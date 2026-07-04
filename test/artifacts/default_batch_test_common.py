@@ -37,6 +37,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "ctz",
     "cumsum",
     "database_join",
+    "edge_update",
     "delta_decode",
     "delta_encode",
     "distance_point",

@@ -31,11 +31,13 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Transforms/RegionUtils.h"
@@ -84,8 +86,8 @@ std::string uniqueSymbol(::mlir::ModuleOp module, ::llvm::StringRef stem) {
   if (auto attr = ::llvm::dyn_cast<::mlir::Attribute>(ofr)) {
     auto intAttr = ::llvm::dyn_cast<::mlir::IntegerAttr>(attr);
     int64_t v = intAttr.getInt();
-    return ::mlir::arith::ConstantOp::create(
-        builder, loc, builder.getIndexAttr(v));
+    return ::mlir::arith::ConstantOp::create(builder, loc,
+                                             builder.getIndexAttr(v));
   }
   return ::llvm::cast<::mlir::Value>(ofr);
 }
@@ -106,6 +108,253 @@ bool isPromotableForall(::mlir::func::FuncOp func,
       return false;
   }
   return false;
+}
+
+bool isLlvmPointerType(::mlir::Type type) {
+  return ::llvm::isa<::mlir::LLVM::LLVMPointerType>(type);
+}
+
+bool isSideEffectFreeSetupOp(::mlir::Operation &op) {
+  if (op.getNumRegions() != 0 || op.getNumSuccessors() != 0)
+    return false;
+  if (op.hasTrait<::mlir::OpTrait::IsTerminator>())
+    return false;
+  if (op.hasTrait<::mlir::OpTrait::SymbolTable>())
+    return false;
+  if (::llvm::isa<::mlir::FunctionOpInterface, ::mlir::CallOpInterface>(op))
+    return false;
+  if (auto effects = ::llvm::dyn_cast<::mlir::MemoryEffectOpInterface>(&op))
+    return effects.hasNoEffect();
+  return ::mlir::isPure(&op);
+}
+
+bool isBlockedStandaloneStructuredNumericOp(::mlir::Operation *op) {
+  ::llvm::StringRef name = op->getName().getStringRef();
+  return name == "arith.divsi" || name == "arith.divui" ||
+         name == "arith.remf" || name == "arith.remsi" ||
+         name == "arith.remui" || name == "llvm.fptosi" ||
+         name == "llvm.sitofp";
+}
+
+bool isFloatType(::mlir::Type type) {
+  return ::llvm::isa<::mlir::FloatType>(type);
+}
+
+bool touchesFloatType(::mlir::Operation *op) {
+  for (::mlir::Value operand : op->getOperands()) {
+    if (isFloatType(operand.getType()))
+      return true;
+  }
+  for (::mlir::Value result : op->getResults()) {
+    if (isFloatType(result.getType()))
+      return true;
+  }
+  return false;
+}
+
+bool isMemsetIntrinsic(::mlir::Operation *op) {
+  return op->getName().getStringRef() == "llvm.intr.memset";
+}
+
+bool isZeroIntegerConstant(::mlir::Value value) {
+  if (auto constant = value.getDefiningOp<::mlir::arith::ConstantOp>()) {
+    auto intAttr = ::llvm::dyn_cast<::mlir::IntegerAttr>(constant.getValue());
+    return intAttr && intAttr.getValue().isZero();
+  }
+  if (auto constant = value.getDefiningOp<::dataflow::ConstantOp>()) {
+    auto intAttr =
+        ::llvm::dyn_cast<::mlir::IntegerAttr>(constant.getConstValue());
+    return intAttr && intAttr.getValue().isZero();
+  }
+  return false;
+}
+
+bool isSupportedStandaloneStructuredMemsetOp(::mlir::Operation *op) {
+  if (!isMemsetIntrinsic(op))
+    return false;
+  if (auto volatileAttr = op->getAttrOfType<::mlir::BoolAttr>("isVolatile")) {
+    if (volatileAttr.getValue())
+      return false;
+  }
+  if (op->getNumOperands() != 3)
+    return false;
+
+  ::mlir::Value dst = op->getOperand(0);
+  ::mlir::Value byteValue = op->getOperand(1);
+  ::mlir::Value byteCount = op->getOperand(2);
+  return isLlvmPointerType(dst.getType()) &&
+         ::llvm::isa<::mlir::IntegerType>(byteValue.getType()) &&
+         ::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(
+             byteCount.getType()) &&
+         isZeroIntegerConstant(byteValue);
+}
+
+bool isEffectFormStructuredBodyCandidate(::mlir::Block *body);
+
+bool isEffectFormStructuredRegionCandidate(::mlir::Region &region) {
+  if (region.empty())
+    return true;
+  if (!region.hasOneBlock())
+    return false;
+  return isEffectFormStructuredBodyCandidate(&region.front());
+}
+
+bool isEffectFormForallGraphCandidate(::mlir::scf::ForallOp forall) {
+  if (!forall.getOutputs().empty() || forall.getNumResults() != 0)
+    return false;
+  auto inParallel = forall.getTerminator();
+  if (inParallel.getRegion().empty() || !inParallel.getRegion().front().empty())
+    return false;
+  return isEffectFormStructuredBodyCandidate(forall.getBody());
+}
+
+bool isEffectFormStructuredBodyCandidate(::mlir::Block *body) {
+  if (!body)
+    return true;
+  for (::mlir::Operation &nested : body->without_terminator()) {
+    if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
+                    ::dataflow::GraphFuncOp, ::dataflow::ThreadOp,
+                    ::mlir::scf::ForOp, ::mlir::scf::WhileOp>(&nested))
+      return false;
+    if (::llvm::isa<::mlir::FunctionOpInterface, ::mlir::CallOpInterface>(
+            &nested))
+      return false;
+    if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(&nested)) {
+      if (!isEffectFormForallGraphCandidate(forall))
+        return false;
+      continue;
+    }
+    if (auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(&nested)) {
+      if (ifOp.getNumResults() != 0)
+        return false;
+      if (!isEffectFormStructuredRegionCandidate(ifOp.getThenRegion()))
+        return false;
+      if (!isEffectFormStructuredRegionCandidate(ifOp.getElseRegion()))
+        return false;
+      continue;
+    }
+    if (nested.getNumRegions() != 0)
+      return false;
+    if (nested.hasTrait<::mlir::OpTrait::SymbolTable>())
+      return false;
+  }
+  return true;
+}
+
+bool isSupportedStandaloneStructuredTopLevelOp(::mlir::Operation *op) {
+  if (auto forOp = ::llvm::dyn_cast<::mlir::scf::ForOp>(op))
+    return forOp.getInitArgs().empty();
+  if (auto whileOp = ::llvm::dyn_cast<::mlir::scf::WhileOp>(op))
+    return whileOp->getNumOperands() == whileOp->getNumResults();
+  if (auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(op))
+    return ifOp.getNumResults() == 0;
+  return false;
+}
+
+bool hasUnsupportedStandaloneStructuredBody(::mlir::Operation *root) {
+  bool unsupported = false;
+  root->walk([&](::mlir::Operation *nested) -> ::mlir::WalkResult {
+    if (nested == root)
+      return ::mlir::WalkResult::advance();
+    if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
+                    ::dataflow::GraphFuncOp, ::dataflow::ThreadOp,
+                    ::mlir::func::FuncOp>(nested)) {
+      unsupported = true;
+      return ::mlir::WalkResult::interrupt();
+    }
+    if (isMemsetIntrinsic(nested) &&
+        !isSupportedStandaloneStructuredMemsetOp(nested)) {
+      unsupported = true;
+      return ::mlir::WalkResult::interrupt();
+    }
+    if (::llvm::isa<::mlir::CallOpInterface>(nested) &&
+        !::llvm::isa<::mlir::LLVM::CallIntrinsicOp>(nested)) {
+      unsupported = true;
+      return ::mlir::WalkResult::interrupt();
+    }
+    if (auto forOp = ::llvm::dyn_cast<::mlir::scf::ForOp>(nested)) {
+      if (!forOp.getInitArgs().empty()) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+    }
+    if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(nested)) {
+      if (isEffectFormForallGraphCandidate(forall))
+        return ::mlir::WalkResult::advance();
+      unsupported = true;
+      return ::mlir::WalkResult::interrupt();
+    }
+    if (auto inParallel = ::llvm::dyn_cast<::mlir::scf::InParallelOp>(nested)) {
+      if (!inParallel.getRegion().empty() &&
+          inParallel.getRegion().front().empty())
+        return ::mlir::WalkResult::advance();
+      unsupported = true;
+      return ::mlir::WalkResult::interrupt();
+    }
+    if (nested->getNumRegions() != 0 &&
+        !::llvm::isa<::mlir::scf::ForOp, ::mlir::scf::WhileOp,
+                     ::mlir::scf::IfOp, ::mlir::scf::IndexSwitchOp>(nested)) {
+      unsupported = true;
+      return ::mlir::WalkResult::interrupt();
+    }
+    return ::mlir::WalkResult::advance();
+  });
+  return unsupported;
+}
+
+bool isStandaloneStructuredGraphCandidate(::mlir::func::FuncOp func) {
+  if (func.isExternal())
+    return false;
+  if (func.getSymName() == "main")
+    return false;
+  if (func.getSymName().starts_with("arm_"))
+    return false;
+  if (!func.getFunctionType().getResults().empty())
+    return false;
+  if (!func.getBody().hasOneBlock())
+    return false;
+
+  bool sawStructuredOp = false;
+  bool sawMemset = false;
+  bool sawBlockedSetupNumericOp = false;
+  bool sawBlockedBodyNumericOp = false;
+  bool sawSequentialStructuredControl = false;
+  bool sawFloatTypedOp = false;
+  ::mlir::Block &entry = func.getBody().front();
+  for (::mlir::Operation &op : entry.without_terminator()) {
+    if (touchesFloatType(&op))
+      sawFloatTypedOp = true;
+    if (isBlockedStandaloneStructuredNumericOp(&op))
+      sawBlockedSetupNumericOp = true;
+    if (isMemsetIntrinsic(&op)) {
+      if (!isSupportedStandaloneStructuredMemsetOp(&op))
+        return false;
+      sawMemset = true;
+      continue;
+    }
+    if (isSideEffectFreeSetupOp(op))
+      continue;
+    if (!isSupportedStandaloneStructuredTopLevelOp(&op))
+      return false;
+    if (hasUnsupportedStandaloneStructuredBody(&op))
+      return false;
+    op.walk([&](::mlir::Operation *nested) {
+      if (touchesFloatType(nested))
+        sawFloatTypedOp = true;
+      if (isBlockedStandaloneStructuredNumericOp(nested))
+        sawBlockedBodyNumericOp = true;
+      if (isMemsetIntrinsic(nested))
+        sawMemset = true;
+      if (::llvm::isa<::mlir::scf::WhileOp, ::mlir::scf::IndexSwitchOp>(nested))
+        sawSequentialStructuredControl = true;
+    });
+    sawStructuredOp = true;
+  }
+
+  return sawStructuredOp && sawSequentialStructuredControl &&
+         !sawFloatTypedOp &&
+         (!sawMemset ||
+          (!sawBlockedSetupNumericOp && !sawBlockedBodyNumericOp));
 }
 
 struct LowerForallToThreadPass
@@ -139,6 +388,8 @@ struct LowerForallToThreadPass
     };
     ::llvm::SmallVector<Pending, 4> pending;
     module.walk([&](::mlir::func::FuncOp func) {
+      if (isStandaloneStructuredGraphCandidate(func))
+        return;
       Pending p;
       p.func = func;
       // Source-order foralls in the function body or under direct
@@ -191,8 +442,7 @@ struct LowerForallToThreadPass
         builder.getFunctionType(inputTypes, /*results=*/{});
 
     // Build a unique symbol like t_<func>_<seq>.
-    std::string symStem =
-        (stem + "_" + ::llvm::Twine(seq)).str();
+    std::string symStem = (stem + "_" + ::llvm::Twine(seq)).str();
     std::string symName = uniqueSymbol(module, symStem);
 
     // Insert the dataflow.thread definition at module scope.

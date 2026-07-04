@@ -1461,7 +1461,8 @@ std::optional<Token> evaluatePointerSelect(mlir::LLVM::SelectOp op,
     return std::nullopt;
   if (trueValue.kind != TokenKind::Pointer ||
       falseValue.kind != TokenKind::Pointer) {
-    state.diagnostics.push_back("llvm.select pointer operands are not pointers");
+    state.diagnostics.push_back(
+        "llvm.select pointer operands are not pointers");
     return std::nullopt;
   }
   return boolToken(condition) ? trueValue : falseValue;
@@ -1611,9 +1612,8 @@ bool selectedIfCapturesAvailable(mlir::scf::IfOp op, SimulatorState &state,
   if (!cond)
     return false;
   mlir::Region *selected = selectedIfRegion(op, *cond);
-  return !selected ||
-         structuredRegionCapturesAvailable(*selected, state, locals,
-                                           captureIndex);
+  return !selected || structuredRegionCapturesAvailable(*selected, state,
+                                                        locals, captureIndex);
 }
 
 unsigned structuredForFireIndex(mlir::scf::ForOp op,
@@ -1684,8 +1684,8 @@ bool assignLocalLLVMICmp(mlir::LLVM::ICmpOp op, SimulatorState &state,
 bool assignLocalLLVMSelect(mlir::LLVM::SelectOp op, SimulatorState &state,
                            LocalValueMap &locals, unsigned captureIndex) {
   if (!isPointerSelect(op))
-    return assignLocalPrimitiveResult(op.getOperation(), op->getResult(0), state,
-                                      locals, captureIndex);
+    return assignLocalPrimitiveResult(op.getOperation(), op->getResult(0),
+                                      state, locals, captureIndex);
   std::optional<Token> condition =
       lookupToken(op->getOperand(0), state, locals, captureIndex);
   std::optional<Token> trueValue =
@@ -2901,6 +2901,7 @@ bool fireStructuredForall(mlir::scf::ForallOp op, SimulatorState &state) {
     operands[operand.get()] = popToken(state.channels, operand);
   if (!executeStructuredForall(op, state, operands))
     return false;
+  recordStructuredEffectFire(state, op.getOperation());
   state.oneShotOps.insert(op.getOperation());
   return true;
 }
@@ -2908,6 +2909,27 @@ bool fireStructuredForall(mlir::scf::ForallOp op, SimulatorState &state) {
 bool isSupportedNonEvent(mlir::Operation *op) {
   return mlir::isa<dataflow::GraphReturnOp>(op);
 }
+
+bool isOrderedStructuredOperation(mlir::Operation *op) {
+  return mlir::isa<mlir::scf::IfOp, mlir::scf::IndexSwitchOp, mlir::scf::ForOp,
+                   mlir::scf::WhileOp, mlir::scf::ForallOp>(op);
+}
+
+unsigned structuredInputTokenCount(mlir::Operation *op,
+                                   const SimulatorState &state) {
+  if (op->getNumOperands() == 0)
+    return 0;
+  return observedTokenCount(op->getOperand(0), state);
+}
+
+bool hasPendingOrderedStructuredFire(mlir::Operation *op,
+                                     const SimulatorState &state) {
+  if (!isOrderedStructuredOperation(op))
+    return false;
+  return structuredInputTokenCount(op, state) >
+         structuredOpFireIndex(op, state);
+}
+
 void collectStreamIndexSources(mlir::Value value,
                                llvm::DenseSet<mlir::Operation *> &sources,
                                llvm::DenseSet<mlir::Value> &seen,
@@ -3155,8 +3177,8 @@ bool hasDataflowCarryUse(mlir::BlockArgument arg) {
 
 bool isScalarBroadcastArgument(mlir::BlockArgument arg) {
   mlir::Type type = arg.getType();
-  if (mlir::isa<mlir::NoneType, mlir::MemRefType,
-                mlir::LLVM::LLVMPointerType>(type))
+  if (mlir::isa<mlir::NoneType, mlir::MemRefType, mlir::LLVM::LLVMPointerType>(
+          type))
     return false;
   if (hasDataflowStreamUse(arg) || hasDataflowCarryUse(arg))
     return false;
@@ -3422,10 +3444,16 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
 
   for (std::uint64_t step = 0; step < options.maxEventSteps; ++step) {
     bool fired = false;
+    bool orderedStructuredBarrier = false;
     for (mlir::Operation &op : entry.getOperations()) {
       if (isSupportedNonEvent(&op))
         continue;
-      fired |= fireOperation(&op, state);
+      if (orderedStructuredBarrier && isOrderedStructuredOperation(&op))
+        continue;
+      bool opFired = fireOperation(&op, state);
+      fired |= opFired;
+      if (hasPendingOrderedStructuredFire(&op, state))
+        orderedStructuredBarrier = true;
     }
     if (!fired)
       break;

@@ -157,7 +157,6 @@ MAPPING_UNSUPPORTED_OPERATIONS: dict[str, str] = {}
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "breadth_first_search",
-    "edge_update",
     "edge_update_batch",
     "col2im",
     "sort_insertion",
@@ -187,11 +186,6 @@ PARTIAL_LOWERING_SWEEP_CASES = {
         "primary workload graph is partial: breadth_first_search lowering covers initialization and queue update "
         "slices while the queue-driven CSR traversal remains outside row-level aggregate evidence",
         "breadth_first_search_kernel",
-    ),
-    "edge_update": (
-        "primary workload graph is partial: edge_update lowering covers the input-to-output copy loop "
-        "while the CSR lookup and update loop remains outside dataflow",
-        "edge_update_kernel",
     ),
     "edge_update_batch": (
         "primary workload graph is partial: edge_update_batch lowering covers the input-to-output copy loop "
@@ -7019,6 +7013,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "histogram", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "hist_bin", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "histogram_strided", "shared_memory_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "edge_update", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "mmtile", "shared_memory_reduction_adg")
         assert_component_references_resolve(evidence_dir, "dotprod")
         assert_component_references_resolve(evidence_dir, "dot_product_3d")
@@ -7671,10 +7666,10 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 132,
-            "pass": 124,
+            "pass": 125,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 8,
+            "unsupported": 7,
             "missing_status": 0,
         }
         if counts != expected_counts:
