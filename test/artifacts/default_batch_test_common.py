@@ -38,6 +38,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "cumsum",
     "database_join",
     "edge_update",
+    "edge_update_batch",
     "delta_decode",
     "delta_encode",
     "distance_point",

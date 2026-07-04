@@ -485,10 +485,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 132,
-            "pass": 125,
+            "pass": 126,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 7,
+            "unsupported": 6,
             "missing_status": 0,
         },
     )
@@ -1291,10 +1291,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
         "primary workload graph is partial: breadth_first_search lowering covers initialization and queue update "
         "slices while the queue-driven CSR traversal remains outside row-level aggregate evidence"
     ),
-    "edge_update_batch": (
-        "primary workload graph is partial: edge_update_batch lowering covers the input-to-output copy loop "
-        "while the batched CSR lookup and update loops remain outside dataflow"
-    ),
     "col2im": (
         "primary workload graph absent: col2im_kernel remains a residual call target outside "
         "the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim cannot "
@@ -1530,10 +1526,10 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         "app",
         {
             "total": 132,
-            "pass": 20,
+            "pass": 21,
             "fail": 0,
             "blocked": 105,
-            "unsupported": 7,
+            "unsupported": 6,
             "missing_status": 0,
         },
     )
@@ -1551,6 +1547,7 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
     assert_app_cgra_pass_row(repo, rows, "hist_bin", expected_hardware="shared_signal_window_adg")
     assert_app_cgra_pass_row(repo, rows, "histogram_strided", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "edge_update", expected_hardware="shared_memory_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "edge_update_batch", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "find_first_set", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "lower_bound", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "upper_bound", expected_hardware="shared_memory_reduction_adg")

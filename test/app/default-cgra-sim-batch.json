@@ -154,6 +154,10 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "edge_update_batch",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "prefix_sum_inclusive",
       "hardware": "shared_reduction_adg"
     },

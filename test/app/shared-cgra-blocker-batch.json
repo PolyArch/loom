@@ -59,7 +59,7 @@
     },
     {
       "case": "edge_update_batch",
-      "hardware": "shared_reduction_adg"
+      "hardware": "shared_memory_reduction_adg"
     },
     {
       "case": "bitonic_stage-modified",

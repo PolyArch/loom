@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    breadth_first_search|col2im|edge_update_batch|sort_insertion|sort_merge|sort_quick|spmspm)
+    breadth_first_search|col2im|sort_insertion|sort_merge|sort_quick|spmspm)
       return 0
       ;;
     *)
@@ -133,7 +133,7 @@ case "${CASE}" in
     case_graph="g_edge_update_kernel_0"
     ;;
   edge_update_batch)
-    case_graph="g_t_edge_update_batch_kernel_0_0"
+    case_graph="g_edge_update_batch_kernel_0"
     ;;
   fft_butterfly)
     case_graph="g_t_fft_butterfly_kernel_red_0_0"
@@ -556,7 +556,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "database_join" || "${CASE}" == "depthwise_conv" || "${CASE}" == "edge_update" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "histogram" || "${CASE}" == "histogram_strided" || "${CASE}" == "im2col" || "${CASE}" == "kmp_table" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "spmm" || "${CASE}" == "stream_nested" || "${CASE}" == "stream_update" || "${CASE}" == "string_compare" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" || "${CASE}" == "wildcard_match" ]]; then
+    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "database_join" || "${CASE}" == "depthwise_conv" || "${CASE}" == "edge_update" || "${CASE}" == "edge_update_batch" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "histogram" || "${CASE}" == "histogram_strided" || "${CASE}" == "im2col" || "${CASE}" == "kmp_table" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "spmm" || "${CASE}" == "stream_nested" || "${CASE}" == "stream_update" || "${CASE}" == "string_compare" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" || "${CASE}" == "wildcard_match" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(
@@ -2985,6 +2985,74 @@ PY
     --mapping-artifact "${mapping_artifact}" \
     --hardware-mlir "${hardware_mlir}" \
     --output "${cgra_report}"
+elif [[ "${CASE}" == "edge_update_batch" ]]; then
+  edge_update_batch_row_ptr="0,2,4,7,10,12,14,15,16"
+  edge_update_batch_cols="1,2,0,3,0,4,5,1,2,6,3,7,4,6,7,5"
+  edge_update_batch_input="1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16"
+  edge_update_batch_zero="0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"
+  edge_update_batch_src="0,2,4,6"
+  edge_update_batch_dst="1,4,7,7"
+  edge_update_batch_weights="100,200,300,400"
+  edge_update_batch_expected="100,2,3,4,5,200,7,8,9,10,11,300,13,14,400,16"
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim \
+    "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${case_graph}" \
+    --workload "${CASE}" \
+    --arg 0=none \
+    --memref "1=${edge_update_batch_row_ptr}" \
+    --memref "2=${edge_update_batch_cols}" \
+    --memref "3=${edge_update_batch_input}" \
+    --memref "4=${edge_update_batch_zero}" \
+    --memref "5=${edge_update_batch_src}" \
+    --memref "6=${edge_update_batch_dst}" \
+    --memref "7=${edge_update_batch_weights}" \
+    --arg 8=4 \
+    --arg 9=8 \
+    --arg 10=16 \
+    --output "${dfg_report}"
+  python3 - "${dfg_report}" "${edge_update_batch_expected}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+expected = [int(value) for value in sys.argv[2].split(",") if value]
+actual_tokens = report.get("final_memory_state", {}).get("arg4")
+if not isinstance(actual_tokens, list):
+    raise SystemExit("edge_update_batch report lacks final_memory_state.arg4")
+if len(actual_tokens) != len(expected):
+    raise SystemExit(
+        f"edge_update_batch output length mismatch: got {len(actual_tokens)}, expected {len(expected)}"
+    )
+actual = []
+for token in actual_tokens:
+    if not isinstance(token, str) or not token.startswith("i32:"):
+        raise SystemExit(f"unexpected edge_update_batch memory token {token!r}")
+    actual.append(int(token.split(":", 1)[1]))
+if actual != expected:
+    raise SystemExit(f"edge_update_batch output mismatch: got {actual}, expected {expected}")
+for index, value in ((0, 100), (5, 200), (11, 300), (14, 400)):
+    if actual[index] != value:
+        raise SystemExit(f"edge_update_batch did not update slot {index}")
+if len(set(actual)) < 16:
+    raise SystemExit("edge_update_batch output is not distinct enough for evidence")
+PY
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    --dfg-report "${dfg_report}" \
+    --output "${dfg_cycle}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${case_graph}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_artifact}" \
+    --output "${mapping}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_report}" \
+    --mapping-artifact "${mapping_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_report}"
 elif uses_primary_graph_absence_path "${CASE}"; then
   graph_absence_args=()
   case "${CASE}" in
@@ -3004,14 +3072,6 @@ elif uses_primary_graph_absence_path "${CASE}"; then
         --required-discovered-graph "g_t_breadth_first_search_kernel_0_0"
         --diagnostic "primary workload graph is partial: breadth_first_search lowering covers initialization and queue update slices while the queue-driven CSR traversal remains outside row-level aggregate evidence"
         --evidence "partial queue-driven graph traversal lowering boundary"
-      )
-      ;;
-    edge_update_batch)
-      expected_primary_graph_token="edge_update_batch_kernel"
-      graph_absence_args=(
-        --expected-graph-presence present
-        --diagnostic "primary workload graph is partial: edge_update_batch lowering covers the input-to-output copy loop while the batched CSR lookup and update loops remain outside dataflow"
-        --evidence "partial dataflow lowering boundary"
       )
       ;;
     sort_insertion)
