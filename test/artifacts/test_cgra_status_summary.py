@@ -908,6 +908,8 @@ module {
                 str(legacy_root),
                 "--cmsis-sim-attempt-stem",
                 "arm_add_q15",
+                "--cmsis-sim-attempt-stem",
+                "arm_relu6_s8",
             ],
         )
         selected_cmsis_rows = read_rows(selected_cmsis_csv)
@@ -927,14 +929,14 @@ module {
             )
         if selected_cmsis_counts.get("cmsis-nn") != {
             "total": 18,
-            "pass": 0,
+            "pass": 1,
             "fail": 0,
-            "blocked": 13,
+            "blocked": 12,
             "unsupported": 5,
             "missing_status": 0,
         }:
             raise AssertionError(
-                f"selected CMSIS attempt should not alter NN rows: {selected_cmsis_counts.get('cmsis-nn')}"
+                f"selected CMSIS attempt should advance one NN row: {selected_cmsis_counts.get('cmsis-nn')}"
             )
         if selected_cmsis_counts.get("app") != {
             "total": APP_CASE_COUNT,
@@ -950,50 +952,31 @@ module {
             )
         selected_app_vecsum = one_row(selected_cmsis_rows, "app", "vecsum")
         assert_app_not_attempted(selected_app_vecsum, "vecsum")
-        selected_cmsis_add = one_row(selected_cmsis_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
-        if (
-            selected_cmsis_add["status"] != "pass"
-            or selected_cmsis_add["diagnostic_class"] != "cgra_sim_pass"
-            or selected_cmsis_add["blocking_prerequisite"]
-            or selected_cmsis_add["owner"] != "sim_report"
-            or selected_cmsis_add["hardware_system"] != "shared_reduction_adg"
-            or selected_cmsis_add["spatialcore_template"] != "shared_reduction_adg"
-            or selected_cmsis_add["dfg_status"] != "pass"
-            or selected_cmsis_add["mapping_status"] != "pass"
-            or selected_cmsis_add["cgra_status"] != "pass"
-            or selected_cmsis_add["comparison_status"] != "pass"
-            or selected_cmsis_add["final_outputs_present"] != "true"
-            or selected_cmsis_add["final_memory_state_present"] != "true"
-        ):
-            raise AssertionError(f"selected CMSIS row should consume complete CGRA evidence: {selected_cmsis_add}")
-        for column in ("dfg_mlir", "dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
-            if not selected_cmsis_add[column]:
-                raise AssertionError(f"selected CMSIS pass row should name {column}: {selected_cmsis_add}")
-        assert_sha256_file(
-            selected_cmsis_add["dfg_mlir"],
-            selected_cmsis_add["dfg_mlir_fingerprint"],
-            repo,
-        )
-        assert_sha256_file(
-            selected_cmsis_add["dfg_report"],
-            selected_cmsis_add["dfg_report_fingerprint"],
-            repo,
-        )
-        assert_sha256_file(
-            selected_cmsis_add["mapping_artifact"],
-            selected_cmsis_add["mapping_artifact_fingerprint"],
-            repo,
-        )
-        assert_sha256_file(
-            selected_cmsis_add["cgra_report"],
-            selected_cmsis_add["cgra_report_fingerprint"],
-            repo,
-        )
-        assert_sha256_file(
-            selected_cmsis_add["comparison_report"],
-            selected_cmsis_add["comparison_report_fingerprint"],
-            repo,
-        )
+
+        def assert_selected_cmsis_pass(suite: str, case: str, expected_hardware: str) -> None:
+            row = one_row(selected_cmsis_rows, suite, case)
+            if (
+                row["status"] != "pass"
+                or row["diagnostic_class"] != "cgra_sim_pass"
+                or row["blocking_prerequisite"]
+                or row["owner"] != "sim_report"
+                or row["hardware_system"] != expected_hardware
+                or row["spatialcore_template"] != expected_hardware
+                or row["dfg_status"] != "pass"
+                or row["mapping_status"] != "pass"
+                or row["cgra_status"] != "pass"
+                or row["comparison_status"] != "pass"
+                or row["final_outputs_present"] != "true"
+                or row["final_memory_state_present"] != "true"
+            ):
+                raise AssertionError(f"selected CMSIS row should consume complete CGRA evidence: {row}")
+            for column in ("dfg_mlir", "dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+                if not row[column]:
+                    raise AssertionError(f"selected CMSIS pass row should name {column}: {row}")
+                assert_sha256_file(row[column], row[f"{column}_fingerprint"], repo)
+
+        assert_selected_cmsis_pass("cmsis-dsp", "BasicMathFunctions/arm_add_q15.c", "shared_reduction_adg")
+        assert_selected_cmsis_pass("cmsis-nn", "ActivationFunctions/arm_relu6_s8.c", "shared_quantized_window_adg")
 
         missing_cmsis_stem_value = run(
             repo,
