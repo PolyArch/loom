@@ -1332,6 +1332,37 @@ void addSelectPe(ModuleBuilder &module, llvm::StringRef result,
   module.addExactBodyLine("    }");
 }
 
+void addWideSelectPe(ModuleBuilder &module, llvm::StringRef result,
+                     llvm::StringRef pred, llvm::StringRef trueValue,
+                     llvm::StringRef falseValue) {
+  auto addSelectFu = [&](llvm::StringRef opName) {
+    module.addExactBodyLine(
+        "      fabric.fu(%sel = %pred : !fabric.bits<64> to !fabric.bits<1>,");
+    module.addExactBodyLine(
+        "                %a = %true_value : !fabric.bits<64>,");
+    module.addExactBodyLine("                %b = %false_value : "
+                            "!fabric.bits<64>) -> !fabric.bits<64> {");
+    module.addExactBodyLine(std::string("        %value = fabric.op [@") +
+                            opName.str() + "] (%sel, %a, %b)");
+    module.addExactBodyLine("            : (!fabric.bits<1>, !fabric.bits<64>, "
+                            "!fabric.bits<64>) -> !fabric.bits<64>");
+    module.addExactBodyLine("        fabric.yield %value : !fabric.bits<64>");
+    module.addExactBodyLine("      }");
+  };
+
+  module.addExactBodyLine(valueName(result) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%pred = " +
+                          valueName(pred) + " : !fabric.bits<64>,");
+  module.addExactBodyLine("                         %true_value = " +
+                          valueName(trueValue) + " : !fabric.bits<64>,");
+  module.addExactBodyLine("                         %false_value = " +
+                          valueName(falseValue) + " : !fabric.bits<64>)");
+  module.addExactBodyLine("        -> !fabric.bits<64> {");
+  addSelectFu("arith.select");
+  addSelectFu("llvm.select");
+  module.addExactBodyLine("    }");
+}
+
 void addDataMuxPe(ModuleBuilder &module, llvm::StringRef result,
                   llvm::StringRef pred, llvm::StringRef falseValue,
                   llvm::StringRef trueValue) {
@@ -3880,6 +3911,7 @@ struct SharedMemoryAdgConfig {
   unsigned unsignedMaxCount = 0;
   unsigned unsignedSaturatingSubCount = 0;
   unsigned selectCount = 8;
+  unsigned wideSelectCount = 0;
   unsigned mulCount = 8;
   unsigned divCount = 0;
   unsigned unsignedDivCount = 0;
@@ -4279,6 +4311,17 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
     sinks32.push_back(trueValue);
     sinks32.push_back(falseValue);
   }
+  for (unsigned index = 0; index < config.wideSelectCount; ++index) {
+    std::string result = numbered("wide_select", index);
+    std::string pred = result + "_pred";
+    std::string trueValue = result + "_true";
+    std::string falseValue = result + "_false";
+    addWideSelectPe(module, result, pred, trueValue, falseValue);
+    sources64.push_back(result);
+    sinks64.push_back(pred);
+    sinks64.push_back(trueValue);
+    sinks64.push_back(falseValue);
+  }
   for (unsigned index = 0; index < config.muxCount; ++index) {
     std::string result = numbered("mux", index);
     std::string pred = result + "_pred";
@@ -4399,16 +4442,22 @@ ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {
   config.addCount = 40;
   config.cmpCount = 48;
   config.selectCount = 48;
+  config.wideSelectCount = 14;
   config.mulCount = 20;
   config.divCount = 4;
   config.muxCount = 4;
-  config.logicCount = 18;
+  config.logicCount = 22;
   config.unsignedMaxCount = 2;
   config.shiftCount = 36;
   config.castCount = 24;
-  config.wideCastCount = 20;
+  config.wideAddCount = 34;
+  config.wideShiftCount = 20;
+  config.wideCmpCount = 2;
+  config.wideCastCount = 36;
   config.wideSextCount = 20;
+  config.wideMulCount = 34;
   config.wideDivCount = 20;
+  config.wideRouteBridgeCount = 16;
   config.ctlzCount = 2;
   return buildSharedMemoryLikeAdg(config);
 }

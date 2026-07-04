@@ -521,8 +521,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 11,
-            "fail": 1,
+            "pass": 12,
+            "fail": 0,
             "blocked": 1,
             "unsupported": 5,
             "missing_status": 0,
@@ -1846,8 +1846,8 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 11,
-            "fail": 1,
+            "pass": 12,
+            "fail": 0,
             "blocked": 1,
             "unsupported": 5,
             "missing_status": 0,
@@ -1875,7 +1875,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_minimum_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_maximum_s8_cgra_evidence(repo, rows, sim_evidence)
-    assert_cmsis_softmax_u8_blocked_evidence(repo, rows, sim_evidence)
+    assert_cmsis_softmax_u8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_depthwise_conv_s8_blocker(repo, rows, sim_evidence)
     assert_cmsis_max_pool_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_fully_connected_s8_cgra_evidence(repo, rows, sim_evidence)
@@ -3346,7 +3346,7 @@ def assert_cmsis_maximum_s8_cgra_evidence(
     )
 
 
-def assert_cmsis_softmax_u8_blocked_evidence(
+def assert_cmsis_softmax_u8_cgra_evidence(
     repo: Path,
     rows: list[dict[str, str]],
     sim_evidence: Path,
@@ -3365,23 +3365,22 @@ def assert_cmsis_softmax_u8_blocked_evidence(
     }
     row = one_row(rows, "cmsis-nn", case)
     if (
-        row["status"] != "fail"
-        or row["diagnostic_class"] != "mapping_artifact_failed"
-        or row["blocking_prerequisite"] != "mapping_artifact"
+        row["status"] != "pass"
+        or row["diagnostic_class"] != "cgra_sim_pass"
+        or row["blocking_prerequisite"]
         or row["owner"] != "sim_report"
         or row["dfg_status"] != "pass"
-        or row["mapping_status"] != "fail"
-        or row["cgra_status"] != "blocked"
-        or row["comparison_status"] != "blocked"
+        or row["mapping_status"] != "pass"
+        or row["cgra_status"] != "pass"
+        or row["comparison_status"] != "pass"
         or row["hardware_system"] != hardware
         or row["spatialcore_template"] != hardware
         or row["mapping_id"] != expected_mapping_id
         or row["final_outputs_present"] != "true"
         or row["final_memory_state_present"] != "true"
-        or "missing hardware resource for software op llvm.trunc" not in row["diagnostic"]
-        or "operation=arith.muli required=34 available=0" not in row["diagnostic"]
+        or row["diagnostic"] != "DFG-sim, mapping, CGRA-sim, and simulation comparison evidence passed"
     ):
-        raise AssertionError(f"{stem} should expose an honest mapping blocker: {row}")
+        raise AssertionError(f"{stem} should expose real CGRA-sim pass evidence: {row}")
     for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
         assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
     for key in ("dfg_report", "mapping_artifact", "cgra_report"):
@@ -3411,83 +3410,32 @@ def assert_cmsis_softmax_u8_blocked_evidence(
         raise AssertionError(f"unexpected {stem} DFG evidence: {dfg_report}")
 
     mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
-    expected_pressure = [
-        {
-            "available": 40,
-            "missing": 34,
-            "operation": "arith.addi",
-            "placed": 24,
-            "required": 58,
-            "resource_kind": "fabric.op",
-        },
-        {
-            "available": 18,
-            "missing": 4,
-            "operation": "arith.andi",
-            "placed": 18,
-            "required": 22,
-            "resource_kind": "fabric.op",
-        },
-        {
-            "available": 48,
-            "missing": 2,
-            "operation": "arith.cmpi",
-            "placed": 47,
-            "required": 49,
-            "resource_kind": "fabric.op",
-        },
-        {
-            "available": 0,
-            "missing": 34,
-            "operation": "arith.muli",
-            "placed": 0,
-            "required": 34,
-            "resource_kind": "fabric.op",
-        },
-        {
-            "available": 48,
-            "missing": 14,
-            "operation": "arith.select",
-            "placed": 28,
-            "required": 42,
-            "resource_kind": "fabric.op",
-        },
-        {
-            "available": 36,
-            "missing": 19,
-            "operation": "arith.shrui",
-            "placed": 7,
-            "required": 26,
-            "resource_kind": "fabric.op",
-        },
-        {
-            "available": 44,
-            "missing": 14,
-            "operation": "llvm.trunc",
-            "placed": 21,
-            "required": 35,
-            "resource_kind": "fabric.op",
-        },
-    ]
     if (
         mapping_artifact.get("kind") != "pnr_mapping"
         or mapping_artifact.get("workload") != case
         or mapping_artifact.get("graph") != graph
         or mapping_artifact.get("hardware") != hardware
         or mapping_artifact.get("mapping_id") != expected_mapping_id
-        or mapping_artifact.get("status") != "fail"
-        or mapping_artifact.get("placed_records") != 247
-        or mapping_artifact.get("unplaced_records") != 121
-        or mapping_artifact.get("routed_edges") != 273
+        or mapping_artifact.get("status") != "pass"
+        or mapping_artifact.get("placed_records") != 368
+        or mapping_artifact.get("unplaced_records") != 0
+        or mapping_artifact.get("routed_edges") != 469
         or mapping_artifact.get("unrouted_edges") != 0
-        or mapping_artifact.get("config_records") != 0
-        or mapping_artifact.get("resource_pressure") != expected_pressure
-        or "missing hardware resource for software op llvm.trunc" not in " ".join(mapping_artifact.get("diagnostics", []))
+        or mapping_artifact.get("config_records") != 13007
+        or mapping_artifact.get("resource_pressure") not in (None, [])
+        or mapping_artifact.get("diagnostics") != ["mapped software graph to fabric resources"]
     ):
-        raise AssertionError(f"unexpected {stem} mapping evidence: {mapping_artifact}")
+        raise AssertionError(f"unexpected {stem} mapping pass evidence: {mapping_artifact}")
     routes = mapping_artifact.get("routes")
-    if not isinstance(routes, list) or len(routes) != 273:
-        raise AssertionError(f"{stem} should expose routed prefix records before resource failure: {mapping_artifact}")
+    if not isinstance(routes, list) or len(routes) != 469:
+        raise AssertionError(f"{stem} should expose routed records for every software edge: {mapping_artifact}")
+    if not any(
+        isinstance(record, dict)
+        and record.get("operation") == "arith.muli"
+        and str(record.get("hardware", "")).startswith(f"{hardware}::fabric.op#")
+        for record in mapping_artifact.get("placements", [])
+    ):
+        raise AssertionError(f"{stem} should place wide fixed-point multiply resources: {mapping_artifact}")
 
     cgra_report = json.loads((repo / row["cgra_report"]).read_text())
     comparison_report = json.loads((repo / row["comparison_report"]).read_text())
@@ -3496,23 +3444,30 @@ def assert_cmsis_softmax_u8_blocked_evidence(
         or cgra_report.get("workload") != case
         or cgra_report.get("hardware") != hardware
         or cgra_report.get("mapping_id") != expected_mapping_id
-        or cgra_report.get("status") != "blocked"
-        or cgra_report.get("difference_classification") != "unsupported_scope"
+        or cgra_report.get("status") != "pass"
+        or cgra_report.get("difference_classification") != "expected_hardware_constraint"
         or cgra_report.get("functional_state_source") != "carried_from_dfg_sim_report"
         or cgra_report.get("final_outputs") != ["none"]
         or cgra_report.get("final_memory_state") != expected_memory
+        or cgra_report.get("placed_records") != 368
+        or cgra_report.get("routed_edges") != 469
         or cgra_report.get("dfg_cycles") != 1428
-        or cgra_report.get("hardware_aware_cycles") != 1428
-        or cgra_report.get("performance_delta_cycles") != 0
-        or cgra_report.get("route_segments") != 1407
-        or cgra_report.get("config_records") != 0
-        or "mapping artifact status fail blocks CGRA-sim" not in " ".join(cgra_report.get("diagnostics", []))
+        or cgra_report.get("hardware_aware_cycles") != 4167
+        or cgra_report.get("performance_delta_cycles") != 2739
+        or cgra_report.get("route_segments") != 2481
+        or cgra_report.get("config_records") != 13007
+        or cgra_report.get("diagnostics") != [
+            "CGRA-sim mapping-constraint estimate: DFG cycles plus modeled route, memory, "
+            "width-adapter, functional-unit, resource-mix, load-address, store-address, "
+            "configuration-load, and temporal penalties; report lists unmodeled "
+            "microarchitectural constraints"
+        ]
         or comparison_report.get("kind") != "sim_comparison_report"
         or comparison_report.get("workload") != case
-        or comparison_report.get("status") != "blocked"
+        or comparison_report.get("status") != "pass"
         or comparison_report.get("functional_comparison_status") != "pass"
         or comparison_report.get("memory_comparison_status") != "pass"
-        or comparison_report.get("performance_comparison_status") != "blocked"
+        or comparison_report.get("performance_comparison_status") != "pass"
         or comparison_report.get("dfg_sim_cycles") != cgra_report.get("dfg_cycles")
         or comparison_report.get("cgra_sim_cycles") != cgra_report.get("hardware_aware_cycles")
         or comparison_report.get("performance_delta_cycles") != cgra_report.get("performance_delta_cycles")
@@ -4809,8 +4764,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 11,
-            "fail": 1,
+            "pass": 12,
+            "fail": 0,
             "blocked": 1,
             "unsupported": 5,
             "missing_status": 0,
@@ -4868,7 +4823,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_minimum_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_maximum_s8_cgra_evidence(repo, rows, sim_evidence)
-    assert_cmsis_softmax_u8_blocked_evidence(repo, rows, sim_evidence)
+    assert_cmsis_softmax_u8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_depthwise_conv_s8_blocker(repo, rows, sim_evidence)
     assert_cmsis_max_pool_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_fully_connected_s8_cgra_evidence(repo, rows, sim_evidence)

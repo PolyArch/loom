@@ -130,8 +130,8 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             },
             "cmsis-nn": {
                 "total": 18,
-                "pass": 11,
-                "fail": 1,
+                "pass": 12,
+                "fail": 0,
                 "blocked": 1,
                 "unsupported": 5,
                 "missing_status": 0,
@@ -180,16 +180,16 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
                 f"{fully_connected}"
             )
         if (
-            softmax["status"] != "fail"
+            softmax["status"] != "pass"
             or softmax["dfg_status"] != "pass"
-            or softmax["mapping_status"] != "fail"
-            or softmax["cgra_status"] != "blocked"
-            or softmax["comparison_status"] != "blocked"
+            or softmax["mapping_status"] != "pass"
+            or softmax["cgra_status"] != "pass"
+            or softmax["comparison_status"] != "pass"
             or softmax["final_outputs_present"] != "true"
             or softmax["final_memory_state_present"] != "true"
-            or "operation=arith.muli required=34 available=0" not in softmax["diagnostic"]
+            or softmax["diagnostic_class"] != "cgra_sim_pass"
         ):
-            raise AssertionError(f"default-batch rollup should expose honest softmax mapping pressure: {softmax}")
+            raise AssertionError(f"default-batch rollup should promote softmax with real CGRA-sim evidence: {softmax}")
         if (
             depthwise["status"] != "blocked"
             or depthwise["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"

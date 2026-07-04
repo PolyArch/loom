@@ -10,6 +10,7 @@
 // HARDWARE-DAG: store_group_size = 9 : i32
 // HARDWARE-DAG: fabric.op [@dataflow.constant]
 // HARDWARE-DAG: fabric.op [@arith.addi, @arith.subi]
+// HARDWARE-DAG: fabric.op [@arith.muli]
 // HARDWARE-DAG: fabric.op [@arith.divsi]
 // HARDWARE-DAG: fabric.op [@arith.cmpi, @llvm.icmp]
 // HARDWARE-DAG: fabric.op [@arith.shli, @arith.shrsi, @arith.shrui]
@@ -17,6 +18,7 @@
 // HARDWARE-DAG: fabric.op [@llvm.intr.ctlz]
 // HARDWARE-DAG: fabric.op [@llvm.intr.umax]
 // HARDWARE-DAG: fabric.op [@llvm.intr.smax]
+// HARDWARE-DAG: fabric.op [@arith.select]
 // HARDWARE-DAG: fabric.op [@llvm.sext]
 // HARDWARE-DAG: fabric.mem [spatial]
 
