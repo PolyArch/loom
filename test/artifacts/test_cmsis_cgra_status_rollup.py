@@ -738,6 +738,7 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     write_legacy_case(legacy_root, "relu")
     write_legacy_case(legacy_root, "sbox_lookup")
     write_legacy_case(legacy_root, "sort_bubble")
+    write_legacy_case(legacy_root, "mat3x3_mult")
     run(
         repo,
         [
@@ -759,9 +760,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 132,
-            "pass": 123,
+            "pass": 124,
             "fail": 0,
-            "blocked": 9,
+            "blocked": 8,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -770,8 +771,8 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "loombench",
         {
-            "total": 79,
-            "pass": 79,
+            "total": 80,
+            "pass": 80,
             "fail": 0,
             "blocked": 0,
             "unsupported": 0,
@@ -859,6 +860,7 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         ("relu", "shared_reduction_adg"),
         ("sbox_lookup", "shared_reduction_adg"),
         ("sort_bubble", "shared_memory_reduction_adg"),
+        ("mat3x3_mult", "shared_reduction_adg"),
         ("vecsum", "shared_reduction_adg"),
         ("vecadd", "shared_reduction_adg"),
         ("bit_reverse", "shared_reduction_adg"),
@@ -984,6 +986,7 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     assert_loombench_cgra_pass_row(repo, rows, "relu", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "sbox_lookup", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "sort_bubble", expected_hardware="shared_memory_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "mat3x3_mult", expected_hardware="shared_reduction_adg")
     for case, _hardware in seed_rows:
         for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json", "sim-comparison-report.json"):
             artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
@@ -1072,6 +1075,7 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
     remaining_bridge.assert_relu_evidence(evidence_dir)
     remaining_bridge.assert_sbox_lookup_evidence(evidence_dir)
     cgra_sweep.assert_merge_dfg_evidence(evidence_dir)
+    cgra_sweep.assert_mat3x3_mult_evidence(evidence_dir)
     run(
         Path(__file__).resolve().parents[2],
         ["python3", "test/artifacts/assert_fft_butterfly_cgra_evidence.py", str(evidence_dir)],
