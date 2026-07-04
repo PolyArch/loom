@@ -190,6 +190,54 @@
       "hardware": "shared_signal_window_adg"
     },
     {
+      "case": "bitrev_complex",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "bisection_step",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "im2col",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "kmp_table",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "distance_point",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "window_blackman",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "window_hamming",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "window_hanning",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "convolve_1d",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "convolve_1d_same",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "conv1d",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "fir_filter",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "axpy",
       "hardware": "shared_vector_alu_adg"
     },
