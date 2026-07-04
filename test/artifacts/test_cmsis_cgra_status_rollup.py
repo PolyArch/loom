@@ -721,6 +721,14 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     write_legacy_case(legacy_root, "matmul")
     write_legacy_case(legacy_root, "matvec")
     write_legacy_case(legacy_root, "upsample")
+    write_legacy_case(legacy_root, "vecsum-while")
+    write_legacy_case(legacy_root, "reduction")
+    write_legacy_case(legacy_root, "prefix_sum")
+    write_legacy_case(legacy_root, "prefix_sum_inclusive")
+    write_legacy_case(legacy_root, "vecnorm_l2")
+    write_legacy_case(legacy_root, "variance")
+    write_legacy_case(legacy_root, "spmv")
+    write_legacy_case(legacy_root, "spmm")
     run(
         repo,
         [
@@ -742,9 +750,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 132,
-            "pass": 105,
+            "pass": 113,
             "fail": 0,
-            "blocked": 27,
+            "blocked": 19,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -753,8 +761,8 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "loombench",
         {
-            "total": 62,
-            "pass": 62,
+            "total": 70,
+            "pass": 70,
             "fail": 0,
             "blocked": 0,
             "unsupported": 0,
@@ -824,6 +832,14 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         ("matmul", "shared_reduction_adg"),
         ("matvec", "shared_reduction_adg"),
         ("upsample", "shared_reduction_adg"),
+        ("vecsum-while", "shared_reduction_adg"),
+        ("reduction", "shared_reduction_adg"),
+        ("prefix_sum", "shared_reduction_adg"),
+        ("prefix_sum_inclusive", "shared_reduction_adg"),
+        ("vecnorm_l2", "shared_reduction_adg"),
+        ("variance", "shared_reduction_adg"),
+        ("spmv", "shared_reduction_adg"),
+        ("spmm", "shared_memory_reduction_adg"),
         ("vecsum", "shared_reduction_adg"),
         ("vecadd", "shared_reduction_adg"),
         ("bit_reverse", "shared_reduction_adg"),
@@ -932,6 +948,14 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     assert_loombench_cgra_pass_row(repo, rows, "matmul", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "matvec", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "upsample", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "vecsum-while", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "reduction", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "prefix_sum", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "prefix_sum_inclusive", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "vecnorm_l2", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "variance", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "spmv", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "spmm", expected_hardware="shared_memory_reduction_adg")
     for case, _hardware in seed_rows:
         for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json", "sim-comparison-report.json"):
             artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
@@ -1006,6 +1030,14 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
     seed_bridge.assert_matmul_evidence(evidence_dir)
     seed_bridge.assert_matvec_evidence(evidence_dir)
     seed_bridge.assert_upsample_evidence(evidence_dir)
+    seed_bridge.assert_vecsum_while_evidence(evidence_dir)
+    seed_bridge.assert_reduction_evidence(evidence_dir)
+    seed_bridge.assert_prefix_sum_evidence(evidence_dir)
+    seed_bridge.assert_prefix_sum_inclusive_evidence(evidence_dir)
+    seed_bridge.assert_vecnorm_l2_evidence(evidence_dir)
+    seed_bridge.assert_variance_evidence(evidence_dir)
+    seed_bridge.assert_spmv_evidence(evidence_dir)
+    seed_bridge.assert_spmm_evidence(evidence_dir)
     run(
         Path(__file__).resolve().parents[2],
         ["python3", "test/artifacts/assert_database_join_cgra_evidence.py", str(evidence_dir)],

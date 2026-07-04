@@ -250,6 +250,38 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "vecsum-while",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "reduction",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "prefix_sum",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "prefix_sum_inclusive",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "vecnorm_l2",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "variance",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "spmv",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "spmm",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "vecsum",
       "hardware": "shared_reduction_adg"
     },

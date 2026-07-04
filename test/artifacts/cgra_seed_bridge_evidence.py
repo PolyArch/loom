@@ -32,7 +32,11 @@ def _assert_mapping(
     routed_edges: int,
     config_records: int,
     required_edges: set[str],
+    expected_diagnostics: list[str] | None = None,
 ) -> None:
+    diagnostics = (
+        ["mapped software graph to fabric resources"] if expected_diagnostics is None else expected_diagnostics
+    )
     if (
         mapping.get("status") != "pass"
         or mapping.get("hardware") != hardware
@@ -41,7 +45,7 @@ def _assert_mapping(
         or mapping.get("unrouted_edges") != 0
         or mapping.get("unplaced_records") != 0
         or mapping.get("config_records") != config_records
-        or mapping.get("diagnostics") != ["mapped software graph to fabric resources"]
+        or mapping.get("diagnostics") != diagnostics
     ):
         raise AssertionError(f"{case} mapping should route on {hardware}: {mapping}")
     routes = mapping.get("routes")
@@ -85,6 +89,7 @@ def _assert_cgra_and_comparison(
     routed_edges: int,
     route_segments: int,
     final_outputs: list[str],
+    functional_state_source: str = "carried_from_dfg_sim_report",
 ) -> None:
     if (
         cgra.get("status") != "pass"
@@ -94,7 +99,7 @@ def _assert_cgra_and_comparison(
         or cgra.get("routed_edges") != routed_edges
         or cgra.get("route_segments") != route_segments
         or cgra.get("final_outputs") != final_outputs
-        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+        or cgra.get("functional_state_source") != functional_state_source
         or cgra.get("dfg_cycles") != dfg.get("optimistic_cycles")
         or cgra.get("hardware_aware_cycles", 0) < cgra.get("dfg_cycles", 0)
     ):
@@ -123,6 +128,90 @@ def _assert_memory_window(
     values = memory.get(key)
     if not isinstance(values, list) or len(values) != length or values[: len(head)] != head or values[-len(tail) :] != tail:
         raise AssertionError(f"{case} memory {key} should match source-derived window: {memory}")
+
+
+def _i32_values(values: list[int]) -> list[str]:
+    return [f"i32:{value}" for value in values]
+
+
+def _f32_values(values: list[str]) -> list[str]:
+    return [f"f32:{value}" for value in values]
+
+
+def _assert_memory_windows(
+    case: str,
+    dfg: dict,
+    cgra: dict,
+    windows: dict[str, tuple[int, list[str], list[str]]],
+) -> None:
+    dfg_memory = dfg.get("final_memory_state")
+    cgra_memory = cgra.get("final_memory_state")
+    if not isinstance(dfg_memory, dict) or not isinstance(cgra_memory, dict):
+        raise AssertionError(f"{case} should expose final memory state in both simulators: {dfg} {cgra}")
+    for key, (length, head, tail) in windows.items():
+        _assert_memory_window(case, dfg_memory, key, length=length, head=head, tail=tail)
+        _assert_memory_window(case, cgra_memory, key, length=length, head=head, tail=tail)
+
+
+def _assert_seed_case_evidence(
+    evidence_dir: Path,
+    case: str,
+    *,
+    graph: str,
+    dynamic_work_items: int,
+    event_count: int,
+    dfg_cycles: int,
+    cgra_cycles: int,
+    final_outputs: list[str],
+    hardware: str,
+    placed_records: int,
+    routed_edges: int,
+    config_records: int,
+    route_segments: int,
+    operation_fire_counts: dict[str, int],
+    required_edges: set[str],
+    memory_windows: dict[str, tuple[int, list[str], list[str]]],
+    functional_state_source: str = "carried_from_dfg_sim_report",
+    expected_diagnostics: list[str] | None = None,
+    expected_mapping_diagnostics: list[str] | None = None,
+) -> None:
+    dfg, mapping, cgra, comparison = _load_reports(evidence_dir, case)
+    diagnostics = [] if expected_diagnostics is None else expected_diagnostics
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != graph
+        or dfg.get("dynamic_work_items") != dynamic_work_items
+        or dfg.get("event_count") != event_count
+        or dfg.get("optimistic_cycles") != dfg_cycles
+        or dfg.get("final_outputs") != final_outputs
+        or dfg.get("diagnostics") != diagnostics
+    ):
+        raise AssertionError(f"{case} DFG evidence should match source-derived execution: {dfg}")
+    _assert_operation_fire_counts(case, dfg, operation_fire_counts)
+    _assert_mapping(
+        case,
+        mapping,
+        hardware=hardware,
+        placed_records=placed_records,
+        routed_edges=routed_edges,
+        config_records=config_records,
+        required_edges=required_edges,
+        expected_diagnostics=expected_mapping_diagnostics,
+    )
+    _assert_memory_windows(case, dfg, cgra, memory_windows)
+    _assert_cgra_and_comparison(
+        case,
+        dfg,
+        cgra,
+        comparison,
+        hardware=hardware,
+        dfg_cycles=dfg_cycles,
+        cgra_cycles=cgra_cycles,
+        routed_edges=routed_edges,
+        route_segments=route_segments,
+        final_outputs=final_outputs,
+        functional_state_source=functional_state_source,
+    )
 
 
 def assert_correlation_evidence(evidence_dir: Path) -> None:
@@ -980,4 +1069,321 @@ def assert_upsample_evidence(evidence_dir: Path) -> None:
         routed_edges=6,
         route_segments=24,
         final_outputs=["none"],
+    )
+
+
+def assert_vecsum_while_evidence(evidence_dir: Path) -> None:
+    _assert_seed_case_evidence(
+        evidence_dir,
+        "vecsum-while",
+        graph="g_t_vecsum_while_kernel_red_0_0",
+        dynamic_work_items=16,
+        event_count=99,
+        dfg_cycles=169,
+        cgra_cycles=203,
+        final_outputs=["none", "i32:120"],
+        hardware="shared_reduction_adg",
+        placed_records=5,
+        routed_edges=6,
+        config_records=137,
+        route_segments=24,
+        operation_fire_counts={
+            "arith.addi": 16,
+            "arith.index_cast": 17,
+            "dataflow.carry": 17,
+            "dataflow.load": 16,
+            "dataflow.stream": 17,
+            "dataflow.sync": 16,
+        },
+        required_edges={
+            "arith.addi#0.result0->dataflow.carry#0.operand2",
+            "dataflow.load#0.result0->arith.addi#0.operand0",
+            "dataflow.stream#0.result0->dataflow.load#0.operand1",
+        },
+        memory_windows={
+            "arg4": (16, _i32_values(list(range(8))), _i32_values(list(range(8, 16)))),
+        },
+    )
+
+
+def assert_reduction_evidence(evidence_dir: Path) -> None:
+    _assert_seed_case_evidence(
+        evidence_dir,
+        "reduction",
+        graph="g_t_reduce_sum_red_0_0",
+        dynamic_work_items=128,
+        event_count=771,
+        dfg_cycles=1289,
+        cgra_cycles=1323,
+        final_outputs=["none", "i32:8128"],
+        hardware="shared_reduction_adg",
+        placed_records=5,
+        routed_edges=6,
+        config_records=137,
+        route_segments=24,
+        operation_fire_counts={
+            "arith.addi": 128,
+            "arith.index_cast": 129,
+            "dataflow.carry": 129,
+            "dataflow.load": 128,
+            "dataflow.stream": 129,
+            "dataflow.sync": 128,
+        },
+        required_edges={
+            "arith.addi#0.result0->dataflow.carry#0.operand2",
+            "dataflow.load#0.result0->arith.addi#0.operand0",
+            "dataflow.stream#0.result0->dataflow.load#0.operand1",
+        },
+        memory_windows={
+            "arg4": (128, _i32_values(list(range(8))), _i32_values(list(range(120, 128)))),
+        },
+    )
+
+
+def assert_prefix_sum_evidence(evidence_dir: Path) -> None:
+    _assert_seed_case_evidence(
+        evidence_dir,
+        "prefix_sum",
+        graph="g_t_prefix_sum_red_0_0",
+        dynamic_work_items=64,
+        event_count=451,
+        dfg_cycles=1034,
+        cgra_cycles=1091,
+        final_outputs=["none", "i32:2016"],
+        hardware="shared_reduction_adg",
+        placed_records=6,
+        routed_edges=9,
+        config_records=202,
+        route_segments=37,
+        operation_fire_counts={
+            "arith.addi": 64,
+            "arith.index_cast": 65,
+            "dataflow.carry": 65,
+            "dataflow.load": 64,
+            "dataflow.store": 64,
+            "dataflow.stream": 65,
+            "dataflow.sync": 64,
+        },
+        required_edges={
+            "arith.addi#0.result0->dataflow.store#0.operand2",
+            "dataflow.store#0.result0->dataflow.sync#0.operand1",
+            "dataflow.stream#0.result0->dataflow.store#0.operand1",
+        },
+        memory_windows={
+            "arg4": (64, _i32_values(list(range(8))), _i32_values(list(range(56, 64)))),
+            "arg5": (
+                64,
+                _i32_values([0, 1, 3, 6, 10, 15, 21, 28]),
+                _i32_values([1596, 1653, 1711, 1770, 1830, 1891, 1953, 2016]),
+            ),
+        },
+    )
+
+
+def assert_prefix_sum_inclusive_evidence(evidence_dir: Path) -> None:
+    _assert_seed_case_evidence(
+        evidence_dir,
+        "prefix_sum_inclusive",
+        graph="g_t_prefix_sum_inclusive_kernel_red_0_0",
+        dynamic_work_items=1023,
+        event_count=7164,
+        dfg_cycles=16378,
+        cgra_cycles=16435,
+        final_outputs=["none", "i32:5620"],
+        hardware="shared_reduction_adg",
+        placed_records=6,
+        routed_edges=9,
+        config_records=202,
+        route_segments=37,
+        operation_fire_counts={
+            "arith.addi": 1023,
+            "arith.index_cast": 1024,
+            "dataflow.carry": 1024,
+            "dataflow.load": 1023,
+            "dataflow.store": 1023,
+            "dataflow.stream": 1024,
+            "dataflow.sync": 1023,
+        },
+        required_edges={
+            "arith.addi#0.result0->dataflow.store#0.operand2",
+            "dataflow.store#0.result0->dataflow.sync#0.operand1",
+            "dataflow.stream#0.result0->dataflow.store#0.operand1",
+        },
+        memory_windows={
+            "arg4": (
+                1024,
+                _i32_values([1, 2, 3, 4, 5, 6, 7, 8]),
+                _i32_values([7, 8, 9, 10, 1, 2, 3, 4]),
+            ),
+            "arg5": (
+                1024,
+                _i32_values([0, 3, 6, 10, 15, 21, 28, 36]),
+                _i32_values([5583, 5591, 5600, 5610, 5611, 5613, 5616, 5620]),
+            ),
+        },
+    )
+
+
+def assert_vecnorm_l2_evidence(evidence_dir: Path) -> None:
+    _assert_seed_case_evidence(
+        evidence_dir,
+        "vecnorm_l2",
+        graph="g_t_vecnorm_l2_red_0_0",
+        dynamic_work_items=64,
+        event_count=451,
+        dfg_cycles=842,
+        cgra_cycles=886,
+        final_outputs=["none", "i32:619"],
+        hardware="shared_reduction_adg",
+        placed_records=6,
+        routed_edges=8,
+        config_records=179,
+        route_segments=32,
+        operation_fire_counts={
+            "arith.addi": 64,
+            "arith.index_cast": 65,
+            "arith.muli": 64,
+            "dataflow.carry": 65,
+            "dataflow.load": 64,
+            "dataflow.stream": 65,
+            "dataflow.sync": 64,
+        },
+        required_edges={
+            "arith.muli#0.result0->arith.addi#0.operand0",
+            "dataflow.load#0.result0->arith.muli#0.operand0",
+            "dataflow.load#0.result0->arith.muli#0.operand1",
+        },
+        memory_windows={
+            "arg4": (
+                64,
+                _i32_values([-5, -4, -3, -2, -1, 0, 1, 2]),
+                _i32_values([-4, -3, -2, -1, 0, 1, 2, 3]),
+            ),
+        },
+    )
+
+
+def assert_variance_evidence(evidence_dir: Path) -> None:
+    window = (
+        16,
+        _f32_values(["-2.750000", "-1.750000", "-0.750000", "0.250000", "1.250000", "2.250000", "3.250000", "-2.750000"]),
+        _f32_values(["-1.750000", "-0.750000", "0.250000", "1.250000", "2.250000", "3.250000", "-2.750000", "-1.750000"]),
+    )
+    _assert_seed_case_evidence(
+        evidence_dir,
+        "variance",
+        graph="workload_graph_set",
+        dynamic_work_items=32,
+        event_count=305,
+        dfg_cycles=662,
+        cgra_cycles=775,
+        final_outputs=["none", "f32:-1", "f32:-0.062500", "none", "f32:67.437500", "f32:4.214844"],
+        hardware="shared_reduction_adg",
+        placed_records=16,
+        routed_edges=22,
+        config_records=472,
+        route_segments=84,
+        operation_fire_counts={
+            "arith.addf": 16,
+            "arith.index_cast": 34,
+            "arith.mulf": 34,
+            "arith.subf": 16,
+            "dataflow.carry": 34,
+            "dataflow.invariant": 57,
+            "dataflow.load": 32,
+            "dataflow.stream": 34,
+            "dataflow.sync": 32,
+            "llvm.intr.fmuladd": 16,
+        },
+        required_edges={
+            "arith.subf#0.result0->llvm.intr.fmuladd#0.operand0",
+            "dataflow.load#0.result0->arith.addf#0.operand1",
+            "llvm.intr.fmuladd#0.result0->dataflow.carry#0.operand2",
+        },
+        memory_windows={
+            "g_t_variance_red_0_0:arg4": window,
+            "g_t_variance_red_1_0:arg4": window,
+        },
+        functional_state_source="component_cgra_sim_reports_carried_from_dfg_sim_reports",
+        expected_diagnostics=["derived workload graph-set DFG report from component DFG simulator reports"],
+        expected_mapping_diagnostics=["derived workload graph-set mapping artifact from component PnR mapping artifacts"],
+    )
+
+
+def assert_spmv_evidence(evidence_dir: Path) -> None:
+    _assert_seed_case_evidence(
+        evidence_dir,
+        "spmv",
+        graph="g_t_spmv_kernel_red_0_0",
+        dynamic_work_items=2,
+        event_count=23,
+        dfg_cycles=58,
+        cgra_cycles=125,
+        final_outputs=["none", "i32:12"],
+        hardware="shared_reduction_adg",
+        placed_records=8,
+        routed_edges=12,
+        config_records=255,
+        route_segments=46,
+        operation_fire_counts={
+            "arith.addi": 2,
+            "arith.index_cast": 5,
+            "arith.muli": 2,
+            "dataflow.carry": 3,
+            "dataflow.load": 6,
+            "dataflow.stream": 3,
+            "dataflow.sync": 2,
+        },
+        required_edges={
+            "arith.muli#0.result0->arith.addi#0.operand0",
+            "dataflow.load#1.result0->dataflow.load#2.operand1",
+            "dataflow.load#2.result0->arith.muli#0.operand0",
+        },
+        memory_windows={
+            "arg4": (2, _i32_values([2, 3]), _i32_values([2, 3])),
+            "arg5": (2, _i32_values([0, 2]), _i32_values([0, 2])),
+            "arg6": (5, _i32_values([3, 4, 2, 5, 6]), _i32_values([3, 4, 2, 5, 6])),
+        },
+    )
+
+
+def assert_spmm_evidence(evidence_dir: Path) -> None:
+    _assert_seed_case_evidence(
+        evidence_dir,
+        "spmm",
+        graph="g_spmm_kernel_0",
+        dynamic_work_items=4,
+        event_count=246,
+        dfg_cycles=488,
+        cgra_cycles=740,
+        final_outputs=["none"],
+        hardware="shared_memory_reduction_adg",
+        placed_records=40,
+        routed_edges=35,
+        config_records=993,
+        route_segments=177,
+        operation_fire_counts={
+            "arith.addi": 36,
+            "arith.cmpi": 7,
+            "arith.index_cast": 88,
+            "arith.muli": 34,
+            "dataflow.constant": 9,
+            "dataflow.load": 28,
+            "dataflow.store": 12,
+            "llvm.trunc": 18,
+            "llvm.zext": 6,
+            "scf.if": 8,
+        },
+        required_edges={
+            "arith.muli#3.result0->arith.addi#4.operand1",
+            "dataflow.load#4.result0->arith.muli#3.operand0",
+            "llvm.zext#0.result0->arith.cmpi#4.operand1",
+        },
+        memory_windows={
+            "arg1": (4, _i32_values([1, 2, 3, 4]), _i32_values([1, 2, 3, 4])),
+            "arg2": (4, _i32_values([0, 2, 1, 2]), _i32_values([0, 2, 1, 2])),
+            "arg3": (3, _i32_values([0, 2, 4]), _i32_values([0, 2, 4])),
+            "arg4": (6, _i32_values([1, 2, 3, 4, 5, 6]), _i32_values([1, 2, 3, 4, 5, 6])),
+            "arg5": (4, _i32_values([11, 14, 29, 36]), _i32_values([11, 14, 29, 36])),
+        },
     )
