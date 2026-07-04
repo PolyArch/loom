@@ -523,8 +523,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 18,
             "pass": 12,
             "fail": 0,
-            "blocked": 0,
-            "unsupported": 6,
+            "blocked": 1,
+            "unsupported": 5,
             "missing_status": 0,
         },
     )
@@ -1848,8 +1848,8 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
             "total": 18,
             "pass": 12,
             "fail": 0,
-            "blocked": 0,
-            "unsupported": 6,
+            "blocked": 1,
+            "unsupported": 5,
             "missing_status": 0,
         },
     )
@@ -1878,7 +1878,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     assert_cmsis_softmax_u8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_depthwise_conv_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_max_pool_s8_cgra_evidence(repo, rows, sim_evidence)
-    assert_cmsis_dfg_unsupported_row(
+    assert_cmsis_mapping_unsupported_row(
         repo,
         rows,
         sim_evidence,
@@ -1886,15 +1886,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "FullyConnectedFunctions/arm_fully_connected_s8.c",
         "arm_fully_connected_s8",
         "g_t_arm_fully_connected_s8_red_0_0",
-        "unsupported op: llvm.call @arm_nn_vec_mat_mult_t_s8",
-        expected_callee="@arm_nn_vec_mat_mult_t_s8",
-    )
-    assert_cmsis_unsupported_row(
-        repo,
-        rows,
-        "cmsis-nn",
-        "FullyConnectedFunctions/arm_fully_connected_s8.c",
-        "unsupported op: llvm.call @arm_nn_vec_mat_mult_t_s8",
+        "unsupported PnR graph operation: llvm.call",
     )
     run(
         repo,
@@ -2039,6 +2031,82 @@ def assert_cmsis_dfg_unsupported_row(
             raise AssertionError(
                 f"CMSIS unsupported DFG row should preserve call to {expected_callee}: {lowered_dfg}"
             )
+
+
+def assert_cmsis_mapping_unsupported_row(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+    suite: str,
+    case: str,
+    stem: str,
+    graph: str,
+    diagnostic: str,
+) -> None:
+    row = one_row(rows, suite, case)
+    if (
+        row["status"] != "blocked"
+        or row["diagnostic_class"] != "mapping_artifact_unsupported"
+        or row["blocking_prerequisite"] != "mapping_artifact"
+        or row["owner"] != "sim_report"
+        or row["dfg_status"] != "pass"
+        or row["mapping_status"] != "unsupported"
+        or row["cgra_status"] != "blocked"
+        or row["comparison_status"] != "blocked"
+        or row["graph_ids"] != graph
+        or row["hardware_system"] != "shared_reduction_adg"
+        or row["final_outputs_present"] != "true"
+        or row["final_memory_state_present"] != "true"
+        or diagnostic not in row["diagnostic"]
+    ):
+        raise AssertionError(f"CMSIS row should expose a real mapping unsupported blocker: {row}")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+        assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
+    for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json"):
+        artifact = sim_evidence / f"{stem}.{suffix}"
+        if not artifact.is_file():
+            raise AssertionError(f"CMSIS evidence mode should emit {artifact}")
+    dfg_report = json.loads((sim_evidence / f"{stem}.dfg.report.json").read_text())
+    expected_memory = {
+        "arg10": ["i32:-128"],
+        "arg11": ["i32:127"],
+        "arg12": ["i32:-2"],
+        "arg13": ["i8:4", "i8:-1", "i8:2", "i8:-3", "i8:5", "i8:1"],
+        "arg15": ["i32:10", "i32:-4"],
+        "arg17": ["i8:1", "i8:-2", "i8:3"],
+        "arg18": ["i8:20", "i8:-18"],
+        "arg4": ["i32:1"],
+        "arg5": ["i32:3"],
+        "arg6": ["i32:1073741824"],
+        "arg7": ["i32:1"],
+        "arg8": ["i32:3"],
+        "arg9": ["i32:2"],
+    }
+    expected_counts = {
+        "arith.addi": 20,
+        "arith.muli": 8,
+        "arith.select": 4,
+        "arith.shrsi": 2,
+        "dataflow.constant": 11,
+        "dataflow.load": 11,
+        "llvm.getelementptr": 2,
+        "llvm.load": 14,
+        "llvm.store": 2,
+    }
+    if (
+        dfg_report.get("kind") != "dfg_sim_report"
+        or dfg_report.get("workload") != case
+        or dfg_report.get("graph") != graph
+        or dfg_report.get("status") != "pass"
+        or dfg_report.get("dynamic_work_items") != 1
+        or dfg_report.get("final_outputs") != ["none"]
+        or dfg_report.get("final_memory_state") != expected_memory
+        or dfg_report.get("operation_fire_counts") != expected_counts
+    ):
+        raise AssertionError(f"unexpected CMSIS mapping-blocked DFG report: {dfg_report}")
+    mapping = json.loads((sim_evidence / f"{stem}.mapping.json").read_text())
+    if mapping.get("status") != "unsupported" or diagnostic not in mapping.get("diagnostics", []):
+        raise AssertionError(f"unexpected CMSIS mapping unsupported report: {mapping}")
 
 
 def assert_cmsis_mat_mult_f32_cgra_evidence(
@@ -4753,8 +4821,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
             "total": 18,
             "pass": 12,
             "fail": 0,
-            "blocked": 0,
-            "unsupported": 6,
+            "blocked": 1,
+            "unsupported": 5,
             "missing_status": 0,
         },
     )
@@ -4813,7 +4881,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_softmax_u8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_depthwise_conv_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_max_pool_s8_cgra_evidence(repo, rows, sim_evidence)
-    assert_cmsis_dfg_unsupported_row(
+    assert_cmsis_mapping_unsupported_row(
         repo,
         rows,
         sim_evidence,
@@ -4821,8 +4889,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "FullyConnectedFunctions/arm_fully_connected_s8.c",
         "arm_fully_connected_s8",
         "g_t_arm_fully_connected_s8_red_0_0",
-        "unsupported op: llvm.call @arm_nn_vec_mat_mult_t_s8",
-        expected_callee="@arm_nn_vec_mat_mult_t_s8",
+        "unsupported PnR graph operation: llvm.call",
     )
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")

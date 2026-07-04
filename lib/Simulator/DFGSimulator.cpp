@@ -580,6 +580,234 @@ bool samePointer(const MemoryView &lhs, const MemoryView &rhs) {
   return lhs.root == rhs.root && lhs.byteOffset == rhs.byteOffset;
 }
 
+std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
+                                               const Token &addr,
+                                               SimulatorState &state,
+                                               llvm::StringRef opName);
+
+constexpr llvm::StringLiteral kCmsisNNVecMatMultTS8 =
+    "arm_nn_vec_mat_mult_t_s8";
+
+bool isSupportedLLVMCall(mlir::LLVM::CallOp op) {
+  auto callee = op.getCallee();
+  if (!callee || *callee != kCmsisNNVecMatMultTS8)
+    return false;
+  if (op->getNumOperands() != 15 || op->getNumResults() != 1)
+    return false;
+  for (unsigned i = 0; i < 5; ++i)
+    if (!mlir::isa<mlir::LLVM::LLVMPointerType>(op->getOperand(i).getType()))
+      return false;
+  return mlir::isa<mlir::IntegerType>(op->getResult(0).getType());
+}
+
+bool isNullPointerToken(const Token &token) {
+  return token.kind == TokenKind::Pointer && !token.pointer.root &&
+         !token.pointer.memory;
+}
+
+std::int64_t signExtend(std::int64_t value, unsigned width) {
+  if (width == 0 || width >= 64)
+    return value;
+  const std::uint64_t mask = (std::uint64_t{1} << width) - 1;
+  std::uint64_t bits = static_cast<std::uint64_t>(value) & mask;
+  const std::uint64_t signBit = std::uint64_t{1} << (width - 1);
+  if ((bits & signBit) == 0)
+    return static_cast<std::int64_t>(bits);
+  return static_cast<std::int64_t>(bits | ~mask);
+}
+
+std::int32_t wrapI32(std::int64_t value) {
+  return static_cast<std::int32_t>(static_cast<std::uint32_t>(value));
+}
+
+std::int32_t doublingHighMultNoSat(std::int32_t lhs, std::int32_t rhs) {
+  std::int64_t product =
+      (std::int64_t{1} << 30) + static_cast<std::int64_t>(lhs) * rhs;
+  return wrapI32(product >> 31);
+}
+
+std::int32_t divideByPowerOfTwo(std::int32_t dividend, std::int32_t exponent) {
+  if (exponent <= 0)
+    return dividend;
+  if (exponent >= 31)
+    exponent = 30;
+  const std::int32_t remainderMask =
+      static_cast<std::int32_t>((std::int64_t{1} << exponent) - 1);
+  const std::int32_t remainder = remainderMask & dividend;
+  std::int32_t result = dividend >> exponent;
+  std::int32_t threshold = remainderMask >> 1;
+  if (result < 0)
+    ++threshold;
+  if (remainder > threshold)
+    ++result;
+  return result;
+}
+
+std::int32_t cmsisRequantize(std::int32_t value, std::int32_t multiplier,
+                             std::int32_t shift) {
+  const std::int32_t leftShift = shift > 0 ? shift : 0;
+  const std::int32_t rightShift = shift > 0 ? 0 : -shift;
+  std::int64_t shifted = static_cast<std::int64_t>(value)
+                         << static_cast<unsigned>(leftShift);
+  std::int32_t multiplied =
+      doublingHighMultNoSat(wrapI32(shifted), multiplier);
+  return divideByPowerOfTwo(multiplied, rightShift);
+}
+
+std::optional<std::int64_t>
+integerOperand(llvm::ArrayRef<Token> operands, unsigned index,
+               llvm::StringRef name, SimulatorState &state) {
+  if (index >= operands.size()) {
+    state.diagnostics.push_back((name + " operand is missing").str());
+    return std::nullopt;
+  }
+  const Token &token = operands[index];
+  if (token.kind != TokenKind::Integer && token.kind != TokenKind::Bool) {
+    state.diagnostics.push_back((name + " operand is not integer-like").str());
+    return std::nullopt;
+  }
+  return integerToken(token);
+}
+
+std::optional<std::int64_t>
+loadIntegerPointerElement(SimulatorState &state, const Token &ptr,
+                          mlir::Type elementType, std::int64_t elementOffset,
+                          unsigned signedWidth, llvm::StringRef opName) {
+  auto viewOrErr = ensurePointerMemory(state, ptr, elementType);
+  if (!viewOrErr) {
+    state.diagnostics.push_back(llvm::toString(viewOrErr.takeError()));
+    return std::nullopt;
+  }
+  std::optional<std::size_t> index = resolveElementIndex(
+      viewOrErr->pointer, integerValueToken(elementOffset), state, opName);
+  if (!index)
+    return std::nullopt;
+  if (!recordEvent(state, "llvm.load"))
+    return std::nullopt;
+  return signExtend(integerToken(viewOrErr->pointer.memory->elements[*index]),
+                    signedWidth);
+}
+
+bool storeIntegerPointerElement(SimulatorState &state, const Token &ptr,
+                                mlir::Type elementType,
+                                std::int64_t elementOffset,
+                                std::int64_t value, llvm::StringRef opName) {
+  auto viewOrErr = ensurePointerMemory(state, ptr, elementType);
+  if (!viewOrErr) {
+    state.diagnostics.push_back(llvm::toString(viewOrErr.takeError()));
+    return false;
+  }
+  std::optional<std::size_t> index = resolveElementIndex(
+      viewOrErr->pointer, integerValueToken(elementOffset), state, opName);
+  if (!index)
+    return false;
+  viewOrErr->pointer.memory->elements[*index] =
+      integerValueToken(signExtend(value, 8));
+  return recordEvent(state, "llvm.store");
+}
+
+bool recordCmsisArithmetic(SimulatorState &state, llvm::StringRef opName) {
+  return recordEvent(state, opName);
+}
+
+bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
+                                 llvm::ArrayRef<Token> operands,
+                                 Token &result) {
+  if (operands.size() != 15) {
+    state.diagnostics.push_back(
+        "arm_nn_vec_mat_mult_t_s8 expects 15 operands");
+    return false;
+  }
+
+  std::optional<std::int64_t> lhsOffset =
+      integerOperand(operands, 5, "lhs_offset", state);
+  std::optional<std::int64_t> dstOffset =
+      integerOperand(operands, 6, "dst_offset", state);
+  std::optional<std::int64_t> dstMultiplier =
+      integerOperand(operands, 7, "dst_multiplier", state);
+  std::optional<std::int64_t> dstShift =
+      integerOperand(operands, 8, "dst_shift", state);
+  std::optional<std::int64_t> rhsCols =
+      integerOperand(operands, 9, "rhs_cols", state);
+  std::optional<std::int64_t> rhsRows =
+      integerOperand(operands, 10, "rhs_rows", state);
+  std::optional<std::int64_t> activationMin =
+      integerOperand(operands, 11, "activation_min", state);
+  std::optional<std::int64_t> activationMax =
+      integerOperand(operands, 12, "activation_max", state);
+  std::optional<std::int64_t> addressOffset =
+      integerOperand(operands, 13, "address_offset", state);
+  std::optional<std::int64_t> rhsOffset =
+      integerOperand(operands, 14, "rhs_offset", state);
+  if (!lhsOffset || !dstOffset || !dstMultiplier || !dstShift || !rhsCols ||
+      !rhsRows || !activationMin || !activationMax || !addressOffset ||
+      !rhsOffset)
+    return false;
+  if (*rhsCols < 0 || *rhsRows < 0 || *addressOffset <= 0) {
+    state.diagnostics.push_back(
+        "arm_nn_vec_mat_mult_t_s8 has invalid dimensions");
+    return false;
+  }
+
+  mlir::Type i8Type = mlir::IntegerType::get(op.getContext(), 8);
+  mlir::Type i32Type = mlir::IntegerType::get(op.getContext(), 32);
+  const bool hasBias = !isNullPointerToken(operands[3]);
+
+  for (std::int64_t row = 0; row < *rhsRows; ++row) {
+    std::int64_t acc = 0;
+    if (hasBias) {
+      std::optional<std::int64_t> bias = loadIntegerPointerElement(
+          state, operands[3], i32Type, row, 32, "arm_nn_vec_mat_mult_t_s8");
+      if (!bias)
+        return false;
+      acc = *bias;
+    }
+    for (std::int64_t col = 0; col < *rhsCols; ++col) {
+      std::optional<std::int64_t> lhsValue = loadIntegerPointerElement(
+          state, operands[0], i8Type, col, 8, "arm_nn_vec_mat_mult_t_s8");
+      std::optional<std::int64_t> rhsValue = loadIntegerPointerElement(
+          state, operands[1], i8Type, row * *rhsCols + col, 8,
+          "arm_nn_vec_mat_mult_t_s8");
+      if (!lhsValue || !rhsValue)
+        return false;
+      if (!recordCmsisArithmetic(state, "arith.addi"))
+        return false;
+      *lhsValue += *lhsOffset;
+      if (!recordCmsisArithmetic(state, "arith.addi"))
+        return false;
+      *rhsValue += *rhsOffset;
+      if (!recordCmsisArithmetic(state, "arith.muli"))
+        return false;
+      const std::int64_t product = *lhsValue * *rhsValue;
+      if (!recordCmsisArithmetic(state, "arith.addi"))
+        return false;
+      acc += product;
+    }
+
+    if (!recordCmsisArithmetic(state, "arith.muli") ||
+        !recordCmsisArithmetic(state, "arith.shrsi"))
+      return false;
+    acc = cmsisRequantize(wrapI32(acc), wrapI32(*dstMultiplier),
+                          wrapI32(*dstShift));
+    if (!recordCmsisArithmetic(state, "arith.addi"))
+      return false;
+    acc += *dstOffset;
+    if (!recordCmsisArithmetic(state, "arith.select"))
+      return false;
+    acc = std::max(acc, *activationMin);
+    if (!recordCmsisArithmetic(state, "arith.select"))
+      return false;
+    acc = std::min(acc, *activationMax);
+    if (!storeIntegerPointerElement(state, operands[4], i8Type,
+                                    row * *addressOffset, acc,
+                                    "arm_nn_vec_mat_mult_t_s8"))
+      return false;
+  }
+
+  result = integerValueToken(0);
+  return true;
+}
+
 bool isSupportedPointerICmp(mlir::LLVM::ICmpOp op) {
   if (!mlir::isa<mlir::LLVM::LLVMPointerType>(op.getLhs().getType()) ||
       !mlir::isa<mlir::LLVM::LLVMPointerType>(op.getRhs().getType()))
@@ -1342,6 +1570,25 @@ bool fireLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state) {
   return executeLLVMMemcpy(op, state, dst, src, len);
 }
 
+bool fireLLVMCall(mlir::LLVM::CallOp op, SimulatorState &state) {
+  if (!isSupportedLLVMCall(op))
+    return false;
+  llvm::SmallVector<Token> operands;
+  operands.reserve(op->getNumOperands());
+  for (mlir::OpOperand &operand : op->getOpOperands()) {
+    if (!hasToken(state.channels, operand))
+      return false;
+  }
+  for (mlir::OpOperand &operand : op->getOpOperands())
+    operands.push_back(popToken(state.channels, operand));
+
+  Token result;
+  if (!executeCmsisNNVecMatMultTS8(op, state, operands, result))
+    return false;
+  emitToken(state, op->getResult(0), result);
+  return true;
+}
+
 bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   if (!hasToken(state.channels, op.getAddrMutable()) ||
       !hasToken(state.channels, op.getDataMutable()) ||
@@ -1850,6 +2097,26 @@ bool assignLocalLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state,
   return executeLLVMMemcpy(op, state, *dst, *src, *len);
 }
 
+bool assignLocalLLVMCall(mlir::LLVM::CallOp op, SimulatorState &state,
+                         LocalValueMap &locals, unsigned captureIndex) {
+  if (!isSupportedLLVMCall(op))
+    return false;
+  llvm::SmallVector<Token> operands;
+  operands.reserve(op->getNumOperands());
+  for (mlir::Value operand : op->getOperands()) {
+    std::optional<Token> token =
+        lookupToken(operand, state, locals, captureIndex);
+    if (!token)
+      return false;
+    operands.push_back(*token);
+  }
+  Token result;
+  if (!executeCmsisNNVecMatMultTS8(op, state, operands, result))
+    return false;
+  locals[op->getResult(0)] = result;
+  return true;
+}
+
 bool assignLocalGate(dataflow::GateOp op, SimulatorState &state,
                      LocalValueMap &locals, unsigned captureIndex) {
   std::optional<Token> cond =
@@ -2119,6 +2386,8 @@ bool executeStructuredForBodyOp(mlir::Operation *op, SimulatorState &state,
     return assignLocalDataflowStore(store, state, locals, captureIndex);
   if (auto memcpy = mlir::dyn_cast<mlir::LLVM::MemcpyOp>(op))
     return assignLocalLLVMMemcpy(memcpy, state, locals, captureIndex);
+  if (auto call = mlir::dyn_cast<mlir::LLVM::CallOp>(op))
+    return assignLocalLLVMCall(call, state, locals, captureIndex);
   if (auto gate = mlir::dyn_cast<dataflow::GateOp>(op))
     return assignLocalGate(gate, state, locals, captureIndex);
   if (auto mux = mlir::dyn_cast<dataflow::MuxOp>(op))
@@ -2193,6 +2462,11 @@ unsupportedStructuredYieldRegion(mlir::Operation *parent, mlir::Block *block,
     }
     if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(bodyOp)) {
       if (isSupportedPointerICmp(icmp))
+        continue;
+      return unsupportedOperationLabel(&bodyOp);
+    }
+    if (auto call = mlir::dyn_cast<mlir::LLVM::CallOp>(bodyOp)) {
+      if (isSupportedLLVMCall(call))
         continue;
       return unsupportedOperationLabel(&bodyOp);
     }
@@ -2283,6 +2557,11 @@ unsupportedStructuredForOperation(mlir::scf::ForOp op) {
         continue;
       return unsupportedOperationLabel(&bodyOp);
     }
+    if (auto call = mlir::dyn_cast<mlir::LLVM::CallOp>(bodyOp)) {
+      if (isSupportedLLVMCall(call))
+        continue;
+      return unsupportedOperationLabel(&bodyOp);
+    }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
                   mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
@@ -2339,6 +2618,11 @@ unsupportedStructuredWhileBody(mlir::Block *block,
     }
     if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(bodyOp)) {
       if (isSupportedPointerICmp(icmp))
+        continue;
+      return unsupportedOperationLabel(&bodyOp);
+    }
+    if (auto call = mlir::dyn_cast<mlir::LLVM::CallOp>(bodyOp)) {
+      if (isSupportedLLVMCall(call))
         continue;
       return unsupportedOperationLabel(&bodyOp);
     }
@@ -2413,6 +2697,11 @@ unsupportedStructuredForallOperation(mlir::scf::ForallOp op) {
     }
     if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(bodyOp)) {
       if (isSupportedPointerICmp(icmp))
+        continue;
+      return unsupportedOperationLabel(&bodyOp);
+    }
+    if (auto call = mlir::dyn_cast<mlir::LLVM::CallOp>(bodyOp)) {
+      if (isSupportedLLVMCall(call))
         continue;
       return unsupportedOperationLabel(&bodyOp);
     }
@@ -3026,6 +3315,8 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireLLVMStore(typedOp, state); })
       .Case<mlir::LLVM::MemcpyOp>(
           [&](auto typedOp) { return fireLLVMMemcpy(typedOp, state); })
+      .Case<mlir::LLVM::CallOp>(
+          [&](auto typedOp) { return fireLLVMCall(typedOp, state); })
       .Case<mlir::arith::ConstantOp>(
           [&](auto typedOp) { return fireArithConstant(typedOp, state); })
       .Case<mlir::scf::IfOp>(
@@ -3072,6 +3363,11 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
     return unsupportedStructuredForallOperation(forallOp);
   if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(op)) {
     if (isSupportedPointerICmp(icmp))
+      return std::nullopt;
+    return unsupportedOperationLabel(op);
+  }
+  if (auto call = mlir::dyn_cast<mlir::LLVM::CallOp>(op)) {
+    if (isSupportedLLVMCall(call))
       return std::nullopt;
     return unsupportedOperationLabel(op);
   }
