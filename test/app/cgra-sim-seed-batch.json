@@ -170,6 +170,38 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "quantile",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "string_compare",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "edit_distance_step",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "gf_mul",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "modmul",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "newton_iter",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "fir_filter_stateful",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "string_hash",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "vecsum",
       "hardware": "shared_reduction_adg"
     },

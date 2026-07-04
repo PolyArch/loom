@@ -701,6 +701,14 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     write_legacy_case(legacy_root, "trsv_lower")
     write_legacy_case(legacy_root, "trsv_upper")
     write_legacy_case(legacy_root, "wildcard_match")
+    write_legacy_case(legacy_root, "quantile")
+    write_legacy_case(legacy_root, "string_compare")
+    write_legacy_case(legacy_root, "edit_distance_step")
+    write_legacy_case(legacy_root, "gf_mul")
+    write_legacy_case(legacy_root, "modmul")
+    write_legacy_case(legacy_root, "newton_iter")
+    write_legacy_case(legacy_root, "fir_filter_stateful")
+    write_legacy_case(legacy_root, "string_hash")
     run(
         repo,
         [
@@ -722,9 +730,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 132,
-            "pass": 85,
+            "pass": 93,
             "fail": 0,
-            "blocked": 47,
+            "blocked": 39,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -733,8 +741,8 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "loombench",
         {
-            "total": 42,
-            "pass": 42,
+            "total": 50,
+            "pass": 50,
             "fail": 0,
             "blocked": 0,
             "unsupported": 0,
@@ -784,6 +792,14 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         ("trsv_lower", "shared_reduction_adg"),
         ("trsv_upper", "shared_reduction_adg"),
         ("wildcard_match", "shared_memory_reduction_adg"),
+        ("quantile", "shared_signal_window_adg"),
+        ("string_compare", "shared_memory_reduction_adg"),
+        ("edit_distance_step", "shared_memory_reduction_adg"),
+        ("gf_mul", "shared_reduction_adg"),
+        ("modmul", "shared_reduction_adg"),
+        ("newton_iter", "shared_reduction_adg"),
+        ("fir_filter_stateful", "shared_reduction_adg"),
+        ("string_hash", "shared_reduction_adg"),
         ("vecsum", "shared_reduction_adg"),
         ("vecadd", "shared_reduction_adg"),
         ("bit_reverse", "shared_reduction_adg"),
@@ -872,6 +888,14 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     assert_loombench_cgra_pass_row(repo, rows, "trsv_lower", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "trsv_upper", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "wildcard_match", expected_hardware="shared_memory_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "quantile", expected_hardware="shared_signal_window_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "string_compare", expected_hardware="shared_memory_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "edit_distance_step", expected_hardware="shared_memory_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "gf_mul", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "modmul", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "newton_iter", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "fir_filter_stateful", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "string_hash", expected_hardware="shared_reduction_adg")
     for case, _hardware in seed_rows:
         for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json", "sim-comparison-report.json"):
             artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
@@ -924,6 +948,14 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
     cgra_sweep.assert_trsv_lower_evidence(evidence_dir)
     cgra_sweep.assert_trsv_upper_evidence(evidence_dir)
     cgra_sweep.assert_wildcard_match_evidence(evidence_dir)
+    cgra_sweep.assert_quantile_evidence(evidence_dir)
+    cgra_sweep.assert_string_compare_evidence(evidence_dir)
+    cgra_sweep.assert_edit_distance_step_evidence(evidence_dir)
+    cgra_sweep.assert_gf_mul_evidence(evidence_dir)
+    cgra_sweep.assert_modmul_evidence(evidence_dir)
+    cgra_sweep.assert_newton_iter_evidence(evidence_dir)
+    cgra_sweep.assert_fir_filter_stateful_evidence(evidence_dir)
+    cgra_sweep.assert_string_hash_evidence(evidence_dir)
     run(
         Path(__file__).resolve().parents[2],
         ["python3", "test/artifacts/assert_database_join_cgra_evidence.py", str(evidence_dir)],
