@@ -521,8 +521,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 14,
-            "fail": 1,
+            "pass": 15,
+            "fail": 0,
             "blocked": 0,
             "unsupported": 3,
             "missing_status": 0,
@@ -565,7 +565,7 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_copy_f32.c", "arm_copy_f32"
     )
     assert_cmsis_reshape_memcpy_cgra_evidence(repo, rows, sim_evidence)
-    assert_cmsis_elementwise_add_s8_mapping_blocker_evidence(repo, rows)
+    assert_cmsis_elementwise_add_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
     cgra_sweep.assert_gauss_seidel_step_evidence(sim_evidence)
 
@@ -1850,8 +1850,8 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 14,
-            "fail": 1,
+            "pass": 15,
+            "fail": 0,
             "blocked": 0,
             "unsupported": 3,
             "missing_status": 0,
@@ -1876,7 +1876,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     )
     assert_cmsis_relu_q7_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_relu6_s8_cgra_evidence(repo, rows, sim_evidence)
-    assert_cmsis_elementwise_add_s8_mapping_blocker_evidence(repo, rows)
+    assert_cmsis_elementwise_add_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_concat_w_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_reshape_memcpy_cgra_evidence(repo, rows, sim_evidence)
@@ -3320,19 +3320,16 @@ def assert_cmsis_mapping_blocker_row(
         raise AssertionError(f"unexpected blocked CMSIS comparison report: {comparison_report}")
 
 
-def assert_cmsis_elementwise_add_s8_mapping_blocker_evidence(
+def assert_cmsis_elementwise_add_s8_cgra_evidence(
     repo: Path,
     rows: list[dict[str, str]],
+    sim_evidence: Path,
 ) -> None:
     case = "BasicMathFunctions/arm_elementwise_add_s8.c"
-    assert_cmsis_mapping_blocker_row(
-        repo,
-        rows,
-        "cmsis-nn",
-        case,
-        diagnostic_substring="missing hardware resource for software op arith.shrui",
-        expected_hardware="shared_quantized_window_adg",
-    )
+    stem = "arm_elementwise_add_s8"
+    graph = "g_arm_elementwise_add_s8_0"
+    hardware = "shared_quantized_window_adg"
+    assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-nn", case, stem, expected_hardware=hardware)
     row = one_row(rows, "cmsis-nn", case)
     dfg_report = json.loads((repo / row["dfg_report"]).read_text())
     expected_memory = {
@@ -3342,7 +3339,8 @@ def assert_cmsis_elementwise_add_s8_mapping_blocker_evidence(
     }
     if (
         dfg_report.get("status") != "pass"
-        or dfg_report.get("graph") != "g_arm_elementwise_add_s8_0"
+        or dfg_report.get("graph") != graph
+        or dfg_report.get("optimistic_cycles") != 308
         or dfg_report.get("dynamic_work_items") != 3
         or dfg_report.get("final_outputs") != ["none", "i32:0"]
         or dfg_report.get("final_memory_state") != expected_memory
@@ -3351,6 +3349,61 @@ def assert_cmsis_elementwise_add_s8_mapping_blocker_evidence(
         or dfg_report.get("operation_fire_counts", {}).get("scf.if") != 2
     ):
         raise AssertionError(f"unexpected arm_elementwise_add_s8 DFG evidence: {dfg_report}")
+
+    mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
+    expected_mapping = {
+        "kind": "pnr_mapping",
+        "workload": case,
+        "graph": graph,
+        "hardware": hardware,
+        "status": "pass",
+        "placed_records": 343,
+        "routed_edges": 541,
+        "unrouted_edges": 0,
+        "unplaced_records": 0,
+        "config_records": 14210,
+    }
+    for key, value in expected_mapping.items():
+        if mapping_artifact.get(key) != value:
+            raise AssertionError(
+                f"arm_elementwise_add_s8 mapping {key}={mapping_artifact.get(key)!r}, expected {value!r}"
+            )
+    routes = mapping_artifact.get("routes", [])
+    if not isinstance(routes, list) or len(routes) != 541:
+        raise AssertionError(f"arm_elementwise_add_s8 mapping should expose every routed edge: {mapping_artifact}")
+    if mapping_artifact.get("resource_pressure"):
+        raise AssertionError(f"arm_elementwise_add_s8 mapping should not report resource pressure: {mapping_artifact}")
+
+    cgra_report = json.loads((repo / row["cgra_report"]).read_text())
+    if (
+        cgra_report.get("kind") != "cgra_sim_report"
+        or cgra_report.get("workload") != case
+        or cgra_report.get("hardware") != hardware
+        or cgra_report.get("status") != "pass"
+        or cgra_report.get("fidelity_level") != "mapping_constraint_estimate"
+        or cgra_report.get("dfg_cycles") != 308
+        or cgra_report.get("hardware_aware_cycles") != 3274
+        or cgra_report.get("performance_delta_cycles") != 2966
+        or cgra_report.get("placed_records") != 343
+        or cgra_report.get("routed_edges") != 541
+        or cgra_report.get("config_records") != 14210
+        or cgra_report.get("route_segments") != 2749
+        or cgra_report.get("final_outputs") != ["none", "i32:0"]
+        or cgra_report.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unexpected arm_elementwise_add_s8 CGRA evidence: {cgra_report}")
+
+    comparison_report = json.loads((repo / row["comparison_report"]).read_text())
+    if (
+        comparison_report.get("kind") != "sim_comparison_report"
+        or comparison_report.get("workload") != case
+        or comparison_report.get("status") != "pass"
+        or comparison_report.get("functional_comparison_status") != "pass"
+        or comparison_report.get("memory_comparison_status") != "pass"
+        or comparison_report.get("performance_comparison_status") != "pass"
+        or comparison_report.get("performance_delta_cycles") != 2966
+    ):
+        raise AssertionError(f"arm_elementwise_add_s8 comparison should pass: {comparison_report}")
 
 
 def assert_cmsis_vector_sum_cgra_evidence(
@@ -5042,8 +5095,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 14,
-            "fail": 1,
+            "pass": 15,
+            "fail": 0,
             "blocked": 0,
             "unsupported": 3,
             "missing_status": 0,
@@ -5096,7 +5149,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     )
     assert_cmsis_relu_q7_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_relu6_s8_cgra_evidence(repo, rows, sim_evidence)
-    assert_cmsis_elementwise_add_s8_mapping_blocker_evidence(repo, rows)
+    assert_cmsis_elementwise_add_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_q7_to_q15_with_offset_cgra_evidence(repo, rows, sim_evidence)
     assert_cgra_status_audit_rejects_bad_relu_q7_mapping(repo, out_dir, legacy_root)
     assert_cmsis_concat_w_memcpy_cgra_evidence(repo, rows, sim_evidence)

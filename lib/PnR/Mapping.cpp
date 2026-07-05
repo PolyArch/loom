@@ -35,10 +35,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <map>
 #include <optional>
-#include <queue>
 #include <set>
 #include <string>
 #include <system_error>
@@ -82,6 +82,8 @@ struct HardwareRouteSegment {
 struct HardwareTopology {
   std::map<std::string, llvm::SmallVector<HardwareRouteSegment, 2>>
       segmentsBySource;
+  std::map<std::string, llvm::SmallVector<HardwareRouteSegment, 2>>
+      segmentsBySink;
 };
 
 struct EndpointKey {
@@ -111,6 +113,47 @@ struct RouteCollection {
   llvm::SmallVector<RouteRecord, 0> routes;
   llvm::SmallVector<UnroutedEdgeRecord, 0> unroutedEdgeDetails;
   std::uint64_t unroutedEdges = 0;
+};
+
+struct RouteEdgeKey {
+  std::string producerSoftwareId;
+  unsigned producerResultIndex = 0;
+  std::string consumerSoftwareId;
+  unsigned consumerOperandIndex = 0;
+
+  bool operator<(const RouteEdgeKey &other) const {
+    return std::tie(producerSoftwareId, producerResultIndex,
+                    consumerSoftwareId, consumerOperandIndex) <
+           std::tie(other.producerSoftwareId, other.producerResultIndex,
+                    other.consumerSoftwareId, other.consumerOperandIndex);
+  }
+};
+
+struct SoftwareRouteEdge {
+  RouteEdgeKey key;
+  std::string payloadKind;
+  std::optional<unsigned> producerResultIndex;
+  std::optional<unsigned> consumerOperandIndex;
+};
+
+struct RoutingProblem {
+  llvm::SmallVector<SoftwareRouteEdge, 0> edges;
+};
+
+struct RouteCacheKey {
+  std::string sourceEndpoint;
+  std::string sinkEndpoint;
+
+  bool operator<(const RouteCacheKey &other) const {
+    return std::tie(sourceEndpoint, sinkEndpoint) <
+           std::tie(other.sourceEndpoint, other.sinkEndpoint);
+  }
+};
+
+struct RouteCache {
+  std::map<RouteCacheKey,
+           std::optional<llvm::SmallVector<RouteSegment, 2>>>
+      routes;
 };
 
 constexpr unsigned kExhaustivePlacementNodeLimit = 20;
@@ -1033,6 +1076,9 @@ routeSegmentTieKey(const HardwareRouteSegment &segment) {
 
 void addTopologySegment(HardwareTopology &topology,
                         HardwareRouteSegment segment) {
+  HardwareRouteSegment reverseIndexSegment = segment;
+  topology.segmentsBySink[reverseIndexSegment.sinkEndpoint].push_back(
+      std::move(reverseIndexSegment));
   topology.segmentsBySource[segment.sourceEndpoint].push_back(
       std::move(segment));
 }
@@ -1040,6 +1086,13 @@ void addTopologySegment(HardwareTopology &topology,
 void normalizeTopologyRoutes(HardwareTopology &topology) {
   for (auto &[sourceEndpoint, segments] : topology.segmentsBySource) {
     (void)sourceEndpoint;
+    llvm::sort(segments, [](const HardwareRouteSegment &lhs,
+                            const HardwareRouteSegment &rhs) {
+      return routeSegmentTieKey(lhs) < routeSegmentTieKey(rhs);
+    });
+  }
+  for (auto &[sinkEndpoint, segments] : topology.segmentsBySink) {
+    (void)sinkEndpoint;
     llvm::sort(segments, [](const HardwareRouteSegment &lhs,
                             const HardwareRouteSegment &rhs) {
       return routeSegmentTieKey(lhs) < routeSegmentTieKey(rhs);
@@ -1982,23 +2035,9 @@ struct RouteBuilder {
     }
   };
 
-  struct EdgeKey {
-    std::string producerSoftwareId;
-    unsigned producerResultIndex = 0;
-    std::string consumerSoftwareId;
-    unsigned consumerOperandIndex = 0;
-
-    bool operator<(const EdgeKey &other) const {
-      return std::tie(producerSoftwareId, producerResultIndex,
-                      consumerSoftwareId, consumerOperandIndex) <
-             std::tie(other.producerSoftwareId, other.producerResultIndex,
-                      other.consumerSoftwareId, other.consumerOperandIndex);
-    }
-  };
-
   llvm::DenseMap<mlir::Value, llvm::SmallVector<ProducerRef, 2>> producer;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<mlir::Value, 2>> adapterForward;
-  std::map<EdgeKey, std::string> payloadKindByEdge;
+  std::map<RouteEdgeKey, std::string> payloadKindByEdge;
 
   void addProducer(mlir::Value value, ProducerRef ref) {
     auto &refs = producer[value];
@@ -2128,108 +2167,68 @@ void sortNodesByPlacementPriority(llvm::MutableArrayRef<SoftwareNode> nodes,
                    });
 }
 
-std::uint64_t routeSegmentCost(const HardwareRouteSegment &segment) {
-  (void)segment;
-  return 1;
-}
-
-std::uint64_t routeHeuristic(llvm::StringRef currentEndpoint,
-                             llvm::StringRef targetEndpoint) {
-  (void)currentEndpoint;
-  (void)targetEndpoint;
-  return 0;
-}
-
 std::optional<llvm::SmallVector<RouteSegment, 2>>
 findRoute(const HardwareTopology &topology, const std::string &sourceEndpoint,
           const std::string &sinkEndpoint) {
-  struct SearchState {
-    std::uint64_t estimatedTotalCost = 0;
-    std::uint64_t routeCost = 0;
-    std::string endpoint;
-
-    bool operator>(const SearchState &other) const {
-      return std::tie(estimatedTotalCost, routeCost, endpoint) >
-             std::tie(other.estimatedTotalCost, other.routeCost,
-                      other.endpoint);
-    }
-  };
-
-  struct Predecessor {
-    std::string previousEndpoint;
+  struct ReverseStep {
+    std::string nextEndpoint;
     HardwareRouteSegment segment;
   };
 
-  constexpr std::uint64_t kUnreachableRouteCost =
-      std::numeric_limits<std::uint64_t>::max() / 4;
-  std::priority_queue<SearchState, std::vector<SearchState>,
-                      std::greater<SearchState>>
-      frontier;
-  std::map<std::string, std::uint64_t> bestCost;
-  std::map<std::string, Predecessor> predecessor;
+  std::deque<std::string> worklist;
+  std::set<std::string> visited;
+  std::map<std::string, ReverseStep> nextByEndpoint;
 
-  bestCost[sourceEndpoint] = 0;
-  frontier.push(SearchState{routeHeuristic(sourceEndpoint, sinkEndpoint), 0,
-                            sourceEndpoint});
+  visited.insert(sinkEndpoint);
+  worklist.push_back(sinkEndpoint);
 
-  while (!frontier.empty()) {
-    SearchState current = frontier.top();
-    frontier.pop();
-    auto bestIt = bestCost.find(current.endpoint);
-    if (bestIt == bestCost.end() || current.routeCost != bestIt->second)
-      continue;
-    if (current.endpoint == sinkEndpoint)
+  while (!worklist.empty()) {
+    std::string currentEndpoint = std::move(worklist.front());
+    worklist.pop_front();
+    if (currentEndpoint == sourceEndpoint)
       break;
 
-    auto segmentsIt = topology.segmentsBySource.find(current.endpoint);
-    if (segmentsIt == topology.segmentsBySource.end())
+    auto incomingIt = topology.segmentsBySink.find(currentEndpoint);
+    if (incomingIt == topology.segmentsBySink.end())
       continue;
-    for (const HardwareRouteSegment &candidate : segmentsIt->second) {
-      std::uint64_t segmentCost = routeSegmentCost(candidate);
-      if (current.routeCost > kUnreachableRouteCost - segmentCost)
+    for (const HardwareRouteSegment &incoming : incomingIt->second) {
+      if (!visited.insert(incoming.sourceEndpoint).second)
         continue;
-      std::uint64_t nextCost = current.routeCost + segmentCost;
-      auto nextBest = bestCost.find(candidate.sinkEndpoint);
-      if (nextBest != bestCost.end() && nextCost >= nextBest->second)
-        continue;
-      bestCost[candidate.sinkEndpoint] = nextCost;
-      predecessor[candidate.sinkEndpoint] =
-          Predecessor{current.endpoint, candidate};
-      std::uint64_t estimatedTotal =
-          nextCost + routeHeuristic(candidate.sinkEndpoint, sinkEndpoint);
-      frontier.push(
-          SearchState{estimatedTotal, nextCost, candidate.sinkEndpoint});
+      nextByEndpoint[incoming.sourceEndpoint] =
+          ReverseStep{currentEndpoint, incoming};
+      if (incoming.sourceEndpoint == sourceEndpoint) {
+        worklist.clear();
+        break;
+      }
+      worklist.push_back(incoming.sourceEndpoint);
     }
   }
 
-  if (!bestCost.count(sinkEndpoint))
+  if (!visited.count(sourceEndpoint))
     return std::nullopt;
 
-  llvm::SmallVector<RouteSegment, 2> reversedPath;
+  llvm::SmallVector<RouteSegment, 2> path;
   std::string currentEndpoint = sinkEndpoint;
-  while (currentEndpoint != sourceEndpoint) {
-    auto predecessorIt = predecessor.find(currentEndpoint);
-    if (predecessorIt == predecessor.end())
+  currentEndpoint = sourceEndpoint;
+  while (currentEndpoint != sinkEndpoint) {
+    auto stepIt = nextByEndpoint.find(currentEndpoint);
+    if (stepIt == nextByEndpoint.end())
       return std::nullopt;
-    const HardwareRouteSegment &candidate = predecessorIt->second.segment;
+    const HardwareRouteSegment &candidate = stepIt->second.segment;
     RouteSegment segment;
     segment.segmentKind = candidate.segmentKind;
     segment.sourceEndpoint = candidate.sourceEndpoint;
     segment.sinkEndpoint = candidate.sinkEndpoint;
     segment.hardwareRef = candidate.hardwareRef;
-    reversedPath.push_back(std::move(segment));
-    currentEndpoint = predecessorIt->second.previousEndpoint;
+    path.push_back(std::move(segment));
+    currentEndpoint = stepIt->second.nextEndpoint;
   }
-  llvm::SmallVector<RouteSegment, 2> path;
-  path.reserve(reversedPath.size());
-  for (const RouteSegment &segment : llvm::reverse(reversedPath))
-    path.push_back(segment);
   for (auto [index, segment] : llvm::enumerate(path))
     segment.segmentId = "seg" + std::to_string(index);
   return path;
 }
 
-std::string edgeRefFor(const RouteBuilder::EdgeKey &edge) {
+std::string edgeRefFor(const RouteEdgeKey &edge) {
   return edge.producerSoftwareId + ".result" +
          std::to_string(edge.producerResultIndex) + "->" +
          edge.consumerSoftwareId + ".operand" +
@@ -2237,8 +2236,7 @@ std::string edgeRefFor(const RouteBuilder::EdgeKey &edge) {
 }
 
 void addUnroutedEdge(RouteCollection &collection,
-                     const RouteBuilder::EdgeKey &edge,
-                     llvm::StringRef payloadKind,
+                     const RouteEdgeKey &edge, llvm::StringRef payloadKind,
                      llvm::StringRef sourceEndpoint,
                      llvm::StringRef sinkEndpoint, llvm::StringRef diagnostic) {
   UnroutedEdgeRecord record;
@@ -2255,17 +2253,27 @@ void addUnroutedEdge(RouteCollection &collection,
   ++collection.unroutedEdges;
 }
 
-RouteCollection collectRoutes(llvm::ArrayRef<SoftwareNode> nodes,
-                              mlir::Operation *graph,
-                              llvm::ArrayRef<PlacementRecord> placements,
-                              const HardwareTopology &topology) {
+std::optional<llvm::SmallVector<RouteSegment, 2>>
+cachedFindRoute(const HardwareTopology &topology, RouteCache &cache,
+                const std::string &sourceEndpoint,
+                const std::string &sinkEndpoint) {
+  RouteCacheKey key{sourceEndpoint, sinkEndpoint};
+  auto cached = cache.routes.find(key);
+  if (cached != cache.routes.end())
+    return cached->second;
+  std::optional<llvm::SmallVector<RouteSegment, 2>> path =
+      findRoute(topology, sourceEndpoint, sinkEndpoint);
+  auto [it, inserted] = cache.routes.try_emplace(std::move(key), path);
+  (void)inserted;
+  return it->second;
+}
+
+RoutingProblem buildRoutingProblem(llvm::ArrayRef<SoftwareNode> nodes,
+                                   mlir::Operation *graph) {
   RouteBuilder builder;
   llvm::DenseMap<mlir::Operation *, std::string> nodeIds = indexNodeIds(nodes);
   collectValueProducers(graph, nodeIds, builder);
 
-  llvm::StringMap<std::string> hardwareBySoftware;
-  for (const PlacementRecord &placement : placements)
-    hardwareBySoftware.try_emplace(placement.softwareId, placement.hardwareId);
   std::map<std::string, ResourceKind> kindBySoftware;
   std::map<std::string, mlir::Operation *> opBySoftware;
   for (const SoftwareNode &node : nodes)
@@ -2291,28 +2299,21 @@ RouteCollection collectRoutes(llvm::ArrayRef<SoftwareNode> nodes,
       for (const RouteBuilder::ProducerRef &source : sources) {
         if (source.softwareId == node.id)
           continue;
-        RouteBuilder::EdgeKey key{source.softwareId, source.resultIndex,
-                                  node.id, consumerOperandIndex};
+        RouteEdgeKey key{source.softwareId, source.resultIndex, node.id,
+                         consumerOperandIndex};
         builder.payloadKindByEdge.try_emplace(std::move(key),
                                               payloadKind(operand));
       }
     }
   }
 
-  RouteCollection collection;
-  std::size_t index = 0;
-  for (const auto &[edge, kind] : builder.payloadKindByEdge) {
-    const std::string &from = edge.producerSoftwareId;
-    const std::string &to = edge.consumerSoftwareId;
-    auto fromHw = hardwareBySoftware.find(from);
-    auto toHw = hardwareBySoftware.find(to);
-    if (fromHw == hardwareBySoftware.end() || toHw == hardwareBySoftware.end())
-      continue;
-    auto fromKind = kindBySoftware.find(from);
-    auto toKind = kindBySoftware.find(to);
+  RoutingProblem problem;
+  for (const auto &[edge, payload] : builder.payloadKindByEdge) {
+    auto fromKind = kindBySoftware.find(edge.producerSoftwareId);
+    auto toKind = kindBySoftware.find(edge.consumerSoftwareId);
     if (fromKind == kindBySoftware.end() || toKind == kindBySoftware.end())
       continue;
-    auto toOp = opBySoftware.find(to);
+    auto toOp = opBySoftware.find(edge.consumerSoftwareId);
     std::optional<unsigned> producerResultIndex =
         hardwareResultIndexForSoftwareEndpoint(fromKind->second,
                                                edge.producerResultIndex);
@@ -2320,17 +2321,43 @@ RouteCollection collectRoutes(llvm::ArrayRef<SoftwareNode> nodes,
         hardwareOperandIndexForSoftwareEndpoint(
             toKind->second, toOp == opBySoftware.end() ? nullptr : toOp->second,
             edge.consumerOperandIndex);
-    if (!producerResultIndex || !consumerOperandIndex) {
+    problem.edges.push_back(
+        SoftwareRouteEdge{edge, payload, producerResultIndex,
+                          consumerOperandIndex});
+  }
+  return problem;
+}
+
+RouteCollection collectRoutes(const RoutingProblem &problem,
+                              llvm::ArrayRef<PlacementRecord> placements,
+                              const HardwareTopology &topology,
+                              RouteCache &routeCache) {
+  llvm::StringMap<std::string> hardwareBySoftware;
+  for (const PlacementRecord &placement : placements)
+    hardwareBySoftware.try_emplace(placement.softwareId, placement.hardwareId);
+
+  RouteCollection collection;
+  std::size_t index = 0;
+  for (const SoftwareRouteEdge &routeEdge : problem.edges) {
+    const RouteEdgeKey &edge = routeEdge.key;
+    llvm::StringRef kind = routeEdge.payloadKind;
+    const std::string &from = edge.producerSoftwareId;
+    const std::string &to = edge.consumerSoftwareId;
+    auto fromHw = hardwareBySoftware.find(from);
+    auto toHw = hardwareBySoftware.find(to);
+    if (fromHw == hardwareBySoftware.end() || toHw == hardwareBySoftware.end())
+      continue;
+    if (!routeEdge.producerResultIndex || !routeEdge.consumerOperandIndex) {
       addUnroutedEdge(collection, edge, kind, "", "",
                       "software endpoint has no hardware endpoint");
       continue;
     }
     std::string sourceEndpoint =
-        endpointFor(fromHw->second, "result", *producerResultIndex);
+        endpointFor(fromHw->second, "result", *routeEdge.producerResultIndex);
     std::string sinkEndpoint =
-        endpointFor(toHw->second, "operand", *consumerOperandIndex);
+        endpointFor(toHw->second, "operand", *routeEdge.consumerOperandIndex);
     std::optional<llvm::SmallVector<RouteSegment, 2>> path =
-        findRoute(topology, sourceEndpoint, sinkEndpoint);
+        cachedFindRoute(topology, routeCache, sourceEndpoint, sinkEndpoint);
     if (!path) {
       addUnroutedEdge(collection, edge, kind, sourceEndpoint, sinkEndpoint,
                       "no Fabric ADG route connects source to sink");
@@ -2343,7 +2370,7 @@ RouteCollection collectRoutes(llvm::ArrayRef<SoftwareNode> nodes,
     route.edgeRef = edgeRef;
     route.producerBinding = "placement:" + from;
     route.consumerBinding = "placement:" + to;
-    route.payloadKind = kind;
+    route.payloadKind = kind.str();
     route.fromSoftwareId = from;
     route.toSoftwareId = to;
     route.segments = std::move(*path);
@@ -2352,11 +2379,12 @@ RouteCollection collectRoutes(llvm::ArrayRef<SoftwareNode> nodes,
   return collection;
 }
 
-bool partialPlacementRoutes(llvm::ArrayRef<SoftwareNode> nodes,
-                            mlir::Operation *graph,
+bool partialPlacementRoutes(const RoutingProblem &routingProblem,
                             llvm::ArrayRef<PlacementRecord> placements,
-                            const HardwareTopology &topology) {
-  RouteCollection partial = collectRoutes(nodes, graph, placements, topology);
+                            const HardwareTopology &topology,
+                            RouteCache &routeCache) {
+  RouteCollection partial =
+      collectRoutes(routingProblem, placements, topology, routeCache);
   return partial.unroutedEdges == 0;
 }
 
@@ -2398,41 +2426,36 @@ usedHardwareIds(llvm::ArrayRef<PlacementRecord> placements,
   return used;
 }
 
-bool replacementRoutes(llvm::ArrayRef<SoftwareNode> nodes,
-                       mlir::Operation *graph,
-                       llvm::ArrayRef<PlacementRecord> placements,
-                       const HardwareTopology &topology) {
-  RouteCollection routes = collectRoutes(nodes, graph, placements, topology);
-  return routes.unroutedEdges == 0;
+std::uint64_t countUnroutedEdges(const RoutingProblem &routingProblem,
+                                 llvm::ArrayRef<PlacementRecord> placements,
+                                 const HardwareTopology &topology,
+                                 RouteCache &routeCache) {
+  RouteCollection routes =
+      collectRoutes(routingProblem, placements, topology, routeCache);
+  return routes.unroutedEdges;
 }
 
-bool tryReplacePlacement(
-    llvm::ArrayRef<SoftwareNode> nodes,
-    llvm::ArrayRef<HardwareResource> resources, mlir::Operation *graph,
-    const HardwareTopology &topology,
-    llvm::SmallVectorImpl<PlacementRecord> &placements, std::size_t index,
-    const HardwareResource &resource) {
+std::optional<llvm::SmallVector<PlacementRecord, 32>>
+replacementCandidate(llvm::ArrayRef<SoftwareNode> nodes,
+                     llvm::ArrayRef<PlacementRecord> placements,
+                     std::size_t index, const HardwareResource &resource) {
   const SoftwareNode *node = findNodeById(nodes, placements[index].softwareId);
   if (!node || !resourceIsCompatible(*node, resource))
-    return false;
+    return std::nullopt;
 
   llvm::SmallVector<PlacementRecord, 32> candidate(placements.begin(),
                                                    placements.end());
   candidate[index] = makePlacementRecord(*node, resource);
-  if (!replacementRoutes(nodes, graph, candidate, topology))
-    return false;
-  placements.assign(candidate.begin(), candidate.end());
-  return true;
+  return candidate;
 }
 
-bool trySwapPlacements(llvm::ArrayRef<SoftwareNode> nodes,
-                       llvm::ArrayRef<HardwareResource> resources,
-                       mlir::Operation *graph,
-                       const HardwareTopology &topology,
-                       llvm::SmallVectorImpl<PlacementRecord> &placements,
-                       std::size_t lhsIndex, std::size_t rhsIndex) {
+std::optional<llvm::SmallVector<PlacementRecord, 32>>
+swapCandidate(llvm::ArrayRef<SoftwareNode> nodes,
+              llvm::ArrayRef<HardwareResource> resources,
+              llvm::ArrayRef<PlacementRecord> placements, std::size_t lhsIndex,
+              std::size_t rhsIndex) {
   if (lhsIndex == rhsIndex)
-    return false;
+    return std::nullopt;
   const SoftwareNode *lhsNode =
       findNodeById(nodes, placements[lhsIndex].softwareId);
   const SoftwareNode *rhsNode =
@@ -2442,64 +2465,93 @@ bool trySwapPlacements(llvm::ArrayRef<SoftwareNode> nodes,
   const HardwareResource *rhsResource =
       findResourceById(resources, placements[rhsIndex].hardwareId);
   if (!lhsNode || !rhsNode || !lhsResource || !rhsResource)
-    return false;
+    return std::nullopt;
   if (!resourceIsCompatible(*lhsNode, *rhsResource) ||
       !resourceIsCompatible(*rhsNode, *lhsResource))
-    return false;
+    return std::nullopt;
 
   llvm::SmallVector<PlacementRecord, 32> candidate(placements.begin(),
                                                    placements.end());
   candidate[lhsIndex] = makePlacementRecord(*lhsNode, *rhsResource);
   candidate[rhsIndex] = makePlacementRecord(*rhsNode, *lhsResource);
-  if (!replacementRoutes(nodes, graph, candidate, topology))
-    return false;
-  placements.assign(candidate.begin(), candidate.end());
-  return true;
-}
-
-bool tryRepairPlacementIndex(
-    llvm::ArrayRef<SoftwareNode> nodes,
-    llvm::ArrayRef<HardwareResource> resources, mlir::Operation *graph,
-    const HardwareTopology &topology,
-    llvm::SmallVectorImpl<PlacementRecord> &placements, std::size_t index) {
-  for (std::size_t otherIndex = 0; otherIndex < placements.size();
-       ++otherIndex)
-    if (trySwapPlacements(nodes, resources, graph, topology, placements, index,
-                          otherIndex))
-      return true;
-
-  llvm::StringSet<> used = usedHardwareIds(placements, index);
-  for (const HardwareResource &resource : resources) {
-    if (used.contains(resource.id))
-      continue;
-    if (tryReplacePlacement(nodes, resources, graph, topology, placements,
-                            index, resource))
-      return true;
-  }
-  return false;
+  return candidate;
 }
 
 bool repairUnroutedGreedyPlacements(
-    llvm::ArrayRef<SoftwareNode> nodes,
-    llvm::ArrayRef<HardwareResource> resources, mlir::Operation *graph,
+    llvm::ArrayRef<SoftwareNode> nodes, const RoutingProblem &routingProblem,
+    llvm::ArrayRef<HardwareResource> resources,
     const HardwareTopology &topology,
-    llvm::SmallVectorImpl<PlacementRecord> &placements) {
-  RouteCollection routes = collectRoutes(nodes, graph, placements, topology);
-  if (routes.unroutedEdges == 0)
-    return true;
-  for (const UnroutedEdgeRecord &edge : routes.unroutedEdgeDetails) {
-    std::optional<std::size_t> producer =
-        findPlacementIndex(placements, edge.fromSoftwareId);
-    if (producer && tryRepairPlacementIndex(nodes, resources, graph, topology,
-                                            placements, *producer))
+    llvm::SmallVectorImpl<PlacementRecord> &placements,
+    RouteCache &routeCache) {
+  std::uint64_t currentUnrouted =
+      countUnroutedEdges(routingProblem, placements, topology, routeCache);
+  for (std::size_t iteration = 0; iteration < placements.size();
+       ++iteration) {
+    if (currentUnrouted == 0)
       return true;
-    std::optional<std::size_t> consumer =
-        findPlacementIndex(placements, edge.toSoftwareId);
-    if (consumer && tryRepairPlacementIndex(nodes, resources, graph, topology,
-                                            placements, *consumer))
-      return true;
+    RouteCollection routes =
+        collectRoutes(routingProblem, placements, topology, routeCache);
+    llvm::SmallVector<std::size_t, 16> repairIndices;
+    for (const UnroutedEdgeRecord &edge : routes.unroutedEdgeDetails) {
+      if (std::optional<std::size_t> producer =
+              findPlacementIndex(placements, edge.fromSoftwareId))
+        if (!llvm::is_contained(repairIndices, *producer))
+          repairIndices.push_back(*producer);
+      if (std::optional<std::size_t> consumer =
+              findPlacementIndex(placements, edge.toSoftwareId))
+        if (!llvm::is_contained(repairIndices, *consumer))
+          repairIndices.push_back(*consumer);
+    }
+
+    std::uint64_t bestUnrouted = currentUnrouted;
+    llvm::SmallVector<PlacementRecord, 32> bestPlacements;
+    for (std::size_t index : repairIndices) {
+      for (std::size_t otherIndex = 0; otherIndex < placements.size();
+           ++otherIndex) {
+        std::optional<llvm::SmallVector<PlacementRecord, 32>> candidate =
+            swapCandidate(nodes, resources, placements, index, otherIndex);
+        if (!candidate)
+          continue;
+        std::uint64_t candidateUnrouted =
+            countUnroutedEdges(routingProblem, *candidate, topology,
+                               routeCache);
+        if (candidateUnrouted >= bestUnrouted)
+          continue;
+        bestUnrouted = candidateUnrouted;
+        bestPlacements.assign(candidate->begin(), candidate->end());
+        if (bestUnrouted == 0)
+          break;
+      }
+      if (bestUnrouted == 0)
+        break;
+
+      llvm::StringSet<> used = usedHardwareIds(placements, index);
+      for (const HardwareResource &resource : resources) {
+        if (used.contains(resource.id))
+          continue;
+        std::optional<llvm::SmallVector<PlacementRecord, 32>> candidate =
+            replacementCandidate(nodes, placements, index, resource);
+        if (!candidate)
+          continue;
+        std::uint64_t candidateUnrouted =
+            countUnroutedEdges(routingProblem, *candidate, topology,
+                               routeCache);
+        if (candidateUnrouted >= bestUnrouted)
+          continue;
+        bestUnrouted = candidateUnrouted;
+        bestPlacements.assign(candidate->begin(), candidate->end());
+        if (bestUnrouted == 0)
+          break;
+      }
+      if (bestUnrouted == 0)
+        break;
+    }
+    if (bestUnrouted >= currentUnrouted)
+      return false;
+    placements.assign(bestPlacements.begin(), bestPlacements.end());
+    currentUnrouted = bestUnrouted;
   }
-  return false;
+  return currentUnrouted == 0;
 }
 
 void clearPlacementState(llvm::MutableArrayRef<HardwareResource> resources,
@@ -2511,9 +2563,11 @@ void clearPlacementState(llvm::MutableArrayRef<HardwareResource> resources,
 
 bool chooseRouteFeasiblePlacements(
     llvm::MutableArrayRef<SoftwareNode> nodes,
-    llvm::MutableArrayRef<HardwareResource> resources, mlir::Operation *graph,
+    const RoutingProblem &routingProblem,
+    llvm::MutableArrayRef<HardwareResource> resources,
     const HardwareTopology &topology,
-    llvm::SmallVectorImpl<PlacementRecord> &placements, unsigned nodeIndex) {
+    llvm::SmallVectorImpl<PlacementRecord> &placements, unsigned nodeIndex,
+    RouteCache &routeCache) {
   if (nodeIndex == nodes.size())
     return true;
 
@@ -2524,9 +2578,11 @@ bool chooseRouteFeasiblePlacements(
     resource.used = true;
     placements.push_back(makePlacementRecord(node, resource));
 
-    if (partialPlacementRoutes(nodes, graph, placements, topology) &&
-        chooseRouteFeasiblePlacements(nodes, resources, graph, topology,
-                                      placements, nodeIndex + 1))
+    if (partialPlacementRoutes(routingProblem, placements, topology,
+                               routeCache) &&
+        chooseRouteFeasiblePlacements(nodes, routingProblem, resources,
+                                      topology, placements, nodeIndex + 1,
+                                      routeCache))
       return true;
 
     placements.pop_back();
@@ -2536,10 +2592,11 @@ bool chooseRouteFeasiblePlacements(
 }
 
 bool placeRouteFeasible(llvm::MutableArrayRef<SoftwareNode> nodes,
+                        const RoutingProblem &routingProblem,
                         llvm::MutableArrayRef<HardwareResource> resources,
-                        mlir::Operation *graph,
                         const HardwareTopology &topology,
-                        llvm::SmallVectorImpl<PlacementRecord> &placements) {
+                        llvm::SmallVectorImpl<PlacementRecord> &placements,
+                        RouteCache &routeCache) {
   sortNodesByPlacementPriority(nodes, resources);
   clearPlacementState(resources, placements);
   bool greedyComplete = true;
@@ -2552,11 +2609,11 @@ bool placeRouteFeasible(llvm::MutableArrayRef<SoftwareNode> nodes,
     placements.push_back(makePlacementRecord(node, *resource));
   }
   if (greedyComplete &&
-      partialPlacementRoutes(nodes, graph, placements, topology))
+      partialPlacementRoutes(routingProblem, placements, topology, routeCache))
     return true;
   if (greedyComplete &&
-      repairUnroutedGreedyPlacements(nodes, resources, graph, topology,
-                                     placements))
+      repairUnroutedGreedyPlacements(nodes, routingProblem, resources, topology,
+                                     placements, routeCache))
     return true;
 
   clearPlacementState(resources, placements);
@@ -2564,8 +2621,8 @@ bool placeRouteFeasible(llvm::MutableArrayRef<SoftwareNode> nodes,
   if (nodes.size() > kExhaustivePlacementNodeLimit)
     return false;
 
-  if (chooseRouteFeasiblePlacements(nodes, resources, graph, topology,
-                                    placements, 0))
+  if (chooseRouteFeasiblePlacements(nodes, routingProblem, resources, topology,
+                                    placements, 0, routeCache))
     return true;
   clearPlacementState(resources, placements);
   return false;
@@ -2884,8 +2941,12 @@ loom::pnr::createMapping(const MappingOptions &options) {
       resolvedConfig, summary.componentConfigView);
   summary.status = "pass";
 
-  if (!placeRouteFeasible(*nodesOrErr, hardwareModelOrErr->resources, graph,
-                          hardwareModelOrErr->topology, summary.placements)) {
+  RoutingProblem routingProblem = buildRoutingProblem(*nodesOrErr, graph);
+  RouteCache routeCache;
+  if (!placeRouteFeasible(*nodesOrErr, routingProblem,
+                          hardwareModelOrErr->resources,
+                          hardwareModelOrErr->topology, summary.placements,
+                          routeCache)) {
     for (HardwareResource &resource : hardwareModelOrErr->resources)
       resource.used = false;
     for (SoftwareNode &node : *nodesOrErr) {
@@ -2923,8 +2984,9 @@ loom::pnr::createMapping(const MappingOptions &options) {
       return std::move(err);
   }
 
-  RouteCollection routeCollection = collectRoutes(
-      *nodesOrErr, graph, summary.placements, hardwareModelOrErr->topology);
+  RouteCollection routeCollection =
+      collectRoutes(routingProblem, summary.placements,
+                    hardwareModelOrErr->topology, routeCache);
   summary.routes = std::move(routeCollection.routes);
   summary.unroutedEdgeDetails = std::move(routeCollection.unroutedEdgeDetails);
   summary.unroutedEdges = routeCollection.unroutedEdges;

@@ -4699,7 +4699,7 @@ ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {
   SharedMemoryAdgConfig config;
   config.moduleName = "shared_quantized_window_adg";
   config.constantCount = 40;
-  config.addCount = 40;
+  config.addCount = 46;
   config.cmpCount = 48;
   config.selectCount = 48;
   config.wideSelectCount = 14;
@@ -4707,15 +4707,16 @@ ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {
   config.divCount = 4;
   config.signedRemCount = 2;
   config.muxCount = 4;
-  config.logicCount = 22;
+  config.logicCount = 25;
   config.unsignedMaxCount = 2;
-  config.shiftCount = 36;
-  config.castCount = 24;
+  config.shiftCount = 65;
+  config.castCount = 25;
+  config.wideConstantCount = 2;
   config.wideAddCount = 34;
   config.wideShiftCount = 20;
   config.wideCmpCount = 2;
   config.wideCastCount = 36;
-  config.wideSextCount = 20;
+  config.wideSextCount = 21;
   config.wideMulCount = 34;
   config.wideDivCount = 20;
   config.wideRouteBridgeCount = 16;
@@ -4725,12 +4726,16 @@ ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {
   config.armPkhtbCount = 1;
   config.armSadd16Count = 4;
   config.armSxtab16Count = 2;
-  config.armSxtb16Count = 1;
+  config.armSxtb16Count = 4;
+  config.minCount = 11;
+  config.maxCount = 11;
   config.constantHexValues = {
       "0x00000000", "0x00000001", "0x00000002", "0x00000003",
       "0x00000004", "0x00000008", "0x0000000f", "0x00000010",
-      "0x00000018", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000",
-      "0xffffffff", "0xffff0000"};
+      "0x00000018", "0x0000001b", "0x0000001f", "0x000000ff",
+      "0x0000ff00", "0x0000ffef", "0x0000ffff", "0x00ff0000",
+      "0x30000000", "0x40000000", "0xffffffff", "0xffff0000"};
+  config.wideConstantHexValues = {"0x0000001f", "0x40000000"};
   return buildSharedMemoryLikeAdg(config);
 }
 
