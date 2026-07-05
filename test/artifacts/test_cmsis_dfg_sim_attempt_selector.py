@@ -284,6 +284,43 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
                 raise AssertionError(f"arm_abs_f32 {label} report should preserve real abs final state: {report}")
 
 
+def assert_convolve_selector_records_dfg_blocker(repo: Path) -> None:
+    with artifact_test_common.repo_temp_dir(repo, "cmsis-convolve-attempt-") as tmp:
+        root = Path(tmp)
+        out_dir = root / "rollup"
+        evidence_dir = root / "sim-evidence"
+
+        run_rollup(repo, out_dir, evidence_dir, "arm_convolve_1x1_s8_fast")
+        row = row_by_case(
+            out_dir / "cgra-status-summary.csv",
+            "cmsis-nn",
+            "ConvolutionFunctions/arm_convolve_1x1_s8_fast.c",
+        )
+        if (
+            row["status"] != "blocked"
+            or row["dfg_status"] != "blocked"
+            or row["mapping_status"] != "not_run"
+            or row["cgra_status"] != "not_run"
+            or row["diagnostic_class"] != "component_dfg_status_blocked"
+            or row["blocking_prerequisite"] != "component_graph_evidence"
+            or "arm_convolve_1x1_s8_fast.red2.dfg.report.json" not in row["dfg_report"]
+            or "dataflow.load consumed 1 of 19 true stream indices" not in row["diagnostic"]
+        ):
+            raise AssertionError(f"convolve selector should record the DFG-sim component blocker: {row}")
+
+        report_path = evidence_dir / "arm_convolve_1x1_s8_fast.red2.dfg.report.json"
+        report = json.loads(report_path.read_text())
+        if (
+            report.get("status") != "blocked"
+            or report.get("graph") != "g_t_arm_nn_mat_mult_nt_t_s8_red_2_0"
+            or report.get("dynamic_work_items") != 19
+            or "dataflow.load consumed 1 of 19 true stream indices" not in " ".join(
+                str(item) for item in report.get("diagnostics", [])
+            )
+        ):
+            raise AssertionError(f"convolve red2 report should expose the current DFG-sim blocker: {report}")
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     attempts = load_attempt_module(repo)
@@ -367,6 +404,24 @@ def main() -> int:
     depthwise_selected = attempts.select_attempts(depthwise_args)
     if labels(depthwise_selected) != ["arm_depthwise_conv_s8.red0", "arm_depthwise_conv_s8.red1"]:
         raise AssertionError(f"arm_depthwise_conv_s8 selector chose unexpected attempts: {labels(depthwise_selected)}")
+
+    convolve_args = attempts.parse_args(
+        [
+            "--cmsis-dsp-dfg-dir",
+            "dsp",
+            "--cmsis-nn-dfg-dir",
+            "nn",
+            "--output-dir",
+            "out",
+            "--attempt-stem",
+            "arm_convolve_1x1_s8_fast",
+        ]
+    )
+    convolve_selected = attempts.select_attempts(convolve_args)
+    if labels(convolve_selected) != ["arm_convolve_1x1_s8_fast.red2"]:
+        raise AssertionError(
+            f"arm_convolve_1x1_s8_fast selector chose unexpected attempts: {labels(convolve_selected)}"
+        )
 
     bad_args = attempts.parse_args(
         [
@@ -510,6 +565,7 @@ def main() -> int:
 
     assert_selected_rollup_drops_stale_cmsis_evidence(repo)
     assert_default_batch_rollup_promotes_bounded_rows(repo)
+    assert_convolve_selector_records_dfg_blocker(repo)
 
     return 0
 

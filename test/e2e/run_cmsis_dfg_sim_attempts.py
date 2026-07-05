@@ -1132,6 +1132,30 @@ ATTEMPTS = (
     ),
     Attempt(
         suite="cmsis-nn",
+        case="ConvolutionFunctions/arm_convolve_1x1_s8_fast.c",
+        stem="arm_convolve_1x1_s8_fast",
+        artifact_stem="arm_convolve_1x1_s8_fast.red2",
+        aggregate_stem="arm_convolve_1x1_s8_fast",
+        graph="g_t_arm_nn_mat_mult_nt_t_s8_red_2_0",
+        dfg_dir_arg="cmsis_nn_dfg_dir",
+        args=(
+            "0=none",
+            "1=19",
+            "2=0",
+            "3=-1",
+            "5=18048",
+            "6=32384",
+        ),
+        memrefs=(
+            "4=115,33,-36,-34,21,91,74,-18,-65,6,-106,44,11,-44,-102,-105,5,-65,74",
+            "7=98,-9,-56,95,97,3,-112,-42,127,-120,102,22,96,-105,-122,67,-18,45,85,"
+            "3,-8,-56,3,-32,62,-23,127,70,-33,-126,65,-120,42,-92,73,106,114,-34",
+        ),
+        hardware_mlir="test/pnr/shared_quantized_window_adg.mlir",
+        hardware="shared_quantized_window_adg",
+    ),
+    Attempt(
+        suite="cmsis-nn",
         case="FullyConnectedFunctions/arm_fully_connected_s8.c",
         stem="arm_fully_connected_s8",
         graph="g_t_arm_fully_connected_s8_red_0_0",
