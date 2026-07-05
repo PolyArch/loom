@@ -811,6 +811,18 @@ def artifact_diagnostic(label: str, data: dict[str, object], path: Path, status:
     return f"{label} status is {status}"
 
 
+def mapping_failure_is_capacity_blocker(mapping: dict[str, object]) -> bool:
+    if string_field(mapping, "status") != "fail":
+        return False
+    unrouted_edges = mapping.get("unrouted_edges")
+    if isinstance(unrouted_edges, int) and unrouted_edges > 0:
+        return False
+    diagnostics = mapping.get("diagnostics")
+    return isinstance(diagnostics, list) and any(
+        isinstance(item, str) and "resource pressure" in item for item in diagnostics
+    )
+
+
 def workload_identity_diagnostics(
     expected_workload: str,
     artifacts: tuple[tuple[str, dict[str, object], Path], ...],
@@ -1038,7 +1050,7 @@ def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comp
         row_data["blocking_prerequisite"] = ""
         row_data["diagnostic"] = "DFG-sim, mapping, CGRA-sim, and simulation comparison evidence passed"
         return
-    if any(value == "fail" for value in stage_values):
+    if any(value == "fail" for value in stage_values) and not mapping_failure_is_capacity_blocker(mapping):
         row_data["status"] = "fail"
     elif dfg_status == "unsupported" and not no_dfg_app_row:
         row_data["status"] = "unsupported"

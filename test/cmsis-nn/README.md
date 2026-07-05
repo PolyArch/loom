@@ -24,6 +24,7 @@ any triple it knows).
 | Path                              | Role                                                                              |
 |-----------------------------------|-----------------------------------------------------------------------------------|
 | `cmsis_nn_targets.txt`            | One row per source: triple, cpu, expected triple/symbols, per-row DFG-shape gate. |
+| `cmsis_nn_companion_sources.txt`  | Explicit wrapper-to-companion bindings consumed by the DFG runner.                |
 | `run_cmsis_nn_ir.sh`              | Loops over rows, invokes loom-cc, asserts IR invariants.                          |
 | `run_cmsis_nn_raise.sh`           | LLVM IR -> SCF MLIR raise smoke.                                                  |
 | `run_cmsis_nn_dfg.sh`             | SCF MLIR -> DFG MLIR lower smoke with per-row shape gate.                         |
@@ -63,7 +64,10 @@ This is in contrast with the cmsis-dsp pipeline, which also threads in
 `cmsis_nn_targets.txt` and the source needs additional include roots,
 wire them into the runner explicitly rather than reaching into the
 source tree -- the externals are vendored verbatim and must stay
-untouched.
+untouched. If a wrapper source delegates all lowerable work to a
+sibling implementation file, add that binding and any DFG-only expected
+symbols to `cmsis_nn_companion_sources.txt` so the DFG runner can build
+a temporary combined translation unit without modifying vendored files.
 
 ## Libc-header strategy: `-isystem /usr/include`
 

@@ -91,8 +91,9 @@ def main() -> int:
                     ("app", "pass"): 126,
                     ("app", "unsupported"): 6,
                     ("cmsis-dsp", "pass"): 16,
-                    ("cmsis-nn", "pass"): 13,
-                    ("cmsis-nn", "unsupported"): 5,
+                    ("cmsis-nn", "pass"): 15,
+                    ("cmsis-nn", "blocked"): 1,
+                    ("cmsis-nn", "unsupported"): 2,
                 },
             )
             gate.assert_cgra_status_default_evidence(no_loombench_csv)

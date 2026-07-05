@@ -1,0 +1,7 @@
+# src_relpath|companion_src_relpath[,companion_src_relpath...]|dfg_expected_symbol[,dfg_expected_symbol...]
+#
+# Some public CMSIS-NN entry points delegate the lowered loop body to
+# a sibling source file. The DFG runner builds a temporary combined
+# translation unit only for rows listed here, preserving the canonical
+# row id while exposing the companion body to loom-lower.
+SoftmaxFunctions/arm_softmax_s8.c|SoftmaxFunctions/arm_nn_softmax_common_s8.c|arm_softmax_s8,arm_nn_softmax_common_s8,g_t_arm_nn_softmax_common_s8_red_0_0

@@ -132,8 +132,8 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
                 "total": 18,
                 "pass": 15,
                 "fail": 0,
-                "blocked": 0,
-                "unsupported": 3,
+                "blocked": 1,
+                "unsupported": 2,
                 "missing_status": 0,
             },
         }
@@ -156,6 +156,7 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
         relu_q7 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu_q7.c")
         relu6 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu6_s8.c")
         reshape = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ReshapeFunctions/arm_reshape_s8.c")
+        softmax_s8 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "SoftmaxFunctions/arm_softmax_s8.c")
         softmax = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "SoftmaxFunctions/arm_softmax_u8.c")
         depthwise = row_by_case(
             out_dir / "cgra-status-summary.csv",
@@ -212,6 +213,19 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
         ):
             raise AssertionError(f"default-batch rollup should promote softmax with real CGRA-sim evidence: {softmax}")
         if (
+            softmax_s8["status"] != "blocked"
+            or softmax_s8["dfg_status"] != "pass"
+            or softmax_s8["mapping_status"] != "fail"
+            or softmax_s8["cgra_status"] != "blocked"
+            or softmax_s8["comparison_status"] != "blocked"
+            or softmax_s8["diagnostic_class"] != "mapping_artifact_failed"
+            or softmax_s8["blocking_prerequisite"] != "mapping_artifact"
+            or softmax_s8["final_outputs_present"] != "true"
+            or softmax_s8["final_memory_state_present"] != "true"
+            or "resource pressure" not in softmax_s8["diagnostic"]
+        ):
+            raise AssertionError(f"default-batch rollup should record softmax_s8 as a shared-fabric blocker: {softmax_s8}")
+        if (
             depthwise["diagnostic_class"] != "cgra_sim_pass"
             or depthwise["blocking_prerequisite"] != ""
             or depthwise["dfg_status"] != "pass"
@@ -250,6 +264,9 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             evidence_dir / "arm_softmax_u8.dfg.report.json",
             evidence_dir / "arm_softmax_u8.mapping.json",
             evidence_dir / "arm_softmax_u8.cgra.report.json",
+            evidence_dir / "arm_softmax_s8.dfg.report.json",
+            evidence_dir / "arm_softmax_s8.mapping.json",
+            evidence_dir / "arm_softmax_s8.cgra.report.json",
             evidence_dir / "arm_depthwise_conv_s8.dfg.report.json",
             evidence_dir / "arm_depthwise_conv_s8.mapping.json",
             evidence_dir / "arm_depthwise_conv_s8.cgra.report.json",

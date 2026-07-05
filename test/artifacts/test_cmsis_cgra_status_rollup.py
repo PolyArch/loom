@@ -74,8 +74,8 @@ def assert_cmsis_dfg_only_counts(data: dict[str, object]) -> None:
             "total": 18,
             "pass": 0,
             "fail": 0,
-            "blocked": 15,
-            "unsupported": 3,
+            "blocked": 16,
+            "unsupported": 2,
             "missing_status": 0,
         },
     )
@@ -523,8 +523,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 18,
             "pass": 15,
             "fail": 0,
-            "blocked": 0,
-            "unsupported": 3,
+            "blocked": 1,
+            "unsupported": 2,
             "missing_status": 0,
         },
     )
@@ -1855,8 +1855,8 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
             "total": 18,
             "pass": 15,
             "fail": 0,
-            "blocked": 0,
-            "unsupported": 3,
+            "blocked": 1,
+            "unsupported": 2,
             "missing_status": 0,
         },
     )
@@ -5100,8 +5100,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
             "total": 18,
             "pass": 15,
             "fail": 0,
-            "blocked": 0,
-            "unsupported": 3,
+            "blocked": 1,
+            "unsupported": 2,
             "missing_status": 0,
         },
     )

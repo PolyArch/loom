@@ -76,6 +76,7 @@ LOOM_RAISE_OPT="${LOOM_RAISE_OPT:-${LOOM_RAISE_OPT_DEFAULT}}"
 
 TARGETS_FILE="${TARGETS_OVERRIDE:-${HERE}/cmsis_nn_targets.txt}"
 SKIP_FILE="${HERE}/cmsis_nn_dfg_skip.txt"
+COMPANION_SOURCES_FILE="${COMPANION_SOURCES_OVERRIDE:-${HERE}/cmsis_nn_companion_sources.txt}"
 
 NN_ROOT="${REPO_ROOT}/externals/cmsis-nn"
 SRC_ROOT="${NN_ROOT}/Source"
@@ -122,6 +123,7 @@ mkdir -p "${OUT_ROOT}"
 rm -f "${OUT_ROOT}"/*.ll \
       "${OUT_ROOT}"/*.scf.mlir \
       "${OUT_ROOT}"/*.dfg.mlir \
+      "${OUT_ROOT}"/*.combined.c \
       "${OUT_ROOT}"/*.log \
       "${OUT_ROOT}"/*.raise.log \
       "${OUT_ROOT}"/*.lower.log \
@@ -131,6 +133,65 @@ declare -A skip_set=()
 declare -A skip_reason=()
 skip_count=0
 cmsis_common_load_skip_set "${SKIP_FILE}" skip_set skip_reason skip_count
+
+declare -A companion_sources=()
+declare -A companion_expected_symbols=()
+load_companion_sources() {
+    local companion_file="$1"
+    [[ -f "${companion_file}" ]] || return 0
+    while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
+        local line="${raw_line%$'\r'}"
+        case "${line}" in
+            ''|'#'*) continue ;;
+        esac
+        local source_rel companions dfg_symbols
+        IFS='|' read -r source_rel companions dfg_symbols <<< "${line}"
+        source_rel="${source_rel#"${source_rel%%[![:space:]]*}"}"
+        source_rel="${source_rel%"${source_rel##*[![:space:]]}"}"
+        companions="${companions#"${companions%%[![:space:]]*}"}"
+        companions="${companions%"${companions##*[![:space:]]}"}"
+        dfg_symbols="${dfg_symbols#"${dfg_symbols%%[![:space:]]*}"}"
+        dfg_symbols="${dfg_symbols%"${dfg_symbols##*[![:space:]]}"}"
+        if [[ -z "${source_rel}" || -z "${companions}" ]]; then
+            echo "[${LABEL}] malformed companion source row: ${line}" >&2
+            exit 2
+        fi
+        if [[ "${source_rel}" = /* || "${source_rel}" == *'..'* ]]; then
+            echo "[${LABEL}] invalid companion source key: ${source_rel}" >&2
+            exit 2
+        fi
+        if [[ ! -f "${SRC_ROOT}/${source_rel}" ]]; then
+            echo "[${LABEL}] companion source key missing under CMSIS-NN Source: ${source_rel}" >&2
+            exit 2
+        fi
+        IFS=',' read -r -a companion_arr <<< "${companions}"
+        local normalized=()
+        local companion
+        for companion in "${companion_arr[@]}"; do
+            companion="${companion#"${companion%%[![:space:]]*}"}"
+            companion="${companion%"${companion##*[![:space:]]}"}"
+            if [[ -z "${companion}" ]]; then
+                echo "[${LABEL}] empty companion source in row: ${line}" >&2
+                exit 2
+            fi
+            if [[ "${companion}" = /* || "${companion}" == *'..'* ]]; then
+                echo "[${LABEL}] invalid companion source path: ${companion}" >&2
+                exit 2
+            fi
+            if [[ ! -f "${SRC_ROOT}/${companion}" ]]; then
+                echo "[${LABEL}] companion source missing under CMSIS-NN Source: ${companion}" >&2
+                exit 2
+            fi
+            normalized+=("${companion}")
+        done
+        companion_sources["${source_rel}"]="$(IFS=','; printf '%s' "${normalized[*]}")"
+        if [[ -n "${dfg_symbols}" ]]; then
+            companion_expected_symbols["${source_rel}"]="${dfg_symbols}"
+        fi
+    done < "${companion_file}"
+}
+
+load_companion_sources "${COMPANION_SOURCES_FILE}"
 
 target_rows=0
 while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
@@ -231,6 +292,17 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     raise_log="${OUT_ROOT}/${base}.raise.log"
     lower_log="${OUT_ROOT}/${base}.lower.log"
     parse_log="${OUT_ROOT}/${base}.dfg-parse.log"
+    compile_src_path="${src_path}"
+
+    if [[ -n "${companion_sources[${src}]:-}" ]]; then
+        combined_src="${OUT_ROOT}/${base}.combined.c"
+        cp "${src_path}" "${combined_src}"
+        IFS=',' read -r -a row_companions <<< "${companion_sources[${src}]}"
+        for companion in "${row_companions[@]}"; do
+            printf '\n#include "%s"\n' "${SRC_ROOT}/${companion}" >> "${combined_src}"
+        done
+        compile_src_path="${combined_src}"
+    fi
 
     # shellcheck disable=SC2206  # intentional word-split on extra_cflags.
     extra_flags_arr=(${extra_cflags})
@@ -242,7 +314,7 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
             "${LIBC_DEFINES[@]}" \
             "${extra_flags_arr[@]}" \
             -emit-llvm -S -O1 \
-            "${src_path}" \
+            "${compile_src_path}" \
             -o "${out_ll}" \
             >"${cc_log}" 2>&1; then
         echo "  FAIL  ${src}  (loom-cc exit nonzero; see ${cc_log})"
@@ -292,7 +364,8 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     # runner: outlining can rename or split the public symbol but at
     # least one tagged form must remain.
     sym_found=0
-    IFS=',' read -r -a sym_arr <<< "${expected_syms}"
+    dfg_expected_syms="${companion_expected_symbols[${src}]:-${expected_syms}}"
+    IFS=',' read -r -a sym_arr <<< "${dfg_expected_syms}"
     for sym in "${sym_arr[@]}"; do
         sym_trimmed="${sym//[[:space:]]/}"
         [[ -z "${sym_trimmed}" ]] && continue
@@ -303,7 +376,7 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     done
 
     if (( sym_found == 0 )); then
-        echo "  FAIL  ${src}  (no func.func / dataflow.thread / dataflow.graph.func definition for any of: ${expected_syms} in ${out_dfg})"
+        echo "  FAIL  ${src}  (no func.func / dataflow.thread / dataflow.graph.func definition for any of: ${dfg_expected_syms} in ${out_dfg})"
         failed+=("${src}")
         continue
     fi
