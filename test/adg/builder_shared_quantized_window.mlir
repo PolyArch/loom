@@ -8,6 +8,9 @@
 // HARDWARE-LABEL: fabric.module @shared_quantized_window_adg
 // HARDWARE-DAG: load_group_size = 18 : i32
 // HARDWARE-DAG: store_group_size = 9 : i32
+// HARDWARE-DAG: fabric.op [@dataflow.stream]
+// HARDWARE-DAG: fabric.op [@dataflow.carry]
+// HARDWARE-DAG: fabric.op [@dataflow.invariant]
 // HARDWARE-DAG: fabric.op [@dataflow.constant]
 // HARDWARE-DAG: 0x0000ffef
 // HARDWARE-DAG: 0x00000018
@@ -35,9 +38,13 @@
 
 // MAPPING-DAG: "workload": "quantized_window_pressure"
 // MAPPING-DAG: "hardware": "shared_quantized_window_adg"
+// MAPPING-DAG: "operation": "dataflow.stream"
+// MAPPING-DAG: "operation": "dataflow.carry"
+// MAPPING-DAG: "operation": "dataflow.invariant"
 // MAPPING-DAG: "unplaced_records": 0
 // MAPPING-DAG: "unrouted_edges": 0
 // MAPPING-DAG: "status": "pass"
+// MAPPING-NOT: "resource_pressure"
 
 module {
   dataflow.graph.func private @quantized_window_pressure(
@@ -53,7 +60,15 @@ module {
     %c1 = dataflow.constant %ctrl {const_value = 1 : index} : index
     %c2 = dataflow.constant %ctrl {const_value = 2 : index} : index
     %c3 = dataflow.constant %ctrl {const_value = 3 : index} : index
+    %i0 = dataflow.constant %ctrl {const_value = 0 : i32} : i32
+    %i1 = dataflow.constant %ctrl {const_value = 1 : i32} : i32
+    %i3 = dataflow.constant %ctrl {const_value = 3 : i32} : i32
     %one = dataflow.constant %ctrl {const_value = 1 : i32} : i32
+    %loop_idx, %rwc = dataflow.stream %i0, %i3, %i1 {cont_cond = "<", step_op = "+="} : i32
+    %stable_x = dataflow.invariant %rwc, %x : i32
+    %carried = dataflow.carry %rwc, %stable_x, %next : i32
+    %next = arith.addi %carried, %one : i32
+    %loop_adjusted = arith.addi %loop_idx, %next : i32
     %a0, %a0_done = dataflow.load %in[%idx] %ctrl : memref<?xi8>
     %a1, %a1_done = dataflow.load %in[%c1] %ctrl : memref<?xi8>
     %a2, %a2_done = dataflow.load %in[%c2] %ctrl : memref<?xi8>
@@ -66,7 +81,7 @@ module {
     %s1 = arith.shrsi %s0, %y : i32
     %s2 = arith.shrui %s1, %y : i32
     %d0 = arith.subi %s2, %x : i32
-    %u0 = arith.addi %d0, %y : i32
+    %u0 = arith.addi %d0, %loop_adjusted : i32
     %q0 = arith.divsi %u0, %one : i32
     %q1 = arith.divsi %x, %one : i32
     %q2 = arith.divsi %y, %one : i32

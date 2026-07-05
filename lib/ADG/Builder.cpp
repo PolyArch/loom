@@ -4729,6 +4729,9 @@ ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {
   config.armSxtb16Count = 4;
   config.minCount = 11;
   config.maxCount = 11;
+  config.streamCount = 4;
+  config.carryCount = 8;
+  config.invariantCount = 8;
   config.constantHexValues = {
       "0x00000000", "0x00000001", "0x00000002", "0x00000003",
       "0x00000004", "0x00000008", "0x0000000f", "0x00000010",

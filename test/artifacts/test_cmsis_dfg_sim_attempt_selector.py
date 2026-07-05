@@ -284,7 +284,7 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
                 raise AssertionError(f"arm_abs_f32 {label} report should preserve real abs final state: {report}")
 
 
-def assert_convolve_selector_records_mapping_blocker(repo: Path) -> None:
+def assert_convolve_selector_records_component_pass_before_aggregate(repo: Path) -> None:
     with artifact_test_common.repo_temp_dir(repo, "cmsis-convolve-attempt-") as tmp:
         root = Path(tmp)
         out_dir = root / "rollup"
@@ -299,15 +299,17 @@ def assert_convolve_selector_records_mapping_blocker(repo: Path) -> None:
         if (
             row["status"] != "blocked"
             or row["dfg_status"] != "pass"
-            or row["mapping_status"] != "fail"
-            or row["cgra_status"] != "blocked"
+            or row["mapping_status"] != "pass"
+            or row["cgra_status"] != "pass"
             or row["diagnostic_class"] != "component_cgra_status_blocked"
             or row["blocking_prerequisite"] != "component_graph_evidence"
             or "arm_convolve_1x1_s8_fast.red2.dfg.report.json" not in row["dfg_report"]
             or "arm_convolve_1x1_s8_fast.red2.mapping.json" not in row["mapping_artifact"]
-            or "missing hardware resource for software op dataflow.stream" not in row["diagnostic"]
+            or "arm_convolve_1x1_s8_fast.red2.cgra.report.json" not in row["cgra_report"]
+            or "row-level aggregate DFG, mapping, CGRA, and comparison artifacts are absent"
+            not in row["diagnostic"]
         ):
-            raise AssertionError(f"convolve selector should record the mapping component blocker: {row}")
+            raise AssertionError(f"convolve selector should record passing component evidence before aggregate: {row}")
 
         report_path = evidence_dir / "arm_convolve_1x1_s8_fast.red2.dfg.report.json"
         report = json.loads(report_path.read_text())
@@ -326,13 +328,30 @@ def assert_convolve_selector_records_mapping_blocker(repo: Path) -> None:
         mapping_path = evidence_dir / "arm_convolve_1x1_s8_fast.red2.mapping.json"
         mapping = json.loads(mapping_path.read_text())
         if (
-            mapping.get("status") != "fail"
+            mapping.get("status") != "pass"
             or mapping.get("graph") != "g_t_arm_nn_mat_mult_nt_t_s8_red_2_0"
-            or "missing hardware resource for software op dataflow.stream" not in " ".join(
-                str(item) for item in mapping.get("diagnostics", [])
-            )
+            or mapping.get("unplaced_records") != 0
+            or mapping.get("unrouted_edges") != 0
+            or mapping.get("resource_pressure") not in (None, [])
         ):
-            raise AssertionError(f"convolve red2 mapping should expose the hardware resource blocker: {mapping}")
+            raise AssertionError(f"convolve red2 mapping should pass on the shared quantized ADG: {mapping}")
+        placed_ops = {placement.get("operation") for placement in mapping.get("placements", [])}
+        if not {"dataflow.stream", "dataflow.carry", "dataflow.invariant"} <= placed_ops:
+            raise AssertionError(f"convolve red2 mapping missed loop-control placements: {mapping}")
+
+        cgra_path = evidence_dir / "arm_convolve_1x1_s8_fast.red2.cgra.report.json"
+        cgra = json.loads(cgra_path.read_text())
+        if (
+            cgra.get("status") != "pass"
+            or cgra.get("kind") != "cgra_sim_report"
+            or "g_t_arm_nn_mat_mult_nt_t_s8_red_2_0" not in str(cgra.get("mapping_id", ""))
+            or cgra.get("hardware") != "shared_quantized_window_adg"
+            or cgra.get("final_outputs") != ["none", "i32:21648", "i32:32462"]
+            or int(cgra.get("placed_records", 0)) <= 0
+            or int(cgra.get("routed_edges", 0)) <= 0
+            or int(cgra.get("route_segments", 0)) <= 0
+        ):
+            raise AssertionError(f"convolve red2 CGRA report should pass after mapping succeeds: {cgra}")
 
 
 def main() -> int:
@@ -579,7 +598,7 @@ def main() -> int:
 
     assert_selected_rollup_drops_stale_cmsis_evidence(repo)
     assert_default_batch_rollup_promotes_bounded_rows(repo)
-    assert_convolve_selector_records_mapping_blocker(repo)
+    assert_convolve_selector_records_component_pass_before_aggregate(repo)
 
     return 0
 
