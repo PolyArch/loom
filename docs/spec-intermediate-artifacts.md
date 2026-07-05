@@ -229,12 +229,16 @@ Rules:
   otherwise structured non-pass.
 * Each downstream consumer record must include `consumer`, `status`,
   and `diagnostic`. Records may also include `case_count`,
-  `evidence_cases`, `source_artifact`, and
+  `evidence_cases`, `status_counts`, `source_artifact`, and
   `source_artifact_fingerprint` when the consumer evidence comes from a
   separate JSON SSOT such as a CGRA status summary.
 * `evidence_cases`, when present, is a deterministic list of
   `suite:case` identities from the consumer artifact. It must name real
   rows in the referenced source artifact, not inferred workloads.
+* `status_counts`, when present, is a nonempty object whose keys are
+  known artifact statuses and whose values count source rows for that
+  consumer stage. Non-pass aggregate records must include their own
+  `status` key in `status_counts`.
 * `source_artifact` resolves to the consumer evidence artifact, and
   `source_artifact_fingerprint` must match that file when present.
 

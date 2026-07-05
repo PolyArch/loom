@@ -404,6 +404,71 @@ def evidence_case(row: dict[str, object]) -> str:
     return ""
 
 
+def stage_status(row: dict[str, object], stage_column: str) -> str:
+    value = row.get(stage_column)
+    return value if isinstance(value, str) and value else ""
+
+
+def aggregate_nonpass_status(status_counts: dict[str, int]) -> str:
+    for status in ("fail", "blocked", "unsupported", "skipped", "not_run"):
+        if status_counts.get(status, 0) > 0:
+            return status
+    return "not_run"
+
+
+def append_consumer_record(
+    records: list[dict[str, object]],
+    *,
+    consumer: str,
+    status: str,
+    rows: list[dict[str, object]],
+    diagnostic: str,
+    status_counts: dict[str, int] | None = None,
+) -> None:
+    cases = sorted(
+        {
+            case
+            for item in rows
+            for case in [evidence_case(item["row"])]
+            if isinstance(item.get("row"), dict) and case
+        }
+    )
+    source_artifacts = sorted(
+        {
+            str(item["source_artifact"])
+            for item in rows
+            if item.get("source_artifact")
+        }
+    )
+    source_fingerprints = sorted(
+        {
+            str(item["source_artifact_fingerprint"])
+            for item in rows
+            if item.get("source_artifact_fingerprint")
+        }
+    )
+    record: dict[str, object] = {
+        "consumer": consumer,
+        "status": status,
+        "case_count": len(cases),
+        "evidence_cases": cases,
+        "diagnostic": diagnostic,
+    }
+    if status_counts is not None:
+        record["status_counts"] = {
+            key: status_counts[key] for key in sorted(status_counts)
+        }
+    if len(source_artifacts) == 1:
+        record["source_artifact"] = source_artifacts[0]
+    if len(source_fingerprints) == 1:
+        record["source_artifact_fingerprint"] = source_fingerprints[0]
+    if len(source_artifacts) > 1:
+        record["source_artifacts"] = source_artifacts
+    if len(source_fingerprints) > 1:
+        record["source_artifact_fingerprints"] = source_fingerprints
+    records.append(record)
+
+
 def append_stage_consumer(
     records: list[dict[str, object]],
     *,
@@ -415,49 +480,43 @@ def append_stage_consumer(
         item
         for item in rows
         if isinstance(item.get("row"), dict)
-        and item["row"].get("status") == "pass"
-        and item["row"].get(stage_column) == "pass"
+        and stage_status(item["row"], stage_column) == "pass"
     ]
-    if not pass_rows:
+    if pass_rows:
+        append_consumer_record(
+            records,
+            consumer=consumer,
+            status="pass",
+            rows=pass_rows,
+            diagnostic=f"{consumer} consumed {len(pass_rows)} CGRA status pass row(s)",
+        )
         return
-    cases = sorted(
-        {
-            case
-            for item in pass_rows
-            for case in [evidence_case(item["row"])]
-            if case
-        }
+
+    nonpass_rows: list[dict[str, object]] = []
+    status_counts: dict[str, int] = {}
+    for item in rows:
+        row = item.get("row")
+        if not isinstance(row, dict):
+            continue
+        status = stage_status(row, stage_column)
+        if not status or status == "pass":
+            continue
+        nonpass_rows.append(item)
+        status_counts[status] = status_counts.get(status, 0) + 1
+    if not nonpass_rows:
+        return
+    status = aggregate_nonpass_status(status_counts)
+    status_summary = ", ".join(
+        f"{key}={status_counts[key]}" for key in sorted(status_counts)
     )
-    source_artifacts = sorted(
-        {
-            str(item["source_artifact"])
-            for item in pass_rows
-            if item.get("source_artifact")
-        }
+    append_consumer_record(
+        records,
+        consumer=consumer,
+        status=status,
+        rows=nonpass_rows,
+        diagnostic=f"{consumer} has no pass rows; statuses: {status_summary}",
+        status_counts=status_counts,
     )
-    source_fingerprints = sorted(
-        {
-            str(item["source_artifact_fingerprint"])
-            for item in pass_rows
-            if item.get("source_artifact_fingerprint")
-        }
-    )
-    record: dict[str, object] = {
-        "consumer": consumer,
-        "status": "pass",
-        "case_count": len(cases),
-        "evidence_cases": cases,
-        "diagnostic": f"{consumer} consumed {len(cases)} CGRA status pass row(s)",
-    }
-    if len(source_artifacts) == 1:
-        record["source_artifact"] = source_artifacts[0]
-    if len(source_fingerprints) == 1:
-        record["source_artifact_fingerprint"] = source_fingerprints[0]
-    if len(source_artifacts) > 1:
-        record["source_artifacts"] = source_artifacts
-    if len(source_fingerprints) > 1:
-        record["source_artifact_fingerprints"] = source_fingerprints
-    records.append(record)
 
 
 def consumer_records(

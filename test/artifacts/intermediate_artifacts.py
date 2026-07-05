@@ -6252,6 +6252,36 @@ def validate_adg_inventory(
                             f"ADG inventory candidate {index} consumer {consumer_index} "
                             "case_count must match evidence_cases"
                         )
+                status_counts = consumer.get("status_counts")
+                if status_counts is not None:
+                    if not isinstance(status_counts, dict) or not status_counts:
+                        diagnostics.append(
+                            f"ADG inventory candidate {index} consumer {consumer_index} "
+                            "status_counts must be a nonempty object"
+                        )
+                    else:
+                        for status, count in status_counts.items():
+                            if status not in BASE_STATUSES:
+                                diagnostics.append(
+                                    f"ADG inventory candidate {index} consumer {consumer_index} "
+                                    "status_counts has unknown status"
+                                )
+                            if not isinstance(count, int) or count < 1:
+                                diagnostics.append(
+                                    f"ADG inventory candidate {index} consumer {consumer_index} "
+                                    "status_counts values must be positive integers"
+                                )
+                        consumer_status = consumer.get("status")
+                        if (
+                            isinstance(consumer_status, str)
+                            and consumer_status in BASE_STATUSES
+                            and consumer_status != "pass"
+                            and consumer_status not in status_counts
+                        ):
+                            diagnostics.append(
+                                f"ADG inventory candidate {index} consumer {consumer_index} "
+                                "status_counts must include consumer status"
+                            )
                 source_artifact = consumer.get("source_artifact")
                 source_fingerprint = consumer.get("source_artifact_fingerprint")
                 if source_artifact is not None or source_fingerprint is not None:

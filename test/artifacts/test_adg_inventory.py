@@ -640,6 +640,96 @@ def assert_system_status_consumer_roots(repo: Path, out_dir: Path) -> None:
             raise AssertionError(f"system status evidence should not attach to acc-only root {root}: {rows_by_root}")
 
 
+def assert_nonpass_consumer_status_evidence(repo: Path, out_dir: Path) -> None:
+    status_json = out_dir / "quantized-window-blocked-cgra-status.json"
+    row = {
+        "suite": "cmsis-nn",
+        "case": "ConvolutionFunctions/arm_depthwise_conv_s8.c",
+        "hardware_system": "shared_quantized_window_adg",
+        "spatialcore_template": "shared_quantized_window_adg",
+        "status": "blocked",
+        "mapping_status": "pass",
+        "cgra_status": "blocked",
+        "diagnostic": "CGRA simulation row kept as structured blocked evidence",
+    }
+    status_json.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "cgra_status_summary",
+                "rows": [row],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    inventory_path = out_dir / "adg-inventory-with-nonpass-consumers.json"
+    artifact_test_common.require_success(
+        repo,
+        [
+            "bash",
+            "test/fabric/run_adg_inventory.sh",
+            "--output",
+            str(inventory_path),
+            "--mlir-output-dir",
+            str(out_dir / "adg-inventory-with-nonpass-consumers-mlir"),
+            "--consumer-status-json",
+            str(status_json),
+        ],
+        "ADG inventory non-pass consumer evidence producer",
+    )
+    inventory = assert_inventory_shape(inventory_path)
+    candidate = next(
+        candidate
+        for candidate in inventory["candidates"]
+        if candidate["candidate_id"]
+        == "adg-builder::shared-quantized-window::shared_quantized_window_adg"
+    )
+    consumers = {
+        str(record.get("consumer")): record
+        for record in candidate.get("downstream_consumers", [])
+        if isinstance(record, dict)
+    }
+    expected_case = ["cmsis-nn:ConvolutionFunctions/arm_depthwise_conv_s8.c"]
+    mapping_record = consumers.get("pnr_mapping")
+    if mapping_record is None or mapping_record.get("status") != "pass":
+        raise AssertionError(f"mapping pass consumer evidence is missing: {consumers}")
+    if mapping_record.get("evidence_cases") != expected_case:
+        raise AssertionError(f"mapping evidence case mismatch: {mapping_record}")
+    for consumer in ("cgra_sim", "cgra_status_summary"):
+        record = consumers.get(consumer)
+        if record is None:
+            raise AssertionError(f"{consumer} non-pass evidence is missing: {consumers}")
+        if record.get("status") != "blocked":
+            raise AssertionError(f"{consumer} should be blocked evidence: {record}")
+        if record.get("evidence_cases") != expected_case:
+            raise AssertionError(f"{consumer} evidence case mismatch: {record}")
+        if record.get("case_count") != 1:
+            raise AssertionError(f"{consumer} case count mismatch: {record}")
+        if record.get("status_counts") != {"blocked": 1}:
+            raise AssertionError(f"{consumer} status counts mismatch: {record}")
+        if not record.get("source_artifact") or not record.get("source_artifact_fingerprint"):
+            raise AssertionError(f"{consumer} missed source artifact identity: {record}")
+    assert_audit_passes([inventory_path])
+    forged = copy.deepcopy(inventory)
+    forged_candidate = next(
+        candidate
+        for candidate in forged["candidates"]
+        if candidate["candidate_id"]
+        == "adg-builder::shared-quantized-window::shared_quantized_window_adg"
+    )
+    forged_record = next(
+        record
+        for record in forged_candidate["downstream_consumers"]
+        if record["consumer"] == "cgra_sim"
+    )
+    forged_record["status_counts"] = {"mystery": 1}
+    forged_path = out_dir / "forged-status-counts-adg-inventory.json"
+    forged_path.write_text(json.dumps(forged, indent=2, sort_keys=True) + "\n")
+    assert_audit_fails(forged_path, "status_counts has unknown status")
+
+
 def assert_malformed_visual_metadata_is_not_safe(repo: Path, out_dir: Path) -> None:
     source_path = out_dir / "malformed-visual.mlir"
     source_path.write_text(
@@ -688,6 +778,7 @@ def main() -> int:
         out_dir = Path(tmp)
         assert_malformed_visual_metadata_is_not_safe(repo, out_dir)
         assert_system_status_consumer_roots(repo, out_dir)
+        assert_nonpass_consumer_status_evidence(repo, out_dir)
         assert_consumer_status_evidence(repo, out_dir)
 
         inventory_path = out_dir / "adg-inventory.json"
