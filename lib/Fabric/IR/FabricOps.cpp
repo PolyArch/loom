@@ -666,6 +666,10 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
     add("llvm.intr.ctlz", {pT(0)}, {pT(0)});
     add("llvm.intr.fshl", {pT(0), pT(0), pT(0)}, {pT(0)});
     add("llvm.intr.bswap", {pT(0)}, {pT(0)});
+    add("llvm.arm.pkhbt", {pT(0), pT(0), pT(0)}, {pT(0)});
+    add("llvm.arm.pkhtb", {pT(0), pT(0), pT(0)}, {pT(0)});
+    add("llvm.arm.sxtab16", {pT(0), pT(0)}, {pT(0)});
+    add("llvm.arm.sxtb16", {pT(0)}, {pT(0)});
     add("llvm.arm.qadd16", {pT(0), pT(0)}, {pT(0)});
     add("llvm.arm.qsub8", {pT(0), pT(0)}, {pT(0)});
     add("llvm.arm.qsub16", {pT(0), pT(0)}, {pT(0)});

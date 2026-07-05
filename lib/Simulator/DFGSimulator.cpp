@@ -918,6 +918,20 @@ std::string primitivePredicate(mlir::Operation *op) {
 }
 
 std::string primitiveOperationName(mlir::Operation *op) {
+  if (op->getName().getStringRef() == "llvm.inline_asm") {
+    auto asmString = op->getAttrOfType<mlir::StringAttr>("asm_string");
+    if (asmString) {
+      llvm::StringRef text = asmString.getValue();
+      if (text == "pkhbt $0, $1, $2, lsl $3")
+        return "llvm.arm.pkhbt";
+      if (text == "pkhtb $0, $1, $2, asr $3")
+        return "llvm.arm.pkhtb";
+      if (text == "sxtab16 $0, $1, $2")
+        return "llvm.arm.sxtab16";
+      if (text == "sxtb16 $0, $1")
+        return "llvm.arm.sxtb16";
+    }
+  }
   if (auto intrinsic = mlir::dyn_cast<mlir::LLVM::CallIntrinsicOp>(op))
     return intrinsic.getIntrin().str();
   return op->getName().getStringRef().str();

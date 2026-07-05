@@ -31,6 +31,18 @@ using namespace dataflow;
 
 namespace {
 
+static bool isSupportedArmInlineAsm(Operation *op) {
+  if (op->getName().getStringRef() != "llvm.inline_asm")
+    return false;
+  auto asmString = op->getAttrOfType<StringAttr>("asm_string");
+  if (!asmString)
+    return false;
+  StringRef text = asmString.getValue();
+  return text == "pkhbt $0, $1, $2, lsl $3" ||
+         text == "pkhtb $0, $1, $2, asr $3" ||
+         text == "sxtab16 $0, $1, $2" || text == "sxtb16 $0, $1";
+}
+
 // Build a generic `func.func`-shaped op state for our function-like
 // ops. Used by both ThreadOp and GraphFuncOp.
 template <typename Op>
@@ -401,6 +413,8 @@ static bool isAllowedInDataflowGraphFuncBody(::mlir::Operation *op) {
   // permit `llvm.intr.*` permissively for forward-compat with new
   // intrinsics.
   if (dialect == "llvm") {
+    if (isSupportedArmInlineAsm(op))
+      return true;
     if (name.starts_with("llvm.intr."))
       return true;
     if (name.starts_with("llvm.mlir."))

@@ -14,6 +14,22 @@ using namespace dataflow;
 #define GET_OP_CLASSES
 #include "Dataflow/IR/DataflowOps.cpp.inc"
 
+namespace {
+
+static bool isSupportedArmInlineAsm(Operation *op) {
+  if (op->getName().getStringRef() != "llvm.inline_asm")
+    return false;
+  auto asmString = op->getAttrOfType<StringAttr>("asm_string");
+  if (!asmString)
+    return false;
+  StringRef text = asmString.getValue();
+  return text == "pkhbt $0, $1, $2, lsl $3" ||
+         text == "pkhtb $0, $1, $2, asr $3" ||
+         text == "sxtab16 $0, $1, $2" || text == "sxtb16 $0, $1";
+}
+
+} // namespace
+
 //===----------------------------------------------------------------------===//
 // Streaming Ops
 //===----------------------------------------------------------------------===//
@@ -396,6 +412,8 @@ static bool isAllowedInDataflowGraph(Operation *op) {
 
   if (dialect == "llvm") {
     if (name == "llvm.alloca")
+      return true;
+    if (isSupportedArmInlineAsm(op))
       return true;
     if (name.starts_with("llvm.intr."))
       return true;

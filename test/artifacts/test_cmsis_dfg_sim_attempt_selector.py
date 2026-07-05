@@ -130,10 +130,10 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             },
             "cmsis-nn": {
                 "total": 18,
-                "pass": 13,
+                "pass": 14,
                 "fail": 0,
                 "blocked": 0,
-                "unsupported": 5,
+                "unsupported": 4,
                 "missing_status": 0,
             },
         }
@@ -147,6 +147,11 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
         fill = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "SupportFunctions/arm_fill_f32.c")
         sin_f32 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "FastMathFunctions/arm_sin_f32.c")
         sqrt_q15 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "FastMathFunctions/arm_sqrt_q15.c")
+        q7_to_q15 = row_by_case(
+            out_dir / "cgra-status-summary.csv",
+            "cmsis-nn",
+            "NNSupportFunctions/arm_q7_to_q15_with_offset.c",
+        )
         relu_q15 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
         relu_q7 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu_q7.c")
         relu6 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu6_s8.c")
@@ -173,6 +178,7 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             fill,
             sin_f32,
             sqrt_q15,
+            q7_to_q15,
             relu_q15,
             relu_q7,
             relu6,
@@ -226,6 +232,9 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             evidence_dir / "arm_sqrt_q15.dfg.report.json",
             evidence_dir / "arm_sqrt_q15.mapping.json",
             evidence_dir / "arm_sqrt_q15.cgra.report.json",
+            evidence_dir / "arm_q7_to_q15_with_offset.dfg.report.json",
+            evidence_dir / "arm_q7_to_q15_with_offset.mapping.json",
+            evidence_dir / "arm_q7_to_q15_with_offset.cgra.report.json",
             evidence_dir / "arm_relu_q15.dfg.report.json",
             evidence_dir / "arm_relu_q15.mapping.json",
             evidence_dir / "arm_relu_q15.cgra.report.json",

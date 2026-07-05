@@ -4176,6 +4176,12 @@ struct SharedMemoryAdgConfig {
   unsigned wideMuxCount = 0;
   unsigned wideRouteBridgeCount = 0;
   unsigned ctlzCount = 0;
+  unsigned signedRemCount = 0;
+  unsigned fshlCount = 0;
+  unsigned armPkhbtCount = 0;
+  unsigned armPkhtbCount = 0;
+  unsigned armSxtab16Count = 0;
+  unsigned armSxtb16Count = 0;
   unsigned extuiCount = 4;
   unsigned fpAddCount = 4;
   unsigned fpMulCount = 4;
@@ -4476,6 +4482,7 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   addBinaryBank("add", config.addCount, {"arith.addi", "arith.subi"});
   addBinaryBank("mul", config.mulCount, {"arith.muli"});
   addBinaryBank("div", config.divCount, {"arith.divsi"});
+  addBinaryBank("rem", config.signedRemCount, {"arith.remsi"});
   addBinaryBank("udiv", config.unsignedDivCount,
                 {"arith.divui", "arith.remui"});
   addBinaryBank("fp_add", config.fpAddCount, {"arith.addf", "arith.subf"});
@@ -4491,6 +4498,11 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   addUnaryBank("fptosi", config.signedFromFpCount, "llvm.fptosi");
   addUnaryBank("fptoui", config.fromFpCount, "llvm.fptoui");
   addTernaryBank("fma", config.fmaCount, "llvm.intr.fmuladd");
+  addTernaryBank("fshl", config.fshlCount, "llvm.intr.fshl");
+  addTernaryBank("arm_pkhbt", config.armPkhbtCount, "llvm.arm.pkhbt");
+  addTernaryBank("arm_pkhtb", config.armPkhtbCount, "llvm.arm.pkhtb");
+  addBinaryBank("arm_sxtab16", config.armSxtab16Count, {"llvm.arm.sxtab16"});
+  addUnaryBank("arm_sxtb16", config.armSxtb16Count, "llvm.arm.sxtb16");
   addBinaryBank("and", config.logicCount, {"arith.andi"});
   addBinaryBank("or", config.logicCount, {"arith.ori"});
   addBinaryBank("xor", config.logicCount, {"arith.xori"});
@@ -4690,6 +4702,7 @@ ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {
   config.wideSelectCount = 14;
   config.mulCount = 20;
   config.divCount = 4;
+  config.signedRemCount = 2;
   config.muxCount = 4;
   config.logicCount = 22;
   config.unsignedMaxCount = 2;
@@ -4704,10 +4717,15 @@ ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {
   config.wideDivCount = 20;
   config.wideRouteBridgeCount = 16;
   config.ctlzCount = 2;
+  config.fshlCount = 2;
+  config.armPkhbtCount = 2;
+  config.armPkhtbCount = 1;
+  config.armSxtab16Count = 2;
+  config.armSxtb16Count = 1;
   config.constantHexValues = {
       "0x00000000", "0x00000001", "0x00000002", "0x00000003",
       "0x00000004", "0x00000008", "0x0000000f", "0x00000010",
-      "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000",
+      "0x00000018", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000",
       "0xffffffff", "0xffff0000"};
   return buildSharedMemoryLikeAdg(config);
 }

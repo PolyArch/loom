@@ -74,8 +74,8 @@ def assert_cmsis_dfg_only_counts(data: dict[str, object]) -> None:
             "total": 18,
             "pass": 0,
             "fail": 0,
-            "blocked": 13,
-            "unsupported": 5,
+            "blocked": 14,
+            "unsupported": 4,
             "missing_status": 0,
         },
     )
@@ -521,15 +521,16 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 13,
+            "pass": 14,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 5,
+            "unsupported": 4,
             "missing_status": 0,
         },
     )
     assert_cmsis_sin_f32_cgra_evidence(repo, rows, out_dir / "current-sim-cycle")
     assert_cmsis_sqrt_q15_cgra_evidence(repo, rows, out_dir / "current-sim-cycle")
+    assert_cmsis_q7_to_q15_with_offset_cgra_evidence(repo, rows, out_dir / "current-sim-cycle")
     expected_hardware = default_batch_hardware(repo)
     for case, hardware in expected_hardware.items():
         assert_app_cgra_pass_row(repo, rows, case, expected_hardware=hardware)
@@ -1848,10 +1849,10 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 13,
+            "pass": 14,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 5,
+            "unsupported": 4,
             "missing_status": 0,
         },
     )
@@ -1868,6 +1869,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     assert_cmsis_sin_f32_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_sqrt_q15_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_mat_mult_f32_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_q7_to_q15_with_offset_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
@@ -2076,6 +2078,116 @@ def assert_cmsis_sqrt_q15_cgra_evidence(
         or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
     ):
         raise AssertionError(f"unexpected CMSIS sqrt CGRA evidence: {cgra}")
+
+
+def assert_cmsis_q7_to_q15_with_offset_cgra_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    case = "NNSupportFunctions/arm_q7_to_q15_with_offset.c"
+    stem = "arm_q7_to_q15_with_offset"
+    graph = "g_arm_q7_to_q15_with_offset_0"
+    hardware = "shared_quantized_window_adg"
+    expected_mapping_id = (
+        "NNSupportFunctions%2Farm_q7_to_q15_with_offset%2Ec__"
+        "g_arm_q7_to_q15_with_offset_0__shared_quantized_window_adg"
+    )
+    expected_memory = {
+        "arg1": ["i32:83690239"],
+        "arg2": ["i32:262145", "i32:458751"],
+    }
+    assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-nn", case, stem, expected_hardware=hardware)
+    row = one_row(rows, "cmsis-nn", case)
+    if row["graph_ids"] != graph or row["required_slice_count"] != "1":
+        raise AssertionError(f"{stem} row should name its single graph profile: {row}")
+    for artifact_name in (
+        f"{stem}.dfg.report.json",
+        f"{stem}.mapping.json",
+        f"{stem}.mapping.csv",
+        f"{stem}.cgra.report.json",
+    ):
+        artifact = sim_evidence / artifact_name
+        if not artifact.is_file():
+            raise AssertionError(f"{stem} evidence should emit {artifact}")
+
+    dfg_report = json.loads((repo / row["dfg_report"]).read_text())
+    expected_counts = {
+        "dataflow.constant": 10,
+        "dataflow.load": 1,
+        "dataflow.store": 2,
+        "llvm.intr.fshl": 1,
+        "llvm.arm.pkhbt": 2,
+        "llvm.arm.pkhtb": 1,
+        "llvm.arm.sxtab16": 2,
+        "arith.remsi": 1,
+        "scf.if": 2,
+    }
+    if (
+        dfg_report.get("kind") != "dfg_sim_report"
+        or dfg_report.get("workload") != case
+        or dfg_report.get("graph") != graph
+        or dfg_report.get("status") != "pass"
+        or dfg_report.get("optimistic_cycles") != 66
+        or dfg_report.get("dynamic_work_items") != 1
+        or dfg_report.get("final_outputs") != ["none"]
+        or dfg_report.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unexpected {stem} DFG evidence: {dfg_report}")
+    counts = dfg_report.get("operation_fire_counts", {})
+    for op_name, expected in expected_counts.items():
+        if counts.get(op_name) != expected:
+            raise AssertionError(f"unexpected {stem} fire count for {op_name}: {dfg_report}")
+
+    mapping = json.loads((repo / row["mapping_artifact"]).read_text())
+    if (
+        mapping.get("kind") != "pnr_mapping"
+        or mapping.get("workload") != case
+        or mapping.get("graph") != graph
+        or mapping.get("hardware") != hardware
+        or mapping.get("mapping_id") != expected_mapping_id
+        or mapping.get("status") != "pass"
+        or mapping.get("placed_records") != 34
+        or mapping.get("routed_edges") != 36
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 956
+        or mapping.get("resource_pressure") not in (None, [])
+    ):
+        raise AssertionError(f"unexpected {stem} mapping evidence: {mapping}")
+    placements = {item.get("operation") for item in mapping.get("placements", []) if isinstance(item, dict)}
+    for op_name in ("llvm.intr.fshl", "llvm.arm.pkhbt", "llvm.arm.pkhtb", "llvm.arm.sxtab16", "arith.remsi"):
+        if op_name not in placements:
+            raise AssertionError(f"{stem} mapping missed shared ADG placement for {op_name}: {mapping}")
+
+    cgra = json.loads((repo / row["cgra_report"]).read_text())
+    comparison = json.loads((repo / row["comparison_report"]).read_text())
+    if (
+        cgra.get("kind") != "cgra_sim_report"
+        or cgra.get("workload") != case
+        or cgra.get("hardware") != hardware
+        or cgra.get("mapping_id") != expected_mapping_id
+        or cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 66
+        or cgra.get("hardware_aware_cycles") != 295
+        or cgra.get("performance_delta_cycles") != 229
+        or cgra.get("route_segments") != 172
+        or cgra.get("config_records") != 956
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+        or cgra.get("difference_classification") != "expected_hardware_constraint"
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state") != expected_memory
+        or comparison.get("kind") != "sim_comparison_report"
+        or comparison.get("workload") != case
+        or comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("dfg_sim_cycles") != cgra.get("dfg_cycles")
+        or comparison.get("cgra_sim_cycles") != cgra.get("hardware_aware_cycles")
+        or comparison.get("performance_delta_cycles") != cgra.get("performance_delta_cycles")
+    ):
+        raise AssertionError(f"unexpected {stem} CGRA comparison evidence: {cgra} {comparison}")
 
 
 def assert_cmsis_dfg_unsupported_row(
@@ -4894,10 +5006,10 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 13,
+            "pass": 14,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 5,
+            "unsupported": 4,
             "missing_status": 0,
         },
     )
@@ -4948,6 +5060,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     )
     assert_cmsis_relu_q7_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_relu6_s8_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_q7_to_q15_with_offset_cgra_evidence(repo, rows, sim_evidence)
     assert_cgra_status_audit_rejects_bad_relu_q7_mapping(repo, out_dir, legacy_root)
     assert_cmsis_concat_w_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)

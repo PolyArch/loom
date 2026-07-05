@@ -280,6 +280,8 @@ struct LowerForToGraphPass
   }
 
   bool isSideEffectFreeSetupOp(::mlir::Operation &op) {
+    if (isSupportedArmInlineAsm(&op))
+      return true;
     if (op.getNumRegions() != 0 || op.getNumSuccessors() != 0)
       return false;
     if (op.hasTrait<::mlir::OpTrait::IsTerminator>())
@@ -292,6 +294,26 @@ struct LowerForToGraphPass
             ::llvm::dyn_cast<::mlir::MemoryEffectOpInterface>(&op))
       return effects.hasNoEffect();
     return ::mlir::isPure(&op);
+  }
+
+  bool isSupportedArmInlineAsm(::mlir::Operation *op) {
+    if (op->getName().getStringRef() != "llvm.inline_asm")
+      return false;
+    auto asmString = op->getAttrOfType<::mlir::StringAttr>("asm_string");
+    if (!asmString)
+      return false;
+    ::llvm::StringRef text = asmString.getValue();
+    return text == "pkhbt $0, $1, $2, lsl $3" ||
+           text == "pkhtb $0, $1, $2, asr $3" ||
+           text == "sxtab16 $0, $1, $2" || text == "sxtb16 $0, $1";
+  }
+
+  bool containsSupportedArmInlineAsm(::mlir::func::FuncOp func) {
+    bool found = false;
+    func.walk([&](::mlir::Operation *op) {
+      found |= isSupportedArmInlineAsm(op);
+    });
+    return found;
   }
 
   bool isStandaloneMemcpyFunctionCandidate(::mlir::func::FuncOp func) {
@@ -330,16 +352,15 @@ struct LowerForToGraphPass
   bool isBlockedStandaloneStructuredSetupOp(::mlir::Operation *op) {
     ::llvm::StringRef name = op->getName().getStringRef();
     return name == "arith.divsi" || name == "arith.divui" ||
-           name == "arith.remf" || name == "arith.remsi" ||
-           name == "arith.remui" || name == "llvm.fptosi" ||
-           name == "llvm.sitofp";
+           name == "arith.remf" || name == "arith.remui" ||
+           name == "llvm.fptosi" || name == "llvm.sitofp";
   }
 
   bool isBlockedStandaloneStructuredBodyOp(::mlir::Operation *op) {
     ::llvm::StringRef name = op->getName().getStringRef();
     return name == "arith.divsi" || name == "arith.remf" ||
-           name == "arith.remsi" || name == "arith.remui" ||
-           name == "llvm.fptosi" || name == "llvm.sitofp";
+           name == "arith.remui" || name == "llvm.fptosi" ||
+           name == "llvm.sitofp";
   }
 
   bool isMemsetIntrinsic(::mlir::Operation *op) {
@@ -385,6 +406,11 @@ struct LowerForToGraphPass
     root->walk([&](::mlir::Operation *nested) -> ::mlir::WalkResult {
       if (nested == root)
         return ::mlir::WalkResult::advance();
+      if (nested->getName().getStringRef() == "llvm.inline_asm" &&
+          !isSupportedArmInlineAsm(nested)) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
       if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
                       ::dataflow::GraphFuncOp, ::dataflow::ThreadOp,
                       ::mlir::func::FuncOp>(nested)) {
@@ -760,7 +786,8 @@ struct LowerForToGraphPass
       return false;
     if (func.getSymName() == "main")
       return false;
-    if (func.getSymName().starts_with("arm_"))
+    if (func.getSymName().starts_with("arm_") &&
+        !containsSupportedArmInlineAsm(func))
       return false;
     if (!func.getFunctionType().getResults().empty())
       return false;
@@ -784,7 +811,8 @@ struct LowerForToGraphPass
       }
       if (isSideEffectFreeSetupOp(op))
         continue;
-      if (!isSupportedStandaloneStructuredTopLevelOp(&op))
+      if (!isSupportedStandaloneStructuredTopLevelOp(&op) &&
+          !isResultBearingStandaloneStructuredTopLevelOp(&op))
         return false;
       if (hasUnsupportedStandaloneStructuredBody(&op))
         return false;

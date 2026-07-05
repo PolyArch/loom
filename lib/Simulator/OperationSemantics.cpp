@@ -80,6 +80,10 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"llvm.intr.fmuladd", 8, 8, true, true},
     {"llvm.intr.abs", 1, 1, true, true},
     {"llvm.intr.fabs", 1, 1, true, true},
+    {"llvm.arm.pkhbt", 1, 1, true, true},
+    {"llvm.arm.pkhtb", 1, 1, true, true},
+    {"llvm.arm.sxtab16", 1, 1, true, true},
+    {"llvm.arm.sxtb16", 1, 1, true, true},
     {"llvm.arm.qadd16", 1, 1, true, true},
     {"llvm.arm.qsub8", 1, 1, true, true},
     {"llvm.arm.qsub16", 1, 1, true, true},
@@ -274,6 +278,22 @@ PrimitiveValue packedSaturatingBinary(
     packed |= (static_cast<std::uint64_t>(saturated) & laneMask) << offset;
   }
   return integerFromBits(packed, bitWidth);
+}
+
+PrimitiveValue packedExtendAddBytes16(std::optional<PrimitiveValue> base,
+                                      const PrimitiveValue &bytes) {
+  const std::uint64_t baseBits =
+      base ? toUnsignedBits(*base, 32) : std::uint64_t{0};
+  const std::uint64_t byteBits = toUnsignedBits(bytes, 32);
+  const std::int64_t lowBase = fromUnsignedBits(baseBits & 0xffff, 16);
+  const std::int64_t highBase = fromUnsignedBits((baseBits >> 16) & 0xffff, 16);
+  const std::int64_t lowByte = fromUnsignedBits(byteBits & 0xff, 8);
+  const std::int64_t highByte = fromUnsignedBits((byteBits >> 16) & 0xff, 8);
+  const std::uint64_t low =
+      static_cast<std::uint64_t>(lowBase + lowByte) & 0xffff;
+  const std::uint64_t high =
+      static_cast<std::uint64_t>(highBase + highByte) & 0xffff;
+  return integerFromBits((high << 16) | low, 32);
 }
 
 std::uint64_t arithmeticRightShiftBits(const PrimitiveValue &value,
@@ -824,6 +844,47 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
     return byteSwapInteger(opName, operands[0], bitWidth);
+  }
+  if (opName == "llvm.arm.pkhbt" || opName == "llvm.arm.pkhtb") {
+    if (llvm::Error arity = requireArity(opName, operands, 3))
+      return std::move(arity);
+    if (normalizeBitWidth(bitWidth) != 32)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "%s result bit width must be 32", opName.str().c_str());
+    auto amountOrErr = checkedShiftAmount(opName, operands[2], 32);
+    if (!amountOrErr)
+      return amountOrErr.takeError();
+    const std::uint64_t lhs = toUnsignedBits(operands[0], 32);
+    const std::uint64_t rhs = toUnsignedBits(operands[1], 32);
+    if (opName == "llvm.arm.pkhbt")
+      return integerFromBits((lhs & 0x0000ffffULL) |
+                                 ((rhs << *amountOrErr) & 0xffff0000ULL),
+                             32);
+    PrimitiveValue rhsValue = integerFromBits(rhs, 32);
+    return integerFromBits((lhs & 0xffff0000ULL) |
+                               (arithmeticRightShiftBits(rhsValue, 32,
+                                                         *amountOrErr) &
+                                0x0000ffffULL),
+                           32);
+  }
+  if (opName == "llvm.arm.sxtab16") {
+    if (llvm::Error arity = requireArity(opName, operands, 2))
+      return std::move(arity);
+    if (normalizeBitWidth(bitWidth) != 32)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "%s result bit width must be 32", opName.str().c_str());
+    return packedExtendAddBytes16(operands[0], operands[1]);
+  }
+  if (opName == "llvm.arm.sxtb16") {
+    if (llvm::Error arity = requireArity(opName, operands, 1))
+      return std::move(arity);
+    if (normalizeBitWidth(bitWidth) != 32)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "%s result bit width must be 32", opName.str().c_str());
+    return packedExtendAddBytes16(std::nullopt, operands[0]);
   }
   if (opName == "llvm.intr.umin" || opName == "llvm.intr.umax") {
     if (llvm::Error arity = requireArity(opName, operands, 2))

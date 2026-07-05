@@ -562,8 +562,8 @@ def assert_counts(rows: list[dict[str, str]], data: dict[str, object]) -> None:
                 "total": total,
                 "pass": 0,
                 "fail": 0,
-                "blocked": 13,
-                "unsupported": 5,
+                "blocked": 14,
+                "unsupported": 4,
                 "missing_status": 0,
             }
             if suite_counts != expected:
@@ -943,8 +943,8 @@ module {
             "total": 18,
             "pass": 1,
             "fail": 0,
-            "blocked": 12,
-            "unsupported": 5,
+            "blocked": 13,
+            "unsupported": 4,
             "missing_status": 0,
         }:
             raise AssertionError(
