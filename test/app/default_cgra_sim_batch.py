@@ -27,6 +27,7 @@ ALLOWED_HARDWARE = frozenset(
         "shared_signal_window_adg",
     }
 )
+ALLOWED_EXPECTED_STATUSES = frozenset({"pass", "unsupported"})
 CASE_LABEL_RE = re.compile(r"^\s*([A-Za-z0-9_.+-]+)\)\s*$")
 CASE_GRAPH_RE = re.compile(r'case_graph="([^"]+)"')
 
@@ -116,10 +117,13 @@ def load_default_batch(
             raise ValueError(f"{manifest} cases entries must be objects")
         case = entry.get("case")
         hardware = entry.get("hardware")
+        expected_status = entry.get("expected_status", "pass")
         if not isinstance(case, str) or not case:
             raise ValueError(f"{manifest} contains an invalid case name")
         if not isinstance(hardware, str) or not hardware:
             raise ValueError(f"{manifest} case {case} is missing hardware")
+        if not isinstance(expected_status, str) or expected_status not in ALLOWED_EXPECTED_STATUSES:
+            raise ValueError(f"{manifest} case {case} has unsupported expected_status {expected_status!r}")
         if hardware not in ALLOWED_HARDWARE:
             raise ValueError(f"{manifest} case {case} has unsupported hardware {hardware}")
         if case in seen:
@@ -132,7 +136,7 @@ def load_default_batch(
             allow_missing_primary_graph=allow_missing_primary_graph,
         )
         seen.add(case)
-        result.append({"case": case, "hardware": hardware})
+        result.append({"case": case, "hardware": hardware, "expected_status": expected_status})
     return result
 
 
@@ -157,8 +161,30 @@ def _read_json(path: Path) -> dict[str, object]:
     return data
 
 
-def validate_evidence_dir(evidence_dir: Path, path: Path | None = None) -> None:
-    for case, expected_hardware in load_default_hardware(path).items():
+def validate_evidence_dir(
+    evidence_dir: Path,
+    path: Path | None = None,
+    *,
+    allow_missing_primary_graph: bool = False,
+) -> None:
+    expected_status_by_kind = {
+        "pass": {
+            "DFG-sim": "pass",
+            "mapping": "pass",
+            "CGRA-sim": "pass",
+            "comparison": "pass",
+        },
+        "unsupported": {
+            "DFG-sim": "unsupported",
+            "mapping": "unsupported",
+            "CGRA-sim": "blocked",
+            "comparison": "blocked",
+        },
+    }
+    for entry in load_default_batch(path, allow_missing_primary_graph=allow_missing_primary_graph):
+        case = entry["case"]
+        expected_hardware = entry["hardware"]
+        expected_status = entry["expected_status"]
         dfg_path = evidence_dir / f"{case}.dfg.report.json"
         mapping_path = evidence_dir / f"{case}.mapping.json"
         cgra_path = evidence_dir / f"{case}.cgra.report.json"
@@ -172,10 +198,14 @@ def validate_evidence_dir(evidence_dir: Path, path: Path | None = None) -> None:
             if not artifact_path.is_file():
                 raise ValueError(f"missing default batch {label} evidence: {artifact_path}")
             data = _read_json(artifact_path)
-            if data.get("status") != "pass":
+            expected_artifact_status = expected_status_by_kind[expected_status][label]
+            if data.get("status") != expected_artifact_status:
                 raise ValueError(
-                    f"default batch {label} evidence for {case} has status {data.get('status')!r}"
+                    f"default batch {label} evidence for {case} has status {data.get('status')!r}, "
+                    f"expected {expected_artifact_status!r}"
                 )
+            if expected_status == "unsupported" and not data.get("diagnostics"):
+                raise ValueError(f"default batch {label} evidence for {case} lacks unsupported diagnostics")
         mapping = _read_json(mapping_path)
         cgra = _read_json(cgra_path)
         if mapping.get("hardware") != expected_hardware:
@@ -208,7 +238,11 @@ def main(argv: list[str]) -> int:
             ):
                 print(case)
         if args.validate_evidence_dir is not None:
-            validate_evidence_dir(args.validate_evidence_dir, manifest)
+            validate_evidence_dir(
+                args.validate_evidence_dir,
+                manifest,
+                allow_missing_primary_graph=args.allow_missing_primary_graph,
+            )
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 1

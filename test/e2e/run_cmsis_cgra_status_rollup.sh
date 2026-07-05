@@ -216,7 +216,12 @@ if [[ "${APP_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
 fi
 
 if [[ "${APP_SIM_SEED_BATCH}" -eq 1 ]]; then
-    if ! seed_case_output="$(load_app_sim_manifest_cases "${DEFAULT_APP_SIM_SEED_BATCH}")"; then
+    if ! seed_case_output="$(
+        python3 "${ROOT}/test/app/default_cgra_sim_batch.py" \
+            --manifest "${DEFAULT_APP_SIM_SEED_BATCH}" \
+            --allow-missing-primary-graph \
+            --emit-cases
+    )"; then
         exit 1
     fi
     while IFS= read -r seed_case; do
@@ -395,6 +400,7 @@ run_app_sim_producer() {
     if [[ "${APP_SIM_SEED_BATCH}" -eq 1 ]]; then
         python3 "${ROOT}/test/app/default_cgra_sim_batch.py" \
             --manifest "${DEFAULT_APP_SIM_SEED_BATCH}" \
+            --allow-missing-primary-graph \
             --validate-evidence-dir "${STATUS_SIM_EVIDENCE_DIR}"
     fi
 }

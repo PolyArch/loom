@@ -766,8 +766,8 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
             "total": 132,
             "pass": 126,
             "fail": 0,
-            "blocked": 6,
-            "unsupported": 0,
+            "blocked": 0,
+            "unsupported": 6,
             "missing_status": 0,
         },
     )
@@ -913,6 +913,7 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     )
     for case, hardware in seed_rows:
         assert_app_cgra_pass_row(repo, rows, case, expected_hardware=hardware)
+    assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
     assert_loombench_cgra_pass_row(repo, rows, "byte_swap", expected_hardware="shared_vector_alu_adg")
     assert_loombench_cgra_pass_row(repo, rows, "xor_block", expected_hardware="shared_vector_alu_adg")
     assert_loombench_cgra_pass_row(repo, rows, "vecmul", expected_hardware="shared_vector_alu_adg")

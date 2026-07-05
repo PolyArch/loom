@@ -502,6 +502,36 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "breadth_first_search",
+      "expected_status": "unsupported",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "col2im",
+      "expected_status": "unsupported",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "spmspm",
+      "expected_status": "unsupported",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "sort_insertion",
+      "expected_status": "unsupported",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "sort_merge",
+      "expected_status": "unsupported",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "sort_quick",
+      "expected_status": "unsupported",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "mat3x3_mult",
       "hardware": "shared_reduction_adg"
     }
