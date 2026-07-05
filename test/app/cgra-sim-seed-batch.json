@@ -94,6 +94,14 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "edge_update",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "edge_update_batch",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "cdma",
       "hardware": "shared_reduction_adg"
     },
