@@ -279,7 +279,7 @@ def csv_producer_command(
             "test/e2e/run_cmsis_cgra_status_rollup.sh",
             "--output-dir",
             str(output.parent),
-            "--cmsis-sim-default",
+            "--full-sim-default-batch",
             "--jobs",
             str(artifact_gate_inner_jobs()),
         ]
@@ -348,9 +348,12 @@ def assert_cgra_status_default_evidence(path: Path) -> None:
         by_suite.setdefault(suite, {}).setdefault(status, 0)
         by_suite[suite][status] += 1
     expected = {
+        "app": {"pass": 126, "unsupported": 6},
         "cmsis-dsp": {"pass": 14, "unsupported": 2},
         "cmsis-nn": {"pass": 13, "unsupported": 5},
     }
+    if "loombench" in by_suite:
+        expected["loombench"] = {"pass": 121, "unsupported": 6}
     for suite, statuses in expected.items():
         actual = by_suite.get(suite, {})
         if sum(actual.values()) != sum(statuses.values()):
@@ -364,7 +367,7 @@ def assert_cgra_status_default_evidence(path: Path) -> None:
                 )
         extras = {status: count for status, count in actual.items() if status not in statuses and count}
         if extras:
-            raise AssertionError(f"{path.name}: {suite} has unexpected default CMSIS statuses: {actual}")
+            raise AssertionError(f"{path.name}: {suite} has unexpected default CGRA statuses: {actual}")
 
 
 def assert_json_artifact(path: Path, required_keys: set[str]) -> None:

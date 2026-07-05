@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import csv
 import importlib.util
 import os
 import sys
@@ -24,6 +25,15 @@ def require_contains(command: list[str], *items: str) -> None:
     missing = [item for item in items if item not in command]
     if missing:
         raise AssertionError(f"command missed {missing}: {command}")
+
+
+def write_status_count_csv(path: Path, counts: dict[tuple[str, str], int]) -> None:
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["suite", "status"])
+        writer.writeheader()
+        for (suite, status), count in counts.items():
+            for _ in range(count):
+                writer.writerow({"suite": suite, "status": status})
 
 
 def main() -> int:
@@ -48,7 +58,7 @@ def main() -> int:
                 raise AssertionError(
                     f"CGRA status gate should use the CMSIS rollup producer: {command}"
                 )
-            require_contains(command, "--output-dir", str(output.parent), "--cmsis-sim-default", "--jobs", "4")
+            require_contains(command, "--output-dir", str(output.parent), "--full-sim-default-batch", "--jobs", "4")
 
             os.environ["LOOM_ARTIFACT_GATE_INNER_JOBS"] = "7"
             _override_output, override_command = gate.csv_producer_command(
@@ -73,6 +83,20 @@ def main() -> int:
             ]
             if normal_command != expected_normal:
                 raise AssertionError(f"normal CSV command changed unexpectedly: {normal_command}")
+
+            no_loombench_csv = out_dir / "no-loombench-cgra-status-summary.csv"
+            write_status_count_csv(
+                no_loombench_csv,
+                {
+                    ("app", "pass"): 126,
+                    ("app", "unsupported"): 6,
+                    ("cmsis-dsp", "pass"): 14,
+                    ("cmsis-dsp", "unsupported"): 2,
+                    ("cmsis-nn", "pass"): 13,
+                    ("cmsis-nn", "unsupported"): 5,
+                },
+            )
+            gate.assert_cgra_status_default_evidence(no_loombench_csv)
     finally:
         if previous_jobs is None:
             os.environ.pop("LOOM_TEST_JOBS", None)
