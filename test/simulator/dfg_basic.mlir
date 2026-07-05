@@ -9,9 +9,9 @@
 // CHECK-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
 // CHECK-DAG: "operation_semantics_source": "loom.sim.operation_semantics.v1"
 // CHECK-DAG: "operation_cost_model_source": "loom.sim.operation_cost.v1"
-// CHECK-DAG: "optimistic_cycles": 33
+// CHECK-DAG: "optimistic_cycles": 37
 // CHECK-DAG: "wavefront_steps": 12
-// CHECK-DAG: "event_count": 23
+// CHECK-DAG: "event_count": 27
 // CHECK-DAG: "final_outputs":
 // CHECK-DAG: "none",
 // CHECK-DAG: "f32:4"

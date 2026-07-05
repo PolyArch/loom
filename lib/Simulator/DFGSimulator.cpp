@@ -3540,12 +3540,98 @@ bool hasDataflowCarryUse(mlir::BlockArgument arg) {
 
 bool isScalarBroadcastArgument(mlir::BlockArgument arg) {
   mlir::Type type = arg.getType();
-  if (mlir::isa<mlir::NoneType, mlir::MemRefType, mlir::LLVM::LLVMPointerType>(
-          type))
+  if (mlir::isa<mlir::MemRefType, mlir::LLVM::LLVMPointerType>(type))
     return false;
   if (hasDataflowStreamUse(arg) || hasDataflowCarryUse(arg))
     return false;
   return true;
+}
+
+std::optional<Token> staticSeedToken(mlir::Value value,
+                                     const SimulatorState &state) {
+  if (auto arg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+    auto it = state.observedOutputs.find(arg);
+    if (it == state.observedOutputs.end() || it->second.empty())
+      return std::nullopt;
+    return it->second.front();
+  }
+  if (auto constant = value.getDefiningOp<mlir::arith::ConstantOp>()) {
+    auto attr = mlir::dyn_cast<mlir::TypedAttr>(constant.getValue());
+    if (!attr)
+      return std::nullopt;
+    auto tokenOrErr = tokenFromTypedAttr(attr);
+    if (!tokenOrErr) {
+      llvm::consumeError(tokenOrErr.takeError());
+      return std::nullopt;
+    }
+    return *tokenOrErr;
+  }
+  if (auto constant = value.getDefiningOp<dataflow::ConstantOp>()) {
+    auto attr = mlir::dyn_cast<mlir::TypedAttr>(constant.getConstValue());
+    if (!attr)
+      return std::nullopt;
+    auto tokenOrErr = tokenFromTypedAttr(attr);
+    if (!tokenOrErr) {
+      llvm::consumeError(tokenOrErr.takeError());
+      return std::nullopt;
+    }
+    return *tokenOrErr;
+  }
+  if (auto cast = value.getDefiningOp<mlir::arith::IndexCastOp>())
+    return staticSeedToken(cast.getIn(), state);
+  return std::nullopt;
+}
+
+std::optional<std::int64_t> staticSeedInteger(mlir::Value value,
+                                              const SimulatorState &state) {
+  std::optional<Token> token = staticSeedToken(value, state);
+  if (!token || (token->kind != TokenKind::Integer &&
+                 token->kind != TokenKind::Bool))
+    return std::nullopt;
+  return integerToken(*token);
+}
+
+std::optional<std::uint64_t>
+staticStreamTripCount(dataflow::StreamOp stream, const SimulatorState &state,
+                      std::uint64_t maxEventSteps) {
+  std::optional<std::int64_t> current =
+      staticSeedInteger(stream->getOperand(0), state);
+  std::optional<std::int64_t> ub =
+      staticSeedInteger(stream->getOperand(1), state);
+  std::optional<std::int64_t> step =
+      staticSeedInteger(stream->getOperand(2), state);
+  if (!current || !ub || !step)
+    return std::nullopt;
+
+  std::uint64_t tripCount = 0;
+  for (std::uint64_t i = 0; i < maxEventSteps; ++i) {
+    if (!evaluateCont(*current, *ub, stream.getContCond()))
+      return tripCount;
+    ++tripCount;
+    const std::int64_t next =
+        stepIndex(*current, *step, stream.getStepOp());
+    if (next == *current)
+      return std::nullopt;
+    *current = next;
+  }
+  return std::nullopt;
+}
+
+std::uint64_t staticStreamCardinality(mlir::Block &entry,
+                                      const SimulatorState &state,
+                                      std::uint64_t maxEventSteps) {
+  std::uint64_t cardinality = 0;
+  for (mlir::Operation &op : entry.getOperations()) {
+    auto stream = mlir::dyn_cast<dataflow::StreamOp>(op);
+    if (!stream)
+      continue;
+    std::optional<std::uint64_t> tripCount =
+        staticStreamTripCount(stream, state, maxEventSteps);
+    if (!tripCount)
+      continue;
+    cardinality = std::max(cardinality, *tripCount);
+  }
+  return cardinality;
 }
 
 std::uint64_t maxSeededArgumentCardinality(const SimulatorState &state) {
@@ -3555,13 +3641,16 @@ std::uint64_t maxSeededArgumentCardinality(const SimulatorState &state) {
   return targetCount;
 }
 
-void broadcastScalarArguments(mlir::Block &entry, SimulatorState &state) {
-  const std::uint64_t targetCount = maxSeededArgumentCardinality(state);
-  if (targetCount <= 1)
-    return;
-
+void broadcastScalarArguments(mlir::Block &entry, SimulatorState &state,
+                              std::uint64_t seededTargetCount,
+                              std::uint64_t streamTargetCount) {
   for (mlir::BlockArgument arg : entry.getArguments()) {
     if (!isScalarBroadcastArgument(arg))
+      continue;
+    std::uint64_t targetCount = seededTargetCount;
+    if (mlir::isa<mlir::NoneType>(arg.getType()))
+      targetCount = std::max(targetCount, streamTargetCount);
+    if (targetCount <= 1)
       continue;
     auto countIt = state.seededTokenCounts.find(arg);
     if (countIt == state.seededTokenCounts.end() || countIt->second != 1)
@@ -3575,8 +3664,8 @@ void broadcastScalarArguments(mlir::Block &entry, SimulatorState &state) {
   }
 }
 
-void broadcastRawPointerArguments(mlir::Block &entry, SimulatorState &state) {
-  const std::uint64_t targetCount = maxSeededArgumentCardinality(state);
+void broadcastRawPointerArguments(mlir::Block &entry, SimulatorState &state,
+                                  std::uint64_t targetCount) {
   if (targetCount <= 1)
     return;
 
@@ -3791,8 +3880,13 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       seedBlockArgument(state, arg, *tokenOrErr);
     }
   }
-  broadcastScalarArguments(entry, state);
-  broadcastRawPointerArguments(entry, state);
+  const std::uint64_t seededBroadcastCardinality =
+      maxSeededArgumentCardinality(state);
+  const std::uint64_t streamBroadcastCardinality =
+      staticStreamCardinality(entry, state, options.maxEventSteps);
+  broadcastScalarArguments(entry, state, seededBroadcastCardinality,
+                           streamBroadcastCardinality);
+  broadcastRawPointerArguments(entry, state, seededBroadcastCardinality);
 
   if (llvm::Error err = propagateMemoryAliases(entry, state))
     return std::move(err);

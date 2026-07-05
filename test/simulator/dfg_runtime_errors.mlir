@@ -1,10 +1,13 @@
 // RUN: loom-dfg-sim %s --graph sum_load --arg 0=none --arg 1=0 --arg 2=3 --arg 3=1 --memref 4=1.000000e+00,2.000000e+00,3.000000e+00 --arg 5=0.000000e+00 --output %t.incomplete.json
-// RUN: FileCheck %s --check-prefix=INCOMPLETE < %t.incomplete.json
+// RUN: FileCheck %s --check-prefix=COMPLETE < %t.incomplete.json
 // RUN: loom-dfg-sim %s --graph sum_load --arg 0=none --arg 0=none --arg 0=none --arg 0=none --arg 0=none --arg 0=none --arg 1=0 --arg 2=5 --arg 3=1 --memref 4=1.000000e+00,2.000000e+00,3.000000e+00 --arg 5=0.000000e+00 --output %t.oob.json
 // RUN: FileCheck %s --check-prefix=OOB < %t.oob.json
 
-// INCOMPLETE-DAG: "status": "blocked"
-// INCOMPLETE-DAG: "DFG-sim stopped before all returned values produced complete outputs"
+// COMPLETE-DAG: "status": "pass"
+// COMPLETE-DAG: "dataflow.load": 3
+// COMPLETE-DAG: "final_outputs":
+// COMPLETE-DAG: "none",
+// COMPLETE-DAG: "f32:6"
 
 // OOB-DAG: "status": "blocked"
 // OOB-DAG: "dataflow.load address is out of range"

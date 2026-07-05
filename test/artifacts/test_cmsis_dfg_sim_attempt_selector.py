@@ -284,7 +284,7 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
                 raise AssertionError(f"arm_abs_f32 {label} report should preserve real abs final state: {report}")
 
 
-def assert_convolve_selector_records_dfg_blocker(repo: Path) -> None:
+def assert_convolve_selector_records_mapping_blocker(repo: Path) -> None:
     with artifact_test_common.repo_temp_dir(repo, "cmsis-convolve-attempt-") as tmp:
         root = Path(tmp)
         out_dir = root / "rollup"
@@ -298,27 +298,41 @@ def assert_convolve_selector_records_dfg_blocker(repo: Path) -> None:
         )
         if (
             row["status"] != "blocked"
-            or row["dfg_status"] != "blocked"
-            or row["mapping_status"] != "not_run"
-            or row["cgra_status"] != "not_run"
-            or row["diagnostic_class"] != "component_dfg_status_blocked"
+            or row["dfg_status"] != "pass"
+            or row["mapping_status"] != "fail"
+            or row["cgra_status"] != "blocked"
+            or row["diagnostic_class"] != "component_cgra_status_blocked"
             or row["blocking_prerequisite"] != "component_graph_evidence"
             or "arm_convolve_1x1_s8_fast.red2.dfg.report.json" not in row["dfg_report"]
-            or "dataflow.load consumed 1 of 19 true stream indices" not in row["diagnostic"]
+            or "arm_convolve_1x1_s8_fast.red2.mapping.json" not in row["mapping_artifact"]
+            or "missing hardware resource for software op dataflow.stream" not in row["diagnostic"]
         ):
-            raise AssertionError(f"convolve selector should record the DFG-sim component blocker: {row}")
+            raise AssertionError(f"convolve selector should record the mapping component blocker: {row}")
 
         report_path = evidence_dir / "arm_convolve_1x1_s8_fast.red2.dfg.report.json"
         report = json.loads(report_path.read_text())
         if (
-            report.get("status") != "blocked"
+            report.get("status") != "pass"
             or report.get("graph") != "g_t_arm_nn_mat_mult_nt_t_s8_red_2_0"
             or report.get("dynamic_work_items") != 19
-            or "dataflow.load consumed 1 of 19 true stream indices" not in " ".join(
-                str(item) for item in report.get("diagnostics", [])
+            or report.get("operation_fire_counts", {}).get("dataflow.load") != 38
+            or report.get("operation_fire_counts", {}).get("llvm.load") != 19
+            or report.get("operation_fire_counts", {}).get("dataflow.sync") != 19
+            or report.get("final_outputs") != ["none", "i32:21648", "i32:32462"]
+            or report.get("diagnostics") != []
+        ):
+            raise AssertionError(f"convolve red2 report should expose complete DFG-sim evidence: {report}")
+
+        mapping_path = evidence_dir / "arm_convolve_1x1_s8_fast.red2.mapping.json"
+        mapping = json.loads(mapping_path.read_text())
+        if (
+            mapping.get("status") != "fail"
+            or mapping.get("graph") != "g_t_arm_nn_mat_mult_nt_t_s8_red_2_0"
+            or "missing hardware resource for software op dataflow.stream" not in " ".join(
+                str(item) for item in mapping.get("diagnostics", [])
             )
         ):
-            raise AssertionError(f"convolve red2 report should expose the current DFG-sim blocker: {report}")
+            raise AssertionError(f"convolve red2 mapping should expose the hardware resource blocker: {mapping}")
 
 
 def main() -> int:
@@ -565,7 +579,7 @@ def main() -> int:
 
     assert_selected_rollup_drops_stale_cmsis_evidence(repo)
     assert_default_batch_rollup_promotes_bounded_rows(repo)
-    assert_convolve_selector_records_dfg_blocker(repo)
+    assert_convolve_selector_records_mapping_blocker(repo)
 
     return 0
 

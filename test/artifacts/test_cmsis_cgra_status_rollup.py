@@ -2814,10 +2814,10 @@ def assert_cmsis_cfft_component_evidence(
         raise AssertionError(f"unexpected arm_cfft_f32 red0 CGRA evidence: {red0_cgra}")
 
     red1_memory = {
-        "arg4": ["f32:5", "f32:7", "f32:9", "f32:11", "f32:5", "f32:15", "f32:17", "f32:19", "f32:9", "f32:10", "f32:11", "f32:12"],
-        "arg5": ["f32:5", "f32:7", "f32:9", "f32:11", "f32:6", "f32:15", "f32:17", "f32:19", "f32:10", "f32:11", "f32:12", "f32:13"],
-        "arg6": ["f32:1", "f32:11", "f32:1", "f32:15", "f32:7", "f32:8", "f32:1", "f32:23", "f32:11", "f32:12", "f32:13", "f32:14"],
-        "arg7": ["f32:-33", "f32:3", "f32:-45", "f32:3", "f32:8", "f32:9", "f32:-69", "f32:3", "f32:12", "f32:13", "f32:14", "f32:15"],
+        "arg4": ["f32:5", "f32:7", "f32:9", "f32:11", "f32:13", "f32:15", "f32:17", "f32:19", "f32:9", "f32:10", "f32:11", "f32:12"],
+        "arg5": ["f32:5", "f32:7", "f32:9", "f32:11", "f32:13", "f32:15", "f32:17", "f32:19", "f32:10", "f32:11", "f32:12", "f32:13"],
+        "arg6": ["f32:1", "f32:11", "f32:1", "f32:15", "f32:1", "f32:19", "f32:1", "f32:23", "f32:11", "f32:12", "f32:13", "f32:14"],
+        "arg7": ["f32:-33", "f32:3", "f32:-45", "f32:3", "f32:-57", "f32:3", "f32:-69", "f32:3", "f32:12", "f32:13", "f32:14", "f32:15"],
         "arg8": ["f32:5", "f32:6", "f32:7", "f32:8", "f32:9", "f32:10", "f32:11", "f32:12", "f32:13", "f32:14", "f32:15", "f32:16"],
     }
     red1_dfg = json.loads((sim_evidence / "arm_cfft_f32.red1.dfg.report.json").read_text())
@@ -2826,11 +2826,12 @@ def assert_cmsis_cfft_component_evidence(
         or red1_dfg.get("graph") != "g_t_arm_cfft_f32_red_1_0"
         or red1_dfg.get("status") != "pass"
         or red1_dfg.get("dynamic_work_items") != 2
-        or red1_dfg.get("optimistic_cycles") != 503
+        or red1_dfg.get("optimistic_cycles") != 596
         or red1_dfg.get("operation_fire_counts", {}).get("llvm.load") != 30
-        or red1_dfg.get("operation_fire_counts", {}).get("llvm.store") != 22
-        or red1_dfg.get("operation_fire_counts", {}).get("arith.mulf") != 26
-        or red1_dfg.get("operation_fire_counts", {}).get("dataflow.store") != 4
+        or red1_dfg.get("operation_fire_counts", {}).get("llvm.store") != 24
+        or red1_dfg.get("operation_fire_counts", {}).get("arith.mulf") != 32
+        or red1_dfg.get("operation_fire_counts", {}).get("dataflow.load") != 10
+        or red1_dfg.get("operation_fire_counts", {}).get("dataflow.store") != 8
         or red1_dfg.get("final_outputs") != ["none"]
         or red1_dfg.get("final_memory_state") != red1_memory
         or red1_dfg.get("diagnostics") != []
@@ -2849,8 +2850,8 @@ def assert_cmsis_cfft_component_evidence(
     red1_cgra = json.loads((sim_evidence / "arm_cfft_f32.red1.cgra.report.json").read_text())
     if (
         red1_cgra.get("status") != "pass"
-        or red1_cgra.get("dfg_cycles") != 503
-        or red1_cgra.get("hardware_aware_cycles") != 1209
+        or red1_cgra.get("dfg_cycles") != 596
+        or red1_cgra.get("hardware_aware_cycles") != 1302
         or red1_cgra.get("final_outputs") != ["none"]
         or red1_cgra.get("final_memory_state") != red1_memory
         or red1_cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
@@ -2860,10 +2861,10 @@ def assert_cmsis_cfft_component_evidence(
     red2_dfg = json.loads((sim_evidence / "arm_cfft_f32.red2.dfg.report.json").read_text())
     red2_memory = red2_dfg.get("final_memory_state", {})
     red2_expected_prefixes = {
-        "arg4": ["f32:400", "f32:401", "f32:402", "f32:403", "f32:404", "f32:405", "f32:406", "f32:407", "f32:2832", "f32:409", "f32:410", "f32:2844"],
-        "arg6": ["f32:600", "f32:601", "f32:602", "f32:603", "f32:604", "f32:605", "f32:606", "f32:607", "f32:-907100", "f32:609", "f32:610", "f32:611"],
-        "arg12": ["f32:1200", "f32:1201", "f32:1202", "f32:1203", "f32:1204", "f32:5420", "f32:1206", "f32:5428", "f32:5432", "f32:1209", "f32:1210", "f32:1211"],
-        "arg13": ["f32:1300", "f32:1301", "f32:1302", "f32:1303", "f32:1304", "f32:1305", "f32:1306", "f32:-644400", "f32:203200", "f32:1309", "f32:1310", "f32:1311"],
+        "arg4": ["f32:400", "f32:401", "f32:402", "f32:403", "f32:404", "f32:405", "f32:406", "f32:407", "f32:2832", "f32:409", "f32:2840", "f32:2844"],
+        "arg6": ["f32:600", "f32:601", "f32:602", "f32:603", "f32:604", "f32:605", "f32:606", "f32:607", "f32:-907100", "f32:609", "f32:-408000", "f32:408800"],
+        "arg12": ["f32:1200", "f32:1201", "f32:1202", "f32:1203", "f32:1204", "f32:5420", "f32:5424", "f32:5428", "f32:5432", "f32:1209", "f32:1210", "f32:1211"],
+        "arg13": ["f32:1300", "f32:1301", "f32:1302", "f32:1303", "f32:1304", "f32:-204400", "f32:204000", "f32:-644400", "f32:203200", "f32:1309", "f32:1310", "f32:1311"],
         "arg21": ["f32:2100", "f32:2101", "f32:2102", "f32:2103", "f32:2104", "f32:2105", "f32:2106", "f32:2107", "f32:2108", "f32:2109", "f32:2110", "f32:68200"],
     }
     if (
@@ -2871,13 +2872,14 @@ def assert_cmsis_cfft_component_evidence(
         or red2_dfg.get("graph") != "g_t_arm_cfft_f32_red_2_0"
         or red2_dfg.get("status") != "pass"
         or red2_dfg.get("dynamic_work_items") != 2
-        or red2_dfg.get("optimistic_cycles") != 641
+        or red2_dfg.get("optimistic_cycles") != 913
         or red2_dfg.get("operation_fire_counts", {}).get("llvm.load") != 30
-        or red2_dfg.get("operation_fire_counts", {}).get("llvm.store") != 10
-        or red2_dfg.get("operation_fire_counts", {}).get("arith.addf") != 29
-        or red2_dfg.get("operation_fire_counts", {}).get("arith.subf") != 35
-        or red2_dfg.get("operation_fire_counts", {}).get("arith.mulf") != 26
-        or red2_dfg.get("operation_fire_counts", {}).get("dataflow.store") != 8
+        or red2_dfg.get("operation_fire_counts", {}).get("llvm.store") != 16
+        or red2_dfg.get("operation_fire_counts", {}).get("arith.addf") != 46
+        or red2_dfg.get("operation_fire_counts", {}).get("arith.subf") != 56
+        or red2_dfg.get("operation_fire_counts", {}).get("arith.mulf") != 48
+        or red2_dfg.get("operation_fire_counts", {}).get("dataflow.load") != 22
+        or red2_dfg.get("operation_fire_counts", {}).get("dataflow.store") != 16
         or red2_dfg.get("final_outputs") != ["none"]
         or red2_dfg.get("diagnostics") != []
         or any(red2_memory.get(arg, [])[:12] != expected for arg, expected in red2_expected_prefixes.items())
@@ -2896,8 +2898,8 @@ def assert_cmsis_cfft_component_evidence(
     red2_cgra = json.loads((sim_evidence / "arm_cfft_f32.red2.cgra.report.json").read_text())
     if (
         red2_cgra.get("status") != "pass"
-        or red2_cgra.get("dfg_cycles") != 641
-        or red2_cgra.get("hardware_aware_cycles") != 1839
+        or red2_cgra.get("dfg_cycles") != 913
+        or red2_cgra.get("hardware_aware_cycles") != 2111
         or red2_cgra.get("final_outputs") != ["none"]
         or any(red2_cgra.get("final_memory_state", {}).get(arg, [])[:12] != expected for arg, expected in red2_expected_prefixes.items())
         or red2_cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
@@ -2952,12 +2954,12 @@ def assert_cmsis_cfft_component_evidence(
         or aggregate_dfg.get("graph") != "workload_graph_set"
         or set(aggregate_dfg.get("component_graphs", [])) != expected_graphs
         or aggregate_dfg.get("dynamic_work_items") != 10
-        or aggregate_dfg.get("optimistic_cycles") != 1281
-        or aggregate_dfg.get("operation_fire_counts", {}).get("arith.addf") != 49
-        or aggregate_dfg.get("operation_fire_counts", {}).get("arith.subf") != 55
-        or aggregate_dfg.get("operation_fire_counts", {}).get("arith.mulf") != 56
+        or aggregate_dfg.get("optimistic_cycles") != 1646
+        or aggregate_dfg.get("operation_fire_counts", {}).get("arith.addf") != 70
+        or aggregate_dfg.get("operation_fire_counts", {}).get("arith.subf") != 80
+        or aggregate_dfg.get("operation_fire_counts", {}).get("arith.mulf") != 84
         or aggregate_dfg.get("operation_fire_counts", {}).get("llvm.load") != 62
-        or aggregate_dfg.get("operation_fire_counts", {}).get("llvm.store") != 34
+        or aggregate_dfg.get("operation_fire_counts", {}).get("llvm.store") != 42
         or aggregate_dfg.get("final_outputs") != ["none", "none", "none", "none"]
     ):
         raise AssertionError(f"unexpected arm_cfft_f32 aggregate DFG evidence: {aggregate_dfg}")
@@ -2979,8 +2981,8 @@ def assert_cmsis_cfft_component_evidence(
         or aggregate_cgra.get("hardware") != "shared_signal_window_adg"
         or aggregate_cgra.get("graph") != "workload_graph_set"
         or set(aggregate_cgra.get("component_graphs", [])) != expected_graphs
-        or aggregate_cgra.get("dfg_cycles") != 1281
-        or aggregate_cgra.get("hardware_aware_cycles") != 3321
+        or aggregate_cgra.get("dfg_cycles") != 1646
+        or aggregate_cgra.get("hardware_aware_cycles") != 3686
         or aggregate_cgra.get("final_outputs") != ["none", "none", "none", "none"]
         or aggregate_cgra.get("functional_state_source") != "component_cgra_sim_reports_carried_from_dfg_sim_reports"
     ):

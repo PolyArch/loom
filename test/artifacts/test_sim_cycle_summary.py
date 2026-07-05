@@ -404,9 +404,9 @@ def main() -> int:
         discovered_by_kernel = {row["kernel"]: row for row in discovered_rows}
         if set(discovered_by_kernel) != {"sum4", "sum8"}:
             raise AssertionError(f"expected discovered evidence rows only, got {discovered_rows}")
-        if discovered_by_kernel["sum4"]["dfg_sim_cycles"] != "33":
+        if discovered_by_kernel["sum4"]["dfg_sim_cycles"] != "37":
             raise AssertionError(f"sum4 should keep DFG cycles from report: {discovered_by_kernel['sum4']}")
-        if discovered_by_kernel["sum8"]["dfg_sim_cycles"] != "53":
+        if discovered_by_kernel["sum8"]["dfg_sim_cycles"] != "61":
             raise AssertionError(f"sum8 should keep DFG cycles from report: {discovered_by_kernel['sum8']}")
         for kernel, discovered_row in discovered_by_kernel.items():
             if discovered_row["cgra_sim_cycles"] != "":
@@ -743,7 +743,7 @@ def main() -> int:
         if len(sum4_rows) != 1:
             raise AssertionError(f"expected one sum4 row, got {dfg_rows}")
         dfg_row = sum4_rows[0]
-        if dfg_row["dfg_sim_cycles"] != "33":
+        if dfg_row["dfg_sim_cycles"] != "37":
             raise AssertionError(f"DFG report should fill DFG cycles: {dfg_row}")
         if dfg_row["cgra_sim_cycles"] != "":
             raise AssertionError(f"CGRA-sim cycles require mapping and Fabric evidence: {dfg_row}")

@@ -1,20 +1,7 @@
-// RUN: loom-dfg-sim %s --graph carry_address_relu_tail --arg 0=none --arg 1=3 --arg 2=0 --arg 3=-1 --arg 4=0 --memref 5=-1,2,-3 --output %t.blocked.json
-// RUN: FileCheck %s --check-prefix=BLOCKED < %t.blocked.json
-// RUN: loom-dfg-sim %s --graph carry_address_relu_tail --arg 0=none --arg 0=none --arg 0=none --arg 1=3 --arg 2=0 --arg 3=-1 --arg 4=0 --memref 5=-1,2,-3 --output %t.pass.json
-// RUN: FileCheck %s --check-prefix=PASS < %t.pass.json
-
-// BLOCKED-DAG: "dataflow.load consumed 1 of 3 true stream indices"
-// BLOCKED: "dynamic_work_items": 3
-// BLOCKED: "final_memory_state": {
-// BLOCKED-NEXT: "arg5": [
-// BLOCKED-NEXT: "i8:0",
-// BLOCKED-NEXT: "i8:2",
-// BLOCKED-NEXT: "i8:-3"
-// BLOCKED-NEXT: ]
-// BLOCKED-NEXT: }
-// BLOCKED-DAG: "dataflow.load": 1
-// BLOCKED-DAG: "dataflow.store": 1
-// BLOCKED-DAG: "status": "blocked"
+// RUN: loom-dfg-sim %s --graph carry_address_relu_tail --arg 0=none --arg 1=3 --arg 2=0 --arg 3=-1 --arg 4=0 --memref 5=-1,2,-3 --output %t.single.json
+// RUN: FileCheck %s --check-prefix=PASS < %t.single.json
+// RUN: loom-dfg-sim %s --graph carry_address_relu_tail --arg 0=none --arg 0=none --arg 0=none --arg 1=3 --arg 2=0 --arg 3=-1 --arg 4=0 --memref 5=-1,2,-3 --output %t.explicit.json
+// RUN: FileCheck %s --check-prefix=PASS < %t.explicit.json
 
 // PASS: "dynamic_work_items": 3
 // PASS: "final_memory_state": {
