@@ -2,6 +2,9 @@
 
 // CHECK: fabric.module @shared_quantized_window_adg
 // CHECK-DAG: fabric.op [@dataflow.constant]
+// CHECK-DAG: 0x0000ffef
+// CHECK-DAG: 0x30000000
+// CHECK-DAG: 0xffff0000
 // CHECK-DAG: fabric.op [@arith.cmpi, @llvm.icmp]
 // CHECK-DAG: fabric.op [@arith.addi, @arith.subi]
 // CHECK-DAG: fabric.op [@arith.muli]
@@ -91,7 +94,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -101,7 +104,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -111,7 +114,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -121,7 +124,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -131,7 +134,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -141,7 +144,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -151,7 +154,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -161,7 +164,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -171,7 +174,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -181,7 +184,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -191,7 +194,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -201,7 +204,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -211,7 +214,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -221,7 +224,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -231,7 +234,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -241,7 +244,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -251,7 +254,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -261,7 +264,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -271,7 +274,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -281,7 +284,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -291,7 +294,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -301,7 +304,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -311,7 +314,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -321,7 +324,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -331,7 +334,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -341,7 +344,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -351,7 +354,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -361,7 +364,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -371,7 +374,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -381,7 +384,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -391,7 +394,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -401,7 +404,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -411,7 +414,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -421,7 +424,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -431,7 +434,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -441,7 +444,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -451,7 +454,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -461,7 +464,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -471,7 +474,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }
@@ -481,7 +484,7 @@ fabric.module @shared_quantized_window_adg(%mgr : memref<?x!fabric.bits<32>>,
           -> !fabric.bits<32> {
         fabric.fu(%token = %pa : !fabric.bits<32> to !fabric.bits<0>) -> !fabric.bits<32> {
           %value = fabric.op [@dataflow.constant] (%token)
-              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]}]}
+              {hw_params = [{const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x0000000f", "0x00000010", "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000", "0xffffffff", "0xffff0000"]}]}
               : (!fabric.bits<0>) -> !fabric.bits<32>
           fabric.yield %value : !fabric.bits<32>
         }

@@ -9,6 +9,9 @@
 // HARDWARE-DAG: load_group_size = 18 : i32
 // HARDWARE-DAG: store_group_size = 9 : i32
 // HARDWARE-DAG: fabric.op [@dataflow.constant]
+// HARDWARE-DAG: 0x0000ffef
+// HARDWARE-DAG: 0x30000000
+// HARDWARE-DAG: 0xffff0000
 // HARDWARE-DAG: fabric.op [@arith.addi, @arith.subi]
 // HARDWARE-DAG: fabric.op [@arith.muli]
 // HARDWARE-DAG: fabric.op [@arith.divsi]

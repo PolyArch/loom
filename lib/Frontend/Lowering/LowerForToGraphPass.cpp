@@ -229,6 +229,7 @@ struct LowerForToGraphPass
 
     promoteStandaloneMemcpyFunctions(module, builder);
     promoteStandaloneScalarReturnFunctions(module, builder);
+    promoteStandaloneStructuredStatusOutParamFunctions(module, builder);
     promoteStandaloneStructuredOutParamFunctions(module, builder);
     promoteStandaloneStructuredFunctions(module, builder);
 
@@ -578,6 +579,105 @@ struct LowerForToGraphPass
   bool isEntryPointerArgument(::mlir::Value value, ::mlir::Block &entry) {
     auto arg = ::llvm::dyn_cast<::mlir::BlockArgument>(value);
     return arg && arg.getOwner() == &entry && isLlvmPointerType(arg.getType());
+  }
+
+  bool isScalarNonPointerType(::mlir::Type type) {
+    return ::llvm::isa<::mlir::IntegerType, ::mlir::FloatType,
+                       ::mlir::IndexType>(type) &&
+           !isLlvmPointerType(type);
+  }
+
+  bool structuredRootStoresOnlyEntryPointers(::mlir::Operation *root,
+                                             ::mlir::Block &entry,
+                                             bool &sawStore) {
+    bool ok = true;
+    root->walk([&](::mlir::Operation *nested) -> ::mlir::WalkResult {
+      auto store = ::llvm::dyn_cast<::mlir::LLVM::StoreOp>(nested);
+      if (!store)
+        return ::mlir::WalkResult::advance();
+      sawStore = true;
+      if (!isEntryPointerArgument(store.getAddr(), entry)) {
+        ok = false;
+        return ::mlir::WalkResult::interrupt();
+      }
+      return ::mlir::WalkResult::advance();
+    });
+    return ok;
+  }
+
+  bool isStandaloneStructuredStatusOutParamFunctionCandidate(
+      ::mlir::func::FuncOp func) {
+    if (func.isExternal())
+      return false;
+    if (func.getSymName() == "main")
+      return false;
+    if (func.getFunctionType().getNumResults() != 1)
+      return false;
+    if (!isScalarNonPointerType(func.getFunctionType().getResult(0)))
+      return false;
+    if (!func.getBody().hasOneBlock())
+      return false;
+    ::mlir::Block &entry = func.getBody().front();
+
+    bool hasPointerInput = false;
+    for (::mlir::Type ty : func.getFunctionType().getInputs())
+      hasPointerInput |= isLlvmPointerType(ty);
+    if (!hasPointerInput)
+      return false;
+
+    auto returnOp =
+        ::llvm::dyn_cast<::mlir::func::ReturnOp>(entry.getTerminator());
+    if (!returnOp || returnOp.getNumOperands() != 1)
+      return false;
+
+    bool sawStructuredOp = false;
+    bool sawStore = false;
+    bool sawBlockedSetupNumericOp = false;
+    bool sawBlockedBodyNumericOp = false;
+    ::llvm::DenseSet<::mlir::Value> structuredResults;
+    for (::mlir::Operation &op : entry.without_terminator()) {
+      if (!sawStructuredOp && isBlockedStandaloneStructuredSetupOp(&op))
+        sawBlockedSetupNumericOp = true;
+
+      if (!sawStructuredOp && isSideEffectFreeSetupOp(op))
+        continue;
+
+      if (!sawStructuredOp) {
+        if (!isResultBearingStandaloneStructuredTopLevelOp(&op))
+          return false;
+        if (hasUnsupportedStandaloneStructuredBody(&op))
+          return false;
+        if (!structuredRootStoresOnlyEntryPointers(&op, entry, sawStore))
+          return false;
+        op.walk([&](::mlir::Operation *nested) {
+          if (isBlockedStandaloneStructuredBodyOp(nested))
+            sawBlockedBodyNumericOp = true;
+        });
+        for (::mlir::Value result : op.getResults())
+          structuredResults.insert(result);
+        sawStructuredOp = true;
+        continue;
+      }
+
+      if (!isSideEffectFreeSetupOp(op))
+        return false;
+    }
+
+    return sawStructuredOp && sawStore &&
+           structuredResults.contains(returnOp.getOperand(0)) &&
+           !sawBlockedSetupNumericOp && !sawBlockedBodyNumericOp;
+  }
+
+  void promoteStandaloneStructuredStatusOutParamFunctions(
+      ::mlir::ModuleOp module, ::mlir::OpBuilder &builder) {
+    ::llvm::SmallVector<::mlir::func::FuncOp, 4> funcs;
+    module.walk([&](::mlir::func::FuncOp func) {
+      if (isStandaloneStructuredStatusOutParamFunctionCandidate(func))
+        funcs.push_back(func);
+    });
+
+    for (::mlir::func::FuncOp func : funcs)
+      promoteGraphOnlyFunction(module, func, builder);
   }
 
   bool isStandaloneStructuredOutParamFunctionCandidate(

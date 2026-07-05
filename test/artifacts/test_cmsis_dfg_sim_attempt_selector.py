@@ -122,10 +122,10 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
         expected_counts = {
             "cmsis-dsp": {
                 "total": 16,
-                "pass": 15,
+                "pass": 16,
                 "fail": 0,
                 "blocked": 0,
-                "unsupported": 1,
+                "unsupported": 0,
                 "missing_status": 0,
             },
             "cmsis-nn": {
@@ -146,6 +146,7 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
         abs_f32 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "BasicMathFunctions/arm_abs_f32.c")
         fill = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "SupportFunctions/arm_fill_f32.c")
         sin_f32 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "FastMathFunctions/arm_sin_f32.c")
+        sqrt_q15 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "FastMathFunctions/arm_sqrt_q15.c")
         relu_q15 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
         relu_q7 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu_q7.c")
         relu6 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu6_s8.c")
@@ -166,7 +167,20 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             "cmsis-nn",
             "FullyConnectedFunctions/arm_fully_connected_s8.c",
         )
-        for row in (add, abs_f32, fill, sin_f32, relu_q15, relu_q7, relu6, reshape, depthwise, vector_sum, fully_connected):
+        for row in (
+            add,
+            abs_f32,
+            fill,
+            sin_f32,
+            sqrt_q15,
+            relu_q15,
+            relu_q7,
+            relu6,
+            reshape,
+            depthwise,
+            vector_sum,
+            fully_connected,
+        ):
             if row["status"] != "pass" or row["cgra_status"] != "pass" or row["comparison_status"] != "pass":
                 raise AssertionError(f"default-batch row should expose CGRA-sim pass evidence: {row}")
         if (
@@ -209,6 +223,9 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             evidence_dir / "arm_abs_f32.dfg.report.json",
             evidence_dir / "arm_abs_f32.mapping.json",
             evidence_dir / "arm_abs_f32.cgra.report.json",
+            evidence_dir / "arm_sqrt_q15.dfg.report.json",
+            evidence_dir / "arm_sqrt_q15.mapping.json",
+            evidence_dir / "arm_sqrt_q15.cgra.report.json",
             evidence_dir / "arm_relu_q15.dfg.report.json",
             evidence_dir / "arm_relu_q15.mapping.json",
             evidence_dir / "arm_relu_q15.cgra.report.json",
@@ -422,8 +439,8 @@ def main() -> int:
         "total": 16,
         "pass": 1,
         "fail": 0,
-        "blocked": 14,
-        "unsupported": 1,
+        "blocked": 15,
+        "unsupported": 0,
         "missing_status": 0,
     }:
         raise AssertionError(f"selected default CMSIS counts are wrong: {selector_default_counts}")

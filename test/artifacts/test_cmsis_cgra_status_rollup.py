@@ -62,8 +62,8 @@ def assert_cmsis_dfg_only_counts(data: dict[str, object]) -> None:
             "total": 16,
             "pass": 0,
             "fail": 0,
-            "blocked": 15,
-            "unsupported": 1,
+            "blocked": 16,
+            "unsupported": 0,
             "missing_status": 0,
         },
     )
@@ -509,10 +509,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 15,
+            "pass": 16,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 1,
+            "unsupported": 0,
             "missing_status": 0,
         },
     )
@@ -529,6 +529,7 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         },
     )
     assert_cmsis_sin_f32_cgra_evidence(repo, rows, out_dir / "current-sim-cycle")
+    assert_cmsis_sqrt_q15_cgra_evidence(repo, rows, out_dir / "current-sim-cycle")
     expected_hardware = default_batch_hardware(repo)
     for case, hardware in expected_hardware.items():
         assert_app_cgra_pass_row(repo, rows, case, expected_hardware=hardware)
@@ -1835,10 +1836,10 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 15,
+            "pass": 16,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 1,
+            "unsupported": 0,
             "missing_status": 0,
         },
     )
@@ -1865,6 +1866,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     )
     assert_cmsis_biquad_shared_adg_evidence(sim_evidence)
     assert_cmsis_sin_f32_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_sqrt_q15_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_mat_mult_f32_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
@@ -2003,6 +2005,77 @@ def assert_cmsis_sin_f32_cgra_evidence(
     for op_name in ("llvm.load", "llvm.fptosi", "llvm.sitofp", "llvm.intr.fmuladd"):
         if op_name not in placements:
             raise AssertionError(f"CMSIS sin mapping is missing placement for {op_name}: {mapping}")
+
+
+def assert_cmsis_sqrt_q15_cgra_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    case = "FastMathFunctions/arm_sqrt_q15.c"
+    stem = "arm_sqrt_q15"
+    graph = "g_arm_sqrt_q15_0"
+    hardware = "shared_quantized_window_adg"
+    assert_cmsis_cgra_pass_row(
+        repo,
+        rows,
+        sim_evidence,
+        "cmsis-dsp",
+        case,
+        stem,
+        expected_hardware=hardware,
+    )
+    dfg = json.loads((sim_evidence / f"{stem}.dfg.report.json").read_text())
+    mapping = json.loads((sim_evidence / f"{stem}.mapping.json").read_text())
+    cgra = json.loads((sim_evidence / f"{stem}.cgra.report.json").read_text())
+    expected_outputs = ["none", "i32:0"]
+    expected_memory = {"arg2": ["i16:23172"]}
+    if (
+        dfg.get("kind") != "dfg_sim_report"
+        or dfg.get("workload") != case
+        or dfg.get("graph") != graph
+        or dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 1
+        or dfg.get("final_outputs") != expected_outputs
+        or dfg.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unexpected CMSIS sqrt DFG evidence: {dfg}")
+    expected_counts = {
+        "dataflow.constant": 15,
+        "dataflow.load": 1,
+        "dataflow.store": 1,
+        "llvm.intr.ctlz": 1,
+        "llvm.mlir.addressof": 1,
+        "llvm.sext": 1,
+        "llvm.trunc": 1,
+        "llvm.zext": 1,
+        "scf.if": 1,
+    }
+    counts = dfg.get("operation_fire_counts", {})
+    for op_name, expected in expected_counts.items():
+        if counts.get(op_name) != expected:
+            raise AssertionError(f"unexpected CMSIS sqrt fire count for {op_name}: {dfg}")
+    placements = {item.get("operation") for item in mapping.get("placements", [])}
+    for op_name in ("dataflow.load", "dataflow.store", "llvm.intr.ctlz", "llvm.trunc"):
+        if op_name not in placements:
+            raise AssertionError(f"CMSIS sqrt mapping is missing placement for {op_name}: {mapping}")
+    if (
+        mapping.get("kind") != "pnr_mapping"
+        or mapping.get("workload") != case
+        or mapping.get("hardware") != hardware
+        or mapping.get("graph") != graph
+        or mapping.get("status") != "pass"
+        or mapping.get("unrouted_edges") != 0
+    ):
+        raise AssertionError(f"unexpected CMSIS sqrt mapping evidence: {mapping}")
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != hardware
+        or cgra.get("final_outputs") != expected_outputs
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"unexpected CMSIS sqrt CGRA evidence: {cgra}")
 
 
 def assert_cmsis_dfg_unsupported_row(
@@ -4809,10 +4882,10 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 15,
+            "pass": 16,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 1,
+            "unsupported": 0,
             "missing_status": 0,
         },
     )
@@ -4864,6 +4937,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_max_shared_adg_evidence(sim_evidence)
     assert_cmsis_biquad_shared_adg_evidence(sim_evidence)
     assert_cmsis_sin_f32_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_sqrt_q15_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_var_shared_adg_evidence(sim_evidence)
     assert_cmsis_cfft_component_evidence(repo, rows, sim_evidence)
     assert_cmsis_fir_component_pass_evidence(repo, rows, sim_evidence)
@@ -5062,12 +5136,13 @@ def main() -> int:
 
         dsp_sqrt = one_row(rows, "cmsis-dsp", "FastMathFunctions/arm_sqrt_q15.c")
         if (
-            dsp_sqrt["status"] != "unsupported"
-            or dsp_sqrt["diagnostic_class"] != "cmsis_no_dataflow_graph"
-            or dsp_sqrt["blocking_prerequisite"] != "dataflow_graph"
-            or dsp_sqrt["required_slice_count"] != "0"
+            dsp_sqrt["status"] != "blocked"
+            or dsp_sqrt["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
+            or dsp_sqrt["blocking_prerequisite"] != "dfg_sim_report"
+            or dsp_sqrt["required_slice_count"] != "1"
+            or "g_arm_sqrt_q15_0" not in dsp_sqrt["graph_ids"]
         ):
-            raise AssertionError(f"CMSIS-DSP sqrt row should remain structured unsupported: {dsp_sqrt}")
+            raise AssertionError(f"CMSIS-DSP sqrt row should expose exact DFG-sim blocker: {dsp_sqrt}")
         assert_sha256_file(dsp_sqrt["dfg_mlir"], dsp_sqrt["dfg_mlir_fingerprint"], repo)
 
         nn_relu = one_row(rows, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")

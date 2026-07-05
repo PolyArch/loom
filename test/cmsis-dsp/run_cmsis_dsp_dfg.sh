@@ -361,9 +361,8 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
         with_emission+=("${src}")
         emission_tag="t=${thread_count} g=${graph_count}"
     else
-        # Legitimate when the source has no parallel scf.forall and no
-        # iter_args reduction to outline, and no standalone graph-only
-        # candidate applies -- e.g., arm_sqrt_q15. Tag for visibility.
+        # Legitimate when the source has no parallel scf.forall, no iter_args
+        # reduction to outline, and no standalone graph-only candidate applies.
         emission_tag="t=0 g=0 (no outline)"
     fi
 

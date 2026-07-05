@@ -551,8 +551,8 @@ def assert_counts(rows: list[dict[str, str]], data: dict[str, object]) -> None:
                 "total": total,
                 "pass": 0,
                 "fail": 0,
-                "blocked": 15,
-                "unsupported": 1,
+                "blocked": 16,
+                "unsupported": 0,
                 "missing_status": 0,
             }
             if suite_counts != expected:
@@ -870,14 +870,16 @@ module {
             or "g_arm_sin_f32_0" not in cmsis_dsp_sin["graph_ids"]
         ):
             raise AssertionError(f"CMSIS-DSP sin row should consume scalar-return DFG MLIR evidence: {cmsis_dsp_sin}")
-        cmsis_dsp_no_graph = one_row(rows, "cmsis-dsp", "FastMathFunctions/arm_sqrt_q15.c")
+        cmsis_dsp_sqrt = one_row(rows, "cmsis-dsp", "FastMathFunctions/arm_sqrt_q15.c")
         if (
-            cmsis_dsp_no_graph["status"] != "unsupported"
-            or cmsis_dsp_no_graph["diagnostic_class"] != "cmsis_no_dataflow_graph"
-            or cmsis_dsp_no_graph["blocking_prerequisite"] != "dataflow_graph"
-            or not cmsis_dsp_no_graph["dfg_mlir"]
+            cmsis_dsp_sqrt["status"] != "blocked"
+            or cmsis_dsp_sqrt["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
+            or cmsis_dsp_sqrt["blocking_prerequisite"] != "dfg_sim_report"
+            or cmsis_dsp_sqrt["owner"] != "compiler_pipeline"
+            or cmsis_dsp_sqrt["required_slice_count"] != "1"
+            or "g_arm_sqrt_q15_0" not in cmsis_dsp_sqrt["graph_ids"]
         ):
-            raise AssertionError(f"CMSIS-DSP sqrt row should remain structured unsupported: {cmsis_dsp_no_graph}")
+            raise AssertionError(f"CMSIS-DSP sqrt row should consume DFG MLIR evidence: {cmsis_dsp_sqrt}")
         no_cmsis_auto_csv = out_dir / "no-cmsis-auto-cgra-status-summary.csv"
         no_cmsis_auto_json = out_dir / "no-cmsis-auto-cgra-status-summary.json"
         run(
@@ -929,8 +931,8 @@ module {
             "total": 16,
             "pass": 1,
             "fail": 0,
-            "blocked": 14,
-            "unsupported": 1,
+            "blocked": 15,
+            "unsupported": 0,
             "missing_status": 0,
         }:
             raise AssertionError(

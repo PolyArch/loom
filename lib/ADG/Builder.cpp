@@ -4704,6 +4704,11 @@ ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {
   config.wideDivCount = 20;
   config.wideRouteBridgeCount = 16;
   config.ctlzCount = 2;
+  config.constantHexValues = {
+      "0x00000000", "0x00000001", "0x00000002", "0x00000003",
+      "0x00000004", "0x00000008", "0x0000000f", "0x00000010",
+      "0x0000001b", "0x0000ffef", "0x0000ffff", "0x30000000",
+      "0xffffffff", "0xffff0000"};
   return buildSharedMemoryLikeAdg(config);
 }
 

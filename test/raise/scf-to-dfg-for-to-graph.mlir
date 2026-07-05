@@ -293,6 +293,28 @@ func.func private @structured_outparam_candidate(%src: !llvm.ptr,
   return
 }
 
+// A standalone structured kernel may both write an out pointer and return a
+// scalar status. The graph-only surface must preserve both effects: stores stay
+// in the graph body and the status becomes a graph result.
+// CHECK-LABEL: func.func private @status_outparam_candidate
+// CHECK: scf.if
+// CHECK: llvm.store
+// CHECK: return
+func.func private @status_outparam_candidate(%dst: !llvm.ptr, %value: i16) -> i32 {
+  %c0_i16 = arith.constant 0 : i16
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %ok = arith.cmpi sgt, %value, %c0_i16 : i16
+  %status = scf.if %ok -> (i32) {
+    llvm.store %value, %dst : i16, !llvm.ptr
+    scf.yield %c0_i32 : i32
+  } else {
+    llvm.store %c0_i16, %dst : i16, !llvm.ptr
+    scf.yield %c1_i32 : i32
+  }
+  return %status : i32
+}
+
 // CHECK-LABEL: dataflow.graph.func private @g_standalone_memcpy_0
 // CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32) -> none
 // CHECK: llvm.intr.memcpy
@@ -304,6 +326,11 @@ func.func private @structured_outparam_candidate(%src: !llvm.ptr,
 // CHECK: llvm.getelementptr
 // CHECK: llvm.intr.memcpy
 // CHECK: dataflow.graph.return %arg0 : none
+// CHECK-LABEL: dataflow.graph.func private @g_status_outparam_candidate_0
+// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: i16) -> (none, i32)
+// CHECK: scf.if
+// CHECK: llvm.store
+// CHECK: dataflow.graph.return %arg0, %{{.*}} : none, i32
 // CHECK-LABEL: dataflow.graph.func private @g_structured_outparam_candidate_0
 // CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32) -> none
 // CHECK: scf.if

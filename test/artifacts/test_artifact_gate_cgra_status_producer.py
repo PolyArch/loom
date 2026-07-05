@@ -90,8 +90,7 @@ def main() -> int:
                 {
                     ("app", "pass"): 126,
                     ("app", "unsupported"): 6,
-                    ("cmsis-dsp", "pass"): 15,
-                    ("cmsis-dsp", "unsupported"): 1,
+                    ("cmsis-dsp", "pass"): 16,
                     ("cmsis-nn", "pass"): 13,
                     ("cmsis-nn", "unsupported"): 5,
                 },
