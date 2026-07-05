@@ -85,6 +85,7 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"llvm.arm.sxtab16", 1, 1, true, true},
     {"llvm.arm.sxtb16", 1, 1, true, true},
     {"llvm.arm.qadd16", 1, 1, true, true},
+    {"llvm.arm.sadd16", 1, 1, true, true},
     {"llvm.arm.qsub8", 1, 1, true, true},
     {"llvm.arm.qsub16", 1, 1, true, true},
     {"math.absf", 1, 1, true, true},
@@ -276,6 +277,25 @@ PrimitiveValue packedSaturatingBinary(
     const std::int64_t saturated =
         saturateSigned(combine(lhsLane, rhsLane), laneWidth);
     packed |= (static_cast<std::uint64_t>(saturated) & laneMask) << offset;
+  }
+  return integerFromBits(packed, bitWidth);
+}
+
+PrimitiveValue packedWrappingBinary(
+    const PrimitiveValue &lhs, const PrimitiveValue &rhs, unsigned bitWidth,
+    unsigned laneWidth,
+    llvm::function_ref<std::int64_t(std::int64_t, std::int64_t)> combine) {
+  std::uint64_t packed = 0;
+  const std::uint64_t lhsBits = toUnsignedBits(lhs, bitWidth);
+  const std::uint64_t rhsBits = toUnsignedBits(rhs, bitWidth);
+  const std::uint64_t laneMask = maskForBitWidth(laneWidth);
+  for (unsigned offset = 0; offset < bitWidth; offset += laneWidth) {
+    const std::int64_t lhsLane =
+        fromUnsignedBits((lhsBits >> offset) & laneMask, laneWidth);
+    const std::int64_t rhsLane =
+        fromUnsignedBits((rhsBits >> offset) & laneMask, laneWidth);
+    const std::int64_t wrapped = combine(lhsLane, rhsLane);
+    packed |= (static_cast<std::uint64_t>(wrapped) & laneMask) << offset;
   }
   return integerFromBits(packed, bitWidth);
 }
@@ -944,8 +964,8 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
   }
   if (opName == "llvm.intr.fabs")
     return evaluateMathUnary(opName, operands);
-  if (opName == "llvm.arm.qadd16" || opName == "llvm.arm.qsub8" ||
-      opName == "llvm.arm.qsub16") {
+  if (opName == "llvm.arm.qadd16" || opName == "llvm.arm.sadd16" ||
+      opName == "llvm.arm.qsub8" || opName == "llvm.arm.qsub16") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
     const unsigned laneWidth = opName == "llvm.arm.qsub8" ? 8 : 16;
@@ -954,6 +974,12 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
           std::errc::invalid_argument,
           "%s result bit width must be a positive multiple of lane width %u",
           opName.str().c_str(), laneWidth);
+    if (opName == "llvm.arm.sadd16")
+      return packedWrappingBinary(operands[0], operands[1], bitWidth,
+                                  laneWidth,
+                                  [](std::int64_t lhs, std::int64_t rhs) {
+                                    return lhs + rhs;
+                                  });
     const bool isAdd = opName == "llvm.arm.qadd16";
     return packedSaturatingBinary(operands[0], operands[1], bitWidth, laneWidth,
                                   [isAdd](std::int64_t lhs, std::int64_t rhs) {

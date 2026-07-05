@@ -351,7 +351,7 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
                     %pb = %packed_sat_rhs : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%lhs = %pa : !fabric.bits<32>,
               %rhs = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
-      %packed = fabric.op [@llvm.arm.qadd16, @llvm.arm.qsub16, @llvm.arm.qsub8] (%lhs, %rhs) : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      %packed = fabric.op [@llvm.arm.qadd16, @llvm.arm.sadd16, @llvm.arm.qsub16, @llvm.arm.qsub8] (%lhs, %rhs) : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %packed : !fabric.bits<32>
     }
   }

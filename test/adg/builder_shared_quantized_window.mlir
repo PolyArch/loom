@@ -22,6 +22,7 @@
 // HARDWARE-DAG: fabric.op [@llvm.intr.fshl]
 // HARDWARE-DAG: fabric.op [@llvm.arm.pkhbt]
 // HARDWARE-DAG: fabric.op [@llvm.arm.pkhtb]
+// HARDWARE-DAG: fabric.op [@llvm.arm.sadd16]
 // HARDWARE-DAG: fabric.op [@llvm.arm.sxtab16]
 // HARDWARE-DAG: fabric.op [@llvm.arm.sxtb16]
 // HARDWARE-DAG: fabric.op [@dataflow.mux]

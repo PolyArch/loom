@@ -665,32 +665,28 @@ struct LowerForToGraphPass
       if (!sawStructuredOp && isBlockedStandaloneStructuredSetupOp(&op))
         sawBlockedSetupNumericOp = true;
 
-      if (!sawStructuredOp && isSideEffectFreeSetupOp(op))
+      if (isSideEffectFreeSetupOp(op))
         continue;
 
-      if (!sawStructuredOp) {
-        if (!isResultBearingStandaloneStructuredTopLevelOp(&op))
-          return false;
-        if (hasUnsupportedStandaloneStructuredBody(&op))
-          return false;
-        if (!structuredRootStoresOnlyEntryPointers(&op, entry, sawStore))
-          return false;
-        op.walk([&](::mlir::Operation *nested) {
-          if (isBlockedStandaloneStructuredBodyOp(nested))
-            sawBlockedBodyNumericOp = true;
-        });
-        for (::mlir::Value result : op.getResults())
-          structuredResults.insert(result);
-        sawStructuredOp = true;
-        continue;
-      }
-
-      if (!isSideEffectFreeSetupOp(op))
+      if (!isSupportedStandaloneStructuredTopLevelOp(&op) &&
+          !isResultBearingStandaloneStructuredTopLevelOp(&op))
         return false;
+      if (hasUnsupportedStandaloneStructuredBody(&op))
+        return false;
+      op.walk([&](::mlir::Operation *nested) {
+        if (isBlockedStandaloneStructuredBodyOp(nested))
+          sawBlockedBodyNumericOp = true;
+        if (::llvm::isa<::mlir::LLVM::StoreOp>(nested))
+          sawStore = true;
+      });
+      for (::mlir::Value result : op.getResults())
+        structuredResults.insert(result);
+      sawStructuredOp = true;
     }
 
     return sawStructuredOp && sawStore &&
-           structuredResults.contains(returnOp.getOperand(0)) &&
+           (structuredResults.contains(returnOp.getOperand(0)) ||
+            isZeroIntegerConstant(returnOp.getOperand(0))) &&
            !sawBlockedSetupNumericOp && !sawBlockedBodyNumericOp;
   }
 

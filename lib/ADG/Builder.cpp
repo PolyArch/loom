@@ -2597,7 +2597,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
        {"rhs", "pb", "!fabric.bits<32>", ""}},
       {"!fabric.bits<32>"},
       {FabricOpSpec{{"packed"},
-                    {"llvm.arm.qadd16", "llvm.arm.qsub16", "llvm.arm.qsub8"},
+                    {"llvm.arm.qadd16", "llvm.arm.sadd16",
+                     "llvm.arm.qsub16", "llvm.arm.qsub8"},
                     {"lhs", "rhs"},
                     {"!fabric.bits<32>", "!fabric.bits<32>"},
                     {"!fabric.bits<32>"},
@@ -4180,6 +4181,7 @@ struct SharedMemoryAdgConfig {
   unsigned fshlCount = 0;
   unsigned armPkhbtCount = 0;
   unsigned armPkhtbCount = 0;
+  unsigned armSadd16Count = 0;
   unsigned armSxtab16Count = 0;
   unsigned armSxtb16Count = 0;
   unsigned extuiCount = 4;
@@ -4501,6 +4503,7 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   addTernaryBank("fshl", config.fshlCount, "llvm.intr.fshl");
   addTernaryBank("arm_pkhbt", config.armPkhbtCount, "llvm.arm.pkhbt");
   addTernaryBank("arm_pkhtb", config.armPkhtbCount, "llvm.arm.pkhtb");
+  addBinaryBank("arm_sadd16", config.armSadd16Count, {"llvm.arm.sadd16"});
   addBinaryBank("arm_sxtab16", config.armSxtab16Count, {"llvm.arm.sxtab16"});
   addUnaryBank("arm_sxtb16", config.armSxtb16Count, "llvm.arm.sxtb16");
   addBinaryBank("and", config.logicCount, {"arith.andi"});
@@ -4720,6 +4723,7 @@ ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {
   config.fshlCount = 2;
   config.armPkhbtCount = 2;
   config.armPkhtbCount = 1;
+  config.armSadd16Count = 4;
   config.armSxtab16Count = 2;
   config.armSxtb16Count = 1;
   config.constantHexValues = {

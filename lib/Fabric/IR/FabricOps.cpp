@@ -671,6 +671,7 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
     add("llvm.arm.sxtab16", {pT(0), pT(0)}, {pT(0)});
     add("llvm.arm.sxtb16", {pT(0)}, {pT(0)});
     add("llvm.arm.qadd16", {pT(0), pT(0)}, {pT(0)});
+    add("llvm.arm.sadd16", {pT(0), pT(0)}, {pT(0)});
     add("llvm.arm.qsub8", {pT(0), pT(0)}, {pT(0)});
     add("llvm.arm.qsub16", {pT(0), pT(0)}, {pT(0)});
 

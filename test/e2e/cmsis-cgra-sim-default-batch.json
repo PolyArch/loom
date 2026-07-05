@@ -17,6 +17,7 @@
     "arm_fill_f32",
     "arm_sin_f32",
     "arm_sqrt_q15",
+    "arm_elementwise_add_s8",
     "arm_q7_to_q15_with_offset",
     "arm_relu_q15",
     "arm_relu_q7",

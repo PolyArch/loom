@@ -86,7 +86,7 @@
 // HARDWARE-DAG: fabric.op [@arith.shli]
 // HARDWARE-DAG: fabric.op [@arith.andi]
 // HARDWARE-DAG: fabric.op [@arith.ori]
-// HARDWARE-DAG: fabric.op [@llvm.arm.qadd16, @llvm.arm.qsub16, @llvm.arm.qsub8]
+// HARDWARE-DAG: fabric.op [@llvm.arm.qadd16, @llvm.arm.sadd16, @llvm.arm.qsub16, @llvm.arm.qsub8]
 // HARDWARE-DAG: fabric.op [@llvm.trunc, @llvm.sext, @llvm.zext]
 // HARDWARE-DAG: fabric.op [@arith.index_cast]
 // HARDWARE-DAG: fabric.op [@llvm.sext, @llvm.zext]

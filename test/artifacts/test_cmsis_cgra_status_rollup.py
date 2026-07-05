@@ -74,8 +74,8 @@ def assert_cmsis_dfg_only_counts(data: dict[str, object]) -> None:
             "total": 18,
             "pass": 0,
             "fail": 0,
-            "blocked": 14,
-            "unsupported": 4,
+            "blocked": 15,
+            "unsupported": 3,
             "missing_status": 0,
         },
     )
@@ -522,9 +522,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         {
             "total": 18,
             "pass": 14,
-            "fail": 0,
+            "fail": 1,
             "blocked": 0,
-            "unsupported": 4,
+            "unsupported": 3,
             "missing_status": 0,
         },
     )
@@ -565,6 +565,7 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_copy_f32.c", "arm_copy_f32"
     )
     assert_cmsis_reshape_memcpy_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_elementwise_add_s8_mapping_blocker_evidence(repo, rows)
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
     cgra_sweep.assert_gauss_seidel_step_evidence(sim_evidence)
 
@@ -1850,9 +1851,9 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         {
             "total": 18,
             "pass": 14,
-            "fail": 0,
+            "fail": 1,
             "blocked": 0,
-            "unsupported": 4,
+            "unsupported": 3,
             "missing_status": 0,
         },
     )
@@ -1875,6 +1876,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     )
     assert_cmsis_relu_q7_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_relu6_s8_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_elementwise_add_s8_mapping_blocker_evidence(repo, rows)
     assert_cmsis_concat_w_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_reshape_memcpy_cgra_evidence(repo, rows, sim_evidence)
@@ -3261,6 +3263,7 @@ def assert_cmsis_mapping_blocker_row(
     case: str,
     *,
     diagnostic_substring: str,
+    expected_hardware: str = "shared_reduction_adg",
 ) -> None:
     row = one_row(rows, suite, case)
     if (
@@ -3275,7 +3278,7 @@ def assert_cmsis_mapping_blocker_row(
         or not row["mapping_artifact"]
         or not row["cgra_report"]
         or not row["comparison_report"]
-        or row["hardware_system"] != "shared_reduction_adg"
+        or row["hardware_system"] != expected_hardware
         or diagnostic_substring not in row["diagnostic"]
     ):
         raise AssertionError(f"CMSIS row should expose exact PnR mapping blocker evidence: {row}")
@@ -3290,7 +3293,7 @@ def assert_cmsis_mapping_blocker_row(
     if (
         mapping_artifact.get("kind") != "pnr_mapping"
         or mapping_artifact.get("workload") != case
-        or mapping_artifact.get("hardware") != "shared_reduction_adg"
+        or mapping_artifact.get("hardware") != expected_hardware
         or mapping_artifact.get("status") != "fail"
         or mapping_artifact.get("unrouted_edges", 0) <= 0
         or diagnostic_substring not in mapping_diagnostics
@@ -3301,7 +3304,7 @@ def assert_cmsis_mapping_blocker_row(
     if (
         cgra_report.get("kind") != "cgra_sim_report"
         or cgra_report.get("workload") != case
-        or cgra_report.get("hardware") != "shared_reduction_adg"
+        or cgra_report.get("hardware") != expected_hardware
         or cgra_report.get("status") != "blocked"
         or diagnostic_substring not in cgra_diagnostics
     ):
@@ -3315,6 +3318,39 @@ def assert_cmsis_mapping_blocker_row(
         or comparison_report.get("performance_comparison_status") != "blocked"
     ):
         raise AssertionError(f"unexpected blocked CMSIS comparison report: {comparison_report}")
+
+
+def assert_cmsis_elementwise_add_s8_mapping_blocker_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+) -> None:
+    case = "BasicMathFunctions/arm_elementwise_add_s8.c"
+    assert_cmsis_mapping_blocker_row(
+        repo,
+        rows,
+        "cmsis-nn",
+        case,
+        diagnostic_substring="missing hardware resource for software op arith.shrui",
+        expected_hardware="shared_quantized_window_adg",
+    )
+    row = one_row(rows, "cmsis-nn", case)
+    dfg_report = json.loads((repo / row["dfg_report"]).read_text())
+    expected_memory = {
+        "arg1": ["i8:1", "i8:-2", "i8:3"],
+        "arg2": ["i8:4", "i8:5", "i8:-6"],
+        "arg10": ["i8:2", "i8:1", "i8:0"],
+    }
+    if (
+        dfg_report.get("status") != "pass"
+        or dfg_report.get("graph") != "g_arm_elementwise_add_s8_0"
+        or dfg_report.get("dynamic_work_items") != 3
+        or dfg_report.get("final_outputs") != ["none", "i32:0"]
+        or dfg_report.get("final_memory_state") != expected_memory
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.load") != 6
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.store") != 3
+        or dfg_report.get("operation_fire_counts", {}).get("scf.if") != 2
+    ):
+        raise AssertionError(f"unexpected arm_elementwise_add_s8 DFG evidence: {dfg_report}")
 
 
 def assert_cmsis_vector_sum_cgra_evidence(
@@ -5007,9 +5043,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         {
             "total": 18,
             "pass": 14,
-            "fail": 0,
+            "fail": 1,
             "blocked": 0,
-            "unsupported": 4,
+            "unsupported": 3,
             "missing_status": 0,
         },
     )
@@ -5060,6 +5096,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     )
     assert_cmsis_relu_q7_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_relu6_s8_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_elementwise_add_s8_mapping_blocker_evidence(repo, rows)
     assert_cmsis_q7_to_q15_with_offset_cgra_evidence(repo, rows, sim_evidence)
     assert_cgra_status_audit_rejects_bad_relu_q7_mapping(repo, out_dir, legacy_root)
     assert_cmsis_concat_w_memcpy_cgra_evidence(repo, rows, sim_evidence)

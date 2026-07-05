@@ -7,6 +7,9 @@
 // RUN: loom-pnr-map --dfg-mlir %s --graph arm_qadd16 --hardware-mlir %s --hardware arm_intrinsic_adg --workload arm_qadd16 --output %t.qadd16.csv --artifact %t.qadd16.json
 // RUN: FileCheck %s --check-prefix=QADD16-CSV < %t.qadd16.csv
 // RUN: FileCheck %s --check-prefix=QADD16-JSON < %t.qadd16.json
+// RUN: loom-pnr-map --dfg-mlir %s --graph arm_sadd16 --hardware-mlir %s --hardware arm_intrinsic_adg --workload arm_sadd16 --output %t.sadd16.csv --artifact %t.sadd16.json
+// RUN: FileCheck %s --check-prefix=SADD16-CSV < %t.sadd16.csv
+// RUN: FileCheck %s --check-prefix=SADD16-JSON < %t.sadd16.json
 
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // CSV-NEXT: arm_qsub16,arm_intrinsic_adg,arm_qsub16__arm_qsub16__arm_intrinsic_adg,1,0,0,0,pass
@@ -26,6 +29,12 @@
 // QADD16-JSON-DAG: "operation": "llvm.arm.qadd16"
 // QADD16-JSON-DAG: "hardware": "arm_intrinsic_adg::fabric.op#2"
 
+// SADD16-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// SADD16-CSV-NEXT: arm_sadd16,arm_intrinsic_adg,arm_sadd16__arm_sadd16__arm_intrinsic_adg,1,0,0,0,pass
+
+// SADD16-JSON-DAG: "operation": "llvm.arm.sadd16"
+// SADD16-JSON-DAG: "hardware": "arm_intrinsic_adg::fabric.op#3"
+
 module {
   dataflow.graph.func private @arm_qsub16(%ctrl: none, %zero: i32, %value: i32)
       -> (none, i32) {
@@ -44,6 +53,13 @@ module {
   dataflow.graph.func private @arm_qadd16(%ctrl: none, %lhs: i32, %rhs: i32)
       -> (none, i32) {
     %packed = llvm.call_intrinsic "llvm.arm.qadd16"(%lhs, %rhs)
+        : (i32, i32) -> i32
+    dataflow.graph.return %ctrl, %packed : none, i32
+  }
+
+  dataflow.graph.func private @arm_sadd16(%ctrl: none, %lhs: i32, %rhs: i32)
+      -> (none, i32) {
+    %packed = llvm.call_intrinsic "llvm.arm.sadd16"(%lhs, %rhs)
         : (i32, i32) -> i32
     dataflow.graph.return %ctrl, %packed : none, i32
   }
@@ -76,6 +92,16 @@ module {
       fabric.fu(%lhs = %pa : !fabric.bits<32>,
                 %rhs = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
         %result = fabric.op [@llvm.arm.qadd16] (%lhs, %rhs)
+            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        fabric.yield %result : !fabric.bits<32>
+      }
+    }
+    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
+                         %pb = %i32b : !fabric.bits<32>)
+        -> !fabric.bits<32> {
+      fabric.fu(%lhs = %pa : !fabric.bits<32>,
+                %rhs = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+        %result = fabric.op [@llvm.arm.sadd16] (%lhs, %rhs)
             : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
         fabric.yield %result : !fabric.bits<32>
       }

@@ -313,6 +313,64 @@ func.func private @multi_structured_outparam_candidate(%src: !llvm.ptr,
   return
 }
 
+// CMSIS-style status kernels can use multiple structured regions to advance
+// pointer state and still return a constant success code. The graph surface is
+// the structured memory work; the scalar status remains a graph result.
+// CHECK-LABEL: func.func private @constant_status_multi_structured_outparam_candidate
+// CHECK: scf.if
+// CHECK: scf.if
+func.func private @constant_status_multi_structured_outparam_candidate(
+    %src: !llvm.ptr, %dst: !llvm.ptr, %n: i32, %offset: i16) -> i32 {
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c2_i32 = arith.constant 2 : i32
+  %c-1_i32 = arith.constant -1 : i32
+  %main_count = arith.shrsi %n, %c1_i32 : i32
+  %has_main = arith.cmpi sgt, %main_count, %c0_i32 : i32
+  %ptrs:2 = scf.if %has_main -> (!llvm.ptr, !llvm.ptr) {
+    %walk:3 = scf.while (%count = %main_count, %d = %dst, %s = %src)
+        : (i32, !llvm.ptr, !llvm.ptr) -> (i32, !llvm.ptr, !llvm.ptr) {
+      %value = llvm.load %s {alignment = 1 : i64} : !llvm.ptr -> i8
+      %wide = llvm.sext %value : i8 to i16
+      %sum = arith.addi %offset, %wide : i16
+      llvm.store %sum, %d {alignment = 2 : i64} : i16, !llvm.ptr
+      %next_s = llvm.getelementptr %s[1] : (!llvm.ptr) -> !llvm.ptr, i8
+      %next_d = llvm.getelementptr %d[2] : (!llvm.ptr) -> !llvm.ptr, i8
+      %next_count = arith.addi %count, %c-1_i32 : i32
+      %more = arith.cmpi sgt, %count, %c1_i32 : i32
+      scf.condition(%more) %next_count, %next_d, %next_s
+          : i32, !llvm.ptr, !llvm.ptr
+    } do {
+    ^bb0(%count: i32, %d: !llvm.ptr, %s: !llvm.ptr):
+      scf.yield %count, %d, %s : i32, !llvm.ptr, !llvm.ptr
+    }
+    scf.yield %walk#2, %walk#1 : !llvm.ptr, !llvm.ptr
+  } else {
+    scf.yield %src, %dst : !llvm.ptr, !llvm.ptr
+  }
+  %tail_count = arith.remsi %n, %c2_i32 : i32
+  %has_tail = arith.cmpi sgt, %tail_count, %c0_i32 : i32
+  scf.if %has_tail {
+    %tail:3 = scf.while (%count = %tail_count, %d = %ptrs#1, %s = %ptrs#0)
+        : (i32, !llvm.ptr, !llvm.ptr) -> (i32, !llvm.ptr, !llvm.ptr) {
+      %value = llvm.load %s {alignment = 1 : i64} : !llvm.ptr -> i8
+      %wide = llvm.sext %value : i8 to i16
+      %sum = arith.addi %offset, %wide : i16
+      llvm.store %sum, %d {alignment = 2 : i64} : i16, !llvm.ptr
+      %next_s = llvm.getelementptr %s[1] : (!llvm.ptr) -> !llvm.ptr, i8
+      %next_d = llvm.getelementptr %d[2] : (!llvm.ptr) -> !llvm.ptr, i8
+      %next_count = arith.addi %count, %c-1_i32 : i32
+      %more = arith.cmpi sgt, %count, %c1_i32 : i32
+      scf.condition(%more) %next_count, %next_d, %next_s
+          : i32, !llvm.ptr, !llvm.ptr
+    } do {
+    ^bb0(%count: i32, %d: !llvm.ptr, %s: !llvm.ptr):
+      scf.yield %count, %d, %s : i32, !llvm.ptr, !llvm.ptr
+    }
+  }
+  return %c0_i32 : i32
+}
+
 // A standalone structured kernel that computes a scalar through result-bearing
 // control and writes it to an out pointer is an accelerator candidate.
 // CHECK-LABEL: func.func private @structured_outparam_candidate
@@ -382,6 +440,12 @@ func.func private @status_outparam_candidate(%dst: !llvm.ptr, %value: i16) -> i3
 // CHECK: llvm.getelementptr
 // CHECK: llvm.intr.memcpy
 // CHECK: dataflow.graph.return %arg0 : none
+// CHECK-LABEL: dataflow.graph.func private @g_constant_status_multi_structured_outparam_candidate_0
+// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32, %arg4: i16) -> (none, i32)
+// CHECK: scf.if
+// CHECK: scf.if
+// CHECK: llvm.store
+// CHECK: dataflow.graph.return %arg0, %{{.*}} : none, i32
 // CHECK-LABEL: dataflow.graph.func private @g_status_outparam_candidate_0
 // CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: i16) -> (none, i32)
 // CHECK: scf.if

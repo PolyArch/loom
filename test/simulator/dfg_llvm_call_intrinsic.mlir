@@ -6,6 +6,8 @@
 // RUN: FileCheck %s --check-prefix=QSUB8-SAT < %t.qsub8.saturate.json
 // RUN: loom-dfg-sim %s --graph arm_qadd16_saturate --arg 0=none --output %t.qadd16.saturate.json
 // RUN: FileCheck %s --check-prefix=QADD16-SAT < %t.qadd16.saturate.json
+// RUN: loom-dfg-sim %s --graph arm_sadd16_wrap --arg 0=none --output %t.sadd16.wrap.json
+// RUN: FileCheck %s --check-prefix=SADD16-WRAP < %t.sadd16.wrap.json
 
 // QSUB16-DAG: "workload": "arm_qsub16"
 // QSUB16-DAG: "graph": "arm_qsub16"
@@ -32,6 +34,12 @@
 // QADD16-SAT-DAG: "status": "pass"
 // QADD16-SAT-DAG: "llvm.arm.qadd16": 1
 // QADD16-SAT-DAG: "i32:2147450879"
+
+// SADD16-WRAP-DAG: "workload": "arm_sadd16_wrap"
+// SADD16-WRAP-DAG: "graph": "arm_sadd16_wrap"
+// SADD16-WRAP-DAG: "status": "pass"
+// SADD16-WRAP-DAG: "llvm.arm.sadd16": 1
+// SADD16-WRAP-DAG: "i32:-2147483645"
 
 module {
   dataflow.graph.func private @arm_qsub16(%ctrl: none) -> (none, i32) {
@@ -62,6 +70,14 @@ module {
     %lhs = dataflow.constant %ctrl {const_value = 2147450879 : i32} : i32
     %rhs = dataflow.constant %ctrl {const_value = 65537 : i32} : i32
     %packed = llvm.call_intrinsic "llvm.arm.qadd16"(%lhs, %rhs)
+        : (i32, i32) -> i32
+    dataflow.graph.return %ctrl, %packed : none, i32
+  }
+
+  dataflow.graph.func private @arm_sadd16_wrap(%ctrl: none) -> (none, i32) {
+    %lhs = dataflow.constant %ctrl {const_value = 2147418113 : i32} : i32
+    %rhs = dataflow.constant %ctrl {const_value = 65538 : i32} : i32
+    %packed = llvm.call_intrinsic "llvm.arm.sadd16"(%lhs, %rhs)
         : (i32, i32) -> i32
     dataflow.graph.return %ctrl, %packed : none, i32
   }

@@ -131,9 +131,9 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             "cmsis-nn": {
                 "total": 18,
                 "pass": 14,
-                "fail": 0,
+                "fail": 1,
                 "blocked": 0,
-                "unsupported": 4,
+                "unsupported": 3,
                 "missing_status": 0,
             },
         }

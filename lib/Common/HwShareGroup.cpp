@@ -32,7 +32,8 @@ namespace common {
            "math.roundeven"},
           {"math.sqrt", "math.rsqrt"},
           {"math.tanh", "math.erf"},
-          {"llvm.arm.qadd16", "llvm.arm.qsub16", "llvm.arm.qsub8"},
+          {"llvm.arm.qadd16", "llvm.arm.sadd16", "llvm.arm.qsub16",
+           "llvm.arm.qsub8"},
           {"llvm.trunc", "llvm.sext", "llvm.zext"},
       };
   return groups;
