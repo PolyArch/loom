@@ -65,6 +65,7 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"llvm.select", 1, 1, true, true},
     {"llvm.icmp", 1, 1, false, true},
     {"llvm.getelementptr", 1, 1, false, false},
+    {"llvm.mlir.addressof", 1, 1, false, false},
     {"llvm.mlir.zero", 1, 1, false, false},
     {"ub.poison", 1, 1, false, false},
     {"llvm.intr.memcpy", 8, 8, false, false},

@@ -44,6 +44,12 @@ static llvm::cl::list<std::string> memrefArgs(
     llvm::cl::desc("memref fixture as index[:byte_offset]=value0,value1,..."),
     llvm::cl::ZeroOrMore);
 
+static llvm::cl::list<std::string> globalMemrefArgs(
+    "global-memref",
+    llvm::cl::desc(
+        "global fixture as symbol[:byte_offset]=value0,value1,..."),
+    llvm::cl::ZeroOrMore);
+
 static llvm::cl::opt<std::string>
     outputPath("output", llvm::cl::desc("DFG simulation report JSON"),
                llvm::cl::Required);
@@ -102,6 +108,46 @@ parseMemoryArgs() {
   return parsed;
 }
 
+static std::string normalizeGlobalSymbol(llvm::StringRef symbol) {
+  symbol = symbol.trim();
+  (void)symbol.consume_front("@");
+  if (symbol.size() >= 2 && symbol.front() == '"' && symbol.back() == '"')
+    symbol = symbol.drop_front().drop_back();
+  return symbol.str();
+}
+
+static llvm::Expected<llvm::SmallVector<loom::sim::DFGGlobalMemoryArg>>
+parseGlobalMemoryArgs() {
+  llvm::SmallVector<loom::sim::DFGGlobalMemoryArg> parsed;
+  for (llvm::StringRef raw : globalMemrefArgs) {
+    std::pair<llvm::StringRef, llvm::StringRef> split = raw.split('=');
+    if (split.second.empty())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "--global-memref expects symbol=values");
+    std::int64_t byteOffset = 0;
+    llvm::StringRef symbolPart = split.first;
+    if (split.first.contains(':')) {
+      std::pair<llvm::StringRef, llvm::StringRef> offsetSplit =
+          split.first.rsplit(':');
+      symbolPart = offsetSplit.first;
+      if (offsetSplit.second.empty())
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "--global-memref byte offset must be a non-negative integer");
+      if (offsetSplit.second.getAsInteger(10, byteOffset) || byteOffset < 0)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "--global-memref byte offset must be a non-negative integer");
+    }
+    std::string symbol = normalizeGlobalSymbol(symbolPart);
+    if (symbol.empty())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "--global-memref symbol must be nonempty");
+    parsed.push_back({std::move(symbol), byteOffset, split.second.str()});
+  }
+  return parsed;
+}
+
 int main(int argc, char **argv) {
   llvm::InitLLVM init(argc, argv);
   llvm::cl::ParseCommandLineOptions(
@@ -145,12 +191,19 @@ int main(int argc, char **argv) {
                  << "\n";
     return 1;
   }
+  auto globalMemoriesOrErr = parseGlobalMemoryArgs();
+  if (!globalMemoriesOrErr) {
+    llvm::errs() << "error: "
+                 << llvm::toString(globalMemoriesOrErr.takeError()) << "\n";
+    return 1;
+  }
 
   loom::sim::DFGSimulationOptions options;
   options.graphName = graphName;
   options.workloadName = workloadName;
   options.args = std::move(*argsOrErr);
   options.memories = std::move(*memoriesOrErr);
+  options.globalMemories = std::move(*globalMemoriesOrErr);
   options.maxEventSteps = maxEventSteps;
 
   auto reportOrErr = loom::sim::simulateDataflowGraph(*module, options);

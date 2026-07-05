@@ -122,9 +122,9 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
         expected_counts = {
             "cmsis-dsp": {
                 "total": 16,
-                "pass": 14,
+                "pass": 15,
                 "fail": 0,
-                "blocked": 1,
+                "blocked": 0,
                 "unsupported": 1,
                 "missing_status": 0,
             },
@@ -145,6 +145,7 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
         add = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
         abs_f32 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "BasicMathFunctions/arm_abs_f32.c")
         fill = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "SupportFunctions/arm_fill_f32.c")
+        sin_f32 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "FastMathFunctions/arm_sin_f32.c")
         relu_q15 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
         relu_q7 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu_q7.c")
         relu6 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu6_s8.c")
@@ -165,7 +166,7 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             "cmsis-nn",
             "FullyConnectedFunctions/arm_fully_connected_s8.c",
         )
-        for row in (add, abs_f32, fill, relu_q15, relu_q7, relu6, reshape, depthwise, vector_sum, fully_connected):
+        for row in (add, abs_f32, fill, sin_f32, relu_q15, relu_q7, relu6, reshape, depthwise, vector_sum, fully_connected):
             if row["status"] != "pass" or row["cgra_status"] != "pass" or row["comparison_status"] != "pass":
                 raise AssertionError(f"default-batch row should expose CGRA-sim pass evidence: {row}")
         if (

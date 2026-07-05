@@ -27,11 +27,18 @@ struct DFGMemoryArg {
   std::string values;
 };
 
+struct DFGGlobalMemoryArg {
+  std::string symbol;
+  std::int64_t byteOffset = 0;
+  std::string values;
+};
+
 struct DFGSimulationOptions {
   std::string graphName;
   std::string workloadName;
   llvm::SmallVector<DFGRuntimeArg> args;
   llvm::SmallVector<DFGMemoryArg> memories;
+  llvm::SmallVector<DFGGlobalMemoryArg> globalMemories;
   std::uint64_t maxEventSteps = 100000;
 };
 

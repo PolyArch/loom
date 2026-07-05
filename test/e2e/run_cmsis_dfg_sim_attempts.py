@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -30,6 +31,8 @@ class Attempt:
     dfg_dir_arg: str
     args: tuple[str, ...]
     memrefs: tuple[str, ...]
+    global_memrefs: tuple[str, ...] = ()
+    cmsis_dsp_global_tables: tuple[str, ...] = ()
     hardware_mlir: str = ""
     hardware: str = ""
     artifact_stem: str = ""
@@ -380,6 +383,28 @@ ATTEMPTS = (
                 ),
             ),
         ),
+    ),
+    Attempt(
+        suite="cmsis-dsp",
+        case="FastMathFunctions/arm_sin_f32.c",
+        stem="arm_sin_f32",
+        graph="g_arm_sin_f32_0",
+        dfg_dir_arg="cmsis_dsp_dfg_dir",
+        args=("0=none", "1=5.000000e-01"),
+        memrefs=(),
+        cmsis_dsp_global_tables=("sinTable_f32",),
+        hardware_mlir="test/pnr/shared_signal_window_adg.mlir",
+        hardware="shared_signal_window_adg",
+        expected_dynamic_work_items=1,
+        expected_operation_fire_counts=(
+            ("dataflow.constant", 7),
+            ("llvm.mlir.addressof", 1),
+            ("llvm.load", 2),
+            ("llvm.fptosi", 1),
+            ("llvm.sitofp", 1),
+            ("llvm.intr.fmuladd", 1),
+        ),
+        expected_final_outputs=("none", "f32:0.479419"),
     ),
     Attempt(
         suite="cmsis-dsp",
@@ -1422,6 +1447,53 @@ def require_tool(path: Path, label: str) -> None:
         raise SystemExit(f"[cmsis-dfg-sim] {label} not executable: {path}")
 
 
+def normalize_c_numeric_literal(value: str) -> str:
+    token = value.strip()
+    while token and token[-1] in "fFuUlL":
+        token = token[:-1]
+    return token
+
+
+def parse_c_initializer_values(body: str) -> list[str]:
+    body = re.sub(r"/\*.*?\*/", " ", body, flags=re.S)
+    body = re.sub(r"//.*", " ", body)
+    values = re.findall(
+        r"[-+]?(?:0x[0-9A-Fa-f]+|\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?[fFuUlL]*",
+        body,
+    )
+    return [normalize_c_numeric_literal(value) for value in values]
+
+
+def cmsis_dsp_common_table_memref(symbol: str) -> str:
+    if not symbol or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", symbol):
+        raise SystemExit(f"[cmsis-dfg-sim] invalid CMSIS-DSP table symbol: {symbol!r}")
+    source = ROOT / "externals" / "cmsis-dsp" / "Source" / "CommonTables" / "arm_common_tables.c"
+    if not source.is_file():
+        raise SystemExit(f"[cmsis-dfg-sim] missing CMSIS-DSP common table source: {source}")
+    text = source.read_text(errors="replace")
+    pattern = (
+        r"const\s+[A-Za-z_][A-Za-z0-9_]*\s+"
+        + re.escape(symbol)
+        + r"\s*\[[^\]]+\][^=]*=\s*\{(?P<body>.*?)\};"
+    )
+    match = re.search(pattern, text, flags=re.S)
+    if not match:
+        raise SystemExit(f"[cmsis-dfg-sim] missing CMSIS-DSP common table: {symbol}")
+    values = parse_c_initializer_values(match.group("body"))
+    if not values:
+        raise SystemExit(f"[cmsis-dfg-sim] CMSIS-DSP common table is empty: {symbol}")
+    return f"{symbol}=" + ",".join(values)
+
+
+def attempt_global_memrefs(attempt: Attempt) -> list[str]:
+    resolved = list(attempt.global_memrefs)
+    resolved.extend(
+        cmsis_dsp_common_table_memref(symbol)
+        for symbol in attempt.cmsis_dsp_global_tables
+    )
+    return resolved
+
+
 def run_command(
     command: list[str],
     timeout_seconds: int,
@@ -1545,6 +1617,8 @@ def run_attempt(
         command.extend(["--arg", arg])
     for memref in attempt.memrefs:
         command.extend(["--memref", memref])
+    for global_memref in attempt_global_memrefs(attempt):
+        command.extend(["--global-memref", global_memref])
 
     run_command(command, args.timeout_seconds, attempt.case)
     if not output.is_file():

@@ -509,9 +509,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 14,
+            "pass": 15,
             "fail": 0,
-            "blocked": 1,
+            "blocked": 0,
             "unsupported": 1,
             "missing_status": 0,
         },
@@ -528,6 +528,7 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "missing_status": 0,
         },
     )
+    assert_cmsis_sin_f32_cgra_evidence(repo, rows, out_dir / "current-sim-cycle")
     expected_hardware = default_batch_hardware(repo)
     for case, hardware in expected_hardware.items():
         assert_app_cgra_pass_row(repo, rows, case, expected_hardware=hardware)
@@ -1834,9 +1835,9 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 14,
+            "pass": 15,
             "fail": 0,
-            "blocked": 1,
+            "blocked": 0,
             "unsupported": 1,
             "missing_status": 0,
         },
@@ -1863,6 +1864,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "arm_biquad_cascade_df1_f32",
     )
     assert_cmsis_biquad_shared_adg_evidence(sim_evidence)
+    assert_cmsis_sin_f32_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_mat_mult_f32_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
@@ -1959,6 +1961,48 @@ def assert_cmsis_cgra_pass_row(
     ):
         if not artifact.is_file():
             raise AssertionError(f"CMSIS evidence mode should emit {artifact}")
+
+
+def assert_cmsis_sin_f32_cgra_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    case = "FastMathFunctions/arm_sin_f32.c"
+    stem = "arm_sin_f32"
+    assert_cmsis_cgra_pass_row(
+        repo,
+        rows,
+        sim_evidence,
+        "cmsis-dsp",
+        case,
+        stem,
+        expected_hardware="shared_signal_window_adg",
+    )
+    dfg = json.loads((sim_evidence / f"{stem}.dfg.report.json").read_text())
+    mapping = json.loads((sim_evidence / f"{stem}.mapping.json").read_text())
+    cgra = json.loads((sim_evidence / f"{stem}.cgra.report.json").read_text())
+    if dfg.get("final_outputs") != ["none", "f32:0.479419"] or cgra.get("final_outputs") != [
+        "none",
+        "f32:0.479419",
+    ]:
+        raise AssertionError(f"unexpected CMSIS sin output evidence: {dfg}, {cgra}")
+    counts = dfg.get("operation_fire_counts", {})
+    expected_counts = {
+        "dataflow.constant": 7,
+        "llvm.mlir.addressof": 1,
+        "llvm.load": 2,
+        "llvm.fptosi": 1,
+        "llvm.sitofp": 1,
+        "llvm.intr.fmuladd": 1,
+    }
+    for op_name, expected in expected_counts.items():
+        if counts.get(op_name) != expected:
+            raise AssertionError(f"unexpected CMSIS sin fire count for {op_name}: {dfg}")
+    placements = {item.get("operation") for item in mapping.get("placements", [])}
+    for op_name in ("llvm.load", "llvm.fptosi", "llvm.sitofp", "llvm.intr.fmuladd"):
+        if op_name not in placements:
+            raise AssertionError(f"CMSIS sin mapping is missing placement for {op_name}: {mapping}")
 
 
 def assert_cmsis_dfg_unsupported_row(
@@ -4765,9 +4809,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 14,
+            "pass": 15,
             "fail": 0,
-            "blocked": 1,
+            "blocked": 0,
             "unsupported": 1,
             "missing_status": 0,
         },
@@ -4819,6 +4863,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_mean_shared_adg_evidence(sim_evidence)
     assert_cmsis_max_shared_adg_evidence(sim_evidence)
     assert_cmsis_biquad_shared_adg_evidence(sim_evidence)
+    assert_cmsis_sin_f32_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_var_shared_adg_evidence(sim_evidence)
     assert_cmsis_cfft_component_evidence(repo, rows, sim_evidence)
     assert_cmsis_fir_component_pass_evidence(repo, rows, sim_evidence)

@@ -600,7 +600,7 @@ bool isStructuredPointerForwardingUse(mlir::OpOperand &use) {
 
 bool isPointerBookkeepingOp(mlir::Operation *op) {
   llvm::StringRef name = op->getName().getStringRef();
-  if (name == "llvm.mlir.zero") {
+  if (name == "llvm.mlir.zero" || name == "llvm.mlir.addressof") {
     if (op->getNumResults() != 1 ||
         !isLlvmPointerType(op->getResult(0).getType()))
       return false;

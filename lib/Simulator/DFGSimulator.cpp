@@ -121,6 +121,7 @@ struct SimulatorState {
   OutputMap pendingObservedOutputs;
   llvm::DenseMap<mlir::Value, std::shared_ptr<MemoryValue>> memories;
   llvm::DenseMap<mlir::Value, MemoryFixture> rawMemoryFixtures;
+  llvm::StringMap<MemoryFixture> globalMemoryFixtures;
   llvm::DenseMap<mlir::Operation *, StreamState> streamStates;
   llvm::DenseMap<mlir::Operation *, LoopState> carryStates;
   llvm::DenseMap<mlir::Operation *, LoopState> invariantStates;
@@ -1664,6 +1665,21 @@ bool fireLLVMZero(mlir::LLVM::ZeroOp op, SimulatorState &state) {
   return recordEvent(state, op->getName().getStringRef());
 }
 
+bool fireLLVMAddressOf(mlir::LLVM::AddressOfOp op, SimulatorState &state) {
+  if (state.oneShotOps.contains(op.getOperation()))
+    return false;
+  mlir::Value result = op->getResult(0);
+  std::int64_t byteOffset = 0;
+  auto fixtureIt = state.globalMemoryFixtures.find(op.getGlobalName());
+  if (fixtureIt != state.globalMemoryFixtures.end()) {
+    state.rawMemoryFixtures[result] = fixtureIt->second;
+    byteOffset = fixtureIt->second.byteOffset;
+  }
+  emitToken(state, result, pointerToken(result, {}, byteOffset));
+  state.oneShotOps.insert(op.getOperation());
+  return recordEvent(state, op->getName().getStringRef());
+}
+
 bool fireUBPoison(mlir::ub::PoisonOp op, SimulatorState &state) {
   if (state.oneShotOps.contains(op.getOperation()))
     return false;
@@ -1897,6 +1913,19 @@ bool assignLocalLLVMZero(mlir::LLVM::ZeroOp op, SimulatorState &state,
     return false;
   }
   locals[op->getResult(0)] = *tokenOrErr;
+  return recordEvent(state, op->getName().getStringRef());
+}
+
+bool assignLocalLLVMAddressOf(mlir::LLVM::AddressOfOp op,
+                              SimulatorState &state, LocalValueMap &locals) {
+  mlir::Value result = op->getResult(0);
+  std::int64_t byteOffset = 0;
+  auto fixtureIt = state.globalMemoryFixtures.find(op.getGlobalName());
+  if (fixtureIt != state.globalMemoryFixtures.end()) {
+    state.rawMemoryFixtures[result] = fixtureIt->second;
+    byteOffset = fixtureIt->second.byteOffset;
+  }
+  locals[result] = pointerToken(result, {}, byteOffset);
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -2374,6 +2403,8 @@ bool executeStructuredForBodyOp(mlir::Operation *op, SimulatorState &state,
     return assignLocalGEP(gep, state, locals, captureIndex);
   if (auto zero = mlir::dyn_cast<mlir::LLVM::ZeroOp>(op))
     return assignLocalLLVMZero(zero, state, locals);
+  if (auto addressOf = mlir::dyn_cast<mlir::LLVM::AddressOfOp>(op))
+    return assignLocalLLVMAddressOf(addressOf, state, locals);
   if (auto poison = mlir::dyn_cast<mlir::ub::PoisonOp>(op))
     return assignLocalUBPoison(poison, state, locals);
   if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(op))
@@ -2472,7 +2503,8 @@ unsupportedStructuredYieldRegion(mlir::Operation *parent, mlir::Block *block,
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
+                  mlir::LLVM::AddressOfOp, mlir::LLVM::GEPOp,
+                  mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
                   mlir::ub::PoisonOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
@@ -2564,7 +2596,8 @@ unsupportedStructuredForOperation(mlir::scf::ForOp op) {
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
+                  mlir::LLVM::AddressOfOp, mlir::LLVM::GEPOp,
+                  mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
                   mlir::ub::PoisonOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
@@ -2628,7 +2661,8 @@ unsupportedStructuredWhileBody(mlir::Block *block,
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
+                  mlir::LLVM::AddressOfOp, mlir::LLVM::GEPOp,
+                  mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
                   mlir::ub::PoisonOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
@@ -2707,7 +2741,8 @@ unsupportedStructuredForallOperation(mlir::scf::ForallOp op) {
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
+                  mlir::LLVM::AddressOfOp, mlir::LLVM::GEPOp,
+                  mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
                   mlir::ub::PoisonOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
@@ -3301,6 +3336,8 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireCast(typedOp, state); })
       .Case<mlir::LLVM::GEPOp>(
           [&](auto typedOp) { return fireGEP(typedOp, state); })
+      .Case<mlir::LLVM::AddressOfOp>(
+          [&](auto typedOp) { return fireLLVMAddressOf(typedOp, state); })
       .Case<mlir::LLVM::ZeroOp>(
           [&](auto typedOp) { return fireLLVMZero(typedOp, state); })
       .Case<mlir::ub::PoisonOp>(
@@ -3376,10 +3413,10 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
                 dataflow::MuxOp, dataflow::DemuxOp, dataflow::ParallelizeOp,
                 dataflow::PackOp, dataflow::UnpackOp, dataflow::SerializeOp,
                 dataflow::LoadOp, dataflow::StoreOp,
-                mlir::UnrealizedConversionCastOp, mlir::LLVM::GEPOp,
-                mlir::LLVM::ZeroOp, mlir::LLVM::LoadOp, mlir::LLVM::StoreOp,
-                mlir::LLVM::MemcpyOp, mlir::arith::ConstantOp,
-                mlir::ub::PoisonOp>(op))
+                mlir::UnrealizedConversionCastOp, mlir::LLVM::AddressOfOp,
+                mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::LoadOp,
+                mlir::LLVM::StoreOp, mlir::LLVM::MemcpyOp,
+                mlir::arith::ConstantOp, mlir::ub::PoisonOp>(op))
     return std::nullopt;
   return unsupportedOperationLabel(op);
 }
@@ -3424,6 +3461,22 @@ indexMemoryArgs(llvm::ArrayRef<DFGMemoryArg> args, unsigned argCount) {
     byIndex.try_emplace(key, MemoryFixture{arg.values, arg.byteOffset});
   }
   return byIndex;
+}
+
+llvm::Expected<llvm::StringMap<MemoryFixture>>
+indexGlobalMemoryArgs(llvm::ArrayRef<DFGGlobalMemoryArg> args) {
+  llvm::StringMap<MemoryFixture> bySymbol;
+  for (const DFGGlobalMemoryArg &arg : args) {
+    if (arg.symbol.empty())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "global memref symbol is empty");
+    if (bySymbol.contains(arg.symbol))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "global memref symbol '%s' is repeated",
+                                     arg.symbol.c_str());
+    bySymbol.try_emplace(arg.symbol, MemoryFixture{arg.values, arg.byteOffset});
+  }
+  return bySymbol;
 }
 
 void observeReturnOperands(dataflow::GraphFuncOp graph,
@@ -3654,9 +3707,13 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   if (!memoriesOrErr)
     return memoriesOrErr.takeError();
   llvm::StringMap<MemoryFixture> memories = std::move(*memoriesOrErr);
+  auto globalMemoriesOrErr = indexGlobalMemoryArgs(options.globalMemories);
+  if (!globalMemoriesOrErr)
+    return globalMemoriesOrErr.takeError();
 
   SimulatorState state;
   state.maxStructuredLoopIterations = options.maxEventSteps;
+  state.globalMemoryFixtures = std::move(*globalMemoriesOrErr);
   llvm::SmallVector<mlir::Value> returnValues;
   observeReturnOperands(graph, returnValues);
 
