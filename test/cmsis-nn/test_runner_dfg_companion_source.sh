@@ -40,4 +40,23 @@ if ! grep -q 'dataflow.graph.func private @g_t_arm_nn_softmax_common_s8_red_0_0'
     exit 1
 fi
 
+cat > "${TMP}/cmsis_nn_convolve_targets.txt" <<'T'
+ConvolutionFunctions/arm_convolve_1x1_s8_fast.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_convolve_1x1_s8_fast|-U__ARM_FEATURE_DSP -UARM_MATH_DSP|4|4|2|16|5|17|2|1|0|0|68
+T
+
+mkdir -p "${TMP}/convolve-out"
+if ! TARGETS_OVERRIDE="${TMP}/cmsis_nn_convolve_targets.txt" \
+    OUT_OVERRIDE="${TMP}/convolve-out" \
+    bash "${HERE}/run_cmsis_nn_dfg.sh" >"${TMP}/convolve-runner.log" 2>&1; then
+    echo "[cmsis-nn-dfg-companion] expected canonical 1x1 convolution companion lowering to pass." >&2
+    cat "${TMP}/convolve-runner.log" >&2 || true
+    exit 1
+fi
+
+if ! grep -q 'dataflow.graph.func private @g_t_arm_nn_mat_mult_nt_t_s8_red_0_0' "${TMP}/convolve-out/arm_convolve_1x1_s8_fast.dfg.mlir"; then
+    echo "[cmsis-nn-dfg-companion] lowered 1x1 convolution MLIR is missing the matrix helper graph." >&2
+    cat "${TMP}/convolve-runner.log" >&2 || true
+    exit 1
+fi
+
 echo "[cmsis-nn-dfg-companion] PASS"

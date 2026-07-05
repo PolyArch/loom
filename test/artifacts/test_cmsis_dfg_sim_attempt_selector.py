@@ -132,8 +132,8 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
                 "total": 18,
                 "pass": 15,
                 "fail": 0,
-                "blocked": 1,
-                "unsupported": 2,
+                "blocked": 2,
+                "unsupported": 1,
                 "missing_status": 0,
             },
         }
