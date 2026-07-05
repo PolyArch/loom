@@ -65,7 +65,7 @@ BasicMathFunctions/arm_add_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown
 BasicMathFunctions/arm_mult_f32.c|thumbv7em-none-eabihf|cortex-m4|thumbv7em-unknown-none-eabihf|arm_mult_f32|-mfloat-abi=hard|1|1|1|2|1|2|1|0|0|0|3
 BasicMathFunctions/arm_offset_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_offset_f32||1|1|1|1|1|2|1|0|0|0|3
 BasicMathFunctions/arm_abs_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_abs_f32||1|1|1|1|1|2|1|0|0|0|3
-FastMathFunctions/arm_sin_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_sin_f32||0|0|0|0|0|0|0|0|0|0|0
+FastMathFunctions/arm_sin_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_sin_f32||0|1|0|0|0|7|0|0|0|0|0
 FastMathFunctions/arm_sqrt_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_sqrt_q15||0|0|0|0|0|0|0|0|0|0|3
 FilteringFunctions/arm_fir_f32.c|thumbv7em-none-eabihf|cortex-m4|thumbv7em-unknown-none-eabihf|arm_fir_f32|-mfloat-abi=hard|2|2|1|4|3|7|1|0|0|0|20
 FilteringFunctions/arm_biquad_cascade_df1_f32.c|thumbv7em-none-eabihf|cortex-m4|thumbv7em-unknown-none-eabihf|arm_biquad_cascade_df1_f32|-mfloat-abi=hard|1|1|1|1|1|2|1|0|0|0|8

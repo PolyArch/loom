@@ -551,8 +551,8 @@ def assert_counts(rows: list[dict[str, str]], data: dict[str, object]) -> None:
                 "total": total,
                 "pass": 0,
                 "fail": 0,
-                "blocked": 14,
-                "unsupported": 2,
+                "blocked": 15,
+                "unsupported": 1,
                 "missing_status": 0,
             }
             if suite_counts != expected:
@@ -860,14 +860,24 @@ module {
             or "g_t_arm_relu6_s8_0_0" not in cmsis_relu6["graph_ids"]
         ):
             raise AssertionError(f"CMSIS-NN relu6 baseline row should consume DFG MLIR evidence: {cmsis_relu6}")
-        cmsis_dsp_no_graph = one_row(rows, "cmsis-dsp", "FastMathFunctions/arm_sin_f32.c")
+        cmsis_dsp_sin = one_row(rows, "cmsis-dsp", "FastMathFunctions/arm_sin_f32.c")
+        if (
+            cmsis_dsp_sin["status"] != "blocked"
+            or cmsis_dsp_sin["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
+            or cmsis_dsp_sin["blocking_prerequisite"] != "dfg_sim_report"
+            or cmsis_dsp_sin["owner"] != "compiler_pipeline"
+            or cmsis_dsp_sin["required_slice_count"] != "1"
+            or "g_arm_sin_f32_0" not in cmsis_dsp_sin["graph_ids"]
+        ):
+            raise AssertionError(f"CMSIS-DSP sin row should consume scalar-return DFG MLIR evidence: {cmsis_dsp_sin}")
+        cmsis_dsp_no_graph = one_row(rows, "cmsis-dsp", "FastMathFunctions/arm_sqrt_q15.c")
         if (
             cmsis_dsp_no_graph["status"] != "unsupported"
             or cmsis_dsp_no_graph["diagnostic_class"] != "cmsis_no_dataflow_graph"
             or cmsis_dsp_no_graph["blocking_prerequisite"] != "dataflow_graph"
             or not cmsis_dsp_no_graph["dfg_mlir"]
         ):
-            raise AssertionError(f"CMSIS-DSP no-graph row should be structured unsupported: {cmsis_dsp_no_graph}")
+            raise AssertionError(f"CMSIS-DSP sqrt row should remain structured unsupported: {cmsis_dsp_no_graph}")
         no_cmsis_auto_csv = out_dir / "no-cmsis-auto-cgra-status-summary.csv"
         no_cmsis_auto_json = out_dir / "no-cmsis-auto-cgra-status-summary.json"
         run(
@@ -919,8 +929,8 @@ module {
             "total": 16,
             "pass": 1,
             "fail": 0,
-            "blocked": 13,
-            "unsupported": 2,
+            "blocked": 14,
+            "unsupported": 1,
             "missing_status": 0,
         }:
             raise AssertionError(
@@ -1498,18 +1508,18 @@ module {
         write_cmsis_dfg_mlir(cmsis_dsp_dfg_dir / "arm_add_q15.dfg.mlir", symbol="arm_add_q15", graph=True)
         write_cmsis_dfg_mlir(cmsis_dsp_dfg_dir / "arm_mult_f32.dfg.mlir", symbol="wrong_symbol", graph=True)
         write_cmsis_dfg_mlir(
-            cmsis_dsp_dfg_dir / "arm_sin_f32.dfg.mlir",
-            symbol="arm_sin_f32",
+            cmsis_dsp_dfg_dir / "arm_sqrt_q15.dfg.mlir",
+            symbol="arm_sqrt_q15",
             graph=False,
             residual_body="""
 module {
-  llvm.mlir.global external constant @".sin.table"() : !llvm.array<16 x f32>
-  func.func @arm_sin_f32(%arg0: f32, %arg1: i1) -> f32 {
-    %table = llvm.mlir.addressof @".sin.table" : !llvm.ptr
+  llvm.mlir.global external constant @".sqrt.table"() : !llvm.array<16 x f32>
+  func.func @arm_sqrt_q15(%arg0: f32, %arg1: i1) -> f32 {
+    %table = llvm.mlir.addressof @".sqrt.table" : !llvm.ptr
     %zero = arith.constant 0.0 : f32
     %fma = llvm.intr.fmuladd(%arg0, %arg0, %zero) : (f32, f32, f32) -> f32
     %qzero = arith.constant 0 : i32
-    %call = llvm.call @arm_sin_f32_table_lookup(%table) : (!llvm.ptr) -> f32
+    %call = llvm.call @arm_sqrt_q15_table_lookup(%table) : (!llvm.ptr) -> f32
     %quoted = llvm.call @"quoted.helper"() : () -> f32
     "llvm.intr.memcpy"(%table, %table, %qzero) : (!llvm.ptr, !llvm.ptr, i32) -> ()
     scf.if %arg1 {
@@ -1517,7 +1527,7 @@ module {
     }
     return %fma : f32
   }
-  llvm.func @arm_sin_f32_table_lookup(!llvm.ptr) -> f32
+  llvm.func @arm_sqrt_q15_table_lookup(!llvm.ptr) -> f32
   llvm.func @"quoted.helper"() -> f32
 }
 """,
@@ -1833,27 +1843,27 @@ module {
                 f"stderr={failed_cmsis_wrong_graph_generic.stderr} "
                 f"audit={forged_cmsis_wrong_graph_generic_data}"
             )
-        cmsis_sin = one_row(cmsis_evidence_rows, "cmsis-dsp", "FastMathFunctions/arm_sin_f32.c")
+        cmsis_sqrt = one_row(cmsis_evidence_rows, "cmsis-dsp", "FastMathFunctions/arm_sqrt_q15.c")
         if (
-            cmsis_sin["status"] != "unsupported"
-            or cmsis_sin["diagnostic_class"] != "cmsis_no_dataflow_graph"
-            or cmsis_sin["blocking_prerequisite"] != "dataflow_graph"
-            or cmsis_sin["required_slice_count"] != "0"
+            cmsis_sqrt["status"] != "unsupported"
+            or cmsis_sqrt["diagnostic_class"] != "cmsis_no_dataflow_graph"
+            or cmsis_sqrt["blocking_prerequisite"] != "dataflow_graph"
+            or cmsis_sqrt["required_slice_count"] != "0"
         ):
-            raise AssertionError(f"CMSIS-DSP no-graph DFG MLIR should become structured unsupported: {cmsis_sin}")
-        if "residual calls: @arm_sin_f32_table_lookup" not in cmsis_sin["diagnostic"]:
-            raise AssertionError(f"CMSIS-DSP no-graph row should expose residual calls: {cmsis_sin}")
+            raise AssertionError(f"CMSIS-DSP no-graph DFG MLIR should become structured unsupported: {cmsis_sqrt}")
+        if "residual calls: @arm_sqrt_q15_table_lookup" not in cmsis_sqrt["diagnostic"]:
+            raise AssertionError(f"CMSIS-DSP no-graph row should expose residual calls: {cmsis_sqrt}")
         for expected in (
             '@"quoted.helper"',
             "llvm.arm.qadd",
             "llvm.intr.fmuladd",
             "llvm.intr.memcpy",
             "scf.if",
-            '@".sin.table"',
+            '@".sqrt.table"',
         ):
-            if expected not in cmsis_sin["diagnostic"]:
-                raise AssertionError(f"CMSIS-DSP no-graph row should expose {expected}: {cmsis_sin}")
-        assert_sha256_file(cmsis_sin["dfg_mlir"], cmsis_sin["dfg_mlir_fingerprint"], repo)
+            if expected not in cmsis_sqrt["diagnostic"]:
+                raise AssertionError(f"CMSIS-DSP no-graph row should expose {expected}: {cmsis_sqrt}")
+        assert_sha256_file(cmsis_sqrt["dfg_mlir"], cmsis_sqrt["dfg_mlir_fingerprint"], repo)
         cmsis_mult = one_row(cmsis_evidence_rows, "cmsis-dsp", "BasicMathFunctions/arm_mult_f32.c")
         if (
             cmsis_mult["status"] != "fail"
@@ -1967,7 +1977,7 @@ module {
                 f"{forged_binding_generic_data}"
             )
         forged_ready_no_graph_rows = [dict(row) for row in cmsis_evidence_rows]
-        forged_ready_no_graph = one_row(forged_ready_no_graph_rows, "cmsis-dsp", "FastMathFunctions/arm_sin_f32.c")
+        forged_ready_no_graph = one_row(forged_ready_no_graph_rows, "cmsis-dsp", "FastMathFunctions/arm_sqrt_q15.c")
         forged_ready_no_graph.update(
             {
                 "status": "blocked",

@@ -475,12 +475,6 @@ struct LowerForToGraphPass
         returnOp.getNumOperands() != func.getFunctionType().getNumResults())
       return false;
 
-    bool hasPointerInput = false;
-    for (::mlir::Type ty : func.getFunctionType().getInputs())
-      hasPointerInput |= isLlvmPointerType(ty);
-    if (!hasPointerInput)
-      return false;
-
     bool hasLoad = false;
     bool unsupported = false;
     func.getBody().walk([&](::mlir::Operation *nested)

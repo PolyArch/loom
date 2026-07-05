@@ -62,8 +62,8 @@ def assert_cmsis_dfg_only_counts(data: dict[str, object]) -> None:
             "total": 16,
             "pass": 0,
             "fail": 0,
-            "blocked": 14,
-            "unsupported": 2,
+            "blocked": 15,
+            "unsupported": 1,
             "missing_status": 0,
         },
     )
@@ -511,8 +511,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 16,
             "pass": 14,
             "fail": 0,
-            "blocked": 0,
-            "unsupported": 2,
+            "blocked": 1,
+            "unsupported": 1,
             "missing_status": 0,
         },
     )
@@ -1836,8 +1836,8 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
             "total": 16,
             "pass": 14,
             "fail": 0,
-            "blocked": 0,
-            "unsupported": 2,
+            "blocked": 1,
+            "unsupported": 1,
             "missing_status": 0,
         },
     )
@@ -4767,8 +4767,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
             "total": 16,
             "pass": 14,
             "fail": 0,
-            "blocked": 0,
-            "unsupported": 2,
+            "blocked": 1,
+            "unsupported": 1,
             "missing_status": 0,
         },
     )
@@ -5006,13 +5006,24 @@ def main() -> int:
 
         dsp_sin = one_row(rows, "cmsis-dsp", "FastMathFunctions/arm_sin_f32.c")
         if (
-            dsp_sin["status"] != "unsupported"
-            or dsp_sin["diagnostic_class"] != "cmsis_no_dataflow_graph"
-            or dsp_sin["blocking_prerequisite"] != "dataflow_graph"
-            or dsp_sin["required_slice_count"] != "0"
+            dsp_sin["status"] != "blocked"
+            or dsp_sin["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
+            or dsp_sin["blocking_prerequisite"] != "dfg_sim_report"
+            or dsp_sin["required_slice_count"] != "1"
+            or "g_arm_sin_f32_0" not in dsp_sin["graph_ids"]
         ):
-            raise AssertionError(f"CMSIS-DSP no-graph row should be structured unsupported: {dsp_sin}")
+            raise AssertionError(f"CMSIS-DSP sin row should consume scalar-return DFG MLIR evidence: {dsp_sin}")
         assert_sha256_file(dsp_sin["dfg_mlir"], dsp_sin["dfg_mlir_fingerprint"], repo)
+
+        dsp_sqrt = one_row(rows, "cmsis-dsp", "FastMathFunctions/arm_sqrt_q15.c")
+        if (
+            dsp_sqrt["status"] != "unsupported"
+            or dsp_sqrt["diagnostic_class"] != "cmsis_no_dataflow_graph"
+            or dsp_sqrt["blocking_prerequisite"] != "dataflow_graph"
+            or dsp_sqrt["required_slice_count"] != "0"
+        ):
+            raise AssertionError(f"CMSIS-DSP sqrt row should remain structured unsupported: {dsp_sqrt}")
+        assert_sha256_file(dsp_sqrt["dfg_mlir"], dsp_sqrt["dfg_mlir_fingerprint"], repo)
 
         nn_relu = one_row(rows, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
         if (

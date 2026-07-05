@@ -124,8 +124,8 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
                 "total": 16,
                 "pass": 14,
                 "fail": 0,
-                "blocked": 0,
-                "unsupported": 2,
+                "blocked": 1,
+                "unsupported": 1,
                 "missing_status": 0,
             },
             "cmsis-nn": {
@@ -421,8 +421,8 @@ def main() -> int:
         "total": 16,
         "pass": 1,
         "fail": 0,
-        "blocked": 13,
-        "unsupported": 2,
+        "blocked": 14,
+        "unsupported": 1,
         "missing_status": 0,
     }:
         raise AssertionError(f"selected default CMSIS counts are wrong: {selector_default_counts}")
