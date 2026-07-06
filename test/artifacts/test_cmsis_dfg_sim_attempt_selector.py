@@ -130,9 +130,9 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             },
             "cmsis-nn": {
                 "total": 18,
-                "pass": 16,
+                "pass": 17,
                 "fail": 0,
-                "blocked": 1,
+                "blocked": 0,
                 "unsupported": 1,
                 "missing_status": 0,
             },
@@ -283,7 +283,7 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
                 raise AssertionError(f"arm_abs_f32 {label} report should preserve real abs final state: {report}")
 
 
-def assert_convolve_selector_records_component_pass_before_aggregate(repo: Path) -> None:
+def assert_convolve_selector_records_row_pass_from_all_components(repo: Path) -> None:
     with artifact_test_common.repo_temp_dir(repo, "cmsis-convolve-attempt-") as tmp:
         root = Path(tmp)
         out_dir = root / "rollup"
@@ -296,19 +296,75 @@ def assert_convolve_selector_records_component_pass_before_aggregate(repo: Path)
             "ConvolutionFunctions/arm_convolve_1x1_s8_fast.c",
         )
         if (
-            row["status"] != "blocked"
+            row["status"] != "pass"
             or row["dfg_status"] != "pass"
             or row["mapping_status"] != "pass"
             or row["cgra_status"] != "pass"
-            or row["diagnostic_class"] != "component_cgra_status_blocked"
-            or row["blocking_prerequisite"] != "component_graph_evidence"
-            or "arm_convolve_1x1_s8_fast.red2.dfg.report.json" not in row["dfg_report"]
-            or "arm_convolve_1x1_s8_fast.red2.mapping.json" not in row["mapping_artifact"]
-            or "arm_convolve_1x1_s8_fast.red2.cgra.report.json" not in row["cgra_report"]
-            or "row-level aggregate DFG, mapping, CGRA, and comparison artifacts are absent"
-            not in row["diagnostic"]
+            or row["comparison_status"] != "pass"
+            or row["diagnostic_class"] != "cgra_sim_pass"
+            or row["blocking_prerequisite"] != ""
+            or row["required_slice_count"] != "4"
+            or row["final_outputs_present"] != "true"
+            or "arm_convolve_1x1_s8_fast.dfg.report.json" not in row["dfg_report"]
+            or "arm_convolve_1x1_s8_fast.mapping.json" not in row["mapping_artifact"]
+            or "arm_convolve_1x1_s8_fast.cgra.report.json" not in row["cgra_report"]
         ):
-            raise AssertionError(f"convolve selector should record passing component evidence before aggregate: {row}")
+            raise AssertionError(f"convolve selector should promote all component evidence to a row pass: {row}")
+
+        aggregate_dfg = json.loads((evidence_dir / "arm_convolve_1x1_s8_fast.dfg.report.json").read_text())
+        expected_graphs = [
+            "g_t_arm_nn_mat_mult_nt_t_s8_red_0_0",
+            "g_t_arm_nn_mat_mult_nt_t_s8_red_1_0",
+            "g_t_arm_nn_mat_mult_nt_t_s8_red_2_0",
+            "g_t_arm_nn_mat_mult_nt_t_s8_red_3_0",
+        ]
+        if (
+            aggregate_dfg.get("status") != "pass"
+            or aggregate_dfg.get("graph") != "workload_graph_set"
+            or aggregate_dfg.get("component_graphs") != expected_graphs
+            or aggregate_dfg.get("final_outputs") != [
+                "none",
+                "i32:98",
+                "i32:-9",
+                "i32:98",
+                "i32:-9",
+                "none",
+                "none",
+                "i32:21648",
+                "i32:32462",
+                "none",
+            ]
+        ):
+            raise AssertionError(f"convolve aggregate DFG should cover all four source graphs: {aggregate_dfg}")
+
+        for component in ("red0", "red1", "red2", "red3"):
+            for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json"):
+                artifact = evidence_dir / f"arm_convolve_1x1_s8_fast.{component}.{suffix}"
+                if not artifact.is_file():
+                    raise AssertionError(f"convolve component evidence is missing {artifact}")
+
+        red0 = json.loads((evidence_dir / "arm_convolve_1x1_s8_fast.red0.dfg.report.json").read_text())
+        if (
+            red0.get("status") != "pass"
+            or red0.get("graph") != "g_t_arm_nn_mat_mult_nt_t_s8_red_0_0"
+            or red0.get("dynamic_work_items") != 1
+            or red0.get("operation_fire_counts", {}).get("dataflow.load") != 1
+            or red0.get("operation_fire_counts", {}).get("llvm.load") != 1
+            or red0.get("final_outputs") != ["none", "i32:98", "i32:-9", "i32:98", "i32:-9"]
+            or red0.get("diagnostics") != []
+        ):
+            raise AssertionError(f"convolve red0 report should expose real source-derived evidence: {red0}")
+
+        red1 = json.loads((evidence_dir / "arm_convolve_1x1_s8_fast.red1.dfg.report.json").read_text())
+        if (
+            red1.get("status") != "pass"
+            or red1.get("graph") != "g_t_arm_nn_mat_mult_nt_t_s8_red_1_0"
+            or red1.get("dynamic_work_items") != 1
+            or red1.get("operation_fire_counts", {}).get("dataflow.store") != 4
+            or red1.get("final_memory_state", {}).get("arg24") != ["i8:127", "i8:127", "i8:127", "i8:0"]
+            or red1.get("diagnostics") != []
+        ):
+            raise AssertionError(f"convolve red1 report should expose real quantized store evidence: {red1}")
 
         report_path = evidence_dir / "arm_convolve_1x1_s8_fast.red2.dfg.report.json"
         report = json.loads(report_path.read_text())
@@ -351,6 +407,17 @@ def assert_convolve_selector_records_component_pass_before_aggregate(repo: Path)
             or int(cgra.get("route_segments", 0)) <= 0
         ):
             raise AssertionError(f"convolve red2 CGRA report should pass after mapping succeeds: {cgra}")
+
+        red3 = json.loads((evidence_dir / "arm_convolve_1x1_s8_fast.red3.dfg.report.json").read_text())
+        if (
+            red3.get("status") != "pass"
+            or red3.get("graph") != "g_t_arm_nn_mat_mult_nt_t_s8_red_3_0"
+            or red3.get("dynamic_work_items") != 1
+            or red3.get("operation_fire_counts", {}).get("dataflow.store") != 1
+            or red3.get("final_memory_state", {}).get("arg22") != ["i8:0", "i8:0", "i8:0", "i8:0"]
+            or red3.get("diagnostics") != []
+        ):
+            raise AssertionError(f"convolve red3 report should expose real quantized store evidence: {red3}")
 
 
 def main() -> int:
@@ -450,7 +517,12 @@ def main() -> int:
         ]
     )
     convolve_selected = attempts.select_attempts(convolve_args)
-    if labels(convolve_selected) != ["arm_convolve_1x1_s8_fast.red2"]:
+    if labels(convolve_selected) != [
+        "arm_convolve_1x1_s8_fast.red0",
+        "arm_convolve_1x1_s8_fast.red1",
+        "arm_convolve_1x1_s8_fast.red2",
+        "arm_convolve_1x1_s8_fast.red3",
+    ]:
         raise AssertionError(
             f"arm_convolve_1x1_s8_fast selector chose unexpected attempts: {labels(convolve_selected)}"
         )
@@ -597,7 +669,7 @@ def main() -> int:
 
     assert_selected_rollup_drops_stale_cmsis_evidence(repo)
     assert_default_batch_rollup_promotes_bounded_rows(repo)
-    assert_convolve_selector_records_component_pass_before_aggregate(repo)
+    assert_convolve_selector_records_row_pass_from_all_components(repo)
 
     return 0
 
