@@ -8631,15 +8631,41 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
         for row in grouped.get("dataflow_primitive_coverage", [])
         if valid_identity(row.get("workload"))
     }
-    hardware = {
-        row["hardware"]
+    hardware_rows_by_identity = {
+        row["hardware"]: row
         for row in grouped.get("adg_hardware", [])
         if row.get("verify_status") == "pass" and valid_identity(row.get("hardware"))
     }
+    hardware = set(hardware_rows_by_identity)
     hardware_symbol_counts: dict[str, int] = {}
     for candidate in hardware:
         symbol = candidate.rsplit("::", 1)[-1]
         hardware_symbol_counts[symbol] = hardware_symbol_counts.get(symbol, 0) + 1
+
+    def standalone_recipe_stem(symbol: str) -> str:
+        stem = symbol
+        if stem.endswith("_adg"):
+            stem = stem[: -len("_adg")]
+        return stem.replace("_", "-")
+
+    def preferred_standalone_hardware_ref(
+        candidate: str,
+        matching_refs: list[str],
+    ) -> str | None:
+        candidate_stem = standalone_recipe_stem(candidate.rsplit("::", 1)[-1])
+        preferred: list[str] = []
+        for full_ref in matching_refs:
+            row = hardware_rows_by_identity.get(full_ref, {})
+            if row.get("topology_class") != "fabric_module_template":
+                continue
+            recipe = row.get("adg_builder_recipe_identity", "")
+            recipe_stem = recipe.rsplit("::", 1)[-1] if recipe else ""
+            source_stem = Path(full_ref.rsplit("::", 1)[0]).stem
+            if recipe_stem == candidate_stem and source_stem == candidate_stem:
+                preferred.append(full_ref)
+        if len(preferred) == 1:
+            return preferred[0]
+        return None
 
     def canonical_hardware_ref(candidate: str | None) -> str | None:
         if not valid_identity(candidate):
@@ -8654,6 +8680,9 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
         ]
         if len(matching_refs) == 1:
             return matching_refs[0]
+        preferred = preferred_standalone_hardware_ref(candidate, matching_refs)
+        if preferred is not None:
+            return preferred
         if hardware_symbol_counts.get(candidate, 0) == 1:
             for full_ref in hardware:
                 if full_ref.rsplit("::", 1)[-1] == candidate:

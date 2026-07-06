@@ -2191,6 +2191,47 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("ambiguous hardware suffix unexpectedly passed audit")
 
+        inventory_duplicate_hardware = out_dir / "inventory-duplicate-adg-hardware-summary.csv"
+        inventory_duplicate_hardware.write_text(
+            "hardware,topology_class,node_count,link_count,verify_status,diagnostic,"
+            "tile_kinds,schedule_kinds,adg_builder_recipe_identity,node_kinds\n"
+            "adg-inventory-mlir/shared-reduction.mlir::shared_reduction_adg,"
+            "fabric_module_template,2,1,pass,verified,pe;switch,spatial,adg-builder::shared-reduction,\n"
+            "adg-inventory-mlir/system-dual-spatial-shared-memory.mlir::shared_reduction_adg,"
+            "fabric_module_template,2,1,pass,verified,pe;switch,spatial,"
+            "adg-builder::system-dual-spatial-shared-memory,\n"
+        )
+        inventory_mapping = out_dir / "inventory-pnr-mapping.json"
+        write_mapping_artifact(inventory_mapping, "vecadd", "g_vecadd", "map0")
+        inventory_mapping_data = json.loads(inventory_mapping.read_text())
+        inventory_mapping_data["hardware"] = "shared_reduction_adg"
+        inventory_mapping.write_text(json.dumps(inventory_mapping_data))
+        inventory_cgra_report = out_dir / "inventory-cgra-sim-report.json"
+        write_cgra_report(inventory_cgra_report, "vecadd", "map0", 10, 12)
+        inventory_cgra_data = json.loads(inventory_cgra_report.read_text())
+        inventory_cgra_data["hardware"] = "shared_reduction_adg"
+        inventory_cgra_report.write_text(json.dumps(inventory_cgra_data))
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-inventory-duplicate-hardware.json"),
+                str(valid_primitive),
+                str(inventory_duplicate_hardware),
+                str(inventory_mapping),
+                str(valid_dfg_report),
+                str(inventory_cgra_report),
+                str(cgra_without_report),
+            ],
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                "inventory standalone hardware candidate failed to disambiguate duplicate symbols\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+
         result = run_command(
             repo,
             [

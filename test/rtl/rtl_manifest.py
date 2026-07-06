@@ -124,18 +124,18 @@ def pass_hardware_rows(path: Path) -> list[dict[str, str]]:
     return rows
 
 
-def source_root(hardware_identity: str) -> tuple[Path, str]:
+def source_root(hardware_identity: str, source_base: Path = ROOT) -> tuple[Path, str]:
     if "::" not in hardware_identity:
         raise InterfaceLoweringError("hardware identity must include source path and module symbol")
     raw_path, symbol = hardware_identity.rsplit("::", 1)
     if not raw_path or not symbol:
         raise InterfaceLoweringError("hardware identity must include source path and module symbol")
     path = Path(raw_path)
-    if not path.is_absolute():
-        path = ROOT / path
-    if not path.is_file():
+    candidates = [path] if path.is_absolute() else [source_base / path, ROOT / path]
+    resolved_path = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if resolved_path is None:
         raise InterfaceLoweringError(f"Fabric source file does not exist: {raw_path}")
-    return path, symbol
+    return resolved_path, symbol
 
 
 def split_top_level_commas(raw: str) -> list[str]:
@@ -292,8 +292,11 @@ def parse_output_ports(raw_outputs: str, used: set[str]) -> tuple[list[ScalarPor
     return ports, diagnostics
 
 
-def module_ports(hardware_identity: str) -> tuple[list[ScalarPort], list[dict[str, str]]]:
-    path, symbol = source_root(hardware_identity)
+def module_ports(
+    hardware_identity: str,
+    source_base: Path = ROOT,
+) -> tuple[list[ScalarPort], list[dict[str, str]]]:
+    path, symbol = source_root(hardware_identity, source_base)
     raw_inputs, raw_outputs = find_module_signature(path.read_text(), symbol)
     used = {"clk", "rst_n"}
     input_ports, input_diagnostics = parse_input_ports(raw_inputs, used)
@@ -301,8 +304,11 @@ def module_ports(hardware_identity: str) -> tuple[list[ScalarPort], list[dict[st
     return input_ports + output_ports, input_diagnostics + output_diagnostics
 
 
-def system_ports(hardware_identity: str) -> tuple[list[ScalarPort], list[dict[str, str]]]:
-    path, symbol = source_root(hardware_identity)
+def system_ports(
+    hardware_identity: str,
+    source_base: Path = ROOT,
+) -> tuple[list[ScalarPort], list[dict[str, str]]]:
+    path, symbol = source_root(hardware_identity, source_base)
     find_system_body(path.read_text(), symbol)
     return [], []
 
@@ -459,6 +465,7 @@ def build_manifest(
     output: Path,
     hardware_row: dict[str, str],
     mapping_artifact: Path | None = None,
+    source_base: Path = ROOT,
 ) -> dict[str, object]:
     hardware_identity = hardware_row["hardware"]
     topology_class = hardware_row.get("topology_class", "")
@@ -477,9 +484,9 @@ def build_manifest(
             )
     try:
         if topology_class == "fabric_system":
-            ports, diagnostics = system_ports(hardware_identity)
+            ports, diagnostics = system_ports(hardware_identity, source_base)
         else:
-            ports, diagnostics = module_ports(hardware_identity)
+            ports, diagnostics = module_ports(hardware_identity, source_base)
     except InterfaceLoweringError as error:
         return blocked_manifest(
             hardware_identity,
@@ -592,6 +599,7 @@ def main(argv: list[str]) -> int:
     mapping_artifact = Path(args.mapping_artifact) if args.mapping_artifact else None
     rows = pass_hardware_rows(hardware_summary)
     sorted_rows = sorted(rows, key=lambda row: row["hardware"])
+    source_base = hardware_summary.parent.resolve() if args.hardware_summary else ROOT
     mapping_data = read_mapping_artifact_object(mapping_artifact)
     hardware_hint = string_field(mapping_data, "hardware")
     if hardware_hint:
@@ -627,7 +635,7 @@ def main(argv: list[str]) -> int:
         output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
         return 1
     manifest = (
-        build_manifest(output, sorted_rows[0], mapping_artifact)
+        build_manifest(output, sorted_rows[0], mapping_artifact, source_base)
         if sorted_rows
         else scaffold(output)
     )

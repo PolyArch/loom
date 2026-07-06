@@ -29,18 +29,6 @@ DEFAULT_INPUTS = (
     ROOT / "test" / "pnr" / "byte_swap_store_adg.mlir",
     ROOT / "test" / "pnr" / "shared_vector_alu_adg.mlir",
 )
-DEFAULT_BUILDER_INPUTS = (
-    (
-        "adg-builder::shared-vector-math",
-        ("--shared-vector-math",),
-        "shared-vector-math.mlir",
-    ),
-    (
-        "adg-builder::shared-signal-window",
-        ("--shared-signal-window",),
-        "shared-signal-window.mlir",
-    ),
-)
 ADG_BUILDER_RECIPES = {
     "test/pnr/minimal_spatial_adg.mlir.inc": "adg-builder::minimal-spatial",
     "test/pnr/minimal_temporal_adg.mlir.inc": "adg-builder::minimal-temporal",
@@ -79,16 +67,6 @@ def loom_tool() -> str | None:
     return shutil.which("loom")
 
 
-def adg_builder_tool() -> str | None:
-    value = os.environ.get("LOOM_ADG_BUILDER_TEST")
-    if value:
-        return value
-    built = ROOT / "build" / "tools" / "loom-adg-builder-test" / "loom-adg-builder-test"
-    if built.is_file():
-        return str(built)
-    return shutil.which("loom-adg-builder-test")
-
-
 def relative_id(path: Path) -> str:
     try:
         return path.resolve().relative_to(ROOT).as_posix()
@@ -111,37 +89,6 @@ def adg_builder_recipe_identity(path: Path, explicit_recipes: dict[str, str]) ->
     if explicit is not None:
         return explicit
     return ADG_BUILDER_RECIPES.get(relative_id(path), "")
-
-
-def generate_default_builder_inputs(
-    output_dir: Path,
-    explicit_recipes: dict[str, str],
-) -> tuple[list[Path], bool]:
-    tool = adg_builder_tool()
-    generated_dir = output_dir / "adg-hardware-summary-generated"
-    generated_dir.mkdir(parents=True, exist_ok=True)
-    rows_ok = True
-    generated_inputs: list[Path] = []
-    for recipe_identity, arguments, filename in DEFAULT_BUILDER_INPUTS:
-        output_path = generated_dir / filename
-        if tool is None:
-            output_path.write_text("")
-            rows_ok = False
-        else:
-            result = subprocess.run(
-                [tool, *arguments, "--output", str(output_path)],
-                cwd=ROOT,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            if result.returncode != 0:
-                output_path.write_text("")
-                rows_ok = False
-        explicit_recipes[output_path.resolve().as_posix()] = recipe_identity
-        generated_inputs.append(output_path)
-    return generated_inputs, rows_ok
 
 
 def first_diagnostic(result: subprocess.CompletedProcess[str]) -> str:
@@ -373,6 +320,28 @@ def summarize_inventory(inventory_path: Path) -> tuple[list[dict[str, str]], boo
     return rows, bool(rows) and all(row["verify_status"] == "pass" for row in rows)
 
 
+def generate_default_inventory(inventory_path: Path) -> str:
+    mlir_dir = inventory_path.parent / "adg-inventory-mlir"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "test" / "fabric" / "adg_inventory.py"),
+            "--output",
+            str(inventory_path),
+            "--mlir-output-dir",
+            str(mlir_dir),
+        ],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode == 0:
+        return ""
+    return first_diagnostic(result)
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     output = Path(args.output)
@@ -389,16 +358,20 @@ def main(argv: list[str]) -> int:
 
     explicit_recipes = explicit_recipe_identities(args.input_recipe_identity)
     output.parent.mkdir(parents=True, exist_ok=True)
-    inputs = [Path(value) for value in args.inputs] if args.inputs else list(DEFAULT_INPUTS)
-    generated_ok = True
     if not args.inputs:
-        generated_inputs, generated_ok = generate_default_builder_inputs(
-            output.parent,
-            explicit_recipes,
-        )
-        inputs.extend(generated_inputs)
+        inventory_path = output.parent / "adg-inventory.json"
+        diagnostic = generate_default_inventory(inventory_path)
+        if diagnostic:
+            intermediate_artifacts.write_csv("adg_hardware", output)
+            print(diagnostic, file=sys.stderr)
+            return 1
+        rows, ok = summarize_inventory(inventory_path)
+        intermediate_artifacts.write_csv_rows("adg_hardware", output, rows)
+        return 0 if ok else 1
+
+    inputs = [Path(value) for value in args.inputs]
     rows: list[dict[str, str]] = []
-    ok = generated_ok
+    ok = True
     for input_path in inputs:
         summary_rows, input_ok = summarize_input(tool, input_path, explicit_recipes)
         rows.extend(summary_rows)

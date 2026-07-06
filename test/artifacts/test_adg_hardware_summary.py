@@ -212,6 +212,47 @@ def assert_minimal_temporal_adg(rows: list[dict[str, str]]) -> None:
         raise AssertionError(f"unexpected diagnostic: {row}")
 
 
+def assert_default_builder_universe(rows: list[dict[str, str]]) -> None:
+    by_recipe = {row["adg_builder_recipe_identity"]: row for row in rows}
+    required_recipes = {
+        "adg-builder::minimal-spatial": "minimal_spatial_adg",
+        "adg-builder::minimal-temporal": "minimal_temporal_adg",
+        "adg-builder::shared-reduction": "shared_reduction_adg",
+        "adg-builder::shared-memory-reduction": "shared_memory_reduction_adg",
+        "adg-builder::shared-vector-alu": "shared_vector_alu_adg",
+        "adg-builder::shared-vector-math": "shared_vector_math_adg",
+        "adg-builder::topology-mesh-2d": "matrix_mesh2d_adg",
+        "adg-builder::topology-heterogeneous-islands": "matrix_heterogeneous_islands_adg",
+        "adg-builder::shared-vector-mesh": "shared_vector_mesh_adg",
+        "adg-builder::shared-signal-window": "shared_signal_window_adg",
+        "adg-builder::shared-quantized-window": "shared_quantized_window_adg",
+        "adg-builder::full-spatialcore": "full_spatialcore_adg",
+        "adg-builder::system-dual-spatial-shared-memory": "system_dual_spatial_shared_memory_soc",
+        "adg-builder::system-cached-accelerator-cluster": "system_cached_accelerator_cluster_soc",
+    }
+    missing = sorted(set(required_recipes) - set(by_recipe))
+    if missing:
+        raise AssertionError(f"default summary missed builder recipes: {missing}")
+    if len(rows) < 60:
+        raise AssertionError(f"default summary should expose the full ADG inventory, got {len(rows)} rows")
+    topology_classes = {row["topology_class"] for row in rows}
+    if "fabric_module_template" not in topology_classes or "fabric_system" not in topology_classes:
+        raise AssertionError(f"default summary should include module and system ADGs: {topology_classes}")
+    for recipe, symbol in required_recipes.items():
+        row = by_recipe[recipe]
+        if symbol not in row["hardware"]:
+            raise AssertionError(f"{recipe} should project {symbol}: {row}")
+        if row["verify_status"] != "pass":
+            raise AssertionError(f"{recipe} should verify cleanly: {row}")
+    system_rows = [row for row in rows if row["topology_class"] == "fabric_system"]
+    if len(system_rows) < 10:
+        raise AssertionError(f"default summary should include system-level SoC breadth: {system_rows}")
+    if not any("acc_core" in row["node_kinds"] and "memory" in row["node_kinds"] for row in system_rows):
+        raise AssertionError(f"system rows should expose heterogeneous node kinds: {system_rows}")
+    if not any(row["link_count"] != "0" for row in system_rows):
+        raise AssertionError(f"system rows should expose real fabric.link connectivity: {system_rows}")
+
+
 def assert_quoted_named_pe(rows: list[dict[str, str]]) -> None:
     matches = [row for row in rows if "quoted module" in row["hardware"]]
     if len(matches) != 1:
@@ -254,15 +295,7 @@ def main() -> int:
             HEADER,
             label="default ADG hardware summary",
         )
-        assert_pe_two_pes(rows)
-        assert_shared_reduction_adg(rows)
-        assert_shared_memory_reduction_adg(rows)
-        assert_dotproduct_fmuladd_adg(rows)
-        assert_byte_swap_store_adg(rows)
-        assert_shared_vector_alu_adg(rows)
-        assert_shared_vector_math_adg(rows)
-        assert_minimal_spatial_adg(rows)
-        assert_minimal_temporal_adg(rows)
+        assert_default_builder_universe(rows)
 
         quoted_input = Path(tmp) / "quoted-named-pe.mlir"
         quoted_input.write_text(

@@ -231,6 +231,47 @@ def main() -> int:
             "RTL manifest audit",
         )
 
+        inventory_hardware = out_dir / "inventory-adg-hardware-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/fabric/run_adg_hardware_summary.sh",
+                "--output",
+                str(inventory_hardware),
+            ],
+            "inventory ADG hardware summary",
+        )
+        inventory_manifest = out_dir / "inventory-rtl-manifest.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_manifest.sh",
+                "--hardware-summary",
+                str(inventory_hardware),
+                "--output",
+                str(inventory_manifest),
+            ],
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                "RTL manifest failed to resolve inventory hardware sources\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+        inventory_data = json.loads(inventory_manifest.read_text())
+        if inventory_data.get("status") != "pass":
+            raise AssertionError(f"inventory RTL manifest should pass: {inventory_data}")
+        inventory_source_root = inventory_data.get("source_fabric_adg_identity")
+        if (
+            not isinstance(inventory_source_root, str)
+            or not inventory_source_root.startswith("adg-inventory-mlir/")
+        ):
+            raise AssertionError(f"inventory manifest should keep projected hardware identity: {inventory_data}")
+        inventory_source = inventory_manifest.parent / inventory_data["emitted_source_files"][0]["path"]
+        if not inventory_source.is_file():
+            raise AssertionError(f"inventory manifest source file does not exist: {inventory_source}")
+
         stale_manifest = out_dir / "stale-rtl-manifest.json"
         stale_data = json.loads(manifest.read_text())
         stale_data["emitted_source_files"][0]["fingerprint"] = "0" * 64
