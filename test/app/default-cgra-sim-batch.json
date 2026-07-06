@@ -62,6 +62,10 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "sort_quick",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "bitrev",
       "hardware": "shared_memory_reduction_adg"
     },

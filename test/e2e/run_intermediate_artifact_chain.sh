@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    breadth_first_search|col2im|sort_merge|sort_quick|spmspm)
+    breadth_first_search|col2im|sort_merge|spmspm)
       return 0
       ;;
     *)
@@ -463,7 +463,7 @@ case "${CASE}" in
     case_graph="g_t_sort_merge_kernel_red_0_0"
     ;;
   sort_quick)
-    case_graph="g_t_sort_quick_kernel_red_0_0"
+    case_graph="workload_graph_set"
     ;;
   spmspm)
     case_graph="g_t_spmspm_kernel_red_0_0"
@@ -562,7 +562,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "database_join" || "${CASE}" == "depthwise_conv" || "${CASE}" == "edge_update" || "${CASE}" == "edge_update_batch" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "histogram" || "${CASE}" == "histogram_strided" || "${CASE}" == "im2col" || "${CASE}" == "kmp_table" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "sort_insertion" || "${CASE}" == "spmm" || "${CASE}" == "stream_nested" || "${CASE}" == "stream_update" || "${CASE}" == "string_compare" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" || "${CASE}" == "wildcard_match" ]]; then
+    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "database_join" || "${CASE}" == "depthwise_conv" || "${CASE}" == "edge_update" || "${CASE}" == "edge_update_batch" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "histogram" || "${CASE}" == "histogram_strided" || "${CASE}" == "im2col" || "${CASE}" == "kmp_table" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "sort_insertion" || "${CASE}" == "sort_quick" || "${CASE}" == "spmm" || "${CASE}" == "stream_nested" || "${CASE}" == "stream_update" || "${CASE}" == "string_compare" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" || "${CASE}" == "wildcard_match" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(
@@ -979,6 +979,322 @@ PY
     "${copy_cgra_report}"
     "${sort_cgra_report}"
   )
+}
+
+run_sort_quick_graph_set() {
+  local source="${ROOT}/test/app/${CASE}/main_func.cpp"
+  local copy_graph="g_t_sort_quick_kernel_0_0"
+  local partition_graph="g_t_sort_quick_kernel_red_0_0"
+
+  local input_values
+  input_values="$(extract_cpp_float_array_csv "${source}" kInput)"
+  local expected_values
+  expected_values="$(extract_cpp_float_array_csv "${source}" kExpected)"
+  local value_count
+  value_count="$(python3 - "${input_values}" <<'PY'
+import sys
+values = [value for value in sys.argv[1].split(",") if value]
+print(len(values))
+PY
+)"
+  if [[ "${value_count}" != "12" ]]; then
+    echo "${CASE} graph fixture expects 12 input values, saw ${value_count}" >&2
+    exit 1
+  fi
+  local zero_values
+  zero_values="$(python3 - "${value_count}" <<'PY'
+import sys
+print(",".join(["0.000000e+00"] * int(sys.argv[1])))
+PY
+)"
+
+  local copy_dfg_report="${OUT_DIR}/${CASE}-dfg-sim-copy.report.json"
+  local copy_mapping_artifact="${OUT_DIR}/pnr-mapping-copy.json"
+  local copy_mapping_summary="${OUT_DIR}/pnr-mapping-copy-summary.csv"
+  local copy_cgra_report="${OUT_DIR}/${CASE}-cgra-sim-copy-report.json"
+  local orchestration_events="${OUT_DIR}/${CASE}-scalar-orchestration-events.jsonl"
+  : > "${orchestration_events}"
+
+  dfg_component_args=()
+  mapping_component_args=()
+  cgra_component_args=()
+  component_artifacts=()
+
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim \
+    "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${copy_graph}" \
+    --workload "${CASE}" \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --memref "1=${input_values}" \
+    --memref "2=${zero_values}" \
+    --arg 3=0 \
+    --arg 3=1 \
+    --arg 3=2 \
+    --arg 3=3 \
+    --arg 3=4 \
+    --arg 3=5 \
+    --arg 3=6 \
+    --arg 3=7 \
+    --arg 3=8 \
+    --arg 3=9 \
+    --arg 3=10 \
+    --arg 3=11 \
+    --output "${copy_dfg_report}"
+  run_mapping_summary \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${copy_graph}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${copy_mapping_artifact}" \
+    --output "${copy_mapping_summary}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${copy_dfg_report}" \
+    --mapping-artifact "${copy_mapping_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${copy_cgra_report}"
+
+  dfg_component_args+=(--dfg-report "${copy_dfg_report}")
+  mapping_component_args+=(--mapping-artifact "${copy_mapping_artifact}")
+  cgra_component_args+=(--cgra-report "${copy_cgra_report}")
+  component_artifacts+=(
+    "${copy_dfg_report}"
+    "${copy_mapping_artifact}"
+    "${copy_cgra_report}"
+  )
+
+  local current_values
+  current_values="$(
+    python3 - "${copy_dfg_report}" "${CASE}" <<'PY'
+import json
+import sys
+
+report = json.loads(open(sys.argv[1]).read())
+case = sys.argv[2]
+values = report.get("final_memory_state", {}).get("arg2")
+if not isinstance(values, list) or len(values) != 12:
+    raise SystemExit(f"{case} copy graph did not emit twelve output values")
+clean = []
+for value in values:
+    if not isinstance(value, str) or ":" not in value:
+        raise SystemExit(f"unexpected {case} copy value {value!r}")
+    clean.append(f"{float(value.split(':', 1)[1]):.6e}")
+print(",".join(clean))
+PY
+  )"
+
+  local -a stack=(0 "$((value_count - 1))")
+  local partition_index=0
+  while ((${#stack[@]} > 0)); do
+    local stack_index
+    stack_index=$((${#stack[@]} - 1))
+    local high="${stack[${stack_index}]}"
+    unset "stack[${stack_index}]"
+    stack_index=$((${#stack[@]} - 1))
+    local low="${stack[${stack_index}]}"
+    unset "stack[${stack_index}]"
+    if (( low >= high )); then
+      continue
+    fi
+
+    local pivot
+    pivot="$(python3 - "${current_values}" "${high}" <<'PY'
+import sys
+
+values = [float(value) for value in sys.argv[1].split(",") if value]
+index = int(sys.argv[2])
+print(f"{values[index]:.6e}")
+PY
+)"
+
+    local component_dfg_report="${OUT_DIR}/${CASE}-dfg-sim-partition-${partition_index}.report.json"
+    local component_mapping_artifact="${OUT_DIR}/pnr-mapping-partition-${partition_index}.json"
+    local component_mapping_summary="${OUT_DIR}/pnr-mapping-partition-${partition_index}-summary.csv"
+    local component_cgra_report="${OUT_DIR}/${CASE}-cgra-sim-partition-${partition_index}-report.json"
+
+    ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim \
+      "${case_dfg_dir}/main_func.dfg.mlir" \
+      --graph "${partition_graph}" \
+      --workload "${CASE}" \
+      --arg 0=none \
+      --arg "1=${low}" \
+      --arg "2=${high}" \
+      --arg 3=1 \
+      --memref "4=${current_values}" \
+      --arg "5=${pivot}" \
+      --arg 6=1 \
+      --arg "7=${low}" \
+      --output "${component_dfg_report}"
+
+    local -a transition
+    mapfile -t transition < <(
+      python3 - \
+        "${component_dfg_report}" \
+        "${current_values}" \
+        "${low}" \
+        "${high}" \
+        "${pivot}" \
+        "${partition_index}" <<'PY'
+import json
+import math
+import sys
+
+report = json.loads(open(sys.argv[1]).read())
+input_values = [float(value) for value in sys.argv[2].split(",") if value]
+low = int(sys.argv[3])
+high = int(sys.argv[4])
+pivot = float(sys.argv[5])
+partition_index = int(sys.argv[6])
+
+if report.get("status") != "pass":
+    raise SystemExit(f"partition DFG report did not pass: {report}")
+outputs = report.get("final_outputs")
+if not isinstance(outputs, list) or len(outputs) < 2:
+    raise SystemExit(f"partition DFG report lacks final outputs: {report}")
+partition_token = outputs[1]
+if not isinstance(partition_token, str) or not partition_token.startswith("i32:"):
+    raise SystemExit(f"partition DFG report has bad partition output: {outputs}")
+partition_value = int(partition_token.split(":", 1)[1])
+state_tokens = report.get("final_memory_state", {}).get("arg4")
+if not isinstance(state_tokens, list) or len(state_tokens) != len(input_values):
+    raise SystemExit(f"partition DFG report lacks full memory state: {report}")
+actual_state = []
+for token in state_tokens:
+    if not isinstance(token, str) or ":" not in token:
+        raise SystemExit(f"bad partition memory token: {token!r}")
+    actual_state.append(float(token.split(":", 1)[1]))
+
+expected_state = list(input_values)
+i = low
+for j in range(low, high):
+    if expected_state[j] <= pivot:
+        expected_state[i], expected_state[j] = expected_state[j], expected_state[i]
+        i += 1
+if i != partition_value:
+    raise SystemExit(f"partition index mismatch: DFG {partition_value}, expected {i}")
+for index, (actual, expected) in enumerate(zip(actual_state, expected_state)):
+    if not math.isclose(actual, expected, rel_tol=1e-6, abs_tol=1e-6):
+        raise SystemExit(
+            f"partition state mismatch at {index}: DFG {actual}, expected {expected}"
+        )
+
+host_state = list(actual_state)
+host_state[partition_value], host_state[high] = host_state[high], host_state[partition_value]
+event = {
+    "component_index": partition_index + 1,
+    "graph": "g_t_sort_quick_kernel_red_0_0",
+    "low": low,
+    "high": high,
+    "pivot_index": high,
+    "partition_index": partition_value,
+    "pivot_value": f"{pivot:.6e}",
+    "host_memory_action": "pivot_swap_after_partition",
+    "state_after_partition": [f"{value:.6e}" for value in actual_state],
+    "state_after_host_action": [f"{value:.6e}" for value in host_state],
+}
+print(partition_value)
+print(",".join(f"{value:.6e}" for value in host_state))
+print(json.dumps(event, sort_keys=True))
+PY
+    )
+    local partition_value="${transition[0]}"
+    current_values="${transition[1]}"
+    printf '%s\n' "${transition[2]}" >> "${orchestration_events}"
+
+    run_mapping_summary \
+      --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+      --graph "${partition_graph}" \
+      --hardware-mlir "${hardware_mlir}" \
+      --hardware "${hardware_name}" \
+      --workload "${CASE}" \
+      --artifact "${component_mapping_artifact}" \
+      --output "${component_mapping_summary}"
+    ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+      --dfg-report "${component_dfg_report}" \
+      --mapping-artifact "${component_mapping_artifact}" \
+      --hardware-mlir "${hardware_mlir}" \
+      --output "${component_cgra_report}"
+
+    dfg_component_args+=(--dfg-report "${component_dfg_report}")
+    mapping_component_args+=(--mapping-artifact "${component_mapping_artifact}")
+    cgra_component_args+=(--cgra-report "${component_cgra_report}")
+    component_artifacts+=(
+      "${component_dfg_report}"
+      "${component_mapping_artifact}"
+      "${component_cgra_report}"
+    )
+
+    if (( partition_value > low )); then
+      stack+=("${low}" "$((partition_value - 1))")
+    fi
+    if (( partition_value < high )); then
+      stack+=("$((partition_value + 1))" "${high}")
+    fi
+    partition_index=$((partition_index + 1))
+  done
+
+  python3 - "${current_values}" "${expected_values}" <<'PY'
+import math
+import sys
+
+actual = [float(value) for value in sys.argv[1].split(",") if value]
+expected = [float(value) for value in sys.argv[2].split(",") if value]
+if len(actual) != len(expected):
+    raise SystemExit(f"sort_quick final length mismatch: got {len(actual)}, expected {len(expected)}")
+for index, (left, right) in enumerate(zip(actual, expected)):
+    if not math.isclose(left, right, rel_tol=1e-6, abs_tol=1e-6):
+        raise SystemExit(f"sort_quick final value mismatch at {index}: got {left}, expected {right}")
+PY
+
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    "${dfg_component_args[@]}" \
+    --output "${dfg_cycle}"
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "${CASE}__workload_graph_set__${hardware_name}" \
+    --source-dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_component_args[@]}" \
+    "${mapping_component_args[@]}" \
+    "${cgra_component_args[@]}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
+  python3 - "${dfg_report}" "${cgra_report}" "${orchestration_events}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+dfg_path = Path(sys.argv[1])
+cgra_path = Path(sys.argv[2])
+events_path = Path(sys.argv[3])
+events = [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
+metadata = {
+    "kind": "host_control_with_cgra_partition_slices",
+    "control_owner": "scalar_host_fixture",
+    "events": events,
+}
+diagnostic = "sort_quick aggregate uses scalar host control with mapped CGRA partition slices"
+for path in (dfg_path, cgra_path):
+    data = json.loads(path.read_text())
+    data["scalar_orchestration"] = metadata
+    diagnostics = data.setdefault("diagnostics", [])
+    if isinstance(diagnostics, list) and diagnostic not in diagnostics:
+        diagnostics.append(diagnostic)
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+PY
 }
 
 run_depthwise_conv_components() {
@@ -2853,6 +3169,8 @@ elif [[ "${CASE}" == "conv2d" ]]; then
     --mapping-summary-output "${mapping}"
 elif [[ "${CASE}" == "sort_bubble" || "${CASE}" == "sort_insertion" ]]; then
   run_float_sort_graph_set
+elif [[ "${CASE}" == "sort_quick" ]]; then
+  run_sort_quick_graph_set
 elif [[ "${CASE}" == "im2col" ]]; then
   im2col_source="${ROOT}/test/app/im2col/main_func.cpp"
   im2col_input_values="$(extract_cpp_float_array_csv "${im2col_source}" kInput)"

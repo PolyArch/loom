@@ -86,10 +86,6 @@
       "hardware": "shared_reduction_adg"
     },
     {
-      "case": "sort_quick",
-      "hardware": "shared_reduction_adg"
-    },
-    {
       "case": "spmspm",
       "hardware": "shared_reduction_adg"
     },

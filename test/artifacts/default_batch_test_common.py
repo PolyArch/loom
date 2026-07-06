@@ -112,6 +112,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "spmspv",
     "sort_bubble",
     "sort_insertion",
+    "sort_quick",
     "stream_nested",
     "stream_update",
     "tridiag_solve",

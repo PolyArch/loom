@@ -348,12 +348,12 @@ def assert_cgra_status_default_evidence(path: Path) -> None:
         by_suite.setdefault(suite, {}).setdefault(status, 0)
         by_suite[suite][status] += 1
     expected = {
-        "app": {"pass": 127, "unsupported": 5},
+        "app": {"pass": 128, "unsupported": 4},
         "cmsis-dsp": {"pass": 16},
         "cmsis-nn": {"pass": 17, "blocked": 0, "unsupported": 1},
     }
     if "loombench" in by_suite:
-        expected["loombench"] = {"pass": 122, "unsupported": 5}
+        expected["loombench"] = {"pass": 123, "unsupported": 4}
     for suite, statuses in expected.items():
         actual = by_suite.get(suite, {})
         if sum(actual.values()) != sum(statuses.values()):

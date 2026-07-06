@@ -485,10 +485,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 132,
-            "pass": 127,
+            "pass": 128,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 5,
+            "unsupported": 4,
             "missing_status": 0,
         },
     )
@@ -562,7 +562,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
     assert_app_cgra_pass_row(repo, rows, "conv2d", expected_hardware="shared_memory_reduction_adg")
     sim_evidence = out_dir / "current-sim-cycle"
     assert_app_cgra_pass_row(repo, rows, "sort_insertion", expected_hardware="shared_memory_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "sort_quick", expected_hardware="shared_memory_reduction_adg")
     cgra_sweep.run(repo, ["python3", "test/artifacts/assert_sort_insertion_cgra_evidence.py", str(sim_evidence)])
+    cgra_sweep.run(repo, ["python3", "test/artifacts/assert_sort_quick_cgra_evidence.py", str(sim_evidence)])
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_copy_f32.c", "arm_copy_f32"
     )
@@ -766,10 +768,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 132,
-            "pass": 127,
+            "pass": 128,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 5,
+            "unsupported": 4,
             "missing_status": 0,
         },
     )
@@ -869,6 +871,7 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         ("sbox_lookup", "shared_reduction_adg"),
         ("sort_bubble", "shared_memory_reduction_adg"),
         ("sort_insertion", "shared_memory_reduction_adg"),
+        ("sort_quick", "shared_memory_reduction_adg"),
         ("mat3x3_mult", "shared_reduction_adg"),
         ("vecsum", "shared_reduction_adg"),
         ("vecadd", "shared_reduction_adg"),
@@ -1310,10 +1313,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
         "primary workload graph is partial: sort_merge lowering covers copy and remainder-copy slices "
         "while the merge compare loop remains outside dataflow"
     ),
-    "sort_quick": (
-        "primary workload graph is partial: sort_quick lowering covers copy and partition slices "
-        "while iterative stack control remains outside dataflow"
-    ),
     "spmspm": (
         "primary workload graph is partial: spmspm lowering covers final nonzero compression "
         "while sparse multiply-accumulate loops remain outside dataflow"
@@ -1534,8 +1533,8 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 132,
             "pass": 22,
             "fail": 0,
-            "blocked": 105,
-            "unsupported": 5,
+            "blocked": 106,
+            "unsupported": 4,
             "missing_status": 0,
         },
     )
