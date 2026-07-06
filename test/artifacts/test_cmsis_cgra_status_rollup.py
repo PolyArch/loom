@@ -5238,6 +5238,52 @@ def assert_app_default_batch_manifest_fail_fast(repo: Path, out_dir: Path, legac
         raise AssertionError(f"default batch manifest failure should be reported by the shell wrapper: {result.stderr}")
 
 
+def assert_rollup_adg_inventory_baseline(out_dir: Path) -> None:
+    inventory_path = out_dir / "adg-inventory.json"
+    summary_path = out_dir / "adg-hardware-summary.csv"
+    audit_path = out_dir / "cgra-status-generic-audit.json"
+    for artifact in (inventory_path, summary_path, audit_path):
+        if not artifact.is_file():
+            raise AssertionError(f"missing expected ADG baseline artifact: {artifact}")
+
+    inventory = json.loads(inventory_path.read_text())
+    if inventory.get("kind") != "adg_inventory" or inventory.get("status") != "pass":
+        raise AssertionError(f"rollup ADG inventory should be a passing JSON SSOT: {inventory}")
+    candidates = inventory.get("candidates")
+    if not isinstance(candidates, list) or len(candidates) < 20:
+        raise AssertionError(f"rollup ADG inventory should include a reusable candidate matrix: {inventory}")
+    if inventory.get("candidate_count") != len(candidates):
+        raise AssertionError(f"ADG inventory candidate_count mismatch: {inventory}")
+
+    root_kinds = {candidate.get("root_kind") for candidate in candidates if isinstance(candidate, dict)}
+    if not {"fabric.module", "fabric.system"}.issubset(root_kinds):
+        raise AssertionError(f"rollup ADG inventory should include module and system roots: {root_kinds}")
+    layout_classes = {candidate.get("layout_class") for candidate in candidates if isinstance(candidate, dict)}
+    if not {"regular", "irregular"}.issubset(layout_classes):
+        raise AssertionError(f"rollup ADG inventory should classify regular and irregular layouts: {layout_classes}")
+
+    inventory_id = str(inventory.get("inventory_id") or "")
+    summary_rows = read_csv_rows(summary_path)
+    if len(summary_rows) != len(candidates):
+        raise AssertionError(f"ADG summary projection should cover each inventory candidate: {summary_rows}")
+    if any(row.get("verify_status") != "pass" for row in summary_rows):
+        raise AssertionError(f"ADG summary projection should contain only passing verified rows: {summary_rows}")
+    if any(inventory_id not in row.get("diagnostic", "") for row in summary_rows):
+        raise AssertionError(f"ADG summary projection rows should reference inventory id {inventory_id}: {summary_rows}")
+
+    audit = json.loads(audit_path.read_text())
+    if audit.get("verdict") != "pass":
+        raise AssertionError(f"rollup generic audit should pass with ADG inventory inputs: {audit}")
+    reviewed_paths = {
+        str(review.get("artifact") or review.get("path") or "")
+        for review in audit.get("artifact_reviews", [])
+        if isinstance(review, dict)
+    }
+    for artifact in (inventory_path, summary_path):
+        if str(artifact) not in reviewed_paths:
+            raise AssertionError(f"generic audit did not review {artifact}: {audit}")
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "cmsis-cgra-status-rollup-") as raw_out_dir:
@@ -5303,6 +5349,7 @@ def main() -> int:
             if not artifact.is_file():
                 raise AssertionError(f"missing expected rollup artifact: {artifact}")
         assert_manifest_projection(manifest_output, manifest_csv_output)
+        assert_rollup_adg_inventory_baseline(out_dir)
 
         rows = read_rows(csv_output)
         data = json.loads(json_output.read_text())

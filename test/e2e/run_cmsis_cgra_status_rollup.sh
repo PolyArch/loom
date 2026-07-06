@@ -34,6 +34,8 @@ batches into the same default status evidence directory.
 When a legacy LoomBench root is supplied or the default legacy root exists,
 the rollup also generates and consumes the dedicated LoomBench manifest so
 legacy rows are structured status records rather than manifest omissions.
+The rollup also emits a top-level ADG inventory JSON artifact and hardware
+summary projection so the hardware baseline is audited beside row status.
 Use --no-legacy-loombench to disable that default legacy-root discovery.
 EOF
 }
@@ -302,6 +304,9 @@ CMSIS_NN_DFG_DIR="${OUT_DIR}/cmsis-nn-dfg"
 STATUS_CSV="${OUT_DIR}/cgra-status-summary.csv"
 STATUS_JSON="${OUT_DIR}/cgra-status-summary.json"
 GENERIC_AUDIT_JSON="${OUT_DIR}/cgra-status-generic-audit.json"
+ADG_INVENTORY_JSON="${OUT_DIR}/adg-inventory.json"
+ADG_INVENTORY_MLIR_DIR="${OUT_DIR}/adg-inventory-mlir"
+ADG_HARDWARE_SUMMARY="${OUT_DIR}/adg-hardware-summary.csv"
 LOOMBENCH_INVENTORY="${OUT_DIR}/loombench-old-app-inventory.csv"
 LOOMBENCH_IMPORT_STATUS="${OUT_DIR}/loombench-app-import-status.csv"
 LOOMBENCH_MANIFEST_JSON="${OUT_DIR}/loombench-manifest.json"
@@ -405,6 +410,13 @@ run_app_sim_producer() {
     fi
 }
 
+run_adg_inventory_producer() {
+    rm -rf "${ADG_INVENTORY_MLIR_DIR}"
+    bash "${ROOT}/test/fabric/run_adg_inventory.sh" \
+        --output "${ADG_INVENTORY_JSON}" \
+        --mlir-output-dir "${ADG_INVENTORY_MLIR_DIR}"
+}
+
 run_rollup_producer_job() {
     local name="$1"
     shift
@@ -453,6 +465,14 @@ elif [[ "${CMSIS_SIM_DEFAULT}" -eq 1 && -z "${SIM_EVIDENCE_DIR}" ]]; then
     rm -rf "${STATUS_SIM_EVIDENCE_DIR}"
     mkdir -p "${STATUS_SIM_EVIDENCE_DIR}"
 fi
+run_rollup_producer_job adg-inventory run_adg_inventory_producer
+active_jobs=$((active_jobs + 1))
+if (( active_jobs >= PARALLEL_JOBS )); then
+    if ! wait -n; then
+        producer_failed=1
+    fi
+    active_jobs=$((active_jobs - 1))
+fi
 
 while (( active_jobs > 0 )); do
     if ! wait -n; then
@@ -473,6 +493,10 @@ done
 if (( producer_failed != 0 )); then
     exit 1
 fi
+
+bash "${ROOT}/test/fabric/run_adg_hardware_summary.sh" \
+    --inventory "${ADG_INVENTORY_JSON}" \
+    --output "${ADG_HARDWARE_SUMMARY}"
 
 if [[ -n "${SIM_EVIDENCE_DIR}" || "${CMSIS_SIM_DEFAULT}" -eq 1 ]]; then
     clean_cmsis_sim_evidence "${ROOT}" "${STATUS_SIM_EVIDENCE_DIR}" "${OUT_DIR}/cgra-status-comparisons"
@@ -534,4 +558,6 @@ bash "${ROOT}/test/e2e/run_cgra_status_summary.sh" "${summary_args[@]}"
 bash "${ROOT}/test/e2e/run_cgra_status_audit.sh" "${audit_args[@]}"
 python3 "${ROOT}/test/e2e/audit_intermediate_artifacts.py" \
     --output "${GENERIC_AUDIT_JSON}" \
-    "${STATUS_CSV}"
+    "${STATUS_CSV}" \
+    "${ADG_INVENTORY_JSON}" \
+    "${ADG_HARDWARE_SUMMARY}"
