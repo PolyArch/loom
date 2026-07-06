@@ -350,7 +350,7 @@ def assert_cgra_status_default_evidence(path: Path) -> None:
     expected = {
         "app": {"pass": 126, "unsupported": 6},
         "cmsis-dsp": {"pass": 16},
-        "cmsis-nn": {"pass": 15, "blocked": 2, "unsupported": 1},
+        "cmsis-nn": {"pass": 16, "blocked": 1, "unsupported": 1},
     }
     if "loombench" in by_suite:
         expected["loombench"] = {"pass": 121, "unsupported": 6}

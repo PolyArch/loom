@@ -130,9 +130,9 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             },
             "cmsis-nn": {
                 "total": 18,
-                "pass": 15,
+                "pass": 16,
                 "fail": 0,
-                "blocked": 2,
+                "blocked": 1,
                 "unsupported": 1,
                 "missing_status": 0,
             },
@@ -213,18 +213,17 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
         ):
             raise AssertionError(f"default-batch rollup should promote softmax with real CGRA-sim evidence: {softmax}")
         if (
-            softmax_s8["status"] != "blocked"
+            softmax_s8["status"] != "pass"
             or softmax_s8["dfg_status"] != "pass"
-            or softmax_s8["mapping_status"] != "fail"
-            or softmax_s8["cgra_status"] != "blocked"
-            or softmax_s8["comparison_status"] != "blocked"
-            or softmax_s8["diagnostic_class"] != "mapping_artifact_failed"
-            or softmax_s8["blocking_prerequisite"] != "mapping_artifact"
+            or softmax_s8["mapping_status"] != "pass"
+            or softmax_s8["cgra_status"] != "pass"
+            or softmax_s8["comparison_status"] != "pass"
             or softmax_s8["final_outputs_present"] != "true"
             or softmax_s8["final_memory_state_present"] != "true"
-            or "resource pressure" not in softmax_s8["diagnostic"]
+            or softmax_s8["diagnostic_class"] != "cgra_sim_pass"
+            or softmax_s8["blocking_prerequisite"] != ""
         ):
-            raise AssertionError(f"default-batch rollup should record softmax_s8 as a shared-fabric blocker: {softmax_s8}")
+            raise AssertionError(f"default-batch rollup should promote softmax_s8 with real CGRA-sim evidence: {softmax_s8}")
         if (
             depthwise["diagnostic_class"] != "cgra_sim_pass"
             or depthwise["blocking_prerequisite"] != ""
