@@ -3832,14 +3832,22 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   report.status = "pass";
 
   dataflow::GraphFuncOp graph = findGraph(module, options.graphName);
-  if (!graph)
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "dataflow.graph.func '%s' was not found",
-                                   options.graphName.c_str());
-  if (graph.isExternal())
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "dataflow.graph.func '%s' is external",
-                                   options.graphName.c_str());
+  if (!graph) {
+    report.status = "unsupported";
+    report.diagnostics.push_back(
+        llvm::formatv("dataflow.graph.func '{0}' was not found",
+                      options.graphName)
+            .str());
+    return report;
+  }
+  if (graph.isExternal()) {
+    report.status = "unsupported";
+    report.diagnostics.push_back(
+        llvm::formatv("dataflow.graph.func '{0}' is external",
+                      options.graphName)
+            .str());
+    return report;
+  }
 
   mlir::Block &entry = graph.getBody().front();
   auto argsOrErr = indexRuntimeArgs(options.args, entry.getNumArguments());

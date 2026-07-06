@@ -994,6 +994,15 @@ ATTEMPTS = (
     ),
     Attempt(
         suite="cmsis-nn",
+        case="PoolingFunctions/arm_avgpool_s8.c",
+        stem="arm_avgpool_s8",
+        graph="g_arm_avgpool_s8_0",
+        dfg_dir_arg="cmsis_nn_dfg_dir",
+        args=(),
+        memrefs=(),
+    ),
+    Attempt(
+        suite="cmsis-nn",
         case="ConvolutionFunctions/arm_depthwise_conv_s8.c",
         stem="arm_depthwise_conv_s8",
         artifact_stem="arm_depthwise_conv_s8.red0",

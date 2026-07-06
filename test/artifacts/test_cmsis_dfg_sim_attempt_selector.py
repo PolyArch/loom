@@ -158,6 +158,7 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
         reshape = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ReshapeFunctions/arm_reshape_s8.c")
         softmax_s8 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "SoftmaxFunctions/arm_softmax_s8.c")
         softmax = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "SoftmaxFunctions/arm_softmax_u8.c")
+        avgpool = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "PoolingFunctions/arm_avgpool_s8.c")
         depthwise = row_by_case(
             out_dir / "cgra-status-summary.csv",
             "cmsis-nn",
@@ -269,9 +270,41 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             evidence_dir / "arm_depthwise_conv_s8.dfg.report.json",
             evidence_dir / "arm_depthwise_conv_s8.mapping.json",
             evidence_dir / "arm_depthwise_conv_s8.cgra.report.json",
+            evidence_dir / "arm_avgpool_s8.dfg.report.json",
         ):
             if not artifact.is_file():
                 raise AssertionError(f"default-batch rollup did not emit {artifact}")
+        for artifact in (
+            evidence_dir / "arm_avgpool_s8.mapping.json",
+            evidence_dir / "arm_avgpool_s8.cgra.report.json",
+        ):
+            if artifact.exists():
+                raise AssertionError(f"avgpool DFG unsupported evidence must not emit {artifact}")
+        if (
+            avgpool["status"] != "unsupported"
+            or avgpool["diagnostic_class"] != "dfg_report_unsupported"
+            or avgpool["blocking_prerequisite"] != "dfg_report"
+            or avgpool["dfg_status"] != "unsupported"
+            or avgpool["mapping_status"] != "not_run"
+            or avgpool["cgra_status"] != "not_run"
+            or avgpool["comparison_status"] != "not_run"
+            or avgpool["dfg_report"] == ""
+            or avgpool["mapping_artifact"] != ""
+            or avgpool["cgra_report"] != ""
+            or "dataflow.graph.func 'g_arm_avgpool_s8_0' was not found" not in avgpool["diagnostic"]
+        ):
+            raise AssertionError(f"default-batch avgpool row should expose exact DFG unsupported evidence: {avgpool}")
+        avgpool_dfg = json.loads((evidence_dir / "arm_avgpool_s8.dfg.report.json").read_text())
+        if (
+            avgpool_dfg.get("status") != "unsupported"
+            or avgpool_dfg.get("graph") != "g_arm_avgpool_s8_0"
+            or avgpool_dfg.get("workload") != "PoolingFunctions/arm_avgpool_s8.c"
+            or avgpool_dfg.get("dynamic_work_items") != 0
+            or avgpool_dfg.get("final_outputs") != []
+            or avgpool_dfg.get("final_memory_state") != {}
+            or "dataflow.graph.func 'g_arm_avgpool_s8_0' was not found" not in avgpool_dfg.get("diagnostics", [])
+        ):
+            raise AssertionError(f"unexpected avgpool DFG unsupported report: {avgpool_dfg}")
         abs_dfg = json.loads((evidence_dir / "arm_abs_f32.dfg.report.json").read_text())
         abs_cgra = json.loads((evidence_dir / "arm_abs_f32.cgra.report.json").read_text())
         expected_abs_memory = {
@@ -487,6 +520,22 @@ def main() -> int:
     max_pool_selected = attempts.select_attempts(max_pool_args)
     if labels(max_pool_selected) != ["arm_max_pool_s8"]:
         raise AssertionError(f"arm_max_pool_s8 selector chose unexpected attempts: {labels(max_pool_selected)}")
+
+    avgpool_args = attempts.parse_args(
+        [
+            "--cmsis-dsp-dfg-dir",
+            "dsp",
+            "--cmsis-nn-dfg-dir",
+            "nn",
+            "--output-dir",
+            "out",
+            "--attempt-stem",
+            "arm_avgpool_s8",
+        ]
+    )
+    avgpool_selected = attempts.select_attempts(avgpool_args)
+    if labels(avgpool_selected) != ["arm_avgpool_s8"]:
+        raise AssertionError(f"arm_avgpool_s8 selector chose unexpected attempts: {labels(avgpool_selected)}")
 
     depthwise_args = attempts.parse_args(
         [

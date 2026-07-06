@@ -27,6 +27,7 @@
     "arm_reshape_s8",
     "arm_minimum_s8",
     "arm_maximum_s8",
+    "arm_avgpool_s8",
     "arm_max_pool_s8",
     "arm_depthwise_conv_s8",
     "arm_convolve_1x1_s8_fast",

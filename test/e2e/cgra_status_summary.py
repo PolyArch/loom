@@ -918,7 +918,10 @@ def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comp
     if suite == "app":
         pass
     elif suite in {"cmsis-dsp", "cmsis-nn"}:
-        if row_data.get("diagnostic_class") != "cmsis_dfg_mlir_ready_for_dfg_sim":
+        if row_data.get("diagnostic_class") not in {
+            "cmsis_dfg_mlir_ready_for_dfg_sim",
+            "cmsis_no_dataflow_graph",
+        }:
             return
     elif suite == "loombench":
         if row_data.get("diagnostic_class") != "loombench_workload_identity_bridge_ready":
