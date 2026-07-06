@@ -1415,6 +1415,58 @@ void addWideDataMuxPe(ModuleBuilder &module, llvm::StringRef result,
   module.addExactBodyLine("    }");
 }
 
+void addDataDemuxPe(ModuleBuilder &module, llvm::StringRef falseResult,
+                    llvm::StringRef trueResult, llvm::StringRef pred,
+                    llvm::StringRef value) {
+  module.addExactBodyLine(valueName(falseResult) + ", " +
+                          valueName(trueResult) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%pred = " +
+                          valueName(pred) + " : !fabric.bits<32>,");
+  module.addExactBodyLine("                         %value = " +
+                          valueName(value) + " : !fabric.bits<32>)");
+  module.addExactBodyLine("        -> (!fabric.bits<32>, !fabric.bits<32>) {");
+  module.addExactBodyLine(
+      "      fabric.fu(%sel = %pred : !fabric.bits<32> to !fabric.bits<1>,");
+  module.addExactBodyLine(
+      "                %data = %value : !fabric.bits<32>)");
+  module.addExactBodyLine("          -> (!fabric.bits<32>, !fabric.bits<32>) {");
+  module.addExactBodyLine("        %false_lane, %true_lane = "
+                          "fabric.op [@dataflow.demux] (%sel, %data)");
+  module.addExactBodyLine("            : (!fabric.bits<1>, !fabric.bits<32>) "
+                          "-> (!fabric.bits<32>, !fabric.bits<32>)");
+  module.addExactBodyLine("        fabric.yield %false_lane, %true_lane : "
+                          "!fabric.bits<32>, !fabric.bits<32>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
+void addControlDemuxPe(ModuleBuilder &module, llvm::StringRef falseResult,
+                       llvm::StringRef trueResult, llvm::StringRef pred,
+                       llvm::StringRef value) {
+  module.addExactBodyLine(valueName(falseResult) + ", " +
+                          valueName(trueResult) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%pred = " +
+                          valueName(pred) + " : !fabric.bits<32>,");
+  module.addExactBodyLine("                         %value = " +
+                          valueName(value) +
+                          " : !fabric.bits<0> to !fabric.bits<32>)");
+  module.addExactBodyLine("        -> (!fabric.bits<32>, !fabric.bits<32>) {");
+  module.addExactBodyLine(
+      "      fabric.fu(%sel = %pred : !fabric.bits<32> to !fabric.bits<1>,");
+  module.addExactBodyLine(
+      "                %data = %value : !fabric.bits<32> to !fabric.bits<0>)");
+  module.addExactBodyLine("          -> (!fabric.bits<32>, !fabric.bits<32>) {");
+  module.addExactBodyLine("        %false_lane, %true_lane = "
+                          "fabric.op [@dataflow.demux] (%sel, %data)");
+  module.addExactBodyLine("            : (!fabric.bits<1>, !fabric.bits<0>) "
+                          "-> (!fabric.bits<0>, !fabric.bits<0>)");
+  module.addExactBodyLine("        fabric.yield %false_lane : "
+                          "!fabric.bits<0> to !fabric.bits<32>, "
+                          "%true_lane : !fabric.bits<0> to !fabric.bits<32>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
 void addMemoryReductionMem(ModuleBuilder &module, unsigned loadCount,
                            unsigned storeCount) {
   std::vector<std::string> resultNames;
@@ -4158,6 +4210,8 @@ struct SharedMemoryAdgConfig {
   unsigned divCount = 0;
   unsigned unsignedDivCount = 0;
   unsigned muxCount = 0;
+  unsigned demuxCount = 0;
+  unsigned controlDemuxCount = 0;
   unsigned logicCount = 8;
   unsigned shiftCount = 8;
   unsigned castCount = 8;
@@ -4593,6 +4647,42 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
     sinks32.push_back(falseValue);
     sinks32.push_back(trueValue);
   }
+  for (unsigned index = 0; index < config.demuxCount; ++index) {
+    std::string stem = numbered("demux", index);
+    std::string falseResult = stem + "_false";
+    std::string trueResult = stem + "_true";
+    std::string pred = stem + "_pred";
+    std::string value = stem + "_value";
+    addDataDemuxPe(module, falseResult, trueResult, pred, value);
+    sources32.push_back(falseResult);
+    sources32.push_back(trueResult);
+    sinks32.push_back(pred);
+    sinks32.push_back(value);
+  }
+  for (unsigned index = 0; index < config.controlDemuxCount; ++index) {
+    std::string stem = numbered("control_demux", index);
+    std::string falseResult = stem + "_false";
+    std::string trueResult = stem + "_true";
+    std::string falseWide = falseResult + "_wide";
+    std::string trueWide = trueResult + "_wide";
+    std::string pred = stem + "_pred";
+    std::string value = stem + "_value";
+    addControlDemuxPe(module, falseWide, trueWide, pred, value);
+    module.addExactBodyLine(valueName(falseResult) + " = fabric.fifo " +
+                            valueName(falseWide) +
+                            " [max_depth = 1, bypassable = true] "
+                            "{bypassed = true}");
+    module.addExactBodyLine("  : !fabric.bits<32> to !fabric.bits<0>");
+    module.addExactBodyLine(valueName(trueResult) + " = fabric.fifo " +
+                            valueName(trueWide) +
+                            " [max_depth = 1, bypassable = true] "
+                            "{bypassed = true}");
+    module.addExactBodyLine("  : !fabric.bits<32> to !fabric.bits<0>");
+    sources0.push_back(falseResult);
+    sources0.push_back(trueResult);
+    sinks32.push_back(pred);
+    sinks0.push_back(value);
+  }
   for (unsigned index = 0; index < config.wideMuxCount; ++index) {
     std::string result = numbered("wide_mux", index);
     std::string pred = result + "_pred";
@@ -4674,14 +4764,18 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
 ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   SharedMemoryAdgConfig config;
   config.moduleName = "shared_memory_reduction_adg";
+  config.selectCount = 12;
+  config.wideSelectCount = 2;
   config.unsignedDivCount = 2;
   config.muxCount = 4;
+  config.demuxCount = 2;
+  config.controlDemuxCount = 1;
   config.trunciCount = 4;
   config.wideConstantCount = 2;
   config.wideAddCount = 2;
   config.wideShiftCount = 1;
   config.wideCmpCount = 1;
-  config.wideIndexCastCount = 4;
+  config.wideIndexCastCount = 6;
   config.wideIndexCastUiCount = 2;
   config.wideSextCount = 4;
   config.wideMulCount = 2;
@@ -4691,7 +4785,12 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   config.constantHexValues = {
       "0x00000000", "0x00000001", "0x00000002", "0x00000003",
       "0x00000004", "0x00000008", "0x00000010", "0x3f800000",
-      "0x40000000", "0xbf800000", "0x0000003f", "0xffffffff"};
+      "0x40000000", "0xbf800000", "0x0000001e", "0x0000003f",
+      "0xffffffff"};
+  config.wideConstantHexValues = {"0x00000000", "0x00000001",
+                                  "0x00000002", "0x00000003",
+                                  "0x00000004", "0x00000008",
+                                  "0x0000001f", "0x40000000"};
   return buildSharedMemoryLikeAdg(config);
 }
 

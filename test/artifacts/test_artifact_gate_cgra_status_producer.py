@@ -88,8 +88,8 @@ def main() -> int:
             write_status_count_csv(
                 no_loombench_csv,
                 {
-                    ("app", "pass"): 126,
-                    ("app", "unsupported"): 6,
+                    ("app", "pass"): 127,
+                    ("app", "unsupported"): 5,
                     ("cmsis-dsp", "pass"): 16,
                     ("cmsis-nn", "pass"): 17,
                     ("cmsis-nn", "blocked"): 0,

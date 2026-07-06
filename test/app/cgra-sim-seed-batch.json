@@ -518,8 +518,7 @@
     },
     {
       "case": "sort_insertion",
-      "expected_status": "unsupported",
-      "hardware": "shared_reduction_adg"
+      "hardware": "shared_memory_reduction_adg"
     },
     {
       "case": "sort_merge",

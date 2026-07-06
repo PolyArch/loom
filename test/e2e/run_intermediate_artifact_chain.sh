@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    breadth_first_search|col2im|sort_insertion|sort_merge|sort_quick|spmspm)
+    breadth_first_search|col2im|sort_merge|sort_quick|spmspm)
       return 0
       ;;
     *)
@@ -457,7 +457,7 @@ case "${CASE}" in
     case_graph="workload_graph_set"
     ;;
   sort_insertion)
-    case_graph="g_t_sort_insertion_kernel_0_0"
+    case_graph="workload_graph_set"
     ;;
   sort_merge)
     case_graph="g_t_sort_merge_kernel_red_0_0"
@@ -562,7 +562,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "database_join" || "${CASE}" == "depthwise_conv" || "${CASE}" == "edge_update" || "${CASE}" == "edge_update_batch" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "histogram" || "${CASE}" == "histogram_strided" || "${CASE}" == "im2col" || "${CASE}" == "kmp_table" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "spmm" || "${CASE}" == "stream_nested" || "${CASE}" == "stream_update" || "${CASE}" == "string_compare" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" || "${CASE}" == "wildcard_match" ]]; then
+    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "database_join" || "${CASE}" == "depthwise_conv" || "${CASE}" == "edge_update" || "${CASE}" == "edge_update_batch" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "histogram" || "${CASE}" == "histogram_strided" || "${CASE}" == "im2col" || "${CASE}" == "kmp_table" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "sort_insertion" || "${CASE}" == "spmm" || "${CASE}" == "stream_nested" || "${CASE}" == "stream_update" || "${CASE}" == "string_compare" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" || "${CASE}" == "wildcard_match" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(
@@ -790,6 +790,195 @@ run_pool2d_window_components() {
     --mapping-output "${mapping_artifact}" \
     --cgra-output "${cgra_report}" \
     --mapping-summary-output "${mapping}"
+}
+
+run_float_sort_graph_set() {
+  local source="${ROOT}/test/app/${CASE}/main_func.cpp"
+  local copy_graph=""
+  local sort_graph=""
+  case "${CASE}" in
+    sort_bubble)
+      copy_graph="g_t_sort_bubble_kernel_0_0"
+      sort_graph="g_t_sort_bubble_kernel_red_0_0"
+      ;;
+    sort_insertion)
+      copy_graph="g_t_sort_insertion_kernel_0_0"
+      sort_graph="g_t_sort_insertion_kernel_effect_0"
+      ;;
+    *)
+      echo "unsupported float sort workload graph set: ${CASE}" >&2
+      exit 1
+      ;;
+  esac
+
+  local input_values
+  input_values="$(extract_cpp_float_array_csv "${source}" kInput)"
+  local value_count
+  value_count="$(python3 - "${input_values}" <<'PY'
+import sys
+values = [value for value in sys.argv[1].split(",") if value]
+print(len(values))
+PY
+)"
+  if [[ "${value_count}" != "12" ]]; then
+    echo "${CASE} graph fixture expects 12 input values, saw ${value_count}" >&2
+    exit 1
+  fi
+  local zero_values
+  zero_values="$(python3 - "${value_count}" <<'PY'
+import sys
+print(",".join(["0.000000e+00"] * int(sys.argv[1])))
+PY
+)"
+
+  local copy_dfg_report="${OUT_DIR}/${CASE}-dfg-sim-copy.report.json"
+  local sort_dfg_report="${OUT_DIR}/${CASE}-dfg-sim-sort.report.json"
+  local copy_mapping_artifact="${OUT_DIR}/pnr-mapping-copy.json"
+  local sort_mapping_artifact="${OUT_DIR}/pnr-mapping-sort.json"
+  local copy_mapping_summary="${OUT_DIR}/pnr-mapping-copy-summary.csv"
+  local sort_mapping_summary="${OUT_DIR}/pnr-mapping-sort-summary.csv"
+  local copy_cgra_report="${OUT_DIR}/${CASE}-cgra-sim-copy-report.json"
+  local sort_cgra_report="${OUT_DIR}/${CASE}-cgra-sim-sort-report.json"
+
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim \
+    "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${copy_graph}" \
+    --workload "${CASE}" \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --arg 0=none \
+    --memref "1=${input_values}" \
+    --memref "2=${zero_values}" \
+    --arg 3=0 \
+    --arg 3=1 \
+    --arg 3=2 \
+    --arg 3=3 \
+    --arg 3=4 \
+    --arg 3=5 \
+    --arg 3=6 \
+    --arg 3=7 \
+    --arg 3=8 \
+    --arg 3=9 \
+    --arg 3=10 \
+    --arg 3=11 \
+    --output "${copy_dfg_report}"
+
+  local copied_values
+  copied_values="$(
+    python3 - "${copy_dfg_report}" "${CASE}" <<'PY'
+import json
+import sys
+
+report = json.loads(open(sys.argv[1]).read())
+case = sys.argv[2]
+values = report.get("final_memory_state", {}).get("arg2")
+if not isinstance(values, list) or len(values) != 12:
+    raise SystemExit(f"{case} copy graph did not emit twelve output values")
+clean = []
+for value in values:
+    if not isinstance(value, str) or ":" not in value:
+        raise SystemExit(f"unexpected {case} copy value {value!r}")
+    clean.append(value.split(":", 1)[1])
+print(",".join(clean))
+PY
+  )"
+
+  case "${CASE}" in
+    sort_bubble)
+      ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim \
+        "${case_dfg_dir}/main_func.dfg.mlir" \
+        --graph "${sort_graph}" \
+        --workload "${CASE}" \
+        --arg 0=none \
+        --arg 1=1 \
+        --arg 2=12 \
+        --arg 3=1 \
+        --arg 4=-1 \
+        --memref "5=${copied_values}" \
+        --arg 6=1 \
+        --arg 7=0 \
+        --arg 8=12 \
+        --output "${sort_dfg_report}"
+      ;;
+    sort_insertion)
+      ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim \
+        "${case_dfg_dir}/main_func.dfg.mlir" \
+        --graph "${sort_graph}" \
+        --workload "${CASE}" \
+        --arg 0=none \
+        --memref "1=${copied_values}" \
+        --arg 2=0 \
+        --arg 3=-1 \
+        --arg 4=0 \
+        --arg 5=1 \
+        --arg 6=4294967295 \
+        --arg 7=12 \
+        --output "${sort_dfg_report}"
+      ;;
+  esac
+
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    --dfg-report "${copy_dfg_report}" \
+    --dfg-report "${sort_dfg_report}" \
+    --output "${dfg_cycle}"
+  run_mapping_summary \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${copy_graph}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${copy_mapping_artifact}" \
+    --output "${copy_mapping_summary}"
+  run_mapping_summary \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${sort_graph}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${sort_mapping_artifact}" \
+    --output "${sort_mapping_summary}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${copy_dfg_report}" \
+    --mapping-artifact "${copy_mapping_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${copy_cgra_report}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${sort_dfg_report}" \
+    --mapping-artifact "${sort_mapping_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${sort_cgra_report}"
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "${CASE}__workload_graph_set__${hardware_name}" \
+    --source-dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --dfg-report "${copy_dfg_report}" \
+    --dfg-report "${sort_dfg_report}" \
+    --mapping-artifact "${copy_mapping_artifact}" \
+    --mapping-artifact "${sort_mapping_artifact}" \
+    --cgra-report "${copy_cgra_report}" \
+    --cgra-report "${sort_cgra_report}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
+  component_artifacts=(
+    "${copy_dfg_report}"
+    "${sort_dfg_report}"
+    "${copy_mapping_artifact}"
+    "${sort_mapping_artifact}"
+    "${copy_cgra_report}"
+    "${sort_cgra_report}"
+  )
 }
 
 run_depthwise_conv_components() {
@@ -2662,150 +2851,8 @@ elif [[ "${CASE}" == "conv2d" ]]; then
     --mapping-output "${mapping_artifact}" \
     --cgra-output "${cgra_report}" \
     --mapping-summary-output "${mapping}"
-elif [[ "${CASE}" == "sort_bubble" ]]; then
-  sort_bubble_input_values="$(extract_cpp_float_array_csv "${ROOT}/test/app/sort_bubble/main_func.cpp" kInput)"
-  sort_bubble_value_count="$(python3 - "${sort_bubble_input_values}" <<'PY'
-import sys
-values = [value for value in sys.argv[1].split(",") if value]
-print(len(values))
-PY
-)"
-  if [[ "${sort_bubble_value_count}" != "12" ]]; then
-    echo "sort_bubble graph fixture expects 12 input values, saw ${sort_bubble_value_count}" >&2
-    exit 1
-  fi
-  sort_bubble_zero_values="$(python3 - "${sort_bubble_value_count}" <<'PY'
-import sys
-print(",".join(["0.000000e+00"] * int(sys.argv[1])))
-PY
-)"
-  copy_dfg_report="${OUT_DIR}/sort_bubble-dfg-sim-copy.report.json"
-  sort_dfg_report="${OUT_DIR}/sort_bubble-dfg-sim-sort.report.json"
-  copy_mapping_artifact="${OUT_DIR}/pnr-mapping-copy.json"
-  sort_mapping_artifact="${OUT_DIR}/pnr-mapping-sort.json"
-  copy_mapping_summary="${OUT_DIR}/pnr-mapping-copy-summary.csv"
-  sort_mapping_summary="${OUT_DIR}/pnr-mapping-sort-summary.csv"
-  copy_cgra_report="${OUT_DIR}/sort_bubble-cgra-sim-copy-report.json"
-  sort_cgra_report="${OUT_DIR}/sort_bubble-cgra-sim-sort-report.json"
-
-  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim \
-    "${case_dfg_dir}/main_func.dfg.mlir" \
-    --graph "g_t_sort_bubble_kernel_0_0" \
-    --workload "${CASE}" \
-    --arg 0=none \
-    --arg 0=none \
-    --arg 0=none \
-    --arg 0=none \
-    --arg 0=none \
-    --arg 0=none \
-    --arg 0=none \
-    --arg 0=none \
-    --arg 0=none \
-    --arg 0=none \
-    --arg 0=none \
-    --arg 0=none \
-    --memref "1=${sort_bubble_input_values}" \
-    --memref "2=${sort_bubble_zero_values}" \
-    --arg 3=0 \
-    --arg 3=1 \
-    --arg 3=2 \
-    --arg 3=3 \
-    --arg 3=4 \
-    --arg 3=5 \
-    --arg 3=6 \
-    --arg 3=7 \
-    --arg 3=8 \
-    --arg 3=9 \
-    --arg 3=10 \
-    --arg 3=11 \
-    --output "${copy_dfg_report}"
-
-  sort_bubble_copied_values="$(
-    python3 - "${copy_dfg_report}" <<'PY'
-import json
-import sys
-
-report = json.loads(open(sys.argv[1]).read())
-values = report.get("final_memory_state", {}).get("arg2")
-if not isinstance(values, list) or len(values) != 12:
-    raise SystemExit("sort_bubble copy graph did not emit twelve output values")
-clean = []
-for value in values:
-    if not isinstance(value, str) or ":" not in value:
-        raise SystemExit(f"unexpected sort_bubble copy value {value!r}")
-    clean.append(value.split(":", 1)[1])
-print(",".join(clean))
-PY
-  )"
-
-  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim \
-    "${case_dfg_dir}/main_func.dfg.mlir" \
-    --graph "g_t_sort_bubble_kernel_red_0_0" \
-    --workload "${CASE}" \
-    --arg 0=none \
-    --arg 1=1 \
-    --arg 2=12 \
-    --arg 3=1 \
-    --arg 4=-1 \
-    --memref "5=${sort_bubble_copied_values}" \
-    --arg 6=1 \
-    --arg 7=0 \
-    --arg 8=12 \
-    --output "${sort_dfg_report}"
-
-  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
-    --dfg-report "${copy_dfg_report}" \
-    --dfg-report "${sort_dfg_report}" \
-    --output "${dfg_cycle}"
-  run_mapping_summary \
-    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
-    --graph "g_t_sort_bubble_kernel_0_0" \
-    --hardware-mlir "${hardware_mlir}" \
-    --hardware "${hardware_name}" \
-    --workload "${CASE}" \
-    --artifact "${copy_mapping_artifact}" \
-    --output "${copy_mapping_summary}"
-  run_mapping_summary \
-    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
-    --graph "g_t_sort_bubble_kernel_red_0_0" \
-    --hardware-mlir "${hardware_mlir}" \
-    --hardware "${hardware_name}" \
-    --workload "${CASE}" \
-    --artifact "${sort_mapping_artifact}" \
-    --output "${sort_mapping_summary}"
-  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
-    --dfg-report "${copy_dfg_report}" \
-    --mapping-artifact "${copy_mapping_artifact}" \
-    --hardware-mlir "${hardware_mlir}" \
-    --output "${copy_cgra_report}"
-  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
-    --dfg-report "${sort_dfg_report}" \
-    --mapping-artifact "${sort_mapping_artifact}" \
-    --hardware-mlir "${hardware_mlir}" \
-    --output "${sort_cgra_report}"
-  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
-    --workload "${CASE}" \
-    --hardware "${hardware_name}" \
-    --mapping-id "${CASE}__workload_graph_set__${hardware_name}" \
-    --source-dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
-    --dfg-report "${copy_dfg_report}" \
-    --dfg-report "${sort_dfg_report}" \
-    --mapping-artifact "${copy_mapping_artifact}" \
-    --mapping-artifact "${sort_mapping_artifact}" \
-    --cgra-report "${copy_cgra_report}" \
-    --cgra-report "${sort_cgra_report}" \
-    --dfg-output "${dfg_report}" \
-    --mapping-output "${mapping_artifact}" \
-    --cgra-output "${cgra_report}" \
-    --mapping-summary-output "${mapping}"
-  component_artifacts=(
-    "${copy_dfg_report}"
-    "${sort_dfg_report}"
-    "${copy_mapping_artifact}"
-    "${sort_mapping_artifact}"
-    "${copy_cgra_report}"
-    "${sort_cgra_report}"
-  )
+elif [[ "${CASE}" == "sort_bubble" || "${CASE}" == "sort_insertion" ]]; then
+  run_float_sort_graph_set
 elif [[ "${CASE}" == "im2col" ]]; then
   im2col_source="${ROOT}/test/app/im2col/main_func.cpp"
   im2col_input_values="$(extract_cpp_float_array_csv "${im2col_source}" kInput)"
@@ -3096,14 +3143,6 @@ elif uses_primary_graph_absence_path "${CASE}"; then
         --required-discovered-graph "g_t_breadth_first_search_kernel_0_0"
         --diagnostic "primary workload graph is partial: breadth_first_search lowering covers initialization and queue update slices while the queue-driven CSR traversal remains outside row-level aggregate evidence"
         --evidence "partial queue-driven graph traversal lowering boundary"
-      )
-      ;;
-    sort_insertion)
-      expected_primary_graph_token="sort_insertion_kernel"
-      graph_absence_args=(
-        --expected-graph-presence present
-        --diagnostic "primary workload graph is partial: sort_insertion lowering covers the copy loop while the insertion-sort compare-and-shift loop remains outside dataflow"
-        --evidence "partial dataflow lowering boundary"
       )
       ;;
     sort_merge)

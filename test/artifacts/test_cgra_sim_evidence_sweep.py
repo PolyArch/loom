@@ -158,7 +158,6 @@ DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "breadth_first_search",
     "col2im",
-    "sort_insertion",
     "sort_merge",
     "sort_quick",
     "spmspm",
@@ -185,11 +184,6 @@ PARTIAL_LOWERING_SWEEP_CASES = {
         "primary workload graph is partial: breadth_first_search lowering covers initialization and queue update "
         "slices while the queue-driven CSR traversal remains outside row-level aggregate evidence",
         "breadth_first_search_kernel",
-    ),
-    "sort_insertion": (
-        "primary workload graph is partial: sort_insertion lowering covers the copy loop "
-        "while the insertion-sort compare-and-shift loop remains outside dataflow",
-        "sort_insertion_kernel",
     ),
     "sort_merge": (
         "primary workload graph is partial: sort_merge lowering covers copy and remainder-copy slices "
@@ -7277,6 +7271,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "merge", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "partition", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "sort_bubble", "shared_memory_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "sort_insertion", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "bitrev", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "bitrev_complex", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "scatter_add", "shared_memory_reduction_adg")
@@ -7465,6 +7460,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "pool_max")
         assert_mapping_uses_switch_multihop(evidence_dir, "outer")
         assert_mapping_uses_switch_multihop(evidence_dir, "sort_bubble")
+        assert_mapping_uses_switch_multihop(evidence_dir, "sort_insertion")
         assert_mapping_uses_switch_multihop(evidence_dir, "bitrev")
         assert_mapping_uses_switch_multihop(evidence_dir, "bitrev_complex")
         assert_mapping_uses_switch_multihop(evidence_dir, "transpose")
@@ -7509,7 +7505,9 @@ def main(argv: list[str]) -> int:
         assert_component_references_resolve(evidence_dir, "vecadd")
         assert_component_references_resolve(evidence_dir, "conv2d")
         assert_component_references_resolve(evidence_dir, "sort_bubble")
+        assert_component_references_resolve(evidence_dir, "sort_insertion")
         run(repo, ["python3", "test/artifacts/assert_sort_bubble_cgra_evidence.py", str(evidence_dir)])
+        run(repo, ["python3", "test/artifacts/assert_sort_insertion_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_bitrev_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_bitrev_complex_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_conv2d_cgra_evidence.py", str(evidence_dir)])
@@ -7805,10 +7803,10 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 132,
-            "pass": 126,
+            "pass": 127,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 6,
+            "unsupported": 5,
             "missing_status": 0,
         }
         if counts != expected_counts:

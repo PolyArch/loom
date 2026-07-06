@@ -485,10 +485,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 132,
-            "pass": 126,
+            "pass": 127,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 6,
+            "unsupported": 5,
             "missing_status": 0,
         },
     )
@@ -561,6 +561,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
     assert_app_cgra_pass_row(repo, rows, "cdma", expected_hardware="shared_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "conv2d", expected_hardware="shared_memory_reduction_adg")
     sim_evidence = out_dir / "current-sim-cycle"
+    assert_app_cgra_pass_row(repo, rows, "sort_insertion", expected_hardware="shared_memory_reduction_adg")
+    cgra_sweep.run(repo, ["python3", "test/artifacts/assert_sort_insertion_cgra_evidence.py", str(sim_evidence)])
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_copy_f32.c", "arm_copy_f32"
     )
@@ -764,10 +766,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 132,
-            "pass": 126,
+            "pass": 127,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 6,
+            "unsupported": 5,
             "missing_status": 0,
         },
     )
@@ -866,6 +868,7 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         ("relu", "shared_reduction_adg"),
         ("sbox_lookup", "shared_reduction_adg"),
         ("sort_bubble", "shared_memory_reduction_adg"),
+        ("sort_insertion", "shared_memory_reduction_adg"),
         ("mat3x3_mult", "shared_reduction_adg"),
         ("vecsum", "shared_reduction_adg"),
         ("vecadd", "shared_reduction_adg"),
@@ -1303,10 +1306,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
         "the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim cannot "
         "observe the kernel return value"
     ),
-    "sort_insertion": (
-        "primary workload graph is partial: sort_insertion lowering covers the copy loop "
-        "while the insertion-sort compare-and-shift loop remains outside dataflow"
-    ),
     "sort_merge": (
         "primary workload graph is partial: sort_merge lowering covers copy and remainder-copy slices "
         "while the merge compare loop remains outside dataflow"
@@ -1533,10 +1532,10 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         "app",
         {
             "total": 132,
-            "pass": 21,
+            "pass": 22,
             "fail": 0,
             "blocked": 105,
-            "unsupported": 6,
+            "unsupported": 5,
             "missing_status": 0,
         },
     )
@@ -1561,6 +1560,11 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
     assert_app_cgra_pass_row(repo, rows, "parity", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "popcount", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "string_compare", expected_hardware="shared_memory_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "sort_insertion", expected_hardware="shared_memory_reduction_adg")
+    cgra_sweep.run(
+        repo,
+        ["python3", "test/artifacts/assert_sort_insertion_cgra_evidence.py", str(out_dir / "current-sim-cycle")],
+    )
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
 
 
@@ -1571,7 +1575,7 @@ def assert_sort_insertion_attempt_manifest_mode(repo: Path, out_dir: Path, legac
         json.dumps(
             {
                 "schema_version": 1,
-                "cases": [{"case": "sort_insertion", "hardware": "shared_reduction_adg"}],
+                "cases": [{"case": "sort_insertion", "hardware": "shared_memory_reduction_adg"}],
             },
             indent=2,
             sort_keys=True,
@@ -1593,21 +1597,18 @@ def assert_sort_insertion_attempt_manifest_mode(repo: Path, out_dir: Path, legac
     )
     rows = read_rows(out_dir / "rollup" / "cgra-status-summary.csv")
     row = one_row(rows, "app", "sort_insertion")
-    if (
-        row["status"] != "unsupported"
-        or row["diagnostic_class"] != "dfg_report_unsupported"
-        or row["owner"] != "sim_report"
-        or row["blocking_prerequisite"] != "dfg_report"
-        or row["dfg_status"] != "unsupported"
-        or row["mapping_status"] != "unsupported"
-        or row["cgra_status"] != "blocked"
-        or row["comparison_status"] != "blocked"
-        or row["hardware_system"] != "shared_reduction_adg"
-        or row["final_outputs_present"] != "false"
-        or row["final_memory_state_present"] != "false"
-        or SHARED_APP_BLOCKER_DIAGNOSTICS["sort_insertion"] not in row["diagnostic"]
-    ):
-        raise AssertionError(f"sort_insertion attempt should publish structured lowering-boundary evidence: {row}")
+    if row["status"] != "pass" or row["hardware_system"] != "shared_memory_reduction_adg":
+        raise AssertionError(f"sort_insertion attempt should publish pass evidence: {row}")
+    if row["final_memory_state_present"] != "true":
+        raise AssertionError(f"sort_insertion attempt should expose final memory state: {row}")
+    cgra_sweep.run(
+        repo,
+        [
+            "python3",
+            "test/artifacts/assert_sort_insertion_cgra_evidence.py",
+            str(out_dir / "rollup" / "current-sim-cycle"),
+        ],
+    )
     for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
         assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
 

@@ -23,5 +23,7 @@ LOOM_RAISE_OPT="${LOOM_RAISE_OPT:-${REPO}/build/bin/loom-raise-opt}"
 
 dfg_one "main_func" "cpp"
 require_kernel_graph "main_func" "sort_insertion_kernel"
+require_graph_body_op "main_func" "g_t_sort_insertion_kernel_effect_0" "arith.cmpf " "sort compare"
+require_graph_body_op "main_func" "g_t_sort_insertion_kernel_effect_0" "dataflow.store " "sort dataflow.store"
 
 echo "[${KERNEL}] PASS"

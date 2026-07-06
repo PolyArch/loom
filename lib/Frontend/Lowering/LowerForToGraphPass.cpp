@@ -240,6 +240,7 @@ struct LowerForToGraphPass
     // be hosted. This keeps the smoke deliverable's "every iter_args
     // reduction becomes a graph" assertion straightforward.
     wrapHostScopeReductions(module, builder);
+    wrapHostScopeStructuredEffectLoops(module, builder);
 
     // Then, for each dataflow.thread body, snapshot the eligible
     // scf.for ops in source order before mutating.
@@ -994,6 +995,169 @@ struct LowerForToGraphPass
     // Note: we deliberately keep the original loop alive at host
     // scope so its result is still valid for downstream uses. The
     // thread body owns a clone of the same loop body.
+  }
+
+  bool isStructuredEffectLoopCandidate(::mlir::func::FuncOp func,
+                                       ::mlir::scf::ForOp loop) {
+    if (!func.getSymName().ends_with("_kernel"))
+      return false;
+    if (!loop.getInitArgs().empty())
+      return false;
+    if (loop->getParentOfType<::dataflow::ThreadOp>() ||
+        loop->getParentOfType<::dataflow::GraphFuncOp>())
+      return false;
+    if (loop->getParentOfType<::mlir::scf::ForOp>() ||
+        loop->getParentOfType<::mlir::scf::WhileOp>())
+      return false;
+    if (!loop.getRegion().hasOneBlock())
+      return false;
+
+    bool hasWhile = false;
+    bool hasStore = false;
+    bool unsupported = false;
+    loop->walk([&](::mlir::Operation *nested) -> ::mlir::WalkResult {
+      if (nested == loop.getOperation())
+        return ::mlir::WalkResult::advance();
+      if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
+                      ::dataflow::GraphFuncOp, ::dataflow::ThreadOp>(nested)) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+      if (::llvm::isa<::mlir::FunctionOpInterface, ::mlir::CallOpInterface>(
+              nested)) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+      if (::llvm::isa<::mlir::LLVM::StoreOp, ::dataflow::StoreOp>(nested))
+        hasStore = true;
+      if (::llvm::isa<::mlir::scf::WhileOp>(nested))
+        hasWhile = true;
+      if (nested->getNumRegions() != 0 &&
+          !::llvm::isa<::mlir::scf::ForOp, ::mlir::scf::IfOp,
+                       ::mlir::scf::WhileOp, ::mlir::scf::IndexSwitchOp>(
+              nested)) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+      return ::mlir::WalkResult::advance();
+    });
+    return hasWhile && hasStore && !unsupported;
+  }
+
+  void collectStructuredEffectLoopCaptures(
+      ::mlir::scf::ForOp loop,
+      ::llvm::SetVector<::mlir::Value> &captures) {
+    collectExternalUses(loop, captures);
+    captures.insert(loop.getLowerBound());
+    captures.insert(loop.getUpperBound());
+    captures.insert(loop.getStep());
+  }
+
+  void wrapHostScopeStructuredEffectLoops(::mlir::ModuleOp module,
+                                          ::mlir::OpBuilder &builder) {
+    struct Pending {
+      ::mlir::func::FuncOp func;
+      ::llvm::SmallVector<::mlir::scf::ForOp, 4> loops;
+    };
+    ::llvm::SmallVector<Pending, 4> pending;
+    module.walk([&](::mlir::func::FuncOp func) {
+      Pending p;
+      p.func = func;
+      func.walk([&](::mlir::scf::ForOp loop) {
+        if (isStructuredEffectLoopCandidate(func, loop))
+          p.loops.push_back(loop);
+      });
+      if (!p.loops.empty())
+        pending.push_back(std::move(p));
+    });
+
+    for (Pending &p : pending) {
+      std::string stem = "t_" + sanitizeSymbol(p.func.getSymName()) + "_effect";
+      for (auto [seq, loop] : ::llvm::enumerate(p.loops))
+        wrapOneStructuredEffectLoop(module, loop, stem, seq, builder);
+    }
+  }
+
+  void wrapOneStructuredEffectLoop(::mlir::ModuleOp module,
+                                   ::mlir::scf::ForOp loop,
+                                   ::llvm::StringRef stem, size_t seq,
+                                   ::mlir::OpBuilder &builder) {
+    ::mlir::Location loc = loop.getLoc();
+    ::mlir::Type noneType = builder.getType<::mlir::NoneType>();
+
+    ::llvm::SetVector<::mlir::Value> captures;
+    collectStructuredEffectLoopCaptures(loop, captures);
+
+    ::llvm::SmallVector<::mlir::Type, 8> captureTypes;
+    for (::mlir::Value value : captures)
+      captureTypes.push_back(value.getType());
+
+    std::string threadName =
+        uniqueSymbol(module, (stem + "_" + ::llvm::Twine(seq)).str());
+    std::string graphName =
+        uniqueSymbol(module, "g_" + sanitizeSymbol(threadName));
+
+    ::mlir::FunctionType threadType =
+        builder.getFunctionType(captureTypes, /*results=*/{});
+    ::llvm::SmallVector<::mlir::Type, 8> graphInputs;
+    graphInputs.push_back(noneType);
+    graphInputs.append(captureTypes.begin(), captureTypes.end());
+    ::mlir::FunctionType graphType =
+        builder.getFunctionType(graphInputs, ::mlir::TypeRange{noneType});
+
+    builder.setInsertionPointToEnd(module.getBody());
+    auto graph = ::dataflow::GraphFuncOp::create(
+        builder, loc, graphName, graphType,
+        ::llvm::ArrayRef<::mlir::NamedAttribute>{});
+    graph.setSymVisibilityAttr(builder.getStringAttr("private"));
+    ::mlir::Block *graphEntry = builder.createBlock(&graph.getBody());
+    for (::mlir::Type type : graphInputs)
+      graphEntry->addArgument(type, loc);
+
+    ::mlir::IRMapping graphMapping;
+    size_t graphArgIndex = 1;
+    for (::mlir::Value value : captures)
+      graphMapping.map(value, graphEntry->getArgument(graphArgIndex++));
+    builder.setInsertionPointToEnd(graphEntry);
+    builder.clone(*loop.getOperation(), graphMapping);
+    ::dataflow::GraphReturnOp::create(
+        builder, loc, ::mlir::ValueRange{graphEntry->getArgument(0)});
+
+    builder.setInsertionPointToEnd(module.getBody());
+    auto thread = ::dataflow::ThreadOp::create(
+        builder, loc, threadName, threadType,
+        ::llvm::ArrayRef<::mlir::NamedAttribute>{});
+    thread.setSymVisibilityAttr(builder.getStringAttr("private"));
+    ::mlir::Block *threadEntry = builder.createBlock(&thread.getBody());
+    for (::mlir::Type type : captureTypes)
+      threadEntry->addArgument(type, loc);
+    ::mlir::BlockArgument threadCtrl =
+        threadEntry->addArgument(noneType, loc);
+    threadEntry->addArgument(builder.getIndexType(), loc);
+
+    builder.setInsertionPointToEnd(threadEntry);
+    ::llvm::SmallVector<::mlir::Value, 8> graphOperands;
+    for (size_t i = 0, e = captureTypes.size(); i < e; ++i)
+      graphOperands.push_back(threadEntry->getArgument(i));
+    auto graphCallee =
+        ::mlir::FlatSymbolRefAttr::get(builder.getContext(), graphName);
+    ::dataflow::GraphLaunchOp::create(
+        builder, loc, /*doneOut=*/noneType, /*results=*/::mlir::TypeRange{},
+        graphCallee, threadCtrl, graphOperands);
+    ::dataflow::ThreadYieldOp::create(builder, loc);
+
+    builder.setInsertionPoint(loop);
+    ::llvm::SmallVector<::mlir::Value, 4> upperBounds;
+    upperBounds.push_back(::mlir::arith::ConstantOp::create(
+        builder, loc, builder.getIndexAttr(1)));
+    ::llvm::SmallVector<::mlir::Value, 8> bodyOperands;
+    for (::mlir::Value value : captures)
+      bodyOperands.push_back(value);
+    auto threadCallee =
+        ::mlir::FlatSymbolRefAttr::get(builder.getContext(), threadName);
+    ::dataflow::ThreadLaunchOp::create(
+        builder, loc, /*asyncToken=*/::mlir::Type{}, threadCallee,
+        bodyOperands, upperBounds, /*asyncDependencies=*/::mlir::ValueRange{});
   }
 
   ::mlir::LogicalResult promoteOne(::mlir::ModuleOp module,

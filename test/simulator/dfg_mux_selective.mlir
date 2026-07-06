@@ -14,6 +14,10 @@
 // RUN: FileCheck %s --check-prefix=COMPUTED-SELECT-FALSE < %t.computed_select_false.json
 // RUN: loom-dfg-sim %s --graph structured_mux_loop --arg 0=none --arg 1=true --arg 2=11 --arg 3=22 --output %t.structured_mux.json
 // RUN: FileCheck %s --check-prefix=STRUCTURED-MUX < %t.structured_mux.json
+// RUN: loom-dfg-sim %s --graph structured_demux_store_noop --arg 0=none --arg 1=false --memref 2=7 --arg 3=99 --output %t.demux_store_noop.json
+// RUN: FileCheck %s --check-prefix=DEMUX-STORE-NOOP < %t.demux_store_noop.json
+// RUN: loom-dfg-sim %s --graph structured_demux_store_noop --arg 0=none --arg 1=true --memref 2=7 --arg 3=99 --output %t.demux_store_active.json
+// RUN: FileCheck %s --check-prefix=DEMUX-STORE-ACTIVE < %t.demux_store_active.json
 
 // FALSE-DAG: "status": "pass"
 // FALSE-DAG: "dataflow.mux": 1
@@ -52,6 +56,18 @@
 // STRUCTURED-MUX-DAG: "dataflow.mux": 1
 // STRUCTURED-MUX-DAG: "i64:22"
 // STRUCTURED-MUX-NOT: "unsupported op: dataflow.mux"
+
+// DEMUX-STORE-NOOP-DAG: "status": "pass"
+// DEMUX-STORE-NOOP-DAG: "arg2": [
+// DEMUX-STORE-NOOP-DAG: "i64:7"
+// DEMUX-STORE-NOOP-DAG: "dataflow.demux": 3
+// DEMUX-STORE-NOOP-NOT: "dataflow.store"
+
+// DEMUX-STORE-ACTIVE-DAG: "status": "pass"
+// DEMUX-STORE-ACTIVE-DAG: "arg2": [
+// DEMUX-STORE-ACTIVE-DAG: "i64:99"
+// DEMUX-STORE-ACTIVE-DAG: "dataflow.demux": 3
+// DEMUX-STORE-ACTIVE-DAG: "dataflow.store": 1
 
 module {
   dataflow.graph.func private @mux_false_lane(%ctrl: none, %sel: i1,
@@ -116,5 +132,23 @@ module {
       scf.yield %selected : i64
     }
     dataflow.graph.return %ctrl, %out : none, i64
+  }
+
+  dataflow.graph.func private @structured_demux_store_noop(
+      %ctrl: none, %sel: i1, %mem: memref<?xi64>, %value: i64) -> none {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %false = arith.constant false
+    %done = scf.while (%i = %c0) : (index) -> index {
+      %addr_false, %addr_true = dataflow.demux %sel, %i : (i1, index) -> (index, index)
+      %data_false, %data_true = dataflow.demux %sel, %value : (i1, i64) -> (i64, i64)
+      %ctrl_false, %ctrl_true = dataflow.demux %sel, %ctrl : (i1, none) -> (none, none)
+      %stored = dataflow.store %mem[%addr_true] %data_true %ctrl_true : memref<?xi64>
+      scf.condition(%false) %c1 : index
+    } do {
+    ^bb0(%next: index):
+      scf.yield %next : index
+    }
+    dataflow.graph.return %ctrl : none
   }
 }

@@ -2104,6 +2104,39 @@ bool assignLocalDataflowLoad(dataflow::LoadOp op, SimulatorState &state,
   return recordEvent(state, op->getName().getStringRef());
 }
 
+std::optional<unsigned> demuxResultIndex(dataflow::DemuxOp op,
+                                         mlir::Value value) {
+  for (auto [index, result] : llvm::enumerate(op.getOutputs()))
+    if (result == value)
+      return static_cast<unsigned>(index);
+  return std::nullopt;
+}
+
+std::optional<bool> isInactiveDemuxResult(mlir::Value value,
+                                          SimulatorState &state,
+                                          const LocalValueMap &locals,
+                                          unsigned captureIndex) {
+  auto demux = value.getDefiningOp<dataflow::DemuxOp>();
+  if (!demux)
+    return std::nullopt;
+  std::optional<unsigned> outputIndex = demuxResultIndex(demux, value);
+  if (!outputIndex)
+    return std::nullopt;
+  std::optional<Token> sel =
+      lookupToken(demux.getSel(), state, locals, captureIndex);
+  if (!sel)
+    return std::nullopt;
+  const std::int64_t lane =
+      mlir::isa<mlir::IntegerType>(demux.getSel().getType())
+          ? boolToken(*sel)
+          : integerToken(*sel);
+  if (lane < 0 || static_cast<std::size_t>(lane) >= demux.getOutputs().size()) {
+    state.diagnostics.push_back("dataflow.demux selector is out of range");
+    return std::nullopt;
+  }
+  return static_cast<unsigned>(lane) != *outputIndex;
+}
+
 bool assignLocalDataflowStore(dataflow::StoreOp op, SimulatorState &state,
                               LocalValueMap &locals, unsigned captureIndex) {
   std::optional<MemoryView> view =
@@ -2114,6 +2147,14 @@ bool assignLocalDataflowStore(dataflow::StoreOp op, SimulatorState &state,
       lookupToken(op.getData(), state, locals, captureIndex);
   std::optional<Token> ctrl =
       lookupToken(op.getCtrl(), state, locals, captureIndex);
+  if (!ctrl) {
+    std::optional<bool> inactive =
+        isInactiveDemuxResult(op.getCtrl(), state, locals, captureIndex);
+    if (inactive && *inactive) {
+      locals[op.getDone()] = noneToken();
+      return true;
+    }
+  }
   if (!view || !addr || !data || !ctrl)
     return false;
   std::optional<std::size_t> index =

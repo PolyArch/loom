@@ -16,7 +16,7 @@
 // HARDWARE-DAG: load_group_size = 18 : i32
 // HARDWARE-DAG: store_group_size = 9 : i32
 // HARDWARE-DAG: fabric.op [@dataflow.constant]
-// HARDWARE-DAG: const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0x3f800000", "0x40000000", "0xbf800000", "0x0000003f", "0xffffffff"]
+// HARDWARE-DAG: const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0x3f800000", "0x40000000", "0xbf800000", "0x0000001e", "0x0000003f", "0xffffffff"]
 // HARDWARE-DAG: fabric.op [@arith.addi, @arith.subi]
 // HARDWARE-DAG: fabric.op [@arith.muli]
 // HARDWARE-DAG: fabric.op [@arith.divui, @arith.remui]
@@ -31,6 +31,7 @@
 // HARDWARE-DAG: fabric.op [@llvm.intr.smax]
 // HARDWARE-DAG: fabric.op [@arith.select]
 // HARDWARE-DAG: fabric.op [@llvm.select]
+// HARDWARE-DAG: fabric.op [@dataflow.demux]
 // HARDWARE-DAG: fabric.op [@llvm.trunc]
 // HARDWARE-DAG: fabric.op [@llvm.zext]
 // HARDWARE-DAG: fabric.mem [spatial]
@@ -45,6 +46,9 @@
 // BUILDER-DAG: %wide_cmp0 =
 // BUILDER-DAG: %wide_cmp0_pred = fabric.fifo %wide_cmp0
 // BUILDER-DAG: %wide_mux0 =
+// BUILDER-DAG: %demux0_false, %demux0_true =
+// BUILDER-DAG: %control_demux0_false_wide, %control_demux0_true_wide =
+// BUILDER-DAG: %control_demux0_false = fabric.fifo %control_demux0_false_wide
 // BUILDER-DAG: %wide_route_bridge0 = fabric.fifo %wide_route_bridge0_input
 
 // MAPPING-DAG: "workload": "minmax_pressure"
