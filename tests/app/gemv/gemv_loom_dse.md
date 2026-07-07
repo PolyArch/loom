@@ -1,4 +1,9 @@
-# gemv Loom-Pragma DSE (banking-aware)
+# gemv Loom-Pragma DSE (lane-aware + vector coalescing)
+
+> **Objective:** minimize cycles subject to the hard ≤12 load-lane / ≤12
+> store-lane per-cycle limit; the recommendation is the **lane-saturation knee** —
+> the smallest exposure whose coalesced traffic saturates the binding resource.
+> Not an area or control/body tradeoff.
 
 Kernel: `tests/app/gemv/gemv.cpp` — `output_y[i] = alpha·Σ_j A[i,j]·x[j] + beta·input_y[i]`
 
@@ -12,75 +17,124 @@ for (uint32_t i = 0; i < M; i++) {        // rows: parallel
 }
 ```
 
-`gemv` is the flagship **nested** case: an outer **parallel** row loop and an
-inner **reduction** column loop. It shows that *where* you place parallelism
-matters, not just how much.
+`gemv` is the flagship **nested** case: an outer **parallel** row loop (`i`) and an
+inner **reduction** column loop (`j`). The `LOOM_MEMORY_BANK(4, block)` annotation on
+`A` is left in the source, but the provisional lane-aware DSE **ignores** it — there
+are no banks, no per-worker ports, and no bank caps in this model. The recommendation
+below is built entirely on machine lanes and vector coalescing, not on that pragma.
 
-Regenerate: `python3 tests/scripts/loom_dse.py gemv --config 6x6 --top 8`
+Regenerate: `python3 tests/scripts/loom_dse.py gemv --config 6x6 --max-parallel 8 --top 14`
 
-## Banking (the key structure)
+## Coalescing (the key structure)
 
-`A` carries `LOOM_MEMORY_BANK(4, block)` — **block-partitioned over rows (`i`)**.
-So:
+Under the lane-aware + vector-coalescing model the only per-cycle caps are the machine
+load/store lanes (`L = S = 12` at `6x6`) and the **global** arithmetic pool
+(`P_pe = 36`, shared by `LOOM_PARALLEL` and `LOOM_UNROLL` alike). The one axis on which
+the two pragmas differ is **vector coalescing**: `V = 4` adjacent 64-bit elements
+touched by consecutive unrolled iterations of one worker collapse into a single vector
+lane-slot (free unpack/pack), whereas parallel workers stride across partitions and
+cannot coalesce. This is a bias *toward* `LOOM_UNROLL` for contiguous groups, bounded
+by `V` and gone once `U ≥ V`.
 
-- `A`'s effective banks `B_L = min(4, p_i)`: row-parallelism scales `A` load
-  bandwidth, but **only up to 4** (the bank cap).
-- Column-parallelism (`p_j`) adds **no** `A` ports, because `A` is not banked
-  over columns. Inner `j` parallel/unroll only reshapes the (product-only)
-  reduction tree — it does **not** change throughput.
-- `x[j]` is a broadcast vector (loaded once per chunk, reused across the chunk's
-  rows). `output_y` is partitioned over rows (`B_S = p_i`).
+Two facts make `gemv` almost fully symmetric in the two pragmas:
 
-`gemv` is load-bound on `A` (`M·N` loads dominate).
+- **The dot-product loads (`A[i][j]`, `x[j]`) are contiguous over `j`, and `j` is a
+  fully-consumed reduction.** Whatever the split on `i`, each row's 64 column elements
+  are consumed in full, so they coalesce identically — the `A`/`x` loads are
+  **P/U-symmetric**. The reduction dim `j` is **inert** to the p/u choice: parallel or
+  unroll on `j` only reshapes the product/merge tree and changes no lane demand.
+- **`y[i]` / `output_y[i]` are contiguous over `i`.** So `LOOM_UNROLL(i)` coalesces the
+  output stores while `LOOM_PARALLEL(i)` strides across rows and does not. This is the
+  only genuine asymmetry — but `gemv` is load-limited (dominated by `A` loads and the
+  per-column `j`-induction), so the store-side edge is **second order** and does not
+  move the binding term.
+
+Net: `gemv` shows little `LOOM_PARALLEL`-vs-`LOOM_UNROLL` distinction — it is largely
+symmetric, and the fixed-product contrast comes out a tie.
 
 ## Setup
 
-- `6x6`, `M = N = 64`. Full-trip counts: `A=16640 LD=8388 ST=4224 CP=11` →
-  `compute=463 load=699 store=352`.
-- `absolute_cgra_lb = 699` (`ceil(8388/12)`, full lanes). But `A`'s 4-bank cap
-  means no pragma reaches it: the real ceiling is `active_L = min(p_i, 4) = 4`.
+- `6x6`: `P_pe = 36`, `L = S = 12`, `V = 4` (64-bit elements per vector op). `M = N = 64`.
+- Full-trip op counts: `A = 16640`, `LD = 5220`, `ST = 4176`, `CP = 11` →
+  `compute = 463`, `load = 435`, `store = 348`.
+- `absolute_cgra_lb = 463` — the full-trip, fully-coalesced aggregate over the full
+  lanes, and the **only** lower bound. It is pinned by the arithmetic term
+  (`ceil(16640/36) = 463`); the coalesced `A`-load term (`435`) sits nearly balanced
+  with it. At finite exposure the load lane fills first (`util_L` reaches 100% at the
+  knee while compute trails at 94%), which is why the tool marks `L` as the binding
+  class for exposure selection. No pragma estimate is a lower bound — every
+  `pragma_agg`/`sched` sits at or above `463`.
 
 ## Results (top of the sweep)
 
 ```text
-flags  split           Ptot  aL  aS   exp  wav  cagg  p_agg  sched  class           util P/L/S
------- --------------- ----- --- --- ---- ---- ----- ------ ------ --------------- ------------
-o      i:P8U1 j:P1U1     8   4   8  512    8   277   2216   2232  resource-bound  21/100/24
-K      i:P4U1 j:P1U1     4   4   4  256   16   147   2352   2384  resource-bound  20/100/45
-b      i:P2U1 j:P1U1     2   2   2  128   32   164   5248   5312  resource-bound   9/100/40
-b      i:P1U1 j:P1U1     1   1   1   64   64   198  12672  12736  resource-bound   4/100/33
+flags    split                      Ptot  aL  aS   exp   wav  cagg   p_agg   sched class           util P/L/S
+-------------------------------------------------------------------------------------------------------------
+o        i:P8U8 j:P1U1  (+15 eq)       8  12  12  4096     1   463     463     580 resource-bound   100/94/75
+o        i:P4U1 j:P1U1  (+15 eq)       4  12  12   256    16    29     464     624 resource-bound  100/100/76
+o        i:P2U2 j:P1U1  (+15 eq)       2  12  12   256    16    29     464     624 resource-bound  100/100/76
+o        i:P1U4 j:P1U1  (+15 eq)       1  12  12   256    16    29     464     624 resource-bound  100/100/76
+o        i:P8U1 j:P1U1  (+15 eq)       8  12  12   512     8    58     464     600 resource-bound   100/98/76
+o        i:P4U2 j:P1U1  (+15 eq)       4  12  12   512     8    58     464     600 resource-bound   100/97/76
+o        i:P1U8 j:P1U1  (+31 eq)       1  12  12   512     8    58     464     600 resource-bound   100/97/76
+o        i:P8U2 j:P1U1  (+15 eq)       8  12  12  1024     4   116     464     592 resource-bound   100/96/76
+o        i:P2U8 j:P1U1  (+31 eq)       2  12  12  1024     4   116     464     588 resource-bound   100/95/75
+o        i:P4U8 j:P1U1  (+31 eq)       4  12  12  2048     2   232     464     584 resource-bound   100/94/75
+         i:P2U1 j:P1U1  (+15 eq)       2  12  12   128    32    16     512     640 resource-bound   94/100/69
+K        i:P1U2 j:P1U1  (+15 eq)       1  12  12   128    32    16     512     640 resource-bound   94/100/69
+b        i:P1U1 j:P1U1  (+15 eq)       1  12  12    64    64    11     704     832 latency-bound     73/82/55
 ```
 
-Every row has `+15 equivalent` candidates — those are all the inner-`j`
-pragma variations, which are **inert** (they collapse to the same numbers). That
-is the "does not demonstrate the distinction on that level" case: inner-column
-parallelism/unroll changes nothing because `A` is banked over rows, not columns.
+Every listed row carries `+15` (or `+31`) `equivalent` candidates — those are the
+inner-`j` pragma variations, which are **inert** and collapse to the same numbers.
+This is the "no distinction on that level" case: `j` is a fully-consumed reduction, so
+parallelizing or unrolling it only reshapes the merge tree and changes no lane demand.
 
 ## The P-vs-U distinction (row level)
 
-At fixed product `P·U = 8` on rows:
+At a fixed product on the row level `i` (inner `j` held at `P1U1`), the two pragmas are
+a tie:
 
-| row split | P_tot | active_L | p_agg | reading |
-|-----------|------:|---------:|------:|---------|
-| `P=8,U=1` | 8 | 4 | 2216 | best (bank-capped at 4) |
-| `P=4,U=2` | 4 | 4 | 2216 | **equal** — 4 workers already saturate 4 banks |
-| `P=2,U=4` | 2 | 2 | 4432 | 2.0× slower — unroll serializes |
-| `P=1,U=8` | 1 | 1 | 8864 | 4.0× slower — unroll serializes |
+```text
+P-vs-U at fixed product 32 on level 'i' (other levels at P1U1):
+  split           LD    ST   p_agg note
+  P8U4           2620  2088     464 tie (fully coalesced or reduction-bound)
+  P4U8           2620  2088     464 tie (fully coalesced or reduction-bound)
+```
 
-Two lessons in one table: parallel beats unroll (up to 4×), **and** the benefit
-of parallel saturates at the 4-bank cap (`P=8,U=1` ties `P=4,U=2`).
+Parallel-heavy (`P8U4`) and unroll-heavy (`P4U8`) splits produce **identical** `LD`,
+`ST`, and `p_agg`. The dominant `A`/`x` loads coalesce the same way regardless of the
+split (contiguous, fully-consumed reduction over `j`), and because the kernel is
+load-limited the store-side unroll advantage never surfaces in the binding term. There
+is no throughput reason to prefer one over the other on the load path.
 
 ## Recommendation
 
-**`LOOM_PARALLEL(4)` on rows, `LOOM_UNROLL(1)`, inner loop left at `1`.**
-`p_i = 4` exactly fills `A`'s 4 banks (`active_L = 4`); more row-parallelism
-(`P=8`, flagged `o`) wastes workers on 4 banks with no throughput gain, and inner
-`j` parallelism is inert. To go faster you must **increase `A`'s banking**
-(`LOOM_MEMORY_BANK(8)` or 2-D banking over columns), not add unroll or inner
-parallelism.
+**`LOOM_UNROLL(2)` on rows (`i`), inner `j` left at `1`.** That is the recommended
+candidate `i:P1U2 j:P1U1`: exposure `128` over `32` waves, `pragma_agg = 512`
+(`1.11×` the `463` floor), resource-bound. It is the saturation knee `E_sat` — the
+smallest exposure at which the load lane becomes resource-bound (`cagg = 16 > CP = 11`).
+Just below it, `i:P1U1` (exposure `64`) is **latency-bound**: `cagg = CP = 11` and the
+resource classes idle (flagged `b`, bandwidth-starved). Above it, every larger candidate
+is flagged `o` (oversubscribed): extra workers/unroll only shrink the wave-serialization
+gap (`p_agg` creeps from `512` toward `463`), not the steady-state floor, while transient
+backlog, area, and mapping pressure grow.
 
-> The `o` rows show a slightly lower `p_agg` than the `K` row (`2216` vs `2352`).
-> That is **not** more bandwidth (both are `active_L=4`); it is the broadcast-`x`
-> reload amortizing over larger chunks (fewer waves = fewer `x` re-reads). It
-> costs extra workers/unroll for a wave-serialization artifact that vanishes
-> under pipelined execution, so it is flagged oversubscribed.
+> `i:P2U1` ties `i:P1U2` **exactly** (same exposure `128`, `p_agg = 512`, identical
+> `util 94/100/69`). The tool breaks the tie toward `LOOM_UNROLL` because `output_y[i]`
+> is contiguous over `i`, so unrolled stores coalesce while parallel stores stride — a
+> second-order preference that does not change the binding term here. On the dominant
+> load path the two are interchangeable.
+
+## Contrast with the old banking model
+
+The previous eval recommended `LOOM_PARALLEL(4)` on rows and claimed "parallel beats
+unroll up to 4×." That conclusion came entirely from a banking assumption: `A` was
+modeled under a `LOOM_MEMORY_BANK(4, block)` cap that let only row-parallelism add `A`
+load bandwidth (capped at 4 rows) while unroll appeared to serialize. The
+current lane-aware model has **no banks, no ports, and no bank caps** — it ignores
+`LOOM_MEMORY_BANK`. The `A`/`x` loads coalesce identically for any split (contiguous,
+fully-consumed reduction over `j`), so parallel and unroll are symmetric on the dominant
+load path. The old row-parallel advantage was an artifact of the bank cap and is gone;
+under this model `gemv` is a tie, tie-broken only by the second-order store-coalescing
+preference toward unroll.

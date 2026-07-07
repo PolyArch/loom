@@ -385,6 +385,27 @@ model **MAY** be used to compare explicit Loom loop-pragmas before committing to
 compiler or hardware mapping work. This optional model is called the
 **Loom-pragma design-space estimate**.
 
+**Objective.** Choose the pragma that minimizes cycles subject to the hard
+`≤ L` load-lane / `≤ S` store-lane per-cycle limit (`L = S = 12` for `6x6`); the
+recommendation is the lane-saturation knee — the smallest exposure whose traffic
+saturates the binding resource. Cycle count credits two effects that both favor
+`LOOM_UNROLL`: vector coalescing of contiguous accesses, and control-overhead
+amortization — a spatially-unrolled body shares one loop iterator, so control op
+counts scale as `trip / U` rather than `trip`. Both are pure cycle-count effects
+that only *reduce op counts* in the existing `P`/`L`/`S` pools. There is **no area
+term** and no control/body area tradeoff: the sole constraint is the `≤ 12`-lane
+cap, and the sole goal is fewest cycles.
+
+**Notation (this section).** To keep the pragma factors distinct from the machine
+resource configuration, this section writes the machine arithmetic-PE, load-lane,
+and store-lane counts as `P_pe`, `L`, and `S` (the Resource Model triple; for
+`6x6`, `P_pe = 36`, `L = S = 12`). The pragma factors are written `p` (one
+`LOOM_PARALLEL` factor), `P_tot` (the product of `p` over parallelizable levels),
+and `U` (a `LOOM_UNROLL` factor), with `U_tot` the product of `U` over all levels;
+candidate shorthand `PaUb` means `p = a`, `U = b`. `V` is the vector width: one
+256-bit vector memory op carries `V = 4` 64-bit scalar elements, and this section
+assumes 64-bit elements throughout.
+
 The Loom-pragma design-space estimate consumes source-loop metadata such as loop
 kind, trip count, `LOOM_PARALLEL(P)`, `LOOM_UNROLL(U)`, and schedule strategy.
 Loop kind controls legality: dependency-parallel loops may use parallel workers,
@@ -398,7 +419,7 @@ For a single dependency-parallel loop, an implementation of this optional model
 SHOULD build one candidate chunk with:
 
 ```
-exposed_iters = min(trip_count, P * U)
+exposed_iters = min(trip_count, P_tot * U)
 waves         = ceil(trip_count / exposed_iters)
 ```
 
@@ -422,11 +443,11 @@ makespans are summed, as if no wave begins before the previous wave fully drains
 Real Loom dataflow maps the DAG spatially and **pipelines** successive waves, so
 this form is a conservative over-estimate that falls **monotonically** as exposure
 grows. Used directly as the objective, it therefore always selects the maximum
-`P · U`, which is **not** a meaningful design recommendation (see exposure
+`P_tot · U`, which is **not** a meaningful design recommendation (see exposure
 selection below).
 
 Three quantities **MAY** be reported per candidate. With exposure
-`E = min(trip_count, P · U)`, `full_waves = trip_count // E`, and
+`E = min(trip_count, P_tot · U)`, `full_waves = trip_count // E`, and
 `tail = trip_count % E`, define a wave-summed aggregate and a wave-summed schedule
 estimate:
 
@@ -435,7 +456,8 @@ pragma_exposure_aggregate = full_waves * chunk_aggregate(E) + (chunk_aggregate(t
 schedule_estimate         = full_waves * chunk_scheduled(E) + (chunk_scheduled(tail) if tail else 0)
 ```
 
-where `chunk_aggregate(E)` is the aggregate CGRA bound (Metric 1) of the
+where `chunk_aggregate(E)` is the aggregate bound (Metric-1 form, with the
+lane-aware effective terms defined in the lane-aware subsection below) of the
 `E`-iteration chunk and `chunk_scheduled(E)` is its finite-resource schedule
 makespan (Metric 2). These relate to the genuine resource floor by the bracket
 
@@ -444,10 +466,44 @@ absolute_cgra_lb  <=  pragma_exposure_aggregate  <=  schedule_estimate
 ```
 
 where `absolute_cgra_lb` is the aggregate CGRA lower bound (Metric 1) evaluated
-over the kernel's **full unrolled** op set — the same Metric-1 lower bound applied
-to the whole loop, independent of `P` and `U`. The left inequality holds because
-`ceil` is subadditive across the wave partition and `CP` is unchanged; the right
-inequality is the per-region conditional invariant of Metric 2 summed over waves.
+over the kernel's **full unrolled** op set, independent of `p` and `U`. When the
+DSE credits vector coalescing (see the lane-aware subsection below), the
+memory terms of `absolute_cgra_lb` are computed over the **fully-coalesced**
+lane-slot counts of the full-unroll op set — full unrolling exposes the maximal
+contiguous run, so it coalesces maximally — divided by the full machine lanes
+`L`/`S`:
+
+```
+absolute_cgra_lb = max(CP, ceil(A / P_pe), ceil(LD_rec_full / L), ceil(ST_vec_full / S))
+```
+
+`LD_rec_full` is the full-unroll **recurring** vector load lane-slot count
+(per-iteration array loads + the residual iterator); `ST_vec_full` is the
+full-unroll vector store lane-slot count. Both reduce to the scalar `LD`/`ST` when
+no coalescing is legal. One-time **invariant** loads are amortized (loaded once and
+held) and excluded from this floor; the reported total traffic is
+`LD_eff_full = LD_rec_full + LD_inv`. This is the genuine resource floor for the
+vector-capable target the candidates run on. Here `A` is the full-unroll op count,
+whose control is amortized to a single residual iterator. The
+left inequality holds because (i) any partial-exposure wave coalesces contiguous
+groups no larger than the full run, so its per-wave vector lane-slots sum to at
+least `LD_vec_full`/`ST_vec_full`; (ii) `active_L ≤ L`, `active_S ≤ S`; and (iii)
+any finite candidate carries the same algorithmic arithmetic **plus** its own
+un-amortized per-worker control (`P_tot · waves ≥ 1` iterator sets ≥ the floor's
+single residual), so its `A` and induction loads/stores are no smaller than the
+floor's. Combined with `ceil` subadditivity across the wave partition and an
+unchanged `CP`, every candidate therefore sits at or above `absolute_cgra_lb`. The right inequality is
+the per-region conditional invariant of Metric 2 summed over waves.
+
+Because it credits both vector coalescing **and** control-overhead amortization
+(the full-unroll floor carries a single residual iterator, not `T` of them; see
+below), this DSE `absolute_cgra_lb` can be well **below** the scalar Metric-1
+aggregate reported in the kernel's main `## CGRA-Constrained Model` section (which
+models neither vector memory ops nor control amortization, charging induction per
+iteration per the ASAP baseline). That gap is expected and often large: for
+memory-light kernels the induction stream dominates the scalar aggregate, and full
+unrolling amortizes it away. The two coincide only when no coalescing applies and
+the loop is already fully unrolled.
 
 **Only `absolute_cgra_lb` is a lower bound.** Both
 `pragma_exposure_aggregate` and `schedule_estimate` embed the wave-serialization
@@ -469,31 +525,57 @@ scheduler backlog (see below). It instead reasons about **steady-state resource
 saturation**.
 
 For a single dependency-parallel loop of trip count `T`, define the
-**per-iteration class demand** — the `P`/`L`/`S` op counts charged by one
-iteration, with loop-invariant values hoisted and charged once for the whole loop,
-not per iteration:
+**per-iteration algorithmic class demand** — the `P`/`L`/`S` op counts charged by
+the kernel's intended math in one iteration, with loop-invariant values hoisted
+and charged once for the whole loop, and **excluding loop control** (the iterator
+load/add/store/compare), which is amortized separately below. The load/store
+demands are **effective lane-slot** demands: counted as vector lane-slots after
+any legal coalescing (a contiguous group of `V` same-array elements amortizes to
+`1/V` lane-slots per iteration), and as scalar lane-slots otherwise:
 
 ```
-a_iter, ld_iter, st_iter
+a_iter, ld_iter, st_iter          # algorithmic only; control amortized separately
 ```
 
-The resource floor is then
+**Control amortization.** Within an exposed wave every iteration is spatial
+(unrolled), so the surviving loop control is one iterator advance per worker per
+wave: induction is charged `P_tot` times per chunk, hence `P_tot · waves ≈ T / U_tot`
+times over the whole loop (`U_tot` = product of unroll factors). At **full unroll**
+(`U_tot = T`) only a single residual iterator remains, so the resource floor uses
+the algorithmic demand alone:
 
 ```
-absolute_cgra_lb = max(CP, ceil(T * a_iter / P), ceil(T * ld_iter / L), ceil(T * st_iter / S))
+absolute_cgra_lb = max(CP, ceil(T * a_iter / P_pe), ceil(T * ld_iter / L), ceil(T * st_iter / S))
 ```
+
+which is the same `absolute_cgra_lb` as in the bracket above (`T * ld_iter`
+= `LD_rec_full` since invariants are hoisted out of `ld_iter`, `T * st_iter`
+= `ST_vec_full`, control ≈ 0). This is precisely why the DSE floor can drop far
+below the per-iteration-induction scalar aggregate.
 
 The **binding class** is the class achieving that `max` (excluding `CP`); let
-`count_binding` and `cap_binding` be its per-iteration demand and its capacity. A
-single wave's chunk has class totals `≈ E · {a_iter, ld_iter, st_iter}` (plus the
-`O(1)` per-wave invariant re-loads), so
+`count_binding` be its effective per-iteration demand and `cap_binding` its
+**machine** capacity (`P_pe`, `L`, or `S`). A single wave's chunk has effective
+class totals `A_eff ≈ E · a_iter + P_tot · a_ctrl`,
+`LD_rec ≈ E · ld_iter + P_tot · ld_ctrl` recurring loads, `ST_eff ≈ E · st_iter +
+P_tot · st_ctrl` (the control term is the un-amortized `P_tot` per-worker iterators
+of *this* wave). The `O(1)` per-wave invariant re-loads form `LD_inv`; they are
+amortized out of the binding term and reported only in `LD_eff = LD_rec + LD_inv`.
+Scheduled under the chunk's effective lane widths, the aggregate is the same
+`chunk_aggregate` defined in the lane-aware subsection. Note the control term
+scales with `P_tot`, not `E` — the lever that makes a parallel-heavy split pay more
+control than an unroll-heavy one at equal exposure:
 
 ```
-chunk_aggregate(E) = max(CP, ceil(E * a_iter / P), ceil(E * ld_iter / L), ceil(E * st_iter / S))
+chunk_aggregate(E) = max(CP, ceil(A_eff / P_pe), ceil(LD_rec / L), ceil(ST_eff / active_S))
 ```
 
-A wave is **latency-bound** while `chunk_aggregate(E) == CP` — the binding class
-idles for `CP − ceil(E * count_binding / cap_binding)` cycles of every wave — and
+For the saturation analysis below, take the exposure large enough that the
+binding class's effective width has reached its machine cap
+(`active_binding = cap_binding`); this is the regime in which added exposure stops
+widening issue and starts stacking work. A wave is then **latency-bound** while
+`chunk_aggregate(E) == CP` — the binding class idles for
+`CP − ceil(E * count_binding / cap_binding)` cycles of every wave — and
 **resource-bound** once the binding class's per-wave ceiling reaches `CP`. The
 **saturation exposure** `E_sat` is the smallest exposure at which the binding
 class becomes resource-bound:
@@ -513,8 +595,8 @@ and invariant-reload amortization, while the instantaneous (transient) ready
 backlog rises linearly. `E_sat` is therefore the diminishing-returns **knee**.
 
 An implementation that selects an exposure **SHOULD** recommend the smallest legal
-exposure `E >= E_sat` — the smallest `P · U` consistent with pragma legality and
-loop nesting — and **SHOULD** flag larger exposures as **oversubscribed**:
+exposure `E >= E_sat` — the smallest `P_tot · U` consistent with pragma legality
+and loop nesting — and **SHOULD** flag larger exposures as **oversubscribed**:
 diminishing aggregate gains traded against linearly growing transient backlog and
 hardware area.
 
@@ -540,9 +622,10 @@ that appears only beyond `E_sat` signals oversubscription, not infeasibility.
 Because `peak_ready_backlog` is a transient cycle-1 release artifact (above), the
 **preferred** steady-state pressure diagnostic is **per-class utilization**: the
 fraction of a wave's makespan during which a class would be busy if its work were
-spread evenly across the wave. For an exposed chunk with the Metric-1 class terms
-`compute = ceil(A/P)`, `load = ceil(LD/L)`, `store = ceil(ST/S)` and aggregate
-`agg = max(CP, compute, load, store)`:
+spread evenly across the wave. For an exposed chunk with the effective class terms
+`compute = ceil(A_eff/P_pe)`, `load = ceil(LD_eff/active_L)`,
+`store = ceil(ST_eff/active_S)` and aggregate `agg = max(CP, compute, load, store)`
+(the same terms as `chunk_aggregate`):
 
 ```
 util_P = compute / agg
@@ -569,88 +652,237 @@ Reports **SHOULD** present `util` as the primary pressure signal.
 transient list-schedule artifact and **MUST NOT** be presented as a steady-state
 quantity or a hardware queue depth.
 
-### Banking-aware P-vs-U distinction (load/store axis)
+### Lane-aware P/U and vector coalescing (load/store axis)
 
-`LOOM_PARALLEL(P)` and `LOOM_UNROLL(U)` are physically distinct (see
-[`docs/spec-pragma.md`](./spec-pragma.md)): `P` maps to separate worker groups
-over data partitions, `U` enlarges one worker's dataflow graph. Two physical
-asymmetries separate them, and they pull in **opposite directions**:
+`LOOM_PARALLEL` and `LOOM_UNROLL` are physically distinct (see
+[`docs/spec-pragma.md`](./spec-pragma.md)): a `LOOM_PARALLEL` factor `p` maps to
+separate worker groups over data partitions, `U` enlarges one worker's dataflow
+graph. The load/store-focused DSE **MUST NOT** assume that unrolled memory
+operations serialize through one lane merely because they live in one worker. If
+the unrolled loop bodies are independent, their memory operations are independent
+DAG nodes and may issue to different load/store lanes in the same cycle, subject
+to memory independence, vector-interface legality, and the machine-wide `L`/`S`
+lane counts. The provisional DSE described here intentionally ignores explicit
+`LOOM_MEMORY_BANK` interactions until the target banking policy is confirmed.
 
-- **Control-overhead amortization** (favors `U`): unrolling shares one loop
-  counter across `U` iterations (control scales `~T/U`); parallelism replicates
-  it (`~T`). This is an op-count-level effect.
-- **Memory ports / banking** (favors `P`): `P` workers can be given independent
-  memory ports/banks and load concurrently; `U`'s unrolled accesses share one
-  worker's port and serialize unless the array is banked further.
+This DSE models the two axes on which `LOOM_PARALLEL` and `LOOM_UNROLL` physically
+diverge; it still **MUST NOT** claim to model place-and-route or cycle-accurate
+RTL. The *algorithmic* arithmetic pool and the critical path stay **global**:
+`compute` and `CP` for the kernel's intended math do not distinguish whether
+exposure came from `p` or `U`. The two pragmas separate on exactly these axes:
 
-This DSE **adopts the memory-port / banking asymmetry on the load/store axis**
-and deliberately leaves control-overhead unmodeled. This is a directed,
-**load/store-focused** choice: for the memory-bound kernels this model targets,
-port bandwidth is the dominant effect, and the resulting recommendation is
-intentionally **biased toward parallelism** (`P`) over unroll (`U`). The
-arithmetic (`P`-class) axis remains a **global pool** (product-only): `compute`
-and `CP` do not distinguish `P` from `U`. An implementation **MUST** state this
-asymmetry and **MUST NOT** claim it also models control-overhead amortization or
-place-and-route.
+1. **Vector coalescing** (load/store axis, detailed below): a worker's `U`
+   adjacent same-array accesses fuse into `ceil(U_mem/V)` vector lane-slots, while
+   `LOOM_PARALLEL` workers stride across data partitions and do not coalesce.
+   Bounded by `V`; the credit is gone once `U ≥ V`.
+2. **Control-overhead amortization** (all pools): within an exposed wave every
+   iteration is laid out spatially, so the only surviving loop control is one
+   iterator advance per worker per wave. Induction (iterator load / add / store /
+   compare) is therefore charged `P_tot` times per chunk — **once per worker** —
+   so the total control op count over the whole loop scales as `trip / U_tot`.
+   `LOOM_UNROLL` amortizes control (`/U`); `LOOM_PARALLEL` keeps one iterator per
+   worker and does not. A fully-consumed reduction is a spatial (tree-reduced)
+   dataflow graph and carries no loop control for any split. The **sequential**
+   carried recurrence is the exception: it cannot be spatially flattened, so its
+   iterator is charged per iteration and lies on the critical path
+   (`tridiag_solve`, `trsv_lower/upper`, `gauss_seidel_step`, `kmp_table`).
 
-**Effective ports.** Let `P_tot` be the total number of parallel workers (the
-product of the per-level `LOOM_PARALLEL` factors over parallelizable levels) and
-`B_L` / `B_S` the effective bank counts of the load / store arrays the loop
-strides over. The concurrent load- and store-issue widths available to a chunk
+Both effects only *reduce op counts* inside the existing `P`/`L`/`S` pools —
+there is **no separate control resource, no capacity knob, and no area term**.
+Both bias the estimate **toward `LOOM_UNROLL`** for contiguous / tiled loops,
+which is the mentor-confirmed direction. The provisional DSE intentionally ignores
+explicit `LOOM_MEMORY_BANK` interactions until the target banking policy is
+confirmed.
+
+This choice is DSE-local and deliberately more optimistic than the ASAP baseline
+(`## Adopted Baseline`), which charges induction per iteration even under full
+unrolling as a conservative floor. The DSE credits the spatial-unroll amortization
+that real Loom dataflow performs; the two models therefore diverge on induction by
+design.
+
+**Scalar lane exposure.** Let `P_tot` be the total number of parallel workers
+(the product of the per-level `LOOM_PARALLEL` factors over parallelizable
+levels). For each load/store access group, define an eligible unroll width
+`U_mem`:
+
+- `U_mem = U` when the unrolled memory operations are independent, refer to
+  distinct elements, and the target can present them concurrently to memory
+  lanes. A dependency-parallel loop with `a[i] = b[i]` unrolled by 4 is the
+  canonical case: `b[i]`, `b[i+1]`, `b[i+2]`, and `b[i+3]` can be issued in the
+  same cycle on four load lanes if four lanes are available.
+- `U_mem < U` when only some unrolled operations are independent and eligible for
+  concurrent memory issue.
+- `U_mem = 1` when a carried dependence, possible alias, unknown access pattern,
+  or target limitation forces the accesses to serialize.
+
+Writing `w_L`/`w_S` for the concurrent load/store **lane-slots one worker
+presents** per access group, the chunk's concurrent load- and store-issue widths
 are
 
 ```
-active_L = min(P_tot, B_L, L)
-active_S = min(P_tot, B_S, S)
+active_L = min(P_tot * w_L, L)
+active_S = min(P_tot * w_S, S)
 ```
 
-**Banking policy (stated assumption).** A `LOOM_PARALLEL(p, contiguous)` (or
-`block`) level is assumed to **partition** each array it strides over into `p`
-banks — one contiguous slice per worker — so absent an explicit pragma
-`B = P_tot` for a strided array. An explicit `LOOM_MEMORY_BANK(B, …)` on an array
-**caps** that array's bank count at `B`. `LOOM_UNROLL(U)` adds **no** banks:
-unrolled iterations run inside one worker and share that worker's single port. An
-array a worker does **not** partition (a broadcast/replicated input, or a
-single-element output) is **not** widened by `P_tot`; its `B` is its own bank
-count (default `1`). A different banking policy **MAY** be used but **MUST** be
-stated.
+For **scalar** (uncoalesced) independent accesses each element is its own
+lane-slot, so `w_L = U_mem_L` and `w_S = U_mem_S`; the **Vector load coalescing**
+paragraph below lowers `w` to the vector-load count when a group coalesces. Thus,
+for scalar independent accesses, `P4U1` and `P1U4` can expose the same four load
+lanes. The DSE **MUST NOT** recommend `LOOM_PARALLEL` over `LOOM_UNROLL` on
+load/store-lane grounds alone when the two candidates have the same eligible
+memory exposure.
+
+**Provisional no-banking assumption.** A `LOOM_PARALLEL(p, contiguous)` (or
+`block`) level partitions work across `p` workers, while `LOOM_UNROLL(U)` exposes
+adjacent iterations inside a worker. Either form can create concurrent memory
+demand for dependency-independent accesses. For the current load/store-focused
+DSE, explicit `LOOM_MEMORY_BANK(B, ...)` parameters and address-level bank
+conflicts are ignored: the only caps on eligible scalar lane exposure are the
+target `L` and `S` lane counts. Reports **MUST** state this assumption. A future
+target-specific extension may reintroduce explicit bank/interface caps, but it
+must state how those caps interact with unrolled accesses.
+
+**Vector load coalescing.** A target may support a vector memory operation plus a
+vector `unpack` operation. Under the provisional target convention, one vector
+memory operation is 256 bits wide and covers four 64-bit scalar elements. Vector
+stores and `pack` are modeled as the inverse operation. When `U` exposes a
+contiguous group of same-array, same-type element loads or stores, and the
+target's alignment and vector-interface rules allow it, the DSE **MAY** coalesce
+the scalar accesses into vector memory operations. For `V = 4` 64-bit elements
+per vector operation:
+
+```
+scalar_loads_without_vector = load_group_elems
+vector_loads                = ceil(load_group_elems / V)
+load_lane_slots             = vector_loads
+scalar_stores_without_vector = store_group_elems
+vector_stores                = ceil(store_group_elems / V)
+store_lane_slots            = vector_stores
+```
+
+For example, four contiguous 64-bit loads `b[i]` through `b[i+3]` may become one
+256-bit vector load. That vector load occupies one load lane for that cycle and
+produces up to four scalar values after unpack. Partial vector groups also
+occupy one load lane, so a group of one to three 64-bit elements still
+contributes one load-lane slot if it is issued as a vector load. Store-side
+vectorization follows the same rule with vector stores and `pack`: one 256-bit
+vector store occupies one store lane and writes up to four scalar elements.
+
+The finite-resource scheduler (Metric 2) **supports vector coalescing**: each
+coalesced access is a single memory node of its class occupying **one** lane-slot,
+and its `unpack`/`pack` is modeled as zero-cost fan-out to (from) the scalar
+consumers (producers). `chunk_scheduled(E)` therefore schedules the **vectorized**
+chunk DAG under `(P_pe, active_L, active_S)`, and the per-region invariant
+`chunk_scheduled >= chunk_aggregate` holds over that DAG. Because `unpack`/`pack`
+carry no modeled `P`-class work, this remains a **load/store-focused** estimate:
+it charges no resource class for (un)packing, and — like every metric here —
+**MUST NOT** be read as a place-and-route or cycle-accurate RTL result.
+
+Because one vector memory operation occupies one lane slot while carrying up to
+four 64-bit elements, vector coalescing reduces both the memory instruction /
+stream-operation count and the load/store lane-slot demand for contiguous
+unrolled groups. Accordingly, a coalesced group's per-worker concurrent lane
+usage is its **vector-load count**, so `w_L = ceil(U_mem_L / V)` (and
+`w_S = ceil(U_mem_S / V)`) for that group — this is the `w_L`/`w_S` fed into
+`active_L`/`active_S` above, and the reason a coalesced group needs fewer active
+lanes than its scalar element count `U_mem`.
+
+**Recurring vs. invariant loads.** The load lane-slots of a chunk split into two
+kinds, and only one of them sets the steady-state lane pressure:
+
+- **Recurring loads** (`LD_rec`) — per-iteration array element loads over the
+  tiled index plus induction reads. Their count **scales with exposure**. These
+  set the steady-state load lane exposure and the binding load term.
+- **Invariant loads** (`LD_inv`) — values hoisted once per chunk, their count
+  **independent of exposure** (e.g. axpy's `alpha`, gemv's whole `x` vector, a
+  kernel's size/param scalars, a recurrence's seed). They are **amortized**:
+  loaded once and held (broadcast by free fan-out to every consumer), so they do
+  **not** establish sustained per-cycle lane pressure.
+
+The reported total traffic is `LD_eff = LD_rec + LD_inv`. The **binding load term
+uses `LD_rec` only**; `LD_inv` is amortized out of it. The reported active load
+lanes are the recurring lane exposure `active_L = min(LD_rec, L)` (and
+`active_S = min(ST_eff, S)`, since stores in these kernels are all recurring).
 
 **Wave formulas.** The exposed chunk (`E = Π_level p·u` iterations, reductions as
 balanced merge trees, inner-invariant loads amortized per the nested-loop note
-below) is scheduled with the effective configuration `(P, active_L, active_S)`.
-Thus
+below) is lowered to effective chunk totals. `LD_rec(candidate)` /
+`LD_eff(candidate)` and `ST_eff(candidate)` are load/store **lane-slot** counts
+after scalar lane eligibility and optional vector coalescing have been applied;
+`A_eff(candidate)` excludes unpack/pack under the provisional free-unpack
+convention but still includes any modeled address-generation work. The chunk
+aggregate is then
 
 ```
-chunk_aggregate = max(CP, ceil(A / P), ceil(LD / active_L), ceil(ST / active_S))
+chunk_aggregate = max(CP,
+                      ceil(A_eff(candidate) / P_pe),
+                      ceil(LD_rec(candidate) / L),        # recurring loads only; invariants amortized
+                      ceil(ST_eff(candidate) / active_S))
 ```
 
-and `pragma_exposure_aggregate` / `schedule_estimate` sum this over the waves as
-before. Because `active_L` / `active_S` grow with `P_tot` (up to `B` and `L`/`S`)
-but **not** with `U`, for a fixed product `E` a parallelism-heavy split issues
-memory faster than an unroll-heavy one: `LOOM_UNROLL` concentrates a worker's
-`U · ld_iter` accesses on one port (a per-body penalty), while `LOOM_PARALLEL`
-spreads traffic across independent ports (multiple streams, each with a smaller
-per-worker trip). This is the intended `P`-vs-`U` distinction.
+`P_pe` in the compute term is the machine compute-lane count (Notation above), not
+a pragma factor. `ceil(LD_rec / L)` equals `ceil(LD_rec / active_L)` because
+`active_L = min(LD_rec, L)`. `pragma_exposure_aggregate` / `schedule_estimate` sum
+this over the waves as before; the finite-resource `schedule_estimate` still
+issues each wave's `LD_inv` re-load, so it sits at or above the
+invariant-amortized aggregate. Two modeled effects make `P4U1` and `P1U4` differ at equal
+product, both biasing **toward** `LOOM_UNROLL` (the intended, mentor-confirmed
+direction):
 
-**Exposure selection under banking.** The steady-state load throughput floor is
-`trip · ld_iter / active_L`, minimized by maximizing
-`active_L = min(P_tot, B, L)`. An implementation **SHOULD** therefore recommend
-the split that saturates the binding memory class — `P_tot = min(trip, B, L)` on
-the parallelizable level(s) — with the **smallest** `U` that makes each wave
-resource-bound (its per-wave memory term reaches `CP`). It **SHOULD** flag
-lower-`P_tot` candidates as **bandwidth-starved** (memory ports idle) and, at
-equal `P_tot`, higher-`U` candidates as **port-serialized** (no throughput gain,
-more area). Only `absolute_cgra_lb` (the full-trip aggregate over full lanes
-`L`/`S`) remains a lower bound; every banked candidate sits above it.
+- **Vector coalescing.** With the provisional one-lane vector convention, an
+  unroll-heavy candidate has a smaller load/store term because contiguous unrolled
+  accesses reduce `LD_eff` / `ST_eff` (unrolled iterations are adjacent and
+  coalesce; parallel workers stride across partitions and do not). Bounded by `V`.
+- **Control amortization.** The `P_tot` per-worker iterators are charged once each
+  per chunk, so a parallel-heavy split (`P4U1`, `P_tot = 4`) carries four iterator
+  load/add/store/compare sets while the unroll-heavy split (`P1U4`, `P_tot = 1`)
+  carries one. This shrinks `A_eff` / `LD_eff` / `ST_eff` for unroll and, unlike
+  coalescing, keeps paying past `U = V`. It even separates the two where coalescing
+  cannot (strided accesses), though it changes the *aggregate* only when the
+  affected class is binding.
 
-**When a kernel shows no `P`-vs-`U` distinction.** Because only the L/S axis is
-banking-aware, a kernel whose binding class is **arithmetic** (`compute`-bound)
-or whose aggregate is set by **`CP`** (latency-bound) is `P`/`U`-symmetric — the
-global arithmetic pool and the critical path do not separate the two. A
-**sequential** level cannot be parallelized at all (`P_tot = 1` there), so only
-`U` applies and no distinction arises on that level. An implementation that
-enumerates such a kernel **SHOULD** report that the distinction does not appear,
-and why.
+**Exposure selection under lane-aware memory.** The implementation should select
+the smallest legal `(p, U)` candidate whose effective load/store terms saturate
+the binding memory class (i.e. reach `E_sat`) after scalar lane eligibility and
+vector coalescing are applied. It **SHOULD** flag candidates below that point as
+**bandwidth-starved**. It **SHOULD** flag larger candidates as
+**oversubscribed** only when extra exposure no longer improves the effective
+binding memory term and only increases transient backlog, area, mapping pressure,
+or non-modeled control/work. Only `absolute_cgra_lb` (the full-trip,
+fully-coalesced aggregate over full lanes `L`/`S`) remains a lower bound; every
+Loom-pragma candidate estimate sits at or above it.
+
+**When a kernel shows no `LOOM_PARALLEL`-vs-`LOOM_UNROLL` distinction.** Because
+control amortization now separates `p` from `U` on the op counts of *any* tiled
+level, genuine symmetry in the **cycle aggregate** arises only when both modeled
+effects (coalescing and control) fall off the binding path. Report symmetry, with
+the reason, in these cases:
+
+- **Fully-consumed reduction dimension.** A reduction is lowered to a spatial
+  (tree-reduced) dataflow graph: it carries no per-element and no per-worker loop
+  control, and its contiguous inputs coalesce identically for any split. Both axes
+  are inert, so the dimension is exactly symmetric (`vecsum`'s whole loop;
+  `gemv`'s `j`; `conv2d`'s `tap`).
+- **Latency-bound.** If the aggregate is set by `CP`, exposure does not change it
+  and control sits off the critical path, so the candidates are symmetric
+  (`tridiag_solve`; `vecsum` at its `CP` floor).
+- **Compute-bound (approximately).** If the algorithmic `compute` term binds and
+  the small `P_tot·a_ctrl` control-arith delta does not tip its ceiling, the
+  parallel- and unroll-heavy splits tie in the aggregate even though their load /
+  store / control op counts differ (`batchnorm`'s `c`/`h` at fixed product). Report
+  the tie in the aggregate while noting the underlying control/coalescing gap.
+
+Otherwise a tiled level is **asymmetric and favors `LOOM_UNROLL`**: control
+amortization shrinks its per-worker iterator count, and (for contiguous accesses)
+coalescing shrinks its lane-slot term. A **sequential** level cannot be
+parallelized at all (`P_tot = 1` there), so only legal unroll exposure applies,
+its iterator stays per-iteration on the critical path, and carried recurrences
+still limit throughput.
+
+**Stream-unit diagnostic.** `LOOM_PARALLEL(P)` creates `P_tot` stream units,
+while `LOOM_UNROLL(U)` increases the exposed work inside each stream unit. The
+current DSE may report stream-unit count as a diagnostic, but stream units do not
+add resource cost in the provisional selection objective.
 
 A **nested** loop adds a second, orthogonal effect: the per-level distribution of
 exposure (how much on the outer vs the inner loop) changes the chunk's op counts,
@@ -658,16 +890,28 @@ because a value loop-invariant with respect to the inner loop is loaded once and
 reused across inner iterations — so exposing the inner loop **amortizes** that
 outer-invariant traffic while exposing the outer loop **replicates** it. (The
 same level-asymmetry arises when an inner level is a reduction.) This level effect
-composes with the banking distinction above, which still holds *within* any single
-level.
+composes with the lane-aware memory model above, which still applies *within* any
+single level.
 
 This exploratory estimate is **not** the aggregate CGRA lower bound, **not** the
-fully-unrolled ASAP metric, and **not** cycle-accurate RTL. It models per-worker
-port **width** from the bank count (the banking asymmetry above) but **not**
-address-level bank **conflicts**, and it is **not** a place-and-route model. It
+fully-unrolled ASAP metric, and **not** cycle-accurate RTL. It models candidate
+memory-lane exposure and optional vector coalescing, but **not** address-level
+bank **conflicts**, and it is **not** a place-and-route model. It
 **MUST NOT** replace or rename the aggregate lower bound in eval files, and the
 phrase "lower bound" **MUST NOT** be applied to the Loom-pragma design-space
 estimate.
+
+**Reference implementation.** The Loom-pragma design-space estimate is
+implemented by `tests/scripts/loom_dse.py`, which reuses the DAG primitives,
+list scheduler, and aggregate computer of `tests/scripts/cgra_schedule.py`
+(Metrics 1–2). It builds each candidate's vectorized chunk DAG (coalescing
+contiguous unrolled groups per the rule above), schedules it, sums over waves,
+and emits the per-candidate table, the `absolute_cgra_lb`, and the recommended
+saturation-knee exposure. It exposes a `--self-test` entry point covering the
+unroll-favoring, symmetric, and sequential cases and the bracket invariant.
+Per-kernel design-space
+evals live at `tests/app/<kernel>/<kernel>_loom_dse.md`; they are distinct from the
+`_eval.md` files and carry only this optional estimate.
 
 ## Eval Reporting Format
 
@@ -777,6 +1021,9 @@ a runtime/scale check and **MUST NOT** block the first deliverable.
   and critical-path conventions this spec builds on, and the committed
   "CGRA-Constrained Model" policy text that references this spec.
 - `tests/app/<kernel>/<kernel>_eval.md` — per-kernel evals carrying both metrics.
-- `tests/scripts/cgra_schedule.py` — the reference helper implementing this spec.
+- `tests/scripts/cgra_schedule.py` — the reference helper implementing Metrics 1–2.
+- `tests/scripts/loom_dse.py` — the reference helper implementing the optional
+  Loom-pragma design-space estimate; per-kernel results in
+  `tests/app/<kernel>/<kernel>_loom_dse.md`.
 - `tests/scripts/check_bridge_tags.py` — the `--self-test` convention mirrored
   here.

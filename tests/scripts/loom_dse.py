@@ -1,46 +1,147 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-"""Banking-aware Loom-pragma design-space estimates.
+"""Lane-aware Loom-pragma design-space estimates (vector-coalescing model).
 
-This helper compares explicit ``LOOM_PARALLEL(P)`` / ``LOOM_UNROLL(U)`` choices
-(per loop level) for a kernel, on a CGRA resource configuration ``(P, L, S)``. It
-implements the "Optional Loom-Pragma Design-Space Estimate" section of
-``docs/spec-kernel-performance.md``, including the *banking-aware P-vs-U
-distinction on the load/store axis*.
+This helper compares explicit ``LOOM_PARALLEL(p)`` / ``LOOM_UNROLL(U)`` choices
+(per loop level) for a kernel, on a CGRA resource configuration ``(P_pe, L, S)``.
+It implements the "Optional Loom-Pragma Design-Space Estimate" section of
+``docs/spec-kernel-performance.md`` under the **lane-aware + vector coalescing**
+model that replaced the earlier banking model.
 
 Model, in one paragraph
 -----------------------
-The op counts of an exposed chunk depend only on the per-level *exposure*
-(``p*u`` per level), so ``P`` and ``U`` do not separate on the arithmetic /
-critical-path axes (those stay a global pool). They separate on the **load/store
-axis** through *banking*: ``LOOM_PARALLEL`` partitions the strided arrays into
-independent banks (one port per worker), while ``LOOM_UNROLL`` piles a worker's
-``U*ld_iter`` accesses onto that worker's single port. The concurrent load/store
-issue widths a chunk can use are therefore
+The *algorithmic* op counts of an exposed chunk depend only on the per-level
+exposure (``p*u``), so ``p`` and ``U`` do NOT separate on the algorithmic
+arithmetic or critical-path axes -- those stay a global pool. The two pragmas
+separate on TWO physical axes. (1) **Control-overhead amortization** (mentor
+Sihao): within a wave every exposed iteration is laid out spatially (unrolled),
+so the only surviving loop control is one iterator advance per worker per wave.
+Induction (iterator load/add/store/compare) is therefore charged ``P_tot`` times
+per chunk -- once per worker -- so the total control op count scales as
+``trip / U_tot``. ``LOOM_UNROLL`` amortizes control (``/U``); ``LOOM_PARALLEL``
+does not (each worker keeps its own iterator). A fully-unrolled level carries no
+loop control at all; a fully-consumed reduction is a spatial tree, so it too
+carries no loop control. A SEQUENTIAL carried recurrence (tridiag) is the
+exception: it cannot be spatially flattened, so its iterator is charged per
+iteration and sits on the critical path. (2) **Vector coalescing on the
+load/store axis**: unrolled iterations inside one worker touch *adjacent*
+elements, so a contiguous group of ``V`` of them coalesces into one 256-bit
+vector memory op (one lane-slot, free unpack/pack); parallel workers stride
+across partitions and do NOT coalesce across the cut. There is no banking and no
+per-worker port cap -- the only caps are the machine lanes ``L``/``S``.
 
-    active_L = min(P_tot, B_L, L)      active_S = min(P_tot, B_S, S)
+Load accounting splits into RECURRING vs. one-time INVARIANT loads. Recurring
+loop loads (per-iteration array elements over the tiled index, plus induction
+reads) scale with exposure and set the steady-state lane exposure and the binding
+load term (``load = ceil(recurring / L)``, ``active_L = min(recurring, L)``).
+Invariant loads (hoisted once per chunk -- e.g. axpy ``alpha``, gemv's whole
+``x`` vector) are amortized (loaded once and held) and appear only in
+``LD_eff = recurring + invariant`` (total traffic), never in the binding term.
 
-where ``P_tot`` is the product of the parallel factors over parallelizable
-levels, and ``B_L``/``B_S`` are the effective bank counts of the binding load /
-store arrays (an explicit ``LOOM_MEMORY_BANK(B)`` caps a bank count; an array
-partitioned over levels ``ℓ`` has ``B = Π p_ℓ`` absent a cap; a broadcast /
-single-element array has ``B = 1``). The chunk is then scheduled with the
-effective configuration ``(P, active_L, active_S)`` and summed over waves. Only
-``absolute_cgra_lb`` (the full-trip aggregate over full lanes) is a lower bound.
+Both P/U axes bias the model **toward LOOM_UNROLL** for
+contiguous groups (mentor-confirmed): coalescing is bounded by ``V = 4`` and
+vanishes once ``U >= V``, while control amortization keeps paying off as ``U``
+grows. Both effects stay in the existing ``P``/``L``/``S`` pools -- there is no
+separate control resource and no area term.
 
-This is a directed, load/store-focused model: it deliberately does NOT model the
-opposing control-overhead amortization (which would favor ``U``), so the
-recommendation is intentionally biased toward parallelism. It is an exploratory
-estimate, not a lower bound and not cycle-accurate RTL.
+``absolute_cgra_lb`` is the full-trip, fully-coalesced aggregate over the full
+lanes ``L``/``S`` -- the only lower bound. Every candidate estimate sits at or
+above it. It is an exploratory estimate, not a lower bound and not RTL.
 """
 
 import argparse
 import sys
 from dataclasses import dataclass, field
 
-from cgra_schedule import Config, Dag, _ceil_div, evaluate, parse_config
+from cgra_schedule import (Config, Dag, L, _ceil_div, evaluate, parse_config,
+                           region_aggregate)
 
-BIG = 1 << 30
+V = 4  # 64-bit scalar elements per 256-bit vector memory op (spec convention)
+
+# Marker appended to the ``kind`` of a load that is loop-INVARIANT: hoisted once
+# per chunk, its count independent of the tiled exposure (e.g. axpy ``alpha``,
+# gemv's whole ``x`` vector). Recurring loop loads (per-iteration array elements
+# and induction reads) carry no marker. The DSE splits the two: recurring loads
+# set the steady-state lane exposure and the binding load term, while invariant
+# loads are amortized (loaded once and held) and reported only in ``LD_eff``.
+INV = "__inv"
+
+
+# ---------------------------------------------------------------------------
+# Coalescing emit helpers
+# ---------------------------------------------------------------------------
+# A "vector load" is a single L-class node that fans out (free unpack) to the V
+# scalar consumers it covers; a "vector store" is a single S-class node that
+# depends on the V scalar producers it packs. This is exactly the spec's
+# one-lane-slot / free-unpack-pack convention, and the existing list scheduler
+# already handles a node with many successors/predecessors.
+
+def _cloads(r, n, coalesce, kind, invariant=False):
+    """Emit loads for ``n`` contiguous elements. If ``coalesce`` (the group is a
+    contiguous run the target can vectorize), emit ``ceil(n/V)`` vector nodes,
+    each returned V times (free unpack fan-out); otherwise ``n`` scalar loads.
+    If ``invariant`` the group is hoisted once per chunk (count independent of
+    exposure) and tagged so the load split can amortize it. Returns a list of
+    ``n`` value handles."""
+    tag = INV if invariant else ""
+    handles = []
+    if coalesce:
+        i = 0
+        while i < n:
+            g = min(V, n - i)
+            nid = r.load(kind=kind + "_vec" + tag)
+            handles.extend([nid] * g)
+            i += V
+    else:
+        for _ in range(n):
+            handles.append(r.load(kind=kind + tag))
+    return handles
+
+
+def _cstores(r, values, coalesce, output, kind):
+    """Emit stores for a contiguous group of value handles. If ``coalesce``,
+    ``ceil(len/V)`` vector stores (each packs up to V producers); else one scalar
+    store per value."""
+    if coalesce:
+        i = 0
+        while i < len(values):
+            grp = values[i:i + V]
+            r.store(*grp, output=output, kind=kind + "_vec")
+            i += V
+    else:
+        for v in values:
+            r.store(v, output=output, kind=kind)
+
+
+def _worker_control(r, n_workers, kind="iv"):
+    """Control-overhead amortization (DSE only; the main ASAP CGRA model still
+    charges induction per iteration per Convention 1).
+
+    Within one exposed wave every iteration is laid out spatially (unrolled), so
+    the only surviving loop control is a single iterator advance per worker per
+    wave. Charge induction ``n_workers`` (= ``P_tot``) times per chunk -- NOT once
+    per exposed body -- so the total control op count over all waves scales as
+    ``trip / U_tot``: ``LOOM_UNROLL`` amortizes control (``/U``), ``LOOM_PARALLEL``
+    does not. The iterator compare does not gate the spatial body, so it stays off
+    the algorithmic critical path (``compare_depends_on_read=False``). These ops
+    land in the existing P/L/S pools -- no separate control resource."""
+    for _ in range(max(1, n_workers)):
+        r.induction(kind=kind, compare_depends_on_read=False)
+
+
+def _load_split(dag) -> tuple[int, int]:
+    """Split a chunk's load lane-slots into (recurring, invariant).
+
+    ``invariant`` = loads hoisted once per chunk (count independent of the tiled
+    exposure), tagged with ``INV`` by the builders. ``recurring`` = everything
+    else: per-iteration array element loads (over the tiled index) and induction
+    reads, which scale with exposure. Recurring loads set the steady-state lane
+    exposure and the binding load term; invariant loads are amortized (loaded
+    once and held) and appear only in ``LD_eff = recurring + invariant``."""
+    nodes = dag.regions[0].nodes
+    invariant = sum(1 for n in nodes if n.cls == L and INV in n.kind)
+    total = sum(1 for n in nodes if n.cls == L)
+    return total - invariant, invariant
 
 
 # ---------------------------------------------------------------------------
@@ -55,8 +156,8 @@ class Level:
     kind: str  # "parallel" | "reduction" | "sequential"
 
     def parallelizable(self) -> bool:
-        # reduction levels may use parallel workers only via LOOM_REDUCE; both
-        # parallel and reduction contribute to P_tot. sequential cannot.
+        # parallel and reduction (via LOOM_REDUCE) contribute to P_tot;
+        # sequential cannot be parallelized.
         return self.kind in ("parallel", "reduction")
 
     def tiled(self) -> bool:
@@ -66,22 +167,12 @@ class Level:
 
 
 @dataclass(frozen=True)
-class BindingArray:
-    """The array that binds a memory class, with its banking description."""
-    name: str
-    bank_cap: int | None            # explicit LOOM_MEMORY_BANK cap; None = uncapped
-    partition_levels: tuple[str, ...]  # levels whose parallelism banks this array
-
-
-@dataclass(frozen=True)
 class KernelSpec:
     name: str
     levels: tuple[Level, ...]
-    load_binding: BindingArray
-    store_binding: BindingArray
-    build_chunk: object             # callable(exposure: dict[str,int]) -> Dag
+    build_chunk: object             # callable(cand: Candidate) -> Dag
+    coalesce_note: str = ""
     default_config: str = "6x6"
-    banking_note: str = ""
 
     def level(self, name: str) -> Level:
         for lv in self.levels:
@@ -91,129 +182,168 @@ class KernelSpec:
 
 
 # ---------------------------------------------------------------------------
-# Per-kernel chunk builders
+# Per-kernel chunk builders (split-aware; coalesce contiguous unrolled groups)
 # ---------------------------------------------------------------------------
-# Each builder receives ``exposure``: a dict level-name -> iterations exposed at
-# that level (p*u for tiled/parallel levels, full trip for reduction levels). The
-# op counts it produces depend ONLY on exposure, never on the P/U split -- the
-# split enters solely through active_L/active_S (see evaluate_candidate).
+# Each builder receives the Candidate and reads (p, u) per level. It builds ONE
+# wave: p workers, each with u contiguous (unrolled) iterations at each tiled
+# level; reduction/sequential levels are fully consumed. Contiguous array
+# accesses over an unrolled level coalesce (per worker); parallel/strided and
+# induction accesses stay scalar. A/CP depend only on exposure.
 
-def _axpy_chunk(exp):
-    E = exp["i"]
+def _axpy_chunk(cand):
+    p, u = cand.factors("i")
     dag = Dag()
     r = dag.region("axpy")
-    ld_alpha = r.load(kind="alpha")
-    r.load(kind="N")
-    for _ in range(E):
-        lx = r.load(kind="input_x")
-        ly = r.load(kind="input_y")
-        m = r.arith(lx, ld_alpha, kind="mul")
-        a = r.arith(m, ly, kind="add")
-        r.store(a, output=True, kind="output_y")
-        r.induction(kind="i", compare_depends_on_read=False)
+    ld_alpha = r.load(kind="alpha" + INV)   # invariant, loaded once per chunk
+    r.load(kind="N" + INV)
+    _worker_control(r, p)   # one iterator advance per worker/wave (unroll amortizes)
+    for _w in range(p):
+        xs = _cloads(r, u, True, "input_x")   # contiguous over unrolled i
+        ys = _cloads(r, u, True, "input_y")
+        outs = []
+        for k in range(u):
+            m = r.arith(xs[k], ld_alpha, kind="mul")
+            outs.append(r.arith(m, ys[k], kind="add"))
+        _cstores(r, outs, True, True, "output_y")
     return dag
 
 
-def _vecsum_chunk(exp):
-    E = exp["i"]
+def _vecsum_chunk(cand):
+    p, u = cand.factors("i")
+    trip = 256
     dag = Dag()
     r = dag.region("vecsum")
-    r.load(kind="init")
-    r.load(kind="N")
+    r.load(kind="init" + INV)
+    r.load(kind="N" + INV)
+    # reduction fully consumed: p contiguous worker blocks, each coalesced over
+    # its whole contiguous run (u only sets the unroll grouping; the block is
+    # contiguous either way, so the vector-load count is ~trip/V regardless of
+    # the p/u split -> vecsum is P/U-symmetric).
     leaves = []
-    for _ in range(E):
-        leaves.append(r.load(kind="A"))
-        r.induction(kind="i", compare_depends_on_read=False)
+    per = max(1, trip // p)
+    used = 0
+    # The whole loop IS the reduction: fully consumed in one wave and tree-reduced
+    # (a spatial tree), so it carries no per-element iterator and no per-worker
+    # iterator -- the p partial-sum lanes are tree branches, not loops. Charge a
+    # single fixed residual control, independent of the p/u split -> vecsum stays
+    # P/U-symmetric (contrast the TILED kernels, where control amortizes by U).
+    _worker_control(r, 1)
+    for w in range(p):
+        block = (trip - used) if w == p - 1 else per
+        block = max(0, min(block, trip - used))
+        used += block
+        hs = _cloads(r, block, True, "A")
+        for k in range(block):
+            leaves.append(hs[k])
     root = r.balanced_reduction(leaves, kind="reduce")
-    acc = r.arith(root, kind="acc_merge")   # merge partial into carry (associative)
+    acc = r.arith(root, kind="acc_merge")   # merge partial into carry
     r.store(acc, output=True, kind="sum")
     return dag
 
 
-def _gemv_chunk(exp):
-    E_i = exp["i"]
-    N = exp["j"]  # reduction dim: fully exposed within each row
+def _gemv_chunk(cand):
+    pi, ui = cand.factors("i")
+    _pj, _uj = cand.factors("j")   # j is a fully-consumed reduction (inert)
+    Ei = pi * ui
+    N = 64
     dag = Dag()
     r = dag.region("gemv")
-    ld_alpha = r.load(kind="alpha")
-    ld_beta = r.load(kind="beta")
-    r.load(kind="M")
-    r.load(kind="N")
-    # x[j] is invariant of i: loaded once per chunk, reused across the E_i rows.
-    xloads = [r.load(kind="x") for _ in range(N)]
-    for _ in range(E_i):
-        r.induction(kind="i", compare_depends_on_read=False)
-        products = []
-        for jj in range(N):
-            aij = r.load(kind="A")
-            products.append(r.arith(aij, xloads[jj], kind="mul"))
-            r.induction(kind="j", compare_depends_on_read=False)
-        rowsum = r.balanced_reduction(products, kind="reduce")
-        asum = r.arith(rowsum, ld_alpha, kind="mul_alpha")
-        ly = r.load(kind="input_y")
-        by = r.arith(ly, ld_beta, kind="mul_beta")
-        r.store(r.arith(asum, by, kind="add"), output=True, kind="output_y")
+    ld_alpha = r.load(kind="alpha" + INV)
+    ld_beta = r.load(kind="beta" + INV)
+    r.load(kind="M" + INV)
+    r.load(kind="N" + INV)
+    # x[j] is invariant of i: loaded once per chunk, contiguous over j -> coalesced.
+    xloads = _cloads(r, N, True, "x", invariant=True)
+    _worker_control(r, pi)   # one row-iterator advance per worker/wave (unroll amortizes;
+                             # the j reduction is a spatial tree -> no j-loop control)
+    for _w in range(pi):
+        iny = _cloads(r, ui, True, "input_y")   # y[i] contiguous over unrolled i
+        outs = []
+        for kk in range(ui):
+            aij = _cloads(r, N, True, "A")       # A row contiguous over j
+            products = []
+            for jj in range(N):
+                products.append(r.arith(aij[jj], xloads[jj], kind="mul"))
+            rowsum = r.balanced_reduction(products, kind="reduce")
+            asum = r.arith(rowsum, ld_alpha, kind="mul_alpha")
+            by = r.arith(iny[kk], ld_beta, kind="mul_beta")
+            outs.append(r.arith(asum, by, kind="add"))
+        _cstores(r, outs, True, True, "output_y")   # y[i] contiguous over i
     return dag
 
 
-def _tridiag_chunk(exp):
-    # Forward elimination sweep of the Thomas algorithm: a NON-associative
-    # carried recurrence (m depends on c_prime[i-1]; d_prime[i] depends on
-    # d_prime[i-1] through a division). It cannot be reduced (unlike vecsum) and
-    # cannot be parallelized -- the sole legal dim is a sequential chain.
-    E = exp["i"]
+def _tridiag_chunk(cand):
+    # Forward elimination sweep of Thomas: a NON-associative carried recurrence
+    # (division chain). Sequential -> p forced to 1; only unroll is legal. Input
+    # reads coalesce (contiguous over i) but the carried CP dominates, so there
+    # is no P-vs-U distinction.
+    _p, u = cand.factors("i")
+    trip = 64
     dag = Dag()
     r = dag.region("tridiag_fwd")
-    prev_c = r.load(kind="c_prime0")   # c_prime[0] root
-    prev_d = r.load(kind="d_prime0")   # d_prime[0] root
-    for _ in range(E):
-        la = r.load(kind="input_a")
-        lb = r.load(kind="input_b")
-        lc = r.load(kind="input_c")
-        ld = r.load(kind="input_d")
-        ac = r.arith(la, prev_c, kind="mul")       # a*c_prime[i-1]  (carried)
-        m = r.arith(lb, ac, kind="sub")            # m = b - a*c'
-        cprime = r.arith(lc, m, kind="div")        # c_prime[i] = c/m
-        ad = r.arith(la, prev_d, kind="mul")       # a*d_prime[i-1]  (carried)
-        dn = r.arith(ld, ad, kind="sub")
-        dprime = r.arith(dn, m, kind="div")        # d_prime[i] = (d-a*d')/m
-        r.store(cprime, kind="c_prime")
-        r.store(dprime, output=True, kind="d_prime")
+    prev_c = r.load(kind="c_prime0" + INV)
+    prev_d = r.load(kind="d_prime0" + INV)
+    # coalesce the input streams over the whole trip (contiguous); the recurrence
+    # still serializes the arithmetic.
+    la_all = _cloads(r, trip, True, "input_a")
+    lb_all = _cloads(r, trip, True, "input_b")
+    lc_all = _cloads(r, trip, True, "input_c")
+    ld_all = _cloads(r, trip, True, "input_d")
+    couts, douts = [], []
+    for i in range(trip):
+        ac = r.arith(la_all[i], prev_c, kind="mul")   # a*c'[i-1] (carried)
+        m = r.arith(lb_all[i], ac, kind="sub")
+        cprime = r.arith(lc_all[i], m, kind="div")
+        ad = r.arith(la_all[i], prev_d, kind="mul")   # a*d'[i-1] (carried)
+        dn = r.arith(ld_all[i], ad, kind="sub")
+        dprime = r.arith(dn, m, kind="div")
+        couts.append(cprime)
+        douts.append(dprime)
         r.induction(kind="i", compare_depends_on_read=True)  # carried iterator
         prev_c = cprime
         prev_d = dprime
+    _cstores(r, couts, True, False, "c_prime")
+    _cstores(r, douts, True, True, "d_prime")
     return dag
 
 
-def _conv2d_chunk(exp):
-    E_out = exp["out"]
-    K = exp["tap"]  # reduction dim (C_in*KH*KW): fully exposed per output pixel
+def _conv2d_chunk(cand):
+    p_out, u_out = cand.factors("out")
+    _pt, _ut = cand.factors("tap")   # tap is a fully-consumed reduction (inert)
+    K = _conv2d_dims()[1]
     dag = Dag()
     r = dag.region("conv2d")
-    r.load(kind="params")
-    for _ in range(E_out):
-        r.induction(kind="out", compare_depends_on_read=False)
-        products = []
-        for _ in range(K):
-            li = r.load(kind="input")
-            lw = r.load(kind="weight")
-            products.append(r.arith(li, lw, kind="mul"))
-            r.induction(kind="tap", compare_depends_on_read=False)
-        r.store(r.balanced_reduction(products, kind="reduce"),
-                output=True, kind="output")
+    r.load(kind="params" + INV)
+    _worker_control(r, p_out)   # one out-iterator advance per worker/wave (unroll amortizes;
+                                # the tap reduction is a spatial tree -> no tap-loop control)
+    for _w in range(p_out):
+        outs = []
+        for _kk in range(u_out):
+            inp = _cloads(r, K, False, "input")    # strided over taps (halo)
+            wt = _cloads(r, K, True, "weight")      # contiguous over taps
+            products = []
+            for t in range(K):
+                products.append(r.arith(inp[t], wt[t], kind="mul"))
+            outs.append(r.balanced_reduction(products, kind="reduce"))
+        _cstores(r, outs, True, True, "output")     # output contiguous over out
     return dag
 
 
-def _batchnorm_chunk(exp):
-    Ec, Eh, Ew = exp["c"], exp["h"], exp["w"]
+def _batchnorm_chunk(cand):
+    pc, uc = cand.factors("c")
+    ph, uh = cand.factors("h")
+    pw, uw = cand.factors("w")
+    Ec, Eh = pc * uc, ph * uh
     dag = Dag()
     r = dag.region("batchnorm")
-    ld_eps = r.load(kind="eps")
-    r.load(kind="C")
-    r.load(kind="H")
-    r.load(kind="W")
-    for _ in range(Ec):
-        r.induction(kind="c", compare_depends_on_read=False)
+    ld_eps = r.load(kind="eps" + INV)
+    r.load(kind="C" + INV)
+    r.load(kind="H" + INV)
+    r.load(kind="W" + INV)
+    # control amortized: one iterator advance per worker/wave over the whole
+    # (c,h,w) worker set (unroll on any level amortizes its control).
+    _worker_control(r, pc * ph * pw)
+    for _c in range(Ec):
         lv = r.load(kind="variance")
         lm = r.load(kind="mean")
         lg = r.load(kind="gamma")
@@ -221,16 +351,16 @@ def _batchnorm_chunk(exp):
         ve = r.arith(lv, ld_eps, kind="var_plus_eps")
         sq = r.arith(ve, kind="sqrt")
         inv = r.arith(sq, kind="inv_std")   # invariant across (h,w)
-        for _ in range(Eh):
-            r.induction(kind="h", compare_depends_on_read=False)
-            for _ in range(Ew):
-                r.induction(kind="w", compare_depends_on_read=False)
-                li = r.load(kind="input")
-                sub = r.arith(li, lm, kind="sub")
-                nm = r.arith(sub, inv, kind="mul_inv")
-                mg = r.arith(nm, lg, kind="mul_gamma")
-                r.store(r.arith(mg, lb, kind="add_beta"),
-                        output=True, kind="output")
+        for _h in range(Eh):
+            for _wk in range(pw):
+                ins = _cloads(r, uw, True, "input")   # contiguous over unrolled w
+                outs = []
+                for kk in range(uw):
+                    sub = r.arith(ins[kk], lm, kind="sub")
+                    nm = r.arith(sub, inv, kind="mul_inv")
+                    mg = r.arith(nm, lg, kind="mul_gamma")
+                    outs.append(r.arith(mg, lb, kind="add_beta"))
+                _cstores(r, outs, True, True, "output")
     return dag
 
 
@@ -253,86 +383,83 @@ def _register():
     KERNELS["axpy"] = KernelSpec(
         name="axpy",
         levels=(Level("i", 256, "parallel"),),
-        load_binding=BindingArray("input_x", None, ("i",)),
-        store_binding=BindingArray("output_y", None, ("i",)),
         build_chunk=_axpy_chunk,
-        banking_note=(
-            "input_x/input_y/output_y are partitioned across the parallel "
-            "workers (contiguous distribution), so B = P_tot; no explicit "
-            "LOOM_MEMORY_BANK cap."),
+        coalesce_note=(
+            "input_x/input_y/output_y are contiguous over i. Two axes both favor "
+            "LOOM_UNROLL over LOOM_PARALLEL at a fixed product: (1) coalescing -- a "
+            "worker's U adjacent accesses fuse into ceil(U/V) vector ops while "
+            "parallel strides across workers (bounded by V=4, gone once U>=V); (2) "
+            "control amortization -- the iterator is charged once per worker, so "
+            "fewer workers (more unroll) means fewer i-loads/adds/stores (keeps "
+            "paying past U=V). So unroll strictly beats parallel at fixed product."),
     )
     KERNELS["vecsum"] = KernelSpec(
         name="vecsum",
         levels=(Level("i", 256, "reduction"),),
-        load_binding=BindingArray("A", None, ("i",)),
-        # The single scalar sum is 1 store; the store class is dominated by the
-        # per-worker iterator write-backs, which are partitioned across the
-        # LOOM_REDUCE workers (B_S = P_tot).
-        store_binding=BindingArray("iter+sum", None, ("i",)),
         build_chunk=_vecsum_chunk,
-        banking_note=(
-            "A is partitioned across the LOOM_REDUCE workers (B_L = P_tot). "
-            "Stores are dominated by per-worker iterator write-backs "
-            "(B_S = P_tot); the final sum is a single scalar store."),
+        coalesce_note=(
+            "A is contiguous over i and the reduction is fully consumed in one "
+            "wave AND tree-reduced (a spatial tree), so it carries no per-element "
+            "and no per-worker iterator -- control is a fixed residual for any "
+            "split. A also coalesces to ~trip/V vector loads regardless of the p/u "
+            "split. Both the control and coalescing axes are inert -> vecsum is "
+            "P/U-symmetric, and CP-bound on the log-depth merge tree."),
     )
     M, N = 64, 64
     KERNELS["gemv"] = KernelSpec(
         name="gemv",
         levels=(Level("i", M, "parallel"), Level("j", N, "reduction")),
-        # A carries LOOM_MEMORY_BANK(4, block): block-partitioned over rows (i),
-        # so B_L = min(4, p_i) and column (j) parallelism adds no A ports.
-        load_binding=BindingArray("A", 4, ("i",)),
-        store_binding=BindingArray("output_y", None, ("i",)),
         build_chunk=_gemv_chunk,
-        banking_note=(
-            "A has LOOM_MEMORY_BANK(4, block): block-partitioned over rows (i), "
-            "so B_L = min(4, p_i) and parallelizing the inner column reduction "
-            "(j) adds NO A ports. x is broadcast (loaded once per chunk, reused "
-            "across rows). output_y is partitioned over rows (B_S = p_i)."),
+        coalesce_note=(
+            "A[i][j] and x[j] are contiguous over j (a fully-consumed reduction, "
+            "tree-reduced), so they coalesce identically and the j-loop carries no "
+            "control -> the dot-product path is P/U-symmetric. On the row level i, "
+            "LOOM_UNROLL(i) beats LOOM_PARALLEL(i) two ways: it coalesces the "
+            "contiguous y[i]/output_y[i] accesses (parallel strides) and it "
+            "amortizes the row iterator (charged once per worker). The A-load term "
+            "is split-symmetric and large, so the i-level edge is modest but real."),
     )
     n_out, K = _conv2d_dims()
     KERNELS["conv2d"] = KernelSpec(
         name="conv2d",
         levels=(Level("out", n_out, "parallel"), Level("tap", K, "reduction")),
-        # input carries LOOM_MEMORY_BANK(4, block) in conv2d.cpp, so its bank
-        # count is capped at 4 regardless of output-pixel parallelism:
-        # active_L = min(P_tot, 4, L).
-        load_binding=BindingArray("input", 4, ("out",)),
-        store_binding=BindingArray("output", None, ("out",)),
         build_chunk=_conv2d_chunk,
-        banking_note=(
-            "Output pixels (out = C_out*OH*OW) parallel; the K = C_in*KH*KW taps "
-            "are a reduction fully consumed per pixel. input carries "
-            "LOOM_MEMORY_BANK(4, block) -> B_L capped at 4 (active_L <= 4). "
-            "weight is uncapped but rides the same modeled load width (single "
-            "binding array); input halo reuse and weight sharing are not modeled "
-            "(conservative loads)."),
+        coalesce_note=(
+            "output pixels (out = C_out*OH*OW) are parallel; the K = C_in*KH*KW "
+            "taps are a fully-consumed reduction (tree-reduced -> no tap iterator). "
+            "input is strided over taps (halo) so it does NOT coalesce and "
+            "dominates loads; weight is contiguous but reduction-inert; output is "
+            "contiguous over out. LOOM_UNROLL(out) beats LOOM_PARALLEL(out) two "
+            "ways: it coalesces the output stores and amortizes the out iterator "
+            "(charged once per worker). Load-bound on the strided input, so the "
+            "edge is modest. Halo reuse / weight sharing not modeled."),
     )
     KERNELS["tridiag_solve"] = KernelSpec(
         name="tridiag_solve",
         levels=(Level("i", 64, "sequential"),),
-        load_binding=BindingArray("input_a", None, ()),   # nothing partitions it
-        store_binding=BindingArray("d_prime", None, ()),
         build_chunk=_tridiag_chunk,
-        banking_note=(
-            "The forward sweep carries a NON-associative recurrence "
-            "(division chain), so LOOM_PARALLEL is illegal and LOOM_REDUCE does "
-            "not apply: P_tot is forced to 1, B_L = B_S = 1, active_L = "
-            "active_S = 1. Only LOOM_UNROLL is legal, and it adds no bank/port "
-            "-- so there is no P-vs-U distinction and the kernel stays "
-            "critical-path (serial) bound."),
+        coalesce_note=(
+            "The forward sweep carries a NON-associative recurrence (division "
+            "chain): LOOM_PARALLEL is illegal (p forced to 1) and the serial CP "
+            "dominates. Input streams coalesce but it does not matter -> the "
+            "kernel stays critical-path bound with no P-vs-U distinction."),
     )
     KERNELS["batchnorm"] = KernelSpec(
         name="batchnorm",
         levels=(Level("c", 4, "parallel"), Level("h", 8, "parallel"),
                 Level("w", 8, "parallel")),
-        load_binding=BindingArray("input", None, ("c", "h", "w")),
-        store_binding=BindingArray("output", None, ("c", "h", "w")),
         build_chunk=_batchnorm_chunk,
-        banking_note=(
-            "All three dims (c,h,w) are parallel; input/output partitioned over "
-            "all of them (B = P_tot). mean/variance/gamma/beta are per-channel "
-            "invariants (loaded once per exposed channel)."),
+        coalesce_note=(
+            "input/output are contiguous over the innermost w. LOOM_UNROLL(w) "
+            "coalesces a worker's adjacent w-accesses (ceil(U_w/V) vector ops) "
+            "while LOOM_PARALLEL(w) strides -> unroll-on-w beats parallel-on-w on "
+            "the load/store term (while U_w < V). c/h are strided for input and do "
+            "not coalesce, but LOOM_UNROLL on ANY level still amortizes the "
+            "iterator (charged once per worker over the c*h*w worker set), so "
+            "unroll cuts control ops even where coalescing cannot. Compute-bound, "
+            "so those load/store savings show as lane headroom, not a lower floor. "
+            "mean/variance/gamma/beta are per-channel invariants (once per "
+            "exposed channel)."),
     )
 
 
@@ -387,7 +514,6 @@ def enumerate_candidates(spec: KernelSpec, max_parallel: int, max_unroll: int,
     def rec(idx: int, acc: list):
         if idx == len(per_level_choices):
             cand = Candidate(tuple(acc))
-            # cap total exposure of tiled (parallel) levels to keep chunks small
             tiled_exp = 1
             for lv in spec.levels:
                 p, u = cand.factors(lv.name)
@@ -406,16 +532,8 @@ def enumerate_candidates(spec: KernelSpec, max_parallel: int, max_unroll: int,
 
 
 # ---------------------------------------------------------------------------
-# Banking + evaluation
+# Evaluation
 # ---------------------------------------------------------------------------
-
-def _exposure(spec: KernelSpec, cand: Candidate) -> dict[str, int]:
-    exp = {}
-    for lv in spec.levels:
-        p, u = cand.factors(lv.name)
-        exp[lv.name] = (p * u) if lv.tiled() else lv.trip
-    return exp
-
 
 def _p_tot(spec: KernelSpec, cand: Candidate) -> int:
     prod = 1
@@ -424,16 +542,6 @@ def _p_tot(spec: KernelSpec, cand: Candidate) -> int:
             p, _ = cand.factors(lv.name)
             prod *= p
     return prod
-
-
-def _effective_banks(spec: KernelSpec, cand: Candidate,
-                     arr: BindingArray) -> int:
-    partition_workers = 1
-    for name in arr.partition_levels:
-        p, _ = cand.factors(name)
-        partition_workers *= p
-    cap = arr.bank_cap if arr.bank_cap is not None else BIG
-    return max(1, min(cap, partition_workers))
 
 
 def _waves(spec: KernelSpec, cand: Candidate) -> int:
@@ -445,19 +553,27 @@ def _waves(spec: KernelSpec, cand: Candidate) -> int:
     return max(1, w)
 
 
+def _exposed_iters(spec: KernelSpec, cand: Candidate) -> int:
+    e = 1
+    for lv in spec.levels:
+        p, u = cand.factors(lv.name)
+        e *= (p * u) if lv.tiled() else lv.trip
+    return e
+
+
 @dataclass
 class CandResult:
     cand: Candidate
     p_tot: int
     active_L: int
     active_S: int
-    exposure: dict
-    exposed_iters: int          # total inner iterations in one chunk
+    exposed_iters: int
     waves: int
     CP: int
     A: int
-    LD: int
+    LD: int          # recurring load lane-slots (drive binding / lane exposure)
     ST: int
+    ld_eff: int      # LD_eff = recurring + one-time invariant loads (total traffic)
     chunk_aggregate: int
     chunk_scheduled: int
     pragma_exposure_aggregate: int
@@ -470,103 +586,127 @@ class CandResult:
 
 def evaluate_candidate(spec: KernelSpec, cand: Candidate,
                        cfg: Config) -> CandResult:
-    exp = _exposure(spec, cand)
-    p_tot = _p_tot(spec, cand)
-    B_L = _effective_banks(spec, cand, spec.load_binding)
-    B_S = _effective_banks(spec, cand, spec.store_binding)
-    active_L = max(1, min(p_tot, B_L, cfg.L))
-    active_S = max(1, min(p_tot, B_S, cfg.S))
-    eff = Config(cfg.P, active_L, active_S,
-                 label=f"P={cfg.P},L={active_L},S={active_S}")
-
-    res = evaluate(spec.build_chunk(exp), spec.name, eff)
+    # Build the vectorized chunk DAG and schedule it on the FULL machine lanes.
+    # With no banking, the only per-cycle cap is L/S. Two axes separate P from U:
+    # vector coalescing (which lowered LD/ST in the DAG) and control amortization.
+    #
+    # Load accounting splits into recurring vs. one-time invariant loads. Only the
+    # RECURRING loads set the steady-state lane exposure and the binding load
+    # term; invariant loads are amortized (loaded once and held) and reported only
+    # in LD_eff. active_L = min(recurring, L) is the recurring lane-exposure
+    # diagnostic.
+    dag = spec.build_chunk(cand)
+    res = evaluate(dag, spec.name, cfg)
     agg = res.region_aggs[0]
+    recurring_LD, invariant_LD = _load_split(dag)
+    ld_eff = recurring_LD + invariant_LD   # == agg.LD (total traffic)
     waves = _waves(spec, cand)
-    chunk_agg = res.aggregate_cycles
-    chunk_sched = res.scheduled_cycles
+    p_tot = _p_tot(spec, cand)
 
-    # binding memory class of this chunk (L vs S; arithmetic stays global pool)
-    binding_class = "L" if agg.load >= agg.store else "S"
-    # resource-bound once any resource term reaches CP (the binding class fills
-    # its issue width every cycle); latency-bound only while CP strictly
-    # dominates every resource term (ports idle draining the critical path).
-    max_resource = max(agg.compute, agg.load, agg.store)
+    # steady-state binding: load term uses RECURRING loads only (invariants
+    # amortized); compute and store are unchanged.
+    load = _ceil_div(recurring_LD, cfg.L)
+    compute = agg.compute
+    store = agg.store
+    chunk_aggregate = max(agg.CP, compute, load, store)
+    active_L = max(1, min(recurring_LD, cfg.L))
+    active_S = max(1, min(agg.ST, cfg.S))
+
+    # binding class of this chunk: the largest resource term (arith stays a
+    # global pool; ties favor loads).
+    terms = {"P": compute, "L": load, "S": store}
+    binding_class = max(terms, key=lambda k: (terms[k], k == "L"))
+    max_resource = max(compute, load, store)
     saturation = "latency-bound" if agg.CP > max_resource else "resource-bound"
-    denom = chunk_agg if chunk_agg > 0 else 1
-    util = (agg.compute / denom, agg.load / denom, agg.store / denom)
-
-    exposed = 1
-    for lv in spec.levels:
-        exposed *= exp[lv.name]
+    denom = chunk_aggregate if chunk_aggregate > 0 else 1
+    util = (compute / denom, load / denom, store / denom)
 
     return CandResult(
         cand=cand, p_tot=p_tot, active_L=active_L, active_S=active_S,
-        exposure=exp, exposed_iters=exposed, waves=waves,
-        CP=agg.CP, A=agg.A, LD=agg.LD, ST=agg.ST,
-        chunk_aggregate=chunk_agg, chunk_scheduled=chunk_sched,
-        pragma_exposure_aggregate=waves * chunk_agg,
-        schedule_estimate=waves * chunk_sched,
+        exposed_iters=_exposed_iters(spec, cand), waves=waves,
+        CP=agg.CP, A=agg.A, LD=recurring_LD, ST=agg.ST, ld_eff=ld_eff,
+        chunk_aggregate=chunk_aggregate, chunk_scheduled=res.scheduled_cycles,
+        pragma_exposure_aggregate=waves * chunk_aggregate,
+        schedule_estimate=waves * res.scheduled_cycles,
         binding_class=binding_class, saturation=saturation, util=util)
 
 
+def _full_candidate(spec: KernelSpec) -> Candidate:
+    """Full unroll of the whole loop, maximally coalesced: p=1, u=trip on every
+    parallelizable level (reduction/sequential are fully consumed anyway)."""
+    split = []
+    for lv in spec.levels:
+        if lv.tiled():
+            split.append((lv.name, 1, lv.trip))
+        else:
+            split.append((lv.name, 1, lv.trip))
+    return Candidate(tuple(split))
+
+
 def absolute_cgra_lb(spec: KernelSpec, cfg: Config) -> tuple[int, dict]:
-    """Full-trip aggregate over FULL lanes: the only lower bound. Also returns
-    the per-iteration demand for the binding-class analysis."""
-    full_exp = {lv.name: lv.trip for lv in spec.levels}
-    res = evaluate(spec.build_chunk(full_exp), spec.name + "_full", cfg)
-    agg = res.region_aggs[0]
-    demand = {"A": agg.A, "LD": agg.LD, "ST": agg.ST, "CP": agg.CP,
-              "compute": agg.compute, "load": agg.load, "store": agg.store,
-              "aggregate": res.aggregate_cycles}
-    return res.aggregate_cycles, demand
+    """Full-trip, fully-coalesced aggregate over FULL lanes: the only lower
+    bound. Aggregate-only (no scheduling) so it scales to the full unrolled DAG.
+    Also returns the full-trip demand for the binding-class analysis."""
+    dag = spec.build_chunk(_full_candidate(spec))
+    agg = region_aggregate(dag.regions[0], cfg)
+    recurring_LD, invariant_LD = _load_split(dag)
+    # steady-state floor: recurring loads only (invariants amortized once over the
+    # whole trip). LD_eff = recurring + invariant is the total traffic.
+    load = _ceil_div(recurring_LD, cfg.L)
+    aggregate = max(agg.CP, agg.compute, load, agg.store)
+    demand = {"A": agg.A, "LD": recurring_LD,
+              "LD_eff": recurring_LD + invariant_LD, "ST": agg.ST, "CP": agg.CP,
+              "compute": agg.compute, "load": load, "store": agg.store,
+              "aggregate": aggregate}
+    return aggregate, demand
 
 
 # ---------------------------------------------------------------------------
-# Recommendation
+# Recommendation and flags
 # ---------------------------------------------------------------------------
 
-def recommend(spec: KernelSpec, results: list[CandResult],
-              cfg: Config) -> CandResult | None:
-    """Banking-aware selection (docs/spec-kernel-performance.md, "Exposure
-    selection under banking"): saturate the binding memory class -- pick the
-    candidate reaching the max achievable active width on the binding class,
-    then the SMALLEST such exposure that is resource-bound (fewest workers /
-    least unroll). Falls back to max-active latency-bound if none saturate."""
+def recommend(spec: KernelSpec, results: list[CandResult]) -> CandResult | None:
+    """Spec "Exposure selection": recommend the saturation knee E_sat -- the
+    smallest exposure at which the BEST-COALESCED candidate becomes
+    resource-bound. Beyond E_sat the wave-summed estimate only creeps toward the
+    floor through wave-serialization rounding (not real steady-state gain), and
+    larger exposure is oversubscribed.
+
+    A candidate that saturates at *lower* exposure than E_sat does so only because
+    it wastes lane-slots (uncoalesced strided loads); we must not reward that.
+    So we walk exposures upward and, at each, take the most-coalesced candidate
+    (min LD+ST); the first exposure whose best candidate is resource-bound is the
+    knee."""
     if not results:
         return None
-    binding = results[0].binding_class
-
-    def active(r: CandResult) -> int:
-        return r.active_L if binding == "L" else r.active_S
-
-    best_active = max(active(r) for r in results)
-    pool = [r for r in results if active(r) == best_active]
-    resource_bound = [r for r in pool if r.saturation == "resource-bound"]
-    if resource_bound:
-        # smallest exposure that already saturates -> fewest workers, least U
-        return min(resource_bound,
-                   key=lambda r: (r.exposed_iters, r.p_tot,
-                                  r.pragma_exposure_aggregate))
-    # nobody saturates: take the max-active candidate with the best estimate
-    return min(pool, key=lambda r: (r.pragma_exposure_aggregate, r.exposed_iters))
+    by_exp: dict[int, list[CandResult]] = {}
+    for r in results:
+        by_exp.setdefault(r.exposed_iters, []).append(r)
+    for E in sorted(by_exp):
+        best = min(by_exp[E], key=lambda r: (r.LD + r.ST, r.p_tot,
+                                             r.pragma_exposure_aggregate))
+        if best.saturation == "resource-bound":
+            return best
+    # nothing saturates (pure latency-bound sweep): take the best estimate.
+    return min(results, key=lambda r: (r.pragma_exposure_aggregate,
+                                       r.exposed_iters))
 
 
 def annotate_flags(spec: KernelSpec, results: list[CandResult],
                    rec: CandResult) -> None:
-    binding = results[0].binding_class
-
-    def active(r: CandResult) -> int:
-        return r.active_L if binding == "L" else r.active_S
-
-    best_active = max(active(r) for r in results)
     for r in results:
-        if r is rec or (r.cand.split == rec.cand.split):
+        if r.cand.split == rec.cand.split:
             r.flags.add("recommended")
-        if active(r) < best_active:
+            continue  # the pick carries no starved/oversubscribed marker
+        # bandwidth-starved: below the knee (latency-bound: resources idle while
+        # the critical path drains).
+        if r.saturation == "latency-bound":
             r.flags.add("bandwidth-starved")
-        # port-serialized: same active width as the recommendation but more
-        # exposure (extra unroll/parallel past the knee) with no throughput gain
-        if (active(r) == active(rec) and r.exposed_iters > rec.exposed_iters):
+        # oversubscribed: resource-bound past the knee -- more exposure than the
+        # recommendation, buying only wave-serialization rounding at the cost of
+        # transient backlog and area.
+        if (r.saturation == "resource-bound"
+                and r.exposed_iters > rec.exposed_iters):
             r.flags.add("oversubscribed")
 
 
@@ -575,8 +715,8 @@ def annotate_flags(spec: KernelSpec, results: list[CandResult],
 # ---------------------------------------------------------------------------
 
 def _dedup(results: list[CandResult]) -> list[list[CandResult]]:
-    """Group candidates that produce identical performance (same active widths
-    and chunk counts and waves) -- e.g. inert inner-reduction pragmas."""
+    """Group candidates with identical performance (same chunk counts, active
+    widths, waves, estimate) -- e.g. inert reduction/parallel pragmas."""
     groups: dict[tuple, list[CandResult]] = {}
     for r in results:
         key = (r.active_L, r.active_S, r.LD, r.ST, r.A, r.CP, r.waves,
@@ -584,7 +724,7 @@ def _dedup(results: list[CandResult]) -> list[list[CandResult]]:
         groups.setdefault(key, []).append(r)
     ordered = sorted(groups.values(),
                      key=lambda g: (g[0].pragma_exposure_aggregate,
-                                    -g[0].p_tot, g[0].exposed_iters))
+                                    g[0].exposed_iters, -g[0].p_tot))
     return ordered
 
 
@@ -594,42 +734,53 @@ def _fmt_util(u):
 
 def render_report(spec: KernelSpec, cfg: Config, results: list[CandResult],
                   lb: int, demand: dict, rec: CandResult, top: int = 0) -> str:
-    L = []
-    L.append(f"# Loom pragma DSE (banking-aware): {spec.name}  "
-             f"({cfg.label})")
-    L.append("")
+    out = []
+    out.append(f"# Loom pragma DSE (lane-aware + vector coalescing): "
+               f"{spec.name}  ({cfg.label})")
+    out.append("")
     nest = ", ".join(f"{lv.name}[{lv.trip},{lv.kind}]" for lv in spec.levels)
-    L.append(f"loop nest (outer->inner): {nest}")
-    L.append(f"banking: {spec.banking_note}")
-    L.append("")
-    L.append(f"absolute_cgra_lb = {lb}  (full-trip aggregate over full lanes "
-             f"L={cfg.L},S={cfg.S}; the ONLY lower bound)")
-    L.append(f"full-trip counts: A={demand['A']} LD={demand['LD']} "
-             f"ST={demand['ST']} CP={demand['CP']} | "
-             f"compute={demand['compute']} load={demand['load']} "
-             f"store={demand['store']}")
-    binding = results[0].binding_class
-    L.append(f"binding memory class = {binding}   "
-             f"(P_tot scales active_{binding} up to banks and cap {cfg.cap(binding)})")
-    L.append("")
-    L.append("Only absolute_cgra_lb is a lower bound. pragma_agg / sched_est "
-             "assume waves do NOT overlap and sit above it.")
-    L.append("active_L/active_S = min(P_tot, banks, lane cap): parallel raises "
-             "them, unroll does not. This is the P-vs-U distinction.")
-    L.append("")
+    out.append(f"loop nest (outer->inner): {nest}")
+    out.append(f"coalescing: {spec.coalesce_note}")
+    out.append("")
+    out.append(f"absolute_cgra_lb = {lb}  (full-trip, fully-coalesced, "
+               f"invariant-amortized aggregate over full lanes L={cfg.L},S={cfg.S}; "
+               f"the ONLY lower bound)")
+    out.append(f"full-trip counts: A={demand['A']} LD_rec={demand['LD']} "
+               f"LD_eff={demand['LD_eff']} ST={demand['ST']} CP={demand['CP']} | "
+               f"compute={demand['compute']} load={demand['load']} "
+               f"store={demand['store']}   (load term = ceil(LD_rec/L); "
+               f"invariants amortized)")
+    ft_terms = {"P": demand["compute"], "L": demand["load"], "S": demand["store"]}
+    ft_binding = max(ft_terms, key=lambda k: (ft_terms[k], k == "L"))
+    out.append(f"binding class (full trip) = {ft_binding}   "
+               f"(P_pe={cfg.P}, L={cfg.L}, S={cfg.S}; V={V} 64-bit elems/vec)")
+    out.append("")
+    out.append("Only absolute_cgra_lb is a lower bound. pragma_agg / sched_est "
+               "assume waves do NOT overlap and sit at or above it.")
+    out.append("aL = active load lanes = min(recurring loads, L): the recurring "
+               "loop loads set the lane exposure and the binding load term. "
+               "LD_eff = recurring + one-time invariant loads (total traffic); "
+               "invariant loads (loaded once and held) are amortized out of the "
+               "binding term.")
+    out.append("Algorithmic arith/CP is a global pool (P and U tie there). P and U "
+               "separate on TWO axes, both favoring LOOM_UNROLL: (1) control "
+               "amortization -- unroll shares one iterator across U bodies, so "
+               "control ops scale as trip/U (parallel keeps an iterator per "
+               "worker); (2) vector coalescing of contiguous accesses (bounded by "
+               "V, gone once U>=V). Sequential carries keep per-iter control on CP.")
+    out.append("")
 
-    header = (f"{'flags':<10} {'split':<26} {'Ptot':>4} {'aL':>3} {'aS':>3} "
-              f"{'exp':>5} {'wav':>5} {'cagg':>5} {'p_agg':>7} {'sched':>7} "
-              f"{'class':<14} {'util P/L/S':>11}")
-    L.append(header)
-    L.append("-" * len(header))
+    header = (f"{'flags':<8} {'split':<26} {'Ptot':>4} {'aL':>3} {'aS':>3} "
+              f"{'LD_eff':>6} {'exp':>5} {'wav':>5} {'cagg':>5} {'p_agg':>7} "
+              f"{'sched':>7} {'class':<14} {'util P/L/S':>11}")
+    out.append(header)
+    out.append("-" * len(header))
     all_groups = _dedup(results)
     shown = all_groups
     omitted = 0
     if top and len(all_groups) > top:
         shown = all_groups[:top]
-        rec_shown = any("recommended" in g[0].flags for g in shown)
-        if not rec_shown:
+        if not any("recommended" in g[0].flags for g in shown):
             rec_group = next((g for g in all_groups
                               if "recommended" in g[0].flags), None)
             if rec_group is not None:
@@ -644,50 +795,42 @@ def render_report(spec: KernelSpec, cfg: Config, results: list[CandResult],
             fl += "b"
         if "oversubscribed" in r.flags:
             fl += "o"
+        split = r.cand.signature()
         if len(group) > 1:
-            split = r.cand.signature() + f"  (+{len(group)-1} equiv)"
-        else:
-            split = r.cand.signature()
-        L.append(
-            f"{fl:<10} {split:<26} {r.p_tot:>4} {r.active_L:>3} {r.active_S:>3} "
-            f"{r.exposed_iters:>5} {r.waves:>5} {r.chunk_aggregate:>5} "
-            f"{r.pragma_exposure_aggregate:>7} {r.schedule_estimate:>7} "
-            f"{r.saturation:<14} {_fmt_util(r.util):>11}")
+            split += f"  (+{len(group)-1} eq)"
+        out.append(
+            f"{fl:<8} {split:<26} {r.p_tot:>4} {r.active_L:>3} {r.active_S:>3} "
+            f"{r.ld_eff:>6} {r.exposed_iters:>5} {r.waves:>5} "
+            f"{r.chunk_aggregate:>5} {r.pragma_exposure_aggregate:>7} "
+            f"{r.schedule_estimate:>7} {r.saturation:<14} {_fmt_util(r.util):>11}")
     if omitted:
-        L.append(f"... ({omitted} more groups omitted; all bandwidth-starved, "
-                 "sorted by p_agg -- use --top 0 for the full sweep)")
-    L.append("")
-    L.append(f"RECOMMENDED: {rec.cand.signature()}  -> P_tot={rec.p_tot}, "
-             f"active_{binding}={rec.active_L if binding=='L' else rec.active_S}, "
-             f"pragma_agg={rec.pragma_exposure_aggregate} "
-             f"({rec.pragma_exposure_aggregate/lb:.2f}x the floor)")
-    L.append("flags: K=recommended (saturation knee at max bandwidth), "
-             "b=bandwidth-starved (memory ports idle -> raise P), "
-             "o=oversubscribed (extra unroll/exposure past the knee, no gain).")
-    L.append("")
-    L.append(_pu_contrast(spec, cfg, results))
-    return "\n".join(L)
+        out.append(f"... ({omitted} more groups omitted; use --top 0 for the "
+                   "full sweep)")
+    out.append("")
+    ratio = rec.pragma_exposure_aggregate / lb if lb else float("nan")
+    out.append(f"RECOMMENDED: {rec.cand.signature()}  -> "
+               f"exposure={rec.exposed_iters}, "
+               f"pragma_agg={rec.pragma_exposure_aggregate} "
+               f"({ratio:.2f}x the floor), {rec.saturation}")
+    out.append("flags: K=recommended (saturation knee E_sat), "
+               "b=bandwidth-starved (latency-bound: resources idle), "
+               "o=oversubscribed (past the knee, no estimate gain).")
+    out.append("")
+    out.append(_pu_contrast(spec, cfg, results))
+    return "\n".join(out)
 
 
 def _pu_contrast(spec: KernelSpec, cfg: Config,
                  results: list[CandResult]) -> str:
     """Fixed-product P-vs-U contrast on the primary parallelizable level: hold
-    p*u constant, vary the split, show the load/aggregate difference."""
-    prim = None
-    for lv in spec.levels:
-        if lv.kind == "parallel":
-            prim = lv
-            break
+    p*u constant, vary the split, show the load/store-term difference (or its
+    absence)."""
+    prim = next((lv for lv in spec.levels if lv.kind == "parallel"), None)
     if prim is None:
-        for lv in spec.levels:
-            if lv.parallelizable():
-                prim = lv
-                break
+        prim = next((lv for lv in spec.levels if lv.parallelizable()), None)
     if prim is None:
         return "P-vs-U contrast: no parallelizable level."
 
-    # choose the largest product on the primary level that has >=2 splits and
-    # holds the other levels at (1,1)
     def others_trivial(r):
         return all(p == 1 and u == 1
                    for n, p, u in r.cand.split if n != prim.name)
@@ -702,29 +845,28 @@ def _pu_contrast(spec: KernelSpec, cfg: Config,
     if not candidates:
         return "P-vs-U contrast: primary level has no fixed-product split set."
 
-    # pick the product whose splits spread the MOST (largest max/min p_agg) --
-    # for a bank-capped level the max product may be past the cap where all
-    # splits tie, so the widest-spread product is the illustrative one.
     def spread(prod):
         vals = [r.pragma_exposure_aggregate for r in candidates[prod]]
         return (max(vals) / min(vals), prod)
 
     prod = max(candidates, key=spread)
-    rows = sorted(candidates[prod],
-                  key=lambda r: -r.cand.factors(prim.name)[0])
-    out = [f"P-vs-U at fixed product {prod} on level '{prim.name}' "
-           f"(other levels at P1U1):"]
-    out.append(f"  {'split':<12} {'Ptot':>4} {'active':>6} {'p_agg':>7} "
-               f"{'note':<28}")
+    rows = sorted(candidates[prod], key=lambda r: -r.cand.factors(prim.name)[0])
+    lines = [f"P-vs-U at fixed product {prod} on level '{prim.name}' "
+             f"(other levels at P1U1):"]
+    lines.append(f"  {'split':<12} {'LD_rec':>6} {'LD_eff':>6} {'ST':>5} "
+                 f"{'p_agg':>7} {'note'}")
     best = min(r.pragma_exposure_aggregate for r in rows)
     for r in rows:
         p, u = r.cand.factors(prim.name)
-        a = r.active_L if r.binding_class == "L" else r.active_S
-        note = "best (all bandwidth)" if r.pragma_exposure_aggregate == best \
-            else f"{r.pragma_exposure_aggregate/best:.1f}x slower (unroll serializes)"
-        out.append(f"  P{p}U{u:<10} {r.p_tot:>4} {a:>6} "
-                   f"{r.pragma_exposure_aggregate:>7} {note:<28}")
-    return "\n".join(out)
+        if r.pragma_exposure_aggregate == best:
+            note = "best" if len({x.pragma_exposure_aggregate for x in rows}) > 1 \
+                else "tie (control/coalescing sit below the binding term)"
+        else:
+            note = (f"{r.pragma_exposure_aggregate/best:.2f}x slower "
+                    "(parallel: extra iterators + strided, no coalesce)")
+        lines.append(f"  P{p}U{u:<10} {r.LD:>6} {r.ld_eff:>6} {r.ST:>5} "
+                     f"{r.pragma_exposure_aggregate:>7} {note}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -736,7 +878,7 @@ def run(spec: KernelSpec, cfg: Config, max_parallel: int, max_unroll: int,
     lb, demand = absolute_cgra_lb(spec, cfg)
     cands = enumerate_candidates(spec, max_parallel, max_unroll, exposure_cap)
     results = [evaluate_candidate(spec, c, cfg) for c in cands]
-    rec = recommend(spec, results, cfg)
+    rec = recommend(spec, results)
     annotate_flags(spec, results, rec)
     report = render_report(spec, cfg, results, lb, demand, rec, top=top)
     return report, rec, lb
@@ -744,7 +886,7 @@ def run(spec: KernelSpec, cfg: Config, max_parallel: int, max_unroll: int,
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        description="Banking-aware Loom-pragma design-space estimate")
+        description="Lane-aware Loom-pragma design-space estimate")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("kernel", nargs="?",
                         help="kernel name: " + ", ".join(sorted(KERNELS)))
@@ -779,88 +921,101 @@ def _run_self_tests() -> int:
     errors: list[str] = []
     cfg = parse_config("6x6")
 
-    # axpy: the banking distinction must make parallel beat unroll at fixed
-    # product. Build P8U1 vs P1U8 (product 8) and compare.
+    # axpy: the vector-coalescing distinction must make UNROLL beat PARALLEL at a
+    # fixed product in the U<V regime. Build P4U1 (strided, no coalesce) vs P1U4
+    # (one worker, 4 adjacent -> 1 vector op).
     spec = KERNELS["axpy"]
-    p8 = evaluate_candidate(spec, Candidate((("i", 8, 1),)), cfg)
-    p1 = evaluate_candidate(spec, Candidate((("i", 1, 8),)), cfg)
-    if not (p8.active_L > p1.active_L):
-        errors.append(f"axpy P8U1 active_L {p8.active_L} !> P1U8 {p1.active_L}")
-    if not (p8.pragma_exposure_aggregate < p1.pragma_exposure_aggregate):
+    p4 = evaluate_candidate(spec, Candidate((("i", 4, 1),)), cfg)
+    u4 = evaluate_candidate(spec, Candidate((("i", 1, 4),)), cfg)
+    if not (u4.LD < p4.LD):
+        errors.append(f"axpy P1U4 LD {u4.LD} !< P4U1 LD {p4.LD} "
+                      "(unroll must coalesce contiguous loads)")
+    if not (u4.pragma_exposure_aggregate <= p4.pragma_exposure_aggregate):
         errors.append(
-            f"axpy P8U1 p_agg {p8.pragma_exposure_aggregate} !< P1U8 "
-            f"{p1.pragma_exposure_aggregate} (parallel must beat unroll)")
-    # same product -> identical chunk op counts (product-only op counts)
-    if (p8.A, p8.LD, p8.ST, p8.CP) != (p1.A, p1.LD, p1.ST, p1.CP):
-        errors.append("axpy P8U1 vs P1U8 chunk op counts must be identical "
-                      "(op counts are product-only; only ports differ)")
+            f"axpy P1U4 p_agg {u4.pragma_exposure_aggregate} > P4U1 "
+            f"{p4.pragma_exposure_aggregate} (unroll must not lose)")
+    # Control amortization (mentor Sihao): at a fixed product, UNROLL amortizes the
+    # iterator (one advance per worker/wave) while PARALLEL keeps one iterator per
+    # worker, so P1U4 must charge strictly fewer arithmetic ops than P4U1.
+    if not (u4.A < p4.A):
+        errors.append(f"axpy P1U4 A {u4.A} !< P4U1 A {p4.A} "
+                      "(unroll must amortize control ops)")
+    # The ALGORITHMIC critical path is still a global pool (control compares sit off
+    # it), so CP must match across the split.
+    if p4.CP != u4.CP:
+        errors.append("axpy P4U1 vs P1U4 CP must match (algorithmic CP is a pool)")
 
-    # axpy absolute_cgra_lb over full lanes should match the legacy value 65.
+    # Once U >= V=4, further unroll coalesces fully -> P8U1 and P1U8 both fully
+    # coalesce at product 8, so they tie on LD (bounded distinction).
+    p8 = evaluate_candidate(spec, Candidate((("i", 8, 1),)), cfg)
+    u8 = evaluate_candidate(spec, Candidate((("i", 1, 8),)), cfg)
+    # P1U8 coalesces 8->2 vec; P8U1 strides 8 scalar -> P1U8 still <= P8U1.
+    if not (u8.LD <= p8.LD):
+        errors.append(f"axpy P1U8 LD {u8.LD} !<= P8U1 LD {p8.LD}")
+
+    # bracket: every candidate sits at or above the (vector-aware) floor.
     lb, _ = absolute_cgra_lb(spec, cfg)
-    if lb != 65:
-        errors.append(f"axpy absolute_cgra_lb {lb} != 65")
+    for name in ("axpy", "batchnorm"):
+        ks = KERNELS[name]
+        klb, _ = absolute_cgra_lb(ks, cfg)
+        for c in enumerate_candidates(ks, 8, 8, 256):
+            r = evaluate_candidate(ks, c, cfg)
+            if not (klb <= r.pragma_exposure_aggregate <= r.schedule_estimate):
+                errors.append(
+                    f"{name} {c.signature()}: bracket violated lb={klb} "
+                    f"pragma={r.pragma_exposure_aggregate} "
+                    f"sched={r.schedule_estimate}")
+                break
 
-    # gemv: inner column (j) parallelism must be inert (A banked over rows),
-    # while row (i) parallelism raises active_L.
-    g = KERNELS["gemv"]
-    gi = evaluate_candidate(g, Candidate((("i", 4, 1), ("j", 1, 1))), cfg)
-    gj = evaluate_candidate(g, Candidate((("i", 1, 1), ("j", 4, 1))), cfg)
-    if gi.active_L <= gj.active_L:
-        errors.append(f"gemv row-parallel active_L {gi.active_L} must exceed "
-                      f"col-parallel {gj.active_L} (A banked over rows)")
-    # A bank cap 4: row parallelism beyond 4 must not raise active_L past 4.
-    g8 = evaluate_candidate(g, Candidate((("i", 8, 1), ("j", 1, 1))), cfg)
-    if g8.active_L != 4:
-        errors.append(f"gemv P_i=8 active_L {g8.active_L} != 4 (bank cap)")
+    # batchnorm: unroll-on-w must beat parallel-on-w (input/output contiguous
+    # over w); c/h are strided and give no coalescing edge.
+    bn = KERNELS["batchnorm"]
+    wpar = evaluate_candidate(bn, Candidate(
+        (("c", 1, 1), ("h", 1, 1), ("w", 4, 1))), cfg)
+    wunr = evaluate_candidate(bn, Candidate(
+        (("c", 1, 1), ("h", 1, 1), ("w", 1, 4))), cfg)
+    if not (wunr.LD < wpar.LD):
+        errors.append(f"batchnorm w-unroll LD {wunr.LD} !< w-parallel {wpar.LD}")
 
-    # vecsum: reduction is legal to parallelize; loads scale with P_tot.
-    v = KERNELS["vecsum"]
-    v1 = evaluate_candidate(v, Candidate((("i", 1, 8),)), cfg)
-    v8 = evaluate_candidate(v, Candidate((("i", 8, 1),)), cfg)
-    if v8.active_L <= v1.active_L:
-        errors.append("vecsum parallel reduction must raise active_L over unroll")
-    if v8.pragma_exposure_aggregate >= v1.pragma_exposure_aggregate:
-        errors.append("vecsum parallel reduction must beat unroll on p_agg")
-    if v8.saturation != "resource-bound" or v8.CP >= v8.chunk_aggregate:
-        errors.append("vecsum P8 must be load-bound (not CP/latency-bound)")
+    # vecsum: reduction fully consumed + contiguous -> P and U symmetric.
+    vs = KERNELS["vecsum"]
+    v_p = evaluate_candidate(vs, Candidate((("i", 8, 1),)), cfg)
+    v_u = evaluate_candidate(vs, Candidate((("i", 1, 8),)), cfg)
+    if (v_p.LD, v_p.ST, v_p.A, v_p.CP, v_p.pragma_exposure_aggregate) != \
+       (v_u.LD, v_u.ST, v_u.A, v_u.CP, v_u.pragma_exposure_aggregate):
+        errors.append("vecsum P8U1 vs P1U8 must be identical (reduction is "
+                      "fully consumed and contiguous -> P/U-symmetric)")
 
-    # tridiag_solve: sequential -> P forced to 1, no P-vs-U distinction, and
-    # CP (serial chain) must dominate the aggregate.
+    # tridiag_solve: sequential -> p forced to 1, CP-bound, no distinction.
     t = KERNELS["tridiag_solve"]
+    tcands = enumerate_candidates(t, 8, 8, 256)
+    if any(p > 1 for c in tcands for _, p, _ in c.split):
+        errors.append("tridiag_solve must not enumerate any parallel factor > 1")
     tu1 = evaluate_candidate(t, Candidate((("i", 1, 1),)), cfg)
     tu8 = evaluate_candidate(t, Candidate((("i", 1, 8),)), cfg)
-    if tu1.p_tot != 1 or tu8.p_tot != 1:
-        errors.append("tridiag_solve must force P_tot=1 (sequential carry)")
-    if tu1.active_L != 1 or tu1.active_S != 1:
-        errors.append("tridiag_solve must have active_L=active_S=1 (no banking)")
     if tu1.pragma_exposure_aggregate != tu8.pragma_exposure_aggregate:
         errors.append("tridiag_solve U1 vs U8 must be identical (no distinction)")
     tlb, tdem = absolute_cgra_lb(t, cfg)
     if tdem["CP"] != tlb:
         errors.append("tridiag_solve floor must be CP-bound (serial recurrence)")
-    # parallel candidate must be illegal (not enumerated).
-    tcands = enumerate_candidates(t, 8, 8, 256)
-    if any(p > 1 for c in tcands for _, p, _ in c.split):
-        errors.append("tridiag_solve must not enumerate any parallel factor > 1")
 
-    # every kernel: run end-to-end, recommendation exists, bracket holds.
+    # every kernel: end-to-end run, a recommendation exists, bracket holds on it.
     for name, ks in KERNELS.items():
-        report, rec, lb = run(ks, cfg, 8, 8, 256)
+        _report, rec, klb = run(ks, cfg, 8, 8, 256)
         if rec is None:
             errors.append(f"{name}: no recommendation produced")
             continue
-        for r in [rec]:
-            if not (lb <= r.pragma_exposure_aggregate <= r.schedule_estimate):
-                errors.append(
-                    f"{name}: bracket violated lb={lb} "
-                    f"pragma={r.pragma_exposure_aggregate} "
-                    f"sched={r.schedule_estimate}")
+        if not (klb <= rec.pragma_exposure_aggregate <= rec.schedule_estimate):
+            errors.append(
+                f"{name}: recommended bracket violated lb={klb} "
+                f"pragma={rec.pragma_exposure_aggregate} "
+                f"sched={rec.schedule_estimate}")
 
     if errors:
         for e in errors:
             print(f"  SELF-TEST FAIL: {e}")
         return 1
-    print("[PASS] loom_dse banking-aware self-tests")
+    print("[PASS] loom_dse lane-aware + vector-coalescing self-tests")
     return 0
 
 
