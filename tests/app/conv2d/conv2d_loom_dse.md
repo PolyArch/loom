@@ -1,152 +1,164 @@
 # conv2d Loom-Pragma DSE (lane-aware + vector coalescing)
 
-> **Objective:** minimize cycles subject to the hard ≤12 load-lane / ≤12
-> store-lane per-cycle limit; the recommendation is the **lane-saturation knee** —
-> the smallest exposure whose coalesced traffic saturates the binding resource.
-> Not an area or control/body tradeoff.
+Shared DSE rules, table columns, and simulator-comparison caveats live in
+[`../DSE_rules.md`](../DSE_rules.md). This file keeps only the conv2d-specific
+setup, helper output, and recommendation.
 
 Kernel: `tests/app/conv2d/conv2d.cpp` —
-`output[co,oh,ow] = Σ_{ci,kh,kw} input[...]·weight[...]`
+`output[co,oh,ow] = Σ_{ci,kh,kw} input[...]·kernel[...]`
 
-Modeled as a two-level nest: an outer **parallel** loop over output pixels
-(`out = C_out·OH·OW`) and an inner **reduction** over the `K = C_in·KH·KW` taps.
+Current source pragma:
 
-Regenerate: `python3 tests/scripts/loom_dse.py conv2d --config 6x6 --max-parallel 8 --top 14`
+```cpp
+LOOM_PARALLEL(4, contiguous)
+for (uint32_t co = 0; co < C_out; co++) {
+    LOOM_UNROLL(4)
+    for (uint32_t oh = 0; oh < OH; oh++) {
+        LOOM_TRIPCOUNT_FULL(16, 16, 1, 64)
+        for (uint32_t ow = 0; ow < OW; ow++) {
+            float sum = 0.0f;
+            for (uint32_t ci = 0; ci < C_in; ci++) {
+                for (uint32_t kh = 0; kh < KH; kh++) {
+                    for (uint32_t kw = 0; kw < KW; kw++) {
+                        ...
+                        sum += input_val * kernel_val;
+                    }
+                }
+            }
+            output[co * (OH * OW) + oh * OW + ow] = sum;
+        }
+    }
+}
+```
 
-## Model / assumptions (lane-aware, no banking)
+The helper models this as a two-level nest: a dependency-parallel flattened
+output-pixel level `out = C_out·OH·OW`, and a fully consumed tap reduction
+`tap = C_in·KH·KW`.
 
-This is the lane-aware + vector-coalescing DSE. There is **no banking model**:
-no bank counts and no bank caps. The provisional DSE deliberately
-**ignores `LOOM_MEMORY_BANK`** (`conv2d.cpp:61` still carries
-`LOOM_MEMORY_BANK(4, block)` on `input`, but this estimate does not read it).
-The only caps on exposure are the machine lanes: for `6x6`, `P_pe = 36`
-arithmetic lanes and `L = S = 12` load/store lanes. Arithmetic (`P_pe`) and the
-critical path `CP` are a **global pool** — they do not distinguish exposure that
-came from `LOOM_PARALLEL` from exposure that came from `LOOM_UNROLL`, so `P` and
-`U` tie on the compute and latency terms. Control-overhead amortization is **not
-modeled**: induction is charged per exposed iteration regardless of the split.
+Model: the lane-aware + vector-coalescing Loom-pragma DSE in
+[`DSE_rules.md`](../DSE_rules.md) and the "Optional Loom-Pragma Design-Space
+Estimate" section of
+[`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md).
 
-The **one** asymmetry between `LOOM_PARALLEL` and `LOOM_UNROLL` is **vector
-coalescing**. Unrolled iterations in a single worker touch **adjacent** elements,
-so a contiguous run of `V = 4` (64-bit) same-array accesses coalesces into one
-256-bit vector memory op — one lane-slot, with free unpack/pack. Parallel workers
-instead **stride** across data partitions and do not coalesce. The model is
-therefore biased **toward `LOOM_UNROLL`** for contiguous groups, but the effect is
-bounded by `V` and vanishes once `U ≥ V` or when the contiguous dimension is a
-fully-consumed reduction.
+Regenerate:
 
-`absolute_cgra_lb` is the full-trip, fully-coalesced aggregate over the **full**
-lanes `L`/`S`. It is the **only** lower bound; the wave-summed `pragma_agg` and
-`sched_est` both assume waves do **not** overlap and therefore sit at or above it.
-The phrase "lower bound" is never applied to any pragma candidate estimate.
+```bash
+python3 tests/scripts/loom_dse.py conv2d --config 6x6 --max-parallel 16 --max-unroll 64 --top 20
+```
 
-### conv2d specifics
+## Why P and U differ
 
-- **`input`** is accessed with a strided **halo** pattern over the taps, so it
-  does **not** coalesce and **dominates the load term**.
-- **`weight`** is contiguous over the taps, so it coalesces — but the tap loop is
-  a fully-consumed reduction, so weight coalescing is **split-inert** (it is the
-  same regardless of how `out` is split into `P`/`U`).
-- **`output`** is contiguous over `out`, so `LOOM_UNROLL(out)` coalesces the
-  output stores while `LOOM_PARALLEL(out)` strides. This is a genuine store-side
-  edge for unroll — but the kernel is **load-bound on `input`** (stores are far
-  from binding), so it is **second order**. Net: conv2d is largely
-  **P/U-symmetric** on `out`.
-- Halo (input-window) reuse across neighboring output pixels and weight sharing
-  are **not** modeled — loads are counted per tap (conservative).
+`out` is dependency-parallel: each output pixel writes a distinct element.
+`tap` is a reduction, so it is tree-reduced and fully consumed inside each output
+lane; tap-level P/U choices are performance-inert in this DSE.
+
+The source still annotates `input` with `LOOM_MEMORY_BANK(4, block)`, but the
+current DSE deliberately ignores explicit banking and bank conflicts. The only
+memory caps are the machine lanes (`L = S = 12` for `6x6`).
+
+The binding traffic is the strided halo `input` window over the taps. Those
+loads do not coalesce, so conv2d remains load-bound. `kernel` is contiguous over
+the tap reduction, but that coalescing is split-inert because the reduction is
+fully consumed. `output` stores are contiguous over `out`, so unroll can coalesce
+stores; unroll also amortizes the `out` iterator because fewer workers carry
+fewer iterator load/add/store/compare sets. The unroll advantage is real but
+modest because the binding load term is still dominated by non-coalesced input
+loads.
 
 ## Setup
 
-- `6x6`; `C_in=3, C_out=4, H=W=8, KH=KW=3, stride=1` → `out = 144`, `K = 27`.
-- Full-trip counts: `A=15696 LD=8929 ST=4068 CP=8` → `compute=436 load=745
-  store=339`. `absolute_cgra_lb = 745` (`ceil(8929/12)`, the load term over the
-  full `L = 12` lanes). The binding class is **L**: conv2d is load-bound on the
-  strided `input`, whose halo accesses do not coalesce.
-- The full-trip `LD = 8929` is the **fully-coalesced** load lane-slot count — the
-  contiguous weight run coalesces over the taps, but the strided input stays
-  scalar, so input sets the term.
+- Resource config: `6x6` (`P_pe = 36`, `L = 12`, `S = 12`); vector width
+  `V = 4` (one 256-bit vector op per four 64-bit elements)
+- Dimensions: `C_in = 3`, `C_out = 4`, `H = W = 8`, `KH = KW = 3`, `stride = 1`,
+  so `out = 144` and `tap = 27`.
+- Full-trip counts (full unroll, fully coalesced where legal):
+  `A = 7634`, `LD_rec = 4897`, `LD_eff = 4898`, `ST = 37`, `CP = 8`, giving
+  `compute = ceil(7634/36) = 213`, `load = ceil(4897/12) = 409`,
+  `store = ceil(37/12) = 4`.
+- `absolute_cgra_lb = 409` — the full-trip, **fully-coalesced,
+  invariant-amortized** aggregate (`max(8, 213, 409, 4) = 409`), and the
+  **only** lower bound. The binding class is **load (`L`)**.
 
-## Results (verbatim `--top 14`)
+## Results (`--max-parallel 16 --max-unroll 64 --top 20`)
 
-```text
-flags    split                      Ptot  aL  aS   exp   wav  cagg   p_agg   sched class           util P/L/S
--------------------------------------------------------------------------------------------------------------
-o        out:P8U2 tap:P1U1  (+12 eq)    8  12  12   432     9    83     747     774 resource-bound   59/100/46
-o        out:P2U8 tap:P1U1  (+25 eq)    2  12  12   432     9    83     747     765 resource-bound   59/100/46
-o        out:P4U1 tap:P1U1  (+12 eq)    4  12  12   108    36    21     756     828 resource-bound   62/100/48
-o        out:P2U2 tap:P1U1  (+12 eq)    2  12  12   108    36    21     756     828 resource-bound   62/100/48
-o        out:P1U4 tap:P1U1  (+12 eq)    1  12  12   108    36    21     756     828 resource-bound   62/100/48
-o        out:P8U1 tap:P1U1  (+12 eq)    8  12  12   216    18    42     756     792 resource-bound   60/100/48
-o        out:P4U2 tap:P1U1  (+12 eq)    4  12  12   216    18    42     756     792 resource-bound   60/100/45
-o        out:P1U8 tap:P1U1  (+25 eq)    1  12  12   216    18    42     756     792 resource-bound   60/100/45
-         out:P2U1 tap:P1U1  (+12 eq)    2  12  12    54    72    11     792     936 resource-bound   64/100/45
-K        out:P1U2 tap:P1U1  (+12 eq)    1  12  12    54    72    11     792     936 resource-bound   64/100/45
-o        out:P4U8 tap:P1U1  (+25 eq)    4  12  12   864     5   166     830     840 resource-bound   58/100/46
-o        out:P8U8 tap:P1U1  (+12 eq)    8  12  12  1728     3   331     993    1002 resource-bound   59/100/46
-b        out:P1U1 tap:P1U1  (+12 eq)    1  12  12    27   144     8    1152    1440 latency-bound     50/75/38
-```
-
-Flags: `K` = recommended (saturation knee `E_sat`); `b` = bandwidth-starved
-(latency-bound, resources idle); `o` = oversubscribed (past the knee, no estimate
-gain). Each row carries `+12`/`+25` equivalent inner-tap variations (inert — the
-taps are a fully-consumed reduction, so tap `P`/`U` only reshapes the product
-merge tree). All rows run over the full `L = S = 12` lanes (`aL = aS = 12`) — no
-cap holds them back, in contrast to the old banking eval.
-
-## The P-vs-U distinction
-
-Because conv2d is load-bound on the strided `input`, `P` and `U` on the `out`
-level are **symmetric** across the whole ranking (equal `p_agg` at equal
-exposure): `out:P2U1` and `out:P1U2` both land at `p_agg = 792` (exposure 54), and
-`out:P4U1`/`out:P2U2`/`out:P1U4` all land at `756` (exposure 108). The only place
-unroll could edge parallel is the **contiguous output store** — but stores are not
-the binding class (`store = 339 ` vs `load = 745`), so that coalescing edge is
-second order.
-
-Fixed product `P·U = 32` on the `out` level (tool's own comparison, other levels
-`P1U1`):
+`out` is the 144-lane dependency-parallel output level and `tap` is the fully
+consumed 27-tap reduction. The full-trip floor is `absolute_cgra_lb = 409`
+(`A = 7634`, `LD_rec = 4897`, `LD_eff = 4898`, `ST = 37`, `CP = 8`), and
+**only** that value is a lower bound; `p_agg` and `sched` are wave-serialized
+estimates. `aL` is based on recurring loads only, while `LD_eff` also includes
+one-time invariant loads. The binding class is load (`L`) because non-coalesced
+input-halo loads dominate; `LOOM_UNROLL(out)` still helps by coalescing output
+stores and amortizing the `out` iterator.
 
 ```text
-  split           LD    ST   p_agg note
-  P8U4           1985   904     830 tie (fully coalesced or reduction-bound)
-  P4U8           1985   904     830 tie (fully coalesced or reduction-bound)
+flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
+--------------------------------------------------------------------------------------------------------------------
+o        out:P4U2 tap:P1U1  (+14 eq)    4  12   8    277   216    18    23     414     504 resource-bound    52/100/4
+o        out:P2U4 tap:P1U1  (+14 eq)    2  12   4    275   216    18    23     414     504 resource-bound    52/100/4
+o        out:P1U8 tap:P1U1  (+14 eq)    1  12   3    274   216    18    23     414     504 resource-bound    52/100/4
+o        out:P8U2 tap:P1U1  (+14 eq)    8  12  12    553   432     9    46     414     459 resource-bound    52/100/4
+o        out:P4U4 tap:P1U1  (+14 eq)    4  12   8    549   432     9    46     414     459 resource-bound    52/100/2
+o        out:P2U8 tap:P1U1  (+14 eq)    2  12   6    547   432     9    46     414     459 resource-bound    52/100/2
+o        out:P1U16 tap:P1U1  (+14 eq)    1  12   5    546   432     9    46     414     459 resource-bound    52/100/2
+o        out:P16U1 tap:P1U1  (+14 eq)   16  12  12    561   432     9    47     423     459 resource-bound    53/100/6
+         out:P4U1 tap:P1U1  (+14 eq)    4  12   8    141   108    36    12     432     612 resource-bound    58/100/8
+         out:P2U2 tap:P1U1  (+14 eq)    2  12   4    139   108    36    12     432     612 resource-bound    50/100/8
+K        out:P1U4 tap:P1U1  (+14 eq)    1  12   2    138   108    36    12     432     612 resource-bound    50/100/8
+o        out:P8U1 tap:P1U1  (+14 eq)    8  12  12    281   216    18    24     432     504 resource-bound    54/100/8
+o        out:P4U8 tap:P1U1  (+14 eq)    4  12  12   1093   864     5    91     455     480 resource-bound    53/100/1
+o        out:P2U16 tap:P1U1  (+14 eq)    2  12  10   1091   864     5    91     455     480 resource-bound    53/100/1
+o        out:P1U32 tap:P1U1  (+14 eq)    1  12   9   1090   864     5    91     455     480 resource-bound    53/100/1
+o        out:P16U2 tap:P1U1  (+14 eq)   16  12  12   1105   864     5    92     460     480 resource-bound    52/100/3
+o        out:P8U4 tap:P1U1  (+14 eq)    8  12  12   1097   864     5    92     460     480 resource-bound    52/100/2
+o        out:P8U8 tap:P1U1  (+14 eq)    8  12  12   2185  1728     3   182     546     561 resource-bound    52/100/1
+o        out:P4U16 tap:P1U1  (+14 eq)    4  12  12   2181  1728     3   182     546     561 resource-bound    52/100/1
+o        out:P2U32 tap:P1U1  (+14 eq)    2  12  12   2179  1728     3   182     546     561 resource-bound    52/100/1
+... (9 more groups omitted; use --top 0 for the full sweep)
+
+RECOMMENDED: out:P1U4 tap:P1U1  -> exposure=108, pragma_agg=432 (1.06x the floor), resource-bound
+flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
+
+P-vs-U at fixed product 8 on level 'out' (other levels at P1U1):
+  split        LD_rec LD_eff    ST   p_agg note
+  P8U1             280    281    16     432 1.04x slower (parallel: extra iterators + strided, no coalesce)
+  P4U2             276    277     8     414 best
+  P2U4             274    275     4     414 best
+  P1U8             273    274     3     414 best
 ```
 
-The unroll-heavy `P4U8` and the parallel-heavy `P8U4` produce **identical** `LD`,
-`ST`, and `p_agg` — input never coalesces (halo stride) and weight coalescing is
-split-inert (reduction), so the split cannot move the binding load term.
+For flag and column meanings, see
+[`DSE_rules.md#table-columns-and-flags`](../DSE_rules.md#table-columns-and-flags).
+
+## Reading the fixed-product block
+
+The fixed-product block isolates the `out` split at exposure product 8 while the
+tap reduction stays fully consumed. `P8U1` pays eight worker iterators and cannot
+coalesce the contiguous output stores, so it lands at `p_agg = 432`. The
+unroll-heavy rows lower both `LD_rec` and `ST`; the best rows tie at
+`p_agg = 414` because the remaining binding term is the non-coalesced input
+loads. This is why conv2d now favors unroll at fixed product, but only modestly.
 
 ## Recommendation
 
-```text
-RECOMMENDED: out:P1U2 tap:P1U1  ->  exposure=54, pragma_agg=792 (1.06x the floor), resource-bound
-```
+**`out:P1U4 tap:P1U1` is the recommended knee (`K`)**: exposure `108`,
+`p_agg = 432` (`1.06×` the `409`-cycle floor), resource-bound. This is the
+smallest exposure where the best-coalesced candidate becomes resource-bound; it
+exposes four output pixels per wave, with each output lane consuming the full
+27-tap reduction.
 
-The recommended knee is `out:P1U2 tap:P1U1` — exposure `54` (2 output pixels ×
-their full 27-tap reduction), `pragma_agg = 792`, i.e. `1.06×` the
-`absolute_cgra_lb` of `745`. This is the smallest exposure at which the binding
-load class becomes resource-bound (`E_sat`); at `6x6`, `out:P2U1` is the exact
-tie (same `792`), and the tool breaks the tie toward `U` for the (second-order)
-output-store coalescing. Larger exposures (`P4U1`, `P8U2`, …, flagged `o`) are
-**oversubscribed**: they only creep `p_agg` toward the floor through per-wave
-rounding while stacking transient backlog and area. The single-worker
-`out:P1U1` (flagged `b`) is **bandwidth-starved** — latency-bound, with the load
-lanes idle (`util L = 75%`).
+Rows above the knee (`o`) mostly reduce wave-serialization rounding toward the
+floor while increasing transient backlog and mapping pressure. The stale
+banking-style explanation does not apply here: this DSE ignores the source
+`LOOM_MEMORY_BANK(4, block)` cap, and the recommendation is not "fill four input
+banks." The useful split-side effect is output-level unroll plus iterator
+amortization, while the sustained floor remains load-bound on the strided input
+halo.
 
-### Contrast with the prior banking eval
+## Comparing against measured DFG simulator cycles
 
-The old eval modeled `input`'s `LOOM_MEMORY_BANK(4, block)` as a hard cap
-`active_L = min(P_tot, 4, L) ≤ 4`, so conv2d behaved like gemv: parallelism
-scaled input bandwidth only to 4 banks, the recommendation was
-`LOOM_PARALLEL(4)` to "fill the 4 banks," and the advice to go faster was to
-**raise `input`'s banking to 12**. Under the lane-aware model there is no such
-cap — every candidate runs over the full `L = 12` lanes. Consequences:
-
-- The lower bound **drops** from the old scalar `985` (`ceil(11809/12)`) to `745`
-  (`ceil(8929/12)`), because the DSE now credits **weight coalescing** in the
-  full-trip aggregate.
-- The recommendation is no longer a bank-fill but the **`E_sat` knee**
-  (`out:P1U2`, exposure `54`), and `P` vs `U` on `out` is **symmetric** (not
-  "parallel beats unroll up to 4 banks"). The `input` halo simply doesn't
-  coalesce, so no split reaches below the load-bound floor — raising banking is
-  no longer the lever, because banking is not modeled at all.
+Use the shared comparison rules in
+[`DSE_rules.md#comparing-measured-dfg-cycles`](../DSE_rules.md#comparing-measured-dfg-cycles).
+For conv2d, the DSE floor is below the scalar Metric-1 aggregate in the main eval
+because this model credits vector coalescing and control amortization and ignores
+explicit banking. It is a Loom-pragma estimate, not a replacement for the main
+ASAP/CGRA eval.

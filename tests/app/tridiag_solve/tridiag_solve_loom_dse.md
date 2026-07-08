@@ -1,10 +1,8 @@
 # tridiag_solve Loom-Pragma DSE (lane-aware + vector coalescing) — the counterexample
 
-> **Objective:** minimize cycles subject to the hard ≤12 load-lane / ≤12
-> store-lane per-cycle limit; the recommendation is the **lane-saturation knee** —
-> the smallest exposure whose coalesced traffic saturates the binding resource.
-> (Here the serial critical path binds before any lane does, so the knee is the
-> floor `i:P1U1`.) Not an area or control/body tradeoff.
+Shared DSE rules, table columns, and simulator-comparison caveats live in
+[`../DSE_rules.md`](../DSE_rules.md). This file keeps only the tridiag-specific
+setup, helper output, and recommendation.
 
 Kernel: `tests/app/tridiag_solve/tridiag_solve.cpp` (forward elimination sweep)
 
@@ -31,29 +29,41 @@ model never enumerates a parallel factor `> 1` and forces `P_tot = 1`. The spec
 names this family explicitly (non-associative recurrences: `tridiag_solve`,
 `trsv_lower/upper`, `gauss_seidel_step`, `kmp_table`).
 
-Regenerate: `python3 tests/scripts/loom_dse.py tridiag_solve --config 6x6`
+Model: the lane-aware + vector-coalescing Loom-pragma DSE in
+[`DSE_rules.md`](../DSE_rules.md) and the "Optional Loom-Pragma Design-Space
+Estimate" section of
+[`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md).
+
+Regenerate:
+
+```bash
+python3 tests/scripts/loom_dse.py tridiag_solve --config 6x6
+```
 
 ## Why there is no distinction
 
-The lane-aware model separates `LOOM_PARALLEL` from `LOOM_UNROLL` only through
-**vector coalescing** on the load/store axis; arithmetic (`P_pe`) and the
-critical path `CP` are a single **global pool** that does not care whether
-exposure came from `p` or `U`. Two facts kill the distinction here:
+The lane-aware model separates `LOOM_PARALLEL` from `LOOM_UNROLL` through two
+DSE-specific effects: vector coalescing of contiguous memory groups, and
+control-overhead amortization when spatial unroll shares one iterator across
+multiple bodies. Arithmetic (`P_pe`) and the critical path `CP` remain a single
+global pool for the kernel's intended math. For this forward sweep one effect is
+**inapplicable** and the other is **inert**:
 
 - **`LOOM_PARALLEL` is illegal → `P_tot = 1`.** The forward sweep carries
   `c_prime[i-1]`/`d_prime[i-1]` through a division chain, so there is no
   parallelizable level and no `p` to vary. `LOOM_UNROLL(U)` is the only legal
   knob.
-- **Coalescing is real but inert.** The input streams `a`, `b`, `c`, `d` are
-  contiguous over `i`, so unrolled adjacent loads/stores *do* coalesce into
-  256-bit vector ops (`V = 4`). This is why the full-trip lane-slot counts drop
-  to `LD = 130`, `ST = 96` (from the uncoalesced scalar counts), and why loads
-  and stores fit comfortably inside the machine lanes (`load = 11`,
+- **Control amortization does not apply; coalescing is real but inert.** A serial
+  recurrence cannot be spatially flattened, so unrolling it is a no-op here — the
+  model charges the iterator **per iteration** (the sequential exception), and
+  there is no shared-iterator saving for `U` to earn. Coalescing, by contrast, is
+  real: the contiguous `a`/`b`/`c`/`d` streams *do* fuse into 256-bit vector ops
+  (`V = 4`), 64 vector loads in all. Those plus the 64 un-amortized per-iteration
+  iterator reads give `LD_rec = 128` (`LD_eff = 130`, `ST = 96`) — loads and
+  stores that already sit comfortably inside the machine lanes (`load = 11`,
   `store = 8`, both well under `L = S = 12`). But the aggregate is set by the
-  **serial critical path** `CP = 194 = absolute_cgra_lb` — the `≈ 3·(N−1)`
-  division-chain depth — which no coalescing and no pragma can shorten. The
-  coalescing that would normally bias toward `LOOM_UNROLL` is exercised, then
-  swamped by `CP`.
+  **serial critical path** `CP = 194 = absolute_cgra_lb` -- the `~3*(N-1)`
+  division-chain depth -- which no coalescing and no pragma choice can shorten.
 
 Because `CP` dominates, every unroll factoring lands on the identical
 latency-bound aggregate, so the tool collapses them into one equivalence group.
@@ -61,15 +71,26 @@ latency-bound aggregate, so the tool collapses them into one equivalence group.
 ## Results (the entire sweep is one row)
 
 ```text
-absolute_cgra_lb = 194  (full-trip, fully-coalesced aggregate over full lanes L=12,S=12; the ONLY lower bound)
-full-trip counts: A=512 LD=130 ST=96 CP=194 | compute=15 load=11 store=8
+# Loom pragma DSE (lane-aware + vector coalescing): tridiag_solve  (6x6)
+
+loop nest (outer->inner): i[64,sequential]
+coalescing: The forward sweep carries a NON-associative recurrence (division chain): LOOM_PARALLEL is illegal (p forced to 1) and the serial CP dominates. Input streams coalesce but it does not matter -> the kernel stays critical-path bound with no P-vs-U distinction.
+
+absolute_cgra_lb = 194  (full-trip, fully-coalesced, invariant-amortized aggregate over full lanes L=12,S=12; the ONLY lower bound)
+full-trip counts: A=512 LD_rec=128 LD_eff=130 ST=96 CP=194 | compute=15 load=11 store=8   (load term = ceil(LD_rec/L); invariants amortized)
 binding class (full trip) = P   (P_pe=36, L=12, S=12; V=4 64-bit elems/vec)
 
-flags    split                      Ptot  aL  aS   exp   wav  cagg   p_agg   sched class           util P/L/S
--------------------------------------------------------------------------------------------------------------
-K        i:P1U1  (+3 eq)               1  12  12    64     1   194     194     194 latency-bound        8/6/4
+Only absolute_cgra_lb is a lower bound. pragma_agg / sched_est assume waves do NOT overlap and sit at or above it.
+aL = active load lanes = min(recurring loads, L): the recurring loop loads set the lane exposure and the binding load term. LD_eff = recurring + one-time invariant loads (total traffic); invariant loads (loaded once and held) are amortized out of the binding term.
+Algorithmic arith/CP is a global pool (P and U tie there). P and U separate on TWO axes, both favoring LOOM_UNROLL: (1) control amortization -- unroll shares one iterator across U bodies, so control ops scale as trip/U (parallel keeps an iterator per worker); (2) vector coalescing of contiguous accesses (bounded by V, gone once U>=V). Sequential carries keep per-iter control on CP.
+
+flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
+--------------------------------------------------------------------------------------------------------------------
+K        i:P1U1  (+3 eq)               1  12  12    130    64     1   194     194     194 latency-bound        8/6/4
 
 RECOMMENDED: i:P1U1  -> exposure=64, pragma_agg=194 (1.00x the floor), latency-bound
+flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
+
 P-vs-U contrast: no parallelizable level.
 ```
 
@@ -82,9 +103,9 @@ choose.
   store lanes go under-utilized: `util P/L/S = 8/6/4`, every class `< 100%`,
   the signature of a **latency-bound** wave (`cagg = p_agg = sched = 194 = CP`).
 - The recommendation is `i:P1U1` at exposure 64, `pragma_agg = 194`, exactly
-  **1.00× the floor**. It is flagged `K` (the saturation knee `E_sat`): once the
-  aggregate is pinned to `CP`, the knee is at the smallest exposure, and adding
-  unroll buys no estimated gain.
+  **1.00× the floor**. Because the aggregate is pinned to `CP`, the selected
+  representative is the smallest legal exposure; adding unroll buys no estimated
+  gain.
 
 ## Takeaway
 
@@ -93,14 +114,12 @@ P-vs-U distinction; here two of them fire and the third makes the point moot:
 
 1. **A non-associative carried dependence forbids parallel workers**
    (`P_tot = 1`), so there is no `P` to vary against `U`.
-2. **Coalescing — the only axis that separates `P` from `U`** — is *available*
-   (the contiguous `a`/`b`/`c`/`d` streams coalesce, cutting `LD`/`ST` to
-   `130`/`96` lane-slots) but **inert**: the memory terms already sit far below
-   the lanes, so shaving them changes nothing.
+2. **The one applicable split effect is off the binding path.** The contiguous
+   `a`/`b`/`c`/`d` streams coalesce (unroll's other lever, control amortization,
+   does not apply to a serial recurrence), but the resulting memory term already
+   sits far below `CP`, so shaving it changes nothing.
 3. **The aggregate is set by `CP`**, which lives in the global arithmetic/
-   dependence pool that this load/store-focused model treats identically for
-   `LOOM_PARALLEL` and `LOOM_UNROLL`. When `CP` binds, exposure is irrelevant by
-   construction.
+   dependence pool. When `CP` binds, exposure is irrelevant by construction.
 
 Contrast with the earlier banking-era eval, which reached the same "no
 distinction" verdict for a *different* reason: it modeled a single worker as a
@@ -111,5 +130,5 @@ capacity — so the kernel is now correctly **latency-bound at `CP = 194`**. The
 conclusion survives the model change, but the mechanism is now the critical
 path, with coalescing real yet inert, rather than a lack of banking. A kernel
 that is merely **compute-bound** (arithmetic dominates but is still parallel)
-hits only condition (3): `P` and `U` become interchangeable because coalescing
-touches only the load/store axis — `batchnorm` sits near that boundary.
+can still show smaller non-binding load/store/control terms for unroll-heavy
+splits; those improvements matter only if they move the binding aggregate.

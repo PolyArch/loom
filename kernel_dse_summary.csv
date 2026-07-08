@@ -1,0 +1,7 @@
+kernel,dse_file,dse_best_split,dse_p_agg_cycles,dse_sched_est_cycles,dse_absolute_cgra_lb,dse_selection_class,dse_notes
+axpy,tests/app/axpy/axpy_loom_dse.md,i:P1U64,16,24,15,resource-bound,saturation knee; unroll favored by vector coalescing and row-control amortization
+batchnorm,tests/app/batchnorm/batchnorm_loom_dse.md,c:P1U1 h:P1U8 w:P1U8,32,44,29,resource-bound,saturation knee; compute-bound after w-coalescing
+conv2d,tests/app/conv2d/conv2d_loom_dse.md,out:P1U4 tap:P1U1,432,612,409,resource-bound,"saturation knee; load-bound on strided input, output-store coalescing is secondary"
+gemv,tests/app/gemv/gemv_loom_dse.md,i:P1U4 j:P1U1,240,352,232,resource-bound,"saturation knee; compute-bound, 1.03x floor, x loads are invariant-amortized"
+tridiag_solve,tests/app/tridiag_solve/tridiag_solve_loom_dse.md,i:P1U1,194,194,194,latency-bound,"sequential recurrence; p forced to 1, unroll does not reduce the carried CP"
+vecsum,tests/app/vecsum/vecsum_loom_dse.md,i:P1U1,11,16,11,latency-bound,fully-consumed reduction; P/U-symmetric and CP-bound
