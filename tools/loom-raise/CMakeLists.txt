@@ -13,8 +13,8 @@ get_property(translation_libs GLOBAL PROPERTY MLIR_TRANSLATION_LIBS)
 add_llvm_executable(loom-raise loom-raise.cpp)
 llvm_update_compile_flags(loom-raise)
 
-# Drop the binary into <build>/bin so test/app/raise_check.sh and the lit
-# substitution can locate it next to loom-cc / loom-c++.
+# Keep the binary in <build>/bin for source-to-IR integration and lit
+# substitutions next to loom-cc / loom-c++.
 set_target_properties(loom-raise PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 

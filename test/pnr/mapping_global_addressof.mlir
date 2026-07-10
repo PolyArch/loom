@@ -1,5 +1,7 @@
-// RUN: rm -rf %t.dir && mkdir -p %t.dir
-// RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph global_table_load --hardware-mlir %S/shared_signal_window_adg.mlir --hardware shared_signal_window_adg --workload global_table_load --output %t.dir/global_table_load.mapping.csv --artifact %t.dir/global_table_load.mapping.json
+// RUN: rm -rf %t.dir
+// RUN: mkdir -p %t.dir
+// RUN: loom-adg-builder-test --shared-signal-window --output %t.dir/shared-signal-window.mlir
+// RUN: loom-pnr-map --dfg-mlir %s --graph global_table_load --hardware-mlir %t.dir/shared-signal-window.mlir --hardware shared_signal_window_adg --workload global_table_load --output %t.dir/global_table_load.mapping.csv --artifact %t.dir/global_table_load.mapping.json
 // RUN: FileCheck %s --check-prefix=JSON < %t.dir/global_table_load.mapping.json
 
 // JSON-DAG: "status": "pass"

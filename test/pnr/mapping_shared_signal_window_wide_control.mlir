@@ -1,4 +1,7 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph signal_window_wide_control --hardware-mlir %S/shared_signal_window_adg.mlir --hardware shared_signal_window_adg --workload signal_window_wide_control --output %t.mapping.csv --artifact %t.mapping.json
+// RUN: rm -rf %t.dir
+// RUN: mkdir -p %t.dir
+// RUN: loom-adg-builder-test --shared-signal-window --output %t.dir/shared-signal-window.mlir
+// RUN: loom-pnr-map --dfg-mlir %s --graph signal_window_wide_control --hardware-mlir %t.dir/shared-signal-window.mlir --hardware shared_signal_window_adg --workload signal_window_wide_control --output %t.mapping.csv --artifact %t.mapping.json
 // RUN: FileCheck %s --check-prefix=CSV < %t.mapping.csv
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
 

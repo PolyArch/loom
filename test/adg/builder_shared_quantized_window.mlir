@@ -1,8 +1,10 @@
 // RUN: rm -rf %t.dir
 // RUN: mkdir -p %t.dir
-// RUN: loom-adg-builder-test --shared-quantized-window --output %t.hardware.mlir
-// RUN: loom %t.hardware.mlir | FileCheck %s --check-prefix=HARDWARE
-// RUN: loom-pnr-map --dfg-mlir %s --graph quantized_window_pressure --hardware-mlir %t.hardware.mlir --hardware shared_quantized_window_adg --workload quantized_window_pressure --output %t.dir/mapping.csv --artifact %t.dir/mapping.json
+// RUN: loom-adg-builder-test --shared-quantized-window --output %t.dir/hardware.mlir
+// RUN: loom-adg-builder-test --shared-quantized-window --output %t.dir/hardware.second.mlir
+// RUN: cmp %t.dir/hardware.mlir %t.dir/hardware.second.mlir
+// RUN: loom %t.dir/hardware.mlir | FileCheck %s --check-prefix=HARDWARE
+// RUN: loom-pnr-map --dfg-mlir %s --graph quantized_window_pressure --hardware-mlir %t.dir/hardware.mlir --hardware shared_quantized_window_adg --workload quantized_window_pressure --output %t.dir/mapping.csv --artifact %t.dir/mapping.json
 // RUN: FileCheck %s --check-prefix=MAPPING < %t.dir/mapping.json
 
 // HARDWARE-LABEL: fabric.module @shared_quantized_window_adg
@@ -31,6 +33,7 @@
 // HARDWARE-DAG: fabric.op [@dataflow.mux]
 // HARDWARE-DAG: fabric.op [@llvm.intr.ctlz]
 // HARDWARE-DAG: fabric.op [@llvm.intr.umax]
+// HARDWARE-DAG: fabric.op [@llvm.intr.smin]
 // HARDWARE-DAG: fabric.op [@llvm.intr.smax]
 // HARDWARE-DAG: fabric.op [@arith.select]
 // HARDWARE-DAG: fabric.op [@llvm.sext]

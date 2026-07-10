@@ -5,8 +5,7 @@
 
 namespace fabric {
 
-// Beam-search partitioner. The current implementation is a placeholder
-// that emits one Block per op via `buildSingletonPartition`.
+// Beam-search partitioner.
 class BeamPartitioner : public IPartitioner {
 public:
   PartitionResult run(::dataflow::GraphOp graph, const TemplateLibrary &lib,

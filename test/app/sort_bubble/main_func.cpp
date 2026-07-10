@@ -34,9 +34,9 @@ void sort_bubble_kernel(const float *input, float *output, uint32_t size) {
     for (uint32_t i = 0; i + 1u < size; ++i) {
         for (uint32_t j = 0; j + i + 1u < size; ++j) {
             if (output[j] > output[j + 1u]) {
-                const float temp = output[j];
+                const float swap_value = output[j];
                 output[j] = output[j + 1u];
-                output[j + 1u] = temp;
+                output[j + 1u] = swap_value;
             }
         }
     }

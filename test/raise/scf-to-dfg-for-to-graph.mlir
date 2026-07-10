@@ -3,9 +3,8 @@
 
 // scf.for with iter_args inside a dataflow.thread body lowers to a
 // sibling dataflow.graph.func definition + a dataflow.graph.launch
-// at the cut site. The host_reduction case below also exercises the
-// host-scope wrap path: a stand-alone reduction at host scope is
-// wrapped in a synthetic 1x1 thread before being promoted.
+// at the cut site. A stand-alone host reduction remains in SCF until
+// it is owned by a real accelerator-region promotion.
 
 // The thread carries the spec-mandated thread_ctrl slot, and the
 // graph.launch consumes it directly as ctrl_in (no ub.poison).
@@ -37,7 +36,8 @@ dataflow.thread private @t_existing(%buf: memref<?xf32>, %n: index) ctrl (%c: no
 // CHECK: dataflow.graph.launch @g_t_forall_store_0(%[[FORALL_CTRL]]
 // CHECK-NOT: scf.forall
 // CHECK-LABEL: func.func @host_reduction
-// CHECK: dataflow.thread.launch @t_host_reduction_red_0
+// CHECK-NOT: dataflow.thread.launch @t_host_reduction
+// CHECK: scf.for {{.*}} iter_args
 dataflow.thread private @t_unused_ptr_walk(%src: !llvm.ptr, %dst: !llvm.ptr,
                                            %n: index) ctrl (%c: none) {
   %c0 = arith.constant 0 : index
@@ -481,14 +481,12 @@ func.func private @status_outparam_candidate(%dst: !llvm.ptr, %value: i16) -> i3
 // CHECK-LABEL: dataflow.graph.func private @g_t_unused_ptr_walk_0
 // CHECK-SAME: -> none
 // CHECK: dataflow.graph.return %{{.*}} : none
-// CHECK: dataflow.graph.func private @g_t_host_reduction_red_0_0
-// CHECK-SAME: -> (none, f32)
-// CHECK: dataflow.graph.return %{{.*}}, %{{.*}} : none, f32
 // CHECK-LABEL: dataflow.graph.func private @g_t_forall_store_0
 // CHECK: scf.forall
 // CHECK: memref.load
 // CHECK: memref.store
 // CHECK: dataflow.graph.return
+// CHECK-NOT: @g_t_host_reduction
 // CHECK-LABEL: dataflow.graph.func private @g_t_structured_while_0
 // CHECK: scf.if
 // CHECK: scf.while

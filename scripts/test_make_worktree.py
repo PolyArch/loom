@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).with_name("make-worktree.py")
-REPO_TEMP_ROOT = SCRIPT.parents[1] / "temp" / "test-runs"
+REPO_TEMP_ROOT = SCRIPT.parents[1] / "build" / "test-runs"
 
 
 def load_dispatcher():
@@ -97,13 +97,13 @@ class MakeWorktreeTest(unittest.TestCase):
     def test_build_llvm_reconfigures_stale_clang_cache(self):
         REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="loom-worktree-test-", dir=REPO_TEMP_ROOT) as td:
-            temp = Path(td)
+            workspace = Path(td)
             paths = FakePaths()
-            paths.llvm_root = temp
-            paths.llvm_src = temp / "llvm"
-            paths.llvm_build = temp / "build"
-            paths.llvm_lock = temp.parent / ".loom-build.llvm.lock"
-            paths.llvm_stamp = temp.parent / ".loom-build.llvm.stamp"
+            paths.llvm_root = workspace
+            paths.llvm_src = workspace / "llvm"
+            paths.llvm_build = workspace / "build"
+            paths.llvm_lock = workspace.parent / ".loom-build.llvm.lock"
+            paths.llvm_stamp = workspace.parent / ".loom-build.llvm.stamp"
             paths.llvm_build.mkdir()
             (paths.llvm_build / "build.ninja").write_text("rule stale\n")
             (paths.llvm_build / "CMakeCache.txt").write_text(
@@ -147,132 +147,30 @@ class MakeWorktreeTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 1)
 
-    def test_cmd_test_isolates_perf_lit_from_artifact_groups(self):
-        popen_calls = []
-        wait_seen_launch_counts = []
+    def test_cmd_test_runs_the_lit_suite_once(self):
         self.args.jobs = 7
-
-        class FakePipe:
-            def close(self):
-                pass
-
-        class FakeProcess:
-            def __init__(self, cmd, **kwargs):
-                self.cmd = cmd
-                self.kwargs = kwargs
-                self.stdout = FakePipe()
-                popen_calls.append(self)
-
-            def wait(self):
-                wait_seen_launch_counts.append(len(popen_calls))
-                return 0
-
+        calls = []
         with (
+            patch.dict("os.environ", {"LIT_OPTS": "--show-all"}, clear=True),
             patch.object(self.module, "check_git_version"),
             patch.object(self.module, "check_loom_compilers"),
             patch.object(self.module, "build_loom"),
-            patch.object(subprocess, "Popen", side_effect=lambda cmd, **kwargs: FakeProcess(cmd, **kwargs)),
+            patch.object(
+                self.module,
+                "run",
+                side_effect=lambda cmd, **kwargs: calls.append((cmd, kwargs)),
+            ),
         ):
             self.module.cmd_test(self.paths, self.args)
 
-        lit_calls = [call for call in popen_calls if call.cmd[0] == str(self.paths.llvm_lit)]
-        filter_calls = [call for call in popen_calls if call.cmd[0] == sys.executable]
-        self.assertEqual(len(lit_calls), 3)
-        self.assertEqual(len(filter_calls), 3)
-        self.assertEqual(min(wait_seen_launch_counts), 4)
-        self.assertEqual(max(wait_seen_launch_counts), 6)
-        self.assertEqual(
-            {call.cmd[1] for call in filter_calls},
-            {str(self.paths.root / "test" / "lit_top_slowest.py")},
-        )
-        broad_call = lit_calls[0]
-        heavy_call = lit_calls[1]
-        perf_call = lit_calls[2]
-        self.assertEqual(broad_call.cmd[-1], str(self.paths.loom_build / "test"))
-        self.assertIn("--filter-out", broad_call.cmd)
-        broad_filter = broad_call.cmd[broad_call.cmd.index("--filter-out") + 1]
-        self.assertIn("techmap/perf", broad_filter)
-        self.assertIn("artifacts/cmsis_cgra_status_rollup\\.mlir", broad_filter)
-        self.assertIn("-j7", broad_call.cmd)
-        self.assertEqual(broad_call.kwargs["env"]["LOOM_TEST_JOBS"], "7")
-        self.assertEqual(broad_call.kwargs["env"]["LOOM_ARTIFACT_TEST_JOBS"], "3")
-        self.assertIn("-j2", heavy_call.cmd)
-        self.assertEqual(heavy_call.kwargs["env"]["LOOM_TEST_JOBS"], "2")
-        self.assertEqual(heavy_call.kwargs["env"]["LOOM_ARTIFACT_TEST_JOBS"], "2")
-        self.assertIn(str(self.paths.loom_build / "test" / "artifacts" / "cmsis_cgra_status_rollup.mlir"), heavy_call.cmd)
-        self.assertIn("-j1", perf_call.cmd)
-        self.assertEqual(perf_call.cmd[-1], str(self.paths.loom_build / "test" / "techmap" / "perf"))
-
-    def test_cmd_test_uses_explicit_lit_worker_budget_for_nested_runners(self):
-        popen_calls = []
-        self.args.jobs = 32
-
-        class FakePipe:
-            def close(self):
-                pass
-
-        class FakeProcess:
-            def __init__(self, cmd, **kwargs):
-                self.cmd = cmd
-                self.kwargs = kwargs
-                self.stdout = FakePipe()
-                popen_calls.append(self)
-
-            def wait(self):
-                return 0
-
-        with (
-            patch.dict("os.environ", {"LIT_OPTS": "-j1"}),
-            patch.object(self.module, "check_git_version"),
-            patch.object(self.module, "check_loom_compilers"),
-            patch.object(self.module, "build_loom"),
-            patch.object(subprocess, "Popen", side_effect=lambda cmd, **kwargs: FakeProcess(cmd, **kwargs)),
-        ):
-            self.module.cmd_test(self.paths, self.args)
-
-        lit_calls = [call for call in popen_calls if call.cmd[0] == str(self.paths.llvm_lit)]
-        self.assertEqual(len(lit_calls), 3)
-        broad_call = lit_calls[0]
-        heavy_call = lit_calls[1]
-        self.assertIn("-j1", broad_call.cmd)
-        self.assertNotIn("-j32", broad_call.cmd)
-        self.assertEqual(broad_call.kwargs["env"]["LOOM_TEST_JOBS"], "1")
-        self.assertIn("-j1", heavy_call.cmd)
-        self.assertEqual(heavy_call.kwargs["env"]["LOOM_TEST_JOBS"], "1")
-
-    def test_cmd_test_scales_heavy_artifact_lanes_for_large_budget(self):
-        popen_calls = []
-        self.args.jobs = 24
-
-        class FakePipe:
-            def close(self):
-                pass
-
-        class FakeProcess:
-            def __init__(self, cmd, **kwargs):
-                self.cmd = cmd
-                self.kwargs = kwargs
-                self.stdout = FakePipe()
-                popen_calls.append(self)
-
-            def wait(self):
-                return 0
-
-        with (
-            patch.object(self.module, "check_git_version"),
-            patch.object(self.module, "check_loom_compilers"),
-            patch.object(self.module, "build_loom"),
-            patch.object(subprocess, "Popen", side_effect=lambda cmd, **kwargs: FakeProcess(cmd, **kwargs)),
-        ):
-            self.module.cmd_test(self.paths, self.args)
-
-        lit_calls = [call for call in popen_calls if call.cmd[0] == str(self.paths.llvm_lit)]
-        self.assertEqual(len(lit_calls), 3)
-        heavy_call = lit_calls[1]
-        self.assertIn("-j4", heavy_call.cmd)
-        self.assertEqual(lit_calls[0].kwargs["env"]["LOOM_ARTIFACT_TEST_JOBS"], "8")
-        self.assertEqual(heavy_call.kwargs["env"]["LOOM_TEST_JOBS"], "4")
-        self.assertEqual(heavy_call.kwargs["env"]["LOOM_ARTIFACT_TEST_JOBS"], "4")
+        self.assertEqual(len(calls), 1)
+        command, kwargs = calls[0]
+        self.assertEqual(command[0], str(self.paths.llvm_lit))
+        self.assertIn("-j7", command)
+        self.assertIn("--show-all", command)
+        self.assertEqual(command[-1], str(self.paths.loom_build / "test"))
+        self.assertEqual(kwargs["env"]["LOOM_TEST_JOBS"], "7")
+        self.assertNotIn("LIT_OPTS", kwargs["env"])
 
 
 if __name__ == "__main__":

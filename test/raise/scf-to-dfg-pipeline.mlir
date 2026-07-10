@@ -1,13 +1,13 @@
 // RUN: loom-raise-opt --loom-lower-scf-to-dfg %s | FileCheck %s
 
 // The combined --loom-lower-scf-to-dfg pipeline runs forall-to-thread
-// and graph extraction in sequence. A function with a parallel-init
-// forall followed by a reduction tail emits one graph for the
-// straight-line parallel body and one graph for the reduction body.
+// and graph extraction in sequence. Parallel work is exposed through
+// a thread and graph. Host reductions remain in SCF until a real
+// accelerator-region promotion owns their execution semantics.
 
 // CHECK-LABEL: func.func @vecadd_like
 // CHECK: dataflow.thread.launch @t_vecadd_like_0
-// CHECK: dataflow.thread.launch @t_vecadd_like_red_0
+// CHECK-NOT: dataflow.thread.launch @t_vecadd_like_red
 func.func @vecadd_like(%a: memref<?xf32>, %b: memref<?xf32>, %n: index) -> f32 {
   scf.forall (%i) in (%n) {
     %v = memref.load %a[%i] : memref<?xf32>
@@ -60,19 +60,8 @@ func.func @nested_forall_reduction(%out: memref<?xi32>, %n: index) -> index {
 // CHECK: dataflow.thread private @t_vecadd_like_0
 // CHECK-SAME: ctrl (%{{.*}}: none) iv (%{{.*}}: index)
 // CHECK: dataflow.graph.launch @g_t_vecadd_like_0_0
-// CHECK: dataflow.thread private @t_vecadd_like_red_0
-// CHECK-SAME: ctrl (%{{.*}}: none) iv (%{{.*}}: index)
-// CHECK: dataflow.graph.launch @g_t_vecadd_like_red_0_0
-// CHECK: dataflow.graph.func private @g_t_vecadd_like_red_0_0
-// CHECK-LABEL: dataflow.graph.func private @g_t_mean_like_red_0_0
-// CHECK: %[[SCALE:.*]] = dataflow.invariant
-// CHECK: %[[MEAN:.*]] = arith.mulf %{{.*}}, %[[SCALE]] : f32
-// CHECK: dataflow.graph.return %{{.*}}, %[[MEAN]] : none, f32
-// CHECK-LABEL: dataflow.graph.func private @g_t_nested_forall_reduction_red_0_0
-// CHECK: scf.forall
-// CHECK-NOT: dataflow.thread.launch
-// CHECK: dataflow.graph.return
 // CHECK-LABEL: dataflow.graph.func private @g_t_vecadd_like_0_0
 // The graph.launch's ctrl_in is the enclosing thread's thread_ctrl
 // block argument; the lowered IR contains no ub.poison.
 // CHECK-NOT: ub.poison : none
+// CHECK-NOT: _red_

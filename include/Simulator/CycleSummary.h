@@ -13,10 +13,6 @@
 namespace loom {
 namespace sim {
 
-struct CycleSummaryOptions {
-  bool emitPrimitiveCountProxy = true;
-};
-
 struct CycleSummaryRow {
   std::string kernel;
   std::optional<std::uint64_t> dfgSimCycles;
@@ -24,12 +20,6 @@ struct CycleSummaryRow {
   std::string status;
   std::string diagnostic;
 };
-
-llvm::SmallVector<CycleSummaryRow> scaffoldCycleSummaryRows();
-
-llvm::Expected<llvm::SmallVector<CycleSummaryRow>>
-summarizePrimitiveCoverage(llvm::StringRef csvPath,
-                           const CycleSummaryOptions &options);
 
 llvm::Expected<llvm::SmallVector<CycleSummaryRow>>
 summarizeDFGReports(llvm::ArrayRef<std::string> reportPaths);

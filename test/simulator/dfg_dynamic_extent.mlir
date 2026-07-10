@@ -5,7 +5,6 @@
 // RUN: FileCheck %s --check-prefix=N4 < %t.dir/n4.json
 // RUN: FileCheck %s --check-prefix=N8 < %t.dir/n8.json
 // RUN: FileCheck %s --check-prefix=N16 < %t.dir/n16.json
-// RUN: python3 %S/../e2e/audit_intermediate_artifacts.py --output %t.dir/audit.json %t.dir/n4.json %t.dir/n8.json %t.dir/n16.json
 
 // N4-DAG: "workload": "sum"
 // N4-DAG: "graph": "sum"

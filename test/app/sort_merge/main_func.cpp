@@ -29,7 +29,7 @@ double checksum(const std::array<float, kSize> &values) {
 } // namespace
 
 extern "C" __attribute__((noinline))
-void sort_merge_kernel(const float *input, float *output, float *temp,
+void sort_merge_kernel(const float *input, float *output, float *merge_buffer,
                        uint32_t size) {
     for (uint32_t i = 0; i < size; ++i) {
         output[i] = input[i];
@@ -44,26 +44,26 @@ void sort_merge_kernel(const float *input, float *output, float *temp,
 
             while (i < mid && j < right) {
                 if (output[i] <= output[j]) {
-                    temp[k] = output[i];
+                    merge_buffer[k] = output[i];
                     ++i;
                 } else {
-                    temp[k] = output[j];
+                    merge_buffer[k] = output[j];
                     ++j;
                 }
                 ++k;
             }
             while (i < mid) {
-                temp[k] = output[i];
+                merge_buffer[k] = output[i];
                 ++i;
                 ++k;
             }
             while (j < right) {
-                temp[k] = output[j];
+                merge_buffer[k] = output[j];
                 ++j;
                 ++k;
             }
             for (uint32_t idx = left; idx < right; ++idx) {
-                output[idx] = temp[idx];
+                output[idx] = merge_buffer[idx];
             }
         }
     }
@@ -71,9 +71,10 @@ void sort_merge_kernel(const float *input, float *output, float *temp,
 
 int main() {
     std::array<float, kSize> candidate = {};
-    std::array<float, kSize> cand_temp = {};
+    std::array<float, kSize> candidate_merge_buffer = {};
 
-    sort_merge_kernel(kInput.data(), candidate.data(), cand_temp.data(), kSize);
+    sort_merge_kernel(kInput.data(), candidate.data(),
+                      candidate_merge_buffer.data(), kSize);
 
     for (uint32_t i = 0; i < kSize; ++i) {
         if (std::fabs(kExpected[i] - candidate[i]) > kTolerance) {

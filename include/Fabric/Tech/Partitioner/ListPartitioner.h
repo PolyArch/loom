@@ -5,8 +5,7 @@
 
 namespace fabric {
 
-// List-priority partitioner. The current implementation is a placeholder
-// that emits one Block per op via `buildSingletonPartition`.
+// List-priority partitioner.
 class ListPartitioner : public IPartitioner {
 public:
   PartitionResult run(::dataflow::GraphOp graph, const TemplateLibrary &lib,

@@ -1,3 +1,6 @@
+// RUN: rm -rf %t.dir
+// RUN: mkdir -p %t.dir
+// RUN: loom-adg-builder-test --shared-memory-reduction --output %t.dir/shared-memory-reduction.mlir
 // RUN: loom-pnr-map --dfg-mlir %s --graph constant_two --hardware-mlir %s --hardware constant_adg --workload constant_two --output %t.pass.csv --artifact %t.pass.json
 // RUN: FileCheck %s --check-prefix=CSV-PASS < %t.pass.csv
 // RUN: FileCheck %s --check-prefix=JSON-PASS < %t.pass.json
@@ -9,7 +12,7 @@
 // RUN: loom-pnr-map --dfg-mlir %s --graph structured_constant_bounds --hardware-mlir %s --hardware bounds_constant_adg --workload structured_constant_bounds --output %t.bounds.csv --artifact %t.bounds.json
 // RUN: FileCheck %s --check-prefix=CSV-BOUNDS < %t.bounds.csv
 // RUN: FileCheck %s --check-prefix=JSON-BOUNDS < %t.bounds.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph shared_constant_eight --hardware-mlir %S/shared_memory_reduction_adg.mlir --hardware shared_memory_reduction_adg --workload shared_constant_eight --output %t.shared-eight.csv --artifact %t.shared-eight.json
+// RUN: loom-pnr-map --dfg-mlir %s --graph shared_constant_eight --hardware-mlir %t.dir/shared-memory-reduction.mlir --hardware shared_memory_reduction_adg --workload shared_constant_eight --output %t.shared-eight.csv --artifact %t.shared-eight.json
 // RUN: FileCheck %s --check-prefix=CSV-SHARED-EIGHT < %t.shared-eight.csv
 // RUN: FileCheck %s --check-prefix=JSON-SHARED-EIGHT < %t.shared-eight.json
 // RUN: loom-pnr-map --dfg-mlir %s --graph wide_constant_thirty_one --hardware-mlir %s --hardware wide_constant_adg --workload wide_constant_thirty_one --output %t.wide.csv --artifact %t.wide.json

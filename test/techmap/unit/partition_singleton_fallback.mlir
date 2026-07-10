@@ -1,6 +1,6 @@
 // RUN: loom %s -loom-partition-graph-into-subgraphs | FileCheck %s
 
-// Smoke test: a single fabric.fu offering arith.addi, plus a function-wrapped
+// Regression: a single fabric.fu offering arith.addi, plus a function-wrapped
 // dataflow.graph with one arith.addi. The partitioner's singleton-fallback
 // behavior should lift the addi into a dataflow.subgraph that yields the
 // original result.

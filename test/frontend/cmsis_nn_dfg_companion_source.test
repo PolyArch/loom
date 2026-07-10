@@ -1,8 +1,0 @@
-# CMSIS-NN wrapper sources may delegate all useful work to a sibling
-# implementation file. This wires the focused shell driver into lit so
-# the DFG smoke requires the runner to include the companion body and
-# expose a real dataflow.graph.func for arm_softmax_s8.
-#
-# RUN: bash -c 'set -o pipefail; env LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../cmsis-nn/test_runner_dfg_companion_source.sh' | FileCheck %s
-#
-# CHECK: PASS

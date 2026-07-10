@@ -1,0 +1,9 @@
+# Runs the representative manifest tier through the source-to-SCF pipeline.
+# The final marker keeps command failures visible through the FileCheck pipe.
+#
+# RUN: env LOOM_CC=%loom-cc LOOM_CXX=%loom-c++ LOOM_RAISE=%loom-raise LOOM_RAISE_OPT=%loom-raise-opt %python %S/../app/ir_runner.py --stage raise --build-root %t | FileCheck %s
+#
+# CHECK: PASS  {{[^ ]+}}  raise
+# CHECK: PASS  {{[^ ]+}}  raise
+# CHECK: PASS  {{[^ ]+}}  raise
+# CHECK: [app-ir-runner] PASS

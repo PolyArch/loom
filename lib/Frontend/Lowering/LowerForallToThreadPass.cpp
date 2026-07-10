@@ -420,10 +420,8 @@ struct LowerForallToThreadPass
                                    ::mlir::OpBuilder &builder) {
     ::mlir::Location loc = forall.getLoc();
 
-    // Effect-form requirement: no shared_outs / op results / non-empty
-    // in_parallel terminator. The raise pipeline today emits effect-
-    // form foralls for our 5 kernels; we leave anything else in
-    // place as a TODO.
+    // Effect-form requirement: no shared_outs, op results, or non-empty
+    // in_parallel terminator. Other forms remain unchanged.
     if (!forall.getOutputs().empty() || forall.getNumResults() != 0)
       return ::mlir::success();
     auto inParallel = forall.getTerminator();

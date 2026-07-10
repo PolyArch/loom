@@ -49,16 +49,16 @@ int main() {
         uint32_t i = low;
         for (uint32_t j = low; j < high; ++j) {
             if (output[j] <= pivot) {
-                const float temp = output[i];
+                const float swap_value = output[i];
                 output[i] = output[j];
-                output[j] = temp;
+                output[j] = swap_value;
                 ++i;
             }
         }
 
-        const float temp = output[i];
+        const float swap_value = output[i];
         output[i] = output[high];
-        output[high] = temp;
+        output[high] = swap_value;
 
         if (i > low) {
             stack[++top] = low;

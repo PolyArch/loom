@@ -5,8 +5,7 @@
 
 namespace fabric {
 
-// Simulated-annealing partitioner. The current implementation is a
-// placeholder that emits one Block per op via `buildSingletonPartition`.
+// Simulated-annealing partitioner.
 class SAPartitioner : public IPartitioner {
 public:
   PartitionResult run(::dataflow::GraphOp graph, const TemplateLibrary &lib,

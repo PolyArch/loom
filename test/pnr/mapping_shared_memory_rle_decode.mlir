@@ -1,4 +1,7 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph rle_decode --hardware-mlir %S/shared_memory_reduction_adg.mlir --hardware shared_memory_reduction_adg --workload rle_decode --output %t.mapping.csv --artifact %t.mapping.json
+// RUN: rm -rf %t.dir
+// RUN: mkdir -p %t.dir
+// RUN: loom-adg-builder-test --shared-memory-reduction --output %t.dir/shared-memory-reduction.mlir
+// RUN: loom-pnr-map --dfg-mlir %s --graph rle_decode --hardware-mlir %t.dir/shared-memory-reduction.mlir --hardware shared_memory_reduction_adg --workload rle_decode --output %t.mapping.csv --artifact %t.mapping.json
 // RUN: FileCheck %s --check-prefix=CSV < %t.mapping.csv
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
 

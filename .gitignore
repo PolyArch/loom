@@ -30,18 +30,8 @@ core
 core.*
 *.log
 
-# Local tool state (scheduled-task locks, scratch ExecPlans, etc.)
+# Local tool state and scratch files
 /.claude/
 /temp/
 /externals/.loom-build.llvm.lock
 /externals/.loom-build.llvm.stamp
-
-# Local perf-runner cache (default LOOM_PERF_CACHE if pointed inside the repo)
-/loom_perf_cache/
-
-# Bench artifacts under test/techmap/perf/results/<rev>/ are ignored by
-# default so casual `git add .` cannot pull in ad-hoc local runs. Already-
-# tracked baseline rev directories are unaffected (gitignore does not
-# untrack files). To publish a new baseline, force-add it explicitly:
-#   git add -f test/techmap/perf/results/<rev>/
-/test/techmap/perf/results/

@@ -5,7 +5,7 @@
 // hoisted from the `scf.for` region into the surrounding graph.func
 // body and rewritten to use the new index / carry SSA values.
 //
-// Design choice (smoke baseline -- option B in the task brief):
+// Memory boundary behavior:
 //   The graph.func today receives raw `!llvm.ptr` operands, and
 //   `dataflow.load` / `dataflow.store` require `AnyMemRef`. Rather
 //   than introduce a memref boundary cast, this pass only lowers the
@@ -27,7 +27,7 @@
 //   anything other than the single-loop simple-reduction shape and
 //   leaves the offending graph.func untouched (with a remark).
 //
-// Eligibility (per the task brief):
+// Eligibility:
 //   * The graph.func body must contain exactly one top-level
 //     `scf.for` op (i.e., one in the entry block of the body, plus
 //     the `dataflow.graph.return` terminator).
@@ -367,8 +367,8 @@ bool isEligibleReduction(::mlir::scf::ForOp loop) {
     if (!definedAbove(v))
       return false;
 
-  // dataflow.stream requires `SignlessIntegerLike` (signless integer)
-  // bounds; `index`-typed loops are outside the smoke shape today.
+  // dataflow.stream requires `SignlessIntegerLike` bounds. This rewrite
+  // leaves index-typed loops unchanged.
   // The cmsis-* corpora are lowered from C int/i32/i64 bounds, so this
   // check only excludes hand-written test inputs.
   if (!loop.getLowerBound().getType().isSignlessInteger())
@@ -552,7 +552,7 @@ struct LowerReductionToStreamPass
       ::mlir::scf::ForOp loop = findSoleTopLevelFor(graph);
       if (!loop) {
         // Either zero or more-than-one top-level for. Both are
-        // outside the smoke shape; leave the body alone.
+        // outside the supported shape; leave the body alone.
         graph.emitRemark()
             << "loom-lower-reduction-to-stream: graph body has zero or "
                "multiple top-level scf.for ops; leaving as-is";

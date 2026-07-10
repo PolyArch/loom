@@ -2,7 +2,7 @@
 // with `dataflow.invariant` carriers so the streaming-primitive
 // contract makes the invariance explicit.
 //
-// Heuristic (smoke baseline):
+// Rewrite scope:
 //   For each `dataflow.graph.func` body that already contains at
 //   least one `dataflow.stream` op:
 //     1. Use the first stream's `rwc` as the gating cond for new
@@ -53,10 +53,7 @@
 
 namespace {
 
-// Return true if `t` is one of the types the dataflow.invariant op
-// is currently used with in the smoke corpus: numeric scalars (int /
-// float), `index`, or `none`. Non-numeric / non-trivial types are
-// skipped.
+// Return true if `t` is a scalar type supported by this rewrite.
 bool isInvariantCarriable(::mlir::Type t) {
   return ::llvm::isa<::mlir::IntegerType, ::mlir::FloatType,
                      ::mlir::IndexType, ::mlir::NoneType>(t);

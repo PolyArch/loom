@@ -6,10 +6,6 @@
 
 #include <string>
 
-static llvm::cl::opt<std::string>
-    primitiveCoveragePath("primitive-coverage",
-                          llvm::cl::desc("dataflow primitive coverage CSV"));
-
 static llvm::cl::list<std::string>
     dfgReportPaths("dfg-report", llvm::cl::desc("DFG simulation report JSON"),
                    llvm::cl::ZeroOrMore);
@@ -28,18 +24,13 @@ int main(int argc, char **argv) {
       argc, argv,
       "loom-sim-cycle-summary: emit simulator cycle summary diagnostics\n");
 
-  loom::sim::CycleSummaryOptions options;
+  if (dfgReportPaths.empty()) {
+    llvm::errs() << "error: at least one --dfg-report is required\n";
+    return 1;
+  }
 
   llvm::Expected<llvm::SmallVector<loom::sim::CycleSummaryRow>> rowsOrErr =
-      dfgReportPaths.empty()
-          ? (primitiveCoveragePath.empty()
-                 ? llvm::Expected<
-                       llvm::SmallVector<loom::sim::CycleSummaryRow>>(
-                       loom::sim::scaffoldCycleSummaryRows())
-                 : loom::sim::summarizePrimitiveCoverage(primitiveCoveragePath,
-                                                         options))
-          : loom::sim::summarizeSimulationReports(dfgReportPaths,
-                                                  cgraReportPaths);
+      loom::sim::summarizeSimulationReports(dfgReportPaths, cgraReportPaths);
   if (!rowsOrErr) {
     llvm::errs() << "error: " << llvm::toString(rowsOrErr.takeError()) << "\n";
     return 1;

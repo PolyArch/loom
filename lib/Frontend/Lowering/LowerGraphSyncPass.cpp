@@ -10,7 +10,7 @@
 // be DCE-ed) and explicitly gates the graph's outgoing token on the
 // rendezvous of every memory op inside the body.
 //
-// Heuristic (smoke baseline):
+// Rewrite scope:
 //   For each `dataflow.graph.func` body:
 //     1. Scan the entry block (top-level ops only) and collect every
 //        `%done` SSA result produced by a `dataflow.load` or
@@ -25,8 +25,7 @@
 //        terminator (the `done_out : none` slot, currently sourced
 //        from the body's `thread_ctrl` block argument) with
 //        `%synced#0`. Every other terminator operand is left in
-//        place. Routing the done port through `%synced#0` is the
-//        idiomatic option (b) called out in the task brief.
+//        place.
 //
 // Bail conditions (graph left unchanged):
 //   * The graph.func has zero top-level `dataflow.load` and zero
@@ -128,8 +127,7 @@ materializeConditionalStoreDone(::dataflow::StoreOp store,
 // gathering only top-level memory ops keeps the rendezvous SSA-legal.
 // Graphs whose memory ops all live inside an scf.for / scf.if body
 // will report an empty token list and the pass will leave them
-// unchanged. A future iteration can extend this to emit one sync per
-// nested region if downstream consumers need a finer rendezvous.
+// unchanged. Nested regions require their own rendezvous handling.
 void collectDoneTokens(::dataflow::GraphFuncOp graph,
                        ::mlir::OpBuilder &builder,
                        ::dataflow::GraphReturnOp ret,

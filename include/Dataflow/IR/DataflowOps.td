@@ -521,11 +521,8 @@ def Dataflow_ThreadOp : Dataflow_Op<"thread", [
     The op is `IsolatedFromAbove`; values flow in only through the
     matching `dataflow.thread.launch` body operands.
 
-    This first-milestone implementation tracks only the function-like
-    surface needed for SCF-to-DFG lowering smoke output. The
-    `staticGrid*` / `mapping` attributes from the spec are accepted as
-    optional dictionary attributes on the op for future use; the
-    smoke driver does not yet exercise them.
+    The `staticGrid*` and `mapping` attributes are accepted as optional
+    dictionary attributes. They do not currently change execution semantics.
   }];
 
   let arguments = (ins
@@ -630,10 +627,9 @@ def Dataflow_ThreadLaunchOp : Dataflow_Op<"thread.launch", [
     body operands and optional grid upper bounds. Produces an optional
     `!dataflow.thread_token` async completion handle.
 
-    The first-milestone surface omits `MemoryEffectsOpInterface`
-    machinery and the spec's full async-deps + lower-bound / step
-    grid plumbing; the smoke driver only needs body operands and
-    upper-bound dynamic grid sizes.
+    The operation does not project callee effects through
+    `MemoryEffectsOpInterface`. Grid lower bounds and steps are not modeled;
+    body operands, upper bounds, and async dependencies are explicit.
   }];
 
   let arguments = (ins
@@ -749,10 +745,8 @@ def Dataflow_GraphLaunchOp : Dataflow_Op<"graph.launch", [
     `done_out : none` completion signal; the remaining results carry
     user data.
 
-    First-milestone surface omits the manual
-    `MemoryEffectsOpInterface` projection over the callee body; the
-    smoke driver only needs the parser/printer plus
-    `SymbolUserOpInterface` resolution.
+    The operation resolves its callee through `SymbolUserOpInterface` but does
+    not project callee effects through `MemoryEffectsOpInterface`.
   }];
 
   let arguments = (ins

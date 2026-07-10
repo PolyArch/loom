@@ -221,10 +221,7 @@ shape. These attributes are metadata only. They must not define
 connectivity, placement legality, routing cost, simulation behavior, RTL
 lowering, or hardware cost. A tool that does not render visualization
 must be able to ignore them without changing any hardware or mapping
-result. The ADG inventory records this with `visual_metadata_role =
-metadata_only` and `coordinates_semantic = false`; see
-`docs/spec-intermediate-artifacts.md` and
-`docs/spec-mapping-visualization.md`.
+result. See `docs/spec-mapping-visualization.md`.
 
 The minimal module-local `visual_layout` form is an array of records:
 

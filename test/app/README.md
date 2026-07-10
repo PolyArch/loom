@@ -1,81 +1,138 @@
-# test/app -- numeric-kernel smoke tests
+# LoomBench application corpus
 
 Small, self-contained C/C++ programs used as drop-in targets for the Loom
-compiler frontend. Each kernel is a complete CMake project that builds with
-stock `gcc`/`g++` and produces deterministic stdout that a shell script
-compares against an `expected.txt`.
+compiler frontend. The manifest-driven native runner covers all 133 cases,
+compiles both source variants, executes every resulting binary, and compares
+stdout byte-for-byte with the checked-in expected output.
 
-These programs intentionally have **no dependency on the top-level Loom
-CMakeLists or libraries**. They are independent so that a future
-`loom-cc` / `loom-c++` drop-in driver can build them by overriding
-`CMAKE_C_COMPILER` / `CMAKE_CXX_COMPILER` only.
+The manifest-driven IR runner provides representative source-to-IR integration
+coverage. Its default `raise` and `dfg` tiers contain `vecadd`, `matmul`, `spmm`,
+`gather`, and `edge_update`. It compiles only the source whose stem is
+`main_func`; the native runner remains responsible for both `main_func` and
+`main_inline` variants.
+
+These programs intentionally have no dependency on the top-level Loom build
+or libraries. Stock `gcc`/`g++` and compatible drop-in drivers can compile the
+same manifest entries.
 
 ## Layout
 
 ```
 test/app/
   README.md
-  run_all.sh                 -- runs every kernel's run_check.sh
-  vecadd/                    -- C, float element-wise add (N=64)
-  gemm/                      -- C++, float matrix multiply (M=N=K=8)
-  dotproduct/                -- C, float dot product (N=64)
-  conv1d/                    -- C++, float 1-D convolution (N=64, K=5)
-  reduction/                 -- C, int sum reduction (N=128)
+  manifest.json              -- ordered case metadata and tier selection
+  native_runner.py           -- reusable native-runner API and command-line entry
+  ir_runner.py               -- source-to-SCF and source-to-DFG integration runner
+  vecadd/
+    main_func.c              -- kernel implemented as a separate function
+    main_inline.c            -- equivalent kernel inlined into main
+    expected.txt             -- exact expected stdout bytes
 ```
 
-Each kernel directory contains:
+The two source variants exercise the shapes that downstream compiler passes
+need to handle: a separate function called from `main` and an equivalent
+inline expression nest inside `main`. Both variants must produce byte-identical
+stdout, including trailing newlines.
 
-```
-<kernel>/
-  CMakeLists.txt             -- self-contained, defines two executables
-  main_func.{c,cpp}          -- kernel implemented as a separate function
-  main_inline.{c,cpp}        -- equivalent kernel inlined into main
-  expected.txt               -- expected stdout (single line)
-  run_check.sh               -- build, run, and diff against expected.txt
-  .gitignore                 -- ignores the per-kernel build/ tree
-```
+## Native execution
 
-The two source variants exercise the two shapes that downstream compiler
-passes need to handle: a separate function called from `main` (CallSite with
-explicit semantics) and an equivalent inline expression nest inside `main`.
-Both variants must produce byte-identical stdout.
-
-## Running
-
-From the repo root:
+From the repository root, run the full manifest:
 
 ```sh
-bash test/app/run_all.sh
+python3 test/app/native_runner.py --all
 ```
 
-This loops over every kernel and prints a `PASS`/`FAIL` summary. The script
-exits non-zero if any kernel fails.
-
-To run a single kernel:
+Run one or more selected cases:
 
 ```sh
-bash test/app/vecadd/run_check.sh
+python3 test/app/native_runner.py --case vecadd --case gemm
 ```
 
-## Compiler override (gcc baseline vs future loom drop-in)
-
-`run_check.sh` and `run_all.sh` honor the standard `CC` and `CXX`
-environment variables and forward them to CMake via
-`-DCMAKE_C_COMPILER=$CC -DCMAKE_CXX_COMPILER=$CXX`. The defaults are `gcc`
-and `g++`.
+Use `--jobs` to set the case worker count. `LOOM_NATIVE_RUNNER_JOBS`,
+`LOOM_TEST_JOBS`, and `JOBS` provide environment defaults in that order.
 
 ```sh
-# default gcc/g++ baseline
-bash test/app/run_all.sh
-
-# future loom drop-in
-CC=loom-cc CXX=loom-c++ bash test/app/run_all.sh
+python3 test/app/native_runner.py --all --jobs 8
 ```
+
+Build products are written below `build/test-runs/native-runner` by default,
+with one deterministic directory per case. `--build-root` selects another
+root without creating output in case source directories.
+
+## IR integration
+
+Run the five default source-to-SCF cases:
+
+```sh
+python3 test/app/ir_runner.py --stage raise
+```
+
+Run the five default source-to-DFG cases:
+
+```sh
+python3 test/app/ir_runner.py --stage dfg
+```
+
+Use one or more explicit `--case` options to run named manifest entries:
+
+```sh
+python3 test/app/ir_runner.py --stage dfg \
+  --case vecadd \
+  --case byte_swap
+```
+
+Explicit cases do not need to belong to the selected stage's default tier.
+This permits focused PnR, simulator, and artifact consumers to request IR for
+any manifest case without broadening the default integration set.
+
+The IR runner executes cases sequentially and applies each case's
+`compiler_flags`. It writes these artifacts below
+`build/test-runs/app-ir-runner/<case>` by default:
+
+```text
+main_func.ll
+main_func.scf.mlir
+main_func.dfg.mlir  # dfg stage only
+```
+
+`--manifest` selects another manifest and `--build-root` selects another output
+root. `LOOM_CC`, `LOOM_CXX`, `LOOM_RAISE`, `LOOM_LOWER`, and
+`LOOM_RAISE_OPT` override the Loom tools. Defaults are resolved below
+`build/bin`.
+
+## Compiler override
+
+The default C command begins with
+`gcc -std=c11 -O2 -Wall -Wextra -Werror`. The default C++ command begins with
+`g++ -std=c++17 -O2 -Wall -Wextra -Werror`. Per-case `compiler_flags` from the
+manifest follow these defaults so a case can override them. Per-case
+`link_flags` are placed at the end of each compiler command.
+
+Use explicit driver paths with `--cc` and `--cxx`:
+
+```sh
+python3 test/app/native_runner.py --all \
+  --cc build/bin/loom-cc \
+  --cxx build/bin/loom-c++
+```
+
+Relative driver paths are resolved against the directory from which the
+runner was invoked. When the command-line options are omitted, `CC` and `CXX`
+provide overrides before the `gcc` and `g++` defaults.
+
+## Manifest controls
+
+`--manifest` selects an alternate manifest. Each case entry supplies its
+language, ordered source list, expected executable names, expected stdout
+file, compiler flags, and link flags. The source and executable lists must
+have equal length. Every case carries the `run` tier. The `raise` and `dfg`
+tiers select the default IR integration cases; explicit IR requests are not
+restricted by those tiers. A `dfg_symbol` field ties a representative DFG case
+to the source kernel without fixing the complete generated symbol name.
 
 ## Determinism notes
 
-* Inputs are hard-coded (no random, no time, no environment lookups).
-* Floats are printed with `%.6f` and ints with `%d` to keep stdout
-  byte-identical across glibc versions.
-* `expected.txt` is checked in and validated by `run_check.sh` on every
-  invocation.
+* Inputs are hard-coded, with no random, time, or environment lookups.
+* Floats are printed with `%.6f` and integers with stable format strings.
+* Expected output is read as bytes and compared without trimming whitespace.
+* Diagnostics are emitted in manifest order even when cases run concurrently.

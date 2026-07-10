@@ -1,3 +1,0 @@
-# Verifies CMSIS runner-side scratch directories stay under repo-local temp.
-#
-# RUN: %python %S/test_cmsis_tempdir_policy.py %S/..

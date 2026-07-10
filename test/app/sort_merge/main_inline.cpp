@@ -30,7 +30,7 @@ double checksum(const std::array<float, kSize> &values) {
 
 int main() {
     std::array<float, kSize> output = {};
-    std::array<float, kSize> temp = {};
+    std::array<float, kSize> merge_buffer = {};
     for (uint32_t i = 0; i < kSize; ++i) {
         output[i] = kInput[i];
     }
@@ -45,26 +45,26 @@ int main() {
 
             while (i < mid && j < right) {
                 if (output[i] <= output[j]) {
-                    temp[k] = output[i];
+                    merge_buffer[k] = output[i];
                     ++i;
                 } else {
-                    temp[k] = output[j];
+                    merge_buffer[k] = output[j];
                     ++j;
                 }
                 ++k;
             }
             while (i < mid) {
-                temp[k] = output[i];
+                merge_buffer[k] = output[i];
                 ++i;
                 ++k;
             }
             while (j < right) {
-                temp[k] = output[j];
+                merge_buffer[k] = output[j];
                 ++j;
                 ++k;
             }
             for (uint32_t idx = left; idx < right; ++idx) {
-                output[idx] = temp[idx];
+                output[idx] = merge_buffer[idx];
             }
         }
     }

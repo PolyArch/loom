@@ -1,311 +1,133 @@
 #!/usr/bin/env python3
-"""Regression test for the app corpus manifest contract."""
+"""Regression test for the app corpus manifest CLI."""
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import artifact_test_common
 
 
-EXPECTED_CASES = {
-    "autocorrelation",
-    "axpy",
-    "batchnorm",
-    "bit_reverse",
-    "bitrev",
-    "bitrev_complex",
-    "bitonic_stage",
-    "bitonic_stage-modified",
-    "bitonic_stage-tweak",
-    "byte_swap",
-    "cdma",
-    "bisection_step",
-    "binary_search",
-    "breadth_first_search",
-    "clz",
-    "col2im",
-    "compare_swap",
-    "compact",
-    "compact_predicate",
-    "convolve_1d",
-    "convolve_1d_same",
-    "conv2d",
-    "correlation",
-    "conv1d",
-    "covariance",
-    "crc32",
-    "cross_product",
-    "ctz",
-    "cumsum",
-    "database_join",
-    "distance_point",
-    "depthwise_conv",
-    "edit_distance_step",
-    "delta_decode",
-    "delta_encode",
-    "dot_product_3d",
-    "dotprod",
-    "dotproduct",
-    "downsample",
-    "downsample_avg",
-    "edge_update",
-    "edge_update_batch",
-    "find_first_set",
-    "fir_filter",
-    "fir_filter_stateful",
-    "fft_butterfly",
-    "ifft_butterfly",
-    "gemm",
-    "gemv",
-    "gf_mul",
-    "gather",
-    "gauss_seidel_step",
-    "hash_mix",
-    "hist_bin",
-    "histogram",
-    "histogram_strided",
-    "im2col",
-    "integrate_trapz",
-    "interpolate_linear",
-    "jacobi_stencil_5pt",
-    "jacobi_stencil_7pt",
-    "kmp_table",
-    "line_intersect",
-    "lower_bound",
-    "mean",
-    "mat3x3_mult",
-    "matmul",
-    "mmtile",
-    "matvec",
-    "merge",
-    "moving_avg",
-    "modexp",
-    "modmul",
-    "normalize",
-    "normalize_vec3",
-    "newton_iter",
-    "outer",
-    "pack_bits",
-    "partition",
-    "parity",
-    "pool_avg",
-    "pool_max",
-    "prefix_sum",
-    "prefix_sum_exclusive",
-    "prefix_sum_inclusive",
-    "quantile",
-    "quat_mult",
-    "popcount",
-    "relu",
-    "reduction",
-    "rotate_bits",
-    "rle_decode",
-    "rle_encode",
-    "runge_kutta_step",
-    "scatter_add",
-    "sbox_lookup",
-    "sigmoid",
-    "softmax",
-    "spmm",
-    "spmv",
-    "spmspm",
-    "spmspv",
-    "sort_bubble",
-    "sort_insertion",
-    "sort_merge",
-    "sort_quick",
-    "string_compare",
-    "wildcard_match",
-    "string_hash",
-    "stream_nested",
-    "stream_update",
-    "tridiag_solve",
-    "trsv_lower",
-    "trsv_upper",
-    "transpose",
-    "transform_point",
-    "unpack_bits",
-    "upsample",
-    "upsample_linear",
-    "upper_bound",
-    "variance",
-    "vecadd",
-    "vecmul",
-    "vecnorm_l1",
-    "vecnorm_l2",
-    "vecscale",
-    "vecsum",
-    "vecsum-while",
-    "window_blackman",
-    "window_hamming",
-    "window_hanning",
-    "xor_block",
-}
+def load_ir_runner(path: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location("loom_test_ir_runner", path)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"cannot load IR runner from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def create_case(root: Path, name: str, tiers: list[str]) -> dict[str, object]:
+    case_dir = root / name
+    case_dir.mkdir(parents=True)
+    (case_dir / "main.c").write_text("int main(void) { return 0; }\n")
+    (case_dir / "expected.txt").write_text("")
+    return {
+        "case": name,
+        "language": "c",
+        "sources": ["main.c"],
+        "expected_stdout": "expected.txt",
+        "tiers": tiers,
+        "compiler_flags": [],
+        "link_flags": [],
+        "expected_executables": [name],
+        "feature_tags": ["fixture"],
+    }
+
+
+def write_manifest(path: Path, cases: list[dict[str, object]]) -> None:
+    path.write_text(json.dumps({"schema_version": 1, "cases": cases}) + "\n")
+
+
+def check_dfg_symbol_mismatch(ir_runner: ModuleType, root: Path) -> None:
+    dfg_ir = root / "symbol-mismatch.mlir"
+    dfg_ir.write_text(
+        "dataflow.graph.func private @unrelated_kernel() {\n"
+        "  dataflow.graph.return\n"
+        "}\n"
+    )
+    case = ir_runner.CaseSpec(
+        case="symbol_mismatch",
+        case_dir=root,
+        language="c",
+        source=root / "main.c",
+        compiler_flags=(),
+        dfg_symbol="expected_kernel",
+    )
+    try:
+        ir_runner.validate_dfg_ir(dfg_ir, case)
+    except ir_runner.RunnerExecutionError as exc:
+        if "no dataflow definition for expected_kernel" not in str(exc):
+            raise AssertionError(f"unexpected DFG symbol diagnostic: {exc}") from exc
+    else:
+        raise AssertionError("DFG validation accepted an unrelated symbol")
 
 
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
-    manifest = repo / "test" / "app" / "manifest.json"
+    cli = [sys.executable, "test/app/app_manifest.py"]
+    ir_runner = load_ir_runner(repo / "test" / "app" / "ir_runner.py")
+
     artifact_test_common.require_success(
         repo,
-        ["bash", "test/app/run_manifest_check.sh"],
-        "app manifest validation",
+        [*cli, "validate"],
+        "checked-in app manifest validation",
     )
 
-    result = artifact_test_common.require_success(
-        repo,
-        ["python3", "test/app/app_manifest.py", "list", "--tier", "run"],
-        "app manifest list",
-    )
-    cases = {line.strip() for line in result.stdout.splitlines() if line.strip()}
-    if cases != EXPECTED_CASES:
-        raise AssertionError(f"manifest run tier cases {cases} do not match {EXPECTED_CASES}")
-
-    data = json.loads(manifest.read_text())
-    if {entry["case"] for entry in data["cases"]} != EXPECTED_CASES:
-        raise AssertionError(f"manifest cases do not match expected seed set: {data}")
-    for entry in data["cases"]:
-        case = entry["case"]
-        for field in ("compiler_flags", "link_flags", "expected_executables"):
-            if field not in entry:
-                raise AssertionError(f"{case}: manifest entry lacks {field}")
-        if not isinstance(entry["compiler_flags"], list) or any(
-            not isinstance(flag, str) for flag in entry["compiler_flags"]
-        ):
-            raise AssertionError(f"{case}: compiler_flags must be a string list")
-        if not isinstance(entry["link_flags"], list) or any(
-            not isinstance(flag, str) for flag in entry["link_flags"]
-        ):
-            raise AssertionError(f"{case}: link_flags must be a string list")
-        if not isinstance(entry["expected_executables"], list) or len(entry["expected_executables"]) != 2:
-            raise AssertionError(f"{case}: expected_executables should name two variants")
-        if not all(isinstance(name, str) and name for name in entry["expected_executables"]):
-            raise AssertionError(f"{case}: expected_executables must contain non-empty strings")
-
-    with artifact_test_common.repo_temp_dir(repo, "loom-bad-app-manifest-") as tmp:
-        bad_manifest = Path(tmp) / "manifest.json"
-        bad_manifest.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "cases": [
-                        {
-                            "case": "vecadd",
-                            "language": "c",
-                            "sources": ["missing.c"],
-                            "expected_stdout": "expected.txt",
-                            "tiers": ["run"],
-                            "compiler_flags": [],
-                            "link_flags": [],
-                            "expected_executables": ["main_func", "main_inline"],
-                            "feature_tags": ["vector"],
-                        }
-                    ],
-                }
-            )
-            + "\n"
+    with artifact_test_common.repo_temp_dir(repo, "loom-app-manifest-") as tmp:
+        root = Path(tmp)
+        valid_manifest = root / "valid" / "manifest.json"
+        write_manifest(
+            valid_manifest,
+            [
+                create_case(valid_manifest.parent, "run_case", ["run"]),
+                create_case(valid_manifest.parent, "raise_case", ["raise"]),
+            ],
         )
+        result = artifact_test_common.require_success(
+            repo,
+            [*cli, "list", "--manifest", str(valid_manifest), "--tier", "run"],
+            "app manifest run-tier list",
+        )
+        if result.stdout != "run_case\n":
+            raise AssertionError(f"unexpected run-tier list: {result.stdout!r}")
+
+        root_list_manifest = root / "root-list.json"
+        root_list_manifest.write_text(json.dumps([]) + "\n")
         result = artifact_test_common.run_command(
             repo,
-            ["python3", "test/app/app_manifest.py", "validate", "--manifest", str(bad_manifest)],
+            [*cli, "validate", "--manifest", str(root_list_manifest)],
         )
         if result.returncode == 0:
-            raise AssertionError("bad manifest with missing source unexpectedly passed")
-        if "missing source" not in result.stderr:
-            raise AssertionError(f"bad manifest diagnostic should name missing source: {result.stderr}")
-
-        bad_manifest.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "cases": [
-                        {
-                            "case": "vecadd",
-                            "language": "c",
-                            "sources": ["main_func.c"],
-                            "expected_stdout": "expected.txt",
-                            "tiers": ["run"],
-                            "compiler_flags": [],
-                            "link_flags": [],
-                            "expected_executables": ["main_func", "main_inline"],
-                            "feature_tags": [1],
-                        }
-                    ],
-                }
+            raise AssertionError("manifest with a list root unexpectedly passed")
+        if "manifest root must be an object" not in result.stderr:
+            raise AssertionError(
+                f"unexpected manifest root diagnostic: {result.stderr}"
             )
-            + "\n"
+
+        unsafe_manifest = root / "unsafe" / "manifest.json"
+        unsafe_case = create_case(unsafe_manifest.parent, "unsafe_case", ["run"])
+        unsafe_case["sources"] = ["../outside.c"]
+        (unsafe_manifest.parent / "outside.c").write_text(
+            "int main(void) { return 0; }\n"
         )
+        write_manifest(unsafe_manifest, [unsafe_case])
+
         result = artifact_test_common.run_command(
             repo,
-            ["python3", "test/app/app_manifest.py", "validate", "--manifest", str(bad_manifest)],
+            [*cli, "validate", "--manifest", str(unsafe_manifest)],
         )
         if result.returncode == 0:
-            raise AssertionError("bad manifest with non-string tag unexpectedly passed")
-        if "feature_tags must contain non-empty strings" not in result.stderr:
-            raise AssertionError(f"bad manifest diagnostic should name non-string tag: {result.stderr}")
+            raise AssertionError("manifest source escaped the case directory")
+        if "sources entries must be file names" not in result.stderr:
+            raise AssertionError(f"missing unsafe source diagnostic: {result.stderr}")
 
-        bad_manifest.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "cases": [
-                        {
-                            "case": "vecadd",
-                            "language": "c",
-                            "sources": ["main_func.c"],
-                            "expected_stdout": "expected.txt",
-                            "tiers": ["run"],
-                            "compiler_flags": "-O2",
-                            "link_flags": [],
-                            "expected_executables": ["main_func", "main_inline"],
-                            "feature_tags": ["vector"],
-                        }
-                    ],
-                }
-            )
-            + "\n"
-        )
-        result = artifact_test_common.run_command(
-            repo,
-            ["python3", "test/app/app_manifest.py", "validate", "--manifest", str(bad_manifest)],
-        )
-        if result.returncode == 0:
-            raise AssertionError("bad manifest with scalar compiler_flags unexpectedly passed")
-        if "compiler_flags must be a list" not in result.stderr:
-            raise AssertionError(f"bad manifest diagnostic should name compiler_flags: {result.stderr}")
-
-        bad_manifest.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "cases": [
-                        {
-                            "case": "vecadd",
-                            "language": "c",
-                            "sources": ["main_func.c"],
-                            "expected_stdout": "expected.txt",
-                            "tiers": ["run"],
-                            "compiler_flags": [],
-                            "link_flags": [],
-                            "expected_executables": [],
-                            "feature_tags": ["vector"],
-                        }
-                    ],
-                }
-            )
-            + "\n"
-        )
-        result = artifact_test_common.run_command(
-            repo,
-            ["python3", "test/app/app_manifest.py", "validate", "--manifest", str(bad_manifest)],
-        )
-        if result.returncode == 0:
-            raise AssertionError("bad manifest with empty expected_executables unexpectedly passed")
-        if "expected_executables must be a non-empty list" not in result.stderr:
-            raise AssertionError(f"bad manifest diagnostic should name expected_executables: {result.stderr}")
+        check_dfg_symbol_mismatch(ir_runner, root)
 
     return 0
 

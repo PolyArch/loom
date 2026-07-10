@@ -75,14 +75,9 @@
 // GEP-JSON-NOT: ".out"
 // GEP-JSON-NOT: ".in"
 
-// RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph mem_gep_pointer_store_value --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_gep_pointer_store_value --output %t.gep-store-value.mapping.csv --artifact %t.gep-store-value.mapping.json
-// RUN: FileCheck %s --check-prefix=GEPSTOREVAL-CSV < %t.gep-store-value.mapping.csv
-// RUN: FileCheck %s --check-prefix=GEPSTOREVAL-JSON < %t.gep-store-value.mapping.json
+// RUN: not loom-pnr-map --dfg-mlir %s --graph mem_gep_pointer_store_value --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_gep_pointer_store_value --output %t.gep-store-value.mapping.csv --artifact %t.gep-store-value.mapping.json 2>&1 | FileCheck %s --check-prefix=GEPSTOREVAL
 
-// GEPSTOREVAL-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// GEPSTOREVAL-CSV-NEXT: mem_gep_pointer_store_value,shared_reduction_adg,mem_gep_pointer_store_value__mem_gep_pointer_store_value__shared_reduction_adg,,,,,unsupported,unsupported PnR graph operation: llvm.getelementptr
-// GEPSTOREVAL-JSON-DAG: "status": "unsupported"
-// GEPSTOREVAL-JSON-DAG: "unsupported PnR graph operation: llvm.getelementptr"
+// GEPSTOREVAL: graph contains unsupported operation for PnR mapping: llvm.getelementptr
 
 // RUN: loom-pnr-map --dfg-mlir %s --graph mem_scf_pointer_yield_bookkeeping --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_scf_pointer_yield_bookkeeping --output %t.scfgep.mapping.csv --artifact %t.scfgep.mapping.json
 // RUN: FileCheck %s --check-prefix=SCFGEP-CSV < %t.scfgep.mapping.csv
@@ -112,23 +107,13 @@
 // NESTED-SCFGEP-JSON-NOT: ".out"
 // NESTED-SCFGEP-JSON-NOT: ".in"
 
-// RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph mem_nested_scf_pointer_store_value --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_nested_scf_pointer_store_value --output %t.nested-store-value.mapping.csv --artifact %t.nested-store-value.mapping.json
-// RUN: FileCheck %s --check-prefix=NESTEDSTOREVAL-CSV < %t.nested-store-value.mapping.csv
-// RUN: FileCheck %s --check-prefix=NESTEDSTOREVAL-JSON < %t.nested-store-value.mapping.json
+// RUN: not loom-pnr-map --dfg-mlir %s --graph mem_nested_scf_pointer_store_value --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_nested_scf_pointer_store_value --output %t.nested-store-value.mapping.csv --artifact %t.nested-store-value.mapping.json 2>&1 | FileCheck %s --check-prefix=NESTEDSTOREVAL
 
-// NESTEDSTOREVAL-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// NESTEDSTOREVAL-CSV-NEXT: mem_nested_scf_pointer_store_value,shared_reduction_adg,mem_nested_scf_pointer_store_value__mem_nested_scf_pointer_store_value__shared_reduction_adg,,,,,unsupported,unsupported PnR graph operation: llvm.getelementptr
-// NESTEDSTOREVAL-JSON-DAG: "status": "unsupported"
-// NESTEDSTOREVAL-JSON-DAG: "unsupported PnR graph operation: llvm.getelementptr"
+// NESTEDSTOREVAL: graph contains unsupported operation for PnR mapping: llvm.getelementptr
 
-// RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph mem_scf_pointer_semantic_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_scf_pointer_semantic_return --output %t.scfptrret.mapping.csv --artifact %t.scfptrret.mapping.json
-// RUN: FileCheck %s --check-prefix=SCFPTRRET-CSV < %t.scfptrret.mapping.csv
-// RUN: FileCheck %s --check-prefix=SCFPTRRET-JSON < %t.scfptrret.mapping.json
+// RUN: not loom-pnr-map --dfg-mlir %s --graph mem_scf_pointer_semantic_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_scf_pointer_semantic_return --output %t.scfptrret.mapping.csv --artifact %t.scfptrret.mapping.json 2>&1 | FileCheck %s --check-prefix=SCFPTRRET
 
-// SCFPTRRET-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// SCFPTRRET-CSV-NEXT: mem_scf_pointer_semantic_return,shared_reduction_adg,mem_scf_pointer_semantic_return__mem_scf_pointer_semantic_return__shared_reduction_adg,,,,,unsupported,graph returns unsupported pointer value for PnR mapping
-// SCFPTRRET-JSON-DAG: "status": "unsupported"
-// SCFPTRRET-JSON-DAG: "graph returns unsupported pointer value for PnR mapping"
+// SCFPTRRET: graph returns unsupported pointer value for PnR mapping
 
 // RUN: loom-pnr-map --dfg-mlir %s --graph mem_pointer_bookkeeping --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_bookkeeping --output %t.ptr.mapping.csv --artifact %t.ptr.mapping.json
 // RUN: FileCheck %s --check-prefix=PTR-CSV < %t.ptr.mapping.csv
@@ -307,23 +292,13 @@
 // CFFT-RED3-JSON-NOT: ".out"
 // CFFT-RED3-JSON-NOT: ".in"
 
-// RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph mem_pointer_semantic_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_semantic_return --output %t.ptrsemantic.mapping.csv --artifact %t.ptrsemantic.mapping.json
-// RUN: FileCheck %s --check-prefix=PTRSEM-CSV < %t.ptrsemantic.mapping.csv
-// RUN: FileCheck %s --check-prefix=PTRSEM-JSON < %t.ptrsemantic.mapping.json
+// RUN: not loom-pnr-map --dfg-mlir %s --graph mem_pointer_semantic_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_semantic_return --output %t.ptrsemantic.mapping.csv --artifact %t.ptrsemantic.mapping.json 2>&1 | FileCheck %s --check-prefix=PTRSEM
 
-// PTRSEM-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// PTRSEM-CSV-NEXT: mem_pointer_semantic_return,shared_reduction_adg,mem_pointer_semantic_return__mem_pointer_semantic_return__shared_reduction_adg,,,,,unsupported,graph returns unsupported pointer value for PnR mapping
-// PTRSEM-JSON-DAG: "status": "unsupported"
-// PTRSEM-JSON-DAG: "graph returns unsupported pointer value for PnR mapping"
+// PTRSEM: graph returns unsupported pointer value for PnR mapping
 
-// RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph mem_pointer_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_return --output %t.ptrret.mapping.csv --artifact %t.ptrret.mapping.json
-// RUN: FileCheck %s --check-prefix=PTRRET-CSV < %t.ptrret.mapping.csv
-// RUN: FileCheck %s --check-prefix=PTRRET-JSON < %t.ptrret.mapping.json
+// RUN: not loom-pnr-map --dfg-mlir %s --graph mem_pointer_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_return --output %t.ptrret.mapping.csv --artifact %t.ptrret.mapping.json 2>&1 | FileCheck %s --check-prefix=PTRRET
 
-// PTRRET-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// PTRRET-CSV-NEXT: mem_pointer_return,shared_reduction_adg,mem_pointer_return__mem_pointer_return__shared_reduction_adg,,,,,unsupported,graph returns unsupported pointer value for PnR mapping
-// PTRRET-JSON-DAG: "status": "unsupported"
-// PTRRET-JSON-DAG: "graph returns unsupported pointer value for PnR mapping"
+// PTRRET: graph returns unsupported pointer value for PnR mapping
 
 module {
   dataflow.graph.func private @mem_route(%ctrl: none, %mem: memref<?xi32>,

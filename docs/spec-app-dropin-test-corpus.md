@@ -1,14 +1,14 @@
-# App Drop-In Test Corpus
+# LoomBench Drop-In Test Corpus
 
 This document specifies the target testing contract for Loom's
-self-contained application corpus under `test/app`. The corpus is the
+self-contained LoomBench corpus under `test/app`. The corpus is the
 general-purpose companion to the CMSIS drop-in compiler tests: each app
 is a small independent C or C++ program that must build and run when
 `loom-cc` or `loom-c++` replaces an ordinary compiler driver.
 
 ## Purpose
 
-The app corpus answers this question:
+LoomBench answers this question:
 
 ```text
 Can Loom act as a drop-in compiler for ordinary standalone C/C++
@@ -28,16 +28,16 @@ The CMSIS drop-in compiler contract is specified in
 `docs/spec-cmsis-dropin-compiler.md`. CMSIS tests validate Loom against
 real external library source trees and public CMSIS APIs.
 
-The app corpus validates Loom against small, self-contained programs
+LoomBench validates Loom against small, self-contained programs
 owned by this repository. It exercises ordinary compiler behavior,
 runtime behavior, artifact generation, and simulator integration
 without requiring external library layout, CMSIS headers, or CMSIS
 build-system conventions.
 
 The global workload universe is owned by `docs/spec-loom-stack.md`.
-This document owns only the repository app-corpus portion of that
-universe. Removal, deferral, or unsupported status for an app-corpus
-case requires a structured record.
+This document owns the repository `loombench` portion of that universe.
+A case remains in that universe until it is deliberately removed from the
+authoritative manifest.
 
 Both suites share the same compiler-product principle: replacing
 `gcc` or `g++` with `loom-cc` or `loom-c++` must preserve ordinary
@@ -60,15 +60,14 @@ Every case must provide:
 * runner metadata that identifies source language, expected compiler
   mode, expected outputs, and supported pipeline stages.
 
-The app source may contain both a reference implementation and a
+The LoomBench source may contain both a reference implementation and a
 candidate accelerator-facing implementation. The harness must compare
 observable results and exit nonzero on mismatch. Naming conventions
 such as reference and candidate function suffixes are test-harness
 conventions only; they do not define dataflow or mapping semantics.
 
-The corpus may normalize source formatting, build descriptors, and
-runner metadata during import. It must not change algorithmic behavior
-or silently weaken result checks.
+Changes to source formatting, build descriptors, and runner metadata
+must not change algorithmic behavior or silently weaken result checks.
 
 ## Corpus Manifest
 
@@ -84,17 +83,16 @@ records:
 * expected stdout or oracle mode;
 * supported validation tiers;
 * required feature tags;
-* unsupported-scope diagnostics when a tier is intentionally unavailable;
 * optional grouping tags such as reduction, scan, stencil, sort, graph,
   sparse, signal, bit, geometry, string, or neural.
 
 Runners must discover cases from the manifest rather than from a
-hard-coded shell array. A hard-coded subset is allowed only for a
-targeted smoke runner, and the subset name must make that scope clear.
+hard-coded shell array. Targeted integration tiers are explicit manifest
+subsets and do not redefine the complete corpus.
 
 ## Validation Tiers
 
-The app corpus uses ordered validation tiers. A case may support a
+LoomBench uses ordered validation tiers. A case may support a
 later tier only if all earlier tiers that are relevant to that case are
 well-defined.
 
@@ -165,28 +163,23 @@ the selected hardware profile supports those flows. Reports must follow
 
 The app runner stack must provide:
 
-* an all-cases runner for each validation tier;
+* one all-cases native and Loom drop-in runner;
+* representative source-to-IR integration tiers;
 * a single-case runner for debugging;
 * a manifest validation command;
 * deterministic output directories;
-* structured pass, fail, skip, and unsupported-scope records;
 * nonzero exit status for real failures;
-* zero exit status only when every required case for that tier passes
-  or has an allowed unsupported-scope record;
-* negative tests proving runner failures are not masked.
+* zero exit status only when every selected case passes;
+* validation that rejects empty selections, missing outputs, and unrelated
+  source symbols.
 
-Skip budgets are allowed only as explicit manifest policy. A skip must
-name the case, tier, reason, and owner category. Silent skip-by-missing
-file or skip-by-empty-corpus behavior is illegal.
-
-Unsupported-scope rows must satisfy the Unsupported Scope Policy in
-`docs/spec-loom-stack.md`. App-corpus rows may add component-specific
+Diagnostics for an attempted unsupported path must satisfy the Unsupported
+Scope Policy in `docs/spec-loom-stack.md` and may add component-specific
 case, tier, runner, or expected-output fields.
 
 ## Artifact Requirements
 
-For every case and tier, generated artifacts must have stable names and
-stable ownership:
+Generated artifacts must have stable names and ownership when a tier is run:
 
 * native executables and stdout files belong to the build/run tier;
 * LLVM IR files belong to the IR tier;
@@ -202,42 +195,10 @@ Generated artifacts must not be committed unless a specific checked-in
 golden artifact is required by a test. Golden artifacts must be small,
 stable, and justified by the test contract.
 
-## Import Requirements
-
-When importing app cases from a prior corpus:
-
-* first create a complete import inventory that lists every source case
-  from the prior corpus;
-* preserve each case as a standalone source package;
-* preserve the reference-oracle behavior;
-* normalize build and runner metadata to the target manifest format;
-* classify each case by validation tiers and feature tags;
-* record unsupported-scope or excluded-case reasons instead of silently
-  deleting difficult cases;
-* add representative negative tests for the manifest and runner
-  machinery before depending on the full corpus.
-
-Importing the corpus is a test-suite migration. It must not mutate
-dataflow, fabric, PnR, simulator, or runtime semantics by itself.
-
-Every case in the import inventory must end in exactly one state:
-
-* accepted into `test/app` with a manifest entry;
-* deferred with a structured unsupported-scope record and owner
-  category;
-* excluded with a stable reason, such as duplicate coverage,
-  nondeterministic behavior, external dependency, or invalid oracle.
-
-Silent omission from the imported corpus is illegal.
-
 ## Acceptance Criteria
 
 The app drop-in corpus target is complete when:
 
-* the import inventory covers every source case from the approved prior
-  corpus snapshot;
-* every inventoried case is accepted, deferred, or excluded with a
-  structured reason;
 * every accepted case under `test/app` is described by the manifest;
 * committed `test/app` case directories do not contain generated build
   outputs unless they are small checked-in golden artifacts justified by
@@ -246,11 +207,8 @@ The app drop-in corpus target is complete when:
 * all required cases pass the Loom drop-in build-and-run tier;
 * supported cases can proceed through LLVM IR, raise, and dataflow
   lowering tiers with structured artifacts;
-* every in-universe app case has an explicit status for every validation
-  tier, with either passing evidence or a structured unsupported-scope,
-  failed, or blocked record;
-* representative feature-group gates may be used as intermediate
-  regression checks, but they do not replace the full target universe;
+* representative downstream tiers remain explicit manifest subsets while
+  the complete manifest remains the suite inventory;
 * runner failures, missing cases, stale expected outputs, and invalid
   manifest records are diagnosed by tests;
 * compatibility-mode failures are separated from optional

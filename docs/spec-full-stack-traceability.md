@@ -266,10 +266,9 @@ The identity includes:
 Fingerprints are optional for early bring-up but required for
 reproducible DSE and for rejecting stale report chains.
 
-Intermediate artifact gate schemas are specified in
-`docs/spec-intermediate-artifacts.md`. Those artifacts summarize and
-audit stage evidence, but they do not replace the artifact identities
-checked by this traceability contract.
+Current mapping and simulation artifact formats are described in
+`docs/spec-intermediate-artifacts.md`. They do not replace the artifact
+identities checked by this traceability contract.
 
 ## Validation
 

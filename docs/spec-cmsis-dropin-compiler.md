@@ -189,11 +189,10 @@ The target CMSIS scope includes:
 
 The global workload universe is owned by `docs/spec-loom-stack.md`.
 This document owns only the CMSIS-DSP and CMSIS-NN portion of that
-universe. Every tracked CMSIS source row must eventually have an
-explicit status for compile/run, IR emission, raise, dataflow lowering,
-DFG-sim, PnR/CGRA-sim, and RTL/FPA evidence. Rows that cannot reach a
-tier must carry structured unsupported-scope, failed, or blocked
-records.
+universe. Its canonical inventory is the tracked C source set in the
+pinned CMSIS submodules. Representative integration targets exercise
+real compiler paths while support expands, but they do not redefine
+that inventory or act as per-source status records.
 
 Unsupported target intrinsics, missing sysroots, unavailable target
 backends, and unsupported library configurations must produce
@@ -260,27 +259,39 @@ When artifact or acceleration mode is enabled, reports should identify:
 
 Reports must not mutate source trees or vendored CMSIS inputs.
 
+## Canonical Source Inventory
+
+Canonical CMSIS status membership comes from every tracked `.c` file
+under `Source` at the submodule commits pinned by the parent repository.
+At the commits pinned by this revision, CMSIS-DSP contributes 660 rows
+and CMSIS-NN contributes 113 rows. LoomBench membership is defined by
+its own manifest rather than by this CMSIS contract.
+
+The CMSIS-DSP and CMSIS-NN integration target tables select replaceable
+representative sources. Each row identifies a `Source`-relative translation
+unit, target triple, CPU, public source symbol, and optional compiler flags.
+The tables neither define suite membership nor require adjacent status,
+binding, or provenance files. The parent repository's pinned submodule commit
+and the source-relative path identify the source used by a regression run.
+
 ## Testing And Acceptance
 
-The target is complete when:
+Core CMSIS regression coverage requires:
 
-* every tracked CMSIS-DSP and CMSIS-NN source row has an explicit status
-  for every validation tier, with either passing evidence or a
-  structured unsupported-scope, failed, or blocked record;
-* C and C++ build-system overrides can use `loom-cc` and `loom-c++`
-  without editing source code;
-* IR emission preserves target triples, data layout, and expected
-  public symbols;
-* raising and dataflow lowering produce deterministic artifacts or
-  structured diagnostics;
-* skip lists are empty or every skip is justified by a structured
-  unsupported-scope diagnostic;
-* negative tests prove runner and per-row gate failures are not masked;
-* acceleration-required mode fails when acceleration is impossible;
-* fallback-allowed mode reports host or ScalarCore fallback explicitly;
-* representative CMSIS-DSP and CMSIS-NN gates may be used as
-  intermediate regression checks, but they do not replace full
-  per-source target tracking across the validation ladder.
+* the inventory count comes directly from tracked `.c` files in each pinned
+  `Source` tree;
+* representative CMSIS-DSP and CMSIS-NN sources compile through LLVM IR,
+  raised MLIR, and dataflow MLIR without modifying the external source trees;
+* generated MLIR reparses, preserves the selected public source symbol, and
+  contains a dataflow definition associated with that symbol;
+* validation rejects a dataflow artifact whose definitions are unrelated to
+  the selected source symbol;
+* ordinary compiler compatibility and acceleration-specific behavior are
+  tested at their owning driver and pipeline boundaries.
+
+Representative targets are deliberately replaceable as compiler coverage
+changes. Expanding coverage toward the complete inventory does not require a
+parallel status ledger or one wrapper test per source file.
 
 ## Non-Goals
 

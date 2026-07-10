@@ -35,9 +35,9 @@ int main() {
     for (uint32_t i = 0; i + 1u < kSize; ++i) {
         for (uint32_t j = 0; j + i + 1u < kSize; ++j) {
             if (output[j] > output[j + 1u]) {
-                const float temp = output[j];
+                const float swap_value = output[j];
                 output[j] = output[j + 1u];
-                output[j + 1u] = temp;
+                output[j + 1u] = swap_value;
             }
         }
     }

@@ -3,7 +3,6 @@ import sys
 
 import lit.formats
 from lit.llvm import llvm_config
-from lit.llvm.subst import ToolSubst
 
 config.name = "LOOM"
 config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
@@ -14,85 +13,16 @@ config.test_exec_root = os.path.join(config.loom_obj_root, "test")
 
 config.substitutions.append(("%PATH%", config.environment["PATH"]))
 config.substitutions.append(("%shlibext", config.llvm_shlib_ext))
-# %python expands to the interpreter running lit, so perf scripts use the
-# same Python that drives the test harness.
+# %python expands to the interpreter running lit.
 config.substitutions.append(("%python", sys.executable))
 
 llvm_config.with_system_environment(
     ["HOME", "INCLUDE", "LIB", "TMP", "TEMP",
-     "LOOM_BIN", "LOOM_PERF", "LOOM_PERF_CACHE", "LOOM_PERF_TIMEOUT_S",
-     "LOOM_RTL_EDA_JOBS", "LOOM_RTL_EDA_RETRIES",
-     "JOBS", "LOOM_TEST_JOBS", "LOOM_ARTIFACT_TEST_JOBS",
-     "LOOM_ARTIFACT_GATES_JOBS", "LOOM_CHAIN_BREADTH_JOBS",
-     "LOOM_APP_BUILD_DIR_JOBS", "LOOM_SOURCE_COMPAT_JOBS",
-     "LOOM_CMSIS_DFG_SIM_JOBS"])
+     "JOBS", "LOOM_TEST_JOBS",
+     "LOOM_NATIVE_RUNNER_JOBS"])
 llvm_config.use_default_substitutions()
 
 config.excludes = ["lit.cfg.py", "lit.site.cfg.py", "CMakeLists.txt"]
-
-# Perf tests are wall-clock-sensitive and each one claims an exclusive
-# core via flock + taskset (see perf_runner.py:claim_exclusive_core).
-# Cap the concurrent perf-test count at the number of claimable cores
-# so each run lands on a distinct, contention-free core. Honors
-# $LOOM_PERF_CORES (same env var perf_runner.py reads). The "perf"
-# group is attached per-directory via lit.local.cfg.py under
-# test/techmap/perf.
-def _perf_parallelism_limit():
-    env = os.environ.get("LOOM_PERF_CORES")
-    if env:
-        cores = [tok.strip() for tok in env.split(",") if tok.strip()]
-        if cores:
-            return max(1, len(cores))
-    try:
-        affinity = os.sched_getaffinity(0)
-    except AttributeError:
-        affinity = set()
-    if not affinity:
-        return 1
-    # Reserve core 0 from the perf pool when there are spare cores
-    # (interrupts often pin to it on Linux). Mirrors candidate_perf_cores.
-    if len(affinity) > 1 and 0 in affinity:
-        affinity = affinity - {0}
-    return max(1, len(affinity))
-
-
-def _positive_env_int(name):
-    value = os.environ.get(name)
-    if not value:
-        return None
-    try:
-        parsed = int(value)
-    except ValueError:
-        lit_config.fatal(f"{name} must be a positive integer")
-    if parsed < 1:
-        lit_config.fatal(f"{name} must be a positive integer")
-    return parsed
-
-
-def _default_cpu_budget():
-    try:
-        affinity = os.sched_getaffinity(0)
-    except AttributeError:
-        affinity = set()
-    if affinity:
-        return max(1, len(affinity))
-    return max(1, os.cpu_count() or 1)
-
-
-def _artifact_parallelism_limit():
-    explicit = _positive_env_int("LOOM_ARTIFACT_TEST_JOBS")
-    if explicit is not None:
-        return explicit
-    test_budget = (
-        _positive_env_int("LOOM_TEST_JOBS")
-        or _positive_env_int("JOBS")
-        or _default_cpu_budget()
-    )
-    return max(1, min(16, test_budget))
-
-
-lit_config.parallelism_groups["perf"] = _perf_parallelism_limit()
-lit_config.parallelism_groups["artifacts"] = _artifact_parallelism_limit()
 
 tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom"),

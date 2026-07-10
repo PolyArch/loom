@@ -19,7 +19,6 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
@@ -218,7 +217,7 @@ struct LowerForToGraphPass
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
     registry.insert<::mlir::arith::ArithDialect, ::mlir::func::FuncDialect,
-                    ::mlir::scf::SCFDialect, ::mlir::ub::UBDialect,
+                    ::mlir::scf::SCFDialect,
                     ::dataflow::DataflowDialect>();
   }
 
@@ -233,16 +232,7 @@ struct LowerForToGraphPass
     promoteStandaloneStructuredOutParamFunctions(module, builder);
     promoteStandaloneStructuredFunctions(module, builder);
 
-    // First, for any host-scope scf.for with iter_args (i.e., a
-    // reduction that survived the forall-to-thread pass because it
-    // could not be promoted to a parallel forall), wrap it in a
-    // synthetic 1x1 dataflow.thread so a downstream graph.launch can
-    // be hosted. This keeps the smoke deliverable's "every iter_args
-    // reduction becomes a graph" assertion straightforward.
-    wrapHostScopeReductions(module, builder);
-    wrapHostScopeStructuredEffectLoops(module, builder);
-
-    // Then, for each dataflow.thread body, snapshot the eligible
+    // For each dataflow.thread body, snapshot the eligible
     // scf.for ops in source order before mutating.
     struct Pending {
       ::dataflow::ThreadOp thread;
@@ -257,8 +247,7 @@ struct LowerForToGraphPass
           return; // No iter_args: keep as scf.for in the thread body.
         if (isNestedInReductionFor(loop))
           return;
-        // Skip nested-inside-another-graph cases (none in the smoke
-        // shape, but keep the rule explicit).
+        // Skip loops already owned by a graph boundary.
         if (loop->getParentOfType<::dataflow::GraphFuncOp>())
           return;
         p.loops.push_back(loop);
@@ -839,327 +828,6 @@ struct LowerForToGraphPass
       promoteGraphOnlyFunction(module, func, builder);
   }
 
-  // ====================================================================
-  // SMOKE-ONLY: structural placeholder for host-scope reductions.
-  //
-  // This path keeps the original host-scope `scf.for` alive WHILE
-  // also emitting a synthetic 1x1 `dataflow.thread` + matching
-  // `dataflow.thread.launch` next to it (the launch site is at the
-  // host, not inside a thread). The synthetic launch exists purely
-  // so the per-kernel `dfg_check.sh` smoke gate can observe a
-  // `thread.launch` for kernels whose reduction tail otherwise lives
-  // at host scope (e.g., dotproduct, reduction, vecadd's tail).
-  //
-  // Important contract: the synthetic launch is a placeholder. Its
-  // body is a clone of the original loop, but the original loop is
-  // intentionally retained at host scope because we have NOT yet
-  // promoted host-scope reductions into their own
-  // `loom.acc_region` (and hence into a real placement-eligible
-  // thread). Downstream placement / execution semantics MUST NOT
-  // consume this shape: the launch is structural-smoke only, the
-  // host-scope loop is the truthful execution surface.
-  //
-  // Remove this entire path once host-scope reductions have been
-  // promoted under their own `loom.acc_region` and the wrapper is
-  // no longer needed for the smoke gate.
-  // ====================================================================
-  // TODO(loom-frontend): host-scope reductions need `loom.acc_region`
-  // promotion before this path can be removed.
-  void wrapHostScopeReductions(::mlir::ModuleOp module,
-                               ::mlir::OpBuilder &builder) {
-    struct Pending {
-      ::mlir::func::FuncOp func;
-      ::llvm::SmallVector<::mlir::scf::ForOp, 4> loops;
-    };
-    ::llvm::SmallVector<Pending, 4> pending;
-    module.walk([&](::mlir::func::FuncOp func) {
-      Pending p;
-      p.func = func;
-      func.walk([&](::mlir::scf::ForOp loop) {
-        if (loop.getInitArgs().empty())
-          return;
-        if (isNestedInReductionFor(loop))
-          return;
-        // Skip if already inside a thread or graph body; only host-
-        // scope reductions are wrapped here.
-        if (loop->getParentOfType<::dataflow::ThreadOp>())
-          return;
-        if (loop->getParentOfType<::dataflow::GraphFuncOp>())
-          return;
-        p.loops.push_back(loop);
-      });
-      if (!p.loops.empty())
-        pending.push_back(std::move(p));
-    });
-
-    for (Pending &p : pending) {
-      ::llvm::StringRef funcSym = p.func.getSymName();
-      std::string stem = "t_" + sanitizeSymbol(funcSym) + "_red";
-      for (auto [seq, loop] : ::llvm::enumerate(p.loops)) {
-        wrapOne(module, loop, stem, seq, builder);
-      }
-    }
-  }
-
-  void wrapOne(::mlir::ModuleOp module, ::mlir::scf::ForOp loop,
-               ::llvm::StringRef stem, size_t seq, ::mlir::OpBuilder &builder) {
-    ::mlir::Location loc = loop.getLoc();
-
-    // Collect every value used inside the loop that is defined
-    // outside the loop, including the iter_args' init operands and
-    // lb/ub/step. Note: iter_args themselves are inside-defined block
-    // args; we capture their *initial* SSA values via getInitArgs().
-    ::llvm::SetVector<::mlir::Value> captures;
-    collectExternalUses(loop, captures);
-    ::llvm::SmallVector<::mlir::Operation *, 4> epilogueOps;
-    collectEpilogueOps(loop, epilogueOps);
-    collectAdditionalCaptures(loop, epilogueOps, captures);
-    captures.insert(loop.getLowerBound());
-    captures.insert(loop.getUpperBound());
-    captures.insert(loop.getStep());
-    for (::mlir::Value v : loop.getInitArgs())
-      captures.insert(v);
-
-    // Build the thread with one input per loop result type so the
-    // launch can carry the reduction value back to the host. We do
-    // this by capturing the loop, materialising a memref-backed
-    // result-spill, but the simplest correct shape for the smoke
-    // deliverable is to leave the loop in the thread body and emit a
-    // store-into-host-side-memref boundary -- we don't need that for
-    // the kernel-correctness of the smoke driver (which only checks
-    // structure, not runnable semantics). Instead, we keep the thread
-    // results void and let the loop's value live inside the thread
-    // body.
-
-    // Build inputs from captured outside values.
-    ::llvm::SmallVector<::mlir::Type, 8> inputTypes;
-    for (::mlir::Value v : captures)
-      inputTypes.push_back(v.getType());
-    ::mlir::FunctionType functionType =
-        builder.getFunctionType(inputTypes, /*results=*/{});
-
-    std::string symStem = (stem + "_" + ::llvm::Twine(seq)).str();
-    std::string symName = uniqueSymbol(module, symStem);
-
-    builder.setInsertionPointToEnd(module.getBody());
-    auto threadOp = ::dataflow::ThreadOp::create(
-        builder, loc, symName, functionType,
-        ::llvm::ArrayRef<::mlir::NamedAttribute>{});
-    threadOp.setSymVisibilityAttr(builder.getStringAttr("private"));
-
-    ::mlir::Region &threadBody = threadOp.getBody();
-    ::mlir::Block *entry = builder.createBlock(&threadBody);
-    for (::mlir::Type ty : inputTypes)
-      entry->addArgument(ty, loc);
-    // Per spec section 5.4.1, the body's entry block layout is
-    // `(args_*, thread_ctrl, iv_*)`: a `none`-typed thread_ctrl slot
-    // followed by one `index`-typed iv per grid dim. We use a 1x1
-    // grid here so a single iv slot covers it.
-    ::mlir::BlockArgument threadCtrlArg =
-        entry->addArgument(builder.getType<::mlir::NoneType>(), loc);
-    (void)threadCtrlArg;
-    ::mlir::BlockArgument ivArg =
-        entry->addArgument(builder.getIndexType(), loc);
-    (void)ivArg;
-
-    builder.setInsertionPointToEnd(entry);
-    ::mlir::IRMapping mapping;
-    for (auto [i, captured] : ::llvm::enumerate(captures))
-      mapping.map(captured, entry->getArgument(i));
-    ::mlir::Operation *cloned = builder.clone(*loop.getOperation(), mapping);
-    if (auto clonedLoop = ::llvm::dyn_cast<::mlir::scf::ForOp>(cloned))
-      clonedLoop->setAttr(::loom::lowering::streamContCondAttrName(),
-                          ::loom::lowering::inferStreamContCond(builder, loop));
-    for (::mlir::Operation *op : epilogueOps)
-      builder.clone(*op, mapping);
-    ::dataflow::ThreadYieldOp::create(builder, loc);
-
-    // Emit the smoke-only synthetic launch at the original loop
-    // site. The original host-scope loop is intentionally retained
-    // alongside the launch so the reduction value remains available
-    // to the host (see the SMOKE-ONLY banner above for rationale).
-    // The launch's purpose is purely structural -- a marker for the
-    // per-kernel `dfg_check.sh` smoke gate.
-    builder.setInsertionPoint(loop);
-    ::llvm::SmallVector<::mlir::Value, 4> upperBounds;
-    upperBounds.push_back(::mlir::arith::ConstantOp::create(
-        builder, loc, builder.getIndexAttr(1)));
-    ::llvm::SmallVector<::mlir::Value, 8> bodyOperands;
-    for (::mlir::Value v : captures)
-      bodyOperands.push_back(v);
-
-    auto callee = ::mlir::FlatSymbolRefAttr::get(builder.getContext(), symName);
-    ::dataflow::ThreadLaunchOp::create(
-        builder, loc, /*asyncToken=*/::mlir::Type{}, callee, bodyOperands,
-        upperBounds, /*asyncDependencies=*/::mlir::ValueRange{});
-    // Note: we deliberately keep the original loop alive at host
-    // scope so its result is still valid for downstream uses. The
-    // thread body owns a clone of the same loop body.
-  }
-
-  bool isStructuredEffectLoopCandidate(::mlir::func::FuncOp func,
-                                       ::mlir::scf::ForOp loop) {
-    if (!func.getSymName().ends_with("_kernel"))
-      return false;
-    if (!loop.getInitArgs().empty())
-      return false;
-    if (loop->getParentOfType<::dataflow::ThreadOp>() ||
-        loop->getParentOfType<::dataflow::GraphFuncOp>())
-      return false;
-    if (loop->getParentOfType<::mlir::scf::ForOp>() ||
-        loop->getParentOfType<::mlir::scf::WhileOp>())
-      return false;
-    if (!loop.getRegion().hasOneBlock())
-      return false;
-
-    bool hasWhile = false;
-    bool hasStore = false;
-    bool unsupported = false;
-    loop->walk([&](::mlir::Operation *nested) -> ::mlir::WalkResult {
-      if (nested == loop.getOperation())
-        return ::mlir::WalkResult::advance();
-      if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
-                      ::dataflow::GraphFuncOp, ::dataflow::ThreadOp>(nested)) {
-        unsupported = true;
-        return ::mlir::WalkResult::interrupt();
-      }
-      if (::llvm::isa<::mlir::FunctionOpInterface, ::mlir::CallOpInterface>(
-              nested)) {
-        unsupported = true;
-        return ::mlir::WalkResult::interrupt();
-      }
-      if (::llvm::isa<::mlir::LLVM::StoreOp, ::dataflow::StoreOp>(nested))
-        hasStore = true;
-      if (::llvm::isa<::mlir::scf::WhileOp>(nested))
-        hasWhile = true;
-      if (nested->getNumRegions() != 0 &&
-          !::llvm::isa<::mlir::scf::ForOp, ::mlir::scf::IfOp,
-                       ::mlir::scf::WhileOp, ::mlir::scf::IndexSwitchOp>(
-              nested)) {
-        unsupported = true;
-        return ::mlir::WalkResult::interrupt();
-      }
-      return ::mlir::WalkResult::advance();
-    });
-    return hasWhile && hasStore && !unsupported;
-  }
-
-  void collectStructuredEffectLoopCaptures(
-      ::mlir::scf::ForOp loop,
-      ::llvm::SetVector<::mlir::Value> &captures) {
-    collectExternalUses(loop, captures);
-    captures.insert(loop.getLowerBound());
-    captures.insert(loop.getUpperBound());
-    captures.insert(loop.getStep());
-  }
-
-  void wrapHostScopeStructuredEffectLoops(::mlir::ModuleOp module,
-                                          ::mlir::OpBuilder &builder) {
-    struct Pending {
-      ::mlir::func::FuncOp func;
-      ::llvm::SmallVector<::mlir::scf::ForOp, 4> loops;
-    };
-    ::llvm::SmallVector<Pending, 4> pending;
-    module.walk([&](::mlir::func::FuncOp func) {
-      Pending p;
-      p.func = func;
-      func.walk([&](::mlir::scf::ForOp loop) {
-        if (isStructuredEffectLoopCandidate(func, loop))
-          p.loops.push_back(loop);
-      });
-      if (!p.loops.empty())
-        pending.push_back(std::move(p));
-    });
-
-    for (Pending &p : pending) {
-      std::string stem = "t_" + sanitizeSymbol(p.func.getSymName()) + "_effect";
-      for (auto [seq, loop] : ::llvm::enumerate(p.loops))
-        wrapOneStructuredEffectLoop(module, loop, stem, seq, builder);
-    }
-  }
-
-  void wrapOneStructuredEffectLoop(::mlir::ModuleOp module,
-                                   ::mlir::scf::ForOp loop,
-                                   ::llvm::StringRef stem, size_t seq,
-                                   ::mlir::OpBuilder &builder) {
-    ::mlir::Location loc = loop.getLoc();
-    ::mlir::Type noneType = builder.getType<::mlir::NoneType>();
-
-    ::llvm::SetVector<::mlir::Value> captures;
-    collectStructuredEffectLoopCaptures(loop, captures);
-
-    ::llvm::SmallVector<::mlir::Type, 8> captureTypes;
-    for (::mlir::Value value : captures)
-      captureTypes.push_back(value.getType());
-
-    std::string threadName =
-        uniqueSymbol(module, (stem + "_" + ::llvm::Twine(seq)).str());
-    std::string graphName =
-        uniqueSymbol(module, "g_" + sanitizeSymbol(threadName));
-
-    ::mlir::FunctionType threadType =
-        builder.getFunctionType(captureTypes, /*results=*/{});
-    ::llvm::SmallVector<::mlir::Type, 8> graphInputs;
-    graphInputs.push_back(noneType);
-    graphInputs.append(captureTypes.begin(), captureTypes.end());
-    ::mlir::FunctionType graphType =
-        builder.getFunctionType(graphInputs, ::mlir::TypeRange{noneType});
-
-    builder.setInsertionPointToEnd(module.getBody());
-    auto graph = ::dataflow::GraphFuncOp::create(
-        builder, loc, graphName, graphType,
-        ::llvm::ArrayRef<::mlir::NamedAttribute>{});
-    graph.setSymVisibilityAttr(builder.getStringAttr("private"));
-    ::mlir::Block *graphEntry = builder.createBlock(&graph.getBody());
-    for (::mlir::Type type : graphInputs)
-      graphEntry->addArgument(type, loc);
-
-    ::mlir::IRMapping graphMapping;
-    size_t graphArgIndex = 1;
-    for (::mlir::Value value : captures)
-      graphMapping.map(value, graphEntry->getArgument(graphArgIndex++));
-    builder.setInsertionPointToEnd(graphEntry);
-    builder.clone(*loop.getOperation(), graphMapping);
-    ::dataflow::GraphReturnOp::create(
-        builder, loc, ::mlir::ValueRange{graphEntry->getArgument(0)});
-
-    builder.setInsertionPointToEnd(module.getBody());
-    auto thread = ::dataflow::ThreadOp::create(
-        builder, loc, threadName, threadType,
-        ::llvm::ArrayRef<::mlir::NamedAttribute>{});
-    thread.setSymVisibilityAttr(builder.getStringAttr("private"));
-    ::mlir::Block *threadEntry = builder.createBlock(&thread.getBody());
-    for (::mlir::Type type : captureTypes)
-      threadEntry->addArgument(type, loc);
-    ::mlir::BlockArgument threadCtrl =
-        threadEntry->addArgument(noneType, loc);
-    threadEntry->addArgument(builder.getIndexType(), loc);
-
-    builder.setInsertionPointToEnd(threadEntry);
-    ::llvm::SmallVector<::mlir::Value, 8> graphOperands;
-    for (size_t i = 0, e = captureTypes.size(); i < e; ++i)
-      graphOperands.push_back(threadEntry->getArgument(i));
-    auto graphCallee =
-        ::mlir::FlatSymbolRefAttr::get(builder.getContext(), graphName);
-    ::dataflow::GraphLaunchOp::create(
-        builder, loc, /*doneOut=*/noneType, /*results=*/::mlir::TypeRange{},
-        graphCallee, threadCtrl, graphOperands);
-    ::dataflow::ThreadYieldOp::create(builder, loc);
-
-    builder.setInsertionPoint(loop);
-    ::llvm::SmallVector<::mlir::Value, 4> upperBounds;
-    upperBounds.push_back(::mlir::arith::ConstantOp::create(
-        builder, loc, builder.getIndexAttr(1)));
-    ::llvm::SmallVector<::mlir::Value, 8> bodyOperands;
-    for (::mlir::Value value : captures)
-      bodyOperands.push_back(value);
-    auto threadCallee =
-        ::mlir::FlatSymbolRefAttr::get(builder.getContext(), threadName);
-    ::dataflow::ThreadLaunchOp::create(
-        builder, loc, /*asyncToken=*/::mlir::Type{}, threadCallee,
-        bodyOperands, upperBounds, /*asyncDependencies=*/::mlir::ValueRange{});
-  }
-
   ::mlir::LogicalResult promoteOne(::mlir::ModuleOp module,
                                    ::mlir::scf::ForOp loop,
                                    ::llvm::StringRef stem, size_t seq,
@@ -1275,10 +943,8 @@ struct LowerForToGraphPass
     for (::mlir::Operation *op : epilogueOps)
       builder.clone(*op, mapping);
 
-    // Emit graph.return: leading ctrl_in passes through (we use the
-    // entry block's ctrl_in here as the done signal placeholder; the
-    // smoke deliverable does not yet model true memory-completion
-    // ordering).
+    // Forward ctrl_in as done_out. Memory completion ordering remains
+    // outside this graph extraction pass.
     builder.setInsertionPointToEnd(entry);
     ::llvm::SmallVector<::mlir::Value, 4> returnVals;
     returnVals.push_back(entry->getArgument(0)); // ctrl_in -> done_out
@@ -1293,22 +959,14 @@ struct LowerForToGraphPass
     // `(args_*, thread_ctrl, iv_*)` and root graph launches consume
     // the thread_ctrl as their start signal).
     builder.setInsertionPoint(loop);
-    ::mlir::Value ctrlIn;
-    if (auto enclosingThread = loop->getParentOfType<::dataflow::ThreadOp>()) {
-      ::mlir::Block &threadEntry = enclosingThread.getBody().front();
-      size_t ctrlIdx = enclosingThread.getFunctionType().getInputs().size();
-      // The verifier guarantees this slot exists and is `none`-typed.
-      ctrlIn = threadEntry.getArgument(ctrlIdx);
-    } else {
-      // SMOKE-ONLY fallback: a host-scope graph.launch (no enclosing
-      // thread) has no thread_ctrl block arg to consume. The current
-      // pipeline never emits this shape because every iter_args
-      // reduction is hoisted into a thread first (either by
-      // forall-to-thread or by wrapHostScopeReductions). We retain
-      // the `ub.poison` fallback as a structural placeholder so a
-      // future host-scope path does not silently miscompile.
-      ctrlIn = ::mlir::ub::PoisonOp::create(builder, loc, noneType);
-    }
+    auto enclosingThread = loop->getParentOfType<::dataflow::ThreadOp>();
+    if (!enclosingThread)
+      return loop.emitOpError(
+          "expected graph extraction candidate inside dataflow.thread");
+    ::mlir::Block &threadEntry = enclosingThread.getBody().front();
+    size_t ctrlIdx = enclosingThread.getFunctionType().getInputs().size();
+    // The verifier guarantees this slot exists and is `none`-typed.
+    ::mlir::Value ctrlIn = threadEntry.getArgument(ctrlIdx);
 
     ::llvm::SmallVector<::mlir::Value, 8> launchOperands;
     launchOperands.push_back(loop.getLowerBound());

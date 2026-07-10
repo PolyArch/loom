@@ -226,8 +226,7 @@ In both cases, the emitted ADG remains an explicit Fabric graph. For
 `fabric.system`, `fabric.link` defines connectivity. Coordinates,
 layout names, ranks, labels, rows, columns, and other display hints are
 visualization metadata only, as specified by
-`docs/spec-mapping-visualization.md` and the ADG inventory fields in
-`docs/spec-intermediate-artifacts.md`. They must not affect Fabric
+`docs/spec-mapping-visualization.md`. They must not affect Fabric
 verification, PnR placement legality, routing legality, routing costs,
 simulator behavior, RTL lowering, FPA, or DSE candidate scoring.
 

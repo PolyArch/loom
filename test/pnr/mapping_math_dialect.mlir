@@ -1,4 +1,7 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph math_exp_graph --hardware-mlir %S/shared_memory_reduction_adg.mlir --hardware shared_memory_reduction_adg --workload math_exp --output %t.csv --artifact %t.json
+// RUN: rm -rf %t.dir
+// RUN: mkdir -p %t.dir
+// RUN: loom-adg-builder-test --shared-memory-reduction --output %t.dir/shared-memory-reduction.mlir
+// RUN: loom-pnr-map --dfg-mlir %s --graph math_exp_graph --hardware-mlir %t.dir/shared-memory-reduction.mlir --hardware shared_memory_reduction_adg --workload math_exp --output %t.csv --artifact %t.json
 // RUN: FileCheck %s --check-prefix=ARTIFACT < %t.json
 
 // ARTIFACT-DAG: "status": "fail"

@@ -251,15 +251,11 @@ void ThreadOp::print(OpAsmPrinter &p) {
 }
 
 LogicalResult ThreadOp::verify() {
-  // Symbol visibility, when set, must be "private" in the first
-  // milestone (the spec rejects "public" / "nested" until cross-module
-  // linkage is specified). The entry-block / function-type
-  // consistency check lives in verifyBody (which the
-  // FunctionOpInterface default verifier calls).
+  // Symbol visibility, when set, must be private. The entry-block and
+  // function-type consistency check lives in verifyBody.
   if (auto vis = getSymVisibility()) {
     if (*vis != "private" && *vis != "")
-      return emitOpError(
-                 "first-milestone sym_visibility must be 'private'; got \"")
+      return emitOpError("sym_visibility must be 'private'; got \"")
              << *vis << "\"";
   }
   return success();
@@ -309,8 +305,7 @@ LogicalResult ThreadLaunchOp::verifySymbolUses(SymbolTableCollection &symbols) {
 
 LogicalResult ThreadLaunchOp::verify() {
   // The op result, if present, must be a thread token. Tablegen's
-  // Optional<Dataflow_ThreadTokenType> already enforces this; nothing
-  // additional to check at the smoke level.
+  // Optional<Dataflow_ThreadTokenType> already enforces this.
   return success();
 }
 
@@ -452,8 +447,7 @@ static bool isAllowedInDataflowGraphFuncBody(::mlir::Operation *op) {
 LogicalResult GraphFuncOp::verify() {
   if (auto vis = getSymVisibility()) {
     if (*vis != "private" && *vis != "")
-      return emitOpError(
-                 "first-milestone sym_visibility must be 'private'; got \"")
+      return emitOpError("sym_visibility must be 'private'; got \"")
              << *vis << "\"";
   }
 

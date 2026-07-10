@@ -2,7 +2,7 @@
 // dataflow control-routing primitives `dataflow.gate` and
 // `dataflow.mux`.
 //
-// Scope of the rewrite (smoke baseline):
+// Rewrite scope:
 //   For each `scf.if` op found anywhere inside a `dataflow.graph.func`
 //   body (post-order traversal so innermost shapes lower first):
 //

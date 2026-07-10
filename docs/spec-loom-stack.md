@@ -63,9 +63,8 @@ when a fact could otherwise be assigned to more than one subsystem.
 
 Loom specs are the natural-language target corpus for the project. They
 describe final behavior, evidence, and verification surfaces. They may
-lead the current implementation. Execution guides under `temp/` describe
-how the current repository moves toward those targets; they are not
-target specs.
+lead the current implementation. Local ignored execution guides may describe
+current repository work, but they are not target specs.
 
 The highest-priority shared contracts are:
 
@@ -110,8 +109,7 @@ high-performance full-stack framework for multi-core heterogeneous
 spatial accelerators. The target universe includes:
 
 * C and C++ drop-in compilation through `loom-cc` and `loom-c++`;
-* the repository app corpus, CMSIS-DSP, CMSIS-NN, and the Loom-owned
-  `loombench` benchmark family;
+* the canonical `loombench`, `cmsis-dsp`, and `cmsis-nn` suites;
 * architecture-aware compiler strategies including graph partitioning,
   fusion, tiling, memory placement, and operator specialization;
 * SpatialCore construction through `fabric.module`;
@@ -216,7 +214,7 @@ multiple components is not an acceptable target state.
 
 This section is non-normative. It records current repository facts for
 orientation only and is not part of target acceptance. Migration routes
-belong in ignored execution guides under `temp/`.
+belong in local ignored execution guides.
 
 The current repository already contains substantial dataflow, fabric,
 mapping, simulator, report, and audit scaffolding, but implementation
@@ -441,8 +439,7 @@ summary exports, is specified in
 `docs/spec-full-stack-reporting.md`. End-to-end demonstrator
 requirements are specified in
 `docs/spec-end-to-end-demonstrators.md`.
-Intermediate artifact gate schemas for mid-run evidence, summary
-exports, and content audits are specified in
+Current mapping and simulation artifact formats are described in
 `docs/spec-intermediate-artifacts.md`.
 
 ## Runtime ABI

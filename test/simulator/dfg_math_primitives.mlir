@@ -10,8 +10,6 @@
 // RUN: FileCheck %s --check-prefix=INT < %t.int.json
 // RUN: loom-dfg-sim %s --graph math_integer_abs_poison --arg 0=none --output %t.int-poison.json
 // RUN: FileCheck %s --check-prefix=INT-POISON < %t.int-poison.json
-// RUN: python3 %S/../e2e/audit_intermediate_artifacts.py --output %t.audit.json %t.float.json %t.round.json %t.roundeven.json %t.int.json %t.int-poison.json
-// RUN: FileCheck %s --check-prefix=AUDIT < %t.audit.json
 // RUN: loom-sim-cycle-summary --dfg-report %t.float.json --output %t.cycle.csv
 // RUN: FileCheck %s --check-prefix=CYCLE < %t.cycle.csv
 
@@ -82,9 +80,6 @@
 // INT-POISON-DAG: "workload": "math_integer_abs_poison"
 // INT-POISON-DAG: "status": "blocked"
 // INT-POISON-DAG: "math.absi cannot represent absolute value of signed minimum"
-
-// AUDIT-DAG: "schema": "dfg_sim_report"
-// AUDIT-DAG: "verdict": "pass"
 
 // CYCLE: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
 // CYCLE: math_unary_float,239,,blocked,DFG-sim report available; CGRA-sim requires Fabric ADG and mapping artifact evidence

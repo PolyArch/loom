@@ -1,8 +1,10 @@
 // RUN: rm -rf %t.dir
 // RUN: mkdir -p %t.dir
-// RUN: loom-adg-builder-test --shared-signal-window --output %t.hardware.mlir
-// RUN: loom %t.hardware.mlir | FileCheck %s --check-prefix=HARDWARE
-// RUN: loom-pnr-map --dfg-mlir %s --graph signal_window_pressure --hardware-mlir %t.hardware.mlir --hardware shared_signal_window_adg --workload signal_window_pressure --output %t.dir/mapping.csv --artifact %t.dir/mapping.json
+// RUN: loom-adg-builder-test --shared-signal-window --output %t.dir/hardware.mlir
+// RUN: loom-adg-builder-test --shared-signal-window --output %t.dir/hardware.second.mlir
+// RUN: cmp %t.dir/hardware.mlir %t.dir/hardware.second.mlir
+// RUN: loom %t.dir/hardware.mlir | FileCheck %s --check-prefix=HARDWARE
+// RUN: loom-pnr-map --dfg-mlir %s --graph signal_window_pressure --hardware-mlir %t.dir/hardware.mlir --hardware shared_signal_window_adg --workload signal_window_pressure --output %t.dir/mapping.csv --artifact %t.dir/mapping.json
 // RUN: FileCheck %s --check-prefix=MAPPING < %t.dir/mapping.json
 
 // HARDWARE-LABEL: fabric.module @shared_signal_window_adg

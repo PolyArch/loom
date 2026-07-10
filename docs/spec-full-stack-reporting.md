@@ -164,10 +164,9 @@ Every table export derived from a report bundle must identify the source
 bundle id, bundle schema version, export profile, and source metric ids
 when metrics are projected into columns.
 
-Portable intermediate artifact gate schemas are specified in
-`docs/spec-intermediate-artifacts.md`. Full-stack report bundles may
-consume those artifacts, but they do not replace the per-artifact
-schemas or content-audit requirements.
+Current mapping and simulation artifact formats are described in
+`docs/spec-intermediate-artifacts.md`. Future report bundles may consume
+those artifacts without replacing their producer-owned semantics.
 
 The required simulator cycle summary export has one row per kernel or
 app case and these required columns:
