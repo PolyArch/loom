@@ -364,6 +364,148 @@ def _batchnorm_chunk(cand):
     return dag
 
 
+def _bisection_chunk(cand):
+    # Single parallel loop (axpy-shaped, but 4 input streams + 2 output streams
+    # and a branch). All six arrays are contiguous over i, so LOOM_UNROLL both
+    # coalesces the adjacent accesses and amortizes the iterator; LOOM_PARALLEL
+    # strides and carries a separate iterator per worker. Only the taken arm of
+    # the if/else is counted (no predication credit): the compute chain is the
+    # same either way and both arms write the same two output addresses.
+    p, u = cand.factors("i")
+    dag = Dag()
+    r = dag.region("bisection_step")
+    r.load(kind="N" + INV)   # invariant, loaded once per chunk
+    _worker_control(r, p)    # one iterator advance per worker/wave (unroll amortizes)
+    for _w in range(p):
+        a = _cloads(r, u, True, "input_a")     # contiguous over unrolled i
+        b = _cloads(r, u, True, "input_b")
+        fa = _cloads(r, u, True, "input_fa")
+        fc = _cloads(r, u, True, "input_fc")
+        outs_a, outs_b = [], []
+        for k in range(u):
+            s = r.arith(a[k], b[k], kind="add")      # a + b
+            c = r.arith(s, kind="mul_half")          # * 0.5 -> c
+            prod = r.arith(fa[k], fc[k], kind="mul") # fa * fc
+            r.arith(prod, kind="cmp_lt")             # < 0 predicate (taken-arm only)
+            outs_a.append(c)   # taken arm writes (a, c) or (c, b); c is the deepest value
+            outs_b.append(c)
+        _cstores(r, outs_a, True, True, "output_a")  # contiguous over i
+        _cstores(r, outs_b, True, True, "output_b")
+    return dag
+
+
+def _autocorr_chunk(cand):
+    # Nested: outer PARALLEL lag loop, inner REDUCTION i loop (associative float
+    # sum, tree-reduced -> no i-loop control). Structurally gemv-shaped. x[i]
+    # (the un-shifted prefix) is the SAME data for every lag -> modeled invariant
+    # (loaded once per chunk, gemv's x). x[i+lag] shifts with lag -> recurring,
+    # contiguous over i so it coalesces. output[lag] is contiguous over lag.
+    #
+    # The inner reduction is modeled at its MAX length x_size (the lag=0 case);
+    # the true per-lag length is x_size - lag (decays to x_size - max_lag = 96),
+    # so the model conservatively over-counts inner work by ~12%. This does not
+    # change the compute-bound conclusion (cross-lag reuse of x is otherwise not
+    # modeled, matching the conv2d halo convention).
+    p_lag, u_lag = cand.factors("lag")
+    _pi, _ui = cand.factors("i")   # i is a fully-consumed reduction (inert split)
+    N = 128   # x_size (inner reduction length, modeled at max)
+    dag = Dag()
+    r = dag.region("autocorrelation")
+    r.load(kind="x_size" + INV)
+    r.load(kind="max_lag" + INV)
+    # x[i] prefix is invariant of lag: loaded once per chunk, contiguous -> coalesced.
+    xa = _cloads(r, N, True, "x", invariant=True)
+    _worker_control(r, p_lag)   # one lag-iterator advance per worker/wave (unroll
+                                # amortizes; the i reduction is a spatial tree -> no i control)
+    for _w in range(p_lag):
+        outs = []
+        for _kk in range(u_lag):
+            xb = _cloads(r, N, True, "x_shift")   # x[i+lag] shifted window (recurring, coalesced)
+            products = [r.arith(xa[j], xb[j], kind="mul") for j in range(N)]
+            outs.append(r.balanced_reduction(products, kind="reduce"))
+        _cstores(r, outs, True, True, "output")   # output[lag] contiguous over lag
+    return dag
+
+
+def _bit_reverse_chunk(cand):
+    # Nested: outer PARALLEL i loop (independent 32-bit words), inner SEQUENTIAL
+    # bit loop. The bit loop carries `result` and `value` through a
+    # non-associative shift/merge recurrence -> it cannot be spatially flattened,
+    # reduced, or parallelized. Following tridiag, the carried scalars are
+    # threaded as dataflow edges (no per-bit round-trip), and the bit iterator is
+    # charged per iteration (it stays on the critical path and cannot be
+    # amortized). The outer i iterator IS amortizable (one advance per worker).
+    # input_data[i] / output_reversed[i] are contiguous over i -> coalesce under
+    # LOOM_UNROLL(i).
+    p_i, u_i = cand.factors("i")
+    _pb, _ub = cand.factors("bit")   # bit is sequential: fully laid out serially, p forced to 1
+    BITS = 32
+    dag = Dag()
+    r = dag.region("bit_reverse")
+    r.load(kind="N" + INV)
+    _worker_control(r, p_i)   # outer i iterator amortized (one advance per worker/wave)
+    for _w in range(p_i):
+        invals = _cloads(r, u_i, True, "input_data")   # contiguous over unrolled i
+        outs = []
+        for _k in range(u_i):
+            value = invals[_k]   # initial value (dataflow from the input load)
+            result = None        # result starts at 0 (constant, anonymous)
+            for _bit in range(BITS):
+                shl = r.arith(result, kind="shl") if result is not None \
+                    else r.arith(kind="shl")           # (result << 1); iter 0 rooted at 0
+                band = r.arith(value, kind="band")     # value & 1 (fanned from one value handle)
+                result = r.arith(shl, band, kind="bor")   # | -> new result (carried)
+                value = r.arith(value, kind="shr")     # value >>= 1 (new value, carried)
+                r.induction(kind="bit", compare_depends_on_read=True)  # inner iterator: per-iter, on CP
+            outs.append(result)
+        _cstores(r, outs, True, True, "output_reversed")   # contiguous over i
+    return dag
+
+
+def _binsearch_chunk(cand):
+    # Nested: outer PARALLEL t loop (independent target searches), inner
+    # SEQUENTIAL while loop with DATA-DEPENDENT termination. Modeled at the
+    # worst-case probe count ceil(log2(N+1)) = 4 for N=10. The while carries
+    # left/right through a non-associative, data-dependent recurrence (threaded
+    # as dataflow), and its termination compare sits on the critical path per
+    # probe. input_sorted[mid] is a data-dependent (non-affine) index -> a scalar
+    # load that cannot coalesce. output_indices[t] is contiguous over t.
+    #
+    # The source pragma is LOOM_NO_PARALLEL / LOOM_NO_UNROLL; this DSE explores
+    # the space anyway (as it does for every kernel) but does NOT model control
+    # divergence across lanes, which is the real reason the source forbids
+    # parallelizing divergent searches. See the eval discussion.
+    p_t, u_t = cand.factors("t")
+    _pp, _up = cand.factors("probe")   # probe is sequential: worst-case trip, p forced to 1
+    PROBES = 4
+    dag = Dag()
+    r = dag.region("binary_search")
+    r.load(kind="N" + INV)
+    r.load(kind="M" + INV)
+    right0 = r.load(kind="right_init" + INV)   # right = N-1, hoisted once (invariant of t)
+    _worker_control(r, p_t)   # outer t iterator amortized (one advance per worker/wave)
+    for _w in range(p_t):
+        outs = []
+        for _kk in range(u_t):
+            target = r.load(kind="target")   # input_targets[t] scalar (recurring per target)
+            bound = right0                   # carried left/right, threaded as dataflow
+            for _pr in range(PROBES):
+                r.arith(bound, kind="cmp_le")             # while (left <= right) termination (side, on CP)
+                sub = r.arith(bound, kind="sub")          # right - left
+                sh = r.arith(sub, kind="shift")           # >> 1
+                mid = r.arith(sh, bound, kind="add_mid")  # + left -> mid
+                sm = r.load(mid, kind="sorted_mid")       # input_sorted[mid]: data-dependent index,
+                                                          # so the load waits on mid (on CP; no coalesce)
+                r.arith(sm, target, kind="cmp_eq")        # sorted[mid] == target (break check)
+                cmp_lt = r.arith(sm, target, kind="cmp_lt")   # sorted[mid] < target (branch)
+                bound = r.arith(cmp_lt, bound, kind="update") # left=mid+1 or right=mid-1 (carried)
+            res = r.arith(bound, kind="result")           # post-loop result read
+            r.arith(res, kind="ternary_cmp")                    # (result == -1) ? ... ternary compare
+            outs.append(res)
+        _cstores(r, outs, True, True, "output_indices")         # output_indices[t] contiguous over t
+    return dag
+
+
 # ---------------------------------------------------------------------------
 # Kernel registry
 # ---------------------------------------------------------------------------
@@ -460,6 +602,69 @@ def _register():
             "so those load/store savings show as lane headroom, not a lower floor. "
             "mean/variance/gamma/beta are per-channel invariants (once per "
             "exposed channel)."),
+    )
+    KERNELS["bisection_step"] = KernelSpec(
+        name="bisection_step",
+        levels=(Level("i", 64, "parallel"),),
+        build_chunk=_bisection_chunk,
+        coalesce_note=(
+            "All six arrays (input_a/b/fa/fc, output_a/b) are contiguous over i. "
+            "This is axpy-shaped: LOOM_UNROLL(i) beats LOOM_PARALLEL(i) two ways "
+            "-- it coalesces the 4 input loads and 2 output stores into vector "
+            "ops (bounded by V=4) and it amortizes the iterator (charged once per "
+            "worker, keeps paying past U=V). The if/else is counted taken-arm-only "
+            "(no predication credit) and the compute is a global pool, so the "
+            "branch does not separate P from U. Load-heavy shape (4 input streams "
+            "to 2 output streams), but compute-bound after coalescing + control "
+            "amortization."),
+    )
+    KERNELS["autocorrelation"] = KernelSpec(
+        name="autocorrelation",
+        levels=(Level("lag", 32, "parallel"), Level("i", 128, "reduction")),
+        build_chunk=_autocorr_chunk,
+        coalesce_note=(
+            "gemv-shaped: outer PARALLEL lag, inner REDUCTION i (associative float "
+            "sum, tree-reduced -> no i-loop control -> the dot-product path is "
+            "P/U-symmetric). x[i] (the un-shifted prefix) is the same data for "
+            "every lag -> modeled invariant (loaded once per chunk). x[i+lag] "
+            "shifts with lag -> recurring, but contiguous over i so it coalesces. "
+            "On the lag level, LOOM_UNROLL(lag) beats LOOM_PARALLEL(lag): it "
+            "coalesces the contiguous output[lag] stores and amortizes the lag "
+            "iterator. Inner length modeled at max x_size=128 (true length "
+            "x_size-lag runs down to 97 at lag=31 -> conservative ~14% over-count, "
+            "4096 vs true 3600); cross-lag reuse of x otherwise not modeled (conv2d "
+            "halo convention)."),
+    )
+    KERNELS["bit_reverse"] = KernelSpec(
+        name="bit_reverse",
+        levels=(Level("i", 256, "parallel"), Level("bit", 32, "sequential")),
+        build_chunk=_bit_reverse_chunk,
+        coalesce_note=(
+            "outer PARALLEL i (independent 32-bit words), inner SEQUENTIAL bit "
+            "loop carrying result/value through a non-associative shift/merge "
+            "recurrence. The carried scalars are threaded as dataflow (no per-bit "
+            "round-trip, unlike the conservative ASAP eval) and the bit iterator "
+            "is charged per iteration (it stays on CP and cannot be amortized). "
+            "The 4 bitops/bit form a large global arithmetic pool -> COMPUTE-bound "
+            "(contrast the store-bound ASAP result, which charges per-bit result/"
+            "value stores). LOOM_UNROLL(i) coalesces input_data/output_reversed "
+            "and amortizes the OUTER i iterator, but the inner sequential loop "
+            "dominates, so the P-vs-U edge is small."),
+    )
+    KERNELS["binary_search"] = KernelSpec(
+        name="binary_search",
+        levels=(Level("t", 5, "parallel"), Level("probe", 4, "sequential")),
+        build_chunk=_binsearch_chunk,
+        coalesce_note=(
+            "outer PARALLEL t (independent target searches), inner SEQUENTIAL "
+            "while with DATA-DEPENDENT termination (worst-case ceil(log2(N+1))=4 "
+            "probes). The left/right recurrence is threaded as dataflow and its "
+            "termination compare sits on CP per probe; input_sorted[mid] is a "
+            "non-affine (data-dependent) scalar load that cannot coalesce. This is "
+            "a COUNTEREXAMPLE like tridiag: the per-target serial recurrence and a "
+            "tiny problem (M=5 targets) leave it CP/latency-bound, so no P-vs-U "
+            "split helps. The source LOOM_NO_PARALLEL/LOOM_NO_UNROLL reflects "
+            "control divergence, which this DSE does not model."),
     )
 
 
@@ -998,6 +1203,50 @@ def _run_self_tests() -> int:
     tlb, tdem = absolute_cgra_lb(t, cfg)
     if tdem["CP"] != tlb:
         errors.append("tridiag_solve floor must be CP-bound (serial recurrence)")
+
+    # bisection_step: axpy-shaped single parallel loop. Unroll must coalesce and
+    # amortize control -> at a fixed product, P1U4 beats P4U1 on loads and A.
+    bs = KERNELS["bisection_step"]
+    bs_p4 = evaluate_candidate(bs, Candidate((("i", 4, 1),)), cfg)
+    bs_u4 = evaluate_candidate(bs, Candidate((("i", 1, 4),)), cfg)
+    if not (bs_u4.LD < bs_p4.LD):
+        errors.append(f"bisection_step P1U4 LD {bs_u4.LD} !< P4U1 LD {bs_p4.LD}")
+    if not (bs_u4.A < bs_p4.A):
+        errors.append(f"bisection_step P1U4 A {bs_u4.A} !< P4U1 A {bs_p4.A}")
+
+    # autocorrelation: gemv-shaped. Inner i reduction is P/U-symmetric; the outer
+    # lag level gives a (modest) unroll edge on loads at a fixed product. Floor
+    # must be compute-bound (large tree of products).
+    ac = KERNELS["autocorrelation"]
+    ac_lb, ac_dem = absolute_cgra_lb(ac, cfg)
+    if ac_dem["compute"] != ac_lb:
+        errors.append("autocorrelation floor must be compute-bound")
+    ac_p4 = evaluate_candidate(ac, Candidate((("lag", 4, 1), ("i", 1, 1))), cfg)
+    ac_u4 = evaluate_candidate(ac, Candidate((("lag", 1, 4), ("i", 1, 1))), cfg)
+    if not (ac_u4.LD <= ac_p4.LD):
+        errors.append(f"autocorrelation lag-unroll LD {ac_u4.LD} !<= "
+                      f"lag-parallel {ac_p4.LD}")
+
+    # bit_reverse: inner bit loop is sequential (p forced to 1). Threading the
+    # carried result/value as dataflow leaves the 4 bitops/bit as a global pool ->
+    # compute-bound.
+    br = KERNELS["bit_reverse"]
+    br_cands = enumerate_candidates(br, 8, 8, 256)
+    if any(n == "bit" and p > 1 for c in br_cands for n, p, _ in c.split):
+        errors.append("bit_reverse: sequential bit level must not parallelize")
+    br_lb, br_dem = absolute_cgra_lb(br, cfg)
+    if br_dem["compute"] != br_lb:
+        errors.append("bit_reverse floor must be compute-bound (bitop pool)")
+
+    # binary_search: COUNTEREXAMPLE. Inner probe loop is sequential (p forced to
+    # 1); data-dependent recurrence + tiny M=5 -> CP-bound, no P-vs-U distinction.
+    bsr = KERNELS["binary_search"]
+    bsr_cands = enumerate_candidates(bsr, 8, 8, 256)
+    if any(n == "probe" and p > 1 for c in bsr_cands for n, p, _ in c.split):
+        errors.append("binary_search: sequential probe level must not parallelize")
+    bsr_lb, bsr_dem = absolute_cgra_lb(bsr, cfg)
+    if bsr_dem["CP"] != bsr_lb:
+        errors.append("binary_search floor must be CP-bound (serial search)")
 
     # every kernel: end-to-end run, a recommendation exists, bracket holds on it.
     for name, ks in KERNELS.items():
