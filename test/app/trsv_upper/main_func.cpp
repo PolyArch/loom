@@ -1,4 +1,3 @@
-// Fixed-size upper triangular solve migrated from the legacy app corpus.
 
 #include <array>
 #include <cstdint>

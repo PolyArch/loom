@@ -1,5 +1,9 @@
 # Simulation Comparison
 
+Implementation status: this document is a target contract. Loom does not
+currently build the CGRA simulator or comparison producer required by this
+contract.
+
 This document specifies how Loom compares DFG-sim and CGRA-sim results.
 DFG-sim is specified in `docs/spec-sim-dfg.md`. CGRA-sim is specified
 in `docs/spec-sim-cgra.md`.
@@ -60,15 +64,14 @@ invalid mapping diagnostics.
 
 ## Performance Comparison
 
-DFG-sim reports optimistic software metrics. CGRA-sim reports
-hardware-aware metrics. These metrics are not automatically the same
-unit.
+DFG-sim reports software activity counts and heuristic scores. CGRA-sim
+reports hardware-aware metrics. These metrics are not automatically the same
+unit and must not be presented as a cycle ratio.
 
-When both reports expose a comparable cycle or step estimate,
-CGRA-sim's constrained cycle count should be no more optimistic than
-DFG-sim's unconstrained estimate. If CGRA-sim reports a lower number,
-the comparison report must explain why the numbers are not comparable or
-which modeling assumption caused the inversion.
+If a future DFG timing model and CGRA-sim expose comparable timing metrics,
+the comparison must first verify their metric definitions and units. A
+comparison tool must classify unmatched definitions as
+`metric_not_comparable` instead of converting activity scores into cycles.
 
 Expected CGRA-sim overhead categories include:
 
@@ -84,8 +87,8 @@ Expected CGRA-sim overhead categories include:
 * modeled ScalarCore residual execution;
 * simulator fidelity settings.
 
-DFG-sim may be used as a lower-bound-style reference, but the comparison
-tool must report the metric definitions before presenting ratios.
+DFG-sim may provide functional and software-activity baselines. Performance
+ratios require explicit, compatible metric definitions from both producers.
 
 ## Difference Classification
 
@@ -125,39 +128,18 @@ A simulation comparison report must include:
 * difference classification;
 * diagnostics and explanation categories.
 
-## Cycle Table Export
+## Metric Table Export
 
-The comparison tool must be able to emit a compact cycle table for
-mid-level regression tracking. The canonical table form has one row per
-kernel or app case and these required columns:
+A future comparison tool may emit a compact table for regression tracking
+only after both simulator report schemas define the projected metrics. Every
+numeric column must identify its metric definition and unit. Workload, input,
+mapping, classification, and diagnostics columns may provide context.
 
-* `kernel`: stable kernel or app case name;
-* `dfg_sim_cycles`: DFG-sim optimistic cycle or step estimate;
-* `cgra_sim_cycles`: CGRA-sim hardware-aware cycle count.
-
-Optional columns may include workload identity, input identity, mapping
-artifact identity, classification, ratio, and diagnostics. Optional
-columns must not change the meaning or order of the three required
-columns when the compact three-column profile is selected.
-
-If either simulator report is unavailable, the row must contain an
-explicit unsupported or diagnostic marker according to the selected
-export profile. It must not silently write zero for a missing cycle
-value.
-
-If a workload is represented by multiple dataflow graph slices, the
-compact table row may aggregate those slices only when all source
-reports share the same workload identity and input identity. The DFG
-cycle value is the sum of matching DFG-sim reports. The CGRA cycle value
-is the sum of matching CGRA-sim reports, and each CGRA-sim report must
-reference a valid mapping artifact for its slice.
-
-Identical cycle values across distinct `pass` rows are a correctness
-risk, not a benign formatting issue. The comparison or artifact audit
-must fail such rows unless they belong to an explicitly documented
-equivalence group and the evidence explains why the kernels are
-first-principles equivalent for the modeled input, operation family, and
-graph shape.
+If either simulator report is unavailable or its metric is not comparable,
+the row must contain an explicit status or diagnostic marker. Missing evidence
+must not be represented as numeric zero. Aggregation across graph slices is
+legal only when source reports share workload, input, metric definition, and
+unit identities.
 
 ## Use By PnR And DSE
 
@@ -179,7 +161,7 @@ The comparison protocol is complete at the target-spec level when:
 * it distinguishes correctness mismatches from expected hardware
   constraint differences;
 * it reports metric definitions before performance ratios;
-* it explains why CGRA-sim differs from the optimistic DFG-sim baseline;
+* it explains which hardware constraints affect CGRA-sim metrics;
 * it can feed PnR and DSE as explicit evidence;
-* it can emit the compact cycle table export with `kernel`,
-  `dfg_sim_cycles`, and `cgra_sim_cycles` columns.
+* any table export records metric definitions, units, and missing-evidence
+  status explicitly.

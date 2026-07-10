@@ -6,7 +6,7 @@ from lit.llvm import llvm_config
 
 config.name = "LOOM"
 config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
-config.suffixes = [".mlir"]
+config.suffixes = [".mlir", ".test"]
 
 config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = os.path.join(config.loom_obj_root, "test")
@@ -33,9 +33,8 @@ tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom-candidate-dump"),
     os.path.join(config.loom_obj_root, "tools", "loom-config-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-cost-test"),
-    os.path.join(config.loom_obj_root, "tools", "loom-cgra-sim"),
+    os.path.join(config.loom_obj_root, "tools", "loom-mapping-estimate"),
     os.path.join(config.loom_obj_root, "tools", "loom-dfg-sim"),
-    os.path.join(config.loom_obj_root, "tools", "loom-sim-cycle-summary"),
     os.path.join(config.loom_obj_root, "tools", "loom-coverage-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-hwsg-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-parallel-test"),
@@ -43,7 +42,6 @@ tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom-synth-base-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-synth-config-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-synth-fu-dump"),
-    os.path.join(config.loom_obj_root, "tools", "loom-synth-verifier-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-template-dump"),
     os.path.join(config.loom_obj_root, "bin"),
     config.llvm_tools_dir,
@@ -55,9 +53,8 @@ tools = [
     "loom-candidate-dump",
     "loom-config-test",
     "loom-cost-test",
-    "loom-cgra-sim",
+    "loom-mapping-estimate",
     "loom-dfg-sim",
-    "loom-sim-cycle-summary",
     "loom-coverage-test",
     "loom-hwsg-test",
     "loom-lower",
@@ -68,7 +65,6 @@ tools = [
     "loom-synth-base-test",
     "loom-synth-config-test",
     "loom-synth-fu-dump",
-    "loom-synth-verifier-test",
     "loom-template-dump",
     "mlir-opt",
 ]

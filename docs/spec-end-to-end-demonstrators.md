@@ -72,7 +72,7 @@ Required generated artifacts:
 * mapping artifact;
 * CGRA-sim report;
 * simulation comparison report;
-* simulator cycle summary table;
+* simulator metric comparison table when comparable metrics exist;
 * runtime package or launch descriptor;
 * RTL manifest and SystemVerilog source set;
 * EDA reports when selected;
@@ -178,7 +178,7 @@ Required generated artifacts:
 * CGRA-sim report;
 * DFG-sim report for comparison;
 * simulation comparison report;
-* simulator cycle summary table;
+* simulator metric comparison table when comparable metrics exist;
 * FPA report;
 * workload report bundle with derived cycle/frequency/power/area
   metrics.
@@ -221,8 +221,8 @@ The demonstrator matrix target is complete when:
 * all required demonstrators have manifest records or test descriptors;
 * every demonstrator has positive and negative validation commands;
 * the app demonstrator reaches a workload report bundle;
-* at least one demonstrator emits the simulator cycle summary table
-  with kernel or app name, DFG-sim cycles, and CGRA-sim cycles;
+* at least one demonstrator emits a simulator metric comparison table with
+  producer-owned metric definitions and units;
 * the CMSIS demonstrator proves drop-in compatibility and at least one
   artifact pipeline path;
 * the heterogeneous non-mesh demonstrator proves arbitrary topology;

@@ -11,6 +11,9 @@ report contains the evidence required by its producer. A non-passing report
 contains diagnostics instead of fabricated numeric values. Producers use a
 subset of this accepted interoperability vocabulary:
 
+Schema versions use `X.Y` strings. `X` changes for incompatible formats and
+`Y` changes for backward-compatible schema additions.
+
 The currently used status values are:
 
 * `pass`: the requested operation completed with usable evidence;
@@ -25,7 +28,8 @@ discover reports by scanning nearby scratch directories.
 
 ## DFG Simulation Report
 
-`loom-dfg-sim` emits a JSON object with `kind = dfg_sim_report`.
+`loom-dfg-sim` emits a JSON object with `schema_version = "2.1"` and
+`kind = dfg_sim_report`.
 
 Representative fields:
 
@@ -34,18 +38,31 @@ Representative fields:
 * `workload`;
 * `graph`;
 * `status`;
+* `metric_definition`;
 * `operation_semantics_source`;
 * `operation_cost_model_source`;
-* `optimistic_cycles`;
+* `operation_cost_score`;
+* `weighted_operation_score`;
+* `modeled_library_score`;
+* `operation_diversity_score`;
+* `memory_address_score`;
+* `score_breakdown`;
 * `dynamic_work_items`;
 * `operation_fire_counts`;
+* `modeled_library_calls`;
 * `final_outputs`;
 * `final_memory_state`;
 * `diagnostics`.
 
-Cycle counts, dynamic work counts, and operation fire counts are non-negative.
-Final outputs and visible memory state use deterministic encodings so a later
-hardware-aware simulation can compare functional results.
+Scores, dynamic work counts, and operation fire counts are non-negative.
+`operation_cost_score` is the sum of weighted operation fires, modeled library
+work, operation diversity, and computed-memory-address scores. The metric
+definition is
+`weighted_operations_plus_library_work_diversity_and_address.v1`. This is a
+deterministic heuristic, not a timing model. `wavefront_steps` and
+`event_count` describe simulator progress and activity; neither field is a
+cycle estimate. Final outputs and visible memory state use deterministic
+encodings for functional regression checks.
 
 ## PnR Mapping Outputs
 
@@ -58,7 +75,8 @@ The CSV columns are:
 workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 ```
 
-The JSON artifact has `kind = pnr_mapping`. Representative fields include:
+The JSON artifact has `schema_version = "1.0"` and `kind = pnr_mapping`.
+Representative fields include:
 
 * workload, graph, and hardware identities;
 * mapping and configuration identities;
@@ -71,48 +89,29 @@ The JSON artifact has `kind = pnr_mapping`. Representative fields include:
 
 A passing mapping has no unplaced software records or unrouted edges. Counts
 must agree with their corresponding arrays. Route segments carry concrete
-endpoints consumed by CGRA simulation. `resource_pressure`, when present, is
+endpoints consumed by mapping validation. `resource_pressure`, when present, is
 diagnostic metadata rather than a stable pass/fail policy.
 
-## CGRA Simulation Report
+Consumers accept the pre-versioning numeric value `1` as a migration input.
+Producers emit only the canonical `"1.0"` string.
 
-`loom-cgra-sim` consumes a DFG simulation report and a PnR mapping artifact.
-Fabric MLIR is an optional validation input. The tool emits a JSON object with
-`kind = cgra_sim_report`.
+## Mapping Estimate Report
+
+`loom-mapping-estimate` consumes a PnR mapping artifact. Fabric MLIR is an
+optional validation input. The tool emits a JSON object with
+`schema_version = "1.0"` and `kind = mapping_estimate_report`.
 
 Representative fields include:
 
 * workload, hardware, and mapping identities;
 * `status` and `diagnostics`;
-* operation semantics and cost-model identities;
-* `dfg_cycles`;
-* `hardware_aware_cycles`;
-* `performance_delta_cycles`;
-* modeled routing, memory, width-adapter, contention, and scheduling costs;
-* `final_outputs`;
-* `final_memory_state`;
-* `functional_state_source`.
+* placement, route, configuration, and schedule counts;
+* weighted component scores and `total_cost_score`;
+* `score_breakdown` and `limitations`.
 
-For comparable passing reports, hardware-aware cycles are not smaller than DFG
-cycles. The reported performance delta agrees with the modeled cost
-components. Functional state is carried from the DFG simulation evidence after
-the report fields are validated.
-
-## Simulator Cycle Summary
-
-`loom-sim-cycle-summary` projects explicit DFG and optional CGRA report paths
-into CSV. It requires at least one `--dfg-report` argument.
-
-The CSV columns are:
-
-```text
-kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
-```
-
-Supplied reports for the same workload are aggregated by summing their cycle
-counts. If any supplied report is incomplete, the aggregate remains
-non-passing and does not expose a partial total. A passing CGRA total must not
-be smaller than the corresponding DFG total.
+The score is a deterministic heuristic derived from mapping artifact counts.
+It is neither a timing model nor a functional simulator and does not report
+cycle counts or program outputs.
 
 ## Scope
 

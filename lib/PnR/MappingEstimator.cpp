@@ -1,9 +1,8 @@
-#include "Simulator/CGRASimulator.h"
+#include "PnR/MappingEstimator.h"
 
 #include "Common/ResolvedConfig.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
-#include "Simulator/OperationSemantics.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -14,10 +13,8 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Error.h"
-#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
@@ -29,18 +26,19 @@
 #include <tuple>
 #include <vector>
 
-using namespace loom::sim;
+using namespace loom::pnr;
 
 namespace {
 
-constexpr std::uint64_t kRouteLatencyPerSegment = 1;
-constexpr std::uint64_t kMemoryLatencyPerAccess = 4;
-constexpr std::uint64_t kStoreCommitLatencyPerPlacement = 3;
-constexpr std::uint64_t kWidthAdapterLatencyPerPlacement = 1;
-constexpr std::uint64_t kFunctionalUnitLatencyPerPlacement = 1;
-constexpr std::uint64_t kLoadAddressLatencyPerRoute = 1;
-constexpr std::uint64_t kStoreAddressLatencyPerRoute = 2;
-constexpr std::uint64_t kConfigRecordsPerIssuePage = 128;
+constexpr std::uint64_t kRouteSegmentWeight = 1;
+constexpr std::uint64_t kMemoryAccessWeight = 4;
+constexpr std::uint64_t kStoreCommitWeight = 3;
+constexpr std::uint64_t kWidthAdapterWeight = 1;
+constexpr std::uint64_t kFunctionalUnitWeight = 1;
+constexpr std::uint64_t kLoadAddressWeight = 1;
+constexpr std::uint64_t kStoreAddressWeight = 2;
+constexpr std::uint64_t kConfigRecordsPerScoreUnit = 128;
+constexpr llvm::StringLiteral kMappingSchemaVersion = "1.0";
 
 struct RouteStats {
   std::uint64_t routeCount = 0;
@@ -56,6 +54,7 @@ struct ConfigEntries {
 
 struct HardwareArtifactResource {
   std::string resourceKind;
+  std::string schedule;
   llvm::StringSet<> supportedOps;
   mlir::Operation *op = nullptr;
 };
@@ -93,6 +92,25 @@ struct HardwareSelection {
   std::string moduleName;
 };
 
+std::string nearestHardwareSchedule(mlir::Operation *op) {
+  for (mlir::Operation *cursor = op; cursor; cursor = cursor->getParentOp()) {
+    if (auto attr = cursor->getAttrOfType<fabric::ScheduleAttr>("schedule"))
+      return fabric::stringifySchedule(attr.getValue()).str();
+  }
+  return "spatial";
+}
+
+bool operationMatchesResourceKind(llvm::StringRef resourceKind,
+                                  llvm::StringRef operation) {
+  if (resourceKind == "fabric.mem.load")
+    return operation == "dataflow.load" || operation == "llvm.load";
+  if (resourceKind == "fabric.mem.store")
+    return operation == "dataflow.store" || operation == "llvm.store";
+  if (resourceKind == "fabric.op")
+    return fabric::isFabricOpSupported(operation);
+  return false;
+}
+
 llvm::Expected<std::string>
 requireObjectString(const llvm::json::Object &object, llvm::StringRef key,
                     llvm::StringRef diagnosticContext);
@@ -100,16 +118,6 @@ requireObjectString(const llvm::json::Object &object, llvm::StringRef key,
 std::string systemCoreHardwareIdentity(llvm::StringRef systemName,
                                        llvm::StringRef accCoreName) {
   return (systemName + "::" + accCoreName).str();
-}
-
-llvm::Error createParentDirectories(llvm::StringRef outputPath) {
-  llvm::SmallString<256> parent(outputPath);
-  llvm::sys::path::remove_filename(parent);
-  if (parent.empty())
-    return llvm::Error::success();
-  if (std::error_code ec = llvm::sys::fs::create_directories(parent))
-    return llvm::createStringError(ec, "could not create %s", parent.c_str());
-  return llvm::Error::success();
 }
 
 std::optional<std::string> symbolName(mlir::Operation *op) {
@@ -185,8 +193,7 @@ selectHardwareForMapping(mlir::ModuleOp module, llvm::StringRef hardwareName,
         "mapping hardware %s does not match selected system core %s",
         hardwareName.str().c_str(), expectedHardware.c_str());
 
-  mlir::Operation *system =
-      findSymbolOp(module, "fabric.system", *systemOrErr);
+  mlir::Operation *system = findSymbolOp(module, "fabric.system", *systemOrErr);
   if (!system)
     return llvm::createStringError(
         std::errc::invalid_argument,
@@ -203,8 +210,8 @@ selectHardwareForMapping(mlir::ModuleOp module, llvm::StringRef hardwareName,
   if (!selectedNode || selectedNode.getKind() != "acc_core")
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "system hardware %s does not contain acc_core %s",
-        systemOrErr->c_str(), accCoreOrErr->c_str());
+        "system hardware %s does not contain acc_core %s", systemOrErr->c_str(),
+        accCoreOrErr->c_str());
   mlir::FlatSymbolRefAttr spatial = selectedNode.getSpatialAttr();
   if (!spatial || spatial.getValue() != *spatialOrErr)
     return llvm::createStringError(
@@ -233,6 +240,7 @@ void addHardwareResource(llvm::StringMap<HardwareArtifactResource> &resources,
                          mlir::Operation *op = nullptr) {
   HardwareArtifactResource resource;
   resource.resourceKind = resourceKind.str();
+  resource.schedule = nearestHardwareSchedule(op);
   resource.op = op;
   resources.try_emplace(resourceId, std::move(resource));
 }
@@ -267,6 +275,7 @@ void appendHardwareOpResource(
     return;
   HardwareArtifactResource resource;
   resource.resourceKind = "fabric.op";
+  resource.schedule = nearestHardwareSchedule(op);
   resource.op = op;
   for (mlir::Attribute attr : opList) {
     if (auto sym = llvm::dyn_cast<mlir::FlatSymbolRefAttr>(attr))
@@ -535,9 +544,9 @@ llvm::Expected<std::pair<std::string, std::string>> expectedRouteEndpoints(
         std::errc::invalid_argument,
         "mapping route producer endpoint is not representable on hardware");
   std::optional<unsigned> consumerOperandIndex =
-      hardwareOperandIndexForResourceKind(consumerPlacement->second.resourceKind,
-                                          consumerPlacement->second.operation,
-                                          indicesOrErr->second);
+      hardwareOperandIndexForResourceKind(
+          consumerPlacement->second.resourceKind,
+          consumerPlacement->second.operation, indicesOrErr->second);
   if (!consumerOperandIndex)
     return llvm::createStringError(
         std::errc::invalid_argument,
@@ -859,9 +868,8 @@ llvm::Error validateHardwareArtifact(llvm::StringRef hardwareMlirPath,
   llvm::StringMap<HardwareArtifactResource> resources =
       collectHardwareArtifactResources(selectionOrErr->module,
                                        selectionOrErr->moduleName);
-  HardwareTopology topology =
-      buildHardwareTopology(selectionOrErr->module, selectionOrErr->moduleName,
-                            resources);
+  HardwareTopology topology = buildHardwareTopology(
+      selectionOrErr->module, selectionOrErr->moduleName, resources);
   const llvm::json::Array *placements = mapping.getArray("placements");
   if (!placements)
     return llvm::createStringError(std::errc::invalid_argument,
@@ -888,6 +896,10 @@ llvm::Error validateHardwareArtifact(llvm::StringRef hardwareMlirPath,
         requireObjectString(*placement, "operation", "mapping placement");
     if (!operationOrErr)
       return operationOrErr.takeError();
+    auto scheduleOrErr =
+        requireObjectString(*placement, "schedule", "mapping placement");
+    if (!scheduleOrErr)
+      return scheduleOrErr.takeError();
 
     auto resourceIt = resources.find(*hardwareOrErr);
     if (resourceIt == resources.end())
@@ -901,6 +913,17 @@ llvm::Error validateHardwareArtifact(llvm::StringRef hardwareMlirPath,
           "hardware resource %s has kind %s but mapping requires %s",
           hardwareOrErr->c_str(), resourceIt->second.resourceKind.c_str(),
           resourceKindOrErr->c_str());
+    if (resourceIt->second.schedule != *scheduleOrErr)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "hardware resource %s has schedule %s but mapping requires %s",
+          hardwareOrErr->c_str(), resourceIt->second.schedule.c_str(),
+          scheduleOrErr->c_str());
+    if (!operationMatchesResourceKind(*resourceKindOrErr, *operationOrErr))
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "operation %s is incompatible with resource kind %s",
+          operationOrErr->c_str(), resourceKindOrErr->c_str());
     if (*resourceKindOrErr == "fabric.op" &&
         !resourceIt->second.supportedOps.contains(*operationOrErr))
       return llvm::createStringError(
@@ -1042,58 +1065,6 @@ requireNonNegativeInteger(const llvm::json::Object &object, llvm::StringRef key,
   return static_cast<std::uint64_t>(*value);
 }
 
-llvm::Expected<std::vector<std::string>>
-requireStringArrayField(const llvm::json::Object &object, llvm::StringRef key,
-                        llvm::StringRef path) {
-  std::vector<std::string> values;
-  const llvm::json::Array *array = object.getArray(key);
-  if (!array)
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "%s lacks array field %s",
-                                   path.str().c_str(), key.str().c_str());
-  for (auto [index, value] : llvm::enumerate(*array)) {
-    std::optional<llvm::StringRef> string = value.getAsString();
-    if (!string)
-      return llvm::createStringError(
-          std::errc::invalid_argument, "%s field %s entry %u is not a string",
-          path.str().c_str(), key.str().c_str(), static_cast<unsigned>(index));
-    values.push_back(string->str());
-  }
-  return values;
-}
-
-llvm::Expected<std::map<std::string, std::vector<std::string>>>
-requireStringArrayObjectField(const llvm::json::Object &object,
-                              llvm::StringRef key, llvm::StringRef path) {
-  std::map<std::string, std::vector<std::string>> result;
-  const llvm::json::Object *state = object.getObject(key);
-  if (!state)
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "%s lacks object field %s",
-                                   path.str().c_str(), key.str().c_str());
-  for (const auto &[name, value] : *state) {
-    std::vector<std::string> values;
-    const llvm::json::Array *array = value.getAsArray();
-    if (!array) {
-      return llvm::createStringError(
-          std::errc::invalid_argument, "%s field %s.%s is not an array",
-          path.str().c_str(), key.str().c_str(), name.str().c_str());
-    }
-    for (auto [index, entry] : llvm::enumerate(*array)) {
-      std::optional<llvm::StringRef> string = entry.getAsString();
-      if (!string)
-        return llvm::createStringError(
-            std::errc::invalid_argument,
-            "%s field %s.%s entry %u is not a string", path.str().c_str(),
-            key.str().c_str(), name.str().c_str(),
-            static_cast<unsigned>(index));
-      values.push_back(string->str());
-    }
-    result[name.str()] = std::move(values);
-  }
-  return result;
-}
-
 llvm::Expected<std::string> requireString(const llvm::json::Object &object,
                                           llvm::StringRef key,
                                           llvm::StringRef path) {
@@ -1103,20 +1074,6 @@ llvm::Expected<std::string> requireString(const llvm::json::Object &object,
                                    "%s lacks string field %s",
                                    path.str().c_str(), key.str().c_str());
   return value->str();
-}
-
-llvm::Expected<std::string>
-requireSupportedReportSource(const llvm::json::Object &object,
-                             llvm::StringRef key, llvm::StringRef expected,
-                             llvm::StringRef label, llvm::StringRef path) {
-  auto valueOrErr = requireString(object, key, path);
-  if (!valueOrErr)
-    return valueOrErr.takeError();
-  if (*valueOrErr == expected)
-    return *valueOrErr;
-  return llvm::createStringError(std::errc::invalid_argument,
-                                 "DFG report %s source %s is not supported",
-                                 label.str().c_str(), valueOrErr->c_str());
 }
 
 llvm::Expected<std::string>
@@ -1131,10 +1088,19 @@ requireObjectString(const llvm::json::Object &object, llvm::StringRef key,
 }
 
 llvm::Expected<std::string>
-requireKindAndStatus(const llvm::json::Object &object,
-                     llvm::StringRef expectedKind, llvm::StringRef path) {
+requireMappingStatus(const llvm::json::Object &object, llvm::StringRef path) {
+  std::optional<llvm::StringRef> schemaVersion =
+      object.getString("schema_version");
+  std::optional<int64_t> legacySchemaVersion =
+      object.getInteger("schema_version");
+  if ((!schemaVersion || *schemaVersion != kMappingSchemaVersion) &&
+      (!legacySchemaVersion || *legacySchemaVersion != 1))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "%s has unsupported schema_version; expected %s", path.str().c_str(),
+        kMappingSchemaVersion.data());
   std::optional<llvm::StringRef> kind = object.getString("kind");
-  if (!kind || *kind != expectedKind)
+  if (!kind || *kind != "pnr_mapping")
     return llvm::createStringError(std::errc::invalid_argument,
                                    "%s has wrong kind", path.str().c_str());
   std::optional<llvm::StringRef> status = object.getString("status");
@@ -1143,12 +1109,65 @@ requireKindAndStatus(const llvm::json::Object &object,
                                    "%s lacks string field status",
                                    path.str().c_str());
   if (*status != "pass" && *status != "fail" && *status != "unsupported" &&
-      *status != "skipped" && *status != "blocked" &&
-      *status != "not_run")
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "DFG report status %s is not supported",
-                                   status->str().c_str());
+      *status != "skipped" && *status != "blocked" && *status != "not_run")
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "mapping artifact status %s is not supported", status->str().c_str());
   return status->str();
+}
+
+llvm::Error validateMappingCounts(const llvm::json::Object &mapping,
+                                  llvm::StringRef mappingPath,
+                                  llvm::StringRef mappingStatus) {
+  const llvm::json::Array *placements = mapping.getArray("placements");
+  if (!placements)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "mapping artifact lacks placements");
+  auto placedOrErr =
+      requireNonNegativeInteger(mapping, "placed_records", mappingPath);
+  if (!placedOrErr)
+    return placedOrErr.takeError();
+  if (*placedOrErr != placements->size())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "mapping placed_records field %llu does not match placements array "
+        "size %llu",
+        static_cast<unsigned long long>(*placedOrErr),
+        static_cast<unsigned long long>(placements->size()));
+
+  auto unplacedOrErr =
+      requireNonNegativeInteger(mapping, "unplaced_records", mappingPath);
+  if (!unplacedOrErr)
+    return unplacedOrErr.takeError();
+  auto unroutedOrErr =
+      requireNonNegativeInteger(mapping, "unrouted_edges", mappingPath);
+  if (!unroutedOrErr)
+    return unroutedOrErr.takeError();
+  const llvm::json::Array *configBitstream =
+      mapping.getArray("config_bitstream");
+  if (!configBitstream)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "mapping artifact lacks config_bitstream");
+  auto configRecordsOrErr =
+      requireNonNegativeInteger(mapping, "config_records", mappingPath);
+  if (!configRecordsOrErr)
+    return configRecordsOrErr.takeError();
+  if (*configRecordsOrErr != configBitstream->size())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "mapping config_records field %llu does not match config_bitstream "
+        "size %llu",
+        static_cast<unsigned long long>(*configRecordsOrErr),
+        static_cast<unsigned long long>(configBitstream->size()));
+  if (mappingStatus == "pass" && *unplacedOrErr != 0)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "passing mapping artifact has non-zero unplaced_records");
+  if (mappingStatus == "pass" && *unroutedOrErr != 0)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "passing mapping artifact has non-zero unrouted_edges");
+  return llvm::Error::success();
 }
 
 llvm::Error
@@ -1157,13 +1176,6 @@ validateMappingConfigFingerprint(const llvm::json::Object &mapping,
                                  const loom::ResolvedConfig &config) {
   std::optional<llvm::StringRef> fingerprint =
       mapping.getString("config_fingerprint");
-  bool producedByPnr = mapping.getString("graph").has_value();
-  bool hasPartialConfigEvidence =
-      mapping.getString("config_id").has_value() ||
-      mapping.getString("component_config_view").has_value() ||
-      mapping.getString("component_config_fingerprint").has_value();
-  if (!fingerprint && !producedByPnr && !hasPartialConfigEvidence)
-    return llvm::Error::success();
   if (!fingerprint)
     return llvm::createStringError(
         std::errc::invalid_argument,
@@ -1229,8 +1241,7 @@ bool isWidthAdapterOperation(llvm::StringRef operation) {
 }
 
 bool isComputedStoreAddressEdge(llvm::StringRef edgeRef) {
-  return edgeRef.contains("->dataflow.store#") &&
-         edgeRef.contains(".operand1");
+  return edgeRef.contains("->dataflow.store#") && edgeRef.contains(".operand1");
 }
 
 bool isComputedLoadAddressEdge(llvm::StringRef edgeRef) {
@@ -1239,19 +1250,12 @@ bool isComputedLoadAddressEdge(llvm::StringRef edgeRef) {
          !edgeRef.starts_with("dataflow.stream#");
 }
 
-bool hasFunctionalUnitLatency(llvm::StringRef operation) {
+bool hasExpensiveFunctionalUnit(llvm::StringRef operation) {
   return operation == "arith.muli" || operation == "arith.mulf" ||
          operation == "arith.divsi" || operation == "arith.divui" ||
          operation == "arith.divf" || operation == "arith.remsi" ||
          operation == "arith.remui" || operation == "arith.remf" ||
          operation == "llvm.intr.fmuladd";
-}
-
-llvm::StringRef differenceClassification(const CGRASimReport &report) {
-  if (report.status != "pass")
-    return "unsupported_scope";
-  return report.performanceDeltaCycles == 0 ? "no_modeled_hardware_constraints"
-                                            : "expected_hardware_constraint";
 }
 
 std::string configKey(llvm::StringRef target, llvm::StringRef registerName,
@@ -1290,7 +1294,7 @@ llvm::Error expectConfig(const ConfigEntries &entries, llvm::StringRef target,
 
 llvm::Error collectConfigEntries(const llvm::json::Object &mapping,
                                  llvm::StringRef mappingArtifactPath,
-                                 CGRASimReport &report,
+                                 MappingEstimateReport &report,
                                  ConfigEntries &entries) {
   const llvm::json::Array *configArray = mapping.getArray("config_bitstream");
   if (!configArray)
@@ -1308,8 +1312,7 @@ llvm::Error collectConfigEntries(const llvm::json::Object &mapping,
         static_cast<unsigned long long>(*declaredRecordsOrErr),
         static_cast<unsigned long long>(configArray->size()));
   report.configRecords = configArray->size();
-  report.configLoadLatencyCycles =
-      report.configRecords / kConfigRecordsPerIssuePage;
+  report.configLoadScore = report.configRecords / kConfigRecordsPerScoreUnit;
   for (const llvm::json::Value &value : *configArray) {
     const llvm::json::Object *entry = value.getAsObject();
     if (!entry)
@@ -1349,7 +1352,7 @@ llvm::Error collectConfigEntries(const llvm::json::Object &mapping,
 }
 
 llvm::Error collectPlacementStats(const llvm::json::Object &mapping,
-                                  CGRASimReport &report) {
+                                  MappingEstimateReport &report) {
   const llvm::json::Array *placements = mapping.getArray("placements");
   if (!placements)
     return llvm::createStringError(std::errc::invalid_argument,
@@ -1385,18 +1388,18 @@ llvm::Error collectPlacementStats(const llvm::json::Object &mapping,
           resourceKind ? resourceKind->str().c_str() : "<missing>");
     std::optional<llvm::StringRef> operation =
         placement->getString("operation");
-    if (*resourceKind == "fabric.op" &&
-        (!operation || !isSupportedMappedOperation(*operation)))
+    if (!operation || !operationMatchesResourceKind(*resourceKind, *operation))
       return llvm::createStringError(std::errc::invalid_argument,
-                                     "mapping placement operation %s is not "
-                                     "supported by operation semantics",
+                                     "operation %s is incompatible with "
+                                     "resource kind %s",
                                      operation ? operation->str().c_str()
-                                               : "<missing>");
+                                               : "<missing>",
+                                     resourceKind->str().c_str());
     if (*resourceKind == "fabric.op" && operation &&
         isWidthAdapterOperation(*operation))
       ++widthAdapterPlacements;
     if (*resourceKind == "fabric.op" && operation &&
-        hasFunctionalUnitLatency(*operation))
+        hasExpensiveFunctionalUnit(*operation))
       ++functionalUnitPlacements;
     if (operation && !operation->empty())
       placedOperationKinds.insert(operation->str());
@@ -1405,15 +1408,13 @@ llvm::Error collectPlacementStats(const llvm::json::Object &mapping,
     if (*resourceKind == "fabric.mem.store")
       ++storePlacements;
   }
-  report.memoryLatencyCycles =
-      (loadPlacements + storePlacements) * kMemoryLatencyPerAccess +
-      storePlacements * kStoreCommitLatencyPerPlacement;
-  report.widthAdapterLatencyCycles =
-      widthAdapterPlacements * kWidthAdapterLatencyPerPlacement;
-  report.functionalUnitLatencyCycles =
-      functionalUnitPlacements * kFunctionalUnitLatencyPerPlacement;
-  report.resourceMixLatencyCycles = placedOperationKinds.size();
-  report.temporalPenaltyCycles =
+  report.memoryAccessScore =
+      (loadPlacements + storePlacements) * kMemoryAccessWeight +
+      storePlacements * kStoreCommitWeight;
+  report.widthAdapterScore = widthAdapterPlacements * kWidthAdapterWeight;
+  report.functionalUnitScore = functionalUnitPlacements * kFunctionalUnitWeight;
+  report.resourceMixScore = placedOperationKinds.size();
+  report.temporalConflictScore =
       report.temporalPlacements == 0
           ? 0
           : report.temporalPlacements * (1 + report.routedEdges);
@@ -1448,6 +1449,13 @@ collectRouteStats(const llvm::json::Object &mapping,
         requireObjectString(*route, "edge_ref", "mapping route");
     if (!edgeRefOrErr)
       return edgeRefOrErr.takeError();
+    auto statusOrErr = requireObjectString(*route, "status", "mapping route");
+    if (!statusOrErr)
+      return statusOrErr.takeError();
+    if (*statusOrErr != "routed")
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "mapping route status %s is not routed",
+                                     statusOrErr->c_str());
     if (isComputedLoadAddressEdge(*edgeRefOrErr))
       ++stats.computedLoadAddressRoutes;
     if (isComputedStoreAddressEdge(*edgeRefOrErr))
@@ -1476,7 +1484,7 @@ collectRouteStats(const llvm::json::Object &mapping,
 }
 
 llvm::Error validateConfigCoverage(const llvm::json::Object &mapping,
-                                   const CGRASimReport &report,
+                                   const MappingEstimateReport &report,
                                    const ConfigEntries &configEntries) {
   const llvm::json::Array *placements = mapping.getArray("placements");
   if (!placements)
@@ -1596,57 +1604,36 @@ llvm::Error validateConfigCoverage(const llvm::json::Object &mapping,
 
 } // namespace
 
-llvm::Expected<CGRASimReport>
-loom::sim::runCGRASimulation(const CGRASimOptions &options) {
-  auto dfgOrErr = parseJsonObject(options.dfgReportPath);
-  if (!dfgOrErr)
-    return dfgOrErr.takeError();
+llvm::Expected<MappingEstimateReport>
+loom::pnr::estimateMapping(const MappingEstimateOptions &options) {
   auto mappingOrErr = parseJsonObject(options.mappingArtifactPath);
   if (!mappingOrErr)
     return mappingOrErr.takeError();
 
-  auto dfgStatusOrErr =
-      requireKindAndStatus(*dfgOrErr, "dfg_sim_report", options.dfgReportPath);
-  if (!dfgStatusOrErr)
-    return dfgStatusOrErr.takeError();
-  std::optional<llvm::StringRef> mappingKind = mappingOrErr->getString("kind");
-  if (!mappingKind || *mappingKind != "pnr_mapping")
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "%s has wrong kind",
-                                   options.mappingArtifactPath.c_str());
-  std::optional<llvm::StringRef> mappingStatus =
-      mappingOrErr->getString("status");
-  if (!mappingStatus || mappingStatus->empty())
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "%s lacks string field status",
-                                   options.mappingArtifactPath.c_str());
+  auto mappingStatusOrErr =
+      requireMappingStatus(*mappingOrErr, options.mappingArtifactPath);
+  if (!mappingStatusOrErr)
+    return mappingStatusOrErr.takeError();
+  if (llvm::Error err = validateMappingCounts(
+          *mappingOrErr, options.mappingArtifactPath, *mappingStatusOrErr))
+    return std::move(err);
 
   loom::ResolvedConfig resolvedConfig = loom::defaultResolvedConfig();
   if (llvm::Error err = validateMappingConfigFingerprint(
           *mappingOrErr, options.mappingArtifactPath, resolvedConfig))
     return std::move(err);
 
-  CGRASimReport report;
+  MappingEstimateReport report;
   report.configId = resolvedConfig.configId;
   report.configFingerprint = loom::resolvedConfigFingerprint(resolvedConfig);
-  report.componentConfigView = "cgra.sim.v1";
+  report.componentConfigView = "mapping.estimate.v1";
   report.componentConfigFingerprint = loom::componentConfigFingerprint(
       resolvedConfig, report.componentConfigView);
   auto workloadOrErr =
-      requireString(*dfgOrErr, "workload", options.dfgReportPath);
+      requireString(*mappingOrErr, "workload", options.mappingArtifactPath);
   if (!workloadOrErr)
     return workloadOrErr.takeError();
   report.workload = *workloadOrErr;
-
-  auto mappingWorkloadOrErr =
-      requireString(*mappingOrErr, "workload", options.mappingArtifactPath);
-  if (!mappingWorkloadOrErr)
-    return mappingWorkloadOrErr.takeError();
-  if (*mappingWorkloadOrErr != report.workload)
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "DFG report workload %s does not match mapping workload %s",
-        report.workload.c_str(), mappingWorkloadOrErr->c_str());
 
   auto hardwareOrErr =
       requireString(*mappingOrErr, "hardware", options.mappingArtifactPath);
@@ -1663,36 +1650,7 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
           options.hardwareMlirPath, report.hardware, *mappingOrErr))
     return std::move(err);
 
-  auto dfgCyclesOrErr = requireNonNegativeInteger(
-      *dfgOrErr, "optimistic_cycles", options.dfgReportPath);
-  if (!dfgCyclesOrErr)
-    return dfgCyclesOrErr.takeError();
-  report.dfgCycles = *dfgCyclesOrErr;
-  auto semanticsOrErr = requireSupportedReportSource(
-      *dfgOrErr, "operation_semantics_source", kOperationSemanticsSource,
-      "operation semantics", options.dfgReportPath);
-  if (!semanticsOrErr)
-    return semanticsOrErr.takeError();
-  report.operationSemanticsSource = *semanticsOrErr;
-  auto costModelOrErr = requireSupportedReportSource(
-      *dfgOrErr, "operation_cost_model_source", kOperationCostModelSource,
-      "operation cost model", options.dfgReportPath);
-  if (!costModelOrErr)
-    return costModelOrErr.takeError();
-  report.operationCostModelSource = *costModelOrErr;
-  auto finalOutputsOrErr = requireStringArrayField(*dfgOrErr, "final_outputs",
-                                                   options.dfgReportPath);
-  if (!finalOutputsOrErr)
-    return finalOutputsOrErr.takeError();
-  report.finalOutputs = *finalOutputsOrErr;
-  auto finalMemoryStateOrErr = requireStringArrayObjectField(
-      *dfgOrErr, "final_memory_state", options.dfgReportPath);
-  if (!finalMemoryStateOrErr)
-    return finalMemoryStateOrErr.takeError();
-  report.finalMemoryState = *finalMemoryStateOrErr;
-  report.functionalStateSource = "carried_from_dfg_sim_report";
-
-  if (*dfgStatusOrErr != "pass") {
+  if (*mappingStatusOrErr != "pass") {
     auto routeStatsOrErr =
         collectRouteStats(*mappingOrErr, options.mappingArtifactPath);
     if (!routeStatsOrErr)
@@ -1706,60 +1664,18 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
     report.configRecords = *configRecordsOrErr;
     if (llvm::Error err = collectPlacementStats(*mappingOrErr, report))
       return std::move(err);
-    report.memoryLatencyCycles = 0;
-    report.widthAdapterLatencyCycles = 0;
-    report.functionalUnitLatencyCycles = 0;
-    report.resourceMixLatencyCycles = 0;
-    report.loadAddressLatencyCycles = 0;
-    report.storeAddressLatencyCycles = 0;
-    report.configLoadLatencyCycles = 0;
-    report.temporalPenaltyCycles = 0;
-    report.hardwareAwareCycles = report.dfgCycles;
-    report.modeledLowerBoundCycles = report.dfgCycles;
-    report.performanceDeltaCycles = 0;
+    report.memoryAccessScore = 0;
+    report.widthAdapterScore = 0;
+    report.functionalUnitScore = 0;
+    report.resourceMixScore = 0;
+    report.loadAddressScore = 0;
+    report.storeAddressScore = 0;
+    report.configLoadScore = 0;
+    report.temporalConflictScore = 0;
+    report.totalCostScore = 0;
     report.status = "blocked";
-    report.diagnostic = "DFG-sim report status ";
-    report.diagnostic += *dfgStatusOrErr;
-    report.diagnostic += " blocks CGRA-sim";
-    if (const llvm::json::Array *diagnostics =
-            dfgOrErr->getArray("diagnostics")) {
-      if (!diagnostics->empty()) {
-        if (std::optional<llvm::StringRef> detail =
-                (*diagnostics)[0].getAsString())
-          report.diagnostic += ": " + detail->str();
-      }
-    }
-    return report;
-  }
-
-  if (*mappingStatus != "pass") {
-    auto routeStatsOrErr =
-        collectRouteStats(*mappingOrErr, options.mappingArtifactPath);
-    if (!routeStatsOrErr)
-      return routeStatsOrErr.takeError();
-    report.routedEdges = routeStatsOrErr->routeCount;
-    report.routeSegments = routeStatsOrErr->segmentCount;
-    auto configRecordsOrErr = requireNonNegativeInteger(
-        *mappingOrErr, "config_records", options.mappingArtifactPath);
-    if (!configRecordsOrErr)
-      return configRecordsOrErr.takeError();
-    report.configRecords = *configRecordsOrErr;
-    if (llvm::Error err = collectPlacementStats(*mappingOrErr, report))
-      return std::move(err);
-    report.memoryLatencyCycles = 0;
-    report.widthAdapterLatencyCycles = 0;
-    report.functionalUnitLatencyCycles = 0;
-    report.resourceMixLatencyCycles = 0;
-    report.loadAddressLatencyCycles = 0;
-    report.storeAddressLatencyCycles = 0;
-    report.configLoadLatencyCycles = 0;
-    report.temporalPenaltyCycles = 0;
-    report.hardwareAwareCycles = report.dfgCycles;
-    report.modeledLowerBoundCycles = report.dfgCycles;
-    report.performanceDeltaCycles = 0;
-    report.status = "blocked";
-    report.diagnostic =
-        "mapping artifact status " + mappingStatus->str() + " blocks CGRA-sim";
+    report.diagnostic = "mapping artifact status " + *mappingStatusOrErr +
+                        " prevents a complete mapping estimate";
     if (const llvm::json::Array *diagnostics =
             mappingOrErr->getArray("diagnostics")) {
       if (!diagnostics->empty()) {
@@ -1777,12 +1693,11 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
     return routeStatsOrErr.takeError();
   report.routedEdges = routeStatsOrErr->routeCount;
   report.routeSegments = routeStatsOrErr->segmentCount;
-  report.routeLatencyCycles = report.routeSegments * kRouteLatencyPerSegment;
-  report.loadAddressLatencyCycles =
-      routeStatsOrErr->computedLoadAddressRoutes * kLoadAddressLatencyPerRoute;
-  report.storeAddressLatencyCycles =
-      routeStatsOrErr->computedStoreAddressRoutes *
-      kStoreAddressLatencyPerRoute;
+  report.routeSegmentScore = report.routeSegments * kRouteSegmentWeight;
+  report.loadAddressScore =
+      routeStatsOrErr->computedLoadAddressRoutes * kLoadAddressWeight;
+  report.storeAddressScore =
+      routeStatsOrErr->computedStoreAddressRoutes * kStoreAddressWeight;
 
   ConfigEntries configEntries;
   if (llvm::Error err = collectConfigEntries(
@@ -1795,225 +1710,11 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
   if (llvm::Error err = collectPlacementStats(*mappingOrErr, report))
     return std::move(err);
 
-  report.hardwareAwareCycles = report.dfgCycles + report.routeLatencyCycles +
-                               report.memoryLatencyCycles +
-                               report.widthAdapterLatencyCycles +
-                               report.functionalUnitLatencyCycles +
-                               report.resourceMixLatencyCycles +
-                               report.loadAddressLatencyCycles +
-                               report.storeAddressLatencyCycles +
-                               report.configLoadLatencyCycles +
-                               report.temporalPenaltyCycles;
-  report.modeledLowerBoundCycles = report.hardwareAwareCycles;
-  report.performanceDeltaCycles = report.hardwareAwareCycles - report.dfgCycles;
+  report.totalCostScore = report.routeSegmentScore + report.memoryAccessScore +
+                          report.widthAdapterScore +
+                          report.functionalUnitScore + report.resourceMixScore +
+                          report.loadAddressScore + report.storeAddressScore +
+                          report.configLoadScore + report.temporalConflictScore;
   report.status = "pass";
-  report.diagnostic =
-      "CGRA-sim mapping-constraint estimate: DFG cycles plus modeled route, "
-      "memory, width-adapter, functional-unit, resource-mix, load-address, "
-      "store-address, configuration-load, and temporal penalties; report "
-      "lists unmodeled "
-      "microarchitectural constraints";
   return report;
-}
-
-llvm::Error loom::sim::writeCGRASimReportJson(llvm::StringRef outputPath,
-                                              const CGRASimReport &report) {
-  if (llvm::Error err = createParentDirectories(outputPath))
-    return err;
-
-  llvm::json::Array cycleBreakdown;
-  cycleBreakdown.push_back(llvm::json::Object{
-      {"category", "route_latency"},
-      {"cycles", static_cast<int64_t>(report.routeLatencyCycles)},
-      {"evidence", "mapping.route_segments"},
-      {"modeled", true},
-      {"explanation",
-       "one first-order route cost per consumed route segment; explicit Fabric "
-       "FIFO timing is listed as an unmodeled constraint"},
-  });
-  cycleBreakdown.push_back(llvm::json::Object{
-      {"category", "memory_latency"},
-      {"cycles", static_cast<int64_t>(report.memoryLatencyCycles)},
-      {"evidence", "fabric.mem placement"},
-      {"modeled", true},
-      {"explanation",
-       "fixed first-order memory tile latency per mapped load/store resource "
-       "plus write-port commit latency for mapped stores"},
-  });
-  cycleBreakdown.push_back(llvm::json::Object{
-      {"category", "width_adapter_latency"},
-      {"cycles", static_cast<int64_t>(report.widthAdapterLatencyCycles)},
-      {"evidence", "mapping.placements.operation"},
-      {"modeled", true},
-      {"explanation",
-       "first-order fabric width adapter latency for mapped truncation and "
-       "zero-extension resources"},
-  });
-  cycleBreakdown.push_back(llvm::json::Object{
-      {"category", "functional_unit_latency"},
-      {"cycles", static_cast<int64_t>(report.functionalUnitLatencyCycles)},
-      {"evidence", "mapping.placements.operation"},
-      {"modeled", true},
-      {"explanation",
-       "first-order multi-cycle FU placement latency for mapped multiply, "
-       "divide, remainder, and fused multiply-add resources"},
-  });
-  cycleBreakdown.push_back(llvm::json::Object{
-      {"category", "resource_mix_latency"},
-      {"cycles", static_cast<int64_t>(report.resourceMixLatencyCycles)},
-      {"evidence", "mapping.placements.operation"},
-      {"modeled", true},
-      {"explanation",
-       "first-order issue/control latency for the number of distinct mapped "
-       "operation kinds"},
-  });
-  cycleBreakdown.push_back(llvm::json::Object{
-      {"category", "load_address_latency"},
-      {"cycles", static_cast<int64_t>(report.loadAddressLatencyCycles)},
-      {"evidence", "mapping.routes.edge_ref"},
-      {"modeled", true},
-      {"explanation",
-       "first-order setup latency when computed SSA values feed a fabric "
-       "load-address port"},
-  });
-  cycleBreakdown.push_back(llvm::json::Object{
-      {"category", "store_address_latency"},
-      {"cycles", static_cast<int64_t>(report.storeAddressLatencyCycles)},
-      {"evidence", "mapping.routes.edge_ref"},
-      {"modeled", true},
-      {"explanation",
-       "first-order setup latency when computed SSA values feed a fabric "
-       "store-address port"},
-  });
-  cycleBreakdown.push_back(llvm::json::Object{
-      {"category", "configuration_load"},
-      {"cycles", static_cast<int64_t>(report.configLoadLatencyCycles)},
-      {"evidence", "mapping.config_records"},
-      {"modeled", true},
-      {"explanation",
-       "first-order configuration loading pressure for bitstreams larger than "
-       "one issue page"},
-  });
-  cycleBreakdown.push_back(llvm::json::Object{
-      {"category", "temporal_conflict"},
-      {"cycles", static_cast<int64_t>(report.temporalPenaltyCycles)},
-      {"evidence", "placement schedule"},
-      {"modeled", true},
-      {"explanation",
-       "temporal placements add first-order reuse conflict cost; fully spatial "
-       "placements have zero temporal conflict penalty"},
-  });
-
-  llvm::json::Array unmodeledConstraints;
-  unmodeledConstraints.push_back("explicit_fabric_route_paths");
-  unmodeledConstraints.push_back("fifo_queueing_latency");
-  unmodeledConstraints.push_back("cache_behavior");
-  unmodeledConstraints.push_back("scratchpad_bank_conflicts");
-  unmodeledConstraints.push_back("coherence_consistency");
-
-  llvm::json::Array firstPrinciplesChecks;
-  firstPrinciplesChecks.push_back(llvm::json::Object{
-      {"name", "cgra_not_more_optimistic_than_dfg"},
-      {"status", "pass"},
-      {"evidence", "hardware_aware_cycles >= dfg_cycles"},
-  });
-  firstPrinciplesChecks.push_back(llvm::json::Object{
-      {"name", "modeled_constraint_lower_bound"},
-      {"status", "pass"},
-      {"evidence", "hardware_aware_cycles >= modeled_lower_bound_cycles"},
-  });
-  firstPrinciplesChecks.push_back(llvm::json::Object{
-      {"name", "delta_explained_by_modeled_constraints"},
-      {"status", "pass"},
-      {"evidence", "performance_delta_cycles = route_latency_cycles + "
-                   "memory_latency_cycles + width_adapter_latency_cycles + "
-                   "functional_unit_latency_cycles + "
-                   "resource_mix_latency_cycles + "
-                   "load_address_latency_cycles + "
-                   "store_address_latency_cycles + "
-                   "config_load_latency_cycles + "
-                   "temporal_penalty_cycles"},
-  });
-
-  llvm::json::Object root{
-      {"schema_version", 1},
-      {"kind", "cgra_sim_report"},
-      {"workload", report.workload},
-      {"hardware", report.hardware},
-      {"mapping_id", report.mappingId},
-      {"config_id", report.configId},
-      {"config_fingerprint", report.configFingerprint},
-      {"component_config_view", report.componentConfigView},
-      {"component_config_fingerprint", report.componentConfigFingerprint},
-      {"status", report.status},
-      {"fidelity_level", "mapping_constraint_estimate"},
-      {"metric_definition", "mapping_constraint_estimate"},
-      {"operation_semantics_source", report.operationSemanticsSource},
-      {"operation_cost_model_source", report.operationCostModelSource},
-      {"difference_classification", differenceClassification(report)},
-      {"hardware_bound_classification",
-       report.status == "pass" ? "within_modeled_bounds" : "unsupported_scope"},
-      {"dfg_cycles", static_cast<int64_t>(report.dfgCycles)},
-      {"modeled_lower_bound_cycles",
-       static_cast<int64_t>(report.modeledLowerBoundCycles)},
-      {"performance_delta_cycles",
-       static_cast<int64_t>(report.performanceDeltaCycles)},
-      {"route_latency_cycles", static_cast<int64_t>(report.routeLatencyCycles)},
-      {"memory_latency_cycles",
-       static_cast<int64_t>(report.memoryLatencyCycles)},
-      {"width_adapter_latency_cycles",
-       static_cast<int64_t>(report.widthAdapterLatencyCycles)},
-      {"functional_unit_latency_cycles",
-       static_cast<int64_t>(report.functionalUnitLatencyCycles)},
-      {"resource_mix_latency_cycles",
-       static_cast<int64_t>(report.resourceMixLatencyCycles)},
-      {"load_address_latency_cycles",
-       static_cast<int64_t>(report.loadAddressLatencyCycles)},
-      {"store_address_latency_cycles",
-       static_cast<int64_t>(report.storeAddressLatencyCycles)},
-      {"config_load_latency_cycles",
-       static_cast<int64_t>(report.configLoadLatencyCycles)},
-      {"temporal_penalty_cycles",
-       static_cast<int64_t>(report.temporalPenaltyCycles)},
-      {"hardware_aware_cycles",
-       static_cast<int64_t>(report.hardwareAwareCycles)},
-      {"placed_records", static_cast<int64_t>(report.placedRecords)},
-      {"routed_edges", static_cast<int64_t>(report.routedEdges)},
-      {"route_segments", static_cast<int64_t>(report.routeSegments)},
-      {"config_records", static_cast<int64_t>(report.configRecords)},
-      {"spatial_placements", static_cast<int64_t>(report.spatialPlacements)},
-      {"temporal_placements", static_cast<int64_t>(report.temporalPlacements)},
-      {"cycle_breakdown", std::move(cycleBreakdown)},
-      {"unmodeled_constraints", std::move(unmodeledConstraints)},
-      {"first_principles_checks", std::move(firstPrinciplesChecks)},
-  };
-  llvm::json::Array finalOutputs;
-  for (const std::string &value : report.finalOutputs)
-    finalOutputs.push_back(value);
-  root.try_emplace("final_outputs", std::move(finalOutputs));
-
-  llvm::json::Object finalMemoryState;
-  for (const auto &[argument, values] : report.finalMemoryState) {
-    llvm::json::Array memoryValues;
-    for (const std::string &value : values)
-      memoryValues.push_back(value);
-    finalMemoryState[argument] = std::move(memoryValues);
-  }
-  root.try_emplace("final_memory_state", std::move(finalMemoryState));
-  root.try_emplace("functional_state_source", report.functionalStateSource);
-  if (!report.diagnostic.empty()) {
-    llvm::json::Array diagnostics;
-    diagnostics.push_back(report.diagnostic);
-    root.try_emplace("diagnostics", std::move(diagnostics));
-  }
-  if (!report.hardwareArtifact.empty())
-    root.try_emplace("hardware_artifact", report.hardwareArtifact);
-
-  std::error_code ec;
-  llvm::raw_fd_ostream out(outputPath, ec, llvm::sys::fs::OF_Text);
-  if (ec)
-    return llvm::createStringError(ec, "could not open %s",
-                                   outputPath.str().c_str());
-  out << llvm::formatv("{0:2}", llvm::json::Value(std::move(root))) << '\n';
-  return llvm::Error::success();
 }

@@ -7,8 +7,8 @@
 // CHECK-DAG: "workload": "fmuladd"
 // CHECK-DAG: "graph": "fmuladd"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
-// CHECK-DAG: "optimistic_cycles": 13
+// CHECK-DAG: "metric_definition": "weighted_operations_plus_library_work_diversity_and_address.v1"
+// CHECK-DAG: "operation_cost_score": 13
 // CHECK-DAG: "wavefront_steps": 2
 // CHECK-DAG: "event_count": 4
 // CHECK-DAG: "f32:10"
@@ -17,8 +17,8 @@
 // SPLIT-DAG: "workload": "split_mulf_addf"
 // SPLIT-DAG: "graph": "split_mulf_addf"
 // SPLIT-DAG: "status": "pass"
-// SPLIT-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
-// SPLIT-DAG: "optimistic_cycles": 11
+// SPLIT-DAG: "metric_definition": "weighted_operations_plus_library_work_diversity_and_address.v1"
+// SPLIT-DAG: "operation_cost_score": 11
 // SPLIT-DAG: "wavefront_steps": 3
 // SPLIT-DAG: "event_count": 5
 // SPLIT-DAG: "f32:10"

@@ -4,9 +4,11 @@
 // CHECK-DAG: "workload": "cmsis_nn_vec_mat_mult_s8"
 // CHECK-DAG: "graph": "cmsis_nn_vec_mat_mult_s8"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "arith.muli": 8
-// CHECK-DAG: "llvm.load": 14
-// CHECK-DAG: "llvm.store": 2
+// CHECK-DAG: "modeled_library_calls": {
+// CHECK-DAG: "arm_nn_vec_mat_mult_t_s8": 1
+// CHECK-DAG: "modeled_library_score": 6
+// CHECK-DAG: "operation_cost_score": 6
+// CHECK-DAG: "operation_fire_counts": {}
 // CHECK-DAG: "final_outputs": [
 // CHECK-DAG: "i32:0"
 // CHECK-DAG: "arg5": [

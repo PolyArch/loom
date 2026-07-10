@@ -1,5 +1,10 @@
 # Full-Stack Reporting
 
+Implementation status: this document is a target contract. Loom does not
+currently build a report-bundle producer or a simulator comparison table
+exporter. Existing mapping and DFG-sim artifacts remain producer-owned inputs
+for that future reporting layer.
+
 This document specifies Loom's target report bundle for source,
 compiler, mapping, simulation, RTL, EDA, FPA, and DSE evidence. The
 report bundle is the user-facing and DSE-facing summary of one workload
@@ -48,6 +53,7 @@ Optional fields:
 * raised MLIR artifact identity;
 * dataflow IR artifact identity;
 * DFG-sim report identity;
+* mapping estimate report identity;
 * CGRA-sim report identity;
 * simulation comparison report identity;
 * runtime package identity;
@@ -168,22 +174,16 @@ Current mapping and simulation artifact formats are described in
 `docs/spec-intermediate-artifacts.md`. Future report bundles may consume
 those artifacts without replacing their producer-owned semantics.
 
-The required simulator cycle summary export has one row per kernel or
-app case and these required columns:
+Once real DFG-sim and CGRA-sim reports expose comparable metrics, a simulator
+comparison export may have one row per kernel or app case. Numeric columns
+must be derived from producer-owned metric definitions and units rather than a
+predeclared cycle schema. Additional columns may provide mapping id, hardware
+candidate id, FPA report id, frequency, area, power, energy, or diagnostics.
 
-* `kernel`;
-* `dfg_sim_cycles`;
-* `cgra_sim_cycles`.
-
-The three required columns appear first and in that order. Additional
-columns may follow when the selected profile requests more context,
-such as mapping id, hardware candidate id, FPA report id, frequency,
-area, power, energy, or diagnostics.
-
-Missing simulator evidence must be represented by explicit unsupported
-or diagnostic values according to the export profile. A missing DFG-sim
-or CGRA-sim cycle value must not be represented as numeric zero unless
-the simulator report itself produced zero.
+Missing simulator evidence must be represented by explicit unsupported or
+diagnostic values according to the export profile. A missing metric must not
+be represented as numeric zero unless the producer report itself produced
+zero.
 
 The global evidence policy in `docs/spec-loom-stack.md` applies to
 report exports. Table rows that do not trace back to real source bundle
@@ -268,8 +268,6 @@ The full-stack reporting target is complete when:
   JSON report, while FPA CSV summaries remain projections of that
   evidence;
 * every metric records fidelity and evidence source;
-* simulator cycle summary exports preserve the required
-  `kernel`, `dfg_sim_cycles`, and `cgra_sim_cycles` columns;
 * every table export identifies the source bundle and export profile;
 * derived cycle/frequency/power/area metrics preserve input metric
   identities;

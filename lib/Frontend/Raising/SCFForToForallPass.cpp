@@ -28,13 +28,8 @@
 // the new body so the original body ops continue to consume an integer
 // iv as before.
 //
-// If a kernel loop that today lifts to scf.forall stops lifting under
-// this stricter matcher, that is an acceptable degradation: the loop
-// remains an scf.for and downstream lowerings still work. The five-
-// kernel raise corpus (vecadd, gemm, conv1d, dotproduct, reduction) was
-// validated under this matcher; only the do-while-tail uplifted loops
-// in gemm `main` (which alias their write base with their read base or
-// otherwise fail one of the constraints above) stop being lifted.
+// A loop that does not satisfy the matcher remains an scf.for so later
+// lowerings can preserve its sequential semantics.
 
 #include "Frontend/Raising/Passes.h"
 
@@ -521,9 +516,9 @@ bool isUnmodelledCall(::mlir::Operation *op) {
 // by the body checker because it can hide arbitrary control flow.
 bool isTransparentScfOp(::mlir::Operation *op) {
   return ::mlir::isa<::mlir::scf::ForOp, ::mlir::scf::IfOp,
-                     ::mlir::scf::WhileOp,
-                     ::mlir::scf::ForallOp, ::mlir::scf::YieldOp,
-                     ::mlir::scf::InParallelOp, ::mlir::scf::ConditionOp>(op);
+                     ::mlir::scf::WhileOp, ::mlir::scf::ForallOp,
+                     ::mlir::scf::YieldOp, ::mlir::scf::InParallelOp,
+                     ::mlir::scf::ConditionOp>(op);
 }
 
 // True when the loop body contains any block with more than one

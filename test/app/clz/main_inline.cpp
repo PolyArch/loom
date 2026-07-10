@@ -1,4 +1,3 @@
-// Count-leading-zeros inline variant migrated from the legacy app corpus.
 
 #include <array>
 #include <cstdint>

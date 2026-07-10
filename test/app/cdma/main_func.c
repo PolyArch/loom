@@ -1,4 +1,3 @@
-/* cdma: sequential uint32_t memory copy migrated from the legacy app corpus. */
 
 #include <stdint.h>
 #include <stdio.h>

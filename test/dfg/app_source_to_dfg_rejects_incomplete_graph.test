@@ -1,0 +1,6 @@
+# A detached graph candidate is not an executable source-to-DFG result.
+#
+# RUN: not env LOOM_CC=%loom-cc LOOM_CXX=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt %python %S/../app/ir_runner.py --stage dfg --case edge_update --build-root %t 2>&1 | FileCheck %s
+#
+# CHECK: edge_update:
+# CHECK-SAME: has no dataflow.graph.launch

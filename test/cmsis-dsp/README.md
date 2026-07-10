@@ -1,9 +1,8 @@
-# CMSIS-DSP Representative DFG Integration
+# CMSIS-DSP DFG Integration
 
 `test/frontend/cmsis_dsp_dfg.test` is the only frontend CMSIS-DSP
 integration entry point. It runs `run_cmsis_dsp_dfg.sh` over the real
-sources selected in `cmsis_dsp_integration_targets.txt`, representing
-fast math, interpolation, and matrix code paths.
+sources selected in `cmsis_dsp_integration_targets.txt`.
 
 For every target, the runner:
 
@@ -11,8 +10,8 @@ For every target, the runner:
 - raises the IR with `loom-raise` and requires nonempty MLIR;
 - lowers it with `loom-lower` and requires nonempty dataflow MLIR;
 - parses the result with `loom-raise-opt`;
-- checks that the public source symbol remains and that a matching
-  `dataflow.thread` or `dataflow.graph.func` definition exists.
+- checks that the public source symbol remains;
+- requires a launched dataflow graph with no residual SCF operations.
 
 The target table format is:
 
@@ -33,7 +32,7 @@ bash test/cmsis-dsp/run_cmsis_dsp_dfg.sh
 can isolate generated artifacts. Tool paths can be overridden with the
 corresponding `LOOM_*` environment variables.
 
-This table is representative integration coverage, not the canonical
+This table records current executable-DFG coverage, not the canonical
 CMSIS-DSP suite inventory. The canonical inventory remains every tracked
 `Source/**/*.c` file at the pinned submodule commit.
 

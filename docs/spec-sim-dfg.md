@@ -1,5 +1,10 @@
 # DFG-sim
 
+Implementation status: `loom-dfg-sim` executes the currently supported
+dataflow semantics and emits functional evidence, deterministic activity
+counts, and heuristic scores. It does not implement a critical-path model or
+emit software or hardware cycle estimates.
+
 This document specifies Loom DFG-sim, the pure software dataflow
 semantic simulator. DFG-sim executes dataflow IR without hardware
 resource limits. Its output is the software-semantic baseline for
@@ -10,8 +15,7 @@ debugging, testing, PnR cost feedback, CGRA-sim comparison, and DSE.
 DFG-sim answers this question:
 
 ```text
-What does this dataflow program do, and what is its optimistic
-unconstrained execution behavior, before hardware mapping is considered?
+What does this dataflow program do before hardware mapping is considered?
 ```
 
 DFG-sim consumes:
@@ -32,7 +36,7 @@ DFG-sim produces:
 * final memory state or memory diffs;
 * token and event traces;
 * deterministic diagnostics;
-* optimistic timing and activity metrics;
+* deterministic activity metrics and heuristic cost scores;
 * a DFG-sim report usable by comparison tools.
 
 DFG-sim does not consume Fabric ADG and does not consume a mapping
@@ -95,10 +99,11 @@ DFG-sim uses a deterministic event model:
   by hardware completion signals;
 * tie-breaking is deterministic for simultaneously fireable events.
 
-The event model is unconstrained by hardware resources. Multiple
-operations may fire in the same optimistic step if dataflow semantics
-allow it. DFG-sim does not model PE count, FU count, route capacity,
-memory port count, buffer depth, clock domains, or protocol latency.
+The event model is unconstrained by hardware resources. The scheduler uses a
+deterministic order for fireable operations. `wavefront_steps` records event
+loop progress; it is not a timing unit. DFG-sim does not model PE count, FU
+count, route capacity, memory port count, buffer depth, clock domains, or
+protocol latency.
 
 ## Memory Model
 
@@ -116,22 +121,23 @@ DFG-sim does not model cache hierarchy, memory bandwidth, coherence
 traffic, NoC latency, or terminal memory target range conflicts. Those
 are hardware concerns for Fabric ADG, PnR, and CGRA-sim.
 
-## Optimistic Metrics
+## Metrics
 
-DFG-sim metrics are software and optimistic. Baseline metrics include:
+The implemented report includes:
 
 * functional output values;
-* final memory diffs;
-* token count per value;
+* final visible memory state;
 * operation fire count;
+* modeled library call count;
 * event count;
-* maximum logical parallelism;
-* critical-path estimate over data dependencies;
-* optimistic cycle or step estimate;
-* diagnostics and unsupported-operation count.
+* wavefront progress count;
+* dynamic work item count;
+* weighted operation, modeled library work, operation diversity, and
+  computed-address scores;
+* diagnostics.
 
-The optimistic cycle or step estimate is not a hardware cycle count. It
-is a lower-bound-style software estimate used for comparison and DSE.
+These scores support deterministic regression and search heuristics. They do
+not estimate latency, throughput, critical path, or hardware cycles.
 
 ## Determinism
 
@@ -146,7 +152,7 @@ DFG-sim must fail before simulation starts.
 
 ## Report Contract
 
-A DFG-sim report must identify:
+The target DFG-sim report contract must identify:
 
 * software IR root;
 * simulator schema version;
@@ -156,9 +162,14 @@ A DFG-sim report must identify:
 * component configuration-view identity;
 * component configuration-view fingerprint;
 * functional outputs and memory diffs;
-* optimistic metrics;
+* activity metrics and heuristic score definitions;
 * trace location or inline trace summary;
 * diagnostics.
+
+The implemented `2.1` intermediate report is described in
+`docs/spec-intermediate-artifacts.md`. Runtime input identity, resolved
+configuration identity, component fingerprints, and trace references remain
+target fields until their producers are connected to `loom-dfg-sim`.
 
 Reports may be consumed by PnR as cost feedback and by the simulation
 comparison protocol. Reports must not contain hardware placement,
@@ -188,8 +199,8 @@ DFG-sim is complete at the target-spec level when:
 * unsupported operations produce structured diagnostics;
 * invalid or conflicting simulator configuration fails early with
   structured diagnostics;
-* reports expose functional outputs, memory diffs, token counts, event
-  counts, and optimistic metrics;
+* reports expose functional outputs, visible memory state, operation counts,
+  event counts, and heuristic scores;
 * reports carry configuration identity, canonical fingerprint, and
   component-view fingerprint;
 * the same workload and input can be compared against CGRA-sim through

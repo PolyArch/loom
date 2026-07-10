@@ -4,7 +4,7 @@
 // CHECK-DAG: "workload": "grid_like"
 // CHECK-DAG: "graph": "grid_like"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "optimistic_cycles": 5
+// CHECK-DAG: "operation_cost_score": 5
 // CHECK-DAG: "event_count": 4
 // CHECK-DAG: "dynamic_work_items": 4
 // CHECK-DAG: "i32:44"

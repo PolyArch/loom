@@ -77,9 +77,8 @@ bool functionSignatureIsRaiseFriendly(::mlir::LLVM::LLVMFuncOp funcOp) {
 // Build a builtin FunctionType from an LLVMFuncOp's signature. Caller
 // has already checked functionSignatureIsRaiseFriendly.
 ::mlir::FunctionType buildBuiltinFunctionType(::mlir::LLVM::LLVMFuncOp funcOp) {
-  return ::mlir::FunctionType::get(funcOp.getContext(),
-                                   funcOp.getArgumentTypes(),
-                                   funcOp.getResultTypes());
+  return ::mlir::FunctionType::get(
+      funcOp.getContext(), funcOp.getArgumentTypes(), funcOp.getResultTypes());
 }
 
 // Rewrite each llvm.return op inside `region` into func.return. The
@@ -97,9 +96,9 @@ void rewriteReturns(::mlir::Region &region) {
 }
 
 // Rewrite direct llvm.call to a raised callee into func.call.
-void rewriteCalls(::mlir::Region &region,
-                  const ::llvm::DenseMap<::llvm::StringRef, ::mlir::func::FuncOp>
-                      &raised) {
+void rewriteCalls(
+    ::mlir::Region &region,
+    const ::llvm::DenseMap<::llvm::StringRef, ::mlir::func::FuncOp> &raised) {
   ::llvm::SmallVector<::mlir::LLVM::CallOp, 4> calls;
   region.walk([&](::mlir::LLVM::CallOp op) { calls.push_back(op); });
   for (::mlir::LLVM::CallOp op : calls) {
@@ -131,8 +130,8 @@ void rewriteCalls(::mlir::Region &region,
       continue;
 
     ::mlir::OpBuilder b(op);
-    auto newCall = ::mlir::func::CallOp::create(
-        b, op.getLoc(), target, argOperands);
+    auto newCall =
+        ::mlir::func::CallOp::create(b, op.getLoc(), target, argOperands);
     if (op->getNumResults() == 1)
       op->getResult(0).replaceAllUsesWith(newCall.getResult(0));
     op.erase();
@@ -159,7 +158,7 @@ struct LLVMFuncToFuncPass
   void runOnOperation() final {
     ::mlir::ModuleOp module = getOperation();
 
-    // Phase 1: collect raise-friendly llvm.func ops.
+    // Collect raise-friendly llvm.func ops.
     ::llvm::SmallVector<::mlir::LLVM::LLVMFuncOp, 8> candidates;
     module.walk([&](::mlir::LLVM::LLVMFuncOp funcOp) {
       if (!functionSignatureIsRaiseFriendly(funcOp))
@@ -172,13 +171,11 @@ struct LLVMFuncToFuncPass
       candidates.push_back(funcOp);
     });
 
-    // Phase 2: build the func.func shells with empty bodies, registered
-    // by name so the call rewriter can find them.
+    // Build empty func.func shells indexed by name for call rewriting.
     ::llvm::DenseMap<::llvm::StringRef, ::mlir::func::FuncOp> raised;
     raised.reserve(candidates.size());
-    ::llvm::SmallVector<std::pair<::mlir::LLVM::LLVMFuncOp,
-                                  ::mlir::func::FuncOp>,
-                        8>
+    ::llvm::SmallVector<
+        std::pair<::mlir::LLVM::LLVMFuncOp, ::mlir::func::FuncOp>, 8>
         pairs;
     pairs.reserve(candidates.size());
 
@@ -186,8 +183,8 @@ struct LLVMFuncToFuncPass
     for (::mlir::LLVM::LLVMFuncOp funcOp : candidates) {
       auto fnType = buildBuiltinFunctionType(funcOp);
       builder.setInsertionPoint(funcOp);
-      auto newFunc = ::mlir::func::FuncOp::create(
-          builder, funcOp.getLoc(), funcOp.getSymName(), fnType);
+      auto newFunc = ::mlir::func::FuncOp::create(builder, funcOp.getLoc(),
+                                                  funcOp.getSymName(), fnType);
       // Mark internal-linkage functions as private so the symbol does
       // not become an exported ABI symbol after the raise.
       if (funcOp.getLinkage() == ::mlir::LLVM::Linkage::Internal ||
@@ -198,8 +195,7 @@ struct LLVMFuncToFuncPass
       pairs.emplace_back(funcOp, newFunc);
     }
 
-    // Phase 3: move the body region from each llvm.func into its
-    // matching func.func, then rewrite the terminator + direct calls.
+    // Move each body into its matching func.func and rewrite returns.
     for (auto &kv : pairs) {
       ::mlir::LLVM::LLVMFuncOp src = kv.first;
       ::mlir::func::FuncOp dst = kv.second;
@@ -207,14 +203,13 @@ struct LLVMFuncToFuncPass
       rewriteReturns(dst.getBody());
     }
 
-    // Phase 4: rewrite calls inside every raised function body now that
-    // every shell exists. Calls that point at unraised callees stay as
-    // llvm.call -- the spec allows the multi-dialect output.
+    // Rewrite direct calls after every destination shell exists. Calls to
+    // unraised functions remain llvm.call in the mixed-dialect output.
     for (auto &kv : pairs) {
       rewriteCalls(kv.second.getBody(), raised);
     }
 
-    // Phase 5: erase the original llvm.func ops.
+    // Remove the replaced llvm.func ops.
     for (auto &kv : pairs)
       kv.first.erase();
   }

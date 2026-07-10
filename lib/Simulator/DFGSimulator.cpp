@@ -37,8 +37,8 @@ using namespace loom::sim;
 
 namespace {
 
-constexpr std::uint64_t kLoadAddressSetupCycles = 1;
-constexpr std::uint64_t kStoreAddressSetupCycles = 2;
+constexpr std::uint64_t kLoadAddressScore = 1;
+constexpr std::uint64_t kStoreAddressScore = 2;
 
 struct MemoryValue;
 
@@ -133,8 +133,10 @@ struct SimulatorState {
   llvm::DenseMap<mlir::Value, std::uint64_t> seededTokenCounts;
   llvm::SmallVector<std::string> diagnostics;
   std::map<std::string, std::uint64_t> operationFireCounts;
+  std::map<std::string, std::uint64_t> modeledLibraryCalls;
+  std::uint64_t modeledLibraryScore = 0;
   std::uint64_t eventCount = 0;
-  std::uint64_t memoryAddressSetupCycles = 0;
+  std::uint64_t memoryAddressScore = 0;
   std::uint64_t structuredLoopIterations = 0;
   std::uint64_t maxStructuredLoopIterations = 0;
 };
@@ -513,10 +515,10 @@ bool hasComputedAddress(mlir::Value value) {
   return def->getName().getStringRef() != "dataflow.stream";
 }
 
-std::uint64_t estimateDynamicPipelineCycles(
+std::uint64_t estimateWeightedOperationScore(
     const std::map<std::string, std::uint64_t> &operationFireCounts,
     llvm::SmallVectorImpl<std::string> &diagnostics) {
-  std::uint64_t cycles = 0;
+  std::uint64_t score = 0;
   for (const auto &[opName, fireCount] : operationFireCounts) {
     if (fireCount == 0)
       continue;
@@ -525,11 +527,11 @@ std::uint64_t estimateDynamicPipelineCycles(
       diagnostics.push_back(llvm::toString(costOrErr.takeError()));
       continue;
     }
-    cycles += costOrErr->latencyCycles;
+    score += costOrErr->baseScore;
     if (fireCount > 1)
-      cycles += (fireCount - 1) * costOrErr->reciprocalThroughput;
+      score += (fireCount - 1) * costOrErr->repeatScore;
   }
-  return cycles;
+  return score;
 }
 
 std::uint64_t nonStructuredDynamicWorkItems(const SimulatorState &state) {
@@ -650,14 +652,13 @@ std::int32_t cmsisRequantize(std::int32_t value, std::int32_t multiplier,
   const std::int32_t rightShift = shift > 0 ? 0 : -shift;
   std::int64_t shifted = static_cast<std::int64_t>(value)
                          << static_cast<unsigned>(leftShift);
-  std::int32_t multiplied =
-      doublingHighMultNoSat(wrapI32(shifted), multiplier);
+  std::int32_t multiplied = doublingHighMultNoSat(wrapI32(shifted), multiplier);
   return divideByPowerOfTwo(multiplied, rightShift);
 }
 
-std::optional<std::int64_t>
-integerOperand(llvm::ArrayRef<Token> operands, unsigned index,
-               llvm::StringRef name, SimulatorState &state) {
+std::optional<std::int64_t> integerOperand(llvm::ArrayRef<Token> operands,
+                                           unsigned index, llvm::StringRef name,
+                                           SimulatorState &state) {
   if (index >= operands.size()) {
     state.diagnostics.push_back((name + " operand is missing").str());
     return std::nullopt;
@@ -683,16 +684,14 @@ loadIntegerPointerElement(SimulatorState &state, const Token &ptr,
       viewOrErr->pointer, integerValueToken(elementOffset), state, opName);
   if (!index)
     return std::nullopt;
-  if (!recordEvent(state, "llvm.load"))
-    return std::nullopt;
   return signExtend(integerToken(viewOrErr->pointer.memory->elements[*index]),
                     signedWidth);
 }
 
 bool storeIntegerPointerElement(SimulatorState &state, const Token &ptr,
                                 mlir::Type elementType,
-                                std::int64_t elementOffset,
-                                std::int64_t value, llvm::StringRef opName) {
+                                std::int64_t elementOffset, std::int64_t value,
+                                llvm::StringRef opName) {
   auto viewOrErr = ensurePointerMemory(state, ptr, elementType);
   if (!viewOrErr) {
     state.diagnostics.push_back(llvm::toString(viewOrErr.takeError()));
@@ -704,19 +703,14 @@ bool storeIntegerPointerElement(SimulatorState &state, const Token &ptr,
     return false;
   viewOrErr->pointer.memory->elements[*index] =
       integerValueToken(signExtend(value, 8));
-  return recordEvent(state, "llvm.store");
-}
-
-bool recordCmsisArithmetic(SimulatorState &state, llvm::StringRef opName) {
-  return recordEvent(state, opName);
+  return true;
 }
 
 bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
                                  llvm::ArrayRef<Token> operands,
                                  Token &result) {
   if (operands.size() != 15) {
-    state.diagnostics.push_back(
-        "arm_nn_vec_mat_mult_t_s8 expects 15 operands");
+    state.diagnostics.push_back("arm_nn_vec_mat_mult_t_s8 expects 15 operands");
     return false;
   }
 
@@ -771,33 +765,16 @@ bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
           "arm_nn_vec_mat_mult_t_s8");
       if (!lhsValue || !rhsValue)
         return false;
-      if (!recordCmsisArithmetic(state, "arith.addi"))
-        return false;
       *lhsValue += *lhsOffset;
-      if (!recordCmsisArithmetic(state, "arith.addi"))
-        return false;
       *rhsValue += *rhsOffset;
-      if (!recordCmsisArithmetic(state, "arith.muli"))
-        return false;
       const std::int64_t product = *lhsValue * *rhsValue;
-      if (!recordCmsisArithmetic(state, "arith.addi"))
-        return false;
       acc += product;
     }
 
-    if (!recordCmsisArithmetic(state, "arith.muli") ||
-        !recordCmsisArithmetic(state, "arith.shrsi"))
-      return false;
     acc = cmsisRequantize(wrapI32(acc), wrapI32(*dstMultiplier),
                           wrapI32(*dstShift));
-    if (!recordCmsisArithmetic(state, "arith.addi"))
-      return false;
     acc += *dstOffset;
-    if (!recordCmsisArithmetic(state, "arith.select"))
-      return false;
     acc = std::max(acc, *activationMin);
-    if (!recordCmsisArithmetic(state, "arith.select"))
-      return false;
     acc = std::min(acc, *activationMax);
     if (!storeIntegerPointerElement(state, operands[4], i8Type,
                                     row * *addressOffset, acc,
@@ -805,6 +782,10 @@ bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
       return false;
   }
 
+  ++state.eventCount;
+  ++state.modeledLibraryCalls[kCmsisNNVecMatMultTS8.str()];
+  state.modeledLibraryScore += static_cast<std::uint64_t>(*rhsRows) *
+                               static_cast<std::uint64_t>(*rhsCols);
   result = integerValueToken(0);
   return true;
 }
@@ -1442,7 +1423,7 @@ bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   emitToken(state, op.getDone(), noneToken());
   ++state.loadFireCounts[op.getOperation()];
   if (hasComputedAddress(op.getAddr()))
-    state.memoryAddressSetupCycles += kLoadAddressSetupCycles;
+    state.memoryAddressScore += kLoadAddressScore;
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -1623,7 +1604,7 @@ bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   view->memory->elements[*index] = data;
   emitToken(state, op.getDone(), noneToken());
   if (hasComputedAddress(op.getAddr()))
-    state.memoryAddressSetupCycles += kStoreAddressSetupCycles;
+    state.memoryAddressScore += kStoreAddressScore;
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -1930,8 +1911,8 @@ bool assignLocalLLVMZero(mlir::LLVM::ZeroOp op, SimulatorState &state,
   return recordEvent(state, op->getName().getStringRef());
 }
 
-bool assignLocalLLVMAddressOf(mlir::LLVM::AddressOfOp op,
-                              SimulatorState &state, LocalValueMap &locals) {
+bool assignLocalLLVMAddressOf(mlir::LLVM::AddressOfOp op, SimulatorState &state,
+                              LocalValueMap &locals) {
   mlir::Value result = op->getResult(0);
   std::int64_t byteOffset = 0;
   auto fixtureIt = state.globalMemoryFixtures.find(op.getGlobalName());
@@ -2100,7 +2081,7 @@ bool assignLocalDataflowLoad(dataflow::LoadOp op, SimulatorState &state,
   locals[op.getDone()] = noneToken();
   ++state.loadFireCounts[op.getOperation()];
   if (hasComputedAddress(op.getAddr()))
-    state.memoryAddressSetupCycles += kLoadAddressSetupCycles;
+    state.memoryAddressScore += kLoadAddressScore;
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -2164,7 +2145,7 @@ bool assignLocalDataflowStore(dataflow::StoreOp op, SimulatorState &state,
   view->memory->elements[*index] = *data;
   locals[op.getDone()] = noneToken();
   if (hasComputedAddress(op.getAddr()))
-    state.memoryAddressSetupCycles += kStoreAddressSetupCycles;
+    state.memoryAddressScore += kStoreAddressScore;
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -2559,8 +2540,8 @@ unsupportedStructuredYieldRegion(mlir::Operation *parent, mlir::Block *block,
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
                   mlir::LLVM::AddressOfOp, mlir::LLVM::GEPOp,
-                  mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
-                  mlir::ub::PoisonOp>(bodyOp))
+                  mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp, mlir::ub::PoisonOp>(
+            bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2652,8 +2633,8 @@ unsupportedStructuredForOperation(mlir::scf::ForOp op) {
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
                   mlir::LLVM::AddressOfOp, mlir::LLVM::GEPOp,
-                  mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
-                  mlir::ub::PoisonOp>(bodyOp))
+                  mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp, mlir::ub::PoisonOp>(
+            bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2717,8 +2698,8 @@ unsupportedStructuredWhileBody(mlir::Block *block,
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
                   mlir::LLVM::AddressOfOp, mlir::LLVM::GEPOp,
-                  mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
-                  mlir::ub::PoisonOp>(bodyOp))
+                  mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp, mlir::ub::PoisonOp>(
+            bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2797,8 +2778,8 @@ unsupportedStructuredForallOperation(mlir::scf::ForallOp op) {
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
                   mlir::LLVM::AddressOfOp, mlir::LLVM::GEPOp,
-                  mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
-                  mlir::ub::PoisonOp>(bodyOp))
+                  mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp, mlir::ub::PoisonOp>(
+            bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -3626,8 +3607,8 @@ std::optional<Token> staticSeedToken(mlir::Value value,
 std::optional<std::int64_t> staticSeedInteger(mlir::Value value,
                                               const SimulatorState &state) {
   std::optional<Token> token = staticSeedToken(value, state);
-  if (!token || (token->kind != TokenKind::Integer &&
-                 token->kind != TokenKind::Bool))
+  if (!token ||
+      (token->kind != TokenKind::Integer && token->kind != TokenKind::Bool))
     return std::nullopt;
   return integerToken(*token);
 }
@@ -3649,8 +3630,7 @@ staticStreamTripCount(dataflow::StreamOp stream, const SimulatorState &state,
     if (!evaluateCont(*current, *ub, stream.getContCond()))
       return tripCount;
     ++tripCount;
-    const std::int64_t next =
-        stepIndex(*current, *step, stream.getStepOp());
+    const std::int64_t next = stepIndex(*current, *step, stream.getStepOp());
     if (next == *current)
       return std::nullopt;
     *current = next;
@@ -3972,7 +3952,7 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   }
   if (report.wavefrontSteps == options.maxEventSteps) {
     report.status = "blocked";
-    report.diagnostics.push_back("maximum optimistic event steps reached");
+    report.diagnostics.push_back("maximum event steps reached");
   }
 
   bool missingReturn = false;
@@ -4022,13 +4002,16 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   }
   report.eventCount = state.eventCount;
   report.operationFireCounts = state.operationFireCounts;
-  report.pipelineLatencyThroughputCycles = estimateDynamicPipelineCycles(
+  report.modeledLibraryCalls = state.modeledLibraryCalls;
+  report.weightedOperationScore = estimateWeightedOperationScore(
       state.operationFireCounts, state.diagnostics);
-  report.optimisticCycles = report.pipelineLatencyThroughputCycles;
-  report.operationMixCycles = report.operationFireCounts.size();
-  report.optimisticCycles += report.operationMixCycles;
-  report.memoryAddressSetupCycles = state.memoryAddressSetupCycles;
-  report.optimisticCycles += report.memoryAddressSetupCycles;
+  report.operationCostScore = report.weightedOperationScore;
+  report.modeledLibraryScore = state.modeledLibraryScore;
+  report.operationCostScore += report.modeledLibraryScore;
+  report.operationDiversityScore = report.operationFireCounts.size();
+  report.operationCostScore += report.operationDiversityScore;
+  report.memoryAddressScore = state.memoryAddressScore;
+  report.operationCostScore += report.memoryAddressScore;
   report.diagnostics.append(state.diagnostics.begin(), state.diagnostics.end());
   return report;
 }
@@ -4052,31 +4035,40 @@ loom::sim::writeDFGSimulationReportJson(llvm::StringRef outputPath,
   root["metric_definition"] = report.metricDefinition;
   root["operation_semantics_source"] = report.operationSemanticsSource;
   root["operation_cost_model_source"] = report.operationCostModelSource;
-  root["optimistic_cycles"] = report.optimisticCycles;
-  root["pipeline_latency_throughput_cycles"] =
-      static_cast<int64_t>(report.pipelineLatencyThroughputCycles);
-  root["operation_mix_cycles"] = report.operationMixCycles;
-  root["memory_address_setup_cycles"] = report.memoryAddressSetupCycles;
-  llvm::json::Array cycleBreakdown;
-  cycleBreakdown.push_back(llvm::json::Object{
-      {"category", "pipeline_latency_throughput"},
-      {"cycles", static_cast<int64_t>(report.pipelineLatencyThroughputCycles)},
-      {"evidence", "operation_fire_counts"},
-      {"modeled", true},
-  });
-  cycleBreakdown.push_back(llvm::json::Object{
-      {"category", "operation_mix"},
-      {"cycles", static_cast<int64_t>(report.operationMixCycles)},
-      {"evidence", "distinct operation_fire_counts keys"},
-      {"modeled", true},
-  });
-  cycleBreakdown.push_back(llvm::json::Object{
-      {"category", "memory_address_setup"},
-      {"cycles", static_cast<int64_t>(report.memoryAddressSetupCycles)},
-      {"evidence", "computed dataflow.load/store address operands"},
-      {"modeled", true},
-  });
-  root["cycle_breakdown"] = std::move(cycleBreakdown);
+  if (report.status == "pass") {
+    root["operation_cost_score"] = report.operationCostScore;
+    root["weighted_operation_score"] =
+        static_cast<int64_t>(report.weightedOperationScore);
+    root["modeled_library_score"] = report.modeledLibraryScore;
+    root["operation_diversity_score"] = report.operationDiversityScore;
+    root["memory_address_score"] = report.memoryAddressScore;
+    llvm::json::Array scoreBreakdown;
+    scoreBreakdown.push_back(llvm::json::Object{
+        {"category", "weighted_operations"},
+        {"score", static_cast<int64_t>(report.weightedOperationScore)},
+        {"evidence", "operation_fire_counts"},
+        {"heuristic", true},
+    });
+    scoreBreakdown.push_back(llvm::json::Object{
+        {"category", "modeled_library_work"},
+        {"score", static_cast<int64_t>(report.modeledLibraryScore)},
+        {"evidence", "modeled_library_calls and modeled workload dimensions"},
+        {"heuristic", true},
+    });
+    scoreBreakdown.push_back(llvm::json::Object{
+        {"category", "operation_diversity"},
+        {"score", static_cast<int64_t>(report.operationDiversityScore)},
+        {"evidence", "distinct operation_fire_counts keys"},
+        {"heuristic", true},
+    });
+    scoreBreakdown.push_back(llvm::json::Object{
+        {"category", "computed_memory_address"},
+        {"score", static_cast<int64_t>(report.memoryAddressScore)},
+        {"evidence", "computed dataflow.load/store address operands"},
+        {"heuristic", true},
+    });
+    root["score_breakdown"] = std::move(scoreBreakdown);
+  }
   root["wavefront_steps"] = report.wavefrontSteps;
   root["event_count"] = report.eventCount;
   root["dynamic_work_items"] = report.dynamicWorkItems;
@@ -4085,6 +4077,11 @@ loom::sim::writeDFGSimulationReportJson(llvm::StringRef outputPath,
   for (const auto &[opName, count] : report.operationFireCounts)
     fireCounts[opName] = count;
   root["operation_fire_counts"] = std::move(fireCounts);
+
+  llvm::json::Object libraryCalls;
+  for (const auto &[callee, count] : report.modeledLibraryCalls)
+    libraryCalls[callee] = count;
+  root["modeled_library_calls"] = std::move(libraryCalls);
 
   llvm::json::Array outputs;
   for (const std::string &value : report.finalOutputs)

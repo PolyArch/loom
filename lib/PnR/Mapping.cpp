@@ -3055,7 +3055,7 @@ llvm::Error loom::pnr::writeMappingJson(llvm::StringRef outputPath,
     resourcePressure.push_back(resourcePressureJson(record));
 
   llvm::json::Object root{
-      {"schema_version", 1},
+      {"schema_version", "1.0"},
       {"kind", "pnr_mapping"},
       {"workload", summary.workload},
       {"hardware", summary.hardware},

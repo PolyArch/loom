@@ -205,11 +205,9 @@ def Fabric_ModuleOp : Fabric_Op<"module", [
     `!fabric.bits_tag<W, T>`, `memref<...>`. No other MLIR types are
     accepted.
 
-    The body whitelist is limited to a fixed set of canonical fabric
-    container ops; today that set is `fabric.pe`, `fabric.fifo`, and
-    `fabric.boundary` (plus the implicit `fabric.yield` terminator).
-    Future container ops (`fabric.switch`, `fabric.mem`, ...) will be
-    added to the whitelist when they land. See
+    The body accepts `fabric.pe`, `fabric.switch`, `fabric.mem`,
+    `fabric.fifo`, nested `fabric.module`, `fabric.instantiate`, and
+    `fabric.boundary`, plus the implicit `fabric.yield` terminator. See
     `docs/spec-fabric-module.md` for the full rules.
   }];
 
@@ -274,8 +272,11 @@ def Fabric_PeOp : Fabric_Op<"pe", [
         fabric.yield %pa : !fabric.bits<W>
       }
 
-    Temporal schedule: parsable but not yet implemented; the verifier
-    rejects it with a "not yet implemented" diagnostic.
+    A temporal PE uses tagged boundary ports and carries the hardware and
+    software configuration attributes declared below. Its verifier checks
+    configuration completeness, instruction encoding, selector bounds, and
+    FU compatibility. See `docs/spec-fabric-pe-temporal.md` for the complete
+    temporal constraints.
 
     Constraints (spatial, both forms):
       * `K = numInputs() >= 1` and `L = numOutputs() >= 1`. For the

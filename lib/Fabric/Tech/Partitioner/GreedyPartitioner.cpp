@@ -92,15 +92,14 @@ PartitionResult GreedyPartitioner::run(::dataflow::GraphOp graph,
   unsigned densityCount = 0;
 
   auto evalCostFromTallies = [&](const AcceptDelta &d) -> double {
-    unsigned b = blocksWithTemplate + static_cast<unsigned>(d.blocksWithTemplate);
+    unsigned b =
+        blocksWithTemplate + static_cast<unsigned>(d.blocksWithTemplate);
     int xe = static_cast<int>(crossEdges) + d.crossEdges;
     double dn = densitySum + d.densityNumerator;
     unsigned dc = densityCount + d.densityCount;
-    double avgDensity =
-        dc == 0 ? 0.0 : dn / static_cast<double>(dc);
-    return cfg.alpha * static_cast<double>(b)
-         + cfg.beta * static_cast<double>(xe)
-         - cfg.gamma * avgDensity;
+    double avgDensity = dc == 0 ? 0.0 : dn / static_cast<double>(dc);
+    return cfg.alpha * static_cast<double>(b) +
+           cfg.beta * static_cast<double>(xe) - cfg.gamma * avgDensity;
   };
 
   // For each op in visit order, try to grow a candidate covering it. If
@@ -192,15 +191,14 @@ PartitionResult GreedyPartitioner::run(::dataflow::GraphOp graph,
       }
 
       blocksWithTemplate += static_cast<unsigned>(delta.blocksWithTemplate);
-      crossEdges = static_cast<unsigned>(
-          static_cast<int>(crossEdges) + delta.crossEdges);
+      crossEdges = static_cast<unsigned>(static_cast<int>(crossEdges) +
+                                         delta.crossEdges);
       densitySum += delta.densityNumerator;
       densityCount += delta.densityCount;
     };
 
-    // Phase 1: enumerate admissible candidates that pass the early filters
-    // (root match, all ops uncovered, no immediate cycle). Their `ops`
-    // vectors are collected up front so phase 2 only touches scoring.
+    // Enumerate candidates that match the root, cover unassigned ops, and
+    // do not introduce an immediate cycle.
     struct Candidate {
       ::llvm::SmallVector<::mlir::Operation *> ops;
       const FuTemplate *tpl;
@@ -242,7 +240,7 @@ PartitionResult GreedyPartitioner::run(::dataflow::GraphOp graph,
       }
     }
 
-    // Phase 2: pick a winner.
+    // Select the lowest-cost admissible candidate.
     if (admissible.empty()) {
       // Fall back to a singleton block. Bind a template only if the
       // cache reports one and accepting that singleton would not form a
@@ -269,8 +267,7 @@ PartitionResult GreedyPartitioner::run(::dataflow::GraphOp graph,
       // and accept directly. The four-tally update still runs so the
       // running cost stays in sync with the partition state.
       Candidate &c = admissible.front();
-      AcceptDelta delta =
-          computeAcceptDelta(c.ops, c.tpl, lib, opToBlockAll);
+      AcceptDelta delta = computeAcceptDelta(c.ops, c.tpl, lib, opToBlockAll);
       acceptBlock(std::move(c.ops), c.tpl, delta);
     } else {
       // Score every admissible candidate. Tie-breaking order:
@@ -284,8 +281,7 @@ PartitionResult GreedyPartitioner::run(::dataflow::GraphOp graph,
       AcceptDelta bestDelta;
       for (unsigned i = 0; i < admissible.size(); ++i) {
         const Candidate &c = admissible[i];
-        AcceptDelta delta =
-            computeAcceptDelta(c.ops, c.tpl, lib, opToBlockAll);
+        AcceptDelta delta = computeAcceptDelta(c.ops, c.tpl, lib, opToBlockAll);
         double cost = evalCostFromTallies(delta);
         unsigned sz = static_cast<unsigned>(c.ops.size());
         auto better = [&]() {

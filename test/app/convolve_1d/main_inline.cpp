@@ -1,4 +1,3 @@
-// Valid 1-D convolution inline variant migrated from the legacy app corpus.
 
 #include <array>
 #include <cmath>

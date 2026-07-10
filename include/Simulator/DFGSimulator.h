@@ -43,22 +43,25 @@ struct DFGSimulationOptions {
 };
 
 struct DFGSimulationReport {
-  int schemaVersion = 1;
+  std::string schemaVersion = "2.1";
   std::string kind = "dfg_sim_report";
   std::string workload;
   std::string graph;
   std::string status;
-  std::string metricDefinition = "optimistic_pipeline_latency_throughput_sum";
+  std::string metricDefinition =
+      "weighted_operations_plus_library_work_diversity_and_address.v1";
   std::string operationSemanticsSource = kOperationSemanticsSource;
   std::string operationCostModelSource = kOperationCostModelSource;
-  std::uint64_t optimisticCycles = 0;
-  std::uint64_t pipelineLatencyThroughputCycles = 0;
-  std::uint64_t operationMixCycles = 0;
-  std::uint64_t memoryAddressSetupCycles = 0;
+  std::uint64_t operationCostScore = 0;
+  std::uint64_t weightedOperationScore = 0;
+  std::uint64_t modeledLibraryScore = 0;
+  std::uint64_t operationDiversityScore = 0;
+  std::uint64_t memoryAddressScore = 0;
   std::uint64_t wavefrontSteps = 0;
   std::uint64_t eventCount = 0;
   std::uint64_t dynamicWorkItems = 0;
   std::map<std::string, std::uint64_t> operationFireCounts;
+  std::map<std::string, std::uint64_t> modeledLibraryCalls;
   llvm::SmallVector<std::string> finalOutputs;
   std::map<std::string, llvm::SmallVector<std::string>> finalMemoryState;
   llvm::SmallVector<std::string> diagnostics;

@@ -2,7 +2,7 @@
 
 This document specifies `loombench`, Loom's repository-owned benchmark
 suite under `test/app`. `test/app/manifest.json` is the authoritative
-inventory and currently lists 133 cases.
+inventory and currently lists 132 cases.
 
 ## Purpose
 

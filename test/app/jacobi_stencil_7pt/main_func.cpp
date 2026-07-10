@@ -1,4 +1,3 @@
-// Seven-point Jacobi stencil migrated from the legacy app corpus.
 
 #include <array>
 #include <cmath>

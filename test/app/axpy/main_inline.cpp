@@ -1,4 +1,3 @@
-// AXPY inline variant migrated from the legacy app corpus.
 
 #include <array>
 #include <cstdint>

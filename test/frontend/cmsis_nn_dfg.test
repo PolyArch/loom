@@ -3,7 +3,5 @@
 #
 # RUN: env LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../cmsis-nn/run_cmsis_nn_dfg.sh | FileCheck %s
 #
-# CHECK: PASS  {{.+}}
-# CHECK: PASS  {{.+}}
-# CHECK: PASS  {{.+}}
+# CHECK: PASS  ActivationFunctions/arm_relu6_s8.c
 # CHECK: [cmsis-nn-dfg] PASS

@@ -1,4 +1,3 @@
-// Same-size 1-D convolution function variant migrated from the legacy app corpus.
 
 #include <array>
 #include <cmath>

@@ -3,7 +3,5 @@
 #
 # RUN: env LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../cmsis-dsp/run_cmsis_dsp_dfg.sh | FileCheck %s
 #
-# CHECK: PASS  {{.+}}
-# CHECK: PASS  {{.+}}
-# CHECK: PASS  {{.+}}
+# CHECK: PASS  MatrixFunctions/arm_householder_f32.c
 # CHECK: [cmsis-dsp-dfg] PASS

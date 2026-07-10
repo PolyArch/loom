@@ -3,7 +3,6 @@ add_mlir_library(MLIRFabricTechSynthesizer
   Anchor.cpp
   CostModel.cpp
   CoverageVerifier.cpp
-  FailureDiagnostic.cpp
   GeneralizeSubgraphsToFuPass.cpp
   HwParams.cpp
   Incremental.cpp

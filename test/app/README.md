@@ -1,15 +1,16 @@
 # LoomBench application corpus
 
 Small, self-contained C/C++ programs used as drop-in targets for the Loom
-compiler frontend. The manifest-driven native runner covers all 133 cases,
+compiler frontend. The manifest-driven native runner covers all 132 cases,
 compiles both source variants, executes every resulting binary, and compares
 stdout byte-for-byte with the checked-in expected output.
 
-The manifest-driven IR runner provides representative source-to-IR integration
-coverage. Its default `raise` and `dfg` tiers contain `vecadd`, `matmul`, `spmm`,
-`gather`, and `edge_update`. It compiles only the source whose stem is
-`main_func`; the native runner remains responsible for both `main_func` and
-`main_inline` variants.
+The manifest-driven IR runner provides source-to-IR integration coverage. The
+default `raise` tier contains `vecadd`, `matmul`, `spmm`, `gather`, and
+`edge_update`. The `dfg` tier contains `vecadd` and `matmul`, the cases that
+currently produce launched graph bodies without residual SCF operations. It
+compiles only the source whose stem is `main_func`; the native runner remains
+responsible for both `main_func` and `main_inline` variants.
 
 These programs intentionally have no dependency on the top-level Loom build
 or libraries. Stock `gcc`/`g++` and compatible drop-in drivers can compile the
@@ -67,7 +68,7 @@ Run the five default source-to-SCF cases:
 python3 test/app/ir_runner.py --stage raise
 ```
 
-Run the five default source-to-DFG cases:
+Run the default source-to-DFG cases:
 
 ```sh
 python3 test/app/ir_runner.py --stage dfg

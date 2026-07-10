@@ -46,8 +46,7 @@ static llvm::cl::list<std::string> memrefArgs(
 
 static llvm::cl::list<std::string> globalMemrefArgs(
     "global-memref",
-    llvm::cl::desc(
-        "global fixture as symbol[:byte_offset]=value0,value1,..."),
+    llvm::cl::desc("global fixture as symbol[:byte_offset]=value0,value1,..."),
     llvm::cl::ZeroOrMore);
 
 static llvm::cl::opt<std::string>
@@ -55,8 +54,7 @@ static llvm::cl::opt<std::string>
                llvm::cl::Required);
 
 static llvm::cl::opt<std::uint64_t>
-    maxEventSteps("max-event-steps",
-                  llvm::cl::desc("maximum optimistic event steps"),
+    maxEventSteps("max-event-steps", llvm::cl::desc("maximum event steps"),
                   llvm::cl::init(100000));
 
 static llvm::Expected<llvm::SmallVector<loom::sim::DFGRuntimeArg>>
@@ -193,8 +191,8 @@ int main(int argc, char **argv) {
   }
   auto globalMemoriesOrErr = parseGlobalMemoryArgs();
   if (!globalMemoriesOrErr) {
-    llvm::errs() << "error: "
-                 << llvm::toString(globalMemoriesOrErr.takeError()) << "\n";
+    llvm::errs() << "error: " << llvm::toString(globalMemoriesOrErr.takeError())
+                 << "\n";
     return 1;
   }
 

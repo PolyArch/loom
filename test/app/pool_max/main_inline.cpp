@@ -1,4 +1,3 @@
-// pool_max: inline 2D max pooling migrated from the legacy app corpus.
 
 #include <array>
 #include <cmath>

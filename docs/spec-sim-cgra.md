@@ -1,5 +1,10 @@
 # CGRA-sim
 
+Implementation status: this document is a target contract. Loom does not
+currently build a CGRA simulator or emit a `cgra_sim_report`.
+`loom-mapping-estimate` validates mapping evidence and emits a static score;
+it is not an implementation of this contract.
+
 This document specifies Loom CGRA-sim, the hardware-aware simulator for
 mapped Loom workloads. Despite the name, CGRA-sim is not limited to
 simulating a `fabric.module` or SpatialCore. It simulates mapped
@@ -110,8 +115,8 @@ If a required mapping fact is missing, CGRA-sim must diagnose the
 mapping artifact instead of inventing a default placement, route, or
 schedule.
 
-If simulator configuration conflicts with the consumed DFG-sim report,
-mapping artifact, Fabric ADG profile, or runtime input profile,
+If simulator configuration conflicts with the dataflow IR, mapping artifact,
+Fabric ADG profile, or runtime input profile,
 CGRA-sim must fail or block before producing pass evidence. A
 configuration mismatch must not be hidden behind a local default.
 

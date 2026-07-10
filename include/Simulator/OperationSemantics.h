@@ -31,8 +31,8 @@ struct PrimitiveValue {
 };
 
 struct OperationCost {
-  std::uint64_t latencyCycles = 1;
-  std::uint64_t reciprocalThroughput = 1;
+  std::uint64_t baseScore = 1;
+  std::uint64_t repeatScore = 1;
 };
 
 struct PrimitiveOperationDescriptor {

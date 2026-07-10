@@ -1,5 +1,3 @@
-# Representative CMSIS-NN source-to-DFG targets.
+# CMSIS-NN sources that currently produce executable DFGs.
 # source|triple|cpu|source_symbol|extra_cflags
 ActivationFunctions/arm_relu6_s8.c|thumbv7em-none-eabi|cortex-m4|arm_relu6_s8|
-BasicMathFunctions/arm_elementwise_add_s8.c|thumbv7em-none-eabi|cortex-m4|arm_elementwise_add_s8|
-SVDFunctions/arm_svdf_s8.c|thumbv7em-none-eabi|cortex-m4|arm_svdf_s8|

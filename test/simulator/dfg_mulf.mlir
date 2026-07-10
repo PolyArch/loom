@@ -5,8 +5,8 @@
 // CHECK-DAG: "workload": "mulf"
 // CHECK-DAG: "graph": "mulf"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
-// CHECK-DAG: "optimistic_cycles": 7
+// CHECK-DAG: "metric_definition": "weighted_operations_plus_library_work_diversity_and_address.v1"
+// CHECK-DAG: "operation_cost_score": 7
 // CHECK-DAG: "wavefront_steps": 2
 // CHECK-DAG: "event_count": 3
 // CHECK-DAG: "f32:3"

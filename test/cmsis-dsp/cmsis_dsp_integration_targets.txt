@@ -1,5 +1,3 @@
-# Representative CMSIS-DSP source-to-DFG targets.
+# CMSIS-DSP sources that currently produce executable DFGs.
 # source|triple|cpu|source_symbol|extra_cflags
-FastMathFunctions/arm_cos_f32.c|thumbv7em-none-eabi|cortex-m4|arm_cos_f32|
-InterpolationFunctions/arm_bilinear_interp_q15.c|thumbv7em-none-eabi|cortex-m4|arm_bilinear_interp_q15|
 MatrixFunctions/arm_householder_f32.c|thumbv7em-none-eabi|cortex-m4|arm_householder_f32|

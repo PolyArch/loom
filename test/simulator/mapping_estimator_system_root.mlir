@@ -6,24 +6,20 @@
 // RUN: FileCheck %s --check-prefix=DFG < %t.dir/byte.dfg.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/byte_swap/main_func.dfg.mlir --graph g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0 --hardware-mlir %t.dir/system.mlir --hardware system_dual_spatial_shared_memory_soc --hardware-root-kind system --acc-core acc1 --workload byte_swap --output %t.dir/byte.system.mapping.csv --artifact %t.dir/byte.system.mapping.json
 // RUN: FileCheck %s --check-prefix=MAPPING < %t.dir/byte.system.mapping.json
-// RUN: loom-cgra-sim --dfg-report %t.dir/byte.dfg.json --mapping-artifact %t.dir/byte.system.mapping.json --hardware-mlir %t.dir/system.mlir --output %t.dir/byte.cgra.json
-// RUN: FileCheck %s --check-prefix=CGRA < %t.dir/byte.cgra.json
-// RUN: loom-sim-cycle-summary --dfg-report %t.dir/byte.dfg.json --cgra-report %t.dir/byte.cgra.json --output %t.dir/byte.summary.csv
-// RUN: FileCheck %s --check-prefix=SUMMARY < %t.dir/byte.summary.csv
+// RUN: loom-mapping-estimate --mapping-artifact %t.dir/byte.system.mapping.json --hardware-mlir %t.dir/system.mlir --output %t.dir/byte.estimate.json
+// RUN: FileCheck %s --check-prefix=ESTIMATE < %t.dir/byte.estimate.json
 // RUN: sed 's/"selected_acc_core": "acc1"/"selected_acc_core": "acc0"/' %t.dir/byte.system.mapping.json > %t.dir/byte.bad-core.mapping.json
-// RUN: not loom-cgra-sim --dfg-report %t.dir/byte.dfg.json --mapping-artifact %t.dir/byte.bad-core.mapping.json --hardware-mlir %t.dir/system.mlir --output %t.dir/byte.bad-core.cgra.json 2>&1 | FileCheck %s --check-prefix=BAD-CORE
+// RUN: not loom-mapping-estimate --mapping-artifact %t.dir/byte.bad-core.mapping.json --hardware-mlir %t.dir/system.mlir --output %t.dir/byte.bad-core.estimate.json 2>&1 | FileCheck %s --check-prefix=BAD-CORE
 
 // MAPPING-DAG: "kind": "pnr_mapping"
 // MAPPING-DAG: "hardware": "system_dual_spatial_shared_memory_soc::acc1"
 // MAPPING-DAG: "status": "pass"
 
-// CGRA-DAG: "kind": "cgra_sim_report"
-// CGRA-DAG: "workload": "byte_swap"
-// CGRA-DAG: "hardware": "system_dual_spatial_shared_memory_soc::acc1"
-// CGRA-DAG: "status": "pass"
-// CGRA-DAG: "functional_state_source": "carried_from_dfg_sim_report"
-// CGRA-DAG: "arg2"
-// CGRA-DAG: "i32:2018915346"
+// ESTIMATE-DAG: "kind": "mapping_estimate_report"
+// ESTIMATE-DAG: "workload": "byte_swap"
+// ESTIMATE-DAG: "hardware": "system_dual_spatial_shared_memory_soc::acc1"
+// ESTIMATE-DAG: "status": "pass"
+// ESTIMATE-DAG: "total_cost_score": {{[1-9][0-9]*}}
 
 // DFG-DAG: "kind": "dfg_sim_report"
 // DFG-DAG: "workload": "byte_swap"
@@ -31,8 +27,5 @@
 // DFG-DAG: "status": "pass"
 // DFG-DAG: "arg2"
 // DFG-DAG: "i32:2018915346"
-
-// SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
-// SUMMARY-NEXT: byte_swap,{{[1-9][0-9]*}},{{[1-9][0-9]*}},pass,
 
 // BAD-CORE: mapping hardware system_dual_spatial_shared_memory_soc::acc1 does not match selected system core system_dual_spatial_shared_memory_soc::acc0

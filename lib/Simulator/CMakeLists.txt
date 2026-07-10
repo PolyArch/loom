@@ -1,6 +1,4 @@
 add_mlir_library(LoomSimulator
-  CGRASimulator.cpp
-  CycleSummary.cpp
   DFGSimulator.cpp
   OperationSemantics.cpp
 

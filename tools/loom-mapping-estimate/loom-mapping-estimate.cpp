@@ -1,14 +1,10 @@
-#include "Simulator/CGRASimulator.h"
+#include "PnR/MappingEstimator.h"
 
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <string>
-
-static llvm::cl::opt<std::string>
-    dfgReportPath("dfg-report", llvm::cl::desc("DFG simulation report JSON"),
-                  llvm::cl::Required);
 
 static llvm::cl::opt<std::string>
     mappingArtifactPath("mapping-artifact",
@@ -21,29 +17,28 @@ static llvm::cl::opt<std::string>
                      llvm::cl::init(""));
 
 static llvm::cl::opt<std::string>
-    outputPath("output", llvm::cl::desc("CGRA simulation report JSON"),
+    outputPath("output", llvm::cl::desc("Mapping estimate report JSON"),
                llvm::cl::Required);
 
 int main(int argc, char **argv) {
   llvm::cl::ParseCommandLineOptions(
       argc, argv,
-      "loom-cgra-sim: estimate hardware-aware cycles from DFG and mapping "
-      "evidence\n");
+      "loom-mapping-estimate: validate a PnR artifact and emit "
+      "a static mapping cost estimate\n");
 
-  loom::sim::CGRASimOptions options;
-  options.dfgReportPath = dfgReportPath;
+  loom::pnr::MappingEstimateOptions options;
   options.mappingArtifactPath = mappingArtifactPath;
   options.hardwareMlirPath = hardwareMlirPath;
 
-  llvm::Expected<loom::sim::CGRASimReport> reportOrErr =
-      loom::sim::runCGRASimulation(options);
+  llvm::Expected<loom::pnr::MappingEstimateReport> reportOrErr =
+      loom::pnr::estimateMapping(options);
   if (!reportOrErr) {
     llvm::errs() << "error: " << llvm::toString(reportOrErr.takeError())
                  << "\n";
     return 1;
   }
   if (llvm::Error err =
-          loom::sim::writeCGRASimReportJson(outputPath, *reportOrErr)) {
+          loom::pnr::writeMappingEstimateReportJson(outputPath, *reportOrErr)) {
     llvm::errs() << "error: " << llvm::toString(std::move(err)) << "\n";
     return 1;
   }

@@ -3,7 +3,6 @@
 #
 # RUN: env LOOM_CC=%loom-cc LOOM_CXX=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt %python %S/../app/ir_runner.py --stage dfg --build-root %t | FileCheck %s
 #
-# CHECK: PASS  {{[^ ]+}}  dfg
-# CHECK: PASS  {{[^ ]+}}  dfg
-# CHECK: PASS  {{[^ ]+}}  dfg
+# CHECK: PASS  matmul  dfg
+# CHECK: PASS  vecadd  dfg
 # CHECK: [app-ir-runner] PASS

@@ -19,6 +19,7 @@ ROOT = APP_ROOT.parents[1]
 sys.path.insert(0, str(APP_ROOT))
 
 import app_manifest  # noqa: E402
+import dfg_validator  # noqa: E402
 
 
 DEFAULT_BUILD_ROOT = ROOT / "build" / "test-runs" / "app-ir-runner"
@@ -28,11 +29,6 @@ MAIN_DEFINITION = re.compile(
     re.MULTILINE,
 )
 SCF_OPERATION = re.compile(r"\bscf\.[A-Za-z_][A-Za-z0-9_.]*\b")
-DFG_DEFINITION = re.compile(
-    r"^\s*dataflow\.(?:thread(?=\s)|graph\.func(?=\s))"
-    r"\s+(?:private\s+)?@([^\s(]+)[^\n]*\{\s*$",
-    re.MULTILINE,
-)
 
 
 class RunnerConfigurationError(ValueError):
@@ -276,19 +272,10 @@ def validate_raise_ir(path: Path, spec: CaseSpec) -> None:
 
 def validate_dfg_ir(path: Path, spec: CaseSpec) -> None:
     text = read_ir(path, f"{spec.case}: DFG IR validation")
-    definitions = DFG_DEFINITION.findall(text)
-    if not definitions:
-        raise RunnerExecutionError(
-            f"{spec.case}: {path} has no dataflow.thread or "
-            "dataflow.graph.func definition with a body"
-        )
-    if spec.dfg_symbol and not any(
-        spec.dfg_symbol in symbol for symbol in definitions
-    ):
-        raise RunnerExecutionError(
-            f"{spec.case}: {path} has no dataflow definition for "
-            f"{spec.dfg_symbol}"
-        )
+    try:
+        dfg_validator.validate_text(text, spec.dfg_symbol)
+    except dfg_validator.DFGValidationError as exc:
+        raise RunnerExecutionError(f"{spec.case}: {path} {exc}") from exc
 
 
 def compiler_for(spec: CaseSpec, tools: Toolchain) -> str:

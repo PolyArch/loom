@@ -1,4 +1,3 @@
-// 32-bit bit-reversal function variant migrated from the legacy app corpus.
 
 #include <array>
 #include <cstdint>

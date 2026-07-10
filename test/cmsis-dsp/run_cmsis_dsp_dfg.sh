@@ -50,12 +50,6 @@ mlir_has_public_func_definition() {
     grep -qE "^[[:space:]]*func\\.func @${symbol}\\(.*\\{[[:space:]]*$" "${mlir}"
 }
 
-mlir_has_dataflow_definition_for_symbol() {
-    local mlir="$1"
-    local symbol="$2"
-    grep -qE "^[[:space:]]*dataflow\\.(thread|graph\\.func)( private)? @[^[:space:](]*${symbol}[^[:space:](]*\\(.*\\{[[:space:]]*$" "${mlir}"
-}
-
 require_executable "${LOOM_CC}" loom-cc
 require_executable "${LOOM_RAISE}" loom-raise
 require_executable "${LOOM_LOWER}" loom-lower
@@ -136,8 +130,11 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     fi
     mlir_has_public_func_definition "${out_dfg}" "${source_symbol}" || row_error \
         "public func.func definition ${source_symbol} did not survive lowering for ${src}"
-    mlir_has_dataflow_definition_for_symbol "${out_dfg}" "${source_symbol}" || row_error \
-        "no dataflow definition for ${source_symbol} exists for ${src}"
+    if ! python3 "${REPO_ROOT}/test/app/dfg_validator.py" \
+            --input "${out_dfg}" --symbol "${source_symbol}" \
+            >>"${parse_log}" 2>&1; then
+        row_error "${out_dfg} is not an executable DFG for ${src}; see ${parse_log}"
+    fi
 
     echo "  PASS  ${src}"
     row_count=$((row_count + 1))

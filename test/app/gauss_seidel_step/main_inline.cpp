@@ -1,4 +1,3 @@
-// Static-size Gauss-Seidel update migrated from the legacy app corpus.
 
 #include <array>
 #include <cmath>

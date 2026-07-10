@@ -5,8 +5,8 @@
 // CHECK-DAG: "workload": "sum_ptr_load"
 // CHECK-DAG: "graph": "sum_ptr_load"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
-// CHECK-DAG: "optimistic_cycles": 42
+// CHECK-DAG: "metric_definition": "weighted_operations_plus_library_work_diversity_and_address.v1"
+// CHECK-DAG: "operation_cost_score": 42
 // CHECK-DAG: "wavefront_steps": 9
 // CHECK-DAG: "event_count": 21
 // CHECK-DAG: "f32:14"

@@ -1410,7 +1410,7 @@ bool FuOp::isOptionalSymbol() { return true; }
 //   fabric.pe [spatial] (%fa = %a : !fabric.bits<W>)
 //                       -> !fabric.bits<W> { ... }
 //
-// `[temporal]` parses but the verifier currently rejects it.
+// Both spatial and temporal schedules have dedicated verifier branches.
 
 // fabric.pe has two disjoint syntactic forms by `sym_name` presence.
 // Anonymous form (definition+use, original syntax):

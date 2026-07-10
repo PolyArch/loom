@@ -21,13 +21,12 @@ set(LOOM_TEST_DEPENDS
   loom-config-test
   loom-cost-test
   loom-dfg-sim
+  loom-mapping-estimate
   loom-hwsg-test
   loom-parallel-test
-  loom-sim-cycle-summary
   loom-synth-base-test
   loom-synth-config-test
   loom-synth-fu-dump
-  loom-synth-verifier-test
   loom-template-dump
 )
 
