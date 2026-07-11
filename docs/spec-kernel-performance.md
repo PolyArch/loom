@@ -31,10 +31,11 @@ The committed policy text in `AGENTS.md` and `.claude/CLAUDE.md` (the
 ## Adopted Baseline: the ASAP Dynamic-Op-Count Model
 
 Both metrics are layered on top of the **ASAP (as-soon-as-possible) dynamic
-operation model** documented in `AGENTS.md` ("Performance Modeling"). That model
-is summarized here so this spec can be understood standalone; `AGENTS.md` remains
-the authoritative source for the op-counting conventions themselves, and this
-spec does not restate every convention verbatim.
+operation model** documented in
+[`tests/app/ASAP_rules.md`](../tests/app/ASAP_rules.md). That model is summarized
+here so this spec can be understood standalone; `ASAP_rules.md` remains the
+authoritative source for the op-counting conventions themselves, and this spec
+does not restate every convention verbatim.
 
 Salient properties of the adopted baseline, all of which this spec depends on:
 
@@ -1017,9 +1018,10 @@ a runtime/scale check and **MUST NOT** block the first deliverable.
 
 ## Related Documents
 
-- `AGENTS.md` — "Performance Modeling": the authoritative ASAP dynamic-op-count
-  and critical-path conventions this spec builds on, and the committed
-  "CGRA-Constrained Model" policy text that references this spec.
+- `tests/app/ASAP_rules.md` — the authoritative ASAP dynamic-op-count and
+  critical-path conventions this spec builds on.
+- `AGENTS.md` — the committed "CGRA-Constrained Model" agent policy that
+  references this spec.
 - `tests/app/<kernel>/<kernel>_eval.md` — per-kernel evals carrying both metrics.
 - `tests/scripts/cgra_schedule.py` — the reference helper implementing Metrics 1–2.
 - `tests/scripts/loom_dse.py` — the reference helper implementing the optional

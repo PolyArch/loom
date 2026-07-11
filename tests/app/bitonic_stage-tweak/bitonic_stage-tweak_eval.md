@@ -100,7 +100,7 @@ total_cycles = 3 (prologue: load → add → shift to form block_size)
 | `inplace[6]` | iter 6 `++` (C9) → iter 6 `-=1` (C12) | C12 |
 | `inplace[7]` | iter 7 `-=1` (~C8) | early |
 
-For comparison: baseline `bitonic_stage` (`i` parallel-unrolled, no extra writes) is 11 cycles; `bitonic_stage-modified` (j-loop drives long memory recurrence) is 23 cycles. The tweak's extra `++` and `-=1` inflate the chain by a fixed +6 over baseline → **17 cycles, 1.55×**.
+For comparison: baseline `bitonic_stage` (`i` parallel-unrolled, no extra writes) is 11 cycles; `bitonic_stage-modified` (j-loop drives long memory recurrence) is 31 cycles. The tweak's extra `++` and `-=1` inflate the chain by a fixed +6 over baseline → **17 cycles, 1.55×**.
 
 ## Op counts
 

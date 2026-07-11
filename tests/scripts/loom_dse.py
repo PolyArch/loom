@@ -53,7 +53,10 @@ import argparse
 import sys
 from dataclasses import dataclass, field
 
-from cgra_schedule import (Config, Dag, L, _ceil_div, evaluate, parse_config,
+from cgra_schedule import (Config, Dag, L, _ceil_div,
+                           build_crc32, build_edge_update,
+                           build_bitonic_stage_modified,
+                           build_bitonic_stage_tweak, evaluate, parse_config,
                            region_aggregate)
 
 V = 4  # 64-bit scalar elements per 256-bit vector memory op (spec convention)
@@ -506,6 +509,172 @@ def _binsearch_chunk(cand):
     return dag
 
 
+def _bitonic_stage_chunk(cand):
+    """Representative split-aware wave for the N=8 stage=1/pass=0 fixture.
+
+    The branch mix is periodic at four lanes: two skipped lanes, one swap lane,
+    and one active non-swap lane.  Candidate exposures are powers of two, so the
+    full-trip model is exact and smaller waves use the nearest conservative
+    representative mix.  Conditional in-place pair accesses remain scalar:
+    the no-predication gates and swap aliasing prevent treating them as a plain
+    contiguous stream for vector coalescing.
+    """
+    p, u = cand.factors("i")
+    exposed = p * u
+    dag = Dag()
+    r = dag.region("bitonic_stage")
+
+    ld_stage = r.load(kind="stage" + INV)
+    ld_pass = r.load(kind="pass" + INV)
+    ld_N = r.load(kind="N" + INV)
+    stage_p1 = r.arith(ld_stage, kind="stage_plus_1")
+    distance = r.arith(ld_pass, kind="distance_shl")
+    block_size = r.arith(stage_p1, kind="block_size_shl")
+    r.arith(block_size, kind="half_block_shr")
+    worker_indices = []
+    for _ in range(p):
+        worker_indices.append(
+            r.induction(kind="i", compare_depends_on_read=False)["read"])
+
+    active_count = _ceil_div(exposed, 2)
+    swap_count = _ceil_div(exposed, 4)
+    statuses = ([(True, True)] * swap_count
+                + [(True, False)] * max(0, active_count - swap_count)
+                + [(False, False)] * max(0, exposed - active_count))
+    for lane, (active, swap) in enumerate(statuses):
+        i_value = worker_indices[min(lane // u, p - 1)]
+        block_idx = r.arith(i_value, block_size, kind="block_idx_div")
+        idx_in_block = r.arith(i_value, block_size, kind="idx_in_block_mod")
+        band_asc = r.arith(block_idx, kind="block_idx_and_1")
+        ascending = r.arith(band_asc, kind="ascending_cmp")
+        band_pred = r.arith(idx_in_block, distance, kind="idx_and_distance")
+        outer_pred = r.arith(band_pred, kind="outer_pred_cmp")
+        if active:
+            partner = r.arith(i_value, distance, outer_pred, kind="partner_add")
+            in_bounds = r.arith(partner, ld_N, kind="partner_lt_N")
+            ld_i = r.load(in_bounds, kind="inplace_i")
+            ld_partner = r.load(in_bounds, partner, kind="inplace_partner")
+            should_swap = r.arith(ascending, ld_i, ld_partner, kind="value_cmp")
+            if swap:
+                r.store(ld_partner, should_swap, output=True,
+                        kind="store_inplace_i")
+                r.store(ld_i, should_swap, output=True,
+                        kind="store_inplace_partner")
+    return dag
+
+
+def _bitonic_stage_modified_chunk(_cand):
+    dag, _contract = build_bitonic_stage_modified()
+    for node in dag.regions[0].nodes:
+        if node.cls == L and node.kind in ("stage", "pass", "N"):
+            node.kind += INV
+    return dag
+
+
+def _bitonic_stage_tweak_chunk(_cand):
+    dag, _contract = build_bitonic_stage_tweak()
+    for node in dag.regions[0].nodes:
+        if node.cls == L and node.kind in ("stage", "pass", "N"):
+            node.kind += INV
+    return dag
+
+
+def _clz_trip_counts_main():
+    values = [0, 0x80000000, 0x40000000, 0x00000001, 0xFFFFFFFF]
+    values.extend((i * 0x1234) & 0xFFFFFFFF for i in range(5, 256))
+    return [None if value == 0 else 32 - value.bit_length()
+            for value in values]
+
+
+def _clz_chunk(cand):
+    p, u = cand.factors("i")
+    exposure = min(256, p * u)
+    trips = _clz_trip_counts_main()
+    waves = _ceil_div(len(trips), exposure)
+    total_A = total_LD = total_ST = total_CP = 0
+    for wave in range(waves):
+        lane_trips = trips[wave * exposure:(wave + 1) * exposure]
+        workers = _ceil_div(len(lane_trips), u)
+        # One outer iterator per active worker plus coalesced boundary I/O.
+        total_A += 2 * workers
+        total_LD += workers
+        total_ST += workers
+        boundary = sum(_ceil_div(len(lane_trips[w * u:(w + 1) * u]), V)
+                       for w in range(workers))
+        total_LD += boundary
+        total_ST += boundary
+        lane_cps = []
+        for trip in lane_trips:
+            if trip is None:
+                total_A += 1
+                lane_cps.append(2)
+            else:
+                total_A += 4 * trip + 3
+                total_LD += 2 * trip + 2
+                total_ST += 2 * trip + 2
+                lane_cps.append(5 * trip + 8)
+        total_CP += max(lane_cps, default=0)
+    A = _ceil_div(total_A, waves)
+    LD_rec = _ceil_div(total_LD, waves)
+    ST = _ceil_div(total_ST, waves)
+    CP = _ceil_div(total_CP, waves)
+    return _emit_counted_region(
+        "clz", A, LD_rec, 1, ST, tuple(["P"] * (CP - 1) + ["S"]))
+
+
+def _emit_counted_region(name, A, LD_rec, LD_inv, ST, chain_classes):
+    dag = Dag()
+    r = dag.region(name)
+    counts = {"P": A, "L": LD_rec, "I": LD_inv, "S": ST}
+    prev = None
+    for cls in chain_classes:
+        preds = () if prev is None else (prev,)
+        if cls == "P":
+            prev = r.arith(*preds, kind="critical")
+        elif cls == "L":
+            prev = r.load(*preds, kind="critical_load")
+        else:
+            prev = r.store(*preds, output=True, kind="critical_store")
+        counts[cls] -= 1
+    for _ in range(counts["P"]):
+        r.arith(kind="counted")
+    for _ in range(counts["L"]):
+        r.load(kind="counted_load")
+    for _ in range(counts["I"]):
+        r.load(kind="parameter" + INV)
+    for _ in range(counts["S"]):
+        r.store(kind="counted_store")
+    return dag
+
+
+def _col2im_chunk(cand):
+    pc, uc = cand.factors("c")
+    channels = min(3, pc * uc)
+    # Remove the eval's 1,365 source-level induction steps before scaling the
+    # output-centric channel body. The DSE then restores one residual iterator
+    # per active c worker, so U amortizes control while P retains one iterator
+    # per worker. The fully exposed P1U3 floor therefore carries one iterator,
+    # not all 1,365 source-loop iterations.
+    workers = min(pc, channels)
+    A = 10 + 4248 * channels + 2 * workers
+    LD_rec = 648 * channels + workers
+    LD_inv = 7
+    ST = 388 * channels + workers
+    return _emit_counted_region(
+        "col2im", A, LD_rec, LD_inv, ST,
+        ("P", "P", "P", "P", "L", "P", "P", "P", "P", "P", "P", "P", "S"))
+
+
+def _crc32_chunk(_cand):
+    dag, _ = build_crc32()
+    return dag
+
+
+def _edge_update_chunk(_cand):
+    dag, _ = build_edge_update()
+    return dag
+
+
 # ---------------------------------------------------------------------------
 # Kernel registry
 # ---------------------------------------------------------------------------
@@ -665,6 +834,83 @@ def _register():
             "tiny problem (M=5 targets) leave it CP/latency-bound, so no P-vs-U "
             "split helps. The source LOOM_NO_PARALLEL/LOOM_NO_UNROLL reflects "
             "control divergence, which this DSE does not model."),
+    )
+    KERNELS["bitonic_stage"] = KernelSpec(
+        name="bitonic_stage",
+        levels=(Level("i", 8, "parallel"),),
+        build_chunk=_bitonic_stage_chunk,
+        coalesce_note=(
+            "i is parallel for the documented N=8, stage=1, pass=0 fixture: "
+            "active lanes touch disjoint compare pairs. The branch mix is one "
+            "active lane per pair and one committing swap lane per four i lanes. "
+            "Conditional in-place pair accesses remain scalar because strict "
+            "compare-to-body gates and swap aliasing do not form a plain "
+            "contiguous vector stream. LOOM_UNROLL therefore helps only through "
+            "outer-iterator control amortization; the 11-cycle gated CP dominates."),
+    )
+    KERNELS["bitonic_stage-modified"] = KernelSpec(
+        name="bitonic_stage-modified",
+        levels=(Level("i", 8, "sequential"),),
+        build_chunk=_bitonic_stage_modified_chunk,
+        coalesce_note=(
+            "The outer i loop is sequential: its loop-counter carry and the "
+            "in-place N/2..N-1 read-modify-write chain cross iterations. Parallel "
+            "factors are illegal and unroll cannot flatten the recurrence, so all "
+            "enumerated U choices describe the same fully consumed serial DAG."),
+    )
+    KERNELS["bitonic_stage-tweak"] = KernelSpec(
+        name="bitonic_stage-tweak",
+        levels=(Level("i", 8, "sequential"),),
+        build_chunk=_bitonic_stage_tweak_chunk,
+        coalesce_note=(
+            "The unconditional inplace[i]-=1 and active-lane inplace[i]++ create "
+            "same-slot and partner RAW chains across the in-place stage. Parallel "
+            "factors are therefore illegal and unroll cannot flatten the memory "
+            "recurrence; all U choices retain the same 17-cycle serial DAG."),
+    )
+    KERNELS["clz"] = KernelSpec(
+        name="clz",
+        levels=(Level("i", 256, "parallel"),),
+        build_chunk=_clz_chunk,
+        coalesce_note=(
+            "outer i is parallel; each lane has a private data-dependent while "
+            "recurrence whose trip count is the concrete main.cpp leading-zero "
+            "count. Contiguous i-unroll coalesces boundary input/output traffic "
+            "and amortizes outer control, while the longest K=31 lane keeps CP "
+            "at 163 once exposed."),
+    )
+    KERNELS["col2im"] = KernelSpec(
+        name="col2im",
+        levels=(Level("c", 3, "parallel"), Level("kh", 3, "reduction")),
+        build_chunk=_col2im_chunk,
+        coalesce_note=(
+            "channels are independent. For each exposed channel, overlapping "
+            "kh/kw contributions are consumed as output-centric associative "
+            "reduction buckets, so kh is fully consumed and its P/U labels are "
+            "equivalent. Channel slices are separated by H*W and do not coalesce "
+            "across c. The eval's per-iteration induction work is removed, then "
+            "one residual c iterator is charged per active worker, so c-unroll "
+            "amortizes control while c-parallel retains one iterator per worker."),
+    )
+    KERNELS["crc32"] = KernelSpec(
+        name="crc32",
+        levels=(Level("i", 256, "sequential"),),
+        build_chunk=_crc32_chunk,
+        coalesce_note=(
+            "crc is a non-associative carried state across all bytes and bits. "
+            "Parallel factors are illegal and unroll cannot flatten the trace, "
+            "so every displayed U choice is an equivalent alias of the same "
+            "fully consumed serial DAG."),
+    )
+    KERNELS["edge_update"] = KernelSpec(
+        name="edge_update",
+        levels=(Level("kernel", 1, "sequential"),),
+        build_chunk=_edge_update_chunk,
+        coalesce_note=(
+            "the source has no Loom parallel/unroll pragma. The copy, bounds "
+            "check, data-dependent CSR search, and matched overwrite are modeled "
+            "as the concrete serial kernel trace; there is no legal P/U level to "
+            "sweep."),
     )
 
 
@@ -1237,6 +1483,41 @@ def _run_self_tests() -> int:
     br_lb, br_dem = absolute_cgra_lb(br, cfg)
     if br_dem["compute"] != br_lb:
         errors.append("bit_reverse floor must be compute-bound (bitop pool)")
+
+    # bitonic family: preserve the corrected loop-invariant half_block count,
+    # exact full-trip DSE totals, and the sequential legality of both variants.
+    bitonic_expected = {
+        "bitonic_stage": (11, 66, 9, 12, 5),
+        "bitonic_stage-modified": (31, 133, 52, 55, 48),
+        "bitonic_stage-tweak": (17, 92, 28, 31, 24),
+    }
+    for name, expected in bitonic_expected.items():
+        _lb, demand = absolute_cgra_lb(KERNELS[name], cfg)
+        got = (demand["CP"], demand["A"], demand["LD"],
+               demand["LD_eff"], demand["ST"])
+        if got != expected:
+            errors.append(f"{name}: full-trip totals {got} != {expected}")
+    for name in ("bitonic_stage-modified", "bitonic_stage-tweak"):
+        cands = enumerate_candidates(KERNELS[name], 8, 8, 256)
+        if any(p > 1 for c in cands for _, p, _ in c.split):
+            errors.append(f"{name}: sequential i level must not parallelize")
+
+    new_expected = {
+        "clz": (163, 13612, 6997, 6998, 6997),
+        "col2im": (13, 12756, 1945, 1952, 1165),
+        "crc32": (50152, 51682, 18945, 18945, 19971),
+        "edge_update": (6, 40, 38, 38, 37),
+    }
+    for name, expected in new_expected.items():
+        _lb, demand = absolute_cgra_lb(KERNELS[name], cfg)
+        got = (demand["CP"], demand["A"], demand["LD"],
+               demand["LD_eff"], demand["ST"])
+        if got != expected:
+            errors.append(f"{name}: full-trip totals {got} != {expected}")
+    for name in ("crc32", "edge_update"):
+        cands = enumerate_candidates(KERNELS[name], 8, 8, 256)
+        if any(p > 1 for c in cands for _, p, _ in c.split):
+            errors.append(f"{name}: sequential level must not parallelize")
 
     # binary_search: COUNTEREXAMPLE. Inner probe loop is sequential (p forced to
     # 1); data-dependent recurrence + tiny M=5 -> CP-bound, no P-vs-U distinction.
