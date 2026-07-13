@@ -10,3 +10,9 @@
 [submodule "externals/cmsis-core"]
 	path = externals/cmsis-core
 	url = git@github.com:ARM-software/CMSIS_6.git
+[submodule "externals/circt"]
+	path = externals/circt
+	url = https://github.com/llvm/circt.git
+[submodule "externals/gem5"]
+	path = externals/gem5
+	url = https://github.com/gem5/gem5.git
