@@ -37,7 +37,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py tridiag_solve --config 6x6
+python3 tests/scripts/loom_dse.py tridiag_solve --config 6x6 --top 24
 ```
 
 ## Why there is no distinction
@@ -68,25 +68,17 @@ global pool for the kernel's intended math. For this forward sweep one effect is
 Because `CP` dominates, every unroll factoring lands on the identical
 latency-bound aggregate, so the tool collapses them into one equivalence group.
 
-## Results (the entire sweep is one row)
+## Results
 
 ```text
 # Loom pragma DSE (lane-aware + vector coalescing): tridiag_solve  (6x6)
 
-loop nest (outer->inner): i[64,sequential]
-coalescing: The forward sweep carries a NON-associative recurrence (division chain): LOOM_PARALLEL is illegal (p forced to 1) and the serial CP dominates. Input streams coalesce but it does not matter -> the kernel stays critical-path bound with no P-vs-U distinction.
-
-absolute_cgra_lb = 194  (full-trip, fully-coalesced, invariant-amortized aggregate over full lanes L=12,S=12; the ONLY lower bound)
-full-trip counts: A=512 LD_rec=128 LD_eff=130 ST=96 CP=194 | compute=15 load=11 store=8   (load term = ceil(LD_rec/L); invariants amortized)
-binding class (full trip) = P   (P_pe=36, L=12, S=12; V=4 64-bit elems/vec)
-
-Only absolute_cgra_lb is a lower bound. pragma_agg / sched_est assume waves do NOT overlap and sit at or above it.
-aL = active load lanes = min(recurring loads, L): the recurring loop loads set the lane exposure and the binding load term. LD_eff = recurring + one-time invariant loads (total traffic); invariant loads (loaded once and held) are amortized out of the binding term.
-Algorithmic arith/CP is a global pool (P and U tie there). P and U separate on TWO axes, both favoring LOOM_UNROLL: (1) control amortization -- unroll shares one iterator across U bodies, so control ops scale as trip/U (parallel keeps an iterator per worker); (2) vector coalescing of contiguous accesses (bounded by V, gone once U>=V). Sequential carries keep per-iter control on CP.
+Search: complete legal power-of-two factors through each trip count.
+Loop nest: `i[64,sequential]`; The forward sweep carries a NON-associative recurrence (division chain): LOOM_PARALLEL is illegal (p forced to 1) and the serial CP dominates. Input streams coalesce but it does not matter -> the kernel stays critical-path bound with no P-vs-U distinction. Full-trip counts are `A=512`, `LD_rec=128`, `LD_eff=130`, `ST=96`, and `CP=194`, giving the only lower bound, `absolute_cgra_lb=194=max(CP 194, compute 15, load 11, store 8)`, with critical-path pressure binding; `p_agg` and `sched` are wave-serialized estimates.
 
 flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
 --------------------------------------------------------------------------------------------------------------------
-K        i:P1U1  (+3 eq)               1  12  12    130    64     1   194     194     194 latency-bound        8/6/4
+K        i:P1U1                        1  12  12    130    64     1   194     194     194 latency-bound        8/6/4
 
 RECOMMENDED: i:P1U1  -> exposure=64, pragma_agg=194 (1.00x the floor), latency-bound
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
@@ -94,8 +86,8 @@ flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound
 P-vs-U contrast: no parallelizable level.
 ```
 
-All four `U` factorings collapse to the same row (`+3 eq`) — there is nothing to
-choose.
+All `U` factorings are semantically equivalent, so the helper displays only the
+canonical `P1U1` representative.
 
 - `absolute_cgra_lb = 194` is **CP-bound** (the serial recurrence), not
   resource-bound. Among the resource classes the binding one is `P`

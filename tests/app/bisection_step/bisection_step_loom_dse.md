@@ -33,7 +33,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py bisection_step --config 6x6 --max-parallel 16 --max-unroll 64
+python3 tests/scripts/loom_dse.py bisection_step --config 6x6 --top 24
 ```
 
 ## Why P and U differ
@@ -80,12 +80,13 @@ while `P1U32` keeps one.
   the 4-input/2-output streams coalesce and the iterator amortizes: `LD_rec = 65`
   so the load term is `6`, below the arithmetic term `8`.
 
-## Results (`--max-parallel 16 --max-unroll 64`)
+## Results
 
 ```text
 # Loom pragma DSE (lane-aware + vector coalescing): bisection_step  (6x6)
 
-loop nest (outer->inner): i[64,parallel]. All six arrays are contiguous over i, so LOOM_UNROLL(i) beats LOOM_PARALLEL(i) by coalescing the 4 input loads and 2 output stores into 256-bit vector ops (bounded by V=4) and by amortizing one iterator per worker; parallel workers are strided and keep separate iterators. The if/else is counted taken-arm-only and compute is a global pool, so the branch does not separate P from U. Full-trip, fully-coalesced, invariant-amortized counts are A=258 LD_rec=65 LD_eff=66 ST=33 CP=4, giving compute=8 load=6 store=3 and absolute_cgra_lb=8, the only lower bound; the full-trip binding class is P. pragma_agg/sched are wave-serialized estimates above that floor, and aL/load use recurring loads while the invariant N load remains visible in LD_eff but is amortized out of the binding term.
+Search: complete legal power-of-two factors through each trip count.
+Loop nest: `i[64,parallel]`; All six arrays (input_a/b/fa/fc, output_a/b) are contiguous over i. This is axpy-shaped: LOOM_UNROLL(i) beats LOOM_PARALLEL(i) two ways -- it coalesces the 4 input loads and 2 output stores into vector ops (bounded by V=4) and it amortizes the iterator (charged once per worker, keeps paying past U=V). The if/else is counted taken-arm-only (no predication credit) and the compute is a global pool, so the branch does not separate P from U. Load-heavy shape (4 input streams to 2 output streams), but compute-bound after coalescing + control amortization. Full-trip counts are `A=258`, `LD_rec=65`, `LD_eff=66`, `ST=33`, and `CP=4`, giving the only lower bound, `absolute_cgra_lb=8=max(CP 4, compute 8, load 6, store 3)`, with compute pressure binding; `p_agg` and `sched` are wave-serialized estimates.
 
 flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
 --------------------------------------------------------------------------------------------------------------------
@@ -99,27 +100,28 @@ o        i:P4U16                       4  12  12     69    64     1     8       
 o        i:P2U32                       2  12  12     67    64     1     8       8       9 resource-bound   100/75/38
 o        i:P1U64                       1  12  12     66    64     1     8       8      10 resource-bound   100/75/38
          i:P16U2                      16  12  12     81    32     2     7      14      18 resource-bound   71/100/57
+o        i:P32U2                      32  12  12    161    64     1    14      14      16 resource-bound   64/100/57
          i:P8U2                        8  12  12     41    16     4     4      16      24 resource-bound   75/100/50
 b        i:P4U4                        4  12  12     21    16     4     4      16      16 latency-bound     50/50/25
 b        i:P2U8                        2  12  10     19    16     4     4      16      16 latency-bound     50/50/25
 b        i:P1U16                       1  12   9     18    16     4     4      16      16 latency-bound     50/50/25
+o        i:P64U1                      64  12  12    321    64     1    27      27      29 resource-bound   41/100/59
          i:P16U1                      16  12  12     81    16     4     7      28      36 resource-bound   43/100/57
+         i:P32U1                      32  12  12    161    32     2    14      28      32 resource-bound   43/100/57
          i:P8U1                        8  12  12     41     8     8     4      32      48 resource-bound   50/100/50
 b        i:P4U2                        4  12  12     21     8     8     4      32      32 latency-bound     50/50/25
 b        i:P2U4                        2  10   6     11     8     8     4      32      32 latency-bound     25/25/25
 b        i:P1U8                        1   9   5     10     8     8     4      32      32 latency-bound     25/25/25
 b        i:P4U1                        4  12  12     21     4    16     4      64      64 latency-bound     25/50/25
 b        i:P2U2                        2  10   6     11     4    16     4      64      64 latency-bound     25/25/25
-b        i:P1U4                        1   5   3      6     4    16     4      64      64 latency-bound     25/25/25
-b        i:P2U1                        2  10   6     11     2    32     4     128     128 latency-bound     25/25/25
-b        i:P1U2                        1   5   3      6     2    32     4     128     128 latency-bound     25/25/25
-b        i:P1U1                        1   5   3      6     1    64     4     256     256 latency-bound     25/25/25
+... (4 more groups omitted; use --top 0 for the full sweep)
 
 RECOMMENDED: i:P1U32  -> exposure=32, pragma_agg=8 (1.00x the floor), resource-bound
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
 
 P-vs-U at fixed product 32 on level 'i' (other levels at P1U1):
   split        LD_rec LD_eff    ST   p_agg note
+  P32U1             160    161    96      28 3.50x slower (parallel: extra iterators + strided, no coalesce)
   P16U2              80     81    48      14 1.75x slower (parallel: extra iterators + strided, no coalesce)
   P8U4              40     41    24       8 best
   P4U8              36     37    20       8 best

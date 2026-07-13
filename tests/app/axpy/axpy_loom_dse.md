@@ -25,7 +25,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py axpy --config 6x6 --max-parallel 16 --max-unroll 64
+python3 tests/scripts/loom_dse.py axpy --config 6x6 --top 24
 ```
 
 ## Why P and U differ
@@ -70,21 +70,20 @@ they also carry separate iterators. At fixed product `P*U = 64`, this is why
   `alpha`/`N` loads once; `LD_rec = 129`, so the load term is `11`, below the
   arithmetic term `15`.
 
-## Results (`--max-parallel 16 --max-unroll 64`)
+## Results
 
 ```text
 # Loom pragma DSE (lane-aware + vector coalescing): axpy  (6x6)
 
-loop nest: i[256, parallel]; input_x/input_y/output_y are contiguous over i.
-unroll coalesces adjacent accesses; parallel workers stride and carry separate iterators.
-absolute_cgra_lb = 15 = max(CP 4, compute 15, load 11, store 6); it is the only lower bound.
-full-trip counts: A=514 LD_rec=129 LD_eff=131 ST=65 CP=4; binding class = P.
-p_agg and sched are wave-serialized estimates; shared rules are in ../DSE_rules.md.
+Search: complete legal power-of-two factors through each trip count.
+Loop nest: `i[256,parallel]`; input_x/input_y/output_y are contiguous over i. Two axes both favor LOOM_UNROLL over LOOM_PARALLEL at a fixed product: (1) coalescing -- a worker's U adjacent accesses fuse into ceil(U/V) vector ops while parallel strides across workers (bounded by V=4, gone once U>=V); (2) control amortization -- the iterator is charged once per worker, so fewer workers (more unroll) means fewer i-loads/adds/stores (keeps paying past U=V). So unroll strictly beats parallel at fixed product. Full-trip counts are `A=514`, `LD_rec=129`, `LD_eff=131`, `ST=65`, and `CP=4`, giving the only lower bound, `absolute_cgra_lb=15=max(CP 4, compute 15, load 11, store 6)`, with compute pressure binding; `p_agg` and `sched` are wave-serialized estimates.
 
 flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
 --------------------------------------------------------------------------------------------------------------------
 o        i:P8U32                       8  12  12    138   256     1    15      15      17 resource-bound   100/80/40
 o        i:P4U64                       4  12  12    134   256     1    15      15      17 resource-bound   100/73/40
+o        i:P2U128                      2  12  12    132   256     1    15      15      17 resource-bound   100/73/40
+o        i:P1U256                      1  12  12    131   256     1    15      15      17 resource-bound   100/73/40
          i:P8U8                        8  12  12     42    64     4     4      16      24 resource-bound  100/100/50
          i:P4U16                       4  12  12     38    64     4     4      16      24 resource-bound   100/75/50
          i:P2U32                       2  12  12     36    64     4     4      16      24 resource-bound   100/75/50
@@ -93,34 +92,27 @@ o        i:P16U8                      16  12  12     82   128     2     8      1
 o        i:P8U16                       8  12  12     74   128     2     8      16      20 resource-bound   100/75/50
 o        i:P4U32                       4  12  12     70   128     2     8      16      20 resource-bound   100/75/38
 o        i:P2U64                       2  12  12     68   128     2     8      16      20 resource-bound   100/75/38
+o        i:P1U128                      1  12  12     67   128     2     8      16      20 resource-bound   100/75/38
+o        i:P32U8                      32  12  12    162   256     1    16      16      18 resource-bound   100/88/50
 o        i:P16U16                     16  12  12    146   256     1    16      16      17 resource-bound   100/75/44
+o        i:P32U4                      32  12  12     98   128     2     9      18      22 resource-bound   100/89/67
+o        i:P64U4                      64  12  12    194   256     1    18      18      20 resource-bound   100/89/61
          i:P16U4                      16  12  12     50    64     4     5      20      28 resource-bound   100/80/60
          i:P16U2                      16  12  12     50    32     8     4      32      56 resource-bound   75/100/75
 b        i:P8U4                        8  12  12     26    32     8     4      32      40 latency-bound     75/50/50
 b        i:P4U8                        4  12  12     22    32     8     4      32      32 latency-bound     50/50/25
 b        i:P2U16                       2  12  10     20    32     8     4      32      32 latency-bound     50/50/25
 b        i:P1U32                       1  12   9     19    32     8     4      32      32 latency-bound     50/50/25
-         i:P16U1                      16  12  12     50    16    16     4      64     112 resource-bound   50/100/75
-b        i:P8U2                        8  12  12     26    16    16     4      64      80 latency-bound     50/50/50
-b        i:P4U4                        4  12   8     14    16    16     4      64      64 latency-bound     50/25/25
-b        i:P2U8                        2  10   6     12    16    16     4      64      64 latency-bound     25/25/25
-b        i:P1U16                       1   9   5     11    16    16     4      64      64 latency-bound     25/25/25
-b        i:P8U1                        8  12  12     26     8    32     4     128     160 latency-bound     25/50/50
-b        i:P4U2                        4  12   8     14     8    32     4     128     128 latency-bound     25/25/25
-b        i:P2U4                        2   6   4      8     8    32     4     128     128 latency-bound     25/25/25
-b        i:P1U8                        1   5   3      7     8    32     4     128     128 latency-bound     25/25/25
-b        i:P4U1                        4  12   8     14     4    64     4     256     256 latency-bound     25/25/25
-b        i:P2U2                        2   6   4      8     4    64     4     256     256 latency-bound     25/25/25
-b        i:P1U4                        1   3   2      5     4    64     4     256     256 latency-bound     25/25/25
-b        i:P2U1                        2   6   4      8     2   128     4     512     512 latency-bound     25/25/25
-b        i:P1U2                        1   3   2      5     2   128     4     512     512 latency-bound     25/25/25
-b        i:P1U1                        1   3   2      5     1   256     4    1024    1024 latency-bound     25/25/25
+         i:P32U2                      32  12  12     98    64     4     8      32      44 resource-bound   75/100/75
+... (21 more groups omitted; use --top 0 for the full sweep)
 
 RECOMMENDED: i:P1U64  -> exposure=64, pragma_agg=16 (1.07x the floor), resource-bound
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
 
 P-vs-U at fixed product 64 on level 'i' (other levels at P1U1):
   split        LD_rec LD_eff    ST   p_agg note
+  P64U1             192    194   128      64 4.00x slower (parallel: extra iterators + strided, no coalesce)
+  P32U2              96     98    64      32 2.00x slower (parallel: extra iterators + strided, no coalesce)
   P16U4              48     50    32      20 1.25x slower (parallel: extra iterators + strided, no coalesce)
   P8U8              40     42    24      16 best
   P4U16             36     38    20      16 best

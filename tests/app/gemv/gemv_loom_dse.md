@@ -31,7 +31,7 @@ this provisional no-banking DSE.
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py gemv --config 6x6 --max-parallel 8 --top 14
+python3 tests/scripts/loom_dse.py gemv --config 6x6 --top 14
 ```
 
 ## Gemv-specific setup
@@ -56,44 +56,41 @@ python3 tests/scripts/loom_dse.py gemv --config 6x6 --max-parallel 8 --top 14
   `CP = 11`. Thus `absolute_cgra_lb = max(11, ceil(8322/36), ceil(1041/12), 2) =
   232`, the only lower bound. The binding class is compute (`P`).
 
-## Results (`--top 14`)
+## Results
 
 ```text
 # Loom pragma DSE (lane-aware + vector coalescing): gemv  (6x6)
 
-loop nest: i[64, parallel] (rows), j[64, reduction] (cols); A[i][j]/x[j] contiguous over j.
-j is fully consumed (tree-reduced) -> the dot-product path is P/U-symmetric; the row-i edge is coalescing y[i] + amortizing the row iterator.
-absolute_cgra_lb = 232 = max(CP 11, compute 232, load 87, store 2); it is the only lower bound.
-full-trip counts: A=8322 LD_rec=1041 LD_eff=1061 ST=17 CP=11; binding class = P (compute).
-p_agg and sched are wave-serialized estimates; shared rules are in ../DSE_rules.md.
+Search: complete legal power-of-two factors through each trip count.
+Loop nest: `i[64,parallel], j[64,reduction]`; A[i][j] and x[j] are contiguous over j (a fully-consumed reduction, tree-reduced), so they coalesce identically and the j-loop carries no control -> the dot-product path is P/U-symmetric. On the row level i, LOOM_UNROLL(i) beats LOOM_PARALLEL(i) two ways: it coalesces the contiguous y[i]/output_y[i] accesses (parallel strides) and it amortizes the row iterator (charged once per worker). The A-load term is split-symmetric and large, so the i-level edge is modest but real. Full-trip counts are `A=8322`, `LD_rec=1041`, `LD_eff=1061`, `ST=17`, and `CP=11`, giving the only lower bound, `absolute_cgra_lb=232=max(CP 11, compute 232, load 87, store 2)`, with compute pressure binding; `p_agg` and `sched` are wave-serialized estimates.
 
 flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
 --------------------------------------------------------------------------------------------------------------------
-o        i:P2U4 j:P1U1  (+15 eq)       2  12   4    152   512     8    29     232     280 resource-bound    100/38/3
-o        i:P1U8 j:P1U1  (+15 eq)       1  12   3    151   512     8    29     232     280 resource-bound    100/38/3
-o        i:P4U4 j:P1U1  (+15 eq)       4  12   8    284  1024     4    58     232     252 resource-bound    100/38/2
-o        i:P2U8 j:P1U1  (+15 eq)       2  12   6    282  1024     4    58     232     252 resource-bound    100/38/2
-o        i:P8U4 j:P1U1  (+15 eq)       8  12  12    548  2048     2   116     232     238 resource-bound    100/38/2
-o        i:P4U8 j:P1U1  (+15 eq)       4  12  12    544  2048     2   116     232     238 resource-bound    100/38/1
-o        i:P8U8 j:P1U1  (+15 eq)       8  12  12   1068  4096     1   232     232     235 resource-bound    100/38/1
-o        i:P8U2 j:P1U1  (+15 eq)       8  12  12    292  1024     4    59     236     252 resource-bound    100/39/3
-         i:P4U1 j:P1U1  (+15 eq)       4  12   8     92   256    16    15     240     352 resource-bound    100/40/7
-         i:P2U2 j:P1U1  (+15 eq)       2  12   4     88   256    16    15     240     352 resource-bound    100/40/7
-K        i:P1U4 j:P1U1  (+15 eq)       1  12   2     86   256    16    15     240     352 resource-bound    100/40/7
-o        i:P8U1 j:P1U1  (+15 eq)       8  12  12    164   512     8    30     240     280 resource-bound    100/40/7
-o        i:P4U2 j:P1U1  (+15 eq)       4  12   8    156   512     8    30     240     280 resource-bound    100/40/3
-b        i:P2U1 j:P1U1  (+15 eq)       2  12   4     56   128    32    11     352     512 latency-bound      73/27/9
-... (2 more groups omitted; use --top 0 for the full sweep)
+o        i:P2U4 j:P1U1                 2  12   4    152   512     8    29     232     280 resource-bound    100/38/3
+o        i:P1U8 j:P1U1                 1  12   3    151   512     8    29     232     280 resource-bound    100/38/3
+o        i:P4U4 j:P1U1                 4  12   8    284  1024     4    58     232     252 resource-bound    100/38/2
+o        i:P2U8 j:P1U1                 2  12   6    282  1024     4    58     232     252 resource-bound    100/38/2
+o        i:P1U16 j:P1U1                1  12   5    281  1024     4    58     232     252 resource-bound    100/38/2
+o        i:P8U4 j:P1U1                 8  12  12    548  2048     2   116     232     238 resource-bound    100/38/2
+o        i:P4U8 j:P1U1                 4  12  12    544  2048     2   116     232     238 resource-bound    100/38/1
+o        i:P2U16 j:P1U1                2  12  10    542  2048     2   116     232     238 resource-bound    100/38/1
+o        i:P1U32 j:P1U1                1  12   9    541  2048     2   116     232     238 resource-bound    100/38/1
+o        i:P16U4 j:P1U1               16  12  12   1076  4096     1   232     232     235 resource-bound    100/38/1
+o        i:P8U8 j:P1U1                 8  12  12   1068  4096     1   232     232     235 resource-bound    100/38/1
+o        i:P4U16 j:P1U1                4  12  12   1064  4096     1   232     232     235 resource-bound    100/38/1
+o        i:P2U32 j:P1U1                2  12  12   1062  4096     1   232     232     235 resource-bound    100/38/1
+o        i:P1U64 j:P1U1                1  12  12   1061  4096     1   232     232     235 resource-bound    100/38/1
+K        i:P1U4 j:P1U1                 1  12   2     86   256    16    15     240     352 resource-bound    100/40/7
+... (13 more groups omitted; use --top 0 for the full sweep)
 
 RECOMMENDED: i:P1U4 j:P1U1  -> exposure=256, pragma_agg=240 (1.03x the floor), resource-bound
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
 
-P-vs-U at fixed product 8 on level 'i' (other levels at P1U1):
+P-vs-U at fixed product 4 on level 'i' (other levels at P1U1):
   split        LD_rec LD_eff    ST   p_agg note
-  P8U1             144    164    16     240 1.03x slower (parallel: extra iterators + strided, no coalesce)
-  P4U2             136    156     8     240 1.03x slower (parallel: extra iterators + strided, no coalesce)
-  P2U4             132    152     4     232 best
-  P1U8             131    151     3     232 best
+  P4U1              72     92     8     240 tie (control/coalescing sit below the binding term)
+  P2U2              68     88     4     240 tie (control/coalescing sit below the binding term)
+  P1U4              66     86     2     240 tie (control/coalescing sit below the binding term)
 ```
 
 For flag and column meanings, see

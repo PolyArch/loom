@@ -24,7 +24,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py bitonic_stage --config 6x6 --max-parallel 8 --max-unroll 8 --top 16
+python3 tests/scripts/loom_dse.py bitonic_stage --config 6x6 --top 16
 ```
 
 ## Setup
@@ -66,12 +66,13 @@ unroll, and avoiding extra workers or exposure after the binding resource has
 saturated. `absolute_cgra_lb` is the only lower bound. `p_agg` and `sched` are
 wave-serialized estimates used to compare legal pragma splits.
 
-## Results (`--max-parallel 8 --max-unroll 8`)
+## Results
 
 ```text
 # Loom pragma DSE (lane-aware + vector coalescing): bitonic_stage  (6x6)
 
-Loop nest: `i[8,parallel]` for the documented `N=8`, `stage=1`, `pass=0` fixture; active lanes operate on disjoint compare pairs, but strict branch gating and in-place swap aliasing keep the conditional pair accesses scalar, so unrolling only amortizes outer-loop control. Full-trip counts are `A=66`, `LD_rec=9`, `LD_eff=12`, `ST=5`, and `CP=11`, giving the only lower bound, `absolute_cgra_lb=11=max(CP 11, compute 2, load 1, store 1)`; the gated critical path dominates, while `p_agg` and `sched` are wave-serialized estimates.
+Search: complete legal power-of-two factors through each trip count.
+Loop nest: `i[8,parallel]`; i is parallel for the documented N=8, stage=1, pass=0 fixture: active lanes touch disjoint compare pairs. The branch mix is one active lane per pair and one committing swap lane per four i lanes. Conditional in-place pair accesses remain scalar because strict compare-to-body gates and swap aliasing do not form a plain contiguous vector stream. LOOM_UNROLL therefore helps only through outer-iterator control amortization; the 11-cycle gated CP dominates. Full-trip counts are `A=66`, `LD_rec=9`, `LD_eff=12`, `ST=5`, and `CP=11`, giving the only lower bound, `absolute_cgra_lb=11=max(CP 11, compute 2, load 1, store 1)`, with critical-path pressure binding; `p_agg` and `sched` are wave-serialized estimates.
 
 flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
 --------------------------------------------------------------------------------------------------------------------

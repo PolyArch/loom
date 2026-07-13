@@ -31,7 +31,7 @@ This uses the shared lane-aware + vector-coalescing DSE from
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py autocorrelation --config 6x6 --max-parallel 8 --top 14
+python3 tests/scripts/loom_dse.py autocorrelation --config 6x6 --top 14
 ```
 
 ## Autocorrelation-specific setup
@@ -69,40 +69,40 @@ inner **reduction** tap loop `i`. It is gemv-shaped — each `lag` privatizes it
   `CP = 10`. Thus `absolute_cgra_lb = max(10, ceil(8162/36), ceil(1025/12), 1) =
   227`, the only lower bound. The binding class is compute (`P`).
 
-## Results (`--top 14`)
+## Results
 
 ```text
 # Loom pragma DSE (lane-aware + vector coalescing): autocorrelation  (6x6)
 
-Loop nest: `lag[32,parallel]`, `i[128,reduction]`. This gemv-shaped DSE treats `x[i]` as an invariant coalesced prefix and `x[i+lag]` as recurring but coalesced over `i`; `LOOM_UNROLL(lag)` has the small edge because it coalesces `output[lag]` stores and amortizes the lag iterator. The model uses `P_pe=36`, `L=S=12`, `V=4`, models every lag at the max `x_size=128` length (4096 products vs true 3600, about 14% conservative over-count), and reports `absolute_cgra_lb=227` as the only lower bound from full-trip counts `A=8162 LD_rec=1025 LD_eff=1059 ST=9 CP=10` with compute binding (`compute=227 load=86 store=1`); `p_agg` and `sched` are wave-serialized estimates, `aL` is recurring-load exposure, and invariant loads are amortized out of the binding load term.
+Search: complete legal power-of-two factors through each trip count.
+Loop nest: `lag[32,parallel], i[128,reduction]`; gemv-shaped: outer PARALLEL lag, inner REDUCTION i (associative float sum, tree-reduced -> no i-loop control -> the dot-product path is P/U-symmetric). x[i] (the un-shifted prefix) is the same data for every lag -> modeled invariant (loaded once per chunk). x[i+lag] shifts with lag -> recurring, but contiguous over i so it coalesces. On the lag level, LOOM_UNROLL(lag) beats LOOM_PARALLEL(lag): it coalesces the contiguous output[lag] stores and amortizes the lag iterator. Inner length modeled at max x_size=128 (true length x_size-lag runs down to 97 at lag=31 -> conservative ~14% over-count, 4096 vs true 3600); cross-lag reuse of x otherwise not modeled (conv2d halo convention). Full-trip counts are `A=8162`, `LD_rec=1025`, `LD_eff=1059`, `ST=9`, and `CP=10`, giving the only lower bound, `absolute_cgra_lb=227=max(CP 10, compute 227, load 86, store 1)`, with compute pressure binding; `p_agg` and `sched` are wave-serialized estimates.
 
 flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
 --------------------------------------------------------------------------------------------------------------------
-o        lag:P4U8 i:P1U1  (+15 eq)     4  12  12   1062  4096     1   227     227     232 resource-bound    100/38/0
-o        lag:P4U2 i:P1U1  (+15 eq)     4  12   8    294  1024     4    57     228     252 resource-bound    100/39/2
-o        lag:P2U4 i:P1U1  (+15 eq)     2  12   4    292  1024     4    57     228     252 resource-bound    100/39/2
-o        lag:P1U8 i:P1U1  (+15 eq)     1  12   3    291  1024     4    57     228     252 resource-bound    100/39/2
-o        lag:P8U2 i:P1U1  (+15 eq)     8  12  12    554  2048     2   114     228     238 resource-bound    100/39/2
-o        lag:P4U4 i:P1U1  (+15 eq)     4  12   8    550  2048     2   114     228     238 resource-bound    100/38/1
-o        lag:P2U8 i:P1U1  (+15 eq)     2  12   6    548  2048     2   114     228     238 resource-bound    100/38/1
-o        lag:P8U4 i:P1U1  (+15 eq)     8  12  12   1066  4096     1   228     228     232 resource-bound    100/38/1
-o        lag:P4U1 i:P1U1  (+15 eq)     4  12   8    166   512     8    29     232     288 resource-bound    100/38/3
-o        lag:P2U2 i:P1U1  (+15 eq)     2  12   4    164   512     8    29     232     288 resource-bound    100/38/3
-o        lag:P1U4 i:P1U1  (+15 eq)     1  12   2    163   512     8    29     232     288 resource-bound    100/38/3
-o        lag:P8U1 i:P1U1  (+15 eq)     8  12  12    298  1024     4    58     232     252 resource-bound    100/38/3
-         lag:P2U1 i:P1U1  (+15 eq)     2  12   4    100   256    16    15     240     352 resource-bound    100/40/7
-K        lag:P1U2 i:P1U1  (+15 eq)     1  12   2     99   256    16    15     240     352 resource-bound    100/40/7
-... (1 more groups omitted; use --top 0 for the full sweep)
+o        lag:P4U8 i:P1U1               4  12  12   1062  4096     1   227     227     232 resource-bound    100/38/0
+o        lag:P2U16 i:P1U1              2  12  10   1060  4096     1   227     227     232 resource-bound    100/38/0
+o        lag:P1U32 i:P1U1              1  12   9   1059  4096     1   227     227     232 resource-bound    100/38/0
+o        lag:P4U2 i:P1U1               4  12   8    294  1024     4    57     228     252 resource-bound    100/39/2
+o        lag:P2U4 i:P1U1               2  12   4    292  1024     4    57     228     252 resource-bound    100/39/2
+o        lag:P1U8 i:P1U1               1  12   3    291  1024     4    57     228     252 resource-bound    100/39/2
+o        lag:P8U2 i:P1U1               8  12  12    554  2048     2   114     228     238 resource-bound    100/39/2
+o        lag:P4U4 i:P1U1               4  12   8    550  2048     2   114     228     238 resource-bound    100/38/1
+o        lag:P2U8 i:P1U1               2  12   6    548  2048     2   114     228     238 resource-bound    100/38/1
+o        lag:P1U16 i:P1U1              1  12   5    547  2048     2   114     228     238 resource-bound    100/38/1
+o        lag:P16U2 i:P1U1             16  12  12   1074  4096     1   228     228     233 resource-bound    100/38/1
+o        lag:P8U4 i:P1U1               8  12  12   1066  4096     1   228     228     232 resource-bound    100/38/1
+o        lag:P32U1 i:P1U1             32  12  12   1090  4096     1   229     229     236 resource-bound    100/38/3
+o        lag:P16U1 i:P1U1             16  12  12    562  2048     2   115     230     240 resource-bound    100/38/3
+K        lag:P1U2 i:P1U1               1  12   2     99   256    16    15     240     352 resource-bound    100/40/7
+... (6 more groups omitted; use --top 0 for the full sweep)
 
 RECOMMENDED: lag:P1U2 i:P1U1  -> exposure=256, pragma_agg=240 (1.06x the floor), resource-bound
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
 
-P-vs-U at fixed product 8 on level 'lag' (other levels at P1U1):
+P-vs-U at fixed product 2 on level 'lag' (other levels at P1U1):
   split        LD_rec LD_eff    ST   p_agg note
-  P8U1             264    298    16     232 1.02x slower (parallel: extra iterators + strided, no coalesce)
-  P4U2             260    294     8     228 best
-  P2U4             258    292     4     228 best
-  P1U8             257    291     3     228 best
+  P2U1              66    100     4     240 tie (control/coalescing sit below the binding term)
+  P1U2              65     99     2     240 tie (control/coalescing sit below the binding term)
 ```
 
 For flag and column meanings, see

@@ -10,7 +10,7 @@ image pixels. The source marks channel `c` parallel and `kh` unrolled.
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py col2im --config 6x6 --max-parallel 8 --max-unroll 8 --top 16
+python3 tests/scripts/loom_dse.py col2im --config 6x6 --top 16
 ```
 
 ## Col2im-specific setup
@@ -28,27 +28,19 @@ python3 tests/scripts/loom_dse.py col2im --config 6x6 --max-parallel 8 --max-unr
 - Full-trip DSE counts are `A=12756`, `LD_rec=1945`, `LD_eff=1952`,
   `ST=1165`, `CP=13`; `absolute_cgra_lb=355`, compute-bound.
 
-## Results (`--top 16`)
+## Results
 
 ```text
 # Loom pragma DSE (lane-aware + vector coalescing): col2im  (6x6)
 
-loop nest (outer->inner): c[3,parallel], kh[3,reduction]
-coalescing: channels are independent. For each exposed channel, overlapping kh/kw contributions are consumed as output-centric associative reduction buckets, so kh is fully consumed and its P/U labels are equivalent. Channel slices are separated by H*W and do not coalesce across c. The eval's per-iteration induction work is removed, then one residual c iterator is charged per active worker, so c-unroll amortizes control while c-parallel retains one iterator per worker.
-
-absolute_cgra_lb = 355  (full-trip, fully-coalesced, invariant-amortized aggregate over full lanes L=12,S=12; the ONLY lower bound)
-full-trip counts: A=12756 LD_rec=1945 LD_eff=1952 ST=1165 CP=13 | compute=355 load=163 store=98   (load term = ceil(LD_rec/L); invariants amortized)
-binding class (full trip) = P   (P_pe=36, L=12, S=12; V=4 64-bit elems/vec)
-
-Only absolute_cgra_lb is a lower bound. pragma_agg / sched_est assume waves do NOT overlap and sit at or above it.
-aL = active load lanes = min(recurring loads, L): the recurring loop loads set the lane exposure and the binding load term. LD_eff = recurring + one-time invariant loads (total traffic); invariant loads (loaded once and held) are amortized out of the binding term.
-Algorithmic arith/CP is a global pool (P and U tie there). P and U separate on TWO axes, both favoring LOOM_UNROLL: (1) control amortization -- unroll shares one iterator across U bodies, so control ops scale as trip/U (parallel keeps an iterator per worker); (2) vector coalescing of contiguous accesses (bounded by V, gone once U>=V). Sequential carries keep per-iter control on CP.
+Search: complete legal power-of-two factors through each trip count.
+Loop nest: `c[3,parallel], kh[3,reduction]`; channels are independent. For each exposed channel, overlapping kh/kw contributions are consumed as output-centric associative reduction buckets, so kh is fully consumed and its P/U labels are equivalent. Channel slices are separated by H*W and do not coalesce across c. The eval's per-iteration induction work is removed, then one residual c iterator is charged per active worker, so c-unroll amortizes control while c-parallel retains one iterator per worker. Full-trip counts are `A=12756`, `LD_rec=1945`, `LD_eff=1952`, `ST=1165`, and `CP=13`, giving the only lower bound, `absolute_cgra_lb=355=max(CP 13, compute 355, load 163, store 98)`, with compute pressure binding; `p_agg` and `sched` are wave-serialized estimates.
 
 flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
 --------------------------------------------------------------------------------------------------------------------
-K        c:P1U1 kh:P1U1  (+2 eq)       1  12  12    656     3     3   119     357     357 resource-bound   100/46/28
-o        c:P2U1 kh:P1U1  (+2 eq)       2  12  12   1305     6     2   237     474     474 resource-bound   100/46/27
-o        c:P1U2 kh:P1U1  (+2 eq)       1  12  12   1304     6     2   237     474     474 resource-bound   100/46/27
+K        c:P1U1 kh:P1U1                1  12  12    656     3     3   119     357     357 resource-bound   100/46/28
+o        c:P2U1 kh:P1U1                2  12  12   1305     6     2   237     474     474 resource-bound   100/46/27
+o        c:P1U2 kh:P1U1                1  12  12   1304     6     2   237     474     474 resource-bound   100/46/27
 
 RECOMMENDED: c:P1U1 kh:P1U1  -> exposure=3, pragma_agg=357 (1.01x the floor), resource-bound
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).

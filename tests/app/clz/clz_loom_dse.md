@@ -11,7 +11,7 @@ each lane contains a private data-dependent sequential `while` recurrence.
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py clz --config 6x6 --max-parallel 8 --max-unroll 8 --top 16
+python3 tests/scripts/loom_dse.py clz --config 6x6 --top 16
 ```
 
 ## CLZ-specific setup
@@ -28,55 +28,53 @@ python3 tests/scripts/loom_dse.py clz --config 6x6 --max-parallel 8 --max-unroll
 - Full-trip counts are `A = 13612`, `LD_rec = 6997`, `LD_eff = 6998`,
   `ST = 6997`, `CP = 163`; therefore `absolute_cgra_lb = 584`, load/store-bound.
 
-## Results (`--top 16`)
+## Results
 
 ```text
 # Loom pragma DSE (lane-aware + vector coalescing): clz  (6x6)
 
-loop nest (outer->inner): i[256,parallel]
-coalescing: outer i is parallel; each lane has a private data-dependent while recurrence whose trip count is the concrete main.cpp leading-zero count. Contiguous i-unroll coalesces boundary input/output traffic and amortizes outer control, while the longest K=31 lane keeps CP at 163 once exposed.
-
-absolute_cgra_lb = 584  (full-trip, fully-coalesced, invariant-amortized aggregate over full lanes L=12,S=12; the ONLY lower bound)
-full-trip counts: A=13612 LD_rec=6997 LD_eff=6998 ST=6997 CP=163 | compute=379 load=584 store=584   (load term = ceil(LD_rec/L); invariants amortized)
-binding class (full trip) = L   (P_pe=36, L=12, S=12; V=4 64-bit elems/vec)
-
-Only absolute_cgra_lb is a lower bound. pragma_agg / sched_est assume waves do NOT overlap and sit at or above it.
-aL = active load lanes = min(recurring loads, L): the recurring loop loads set the lane exposure and the binding load term. LD_eff = recurring + one-time invariant loads (total traffic); invariant loads (loaded once and held) are amortized out of the binding term.
-Algorithmic arith/CP is a global pool (P and U tie there). P and U separate on TWO axes, both favoring LOOM_UNROLL: (1) control amortization -- unroll shares one iterator across U bodies, so control ops scale as trip/U (parallel keeps an iterator per worker); (2) vector coalescing of contiguous accesses (bounded by V, gone once U>=V). Sequential carries keep per-iter control on CP.
+Search: complete legal power-of-two factors through each trip count.
+Loop nest: `i[256,parallel]`; outer i is parallel; each lane has a private data-dependent while recurrence whose trip count is the concrete main.cpp leading-zero count. Contiguous i-unroll coalesces boundary input/output traffic and amortizes outer control, while the longest K=31 lane keeps CP at 163 once exposed. Full-trip counts are `A=13612`, `LD_rec=6997`, `LD_eff=6998`, `ST=6997`, and `CP=163`, giving the only lower bound, `absolute_cgra_lb=584=max(CP 163, compute 379, load 584, store 584)`, with load pressure binding; `p_agg` and `sched` are wave-serialized estimates.
 
 flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
 --------------------------------------------------------------------------------------------------------------------
-K        i:P8U8                        8  12  12   1758    64     4   147     588     588 resource-bound  65/100/100
-b        i:P8U4                        8  12  12    884    32     8    83     664     664 latency-bound     58/89/89
-b        i:P4U8                        4  12  12    880    32     8    83     664     664 latency-bound     58/89/89
-b        i:P8U2                        8  12  12    451    16    16    78    1248    1248 latency-bound     32/49/49
-b        i:P4U4                        4  12  12    443    16    16    78    1248    1248 latency-bound     31/47/47
-b        i:P2U8                        2  12  12    441    16    16    78    1248    1248 latency-bound     31/47/47
-b        i:P8U1                        8  12  12    234     8    32    75    2400    2400 latency-bound     17/27/27
-b        i:P4U2                        4  12  12    226     8    32    75    2400    2400 latency-bound     17/25/25
-b        i:P2U4                        2  12  12    222     8    32    75    2400    2400 latency-bound     16/25/25
-b        i:P1U8                        1  12  12    221     8    32    75    2400    2400 latency-bound     16/25/25
-b        i:P4U1                        4  12  12    118     4    64    74    4736    4736 latency-bound      9/14/14
-b        i:P2U2                        2  12  12    114     4    64    74    4736    4736 latency-bound      9/14/14
-b        i:P1U4                        1  12  12    112     4    64    74    4736    4736 latency-bound      8/14/14
-b        i:P2U1                        2  12  12     60     2   128    72    9216    9216 latency-bound        6/7/7
-b        i:P1U2                        1  12  12     58     2   128    72    9216    9216 latency-bound        6/7/7
-b        i:P1U1                        1  12  12     31     1   256    71   18176   18176 latency-bound        3/4/4
+         i:P2U32                       2  12  12   1752    64     4   146     584     584 resource-bound  65/100/100
+K        i:P1U64                       1  12  12   1751    64     4   146     584     584 resource-bound  65/100/100
+o        i:P4U32                       4  12  12   3503   128     2   292     584     584 resource-bound  65/100/100
+o        i:P2U64                       2  12  12   3501   128     2   292     584     584 resource-bound  65/100/100
+o        i:P1U128                      1  12  12   3500   128     2   292     584     584 resource-bound  65/100/100
+o        i:P8U32                       8  12  12   7005   256     1   584     584     584 resource-bound  65/100/100
+o        i:P4U64                       4  12  12   7001   256     1   584     584     584 resource-bound  65/100/100
+o        i:P2U128                      2  12  12   6999   256     1   584     584     584 resource-bound  65/100/100
+o        i:P1U256                      1  12  12   6998   256     1   584     584     584 resource-bound  65/100/100
+o        i:P16U16                     16  12  12   7013   256     1   585     585     585 resource-bound  65/100/100
+o        i:P16U8                      16  12  12   3515   128     2   293     586     586 resource-bound  65/100/100
+o        i:P8U16                       8  12  12   3507   128     2   293     586     586 resource-bound  65/100/100
+o        i:P32U8                      32  12  12   7029   256     1   586     586     586 resource-bound  65/100/100
+         i:P8U8                        8  12  12   1758    64     4   147     588     588 resource-bound  65/100/100
+         i:P4U16                       4  12  12   1754    64     4   147     588     588 resource-bound  65/100/100
+o        i:P64U4                      64  12  12   7061   256     1   589     589     589 resource-bound  65/100/100
+... (29 more groups omitted; use --top 0 for the full sweep)
 
-RECOMMENDED: i:P8U8  -> exposure=64, pragma_agg=588 (1.01x the floor), resource-bound
+RECOMMENDED: i:P1U64  -> exposure=64, pragma_agg=584 (1.00x the floor), resource-bound
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
 
-P-vs-U at fixed product 32 on level 'i' (other levels at P1U1):
+P-vs-U at fixed product 64 on level 'i' (other levels at P1U1):
   split        LD_rec LD_eff    ST   p_agg note
-  P8U4             883    884   883     664 tie (control/coalescing sit below the binding term)
-  P4U8             879    880   879     664 tie (control/coalescing sit below the binding term)
+  P64U1            1861   1862  1861     624 1.07x slower (parallel: extra iterators + strided, no coalesce)
+  P32U2            1797   1798  1797     600 1.03x slower (parallel: extra iterators + strided, no coalesce)
+  P16U4            1765   1766  1765     592 1.01x slower (parallel: extra iterators + strided, no coalesce)
+  P8U8            1757   1758  1757     588 1.01x slower (parallel: extra iterators + strided, no coalesce)
+  P4U16           1753   1754  1753     588 1.01x slower (parallel: extra iterators + strided, no coalesce)
+  P2U32           1751   1752  1751     584 best
+  P1U64           1750   1751  1750     584 best
 ```
 
 ## Recommendation
 
-Use **`i:P8U8`** for this bounded sweep. Exposure 64 reaches the first
-resource-bound row with `p_agg = sched = 588`, only `1.01x` the 584-cycle
-aggregate floor. Smaller exposures remain latency-bound because their
-wave-serialized per-wave scan depths dominate. At fixed exposure 32,
-`P8U4` and `P4U8` tie in cycles; the helper still reports the small unroll-side
-traffic advantage, but it sits below the binding term.
+Use **`i:P1U64`**. Exposure 64 is the first resource-bound power-of-two exposure,
+and the unroll-heavy split reaches `p_agg = sched = 584`, exactly the aggregate
+floor. `P8U8` exposes the same number of words but reports 588 cycles because
+eight workers retain more iterator traffic and cannot coalesce across worker
+partitions. Smaller exposures remain latency-bound because their wave-serialized
+per-wave scan depths dominate.

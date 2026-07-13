@@ -853,6 +853,21 @@ or non-modeled control/work. Only `absolute_cgra_lb` (the full-trip,
 fully-coalesced aggregate over full lanes `L`/`S`) remains a lower bound; every
 Loom-pragma candidate estimate sits at or above it.
 
+**Search completeness.** The current design-space search uses power-of-two
+pragma factors and **MUST** consider every power-of-two `p` and `U` allowed by
+the modeled trip counts and dependency legality; it **MUST NOT** impose an
+implicit factor-of-eight or global exposure limit. An explicit source
+`LOOM_PARALLEL(P)` or `LOOM_UNROLL(U)` value is a candidate hint, not a search
+maximum. Factors that
+cannot expose additional iterations (`p * U > trip_count`) may be omitted as
+duplicate exposure. This power-of-two policy is an intentional current DSE
+scope choice; non-power-of-two factors may be added in a future extension.
+Reduction and sequential levels that are fully consumed in every candidate may
+likewise use one canonical factor label when all labels build the same DAG. An
+implementation **MAY** accept user-requested factor or exposure caps for
+diagnostic runs, but a capped report **MUST** label itself as a bounded search and
+**MUST NOT** present its result as the global recommendation.
+
 **When a kernel shows no `LOOM_PARALLEL`-vs-`LOOM_UNROLL` distinction.** Because
 control amortization now separates `p` from `U` on the op counts of *any* tiled
 level, genuine symmetry in the **cycle aggregate** arises only when both modeled

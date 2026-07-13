@@ -26,7 +26,7 @@ Design-Space Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py vecsum --config 6x6 --max-parallel 16
+python3 tests/scripts/loom_dse.py vecsum --config 6x6 --top 24
 ```
 
 ## Why P and U are symmetric
@@ -52,28 +52,22 @@ Every candidate therefore collapses into one equivalence group: vecsum shows no
 - `absolute_cgra_lb = 11 = max(CP 11, compute 8, load 6, store 1)`. It is the
   only lower bound and is CP-bound on the log-depth merge tree.
 
-## Results (`--max-parallel 16`)
+## Results
 
 ```text
 # Loom pragma DSE (lane-aware + vector coalescing): vecsum  (6x6)
 
-loop nest: i[256, reduction]; A contiguous over i, reduction fully consumed and tree-reduced.
-control and coalescing are both inert (spatial tree, contiguous) -> P/U-symmetric, CP-bound on the log-depth merge.
-absolute_cgra_lb = 11 = max(CP 11, compute 8, load 6, store 1); it is the only lower bound.
-full-trip counts: A=258 LD_rec=65 LD_eff=67 ST=2 CP=11; latency-bound at CP=11 (largest resource term compute=8).
-p_agg and sched are wave-serialized estimates; shared rules are in ../DSE_rules.md.
+Search: complete legal power-of-two factors through each trip count.
+Loop nest: `i[256,reduction]`; A is contiguous over i and the reduction is fully consumed in one wave AND tree-reduced (a spatial tree), so it carries no per-element and no per-worker iterator -- control is a fixed residual for any split. A also coalesces to ~trip/V vector loads regardless of the p/u split. Both the control and coalescing axes are inert -> vecsum is P/U-symmetric, and CP-bound on the log-depth merge tree. Full-trip counts are `A=258`, `LD_rec=65`, `LD_eff=67`, `ST=2`, and `CP=11`, giving the only lower bound, `absolute_cgra_lb=11=max(CP 11, compute 8, load 6, store 1)`, with critical-path pressure binding; `p_agg` and `sched` are wave-serialized estimates.
 
 flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
 --------------------------------------------------------------------------------------------------------------------
-K        i:P1U1  (+19 eq)              1  12   2     67   256     1    11      11      16 latency-bound      73/55/9
+K        i:P1U1                        1  12   2     67   256     1    11      11      16 latency-bound      73/55/9
 
 RECOMMENDED: i:P1U1  -> exposure=256, pragma_agg=11 (1.00x the floor), latency-bound
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
 
-P-vs-U at fixed product 64 on level 'i' (other levels at P1U1):
-  split        LD_rec LD_eff    ST   p_agg note
-  P16U4              65     67     2      11 tie (control/coalescing sit below the binding term)
-  P8U8              65     67     2      11 tie (control/coalescing sit below the binding term)
+P-vs-U contrast: primary level has no fixed-product split set.
 ```
 
 For flag and column meanings, see

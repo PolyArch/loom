@@ -43,7 +43,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py conv2d --config 6x6 --max-parallel 16 --max-unroll 64 --top 20
+python3 tests/scripts/loom_dse.py conv2d --config 6x6 --top 20
 ```
 
 ## Why P and U differ
@@ -79,7 +79,7 @@ loads.
   invariant-amortized** aggregate (`max(8, 213, 409, 4) = 409`), and the
   **only** lower bound. The binding class is **load (`L`)**.
 
-## Results (`--max-parallel 16 --max-unroll 64 --top 20`)
+## Results
 
 `out` is the 144-lane dependency-parallel output level and `tap` is the fully
 consumed 27-tap reduction. The full-trip floor is `absolute_cgra_lb = 409`
@@ -91,39 +91,43 @@ input-halo loads dominate; `LOOM_UNROLL(out)` still helps by coalescing output
 stores and amortizing the `out` iterator.
 
 ```text
+# Loom pragma DSE (lane-aware + vector coalescing): conv2d  (6x6)
+
+Search: complete legal power-of-two factors through each trip count.
+Loop nest: `out[144,parallel], tap[27,reduction]`; output pixels (out = C_out*OH*OW) are parallel; the K = C_in*KH*KW taps are a fully-consumed reduction (tree-reduced -> no tap iterator). input is strided over taps (halo) so it does NOT coalesce and dominates loads; weight is contiguous but reduction-inert; output is contiguous over out. LOOM_UNROLL(out) beats LOOM_PARALLEL(out) two ways: it coalesces the output stores and amortizes the out iterator (charged once per worker). Load-bound on the strided input, so the edge is modest. Halo reuse / weight sharing not modeled. Full-trip counts are `A=7634`, `LD_rec=4897`, `LD_eff=4898`, `ST=37`, and `CP=8`, giving the only lower bound, `absolute_cgra_lb=409=max(CP 8, compute 213, load 409, store 4)`, with load pressure binding; `p_agg` and `sched` are wave-serialized estimates.
+
 flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
 --------------------------------------------------------------------------------------------------------------------
-o        out:P4U2 tap:P1U1  (+14 eq)    4  12   8    277   216    18    23     414     504 resource-bound    52/100/4
-o        out:P2U4 tap:P1U1  (+14 eq)    2  12   4    275   216    18    23     414     504 resource-bound    52/100/4
-o        out:P1U8 tap:P1U1  (+14 eq)    1  12   3    274   216    18    23     414     504 resource-bound    52/100/4
-o        out:P8U2 tap:P1U1  (+14 eq)    8  12  12    553   432     9    46     414     459 resource-bound    52/100/4
-o        out:P4U4 tap:P1U1  (+14 eq)    4  12   8    549   432     9    46     414     459 resource-bound    52/100/2
-o        out:P2U8 tap:P1U1  (+14 eq)    2  12   6    547   432     9    46     414     459 resource-bound    52/100/2
-o        out:P1U16 tap:P1U1  (+14 eq)    1  12   5    546   432     9    46     414     459 resource-bound    52/100/2
-o        out:P16U1 tap:P1U1  (+14 eq)   16  12  12    561   432     9    47     423     459 resource-bound    53/100/6
-         out:P4U1 tap:P1U1  (+14 eq)    4  12   8    141   108    36    12     432     612 resource-bound    58/100/8
-         out:P2U2 tap:P1U1  (+14 eq)    2  12   4    139   108    36    12     432     612 resource-bound    50/100/8
-K        out:P1U4 tap:P1U1  (+14 eq)    1  12   2    138   108    36    12     432     612 resource-bound    50/100/8
-o        out:P8U1 tap:P1U1  (+14 eq)    8  12  12    281   216    18    24     432     504 resource-bound    54/100/8
-o        out:P4U8 tap:P1U1  (+14 eq)    4  12  12   1093   864     5    91     455     480 resource-bound    53/100/1
-o        out:P2U16 tap:P1U1  (+14 eq)    2  12  10   1091   864     5    91     455     480 resource-bound    53/100/1
-o        out:P1U32 tap:P1U1  (+14 eq)    1  12   9   1090   864     5    91     455     480 resource-bound    53/100/1
-o        out:P16U2 tap:P1U1  (+14 eq)   16  12  12   1105   864     5    92     460     480 resource-bound    52/100/3
-o        out:P8U4 tap:P1U1  (+14 eq)    8  12  12   1097   864     5    92     460     480 resource-bound    52/100/2
-o        out:P8U8 tap:P1U1  (+14 eq)    8  12  12   2185  1728     3   182     546     561 resource-bound    52/100/1
-o        out:P4U16 tap:P1U1  (+14 eq)    4  12  12   2181  1728     3   182     546     561 resource-bound    52/100/1
-o        out:P2U32 tap:P1U1  (+14 eq)    2  12  12   2179  1728     3   182     546     561 resource-bound    52/100/1
-... (9 more groups omitted; use --top 0 for the full sweep)
+o        out:P4U2 tap:P1U1             4  12   8    277   216    18    23     414     504 resource-bound    52/100/4
+o        out:P2U4 tap:P1U1             2  12   4    275   216    18    23     414     504 resource-bound    52/100/4
+o        out:P1U8 tap:P1U1             1  12   3    274   216    18    23     414     504 resource-bound    52/100/4
+o        out:P8U2 tap:P1U1             8  12  12    553   432     9    46     414     459 resource-bound    52/100/4
+o        out:P4U4 tap:P1U1             4  12   8    549   432     9    46     414     459 resource-bound    52/100/2
+o        out:P2U8 tap:P1U1             2  12   6    547   432     9    46     414     459 resource-bound    52/100/2
+o        out:P1U16 tap:P1U1            1  12   5    546   432     9    46     414     459 resource-bound    52/100/2
+o        out:P16U1 tap:P1U1           16  12  12    561   432     9    47     423     459 resource-bound    53/100/6
+         out:P4U1 tap:P1U1             4  12   8    141   108    36    12     432     612 resource-bound    58/100/8
+         out:P2U2 tap:P1U1             2  12   4    139   108    36    12     432     612 resource-bound    50/100/8
+K        out:P1U4 tap:P1U1             1  12   2    138   108    36    12     432     612 resource-bound    50/100/8
+o        out:P8U1 tap:P1U1             8  12  12    281   216    18    24     432     504 resource-bound    54/100/8
+o        out:P4U8 tap:P1U1             4  12  12   1093   864     5    91     455     480 resource-bound    53/100/1
+o        out:P2U16 tap:P1U1            2  12  10   1091   864     5    91     455     480 resource-bound    53/100/1
+o        out:P1U32 tap:P1U1            1  12   9   1090   864     5    91     455     480 resource-bound    53/100/1
+o        out:P16U2 tap:P1U1           16  12  12   1105   864     5    92     460     480 resource-bound    52/100/3
+o        out:P8U4 tap:P1U1             8  12  12   1097   864     5    92     460     480 resource-bound    52/100/2
+o        out:P32U1 tap:P1U1           32  12  12   1121   864     5    94     470     490 resource-bound    52/100/6
+o        out:P8U8 tap:P1U1             8  12  12   2185  1728     3   182     546     561 resource-bound    52/100/1
+o        out:P4U16 tap:P1U1            4  12  12   2181  1728     3   182     546     561 resource-bound    52/100/1
+... (16 more groups omitted; use --top 0 for the full sweep)
 
 RECOMMENDED: out:P1U4 tap:P1U1  -> exposure=108, pragma_agg=432 (1.06x the floor), resource-bound
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
 
-P-vs-U at fixed product 8 on level 'out' (other levels at P1U1):
+P-vs-U at fixed product 4 on level 'out' (other levels at P1U1):
   split        LD_rec LD_eff    ST   p_agg note
-  P8U1             280    281    16     432 1.04x slower (parallel: extra iterators + strided, no coalesce)
-  P4U2             276    277     8     414 best
-  P2U4             274    275     4     414 best
-  P1U8             273    274     3     414 best
+  P4U1             140    141     8     432 tie (control/coalescing sit below the binding term)
+  P2U2             138    139     4     432 tie (control/coalescing sit below the binding term)
+  P1U4             137    138     2     432 tie (control/coalescing sit below the binding term)
 ```
 
 For flag and column meanings, see

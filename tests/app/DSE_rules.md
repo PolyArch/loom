@@ -149,6 +149,16 @@ Do not choose the maximum `P_tot * U_tot` merely because the wave-summed estimat
 keeps decreasing with exposure. The recommendation is the saturation knee:
 the smallest legal exposure whose binding resource becomes resource-bound.
 
+The current helper search covers every power-of-two `P` and `U` allowed by the
+concrete trip counts and dependency legality. Source pragma values are hints,
+not search maxima. There is no implicit factor-of-eight or global exposure cap;
+non-power-of-two factors are outside the current DSE scope. Explicit
+`--max-parallel`, `--max-unroll`, and
+`--exposure-cap` options are bounded diagnostic overrides; reports produced with
+them are not global recommendations. Fully consumed reduction or sequential
+levels may use one canonical `P1U1` label when all factor labels build the same
+DAG.
+
 Rows are flagged as:
 
 - `K`: recommended knee.

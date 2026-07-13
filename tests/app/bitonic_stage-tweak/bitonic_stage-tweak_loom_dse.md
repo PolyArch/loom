@@ -31,7 +31,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py bitonic_stage-tweak --config 6x6 --max-parallel 8 --max-unroll 8 --top 16
+python3 tests/scripts/loom_dse.py bitonic_stage-tweak --config 6x6 --top 16
 ```
 
 ## Bitonic-stage-tweak-specific setup
@@ -52,10 +52,10 @@ dimension. The DSE fixture is the smoke-test case from `main.cpp`: `6x6`
   `-= 1`; for the fixture, iter 0 writes `inplace[1]` before iter 1 decrements
   it, and iter 2 similarly feeds iter 3. This is a true memory-carried
   dependence, not removable loop-control overhead.
-- Therefore `i` is **sequential** and `P` is forced to one. The helper may
-  enumerate inert `U` labels, but every label builds the same fully consumed
-  recurrence and collapses into the `i:P1U1` representative. The checked-in
-  `LOOM_PARALLEL(4, interleaved)` is outside the legal DSE space for this tweak.
+- Therefore `i` is **sequential** and `P` is forced to one. Every `U` label
+  builds the same fully consumed recurrence, so the helper uses the canonical
+  `i:P1U1` representative. The checked-in `LOOM_PARALLEL(4, interleaved)` is
+  outside the legal DSE space for this tweak.
 - Because no loop dimension is legally exposed, vector coalescing and
   parallel-iterator amortization do not apply. The sequential iterator and
   the array read-modify-write traffic remain ordered. From the current eval
@@ -65,25 +65,17 @@ dimension. The DSE fixture is the smoke-test case from `main.cpp`: `6x6`
   `absolute_cgra_lb` is the only lower bound; `p_agg` and `sched` are
   wave-serialized estimates.
 
-## Results (`--top 16`)
+## Results
 
 ```text
 # Loom pragma DSE (lane-aware + vector coalescing): bitonic_stage-tweak  (6x6)
 
-loop nest (outer->inner): i[8,sequential]
-coalescing: The unconditional inplace[i]-=1 and active-lane inplace[i]++ create same-slot and partner RAW chains across the in-place stage. Parallel factors are therefore illegal and unroll cannot flatten the memory recurrence; all U choices retain the same 17-cycle serial DAG.
-
-absolute_cgra_lb = 17  (full-trip, fully-coalesced, invariant-amortized aggregate over full lanes L=12,S=12; the ONLY lower bound)
-full-trip counts: A=92 LD_rec=28 LD_eff=31 ST=24 CP=17 | compute=3 load=3 store=2   (load term = ceil(LD_rec/L); invariants amortized)
-binding class (full trip) = L   (P_pe=36, L=12, S=12; V=4 64-bit elems/vec)
-
-Only absolute_cgra_lb is a lower bound. pragma_agg / sched_est assume waves do NOT overlap and sit at or above it.
-aL = active load lanes = min(recurring loads, L): the recurring loop loads set the lane exposure and the binding load term. LD_eff = recurring + one-time invariant loads (total traffic); invariant loads (loaded once and held) are amortized out of the binding term.
-Algorithmic arith/CP is a global pool (P and U tie there). P and U separate on TWO axes, both favoring LOOM_UNROLL: (1) control amortization -- unroll shares one iterator across U bodies, so control ops scale as trip/U (parallel keeps an iterator per worker); (2) vector coalescing of contiguous accesses (bounded by V, gone once U>=V). Sequential carries keep per-iter control on CP.
+Search: complete legal power-of-two factors through each trip count.
+Loop nest: `i[8,sequential]`; The unconditional inplace[i]-=1 and active-lane inplace[i]++ create same-slot and partner RAW chains across the in-place stage. Parallel factors are therefore illegal and unroll cannot flatten the memory recurrence; equivalent unroll labels use the canonical P1U1 representative for the same 17-cycle serial DAG. Full-trip counts are `A=92`, `LD_rec=28`, `LD_eff=31`, `ST=24`, and `CP=17`, giving the only lower bound, `absolute_cgra_lb=17=max(CP 17, compute 3, load 3, store 2)`, with critical-path pressure binding; `p_agg` and `sched` are wave-serialized estimates.
 
 flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
 --------------------------------------------------------------------------------------------------------------------
-K        i:P1U1  (+3 eq)               1  12  12     31     8     1    17      17      17 latency-bound     18/18/12
+K        i:P1U1                        1  12  12     31     8     1    17      17      17 latency-bound     18/18/12
 
 RECOMMENDED: i:P1U1  -> exposure=8, pragma_agg=17 (1.00x the floor), latency-bound
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
@@ -100,7 +92,7 @@ For flag and column meanings, see
 the compare-swap, `++`, and unconditional `-= 1` create in-place RAW/WAW
 ordering both within an iteration and from an active iteration to a later
 partner iteration. Any `P > 1` candidate would violate that ordering; the
-helper's other `U` labels are equivalent aliases, not real overlap. If spatial
+other `U` labels are semantically equivalent, not real overlap. If spatial
 exposure is required, the algorithm must first be
 rewritten to remove the cross-iteration alias, for example by separating the
 stage result from the subsequent element updates; that would be a different

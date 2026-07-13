@@ -50,7 +50,9 @@ above it. It is an exploratory estimate, not a lower bound and not RTL.
 """
 
 import argparse
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 
 from cgra_schedule import (Config, Dag, L, _ceil_div,
@@ -855,8 +857,9 @@ def _register():
         coalesce_note=(
             "The outer i loop is sequential: its loop-counter carry and the "
             "in-place N/2..N-1 read-modify-write chain cross iterations. Parallel "
-            "factors are illegal and unroll cannot flatten the recurrence, so all "
-            "enumerated U choices describe the same fully consumed serial DAG."),
+            "factors are illegal and unroll cannot flatten the recurrence, so "
+            "equivalent unroll labels use the canonical P1U1 representative for "
+            "the fully consumed serial DAG."),
     )
     KERNELS["bitonic_stage-tweak"] = KernelSpec(
         name="bitonic_stage-tweak",
@@ -866,7 +869,8 @@ def _register():
             "The unconditional inplace[i]-=1 and active-lane inplace[i]++ create "
             "same-slot and partner RAW chains across the in-place stage. Parallel "
             "factors are therefore illegal and unroll cannot flatten the memory "
-            "recurrence; all U choices retain the same 17-cycle serial DAG."),
+            "recurrence; equivalent unroll labels use the canonical P1U1 "
+            "representative for the same 17-cycle serial DAG."),
     )
     KERNELS["clz"] = KernelSpec(
         name="clz",
@@ -899,8 +903,8 @@ def _register():
         coalesce_note=(
             "crc is a non-associative carried state across all bytes and bits. "
             "Parallel factors are illegal and unroll cannot flatten the trace, "
-            "so every displayed U choice is an equivalent alias of the same "
-            "fully consumed serial DAG."),
+            "so equivalent unroll labels use the canonical P1U1 representative "
+            "for the fully consumed serial DAG."),
     )
     KERNELS["edge_update"] = KernelSpec(
         name="edge_update",
@@ -936,26 +940,38 @@ class Candidate:
         return " ".join(f"{n}:P{p}U{u}" for n, p, u in self.split)
 
 
-def _pow2_upto(limit: int) -> list[int]:
-    vals, v = [], 1
-    while v <= limit:
-        vals.append(v)
-        v *= 2
-    return vals or [1]
+def _powers_of_two_through(limit: int) -> list[int]:
+    values = []
+    factor = 1
+    while factor <= limit:
+        values.append(factor)
+        factor *= 2
+    return values
 
 
-def enumerate_candidates(spec: KernelSpec, max_parallel: int, max_unroll: int,
-                         exposure_cap: int) -> list[Candidate]:
+def enumerate_candidates(spec: KernelSpec, max_parallel: int | None = None,
+                         max_unroll: int | None = None,
+                         exposure_cap: int | None = None) -> list[Candidate]:
     """Cartesian product of per-level (p,u) choices, honoring legality:
-    sequential -> p=1; p*u <= trip per level; total tiled exposure <=
-    exposure_cap (keeps chunks small)."""
+    sequential -> p=1; p*u <= trip per tiled level. By default every power-of-two
+    factor through the concrete trip count is considered. Optional caps are
+    explicit diagnostic restrictions, not part of the spec-defined search.
+
+    Reduction and sequential levels are fully consumed inside every chunk, so
+    their factor labels cannot change exposure or the built DAG. Canonicalize
+    those equivalent aliases to P1U1 instead of repeatedly evaluating them.
+    """
     per_level_choices = []
     for lv in spec.levels:
-        pmax = min(max_parallel, lv.trip) if lv.parallelizable() else 1
-        umax = min(max_unroll, lv.trip)
+        if not lv.tiled():
+            per_level_choices.append([(lv.name, 1, 1)])
+            continue
+
+        pmax = lv.trip if max_parallel is None else min(max_parallel, lv.trip)
+        umax = lv.trip if max_unroll is None else min(max_unroll, lv.trip)
         choices = []
-        for p in _pow2_upto(pmax):
-            for u in _pow2_upto(umax):
+        for p in _powers_of_two_through(pmax):
+            for u in _powers_of_two_through(umax):
                 if p * u <= lv.trip:
                     choices.append((lv.name, p, u))
         per_level_choices.append(choices)
@@ -970,7 +986,7 @@ def enumerate_candidates(spec: KernelSpec, max_parallel: int, max_unroll: int,
                 p, u = cand.factors(lv.name)
                 if lv.tiled():
                     tiled_exp *= p * u
-            if tiled_exp <= exposure_cap:
+            if exposure_cap is None or tiled_exp <= exposure_cap:
                 out.append(cand)
             return
         for choice in per_level_choices[idx]:
@@ -1026,17 +1042,17 @@ class CandResult:
     ST: int
     ld_eff: int      # LD_eff = recurring + one-time invariant loads (total traffic)
     chunk_aggregate: int
-    chunk_scheduled: int
+    chunk_scheduled: int | None
     pragma_exposure_aggregate: int
-    schedule_estimate: int
+    schedule_estimate: int | None
     binding_class: str
     saturation: str             # latency-bound | resource-bound
     util: tuple                 # (P, L, S)
     flags: set = field(default_factory=set)
 
 
-def evaluate_candidate(spec: KernelSpec, cand: Candidate,
-                       cfg: Config) -> CandResult:
+def evaluate_candidate(spec: KernelSpec, cand: Candidate, cfg: Config,
+                       schedule: bool = True) -> CandResult:
     # Build the vectorized chunk DAG and schedule it on the FULL machine lanes.
     # With no banking, the only per-cycle cap is L/S. Two axes separate P from U:
     # vector coalescing (which lowered LD/ST in the DAG) and control amortization.
@@ -1047,8 +1063,13 @@ def evaluate_candidate(spec: KernelSpec, cand: Candidate,
     # in LD_eff. active_L = min(recurring, L) is the recurring lane-exposure
     # diagnostic.
     dag = spec.build_chunk(cand)
-    res = evaluate(dag, spec.name, cfg)
-    agg = res.region_aggs[0]
+    if schedule:
+        res = evaluate(dag, spec.name, cfg)
+        agg = res.region_aggs[0]
+        chunk_scheduled = res.scheduled_cycles
+    else:
+        agg = region_aggregate(dag.regions[0], cfg)
+        chunk_scheduled = None
     recurring_LD, invariant_LD = _load_split(dag)
     ld_eff = recurring_LD + invariant_LD   # == agg.LD (total traffic)
     waves = _waves(spec, cand)
@@ -1076,10 +1097,24 @@ def evaluate_candidate(spec: KernelSpec, cand: Candidate,
         cand=cand, p_tot=p_tot, active_L=active_L, active_S=active_S,
         exposed_iters=_exposed_iters(spec, cand), waves=waves,
         CP=agg.CP, A=agg.A, LD=recurring_LD, ST=agg.ST, ld_eff=ld_eff,
-        chunk_aggregate=chunk_aggregate, chunk_scheduled=res.scheduled_cycles,
+        chunk_aggregate=chunk_aggregate, chunk_scheduled=chunk_scheduled,
         pragma_exposure_aggregate=waves * chunk_aggregate,
-        schedule_estimate=waves * res.scheduled_cycles,
+        schedule_estimate=(waves * chunk_scheduled
+                           if chunk_scheduled is not None else None),
         binding_class=binding_class, saturation=saturation, util=util)
+
+
+def _ensure_scheduled(spec: KernelSpec, result: CandResult, cfg: Config) -> None:
+    if result.schedule_estimate is not None:
+        return
+    scheduled = evaluate_candidate(spec, result.cand, cfg, schedule=True)
+    result.chunk_scheduled = scheduled.chunk_scheduled
+    result.schedule_estimate = scheduled.schedule_estimate
+
+
+def _evaluate_aggregate_task(args) -> CandResult:
+    spec, cand, cfg = args
+    return evaluate_candidate(spec, cand, cfg, schedule=False)
 
 
 def _full_candidate(spec: KernelSpec) -> Candidate:
@@ -1173,7 +1208,12 @@ def _dedup(results: list[CandResult]) -> list[list[CandResult]]:
         key = (r.active_L, r.active_S, r.LD, r.ST, r.A, r.CP, r.waves,
                r.pragma_exposure_aggregate)
         groups.setdefault(key, []).append(r)
-    ordered = sorted(groups.values(),
+    grouped = []
+    for group in groups.values():
+        group.sort(key=lambda r: ("recommended" not in r.flags,
+                                  r.p_tot, r.cand.signature()))
+        grouped.append(group)
+    ordered = sorted(grouped,
                      key=lambda g: (g[0].pragma_exposure_aggregate,
                                     g[0].exposed_iters, -g[0].p_tot))
     return ordered
@@ -1184,41 +1224,27 @@ def _fmt_util(u):
 
 
 def render_report(spec: KernelSpec, cfg: Config, results: list[CandResult],
-                  lb: int, demand: dict, rec: CandResult, top: int = 0) -> str:
+                  lb: int, demand: dict, rec: CandResult, search_scope: str,
+                  top: int = 0) -> str:
     out = []
     out.append(f"# Loom pragma DSE (lane-aware + vector coalescing): "
                f"{spec.name}  ({cfg.label})")
     out.append("")
     nest = ", ".join(f"{lv.name}[{lv.trip},{lv.kind}]" for lv in spec.levels)
-    out.append(f"loop nest (outer->inner): {nest}")
-    out.append(f"coalescing: {spec.coalesce_note}")
-    out.append("")
-    out.append(f"absolute_cgra_lb = {lb}  (full-trip, fully-coalesced, "
-               f"invariant-amortized aggregate over full lanes L={cfg.L},S={cfg.S}; "
-               f"the ONLY lower bound)")
-    out.append(f"full-trip counts: A={demand['A']} LD_rec={demand['LD']} "
-               f"LD_eff={demand['LD_eff']} ST={demand['ST']} CP={demand['CP']} | "
-               f"compute={demand['compute']} load={demand['load']} "
-               f"store={demand['store']}   (load term = ceil(LD_rec/L); "
-               f"invariants amortized)")
     ft_terms = {"P": demand["compute"], "L": demand["load"], "S": demand["store"]}
     ft_binding = max(ft_terms, key=lambda k: (ft_terms[k], k == "L"))
-    out.append(f"binding class (full trip) = {ft_binding}   "
-               f"(P_pe={cfg.P}, L={cfg.L}, S={cfg.S}; V={V} 64-bit elems/vec)")
-    out.append("")
-    out.append("Only absolute_cgra_lb is a lower bound. pragma_agg / sched_est "
-               "assume waves do NOT overlap and sit at or above it.")
-    out.append("aL = active load lanes = min(recurring loads, L): the recurring "
-               "loop loads set the lane exposure and the binding load term. "
-               "LD_eff = recurring + one-time invariant loads (total traffic); "
-               "invariant loads (loaded once and held) are amortized out of the "
-               "binding term.")
-    out.append("Algorithmic arith/CP is a global pool (P and U tie there). P and U "
-               "separate on TWO axes, both favoring LOOM_UNROLL: (1) control "
-               "amortization -- unroll shares one iterator across U bodies, so "
-               "control ops scale as trip/U (parallel keeps an iterator per "
-               "worker); (2) vector coalescing of contiguous accesses (bounded by "
-               "V, gone once U>=V). Sequential carries keep per-iter control on CP.")
+    binding = "critical-path" if demand["CP"] > max(ft_terms.values()) \
+        else {"P": "compute", "L": "load", "S": "store"}[ft_binding]
+    out.append(f"Search: {search_scope}.")
+    out.append(
+        f"Loop nest: `{nest}`; {spec.coalesce_note} Full-trip counts are "
+        f"`A={demand['A']}`, `LD_rec={demand['LD']}`, "
+        f"`LD_eff={demand['LD_eff']}`, `ST={demand['ST']}`, and "
+        f"`CP={demand['CP']}`, giving the only lower bound, "
+        f"`absolute_cgra_lb={lb}=max(CP {demand['CP']}, "
+        f"compute {demand['compute']}, load {demand['load']}, "
+        f"store {demand['store']})`, with {binding} pressure binding; "
+        f"`p_agg` and `sched` are wave-serialized estimates.")
     out.append("")
 
     header = (f"{'flags':<8} {'split':<26} {'Ptot':>4} {'aL':>3} {'aS':>3} "
@@ -1239,6 +1265,7 @@ def render_report(spec: KernelSpec, cfg: Config, results: list[CandResult],
         omitted = len(all_groups) - len(shown)
     for group in shown:
         r = group[0]
+        _ensure_scheduled(spec, r, cfg)
         fl = ""
         if "recommended" in r.flags:
             fl += "K"
@@ -1267,12 +1294,12 @@ def render_report(spec: KernelSpec, cfg: Config, results: list[CandResult],
                "b=bandwidth-starved (latency-bound: resources idle), "
                "o=oversubscribed (past the knee, no estimate gain).")
     out.append("")
-    out.append(_pu_contrast(spec, cfg, results))
+    out.append(_pu_contrast(spec, cfg, results, rec))
     return "\n".join(out)
 
 
 def _pu_contrast(spec: KernelSpec, cfg: Config,
-                 results: list[CandResult]) -> str:
+                 results: list[CandResult], rec: CandResult) -> str:
     """Fixed-product P-vs-U contrast on the primary parallelizable level: hold
     p*u constant, vary the split, show the load/store-term difference (or its
     absence)."""
@@ -1300,7 +1327,9 @@ def _pu_contrast(spec: KernelSpec, cfg: Config,
         vals = [r.pragma_exposure_aggregate for r in candidates[prod]]
         return (max(vals) / min(vals), prod)
 
-    prod = max(candidates, key=spread)
+    rec_p, rec_u = rec.cand.factors(prim.name)
+    rec_prod = rec_p * rec_u
+    prod = rec_prod if rec_prod in candidates else max(candidates, key=spread)
     rows = sorted(candidates[prod], key=lambda r: -r.cand.factors(prim.name)[0])
     lines = [f"P-vs-U at fixed product {prod} on level '{prim.name}' "
              f"(other levels at P1U1):"]
@@ -1324,14 +1353,35 @@ def _pu_contrast(spec: KernelSpec, cfg: Config,
 # Driver
 # ---------------------------------------------------------------------------
 
-def run(spec: KernelSpec, cfg: Config, max_parallel: int, max_unroll: int,
-        exposure_cap: int, top: int = 0) -> tuple[str, CandResult, int]:
+def run(spec: KernelSpec, cfg: Config, max_parallel: int | None = None,
+        max_unroll: int | None = None, exposure_cap: int | None = None,
+        top: int = 0, jobs: int = 1) -> tuple[str, CandResult, int]:
     lb, demand = absolute_cgra_lb(spec, cfg)
     cands = enumerate_candidates(spec, max_parallel, max_unroll, exposure_cap)
-    results = [evaluate_candidate(spec, c, cfg) for c in cands]
+    if jobs == 1 or len(cands) < 2:
+        results = [evaluate_candidate(spec, c, cfg, schedule=False)
+                   for c in cands]
+    else:
+        chunksize = max(1, len(cands) // (jobs * 4))
+        tasks = ((spec, cand, cfg) for cand in cands)
+        with ProcessPoolExecutor(max_workers=jobs) as executor:
+            results = list(executor.map(_evaluate_aggregate_task, tasks,
+                                        chunksize=chunksize))
     rec = recommend(spec, results)
     annotate_flags(spec, results, rec)
-    report = render_report(spec, cfg, results, lb, demand, rec, top=top)
+    caps = []
+    if max_parallel is not None:
+        caps.append(f"P<={max_parallel}")
+    if max_unroll is not None:
+        caps.append(f"U<={max_unroll}")
+    if exposure_cap is not None:
+        caps.append(f"exposure<={exposure_cap}")
+    if caps:
+        search_scope = "bounded diagnostic (" + ", ".join(caps) + ")"
+    else:
+        search_scope = "complete legal power-of-two factors through each trip count"
+    report = render_report(spec, cfg, results, lb, demand, rec, search_scope,
+                           top=top)
     return report, rec, lb
 
 
@@ -1342,13 +1392,29 @@ def main(argv: list[str]) -> int:
     parser.add_argument("kernel", nargs="?",
                         help="kernel name: " + ", ".join(sorted(KERNELS)))
     parser.add_argument("--config", default="6x6")
-    parser.add_argument("--max-parallel", type=int, default=8)
-    parser.add_argument("--max-unroll", type=int, default=8)
-    parser.add_argument("--exposure-cap", type=int, default=256,
-                        help="skip candidates whose tiled exposure exceeds this")
-    parser.add_argument("--top", type=int, default=0,
-                        help="show only the best N candidate groups (0 = all)")
+    parser.add_argument(
+        "--max-parallel", type=int,
+        help=("optional diagnostic cap; default searches powers of two through "
+              "each trip count"))
+    parser.add_argument(
+        "--max-unroll", type=int,
+        help=("optional diagnostic cap; default searches powers of two through "
+              "each trip count"))
+    parser.add_argument(
+        "--exposure-cap", type=int,
+        help="optional diagnostic cap on total tiled exposure; default is uncapped")
+    parser.add_argument("--top", type=int, default=24,
+                        help="show the best N candidate groups (0 schedules all)")
+    parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1),
+                        help="parallel workers for exhaustive candidate evaluation")
     args = parser.parse_args(argv)
+
+    for name in ("max_parallel", "max_unroll", "exposure_cap"):
+        value = getattr(args, name)
+        if value is not None and value < 1:
+            parser.error(f"--{name.replace('_', '-')} must be positive")
+    if args.jobs < 1:
+        parser.error("--jobs must be positive")
 
     if args.self_test:
         return _run_self_tests()
@@ -1359,7 +1425,7 @@ def main(argv: list[str]) -> int:
     spec = KERNELS[args.kernel]
     cfg = parse_config(args.config)
     report, _, _ = run(spec, cfg, args.max_parallel, args.max_unroll,
-                       args.exposure_cap, top=args.top)
+                       args.exposure_cap, top=args.top, jobs=args.jobs)
     print(report)
     return 0
 
@@ -1371,6 +1437,28 @@ def main(argv: list[str]) -> int:
 def _run_self_tests() -> int:
     errors: list[str] = []
     cfg = parse_config("6x6")
+
+    # Search completeness: uncapped enumeration covers every power-of-two factor
+    # through the concrete trip count. Caps remain available only when explicitly
+    # requested.
+    search_spec = KernelSpec(
+        name="search_test", levels=(Level("i", 5, "parallel"),),
+        build_chunk=_axpy_chunk)
+    uncapped = enumerate_candidates(search_spec)
+    uncapped_splits = {cand.split for cand in uncapped}
+    for expected in ((('i', 4, 1),), (('i', 1, 4),), (('i', 2, 2),)):
+        if expected not in uncapped_splits:
+            errors.append(f"uncapped search omitted legal factor {expected}")
+    for excluded in ((('i', 3, 1),), (('i', 1, 5),)):
+        if excluded in uncapped_splits:
+            errors.append(f"power-of-two search included {excluded}")
+    if any(p * u > 5 for cand in uncapped for _, p, u in cand.split):
+        errors.append("uncapped search exceeded the concrete trip count")
+    capped = enumerate_candidates(search_spec, max_parallel=2, max_unroll=2,
+                                  exposure_cap=3)
+    if any(p > 2 or u > 2 or p * u > 3
+           for cand in capped for _, p, u in cand.split):
+        errors.append("explicit diagnostic caps were not enforced")
 
     # axpy: the vector-coalescing distinction must make UNROLL beat PARALLEL at a
     # fixed product in the U<V regime. Build P4U1 (strided, no coalesce) vs P1U4
@@ -1529,9 +1617,27 @@ def _run_self_tests() -> int:
     if bsr_dem["CP"] != bsr_lb:
         errors.append("binary_search floor must be CP-bound (serial search)")
 
+    # CLZ regression: an explicit factor-8 diagnostic cap stops at P8U8, while
+    # the complete power-of-two search reaches the better P1U64 row.
+    clz = KERNELS["clz"]
+    _report, clz_bounded, _ = run(clz, cfg, 8, 8, 256, top=1)
+    if clz_bounded.cand.signature() != "i:P8U8":
+        errors.append(f"clz bounded search expected i:P8U8, got "
+                      f"{clz_bounded.cand.signature()}")
+    _report, clz_complete, _ = run(
+        clz, cfg, top=1, jobs=min(8, os.cpu_count() or 1))
+    if clz_complete.cand.signature() != "i:P1U64":
+        errors.append(f"clz complete search expected i:P1U64, got "
+                      f"{clz_complete.cand.signature()}")
+    clz_u64 = evaluate_candidate(clz, Candidate((("i", 1, 64),)), cfg,
+                                 schedule=False)
+    if clz_u64.pragma_exposure_aggregate != 584:
+        errors.append(f"clz P1U64 expected p_agg 584, got "
+                      f"{clz_u64.pragma_exposure_aggregate}")
+
     # every kernel: end-to-end run, a recommendation exists, bracket holds on it.
     for name, ks in KERNELS.items():
-        _report, rec, klb = run(ks, cfg, 8, 8, 256)
+        _report, rec, klb = run(ks, cfg, 8, 8, 256, top=1)
         if rec is None:
             errors.append(f"{name}: no recommendation produced")
             continue

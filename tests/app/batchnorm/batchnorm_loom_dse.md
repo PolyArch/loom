@@ -33,7 +33,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py batchnorm --config 6x6 --max-parallel 16 --max-unroll 64 --top 24
+python3 tests/scripts/loom_dse.py batchnorm --config 6x6 --top 24
 ```
 
 ## Why P and U differ
@@ -68,7 +68,7 @@ load/store headroom and schedule estimate changes, not a lower
   invariant-amortized** aggregate (`max(8, 29, 7, 6) = 29`), and the **only**
   lower bound. The binding class is **compute (`P`)**.
 
-## Results (`--max-parallel 16 --max-unroll 64 --top 24`)
+## Results
 
 `c`, `h`, and `w` are all dependency-parallel, with only the innermost `w`
 contiguous for input/output coalescing. The full-trip floor is
@@ -79,6 +79,11 @@ shows up as load/store headroom: `LOOM_UNROLL(w)` coalesces contiguous memory,
 and unroll on any level amortizes iterator control.
 
 ```text
+# Loom pragma DSE (lane-aware + vector coalescing): batchnorm  (6x6)
+
+Search: complete legal power-of-two factors through each trip count.
+Loop nest: `c[4,parallel], h[8,parallel], w[8,parallel]`; input/output are contiguous over the innermost w. LOOM_UNROLL(w) coalesces a worker's adjacent w-accesses (ceil(U_w/V) vector ops) while LOOM_PARALLEL(w) strides -> unroll-on-w beats parallel-on-w on the load/store term (while U_w < V). c/h are strided for input and do not coalesce, but LOOM_UNROLL on ANY level still amortizes the iterator (charged once per worker over the c*h*w worker set), so unroll cuts control ops even where coalescing cannot. Compute-bound, so those load/store savings show as lane headroom, not a lower floor. mean/variance/gamma/beta are per-channel invariants (once per exposed channel). Full-trip counts are `A=1038`, `LD_rec=81`, `LD_eff=85`, `ST=65`, and `CP=8`, giving the only lower bound, `absolute_cgra_lb=29=max(CP 8, compute 29, load 7, store 6)`, with compute pressure binding; `p_agg` and `sched` are wave-serialized estimates.
+
 flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
 --------------------------------------------------------------------------------------------------------------------
 o        c:P1U4 h:P1U8 w:P4U2          4  12  12    152   256     1    29      29      36 resource-bound   100/45/38

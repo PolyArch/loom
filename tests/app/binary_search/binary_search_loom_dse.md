@@ -36,7 +36,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py binary_search --config 6x6 --max-parallel 8 --max-unroll 8 --top 0
+python3 tests/scripts/loom_dse.py binary_search --config 6x6 --top 0
 ```
 
 ## Why this kernel does not demonstrate a P-vs-U distinction
@@ -91,21 +91,22 @@ different P/U split gives no modeled throughput benefit here.
   it is the only lower bound. Binding class is `P` (compute), but even that term
   (`5`) sits far below `CP`.
 
-## Results (`--top 0`)
+## Results
 
 ```text
 # Loom pragma DSE (lane-aware + vector coalescing): binary_search  (6x6)
 
-loop nest (outer->inner): t[5,parallel], probe[4,sequential]. The outer target searches are independent, but each search has a serial data-dependent probe chain with non-coalescing input_sorted[mid] loads; CP=27 dominates compute=5, load=3, and store=1, so absolute_cgra_lb=27 and every listed candidate is latency-bound. pragma_agg / sched_est are wave-summed estimates at or above that floor; P and U mostly change wave count plus small control/coalescing terms, not the per-search critical path.
+Search: complete legal power-of-two factors through each trip count.
+Loop nest: `t[5,parallel], probe[4,sequential]`; outer PARALLEL t (independent target searches), inner SEQUENTIAL while with DATA-DEPENDENT termination (worst-case ceil(log2(N+1))=4 probes). The left/right recurrence is threaded as dataflow and its termination compare sits on CP per probe; input_sorted[mid] is a non-affine (data-dependent) scalar load that cannot coalesce. This is a COUNTEREXAMPLE like tridiag: the per-target serial recurrence and a tiny problem (M=5 targets) leave it CP/latency-bound, so no P-vs-U split helps. The source LOOM_NO_PARALLEL/LOOM_NO_UNROLL reflects control divergence, which this DSE does not model. Full-trip counts are `A=152`, `LD_rec=26`, `LD_eff=29`, `ST=3`, and `CP=27`, giving the only lower bound, `absolute_cgra_lb=27=max(CP 27, compute 5, load 3, store 1)`, with critical-path pressure binding; `p_agg` and `sched` are wave-serialized estimates.
 
 flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
 --------------------------------------------------------------------------------------------------------------------
-b        t:P4U1 probe:P1U1  (+2 eq)    4  12   8     27    16     2    27      54      54 latency-bound       15/7/4
-b        t:P2U2 probe:P1U1  (+2 eq)    2  12   4     25    16     2    27      54      54 latency-bound       15/7/4
-K        t:P1U4 probe:P1U1  (+2 eq)    1  12   2     24    16     2    27      54      54 latency-bound       15/7/4
-b        t:P2U1 probe:P1U1  (+2 eq)    2  12   4     15     8     3    27      81      81 latency-bound        7/4/4
-b        t:P1U2 probe:P1U1  (+2 eq)    1  11   2     14     8     3    27      81      81 latency-bound        7/4/4
-b        t:P1U1 probe:P1U1  (+2 eq)    1   6   2      9     4     5    27     135     135 latency-bound        4/4/4
+b        t:P4U1 probe:P1U1             4  12   8     27    16     2    27      54      54 latency-bound       15/7/4
+b        t:P2U2 probe:P1U1             2  12   4     25    16     2    27      54      54 latency-bound       15/7/4
+K        t:P1U4 probe:P1U1             1  12   2     24    16     2    27      54      54 latency-bound       15/7/4
+b        t:P2U1 probe:P1U1             2  12   4     15     8     3    27      81      81 latency-bound        7/4/4
+b        t:P1U2 probe:P1U1             1  11   2     14     8     3    27      81      81 latency-bound        7/4/4
+b        t:P1U1 probe:P1U1             1   6   2      9     4     5    27     135     135 latency-bound        4/4/4
 
 RECOMMENDED: t:P1U4 probe:P1U1  -> exposure=16, pragma_agg=54 (2.00x the floor), latency-bound
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).

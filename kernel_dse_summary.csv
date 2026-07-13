@@ -1,7 +1,18 @@
 kernel,dse_file,dse_best_split,dse_p_agg_cycles,dse_sched_est_cycles,dse_absolute_cgra_lb,dse_selection_class,dse_notes
+autocorrelation,tests/app/autocorrelation/autocorrelation_loom_dse.md,lag:P1U2 i:P1U1,240,352,227,resource-bound,"saturation knee; compute-bound, pure unroll is the fewest-iterator representative of a tie"
 axpy,tests/app/axpy/axpy_loom_dse.md,i:P1U64,16,24,15,resource-bound,saturation knee; unroll favored by vector coalescing and row-control amortization
 batchnorm,tests/app/batchnorm/batchnorm_loom_dse.md,c:P1U1 h:P1U8 w:P1U8,32,44,29,resource-bound,saturation knee; compute-bound after w-coalescing
+binary_search,tests/app/binary_search/binary_search_loom_dse.md,t:P1U4 probe:P1U1,54,54,27,latency-bound,"best enumerated fallback; serial probe CP dominates, and the power-of-two sweep still needs two waves"
+bisection_step,tests/app/bisection_step/bisection_step_loom_dse.md,i:P1U32,8,12,8,resource-bound,saturation knee; unroll coalesces all six streams and amortizes loop control
+bit_reverse,tests/app/bit_reverse/bit_reverse_loom_dse.md,i:P1U16 bit:P1U1,1376,1520,1366,resource-bound,"saturation knee; outer unroll coalesces boundary traffic while the bit recurrence remains serial"
+bitonic_stage,tests/app/bitonic_stage/bitonic_stage_loom_dse.md,i:P1U8,11,11,11,latency-bound,full-fixture exposure; gated compare-swap CP dominates and no resource knee is reached
+bitonic_stage-modified,tests/app/bitonic_stage-modified/bitonic_stage-modified_loom_dse.md,i:P1U1,31,31,31,latency-bound,serial in-place recurrence; equivalent unroll labels use the canonical representative
+bitonic_stage-tweak,tests/app/bitonic_stage-tweak/bitonic_stage-tweak_loom_dse.md,i:P1U1,17,17,17,latency-bound,sequential read-modify-write recurrence; no legal spatial saturation-knee search
+clz,tests/app/clz/clz_loom_dse.md,i:P1U64,584,584,584,resource-bound,saturation knee; unroll amortizes outer control and reaches the load/store floor at exposure 64
+col2im,tests/app/col2im/col2im_loom_dse.md,c:P1U1 kh:P1U1,357,357,355,resource-bound,smallest saturation-knee representative; compute-bound with equivalent fully consumed kh factorizations
 conv2d,tests/app/conv2d/conv2d_loom_dse.md,out:P1U4 tap:P1U1,432,612,409,resource-bound,"saturation knee; load-bound on strided input, output-store coalescing is secondary"
+crc32,tests/app/crc32/crc32_loom_dse.md,i:P1U1,50152,50152,50152,latency-bound,serial CRC recurrence; equivalent unroll labels use the canonical fully consumed DAG
+edge_update,tests/app/edge_update/edge_update_loom_dse.md,kernel:P1U1,6,6,6,latency-bound,only legal representative; source has no parallel or unroll pragma level to sweep
 gemv,tests/app/gemv/gemv_loom_dse.md,i:P1U4 j:P1U1,240,352,232,resource-bound,"saturation knee; compute-bound, 1.03x floor, x loads are invariant-amortized"
 tridiag_solve,tests/app/tridiag_solve/tridiag_solve_loom_dse.md,i:P1U1,194,194,194,latency-bound,"sequential recurrence; p forced to 1, unroll does not reduce the carried CP"
 vecsum,tests/app/vecsum/vecsum_loom_dse.md,i:P1U1,11,16,11,latency-bound,fully-consumed reduction; P/U-symmetric and CP-bound

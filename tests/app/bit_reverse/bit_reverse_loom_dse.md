@@ -31,7 +31,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py bit_reverse --config 6x6 --max-parallel 8 --max-unroll 8 --top 16
+python3 tests/scripts/loom_dse.py bit_reverse --config 6x6 --top 16
 ```
 
 ## Bit-reverse-specific setup
@@ -68,39 +68,45 @@ inner **sequential** bit loop.
   `absolute_cgra_lb = max(66, ceil(49154/36), ceil(8257/12), ceil(8257/12)) =
   1366`, binding class **compute** (`P`).
 
-## Results (`--top 16`)
+## Results
 
 ```text
 # Loom pragma DSE (lane-aware + vector coalescing): bit_reverse  (6x6)
 
-loop nest (outer->inner): i[256,parallel], bit[32,sequential]. The outer word loop is parallel, while the inner bit loop is sequential because result/value form a non-associative shift/merge recurrence; carried scalars are threaded as dataflow, but the bit iterator stays per-iteration and on CP. absolute_cgra_lb = 1366 = max(CP 66, compute 1366, load 689, store 689) is the only lower bound, with full-trip counts A=49154, LD_rec=8257, LD_eff=8258, ST=8257; p_agg and sched are wave-serialized estimates, and unroll helps only through outer-word control amortization plus vector coalescing of input_data/output_reversed.
+Search: complete legal power-of-two factors through each trip count.
+Loop nest: `i[256,parallel], bit[32,sequential]`; outer PARALLEL i (independent 32-bit words), inner SEQUENTIAL bit loop carrying result/value through a non-associative shift/merge recurrence. The carried scalars are threaded as dataflow (no per-bit round-trip, unlike the conservative ASAP eval) and the bit iterator is charged per iteration (it stays on CP and cannot be amortized). The 4 bitops/bit form a large global arithmetic pool -> COMPUTE-bound (contrast the store-bound ASAP result, which charges per-bit result/value stores). LOOM_UNROLL(i) coalesces input_data/output_reversed and amortizes the OUTER i iterator, but the inner sequential loop dominates, so the P-vs-U edge is small. Full-trip counts are `A=49154`, `LD_rec=8257`, `LD_eff=8258`, `ST=8257`, and `CP=66`, giving the only lower bound, `absolute_cgra_lb=1366=max(CP 66, compute 1366, load 689, store 689)`, with compute pressure binding; `p_agg` and `sched` are wave-serialized estimates.
 
 flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
 --------------------------------------------------------------------------------------------------------------------
-o        i:P4U8 bit:P1U1  (+3 eq)      4  12  12   1037  1024     8   171    1368    1600 resource-bound   100/51/51
-o        i:P8U8 bit:P1U1  (+3 eq)      8  12  12   2073  2048     4   342    1368    1592 resource-bound   100/51/51
-         i:P8U2 bit:P1U1  (+3 eq)      8  12  12    529   512    16    86    1376    1536 resource-bound   100/51/51
-         i:P4U4 bit:P1U1  (+3 eq)      4  12  12    521   512    16    86    1376    1520 resource-bound   100/51/51
-K        i:P2U8 bit:P1U1  (+3 eq)      2  12  12    519   512    16    86    1376    1520 resource-bound   100/51/51
-o        i:P8U4 bit:P1U1  (+3 eq)      8  12  12   1041  1024     8   172    1376    1600 resource-bound   100/51/51
-b        i:P8U1 bit:P1U1  (+3 eq)      8  12  12    273   256    32    66    2112    2112 latency-bound     67/35/35
-b        i:P4U2 bit:P1U1  (+3 eq)      4  12  12    265   256    32    66    2112    2112 latency-bound     65/33/33
-b        i:P2U4 bit:P1U1  (+3 eq)      2  12  12    261   256    32    66    2112    2112 latency-bound     65/33/33
-b        i:P1U8 bit:P1U1  (+3 eq)      1  12  12    260   256    32    66    2112    2112 latency-bound     65/33/33
-b        i:P4U1 bit:P1U1  (+3 eq)      4  12  12    137   128    64    66    4224    4224 latency-bound     33/18/18
-b        i:P2U2 bit:P1U1  (+3 eq)      2  12  12    133   128    64    66    4224    4224 latency-bound     33/17/17
-b        i:P1U4 bit:P1U1  (+3 eq)      1  12  12    131   128    64    66    4224    4224 latency-bound     33/17/17
-b        i:P2U1 bit:P1U1  (+3 eq)      2  12  12     69    64   128    66    8448    8448 latency-bound       17/9/9
-b        i:P1U2 bit:P1U1  (+3 eq)      1  12  12     67    64   128    66    8448    8448 latency-bound       17/9/9
-b        i:P1U1 bit:P1U1  (+3 eq)      1  12  12     35    32   256    66   16896   16896 latency-bound        9/5/5
+o        i:P4U32 bit:P1U1              4  12  12   4133  4096     2   683    1366    1588 resource-bound   100/51/51
+o        i:P2U64 bit:P1U1              2  12  12   4131  4096     2   683    1366    1588 resource-bound   100/51/51
+o        i:P1U128 bit:P1U1             1  12  12   4130  4096     2   683    1366    1588 resource-bound   100/51/51
+o        i:P8U32 bit:P1U1              8  12  12   8265  8192     1  1366    1366    1586 resource-bound   100/50/50
+o        i:P4U64 bit:P1U1              4  12  12   8261  8192     1  1366    1366    1586 resource-bound   100/50/50
+o        i:P2U128 bit:P1U1             2  12  12   8259  8192     1  1366    1366    1586 resource-bound   100/50/50
+o        i:P1U256 bit:P1U1             1  12  12   8258  8192     1  1366    1366    1586 resource-bound   100/50/50
+o        i:P16U16 bit:P1U1            16  12  12   8273  8192     1  1367    1367    1587 resource-bound   100/50/50
+o        i:P4U8 bit:P1U1               4  12  12   1037  1024     8   171    1368    1600 resource-bound   100/51/51
+o        i:P2U16 bit:P1U1              2  12  12   1035  1024     8   171    1368    1600 resource-bound   100/51/51
+o        i:P1U32 bit:P1U1              1  12  12   1034  1024     8   171    1368    1600 resource-bound   100/51/51
+o        i:P8U8 bit:P1U1               8  12  12   2073  2048     4   342    1368    1592 resource-bound   100/51/51
+o        i:P4U16 bit:P1U1              4  12  12   2069  2048     4   342    1368    1592 resource-bound   100/51/51
+o        i:P2U32 bit:P1U1              2  12  12   2067  2048     4   342    1368    1592 resource-bound   100/51/51
+o        i:P1U64 bit:P1U1              1  12  12   2066  2048     4   342    1368    1592 resource-bound   100/51/51
+o        i:P16U8 bit:P1U1             16  12  12   4145  4096     2   684    1368    1590 resource-bound   100/51/51
+K        i:P1U16 bit:P1U1              1  12  12    518   512    16    86    1376    1520 resource-bound   100/51/51
+... (28 more groups omitted; use --top 0 for the full sweep)
 
-RECOMMENDED: i:P2U8 bit:P1U1  -> exposure=512, pragma_agg=1376 (1.01x the floor), resource-bound
+RECOMMENDED: i:P1U16 bit:P1U1  -> exposure=512, pragma_agg=1376 (1.01x the floor), resource-bound
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
 
-P-vs-U at fixed product 32 on level 'i' (other levels at P1U1):
+P-vs-U at fixed product 16 on level 'i' (other levels at P1U1):
   split        LD_rec LD_eff    ST   p_agg note
-  P8U4            1040   1041  1040    1376 1.01x slower (parallel: extra iterators + strided, no coalesce)
-  P4U8            1036   1037  1036    1368 best
+  P16U1             544    545   544    1392 1.01x slower (parallel: extra iterators + strided, no coalesce)
+  P8U2             528    529   528    1376 best
+  P4U4             520    521   520    1376 best
+  P2U8             518    519   518    1376 best
+  P1U16            517    518   517    1376 best
 ```
 
 For flag and column meanings, see
@@ -108,12 +114,12 @@ For flag and column meanings, see
 
 ## Recommendation and reading
 
-**`i:P2U8 bit:P1U1` is the recommended knee (`K`)**: exposure `512` (words per
+**`i:P1U16 bit:P1U1` is the recommended knee (`K`)**: exposure `512` (words per
 wave × their full 32-bit sequential reversal), `p_agg = 1376` (`1.01×` the
 `1366` compute floor), resource-bound on the arithmetic pool. It is the smallest
-exposure that saturates `P`; `i:P4U4` and `i:P8U2` tie it exactly at `1376`, and
-the tool reports the unroll-heaviest representative because it carries the fewest
-word iterators.
+power-of-two exposure that saturates `P`; `i:P2U8`, `i:P4U4`, and `i:P8U2` tie
+it at `1376`, and the tool reports the unroll-heaviest representative because it
+carries the fewest word iterators.
 
 The **P-vs-U edge on the outer `i` is small**. At fixed word-level product
 `P·U = 32`, `P4U8` (`p_agg = 1368`) is only `1.01×` faster than `P8U4`
@@ -159,12 +165,3 @@ Measured DFG simulator comparisons should use the shared rules in
 Treat `absolute_cgra_lb = 1366` as this DSE's optional floor; a real DFG run that
 does not thread `result`/`value` through registers — spilling them to memory each
 bit — would regress toward the store-bound ASAP figure instead.
-
-## Broader unroll note
-
-If the sweep allows `--max-unroll 16`, `i:P1U16 bit:P1U1` performs at least as
-well as the current-table knee `i:P2U8 bit:P1U1`: both report `p_agg = 1376` and
-`sched = 1520`, while `P1U16` carries one fewer outer word iterator per wave
-(`A = 3074`, `LD_rec = 517`, `ST = 517`, versus `A = 3076`, `LD_rec = 518`,
-`ST = 518` for `P2U8`). The checked-in table uses `--max-unroll 8`, matching the
-current source pragma, so `P1U16` is outside that displayed sweep.

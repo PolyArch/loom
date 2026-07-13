@@ -31,7 +31,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py bitonic_stage-modified --config 6x6 --max-parallel 8 --max-unroll 8 --top 16
+python3 tests/scripts/loom_dse.py bitonic_stage-modified --config 6x6 --top 16
 ```
 
 ## Why the outer loop is sequential
@@ -63,9 +63,9 @@ the scalar CGRA aggregate is dependency-bound at 31.
   distinct elements within one taken outer iteration, but the current DSE helper
   models that local work as part of the fully consumed `i` recurrence rather
   than exposing a separate pragma level.
-- **Expected effect: none in the current legal search.** The helper enumerates
-  only inert `U` labels for the sequential level; they all build the same full
-  DAG and collapse into one equivalent row.
+- **Expected effect: none in the current legal search.** Equivalent `U` labels
+  for the fully consumed sequential level use the canonical `P1U1`
+  representative because they all build the same full DAG.
 
 Thus the search cannot remove or repackage the kernel's serial bottleneck. The
 smallest representative is preferred when all candidates tie at the
@@ -76,11 +76,12 @@ dependency-bound estimate.
 ```text
 # Loom pragma DSE (lane-aware + vector coalescing): bitonic_stage-modified  (6x6)
 
-Loop nest: `i[8,sequential]`; the loop-counter carry and in-place second-half read-modify-write chain cross iterations, so parallel factors are illegal and unrolling cannot flatten the recurrence, leaving every enumerated U choice with the same serial DAG. Full-trip counts are `A=133`, `LD_rec=52`, `LD_eff=55`, `ST=48`, and `CP=31`, giving the only lower bound, `absolute_cgra_lb=31=max(CP 31, compute 4, load 5, store 4)`; the critical path dominates, while `p_agg` and `sched` are wave-serialized estimates.
+Search: complete legal power-of-two factors through each trip count.
+Loop nest: `i[8,sequential]`; The outer i loop is sequential: its loop-counter carry and the in-place N/2..N-1 read-modify-write chain cross iterations. Parallel factors are illegal and unroll cannot flatten the recurrence, so equivalent unroll labels use the canonical P1U1 representative for the fully consumed serial DAG. Full-trip counts are `A=133`, `LD_rec=52`, `LD_eff=55`, `ST=48`, and `CP=31`, giving the only lower bound, `absolute_cgra_lb=31=max(CP 31, compute 4, load 5, store 4)`, with critical-path pressure binding; `p_agg` and `sched` are wave-serialized estimates.
 
 flags    split                      Ptot  aL  aS LD_eff   exp   wav  cagg   p_agg   sched class           util P/L/S
 --------------------------------------------------------------------------------------------------------------------
-K        i:P1U1  (+3 eq)               1  12  12     55     8     1    31      31      31 latency-bound     13/16/13
+K        i:P1U1                        1  12  12     55     8     1    31      31      31 latency-bound     13/16/13
 
 RECOMMENDED: i:P1U1  -> exposure=8, pragma_agg=31 (1.00x the floor), latency-bound
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
@@ -93,11 +94,10 @@ For flag and column meanings, see
 
 ## Recommendation
 
-**`i:P1U1` is the recommended representative.** The helper collapses four
-equivalent sequential labels into one row (`+3 eq`): every choice consumes the
-same full recurrence and reports `p_agg = sched = 31`, equal to
-`absolute_cgra_lb = 31`. No pragma factor shortens the carry or changes traffic,
-so the smallest label avoids implying nonexistent spatial exposure.
+**`i:P1U1` is the recommended representative.** Every sequential unroll label
+consumes the same full recurrence and reports `p_agg = sched = 31`, equal to
+`absolute_cgra_lb = 31`. The helper therefore uses the canonical `P1U1` label
+instead of implying nonexistent spatial exposure.
 
 Reserve **lower bound** for `absolute_cgra_lb`. Both `p_agg` and `sched` assume
 wave serialization and are estimates; real execution may overlap waves and
