@@ -21,9 +21,14 @@ python3 tests/scripts/loom_dse.py edge_update --config 6x6 --top 16
   data-dependent and first-match ordered; directly parallelizing it can change
   behavior when duplicate destinations exist.
 - The helper uses the committed concrete DAG from `cgra_schedule.py`. The copy
-  and matched overwrite remain in one schedulable region: the overwrite is a
-  WAW on a value that is never read between stores, so it is not a RAW phase
-  barrier. Full-trip counts are `A=40`, `LD_rec=LD_eff=38`, `ST=37`, `CP=6`.
+  loop is included as 16 fully expanded scalar copy iterations, whose independent
+  memory operations may use the available lanes and overlap the search. This is
+  not an assumed `LOOM_PARALLEL` / `LOOM_UNROLL` split, so the helper does not
+  sweep copy-loop pragmas or credit unroll-specific coalescing and control
+  amortization. The copy and matched overwrite remain in one schedulable region:
+  the overwrite is a WAW on a value that is never read between stores, so it is
+  not a RAW phase barrier. Full-trip counts are `A=40`, `LD_rec=LD_eff=38`,
+  `ST=37`, `CP=6`.
 
 ## Results
 
@@ -45,7 +50,11 @@ P-vs-U contrast: no parallelizable level.
 
 ## Recommendation
 
-Use **`kernel:P1U1`**, the only legal representative. The 6-cycle dependency
-chain is longer than the aggregate compute/load/store terms, so
-`p_agg = sched = absolute_cgra_lb = 6`. Any future copy-loop pragma exploration
-should be modeled explicitly rather than inferred from this no-pragma source.
+Use **`kernel:P1U1`** only as the canonical whole-kernel label for this no-sweep
+model. It is not a pragma recommendation for the actual search loop, and it does
+not assign `P1U1` to the copy loop. The first-match search remains sequential by
+dependence, while the fully expanded copy work is included in the operation
+counts and schedule without an explicit `P/U` choice. The 6-cycle search/update
+dependency chain is longer than the aggregate compute/load/store terms, so
+`p_agg = sched = absolute_cgra_lb = 6`. A copy-loop pragma recommendation would
+require a separate DSE that exposes the copy loop as a parallelizable level.

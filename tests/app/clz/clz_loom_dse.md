@@ -18,6 +18,7 @@ python3 tests/scripts/loom_dse.py clz --config 6x6 --top 16
 
 - Fixture: `N = 256`, one zero lane, 255 nonzero lanes, `sum(K) = 3211`, and
   `max(K) = 31`, matching `main.cpp`.
+    - Important: critical path (CP) is dependent on the input. In this evaluation, it is set by max(K) = 31
 - Only outer `i` is parallelizable. The `mask` shift, `count` update, and exit
   test form a per-lane sequential recurrence; the helper preserves the concrete
   branch/trip distribution and sums contiguous waves before forming its
@@ -27,6 +28,14 @@ python3 tests/scripts/loom_dse.py clz --config 6x6 --top 16
   once per worker per wave, while the data-dependent scan remains scalar.
 - Full-trip counts are `A = 13612`, `LD_rec = 6997`, `LD_eff = 6998`,
   `ST = 6997`, `CP = 163`; therefore `absolute_cgra_lb = 584`, load/store-bound.
+
+For a candidate with `W` contiguous waves, the helper defines
+`representative_wave_CP = ceil(sum(maximum lane depth in each wave) / W)`.
+CLZ needs this representative because its input-dependent lane depths make the
+waves unequal, while the DSE evaluates one representative chunk and multiplies
+its aggregate by `W`; charging the full-trip `CP = 163` to every wave would
+overstate latency, whereas averaging individual lanes would ignore that each
+wave waits for its slowest lane.
 
 ## Results
 
