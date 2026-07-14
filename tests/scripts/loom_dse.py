@@ -55,8 +55,9 @@ import sys
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 
-from cgra_schedule import (Config, Dag, L, _ceil_div,
+from cgra_schedule import (Config, Dag, L, P, S, _ceil_div,
                            build_crc32, build_edge_update,
+                           build_fft_butterfly,
                            build_bitonic_stage_modified,
                            build_bitonic_stage_tweak, evaluate, parse_config,
                            region_aggregate)
@@ -143,10 +144,26 @@ def _load_split(dag) -> tuple[int, int]:
     reads, which scale with exposure. Recurring loads set the steady-state lane
     exposure and the binding load term; invariant loads are amortized (loaded
     once and held) and appear only in ``LD_eff = recurring + invariant``."""
-    nodes = dag.regions[0].nodes
-    invariant = sum(1 for n in nodes if n.cls == L and INV in n.kind)
-    total = sum(1 for n in nodes if n.cls == L)
-    return total - invariant, invariant
+    recurring = 0
+    invariant = 0
+    for region in dag.regions:
+        region_invariant = sum(
+            1 for node in region.nodes if node.cls == L and INV in node.kind)
+        region_total = sum(1 for node in region.nodes if node.cls == L)
+        recurring += region_total - region_invariant
+        invariant += region_invariant
+    return recurring, invariant
+
+
+def _region_load_splits(dag) -> list[tuple[int, int]]:
+    """Return recurring/invariant load counts aligned with ``dag.regions``."""
+    splits = []
+    for region in dag.regions:
+        invariant = sum(
+            1 for node in region.nodes if node.cls == L and INV in node.kind)
+        total = sum(1 for node in region.nodes if node.cls == L)
+        splits.append((total - invariant, invariant))
+    return splits
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +195,8 @@ class KernelSpec:
     build_chunk: object             # callable(cand: Candidate) -> Dag
     coalesce_note: str = ""
     default_config: str = "6x6"
+    repeat_waves: bool = True
+    selection_mode: str = "knee"  # "knee" | "latency_fallback"
 
     def level(self, name: str) -> Level:
         for lv in self.levels:
@@ -677,6 +696,319 @@ def _edge_update_chunk(_cand):
     return dag
 
 
+def _gauss_seidel_step_chunk(_cand):
+    # The outer row loop is a true in-place recurrence: row i reads the values
+    # written by rows 0..i-1. Its source P/U labels therefore cannot flatten or
+    # parallelize the sweep. The two j loops are associative row reductions, so
+    # they are fully consumed without source-level j-loop control.
+    N = 32
+    dag = Dag()
+    r = dag.region("gauss_seidel_step")
+    r.load(kind="N" + INV)
+    # input_x is read-only and reused by every row. As in gemv's x vector, load
+    # the complete contiguous vector once per kernel chunk and hold it.
+    input_x = _cloads(r, N, True, "input_x", invariant=True)
+
+    def a_segment(row_base, count, kind):
+        # input_A is contiguous within each lower/upper row segment. Preserve
+        # one source address add per scalar access, but fuse up to V adjacent
+        # loads into one vector lane-slot.
+        addrs = [r.address_add(row_base, kind=kind + "_addr")
+                 for _ in range(count)]
+        values = []
+        for start in range(0, count, V):
+            group = addrs[start:start + V]
+            ld = r.load(*group, kind=kind + "_vec")
+            values.extend([ld] * len(group))
+        return values
+
+    output_stores = []
+    for i in range(N):
+        r.induction(kind="i", compare_depends_on_read=True)
+        # Constants/loop indices are available at entry under the source model;
+        # the row-base multiply is therefore a root on the documented CP.
+        row_base = r.arith(kind="row_base_mul")
+
+        lower_a = a_segment(row_base, i, "A_lower")
+        # Coalesce the already-ready prefix, but keep output_x[i-1] as a separate
+        # scalar load. Grouping the newest value with older entries would delay
+        # that group behind the carried store and lengthen the six-cycle row II.
+        lower_x = []
+        ready_prefix = max(0, i - 1)
+        for start in range(0, ready_prefix, V):
+            stores = output_stores[start:min(start + V, ready_prefix)]
+            ld = r.load(*stores, kind="output_x_ready_vec")
+            lower_x.extend([ld] * len(stores))
+        if i:
+            lower_x.append(
+                r.load(output_stores[i - 1], kind="output_x_latest"))
+        lower_products = [r.arith(lower_a[j], lower_x[j], kind="mul_lower")
+                          for j in range(i)]
+
+        upper = N - i - 1
+        upper_a = a_segment(row_base, upper, "A_upper")
+        upper_x = input_x[i + 1:]
+        upper_products = [r.arith(upper_a[j], upper_x[j], kind="mul_upper")
+                          for j in range(upper)]
+
+        if i == 0:
+            sigma = r.balanced_reduction(upper_products, kind="sigma_reduce")
+        else:
+            # Everything except output_x[i-1] can be reduced while waiting for
+            # the newest predecessor. The final combine keeps the accepted
+            # six-cycle row recurrence: load, multiply, add, sub, div, store.
+            latest = lower_products[-1]
+            ready_terms = lower_products[:-1] + upper_products
+            partial = r.balanced_reduction(ready_terms, kind="sigma_partial")
+            sigma = r.arith(partial, latest, kind="sigma_combine")
+
+        diag_addr = r.address_add(row_base, kind="A_diag_addr")
+        diag = r.load(diag_addr, kind="A_diag")
+        rhs = r.load(kind="input_b")
+        numerator = r.arith(rhs, sigma, kind="sub")
+        value = r.arith(numerator, diag, kind="div")
+        output_stores.append(
+            r.store(value, output=True, kind="output_x_store"))
+    return dag
+
+
+def _hist_bin_chunk(cand):
+    # The source's only explicit parallel pragma belongs to the short zero-fill
+    # phase. Emit those phase-local waves here, then append the dominant count
+    # phase exactly once as ten concrete associative scatter buckets.
+    N = 1024
+    fan_ins = (110, 110, 104, 100, 100, 100, 100, 100, 100, 100)
+    dag = Dag()
+
+    # True RAW barrier: every count bucket reads the identities written by all
+    # zero-fill waves. Include the partial tail (e.g. 8+2 at P1U8), with one
+    # residual iterator per active worker and vector stores within each worker.
+    p, u = cand.factors("zero_i")
+    trip = len(fan_ins)
+    wave_width = p * u
+    for wave_index, start in enumerate(range(0, trip, wave_width)):
+        active = min(wave_width, trip - start)
+        workers = min(p, _ceil_div(active, u))
+        name = "zero_fill" if wave_index == 0 else f"zero_fill.wave{wave_index}"
+        zero = dag.region(name)
+        _worker_control(zero, workers, kind="zero_i")
+        for worker in range(workers):
+            block = min(u, active - worker * u)
+            for _ in range(_ceil_div(block, V)):
+                zero.store(output=True, kind="output_zero_vec")
+
+    count = dag.region("count")
+    count.load(kind="N" + INV)
+    num_bins = count.load(kind="num_bins" + INV)
+    min_val = count.load(kind="min_val" + INV)
+    max_val = count.load(kind="max_val" + INV)
+    value_range = count.arith(max_val, min_val, kind="range_sub")
+    bin_width = count.arith(value_range, num_bins, kind="bin_width_div")
+
+    # input[i] is contiguous and fully consumed, so its boundary loads coalesce.
+    input_values = _cloads(count, N, True, "input")
+    bucket_gates = [[] for _ in fan_ins]
+    bucket_output_loads = [[] for _ in fan_ins]
+    for lane, value in enumerate(input_values):
+        # main.cpp uses input[i] = i % 100 and bin_width=10, so this is the
+        # concrete resolved bucket for the lane after the all-valid guard.
+        bin_index = (lane % 100) // 10
+        # Preserve short-circuit gating: the high comparison follows the low
+        # comparison, and only the normal path reaches the bin calculation. The
+        # clamp comparison executes, but its assignment arm is never taken.
+        low = count.arith(value, min_val, kind="val_lt_min")
+        high = count.arith(low, value, max_val, kind="val_ge_max")
+        shifted = count.arith(high, value, min_val, kind="val_sub_min")
+        bin_value = count.arith(shifted, bin_width, kind="bin_div")
+        bin_store = count.store(bin_value, kind="bin_store")
+        bin_load = count.load(bin_store, kind="bin_load")
+        clamp = count.arith(bin_load, num_bins, kind="bin_ge_num_bins")
+        bucket_gates[bin_index].append(clamp)
+        bucket_output_loads[bin_index].append(
+            count.load(clamp, kind="output_update_load"))
+
+    got_fan_ins = tuple(len(bucket) for bucket in bucket_gates)
+    if got_fan_ins != fan_ins:
+        raise AssertionError(
+            f"hist_bin fan-ins {got_fan_ins} != expected {fan_ins}")
+
+    for gates, output_loads in zip(bucket_gates, bucket_output_loads):
+        # H source updates contain H adds. Reduce H gated +1 contributions plus
+        # one loaded zero identity: H+1 leaves require exactly H tree adds. The
+        # remaining source output loads are counted but dead under this
+        # output-centric associative interpretation.
+        level = list(gates) + [output_loads[-1]]
+        reduction_nodes = []
+        while len(level) > 1:
+            next_level = []
+            index = 0
+            while index + 1 < len(level):
+                add = count.arith(level[index], level[index + 1],
+                                  kind="bucket_add")
+                reduction_nodes.append(add)
+                next_level.append(add)
+                index += 2
+            if index < len(level):
+                next_level.append(level[index])
+            level = next_level
+        root = level[0]
+        for add in reduction_nodes:
+            count.store(add, output=(add == root), kind="output_update_store")
+    return dag
+
+
+def _clone_region(dag, source):
+    """Clone one ordered region while preserving its internal dependencies."""
+    r = dag.region(source.name)
+    id_map = {}
+    for node in source.nodes:
+        preds = [id_map[pred] for pred in node.preds]
+        if node.cls == P:
+            nid = r.arith(*preds, output=node.is_output, kind=node.kind)
+        elif node.cls == L:
+            nid = r.load(*preds, output=node.is_output, kind=node.kind)
+        elif node.cls == S:
+            nid = r.store(*preds, output=node.is_output, kind=node.kind)
+        else:
+            raise AssertionError(f"unknown FFT node class {node.cls!r}")
+        id_map[node.nid] = nid
+
+
+def _fft_butterfly_chunk(cand):
+    p, u = cand.factors("copy_i")
+    trip = 16
+    wave_width = p * u
+    dag = Dag()
+
+    # Copy waves are phase-local: they drain in order before stage 1, while the
+    # four FFT stages execute exactly once. Legal power-of-two factors divide
+    # N=16, so every wave has p complete workers of u adjacent elements.
+    for wave in range(_ceil_div(trip, wave_width)):
+        r = dag.region("copy" if wave == 0 else f"copy.wave{wave}")
+        if wave == 0:
+            ld_N = r.load(kind="N" + INV)
+            r.arith(ld_N, kind="log2f")
+            r.store(kind="stage_loop_init")
+        _worker_control(r, p, kind="copy_i")
+        for _w in range(p):
+            in_real = _cloads(r, u, True, "input_real")
+            in_imag = _cloads(r, u, True, "input_imag")
+            _cstores(r, in_real, True, True, "output_real")
+            _cstores(r, in_imag, True, True, "output_imag")
+
+    # Reuse the validated source-level stage DAG. Its ordered regions retain
+    # the s-to-s barriers, sequential j induction, and memory-backed twiddle
+    # recurrence; only the separately annotated copy loop is swept here.
+    fixed_dag, _ = build_fft_butterfly(N=trip)
+    for source_region in fixed_dag.regions[1:]:
+        _clone_region(dag, source_region)
+    return dag
+
+
+def _gather_chunk(cand):
+    p, u = cand.factors("i")
+    dag = Dag()
+    r = dag.region("gather")
+    r.load(kind="N" + INV)
+    ld_src_size = r.load(kind="src_size" + INV)
+    _worker_control(r, p)
+    for _w in range(p):
+        # indices[i] and dst[i] are contiguous over an unrolled i group. The
+        # loaded indices may be arbitrary, so src[indices[i]] stays scalar even
+        # for the regular main.cpp fixture; read-only aliasing does not prevent
+        # those scalar loads from issuing independently on different lanes.
+        indices = _cloads(r, u, True, "indices")
+        gathered = []
+        for idx in indices:
+            valid = r.arith(idx, ld_src_size, kind="idx_lt_src_size")
+            gathered.append(r.load(valid, idx, kind="src_indirect"))
+        _cstores(r, gathered, True, True, "dst")
+    return dag
+
+
+def _interpolate_trace_main():
+    """Concrete per-query source trace for the N_data=32, N_query=64 fixture.
+
+    Counts exclude outer-q control and the two parameter loads / N_data-1
+    subtraction, which the chunk builder restores at wave granularity. Each LD
+    count includes the contiguous input_xq[q] boundary load, and each ST count
+    includes the contiguous output_yq[q] boundary store.
+    """
+    trace = []
+    for q in range(64):
+        xq = 0.5 * q
+        hit = False
+        for k in range(31):
+            if xq >= float(k) and xq <= float(k + 1):
+                probes = k + 1
+                hit = True
+                break
+        if not hit:
+            probes = 31
+
+        if hit:
+            A = 5 * probes + 7
+            LD = 3 * probes + 6
+            CP = 9 * probes + 7
+        else:
+            # The no-hit q=63 lane executes all 31 failed probes and one final
+            # failing k-bound check before interpolating with the initial i=0.
+            A = 5 * probes + 9
+            LD = 3 * probes + 7
+            CP = 9 * probes + 10
+        ST = probes + 2
+        trace.append((A, LD, ST, CP))
+    return trace
+
+
+def _interpolate_critical_chain(CP):
+    """A source-shaped serial-search chain of exactly ``CP`` nodes."""
+    failed_probe = ("L", "P", "L", "P", "P", "L", "P", "P", "S")
+    final_check = ("L", "P")
+    interpolation = ("L", "P", "L", "P", "P", "P", "P", "S")
+    no_hit = failed_probe * 31 + final_check + interpolation
+    if CP <= 1:
+        return ("S",)
+    return no_hit[:CP - 1] + ("S",)
+
+
+def _interpolate_linear_chunk(cand):
+    p, u = cand.factors("q")
+    trace = _interpolate_trace_main()
+    exposure = min(len(trace), p * u)
+    waves = [trace[start:start + exposure]
+             for start in range(0, len(trace), exposure)]
+
+    total_A = total_LD_rec = total_ST = total_CP = 0
+    for wave in waves:
+        workers = _ceil_div(len(wave), u)
+        boundary_slots = sum(
+            _ceil_div(len(wave[start:start + u]), V)
+            for start in range(0, len(wave), u))
+
+        # Search and interpolation counts retain each q-private, sequential
+        # concrete trace. Only input_xq[q] / output_yq[q] are contiguous over q
+        # and coalesce inside one unrolled worker. input_x[k], input_x[i], and
+        # input_y[i] stay recurring scalar loads: their execution or address is
+        # data-dependent and conditionally gated, so this model does not assume
+        # cross-query cache/broadcast reuse merely because the arrays are read-only.
+        total_A += sum(row[0] for row in wave) + 1 + 2 * workers
+        total_LD_rec += (sum(row[1] for row in wave) - len(wave)
+                         + boundary_slots + workers)
+        total_ST += (sum(row[2] for row in wave) - len(wave)
+                     + boundary_slots + workers)
+        total_CP += max(row[3] for row in wave)
+
+    n_waves = len(waves)
+    A = _ceil_div(total_A, n_waves)
+    LD_rec = _ceil_div(total_LD_rec, n_waves)
+    ST = _ceil_div(total_ST, n_waves)
+    CP = _ceil_div(total_CP, n_waves)
+    return _emit_counted_region(
+        "interpolate_linear", A, LD_rec, 2, ST,
+        _interpolate_critical_chain(CP))
+
+
 # ---------------------------------------------------------------------------
 # Kernel registry
 # ---------------------------------------------------------------------------
@@ -916,6 +1248,86 @@ def _register():
             "as the concrete serial kernel trace; there is no legal P/U level to "
             "sweep."),
     )
+    KERNELS["fft_butterfly"] = KernelSpec(
+        name="fft_butterfly",
+        levels=(Level("copy_i", 16, "parallel"),),
+        build_chunk=_fft_butterfly_chunk,
+        coalesce_note=(
+            "the annotated copy loop is parallel and its two input/output "
+            "streams are contiguous, so copy_i-unroll coalesces them and "
+            "amortizes copy control. Copy waves are ordered before four fixed "
+            "once-only FFT stage regions. Those stages are barrier-ordered by "
+            "in-place array RAW hazards; within each stage k blocks are "
+            "independent, but j remains sequential because both its iterator "
+            "and the generated twiddle w<-w*wm are carried recurrences. Thus a "
+            "copy candidate's waves do not repeat the stage work."),
+        repeat_waves=False,
+    )
+    KERNELS["gauss_seidel_step"] = KernelSpec(
+        name="gauss_seidel_step",
+        levels=(Level("i", 32, "sequential"),),
+        build_chunk=_gauss_seidel_step_chunk,
+        coalesce_note=(
+            "the outer i loop is a true in-place Gauss-Seidel recurrence: row i "
+            "reads output_x values written by earlier rows, so parallel factors "
+            "are illegal and unroll labels cannot flatten the sweep. The lower "
+            "and upper j sums are fully consumed associative reductions with no "
+            "j-loop control. The read-only input_x vector is loaded once and held; "
+            "independent contiguous input_A row segments and already-ready "
+            "lower-triangle output_x prefixes coalesce. The newest output_x[i-1] "
+            "read and sequential output_x stores stay scalar to preserve the row "
+            "recurrence. Equivalent i-unroll labels use the canonical P1U1 "
+            "representative."),
+        selection_mode="latency_fallback",
+    )
+    KERNELS["gather"] = KernelSpec(
+        name="gather",
+        levels=(Level("i", 1024, "parallel"),),
+        build_chunk=_gather_chunk,
+        coalesce_note=(
+            "i is parallel and every concrete fixture lane takes the valid arm. "
+            "indices[i] and dst[i] are contiguous, so i-unroll coalesces those "
+            "streams and amortizes the iterator. src[indices[i]] remains an "
+            "indirect scalar load: the loaded indices are not an affine address "
+            "sequence the vector interface may coalesce, although the read-only "
+            "loads are independent and may occupy separate load lanes. The DSE "
+            "uses the spec-wide V=4 convention despite the uint32_t element type."),
+    )
+    KERNELS["hist_bin"] = KernelSpec(
+        name="hist_bin",
+        levels=(Level("zero_i", 10, "parallel"),),
+        build_chunk=_hist_bin_chunk,
+        coalesce_note=(
+            "the annotated zero_i loop is parallel; its contiguous output stores "
+            "coalesce within each unrolled worker, and its phase-local waves "
+            "include the partial tail. All zero-fill waves are ordered before one "
+            "fixed 1024-input count region because the later updates read those "
+            "zero identities. All inputs take the valid guard path; the bin clamp "
+            "compare executes but its assignment arm is untaken. "
+            "Concrete per-bin fan-ins are 110,110,104,100,100,100,100,100,100,100 "
+            "and form associative output-centric trees. Contiguous input loads "
+            "coalesce, while data-dependent output scatter loads/stores and "
+            "memory-backed bin scalars remain scalar. The dominant scatter phase "
+            "has no independent tiled P/U level and executes exactly once for "
+            "every zero_i candidate."),
+        repeat_waves=False,
+    )
+    KERNELS["interpolate_linear"] = KernelSpec(
+        name="interpolate_linear",
+        levels=(Level("q", 64, "parallel"),),
+        build_chunk=_interpolate_linear_chunk,
+        coalesce_note=(
+            "q lanes are independent, but each lane keeps its private sequential "
+            "data-dependent k search and selected i state. The helper uses the "
+            "concrete main.cpp trace (1024 probes: 63 hits and one final-check "
+            "no-hit lane) and the same deterministic wave-average convention as "
+            "clz. q-unroll coalesces only contiguous input_xq[q] / output_yq[q] "
+            "boundary traffic and amortizes q control. Search input_x[k] loads "
+            "and tail input_x/input_y[i] loads remain recurring scalar accesses: "
+            "conditional termination and data-dependent indices prevent vector "
+            "coalescing, and no cross-query cache/broadcast reuse is assumed."),
+        selection_mode="latency_fallback",
+    )
 
 
 _register()
@@ -1065,41 +1477,56 @@ def evaluate_candidate(spec: KernelSpec, cand: Candidate, cfg: Config,
     dag = spec.build_chunk(cand)
     if schedule:
         res = evaluate(dag, spec.name, cfg)
-        agg = res.region_aggs[0]
+        region_aggs = res.region_aggs
         chunk_scheduled = res.scheduled_cycles
     else:
-        agg = region_aggregate(dag.regions[0], cfg)
+        region_aggs = [region_aggregate(region, cfg) for region in dag.regions]
         chunk_scheduled = None
-    recurring_LD, invariant_LD = _load_split(dag)
-    ld_eff = recurring_LD + invariant_LD   # == agg.LD (total traffic)
+    load_splits = _region_load_splits(dag)
+    recurring_LD = sum(recurring for recurring, _ in load_splits)
+    invariant_LD = sum(invariant for _, invariant in load_splits)
+    ld_eff = recurring_LD + invariant_LD   # total load traffic across regions
     waves = _waves(spec, cand)
     p_tot = _p_tot(spec, cand)
 
-    # steady-state binding: load term uses RECURRING loads only (invariants
-    # amortized); compute and store are unchanged.
-    load = _ceil_div(recurring_LD, cfg.L)
-    compute = agg.compute
-    store = agg.store
-    chunk_aggregate = max(agg.CP, compute, load, store)
-    active_L = max(1, min(recurring_LD, cfg.L))
-    active_S = max(1, min(agg.ST, cfg.S))
+    # Ordered regions retain separate resource ceilings. This matters for
+    # barrier-ordered kernels such as FFT: max-of-kernel totals would allow work
+    # from different phases to overlap and understate the spec-defined bound.
+    region_terms = []
+    for agg, (region_recurring, _region_invariant) in zip(
+            region_aggs, load_splits):
+        region_load = _ceil_div(region_recurring, cfg.L)
+        region_terms.append((agg.CP, agg.compute, region_load, agg.store))
+    CP = sum(terms[0] for terms in region_terms)
+    compute = sum(terms[1] for terms in region_terms)
+    load = sum(terms[2] for terms in region_terms)
+    store = sum(terms[3] for terms in region_terms)
+    chunk_aggregate = sum(max(terms) for terms in region_terms)
+    active_L = max(1, min(max(
+        (recurring for recurring, _ in load_splits), default=0), cfg.L))
+    active_S = max(1, min(max(
+        (agg.ST for agg in region_aggs), default=0), cfg.S))
 
-    # binding class of this chunk: the largest resource term (arith stays a
-    # global pool; ties favor loads).
+    # Binding is summarized over the ordered phase totals. For a multi-region
+    # kernel this is descriptive only; the actual aggregate remains the sum of
+    # each region's maximum above.
     terms = {"P": compute, "L": load, "S": store}
     binding_class = max(terms, key=lambda k: (terms[k], k == "L"))
-    max_resource = max(compute, load, store)
-    saturation = "latency-bound" if agg.CP > max_resource else "resource-bound"
+    all_latency_bound = all(cp > max(comp, ld, st)
+                            for cp, comp, ld, st in region_terms)
+    saturation = "latency-bound" if all_latency_bound else "resource-bound"
     denom = chunk_aggregate if chunk_aggregate > 0 else 1
     util = (compute / denom, load / denom, store / denom)
+    estimate_multiplier = waves if spec.repeat_waves else 1
 
     return CandResult(
         cand=cand, p_tot=p_tot, active_L=active_L, active_S=active_S,
         exposed_iters=_exposed_iters(spec, cand), waves=waves,
-        CP=agg.CP, A=agg.A, LD=recurring_LD, ST=agg.ST, ld_eff=ld_eff,
+        CP=CP, A=sum(agg.A for agg in region_aggs), LD=recurring_LD,
+        ST=sum(agg.ST for agg in region_aggs), ld_eff=ld_eff,
         chunk_aggregate=chunk_aggregate, chunk_scheduled=chunk_scheduled,
-        pragma_exposure_aggregate=waves * chunk_aggregate,
-        schedule_estimate=(waves * chunk_scheduled
+        pragma_exposure_aggregate=estimate_multiplier * chunk_aggregate,
+        schedule_estimate=(estimate_multiplier * chunk_scheduled
                            if chunk_scheduled is not None else None),
         binding_class=binding_class, saturation=saturation, util=util)
 
@@ -1134,16 +1561,28 @@ def absolute_cgra_lb(spec: KernelSpec, cfg: Config) -> tuple[int, dict]:
     bound. Aggregate-only (no scheduling) so it scales to the full unrolled DAG.
     Also returns the full-trip demand for the binding-class analysis."""
     dag = spec.build_chunk(_full_candidate(spec))
-    agg = region_aggregate(dag.regions[0], cfg)
-    recurring_LD, invariant_LD = _load_split(dag)
-    # steady-state floor: recurring loads only (invariants amortized once over the
-    # whole trip). LD_eff = recurring + invariant is the total traffic.
-    load = _ceil_div(recurring_LD, cfg.L)
-    aggregate = max(agg.CP, agg.compute, load, agg.store)
-    demand = {"A": agg.A, "LD": recurring_LD,
-              "LD_eff": recurring_LD + invariant_LD, "ST": agg.ST, "CP": agg.CP,
-              "compute": agg.compute, "load": load, "store": agg.store,
-              "aggregate": aggregate}
+    region_aggs = [region_aggregate(region, cfg) for region in dag.regions]
+    load_splits = _region_load_splits(dag)
+    region_terms = []
+    for agg, (region_recurring, _region_invariant) in zip(
+            region_aggs, load_splits):
+        region_terms.append((agg.CP, agg.compute,
+                             _ceil_div(region_recurring, cfg.L), agg.store))
+    recurring_LD = sum(recurring for recurring, _ in load_splits)
+    invariant_LD = sum(invariant for _, invariant in load_splits)
+    aggregate = sum(max(terms) for terms in region_terms)
+    demand = {
+        "A": sum(agg.A for agg in region_aggs),
+        "LD": recurring_LD,
+        "LD_eff": recurring_LD + invariant_LD,
+        "ST": sum(agg.ST for agg in region_aggs),
+        "CP": sum(terms[0] for terms in region_terms),
+        "compute": sum(terms[1] for terms in region_terms),
+        "load": sum(terms[2] for terms in region_terms),
+        "store": sum(terms[3] for terms in region_terms),
+        "aggregate": aggregate,
+        "region_count": len(region_terms),
+    }
     return aggregate, demand
 
 
@@ -1165,6 +1604,20 @@ def recommend(spec: KernelSpec, results: list[CandResult]) -> CandResult | None:
     knee."""
     if not results:
         return None
+    if not spec.repeat_waves:
+        # The builder already emits every phase-local wave and every fixed
+        # once-only region. A fixed stage may be resource-bound even when the
+        # tunable phase is underexposed, so the single-loop saturation test is
+        # not meaningful. Select the smallest exposure that reaches the best
+        # whole-kernel estimate, then prefer the most coalesced/fewest-worker
+        # representative at that exposure.
+        best_estimate = min(r.pragma_exposure_aggregate for r in results)
+        best = [r for r in results
+                if r.pragma_exposure_aggregate == best_estimate]
+        min_exposure = min(r.exposed_iters for r in best)
+        best = [r for r in best if r.exposed_iters == min_exposure]
+        return min(best, key=lambda r: (r.LD + r.ST, r.p_tot,
+                                        r.cand.signature()))
     by_exp: dict[int, list[CandResult]] = {}
     for r in results:
         by_exp.setdefault(r.exposed_iters, []).append(r)
@@ -1180,10 +1633,17 @@ def recommend(spec: KernelSpec, results: list[CandResult]) -> CandResult | None:
 
 def annotate_flags(spec: KernelSpec, results: list[CandResult],
                    rec: CandResult) -> None:
+    latency_fallback = spec.selection_mode == "latency_fallback"
     for r in results:
         if r.cand.split == rec.cand.split:
             r.flags.add("recommended")
             continue  # the pick carries no starved/oversubscribed marker
+        if not spec.repeat_waves:
+            continue
+        if latency_fallback:
+            if r.pragma_exposure_aggregate > rec.pragma_exposure_aggregate:
+                r.flags.add("bandwidth-starved")
+            continue
         # bandwidth-starved: below the knee (latency-bound: resources idle while
         # the critical path drains).
         if r.saturation == "latency-bound":
@@ -1236,14 +1696,23 @@ def render_report(spec: KernelSpec, cfg: Config, results: list[CandResult],
     binding = "critical-path" if demand["CP"] > max(ft_terms.values()) \
         else {"P": "compute", "L": "load", "S": "store"}[ft_binding]
     out.append(f"Search: {search_scope}.")
+    if demand.get("region_count", 1) == 1:
+        floor_text = (
+            f"`absolute_cgra_lb={lb}=max(CP {demand['CP']}, "
+            f"compute {demand['compute']}, load {demand['load']}, "
+            f"store {demand['store']})`, with {binding} pressure binding")
+    else:
+        floor_text = (
+            f"`absolute_cgra_lb={lb}` from the sum of "
+            f"{demand['region_count']} ordered-region aggregates "
+            f"(region-summed CP {demand['CP']}, compute ceilings "
+            f"{demand['compute']}, load ceilings {demand['load']}, and store "
+            f"ceilings {demand['store']})")
     out.append(
         f"Loop nest: `{nest}`; {spec.coalesce_note} Full-trip counts are "
         f"`A={demand['A']}`, `LD_rec={demand['LD']}`, "
         f"`LD_eff={demand['LD_eff']}`, `ST={demand['ST']}`, and "
-        f"`CP={demand['CP']}`, giving the only lower bound, "
-        f"`absolute_cgra_lb={lb}=max(CP {demand['CP']}, "
-        f"compute {demand['compute']}, load {demand['load']}, "
-        f"store {demand['store']})`, with {binding} pressure binding; "
+        f"`CP={demand['CP']}`, giving the only lower bound, {floor_text}; "
         f"`p_agg` and `sched` are wave-serialized estimates.")
     out.append("")
 
@@ -1286,13 +1755,28 @@ def render_report(spec: KernelSpec, cfg: Config, results: list[CandResult],
                    "full sweep)")
     out.append("")
     ratio = rec.pragma_exposure_aggregate / lb if lb else float("nan")
+    latency_fallback = spec.selection_mode == "latency_fallback"
+    if not spec.repeat_waves:
+        selection = "phase-composed"
+    elif latency_fallback:
+        selection = "latency-bound best-estimate fallback"
+    else:
+        selection = rec.saturation
     out.append(f"RECOMMENDED: {rec.cand.signature()}  -> "
                f"exposure={rec.exposed_iters}, "
                f"pragma_agg={rec.pragma_exposure_aggregate} "
-               f"({ratio:.2f}x the floor), {rec.saturation}")
-    out.append("flags: K=recommended (saturation knee E_sat), "
-               "b=bandwidth-starved (latency-bound: resources idle), "
-               "o=oversubscribed (past the knee, no estimate gain).")
+               f"({ratio:.2f}x the floor), {selection}")
+    if not spec.repeat_waves:
+        out.append("flags: K=recommended (smallest tunable-phase exposure "
+                   "that reaches the best phase-composed estimate).")
+    elif latency_fallback:
+        out.append("flags: K=recommended (smallest split reaching the best "
+                   "estimate; no resource-bound knee), b=higher "
+                   "wave-serialized estimate.")
+    else:
+        out.append("flags: K=recommended (saturation knee E_sat), "
+                   "b=bandwidth-starved (latency-bound: resources idle), "
+                   "o=oversubscribed (past the knee, no estimate gain).")
     out.append("")
     out.append(_pu_contrast(spec, cfg, results, rec))
     return "\n".join(out)
@@ -1595,6 +2079,10 @@ def _run_self_tests() -> int:
         "col2im": (13, 12756, 1945, 1952, 1165),
         "crc32": (50152, 51682, 18945, 18945, 19971),
         "edge_update": (6, 40, 38, 38, 37),
+        "fft_butterfly": (71, 701, 252, 253, 302),
+        "gauss_seidel_step": (198, 3136, 527, 536, 64),
+        "gather": (4, 1026, 1281, 1283, 257),
+        "hist_bin": (17, 6148, 2305, 2309, 2052),
     }
     for name, expected in new_expected.items():
         _lb, demand = absolute_cgra_lb(KERNELS[name], cfg)
@@ -1602,10 +2090,119 @@ def _run_self_tests() -> int:
                demand["LD_eff"], demand["ST"])
         if got != expected:
             errors.append(f"{name}: full-trip totals {got} != {expected}")
-    for name in ("crc32", "edge_update"):
+    for name in ("crc32", "edge_update", "gauss_seidel_step"):
         cands = enumerate_candidates(KERNELS[name], 8, 8, 256)
         if any(p > 1 for c in cands for _, p, _ in c.split):
             errors.append(f"{name}: sequential level must not parallelize")
+
+    # fft_butterfly: copy waves are local to the tunable copy phase. The four
+    # stage regions execute once, in order, and retain the validated sequential
+    # j/twiddle recurrence depths instead of being repeated per copy wave.
+    fft = KERNELS["fft_butterfly"]
+    fft_u16_cand = Candidate((("copy_i", 1, 16),))
+    fft_u16_dag = fft.build_chunk(fft_u16_cand)
+    fft_names = [region.name for region in fft_u16_dag.regions]
+    if fft_names != ["copy", "s=1", "s=2", "s=3", "s=4"]:
+        errors.append(f"fft_butterfly: ordered regions {fft_names}")
+    fft_cps = [region_aggregate(region, cfg).CP
+               for region in fft_u16_dag.regions]
+    if fft_cps != [2, 8, 11, 17, 33]:
+        errors.append(f"fft_butterfly: ordered-region CPs {fft_cps}")
+    fft_u8 = evaluate_candidate(
+        fft, Candidate((("copy_i", 1, 8),)), cfg)
+    fft_u16 = evaluate_candidate(fft, fft_u16_cand, cfg)
+    if (fft_u8.waves, fft_u8.pragma_exposure_aggregate,
+            fft_u8.schedule_estimate) != (2, 73, 78):
+        errors.append(
+            "fft_butterfly: P1U8 expected two copy waves, p_agg=73, sched=78")
+    if (fft_u16.waves, fft_u16.pragma_exposure_aggregate,
+            fft_u16.schedule_estimate) != (1, 71, 75):
+        errors.append(
+            "fft_butterfly: P1U16 expected one copy wave, p_agg=71, sched=75")
+
+    # gauss_seidel_step: the lower-triangle RAW chain keeps the outer loop
+    # serial, while the row-local reductions preserve the accepted six-cycle
+    # recurrence and 198-cycle full-sweep CP.
+    gauss = KERNELS["gauss_seidel_step"]
+    gauss_result = evaluate_candidate(
+        gauss, Candidate((("i", 1, 1),)), cfg)
+    if (gauss_result.pragma_exposure_aggregate,
+            gauss_result.schedule_estimate) != (198, 198):
+        errors.append(
+            "gauss_seidel_step: expected p_agg=sched=198 for the serial sweep")
+    gauss_dag = gauss.build_chunk(Candidate((("i", 1, 1),)))
+    latest_reads = sum(
+        node.kind == "output_x_latest" for node in gauss_dag.regions[0].nodes)
+    ready_vectors = sum(
+        node.kind == "output_x_ready_vec" for node in gauss_dag.regions[0].nodes)
+    if (latest_reads, ready_vectors) != (31, 128):
+        errors.append(
+            "gauss_seidel_step: expected 31 scalar latest reads and 128 "
+            f"ready-prefix vectors, got {(latest_reads, ready_vectors)}")
+
+    # hist_bin: zero-fill waves are local to the annotated zero_i phase and the
+    # count region executes once after them. P1U8 must include the two-element
+    # tail, then the concrete count trace takes all 1024 normal paths, no clamp
+    # assignments, and exactly 1024 bucket adds over the accepted fan-ins.
+    hist = KERNELS["hist_bin"]
+    hist_cand = Candidate((("zero_i", 1, 8),))
+    hist_dag = hist.build_chunk(hist_cand)
+    hist_names = [region.name for region in hist_dag.regions]
+    if hist_names != ["zero_fill", "zero_fill.wave1", "count"]:
+        errors.append(f"hist_bin: ordered regions {hist_names}")
+    hist_kinds = [node.kind for region in hist_dag.regions for node in region.nodes]
+    if hist_kinds.count("bucket_add") != 1024:
+        errors.append(
+            f"hist_bin: bucket adds {hist_kinds.count('bucket_add')} != 1024")
+    if "clamp_store" in hist_kinds:
+        errors.append("hist_bin: concrete fixture must not take the clamp arm")
+    hist_result = evaluate_candidate(hist, hist_cand, cfg)
+    if (hist_result.waves, hist_result.pragma_exposure_aggregate,
+            hist_result.schedule_estimate) != (2, 194, 263):
+        errors.append(
+            "hist_bin: P1U8 expected two zero waves, p_agg=194, sched=263")
+    _report, hist_rec, _lb = run(hist, cfg, top=16)
+    if hist_rec.cand.signature() != "zero_i:P1U8":
+        errors.append(
+            f"hist_bin: expected zero_i:P1U8 recommendation, got "
+            f"{hist_rec.cand.signature()}")
+
+    # interpolate_linear: full exposure must preserve the concrete 64-query
+    # trace while replacing outer-q source induction with one residual iterator.
+    interpolate = KERNELS["interpolate_linear"]
+    _lb, demand = absolute_cgra_lb(interpolate, cfg)
+    expected = (289, 5573, 3410, 3412, 1105)
+    got = (demand["CP"], demand["A"], demand["LD"],
+           demand["LD_eff"], demand["ST"])
+    if got != expected:
+        errors.append(
+            f"interpolate_linear: full-trip totals {got} != {expected}")
+    interpolate_p4 = evaluate_candidate(
+        interpolate, Candidate((("q", 4, 1),)), cfg)
+    interpolate_u4 = evaluate_candidate(
+        interpolate, Candidate((("q", 1, 4),)), cfg)
+    if not (interpolate_u4.LD < interpolate_p4.LD
+            and interpolate_u4.ST < interpolate_p4.ST
+            and interpolate_u4.A < interpolate_p4.A):
+        errors.append(
+            "interpolate_linear: q-unroll must coalesce boundary traffic and "
+            "amortize q control relative to q-parallel at fixed exposure")
+
+    # gather: only the contiguous indices/dst streams coalesce. The indirect
+    # src[indices[i]] loads stay scalar, while unroll still saves vector slots
+    # and iterator work relative to parallel workers at fixed exposure.
+    gather = KERNELS["gather"]
+    gather_p4 = evaluate_candidate(
+        gather, Candidate((("i", 4, 1),)), cfg)
+    gather_u4 = evaluate_candidate(
+        gather, Candidate((("i", 1, 4),)), cfg)
+    if not (gather_u4.LD < gather_p4.LD):
+        errors.append(
+            f"gather P1U4 LD {gather_u4.LD} !< P4U1 LD {gather_p4.LD}")
+    if gather_u4.LD != 6:
+        errors.append(
+            f"gather P1U4 LD {gather_u4.LD} != 6; indirect src loads must stay "
+            "scalar")
 
     # binary_search: COUNTEREXAMPLE. Inner probe loop is sequential (p forced to
     # 1); data-dependent recurrence + tiny M=5 -> CP-bound, no P-vs-U distinction.
