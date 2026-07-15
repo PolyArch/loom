@@ -1,5 +1,7 @@
 llvm_canonicalize_cmake_booleans(MLIR_ENABLE_BINDINGS_PYTHON)
 
+add_subdirectory(mapping)
+
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
   ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
@@ -24,6 +26,7 @@ set(LOOM_TEST_DEPENDS
   loom-dfg-sim
   loom-mapping-estimate
   loom-hwsg-test
+  loom-mapping-core-test
   loom-parallel-test
   loom-pnr-map
   loom-synth-base-test
