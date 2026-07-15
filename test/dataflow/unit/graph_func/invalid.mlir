@@ -79,7 +79,10 @@ dataflow.thread private @t_empty() ctrl (%thread_ctrl: none) {
   dataflow.thread.yield
 }
 dataflow.graph.func private @g_rejects_thread_launch(%ctrl: none) -> none {
-  // expected-error @+1 {{is not allowed inside a dataflow.graph.func body}}
-  %tok = dataflow.thread.launch @t_empty() : () -> !dataflow.thread_token
+  scf.execute_region {
+    // expected-error @+1 {{must appear outside any dataflow.thread or dataflow.graph definition}}
+    %tok = dataflow.thread.launch @t_empty() : () -> !dataflow.thread_token
+    scf.yield
+  }
   dataflow.graph.return %ctrl : none
 }

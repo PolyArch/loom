@@ -36,8 +36,8 @@ requests.
 
 | Owner | Owns | Must not own |
 |-------|------|--------------|
-| `dataflow.thread` | Logical software execution domains, nested logical instance structure, async thread-completion tokens, graph-launch containment legality. | Physical AccCore identity, route selection, schedule slots, temporal tags, topology coordinates, hardware capacity. |
-| `dataflow.graph` | Symbol-bearing SpatialCore software DFG definitions launched from innermost executable thread bodies. | Host launch ABI, physical SpatialCore instance identity, hardware routes, resource-sharing assignments. |
+| `dataflow.thread` | Logical multidimensional launch domains, async thread-completion tokens, and graph-launch containment legality. | Physical AccCore identity, route selection, schedule slots, temporal tags, topology coordinates, hardware capacity. |
+| `dataflow.graph` | Symbol-bearing SpatialCore software DFG definitions launched from thread bodies. | Host launch ABI, physical SpatialCore instance identity, hardware routes, resource-sharing assignments. |
 | `dataflow.subgraph` | L3 software graph partitions used as candidates for FU matching and generalization. | Hardware hierarchy, PE identity, route, schedule, temporal tag, time-sharing decision. |
 | `fabric.system` | System-level ADG: HostCore nodes, AccCore nodes, memories, caches, interconnect, external ports, protocol ports, directed channels, explicit one-to-one links, domains, address spaces, coherence, consistency. | Software execution semantics, selected software placement, workload schedule, simulator trace state. |
 | `fabric.module` | SpatialCore or CGRA hardware templates, including PEs, FUs, switches, memories, FIFOs, boundaries, and local hardware capabilities. | A system-level SoC graph, selected workload placement, dataflow graph definition semantics. |
@@ -50,20 +50,20 @@ requests.
 
 ## Dataflow Boundary
 
-`dataflow.thread` is a software execution-domain carrier. Before
-binding, every dynamic thread instance is logical. Selected innermost
-executable thread instances may later bind to AccCore execution slots
-through PnR and the mapping artifact. The dataflow verifier must not
-treat a logical thread as a physical AccCore by itself.
+`dataflow.thread` is a non-recursive software execution-domain carrier.
+Before binding, every dynamic thread instance is logical and may later bind
+to an AccCore execution slot through the mapping artifact. The dataflow
+verifier must not treat a logical thread as a physical AccCore by itself.
 
-Thread hierarchy is layered:
+Thread launch ownership is strict:
 
-* non-innermost thread bodies may contain ScalarCore orchestration code
-  and child `dataflow.thread.launch` operations;
-* innermost executable thread bodies may contain ScalarCore residual
-  code and `dataflow.graph.launch` operations;
-* one direct thread-body placement level must not mix child thread
-  launches and graph launches.
+* `dataflow.thread.launch` appears only in host/runtime orchestration outside
+  every thread or graph definition;
+* a thread body never launches another thread;
+* a thread's InstructionCore code may launch `dataflow.graph` definitions;
+* graph bodies never launch threads;
+* multidimensional parallelism is expressed by one launch domain rather than
+  recursive thread nesting.
 
 `!dataflow.thread_token` is the inter-thread completion token domain.
 `none`-typed control values are graph, stream, memory-order, and
@@ -75,8 +75,8 @@ graph-control value.
 
 `dataflow.graph` is the single canonical SpatialCore software DFG
 definition surface. It is symbol-bearing, function-like, module-scope,
-and executes only through `dataflow.graph.launch` from an innermost
-executable thread body. The target dataflow dialect has no separate
+and executes only through `dataflow.graph.launch` from a thread body.
+The target dataflow dialect has no separate
 `dataflow.graph.func` surface.
 
 `dataflow.subgraph` is software partitioning inside a `dataflow.graph`

@@ -304,6 +304,13 @@ LogicalResult ThreadLaunchOp::verifySymbolUses(SymbolTableCollection &symbols) {
 }
 
 LogicalResult ThreadLaunchOp::verify() {
+  if ((*this)->getParentOfType<ThreadOp>() ||
+      (*this)->getParentOfType<GraphFuncOp>() ||
+      (*this)->getParentOfType<GraphOp>())
+    return emitOpError(
+        "must appear outside any dataflow.thread or dataflow.graph "
+        "definition");
+
   // The op result, if present, must be a thread token. Tablegen's
   // Optional<Dataflow_ThreadTokenType> already enforces this.
   return success();
@@ -366,10 +373,10 @@ static bool isAllowedInDataflowGraphFuncBody(::mlir::Operation *op) {
   ::mlir::StringRef name = op->getName().getStringRef();
 
   // dataflow.* is broadly allowed for leaf streaming primitives,
-  // control routing, and the graph.return terminator. Launch ops
-  // belong in the host/thread orchestration layer, not inside a leaf
-  // graph body.
-  if (::llvm::isa<ThreadLaunchOp, GraphLaunchOp>(op))
+  // control routing, and the graph.return terminator. A graph launch is
+  // never valid in another graph. ThreadLaunchOp owns its containment
+  // invariant so every thread/graph surface reports one canonical error.
+  if (::llvm::isa<GraphLaunchOp>(op))
     return false;
   if (dialect == "dataflow")
     return true;
