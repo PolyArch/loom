@@ -16,11 +16,15 @@ LOOM_LOWER="${LOOM_LOWER:-${REPO_ROOT}/build/bin/loom-lower}"
 LOOM_RAISE_OPT="${LOOM_RAISE_OPT:-${REPO_ROOT}/build/bin/loom-raise-opt}"
 
 SMOKE_TARGETS_FILE="${SMOKE_TARGETS_OVERRIDE:-${HERE}/cmsis_dsp_dfg_smoke_targets.txt}"
-DSP_ROOT="${REPO_ROOT}/externals/cmsis-dsp"
+EXTERNALS_ROOT="$(
+    python3 "${REPO_ROOT}/scripts/make-worktree.py" \
+        --root "${REPO_ROOT}" externals-root
+)"
+DSP_ROOT="${EXTERNALS_ROOT}/cmsis-dsp"
 SRC_ROOT="${DSP_ROOT}/Source"
 DSP_INC="${DSP_ROOT}/Include"
 DSP_PRIV_INC="${DSP_ROOT}/PrivateInclude"
-CORE_INC="${REPO_ROOT}/externals/cmsis-core/CMSIS/Core/Include"
+CORE_INC="${EXTERNALS_ROOT}/cmsis-core/CMSIS/Core/Include"
 OUT_ROOT="${OUT_OVERRIDE:-$(cmsis_common_default_out_dir "${REPO_ROOT}" "cmsis-dsp" "dfg")}"
 LABEL="cmsis-dsp-dfg-smoke"
 

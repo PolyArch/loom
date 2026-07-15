@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -83,6 +84,13 @@ class GitTopology:
         git(self.circt_repo, "commit", "-qm", "Pin LLVM")
         self.circt_pin = git(self.circt_repo, "rev-parse", "HEAD")
 
+        self.cmsis_repo = root / "cmsis-repo"
+        init_repo(self.cmsis_repo)
+        (self.cmsis_repo / "Source").mkdir()
+        commit_file(
+            self.cmsis_repo, "Source/kernel.c", "int kernel(void) { return 0; }\n"
+        )
+
         self.main = root / "super"
         init_repo(self.main)
         git(
@@ -105,8 +113,25 @@ class GitTopology:
             str(self.llvm_repo),
             "externals/llvm",
         )
+        git(
+            self.main,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            str(self.cmsis_repo),
+            "externals/cmsis",
+        )
         git(self.main / "externals/llvm", "checkout", "-q", self.llvm_pin)
-        git(self.main, "add", ".gitmodules", "externals/circt", "externals/llvm")
+        git(
+            self.main,
+            "add",
+            ".gitmodules",
+            "externals/circt",
+            "externals/llvm",
+            "externals/cmsis",
+        )
         git(self.main, "commit", "-qm", "Pin dependencies")
 
         self.linked = root / "linked"
@@ -132,6 +157,7 @@ def build_paths(root: Path):
         root=root,
         main=root,
         is_main=True,
+        externals_root=root / "externals",
         llvm_root=llvm_root,
         llvm_src=llvm_root / "llvm",
         llvm_build=llvm_build,
@@ -155,6 +181,55 @@ class MakeWorktreeTest(unittest.TestCase):
         with redirect_stderr(stderr), self.assertRaises(SystemExit):
             self.module.check_dependency_pins(paths)
         return stderr.getvalue()
+
+    def hygiene_error(self, paths) -> str:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(SystemExit):
+            self.module.check_linked_submodule_hygiene(paths)
+        return stderr.getvalue()
+
+    def test_primary_worktree_resolution_fails_outside_git_topology(self):
+        with tempfile.TemporaryDirectory() as td:
+            stderr = io.StringIO()
+            with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                self.module.resolve_main_worktree(Path(td))
+            self.assertIn("could not resolve primary worktree", stderr.getvalue())
+
+    def test_linked_worktree_uses_primary_externals_without_submodules(self):
+        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            topology = GitTopology(Path(td))
+            paths = self.module.Paths(topology.linked)
+
+            self.assertEqual(paths.externals_root, topology.main / "externals")
+            self.module.check_linked_submodule_hygiene(paths)
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.module.cmd_externals_root(paths, self.args)
+            self.assertEqual(
+                stdout.getvalue().strip(), str(topology.main / "externals")
+            )
+
+            git(
+                topology.linked,
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "update",
+                "--init",
+                "--",
+                "externals/cmsis",
+            )
+            error = self.hygiene_error(paths)
+            self.assertIn("externals/cmsis", error)
+            self.assertIn("must not initialize submodules", error)
+            self.assertIn(str(topology.main / "externals"), error)
+            self.assertNotIn("submodule deinit", error)
+            self.assertIn("externals/cmsis", self.gate_error(paths))
+
+            shutil.rmtree(topology.linked / "externals" / "cmsis")
+            residual_error = self.hygiene_error(paths)
+            self.assertIn("administrative state", residual_error)
 
     def test_dependency_gate_with_real_linked_worktree(self):
         REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)

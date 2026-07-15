@@ -16,7 +16,11 @@ LOOM_LOWER="${LOOM_LOWER:-${REPO_ROOT}/build/bin/loom-lower}"
 LOOM_RAISE_OPT="${LOOM_RAISE_OPT:-${REPO_ROOT}/build/bin/loom-raise-opt}"
 
 SMOKE_TARGETS_FILE="${SMOKE_TARGETS_OVERRIDE:-${HERE}/cmsis_nn_dfg_smoke_targets.txt}"
-NN_ROOT="${REPO_ROOT}/externals/cmsis-nn"
+EXTERNALS_ROOT="$(
+    python3 "${REPO_ROOT}/scripts/make-worktree.py" \
+        --root "${REPO_ROOT}" externals-root
+)"
+NN_ROOT="${EXTERNALS_ROOT}/cmsis-nn"
 SRC_ROOT="${NN_ROOT}/Source"
 NN_INC="${NN_ROOT}/Include"
 OUT_ROOT="${OUT_OVERRIDE:-$(cmsis_common_default_out_dir "${REPO_ROOT}" "cmsis-nn" "dfg")}"

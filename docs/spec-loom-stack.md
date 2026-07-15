@@ -87,6 +87,33 @@ shared LLVM build lock. An absent, legacy, malformed, or changed identity
 invalidates the stamp and requires removal and reconstruction of the LLVM
 build directory before reuse.
 
+## Worktree External Ownership
+
+The primary Git worktree is the sole owner of initialized top-level
+submodule checkouts. A linked worktree must leave every submodule path
+uninitialized and must not retain worktree-local submodule administrative
+state. It consumes external sources through the primary worktree instead.
+This rule applies uniformly to LLVM, CIRCT, CMSIS, gem5, and future external
+dependencies; dependency-specific build code must not create a competing
+source checkout policy.
+
+`scripts/make-worktree.py` is the SSOT for resolving the primary worktree and
+its `externals` directory. Build and test consumers that need external source
+paths query that dispatcher rather than assuming that `externals` belongs to
+the invoking worktree. When a linked branch pins a different submodule commit,
+the consumer must reject the mismatch with the shared checkout instead of
+silently using the wrong source revision. A consumer must also reject tracked
+modifications in each shared submodule it reads; untracked build products do
+not change the source identity.
+
+External build products are shared only when their owning build dispatcher
+defines a shared location under the primary worktree. LLVM currently follows
+this model. Loom's own build directory remains local to each worktree because
+it contains outputs derived from that worktree's source revision. Linked
+worktree cleanup must preserve shared external sources and build products.
+Doctor and build entry points reject accidental linked-worktree submodule
+initialization before consuming external sources.
+
 ## Core Dialect Boundary
 
 The target ownership boundary between dataflow software semantics,

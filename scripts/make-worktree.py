@@ -9,6 +9,9 @@ all live here:
     `git rev-parse --path-format=absolute` flag (git >= 2.31).
   * Paths are run through `realpath` so a symlinked entry into the main
     worktree still compares equal to the canonical worktree path.
+  * The main worktree owns every initialized top-level submodule checkout.
+    Linked worktrees consume those shared sources and must keep their own
+    submodule paths and administrative state uninitialized.
   * The shared LLVM build is gated by an fcntl.flock with a configurable
     timeout, so a wedged build cannot hang every other worktree forever.
   * A deterministic stamp records the validated CIRCT/LLVM pins, exact
@@ -195,14 +198,20 @@ def resolve_main_worktree(root: Path) -> Path:
     try:
         out = subprocess.check_output(
             ["git", "-C", str(root), "worktree", "list", "--porcelain"],
-            stderr=subprocess.DEVNULL,
-        ).decode()
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return real(root)
+            stderr=subprocess.STDOUT,
+        ).decode(errors="replace")
+    except FileNotFoundError:
+        die("git not found on PATH")
+    except subprocess.CalledProcessError as e:
+        detail = e.output.decode(errors="replace").strip()
+        die(
+            f"could not resolve primary worktree for {root}: "
+            f"{detail or e}"
+        )
     for line in out.splitlines():
         if line.startswith("worktree "):
             return real(Path(line.split(" ", 1)[1]))
-    return real(root)
+    die(f"could not resolve primary worktree for {root}: empty worktree list")
 
 
 def is_nfs(path: Path) -> bool:
@@ -229,14 +238,14 @@ class Paths:
     def __init__(self, root: Path):
         self.root = real(root)
         self.main = resolve_main_worktree(self.root)
-        externals = self.main / "externals"
-        self.circt_root = externals / "circt"
-        llvm_external = externals / "llvm"
+        self.externals_root = self.main / "externals"
+        self.circt_root = self.externals_root / "circt"
+        llvm_external = self.externals_root / "llvm"
         self.llvm_root = llvm_external
         self.llvm_src = llvm_external / "llvm"
         self.llvm_build = llvm_external / "build"
-        self.llvm_lock = externals / ".loom-build.llvm.lock"
-        self.llvm_stamp = externals / ".loom-build.llvm.stamp"
+        self.llvm_lock = self.externals_root / ".loom-build.llvm.lock"
+        self.llvm_stamp = self.externals_root / ".loom-build.llvm.stamp"
         self.loom_build = self.root / "build"
         self.mlir_dir = self.llvm_build / "lib" / "cmake" / "mlir"
         self.cmake_llvm_dir = self.llvm_build / "lib" / "cmake" / "llvm"
@@ -254,8 +263,92 @@ class DependencyState:
     llvm_commit: str
 
 
+def gitlinks_at_head(root: Path) -> tuple[str, ...]:
+    try:
+        output = subprocess.check_output(
+            ["git", "-C", str(root), "ls-tree", "-rz", "--full-tree", "HEAD"],
+            stderr=subprocess.STDOUT,
+        )
+    except FileNotFoundError:
+        die("git not found on PATH")
+    except subprocess.CalledProcessError as e:
+        detail = e.output.decode(errors="replace").strip()
+        die(f"could not enumerate submodules in {root}: {detail or e}")
+
+    paths = []
+    for raw_entry in output.split(b"\0"):
+        if not raw_entry:
+            continue
+        metadata, raw_path = raw_entry.split(b"\t", 1)
+        mode, object_type, _commit = metadata.split(b" ", 2)
+        if mode == b"160000" and object_type == b"commit":
+            paths.append(raw_path.decode(errors="surrogateescape"))
+    return tuple(sorted(paths))
+
+
+def initialized_checkout(path: Path) -> bool:
+    if not path.exists():
+        return False
+    completed = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if completed.returncode != 0:
+        return False
+    return real(Path(completed.stdout.strip())) == real(path)
+
+
+def linked_modules_dir(root: Path) -> Path:
+    try:
+        output = subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "--git-path", "modules"],
+            stderr=subprocess.STDOUT,
+        ).decode(errors="replace").strip()
+    except FileNotFoundError:
+        die("git not found on PATH")
+    except subprocess.CalledProcessError as e:
+        detail = e.output.decode(errors="replace").strip()
+        die(f"could not resolve worktree submodule state for {root}: {detail or e}")
+    path = Path(output)
+    return real(path if path.is_absolute() else root / path)
+
+
+def check_linked_submodule_hygiene(paths: Paths) -> None:
+    if paths.is_main:
+        return
+
+    initialized = [
+        relative_path
+        for relative_path in gitlinks_at_head(paths.root)
+        if initialized_checkout(paths.root / relative_path)
+    ]
+    modules_dir = linked_modules_dir(paths.root)
+    has_admin_state = modules_dir.is_dir() and any(modules_dir.iterdir())
+    if not initialized and not has_admin_state:
+        return
+
+    details = []
+    if initialized:
+        details.append("initialized checkouts: " + ", ".join(initialized))
+    if has_admin_state:
+        details.append(f"administrative state: {modules_dir}")
+    die(
+        f"linked worktree {paths.root} must not initialize submodules "
+        f"({'; '.join(details)}). Use the primary worktree sources under "
+        f"{paths.externals_root}. No automatic repair is safe because Git "
+        f"shares submodule configuration between worktrees. Preserve any "
+        f"superproject changes, then remove and recreate only the linked "
+        f"worktree without initializing submodules. Do not modify the shared "
+        f"primary checkouts"
+    )
+
+
 def check_dependency_pins(paths: Paths) -> DependencyState:
     """Validate and return the invoking worktree's shared dependency state."""
+
+    check_linked_submodule_hygiene(paths)
 
     def git_output(repo: Path, *args: str) -> str:
         cmd = ["git", "-C", str(repo), *args]
@@ -640,6 +733,11 @@ def cmd_doctor(paths: Paths, args: argparse.Namespace) -> None:
     print(f"main_worktree   {paths.main}")
     print(f"this_worktree   {paths.root}")
     print(f"is_main         {paths.is_main}")
+    print(f"externals_root  {paths.externals_root}")
+    print(
+        "submodule_mode  "
+        + ("primary owner" if paths.is_main else "shared from primary")
+    )
     print(f"circt_commit    {state.circt_commit}")
     print(f"llvm_commit     {state.llvm_commit}")
     print(f"circt_llvm_pin  {state.llvm_commit}")
@@ -655,6 +753,11 @@ def cmd_doctor(paths: Paths, args: argparse.Namespace) -> None:
     print(f"loom_cxx        {compiler_status(LOOM_CXX_COMPILER, LOOM_CLANG_MIN)}")
     print(f"loom_build      {paths.loom_build}")
     print(f"loom_stale      {loom_build_is_stale(paths)}")
+
+
+def cmd_externals_root(paths: Paths, args: argparse.Namespace) -> None:
+    check_linked_submodule_hygiene(paths)
+    print(paths.externals_root)
 
 
 def cmd_build_llvm(paths: Paths, args: argparse.Namespace) -> None:
@@ -720,7 +823,7 @@ def main() -> None:
     p.add_argument("--lock-timeout", type=float, default=1800.0,
                    help="seconds to wait for the shared LLVM lock")
     sub = p.add_subparsers(dest="command", required=True)
-    for name in ("doctor", "build-llvm", "build-loom",
+    for name in ("doctor", "externals-root", "build-llvm", "build-loom",
                  "clean", "distclean", "test"):
         sub.add_parser(name)
     args = p.parse_args()
@@ -728,6 +831,7 @@ def main() -> None:
     paths = Paths(Path(args.root))
     dispatch = {
         "doctor": cmd_doctor,
+        "externals-root": cmd_externals_root,
         "build-llvm": cmd_build_llvm,
         "build-loom": cmd_build_loom,
         "clean": cmd_clean,

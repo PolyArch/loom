@@ -26,6 +26,7 @@ CMSIS_SUBMODULES = {
     "cmsis-dsp": Path("externals/cmsis-dsp"),
     "cmsis-nn": Path("externals/cmsis-nn"),
 }
+CMSIS_SUPPORT_SUBMODULES = (Path("externals/cmsis-core"),)
 
 
 class InventoryError(ValueError):
@@ -75,6 +76,39 @@ def git_text(arguments: Sequence[str], cwd: Path) -> str:
     return run_git(arguments, cwd).decode(errors="replace").strip()
 
 
+def resolve_externals_root(repo_root: Path) -> Path:
+    dispatcher = repo_root / "scripts" / "make-worktree.py"
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(dispatcher),
+                "--root",
+                str(repo_root),
+                "externals-root",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except OSError as exc:
+        raise InventoryError(
+            f"cannot resolve shared external sources: {exc}"
+        ) from exc
+    if completed.returncode != 0:
+        diagnostic = completed.stderr.strip()
+        raise InventoryError(
+            f"cannot resolve shared external sources: {diagnostic or 'unknown error'}"
+        )
+    resolved = completed.stdout.strip()
+    if not resolved:
+        raise InventoryError(
+            "worktree dispatcher returned an empty external source path"
+        )
+    return Path(resolved).resolve()
+
+
 def load_loombench(repo_root: Path) -> list[CorpusCase]:
     manifest_path = repo_root / "test" / "app" / "manifest.json"
     data, diagnostics = app_manifest.validate_manifest(manifest_path)
@@ -108,17 +142,23 @@ def load_loombench(repo_root: Path) -> list[CorpusCase]:
     return cases
 
 
-def require_pinned_submodule(repo_root: Path, relative_path: Path) -> tuple[Path, str]:
-    submodule = (repo_root / relative_path).resolve()
+def require_pinned_submodule(
+    repo_root: Path, external_root: Path, relative_path: Path
+) -> tuple[Path, str]:
+    if not relative_path.parts or relative_path.parts[0] != "externals":
+        raise InventoryError(f"invalid external submodule path: {relative_path}")
+    submodule = external_root.joinpath(*relative_path.parts[1:]).resolve()
     if not submodule.is_dir():
         raise InventoryError(
-            f"missing submodule checkout: {relative_path}; run git submodule update --init"
+            f"missing shared submodule checkout: {relative_path}; initialize it only "
+            f"in the primary worktree at {external_root}"
         )
 
     actual_root = Path(git_text(["rev-parse", "--show-toplevel"], submodule)).resolve()
     if actual_root != submodule:
         raise InventoryError(
-            f"submodule is not initialized: {relative_path}; run git submodule update --init"
+            f"shared submodule is not initialized: {relative_path}; initialize it only "
+            f"in the primary worktree at {external_root}"
         )
 
     pinned_revision = git_text(
@@ -129,6 +169,13 @@ def require_pinned_submodule(repo_root: Path, relative_path: Path) -> tuple[Path
         raise InventoryError(
             f"submodule revision mismatch for {relative_path}: "
             f"expected {pinned_revision}, found {checked_out_revision}"
+        )
+    dirty = git_text(
+        ["status", "--porcelain", "--untracked-files=no"], submodule
+    )
+    if dirty:
+        raise InventoryError(
+            f"shared submodule has tracked modifications: {relative_path}"
         )
     return submodule, pinned_revision
 
@@ -148,9 +195,13 @@ def tracked_c_sources_at_revision(submodule: Path, revision: str) -> tuple[str, 
     return tuple(source_paths)
 
 
-def load_cmsis_suite(repo_root: Path, suite: str) -> list[CorpusCase]:
+def load_cmsis_suite(
+    repo_root: Path, external_root: Path, suite: str
+) -> list[CorpusCase]:
     relative_path = CMSIS_SUBMODULES[suite]
-    submodule, pinned_revision = require_pinned_submodule(repo_root, relative_path)
+    submodule, pinned_revision = require_pinned_submodule(
+        repo_root, external_root, relative_path
+    )
     source_paths = tracked_c_sources_at_revision(submodule, pinned_revision)
     if not source_paths:
         raise InventoryError(f"{suite} has no tracked C sources under Source")
@@ -168,9 +219,12 @@ def load_cmsis_suite(repo_root: Path, suite: str) -> list[CorpusCase]:
 
 def load_inventory(repo_root: Path = ROOT) -> tuple[CorpusCase, ...]:
     root = repo_root.resolve()
+    external_root = resolve_externals_root(root)
+    for relative_path in CMSIS_SUPPORT_SUBMODULES:
+        require_pinned_submodule(root, external_root, relative_path)
     cases = load_loombench(root)
     for suite in SUITE_ORDER[1:]:
-        cases.extend(load_cmsis_suite(root, suite))
+        cases.extend(load_cmsis_suite(root, external_root, suite))
 
     order = {suite: index for index, suite in enumerate(SUITE_ORDER)}
     cases.sort(key=lambda case: (order[case.suite], case.case))

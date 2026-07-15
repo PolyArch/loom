@@ -20,9 +20,10 @@ import app_manifest  # noqa: E402
 import corpus_inventory  # noqa: E402
 
 
+EXTERNALS_ROOT = corpus_inventory.resolve_externals_root(ROOT)
 CMSIS_SUITES = {
-    "cmsis-dsp": ROOT / "externals" / "cmsis-dsp",
-    "cmsis-nn": ROOT / "externals" / "cmsis-nn",
+    "cmsis-dsp": EXTERNALS_ROOT / "cmsis-dsp",
+    "cmsis-nn": EXTERNALS_ROOT / "cmsis-nn",
 }
 SMOKE_TABLES = {
     "cmsis-dsp": TEST_ROOT / "cmsis-dsp" / "cmsis_dsp_dfg_smoke_targets.txt",
@@ -61,6 +62,18 @@ class CorpusInventoryTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.cases = corpus_inventory.load_inventory(ROOT)
+
+    def test_external_sources_resolve_from_primary_worktree(self) -> None:
+        worktrees = git_output(ROOT, "worktree", "list", "--porcelain")
+        primary = next(
+            Path(line.split(" ", 1)[1]).resolve()
+            for line in worktrees.splitlines()
+            if line.startswith("worktree ")
+        )
+        self.assertEqual(
+            corpus_inventory.resolve_externals_root(ROOT),
+            primary / "externals",
+        )
 
     def test_inventory_matches_all_three_membership_owners(self) -> None:
         manifest, diagnostics = app_manifest.validate_manifest(
@@ -159,6 +172,51 @@ class CorpusInventoryTest(unittest.TestCase):
                 ),
                 ("Source/committed.c",),
             )
+
+    def test_shared_submodule_rejects_tracked_modifications(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            superproject = root / "superproject"
+            shared_root = root / "shared-externals"
+            submodule = shared_root / "cmsis-dsp"
+            for repository in (superproject, submodule):
+                repository.mkdir(parents=True)
+                git_output(repository, "init", "-q")
+                git_output(repository, "config", "user.name", "Inventory Test")
+                git_output(
+                    repository,
+                    "config",
+                    "user.email",
+                    "inventory@example.com",
+                )
+
+            source = submodule / "Source" / "kernel.c"
+            source.parent.mkdir()
+            source.write_text("int kernel(void) { return 0; }\n")
+            git_output(submodule, "add", "Source/kernel.c")
+            git_output(submodule, "commit", "-qm", "Add source")
+            pin = git_output(submodule, "rev-parse", "HEAD").strip()
+
+            git_output(
+                superproject,
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "160000",
+                pin,
+                "externals/cmsis-dsp",
+            )
+            git_output(superproject, "commit", "-qm", "Pin CMSIS-DSP")
+
+            source.write_text("int kernel(void) { return 1; }\n")
+            with self.assertRaisesRegex(
+                corpus_inventory.InventoryError, "tracked modifications"
+            ):
+                corpus_inventory.require_pinned_submodule(
+                    superproject,
+                    shared_root,
+                    Path("externals/cmsis-dsp"),
+                )
 
     def test_loombench_manifest_rejects_duplicate_and_omitted_cases(self) -> None:
         entry = {

@@ -1,9 +1,10 @@
 # Wrapper Makefile for loom.
 #
 # Path resolution and the worktree edge-case handling (main-worktree
-# detection, shared-LLVM serialisation, build-identity stamp tracking,
-# stale-loom-build pruning, lock timeouts, NFS warnings) all live in
-# scripts/make-worktree.py. This Makefile is a thin dispatcher.
+# detection, primary-owned submodule sources, shared-LLVM serialisation,
+# build-identity stamp tracking, stale-loom-build pruning, lock timeouts,
+# NFS warnings) all live in scripts/make-worktree.py. This Makefile is a
+# thin dispatcher.
 #
 # Targets:
 #   make doctor    - print resolved paths and run pre-flight checks
