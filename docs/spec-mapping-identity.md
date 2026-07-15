@@ -1,195 +1,225 @@
 # Mapping Identity and References
 
-This document specifies the identity, reference, and fingerprint model
-shared by all Loom mapping artifacts. Other mapping specs define record
-families that use these identifiers.
+This document specifies finalized content identity and persistent
+references for Mapping Artifacts and their Canonical Dataflow Program and
+Fabric Hardware Description inputs.
 
-The mapping artifact is an independent relation between software
-dataflow IR and hardware Fabric ADG. It must not mutate either input and
-must not rely on line numbers, source offsets, printer ordering that is
-not made stable, or local filesystem paths.
+Persistent references use finalized artifact identity and typed
+artifact-local entity identity. Symbol spelling, paths, printer order,
+builder insertion order, filesystem location, and source location are not
+reference authority.
 
-## Required Header
+## Identity Model
 
-Every mapping artifact has one header record.
+Each Canonical Dataflow Program, Fabric Hardware Description, and Mapping
+Artifact is finalized independently. A finalized artifact has:
 
-Required fields:
+* one schema identity and version in `X.Y` form;
+* one required content-derived artifact identity;
+* one artifact-global namespace of local `EntityId` values; and
+* immutable canonical semantic content.
 
-* `schema_version`: mapping artifact schema version.
-* `artifact_id`: stable identifier for this candidate artifact.
-* `software_root`: reference to the software module or dataflow root.
-* `hardware_system`: reference to the selected `fabric.system`.
-* `producer`: tool name and tool version that produced the artifact.
+`X` denotes a breaking or incompatible schema change. `Y` denotes a
+non-breaking schema improvement. Schema identity and version participate
+in artifact identity.
 
-Optional fields:
+The conceptual persistent reference form is:
 
-* `software_fingerprint`: content fingerprint of the referenced
-  software IR.
-* `hardware_fingerprint`: content fingerprint of the referenced
-  hardware IR.
-* `workload_profile`: reference to workload shape, profile data, or
-  concrete input class used during mapping.
-* `mapping_set`: identifier of the mapping-set manifest that contains
-  this artifact.
-* `created_at`: timestamp for reporting only. It is never used for
-  legality or deterministic ordering.
-
-Fingerprints are optional in early flows. When present, every consumer
-must validate them before using the artifact. A mismatch is a stale-input
-diagnostic, not a reason to reinterpret references heuristically.
-
-## Record Identity
-
-Every non-header record has a required `record_id`. The `record_id` is
-unique within the artifact and stable under deterministic PnR reruns with
-the same inputs and options.
-
-The canonical record-id shape is:
-
-```
-<family>/<stable-symbolic-key>
+```text
+PersistentRef<T> = finalized artifact identity + typed local EntityId<T>
 ```
 
-Examples:
+The reference field's schema constrains `T`. A generic subject reference
+also requires a closed entity-kind tag. Arbitrary kind strings and owner
+paths are not ordinary persistent references.
 
-* `thread_binding/main_thread/i0`
-* `graph_binding/gemm_body/launch0`
-* `op_binding/graph0/add_17`
-* `route/graph0/add_17_to_mul_19`
+## Finalization
 
-Record IDs are artifact-local. External tools must not infer software or
-hardware meaning from a record ID alone; they must read the referenced
-objects in the record body.
+Mutable compiler construction, Dataflow canonicalization, Fabric
+elaboration, and Mapping construction complete before persistent identity
+is assigned.
 
-## Software References
+Finalization follows one conceptual sequence:
 
-Software references are symbolic references into dataflow IR.
+```text
+typed semantic relations without local IDs
+  -> exact semantic-graph canonical labeling
+  -> canonical slots
+  -> artifact-global EntityId assignment
+  -> canonical semantic serialization
+  -> collision-checked artifact digest
+  -> immutable artifact
+```
 
-Required fields:
+This gives local IDs, serialization, and artifact identity one semantic
+source. Persistent IDs must not derive from mutable addresses, symbol
+order, printer order, traversal order, or insertion order.
 
-* `kind`: one of `thread_def`, `thread_launch`, `thread_instance_domain`,
-  `graph_def`, `graph_launch`, `subgraph`, `operation`, `ssa_value`,
-  `edge`, `memref_region`, `partitioned_region`, `control_token_edge`,
-  `done_token_edge`, or `memory_order_edge`.
-* `symbol`: nearest stable symbol that owns the referenced object.
+If the artifact-local namespace cannot be represented without loss,
+finalization fails. It must not truncate IDs or emit a partially finalized
+artifact.
 
-Optional fields:
+## Artifact Identity
 
-* `op_path`: stable operation path under the owner symbol.
-* `result_index`: SSA result index.
-* `operand_index`: operand index.
-* `instance`: logical instance descriptor for parametric thread or graph
-  instances.
-* `edge_role`: value, control, done, or memory-order role.
-* `fingerprint`: object-level fingerprint when available.
+Artifact identity is conceptually derived from the artifact schema identity
+and version plus canonical semantic serialization. The concrete digest
+encoding is not fixed here, but collisions must be detected rather than
+silently accepted.
 
-Line numbers and source-file offsets are forbidden. If an operation has
-no stable path, the compiler must assign a stable mapping anchor before
-PnR emits a reference to it.
+Canonical semantic serialization includes every typed upstream artifact
+reference that is part of the artifact's semantics. A TechMapping artifact
+therefore includes its exact Canonical Dataflow Program and Fabric Hardware
+Description references. A Physical Mapping includes its exact immutable
+TechMapping predecessor reference.
 
-## Hardware References
+Producer names, timestamps, host paths, search seeds, invocation order,
+debug names, source locations, viewer layout, and provenance do not change
+content identity unless their semantic projection is explicitly part of
+the artifact content. Derivation lineage and execution settings belong to
+manifests or Evaluation Evidence.
 
-Hardware references are symbolic references into Fabric ADG or into a
-referenced `fabric.module` template.
+Optional fingerprints, symbols, or compatibility labels cannot substitute
+for required artifact identity. A mismatch is an identity failure, not
+permission to reinterpret or heuristically rebind a reference.
 
-Required fields:
+## Artifact-Global EntityId Namespace
 
-* `kind`: one of `system`, `node`, `external_port`, `node_port`,
-  `channel_endpoint`, `link`, `module`, `module_resource`, `pe`, `fu`,
-  `mem`, `switch`, `boundary`, `fifo`, `adapter`, `domain`, or
-  `address_range`.
-* `symbol`: nearest stable Fabric symbol that owns the referenced object.
+Every independently referenceable semantic object owned by a finalized
+artifact receives one artifact-local `EntityId`. All entity kinds in that
+artifact share one global local-ID namespace. Graphs, modules, record
+families, and entity kinds do not create nested numeric namespaces.
 
-Optional fields:
+Persistent `EntityId` has one unsigned 64-bit semantic range. Native
+consumers may derive narrower or differently arranged dense indices, but
+those indices are not persistent identities.
 
-* `node`: system node symbol for node-local references.
-* `port`: port symbol or ordinal under a node or resource.
-* `channel`: protocol channel name for compound protocol ports.
-* `endpoint_direction`: `source` or `sink` for directed channel
-  endpoints.
-* `resource_path`: stable resource path under a `fabric.module` symbol.
-* `instance`: physical instance descriptor when a template is
-  instantiated multiple times.
-* `fingerprint`: object-level fingerprint when available.
+The confirmed structural core applies this rule to the graph, actor, FU,
+`fabric.op`, Fabric encoding, and Compute Realization entities required by
+TechMapping structural validation. This list does not classify every
+possible Dataflow or Fabric object.
 
-Compound protocol ports are references to bundles only when the record
-explicitly says it is referring to a bundle for reporting or
-visualization. Legality records that drive mapping behavior reference
-directed channel endpoints.
+Human-readable labels may exist as metadata, but record identity is an
+`EntityId`, not a string such as `family/symbol/path`.
 
-## Mapping References
+## Typed Structural Keys
 
-Mapping references point to other records in the same artifact.
+An object uniquely and mechanically derived from one identified owner uses
+a typed structural key instead of receiving a redundant `EntityId`.
 
-Required fields:
+Confirmed forms include:
 
-* `record_id`: target record ID.
+```text
+actor result   = actor EntityId + result index
+actor operand  = actor EntityId + operand index
+graph boundary = graph EntityId + boundary kind + port index
+FU port        = FU EntityId + direction + port index
+software edge  = typed producer endpoint + typed consumer endpoint
+```
 
-Optional fields:
+If an owner plus typed structural key cannot distinguish semantic parallel
+objects, those objects require independent entities. Printer position,
+user spelling, and consumer-local array index are not valid
+disambiguators.
 
-* `role`: producer, consumer, buffer, route_segment, schedule_context,
-  memory_context, or diagnostic subject.
+## Cross-Artifact References
 
-Mapping references are allowed only within one artifact. A mapping-set
-manifest may reference many artifacts. A workload graph-set aggregate
-mapping artifact may reference component mapping artifacts only through
-top-level component identity and fingerprint fields; per-record
-references must still point inside the aggregate artifact.
+A Mapping software reference consists of the exact Canonical Dataflow
+Program identity and a typed `EntityId` from that artifact. A Mapping
+hardware reference consists of the exact Fabric Hardware Description
+identity and a typed `EntityId` from that artifact.
 
-## Workload Shape References
+References to records owned by one TechMapping artifact use that artifact's
+local namespace. A Physical Mapping references its TechMapping predecessor
+by exact artifact identity and addresses predecessor entities through that
+identity. It does not copy predecessor IDs into its own namespace as newly
+owned facts.
 
-When a mapping is shape-dependent, the artifact may reference a workload
-shape record.
+An FU implementation reference resolves inside the exact Fabric Hardware
+Description named by the TechMapping artifact. An implementation content
+digest may be used for deduplication or a pure cache key, but it is not a
+persistent cross-Fabric reference and does not permit rebinding.
 
-Required fields for a workload shape record:
+## Canonical Labeling Boundary
 
-* `shape_id`: stable shape identifier.
-* `parameters`: symbolic parameter map used by PnR, such as tensor
-  extents, loop trip counts, or partition sizes.
+Canonical labeling considers only semantic facts, including entity and
+operation kinds, typed ports and ordinals, semantic attributes, directed
+typed edges, containment and instance relations, state, capability, and
+artifact boundary interfaces.
 
-Optional fields:
+It excludes symbol spelling, source and filesystem locations, debug and
+provenance metadata, visual coordinates, printer order, and builder
+insertion order. If an order or label changes software or hardware
+behavior, that fact must first be represented as an explicit semantic
+relation.
 
-* `profile_ref`: reference to profile evidence used by the cost model.
-* `input_class`: human-readable label for reports.
+The equivalence boundary is exact typed and attributed graph isomorphism.
+Canonical labeling does not prove algebraic equivalence, optimized-circuit
+equivalence, or functional equivalence between distinct
+microarchitectures. The particular canonical-labeling algorithm is not
+part of the persistent schema.
 
-Workload shape affects mapping choice but not software semantics. A
-consumer must reject a shape-specific artifact if asked to use it for an
-incompatible shape.
+Entities in one graph-automorphism orbit have no recoverable non-semantic
+identity such as an original builder handle or an implicit numeric name. A
+producer may retain a construction-object-to-`EntityId` provenance map for
+diagnostics, but that map does not participate in content identity and is
+not reference authority.
 
 ## Deterministic Ordering
 
-Artifacts use deterministic ordering:
+Canonical serialization order derives from canonical semantic slots and
+explicit semantic order. Lexical symbols, record labels, and printer order
+are not tie breakers.
 
-* header first;
-* record families in the order listed by `docs/spec-mapping-artifact.md`;
-* records within a family by `record_id`;
-* dictionary keys lexically;
-* arrays by semantic order when one exists, otherwise by stable
-  symbolic key.
+Arrays preserve semantic order where the model defines one. Unordered sets
+and maps use canonical serialization order. Consumers must not infer
+legality or execution order from serialized record position.
 
-Deterministic ordering is a serialization rule. It must not be used as a
-hidden source of legality.
+## Dense Indices, Provenance, And Caches
+
+Persistent `EntityId`, consumer-local dense index, and provenance are
+separate concepts:
+
+* `EntityId` supports persistent cross-artifact references;
+* a dense index supports one derived native model or cache and is
+  disposable; and
+* provenance supports source traceability and DSE attribution but is not
+  execution or reference authority.
+
+Caches bind exact artifact identities and all relevant producer semantics.
+They invalidate as a unit when those inputs change. They must not export
+artifact-local references, coverage, current-artifact legality conclusions,
+or physical decisions into another artifact context.
+
+## Deferred Classification
+
+This document does not yet decide whether channels or unqualified Fabric
+resources receive independent `EntityId` values. Fabric connections,
+capacity objects, memory objects, tag objects, external linkage objects,
+and other route or deployment entities must be classified from concrete
+reference requirements by the general entity-versus-structural-key rule.
+
+No implementation may treat this deferral as permission to use symbols,
+paths, coordinates, or traversal order as persistent identity.
 
 ## Validation
 
-The identity verifier checks:
+Identity validation requires:
 
-* every required header field is present;
-* every `record_id` is unique;
-* every software reference resolves;
-* every hardware reference resolves;
-* every mapping reference resolves within the same artifact;
-* fingerprints match when present;
-* no reference uses line numbers, byte offsets, host-local paths, or
-  unresolved printer-order assumptions.
+* a valid content-derived artifact identity;
+* one collision-free artifact-global unsigned 64-bit `EntityId` namespace;
+* a valid target kind for every typed reference;
+* exact resolution of every referenced artifact and local entity;
+* exact TechMapping coupling to one Canonical Dataflow Program and one
+  Fabric Hardware Description;
+* exact Physical Mapping coupling to one immutable TechMapping
+  predecessor;
+* no symbol, path, printer-order, source-location, or filesystem-path
+  reference authority; and
+* no persistent use of consumer-local dense indices or provenance handles.
 
-## Acceptance Criteria
+## Non-Goals
 
-The identity model is complete when:
-
-* every detailed mapping record can use the shared reference model;
-* stale software or hardware inputs are diagnosed before simulation,
-  runtime, RTL lowering, or FPA estimation consumes the artifact;
-* deterministic reruns produce stable record IDs and stable ordering;
-* compound protocol ports can be displayed as bundles while legality
-  records still reference directed channel endpoints.
+This document does not define Mapping dialect syntax, the
+canonical-labeling algorithm, native PnR index layout, deferred entity
+classifications, representation-adapter records, SystemMapping references,
+or bitstream identifiers.
