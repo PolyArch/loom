@@ -11,8 +11,8 @@ report contains the evidence required by its producer. A non-passing report
 contains diagnostics instead of fabricated numeric values. Producers use a
 subset of this accepted interoperability vocabulary:
 
-Schema versions use `X.Y` strings. `X` changes for incompatible formats and
-`Y` changes for backward-compatible schema additions.
+Schema versions are strings in `X.Y` form. `X` changes are
+breaking/incompatible and `Y` changes are non-breaking.
 
 The currently used status values are:
 
@@ -92,8 +92,7 @@ must agree with their corresponding arrays. Route segments carry concrete
 endpoints consumed by mapping validation. `resource_pressure`, when present, is
 diagnostic metadata rather than a stable pass/fail policy.
 
-Consumers accept the pre-versioning numeric value `1` as a migration input.
-Producers emit only the canonical `"1.0"` string.
+Consumers require the canonical `"1.0"` string.
 
 ## Mapping Estimate Report
 

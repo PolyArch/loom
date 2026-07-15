@@ -1091,14 +1091,11 @@ llvm::Expected<std::string>
 requireMappingStatus(const llvm::json::Object &object, llvm::StringRef path) {
   std::optional<llvm::StringRef> schemaVersion =
       object.getString("schema_version");
-  std::optional<int64_t> legacySchemaVersion =
-      object.getInteger("schema_version");
-  if ((!schemaVersion || *schemaVersion != kMappingSchemaVersion) &&
-      (!legacySchemaVersion || *legacySchemaVersion != 1))
+  if (!schemaVersion || *schemaVersion != kMappingSchemaVersion)
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "%s has unsupported schema_version; expected %s", path.str().c_str(),
-        kMappingSchemaVersion.data());
+        "%s has unsupported schema_version; expected string \"%s\"",
+        path.str().c_str(), kMappingSchemaVersion.data());
   std::optional<llvm::StringRef> kind = object.getString("kind");
   if (!kind || *kind != "pnr_mapping")
     return llvm::createStringError(std::errc::invalid_argument,

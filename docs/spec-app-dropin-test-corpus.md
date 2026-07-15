@@ -71,8 +71,10 @@ must not change algorithmic behavior or silently weaken result checks.
 
 ## Corpus Manifest
 
-The target corpus is manifest-driven. A manifest entry for each case
-records:
+The target corpus is manifest-driven. The manifest requires
+`schema_version = "1.0"`. Schema versions are strings in `X.Y` form: `X`
+changes are breaking/incompatible and `Y` changes are non-breaking. A manifest
+entry for each case records:
 
 * case name;
 * source files;

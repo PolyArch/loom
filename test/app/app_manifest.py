@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = ROOT / "test" / "app"
 DEFAULT_MANIFEST = APP_ROOT / "manifest.json"
+MANIFEST_SCHEMA_VERSION = "1.0"
 VALID_LANGUAGES = {"c", "cxx"}
 VALID_TIERS = {"run", "raise", "dfg"}
 
@@ -119,7 +120,11 @@ def validate_manifest(path: Path) -> tuple[dict[str, object], list[str]]:
     if not isinstance(data, dict):
         return {}, ["manifest root must be an object"]
 
-    require(data.get("schema_version") == 1, "schema_version must be 1", diagnostics)
+    require(
+        data.get("schema_version") == MANIFEST_SCHEMA_VERSION,
+        f'schema_version must be "{MANIFEST_SCHEMA_VERSION}"',
+        diagnostics,
+    )
     cases = data.get("cases")
     require(isinstance(cases, list), "cases must be a list", diagnostics)
     if not isinstance(cases, list):
