@@ -1,6 +1,7 @@
 #ifndef LOOM_SIMULATOR_DFG_SIMULATOR_H
 #define LOOM_SIMULATOR_DFG_SIMULATOR_H
 
+#include "Simulator/OperationCostModel.h"
 #include "Simulator/OperationSemantics.h"
 
 #include "mlir/IR/BuiltinOps.h"

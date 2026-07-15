@@ -13,137 +13,129 @@ using namespace loom::sim;
 
 namespace {
 
-struct OperationCostEntry {
+enum class OperationSupport : std::uint8_t {
+  None = 0,
+  Primitive = 1,
+  Mapped = 2,
+  PrimitiveAndMapped = 3,
+};
+
+struct OperationSupportEntry {
   const char *name;
-  std::uint64_t baseScore;
-  std::uint64_t repeatScore;
-  bool isPrimitive;
-  bool isMapped;
+  OperationSupport support;
 };
 
-constexpr OperationCostEntry kOperationCosts[] = {
-    {"arith.constant", 1, 1, false, false},
-    {"arith.addf", 2, 2, true, true},
-    {"arith.subf", 2, 2, true, true},
-    {"arith.mulf", 3, 3, true, true},
-    {"arith.divf", 12, 12, true, true},
-    {"arith.addi", 1, 1, true, true},
-    {"arith.subi", 1, 1, true, true},
-    {"arith.muli", 3, 3, true, true},
-    {"arith.andi", 1, 1, true, true},
-    {"arith.ori", 1, 1, true, true},
-    {"arith.xori", 1, 1, true, true},
-    {"arith.shli", 1, 1, true, true},
-    {"arith.shrsi", 1, 1, true, true},
-    {"arith.shrui", 1, 1, true, true},
-    {"arith.divsi", 8, 8, true, true},
-    {"arith.divui", 8, 8, true, true},
-    {"arith.remsi", 8, 8, true, true},
-    {"arith.remui", 8, 8, true, true},
-    {"arith.cmpi", 1, 1, true, true},
-    {"arith.cmpf", 2, 2, true, true},
-    {"arith.select", 1, 1, true, true},
-    {"arith.index_cast", 1, 1, true, true},
-    {"arith.index_castui", 1, 1, true, false},
-    {"arith.extsi", 1, 1, true, true},
-    {"arith.extui", 1, 1, true, true},
-    {"arith.trunci", 1, 1, true, true},
-    {"arith.sitofp", 3, 3, true, true},
-    {"arith.uitofp", 3, 3, true, true},
-    {"arith.fptosi", 3, 3, true, true},
-    {"arith.fptoui", 3, 3, true, true},
-    {"llvm.trunc", 1, 1, true, true},
-    {"llvm.sext", 1, 1, true, true},
-    {"llvm.zext", 1, 1, true, true},
-    {"llvm.sitofp", 3, 3, true, true},
-    {"llvm.uitofp", 3, 3, true, true},
-    {"llvm.fptosi", 3, 3, true, true},
-    {"llvm.fptoui", 3, 3, true, true},
-    {"llvm.fneg", 1, 1, true, true},
-    {"llvm.load", 4, 4, false, true},
-    {"llvm.store", 4, 4, false, true},
-    {"llvm.select", 1, 1, true, true},
-    {"llvm.icmp", 1, 1, false, true},
-    {"llvm.getelementptr", 1, 1, false, false},
-    {"llvm.mlir.addressof", 1, 1, false, false},
-    {"llvm.mlir.zero", 1, 1, false, false},
-    {"ub.poison", 1, 1, false, false},
-    {"llvm.intr.memcpy", 8, 8, false, false},
-    {"llvm.intr.fshl", 1, 1, true, true},
-    {"llvm.intr.bswap", 1, 1, true, true},
-    {"llvm.intr.umin", 1, 1, true, true},
-    {"llvm.intr.umax", 1, 1, true, true},
-    {"llvm.intr.usub.sat", 1, 1, true, true},
-    {"llvm.intr.smin", 1, 1, true, true},
-    {"llvm.intr.smax", 1, 1, true, true},
-    {"llvm.intr.ctlz", 1, 1, true, true},
-    {"llvm.intr.fmuladd", 8, 8, true, true},
-    {"llvm.intr.abs", 1, 1, true, true},
-    {"llvm.intr.fabs", 1, 1, true, true},
-    {"llvm.arm.pkhbt", 1, 1, true, true},
-    {"llvm.arm.pkhtb", 1, 1, true, true},
-    {"llvm.arm.sxtab16", 1, 1, true, true},
-    {"llvm.arm.sxtb16", 1, 1, true, true},
-    {"llvm.arm.qadd16", 1, 1, true, true},
-    {"llvm.arm.sadd16", 1, 1, true, true},
-    {"llvm.arm.qsub8", 1, 1, true, true},
-    {"llvm.arm.qsub16", 1, 1, true, true},
-    {"math.absf", 1, 1, true, true},
-    {"math.absi", 1, 1, true, true},
-    {"math.sin", 16, 16, true, true},
-    {"math.cos", 16, 16, true, true},
-    {"math.tan", 16, 16, true, true},
-    {"math.sinh", 16, 16, true, true},
-    {"math.cosh", 16, 16, true, true},
-    {"math.tanh", 16, 16, true, true},
-    {"math.exp", 12, 12, true, true},
-    {"math.exp2", 12, 12, true, true},
-    {"math.expm1", 12, 12, true, true},
-    {"math.log", 12, 12, true, true},
-    {"math.log2", 12, 12, true, true},
-    {"math.log10", 12, 12, true, true},
-    {"math.log1p", 12, 12, true, true},
-    {"math.floor", 2, 2, true, true},
-    {"math.ceil", 2, 2, true, true},
-    {"math.round", 2, 2, true, true},
-    {"math.trunc", 2, 2, true, true},
-    {"math.roundeven", 2, 2, true, true},
-    {"math.sqrt", 8, 8, true, true},
-    {"math.rsqrt", 8, 8, true, true},
-    {"math.erf", 16, 16, true, true},
-    {"dataflow.stream", 1, 1, false, true},
-    {"dataflow.carry", 1, 1, false, true},
-    {"dataflow.invariant", 1, 1, false, true},
-    {"dataflow.constant", 1, 1, false, true},
-    {"dataflow.sync", 1, 1, false, true},
-    {"dataflow.load", 4, 4, false, true},
-    {"dataflow.store", 4, 4, false, true},
-    {"dataflow.mux", 2, 2, false, true},
-    {"dataflow.demux", 2, 2, false, true},
-    {"dataflow.parallelize", 1, 1, false, true},
-    {"dataflow.pack", 1, 1, false, true},
-    {"dataflow.unpack", 1, 1, false, true},
-    {"dataflow.serialize", 1, 1, false, true},
-    {"dataflow.gate", 1, 1, false, true},
-    {"scf.if", 1, 1, false, false},
-    {"scf.index_switch", 1, 1, false, false},
-    {"scf.while", 1, 1, false, false},
-    {"scf.forall", 1, 1, false, false},
+constexpr OperationSupportEntry kOperationSupport[] = {
+    {"arith.addf", OperationSupport::PrimitiveAndMapped},
+    {"arith.subf", OperationSupport::PrimitiveAndMapped},
+    {"arith.mulf", OperationSupport::PrimitiveAndMapped},
+    {"arith.divf", OperationSupport::PrimitiveAndMapped},
+    {"arith.addi", OperationSupport::PrimitiveAndMapped},
+    {"arith.subi", OperationSupport::PrimitiveAndMapped},
+    {"arith.muli", OperationSupport::PrimitiveAndMapped},
+    {"arith.andi", OperationSupport::PrimitiveAndMapped},
+    {"arith.ori", OperationSupport::PrimitiveAndMapped},
+    {"arith.xori", OperationSupport::PrimitiveAndMapped},
+    {"arith.shli", OperationSupport::PrimitiveAndMapped},
+    {"arith.shrsi", OperationSupport::PrimitiveAndMapped},
+    {"arith.shrui", OperationSupport::PrimitiveAndMapped},
+    {"arith.divsi", OperationSupport::PrimitiveAndMapped},
+    {"arith.divui", OperationSupport::PrimitiveAndMapped},
+    {"arith.remsi", OperationSupport::PrimitiveAndMapped},
+    {"arith.remui", OperationSupport::PrimitiveAndMapped},
+    {"arith.cmpi", OperationSupport::PrimitiveAndMapped},
+    {"arith.cmpf", OperationSupport::PrimitiveAndMapped},
+    {"arith.select", OperationSupport::PrimitiveAndMapped},
+    {"arith.index_cast", OperationSupport::PrimitiveAndMapped},
+    {"arith.index_castui", OperationSupport::Primitive},
+    {"arith.extsi", OperationSupport::PrimitiveAndMapped},
+    {"arith.extui", OperationSupport::PrimitiveAndMapped},
+    {"arith.trunci", OperationSupport::PrimitiveAndMapped},
+    {"arith.sitofp", OperationSupport::PrimitiveAndMapped},
+    {"arith.uitofp", OperationSupport::PrimitiveAndMapped},
+    {"arith.fptosi", OperationSupport::PrimitiveAndMapped},
+    {"arith.fptoui", OperationSupport::PrimitiveAndMapped},
+    {"llvm.trunc", OperationSupport::PrimitiveAndMapped},
+    {"llvm.sext", OperationSupport::PrimitiveAndMapped},
+    {"llvm.zext", OperationSupport::PrimitiveAndMapped},
+    {"llvm.sitofp", OperationSupport::PrimitiveAndMapped},
+    {"llvm.uitofp", OperationSupport::PrimitiveAndMapped},
+    {"llvm.fptosi", OperationSupport::PrimitiveAndMapped},
+    {"llvm.fptoui", OperationSupport::PrimitiveAndMapped},
+    {"llvm.fneg", OperationSupport::PrimitiveAndMapped},
+    {"llvm.load", OperationSupport::Mapped},
+    {"llvm.store", OperationSupport::Mapped},
+    {"llvm.select", OperationSupport::PrimitiveAndMapped},
+    {"llvm.icmp", OperationSupport::Mapped},
+    {"llvm.intr.fshl", OperationSupport::PrimitiveAndMapped},
+    {"llvm.intr.bswap", OperationSupport::PrimitiveAndMapped},
+    {"llvm.intr.umin", OperationSupport::PrimitiveAndMapped},
+    {"llvm.intr.umax", OperationSupport::PrimitiveAndMapped},
+    {"llvm.intr.usub.sat", OperationSupport::PrimitiveAndMapped},
+    {"llvm.intr.smin", OperationSupport::PrimitiveAndMapped},
+    {"llvm.intr.smax", OperationSupport::PrimitiveAndMapped},
+    {"llvm.intr.ctlz", OperationSupport::PrimitiveAndMapped},
+    {"llvm.intr.fmuladd", OperationSupport::PrimitiveAndMapped},
+    {"llvm.intr.abs", OperationSupport::PrimitiveAndMapped},
+    {"llvm.intr.fabs", OperationSupport::PrimitiveAndMapped},
+    {"llvm.arm.pkhbt", OperationSupport::PrimitiveAndMapped},
+    {"llvm.arm.pkhtb", OperationSupport::PrimitiveAndMapped},
+    {"llvm.arm.sxtab16", OperationSupport::PrimitiveAndMapped},
+    {"llvm.arm.sxtb16", OperationSupport::PrimitiveAndMapped},
+    {"llvm.arm.qadd16", OperationSupport::PrimitiveAndMapped},
+    {"llvm.arm.sadd16", OperationSupport::PrimitiveAndMapped},
+    {"llvm.arm.qsub8", OperationSupport::PrimitiveAndMapped},
+    {"llvm.arm.qsub16", OperationSupport::PrimitiveAndMapped},
+    {"math.absf", OperationSupport::PrimitiveAndMapped},
+    {"math.absi", OperationSupport::PrimitiveAndMapped},
+    {"math.sin", OperationSupport::PrimitiveAndMapped},
+    {"math.cos", OperationSupport::PrimitiveAndMapped},
+    {"math.tan", OperationSupport::PrimitiveAndMapped},
+    {"math.sinh", OperationSupport::PrimitiveAndMapped},
+    {"math.cosh", OperationSupport::PrimitiveAndMapped},
+    {"math.tanh", OperationSupport::PrimitiveAndMapped},
+    {"math.exp", OperationSupport::PrimitiveAndMapped},
+    {"math.exp2", OperationSupport::PrimitiveAndMapped},
+    {"math.expm1", OperationSupport::PrimitiveAndMapped},
+    {"math.log", OperationSupport::PrimitiveAndMapped},
+    {"math.log2", OperationSupport::PrimitiveAndMapped},
+    {"math.log10", OperationSupport::PrimitiveAndMapped},
+    {"math.log1p", OperationSupport::PrimitiveAndMapped},
+    {"math.floor", OperationSupport::PrimitiveAndMapped},
+    {"math.ceil", OperationSupport::PrimitiveAndMapped},
+    {"math.round", OperationSupport::PrimitiveAndMapped},
+    {"math.trunc", OperationSupport::PrimitiveAndMapped},
+    {"math.roundeven", OperationSupport::PrimitiveAndMapped},
+    {"math.sqrt", OperationSupport::PrimitiveAndMapped},
+    {"math.rsqrt", OperationSupport::PrimitiveAndMapped},
+    {"math.erf", OperationSupport::PrimitiveAndMapped},
+    {"dataflow.stream", OperationSupport::Mapped},
+    {"dataflow.carry", OperationSupport::Mapped},
+    {"dataflow.invariant", OperationSupport::Mapped},
+    {"dataflow.constant", OperationSupport::Mapped},
+    {"dataflow.sync", OperationSupport::Mapped},
+    {"dataflow.load", OperationSupport::Mapped},
+    {"dataflow.store", OperationSupport::Mapped},
+    {"dataflow.mux", OperationSupport::Mapped},
+    {"dataflow.demux", OperationSupport::Mapped},
+    {"dataflow.parallelize", OperationSupport::Mapped},
+    {"dataflow.pack", OperationSupport::Mapped},
+    {"dataflow.unpack", OperationSupport::Mapped},
+    {"dataflow.serialize", OperationSupport::Mapped},
+    {"dataflow.gate", OperationSupport::Mapped},
 };
 
-const OperationCostEntry *lookupOperationCostEntry(llvm::StringRef opName) {
-  for (const OperationCostEntry &entry : kOperationCosts) {
+OperationSupport lookupOperationSupport(llvm::StringRef opName) {
+  for (const OperationSupportEntry &entry : kOperationSupport) {
     if (opName == entry.name)
-      return &entry;
+      return entry.support;
   }
-  return nullptr;
+  return OperationSupport::None;
 }
 
-std::optional<OperationCost> lookupOperationCost(llvm::StringRef opName) {
-  const OperationCostEntry *entry = lookupOperationCostEntry(opName);
-  if (!entry)
-    return std::nullopt;
-  return OperationCost{entry->baseScore, entry->repeatScore};
+bool hasOperationSupport(OperationSupport support, OperationSupport required) {
+  return (static_cast<std::uint8_t>(support) &
+          static_cast<std::uint8_t>(required)) != 0;
 }
 
 llvm::Error requireArity(llvm::StringRef opName,
@@ -534,27 +526,13 @@ PrimitiveValue PrimitiveValue::boolean(bool value) {
 }
 
 bool loom::sim::isSupportedPrimitiveOperation(llvm::StringRef opName) {
-  const OperationCostEntry *entry = lookupOperationCostEntry(opName);
-  return entry && entry->isPrimitive;
+  return hasOperationSupport(lookupOperationSupport(opName),
+                             OperationSupport::Primitive);
 }
 
 bool loom::sim::isSupportedMappedOperation(llvm::StringRef opName) {
-  const OperationCostEntry *entry = lookupOperationCostEntry(opName);
-  return entry && entry->isMapped;
-}
-
-bool loom::sim::hasOperationCost(llvm::StringRef opName) {
-  return lookupOperationCost(opName).has_value();
-}
-
-llvm::Expected<OperationCost>
-loom::sim::estimateOperationCost(llvm::StringRef opName) {
-  std::optional<OperationCost> cost = lookupOperationCost(opName);
-  if (cost)
-    return *cost;
-  return llvm::createStringError(std::errc::invalid_argument,
-                                 "%s has no operation cost model entry",
-                                 opName.str().c_str());
+  return hasOperationSupport(lookupOperationSupport(opName),
+                             OperationSupport::Mapped);
 }
 
 llvm::Expected<PrimitiveValue>

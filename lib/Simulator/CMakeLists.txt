@@ -1,5 +1,6 @@
 add_mlir_library(LoomSimulator
   DFGSimulator.cpp
+  OperationCostModel.cpp
   OperationSemantics.cpp
 
   ADDITIONAL_HEADER_DIRS

@@ -27,8 +27,7 @@ DFG-sim consumes:
 
 Simulator configuration is a typed view of the resolved configuration
 specified in `docs/spec-config-ssot.md`. DFG-sim does not own independent
-defaults for operation semantics, reciprocal throughput, event limits,
-or reporting policy.
+defaults for operation semantics, event limits, or reporting policy.
 
 DFG-sim produces:
 
@@ -54,6 +53,19 @@ are expected because DFG-sim intentionally ignores hardware limits.
 
 The comparison protocol is specified in
 `docs/spec-sim-comparison.md`.
+
+## Functional Semantics And Heuristic Cost
+
+Primitive operation support and evaluation are owned by
+`OperationSemantics`. The independent `OperationCostModel` owns the
+dimensionless operation weights and model identity used by the implemented
+report score. A cost entry does not establish functional support, and a
+functional operation does not derive its behavior from a cost entry.
+
+The operation cost model is not an abstract timing profile or a hardware
+timing model. Its base and repeat scores are not latency, initiation interval,
+throughput, critical-path length, or cycle counts. This separation does not
+add timed simulation or change observable functional semantics.
 
 ## Semantic Scope
 
