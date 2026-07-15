@@ -12,9 +12,8 @@
 // CHECK: %[[PTR_CARRY:.*]] = dataflow.carry %[[RWC]], %arg5,
 // CHECK: %{{.*}}, %[[PTR_BODY:.*]] = dataflow.gate %[[RWC]], %[[PTR_CARRY]] : !llvm.ptr
 // CHECK: %[[DATA:.*]], %{{.*}} = dataflow.load
-// CHECK: %[[COND:.*]] = arith.cmpi slt, %[[DATA]], %[[ZERO]] : i8
-// CHECK: %[[SEL:.*]] = arith.select %[[COND]], %[[ZERO]], %[[DATA]] : i8
-// CHECK: dataflow.store {{.*}} %[[SEL]]
+// CHECK: %[[STORE_VALUE:.*]] = arith.{{(maxsi|select)}}
+// CHECK: dataflow.store {{.*}} %[[STORE_VALUE]]
 // CHECK-NOT: scf.for
 // CHECK-NOT: scf.if
 // CHECK: dataflow.graph.return

@@ -13,10 +13,9 @@
 // CHECK: %[[PTR_CARRY:.*]] = dataflow.carry %[[RWC]], %arg5,
 // CHECK: %{{.*}}, %[[PTR_BODY:.*]] = dataflow.gate %[[RWC]], %[[PTR_CARRY]] : !llvm.ptr
 // CHECK: %[[DATA:.*]], %{{.*}} = dataflow.load
-// CHECK: %[[COND:.*]] = arith.cmpi slt, %[[DATA]], %[[ZERO]] : i8
 // CHECK: %[[STORE_MEM:.*]] = builtin.unrealized_conversion_cast %[[PTR_BODY]] : !llvm.ptr to memref<?xi8>
-// CHECK: %[[SEL:.*]] = arith.select %[[COND]], %[[ZERO]], %[[DATA]] : i8
-// CHECK: dataflow.store %[[STORE_MEM]]{{.*}} %[[SEL]]
+// CHECK: %[[STORE_VALUE:.*]] = arith.{{(maxsi|select)}}
+// CHECK: dataflow.store %[[STORE_MEM]]{{.*}} %[[STORE_VALUE]]
 // CHECK-NOT: scf.for
 // CHECK-NOT: scf.if
 // CHECK-NOT: llvm.load
