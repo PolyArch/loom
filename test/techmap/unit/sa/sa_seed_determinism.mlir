@@ -2,7 +2,7 @@
 // produce byte-identical output IR. This locks in the determinism contract
 // of the simulated-annealing partitioner under a fixed PRNG seed.
 
-// RUN: echo "techmap:" > %t.cfg.yaml
+// RUN: echo "fabric_techmap:" > %t.cfg.yaml
 // RUN: echo "  algorithm: sa" >> %t.cfg.yaml
 // RUN: echo "  sa_steps: 200" >> %t.cfg.yaml
 // RUN: echo "  sa_seed: 42" >> %t.cfg.yaml

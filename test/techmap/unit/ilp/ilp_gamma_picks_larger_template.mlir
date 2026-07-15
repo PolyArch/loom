@@ -7,12 +7,12 @@
 // gamma = 0 the two partitions tie; with gamma = 10 the 2-op covering
 // strictly dominates.
 
-// RUN: echo "techmap:" > %t.g0.yaml
+// RUN: echo "fabric_techmap:" > %t.g0.yaml
 // RUN: echo "  algorithm: ilp" >> %t.g0.yaml
 // RUN: echo "  alpha: 0" >> %t.g0.yaml
 // RUN: echo "  beta: 0" >> %t.g0.yaml
 // RUN: echo "  gamma: 0" >> %t.g0.yaml
-// RUN: echo "techmap:" > %t.g10.yaml
+// RUN: echo "fabric_techmap:" > %t.g10.yaml
 // RUN: echo "  algorithm: ilp" >> %t.g10.yaml
 // RUN: echo "  alpha: 0" >> %t.g10.yaml
 // RUN: echo "  beta: 0" >> %t.g10.yaml

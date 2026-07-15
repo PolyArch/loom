@@ -1,5 +1,4 @@
 add_mlir_library(LoomCommon
-  Config.cpp
   HwShareGroup.cpp
   IndexWidth.cpp
   LoomConstants.cpp

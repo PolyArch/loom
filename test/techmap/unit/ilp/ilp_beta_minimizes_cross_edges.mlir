@@ -12,12 +12,12 @@
 // which for this input is the two-singleton partition. With beta = 10
 // the fused 2-op partition strictly dominates and the MIP returns it.
 
-// RUN: echo "techmap:" > %t.b0.yaml
+// RUN: echo "fabric_techmap:" > %t.b0.yaml
 // RUN: echo "  algorithm: ilp" >> %t.b0.yaml
 // RUN: echo "  alpha: 0" >> %t.b0.yaml
 // RUN: echo "  beta: 0" >> %t.b0.yaml
 // RUN: echo "  gamma: 0" >> %t.b0.yaml
-// RUN: echo "techmap:" > %t.b10.yaml
+// RUN: echo "fabric_techmap:" > %t.b10.yaml
 // RUN: echo "  algorithm: ilp" >> %t.b10.yaml
 // RUN: echo "  alpha: 0" >> %t.b10.yaml
 // RUN: echo "  beta: 10" >> %t.b10.yaml

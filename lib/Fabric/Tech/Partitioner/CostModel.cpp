@@ -30,7 +30,7 @@ maxTemplateSizeByRoot(const TemplateLibrary &lib) {
 } // namespace
 
 double computeCost(const PartitionResult &partition, const TemplateLibrary &lib,
-                   const ::loom::TechMapConfig &cfg) {
+                   const ::loom::ResolvedFabricTechMapConfig &cfg) {
   // Map each op pointer to its block id, so we can detect cross-block edges
   // by comparing the producer's block to the consumer's block.
   ::llvm::DenseMap<::mlir::Operation *, unsigned> opToBlock;

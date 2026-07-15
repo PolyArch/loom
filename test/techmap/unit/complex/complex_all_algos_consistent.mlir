@@ -1,13 +1,13 @@
-// RUN: echo "techmap:" > %t.greedy.yaml
+// RUN: echo "fabric_techmap:" > %t.greedy.yaml
 // RUN: echo "  algorithm: greedy" >> %t.greedy.yaml
-// RUN: echo "techmap:" > %t.list.yaml
+// RUN: echo "fabric_techmap:" > %t.list.yaml
 // RUN: echo "  algorithm: list" >> %t.list.yaml
-// RUN: echo "techmap:" > %t.beam.yaml
+// RUN: echo "fabric_techmap:" > %t.beam.yaml
 // RUN: echo "  algorithm: beam" >> %t.beam.yaml
-// RUN: echo "techmap:" > %t.sa.yaml
+// RUN: echo "fabric_techmap:" > %t.sa.yaml
 // RUN: echo "  algorithm: sa" >> %t.sa.yaml
 // RUN: echo "  sa_steps: 200" >> %t.sa.yaml
-// RUN: echo "techmap:" > %t.ilp.yaml
+// RUN: echo "fabric_techmap:" > %t.ilp.yaml
 // RUN: echo "  algorithm: ilp" >> %t.ilp.yaml
 // RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.greedy.yaml" > %t.greedy.mlir
 // RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.list.yaml" > %t.list.mlir

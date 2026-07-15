@@ -58,7 +58,7 @@ unsigned countOps(::dataflow::GraphOp graph) {
 // Emit a module-level warning explaining why we are falling back to greedy.
 PartitionResult fallbackToGreedy(::dataflow::GraphOp graph,
                                  const TemplateLibrary &lib,
-                                 const ::loom::TechMapConfig &cfg,
+                                 const ::loom::ResolvedFabricTechMapConfig &cfg,
                                  ::llvm::StringRef reason) {
   if (auto module =
           graph->getParentOfType<::mlir::ModuleOp>()) {
@@ -91,9 +91,9 @@ double readTimeoutSeconds() {
 
 #ifdef LOOM_HAS_ILP
 
-PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
-                                    const TemplateLibrary &lib,
-                                    const ::loom::TechMapConfig &cfg) {
+PartitionResult ILPPartitioner::run(
+    ::dataflow::GraphOp graph, const TemplateLibrary &lib,
+    const ::loom::ResolvedFabricTechMapConfig &cfg) {
   unsigned n = countOps(graph);
   if (n > kILPMaxOps) {
     return fallbackToGreedy(
@@ -576,9 +576,9 @@ PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
 
 #else // !LOOM_HAS_ILP
 
-PartitionResult ILPPartitioner::run(::dataflow::GraphOp graph,
-                                    const TemplateLibrary &lib,
-                                    const ::loom::TechMapConfig &cfg) {
+PartitionResult ILPPartitioner::run(
+    ::dataflow::GraphOp graph, const TemplateLibrary &lib,
+    const ::loom::ResolvedFabricTechMapConfig &cfg) {
   return fallbackToGreedy(graph, lib, cfg,
                           "ILP support not compiled in (LOOM_ENABLE_ILP=OFF)");
 }

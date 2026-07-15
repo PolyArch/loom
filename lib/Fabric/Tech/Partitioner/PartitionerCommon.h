@@ -16,7 +16,7 @@
 // Greedy and List share these without modification; algorithms that need
 // different cycle / cost semantics may build on top of them.
 
-#include "Common/Config.h"
+#include "Common/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Fabric/Tech/Partitioner/Partitioner.h"
 #include "Fabric/Tech/TemplateLibrary.h"
@@ -139,7 +139,7 @@ computeAcceptDelta(::llvm::ArrayRef<::mlir::Operation *> ops,
 // it into a public PartitionResult and calling the standard CostModel.
 double computePendingCost(const ::llvm::SmallVector<PendingBlock> &blocks,
                           const TemplateLibrary &lib,
-                          const ::loom::TechMapConfig &cfg);
+                          const ::loom::ResolvedFabricTechMapConfig &cfg);
 
 // Returns true iff the bound blocks of `result` (those with `tpl != nullptr`)
 // form a multi-block SSA cycle — i.e. there exists a non-trivial strongly

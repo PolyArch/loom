@@ -4,7 +4,7 @@
 // matching template. The expected output is two singleton subgraphs --
 // the same shape that greedy produces for this input.
 
-// RUN: echo "techmap:" > %t.ilp.yaml
+// RUN: echo "fabric_techmap:" > %t.ilp.yaml
 // RUN: echo "  algorithm: ilp" >> %t.ilp.yaml
 // RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.ilp.yaml" 2>&1 | FileCheck %s
 

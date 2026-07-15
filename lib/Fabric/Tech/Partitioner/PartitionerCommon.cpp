@@ -675,7 +675,7 @@ computeAcceptDelta(::llvm::ArrayRef<::mlir::Operation *> ops,
 
 double computePendingCost(const ::llvm::SmallVector<PendingBlock> &blocks,
                           const TemplateLibrary &lib,
-                          const ::loom::TechMapConfig &cfg) {
+                          const ::loom::ResolvedFabricTechMapConfig &cfg) {
   PartitionResult mirror;
   mirror.blocks.reserve(blocks.size());
   for (unsigned i = 0; i < blocks.size(); ++i) {

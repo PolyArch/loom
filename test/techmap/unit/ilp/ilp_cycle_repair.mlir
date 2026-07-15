@@ -10,7 +10,7 @@
 // module-level diagnostic. The result is a partition whose bound
 // blocks form a DAG.
 
-// RUN: echo "techmap:" > %t.ilp.yaml
+// RUN: echo "fabric_techmap:" > %t.ilp.yaml
 // RUN: echo "  algorithm: ilp" >> %t.ilp.yaml
 // RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.ilp.yaml" \
 // RUN:   2> %t.diag > %t.mlir

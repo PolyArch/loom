@@ -6,9 +6,9 @@
 // subgraph). SA must match: any extra block would imply a cost regression
 // past the seed.
 
-// RUN: echo "techmap:" > %t.greedy.yaml
+// RUN: echo "fabric_techmap:" > %t.greedy.yaml
 // RUN: echo "  algorithm: greedy" >> %t.greedy.yaml
-// RUN: echo "techmap:" > %t.sa.yaml
+// RUN: echo "fabric_techmap:" > %t.sa.yaml
 // RUN: echo "  algorithm: sa" >> %t.sa.yaml
 // RUN: echo "  sa_steps: 500" >> %t.sa.yaml
 // RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.greedy.yaml" > %t.greedy.mlir

@@ -1,9 +1,0 @@
-techmap:
-  algorithm: beam
-  alpha: 2.0
-  beta: 0.5
-  gamma: 0.25
-  beam_width: 8
-  sa_steps: 500
-  sa_seed: 42
-  threads: 4

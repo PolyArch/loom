@@ -1,7 +1,7 @@
 #ifndef FABRIC_TECH_PARTITIONER_COSTMODEL_H
 #define FABRIC_TECH_PARTITIONER_COSTMODEL_H
 
-#include "Common/Config.h"
+#include "Common/ResolvedConfig.h"
 #include "Fabric/Tech/Partitioner/Partitioner.h"
 #include "Fabric/Tech/TemplateLibrary.h"
 
@@ -46,7 +46,7 @@ namespace fabric {
 // in this header so cost-model changes have a single point of authority.
 double computeCost(const PartitionResult &partition,
                    const TemplateLibrary &lib,
-                   const ::loom::TechMapConfig &cfg);
+                   const ::loom::ResolvedFabricTechMapConfig &cfg);
 
 } // namespace fabric
 

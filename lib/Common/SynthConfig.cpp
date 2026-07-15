@@ -359,7 +359,7 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
 //   ...
 //
 // Sections outside the `synth.*` family are silently ignored for
-// forward-compat, matching the TechMapConfig loader's behavior.
+// forward compatibility.
 
 ::llvm::Expected<std::vector<std::string>>
 parseTomlStringArray(StringRef v, StringRef ctx) {

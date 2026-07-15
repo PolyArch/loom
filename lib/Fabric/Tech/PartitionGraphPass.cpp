@@ -1,6 +1,6 @@
 #include "Fabric/Tech/Passes.h"
 
-#include "Common/Config.h"
+#include "Common/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Fabric/IR/FabricOps.h"
@@ -52,24 +52,23 @@ struct PartitionGraphPass
 
   Option<std::string> configPath{
       *this, "config",
-      ::llvm::cl::desc(
-          "Path to a YAML or TOML tech-mapping configuration file."),
+      ::llvm::cl::desc("Path to a resolved YAML or JSON configuration file."),
       ::llvm::cl::init("")};
 
   void runOnOperation() final {
     ::mlir::ModuleOp module = getOperation();
 
-    ::loom::TechMapConfig cfg;
-    if (!configPath.empty()) {
-      auto loaded = ::loom::loadTechMapConfig(configPath);
-      if (!loaded) {
-        ::mlir::emitError(module.getLoc())
-            << "loom-partition-graph-into-subgraphs: "
-            << ::llvm::toString(loaded.takeError());
-        return signalPassFailure();
-      }
-      cfg = *loaded;
+    ::llvm::Expected<::loom::ResolvedConfig> resolved =
+        configPath.empty() ? ::llvm::Expected<::loom::ResolvedConfig>(
+                                 ::loom::defaultResolvedConfig())
+                           : ::loom::loadResolvedConfig(configPath);
+    if (!resolved) {
+      ::mlir::emitError(module.getLoc())
+          << "loom-partition-graph-into-subgraphs: "
+          << ::llvm::toString(resolved.takeError());
+      return signalPassFailure();
     }
+    const ::loom::ResolvedFabricTechMapConfig &cfg = resolved->fabricTechMap;
 
     ::llvm::SmallVector<::fabric::FuOp> fus;
     module.walk([&](::fabric::FuOp fu) { fus.push_back(fu); });

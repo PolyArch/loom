@@ -2,10 +2,10 @@
 // the candidate cache is the only multi-threaded part, and its output is
 // already sorted; the MIP itself is run with HiGHS threads=1.
 
-// RUN: echo "techmap:" > %t.ilp1.yaml
+// RUN: echo "fabric_techmap:" > %t.ilp1.yaml
 // RUN: echo "  algorithm: ilp" >> %t.ilp1.yaml
 // RUN: echo "  threads: 1" >> %t.ilp1.yaml
-// RUN: echo "techmap:" > %t.ilp4.yaml
+// RUN: echo "fabric_techmap:" > %t.ilp4.yaml
 // RUN: echo "  algorithm: ilp" >> %t.ilp4.yaml
 // RUN: echo "  threads: 4" >> %t.ilp4.yaml
 // RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.ilp1.yaml" > %t.ilp1.mlir

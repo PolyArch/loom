@@ -1,4 +1,4 @@
-// RUN: echo "techmap:" > %t.cfg.yaml
+// RUN: echo "fabric_techmap:" > %t.cfg.yaml
 // RUN: echo "  algorithm: beam" >> %t.cfg.yaml
 // RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.cfg.yaml" | FileCheck %s
 

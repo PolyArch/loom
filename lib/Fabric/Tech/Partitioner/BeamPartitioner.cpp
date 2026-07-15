@@ -105,7 +105,7 @@ void appendBlockKey(std::string &out, const FuTemplate *tpl) {
 // has been updated. Doing this once per successor keeps the cost / key
 // values consistent with the underlying partition.
 void refreshDerived(BeamState &s, const TemplateLibrary &lib,
-                    const ::loom::TechMapConfig &cfg,
+                    const ::loom::ResolvedFabricTechMapConfig &cfg,
                     unsigned justAcceptedRootPosition) {
   s.cost = computePendingCost(s.blocks, lib, cfg);
   s.blocksWithTemplate = 0;
@@ -143,7 +143,7 @@ void acceptBlockInState(BeamState &s,
                         ::llvm::SmallVector<::mlir::Operation *> ops,
                         const FuTemplate *tpl, unsigned rootPosition,
                         const TemplateLibrary &lib,
-                        const ::loom::TechMapConfig &cfg) {
+                        const ::loom::ResolvedFabricTechMapConfig &cfg) {
   unsigned newId = static_cast<unsigned>(s.blocks.size());
   PendingBlock pb;
   pb.ops = ops;
@@ -198,7 +198,7 @@ bool tryExpand(const BeamState &parent, ::mlir::Operation *root,
                ::llvm::SmallVector<::mlir::Operation *> ops,
                const FuTemplate *tpl, unsigned rootPosition,
                const TemplateLibrary &lib,
-               const ::loom::TechMapConfig &cfg,
+               const ::loom::ResolvedFabricTechMapConfig &cfg,
                ::llvm::SmallVector<BeamState, 0> &out) {
   if (ops.empty())
     return false;
@@ -260,9 +260,9 @@ void enforceAcyclicity(BeamState &s) {
 
 } // namespace
 
-PartitionResult BeamPartitioner::run(::dataflow::GraphOp graph,
-                                     const TemplateLibrary &lib,
-                                     const ::loom::TechMapConfig &cfg) {
+PartitionResult BeamPartitioner::run(
+    ::dataflow::GraphOp graph, const TemplateLibrary &lib,
+    const ::loom::ResolvedFabricTechMapConfig &cfg) {
   // Build a candidate cache once. Worker thread count is taken from the
   // tech-map config so single-threaded and multi-threaded runs share the
   // same downstream search path.

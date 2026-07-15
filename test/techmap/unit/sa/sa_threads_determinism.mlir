@@ -5,12 +5,12 @@
 // The temporary YAML configs override only the `threads` knob; the SA
 // algorithm and seed are pinned so the only varying axis is thread count.
 
-// RUN: echo "techmap:" > %t.cfg1.yaml
+// RUN: echo "fabric_techmap:" > %t.cfg1.yaml
 // RUN: echo "  algorithm: sa" >> %t.cfg1.yaml
 // RUN: echo "  sa_steps: 200" >> %t.cfg1.yaml
 // RUN: echo "  sa_seed: 1234" >> %t.cfg1.yaml
 // RUN: echo "  threads: 1" >> %t.cfg1.yaml
-// RUN: echo "techmap:" > %t.cfg4.yaml
+// RUN: echo "fabric_techmap:" > %t.cfg4.yaml
 // RUN: echo "  algorithm: sa" >> %t.cfg4.yaml
 // RUN: echo "  sa_steps: 200" >> %t.cfg4.yaml
 // RUN: echo "  sa_seed: 1234" >> %t.cfg4.yaml

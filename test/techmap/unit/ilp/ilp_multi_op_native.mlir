@@ -3,7 +3,7 @@
 // VF2 candidates. The optimum binds the muli+addi chain to a single
 // 2-op subgraph; no greedy fallback diagnostic is emitted.
 
-// RUN: echo "techmap:" > %t.ilp.yaml
+// RUN: echo "fabric_techmap:" > %t.ilp.yaml
 // RUN: echo "  algorithm: ilp" >> %t.ilp.yaml
 // RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.ilp.yaml" 2> %t.diag | FileCheck %s
 // RUN: not test -s %t.diag

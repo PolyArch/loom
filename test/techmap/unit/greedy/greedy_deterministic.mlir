@@ -7,10 +7,10 @@
 // algorithm and weights stay at their defaults (greedy / alpha=beta=1 /
 // gamma=0.5).
 
-// RUN: echo "techmap:" > %t.cfg1.yaml
+// RUN: echo "fabric_techmap:" > %t.cfg1.yaml
 // RUN: echo "  algorithm: greedy" >> %t.cfg1.yaml
 // RUN: echo "  threads: 1" >> %t.cfg1.yaml
-// RUN: echo "techmap:" > %t.cfg4.yaml
+// RUN: echo "fabric_techmap:" > %t.cfg4.yaml
 // RUN: echo "  algorithm: greedy" >> %t.cfg4.yaml
 // RUN: echo "  threads: 4" >> %t.cfg4.yaml
 // RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.cfg1.yaml" > %t.t1.mlir

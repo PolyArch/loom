@@ -1,12 +1,11 @@
 #ifndef FABRIC_TECH_PARTITIONER_PARTITIONER_H
 #define FABRIC_TECH_PARTITIONER_PARTITIONER_H
 
-#include "Common/Config.h"
+#include "Common/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Fabric/Tech/TemplateLibrary.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringRef.h"
 
 #include <memory>
 
@@ -40,12 +39,12 @@ public:
 
   virtual PartitionResult run(::dataflow::GraphOp graph,
                               const TemplateLibrary &lib,
-                              const ::loom::TechMapConfig &cfg) = 0;
+                              const ::loom::ResolvedFabricTechMapConfig &cfg) = 0;
 };
 
-// Factory: produce a partitioner for the named algorithm. Valid names are
-// "greedy", "list", "beam", "sa", and "ilp".
-std::unique_ptr<IPartitioner> createPartitioner(::llvm::StringRef algorithm);
+// Factory for an algorithm validated during resolved configuration loading.
+std::unique_ptr<IPartitioner>
+createPartitioner(::loom::FabricTechMapAlgorithm algorithm);
 
 } // namespace fabric
 

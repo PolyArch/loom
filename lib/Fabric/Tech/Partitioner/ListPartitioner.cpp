@@ -79,9 +79,9 @@ struct PQEntryLess {
 
 } // namespace
 
-PartitionResult ListPartitioner::run(::dataflow::GraphOp graph,
-                                     const TemplateLibrary &lib,
-                                     const ::loom::TechMapConfig &cfg) {
+PartitionResult
+ListPartitioner::run(::dataflow::GraphOp graph, const TemplateLibrary &lib,
+                     const ::loom::ResolvedFabricTechMapConfig &cfg) {
   // Build a candidate cache once. Worker thread count is taken from the
   // tech-map config so single-threaded and multi-threaded runs share the
   // same downstream search path.

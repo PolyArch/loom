@@ -9,7 +9,7 @@ namespace fabric {
 class GreedyPartitioner : public IPartitioner {
 public:
   PartitionResult run(::dataflow::GraphOp graph, const TemplateLibrary &lib,
-                      const ::loom::TechMapConfig &cfg) override;
+                      const ::loom::ResolvedFabricTechMapConfig &cfg) override;
 };
 
 } // namespace fabric

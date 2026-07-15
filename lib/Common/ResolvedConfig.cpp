@@ -4,6 +4,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
@@ -128,9 +129,32 @@ llvm::Expected<double> requireDouble(llvm::yaml::Node *node,
   return value;
 }
 
-bool isKnownAlgorithm(StringRef value) {
-  return value == "greedy" || value == "list" || value == "beam" ||
-         value == "sa" || value == "ilp";
+struct FabricTechMapAlgorithmName {
+  loom::FabricTechMapAlgorithm algorithm;
+  llvm::StringLiteral name;
+};
+
+constexpr FabricTechMapAlgorithmName fabricTechMapAlgorithmNames[] = {
+    {loom::FabricTechMapAlgorithm::Greedy, "greedy"},
+    {loom::FabricTechMapAlgorithm::List, "list"},
+    {loom::FabricTechMapAlgorithm::Beam, "beam"},
+    {loom::FabricTechMapAlgorithm::SimulatedAnnealing, "sa"},
+    {loom::FabricTechMapAlgorithm::ILP, "ilp"},
+};
+
+llvm::Expected<loom::FabricTechMapAlgorithm>
+parseFabricTechMapAlgorithm(StringRef value, StringRef canonicalKey) {
+  for (const FabricTechMapAlgorithmName &entry : fabricTechMapAlgorithmNames)
+    if (entry.name == value)
+      return entry.algorithm;
+  return diagnostic("config_unknown_policy", canonicalKey, value);
+}
+
+StringRef fabricTechMapAlgorithmName(loom::FabricTechMapAlgorithm algorithm) {
+  for (const FabricTechMapAlgorithmName &entry : fabricTechMapAlgorithmNames)
+    if (entry.algorithm == algorithm)
+      return entry.name;
+  llvm_unreachable("invalid resolved Fabric TechMapping algorithm");
 }
 
 bool isKnownObjective(StringRef value) {
@@ -156,7 +180,7 @@ struct ConfigPatch {
   std::optional<double> alpha;
   std::optional<double> beta;
   std::optional<double> gamma;
-  std::optional<std::string> algorithm;
+  std::optional<loom::FabricTechMapAlgorithm> algorithm;
   std::optional<unsigned> beamWidth;
   std::optional<unsigned> saSteps;
   std::optional<std::uint64_t> saSeed;
@@ -321,16 +345,19 @@ llvm::Error parseFabricTechMap(ConfigPatch &patch,
       auto valueOrErr = requireScalarString(kv.getValue(), canonicalKey);
       if (!valueOrErr)
         return valueOrErr.takeError();
-      if (!isKnownAlgorithm(*valueOrErr))
-        return diagnostic("config_unknown_policy", canonicalKey, *valueOrErr);
-      patch.algorithm = *valueOrErr;
+      auto algorithmOrErr =
+          parseFabricTechMapAlgorithm(*valueOrErr, canonicalKey);
+      if (!algorithmOrErr)
+        return algorithmOrErr.takeError();
+      patch.algorithm = *algorithmOrErr;
     } else if (key == "beam_width") {
       auto valueOrErr = requireUnsigned(kv.getValue(), canonicalKey);
       if (!valueOrErr)
         return valueOrErr.takeError();
       patch.beamWidth = *valueOrErr;
     } else if (key == "sa_steps") {
-      auto valueOrErr = requireUnsigned(kv.getValue(), canonicalKey);
+      auto valueOrErr =
+          requireUnsigned(kv.getValue(), canonicalKey, /*allowZero=*/true);
       if (!valueOrErr)
         return valueOrErr.takeError();
       patch.saSteps = *valueOrErr;
@@ -636,7 +663,8 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
        }},
       {"fabric_techmap",
        llvm::json::Object{
-           {"algorithm", config.fabricTechMap.algorithm},
+           {"algorithm",
+            fabricTechMapAlgorithmName(config.fabricTechMap.algorithm)},
            {"alpha", config.fabricTechMap.alpha},
            {"beta", config.fabricTechMap.beta},
            {"gamma", config.fabricTechMap.gamma},

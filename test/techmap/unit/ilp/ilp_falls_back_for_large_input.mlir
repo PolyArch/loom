@@ -3,7 +3,7 @@
 // emits a diagnostic explaining why. Synthesize a 220-op chain via a
 // helper python script.
 
-// RUN: echo "techmap:" > %t.ilp.yaml
+// RUN: echo "fabric_techmap:" > %t.ilp.yaml
 // RUN: echo "  algorithm: ilp" >> %t.ilp.yaml
 // RUN: python3 %S/gen_big_chain.py 220 > %t.big.mlir
 // RUN: loom %t.big.mlir -loom-partition-graph-into-subgraphs="config=%t.ilp.yaml" > %t.out.mlir 2> %t.diag

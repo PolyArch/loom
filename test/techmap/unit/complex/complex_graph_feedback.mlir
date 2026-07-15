@@ -1,5 +1,5 @@
 // RUN: loom %s -loom-partition-graph-into-subgraphs | FileCheck %s
-// RUN: echo "techmap:" > %t.ilp.yaml
+// RUN: echo "fabric_techmap:" > %t.ilp.yaml
 // RUN: echo "  algorithm: ilp" >> %t.ilp.yaml
 // RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.ilp.yaml" \
 // RUN:   2> %t.ilp.diag > %t.ilp.mlir

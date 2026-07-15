@@ -17,10 +17,10 @@
 // different IR for the same input — i.e., the two diff invocations both
 // fail with non-zero exit, which is what `not diff` is asserting.
 
-// RUN: echo "techmap:" > %t.cfg1.yaml
+// RUN: echo "fabric_techmap:" > %t.cfg1.yaml
 // RUN: echo "  algorithm: beam" >> %t.cfg1.yaml
 // RUN: echo "  beam_width: 1" >> %t.cfg1.yaml
-// RUN: echo "techmap:" > %t.cfg4.yaml
+// RUN: echo "fabric_techmap:" > %t.cfg4.yaml
 // RUN: echo "  algorithm: beam" >> %t.cfg4.yaml
 // RUN: echo "  beam_width: 4" >> %t.cfg4.yaml
 // RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.cfg1.yaml" > %t.beam1.mlir

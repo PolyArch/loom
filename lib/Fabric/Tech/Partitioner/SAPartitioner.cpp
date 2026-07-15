@@ -66,7 +66,7 @@ void greedyFillUncovered(
     const ::llvm::SmallVector<::mlir::Operation *> &visit,
     const ::llvm::DenseSet<::mlir::Operation *> &uncovered,
     const TemplateLibrary &lib, const CandidateCache &cache,
-    const ::loom::TechMapConfig &cfg,
+    const ::loom::ResolvedFabricTechMapConfig &cfg,
     ::llvm::SmallVector<PendingBlock> &blocks,
     ::llvm::DenseMap<::mlir::Operation *, unsigned> &opToBlock,
     ReachMatrix &reach) {
@@ -264,9 +264,9 @@ allOpsAsUncovered(::dataflow::GraphOp graph) {
 
 } // namespace
 
-PartitionResult SAPartitioner::run(::dataflow::GraphOp graph,
-                                   const TemplateLibrary &lib,
-                                   const ::loom::TechMapConfig &cfg) {
+PartitionResult SAPartitioner::run(
+    ::dataflow::GraphOp graph, const TemplateLibrary &lib,
+    const ::loom::ResolvedFabricTechMapConfig &cfg) {
   // Build the candidate cache once; it is read-only during the SA loop.
   CandidateCache cache = CandidateCache::build(graph, lib, cfg.threads);
 

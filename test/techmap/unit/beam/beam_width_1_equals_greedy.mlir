@@ -3,9 +3,9 @@
 // We verify that the resulting IR matches the greedy partitioner's output
 // for the same input.
 
-// RUN: echo "techmap:" > %t.greedy.yaml
+// RUN: echo "fabric_techmap:" > %t.greedy.yaml
 // RUN: echo "  algorithm: greedy" >> %t.greedy.yaml
-// RUN: echo "techmap:" > %t.beam1.yaml
+// RUN: echo "fabric_techmap:" > %t.beam1.yaml
 // RUN: echo "  algorithm: beam" >> %t.beam1.yaml
 // RUN: echo "  beam_width: 1" >> %t.beam1.yaml
 // RUN: loom %s -loom-partition-graph-into-subgraphs="config=%t.greedy.yaml" > %t.greedy.mlir

@@ -15,11 +15,19 @@ struct ResolvedDseObjective {
   double weight = 0.0;
 };
 
+enum class FabricTechMapAlgorithm : std::uint8_t {
+  Greedy,
+  List,
+  Beam,
+  SimulatedAnnealing,
+  ILP,
+};
+
 struct ResolvedFabricTechMapConfig {
   double alpha = 1.0;
   double beta = 1.0;
   double gamma = 0.5;
-  std::string algorithm = "greedy";
+  FabricTechMapAlgorithm algorithm = FabricTechMapAlgorithm::Greedy;
   unsigned beamWidth = 4;
   unsigned saSteps = 1000;
   std::uint64_t saSeed = 0xC0DEull;
