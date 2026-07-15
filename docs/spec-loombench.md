@@ -2,7 +2,8 @@
 
 This document specifies `loombench`, Loom's repository-owned benchmark
 suite under `test/app`. `test/app/manifest.json` is the authoritative
-inventory and currently lists 132 cases.
+membership inventory. Counts are derived from that manifest rather than
+maintained as specification constants.
 
 ## Purpose
 
@@ -70,6 +71,11 @@ The target is verifiable when:
   evidence when the selected tier requires it;
 * DSE report bundles aggregate `loombench` cases without changing their
   suite identity.
+
+`test/corpus_inventory.py` is the shared structured inventory view. It must
+reuse manifest validation, emit deterministic case and source identities, and
+support complete-suite or explicit-case selection without creating another
+membership authority.
 
 ## Unsupported Scope Policy
 

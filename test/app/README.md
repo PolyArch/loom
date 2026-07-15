@@ -1,9 +1,10 @@
 # LoomBench application corpus
 
 Small, self-contained C/C++ programs used as drop-in targets for the Loom
-compiler frontend. The manifest-driven native runner covers all 132 cases,
-compiles both source variants, executes every resulting binary, and compares
-stdout byte-for-byte with the checked-in expected output.
+compiler frontend. `manifest.json` is the LoomBench membership source of truth.
+The manifest-driven native runner covers every listed case, compiles both
+source variants, executes every resulting binary, and compares stdout
+byte-for-byte with the checked-in expected output.
 
 The manifest-driven IR runner provides source-to-IR integration coverage. The
 default `raise` tier contains `vecadd`, `matmul`, `spmm`, `gather`, and
@@ -130,6 +131,12 @@ have equal length. Every case carries the `run` tier. The `raise` and `dfg`
 tiers select the default IR integration cases; explicit IR requests are not
 restricted by those tiers. A `dfg_symbol` field ties a representative DFG case
 to the source kernel without fixing the complete generated symbol name.
+
+The repository-wide `test/corpus_inventory.py` command validates this manifest
+and combines its cases with the two CMSIS suites. Running `list` without case
+selectors emits the complete inventory; `--case loombench:NAME` selects an
+explicit LoomBench case. Manifest tiers remain integration subsets and do not
+change membership.
 
 ## Determinism notes
 

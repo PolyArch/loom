@@ -1,3 +1,3 @@
-# CMSIS-DSP sources that currently produce executable DFGs.
+# CMSIS-DSP DFG smoke subset. This file does not define suite membership.
 # source|triple|cpu|source_symbol|extra_cflags
 MatrixFunctions/arm_householder_f32.c|thumbv7em-none-eabi|cortex-m4|arm_householder_f32|

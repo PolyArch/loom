@@ -168,7 +168,7 @@ Per-source or per-library adaptation belongs in:
 * include path configuration;
 * target feature selection;
 * Loom metadata or analysis;
-* target manifests used by tests;
+* sparse smoke metadata used by tests;
 * explicit compatibility shims supplied by the user or runtime.
 
 The compiler must preserve CMSIS public API names, symbol visibility,
@@ -190,9 +190,9 @@ The target CMSIS scope includes:
 The global workload universe is owned by `docs/spec-loom-stack.md`.
 This document owns only the CMSIS-DSP and CMSIS-NN portion of that
 universe. Its canonical inventory is the tracked C source set in the
-pinned CMSIS submodules. Representative integration targets exercise
-real compiler paths while support expands, but they do not redefine
-that inventory or act as per-source status records.
+pinned CMSIS submodules. Explicit smoke targets exercise real compiler paths
+while support expands, but they do not redefine that inventory or act as
+per-source status records.
 
 Unsupported target intrinsics, missing sysroots, unavailable target
 backends, and unsupported library configurations must produce
@@ -261,18 +261,21 @@ Reports must not mutate source trees or vendored CMSIS inputs.
 
 ## Canonical Source Inventory
 
-Canonical CMSIS status membership comes from every tracked `.c` file
+Canonical CMSIS membership comes from every tracked `.c` file
 under `Source` at the submodule commits pinned by the parent repository.
-At the commits pinned by this revision, CMSIS-DSP contributes 660 rows
-and CMSIS-NN contributes 113 rows. LoomBench membership is defined by
-its own manifest rather than by this CMSIS contract.
+`test/corpus_inventory.py` derives these rows directly from each verified
+submodule commit tree, reports their counts mechanically, and verifies that the
+checked-out submodule revisions match the parent repository gitlinks.
+LoomBench membership is defined by its own manifest rather than by this CMSIS
+contract.
 
-The CMSIS-DSP and CMSIS-NN integration target tables select replaceable
-representative sources. Each row identifies a `Source`-relative translation
-unit, target triple, CPU, public source symbol, and optional compiler flags.
-The tables neither define suite membership nor require adjacent status,
-binding, or provenance files. The parent repository's pinned submodule commit
-and the source-relative path identify the source used by a regression run.
+The CMSIS-DSP and CMSIS-NN DFG smoke tables select replaceable sources. Each
+row identifies a `Source`-relative translation unit, target triple, CPU, public
+source symbol, and optional compiler flags. The tables must validate as strict
+subsets of their canonical inventories. They neither define suite membership
+nor require adjacent status, binding, or provenance files. The parent
+repository's pinned submodule commit and the source-relative path identify the
+source used by a smoke run.
 
 ## Testing And Acceptance
 
@@ -280,7 +283,7 @@ Core CMSIS regression coverage requires:
 
 * the inventory count comes directly from tracked `.c` files in each pinned
   `Source` tree;
-* representative CMSIS-DSP and CMSIS-NN sources compile through LLVM IR,
+* smoke-selected CMSIS-DSP and CMSIS-NN sources compile through LLVM IR,
   raised MLIR, and dataflow MLIR without modifying the external source trees;
 * generated MLIR reparses, preserves the selected public source symbol, and
   contains a dataflow definition associated with that symbol;
@@ -289,9 +292,11 @@ Core CMSIS regression coverage requires:
 * ordinary compiler compatibility and acceleration-specific behavior are
   tested at their owning driver and pipeline boundaries.
 
-Representative targets are deliberately replaceable as compiler coverage
-changes. Expanding coverage toward the complete inventory does not require a
-parallel status ledger or one wrapper test per source file.
+Smoke targets are deliberately replaceable as compiler coverage changes.
+Expanding coverage toward the complete inventory does not require a parallel
+status ledger or one wrapper test per source file. Inventory enumeration alone
+does not claim compilation, lowering, simulation, mapping, or support success;
+an attempted source keeps its own honest pipeline outcome.
 
 ## Non-Goals
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 
@@ -56,7 +57,9 @@ def is_file_name(value: str) -> bool:
     return value not in {".", ".."} and Path(value).name == value
 
 
-def non_empty_string_field(entry: dict[object, object], field: str, context: str, diagnostics: list[str]) -> str | None:
+def non_empty_string_field(
+    entry: dict[object, object], field: str, context: str, diagnostics: list[str]
+) -> str | None:
     value = entry.get(field)
     if not isinstance(value, str) or value == "":
         diagnostics.append(f"{context}: {field} must be a non-empty string")
@@ -146,24 +149,39 @@ def validate_manifest(path: Path) -> tuple[dict[str, object], list[str]]:
             require(case_dir.is_dir(), f"{case}: missing case directory", diagnostics)
 
         language = entry.get("language")
-        require(language in VALID_LANGUAGES, f"{context}: invalid language {language!r}", diagnostics)
+        require(
+            language in VALID_LANGUAGES,
+            f"{context}: invalid language {language!r}",
+            diagnostics,
+        )
         if "dfg_symbol" in entry:
             non_empty_string_field(entry, "dfg_symbol", context, diagnostics)
 
         raw_sources = entry.get("sources")
         sources = non_empty_string_list_field(entry, "sources", context, diagnostics)
+        duplicate_sources = sorted(
+            source for source, count in Counter(sources).items() if count > 1
+        )
+        for source in duplicate_sources:
+            diagnostics.append(f"{context}: duplicate source: {source}")
         for source in sources:
             if not is_file_name(source):
                 continue
             source_path = case_dir / source
-            require(source_path.is_file(), f"{context}: missing source {source}", diagnostics)
+            require(
+                source_path.is_file(),
+                f"{context}: missing source {source}",
+                diagnostics,
+            )
         require(
             all(is_file_name(source) for source in sources),
             f"{context}: sources entries must be file names",
             diagnostics,
         )
 
-        expected = non_empty_string_field(entry, "expected_stdout", context, diagnostics)
+        expected = non_empty_string_field(
+            entry, "expected_stdout", context, diagnostics
+        )
         if expected:
             if is_file_name(expected):
                 require(

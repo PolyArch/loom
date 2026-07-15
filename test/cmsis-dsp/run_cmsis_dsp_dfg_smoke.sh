@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Representative CMSIS-DSP source-to-DFG integration runner.
+# CMSIS-DSP source-to-DFG smoke runner.
 
 set -euo pipefail
 export LC_ALL=C
@@ -15,14 +15,14 @@ LOOM_RAISE="${LOOM_RAISE:-${REPO_ROOT}/build/bin/loom-raise}"
 LOOM_LOWER="${LOOM_LOWER:-${REPO_ROOT}/build/bin/loom-lower}"
 LOOM_RAISE_OPT="${LOOM_RAISE_OPT:-${REPO_ROOT}/build/bin/loom-raise-opt}"
 
-TARGETS_FILE="${TARGETS_OVERRIDE:-${HERE}/cmsis_dsp_integration_targets.txt}"
+SMOKE_TARGETS_FILE="${SMOKE_TARGETS_OVERRIDE:-${HERE}/cmsis_dsp_dfg_smoke_targets.txt}"
 DSP_ROOT="${REPO_ROOT}/externals/cmsis-dsp"
 SRC_ROOT="${DSP_ROOT}/Source"
 DSP_INC="${DSP_ROOT}/Include"
 DSP_PRIV_INC="${DSP_ROOT}/PrivateInclude"
 CORE_INC="${REPO_ROOT}/externals/cmsis-core/CMSIS/Core/Include"
 OUT_ROOT="${OUT_OVERRIDE:-$(cmsis_common_default_out_dir "${REPO_ROOT}" "cmsis-dsp" "dfg")}"
-LABEL="cmsis-dsp-dfg"
+LABEL="cmsis-dsp-dfg-smoke"
 
 configuration_error() {
     echo "[${LABEL}] $*" >&2
@@ -54,7 +54,10 @@ require_executable "${LOOM_CC}" loom-cc
 require_executable "${LOOM_RAISE}" loom-raise
 require_executable "${LOOM_LOWER}" loom-lower
 require_executable "${LOOM_RAISE_OPT}" loom-raise-opt
-[[ -f "${TARGETS_FILE}" ]] || configuration_error "missing targets file: ${TARGETS_FILE}"
+if ! python3 "${REPO_ROOT}/test/corpus_inventory.py" validate-smoke \
+        --suite cmsis-dsp --targets "${SMOKE_TARGETS_FILE}"; then
+    configuration_error "invalid smoke target table: ${SMOKE_TARGETS_FILE}"
+fi
 [[ -d "${SRC_ROOT}" && -d "${DSP_INC}" && -d "${DSP_PRIV_INC}" ]] || configuration_error \
     "CMSIS-DSP sources or headers not found under ${DSP_ROOT}"
 [[ -d "${CORE_INC}" ]] || configuration_error "CMSIS-Core headers not found at: ${CORE_INC}"
@@ -138,7 +141,7 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
 
     echo "  PASS  ${src}"
     row_count=$((row_count + 1))
-done < "${TARGETS_FILE}"
+done < "${SMOKE_TARGETS_FILE}"
 
-(( row_count > 0 )) || row_error "target table contains no source rows"
+(( row_count > 0 )) || row_error "smoke target table contains no source rows"
 echo "[${LABEL}] PASS"

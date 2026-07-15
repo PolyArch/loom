@@ -88,9 +88,18 @@ entry for each case records:
 * optional grouping tags such as reduction, scan, stencil, sort, graph,
   sparse, signal, bit, geometry, string, or neural.
 
+Each source identity must appear only once within its manifest case. The
+combined inventory must also reject a canonical source path claimed by more
+than one emitted case row.
+
 Runners must discover cases from the manifest rather than from a
 hard-coded shell array. Targeted integration tiers are explicit manifest
 subsets and do not redefine the complete corpus.
+
+`test/corpus_inventory.py` is the canonical derived inventory view shared with
+CMSIS tooling. It must validate `test/app/manifest.json`, preserve each case's
+source identities, and derive counts from the loaded entries. It must not
+maintain a second LoomBench membership list.
 
 ## Validation Tiers
 

@@ -161,6 +161,12 @@ spatial accelerators. The target universe includes:
   parameters, ADG Builder recipe defaults, and backend profile selection
   through one resolved configuration model.
 
+Membership in the three source suites is derived by
+`test/corpus_inventory.py`: LoomBench from `test/app/manifest.json`, and both
+CMSIS suites from tracked `Source/**/*.c` files in their pinned submodules.
+Small compiler or hardware integration selections are explicit smoke subsets,
+not alternate suite definitions.
+
 All workload families target the full validation ladder from native or
 drop-in compile/run through RTL/FPA evidence. A missing intermediate or
 backend capability must be represented by a structured unsupported-scope
@@ -204,8 +210,8 @@ backend evidence.
 Each component spec owns its detailed verification surface. The global
 verification policy is:
 
-* each accepted workload row must have a manifest or report row naming
-  its status;
+* each attempted workload row must report its own outcome; inventory
+  enumeration alone does not assign pipeline status;
 * each target boundary must have positive and negative tests or audit
   checks;
 * every machine-consumed report must identify schema version, producer,

@@ -1,8 +1,8 @@
-# CMSIS-DSP DFG Integration
+# CMSIS-DSP DFG Smoke Coverage
 
-`test/frontend/cmsis_dsp_dfg.test` is the only frontend CMSIS-DSP
-integration entry point. It runs `run_cmsis_dsp_dfg.sh` over the real
-sources selected in `cmsis_dsp_integration_targets.txt`.
+`test/frontend/cmsis_dsp_dfg_smoke.test` runs
+`run_cmsis_dsp_dfg_smoke.sh` over the real sources selected in
+`cmsis_dsp_dfg_smoke_targets.txt`.
 
 For every target, the runner:
 
@@ -22,19 +22,23 @@ source|triple|cpu|source_symbol|extra_cflags
 `extra_cflags` is optional and contains whitespace-separated compiler
 flags. Sources are relative to `externals/cmsis-dsp/Source`.
 
-Run the integration directly from the repository root:
+Run the smoke path directly from the repository root:
 
 ```bash
-bash test/cmsis-dsp/run_cmsis_dsp_dfg.sh
+bash test/cmsis-dsp/run_cmsis_dsp_dfg_smoke.sh
 ```
 
-`TARGETS_OVERRIDE` can select a focused target table and `OUT_OVERRIDE`
-can isolate generated artifacts. Tool paths can be overridden with the
-corresponding `LOOM_*` environment variables.
+`SMOKE_TARGETS_OVERRIDE` can select another explicit smoke table and
+`OUT_OVERRIDE` can isolate generated artifacts. Tool paths can be overridden
+with the corresponding `LOOM_*` environment variables.
 
-This table records current executable-DFG coverage, not the canonical
-CMSIS-DSP suite inventory. The canonical inventory remains every tracked
-`Source/**/*.c` file at the pinned submodule commit.
+The canonical CMSIS-DSP inventory is every tracked `Source/**/*.c` file at the
+pinned submodule commit. The command
+`python3 test/corpus_inventory.py list --suite cmsis-dsp` derives and emits that
+complete set. The smoke table is validated as a strict inventory subset before
+the compiler runs; it records only current source-to-DFG smoke coverage and
+cannot add or remove suite members.
 
-Files under `externals/` remain unmodified. Per-source compiler changes
-belong in the target table.
+Files under `externals/` remain unmodified. Sparse compiler metadata needed by
+the smoke path belongs in the smoke table and does not imply support for any
+unattempted inventory source.
