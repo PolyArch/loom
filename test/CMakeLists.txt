@@ -20,7 +20,6 @@ set(LOOM_TEST_DEPENDS
   loom-raise-opt
   loom-adg-builder-test
   loom-alignment-test
-  loom-candidate-dump
   loom-config-test
   loom-cost-test
   loom-coverage-test
@@ -34,7 +33,6 @@ set(LOOM_TEST_DEPENDS
   loom-synth-base-test
   loom-synth-config-test
   loom-synth-fu-dump
-  loom-template-dump
 )
 
 add_lit_testsuite(check-fabric "Running the fabric regression tests"

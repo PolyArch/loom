@@ -2,12 +2,12 @@
 
 // Subgraph with two yield operands: one is an addi/subi (single share
 // group), the other is an andi/ori (different share group). Two inputs
-// share the same topology shape; the synthesized FU has two output
-// ports, each fed by its own fabric.op merging the per-position op
-// names.
+// share the same topology shape; the synthesized FU has two independent
+// physical ops. Their complete modes form four explicit legal encodings,
+// including the two input functions and two additional combinations.
 
 // CHECK: remark: {{.*}}synth-stat group=multi_yield strategy=anchor reason=success
-// CHECK-SAME: covered=2/2 nodes=2/0/0
+// CHECK-SAME: covered=2/2 nodes=2/0/0 encodings=4
 // CHECK: fabric.module @fu_multi_yield
 // CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu

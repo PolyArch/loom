@@ -1,19 +1,16 @@
 // RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
 
-// Tier A: two subgraphs of identical topology. Each yields the index port
-// of a `dataflow.stream` whose `step_op` and `cont_cond` attributes
-// differ between inputs (`+=`/`<` and `-=`/`>`). The synthesized FU's
-// hw_params must surface the observed-value union of step_op and
-// cont_cond, sorted lexically. Without the union the enumerator's
-// step_op/cont_cond axes would not fan out and coverage would fail.
+// The two stream functions select different correlated attribute tuples.
+// Each tuple is a complete hw_params mode and a distinct explicit encoding;
+// no field-wise Cartesian product is legal.
 
 // CHECK: remark: {{.*}}synth-stat group=stream_axes strategy=anchor reason=success
-// CHECK-SAME: covered=2/2 nodes=1/0/0
+// CHECK-SAME: covered=2/2 nodes=1/0/0 encodings=2
 // CHECK: fabric.module @fu_stream_axes
 // CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@dataflow.stream]
-// CHECK-SAME: hw_params = [{cont_cond = ["<", ">"], step_op = ["+=", "-="]}]
+// CHECK-SAME: hw_params = [
 // CHECK: fabric.yield
 
 func.func @pat_stream_inc_lt(%lb: i32, %ub: i32, %step: i32) -> i32

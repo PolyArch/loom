@@ -9,23 +9,15 @@
 namespace fabric {
 
 // Walk every fabric.fu in the module and append, immediately after the FU,
-// one dataflow.subgraph per supported software configuration. Each emitted
-// subgraph carries an `loom.from_fu_config` string attribute summarizing
-// the configuration that produced it.
+// one derived dataflow.subgraph per explicit semantic encoding. Each emitted
+// subgraph carries its `loom.from_fu_encoding` array index.
 std::unique_ptr<::mlir::Pass> createEnumerateFuSubgraphsPass();
 
 // For each dataflow.subgraph annotated with `loom.is_pattern`, try to find
 // a fabric.fu in the module that can implement the pattern. On success the
-// pattern is annotated with `loom.matched_fu` (FuOp identifier) and
-// `loom.match_config` (configuration description); otherwise the pattern
-// is tagged `loom.unmatched`.
+// pattern is annotated with the selected FU and encoding plus actor/op and
+// boundary-port correspondence; otherwise it is tagged `loom.unmatched`.
 std::unique_ptr<::mlir::Pass> createMapSubgraphToFusPass();
-
-// Partition each dataflow.graph body in the module into dataflow.subgraphs
-// using the algorithm and weights specified by the (optional) tech-mapping
-// config file. An empty `configPath` selects the built-in defaults.
-std::unique_ptr<::mlir::Pass>
-createPartitionGraphPass(std::string configPath = "");
 
 // Synthesize one fabric.fu per `loom.synth_group` value out of the input
 // dataflow.subgraphs in the module. Each successfully synthesized FU is

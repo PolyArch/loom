@@ -1,10 +1,9 @@
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"
 
+#include "Fabric/IR/ConfiguredFunction.h"
 #include "Fabric/Tech/Synthesizer/Anchor.h"
-#include "Fabric/Tech/Synthesizer/Incremental.h"
-#include "Fabric/Tech/Synthesizer/IncrementalRandom.h"
-#include "Fabric/Tech/Synthesizer/MCS.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/Compiler.h"
 
 #include <memory>
@@ -16,12 +15,40 @@ namespace loom::fabric::tech {
 //===----------------------------------------------------------------------===//
 
 bool CoverageReport::allCovered() const {
-  // Vacuous coverage: zero inputs are trivially covered. Any non-empty
-  // matchIndex requires every entry to carry a materialized index.
-  for (const ::std::optional<::std::size_t> &slot : matchIndex)
-    if (!slot.has_value())
+  for (const ::std::optional<CoverageWitness> &witness : witnesses)
+    if (!witness.has_value())
       return false;
   return true;
+}
+
+CapabilityMetrics measureCapability(::fabric::FuOp fu,
+                                    const CoverageReport &coverage) {
+  CapabilityMetrics metrics;
+  metrics.encodingCount = ::fabric::getValidSemanticEncodingCount(fu);
+  ::llvm::DenseSet<::std::size_t> covered;
+  for (const auto &witness : coverage.witnesses) {
+    if (witness && witness->encodingIndex < metrics.encodingCount)
+      covered.insert(witness->encodingIndex);
+  }
+  metrics.coveredEncodingCount = covered.size();
+  metrics.extraCapabilityCount =
+      metrics.encodingCount - metrics.coveredEncodingCount;
+  return metrics;
+}
+
+bool preferSynthCandidate(const SynthCandidateScore &candidate,
+                          const SynthCandidateScore &currentBest) {
+  if (candidate.hardwareCost != currentBest.hardwareCost)
+    return candidate.hardwareCost < currentBest.hardwareCost;
+  if (candidate.capability.extraCapabilityCount !=
+      currentBest.capability.extraCapabilityCount)
+    return candidate.capability.extraCapabilityCount <
+           currentBest.capability.extraCapabilityCount;
+  if (candidate.capability.encodingCount !=
+      currentBest.capability.encodingCount)
+    return candidate.capability.encodingCount <
+           currentBest.capability.encodingCount;
+  return candidate.deterministicOrder < currentBest.deterministicOrder;
 }
 
 //===----------------------------------------------------------------------===//
@@ -64,21 +91,10 @@ bool CoverageReport::allCovered() const {
 // Factory.
 //===----------------------------------------------------------------------===//
 
-::std::unique_ptr<Synthesizer>
-makeSynthesizer(::llvm::StringRef strategyName,
-                const ::loom::SynthConfig &cfg) {
-  // Known strategy names per `SynthConfig.strategy` documentation.
+::std::unique_ptr<Synthesizer> makeSynthesizer(::llvm::StringRef strategyName,
+                                               const ::loom::SynthConfig &cfg) {
   if (strategyName == "anchor")
     return std::make_unique<AnchorSynthesizer>(cfg);
-  if (strategyName == "incremental")
-    return std::make_unique<IncrementalSynthesizer>(cfg);
-  if (strategyName == "incremental_random")
-    return std::make_unique<IncrementalRandomSynthesizer>(cfg);
-  if (strategyName == "mcs")
-    return std::make_unique<MCSSynthesizer>(cfg);
-
-  // Unknown name: caller is responsible for translating this null
-  // return into an `invalid_input` diagnostic on the input function.
   return nullptr;
 }
 

@@ -5,9 +5,9 @@
 // `loom-generalize-subgraphs-to-fu` to dispatch the per-group synthesis
 // strategy chosen by `SynthConfig.strategy`.
 //
-// Strategies (`anchor`, `mcs`, `incremental`, `incremental_random`) all
-// implement `Synthesizer::run` over a `SynthInputs` value bundle and
-// return a `SynthResult` carrying either the freshly built wrapper
+// The canonical `anchor` strategy implements `Synthesizer::run` over a
+// `SynthInputs` value bundle and returns a `SynthResult` carrying either the
+// freshly built wrapper
 // `fabric.module` (containing one detached `fabric.pe` whose body holds
 // the inner `fabric.fu`) or one of the closed `SynthFailureReason` enum
 // values.
@@ -25,7 +25,7 @@
 // `SynthInputs.context` and `SynthResult.wrapper` for the contract.
 
 #include "Common/SynthConfig.h"
-#include "Dataflow/IR/DataflowOps.h"
+#include "Fabric/IR/ConfiguredFunction.h"
 #include "Fabric/IR/FabricOps.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -40,6 +40,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace loom::fabric::tech {
 
@@ -69,22 +70,43 @@ enum class SynthFailureReason : uint8_t {
 // spec wording verbatim.
 ::llvm::StringRef failureReasonString(SynthFailureReason);
 
-// Coverage report produced by `CoverageVerifier::verify`. Lives in this
-// header so `SynthResult` can embed one by value without forming a
-// circular dependency with the verifier (which depends on the
-// `Synthesizer` family at link time, not at type time).
-struct CoverageReport {
-  // For each input subgraph, the index of a materialized FU candidate
-  // that matches it, or `std::nullopt` on miss.
-  ::llvm::SmallVector<::std::optional<::std::size_t>, 8> matchIndex;
+struct CoverageWitness {
+  ::std::size_t encodingIndex = 0;
+  ::llvm::SmallVector<unsigned, 8> actorToFabricOp;
+  ::llvm::SmallVector<::std::pair<unsigned, unsigned>, 4> inputPorts;
+  ::llvm::SmallVector<::std::pair<unsigned, unsigned>, 4> outputPorts;
+};
 
-  // True iff every input subgraph found a materialized match. Vacuous
-  // coverage (`matchIndex` empty) returns `true`: zero inputs are
-  // trivially covered by any FU. The verifier never produces an empty
-  // `matchIndex` for a non-empty input list, so this default surfaces
-  // only for callers that build a `SynthResult` with no verifier run.
+struct CoverageReport {
+  // Complete match witness keyed by input order. A present witness carries
+  // the selected encoding, actor-to-fabric.op correspondence, and exact
+  // boundary-port mapping needed by a structural realization.
+  ::llvm::SmallVector<::std::optional<CoverageWitness>, 8> witnesses;
+
+  // True iff every input function has a complete witness. An empty input set
+  // is vacuously covered.
   bool allCovered() const;
 };
+
+struct CapabilityMetrics {
+  ::std::size_t encodingCount = 0;
+  ::std::size_t coveredEncodingCount = 0;
+  ::std::size_t extraCapabilityCount = 0;
+};
+
+CapabilityMetrics measureCapability(::fabric::FuOp fu,
+                                    const CoverageReport &coverage);
+
+struct SynthCandidateScore {
+  double hardwareCost = 0.0;
+  CapabilityMetrics capability;
+  ::std::size_t deterministicOrder = 0;
+};
+
+// Lower hardware cost wins. Equivalent primary cost prefers less extra
+// capability, then fewer total encodings, then stable producer order.
+bool preferSynthCandidate(const SynthCandidateScore &candidate,
+                          const SynthCandidateScore &currentBest);
 
 // Inputs to one Synthesizer run. References borrow; ownership is not
 // transferred. The synthesizer must not store these references past the
@@ -93,10 +115,10 @@ struct SynthInputs {
   // Lexical group name (the value of `loom.synth_group`, or
   // `"default"` for the implicit group).
   ::llvm::StringRef groupName;
-  // One entry per input subgraph in this group. The synthesizer may
-  // reorder its internal handling but must produce a `CoverageReport`
-  // whose `matchIndex` is keyed by this slice's order.
-  ::llvm::ArrayRef<::dataflow::SubgraphOp> subgraphs;
+  // One canonical software function per input in this group. The synthesizer
+  // may reorder its internal handling but must produce a `CoverageReport` whose
+  // witnesses are keyed by this slice's order.
+  ::llvm::ArrayRef<::fabric::ConfiguredFunction> functions;
   // Resolved synth config (already parsed; defaults applied).
   const ::loom::SynthConfig &config;
   // Scratch MLIR context for this worker. Per the spec rule "MLIR
@@ -126,6 +148,9 @@ struct SynthResult {
   // CoverageVerifier output. Default-constructed when the verifier is
   // disabled (or for failure paths that never reached verification).
   CoverageReport coverage;
+  // Explicit capability metrics derived from the verified encoding set and
+  // distinct input coverage witnesses.
+  CapabilityMetrics capability;
   // Diagnostics emitted during synthesis (informational; not an error
   // log). Strategies should keep these short and machine-readable so
   // lit tests can assert against them.
@@ -148,15 +173,10 @@ public:
   virtual SynthResult run(const SynthInputs &) = 0;
 };
 
-// Factory: looks up `SynthConfig.strategy` and constructs the right
-// concrete subclass. For strategies that are not yet implemented, this
-// returns a stub that immediately reports `TopologyMismatch` with a
-// note explaining that the named strategy is a stub. Returns `nullptr`
-// on an unknown strategy name (caller must propagate as
-// `invalid_input`).
-//
-// `strategyName` is matched exactly (no canonicalization); the four
-// known names are `anchor`, `mcs`, `incremental`, `incremental_random`.
+// Factory for externally selectable canonical synthesis. Only `anchor`
+// currently implements normalized hw_params modes, explicit valid encodings,
+// and the shared coverage gate. Other historical strategy names return
+// nullptr.
 ::std::unique_ptr<Synthesizer>
 makeSynthesizer(::llvm::StringRef strategyName,
                 const ::loom::SynthConfig &);

@@ -1,2 +1,0 @@
-synth:
-  fallback_chain: [anchor, mcs, incremental]

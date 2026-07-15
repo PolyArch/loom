@@ -7,10 +7,13 @@
 #include "Common/SynthConfig.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Fabric/IR/ConfiguredFunction.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
+#include "Fabric/Tech/ConfiguredFunctionAdapters.h"
 #include "Fabric/Tech/Synthesizer/Anchor.h"
 #include "Fabric/Tech/Synthesizer/CostModel.h"
+#include "Fabric/Tech/Synthesizer/CoverageVerifier.h"
 #include "Fabric/Tech/Synthesizer/Parallel.h"
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"
 
@@ -51,13 +54,16 @@
 
 namespace {
 
-// One synth group's pre-splice bookkeeping. We carry the lexical name
-// (used as a stable sort key), the input subgraphs, and the parent
-// func.func of each subgraph (for failure annotation).
+// One synth group's canonical functions and parent operations.
 struct SynthGroup {
   std::string name;
-  ::llvm::SmallVector<::dataflow::SubgraphOp, 4> subgraphs;
+  ::llvm::SmallVector<::fabric::ConfiguredFunction, 4> functions;
   ::llvm::SmallVector<::mlir::func::FuncOp, 4> parents;
+};
+
+struct ValidatedInput {
+  ::mlir::func::FuncOp parent;
+  ::fabric::ConfiguredFunction function;
 };
 
 // Sanitize a group name into a symbol-safe token: replace any character
@@ -91,14 +97,10 @@ struct WorkerHandoff {
   std::string wrapperIR;
 };
 
-// Run the configured primary strategy and walk `fallbackChain` on
-// failure. Returns the *primary's* failure reason on full failure (per
-// the spec: "most informative: primary's failure reason"). The
-// returned `SynthResult::wrapper` is owned by the caller via
-// `OwningOpRef`.
+// Run the one externally selectable canonical synthesis path.
 static ::loom::fabric::tech::SynthResult
-runWithFallback(const ::loom::SynthConfig &cfg,
-                const ::loom::fabric::tech::SynthInputs &inputs) {
+runCanonicalSynthesis(const ::loom::SynthConfig &cfg,
+                      const ::loom::fabric::tech::SynthInputs &inputs) {
   using ::loom::fabric::tech::makeSynthesizer;
   using ::loom::fabric::tech::SynthResult;
 
@@ -115,19 +117,7 @@ runWithFallback(const ::loom::SynthConfig &cfg,
     return r;
   }
 
-  SynthResult primaryResult = primary->run(inputs);
-  if (primaryResult.success())
-    return primaryResult;
-
-  for (const std::string &fallback : cfg.fallbackChain) {
-    auto strat = makeSynthesizer(fallback, cfg);
-    if (!strat)
-      continue;
-    SynthResult r = strat->run(inputs);
-    if (r.success())
-      return r;
-  }
-  return primaryResult;
+  return primary->run(inputs);
 }
 
 // Walk a fabric.fu body and count its top-level fabric.op / mux /
@@ -166,6 +156,37 @@ static ::fabric::FuOp findInnerFu(::fabric::ModuleOp wrapper) {
       found = fu;
   });
   return found;
+}
+
+static void enforceCanonicalSynthesisGate(
+    ::loom::fabric::tech::SynthResult &result,
+    ::llvm::ArrayRef<::fabric::ConfiguredFunction> inputs,
+    const ::loom::SynthConfig &cfg) {
+  using ::loom::fabric::tech::SynthFailureReason;
+  if (!result.success())
+    return;
+
+  ::fabric::FuOp fu = findInnerFu(result.wrapper.get());
+  if (!fu || ::mlir::failed(::mlir::verify(result.wrapper.get()))) {
+    result.wrapper = nullptr;
+    result.failureReason = SynthFailureReason::VerifierFailed;
+    result.notes.push_back(
+        "canonical synthesis gate: wrapper or FU verification failed");
+    return;
+  }
+
+  ::loom::fabric::tech::CoverageVerifier verifier(cfg);
+  result.coverage = verifier.verify(fu, inputs);
+  if (!result.coverage.allCovered()) {
+    result.wrapper = nullptr;
+    result.failureReason = SynthFailureReason::VerifierFailed;
+    result.notes.push_back(
+        "canonical synthesis gate: explicit encodings do not cover every "
+        "input function");
+    return;
+  }
+  result.capability =
+      ::loom::fabric::tech::measureCapability(fu, result.coverage);
 }
 
 class GeneralizeSubgraphsToFuPass
@@ -225,25 +246,22 @@ private:
   // Per-func.func input validation. Populates `valid` (one entry per
   // surviving function) and annotates rejected functions with
   // `loom.synth_failed = "invalid_input"`.
-  void validateFunctions(
-      ::mlir::ModuleOp module,
-      ::llvm::SmallVectorImpl<
-          ::std::pair<::mlir::func::FuncOp, ::dataflow::SubgraphOp>> &valid);
+  void validateFunctions(::mlir::ModuleOp module,
+                         ::llvm::SmallVectorImpl<ValidatedInput> &valid);
 
   // Bucket surviving (function, subgraph) pairs by the parent
   // func.func's `loom.synth_group` attribute (default == `"default"`).
   // The returned vector is sorted lexically by group name.
   ::llvm::SmallVector<SynthGroup, 4>
-  collectGroups(::llvm::ArrayRef<
-                ::std::pair<::mlir::func::FuncOp, ::dataflow::SubgraphOp>>
-                    valid);
+  collectGroups(::llvm::ArrayRef<ValidatedInput> valid);
 
   // Detect symbol conflict / idempotent re-synth for a group before
   // strategy invocation. Returns true iff the splice loop should
   // still try to synthesize this group; false means the group has
   // been handled by either the symbol-conflict failure path or the
   // idempotent-skip remark.
-  bool prepareSymbolSlot(::mlir::ModuleOp module, const SynthGroup &group);
+  bool prepareSymbolSlot(::mlir::ModuleOp module, const SynthGroup &group,
+                         const ::loom::SynthConfig &cfg);
 
   // Emit the canonical `synth-stat` remark for one group.
   void emitSynthStat(::mlir::ModuleOp module, const SynthGroup &group,
@@ -258,9 +276,7 @@ private:
 } // namespace
 
 void GeneralizeSubgraphsToFuPass::validateFunctions(
-    ::mlir::ModuleOp module,
-    ::llvm::SmallVectorImpl<
-        ::std::pair<::mlir::func::FuncOp, ::dataflow::SubgraphOp>> &valid) {
+    ::mlir::ModuleOp module, ::llvm::SmallVectorImpl<ValidatedInput> &valid) {
   auto *ctx = &getContext();
   auto invalidAttr = ::mlir::StringAttr::get(
       ctx, ::loom::fabric::tech::failureReasonString(
@@ -297,27 +313,34 @@ void GeneralizeSubgraphsToFuPass::validateFunctions(
       continue;
     }
 
-    valid.emplace_back(func, subgraphs.front());
+    ::fabric::ConfiguredFunction function;
+    std::string adapterError;
+    if (::mlir::failed(::fabric::configuredFunctionFromSubgraph(
+            subgraphs.front(), function, adapterError))) {
+      func->setAttr("loom.synth_failed", invalidAttr);
+      func.emitWarning() << "func.func @" << func.getName()
+                         << ": invalid_input (" << adapterError << ")";
+      continue;
+    }
+    valid.push_back({func, std::move(function)});
   }
 }
 
 ::llvm::SmallVector<SynthGroup, 4> GeneralizeSubgraphsToFuPass::collectGroups(
-    ::llvm::ArrayRef<::std::pair<::mlir::func::FuncOp, ::dataflow::SubgraphOp>>
-        valid) {
+    ::llvm::ArrayRef<ValidatedInput> valid) {
   // Use std::map for lexically-sorted iteration; the spec requires
   // groups to be processed in lexical name order both for parallel
   // dispatch results and for the splice loop.
   std::map<std::string, SynthGroup> table;
-  for (const auto &pair : valid) {
-    auto func = pair.first;
-    auto sg = pair.second;
+  for (const ValidatedInput &input : valid) {
+    auto func = input.parent;
     std::string name = "default";
     if (auto attr = func->getAttrOfType<::mlir::StringAttr>("loom.synth_group"))
       name = attr.getValue().str();
     auto &slot = table[name];
     if (slot.name.empty())
       slot.name = name;
-    slot.subgraphs.push_back(sg);
+    slot.functions.push_back(input.function);
     slot.parents.push_back(func);
   }
   ::llvm::SmallVector<SynthGroup, 4> groups;
@@ -338,7 +361,7 @@ void GeneralizeSubgraphsToFuPass::validateFunctions(
 //       `mlir::verify`).
 //   Signature match: the wrapper's signature (operand types + FU
 //       result types) matches the expected signature derived from
-//       the input subgraphs via `collectWrapperPorts`.
+//       the canonical input functions via `collectWrapperPorts`.
 //
 // Returns an empty string on success. Returns a deterministic failure
 // reason note (suitable for an attached note on the diag) when any
@@ -347,8 +370,9 @@ void GeneralizeSubgraphsToFuPass::validateFunctions(
 static std::string
 validateMarkerWrapper(::fabric::ModuleOp existingModule,
                       ::llvm::StringRef symbolName, ::llvm::StringRef groupName,
-                      ::llvm::ArrayRef<::dataflow::SubgraphOp> subgraphs,
-                      ::mlir::MLIRContext *ctx) {
+                      ::llvm::ArrayRef<::fabric::ConfiguredFunction> functions,
+                      ::mlir::MLIRContext *ctx,
+                      const ::loom::SynthConfig &cfg) {
   std::string note;
   ::llvm::raw_string_ostream os(note);
 
@@ -437,19 +461,18 @@ validateMarkerWrapper(::fabric::ModuleOp existingModule,
     }
   }
 
-  // Signature match: the expected signature is the lift of the input
-  // subgraphs' block-arg types (-> wrapper inputs) and yield operand
-  // types (-> FU result types) to fabric.bits<N>. The wrapper's input
+  // Signature match: the expected signature is the physical lift of the
+  // canonical function boundaries. The wrapper's input
   // surface lives on the fabric.module's entry-block argument types;
   // the wrapper's "result" surface (per the synthesizer contract) is
   // the inner fabric.fu's result type list, since fabric.module itself
   // declares no SSA results.
-  auto portsOpt = ::loom::fabric::tech::collectWrapperPorts(subgraphs, ctx);
+  auto portsOpt = ::loom::fabric::tech::collectWrapperPorts(functions, ctx);
   if (!portsOpt.has_value()) {
     os << "symbol_conflict (existing @" << symbolName
        << " tagged loom.synthesized_for=\"" << groupName
        << "\" but expected signature could not be derived from the input "
-          "subgraphs (block-arg / yield types not lift-able) "
+          "functions (boundary types are not lift-able) "
           "[signature-mismatch])";
     return os.str();
   }
@@ -498,11 +521,22 @@ validateMarkerWrapper(::fabric::ModuleOp existingModule,
     return os.str();
   }
 
+  ::loom::fabric::tech::CoverageVerifier coverageVerifier(cfg);
+  auto coverage = coverageVerifier.verify(innerFu, functions);
+  if (!coverage.allCovered()) {
+    os << "symbol_conflict (existing @" << symbolName
+       << " tagged loom.synthesized_for=\"" << groupName
+       << "\" but semantic coverage failed: explicit valid encodings do not "
+          "cover every input function [semantic-coverage])";
+    return os.str();
+  }
+
   return std::string();
 }
 
-bool GeneralizeSubgraphsToFuPass::prepareSymbolSlot(::mlir::ModuleOp module,
-                                                    const SynthGroup &group) {
+bool GeneralizeSubgraphsToFuPass::prepareSymbolSlot(
+    ::mlir::ModuleOp module, const SynthGroup &group,
+    const ::loom::SynthConfig &cfg) {
   std::string symbolName = wrapperNameFor(group.name);
   auto *existing = ::mlir::SymbolTable::lookupSymbolIn(module, symbolName);
   if (!existing)
@@ -521,8 +555,8 @@ bool GeneralizeSubgraphsToFuPass::prepareSymbolSlot(::mlir::ModuleOp module,
         // no-op.
         std::string failureNote = validateMarkerWrapper(
             existingModule, symbolName, group.name,
-            ::llvm::ArrayRef<::dataflow::SubgraphOp>(group.subgraphs),
-            &getContext());
+            ::llvm::ArrayRef<::fabric::ConfiguredFunction>(group.functions),
+            &getContext(), cfg);
         if (failureNote.empty()) {
           ::mlir::InFlightDiagnostic diag =
               module.emitRemark()
@@ -616,9 +650,7 @@ void GeneralizeSubgraphsToFuPass::runOnOperation() {
   }
 
   // Validate input functions.
-  ::llvm::SmallVector<::std::pair<::mlir::func::FuncOp, ::dataflow::SubgraphOp>,
-                      4>
-      valid;
+  ::llvm::SmallVector<ValidatedInput, 4> valid;
   validateFunctions(module, valid);
 
   // Empty input: emit a `no synth groups` remark and return. We
@@ -647,16 +679,15 @@ void GeneralizeSubgraphsToFuPass::runOnOperation() {
   ::llvm::SmallVector<SynthGroup, 4> queued;
   queued.reserve(groups.size());
   for (auto &g : groups) {
-    if (prepareSymbolSlot(module, g))
+    if (prepareSymbolSlot(module, g, cfg))
       queued.push_back(std::move(g));
   }
   if (queued.empty())
     return;
 
-  // Parallel-dispatch synthesis. Each worker runs the primary
-  // strategy (and the fallback chain on failure) on its group's input
-  // subgraphs in a thread-local *scratch* MLIRContext (per the spec
-  // rule "MLIR mutation is never parallel"). The strategy never sees
+  // Parallel-dispatch synthesis. Each worker runs canonical Anchor synthesis
+  // on its group's ConfiguredFunctions in a thread-local scratch MLIRContext.
+  // The strategy never sees
   // the user's MLIRContext: that would race on `StorageUniquer`,
   // attribute interning, and type uniquing as soon as a real strategy
   // begins building IR. To hand the wrapper back to the main thread
@@ -667,20 +698,17 @@ void GeneralizeSubgraphsToFuPass::runOnOperation() {
   ::loom::fabric::tech::WorkerPool pool(
       cfg.parallelismCrossGroup ? cfg.parallelismWorkers : 1u);
 
-  // Per-group input bundle that is cheap to copy into a worker. We
-  // pass the raw SubgraphOp slice + group name; the worker constructs
-  // its own scratch MLIRContext and rebuilds a `SynthInputs` rooted in
-  // it before invoking the strategy.
+  // Per-group canonical input bundle borrowed by a worker.
   struct WorkerJob {
     ::llvm::StringRef groupName;
-    ::llvm::ArrayRef<::dataflow::SubgraphOp> subgraphs;
+    ::llvm::ArrayRef<::fabric::ConfiguredFunction> functions;
   };
   ::llvm::SmallVector<WorkerJob, 4> jobs;
   jobs.reserve(queued.size());
   for (auto &g : queued)
     jobs.push_back(
         WorkerJob{::llvm::StringRef(g.name),
-                  ::llvm::ArrayRef<::dataflow::SubgraphOp>(g.subgraphs)});
+                  ::llvm::ArrayRef<::fabric::ConfiguredFunction>(g.functions)});
 
   auto handoffs = pool.parallelMap<WorkerJob, WorkerHandoff>(
       ::llvm::ArrayRef<WorkerJob>(jobs), [&cfg](const WorkerJob &job) {
@@ -695,9 +723,10 @@ void GeneralizeSubgraphsToFuPass::runOnOperation() {
         scratch.appendDialectRegistry(registry);
         scratch.loadAllAvailableDialects();
 
-        ::loom::fabric::tech::SynthInputs in{job.groupName, job.subgraphs, cfg,
+        ::loom::fabric::tech::SynthInputs in{job.groupName, job.functions, cfg,
                                              &scratch};
-        ::loom::fabric::tech::SynthResult res = runWithFallback(cfg, in);
+        ::loom::fabric::tech::SynthResult res = runCanonicalSynthesis(cfg, in);
+        enforceCanonicalSynthesisGate(res, job.functions, cfg);
 
         WorkerHandoff out;
         if (res.success()) {
@@ -769,6 +798,9 @@ void GeneralizeSubgraphsToFuPass::runOnOperation() {
     bool snapshotSuccess = result.success();
     double snapshotCost = 0.0;
     unsigned snapshotCovered = 0;
+    unsigned snapshotEncodings = 0;
+    unsigned snapshotCoveredEncodings = 0;
+    unsigned snapshotExtraCapability = 0;
     NodeCounts snapshotCounts;
     if (snapshotSuccess) {
       auto innerFu = findInnerFu(result.wrapper.get());
@@ -776,8 +808,13 @@ void GeneralizeSubgraphsToFuPass::runOnOperation() {
         ::loom::fabric::tech::CostModel cm(cfg);
         snapshotCost = cm.evaluate(innerFu);
         snapshotCounts = countFuBodyNodes(innerFu);
+        snapshotEncodings = result.capability.encodingCount;
+        snapshotCoveredEncodings = result.capability.coveredEncodingCount;
+        snapshotExtraCapability = result.capability.extraCapabilityCount;
       }
-      snapshotCovered = static_cast<unsigned>(group.subgraphs.size());
+      for (const auto &witness : result.coverage.witnesses)
+        if (witness)
+          ++snapshotCovered;
     }
 
     if (result.success()) {
@@ -819,10 +856,12 @@ void GeneralizeSubgraphsToFuPass::runOnOperation() {
         os << "success";
       else
         os << ::loom::fabric::tech::failureReasonString(result.failureReason);
-      unsigned m = static_cast<unsigned>(group.subgraphs.size());
+      unsigned m = static_cast<unsigned>(group.functions.size());
       os << " cost=" << snapshotCost << " covered=" << snapshotCovered << "/"
          << m << " nodes=" << snapshotCounts.ops << "/" << snapshotCounts.muxes
-         << "/" << snapshotCounts.demuxes;
+         << "/" << snapshotCounts.demuxes << " encodings=" << snapshotEncodings
+         << " covered_encodings=" << snapshotCoveredEncodings
+         << " extra_capability=" << snapshotExtraCapability;
       module.emitRemark() << os.str();
     }
   }

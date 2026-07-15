@@ -41,7 +41,7 @@ physical implementation structure.
 The TechMapping-profile Mapping Artifact owns the selected logical
 realization relation between those exact artifacts. It owns
 target-specific actor grouping, selected FU realization, software-to-FU
-correspondence, and the selected software-visible FU configuration.
+correspondence, and the selected Fabric-defined valid semantic encoding.
 
 The Physical-Mapping-profile artifact owns the concrete physical
 realization and legality facts added after TechMapping. At this level only
@@ -123,8 +123,8 @@ Only an immutable artifact satisfying this closed coverage gate may enter
 PnR.
 
 The profile contains Compute Realizations and any typed representation
-obligations required by those realizations. Exact representation and
-adapter record syntax remains deferred.
+obligations required by those realizations. Adapter record syntax remains
+deferred.
 
 ## Compute Realization
 
@@ -140,18 +140,23 @@ Its confirmed conceptual content is:
 * one exact FU implementation reference in the referenced Fabric artifact;
 * complete actor-to-`fabric.op` correspondence;
 * complete typed software-boundary-to-FU-template-port correspondence;
-* a reference to the selected Fabric-defined valid semantic encoding and
-  its condition-relevant configuration; and
+* a reference to the selected Fabric-defined valid semantic encoding; and
 * the typed legality and representation obligations for the match.
 
 This list defines semantic ownership, not Mapping dialect field syntax.
-The exact normalized-encoding representation remains open.
+The encoding representation and configured-function projection are specified
+by `docs/spec-fabric-reconfigurable-op.md`.
 
 The configured function is a derived typed and attributed projection of
-the selected FU topology under the selected encoding and configuration.
+the selected FU topology under the selected encoding.
 It is used to verify the actor group, but it is not persisted as a second
 software graph, does not receive independent program identity, and does
 not replace either input artifact.
+
+Mapping does not copy selected `sw_configs` into canonical Fabric. A backend
+may derive transient `sw_configs = {mode = N}` values for `fabric.op`
+resources and route selections from the selected encoding, but those values
+are caches or lowering products, not another capability or type authority.
 
 ## Edge Ownership
 
@@ -215,6 +220,11 @@ configuration, or physical realization facts. Referencing the exact
 Mapping Artifact identity identifies those facts. Evidence cannot make an
 incomplete or invalid mapping acceptable.
 
+Synthesis and DSE evidence may record explicit encoding count, distinct
+input-covered encoding count, and extra capability count. These are candidate
+metrics derived from Fabric encodings and coverage witnesses; they do not add
+another Mapping or capability authority.
+
 ## Profile Validation
 
 The shared Mapping verifier supports closed completeness profiles.
@@ -227,7 +237,14 @@ The TechMapping profile verifies at least:
 * closed coverage for the declared graph-definition set;
 * complete actor-to-`fabric.op` and boundary-port correspondence;
 * selected FU and encoding ownership; and
+* configured-function equality for the actor group, including exact semantic
+  types, attributes, ordered edges, fanout, and boundary correspondence; and
 * all required typed realization and representation obligations.
+
+Port legality uses exact port kind and compatible payload capacity. In
+particular, `bits` and `bits_tag` do not correspond implicitly, while an
+untagged physical payload may be wider than the software requirement under the
+low-bit-aligned widening and narrowing rules owned by Fabric.
 
 Configured-function equivalence and full configuration legality remain
 required target checks even where the current structural validator has not
@@ -243,7 +260,6 @@ checks remain deferred with their record schemas.
 This document does not define:
 
 * Mapping dialect assembly syntax;
-* normalized semantic encoding syntax;
 * physical delta record schemas;
 * route-tree, resource-time, schedule, tag, buffer, memory, or boundary
   schemas;

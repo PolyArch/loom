@@ -1,10 +1,8 @@
 // RUN: loom-synth-base-test --list-strategies | FileCheck %s
 
-// The factory dispatches on `SynthConfig.strategy`. The four canonical
-// names are documented in `docs/spec-generalize-subgraphs-to-fu.md`'s
-// "Configuration Surface" section and listed by the helper in spec order.
+// Only strategies that satisfy the canonical capability and coverage gate
+// are externally selectable.
 
 // CHECK: anchor
-// CHECK-NEXT: mcs
-// CHECK-NEXT: incremental
-// CHECK-NEXT: incremental_random
+// CHECK-NOT: mcs
+// CHECK-NOT: incremental

@@ -4,15 +4,8 @@ add_mlir_library(MLIRFabricTechSynthesizer
   CostModel.cpp
   CoverageVerifier.cpp
   GeneralizeSubgraphsToFuPass.cpp
-  HwParams.cpp
-  Incremental.cpp
-  IncrementalExtensions.cpp
-  IncrementalExtensionsTierC.cpp
-  IncrementalRandom.cpp
   ExactMcesSolver.cpp
-  MCS.cpp
   McsGraph.cpp
-  McesMaterializer.cpp
   McesSolver.cpp
   Parallel.cpp
   Synthesizer.cpp

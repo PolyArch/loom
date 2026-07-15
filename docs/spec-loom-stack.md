@@ -411,13 +411,10 @@ only through `dataflow.graph.launch` inside an innermost executable
 thread body. The target dataflow dialect has no separate
 `dataflow.graph.func` surface.
 
-`dataflow.subgraph` represents an L3 software partition inside a
-`dataflow.graph` definition. It is a candidate unit for matching or
-generalizing against `fabric.fu` templates. It is not a hardware
-hierarchy node, PE, route, schedule, tag, or time-sharing statement.
-The dataflow dialect does not attach spatial / temporal schedule
-semantics to subgraphs; resource sharing and tags are introduced by
-binding, PnR, or fabric-side IR.
+`dataflow.subgraph` is a migration-only adapter form, not a canonical L3
+partition. TechMapping owns actor grouping, selected FU encodings, actor/op
+correspondence, and boundary-port correspondence without persisting a second
+software graph. Resource sharing and tags remain Mapping, PnR, or Fabric facts.
 
 ## Hardware Representation
 

@@ -172,7 +172,6 @@ The target configuration tree includes these domains:
 * `dse`: objective records, continuous weights, preset weight profiles,
   ranking policies, Pareto policy, seeds, and fidelity requirements;
 * `adg_builder`: recipe defaults and architecture-template parameters;
-* `fabric_techmap`: partitioner and FU-synthesis parameters;
 * `pnr`: placement, routing, resource-compatibility, and mapping search
   policies;
 * `sim`: DFG-sim and CGRA-sim model parameters, limits, and fidelity
@@ -186,6 +185,10 @@ The target configuration tree includes these domains:
 
 These domains are organizational views over one resolved configuration.
 They are not independent files with independent defaults.
+
+FU synthesis settings remain on the dedicated consumed `SynthConfig` surface.
+An unconsumed `fabric_techmap` domain must not appear in `ResolvedConfig`,
+canonical resolved JSON, or configuration fingerprints.
 
 ## DSE Weights
 

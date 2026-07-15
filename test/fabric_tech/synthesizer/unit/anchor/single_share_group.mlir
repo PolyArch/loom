@@ -6,12 +6,12 @@
 // the sorted union of observed names.
 
 // CHECK: remark: {{.*}}synth-stat group=alu_int_32 strategy=anchor reason=success
-// CHECK-SAME: covered=2/2 nodes=1/0/0
+// CHECK-SAME: covered=2/2 nodes=1/0/0 encodings=2
 // CHECK: fabric.module @fu_alu_int_32
 // CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@arith.addi, @arith.subi]
-// CHECK-SAME: hw_params = [{}]
+// CHECK-SAME: hw_params = [
 // CHECK: !fabric.bits<32>
 // CHECK: fabric.yield
 

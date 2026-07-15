@@ -63,9 +63,14 @@ std::string nearestSchedule(mlir::Operation *op) {
   return "spatial";
 }
 
+bool isControlledBySemanticEncoding(mlir::Operation *op) {
+  auto fu = op->getParentOfType<fabric::FuOp>();
+  return fu && fu->getAttrOfType<mlir::ArrayAttr>("valid_encodings");
+}
+
 void appendHwParamOptions(mlir::Operation *op, HardwareResource &resource) {
   auto hwParams = op->getAttrOfType<mlir::ArrayAttr>("hw_params");
-  if (!hwParams)
+  if (!hwParams || isControlledBySemanticEncoding(op))
     return;
   for (mlir::Attribute paramSet : hwParams) {
     auto dict = mlir::dyn_cast<mlir::DictionaryAttr>(paramSet);
@@ -692,6 +697,20 @@ llvm::Expected<HardwareModel> collectHardwareModel(mlir::Operation *hardware,
         "PnR requires fully elaborated Fabric hardware; unresolved "
         "fabric.instantiate @%s remains in @%s",
         unresolvedInstance->c_str(), name.str().c_str());
+
+  bool hasUnselectedSemanticEncoding = false;
+  hardware->walk([&](fabric::OpOp op) {
+    if (!hasUnselectedSemanticEncoding &&
+        isConcreteHardwareOperation(op, hardware) &&
+        isControlledBySemanticEncoding(op))
+      hasUnselectedSemanticEncoding = true;
+  });
+  if (hasUnselectedSemanticEncoding)
+    return llvm::createStringError(
+        std::errc::not_supported,
+        "legacy PnR cannot consume normalized fabric.op hw_params in @%s; "
+        "a selected fabric.fu semantic encoding is required",
+        name.str().c_str());
 
   HardwareModel model;
   unsigned fabricOpIndex = 0;

@@ -378,3 +378,25 @@ fabric.module @op_hw_value_not_array(%lb : !fabric.bits<32>, %ub : !fabric.bits<
   }
   fabric.yield
 }
+
+// -----
+// Normalized hardware modes are selected only by mode index.
+fabric.module @op_normalized_mode_out_of_range(%a : !fabric.bits<32>,
+                                               %b : !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                      %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%fa = %pa : !fabric.bits<32>,
+              %fb = %pb : !fabric.bits<32>) -> () {
+      // expected-error @+1 {{'sw_configs.mode' is out of range for hw_params}}
+      %v = fabric.op [@arith.addi] (%fa, %fb)
+           {hw_params = [
+             {op = @arith.addi, function_type = (i32, i32) -> i32,
+              input_ports = [0 : i32, 1 : i32],
+              output_ports = [0 : i32], attributes = {}}
+           ], sw_configs = {mode = 1 : i32}}
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield
+    }
+  }
+  fabric.yield
+}

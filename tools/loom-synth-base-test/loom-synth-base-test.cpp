@@ -1,7 +1,5 @@
-// CLI helper for lit tests: drives the Synthesizer base + factory glue
-// added in this task. The tool is intentionally tiny -- it never builds
-// IR -- because the strategies it dispatches through are all stubs at
-// this point.
+// CLI helper for lit tests: drives canonical synthesizer factory glue and
+// selected pure solver helpers.
 //
 // Usage:
 //   loom-synth-base-test --list-strategies
@@ -9,9 +7,7 @@
 //   loom-synth-base-test --make <strategy>
 //
 // Output formats (one per line):
-//   --list-strategies         -> the four canonical strategy names
-//                                (lexical: anchor, mcs, incremental,
-//                                 incremental_random) in spec order.
+//   --list-strategies         -> the selectable canonical strategy names.
 //   --list-failure-reasons    -> the 13 SynthFailureReason snake_case
 //                                strings in enum order. The success
 //                                sentinel `None` prints as `none` so
@@ -51,7 +47,7 @@
 
 static ::llvm::cl::opt<bool> listStrategies(
     "list-strategies",
-    ::llvm::cl::desc("Print the four canonical strategy names, one per line"),
+    ::llvm::cl::desc("Print canonical strategy names, one per line"),
     ::llvm::cl::init(false));
 
 static ::llvm::cl::opt<bool> listFailureReasons(
@@ -75,13 +71,16 @@ static ::llvm::cl::opt<bool> exactMcesCapStatus(
                      "print cap/proof status"),
     ::llvm::cl::init(false));
 
+static ::llvm::cl::opt<bool> capabilityTieBreak(
+    "capability-tiebreak",
+    ::llvm::cl::desc("Exercise deterministic capability-aware candidate "
+                     "ranking"),
+    ::llvm::cl::init(false));
+
 namespace {
 
 constexpr ::llvm::StringRef kKnownStrategies[] = {
     "anchor",
-    "mcs",
-    "incremental",
-    "incremental_random",
 };
 
 // Enum-order list of every SynthFailureReason (including None so the
@@ -137,10 +136,10 @@ int doMake(::llvm::StringRef strategy) {
   ::mlir::MLIRContext ctx(registry);
   ctx.loadAllAvailableDialects();
 
-  ::llvm::SmallVector<::dataflow::SubgraphOp, 0> noSubgraphs;
+  ::llvm::SmallVector<::fabric::ConfiguredFunction, 0> noFunctions;
   ::loom::fabric::tech::SynthInputs inputs{
       /*groupName=*/::llvm::StringRef("t"),
-      /*subgraphs=*/::llvm::ArrayRef<::dataflow::SubgraphOp>(noSubgraphs),
+      /*functions=*/::llvm::ArrayRef<::fabric::ConfiguredFunction>(noFunctions),
       /*config=*/cfg,
       /*context=*/&ctx,
   };
@@ -229,6 +228,36 @@ int doExactMcesCapStatus() {
   return 0;
 }
 
+int doCapabilityTieBreak() {
+  ::loom::fabric::tech::SynthCandidateScore smallerExtra;
+  smallerExtra.hardwareCost = 10.0;
+  smallerExtra.capability.encodingCount = 3;
+  smallerExtra.capability.extraCapabilityCount = 1;
+  smallerExtra.deterministicOrder = 1;
+
+  ::loom::fabric::tech::SynthCandidateScore largerExtra = smallerExtra;
+  largerExtra.capability.encodingCount = 4;
+  largerExtra.capability.extraCapabilityCount = 2;
+  largerExtra.deterministicOrder = 0;
+
+  ::loom::fabric::tech::SynthCandidateScore lowerCost = largerExtra;
+  lowerCost.hardwareCost = 9.0;
+
+  ::llvm::outs() << "equal_cost_prefers_less_extra="
+                 << (::loom::fabric::tech::preferSynthCandidate(smallerExtra,
+                                                                largerExtra)
+                         ? "true"
+                         : "false")
+                 << "\n";
+  ::llvm::outs() << "lower_cost_precedes_extra_metric="
+                 << (::loom::fabric::tech::preferSynthCandidate(lowerCost,
+                                                                smallerExtra)
+                         ? "true"
+                         : "false")
+                 << "\n";
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -254,6 +283,12 @@ int main(int argc, char **argv) {
   }
   if (exactMcesCapStatus.getValue()) {
     int rc = doExactMcesCapStatus();
+    if (rc != 0)
+      return rc;
+    didSomething = true;
+  }
+  if (capabilityTieBreak.getValue()) {
+    int rc = doCapabilityTieBreak();
     if (rc != 0)
       return rc;
     didSomething = true;

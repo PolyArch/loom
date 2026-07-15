@@ -21,8 +21,17 @@ fabric.module @fu_y(%a: !fabric.bits<32>, %b: !fabric.bits<32>)
     attributes {loom.synthesized_for = "y"} {
   fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                        %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
-    fabric.fu(%aa = %pa : !fabric.bits<32>, %bb = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
-      %x = fabric.op [@arith.addi] (%aa, %bb) {hw_params = [{}]}
+    fabric.fu(%aa = %pa : !fabric.bits<32>,
+              %bb = %pb : !fabric.bits<32>) -> !fabric.bits<32>
+        attributes {valid_encodings = [{outputs = [0 : i32], resources = [
+          {resource = 0 : i32, mode = 0 : i32}
+        ]}]} {
+      %x = fabric.op [@arith.addi] (%aa, %bb)
+           {hw_params = [{op = @arith.addi,
+             function_type = (i32, i32) -> i32,
+             input_ports = [0 : i32, 1 : i32],
+             output_ports = [0 : i32],
+             attributes = {overflowFlags = #arith.overflow<none>}}]}
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %x : !fabric.bits<32>
     }

@@ -1,8 +1,0 @@
-synth:
-  strategy: incremental_random
-  parallelism:
-    workers: 1
-  incremental_random:
-    restarts: 1
-    seed: 42
-    input_order_heuristic: smallest_first

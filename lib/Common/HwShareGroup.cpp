@@ -5,37 +5,22 @@
 namespace loom {
 namespace common {
 
+static ::llvm::SmallVector<::llvm::DenseSet<::llvm::StringRef>, 32>
+buildHwShareGroups() {
+  ::llvm::SmallVector<::llvm::DenseSet<::llvm::StringRef>, 32> groups;
+#define LOOM_HW_SHARE_GROUP(ID) groups.emplace_back();
+#define LOOM_HW_SHARE_MEMBER(NAME) groups.back().insert(NAME);
+#define LOOM_HW_SHARE_GROUP_END()
+#include "Common/HwShareGroups.def"
+#undef LOOM_HW_SHARE_GROUP
+#undef LOOM_HW_SHARE_MEMBER
+#undef LOOM_HW_SHARE_GROUP_END
+  return groups;
+}
+
 ::llvm::ArrayRef<::llvm::DenseSet<::llvm::StringRef>> hwShareGroups() {
-  // Multi-member hardware-share groups. Single-member groups are implicit:
-  // any op not in any group below is its own singleton (cannot share with
-  // any other op).
-  static const ::llvm::SmallVector<::llvm::DenseSet<::llvm::StringRef>, 32>
-      groups = {
-          {"arith.addi", "arith.subi"},
-          {"arith.divsi", "arith.remsi"},
-          {"arith.divui", "arith.remui"},
-          {"arith.shli", "arith.shrsi", "arith.shrui"},
-          {"arith.andi", "arith.ori", "arith.xori"},
-          {"arith.minsi", "arith.maxsi"},
-          {"arith.minui", "arith.maxui"},
-          {"arith.cmpi", "llvm.icmp"},
-          {"arith.sitofp", "arith.uitofp"},
-          {"arith.fptosi", "arith.fptoui"},
-          {"arith.addf", "arith.subf"},
-          {"arith.divf", "arith.remf"},
-          {"arith.minimumf", "arith.maximumf"},
-          {"math.sin", "math.cos"},
-          {"math.sinh", "math.cosh"},
-          {"math.exp", "math.exp2", "math.expm1"},
-          {"math.log", "math.log2", "math.log10", "math.log1p"},
-          {"math.floor", "math.ceil", "math.round", "math.trunc",
-           "math.roundeven"},
-          {"math.sqrt", "math.rsqrt"},
-          {"math.tanh", "math.erf"},
-          {"llvm.arm.qadd16", "llvm.arm.sadd16", "llvm.arm.qsub16",
-           "llvm.arm.qsub8"},
-          {"llvm.trunc", "llvm.sext", "llvm.zext"},
-      };
+  // Single-member groups are implicit: an unlisted op is its own singleton.
+  static const auto groups = buildHwShareGroups();
   return groups;
 }
 

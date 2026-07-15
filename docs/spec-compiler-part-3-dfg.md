@@ -200,11 +200,9 @@ verifier or parsing side effect.
   `dataflow.graph` callable by symbol, supplies the leading
   `ctrl_in : none` and user operands, and yields a leading
   `done_out : none` plus user results.
-* `dataflow.subgraph` is the L3 software partition unit inside a
-  `dataflow.graph` definition's body. It is used by fabric tech
-  mapping as a candidate for matching or generalizing against
-  `fabric.fu` templates. It is not a hardware hierarchy node,
-  schedule marker, route, tag, or resource-sharing decision.
+* `dataflow.subgraph` is a migration-only adapter input. Canonical
+  `dataflow.graph` definitions do not persist L3 partitions; TechMapping owns
+  actor grouping and selected FU realization.
 
 Function definitions remain module-level symbols in this design.
 `dataflow.thread` definitions are also module-level symbols (and

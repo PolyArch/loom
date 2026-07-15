@@ -1,10 +1,7 @@
 synth:
-  strategy: incremental_random
+  strategy: anchor
   parallelism:
     workers: 4
-  incremental_random:
-    restarts: 8
-    seed: 2024
   cost:
     mux_penalty: 1.5
     demux_penalty: 1.5

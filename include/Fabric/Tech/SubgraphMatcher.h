@@ -3,10 +3,10 @@
 
 #include "Dataflow/IR/DataflowOps.h"
 #include "Fabric/IR/FabricOps.h"
-#include "mlir/IR/BuiltinOps.h"
-#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 
-#include <string>
+#include <cstddef>
+#include <utility>
 
 namespace fabric {
 
@@ -15,37 +15,19 @@ struct FuMatchResult {
   bool matched = false;
   // Reference to the matching FU.
   FuOp fu;
-  // Human-readable description of the matched configuration.
-  std::string configDescription;
-  // Per-fabric-op sw_configs to apply to `fu` to realize the matched
-  // pattern subgraph. Keys are pointers into `fu`'s body.
-  ::llvm::DenseMap<::mlir::Operation *, ::mlir::DictionaryAttr> swConfigsByOp;
+  // Index into the FU's Fabric-owned valid_encodings array.
+  std::size_t encodingIndex = 0;
+  // Pattern actor order to physical fabric.op resource index.
+  ::llvm::SmallVector<unsigned, 8> actorToFabricOp;
+  // Software boundary port to FU boundary port correspondence.
+  ::llvm::SmallVector<std::pair<unsigned, unsigned>, 4> inputPorts;
+  ::llvm::SmallVector<std::pair<unsigned, unsigned>, 4> outputPorts;
 };
 
-// Whether two dataflow.subgraph instances describe the same software-level
-// computation, up to graph isomorphism. Implemented by VF2-style
-// backtracking matching:
-//   * block-argument permutations are allowed,
-//   * commutativity-preserving operand permutations are allowed iff the
-//     SSA wiring remains consistent under some bijection,
-//   * op kind, arity, result-type widths and attribute dictionaries
-//     (excluding `loom.*` annotations) must agree.
-// Matching is deterministic: same input -> same yes/no answer.
-bool subgraphsIsomorphic(::dataflow::SubgraphOp user,
-                         ::dataflow::SubgraphOp tpl);
-
-// Backwards-compatible alias retained for the original strict-equality
-// callers. Implemented on top of `subgraphsIsomorphic`.
-bool subgraphsStructurallyEqual(::dataflow::SubgraphOp a,
-                                ::dataflow::SubgraphOp b);
-
-// Try to find a software configuration of `fu` that implements `pattern`.
-// `tempModule` is used as scratch space for the FU's enumerated candidates;
-// its body is cleared before each FU is queried so the same scratch module
-// can be reused across calls. Returns a default-constructed FuMatchResult
-// (matched == false) when no configuration matches.
-FuMatchResult mapPatternToFu(::dataflow::SubgraphOp pattern, FuOp fu,
-                             ::mlir::ModuleOp tempModule);
+// Match a legacy dataflow.subgraph input against the FU's explicit semantic
+// encodings. The result selects one encoding and carries the complete mapping
+// witness; it never produces or persists workload-selected sw_configs.
+FuMatchResult mapPatternToFu(::dataflow::SubgraphOp pattern, FuOp fu);
 
 } // namespace fabric
 

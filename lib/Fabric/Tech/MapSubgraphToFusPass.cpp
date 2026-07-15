@@ -17,6 +17,8 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstdint>
+
 namespace {
 
 struct MapSubgraphToFusPass
@@ -30,8 +32,8 @@ struct MapSubgraphToFusPass
   ::llvm::StringRef getDescription() const final {
     return "For each dataflow.subgraph annotated 'loom.is_pattern', try to "
            "match it against every fabric.fu in the module and annotate the "
-           "subgraph with the resulting sw_configs. Patterns that match "
-           "no FU are tagged with 'loom.unmatched'.";
+           "subgraph with its selected encoding and mapping witness. Patterns "
+           "that match no FU are tagged with 'loom.unmatched'.";
   }
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
@@ -61,6 +63,18 @@ struct MapSubgraphToFusPass
     return s;
   }
 
+  static ::mlir::DenseI32ArrayAttr portCorrespondenceAttr(
+      ::mlir::MLIRContext *ctx,
+      ::llvm::ArrayRef<std::pair<unsigned, unsigned>> correspondence) {
+    ::llvm::SmallVector<int32_t, 8> values;
+    values.reserve(correspondence.size() * 2);
+    for (auto [softwarePort, fuPort] : correspondence) {
+      values.push_back(static_cast<int32_t>(softwarePort));
+      values.push_back(static_cast<int32_t>(fuPort));
+    }
+    return ::mlir::DenseI32ArrayAttr::get(ctx, values);
+  }
+
   void runOnOperation() final {
     ::mlir::ModuleOp module = getOperation();
     auto *ctx = &getContext();
@@ -86,36 +100,41 @@ struct MapSubgraphToFusPass
     if (patterns.empty())
       return;
 
-    auto tempModule = ::mlir::ModuleOp::create(::mlir::UnknownLoc::get(ctx));
-
     for (::dataflow::SubgraphOp pat : patterns) {
       // Strip prior annotations, if any, before re-running.
       pat->removeAttr("loom.matched_fu");
-      pat->removeAttr("loom.match_config");
+      pat->removeAttr("loom.matched_encoding");
+      pat->removeAttr("loom.actor_to_fabric_op");
+      pat->removeAttr("loom.input_port_correspondence");
+      pat->removeAttr("loom.output_port_correspondence");
       pat->removeAttr("loom.unmatched");
 
       bool found = false;
       for (auto [i, fu] : ::llvm::enumerate(fus)) {
-        // Clear the scratch module body before each FU query.
-        tempModule.getBody()->clear();
-
-        auto r = ::fabric::mapPatternToFu(pat, fu, tempModule);
+        auto r = ::fabric::mapPatternToFu(pat, fu);
         if (r.matched) {
+          ::llvm::SmallVector<int32_t, 8> actorToFabricOp;
+          for (unsigned resource : r.actorToFabricOp)
+            actorToFabricOp.push_back(static_cast<int32_t>(resource));
+          pat->setAttr("loom.actor_to_fabric_op",
+                       ::mlir::DenseI32ArrayAttr::get(ctx, actorToFabricOp));
+          pat->setAttr("loom.input_port_correspondence",
+                       portCorrespondenceAttr(ctx, r.inputPorts));
+          pat->setAttr("loom.matched_encoding",
+                       ::mlir::IntegerAttr::get(
+                           ::mlir::IntegerType::get(ctx, 64), r.encodingIndex));
           pat->setAttr(
               "loom.matched_fu",
               ::mlir::StringAttr::get(ctx, nameForFu(fu, fuIndexInParent[i])));
-          pat->setAttr("loom.match_config",
-                       ::mlir::StringAttr::get(ctx, r.configDescription));
+          pat->setAttr("loom.output_port_correspondence",
+                       portCorrespondenceAttr(ctx, r.outputPorts));
           found = true;
           break;
         }
       }
       if (!found)
         pat->setAttr("loom.unmatched", ::mlir::UnitAttr::get(ctx));
-      tempModule.getBody()->clear();
     }
-
-    tempModule.erase();
   }
 };
 

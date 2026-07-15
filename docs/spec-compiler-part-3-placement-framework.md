@@ -259,37 +259,25 @@ scalar-only case is a fallback for explicitly selected accelerator
 regions, not an implicit L1 selection rule. The
 details are specified in `docs/spec-compiler-part-3-impl.md`.
 
-## 8. L3 Subgraph Partitioning
+## 8. L3 Compute Realization Search
 
-L3 decides how a `dataflow.graph` definition's body is
-partitioned into `dataflow.subgraph` units that can be matched or
-generalized against FU templates. The dataflow compiler owns this
-software partitioning instance. Fabric tech owns template compatibility
-and template synthesis. PnR and the mapping artifact own selected
-binding between software subgraphs and concrete hardware resources.
+L3 searches actor groups and selected Fabric FU encodings without persisting a
+second software partition graph. The Canonical Dataflow Program remains the
+software authority; Fabric owns topology and capability; TechMapping owns the
+selected actor group, encoding, actor/op correspondence, and boundary ports.
 
-The admission constraints include the `dataflow.subgraph` verifier,
-the fabric-op support matrix, memory-op exclusion from `fabric.fu`,
-explicit subgraph boundary values, acyclic or feedback legality as
-required by the selected fabric strategy, and the target template
-library. A `dataflow.subgraph` is a software partition unit only. It
-does not encode a hardware hierarchy level, PE identity, route,
-resource sharing decision, schedule slot, or temporal tag. Boundary
-types are limited to graph-compute values and `none` control; memref
-traffic remains at the enclosing `dataflow.graph` level through
-`dataflow.load` / `dataflow.store` and is not part of a `fabric.fu`
-candidate.
+Admission checks include exact configured-function equality, memory-op
+exclusion from `fabric.fu`, complete boundary correspondence, feedback
+legality, and explicit Fabric encoding legality. Search cost may consider FU
+utilization, routing resources, reconfiguration pressure, coverage, extra
+capability, and reuse. These are mapping or evaluation facts, not Dataflow
+attributes.
 
-The L3 cost model may consider FU utilization, mux / demux cost,
-reconfiguration pressure, template coverage, and reuse opportunities
-when evaluating how software subgraphs match fabric templates. Those
-costs are mapping criteria, not attributes on `dataflow.subgraph`
-itself.
-
-The existing `loom-partition-graph-into-subgraphs` pass already has
-multiple policy implementations and a cost model. Future work may align
-its public terminology with this framework without changing the
-correctness contract of existing fabric tests.
+The former `loom-partition-graph-into-subgraphs` template-library path was
+removed because it made materialized `dataflow.subgraph` instances a competing
+mapping authority. Future L3 work must produce Compute Realization candidates
+that select Fabric-defined encodings and retain actor/op and boundary-port
+correspondence.
 
 ## 9. Diagnostics and Tests
 

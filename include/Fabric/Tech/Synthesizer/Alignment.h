@@ -1,8 +1,8 @@
 #ifndef LOOM_FABRIC_TECH_SYNTHESIZER_ALIGNMENT_H
 #define LOOM_FABRIC_TECH_SYNTHESIZER_ALIGNMENT_H
 
-// Alignment facade over `dataflow.subgraph` bodies for the synthesizer's
-// anchor / mcs / incremental / incremental_random strategies.
+// Legacy alignment facade over `dataflow.subgraph` bodies for graph-analysis
+// tools. Canonical synthesis consumes ConfiguredFunction directly.
 //
 // This header is intentionally a thin wrapper around the matcher's
 // `GraphView` data model (see `Fabric/Tech/SubgraphGraphView.h`) so that
@@ -95,7 +95,7 @@ NodeSignature signatureOf(Source s);
 
 // Yield anchors: the ordered list of `Source` descriptors for the
 // `dataflow.yield`'s operands. This is the canonical entry point for
-// anchor / mcs / incremental alignment: every strategy walks its
+// Graph alignment helpers walk their
 // subgraphs starting from these anchor sources.
 ::llvm::SmallVector<Source, 4>
 yieldAnchors(::dataflow::SubgraphOp sg);

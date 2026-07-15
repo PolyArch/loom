@@ -171,38 +171,37 @@ def Fabric_OpOp : Fabric_Op<"op", []> {
       "one of a set of software ops";
   let description = [{
     Models a piece of fabric hardware (a "module") that can be
-    configured to implement any one of the software ops listed in
-    `op_list`. Members of `op_list` must either be a single op or all
-    belong to one shared hardware-share group. Hardware ports are
-    `fabric.bits<N>` only (other fabric types are rejected).
+    configured to implement one of its typed `hw_params`. The required
+    `op_list` mirrors the distinct operation identities in those modes.
+    Members must either be a single op or all belong to one shared hardware-
+    share group. Hardware ports are `fabric.bits<N>` only.
 
     Attributes:
-      * `op_list`    : array of `FlatSymbolRefAttr`, e.g.
-                       `[@arith.addi, @arith.subi]`. Printed in `[]`
-                       since the list is itself a hardware property.
-      * `hw_params`  : `[ {key = ...} ]` - an `ArrayAttr` of length 1
-                       wrapping a `DictionaryAttr` whose keys/values
-                       describe the hardware-supported set for each
-                       configurable parameter. The outer `[]` marks
-                       this as a hardware attribute. Optional (some
-                       ops have no hardware parameters).
+      * `op_list`    : checked array of `FlatSymbolRefAttr`, e.g.
+                       `[@arith.addi, @arith.subi]`. In a canonical FU its
+                       distinct entries equal the operation identities in
+                       `hw_params`.
+      * `hw_params`  : an array of complete typed software modes owned
+                       by this physical datapath. Each mode contains one
+                       operation identity, exact function type, exact semantic
+                       attributes, and ordered software-to-physical port maps.
+                       FU semantic encodings select these modes by index. Each
+                       mode must verify as the selected software operation;
+                       mapped physical payload widths may differ and need only
+                       be at least the corresponding software widths.
+                       Legacy programmed Fabric may still use the historical
+                       length-one allowed-set dictionary as an adapter form;
+                       canonical FUs reject that shape.
       * `sw_configs` : `{ key = ... }` - a `DictionaryAttr` with
-                       runtime-config values selecting concrete
-                       behaviour. When `op_list` has more than one
-                       member and the op is programmed, `sw_configs`
-                       must contain `op_sel` whose string value
-                       matches one of the symbols in `op_list`.
-                       Follows the fabric all-or-nothing rule:
-                       either present (programmed) or absent
-                       (pure hardware description).
+                       runtime configuration. Normalized `hw_params` modes are
+                       selected only by `{mode = N}`. Legacy allowed-set input
+                       retains its historical field selections. Canonical FUs
+                       do not persist either programmed form.
   }];
 
-  let arguments = (ins
-      Variadic<Fabric_BitsType>:$inputs,
-      ArrayAttr:$op_list,
+  let arguments = (ins Variadic<Fabric_BitsType>:$inputs, ArrayAttr:$op_list,
       OptionalAttr<ArrayAttr>:$hw_params,
-      OptionalAttr<DictionaryAttr>:$sw_configs
-  );
+      OptionalAttr<DictionaryAttr>:$sw_configs);
   let results = (outs Variadic<Fabric_BitsType>:$outputs);
 
   let assemblyFormat = [{

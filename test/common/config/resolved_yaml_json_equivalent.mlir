@@ -5,12 +5,12 @@
 // RUN: loom-config-test --resolved-fingerprint %p/resolved_equiv.json > %t.json.fp
 // RUN: diff %t.yaml.fp %t.json.fp
 // RUN: FileCheck %s < %t.yaml.json
+// RUN: FileCheck %s --check-prefix=NO-TECHMAP < %t.yaml.json
 
 // CHECK-DAG: "config_id": "unit.config"
 // CHECK-DAG: "addr_bits": 40
 // CHECK-DAG: "index_width": 64
 // CHECK-DAG: "mem_bus_width": 1024
-// CHECK-DAG: "algorithm": "beam"
-// CHECK-DAG: "beam_width": 9
 // CHECK-DAG: "objective_id": "minimize_runtime"
 // CHECK-DAG: "objective_id": "minimize_area"
+// NO-TECHMAP-NOT: "fabric_techmap"

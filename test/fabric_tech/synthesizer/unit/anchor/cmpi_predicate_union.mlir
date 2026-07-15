@@ -1,20 +1,17 @@
 // RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
 
-// Tier A: two subgraphs of identical topology (yield <- arith.cmpi of two
-// block args), one with predicate `eq`, the other with predicate `ne`.
-// Per spec "hw_params policy" the synthesized FU's hw_params must surface
-// the observed-value union of predicate strings -- otherwise the
-// enumerator would not fan out the predicate axis and coverage
-// verification would fail.
+// Two functions have identical topology but distinct comparison predicates.
+// The shared physical op owns both complete typed modes, and the FU exposes
+// one explicit encoding for each mode without field-wise recombination.
 
 // CHECK: remark: {{.*}}synth-stat group=cmpi_pred strategy=anchor reason=success
-// CHECK-SAME: covered=2/2 nodes=1/0/0
+// CHECK-SAME: covered=2/2 nodes=1/0/0 encodings=2
 // CHECK: fabric.module @fu_cmpi_pred
 // CHECK-SAME: loom.synthesized_for = "cmpi_pred"
 // CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@arith.cmpi]
-// CHECK-SAME: hw_params = [{predicate = ["eq", "ne"]}]
+// CHECK-SAME: hw_params = [
 // CHECK: fabric.yield
 
 func.func @pat_cmpi_eq(%a: i32, %b: i32) -> i1

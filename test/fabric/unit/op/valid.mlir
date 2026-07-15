@@ -287,3 +287,27 @@ fabric.module @op_gate(%bv : !fabric.bits<32>) {
   }
   fabric.yield
 }
+
+// CHECK-LABEL: fabric.module @op_normalized_hw_modes
+fabric.module @op_normalized_hw_modes(%a : !fabric.bits<32>,
+                                      %b : !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                      %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%fa = %pa : !fabric.bits<32>,
+              %fb = %pb : !fabric.bits<32>) -> () {
+      // CHECK: sw_configs = {mode = 1 : i32}
+      %v = fabric.op [@arith.addi, @arith.subi] (%fa, %fb)
+           {hw_params = [
+             {op = @arith.addi, function_type = (i32, i32) -> i32,
+              input_ports = [0 : i32, 1 : i32],
+              output_ports = [0 : i32], attributes = {}},
+             {op = @arith.subi, function_type = (i32, i32) -> i32,
+              input_ports = [0 : i32, 1 : i32],
+              output_ports = [0 : i32], attributes = {}}
+           ], sw_configs = {mode = 1 : i32}}
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield
+    }
+  }
+  fabric.yield
+}

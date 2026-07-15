@@ -1,5 +1,6 @@
 add_mlir_dialect_library(MLIRFabric
   ArithPredicates.cpp
+  ConfiguredFunction.cpp
   FabricBoundaryOps.cpp
   FabricDialect.cpp
   FabricInstantiateOp.cpp

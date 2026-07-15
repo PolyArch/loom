@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <set>
@@ -82,8 +83,7 @@ llvm::Expected<std::string> requireScalarString(llvm::yaml::Node *node,
 }
 
 llvm::Expected<unsigned> requireUnsigned(llvm::yaml::Node *node,
-                                         llvm::StringRef key,
-                                         bool allowZero = false) {
+                                         llvm::StringRef key) {
   if (isQuotedScalar(node))
     return diagnostic("config_type_mismatch", key,
                       "expected unsigned integer, got string");
@@ -91,28 +91,13 @@ llvm::Expected<unsigned> requireUnsigned(llvm::yaml::Node *node,
   if (!valueOrErr)
     return valueOrErr.takeError();
   std::uint64_t value = 0;
-  if (StringRef(*valueOrErr).getAsInteger(10, value) ||
-      (!allowZero && value == 0))
+  if (StringRef(*valueOrErr).getAsInteger(10, value) || value == 0)
     return diagnostic("config_type_mismatch", key,
                       "expected positive unsigned integer");
   if (value > std::numeric_limits<unsigned>::max())
     return diagnostic("config_range_violation", key,
                       "unsigned integer exceeds supported range");
   return static_cast<unsigned>(value);
-}
-
-llvm::Expected<std::uint64_t> requireUInt64(llvm::yaml::Node *node,
-                                            llvm::StringRef key) {
-  if (isQuotedScalar(node))
-    return diagnostic("config_type_mismatch", key,
-                      "expected unsigned integer, got string");
-  auto valueOrErr = requireScalarString(node, key);
-  if (!valueOrErr)
-    return valueOrErr.takeError();
-  std::uint64_t value = 0;
-  if (StringRef(*valueOrErr).getAsInteger(10, value))
-    return diagnostic("config_type_mismatch", key, "expected unsigned integer");
-  return value;
 }
 
 llvm::Expected<double> requireDouble(llvm::yaml::Node *node,
@@ -127,34 +112,6 @@ llvm::Expected<double> requireDouble(llvm::yaml::Node *node,
   if (StringRef(*valueOrErr).getAsDouble(value))
     return diagnostic("config_type_mismatch", key, "expected number");
   return value;
-}
-
-struct FabricTechMapAlgorithmName {
-  loom::FabricTechMapAlgorithm algorithm;
-  llvm::StringLiteral name;
-};
-
-constexpr FabricTechMapAlgorithmName fabricTechMapAlgorithmNames[] = {
-    {loom::FabricTechMapAlgorithm::Greedy, "greedy"},
-    {loom::FabricTechMapAlgorithm::List, "list"},
-    {loom::FabricTechMapAlgorithm::Beam, "beam"},
-    {loom::FabricTechMapAlgorithm::SimulatedAnnealing, "sa"},
-    {loom::FabricTechMapAlgorithm::ILP, "ilp"},
-};
-
-llvm::Expected<loom::FabricTechMapAlgorithm>
-parseFabricTechMapAlgorithm(StringRef value, StringRef canonicalKey) {
-  for (const FabricTechMapAlgorithmName &entry : fabricTechMapAlgorithmNames)
-    if (entry.name == value)
-      return entry.algorithm;
-  return diagnostic("config_unknown_policy", canonicalKey, value);
-}
-
-StringRef fabricTechMapAlgorithmName(loom::FabricTechMapAlgorithm algorithm) {
-  for (const FabricTechMapAlgorithmName &entry : fabricTechMapAlgorithmNames)
-    if (entry.algorithm == algorithm)
-      return entry.name;
-  llvm_unreachable("invalid resolved Fabric TechMapping algorithm");
 }
 
 bool isKnownObjective(StringRef value) {
@@ -177,14 +134,6 @@ struct ConfigPatch {
   std::optional<unsigned> addrBits;
   std::optional<unsigned> indexWidth;
   std::optional<unsigned> memBusWidth;
-  std::optional<double> alpha;
-  std::optional<double> beta;
-  std::optional<double> gamma;
-  std::optional<loom::FabricTechMapAlgorithm> algorithm;
-  std::optional<unsigned> beamWidth;
-  std::optional<unsigned> saSteps;
-  std::optional<std::uint64_t> saSeed;
-  std::optional<unsigned> threads;
   std::optional<std::string> rankingPolicy;
   std::optional<std::vector<loom::ResolvedDseObjective>> objectives;
   std::set<std::string> touchedKeys;
@@ -221,22 +170,6 @@ llvm::Error mergeSiblingPatch(ConfigPatch &dst, const ConfigPatch &src) {
     dst.indexWidth = src.indexWidth;
   if (src.memBusWidth)
     dst.memBusWidth = src.memBusWidth;
-  if (src.alpha)
-    dst.alpha = src.alpha;
-  if (src.beta)
-    dst.beta = src.beta;
-  if (src.gamma)
-    dst.gamma = src.gamma;
-  if (src.algorithm)
-    dst.algorithm = src.algorithm;
-  if (src.beamWidth)
-    dst.beamWidth = src.beamWidth;
-  if (src.saSteps)
-    dst.saSteps = src.saSteps;
-  if (src.saSeed)
-    dst.saSeed = src.saSeed;
-  if (src.threads)
-    dst.threads = src.threads;
   if (src.rankingPolicy)
     dst.rankingPolicy = src.rankingPolicy;
   if (src.objectives)
@@ -254,22 +187,6 @@ void applyPatch(loom::ResolvedConfig &config, const ConfigPatch &patch) {
     config.global.indexWidth = *patch.indexWidth;
   if (patch.memBusWidth)
     config.global.memBusWidth = *patch.memBusWidth;
-  if (patch.alpha)
-    config.fabricTechMap.alpha = *patch.alpha;
-  if (patch.beta)
-    config.fabricTechMap.beta = *patch.beta;
-  if (patch.gamma)
-    config.fabricTechMap.gamma = *patch.gamma;
-  if (patch.algorithm)
-    config.fabricTechMap.algorithm = *patch.algorithm;
-  if (patch.beamWidth)
-    config.fabricTechMap.beamWidth = *patch.beamWidth;
-  if (patch.saSteps)
-    config.fabricTechMap.saSteps = *patch.saSteps;
-  if (patch.saSeed)
-    config.fabricTechMap.saSeed = *patch.saSeed;
-  if (patch.threads)
-    config.fabricTechMap.threads = *patch.threads;
   if (patch.rankingPolicy)
     config.dse.rankingPolicy = *patch.rankingPolicy;
   if (patch.objectives)
@@ -299,79 +216,6 @@ llvm::Error parseGlobal(ConfigPatch &patch, llvm::yaml::MappingNode &map) {
       if (!valueOrErr)
         return valueOrErr.takeError();
       patch.memBusWidth = *valueOrErr;
-    } else {
-      return diagnostic("config_unknown_key", canonicalKey);
-    }
-    if (llvm::Error err = touch(patch, canonicalKey))
-      return err;
-  }
-  return llvm::Error::success();
-}
-
-llvm::Error parseFabricTechMap(ConfigPatch &patch,
-                               llvm::yaml::MappingNode &map) {
-  llvm::StringSet<> seen;
-  for (auto &kv : map) {
-    llvm::SmallString<64> keyStorage;
-    StringRef key = scalarValue(kv.getKey(), keyStorage);
-    if (llvm::Error err = checkDuplicateKey(seen, "fabric_techmap", key))
-      return err;
-    std::string canonicalKey = ("fabric_techmap." + key).str();
-    if (key == "alpha") {
-      auto valueOrErr = requireDouble(kv.getValue(), canonicalKey);
-      if (!valueOrErr)
-        return valueOrErr.takeError();
-      if (*valueOrErr < 0.0)
-        return diagnostic("config_range_violation", canonicalKey,
-                          "weight must be non-negative");
-      patch.alpha = *valueOrErr;
-    } else if (key == "beta") {
-      auto valueOrErr = requireDouble(kv.getValue(), canonicalKey);
-      if (!valueOrErr)
-        return valueOrErr.takeError();
-      if (*valueOrErr < 0.0)
-        return diagnostic("config_range_violation", canonicalKey,
-                          "weight must be non-negative");
-      patch.beta = *valueOrErr;
-    } else if (key == "gamma") {
-      auto valueOrErr = requireDouble(kv.getValue(), canonicalKey);
-      if (!valueOrErr)
-        return valueOrErr.takeError();
-      if (*valueOrErr < 0.0)
-        return diagnostic("config_range_violation", canonicalKey,
-                          "weight must be non-negative");
-      patch.gamma = *valueOrErr;
-    } else if (key == "algorithm") {
-      auto valueOrErr = requireScalarString(kv.getValue(), canonicalKey);
-      if (!valueOrErr)
-        return valueOrErr.takeError();
-      auto algorithmOrErr =
-          parseFabricTechMapAlgorithm(*valueOrErr, canonicalKey);
-      if (!algorithmOrErr)
-        return algorithmOrErr.takeError();
-      patch.algorithm = *algorithmOrErr;
-    } else if (key == "beam_width") {
-      auto valueOrErr = requireUnsigned(kv.getValue(), canonicalKey);
-      if (!valueOrErr)
-        return valueOrErr.takeError();
-      patch.beamWidth = *valueOrErr;
-    } else if (key == "sa_steps") {
-      auto valueOrErr =
-          requireUnsigned(kv.getValue(), canonicalKey, /*allowZero=*/true);
-      if (!valueOrErr)
-        return valueOrErr.takeError();
-      patch.saSteps = *valueOrErr;
-    } else if (key == "sa_seed") {
-      auto valueOrErr = requireUInt64(kv.getValue(), canonicalKey);
-      if (!valueOrErr)
-        return valueOrErr.takeError();
-      patch.saSeed = *valueOrErr;
-    } else if (key == "threads") {
-      auto valueOrErr =
-          requireUnsigned(kv.getValue(), canonicalKey, /*allowZero=*/true);
-      if (!valueOrErr)
-        return valueOrErr.takeError();
-      patch.threads = *valueOrErr;
     } else {
       return diagnostic("config_unknown_key", canonicalKey);
     }
@@ -577,14 +421,6 @@ parseConfigPatchFromMapping(llvm::yaml::MappingNode &topMap,
         return diagnostic("config_type_mismatch", "global", "expected mapping");
       if (llvm::Error err = parseGlobal(local, *map))
         return err;
-    } else if (key == "fabric_techmap") {
-      auto *map =
-          llvm::dyn_cast_or_null<llvm::yaml::MappingNode>(kv.getValue());
-      if (!map)
-        return diagnostic("config_type_mismatch", "fabric_techmap",
-                          "expected mapping");
-      if (llvm::Error err = parseFabricTechMap(local, *map))
-        return err;
     } else if (key == "dse") {
       auto *map =
           llvm::dyn_cast_or_null<llvm::yaml::MappingNode>(kv.getValue());
@@ -608,22 +444,6 @@ parseConfigPatchFromMapping(llvm::yaml::MappingNode &topMap,
     merged.indexWidth = local.indexWidth;
   if (local.memBusWidth)
     merged.memBusWidth = local.memBusWidth;
-  if (local.alpha)
-    merged.alpha = local.alpha;
-  if (local.beta)
-    merged.beta = local.beta;
-  if (local.gamma)
-    merged.gamma = local.gamma;
-  if (local.algorithm)
-    merged.algorithm = local.algorithm;
-  if (local.beamWidth)
-    merged.beamWidth = local.beamWidth;
-  if (local.saSteps)
-    merged.saSteps = local.saSteps;
-  if (local.saSeed)
-    merged.saSeed = local.saSeed;
-  if (local.threads)
-    merged.threads = local.threads;
   if (local.rankingPolicy)
     merged.rankingPolicy = local.rankingPolicy;
   if (local.objectives)
@@ -660,18 +480,6 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
            {"addr_bits", static_cast<int64_t>(config.global.addrBits)},
            {"index_width", static_cast<int64_t>(config.global.indexWidth)},
            {"mem_bus_width", static_cast<int64_t>(config.global.memBusWidth)},
-       }},
-      {"fabric_techmap",
-       llvm::json::Object{
-           {"algorithm",
-            fabricTechMapAlgorithmName(config.fabricTechMap.algorithm)},
-           {"alpha", config.fabricTechMap.alpha},
-           {"beta", config.fabricTechMap.beta},
-           {"gamma", config.fabricTechMap.gamma},
-           {"beam_width", static_cast<int64_t>(config.fabricTechMap.beamWidth)},
-           {"sa_steps", static_cast<int64_t>(config.fabricTechMap.saSteps)},
-           {"sa_seed", static_cast<int64_t>(config.fabricTechMap.saSeed)},
-           {"threads", static_cast<int64_t>(config.fabricTechMap.threads)},
        }},
       {"dse",
        llvm::json::Object{

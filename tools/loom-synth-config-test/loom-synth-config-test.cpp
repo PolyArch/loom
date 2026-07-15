@@ -27,35 +27,12 @@ static void dump(const ::loom::SynthConfig &cfg) {
   ::llvm::outs() << "coverage_verifier.parallel_match="
                  << (cfg.coverageVerifierParallelMatch ? "true" : "false")
                  << "\n";
-  ::llvm::outs() << "fallback_chain.size=" << cfg.fallbackChain.size() << "\n";
-  for (size_t i = 0; i < cfg.fallbackChain.size(); ++i)
-    ::llvm::outs() << "fallback_chain[" << i << "]=" << cfg.fallbackChain[i]
-                   << "\n";
   ::llvm::outs() << "cost.mux_penalty=" << cfg.costMuxPenalty << "\n";
   ::llvm::outs() << "cost.demux_penalty=" << cfg.costDemuxPenalty << "\n";
   ::llvm::outs() << "cost.carry_penalty=" << cfg.costCarryPenalty << "\n";
   ::llvm::outs() << "anchor.allow_intra_position_mux="
                  << (cfg.anchorAllowIntraPositionMux ? "true" : "false")
                  << "\n";
-  ::llvm::outs() << "incremental.input_order_heuristic="
-                 << cfg.incrementalInputOrderHeuristic << "\n";
-  ::llvm::outs() << "incremental.coverage_verify_each_attempt="
-                 << (cfg.incrementalCoverageVerifyEachAttempt ? "true"
-                                                              : "false")
-                 << "\n";
-  ::llvm::outs() << "incremental_random.restarts=" << cfg.incrementalRandomRestarts
-                 << "\n";
-  ::llvm::outs() << "incremental_random.seed=" << cfg.incrementalRandomSeed
-                 << "\n";
-  ::llvm::outs() << "incremental_random.input_order_heuristic="
-                 << cfg.incrementalRandomInputOrderHeuristic << "\n";
-  ::llvm::outs() << "mcs.timeout_sec=" << cfg.mcsTimeoutSec << "\n";
-  ::llvm::outs() << "mcs.branch_workers=" << cfg.mcsBranchWorkers << "\n";
-  ::llvm::outs() << "mcs.candidate_cap=" << cfg.mcsCandidateCap << "\n";
-  ::llvm::outs() << "scc_full_unroll="
-                 << (cfg.sccFullUnroll ? "true" : "false") << "\n";
-  ::llvm::outs() << "subgraph_share_recurse="
-                 << (cfg.subgraphShareRecurse ? "true" : "false") << "\n";
 }
 
 int main(int argc, char **argv) {

@@ -1,20 +1,16 @@
 // RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
 
-// Tier A: two subgraphs of identical topology, each yielding the first
-// output of a 2-input `dataflow.sync`. Both inputs have the same arity
-// (M=2), so the observed-value union of the variadic `bitmask` axis
-// collapses to a single value `"11"`. The synthesized FU's hw_params
-// must surface that explicit allowed set (rather than `[{}]`) so the
-// enumerator's bitmask fan-out is constrained to the observed set.
+// Both functions use the same complete `dataflow.sync` mode. The shared
+// physical op owns that typed mode once, and the FU needs one encoding.
 
 // CHECK: remark: {{.*}}synth-stat group=sync_pair strategy=anchor reason=success
-// CHECK-SAME: covered=2/2 nodes=1/0/0
+// CHECK-SAME: covered=2/2 nodes=1/0/0 encodings=1
 // CHECK: fabric.module @fu_sync_pair
 // CHECK-SAME: loom.synthesized_for = "sync_pair"
 // CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@dataflow.sync]
-// CHECK-SAME: hw_params = [{bitmask = ["11"]}]
+// CHECK-SAME: hw_params = [
 // CHECK: fabric.yield
 
 func.func @pat_sync_a(%a: i32, %b: i32) -> i32

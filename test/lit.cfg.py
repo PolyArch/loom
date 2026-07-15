@@ -30,7 +30,6 @@ tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom-raise-opt"),
     os.path.join(config.loom_obj_root, "tools", "loom-adg-builder-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-alignment-test"),
-    os.path.join(config.loom_obj_root, "tools", "loom-candidate-dump"),
     os.path.join(config.loom_obj_root, "tools", "loom-config-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-cost-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-mapping-estimate"),
@@ -42,7 +41,6 @@ tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom-synth-base-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-synth-config-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-synth-fu-dump"),
-    os.path.join(config.loom_obj_root, "tools", "loom-template-dump"),
     os.path.join(config.loom_obj_root, "bin"),
     config.llvm_tools_dir,
 ]
@@ -50,7 +48,6 @@ tools = [
     "loom",
     "loom-adg-builder-test",
     "loom-alignment-test",
-    "loom-candidate-dump",
     "loom-config-test",
     "loom-cost-test",
     "loom-mapping-estimate",
@@ -65,7 +62,6 @@ tools = [
     "loom-synth-base-test",
     "loom-synth-config-test",
     "loom-synth-fu-dump",
-    "loom-template-dump",
     "mlir-opt",
 ]
 llvm_config.add_tool_substitutions(tools, tool_dirs)

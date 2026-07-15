@@ -20,25 +20,6 @@ configure_file(
   "${PROJECT_BINARY_DIR}/include/PnR/BuildConfig.h"
   @ONLY
 )
-
-option(LOOM_ENABLE_ILP "Enable HiGHS-backed ILP partitioner" ON)
-if(LOOM_ENABLE_ILP)
-  find_package(HIGHS CONFIG QUIET)
-  if(NOT TARGET highs::highs)
-    include(FetchContent)
-    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-    set(FAST_BUILD ON CACHE BOOL "" FORCE)
-    set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-    set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(USE_OPENMP OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(highs
-      GIT_REPOSITORY https://github.com/ERGO-Code/HiGHS
-      GIT_TAG v1.14.0)
-    FetchContent_MakeAvailable(highs)
-  endif()
-  add_compile_definitions(LOOM_HAS_ILP)
-endif()
-
 find_package(MLIR REQUIRED CONFIG)
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")

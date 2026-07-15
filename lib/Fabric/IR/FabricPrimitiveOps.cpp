@@ -2,15 +2,16 @@
 
 #include "Common/HwShareGroup.h"
 #include "Common/IndexWidth.h"
+#include "Fabric/IR/ConfiguredFunction.h"
 #include "Fabric/IR/FabricTypes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/OpImplementation.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
-#include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
 #include <optional>
@@ -546,223 +547,267 @@ LogicalResult OpOp::verify() {
     }
   }
 
-  // 4. Schema check (port count and per-port width).
-  unsigned numIns = getInputs().size();
-  unsigned numOuts = getOutputs().size();
-  SmallVector<unsigned, 4> inW, outW;
-  for (Type t : getInputs().getTypes())
-    inW.push_back(*getFabricBitsWidth(t));
-  for (Type t : getOutputs().getTypes())
-    outW.push_back(*getFabricBitsWidth(t));
-
-  // Variadic ops are always in a singleton group; opNames.size() == 1.
-  const OpSchema &schemaFront = opSchemas().lookup(opNames.front());
-  bool isFixedKind = schemaFront.kind == OpSchema::Fixed;
-
-  // Convenience for sw_configs lookups used by both variadic and shared
-  // hw_params <- sw_configs cross-check below.
-  DictionaryAttr swDict;
-  if (auto sw = getSwConfigsAttr())
-    swDict = sw;
-
-  if (!isFixedKind) {
-    // Variadic ops are singletons; ensure no group misuse already covered.
-    switch (schemaFront.kind) {
-    case OpSchema::Fixed:
-      llvm_unreachable("handled above");
-    case OpSchema::VariadicSync: {
-      if (numIns != numOuts)
+  // 4. Identify the canonical typed-mode form before applying any legacy
+  //    schema checks. A normalized mode owns its exact software type,
+  //    attributes, and ordered software-to-physical port maps. The schema
+  //    table remains only as a compatibility check for programmed forms that
+  //    do not carry typed modes.
+  ArrayAttr hwParams = getHwParamsAttr();
+  bool normalizedModes = false;
+  if (hwParams) {
+    if (hwParams.empty())
+      return emitOpError("'hw_params' must not be empty");
+    auto isMode = [](DictionaryAttr entry) {
+      return entry && entry.get("op") && entry.get("function_type") &&
+             entry.get("input_ports") && entry.get("output_ports") &&
+             entry.get("attributes");
+    };
+    for (auto [index, attr] : llvm::enumerate(hwParams)) {
+      auto entry = dyn_cast<DictionaryAttr>(attr);
+      if (!entry)
+        return emitOpError("'hw_params' entry #")
+               << index << " must be a dictionary attribute";
+      bool entryIsMode = isMode(entry);
+      if (index == 0)
+        normalizedModes = entryIsMode;
+      else if (entryIsMode != normalizedModes)
         return emitOpError(
-                   "@dataflow.sync requires equal input/output counts, got ")
-               << numIns << " inputs and " << numOuts << " outputs";
-      if (numIns < 1)
-        return emitOpError("@dataflow.sync requires at least 1 port");
-      for (unsigned p = 0; p < numIns; ++p)
-        if (inW[p] != outW[p])
-          return emitOpError("@dataflow.sync port #")
-                 << p << " input width " << inW[p]
-                 << " must match output width " << outW[p];
-      if (swDict) {
-        auto bm = swDict.get("bitmask");
-        if (!bm)
-          return emitOpError(
-              "programmed @dataflow.sync requires sw_configs key 'bitmask'");
-        auto bmStr = dyn_cast<StringAttr>(bm);
-        if (!bmStr)
-          return emitOpError("'sw_configs.bitmask' must be a string attribute");
-        StringRef s = bmStr.getValue();
-        if (s.size() != numIns)
-          return emitOpError("'sw_configs.bitmask' length (")
-                 << s.size() << ") must equal port count (" << numIns << ")";
-        for (char c : s)
-          if (c != '0' && c != '1')
-            return emitOpError(
-                "'sw_configs.bitmask' must contain only '0' and '1'");
-      }
-      break;
+            "'hw_params' must not mix normalized modes and legacy fields");
     }
-    case OpSchema::VariadicMux: {
-      if (numIns < 3)
-        return emitOpError("@dataflow.mux requires at least 1 sel + 2 data "
-                           "inputs, got ")
-               << numIns << " inputs";
-      if (numOuts != 1)
-        return emitOpError("@dataflow.mux requires exactly 1 output, got ")
-               << numOuts;
-      unsigned fanIn = numIns - 1;
-      unsigned wantSel = (fanIn == 2) ? 1u : loom::getIndexWidth();
-      if (inW[0] != wantSel)
-        return emitOpError("@dataflow.mux sel port (input #0) width ")
-               << inW[0] << " must be " << wantSel
-               << " (i1 for fan-in 2, index width " << loom::getIndexWidth()
-               << " otherwise)";
-      unsigned dataW = outW[0];
-      for (unsigned p = 1; p < numIns; ++p)
-        if (inW[p] != dataW)
-          return emitOpError("@dataflow.mux input #")
-                 << p << " width " << inW[p] << " must match output width "
-                 << dataW;
-      break;
-    }
-    case OpSchema::VariadicDemux: {
-      if (numIns != 2)
-        return emitOpError("@dataflow.demux requires exactly 1 sel + 1 data "
-                           "input, got ")
-               << numIns << " inputs";
-      if (numOuts < 2)
-        return emitOpError("@dataflow.demux requires at least 2 outputs, got ")
-               << numOuts;
-      unsigned fanOut = numOuts;
-      unsigned wantSel = (fanOut == 2) ? 1u : loom::getIndexWidth();
-      if (inW[0] != wantSel)
-        return emitOpError("@dataflow.demux sel port (input #0) width ")
-               << inW[0] << " must be " << wantSel
-               << " (i1 for fan-out 2, index width " << loom::getIndexWidth()
-               << " otherwise)";
-      unsigned dataW = inW[1];
-      for (unsigned p = 0; p < numOuts; ++p)
-        if (outW[p] != dataW)
-          return emitOpError("@dataflow.demux output #")
-                 << p << " width " << outW[p] << " must match data input width "
-                 << dataW;
-      break;
-    }
-    }
+    if (!normalizedModes && hwParams.size() != 1)
+      return emitOpError("legacy 'hw_params' must be a length-1 array, got ")
+             << hwParams.size();
   }
 
-  if (isFixedKind) {
-    // 4a. All members must agree on input/output count.
-    const OpSchema &first = opSchemas().lookup(opNames.front());
-    for (StringRef n : opNames) {
-      const OpSchema &s = opSchemas().lookup(n);
-      if (s.inputs.size() != first.inputs.size() ||
-          s.outputs.size() != first.outputs.size())
-        return emitOpError("ops in op_list must agree on input/output port "
-                           "counts; @")
-               << opNames.front() << " has " << first.inputs.size() << "->"
-               << first.outputs.size() << " but @" << n << " has "
-               << s.inputs.size() << "->" << s.outputs.size();
-    }
-    if (numIns != first.inputs.size() || numOuts != first.outputs.size())
-      return emitOpError("port count (")
-             << numIns << "->" << numOuts
-             << ") does not match the supported software ops ("
-             << first.inputs.size() << "->" << first.outputs.size() << ")";
+  DictionaryAttr swDict = getSwConfigsAttr();
 
-    // 4b. Per port: collect the required width across all members. For
-    //     TypeParam ports the required width is taken from the fabric.op
-    //     port itself; we then check consistency across all TypeParam ports
-    //     sharing the same id within each member. For Fixed ports each
-    //     member contributes its fixed width and we take the max.
-    auto check = [&](ArrayRef<unsigned> portWidths, auto extractor,
-                     StringRef portKind) -> LogicalResult {
-      for (unsigned p = 0; p < portWidths.size(); ++p) {
-        unsigned want = 0;
-        for (StringRef n : opNames) {
-          const OpSchema &s = opSchemas().lookup(n);
-          PortSpec spec = extractor(s, p);
-          unsigned needed;
-          if (spec.kind == PortSpec::Fixed) {
-            needed = spec.value;
-          } else {
-            // TypeParam: the width is whatever the fabric port has, but it
-            // must agree with all other ports of the same param id within
-            // the same member.
-            needed = portWidths[p];
-            for (unsigned q = 0; q < s.inputs.size(); ++q) {
-              if (s.inputs[q].kind == PortSpec::TypeParam &&
-                  s.inputs[q].value == spec.value && q < portWidths.size()) {
-                // Skip cross-checking here; handled below.
+  // 5. Legacy schema check (port count and per-port width). Canonical modes
+  //    are checked below against their selected software operation instance.
+  if (!normalizedModes) {
+    unsigned numIns = getInputs().size();
+    unsigned numOuts = getOutputs().size();
+    SmallVector<unsigned, 4> inW, outW;
+    for (Type t : getInputs().getTypes())
+      inW.push_back(*getFabricBitsWidth(t));
+    for (Type t : getOutputs().getTypes())
+      outW.push_back(*getFabricBitsWidth(t));
+
+    // Variadic ops are always in a singleton group; opNames.size() == 1.
+    const OpSchema &schemaFront = opSchemas().lookup(opNames.front());
+    bool isFixedKind = schemaFront.kind == OpSchema::Fixed;
+
+    if (!isFixedKind) {
+      // Variadic ops are singletons; ensure no group misuse already covered.
+      switch (schemaFront.kind) {
+      case OpSchema::Fixed:
+        llvm_unreachable("handled above");
+      case OpSchema::VariadicSync: {
+        if (numIns != numOuts)
+          return emitOpError(
+                     "@dataflow.sync requires equal input/output counts, got ")
+                 << numIns << " inputs and " << numOuts << " outputs";
+        if (numIns < 1)
+          return emitOpError("@dataflow.sync requires at least 1 port");
+        for (unsigned p = 0; p < numIns; ++p)
+          if (inW[p] != outW[p])
+            return emitOpError("@dataflow.sync port #")
+                   << p << " input width " << inW[p]
+                   << " must match output width " << outW[p];
+        if (swDict) {
+          auto bm = swDict.get("bitmask");
+          if (!bm)
+            return emitOpError(
+                "programmed @dataflow.sync requires sw_configs key 'bitmask'");
+          auto bmStr = dyn_cast<StringAttr>(bm);
+          if (!bmStr)
+            return emitOpError(
+                "'sw_configs.bitmask' must be a string attribute");
+          StringRef s = bmStr.getValue();
+          if (s.size() != numIns)
+            return emitOpError("'sw_configs.bitmask' length (")
+                   << s.size() << ") must equal port count (" << numIns << ")";
+          for (char c : s)
+            if (c != '0' && c != '1')
+              return emitOpError(
+                  "'sw_configs.bitmask' must contain only '0' and '1'");
+        }
+        break;
+      }
+      case OpSchema::VariadicMux: {
+        if (numIns < 3)
+          return emitOpError("@dataflow.mux requires at least 1 sel + 2 data "
+                             "inputs, got ")
+                 << numIns << " inputs";
+        if (numOuts != 1)
+          return emitOpError("@dataflow.mux requires exactly 1 output, got ")
+                 << numOuts;
+        unsigned fanIn = numIns - 1;
+        unsigned wantSel = (fanIn == 2) ? 1u : loom::getIndexWidth();
+        if (inW[0] != wantSel)
+          return emitOpError("@dataflow.mux sel port (input #0) width ")
+                 << inW[0] << " must be " << wantSel
+                 << " (i1 for fan-in 2, index width " << loom::getIndexWidth()
+                 << " otherwise)";
+        unsigned dataW = outW[0];
+        for (unsigned p = 1; p < numIns; ++p)
+          if (inW[p] != dataW)
+            return emitOpError("@dataflow.mux input #")
+                   << p << " width " << inW[p] << " must match output width "
+                   << dataW;
+        break;
+      }
+      case OpSchema::VariadicDemux: {
+        if (numIns != 2)
+          return emitOpError("@dataflow.demux requires exactly 1 sel + 1 data "
+                             "input, got ")
+                 << numIns << " inputs";
+        if (numOuts < 2)
+          return emitOpError(
+                     "@dataflow.demux requires at least 2 outputs, got ")
+                 << numOuts;
+        unsigned fanOut = numOuts;
+        unsigned wantSel = (fanOut == 2) ? 1u : loom::getIndexWidth();
+        if (inW[0] != wantSel)
+          return emitOpError("@dataflow.demux sel port (input #0) width ")
+                 << inW[0] << " must be " << wantSel
+                 << " (i1 for fan-out 2, index width " << loom::getIndexWidth()
+                 << " otherwise)";
+        unsigned dataW = inW[1];
+        for (unsigned p = 0; p < numOuts; ++p)
+          if (outW[p] != dataW)
+            return emitOpError("@dataflow.demux output #")
+                   << p << " width " << outW[p]
+                   << " must match data input width " << dataW;
+        break;
+      }
+      }
+    }
+
+    if (isFixedKind) {
+      // 4a. All members must agree on input/output count.
+      const OpSchema &first = opSchemas().lookup(opNames.front());
+      for (StringRef n : opNames) {
+        const OpSchema &s = opSchemas().lookup(n);
+        if (s.inputs.size() != first.inputs.size() ||
+            s.outputs.size() != first.outputs.size())
+          return emitOpError("ops in op_list must agree on input/output port "
+                             "counts; @")
+                 << opNames.front() << " has " << first.inputs.size() << "->"
+                 << first.outputs.size() << " but @" << n << " has "
+                 << s.inputs.size() << "->" << s.outputs.size();
+      }
+      if (numIns != first.inputs.size() || numOuts != first.outputs.size())
+        return emitOpError("port count (")
+               << numIns << "->" << numOuts
+               << ") does not match the supported software ops ("
+               << first.inputs.size() << "->" << first.outputs.size() << ")";
+
+      // 4b. Per port: collect the required width across all members. For
+      //     TypeParam ports the required width is taken from the fabric.op
+      //     port itself; we then check consistency across all TypeParam ports
+      //     sharing the same id within each member. For Fixed ports each
+      //     member contributes its fixed width and we take the max.
+      auto check = [&](ArrayRef<unsigned> portWidths, auto extractor,
+                       StringRef portKind) -> LogicalResult {
+        for (unsigned p = 0; p < portWidths.size(); ++p) {
+          unsigned want = 0;
+          for (StringRef n : opNames) {
+            const OpSchema &s = opSchemas().lookup(n);
+            PortSpec spec = extractor(s, p);
+            unsigned needed;
+            if (spec.kind == PortSpec::Fixed) {
+              needed = spec.value;
+            } else {
+              // TypeParam: the width is whatever the fabric port has, but it
+              // must agree with all other ports of the same param id within
+              // the same member.
+              needed = portWidths[p];
+              for (unsigned q = 0; q < s.inputs.size(); ++q) {
+                if (s.inputs[q].kind == PortSpec::TypeParam &&
+                    s.inputs[q].value == spec.value && q < portWidths.size()) {
+                  // Skip cross-checking here; handled below.
+                }
               }
             }
+            want = std::max(want, needed);
           }
-          want = std::max(want, needed);
+          if (portWidths[p] != want)
+            return emitOpError()
+                   << portKind << " port #" << p << " has width "
+                   << portWidths[p] << " but software op(s) require width "
+                   << want;
         }
-        if (portWidths[p] != want)
-          return emitOpError()
-                 << portKind << " port #" << p << " has width " << portWidths[p]
-                 << " but software op(s) require width " << want;
-      }
-      return success();
-    };
-
-    if (failed(check(
-            inW, [](const OpSchema &s, unsigned p) { return s.inputs[p]; },
-            "input")))
-      return failure();
-    if (failed(check(
-            outW, [](const OpSchema &s, unsigned p) { return s.outputs[p]; },
-            "output")))
-      return failure();
-
-    // 4c. Within each member, all TypeParam ports with the same param id
-    //     must end up at the same width given the chosen fabric port widths.
-    for (StringRef n : opNames) {
-      const OpSchema &s = opSchemas().lookup(n);
-      llvm::SmallDenseMap<unsigned, unsigned, 4> paramWidth;
-      auto checkParam = [&](PortSpec spec, unsigned w) -> LogicalResult {
-        if (spec.kind != PortSpec::TypeParam)
-          return success();
-        auto it = paramWidth.find(spec.value);
-        if (it == paramWidth.end()) {
-          paramWidth[spec.value] = w;
-          return success();
-        }
-        if (it->second != w)
-          return emitOpError("op @")
-                 << n
-                 << " requires the same width on all ports tied to its "
-                    "type parameter T"
-                 << spec.value << ", got " << it->second << " and " << w;
         return success();
       };
-      for (unsigned p = 0; p < s.inputs.size(); ++p)
-        if (failed(checkParam(s.inputs[p], inW[p])))
-          return failure();
-      for (unsigned p = 0; p < s.outputs.size(); ++p)
-        if (failed(checkParam(s.outputs[p], outW[p])))
-          return failure();
+
+      if (failed(check(
+              inW, [](const OpSchema &s, unsigned p) { return s.inputs[p]; },
+              "input")))
+        return failure();
+      if (failed(check(
+              outW, [](const OpSchema &s, unsigned p) { return s.outputs[p]; },
+              "output")))
+        return failure();
+
+      // 4c. Within each member, all TypeParam ports with the same param id
+      //     must end up at the same width given the chosen fabric port widths.
+      for (StringRef n : opNames) {
+        const OpSchema &s = opSchemas().lookup(n);
+        llvm::SmallDenseMap<unsigned, unsigned, 4> paramWidth;
+        auto checkParam = [&](PortSpec spec, unsigned w) -> LogicalResult {
+          if (spec.kind != PortSpec::TypeParam)
+            return success();
+          auto it = paramWidth.find(spec.value);
+          if (it == paramWidth.end()) {
+            paramWidth[spec.value] = w;
+            return success();
+          }
+          if (it->second != w)
+            return emitOpError("op @")
+                   << n
+                   << " requires the same width on all ports tied to its "
+                      "type parameter T"
+                   << spec.value << ", got " << it->second << " and " << w;
+          return success();
+        };
+        for (unsigned p = 0; p < s.inputs.size(); ++p)
+          if (failed(checkParam(s.inputs[p], inW[p])))
+            return failure();
+        for (unsigned p = 0; p < s.outputs.size(); ++p)
+          if (failed(checkParam(s.outputs[p], outW[p])))
+            return failure();
+      }
     }
   }
 
-  // 5. hw_params (optional): must be ArrayAttr of length 1 wrapping a
-  //    DictionaryAttr.
-  if (auto hp = getHwParamsAttr()) {
-    if (hp.size() != 1)
-      return emitOpError("'hw_params' must be a length-1 array wrapping a "
-                         "dictionary, got length ")
-             << hp.size();
-    if (!isa<DictionaryAttr>(hp[0]))
-      return emitOpError(
-          "'hw_params' inner element must be a dictionary attribute");
-  }
+  // 6. hw_params owns the concrete datapath capability. Canonical mode tuples
+  //    are stored directly as array entries. The historical length-one
+  //    allowed-set dictionary remains accepted only as a programmed adapter.
+  if (normalizedModes && failed(verifyNormalizedHardwareModes(*this)))
+    return failure();
 
-  // 6. sw_configs (optional). When op_list has > 1 entry and sw_configs is
-  //    present, it must contain `op_sel` whose StringAttr value matches one
-  //    of the symbols in op_list. Additionally, every key in sw_configs that
-  //    also appears in hw_params must take a value listed in the
-  //    corresponding hw_params allowed set.
+  // 7. sw_configs selects one normalized mode index. Legacy allowed-set input
+  //    retains its historical per-field checks.
   if (swDict) {
+    if (normalizedModes) {
+      if (swDict.size() != 1 || !swDict.get("mode"))
+        return emitOpError(
+            "normalized hw_params requires sw_configs = {mode = N}");
+      auto selected = dyn_cast<IntegerAttr>(swDict.get("mode"));
+      if (!selected || selected.getValue().isNegative() ||
+          selected.getValue().getActiveBits() > 32)
+        return emitOpError("'sw_configs.mode' must be a non-negative i32");
+      uint64_t modeIndex = selected.getValue().getZExtValue();
+      if (modeIndex >= hwParams.size())
+        return emitOpError("'sw_configs.mode' is out of range for hw_params");
+      auto mode = cast<DictionaryAttr>(hwParams[modeIndex]);
+      auto selectedOp = mode.getAs<FlatSymbolRefAttr>("op");
+      if (!selectedOp || !llvm::is_contained(opNames, selectedOp.getValue()))
+        return emitOpError(
+            "selected hw_params mode operation is not in op_list");
+      return success();
+    }
+
     if (opNames.size() > 1) {
       auto sel = swDict.get("op_sel");
       if (!sel)

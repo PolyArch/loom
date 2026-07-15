@@ -13,10 +13,11 @@ namespace common {
 
 // Returns the canonical table of multi-member hardware-share groups.
 //
-// Each entry is a set of MLIR op names (e.g. "arith.addi") whose operations
-// are allowed to share a single hardware functional unit. An op name that
-// does not appear in any group is treated as its own implicit singleton
-// group: it cannot share hardware with any other op name.
+// `include/Common/HwShareGroups.def` is the single source of truth for the
+// returned registry. Entries are software operation family keys whose modes
+// may share one hardware functional unit. Most keys are registered MLIR op
+// names. Intrinsic semantic keys require an explicit registered-operation
+// representation before they can appear in a normalized Fabric mode.
 //
 // The returned reference is to a static immutable table; the data outlives
 // any caller and is safe to cache by index.

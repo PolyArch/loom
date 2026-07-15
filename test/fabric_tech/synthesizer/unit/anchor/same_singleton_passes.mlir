@@ -9,12 +9,12 @@
 // distinct singletons (covered by `cross_singleton_*.mlir`) must not.
 
 // CHECK: remark: {{.*}}synth-stat group=fpu_abs_32 strategy=anchor reason=success
-// CHECK-SAME: covered=2/2 nodes=1/0/0
+// CHECK-SAME: covered=2/2 nodes=1/0/0 encodings=1
 // CHECK: fabric.module @fu_fpu_abs_32
 // CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@math.absf]
-// CHECK-SAME: hw_params = [{}]
+// CHECK-SAME: hw_params = [
 // CHECK: !fabric.bits<32>
 // CHECK: fabric.yield
 

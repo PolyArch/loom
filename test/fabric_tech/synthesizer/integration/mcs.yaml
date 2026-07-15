@@ -1,8 +1,0 @@
-synth:
-  strategy: mcs
-  parallelism:
-    workers: 1
-  mcs:
-    timeout_sec: 60
-    branch_workers: 1
-    candidate_cap: 1000000

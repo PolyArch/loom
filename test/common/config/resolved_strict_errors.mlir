@@ -3,19 +3,15 @@
 // RUN: not loom-config-test --resolved-json %p/resolved_conflicting_include.yaml 2>&1 | FileCheck %s --check-prefix=CONFLICT
 // RUN: not loom-config-test --resolved-json %p/resolved_unknown_objective.yaml 2>&1 | FileCheck %s --check-prefix=OBJECTIVE
 // RUN: not loom-config-test --resolved-json %p/resolved_unknown_policy.json 2>&1 | FileCheck %s --check-prefix=POLICY
-// RUN: not loom-config-test --resolved-json %p/resolved_unknown_algorithm.yaml 2>&1 | FileCheck %s --check-prefix=ALGORITHM
+// RUN: not loom-config-test --resolved-json %p/resolved_unknown_algorithm.yaml 2>&1 | FileCheck %s --check-prefix=OBSOLETE
 // RUN: not loom-config-test --resolved-json %p/resolved_extra_document.yaml 2>&1 | FileCheck %s --check-prefix=MULTIDOC
 // RUN: not loom-config-test --resolved-json %p/resolved_string_numeric.json 2>&1 | FileCheck %s --check-prefix=TYPE
-// RUN: not loom-config-test --resolved-json %p/resolved_negative_techmap.yaml 2>&1 | FileCheck %s --check-prefix=RANGE
-// RUN: not loom-config-test --resolved-json %p/resolved_overflow_unsigned.json 2>&1 | FileCheck %s --check-prefix=OVERFLOW
 
 // UNKNOWN: config_unknown_key
 // DUPLICATE: config_duplicate_key
 // CONFLICT: config_conflicting_sources
 // OBJECTIVE: config_unknown_objective
 // POLICY: config_unknown_policy
-// ALGORITHM: config_unknown_policy: fabric_techmap.algorithm: mystery
+// OBSOLETE: config_unknown_key: fabric_techmap
 // MULTIDOC: config_parse_failed
 // TYPE: config_type_mismatch
-// RANGE: config_range_violation
-// OVERFLOW: config_range_violation

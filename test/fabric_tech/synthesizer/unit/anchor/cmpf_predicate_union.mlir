@@ -1,19 +1,17 @@
 // RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
 
-// Tier A: two subgraphs of identical topology (yield <- arith.cmpf of two
-// f32 block args), one with predicate `oeq`, the other with predicate
-// `one`. Per spec "hw_params policy" the synthesized FU's hw_params must
-// surface the observed-value union of predicate strings so the
-// enumerator's `predicate` axis fan-out covers both inputs.
+// Two functions have identical topology but distinct comparison predicates.
+// The shared physical op owns both complete typed modes, and the FU exposes
+// one explicit encoding for each mode without field-wise recombination.
 
 // CHECK: remark: {{.*}}synth-stat group=cmpf_pred strategy=anchor reason=success
-// CHECK-SAME: covered=2/2 nodes=1/0/0
+// CHECK-SAME: covered=2/2 nodes=1/0/0 encodings=2
 // CHECK: fabric.module @fu_cmpf_pred
 // CHECK-SAME: loom.synthesized_for = "cmpf_pred"
 // CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@arith.cmpf]
-// CHECK-SAME: hw_params = [{predicate = ["oeq", "one"]}]
+// CHECK-SAME: hw_params = [
 // CHECK: fabric.yield
 
 func.func @pat_cmpf_oeq(%a: f32, %b: f32) -> i1

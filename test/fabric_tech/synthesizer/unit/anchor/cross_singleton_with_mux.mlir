@@ -1,19 +1,15 @@
 // RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/anchor_with_mux.yaml dump-stats=true' 2>&1 | FileCheck %s
 
-// Tier A with two distinct singleton ops at the same anchor position
-// (math.absf and math.tan), with intra-position muxing enabled. Each
-// distinct singleton occupies its own share-group bucket, so the
-// strategy emits one fabric.op per singleton (each op_list has exactly
-// one entry) and joins them through a fresh fabric.mux. The coverage
-// verifier is left enabled (its default): the synthesized FU must
-// round-trip through SubgraphEnumerator + SubgraphMatcher cleanly,
-// including the fabric.mux output's float-flavor lift inference.
+// Distinct singleton ops share one FU input through an explicit demux and
+// join their results through a mux. Each legal route is a complete encoding.
 
 // CHECK: remark: {{.*}}synth-stat group=fpu_unary_32_x strategy=anchor reason=success
+// CHECK-SAME: covered=2/2 nodes=2/1/1 encodings=2
 // CHECK: fabric.module @fu_fpu_unary_32_x
 // CHECK-SAME: loom.synthesized_for = "fpu_unary_32_x"
 // CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
+// CHECK: fabric.demux
 // CHECK-DAG: fabric.op [@math.absf]
 // CHECK-DAG: fabric.op [@math.tan]
 // CHECK: fabric.mux

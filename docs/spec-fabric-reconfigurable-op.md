@@ -1,151 +1,163 @@
 # Fabric Reconfigurable Ops
 
-This document specifies the set of software op kinds that the loom fabric
-dialect can wrap inside a `fabric.op`, and which of those have **runtime
-sw_config axes** that the subgraph enumerator explores.
+This document specifies how Fabric owns typed software capability and how an
+FU exposes normalized valid semantic encodings.
 
-## Background
+## Semantic Ownership
 
-`fabric.op` is the sole bridge between software computation kinds (in
-`dataflow`, `arith`, `math`, ...) and physical hardware capability. Every
-`fabric.op` carries:
+An FU has three distinct kinds of facts:
 
-* `op_list` -- a non-empty array of `FlatSymbolRefAttr`s. Names the
-  software op kind(s) this hardware block can execute. When the array has
-  more than one entry, all entries must belong to a single hardware-share
-  group (see `spec-fabric-hw-share-group.md`).
-* `hw_params` -- an optional length-1 array wrapping a dictionary of
-  parameters that change the hardware itself. Modifying `hw_params` means
-  changing the synthesized block. Examples: the `bitmask` allowed-set for a
-  variadic `dataflow.sync`, the `predicate` allowed-set for a configurable
-  `arith.cmpi`.
-* `sw_configs` -- an optional dictionary of runtime configuration values
-  that alter the materialized software function without changing the
-  hardware. Examples: `op_sel` to pick a member of a share group, `bitmask`
-  to pick the active subset of a variadic op, `predicate` to pick a
-  comparison code.
+* FU topology owns physical resources, SSA wiring, fanout, and boundary ports.
+* Each `fabric.op` owns the complete typed software modes supported by that
+  physical datapath.
+* The FU owns the normalized set of valid cross-resource encodings.
 
-The op_list is itself a special hardware parameter: its presence and
-contents fix what the block can compute. The `op_sel` `sw_config` then
-chooses among the listed members at runtime.
+The Hardware Sharing Group registry is the global authority for which software
+operation families may share one physical datapath. `fabric.op.op_list` is the
+HSG-validated operation-family envelope selected by a concrete datapath.
+`fabric.op.hw_params` owns the complete typed modes within that envelope. In a
+canonical FU, the distinct `op_list` entries must equal the operation
+identities present in the normalized mode set.
 
-## Two axes that the enumerator explores
+`fabric.op.hw_params` is the canonical typed capability set implemented
+by the concrete datapath. Every mode contains:
 
-Inside a `fabric.fu`, exactly five op kinds carry **structural** sw_config
-axes whose choices change the materialized software graph topology, not
-just attribute values:
+```text
+{ op, function_type, input_ports, output_ports, attributes }
+```
 
-* `fabric.mux` -- `sel` + `discard` + `disconnect`
-* `fabric.demux` -- `sel` + `discard` + `disconnect`
-* `fabric.op[@dataflow.sync]` -- `bitmask` (M-bit, N <= M ones)
-* `fabric.op[@dataflow.mux]` -- `bitmask` (same envelope)
-* `fabric.op[@dataflow.demux]` -- `bitmask` (same envelope)
+`op` is the exact software operation identity. `function_type` and
+`attributes` are the complete semantic type and attribute selection for that
+mode. `input_ports` and `output_ports` map ordered software operands and
+results to physical `fabric.op` ports.
 
-Beyond the five structural axes, the enumerator also explores **attribute
-axes** when `hw_params` declares an allowed set for them. These do not
-change subgraph topology; they parameterize an existing op:
+These fields are Fabric-owned capability facts. They do not compete with the
+Hardware Sharing Group registry: the registry admits the operation family,
+while the mode selects a concrete typed and attributed member of that family.
+The mode must form a valid instance of the selected registered software
+operation. The fields are stored once on the physical `fabric.op`, not
+repeated in each FU encoding.
 
-* `op_sel` -- multi-member `op_list` share groups.
-* `predicate` -- `arith.cmpi` / `arith.cmpf` predicates, when restricted
-  by `hw_params`.
-* `step_op`, `cont_cond` -- `dataflow.stream` axes, when restricted.
-* `const_hex_value` -- `dataflow.constant`, when the hardware fixes the
-  allowed value set via `hw_params` (otherwise this is a free runtime
-  constant, not enumerated).
+For canonical typed modes, operation-family schema metadata must not impose a
+second function type or require equal physical widths on ports tied to one
+software type. The complete mode is the type authority; each mapped physical
+port is legal when its payload capacity is at least the corresponding software
+requirement. Historical exact-width schema checks apply only to the legacy
+programmed adapter form that has no typed mode tuple.
 
-If `hw_params` does not declare an allowed set for one of the attribute
-axes, that attribute is a free `sw_config` and the enumerator does not
-fan out across it.
+## Valid Semantic Encodings
 
-## Runtime sw-configurable ops (the canonical seven)
+`fabric.fu.valid_encodings` is an array of complete legal configurations. An
+encoding contains the ordered FU output ports exposed as software results and
+a resource assignment list:
 
-The following op kinds support runtime reconfiguration via `sw_configs`.
-They are the ones a hardware designer most commonly puts inside a
-`fabric.fu` to give the FU programmable behavior.
+```text
+{ outputs = [...], resources = [
+    { resource = R, mode = M },
+    { resource = R, select = S }
+] }
+```
 
-| Software op | Configurable axes | Notes |
-|---|---|---|
-| `dataflow.stream` | `step_op`, `cont_cond` (when restricted by `hw_params`) | A streaming source whose stride and continuation predicate can be re-fixed at config time. |
-| `dataflow.sync` | `bitmask` over M ports | Variadic. Selects the active N <= M input/output port pairs. The remaining ports are pruned upstream and downstream from the materialized subgraph. |
-| `dataflow.constant` | `const_hex_value` (when restricted by `hw_params`) | Compile-time-set runtime constant. Without `hw_params` restriction the value is a free sw_config, not enumerated. |
-| `dataflow.mux` | `bitmask` over M data ports | Variadic. Bitmask selects N active data ports; materialized `sel` width is `i1` for N=2 and `index` for N>=3. Hardware port stays at `bits<ceil(log2(M))>`. Data-dependent gating (only consumes the selected data input). |
-| `dataflow.demux` | `bitmask` over M output ports | Variadic. Mirror of mux: bitmask selects which output ports are active; only `outputs[sel]` carries a value at runtime. |
-| `arith.cmpi` | `predicate` (when restricted by `hw_params`) | Integer comparison. Default is the full 10-way set; `hw_params=[{predicate=[...]}]` restricts to a hardware-allowed subset. |
-| `arith.cmpf` | `predicate` (when restricted by `hw_params`) | Floating-point comparison; same enumeration shape as `cmpi`. |
+`mode` selects one `hw_params` entry on a `fabric.op`. `select` chooses
+the live arm of a routing resource. Resource assignments are ordered by
+resource index.
 
-These seven plus the share-group `op_sel` axis (any multi-member op_list)
-cover every runtime sw_config knob the enumerator explores.
+An encoding contains exactly the assignments that affect its configured
+function. It must not contain selections for dead resources, don't-care
+fields, or workload-selected `sw_configs`. Cross-resource correlation is
+represented by the complete encoding tuple, never by independent per-field
+allowed sets.
 
-## Non-configurable ops (no sw_config axes)
+Every declared `hw_params` mode must be selected by at least one valid
+encoding. Every selected resource must be live and coherent under the FU SSA
+topology. An active value may fan out to multiple active consumers, but a value
+must not implicitly feed active and inactive mutually exclusive datapaths.
+That case requires explicit routing resources.
 
-The following ops are accepted in `op_list` but have **no** sw_config axes
-of their own. The enumerator emits a single template per occurrence,
-modulo any other configurable elements elsewhere in the FU.
+## Configured Function Projection
 
-* All single-output, fixed-arity arithmetic: `arith.{addi, subi, muli,
-  divsi, divui, remsi, remui, shli, shrsi, shrui, andi, ori, xori, minsi,
-  maxsi, minui, maxui, addf, subf, mulf, divf, remf, minimumf, maximumf}`.
-* Integer-floating casts: `arith.{sitofp, uitofp, fptosi, fptoui}`.
-* All `math.*` unary ops: `math.{sin, cos, tan, sinh, cosh, tanh, exp,
-  exp2, expm1, log, log2, log10, log1p, floor, ceil, round, trunc,
-  roundeven, sqrt, rsqrt, absf, absi, erf}`.
-* Fixed-arity dataflow ops: `dataflow.{carry, invariant, gate}`.
-* `arith.select` -- strict-SSA eager 2-input mux. Distinct semantics from
-  `dataflow.mux` (eager evaluation, consumes both data inputs). Does not
-  belong to any share group, must occupy `fabric.op` alone.
+The canonical projector has this semantic interface:
 
-The runtime knobs an FU may carry for these come from the surrounding
-`fabric.mux` / `fabric.demux` and the variadic ops, not from the op
-itself.
+```text
+projectConfiguredFunction(fu, encoding) -> ConfiguredFunction
+```
 
-## Excluded ops
+The result is a typed and attributed software function graph containing:
 
-The following are deliberately not in `opSchemas()` and `fabric.op` will
-reject them:
+* exact software operation identities;
+* exact function types and semantic attributes;
+* ordered operand edges, result indices, and fanout;
+* software-operand and result order; and
+* exact FU boundary input and output port correspondence.
 
-* `llvm.alloca`, `ub.poison`, `arith.constant` -- these are compile-time
-  or pseudo ops that have no fabric realization.
-* `dataflow.{load, store}` -- memory ops that the partitioner handles
-  separately (they live at graph level, not inside `fabric.fu`).
-* `dataflow.subgraph`, `dataflow.yield` -- software graph structure, not
-  computations. The canonical `dataflow.graph` definition is a module-scope
-  callable container and is never a `fabric.op` computation kind.
+Muxes and demuxes are not software actors. The projector follows their
+selected routes. A `fabric.op` becomes one software node selected by its mode.
+Configuration that is not live in the projection is invalid rather than a
+don't-care.
 
-## How sw_configs become enumerator axes
+Two distinct valid encodings must not project to isomorphic configured
+functions when FU boundary identity is preserved. Such an FU is rejected by
+the Fabric verifier. Consumers must not repair it with post-hoc deduplication
+or first-assignment canonicalization.
 
-The enumerator (`SubgraphEnumerator::enumerateFuSubgraphs`) walks each
-`fabric.fu` body and builds a list of `ChoiceAxis` records. One axis is
-created when:
+## Port Kinds And Widths
 
-1. The op is a `fabric.mux` or `fabric.demux` -- yields a `_mode` axis
-   covering all `(sel, discard, disconnect)` combinations.
-2. The op is `fabric.op[@dataflow.sync]`, `fabric.op[@dataflow.mux]`, or
-   `fabric.op[@dataflow.demux]` -- yields a `bitmask` axis. The allowed
-   bitmasks are taken from `hw_params=[{bitmask=[...]}]` if present;
-   otherwise the full 2^M - 1 enumeration is used (capped at M = 8).
-3. The `fabric.op`'s `op_list` has more than one entry -- yields an
-   `op_sel` axis with one value per member.
-4. The `fabric.op`'s `hw_params` declares an array allowed-set for a
-   non-`bitmask` key (`predicate`, `step_op`, `cont_cond`,
-   `const_hex_value`, ...) -- yields one axis per such key.
+Capability legality first requires the same port kind. `bits` and `bits_tag`
+are distinct kinds and must not be exchanged implicitly.
 
-The Cartesian product of all axes is the raw configuration space. After
-per-config materialization, the enumerator runs `subgraphsIsomorphic`
-between every pair of surviving templates and keeps the
-lexicographically-smallest configuration per isomorphism class.
+For an untagged `bits<W>` physical path carrying a software value that requires
+`N` payload bits, every node and boundary segment on the selected path must
+satisfy `W >= N`. Exact width equality is not required. For example, an `i16`
+mode may use `bits<32>` operation ports and a `bits<64>` FU boundary.
 
-## Design principle
+Payloads are low-bit aligned. Moving from a narrower physical segment to a
+wider segment zero-fills high bits. Moving from a wider segment to a narrower
+segment truncates high bits. Such a narrowing remains legal only when the
+destination width is still at least the software semantic width. No selected
+path segment may be narrower than the software requirement.
 
-Distinct sw_configs are intended to map to distinct software functions. If
-a `fabric.fu` produces many software-isomorphic templates under different
-sw_configs, that is a smell in the FU design itself, not in the
-enumerator. The enumerator's dedup discards the redundant configurations
-deliberately.
+The software type remains exact in the `hw_params` mode and configured
+function. Physical payload width does not become a second software type.
 
-## Implementation Mirror
+## Routing Mutually Exclusive Datapaths
 
-The implementation should mirror this table in the fabric op schema code.
-The `Variadic*` schema kinds flag which entries get a bitmask axis;
-non-variadic schemas have an axis only when `hw_params` restricts them.
-To extend either set, update this target table, the implementation mirror,
-and the corresponding fabric tests in the same change.
+When distinct physical datapaths share FU inputs, each shared input requires
+an explicit demux or equivalent route selector, and their results require an
+explicit mux when they share an FU output. One valid encoding selects all
+matching input and output routes together with the active operation mode.
+
+An output mux alone is insufficient because it leaves inactive datapaths
+implicitly consuming broadcast inputs. That topology does not materialize the
+selected software function.
+
+## Mapping Selection And Legacy Input
+
+Canonical `fabric.op.hw_params` is an array of complete normalized mode tuples.
+A `fabric.fu` carrying `valid_encodings` must not persist selected
+`sw_configs` on its internal resources or selected routing on muxes and
+demuxes. Mapping selects one FU encoding. A backend may derive transient
+`sw_configs = {mode = N}` and route selections from that encoding, but those
+values are workload choices and must not be written back into canonical
+Fabric.
+
+The historical length-one field-wise `hw_params` dictionary remains accepted
+only for non-canonical programmed Fabric input. It is a boundary adapter and
+must not enter the projector, synthesis, coverage, or canonical FU verifier.
+
+`dataflow.subgraph` is likewise only a legacy input or display adapter. The
+projector, verifier, coverage check, and synthesis acceptance gate operate on
+`ConfiguredFunction` and explicit valid encodings.
+
+## Extending Capability
+
+Adding a software operation to Fabric requires all of the following:
+
+* the operation is admitted by the Fabric operation schema;
+* any multi-operation physical sharing is admitted by the Hardware Sharing
+  Group registry;
+* each physical `fabric.op` declares complete typed `hw_params` modes; and
+* FU encodings select complete legal resource tuples whose projections are
+  pairwise distinct under boundary-preserving identity.
+
+Changing only `op_list`, an allowed-set field, or an enumerator table does not
+add canonical capability.

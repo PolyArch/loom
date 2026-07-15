@@ -51,15 +51,7 @@ StringRef stripQuotes(StringRef v) {
   return v;
 }
 
-bool stringIsKnownStrategy(StringRef s) {
-  return s == "anchor" || s == "mcs" || s == "incremental" ||
-         s == "incremental_random";
-}
-
-bool stringIsKnownOrderHeuristic(StringRef s) {
-  return s == "largest_first" || s == "smallest_first" ||
-         s == "random_seeded";
-}
+bool stringIsKnownStrategy(StringRef s) { return s == "anchor"; }
 
 ::llvm::Expected<bool> parseBool(StringRef v, StringRef ctx) {
   v = stripQuotes(v);
@@ -96,35 +88,11 @@ bool stringIsKnownOrderHeuristic(StringRef s) {
 
 ::llvm::Error validate(const ::loom::SynthConfig &cfg) {
   if (!stringIsKnownStrategy(cfg.strategy))
-    return makeErr(
-        "synth.strategy must be one of "
-        "anchor|mcs|incremental|incremental_random, got '" +
-        cfg.strategy + "'");
-  for (const auto &s : cfg.fallbackChain)
-    if (!stringIsKnownStrategy(s))
-      return makeErr(
-          "synth.fallback_chain entry must be one of "
-          "anchor|mcs|incremental|incremental_random, got '" +
-          s + "'");
-  if (!stringIsKnownOrderHeuristic(cfg.incrementalInputOrderHeuristic))
-    return makeErr("synth.incremental.input_order_heuristic must be one of "
-                   "largest_first|smallest_first|random_seeded, got '" +
-                   cfg.incrementalInputOrderHeuristic + "'");
-  if (!stringIsKnownOrderHeuristic(
-          cfg.incrementalRandomInputOrderHeuristic))
-    return makeErr(
-        "synth.incremental_random.input_order_heuristic must be one of "
-        "largest_first|smallest_first|random_seeded, got '" +
-        cfg.incrementalRandomInputOrderHeuristic + "'");
+    return makeErr("synth.strategy must be 'anchor', got '" + cfg.strategy +
+                   "'");
   if (!(cfg.costMuxPenalty >= 0.0 && cfg.costDemuxPenalty >= 0.0 &&
         cfg.costCarryPenalty >= 0.0))
     return makeErr("synth.cost.{mux,demux,carry}_penalty must all be >= 0");
-  if (cfg.incrementalRandomRestarts == 0)
-    return makeErr("synth.incremental_random.restarts must be >= 1");
-  if (cfg.mcsBranchWorkers == 0)
-    return makeErr("synth.mcs.branch_workers must be >= 1");
-  if (cfg.mcsCandidateCap == 0)
-    return makeErr("synth.mcs.candidate_cap must be >= 1");
   return ::llvm::Error::success();
 }
 
@@ -219,65 +187,6 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
       continue;
     }
 
-    if (parent == "incremental") {
-      ::llvm::SmallString<32> vbuf;
-      StringRef val = scalarValue(valNode, vbuf);
-      if (child == "input_order_heuristic") {
-        cfg.incrementalInputOrderHeuristic = stripQuotes(val).str();
-      } else if (child == "coverage_verify_each_attempt") {
-        auto v = parseBool(
-            val, "synth.incremental.coverage_verify_each_attempt");
-        if (!v)
-          return v.takeError();
-        cfg.incrementalCoverageVerifyEachAttempt = *v;
-      }
-      continue;
-    }
-
-    if (parent == "incremental_random") {
-      ::llvm::SmallString<32> vbuf;
-      StringRef val = scalarValue(valNode, vbuf);
-      if (child == "restarts") {
-        auto v = parseUInt(val, "synth.incremental_random.restarts",
-                           /*acceptAuto=*/false);
-        if (!v)
-          return v.takeError();
-        cfg.incrementalRandomRestarts = static_cast<unsigned>(*v);
-      } else if (child == "seed") {
-        auto v = parseUInt(val, "synth.incremental_random.seed",
-                           /*acceptAuto=*/false);
-        if (!v)
-          return v.takeError();
-        cfg.incrementalRandomSeed = *v;
-      } else if (child == "input_order_heuristic") {
-        cfg.incrementalRandomInputOrderHeuristic = stripQuotes(val).str();
-      }
-      continue;
-    }
-
-    if (parent == "mcs") {
-      ::llvm::SmallString<32> vbuf;
-      StringRef val = scalarValue(valNode, vbuf);
-      if (child == "timeout_sec") {
-        auto v = parseUInt(val, "synth.mcs.timeout_sec", /*acceptAuto=*/false);
-        if (!v)
-          return v.takeError();
-        cfg.mcsTimeoutSec = static_cast<unsigned>(*v);
-      } else if (child == "branch_workers") {
-        auto v = parseUInt(val, "synth.mcs.branch_workers",
-                           /*acceptAuto=*/false);
-        if (!v)
-          return v.takeError();
-        cfg.mcsBranchWorkers = static_cast<unsigned>(*v);
-      } else if (child == "candidate_cap") {
-        auto v = parseUInt(val, "synth.mcs.candidate_cap",
-                           /*acceptAuto=*/false);
-        if (!v)
-          return v.takeError();
-        cfg.mcsCandidateCap = static_cast<unsigned>(*v);
-      }
-      continue;
-    }
     // Unknown nested section: silently ignored for forward compatibility.
   }
   return ::llvm::Error::success();
@@ -292,48 +201,6 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
     cfg.strategy = stripQuotes(val).str();
     return ::llvm::Error::success();
   }
-  if (key == "scc_full_unroll") {
-    ::llvm::SmallString<32> vbuf;
-    StringRef val = scalarValue(value, vbuf);
-    auto v = parseBool(val, "synth.scc_full_unroll");
-    if (!v)
-      return v.takeError();
-    cfg.sccFullUnroll = *v;
-    return ::llvm::Error::success();
-  }
-  if (key == "subgraph_share_recurse") {
-    ::llvm::SmallString<32> vbuf;
-    StringRef val = scalarValue(value, vbuf);
-    auto v = parseBool(val, "synth.subgraph_share_recurse");
-    if (!v)
-      return v.takeError();
-    cfg.subgraphShareRecurse = *v;
-    return ::llvm::Error::success();
-  }
-
-  // fallback_chain is a flow/block sequence of strings.
-  if (key == "fallback_chain") {
-    auto *seq = ::llvm::dyn_cast_or_null<::llvm::yaml::SequenceNode>(value);
-    if (!seq) {
-      // Allow an empty/flow scalar like `[]` to be the empty list. If the
-      // YAML parser surfaced it as a scalar rather than a sequence, accept
-      // the empty case and reject anything else.
-      ::llvm::SmallString<8> vbuf;
-      StringRef val = trim(scalarValue(value, vbuf));
-      if (val.empty() || val == "[]")
-        return ::llvm::Error::success();
-      return makeErr(
-          "synth.fallback_chain must be a YAML list, got '" + val + "'");
-    }
-    cfg.fallbackChain.clear();
-    for (auto &item : *seq) {
-      ::llvm::SmallString<32> ibuf;
-      StringRef name = scalarValue(&item, ibuf);
-      cfg.fallbackChain.push_back(stripQuotes(name).str());
-    }
-    return ::llvm::Error::success();
-  }
-
   // Nested maps.
   if (auto *m = ::llvm::dyn_cast_or_null<::llvm::yaml::MappingNode>(value))
     return applySynthYAMLNested(cfg, key, m);
@@ -347,8 +214,6 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
 // Subset of TOML the loader recognizes:
 //   [synth]
 //   strategy = "anchor"
-//   scc_full_unroll = false
-//   fallback_chain = ["anchor", "mcs"]
 //
 //   [synth.parallelism]
 //   cross_group = true
@@ -360,30 +225,6 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
 //
 // Sections outside the `synth.*` family are silently ignored for
 // forward compatibility.
-
-::llvm::Expected<std::vector<std::string>>
-parseTomlStringArray(StringRef v, StringRef ctx) {
-  v = trim(v);
-  if (v.size() < 2 || v.front() != '[' || v.back() != ']')
-    return makeErr(ctx + ": expected '[...]' string list, got '" + v + "'");
-  StringRef body = trim(v.drop_front().drop_back());
-  std::vector<std::string> out;
-  if (body.empty())
-    return out;
-  // Split on commas. We do not support strings containing literal commas.
-  while (!body.empty()) {
-    auto split = body.split(',');
-    StringRef item = trim(split.first);
-    body = trim(split.second);
-    if (item.empty())
-      continue;
-    if (item.size() < 2 || (item.front() != '"' && item.front() != '\'') ||
-        item.front() != item.back())
-      return makeErr(ctx + ": list entry must be quoted, got '" + item + "'");
-    out.push_back(item.drop_front().drop_back().str());
-  }
-  return out;
-}
 
 ::llvm::Error applyTomlKV(::loom::SynthConfig &cfg, StringRef section,
                           StringRef key, StringRef value) {
@@ -411,27 +252,9 @@ parseTomlStringArray(StringRef v, StringRef ctx) {
     target = static_cast<unsigned>(*v);
     return ::llvm::Error::success();
   };
-  auto setUInt64 = [&](uint64_t &target, StringRef ctx) -> ::llvm::Error {
-    auto v = parseUInt(value, ctx, /*acceptAuto=*/false);
-    if (!v)
-      return v.takeError();
-    target = *v;
-    return ::llvm::Error::success();
-  };
-
   if (section == "synth") {
-    if (key == "strategy") {
+    if (key == "strategy")
       cfg.strategy = stripQuotes(value).str();
-    } else if (key == "scc_full_unroll") {
-      return setBool(cfg.sccFullUnroll, "synth.scc_full_unroll");
-    } else if (key == "subgraph_share_recurse") {
-      return setBool(cfg.subgraphShareRecurse, "synth.subgraph_share_recurse");
-    } else if (key == "fallback_chain") {
-      auto v = parseTomlStringArray(value, "synth.fallback_chain");
-      if (!v)
-        return v.takeError();
-      cfg.fallbackChain = std::move(*v);
-    }
     return ::llvm::Error::success();
   }
   if (section == "synth.parallelism") {
@@ -462,41 +285,6 @@ parseTomlStringArray(StringRef v, StringRef ctx) {
     if (key == "allow_intra_position_mux")
       return setBool(cfg.anchorAllowIntraPositionMux,
                      "synth.anchor.allow_intra_position_mux");
-    return ::llvm::Error::success();
-  }
-  if (section == "synth.incremental") {
-    if (key == "input_order_heuristic") {
-      cfg.incrementalInputOrderHeuristic = stripQuotes(value).str();
-    } else if (key == "coverage_verify_each_attempt") {
-      return setBool(cfg.incrementalCoverageVerifyEachAttempt,
-                     "synth.incremental.coverage_verify_each_attempt");
-    }
-    return ::llvm::Error::success();
-  }
-  if (section == "synth.incremental_random") {
-    if (key == "restarts") {
-      return setUInt32(cfg.incrementalRandomRestarts,
-                       "synth.incremental_random.restarts",
-                       /*acceptAuto=*/false);
-    }
-    if (key == "seed")
-      return setUInt64(cfg.incrementalRandomSeed,
-                       "synth.incremental_random.seed");
-    if (key == "input_order_heuristic") {
-      cfg.incrementalRandomInputOrderHeuristic = stripQuotes(value).str();
-    }
-    return ::llvm::Error::success();
-  }
-  if (section == "synth.mcs") {
-    if (key == "timeout_sec")
-      return setUInt32(cfg.mcsTimeoutSec, "synth.mcs.timeout_sec",
-                       /*acceptAuto=*/false);
-    if (key == "branch_workers")
-      return setUInt32(cfg.mcsBranchWorkers, "synth.mcs.branch_workers",
-                       /*acceptAuto=*/false);
-    if (key == "candidate_cap")
-      return setUInt32(cfg.mcsCandidateCap, "synth.mcs.candidate_cap",
-                       /*acceptAuto=*/false);
     return ::llvm::Error::success();
   }
   // Unknown section: silently ignored.

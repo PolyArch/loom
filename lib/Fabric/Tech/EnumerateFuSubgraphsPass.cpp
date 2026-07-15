@@ -57,8 +57,9 @@ struct EnumerateFuSubgraphsPass
       }
       for (auto &cand : cands) {
         cand.subgraph->setAttr(
-            "loom.from_fu_config",
-            ::mlir::StringAttr::get(ctx, cand.configDescription));
+            "loom.from_fu_encoding",
+            ::mlir::IntegerAttr::get(::mlir::IntegerType::get(ctx, 64),
+                                     cand.encodingIndex));
       }
     }
   }
@@ -75,7 +76,6 @@ std::unique_ptr<::mlir::Pass> createEnumerateFuSubgraphsPass() {
 void registerFabricTechPasses() {
   ::mlir::PassRegistration<EnumerateFuSubgraphsPass>();
   ::mlir::registerPass(createMapSubgraphToFusPass);
-  ::mlir::registerPass([] { return createPartitionGraphPass(); });
 }
 
 } // namespace fabric

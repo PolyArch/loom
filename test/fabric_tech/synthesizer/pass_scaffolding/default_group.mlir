@@ -1,13 +1,12 @@
-// RUN: loom %s -loom-generalize-subgraphs-to-fu='dump-stats=true' 2>&1 | FileCheck %s
+// RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/../unit/anchor/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
 
 // Two func.funcs with no `loom.synth_group` attribute land in the implicit
-// `default` group. The default `incremental_random` strategy folds both
-// inputs into a single shared FU; the `dump-stats=true` flag emits one
-// canonical `synth-stat` line per group.
+// `default` group. Anchor folds both inputs into one FU and emits one real
+// coverage statistic for the group.
 
 // CHECK: remark:
-// CHECK-SAME: synth-stat group=default strategy=incremental_random reason=success
-// CHECK-SAME: covered=2/2 nodes=1/0/0
+// CHECK-SAME: synth-stat group=default strategy=anchor reason=success
+// CHECK-SAME: covered=2/2 nodes=1/0/0 encodings=2
 // CHECK: fabric.module @fu_default
 // CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu

@@ -34,6 +34,7 @@
 #include "Dataflow/IR/DataflowOps.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
+#include "Fabric/Tech/ConfiguredFunctionAdapters.h"
 #include "Fabric/Tech/Synthesizer/CoverageVerifier.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -139,6 +140,7 @@ int main(int argc, char **argv) {
   // top-level func.funcs and pick the unique dataflow.subgraph from
   // every one tagged with `loom.coverage_input`.
   ::llvm::SmallVector<::dataflow::SubgraphOp, 4> inputs;
+  ::llvm::SmallVector<::fabric::ConfiguredFunction, 4> functions;
   ::llvm::SmallVector<std::string, 4> inputNames;
   for (::mlir::func::FuncOp f : mod->getOps<::mlir::func::FuncOp>()) {
     if (!hasCoverageInputAttr(f))
@@ -155,23 +157,30 @@ int main(int argc, char **argv) {
       return 1;
     }
     inputs.push_back(found);
+    ::fabric::ConfiguredFunction function;
+    std::string adapterError;
+    if (::mlir::failed(::fabric::configuredFunctionFromSubgraph(
+            found, function, adapterError))) {
+      ::llvm::errs() << "error: func @" << f.getSymName() << ": "
+                     << adapterError << "\n";
+      return 1;
+    }
+    functions.push_back(std::move(function));
     inputNames.push_back(f.getSymName().str());
   }
 
   // Run the verifier.
   ::loom::fabric::tech::CoverageVerifier verifier(cfg);
-  ::loom::fabric::tech::CoverageReport report = verifier.verify(fu, inputs);
+  ::loom::fabric::tech::CoverageReport report = verifier.verify(fu, functions);
 
-  // Emit results. The shape of the report is documented in
-  // `Synthesizer.h`: one slot per input, std::nullopt for "no
-  // candidate matches".
+  // Emit results. The report contains one optional witness per input.
   for (size_t i = 0; i < inputs.size(); ++i) {
+    const auto &witness = report.witnesses[i];
     ::llvm::outs() << "coverage[" << i << "] funcname=" << inputNames[i]
-                   << " matched="
-                   << (report.matchIndex[i].has_value() ? "true" : "false")
+                   << " matched=" << (witness.has_value() ? "true" : "false")
                    << " index=";
-    if (report.matchIndex[i].has_value())
-      ::llvm::outs() << *report.matchIndex[i];
+    if (witness.has_value())
+      ::llvm::outs() << witness->encodingIndex;
     else
       ::llvm::outs() << "none";
     ::llvm::outs() << "\n";
