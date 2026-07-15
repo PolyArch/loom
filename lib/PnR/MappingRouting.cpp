@@ -63,14 +63,30 @@ std::string nearestSchedule(mlir::Operation *op) {
   return "spatial";
 }
 
-bool isControlledBySemanticEncoding(mlir::Operation *op) {
+bool hasNormalizedHardwareModes(mlir::Operation *op) {
+  auto hwParams = op->getAttrOfType<mlir::ArrayAttr>("hw_params");
+  if (!hwParams || hwParams.empty())
+    return false;
+  auto mode = mlir::dyn_cast<mlir::DictionaryAttr>(hwParams[0]);
+  return mode && mode.get("op") && mode.get("function_type") &&
+         mode.get("input_ports") && mode.get("output_ports") &&
+         mode.get("attributes");
+}
+
+bool requiresSemanticEncodingAwarePnr(mlir::Operation *op) {
   auto fu = op->getParentOfType<fabric::FuOp>();
-  return fu && fu->getAttrOfType<mlir::ArrayAttr>("valid_encodings");
+  if (!fu)
+    return false;
+  if (fu->getAttrOfType<mlir::ArrayAttr>("valid_encodings") ||
+      hasNormalizedHardwareModes(op))
+    return true;
+  auto swConfigs = op->getAttrOfType<mlir::DictionaryAttr>("sw_configs");
+  return swConfigs && swConfigs.get("mode");
 }
 
 void appendHwParamOptions(mlir::Operation *op, HardwareResource &resource) {
   auto hwParams = op->getAttrOfType<mlir::ArrayAttr>("hw_params");
-  if (!hwParams || isControlledBySemanticEncoding(op))
+  if (!hwParams || requiresSemanticEncodingAwarePnr(op))
     return;
   for (mlir::Attribute paramSet : hwParams) {
     auto dict = mlir::dyn_cast<mlir::DictionaryAttr>(paramSet);
@@ -698,14 +714,14 @@ llvm::Expected<HardwareModel> collectHardwareModel(mlir::Operation *hardware,
         "fabric.instantiate @%s remains in @%s",
         unresolvedInstance->c_str(), name.str().c_str());
 
-  bool hasUnselectedSemanticEncoding = false;
+  bool hasUnsupportedFuConfiguration = false;
   hardware->walk([&](fabric::OpOp op) {
-    if (!hasUnselectedSemanticEncoding &&
+    if (!hasUnsupportedFuConfiguration &&
         isConcreteHardwareOperation(op, hardware) &&
-        isControlledBySemanticEncoding(op))
-      hasUnselectedSemanticEncoding = true;
+        requiresSemanticEncodingAwarePnr(op))
+      hasUnsupportedFuConfiguration = true;
   });
-  if (hasUnselectedSemanticEncoding)
+  if (hasUnsupportedFuConfiguration)
     return llvm::createStringError(
         std::errc::not_supported,
         "legacy PnR cannot consume normalized fabric.op hw_params in @%s; "

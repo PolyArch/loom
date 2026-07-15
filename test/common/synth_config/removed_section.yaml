@@ -1,0 +1,4 @@
+synth:
+  strategy: anchor
+  mcs:
+    timeout_sec: 1

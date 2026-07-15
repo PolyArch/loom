@@ -4,9 +4,6 @@ add_mlir_library(MLIRFabricTechSynthesizer
   CostModel.cpp
   CoverageVerifier.cpp
   GeneralizeSubgraphsToFuPass.cpp
-  ExactMcesSolver.cpp
-  McsGraph.cpp
-  McesSolver.cpp
   Parallel.cpp
   Synthesizer.cpp
 
@@ -21,6 +18,7 @@ add_mlir_library(MLIRFabricTechSynthesizer
   MLIRFabricTech
   MLIRFuncDialect
   MLIRIR
+  MLIRLLVMDialect
   MLIRMathDialect
   MLIRParser
   MLIRPass

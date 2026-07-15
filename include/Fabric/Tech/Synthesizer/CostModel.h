@@ -5,9 +5,8 @@
 //
 // `CostModel::evaluate(fu)` is a pure function over a built `fabric.fu`: no
 // MLIR mutation, no I/O, no PRNG, no logging. It is the only ranking metric
-// shared across all synthesis strategies, MCS branch candidates, and the
-// regression metric in perf tests; thread-safe and called inline because
-// each evaluation is cheap.
+// shared across synthesis candidate ranking and regression metrics;
+// thread-safe and called inline because each evaluation is cheap.
 //
 // Formula (verbatim from `docs/spec-generalize-subgraphs-to-fu.md`):
 //

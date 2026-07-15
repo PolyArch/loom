@@ -19,6 +19,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Builders.h"
@@ -221,7 +222,7 @@ public:
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
     registry.insert<::mlir::func::FuncDialect, ::dataflow::DataflowDialect,
                     ::fabric::FabricDialect, ::mlir::arith::ArithDialect,
-                    ::mlir::math::MathDialect>();
+                    ::mlir::LLVM::LLVMDialect, ::mlir::math::MathDialect>();
   }
 
   Option<std::string> configPath{
@@ -719,7 +720,7 @@ void GeneralizeSubgraphsToFuPass::runOnOperation() {
         ::mlir::DialectRegistry registry;
         registry.insert<::mlir::func::FuncDialect, ::dataflow::DataflowDialect,
                         ::fabric::FabricDialect, ::mlir::arith::ArithDialect,
-                        ::mlir::math::MathDialect>();
+                        ::mlir::LLVM::LLVMDialect, ::mlir::math::MathDialect>();
         scratch.appendDialectRegistry(registry);
         scratch.loadAllAvailableDialects();
 

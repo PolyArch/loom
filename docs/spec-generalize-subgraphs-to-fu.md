@@ -159,6 +159,10 @@ Fabric.
 `mcs`, `incremental`, and `incremental_random` producers were removed from the
 factory because they did not emit the canonical capability contract.
 
+`SynthConfig` is schema-closed in both YAML and TOML. Unknown keys and
+sections, including removed strategy controls, fail with a source location;
+they never select `anchor` by falling through to defaults.
+
 Any future strategy must emit complete normalized `hw_params` modes and valid
 encodings, then pass the same shared projection and coverage gate before it
 becomes selectable. A strategy-local success flag cannot bypass that gate.

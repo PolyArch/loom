@@ -109,19 +109,37 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
   return s->getValue(buf);
 }
 
+::llvm::Error makeYamlSchemaErr(::llvm::SourceMgr &sm, ::llvm::yaml::Node *node,
+                                const ::llvm::Twine &message) {
+  if (node) {
+    ::llvm::SMLoc loc = node->getSourceRange().Start;
+    if (loc.isValid()) {
+      auto [line, column] = sm.getLineAndColumn(loc);
+      return makeErr("yaml line " + ::llvm::Twine(line) + " column " +
+                     ::llvm::Twine(column) + ": " + message);
+    }
+  }
+  return makeErr("yaml: " + message);
+}
+
 // Apply a single `key: value` at the top of the synth map. Handles both
 // scalar leaves (e.g. `strategy: ...`) and nested maps (e.g. `parallelism:`).
 ::llvm::Error applySynthYAMLEntry(::loom::SynthConfig &cfg, StringRef key,
-                                  ::llvm::yaml::Node *value);
+                                  ::llvm::yaml::Node *keyNode,
+                                  ::llvm::yaml::Node *value,
+                                  ::llvm::SourceMgr &sm);
 
 // Apply a single nested mapping (e.g. the `parallelism:` block) by dispatching
 // on `parent.child` keys.
-::llvm::Error applySynthYAMLNested(::loom::SynthConfig &cfg,
-                                   StringRef parent,
-                                   ::llvm::yaml::MappingNode *map) {
+::llvm::Error applySynthYAMLNested(::loom::SynthConfig &cfg, StringRef parent,
+                                   ::llvm::yaml::MappingNode *map,
+                                   ::llvm::SourceMgr &sm) {
   for (auto &kv : *map) {
     ::llvm::SmallString<32> kbuf;
     StringRef child = scalarValue(kv.getKey(), kbuf);
+    if (child.empty())
+      return makeYamlSchemaErr(sm, kv.getKey(),
+                               "mapping keys must be scalar strings");
     auto *valNode = kv.getValue();
 
     if (parent == "parallelism") {
@@ -133,10 +151,15 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
           return v.takeError();
         cfg.parallelismCrossGroup = *v;
       } else if (child == "workers") {
-        auto v = parseUInt(val, "synth.parallelism.workers", /*acceptAuto=*/true);
+        auto v =
+            parseUInt(val, "synth.parallelism.workers", /*acceptAuto=*/true);
         if (!v)
           return v.takeError();
         cfg.parallelismWorkers = static_cast<unsigned>(*v);
+      } else {
+        return makeYamlSchemaErr(sm, kv.getKey(),
+                                 ::llvm::Twine("unknown key 'synth.") + parent +
+                                     "." + child + "'");
       }
       continue;
     }
@@ -149,6 +172,10 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
         if (!v)
           return v.takeError();
         cfg.coverageVerifierParallelMatch = *v;
+      } else {
+        return makeYamlSchemaErr(sm, kv.getKey(),
+                                 ::llvm::Twine("unknown key 'synth.") + parent +
+                                     "." + child + "'");
       }
       continue;
     }
@@ -171,6 +198,10 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
         if (!v)
           return v.takeError();
         cfg.costCarryPenalty = *v;
+      } else {
+        return makeYamlSchemaErr(sm, kv.getKey(),
+                                 ::llvm::Twine("unknown key 'synth.") + parent +
+                                     "." + child + "'");
       }
       continue;
     }
@@ -183,17 +214,21 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
         if (!v)
           return v.takeError();
         cfg.anchorAllowIntraPositionMux = *v;
+      } else {
+        return makeYamlSchemaErr(sm, kv.getKey(),
+                                 ::llvm::Twine("unknown key 'synth.") + parent +
+                                     "." + child + "'");
       }
       continue;
     }
-
-    // Unknown nested section: silently ignored for forward compatibility.
   }
   return ::llvm::Error::success();
 }
 
 ::llvm::Error applySynthYAMLEntry(::loom::SynthConfig &cfg, StringRef key,
-                                  ::llvm::yaml::Node *value) {
+                                  ::llvm::yaml::Node *keyNode,
+                                  ::llvm::yaml::Node *value,
+                                  ::llvm::SourceMgr &sm) {
   // Scalar leaves at the top of the synth map.
   if (key == "strategy") {
     ::llvm::SmallString<32> vbuf;
@@ -201,12 +236,22 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
     cfg.strategy = stripQuotes(val).str();
     return ::llvm::Error::success();
   }
-  // Nested maps.
-  if (auto *m = ::llvm::dyn_cast_or_null<::llvm::yaml::MappingNode>(value))
-    return applySynthYAMLNested(cfg, key, m);
+  bool knownSection = key == "parallelism" || key == "coverage_verifier" ||
+                      key == "cost" || key == "anchor";
+  if (knownSection) {
+    auto *map = ::llvm::dyn_cast_or_null<::llvm::yaml::MappingNode>(value);
+    if (!map)
+      return makeYamlSchemaErr(sm, keyNode,
+                               ::llvm::Twine("section 'synth.") + key +
+                                   "' must be a mapping");
+    return applySynthYAMLNested(cfg, key, map, sm);
+  }
 
-  // Unknown scalar key: forward-compat, silently ignore.
-  return ::llvm::Error::success();
+  if (::llvm::isa_and_nonnull<::llvm::yaml::MappingNode>(value))
+    return makeYamlSchemaErr(
+        sm, keyNode, ::llvm::Twine("unknown section 'synth.") + key + "'");
+  return makeYamlSchemaErr(sm, keyNode,
+                           ::llvm::Twine("unknown key 'synth.") + key + "'");
 }
 
 // ---------- TOML helpers ---------------------------------------------------
@@ -223,11 +268,8 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
 //   mux_penalty = 1.5
 //   ...
 //
-// Sections outside the `synth.*` family are silently ignored for
-// forward compatibility.
-
 ::llvm::Error applyTomlKV(::loom::SynthConfig &cfg, StringRef section,
-                          StringRef key, StringRef value) {
+                          StringRef key, StringRef value, size_t lineNo) {
   value = trim(value);
 
   auto setBool = [&](bool &target, StringRef ctx) -> ::llvm::Error {
@@ -255,6 +297,9 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
   if (section == "synth") {
     if (key == "strategy")
       cfg.strategy = stripQuotes(value).str();
+    else
+      return makeErr("toml line " + ::llvm::Twine(lineNo) +
+                     ": unknown key 'synth." + key + "'");
     return ::llvm::Error::success();
   }
   if (section == "synth.parallelism") {
@@ -264,13 +309,15 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
     if (key == "workers")
       return setUInt32(cfg.parallelismWorkers, "synth.parallelism.workers",
                        /*acceptAuto=*/true);
-    return ::llvm::Error::success();
+    return makeErr("toml line " + ::llvm::Twine(lineNo) +
+                   ": unknown key 'synth.parallelism." + key + "'");
   }
   if (section == "synth.coverage_verifier") {
     if (key == "parallel_match")
       return setBool(cfg.coverageVerifierParallelMatch,
                      "synth.coverage_verifier.parallel_match");
-    return ::llvm::Error::success();
+    return makeErr("toml line " + ::llvm::Twine(lineNo) +
+                   ": unknown key 'synth.coverage_verifier." + key + "'");
   }
   if (section == "synth.cost") {
     if (key == "mux_penalty")
@@ -279,16 +326,25 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
       return setDouble(cfg.costDemuxPenalty, "synth.cost.demux_penalty");
     if (key == "carry_penalty")
       return setDouble(cfg.costCarryPenalty, "synth.cost.carry_penalty");
-    return ::llvm::Error::success();
+    return makeErr("toml line " + ::llvm::Twine(lineNo) +
+                   ": unknown key 'synth.cost." + key + "'");
   }
   if (section == "synth.anchor") {
     if (key == "allow_intra_position_mux")
       return setBool(cfg.anchorAllowIntraPositionMux,
                      "synth.anchor.allow_intra_position_mux");
-    return ::llvm::Error::success();
+    return makeErr("toml line " + ::llvm::Twine(lineNo) +
+                   ": unknown key 'synth.anchor." + key + "'");
   }
-  // Unknown section: silently ignored.
-  return ::llvm::Error::success();
+  std::string path = section.empty() ? key.str() : (section + "." + key).str();
+  return makeErr("toml line " + ::llvm::Twine(lineNo) + ": unknown key '" +
+                 path + "'");
+}
+
+bool isKnownTomlSection(StringRef section) {
+  return section == "synth" || section == "synth.parallelism" ||
+         section == "synth.coverage_verifier" || section == "synth.cost" ||
+         section == "synth.anchor";
 }
 
 } // namespace
@@ -346,34 +402,51 @@ namespace loom {
   if (!topMap)
     return makeErr("yaml: top-level must be a mapping");
 
-  ::llvm::yaml::MappingNode *synth = nullptr;
-  for (auto &kv : *topMap) {
-    auto *keyNode = ::llvm::dyn_cast<::llvm::yaml::ScalarNode>(kv.getKey());
-    if (!keyNode)
-      continue;
-    ::llvm::SmallString<16> kbuf;
-    StringRef keyName = keyNode->getValue(kbuf);
-    if (keyName == "synth") {
-      synth = ::llvm::dyn_cast<::llvm::yaml::MappingNode>(kv.getValue());
-      break;
-    }
-  }
-  if (stream.failed())
-    return buildParseErr();
-  if (!synth)
+  auto topIt = topMap->begin();
+  if (topIt == topMap->end())
     return makeErr("yaml: top-level mapping must contain a 'synth:' key");
+  auto *synthKeyNode =
+      ::llvm::dyn_cast<::llvm::yaml::ScalarNode>(topIt->getKey());
+  if (!synthKeyNode)
+    return makeErr("yaml: top-level mapping must contain a 'synth:' key");
+  ::llvm::SmallString<16> synthKeyBuffer;
+  if (synthKeyNode->getValue(synthKeyBuffer) != "synth")
+    return makeErr("yaml: top-level mapping must contain a 'synth:' key");
+  auto *synth = ::llvm::dyn_cast<::llvm::yaml::MappingNode>(topIt->getValue());
+  if (!synth)
+    return makeYamlSchemaErr(sm, synthKeyNode,
+                             "section 'synth' must be a mapping");
 
   for (auto &kv : *synth) {
     auto *keyNode = ::llvm::dyn_cast<::llvm::yaml::ScalarNode>(kv.getKey());
     if (!keyNode)
-      continue;
+      return makeYamlSchemaErr(sm, kv.getKey(),
+                               "mapping keys must be scalar strings");
     ::llvm::SmallString<32> kbuf;
     StringRef key = keyNode->getValue(kbuf);
-    if (auto e = applySynthYAMLEntry(cfg, key, kv.getValue()))
+    if (auto e = applySynthYAMLEntry(cfg, key, kv.getKey(), kv.getValue(), sm))
       return std::move(e);
   }
   if (stream.failed())
     return buildParseErr();
+
+  ++topIt;
+  if (topIt != topMap->end()) {
+    auto *keyNode = ::llvm::dyn_cast<::llvm::yaml::ScalarNode>(topIt->getKey());
+    if (!keyNode)
+      return makeYamlSchemaErr(sm, topIt->getKey(),
+                               "top-level keys must be scalar strings");
+    ::llvm::SmallString<16> keyBuffer;
+    StringRef key = keyNode->getValue(keyBuffer);
+    if (key == "synth")
+      return makeYamlSchemaErr(sm, topIt->getKey(),
+                               "duplicate section 'synth'");
+    if (::llvm::isa_and_nonnull<::llvm::yaml::MappingNode>(topIt->getValue()))
+      return makeYamlSchemaErr(sm, topIt->getKey(),
+                               ::llvm::Twine("unknown section '") + key + "'");
+    return makeYamlSchemaErr(sm, topIt->getKey(),
+                             ::llvm::Twine("unknown key '") + key + "'");
+  }
 
   if (auto e = validate(cfg))
     return std::move(e);
@@ -397,6 +470,9 @@ namespace loom {
         return makeErr("toml line " + ::llvm::Twine(lineNo) +
                        ": malformed section header");
       section = trim(line.drop_front().drop_back());
+      if (!isKnownTomlSection(section))
+        return makeErr("toml line " + ::llvm::Twine(lineNo) +
+                       ": unknown section '" + section + "'");
       continue;
     }
 
@@ -406,7 +482,7 @@ namespace loom {
                      ": expected `key = value`");
     StringRef key = trim(line.substr(0, eq));
     StringRef value = trim(line.substr(eq + 1));
-    if (auto e = applyTomlKV(cfg, section, key, value))
+    if (auto e = applyTomlKV(cfg, section, key, value, lineNo))
       return std::move(e);
   }
   if (auto e = validate(cfg))

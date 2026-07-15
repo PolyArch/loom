@@ -11,8 +11,9 @@ namespace loom {
 // Configuration for the loom-generalize-subgraphs-to-fu pass.
 //
 // Loaded from a YAML or TOML file via `--config <path>`; missing keys fall
-// back to the defaults below. The schema mirrors the YAML reference in
-// `docs/spec-generalize-subgraphs-to-fu.md` (section "SynthConfig schema").
+// back to the defaults below, while unknown keys and sections are errors.
+// The schema mirrors the YAML reference in
+// `docs/spec-generalize-subgraphs-to-fu.md`.
 //
 // The synthesizer and downstream code read the populated struct once per pass
 // invocation; the file is never re-inspected after parsing.
