@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -379,6 +380,30 @@ class MakeWorktreeTest(unittest.TestCase):
             self.assertRaises(SystemExit),
         ):
             self.module.check_loom_compilers()
+
+    def test_compiler_resolution_skips_ccache_frontend_symlinks(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as temp_dir:
+            root = Path(temp_dir)
+            launcher_dir = root / "launcher"
+            compiler_dir = root / "compiler"
+            launcher_dir.mkdir()
+            compiler_dir.mkdir()
+
+            ccache = launcher_dir / "ccache"
+            ccache.write_text("#!/bin/sh\nexit 0\n")
+            ccache.chmod(0o755)
+            (launcher_dir / "gcc").symlink_to(ccache)
+
+            compiler = compiler_dir / "gcc"
+            compiler.write_text("#!/bin/sh\nexit 0\n")
+            compiler.chmod(0o755)
+
+            path = os.pathsep.join((str(launcher_dir), str(compiler_dir)))
+            with patch.dict(os.environ, {"PATH": path}, clear=False):
+                self.assertEqual(
+                    self.module.resolve_compiler_executable("gcc"),
+                    str(compiler.resolve()),
+                )
 
     def test_doctor_and_test_commands_preserve_reports_and_lit_invocation(self):
         state = self.module.DependencyState("circt", "llvm")

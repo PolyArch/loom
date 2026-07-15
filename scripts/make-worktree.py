@@ -120,10 +120,25 @@ def check_compiler(tool: str, nice_name: str,
             f"got {format_version(version)} from {first_line}"
         )
     info(f"{nice_name} {format_version(version)} ok ({tool})")
-    executable = shutil.which(tool)
-    if executable is None:
-        die(f"could not resolve {tool} on PATH")
-    return str(real(Path(executable))), first_line
+    return resolve_compiler_executable(tool), first_line
+
+
+def resolve_compiler_executable(tool: str) -> str:
+    """Resolve the compiler itself, not a PATH-level launcher symlink."""
+    if os.path.dirname(tool):
+        candidates = [Path(tool)]
+    else:
+        candidates = [Path(directory) / tool for directory in os.get_exec_path()]
+
+    for candidate in candidates:
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            continue
+        resolved = real(candidate)
+        if resolved.name == "ccache":
+            continue
+        return str(resolved)
+
+    die(f"could not resolve compiler {tool} on PATH without a ccache wrapper")
 
 
 def check_llvm_compilers() -> tuple[tuple[str, str], tuple[str, str]]:
