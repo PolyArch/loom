@@ -112,6 +112,56 @@ fabric.module @mem_addr_width_mismatch(%mgr : memref<?x!fabric.bits<32>>,
 }
 
 // -----
+// Incoming endpoint typing may normalize widths but cannot change kind.
+fabric.module @mem_input_kind_mismatch(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr : !fabric.bits<32>,
+    %ctrl : !fabric.bits<0>) {
+  // expected-error @+1 {{must share the same fabric kind (bits or bits_tag)}}
+  %data, %done = fabric.mem [temporal] mgr(%mgr) load(%addr, %ctrl)
+        [{load_group_size = 1 : i32, store_group_size = 0 : i32,
+          tag_width = 4 : i32, addr_table_size = 1 : i32}]
+        : (memref<?x!fabric.bits<32>>,
+           !fabric.bits<32> to !fabric.bits_tag<32, 4>,
+           !fabric.bits<0> to !fabric.bits_tag<0, 4>)
+        -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<0, 4>)
+  fabric.yield
+}
+
+// -----
+// Memory capabilities cannot use transport width-normalization syntax.
+fabric.module @mem_manager_to_type(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr : !fabric.bits<32>,
+    %ctrl : !fabric.bits<0>) {
+  // expected-error @+1 {{memref capabilities cannot use the 'to <destination-type>' clause}}
+  %data, %done = fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl)
+        [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+        : (memref<?x!fabric.bits<32>> to memref<?x!fabric.bits<16>>,
+           !fabric.bits<32>, !fabric.bits<0>)
+        -> (!fabric.bits<32>, !fabric.bits<0>)
+  fabric.yield
+}
+
+// -----
+// A same-name discardable attribute must not shadow a valid inherent property.
+fabric.module @mem_inner_input_types_collision(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr : !fabric.bits<32>,
+    %ctrl : !fabric.bits<0>) {
+  // expected-error @+1 {{discardable attribute 'inner_input_types' conflicts with the inherent property of the same name}}
+  %data, %done = "fabric.mem"(%mgr, %addr, %ctrl) <{
+    hw_params = [{load_group_size = 1 : i32, store_group_size = 0 : i32}],
+    inner_input_types = [memref<?x!fabric.bits<32>>, !fabric.bits<32>,
+                         !fabric.bits<0>],
+    schedule = 0 : i32
+  }> {inner_input_types = "not-an-array"}
+      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+     -> (!fabric.bits<32>, !fabric.bits<0>)
+  fabric.yield
+}
+
+// -----
 // Schedule + port type-kind mismatch (spatial schedule with bits_tag ports).
 fabric.module @mem_spatial_with_tag(%mgr : memref<?x!fabric.bits<32>>,
                                     %la0 : !fabric.bits_tag<32, 4>,

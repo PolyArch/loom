@@ -3,15 +3,15 @@ fabric.module @minimal_spatial_adg(%mgr : memref<?x!fabric.bits<32>>,
                                     %rhs : !fabric.bits<32>,
                                     %addr : !fabric.bits<32>,
                                     %ctrl : !fabric.bits<0>) attributes {coordinates_semantic = false, visual_layout = [{node = "mem", x = 0 : i32, y = 0 : i32}, {node = "pe", x = 1 : i32, y = 0 : i32}, {node = "switch", x = 2 : i32, y = 0 : i32}]} {
-  fabric.pe [spatial] (%pa = %lhs : !fabric.bits<32>,
-                    %pb = %rhs : !fabric.bits<32>) -> !fabric.bits<32> {
+  fabric.pe [spatial] (%pa = %transport_fanout0_out0 : !fabric.bits<32>,
+                    %pb = %transport_fanout1_out0 : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
       %sum = fabric.op [@arith.addi] (%fa, %fb) : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %sum : !fabric.bits<32>
     }
   }
-  %sw0_out0, %sw0_out1 = fabric.switch [spatial] %lhs, %rhs
+  %sw0_out0, %sw0_out1 = fabric.switch [spatial] %transport_fanout0_out1, %transport_fanout1_out1
          [{connectivity_table = ["11", "11"]}]
          : (!fabric.bits<32>, !fabric.bits<32>)
         -> (!fabric.bits<32>, !fabric.bits<32>)
@@ -19,5 +19,13 @@ fabric.module @minimal_spatial_adg(%mgr : memref<?x!fabric.bits<32>>,
         [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
         : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
         -> (!fabric.bits<32>, !fabric.bits<0>)
+  %transport_fanout0_out0, %transport_fanout0_out1 = fabric.switch [spatial] %lhs
+         [{connectivity_table = ["1", "1"]}]
+         : (!fabric.bits<32>)
+        -> (!fabric.bits<32>, !fabric.bits<32>)
+  %transport_fanout1_out0, %transport_fanout1_out1 = fabric.switch [spatial] %rhs
+         [{connectivity_table = ["1", "1"]}]
+         : (!fabric.bits<32>)
+        -> (!fabric.bits<32>, !fabric.bits<32>)
   fabric.yield
 }

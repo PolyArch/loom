@@ -12,6 +12,21 @@ fabric.module @s2t_general(%d : !fabric.bits<32>, %t : !fabric.bits<4>) {
 }
 
 // -----------------------------------------------------------------------------
+// Incoming same-kind widths normalize at the boundary input endpoints.
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: fabric.module @s2t_input_width_normalization
+// CHECK: fabric.boundary [s2t] %{{.*}}, %{{.*}} : (!fabric.bits<32> to !fabric.bits<16>, !fabric.bits<8> to !fabric.bits<4>) -> !fabric.bits_tag<16, 4>
+fabric.module @s2t_input_width_normalization(%d : !fabric.bits<32>,
+                                             %t : !fabric.bits<8>) {
+  %0 = fabric.boundary [s2t] %d, %t
+       : (!fabric.bits<32> to !fabric.bits<16>,
+          !fabric.bits<8> to !fabric.bits<4>)
+      -> !fabric.bits_tag<16, 4>
+  fabric.yield
+}
+
+// -----------------------------------------------------------------------------
 // fabric.boundary [s2t] constant-tag form: 1 operand + sw_configs.tag.
 // -----------------------------------------------------------------------------
 

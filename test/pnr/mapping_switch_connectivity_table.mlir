@@ -21,10 +21,10 @@
 // ALLOW-JSON-DAG: "segment_kind": "resource_edge"
 // ALLOW-JSON-DAG: "segment_kind": "module_path"
 // ALLOW-JSON-DAG: "source_endpoint": "switch_allowed_adg::mem.load#0.result0"
-// ALLOW-JSON-DAG: "sink_endpoint": "switch_allowed_adg::fabric.switch#0.operand1"
-// ALLOW-JSON-DAG: "source_endpoint": "switch_allowed_adg::fabric.switch#0.operand1"
-// ALLOW-JSON-DAG: "sink_endpoint": "switch_allowed_adg::fabric.switch#0.result0"
-// ALLOW-JSON-DAG: "source_endpoint": "switch_allowed_adg::fabric.switch#0.result0"
+// ALLOW-JSON-DAG: "sink_endpoint": "switch_allowed_adg::fabric.switch#{{[0-9]+}}.operand1"
+// ALLOW-JSON-DAG: "source_endpoint": "switch_allowed_adg::fabric.switch#{{[0-9]+}}.operand1"
+// ALLOW-JSON-DAG: "sink_endpoint": "switch_allowed_adg::fabric.switch#{{[0-9]+}}.result0"
+// ALLOW-JSON-DAG: "source_endpoint": "switch_allowed_adg::fabric.switch#{{[0-9]+}}.result0"
 // ALLOW-JSON-DAG: "sink_endpoint": "switch_allowed_adg::fabric.op#0.operand0"
 // ALLOW-JSON-NOT: ".out"
 // ALLOW-JSON-NOT: ".in"
@@ -42,17 +42,20 @@ module {
                                       %addr : !fabric.bits<32>,
                                       %ctrl : !fabric.bits<0>,
                                       %rhs : !fabric.bits<32>) {
+    %rhs_to_switch, %rhs_to_pe = fabric.switch [spatial] %rhs
+        [{connectivity_table = ["1", "1"]}]
+        : (!fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>)
     %data, %done =
         fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl) store()
           [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
           : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
             -> (!fabric.bits<32>, !fabric.bits<0>)
-    %to_add, %unused = fabric.switch [spatial] %rhs, %data
+    %to_add, %unused = fabric.switch [spatial] %rhs_to_switch, %data
          [{connectivity_table = ["01", "10"]}]
          : (!fabric.bits<32>, !fabric.bits<32>)
         -> (!fabric.bits<32>, !fabric.bits<32>)
     fabric.pe [spatial] (%lhs = %to_add : !fabric.bits<32>,
-                         %right = %rhs : !fabric.bits<32>)
+                         %right = %rhs_to_pe : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>,
                 %b = %right : !fabric.bits<32>) -> () {
@@ -68,17 +71,20 @@ module {
                                     %addr : !fabric.bits<32>,
                                     %ctrl : !fabric.bits<0>,
                                     %rhs : !fabric.bits<32>) {
+    %rhs_to_switch, %rhs_to_pe = fabric.switch [spatial] %rhs
+        [{connectivity_table = ["1", "1"]}]
+        : (!fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>)
     %data, %done =
         fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl) store()
           [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
           : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
             -> (!fabric.bits<32>, !fabric.bits<0>)
-    %to_add, %unused = fabric.switch [spatial] %rhs, %data
+    %to_add, %unused = fabric.switch [spatial] %rhs_to_switch, %data
          [{connectivity_table = ["10", "01"]}]
          : (!fabric.bits<32>, !fabric.bits<32>)
         -> (!fabric.bits<32>, !fabric.bits<32>)
     fabric.pe [spatial] (%lhs = %to_add : !fabric.bits<32>,
-                         %right = %rhs : !fabric.bits<32>)
+                         %right = %rhs_to_pe : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>,
                 %b = %right : !fabric.bits<32>) -> () {

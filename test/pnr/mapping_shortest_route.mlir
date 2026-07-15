@@ -10,7 +10,7 @@
 // JSON-DAG: "unrouted_edges": 0
 // JSON-DAG: "register": "segment_count"
 // JSON-DAG: "target": "shortest_route__shortest_route__shortest_route_adg::route#0"
-// JSON-DAG: "value": "5"
+// JSON-DAG: "value": "11"
 // JSON-NOT: ".out"
 // JSON-NOT: ".in"
 
@@ -24,8 +24,11 @@ module {
 
   fabric.module @shortest_route_adg(%i32a : !fabric.bits<32>,
                                     %i32b : !fabric.bits<32>) {
+    %i32b_to_source, %i32b_to_sink = fabric.switch [spatial] %i32b
+        [{connectivity_table = ["1", "1"]}]
+        : (!fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>)
     %src = fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
-                                %pb = %i32b : !fabric.bits<32>)
+                                %pb = %i32b_to_source : !fabric.bits<32>)
         -> !fabric.bits<32> {
       %fu_sum = fabric.fu(%lhs = %pa : !fabric.bits<32>,
                           %rhs = %pb : !fabric.bits<32>)
@@ -35,17 +38,24 @@ module {
         fabric.yield %sum : !fabric.bits<32>
       }
     }
-    %long0 = fabric.switch [spatial] %src
+    %src_to_long, %src_to_join = fabric.switch [spatial] %src
+        [{connectivity_table = ["1", "1"]}]
+        : (!fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>)
+    %long0 = fabric.switch [spatial] %src_to_long
         [{connectivity_table = ["1"]}]
         : (!fabric.bits<32>) -> !fabric.bits<32>
     %long1 = fabric.switch [spatial] %long0
         [{connectivity_table = ["1"]}]
         : (!fabric.bits<32>) -> !fabric.bits<32>
-    %joined = fabric.switch [spatial] %long1, %src
+    %short_narrow = fabric.switch [spatial] %src_to_join
+        [{connectivity_table = ["1"]}]
+        : (!fabric.bits<32> to !fabric.bits<8>) -> !fabric.bits<8>
+    %joined = fabric.switch [spatial] %long1, %short_narrow
         [{connectivity_table = ["11"]}]
-        : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        : (!fabric.bits<32>, !fabric.bits<8> to !fabric.bits<32>)
+       -> !fabric.bits<32>
     fabric.pe [spatial] (%value = %joined : !fabric.bits<32>,
-                         %right = %i32b : !fabric.bits<32>)
+                         %right = %i32b_to_sink : !fabric.bits<32>)
         -> !fabric.bits<32> {
       %fu_sum = fabric.fu(%lhs = %value : !fabric.bits<32>,
                           %rhs = %right : !fabric.bits<32>)

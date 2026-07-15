@@ -6,6 +6,7 @@ include "Fabric/IR/FabricTypes.td"
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/CommonAttrConstraints.td"
 include "mlir/IR/EnumAttr.td"
+include "mlir/IR/Properties.td"
 include "mlir/IR/RegionKindInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
@@ -29,6 +30,36 @@ def Fabric_BoundaryDirectionAttr : I32EnumAttr<"BoundaryDirection",
       I32EnumAttrCase<"T2s", 2, "t2s">
     ]> {
   let cppNamespace = "::fabric";
+}
+
+def Fabric_TypeProp : Property<"::mlir::Type", "MLIR type"> {
+  let convertFromAttribute = [{
+    auto typeAttr = ::llvm::dyn_cast_if_present<::mlir::TypeAttr>($_attr);
+    if (!typeAttr)
+      return $_diag() << "expected type attribute";
+    $_storage = typeAttr.getValue();
+    return ::mlir::success();
+  }];
+  let convertToAttribute = [{
+    return ::mlir::TypeAttr::get($_storage);
+  }];
+  let parser = [{
+    if (::mlir::failed($_parser.parseType($_storage)))
+      return ::mlir::failure();
+  }];
+  let printer = "$_printer.printType($_storage)";
+  let readFromMlirBytecode = [{
+    if (::mlir::failed($_reader.readType($_storage)))
+      return ::mlir::failure();
+  }];
+  let writeToMlirBytecode = "$_writer.writeType($_storage)";
+  let hashProperty = "::llvm::hash_value($_storage.getAsOpaquePointer())";
+}
+
+def Fabric_InnerInputTypesProp : ArrayProp<Fabric_TypeProp,
+    "inner input type array"> {
+  let defaultValue = "::llvm::ArrayRef<::mlir::Type>{}";
+  let storageTypeValueOverride = "::llvm::SmallVector<::mlir::Type>{}";
 }
 
 // Temporal-PE FU configuration mode and operand buffer mode are stored
@@ -105,8 +136,10 @@ def Fabric_DemuxOp : Fabric_Op<"demux", [Pure, SameOperandsAndResultType]> {
 def Fabric_FifoOp : Fabric_Op<"fifo", [Pure]> {
   let summary = "fabric FIFO with handshake";
   let description = [{
-    Single-input single-output FIFO. Input and output share one fabric type
-    (same kind, same widths).
+    Single-input single-output FIFO. Input and output share one Fabric port
+    kind. Their widths may differ under the module-level low-bit-aligned
+    truncation or zero-extension rule; the output type is the FIFO's internal
+    storage width.
 
     Hardware parameters (always present, printed in `[...]`):
       * `max_depth`   : i32, must be > 0 (physical FIFO depth)
@@ -394,26 +427,29 @@ def Fabric_InstantiateOp : Fabric_Op<"instantiate", [
     DeclareOpInterfaceMethods<SymbolUserOpInterface>
 ]> {
   let summary =
-      "fabric instantiation: bind a previously-defined fabric.{module,pe,fu} "
+      "fabric instantiation: bind a previously-defined fabric resource "
       "symbol into the current scope as a fresh hardware instance";
   let description = [{
     `fabric.instantiate` references a previously-defined fabric symbol
-    (`fabric.module`, `fabric.pe`, or `fabric.fu`) and creates a fresh
-    hardware instance with its own SSA inputs and results. The symbol
-    target supplies the hardware shape (port count and per-port type);
-    the instantiation site supplies the SSA inputs and consumer-side
-    result SSA values.
+    (`fabric.module`, `fabric.pe`, `fabric.switch`, `fabric.mem`, or
+    `fabric.fu`) and creates a fresh hardware instance with its own SSA
+    inputs and results. The symbol target supplies the hardware shape
+    (port count and per-port type); the instantiation site supplies the
+    SSA inputs and consumer-side result SSA values.
 
     Allowed target kinds depend on the parent of the `fabric.instantiate`:
       * builtin top-level module: only `fabric.module` symbols.
-      * `fabric.module` body: `fabric.module` (sibling top-level) or a
-        named `fabric.pe` defined inside the same module body.
+      * `fabric.module` body: `fabric.module` (sibling top-level), or a
+        named `fabric.pe`, `fabric.switch`, or `fabric.mem` defined inside
+        the same module body.
       * `fabric.pe` body: a named `fabric.fu` defined inside the same
         pe body.
 
     Width relaxation at the input side mirrors the existing connection-
     point rule: the SSA operand type may differ in width from the target's
     declared input port type, expressed via the `to <inner-type>` clause.
+    Differing destination types are retained in the ODS-owned typed
+    `inner_input_types` property.
     `memref` operands must match exactly. Output direction is strict:
     each result type must equal the target's declared output port type.
 
@@ -422,7 +458,8 @@ def Fabric_InstantiateOp : Fabric_Op<"instantiate", [
 
   let arguments = (ins
       FlatSymbolRefAttr:$callee,
-      Variadic<Fabric_ModulePortType>:$inputs);
+      Variadic<Fabric_ModulePortType>:$inputs,
+      Fabric_InnerInputTypesProp:$inner_input_types);
   let results = (outs Variadic<Fabric_ModulePortType>:$outputs);
 
   let hasCustomAssemblyFormat = 1;
@@ -444,15 +481,20 @@ def Fabric_BoundaryOp : Fabric_Op<"boundary", [Pure]> {
     surface syntax (s2t general / s2t constant-tag / t2t LUT / t2s split
     / t2s drop-tag).
 
-    Allowed only inside a `fabric.module` body. Width relaxation is not
-    supported; per-direction operand/result widths must match exactly.
-    See `docs/spec-fabric-boundary.md` for the per-direction verifier
-    rules and the t2t LUT config-mem encoding.
+    Allowed only inside a `fabric.module` body. The direction-specific
+    relationships between destination input-port and result widths remain
+    exact. An incoming anonymous connection may use `source-type to
+    destination-port-type` for same-kind `bits` or `bits_tag` width
+    normalization; differing destination types are retained in the ODS-owned
+    typed `inner_input_types` property. See
+    `docs/spec-fabric-boundary.md` for the per-direction verifier rules and
+    the t2t LUT config-mem encoding.
   }];
 
   let arguments = (ins
       Variadic<Fabric_AnyType>:$inputs,
       Fabric_BoundaryDirectionAttr:$direction,
+      Fabric_InnerInputTypesProp:$inner_input_types,
       OptionalAttr<ArrayAttr>:$hw_params,
       OptionalAttr<DictionaryAttr>:$sw_configs
   );
@@ -475,7 +517,10 @@ def Fabric_SwitchOp : Fabric_Op<"switch", [
     `connectivity_table` describing the static physical fabric. The op
     exists in two disjoint syntactic forms by `sym_name` presence:
 
-    Anonymous form has variadic SSA operands and variadic SSA results.
+    Anonymous form has variadic SSA operands and variadic SSA results. Its
+    input type list accepts `source-type to destination-port-type` pairs for
+    same-kind `bits` or `bits_tag` width normalization; differing destination
+    types are retained in the ODS-owned typed `inner_input_types` property.
     Named template form has zero SSA operands and zero SSA results in the
     host scope; the port signature is captured in the `function_type`
     attribute. Hardware parameters are carried in `hw_params` (an
@@ -494,6 +539,7 @@ def Fabric_SwitchOp : Fabric_Op<"switch", [
       OptionalAttr<SymbolNameAttr>:$sym_name,
       OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
       Fabric_ScheduleAttr:$schedule,
+      Fabric_InnerInputTypesProp:$inner_input_types,
       OptionalAttr<ArrayAttr>:$hw_params,
       OptionalAttr<DictionaryAttr>:$sw_configs
   );
@@ -521,7 +567,10 @@ def Fabric_MemOp : Fabric_Op<"mem", [
     then per store port `(addr, data, ctrl)` three operands. Result
     layout: optional `memref_sub` first (detected from result type),
     then per load port `(data, done)` two results, then per store port
-    `done` one result.
+    `done` one result. Incoming transport operands may use
+    `source-type to destination-port-type` for same-kind width
+    normalization. Differing destination types are retained in the ODS-owned
+    typed `inner_input_types` property.
 
     Named template form has zero SSA operands and zero SSA results in
     the host scope; the port signature is captured in the
@@ -538,6 +587,7 @@ def Fabric_MemOp : Fabric_Op<"mem", [
       OptionalAttr<SymbolNameAttr>:$sym_name,
       OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
       Fabric_ScheduleAttr:$schedule,
+      Fabric_InnerInputTypesProp:$inner_input_types,
       OptionalAttr<ArrayAttr>:$hw_params,
       OptionalAttr<ArrayAttr>:$addr_table,
       OptionalAttr<BoolAttr>:$mem_enable

@@ -11,6 +11,9 @@
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "llvm/ADT/StringRef.h"
+
+#include <optional>
 
 #include "Fabric/IR/FabricTypes.h"
 
@@ -20,6 +23,17 @@
 #include "Fabric/IR/FabricOps.h.inc"
 
 namespace fabric {
+inline constexpr ::llvm::StringLiteral kInnerInputTypesPropertyName =
+    "inner_input_types";
+
+bool isFabricModulePortType(::mlir::Type type);
+bool haveSameFabricModulePortKind(::mlir::Type source,
+                                  ::mlir::Type destination);
+std::optional<unsigned> getFabricBitsWidth(::mlir::Type type);
+::mlir::LogicalResult
+verifyInnerInputTypesProperty(::mlir::Operation *op, ::mlir::ValueRange inputs,
+                              ::llvm::ArrayRef<::mlir::Type> innerInputTypes);
+
 // Returns true if the software op named by `name` is one of the operations
 // supported as a member of fabric.op's `op_list`. This is the canonical
 // allowlist of "ops a fabric tile can implement" and is also consumed by the

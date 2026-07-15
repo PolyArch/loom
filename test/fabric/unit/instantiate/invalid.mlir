@@ -153,7 +153,11 @@ fabric.module @host_named_fu_anon_shape(%a : !fabric.bits<32>) {
 // Instantiate site references an anonymous (unnamed) fabric.pe: the
 // symbol lookup fails because the op carries no @sym attribute.
 fabric.module @host_target_anon(%a : !fabric.bits<32>) {
-  %r = fabric.pe [spatial] (%pa = %a : !fabric.bits<32>) -> !fabric.bits<32> {
+  %a_to_pe, %a_to_instantiate = fabric.switch [spatial] %a
+       [{connectivity_table = ["1", "1"]}]
+       : (!fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>)
+  %r = fabric.pe [spatial] (%pa = %a_to_pe : !fabric.bits<32>)
+       -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
@@ -161,6 +165,53 @@ fabric.module @host_target_anon(%a : !fabric.bits<32>) {
     }
   }
   // expected-error @+1 {{references undefined symbol '@anon_pe'}}
-  %s = fabric.instantiate @anon_pe(%a : !fabric.bits<32>) -> (!fabric.bits<32>)
+  %s = fabric.instantiate @anon_pe(%a_to_instantiate : !fabric.bits<32>)
+       -> (!fabric.bits<32>)
+  fabric.yield
+}
+
+// -----
+// Generic assembly must reject a non-array inner_input_types container.
+fabric.module @inner_types_target(%x : !fabric.bits<32>)
+    -> (!fabric.bits<32>) {
+  fabric.yield %x : !fabric.bits<32>
+}
+fabric.module @inner_types_host(%a : !fabric.bits<32>) {
+  // expected-error @+1 {{for `inner_input_types`: expected array attribute}}
+  %r = "fabric.instantiate"(%a) <{
+    callee = @inner_types_target,
+    inner_input_types = "not-an-array"
+  }> : (!fabric.bits<32>) -> !fabric.bits<32>
+  fabric.yield
+}
+
+// -----
+// A non-empty inner_input_types property must encode a real endpoint change.
+fabric.module @redundant_inner_types_target(%x : !fabric.bits<32>)
+    -> (!fabric.bits<32>) {
+  fabric.yield %x : !fabric.bits<32>
+}
+fabric.module @redundant_inner_types_host(%a : !fabric.bits<32>) {
+  // expected-error @+1 {{must be empty when every destination input type equals its operand type}}
+  %r = "fabric.instantiate"(%a) <{
+    callee = @redundant_inner_types_target,
+    inner_input_types = [!fabric.bits<32>]
+  }> : (!fabric.bits<32>) -> !fabric.bits<32>
+  fabric.yield
+}
+
+// -----
+// A same-name discardable attribute must not shadow a valid inherent property.
+fabric.module @inner_types_collision_target(%x : !fabric.bits<16>)
+    -> (!fabric.bits<16>) {
+  fabric.yield %x : !fabric.bits<16>
+}
+fabric.module @inner_types_collision_host(%a : !fabric.bits<32>) {
+  // expected-error @+1 {{discardable attribute 'inner_input_types' conflicts with the inherent property of the same name}}
+  %r = "fabric.instantiate"(%a) <{
+    callee = @inner_types_collision_target,
+    inner_input_types = [!fabric.bits<16>]
+  }> {inner_input_types = "not-an-array"}
+      : (!fabric.bits<32>) -> !fabric.bits<16>
   fabric.yield
 }

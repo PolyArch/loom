@@ -4,6 +4,7 @@
 #include "Fabric/IR/FabricTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OpImplementation.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/APSInt.h"
@@ -33,7 +34,8 @@ using namespace fabric;
 //   [t2t] tag-remap form (1 SSA operand + hw_params + sw_configs):
 //     fabric.boundary [t2t] %in
 //                {hw_params = [{lut_size = N : i32}],
-//                 sw_configs = {lookup_table = [{src_tag = ..., dst_tag = ...}, ...]}}
+//                 sw_configs = {lookup_table = [{src_tag = ..., dst_tag = ...},
+//                 ...]}}
 //                : !fabric.bits_tag<BW, TW1> -> !fabric.bits_tag<BW, TW2>
 //
 //   [t2s] split form (2 results -- data, tag):
@@ -58,9 +60,8 @@ ParseResult BoundaryOp::parse(OpAsmParser &parser, OperationState &result) {
                             "expected fabric boundary direction keyword "
                             "'s2t', 't2t' or 't2s', got '")
            << directionKw << "'";
-  result.addAttribute(
-      "direction",
-      BoundaryDirectionAttr::get(parser.getContext(), *sym));
+  result.addAttribute("direction",
+                      BoundaryDirectionAttr::get(parser.getContext(), *sym));
 
   // SSA operand list (1 or 2 operands).
   SmallVector<OpAsmParser::UnresolvedOperand, 2> operands;
@@ -82,28 +83,35 @@ ParseResult BoundaryOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
 
   SMLoc typeLoc = parser.getCurrentLocation();
-  SmallVector<Type, 2> operandTypes;
+  SmallVector<Type, 2> sourceTypes;
+  SmallVector<Type, 2> inputPortTypes;
   SmallVector<Type, 2> resultTypes;
+
+  auto parseInputType = [&]() -> ParseResult {
+    Type sourceType;
+    if (parser.parseType(sourceType))
+      return failure();
+    Type inputPortType = sourceType;
+    if (succeeded(parser.parseOptionalKeyword("to")))
+      if (parser.parseType(inputPortType))
+        return failure();
+    sourceTypes.push_back(sourceType);
+    inputPortTypes.push_back(inputPortType);
+    return success();
+  };
 
   // The functional `(...) -> ...` form is used iff there are 2 operands.
   // For 1-operand cases the input type is a bare type. The result side may
   // be either a bare type or a parenthesized list of types.
   if (operands.size() == 2) {
-    if (parser.parseLParen())
+    if (parser.parseLParen() || parseInputType() || parser.parseComma() ||
+        parseInputType() || parser.parseRParen())
       return failure();
-    Type t0, t1;
-    if (parser.parseType(t0) || parser.parseComma() || parser.parseType(t1) ||
-        parser.parseRParen())
-      return failure();
-    operandTypes.push_back(t0);
-    operandTypes.push_back(t1);
     if (parser.parseArrow())
       return failure();
   } else {
-    Type t0;
-    if (parser.parseType(t0) || parser.parseArrow())
+    if (parseInputType() || parser.parseArrow())
       return failure();
-    operandTypes.push_back(t0);
   }
 
   if (succeeded(parser.parseOptionalLParen())) {
@@ -116,8 +124,18 @@ ParseResult BoundaryOp::parse(OpAsmParser &parser, OperationState &result) {
     resultTypes.push_back(t);
   }
 
-  if (parser.resolveOperands(operands, operandTypes, typeLoc, result.operands))
+  if (parser.resolveOperands(operands, sourceTypes, typeLoc, result.operands))
     return failure();
+  bool anyDiffer = false;
+  for (auto [sourceType, inputPortType] :
+       llvm::zip(sourceTypes, inputPortTypes))
+    if (sourceType != inputPortType) {
+      anyDiffer = true;
+      break;
+    }
+  if (anyDiffer) {
+    result.getOrAddProperties<Properties>().setInnerInputTypes(inputPortTypes);
+  }
   result.addTypes(resultTypes);
   return success();
 }
@@ -125,16 +143,36 @@ ParseResult BoundaryOp::parse(OpAsmParser &parser, OperationState &result) {
 void BoundaryOp::print(OpAsmPrinter &p) {
   p << " [" << stringifyBoundaryDirection(getDirection()) << "] ";
   llvm::interleaveComma(getInputs(), p, [&](Value v) { p << v; });
+  ArrayRef<Type> innerTypes = getInnerInputTypes();
+  SmallVector<Type, 2> inputPortTypes;
+  inputPortTypes.reserve(getInputs().size());
+  if (!innerTypes.empty() && innerTypes.size() == getInputs().size()) {
+    inputPortTypes.append(innerTypes.begin(), innerTypes.end());
+  } else {
+    for (Value input : getInputs())
+      inputPortTypes.push_back(input.getType());
+  }
   // Elide the `direction` attribute since it is rendered as the bracket
-  // predicate above.
-  SmallVector<StringRef, 1> elided{"direction"};
+  // predicate above, and the destination input types rendered below.
+  SmallVector<StringRef, 1> elided{getDirectionAttrName().getValue()};
   p.printOptionalAttrDict(getOperation()->getAttrs(), elided);
   p << " : ";
+  auto printInputType = [&](unsigned index) {
+    Type sourceType = getInputs()[index].getType();
+    Type inputPortType = inputPortTypes[index];
+    p << sourceType;
+    if (inputPortType && inputPortType != sourceType)
+      p << " to " << inputPortType;
+  };
   if (getInputs().size() == 2) {
-    p << '(' << getInputs()[0].getType() << ", " << getInputs()[1].getType()
-      << ") -> ";
+    p << '(';
+    printInputType(0);
+    p << ", ";
+    printInputType(1);
+    p << ") -> ";
   } else {
-    p << getInputs()[0].getType() << " -> ";
+    printInputType(0);
+    p << " -> ";
   }
   auto rTypes = getResultTypes();
   if (rTypes.size() == 1) {
@@ -147,6 +185,37 @@ void BoundaryOp::print(OpAsmPrinter &p) {
 }
 
 namespace {
+
+static LogicalResult
+collectInputPortTypes(BoundaryOp op, SmallVectorImpl<Type> &inputPortTypes) {
+  ArrayRef<Type> innerTypes = op.getInnerInputTypes();
+  if (!innerTypes.empty()) {
+    inputPortTypes.append(innerTypes.begin(), innerTypes.end());
+  } else {
+    for (Value input : op.getInputs())
+      inputPortTypes.push_back(input.getType());
+  }
+
+  for (auto [i, pair] :
+       llvm::enumerate(llvm::zip(op.getInputs(), inputPortTypes))) {
+    Value input;
+    Type inputPortType;
+    std::tie(input, inputPortType) = pair;
+    Type sourceType = input.getType();
+    if (isa<MemRefType>(sourceType) || isa<MemRefType>(inputPortType))
+      return op.emitOpError("incoming connection operand #")
+             << i
+             << ": memref capabilities cannot use the 'to "
+                "<destination-type>' clause or serve as boundary transport "
+                "ports";
+    if (!haveSameFabricModulePortKind(sourceType, inputPortType))
+      return op.emitOpError("incoming connection operand #")
+             << i << " source type " << sourceType
+             << " and destination port type " << inputPortType
+             << " must share the same fabric kind (bits or bits_tag)";
+  }
+  return success();
+}
 
 // Reject negative integer-attribute literals. For signed/unsigned
 // IntegerType we use `getAPSInt().isNegative()` which is exact. For
@@ -166,7 +235,7 @@ static bool isNegativeIntLiteral(IntegerAttr attr) {
   return attr.getAPSInt().isNegative();
 }
 
-static LogicalResult verifyS2t(BoundaryOp op) {
+static LogicalResult verifyS2t(BoundaryOp op, ArrayRef<Type> inputPortTypes) {
   auto operands = op.getInputs();
   auto results = op.getOutputs();
   if (operands.size() < 1 || operands.size() > 2)
@@ -183,10 +252,10 @@ static LogicalResult verifyS2t(BoundaryOp op) {
   unsigned resBW = resultTagTy.getWidth();
   unsigned resTW = resultTagTy.getTagWidth();
 
-  auto in0 = dyn_cast<BitsType>(operands[0].getType());
+  auto in0 = dyn_cast<BitsType>(inputPortTypes[0]);
   if (!in0)
     return op.emitOpError("[s2t] operand #0 must be !fabric.bits<BW>, got ")
-           << operands[0].getType();
+           << inputPortTypes[0];
   if (in0.getWidth() != resBW)
     return op.emitOpError("[s2t] operand #0 bits-width ")
            << in0.getWidth() << " must equal result data-width " << resBW;
@@ -195,10 +264,10 @@ static LogicalResult verifyS2t(BoundaryOp op) {
     return op.emitOpError("[s2t] must not carry 'hw_params'");
 
   if (operands.size() == 2) {
-    auto in1 = dyn_cast<BitsType>(operands[1].getType());
+    auto in1 = dyn_cast<BitsType>(inputPortTypes[1]);
     if (!in1)
       return op.emitOpError("[s2t] operand #1 must be !fabric.bits<TW>, got ")
-             << operands[1].getType();
+             << inputPortTypes[1];
     if (in1.getWidth() != resTW)
       return op.emitOpError("[s2t] operand #1 bits-width ")
              << in1.getWidth() << " must equal result tag-width " << resTW;
@@ -236,7 +305,7 @@ static LogicalResult verifyS2t(BoundaryOp op) {
   return success();
 }
 
-static LogicalResult verifyT2t(BoundaryOp op) {
+static LogicalResult verifyT2t(BoundaryOp op, ArrayRef<Type> inputPortTypes) {
   auto operands = op.getInputs();
   auto results = op.getOutputs();
   if (operands.size() != 1)
@@ -246,7 +315,7 @@ static LogicalResult verifyT2t(BoundaryOp op) {
     return op.emitOpError("[t2t] expects exactly 1 result, got ")
            << results.size();
 
-  auto inTy = dyn_cast<BitsTagType>(operands[0].getType());
+  auto inTy = dyn_cast<BitsTagType>(inputPortTypes[0]);
   auto outTy = dyn_cast<BitsTagType>(results[0].getType());
   if (!inTy || !outTy)
     return op.emitOpError(
@@ -284,8 +353,7 @@ static LogicalResult verifyT2t(BoundaryOp op) {
     return op.emitOpError("[t2t] 'lut_size' must be an IntegerAttr");
   if (isNegativeIntLiteral(lutSizeInt) ||
       lutSizeInt.getValue().getZExtValue() < 1)
-    return op.emitOpError(
-        "[t2t] 'lut_size' must be a positive integer (>= 1)");
+    return op.emitOpError("[t2t] 'lut_size' must be a positive integer (>= 1)");
   uint64_t lutSize = lutSizeInt.getValue().getZExtValue();
 
   // sw_configs: required, must contain `lookup_table`.
@@ -351,7 +419,7 @@ static LogicalResult verifyT2t(BoundaryOp op) {
   return success();
 }
 
-static LogicalResult verifyT2s(BoundaryOp op) {
+static LogicalResult verifyT2s(BoundaryOp op, ArrayRef<Type> inputPortTypes) {
   auto operands = op.getInputs();
   auto results = op.getOutputs();
   if (operands.size() != 1)
@@ -361,7 +429,7 @@ static LogicalResult verifyT2s(BoundaryOp op) {
     return op.emitOpError("[t2s] expects 1 or 2 results, got ")
            << results.size();
 
-  auto inTy = dyn_cast<BitsTagType>(operands[0].getType());
+  auto inTy = dyn_cast<BitsTagType>(inputPortTypes[0]);
   if (!inTy)
     return op.emitOpError(
         "[t2s] operand must be a !fabric.bits_tag<BW, TW> type");
@@ -396,13 +464,20 @@ static LogicalResult verifyT2s(BoundaryOp op) {
 } // namespace
 
 LogicalResult BoundaryOp::verify() {
+  if (failed(verifyInnerInputTypesProperty(getOperation(), getInputs(),
+                                           getInnerInputTypes())))
+    return failure();
+
+  SmallVector<Type, 2> inputPortTypes;
+  if (failed(collectInputPortTypes(*this, inputPortTypes)))
+    return failure();
   switch (getDirection()) {
   case BoundaryDirection::S2t:
-    return verifyS2t(*this);
+    return verifyS2t(*this, inputPortTypes);
   case BoundaryDirection::T2t:
-    return verifyT2t(*this);
+    return verifyT2t(*this, inputPortTypes);
   case BoundaryDirection::T2s:
-    return verifyT2s(*this);
+    return verifyT2s(*this, inputPortTypes);
   }
   return emitOpError("unknown boundary direction");
 }

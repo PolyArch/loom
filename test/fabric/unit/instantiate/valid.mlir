@@ -67,6 +67,40 @@ fabric.module @named_fu_host(%a : !fabric.bits<32>) {
   fabric.yield
 }
 
+// Named switch and memory templates are module-level physical resources and
+// can be instantiated like named PE templates.
+// CHECK-LABEL: fabric.module @named_switch_host
+// CHECK: fabric.switch @SW [spatial]
+// CHECK: fabric.instantiate @SW
+fabric.module @named_switch_host(%a : !fabric.bits<32>,
+                                 %b : !fabric.bits<32>) {
+  fabric.switch @SW [spatial]
+       (!fabric.bits<32>, !fabric.bits<32>)
+        -> (!fabric.bits<32>, !fabric.bits<32>)
+       [{connectivity_table = ["11", "11"]}]
+  %out:2 = fabric.instantiate @SW(%a : !fabric.bits<32>,
+                                  %b : !fabric.bits<32>)
+           -> (!fabric.bits<32>, !fabric.bits<32>)
+  fabric.yield
+}
+
+// CHECK-LABEL: fabric.module @named_mem_host
+// CHECK: fabric.mem @MEM [spatial]
+// CHECK: fabric.instantiate @MEM
+fabric.module @named_mem_host(%mgr : memref<?x!fabric.bits<32>>,
+                              %addr : !fabric.bits<32>,
+                              %ctrl : !fabric.bits<0>) {
+  fabric.mem @MEM [spatial]
+       (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+        -> (!fabric.bits<32>, !fabric.bits<0>)
+       [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+  %data, %done = fabric.instantiate @MEM(
+       %mgr : memref<?x!fabric.bits<32>>,
+       %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>)
+       -> (!fabric.bits<32>, !fabric.bits<0>)
+  fabric.yield
+}
+
 // Width-relaxation on the input direction: SSA operand is bits<32> while
 // the callee declares its input as bits<16>. Round-trip preserves the
 // `to <inner-type>` clause.

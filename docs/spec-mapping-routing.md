@@ -28,6 +28,21 @@ path whose data fields are 32, 64, and 32 bits, but not one containing an
 8-bit data field. A `bits_tag<8, 8>` endpoint still provides only eight
 payload bits.
 
+The frozen routing topology may cache this minimum on each directed arc.
+Route search must consume the software edge's required payload width, and
+any route cache key must include that width so a path found for a narrower
+edge cannot be reused for a wider edge.
+
+The routing importer consumes fully elaborated physical occurrences.
+Unresolved `fabric.instantiate` operations are rejected explicitly; named
+templates are not counted as physical resources until elaboration creates
+instance-qualified occurrences.
+
+For `fabric.boundary`, only the data projection carries a canonical
+software payload: `s2t` input 0 to result 0, `t2t` input 0 to result 0,
+and `t2s` input 0 to data result 0. Tag inputs and extracted tag results
+remain owned by deferred temporal-tag allocation and are not payload arcs.
+
 ## Same-Kind Width Normalization
 
 A width difference between connected endpoints of the same Fabric port

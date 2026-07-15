@@ -39,8 +39,24 @@ module {
 
   fabric.module @long_chain_adg(%seed : !fabric.bits<32>,
                                 %rhs : !fabric.bits<32>) {
+    %rhs_to_p0, %rhs_to_p1, %rhs_to_p2, %rhs_to_p3, %rhs_to_p4,
+        %rhs_to_p5, %rhs_to_p6, %rhs_to_p7, %rhs_to_p8, %rhs_to_p9,
+        %rhs_to_p10, %rhs_to_p11, %rhs_to_p12, %rhs_to_p13, %rhs_to_p14,
+        %rhs_to_p15, %rhs_to_p16, %rhs_to_p17, %rhs_to_p18, %rhs_to_p19,
+        %rhs_to_p20 = fabric.switch [spatial] %rhs
+          [{connectivity_table = ["1", "1", "1", "1", "1", "1", "1", "1",
+                                  "1", "1", "1", "1", "1", "1", "1", "1",
+                                  "1", "1", "1", "1", "1"]}]
+          : (!fabric.bits<32>)
+            -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
+                !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
+                !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
+                !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
+                !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
+                !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
+                !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
     %p0 = fabric.pe [spatial] (%lhs = %seed : !fabric.bits<32>,
-                               %r = %rhs : !fabric.bits<32>)
+                               %r = %rhs_to_p0 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -50,7 +66,7 @@ module {
       }
     }
     %p1 = fabric.pe [spatial] (%lhs = %p0 : !fabric.bits<32>,
-                               %r = %rhs : !fabric.bits<32>)
+                               %r = %rhs_to_p1 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -60,7 +76,7 @@ module {
       }
     }
     %p2 = fabric.pe [spatial] (%lhs = %p1 : !fabric.bits<32>,
-                               %r = %rhs : !fabric.bits<32>)
+                               %r = %rhs_to_p2 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -70,7 +86,7 @@ module {
       }
     }
     %p3 = fabric.pe [spatial] (%lhs = %p2 : !fabric.bits<32>,
-                               %r = %rhs : !fabric.bits<32>)
+                               %r = %rhs_to_p3 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -80,7 +96,7 @@ module {
       }
     }
     %p4 = fabric.pe [spatial] (%lhs = %p3 : !fabric.bits<32>,
-                               %r = %rhs : !fabric.bits<32>)
+                               %r = %rhs_to_p4 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -90,7 +106,7 @@ module {
       }
     }
     %p5 = fabric.pe [spatial] (%lhs = %p4 : !fabric.bits<32>,
-                               %r = %rhs : !fabric.bits<32>)
+                               %r = %rhs_to_p5 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -100,7 +116,7 @@ module {
       }
     }
     %p6 = fabric.pe [spatial] (%lhs = %p5 : !fabric.bits<32>,
-                               %r = %rhs : !fabric.bits<32>)
+                               %r = %rhs_to_p6 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -110,7 +126,7 @@ module {
       }
     }
     %p7 = fabric.pe [spatial] (%lhs = %p6 : !fabric.bits<32>,
-                               %r = %rhs : !fabric.bits<32>)
+                               %r = %rhs_to_p7 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -120,7 +136,7 @@ module {
       }
     }
     %p8 = fabric.pe [spatial] (%lhs = %p7 : !fabric.bits<32>,
-                               %r = %rhs : !fabric.bits<32>)
+                               %r = %rhs_to_p8 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -130,7 +146,7 @@ module {
       }
     }
     %p9 = fabric.pe [spatial] (%lhs = %p8 : !fabric.bits<32>,
-                               %r = %rhs : !fabric.bits<32>)
+                               %r = %rhs_to_p9 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -140,7 +156,7 @@ module {
       }
     }
     %p10 = fabric.pe [spatial] (%lhs = %p9 : !fabric.bits<32>,
-                                %r = %rhs : !fabric.bits<32>)
+                                %r = %rhs_to_p10 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -150,7 +166,7 @@ module {
       }
     }
     %p11 = fabric.pe [spatial] (%lhs = %p10 : !fabric.bits<32>,
-                                %r = %rhs : !fabric.bits<32>)
+                                %r = %rhs_to_p11 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -160,7 +176,7 @@ module {
       }
     }
     %p12 = fabric.pe [spatial] (%lhs = %p11 : !fabric.bits<32>,
-                                %r = %rhs : !fabric.bits<32>)
+                                %r = %rhs_to_p12 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -170,7 +186,7 @@ module {
       }
     }
     %p13 = fabric.pe [spatial] (%lhs = %p12 : !fabric.bits<32>,
-                                %r = %rhs : !fabric.bits<32>)
+                                %r = %rhs_to_p13 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -180,7 +196,7 @@ module {
       }
     }
     %p14 = fabric.pe [spatial] (%lhs = %p13 : !fabric.bits<32>,
-                                %r = %rhs : !fabric.bits<32>)
+                                %r = %rhs_to_p14 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -190,7 +206,7 @@ module {
       }
     }
     %p15 = fabric.pe [spatial] (%lhs = %p14 : !fabric.bits<32>,
-                                %r = %rhs : !fabric.bits<32>)
+                                %r = %rhs_to_p15 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -200,7 +216,7 @@ module {
       }
     }
     %p16 = fabric.pe [spatial] (%lhs = %p15 : !fabric.bits<32>,
-                                %r = %rhs : !fabric.bits<32>)
+                                %r = %rhs_to_p16 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -210,7 +226,7 @@ module {
       }
     }
     %p17 = fabric.pe [spatial] (%lhs = %p16 : !fabric.bits<32>,
-                                %r = %rhs : !fabric.bits<32>)
+                                %r = %rhs_to_p17 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -220,7 +236,7 @@ module {
       }
     }
     %p18 = fabric.pe [spatial] (%lhs = %p17 : !fabric.bits<32>,
-                                %r = %rhs : !fabric.bits<32>)
+                                %r = %rhs_to_p18 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -230,7 +246,7 @@ module {
       }
     }
     %p19 = fabric.pe [spatial] (%lhs = %p18 : !fabric.bits<32>,
-                                %r = %rhs : !fabric.bits<32>)
+                                %r = %rhs_to_p19 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {
@@ -240,7 +256,7 @@ module {
       }
     }
     fabric.pe [spatial] (%lhs = %p19 : !fabric.bits<32>,
-                         %r = %rhs : !fabric.bits<32>)
+                         %r = %rhs_to_p20 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
           -> !fabric.bits<32> {

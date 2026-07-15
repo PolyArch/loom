@@ -23,6 +23,7 @@
 #include "Fabric/IR/FabricTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/DenseSet.h"
@@ -55,8 +56,7 @@ ParseResult SwitchOp::parse(OpAsmParser &parser, OperationState &result) {
                             "expected fabric switch schedule keyword "
                             "'spatial' or 'temporal', got '")
            << scheduleKw << "'";
-  result.addAttribute(
-      "schedule", ScheduleAttr::get(parser.getContext(), *sym));
+  result.addAttribute("schedule", ScheduleAttr::get(parser.getContext(), *sym));
 
   if (isNamed) {
     // `(<input-types>) -> (<result-types>)` builds function_type.
@@ -142,11 +142,29 @@ ParseResult SwitchOp::parse(OpAsmParser &parser, OperationState &result) {
 
     if (parser.parseColon())
       return failure();
-    SmallVector<Type, 4> operandTypes;
+    SmallVector<Type, 4> sourceTypes;
+    SmallVector<Type, 4> inputPortTypes;
     if (parser.parseLParen())
       return failure();
     if (failed(parser.parseOptionalRParen())) {
-      if (parser.parseTypeList(operandTypes) || parser.parseRParen())
+      auto parseOneType = [&]() -> ParseResult {
+        Type sourceType;
+        if (parser.parseType(sourceType))
+          return failure();
+        Type inputPortType = sourceType;
+        if (succeeded(parser.parseOptionalKeyword("to")))
+          if (parser.parseType(inputPortType))
+            return failure();
+        sourceTypes.push_back(sourceType);
+        inputPortTypes.push_back(inputPortType);
+        return success();
+      };
+      if (parseOneType())
+        return failure();
+      while (succeeded(parser.parseOptionalComma()))
+        if (parseOneType())
+          return failure();
+      if (parser.parseRParen())
         return failure();
     }
     if (parser.parseArrow())
@@ -163,12 +181,23 @@ ParseResult SwitchOp::parse(OpAsmParser &parser, OperationState &result) {
         return failure();
       resultTypes.push_back(ty);
     }
-    if (operandTypes.size() != operands.size())
+    if (sourceTypes.size() != operands.size())
       return parser.emitError(operandsLoc,
                               "operand count does not match type list count");
-    if (parser.resolveOperands(operands, operandTypes, operandsLoc,
+    if (parser.resolveOperands(operands, sourceTypes, operandsLoc,
                                result.operands))
       return failure();
+    bool anyDiffer = false;
+    for (auto [sourceType, inputPortType] :
+         llvm::zip(sourceTypes, inputPortTypes))
+      if (sourceType != inputPortType) {
+        anyDiffer = true;
+        break;
+      }
+    if (anyDiffer) {
+      result.getOrAddProperties<Properties>().setInnerInputTypes(
+          inputPortTypes);
+    }
     result.addTypes(resultTypes);
     return success();
   }
@@ -243,8 +272,7 @@ void SwitchOp::print(OpAsmPrinter &p) {
   // hw_params in `[ ... ]`.
   if (auto hp = getHwParamsAttr()) {
     p << ' ' << '[';
-    llvm::interleaveComma(hp, p,
-                          [&](Attribute a) { p.printAttribute(a); });
+    llvm::interleaveComma(hp, p, [&](Attribute a) { p.printAttribute(a); });
     p << ']';
   }
 
@@ -255,8 +283,25 @@ void SwitchOp::print(OpAsmPrinter &p) {
   }
 
   if (!isNamed) {
+    ArrayRef<Type> innerTypes = getInnerInputTypes();
+    SmallVector<Type, 4> inputPortTypes;
+    inputPortTypes.reserve(getInputs().size());
+    if (!innerTypes.empty() && innerTypes.size() == getInputs().size()) {
+      inputPortTypes.append(innerTypes.begin(), innerTypes.end());
+    } else {
+      for (Value input : getInputs())
+        inputPortTypes.push_back(input.getType());
+    }
     p << " : (";
-    llvm::interleaveComma(getInputs().getTypes(), p);
+    llvm::interleaveComma(
+        llvm::zip(getInputs(), inputPortTypes), p, [&](auto pair) {
+          Value input;
+          Type inputPortType;
+          std::tie(input, inputPortType) = pair;
+          p << input.getType();
+          if (inputPortType && inputPortType != input.getType())
+            p << " to " << inputPortType;
+        });
     p << ") -> ";
     auto rTypes = getResultTypes();
     if (rTypes.size() == 1) {
@@ -281,12 +326,10 @@ namespace {
 // On success returns the ArrayAttr of L StringAttrs. The hwDict output
 // argument receives the underlying DictionaryAttr (caller may inspect
 // further keys, e.g. route_table_size).
-static LogicalResult
-readHwParamsDict(SwitchOp op, DictionaryAttr &outDict) {
+static LogicalResult readHwParamsDict(SwitchOp op, DictionaryAttr &outDict) {
   auto hp = op.getHwParamsAttr();
   if (!hp)
-    return op.emitOpError(
-        "requires 'hw_params' with 'connectivity_table'");
+    return op.emitOpError("requires 'hw_params' with 'connectivity_table'");
   if (hp.size() != 1)
     return op.emitOpError(
                "'hw_params' must be a length-1 array wrapping a dictionary, "
@@ -294,8 +337,7 @@ readHwParamsDict(SwitchOp op, DictionaryAttr &outDict) {
            << hp.size();
   auto d = dyn_cast<DictionaryAttr>(hp[0]);
   if (!d)
-    return op.emitOpError(
-        "'hw_params' inner element must be a DictionaryAttr");
+    return op.emitOpError("'hw_params' inner element must be a DictionaryAttr");
   outDict = d;
   return success();
 }
@@ -305,12 +347,10 @@ readHwParamsDict(SwitchOp op, DictionaryAttr &outDict) {
 // having at least one '1'. Returns the parsed table on success.
 static LogicalResult
 verifyConnectivityTable(SwitchOp op, DictionaryAttr hwDict, unsigned K,
-                        unsigned L,
-                        SmallVectorImpl<StringRef> &outRows) {
+                        unsigned L, SmallVectorImpl<StringRef> &outRows) {
   auto attr = hwDict.get("connectivity_table");
   if (!attr)
-    return op.emitOpError(
-        "requires 'hw_params' with 'connectivity_table'");
+    return op.emitOpError("requires 'hw_params' with 'connectivity_table'");
   auto arr = dyn_cast<ArrayAttr>(attr);
   if (!arr)
     return op.emitOpError("'connectivity_table' must be an ArrayAttr");
@@ -376,6 +416,38 @@ static unsigned popcountOnes(StringRef row) {
   return n;
 }
 
+static LogicalResult
+collectAnonymousInputPortTypes(SwitchOp op,
+                               SmallVectorImpl<Type> &inputPortTypes) {
+  ArrayRef<Type> innerTypes = op.getInnerInputTypes();
+  if (!innerTypes.empty()) {
+    inputPortTypes.append(innerTypes.begin(), innerTypes.end());
+  } else {
+    for (Value input : op.getInputs())
+      inputPortTypes.push_back(input.getType());
+  }
+
+  for (auto [i, pair] :
+       llvm::enumerate(llvm::zip(op.getInputs(), inputPortTypes))) {
+    Value input;
+    Type inputPortType;
+    std::tie(input, inputPortType) = pair;
+    Type sourceType = input.getType();
+    if (isa<MemRefType>(sourceType) || isa<MemRefType>(inputPortType))
+      return op.emitOpError("incoming connection operand #")
+             << i
+             << ": memref capabilities cannot use the 'to "
+                "<destination-type>' clause or serve as switch transport "
+                "ports";
+    if (!haveSameFabricModulePortKind(sourceType, inputPortType))
+      return op.emitOpError("incoming connection operand #")
+             << i << " source type " << sourceType
+             << " and destination port type " << inputPortType
+             << " must share the same fabric kind (bits or bits_tag)";
+  }
+  return success();
+}
+
 // Verify a single route_sel ArrayAttr against the connectivity rows. Each
 // row j has length popcount(connRow[j]); each row has at most one '1',
 // and each '1' bit position must align with a '1' in connectivity_table[j]
@@ -389,14 +461,13 @@ static unsigned popcountOnes(StringRef row) {
 // require that the route_sel string is the same length as popcount(connRow)
 // and that any '1' in route_sel maps back to a '1' in connectivity row at
 // the corresponding shifted character index.
-static LogicalResult
-verifyRouteTableRows(SwitchOp op, ArrayAttr routeArr,
-                     ArrayRef<StringRef> connRows,
-                     StringRef diagPrefix = StringRef()) {
+static LogicalResult verifyRouteTableRows(SwitchOp op, ArrayAttr routeArr,
+                                          ArrayRef<StringRef> connRows,
+                                          StringRef diagPrefix = StringRef()) {
   if (routeArr.size() != connRows.size())
     return op.emitOpError(diagPrefix)
-           << "'route_table' length " << routeArr.size()
-           << " must equal L (" << connRows.size() << ")";
+           << "'route_table' length " << routeArr.size() << " must equal L ("
+           << connRows.size() << ")";
   for (size_t j = 0; j < routeArr.size(); ++j) {
     auto s = dyn_cast<StringAttr>(routeArr[j]);
     if (!s)
@@ -407,16 +478,15 @@ verifyRouteTableRows(SwitchOp op, ArrayAttr routeArr,
     if (row.size() != ones)
       return op.emitOpError(diagPrefix)
              << "'route_table' row #" << j << " length " << row.size()
-             << " must equal '1'-count of connectivity_table row #" << j
-             << " (" << ones << ")";
+             << " must equal '1'-count of connectivity_table row #" << j << " ("
+             << ones << ")";
     unsigned routeOnes = 0;
     int onePos = -1;
     for (size_t i = 0; i < row.size(); ++i) {
       char c = row[i];
       if (c != '0' && c != '1')
-        return op.emitOpError(diagPrefix)
-               << "'route_table' row #" << j
-               << " contains non-'0'/'1' character";
+        return op.emitOpError(diagPrefix) << "'route_table' row #" << j
+                                          << " contains non-'0'/'1' character";
       if (c == '1') {
         ++routeOnes;
         onePos = (int)i;
@@ -452,10 +522,9 @@ verifyRouteTableRows(SwitchOp op, ArrayAttr routeArr,
       // The "bit position" reported in diagnostics is the input-port
       // index = (K - 1 - connStrIdx).
       if (connStrIdx < 0 || connRows[j][connStrIdx] != '1') {
-        unsigned portIdx =
-            connStrIdx >= 0
-                ? (unsigned)connRows[j].size() - 1 - (unsigned)connStrIdx
-                : pRight;
+        unsigned portIdx = connStrIdx >= 0 ? (unsigned)connRows[j].size() - 1 -
+                                                 (unsigned)connStrIdx
+                                           : pRight;
         return op.emitOpError(diagPrefix)
                << "'route_table' row #" << j << " selects bit position "
                << portIdx << " but connectivity_table row #" << j
@@ -468,12 +537,15 @@ verifyRouteTableRows(SwitchOp op, ArrayAttr routeArr,
 
 // Read the boundary types per form (anonymous: SSA operands/results;
 // named: function_type). Returns K, L, and the operand/result type lists.
-static LogicalResult
-collectShape(SwitchOp op, unsigned &K, unsigned &L,
-             SmallVectorImpl<Type> &inTys,
-             SmallVectorImpl<Type> &outTys, bool &isNamed) {
+static LogicalResult collectShape(SwitchOp op, unsigned &K, unsigned &L,
+                                  SmallVectorImpl<Type> &inTys,
+                                  SmallVectorImpl<Type> &outTys,
+                                  bool &isNamed) {
   isNamed = static_cast<bool>(op.getSymNameAttr());
   if (isNamed) {
+    if (!op.getInnerInputTypes().empty())
+      return op.emitOpError("named fabric.switch template must not carry '")
+             << kInnerInputTypesPropertyName << "'";
     if (!op.getInputs().empty())
       return op.emitOpError(
                  "named fabric.switch template must have zero SSA operands; "
@@ -498,8 +570,8 @@ collectShape(SwitchOp op, unsigned &K, unsigned &L,
       return op.emitOpError(
           "anonymous fabric.switch must not carry a 'function_type' "
           "attribute");
-    for (Type t : op.getInputs().getTypes())
-      inTys.push_back(t);
+    if (failed(collectAnonymousInputPortTypes(op, inTys)))
+      return failure();
     for (Type t : op.getResultTypes())
       outTys.push_back(t);
   }
@@ -513,9 +585,8 @@ collectShape(SwitchOp op, unsigned &K, unsigned &L,
 }
 
 // Spatial: all ports must be !fabric.bits<W> with uniform W.
-static LogicalResult
-verifySpatialPorts(SwitchOp op, ArrayRef<Type> inTys, ArrayRef<Type> outTys,
-                   unsigned &W) {
+static LogicalResult verifySpatialPorts(SwitchOp op, ArrayRef<Type> inTys,
+                                        ArrayRef<Type> outTys, unsigned &W) {
   auto firstBits = dyn_cast<BitsType>(inTys[0]);
   if (!firstBits) {
     if (isa<BitsTagType>(inTys[0]))
@@ -571,9 +642,9 @@ verifySpatialPorts(SwitchOp op, ArrayRef<Type> inTys, ArrayRef<Type> outTys,
 }
 
 // Temporal: all ports must be !fabric.bits_tag<W, T> with uniform (W, T).
-static LogicalResult
-verifyTemporalPorts(SwitchOp op, ArrayRef<Type> inTys, ArrayRef<Type> outTys,
-                    unsigned &W, unsigned &T) {
+static LogicalResult verifyTemporalPorts(SwitchOp op, ArrayRef<Type> inTys,
+                                         ArrayRef<Type> outTys, unsigned &W,
+                                         unsigned &T) {
   auto firstTag = dyn_cast<BitsTagType>(inTys[0]);
   if (!firstTag)
     return op.emitOpError(
@@ -614,8 +685,8 @@ verifyTemporalPorts(SwitchOp op, ArrayRef<Type> inTys, ArrayRef<Type> outTys,
 }
 
 // Reject any temporal-only key on a spatial switch.
-static LogicalResult
-verifySpatialNoTemporalKeys(SwitchOp op, DictionaryAttr hwDict) {
+static LogicalResult verifySpatialNoTemporalKeys(SwitchOp op,
+                                                 DictionaryAttr hwDict) {
   if (hwDict.get("route_table_size"))
     return op.emitOpError(
         "spatial fabric.switch must not carry temporal-only attribute "
@@ -653,6 +724,10 @@ static LogicalResult verifyAllOrNothing(SwitchOp op, DictionaryAttr swDict,
 //===----------------------------------------------------------------------===//
 
 LogicalResult SwitchOp::verify() {
+  if (failed(verifyInnerInputTypesProperty(getOperation(), getInputs(),
+                                           getInnerInputTypes())))
+    return failure();
+
   unsigned K = 0, L = 0;
   bool isNamed = false;
   SmallVector<Type, 4> inTys, outTys;
@@ -734,8 +809,7 @@ LogicalResult SwitchOp::verify() {
       auto validAttr = entry.get("valid");
       if (!routeSelAttr || !tagAttr || !validAttr)
         return emitOpError("'route_table' entry #")
-               << i
-               << " must have keys 'route_sel', 'tag', and 'valid'";
+               << i << " must have keys 'route_sel', 'tag', and 'valid'";
       auto routeSelArr = dyn_cast<ArrayAttr>(routeSelAttr);
       if (!routeSelArr)
         return emitOpError("'route_table' entry #")

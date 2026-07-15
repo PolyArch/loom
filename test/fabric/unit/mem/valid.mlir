@@ -28,6 +28,34 @@ fabric.module @mem_spatial_anon_hw(%mgr : memref<?x!fabric.bits<32>>,
 }
 
 // -----------------------------------------------------------------------------
+// Anonymous spatial fabric.mem with explicit incoming endpoint widths.
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: fabric.module @mem_spatial_input_width_normalization
+// CHECK: fabric.mem [spatial]
+// CHECK-SAME: : (memref<?x!fabric.bits<32>>, !fabric.bits<64> to !fabric.bits<32>, !fabric.bits<8> to !fabric.bits<0>, !fabric.bits<64> to !fabric.bits<32>, !fabric.bits<16> to !fabric.bits<32>, !fabric.bits<4> to !fabric.bits<0>)
+fabric.module @mem_spatial_input_width_normalization(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %load_addr : !fabric.bits<64>,
+    %load_ctrl : !fabric.bits<8>,
+    %store_addr : !fabric.bits<64>,
+    %store_data : !fabric.bits<16>,
+    %store_ctrl : !fabric.bits<4>) {
+  %data, %load_done, %store_done =
+      fabric.mem [spatial] mgr(%mgr) load(%load_addr, %load_ctrl)
+                            store(%store_addr, %store_data, %store_ctrl)
+        [{load_group_size = 1 : i32, store_group_size = 1 : i32}]
+        : (memref<?x!fabric.bits<32>>,
+           !fabric.bits<64> to !fabric.bits<32>,
+           !fabric.bits<8> to !fabric.bits<0>,
+           !fabric.bits<64> to !fabric.bits<32>,
+           !fabric.bits<16> to !fabric.bits<32>,
+           !fabric.bits<4> to !fabric.bits<0>)
+        -> (!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<0>)
+  fabric.yield
+}
+
+// -----------------------------------------------------------------------------
 // Anonymous spatial fabric.mem with memref_sub bypass result.
 // -----------------------------------------------------------------------------
 

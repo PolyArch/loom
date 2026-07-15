@@ -3,8 +3,8 @@ fabric.module @minimal_temporal_adg(%mgr : memref<?x!fabric.bits<32>>,
                                     %rhs : !fabric.bits_tag<32, 4>,
                                     %addr : !fabric.bits_tag<32, 4>,
                                     %ctrl : !fabric.bits_tag<0, 4>) attributes {coordinates_semantic = false, visual_layout = [{node = "mem", x = 0 : i32, y = 0 : i32}, {node = "pe", x = 1 : i32, y = 0 : i32}, {node = "switch", x = 2 : i32, y = 0 : i32}]} {
-  fabric.pe [temporal] (%pa = %lhs : !fabric.bits_tag<32, 4>,
-                    %pb = %rhs : !fabric.bits_tag<32, 4>) -> !fabric.bits_tag<32, 4> attributes {
+  fabric.pe [temporal] (%pa = %transport_fanout0_out0 : !fabric.bits_tag<32, 4>,
+                    %pb = %transport_fanout1_out0 : !fabric.bits_tag<32, 4>) -> !fabric.bits_tag<32, 4> attributes {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
@@ -16,7 +16,7 @@ fabric.module @minimal_temporal_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.yield %sum : !fabric.bits<32>
     }
   }
-  %sw0_out0, %sw0_out1 = fabric.switch [temporal] %lhs, %rhs
+  %sw0_out0, %sw0_out1 = fabric.switch [temporal] %transport_fanout0_out1, %transport_fanout1_out1
          [{connectivity_table = ["11", "11"], route_table_size = 1 : i32}]
          : (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
         -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
@@ -24,5 +24,13 @@ fabric.module @minimal_temporal_adg(%mgr : memref<?x!fabric.bits<32>>,
         [{load_group_size = 1 : i32, store_group_size = 0 : i32, tag_width = 4 : i32, addr_table_size = 1 : i32}]
         : (memref<?x!fabric.bits<32>>, !fabric.bits_tag<32, 4>, !fabric.bits_tag<0, 4>)
         -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<0, 4>)
+  %transport_fanout0_out0, %transport_fanout0_out1 = fabric.switch [temporal] %lhs
+         [{connectivity_table = ["1", "1"], route_table_size = 16 : i32}]
+         : (!fabric.bits_tag<32, 4>)
+        -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
+  %transport_fanout1_out0, %transport_fanout1_out1 = fabric.switch [temporal] %rhs
+         [{connectivity_table = ["1", "1"], route_table_size = 16 : i32}]
+         : (!fabric.bits_tag<32, 4>)
+        -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
   fabric.yield
 }

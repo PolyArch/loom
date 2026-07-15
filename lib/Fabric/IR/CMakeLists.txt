@@ -4,7 +4,9 @@ add_mlir_dialect_library(MLIRFabric
   FabricDialect.cpp
   FabricInstantiateOp.cpp
   FabricMemOp.cpp
+  FabricOpUtils.cpp
   FabricOps.cpp
+  FabricPrimitiveOps.cpp
   FabricPeTemporalOps.cpp
   FabricSwitchOp.cpp
 

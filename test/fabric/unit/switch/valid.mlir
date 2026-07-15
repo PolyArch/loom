@@ -79,6 +79,22 @@ fabric.module @sw_temporal_anon_hw(%a : !fabric.bits_tag<32, 4>,
 }
 
 // -----------------------------------------------------------------------------
+// Anonymous temporal switch with incoming same-kind width normalization.
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: fabric.module @sw_temporal_input_width_normalization
+// CHECK: fabric.switch [temporal]
+// CHECK-SAME: : (!fabric.bits_tag<32, 8> to !fabric.bits_tag<16, 4>) -> !fabric.bits_tag<16, 4>
+fabric.module @sw_temporal_input_width_normalization(
+    %a : !fabric.bits_tag<32, 8>) {
+  %o = fabric.switch [temporal] %a
+       [{connectivity_table = ["1"], route_table_size = 1 : i32}]
+       : (!fabric.bits_tag<32, 8> to !fabric.bits_tag<16, 4>)
+      -> !fabric.bits_tag<16, 4>
+  fabric.yield
+}
+
+// -----------------------------------------------------------------------------
 // Anonymous temporal fabric.switch, programmed (route_table_size = 2).
 // -----------------------------------------------------------------------------
 

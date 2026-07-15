@@ -32,31 +32,31 @@ using namespace fabric;
 
 namespace {
 
-// Returns true if both types have the same kind (both bits, both
-// bits_tag, or both memref). For memref this also requires exact
-// equality (no relaxation). Caller is expected to first ensure both are
-// valid module port types. (Local copy: the same predicate also lives in
-// FabricOps.cpp; we keep a separate copy here to avoid exposing it on a
-// header just for the instantiate op.)
-static bool sameModulePortKind(Type src, Type dst) {
-  if (isa<BitsType>(src))
-    return isa<BitsType>(dst);
-  if (isa<BitsTagType>(src))
-    return isa<BitsTagType>(dst);
-  if (isa<MemRefType>(src))
-    return isa<MemRefType>(dst);
-  return false;
+template <typename OpTy>
+static LogicalResult getNamedTargetPortTypes(OpTy op,
+                                             SmallVectorImpl<Type> &inputs,
+                                             SmallVectorImpl<Type> &outputs) {
+  if (!op.getSymNameAttr())
+    return failure();
+  auto functionTypeAttr = op.getFunctionTypeAttr();
+  if (!functionTypeAttr)
+    return failure();
+  auto functionType = dyn_cast<FunctionType>(functionTypeAttr.getValue());
+  if (!functionType)
+    return failure();
+  inputs.append(functionType.getInputs().begin(),
+                functionType.getInputs().end());
+  outputs.append(functionType.getResults().begin(),
+                 functionType.getResults().end());
+  return success();
 }
 
 // Returns the declared input/output port types of a fabric symbol target.
-// Named fabric.pe / fabric.fu definitions are template-only and carry the
-// signature in their `function_type` attribute; the anonymous form is not
-// a legal instantiate target. Returns failure when the target kind is not
-// one of fabric.{module, pe, fu} or when a pe/fu target is anonymous; the
-// caller is expected to issue a kind-specific diagnostic.
-static LogicalResult
-getTargetPortTypes(Operation *target, SmallVectorImpl<Type> &inputs,
-                   SmallVectorImpl<Type> &outputs) {
+// Named PE, switch, memory, and FU definitions carry their signature in a
+// function_type attribute; anonymous forms are not legal instantiate targets.
+static LogicalResult getTargetPortTypes(Operation *target,
+                                        SmallVectorImpl<Type> &inputs,
+                                        SmallVectorImpl<Type> &outputs) {
   if (auto m = dyn_cast<fabric::ModuleOp>(target)) {
     for (Type t : m.getFunctionType().getInputs())
       inputs.push_back(t);
@@ -64,50 +64,29 @@ getTargetPortTypes(Operation *target, SmallVectorImpl<Type> &inputs,
       outputs.push_back(t);
     return success();
   }
-  if (auto pe = dyn_cast<PeOp>(target)) {
-    if (!pe.getSymNameAttr())
-      return failure();
-    auto fta = pe.getFunctionTypeAttr();
-    if (!fta)
-      return failure();
-    auto ft = dyn_cast<FunctionType>(fta.getValue());
-    if (!ft)
-      return failure();
-    for (Type t : ft.getInputs())
-      inputs.push_back(t);
-    for (Type t : ft.getResults())
-      outputs.push_back(t);
-    return success();
-  }
-  if (auto fu = dyn_cast<FuOp>(target)) {
-    if (!fu.getSymNameAttr())
-      return failure();
-    auto fta = fu.getFunctionTypeAttr();
-    if (!fta)
-      return failure();
-    auto ft = dyn_cast<FunctionType>(fta.getValue());
-    if (!ft)
-      return failure();
-    for (Type t : ft.getInputs())
-      inputs.push_back(t);
-    for (Type t : ft.getResults())
-      outputs.push_back(t);
-    return success();
-  }
+  if (auto pe = dyn_cast<PeOp>(target))
+    return getNamedTargetPortTypes(pe, inputs, outputs);
+  if (auto sw = dyn_cast<SwitchOp>(target))
+    return getNamedTargetPortTypes(sw, inputs, outputs);
+  if (auto mem = dyn_cast<MemOp>(target))
+    return getNamedTargetPortTypes(mem, inputs, outputs);
+  if (auto fu = dyn_cast<FuOp>(target))
+    return getNamedTargetPortTypes(fu, inputs, outputs);
   return failure();
 }
 
 // Returns true if `target`'s op kind is a legal instantiate target given
 // the parent op of the `fabric.instantiate` site. The parent is one of:
 //   * `mlir::ModuleOp` (top-level builtin module): only `fabric.module`.
-//   * `fabric::ModuleOp` body: `fabric.module` or `fabric.pe`.
+//   * `fabric::ModuleOp` body: module, PE, switch, or memory.
 //   * `fabric::PeOp` body: `fabric.fu` only.
 // Returns false otherwise; the caller emits a precise diagnostic.
 static bool isLegalKindForParent(Operation *parent, Operation *target) {
   if (isa<mlir::ModuleOp>(parent))
     return isa<fabric::ModuleOp>(target);
   if (isa<fabric::ModuleOp>(parent))
-    return isa<fabric::ModuleOp>(target) || isa<fabric::PeOp>(target);
+    return isa<fabric::ModuleOp, fabric::PeOp, fabric::SwitchOp,
+               fabric::MemOp>(target);
   if (isa<fabric::PeOp>(parent))
     return isa<fabric::FuOp>(target);
   return false;
@@ -115,8 +94,7 @@ static bool isLegalKindForParent(Operation *parent, Operation *target) {
 
 } // namespace
 
-ParseResult InstantiateOp::parse(OpAsmParser &parser,
-                                 OperationState &result) {
+ParseResult InstantiateOp::parse(OpAsmParser &parser, OperationState &result) {
   // `@callee`
   FlatSymbolRefAttr callee;
   if (parser.parseAttribute(callee, "callee", result.attributes))
@@ -156,14 +134,14 @@ ParseResult InstantiateOp::parse(OpAsmParser &parser,
 
   // Resolve operand SSA types against the declared OUTER (source) types so
   // the IR's operand list matches the SSA producer side. Inner (target's
-  // declared input) types are stashed as an attribute for the verifier and
+  // declared input) types are stashed as a property for the verifier and
   // the printer to recover.
   if (parser.resolveOperands(operands, outerTypes, operandsLoc,
                              result.operands))
     return failure();
 
   // Stash inner types when any of them differs from its outer; otherwise
-  // skip the attribute so the no-relaxation case round-trips cleanly.
+  // leave the property empty so the no-relaxation case round-trips cleanly.
   bool anyDiffer = false;
   for (auto [o, i] : llvm::zip(outerTypes, innerTypes))
     if (o != i) {
@@ -171,12 +149,7 @@ ParseResult InstantiateOp::parse(OpAsmParser &parser,
       break;
     }
   if (anyDiffer) {
-    SmallVector<Attribute, 4> typeAttrs;
-    typeAttrs.reserve(innerTypes.size());
-    for (Type t : innerTypes)
-      typeAttrs.push_back(TypeAttr::get(t));
-    result.addAttribute("inner_input_types",
-                        ArrayAttr::get(parser.getContext(), typeAttrs));
+    result.getOrAddProperties<Properties>().setInnerInputTypes(innerTypes);
   }
 
   // `-> ( T0, T1, ... )` or `-> T` or empty.
@@ -207,27 +180,23 @@ void InstantiateOp::print(OpAsmPrinter &p) {
   p << '(';
   // Recover inner (declared-target) types, defaulting to the operand's SSA
   // outer type when no relaxation was recorded.
-  auto innerArr = (*this)->getAttrOfType<ArrayAttr>("inner_input_types");
+  ArrayRef<Type> innerTypes = getInnerInputTypes();
   SmallVector<Type, 4> inner;
   inner.reserve(getInputs().size());
-  if (innerArr && innerArr.size() == getInputs().size()) {
-    for (Attribute a : innerArr) {
-      auto ta = dyn_cast<TypeAttr>(a);
-      inner.push_back(ta ? ta.getValue() : Type{});
-    }
+  if (!innerTypes.empty() && innerTypes.size() == getInputs().size()) {
+    inner.append(innerTypes.begin(), innerTypes.end());
   } else {
     for (Value v : getInputs())
       inner.push_back(v.getType());
   }
-  llvm::interleaveComma(
-      llvm::zip(getInputs(), inner), p, [&](auto pair) {
-        Value v;
-        Type i;
-        std::tie(v, i) = pair;
-        p << v << " : " << v.getType();
-        if (i && i != v.getType())
-          p << " to " << i;
-      });
+  llvm::interleaveComma(llvm::zip(getInputs(), inner), p, [&](auto pair) {
+    Value v;
+    Type i;
+    std::tie(v, i) = pair;
+    p << v << " : " << v.getType();
+    if (i && i != v.getType())
+      p << " to " << i;
+  });
   p << ')';
   p << " -> ";
   auto rTypes = getResultTypes();
@@ -239,27 +208,22 @@ void InstantiateOp::print(OpAsmPrinter &p) {
     p << ')';
   }
   // Elide attributes already serialized inline.
-  SmallVector<StringRef, 2> elided{"callee", "inner_input_types"};
+  SmallVector<StringRef, 1> elided{getCalleeAttrName().getValue()};
   p.printOptionalAttrDict(getOperation()->getAttrs(), elided);
 }
 
 LogicalResult InstantiateOp::verify() {
+  if (failed(verifyInnerInputTypesProperty(getOperation(), getInputs(),
+                                           getInnerInputTypes())))
+    return failure();
+
   // Recover the inner (declared-target) input types if any. When absent,
   // the inner type equals the operand's outer SSA type for every port.
-  auto innerArr = (*this)->getAttrOfType<ArrayAttr>("inner_input_types");
+  ArrayRef<Type> innerTypes = getInnerInputTypes();
   SmallVector<Type, 4> inner;
   inner.reserve(getInputs().size());
-  if (innerArr) {
-    if (innerArr.size() != getInputs().size())
-      return emitOpError(
-          "'inner_input_types' attribute size does not match operand count");
-    for (Attribute a : innerArr) {
-      auto ta = dyn_cast<TypeAttr>(a);
-      if (!ta)
-        return emitOpError(
-            "'inner_input_types' must be an array of type attributes");
-      inner.push_back(ta.getValue());
-    }
+  if (!innerTypes.empty()) {
+    inner.append(innerTypes.begin(), innerTypes.end());
   } else {
     for (Value v : getInputs())
       inner.push_back(v.getType());
@@ -275,10 +239,10 @@ LogicalResult InstantiateOp::verify() {
     Type outerTy = v.getType();
     if (outerTy == innerTy)
       continue;
-    if (!sameModulePortKind(outerTy, innerTy))
+    if (!haveSameFabricModulePortKind(outerTy, innerTy))
       return emitOpError("operand #")
-             << i << " outer type " << outerTy
-             << " and declared inner type " << innerTy
+             << i << " outer type " << outerTy << " and declared inner type "
+             << innerTy
              << " must share the same fabric kind (bits, bits_tag, memref); "
                 "low-bit alignment / zero-fill applies on width relaxation";
     if (isa<MemRefType>(outerTy))
@@ -311,8 +275,7 @@ InstantiateOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
     symCursor = st->getParentOp();
   }
   if (!target)
-    return emitOpError("references undefined symbol '@")
-           << getCallee() << "'";
+    return emitOpError("references undefined symbol '@") << getCallee() << "'";
 
   // 2. Confirm the parent-of-instantiate / target-kind table.
   Operation *parent = (*this)->getParentOp();
@@ -329,7 +292,8 @@ InstantiateOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
              << targetName << "' for symbol '@" << getCallee() << "'";
     if (isa<fabric::ModuleOp>(parent))
       return emitOpError("inside a fabric.module body may only target "
-                         "'fabric.module' or 'fabric.pe'; got target kind '")
+                         "'fabric.module', 'fabric.pe', 'fabric.switch', or "
+                         "'fabric.mem'; got target kind '")
              << targetName << "' for symbol '@" << getCallee() << "'";
     if (isa<fabric::PeOp>(parent))
       return emitOpError("inside a fabric.pe body may only target "
@@ -393,9 +357,8 @@ InstantiateOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
         "internal: target op kind unrecognized after legality check");
   if (declaredIn.size() != getInputs().size())
     return emitOpError("operand count (")
-           << getInputs().size() << ") does not match callee '@"
-           << getCallee() << "' input port count (" << declaredIn.size()
-           << ')';
+           << getInputs().size() << ") does not match callee '@" << getCallee()
+           << "' input port count (" << declaredIn.size() << ')';
   if (declaredOut.size() != getResultTypes().size())
     return emitOpError("result count (")
            << getResultTypes().size() << ") does not match callee '@"
@@ -403,14 +366,11 @@ InstantiateOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
            << ')';
 
   // Recover declared inner-input types stashed by the parser/builder.
-  auto innerArr = (*this)->getAttrOfType<ArrayAttr>("inner_input_types");
+  ArrayRef<Type> innerTypes = getInnerInputTypes();
   SmallVector<Type, 4> inner;
   inner.reserve(getInputs().size());
-  if (innerArr && innerArr.size() == getInputs().size()) {
-    for (Attribute a : innerArr) {
-      auto ta = dyn_cast<TypeAttr>(a);
-      inner.push_back(ta ? ta.getValue() : Type{});
-    }
+  if (!innerTypes.empty() && innerTypes.size() == getInputs().size()) {
+    inner.append(innerTypes.begin(), innerTypes.end());
   } else {
     for (Value v : getInputs())
       inner.push_back(v.getType());
@@ -425,10 +385,9 @@ InstantiateOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
   for (auto [i, t] : llvm::enumerate(declaredIn)) {
     Type innerTy = inner[i];
     if (innerTy != t)
-      return emitOpError("input #")
-             << i << " declared inner type " << innerTy
-             << " must equal callee '@" << getCallee()
-             << "' input port type " << t;
+      return emitOpError("input #") << i << " declared inner type " << innerTy
+                                    << " must equal callee '@" << getCallee()
+                                    << "' input port type " << t;
   }
   // 8. Output direction is strict in this iteration: each result SSA
   //    type must equal the target's declared output port type.

@@ -72,11 +72,27 @@ struct HardwareResource {
   bool used = false;
 };
 
+enum class TransportKind {
+  Bits,
+  BitsTag,
+};
+
+struct TransportShape {
+  TransportKind kind = TransportKind::Bits;
+  unsigned payloadWidth = 0;
+};
+
+struct HardwareEndpoint {
+  std::string id;
+  TransportShape shape;
+};
+
 struct HardwareRouteSegment {
   std::string segmentKind;
   std::string sourceEndpoint;
   std::string sinkEndpoint;
   std::string hardwareRef;
+  unsigned payloadCapacity = 0;
 };
 
 struct HardwareTopology {
@@ -132,6 +148,7 @@ struct RouteEdgeKey {
 struct SoftwareRouteEdge {
   RouteEdgeKey key;
   std::string payloadKind;
+  unsigned requiredPayloadWidth = 0;
   std::optional<unsigned> producerResultIndex;
   std::optional<unsigned> consumerOperandIndex;
 };
@@ -143,10 +160,12 @@ struct RoutingProblem {
 struct RouteCacheKey {
   std::string sourceEndpoint;
   std::string sinkEndpoint;
+  unsigned requiredPayloadWidth = 0;
 
   bool operator<(const RouteCacheKey &other) const {
-    return std::tie(sourceEndpoint, sinkEndpoint) <
-           std::tie(other.sourceEndpoint, other.sinkEndpoint);
+    return std::tie(sourceEndpoint, sinkEndpoint, requiredPayloadWidth) <
+           std::tie(other.sourceEndpoint, other.sinkEndpoint,
+                    other.requiredPayloadWidth);
   }
 };
 
@@ -231,6 +250,26 @@ std::optional<std::string> symbolName(mlir::Operation *op) {
   if (auto attr = op->getAttrOfType<mlir::StringAttr>("sym_name"))
     return attr.getValue().str();
   return std::nullopt;
+}
+
+bool isNamedFabricTemplate(mlir::Operation *op) {
+  llvm::StringRef name = op->getName().getStringRef();
+  if (name != "fabric.pe" && name != "fabric.fu" &&
+      name != "fabric.switch" && name != "fabric.mem")
+    return false;
+  return op->hasAttr("sym_name");
+}
+
+bool isConcreteHardwareOperation(mlir::Operation *op,
+                                 mlir::Operation *hardwareRoot) {
+  for (mlir::Operation *current = op; current && current != hardwareRoot;
+       current = current->getParentOp()) {
+    if (isNamedFabricTemplate(current))
+      return false;
+    if (current->getName().getStringRef() == "fabric.module")
+      return false;
+  }
+  return true;
 }
 
 mlir::Operation *findSymbolOp(mlir::ModuleOp module, llvm::StringRef opName,
@@ -1068,6 +1107,20 @@ bool switchConnectsInputToOutput(llvm::ArrayRef<std::string> rows,
   return row[inputCount - 1 - inputIndex] == '1';
 }
 
+bool boundaryCarriesSoftwarePayload(fabric::BoundaryOp boundary,
+                                    unsigned inputIndex,
+                                    unsigned outputIndex) {
+  if (inputIndex != 0 || outputIndex != 0)
+    return false;
+  switch (boundary.getDirection()) {
+  case fabric::BoundaryDirection::S2t:
+  case fabric::BoundaryDirection::T2t:
+  case fabric::BoundaryDirection::T2s:
+    return true;
+  }
+  llvm_unreachable("unknown fabric boundary direction");
+}
+
 std::tuple<std::string, std::string, std::string, std::string>
 routeSegmentTieKey(const HardwareRouteSegment &segment) {
   return {segment.sinkEndpoint, segment.segmentKind, segment.hardwareRef,
@@ -1121,26 +1174,59 @@ unsigned memResultPortBase(mlir::Operation *op) {
   return 0;
 }
 
-std::optional<std::string> forwardedBlockArgumentEndpoint(
-    mlir::Value value,
-    const std::map<EndpointKey, std::string> &resultEndpoints);
+std::optional<TransportShape> transportShape(mlir::Type type) {
+  if (auto bits = mlir::dyn_cast<fabric::BitsType>(type))
+    return TransportShape{TransportKind::Bits, bits.getWidth()};
+  if (auto bitsTag = mlir::dyn_cast<fabric::BitsTagType>(type))
+    return TransportShape{TransportKind::BitsTag, bitsTag.getWidth()};
+  return std::nullopt;
+}
 
-std::optional<std::string> sourceEndpointForValue(
-    mlir::Value value,
-    const std::map<EndpointKey, std::string> &resultEndpoints) {
+mlir::Type physicalOperandType(mlir::Operation *op, unsigned index) {
+  if (auto fifo = mlir::dyn_cast<fabric::FifoOp>(op))
+    return fifo.getOutput().getType();
+
+  llvm::ArrayRef<mlir::Type> innerTypes;
+  if (auto boundary = mlir::dyn_cast<fabric::BoundaryOp>(op))
+    innerTypes = boundary.getInnerInputTypes();
+  else if (auto switchOp = mlir::dyn_cast<fabric::SwitchOp>(op))
+    innerTypes = switchOp.getInnerInputTypes();
+  else if (auto mem = mlir::dyn_cast<fabric::MemOp>(op))
+    innerTypes = mem.getInnerInputTypes();
+
+  if (!innerTypes.empty() && index < innerTypes.size())
+    return innerTypes[index];
+  return op->getOperand(index).getType();
+}
+
+using HardwareEndpointMap = std::map<EndpointKey, HardwareEndpoint>;
+
+struct SourceEndpointResolution {
+  HardwareEndpoint endpoint;
+  TransportShape valueShape;
+  unsigned payloadCapacity = 0;
+  bool explicitKindTransition = false;
+};
+
+std::optional<SourceEndpointResolution> forwardedBlockArgumentEndpoint(
+    mlir::Value value, const HardwareEndpointMap &resultEndpoints);
+
+std::optional<SourceEndpointResolution>
+sourceEndpointForValue(mlir::Value value,
+                       const HardwareEndpointMap &resultEndpoints) {
   if (auto opResult = llvm::dyn_cast<mlir::OpResult>(value)) {
     auto it = resultEndpoints.find(
         EndpointKey{opResult.getOwner(), opResult.getResultNumber()});
     if (it != resultEndpoints.end())
-      return it->second;
+      return SourceEndpointResolution{it->second, it->second.shape,
+                                      it->second.shape.payloadWidth, false};
     return std::nullopt;
   }
   return forwardedBlockArgumentEndpoint(value, resultEndpoints);
 }
 
-std::optional<std::string> forwardedBlockArgumentEndpoint(
-    mlir::Value value,
-    const std::map<EndpointKey, std::string> &resultEndpoints) {
+std::optional<SourceEndpointResolution> forwardedBlockArgumentEndpoint(
+    mlir::Value value, const HardwareEndpointMap &resultEndpoints) {
   auto blockArg = llvm::dyn_cast<mlir::BlockArgument>(value);
   if (!blockArg)
     return std::nullopt;
@@ -1153,22 +1239,50 @@ std::optional<std::string> forwardedBlockArgumentEndpoint(
   unsigned index = blockArg.getArgNumber();
   if (index >= parent->getNumOperands())
     return std::nullopt;
-  return sourceEndpointForValue(parent->getOperand(index), resultEndpoints);
+  std::optional<SourceEndpointResolution> source =
+      sourceEndpointForValue(parent->getOperand(index), resultEndpoints);
+  std::optional<TransportShape> blockShape = transportShape(blockArg.getType());
+  if (!source || !blockShape)
+    return std::nullopt;
+
+  if (source->valueShape.kind != blockShape->kind) {
+    auto pe = mlir::dyn_cast<fabric::PeOp>(parent);
+    if (!pe || pe.getSchedule() != fabric::Schedule::Temporal)
+      return std::nullopt;
+    source->explicitKindTransition = true;
+  }
+  source->payloadCapacity =
+      std::min(source->payloadCapacity, blockShape->payloadWidth);
+  source->valueShape = *blockShape;
+  return source;
 }
 
 void addGenericEndpointMaps(
     mlir::Operation *op, llvm::StringRef resourceId,
-    std::map<EndpointKey, std::string> &operandEndpoints,
-    std::map<EndpointKey, std::string> &resultEndpoints) {
+    HardwareEndpointMap &operandEndpoints,
+    HardwareEndpointMap &resultEndpoints) {
   for (unsigned operandIndex = 0; operandIndex < op->getNumOperands();
-       ++operandIndex)
+       ++operandIndex) {
+    std::optional<TransportShape> shape =
+        transportShape(physicalOperandType(op, operandIndex));
+    if (!shape)
+      continue;
     operandEndpoints.try_emplace(
         EndpointKey{op, operandIndex},
-        endpointFor(resourceId, "operand", operandIndex));
+        HardwareEndpoint{endpointFor(resourceId, "operand", operandIndex),
+                         *shape});
+  }
   for (unsigned resultIndex = 0; resultIndex < op->getNumResults();
-       ++resultIndex)
-    resultEndpoints.try_emplace(EndpointKey{op, resultIndex},
-                                endpointFor(resourceId, "result", resultIndex));
+       ++resultIndex) {
+    std::optional<TransportShape> shape =
+        transportShape(op->getResult(resultIndex).getType());
+    if (!shape)
+      continue;
+    resultEndpoints.try_emplace(
+        EndpointKey{op, resultIndex},
+        HardwareEndpoint{endpointFor(resourceId, "result", resultIndex),
+                         *shape});
+  }
 }
 
 bool isFabricBoundaryOp(llvm::StringRef opName) {
@@ -1176,45 +1290,87 @@ bool isFabricBoundaryOp(llvm::StringRef opName) {
 }
 
 void addMemEndpointMaps(mlir::Operation *op, llvm::StringRef hardwareName,
-                        std::map<EndpointKey, std::string> &operandEndpoints,
-                        std::map<EndpointKey, std::string> &resultEndpoints) {
+                        HardwareEndpointMap &operandEndpoints,
+                        HardwareEndpointMap &resultEndpoints) {
+  auto addOperand = [&](unsigned opIndex, llvm::StringRef resourceId,
+                        unsigned portIndex) {
+    std::optional<TransportShape> shape =
+        transportShape(physicalOperandType(op, opIndex));
+    if (!shape)
+      return;
+    operandEndpoints.try_emplace(
+        EndpointKey{op, opIndex},
+        HardwareEndpoint{endpointFor(resourceId, "operand", portIndex),
+                         *shape});
+  };
+  auto addResult = [&](unsigned opIndex, llvm::StringRef resourceId,
+                       unsigned portIndex) {
+    std::optional<TransportShape> shape =
+        transportShape(op->getResult(opIndex).getType());
+    if (!shape)
+      return;
+    resultEndpoints.try_emplace(
+        EndpointKey{op, opIndex},
+        HardwareEndpoint{endpointFor(resourceId, "result", portIndex),
+                         *shape});
+  };
+
   auto [loadPorts, storePorts] = memPortCounts(op);
   unsigned operandBase = 1;
   unsigned resultBase = memResultPortBase(op);
   for (std::uint64_t i = 0; i < loadPorts; ++i) {
     std::string resourceId =
         (hardwareName + "::mem.load#" + llvm::Twine(i)).str();
-    operandEndpoints.try_emplace(EndpointKey{op, operandBase},
-                                 endpointFor(resourceId, "operand", 0));
-    operandEndpoints.try_emplace(EndpointKey{op, operandBase + 1},
-                                 endpointFor(resourceId, "operand", 1));
-    resultEndpoints.try_emplace(EndpointKey{op, resultBase},
-                                endpointFor(resourceId, "result", 0));
-    resultEndpoints.try_emplace(EndpointKey{op, resultBase + 1},
-                                endpointFor(resourceId, "result", 1));
+    addOperand(operandBase, resourceId, 0);
+    addOperand(operandBase + 1, resourceId, 1);
+    addResult(resultBase, resourceId, 0);
+    addResult(resultBase + 1, resourceId, 1);
     operandBase += 2;
     resultBase += 2;
   }
   for (std::uint64_t i = 0; i < storePorts; ++i) {
     std::string resourceId =
         (hardwareName + "::mem.store#" + llvm::Twine(i)).str();
-    operandEndpoints.try_emplace(EndpointKey{op, operandBase},
-                                 endpointFor(resourceId, "operand", 0));
-    operandEndpoints.try_emplace(EndpointKey{op, operandBase + 1},
-                                 endpointFor(resourceId, "operand", 1));
-    operandEndpoints.try_emplace(EndpointKey{op, operandBase + 2},
-                                 endpointFor(resourceId, "operand", 2));
-    resultEndpoints.try_emplace(EndpointKey{op, resultBase},
-                                endpointFor(resourceId, "result", 0));
+    addOperand(operandBase, resourceId, 0);
+    addOperand(operandBase + 1, resourceId, 1);
+    addOperand(operandBase + 2, resourceId, 2);
+    addResult(resultBase, resourceId, 0);
     operandBase += 3;
     resultBase += 1;
   }
 }
 
+std::optional<HardwareRouteSegment> makeTopologySegment(
+    llvm::StringRef segmentKind, const SourceEndpointResolution &source,
+    const HardwareEndpoint &sink, llvm::StringRef hardwareRef,
+    bool ownerAllowsKindTransition = false) {
+  bool explicitKindTransition =
+      source.explicitKindTransition || ownerAllowsKindTransition;
+  if (source.endpoint.shape.kind != sink.shape.kind &&
+      !explicitKindTransition)
+    return std::nullopt;
+  return HardwareRouteSegment{
+      segmentKind.str(), source.endpoint.id, sink.id, hardwareRef.str(),
+      std::min(source.payloadCapacity, sink.shape.payloadWidth)};
+}
+
+std::optional<HardwareRouteSegment>
+makeTopologySegment(llvm::StringRef segmentKind,
+                    const HardwareEndpoint &source,
+                    const HardwareEndpoint &sink,
+                    llvm::StringRef hardwareRef,
+                    bool ownerAllowsKindTransition = false) {
+  return makeTopologySegment(
+      segmentKind,
+      SourceEndpointResolution{source, source.shape, source.shape.payloadWidth,
+                               false},
+      sink, hardwareRef, ownerAllowsKindTransition);
+}
+
 void addYieldBoundarySegments(
     mlir::Operation *op,
     const llvm::DenseMap<mlir::Operation *, std::string> &fabricBoundaryIds,
-    const std::map<EndpointKey, std::string> &resultEndpoints,
+    const HardwareEndpointMap &resultEndpoints,
     HardwareTopology &topology) {
   if (op->getName().getStringRef() != "fabric.yield")
     return;
@@ -1228,23 +1384,27 @@ void addYieldBoundarySegments(
     return;
   for (unsigned operandIndex = 0; operandIndex < op->getNumOperands();
        ++operandIndex) {
-    std::optional<std::string> sourceEndpoint =
+    std::optional<SourceEndpointResolution> sourceEndpoint =
         sourceEndpointForValue(op->getOperand(operandIndex), resultEndpoints);
     if (!sourceEndpoint)
       continue;
     auto sinkIt = resultEndpoints.find(EndpointKey{parent, operandIndex});
     if (sinkIt == resultEndpoints.end())
       continue;
-    addTopologySegment(topology,
-                       HardwareRouteSegment{"module_path", *sourceEndpoint,
-                                            sinkIt->second, parentId->second});
+    auto pe = mlir::dyn_cast<fabric::PeOp>(parent);
+    bool temporalPe = pe && pe.getSchedule() == fabric::Schedule::Temporal;
+    std::optional<HardwareRouteSegment> segment = makeTopologySegment(
+        "module_path", *sourceEndpoint, sinkIt->second, parentId->second,
+        temporalPe);
+    if (segment)
+      addTopologySegment(topology, std::move(*segment));
   }
 }
 
 void addFuToPeBoundarySegments(
     mlir::Operation *op,
     const llvm::DenseMap<mlir::Operation *, std::string> &fabricBoundaryIds,
-    const std::map<EndpointKey, std::string> &resultEndpoints,
+    const HardwareEndpointMap &resultEndpoints,
     HardwareTopology &topology) {
   if (op->getName().getStringRef() != "fabric.fu")
     return;
@@ -1260,9 +1420,12 @@ void addFuToPeBoundarySegments(
     auto sinkIt = resultEndpoints.find(EndpointKey{parent, resultIndex});
     if (sourceIt == resultEndpoints.end() || sinkIt == resultEndpoints.end())
       continue;
-    addTopologySegment(topology,
-                       HardwareRouteSegment{"module_path", sourceIt->second,
-                                            sinkIt->second, peId->second});
+    auto pe = mlir::cast<fabric::PeOp>(parent);
+    std::optional<HardwareRouteSegment> segment = makeTopologySegment(
+        "module_path", sourceIt->second, sinkIt->second, peId->second,
+        pe.getSchedule() == fabric::Schedule::Temporal);
+    if (segment)
+      addTopologySegment(topology, std::move(*segment));
   }
 }
 
@@ -1315,8 +1478,8 @@ HardwareTopology buildHardwareTopology(
     mlir::Operation *hardware, llvm::StringRef hardwareName,
     const llvm::SmallVectorImpl<HardwareResource> &resources) {
   HardwareTopology topology;
-  std::map<EndpointKey, std::string> operandEndpoints;
-  std::map<EndpointKey, std::string> resultEndpoints;
+  HardwareEndpointMap operandEndpoints;
+  HardwareEndpointMap resultEndpoints;
   llvm::DenseMap<mlir::Operation *, std::string> fabricBoundaryIds;
   for (const HardwareResource &resource : resources) {
     if (resource.kind == ResourceKind::FabricOp && resource.op)
@@ -1327,6 +1490,8 @@ HardwareTopology buildHardwareTopology(
   llvm::StringMap<unsigned> fabricBoundaryCounts;
   llvm::StringMap<unsigned> routeResourceCounts;
   hardware->walk([&](mlir::Operation *op) {
+    if (!isConcreteHardwareOperation(op, hardware))
+      return;
     llvm::StringRef opName = op->getName().getStringRef();
     if (isFabricBoundaryOp(opName)) {
       unsigned index = fabricBoundaryCounts[opName]++;
@@ -1351,23 +1516,25 @@ HardwareTopology buildHardwareTopology(
 
   unsigned ssaEdgeIndex = 0;
   hardware->walk([&](mlir::Operation *op) {
+    if (!isConcreteHardwareOperation(op, hardware))
+      return;
     llvm::StringRef opName = op->getName().getStringRef();
     for (unsigned operandIndex = 0; operandIndex < op->getNumOperands();
          ++operandIndex) {
       mlir::Value operand = op->getOperand(operandIndex);
-      std::optional<std::string> sourceEndpoint =
+      std::optional<SourceEndpointResolution> sourceEndpoint =
           sourceEndpointForValue(operand, resultEndpoints);
       if (!sourceEndpoint)
         continue;
       auto destIt = operandEndpoints.find(EndpointKey{op, operandIndex});
       if (destIt == operandEndpoints.end())
         continue;
-      addTopologySegment(
-          topology,
-          HardwareRouteSegment{
-              "resource_edge", *sourceEndpoint, destIt->second,
-              (hardwareName + "::ssa_edge#" + llvm::Twine(ssaEdgeIndex++))
-                  .str()});
+      std::string hardwareRef =
+          (hardwareName + "::ssa_edge#" + llvm::Twine(ssaEdgeIndex++)).str();
+      std::optional<HardwareRouteSegment> segment = makeTopologySegment(
+          "resource_edge", *sourceEndpoint, destIt->second, hardwareRef);
+      if (segment)
+        addTopologySegment(topology, std::move(*segment));
     }
 
     addYieldBoundarySegments(op, fabricBoundaryIds, resultEndpoints, topology);
@@ -1378,7 +1545,7 @@ HardwareTopology buildHardwareTopology(
     std::optional<std::string> destId;
     auto firstOperand = operandEndpoints.find(EndpointKey{op, 0});
     if (firstOperand != operandEndpoints.end()) {
-      llvm::StringRef endpoint = firstOperand->second;
+      llvm::StringRef endpoint = firstOperand->second.id;
       std::size_t dot = endpoint.rfind(".operand");
       if (dot != std::string::npos)
         destId = endpoint.take_front(dot).str();
@@ -1396,12 +1563,21 @@ HardwareTopology buildHardwareTopology(
             !switchConnectsInputToOutput(switchRows, operandIndex, resultIndex,
                                          op->getNumOperands()))
           continue;
-        addTopologySegment(
-            topology,
-            HardwareRouteSegment{internalRouteSegmentKind(opName),
-                                 endpointFor(*destId, "operand", operandIndex),
-                                 endpointFor(*destId, "result", resultIndex),
-                                 *destId});
+        if (auto boundary = mlir::dyn_cast<fabric::BoundaryOp>(op))
+          if (!boundaryCarriesSoftwarePayload(boundary, operandIndex,
+                                              resultIndex))
+            continue;
+        auto sourceIt =
+            operandEndpoints.find(EndpointKey{op, operandIndex});
+        auto sinkIt = resultEndpoints.find(EndpointKey{op, resultIndex});
+        if (sourceIt == operandEndpoints.end() ||
+            sinkIt == resultEndpoints.end())
+          continue;
+        std::optional<HardwareRouteSegment> segment = makeTopologySegment(
+            internalRouteSegmentKind(opName), sourceIt->second, sinkIt->second,
+            *destId, opName == "fabric.boundary");
+        if (segment)
+          addTopologySegment(topology, std::move(*segment));
       }
     }
   });
@@ -1411,9 +1587,25 @@ HardwareTopology buildHardwareTopology(
 
 llvm::Expected<HardwareModel> collectHardwareModel(mlir::Operation *hardware,
                                                    llvm::StringRef name) {
+  std::optional<std::string> unresolvedInstance;
+  hardware->walk([&](fabric::InstantiateOp instantiate) {
+    if (unresolvedInstance ||
+        !isConcreteHardwareOperation(instantiate, hardware))
+      return;
+    unresolvedInstance = instantiate.getCallee().str();
+  });
+  if (unresolvedInstance)
+    return llvm::createStringError(
+        std::errc::not_supported,
+        "PnR requires fully elaborated Fabric hardware; unresolved "
+        "fabric.instantiate @%s remains in @%s",
+        unresolvedInstance->c_str(), name.str().c_str());
+
   HardwareModel model;
   unsigned fabricOpIndex = 0;
   hardware->walk([&](mlir::Operation *op) {
+    if (!isConcreteHardwareOperation(op, hardware))
+      return;
     llvm::StringRef opName = op->getName().getStringRef();
     if (opName == "fabric.op") {
       appendFabricOpResource(op, name, fabricOpIndex++, model.resources);
@@ -2037,7 +2229,11 @@ struct RouteBuilder {
 
   llvm::DenseMap<mlir::Value, llvm::SmallVector<ProducerRef, 2>> producer;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<mlir::Value, 2>> adapterForward;
-  std::map<RouteEdgeKey, std::string> payloadKindByEdge;
+  struct EdgeTransport {
+    std::string payloadKind;
+    unsigned requiredPayloadWidth = 0;
+  };
+  std::map<RouteEdgeKey, EdgeTransport> transportByEdge;
 
   void addProducer(mlir::Value value, ProducerRef ref) {
     auto &refs = producer[value];
@@ -2169,7 +2365,7 @@ void sortNodesByPlacementPriority(llvm::MutableArrayRef<SoftwareNode> nodes,
 
 std::optional<llvm::SmallVector<RouteSegment, 2>>
 findRoute(const HardwareTopology &topology, const std::string &sourceEndpoint,
-          const std::string &sinkEndpoint) {
+          const std::string &sinkEndpoint, unsigned requiredPayloadWidth) {
   struct ReverseStep {
     std::string nextEndpoint;
     HardwareRouteSegment segment;
@@ -2192,6 +2388,8 @@ findRoute(const HardwareTopology &topology, const std::string &sourceEndpoint,
     if (incomingIt == topology.segmentsBySink.end())
       continue;
     for (const HardwareRouteSegment &incoming : incomingIt->second) {
+      if (incoming.payloadCapacity < requiredPayloadWidth)
+        continue;
       if (!visited.insert(incoming.sourceEndpoint).second)
         continue;
       nextByEndpoint[incoming.sourceEndpoint] =
@@ -2256,20 +2454,22 @@ void addUnroutedEdge(RouteCollection &collection,
 std::optional<llvm::SmallVector<RouteSegment, 2>>
 cachedFindRoute(const HardwareTopology &topology, RouteCache &cache,
                 const std::string &sourceEndpoint,
-                const std::string &sinkEndpoint) {
-  RouteCacheKey key{sourceEndpoint, sinkEndpoint};
+                const std::string &sinkEndpoint,
+                unsigned requiredPayloadWidth) {
+  RouteCacheKey key{sourceEndpoint, sinkEndpoint, requiredPayloadWidth};
   auto cached = cache.routes.find(key);
   if (cached != cache.routes.end())
     return cached->second;
   std::optional<llvm::SmallVector<RouteSegment, 2>> path =
-      findRoute(topology, sourceEndpoint, sinkEndpoint);
+      findRoute(topology, sourceEndpoint, sinkEndpoint, requiredPayloadWidth);
   auto [it, inserted] = cache.routes.try_emplace(std::move(key), path);
   (void)inserted;
   return it->second;
 }
 
-RoutingProblem buildRoutingProblem(llvm::ArrayRef<SoftwareNode> nodes,
-                                   mlir::Operation *graph) {
+llvm::Expected<RoutingProblem>
+buildRoutingProblem(llvm::ArrayRef<SoftwareNode> nodes,
+                    mlir::Operation *graph) {
   RouteBuilder builder;
   llvm::DenseMap<mlir::Operation *, std::string> nodeIds = indexNodeIds(nodes);
   collectValueProducers(graph, nodeIds, builder);
@@ -2296,19 +2496,28 @@ RoutingProblem buildRoutingProblem(llvm::ArrayRef<SoftwareNode> nodes,
         continue;
       }
       unsigned consumerOperandIndex = operandIndex++;
+      std::optional<unsigned> requiredPayloadWidth =
+          softwareBitWidth(operand.getType());
+      if (!requiredPayloadWidth)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "software edge into %s operand %u has unsupported transport type",
+            node.id.c_str(), consumerOperandIndex);
       for (const RouteBuilder::ProducerRef &source : sources) {
         if (source.softwareId == node.id)
           continue;
         RouteEdgeKey key{source.softwareId, source.resultIndex, node.id,
                          consumerOperandIndex};
-        builder.payloadKindByEdge.try_emplace(std::move(key),
-                                              payloadKind(operand));
+        builder.transportByEdge.try_emplace(
+            std::move(key),
+            RouteBuilder::EdgeTransport{payloadKind(operand),
+                                        *requiredPayloadWidth});
       }
     }
   }
 
   RoutingProblem problem;
-  for (const auto &[edge, payload] : builder.payloadKindByEdge) {
+  for (const auto &[edge, transport] : builder.transportByEdge) {
     auto fromKind = kindBySoftware.find(edge.producerSoftwareId);
     auto toKind = kindBySoftware.find(edge.consumerSoftwareId);
     if (fromKind == kindBySoftware.end() || toKind == kindBySoftware.end())
@@ -2322,8 +2531,9 @@ RoutingProblem buildRoutingProblem(llvm::ArrayRef<SoftwareNode> nodes,
             toKind->second, toOp == opBySoftware.end() ? nullptr : toOp->second,
             edge.consumerOperandIndex);
     problem.edges.push_back(
-        SoftwareRouteEdge{edge, payload, producerResultIndex,
-                          consumerOperandIndex});
+        SoftwareRouteEdge{edge, transport.payloadKind,
+                          transport.requiredPayloadWidth,
+                          producerResultIndex, consumerOperandIndex});
   }
   return problem;
 }
@@ -2357,7 +2567,8 @@ RouteCollection collectRoutes(const RoutingProblem &problem,
     std::string sinkEndpoint =
         endpointFor(toHw->second, "operand", *routeEdge.consumerOperandIndex);
     std::optional<llvm::SmallVector<RouteSegment, 2>> path =
-        cachedFindRoute(topology, routeCache, sourceEndpoint, sinkEndpoint);
+        cachedFindRoute(topology, routeCache, sourceEndpoint, sinkEndpoint,
+                        routeEdge.requiredPayloadWidth);
     if (!path) {
       addUnroutedEdge(collection, edge, kind, sourceEndpoint, sinkEndpoint,
                       "no Fabric ADG route connects source to sink");
@@ -2941,7 +3152,10 @@ loom::pnr::createMapping(const MappingOptions &options) {
       resolvedConfig, summary.componentConfigView);
   summary.status = "pass";
 
-  RoutingProblem routingProblem = buildRoutingProblem(*nodesOrErr, graph);
+  auto routingProblemOrErr = buildRoutingProblem(*nodesOrErr, graph);
+  if (!routingProblemOrErr)
+    return routingProblemOrErr.takeError();
+  RoutingProblem routingProblem = std::move(*routingProblemOrErr);
   RouteCache routeCache;
   if (!placeRouteFeasible(*nodesOrErr, routingProblem,
                           hardwareModelOrErr->resources,

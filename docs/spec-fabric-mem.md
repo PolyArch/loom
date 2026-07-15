@@ -40,6 +40,26 @@ Spatial ports may not use `bits_tag`; temporal ports may not use
 `bits`. The verifier emits a "schedule mismatch with port kind"
 diagnostic on violation.
 
+For anonymous `fabric.mem`, the types in the per-port rules below are
+the memory resource's destination input-port types. An incoming
+connection may spell both endpoints as
+`source-type to destination-port-type`. The source type resolves the
+SSA operand; the destination type is checked against the memory port
+signature. `bits` may connect only to `bits`, and `bits_tag` only to
+`bits_tag`; widths may differ with the module-level LSB-aligned
+truncation or zero-extension semantics. A kind change is rejected.
+`memref_mgr` is a memory capability rather than token transport and
+must match exactly without a `to` conversion.
+
+Differing destination input-port types are retained in the ODS-owned
+typed `inner_input_types : ArrayRef<Type>` property. The custom parser
+leaves the property empty when every source and destination type is
+equal, and the printer reconstructs each required `to` clause from it.
+A non-empty property has one entry per operand and must contain at least
+one actual endpoint-type difference.
+Named template forms remain governed by their exact `function_type`
+signature.
+
 ## Memref interfaces (M2.A model)
 
 `fabric.mem` exposes two memref interfaces:
@@ -113,6 +133,10 @@ For each store port:
 
 `W_mgr` is the inferred element width of `memref_mgr`; `T` is
 `tag_width` (temporal only).
+
+These tables constrain destination resource-port types. The anonymous
+form's source SSA types may have different widths only under the
+same-kind incoming connection rule above.
 
 ## Hardware parameters
 
@@ -234,7 +258,8 @@ Anonymous form (readable named-group syntax):
        {base_addr = 131072 : i48, element_log2_size = 2 : i4, valid = true}
      ], mem_enable = true}
     : (memref<?x!fabric.bits<32>>,
-       !fabric.bits<32>, !fabric.bits<0>,
+       !fabric.bits<64> to !fabric.bits<32>,
+       !fabric.bits<8> to !fabric.bits<0>,
        !fabric.bits<32>, !fabric.bits<0>,
        !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>)
     -> (memref<?x!fabric.bits<32>>,
@@ -308,6 +333,11 @@ through `fabric.instantiate`.
 * Named template form: 0 SSA operands AND 0 SSA results;
   `function_type` required.
 * Anonymous form: `function_type` absent.
+* Anonymous incoming connections:
+  * destination type count equals operand count;
+  * source and destination transport types have the same `bits` or
+    `bits_tag` kind;
+  * `memref_mgr` remains exact and cannot use `to`.
 
 ## Negative tests
 
@@ -322,6 +352,9 @@ The verifier exercises the following rejections (see
 * `memref_sub` element type not `!fabric.bits<W_sub>`.
 * Per-port operand/result type does not match the schedule's expected
   `addr` / `ctrl` / `data` shape.
+* Incoming source and destination endpoint types have different
+  transport kinds.
+* `memref_mgr` uses a `to` clause instead of an exact capability type.
 * Store data port width does not equal `memref_mgr` element width.
 * `addr_table` length does not match the expected per-schedule
   count.

@@ -35,6 +35,30 @@ fabric.module @sw_temporal_with_bits(%a : !fabric.bits<32>, %b : !fabric.bits<32
 }
 
 // -----
+// Incoming connection typing may normalize widths but cannot change kind.
+fabric.module @sw_input_kind_mismatch(%a : !fabric.bits<32>) {
+  // expected-error @+1 {{must share the same fabric kind (bits or bits_tag)}}
+  %o = fabric.switch [temporal] %a
+       [{connectivity_table = ["1"], route_table_size = 1 : i32}]
+       : (!fabric.bits<32> to !fabric.bits_tag<16, 4>)
+      -> !fabric.bits_tag<16, 4>
+  fabric.yield
+}
+
+// -----
+// A same-name discardable attribute must not shadow a valid inherent property.
+fabric.module @sw_inner_input_types_collision(%a : !fabric.bits<32>) {
+  // expected-error @+1 {{discardable attribute 'inner_input_types' conflicts with the inherent property of the same name}}
+  %o = "fabric.switch"(%a) <{
+    hw_params = [{connectivity_table = ["1"]}],
+    inner_input_types = [!fabric.bits<16>],
+    schedule = 0 : i32
+  }> {inner_input_types = "not-an-array"}
+      : (!fabric.bits<32>) -> !fabric.bits<16>
+  fabric.yield
+}
+
+// -----
 // Non-uniform widths on spatial ports.
 fabric.module @sw_spatial_nonuniform(%a : !fabric.bits<32>, %b : !fabric.bits<16>) {
   // expected-error @+1 {{requires uniform 'bits<W>' on all switch ports}}

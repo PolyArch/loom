@@ -58,6 +58,31 @@ fabric.module @m_fifo_to_clause_kind_mismatch(%a : !fabric.bits<32>) {
 }
 
 // -----
+// A module transport input is point-to-point. Broadcast must be expressed by
+// an explicit routing resource rather than by reusing an SSA input value.
+// expected-error @+1 {{transport source is used by more than one consumer}}
+fabric.module @m_input_fanout_requires_switch(%a : !fabric.bits<32>) {
+  %left = fabric.fifo %a [max_depth = 2, bypassable = false]
+          : !fabric.bits<32>
+  %right = fabric.fifo %a [max_depth = 2, bypassable = false]
+           : !fabric.bits<32>
+  fabric.yield
+}
+
+// -----
+// A direct operation result is also point-to-point. Yielding a value after it
+// has already fed another resource is a second consuming use.
+fabric.module @m_result_fanout_requires_switch(%a : !fabric.bits<32>)
+    -> (!fabric.bits<32>) {
+  // expected-error @+1 {{transport source is used by more than one consumer}}
+  %source = fabric.fifo %a [max_depth = 2, bypassable = false]
+            : !fabric.bits<32>
+  %sink = fabric.fifo %source [max_depth = 2, bypassable = false]
+          : !fabric.bits<32>
+  fabric.yield %source : !fabric.bits<32>
+}
+
+// -----
 // Disallowed input port type: i32 is not a valid fabric.module port type.
 // expected-error @+1 {{is not an allowed fabric.module port type}}
 fabric.module @m_bad_input_type(%a : i32) {

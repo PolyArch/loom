@@ -1,7 +1,11 @@
 // RUN: loom-adg-builder-test --shared-reduction --output %t.hardware.mlir
+// RUN: FileCheck %s --check-prefix=BUILDER < %t.hardware.mlir
+// RUN: sed -n '/^fabric.module/,$p' %S/../pnr/shared_reduction_adg.mlir > %t.fixture.mlir
+// RUN: diff %t.fixture.mlir %t.hardware.mlir
 // RUN: loom %t.hardware.mlir | FileCheck %s --check-prefix=HARDWARE
 
 // HARDWARE-LABEL: fabric.module @shared_reduction_adg
+// HARDWARE-DAG: fabric.switch [spatial] %arg8 [{connectivity_table = ["1", "1"
 // HARDWARE-DAG: fabric.op [@dataflow.stream]
 // HARDWARE-DAG: cont_cond = ["<", ">"]
 // HARDWARE-DAG: fabric.op [@dataflow.carry]
@@ -37,3 +41,8 @@
 // HARDWARE-DAG: fabric.fifo
 // HARDWARE-DAG: fabric.op [@dataflow.sync]
 // HARDWARE-DAG: fabric.mem [spatial]
+
+// BUILDER-DAG: %aux_gate_cond1, %aux_active_idx1 = fabric.pe [spatial]
+// BUILDER-DAG: %gate_value1 = fabric.switch [spatial]
+// BUILDER-DAG: %bit_invariant_value = fabric.switch [spatial]
+// BUILDER-DAG: %bit_invariant_aux0_value = fabric.switch [spatial]

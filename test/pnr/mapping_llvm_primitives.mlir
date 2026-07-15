@@ -115,37 +115,60 @@ module {
   fabric.module @llvm_primitive_adg(%i32a : !fabric.bits<32>,
                                     %i32b : !fabric.bits<32>,
                                     %i32c : !fabric.bits<32>) {
-    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>) -> !fabric.bits<32> {
+    %a_zext, %a_sext, %a_abs, %a_fabs, %a_fmuladd, %a_fshl, %a_bswap,
+        %a_umax, %a_smin, %a_smax = fabric.switch [spatial] %i32a
+          [{connectivity_table = ["1", "1", "1", "1", "1", "1", "1", "1",
+                                  "1", "1"]}]
+          : (!fabric.bits<32>)
+            -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
+                !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
+                !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
+                !fabric.bits<32>)
+    %b_fmuladd, %b_fshl, %b_umax, %b_smin, %b_smax =
+        fabric.switch [spatial] %i32b
+          [{connectivity_table = ["1", "1", "1", "1", "1"]}]
+          : (!fabric.bits<32>)
+            -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
+                !fabric.bits<32>, !fabric.bits<32>)
+    %c_fmuladd, %c_fshl = fabric.switch [spatial] %i32c
+        [{connectivity_table = ["1", "1"]}]
+        : (!fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>)
+    fabric.pe [spatial] (%pa = %a_zext : !fabric.bits<32>)
+        -> !fabric.bits<32> {
       fabric.fu(%value = %pa : !fabric.bits<32>) -> () {
         %wide = fabric.op [@llvm.zext] (%value)
                 : (!fabric.bits<32>) -> !fabric.bits<64>
         fabric.yield
       }
     }
-    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.pe [spatial] (%pa = %a_sext : !fabric.bits<32>)
+        -> !fabric.bits<32> {
       fabric.fu(%value = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
         %wide = fabric.op [@llvm.sext] (%value)
                 : (!fabric.bits<32>) -> !fabric.bits<32>
         fabric.yield %wide : !fabric.bits<32>
       }
     }
-    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.pe [spatial] (%pa = %a_abs : !fabric.bits<32>)
+        -> !fabric.bits<32> {
       fabric.fu(%value = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
         %abs = fabric.op [@llvm.intr.abs] (%value)
                : (!fabric.bits<32>) -> !fabric.bits<32>
         fabric.yield %abs : !fabric.bits<32>
       }
     }
-    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.pe [spatial] (%pa = %a_fabs : !fabric.bits<32>)
+        -> !fabric.bits<32> {
       fabric.fu(%value = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
         %abs = fabric.op [@llvm.intr.fabs] (%value)
                : (!fabric.bits<32>) -> !fabric.bits<32>
         fabric.yield %abs : !fabric.bits<32>
       }
     }
-    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
-                      %pb = %i32b : !fabric.bits<32>,
-                      %pc = %i32c : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.pe [spatial] (%pa = %a_fmuladd : !fabric.bits<32>,
+                         %pb = %b_fmuladd : !fabric.bits<32>,
+                         %pc = %c_fmuladd : !fabric.bits<32>)
+        -> !fabric.bits<32> {
       fabric.fu(%lhs = %pa : !fabric.bits<32>,
                 %rhs = %pb : !fabric.bits<32>,
                 %acc = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
@@ -155,9 +178,10 @@ module {
         fabric.yield %result : !fabric.bits<32>
       }
     }
-    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
-                      %pb = %i32b : !fabric.bits<32>,
-                      %pc = %i32c : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.pe [spatial] (%pa = %a_fshl : !fabric.bits<32>,
+                         %pb = %b_fshl : !fabric.bits<32>,
+                         %pc = %c_fshl : !fabric.bits<32>)
+        -> !fabric.bits<32> {
       fabric.fu(%lhs = %pa : !fabric.bits<32>,
                 %rhs = %pb : !fabric.bits<32>,
                 %amount = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
@@ -167,15 +191,16 @@ module {
         fabric.yield %result : !fabric.bits<32>
       }
     }
-    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.pe [spatial] (%pa = %a_bswap : !fabric.bits<32>)
+        -> !fabric.bits<32> {
       fabric.fu(%value = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
         %result = fabric.op [@llvm.intr.bswap] (%value)
                   : (!fabric.bits<32>) -> !fabric.bits<32>
         fabric.yield %result : !fabric.bits<32>
       }
     }
-    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
-                         %pb = %i32b : !fabric.bits<32>)
+    fabric.pe [spatial] (%pa = %a_umax : !fabric.bits<32>,
+                         %pb = %b_umax : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%lhs = %pa : !fabric.bits<32>,
                 %rhs = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
@@ -184,8 +209,8 @@ module {
         fabric.yield %result : !fabric.bits<32>
       }
     }
-    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
-                         %pb = %i32b : !fabric.bits<32>)
+    fabric.pe [spatial] (%pa = %a_smin : !fabric.bits<32>,
+                         %pb = %b_smin : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%lhs = %pa : !fabric.bits<32>,
                 %rhs = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
@@ -194,8 +219,8 @@ module {
         fabric.yield %result : !fabric.bits<32>
       }
     }
-    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
-                         %pb = %i32b : !fabric.bits<32>)
+    fabric.pe [spatial] (%pa = %a_smax : !fabric.bits<32>,
+                         %pb = %b_smax : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%lhs = %pa : !fabric.bits<32>,
                 %rhs = %pb : !fabric.bits<32>) -> !fabric.bits<32> {

@@ -118,12 +118,10 @@ ParseResult MemOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
   auto sym = symbolizeSchedule(scheduleKw);
   if (!sym)
-    return parser.emitError(scheduleLoc,
-                            "expected fabric mem schedule keyword "
-                            "'spatial' or 'temporal', got '")
+    return parser.emitError(scheduleLoc, "expected fabric mem schedule keyword "
+                                         "'spatial' or 'temporal', got '")
            << scheduleKw << "'";
-  result.addAttribute("schedule",
-                      ScheduleAttr::get(parser.getContext(), *sym));
+  result.addAttribute("schedule", ScheduleAttr::get(parser.getContext(), *sym));
 
   if (isNamed) {
     // Named template form: parse function-type signature
@@ -277,11 +275,29 @@ ParseResult MemOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parser.parseColon())
     return failure();
 
-  SmallVector<Type, 8> operandTypes;
+  SmallVector<Type, 8> sourceTypes;
+  SmallVector<Type, 8> inputPortTypes;
   if (parser.parseLParen())
     return failure();
   if (failed(parser.parseOptionalRParen())) {
-    if (parser.parseTypeList(operandTypes) || parser.parseRParen())
+    auto parseOneType = [&]() -> ParseResult {
+      Type sourceType;
+      if (parser.parseType(sourceType))
+        return failure();
+      Type inputPortType = sourceType;
+      if (succeeded(parser.parseOptionalKeyword("to")))
+        if (parser.parseType(inputPortType))
+          return failure();
+      sourceTypes.push_back(sourceType);
+      inputPortTypes.push_back(inputPortType);
+      return success();
+    };
+    if (parseOneType())
+      return failure();
+    while (succeeded(parser.parseOptionalComma()))
+      if (parseOneType())
+        return failure();
+    if (parser.parseRParen())
       return failure();
   }
   if (parser.parseArrow())
@@ -298,12 +314,22 @@ ParseResult MemOp::parse(OpAsmParser &parser, OperationState &result) {
       return failure();
     resultTypes.push_back(ty);
   }
-  if (operandTypes.size() != operands.size())
+  if (sourceTypes.size() != operands.size())
     return parser.emitError(operandsLoc,
                             "operand count does not match type list count");
-  if (parser.resolveOperands(operands, operandTypes, operandsLoc,
+  if (parser.resolveOperands(operands, sourceTypes, operandsLoc,
                              result.operands))
     return failure();
+  bool anyDiffer = false;
+  for (auto [sourceType, inputPortType] :
+       llvm::zip(sourceTypes, inputPortTypes))
+    if (sourceType != inputPortType) {
+      anyDiffer = true;
+      break;
+    }
+  if (anyDiffer) {
+    result.getOrAddProperties<Properties>().setInnerInputTypes(inputPortTypes);
+  }
   result.addTypes(resultTypes);
   return success();
 }
@@ -390,8 +416,7 @@ void MemOp::print(OpAsmPrinter &p) {
   // hw_params in `[ ... ]`.
   if (auto hp = getHwParamsAttr()) {
     p << ' ' << '[';
-    llvm::interleaveComma(hp, p,
-                          [&](Attribute a) { p.printAttribute(a); });
+    llvm::interleaveComma(hp, p, [&](Attribute a) { p.printAttribute(a); });
     p << ']';
   }
 
@@ -419,8 +444,26 @@ void MemOp::print(OpAsmPrinter &p) {
   }
 
   if (!isNamed) {
+    ArrayRef<Type> innerTypes = getInnerInputTypes();
+    SmallVector<Type, 8> inputPortTypes;
+    inputPortTypes.reserve(getInputs().size());
+    if (!innerTypes.empty() && innerTypes.size() == getInputs().size()) {
+      inputPortTypes.append(innerTypes.begin(), innerTypes.end());
+    } else {
+      for (Value input : getInputs())
+        inputPortTypes.push_back(input.getType());
+    }
     p << " : (";
-    llvm::interleaveComma(getInputs().getTypes(), p);
+    llvm::interleaveComma(llvm::zip(getInputs(), inputPortTypes), p,
+                          [&](auto pair) {
+                            Value input;
+                            Type inputPortType;
+                            std::tie(input, inputPortType) = pair;
+                            Type sourceType = input.getType();
+                            p << sourceType;
+                            if (inputPortType && inputPortType != sourceType)
+                              p << " to " << inputPortType;
+                          });
     p << ") -> ";
     auto rTypes = getResultTypes();
     if (rTypes.size() == 1) {
@@ -441,14 +484,48 @@ bool MemOp::isOptionalSymbol() { return true; }
 
 namespace {
 
+static LogicalResult
+collectAnonymousInputPortTypes(MemOp op,
+                               SmallVectorImpl<Type> &inputPortTypes) {
+  ArrayRef<Type> innerTypes = op.getInnerInputTypes();
+  if (!innerTypes.empty()) {
+    inputPortTypes.append(innerTypes.begin(), innerTypes.end());
+  } else {
+    for (Value input : op.getInputs())
+      inputPortTypes.push_back(input.getType());
+  }
+
+  for (auto [i, pair] :
+       llvm::enumerate(llvm::zip(op.getInputs(), inputPortTypes))) {
+    Value input;
+    Type inputPortType;
+    std::tie(input, inputPortType) = pair;
+    Type sourceType = input.getType();
+    if (isa<MemRefType>(sourceType) || isa<MemRefType>(inputPortType)) {
+      if (sourceType != inputPortType)
+        return op.emitOpError("incoming connection operand #")
+               << i
+               << ": memref capabilities cannot use the 'to "
+                  "<destination-type>' clause; memref types must match "
+                  "exactly";
+      continue;
+    }
+    if (!haveSameFabricModulePortKind(sourceType, inputPortType))
+      return op.emitOpError("incoming connection operand #")
+             << i << " source type " << sourceType
+             << " and destination port type " << inputPortType
+             << " must share the same fabric kind (bits or bits_tag)";
+  }
+  return success();
+}
+
 // Decode hw_params length-1-array-of-dict pattern. Returns the dict on
 // success.
 static LogicalResult readHwParams(MemOp op, DictionaryAttr &outDict) {
   auto hp = op.getHwParamsAttr();
   if (!hp)
-    return op.emitOpError(
-        "requires 'hw_params' with 'load_group_size' and "
-        "'store_group_size'");
+    return op.emitOpError("requires 'hw_params' with 'load_group_size' and "
+                          "'store_group_size'");
   if (hp.size() != 1)
     return op.emitOpError(
                "'hw_params' must be a length-1 array wrapping a dictionary, "
@@ -456,8 +533,7 @@ static LogicalResult readHwParams(MemOp op, DictionaryAttr &outDict) {
            << hp.size();
   auto d = dyn_cast<DictionaryAttr>(hp[0]);
   if (!d)
-    return op.emitOpError(
-        "'hw_params' inner element must be a DictionaryAttr");
+    return op.emitOpError("'hw_params' inner element must be a DictionaryAttr");
   outDict = d;
   return success();
 }
@@ -485,6 +561,10 @@ static LogicalResult readSizeKey(MemOp op, DictionaryAttr d, StringRef key,
 //===----------------------------------------------------------------------===//
 
 LogicalResult MemOp::verify() {
+  if (failed(verifyInnerInputTypesProperty(getOperation(), getInputs(),
+                                           getInnerInputTypes())))
+    return failure();
+
   // Form selection.
   bool isNamed = static_cast<bool>(getSymNameAttr());
   SmallVector<Type, 8> inTys, outTys;
@@ -497,6 +577,9 @@ LogicalResult MemOp::verify() {
       return emitOpError(
                  "named fabric.mem template must have zero SSA results; got ")
              << getResultTypes().size();
+    if (!getInnerInputTypes().empty())
+      return emitOpError("named fabric.mem template must not carry '")
+             << kInnerInputTypesPropertyName << "'";
     auto fta = getFunctionTypeAttr();
     if (!fta)
       return emitOpError(
@@ -510,8 +593,8 @@ LogicalResult MemOp::verify() {
     if (getFunctionTypeAttr())
       return emitOpError(
           "anonymous fabric.mem must not carry a 'function_type' attribute");
-    for (Type t : getInputs().getTypes())
-      inTys.push_back(t);
+    if (failed(collectAnonymousInputPortTypes(*this, inTys)))
+      return failure();
     for (Type t : getResultTypes())
       outTys.push_back(t);
   }
@@ -526,8 +609,8 @@ LogicalResult MemOp::verify() {
   if (failed(readSizeKey(*this, hwDict, "store_group_size", storeN, 0)))
     return failure();
   if (loadN + storeN < 1)
-    return emitOpError(
-        "load_group_size + store_group_size must be >= 1 (got load_group_size = ")
+    return emitOpError("load_group_size + store_group_size must be >= 1 (got "
+                       "load_group_size = ")
            << loadN << ", store_group_size = " << storeN << ")";
 
   bool isTemporal = (getSchedule() == Schedule::Temporal);
@@ -552,18 +635,18 @@ LogicalResult MemOp::verify() {
   uint64_t expectedOps = 1u + 2u * (uint64_t)loadN + 3u * (uint64_t)storeN;
   if ((uint64_t)inTys.size() != expectedOps)
     return emitOpError("expected ")
-           << expectedOps << " operand types (1 memref_mgr + 2*"
-           << loadN << " load + 3*" << storeN << " store), got " << inTys.size();
+           << expectedOps << " operand types (1 memref_mgr + 2*" << loadN
+           << " load + 3*" << storeN << " store), got " << inTys.size();
 
   // memref_mgr type.
   auto mgrMemref = dyn_cast<MemRefType>(inTys[0]);
   if (!mgrMemref)
-    return emitOpError(
-        "first operand 'memref_mgr' must be a memref type, got ")
+    return emitOpError("first operand 'memref_mgr' must be a memref type, got ")
            << inTys[0];
   auto mgrElem = dyn_cast<BitsType>(mgrMemref.getElementType());
   if (!mgrElem)
-    return emitOpError("memref_mgr element type must be '!fabric.bits<W>', got ")
+    return emitOpError(
+               "memref_mgr element type must be '!fabric.bits<W>', got ")
            << mgrMemref.getElementType();
   unsigned wMgr = mgrElem.getWidth();
 
@@ -576,7 +659,7 @@ LogicalResult MemOp::verify() {
     auto subElem = dyn_cast<BitsType>(subMemref.getElementType());
     if (!subElem)
       return emitOpError(
-          "memref_sub element type must be '!fabric.bits<W_sub>', got ")
+                 "memref_sub element type must be '!fabric.bits<W_sub>', got ")
              << subMemref.getElementType();
     subIdx = 1;
   }
@@ -586,9 +669,8 @@ LogicalResult MemOp::verify() {
   if ((uint64_t)outTys.size() != expectedRes)
     return emitOpError("expected ")
            << expectedRes << " result types ("
-           << (hasSub ? "1 memref_sub + " : "")
-           << "2*" << loadN << " load + " << storeN << " store), got "
-           << outTys.size();
+           << (hasSub ? "1 memref_sub + " : "") << "2*" << loadN << " load + "
+           << storeN << " store), got " << outTys.size();
 
   // Per-port type checks.
   unsigned indexW = ::loom::getIndexWidth();
@@ -607,9 +689,8 @@ LogicalResult MemOp::verify() {
   Type expectData = mkExpectData();
 
   StringRef portKindMsg =
-      isTemporal
-          ? "temporal fabric.mem requires '!fabric.bits_tag<W, T>' ports"
-          : "spatial fabric.mem requires '!fabric.bits<W>' ports";
+      isTemporal ? "temporal fabric.mem requires '!fabric.bits_tag<W, T>' ports"
+                 : "spatial fabric.mem requires '!fabric.bits<W>' ports";
 
   // Load ports (operands).
   for (int64_t i = 0; i < loadN; ++i) {
@@ -681,9 +762,8 @@ LogicalResult MemOp::verify() {
       return emitOpError(
           "all-or-nothing violation: 'addr_table' is present but "
           "'mem_enable' is missing");
-    return emitOpError(
-        "all-or-nothing violation: 'mem_enable' is present but "
-        "'addr_table' is missing");
+    return emitOpError("all-or-nothing violation: 'mem_enable' is present but "
+                       "'addr_table' is missing");
   }
   if (!addrTable)
     return success();
@@ -694,12 +774,12 @@ LogicalResult MemOp::verify() {
   unsigned maxLog2 = floorLog2((uint64_t)busWidth / 8u);
 
   uint64_t expectedEntries =
-      isTemporal ? (uint64_t)addrTableSize
-                 : (uint64_t)(loadN + storeN);
+      isTemporal ? (uint64_t)addrTableSize : (uint64_t)(loadN + storeN);
   if ((uint64_t)addrTable.size() != expectedEntries)
     return emitOpError("'addr_table' length ")
            << addrTable.size() << " must equal "
-           << (isTemporal ? "addr_table_size (" : "load_group_size + store_group_size (")
+           << (isTemporal ? "addr_table_size ("
+                          : "load_group_size + store_group_size (")
            << expectedEntries << ")";
 
   llvm::DenseSet<uint64_t> seenValidTags;
@@ -745,8 +825,8 @@ LogicalResult MemOp::verify() {
     uint64_t elsVal = elsInt.getValue().getZExtValue();
     if (elsVal > maxLog2)
       return emitOpError("'element_log2_size' value ")
-             << elsVal << " exceeds log2(loom_mem_bus_width / 8) = "
-             << maxLog2 << " (entry #" << i << ")";
+             << elsVal << " exceeds log2(loom_mem_bus_width / 8) = " << maxLog2
+             << " (entry #" << i << ")";
 
     auto validBool = dyn_cast<BoolAttr>(validAttr);
     if (!validBool)
@@ -778,8 +858,7 @@ LogicalResult MemOp::verify() {
     } else {
       if (entry.get("tag"))
         return emitOpError("'addr_table' entry #")
-               << i
-               << " spatial mode must not carry 'tag' (temporal-only key)";
+               << i << " spatial mode must not carry 'tag' (temporal-only key)";
     }
   }
 

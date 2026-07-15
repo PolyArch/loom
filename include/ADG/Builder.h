@@ -6,6 +6,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -14,6 +15,8 @@
 
 namespace loom {
 namespace adg {
+
+struct ModuleBuilderInternals;
 
 enum class Schedule { Spatial, Temporal };
 
@@ -99,11 +102,28 @@ public:
   ModuleBuilder &addSwitch(SwitchSpec sw);
   ModuleBuilder &addMem(MemSpec mem);
   ModuleBuilder &addAttribute(std::string name, std::string value);
-  ModuleBuilder &addExactBodyLine(std::string line);
 
   llvm::Error print(llvm::raw_ostream &os) const;
 
 private:
+  friend struct ModuleBuilderInternals;
+
+  struct BodyLineSpec {
+    std::vector<std::string> fragments;
+    std::vector<std::string> operands;
+    bool moduleScope = true;
+  };
+
+  struct BodyResultSpec {
+    std::string name;
+    std::string type;
+  };
+
+  struct BodyOpSpec {
+    std::vector<BodyResultSpec> results;
+    std::vector<BodyLineSpec> lines;
+  };
+
   struct Input {
     std::string name;
     std::string type;
@@ -114,13 +134,41 @@ private:
     std::string value;
   };
 
+  struct DirectUse {
+    std::string sourceName;
+  };
+
+  struct PeEntry {
+    PeSpec spec;
+    std::vector<std::size_t> useIds;
+  };
+
+  struct SwitchEntry {
+    SwitchSpec spec;
+    std::vector<std::size_t> useIds;
+  };
+
+  struct MemEntry {
+    MemSpec spec;
+    std::vector<std::size_t> useIds;
+  };
+
+  struct BodyOpEntry {
+    BodyOpSpec spec;
+    std::vector<std::vector<std::size_t>> lineUseIds;
+  };
+
+  std::size_t registerDirectUse(std::string sourceName);
+  ModuleBuilder &addBodyOp(BodyOpSpec op);
+
   std::string name;
   std::vector<Input> inputs;
   std::vector<Attribute> attributes;
-  std::vector<PeSpec> pes;
-  std::vector<SwitchSpec> switches;
-  std::vector<MemSpec> mems;
-  std::vector<std::string> exactBodyLines;
+  std::vector<DirectUse> directUses;
+  std::vector<PeEntry> pes;
+  std::vector<SwitchEntry> switches;
+  std::vector<MemEntry> mems;
+  std::vector<BodyOpEntry> bodyOps;
 };
 
 struct SystemNodeSpec {

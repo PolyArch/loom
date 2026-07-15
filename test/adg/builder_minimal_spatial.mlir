@@ -3,7 +3,8 @@
 // RUN: loom %t.hardware.mlir | FileCheck %s --check-prefix=HARDWARE
 
 // HARDWARE-LABEL: fabric.module @minimal_spatial_adg
-// HARDWARE: fabric.pe [spatial]
-// HARDWARE: fabric.switch [spatial]
-// HARDWARE-SAME: connectivity_table = ["11", "11"]
-// HARDWARE: fabric.mem [spatial]
+// HARDWARE-DAG: %[[LHS_FANOUT:[0-9]+]]:2 = fabric.switch [spatial] %arg1 [{connectivity_table = ["1", "1"]}] : (!fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>)
+// HARDWARE-DAG: %[[RHS_FANOUT:[0-9]+]]:2 = fabric.switch [spatial] %arg2 [{connectivity_table = ["1", "1"]}] : (!fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>)
+// HARDWARE-DAG: fabric.pe [spatial] ({{.*}}%[[LHS_FANOUT]]#0{{.*}}%[[RHS_FANOUT]]#0
+// HARDWARE-DAG: fabric.switch [spatial] %[[LHS_FANOUT]]#1, %[[RHS_FANOUT]]#1 [{connectivity_table = ["11", "11"]}]
+// HARDWARE-DAG: fabric.mem [spatial]

@@ -51,6 +51,12 @@ boundary directions describe the transitions between the two domains:
 handshake mediation (FIFO, mux, demux, etc.); it only transforms the
 type of the stream.
 
+`fabric.boundary` is required for a real port-kind or tagged-domain
+transition. It is not required for an ordinary `bits` to `bits` or
+`bits_tag` to `bits_tag` width mismatch. The latter follows the
+module-level physical connection rule in `spec-fabric-module.md` and
+does not instantiate an adapter resource.
+
 ## Placement
 
 `fabric.boundary` is allowed only in a `fabric.module` body. The
@@ -219,17 +225,44 @@ canonical "exit the temporal domain and discard the tag" form.
 * `hw_params` must be absent.
 * `sw_configs` must be absent.
 
-## Width relaxation
+## Connection Widths
 
-`fabric.boundary` has strict typing rules: every operand and every
-result type must match exactly under the verifier rules above. There
-is no `to <inner-type>` clause on this op.
+The verifier rules above define the boundary resource's own declared
+transformation. For example, `s2t` preserves the declared data field
+while introducing a tag field, and `t2t` performs the declared tag
+lookup rather than an implicit bit reinterpretation.
 
-If a wider SSA source needs to feed a narrower boundary-op operand
-(or vice-versa) the width adaptation is achieved via an upstream
-`fabric.fifo` or by routing through a `fabric.pe` template that
-performs the width adaptation at its boundary. The boundary op
-itself only describes the spatial/temporal type transition.
+Connections into and out of the boundary remain ordinary
+`fabric.module` physical connections. A same-kind width mismatch on
+either side therefore uses the canonical LSB-aligned truncation or
+zero-extension rule from `spec-fabric-module.md`; it does not require
+an upstream FIFO, PE, or synthetic adapter. The boundary remains the
+explicit resource only for the semantic transition it owns:
+
+* `s2t` introduces the tagged temporal domain;
+* `t2t` performs configured tag-value remapping;
+* `t2s` exits the tagged temporal domain and optionally exposes the tag.
+
+An incoming boundary operand may spell both endpoints as
+`source-type to destination-port-type`. The source type resolves the SSA
+operand, while the destination type is the boundary input-port type used
+by the direction-specific verifier rules above. Only `bits` to `bits`
+and `bits_tag` to `bits_tag` are legal; widths follow the module-level
+LSB-aligned semantics. Port-kind changes and `memref` are rejected. When
+`to` is absent, the destination type equals the source type.
+
+Differing destination input-port types are retained in the ODS-owned
+typed `inner_input_types : ArrayRef<Type>` property. The custom assembly
+syntax renders that state through the per-input `to` clauses and leaves
+the property empty when every source and destination type is equal.
+A non-empty property has one entry per operand and must contain at least
+one actual endpoint-type difference.
+
+A boundary consumes its operands once and exposes each result as a
+distinct point-to-point module transport. Multiple boundary results do
+not authorize reusing any one result at multiple consumers.
+
+A plain same-kind resize must not be represented as a boundary op.
 
 ## Cross-references
 
@@ -238,6 +271,6 @@ itself only describes the spatial/temporal type transition.
 * `spec-fabric-fu.md` and `spec-fabric-pe.md` -- describe the
   `fabric.fu` and `fabric.pe` containers that, by their own body
   whitelists, exclude `fabric.boundary`.
-* `spec-fabric-instantiate.md` -- alternative routing path for
-  width adaptation that is intentionally NOT folded into
-  `fabric.boundary`.
+* `spec-fabric-instantiate.md` -- template instantiation rules for
+  Fabric resources whose external connections remain governed by the
+  module-level compatibility rule.

@@ -633,13 +633,17 @@ module {
   fabric.module @mem_store_route_adg(%mgr : memref<?x!fabric.bits<32>>,
                                      %addr : !fabric.bits<32>,
                                      %ctrl : !fabric.bits<0>) {
+    %addr_to_load, %addr_to_store = fabric.switch [spatial] %addr
+        [{connectivity_table = ["1", "1"]}]
+        : (!fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>)
     %sub, %data, %done =
-        fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl) store()
+        fabric.mem [spatial] mgr(%mgr) load(%addr_to_load, %ctrl) store()
           [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
           : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
             -> (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
     %stored =
-        fabric.mem [spatial] mgr(%sub) load() store(%addr, %data, %done)
+        fabric.mem [spatial] mgr(%sub) load()
+            store(%addr_to_store, %data, %done)
           [{load_group_size = 0 : i32, store_group_size = 1 : i32}]
           : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<32>,
              !fabric.bits<0>) -> !fabric.bits<0>

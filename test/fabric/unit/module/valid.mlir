@@ -35,7 +35,7 @@ fabric.module @m_with_inner_ops(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
       fabric.yield %k : !fabric.bits<32>
     }
   }
-  %f = fabric.fifo %a [max_depth = 4, bypassable = false] : !fabric.bits<32>
+  %f = fabric.fifo %r [max_depth = 4, bypassable = false] : !fabric.bits<32>
   fabric.yield
 }
 
@@ -52,7 +52,8 @@ fabric.module @m_second() {
 // declared output types exactly (no width relaxation needed).
 // CHECK-LABEL: fabric.module @m_with_outputs
 // CHECK-SAME: -> (!fabric.bits<32>, !fabric.bits<32>)
-fabric.module @m_with_outputs(%a : !fabric.bits<32>, %b : !fabric.bits<32>)
+fabric.module @m_with_outputs(%a : !fabric.bits<32>, %b : !fabric.bits<32>,
+                              %c : !fabric.bits<32>)
     -> (!fabric.bits<32>, !fabric.bits<32>) {
   %r = fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
                          %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
@@ -63,7 +64,24 @@ fabric.module @m_with_outputs(%a : !fabric.bits<32>, %b : !fabric.bits<32>)
       fabric.yield %k : !fabric.bits<32>
     }
   }
-  fabric.yield %r, %a : !fabric.bits<32>, !fabric.bits<32>
+  fabric.yield %r, %c : !fabric.bits<32>, !fabric.bits<32>
+}
+
+// Explicit broadcast consumes each module input once through a switch and
+// exposes two distinct point-to-point output transports.
+// CHECK-LABEL: fabric.module @m_explicit_switch_broadcast
+// CHECK: %{{.*}}:2 = fabric.switch [spatial]
+// CHECK-SAME: route_table = ["10", "10"]
+// CHECK: fabric.yield %{{.*}}#0, %{{.*}}#1 : !fabric.bits<32>, !fabric.bits<32>
+fabric.module @m_explicit_switch_broadcast(%a : !fabric.bits<32>,
+                                            %b : !fabric.bits<32>)
+    -> (!fabric.bits<32>, !fabric.bits<32>) {
+  %out:2 = fabric.switch [spatial] %a, %b
+           [{connectivity_table = ["11", "11"]}]
+           {route_table = ["10", "10"], switch_enable = true}
+           : (!fabric.bits<32>, !fabric.bits<32>)
+          -> (!fabric.bits<32>, !fabric.bits<32>)
+  fabric.yield %out#0, %out#1 : !fabric.bits<32>, !fabric.bits<32>
 }
 
 // memref input/output: must round-trip exactly (no width relaxation).
@@ -71,6 +89,14 @@ fabric.module @m_with_outputs(%a : !fabric.bits<32>, %b : !fabric.bits<32>)
 // CHECK-SAME: (%{{.*}}: memref<8xi32>) -> memref<8xi32>
 fabric.module @m_memref_passthrough(%mem : memref<8xi32>) -> (memref<8xi32>) {
   fabric.yield %mem : memref<8xi32>
+}
+
+// Memory capabilities are not token transports and may have multiple uses.
+// CHECK-LABEL: fabric.module @m_memref_multiuse
+// CHECK: fabric.yield %{{.*}}, %{{.*}} : memref<8xi32>, memref<8xi32>
+fabric.module @m_memref_multiuse(%mem : memref<8xi32>)
+    -> (memref<8xi32>, memref<8xi32>) {
+  fabric.yield %mem, %mem : memref<8xi32>, memref<8xi32>
 }
 
 // Width relaxation at module-input -> pe operand: the source is

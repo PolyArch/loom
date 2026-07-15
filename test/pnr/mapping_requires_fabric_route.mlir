@@ -30,8 +30,15 @@ module {
 
   fabric.module @disconnected_adg(%i32a : !fabric.bits<32>,
                                   %i32b : !fabric.bits<32>) {
-    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
-                         %pb = %i32b : !fabric.bits<32>) -> !fabric.bits<32> {
+    %i32a_to_first, %i32a_to_second = fabric.switch [spatial] %i32a
+        [{connectivity_table = ["1", "1"]}]
+        : (!fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>)
+    %i32b_to_first, %i32b_to_second = fabric.switch [spatial] %i32b
+        [{connectivity_table = ["1", "1"]}]
+        : (!fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>)
+    fabric.pe [spatial] (%pa = %i32a_to_first : !fabric.bits<32>,
+                         %pb = %i32b_to_first : !fabric.bits<32>)
+        -> !fabric.bits<32> {
       fabric.fu(%lhs = %pa : !fabric.bits<32>,
                 %rhs = %pb : !fabric.bits<32>) -> () {
         %sum = fabric.op [@arith.addi] (%lhs, %rhs)
@@ -39,8 +46,9 @@ module {
         fabric.yield
       }
     }
-    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
-                         %pb = %i32b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.pe [spatial] (%pa = %i32a_to_second : !fabric.bits<32>,
+                         %pb = %i32b_to_second : !fabric.bits<32>)
+        -> !fabric.bits<32> {
       fabric.fu(%lhs = %pa : !fabric.bits<32>,
                 %rhs = %pb : !fabric.bits<32>) -> () {
         %sum = fabric.op [@arith.addi] (%lhs, %rhs)

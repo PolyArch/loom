@@ -5,8 +5,11 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cassert>
+#include <cctype>
 #include <initializer_list>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <system_error>
 
@@ -24,10 +27,164 @@ llvm::StringRef scheduleName(Schedule schedule) {
   llvm_unreachable("unknown ADG schedule");
 }
 
+std::string canonicalValueName(llvm::StringRef name) {
+  name.consume_front("%");
+  return name.str();
+}
+
 std::string valueName(llvm::StringRef name) {
-  if (name.consume_front("%"))
-    return ("%" + name).str();
-  return ("%" + name).str();
+  return "%" + canonicalValueName(name);
+}
+
+bool isSpatialTransportType(llvm::StringRef type) {
+  return type.starts_with("!fabric.bits<");
+}
+
+bool isTemporalTransportType(llvm::StringRef type) {
+  return type.starts_with("!fabric.bits_tag<");
+}
+
+bool isTransportType(llvm::StringRef type) {
+  return isSpatialTransportType(type) || isTemporalTransportType(type);
+}
+
+bool fragmentHidesDirectUse(llvm::StringRef fragment) {
+  for (std::size_t percent = fragment.find('%');
+       percent != llvm::StringRef::npos;
+       percent = fragment.find('%', percent + 1)) {
+    std::size_t end = percent + 1;
+    while (end < fragment.size()) {
+      unsigned char c = static_cast<unsigned char>(fragment[end]);
+      if (!std::isalnum(c) && c != '_' && c != '-' && c != '.' && c != '$')
+        break;
+      ++end;
+    }
+    if (end == percent + 1)
+      return true;
+    std::size_t next = end;
+    while (next < fragment.size() &&
+           std::isspace(static_cast<unsigned char>(fragment[next])))
+      ++next;
+    if (next >= fragment.size() || fragment[next] != '=')
+      return true;
+  }
+  return false;
+}
+
+llvm::Expected<unsigned> temporalTagDomainSize(llvm::StringRef type) {
+  llvm::StringRef spelling = type.trim();
+  if (!spelling.consume_front("!fabric.bits_tag<") ||
+      !spelling.consume_back(">"))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "ADG temporal transport type %s is not a bits_tag type",
+        type.str().c_str());
+
+  auto [dataWidth, tagWidthText] = spelling.split(',');
+  dataWidth = dataWidth.trim();
+  tagWidthText = tagWidthText.trim();
+  if (dataWidth.empty() || tagWidthText.empty() || tagWidthText.contains(','))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "ADG temporal transport type %s has an invalid bits_tag shape",
+        type.str().c_str());
+
+  unsigned dataWidthValue = 0;
+  unsigned tagWidth = 0;
+  if (dataWidth.getAsInteger(10, dataWidthValue) ||
+      tagWidthText.getAsInteger(10, tagWidth) || tagWidth == 0)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "ADG temporal transport type %s has an invalid tag width",
+        type.str().c_str());
+  if (tagWidth >= std::numeric_limits<int32_t>::digits)
+    return llvm::createStringError(
+        std::errc::value_too_large,
+        "ADG temporal transport tag width %u requires a route table size "
+        "that does not fit Fabric's signed i32 field",
+        tagWidth);
+  return 1u << tagWidth;
+}
+
+struct TransportFanout {
+  std::string sourceName;
+  std::string type;
+  Schedule schedule;
+  unsigned temporalRouteTableSize;
+  std::vector<std::string> resultNames;
+};
+
+struct TransportPlan {
+  std::vector<std::string> resolvedUses;
+  std::vector<TransportFanout> fanouts;
+};
+
+llvm::Expected<TransportPlan>
+buildTransportPlan(llvm::ArrayRef<std::string> useSources,
+                   const llvm::StringMap<std::string> &valueTypes,
+                   llvm::StringSet<> reservedNames) {
+  struct SourceUses {
+    std::string sourceName;
+    std::string type;
+    std::vector<std::size_t> useIds;
+  };
+
+  TransportPlan plan;
+  plan.resolvedUses.assign(useSources.begin(), useSources.end());
+  llvm::StringMap<std::size_t> sourceIndices;
+  std::vector<SourceUses> sources;
+  for (auto [useId, sourceName] : llvm::enumerate(useSources)) {
+    auto typeIt = valueTypes.find(sourceName);
+    if (typeIt == valueTypes.end())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "ADG direct body source %s is unknown",
+                                     sourceName.c_str());
+    if (!isTransportType(typeIt->second))
+      continue;
+
+    auto [indexIt, inserted] = sourceIndices.try_emplace(sourceName);
+    if (inserted) {
+      indexIt->second = sources.size();
+      sources.push_back(
+          SourceUses{sourceName, typeIt->second, std::vector<std::size_t>()});
+    }
+    sources[indexIt->second].useIds.push_back(useId);
+  }
+
+  for (const SourceUses &source : sources) {
+    if (source.useIds.size() == 1)
+      continue;
+
+    std::size_t fanoutIndex = plan.fanouts.size();
+    Schedule schedule = isTemporalTransportType(source.type)
+                            ? Schedule::Temporal
+                            : Schedule::Spatial;
+    unsigned temporalRouteTableSize = 0;
+    if (schedule == Schedule::Temporal) {
+      auto domainSize = temporalTagDomainSize(source.type);
+      if (!domainSize)
+        return domainSize.takeError();
+      temporalRouteTableSize = *domainSize;
+    }
+    TransportFanout fanout{
+        source.sourceName, source.type, schedule, temporalRouteTableSize, {}};
+    for (auto [consumerIndex, useId] : llvm::enumerate(source.useIds)) {
+      std::string resultName =
+          (llvm::Twine("transport_fanout") + llvm::Twine(fanoutIndex) + "_out" +
+           llvm::Twine(consumerIndex))
+              .str();
+      if (!reservedNames.insert(resultName).second)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "ADG generated transport fanout result %s conflicts with an "
+            "existing value",
+            resultName.c_str());
+      fanout.resultNames.push_back(resultName);
+      plan.resolvedUses[useId] = std::move(resultName);
+    }
+    plan.fanouts.push_back(std::move(fanout));
+  }
+  return plan;
 }
 
 void printTypeList(llvm::raw_ostream &os, llvm::ArrayRef<std::string> types) {
@@ -70,6 +227,23 @@ void printBindings(llvm::raw_ostream &os, llvm::ArrayRef<PortBinding> bindings,
       os << ",\n" << indent;
     os << valueName(binding.localName) << " = " << valueName(binding.sourceName)
        << " : " << binding.type;
+    if (!binding.castType.empty())
+      os << " to " << binding.castType;
+  }
+}
+
+void printDirectBindings(llvm::raw_ostream &os,
+                         llvm::ArrayRef<PortBinding> bindings,
+                         llvm::ArrayRef<std::size_t> useIds,
+                         llvm::ArrayRef<std::string> resolvedUses,
+                         llvm::StringRef indent) {
+  assert(bindings.size() == useIds.size());
+  for (std::size_t i = 0; i < bindings.size(); ++i) {
+    const PortBinding &binding = bindings[i];
+    if (i)
+      os << ",\n" << indent;
+    os << valueName(binding.localName) << " = "
+       << valueName(resolvedUses[useIds[i]]) << " : " << binding.type;
     if (!binding.castType.empty())
       os << " to " << binding.castType;
   }
@@ -238,7 +412,9 @@ void printTemporalPeAttributes(llvm::raw_ostream &os,
   os << "\n       }";
 }
 
-void printPe(llvm::raw_ostream &os, const PeSpec &pe) {
+void printPe(llvm::raw_ostream &os, const PeSpec &pe,
+             llvm::ArrayRef<std::size_t> useIds,
+             llvm::ArrayRef<std::string> resolvedUses) {
   os << "  ";
   if (!pe.resultNames.empty()) {
     for (std::size_t i = 0; i < pe.resultNames.size(); ++i) {
@@ -249,7 +425,8 @@ void printPe(llvm::raw_ostream &os, const PeSpec &pe) {
     os << " = ";
   }
   os << "fabric.pe [" << scheduleName(pe.schedule) << "] (";
-  printBindings(os, pe.inputs, "                    ");
+  printDirectBindings(os, pe.inputs, useIds, resolvedUses,
+                      "                    ");
   os << ") -> ";
   printResultTypes(os, pe.resultTypes);
   if (pe.schedule == Schedule::Temporal)
@@ -269,7 +446,8 @@ void printSwitchHwParams(llvm::raw_ostream &os, const SwitchSpec &sw) {
 }
 
 void printSwitch(llvm::raw_ostream &os, const SwitchSpec &sw,
-                 std::size_t switchIndex,
+                 std::size_t switchIndex, llvm::ArrayRef<std::size_t> useIds,
+                 llvm::ArrayRef<std::string> resolvedUses,
                  llvm::ArrayRef<std::string> operandTypes) {
   os << "  ";
   for (std::size_t i = 0; i < sw.resultTypes.size(); ++i) {
@@ -281,8 +459,7 @@ void printSwitch(llvm::raw_ostream &os, const SwitchSpec &sw,
   for (std::size_t i = 0; i < sw.inputs.size(); ++i) {
     if (i)
       os << ',';
-    const std::string &input = sw.inputs[i];
-    os << ' ' << valueName(input);
+    os << ' ' << valueName(resolvedUses[useIds[i]]);
   }
   os << "\n         ";
   printSwitchHwParams(os, sw);
@@ -290,6 +467,33 @@ void printSwitch(llvm::raw_ostream &os, const SwitchSpec &sw,
   printTypeList(os, operandTypes);
   os << "\n        -> ";
   printResultTypes(os, sw.resultTypes);
+  os << '\n';
+}
+
+void printTransportFanout(llvm::raw_ostream &os,
+                          const TransportFanout &fanout) {
+  os << "  ";
+  for (std::size_t i = 0; i < fanout.resultNames.size(); ++i) {
+    if (i)
+      os << ", ";
+    os << valueName(fanout.resultNames[i]);
+  }
+  os << " = fabric.switch [" << scheduleName(fanout.schedule) << "] "
+     << valueName(fanout.sourceName) << "\n"
+     << "         [{connectivity_table = [";
+  for (std::size_t i = 0; i < fanout.resultNames.size(); ++i) {
+    if (i)
+      os << ", ";
+    os << "\"1\"";
+  }
+  os << ']';
+  if (fanout.schedule == Schedule::Temporal)
+    os << ", route_table_size = " << fanout.temporalRouteTableSize << " : i32";
+  os << "}]\n"
+     << "         : (" << fanout.type << ")\n"
+     << "        -> ";
+  std::vector<std::string> resultTypes(fanout.resultNames.size(), fanout.type);
+  printResultTypes(os, resultTypes);
   os << '\n';
 }
 
@@ -316,10 +520,11 @@ llvm::Error validateSwitch(const SwitchSpec &sw,
 
   std::vector<bool> columnHasConnection(sw.inputs.size(), false);
   for (const std::string &input : sw.inputs) {
-    if (!inputTypes.contains(input))
+    std::string inputName = canonicalValueName(input);
+    if (!inputTypes.contains(inputName))
       return llvm::createStringError(std::errc::invalid_argument,
                                      "ADG switch input %s is unknown",
-                                     input.c_str());
+                                     inputName.c_str());
   }
   for (std::size_t rowIndex = 0; rowIndex < sw.connectivityTable.size();
        ++rowIndex) {
@@ -355,68 +560,6 @@ llvm::Error validateSwitch(const SwitchSpec &sw,
   return llvm::Error::success();
 }
 
-PeSpec makeMinimalAddPe(Schedule schedule, std::string lhsSource,
-                        std::string rhsSource, std::string boundaryType,
-                        std::string fuType,
-                        TemporalPeConfig temporal = TemporalPeConfig()) {
-  PeSpec pe;
-  pe.schedule = schedule;
-  pe.inputs = {{"pa", std::move(lhsSource), boundaryType, ""},
-               {"pb", std::move(rhsSource), boundaryType, ""}};
-  pe.resultTypes = {boundaryType};
-  pe.temporal = std::move(temporal);
-
-  FuSpec addFu;
-  addFu.inputs = {{"fa", "pa", fuType, ""}, {"fb", "pb", fuType, ""}};
-  addFu.resultTypes = {fuType};
-  addFu.operations.push_back(FabricOpSpec{{"sum"},
-                                          {"arith.addi"},
-                                          {"fa", "fb"},
-                                          {fuType, fuType},
-                                          {fuType},
-                                          {},
-                                          {}});
-  addFu.yieldValues = {"sum"};
-  pe.fus.push_back(std::move(addFu));
-  return pe;
-}
-
-PeSpec makeMinimalAddPe(Schedule schedule, std::string boundaryType,
-                        std::string fuType,
-                        TemporalPeConfig temporal = TemporalPeConfig()) {
-  return makeMinimalAddPe(schedule, "lhs", "rhs", std::move(boundaryType),
-                          std::move(fuType), std::move(temporal));
-}
-
-struct VisualPoint {
-  llvm::StringRef node;
-  int x;
-  int y;
-};
-
-std::string visualLayoutAttr(llvm::ArrayRef<VisualPoint> points) {
-  std::string text = "[";
-  for (const VisualPoint &point : points) {
-    if (text.size() > 1)
-      text += ", ";
-    text += "{node = \"";
-    text += point.node.str();
-    text += "\", x = ";
-    text += std::to_string(point.x);
-    text += " : i32, y = ";
-    text += std::to_string(point.y);
-    text += " : i32}";
-  }
-  text += "]";
-  return text;
-}
-
-void addVisualLayout(ModuleBuilder &module,
-                     llvm::ArrayRef<VisualPoint> points) {
-  module.addAttribute("coordinates_semantic", "false");
-  module.addAttribute("visual_layout", visualLayoutAttr(points));
-}
-
 } // namespace
 
 ModuleBuilder::ModuleBuilder(std::string name) : name(std::move(name)) {}
@@ -427,29 +570,62 @@ ModuleBuilder &ModuleBuilder::addInput(std::string inputName,
   return *this;
 }
 
+std::size_t ModuleBuilder::registerDirectUse(std::string sourceName) {
+  directUses.push_back(DirectUse{canonicalValueName(sourceName)});
+  return directUses.size() - 1;
+}
+
 ModuleBuilder &ModuleBuilder::addPe(PeSpec pe) {
-  pes.push_back(std::move(pe));
+  std::vector<std::size_t> useIds;
+  useIds.reserve(pe.inputs.size());
+  for (const PortBinding &input : pe.inputs)
+    useIds.push_back(registerDirectUse(input.sourceName));
+  pes.push_back(PeEntry{std::move(pe), std::move(useIds)});
   return *this;
 }
 
 ModuleBuilder &ModuleBuilder::addSwitch(SwitchSpec sw) {
-  switches.push_back(std::move(sw));
+  std::vector<std::size_t> useIds;
+  useIds.reserve(sw.inputs.size());
+  for (const std::string &input : sw.inputs)
+    useIds.push_back(registerDirectUse(input));
+  switches.push_back(SwitchEntry{std::move(sw), std::move(useIds)});
   return *this;
 }
 
 ModuleBuilder &ModuleBuilder::addMem(MemSpec mem) {
-  mems.push_back(std::move(mem));
+  std::vector<std::size_t> useIds;
+  useIds.push_back(registerDirectUse(mem.manager));
+  for (const MemLoadPort &load : mem.loads) {
+    useIds.push_back(registerDirectUse(load.address));
+    useIds.push_back(registerDirectUse(load.control));
+  }
+  for (const MemStorePort &store : mem.stores) {
+    useIds.push_back(registerDirectUse(store.address));
+    useIds.push_back(registerDirectUse(store.data));
+    useIds.push_back(registerDirectUse(store.control));
+  }
+  mems.push_back(MemEntry{std::move(mem), std::move(useIds)});
+  return *this;
+}
+
+ModuleBuilder &ModuleBuilder::addBodyOp(BodyOpSpec op) {
+  std::vector<std::vector<std::size_t>> lineUseIds;
+  lineUseIds.reserve(op.lines.size());
+  for (const BodyLineSpec &line : op.lines) {
+    std::vector<std::size_t> useIds;
+    useIds.reserve(line.operands.size());
+    for (const std::string &operand : line.operands)
+      useIds.push_back(registerDirectUse(operand));
+    lineUseIds.push_back(std::move(useIds));
+  }
+  bodyOps.push_back(BodyOpEntry{std::move(op), std::move(lineUseIds)});
   return *this;
 }
 
 ModuleBuilder &ModuleBuilder::addAttribute(std::string attrName,
                                            std::string value) {
   attributes.push_back(Attribute{std::move(attrName), std::move(value)});
-  return *this;
-}
-
-ModuleBuilder &ModuleBuilder::addExactBodyLine(std::string line) {
-  exactBodyLines.push_back(std::move(line));
   return *this;
 }
 
@@ -546,16 +722,32 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
     return llvm::createStringError(std::errc::invalid_argument,
                                    "ADG module name is empty");
   llvm::StringSet<> seenInputs;
-  llvm::StringMap<std::string> inputTypes;
+  llvm::StringSet<> valueNames;
+  llvm::StringMap<std::string> valueTypes;
+  auto defineValue = [&](llvm::StringRef valueName,
+                         llvm::StringRef type) -> llvm::Error {
+    std::string canonicalName = canonicalValueName(valueName);
+    if (canonicalName.empty() || type.empty())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "ADG body value is incomplete");
+    if (!valueNames.insert(canonicalName).second)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "duplicate ADG body value %s",
+                                     canonicalName.c_str());
+    valueTypes[canonicalName] = type;
+    return llvm::Error::success();
+  };
   for (const Input &input : inputs) {
     if (input.name.empty() || input.type.empty())
       return llvm::createStringError(std::errc::invalid_argument,
                                      "ADG module input is incomplete");
-    if (!seenInputs.insert(input.name).second)
+    std::string inputName = canonicalValueName(input.name);
+    if (!seenInputs.insert(inputName).second)
       return llvm::createStringError(std::errc::invalid_argument,
                                      "duplicate ADG module input %s",
-                                     input.name.c_str());
-    inputTypes[input.name] = input.type;
+                                     inputName.c_str());
+    if (llvm::Error err = defineValue(inputName, input.type))
+      return err;
   }
   llvm::StringSet<> seenAttributes;
   for (const Attribute &attribute : attributes) {
@@ -567,6 +759,129 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
                                      "duplicate ADG module attribute %s",
                                      attribute.name.c_str());
   }
+
+  for (const PeEntry &entry : pes) {
+    const PeSpec &pe = entry.spec;
+    if (!pe.resultNames.empty() &&
+        pe.resultNames.size() != pe.resultTypes.size())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG pe result name count must match result type count");
+    if (entry.useIds.size() != pe.inputs.size())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "ADG pe direct use count is invalid");
+    for (const FuSpec &fu : pe.fus)
+      if (llvm::Error err = validateFu(fu))
+        return err;
+    for (auto [resultName, resultType] :
+         llvm::zip(pe.resultNames, pe.resultTypes))
+      if (llvm::Error err = defineValue(resultName, resultType))
+        return err;
+  }
+  for (auto [switchIndex, entry] : llvm::enumerate(switches)) {
+    const SwitchSpec &sw = entry.spec;
+    if (entry.useIds.size() != sw.inputs.size())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "ADG switch direct use count is invalid");
+    for (auto [resultIndex, resultType] : llvm::enumerate(sw.resultTypes)) {
+      std::string resultName = (llvm::Twine("sw") + llvm::Twine(switchIndex) +
+                                "_out" + llvm::Twine(resultIndex))
+                                   .str();
+      if (llvm::Error err = defineValue(resultName, resultType))
+        return err;
+    }
+  }
+  for (const BodyOpEntry &entry : bodyOps) {
+    const BodyOpSpec &op = entry.spec;
+    if (!op.results.empty() && op.lines.empty())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG body op with results must have an operation line");
+    if (entry.lineUseIds.size() != op.lines.size())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG body op direct use line count is invalid");
+    for (auto [line, useIds] : llvm::zip(op.lines, entry.lineUseIds)) {
+      if (line.fragments.size() != line.operands.size() + 1)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "ADG body line fragment count must be one greater than operand "
+            "count");
+      if (useIds.size() != line.operands.size())
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "ADG body line direct use count is invalid");
+      if (line.moduleScope)
+        for (const std::string &fragment : line.fragments)
+          if (fragmentHidesDirectUse(fragment))
+            return llvm::createStringError(
+                std::errc::invalid_argument,
+                "ADG body literal fragment hides a module SSA value; direct "
+                "uses must be declared as operands");
+    }
+    for (const BodyResultSpec &result : op.results)
+      if (llvm::Error err = defineValue(result.name, result.type))
+        return err;
+  }
+  for (auto [memIndex, entry] : llvm::enumerate(mems)) {
+    const MemSpec &mem = entry.spec;
+    std::size_t expectedUseCount =
+        1 + mem.loads.size() * 2 + mem.stores.size() * 3;
+    if (entry.useIds.size() != expectedUseCount)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "ADG mem direct use count is invalid");
+    std::size_t useIndex = 1;
+    for (std::size_t i = 0; i < mem.loads.size(); ++i) {
+      std::string addressType =
+          valueTypes.lookup(directUses[entry.useIds[useIndex]].sourceName);
+      std::string controlType =
+          valueTypes.lookup(directUses[entry.useIds[useIndex + 1]].sourceName);
+      if (addressType.empty() || controlType.empty())
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "ADG mem load source is unknown");
+      if (llvm::Error err =
+              defineValue((llvm::Twine("mem") + llvm::Twine(memIndex) +
+                           "_data" + llvm::Twine(i))
+                              .str(),
+                          addressType))
+        return err;
+      if (llvm::Error err =
+              defineValue((llvm::Twine("mem") + llvm::Twine(memIndex) +
+                           "_done" + llvm::Twine(i))
+                              .str(),
+                          controlType))
+        return err;
+      useIndex += 2;
+    }
+    for (std::size_t i = 0; i < mem.stores.size(); ++i) {
+      std::string controlType =
+          valueTypes.lookup(directUses[entry.useIds[useIndex + 2]].sourceName);
+      if (controlType.empty())
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "ADG mem store source is unknown");
+      if (llvm::Error err =
+              defineValue((llvm::Twine("mem") + llvm::Twine(memIndex) +
+                           "_store_done" + llvm::Twine(i))
+                              .str(),
+                          controlType))
+        return err;
+      useIndex += 3;
+    }
+  }
+
+  for (const SwitchEntry &entry : switches)
+    if (llvm::Error err = validateSwitch(entry.spec, valueTypes))
+      return err;
+
+  std::vector<std::string> useSources;
+  useSources.reserve(directUses.size());
+  for (const DirectUse &use : directUses)
+    useSources.push_back(use.sourceName);
+  auto planOrErr =
+      buildTransportPlan(useSources, valueTypes, std::move(valueNames));
+  if (!planOrErr)
+    return planOrErr.takeError();
+  TransportPlan plan = std::move(*planOrErr);
 
   os << "fabric.module @" << name << '(';
   for (std::size_t i = 0; i < inputs.size(); ++i) {
@@ -585,63 +900,22 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
     os << '}';
   }
   os << " {\n";
-  for (const PeSpec &pe : pes)
-    if (!pe.resultNames.empty() &&
-        pe.resultNames.size() != pe.resultTypes.size())
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "ADG pe result name count must match result type count");
-  for (const PeSpec &pe : pes)
-    for (const FuSpec &fu : pe.fus)
-      if (llvm::Error err = validateFu(fu))
-        return err;
-  for (const PeSpec &pe : pes)
-    printPe(os, pe);
+  for (const PeEntry &entry : pes)
+    printPe(os, entry.spec, entry.useIds, plan.resolvedUses);
   for (std::size_t switchIndex = 0; switchIndex < switches.size();
        ++switchIndex) {
-    const SwitchSpec &sw = switches[switchIndex];
-    if (llvm::Error err = validateSwitch(sw, inputTypes))
-      return err;
+    const SwitchEntry &entry = switches[switchIndex];
+    const SwitchSpec &sw = entry.spec;
     llvm::SmallVector<std::string> operandTypes;
-    for (const std::string &input : sw.inputs)
-      operandTypes.push_back(inputTypes.lookup(input));
-    printSwitch(os, sw, switchIndex, operandTypes);
+    for (std::size_t useId : entry.useIds)
+      operandTypes.push_back(valueTypes.lookup(directUses[useId].sourceName));
+    printSwitch(os, sw, switchIndex, entry.useIds, plan.resolvedUses,
+                operandTypes);
   }
   for (std::size_t memIndex = 0; memIndex < mems.size(); ++memIndex) {
-    const MemSpec &mem = mems[memIndex];
-    if (!inputTypes.contains(mem.manager))
-      return llvm::createStringError(std::errc::invalid_argument,
-                                     "ADG mem manager input %s is unknown",
-                                     mem.manager.c_str());
-    for (const MemLoadPort &load : mem.loads) {
-      if (!inputTypes.contains(load.address))
-        return llvm::createStringError(std::errc::invalid_argument,
-                                       "ADG mem load address input %s is "
-                                       "unknown",
-                                       load.address.c_str());
-      if (!inputTypes.contains(load.control))
-        return llvm::createStringError(std::errc::invalid_argument,
-                                       "ADG mem load control input %s is "
-                                       "unknown",
-                                       load.control.c_str());
-    }
-    for (const MemStorePort &store : mem.stores) {
-      if (!inputTypes.contains(store.address))
-        return llvm::createStringError(std::errc::invalid_argument,
-                                       "ADG mem store address input %s is "
-                                       "unknown",
-                                       store.address.c_str());
-      if (!inputTypes.contains(store.data))
-        return llvm::createStringError(std::errc::invalid_argument,
-                                       "ADG mem store data input %s is "
-                                       "unknown",
-                                       store.data.c_str());
-      if (!inputTypes.contains(store.control))
-        return llvm::createStringError(std::errc::invalid_argument,
-                                       "ADG mem store control input %s is "
-                                       "unknown",
-                                       store.control.c_str());
-    }
+    const MemEntry &entry = mems[memIndex];
+    const MemSpec &mem = entry.spec;
+    std::size_t useIndex = 0;
     os << "  ";
     bool hasResult = false;
     for (std::size_t i = 0; i < mem.loads.size(); ++i) {
@@ -658,14 +932,14 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
       hasResult = true;
     }
     os << " = fabric.mem [" << scheduleName(mem.schedule) << "] mgr("
-       << valueName(mem.manager) << ')';
+       << valueName(plan.resolvedUses[entry.useIds[useIndex++]]) << ')';
     if (!mem.loads.empty()) {
       os << " load(";
       for (std::size_t i = 0; i < mem.loads.size(); ++i) {
         if (i)
           os << ", ";
-        const MemLoadPort &load = mem.loads[i];
-        os << valueName(load.address) << ", " << valueName(load.control);
+        os << valueName(plan.resolvedUses[entry.useIds[useIndex++]]) << ", "
+           << valueName(plan.resolvedUses[entry.useIds[useIndex++]]);
       }
       os << ')';
     }
@@ -674,9 +948,9 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
       for (std::size_t i = 0; i < mem.stores.size(); ++i) {
         if (i)
           os << ", ";
-        const MemStorePort &store = mem.stores[i];
-        os << valueName(store.address) << ", " << valueName(store.data) << ", "
-           << valueName(store.control);
+        os << valueName(plan.resolvedUses[entry.useIds[useIndex++]]) << ", "
+           << valueName(plan.resolvedUses[entry.useIds[useIndex++]]) << ", "
+           << valueName(plan.resolvedUses[entry.useIds[useIndex++]]);
       }
       os << ')';
     }
@@ -691,31 +965,52 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
     os << "}]\n";
 
     llvm::SmallVector<std::string> operandTypes;
-    operandTypes.push_back(inputTypes.lookup(mem.manager));
+    for (std::size_t useId : entry.useIds)
+      operandTypes.push_back(valueTypes.lookup(directUses[useId].sourceName));
+    llvm::SmallVector<std::string> resultTypes;
+    useIndex = 1;
     for (const MemLoadPort &load : mem.loads) {
-      operandTypes.push_back(inputTypes.lookup(load.address));
-      operandTypes.push_back(inputTypes.lookup(load.control));
+      (void)load;
+      resultTypes.push_back(
+          valueTypes.lookup(directUses[entry.useIds[useIndex++]].sourceName));
+      resultTypes.push_back(
+          valueTypes.lookup(directUses[entry.useIds[useIndex++]].sourceName));
     }
     for (const MemStorePort &store : mem.stores) {
-      operandTypes.push_back(inputTypes.lookup(store.address));
-      operandTypes.push_back(inputTypes.lookup(store.data));
-      operandTypes.push_back(inputTypes.lookup(store.control));
+      (void)store;
+      useIndex += 2;
+      resultTypes.push_back(
+          valueTypes.lookup(directUses[entry.useIds[useIndex++]].sourceName));
     }
-    llvm::SmallVector<std::string> resultTypes;
-    for (const MemLoadPort &load : mem.loads) {
-      resultTypes.push_back(inputTypes.lookup(load.address));
-      resultTypes.push_back(inputTypes.lookup(load.control));
-    }
-    for (const MemStorePort &store : mem.stores)
-      resultTypes.push_back(inputTypes.lookup(store.control));
     os << "        : ";
     printTypeList(os, operandTypes);
     os << "\n        -> ";
     printResultTypes(os, resultTypes);
     os << '\n';
   }
-  for (const std::string &line : exactBodyLines)
-    os << "  " << line << '\n';
+  for (const BodyOpEntry &entry : bodyOps) {
+    for (std::size_t lineIndex = 0; lineIndex < entry.spec.lines.size();
+         ++lineIndex) {
+      const BodyLineSpec &line = entry.spec.lines[lineIndex];
+      llvm::ArrayRef<std::size_t> useIds = entry.lineUseIds[lineIndex];
+      os << "  ";
+      if (lineIndex == 0 && !entry.spec.results.empty()) {
+        for (std::size_t i = 0; i < entry.spec.results.size(); ++i) {
+          if (i)
+            os << ", ";
+          os << valueName(entry.spec.results[i].name);
+        }
+        os << " = ";
+      }
+      os << line.fragments.front();
+      for (std::size_t i = 0; i < line.operands.size(); ++i)
+        os << valueName(plan.resolvedUses[useIds[i]]) << line.fragments[i + 1];
+      os << '\n';
+    }
+  }
+  // Resolve original top-level source names before parsing generated fanouts.
+  for (const TransportFanout &fanout : plan.fanouts)
+    printTransportFanout(os, fanout);
   os << "  fabric.yield\n";
   os << "}\n";
   return llvm::Error::success();
@@ -803,4717 +1098,4 @@ llvm::Error SystemBuilder::print(llvm::raw_ostream &os) const {
   }
   os << "}\n";
   return llvm::Error::success();
-}
-
-namespace {
-
-std::vector<std::string> axiManagerPort(std::string port) {
-  return {port + ".aw:output", port + ".w:output", port + ".b:input",
-          port + ".ar:output", port + ".r:input"};
-}
-
-std::vector<std::string> axiSubordinatePort(std::string port) {
-  return {port + ".aw:input", port + ".w:input", port + ".b:output",
-          port + ".ar:input", port + ".r:output"};
-}
-
-void appendPorts(std::vector<std::string> &dst, std::vector<std::string> src) {
-  dst.insert(dst.end(), std::make_move_iterator(src.begin()),
-             std::make_move_iterator(src.end()));
-}
-
-void connectAxiMemoryPort(SystemBuilder &system, llvm::StringRef managerNode,
-                          llvm::StringRef managerPort,
-                          llvm::StringRef memoryNode,
-                          llvm::StringRef memoryPort) {
-  system.connect(managerNode.str(), managerPort.str(), "aw", memoryNode.str(),
-                 memoryPort.str(), "aw");
-  system.connect(managerNode.str(), managerPort.str(), "w", memoryNode.str(),
-                 memoryPort.str(), "w");
-  system.connect(memoryNode.str(), memoryPort.str(), "b", managerNode.str(),
-                 managerPort.str(), "b");
-  system.connect(managerNode.str(), managerPort.str(), "ar", memoryNode.str(),
-                 memoryPort.str(), "ar");
-  system.connect(memoryNode.str(), memoryPort.str(), "r", managerNode.str(),
-                 managerPort.str(), "r");
-}
-
-ModuleBuilder makeTopologyMatrixModule(
-    llvm::StringRef name, bool includeTemporal = false,
-    llvm::ArrayRef<VisualPoint> visualPoints = {}) {
-  ModuleBuilder module(name.str());
-  if (!visualPoints.empty())
-    addVisualLayout(module, visualPoints);
-  module.addInput("mgr", "memref<?x!fabric.bits<32>>")
-      .addInput("a", "!fabric.bits<32>")
-      .addInput("b", "!fabric.bits<32>")
-      .addInput("c", "!fabric.bits<32>")
-      .addInput("d", "!fabric.bits<32>")
-      .addInput("addr", "!fabric.bits<32>")
-      .addInput("ctrl", "!fabric.bits<0>");
-  if (includeTemporal) {
-    module.addInput("lhs_t", "!fabric.bits_tag<32, 4>")
-        .addInput("rhs_t", "!fabric.bits_tag<32, 4>")
-        .addInput("tag", "!fabric.bits<4>");
-  }
-  return module;
-}
-
-std::string valueList(llvm::ArrayRef<llvm::StringRef> names) {
-  std::string text;
-  for (llvm::StringRef name : names) {
-    if (!text.empty())
-      text += ", ";
-    text += valueName(name);
-  }
-  return text;
-}
-
-std::string bits32TypeList(std::size_t count) {
-  std::string text = "(";
-  for (std::size_t index = 0; index < count; ++index) {
-    if (index)
-      text += ", ";
-    text += "!fabric.bits<32>";
-  }
-  text += ")";
-  return text;
-}
-
-std::string uniformTypeList(std::size_t count, llvm::StringRef type) {
-  std::string text = "(";
-  for (std::size_t index = 0; index < count; ++index) {
-    if (index)
-      text += ", ";
-    text += type;
-  }
-  text += ")";
-  return text;
-}
-
-std::string valueListStrings(llvm::ArrayRef<std::string> names) {
-  std::string text;
-  for (const std::string &name : names) {
-    if (!text.empty())
-      text += ", ";
-    text += valueName(name);
-  }
-  return text;
-}
-
-std::string opNameList(llvm::ArrayRef<llvm::StringRef> names) {
-  std::string text;
-  for (llvm::StringRef name : names) {
-    if (!text.empty())
-      text += ", ";
-    text += "@";
-    text += name.str();
-  }
-  return text;
-}
-
-std::string switchConnectivity(llvm::ArrayRef<llvm::StringRef> rows) {
-  std::string text = "[{connectivity_table = [";
-  for (std::size_t index = 0; index < rows.size(); ++index) {
-    if (index)
-      text += ", ";
-    text += "\"";
-    text += rows[index].str();
-    text += "\"";
-  }
-  text += "]}]";
-  return text;
-}
-
-std::string uniformConnectivityRows(std::size_t rowCount,
-                                    std::size_t inputCount) {
-  std::string row(inputCount, '1');
-  std::string text = "[{connectivity_table = [";
-  for (std::size_t index = 0; index < rowCount; ++index) {
-    if (index)
-      text += ", ";
-    text += "\"";
-    text += row;
-    text += "\"";
-  }
-  text += "]}]";
-  return text;
-}
-
-void addUniformSwitch(ModuleBuilder &module,
-                      llvm::ArrayRef<std::string> results,
-                      llvm::ArrayRef<std::string> inputs,
-                      llvm::StringRef type) {
-  module.addExactBodyLine(valueListStrings(results) + " =");
-  module.addExactBodyLine("    fabric.switch [spatial] " +
-                          valueListStrings(inputs));
-  module.addExactBodyLine(
-      "      " + uniformConnectivityRows(results.size(), inputs.size()));
-  module.addExactBodyLine("      : " + uniformTypeList(inputs.size(), type));
-  module.addExactBodyLine("      -> " +
-                          (results.size() == 1
-                               ? type.str()
-                               : uniformTypeList(results.size(), type)));
-}
-
-void addSpatialMemLoad(ModuleBuilder &module) {
-  module.addExactBodyLine("%data, %done =");
-  module.addExactBodyLine(
-      "    fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl)");
-  module.addExactBodyLine(
-      "      [{load_group_size = 1 : i32, store_group_size = 0 : i32}]");
-  module.addExactBodyLine(
-      "      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, "
-      "!fabric.bits<0>)");
-  module.addExactBodyLine("      -> (!fabric.bits<32>, !fabric.bits<0>)");
-}
-
-void addSpatialSwitch(ModuleBuilder &module,
-                      llvm::ArrayRef<llvm::StringRef> results,
-                      llvm::ArrayRef<llvm::StringRef> inputs,
-                      llvm::ArrayRef<llvm::StringRef> rows) {
-  module.addExactBodyLine(valueList(results) + " =");
-  module.addExactBodyLine("    fabric.switch [spatial] " + valueList(inputs));
-  module.addExactBodyLine("      " + switchConnectivity(rows));
-  module.addExactBodyLine("      : " + bits32TypeList(inputs.size()));
-  module.addExactBodyLine("      -> " + (results.size() == 1
-                                             ? std::string("!fabric.bits<32>")
-                                             : bits32TypeList(results.size())));
-}
-
-void addSpatialAddPe(ModuleBuilder &module, llvm::StringRef result,
-                     llvm::StringRef lhs, llvm::StringRef rhs,
-                     llvm::StringRef opName = "arith.addi") {
-  module.addExactBodyLine(valueName(result) + " =");
-  module.addExactBodyLine("    fabric.pe [spatial] (%lhs = " + valueName(lhs) +
-                          " : !fabric.bits<32>,");
-  module.addExactBodyLine("                         %rhs = " + valueName(rhs) +
-                          " : !fabric.bits<32>)");
-  module.addExactBodyLine("        -> !fabric.bits<32> {");
-  module.addExactBodyLine("      fabric.fu(%fu_lhs = %lhs : !fabric.bits<32>,");
-  module.addExactBodyLine("                %fu_rhs = %rhs : !fabric.bits<32>) "
-                          "-> !fabric.bits<32> {");
-  module.addExactBodyLine("        %value = fabric.op [@" + opName.str() +
-                          "] (%fu_lhs, %fu_rhs)");
-  module.addExactBodyLine(
-      "                 : (!fabric.bits<32>, !fabric.bits<32>) -> "
-      "!fabric.bits<32>");
-  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-}
-
-void addUnaryPe(ModuleBuilder &module, llvm::StringRef result,
-                llvm::StringRef input, llvm::StringRef opName) {
-  module.addExactBodyLine(valueName(result) + " =");
-  module.addExactBodyLine("    fabric.pe [spatial] (%value = " +
-                          valueName(input) + " : !fabric.bits<32>)");
-  module.addExactBodyLine("        -> !fabric.bits<32> {");
-  module.addExactBodyLine(
-      "      fabric.fu(%input = %value : !fabric.bits<32>) -> "
-      "!fabric.bits<32> {");
-  module.addExactBodyLine("        %result = fabric.op [@" + opName.str() +
-                          "] (%input)");
-  module.addExactBodyLine(
-      "                 : (!fabric.bits<32>) -> !fabric.bits<32>");
-  module.addExactBodyLine("        fabric.yield %result : !fabric.bits<32>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-}
-
-void addWideExtensionPe(ModuleBuilder &module, llvm::StringRef result,
-                        llvm::StringRef input, llvm::StringRef opName) {
-  module.addExactBodyLine(valueName(result) + " =");
-  module.addExactBodyLine(
-      "    fabric.pe [spatial] (%value = " + valueName(input) +
-      " : !fabric.bits<32> to !fabric.bits<64>)");
-  module.addExactBodyLine("        -> !fabric.bits<64> {");
-  module.addExactBodyLine(
-      "      fabric.fu(%input = %value : !fabric.bits<64> to "
-      "!fabric.bits<32>) -> !fabric.bits<64> {");
-  module.addExactBodyLine("        %result = fabric.op [@" + opName.str() +
-                          "] (%input)");
-  module.addExactBodyLine(
-      "                 : (!fabric.bits<32>) -> !fabric.bits<64>");
-  module.addExactBodyLine("        fabric.yield %result : !fabric.bits<64>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-}
-
-void addWideNarrowingPe(ModuleBuilder &module, llvm::StringRef result,
-                        llvm::StringRef input, llvm::StringRef opName) {
-  module.addExactBodyLine(valueName(result) + " =");
-  module.addExactBodyLine("    fabric.pe [spatial] (%value = " +
-                          valueName(input) + " : !fabric.bits<64>)");
-  module.addExactBodyLine("        -> !fabric.bits<64> {");
-  module.addExactBodyLine(
-      "      fabric.fu(%input = %value : !fabric.bits<64>) -> "
-      "!fabric.bits<64> {");
-  module.addExactBodyLine("        %result = fabric.op [@" + opName.str() +
-                          "] (%input)");
-  module.addExactBodyLine(
-      "                 : (!fabric.bits<64>) -> !fabric.bits<32>");
-  module.addExactBodyLine(
-      "        fabric.yield %result : !fabric.bits<32> to !fabric.bits<64>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-}
-
-void addWideTruncPe(ModuleBuilder &module, llvm::StringRef result,
-                    llvm::StringRef input) {
-  addWideNarrowingPe(module, result, input, "llvm.trunc");
-}
-
-void addTernaryPe(ModuleBuilder &module, llvm::StringRef result,
-                  llvm::StringRef lhs, llvm::StringRef rhs, llvm::StringRef acc,
-                  llvm::StringRef opName) {
-  module.addExactBodyLine(valueName(result) + " =");
-  module.addExactBodyLine("    fabric.pe [spatial] (%lhs = " + valueName(lhs) +
-                          " : !fabric.bits<32>,");
-  module.addExactBodyLine("                         %rhs = " + valueName(rhs) +
-                          " : !fabric.bits<32>,");
-  module.addExactBodyLine("                         %acc = " + valueName(acc) +
-                          " : !fabric.bits<32>)");
-  module.addExactBodyLine("        -> !fabric.bits<32> {");
-  module.addExactBodyLine("      fabric.fu(%a = %lhs : !fabric.bits<32>,");
-  module.addExactBodyLine("                %b = %rhs : !fabric.bits<32>,");
-  module.addExactBodyLine("                %c = %acc : !fabric.bits<32>) "
-                          "-> !fabric.bits<32> {");
-  module.addExactBodyLine("        %value = fabric.op [@" + opName.str() +
-                          "] (%a, %b, %c)");
-  module.addExactBodyLine(
-      "                 : (!fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>) -> !fabric.bits<32>");
-  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-}
-
-std::string numbered(llvm::StringRef prefix, unsigned index) {
-  return (prefix + llvm::Twine(index)).str();
-}
-
-std::string quotedList(llvm::ArrayRef<llvm::StringRef> values) {
-  std::string result;
-  llvm::raw_string_ostream os(result);
-  for (auto [index, value] : llvm::enumerate(values)) {
-    if (index != 0)
-      os << ", ";
-    os << "\"" << value << "\"";
-  }
-  return os.str();
-}
-
-void addConfigurableConstantPe(ModuleBuilder &module, llvm::StringRef result,
-                               llvm::StringRef control,
-                               llvm::ArrayRef<llvm::StringRef> constHexValues) {
-  module.addExactBodyLine(valueName(result) + " =");
-  module.addExactBodyLine(
-      "    fabric.pe [spatial] (%pa = " + valueName(control) +
-      " : !fabric.bits<0> to !fabric.bits<32>)");
-  module.addExactBodyLine("        -> !fabric.bits<32> {");
-  module.addExactBodyLine("      fabric.fu(%token = %pa : !fabric.bits<32> to "
-                          "!fabric.bits<0>) -> !fabric.bits<32> {");
-  module.addExactBodyLine(
-      "        %value = fabric.op [@dataflow.constant] (%token)");
-  module.addExactBodyLine(
-      "            {hw_params = [{const_hex_value = [" +
-      quotedList(constHexValues) + "]}]}");
-  module.addExactBodyLine(
-      "            : (!fabric.bits<0>) -> !fabric.bits<32>");
-  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-}
-
-void addConfigurableWideConstantPe(
-    ModuleBuilder &module, llvm::StringRef result, llvm::StringRef control,
-    llvm::ArrayRef<llvm::StringRef> constHexValues) {
-  module.addExactBodyLine(valueName(result) + " =");
-  module.addExactBodyLine(
-      "    fabric.pe [spatial] (%pa = " + valueName(control) +
-      " : !fabric.bits<0> to !fabric.bits<64>)");
-  module.addExactBodyLine("        -> !fabric.bits<64> {");
-  module.addExactBodyLine("      fabric.fu(%token = %pa : !fabric.bits<64> to "
-                          "!fabric.bits<0>) -> !fabric.bits<64> {");
-  module.addExactBodyLine(
-      "        %value = fabric.op [@dataflow.constant] (%token)");
-  module.addExactBodyLine(
-      "            {hw_params = [{const_hex_value = [" +
-      quotedList(constHexValues) + "]}]}");
-  module.addExactBodyLine(
-      "            : (!fabric.bits<0>) -> !fabric.bits<64>");
-  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<64>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-}
-
-void addConfigurableBinaryPe(ModuleBuilder &module, llvm::StringRef result,
-                             llvm::StringRef lhs, llvm::StringRef rhs,
-                             llvm::ArrayRef<llvm::StringRef> opNames) {
-  module.addExactBodyLine(valueName(result) + " =");
-  module.addExactBodyLine("    fabric.pe [spatial] (%lhs = " + valueName(lhs) +
-                          " : !fabric.bits<32>,");
-  module.addExactBodyLine("                         %rhs = " + valueName(rhs) +
-                          " : !fabric.bits<32>)");
-  module.addExactBodyLine("        -> !fabric.bits<32> {");
-  module.addExactBodyLine("      fabric.fu(%a = %lhs : !fabric.bits<32>,");
-  module.addExactBodyLine("                %b = %rhs : !fabric.bits<32>) "
-                          "-> !fabric.bits<32> {");
-  module.addExactBodyLine("        %value = fabric.op [" + opNameList(opNames) +
-                          "] (%a, %b)");
-  module.addExactBodyLine(
-      "            : (!fabric.bits<32>, !fabric.bits<32>) -> "
-      "!fabric.bits<32>");
-  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-}
-
-void addConfigurableWideBinaryPe(ModuleBuilder &module, llvm::StringRef result,
-                                 llvm::StringRef lhs, llvm::StringRef rhs,
-                                 llvm::ArrayRef<llvm::StringRef> opNames) {
-  module.addExactBodyLine(valueName(result) + " =");
-  module.addExactBodyLine("    fabric.pe [spatial] (%lhs = " + valueName(lhs) +
-                          " : !fabric.bits<64>,");
-  module.addExactBodyLine("                         %rhs = " + valueName(rhs) +
-                          " : !fabric.bits<64>)");
-  module.addExactBodyLine("        -> !fabric.bits<64> {");
-  module.addExactBodyLine("      fabric.fu(%a = %lhs : !fabric.bits<64>,");
-  module.addExactBodyLine("                %b = %rhs : !fabric.bits<64>) "
-                          "-> !fabric.bits<64> {");
-  module.addExactBodyLine("        %value = fabric.op [" + opNameList(opNames) +
-                          "] (%a, %b)");
-  module.addExactBodyLine(
-      "            : (!fabric.bits<64>, !fabric.bits<64>) -> "
-      "!fabric.bits<64>");
-  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<64>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-}
-
-void addCmpPe(ModuleBuilder &module, llvm::StringRef result,
-              llvm::StringRef lhs, llvm::StringRef rhs) {
-  module.addExactBodyLine(valueName(result) + " =");
-  module.addExactBodyLine("    fabric.pe [spatial] (%lhs = " + valueName(lhs) +
-                          " : !fabric.bits<32>,");
-  module.addExactBodyLine("                         %rhs = " + valueName(rhs) +
-                          " : !fabric.bits<32>)");
-  module.addExactBodyLine("        -> !fabric.bits<32> {");
-  module.addExactBodyLine("      fabric.fu(%a = %lhs : !fabric.bits<32>,");
-  module.addExactBodyLine("                %b = %rhs : !fabric.bits<32>) "
-                          "-> !fabric.bits<32> {");
-  module.addExactBodyLine(
-      "        %pred = fabric.op [@arith.cmpi, @llvm.icmp] (%a, %b)");
-  module.addExactBodyLine(
-      "            {hw_params = [{predicate = [\"eq\", \"ne\", \"slt\", "
-      "\"sle\", \"sgt\", \"sge\", \"ult\", \"ule\", \"ugt\", \"uge\"]}]}");
-  module.addExactBodyLine(
-      "            : (!fabric.bits<32>, !fabric.bits<32>) -> "
-      "!fabric.bits<1>");
-  module.addExactBodyLine("        fabric.yield %pred : !fabric.bits<1> to "
-                          "!fabric.bits<32>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-}
-
-void addWideCmpPe(ModuleBuilder &module, llvm::StringRef result,
-                  llvm::StringRef lhs, llvm::StringRef rhs) {
-  module.addExactBodyLine(valueName(result) + " =");
-  module.addExactBodyLine("    fabric.pe [spatial] (%lhs = " + valueName(lhs) +
-                          " : !fabric.bits<64>,");
-  module.addExactBodyLine("                         %rhs = " + valueName(rhs) +
-                          " : !fabric.bits<64>)");
-  module.addExactBodyLine("        -> !fabric.bits<64> {");
-  module.addExactBodyLine("      fabric.fu(%a = %lhs : !fabric.bits<64>,");
-  module.addExactBodyLine("                %b = %rhs : !fabric.bits<64>) "
-                          "-> !fabric.bits<64> {");
-  module.addExactBodyLine(
-      "        %pred = fabric.op [@arith.cmpi, @llvm.icmp] (%a, %b)");
-  module.addExactBodyLine(
-      "            {hw_params = [{predicate = [\"eq\", \"ne\", \"slt\", "
-      "\"sle\", \"sgt\", \"sge\", \"ult\", \"ule\", \"ugt\", \"uge\"]}]}");
-  module.addExactBodyLine(
-      "            : (!fabric.bits<64>, !fabric.bits<64>) -> "
-      "!fabric.bits<1>");
-  module.addExactBodyLine("        fabric.yield %pred : !fabric.bits<1> to "
-                          "!fabric.bits<64>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-}
-
-void addFloatCmpPe(ModuleBuilder &module, llvm::StringRef result,
-                   llvm::StringRef lhs, llvm::StringRef rhs) {
-  module.addExactBodyLine(valueName(result) + " =");
-  module.addExactBodyLine("    fabric.pe [spatial] (%lhs = " + valueName(lhs) +
-                          " : !fabric.bits<32>,");
-  module.addExactBodyLine("                         %rhs = " + valueName(rhs) +
-                          " : !fabric.bits<32>)");
-  module.addExactBodyLine("        -> !fabric.bits<32> {");
-  module.addExactBodyLine("      fabric.fu(%a = %lhs : !fabric.bits<32>,");
-  module.addExactBodyLine("                %b = %rhs : !fabric.bits<32>) "
-                          "-> !fabric.bits<32> {");
-  module.addExactBodyLine("        %pred = fabric.op [@arith.cmpf] (%a, %b)");
-  module.addExactBodyLine(
-      "            {hw_params = [{predicate = [\"oeq\", \"ogt\", \"oge\", "
-      "\"olt\", \"ole\", \"one\", \"ord\", \"ueq\", \"ugt\", \"uge\", "
-      "\"ult\", \"ule\", \"une\", \"uno\"]}]}");
-  module.addExactBodyLine(
-      "            : (!fabric.bits<32>, !fabric.bits<32>) -> "
-      "!fabric.bits<1>");
-  module.addExactBodyLine("        fabric.yield %pred : !fabric.bits<1> to "
-                          "!fabric.bits<32>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-}
-
-void addControlSyncPe(ModuleBuilder &module, llvm::StringRef prefix,
-                      unsigned inputCount) {
-  PeSpec pe;
-  for (unsigned index = 0; index < inputCount; ++index) {
-    pe.inputs.push_back(
-        {(llvm::Twine("p") + llvm::Twine(index)).str(),
-         (prefix + llvm::Twine("_in") + llvm::Twine(index)).str(),
-         "!fabric.bits<0>", ""});
-    pe.resultNames.push_back(
-        (prefix + llvm::Twine("_done") + llvm::Twine(index)).str());
-    pe.resultTypes.push_back("!fabric.bits<0>");
-  }
-
-  FuSpec fu;
-  FabricOpSpec sync;
-  for (unsigned index = 0; index < inputCount; ++index) {
-    std::string local = (llvm::Twine("f") + llvm::Twine(index)).str();
-    fu.inputs.push_back(
-        {local, pe.inputs[index].localName, "!fabric.bits<0>", ""});
-    fu.resultTypes.push_back("!fabric.bits<0>");
-    std::string result = (llvm::Twine("s") + llvm::Twine(index)).str();
-    sync.results.push_back(result);
-    sync.operands.push_back(local);
-    sync.operandTypes.push_back("!fabric.bits<0>");
-    sync.resultTypes.push_back("!fabric.bits<0>");
-    fu.yieldValues.push_back(result);
-  }
-  sync.opList.push_back("dataflow.sync");
-  sync.swConfigs["bitmask"] = std::string(inputCount, '1');
-  fu.operations.push_back(std::move(sync));
-  pe.fus.push_back(std::move(fu));
-  module.addPe(std::move(pe));
-}
-
-void addSelectPe(ModuleBuilder &module, llvm::StringRef result,
-                 llvm::StringRef pred, llvm::StringRef trueValue,
-                 llvm::StringRef falseValue) {
-  auto addSelectFu = [&](llvm::StringRef opName) {
-    module.addExactBodyLine(
-        "      fabric.fu(%sel = %pred : !fabric.bits<32> to !fabric.bits<1>,");
-    module.addExactBodyLine(
-        "                %a = %true_value : !fabric.bits<32>,");
-    module.addExactBodyLine("                %b = %false_value : "
-                            "!fabric.bits<32>) -> !fabric.bits<32> {");
-    module.addExactBodyLine(std::string("        %value = fabric.op [@") +
-                            opName.str() + "] (%sel, %a, %b)");
-    module.addExactBodyLine("            : (!fabric.bits<1>, !fabric.bits<32>, "
-                            "!fabric.bits<32>) -> !fabric.bits<32>");
-    module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
-    module.addExactBodyLine("      }");
-  };
-
-  module.addExactBodyLine(valueName(result) + " =");
-  module.addExactBodyLine("    fabric.pe [spatial] (%pred = " +
-                          valueName(pred) + " : !fabric.bits<32>,");
-  module.addExactBodyLine("                         %true_value = " +
-                          valueName(trueValue) + " : !fabric.bits<32>,");
-  module.addExactBodyLine("                         %false_value = " +
-                          valueName(falseValue) + " : !fabric.bits<32>)");
-  module.addExactBodyLine("        -> !fabric.bits<32> {");
-  addSelectFu("arith.select");
-  addSelectFu("llvm.select");
-  module.addExactBodyLine("    }");
-}
-
-void addWideSelectPe(ModuleBuilder &module, llvm::StringRef result,
-                     llvm::StringRef pred, llvm::StringRef trueValue,
-                     llvm::StringRef falseValue) {
-  auto addSelectFu = [&](llvm::StringRef opName) {
-    module.addExactBodyLine(
-        "      fabric.fu(%sel = %pred : !fabric.bits<64> to !fabric.bits<1>,");
-    module.addExactBodyLine(
-        "                %a = %true_value : !fabric.bits<64>,");
-    module.addExactBodyLine("                %b = %false_value : "
-                            "!fabric.bits<64>) -> !fabric.bits<64> {");
-    module.addExactBodyLine(std::string("        %value = fabric.op [@") +
-                            opName.str() + "] (%sel, %a, %b)");
-    module.addExactBodyLine("            : (!fabric.bits<1>, !fabric.bits<64>, "
-                            "!fabric.bits<64>) -> !fabric.bits<64>");
-    module.addExactBodyLine("        fabric.yield %value : !fabric.bits<64>");
-    module.addExactBodyLine("      }");
-  };
-
-  module.addExactBodyLine(valueName(result) + " =");
-  module.addExactBodyLine("    fabric.pe [spatial] (%pred = " +
-                          valueName(pred) + " : !fabric.bits<64>,");
-  module.addExactBodyLine("                         %true_value = " +
-                          valueName(trueValue) + " : !fabric.bits<64>,");
-  module.addExactBodyLine("                         %false_value = " +
-                          valueName(falseValue) + " : !fabric.bits<64>)");
-  module.addExactBodyLine("        -> !fabric.bits<64> {");
-  addSelectFu("arith.select");
-  addSelectFu("llvm.select");
-  module.addExactBodyLine("    }");
-}
-
-void addDataMuxPe(ModuleBuilder &module, llvm::StringRef result,
-                  llvm::StringRef pred, llvm::StringRef falseValue,
-                  llvm::StringRef trueValue) {
-  module.addExactBodyLine(valueName(result) + " =");
-  module.addExactBodyLine("    fabric.pe [spatial] (%pred = " +
-                          valueName(pred) + " : !fabric.bits<32>,");
-  module.addExactBodyLine("                         %false_value = " +
-                          valueName(falseValue) + " : !fabric.bits<32>,");
-  module.addExactBodyLine("                         %true_value = " +
-                          valueName(trueValue) + " : !fabric.bits<32>)");
-  module.addExactBodyLine("        -> !fabric.bits<32> {");
-  module.addExactBodyLine(
-      "      fabric.fu(%sel = %pred : !fabric.bits<32> to !fabric.bits<1>,");
-  module.addExactBodyLine(
-      "                %a = %false_value : !fabric.bits<32>,");
-  module.addExactBodyLine("                %b = %true_value : "
-                          "!fabric.bits<32>) -> !fabric.bits<32> {");
-  module.addExactBodyLine("        %value = fabric.op [@dataflow.mux] "
-                          "(%sel, %a, %b)");
-  module.addExactBodyLine("            : (!fabric.bits<1>, !fabric.bits<32>, "
-                          "!fabric.bits<32>) -> !fabric.bits<32>");
-  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-}
-
-void addWideDataMuxPe(ModuleBuilder &module, llvm::StringRef result,
-                      llvm::StringRef pred, llvm::StringRef falseValue,
-                      llvm::StringRef trueValue) {
-  module.addExactBodyLine(valueName(result) + " =");
-  module.addExactBodyLine("    fabric.pe [spatial] (%pred = " +
-                          valueName(pred) + " : !fabric.bits<64>,");
-  module.addExactBodyLine("                         %false_value = " +
-                          valueName(falseValue) + " : !fabric.bits<64>,");
-  module.addExactBodyLine("                         %true_value = " +
-                          valueName(trueValue) + " : !fabric.bits<64>)");
-  module.addExactBodyLine("        -> !fabric.bits<64> {");
-  module.addExactBodyLine(
-      "      fabric.fu(%sel = %pred : !fabric.bits<64> to !fabric.bits<1>,");
-  module.addExactBodyLine(
-      "                %a = %false_value : !fabric.bits<64>,");
-  module.addExactBodyLine("                %b = %true_value : "
-                          "!fabric.bits<64>) -> !fabric.bits<64> {");
-  module.addExactBodyLine("        %value = fabric.op [@dataflow.mux] "
-                          "(%sel, %a, %b)");
-  module.addExactBodyLine("            : (!fabric.bits<1>, !fabric.bits<64>, "
-                          "!fabric.bits<64>) -> !fabric.bits<64>");
-  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<64>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-}
-
-void addDataDemuxPe(ModuleBuilder &module, llvm::StringRef falseResult,
-                    llvm::StringRef trueResult, llvm::StringRef pred,
-                    llvm::StringRef value) {
-  module.addExactBodyLine(valueName(falseResult) + ", " +
-                          valueName(trueResult) + " =");
-  module.addExactBodyLine("    fabric.pe [spatial] (%pred = " +
-                          valueName(pred) + " : !fabric.bits<32>,");
-  module.addExactBodyLine("                         %value = " +
-                          valueName(value) + " : !fabric.bits<32>)");
-  module.addExactBodyLine("        -> (!fabric.bits<32>, !fabric.bits<32>) {");
-  module.addExactBodyLine(
-      "      fabric.fu(%sel = %pred : !fabric.bits<32> to !fabric.bits<1>,");
-  module.addExactBodyLine(
-      "                %data = %value : !fabric.bits<32>)");
-  module.addExactBodyLine("          -> (!fabric.bits<32>, !fabric.bits<32>) {");
-  module.addExactBodyLine("        %false_lane, %true_lane = "
-                          "fabric.op [@dataflow.demux] (%sel, %data)");
-  module.addExactBodyLine("            : (!fabric.bits<1>, !fabric.bits<32>) "
-                          "-> (!fabric.bits<32>, !fabric.bits<32>)");
-  module.addExactBodyLine("        fabric.yield %false_lane, %true_lane : "
-                          "!fabric.bits<32>, !fabric.bits<32>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-}
-
-void addControlDemuxPe(ModuleBuilder &module, llvm::StringRef falseResult,
-                       llvm::StringRef trueResult, llvm::StringRef pred,
-                       llvm::StringRef value) {
-  module.addExactBodyLine(valueName(falseResult) + ", " +
-                          valueName(trueResult) + " =");
-  module.addExactBodyLine("    fabric.pe [spatial] (%pred = " +
-                          valueName(pred) + " : !fabric.bits<32>,");
-  module.addExactBodyLine("                         %value = " +
-                          valueName(value) +
-                          " : !fabric.bits<0> to !fabric.bits<32>)");
-  module.addExactBodyLine("        -> (!fabric.bits<32>, !fabric.bits<32>) {");
-  module.addExactBodyLine(
-      "      fabric.fu(%sel = %pred : !fabric.bits<32> to !fabric.bits<1>,");
-  module.addExactBodyLine(
-      "                %data = %value : !fabric.bits<32> to !fabric.bits<0>)");
-  module.addExactBodyLine("          -> (!fabric.bits<32>, !fabric.bits<32>) {");
-  module.addExactBodyLine("        %false_lane, %true_lane = "
-                          "fabric.op [@dataflow.demux] (%sel, %data)");
-  module.addExactBodyLine("            : (!fabric.bits<1>, !fabric.bits<0>) "
-                          "-> (!fabric.bits<0>, !fabric.bits<0>)");
-  module.addExactBodyLine("        fabric.yield %false_lane : "
-                          "!fabric.bits<0> to !fabric.bits<32>, "
-                          "%true_lane : !fabric.bits<0> to !fabric.bits<32>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-}
-
-void addMemoryReductionMem(ModuleBuilder &module, unsigned loadCount,
-                           unsigned storeCount) {
-  std::vector<std::string> resultNames;
-  for (unsigned index = 0; index < loadCount; ++index) {
-    resultNames.push_back(numbered("data", index));
-    resultNames.push_back(numbered("done", index));
-  }
-  for (unsigned index = 0; index < storeCount; ++index)
-    resultNames.push_back(numbered("store_done", index));
-
-  std::vector<std::string> loadOperands;
-  for (unsigned index = 0; index < loadCount; ++index) {
-    loadOperands.push_back(numbered("load_addr", index));
-    loadOperands.push_back(numbered("load_ctrl", index));
-  }
-  std::vector<std::string> storeOperands;
-  for (unsigned index = 0; index < storeCount; ++index) {
-    storeOperands.push_back(numbered("store_addr", index));
-    storeOperands.push_back(numbered("store_value", index));
-    storeOperands.push_back(numbered("store_ctrl", index));
-  }
-
-  module.addExactBodyLine(valueListStrings(resultNames) + " =");
-  module.addExactBodyLine("    fabric.mem [spatial] mgr(%mgr) load(" +
-                          valueListStrings(loadOperands) + ")");
-  module.addExactBodyLine("                              store(" +
-                          valueListStrings(storeOperands) + ")");
-  module.addExactBodyLine(
-      "      [{load_group_size = " + std::to_string(loadCount) +
-      " : i32, store_group_size = " + std::to_string(storeCount) + " : i32}]");
-
-  std::string operandTypes = "(memref<?x!fabric.bits<32>>";
-  for (unsigned index = 0; index < loadCount; ++index)
-    operandTypes += ", !fabric.bits<32>, !fabric.bits<0>";
-  for (unsigned index = 0; index < storeCount; ++index)
-    operandTypes += ", !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>";
-  operandTypes += ")";
-  module.addExactBodyLine("      : " + operandTypes);
-
-  std::string resultTypes = "(";
-  bool first = true;
-  auto appendResultType = [&](llvm::StringRef type) {
-    if (!first)
-      resultTypes += ", ";
-    first = false;
-    resultTypes += type;
-  };
-  for (unsigned index = 0; index < loadCount; ++index) {
-    appendResultType("!fabric.bits<32>");
-    appendResultType("!fabric.bits<0>");
-  }
-  for (unsigned index = 0; index < storeCount; ++index)
-    appendResultType("!fabric.bits<0>");
-  resultTypes += ")";
-  module.addExactBodyLine("      -> " + resultTypes);
-}
-
-ModuleBuilder buildChain1DAdg() {
-  ModuleBuilder module =
-      makeTopologyMatrixModule("matrix_chain1d_adg", false,
-                               {{"mem", 0, 0},
-                                {"p0", 1, 0},
-                                {"s0", 2, 0},
-                                {"p1", 3, 0},
-                                {"p2", 4, 0}});
-  addSpatialMemLoad(module);
-  addSpatialAddPe(module, "p0", "data", "a");
-  addSpatialSwitch(module, {"s0"}, {"p0", "b"}, {"11"});
-  addSpatialAddPe(module, "p1", "s0", "c");
-  addSpatialAddPe(module, "p2", "p1", "d");
-  return module;
-}
-
-ModuleBuilder buildMesh2DAdg() {
-  ModuleBuilder module =
-      makeTopologyMatrixModule("matrix_mesh2d_adg", false,
-                               {{"mem", 0, 0},
-                                {"n00", 1, 0},
-                                {"n01", 2, 0},
-                                {"n10", 1, 1},
-                                {"n11", 2, 1}});
-  addSpatialMemLoad(module);
-  addSpatialAddPe(module, "n00", "data", "a");
-  addSpatialAddPe(module, "n01", "data", "b");
-  addSpatialSwitch(module, {"east", "south"}, {"n00", "n01"}, {"11", "11"});
-  addSpatialAddPe(module, "n10", "east", "c");
-  addSpatialAddPe(module, "n11", "south", "n10");
-  return module;
-}
-
-ModuleBuilder buildTorusEdgeAdg() {
-  ModuleBuilder module =
-      makeTopologyMatrixModule("matrix_torus_edge_adg", false,
-                               {{"mem", 0, 0},
-                                {"n00", 1, 0},
-                                {"n01", 2, 0},
-                                {"n10", 1, 1},
-                                {"n11", 2, 1},
-                                {"wrap_north", 1, -1},
-                                {"wrap_west", 0, 1}});
-  addSpatialMemLoad(module);
-  addSpatialAddPe(module, "n00", "data", "a");
-  addSpatialAddPe(module, "n01", "data", "b");
-  addSpatialSwitch(module, {"east", "south"}, {"n00", "n01", "c"},
-                   {"110", "101"});
-  addSpatialAddPe(module, "n10", "east", "south");
-  addSpatialSwitch(module, {"wrap_north", "wrap_west"}, {"n10", "n00", "d"},
-                   {"110", "101"});
-  addSpatialAddPe(module, "n11", "wrap_north", "wrap_west");
-  return module;
-}
-
-ModuleBuilder buildSystolicArrayAdg() {
-  ModuleBuilder module =
-      makeTopologyMatrixModule("matrix_systolic_array_adg", false,
-                               {{"mem", 0, 0},
-                                {"broadcast", 1, 0},
-                                {"cell0", 2, 0},
-                                {"cell1", 3, 0},
-                                {"cell2", 4, 0}});
-  addSpatialMemLoad(module);
-  addSpatialSwitch(module, {"broadcast"}, {"data", "a", "b"}, {"111"});
-  addSpatialAddPe(module, "cell0", "broadcast", "c", "arith.mulf");
-  addSpatialAddPe(module, "cell1", "cell0", "d", "arith.addf");
-  addSpatialAddPe(module, "cell2", "cell1", "broadcast", "arith.addf");
-  return module;
-}
-
-ModuleBuilder buildClusteredArrayAdg() {
-  ModuleBuilder module =
-      makeTopologyMatrixModule("matrix_clustered_array_adg", false,
-                               {{"mem", 0, 0},
-                                {"c0a", 1, 0},
-                                {"c0b", 1, 1},
-                                {"cluster0", 2, 0},
-                                {"c1a", 3, 0},
-                                {"c1b", 3, 1},
-                                {"cluster1", 4, 0},
-                                {"out", 5, 0}});
-  addSpatialMemLoad(module);
-  addSpatialAddPe(module, "c0a", "data", "a");
-  addSpatialAddPe(module, "c0b", "data", "b");
-  addSpatialSwitch(module, {"cluster0"}, {"c0a", "c0b"}, {"11"});
-  addSpatialAddPe(module, "c1a", "c", "d");
-  addSpatialAddPe(module, "c1b", "cluster0", "c1a");
-  addSpatialSwitch(module, {"cluster1"}, {"c1a", "c1b"}, {"11"});
-  addSpatialAddPe(module, "out", "cluster0", "cluster1");
-  return module;
-}
-
-ModuleBuilder buildFoldedRingAdg() {
-  ModuleBuilder module =
-      makeTopologyMatrixModule("matrix_folded_ring_adg", false,
-                               {{"mem", 0, 0},
-                                {"n0", 1, 0},
-                                {"n1", 2, 0},
-                                {"n2", 2, 1},
-                                {"n3", 1, 1},
-                                {"wrap", 0, 1}});
-  addSpatialMemLoad(module);
-  addSpatialAddPe(module, "n0", "data", "a");
-  addSpatialAddPe(module, "n1", "n0", "b");
-  addSpatialAddPe(module, "n2", "n1", "c");
-  addSpatialSwitch(module, {"wrap", "forward"}, {"n2", "n0", "d"},
-                   {"110", "101"});
-  addSpatialAddPe(module, "n3", "wrap", "forward");
-  return module;
-}
-
-ModuleBuilder buildMeshDiagonalAdg() {
-  ModuleBuilder module =
-      makeTopologyMatrixModule("matrix_mesh_diagonal_adg", false,
-                               {{"mem", 0, 0},
-                                {"n00", 1, 0},
-                                {"n01", 2, 0},
-                                {"n10", 1, 1},
-                                {"n11", 2, 1},
-                                {"diag", 2, 2}});
-  addSpatialMemLoad(module);
-  addSpatialAddPe(module, "n00", "data", "a");
-  addSpatialAddPe(module, "n01", "data", "b");
-  addSpatialAddPe(module, "n10", "c", "d");
-  addSpatialSwitch(module, {"east", "south", "diag"}, {"n00", "n01", "n10"},
-                   {"110", "101", "011"});
-  addSpatialAddPe(module, "n11", "diag", "south");
-  return module;
-}
-
-ModuleBuilder buildMultiLanePipelineAdg() {
-  ModuleBuilder module =
-      makeTopologyMatrixModule("matrix_multi_lane_pipeline_adg", false,
-                               {{"mem", 0, 0},
-                                {"lane0_in", 1, 0},
-                                {"lane1_in", 1, 1},
-                                {"lane0_stage0", 2, 0},
-                                {"lane1_stage0", 2, 1},
-                                {"lane0_stage1", 3, 0},
-                                {"lane1_stage1", 3, 1},
-                                {"merged", 4, 0},
-                                {"out", 5, 0}});
-  addSpatialMemLoad(module);
-  addSpatialSwitch(module, {"lane0_in", "lane1_in"}, {"data", "a", "b"},
-                   {"110", "101"});
-  addSpatialAddPe(module, "lane0_stage0", "lane0_in", "c");
-  addSpatialAddPe(module, "lane1_stage0", "lane1_in", "d");
-  addSpatialAddPe(module, "lane0_stage1", "lane0_stage0", "lane1_stage0");
-  addSpatialAddPe(module, "lane1_stage1", "lane1_stage0", "lane0_stage0");
-  addSpatialSwitch(module, {"merged"}, {"lane0_stage1", "lane1_stage1"},
-                   {"11"});
-  addSpatialAddPe(module, "out", "merged", "data");
-  return module;
-}
-
-ModuleBuilder buildReductionTreeAdg() {
-  ModuleBuilder module = makeTopologyMatrixModule("matrix_reduction_tree_adg");
-  addSpatialMemLoad(module);
-  addSpatialAddPe(module, "leaf0", "data", "a");
-  addSpatialAddPe(module, "leaf1", "b", "c");
-  addSpatialSwitch(module, {"tree0", "tree1"}, {"leaf0", "leaf1"},
-                   {"10", "01"});
-  addSpatialAddPe(module, "root", "tree0", "tree1");
-  return module;
-}
-
-ModuleBuilder buildCrossCoupledSwitchAdg() {
-  ModuleBuilder module =
-      makeTopologyMatrixModule("matrix_cross_coupled_switch_adg");
-  addSpatialMemLoad(module);
-  addSpatialAddPe(module, "left", "data", "a");
-  addSpatialAddPe(module, "right", "b", "c");
-  addSpatialSwitch(module, {"x0", "x1"}, {"left", "right"}, {"01", "10"});
-  addSpatialSwitch(module, {"x2", "x3"}, {"x0", "x1", "d"}, {"111", "111"});
-  addSpatialAddPe(module, "merged", "x2", "x3");
-  return module;
-}
-
-ModuleBuilder buildDiamondBypassAdg() {
-  ModuleBuilder module = makeTopologyMatrixModule("matrix_diamond_bypass_adg");
-  addSpatialMemLoad(module);
-  addSpatialAddPe(module, "entry", "data", "a");
-  addSpatialAddPe(module, "upper", "entry", "b");
-  addSpatialAddPe(module, "lower", "entry", "c");
-  addSpatialSwitch(module, {"join", "bypass"}, {"upper", "lower", "entry"},
-                   {"110", "001"});
-  addSpatialAddPe(module, "exit", "join", "bypass");
-  return module;
-}
-
-ModuleBuilder buildMemoryFanoutAdg() {
-  ModuleBuilder module = makeTopologyMatrixModule("matrix_memory_fanout_adg");
-  addSpatialMemLoad(module);
-  addSpatialSwitch(module, {"data_lane0", "data_lane1", "data_lane2"},
-                   {"data", "a", "b"}, {"111", "101", "110"});
-  addSpatialAddPe(module, "lane0", "data_lane0", "c");
-  addSpatialAddPe(module, "lane1", "data_lane1", "d");
-  addSpatialAddPe(module, "lane2", "data_lane2", "lane0");
-  addSpatialSwitch(module, {"combined"}, {"lane0", "lane1", "lane2"}, {"111"});
-  addSpatialAddPe(module, "out", "combined", "data");
-  return module;
-}
-
-ModuleBuilder buildMixedTemporalBridgeAdg() {
-  ModuleBuilder module =
-      makeTopologyMatrixModule("matrix_mixed_temporal_bridge_adg", true);
-  TemporalPeConfig temporal;
-  temporal.tagWidth = 4;
-  temporal.numInstruction = 3;
-  temporal.fuConfigMode = "per_fu_config";
-  temporal.operandBufferMode = "per_input_port";
-  temporal.operandBufferSize = 4;
-  module.addPe(makeMinimalAddPe(Schedule::Temporal, "lhs_t", "rhs_t",
-                                "!fabric.bits_tag<32, 4>", "!fabric.bits<32>",
-                                std::move(temporal)));
-  addSpatialMemLoad(module);
-  addSpatialAddPe(module, "spatial0", "data", "a");
-  module.addExactBodyLine(
-      "%tagged = fabric.boundary [s2t] %spatial0, %tag : "
-      "(!fabric.bits<32>, !fabric.bits<4>) -> !fabric.bits_tag<32, 4>");
-  module.addExactBodyLine(
-      "%queued = fabric.fifo %tagged [max_depth = 4, bypassable = true] : "
-      "!fabric.bits_tag<32, 4>");
-  module.addExactBodyLine("%untagged = fabric.boundary [t2s] %queued : "
-                          "!fabric.bits_tag<32, 4> -> !fabric.bits<32>");
-  addSpatialSwitch(module, {"bridge_out"}, {"untagged", "b", "c"}, {"111"});
-  addSpatialAddPe(module, "spatial1", "bridge_out", "d");
-  return module;
-}
-
-ModuleBuilder buildSparseLongLinkAdg() {
-  ModuleBuilder module =
-      makeTopologyMatrixModule("matrix_sparse_long_link_adg");
-  addSpatialMemLoad(module);
-  addSpatialAddPe(module, "near0", "data", "a");
-  addSpatialAddPe(module, "near1", "b", "c");
-  addSpatialAddPe(module, "far0", "near1", "d");
-  addSpatialSwitch(module, {"long0", "bypass"}, {"near0", "far0", "data"},
-                   {"101", "010"});
-  addSpatialAddPe(module, "far1", "long0", "bypass");
-  return module;
-}
-
-ModuleBuilder buildHeterogeneousIslandsAdg() {
-  ModuleBuilder module =
-      makeTopologyMatrixModule("matrix_heterogeneous_islands_adg", true);
-  TemporalPeConfig temporal;
-  temporal.tagWidth = 4;
-  temporal.numInstruction = 2;
-  temporal.fuConfigMode = "per_fu_config";
-  temporal.operandBufferMode = "per_input_port";
-  temporal.operandBufferSize = 2;
-  module.addPe(makeMinimalAddPe(Schedule::Temporal, "lhs_t", "rhs_t",
-                                "!fabric.bits_tag<32, 4>", "!fabric.bits<32>",
-                                std::move(temporal)));
-  addSpatialMemLoad(module);
-  addSpatialAddPe(module, "int_island", "data", "a", "arith.addi");
-  addSpatialAddPe(module, "float_island", "b", "c", "arith.mulf");
-  addSpatialSwitch(module, {"island_mux"}, {"int_island", "float_island", "d"},
-                   {"111"});
-  addSpatialAddPe(module, "bridge", "island_mux", "int_island");
-  return module;
-}
-
-SystemBuilder buildDualSpatialSharedMemorySocAdg() {
-  SystemBuilder system("system_dual_spatial_shared_memory_soc", "sequential");
-  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
-                               axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc1", "shared_vector_alu_adg", "rv32imc",
-                               axiManagerPort("mem"));
-
-  std::vector<std::string> dramPorts;
-  appendPorts(dramPorts, axiSubordinatePort("host0"));
-  appendPorts(dramPorts, axiSubordinatePort("acc0"));
-  appendPorts(dramPorts, axiSubordinatePort("acc1"));
-  system.addMemory("dram0", 2 * 1024 * 1024, std::move(dramPorts));
-
-  connectAxiMemoryPort(system, "host0", "mem", "dram0", "host0");
-  connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
-  connectAxiMemoryPort(system, "acc1", "mem", "dram0", "acc1");
-  return system;
-}
-
-SystemBuilder buildCachedDualAccelSocAdg() {
-  SystemBuilder system("system_cached_dual_accel_soc", "release_acquire");
-  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
-                               axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc1", "shared_vector_alu_adg", "rv32imc",
-                               axiManagerPort("mem"));
-
-  std::vector<std::string> hostCachePorts;
-  appendPorts(hostCachePorts, axiSubordinatePort("host"));
-  appendPorts(hostCachePorts, axiManagerPort("mem"));
-  system.addCache("l1d0", 64, 32 * 1024, std::move(hostCachePorts));
-
-  std::vector<std::string> accCachePorts;
-  appendPorts(accCachePorts, axiSubordinatePort("acc"));
-  appendPorts(accCachePorts, axiManagerPort("mem"));
-  system.addCache("acc_l1d0", 64, 16 * 1024, std::move(accCachePorts));
-
-  std::vector<std::string> dramPorts;
-  appendPorts(dramPorts, axiSubordinatePort("host_cache"));
-  appendPorts(dramPorts, axiSubordinatePort("acc_cache"));
-  appendPorts(dramPorts, axiSubordinatePort("acc1"));
-  system.addMemory("dram0", 4 * 1024 * 1024, std::move(dramPorts));
-
-  connectAxiMemoryPort(system, "host0", "mem", "l1d0", "host");
-  connectAxiMemoryPort(system, "l1d0", "mem", "dram0", "host_cache");
-  connectAxiMemoryPort(system, "acc0", "mem", "acc_l1d0", "acc");
-  connectAxiMemoryPort(system, "acc_l1d0", "mem", "dram0", "acc_cache");
-  connectAxiMemoryPort(system, "acc1", "mem", "dram0", "acc1");
-  return system;
-}
-
-SystemBuilder buildDmaScratchpadSocAdg() {
-  SystemBuilder system("system_dma_scratchpad_soc", "tso");
-  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
-                               axiManagerPort("mem"));
-
-  std::vector<std::string> dmaPorts;
-  appendPorts(dmaPorts, axiSubordinatePort("ctrl"));
-  appendPorts(dmaPorts, axiManagerPort("mem"));
-  system.addDmaEngine("dma0", 8, std::move(dmaPorts));
-
-  std::vector<std::string> scratchPorts;
-  appendPorts(scratchPorts, axiSubordinatePort("acc0"));
-  appendPorts(scratchPorts, axiSubordinatePort("dma0"));
-  system.addMemory("scratch0", 256 * 1024, std::move(scratchPorts));
-
-  connectAxiMemoryPort(system, "host0", "mem", "dma0", "ctrl");
-  connectAxiMemoryPort(system, "dma0", "mem", "scratch0", "dma0");
-  connectAxiMemoryPort(system, "acc0", "mem", "scratch0", "acc0");
-  return system;
-}
-
-SystemBuilder buildFixedAndSpatialSocAdg() {
-  SystemBuilder system("system_fixed_and_spatial_soc", "sequential");
-  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
-                               axiManagerPort("mem"));
-  system.addFixedAccelerator("crypto0", "xor_block", axiManagerPort("mem"));
-
-  std::vector<std::string> dramPorts;
-  appendPorts(dramPorts, axiSubordinatePort("host0"));
-  appendPorts(dramPorts, axiSubordinatePort("acc0"));
-  appendPorts(dramPorts, axiSubordinatePort("crypto0"));
-  system.addMemory("dram0", 1024 * 1024, std::move(dramPorts));
-
-  connectAxiMemoryPort(system, "host0", "mem", "dram0", "host0");
-  connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
-  connectAxiMemoryPort(system, "crypto0", "mem", "dram0", "crypto0");
-  return system;
-}
-
-SystemBuilder buildTriSpatialSharedMemorySocAdg() {
-  SystemBuilder system("system_tri_spatial_shared_memory_soc", "sequential");
-  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
-                               axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc1", "shared_vector_alu_adg", "rv32imc",
-                               axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc2", "shared_memory_reduction_adg",
-                               "rv32im", axiManagerPort("mem"));
-
-  std::vector<std::string> dramPorts;
-  appendPorts(dramPorts, axiSubordinatePort("host0"));
-  appendPorts(dramPorts, axiSubordinatePort("acc0"));
-  appendPorts(dramPorts, axiSubordinatePort("acc1"));
-  appendPorts(dramPorts, axiSubordinatePort("acc2"));
-  system.addMemory("dram0", 4 * 1024 * 1024, std::move(dramPorts));
-
-  connectAxiMemoryPort(system, "host0", "mem", "dram0", "host0");
-  connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
-  connectAxiMemoryPort(system, "acc1", "mem", "dram0", "acc1");
-  connectAxiMemoryPort(system, "acc2", "mem", "dram0", "acc2");
-  return system;
-}
-
-SystemBuilder buildDualHostSharedMemorySocAdg() {
-  SystemBuilder system("system_dual_host_shared_memory_soc",
-                       "release_acquire");
-  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
-  system.addHostCore("host1", "rv64gc", axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
-                               axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc1", "shared_vector_alu_adg", "rv32imc",
-                               axiManagerPort("mem"));
-
-  std::vector<std::string> dramPorts;
-  appendPorts(dramPorts, axiSubordinatePort("host0"));
-  appendPorts(dramPorts, axiSubordinatePort("host1"));
-  appendPorts(dramPorts, axiSubordinatePort("acc0"));
-  appendPorts(dramPorts, axiSubordinatePort("acc1"));
-  system.addMemory("dram0", 8 * 1024 * 1024, std::move(dramPorts));
-
-  connectAxiMemoryPort(system, "host0", "mem", "dram0", "host0");
-  connectAxiMemoryPort(system, "host1", "mem", "dram0", "host1");
-  connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
-  connectAxiMemoryPort(system, "acc1", "mem", "dram0", "acc1");
-  return system;
-}
-
-SystemBuilder buildPrivateScratchpadPairSocAdg() {
-  SystemBuilder system("system_private_scratchpad_pair_soc", "sequential");
-  std::vector<std::string> hostPorts;
-  appendPorts(hostPorts, axiManagerPort("mem0"));
-  appendPorts(hostPorts, axiManagerPort("mem1"));
-  system.addHostCore("host0", "rv64gc", std::move(hostPorts));
-  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
-                               axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc1", "shared_vector_alu_adg", "rv32imc",
-                               axiManagerPort("mem"));
-
-  std::vector<std::string> scratch0Ports;
-  appendPorts(scratch0Ports, axiSubordinatePort("host"));
-  appendPorts(scratch0Ports, axiSubordinatePort("acc0"));
-  system.addMemory("scratch0", 256 * 1024, std::move(scratch0Ports));
-
-  std::vector<std::string> scratch1Ports;
-  appendPorts(scratch1Ports, axiSubordinatePort("host"));
-  appendPorts(scratch1Ports, axiSubordinatePort("acc1"));
-  system.addMemory("scratch1", 256 * 1024, std::move(scratch1Ports));
-
-  connectAxiMemoryPort(system, "host0", "mem0", "scratch0", "host");
-  connectAxiMemoryPort(system, "host0", "mem1", "scratch1", "host");
-  connectAxiMemoryPort(system, "acc0", "mem", "scratch0", "acc0");
-  connectAxiMemoryPort(system, "acc1", "mem", "scratch1", "acc1");
-  return system;
-}
-
-SystemBuilder buildHostCacheDualMemorySocAdg() {
-  SystemBuilder system("system_host_cache_dual_memory_soc",
-                       "release_acquire");
-  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
-                               axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc1", "shared_vector_alu_adg", "rv32imc",
-                               axiManagerPort("mem"));
-
-  std::vector<std::string> cachePorts;
-  appendPorts(cachePorts, axiSubordinatePort("host"));
-  appendPorts(cachePorts, axiManagerPort("mem0"));
-  appendPorts(cachePorts, axiManagerPort("mem1"));
-  system.addCache("l1d0", 64, 64 * 1024, std::move(cachePorts));
-
-  std::vector<std::string> dram0Ports;
-  appendPorts(dram0Ports, axiSubordinatePort("cache"));
-  appendPorts(dram0Ports, axiSubordinatePort("acc0"));
-  system.addMemory("dram0", 4 * 1024 * 1024, std::move(dram0Ports));
-
-  std::vector<std::string> dram1Ports;
-  appendPorts(dram1Ports, axiSubordinatePort("cache"));
-  appendPorts(dram1Ports, axiSubordinatePort("acc1"));
-  system.addMemory("dram1", 4 * 1024 * 1024, std::move(dram1Ports));
-
-  connectAxiMemoryPort(system, "host0", "mem", "l1d0", "host");
-  connectAxiMemoryPort(system, "l1d0", "mem0", "dram0", "cache");
-  connectAxiMemoryPort(system, "l1d0", "mem1", "dram1", "cache");
-  connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
-  connectAxiMemoryPort(system, "acc1", "mem", "dram1", "acc1");
-  return system;
-}
-
-SystemBuilder buildDmaDualMemorySocAdg() {
-  SystemBuilder system("system_dma_dual_memory_soc", "tso");
-  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
-                               axiManagerPort("mem"));
-
-  std::vector<std::string> dmaPorts;
-  appendPorts(dmaPorts, axiSubordinatePort("ctrl"));
-  appendPorts(dmaPorts, axiManagerPort("src"));
-  appendPorts(dmaPorts, axiManagerPort("dst"));
-  system.addDmaEngine("dma0", 16, std::move(dmaPorts));
-
-  std::vector<std::string> srcPorts;
-  appendPorts(srcPorts, axiSubordinatePort("dma0"));
-  system.addMemory("src_mem", 1024 * 1024, std::move(srcPorts));
-
-  std::vector<std::string> dstPorts;
-  appendPorts(dstPorts, axiSubordinatePort("dma0"));
-  appendPorts(dstPorts, axiSubordinatePort("acc0"));
-  system.addMemory("dst_mem", 1024 * 1024, std::move(dstPorts));
-
-  connectAxiMemoryPort(system, "host0", "mem", "dma0", "ctrl");
-  connectAxiMemoryPort(system, "dma0", "src", "src_mem", "dma0");
-  connectAxiMemoryPort(system, "dma0", "dst", "dst_mem", "dma0");
-  connectAxiMemoryPort(system, "acc0", "mem", "dst_mem", "acc0");
-  return system;
-}
-
-SystemBuilder buildCachedAcceleratorClusterSocAdg() {
-  SystemBuilder system("system_cached_accelerator_cluster_soc",
-                       "release_acquire");
-  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
-                               axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc1", "shared_vector_alu_adg", "rv32imc",
-                               axiManagerPort("mem"));
-
-  std::vector<std::string> hostCachePorts;
-  appendPorts(hostCachePorts, axiSubordinatePort("host"));
-  appendPorts(hostCachePorts, axiManagerPort("mem"));
-  system.addCache("l1d0", 64, 32 * 1024, std::move(hostCachePorts));
-
-  std::vector<std::string> acc0CachePorts;
-  appendPorts(acc0CachePorts, axiSubordinatePort("acc"));
-  appendPorts(acc0CachePorts, axiManagerPort("mem"));
-  system.addCache("acc_l1d0", 64, 16 * 1024, std::move(acc0CachePorts));
-
-  std::vector<std::string> acc1CachePorts;
-  appendPorts(acc1CachePorts, axiSubordinatePort("acc"));
-  appendPorts(acc1CachePorts, axiManagerPort("mem"));
-  system.addCache("acc_l1d1", 64, 16 * 1024, std::move(acc1CachePorts));
-
-  std::vector<std::string> dramPorts;
-  appendPorts(dramPorts, axiSubordinatePort("host_cache"));
-  appendPorts(dramPorts, axiSubordinatePort("acc0_cache"));
-  appendPorts(dramPorts, axiSubordinatePort("acc1_cache"));
-  system.addMemory("dram0", 8 * 1024 * 1024, std::move(dramPorts));
-
-  connectAxiMemoryPort(system, "host0", "mem", "l1d0", "host");
-  connectAxiMemoryPort(system, "l1d0", "mem", "dram0", "host_cache");
-  connectAxiMemoryPort(system, "acc0", "mem", "acc_l1d0", "acc");
-  connectAxiMemoryPort(system, "acc_l1d0", "mem", "dram0", "acc0_cache");
-  connectAxiMemoryPort(system, "acc1", "mem", "acc_l1d1", "acc");
-  connectAxiMemoryPort(system, "acc_l1d1", "mem", "dram0", "acc1_cache");
-  return system;
-}
-
-SystemBuilder buildMixedFixedSpatialPipelineSocAdg() {
-  SystemBuilder system("system_mixed_fixed_spatial_pipeline_soc",
-                       "sequential");
-  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
-                               axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc1", "shared_vector_alu_adg", "rv32imc",
-                               axiManagerPort("mem"));
-  system.addFixedAccelerator("fft0", "fft", axiManagerPort("mem"));
-  system.addFixedAccelerator("crypto0", "xor_block", axiManagerPort("mem"));
-
-  std::vector<std::string> dramPorts;
-  appendPorts(dramPorts, axiSubordinatePort("host0"));
-  appendPorts(dramPorts, axiSubordinatePort("acc0"));
-  appendPorts(dramPorts, axiSubordinatePort("acc1"));
-  appendPorts(dramPorts, axiSubordinatePort("fft0"));
-  appendPorts(dramPorts, axiSubordinatePort("crypto0"));
-  system.addMemory("dram0", 4 * 1024 * 1024, std::move(dramPorts));
-
-  connectAxiMemoryPort(system, "host0", "mem", "dram0", "host0");
-  connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
-  connectAxiMemoryPort(system, "acc1", "mem", "dram0", "acc1");
-  connectAxiMemoryPort(system, "fft0", "mem", "dram0", "fft0");
-  connectAxiMemoryPort(system, "crypto0", "mem", "dram0", "crypto0");
-  return system;
-}
-
-SystemBuilder buildSignalQuantizedPairSocAdg() {
-  SystemBuilder system("system_signal_quantized_pair_soc", "sequential");
-  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc0", "shared_signal_window_adg", "rv32im",
-                               axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc1", "shared_quantized_window_adg",
-                               "rv32imc", axiManagerPort("mem"));
-
-  std::vector<std::string> dramPorts;
-  appendPorts(dramPorts, axiSubordinatePort("host0"));
-  appendPorts(dramPorts, axiSubordinatePort("acc0"));
-  appendPorts(dramPorts, axiSubordinatePort("acc1"));
-  system.addMemory("dram0", 8 * 1024 * 1024, std::move(dramPorts));
-
-  connectAxiMemoryPort(system, "host0", "mem", "dram0", "host0");
-  connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
-  connectAxiMemoryPort(system, "acc1", "mem", "dram0", "acc1");
-  return system;
-}
-
-llvm::Error printReusableSpatialTemplates(llvm::raw_ostream &os,
-                                          bool includeVectorAlu,
-                                          bool includeMemoryReduction = false,
-                                          bool includeSignalWindow = false,
-                                          bool includeQuantizedWindow = false) {
-  if (llvm::Error err = buildSharedReductionAdg().print(os))
-    return err;
-  if (includeVectorAlu) {
-    os << '\n';
-    if (llvm::Error err = buildSharedVectorAluAdg().print(os))
-      return err;
-  }
-  if (includeMemoryReduction) {
-    os << '\n';
-    if (llvm::Error err = buildSharedMemoryReductionAdg().print(os))
-      return err;
-  }
-  if (includeSignalWindow) {
-    os << '\n';
-    if (llvm::Error err = buildSharedSignalWindowAdg().print(os))
-      return err;
-  }
-  if (includeQuantizedWindow) {
-    os << '\n';
-    if (llvm::Error err = buildSharedQuantizedWindowAdg().print(os))
-      return err;
-  }
-  os << '\n';
-  return llvm::Error::success();
-}
-
-} // namespace
-
-ModuleBuilder loom::adg::buildMinimalSpatialAdg() {
-  ModuleBuilder module("minimal_spatial_adg");
-  addVisualLayout(module, {{"mem", 0, 0}, {"pe", 1, 0}, {"switch", 2, 0}});
-  module.addInput("mgr", "memref<?x!fabric.bits<32>>")
-      .addInput("lhs", "!fabric.bits<32>")
-      .addInput("rhs", "!fabric.bits<32>")
-      .addInput("addr", "!fabric.bits<32>")
-      .addInput("ctrl", "!fabric.bits<0>");
-
-  module.addPe(makeMinimalAddPe(Schedule::Spatial, "!fabric.bits<32>",
-                                "!fabric.bits<32>"));
-
-  module.addSwitch(SwitchSpec{Schedule::Spatial,
-                              {"lhs", "rhs"},
-                              {"!fabric.bits<32>", "!fabric.bits<32>"},
-                              {"11", "11"},
-                              0});
-  module.addMem(MemSpec{Schedule::Spatial, "mgr", {{"addr", "ctrl"}}, {}});
-  return module;
-}
-
-ModuleBuilder loom::adg::buildMinimalTemporalAdg() {
-  ModuleBuilder module("minimal_temporal_adg");
-  addVisualLayout(module, {{"mem", 0, 0}, {"pe", 1, 0}, {"switch", 2, 0}});
-  module.addInput("mgr", "memref<?x!fabric.bits<32>>")
-      .addInput("lhs", "!fabric.bits_tag<32, 4>")
-      .addInput("rhs", "!fabric.bits_tag<32, 4>")
-      .addInput("addr", "!fabric.bits_tag<32, 4>")
-      .addInput("ctrl", "!fabric.bits_tag<0, 4>");
-
-  TemporalPeConfig temporal;
-  temporal.tagWidth = 4;
-  temporal.numInstruction = 1;
-  temporal.fuConfigMode = "per_fu_config";
-  temporal.operandBufferMode = "per_instruction";
-  module.addPe(makeMinimalAddPe(Schedule::Temporal, "!fabric.bits_tag<32, 4>",
-                                "!fabric.bits<32>", std::move(temporal)));
-
-  module.addSwitch(
-      SwitchSpec{Schedule::Temporal,
-                 {"lhs", "rhs"},
-                 {"!fabric.bits_tag<32, 4>", "!fabric.bits_tag<32, 4>"},
-                 {"11", "11"},
-                 1});
-
-  MemSpec mem;
-  mem.schedule = Schedule::Temporal;
-  mem.manager = "mgr";
-  mem.loads = {{"addr", "ctrl"}};
-  mem.temporalTagWidth = 4;
-  mem.temporalAddrTableSize = 1;
-  module.addMem(std::move(mem));
-  return module;
-}
-
-ModuleBuilder loom::adg::buildSharedReductionAdg() {
-  ModuleBuilder module("shared_reduction_adg");
-  module.addInput("mgr", "memref<?x!fabric.bits<32>>")
-      .addInput("i64a", "!fabric.bits<64>")
-      .addInput("i64b", "!fabric.bits<64>")
-      .addInput("i64c", "!fabric.bits<64>")
-      .addInput("i32a", "!fabric.bits<32>")
-      .addInput("i32b", "!fabric.bits<32>")
-      .addInput("i32c", "!fabric.bits<32>")
-      .addInput("i32d", "!fabric.bits<32>")
-      .addInput("ctrl", "!fabric.bits<0>");
-
-  PeSpec streamPe;
-  streamPe.inputs = {{"pa", "i64a", "!fabric.bits<64>", "!fabric.bits<32>"},
-                     {"pb", "i64b", "!fabric.bits<64>", "!fabric.bits<32>"},
-                     {"pc", "i64c", "!fabric.bits<64>", "!fabric.bits<32>"},
-                     {"pd", "stream_sum_lhs", "!fabric.bits<32>", ""},
-                     {"pe", "stream_sum_rhs", "!fabric.bits<32>", ""},
-                     {"pi", "scan_init", "!fabric.bits<32>", ""},
-                     {"pn", "scan_feedback", "!fabric.bits<32>", ""},
-                     {"ps", "scan_scale", "!fabric.bits<32>", ""}};
-  streamPe.resultNames = {"idx", "running", "carried_scan", "reduction_scale",
-                          "fp_gate"};
-  streamPe.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>",
-                          "!fabric.bits<32>", "!fabric.bits<32>",
-                          "!fabric.bits<32>"};
-  FuSpec streamFu;
-  streamFu.inputs = {{"fa", "pa", "!fabric.bits<32>", ""},
-                     {"fb", "pb", "!fabric.bits<32>", ""},
-                     {"fc", "pc", "!fabric.bits<32>", ""},
-                     {"sum_lhs", "pd", "!fabric.bits<32>", ""},
-                     {"sum_rhs", "pe", "!fabric.bits<32>", ""},
-                     {"init", "pi", "!fabric.bits<32>", ""},
-                     {"next", "pn", "!fabric.bits<32>", ""},
-                     {"scale", "ps", "!fabric.bits<32>", ""}};
-  streamFu.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>",
-                          "!fabric.bits<32>", "!fabric.bits<32>",
-                          "!fabric.bits<32>"};
-  streamFu.operations.push_back(
-      FabricOpSpec{{"idx", "rwc"},
-                   {"dataflow.stream"},
-                   {"fa", "fb", "fc"},
-                   {"!fabric.bits<32>", "!fabric.bits<32>", "!fabric.bits<32>"},
-                   {"!fabric.bits<32>", "!fabric.bits<1>"},
-                   {{"cont_cond", {"<", ">"}}, {"step_op", {"+="}}},
-                   {{"cont_cond", "<"}, {"step_op", "+="}}});
-  streamFu.operations.push_back(
-      FabricOpSpec{{"carried"},
-                   {"dataflow.carry"},
-                   {"rwc", "init", "next"},
-                   {"!fabric.bits<1>", "!fabric.bits<32>", "!fabric.bits<32>"},
-                   {"!fabric.bits<32>"},
-                   {},
-                   {}});
-  streamFu.operations.push_back(
-      FabricOpSpec{{"sum"},
-                   {"arith.addi"},
-                   {"sum_lhs", "sum_rhs"},
-                   {"!fabric.bits<32>", "!fabric.bits<32>"},
-                   {"!fabric.bits<32>"},
-                   {},
-                   {}});
-  streamFu.operations.push_back(
-      FabricOpSpec{{"stable_scale"},
-                   {"dataflow.invariant"},
-                   {"rwc", "scale"},
-                   {"!fabric.bits<1>", "!fabric.bits<32>"},
-                   {"!fabric.bits<32>"},
-                   {},
-                   {}});
-  streamFu.yieldValues = {"idx", "sum", "carried", "stable_scale", "rwc"};
-  streamFu.yieldTypes = {"!fabric.bits<32>", "!fabric.bits<32>",
-                         "!fabric.bits<32>", "!fabric.bits<32>",
-                         "!fabric.bits<1>"};
-  streamPe.fus.push_back(std::move(streamFu));
-  module.addPe(std::move(streamPe));
-
-  PeSpec auxStreamPe;
-  auxStreamPe.inputs = {{"pa", "aux_stream_lb", "!fabric.bits<32>", ""},
-                        {"pb", "aux_stream_ub", "!fabric.bits<32>", ""},
-                        {"pc", "aux_stream_step", "!fabric.bits<32>", ""}};
-  auxStreamPe.resultNames = {"aux_idx", "aux_rwc"};
-  auxStreamPe.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
-  FuSpec auxStreamFu;
-  auxStreamFu.inputs = {{"fa", "pa", "!fabric.bits<32>", ""},
-                        {"fb", "pb", "!fabric.bits<32>", ""},
-                        {"fc", "pc", "!fabric.bits<32>", ""}};
-  auxStreamFu.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
-  auxStreamFu.operations.push_back(
-      FabricOpSpec{{"aux_op_idx", "aux_op_rwc"},
-                   {"dataflow.stream"},
-                   {"fa", "fb", "fc"},
-                   {"!fabric.bits<32>", "!fabric.bits<32>", "!fabric.bits<32>"},
-                   {"!fabric.bits<32>", "!fabric.bits<1>"},
-                   {{"cont_cond", {"<", ">"}}, {"step_op", {"+="}}},
-                   {{"cont_cond", "<"}, {"step_op", "+="}}});
-  auxStreamFu.yieldValues = {"aux_op_idx", "aux_op_rwc"};
-  auxStreamFu.yieldTypes = {"!fabric.bits<32>", "!fabric.bits<1>"};
-  auxStreamPe.fus.push_back(std::move(auxStreamFu));
-  module.addPe(std::move(auxStreamPe));
-
-  PeSpec auxGatePe;
-  auxGatePe.inputs = {{"pa", "gate_cond", "!fabric.bits<32>", ""},
-                      {"pb", "gate_value", "!fabric.bits<32>", ""}};
-  auxGatePe.resultNames = {"aux_gate_cond", "aux_active_idx"};
-  auxGatePe.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
-  auto makeGateFu = []() {
-    FuSpec fu;
-    fu.inputs = {{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-                 {"value", "pb", "!fabric.bits<32>", ""}};
-    fu.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
-    fu.operations.push_back(
-        FabricOpSpec{{"after_cond", "after_value"},
-                     {"dataflow.gate"},
-                     {"cond", "value"},
-                     {"!fabric.bits<1>", "!fabric.bits<32>"},
-                     {"!fabric.bits<1>", "!fabric.bits<32>"},
-                     {},
-                     {{"value_kind", "data"}}});
-    fu.yieldValues = {"after_cond", "after_value"};
-    fu.yieldTypes = {"!fabric.bits<1>", "!fabric.bits<32>"};
-    return fu;
-  };
-  auxGatePe.fus.push_back(makeGateFu());
-  auxGatePe.fus.push_back(makeGateFu());
-  auxGatePe.fus.push_back(makeGateFu());
-  auxGatePe.fus.push_back(makeGateFu());
-  module.addPe(std::move(auxGatePe));
-
-  PeSpec absPe;
-  absPe.inputs = {{"pa", "data0", "!fabric.bits<32>", ""}};
-  absPe.resultNames = {"abs_data"};
-  absPe.resultTypes = {"!fabric.bits<32>"};
-  absPe.fus.push_back(FuSpec{{{"value", "pa", "!fabric.bits<32>", ""}},
-                             {"!fabric.bits<32>"},
-                             {FabricOpSpec{{"abs"},
-                                           {"llvm.intr.abs"},
-                                           {"value"},
-                                           {"!fabric.bits<32>"},
-                                           {"!fabric.bits<32>"},
-                                           {},
-                                           {}}},
-                             {"abs"}});
-  absPe.fus.push_back(FuSpec{{{"value", "pa", "!fabric.bits<32>", ""}},
-                             {"!fabric.bits<32>"},
-                             {FabricOpSpec{{"abs"},
-                                           {"llvm.intr.fabs"},
-                                           {"value"},
-                                           {"!fabric.bits<32>"},
-                                           {"!fabric.bits<32>"},
-                                           {},
-                                           {}}},
-                             {"abs"}});
-  module.addPe(std::move(absPe));
-
-  PeSpec squaredPe;
-  squaredPe.inputs = {{"pa", "mul_lhs_input", "!fabric.bits<32>", ""},
-                      {"pb", "mul_rhs_input", "!fabric.bits<32>", ""}};
-  squaredPe.resultNames = {"squared_data"};
-  squaredPe.resultTypes = {"!fabric.bits<32>"};
-  squaredPe.fus.push_back(
-      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-              {"rhs", "pb", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"product"},
-                           {"arith.muli"},
-                           {"lhs", "rhs"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"product"}});
-  module.addPe(std::move(squaredPe));
-
-  auto addFpBinaryPe = [&](std::string resultName, std::string lhsInput,
-                           std::string rhsInput, llvm::StringRef valueName,
-                           llvm::StringRef opName) {
-    PeSpec pe;
-    pe.inputs = {{"pa", std::move(lhsInput), "!fabric.bits<32>", ""},
-                 {"pb", std::move(rhsInput), "!fabric.bits<32>", ""}};
-    pe.resultNames = {std::move(resultName)};
-    pe.resultTypes = {"!fabric.bits<32>"};
-    pe.fus.push_back(
-        FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-                {"rhs", "pb", "!fabric.bits<32>", ""}},
-               {"!fabric.bits<32>"},
-               {FabricOpSpec{{valueName.str()},
-                             {opName.str()},
-                             {"lhs", "rhs"},
-                             {"!fabric.bits<32>", "!fabric.bits<32>"},
-                             {"!fabric.bits<32>"},
-                             {},
-                             {}}},
-               {valueName.str()}});
-    module.addPe(std::move(pe));
-  };
-
-  addFpBinaryPe("fp_running", "fp_lhs", "fp_rhs", "sum", "arith.addf");
-  addFpBinaryPe("fp_running_aux", "fp_lhs_aux", "fp_rhs_aux", "sum",
-                "arith.addf");
-
-  PeSpec fpInvariantPe;
-  fpInvariantPe.inputs = {{"pa", "fp_gate", "!fabric.bits<32>", ""},
-                          {"pb", "fp_invariant_value", "!fabric.bits<32>", ""}};
-  fpInvariantPe.resultNames = {"fp_invariant"};
-  fpInvariantPe.resultTypes = {"!fabric.bits<32>"};
-  fpInvariantPe.fus.push_back(
-      FuSpec{{{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-              {"value", "pb", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"stable"},
-                           {"dataflow.invariant"},
-                           {"cond", "value"},
-                           {"!fabric.bits<1>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"stable"}});
-  module.addPe(std::move(fpInvariantPe));
-
-  auto addInvariantPe = [&](std::string resultName, std::string valueInput,
-                            std::string condInput = "fp_gate") {
-    PeSpec pe;
-    pe.inputs = {{"pa", std::move(condInput), "!fabric.bits<32>", ""},
-                 {"pb", std::move(valueInput), "!fabric.bits<32>", ""}};
-    pe.resultNames = {std::move(resultName)};
-    pe.resultTypes = {"!fabric.bits<32>"};
-    pe.fus.push_back(
-        FuSpec{{{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-                {"value", "pb", "!fabric.bits<32>", ""}},
-               {"!fabric.bits<32>"},
-               {FabricOpSpec{{"stable"},
-                             {"dataflow.invariant"},
-                             {"cond", "value"},
-                             {"!fabric.bits<1>", "!fabric.bits<32>"},
-                             {"!fabric.bits<32>"},
-                             {},
-                             {}}},
-               {"stable"}});
-    module.addPe(std::move(pe));
-  };
-  addInvariantPe("bit_invariant", "i32d");
-  addInvariantPe("bit_invariant_aux0", "i32c");
-  addInvariantPe("aux_invariant2", "bit_invariant_aux1_value",
-                 "aux_invariant_cond");
-  addInvariantPe("bit_invariant_aux1", "bit_invariant_aux1_value");
-  auto addAuxInvariantPe = [&](std::string resultName, std::string valueInput) {
-    PeSpec pe;
-    pe.inputs = {{"pa", "aux_invariant_cond", "!fabric.bits<32>", ""},
-                 {"pb", std::move(valueInput), "!fabric.bits<32>", ""}};
-    pe.resultNames = {std::move(resultName)};
-    pe.resultTypes = {"!fabric.bits<32>"};
-    pe.fus.push_back(
-        FuSpec{{{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-                {"value", "pb", "!fabric.bits<32>", ""}},
-               {"!fabric.bits<32>"},
-               {FabricOpSpec{{"stable"},
-                             {"dataflow.invariant"},
-                             {"cond", "value"},
-                             {"!fabric.bits<1>", "!fabric.bits<32>"},
-                             {"!fabric.bits<32>"},
-                             {},
-                             {}}},
-               {"stable"}});
-    module.addPe(std::move(pe));
-  };
-  addAuxInvariantPe("aux_invariant0", "aux_invariant0_value");
-  addAuxInvariantPe("aux_invariant1", "aux_invariant1_value");
-
-  addFpBinaryPe("fp_diff", "fp_diff_lhs", "fp_diff_rhs", "diff", "arith.subf");
-  addFpBinaryPe("fp_diff_aux", "fp_diff_aux_lhs", "fp_diff_aux_rhs", "diff",
-                "arith.subf");
-
-  PeSpec scaledReductionPe;
-  scaledReductionPe.inputs = {
-      {"pa", "scaled_reduction_lhs", "!fabric.bits<32>", ""},
-      {"pb", "scaled_reduction_rhs", "!fabric.bits<32>", ""}};
-  scaledReductionPe.resultNames = {"scaled_reduction"};
-  scaledReductionPe.resultTypes = {"!fabric.bits<32>"};
-  scaledReductionPe.fus.push_back(
-      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-              {"rhs", "pb", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"product"},
-                           {"arith.mulf"},
-                           {"lhs", "rhs"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"product"}});
-  module.addPe(std::move(scaledReductionPe));
-
-  auto makeCarryFu = []() {
-    return FuSpec{{{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-                   {"init", "pb", "!fabric.bits<32>", ""},
-                   {"next", "pc", "!fabric.bits<32>", ""}},
-                  {"!fabric.bits<32>"},
-                  {FabricOpSpec{{"carried"},
-                                {"dataflow.carry"},
-                                {"cond", "init", "next"},
-                                {"!fabric.bits<1>", "!fabric.bits<32>",
-                                 "!fabric.bits<32>"},
-                                {"!fabric.bits<32>"},
-                                {},
-                                {}}},
-                  {"carried"}};
-  };
-  PeSpec carryPe;
-  carryPe.inputs = {{"pa", "bit_carry_cond", "!fabric.bits<32>", ""},
-                    {"pb", "bit_carry_init", "!fabric.bits<32>", ""},
-                    {"pc", "bit_carry_next", "!fabric.bits<32>", ""}};
-  carryPe.resultNames = {"bit_carry"};
-  carryPe.resultTypes = {"!fabric.bits<32>"};
-  carryPe.fus.push_back(makeCarryFu());
-  carryPe.fus.push_back(makeCarryFu());
-  module.addPe(std::move(carryPe));
-
-  auto makeBinary32Fu = [](std::string resultName,
-                           std::vector<std::string> opList) {
-    std::string yieldName = resultName;
-    return FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-                   {"rhs", "pb", "!fabric.bits<32>", ""}},
-                  {"!fabric.bits<32>"},
-                  {FabricOpSpec{{std::move(resultName)},
-                                std::move(opList),
-                                {"lhs", "rhs"},
-                                {"!fabric.bits<32>", "!fabric.bits<32>"},
-                                {"!fabric.bits<32>"},
-                                {},
-                                {}}},
-                  {std::move(yieldName)}};
-  };
-  auto addBinary32Pe = [&](std::string peResultName, std::string lhsInput,
-                           std::string rhsInput, std::string opResultName,
-                           std::vector<std::string> opList) {
-    PeSpec pe;
-    pe.inputs = {{"pa", std::move(lhsInput), "!fabric.bits<32>", ""},
-                 {"pb", std::move(rhsInput), "!fabric.bits<32>", ""}};
-    pe.resultNames = {std::move(peResultName)};
-    pe.resultTypes = {"!fabric.bits<32>"};
-    pe.fus.push_back(
-        makeBinary32Fu(std::move(opResultName), std::move(opList)));
-    module.addPe(std::move(pe));
-  };
-  addBinary32Pe("int_sum", "int_add_lhs", "int_add_rhs", "sum",
-                {"arith.addi", "arith.subi"});
-  addBinary32Pe("int_product", "int_mul_lhs", "int_mul_rhs", "product",
-                {"arith.muli"});
-  addBinary32Pe("int_product_aux", "int_mul_aux_lhs", "int_mul_aux_rhs",
-                "product", {"arith.muli"});
-  addBinary32Pe("int_div0", "int_div0_lhs", "int_div0_rhs", "quotient",
-                {"arith.divsi"});
-  addBinary32Pe("int_div1", "int_div1_lhs", "int_div1_rhs", "quotient",
-                {"arith.divsi"});
-  addBinary32Pe("int_rem", "int_rem_lhs", "int_rem_rhs", "remainder",
-                {"arith.remsi"});
-  addBinary32Pe("uint_rem", "uint_rem_lhs", "uint_rem_rhs", "remainder",
-                {"arith.divui", "arith.remui"});
-  addBinary32Pe("fp_div", "fp_div_lhs", "fp_div_rhs", "quotient",
-                {"arith.divf", "arith.remf"});
-  auto addConfigurableConstPe = [&](std::string resultName) {
-    PeSpec constPe;
-    constPe.inputs = {{"pa", "ctrl", "!fabric.bits<0>", "!fabric.bits<32>"}};
-    constPe.resultNames = {std::move(resultName)};
-    constPe.resultTypes = {"!fabric.bits<32>"};
-    constPe.fus.push_back(FuSpec{
-        {{"ctrl_in", "pa", "!fabric.bits<32>", "!fabric.bits<0>"}},
-        {"!fabric.bits<32>"},
-        {FabricOpSpec{
-            {"value"},
-            {"dataflow.constant"},
-            {"ctrl_in"},
-            {"!fabric.bits<0>"},
-            {"!fabric.bits<32>"},
-            {{"const_hex_value", {"0x00000000", "0x00000001", "0x00000002"}}},
-            {}}},
-        {"value"}});
-    module.addPe(std::move(constPe));
-  };
-  addConfigurableConstPe("addr_shift_const");
-  addConfigurableConstPe("addr_aux_const");
-  addConfigurableConstPe("addr_bias_const");
-  addConfigurableConstPe("addr_extra_const0");
-  addConfigurableConstPe("addr_extra_const1");
-  addBinary32Pe("logic_shifted", "logic_shift_lhs", "logic_shift_rhs",
-                "shifted", {"arith.shrsi", "arith.shrui"});
-
-  PeSpec addrUnscalePe;
-  addrUnscalePe.inputs = {{"pa", "addr_unscale_lhs", "!fabric.bits<32>", ""},
-                          {"pb", "addr_unscale_rhs", "!fabric.bits<32>", ""}};
-  addrUnscalePe.resultNames = {"addr_unscaled"};
-  addrUnscalePe.resultTypes = {"!fabric.bits<32>"};
-  addrUnscalePe.fus.push_back(
-      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-              {"rhs", "pb", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"shifted"},
-                           {"arith.shrsi", "arith.shrui"},
-                           {"lhs", "rhs"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"shifted"}});
-  module.addPe(std::move(addrUnscalePe));
-  PeSpec addrShiftPe;
-  addrShiftPe.inputs = {{"pa", "addr_shift_lhs", "!fabric.bits<32>", ""},
-                        {"pb", "addr_shift_rhs", "!fabric.bits<32>", ""}};
-  addrShiftPe.resultNames = {"addr_shifted"};
-  addrShiftPe.resultTypes = {"!fabric.bits<32>"};
-  addrShiftPe.fus.push_back(
-      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-              {"rhs", "pb", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"shifted"},
-                           {"arith.shli"},
-                           {"lhs", "rhs"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"shifted"}});
-  module.addPe(std::move(addrShiftPe));
-  PeSpec logicMaskPe;
-  logicMaskPe.inputs = {{"pa", "logic_mask_lhs", "!fabric.bits<32>", ""},
-                        {"pb", "logic_mask_rhs", "!fabric.bits<32>", ""}};
-  logicMaskPe.resultNames = {"logic_masked"};
-  logicMaskPe.resultTypes = {"!fabric.bits<32>"};
-  logicMaskPe.fus.push_back(
-      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-              {"rhs", "pb", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"masked"},
-                           {"arith.andi"},
-                           {"lhs", "rhs"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"masked"}});
-  module.addPe(std::move(logicMaskPe));
-  addBinary32Pe("int_or", "int_or_lhs", "int_or_rhs", "combined",
-                {"arith.ori"});
-  addBinary32Pe("int_xor", "int_xor_lhs", "int_xor_rhs", "combined",
-                {"arith.xori"});
-  PeSpec packedSatPe;
-  packedSatPe.inputs = {{"pa", "packed_sat_lhs", "!fabric.bits<32>", ""},
-                        {"pb", "packed_sat_rhs", "!fabric.bits<32>", ""}};
-  packedSatPe.resultNames = {"packed_sat"};
-  packedSatPe.resultTypes = {"!fabric.bits<32>"};
-  packedSatPe.fus.push_back(FuSpec{
-      {{"lhs", "pa", "!fabric.bits<32>", ""},
-       {"rhs", "pb", "!fabric.bits<32>", ""}},
-      {"!fabric.bits<32>"},
-      {FabricOpSpec{{"packed"},
-                    {"llvm.arm.qadd16", "llvm.arm.sadd16",
-                     "llvm.arm.qsub16", "llvm.arm.qsub8"},
-                    {"lhs", "rhs"},
-                    {"!fabric.bits<32>", "!fabric.bits<32>"},
-                    {"!fabric.bits<32>"},
-                    {},
-                    {}}},
-      {"packed"}});
-  module.addPe(std::move(packedSatPe));
-
-  auto addFmulAddPe = [&](std::string resultName, std::string lhsInput,
-                          std::string rhsInput, std::string accInput) {
-    PeSpec pe;
-    pe.inputs = {{"pa", std::move(lhsInput), "!fabric.bits<32>", ""},
-                 {"pb", std::move(rhsInput), "!fabric.bits<32>", ""},
-                 {"pc", std::move(accInput), "!fabric.bits<32>", ""}};
-    pe.resultNames = {std::move(resultName)};
-    pe.resultTypes = {"!fabric.bits<32>"};
-    pe.fus.push_back(
-        FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-                {"rhs", "pb", "!fabric.bits<32>", ""},
-                {"acc", "pc", "!fabric.bits<32>", ""}},
-               {"!fabric.bits<32>"},
-               {FabricOpSpec{
-                   {"mac"},
-                   {"llvm.intr.fmuladd"},
-                   {"lhs", "rhs", "acc"},
-                   {"!fabric.bits<32>", "!fabric.bits<32>", "!fabric.bits<32>"},
-                   {"!fabric.bits<32>"},
-                   {},
-                   {}}},
-               {"mac"}});
-    module.addPe(std::move(pe));
-  };
-  addFmulAddPe("mac_result", "mac_lhs", "mac_rhs", "mac_acc");
-  addFmulAddPe("mac_result1", "mac1_lhs", "mac1_rhs", "mac1_acc");
-
-  PeSpec unsignedMinMaxPe;
-  unsignedMinMaxPe.inputs = {{"pa", "minmax_lhs", "!fabric.bits<32>", ""},
-                             {"pb", "minmax_rhs", "!fabric.bits<32>", ""}};
-  unsignedMinMaxPe.resultNames = {"unsigned_minmax"};
-  unsignedMinMaxPe.resultTypes = {"!fabric.bits<32>"};
-  unsignedMinMaxPe.fus.push_back(
-      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-              {"rhs", "pb", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"selected"},
-                           {"llvm.intr.umax"},
-                           {"lhs", "rhs"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"selected"}});
-  module.addPe(std::move(unsignedMinMaxPe));
-
-  PeSpec unsignedMinPe;
-  unsignedMinPe.inputs = {{"pa", "minmax_lhs", "!fabric.bits<32>", ""},
-                          {"pb", "minmax_rhs", "!fabric.bits<32>", ""}};
-  unsignedMinPe.resultNames = {"unsigned_min"};
-  unsignedMinPe.resultTypes = {"!fabric.bits<32>"};
-  unsignedMinPe.fus.push_back(
-      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-              {"rhs", "pb", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"selected"},
-                           {"llvm.intr.umin"},
-                           {"lhs", "rhs"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"selected"}});
-  module.addPe(std::move(unsignedMinPe));
-
-  PeSpec signedMinPe;
-  signedMinPe.inputs = {{"pa", "minmax_lhs", "!fabric.bits<32>", ""},
-                        {"pb", "minmax_rhs", "!fabric.bits<32>", ""}};
-  signedMinPe.resultNames = {"signed_min"};
-  signedMinPe.resultTypes = {"!fabric.bits<32>"};
-  signedMinPe.fus.push_back(
-      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-              {"rhs", "pb", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"selected"},
-                           {"llvm.intr.smin"},
-                           {"lhs", "rhs"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"selected"}});
-  module.addPe(std::move(signedMinPe));
-
-  PeSpec signedMaxPe;
-  signedMaxPe.inputs = {{"pa", "minmax_lhs", "!fabric.bits<32>", ""},
-                        {"pb", "minmax_rhs", "!fabric.bits<32>", ""}};
-  signedMaxPe.resultNames = {"signed_max"};
-  signedMaxPe.resultTypes = {"!fabric.bits<32>"};
-  signedMaxPe.fus.push_back(
-      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-              {"rhs", "pb", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"selected"},
-                           {"llvm.intr.smax"},
-                           {"lhs", "rhs"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"selected"}});
-  module.addPe(std::move(signedMaxPe));
-
-  auto makeUnary32YieldFu = [](std::string resultName, std::string opName) {
-    std::string yieldName = resultName;
-    return FuSpec{{{"value", "pa", "!fabric.bits<32>", ""}},
-                  {"!fabric.bits<32>"},
-                  {FabricOpSpec{{std::move(resultName)},
-                                {std::move(opName)},
-                                {"value"},
-                                {"!fabric.bits<32>"},
-                                {"!fabric.bits<32>"},
-                                {},
-                                {}}},
-                  {std::move(yieldName)}};
-  };
-  auto addUnary32YieldPe = [&](std::string resultName, std::string opName,
-                               std::string inputName = "i32a") {
-    std::string peResultName = resultName;
-    PeSpec pe;
-    pe.inputs = {{"pa", std::move(inputName), "!fabric.bits<32>", ""}};
-    pe.resultNames = {std::move(peResultName)};
-    pe.resultTypes = {"!fabric.bits<32>"};
-    pe.fus.push_back(
-        makeUnary32YieldFu(std::move(resultName), std::move(opName)));
-    module.addPe(std::move(pe));
-  };
-
-  PeSpec fshlPe;
-  fshlPe.inputs = {{"pa", "rotate_lhs", "!fabric.bits<32>", ""},
-                   {"pb", "rotate_rhs", "!fabric.bits<32>", ""},
-                   {"pc", "rotate_amount", "!fabric.bits<32>", ""}};
-  fshlPe.resultNames = {"rotated"};
-  fshlPe.resultTypes = {"!fabric.bits<32>"};
-  auto makeFshlFu = []() {
-    return FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-                   {"rhs", "pb", "!fabric.bits<32>", ""},
-                   {"amount", "pc", "!fabric.bits<32>", ""}},
-                  {"!fabric.bits<32>"},
-                  {FabricOpSpec{{"rotated_value"},
-                                {"llvm.intr.fshl"},
-                                {"lhs", "rhs", "amount"},
-                                {"!fabric.bits<32>", "!fabric.bits<32>",
-                                 "!fabric.bits<32>"},
-                                {"!fabric.bits<32>"},
-                                {},
-                                {}}},
-                  {"rotated_value"}};
-  };
-  fshlPe.fus.push_back(makeFshlFu());
-  fshlPe.fus.push_back(makeFshlFu());
-  module.addPe(std::move(fshlPe));
-
-  addUnary32YieldPe("abs", "llvm.intr.abs");
-  addUnary32YieldPe("swapped", "llvm.intr.bswap");
-  addUnary32YieldPe("leading_zero_count", "llvm.intr.ctlz");
-
-  auto addCastBankPe = [&]() {
-    constexpr unsigned kCastLanes = 4;
-    const char *ports[] = {"pa", "pb", "pc", "pd"};
-    PeSpec pe;
-    FuSpec fu;
-    for (unsigned i = 0; i < kCastLanes; ++i) {
-      std::string index = std::to_string(i);
-      std::string value = "value" + index;
-      std::string converted = "converted" + index;
-      pe.inputs.push_back(
-          {ports[i], "cast" + index + "_input", "!fabric.bits<32>", ""});
-      pe.resultNames.push_back("cast" + index + "_result");
-      pe.resultTypes.push_back("!fabric.bits<32>");
-      fu.inputs.push_back({value, ports[i], "!fabric.bits<32>", ""});
-      fu.resultTypes.push_back("!fabric.bits<32>");
-      fu.operations.push_back(
-          FabricOpSpec{{converted},
-                       {"llvm.trunc", "llvm.sext", "llvm.zext"},
-                       {value},
-                       {"!fabric.bits<32>"},
-                       {"!fabric.bits<32>"},
-                       {},
-                       {}});
-      fu.yieldValues.push_back(std::move(converted));
-    }
-    pe.fus.push_back(std::move(fu));
-    module.addPe(std::move(pe));
-  };
-  addCastBankPe();
-  addUnary32YieldPe("int_extui", "arith.extui", "int_extui_input");
-
-  auto addWideExtensionPe = [&](std::string resultName, std::string inputName) {
-    PeSpec pe;
-    pe.inputs = {
-        {"pa", std::move(inputName), "!fabric.bits<32>", "!fabric.bits<64>"}};
-    pe.resultNames = {std::move(resultName)};
-    pe.resultTypes = {"!fabric.bits<64>"};
-    pe.fus.push_back(
-        FuSpec{{{"value", "pa", "!fabric.bits<64>", "!fabric.bits<32>"}},
-               {"!fabric.bits<64>"},
-               {FabricOpSpec{{"wide"},
-                             {"llvm.sext", "llvm.zext"},
-                             {"value"},
-                             {"!fabric.bits<32>"},
-                             {"!fabric.bits<64>"},
-                             {},
-                             {}}},
-               {"wide"}});
-    module.addPe(std::move(pe));
-  };
-  addWideExtensionPe("wide_zext0", "wide_zext0_input");
-  addWideExtensionPe("wide_zext1", "wide_zext1_input");
-
-  auto addWideBinaryPe = [&](std::string peResultName, std::string lhsInput,
-                             std::string rhsInput,
-                             std::vector<std::string> opList) {
-    PeSpec pe;
-    pe.inputs = {{"pa", std::move(lhsInput), "!fabric.bits<64>", ""},
-                 {"pb", std::move(rhsInput), "!fabric.bits<64>", ""}};
-    pe.resultNames = {std::move(peResultName)};
-    pe.resultTypes = {"!fabric.bits<64>"};
-    pe.fus.push_back(
-        FuSpec{{{"lhs", "pa", "!fabric.bits<64>", ""},
-                {"rhs", "pb", "!fabric.bits<64>", ""}},
-               {"!fabric.bits<64>"},
-               {FabricOpSpec{{"value"},
-                             std::move(opList),
-                             {"lhs", "rhs"},
-                             {"!fabric.bits<64>", "!fabric.bits<64>"},
-                             {"!fabric.bits<64>"},
-                             {},
-                             {}}},
-               {"value"}});
-    module.addPe(std::move(pe));
-  };
-  addWideBinaryPe("wide_product", "wide_mul_lhs", "wide_mul_rhs",
-                  {"arith.muli"});
-  addWideBinaryPe("wide_signed_quotient", "wide_div_lhs", "wide_div_rhs",
-                  {"arith.divsi"});
-  addWideBinaryPe("wide_remainder", "wide_rem_lhs", "wide_rem_rhs",
-                  {"arith.divui", "arith.remui"});
-  addWideBinaryPe("wide_sum", "wide_add_lhs", "wide_add_rhs",
-                  {"arith.addi", "arith.subi"});
-  addWideBinaryPe("wide_sum_aux", "wide_add_aux_lhs", "wide_add_aux_rhs",
-                  {"arith.addi", "arith.subi"});
-  addWideBinaryPe("wide_shifted", "wide_shift_lhs", "wide_shift_rhs",
-                  {"arith.shli"});
-
-  auto addWideTruncPe = [&](std::string resultName, std::string inputName) {
-    PeSpec pe;
-    pe.inputs = {{"pa", std::move(inputName), "!fabric.bits<64>", ""}};
-    pe.resultNames = {std::move(resultName)};
-    pe.resultTypes = {"!fabric.bits<64>"};
-    pe.fus.push_back(FuSpec{{{"value", "pa", "!fabric.bits<64>", ""}},
-                            {"!fabric.bits<64>"},
-                            {FabricOpSpec{{"narrow"},
-                                          {"llvm.trunc"},
-                                          {"value"},
-                                          {"!fabric.bits<64>"},
-                                          {"!fabric.bits<32>"},
-                                          {},
-                                          {}}},
-                            {"narrow"},
-                            {"!fabric.bits<32>"}});
-    module.addPe(std::move(pe));
-  };
-  addWideTruncPe("wide_truncated_wide", "wide_trunc_input");
-  addWideTruncPe("wide_truncated_aux_wide", "wide_trunc_aux_input");
-  addWideNarrowingPe(module, "wide_index_cast0", "wide_index_cast0_input",
-                     "arith.index_cast");
-  addWideNarrowingPe(module, "wide_index_cast1", "wide_index_cast1_input",
-                     "arith.index_cast");
-  module.addExactBodyLine(
-      "%wide_truncated = fabric.fifo %wide_truncated_wide "
-      "[max_depth = 1, bypassable = true] {bypassed = true}");
-  module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
-  module.addExactBodyLine(
-      "%wide_truncated_aux = fabric.fifo %wide_truncated_aux_wide "
-      "[max_depth = 1, bypassable = true] {bypassed = true}");
-  module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
-  module.addExactBodyLine(
-      "%wide_index_cast0_narrow = fabric.fifo %wide_index_cast0 "
-      "[max_depth = 1, bypassable = true] {bypassed = true}");
-  module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
-  module.addExactBodyLine(
-      "%wide_index_cast1_narrow = fabric.fifo %wide_index_cast1 "
-      "[max_depth = 1, bypassable = true] {bypassed = true}");
-  module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
-
-  addUnary32YieldPe("fp", "llvm.uitofp");
-  addUnary32YieldPe("fp_negated", "llvm.fneg", "fp_negated_input");
-
-  auto addCmpPe = [&](std::string resultName, std::vector<std::string> opNames,
-                      std::vector<std::string> predicates) {
-    PeSpec pe;
-    pe.inputs = {{"pa", "cmp_lhs", "!fabric.bits<32>", ""},
-                 {"pb", "cmp_rhs", "!fabric.bits<32>", ""}};
-    pe.resultNames = {resultName};
-    pe.resultTypes = {"!fabric.bits<32>"};
-    pe.fus.push_back(
-        FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-                {"rhs", "pb", "!fabric.bits<32>", ""}},
-               {"!fabric.bits<32>"},
-               {FabricOpSpec{{"pred"},
-                             std::move(opNames),
-                             {"lhs", "rhs"},
-                             {"!fabric.bits<32>", "!fabric.bits<32>"},
-                             {"!fabric.bits<1>"},
-                             {{"predicate", std::move(predicates)}},
-                             {}}},
-               {"pred"},
-               {"!fabric.bits<1>"}});
-    module.addPe(std::move(pe));
-  };
-  addCmpPe("cmpf_pred", {"arith.cmpf"}, {"oeq", "ogt", "ugt", "ule", "olt"});
-  std::vector<std::string> integerCmpPredicates = {
-      "eq", "ne", "slt", "sle", "sgt", "sge", "ult", "ule", "ugt", "uge"};
-  addCmpPe("cmpi_pred", {"arith.cmpi", "llvm.icmp"}, integerCmpPredicates);
-  addCmpPe("cmpi_pred_aux", {"arith.cmpi", "llvm.icmp"},
-           std::move(integerCmpPredicates));
-
-  auto addWideCmpPe = [&](std::string resultName, std::string resultType) {
-    PeSpec pe;
-    pe.inputs = {{"pa", "cmp64_lhs", "!fabric.bits<64>", ""},
-                 {"pb", "cmp64_rhs", "!fabric.bits<64>", ""}};
-    pe.resultNames = {std::move(resultName)};
-    pe.resultTypes = {resultType};
-    pe.fus.push_back(
-        FuSpec{{{"lhs", "pa", "!fabric.bits<64>", ""},
-                {"rhs", "pb", "!fabric.bits<64>", ""}},
-               {resultType},
-               {FabricOpSpec{{"pred"},
-                             {"arith.cmpi"},
-                             {"lhs", "rhs"},
-                             {"!fabric.bits<64>", "!fabric.bits<64>"},
-                             {"!fabric.bits<1>"},
-                             {{"predicate",
-                               {"eq", "ne", "slt", "sle", "sgt", "sge",
-                                "ult", "ule", "ugt", "uge"}}},
-                             {}}},
-               {"pred"},
-               {"!fabric.bits<1>"}});
-    module.addPe(std::move(pe));
-  };
-  addWideCmpPe("cmpi64_pred", "!fabric.bits<64>");
-  addWideCmpPe("cmpi64_pred_aux", "!fabric.bits<64>");
-  module.addExactBodyLine(
-      "%cmpi64_pred_aux_narrow = fabric.fifo %cmpi64_pred_aux "
-      "[max_depth = 1, bypassable = true] {bypassed = true}");
-  module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
-
-  PeSpec widePredExtuiPe;
-  widePredExtuiPe.inputs = {{"pa", "cmpi64_pred", "!fabric.bits<64>", ""}};
-  widePredExtuiPe.resultNames = {"wide_pred_extui"};
-  widePredExtuiPe.resultTypes = {"!fabric.bits<64>"};
-  widePredExtuiPe.fus.push_back(
-      FuSpec{{{"value", "pa", "!fabric.bits<64>", "!fabric.bits<1>"}},
-             {"!fabric.bits<64>"},
-             {FabricOpSpec{{"extended"},
-                           {"arith.extui"},
-                           {"value"},
-                           {"!fabric.bits<1>"},
-                           {"!fabric.bits<64>"},
-                           {},
-                           {}}},
-             {"extended"}});
-  module.addPe(std::move(widePredExtuiPe));
-
-  PeSpec selectPe;
-  selectPe.inputs = {{"pa", "select_pred", "!fabric.bits<32>", ""},
-                     {"pb", "select_true", "!fabric.bits<32>", ""},
-                     {"pc", "select_false", "!fabric.bits<32>", ""}};
-  selectPe.resultNames = {"selected"};
-  selectPe.resultTypes = {"!fabric.bits<32>"};
-  auto makeSelectFu = [](llvm::StringRef opName) {
-    return FuSpec{{{"sel", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-                   {"when_true", "pb", "!fabric.bits<32>", ""},
-                   {"when_false", "pc", "!fabric.bits<32>", ""}},
-                  {"!fabric.bits<32>"},
-                  {FabricOpSpec{{"selected_value"},
-                                {opName.str()},
-                                {"sel", "when_true", "when_false"},
-                                {"!fabric.bits<1>", "!fabric.bits<32>",
-                                 "!fabric.bits<32>"},
-                                {"!fabric.bits<32>"},
-                                {},
-                                {}}},
-                  {"selected_value"}};
-  };
-  selectPe.fus.push_back(makeSelectFu("arith.select"));
-  selectPe.fus.push_back(makeSelectFu("arith.select"));
-  selectPe.fus.push_back(makeSelectFu("llvm.select"));
-  module.addPe(std::move(selectPe));
-
-  auto addDemuxPe = [&](llvm::StringRef valueInput, llvm::StringRef falseResult,
-                        llvm::StringRef trueResult) {
-    PeSpec demuxPe;
-    demuxPe.inputs = {{"pa", "demux_sel", "!fabric.bits<32>", ""},
-                      {"pb", valueInput.str(), "!fabric.bits<32>", ""}};
-    demuxPe.resultNames = {falseResult.str(), trueResult.str()};
-    demuxPe.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
-    demuxPe.fus.push_back(
-        FuSpec{{{"sel", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-                {"value", "pb", "!fabric.bits<32>", ""}},
-               {"!fabric.bits<32>", "!fabric.bits<32>"},
-               {FabricOpSpec{{"false_lane", "true_lane"},
-                             {"dataflow.demux"},
-                             {"sel", "value"},
-                             {"!fabric.bits<1>", "!fabric.bits<32>"},
-                             {"!fabric.bits<32>", "!fabric.bits<32>"},
-                             {},
-                             {}}},
-               {"false_lane", "true_lane"}});
-    module.addPe(std::move(demuxPe));
-  };
-  addDemuxPe("demux_value", "control_demux_false", "control_demux_true");
-  addDemuxPe("demux_then_value", "compute_demux_false", "compute_demux_true");
-
-  PeSpec muxPe;
-  muxPe.inputs = {{"pa", "mux_sel", "!fabric.bits<32>", ""},
-                  {"pb", "mux_false", "!fabric.bits<32>", ""},
-                  {"pc", "mux_true", "!fabric.bits<32>", ""}};
-  muxPe.resultNames = {"control_muxed"};
-  muxPe.resultTypes = {"!fabric.bits<32>"};
-  muxPe.fus.push_back(FuSpec{
-      {{"sel", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-       {"false_lane", "pb", "!fabric.bits<32>", ""},
-       {"true_lane", "pc", "!fabric.bits<32>", ""}},
-      {"!fabric.bits<32>"},
-      {FabricOpSpec{{"selected_lane"},
-                    {"dataflow.mux"},
-                    {"sel", "false_lane", "true_lane"},
-                    {"!fabric.bits<1>", "!fabric.bits<32>", "!fabric.bits<32>"},
-                    {"!fabric.bits<32>"},
-                    {},
-                    {}}},
-      {"selected_lane"}});
-  module.addPe(std::move(muxPe));
-
-  PeSpec controlDemuxPe;
-  controlDemuxPe.inputs = {
-      {"pa", "control_token_demux_sel", "!fabric.bits<32>", ""},
-      {"pb", "ctrl", "!fabric.bits<0>", "!fabric.bits<32>"}};
-  controlDemuxPe.resultNames = {"control_token_demux_false",
-                                "control_token_demux_true"};
-  controlDemuxPe.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
-  controlDemuxPe.fus.push_back(
-      FuSpec{{{"sel", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-              {"value", "pb", "!fabric.bits<32>", "!fabric.bits<0>"}},
-             {"!fabric.bits<32>", "!fabric.bits<32>"},
-             {FabricOpSpec{{"false_lane", "true_lane"},
-                           {"dataflow.demux"},
-                           {"sel", "value"},
-                           {"!fabric.bits<1>", "!fabric.bits<0>"},
-                           {"!fabric.bits<0>", "!fabric.bits<0>"},
-                           {},
-                           {}}},
-             {"false_lane", "true_lane"},
-             {"!fabric.bits<0>", "!fabric.bits<0>"}});
-  module.addPe(std::move(controlDemuxPe));
-
-  PeSpec controlMuxPe;
-  controlMuxPe.inputs = {
-      {"pa", "control_token_mux_sel", "!fabric.bits<32>", ""},
-      {"pb", "control_token_mux_false", "!fabric.bits<0>", "!fabric.bits<32>"},
-      {"pc", "control_token_mux_true", "!fabric.bits<0>", "!fabric.bits<32>"}};
-  controlMuxPe.resultNames = {"control_token_muxed"};
-  controlMuxPe.resultTypes = {"!fabric.bits<32>"};
-  controlMuxPe.fus.push_back(FuSpec{
-      {{"sel", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-       {"false_lane", "pb", "!fabric.bits<32>", "!fabric.bits<0>"},
-       {"true_lane", "pc", "!fabric.bits<32>", "!fabric.bits<0>"}},
-      {"!fabric.bits<32>"},
-      {FabricOpSpec{{"selected_lane"},
-                    {"dataflow.mux"},
-                    {"sel", "false_lane", "true_lane"},
-                    {"!fabric.bits<1>", "!fabric.bits<0>", "!fabric.bits<0>"},
-                    {"!fabric.bits<0>"},
-                    {},
-                    {}}},
-      {"selected_lane"},
-      {"!fabric.bits<0>"}});
-  module.addPe(std::move(controlMuxPe));
-
-  PeSpec vectorSyncPe;
-  vectorSyncPe.inputs = {{"pa", "sync_head", "!fabric.bits<0>", ""},
-                         {"pb", "vector_sync_mid", "!fabric.bits<0>", ""},
-                         {"pc", "sync_tail", "!fabric.bits<0>", ""},
-                         {"pd", "sync_extra", "!fabric.bits<0>", ""},
-                         {"pe", "done4", "!fabric.bits<0>", ""},
-                         {"pf", "sync_lane5", "!fabric.bits<0>", ""},
-                         {"pg", "store_done0", "!fabric.bits<0>", ""},
-                         {"ph", "sync_lane6", "!fabric.bits<0>", ""},
-                         {"pi", "sync_lane7", "!fabric.bits<0>", ""}};
-  vectorSyncPe.resultTypes = {"!fabric.bits<0>"};
-  vectorSyncPe.fus.push_back(FuSpec{
-      {{"fa", "pa", "!fabric.bits<0>", ""},
-       {"fb", "pb", "!fabric.bits<0>", ""},
-       {"fc", "pc", "!fabric.bits<0>", ""},
-       {"fd", "pd", "!fabric.bits<0>", ""},
-       {"fe", "pe", "!fabric.bits<0>", ""},
-       {"ff", "pf", "!fabric.bits<0>", ""},
-       {"fg", "pg", "!fabric.bits<0>", ""},
-       {"fh", "ph", "!fabric.bits<0>", ""},
-       {"fi", "pi", "!fabric.bits<0>", ""}},
-      {"!fabric.bits<0>"},
-      {FabricOpSpec{{"sync_done0", "sync_done1", "sync_done2", "sync_done3",
-                     "sync_done4", "sync_done5", "sync_done6", "sync_done7",
-                     "sync_done8"},
-                    {"dataflow.sync"},
-                    {"fa", "fb", "fc", "fd", "fe", "ff", "fg", "fh", "fi"},
-                    {"!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>",
-                     "!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>",
-                     "!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>"},
-                    {"!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>",
-                     "!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>",
-                     "!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>"},
-                    {},
-                    {{"bitmask", "111111111"}}}},
-      {"sync_done0"}});
-  module.addPe(std::move(vectorSyncPe));
-
-  PeSpec syncPe;
-  syncPe.inputs = {{"pc", "done0", "!fabric.bits<0>", ""},
-                   {"pd", "sync_aux_done", "!fabric.bits<0>", ""}};
-  syncPe.resultTypes = {"!fabric.bits<0>"};
-  syncPe.fus.push_back(
-      FuSpec{{{"fc", "pc", "!fabric.bits<0>", ""},
-              {"fd", "pd", "!fabric.bits<0>", ""}},
-             {"!fabric.bits<0>"},
-             {FabricOpSpec{{"sync_done0", "sync_done1"},
-                           {"dataflow.sync"},
-                           {"fc", "fd"},
-                           {"!fabric.bits<0>", "!fabric.bits<0>"},
-                           {"!fabric.bits<0>", "!fabric.bits<0>"},
-                           {},
-                           {{"bitmask", "11"}}}},
-             {"sync_done0"}});
-  module.addPe(std::move(syncPe));
-
-  PeSpec addrAddPe;
-  addrAddPe.inputs = {{"pa", "addr_add_lhs", "!fabric.bits<32>", ""},
-                      {"pb", "addr_add_rhs", "!fabric.bits<32>", ""}};
-  addrAddPe.resultNames = {"addr_sum"};
-  addrAddPe.resultTypes = {"!fabric.bits<32>"};
-  addrAddPe.fus.push_back(
-      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-              {"rhs", "pb", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"sum"},
-                           {"arith.addi", "arith.subi"},
-                           {"lhs", "rhs"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"sum"}});
-  module.addPe(std::move(addrAddPe));
-
-  PeSpec addrMaskPe;
-  addrMaskPe.inputs = {{"pa", "addr_mask_lhs", "!fabric.bits<32>", ""},
-                       {"pb", "addr_mask_rhs", "!fabric.bits<32>", ""}};
-  addrMaskPe.resultNames = {"addr_masked"};
-  addrMaskPe.resultTypes = {"!fabric.bits<32>"};
-  addrMaskPe.fus.push_back(
-      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-              {"rhs", "pb", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"masked"},
-                           {"arith.andi"},
-                           {"lhs", "rhs"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"masked"}});
-  module.addPe(std::move(addrMaskPe));
-
-  addBinary32Pe("aux_masked", "aux_mask_lhs", "aux_mask_rhs", "masked",
-                {"arith.andi"});
-  addBinary32Pe("aux_xor", "aux_xor_lhs", "aux_xor_rhs", "xor_value",
-                {"arith.xori"});
-
-  addFmulAddPe("mac_result2", "mac2_lhs", "mac2_rhs", "mac2_acc");
-  addFmulAddPe("mac_result3", "mac3_lhs", "mac3_rhs", "mac3_acc");
-
-  PeSpec stateCarryPe;
-  stateCarryPe.inputs = {{"pa", "state_carry_cond", "!fabric.bits<32>", ""},
-                         {"pb", "state_carry_init", "!fabric.bits<32>", ""},
-                         {"pc", "state_carry_next", "!fabric.bits<32>", ""}};
-  stateCarryPe.resultNames = {"state_carry"};
-  stateCarryPe.resultTypes = {"!fabric.bits<32>"};
-  stateCarryPe.fus.push_back(makeCarryFu());
-  stateCarryPe.fus.push_back(makeCarryFu());
-  module.addPe(std::move(stateCarryPe));
-
-  addFpBinaryPe("scaled_reduction_aux", "scaled_reduction_aux_lhs",
-                "scaled_reduction_aux_rhs", "product", "arith.mulf");
-
-  auto addSingleResultBits32Switch =
-      [&](llvm::StringRef result,
-          std::initializer_list<llvm::StringRef> inputs) {
-        llvm::ArrayRef<llvm::StringRef> inputRefs(inputs.begin(),
-                                                  inputs.size());
-        module.addExactBodyLine(valueName(result) +
-                                " = fabric.switch [spatial] " +
-                                valueList(inputRefs));
-        module.addExactBodyLine("  [{connectivity_table = [\"" +
-                                std::string(inputRefs.size(), '1') + "\"]}]");
-        module.addExactBodyLine("  : " + bits32TypeList(inputRefs.size()) +
-                                " -> !fabric.bits<32>");
-      };
-  auto addSingleResultBits64Switch =
-      [&](llvm::StringRef result,
-          std::initializer_list<llvm::StringRef> inputs) {
-        llvm::ArrayRef<llvm::StringRef> inputRefs(inputs.begin(),
-                                                  inputs.size());
-        module.addExactBodyLine(valueName(result) +
-                                " = fabric.switch [spatial] " +
-                                valueList(inputRefs));
-        module.addExactBodyLine("  [{connectivity_table = [\"" +
-                                std::string(inputRefs.size(), '1') + "\"]}]");
-        module.addExactBodyLine(
-            "  : " + uniformTypeList(inputRefs.size(), "!fabric.bits<64>") +
-            " -> !fabric.bits<64>");
-      };
-  addSingleResultBits32Switch(
-      "logic_mask_lhs",
-      {"i32a", "data0", "data1", "bit_carry", "addr_unscaled", "logic_shifted",
-       "int_xor", "aux_xor", "cmpi_pred", "cmpi_pred_aux", "running"});
-  addSingleResultBits32Switch(
-      "logic_mask_rhs", {"i32b", "i32c", "reduction_scale", "fp_invariant",
-                         "bit_invariant", "bit_invariant_aux0",
-                         "bit_invariant_aux1", "cmpi_pred", "cmpi_pred_aux"});
-  const std::initializer_list<llvm::StringRef> auxMaskLhsSources = {
-      "carried_scan", "bit_carry", "state_carry", "selected", "addr_shifted",
-      "running",      "idx",       "data0",       "data1"};
-  const std::initializer_list<llvm::StringRef> auxMaskRhsSources = {
-      "i32a",
-      "i32b",
-      "i32c",
-      "i32d",
-      "reduction_scale",
-      "fp_invariant",
-      "bit_invariant",
-      "bit_invariant_aux0",
-      "bit_invariant_aux1",
-      "addr_shift_const",
-      "addr_aux_const",
-      "addr_bias_const"};
-  const std::initializer_list<llvm::StringRef> auxXorLhsSources = {
-      "selected",     "addr_shifted", "addr_unscaled", "logic_shifted",
-      "carried_scan", "bit_carry",    "state_carry",   "logic_masked",
-      "addr_masked",  "int_xor",      "aux_masked"};
-  const std::initializer_list<llvm::StringRef> auxXorRhsSources = {
-      "carried_scan",
-      "bit_carry",
-      "state_carry",
-      "i32a",
-      "i32b",
-      "data0",
-      "data1",
-      "i32c",
-      "i32d",
-      "reduction_scale",
-      "fp_invariant",
-      "bit_invariant",
-      "bit_invariant_aux0",
-      "bit_invariant_aux1"};
-  addSingleResultBits32Switch("aux_mask_lhs", auxMaskLhsSources);
-  addSingleResultBits32Switch("aux_mask_rhs", auxMaskRhsSources);
-  addSingleResultBits32Switch("aux_xor_lhs", auxXorLhsSources);
-  addSingleResultBits32Switch("aux_xor_rhs", auxXorRhsSources);
-  addSingleResultBits32Switch("int_add_lhs", {"i32a",
-                                              "data1",
-                                              "data0",
-                                              "carried_scan",
-                                              "running",
-                                              "squared_data",
-                                              "bit_carry",
-                                              "reduction_scale",
-                                              "int_product",
-                                              "int_product_aux",
-                                              "fp_invariant",
-                                              "bit_invariant",
-                                              "bit_invariant_aux0",
-                                              "bit_invariant_aux1",
-                                              "aux_invariant0",
-                                              "aux_invariant1",
-                                              "aux_invariant2",
-                                              "cast0_result",
-                                              "cast1_result",
-                                              "cast2_result",
-                                              "cast3_result",
-                                              "int_extui",
-                                              "wide_truncated",
-                                              "wide_truncated_aux"});
-  addSingleResultBits32Switch("int_add_rhs", {"i32b",
-                                              "data0",
-                                              "data1",
-                                              "fp_invariant",
-                                              "idx",
-                                              "reduction_scale",
-                                              "bit_invariant",
-                                              "bit_invariant_aux0",
-                                              "bit_invariant_aux1",
-                                              "int_rem",
-                                              "aux_idx",
-                                              "aux_active_idx",
-                                              "cast0_result",
-                                              "cast1_result",
-                                              "cast2_result",
-                                              "cast3_result",
-                                              "int_extui",
-                                              "int_product",
-                                              "int_product_aux",
-                                              "squared_data"});
-  addSingleResultBits32Switch(
-      "int_mul_lhs",
-      {"i32a", "int_xor", "data0", "data1", "int_div0", "int_div1", "aux_idx",
-       "aux_active_idx", "bit_invariant", "bit_invariant_aux0",
-       "bit_invariant_aux1", "cast0_result", "cast1_result", "cast2_result",
-       "cast3_result", "int_sum", "running"});
-  addSingleResultBits32Switch(
-      "int_mul_rhs",
-      {"i32b", "data0", "data1", "reduction_scale", "bit_invariant",
-       "bit_invariant_aux0", "bit_invariant_aux1", "aux_invariant0",
-       "aux_invariant1", "aux_invariant2", "fp_invariant", "cast0_result",
-       "cast1_result", "cast2_result", "cast3_result"});
-  addSingleResultBits32Switch("int_mul_aux_lhs",
-                              {"i32a", "int_xor", "data0", "data1", "int_div0",
-                               "int_div1", "aux_idx", "aux_active_idx"});
-  addSingleResultBits32Switch(
-      "int_mul_aux_rhs",
-      {"i32b", "data0", "data1", "reduction_scale", "bit_invariant",
-       "bit_invariant_aux0", "bit_invariant_aux1", "aux_invariant0",
-       "aux_invariant1", "aux_invariant2", "fp_invariant"});
-  addSingleResultBits32Switch(
-      "int_div0_lhs",
-      {"int_sum", "addr_sum", "aux_idx", "aux_active_idx", "i32b", "i32c"});
-  addSingleResultBits32Switch("int_div0_rhs",
-                              {"i32c", "reduction_scale", "fp_invariant",
-                               "bit_invariant", "bit_invariant_aux0",
-                               "bit_invariant_aux1", "aux_invariant0",
-                               "aux_invariant1", "aux_invariant2"});
-  addSingleResultBits32Switch(
-      "int_div1_lhs",
-      {"int_sum", "addr_sum", "aux_idx", "aux_active_idx", "i32b", "i32c"});
-  addSingleResultBits32Switch("int_div1_rhs",
-                              {"i32c", "reduction_scale", "fp_invariant",
-                               "bit_invariant", "bit_invariant_aux0",
-                               "bit_invariant_aux1", "aux_invariant0",
-                               "aux_invariant1", "aux_invariant2"});
-  addSingleResultBits32Switch("int_rem_lhs",
-                              {"aux_idx", "aux_active_idx", "i32a", "i32b"});
-  addSingleResultBits32Switch(
-      "int_rem_rhs", {"reduction_scale", "bit_invariant", "bit_invariant_aux0",
-                      "bit_invariant_aux1", "aux_invariant0", "aux_invariant1",
-                      "aux_invariant2", "i32d"});
-  addSingleResultBits32Switch("uint_rem_lhs",
-                              {"int_product", "aux_idx", "aux_active_idx",
-                               "i32b", "addr_shifted", "running"});
-  addSingleResultBits32Switch(
-      "uint_rem_rhs", {"i32c", "reduction_scale", "bit_invariant",
-                       "bit_invariant_aux0", "bit_invariant_aux1",
-                       "aux_invariant0", "aux_invariant1", "aux_invariant2"});
-  addSingleResultBits32Switch(
-      "int_or_lhs",
-      {"i32a", "logic_masked", "data0", "data1", "addr_shifted", "selected"});
-  addSingleResultBits32Switch("int_or_rhs",
-                              {"i32b", "logic_masked", "data0", "data1"});
-  addSingleResultBits32Switch(
-      "int_xor_lhs",
-      {"i32a", "rotated", "logic_shifted", "addr_unscaled", "logic_masked",
-       "data0", "packed_sat", "selected", "addr_masked", "aux_masked",
-       "cmpf_pred", "cmpi_pred", "cmpi_pred_aux"});
-  addSingleResultBits32Switch(
-      "int_xor_rhs",
-      {"i32b", "data1", "data0", "logic_masked", "reduction_scale",
-       "fp_invariant", "bit_invariant", "bit_invariant_aux0",
-       "bit_invariant_aux1", "carried_scan", "bit_carry", "state_carry",
-       "addr_masked", "selected", "aux_masked"});
-  addSingleResultBits32Switch("packed_sat_lhs",
-                              {"i32a", "reduction_scale", "fp_invariant",
-                               "bit_invariant", "bit_invariant_aux0",
-                               "bit_invariant_aux1", "cast0_result",
-                               "cast1_result", "cast2_result", "cast3_result"});
-  addSingleResultBits32Switch("packed_sat_rhs",
-                              {"logic_masked", "addr_masked", "data0", "data1",
-                               "i32b", "reduction_scale", "fp_invariant",
-                               "bit_invariant", "bit_invariant_aux0",
-                               "bit_invariant_aux1", "cast0_result",
-                               "cast1_result", "cast2_result", "cast3_result"});
-  addSingleResultBits32Switch(
-      "minmax_lhs", {"i32a", "i32b", "data0", "data1", "idx", "running",
-                     "int_sum", "addr_sum", "addr_masked", "logic_masked",
-                     "carried_scan", "bit_carry", "state_carry", "cast0_result",
-                     "cast1_result", "cast2_result", "cast3_result"});
-  addSingleResultBits32Switch(
-      "minmax_rhs",
-      {"i32b", "i32c", "data0", "data1", "idx", "running", "int_sum",
-       "addr_sum", "addr_shift_const", "addr_aux_const", "addr_bias_const",
-       "reduction_scale", "fp_invariant", "bit_invariant", "bit_invariant_aux0",
-       "bit_invariant_aux1"});
-  module.addExactBodyLine(
-      "%rotate_lhs = fabric.switch [spatial] %i32a, %data1, %data0, "
-      "%logic_masked, %int_sum, %int_product");
-  module.addExactBodyLine("  [{connectivity_table = [\"111111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> "
-      "!fabric.bits<32>");
-  module.addExactBodyLine(
-      "%rotate_rhs = fabric.switch [spatial] %i32b, %data1, %data0, "
-      "%logic_masked, %int_sum, %int_product");
-  module.addExactBodyLine("  [{connectivity_table = [\"111111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> "
-      "!fabric.bits<32>");
-  module.addExactBodyLine(
-      "%rotate_amount = fabric.switch [spatial] %i32c, %data0, "
-      "%reduction_scale, %addr_shift_const");
-  module.addExactBodyLine("  [{connectivity_table = [\"1111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>) -> !fabric.bits<32>");
-  addSingleResultBits32Switch(
-      "cmp_lhs", {"i32a", "logic_masked", "data0", "data1", "bit_carry",
-                  "running", "addr_sum", "addr_masked", "aux_masked"});
-  addSingleResultBits32Switch("cmp_rhs", {"i32b", "i32c", "reduction_scale",
-                                          "data1", "data0", "fp_invariant",
-                                          "bit_invariant", "bit_invariant_aux0",
-                                          "bit_invariant_aux1", "aux_masked"});
-  addSingleResultBits32Switch(
-      "int_extui_input", {"i32a", "cmpi_pred", "cmpi_pred_aux", "cmpf_pred",
-                          "cmpi64_pred_aux_narrow", "logic_masked",
-                          "addr_masked", "int_xor", "aux_xor"});
-  addSingleResultBits32Switch(
-      "select_pred", {"i32a", "logic_masked", "addr_masked", "cmpi_pred",
-                      "cmpi_pred_aux", "cmpi64_pred_aux_narrow", "cmpf_pred",
-                      "aux_masked"});
-  addSingleResultBits32Switch(
-      "select_true",
-      {"i32b", "idx", "data1", "rotated", "data0", "int_sum", "addr_sum",
-       "addr_shifted", "reduction_scale", "bit_invariant", "bit_invariant_aux0",
-       "bit_invariant_aux1", "cast0_result", "cast1_result", "cast2_result",
-       "cast3_result", "aux_xor", "carried_scan"});
-  addSingleResultBits32Switch("select_false",
-                              {"i32c", "rotated", "data0", "data1",
-                               "carried_scan", "bit_carry", "addr_shift_const",
-                               "addr_aux_const", "addr_bias_const", "aux_xor",
-                               "running", "addr_shifted"});
-  addSingleResultBits32Switch(
-      "gate_cond", {"aux_rwc", "logic_masked", "addr_masked", "cmpi_pred",
-                    "cmpi_pred_aux", "cmpi64_pred_aux_narrow", "cmpf_pred",
-                    "fp_gate", "i32a"});
-  addSingleResultBits32Switch(
-      "gate_value", {"aux_idx", "idx", "running", "addr_sum", "int_sum",
-                     "squared_data", "carried_scan", "cast0_result",
-                     "cast1_result", "cast2_result", "cast3_result"});
-  addSingleResultBits32Switch("demux_sel", {"logic_masked", "addr_masked",
-                                            "cmpi_pred", "cmpi_pred_aux",
-                                            "cmpi64_pred_aux_narrow",
-                                            "cmpf_pred", "fp_gate", "i32a"});
-  addSingleResultBits32Switch("demux_value",
-                              {"carried_scan", "bit_carry", "state_carry",
-                               "fp_invariant", "reduction_scale", "running"});
-  addSingleResultBits32Switch(
-      "demux_then_value",
-      {"mac_result", "mac_result1", "mac_result2", "mac_result3", "fp_running",
-       "fp_running_aux", "scaled_reduction", "data0", "data1", "int_sum",
-       "addr_sum", "int_product", "int_product_aux", "selected"});
-  addSingleResultBits32Switch("mux_sel", {"logic_masked", "addr_masked",
-                                          "cmpi_pred", "cmpi_pred_aux",
-                                          "cmpi64_pred_aux_narrow", "cmpf_pred",
-                                          "fp_gate", "i32a"});
-  addSingleResultBits32Switch("mux_false",
-                              {"control_demux_false", "carried_scan",
-                               "bit_carry", "state_carry", "fp_invariant"});
-  addSingleResultBits32Switch(
-      "mux_true", {"compute_demux_true", "mac_result", "mac_result1",
-                   "mac_result2", "mac_result3", "fp_running", "fp_running_aux",
-                   "scaled_reduction", "data0", "data1"});
-  addSingleResultBits32Switch("control_token_demux_sel",
-                              {"logic_masked", "addr_masked", "cmpi_pred",
-                               "cmpi_pred_aux", "cmpi64_pred_aux_narrow",
-                               "cmpf_pred", "fp_gate", "i32a"});
-  module.addExactBodyLine(
-      "%control_token_demux_false_token = fabric.fifo "
-      "%control_token_demux_false [max_depth = 1, bypassable = true] "
-      "{bypassed = true}");
-  module.addExactBodyLine("  : !fabric.bits<32> to !fabric.bits<0>");
-  module.addExactBodyLine(
-      "%control_token_demux_true_token = fabric.fifo "
-      "%control_token_demux_true [max_depth = 1, bypassable = true] "
-      "{bypassed = true}");
-  module.addExactBodyLine("  : !fabric.bits<32> to !fabric.bits<0>");
-  module.addExactBodyLine(
-      "%control_token_muxed_token = fabric.fifo %control_token_muxed "
-      "[max_depth = 1, bypassable = true] {bypassed = true}");
-  module.addExactBodyLine("  : !fabric.bits<32> to !fabric.bits<0>");
-  addSingleResultBits32Switch("control_token_mux_sel",
-                              {"logic_masked", "addr_masked", "cmpi_pred",
-                               "cmpi_pred_aux", "cmpi64_pred_aux_narrow",
-                               "cmpf_pred", "fp_gate", "i32a"});
-  module.addExactBodyLine(
-      "%control_token_mux_false = fabric.switch [spatial] "
-      "%control_token_demux_false_token, %store_done0, %ctrl");
-  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> "
-      "!fabric.bits<0>");
-  module.addExactBodyLine(
-      "%control_token_mux_true = fabric.switch [spatial] "
-      "%store_done0, %control_token_demux_true_token, %ctrl");
-  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> "
-      "!fabric.bits<0>");
-  addSingleResultBits32Switch("load1_addr", {"idx",
-                                             "i32b",
-                                             "addr_unscaled",
-                                             "cast0_result",
-                                             "cast1_result",
-                                             "cast2_result",
-                                             "cast3_result",
-                                             "running",
-                                             "addr_sum",
-                                             "squared_data",
-                                             "int_sum",
-                                             "carried_scan",
-                                             "aux_idx",
-                                             "aux_active_idx",
-                                             "selected",
-                                             "logic_masked",
-                                             "addr_masked",
-                                             "int_extui",
-                                             "addr_shift_const",
-                                             "addr_aux_const",
-                                             "addr_bias_const",
-                                             "addr_extra_const0",
-                                             "addr_extra_const1",
-                                             "wide_index_cast0_narrow",
-                                             "wide_index_cast1_narrow"});
-  addSingleResultBits32Switch(
-      "cast0_input", {"i32a", "data0", "data1", "logic_masked", "packed_sat",
-                      "idx", "running", "int_sum", "addr_sum", "uint_rem"});
-  addSingleResultBits32Switch("cast1_input",
-                              {"i32a", "data0", "data1", "logic_masked",
-                               "packed_sat", "idx", "running", "int_sum",
-                               "addr_sum", "uint_rem", "cast0_result"});
-  addSingleResultBits32Switch(
-      "cast2_input",
-      {"i32a", "data0", "data1", "logic_masked", "packed_sat", "idx", "running",
-       "int_sum", "addr_sum", "uint_rem", "cast0_result", "cast1_result"});
-  addSingleResultBits32Switch(
-      "cast3_input", {"i32a", "data0", "data1", "logic_masked", "packed_sat",
-                      "idx", "running", "int_sum", "addr_sum", "uint_rem",
-                      "cast0_result", "cast1_result", "cast2_result"});
-  addSingleResultBits32Switch("wide_zext0_input",
-                              {"data0", "data1", "i32a", "cast0_result",
-                               "cast1_result", "unsigned_minmax",
-                               "unsigned_min", "signed_min", "signed_max"});
-  addSingleResultBits32Switch(
-      "wide_zext1_input",
-      {"data1", "data0", "i32b", "cast0_result", "cast1_result"});
-  addSingleResultBits64Switch("wide_mul_lhs",
-                              {"wide_zext1", "wide_zext0", "i64a", "i64b"});
-  addSingleResultBits64Switch("wide_mul_rhs",
-                              {"wide_zext0", "wide_zext1", "i64a", "i64c"});
-  addSingleResultBits64Switch(
-      "wide_div_lhs", {"wide_product", "wide_zext0", "wide_zext1", "i64a"});
-  addSingleResultBits64Switch(
-      "wide_div_rhs", {"i64a", "i64b", "i64c", "wide_zext0", "wide_zext1"});
-  addSingleResultBits64Switch(
-      "wide_rem_lhs", {"wide_product", "wide_zext0", "wide_zext1", "i64a"});
-  addSingleResultBits64Switch(
-      "wide_rem_rhs", {"i64a", "i64b", "i64c", "wide_zext0", "wide_zext1"});
-  addSingleResultBits64Switch("wide_add_lhs",
-                              {"i64a", "i64b", "i64c", "wide_shifted",
-                               "wide_zext0", "wide_zext1", "wide_product",
-                               "wide_signed_quotient", "wide_remainder"});
-  addSingleResultBits64Switch("wide_add_rhs",
-                              {"i64a", "i64b", "i64c", "wide_shifted",
-                               "wide_zext0", "wide_zext1", "wide_product",
-                               "wide_signed_quotient", "wide_remainder"});
-  addSingleResultBits64Switch(
-      "wide_add_aux_lhs",
-      {"i64a", "i64b", "i64c", "wide_shifted", "wide_sum", "wide_zext0",
-       "wide_zext1", "wide_product", "wide_signed_quotient", "wide_remainder"});
-  addSingleResultBits64Switch(
-      "wide_add_aux_rhs",
-      {"i64a", "i64b", "i64c", "wide_shifted", "wide_sum", "wide_zext0",
-       "wide_zext1", "wide_product", "wide_signed_quotient", "wide_remainder"});
-  addSingleResultBits64Switch(
-      "wide_shift_lhs",
-      {"i64a", "i64b", "i64c", "wide_sum", "wide_sum_aux", "wide_zext0",
-       "wide_zext1", "wide_product", "wide_signed_quotient", "wide_remainder"});
-  addSingleResultBits64Switch(
-      "wide_shift_rhs", {"i64a", "i64b", "i64c", "wide_zext0", "wide_zext1"});
-  addSingleResultBits64Switch("wide_trunc_input",
-                              {"wide_remainder", "wide_product", "wide_zext0",
-                               "wide_zext1", "wide_pred_extui",
-                               "wide_signed_quotient", "wide_shifted",
-                               "wide_sum", "wide_sum_aux"});
-  addSingleResultBits64Switch("wide_trunc_aux_input",
-                              {"wide_sum", "wide_sum_aux", "wide_shifted",
-                               "wide_remainder", "wide_product",
-                               "wide_signed_quotient", "wide_zext0",
-                               "wide_zext1", "wide_pred_extui"});
-  addSingleResultBits64Switch("wide_index_cast0_input",
-                              {"i64a", "i64b", "i64c", "wide_zext0",
-                               "wide_zext1", "wide_product", "wide_sum",
-                               "wide_sum_aux", "wide_shifted",
-                               "wide_signed_quotient", "wide_remainder"});
-  addSingleResultBits64Switch("wide_index_cast1_input",
-                              {"i64a", "i64b", "i64c", "wide_zext0",
-                               "wide_zext1", "wide_product", "wide_sum",
-                               "wide_sum_aux", "wide_shifted",
-                               "wide_signed_quotient", "wide_remainder"});
-  addSingleResultBits64Switch(
-      "cmp64_lhs",
-      {"i64a", "i64b", "i64c", "wide_zext0", "wide_zext1", "wide_product",
-       "wide_signed_quotient", "wide_remainder", "wide_shifted"});
-  addSingleResultBits64Switch(
-      "cmp64_rhs",
-      {"i64a", "i64b", "i64c", "wide_zext0", "wide_zext1", "wide_product",
-       "wide_signed_quotient", "wide_remainder", "wide_shifted"});
-  addSingleResultBits32Switch("fp_negated_input",
-                              {"data0", "data1", "data2", "data3", "data4",
-                               "data5", "fp_running", "fp_running_aux",
-                               "fp_diff", "fp_diff_aux", "scaled_reduction"});
-  addSingleResultBits32Switch("load2_addr", {"i32c",
-                                             "cast0_result",
-                                             "cast1_result",
-                                             "cast2_result",
-                                             "cast3_result",
-                                             "idx",
-                                             "addr_sum",
-                                             "running",
-                                             "squared_data",
-                                             "int_sum",
-                                             "aux_idx",
-                                             "aux_active_idx",
-                                             "data0",
-                                             "data1",
-                                             "int_extui",
-                                             "addr_shift_const",
-                                             "addr_aux_const",
-                                             "addr_bias_const",
-                                             "addr_extra_const0",
-                                             "addr_extra_const1",
-                                             "wide_index_cast0_narrow",
-                                             "wide_index_cast1_narrow"});
-  addSingleResultBits32Switch("store0_value", {"scan_store_value",
-                                               "fp_running",
-                                               "fp_running_aux",
-                                               "running",
-                                               "mac_result",
-                                               "mac_result1",
-                                               "mac_result2",
-                                               "mac_result3",
-                                               "data0",
-                                               "data1",
-                                               "data2",
-                                               "data3",
-                                               "data4",
-                                               "data5",
-                                               "selected",
-                                               "rotated",
-                                               "addr_masked",
-                                               "logic_masked",
-                                               "int_or",
-                                               "int_xor",
-                                               "packed_sat",
-                                               "cast0_result",
-                                               "cast1_result",
-                                               "cast2_result",
-                                               "cast3_result",
-                                               "abs_data",
-                                               "scaled_reduction",
-                                               "scaled_reduction_aux",
-                                               "int_product",
-                                               "reduction_scale",
-                                               "int_sum",
-                                               "addr_sum",
-                                               "fp_diff",
-                                               "fp_diff_aux",
-                                               "compute_demux_false",
-                                               "compute_demux_true",
-                                               "wide_truncated",
-                                               "fp_negated",
-                                               "signed_min",
-                                               "signed_max"});
-  addSingleResultBits32Switch(
-      "store1_value",
-      {"i32d", "data0", "data1", "data2", "data3", "data4", "data5", "selected",
-       "scaled_reduction", "scaled_reduction_aux", "mac_result", "mac_result1",
-       "mac_result2", "mac_result3", "signed_min", "signed_max"});
-  module.addExactBodyLine(
-      "%vector_sync_mid = fabric.switch [spatial] %done1, %store_done0, "
-      "%control_token_muxed_token");
-  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> "
-      "!fabric.bits<0>");
-  module.addExactBodyLine(
-      "%sync_head = fabric.switch [spatial] %done0, %store_done0");
-  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<0>, !fabric.bits<0>) -> !fabric.bits<0>");
-  module.addExactBodyLine(
-      "%sync_tail = fabric.switch [spatial] %store_done0, %done2");
-  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<0>, !fabric.bits<0>) -> !fabric.bits<0>");
-  module.addExactBodyLine(
-      "%sync_extra = fabric.switch [spatial] %store_done1, %done3, "
-      "%store_done0");
-  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> "
-      "!fabric.bits<0>");
-  module.addExactBodyLine(
-      "%sync_lane5 = fabric.switch [spatial] %done5, %store_done0");
-  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<0>, !fabric.bits<0>) -> !fabric.bits<0>");
-  module.addExactBodyLine(
-      "%sync_lane6 = fabric.switch [spatial] %done1, %done4, %store_done0");
-  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> "
-      "!fabric.bits<0>");
-  module.addExactBodyLine(
-      "%sync_lane7 = fabric.switch [spatial] %done2, %done5, "
-      "%control_token_muxed_token");
-  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> "
-      "!fabric.bits<0>");
-  addSingleResultBits32Switch("addr_add_lhs",
-                              {"idx", "i32a", "i32b", "i32c", "squared_data",
-                               "int_product", "running", "reduction_scale",
-                               "int_product_aux", "data0", "data1"});
-  module.addExactBodyLine(
-      "%addr_add_rhs = fabric.switch [spatial] %fp_invariant, "
-      "%reduction_scale, %i32a, %i32b, %idx, %int_rem, %aux_idx, "
-      "%aux_active_idx, %carried_scan, %int_product, %int_product_aux, "
-      "%squared_data, %running");
-  module.addExactBodyLine("  [{connectivity_table = [\"1111111111111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>)");
-  module.addExactBodyLine("  -> !fabric.bits<32>");
-  addSingleResultBits32Switch(
-      "addr_mask_lhs",
-      {"addr_sum", "idx", "data0", "data1", "logic_masked", "carried_scan",
-       "bit_carry", "state_carry", "selected", "aux_masked", "aux_xor"});
-  addSingleResultBits32Switch("addr_mask_rhs",
-                              {"reduction_scale", "fp_invariant", "i32b",
-                               "i32c", "int_xor", "packed_sat", "logic_masked",
-                               "bit_invariant", "bit_invariant_aux0",
-                               "bit_invariant_aux1", "aux_masked", "aux_xor"});
-  module.addExactBodyLine(
-      "%addr_unscale_lhs = fabric.switch [spatial] %i32a, %addr_shifted, "
-      "%bit_carry, %data0, %squared_data, %int_product, %int_product_aux");
-  module.addExactBodyLine("  [{connectivity_table = [\"1111111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>) -> !fabric.bits<32>");
-  module.addExactBodyLine(
-      "%addr_unscale_rhs = fabric.switch [spatial] %i32b, %addr_shift_const, "
-      "%reduction_scale, %fp_invariant, %bit_invariant, "
-      "%bit_invariant_aux0, %bit_invariant_aux1");
-  module.addExactBodyLine("  [{connectivity_table = [\"1111111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>) -> !fabric.bits<32>");
-  addSingleResultBits32Switch("logic_shift_lhs",
-                              {"i32a", "data0", "data1", "carried_scan",
-                               "bit_carry", "state_carry", "running",
-                               "addr_unscaled", "addr_shifted", "logic_masked",
-                               "addr_masked", "int_xor", "aux_xor"});
-  addSingleResultBits32Switch(
-      "logic_shift_rhs",
-      {"i32b", "addr_shifted", "reduction_scale", "addr_shift_const",
-       "addr_aux_const", "addr_bias_const", "bit_invariant",
-       "bit_invariant_aux0", "bit_invariant_aux1", "aux_invariant0",
-       "aux_invariant1", "aux_invariant2", "wide_truncated",
-       "wide_truncated_aux"});
-  addSingleResultBits32Switch(
-      "addr_shift_lhs", {"i32a", "carried_scan", "idx", "bit_carry",
-                         "state_carry", "selected", "aux_masked", "aux_xor"});
-  addSingleResultBits32Switch(
-      "addr_shift_rhs",
-      {"i32b", "reduction_scale", "bit_invariant", "bit_invariant_aux0",
-       "bit_invariant_aux1", "addr_shift_const", "addr_aux_const",
-       "addr_bias_const", "aux_masked", "aux_xor", "aux_invariant0",
-       "aux_invariant1", "aux_invariant2", "wide_truncated",
-       "wide_truncated_aux"});
-  addSingleResultBits32Switch("load0_addr", {"idx",
-                                             "addr_masked",
-                                             "addr_shifted",
-                                             "addr_unscaled",
-                                             "carried_scan",
-                                             "bit_carry",
-                                             "state_carry",
-                                             "squared_data",
-                                             "running",
-                                             "addr_sum",
-                                             "int_product",
-                                             "int_sum",
-                                             "aux_idx",
-                                             "aux_active_idx",
-                                             "cast0_result",
-                                             "cast1_result",
-                                             "cast2_result",
-                                             "cast3_result",
-                                             "selected",
-                                             "addr_shift_const",
-                                             "addr_aux_const",
-                                             "addr_bias_const",
-                                             "int_extui",
-                                             "wide_index_cast0_narrow",
-                                             "wide_index_cast1_narrow"});
-  addSingleResultBits32Switch(
-      "load3_addr",
-      {"i32d", "carried_scan", "idx", "squared_data", "running", "addr_sum",
-       "int_sum", "aux_idx", "aux_active_idx", "int_extui",
-       "wide_index_cast0_narrow", "wide_index_cast1_narrow"});
-  addSingleResultBits32Switch(
-      "load4_addr",
-      {"idx", "squared_data", "running", "addr_sum", "int_product", "int_sum",
-       "addr_unscaled", "addr_shifted", "aux_idx", "aux_active_idx",
-       "int_extui", "wide_index_cast0_narrow", "wide_index_cast1_narrow"});
-  addSingleResultBits32Switch(
-      "load5_addr",
-      {"idx", "squared_data", "running", "addr_sum", "int_product", "int_sum",
-       "addr_unscaled", "addr_shifted", "aux_idx", "aux_active_idx",
-       "int_extui", "wide_index_cast0_narrow", "wide_index_cast1_narrow"});
-  addSingleResultBits32Switch(
-      "store0_addr",
-      {"idx", "addr_unscaled", "carried_scan", "addr_shift_const",
-       "state_carry", "addr_aux_const", "addr_bias_const", "addr_extra_const0",
-       "addr_extra_const1", "int_sum", "addr_sum", "aux_idx", "running",
-       "aux_active_idx", "control_demux_false", "control_demux_true",
-       "int_extui", "wide_index_cast0_narrow", "wide_index_cast1_narrow"});
-  addSingleResultBits32Switch(
-      "store1_addr",
-      {"i32c", "idx", "addr_unscaled", "carried_scan", "addr_shift_const",
-       "addr_aux_const", "addr_bias_const", "addr_extra_const0",
-       "addr_extra_const1", "int_sum", "addr_sum", "aux_idx", "running",
-       "aux_active_idx", "int_extui", "wide_index_cast0_narrow",
-       "wide_index_cast1_narrow"});
-  addSingleResultBits32Switch(
-      "aux_stream_lb",
-      {"addr_shift_const", "addr_aux_const", "addr_bias_const"});
-  addSingleResultBits32Switch(
-      "aux_stream_ub", {"int_product", "int_product_aux", "squared_data"});
-  addSingleResultBits32Switch(
-      "aux_stream_step",
-      {"addr_shift_const", "addr_aux_const", "addr_bias_const"});
-  addSingleResultBits32Switch("aux_invariant_cond", {"aux_rwc", "fp_gate"});
-  addSingleResultBits32Switch(
-      "aux_invariant0_value",
-      {"i32a", "i32b", "i32c", "i32d", "reduction_scale", "bit_invariant",
-       "bit_invariant_aux0", "bit_invariant_aux1", "fp_invariant",
-       "addr_shift_const", "addr_aux_const", "addr_bias_const"});
-  addSingleResultBits32Switch(
-      "aux_invariant1_value",
-      {"i32a", "i32b", "i32c", "i32d", "reduction_scale", "bit_invariant",
-       "bit_invariant_aux0", "bit_invariant_aux1", "fp_invariant",
-       "aux_invariant0", "addr_shift_const", "addr_aux_const",
-       "addr_bias_const"});
-  module.addExactBodyLine(
-      "%store0_ctrl = fabric.switch [spatial] %ctrl, %done0, %done1, %done2, "
-      "%done3, %done4, %done5, %control_token_demux_false_token, "
-      "%control_token_demux_true_token");
-  module.addExactBodyLine("  [{connectivity_table = [\"111111111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> "
-      "!fabric.bits<0>");
-  module.addExactBodyLine(
-      "%store1_ctrl = fabric.switch [spatial] %ctrl, %done0, %done1, %done2, "
-      "%done3, %done4, %done5, %control_token_demux_false_token, "
-      "%control_token_demux_true_token");
-  module.addExactBodyLine("  [{connectivity_table = [\"111111111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> "
-      "!fabric.bits<0>");
-  module.addExactBodyLine(
-      "%data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, "
-      "%data4, %done4, %data5, %done5, %store_done0, %store_done1 =");
-  module.addExactBodyLine(
-      "    fabric.mem [spatial] mgr(%mgr) load(%load0_addr, %ctrl, "
-      "%load1_addr, "
-      "%ctrl, %load2_addr, %ctrl, %load3_addr, %ctrl, %load4_addr, %ctrl, "
-      "%load5_addr, %ctrl)");
-  module.addExactBodyLine(
-      "                              store(%store0_addr, %store0_value, "
-      "%store0_ctrl, %store1_addr, %store1_value, %store1_ctrl)");
-  module.addExactBodyLine(
-      "      [{load_group_size = 6 : i32, store_group_size = 2 : i32}]");
-  module.addExactBodyLine(
-      "      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, "
-      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
-      "!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
-      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
-      "!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<0>)");
-  module.addExactBodyLine(
-      "      -> (!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
-      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
-      "!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
-      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
-      "!fabric.bits<0>, !fabric.bits<0>)");
-  addSingleResultBits32Switch("mul_lhs_input", {"data0",
-                                                "data1",
-                                                "data2",
-                                                "idx",
-                                                "data4",
-                                                "int_div0",
-                                                "int_div1",
-                                                "aux_idx",
-                                                "aux_active_idx",
-                                                "bit_invariant",
-                                                "bit_invariant_aux0",
-                                                "bit_invariant_aux1",
-                                                "cast0_result",
-                                                "cast1_result",
-                                                "cast2_result",
-                                                "cast3_result",
-                                                "aux_invariant0",
-                                                "aux_invariant1",
-                                                "aux_invariant2",
-                                                "int_sum",
-                                                "running"});
-  addSingleResultBits32Switch(
-      "mul_rhs_input",
-      {"data0", "data1", "data2", "data4", "reduction_scale", "bit_invariant",
-       "bit_invariant_aux0", "bit_invariant_aux1", "aux_invariant0",
-       "aux_invariant1", "aux_invariant2", "fp_invariant", "cast0_result",
-       "cast1_result", "cast2_result", "cast3_result"});
-  module.addExactBodyLine(
-      "%reduction_input = fabric.switch [spatial] %data0, %abs_data, "
-      "%squared_data");
-  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
-  module.addExactBodyLine("  -> !fabric.bits<32>");
-  addSingleResultBits32Switch(
-      "stream_sum_lhs",
-      {"reduction_input", "carried_scan", "bit_carry", "state_carry",
-       "int_product", "int_product_aux", "bit_invariant", "bit_invariant_aux0",
-       "bit_invariant_aux1", "cast0_result", "cast1_result", "cast2_result",
-       "cast3_result", "int_extui"});
-  addSingleResultBits32Switch(
-      "stream_sum_rhs",
-      {"carried_scan", "fp_invariant", "reduction_scale", "bit_invariant_aux1",
-       "int_rem", "aux_idx", "aux_invariant0", "aux_invariant1",
-       "aux_invariant2", "bit_invariant", "bit_invariant_aux0", "cast0_result",
-       "cast1_result", "cast2_result", "cast3_result", "addr_shifted",
-       "int_extui"});
-  addSingleResultBits32Switch(
-      "scan_init",
-      {"i32a", "addr_shift_const", "addr_aux_const", "addr_bias_const"});
-  addSingleResultBits32Switch(
-      "scan_scale",
-      {"i32b", "addr_shift_const", "addr_aux_const", "addr_bias_const"});
-  addSingleResultBits32Switch("fp_lhs",
-                              {"carried_scan", "data0", "data2", "data4",
-                               "reduction_scale", "mac_result1"});
-  addSingleResultBits32Switch(
-      "fp_rhs", {"data0", "data1", "data3", "data5", "reduction_scale"});
-  addSingleResultBits32Switch("fp_lhs_aux",
-                              {"bit_carry", "state_carry", "carried_scan",
-                               "data0", "data1", "data2", "data4",
-                               "reduction_scale", "mac_result1"});
-  addSingleResultBits32Switch("fp_rhs_aux", {"data1", "data0", "data3", "data5",
-                                             "reduction_scale", "fp_invariant",
-                                             "bit_invariant"});
-  module.addExactBodyLine(
-      "%fp_diff_lhs = fabric.switch [spatial] %i32a, %data0");
-  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
-  addSingleResultBits32Switch("fp_diff_rhs",
-                              {"i32b", "fp_invariant", "data1", "fp_div"});
-  addSingleResultBits32Switch("fp_diff_aux_lhs", {"data1", "data0", "i32a"});
-  addSingleResultBits32Switch("fp_diff_aux_rhs",
-                              {"bit_invariant", "fp_invariant",
-                               "bit_invariant_aux0", "bit_invariant_aux1",
-                               "aux_invariant0", "aux_invariant1",
-                               "aux_invariant2", "i32b", "data1", "fp_div"});
-  addSingleResultBits32Switch("fp_div_lhs", {"data1", "data0"});
-  addSingleResultBits32Switch("fp_div_rhs",
-                              {"data2", "fp_invariant", "reduction_scale"});
-  addSingleResultBits32Switch(
-      "fp_invariant_value",
-      {"i32b", "addr_shift_const", "addr_aux_const", "addr_bias_const"});
-  addSingleResultBits32Switch("bit_invariant_aux1_value",
-                              {"i32b", "reduction_scale", "addr_shift_const",
-                               "addr_aux_const", "addr_bias_const"});
-  const std::initializer_list<llvm::StringRef> scaledReductionLhsInputs = {
-      "carried_scan",
-      "fp_running",
-      "fp_running_aux",
-      "data1",
-      "data3",
-      "data5",
-      "data0",
-      "bit_invariant",
-      "bit_invariant_aux0",
-      "bit_invariant_aux1",
-      "aux_invariant0",
-      "aux_invariant1",
-      "aux_invariant2",
-      "fp_negated",
-      "reduction_scale"};
-  const std::initializer_list<llvm::StringRef> scaledReductionRhsInputs = {
-      "reduction_scale", "data4",          "data5",      "data1",
-      "data3",           "state_carry",    "bit_carry",  "aux_invariant0",
-      "aux_invariant1",  "aux_invariant2", "fp_negated", "data0"};
-  addSingleResultBits32Switch("scaled_reduction_lhs", scaledReductionLhsInputs);
-  addSingleResultBits32Switch("scaled_reduction_rhs", scaledReductionRhsInputs);
-  addSingleResultBits32Switch("scaled_reduction_aux_lhs",
-                              scaledReductionLhsInputs);
-  addSingleResultBits32Switch("scaled_reduction_aux_rhs",
-                              scaledReductionRhsInputs);
-  addSingleResultBits32Switch(
-      "mac_lhs",
-      {"i32a", "data0", "data2", "data4", "fp_diff", "fp_diff_aux",
-       "scaled_reduction", "fp_invariant", "bit_invariant",
-       "bit_invariant_aux0", "data1", "bit_invariant_aux1", "reduction_scale"});
-  addSingleResultBits32Switch("mac_rhs", {"i32b", "data1", "data2", "data3",
-                                          "data5", "fp_diff", "fp_diff_aux",
-                                          "data0", "bit_carry", "state_carry"});
-  addSingleResultBits32Switch("mac_acc",
-                              {"i32c", "carried_scan", "bit_carry",
-                               "scaled_reduction", "state_carry", "data0"});
-  addSingleResultBits32Switch(
-      "mac1_lhs", {"i32a", "data2", "data4", "data0", "fp_diff", "fp_diff_aux",
-                   "fp_invariant", "bit_invariant", "bit_invariant_aux0",
-                   "bit_invariant_aux1", "reduction_scale"});
-  addSingleResultBits32Switch(
-      "mac1_rhs", {"i32b", "data3", "data5", "data1", "fp_diff", "fp_diff_aux",
-                   "bit_carry", "state_carry", "carried_scan"});
-  addSingleResultBits32Switch("mac1_acc",
-                              {"i32c", "mac_result", "scaled_reduction",
-                               "carried_scan", "bit_carry", "state_carry"});
-  addSingleResultBits32Switch(
-      "mac2_lhs",
-      {"i32a", "data0", "data2", "data4", "fp_invariant", "bit_invariant",
-       "bit_invariant_aux0", "bit_invariant_aux1", "reduction_scale"});
-  addSingleResultBits32Switch("mac2_rhs",
-                              {"i32b", "data0", "data1", "data3", "data5",
-                               "bit_carry", "state_carry", "carried_scan"});
-  addSingleResultBits32Switch("mac2_acc",
-                              {"mac_result1", "mac_result", "scaled_reduction",
-                               "bit_carry", "state_carry"});
-  addSingleResultBits32Switch(
-      "mac3_lhs",
-      {"i32a", "data0", "data2", "data4", "fp_invariant", "bit_invariant",
-       "bit_invariant_aux0", "bit_invariant_aux1", "reduction_scale"});
-  addSingleResultBits32Switch("mac3_rhs",
-                              {"i32b", "data0", "data1", "data3", "data5",
-                               "bit_carry", "state_carry", "carried_scan",
-                               "fp_running", "fp_running_aux"});
-  addSingleResultBits32Switch(
-      "mac3_acc", {"mac_result2", "mac_result1", "mac_result",
-                   "scaled_reduction", "bit_carry", "state_carry", "data4"});
-  module.addExactBodyLine(
-      "%bit_carry_cond = fabric.switch [spatial] %i32a, %fp_gate");
-  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
-  addSingleResultBits32Switch(
-      "bit_carry_init",
-      {"i32b", "i32c", "addr_shift_const", "addr_bias_const"});
-  addSingleResultBits32Switch(
-      "bit_carry_next",
-      {"i32c", "addr_unscaled", "mac_result", "mac_result1", "int_sum",
-       "selected", "running", "mac_result2", "mac_result3", "data0",
-       "state_carry", "aux_masked", "aux_xor", "fp_running_aux"});
-  addSingleResultBits32Switch("state_carry_cond", {"fp_gate", "i32a"});
-  addSingleResultBits32Switch("state_carry_init",
-                              {"i32a", "i32b", "i32c", "i32d",
-                               "addr_shift_const", "addr_aux_const",
-                               "addr_bias_const", "data0", "data1"});
-  addSingleResultBits32Switch("state_carry_next",
-                              {"mac_result", "mac_result1", "mac_result2",
-                               "mac_result3", "bit_carry", "carried_scan",
-                               "int_sum", "data0", "running", "aux_masked",
-                               "aux_xor", "fp_running_aux"});
-  module.addExactBodyLine(
-      "%scan_feedback, %scan_store_value = fabric.switch [spatial] "
-      "%running, %fp_running, %mac_result, %mac_result1, %mac_result2, "
-      "%mac_result3, %bit_carry, %state_carry, %int_or, %selected, "
-      "%int_sum, %addr_sum, %int_product, %int_product_aux, "
-      "%control_muxed, %int_xor, %aux_masked, %aux_xor, %fp_running_aux, "
-      "%uint_rem");
-  module.addExactBodyLine("  [{connectivity_table = [\"11111111111111111111\", "
-                          "\"00111100000000000000\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>)");
-  module.addExactBodyLine("  -> (!fabric.bits<32>, !fabric.bits<32>)");
-  module.addExactBodyLine(
-      "%sync_aux_done = fabric.switch [spatial] %store_done0, %done1, "
-      "%done2, %done3, %done4, %done5, %control_token_muxed_token");
-  module.addExactBodyLine("  [{connectivity_table = [\"1111111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>) -> !fabric.bits<0>");
-  return module;
-}
-
-struct SharedMemoryAdgConfig {
-  llvm::StringRef moduleName;
-  unsigned wideInputCount = 0;
-  unsigned loadCount = 18;
-  unsigned storeCount = 9;
-  unsigned constantCount = 30;
-  unsigned addCount = 12;
-  unsigned cmpCount = 12;
-  unsigned minCount = 10;
-  unsigned maxCount = 10;
-  unsigned unsignedMinCount = 4;
-  unsigned unsignedMaxCount = 0;
-  unsigned unsignedSaturatingSubCount = 0;
-  unsigned selectCount = 8;
-  unsigned wideSelectCount = 0;
-  unsigned mulCount = 8;
-  unsigned divCount = 0;
-  unsigned unsignedDivCount = 0;
-  unsigned muxCount = 0;
-  unsigned demuxCount = 0;
-  unsigned controlDemuxCount = 0;
-  unsigned logicCount = 8;
-  unsigned shiftCount = 8;
-  unsigned castCount = 8;
-  unsigned trunciCount = 0;
-  unsigned wideConstantCount = 0;
-  unsigned wideAddCount = 0;
-  unsigned wideShiftCount = 0;
-  unsigned wideCmpCount = 0;
-  unsigned wideCastCount = 4;
-  unsigned wideTrunciCount = 0;
-  unsigned wideIndexCastCount = 0;
-  unsigned wideIndexCastUiCount = 0;
-  unsigned wideSextCount = 0;
-  unsigned wideMulCount = 0;
-  unsigned wideUnsignedDivCount = 0;
-  unsigned wideDivCount = 0;
-  unsigned wideMuxCount = 0;
-  unsigned wideRouteBridgeCount = 0;
-  unsigned ctlzCount = 0;
-  unsigned signedRemCount = 0;
-  unsigned fshlCount = 0;
-  unsigned armPkhbtCount = 0;
-  unsigned armPkhtbCount = 0;
-  unsigned armSadd16Count = 0;
-  unsigned armSxtab16Count = 0;
-  unsigned armSxtb16Count = 0;
-  unsigned extuiCount = 4;
-  unsigned fpAddCount = 4;
-  unsigned fpMulCount = 4;
-  unsigned fpDivCount = 0;
-  unsigned fnegCount = 0;
-  unsigned fabsCount = 0;
-  unsigned sqrtCount = 0;
-  unsigned expCount = 0;
-  unsigned cosCount = 0;
-  unsigned toFpCount = 0;
-  unsigned fromFpCount = 0;
-  unsigned signedToFpCount = 0;
-  unsigned signedFromFpCount = 0;
-  unsigned fmaCount = 6;
-  unsigned fpCmpCount = 4;
-  unsigned syncCount = 4;
-  unsigned syncArity = 6;
-  unsigned streamCount = 0;
-  unsigned carryCount = 0;
-  unsigned gateCount = 0;
-  unsigned invariantCount = 0;
-  std::vector<llvm::StringRef> constantHexValues = {
-      "0x00000000", "0x00000001", "0x00000002", "0x00000003",
-      "0x00000004", "0x00000008", "0x00000010", "0xffffffff"};
-  std::vector<llvm::StringRef> wideConstantHexValues = {
-      "0x00000000", "0x00000001", "0x00000002", "0x00000003",
-      "0x00000004", "0x00000008"};
-};
-
-ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
-  ModuleBuilder module(config.moduleName.str());
-  module.addInput("mgr", "memref<?x!fabric.bits<32>>")
-      .addInput("i32a", "!fabric.bits<32>")
-      .addInput("i32b", "!fabric.bits<32>")
-      .addInput("i32c", "!fabric.bits<32>")
-      .addInput("i32d", "!fabric.bits<32>")
-      .addInput("ctrl", "!fabric.bits<0>");
-
-  std::vector<std::string> wideInputs;
-  for (unsigned index = 0; index < config.wideInputCount; ++index) {
-    std::string name =
-        index < 4 ? ("i64" + std::string(1, static_cast<char>('a' + index)))
-                  : numbered("i64", index);
-    module.addInput(name, "!fabric.bits<64>");
-    wideInputs.push_back(std::move(name));
-  }
-
-  std::vector<std::string> sources32 = {"i32a", "i32b", "i32c", "i32d"};
-  std::vector<std::string> sinks32;
-  std::vector<std::string> sources64 = wideInputs;
-  std::vector<std::string> sinks64;
-  std::vector<std::string> sources0 = {"ctrl"};
-  std::vector<std::string> sinks0;
-
-  auto addBinaryBank = [&](llvm::StringRef prefix, unsigned count,
-                           llvm::ArrayRef<llvm::StringRef> opNames) {
-    for (unsigned index = 0; index < count; ++index) {
-      std::string result = numbered(prefix, index);
-      std::string lhs = result + "_lhs";
-      std::string rhs = result + "_rhs";
-      addConfigurableBinaryPe(module, result, lhs, rhs, opNames);
-      sources32.push_back(result);
-      sinks32.push_back(lhs);
-      sinks32.push_back(rhs);
-    }
-  };
-  auto addUnaryBank = [&](llvm::StringRef prefix, unsigned count,
-                          llvm::StringRef opName) {
-    for (unsigned index = 0; index < count; ++index) {
-      std::string result = numbered(prefix, index);
-      std::string input = result + "_input";
-      addUnaryPe(module, result, input, opName);
-      sources32.push_back(result);
-      sinks32.push_back(input);
-    }
-  };
-  auto addWideExtensionBank = [&](llvm::StringRef prefix, unsigned count,
-                                  llvm::StringRef opName) {
-    for (unsigned index = 0; index < count; ++index) {
-      std::string result = numbered(prefix, index);
-      std::string input = result + "_input";
-      addWideExtensionPe(module, result, input, opName);
-      sources64.push_back(result);
-      sinks32.push_back(input);
-    }
-  };
-  auto addWideTruncBank = [&](llvm::StringRef prefix, unsigned count) {
-    for (unsigned index = 0; index < count; ++index) {
-      std::string result = numbered(prefix, index);
-      std::string wideResult = result + "_wide";
-      std::string input = result + "_input";
-      addWideTruncPe(module, wideResult, input);
-      module.addExactBodyLine(valueName(result) + " = fabric.fifo " +
-                              valueName(wideResult) +
-                              " [max_depth = 1, bypassable = true] "
-                              "{bypassed = true}");
-      module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
-      sources32.push_back(result);
-      sinks64.push_back(input);
-    }
-  };
-  auto addWideNarrowingBank = [&](llvm::StringRef prefix, unsigned count,
-                                  llvm::StringRef opName) {
-    for (unsigned index = 0; index < count; ++index) {
-      std::string result = numbered(prefix, index);
-      std::string wideResult = result + "_wide";
-      std::string input = result + "_input";
-      addWideNarrowingPe(module, wideResult, input, opName);
-      module.addExactBodyLine(valueName(result) + " = fabric.fifo " +
-                              valueName(wideResult) +
-                              " [max_depth = 1, bypassable = true] "
-                              "{bypassed = true}");
-      module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
-      sources32.push_back(result);
-      sinks64.push_back(input);
-    }
-  };
-  auto addWideBinaryBank = [&](llvm::StringRef prefix, unsigned count,
-                               llvm::ArrayRef<llvm::StringRef> opNames) {
-    for (unsigned index = 0; index < count; ++index) {
-      std::string result = numbered(prefix, index);
-      std::string lhs = result + "_lhs";
-      std::string rhs = result + "_rhs";
-      addConfigurableWideBinaryPe(module, result, lhs, rhs, opNames);
-      sources64.push_back(result);
-      sinks64.push_back(lhs);
-      sinks64.push_back(rhs);
-    }
-  };
-  auto addTernaryBank = [&](llvm::StringRef prefix, unsigned count,
-                            llvm::StringRef opName) {
-    for (unsigned index = 0; index < count; ++index) {
-      std::string result = numbered(prefix, index);
-      std::string lhs = result + "_lhs";
-      std::string rhs = result + "_rhs";
-      std::string acc = result + "_acc";
-      addTernaryPe(module, result, lhs, rhs, acc, opName);
-      sources32.push_back(result);
-      sinks32.push_back(lhs);
-      sinks32.push_back(rhs);
-      sinks32.push_back(acc);
-    }
-  };
-  auto addStreamBank = [&](llvm::StringRef prefix, unsigned count) {
-    for (unsigned index = 0; index < count; ++index) {
-      std::string stem = numbered(prefix, index);
-      std::string idx = stem + "_idx";
-      std::string rwc = stem + "_rwc";
-      std::string lb = stem + "_lb";
-      std::string ub = stem + "_ub";
-      std::string step = stem + "_step";
-      PeSpec pe;
-      pe.inputs = {{"pa", lb, "!fabric.bits<32>", ""},
-                   {"pb", ub, "!fabric.bits<32>", ""},
-                   {"pc", step, "!fabric.bits<32>", ""}};
-      pe.resultNames = {idx, rwc};
-      pe.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
-      FuSpec fu;
-      fu.inputs = {{"fa", "pa", "!fabric.bits<32>", ""},
-                   {"fb", "pb", "!fabric.bits<32>", ""},
-                   {"fc", "pc", "!fabric.bits<32>", ""}};
-      fu.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
-      fu.operations.push_back(FabricOpSpec{
-          {"idx", "rwc"},
-          {"dataflow.stream"},
-          {"fa", "fb", "fc"},
-          {"!fabric.bits<32>", "!fabric.bits<32>", "!fabric.bits<32>"},
-          {"!fabric.bits<32>", "!fabric.bits<1>"},
-          {{"cont_cond", {"<", ">"}}, {"step_op", {"+="}}},
-          {{"cont_cond", "<"}, {"step_op", "+="}}});
-      fu.yieldValues = {"idx", "rwc"};
-      fu.yieldTypes = {"!fabric.bits<32>", "!fabric.bits<1>"};
-      pe.fus.push_back(std::move(fu));
-      module.addPe(std::move(pe));
-      sources32.push_back(idx);
-      sources32.push_back(rwc);
-      sinks32.push_back(lb);
-      sinks32.push_back(ub);
-      sinks32.push_back(step);
-    }
-  };
-  auto addCarryBank = [&](llvm::StringRef prefix, unsigned count) {
-    for (unsigned index = 0; index < count; ++index) {
-      std::string result = numbered(prefix, index);
-      std::string cond = result + "_cond";
-      std::string init = result + "_init";
-      std::string next = result + "_next";
-      PeSpec pe;
-      pe.inputs = {{"pa", cond, "!fabric.bits<32>", ""},
-                   {"pb", init, "!fabric.bits<32>", ""},
-                   {"pc", next, "!fabric.bits<32>", ""}};
-      pe.resultNames = {result};
-      pe.resultTypes = {"!fabric.bits<32>"};
-      pe.fus.push_back(
-          FuSpec{{{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-                  {"init", "pb", "!fabric.bits<32>", ""},
-                  {"next", "pc", "!fabric.bits<32>", ""}},
-                 {"!fabric.bits<32>"},
-                 {FabricOpSpec{{"carried"},
-                               {"dataflow.carry"},
-                               {"cond", "init", "next"},
-                               {"!fabric.bits<1>", "!fabric.bits<32>",
-                                "!fabric.bits<32>"},
-                               {"!fabric.bits<32>"},
-                               {},
-                               {}}},
-                 {"carried"}});
-      module.addPe(std::move(pe));
-      sources32.push_back(result);
-      sinks32.push_back(cond);
-      sinks32.push_back(init);
-      sinks32.push_back(next);
-    }
-  };
-  auto addGateBank = [&](llvm::StringRef prefix, unsigned count) {
-    for (unsigned index = 0; index < count; ++index) {
-      std::string stem = numbered(prefix, index);
-      std::string condOut = stem + "_cond";
-      std::string valueOut = stem + "_value";
-      std::string cond = stem + "_cond_in";
-      std::string value = stem + "_value_in";
-      PeSpec pe;
-      pe.inputs = {{"pa", cond, "!fabric.bits<32>", ""},
-                   {"pb", value, "!fabric.bits<32>", ""}};
-      pe.resultNames = {condOut, valueOut};
-      pe.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
-      pe.fus.push_back(
-          FuSpec{{{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-                  {"value", "pb", "!fabric.bits<32>", ""}},
-                 {"!fabric.bits<32>", "!fabric.bits<32>"},
-                 {FabricOpSpec{{"after_cond", "after_value"},
-                               {"dataflow.gate"},
-                               {"cond", "value"},
-                               {"!fabric.bits<1>", "!fabric.bits<32>"},
-                               {"!fabric.bits<1>", "!fabric.bits<32>"},
-                               {},
-                               {{"value_kind", "data"}}}},
-                 {"after_cond", "after_value"},
-                 {"!fabric.bits<1>", "!fabric.bits<32>"}});
-      module.addPe(std::move(pe));
-      sources32.push_back(condOut);
-      sources32.push_back(valueOut);
-      sinks32.push_back(cond);
-      sinks32.push_back(value);
-    }
-  };
-  auto addInvariantBank = [&](llvm::StringRef prefix, unsigned count) {
-    for (unsigned index = 0; index < count; ++index) {
-      std::string result = numbered(prefix, index);
-      std::string cond = result + "_cond";
-      std::string value = result + "_value";
-      PeSpec pe;
-      pe.inputs = {{"pa", cond, "!fabric.bits<32>", ""},
-                   {"pb", value, "!fabric.bits<32>", ""}};
-      pe.resultNames = {result};
-      pe.resultTypes = {"!fabric.bits<32>"};
-      pe.fus.push_back(
-          FuSpec{{{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-                  {"value", "pb", "!fabric.bits<32>", ""}},
-                 {"!fabric.bits<32>"},
-                 {FabricOpSpec{{"stable"},
-                               {"dataflow.invariant"},
-                               {"cond", "value"},
-                               {"!fabric.bits<1>", "!fabric.bits<32>"},
-                               {"!fabric.bits<32>"},
-                               {},
-                               {}}},
-                 {"stable"}});
-      module.addPe(std::move(pe));
-      sources32.push_back(result);
-      sinks32.push_back(cond);
-      sinks32.push_back(value);
-    }
-  };
-
-  for (unsigned index = 0; index < config.constantCount; ++index) {
-    std::string result = numbered("const", index);
-    std::string control = result + "_ctrl";
-    addConfigurableConstantPe(module, result, control,
-                              config.constantHexValues);
-    sources32.push_back(result);
-    sinks0.push_back(control);
-  }
-  for (unsigned index = 0; index < config.wideConstantCount; ++index) {
-    std::string result = numbered("wide_const", index);
-    std::string control = result + "_ctrl";
-    addConfigurableWideConstantPe(module, result, control,
-                                  config.wideConstantHexValues);
-    sources64.push_back(result);
-    sinks0.push_back(control);
-  }
-
-  addStreamBank("stream", config.streamCount);
-  addCarryBank("carry", config.carryCount);
-  addGateBank("gate", config.gateCount);
-  addInvariantBank("invariant", config.invariantCount);
-
-  addBinaryBank("add", config.addCount, {"arith.addi", "arith.subi"});
-  addBinaryBank("mul", config.mulCount, {"arith.muli"});
-  addBinaryBank("div", config.divCount, {"arith.divsi"});
-  addBinaryBank("rem", config.signedRemCount, {"arith.remsi"});
-  addBinaryBank("udiv", config.unsignedDivCount,
-                {"arith.divui", "arith.remui"});
-  addBinaryBank("fp_add", config.fpAddCount, {"arith.addf", "arith.subf"});
-  addBinaryBank("fp_mul", config.fpMulCount, {"arith.mulf"});
-  addBinaryBank("fp_div", config.fpDivCount, {"arith.divf"});
-  addUnaryBank("fneg", config.fnegCount, "llvm.fneg");
-  addUnaryBank("fabs", config.fabsCount, "llvm.intr.fabs");
-  addUnaryBank("sqrt", config.sqrtCount, "math.sqrt");
-  addUnaryBank("exp", config.expCount, "math.exp");
-  addUnaryBank("cos", config.cosCount, "math.cos");
-  addUnaryBank("sitofp", config.signedToFpCount, "llvm.sitofp");
-  addUnaryBank("uitofp", config.toFpCount, "llvm.uitofp");
-  addUnaryBank("fptosi", config.signedFromFpCount, "llvm.fptosi");
-  addUnaryBank("fptoui", config.fromFpCount, "llvm.fptoui");
-  addTernaryBank("fma", config.fmaCount, "llvm.intr.fmuladd");
-  addTernaryBank("fshl", config.fshlCount, "llvm.intr.fshl");
-  addTernaryBank("arm_pkhbt", config.armPkhbtCount, "llvm.arm.pkhbt");
-  addTernaryBank("arm_pkhtb", config.armPkhtbCount, "llvm.arm.pkhtb");
-  addBinaryBank("arm_sadd16", config.armSadd16Count, {"llvm.arm.sadd16"});
-  addBinaryBank("arm_sxtab16", config.armSxtab16Count, {"llvm.arm.sxtab16"});
-  addUnaryBank("arm_sxtb16", config.armSxtb16Count, "llvm.arm.sxtb16");
-  addBinaryBank("and", config.logicCount, {"arith.andi"});
-  addBinaryBank("or", config.logicCount, {"arith.ori"});
-  addBinaryBank("xor", config.logicCount, {"arith.xori"});
-  addBinaryBank("shift", config.shiftCount,
-                {"arith.shli", "arith.shrsi", "arith.shrui"});
-  addWideBinaryBank("wide_add", config.wideAddCount,
-                    {"arith.addi", "arith.subi"});
-  addWideBinaryBank("wide_mul", config.wideMulCount, {"arith.muli"});
-  addWideBinaryBank("wide_udiv", config.wideUnsignedDivCount,
-                    {"arith.divui", "arith.remui"});
-  addWideBinaryBank("wide_shift", config.wideShiftCount,
-                    {"arith.shli", "arith.shrsi", "arith.shrui"});
-  addBinaryBank("umin", config.unsignedMinCount, {"llvm.intr.umin"});
-  addBinaryBank("umax", config.unsignedMaxCount, {"llvm.intr.umax"});
-  addBinaryBank("usub_sat", config.unsignedSaturatingSubCount,
-                {"llvm.intr.usub.sat"});
-  addBinaryBank("smin", config.minCount, {"llvm.intr.smin"});
-  addBinaryBank("smax", config.maxCount, {"llvm.intr.smax"});
-
-  for (unsigned index = 0; index < config.cmpCount; ++index) {
-    std::string result = numbered("cmp", index);
-    std::string lhs = result + "_lhs";
-    std::string rhs = result + "_rhs";
-    addCmpPe(module, result, lhs, rhs);
-    sources32.push_back(result);
-    sinks32.push_back(lhs);
-    sinks32.push_back(rhs);
-  }
-  for (unsigned index = 0; index < config.wideCmpCount; ++index) {
-    std::string result = numbered("wide_cmp", index);
-    std::string pred = result + "_pred";
-    std::string lhs = result + "_lhs";
-    std::string rhs = result + "_rhs";
-    addWideCmpPe(module, result, lhs, rhs);
-    module.addExactBodyLine(valueName(pred) + " = fabric.fifo " +
-                            valueName(result) +
-                            " [max_depth = 1, bypassable = true] "
-                            "{bypassed = true}");
-    module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
-    sources32.push_back(pred);
-    sinks64.push_back(lhs);
-    sinks64.push_back(rhs);
-  }
-
-  for (unsigned index = 0; index < config.fpCmpCount; ++index) {
-    std::string result = numbered("fp_cmp", index);
-    std::string lhs = result + "_lhs";
-    std::string rhs = result + "_rhs";
-    addFloatCmpPe(module, result, lhs, rhs);
-    sources32.push_back(result);
-    sinks32.push_back(lhs);
-    sinks32.push_back(rhs);
-  }
-
-  for (unsigned index = 0; index < config.selectCount; ++index) {
-    std::string result = numbered("select", index);
-    std::string pred = result + "_pred";
-    std::string trueValue = result + "_true";
-    std::string falseValue = result + "_false";
-    addSelectPe(module, result, pred, trueValue, falseValue);
-    sources32.push_back(result);
-    sinks32.push_back(pred);
-    sinks32.push_back(trueValue);
-    sinks32.push_back(falseValue);
-  }
-  for (unsigned index = 0; index < config.wideSelectCount; ++index) {
-    std::string result = numbered("wide_select", index);
-    std::string pred = result + "_pred";
-    std::string trueValue = result + "_true";
-    std::string falseValue = result + "_false";
-    addWideSelectPe(module, result, pred, trueValue, falseValue);
-    sources64.push_back(result);
-    sinks64.push_back(pred);
-    sinks64.push_back(trueValue);
-    sinks64.push_back(falseValue);
-  }
-  for (unsigned index = 0; index < config.muxCount; ++index) {
-    std::string result = numbered("mux", index);
-    std::string pred = result + "_pred";
-    std::string falseValue = result + "_false";
-    std::string trueValue = result + "_true";
-    addDataMuxPe(module, result, pred, falseValue, trueValue);
-    sources32.push_back(result);
-    sinks32.push_back(pred);
-    sinks32.push_back(falseValue);
-    sinks32.push_back(trueValue);
-  }
-  for (unsigned index = 0; index < config.demuxCount; ++index) {
-    std::string stem = numbered("demux", index);
-    std::string falseResult = stem + "_false";
-    std::string trueResult = stem + "_true";
-    std::string pred = stem + "_pred";
-    std::string value = stem + "_value";
-    addDataDemuxPe(module, falseResult, trueResult, pred, value);
-    sources32.push_back(falseResult);
-    sources32.push_back(trueResult);
-    sinks32.push_back(pred);
-    sinks32.push_back(value);
-  }
-  for (unsigned index = 0; index < config.controlDemuxCount; ++index) {
-    std::string stem = numbered("control_demux", index);
-    std::string falseResult = stem + "_false";
-    std::string trueResult = stem + "_true";
-    std::string falseWide = falseResult + "_wide";
-    std::string trueWide = trueResult + "_wide";
-    std::string pred = stem + "_pred";
-    std::string value = stem + "_value";
-    addControlDemuxPe(module, falseWide, trueWide, pred, value);
-    module.addExactBodyLine(valueName(falseResult) + " = fabric.fifo " +
-                            valueName(falseWide) +
-                            " [max_depth = 1, bypassable = true] "
-                            "{bypassed = true}");
-    module.addExactBodyLine("  : !fabric.bits<32> to !fabric.bits<0>");
-    module.addExactBodyLine(valueName(trueResult) + " = fabric.fifo " +
-                            valueName(trueWide) +
-                            " [max_depth = 1, bypassable = true] "
-                            "{bypassed = true}");
-    module.addExactBodyLine("  : !fabric.bits<32> to !fabric.bits<0>");
-    sources0.push_back(falseResult);
-    sources0.push_back(trueResult);
-    sinks32.push_back(pred);
-    sinks0.push_back(value);
-  }
-  for (unsigned index = 0; index < config.wideMuxCount; ++index) {
-    std::string result = numbered("wide_mux", index);
-    std::string pred = result + "_pred";
-    std::string falseValue = result + "_false";
-    std::string trueValue = result + "_true";
-    addWideDataMuxPe(module, result, pred, falseValue, trueValue);
-    sources64.push_back(result);
-    sinks64.push_back(pred);
-    sinks64.push_back(falseValue);
-    sinks64.push_back(trueValue);
-  }
-
-  addUnaryBank("cast", config.castCount, "llvm.trunc");
-  addUnaryBank("sext", config.castCount, "llvm.sext");
-  addUnaryBank("zext", config.castCount, "llvm.zext");
-  addUnaryBank("trunci", config.trunciCount, "arith.trunci");
-  addUnaryBank("ctlz", config.ctlzCount, "llvm.intr.ctlz");
-  addWideExtensionBank("wide_zext", config.wideCastCount, "llvm.zext");
-  addWideExtensionBank("wide_sext", config.wideSextCount, "llvm.sext");
-  addWideBinaryBank("wide_div", config.wideDivCount, {"arith.divsi"});
-  addWideTruncBank("wide_trunc", config.wideCastCount);
-  addWideNarrowingBank("wide_trunci", config.wideTrunciCount,
-                       "arith.trunci");
-  addWideNarrowingBank("wide_index_cast", config.wideIndexCastCount,
-                       "arith.index_cast");
-  addWideNarrowingBank("wide_index_castui", config.wideIndexCastUiCount,
-                       "arith.index_castui");
-  addUnaryBank("extui", config.extuiCount, "arith.extui");
-
-  for (unsigned index = 0; index < config.syncCount; ++index) {
-    std::string prefix = numbered("sync", index);
-    addControlSyncPe(module, prefix, config.syncArity);
-    for (unsigned lane = 0; lane < config.syncArity; ++lane) {
-      sinks0.push_back((prefix + llvm::Twine("_in") + llvm::Twine(lane)).str());
-      sources0.push_back(
-          (prefix + llvm::Twine("_done") + llvm::Twine(lane)).str());
-    }
-  }
-
-  for (unsigned index = 0; index < config.loadCount; ++index) {
-    sources32.push_back(numbered("data", index));
-    sources0.push_back(numbered("done", index));
-    sinks32.push_back(numbered("load_addr", index));
-    sinks0.push_back(numbered("load_ctrl", index));
-  }
-  for (unsigned index = 0; index < config.storeCount; ++index) {
-    sources0.push_back(numbered("store_done", index));
-    sinks32.push_back(numbered("store_addr", index));
-    sinks32.push_back(numbered("store_value", index));
-    sinks0.push_back(numbered("store_ctrl", index));
-  }
-
-  llvm::SmallVector<std::string, 4> wideRouteBridgeInputs;
-  llvm::SmallVector<std::string, 4> wideRouteBridgeResults;
-  for (unsigned index = 0; index < config.wideRouteBridgeCount; ++index) {
-    std::string stem = numbered("wide_route_bridge", index);
-    std::string input = stem + "_input";
-    wideRouteBridgeInputs.push_back(input);
-    wideRouteBridgeResults.push_back(stem);
-    sinks32.push_back(input);
-  }
-
-  addUniformSwitch(module, sinks32, sources32, "!fabric.bits<32>");
-  for (auto [input, result] :
-       llvm::zip(wideRouteBridgeInputs, wideRouteBridgeResults)) {
-    module.addExactBodyLine(valueName(result) + " = fabric.fifo " +
-                            valueName(input) +
-                            " [max_depth = 1, bypassable = true] "
-                            "{bypassed = true}");
-    module.addExactBodyLine("  : !fabric.bits<32> to !fabric.bits<64>");
-    sources64.push_back(result);
-  }
-  addUniformSwitch(module, sinks64, sources64, "!fabric.bits<64>");
-  addUniformSwitch(module, sinks0, sources0, "!fabric.bits<0>");
-  addMemoryReductionMem(module, config.loadCount, config.storeCount);
-  return module;
-}
-
-ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
-  SharedMemoryAdgConfig config;
-  config.moduleName = "shared_memory_reduction_adg";
-  config.selectCount = 12;
-  config.wideSelectCount = 2;
-  config.unsignedDivCount = 2;
-  config.muxCount = 4;
-  config.demuxCount = 2;
-  config.controlDemuxCount = 1;
-  config.trunciCount = 4;
-  config.wideConstantCount = 2;
-  config.wideAddCount = 2;
-  config.wideShiftCount = 1;
-  config.wideCmpCount = 1;
-  config.wideIndexCastCount = 6;
-  config.wideIndexCastUiCount = 2;
-  config.wideSextCount = 4;
-  config.wideMulCount = 2;
-  config.wideUnsignedDivCount = 2;
-  config.wideMuxCount = 1;
-  config.wideRouteBridgeCount = 2;
-  config.constantHexValues = {
-      "0x00000000", "0x00000001", "0x00000002", "0x00000003",
-      "0x00000004", "0x00000008", "0x00000010", "0x3f800000",
-      "0x40000000", "0xbf800000", "0x0000001e", "0x0000003f",
-      "0xffffffff"};
-  config.wideConstantHexValues = {"0x00000000", "0x00000001",
-                                  "0x00000002", "0x00000003",
-                                  "0x00000004", "0x00000008",
-                                  "0x0000001f", "0x40000000"};
-  return buildSharedMemoryLikeAdg(config);
-}
-
-ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {
-  SharedMemoryAdgConfig config;
-  config.moduleName = "shared_quantized_window_adg";
-  config.constantCount = 40;
-  config.addCount = 84;
-  config.cmpCount = 84;
-  config.selectCount = 76;
-  config.wideSelectCount = 20;
-  config.mulCount = 48;
-  config.divCount = 4;
-  config.signedRemCount = 2;
-  config.muxCount = 4;
-  config.logicCount = 40;
-  config.unsignedMaxCount = 2;
-  config.shiftCount = 96;
-  config.castCount = 44;
-  config.wideConstantCount = 2;
-  config.wideAddCount = 48;
-  config.wideShiftCount = 28;
-  config.wideCmpCount = 4;
-  config.wideCastCount = 52;
-  config.wideSextCount = 32;
-  config.wideMulCount = 48;
-  config.wideDivCount = 20;
-  config.wideRouteBridgeCount = 16;
-  config.ctlzCount = 2;
-  config.fshlCount = 2;
-  config.armPkhbtCount = 2;
-  config.armPkhtbCount = 1;
-  config.armSadd16Count = 4;
-  config.armSxtab16Count = 2;
-  config.armSxtb16Count = 4;
-  config.minCount = 11;
-  config.maxCount = 11;
-  config.streamCount = 4;
-  config.carryCount = 8;
-  config.invariantCount = 8;
-  config.constantHexValues = {
-      "0x00000000", "0x00000001", "0x00000002", "0x00000003",
-      "0x00000004", "0x00000008", "0x0000000f", "0x00000010",
-      "0x00000018", "0x0000001b", "0x0000001f", "0x000000ff",
-      "0x0000ff00", "0x0000ffef", "0x0000ffff", "0x00ff0000",
-      "0x30000000", "0x40000000", "0xffffffff", "0xffff0000"};
-  config.wideConstantHexValues = {"0x0000001f", "0x40000000"};
-  return buildSharedMemoryLikeAdg(config);
-}
-
-ModuleBuilder loom::adg::buildSharedSignalWindowAdg() {
-  SharedMemoryAdgConfig config;
-  config.moduleName = "shared_signal_window_adg";
-  config.wideInputCount = 4;
-  config.loadCount = 40;
-  config.storeCount = 40;
-  config.constantCount = 48;
-  config.addCount = 32;
-  config.cmpCount = 16;
-  config.selectCount = 16;
-  config.mulCount = 16;
-  config.divCount = 4;
-  config.muxCount = 2;
-  config.logicCount = 16;
-  config.shiftCount = 16;
-  config.castCount = 16;
-  config.wideConstantCount = 3;
-  config.wideAddCount = 2;
-  config.wideCmpCount = 2;
-  config.wideTrunciCount = 2;
-  config.wideIndexCastCount = 4;
-  config.wideIndexCastUiCount = 2;
-  config.wideRouteBridgeCount = 2;
-  config.fpAddCount = 72;
-  config.fpMulCount = 24;
-  config.fpDivCount = 4;
-  config.fnegCount = 4;
-  config.fabsCount = 2;
-  config.sqrtCount = 2;
-  config.expCount = 4;
-  config.cosCount = 4;
-  config.signedToFpCount = 2;
-  config.toFpCount = 4;
-  config.signedFromFpCount = 2;
-  config.fromFpCount = 2;
-  config.unsignedSaturatingSubCount = 2;
-  config.constantHexValues = {
-      "0x00000000", "0x00000001", "0x00000002", "0x00000003",
-      "0x00000004", "0x00000008", "0x00000010", "0xffffffff",
-      "0x3f800000", "0x40000000", "0xbf800000", "0x322bcc77",
-      "0x3727c5ac", "0x3e22f983", "0x44000000", "0xc4000000",
-      "0x000001ff"};
-  config.wideConstantHexValues = {
-      "0x0000000000000000", "0x0000000000000001",
-      "0x0000000000000002", "0x0000000000000003",
-      "0x0000000000000004", "0x0000000000000008",
-      "0x0000000000000010"};
-  config.fmaCount = 8;
-  config.fpCmpCount = 8;
-  config.syncCount = 4;
-  config.syncArity = 20;
-  config.streamCount = 4;
-  config.carryCount = 28;
-  config.gateCount = 28;
-  config.invariantCount = 12;
-  return buildSharedMemoryLikeAdg(config);
-}
-
-ModuleBuilder loom::adg::buildSharedVectorAluAdg() {
-  ModuleBuilder module("shared_vector_alu_adg");
-  module.addInput("mgr", "memref<?x!fabric.bits<32>>")
-      .addInput("idx0", "!fabric.bits<32>")
-      .addInput("idx1", "!fabric.bits<32>")
-      .addInput("store_idx", "!fabric.bits<32>")
-      .addInput("ctrl", "!fabric.bits<0>")
-      .addInput("i32a", "!fabric.bits<32>")
-      .addInput("i32b", "!fabric.bits<32>");
-
-  PeSpec xorPe;
-  xorPe.inputs = {{"lhs", "bin0", "!fabric.bits<32>", ""},
-                  {"rhs", "bin1", "!fabric.bits<32>", ""}};
-  xorPe.resultNames = {"xored"};
-  xorPe.resultTypes = {"!fabric.bits<32>"};
-  xorPe.fus.push_back(
-      FuSpec{{{"a", "lhs", "!fabric.bits<32>", ""},
-              {"b", "rhs", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"value"},
-                           {"arith.xori"},
-                           {"a", "b"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"value"}});
-  module.addPe(std::move(xorPe));
-
-  PeSpec bswapPe;
-  bswapPe.inputs = {{"value", "unary", "!fabric.bits<32>", ""}};
-  bswapPe.resultNames = {"swapped"};
-  bswapPe.resultTypes = {"!fabric.bits<32>"};
-  bswapPe.fus.push_back(FuSpec{{{"input", "value", "!fabric.bits<32>", ""}},
-                               {"!fabric.bits<32>"},
-                               {FabricOpSpec{{"result"},
-                                             {"llvm.intr.bswap"},
-                                             {"input"},
-                                             {"!fabric.bits<32>"},
-                                             {"!fabric.bits<32>"},
-                                             {},
-                                             {}}},
-                               {"result"}});
-  module.addPe(std::move(bswapPe));
-
-  PeSpec floatMulPe;
-  floatMulPe.inputs = {{"lhs", "bin0", "!fabric.bits<32>", ""},
-                       {"rhs", "bin1", "!fabric.bits<32>", ""}};
-  floatMulPe.resultNames = {"product"};
-  floatMulPe.resultTypes = {"!fabric.bits<32>"};
-  floatMulPe.fus.push_back(
-      FuSpec{{{"a", "lhs", "!fabric.bits<32>", ""},
-              {"b", "rhs", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"value"},
-                           {"arith.mulf"},
-                           {"a", "b"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"value"}});
-  module.addPe(std::move(floatMulPe));
-
-  PeSpec intMulPe;
-  intMulPe.inputs = {{"lhs", "bin0", "!fabric.bits<32>", ""},
-                     {"rhs", "i32b", "!fabric.bits<32>", ""}};
-  intMulPe.resultNames = {"int_product"};
-  intMulPe.resultTypes = {"!fabric.bits<32>"};
-  intMulPe.fus.push_back(
-      FuSpec{{{"a", "lhs", "!fabric.bits<32>", ""},
-              {"b", "rhs", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"value"},
-                           {"arith.muli"},
-                           {"a", "b"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"value"}});
-  module.addPe(std::move(intMulPe));
-
-  PeSpec intAddPe;
-  intAddPe.inputs = {{"lhs", "int_product", "!fabric.bits<32>", ""},
-                     {"rhs", "bin1", "!fabric.bits<32>", ""}};
-  intAddPe.resultNames = {"int_sum"};
-  intAddPe.resultTypes = {"!fabric.bits<32>"};
-  intAddPe.fus.push_back(
-      FuSpec{{{"a", "lhs", "!fabric.bits<32>", ""},
-              {"b", "rhs", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"value"},
-                           {"arith.addi"},
-                           {"a", "b"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"value"}});
-  module.addPe(std::move(intAddPe));
-
-  PeSpec qsub16Pe;
-  qsub16Pe.inputs = {{"lhs", "bin0", "!fabric.bits<32>", ""},
-                     {"rhs", "bin1", "!fabric.bits<32>", ""}};
-  qsub16Pe.resultNames = {"qsub16"};
-  qsub16Pe.resultTypes = {"!fabric.bits<32>"};
-  qsub16Pe.fus.push_back(
-      FuSpec{{{"a", "lhs", "!fabric.bits<32>", ""},
-              {"b", "rhs", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"value"},
-                           {"llvm.arm.qsub16"},
-                           {"a", "b"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"value"}});
-  module.addPe(std::move(qsub16Pe));
-
-  PeSpec syncPe;
-  syncPe.inputs = {{"pa", "sync0", "!fabric.bits<0>", ""},
-                   {"pb", "sync1", "!fabric.bits<0>", ""},
-                   {"pc", "sync2", "!fabric.bits<0>", ""}};
-  syncPe.resultTypes = {"!fabric.bits<0>"};
-  syncPe.fus.push_back(FuSpec{
-      {{"fa", "pa", "!fabric.bits<0>", ""},
-       {"fb", "pb", "!fabric.bits<0>", ""},
-       {"fc", "pc", "!fabric.bits<0>", ""}},
-      {"!fabric.bits<0>"},
-      {FabricOpSpec{{"sa", "sb", "sc"},
-                    {"dataflow.sync"},
-                    {"fa", "fb", "fc"},
-                    {"!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>"},
-                    {"!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>"},
-                    {},
-                    {{"bitmask", "111"}}}},
-      {"sa"}});
-  module.addPe(std::move(syncPe));
-
-  module.addExactBodyLine("%data0, %done0, %data1, %done1, %store_done =");
-  module.addExactBodyLine("    fabric.mem [spatial] mgr(%mgr)");
-  module.addExactBodyLine("      load(%idx0, %ctrl, %idx1, %ctrl)");
-  module.addExactBodyLine("      store(%store_idx, %store_value, %ctrl)");
-  module.addExactBodyLine(
-      "      [{load_group_size = 2 : i32, store_group_size = 1 : i32}]");
-  module.addExactBodyLine(
-      "      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, "
-      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>)");
-  module.addExactBodyLine(
-      "      -> (!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
-      "!fabric.bits<0>, !fabric.bits<0>)");
-  module.addExactBodyLine(
-      "%bin0, %bin1, %unary = fabric.switch [spatial] %data0, %data1, "
-      "%i32a");
-  module.addExactBodyLine(
-      "  [{connectivity_table = [\"111\", \"111\", \"111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
-  module.addExactBodyLine(
-      "  -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
-  module.addExactBodyLine(
-      "%store_value = fabric.switch [spatial] %xored, %swapped, %product, "
-      "%int_product, %int_sum, %qsub16, %i32b");
-  module.addExactBodyLine("  [{connectivity_table = [\"1111111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>)");
-  module.addExactBodyLine("  -> !fabric.bits<32>");
-  module.addExactBodyLine(
-      "%sync0, %sync1, %sync2 = fabric.switch [spatial] %done0, %done1, "
-      "%store_done");
-  module.addExactBodyLine(
-      "  [{connectivity_table = [\"111\", \"111\", \"111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>)");
-  module.addExactBodyLine(
-      "  -> (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>)");
-  return module;
-}
-
-ModuleBuilder loom::adg::buildSharedVectorMathAdg() {
-  SharedMemoryAdgConfig config;
-  config.moduleName = "shared_vector_math_adg";
-  config.loadCount = 8;
-  config.storeCount = 4;
-  config.constantCount = 6;
-  config.addCount = 2;
-  config.cmpCount = 1;
-  config.minCount = 0;
-  config.maxCount = 0;
-  config.unsignedMinCount = 0;
-  config.unsignedMaxCount = 0;
-  config.selectCount = 0;
-  config.mulCount = 3;
-  config.divCount = 0;
-  config.unsignedDivCount = 0;
-  config.muxCount = 0;
-  config.logicCount = 3;
-  config.shiftCount = 4;
-  config.castCount = 0;
-  config.trunciCount = 0;
-  config.wideConstantCount = 2;
-  config.wideAddCount = 0;
-  config.wideShiftCount = 0;
-  config.wideCmpCount = 0;
-  config.wideCastCount = 1;
-  config.wideIndexCastCount = 0;
-  config.wideIndexCastUiCount = 0;
-  config.wideSextCount = 0;
-  config.wideMulCount = 0;
-  config.wideUnsignedDivCount = 0;
-  config.wideDivCount = 0;
-  config.wideMuxCount = 0;
-  config.wideRouteBridgeCount = 0;
-  config.ctlzCount = 0;
-  config.extuiCount = 0;
-  config.fpAddCount = 0;
-  config.fpMulCount = 4;
-  config.fnegCount = 4;
-  config.fmaCount = 12;
-  config.fpCmpCount = 0;
-  config.syncCount = 1;
-  config.syncArity = 16;
-  config.streamCount = 0;
-  config.carryCount = 0;
-  config.gateCount = 0;
-  config.invariantCount = 0;
-  return buildSharedMemoryLikeAdg(config);
-}
-
-ModuleBuilder loom::adg::buildSharedVectorMeshAdg() {
-  ModuleBuilder module("shared_vector_mesh_adg");
-  addVisualLayout(module, {{"mem", 0, 1},
-                           {"west0", 1, 0},
-                           {"west1", 1, 1},
-                           {"west_unary", 1, 2},
-                           {"xored", 2, 0},
-                           {"swapped", 2, 2},
-                           {"store_value", 3, 1},
-                           {"sync", 2, 3}});
-  module.addInput("mgr", "memref<?x!fabric.bits<32>>")
-      .addInput("idx0", "!fabric.bits<32>")
-      .addInput("idx1", "!fabric.bits<32>")
-      .addInput("store_idx", "!fabric.bits<32>")
-      .addInput("ctrl", "!fabric.bits<0>")
-      .addInput("i32a", "!fabric.bits<32>");
-
-  PeSpec xorPe;
-  xorPe.inputs = {{"lhs", "mesh_lhs", "!fabric.bits<32>", ""},
-                  {"rhs", "mesh_rhs", "!fabric.bits<32>", ""}};
-  xorPe.resultNames = {"xored"};
-  xorPe.resultTypes = {"!fabric.bits<32>"};
-  xorPe.fus.push_back(
-      FuSpec{{{"a", "lhs", "!fabric.bits<32>", ""},
-              {"b", "rhs", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"value"},
-                           {"arith.xori"},
-                           {"a", "b"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"value"}});
-  module.addPe(std::move(xorPe));
-
-  PeSpec bswapPe;
-  bswapPe.inputs = {{"value", "mesh_unary", "!fabric.bits<32>", ""}};
-  bswapPe.resultNames = {"swapped"};
-  bswapPe.resultTypes = {"!fabric.bits<32>"};
-  bswapPe.fus.push_back(FuSpec{{{"input", "value", "!fabric.bits<32>", ""}},
-                               {"!fabric.bits<32>"},
-                               {FabricOpSpec{{"result"},
-                                             {"llvm.intr.bswap"},
-                                             {"input"},
-                                             {"!fabric.bits<32>"},
-                                             {"!fabric.bits<32>"},
-                                             {},
-                                             {}}},
-                               {"result"}});
-  module.addPe(std::move(bswapPe));
-
-  PeSpec syncPe;
-  syncPe.inputs = {{"pa", "sync0", "!fabric.bits<0>", ""},
-                   {"pb", "sync1", "!fabric.bits<0>", ""},
-                   {"pc", "sync2", "!fabric.bits<0>", ""}};
-  syncPe.resultTypes = {"!fabric.bits<0>"};
-  syncPe.fus.push_back(FuSpec{
-      {{"fa", "pa", "!fabric.bits<0>", ""},
-       {"fb", "pb", "!fabric.bits<0>", ""},
-       {"fc", "pc", "!fabric.bits<0>", ""}},
-      {"!fabric.bits<0>"},
-      {FabricOpSpec{{"sa", "sb", "sc"},
-                    {"dataflow.sync"},
-                    {"fa", "fb", "fc"},
-                    {"!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>"},
-                    {"!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>"},
-                    {},
-                    {{"bitmask", "111"}}}},
-      {"sa"}});
-  module.addPe(std::move(syncPe));
-
-  module.addExactBodyLine("%data0, %done0, %data1, %done1, %store_done =");
-  module.addExactBodyLine("    fabric.mem [spatial] mgr(%mgr)");
-  module.addExactBodyLine("      load(%idx0, %ctrl, %idx1, %ctrl)");
-  module.addExactBodyLine("      store(%store_idx, %store_value, %ctrl)");
-  module.addExactBodyLine(
-      "      [{load_group_size = 2 : i32, store_group_size = 1 : i32}]");
-  module.addExactBodyLine(
-      "      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, "
-      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>)");
-  module.addExactBodyLine(
-      "      -> (!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
-      "!fabric.bits<0>, !fabric.bits<0>)");
-  module.addExactBodyLine(
-      "%west0, %west1, %west_unary = fabric.switch [spatial] %data0, "
-      "%data1, %i32a");
-  module.addExactBodyLine(
-      "  [{connectivity_table = [\"111\", \"111\", \"101\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
-  module.addExactBodyLine(
-      "  -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
-  module.addExactBodyLine(
-      "%mesh_lhs, %mesh_rhs_pre = fabric.switch [spatial] %west0, %west1");
-  module.addExactBodyLine("  [{connectivity_table = [\"11\", \"11\"]}]");
-  module.addExactBodyLine("  : (!fabric.bits<32>, !fabric.bits<32>)");
-  module.addExactBodyLine("  -> (!fabric.bits<32>, !fabric.bits<32>)");
-  module.addExactBodyLine(
-      "%mesh_rhs, %mesh_unary = fabric.switch [spatial] %mesh_rhs_pre, "
-      "%west0, %west_unary");
-  module.addExactBodyLine("  [{connectivity_table = [\"111\", \"011\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
-  module.addExactBodyLine("  -> (!fabric.bits<32>, !fabric.bits<32>)");
-  module.addExactBodyLine(
-      "%store_value = fabric.switch [spatial] %xored, %swapped, %i32a");
-  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
-  module.addExactBodyLine("  -> !fabric.bits<32>");
-  module.addExactBodyLine(
-      "%sync0, %sync1, %sync2 = fabric.switch [spatial] %done0, %done1, "
-      "%store_done");
-  module.addExactBodyLine(
-      "  [{connectivity_table = [\"111\", \"111\", \"111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>)");
-  module.addExactBodyLine(
-      "  -> (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>)");
-  return module;
-}
-
-ModuleBuilder loom::adg::buildFullSpatialCoreAdg() {
-  ModuleBuilder module("full_spatialcore_adg");
-  module.addInput("mgr", "memref<?x!fabric.bits<32>>")
-      .addInput("lhs", "!fabric.bits<32>")
-      .addInput("rhs", "!fabric.bits<32>")
-      .addInput("addr", "!fabric.bits<32>")
-      .addInput("ctrl", "!fabric.bits<0>")
-      .addInput("tag", "!fabric.bits<4>")
-      .addInput("lhs_t", "!fabric.bits_tag<32, 4>")
-      .addInput("rhs_t", "!fabric.bits_tag<32, 4>")
-      .addInput("addr_t", "!fabric.bits_tag<32, 4>")
-      .addInput("ctrl_t", "!fabric.bits_tag<0, 4>");
-
-  module.addPe(makeMinimalAddPe(Schedule::Spatial, "!fabric.bits<32>",
-                                "!fabric.bits<32>"));
-
-  TemporalPeConfig temporal;
-  temporal.tagWidth = 4;
-  temporal.numInstruction = 2;
-  temporal.fuConfigMode = "per_fu_config";
-  temporal.operandBufferMode = "per_input_port";
-  temporal.operandBufferSize = 2;
-  temporal.numRegFifo = 2;
-  temporal.regFifoDepth = 4;
-  temporal.regFifoPorts = 1;
-  module.addPe(makeMinimalAddPe(Schedule::Temporal, "lhs_t", "rhs_t",
-                                "!fabric.bits_tag<32, 4>", "!fabric.bits<32>",
-                                std::move(temporal)));
-
-  module.addSwitch(SwitchSpec{Schedule::Spatial,
-                              {"lhs", "rhs"},
-                              {"!fabric.bits<32>", "!fabric.bits<32>"},
-                              {"11", "11"},
-                              0});
-  module.addSwitch(
-      SwitchSpec{Schedule::Temporal,
-                 {"lhs_t", "rhs_t"},
-                 {"!fabric.bits_tag<32, 4>", "!fabric.bits_tag<32, 4>"},
-                 {"11", "11"},
-                 2});
-
-  module.addMem(MemSpec{
-      Schedule::Spatial, "mgr", {{"addr", "ctrl"}}, {{"addr", "lhs", "ctrl"}}});
-
-  MemSpec temporalMem;
-  temporalMem.schedule = Schedule::Temporal;
-  temporalMem.manager = "mgr";
-  temporalMem.loads = {{"addr_t", "ctrl_t"}};
-  temporalMem.stores = {{"addr_t", "lhs_t", "ctrl_t"}};
-  temporalMem.temporalTagWidth = 4;
-  temporalMem.temporalAddrTableSize = 2;
-  module.addMem(std::move(temporalMem));
-
-  module.addExactBodyLine(
-      "%tagged = fabric.boundary [s2t] %lhs, %tag : (!fabric.bits<32>, "
-      "!fabric.bits<4>) -> !fabric.bits_tag<32, 4>");
-  module.addExactBodyLine(
-      "%queued = fabric.fifo %tagged [max_depth = 4, bypassable = true] : "
-      "!fabric.bits_tag<32, 4>");
-  module.addExactBodyLine(
-      "fabric.pe @ALU [spatial] (!fabric.bits<32>) -> (!fabric.bits<32>) {");
-  module.addExactBodyLine("^bb0(%pa: !fabric.bits<32>):");
-  module.addExactBodyLine(
-      "  fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {");
-  module.addExactBodyLine(
-      "    %v = fabric.op [@arith.addi] (%fa, %fa) : (!fabric.bits<32>, "
-      "!fabric.bits<32>) -> !fabric.bits<32>");
-  module.addExactBodyLine("    fabric.yield %v : !fabric.bits<32>");
-  module.addExactBodyLine("  }");
-  module.addExactBodyLine("  fabric.yield %pa : !fabric.bits<32>");
-  module.addExactBodyLine("}");
-  module.addExactBodyLine(
-      "%inst = fabric.instantiate @ALU(%lhs : !fabric.bits<32>) -> "
-      "(!fabric.bits<32>)");
-  return module;
-}
-
-SystemBuilder loom::adg::buildHeterogeneousSocAdg() {
-  SystemBuilder system("heterogeneous_dual_accel_soc", "sequential");
-  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
-  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
-                               axiManagerPort("mem"));
-  system.addFixedAccelerator("fft0", "fft", axiManagerPort("mem"));
-
-  std::vector<std::string> cachePorts;
-  appendPorts(cachePorts, axiSubordinatePort("host"));
-  appendPorts(cachePorts, axiManagerPort("mem"));
-  system.addCache("l1d0", 64, 32 * 1024, std::move(cachePorts));
-
-  std::vector<std::string> dmaPorts;
-  appendPorts(dmaPorts, axiSubordinatePort("ctrl"));
-  appendPorts(dmaPorts, axiManagerPort("mem"));
-  system.addDmaEngine("dma0", 4, std::move(dmaPorts));
-
-  std::vector<std::string> dramPorts;
-  appendPorts(dramPorts, axiSubordinatePort("cache"));
-  appendPorts(dramPorts, axiSubordinatePort("acc0"));
-  appendPorts(dramPorts, axiSubordinatePort("fft0"));
-  appendPorts(dramPorts, axiSubordinatePort("dma0"));
-  system.addMemory("dram0", 1024 * 1024, std::move(dramPorts));
-
-  connectAxiMemoryPort(system, "host0", "mem", "l1d0", "host");
-  connectAxiMemoryPort(system, "l1d0", "mem", "dram0", "cache");
-  connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
-  connectAxiMemoryPort(system, "fft0", "mem", "dram0", "fft0");
-  connectAxiMemoryPort(system, "dma0", "mem", "dram0", "dma0");
-  return system;
-}
-
-llvm::Error loom::adg::writeMinimalSpatialAdg(llvm::raw_ostream &os) {
-  return buildMinimalSpatialAdg().print(os);
-}
-
-llvm::Error loom::adg::writeMinimalTemporalAdg(llvm::raw_ostream &os) {
-  return buildMinimalTemporalAdg().print(os);
-}
-
-llvm::Error loom::adg::writeSharedReductionAdg(llvm::raw_ostream &os) {
-  return buildSharedReductionAdg().print(os);
-}
-
-llvm::Error loom::adg::writeSharedMemoryReductionAdg(llvm::raw_ostream &os) {
-  return buildSharedMemoryReductionAdg().print(os);
-}
-
-llvm::Error loom::adg::writeSharedQuantizedWindowAdg(llvm::raw_ostream &os) {
-  return buildSharedQuantizedWindowAdg().print(os);
-}
-
-llvm::Error loom::adg::writeSharedSignalWindowAdg(llvm::raw_ostream &os) {
-  return buildSharedSignalWindowAdg().print(os);
-}
-
-llvm::Error loom::adg::writeSharedVectorAluAdg(llvm::raw_ostream &os) {
-  return buildSharedVectorAluAdg().print(os);
-}
-
-llvm::Error loom::adg::writeSharedVectorMathAdg(llvm::raw_ostream &os) {
-  return buildSharedVectorMathAdg().print(os);
-}
-
-llvm::Error loom::adg::writeSharedVectorMeshAdg(llvm::raw_ostream &os) {
-  return buildSharedVectorMeshAdg().print(os);
-}
-
-llvm::Error loom::adg::writeFullSpatialCoreAdg(llvm::raw_ostream &os) {
-  return buildFullSpatialCoreAdg().print(os);
-}
-
-llvm::Error loom::adg::writeHeterogeneousSocAdg(llvm::raw_ostream &os) {
-  if (llvm::Error err = printReusableSpatialTemplates(os, false))
-    return err;
-  return buildHeterogeneousSocAdg().print(os);
-}
-
-llvm::Error loom::adg::writeSpatialTopologyMatrixAdg(llvm::raw_ostream &os,
-                                                     llvm::StringRef family) {
-  if (family == "chain-1d")
-    return buildChain1DAdg().print(os);
-  if (family == "mesh-2d")
-    return buildMesh2DAdg().print(os);
-  if (family == "torus-edge")
-    return buildTorusEdgeAdg().print(os);
-  if (family == "systolic-array")
-    return buildSystolicArrayAdg().print(os);
-  if (family == "clustered-array")
-    return buildClusteredArrayAdg().print(os);
-  if (family == "folded-ring")
-    return buildFoldedRingAdg().print(os);
-  if (family == "mesh-diagonal")
-    return buildMeshDiagonalAdg().print(os);
-  if (family == "multi-lane-pipeline")
-    return buildMultiLanePipelineAdg().print(os);
-  if (family == "reduction-tree")
-    return buildReductionTreeAdg().print(os);
-  if (family == "cross-coupled-switch")
-    return buildCrossCoupledSwitchAdg().print(os);
-  if (family == "diamond-bypass")
-    return buildDiamondBypassAdg().print(os);
-  if (family == "memory-fanout")
-    return buildMemoryFanoutAdg().print(os);
-  if (family == "mixed-temporal-bridge")
-    return buildMixedTemporalBridgeAdg().print(os);
-  if (family == "sparse-long-link")
-    return buildSparseLongLinkAdg().print(os);
-  if (family == "heterogeneous-islands")
-    return buildHeterogeneousIslandsAdg().print(os);
-  return llvm::createStringError(std::errc::invalid_argument,
-                                 "unknown topology matrix case %s",
-                                 family.str().c_str());
-}
-
-llvm::Error loom::adg::writeSystemTopologyMatrixAdg(llvm::raw_ostream &os,
-                                                    llvm::StringRef family) {
-  if (family == "dual-spatial-shared-memory") {
-    if (llvm::Error err = printReusableSpatialTemplates(os, true))
-      return err;
-    return buildDualSpatialSharedMemorySocAdg().print(os);
-  }
-  if (family == "cached-dual-accel") {
-    if (llvm::Error err = printReusableSpatialTemplates(os, true))
-      return err;
-    return buildCachedDualAccelSocAdg().print(os);
-  }
-  if (family == "dma-scratchpad") {
-    if (llvm::Error err = printReusableSpatialTemplates(os, false))
-      return err;
-    return buildDmaScratchpadSocAdg().print(os);
-  }
-  if (family == "fixed-and-spatial") {
-    if (llvm::Error err = printReusableSpatialTemplates(os, false))
-      return err;
-    return buildFixedAndSpatialSocAdg().print(os);
-  }
-  if (family == "tri-spatial-shared-memory") {
-    if (llvm::Error err =
-            printReusableSpatialTemplates(os, true, true, false, false))
-      return err;
-    return buildTriSpatialSharedMemorySocAdg().print(os);
-  }
-  if (family == "dual-host-shared-memory") {
-    if (llvm::Error err = printReusableSpatialTemplates(os, true))
-      return err;
-    return buildDualHostSharedMemorySocAdg().print(os);
-  }
-  if (family == "private-scratchpad-pair") {
-    if (llvm::Error err = printReusableSpatialTemplates(os, true))
-      return err;
-    return buildPrivateScratchpadPairSocAdg().print(os);
-  }
-  if (family == "host-cache-dual-memory") {
-    if (llvm::Error err = printReusableSpatialTemplates(os, true))
-      return err;
-    return buildHostCacheDualMemorySocAdg().print(os);
-  }
-  if (family == "dma-dual-memory") {
-    if (llvm::Error err = printReusableSpatialTemplates(os, false))
-      return err;
-    return buildDmaDualMemorySocAdg().print(os);
-  }
-  if (family == "cached-accelerator-cluster") {
-    if (llvm::Error err = printReusableSpatialTemplates(os, true))
-      return err;
-    return buildCachedAcceleratorClusterSocAdg().print(os);
-  }
-  if (family == "mixed-fixed-spatial-pipeline") {
-    if (llvm::Error err = printReusableSpatialTemplates(os, true))
-      return err;
-    return buildMixedFixedSpatialPipelineSocAdg().print(os);
-  }
-  if (family == "signal-quantized-pair") {
-    if (llvm::Error err =
-            printReusableSpatialTemplates(os, false, false, true, true))
-      return err;
-    return buildSignalQuantizedPairSocAdg().print(os);
-  }
-  return llvm::createStringError(std::errc::invalid_argument,
-                                 "unknown system topology matrix case %s",
-                                 family.str().c_str());
 }

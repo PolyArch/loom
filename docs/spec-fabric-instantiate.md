@@ -5,7 +5,7 @@ previously-defined fabric template symbol into a legal parent scope as a
 fresh hardware instance with its own SSA inputs and outputs.
 The canonical IR source is `Fabric_InstantiateOp` in
 `include/Fabric/IR/FabricOps.td`; verifier rules live in
-`lib/Fabric/IR/FabricOps.cpp`.
+`lib/Fabric/IR/FabricInstantiateOp.cpp`.
 
 ## Op shape and assembly syntax
 
@@ -31,10 +31,16 @@ Operands form:
   type must equal the target's declared output port type.
 
 The IR-level operand types reflect the SSA source side. The internal
-inner-input types are stashed in an `inner_input_types : ArrayAttr` only
-when at least one operand has a width-relaxing `to` clause; otherwise
-the attribute is omitted to keep the no-relaxation case round-tripping
-unchanged.
+inner-input types are retained in the ODS-owned typed
+`inner_input_types : ArrayRef<Type>` property only when at least one
+operand has a width-relaxing `to` clause; otherwise the property remains
+empty to keep the no-relaxation case round-tripping unchanged. ODS owns
+the container and element-type contract; the operation verifier owns
+operand-count and endpoint-compatibility checks.
+
+The property is canonical: it is empty if every destination input type
+equals its SSA operand type. A non-empty property has one entry per
+operand and must contain at least one actual endpoint-type difference.
 
 `fabric.instantiate` implements `SymbolUserOpInterface`, so the symbol
 table verifier dispatches `verifySymbolUses` automatically.

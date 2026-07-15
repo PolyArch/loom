@@ -37,6 +37,32 @@ In both forms, `K = numInputs() >= 1` and `L = numOutputs() >= 1`. For
 the named form `K`/`L` are taken from the `function_type` signature; for
 the anonymous form they are the SSA operand and result counts.
 
+This uniformity rule describes the switch's own declared physical
+ports. It does not require a neighboring producer or consumer to use
+the same width. A connection from a differently sized endpoint into a
+switch input, or from a switch output into a differently sized endpoint,
+uses the module-level LSB-aligned width rule in
+`spec-fabric-module.md`. That connection does not add an adapter and
+does not change the switch's internal crossbar width. Port-kind changes
+remain illegal without an explicit `fabric.boundary`.
+
+For an anonymous switch, each incoming type-list entry may spell both
+endpoints as `source-type to destination-port-type`. The source type
+resolves the SSA operand; the destination type is the switch input-port
+type used by the uniformity and schedule checks. The clause accepts only
+`bits` to `bits` or `bits_tag` to `bits_tag`; widths normalize with the
+module-level LSB-aligned semantics. It rejects port-kind changes and
+`memref`. When `to` is absent, the destination type equals the source
+type. Named switch templates continue to derive all port types from
+their declared `function_type` signature.
+
+Differing anonymous input-port types are retained in the ODS-owned typed
+`inner_input_types : ArrayRef<Type>` property. The custom assembly syntax
+renders that state through the per-input `to` clauses and leaves the
+property empty when every source and destination type is equal.
+A non-empty property has one entry per operand and must contain at least
+one actual endpoint-type difference.
+
 ## Hardware parameters
 
 Hardware parameters live in `hw_params`, an ArrayAttr of length 1
@@ -106,6 +132,12 @@ Spatial switches allow **broadcast** (one input may be selected by
 multiple `route_table` rows simultaneously) but FORBID **fan-in** to a
 single output (the per-row `'1'` <= 1 rule enforces this).
 
+At the enclosing `fabric.module` SSA level, broadcast does not reuse the
+input transport at multiple consumers. The switch consumes that input
+once and exposes each selected output port as a distinct SSA result.
+Each result remains a point-to-point transport under
+`spec-fabric-module.md`.
+
 ### route_table -- temporal
 
 * ArrayAttr of exactly `route_table_size` entries.
@@ -132,6 +164,12 @@ cycle's tokens carrying tag `t`. Different tags routed in the same cycle
 share the physical crossbar; same-cycle conflicts on a single output
 port (multi-input-to-same-output across different tags) are arbitrated
 in hardware via round-robin.
+
+### Hardware payload opacity
+
+A switch routes physical valid/ready transfers and treats the payload
+bits as opaque. It does not assign or interpret software-level value,
+control, or completion semantics.
 
 ## Limits and arbitration
 

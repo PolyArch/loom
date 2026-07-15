@@ -66,7 +66,7 @@ fabric.module @top(...) -> (!fabric.bits<32>, memref<8xi32>) {
 The same allowed-type table applies to outputs. Outputs are produced by
 the `fabric.yield` terminator inside the body. The yield value count
 must equal the module's declared output count, and yield value types
-must conform to the width-relaxation rule below.
+must conform to the physical connection compatibility rule below.
 
 A module may have zero outputs (`-> ()`) or zero inputs
 (`fabric.module @top()`).
@@ -115,82 +115,102 @@ level.
 support constructs for buffering, spatial/temporal domain conversion,
 and template reuse. They do not replace the core tile matrix.
 
-## Width-relaxation rule (three connection points)
+## Physical Connection Type Compatibility
 
-`fabric.module` body has three connection points where width relaxation
-is permitted as long as the type-kind matches:
+This section is the single source of truth for ordinary directed
+physical connections inside `fabric.module`. Operation-specific specs
+may constrain the declared ports of a resource, but they must not
+redefine the semantics of a connection between two such ports.
 
-1. **Module input -> sub-module operand.** A `fabric.module` block
-   argument feeding a sub-module (e.g., `fabric.pe [spatial]`,
-   `fabric.fifo`).
-2. **Sub-module result -> sub-module operand.** A sub-module's result
-   inside the same module body consumed by another sub-module.
-3. **Sub-module result -> module yield.** The value flowing out of the
-   module to one of its declared result ports.
+The rule applies at all three module-level connection classes:
 
-At each of these boundaries the source SSA value's type may differ from
-the destination's declared type **in width only**, while the
-type-kind must be identical:
+1. a module input endpoint connected to a resource input endpoint;
+2. a resource output endpoint connected to another resource input
+   endpoint;
+3. a resource output endpoint connected to a module output endpoint.
 
-* `bits` -> `bits`
-* `bits_tag` -> `bits_tag`
-* `memref` -> `memref` (no width relaxation; types must match exactly).
+The source and destination must have the same port kind:
 
-### Semantics: low-bit alignment, zero-fill on extension
+* `bits` may connect only to `bits`;
+* `bits_tag` may connect only to `bits_tag`;
+* `memref` may connect only to an exactly matching `memref` type.
 
-For `bits<Ws>` -> `bits<Wd>` the two values are aligned at the LSB.
+An ordinary connection must not convert `bits` to `bits_tag` or
+`bits_tag` to `bits`. Such a spatial/temporal domain transition requires
+an explicit `fabric.boundary` resource. Protocol conversion, tag-value
+remapping, buffering, arbitration, and clock, reset, or power-domain
+crossing likewise require the corresponding explicit Fabric resource.
 
-* If `Ws > Wd`: the high `Ws - Wd` bits of the source are dropped
-  (truncation).
-* If `Ws < Wd`: the high `Wd - Ws` bits of the destination are
-  zero-filled.
+### Point-to-Point Transport Values
 
-For `bits_tag<Ws, Ts>` -> `bits_tag<Wd, Td>` the rule applies
-independently to the bits field and the tag field. Each field aligns
-low-bit-first; extension is zero-fill, truncation drops high bits. The
-tag-only form `bits_tag<0, T>` follows the same rule on the tag field.
+Direct module-body `!fabric.bits` and `!fabric.bits_tag` SSA values are
+point-to-point transports. Each module entry-block argument and each
+result of an operation directly in the module body may have at most one
+consuming operand use owned by an operation in that body.
+`fabric.yield` is a consumer under this rule. A transport may be unused.
 
-For `memref<...>` -> `memref<...>` no width relaxation is allowed. The
-two memref types must match exactly: same element type, same shape,
-same layout, same memory space. Mismatch is a verifier error.
+Broadcast and fan-in require explicit routing resources. A switch may
+route one input to multiple output ports, but those ports are distinct
+SSA results and each result remains a point-to-point transport.
 
-### IR-level expression of the relaxation
+The rule does not apply to `memref` values, which represent memory
+capabilities rather than token transports. It also does not inspect
+values or uses inside nested `fabric.pe` or `fabric.fu` regions; those
+regions follow their own verifier contracts.
 
-The relaxation is made explicit at each connection point through a
-`to T_inner` (or `to T_module_result`) clause, mirroring `fabric.fu`'s
-existing FU-boundary truncation syntax:
+### Same-Kind Width Semantics
 
-* `fabric.pe [spatial]` operands accept an optional
-  `to <inner-type>` clause:
-  ```mlir
-  fabric.pe [spatial](%pa = %src : !fabric.bits<32>
-                                to !fabric.bits<16>) -> ...
-  ```
-  Outer (operand source) type is `bits<32>`, inner (PE block arg) type
-  is `bits<16>`. The PE's K, L, W rules still govern the inner side.
-* `fabric.fifo` operand accepts the same clause:
-  ```mlir
-  %0 = fabric.fifo %src to !fabric.bits<8>
-                  [max_depth = 4, bypassable = false] : !fabric.bits<8>
-  ```
-  The FIFO operates internally at the inner type; the SSA source may
-  be a different width within the same kind.
-* `fabric.yield` accepts a per-value optional `to T_module_result`
-  clause:
-  ```mlir
-  fabric.yield %v0 : !fabric.bits<32> to !fabric.bits<16>,
-               %v1 : !fabric.bits<8>
-  ```
-  The first value is yielded as a `bits<16>` module result with low-bit
-  alignment; the second yields a `bits<8>` value as-is.
+Equal widths are not required for `bits` and `bits_tag` connections.
+The only legal width-mismatch semantics is LSB alignment:
 
-Without the `to ...` clause, source and destination types must match.
-The `to ...` clause is rejected on `memref` operands.
+* `bits<Ws>` to `bits<Wd>` drops the high `Ws - Wd` source bits when
+  `Ws > Wd` and zero-fills the high `Wd - Ws` destination bits when
+  `Ws < Wd`;
+* `bits_tag<Ws, Ts>` to `bits_tag<Wd, Td>` applies the same rule
+  independently to the data field and the tag field;
+* the tag-only form `bits_tag<0, T>` applies the rule to the tag field
+  and carries no data bits.
 
-The relaxation does **not** apply inside a sub-module's body. Inside
-`fabric.pe [spatial]` the existing `fabric.fu` `to T_inner` syntax for
-the FU boundary still governs FU-input asymmetry; everything else stays
-strict per the existing rules.
+Width normalization does not change the valid/ready transfer event.
+It is intrinsic to the physical connection and is not an adapter,
+buffer, configurable resource, or additional route hop. PnR and other
+consumers must derive it from the connected endpoint types and must not
+invent an adapter record for a pure same-kind width change.
+
+For `memref<...>` no width relaxation is allowed. Source and destination
+must have the same element type, shape, layout, and memory space.
+
+### IR Expression
+
+Both endpoint types must remain explicit in IR. A consumer signature or
+an operation-specific `to <destination-type>` clause records the
+destination endpoint type when it differs from the producer SSA type.
+The `to` clause is connection typing, not a hardware resource.
+
+Examples include:
+
+```mlir
+fabric.pe [spatial](%pa = %src : !fabric.bits<32>
+                              to !fabric.bits<16>) -> ...
+
+%0 = fabric.fifo %src [max_depth = 4, bypassable = false]
+                : !fabric.bits<32> to !fabric.bits<8>
+
+fabric.yield %v0 : !fabric.bits<32> to !fabric.bits<16>,
+             %v1 : !fabric.bits<8>
+```
+
+The first two examples declare the consumer-side physical port width;
+the final example declares the module output endpoint width. A `to`
+clause is illegal for `memref` because `memref` connections require an
+exact type match. Anonymous `fabric.switch` and `fabric.boundary`
+incoming type lists use the same `source-type to destination-port-type`
+form. Their result types remain the resource output-port types.
+
+Resource-internal constraints remain owned by the corresponding
+resource spec. For example, a switch may require all of its declared
+ports to be uniform even though neighboring resources connected to
+those ports may use different widths under this module-level rule.
 
 ## Optional Loom-constant overrides
 
@@ -254,10 +274,19 @@ artifact that claims visualization evidence.
 * The region kind is `Graph`.
 * The op is `IsolatedFromAbove`: external SSA values cannot leak in;
   entry-block arguments are the only inputs.
+* Every ordinary physical connection preserves port kind. Same-kind
+  `bits` and `bits_tag` width differences are accepted with the
+  canonical LSB-aligned semantics; `bits`/`bits_tag` transitions require
+  an explicit `fabric.boundary`.
+* A pure same-kind width difference does not require or imply an
+  adapter resource.
+* Every direct module-body `bits` or `bits_tag` transport source has at
+  most one direct module-body consuming use. `fabric.yield` counts as a
+  consumer; `memref` values and nested PE/FU region values are excluded.
 * `fabric.yield` inside `fabric.module` must have exactly as many
   operands as the module's declared result count, and each yield value
-  must satisfy the width-relaxation rule against the corresponding
-  module result type.
+  must satisfy the physical connection compatibility rule against the
+  corresponding module result type.
 
 ## Target Universe
 
@@ -269,8 +298,9 @@ The `fabric.module` target universe includes:
 * spatial-to-temporal, temporal-to-temporal, and temporal-to-spatial
   boundary ops;
 * named and anonymous forms for supported module-body constructs;
-* template instantiation rules for module, PE, and FU symbols;
-* Graph-region SSA connectivity and width-relaxation points;
+* template instantiation rules for module, PE, switch, memory, and FU symbols;
+* point-to-point Graph-region SSA connectivity and same-kind
+  width-normalization points;
 * optional module-level Loom address and memory-bus overrides.
 
 The target universe does not include module-internal `fabric.link`.
@@ -285,7 +315,7 @@ artifact rows that identify the selected `fabric.module` symbol.
 Every supported module-body construct must have at least one positive
 test and at least one diagnostic or unsupported-scope test for invalid
 shape, invalid type, invalid schedule, invalid symbol use, or invalid
-width-relaxation form.
+connection-typing form.
 
 ## Objective Verification
 
@@ -346,14 +376,16 @@ The verifier exercises the following rejections (see
   result).
 * `memref` width or shape mismatch on yield.
 * `to T_inner` clause used on a `memref` operand.
+* Direct module-body transport fanout without an explicit routing
+  resource.
 
 ## Cross-references
 
 * `spec-fabric-pe.md` -- inner PE container (spatial and temporal
   schedules), including PE-side width and FU-boundary details.
 * `spec-fabric-instantiate.md` -- the `fabric.instantiate` op that
-  binds a previously-defined `fabric.{module, pe, fu}` symbol into
-  the current scope as a fresh hardware instance.
+  binds a previously-defined module, PE, switch, memory, or FU symbol
+  into the current scope as a fresh hardware instance.
 * `spec-fabric-reconfigurable-op.md` -- per-op runtime axes that
   populate spatial PE configurations.
 * `spec-fabric-hw-share-group.md` -- legal hardware-share groups for

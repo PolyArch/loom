@@ -25,6 +25,29 @@ fabric.module @s2t_data_width_mismatch(%d : !fabric.bits<16>, %t : !fabric.bits<
 }
 
 // -----
+// Memory capabilities cannot be declared as boundary destination ports.
+fabric.module @boundary_memref_input_normalization(%a : !fabric.bits<32>) {
+  // expected-error @+1 {{memref capabilities cannot use the 'to <destination-type>' clause}}
+  %0 = fabric.boundary [s2t] %a {sw_configs = {tag = 0 : i4}}
+       : !fabric.bits<32> to memref<4xi32> -> !fabric.bits_tag<16, 4>
+  fabric.yield
+}
+
+// -----
+// A same-name discardable attribute must not shadow a valid inherent property.
+fabric.module @boundary_inner_input_types_collision(
+    %a : !fabric.bits<32>) {
+  // expected-error @+1 {{discardable attribute 'inner_input_types' conflicts with the inherent property of the same name}}
+  %0 = "fabric.boundary"(%a) <{
+    direction = 0 : i32,
+    inner_input_types = [!fabric.bits<16>],
+    sw_configs = {tag = 0 : i4}
+  }> {inner_input_types = "not-an-array"}
+      : (!fabric.bits<32>) -> !fabric.bits_tag<16, 4>
+  fabric.yield
+}
+
+// -----
 // fabric.boundary [s2t]: 1-operand form missing sw_configs.tag.
 fabric.module @s2t_const_missing_tag(%d : !fabric.bits<32>) {
   // expected-error @+1 {{[s2t] constant-tag form requires 'sw_configs.tag' integer attribute}}

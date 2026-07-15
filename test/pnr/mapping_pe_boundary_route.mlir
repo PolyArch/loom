@@ -26,8 +26,11 @@ module {
 
   fabric.module @pe_boundary_route_adg(%lhs : !fabric.bits<32>,
                                        %rhs : !fabric.bits<32>) {
+    %rhs_to_sum, %rhs_to_product = fabric.switch [spatial] %rhs
+        [{connectivity_table = ["1", "1"]}]
+        : (!fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>)
     %sum = fabric.pe [spatial] (%pa = %lhs : !fabric.bits<32>,
-                                %pb = %rhs : !fabric.bits<32>)
+                                %pb = %rhs_to_sum : !fabric.bits<32>)
         -> !fabric.bits<32> {
       %fu_sum = fabric.fu(%fa = %pa : !fabric.bits<32>,
                           %fb = %pb : !fabric.bits<32>)
@@ -38,7 +41,7 @@ module {
       }
     }
     fabric.pe [spatial] (%px = %sum : !fabric.bits<32>,
-                         %py = %rhs : !fabric.bits<32>)
+                         %py = %rhs_to_product : !fabric.bits<32>)
         -> !fabric.bits<32> {
       %fu_product = fabric.fu(%fx = %px : !fabric.bits<32>,
                               %fy = %py : !fabric.bits<32>)
