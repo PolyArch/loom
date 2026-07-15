@@ -1,7 +1,7 @@
 # Wrapper Makefile for loom.
 #
 # Path resolution and the worktree edge-case handling (main-worktree
-# detection, shared-LLVM serialisation, source-id stamp tracking,
+# detection, shared-LLVM serialisation, build-identity stamp tracking,
 # stale-loom-build pruning, lock timeouts, NFS warnings) all live in
 # scripts/make-worktree.py. This Makefile is a thin dispatcher.
 #
@@ -9,7 +9,7 @@
 #   make doctor    - print resolved paths and run pre-flight checks
 #   make llvm      - build externals/llvm under the shared lock
 #   make loom      - build this worktree's loom build (auto-builds LLVM
-#                    when missing or when the source commit drifted)
+#                    when missing or when its build identity drifted)
 #   make test      - run lit FileCheck tests (target: check-fabric)
 #   make clean     - remove this worktree's loom build only
 #   make distclean - main worktree: remove both loom and shared LLVM

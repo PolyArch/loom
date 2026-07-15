@@ -51,6 +51,42 @@ routing, explicit memory access, and synchronization primitives such as
 forms; their SSOT is `docs/spec-dataflow-vectorization.md`. These are
 the semantic base for DFG simulation and for later hardware mapping.
 
+## CIRCT And LLVM Dependency Pinning
+
+CIRCT is an unmodified upstream submodule at `externals/circt`. Loom
+maintains and builds exactly one LLVM source tree at `externals/llvm`;
+the nested `externals/circt/llvm` submodule must remain uninitialized.
+
+An explicit dependency upgrade resolves the latest stable, non-draft,
+non-prerelease `firtool-*` release to an exact CIRCT commit, reads that
+commit's `llvm` gitlink, and updates the top-level CIRCT and LLVM
+gitlinks atomically. Ordinary checkout, configure, doctor, and build
+operations consume those recorded commits without resolving floating
+tags or branches and without network access.
+
+For every invoking superproject worktree, the shared CIRCT and LLVM
+checkouts under the main worktree must match that invoking worktree's
+top-level `HEAD` gitlinks. Unmerged dependency gitlinks in the invoking
+worktree index require explicit manual resolution. The expected CIRCT
+commit's `llvm` gitlink must equal the top-level LLVM gitlink. Both shared
+dependency repositories must have clean tracked index and worktree state;
+untracked build outputs do not affect the dependency contract. Global
+recursive submodule updates are not permitted because they initialize the
+nested LLVM checkout. Doctor and build entry points must reject checkout
+drift, inconsistent parent gitlinks, tracked dependency modifications, or
+an initialized nested LLVM checkout with diagnostics that identify the
+violated invariant and the corresponding repair.
+
+CIRCT configuration uses `-DMLIR_DIR` and `-DLLVM_DIR` from the shared
+top-level LLVM build. That build has one deterministic identity containing
+the validated CIRCT commit, LLVM commit, exact LLVM C and C++ compiler
+identities, and the canonical semantic LLVM CMake arguments. The same
+canonical argument list configures LLVM and contributes to the identity.
+Dependency state and compiler identities are derived while holding the
+shared LLVM build lock. An absent, legacy, malformed, or changed identity
+invalidates the stamp and requires removal and reconstruction of the LLVM
+build directory before reuse.
+
 ## Core Dialect Boundary
 
 The target ownership boundary between dataflow software semantics,

@@ -11,10 +11,9 @@ all live here:
     worktree still compares equal to the canonical worktree path.
   * The shared LLVM build is gated by an fcntl.flock with a configurable
     timeout, so a wedged build cannot hang every other worktree forever.
-  * A stamp file records the LLVM source commit (or fallback id) used to
-    populate the shared build. If a sibling worktree advances the
-    submodule pointer, the next builder reconfigures + rebuilds instead
-    of silently linking against stale headers.
+  * A deterministic stamp records the validated CIRCT/LLVM pins, exact
+    LLVM compiler identities, and semantic CMake arguments. Identity
+    drift discards the shared build before reconfiguration.
   * If a per-worktree loom build was configured against a shared LLVM
     that has since been wiped (e.g. main ran `distclean`), the stale
     loom build directory is removed before reconfiguring.
@@ -27,6 +26,7 @@ from __future__ import annotations
 import argparse
 import errno
 import fcntl
+import json
 import os
 import re
 import shlex
@@ -34,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 REQUIRED_GIT = (2, 7)
@@ -43,6 +44,17 @@ LLVM_GCC_MIN = (7, 4)
 LOOM_C_COMPILER = "clang"
 LOOM_CXX_COMPILER = "clang++"
 LOOM_CLANG_MIN = (21, 1, 8)
+LLVM_SEMANTIC_CMAKE_ARGS = (
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DLLVM_ENABLE_PROJECTS=mlir;clang",
+    "-DLLVM_TARGETS_TO_BUILD=host",
+    "-DLLVM_ENABLE_ASSERTIONS=ON",
+    "-DLLVM_ENABLE_RTTI=ON",
+    "-DLLVM_INSTALL_UTILS=ON",
+    "-DBUILD_SHARED_LIBS=OFF",
+    "-DLLVM_BUILD_LLVM_DYLIB=ON",
+    "-DLLVM_LINK_LLVM_DYLIB=ON",
+)
 
 
 def info(msg: str) -> None:
@@ -100,7 +112,7 @@ def compiler_version(tool: str) -> tuple[tuple[int, ...], str]:
 
 
 def check_compiler(tool: str, nice_name: str,
-                   minimum: tuple[int, ...]) -> tuple[int, ...]:
+                   minimum: tuple[int, ...]) -> tuple[str, str]:
     version, first_line = compiler_version(tool)
     if version_less(version, minimum):
         die(
@@ -108,12 +120,17 @@ def check_compiler(tool: str, nice_name: str,
             f"got {format_version(version)} from {first_line}"
         )
     info(f"{nice_name} {format_version(version)} ok ({tool})")
-    return version
+    executable = shutil.which(tool)
+    if executable is None:
+        die(f"could not resolve {tool} on PATH")
+    return str(real(Path(executable))), first_line
 
 
-def check_llvm_compilers() -> None:
-    check_compiler(LLVM_C_COMPILER, "GCC C compiler", LLVM_GCC_MIN)
-    check_compiler(LLVM_CXX_COMPILER, "GCC C++ compiler", LLVM_GCC_MIN)
+def check_llvm_compilers() -> tuple[tuple[str, str], tuple[str, str]]:
+    return (
+        check_compiler(LLVM_C_COMPILER, "GCC C compiler", LLVM_GCC_MIN),
+        check_compiler(LLVM_CXX_COMPILER, "GCC C++ compiler", LLVM_GCC_MIN),
+    )
 
 
 def check_loom_compilers() -> None:
@@ -198,6 +215,7 @@ class Paths:
         self.root = real(root)
         self.main = resolve_main_worktree(self.root)
         externals = self.main / "externals"
+        self.circt_root = externals / "circt"
         llvm_external = externals / "llvm"
         self.llvm_root = llvm_external
         self.llvm_src = llvm_external / "llvm"
@@ -213,6 +231,159 @@ class Paths:
     @property
     def is_main(self) -> bool:
         return self.main == self.root
+
+
+@dataclass(frozen=True)
+class DependencyState:
+    circt_commit: str
+    llvm_commit: str
+
+
+def check_dependency_pins(paths: Paths) -> DependencyState:
+    """Validate and return the invoking worktree's shared dependency state."""
+
+    def git_output(repo: Path, *args: str) -> str:
+        cmd = ["git", "-C", str(repo), *args]
+        try:
+            return subprocess.check_output(
+                cmd, stderr=subprocess.STDOUT
+            ).decode(errors="replace").rstrip()
+        except FileNotFoundError:
+            die("git not found on PATH")
+        except subprocess.CalledProcessError as e:
+            detail = e.output.decode(errors="replace").strip()
+            die(
+                f"could not inspect CIRCT/LLVM dependency state with "
+                f"{shlex.join(cmd)}: {detail or e}"
+            )
+
+    dependency_paths = ("externals/circt", "externals/llvm")
+    unmerged = git_output(
+        paths.root, "ls-files", "-u", "--", *dependency_paths
+    )
+    if unmerged:
+        inspect_command = shlex.join([
+            "git", "-C", str(paths.root),
+            "ls-files", "-u", "--", *dependency_paths,
+        ])
+        stage_command = shlex.join([
+            "git", "-C", str(paths.root), "add", "--", *dependency_paths,
+        ])
+        rerun_command = shlex.join([
+            "make", "-C", str(paths.root), "doctor",
+        ])
+        die(
+            f"invoking worktree {paths.root} has unmerged gitlink entries; "
+            f"resolve them manually:\n"
+            f"  1. inspect index stages: {inspect_command}\n"
+            f"  2. select the intended CIRCT and LLVM gitlinks without "
+            f"automatically choosing ours or theirs\n"
+            f"  3. stage the resolved gitlinks: {stage_command}\n"
+            f"  4. rerun the dependency gate: {rerun_command}"
+        )
+
+    circt_commit = git_output(
+        paths.root, "rev-parse", "HEAD:externals/circt"
+    ).strip()
+    llvm_commit = git_output(
+        paths.root, "rev-parse", "HEAD:externals/llvm"
+    ).strip()
+    repair_commands = (
+        shlex.join([
+            "git", "-C", str(paths.main), "submodule", "update",
+            "--init", "--checkout", "--",
+            "externals/circt", "externals/llvm",
+        ]),
+        shlex.join(["git", "-C", str(paths.circt_root), "fetch", "origin"]),
+        shlex.join(["git", "-C", str(paths.llvm_root), "fetch", "origin"]),
+        shlex.join([
+            "git", "-C", str(paths.circt_root),
+            "checkout", "--detach", circt_commit,
+        ]),
+        shlex.join([
+            "git", "-C", str(paths.llvm_root),
+            "checkout", "--detach", llvm_commit,
+        ]),
+    )
+    repair = "\n  ".join(repair_commands)
+
+    def checkout_head(path: Path, relative_path: str) -> str:
+        if not path.exists():
+            die(
+                f"shared {relative_path} checkout is uninitialized for "
+                f"invoking superproject {paths.root}; repair with:\n  {repair}"
+            )
+        top = real(Path(git_output(path, "rev-parse", "--show-toplevel")))
+        if top != real(path):
+            die(
+                f"shared {relative_path} is not an initialized repository "
+                f"under {paths.main}; repair with:\n  {repair}"
+            )
+        return git_output(path, "rev-parse", "HEAD").strip()
+
+    circt_head = checkout_head(paths.circt_root, "externals/circt")
+    llvm_head = checkout_head(paths.llvm_root, "externals/llvm")
+    if circt_head != circt_commit or llvm_head != llvm_commit:
+        die(
+            f"shared dependency checkout drift: invoking superproject "
+            f"{paths.root} pins CIRCT {circt_commit} and LLVM {llvm_commit}, "
+            f"but shared checkouts under {paths.main} are CIRCT "
+            f"{circt_head} and LLVM {llvm_head}; repair with:\n  {repair}"
+        )
+
+    circt_llvm_commit = git_output(
+        paths.circt_root, "rev-parse", f"{circt_commit}:llvm"
+    ).strip()
+    if circt_llvm_commit != llvm_commit:
+        die(
+            f"invoking superproject parent gitlinks are internally "
+            f"inconsistent: CIRCT {circt_commit} pins LLVM "
+            f"{circt_llvm_commit}, but externals/llvm is pinned to "
+            f"{llvm_commit}; the CIRCT and LLVM parent gitlinks in "
+            f"{paths.root} must be updated atomically"
+        )
+
+    nested_llvm = paths.circt_root / "llvm"
+    nested_top = ""
+    if nested_llvm.exists():
+        nested = subprocess.run(
+            ["git", "-C", str(nested_llvm), "rev-parse", "--show-toplevel"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if nested.returncode == 0:
+            nested_top = nested.stdout.strip()
+    if nested_top and real(Path(nested_top)) == real(nested_llvm):
+        deinit_command = shlex.join([
+            "git", "-C", str(paths.circt_root), "submodule", "deinit",
+            "-f", "--", "llvm",
+        ])
+        die(
+            "externals/circt/llvm must remain uninitialized; repair with: "
+            f"{deinit_command}"
+        )
+
+    for repo, label in (
+        (paths.circt_root, "externals/circt"),
+        (paths.llvm_root, "externals/llvm"),
+    ):
+        dirty = git_output(
+            repo, "status", "--porcelain", "--untracked-files=no"
+        )
+        if dirty:
+            die(
+                f"shared {label} has tracked modifications:\n{dirty}\n"
+                f"restore the tracked changes, then rerun the gate. If the "
+                f"changes are intentional, make them an upstream commit and "
+                f"update the parent CIRCT and LLVM gitlinks atomically before "
+                f"rerunning"
+            )
+
+    return DependencyState(
+        circt_commit=circt_commit,
+        llvm_commit=llvm_commit,
+    )
 
 
 class FileLock:
@@ -261,25 +432,24 @@ class FileLock:
                 self.fd = None
 
 
-def llvm_source_id(paths: Paths) -> str:
-    """Identifier captured in the stamp file.
-
-    `git rev-parse HEAD` works for both submodule and plain checkouts.
-    The fallback only fires when the source tree is not a git checkout
-    at all, in which case we degrade to a sentinel that never matches a
-    real commit (forcing a reconfigure on first use after the script is
-    upgraded, but stable thereafter).
-    """
-    try:
-        out = subprocess.check_output(
-            ["git", "-C", str(paths.llvm_src), "rev-parse", "HEAD"],
-            stderr=subprocess.DEVNULL,
-        ).decode().strip()
-        if out:
-            return f"git:{out}"
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        pass
-    return "unknown:non-git-source"
+def llvm_build_identity(
+    state: DependencyState,
+    compilers: tuple[tuple[str, str], tuple[str, str]],
+) -> str:
+    return json.dumps(
+        {
+            "compilers": {
+                "c": {"path": compilers[0][0], "version": compilers[0][1]},
+                "cxx": {"path": compilers[1][0], "version": compilers[1][1]},
+            },
+            "dependencies": {
+                "circt": state.circt_commit,
+                "llvm": state.llvm_commit,
+            },
+            "semantic_cmake_args": list(LLVM_SEMANTIC_CMAKE_ARGS),
+        },
+        sort_keys=True,
+    )
 
 
 def read_stamp(path: Path) -> str:
@@ -321,25 +491,20 @@ def cmake_cache_uses_compilers(build_dir: Path, c_compiler: str,
     )
 
 
-def configure_llvm(paths: Paths) -> None:
+def configure_llvm(
+    paths: Paths,
+    compilers: tuple[tuple[str, str], tuple[str, str]],
+) -> None:
     run([
         "cmake", "-G", "Ninja",
         "-S", str(paths.llvm_src),
         "-B", str(paths.llvm_build),
-        "-DCMAKE_BUILD_TYPE=Release",
-        f"-DCMAKE_C_COMPILER={LLVM_C_COMPILER}",
-        f"-DCMAKE_CXX_COMPILER={LLVM_CXX_COMPILER}",
-        "-DLLVM_ENABLE_PROJECTS=mlir;clang",
-        "-DLLVM_TARGETS_TO_BUILD=host",
-        "-DLLVM_ENABLE_ASSERTIONS=ON",
-        "-DLLVM_ENABLE_RTTI=ON",
-        "-DLLVM_INSTALL_UTILS=ON",
+        f"-DCMAKE_C_COMPILER={compilers[0][0]}",
+        f"-DCMAKE_CXX_COMPILER={compilers[1][0]}",
+        *LLVM_SEMANTIC_CMAKE_ARGS,
         "-DLLVM_CCACHE_BUILD=ON",
         "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
         "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
-        "-DBUILD_SHARED_LIBS=OFF",
-        "-DLLVM_BUILD_LLVM_DYLIB=ON",
-        "-DLLVM_LINK_LLVM_DYLIB=ON",
     ])
 
 
@@ -360,37 +525,45 @@ def configure_loom(paths: Paths) -> None:
     ])
 
 
-def build_llvm(paths: Paths, args: argparse.Namespace) -> None:
-    """Configure (if needed) and build the shared LLVM under flock."""
+def sync_shared_llvm(
+    paths: Paths,
+    args: argparse.Namespace,
+    always_build: bool,
+) -> None:
     if not paths.is_main:
-        info(f"building shared LLVM under main worktree {paths.main}")
+        info(f"checking shared LLVM under main worktree {paths.main}")
     if is_nfs(paths.llvm_root):
         warn(
             f"shared LLVM tree {paths.llvm_root} appears to live on NFS; "
             "flock semantics across hosts are unreliable"
         )
     with FileLock(paths.llvm_lock, args.lock_timeout):
-        current = llvm_source_id(paths)
+        state = check_dependency_pins(paths)
+        compilers = check_llvm_compilers()
+        current = llvm_build_identity(state, compilers)
         prev = read_stamp(paths.llvm_stamp)
         build_ninja = paths.llvm_build / "build.ninja"
-        if build_ninja.exists() and not cmake_cache_uses_compilers(
-            paths.llvm_build, LLVM_C_COMPILER, LLVM_CXX_COMPILER
-        ):
-            info(
-                f"LLVM build compiler changed to {LLVM_C_COMPILER}/"
-                f"{LLVM_CXX_COMPILER}; removing {paths.llvm_build}"
-            )
-            shutil.rmtree(paths.llvm_build, ignore_errors=True)
-        if not build_ninja.exists():
-            configure_llvm(paths)
-        elif prev and prev != current:
-            info(
-                f"LLVM source id changed ({prev} -> {current}); "
-                "reconfiguring shared build"
-            )
-            configure_llvm(paths)
-        run(["cmake", "--build", str(paths.llvm_build), f"-j{args.jobs}"])
-        write_stamp(paths.llvm_stamp, current)
+        build_ready = (
+            build_ninja.exists() and
+            (paths.mlir_dir / "MLIRConfig.cmake").exists() and
+            (paths.cmake_clang_dir / "ClangConfig.cmake").exists()
+        )
+        rebuild = prev != current or not build_ready
+        if rebuild:
+            if paths.llvm_build.exists():
+                info(
+                    f"LLVM build is incomplete or its identity changed; removing "
+                    f"{paths.llvm_build}"
+                )
+                shutil.rmtree(paths.llvm_build)
+            configure_llvm(paths, compilers)
+        if always_build or rebuild:
+            run(["cmake", "--build", str(paths.llvm_build), f"-j{args.jobs}"])
+            write_stamp(paths.llvm_stamp, current)
+
+
+def build_llvm(paths: Paths, args: argparse.Namespace) -> None:
+    sync_shared_llvm(paths, args, always_build=True)
 
 
 def loom_build_is_stale(paths: Paths) -> bool:
@@ -413,30 +586,7 @@ def loom_build_is_stale(paths: Paths) -> bool:
 
 
 def ensure_shared_llvm(paths: Paths, args: argparse.Namespace) -> None:
-    mlir_cfg = paths.mlir_dir / "MLIRConfig.cmake"
-    clang_cfg = paths.cmake_clang_dir / "ClangConfig.cmake"
-    current = llvm_source_id(paths)
-    prev = read_stamp(paths.llvm_stamp)
-    if not mlir_cfg.exists():
-        info(f"shared MLIR not found at {paths.llvm_build}; building it now")
-        check_llvm_compilers()
-        build_llvm(paths, args)
-        return
-    if not clang_cfg.exists():
-        info(
-            f"shared Clang not found at {paths.cmake_clang_dir}; "
-            "rebuilding LLVM with clang enabled"
-        )
-        check_llvm_compilers()
-        build_llvm(paths, args)
-        return
-    if prev and prev != current:
-        info(
-            f"shared LLVM source id drifted ({prev} -> {current}); "
-            "rebuilding before loom"
-        )
-        check_llvm_compilers()
-        build_llvm(paths, args)
+    sync_shared_llvm(paths, args, always_build=False)
 
 
 def build_loom(paths: Paths, args: argparse.Namespace) -> None:
@@ -463,6 +613,7 @@ def build_loom(paths: Paths, args: argparse.Namespace) -> None:
 
 def cmd_doctor(paths: Paths, args: argparse.Namespace) -> None:
     check_git_version()
+    state = check_dependency_pins(paths)
     for tool in ("cmake", "ninja"):
         if not shutil.which(tool):
             warn(f"{tool} not found on PATH")
@@ -474,12 +625,15 @@ def cmd_doctor(paths: Paths, args: argparse.Namespace) -> None:
     print(f"main_worktree   {paths.main}")
     print(f"this_worktree   {paths.root}")
     print(f"is_main         {paths.is_main}")
+    print(f"circt_commit    {state.circt_commit}")
+    print(f"llvm_commit     {state.llvm_commit}")
+    print(f"circt_llvm_pin  {state.llvm_commit}")
+    print("nested_llvm     uninitialized")
     print(f"llvm_src        {paths.llvm_src}")
     print(f"llvm_build      {paths.llvm_build}")
     print(f"llvm_lock       {paths.llvm_lock}")
     print(f"llvm_stamp      {paths.llvm_stamp}")
     print(f"stamp_value     {read_stamp(paths.llvm_stamp) or '(unset)'}")
-    print(f"current_src_id  {llvm_source_id(paths)}")
     print(f"llvm_c          {compiler_status(LLVM_C_COMPILER, LLVM_GCC_MIN)}")
     print(f"llvm_cxx        {compiler_status(LLVM_CXX_COMPILER, LLVM_GCC_MIN)}")
     print(f"loom_c          {compiler_status(LOOM_C_COMPILER, LOOM_CLANG_MIN)}")
@@ -490,7 +644,6 @@ def cmd_doctor(paths: Paths, args: argparse.Namespace) -> None:
 
 def cmd_build_llvm(paths: Paths, args: argparse.Namespace) -> None:
     check_git_version()
-    check_llvm_compilers()
     build_llvm(paths, args)
 
 
