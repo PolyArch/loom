@@ -4,6 +4,7 @@ add_mlir_library(LoomPnR
   MappingRouting.cpp
   MappingEstimateReport.cpp
   MappingEstimator.cpp
+  PnrIndex.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/PnR

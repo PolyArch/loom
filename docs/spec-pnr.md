@@ -135,6 +135,54 @@ A complete PnR candidate contains these decisions when relevant:
 The candidate is serialized as a mapping artifact. PnR-internal state is
 not a valid substitute for artifact records.
 
+## Native Index Width
+
+Persistent Mapping `EntityId` values and native PnR indices have separate
+authorities. Persistent `EntityId` remains an unsigned 64-bit semantic
+identifier used by mapping artifacts and long-lived references. A
+freeze-local dense index exists only to address rebuildable native arrays and
+must use the build-selected `PnrIndex` type.
+
+`LOOM_PNR_INDEX_BITS` is the sole CMake cache setting for the native index
+width. It accepts only `32` or `64` and defaults to `32`. CMake emits the
+validated value through the generated `PnR/BuildConfig.h`; the canonical type,
+width/build identity accessors, typed capacity measure, capacity error,
+validation-only preflight, checked conversion, and checked preflight arithmetic
+are owned by `PnR/PnrIndex.h`. PnR code must not introduce runtime width
+dispatch, per-array width selection, independent typedefs, scattered
+conditional compilation, or unchecked narrowing.
+
+Before allocating native arrays, emitting native caches, or beginning search,
+freeze must use sufficiently wide checked arithmetic for dense entity counts,
+CSR offsets, array lengths, products, and maximum indices. Every value encoded
+as `PnrIndex` must pass through the same checked API. A failure must be
+deterministic and must identify the artifact, table, entity domain, required
+maximum, and active `LOOM_PNR_INDEX_BITS` build. The required maximum is typed
+as a count, index, or offset and is reported respectively as
+`required_max_count`, `required_max_index`, or `required_max_offset`.
+`preflightPnrIndexCapacity` validates capacity without encoding a value; it and
+all checked encoding and arithmetic APIs use the same internal capacity check
+and error path.
+
+A 32-bit capacity failure whose required maximum remains representable by the
+64-bit build must state that Loom can be reconfigured and rebuilt with
+`-DLOOM_PNR_INDEX_BITS=64`. A requirement that also exceeds the
+`LOOM_PNR_INDEX_BITS=64` contract must say so explicitly and must not present a
+64-bit rebuild as a remedy. Both cases are native capacity errors, not mapping
+infeasibility.
+
+Native-cache headers, native build identities, and execution evidence must
+record the actual PnR index width. A width mismatch invalidates the complete
+native cache. The width is not part of Mapping semantics: when both builds can
+represent a problem, 32-bit and 64-bit builds must produce the same Physical
+Mapping semantic digest.
+
+`Common/IndexWidth` and the `LOOM_INDEX_WIDTH` environment variable control
+MLIR `index` transport width. They are unrelated to `PnrIndex` and must not be
+renamed, merged, or used as its authority. This native index contract is
+foundational infrastructure and does not define or imply a completed
+FrozenModel.
+
 ## Legality Rules
 
 PnR legality includes at least the following rule families.

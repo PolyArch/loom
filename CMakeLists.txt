@@ -5,6 +5,22 @@ set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+set(LOOM_PNR_INDEX_BITS "32" CACHE STRING
+  "Native PnR index width in bits (32 or 64)")
+set_property(CACHE LOOM_PNR_INDEX_BITS PROPERTY STRINGS 32 64)
+if(NOT LOOM_PNR_INDEX_BITS STREQUAL "32" AND
+   NOT LOOM_PNR_INDEX_BITS STREQUAL "64")
+  message(FATAL_ERROR
+    "LOOM_PNR_INDEX_BITS must be 32 or 64, got '${LOOM_PNR_INDEX_BITS}'")
+endif()
+
+file(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/include/PnR")
+configure_file(
+  "${PROJECT_SOURCE_DIR}/include/PnR/BuildConfig.h.in"
+  "${PROJECT_BINARY_DIR}/include/PnR/BuildConfig.h"
+  @ONLY
+)
+
 option(LOOM_ENABLE_ILP "Enable HiGHS-backed ILP partitioner" ON)
 if(LOOM_ENABLE_ILP)
   find_package(HIGHS CONFIG QUIET)
