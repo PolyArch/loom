@@ -10,7 +10,7 @@ Kernel: `tests/app/gather/gather.cpp` - gather valid indexed values with
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py gather --config 6x6 --top 16
+python3 tests/scripts/loom_dse.py gather --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 16
 ```
 
 ## Gather-specific setup
@@ -67,6 +67,9 @@ P-vs-U at fixed product 32 on level 'i' (other levels at P1U1):
   P4U8              44     46    12     128 best
   P2U16             42     44    10     128 best
   P1U32             41     43     9     128 best
+
+4x4 recommendation: i:P1U32.
+8x8 recommendation: i:P1U64.
 ```
 
 ## Recommendation

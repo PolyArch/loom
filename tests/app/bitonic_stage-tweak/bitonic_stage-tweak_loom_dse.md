@@ -31,7 +31,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py bitonic_stage-tweak --config 6x6 --top 16
+python3 tests/scripts/loom_dse.py bitonic_stage-tweak --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 16
 ```
 
 ## Bitonic-stage-tweak-specific setup
@@ -81,6 +81,9 @@ RECOMMENDED: i:P1U1  -> exposure=8, pragma_agg=17 (1.00x the floor), latency-bou
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
 
 P-vs-U contrast: no parallelizable level.
+
+4x4 recommendation: i:P1U1.
+8x8 recommendation: i:P1U1.
 ```
 
 For flag and column meanings, see

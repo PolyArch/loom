@@ -10,7 +10,7 @@ input, then execute four in-place radix-2 butterfly stages.
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py fft_butterfly --config 6x6 --top 16
+python3 tests/scripts/loom_dse.py fft_butterfly --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 16
 ```
 
 ## FFT-butterfly-specific setup
@@ -28,6 +28,13 @@ python3 tests/scripts/loom_dse.py fft_butterfly --config 6x6 --top 16
 - Because the builder emits every copy wave and all four fixed stages, `cagg`
   is already phase-composed for this kernel and equals `p_agg`; `wav` reports
   only the number of copy waves.
+- The table's `class` is region-sensitive: a row is `resource-bound` when any
+  ordered region is locally resource-bound. Here stage `s=1` has `CP=8` and a
+  store ceiling of 8, so that stage is locally store-bound. `util P/L/S`
+  instead divides the region-summed resource ceilings by the phase-composed
+  `cagg`; for `P1U16`, `22/23/28` over 71 gives `31/32/39`. The later
+  recurrence-bound stages therefore dilute the local 100% store utilization in
+  the whole-kernel percentages.
 - Within a stage, `k` blocks are independent, but `j` is sequential. It carries
   both its iterator and the generated twiddle recurrence `w <- w*wm`, preserving
   the validated stage critical paths `8`, `11`, `17`, and `33`.
@@ -70,6 +77,9 @@ P-vs-U at fixed product 16 on level 'copy_i' (other levels at P1U1):
   P4U4             255    256   305      71 best
   P2U8             253    254   303      71 best
   P1U16            252    253   302      71 best
+
+4x4 recommendation: copy_i:P1U16.
+8x8 recommendation: copy_i:P1U16.
 ```
 
 ## Recommendation
@@ -77,7 +87,10 @@ P-vs-U at fixed product 16 on level 'copy_i' (other levels at P1U1):
 Use **`copy_i:P1U16`**. A single fully unrolled copy wave reaches
 `p_agg=absolute_cgra_lb=71`, compared with 73 cycles for the source-like
 `P1U8` split. `P4U4` and `P2U8` tie the same aggregate estimate, but `P1U16`
-uses the fewest workers and retains the lowest memory/control counts. The
-finite-resource `sched=75` remains an estimate above the floor; the four-cycle
-gap comes from time-local pressure inside the fixed ordered regions, not from
-additional stage parallelism.
+uses the fewest workers and retains the lowest memory/control counts. This is
+not the normal lane-saturation knee: fixed stage `s=1` is locally store-bound
+for every split, so the helper instead selects the smallest copy exposure that
+reaches the best phase-composed estimate. The finite-resource `sched=75`
+remains an estimate above the floor; the four-cycle gap comes from time-local
+pressure inside the fixed ordered regions, not from additional stage
+parallelism.

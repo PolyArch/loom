@@ -33,7 +33,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py batchnorm --config 6x6 --top 24
+python3 tests/scripts/loom_dse.py batchnorm --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 24
 ```
 
 ## Why P and U differ
@@ -121,6 +121,9 @@ P-vs-U at fixed product 4 on level 'c' (other levels at P1U1):
   P4U1              24     28     8     512 tie (control/coalescing sit below the binding term)
   P2U2              22     26     6     512 tie (control/coalescing sit below the binding term)
   P1U4              21     25     5     512 tie (control/coalescing sit below the binding term)
+
+4x4 recommendation: c:P1U1 h:P1U4 w:P1U8.
+8x8 recommendation: c:P1U2 h:P1U8 w:P1U8.
 ```
 
 For flag and column meanings, see

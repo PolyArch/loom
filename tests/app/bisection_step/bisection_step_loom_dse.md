@@ -33,7 +33,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py bisection_step --config 6x6 --top 24
+python3 tests/scripts/loom_dse.py bisection_step --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 24
 ```
 
 ## Why P and U differ
@@ -127,6 +127,9 @@ P-vs-U at fixed product 32 on level 'i' (other levels at P1U1):
   P4U8              36     37    20       8 best
   P2U16             34     35    18       8 best
   P1U32             33     34    17       8 best
+
+4x4 recommendation: i:P1U16.
+8x8 recommendation: i:P1U64.
 ```
 
 For flag and column meanings, see

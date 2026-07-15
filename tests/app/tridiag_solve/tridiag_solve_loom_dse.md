@@ -37,7 +37,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py tridiag_solve --config 6x6 --top 24
+python3 tests/scripts/loom_dse.py tridiag_solve --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 24
 ```
 
 ## Why there is no distinction
@@ -84,6 +84,9 @@ RECOMMENDED: i:P1U1  -> exposure=64, pragma_agg=194 (1.00x the floor), latency-b
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
 
 P-vs-U contrast: no parallelizable level.
+
+4x4 recommendation: i:P1U1.
+8x8 recommendation: i:P1U1.
 ```
 
 All `U` factorings are semantically equivalent, so the helper displays only the

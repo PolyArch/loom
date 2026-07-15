@@ -13,6 +13,11 @@ col2im,tests/app/col2im/col2im_loom_dse.md,c:P1U1 kh:P1U1,357,357,355,resource-b
 conv2d,tests/app/conv2d/conv2d_loom_dse.md,out:P1U4 tap:P1U1,432,612,409,resource-bound,"saturation knee; load-bound on strided input, output-store coalescing is secondary"
 crc32,tests/app/crc32/crc32_loom_dse.md,i:P1U1,50152,50152,50152,latency-bound,serial CRC recurrence; equivalent unroll labels use the canonical fully consumed DAG
 edge_update,tests/app/edge_update/edge_update_loom_dse.md,kernel:P1U1,6,6,6,latency-bound,only legal representative; source has no parallel or unroll pragma level to sweep
+fft_butterfly,tests/app/fft_butterfly/fft_butterfly_loom_dse.md,copy_i:P1U16,71,75,71,resource-bound,phase-composed best estimate; full copy unroll reaches the floor while fixed ordered FFT stages dominate
+gather,tests/app/gather/gather_loom_dse.md,i:P1U32,128,192,107,resource-bound,saturation knee; indirect source loads remain scalar while unroll coalesces boundary streams and amortizes control
+gauss_seidel_step,tests/app/gauss_seidel_step/gauss_seidel_step_loom_dse.md,i:P1U1,198,198,198,latency-bound,canonical serial recurrence; in-place row dependence prevents independent spatial exposure
 gemv,tests/app/gemv/gemv_loom_dse.md,i:P1U4 j:P1U1,240,352,232,resource-bound,"saturation knee; compute-bound, 1.03x floor, x loads are invariant-amortized"
+hist_bin,tests/app/hist_bin/hist_bin_loom_dse.md,zero_i:P1U8,194,263,193,resource-bound,phase-composed best estimate; one eight-bin wave plus a two-bin tail precedes the fixed scatter region
+interpolate_linear,tests/app/interpolate_linear/interpolate_linear_loom_dse.md,q:P1U64,289,289,289,latency-bound,best-estimate fallback; full query unroll reaches the serial-search CP floor with the lowest traffic
 tridiag_solve,tests/app/tridiag_solve/tridiag_solve_loom_dse.md,i:P1U1,194,194,194,latency-bound,"sequential recurrence; p forced to 1, unroll does not reduce the carried CP"
 vecsum,tests/app/vecsum/vecsum_loom_dse.md,i:P1U1,11,16,11,latency-bound,fully-consumed reduction; P/U-symmetric and CP-bound

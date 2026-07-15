@@ -31,7 +31,7 @@ This uses the shared lane-aware + vector-coalescing DSE from
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py autocorrelation --config 6x6 --top 14
+python3 tests/scripts/loom_dse.py autocorrelation --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 14
 ```
 
 ## Autocorrelation-specific setup
@@ -103,6 +103,9 @@ P-vs-U at fixed product 2 on level 'lag' (other levels at P1U1):
   split        LD_rec LD_eff    ST   p_agg note
   P2U1              66    100     4     240 tie (control/coalescing sit below the binding term)
   P1U2              65     99     2     240 tie (control/coalescing sit below the binding term)
+
+4x4 recommendation: lag:P1U1 i:P1U1.
+8x8 recommendation: lag:P1U4 i:P1U1.
 ```
 
 For flag and column meanings, see

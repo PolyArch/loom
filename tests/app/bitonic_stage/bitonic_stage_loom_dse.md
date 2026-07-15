@@ -24,7 +24,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py bitonic_stage --config 6x6 --top 16
+python3 tests/scripts/loom_dse.py bitonic_stage --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 16
 ```
 
 ## Setup
@@ -96,6 +96,9 @@ P-vs-U at fixed product 8 on level 'i' (other levels at P1U1):
   P4U2              12     15     8      11 tie (control/coalescing sit below the binding term)
   P2U4              10     13     6      11 tie (control/coalescing sit below the binding term)
   P1U8               9     12     5      11 tie (control/coalescing sit below the binding term)
+
+4x4 recommendation: i:P1U8.
+8x8 recommendation: i:P1U8.
 ```
 
 For flag and column meanings, see

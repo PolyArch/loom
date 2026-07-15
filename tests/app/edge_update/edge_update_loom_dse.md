@@ -10,7 +10,7 @@ find and overwrite the first matching edge for `src=2`, `dst=4`.
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py edge_update --config 6x6 --top 16
+python3 tests/scripts/loom_dse.py edge_update --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 16
 ```
 
 ## Edge-update-specific setup
@@ -46,6 +46,9 @@ RECOMMENDED: kernel:P1U1  -> exposure=1, pragma_agg=6 (1.00x the floor), latency
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
 
 P-vs-U contrast: no parallelizable level.
+
+4x4 recommendation: kernel:P1U1.
+8x8 recommendation: kernel:P1U1.
 ```
 
 ## Recommendation

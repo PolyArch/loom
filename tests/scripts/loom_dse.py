@@ -1463,6 +1463,15 @@ class CandResult:
     flags: set = field(default_factory=set)
 
 
+@dataclass
+class SearchOutcome:
+    results: list[CandResult]
+    recommendation: CandResult
+    absolute_lb: int
+    demand: dict
+    search_scope: str
+
+
 def evaluate_candidate(spec: KernelSpec, cand: Candidate, cfg: Config,
                        schedule: bool = True) -> CandResult:
     # Build the vectorized chunk DAG and schedule it on the FULL machine lanes.
@@ -1685,7 +1694,8 @@ def _fmt_util(u):
 
 def render_report(spec: KernelSpec, cfg: Config, results: list[CandResult],
                   lb: int, demand: dict, rec: CandResult, search_scope: str,
-                  top: int = 0) -> str:
+                  top: int = 0,
+                  brief_recommendations: tuple[tuple[str, str], ...] = ()) -> str:
     out = []
     out.append(f"# Loom pragma DSE (lane-aware + vector coalescing): "
                f"{spec.name}  ({cfg.label})")
@@ -1779,6 +1789,10 @@ def render_report(spec: KernelSpec, cfg: Config, results: list[CandResult],
                    "o=oversubscribed (past the knee, no estimate gain).")
     out.append("")
     out.append(_pu_contrast(spec, cfg, results, rec))
+    if brief_recommendations:
+        out.append("")
+        for label, signature in brief_recommendations:
+            out.append(f"{label} recommendation: {signature}.")
     return "\n".join(out)
 
 
@@ -1837,9 +1851,27 @@ def _pu_contrast(spec: KernelSpec, cfg: Config,
 # Driver
 # ---------------------------------------------------------------------------
 
-def run(spec: KernelSpec, cfg: Config, max_parallel: int | None = None,
-        max_unroll: int | None = None, exposure_cap: int | None = None,
-        top: int = 0, jobs: int = 1) -> tuple[str, CandResult, int]:
+def _config_key(cfg: Config) -> tuple[int, int, int]:
+    return cfg.P, cfg.L, cfg.S
+
+
+def _normalize_brief_configs(primary: Config,
+                             configs: list[Config]) -> list[Config]:
+    """Deduplicate equivalent capacities and suppress the detailed config."""
+    seen = {_config_key(primary)}
+    normalized = []
+    for cfg in configs:
+        key = _config_key(cfg)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(cfg)
+    return normalized
+
+
+def search(spec: KernelSpec, cfg: Config, max_parallel: int | None = None,
+           max_unroll: int | None = None, exposure_cap: int | None = None,
+           jobs: int = 1) -> SearchOutcome:
     lb, demand = absolute_cgra_lb(spec, cfg)
     cands = enumerate_candidates(spec, max_parallel, max_unroll, exposure_cap)
     if jobs == 1 or len(cands) < 2:
@@ -1852,7 +1884,8 @@ def run(spec: KernelSpec, cfg: Config, max_parallel: int | None = None,
             results = list(executor.map(_evaluate_aggregate_task, tasks,
                                         chunksize=chunksize))
     rec = recommend(spec, results)
-    annotate_flags(spec, results, rec)
+    if rec is None:
+        raise RuntimeError(f"{spec.name}: candidate search produced no result")
     caps = []
     if max_parallel is not None:
         caps.append(f"P<={max_parallel}")
@@ -1864,8 +1897,27 @@ def run(spec: KernelSpec, cfg: Config, max_parallel: int | None = None,
         search_scope = "bounded diagnostic (" + ", ".join(caps) + ")"
     else:
         search_scope = "complete legal power-of-two factors through each trip count"
-    report = render_report(spec, cfg, results, lb, demand, rec, search_scope,
-                           top=top)
+    return SearchOutcome(results, rec, lb, demand, search_scope)
+
+
+def run(spec: KernelSpec, cfg: Config, max_parallel: int | None = None,
+        max_unroll: int | None = None, exposure_cap: int | None = None,
+        top: int = 0, jobs: int = 1,
+        brief_configs: list[Config] | None = None) -> tuple[str, CandResult, int]:
+    outcome = search(spec, cfg, max_parallel, max_unroll, exposure_cap, jobs)
+    annotate_flags(spec, outcome.results, outcome.recommendation)
+    brief_recommendations = []
+    for brief_cfg in brief_configs or []:
+        brief = search(spec, brief_cfg, max_parallel, max_unroll, exposure_cap,
+                       jobs)
+        brief_recommendations.append(
+            (brief_cfg.label, brief.recommendation.cand.signature()))
+    report = render_report(
+        spec, cfg, outcome.results, outcome.absolute_lb, outcome.demand,
+        outcome.recommendation, outcome.search_scope, top=top,
+        brief_recommendations=tuple(brief_recommendations))
+    rec = outcome.recommendation
+    lb = outcome.absolute_lb
     return report, rec, lb
 
 
@@ -1876,6 +1928,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("kernel", nargs="?",
                         help="kernel name: " + ", ".join(sorted(KERNELS)))
     parser.add_argument("--config", default="6x6")
+    parser.add_argument(
+        "--brief-config", action="append", default=[],
+        help=("append one terse recommendation for this configuration; may be "
+              "repeated"))
     parser.add_argument(
         "--max-parallel", type=int,
         help=("optional diagnostic cap; default searches powers of two through "
@@ -1907,9 +1963,15 @@ def main(argv: list[str]) -> int:
         print("\nkernels: " + ", ".join(sorted(KERNELS)))
         return 1
     spec = KERNELS[args.kernel]
-    cfg = parse_config(args.config)
+    try:
+        cfg = parse_config(args.config)
+        brief_configs = [parse_config(text) for text in args.brief_config]
+    except (KeyError, ValueError) as exc:
+        parser.error(str(exc))
+    brief_configs = _normalize_brief_configs(cfg, brief_configs)
     report, _, _ = run(spec, cfg, args.max_parallel, args.max_unroll,
-                       args.exposure_cap, top=args.top, jobs=args.jobs)
+                       args.exposure_cap, top=args.top, jobs=args.jobs,
+                       brief_configs=brief_configs)
     print(report)
     return 0
 
@@ -1921,6 +1983,49 @@ def main(argv: list[str]) -> int:
 def _run_self_tests() -> int:
     errors: list[str] = []
     cfg = parse_config("6x6")
+
+    cfg4 = parse_config("4x4")
+    cfg8 = parse_config("8x8")
+    if _config_key(cfg4) != (16, 8, 8):
+        errors.append(f"4x4 config mapped to {_config_key(cfg4)}")
+    if _config_key(cfg8) != (64, 16, 16):
+        errors.append(f"8x8 config mapped to {_config_key(cfg8)}")
+    normalized = _normalize_brief_configs(
+        cfg, [cfg4, parse_config("P=16,L=8,S=8"), cfg, cfg8, cfg4])
+    if [brief.label for brief in normalized] != ["4x4", "8x8"]:
+        errors.append(
+            "brief config normalization must preserve first-seen unique labels")
+
+    alternate_expected = {
+        "axpy": {"4x4": "i:P1U32", "8x8": "i:P1U128"},
+        "conv2d": {
+            "4x4": "out:P1U2 tap:P1U1",
+            "8x8": "out:P1U4 tap:P1U1",
+        },
+        "vecsum": {"4x4": "i:P1U1", "8x8": "i:P1U1"},
+    }
+    for kernel, expected_by_config in alternate_expected.items():
+        for alt_cfg in (cfg4, cfg8):
+            outcome = search(KERNELS[kernel], alt_cfg, jobs=1)
+            got = outcome.recommendation.cand.signature()
+            expected = expected_by_config[alt_cfg.label]
+            if got != expected:
+                errors.append(
+                    f"{kernel} {alt_cfg.label}: expected {expected}, got {got}")
+
+    brief_report, _, _ = run(
+        KERNELS["axpy"], cfg, top=1, jobs=1,
+        brief_configs=_normalize_brief_configs(cfg, [cfg4, cfg8]))
+    plain_report, _, _ = run(KERNELS["axpy"], cfg, top=1, jobs=1)
+    for expected_line in (
+            "4x4 recommendation: i:P1U32.",
+            "8x8 recommendation: i:P1U128."):
+        if expected_line not in brief_report:
+            errors.append(f"brief report omitted {expected_line!r}")
+        if expected_line in plain_report:
+            errors.append(f"plain report unexpectedly included {expected_line!r}")
+    if brief_report.count("flags    split") != 1:
+        errors.append("multi-config report must contain exactly one detailed table")
 
     # Search completeness: uncapped enumeration covers every power-of-two factor
     # through the concrete trip count. Caps remain available only when explicitly

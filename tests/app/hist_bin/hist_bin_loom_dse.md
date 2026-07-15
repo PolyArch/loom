@@ -10,7 +10,7 @@ and accumulate one associative bucket per resolved bin.
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py hist_bin --config 6x6 --top 16
+python3 tests/scripts/loom_dse.py hist_bin --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 16
 ```
 
 ## Histogram-specific setup
@@ -68,6 +68,9 @@ P-vs-U at fixed product 8 on level 'zero_i' (other levels at P1U1):
   P4U2            2309   2313  2058     194 best
   P2U4            2307   2311  2054     194 best
   P1U8            2306   2310  2053     194 best
+
+4x4 recommendation: zero_i:P1U8.
+8x8 recommendation: zero_i:P1U8.
 ```
 
 ## Recommendation

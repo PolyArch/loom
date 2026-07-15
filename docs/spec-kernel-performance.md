@@ -88,6 +88,12 @@ canonical example used in the eval files is **`6x6`**: `P = 36`, `L = 12`,
 **MUST** be rejected with a clear error (it cannot drain its class and would
 otherwise loop forever).
 
+For analytical helper input, the grid shorthand `AxB` **MUST** map to
+`P = A * B` and `L = S = A + B`. Thus the standard DSE configurations are
+`4x4 = (16, 8, 8)`, `6x6 = (36, 12, 12)`, and `8x8 = (64, 16, 16)`. This is a
+resource-model convention for these estimates, not a claim that every physical
+ADG with the same PE dimensions exposes that number of load or store ports.
+
 ### Op-class mapping (MUST match the aggregate model exactly)
 
 Every counted dynamic operation is assigned **exactly one** resource class:
@@ -406,6 +412,14 @@ and `U` (a `LOOM_UNROLL` factor), with `U_tot` the product of `U` over all level
 candidate shorthand `PaUb` means `p = a`, `U = b`. `V` is the vector width: one
 256-bit vector memory op carries `V = 4` 64-bit scalar elements, and this section
 assumes 64-bit elements throughout.
+
+A DSE report **MAY** render one configuration in full and append terse split
+recommendations for additional configurations. Each terse recommendation
+**MUST** use the same loop legality, complete candidate enumeration, and
+recommendation policy as a full report for that configuration; it **MUST NOT**
+be scaled or inferred from the detailed configuration's split. Alternate lines
+compare pragma choices within each named configuration only. They do not rank,
+select, or recommend a CGRA size.
 
 The Loom-pragma design-space estimate consumes source-loop metadata such as loop
 kind, trip count, `LOOM_PARALLEL(P)`, `LOOM_UNROLL(U)`, and schedule strategy.

@@ -10,7 +10,7 @@ image pixels. The source marks channel `c` parallel and `kh` unrolled.
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py col2im --config 6x6 --top 16
+python3 tests/scripts/loom_dse.py col2im --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 16
 ```
 
 ## Col2im-specific setup
@@ -49,6 +49,9 @@ P-vs-U at fixed product 2 on level 'c' (other levels at P1U1):
   split        LD_rec LD_eff    ST   p_agg note
   P2U1            1298   1305   778     474 tie (control/coalescing sit below the binding term)
   P1U2            1297   1304   777     474 tie (control/coalescing sit below the binding term)
+
+4x4 recommendation: c:P1U1 kh:P1U1.
+8x8 recommendation: c:P1U1 kh:P1U1.
 ```
 
 ## Recommendation

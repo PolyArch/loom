@@ -31,7 +31,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py bit_reverse --config 6x6 --top 16
+python3 tests/scripts/loom_dse.py bit_reverse --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 16
 ```
 
 ## Bit-reverse-specific setup
@@ -107,6 +107,9 @@ P-vs-U at fixed product 16 on level 'i' (other levels at P1U1):
   P4U4             520    521   520    1376 best
   P2U8             518    519   518    1376 best
   P1U16            517    518   517    1376 best
+
+4x4 recommendation: i:P1U8 bit:P1U1.
+8x8 recommendation: i:P1U32 bit:P1U1.
 ```
 
 For flag and column meanings, see

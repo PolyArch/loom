@@ -10,7 +10,7 @@ bytes, and bits.
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py crc32 --config 6x6 --top 16
+python3 tests/scripts/loom_dse.py crc32 --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 16
 ```
 
 ## CRC32-specific setup
@@ -40,6 +40,9 @@ RECOMMENDED: i:P1U1  -> exposure=256, pragma_agg=50152 (1.00x the floor), latenc
 flags: K=recommended (saturation knee E_sat), b=bandwidth-starved (latency-bound: resources idle), o=oversubscribed (past the knee, no estimate gain).
 
 P-vs-U contrast: no parallelizable level.
+
+4x4 recommendation: i:P1U1.
+8x8 recommendation: i:P1U1.
 ```
 
 ## Recommendation

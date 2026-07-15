@@ -19,6 +19,11 @@ lanes and `L = S = 12` load/store lanes. The model has no separate area term, no
 control/body area tradeoff, and no separate control resource; all effects reduce
 or increase work inside the existing `P`/`L`/`S` pools.
 
+Checked-in kernel notes keep the detailed table and explanation on `6x6`. They
+may append concise `4x4` and `8x8` split recommendations computed by independent
+runs of the same legal power-of-two search; these lines do not choose between
+CGRA sizes.
+
 ## Reported quantities
 
 Per-candidate estimates use wave-serialized chunks:

@@ -10,7 +10,7 @@ search and interpolate one output for each query point.
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py interpolate_linear --config 6x6 --top 16
+python3 tests/scripts/loom_dse.py interpolate_linear --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 16
 ```
 
 ## Interpolate-linear-specific setup
@@ -72,6 +72,9 @@ P-vs-U at fixed product 64 on level 'q' (other levels at P1U1):
   P4U16           3413   3415  1108     289 best
   P2U32           3411   3413  1106     289 best
   P1U64           3410   3412  1105     289 best
+
+4x4 recommendation: q:P1U64.
+8x8 recommendation: q:P1U64.
 ```
 
 ## Recommendation

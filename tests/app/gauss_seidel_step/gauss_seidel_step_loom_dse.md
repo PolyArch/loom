@@ -10,7 +10,7 @@ Gauss-Seidel sweep in row order.
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py gauss_seidel_step --config 6x6 --top 16
+python3 tests/scripts/loom_dse.py gauss_seidel_step --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 16
 ```
 
 ## Gauss-Seidel-specific setup
@@ -46,6 +46,9 @@ RECOMMENDED: i:P1U1  -> exposure=32, pragma_agg=198 (1.00x the floor), latency-b
 flags: K=recommended (smallest split reaching the best estimate; no resource-bound knee), b=higher wave-serialized estimate.
 
 P-vs-U contrast: no parallelizable level.
+
+4x4 recommendation: i:P1U1.
+8x8 recommendation: i:P1U1.
 ```
 
 ## Recommendation

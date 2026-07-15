@@ -36,7 +36,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py binary_search --config 6x6 --top 0
+python3 tests/scripts/loom_dse.py binary_search --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 0
 ```
 
 ## Why this kernel does not demonstrate a P-vs-U distinction
@@ -116,6 +116,9 @@ P-vs-U at fixed product 4 on level 't' (other levels at P1U1):
   P4U1              24     27     8      54 tie (control/coalescing sit below the binding term)
   P2U2              22     25     4      54 tie (control/coalescing sit below the binding term)
   P1U4              21     24     2      54 tie (control/coalescing sit below the binding term)
+
+4x4 recommendation: t:P1U4 probe:P1U1.
+8x8 recommendation: t:P1U4 probe:P1U1.
 ```
 
 For flag and column meanings, see

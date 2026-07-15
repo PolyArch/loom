@@ -11,7 +11,7 @@ each lane contains a private data-dependent sequential `while` recurrence.
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py clz --config 6x6 --top 16
+python3 tests/scripts/loom_dse.py clz --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 16
 ```
 
 ## CLZ-specific setup
@@ -77,6 +77,9 @@ P-vs-U at fixed product 64 on level 'i' (other levels at P1U1):
   P4U16           1753   1754  1753     588 1.01x slower (parallel: extra iterators + strided, no coalesce)
   P2U32           1751   1752  1751     584 best
   P1U64           1750   1751  1750     584 best
+
+4x4 recommendation: i:P1U32.
+8x8 recommendation: i:P1U64.
 ```
 
 ## Recommendation

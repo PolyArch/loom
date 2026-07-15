@@ -43,7 +43,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py conv2d --config 6x6 --top 20
+python3 tests/scripts/loom_dse.py conv2d --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 20
 ```
 
 ## Why P and U differ
@@ -128,6 +128,9 @@ P-vs-U at fixed product 4 on level 'out' (other levels at P1U1):
   P4U1             140    141     8     432 tie (control/coalescing sit below the binding term)
   P2U2             138    139     4     432 tie (control/coalescing sit below the binding term)
   P1U4             137    138     2     432 tie (control/coalescing sit below the binding term)
+
+4x4 recommendation: out:P1U2 tap:P1U1.
+8x8 recommendation: out:P1U4 tap:P1U1.
 ```
 
 For flag and column meanings, see

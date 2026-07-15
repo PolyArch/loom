@@ -25,7 +25,7 @@ Estimate" section of
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py axpy --config 6x6 --top 24
+python3 tests/scripts/loom_dse.py axpy --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 24
 ```
 
 ## Why P and U differ
@@ -118,6 +118,9 @@ P-vs-U at fixed product 64 on level 'i' (other levels at P1U1):
   P4U16             36     38    20      16 best
   P2U32             34     36    18      16 best
   P1U64             33     35    17      16 best
+
+4x4 recommendation: i:P1U32.
+8x8 recommendation: i:P1U128.
 ```
 
 For flag and column meanings, see

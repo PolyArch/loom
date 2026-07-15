@@ -31,7 +31,7 @@ this provisional no-banking DSE.
 Regenerate:
 
 ```bash
-python3 tests/scripts/loom_dse.py gemv --config 6x6 --top 14
+python3 tests/scripts/loom_dse.py gemv --config 6x6 --brief-config 4x4 --brief-config 8x8 --top 14
 ```
 
 ## Gemv-specific setup
@@ -91,6 +91,9 @@ P-vs-U at fixed product 4 on level 'i' (other levels at P1U1):
   P4U1              72     92     8     240 tie (control/coalescing sit below the binding term)
   P2U2              68     88     4     240 tie (control/coalescing sit below the binding term)
   P1U4              66     86     2     240 tie (control/coalescing sit below the binding term)
+
+4x4 recommendation: i:P1U2 j:P1U1.
+8x8 recommendation: i:P1U8 j:P1U1.
 ```
 
 For flag and column meanings, see
