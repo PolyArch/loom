@@ -36,6 +36,77 @@ dataflow.graph.func private @g_canonical(%arg0: none, %arg1: i64, %arg2: i64,
   dataflow.graph.return %arg0, %0 : none, f32
 }
 
+// A direct no-wrap GEP whose stride equals the accessed element width already
+// carries an element index. Preserve that index instead of materializing a
+// multiply-by-width followed by the inverse element-width shift.
+
+// CHECK-LABEL: dataflow.graph.func private @g_inbounds_element_index
+// CHECK-DAG: %[[INBOUNDS_MEM:.*]] = builtin.unrealized_conversion_cast %arg4 : !llvm.ptr to memref<?xi32>
+// CHECK: %[[INBOUNDS_INDEX:.*]], %[[INBOUNDS_RWC:.*]] = dataflow.stream
+// CHECK-NOT: arith.muli
+// CHECK-NOT: arith.shrsi
+// CHECK: %[[INBOUNDS_ADDR:.*]] = arith.index_cast %[[INBOUNDS_INDEX]] : i64 to index
+// CHECK: %[[INBOUNDS_DATA:.*]], %[[INBOUNDS_DONE:.*]] = dataflow.load %[[INBOUNDS_MEM]][%[[INBOUNDS_ADDR]]] %arg0 : memref<?xi32>
+// CHECK: dataflow.store %[[INBOUNDS_MEM]][%[[INBOUNDS_ADDR]]] %[[INBOUNDS_DATA]] %arg0 : memref<?xi32>
+// CHECK-NOT: llvm.getelementptr
+// CHECK-NOT: llvm.load
+// CHECK-NOT: llvm.store
+dataflow.graph.func private @g_inbounds_element_index(
+    %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
+    %arg4: !llvm.ptr) -> none {
+  %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
+      {cont_cond = "<", step_op = "+="} : i64
+  %ptr = llvm.getelementptr inbounds %arg4[%index]
+      : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+  %value = llvm.load %ptr : !llvm.ptr -> i32
+  llvm.store %value, %ptr : i32, !llvm.ptr
+  dataflow.graph.return %arg0 : none
+}
+
+// Unsigned-only no-wrap does not prove that signed byte multiplication can be
+// inverted. Keep the conservative byte-domain normalization.
+
+// CHECK-LABEL: dataflow.graph.func private @g_nuw_element_index
+// CHECK: %[[NUW_INDEX:.*]], %[[NUW_RWC:.*]] = dataflow.stream
+// CHECK: %[[NUW_STRIDE:.*]] = arith.constant 4 : i64
+// CHECK: %[[NUW_BYTES:.*]] = arith.muli %[[NUW_INDEX]], %[[NUW_STRIDE]] : i64
+// CHECK: %[[NUW_ELEMENTS:.*]] = arith.shrsi %[[NUW_BYTES]], %{{.*}} : i64
+// CHECK: %[[NUW_ADDR:.*]] = arith.index_cast %[[NUW_ELEMENTS]] : i64 to index
+dataflow.graph.func private @g_nuw_element_index(
+    %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
+    %arg4: !llvm.ptr) -> none {
+  %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
+      {cont_cond = "<", step_op = "+="} : i64
+  %ptr = llvm.getelementptr nuw %arg4[%index]
+      : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+  %value = llvm.load %ptr : !llvm.ptr -> i32
+  llvm.store %value, %ptr : i32, !llvm.ptr
+  dataflow.graph.return %arg0 : none
+}
+
+// Keep chained GEPs on the general byte-normalization path even when the
+// companion offset is zero.
+
+// CHECK-LABEL: dataflow.graph.func private @g_inbounds_zero_companion
+// CHECK: %[[CHAIN_ZERO_INDEX:.*]], %[[CHAIN_ZERO_RWC:.*]] = dataflow.stream
+// CHECK: %[[CHAIN_ZERO_STRIDE:.*]] = arith.constant 4 : i64
+// CHECK: %[[CHAIN_ZERO_BYTES:.*]] = arith.muli %[[CHAIN_ZERO_INDEX]], %[[CHAIN_ZERO_STRIDE]] : i64
+// CHECK: %[[CHAIN_ZERO_ELEMENTS:.*]] = arith.shrsi %[[CHAIN_ZERO_BYTES]], %{{.*}} : i64
+// CHECK: %[[CHAIN_ZERO_ADDR:.*]] = arith.index_cast %[[CHAIN_ZERO_ELEMENTS]] : i64 to index
+dataflow.graph.func private @g_inbounds_zero_companion(
+    %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
+    %arg4: !llvm.ptr) -> none {
+  %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
+      {cont_cond = "<", step_op = "+="} : i64
+  %base = llvm.getelementptr inbounds %arg4[%index]
+      : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+  %ptr = llvm.getelementptr %base[0]
+      : (!llvm.ptr) -> !llvm.ptr, i8
+  %value = llvm.load %ptr : !llvm.ptr -> i32
+  llvm.store %value, %ptr : i32, !llvm.ptr
+  dataflow.graph.return %arg0 : none
+}
+
 // Negative-bail #1: a graph.func body whose llvm.load / llvm.store
 // use a base pointer derived from a global address-of (not a graph
 // block-arg) keeps the original llvm.{load, store, gep} chain.

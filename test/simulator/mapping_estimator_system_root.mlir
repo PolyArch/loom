@@ -13,7 +13,15 @@
 
 // MAPPING-DAG: "kind": "pnr_mapping"
 // MAPPING-DAG: "hardware": "system_dual_spatial_shared_memory_soc::acc1"
+// MAPPING-DAG: "hardware_root_kind": "fabric.system"
+// MAPPING-DAG: "selected_acc_core": "acc1"
 // MAPPING-DAG: "status": "pass"
+// MAPPING-DAG: "unplaced_records": 0
+// MAPPING-DAG: "unrouted_edges": 0
+// MAPPING-DAG: "operation": "llvm.intr.bswap",
+// MAPPING-DAG: "software": "llvm.intr.bswap#0"
+// MAPPING-DAG: "edge_ref": "dataflow.load#0.result0->llvm.intr.bswap#0.operand0",
+// MAPPING-DAG: "status": "routed",
 
 // ESTIMATE-DAG: "kind": "mapping_estimate_report"
 // ESTIMATE-DAG: "workload": "byte_swap"

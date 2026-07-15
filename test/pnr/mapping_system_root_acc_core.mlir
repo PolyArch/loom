@@ -17,7 +17,12 @@
 // ACC1-DAG: "selected_acc_core": "acc1"
 // ACC1-DAG: "spatialcore_template": "shared_vector_alu_adg"
 // ACC1-DAG: "status": "pass"
+// ACC1-DAG: "unplaced_records": 0
 // ACC1-DAG: "unrouted_edges": 0
+// ACC1-DAG: "operation": "llvm.intr.bswap",
+// ACC1-DAG: "software": "llvm.intr.bswap#0"
+// ACC1-DAG: "edge_ref": "dataflow.load#0.result0->llvm.intr.bswap#0.operand0",
+// ACC1-DAG: "status": "routed",
 
 // ACC0-DAG: "hardware": "system_dual_spatial_shared_memory_soc::acc0"
 // ACC0-DAG: "hardware_system": "system_dual_spatial_shared_memory_soc"

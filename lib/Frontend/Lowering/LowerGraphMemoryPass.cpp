@@ -422,11 +422,20 @@ resolveLinearTopLevelGep(::mlir::LLVM::GEPOp gep, ::dataflow::GraphFuncOp graph,
       !::llvm::isIntN(*indexBitWidth, constantByteOffset))
     return std::nullopt;
 
-  AddrResolution resolution{
-      dynamicGep.getBase(),           dynamicIndex,      {}, 0,
-      ::llvm::Log2_64(*elementBytes), gep.getOperation()};
+  bool preserveElementIndex =
+      !companionIndex && constantByteOffset == 0 &&
+      *baseStrideBytes == *elementBytes &&
+      ::mlir::LLVM::bitEnumContainsAny(dynamicGep.getNoWrapFlags(),
+                                       ::mlir::LLVM::GEPNoWrapFlags::nusw);
+  unsigned byteToElementShift =
+      preserveElementIndex ? 0 : ::llvm::Log2_64(*elementBytes);
+  std::int64_t intIndexByteStride =
+      preserveElementIndex ? 1 : static_cast<std::int64_t>(*baseStrideBytes);
+
+  AddrResolution resolution{dynamicGep.getBase(), dynamicIndex,      {}, 0,
+                            byteToElementShift,   gep.getOperation()};
   resolution.baseGepToErase = baseGepToErase;
-  resolution.intIndexByteStride = static_cast<std::int64_t>(*baseStrideBytes);
+  resolution.intIndexByteStride = intIndexByteStride;
   resolution.intIndexByteBias = constantByteOffset;
   return resolution;
 }

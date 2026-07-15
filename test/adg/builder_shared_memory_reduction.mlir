@@ -62,12 +62,13 @@
 
 // BITONIC-DAG: "workload": "bitonic_stage"
 // BITONIC-DAG: "hardware": "shared_memory_reduction_adg"
-// BITONIC-DAG: "placed_records": 23
 // BITONIC-DAG: "unplaced_records": 0
 // BITONIC-DAG: "unrouted_edges": 0
-// BITONIC-DAG: "edge_ref": "dataflow.constant#1.result0->arith.index_cast#1.operand0"
-// BITONIC-DAG: "edge_ref": "arith.index_cast#1.result0->arith.shli#2.operand1"
-// BITONIC-DAG: "edge_ref": "arith.shrui#1.result0->dataflow.store#0.operand1"
+// BITONIC-DAG: "software": "arith.cmpi#0"
+// BITONIC-DAG: "software": "dataflow.store#0"
+// BITONIC-DAG: "edge_ref": "arith.cmpi#0.result0->arith.select#0.operand0"
+// BITONIC-DAG: "edge_ref": "dataflow.constant#1.result0->arith.shli#0.operand1"
+// BITONIC-DAG: "edge_ref": "dataflow.load#1.result0->arith.cmpf#1.operand1"
 // BITONIC-DAG: "status": "pass"
 
 module {
