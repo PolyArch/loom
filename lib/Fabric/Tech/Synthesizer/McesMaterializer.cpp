@@ -237,6 +237,27 @@ liftedResultTypes(::mlir::MLIRContext *ctx,
 using SharedResultKey = ::std::pair<unsigned, unsigned>;
 using PrivateNodeKey = ::std::pair<unsigned, unsigned>;
 
+enum class CanonicalSourceKind : uint8_t { None, BlockArgument, SharedResult };
+
+struct CanonicalSource {
+  CanonicalSourceKind kind = CanonicalSourceKind::None;
+  unsigned index = 0;
+  unsigned resultIndex = 0;
+
+  bool operator==(const CanonicalSource &other) const {
+    return kind == other.kind && index == other.index &&
+           resultIndex == other.resultIndex;
+  }
+
+  bool operator<(const CanonicalSource &other) const {
+    if (kind != other.kind)
+      return kind < other.kind;
+    if (index != other.index)
+      return index < other.index;
+    return resultIndex < other.resultIndex;
+  }
+};
+
 struct EmissionState {
   EmissionState(const SynthInputs &inputs, ::llvm::ArrayRef<McsGraph> graphs,
                 const McesCandidate &candidate, WrapperShell &shell,
@@ -255,8 +276,8 @@ struct EmissionState {
   ::std::vector<::std::vector<int>> sharedIdByGraphNode;
   ::std::vector<::std::vector<int>> blockArgToBaseArg;
   ::llvm::SmallVector<::llvm::SmallVector<::mlir::Value, 2>, 4> sharedOutputs;
-  ::std::map<SharedResultKey, ::llvm::SmallVector<::mlir::Value, 4>>
-      demuxedShared;
+  ::std::map<CanonicalSource, ::llvm::SmallVector<::mlir::Value, 4>>
+      demuxedSources;
   ::std::map<SharedResultKey, ::mlir::Value> sharedPlaceholders;
   ::llvm::SmallVector<::mlir::Operation *, 4> placeholderOps;
   ::std::map<PrivateNodeKey, ::llvm::SmallVector<::mlir::Value, 2>>
@@ -362,58 +383,77 @@ bool resolveSharedPlaceholders(EmissionState &state) {
   return static_cast<unsigned>(mapped);
 }
 
-::std::optional<::mlir::Value> blockArgumentValue(const EmissionState &state,
-                                                  unsigned graphIndex,
-                                                  unsigned argIndex) {
-  auto mapped = mappedBlockArgumentIndex(state, graphIndex, argIndex);
-  if (!mapped.has_value())
-    return std::nullopt;
-  if (!state.shell.fuEntry || *mapped >= state.shell.fuEntry->getNumArguments())
-    return std::nullopt;
-  return state.shell.fuEntry->getArgument(*mapped);
+CanonicalSource canonicalSource(const EmissionState &state, unsigned graphIndex,
+                                McsValueRef source) {
+  if (source.kind == McsValueKind::BlockArgument) {
+    auto mapped = mappedBlockArgumentIndex(state, graphIndex, source.argIndex);
+    if (!mapped.has_value())
+      return {};
+    return {CanonicalSourceKind::BlockArgument, *mapped, 0};
+  }
+  auto sharedId = sharedIdForNode(state, graphIndex, source.nodeIndex);
+  if (!sharedId.has_value())
+    return {};
+  return {CanonicalSourceKind::SharedResult, *sharedId, source.resultIndex};
 }
 
-void collectSharedRefsForArm(EmissionState &state, unsigned graphIndex,
-                             McsValueRef source,
-                             ::std::set<SharedResultKey> &refs,
-                             ::std::set<PrivateNodeKey> &seenPrivate) {
-  if (source.kind == McsValueKind::BlockArgument)
-    return;
-
-  auto sharedId = sharedIdForNode(state, graphIndex, source.nodeIndex);
-  if (sharedId.has_value()) {
-    refs.insert({*sharedId, source.resultIndex});
-    return;
+bool collectRoutedSourcesForArm(EmissionState &state, unsigned graphIndex,
+                                McsValueRef source,
+                                ::std::set<CanonicalSource> &refs,
+                                ::std::set<PrivateNodeKey> &seenPrivate) {
+  CanonicalSource canonical = canonicalSource(state, graphIndex, source);
+  if (source.kind == McsValueKind::BlockArgument) {
+    if (canonical.kind == CanonicalSourceKind::None)
+      return false;
+    refs.insert(canonical);
+    return true;
+  }
+  if (canonical.kind == CanonicalSourceKind::SharedResult) {
+    refs.insert(canonical);
+    return true;
   }
 
-  PrivateNodeKey key{graphIndex, source.nodeIndex};
-  if (!seenPrivate.insert(key).second)
-    return;
   if (graphIndex >= state.graphs.size() ||
       source.nodeIndex >= state.graphs[graphIndex].nodes.size())
-    return;
+    return false;
+  PrivateNodeKey key{graphIndex, source.nodeIndex};
+  if (!seenPrivate.insert(key).second)
+    return true;
   const McsNode &node = state.graphs[graphIndex].nodes[source.nodeIndex];
   for (const McsOperand &operand : node.operands)
-    collectSharedRefsForArm(state, graphIndex, operand.source, refs,
-                            seenPrivate);
+    if (!collectRoutedSourcesForArm(state, graphIndex, operand.source, refs,
+                                    seenPrivate))
+      return false;
+  return true;
+}
+
+::std::optional<::mlir::Value> canonicalSourceValue(EmissionState &state,
+                                                    CanonicalSource source) {
+  if (source.kind == CanonicalSourceKind::BlockArgument) {
+    if (!state.shell.fuEntry ||
+        source.index >= state.shell.fuEntry->getNumArguments())
+      return std::nullopt;
+    return state.shell.fuEntry->getArgument(source.index);
+  }
+  if (source.kind == CanonicalSourceKind::SharedResult)
+    return sharedOutputOrPlaceholder(state, source.index, source.resultIndex);
+  return std::nullopt;
 }
 
 ::std::optional<::llvm::SmallVector<::mlir::Value, 4>>
-getOrCreateDemux(EmissionState &state, unsigned sharedId,
-                 unsigned resultIndex) {
-  SharedResultKey key{sharedId, resultIndex};
-  auto found = state.demuxedShared.find(key);
-  if (found != state.demuxedShared.end())
+getOrCreateDemux(EmissionState &state, CanonicalSource source) {
+  auto found = state.demuxedSources.find(source);
+  if (found != state.demuxedSources.end())
     return found->second;
 
-  auto input = sharedOutputOrPlaceholder(state, sharedId, resultIndex);
+  auto input = canonicalSourceValue(state, source);
   if (!input.has_value())
     return std::nullopt;
 
   ::llvm::SmallVector<::mlir::Value, 4> outputs;
   if (state.graphs.size() < 2) {
     outputs.push_back(*input);
-    state.demuxedShared[key] = outputs;
+    state.demuxedSources[source] = outputs;
     return outputs;
   }
 
@@ -423,7 +463,7 @@ getOrCreateDemux(EmissionState &state, unsigned sharedId,
   auto demux = emitDemux(*state.builder, state.loc, *input,
                          static_cast<unsigned>(state.graphs.size()), bits);
   outputs.assign(demux.getOutputs().begin(), demux.getOutputs().end());
-  state.demuxedShared[key] = outputs;
+  state.demuxedSources[source] = outputs;
   return outputs;
 }
 
@@ -433,20 +473,18 @@ materializePrivateNode(EmissionState &state, unsigned graphIndex,
 
 ::std::optional<::mlir::Value>
 resolveArmValue(EmissionState &state, unsigned graphIndex, McsValueRef source) {
-  if (source.kind == McsValueKind::BlockArgument)
-    return blockArgumentValue(state, graphIndex, source.argIndex);
-
-  auto sharedId = sharedIdForNode(state, graphIndex, source.nodeIndex);
-  if (sharedId.has_value()) {
-    SharedResultKey key{*sharedId, source.resultIndex};
-    auto demuxed = state.demuxedShared.find(key);
-    if (demuxed != state.demuxedShared.end()) {
+  CanonicalSource canonical = canonicalSource(state, graphIndex, source);
+  if (canonical.kind != CanonicalSourceKind::None) {
+    auto demuxed = state.demuxedSources.find(canonical);
+    if (demuxed != state.demuxedSources.end()) {
       if (graphIndex >= demuxed->second.size())
         return std::nullopt;
       return demuxed->second[graphIndex];
     }
-    return sharedOutputOrPlaceholder(state, *sharedId, source.resultIndex);
+    return canonicalSourceValue(state, canonical);
   }
+  if (source.kind == McsValueKind::BlockArgument)
+    return std::nullopt;
 
   auto outputs = materializePrivateNode(state, graphIndex, source.nodeIndex);
   if (!outputs.has_value() || source.resultIndex >= outputs->size())
@@ -496,41 +534,14 @@ materializePrivateNode(EmissionState &state, unsigned graphIndex,
   return outputs;
 }
 
-enum class DirectKind : uint8_t { None, BlockArgument, SharedResult };
-
-struct DirectSource {
-  DirectKind kind = DirectKind::None;
-  unsigned index = 0;
-  unsigned resultIndex = 0;
-
-  bool operator==(const DirectSource &other) const {
-    return kind == other.kind && index == other.index &&
-           resultIndex == other.resultIndex;
-  }
-};
-
-DirectSource canonicalDirectSource(const EmissionState &state,
-                                   unsigned graphIndex, McsValueRef source) {
-  if (source.kind == McsValueKind::BlockArgument) {
-    auto mapped = mappedBlockArgumentIndex(state, graphIndex, source.argIndex);
-    if (!mapped.has_value())
-      return {};
-    return {DirectKind::BlockArgument, *mapped, 0};
-  }
-  auto sharedId = sharedIdForNode(state, graphIndex, source.nodeIndex);
-  if (!sharedId.has_value())
-    return {};
-  return {DirectKind::SharedResult, *sharedId, source.resultIndex};
-}
-
 bool directSourceCompatibleForPermutation(const EmissionState &state,
                                           unsigned graphIndex,
                                           McsValueRef baseSource,
                                           McsValueRef candidateSource) {
-  DirectSource base = canonicalDirectSource(state, 0, baseSource);
-  DirectSource candidate =
-      canonicalDirectSource(state, graphIndex, candidateSource);
-  return base.kind != DirectKind::None && base == candidate;
+  CanonicalSource base = canonicalSource(state, 0, baseSource);
+  CanonicalSource candidate =
+      canonicalSource(state, graphIndex, candidateSource);
+  return base.kind != CanonicalSourceKind::None && base == candidate;
 }
 
 ::llvm::SmallVector<unsigned, 4>
@@ -580,17 +591,13 @@ resolveDirectCommonValue(EmissionState &state,
                          ::llvm::ArrayRef<McsValueRef> sources) {
   if (sources.empty() || sources.size() != state.graphs.size())
     return std::nullopt;
-  DirectSource first = canonicalDirectSource(state, 0, sources.front());
-  if (first.kind == DirectKind::None)
+  CanonicalSource first = canonicalSource(state, 0, sources.front());
+  if (first.kind == CanonicalSourceKind::None)
     return std::nullopt;
   for (unsigned graphIndex = 1; graphIndex < sources.size(); ++graphIndex)
-    if (!(canonicalDirectSource(state, graphIndex, sources[graphIndex]) ==
-          first))
+    if (!(canonicalSource(state, graphIndex, sources[graphIndex]) == first))
       return std::nullopt;
-
-  if (first.kind == DirectKind::BlockArgument)
-    return blockArgumentValue(state, 0, first.index);
-  return sharedOutputOrPlaceholder(state, first.index, first.resultIndex);
+  return canonicalSourceValue(state, first);
 }
 
 ::std::optional<::mlir::Value>
@@ -600,14 +607,16 @@ buildAdapterValue(EmissionState &state, ::llvm::ArrayRef<McsValueRef> sources) {
   if (auto direct = resolveDirectCommonValue(state, sources))
     return direct;
 
-  ::std::set<SharedResultKey> sharedRefs;
+  ::std::set<CanonicalSource> routedSources;
   for (auto indexed : ::llvm::enumerate(sources)) {
     ::std::set<PrivateNodeKey> seenPrivate;
-    collectSharedRefsForArm(state, static_cast<unsigned>(indexed.index()),
-                            indexed.value(), sharedRefs, seenPrivate);
+    if (!collectRoutedSourcesForArm(
+            state, static_cast<unsigned>(indexed.index()), indexed.value(),
+            routedSources, seenPrivate))
+      return std::nullopt;
   }
-  for (SharedResultKey key : sharedRefs)
-    if (!getOrCreateDemux(state, key.first, key.second).has_value())
+  for (CanonicalSource source : routedSources)
+    if (!getOrCreateDemux(state, source).has_value())
       return std::nullopt;
 
   ::llvm::SmallVector<::mlir::Value, 4> arms;

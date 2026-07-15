@@ -13,14 +13,14 @@
 // INC: remark: {{.*}}synth-stat group=mces_tail_split strategy=incremental reason=topology_mismatch
 
 // MCS: remark: {{.*}}synth-stat group=mces_tail_split strategy=mcs reason=success
-// MCS-SAME: cost=2.020000e+02
+// MCS-SAME: cost=2.980000e+02
 // MCS-SAME: covered=2/2
-// MCS-SAME: nodes=3/1/1
+// MCS-SAME: nodes=3/1/2
 // MCS: fabric.module @fu_mces_tail_split
 // MCS: fabric.pe [spatial]
 // MCS: fabric.fu
 // MCS: fabric.op [@arith.addi]
-// MCS-DAG: fabric.demux
+// MCS-COUNT-2: fabric.demux
 // MCS-DAG: fabric.op [@arith.muli]
 // MCS-DAG: fabric.op [@arith.divsi]
 // MCS-DAG: fabric.mux

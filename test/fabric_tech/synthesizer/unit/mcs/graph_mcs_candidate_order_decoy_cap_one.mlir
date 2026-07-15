@@ -8,7 +8,7 @@
 
 // CHECK: remark: {{.*}}synth-stat group=decoy_candidate_order strategy=mcs reason=success
 // CHECK-SAME: covered=2/2
-// CHECK-SAME: nodes=3/2/1
+// CHECK-SAME: nodes=3/2/4
 // CHECK: fabric.module @fu_decoy_candidate_order
 // CHECK: fabric.fu
 // CHECK: fabric.op [@arith.addi]

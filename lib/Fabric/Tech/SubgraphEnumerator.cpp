@@ -630,80 +630,31 @@ static Flavor flavorOfFabricOp(::fabric::OpOp fop) {
   return opFlavors().lookup(sym);
 }
 
-// Whether the use port at `idx` of `user` is "blocking" for `v` in this
-// configuration: the user's hardware-side ready signal would remain low,
-// so the value's producer cannot complete its broadcast to that consumer
-// unless an alternative drain (discard mode on another fanout branch, a
-// different firing consumer, etc.) is provided.
-//
-// "Non-blocking" (a.k.a. dormant) uses are uses that the configurable
-// fabric drains transparently: their ready is tied high so they cannot
-// stall the producer. Those uses do not consume `v` in the materialized
-// subgraph either; they only exist for routing flexibility.
-//
-// Non-blocking cases:
-//   * fabric.OpOp that does not fire in this configuration. The fabric
-//     configures unused op modules with their input ready signals tied
-//     high, draining whatever broadcasts arrive. They consume nothing.
-//   * fabric.OpOp that fires but whose `idx` is masked off by a variadic
-//     bitmask (dataflow.{sync,mux,demux}). The masked-off physical port
-//     is unused for this bitmask; its ready is tied high.
-//   * fabric.MuxOp that fires (any operand index, including the
-//     non-selected ports). A firing fabric.mux drains every input port:
-//     the selected one propagates, the others are accepted and discarded.
-//     This is the fix for the fanout-to-distinct-muxes bug.
-//   * fabric.DemuxOp that fires at any non-data operand index (only
-//     `idx == 0` is the data port; demux has no other operand kinds, so
-//     this case is dead weight in practice).
-//   * fabric.MuxOp / fabric.DemuxOp in disconnect mode: the input ready
-//     is held low by definition, so this is actually blocking. Listed
-//     here as a reminder that `disconnect` is treated as "blocking with
-//     no completion path", which is what causes the analyzer to drop
-//     configs that disconnect a value with no other consumer.
-//
-// Blocking cases:
-//   * fabric.yield (the FU's terminator): always blocking, since the FU
-//     output port must complete the handshake outward.
-//   * fabric.OpOp that fires AND `idx` is an active operand index for
-//     this configuration: the hardware actually consumes the value.
-//   * fabric.MuxOp that fires AND not in disconnect mode AND `idx` is the
-//     selected input port: the mux propagates this value to its output.
-//     Note: non-selected ports of a firing mux are drained, hence
-//     non-blocking (see above).
-//   * fabric.MuxOp / fabric.DemuxOp that does NOT fire and is not in
-//     disconnect mode: the hardware ready remains low (the unit has no
-//     downstream consumer demanding its output), so the fanout deadlocks.
-//     Treat as blocking so the analyzer rejects such configs (the user
-//     must explicitly request `discard` or a side drain).
-//   * fabric.DemuxOp that fires AND not in disconnect mode AND `idx == 0`
-//     (its single data input): consumed by the demux.
-//
-// Note on the legacy name `useIsActive`: the function returns true when
-// the use is "active in the consume-or-drain sense" (i.e. the producer's
-// broadcast can complete via this use). The alive-shrink in
-// `analyzeConfig` uses `allUsesActive` to test whether every use of a
-// value can complete its handshake; if any use is blocking-and-stuck,
-// the value cannot stay alive. Treating drained-but-not-consuming uses
-// (firing mux at non-selected port, non-firing fabric.op) as active is
-// the central fix for the fanout-broadcast deadlock false positive.
+// A Fabric SSA multi-use is a real broadcast. Every use of an alive value
+// must therefore be an actual consumer in the chosen configuration. Inactive
+// fabric.op instances, masked variadic ports, and non-selected mux inputs do
+// not receive an implicit ready-high drain. Explicit mux/demux discard modes
+// remain consumers of their selected input.
 static bool useIsActive(
     Operation *user, unsigned idx, const llvm::DenseSet<Operation *> &fires,
     const llvm::DenseMap<Operation *, llvm::StringMap<Attribute>> &chosenByOp) {
   if (::mlir::isa<::fabric::YieldOp>(user))
     return true;
+  if (auto fop = ::mlir::dyn_cast<::fabric::OpOp>(user)) {
+    if (!fires.count(user))
+      return false;
+    Flavor f = flavorOfFabricOp(fop);
+    if (!isVariadicFlavor(f))
+      return true;
+    return variadicInputActive(f, idx, getChosenBitmask(user, chosenByOp));
+  }
   if (::mlir::isa<::fabric::MuxOp>(user)) {
     if (!fires.count(user))
       return false;
     auto [sel, discard, disconnect] =
         decodeMuxLikeMode(chosenByOp.lookup(user));
-    (void)sel;
     (void)discard;
-    if (disconnect)
-      return false;
-    // A firing fabric.mux drains every input port: the selected port
-    // propagates the value, the non-selected ports complete their
-    // handshakes by accepting and discarding the data.
-    return true;
+    return !disconnect && idx == sel;
   }
   if (::mlir::isa<::fabric::DemuxOp>(user)) {
     if (!fires.count(user))
@@ -716,7 +667,7 @@ static bool useIsActive(
       return false;
     return idx == 0;
   }
-  return true;
+  return false;
 }
 
 static bool allUsesActive(
@@ -1008,8 +959,8 @@ static std::optional<ConfigAnalysis> analyzeConfig(
           decodeMuxLikeMode(chosenByOp.lookup(op));
       (void)disconnect;
       // Both normal-mode and discard-mode firing fabric.mux read the
-      // selected input; only the unselected ports are passive drains
-      // and need not be alive.
+      // selected input. Unselected inputs are inactive; any alive broadcast
+      // reaching one was rejected by allUsesActive.
       if (!alive.count(m.getInputs()[sel]))
         return std::nullopt;
       (void)discard;
@@ -1043,7 +994,7 @@ static std::optional<ConfigAnalysis> analyzeConfig(
 // body actually reads (transitively through pass-through fabric.mux /
 // fabric.demux chains). The set excludes values consumed only by:
 //   * non-firing ops (those don't materialize at all),
-//   * the unselected ports of a firing fabric.mux (drained, not consumed),
+//   * the unselected ports of a firing fabric.mux (inactive),
 //   * a firing fabric.mux/demux operating in discard mode (the selected
 //     input is drained at the hardware level but no value flows into the
 //     software graph).

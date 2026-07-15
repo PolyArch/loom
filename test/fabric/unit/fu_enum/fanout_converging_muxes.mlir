@@ -1,53 +1,57 @@
 // RUN: loom %s -loom-enumerate-fu-subgraphs | FileCheck %s
 
-// Pins the producer-fanout-into-distinct-muxes shape: a fabric.op
-// (%pre = addi(D, B)) feeds two structurally-different fabric.mux
-// instances whose outputs converge into a single multi-arg fabric.op
-// (%m = muli(%xa, %xb)). The two muxes pick distinct first-input
-// block-args (%A vs %B) so they are NOT structurally identical, which
-// is the exact enumerator failure mode that motivates this test.
-//
-// Correct alive analysis must recognize that a firing fabric.mux drains
-// every input port (the selected port propagates, the non-selected
-// ports complete their handshakes by accepting and discarding the
-// data). Without that recognition the enumerator killed %pre whenever
-// even one downstream mux did not select it, collapsing the entire
-// candidate set to zero. With the fix, every (mux#0.sel, mux#1.sel)
-// combination yields a structurally distinct effective compute, so the
-// dedup pass keeps four templates: muli(A, B), muli(pre, B),
-// muli(A, pre), muli(pre, pre).
-//
-// Note: the FU body intentionally does NOT use back-edges; this test
-// is independent of graph-region work and exercises the alive
-// fixed-point alone.
+// Direct SSA multi-use is broadcast. Selecting one result cannot make the
+// other operation disappear because both operations still receive every input
+// token. No configuration is valid without explicit input routing.
 
-// CHECK-LABEL: fabric.module @repro_fanout_converging_muxes
-fabric.module @repro_fanout_converging_muxes(%a : !fabric.bits<32>, %b : !fabric.bits<32>, %d : !fabric.bits<32>) {
+// CHECK-LABEL: fabric.module @implicit_add_or_mul
+fabric.module @implicit_add_or_mul(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
   fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
-                    %pb = %b : !fabric.bits<32>,
-                    %pd = %d : !fabric.bits<32>) -> !fabric.bits<32> {
-    fabric.fu(%A = %pa : !fabric.bits<32>,
-              %B = %pb : !fabric.bits<32>,
-              %D = %pd : !fabric.bits<32>) -> !fabric.bits<32> {
-      %pre = fabric.op [@arith.addi] (%D, %B)
+                    %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>,
+              %y = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+      %add = fabric.op [@arith.addi] (%x, %y)
              : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-      %xa = fabric.mux %A, %pre : !fabric.bits<32>
-      %xb = fabric.mux %B, %pre : !fabric.bits<32>
-      %m = fabric.op [@arith.muli] (%xa, %xb)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-      fabric.yield %m : !fabric.bits<32>
+      %mul = fabric.op [@arith.muli] (%x, %y)
+             : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      %out = fabric.mux %add, %mul : !fabric.bits<32>
+      fabric.yield %out : !fabric.bits<32>
     }
   }
   fabric.yield
 }
 
-// Sanity floor: at least four distinct private subgraph wrappers must
-// be emitted, one per (mux#0.sel, mux#1.sel) combination.
-// CHECK: func.func private @fu0_subgraph_0
-// CHECK: func.func private @fu0_subgraph_1
-// CHECK: func.func private @fu0_subgraph_2
-// CHECK: func.func private @fu0_subgraph_3
+// Explicit demuxes route each input to exactly one operation. The result mux
+// must select the same branch, leaving two valid configured functions.
 
-// At least one of the emitted templates must contain the converging
-// arith.muli, confirming the downstream multi-arg op materializes.
+// CHECK-LABEL: fabric.module @explicit_add_or_mul
+fabric.module @explicit_add_or_mul(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                    %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>,
+              %y = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+      %x0, %x1 = fabric.demux %x : !fabric.bits<32> -> 2
+      %y0, %y1 = fabric.demux %y : !fabric.bits<32> -> 2
+      %add = fabric.op [@arith.addi] (%x0, %y0)
+             : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      %mul = fabric.op [@arith.muli] (%x1, %y1)
+             : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      %out = fabric.mux %add, %mul : !fabric.bits<32>
+      fabric.yield %out : !fabric.bits<32>
+    }
+  }
+  fabric.yield
+}
+
+// CHECK-NOT: func.func private @fu0_subgraph_
+// CHECK: func.func private @fu1_subgraph_0
+// CHECK: dataflow.subgraph
+// CHECK-SAME: demux#0{sel=0,discard=false,disconnect=false}; demux#1{sel=0,discard=false,disconnect=false}; mux#0{sel=0,discard=false,disconnect=false}
+// CHECK: arith.addi
+// CHECK-NOT: arith.muli
+
+// CHECK: func.func private @fu1_subgraph_1
+// CHECK: dataflow.subgraph
+// CHECK-SAME: demux#0{sel=1,discard=false,disconnect=false}; demux#1{sel=1,discard=false,disconnect=false}; mux#0{sel=1,discard=false,disconnect=false}
 // CHECK: arith.muli
+// CHECK-NOT: func.func private @fu1_subgraph_2

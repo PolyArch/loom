@@ -22,8 +22,9 @@
 //        c. Generates one candidate FU that grafts the new sg's SCC
 //           body onto the FU, reusing state heads whose signatures
 //           match an existing FU state head, merging carry feedback
-//           inputs for matched carries, and inserting a `fabric.mux`
-//           where the post-state value differs.
+//           inputs for matched carries, routing shared branch inputs
+//           through outer `fabric.demux` ops, and inserting a
+//           `fabric.mux` where the post-state value differs.
 //
 // Back-edge realization. Both builders use the same
 // "build-then-resolve" placeholder scheme that mirrors
@@ -488,6 +489,10 @@ struct BodyBuildCtx {
   // for. The post-pass uses this to look up the real value in
   // `valueMap` (which by then contains every body op's result).
   ::llvm::DenseMap<::mlir::Operation *, ::mlir::Value> placeholderSource;
+  // fabric.op instances emitted while mirroring the source body. Tier-C
+  // extension uses this list to distinguish the new private arm from the
+  // existing aggregate.
+  ::llvm::SmallVector<::mlir::Operation *, 8> emittedOps;
 };
 
 // Returns the FU-side value for `srcValue`. Block-args are mapped 1:1
@@ -626,6 +631,7 @@ bool mirrorBodyOp(BodyBuildCtx &c, ::mlir::Operation *srcOp) {
       emitFabricOpInBody(c, opName, inputs, resultTypes, hwParams);
   if (!emitted)
     return false;
+  c.emittedOps.push_back(emitted.getOperation());
   for (auto [i, r] : ::llvm::enumerate(srcOp->getResults()))
     c.valueMap[r] = emitted->getResult(i);
   return true;
@@ -826,6 +832,63 @@ namespace {
   return ::mlir::cast<::fabric::MuxOp>(raw);
 }
 
+::fabric::DemuxOp emitDemux2(::mlir::OpBuilder &builder, ::mlir::Location loc,
+                             ::mlir::Value input, ::mlir::Type bits) {
+  ::mlir::OperationState state(loc, ::fabric::DemuxOp::getOperationName());
+  state.addOperands({input});
+  state.addTypes({bits, bits});
+  return ::mlir::cast<::fabric::DemuxOp>(builder.create(state));
+}
+
+bool routePrivateBranchInputs(
+    BodyBuildCtx &bc,
+    const ::llvm::DenseSet<::mlir::Operation *> &anchoredFuOps,
+    const ::llvm::DenseSet<::mlir::OpOperand *> &branchSpecificUses) {
+  ::llvm::DenseSet<::mlir::Operation *> newOps(bc.emittedOps.begin(),
+                                               bc.emittedOps.end());
+  ::llvm::DenseSet<::mlir::Value> seenSources;
+  ::llvm::SmallVector<::mlir::Value, 8> sources;
+  for (::mlir::Operation *op : bc.emittedOps) {
+    for (::mlir::Value operand : op->getOperands()) {
+      if (newOps.contains(operand.getDefiningOp()))
+        continue;
+      if (seenSources.insert(operand).second)
+        sources.push_back(operand);
+    }
+  }
+
+  for (::mlir::Value source : sources) {
+    ::llvm::SmallVector<::mlir::OpOperand *, 8> oldBranchUses;
+    ::llvm::SmallVector<::mlir::OpOperand *, 8> newBranchUses;
+    bool hasExistingUse = false;
+    for (::mlir::OpOperand &use : source.getUses()) {
+      ::mlir::Operation *owner = use.getOwner();
+      if (newOps.contains(owner)) {
+        newBranchUses.push_back(&use);
+        continue;
+      }
+      hasExistingUse = true;
+      if ((anchoredFuOps.contains(owner) ||
+           ::mlir::isa<::fabric::YieldOp>(owner)) &&
+          !branchSpecificUses.contains(&use))
+        continue;
+      oldBranchUses.push_back(&use);
+    }
+    if (!hasExistingUse || newBranchUses.empty())
+      continue;
+
+    auto bits = ::llvm::dyn_cast<::fabric::BitsType>(source.getType());
+    if (!bits)
+      return false;
+    ::fabric::DemuxOp demux = emitDemux2(*bc.builder, bc.loc, source, bits);
+    for (::mlir::OpOperand *use : oldBranchUses)
+      use->set(demux.getOutputs()[0]);
+    for (::mlir::OpOperand *use : newBranchUses)
+      use->set(demux.getOutputs()[1]);
+  }
+  return true;
+}
+
 bool containsValue(::llvm::ArrayRef<::mlir::Value> values, ::mlir::Value v) {
   return llvm::any_of(values, [&](::mlir::Value cur) { return cur == v; });
 }
@@ -951,6 +1014,9 @@ buildMirroredTierCCandidate(::fabric::ModuleOp curWrapper,
     anchoredOps[head.op] = fuHead;
     addMatchedCondProducer(head.op, fuHead, anchoredOps);
   }
+  ::llvm::DenseSet<::mlir::Operation *> anchoredFuOps;
+  for (auto &kv : anchoredOps)
+    anchoredFuOps.insert(kv.second.getOperation());
 
   ::mlir::Operation *yield = fuYield(newFu);
   if (!yield)
@@ -981,6 +1047,38 @@ buildMirroredTierCCandidate(::fabric::ModuleOp curWrapper,
   if (!resolvePlaceholders(bc))
     return {};
 
+  ::llvm::DenseSet<::mlir::OpOperand *> branchSpecificUses;
+  for (const SgStateHead &head : sgHeads) {
+    if (head.kind != StateHeadKind::Carry)
+      continue;
+    auto it = matchedHeads.find(head.op);
+    if (it == matchedHeads.end())
+      continue;
+    ::fabric::OpOp fuCarry = it->second;
+    if (head.op->getNumOperands() < 3 || fuCarry.getInputs().size() < 3)
+      return {};
+    auto mappedBackedge = bc.valueMap.find(head.op->getOperand(2));
+    if (mappedBackedge == bc.valueMap.end())
+      return {};
+    if (fuCarry.getInputs()[2] != mappedBackedge->second)
+      branchSpecificUses.insert(&fuCarry->getOpOperand(2));
+  }
+
+  ::mlir::Operation *sgYield = sgBody.getTerminator();
+  if (!sgYield || sgYield->getNumOperands() != yield->getNumOperands())
+    return {};
+  for (unsigned i = 0, e = sgYield->getNumOperands(); i < e; ++i) {
+    auto mapped = bc.valueMap.find(sgYield->getOperand(i));
+    if (mapped == bc.valueMap.end())
+      return {};
+    if (yield->getOperand(i) != mapped->second)
+      branchSpecificUses.insert(&yield->getOpOperand(i));
+  }
+
+  builder.setInsertionPoint(yield);
+  if (!routePrivateBranchInputs(bc, anchoredFuOps, branchSpecificUses))
+    return {};
+
   builder.setInsertionPoint(yield);
   for (const SgStateHead &head : sgHeads) {
     if (head.kind != StateHeadKind::Carry)
@@ -1003,9 +1101,6 @@ buildMirroredTierCCandidate(::fabric::ModuleOp curWrapper,
     eraseUnusedMuxProducer(oldFeedback);
   }
 
-  ::mlir::Operation *sgYield = sgBody.getTerminator();
-  if (!sgYield || sgYield->getNumOperands() != yield->getNumOperands())
-    return {};
   builder.setInsertionPoint(yield);
   for (unsigned i = 0, e = sgYield->getNumOperands(); i < e; ++i) {
     auto mapped = bc.valueMap.find(sgYield->getOperand(i));

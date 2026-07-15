@@ -7,14 +7,14 @@
 // RUN: FileCheck %s --check-prefix=ENUM < %t.enum.mlir
 
 // The inputs return two values from shared terminal ops. The second input
-// inserts one private op before both yielded values, so independent routing
-// on the yielded paths exposes a strict superset during enumeration.
+// inserts one private op before both yielded values. Explicit source routing
+// couples the private branch choice across both yielded paths.
 
 // SYNTH: remark: {{.*}}synth-stat group=multi_yield_shared_superset strategy=mcs reason=success
 // SYNTH-SAME: covered=2/2
 // SYNTH: fabric.fu
 // SYNTH: fabric.op [@arith.addi]
-// SYNTH: fabric.demux
+// SYNTH-COUNT-2: fabric.demux
 // SYNTH: fabric.op [@arith.xori]
 // SYNTH: fabric.mux
 // SYNTH: fabric.op [@arith.muli]
@@ -22,18 +22,18 @@
 // SYNTH: fabric.op [@arith.subi]
 // SYNTH: fabric.yield
 
-// COUNT: 6
+// COUNT: 2
 
 // ENUM: func.func private @fu0_subgraph_0
 // ENUM: arith.addi
 // ENUM: arith.muli
 // ENUM: arith.subi
-// ENUM: func.func private @fu0_subgraph_2
+// ENUM: func.func private @fu0_subgraph_1
 // ENUM: arith.addi
 // ENUM: arith.xori
 // ENUM: arith.muli
 // ENUM: arith.subi
-// ENUM-NOT: func.func private @fu0_subgraph_6
+// ENUM-NOT: func.func private @fu0_subgraph_2
 
 func.func @pat_two_yields_direct(%a: i32, %b: i32, %c: i32) -> (i32, i32)
     attributes {loom.synth_group = "multi_yield_shared_superset"} {

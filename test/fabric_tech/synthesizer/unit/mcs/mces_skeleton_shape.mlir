@@ -6,14 +6,14 @@
 // one shared add and all three tail operators behind mux/demux hardware.
 
 // CHECK: remark: {{.*}}synth-stat group=mces_three_tail strategy=mcs reason=success
-// CHECK-SAME: cost=2.995000e+02
+// CHECK-SAME: cost=4.435000e+02
 // CHECK-SAME: covered=3/3
-// CHECK-SAME: nodes=4/1/1
+// CHECK-SAME: nodes=4/1/2
 // CHECK: fabric.module @fu_mces_three_tail
 // CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@arith.addi]
-// CHECK-DAG: fabric.demux
+// CHECK-COUNT-2: fabric.demux
 // CHECK-DAG: fabric.op [@arith.muli]
 // CHECK-DAG: fabric.op [@arith.divsi]
 // CHECK-DAG: fabric.op [@arith.shli]

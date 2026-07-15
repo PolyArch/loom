@@ -18,6 +18,7 @@
 // CHECK-DAG: fabric.op [@dataflow.carry]
 // CHECK-DAG: fabric.op [@arith.addi]
 // CHECK-DAG: fabric.op [@arith.xori]
+// CHECK-COUNT-2: fabric.demux
 // CHECK-DAG: fabric.mux
 // CHECK: fabric.yield
 

@@ -9,10 +9,10 @@
 
 // SYNTH: remark: {{.*}}synth-stat group=commutative_permuted strategy=mcs reason=success
 // SYNTH-SAME: covered=2/2
-// SYNTH-SAME: nodes=3/1/1
+// SYNTH-SAME: nodes=3/1/2
 // SYNTH: fabric.fu
 // SYNTH: fabric.op [@arith.addi]
-// SYNTH: fabric.demux
+// SYNTH-COUNT-2: fabric.demux
 // SYNTH: fabric.op [@arith.muli]
 // SYNTH: fabric.mux
 // SYNTH: fabric.op [@arith.subi]

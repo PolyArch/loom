@@ -87,6 +87,20 @@ in the body lets configurable compute ops (e.g.
 The FU body region is a graph region
 (`RegionKindInterface::Graph`).
 
+## Explicit routing semantics
+
+Multiple uses of one FU-local SSA value are a real token broadcast. Every
+consumer participates in delivery and backpressure; configuration does not
+implicitly drain inputs of an inactive `fabric.op`, masked-off variadic
+`fabric.op` inputs, or non-selected inputs of a `fabric.mux`.
+
+Mutually exclusive datapaths must route shared inputs through explicit
+`fabric.demux` ops and collect their results through a matching `fabric.mux`.
+For example, an FU that selects between separate add and multiply datapaths
+needs one demux per shared input and one result mux. Directly connecting each
+input to both operations describes broadcast to both datapaths, not selection.
+Any configuration that would require an implicit drain is invalid.
+
 ## FU-boundary truncation (input side)
 
 Anonymous form only: each operand may declare an inner block-argument
