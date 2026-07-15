@@ -40,12 +40,19 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Target/LLVMIR/TypeToLLVM.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/Support/MathExtras.h"
+
+#include <limits>
 
 namespace {
 
@@ -64,6 +71,18 @@ bool isGraphPtrBlockArg(::mlir::Value v, ::dataflow::GraphFuncOp graph) {
   if (!blockArg || blockArg.getOwner() != &graph.getBody().front())
     return false;
   return ::llvm::isa<::mlir::LLVM::LLVMPointerType>(blockArg.getType());
+}
+
+std::optional<::llvm::DataLayout>
+getModuleLLVMDataLayout(::mlir::Operation *scope) {
+  auto module = scope->getParentOfType<::mlir::ModuleOp>();
+  if (!module)
+    return std::nullopt;
+  auto layoutAttr = module->getAttrOfType<::mlir::StringAttr>(
+      ::mlir::LLVM::LLVMDialect::getDataLayoutAttrName());
+  if (!layoutAttr)
+    return std::nullopt;
+  return ::llvm::DataLayout(layoutAttr.getValue());
 }
 
 // The leading `none`-typed signature input is the `thread_ctrl`
@@ -109,6 +128,9 @@ struct AddrResolution {
   std::int64_t ordinalElementBias = 0;
   unsigned byteToElementShift = 0;
   ::mlir::Operation *gepToErase = nullptr;
+  ::mlir::Operation *baseGepToErase = nullptr;
+  std::int64_t intIndexByteStride = 1;
+  std::int64_t intIndexByteBias = 0;
 };
 
 struct MemcpyPtrResolution {
@@ -244,6 +266,171 @@ getSingleIndexElementStride(::mlir::LLVM::GEPOp gep, ::mlir::Type elemTy) {
   return byteOffset / static_cast<std::int64_t>(elementByteWidth);
 }
 
+bool isSupportedLinearGepElementType(::mlir::Type type) {
+  if (::llvm::isa<::mlir::IntegerType, ::mlir::Float16Type,
+                  ::mlir::BFloat16Type, ::mlir::Float32Type,
+                  ::mlir::Float64Type, ::mlir::Float80Type,
+                  ::mlir::Float128Type>(type))
+    return true;
+  auto arrayTy = ::llvm::dyn_cast<::mlir::LLVM::LLVMArrayType>(type);
+  return arrayTy && arrayTy.getNumElements() != 0 &&
+         isSupportedLinearGepElementType(arrayTy.getElementType());
+}
+
+std::optional<std::uint64_t>
+getMLIRFixedAllocByteSize(const ::mlir::DataLayout &dataLayout,
+                          ::mlir::Type type) {
+  if (!isSupportedLinearGepElementType(type))
+    return std::nullopt;
+  ::llvm::TypeSize bitSize = dataLayout.getTypeSizeInBits(type);
+  if (bitSize.isScalable())
+    return std::nullopt;
+  std::uint64_t fixedBits = bitSize.getFixedValue();
+  if (fixedBits == 0 || fixedBits % 8 != 0)
+    return std::nullopt;
+  ::llvm::TypeSize byteSize = dataLayout.getTypeSize(type);
+  if (byteSize.isScalable() || byteSize.getFixedValue() == 0)
+    return std::nullopt;
+  std::uint64_t alignment = dataLayout.getTypeABIAlignment(type);
+  if (alignment == 0 ||
+      byteSize.getFixedValue() >
+          std::numeric_limits<std::uint64_t>::max() - (alignment - 1))
+    return std::nullopt;
+  return ::llvm::alignTo(byteSize.getFixedValue(), alignment);
+}
+
+std::optional<std::uint64_t>
+getLLVMFixedAllocByteSize(const ::llvm::DataLayout &dataLayout,
+                          ::mlir::LLVM::TypeToLLVMIRTranslator &typeTranslator,
+                          ::mlir::Type type) {
+  if (!isSupportedLinearGepElementType(type))
+    return std::nullopt;
+  ::llvm::TypeSize byteSize =
+      dataLayout.getTypeAllocSize(typeTranslator.translateType(type));
+  if (byteSize.isScalable() || byteSize.getFixedValue() == 0)
+    return std::nullopt;
+  return byteSize.getFixedValue();
+}
+
+std::optional<unsigned>
+getIntegralIndexBitWidth(const ::mlir::DataLayout &dataLayout,
+                         ::mlir::Type type) {
+  if (auto intTy = ::llvm::dyn_cast<::mlir::IntegerType>(type)) {
+    if (!intTy.isSignless())
+      return std::nullopt;
+    return intTy.getWidth();
+  }
+  if (!::llvm::isa<::mlir::IndexType>(type))
+    return std::nullopt;
+  ::llvm::TypeSize bitSize = dataLayout.getTypeSizeInBits(type);
+  if (bitSize.isScalable() || bitSize.getFixedValue() == 0)
+    return std::nullopt;
+  return static_cast<unsigned>(
+      std::min<std::uint64_t>(bitSize.getFixedValue(), 64));
+}
+
+std::optional<AddrResolution>
+resolveLinearTopLevelGep(::mlir::LLVM::GEPOp gep, ::dataflow::GraphFuncOp graph,
+                         ::mlir::Type elemTy) {
+  ::mlir::LLVM::GEPOp dynamicGep = gep;
+  ::mlir::Operation *baseGepToErase = nullptr;
+  std::optional<std::int64_t> companionIndex;
+  auto rawIndices = gep.getRawConstantIndices();
+  auto dynamicIndices = gep.getDynamicIndices();
+  if (rawIndices.size() == 1 && dynamicIndices.size() == 1 &&
+      rawIndices.front() == ::mlir::LLVM::GEPOp::kDynamicIndex) {
+    // The access is formed directly by the dynamic GEP.
+  } else if (rawIndices.size() == 1 && dynamicIndices.empty() &&
+             rawIndices.front() != ::mlir::LLVM::GEPOp::kDynamicIndex) {
+    dynamicGep = gep.getBase().getDefiningOp<::mlir::LLVM::GEPOp>();
+    if (!dynamicGep)
+      return std::nullopt;
+    baseGepToErase = dynamicGep.getOperation();
+    companionIndex = rawIndices.front();
+    rawIndices = dynamicGep.getRawConstantIndices();
+    dynamicIndices = dynamicGep.getDynamicIndices();
+  } else {
+    return std::nullopt;
+  }
+
+  if (!isGraphPtrBlockArg(dynamicGep.getBase(), graph) ||
+      rawIndices.size() != 1 || dynamicIndices.size() != 1 ||
+      rawIndices.front() != ::mlir::LLVM::GEPOp::kDynamicIndex)
+    return std::nullopt;
+
+  ::mlir::DataLayout dataLayout =
+      ::mlir::DataLayout::closest(gep.getOperation());
+  std::optional<::llvm::DataLayout> llvmDataLayout =
+      getModuleLLVMDataLayout(gep.getOperation());
+  ::llvm::LLVMContext llvmContext;
+  ::mlir::LLVM::TypeToLLVMIRTranslator typeTranslator(llvmContext);
+  ::mlir::Value dynamicIndex = dynamicIndices.front();
+  std::optional<unsigned> indexBitWidth;
+  std::optional<std::uint64_t> pointerIndexBitWidth;
+  if (llvmDataLayout) {
+    auto intTy = ::llvm::dyn_cast<::mlir::IntegerType>(dynamicIndex.getType());
+    if (!intTy || !intTy.isSignless())
+      return std::nullopt;
+    indexBitWidth = intTy.getWidth();
+    auto ptrTy = ::llvm::dyn_cast<::mlir::LLVM::LLVMPointerType>(
+        dynamicGep.getBase().getType());
+    if (!ptrTy)
+      return std::nullopt;
+    pointerIndexBitWidth =
+        llvmDataLayout->getIndexSizeInBits(ptrTy.getAddressSpace());
+  } else {
+    indexBitWidth =
+        getIntegralIndexBitWidth(dataLayout, dynamicIndex.getType());
+    pointerIndexBitWidth =
+        dataLayout.getTypeIndexBitwidth(dynamicGep.getBase().getType());
+  }
+  if (!indexBitWidth || !pointerIndexBitWidth ||
+      *pointerIndexBitWidth != *indexBitWidth)
+    return std::nullopt;
+
+  auto getAllocBytes = [&](::mlir::Type type) {
+    if (llvmDataLayout)
+      return getLLVMFixedAllocByteSize(*llvmDataLayout, typeTranslator, type);
+    return getMLIRFixedAllocByteSize(dataLayout, type);
+  };
+  std::optional<std::uint64_t> elementBytes = getAllocBytes(elemTy);
+  std::optional<std::uint64_t> baseStrideBytes =
+      getAllocBytes(dynamicGep.getElemType());
+  constexpr std::uint64_t maxSigned =
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+  if (!elementBytes || !baseStrideBytes || *elementBytes > maxSigned ||
+      *baseStrideBytes > maxSigned || !::llvm::isPowerOf2_64(*elementBytes) ||
+      ::llvm::Log2_64(*elementBytes) >= *indexBitWidth ||
+      (::llvm::isa<::mlir::IndexType>(dynamicIndex.getType()) &&
+       *elementBytes != 1) ||
+      *baseStrideBytes % *elementBytes != 0)
+    return std::nullopt;
+
+  std::int64_t constantByteOffset = 0;
+  if (companionIndex) {
+    std::optional<std::uint64_t> companionStrideBytes =
+        getAllocBytes(gep.getElemType());
+    if (!companionStrideBytes || *companionStrideBytes > maxSigned ||
+        ::llvm::MulOverflow(*companionIndex,
+                            static_cast<std::int64_t>(*companionStrideBytes),
+                            constantByteOffset))
+      return std::nullopt;
+  }
+  if (constantByteOffset % static_cast<std::int64_t>(*elementBytes) != 0 ||
+      !::llvm::isIntN(*indexBitWidth,
+                      static_cast<std::int64_t>(*baseStrideBytes)) ||
+      !::llvm::isIntN(*indexBitWidth, constantByteOffset))
+    return std::nullopt;
+
+  AddrResolution resolution{
+      dynamicGep.getBase(),           dynamicIndex,      {}, 0,
+      ::llvm::Log2_64(*elementBytes), gep.getOperation()};
+  resolution.baseGepToErase = baseGepToErase;
+  resolution.intIndexByteStride = static_cast<std::int64_t>(*baseStrideBytes);
+  resolution.intIndexByteBias = constantByteOffset;
+  return resolution;
+}
+
 ::dataflow::StreamOp getUnitStridePointerCarryStream(::dataflow::CarryOp carry,
                                                      ::dataflow::GraphFuncOp graph,
                                                      ::mlir::Type elemTy) {
@@ -254,6 +441,8 @@ getSingleIndexElementStride(::mlir::LLVM::GEPOp gep, ::mlir::Type elemTy) {
     return {};
   auto gep = carry.getCarry().getDefiningOp<::mlir::LLVM::GEPOp>();
   if (!gep)
+    return {};
+  if (getModuleLLVMDataLayout(gep))
     return {};
   ::mlir::Value gepBase = gep.getBase();
   if (gepBase != carry.getOutput()) {
@@ -297,6 +486,8 @@ std::optional<::dataflow::CarryOp> getPointerCarry(::mlir::Value value) {
 }
 
 std::optional<::mlir::Value> getSingleDynamicIndex(::mlir::LLVM::GEPOp gep) {
+  if (getModuleLLVMDataLayout(gep))
+    return std::nullopt;
   auto rawIndices = gep.getRawConstantIndices();
   auto dynIndices = gep.getDynamicIndices();
   if (rawIndices.size() != 1 || dynIndices.size() != 1 ||
@@ -364,8 +555,10 @@ resolvePointer(::mlir::Value loadStorePtr, ::dataflow::GraphFuncOp graph,
                bool topLevel, ::mlir::Type elemTy) {
   if (topLevel) {
     if (auto gep = loadStorePtr.getDefiningOp<::mlir::LLVM::GEPOp>()) {
+      if (std::optional<AddrResolution> linear =
+              resolveLinearTopLevelGep(gep, graph, elemTy))
+        return linear;
       ::mlir::Value base = gep.getBase();
-      auto dynIdxs = gep.getDynamicIndices();
       if (auto carry = getPointerCarry(base)) {
         if (::dataflow::StreamOp stream =
                 getUnitStridePointerCarryStream(*carry, graph, elemTy)) {
@@ -377,13 +570,7 @@ resolvePointer(::mlir::Value loadStorePtr, ::dataflow::GraphFuncOp graph,
                                 nullptr};
         }
       }
-      if (!isGraphPtrBlockArg(base, graph) || dynIdxs.size() != 1)
-        return std::nullopt;
-      ::mlir::Value idx = dynIdxs.front();
-      if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(idx.getType()))
-        return std::nullopt;
-      return AddrResolution{base, idx, {}, 0, getByteToElementShift(gep, elemTy),
-                            gep.getOperation()};
+      return std::nullopt;
     }
     if (auto carry = loadStorePtr.getDefiningOp<::dataflow::CarryOp>()) {
       if (::dataflow::StreamOp stream =
@@ -409,13 +596,15 @@ resolvePointer(::mlir::Value loadStorePtr, ::dataflow::GraphFuncOp graph,
   if (!::llvm::isa<::mlir::LLVM::LLVMPointerType>(loadStorePtr.getType()))
     return std::nullopt;
   if (auto gep = loadStorePtr.getDefiningOp<::mlir::LLVM::GEPOp>()) {
+    if (getModuleLLVMDataLayout(gep))
+      return std::nullopt;
     auto dynIdxs = gep.getDynamicIndices();
     if (dynIdxs.size() == 1) {
       ::mlir::Value idx = dynIdxs.front();
-      if (::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(idx.getType()))
-        return AddrResolution{gep.getBase(), idx, {}, 0,
-                              getByteToElementShift(gep, elemTy),
-                              gep.getOperation()};
+      unsigned byteToElementShift = getByteToElementShift(gep, elemTy);
+      if (byteToElementShift == 0 &&
+          ::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(idx.getType()))
+        return AddrResolution{gep.getBase(), idx, {}, 0, 0, gep.getOperation()};
     }
   }
   return AddrResolution{loadStorePtr, {}, {}, 0, 0, nullptr};
@@ -425,12 +614,28 @@ resolvePointer(::mlir::Value loadStorePtr, ::dataflow::GraphFuncOp graph,
 // `ptr : !llvm.ptr` to `memref<?xElem>`. Top-level rewrites hoist
 // and cache the cast at the start of the graph body; nested rewrites
 // emit the cast at the load/store site to respect SSA dominance.
+bool isSupportedBridgePointer(::mlir::Value ptr,
+                              ::dataflow::GraphFuncOp graph) {
+  auto ptrTy = ::llvm::dyn_cast<::mlir::LLVM::LLVMPointerType>(ptr.getType());
+  if (!ptrTy)
+    return false;
+  unsigned addressSpace = ptrTy.getAddressSpace();
+  std::optional<::llvm::DataLayout> llvmDataLayout =
+      getModuleLLVMDataLayout(graph);
+  if (llvmDataLayout && llvmDataLayout->isNonIntegralAddressSpace(addressSpace))
+    return false;
+  // The bridge does not preserve LLVM address spaces in the memref type.
+  return addressSpace == 0;
+}
+
 ::mlir::Value
 getMemrefBridge(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
                 ::llvm::DenseMap<BridgeKey, ::mlir::Value, BridgeKeyInfo>
                     &cache,
                 ::mlir::Value ptr, ::mlir::Type elem, ::mlir::Location loc,
                 bool topLevel, ::mlir::Operation *insertBeforeIfNested) {
+  if (!isSupportedBridgePointer(ptr, graph))
+    return {};
   if (topLevel) {
     BridgeKey key{ptr, elem};
     if (auto it = cache.find(key); it != cache.end())
@@ -451,6 +656,19 @@ getMemrefBridge(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
   return bridge;
 }
 
+bool canMaterializeIndex(::mlir::Type type, ::mlir::Operation *scope) {
+  if (::llvm::isa<::mlir::IndexType>(type))
+    return true;
+  auto intTy = ::llvm::dyn_cast<::mlir::IntegerType>(type);
+  if (!intTy || !intTy.isSignless())
+    return false;
+  ::mlir::DataLayout dataLayout = ::mlir::DataLayout::closest(scope);
+  ::llvm::TypeSize indexBits =
+      dataLayout.getTypeSizeInBits(::mlir::IndexType::get(type.getContext()));
+  return !indexBits.isScalable() &&
+         intTy.getWidth() <= indexBits.getFixedValue();
+}
+
 ::mlir::Value
 getIndexCast(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
              ::llvm::DenseMap<::mlir::Value, ::mlir::Value> &cache,
@@ -458,6 +676,8 @@ getIndexCast(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
              ::mlir::Operation *insertBeforeIfNested) {
   if (::llvm::isa<::mlir::IndexType>(iv.getType()))
     return iv;
+  if (!canMaterializeIndex(iv.getType(), insertBeforeIfNested))
+    return {};
   if (topLevel) {
     if (auto it = cache.find(iv); it != cache.end())
       return it->second;
@@ -484,6 +704,38 @@ getIndexCast(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
   if (::llvm::isa<::mlir::IndexType>(type))
     return builder.getIndexAttr(value);
   return {};
+}
+
+::mlir::Value getLinearByteIndex(::mlir::OpBuilder &builder,
+                                 ::mlir::Value index, std::int64_t byteStride,
+                                 std::int64_t byteBias, ::mlir::Location loc,
+                                 ::mlir::Operation *insertBefore) {
+  ::mlir::OpBuilder::InsertionGuard g(builder);
+  builder.setInsertionPoint(insertBefore);
+  ::mlir::Value result = index;
+  if (byteStride != 1) {
+    ::mlir::TypedAttr strideAttr =
+        getIntegerLikeAttr(builder, index.getType(), byteStride);
+    if (!strideAttr)
+      return {};
+    ::mlir::Value stride = ::mlir::arith::ConstantOp::create(
+                               builder, loc, index.getType(), strideAttr)
+                               .getResult();
+    result =
+        ::mlir::arith::MulIOp::create(builder, loc, result, stride).getResult();
+  }
+  if (byteBias != 0) {
+    ::mlir::TypedAttr biasAttr =
+        getIntegerLikeAttr(builder, index.getType(), byteBias);
+    if (!biasAttr)
+      return {};
+    ::mlir::Value bias = ::mlir::arith::ConstantOp::create(
+                             builder, loc, index.getType(), biasAttr)
+                             .getResult();
+    result =
+        ::mlir::arith::AddIOp::create(builder, loc, result, bias).getResult();
+  }
+  return result;
 }
 
 ::mlir::Value getDataflowConstant(::mlir::OpBuilder &builder,
@@ -596,10 +848,11 @@ getElementIndex(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
   if (byteToElementShift == 0)
     return getIndexCast(builder, graph, cache, intIndex, loc, topLevel,
                         insertBeforeIfNested);
+  if (!canMaterializeIndex(intIndex.getType(), insertBeforeIfNested))
+    return {};
   auto intTy = ::llvm::dyn_cast<::mlir::IntegerType>(intIndex.getType());
   if (!intTy)
-    return getIndexCast(builder, graph, cache, intIndex, loc, topLevel,
-                        insertBeforeIfNested);
+    return {};
 
   ::mlir::OpBuilder::InsertionGuard g(builder);
   bool hoist = topLevel && ::llvm::isa<::mlir::BlockArgument>(intIndex);
@@ -612,7 +865,7 @@ getElementIndex(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
       ::dataflow::ConstantOp::create(builder, loc, intTy, ctrl, shiftAttr)
           .getValue();
   ::mlir::Value elemIndex =
-      ::mlir::arith::ShRUIOp::create(builder, loc, intIndex, shiftAmount)
+      ::mlir::arith::ShRSIOp::create(builder, loc, intIndex, shiftAmount)
           .getResult();
   return getIndexCast(builder, graph, cache, elemIndex, loc, topLevel,
                       insertBeforeIfNested);
@@ -647,6 +900,8 @@ getElementIndex(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
                               bool cacheResult = true) {
   if (::llvm::isa<::mlir::IndexType>(value.getType()))
     return value;
+  if (!canMaterializeIndex(value.getType(), insertBefore))
+    return {};
   if (cacheResult) {
     if (auto it = cache.find(value); it != cache.end())
       return it->second;
@@ -692,11 +947,16 @@ bool tryRewriteNestedMemcpy(::mlir::LLVM::MemcpyOp memcpy,
   ::mlir::Type lenType = memcpy.getLen().getType();
   if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(lenType))
     return false;
+  if (!canMaterializeIndex(memcpy.getLen().getType(), memcpy))
+    return false;
 
   ::mlir::Type byteTy = builder.getI8Type();
   if (!::llvm::isa<::mlir::LLVM::LLVMPointerType>(
           memcpy.getSrc().getType()) ||
       !::llvm::isa<::mlir::LLVM::LLVMPointerType>(memcpy.getDst().getType()))
+    return false;
+  if (!isSupportedBridgePointer(memcpy.getSrc(), ctx.graph) ||
+      !isSupportedBridgePointer(memcpy.getDst(), ctx.graph))
     return false;
 
   ::mlir::Location loc = memcpy.getLoc();
@@ -754,6 +1014,12 @@ bool tryRewriteDirectMemcpy(::mlir::LLVM::MemcpyOp memcpy,
   std::optional<DirectMemcpyPtrResolution> dst =
       resolveDirectMemcpyPointer(memcpy.getDst(), ctx.graph);
   if (!src || !dst)
+    return false;
+  if (!isSupportedBridgePointer(src->basePtr, ctx.graph) ||
+      !isSupportedBridgePointer(dst->basePtr, ctx.graph))
+    return false;
+  if ((src->offset && !canMaterializeIndex(src->offset.getType(), memcpy)) ||
+      (dst->offset && !canMaterializeIndex(dst->offset.getType(), memcpy)))
     return false;
 
   ::mlir::Location loc = memcpy.getLoc();
@@ -824,10 +1090,16 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
   bool isLoad = ::llvm::isa<::mlir::LLVM::LoadOp>(op);
   if (isLoad) {
     auto load = ::llvm::cast<::mlir::LLVM::LoadOp>(op);
+    if (load.getVolatile_() ||
+        load.getOrdering() != ::mlir::LLVM::AtomicOrdering::not_atomic)
+      return false;
     ptrArg = load.getAddr();
     elemTy = load.getResult().getType();
   } else {
     auto store = ::llvm::cast<::mlir::LLVM::StoreOp>(op);
+    if (store.getVolatile_() ||
+        store.getOrdering() != ::mlir::LLVM::AtomicOrdering::not_atomic)
+      return false;
     ptrArg = store.getAddr();
     elemTy = store.getValue().getType();
   }
@@ -837,12 +1109,16 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
   auto resolved = resolvePointer(ptrArg, ctx.graph, topLevel, elemTy);
   if (!resolved)
     return false;
+  if (!isSupportedBridgePointer(resolved->ptr, ctx.graph))
+    return false;
+  ::mlir::Value addressSource = resolved->intIndex;
+  if (resolved->ordinalStream)
+    addressSource = resolved->ordinalStream.getIndex();
+  if (addressSource && !canMaterializeIndex(addressSource.getType(), op))
+    return false;
   ::mlir::Location loc = op->getLoc();
   ::mlir::OpBuilder::InsertionGuard g(builder);
   builder.setInsertionPoint(op);
-  ::mlir::Value mem =
-      getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, resolved->ptr,
-                      elemTy, loc, topLevel, op);
   ::mlir::Value addr;
   if (resolved->ordinalStream) {
     ::mlir::Value ordinal =
@@ -859,12 +1135,23 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
                            resolved->byteToElementShift, ctx.ctrl, loc,
                            topLevel, op);
   } else if (resolved->intIndex) {
-    addr = getElementIndex(builder, ctx.graph, ctx.indexCastCache,
-                           resolved->intIndex, resolved->byteToElementShift,
-                           ctx.ctrl, loc, topLevel, op);
+    ::mlir::Value intIndex = getLinearByteIndex(
+        builder, resolved->intIndex, resolved->intIndexByteStride,
+        resolved->intIndexByteBias, loc, op);
+    if (!intIndex)
+      return false;
+    addr = getElementIndex(builder, ctx.graph, ctx.indexCastCache, intIndex,
+                           resolved->byteToElementShift, ctx.ctrl, loc,
+                           topLevel, op);
   } else {
     addr = getZeroIndex(builder, ctx.graph, ctx.zeroIdx, loc, topLevel, op);
   }
+  if (!addr)
+    return false;
+  ::mlir::Value mem = getMemrefBridge(builder, ctx.graph, ctx.bridgeCache,
+                                      resolved->ptr, elemTy, loc, topLevel, op);
+  if (!mem)
+    return false;
   if (isLoad) {
     auto load = ::llvm::cast<::mlir::LLVM::LoadOp>(op);
     auto newLoad = ::dataflow::LoadOp::create(
@@ -880,6 +1167,8 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
   op->erase();
   if (resolved->gepToErase)
     ctx.deadGeps.push_back(resolved->gepToErase);
+  if (resolved->baseGepToErase)
+    ctx.deadGeps.push_back(resolved->baseGepToErase);
   return true;
 }
 
@@ -894,6 +1183,8 @@ bool tryRewriteMemcpy(::mlir::Operation *op, bool topLevel,
   ::mlir::Type lenType = memcpy.getLen().getType();
   if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(lenType))
     return false;
+  if (!canMaterializeIndex(memcpy.getLen().getType(), memcpy))
+    return false;
 
   if (tryRewriteDirectMemcpy(memcpy, builder, ctx))
     return true;
@@ -906,6 +1197,9 @@ bool tryRewriteMemcpy(::mlir::Operation *op, bool topLevel,
   std::optional<MemcpyPtrResolution> dst =
       resolveMemcpyPointer(memcpy.getDst(), ctx.graph);
   if (!src || !dst || src->outerStream != dst->outerStream)
+    return false;
+  if (!isSupportedBridgePointer(src->basePtr, ctx.graph) ||
+      !isSupportedBridgePointer(dst->basePtr, ctx.graph))
     return false;
 
   ::mlir::Location loc = op->getLoc();
@@ -1000,8 +1294,12 @@ bool tryRewriteMemset(::mlir::Operation *op, bool topLevel,
   ::mlir::Value byteCount = op->getOperand(2);
   if (!::llvm::isa<::mlir::LLVM::LLVMPointerType>(dst.getType()))
     return false;
+  if (!isSupportedBridgePointer(dst, ctx.graph))
+    return false;
   if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(
           byteCount.getType()))
+    return false;
+  if (!canMaterializeIndex(byteCount.getType(), op))
     return false;
 
   std::optional<::mlir::Type> elemTy =
@@ -1136,10 +1434,12 @@ unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
   // silently.
   ::llvm::SmallPtrSet<::mlir::Operation *, 8> visitedDeadGeps;
   for (::mlir::Operation *gep : ctx.deadGeps) {
-    if (!visitedDeadGeps.insert(gep).second)
+    if (visitedDeadGeps.contains(gep))
       continue;
-    if (gep->use_empty())
+    if (gep->use_empty()) {
+      visitedDeadGeps.insert(gep);
       gep->erase();
+    }
   }
   return rewrites;
 }
