@@ -60,25 +60,12 @@
 
 namespace {
 
-constexpr ::llvm::StringLiteral kConditionalStoreDoneAttr =
-    "loom.conditional_store_done";
+struct ConditionalStoreRoute {
+  ::dataflow::DemuxOp ctrlDemux;
+  unsigned storeLane;
+};
 
-std::optional<::mlir::Value> findConditionalStoreDone(::mlir::Value storeDone) {
-  ::mlir::Value replacement;
-  for (::mlir::OpOperand &use : storeDone.getUses()) {
-    auto mux = ::llvm::dyn_cast<::dataflow::MuxOp>(use.getOwner());
-    if (!mux || !mux->hasAttr(kConditionalStoreDoneAttr))
-      continue;
-    if (mux.getOutput().getType() != storeDone.getType())
-      continue;
-    if (replacement)
-      return std::nullopt;
-    replacement = mux.getOutput();
-  }
-  if (!replacement)
-    return std::nullopt;
-  return replacement;
-}
+enum class ConditionalStoreDoneMatchKind { None, Unique, Ambiguous };
 
 std::optional<unsigned> findDemuxOutputIndex(::dataflow::DemuxOp demux,
                                              ::mlir::Value output) {
@@ -89,35 +76,99 @@ std::optional<unsigned> findDemuxOutputIndex(::dataflow::DemuxOp demux,
   return std::nullopt;
 }
 
-std::optional<::mlir::Value>
-materializeConditionalStoreDone(::dataflow::StoreOp store,
-                                ::mlir::OpBuilder &builder,
-                                ::dataflow::GraphReturnOp ret) {
+std::optional<ConditionalStoreRoute>
+matchConditionalStoreRoute(::dataflow::StoreOp store, ::mlir::Block &entry) {
+  if (store->getBlock() != &entry)
+    return std::nullopt;
   auto ctrlDemux = store.getCtrl().getDefiningOp<::dataflow::DemuxOp>();
-  if (!ctrlDemux)
+  if (!ctrlDemux || ctrlDemux->getBlock() != &entry ||
+      ctrlDemux.getOutputs().size() != 2 ||
+      !ctrlDemux.getSel().getType().isInteger(1))
     return std::nullopt;
   std::optional<unsigned> storeLane =
       findDemuxOutputIndex(ctrlDemux, store.getCtrl());
   if (!storeLane)
     return std::nullopt;
+  return ConditionalStoreRoute{ctrlDemux, *storeLane};
+}
 
+ConditionalStoreDoneMatchKind
+findConditionalStoreDone(::dataflow::StoreOp store, ConditionalStoreRoute route,
+                         ::mlir::Block &entry, ::mlir::Value &done) {
+  ::dataflow::MuxOp doneMux;
+  for (::mlir::OpOperand &use : store.getDone().getUses()) {
+    auto candidate = ::llvm::dyn_cast<::dataflow::MuxOp>(use.getOwner());
+    if (!candidate || candidate->getBlock() != &entry ||
+        candidate.getSel() != route.ctrlDemux.getSel())
+      continue;
+    if (candidate.getOutput().getType() != store.getDone().getType() ||
+        candidate.getInputs().size() != route.ctrlDemux.getOutputs().size() ||
+        candidate.getInputs()[route.storeLane] != store.getDone())
+      continue;
+
+    bool forwardsSkippedLanes = true;
+    for (unsigned i = 0, e = candidate.getInputs().size(); i < e; ++i) {
+      if (i != route.storeLane &&
+          candidate.getInputs()[i] != route.ctrlDemux.getOutputs()[i]) {
+        forwardsSkippedLanes = false;
+        break;
+      }
+    }
+    if (!forwardsSkippedLanes)
+      continue;
+    if (doneMux)
+      return ConditionalStoreDoneMatchKind::Ambiguous;
+    doneMux = candidate;
+  }
+  if (!doneMux)
+    return ConditionalStoreDoneMatchKind::None;
+  done = doneMux.getOutput();
+  return ConditionalStoreDoneMatchKind::Unique;
+}
+
+::mlir::Value materializeConditionalStoreDone(::dataflow::StoreOp store,
+                                              ConditionalStoreRoute route,
+                                              ::mlir::OpBuilder &builder,
+                                              ::dataflow::GraphReturnOp ret) {
   ::llvm::SmallVector<::mlir::Value, 4> inputs;
-  inputs.reserve(ctrlDemux.getOutputs().size());
-  for (unsigned i = 0, e = ctrlDemux.getOutputs().size(); i < e; ++i) {
-    if (i == *storeLane) {
+  inputs.reserve(route.ctrlDemux.getOutputs().size());
+  for (unsigned i = 0, e = route.ctrlDemux.getOutputs().size(); i < e; ++i) {
+    if (i == route.storeLane) {
       inputs.push_back(store.getDone());
       continue;
     }
-    inputs.push_back(ctrlDemux.getOutputs()[i]);
+    inputs.push_back(route.ctrlDemux.getOutputs()[i]);
   }
 
   ::mlir::OpBuilder::InsertionGuard g(builder);
   builder.setInsertionPoint(ret);
-  auto mergedDone = ::dataflow::MuxOp::create(
-      builder, store.getLoc(), builder.getNoneType(), ctrlDemux.getSel(),
-      inputs);
-  mergedDone->setAttr(kConditionalStoreDoneAttr, builder.getUnitAttr());
+  auto mergedDone =
+      ::dataflow::MuxOp::create(builder, store.getLoc(), builder.getNoneType(),
+                                route.ctrlDemux.getSel(), inputs);
   return mergedDone.getOutput();
+}
+
+// Reject ambiguity before materializing any completion topology.
+bool hasAmbiguousConditionalStoreDone(::dataflow::GraphFuncOp graph) {
+  ::mlir::Block &entry = graph.getBody().front();
+  for (::mlir::Operation &op : entry.without_terminator()) {
+    auto store = ::llvm::dyn_cast<::dataflow::StoreOp>(op);
+    if (!store)
+      continue;
+    std::optional<ConditionalStoreRoute> route =
+        matchConditionalStoreRoute(store, entry);
+    if (!route)
+      continue;
+    ::mlir::Value done;
+    if (findConditionalStoreDone(store, *route, entry, done) !=
+        ConditionalStoreDoneMatchKind::Ambiguous)
+      continue;
+    store.emitRemark()
+        << "loom-lower-graph-sync: multiple conditional store completion "
+           "muxes match this store; leaving graph unchanged";
+    return true;
+  }
+  return false;
 }
 
 // Collect every `%done : none` token produced by a `dataflow.load` or
@@ -134,21 +185,26 @@ void collectDoneTokens(::dataflow::GraphFuncOp graph,
                        ::llvm::SmallVectorImpl<::mlir::Value> &out) {
   ::mlir::Block &entry = graph.getBody().front();
   for (::mlir::Operation &op : entry.without_terminator()) {
-    if (auto load = ::llvm::dyn_cast<::dataflow::LoadOp>(op))
+    if (auto load = ::llvm::dyn_cast<::dataflow::LoadOp>(op)) {
       out.push_back(load.getDone());
-    else if (auto store = ::llvm::dyn_cast<::dataflow::StoreOp>(op)) {
-      if (std::optional<::mlir::Value> done =
-              findConditionalStoreDone(store.getDone())) {
-        out.push_back(*done);
-        continue;
-      }
-      if (std::optional<::mlir::Value> done =
-              materializeConditionalStoreDone(store, builder, ret)) {
-        out.push_back(*done);
-        continue;
-      }
-      out.push_back(store.getDone());
+      continue;
     }
+    auto store = ::llvm::dyn_cast<::dataflow::StoreOp>(op);
+    if (!store)
+      continue;
+    std::optional<ConditionalStoreRoute> route =
+        matchConditionalStoreRoute(store, entry);
+    if (!route) {
+      out.push_back(store.getDone());
+      continue;
+    }
+    ::mlir::Value done;
+    if (findConditionalStoreDone(store, *route, entry, done) ==
+        ConditionalStoreDoneMatchKind::Unique) {
+      out.push_back(done);
+      continue;
+    }
+    out.push_back(materializeConditionalStoreDone(store, *route, builder, ret));
   }
 }
 
@@ -165,6 +221,8 @@ bool rewriteOneGraph(::dataflow::GraphFuncOp graph,
   if (!ret)
     return false;
   if (ret.getValues().empty())
+    return false;
+  if (hasAmbiguousConditionalStoreDone(graph))
     return false;
   collectDoneTokens(graph, builder, ret, dones);
   if (dones.empty())

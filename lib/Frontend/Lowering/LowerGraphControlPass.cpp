@@ -76,6 +76,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Interfaces/CallInterfaces.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -86,11 +87,6 @@
 #include <cstdint>
 
 namespace {
-
-constexpr ::llvm::StringLiteral kConditionalStoreSameAddressAttr =
-    "loom.conditional_store_same_address";
-constexpr ::llvm::StringLiteral kConditionalStoreDoneAttr =
-    "loom.conditional_store_done";
 
 // Return true if `t` is one of the scalar types the pass is willing to
 // gate. The gate op's IR signature admits AnyType, but the rest of the
@@ -296,6 +292,142 @@ bool areSameStoreAddress(::mlir::Value lhs, ::mlir::Value rhs) {
   return lhs.getType() == rhs.getType() && lhsAttr == rhsAttr;
 }
 
+bool hasIntegerValue(::mlir::Value value, std::int64_t expected) {
+  auto attr = ::llvm::dyn_cast_or_null<::mlir::IntegerAttr>(
+      getConstantAddressAttr(value));
+  return attr && attr.getInt() == expected;
+}
+
+bool isDataflowIntegerConstant(::mlir::Value value, ::mlir::Value ctrl,
+                               ::mlir::Type type, std::int64_t expected) {
+  auto constant = value.getDefiningOp<::dataflow::ConstantOp>();
+  return constant && constant.getValue() == value &&
+         constant.getCtrl() == ctrl && value.getType() == type &&
+         hasIntegerValue(value, expected);
+}
+
+std::optional<::mlir::Value> getCanonicalOrdinal(::mlir::Value address,
+                                                 ::dataflow::StreamOp stream,
+                                                 ::mlir::Operation *scope) {
+  ::mlir::Type streamType = stream.getIndex().getType();
+  if (::llvm::isa<::mlir::IndexType>(streamType))
+    return address.getType() == streamType ? std::optional(address)
+                                           : std::nullopt;
+
+  auto cast = address.getDefiningOp<::mlir::arith::IndexCastOp>();
+  auto intType = ::llvm::dyn_cast<::mlir::IntegerType>(streamType);
+  if (!cast || cast.getResult() != address ||
+      cast.getIn().getType() != streamType || !intType || !intType.isSignless())
+    return std::nullopt;
+  ::mlir::DataLayout dataLayout = ::mlir::DataLayout::closest(scope);
+  ::llvm::TypeSize indexBits =
+      dataLayout.getTypeSizeInBits(::mlir::IndexType::get(scope->getContext()));
+  if (indexBits.isScalable() || intType.getWidth() > indexBits.getFixedValue())
+    return std::nullopt;
+  return cast.getIn();
+}
+
+bool isCanonicalStreamOrdinal(::mlir::Value address,
+                              ::dataflow::StreamOp stream, ::mlir::Value ctrl,
+                              ::mlir::Block &entry, ::mlir::Operation *scope) {
+  std::optional<::mlir::Value> ordinal =
+      getCanonicalOrdinal(address, stream, scope);
+  if (!ordinal)
+    return false;
+  auto carry = ordinal->getDefiningOp<::dataflow::CarryOp>();
+  ::mlir::Type ordinalType = stream.getIndex().getType();
+  if (!carry || carry->getBlock() != &entry || carry.getOutput() != *ordinal ||
+      carry.getOutput().getType() != ordinalType ||
+      carry.getCond() != stream.getRwc() ||
+      !isDataflowIntegerConstant(carry.getInit(), ctrl, ordinalType, 0))
+    return false;
+
+  auto next = carry.getCarry().getDefiningOp<::mlir::arith::AddIOp>();
+  if (!next || next->getBlock() != &entry || next.getLhs() != carry.getOutput())
+    return false;
+
+  auto invariant = next.getRhs().getDefiningOp<::dataflow::InvariantOp>();
+  return invariant && invariant->getBlock() == &entry &&
+         invariant.getOutput() == next.getRhs() &&
+         invariant.getCond() == stream.getRwc() &&
+         isDataflowIntegerConstant(invariant.getInit(), ctrl, ordinalType, 1);
+}
+
+struct UnitStridePointerCarry {
+  ::dataflow::CarryOp carry;
+  ::dataflow::StreamOp stream;
+};
+
+std::optional<UnitStridePointerCarry>
+getUnitStridePointerCarry(::mlir::Value pointer, ::mlir::Type elementType,
+                          ::mlir::Block &entry) {
+  auto gate = pointer.getDefiningOp<::dataflow::GateOp>();
+  if (!gate || gate->getBlock() != &entry || gate.getAfterValue() != pointer)
+    return std::nullopt;
+  auto carry = gate.getBeforeValue().getDefiningOp<::dataflow::CarryOp>();
+  if (!carry || carry->getBlock() != &entry ||
+      carry.getOutput() != gate.getBeforeValue() ||
+      carry.getCond() != gate.getBeforeCond())
+    return std::nullopt;
+  auto stream = carry.getCond().getDefiningOp<::dataflow::StreamOp>();
+  if (!stream || stream->getBlock() != &entry ||
+      stream.getRwc() != carry.getCond())
+    return std::nullopt;
+
+  auto gep = carry.getCarry().getDefiningOp<::mlir::LLVM::GEPOp>();
+  if (!gep || gep->getBlock() != &entry || gep.getBase() != pointer ||
+      gep.getElemType() != elementType || !gep.getDynamicIndices().empty())
+    return std::nullopt;
+  auto rawIndices = gep.getRawConstantIndices();
+  if (rawIndices.size() != 1 || rawIndices.front() != 1)
+    return std::nullopt;
+  return UnitStridePointerCarry{carry, stream};
+}
+
+// Graph memory expresses a top-level pointer-carry load as base plus ordinal,
+// while a nested store remains current pointer plus zero. Match only the
+// explicit coupled unit-stride recurrences that prove those addresses equal.
+bool areSameUnitStrideCarriedAddress(::dataflow::LoadOp load,
+                                     ::dataflow::StoreOp store) {
+  auto graph = store->getParentOfType<::dataflow::GraphFuncOp>();
+  if (!graph || load->getParentOfType<::dataflow::GraphFuncOp>() != graph)
+    return false;
+  ::mlir::Block &entry = graph.getBody().front();
+  if (load->getBlock() != &entry || entry.getNumArguments() == 0)
+    return false;
+  ::mlir::Value ctrl = entry.getArgument(0);
+  if (!::llvm::isa<::mlir::NoneType>(ctrl.getType()) ||
+      load.getCtrl() != ctrl || store.getCtrl() != ctrl)
+    return false;
+
+  auto zero = store.getAddr().getDefiningOp<::mlir::arith::ConstantOp>();
+  if (!zero || zero.getResult() != store.getAddr() ||
+      !::llvm::isa<::mlir::IndexType>(store.getAddr().getType()) ||
+      !hasIntegerValue(store.getAddr(), 0))
+    return false;
+  auto loadMemType =
+      ::llvm::dyn_cast<::mlir::MemRefType>(load.getMem().getType());
+  auto storeMemType =
+      ::llvm::dyn_cast<::mlir::MemRefType>(store.getMem().getType());
+  if (!loadMemType || !storeMemType ||
+      loadMemType.getElementType() != storeMemType.getElementType())
+    return false;
+
+  ::mlir::Value storePointer = stripSingleInputCasts(store.getMem());
+  std::optional<UnitStridePointerCarry> pointerCarry =
+      getUnitStridePointerCarry(storePointer, storeMemType.getElementType(),
+                                entry);
+  if (!pointerCarry || stripSingleInputCasts(load.getMem()) !=
+                           stripSingleInputCasts(pointerCarry->carry.getInit()))
+    return false;
+  auto initArg =
+      ::llvm::dyn_cast<::mlir::BlockArgument>(pointerCarry->carry.getInit());
+  if (!initArg || initArg.getOwner() != &entry)
+    return false;
+  return isCanonicalStreamOrdinal(load.getAddr(), pointerCarry->stream, ctrl,
+                                  entry, load.getOperation());
+}
+
 bool elseRegionIsEmpty(::mlir::scf::IfOp ifOp) {
   if (ifOp.getElseRegion().empty())
     return true;
@@ -370,12 +502,10 @@ bool matchConditionalStoreIf(::mlir::scf::IfOp ifOp,
   auto load = preserved.getDefiningOp<::dataflow::LoadOp>();
   if (!load)
     return false;
-  bool addressPrechecked =
-      ifOp->hasAttr(kConditionalStoreSameAddressAttr);
-  bool addressMatches =
+  bool sameCanonicalAddress =
       areSameMemoryHandle(load.getMem(), store.getMem()) &&
       areSameStoreAddress(load.getAddr(), store.getAddr());
-  if (!addressPrechecked && !addressMatches)
+  if (!sameCanonicalAddress && !areSameUnitStrideCarriedAddress(load, store))
     return false;
 
   match.store = store;
@@ -753,10 +883,9 @@ bool rewriteConditionalStoreResultIf(::mlir::scf::IfOp ifOp,
       falseDone = match.store.getDone();
       trueDone = ctrlDemux.getOutputs()[1];
     }
-    auto mergedDone = ::dataflow::MuxOp::create(
+    ::dataflow::MuxOp::create(
         builder, match.store.getLoc(), builder.getNoneType(), cond,
         ::llvm::SmallVector<::mlir::Value, 2>{falseDone, trueDone});
-    mergedDone->setAttr(kConditionalStoreDoneAttr, builder.getUnitAttr());
   }
 
   ::mlir::OpBuilder::InsertionGuard g(builder);

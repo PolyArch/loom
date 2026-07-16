@@ -1,4 +1,5 @@
-// RUN: loom-raise-opt --loom-lower-scf-to-dfg %s | FileCheck %s
+// RUN: loom-raise-opt --loom-lower-scf-to-dfg %s | FileCheck %s --implicit-check-not=loom.conditional_store_
+// RUN: loom-raise-opt --loom-lower-reduction-to-stream %s | FileCheck %s --check-prefix=REDUCTION --implicit-check-not=loom.conditional_store_
 
 // A pointer-carried residual loop with a then-only conditional store is the
 // tail shape emitted by the CMSIS-NN q7 relu cleanup graph. The store is
@@ -17,6 +18,9 @@
 // CHECK-NOT: scf.for
 // CHECK-NOT: scf.if
 // CHECK: dataflow.graph.return
+// REDUCTION-LABEL: dataflow.graph.func private @g_conditional_store_loop
+// REDUCTION: scf.if
+// REDUCTION: dataflow.graph.return
 dataflow.graph.func private @g_conditional_store_loop(
     %ctrl: none, %lb: i16, %ub: i16, %step: i16, %zero: i8,
     %buf: !llvm.ptr) -> none {

@@ -122,6 +122,45 @@ dataflow.graph.func private @g_bail_two_sided_no_result(%arg0: none,
   dataflow.graph.return %arg0 : none
 }
 
+// Negative-bail: an i8 ordinal is not the stream's canonical i16 ordinal and
+// can wrap independently of the pointer carry. It cannot prove that the load
+// and conditional store address the same element.
+
+// CHECK-LABEL: dataflow.graph.func private @g_bail_wrapping_store_ordinal
+// CHECK: scf.if
+// CHECK-NOT: arith.select
+// CHECK: dataflow.graph.return
+dataflow.graph.func private @g_bail_wrapping_store_ordinal(
+    %arg0: none, %arg1: i16, %arg2: i16, %arg3: i16, %arg4: i8,
+    %arg5: !llvm.ptr) -> none {
+  %mem = builtin.unrealized_conversion_cast %arg5
+      : !llvm.ptr to memref<?xi8>
+  %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
+      {cont_cond = ">", step_op = "+="} : i16
+  %replacement = dataflow.invariant %rwc, %arg4 : i8
+  %pointer = dataflow.carry %rwc, %arg5, %next_pointer : !llvm.ptr
+  %after_cond, %current_pointer = dataflow.gate %rwc, %pointer : !llvm.ptr
+  %c0 = dataflow.constant %arg0 {const_value = 0 : i8} : i8
+  %c1 = dataflow.constant %arg0 {const_value = 1 : i8} : i8
+  %one = dataflow.invariant %rwc, %c1 : i8
+  %ordinal = dataflow.carry %rwc, %c0, %next_ordinal : i8
+  %next_ordinal = arith.addi %ordinal, %one : i8
+  %addr = arith.index_cast %ordinal : i8 to index
+  %data, %done = dataflow.load %mem[%addr] %arg0 : memref<?xi8>
+  %replace = arith.cmpi slt, %data, %replacement : i8
+  // expected-remark@+1 {{loom-lower-graph-control: scf.if shape not lifted}}
+  scf.if %replace {
+    %c0_store = arith.constant 0 : index
+    %store_mem = builtin.unrealized_conversion_cast %current_pointer
+        : !llvm.ptr to memref<?xi8>
+    %store = dataflow.store %store_mem[%c0_store] %replacement %arg0
+        : memref<?xi8>
+  }
+  %next_pointer = llvm.getelementptr inbounds|nuw %current_pointer[1]
+      : (!llvm.ptr) -> !llvm.ptr, i8
+  dataflow.graph.return %arg0 : none
+}
+
 // Positive (index-domain induction): loop-carried i64 induction values that
 // only feed memory addresses may be narrowed to Loom's index domain before PnR.
 // The graph result keeps the original i64 shape by casting the narrowed cursor

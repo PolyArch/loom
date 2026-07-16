@@ -64,9 +64,6 @@
 
 namespace {
 
-constexpr ::llvm::StringLiteral kConditionalStoreSameAddressAttr =
-    "loom.conditional_store_same_address";
-
 // Return true if `op` is a structured-control-flow nesting we cannot
 // yet handle inside the graph.func reduction body.
 bool isNestedStructuredControl(::mlir::Operation *op) {
@@ -275,8 +272,6 @@ bool isConditionalStoreIf(::mlir::scf::IfOp ifOp) {
     if (!areSameMemoryHandle(load.getMem(), dataflowStore.getMem()) ||
         !areSameStoreAddress(load.getAddr(), dataflowStore.getAddr()))
       return false;
-    ifOp->setAttr(kConditionalStoreSameAddressAttr,
-                  ::mlir::UnitAttr::get(ifOp.getContext()));
     return true;
   }
 
@@ -285,8 +280,6 @@ bool isConditionalStoreIf(::mlir::scf::IfOp ifOp) {
     return false;
   if (!areSameMemoryHandle(load.getAddr(), llvmStore.getAddr()))
     return false;
-  ifOp->setAttr(kConditionalStoreSameAddressAttr,
-                ::mlir::UnitAttr::get(ifOp.getContext()));
   return true;
 }
 

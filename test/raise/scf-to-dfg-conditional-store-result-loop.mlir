@@ -1,4 +1,4 @@
-// RUN: loom-raise-opt --loom-lower-scf-to-dfg %s | FileCheck %s
+// RUN: loom-raise-opt --loom-lower-scf-to-dfg %s | FileCheck %s --implicit-check-not=loom.conditional_store_
 
 // Compact-style loops carry a write cursor through a result-bearing
 // conditional store. The store branch must be routed by the condition, and
@@ -14,7 +14,7 @@
 // CHECK: %[[STORE_DATA:.*]]:2 = dataflow.demux %[[IS_ZERO]], %[[DATA]] : (i1, i32) -> (i32, i32)
 // CHECK: %[[STORE_CTRL:.*]]:2 = dataflow.demux %[[IS_ZERO]], %arg0 : (i1, none) -> (none, none)
 // CHECK: %[[STORE_DONE:.*]] = dataflow.store {{.*}}[%[[STORE_ADDR]]#0] %[[STORE_DATA]]#0 %[[STORE_CTRL]]#0
-// CHECK: %[[MERGED_DONE:.*]] = dataflow.mux %[[IS_ZERO]], %[[STORE_DONE]], %[[STORE_CTRL]]#1 {loom.conditional_store_done} : (i1, none, none) -> none
+// CHECK: %[[MERGED_DONE:.*]] = dataflow.mux %[[IS_ZERO]], %[[STORE_DONE]], %[[STORE_CTRL]]#1 : (i1, none, none) -> none
 // CHECK: %[[NEXT:.*]] = arith.addi %[[CURSOR]], %{{.*}} : i32
 // CHECK: arith.select %[[IS_ZERO]], %[[CURSOR]], %[[NEXT]] : i32
 // CHECK: dataflow.sync {{.*}}, %[[MERGED_DONE]]
@@ -57,7 +57,7 @@ dataflow.graph.func private @g_conditional_store_result_loop(
 // CHECK: %[[STORE_DATA2:.*]]:2 = dataflow.demux %[[IS_ZERO2]], %[[DATA2]] : (i1, i32) -> (i32, i32)
 // CHECK: %[[STORE_CTRL2:.*]]:2 = dataflow.demux %[[IS_ZERO2]], %arg0 : (i1, none) -> (none, none)
 // CHECK: %[[STORE_DONE2:.*]] = dataflow.store {{.*}}[%[[STORE_ADDR2]]#1] %[[STORE_DATA2]]#1 %[[STORE_CTRL2]]#1
-// CHECK: %[[MERGED_DONE2:.*]] = dataflow.mux %[[IS_ZERO2]], %[[STORE_CTRL2]]#0, %[[STORE_DONE2]] {loom.conditional_store_done} : (i1, none, none) -> none
+// CHECK: %[[MERGED_DONE2:.*]] = dataflow.mux %[[IS_ZERO2]], %[[STORE_CTRL2]]#0, %[[STORE_DONE2]] : (i1, none, none) -> none
 // CHECK: %[[NEXT2:.*]] = arith.addi %[[CURSOR2]], %{{.*}} : i32
 // CHECK: arith.select %[[IS_ZERO2]], %[[NEXT2]], %[[CURSOR2]] : i32
 // CHECK: dataflow.sync {{.*}}, %[[MERGED_DONE2]]
