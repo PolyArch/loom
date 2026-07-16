@@ -606,15 +606,23 @@ def Dataflow_ThreadYieldOp : Dataflow_Op<"thread.yield", [
 ]> {
   let summary = "Terminator for a dataflow.thread body";
   let description = [{
-    Operand list is intentionally empty. Tensor-result aggregation
-    from `scf.forall` is materialised into explicit destination-buffer
-    writes before thread promotion, so the thread definition has no
-    parallel combining region or thread data results.
+    Accepts an unordered all-of completion frontier of `none` values.
+    Tensor-result aggregation from `scf.forall` is materialised into
+    explicit destination-buffer writes before thread promotion, so the
+    thread definition has no parallel combining region or thread data
+    results.
   }];
 
-  let arguments = (ins);
+  let arguments = (ins Variadic<NoneType>:$completionFrontier);
 
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "($completionFrontier^ `:` type($completionFrontier))? attr-dict";
+
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins CArg<"::mlir::ValueRange", "{}">:$completionFrontier), [{
+      $_state.addOperands(completionFrontier);
+    }]>
+  ];
 }
 
 def Dataflow_ThreadLaunchOp : Dataflow_Op<"thread.launch", [
@@ -624,12 +632,12 @@ def Dataflow_ThreadLaunchOp : Dataflow_Op<"thread.launch", [
   let summary = "Async launch of a dataflow.thread callable";
   let description = [{
     References a `dataflow.thread` definition by symbol and supplies
-    body operands and optional grid upper bounds. Produces an optional
-    `!dataflow.thread_token` async completion handle.
+    body operands and optional grid upper bounds. Always produces one
+    `!dataflow.thread_token` completion handle for all dynamic launch
+    instances.
 
-    The operation does not project callee effects through
-    `MemoryEffectsOpInterface`. Grid lower bounds and steps are not modeled;
-    body operands, upper bounds, and async dependencies are explicit.
+    Grid lower bounds and steps are not modeled; body operands, upper bounds,
+    and async dependencies are explicit.
   }];
 
   let arguments = (ins
@@ -638,7 +646,7 @@ def Dataflow_ThreadLaunchOp : Dataflow_Op<"thread.launch", [
       Variadic<Index>:$gridUpperBounds,
       Variadic<Dataflow_ThreadTokenType>:$asyncDependencies);
 
-  let results = (outs Optional<Dataflow_ThreadTokenType>:$asyncToken);
+  let results = (outs Dataflow_ThreadTokenType:$asyncToken);
 
   let assemblyFormat = [{
     $callee
@@ -648,6 +656,43 @@ def Dataflow_ThreadLaunchOp : Dataflow_Op<"thread.launch", [
     attr-dict `:`
     functional-type($bodyOperands, results)
   }];
+
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins
+        "::mlir::FlatSymbolRefAttr":$callee,
+        "::mlir::ValueRange":$bodyOperands,
+        "::mlir::ValueRange":$gridUpperBounds,
+        "::mlir::ValueRange":$asyncDependencies), [{
+      $_state.addOperands(bodyOperands);
+      $_state.addOperands(gridUpperBounds);
+      $_state.addOperands(asyncDependencies);
+      auto &properties = $_state.getOrAddProperties<Properties>();
+      properties.operandSegmentSizes = {
+          static_cast<int32_t>(bodyOperands.size()),
+          static_cast<int32_t>(gridUpperBounds.size()),
+          static_cast<int32_t>(asyncDependencies.size())};
+      properties.callee = callee;
+      $_state.addTypes(::dataflow::ThreadTokenType::get($_builder.getContext()));
+    }]>
+  ];
+
+  let hasVerifier = 1;
+}
+
+def Dataflow_ThreadWaitOp : Dataflow_Op<"thread.wait", [
+    NativeOpTrait<"AtLeastNOperands<1>::Impl">
+]> {
+  let summary = "Ordered wait for one or more thread completion tokens";
+  let description = [{
+    Consumes an unordered all-of set of `!dataflow.thread_token` values.
+    It is an ordered stored-program wait that does not introduce
+    memory-barrier or graph-control semantics.
+  }];
+
+  let arguments = (ins Variadic<Dataflow_ThreadTokenType>:$asyncDependencies);
+
+  let assemblyFormat = "$asyncDependencies `:` type($asyncDependencies) attr-dict";
 
   let hasVerifier = 1;
 }

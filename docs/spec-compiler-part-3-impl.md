@@ -197,37 +197,12 @@ documentation never refers to the numeric position.
   empty `dataflow.thread.yield` inside the def body. No tensor
   aggregation action is dropped by this pass; all such actions must
   already have been materialized as explicit memory effects.
-* `scf.forall` is an implicit synchronization point. The launch
-  produces an `Optional<!dataflow.thread_token>` result `%t`; the
-  replacement must make continuation ordering explicit on `%t`. The
-  pass applies the following mechanical rule, in order:
-  1. Compute `%t = produced thread launch token`.
-  2. Identify `next_op` as the op that immediately follows the
-     original `scf.forall` in source order at its continuation
-     point. "Immediately follows" means structurally adjacent in the
-     parent block, with no intervening op (no `arith.*`, no
-     `func.call`, no other op of any kind sits between the original
-     `scf.forall` and `next_op`).
-  3. The pass omits the explicit sync op iff both of the following
-     hold:
-     - (A) `next_op` implements `LoomAsyncOpInterface`.
-     - (B) On exit from this lowering, `next_op`'s
-       `asyncDependencies` operand list contains `%t`.
-
-     The two conditions are independent. Structural adjacency
-     without `%t` use is not enough; a use of `%t` somewhere later
-     in the program but not on the immediately following op is not
-     enough either.
-  4. If either condition fails, or cannot be verified at lowering
-     time, the pass inserts `dataflow.thread.wait %t` at the
-     original continuation point, before any continuation op.
-     Subsequent ops keep their source-order position.
-
-  The fallback to `dataflow.thread.wait` is the spec contract, not
-  an optimization opportunity. The wait carries the default-resource
-  memory barrier introduced by `docs/spec-compiler-part-3-dfg.md`
-  Section 3 Constitutional Rule 8, so subsequent host or parent-context
-  ops cannot be reordered to before the synchronization.
+* Every `dataflow.thread.launch` produces one
+  `!dataflow.thread_token`. Because the source `scf.forall` is
+  synchronous, this pass immediately emits `dataflow.thread.wait` for
+  that token at the original continuation point. The wait is
+  caller-side only and does not provide memory-barrier or visibility
+  semantics.
 * Once every marked forall inside a `loom.acc_region` has been
   replaced by a def + launch pair (def at module scope, launch in
   place), the transient accelerator-region wrapper is erased and
@@ -326,24 +301,17 @@ documentation never refers to the numeric position.
   graph admission rules.
 * Required cuts close the current graph run and remain in the
   ScalarCore thread definition's body. The required cuts are
-  `dataflow.thread.fence`, non-inlined `func.call`,
+  non-inlined `func.call`,
   `dataflow.map_info`, partitioned-data query or layout ops,
   graph-illegal ops, and the parent terminator. The policy also
   cuts before any structured-control op whose nested regions
   contain a required cut. Unsupported required SpatialCore
   placement is a diagnostic; optional unadmitted code stays
   ScalarCore.
-* `dataflow.thread.launch` is not merely a cut: per
-  `docs/spec-compiler-part-3-dfg.md` Section 3 Constitutional Rule 2,
-  thread hierarchy is strictly layered. Whenever the thread
-  definition's body the pass is processing has any direct
-  `dataflow.thread.launch` op, the pass emits no
-  `dataflow.graph.launch` at that level at all. Graph extraction
-  runs only on innermost executable thread bodies: bodies with no
-  direct child `dataflow.thread.launch`, and with graph-admissible
-  code or scalar-only residual code. This matches the placement
-  framework's L2 graph-placement rule in
-  `docs/spec-compiler-part-3-placement-framework.md` Section 7.
+* `dataflow.thread.launch` is never admitted to a thread definition
+  body. Graph extraction therefore operates only on legal thread
+  bodies containing graph-admissible code or scalar-only residual
+  code.
 * Connectedness is not part of the baseline admission rule. If two
   memory-access clusters are adjacent in source order and separated
   only by graph-admissible compute, they are placed in the same
@@ -363,20 +331,14 @@ documentation never refers to the numeric position.
   Graph-to-graph ordering is represented by ordinary SSA use of
   one launch's `done_out` result as another launch's `ctrl_in`
   operand.
-* A graph launch with no graph-launch predecessor and no explicit
-  ScalarCore fence predecessor uses the enclosing thread
-  definition's `thread_ctrl` block argument as its `ctrl_in`
-  operand. If ScalarCore work must complete before a graph launch
-  starts, the lowering inserts or preserves a
-  `dataflow.thread.fence` at that program point and uses the fence
-  result as the launch's `ctrl_in` operand.
+* A graph launch with no graph-launch predecessor uses the enclosing
+  thread definition's `thread_ctrl` block argument as its `ctrl_in`
+  operand. A preceding graph launch's `done_out` may provide the
+  explicit graph-to-graph control dependency.
 * `dataflow.graph.launch` ops are ScalarCore launch points for
-  SpatialCore work. The `ctrl_in` operand is an additional graph-
-  level start dependency; it is not the only sequencing rule. The
-  graph launch also occurs at the launch op's position in the
-  enclosing ScalarCore program. SpatialCore completion becomes
-  visible to later ScalarCore code only when the launch's
-  `done_out` is consumed by `dataflow.thread.fence`.
+  SpatialCore work. The `ctrl_in` operand is an explicit graph-level
+  start dependency, and `done_out` is the corresponding graph-level
+  completion value.
 * Because `dataflow.graph` (def) is `IsolatedFromAbove`, the
   extraction pass also computes every surrounding value used by
   the run's body and materializes it as an explicit launch operand
@@ -613,68 +575,20 @@ documentation never refers to the numeric position.
   `dataflow.graph.launch` has a well-formed explicit `ctrl_in`
   operand and `done_out` result; every graph launch's `ctrl_in` is
   sourced from the enclosing thread definition's `thread_ctrl` block
-  arg, a preceding graph launch's `done_out`, or a
-  `dataflow.thread.fence`.
+  arg or a preceding graph launch's `done_out`.
 
 ## 2. Testing Strategy
 
-The lit-test layout grows three new directories:
+The lit-test layout includes focused per-element fixtures under
+`test/dataflow/unit/`:
 
-* `test/frontend/unit/` -- one subdirectory per new dialect element.
-  Each subdirectory has `valid.mlir`, `invalid.mlir`, and a
-  `roundtrip.mlir` confirming the printer / parser stability.
-  Coverage targets:
-  - `thread/`, `thread_launch/`, `thread_yield/`, `thread_fence/`,
-    `thread_wait/`, `map_info/`, `graph/`, `graph_launch/`.
-    `thread/` and `graph/` cover the def-side contracts (Symbol,
-    FunctionOpInterface, function_type shape, body block-arg
-    layout, IsolatedFromAbove); `thread_launch/` and `graph_launch/`
-    cover launch-side contracts (callee resolution, type checking
-    against the def's function_type, map_info-provenance,
-    direction/body-effect compatibility, ctrl/done plumbing).
-    Unit-test coverage for partitioned-data ops is owned by
-    `docs/spec-compiler-part-4-partitioned-data.md`.
-  - `thread/`, `thread_launch/`, `graph/`, and `graph_launch/`
-    include invalid cases that directly reference surrounding SSA
-    values from isolated regions.
-  - `thread/` includes cases for ScalarCore-legal `func.call` in a
-    thread definition's body and rejection of `func.func`
-    definitions inside a thread definition.
-  - `thread_launch/` includes cases that check the boundary
-    memory-effect summary for `to`, `from`, and `tofrom` mapped
-    operands, rejection of mapped operands not produced by
-    `dataflow.map_info`, and the direction/body-effect
-    compatibility check (a launch declaring `direction = to` whose
-    callee writes through that arg is rejected with a diagnostic
-    naming both ops).
-  - `thread/` includes mapping-attribute fixtures for the
-    `#loom.thread_axis<kind, axis, domain?>` form
-    (per `docs/spec-compiler-part-3-dfg.md` Section 5.2 and Section 9):
-    - valid: `#loom.thread_axis<parallel, 0>` and
-      `#loom.thread_axis<multiplexed, 1>` entries with no domain
-      qualifier.
-    - valid: explicit-domain entries such as
-      `#loom.thread_axis<parallel, 0, @D>` and
-      `#loom.thread_axis<multiplexed, 1, @D>`, where `@D` is a
-      visible `dataflow.partition_domain`.
-    - invalid: a duplicate `(kind, domain, axis)` triple.
-    - invalid: a domain-qualified entry whose symbol does not resolve
-      to `dataflow.partition_domain`.
-    - invalid: an axis value outside `[0, domain_rank)` for a
-      domain-qualified entry.
-    - invalid: a foreign (non-Loom) `DeviceMappingAttrInterface`
-      attribute mixed with Loom-recognized entries (per Part 3 Section 3
-      Mapping attribute rules).
-  - `graph/` includes invalid cases for `func.call` and
-    `func.func` inside a graph definition's body, and invalid
-    cases for `dataflow.graph.launch` / `dataflow.thread.launch`
-    appearing inside a graph definition's body.
-  - `graph_launch/` includes invalid cases for graph launches at
-    host scope (graph launch must be inside a thread definition's
-    body), for callee mismatches (callee is not a `dataflow.graph`
-    definition, function_type does not match operand/result types),
-    and for the parent-side strict-layering rule (a graph launch in a
-    non-innermost thread body that directly launches child threads).
+* `thread/` covers thread symbol resolution and body-operand type
+  checking, the mandatory launch completion token, all-of launch
+  dependencies and waits, nonempty token-typed waits, `none`-typed
+  yield frontiers, and transitive thread containment.
+* `graph/` and `graph_func/` cover rejection of thread launches and
+  caller-side waits inside graph definitions, including transitive
+  containment through nested regions.
 * `test/frontend/lower_scf/` -- one subdirectory per scf op. Each
   directory holds:
   - `before.mlir` (the scf input).
@@ -705,9 +619,9 @@ The lit-test layout grows three new directories:
     `dataflow.thread` definition is built, and that residual
     non-empty `in_parallel` terminators produce diagnostics. Mapped
     forall tests also check that the original implicit
-    synchronization point is represented by a token dependency on
-    the produced launch's `!dataflow.thread_token` or by an
-    explicit `dataflow.thread.wait`.
+    synchronization point is represented by an immediate
+    `dataflow.thread.wait` on the produced launch's
+    `!dataflow.thread_token`.
   - The `for/` and `while/` directories include loop-carried memory
     cases: an in-place stencil, zero-trip and one-trip execution,
     conditional memory effects whose tails must be joined by
@@ -773,24 +687,14 @@ following hold simultaneously:
   non-empty `scf.forall.in_parallel` reaches
   `loom-build-thread-skeleton`, and no combining action is silently
   discarded.
-* Every promoted mapped `scf.forall` preserves the source
-  operation's implicit synchronization point by following the
-  mechanical rule in Section 1.5: either the immediately structurally
-  following op is a `LoomAsyncOpInterface` op whose
-  `asyncDependencies` operand list includes the produced token (the
-  SSA use itself is the synchronization, no extra op needed), or a
-  `dataflow.thread.wait` consuming the token is present before any
-  continuation op (the conservative fallback). Acceptance verifies
-  both conditions independently; the wait's effect-visibility
-  barrier from `docs/spec-compiler-part-3-dfg.md` Section 3 Constitutional
-  Rule 8 prevents subsequent ops from being reordered to before
-  the synchronization.
+* Every promoted mapped `scf.forall` produces one completion token,
+  which `loom-build-thread-skeleton` immediately consumes with a
+  caller-side `dataflow.thread.wait` at the original continuation
+  point. The wait is not a memory barrier.
 * Root graph launch `ctrl_in` wiring is mechanical: graph launches
-  with no preceding graph launch and no preceding ScalarCore fence
-  consume the enclosing thread definition's `thread_ctrl` block
-  argument, ScalarCore-to-graph-launch ordering uses
-  `dataflow.thread.fence`, and child-thread launch completion can
-  feed graph-launch control through that same fence op.
+  with no preceding graph launch consume the enclosing thread
+  definition's `thread_ctrl` block argument, and graph-to-graph
+  ordering uses a preceding launch's `done_out`.
 * `func.call` inside a `dataflow.thread` definition's body is
   handled as ScalarCore control: graph-containing callees are
   inlined or specialized before graph extraction, graph-free
@@ -829,22 +733,7 @@ following hold simultaneously:
   verifiers for `dataflow.thread.launch` and
   `dataflow.graph.launch` reject unresolved callee symbols, callee-
   kind mismatches, type mismatches against the resolved def's
-  `function_type`, and (for thread launch) map_info-provenance and
-  direction-vs-body-effect-compatibility violations.
-* `dataflow.thread.launch` reports external memory effects through
-  its `MemoryEffectsOpInterface` implementation, projecting mapped
-  boundary operands to their `dataflow.map_info` sources according
-  to `direction`. The launch additionally declares a conservative
-  effect on a custom `LoomAsyncResource` resource so generic
-  CSE / DCE never removes a launch even when its callee body has
-  no host-visible memory effects (per
-  `docs/spec-compiler-part-3-dfg.md` Section 3 Constitutional Rule 8).
-  `dataflow.graph.launch` reports external memory effects by
-  resolving its `callee` and walking the callee body. No acceptance
-  test depends on `RecursiveMemoryEffects` to discover host-
-  visible thread or graph reads or writes through the launch
-  boundary; the def-side `RecursiveMemoryEffects` trait is for
-  module-scope walkers only.
+  `function_type`.
 * Integration tests in `test/frontend/integration/` run under
   `--mem-alias=basic`; any differential coverage in this directory
   must use explicit oracle-specific fixtures.

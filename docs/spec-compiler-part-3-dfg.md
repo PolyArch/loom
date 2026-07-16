@@ -117,9 +117,9 @@ The front-end's IR mirrors this trio:
 | Hardware | Front-end IR carrier |
 |----------|----------------------|
 | HostCore | Host-call-context `func.func` body code outside any `dataflow.thread.launch` |
-| Logical execution domain | An outermost `dataflow.thread` definition (Symbol-bearing, module-scope), launched at host scope by `dataflow.thread.launch` with `mapping = [#loom.thread_axis<...>, ...]` logical execution-axis tags. Each dynamic thread instance is a logical execution cell before binding. The cell-to-AccCore binding is a separate concern. |
-| ScalarCore | The body of an innermost executable `dataflow.thread` definition, minus its `dataflow.graph.launch` ops, plus ScalarCore-legal `func.call` callees after inlining or specialization. The body is "what one logical execution cell runs once binding maps it to a physical AccCore". |
-| SpatialCore | Each `dataflow.graph` definition referenced by a `dataflow.graph.launch` inside an innermost executable `dataflow.thread` definition's body, again per bound logical execution cell. |
+| Logical execution domain | A `dataflow.thread` definition (Symbol-bearing, module-scope), launched at caller scope by `dataflow.thread.launch` with `mapping = [#loom.thread_axis<...>, ...]` logical execution-axis tags. Each dynamic thread instance is a logical execution cell before binding. The cell-to-AccCore binding is a separate concern. |
+| ScalarCore | The body of a `dataflow.thread` definition, minus its `dataflow.graph.launch` ops, plus ScalarCore-legal `func.call` callees after inlining or specialization. The body is "what one logical execution cell runs once binding maps it to a physical AccCore". |
+| SpatialCore | Each `dataflow.graph` definition referenced by a `dataflow.graph.launch` inside a `dataflow.thread` definition's body, again per bound logical execution cell. |
 
 A single `dataflow.thread.launch` corresponds to one launch of a
 multi-dimensional iteration domain, distributed across a logical
@@ -134,15 +134,12 @@ is supported by the same mapping mechanism. The binding from a
 logical execution point to a physical AccCore is a separate concern;
 see the placement framework and the later binding/PnR specs.
 
-An innermost executable thread is a `dataflow.thread` whose body, at
-the thread-body placement level, does not launch another
-`dataflow.thread`. Such a body may contain ScalarCore residual code and
-`dataflow.graph.launch` ops. Only dynamic instances of innermost
-executable threads are eligible to become one physical AccCore
-execution slot after binding/PnR. Non-innermost threads remain logical
-parallel hierarchy and scheduling structure before binding.
+Every `dataflow.thread` body may contain ScalarCore residual code and
+`dataflow.graph.launch` ops, but it cannot launch another thread.
+Dynamic instances become physical AccCore execution slots only after
+binding/PnR.
 
-A ScalarCore-only innermost executable thread body is legal, but this is
+A ScalarCore-only thread body is legal, but this is
 only an IR legality statement. Such a thread remains AccCore work only
 when L1 placement, explicit source intent, or a DSE policy selected the
 enclosing region for accelerator execution. L2 graph placement failure
@@ -153,21 +150,19 @@ Thread completion and graph/dataflow control are distinct token domains.
 token produced by `dataflow.thread.launch`. `none` values are the
 graph-control, graph-completion, streaming-control, and memory-order
 tokens used inside dataflow. There is no implicit cast or general
-conversion between the two domains. `dataflow.thread.fence` is the
-explicit bridge that accepts `none` and/or `!dataflow.thread_token`
-dependencies and emits one `none` control value. `dataflow.thread.wait`
-consumes `!dataflow.thread_token` values for host or parent-context
-synchronization and emits no SSA value.
+conversion between the two domains. `dataflow.thread.wait` consumes
+one or more `!dataflow.thread_token` values for caller-side causal
+synchronization and emits no SSA value or graph-control value. It is
+not a memory barrier.
 
 Thread hierarchy transforms before binding are legal only as explicit
 optimization policies. They may reorder independent thread levels,
 collapse adjacent independent levels, or tile and split a level when the
 transform preserves the logical instance set, each instance's scalar
-values, memory-order constraints, async launch and fence ordering, and
-the strict layering rule between child thread launches and graph
-launches. The deterministic baseline policy performs only annotation
-and canonicalization; it must not silently change hierarchy shape as a
-verifier or parsing side effect.
+values, memory-order constraints, and thread-completion causal order.
+Launch placement remains caller-side only. The deterministic baseline
+policy performs only annotation and canonicalization; it must not
+silently change hierarchy shape as a verifier or parsing side effect.
 
 ### 2.1 IR Carrier Responsibilities
 
@@ -183,8 +178,8 @@ verifier or parsing side effect.
   owns the kernel body, the static grid shape, and the mapping
   attribute. It does not itself execute; dynamic logical instances are
   materialized by one or more `dataflow.thread.launch` ops at use
-  sites, then later binding decides which innermost executable
-  instances occupy physical AccCore slots.
+  sites, then later binding decides which instances occupy physical
+  AccCore slots.
 * `dataflow.thread.launch` is the logical accelerator execution
   boundary. It
   references a `dataflow.thread` callable by symbol, supplies async
@@ -209,11 +204,12 @@ Function definitions remain module-level symbols in this design.
 not symbol tables themselves) and do not physically contain
 `func.func` definitions. A `func.call` inside a `dataflow.thread`
 definition's body is a ScalarCore call. If the callee contains
-code that must become a `dataflow.graph` definition or a nested
-`dataflow.thread` launch, Part 3 must inline or specialize that
-callee into the active thread definition before graph extraction.
-Non-inlined ScalarCore calls may remain only when their callee
-body is graph-free after this preparation.
+code that must become a `dataflow.graph` definition, Part 3 must
+inline or specialize that callee into the active thread definition
+before graph extraction. A `dataflow.thread.launch` is invalid
+transitively inside every thread or graph definition. Non-inlined
+ScalarCore calls may remain only when their callee body is graph-free
+after this preparation.
 
 ## 3. Constitutional Rules
 
@@ -225,15 +221,16 @@ each rule lands in IR.
    primitive used for selected accelerator work. It is a
    Symbol-bearing, module-scope, function-like definition (Part 3
    Section 5.4.1); dynamic logical instances are materialized by
-   `dataflow.thread.launch` ops. Multi-level launch nesting is
-   allowed; depth has no hard upper bound. A dynamic instance becomes
-   a physical AccCore execution slot only after binding/PnR, and only
-   when it is an innermost executable thread instance. The thread
-   definition's body has a `thread_ctrl : none` block argument that
-   fires once the logical thread instance starts executing
+   `dataflow.thread.launch` ops. Launches appear only in host/runtime
+   orchestration outside every thread or graph definition; one launch
+   domain expresses multidimensional parallelism. A dynamic instance
+   becomes a physical AccCore execution slot only after binding/PnR.
+   The thread definition's body has a `thread_ctrl : none` block
+   argument that fires once the logical thread instance starts executing
    (entry-block layout: `(args_*, thread_ctrl, iv_*)`, see Section 5.4.1).
    The body may contain ScalarCore operations and ScalarCore-legal
-   `func.call` operations, but not `func.func` definitions.
+   `func.call` operations, but not `func.func` definitions or
+   `dataflow.thread.launch` ops.
 2. `dataflow.graph` is a leaf-level definition. It is also a Symbol-
    bearing, module-scope, function-like definition (Part 3 Section 5.5);
    execution is materialized by `dataflow.graph.launch` ops inside a
@@ -241,23 +238,10 @@ each rule lands in IR.
    `func.func`, `func.call`, `dataflow.thread.launch`,
    `dataflow.graph.launch`, or another `dataflow.graph` definition.
    The graph body is a single graph-kind region; it already permits
-   feedback edges (accepted semantics). Additionally, from the
-   parent side: a `dataflow.thread` definition's body must not
-   directly contain both a `dataflow.graph.launch` and a
-   `dataflow.thread.launch` at the same thread-body placement level.
-   This is a
-   separate constraint from the leaf rule above (the leaf rule
-   constrains the graph body; this parent-side constraint is on
-   what may sit alongside a graph launch in its enclosing thread
-   body). The accepted thread hierarchy is strictly layered:
-   non-innermost thread bodies may contain ScalarCore orchestration
-   code and direct `dataflow.thread.launch` ops, but must not directly
-   contain `dataflow.graph.launch` ops. Innermost executable thread
-   bodies may contain ScalarCore residual code and direct
-   `dataflow.graph.launch` ops, but must not directly contain child
-   `dataflow.thread.launch` ops. A single thread-body placement level
-   must never directly mix thread launches and graph launches. Both
-   rules are enforced by the verifier (see Section 9).
+   feedback edges (accepted semantics). A thread body may contain
+   ScalarCore residual code and `dataflow.graph.launch` ops, but it
+   never launches another thread. The verifier enforces this launch
+   containment transitively (see Section 9).
 3. Every `dataflow.graph` definition has explicit control ports
    inside its `function_type`: the inputs lead with `ctrl_in : none`,
    the results lead with `done_out : none`, the entry block of the
@@ -323,11 +307,8 @@ each rule lands in IR.
    partitioned-data handles cross through `dataflow.map_info`, while
    scalar values cross by value. For a `dataflow.graph.launch`,
    operands and results are the explicit SpatialCore data/control
-   ports. The `dataflow.thread.launch` op implements
-   `MemoryEffectsOpInterface` directly and projects boundary
-   effects from its `dataflow.map_info`-rooted operands; this
-   projection, not recursive region effects on the def, is what
-   host code observes for an async thread launch. The
+   ports. A `dataflow.thread.launch` completion token expresses
+   launch-retirement causality only. The
    `dataflow.graph.launch` op also implements
    `MemoryEffectsOpInterface` directly: it resolves the callee
    symbol and walks the callee body to project effects (a
@@ -337,21 +318,17 @@ each rule lands in IR.
    observe per-callable effects without re-implementing the
    boundary projection.
 8. Effect visibility contract. Every front-end op whose execution
-   affects program order, memory state, or async completion must
-   declare its effects through MLIR's `MemoryEffectOpInterface` (or
-   an equivalent recursive trait) accurately enough that generic
-   optimizers (CSE, LICM, scheduling, code motion) preserve the
-   intended observable behavior. The baseline policy uses MLIR's
-   default-resource barrier pattern -- broad, conservative
-   `MemRead + MemWrite` declarations -- where a precise per-resource
-   binding would require op-side machinery outside this contract.
+   affects memory state must declare its effects through MLIR's
+   `MemoryEffectOpInterface` (or an equivalent recursive trait)
+   accurately enough that generic optimizers preserve the intended
+   observable behavior. Causal ordering and completion are defined
+   by their individual op contracts, not by memory effects. The
+   baseline policy uses MLIR's default-resource barrier pattern --
+   broad, conservative `MemRead + MemWrite` declarations -- where a
+   precise per-resource binding would require op-side machinery
+   outside this contract.
    Tighter per-resource bindings (for example, load/store keyed on
-   the `$mem` operand) are explicit extensions. In
-   addition, `dataflow.thread.launch` declares a conservative
-   side effect on a custom `LoomAsyncResource` resource so that
-   generic CSE / DCE never removes a launch even when its callee
-   body has no host-visible memory effects (see Section 5.4 for the launch
-   signatures).
+   the `$mem` operand) are explicit extensions.
 
 ## 4. Glossary
 
@@ -419,14 +396,7 @@ each rule lands in IR.
   a `dataflow.thread` definition's body (named `thread_ctrl`,
   positioned after the function-signature args per Section 5.4.1). It is
   the per-instance AccCore start signal used to launch root
-  `dataflow.graph.launch` ops or ScalarCore / SpatialCore fences.
-* **Thread fence.** A ScalarCore barrier op that waits at a precise
-  `dataflow.thread` definition's body program point for zero or
-  more SpatialCore `none` tokens and/or child
-  `!dataflow.thread_token` values, then emits a `none` token usable
-  as a `dataflow.graph.launch` `ctrl_in` operand. It is the only
-  primitive that bridges thread-completion tokens into graph-control
-  tokens.
+  `dataflow.graph.launch` ops.
 * **Map info result.** A value produced by `dataflow.map_info` that
   carries the same type as its source memref. It is a pure, view-
   like alias of the source; by IR convention it must only be
@@ -532,16 +502,10 @@ One new attribute class implements the upstream
     `getRelativeIndex()` returns the position of this entry within
     the enclosing thread's `mapping` array.
 
-### 5.3 New Operation Interfaces
+### 5.3 Thread Completion
 
-* `LoomAsyncOpInterface`
-  - Shape mirrors upstream `GPU_AsyncOpInterface`: the op accepts a
-    variadic operand prefix of `!dataflow.thread_token` dependencies
-    and optionally produces a `!dataflow.thread_token` result.
-  - The baseline participants are `dataflow.thread.launch` and
-    `dataflow.thread.wait`. Host-scope async memory ops such as
-    alloc or memcpy may adopt the same interface through an explicit
-    runtime / ABI extension.
+No separate operation interface is introduced for thread completion.
+The launch, wait, and yield contracts are specified directly below.
 
 ### 5.4 New Operations (signatures only)
 
@@ -593,9 +557,9 @@ traits:
   user-data operand types `(T0, ..., TN)` and whose results are
   empty. The thread definition has no SSA data results; the
   per-launch completion token is launch-side, not part of the
-  callable signature. The asynchronous-execution semantics is
-  expressed at the launch op via `LoomAsyncOpInterface`, not via
-  the function type.
+  callable signature. Asynchronous execution is expressed by launch
+  dependencies and the mandatory launch completion token, not by the
+  function type.
 * `sym_name` is required and module-unique. `sym_visibility` is
   required and must equal `"private"` under the baseline visibility
   policy. The verifier rejects `"public"` and `"nested"` unless
@@ -636,15 +600,6 @@ traits:
 * The body is `IsolatedFromAbove`. No SSA value defined outside
   the def's body may be used inside it; the launch's body operands
   are the only inputs.
-* `dataflow.thread` implements `RecursiveMemoryEffects` so module-
-  scope walkers can observe per-callable effects without re-
-  implementing the boundary projection. This is **not** the
-  primary effect surface seen by host code; that is the
-  `dataflow.thread.launch` op's own
-  `MemoryEffectsOpInterface` projection (Section 5.4.2). A graph
-  reached through this body is exposed to the def's recursive
-  effect rollup via its inner launch's effects.
-
 #### 5.4.2 `dataflow.thread.launch`
 
 ```
@@ -656,12 +611,10 @@ arguments:
   Variadic<AnyType>:$bodyOperands,
   FlatSymbolRefAttr:$callee;
 results:
-  Optional<Dataflow_ThreadToken>:$asyncToken;
+  Dataflow_ThreadToken:$asyncToken;
 traits:
   AttrSizedOperandSegments,
-  DeclareOpInterfaceMethods<SymbolUserOpInterface>,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
-  DeclareOpInterfaceMethods<LoomAsyncOpInterface>.
+  DeclareOpInterfaceMethods<SymbolUserOpInterface>.
 ```
 
 `dataflow.thread.launch` deliberately does **not** implement
@@ -673,10 +626,7 @@ Section 5.4.1). Generic call-graph and inliner consumers that read
 a thread token" picture; matching the upstream `gpu.launch_func`
 precedent (which also exposes async tokens but does not implement
 `CallOpInterface`), thread launch carries only `SymbolUserOpInterface`
-plus `LoomAsyncOpInterface`. Symbol-resolution machinery still works
-through `SymbolUserOpInterface` and the explicit `callee` attribute;
-custom Loom analyses can introspect the callable through
-`SymbolTable::lookupNearestSymbolFrom(...)`.
+and resolves its callee through the explicit `callee` attribute.
 
 * `callee` is a flat symbol reference that must resolve to a
   `dataflow.thread` definition in the same module. The verifier
@@ -690,86 +640,23 @@ custom Loom analyses can introspect the callable through
   per-axis and per-array as on the def; mixing strategy across
   the three arrays follows the source `scf.forall` pattern.
 * `asyncDependencies` is the variadic prefix of incoming
-  `!dataflow.thread_token` dependencies (this op's
-  `LoomAsyncOpInterface` slot). The op produces an
-  `Optional<!dataflow.thread_token>` `asyncToken` result. The
-  baseline policy always produces it (pure async style); any
-  non-async lowering policy must be specified separately.
-* The op has no data results. Values produced by AccCore execution
-  cross the HostCore-to-AccCore boundary through mapped memory
-  effects; the token is the readiness signal for those effects.
+  `!dataflow.thread_token` dependencies. They form an all-of start
+  ordering. The op always produces exactly one
+  `!dataflow.thread_token` `asyncToken` result for collective
+  retirement of all dynamic launch instances.
+* The op has no data results. Its mandatory token is the only
+  launch-level completion result.
 * Each memref-like operand in `bodyOperands` must be the direct
   SSA result of a `dataflow.map_info` op in the launch's enclosing
   context. The verifier enforces this provenance; the in-thread
   block argument bound to the operand is the same memref type as
   the source memref. With the def + launch split, provenance belongs
   to the launch site, where `dataflow.map_info` is reachable.
-* `dataflow.thread.launch` implements `MemoryEffectsOpInterface`
-  directly. The interface reports host-visible effects by walking
-  each memref-like operand in `bodyOperands` back through its
-  defining `dataflow.map_info` op and reading the `direction`
-  attribute there:
-  - `direction = to` reports `Read` on the map source.
-  - `direction = from` reports `Write` on the map source.
-  - `direction = tofrom` reports both `Read` and `Write` on the map
-    source.
-  - `direction = alloc` reports `Allocate` on the map source.
-  - `direction = release` reports `Free` on the map source.
-  Scalar operands do not contribute memory effects.
-* Effects are reported on the `dataflow.map_info` source value, not on
-  the `dataflow.map_info` result (which is a view-like alias). The
-  source value is then peeled through any recognized view-like ops
-  before the effect is projected, using the same view-like list as
-  the alias oracle in `docs/spec-compiler-part-3-mem.md` Section 3.1; in
-  particular, `dataflow.partition_layout` is one such view-like
-  producer, so a launch whose `map_info` source is a
-  `dataflow.partition_layout` result reports its effects on the
-  underlying `partition_layout` source memref (per
-  `docs/spec-compiler-part-4-partitioned-data.md`). In nested-launch
-  cases inside a parent thread definition, the parent's `map_info`
-  source may itself be an entry-block argument of the parent thread
-  definition's body; the parent launch's own boundary summary is
-  responsible for projecting its effects one level further outward.
-* **Direction / body-effect compatibility check.** With one def
-  reused at multiple launch sites, the launch's projection from
-  `map_info.direction` must not under-report effects relative to
-  the callee body's actual reads / writes on the corresponding
-  block argument. For each memref-like body operand `i` of
-  `dataflow.thread.launch`, the projected `direction` must cover
-  every effect that the callee body declares on its `i`-th
-  function-signature block argument:
-  - `direction = to` requires the callee body to perform no writes
-    through arg `i` (read-only).
-  - `direction = from` requires the callee body to perform no
-    reads through arg `i` (write-only).
-  - `direction = tofrom` accepts any combination of reads and
-    writes.
-  - `direction = alloc` requires the callee body's first effect on
-    arg `i` to be an allocation-style write before any read.
-  - `direction = release` requires the callee body to perform no
-    further reads / writes after the release point.
-  The body's effect on each block arg is computed by walking the
-  body for `MemoryEffectsOpInterface` ops keyed on that arg (and on
-  aliases reachable through `dataflow.partition_layout` / view-like
-  ops, per the alias oracle). Violations are diagnosed at the
-  launch op with a message that names both the launch and the
-  offending body op.
-* **Anti-CSE / anti-DCE protection.** A `dataflow.thread.launch`
-  whose callee body has no host-visible memory effects but whose
-  execution is still observable (for example, a thread that only
-  writes to scratch memory not visible to the host) must not be
-  considered freely removable by generic MLIR optimizers. The op
-  declares a conservative side effect on a custom
-  `LoomAsyncResource` resource (in addition to its
-  `map_info`-derived effects). Generic CSE / DCE see this resource
-  as a write barrier and refuse to merge or delete launches even
-  when no other memory effect is reported.
-
 #### 5.4.3 `dataflow.thread.yield`
 
 ```
 arguments:
-  none;
+  Variadic<NoneType>:$completionFrontier;
 results:
   none;
 regions:
@@ -780,80 +667,15 @@ traits:
   Pure.
 ```
 
-* The operand list is intentionally empty. Tensor-result aggregation
-  from `scf.forall` is materialized into explicit destination-buffer
-  writes before thread promotion, so `dataflow.thread` (def) does not
-  need a parallel combining region or thread data results. Values
-  defined inside an isolated thread definition's body never escape by
-  direct SSA use.
+* `completionFrontier` is a variadic unordered all-of frontier of
+  `none` values. Structural verification checks only that each operand
+  has type `none` and that the op terminates a `dataflow.thread` body;
+  it does not prove transitive reduction or asynchronous coverage.
+  Tensor-result aggregation remains materialized as explicit
+  destination-buffer writes, so the frontier carries no thread data
+  result.
 
-#### 5.4.4 `dataflow.thread.fence`
-
-```
-arguments:
-  Variadic<AnyTypeOf<[NoneType, Dataflow_ThreadToken]>>:$deps;
-results:
-  NoneType:$ctrl;
-regions:
-  none;
-traits:
-  ParentOneOf<["::dataflow::ThreadOp"]>,
-  MemoryEffects<[MemRead, MemWrite]>.
-```
-
-* ScalarCore-side fence and token bridge. It must appear directly in a
-  `dataflow.thread` definition's body, outside any
-  `dataflow.graph.launch`.
-* **Async dependencies.** Each `none` operand in `$deps` is a
-  `dataflow.graph.launch` `done_out` result, and each
-  `!dataflow.thread_token` operand is a child-thread completion
-  token produced by a `dataflow.thread.launch`. SSA def-use already
-  enforces "the fence happens after every defining op of `$deps`";
-  no extra effect machinery is needed for that part of the
-  contract.
-* **ScalarCore-side memory barrier.** The fence declares
-  `MemRead + MemWrite` on MLIR's default memory resource. This is the
-  default-resource barrier pattern (broad and conservative, comparable
-  to an `MPI_Barrier`-style global barrier). Any ScalarCore op in the
-  same thread definition's body that touches memory through specific
-  memrefs (via `memref.{load, store}`, `func.call`, etc.) declares
-  effects that the default resource subsumes. MLIR therefore must not
-  reorder any such op across the fence in either direction. Pure ops
-  with no declared effects may still be reordered freely; this is
-  intentional and does not change observable behavior.
-* **Result token.** The `none` result fires after both the async
-  dependencies are satisfied and the ScalarCore-side barrier is
-  observed. The result can feed a downstream `dataflow.graph.launch`'s
-  `ctrl_in` operand to express "graph B starts only after graph A and
-  the surrounding ScalarCore side effects".
-* This op is the only sanctioned bridge between thread completion and
-  graph-launch control. There is no general cast between
-  `!dataflow.thread_token` and `none`. Ordering a child thread launch
-  after a graph launch completes is expressed by placing the child
-  `dataflow.thread.launch` after
-  `dataflow.thread.fence(%graph_done)` in ScalarCore program order.
-  The fence's default-resource memory barrier (per Section 3 Constitutional
-  Rule 8) keeps any op with declared memory effects from being
-  reordered across the fence, which covers the common case where the
-  child thread launch has at least one mapped operand and therefore
-  reports boundary memory effects through `MemoryEffectsOpInterface`.
-  For the uncommon scalar-only child-thread case (no mapped operands,
-  no reported boundary memory effects), the front-end lowering must
-  additionally close the SSA path so generic code motion has no
-  freedom: it emits a trailing `dataflow.thread.fence(%child_done)`
-  that consumes the scalar-only child `dataflow.thread.launch`'s
-  `!dataflow.thread_token` result, and threads the prior fence's
-  `none` result into the same trailing fence's operand list (the
-  fence verifier accepts a mix of `none` and `!dataflow.thread_token`
-  operands, see Section 9). The trailing fence's memory barrier then anchors
-  the launch sequence on both sides. The lit suite covers this
-  scalar-only case; in the common case the leading fence alone is
-  sufficient. Note that the launch op's `LoomAsyncResource` effect
-  (Section 5.4.2) is an additional belt-and-braces guard against generic
-  CSE / DCE in the scalar-only case, but the fence + trailing fence
-  pair remains the canonical ordering primitive.
-
-#### 5.4.5 `dataflow.thread.wait`
+#### 5.4.4 `dataflow.thread.wait`
 
 ```
 arguments:
@@ -861,27 +683,17 @@ arguments:
 results:
   none;
 traits:
-  DeclareOpInterfaceMethods<LoomAsyncOpInterface>,
-  MemoryEffects<[MemRead, MemWrite]>.
+  AtLeastNOperands<1>.
 ```
 
-* Synchronous wait in the enclosing control context: HostCore for an
-  outer `dataflow.thread.launch`, ScalarCore code for a nested
-  `dataflow.thread.launch` inside a parent thread definition's
-  body. After this op, all listed thread tokens are guaranteed
-  complete. Inside a `dataflow.thread` definition's body, prefer
-  `dataflow.thread.fence` when the wait result must feed a
-  `dataflow.graph.launch`'s `ctrl_in`.
-* The op produces no SSA result, so subsequent host or parent-context
-  memory ops cannot be made to depend on it through SSA def-use. To
-  preserve "wait for async completion before observing memory" across
-  generic MLIR optimizers, the op declares `MemRead + MemWrite` on
-  the default memory resource. This is the same default-resource
-  barrier pattern used by `dataflow.thread.fence`: it does not mean
-  the wait itself touches memory, only that no surrounding memory op
-  may be moved across it.
+* A caller-side ordered stored-program wait. It consumes at least one
+  thread completion token and completes only after every supplied token
+  has retired. The operand set is unordered all-of.
+* The op produces no SSA result and no graph-control `none` value. It
+  is not a memory barrier and does not define memory visibility.
+* The op is not `Pure`; it remains a causal wait in the stored program.
 
-#### 5.4.6 `dataflow.map_info`
+#### 5.4.5 `dataflow.map_info`
 
 ```
 arguments:
@@ -1070,10 +882,8 @@ traits:
   is what makes a graph that contains side-effecting body ops
   (notably `dataflow.{load, store}`) visible as a memory-touching
   op to the surrounding ScalarCore code, so that standard
-  optimizers do not reorder it across `dataflow.thread.fence` or
-  across other ScalarCore memory ops. This is the synchronous
-  complement of the boundary-projection model
-  `dataflow.thread.launch` uses for its async launch.
+  optimizers preserve its declared ordering with other ScalarCore
+  memory ops.
 
 * `Dataflow_YieldOp`.
   - The verifier's parent-result-count and parent-result-type checks
@@ -2057,7 +1867,7 @@ dataflow.thread @t_<funcSym>_<seq>(%B_arg : memref<?xf32>, ...)
 
 // At the original scf.forall site (after map_info materialization):
 %mB = dataflow.map_info %B { direction = #to } : memref<?xf32>
-%tok = dataflow.thread.launch @t_<funcSym>_<seq>(%mB, ...) async
+%tok = dataflow.thread.launch @t_<funcSym>_<seq>(%mB, ...)
        : (memref<?xf32>, ...) -> !dataflow.thread_token
 dataflow.thread.wait %tok : !dataflow.thread_token
 ```
@@ -2917,28 +2727,13 @@ In addition to the dataflow / fabric verifier set:
     definition is a sibling at module scope, not a body element).
     A `dataflow.graph.launch` is the only way to invoke a graph
     callable from inside a thread definition's body.
-  - Body must not contain a `dataflow.thread` definition (thread
-    definitions are also module-scope siblings). A
-    `dataflow.thread.launch` is the only way to invoke a thread
-    callable from inside another thread definition's body.
-  - The body must follow strict thread layering. ScalarCore code
-    (`scf.*` ops, ScalarCore-legal `func.call`, ScalarCore memory
-    ops, `dataflow.thread.fence`, etc.) is always allowed in the
-    thread definition's body. Direct launch shapes are constrained:
-    - an innermost executable thread body may contain any number of
-      direct `dataflow.graph.launch` ops interleaved with ScalarCore
-      residual code, and no direct `dataflow.thread.launch`;
-    - a non-innermost thread body may contain any number of direct
-      `dataflow.thread.launch` ops interleaved with ScalarCore
-      orchestration code, and no direct `dataflow.graph.launch`;
-    - a ScalarCore-only body with neither launch shape is legal; by
-      absence of direct child thread launches it is an innermost
-      executable scalar-only AccCore binding candidate. This verifier
-      rule does not itself select AccCore execution; placement must have
-      selected the enclosing accelerator region first.
-    Mixing direct graph launches with direct thread launches at the
-    same thread-body placement level violates Section 3 Constitutional
-    Rule 2's parent-side constraint.
+  - Body must not contain a `dataflow.thread` definition or a
+    `dataflow.thread.launch`; thread definitions are module-scope
+    siblings and launches are caller-side only. The launch verifier
+    checks this restriction transitively through nested regions.
+  - ScalarCore code and `dataflow.graph.launch` ops are allowed in a
+    thread body. A ScalarCore-only body with no graph launch is also
+    legal; this verifier rule does not itself select AccCore execution.
   - Body may contain `func.call` only when the callee has been
     proven ScalarCore-legal or is scheduled for inlining before
     graph extraction. Body must not contain `func.func`
@@ -2959,68 +2754,31 @@ In addition to the dataflow / fabric verifier set:
     `ShapedType::kDynamic` sentinels in
     `callee.staticGrid*`. Per-axis static / dynamic mixing
     follows the def's static-bounds pattern.
-  - The op produces an `Optional<!dataflow.thread_token>` result.
-    Under the baseline policy the result is always present.
+  - The op always produces exactly one `!dataflow.thread_token`
+    result for collective retirement of all its dynamic instances.
   - Each memref-like operand in `bodyOperands` is the direct SSA
     result of a `dataflow.map_info` op in the launch's enclosing
-    context. The launch's `MemoryEffectsOpInterface` walks back
-    through that `map_info` op and projects effects on the map
-    source according to its `direction` attribute (per Section 5.4.2
-    contract).
-  - **Direction / body-effect compatibility.** For each memref-
-    like operand `i`, the projected `direction` must cover every
-    effect that the callee body declares on its `i`-th
-    function-signature block argument:
-    - `direction = to` requires no writes through arg `i`.
-    - `direction = from` requires no reads through arg `i`.
-    - `direction = tofrom` accepts any combination.
-    - `direction = alloc` requires the body's first effect on
-      arg `i` to be allocation-style (write before read).
-    - `direction = release` requires no further reads / writes
-      after the release point.
-    Violations are diagnosed at the launch op with a message
-    naming both the launch and the offending body op.
-  - The op declares a conservative effect on the
-    `LoomAsyncResource` resource so generic CSE / DCE never
-    removes a launch even when its callee body has no host-
-    visible memory effects (per Section 3 Constitutional Rule 8).
-  - May appear at host scope (`func.func` body) or inside a
-    parent `dataflow.thread` definition's body (nested launch).
-    Must not appear inside a `dataflow.graph` definition's body.
+    context.
+  - Must appear outside every `dataflow.thread` and `dataflow.graph`
+    definition, including through nested regions.
 
 * `dataflow.thread.yield`
-  - No operand allowed. The parent `dataflow.thread` definition
-    has no data results; the per-launch completion token is
-    produced by the launch op, not yielded as a body value.
+  - Accepts zero or more `none` operands as an unordered all-of
+    completion frontier. The parent `dataflow.thread` definition has
+    no data results; the per-launch completion token is produced by
+    the launch op, not yielded as a body value. The verifier checks
+    only frontier operand types and terminator placement.
   - Parent op must be a `dataflow.thread` definition (enforced by
     `ParentOneOf<["::dataflow::ThreadOp"]>`).
-
-* `dataflow.thread.fence`
-  - Must appear directly in a `dataflow.thread` definition's body,
-    not at host scope and not inside a `dataflow.graph.launch` or a
-    `dataflow.graph` definition's body.
-  - Every operand has type `none` or `!dataflow.thread_token`.
-  - The result has type `none`.
-  - This op is the only explicit bridge from thread completion to
-    graph-control `none` values. No verifier or canonicalizer may
-    replace it with an implicit cast.
-  - The op's `MemoryEffectOpInterface` implementation must report
-    `MemRead + MemWrite` on MLIR's default memory resource. Lowering
-    and verification must not weaken this to a per-resource effect or
-    to no effect; doing so breaks the ScalarCore-side barrier
-    contract specified in Section 3 rule 8.
 
 * `dataflow.thread.wait`
   - At least one operand. Each is `!dataflow.thread_token` produced
     by a `dataflow.thread.launch`.
-  - The op has no SSA result and therefore does not produce a
-    graph-control `none` value. Use `dataflow.thread.fence` instead
-    when child-thread completion must feed a graph launch's `ctrl_in`.
-  - The op's `MemoryEffectOpInterface` implementation must report
-    `MemRead + MemWrite` on MLIR's default memory resource. The wait
-    has no SSA result, so this barrier is the only mechanism that
-    keeps surrounding host or parent-context memory ops from being
-    moved across it.
+  - Must appear outside every `dataflow.thread` and `dataflow.graph`
+    definition, including through nested regions.
+  - The op has no SSA result and therefore produces no graph-control
+    `none` value. It is an ordered stored-program causal wait, not a
+    memory barrier.
 
 * `dataflow.map_info`
   - `direction` is one of the closed enum values.
@@ -3094,7 +2852,7 @@ Verifier rules for `dataflow.partition_layout`,
     pure ops permitted in the graph body whitelist.
   - Body must not contain `scf.*`, `func.func`, `func.call`,
     `dataflow.thread.launch`, `dataflow.graph.launch`,
-    `dataflow.thread.fence`, `dataflow.map_info`, any partitioned-data
+    `dataflow.thread.wait`, `dataflow.map_info`, any partitioned-data
     op specified in `docs/spec-compiler-part-4-partitioned-data.md`,
     another `dataflow.graph` definition, or a `dataflow.thread`
     definition.

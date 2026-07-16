@@ -97,3 +97,15 @@ func.func @graph_rejects_llvm_load(%n: i32) {
   }
   return
 }
+
+// -----
+// A regional graph body cannot wait on a caller-side completion token.
+func.func @regional_graph_rejects_thread_wait() {
+  dataflow.graph() -> () {
+    %token = ub.poison : !dataflow.thread_token
+    // expected-error @+1 {{must appear outside any dataflow.thread or dataflow.graph definition}}
+    dataflow.thread.wait %token : !dataflow.thread_token
+    dataflow.yield
+  }
+  return
+}

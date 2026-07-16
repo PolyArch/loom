@@ -14,19 +14,30 @@ dataflow.thread private @t_two_args(%a: i32, %b: f32) ctrl (%c: none) iv (%i: in
   dataflow.thread.yield
 }
 
-// Async-token-producing launch carrying mapped operands and a grid
-// upper bound.
+// Every launch produces one completion token, including a launch carrying
+// mapped operands and a grid upper bound.
 // CHECK-LABEL: func.func @launch_demo
 func.func @launch_demo(%a: i32, %b: f32, %n: index) {
-  // CHECK: dataflow.thread.launch @t_two_args(%{{.*}}, %{{.*}}) grid(%{{.*}}) : (i32, f32) -> ()
-  dataflow.thread.launch @t_two_args(%a, %b) grid(%n) : (i32, f32) -> ()
+  // CHECK: %{{.*}} = dataflow.thread.launch @t_two_args(%{{.*}}, %{{.*}}) grid(%{{.*}}) : (i32, f32) -> !dataflow.thread_token
+  %completion = dataflow.thread.launch @t_two_args(%a, %b) grid(%n) : (i32, f32) -> !dataflow.thread_token
   return
 }
 
-// Token-producing launch round-trip.
-// CHECK-LABEL: func.func @launch_token
-func.func @launch_token() -> !dataflow.thread_token {
+// Launch dependencies and waits both express unordered all-of completion.
+// CHECK-LABEL: func.func @wait_for_launches
+func.func @wait_for_launches() {
   // CHECK: %{{.*}} = dataflow.thread.launch @t_empty() : () -> !dataflow.thread_token
-  %tok = dataflow.thread.launch @t_empty() : () -> !dataflow.thread_token
-  return %tok : !dataflow.thread_token
+  %first = dataflow.thread.launch @t_empty() : () -> !dataflow.thread_token
+  // CHECK: %{{.*}} = dataflow.thread.launch @t_empty() wait(%{{.*}}) : () -> !dataflow.thread_token
+  %second = dataflow.thread.launch @t_empty() wait(%first) : () -> !dataflow.thread_token
+  // CHECK: dataflow.thread.wait %{{.*}}, %{{.*}} : !dataflow.thread_token, !dataflow.thread_token
+  dataflow.thread.wait %first, %second : !dataflow.thread_token, !dataflow.thread_token
+  return
+}
+
+// Completion frontiers carry zero or more unordered none-typed values.
+// CHECK-LABEL: dataflow.thread private @t_frontier() ctrl (%{{.*}}: none)
+dataflow.thread private @t_frontier() ctrl (%ctrl: none) {
+  // CHECK: dataflow.thread.yield %{{.*}} : none
+  dataflow.thread.yield %ctrl : none
 }

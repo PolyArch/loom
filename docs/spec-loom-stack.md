@@ -351,48 +351,24 @@ or a persistent adapter partition is not the final design.
 thread instance is a logical execution cell until later binding maps it
 onto physical AccCore resources. The accepted direction is a two-level
 model: front-end IR preserves logical parallel structure, while PnR or a
-binding artifact assigns selected innermost executable instances to
-AccCore execution slots.
-
-An innermost executable thread is a `dataflow.thread` whose body, at the
-thread-body placement level, does not launch another `dataflow.thread`.
-It may contain ScalarCore residual code and `dataflow.graph.launch` ops.
-Only dynamic instances of such threads are eligible to become one
-AccCore execution slot after binding. Non-innermost threads remain
-logical hierarchy and scheduling structure. Before binding, hierarchy
-transforms may reorder independent thread levels, collapse adjacent
-independent levels, or tile and split levels only when they preserve the
-logical instance set, per-instance scalar values, memory-order
-constraints, async launch/fence ordering, and strict thread/graph
-layering. The deterministic baseline policy stops at annotation and
-canonicalization. Nontrivial hierarchy transforms are explicit
-optimization policies, not verifier side effects, and must be enabled
-through documented placement policies.
-
-Thread nesting is strictly layered. A non-innermost thread may contain
-ScalarCore orchestration code and child `dataflow.thread.launch` ops,
-but it must not directly contain `dataflow.graph.launch` ops. An
-innermost executable thread may contain ScalarCore residual code and
-`dataflow.graph.launch` ops, but must not directly contain child
-`dataflow.thread.launch` ops. A single thread-body placement level must
-never directly mix thread launches and graph launches. A ScalarCore-only
-thread body with neither launch shape is legal and is an innermost
-scalar-only AccCore binding candidate. This legality is not an implicit
-offload decision: a scalar-only thread is retained as AccCore work only
-when L1 placement, source intent, or an explicit DSE policy selected that
-region for accelerator execution. Failed L2 graph extraction must not
-create a new accelerator offload by itself.
+binding artifact assigns selected dynamic instances to AccCore execution
+slots. A thread body may contain ScalarCore residual code and
+`dataflow.graph.launch` ops, but `dataflow.thread.launch` appears only
+in caller-side host/runtime orchestration outside every thread or graph
+definition. A ScalarCore-only thread body is legal. This legality is not
+an implicit offload decision: a scalar-only thread is retained as AccCore
+work only when L1 placement, source intent, or an explicit DSE policy
+selected that region for accelerator execution. Failed L2 graph
+extraction must not create a new accelerator offload by itself.
 
 Thread completion and dataflow control are separate token domains.
 `!dataflow.thread_token` represents inter-thread asynchronous
 completion from `dataflow.thread.launch`. `none`-typed control values
 represent graph launch control, graph completion, streaming control, and
-memory-order tokens inside dataflow. There is no implicit cast between
-these domains. `dataflow.thread.fence` is the explicit bridge from
-thread completion and graph-control dependencies to a `none` control
-result; `dataflow.thread.wait` consumes thread completion tokens for
-host or parent-context synchronization and produces no graph-control
-value.
+memory-order tokens inside dataflow. There is no implicit cast or bridge
+between these domains. `dataflow.thread.wait` consumes one or more
+thread completion tokens for caller-side causal synchronization and
+produces no graph-control value or memory barrier.
 
 Thread grid mapping uses domain-neutral logical-axis attributes. The
 target spelling is `#loom.thread_axis<parallel, axis>` or
@@ -408,8 +384,8 @@ belong to binding/PnR artifacts.
 
 `dataflow.graph` represents SpatialCore software dataflow. The target
 form is a symbol-bearing, module-scope callable definition. It executes
-only through `dataflow.graph.launch` inside an innermost executable
-thread body. The target dataflow dialect has no separate
+only through `dataflow.graph.launch` inside a `dataflow.thread` body.
+The target dataflow dialect has no separate
 `dataflow.graph.func` surface.
 
 `dataflow.subgraph` is a migration-only adapter form, not a canonical L3

@@ -3,7 +3,7 @@
 module {
   func.func @launch(%dst: !llvm.ptr) {
     %c4 = arith.constant 4 : index
-    dataflow.thread.launch @t_nested_forall(%dst) grid(%c4) : (!llvm.ptr) -> ()
+    %completion = dataflow.thread.launch @t_nested_forall(%dst) grid(%c4) : (!llvm.ptr) -> !dataflow.thread_token
     return
   }
 

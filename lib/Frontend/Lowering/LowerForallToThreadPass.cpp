@@ -496,9 +496,11 @@ struct LowerForallToThreadPass
       bodyOperands.push_back(v);
 
     auto callee = ::mlir::FlatSymbolRefAttr::get(builder.getContext(), symName);
-    ::dataflow::ThreadLaunchOp::create(
-        builder, loc, /*asyncToken=*/::mlir::Type{}, callee, bodyOperands,
-        upperBounds, /*asyncDependencies=*/::mlir::ValueRange{});
+    auto launch = ::dataflow::ThreadLaunchOp::create(
+        builder, loc, callee, bodyOperands, upperBounds,
+        /*asyncDependencies=*/::mlir::ValueRange{});
+    ::dataflow::ThreadWaitOp::create(
+        builder, loc, ::mlir::ValueRange{launch.getAsyncToken()});
 
     forall.erase();
     return ::mlir::success();

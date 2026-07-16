@@ -67,11 +67,10 @@ Thread launch ownership is strict:
 
 `!dataflow.thread_token` is the inter-thread completion token domain.
 `none`-typed control values are graph, stream, memory-order, and
-dataflow-control tokens. `dataflow.thread.fence` is the explicit bridge
-from thread-completion and dataflow-control dependencies to a `none`
-control result. `dataflow.thread.wait` consumes thread-completion
-tokens for host or parent-context synchronization and produces no
-graph-control value.
+dataflow-control tokens. `dataflow.thread.wait` consumes one or more
+thread-completion tokens for caller-side causal synchronization and
+produces no graph-control value. It is not a memory barrier, and there
+is no conversion between the two token domains.
 
 `dataflow.graph` is the single canonical SpatialCore software DFG
 definition surface. It is symbol-bearing, function-like, module-scope,

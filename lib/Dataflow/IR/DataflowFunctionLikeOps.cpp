@@ -270,8 +270,8 @@ LogicalResult ThreadOp::verify() {
 // dataflow.thread.yield
 //===----------------------------------------------------------------------===//
 
-// No verifier body needed; the assembly format is empty and the
-// terminator status is trait-enforced.
+// No verifier body needed; ODS enforces the optional variadic `none`
+// completion frontier and terminator placement.
 
 //===----------------------------------------------------------------------===//
 // dataflow.thread.launch
@@ -311,8 +311,21 @@ LogicalResult ThreadLaunchOp::verify() {
         "must appear outside any dataflow.thread or dataflow.graph "
         "definition");
 
-  // The op result, if present, must be a thread token. Tablegen's
-  // Optional<Dataflow_ThreadTokenType> already enforces this.
+  // The op result is the required thread token. Tablegen enforces its type.
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// dataflow.thread.wait
+//===----------------------------------------------------------------------===//
+
+LogicalResult ThreadWaitOp::verify() {
+  if ((*this)->getParentOfType<ThreadOp>() ||
+      (*this)->getParentOfType<GraphFuncOp>() ||
+      (*this)->getParentOfType<GraphOp>())
+    return emitOpError(
+        "must appear outside any dataflow.thread or dataflow.graph "
+        "definition");
   return success();
 }
 

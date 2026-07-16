@@ -32,9 +32,10 @@ def Dataflow_ThreadTokenType
   let summary = "one-shot async completion handle for a dataflow.thread.launch";
   let description = [{
     A one-shot completion handle returned by `dataflow.thread.launch`
-    and consumed by `dataflow.thread.wait` or
-    `dataflow.thread.fence`. Equivalent to `!async.token` but local to
-    the Loom dataflow dialect.
+    and consumed by launch dependencies or `dataflow.thread.wait`.
+    It represents collective retirement of all dynamic instances from
+    one launch. Equivalent to `!async.token` but local to the Loom
+    dataflow dialect.
   }];
   let assemblyFormat = "";
 }

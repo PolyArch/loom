@@ -10,7 +10,8 @@
 // names: t_<func>_0 and t_<func>_1.
 
 // CHECK-LABEL: func.func @parallel_init
-// CHECK: dataflow.thread.launch @t_parallel_init_0
+// CHECK: %[[PARALLEL_TOKEN:.*]] = dataflow.thread.launch @t_parallel_init_0
+// CHECK-NEXT: dataflow.thread.wait %[[PARALLEL_TOKEN]] : !dataflow.thread_token
 // CHECK-NOT: scf.forall
 func.func @parallel_init(%buf: memref<?xf32>, %n: index) {
     %f0 = arith.constant 0.0 : f32
@@ -21,8 +22,10 @@ func.func @parallel_init(%buf: memref<?xf32>, %n: index) {
 }
 
 // CHECK-LABEL: func.func @two_foralls
-// CHECK: dataflow.thread.launch @t_two_foralls_0
-// CHECK: dataflow.thread.launch @t_two_foralls_1
+// CHECK: %[[FIRST_TOKEN:.*]] = dataflow.thread.launch @t_two_foralls_0
+// CHECK-NEXT: dataflow.thread.wait %[[FIRST_TOKEN]] : !dataflow.thread_token
+// CHECK: %[[SECOND_TOKEN:.*]] = dataflow.thread.launch @t_two_foralls_1
+// CHECK-NEXT: dataflow.thread.wait %[[SECOND_TOKEN]] : !dataflow.thread_token
 func.func @two_foralls(%a: memref<?xf32>, %b: memref<?xf32>, %n: index) {
     %f0 = arith.constant 0.0 : f32
     %f1 = arith.constant 1.0 : f32
@@ -40,7 +43,8 @@ func.func @two_foralls(%a: memref<?xf32>, %b: memref<?xf32>, %n: index) {
 // simple store loops that are protected by an `n > 0` check.
 // CHECK-LABEL: func.func @guarded_parallel_store
 // CHECK: scf.if
-// CHECK-NEXT: dataflow.thread.launch @t_guarded_parallel_store_0
+// CHECK-NEXT: %[[GUARDED_TOKEN:.*]] = dataflow.thread.launch @t_guarded_parallel_store_0
+// CHECK-NEXT: dataflow.thread.wait %[[GUARDED_TOKEN]] : !dataflow.thread_token
 // CHECK-NEXT: }
 // CHECK-NOT: scf.forall
 func.func @guarded_parallel_store(%src: memref<?xf32>, %dst: memref<?xf32>,

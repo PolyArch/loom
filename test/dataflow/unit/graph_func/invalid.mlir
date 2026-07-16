@@ -86,3 +86,15 @@ dataflow.graph.func private @g_rejects_thread_launch(%ctrl: none) -> none {
   }
   dataflow.graph.return %ctrl : none
 }
+
+// -----
+// A graph.func body cannot wait on a caller-side completion token.
+dataflow.graph.func private @g_rejects_thread_wait(%ctrl: none) -> none {
+  %token = ub.poison : !dataflow.thread_token
+  scf.execute_region {
+    // expected-error @+1 {{must appear outside any dataflow.thread or dataflow.graph definition}}
+    dataflow.thread.wait %token : !dataflow.thread_token
+    scf.yield
+  }
+  dataflow.graph.return %ctrl : none
+}
