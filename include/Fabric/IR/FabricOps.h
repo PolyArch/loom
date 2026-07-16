@@ -45,6 +45,12 @@ FabricOpModeClassification classifyFabricOpModes(OpOp op);
 verifyInnerInputTypesProperty(::mlir::Operation *op, ::mlir::ValueRange inputs,
                               ::llvm::ArrayRef<::mlir::Type> innerInputTypes);
 
+// Resolve an instantiate target with the dialect's canonical outward symbol
+// table lookup semantics.
+::mlir::Operation *
+resolveInstantiateTarget(InstantiateOp instantiate,
+                         ::mlir::SymbolTableCollection &symbolTables);
+
 // Returns true if the software op named by `name` is one of the operations
 // supported as a member of fabric.op's `op_list`. This is the canonical
 // allowlist of "ops a fabric tile can implement" and is also consumed by the

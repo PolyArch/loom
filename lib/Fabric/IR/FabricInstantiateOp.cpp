@@ -85,14 +85,30 @@ static bool isLegalKindForParent(Operation *parent, Operation *target) {
   if (isa<mlir::ModuleOp>(parent))
     return isa<fabric::ModuleOp>(target);
   if (isa<fabric::ModuleOp>(parent))
-    return isa<fabric::ModuleOp, fabric::PeOp, fabric::SwitchOp,
-               fabric::MemOp>(target);
+    return isa<fabric::ModuleOp, fabric::PeOp, fabric::SwitchOp, fabric::MemOp>(
+        target);
   if (isa<fabric::PeOp>(parent))
     return isa<fabric::FuOp>(target);
   return false;
 }
 
 } // namespace
+
+Operation *
+fabric::resolveInstantiateTarget(InstantiateOp instantiate,
+                                 SymbolTableCollection &symbolTables) {
+  Operation *cursor = instantiate.getOperation();
+  while (cursor) {
+    Operation *symbolTable = SymbolTable::getNearestSymbolTable(cursor);
+    if (!symbolTable)
+      break;
+    if (Operation *target = symbolTables.lookupSymbolIn(
+            symbolTable, instantiate.getCalleeAttr()))
+      return target;
+    cursor = symbolTable->getParentOp();
+  }
+  return nullptr;
+}
 
 ParseResult InstantiateOp::parse(OpAsmParser &parser, OperationState &result) {
   // `@callee`
@@ -263,17 +279,7 @@ InstantiateOp::verifySymbolUses(::mlir::SymbolTableCollection &symbolTable) {
   //    SymbolTable's parent, until a match is found or no SymbolTable
   //    remains. This is the explicit "reaches sibling top-level modules
   //    via SymbolTable lookup-up" semantics from the spec.
-  Operation *target = nullptr;
-  Operation *symCursor = getOperation();
-  while (symCursor) {
-    Operation *st = ::mlir::SymbolTable::getNearestSymbolTable(symCursor);
-    if (!st)
-      break;
-    target = symbolTable.lookupSymbolIn(st, getCalleeAttr());
-    if (target)
-      break;
-    symCursor = st->getParentOp();
-  }
+  Operation *target = resolveInstantiateTarget(*this, symbolTable);
   if (!target)
     return emitOpError("references undefined symbol '@") << getCallee() << "'";
 

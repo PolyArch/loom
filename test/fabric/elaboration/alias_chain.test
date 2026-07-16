@@ -1,0 +1,3 @@
+# RUN: loom-fabric-elaboration-alias-chain-test | FileCheck %s
+
+# CHECK: fabric alias chain ok

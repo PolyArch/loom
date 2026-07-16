@@ -181,6 +181,87 @@ rejected on `memref` operands.
 8. For each output port, the result SSA type equals the target's
    declared output port type (strict).
 
+## Canonical root-local elaboration
+
+The public Fabric IR API
+`fabric::elaborateInstances(fabric::ModuleOp root)` and the registered
+`loom` development pass `--loom-elaborate-fabric-instances` provide the
+single canonical instance elaboration path. The API elaborates one selected
+top-level `fabric.module` root directly contained by `builtin.module` and
+preserves that root operation's identity. A non-top-level root is diagnosed as
+unsupported because selecting its counterpart in a cloned hierarchy would
+require guessing or inventing a hierarchy path identity. The pass applies the
+same implementation to every top-level `fabric.module` directly contained by
+the input `builtin.module`.
+
+Elaboration has the following observable contract:
+
+* Every concrete `fabric.instantiate` under an elaborated root is removed.
+  Module targets inline their physical body operations at the use site in
+  deterministic textual order. Named PE, FU, switch, and memory targets
+  create fresh anonymous physical occurrences with independent operation,
+  region, and mapping state for every site.
+* Named definitions remain declarations. They are not physical occurrences,
+  and module inlining does not copy them into the caller. Nested instances are
+  resolved in the source template's symbol-table context before their fresh
+  occurrences are created in the destination root.
+* Symbol identity and visibility are not copied to anonymous occurrences.
+  Capability and configuration attributes remain owned by the target
+  declaration and are copied as the physical occurrence contract requires.
+* A `fabric.instantiate @module` directly under `builtin.module` remains valid
+  source syntax but is unsupported by root-local elaboration because there is
+  no enclosing `fabric.module` occurrence owner. The pass diagnoses this
+  boundary and does not invent a wrapper or top-level ownership model.
+* Successful elaboration is deterministic, independent of Graph-region
+  operation order, verifier-valid, round-trippable, and leaves no concrete
+  `fabric.instantiate` under the selected root. Legal forward SSA and feedback
+  through materialized physical occurrences are preserved. An instance-only
+  alias cycle with no physical producer is diagnosed because it has no
+  representable producer after all module boundaries are removed. Unused named
+  declarations may remain.
+
+Validation has two parts inside the transactional scratch IR. For each isolated
+Graph-region block, elaboration creates every fresh occurrence and builds one
+complete block-local replacement plan without erasing an instance or rewriting
+a surviving use. Graph-region cloning establishes all result mappings before
+operands, so forward SSA and feedback do not depend on textual order. The
+block-local plan then proves the semantic rules that cannot be recovered by
+verifying the elaborated leaf operations. Removing a module boundary may
+compose two existing low-bit normalizations into one direct endpoint connection
+only when the composition is equivalent. For a source width `S`, removed
+intermediate module-port width `M`, and adjacent destination width `D`,
+equivalence requires `M >= min(S, D)`. If `M` is narrower than both adjacent
+widths, the first connection discards bits that a direct `S -> D` connection
+would preserve, so elaboration rejects the instance as unsupported. For
+`bits_tag`, this rule is checked independently for the payload and tag widths.
+Memrefs retain their existing exact-type requirement. Elaboration does not
+insert an adapter, FIFO, wrapper, or routing resource for a non-representable
+composition.
+
+Inlining and leaf materialization change the enclosing module seen by
+`resolveLoomAddrBits` and `resolveLoomMemBusWidth`. The semantic check therefore
+requires the definition and destination effective values to match for both
+settings for module, PE, FU, switch, and memory targets. A mismatch is
+diagnosed instead of rebinding resource semantics or copying module-scoped
+configuration into a second authority.
+
+The complete containing `builtin.module` is cloned before block-local planning
+begins, preserving sibling symbol context. Each successful block plan rewires
+its surviving uses and removes its concrete instances in the scratch IR. The
+existing Fabric op verifiers then validate the materialized anonymous PE, FU,
+switch, and memory occurrences and the fully elaborated scratch roots. The
+outer complete-module scratch transaction provides failure atomicity across
+all processed blocks and roots. Leaf legality is not duplicated in a second
+hand-maintained preflight.
+
+Both the reusable API and the builtin-module pass are failure-atomic. The pass
+publishes the successful scratch builtin-module body only after every selected
+root rewrites and verifies. The API finds the selected cloned top-level root by
+its symbol, rewrites and verifies it in the complete scratch builtin-module
+context, and then moves only its body into the original root. Any semantic,
+rewrite, or verifier failure discards the scratch IR and leaves the original
+IR untouched.
+
 ## Body whitelist updates
 
 * `fabric.module` body now also accepts `fabric.module` (nested) and

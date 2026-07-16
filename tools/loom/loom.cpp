@@ -1,4 +1,5 @@
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Fabric/IR/Elaboration.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/Tech/Passes.h"
 
@@ -13,6 +14,7 @@ int main(int argc, char **argv) {
   mlir::registerAllDialects(registry);
   mlir::registerAllPasses();
   registry.insert<fabric::FabricDialect, dataflow::DataflowDialect>();
+  fabric::registerFabricIRPasses();
   fabric::registerFabricTechPasses();
   fabric::registerFabricTechSynthesizerPasses();
   return mlir::asMainReturnCode(

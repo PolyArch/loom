@@ -1,0 +1,4 @@
+# RUN: loom-fabric-elaboration-api-test | FileCheck %s
+# RUN: loom-fabric-elaboration-header-test
+
+# CHECK: fabric elaboration API ok

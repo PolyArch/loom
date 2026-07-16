@@ -3,6 +3,7 @@ add_mlir_dialect_library(MLIRFabric
   ConfiguredFunction.cpp
   FabricBoundaryOps.cpp
   FabricDialect.cpp
+  FabricElaboration.cpp
   FabricInstantiateOp.cpp
   FabricMemOp.cpp
   FabricOpUtils.cpp
@@ -24,5 +25,6 @@ add_mlir_dialect_library(MLIRFabric
   MLIRArithDialect
   MLIRIR
   MLIRLLVMDialect
+  MLIRPass
   MLIRSupport
 )
