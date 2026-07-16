@@ -160,6 +160,41 @@ llvm::Error validateOrderedValues(const MetricDescriptor &descriptor,
   return llvm::Error::success();
 }
 
+llvm::Error validateMetricScope(const MetricDescriptor &descriptor,
+                                const MetricScope &scope) {
+  const auto *entity = std::get_if<MetricEntityReference>(&scope);
+  if (!entity)
+    return llvm::Error::success();
+  if (!descriptor.permitsEntityScope)
+    return metricError(descriptor.spelling + " does not permit entity scope");
+  if (entity->artifact.empty())
+    return metricError("entity scope requires an artifact identity");
+  return llvm::Error::success();
+}
+
+bool metricQueryLess(const MetricQuery &lhs, const MetricQuery &rhs) {
+  const llvm::StringRef lhsSpelling = toString(lhs.metric);
+  const llvm::StringRef rhsSpelling = toString(rhs.metric);
+  if (lhsSpelling != rhsSpelling)
+    return lhsSpelling < rhsSpelling;
+  if (lhs.scope.index() != rhs.scope.index())
+    return lhs.scope.index() < rhs.scope.index();
+  if (std::holds_alternative<WholeSubjectScope>(lhs.scope))
+    return false;
+
+  const MetricEntityReference &lhsEntity =
+      std::get<MetricEntityReference>(lhs.scope);
+  const MetricEntityReference &rhsEntity =
+      std::get<MetricEntityReference>(rhs.scope);
+  if (lhsEntity.artifact.bytes() != rhsEntity.artifact.bytes())
+    return lhsEntity.artifact.bytes() < rhsEntity.artifact.bytes();
+  return lhsEntity.entity.value() < rhsEntity.entity.value();
+}
+
+bool sameMetricQuery(const MetricQuery &lhs, const MetricQuery &rhs) {
+  return lhs.metric == rhs.metric && lhs.scope == rhs.scope;
+}
+
 bool isAllowedField(llvm::StringRef field,
                     std::initializer_list<llvm::StringRef> allowed) {
   return std::find(allowed.begin(), allowed.end(), field) != allowed.end();
@@ -590,6 +625,25 @@ llvm::Expected<DecimalValue> DecimalValue::get(std::int64_t coefficient,
   return DecimalValue(coefficient, base10Exponent);
 }
 
+llvm::Error validateMetricQuery(const MetricQuery &query) {
+  return validateMetricScope(metricDescriptor(query.metric), query.scope);
+}
+
+llvm::Expected<std::vector<MetricQuery>>
+canonicalizeMetricQueries(llvm::ArrayRef<MetricQuery> queries) {
+  std::vector<MetricQuery> canonical(queries.begin(), queries.end());
+  for (const MetricQuery &query : canonical)
+    if (llvm::Error error = validateMetricQuery(query))
+      return std::move(error);
+
+  std::sort(canonical.begin(), canonical.end(), metricQueryLess);
+  for (std::size_t index = 1; index < canonical.size(); ++index)
+    if (sameMetricQuery(canonical[index - 1], canonical[index]))
+      return metricError("duplicate metric query for '" +
+                         toString(canonical[index].metric) + "'");
+  return canonical;
+}
+
 ObservationForm observationForm(const MetricObservation &observation) {
   if (std::holds_alternative<PointObservation>(observation.observation))
     return ObservationForm::Point;
@@ -607,13 +661,8 @@ llvm::Error validateMetricObservation(const MetricObservation &observation) {
     return metricError(descriptor.spelling + " does not permit " +
                        toString(form) + " observations");
 
-  if (const auto *entity =
-          std::get_if<MetricEntityReference>(&observation.scope)) {
-    if (!descriptor.permitsEntityScope)
-      return metricError(descriptor.spelling + " does not permit entity scope");
-    if (entity->artifact.empty())
-      return metricError("entity scope requires an artifact identity");
-  }
+  if (llvm::Error error = validateMetricScope(descriptor, observation.scope))
+    return error;
 
   if (const auto *point =
           std::get_if<PointObservation>(&observation.observation))

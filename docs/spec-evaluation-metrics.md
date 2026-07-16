@@ -47,6 +47,21 @@ exponent zero. Normalization that would overflow the exponent is rejected.
 artifact identity. Multi-entity relations and string paths are outside this
 slice.
 
+## Metric Queries
+
+`MetricQuery` is an in-memory value pairing one registered `MetricKind` with
+one typed `MetricScope`. Query and observation validation use the same scope
+validation implementation.
+
+`canonicalizeMetricQueries` accepts an empty list and returns a validated copy
+ordered by metric registry spelling, scope kind, and, for entity scopes,
+artifact identity bytes followed by `MetricEntityId`. Exact duplicate queries
+are rejected. The same metric at distinct typed scopes remains distinct.
+
+A query has no metric-specific condition map. It is not a persistent artifact
+and defines no query JSON schema or serialization contract. A future request
+type, rather than this value atom, may require a nonempty query list.
+
 ## Observations
 
 `MetricObservation` separates:
@@ -80,6 +95,7 @@ noncanonical bytes, and any input whose reserialization differs.
 ## Explicit Exclusions
 
 This slice does not define Evaluation Request or Evidence objects, case keys,
-model registries, derived metrics, tool execution, artifact storage, training,
+model descriptors or registries, metric-specific conditions, query hashing or
+JSON artifacts, derived metrics, tool execution, artifact storage, training,
 incremental evaluation, simulator or PnR report migration, or any score,
 objective, or acceptance field.

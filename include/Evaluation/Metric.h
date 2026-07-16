@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace loom::evaluation {
 
@@ -132,6 +133,15 @@ struct WholeSubjectScope {
 
 using MetricEntityReference = ArtifactReference<MetricEntityId>;
 using MetricScope = std::variant<WholeSubjectScope, MetricEntityReference>;
+
+struct MetricQuery {
+  MetricKind metric;
+  MetricScope scope;
+};
+
+llvm::Error validateMetricQuery(const MetricQuery &query);
+llvm::Expected<std::vector<MetricQuery>>
+canonicalizeMetricQueries(llvm::ArrayRef<MetricQuery> queries);
 
 struct PointObservation {
   MetricValue value;

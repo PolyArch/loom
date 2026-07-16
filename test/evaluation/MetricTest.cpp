@@ -12,6 +12,7 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 using namespace loom;
 using namespace loom::evaluation;
@@ -49,6 +50,12 @@ void expectErrorContains(const char *test, llvm::Error error,
   std::string message = llvm::toString(std::move(error));
   require(test, llvm::StringRef(message).contains(expected),
           "unexpected error: " + message);
+}
+
+std::string takeErrorMessage(const char *test, llvm::Error error) {
+  if (!error)
+    fail(test, "expected an error");
+  return llvm::toString(std::move(error));
 }
 
 template <typename T>
@@ -247,6 +254,88 @@ void observationValidationRejectsIllegalCombinations() {
                       "entity scope requires an artifact identity");
 }
 
+void metricQueryCanonicalizationIsInputOrderIndependent() {
+  MetricQuery clockWhole{MetricKind::ClockPeriod, WholeSubjectScope{}};
+  MetricQuery clockEntityLate{
+      MetricKind::ClockPeriod,
+      MetricEntityReference{ArtifactIdentity({0x02}), MetricEntityId(1)}};
+  MetricQuery clockEntityHighId{
+      MetricKind::ClockPeriod,
+      MetricEntityReference{ArtifactIdentity({0x01}), MetricEntityId(9)}};
+  MetricQuery clockEntityLowId{
+      MetricKind::ClockPeriod,
+      MetricEntityReference{ArtifactIdentity({0x01}), MetricEntityId(3)}};
+  MetricQuery cyclesWhole{MetricKind::CycleCount, WholeSubjectScope{}};
+  MetricQuery runtimeWhole{MetricKind::Runtime, WholeSubjectScope{}};
+
+  std::vector<MetricQuery> forward = takeExpected(
+      __func__, canonicalizeMetricQueries({cyclesWhole, clockEntityLate,
+                                           runtimeWhole, clockEntityHighId,
+                                           clockWhole, clockEntityLowId}));
+  std::vector<MetricQuery> reverse = takeExpected(
+      __func__, canonicalizeMetricQueries({clockEntityLowId, clockWhole,
+                                           clockEntityHighId, runtimeWhole,
+                                           clockEntityLate, cyclesWhole}));
+
+  require(__func__, forward.size() == 6 && reverse.size() == forward.size(),
+          "canonicalization changed the query count");
+  for (std::size_t index = 0; index < forward.size(); ++index)
+    require(__func__,
+            forward[index].metric == reverse[index].metric &&
+                forward[index].scope == reverse[index].scope,
+            "canonical order depends on input order");
+
+  const std::vector<MetricQuery> expected = {
+      clockWhole,      clockEntityLowId, clockEntityHighId,
+      clockEntityLate, cyclesWhole,      runtimeWhole};
+  for (std::size_t index = 0; index < expected.size(); ++index)
+    require(__func__,
+            forward[index].metric == expected[index].metric &&
+                forward[index].scope == expected[index].scope,
+            "canonical query ordering changed");
+}
+
+void metricQueryDuplicatesAreRejectedWithoutCollapsingScopes() {
+  MetricQuery whole{MetricKind::CycleCount, WholeSubjectScope{}};
+  MetricQuery firstEntity{
+      MetricKind::CycleCount,
+      MetricEntityReference{ArtifactIdentity({0x01}), MetricEntityId(1)}};
+  MetricQuery secondEntity{
+      MetricKind::CycleCount,
+      MetricEntityReference{ArtifactIdentity({0x01}), MetricEntityId(2)}};
+
+  std::vector<MetricQuery> distinct = takeExpected(
+      __func__, canonicalizeMetricQueries({secondEntity, whole, firstEntity}));
+  require(__func__, distinct.size() == 3,
+          "distinct typed scopes were collapsed");
+  expectErrorContains(__func__,
+                      canonicalizeMetricQueries(
+                          {whole, firstEntity, secondEntity, firstEntity}),
+                      "duplicate metric query");
+}
+
+void metricQueryUsesSharedScopeValidation() {
+  MetricQuery query{
+      MetricKind::CycleCount,
+      MetricEntityReference{ArtifactIdentity(), MetricEntityId(7)}};
+  MetricObservation observation{
+      MetricKind::CycleCount,
+      MetricEntityReference{ArtifactIdentity(), MetricEntityId(7)},
+      UncertaintyKind::ExactWithinModel,
+      PointObservation{MetricValue{IntegerValue(1)}}};
+
+  const std::string queryError =
+      takeErrorMessage(__func__, validateMetricQuery(query));
+  const std::string observationError =
+      takeErrorMessage(__func__, validateMetricObservation(observation));
+  require(__func__, queryError == observationError,
+          "query and observation scope validation diverged");
+  require(__func__,
+          llvm::StringRef(queryError)
+              .contains("entity scope requires an artifact identity"),
+          "invalid entity scope produced an unclear error");
+}
+
 void canonicalJsonIsStableAndStrict() {
   MetricObservation observation{
       MetricKind::ClockPeriod,
@@ -345,6 +434,9 @@ int main() {
   metricRegistryIsClosedAndTyped();
   decimalValuesNormalizeCanonically();
   observationValidationRejectsIllegalCombinations();
+  metricQueryCanonicalizationIsInputOrderIndependent();
+  metricQueryDuplicatesAreRejectedWithoutCollapsingScopes();
+  metricQueryUsesSharedScopeValidation();
   canonicalJsonIsStableAndStrict();
   return 0;
 }
