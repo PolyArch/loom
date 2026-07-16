@@ -236,8 +236,9 @@ service. A root cannot silently move between unrelated service domains.
 The record contains no concrete memory occurrence, physical operation port or
 context, bank, tag, base or range, route, buffer, schedule, arbitration, or
 resource-time choice. The current implementation is limited to the neutral C++
-Artifact and Verifier model; it does not add Mapping MLIR persistence, a PnR
-consumer, or physical memory binding records.
+Artifact and Verifier model plus the ephemeral PnR structural projection
+described below. It does not add Mapping MLIR persistence or physical memory
+binding records.
 
 ## Edge Ownership
 
@@ -258,9 +259,9 @@ accounted for by logical roots and service obligations, never by ordinary
 Dataflow edges or token sink accounting.
 
 Importers must not infer correspondence from textual order, symbol
-spelling, paths, or port names. Canonical fanout with one exposed producer
-endpoint and one delivery class derives one multi-sink logical obligation;
-a duplicate persistent TechMapping netlist is not another authority.
+spelling, paths, or port names. Canonical fanout groups edges with the same
+exact canonical source endpoint into one multi-sink logical obligation; a
+duplicate persistent TechMapping netlist is not another authority.
 
 ## Physical Mapping Profile
 
@@ -290,6 +291,30 @@ or pure match results.
 Every projection is non-authoritative, deletable, and deterministically
 rebuildable from exact finalized inputs. Cache keys bind all semantic
 inputs and the producing algorithm semantics.
+
+The implemented `freezeRealizationGraph` projection is the bounded
+Dataflow/TechMapping/Fabric structural input to later PnR construction. It
+rechecks the two exact input identities, assigns dense native indices by
+persistent entity identity, records actor ownership, derives external
+multi-sink logical nets from canonical edges and exact boundary
+correspondence, and derives logical-memory-root service obligations from
+selected Memory Realizations. Its dense terminal table contains only selected
+FU or memory operation-template terminals needed by those logical nets. Graph
+boundary endpoints remain embedded typed terminal variants in logical-net
+sources and sinks. Graph memory import and export capability ports are not
+token terminals.
+
+This projection is ephemeral and has no independent artifact identity,
+persistence form, occurrence or candidate state, configuration, placement,
+route, tag, buffer, resource-time, or physical-memory decisions. It is a
+three-input structural subview, not the complete four-input `FrozenModel`.
+
+The structural subview intentionally retains canonical edge identities and
+dense terminal references. The next endpoint-domain builder must consume and
+identity-check the same exact `DataflowProgramView`, `FabricHardwareView`, and
+`ValidatedTechMapping` to recover canonical port kind, type, payload, and
+control facts. It may cache those derived facts, but it must not reinterpret
+them or create a second authority.
 
 A cache must not transfer mapping coverage, artifact-local references,
 current-Fabric legality conclusions, or physical decisions into another
@@ -357,7 +382,7 @@ This document does not define:
 * physical delta record schemas;
 * route-tree, resource-time, schedule, tag, buffer, memory, or boundary
   schemas;
-* native FrozenModel or PnR data layout;
+* the complete four-input `FrozenModel` and later physical PnR data layout;
 * candidate-domain formulas or search algorithms;
 * Hardware Sharing Group registry syntax;
 * SystemMapping composition; or

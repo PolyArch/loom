@@ -1,15 +1,22 @@
 #include "Mapping/Artifact.h"
 #include "Mapping/Verifier.h"
+#include "PnR/FrozenRealizationGraph.h"
+#include "PnR/PnrIndex.h"
 
 #include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
+#include <string>
 #include <type_traits>
 #include <utility>
 
 using namespace loom::mapping;
+using namespace loom::pnr;
 
 namespace {
 
@@ -54,6 +61,20 @@ void expectError(const char *test, llvm::Expected<T> result,
     fail(test, "expected validation failure");
   if (takeCode(result.takeError()) != expected)
     fail(test, "received a different validation failure");
+}
+
+template <typename T>
+T takeExpected(const char *test, llvm::Expected<T> value) {
+  if (!value)
+    fail(test, llvm::toString(value.takeError()).c_str());
+  return std::move(*value);
+}
+
+template <typename T>
+void expectAnyError(const char *test, llvm::Expected<T> result) {
+  if (result)
+    fail(test, "expected failure");
+  llvm::consumeError(result.takeError());
 }
 
 void expectMapError(const char *test, const TestCase &testCase,
@@ -533,6 +554,222 @@ void selectInternalMemoryGraph(TestCase &testCase) {
   testCase.mapping.memoryRealizations = {std::move(grouped)};
 }
 
+bool containsExternalEdge(const FrozenRealizationGraph &graph, EdgeId edge) {
+  return std::any_of(
+      graph.logicalNetSinks().begin(), graph.logicalNetSinks().end(),
+      [&](const FrozenLogicalNetSink &sink) { return sink.edge == edge; });
+}
+
+bool isGraphMemoryCapabilityPort(const FrozenTerminal &terminal) {
+  const auto *graph = std::get_if<FrozenGraphBoundaryTerminal>(&terminal);
+  return graph && graph->port == 0;
+}
+
+void freezesInternalMemoryAnchor() {
+  TestCase testCase = makeMemoryAnchorCase();
+  selectInternalMemoryGraph(testCase);
+  ValidatedTechMapping mapping = takeExpected(
+      __func__, validateTechMapping(testCase.mapping, testCase.dataflow,
+                                    testCase.fabric));
+  FrozenRealizationGraph graph =
+      takeExpected(__func__, freezeRealizationGraph(testCase.dataflow,
+                                                    testCase.fabric, mapping));
+
+  if (graph.actorOwnerships().size() != 7)
+    fail(__func__, "frozen graph has the wrong actor count");
+  if (graph.computeRealizations().size() != 4)
+    fail(__func__, "frozen graph has the wrong compute realization count");
+  if (graph.memoryRealizations().size() != 1)
+    fail(__func__, "frozen graph has the wrong memory realization count");
+
+  for (std::uint64_t edge : {100, 104, 113, 114, 115}) {
+    if (containsExternalEdge(graph, EdgeId(edge)))
+      fail(__func__, "internal edge escaped into the external net cache");
+  }
+
+  const FrozenLogicalNet *fanout = nullptr;
+  for (const FrozenLogicalNet &net : graph.logicalNets()) {
+    const auto *reference = std::get_if<FrozenTemplateTerminalRef>(&net.source);
+    if (!reference)
+      continue;
+    const auto *source = std::get_if<FrozenComputeTemplateTerminal>(
+        &graph.templateTerminals()[reference->terminal]);
+    if (!source)
+      continue;
+    const FrozenComputeRealization &realization =
+        graph.computeRealizations()[source->realization];
+    if (realization.id == ComputeRealizationId(50) &&
+        source->direction == PortDirection::Output && source->port == 0) {
+      fanout = &net;
+      break;
+    }
+  }
+  if (!fanout)
+    fail(__func__, "preAdd external fanout net is missing");
+  if (fanout->sinkCount != 2)
+    fail(__func__, "preAdd external fanout was not grouped into one net");
+  const FrozenLogicalNetSink &first =
+      graph.logicalNetSinks()[fanout->sinkOffset];
+  const FrozenLogicalNetSink &second =
+      graph.logicalNetSinks()[fanout->sinkOffset + 1];
+  if (first.edge != EdgeId(106) || second.edge != EdgeId(107))
+    fail(__func__, "preAdd fanout sinks are not deterministic");
+
+  if (graph.memoryServiceObligations().size() != 1)
+    fail(__func__, "logical root did not deduplicate to one service");
+  const FrozenMemoryServiceObligation &service =
+      graph.memoryServiceObligations().front();
+  if (service.root != LogicalMemoryRootId(20) ||
+      service.service != MemoryServiceDomainId(30))
+    fail(__func__, "logical root resolved to the wrong memory service");
+
+  for (const FrozenLogicalNet &net : graph.logicalNets()) {
+    if (isGraphMemoryCapabilityPort(net.source))
+      fail(__func__, "graph memory capability port became a token source");
+  }
+  for (const FrozenLogicalNetSink &sink : graph.logicalNetSinks()) {
+    if (isGraphMemoryCapabilityPort(sink.terminal))
+      fail(__func__, "graph memory capability port became a token sink");
+  }
+}
+
+void freezesDeterministicallyAcrossInputPermutation() {
+  TestCase baselineCase = makeMemoryAnchorCase();
+  selectInternalMemoryGraph(baselineCase);
+  ValidatedTechMapping baselineMapping = takeExpected(
+      __func__, validateTechMapping(baselineCase.mapping, baselineCase.dataflow,
+                                    baselineCase.fabric));
+  FrozenRealizationGraph baseline = takeExpected(
+      __func__, freezeRealizationGraph(baselineCase.dataflow,
+                                       baselineCase.fabric, baselineMapping));
+
+  TestCase permutedCase = makeMemoryAnchorCase();
+  selectInternalMemoryGraph(permutedCase);
+  std::reverse(permutedCase.dataflow.actors.begin(),
+               permutedCase.dataflow.actors.end());
+  std::reverse(permutedCase.dataflow.edges.begin(),
+               permutedCase.dataflow.edges.end());
+  std::reverse(permutedCase.fabric.functionalUnits.begin(),
+               permutedCase.fabric.functionalUnits.end());
+  std::reverse(permutedCase.fabric.operations.begin(),
+               permutedCase.fabric.operations.end());
+  std::reverse(permutedCase.fabric.encodings.begin(),
+               permutedCase.fabric.encodings.end());
+  std::reverse(permutedCase.fabric.memoryServiceDomains.begin(),
+               permutedCase.fabric.memoryServiceDomains.end());
+  std::reverse(permutedCase.fabric.memoryImplementations.begin(),
+               permutedCase.fabric.memoryImplementations.end());
+  std::reverse(permutedCase.fabric.memoryOperationPortTemplates.begin(),
+               permutedCase.fabric.memoryOperationPortTemplates.end());
+  std::reverse(permutedCase.fabric.memoryInternalConnections.begin(),
+               permutedCase.fabric.memoryInternalConnections.end());
+  std::reverse(permutedCase.fabric.memorySemanticEncodings.begin(),
+               permutedCase.fabric.memorySemanticEncodings.end());
+  std::reverse(permutedCase.mapping.realizations.begin(),
+               permutedCase.mapping.realizations.end());
+  MemoryRealizationDraft &memory =
+      permutedCase.mapping.memoryRealizations.front();
+  std::reverse(memory.actors.begin(), memory.actors.end());
+  std::reverse(memory.actorToOperations.begin(),
+               memory.actorToOperations.end());
+  std::reverse(memory.boundaryPorts.begin(), memory.boundaryPorts.end());
+  std::reverse(memory.graphBoundaryPorts.begin(),
+               memory.graphBoundaryPorts.end());
+  std::reverse(memory.internalEdges.begin(), memory.internalEdges.end());
+
+  ValidatedTechMapping permutedMapping = takeExpected(
+      __func__, validateTechMapping(permutedCase.mapping, permutedCase.dataflow,
+                                    permutedCase.fabric));
+  FrozenRealizationGraph permuted = takeExpected(
+      __func__, freezeRealizationGraph(permutedCase.dataflow,
+                                       permutedCase.fabric, permutedMapping));
+  if (baseline != permuted)
+    fail(__func__, "harmless vector permutation changed frozen output");
+}
+
+void rejectsFrozenInputIdentityMismatch() {
+  {
+    TestCase testCase = makeValidCase();
+    ValidatedTechMapping mapping = takeExpected(
+        __func__, validateTechMapping(testCase.mapping, testCase.dataflow,
+                                      testCase.fabric));
+    testCase.dataflow.identity = artifact(99);
+    expectAnyError(__func__, freezeRealizationGraph(testCase.dataflow,
+                                                    testCase.fabric, mapping));
+  }
+  {
+    TestCase testCase = makeValidCase();
+    ValidatedTechMapping mapping = takeExpected(
+        __func__, validateTechMapping(testCase.mapping, testCase.dataflow,
+                                      testCase.fabric));
+    testCase.fabric.identity = artifact(99);
+    expectAnyError(__func__, freezeRealizationGraph(testCase.dataflow,
+                                                    testCase.fabric, mapping));
+  }
+}
+
+void rejectsInconsistentFrozenMemoryService() {
+  TestCase testCase = makeMemoryAnchorCase();
+  ValidatedTechMapping mapping = takeExpected(
+      __func__, validateTechMapping(testCase.mapping, testCase.dataflow,
+                                    testCase.fabric));
+  testCase.fabric.memorySemanticEncodings[1].implementation =
+      MemoryImplementationId(33);
+  expectAnyError(__func__, freezeRealizationGraph(testCase.dataflow,
+                                                  testCase.fabric, mapping));
+}
+
+void preflightsFrozenCapacityPlanning() {
+  TestCase testCase = makeValidCase();
+  llvm::Error error =
+      loom::pnr::detail::preflightFrozenRealizationGraphCapacity(
+          testCase.mapping.realizations, testCase.mapping.memoryRealizations,
+          getPnrIndexMax());
+  if (!error)
+    fail(__func__, "expected template terminal capacity failure");
+
+  bool sawCapacityError = false;
+  llvm::handleAllErrors(
+      std::move(error), [&](const PnrIndexCapacityError &capacityError) {
+        sawCapacityError = true;
+        std::string message;
+        llvm::raw_string_ostream stream(message);
+        capacityError.log(stream);
+        if (message.find("table 'template_terminals'") == std::string::npos)
+          fail(__func__, "capacity failure named the wrong table");
+      });
+  if (!sawCapacityError)
+    fail(__func__, "received a different capacity error category");
+}
+
+static_assert(
+    std::is_same_v<decltype(std::declval<FrozenActorOwnership>().realization),
+                   PnrIndex>);
+static_assert(
+    std::is_same_v<
+        decltype(std::declval<FrozenComputeTemplateTerminal>().realization),
+        PnrIndex>);
+static_assert(
+    std::is_same_v<decltype(std::declval<FrozenComputeTemplateTerminal>().port),
+                   PnrIndex>);
+static_assert(
+    std::is_same_v<
+        decltype(std::declval<FrozenMemoryTemplateTerminal>().realization),
+        PnrIndex>);
+static_assert(
+    std::is_same_v<decltype(std::declval<FrozenMemoryTemplateTerminal>().port),
+                   PnrIndex>);
+static_assert(
+    std::is_same_v<decltype(std::declval<FrozenGraphBoundaryTerminal>().port),
+                   PnrIndex>);
+static_assert(
+    std::is_same_v<decltype(std::declval<FrozenTemplateTerminalRef>().terminal),
+                   PnrIndex>);
+static_assert(std::is_same_v<
+              decltype(std::declval<FrozenLogicalNet>().sinkOffset), PnrIndex>);
+static_assert(std::is_same_v<
+              decltype(std::declval<FrozenLogicalNet>().sinkCount), PnrIndex>);
+
 void acceptsExternalAndInternalMemoryAnchor() {
   {
     TestCase testCase = makeMemoryAnchorCase();
@@ -825,10 +1062,46 @@ void acceptsBoundaryInputFanout() {
   testCase.fabric.encodings[0].operations[1].operands[1] = FuInputValue{0};
   testCase.mapping.realizations[0].boundaryPorts[2].fuPort.index = 0;
 
-  auto result =
-      validateTechMapping(testCase.mapping, testCase.dataflow, testCase.fabric);
-  if (!result)
-    fail(__func__, llvm::toString(result.takeError()).c_str());
+  ValidatedTechMapping mapping = takeExpected(
+      __func__, validateTechMapping(testCase.mapping, testCase.dataflow,
+                                    testCase.fabric));
+  FrozenRealizationGraph graph =
+      takeExpected(__func__, freezeRealizationGraph(testCase.dataflow,
+                                                    testCase.fabric, mapping));
+
+  const FrozenLogicalNet *fanout = nullptr;
+  for (const FrozenLogicalNet &net : graph.logicalNets()) {
+    const auto *source = std::get_if<FrozenGraphBoundaryTerminal>(&net.source);
+    if (source && source->graph == GraphId(1) &&
+        source->direction == PortDirection::Input && source->port == 0) {
+      if (fanout)
+        fail(__func__, "graph boundary source produced multiple logical nets");
+      fanout = &net;
+    }
+  }
+  if (!fanout || fanout->sinkCount != 2)
+    fail(__func__, "graph boundary fanout did not produce one two-sink net");
+
+  const FrozenLogicalNetSink &first =
+      graph.logicalNetSinks()[fanout->sinkOffset];
+  const FrozenLogicalNetSink &second =
+      graph.logicalNetSinks()[fanout->sinkOffset + 1];
+  if (first.edge != EdgeId(100) || second.edge != EdgeId(103))
+    fail(__func__, "graph boundary fanout lost canonical edge provenance");
+  const auto *firstTerminal =
+      std::get_if<FrozenTemplateTerminalRef>(&first.terminal);
+  const auto *secondTerminal =
+      std::get_if<FrozenTemplateTerminalRef>(&second.terminal);
+  if (!firstTerminal || !secondTerminal ||
+      firstTerminal->terminal != secondTerminal->terminal)
+    fail(__func__, "shared FU input did not produce one sink terminal");
+  const auto *sharedTerminal = std::get_if<FrozenComputeTemplateTerminal>(
+      &graph.templateTerminals()[firstTerminal->terminal]);
+  if (!sharedTerminal || sharedTerminal->realization != 0 ||
+      sharedTerminal->fu != FuId(10) ||
+      sharedTerminal->direction != PortDirection::Input ||
+      sharedTerminal->port != 0)
+    fail(__func__, "fanout sinks resolved to the wrong FU input terminal");
 }
 
 void acceptsBoundaryOutputFanoutWithOneCorrespondence() {
@@ -1336,6 +1609,11 @@ void rejectsInvalidBoundaryCorrespondence() {
 } // namespace
 
 int main() {
+  freezesInternalMemoryAnchor();
+  freezesDeterministicallyAcrossInputPermutation();
+  rejectsFrozenInputIdentityMismatch();
+  rejectsInconsistentFrozenMemoryService();
+  preflightsFrozenCapacityPlanning();
   acceptsExternalAndInternalMemoryAnchor();
   rejectsInexactMemoryInternalGraph();
   validatesCorrelatedMemoryAccessCapabilities();

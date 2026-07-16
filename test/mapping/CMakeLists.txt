@@ -4,5 +4,6 @@ add_executable(loom-mapping-core-test
 
 target_link_libraries(loom-mapping-core-test PRIVATE
   LoomMapping
+  LoomPnR
   LLVMSupport
 )

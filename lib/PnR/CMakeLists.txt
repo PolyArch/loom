@@ -1,4 +1,5 @@
 add_mlir_library(LoomPnR
+  FrozenRealizationGraph.cpp
   Mapping.cpp
   MappingHardware.cpp
   MappingIO.cpp
@@ -11,6 +12,7 @@ add_mlir_library(LoomPnR
   ${LOOM_SOURCE_DIR}/include/PnR
 
   LINK_LIBS PUBLIC
+  LoomMapping
   MLIRArithDialect
   MLIRBuiltinToLLVMIRTranslation
   MLIRDataflow
