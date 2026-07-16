@@ -20,6 +20,9 @@ namespace {
 
 constexpr llvm::StringLiteral metricSchemaIdentity = "evaluation.metric";
 constexpr SchemaVersion metricSchemaVersion{1, 0};
+constexpr llvm::StringLiteral metricQuerySchemaIdentity =
+    "evaluation.metric_query";
+constexpr SchemaVersion metricQuerySchemaVersion{1, 0};
 
 constexpr std::uint8_t observationFormBit(ObservationForm form) {
   return std::uint8_t{1} << static_cast<std::uint8_t>(form);
@@ -60,9 +63,8 @@ llvm::Error metricError(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
 }
 
-std::string metricSchemaVersionString() {
-  return std::to_string(metricSchemaVersion.major) + "." +
-         std::to_string(metricSchemaVersion.minor);
+std::string schemaVersionString(SchemaVersion version) {
+  return std::to_string(version.major) + "." + std::to_string(version.minor);
 }
 
 template <typename Enum>
@@ -640,6 +642,77 @@ canonicalizeMetricQueries(llvm::ArrayRef<MetricQuery> queries) {
   return canonical;
 }
 
+llvm::Expected<std::string> serializeMetricQuery(const MetricQuery &query) {
+  if (llvm::Error error = validateMetricQuery(query))
+    return std::move(error);
+
+  llvm::SmallString<256> storage;
+  llvm::raw_svector_ostream output(storage);
+  llvm::json::OStream json(output);
+  json.object([&] {
+    json.attribute("schema", metricQuerySchemaIdentity);
+    json.attribute("schema_version",
+                   schemaVersionString(metricQuerySchemaVersion));
+    json.attribute("metric", toString(query.metric));
+    json.attributeBegin("scope");
+    writeScope(json, query.scope);
+    json.attributeEnd();
+  });
+  return output.str().str();
+}
+
+llvm::Expected<MetricQuery> parseMetricQuery(llvm::StringRef json) {
+  auto value = llvm::json::parse(json);
+  if (!value)
+    return value.takeError();
+  const llvm::json::Object *root = value->getAsObject();
+  if (!root)
+    return metricError("evaluation.metric_query root must be an object");
+  if (llvm::Error error =
+          rejectUnknownFields(*root, "evaluation.metric_query root",
+                              {"schema", "schema_version", "metric", "scope"}))
+    return std::move(error);
+
+  auto schema = requireString(*root, "schema", "evaluation.metric_query root");
+  if (!schema)
+    return schema.takeError();
+  if (*schema != metricQuerySchemaIdentity)
+    return metricError("unsupported metric query schema '" + *schema + "'");
+  auto version =
+      requireString(*root, "schema_version", "evaluation.metric_query root");
+  if (!version)
+    return version.takeError();
+  if (*version != schemaVersionString(metricQuerySchemaVersion))
+    return metricError("unsupported evaluation.metric_query version '" +
+                       *version + "'");
+
+  auto metricSpelling =
+      requireString(*root, "metric", "evaluation.metric_query root");
+  if (!metricSpelling)
+    return metricSpelling.takeError();
+  auto metric = parseMetricKind(*metricSpelling);
+  if (!metric)
+    return metric.takeError();
+
+  auto scopeObject =
+      requireObject(*root, "scope", "evaluation.metric_query root");
+  if (!scopeObject)
+    return scopeObject.takeError();
+  auto scope = parseMetricScope(**scopeObject);
+  if (!scope)
+    return scope.takeError();
+
+  MetricQuery query{*metric, std::move(*scope)};
+  if (llvm::Error error = validateMetricQuery(query))
+    return std::move(error);
+  auto canonical = serializeMetricQuery(query);
+  if (!canonical)
+    return canonical.takeError();
+  if (*canonical != json)
+    return metricError("metric query JSON is not canonical");
+  return query;
+}
+
 ObservationForm observationForm(const MetricObservation &observation) {
   if (std::holds_alternative<PointObservation>(observation.observation))
     return ObservationForm::Point;
@@ -707,7 +780,7 @@ serializeMetricObservation(const MetricObservation &observation) {
   llvm::json::OStream json(output);
   json.object([&] {
     json.attribute("schema", metricSchemaIdentity);
-    json.attribute("schema_version", metricSchemaVersionString());
+    json.attribute("schema_version", schemaVersionString(metricSchemaVersion));
     json.attribute("metric", toString(observation.metric));
     json.attributeBegin("scope");
     writeScope(json, observation.scope);
@@ -742,7 +815,7 @@ llvm::Expected<MetricObservation> parseMetricObservation(llvm::StringRef json) {
       requireString(*root, "schema_version", "evaluation.metric root");
   if (!version)
     return version.takeError();
-  if (*version != metricSchemaVersionString())
+  if (*version != schemaVersionString(metricSchemaVersion))
     return metricError("unsupported evaluation.metric version '" + *version +
                        "'");
 

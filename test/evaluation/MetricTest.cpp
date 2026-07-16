@@ -335,6 +335,72 @@ void metricQueryUsesSharedScopeValidation() {
           "invalid entity scope produced an unclear error");
 }
 
+void metricQueryJsonRoundTripsCanonically() {
+  MetricQuery query{
+      MetricKind::ClockPeriod,
+      MetricEntityReference{
+          ArtifactIdentity({0x01, 0xab}),
+          MetricEntityId(std::numeric_limits<std::uint64_t>::max())}};
+  const std::string expected =
+      R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"clock_period","scope":{"kind":"entity","artifact":"01ab","entity_id":18446744073709551615}})";
+
+  std::string serialized = takeExpected(__func__, serializeMetricQuery(query));
+  require(__func__, serialized == expected,
+          "canonical metric query JSON bytes changed:\n" + serialized);
+
+  MetricQuery parsed = takeExpected(__func__, parseMetricQuery(expected));
+  require(__func__, parsed == query, "metric query JSON did not round-trip");
+  require(__func__,
+          takeExpected(__func__, serializeMetricQuery(parsed)) == expected,
+          "metric query round trip was not byte-stable");
+
+  expectErrorContains(
+      __func__,
+      parseMetricQuery(
+          R"({"schema":"evaluation.metric_query","schema_version":"1.1","metric":"cycle_count","scope":{"kind":"whole_subject"}})"),
+      "unsupported evaluation.metric_query version");
+  expectErrorContains(
+      __func__,
+      parseMetricQuery(
+          R"({"schema":"evaluation.metric_query.other","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"whole_subject"}})"),
+      "unsupported metric query schema");
+  expectErrorContains(
+      __func__,
+      parseMetricQuery(
+          R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"whole_subject"},"condition":{}})"),
+      "unknown field 'condition'");
+  expectErrorContains(
+      __func__,
+      parseMetricQuery(
+          R"({"schema":"evaluation.metric_query","schema_version":"1.0","queries":[]})"),
+      "unknown field 'queries'");
+  expectErrorContains(
+      __func__,
+      parseMetricQuery(
+          R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"entity","artifact":"","entity_id":7}})"),
+      "entity scope requires an artifact identity");
+  expectErrorContains(
+      __func__,
+      parseMetricQuery(
+          R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"entity","artifact":"01AB","entity_id":7}})"),
+      "artifact identity must use lowercase hexadecimal");
+  expectErrorContains(
+      __func__,
+      parseMetricQuery(
+          R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"entity","artifact":"01ab","entity_id":-1}})"),
+      "entity_id' must be an unsigned integer");
+  auto trailing = parseMetricQuery(
+      R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"whole_subject"}})"
+      " trailing");
+  require(__func__, !trailing, "trailing JSON was accepted");
+  llvm::consumeError(trailing.takeError());
+  expectErrorContains(
+      __func__,
+      parseMetricQuery(
+          R"({"metric":"cycle_count","schema":"evaluation.metric_query","schema_version":"1.0","scope":{"kind":"whole_subject"}})"),
+      "metric query JSON is not canonical");
+}
+
 void canonicalJsonIsStableAndStrict() {
   MetricObservation observation{
       MetricKind::ClockPeriod,
@@ -436,6 +502,7 @@ int main() {
   metricQueryCanonicalizationIsInputOrderIndependent();
   metricQueryDuplicatesAreRejectedWithoutCollapsingScopes();
   metricQueryUsesSharedScopeValidation();
+  metricQueryJsonRoundTripsCanonically();
   canonicalJsonIsStableAndStrict();
   return 0;
 }

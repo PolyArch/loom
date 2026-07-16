@@ -58,9 +58,21 @@ ordered by metric registry spelling, scope kind, and, for entity scopes,
 artifact identity bytes followed by `MetricEntityId`. Exact duplicate queries
 are rejected. The same metric at distinct typed scopes remains distinct.
 
-A query has no metric-specific condition map. It is not a persistent artifact
-and defines no query JSON schema or serialization contract. A future request
-type, rather than this value atom, may require a nonempty query list.
+`MetricQuery` is also a canonical persisted Evaluation primitive. The public
+persistence API is:
+
+- `llvm::Expected<std::string> serializeMetricQuery(const MetricQuery &)`
+- `llvm::Expected<MetricQuery> parseMetricQuery(llvm::StringRef json)`
+
+The document uses schema identity `evaluation.metric_query` and version `1.0`.
+Versions are strings in `X.Y` form: `X` changes are breaking/incompatible and
+`Y` changes are non-breaking. The root contains exactly one metric and scope.
+
+`canonicalizeMetricQueries` remains the sole authority for in-memory query
+sets. This slice defines no independent persisted query-set root or schema. A
+query has no metric-specific condition map. A future request type, rather than
+this value atom, may require a nonempty query list and own its persisted list
+shape.
 
 ## Observations
 
@@ -79,23 +91,26 @@ Evidence method and execution status remain outside this slice.
 
 ## Canonical JSON
 
-The only schema defined here is `evaluation.metric.1.0`, represented by the
-root fields `schema: "evaluation.metric"` and `schema_version: "1.0"`. It
-serializes one `MetricObservation`; it does not define a new persistent Metric
-artifact family.
+`evaluation.metric.1.0`, represented by root fields
+`schema: "evaluation.metric"` and `schema_version: "1.0"`, serializes one
+`MetricObservation`. `evaluation.metric_query.1.0`, represented by
+`schema: "evaluation.metric_query"` and `schema_version: "1.0"`, serializes
+one `MetricQuery`. These are cold-path representations of the typed C++ model,
+not independent schema authorities.
 
 Canonical JSON has fixed field ordering, compact encoding, lowercase
 hexadecimal artifact identities, canonical enum spellings, and integer JSON
 tokens for integer values, decimal coefficients, and base-10 exponents.
-Decimal values are never encoded as JSON floating-point numbers. The parser
-rejects unknown fields at every object level, unsupported schema identities or
-versions, noncanonical decimals, invalid observations, reordered or otherwise
-noncanonical bytes, and any input whose reserialization differs.
+Decimal values are never encoded as JSON floating-point numbers. Parsers reject
+unknown fields at every object level, unsupported schema identities or
+versions, malformed artifact and entity references, invalid typed values or
+scopes, trailing JSON, reordered or otherwise noncanonical bytes, and any input
+whose reserialization differs.
 
 ## Explicit Exclusions
 
 This slice does not define Evaluation Request or Evidence objects, case keys,
-model descriptors or registries, metric-specific conditions, query hashing or
-JSON artifacts, derived metrics, tool execution, artifact storage, training,
-incremental evaluation, simulator or PnR report migration, or any score,
-objective, or acceptance field.
+model descriptors or registries, metric-specific conditions, query hashing,
+persisted query-set artifacts, derived metrics, tool execution, artifact
+storage, training, incremental evaluation, simulator or PnR report migration,
+or any score, objective, or acceptance field.

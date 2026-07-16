@@ -149,6 +149,8 @@ struct MetricQuery {
 llvm::Error validateMetricQuery(const MetricQuery &query);
 llvm::Expected<std::vector<MetricQuery>>
 canonicalizeMetricQueries(llvm::ArrayRef<MetricQuery> queries);
+llvm::Expected<std::string> serializeMetricQuery(const MetricQuery &query);
+llvm::Expected<MetricQuery> parseMetricQuery(llvm::StringRef json);
 
 struct PointObservation {
   MetricValue value;
