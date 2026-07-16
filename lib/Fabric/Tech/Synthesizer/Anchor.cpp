@@ -10,6 +10,7 @@
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FabricTypes.h"
 #include "Fabric/Tech/Synthesizer/CostModel.h"
+#include "Fabric/Tech/Synthesizer/CoverageVerifier.h"
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"
 
 #include "mlir/AsmParser/AsmParser.h"
@@ -29,6 +30,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
+#include "mlir/IR/Verifier.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -43,7 +45,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
-#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -1075,12 +1076,11 @@ EmitOutcome materializePeers(AnchorState &st, const PeerVec &peers,
 } // namespace
 
 //===----------------------------------------------------------------------===//
-// AnchorSynthesizer.
+// Anchor synthesis producer.
 //===----------------------------------------------------------------------===//
 
-AnchorSynthesizer::AnchorSynthesizer(const ::loom::SynthConfig &c) : cfg(c) {}
-
-SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
+static SynthResult runAnchorSynthesis(const ::loom::SynthConfig &cfg,
+                                      const SynthInputs &inputs) {
   SynthResult result;
 
   if (inputs.functions.empty()) {
@@ -1354,8 +1354,65 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
   return result;
 }
 
+static ::fabric::FuOp findInnerFu(::fabric::ModuleOp wrapper) {
+  if (!wrapper)
+    return nullptr;
+  ::fabric::FuOp found;
+  wrapper.walk([&](::fabric::FuOp fu) {
+    if (!found)
+      found = fu;
+  });
+  return found;
+}
+
+static void enforceCanonicalAcceptance(
+    SynthResult &result, ::llvm::ArrayRef<::fabric::ConfiguredFunction> inputs,
+    const ::loom::SynthConfig &cfg) {
+  if (!result.success())
+    return;
+
+  ::fabric::FuOp fu = findInnerFu(result.wrapper.get());
+  if (!fu || ::mlir::failed(::mlir::verify(result.wrapper.get()))) {
+    result.wrapper = nullptr;
+    result.failureReason = SynthFailureReason::VerifierFailed;
+    result.notes.push_back(
+        "canonical synthesis gate: wrapper or FU verification failed");
+    return;
+  }
+
+  CoverageVerifier verifier(cfg);
+  result.coverage = verifier.verify(fu, inputs);
+  if (!result.coverage.allCovered()) {
+    result.wrapper = nullptr;
+    result.failureReason = SynthFailureReason::VerifierFailed;
+    result.notes.push_back(
+        "canonical synthesis gate: explicit encodings do not cover every "
+        "input function");
+    return;
+  }
+  result.capability = measureCapability(fu, result.coverage);
+}
+
+SynthResult synthesize(const ::loom::SynthConfig &cfg,
+                       const SynthInputs &inputs) {
+  if (cfg.strategy != "anchor") {
+    SynthResult result;
+    result.failureReason = SynthFailureReason::InvalidInput;
+    std::string note;
+    ::llvm::raw_string_ostream os(note);
+    os << "unknown strategy '" << cfg.strategy << "'";
+    os.flush();
+    result.notes.push_back(std::move(note));
+    return result;
+  }
+
+  SynthResult result = runAnchorSynthesis(cfg, inputs);
+  enforceCanonicalAcceptance(result, inputs.functions, cfg);
+  return result;
+}
+
 //===----------------------------------------------------------------------===//
-// Public helpers (callable from any TU that links MLIRFabricTechSynthesizer).
+// Public wrapper helpers.
 //===----------------------------------------------------------------------===//
 
 ::std::optional<WrapperPorts>

@@ -1,10 +1,10 @@
-// CLI helper for lit tests: drives canonical synthesizer factory glue and
+// CLI helper for lit tests: drives the canonical synthesis entrypoint and
 // candidate-ranking helpers.
 //
 // Usage:
 //   loom-synth-base-test --list-strategies
 //   loom-synth-base-test --list-failure-reasons
-//   loom-synth-base-test --make <strategy>
+//   loom-synth-base-test --synthesize-empty <strategy>
 //
 // Output formats (one per line):
 //   --list-strategies         -> the selectable canonical strategy names.
@@ -14,17 +14,14 @@
 //                                the line is unambiguous in lit
 //                                checks; every other value matches
 //                                `failureReasonString` verbatim.
-//   --make <strategy>         -> `result: success=<bool> reason=<str>`
-//                                followed by `note: <text>` lines for
-//                                every entry in `SynthResult.notes`.
-//                                For an unknown strategy the line is
-//                                `factory: nullptr` instead.
+//   --synthesize-empty <strategy>
+//                             -> `result: success=<bool> reason=<str>`
+//                                followed by `note: <text>` lines for every
+//                                entry in `SynthResult.notes`.
 //
 // All command-line modes use a default-constructed `SynthConfig`. The
-// `--make` paths run on an empty `SynthInputs` (groupName `t`, no
-// subgraphs) against a fresh `MLIRContext`; this is sufficient to
-// observe the stub's failure path because no current strategy inspects
-// inputs before reporting.
+// `--synthesize-empty` runs on an empty `SynthInputs` (groupName `t`, no
+// functions) against a fresh `MLIRContext`.
 
 #include "Common/SynthConfig.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -44,7 +41,6 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <memory>
 #include <string>
 
 static ::llvm::cl::opt<bool> listStrategies(
@@ -58,14 +54,11 @@ static ::llvm::cl::opt<bool> listFailureReasons(
                      "enum order, one per line"),
     ::llvm::cl::init(false));
 
-static ::llvm::cl::opt<std::string>
-    makeStrategy("make",
-                 ::llvm::cl::desc("Construct the named strategy via "
-                                  "makeSynthesizer and run it on empty "
-                                  "SynthInputs. Print one `result:` line "
-                                  "plus `note:` lines, or `factory: "
-                                  "nullptr` on an unknown name."),
-                 ::llvm::cl::init(""));
+static ::llvm::cl::opt<std::string> synthesizeEmptyStrategy(
+    "synthesize-empty",
+    ::llvm::cl::desc("Run the canonical synthesis entrypoint on empty "
+                     "SynthInputs with the named strategy"),
+    ::llvm::cl::init(""));
 
 static ::llvm::cl::opt<bool> capabilityTieBreak(
     "capability-tiebreak",
@@ -124,14 +117,9 @@ void printFailureReasons() {
   }
 }
 
-int doMake(::llvm::StringRef strategy) {
+int doSynthesizeEmpty(::llvm::StringRef strategy) {
   ::loom::SynthConfig cfg;
   cfg.strategy = strategy.str();
-  auto synth = ::loom::fabric::tech::makeSynthesizer(strategy, cfg);
-  if (!synth) {
-    ::llvm::outs() << "factory: nullptr\n";
-    return 0;
-  }
 
   ::mlir::DialectRegistry registry;
   registry.insert<::mlir::func::FuncDialect, ::fabric::FabricDialect,
@@ -253,7 +241,7 @@ int doFixedVectorSynthesis() {
 int main(int argc, char **argv) {
   ::llvm::cl::ParseCommandLineOptions(
       argc, argv,
-      "loom-synth-base-test: drive Synthesizer factory + failure-reason "
+      "loom-synth-base-test: drive canonical synthesis and failure-reason "
       "string mapping from lit tests\n");
 
   bool didSomething = false;
@@ -265,8 +253,8 @@ int main(int argc, char **argv) {
     printFailureReasons();
     didSomething = true;
   }
-  if (!makeStrategy.getValue().empty()) {
-    int rc = doMake(makeStrategy.getValue());
+  if (!synthesizeEmptyStrategy.getValue().empty()) {
+    int rc = doSynthesizeEmpty(synthesizeEmptyStrategy.getValue());
     if (rc != 0)
       return rc;
     didSomething = true;
@@ -285,7 +273,7 @@ int main(int argc, char **argv) {
   }
   if (!didSomething) {
     ::llvm::errs() << "error: one of --list-strategies / "
-                      "--list-failure-reasons / --make / "
+                      "--list-failure-reasons / --synthesize-empty / "
                       "--capability-tiebreak / --synthesize-fixed-vector is "
                       "required\n";
     return 1;

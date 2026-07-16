@@ -1,12 +1,12 @@
 #ifndef LOOM_FABRIC_TECH_SYNTHESIZER_SYNTHESIZER_H
 #define LOOM_FABRIC_TECH_SYNTHESIZER_SYNTHESIZER_H
 
-// Abstract Synthesizer interface and factory used by
-// `loom-generalize-subgraphs-to-fu` to dispatch the per-group synthesis
-// strategy chosen by `SynthConfig.strategy`.
+// Canonical FU synthesis interface used by
+// `loom-generalize-subgraphs-to-fu` for each configured-function group.
 //
-// The canonical `anchor` strategy implements `Synthesizer::run` over a
-// `SynthInputs` value bundle and returns a `SynthResult` carrying either the
+// `synthesize` dispatches `SynthConfig.strategy`, runs the internal producer,
+// and applies verification, coverage, and capability measurement before a
+// successful `SynthResult` can be returned. The result carries either the
 // freshly built wrapper
 // `fabric.module` (containing one detached `fabric.pe` whose body holds
 // the inner `fabric.fu`) or one of the closed `SynthFailureReason` enum
@@ -16,8 +16,8 @@
 // "Strategies" (the C++ interface block) and
 // "Failure reasons (closed enumeration)".
 //
-// Threading: the factory is stateless and safe to call from any thread.
-// Concrete strategies must build their candidate wrappers in the
+// Threading: `synthesize` is safe to call from any worker thread. Internal
+// producers build their candidate wrappers in the
 // worker-local scratch `MLIRContext` provided via `SynthInputs.context`
 // (never in the user's module context) and must not mutate the user's
 // `ModuleOp`. The pass main thread re-homes each returned wrapper into
@@ -37,7 +37,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -108,9 +107,8 @@ struct SynthCandidateScore {
 bool preferSynthCandidate(const SynthCandidateScore &candidate,
                           const SynthCandidateScore &currentBest);
 
-// Inputs to one Synthesizer run. References borrow; ownership is not
-// transferred. The synthesizer must not store these references past the
-// `run` call.
+// Inputs to one synthesis call. References borrow; ownership is not
+// transferred past the call.
 struct SynthInputs {
   // Lexical group name (the value of `loom.synth_group`, or
   // `"default"` for the implicit group).
@@ -121,8 +119,8 @@ struct SynthInputs {
   ::llvm::ArrayRef<::fabric::ConfiguredFunction> functions;
   // Scratch MLIR context for this worker. Per the spec rule "MLIR
   // mutation is never parallel", the pass constructs a fresh
-  // thread-local `MLIRContext` for each worker before invoking
-  // `Synthesizer::run`, and the strategy must build its candidate
+  // thread-local `MLIRContext` for each worker before invoking `synthesize`,
+  // and the internal producer must build its candidate
   // wrapper here -- never in the user's module context. Concrete
   // strategies may additionally allocate further scratch contexts for
   // parallel per-restart work. The pass's main thread is responsible
@@ -162,24 +160,9 @@ struct SynthResult {
   }
 };
 
-// Abstract base for one synthesis strategy. One instance handles one
-// group; concrete strategies must be safe to construct and destroy
-// from any thread, but `run` itself need not be re-entrant.
-class Synthesizer {
-public:
-  virtual ~Synthesizer() = default;
-  virtual SynthResult run(const SynthInputs &) = 0;
-};
-
-// Strategy construction for the canonical synthesis entrypoint. Only `anchor`
-// currently implements normalized hw_params modes and explicit valid
-// encodings. Other historical strategy names return nullptr.
-::std::unique_ptr<Synthesizer> makeSynthesizer(::llvm::StringRef strategyName,
-                                               const ::loom::SynthConfig &);
-
-// The canonical synthesis entrypoint dispatches the selected strategy, then
-// applies wrapper verification, explicit encoding coverage, and capability
-// measurement exactly once before returning a successful result.
+// The sole public accepted-result entrypoint dispatches the selected strategy,
+// then applies wrapper verification, explicit encoding coverage, and
+// capability measurement exactly once before returning a successful result.
 SynthResult synthesize(const ::loom::SynthConfig &cfg,
                        const SynthInputs &inputs);
 

@@ -4,6 +4,7 @@
 //
 // Usage:
 //   loom-coverage-test <input.mlir> [--config <path>] [--check-isolation]
+//   loom-coverage-test <input.mlir> --project-first-encoding
 //
 // Input contract:
 //   * The module must contain exactly one `fabric.fu`. The verifier
@@ -20,6 +21,9 @@
 //     `candidate_in_user=<bool>` line for whether any func.func name
 //     starts with `candidate_` (the prefix the verifier passes to
 //     `enumerateFuSubgraphs`). Used by the isolation lit test.
+//   * `--project-first-encoding` parses without running operation verifiers and
+//     invokes `projectConfiguredFunction` directly on the first encoding. This
+//     is reserved for malformed-input projector regressions.
 //
 // Output (one line per input subgraph, in module order):
 //   coverage[i] funcname=<name> matched=<true|false> index=<n_or_none>
@@ -32,6 +36,7 @@
 #include "Common/SynthConfig.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Fabric/IR/ConfiguredFunction.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/Tech/ConfiguredFunctionAdapters.h"
@@ -70,6 +75,12 @@ static ::llvm::cl::opt<bool>
                                     "user_funcs_after=<N> and "
                                     "candidate_in_user=<bool>."),
                    ::llvm::cl::init(false));
+
+static ::llvm::cl::opt<bool> projectFirstEncoding(
+    "project-first-encoding",
+    ::llvm::cl::desc("Parse without verification and directly project the "
+                     "first fabric.fu semantic encoding"),
+    ::llvm::cl::init(false));
 
 namespace {
 
@@ -119,8 +130,10 @@ int main(int argc, char **argv) {
   }
   ::llvm::SourceMgr sm;
   sm.AddNewSourceBuffer(std::move(*bufOrErr), ::llvm::SMLoc());
+  ::mlir::ParserConfig parserConfig(
+      &ctx, /*verifyAfterParse=*/!projectFirstEncoding.getValue());
   ::mlir::OwningOpRef<::mlir::ModuleOp> mod =
-      ::mlir::parseSourceFile<::mlir::ModuleOp>(sm, &ctx);
+      ::mlir::parseSourceFile<::mlir::ModuleOp>(sm, parserConfig);
   if (!mod) {
     ::llvm::errs() << "error: parse failed\n";
     return 1;
@@ -135,6 +148,28 @@ int main(int argc, char **argv) {
     return 1;
   }
   ::fabric::FuOp fu = fus.front();
+
+  if (projectFirstEncoding.getValue()) {
+    auto encodings = fu.getValidEncodingsAttr();
+    if (!encodings || encodings.empty()) {
+      ::llvm::errs() << "error: fabric.fu has no semantic encoding\n";
+      return 1;
+    }
+    auto encoding = ::mlir::dyn_cast<::mlir::DictionaryAttr>(encodings[0]);
+    if (!encoding) {
+      ::llvm::errs() << "error: first semantic encoding is not a dictionary\n";
+      return 1;
+    }
+    ::fabric::ConfiguredFunction function;
+    std::string error;
+    if (::mlir::failed(::fabric::projectConfiguredFunction(fu, encoding,
+                                                           function, error))) {
+      ::llvm::outs() << "projection=failed\nerror=" << error << "\n";
+      return 0;
+    }
+    ::llvm::outs() << "projection=success\n";
+    return 0;
+  }
 
   // Gather coverage-input subgraphs in module order. We iterate
   // top-level func.funcs and pick the unique dataflow.subgraph from

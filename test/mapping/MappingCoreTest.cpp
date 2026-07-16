@@ -197,6 +197,30 @@ void acceptsBoundaryOutputFanoutWithOneCorrespondence() {
     fail(__func__, llvm::toString(result.takeError()).c_str());
 }
 
+void rejectsDistinctBoundaryOutputsSharingFuOutput() {
+  TestCase testCase = makeValidCase();
+  const ArtifactIdentity &dataflowId = testCase.dataflow.identity;
+  const ArtifactIdentity &fabricId = testCase.fabric.identity;
+  const GraphId graph(1);
+  const ActorId multiplyActor(2);
+  const FuId fu(10);
+  const PortDescriptor value = port(PortKind::Value, type(1));
+
+  testCase.dataflow.graphs[0].outputPorts.push_back(value);
+  testCase.dataflow.edges.push_back(
+      DataflowEdge{ActorPort{multiplyActor, PortDirection::Output, 0},
+                   GraphPort{graph, PortDirection::Output, 1}});
+  testCase.mapping.realizations[0].boundaryPorts.push_back(
+      {ActorPortRef{ActorRef{dataflowId, multiplyActor}, PortDirection::Output,
+                    0},
+       FuPortRef{FuRef{fabricId, fu}, PortDirection::Output, 0}});
+
+  expectError(
+      __func__,
+      validateTechMapping(testCase.mapping, testCase.dataflow, testCase.fabric),
+      MappingErrorCode::IncompleteBoundaryCorrespondence);
+}
+
 void rejectsBoundaryInputCoalescing() {
   TestCase testCase = makeValidCase();
   const PortDescriptor value = port(PortKind::Value, type(1));
@@ -652,6 +676,7 @@ int main() {
   acceptsValidTechMapping();
   acceptsBoundaryInputFanout();
   acceptsBoundaryOutputFanoutWithOneCorrespondence();
+  rejectsDistinctBoundaryOutputsSharingFuOutput();
   rejectsBoundaryInputCoalescing();
   acceptsCrossRealizationEdgeAccounting();
   rejectsUnsupportedSchemaProfileAndIdentity();

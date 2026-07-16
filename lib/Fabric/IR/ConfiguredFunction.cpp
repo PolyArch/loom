@@ -948,6 +948,18 @@ private:
   for (Operation &op : fu.getBody().front().without_terminator())
     bodyOps.push_back(&op);
 
+  for (Operation *bodyOp : bodyOps) {
+    auto configurable = ::mlir::dyn_cast<OpOp>(bodyOp);
+    if (!configurable)
+      continue;
+    FabricOpModeClassification classification =
+        classifyFabricOpModes(configurable);
+    if (classification.kind != FabricOpModeKind::Malformed)
+      continue;
+    error = std::move(classification.diagnostic);
+    return ::mlir::failure();
+  }
+
   ParsedEncoding parsed;
   if (!parseEncoding(fu, encoding, bodyOps, parsed, error))
     return ::mlir::failure();

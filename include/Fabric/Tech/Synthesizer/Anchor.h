@@ -8,13 +8,12 @@
 // Spec source: `docs/spec-generalize-subgraphs-to-fu.md`, heading
 // "Anchor Synthesis".
 //
-// Threading: the strategy must build its candidate wrapper inside the
+// Threading: the Anchor producer builds its candidate wrapper inside the
 // worker-local `MLIRContext` provided via `SynthInputs.context`. The
 // pass's main thread re-homes the returned wrapper into the user's
 // module context (see `GeneralizeSubgraphsToFuPass`'s splice loop).
 
-#include "Common/SynthConfig.h"
-#include "Fabric/Tech/Synthesizer/Synthesizer.h"
+#include "Fabric/IR/ConfiguredFunction.h"
 
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Types.h"
@@ -24,17 +23,6 @@
 #include <optional>
 
 namespace loom::fabric::tech {
-
-// Cross-share-group positions may insert explicit routing when
-// `SynthConfig.anchorAllowIntraPositionMux` is true.
-class AnchorSynthesizer final : public Synthesizer {
-public:
-  explicit AnchorSynthesizer(const ::loom::SynthConfig &cfg);
-  SynthResult run(const SynthInputs &) override;
-
-private:
-  const ::loom::SynthConfig &cfg;
-};
 
 // Physical wrapper-port type lists for one canonical function group.
 struct WrapperPorts {

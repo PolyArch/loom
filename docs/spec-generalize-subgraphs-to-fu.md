@@ -19,7 +19,7 @@ authority.
 The central interfaces are:
 
 ```text
-synthesize(functions: ArrayRef<ConfiguredFunction>) -> SynthResult
+synthesize(config, inputs: SynthInputs) -> SynthResult
 projectConfiguredFunctions(fu: FuOp) -> Array<ConfiguredFunction>
 verifyCoverage(inputs, projected) -> CoverageReport
 ```
@@ -156,8 +156,11 @@ Fabric.
 ## Selectable Synthesis Path
 
 `anchor` is currently the only externally selectable strategy. Historical
-`mcs`, `incremental`, and `incremental_random` producers were removed from the
-factory because they did not emit the canonical capability contract.
+`synthesize` is the sole public path that may return an accepted result. The
+`anchor` producer and strategy dispatch are internal so no caller can bypass
+the shared verification, coverage, and capability gate. Historical `mcs`,
+`incremental`, and `incremental_random` producers were removed because they did
+not emit the canonical capability contract.
 
 `SynthConfig` is schema-closed in both YAML and TOML. Unknown keys and
 sections, including removed strategy controls, fail with a source location;
