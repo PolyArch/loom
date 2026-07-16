@@ -2,4 +2,4 @@
 
 // A YAML document without a top-level `synth:` mapping is rejected.
 
-// CHECK: error: yaml: top-level mapping must contain a 'synth:' key
+// CHECK: error: yaml line 1 column 1: unknown section 'techmap'

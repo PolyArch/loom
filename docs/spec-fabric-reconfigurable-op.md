@@ -140,6 +140,13 @@ demuxes. Mapping selects one FU encoding. A backend may derive transient
 values are workload choices and must not be written back into canonical
 Fabric.
 
+A deliberately programmed normalized adapter may omit `valid_encodings` only
+when every inner `fabric.op` carries normalized modes plus one explicit
+`sw_configs.mode` selection and every `fabric.mux` / `fabric.demux` carries a
+complete route selection. Partial or mixed programmed state is invalid. This
+form is non-canonical boundary input; it does not become a capability source or
+a substitute for normalized valid semantic encodings.
+
 The historical length-one field-wise `hw_params` dictionary remains accepted
 only for non-canonical programmed Fabric input. It is a boundary adapter and
 must not enter the projector, synthesis, coverage, or canonical FU verifier.

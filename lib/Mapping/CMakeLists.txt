@@ -1,5 +1,5 @@
 add_library(LoomMapping
-  StructureValidator.cpp
+  Verifier.cpp
 )
 
 target_include_directories(LoomMapping PUBLIC

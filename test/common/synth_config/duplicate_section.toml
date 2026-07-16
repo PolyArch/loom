@@ -1,0 +1,4 @@
+[synth.cost]
+mux_penalty = 1.0
+
+[synth.cost]

@@ -383,10 +383,10 @@ each rule lands in IR.
   layout descriptor; lets in-thread code query its local tile via
   `dataflow.local_range`. The domain is the same logical
   partition-domain referenced by thread-axis tags.
-* **Software subgraph.** A `dataflow.subgraph` inside a
-  `dataflow.graph` definition. It groups graph-compute operations for
-  L3 fabric matching. It carries no fabric placement, route, schedule,
-  temporal tag, or physical-resource binding semantics.
+* **Legacy subgraph adapter.** A `dataflow.subgraph` may appear in migration,
+  synthesis-test, or display input, but it is not part of the Canonical
+  Dataflow Program. TechMapping-owned actor grouping and FU realization live
+  only in the Mapping Artifact.
 * **Mapping attribute.** Any attribute that implements
   `mlir::DeviceMappingAttrInterface`. The target front-end ships
   `#loom.thread_axis<kind, axis, domain?>` instances and recognizes
@@ -3051,7 +3051,8 @@ Verifier rules for `dataflow.partition_layout`,
 `docs/spec-compiler-part-4-partitioned-data.md`.
 
 * `dataflow.subgraph`
-  - The op appears only inside a `dataflow.graph` definition body.
+  - The op is a legacy input/display adapter, not a canonical graph partition
+    and not a Mapping authority.
   - The op is `IsolatedFromAbove`; all external values enter through
     explicit operands and region block arguments.
   - Operand and result types are graph-compute scalar types or `none`
@@ -3062,7 +3063,9 @@ Verifier rules for `dataflow.partition_layout`,
     `dataflow.store` are rejected.
   - The op carries no hardware topology, PE identity, route,
     schedule slot, spatial / temporal mode, temporal tag, or
-    resource-sharing attribute.
+    resource-sharing attribute. FU selection, semantic encoding, actor-to-op
+    correspondence, and boundary correspondence belong only to the Mapping
+    Artifact.
 
 * `dataflow.graph` (definition, Section 5.5.1)
   - The op is a Symbol-bearing, function-like callable; it must

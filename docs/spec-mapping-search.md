@@ -21,12 +21,13 @@ mapping artifacts, including manually produced fixtures. Scalable search
 engines are search-extension targets layered on top of the same artifact
 and verifier contracts.
 
-The central compute mapping relation is `dataflow.subgraph` to
-`fabric.fu`. Operation-level binding is allowed when the software graph
-has not been partitioned or when a consumer explicitly requests that
-granularity, but the SpatialCore CGRA target is the FU-compatible
-software subgraph. PE, switch, memory, and boundary records exist to
-make that subgraph-to-FU mapping executable on the selected hardware.
+The central compute mapping relation is a Compute Realization in the
+Mapping Artifact: one target-specific actor group, one selected
+`fabric.fu`, one valid semantic encoding, and complete actor/port
+correspondence. The actor group is selected during TechMapping and is not
+persisted as `dataflow.subgraph` or another Canonical Dataflow Program
+partition. PE, switch, memory, and boundary records make that realization
+executable on the selected hardware.
 
 ## Search Inputs
 
@@ -68,7 +69,7 @@ Every PnR policy uses the same legality pipeline:
 1. identity and reference legality;
 2. thread placement legality;
 3. graph placement legality;
-4. operation/subgraph placement legality;
+4. Compute Realization and operation placement legality;
 5. route legality;
 6. schedule, temporal-tag, reconfiguration, and resource-sharing
    legality;
@@ -103,7 +104,7 @@ Candidate construction order:
 
 1. process thread instance domains in stable logical order;
 2. process graph launches in stable software order;
-3. process operation and subgraph units in dependency-topological order,
+3. process actor groups and operation units in dependency-topological order,
    with stable symbolic tie breakers;
 4. enumerate compatible hardware resources in stable symbol order;
 5. enumerate route paths over the explicit hardware graph using a stable
@@ -202,7 +203,7 @@ Search-policy tests must include:
 
 * deterministic baseline on arbitrary non-mesh topology;
 * deterministic baseline on mesh-like topology using explicit links;
-* subgraph-to-FU binding as the primary compute-placement case;
+* Compute Realization actor-group-to-FU binding as the primary compute case;
 * PE with multiple candidate FUs where only one FU can be active for a
   spatial or temporal resource-use slot;
 * negative no-route case;

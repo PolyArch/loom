@@ -37,7 +37,6 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -46,6 +45,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -81,6 +81,17 @@ namespace {
     return ::loom::getIndexWidth();
   if (::llvm::isa<::mlir::NoneType>(t))
     return 0u;
+  if (auto vector = ::llvm::dyn_cast<::mlir::VectorType>(t)) {
+    if (vector.isScalable())
+      return std::nullopt;
+    auto elementWidth = tryBitWidthOf(vector.getElementType());
+    if (!elementWidth)
+      return std::nullopt;
+    uint64_t width = vector.getNumElements() * uint64_t(*elementWidth);
+    if (width > std::numeric_limits<unsigned>::max())
+      return std::nullopt;
+    return static_cast<unsigned>(width);
+  }
   return std::nullopt;
 }
 
@@ -488,7 +499,7 @@ bool peersUniformArity(const PeerVec &peers,
 struct BucketKey {
   bool isSingleton = false;
   ::std::size_t groupIndex = 0; // valid iff !isSingleton
-  ::std::string singletonName; // valid iff isSingleton
+  ::std::string singletonName;  // valid iff isSingleton
 
   static BucketKey forGroup(::std::size_t idx) {
     BucketKey k;
@@ -604,9 +615,13 @@ struct EmittedOp {
   ::llvm::SmallVector<::mlir::Value, 2> results;
 };
 
+struct PendingOp {
+  ::mlir::Operation *placeholder = nullptr;
+  ::llvm::SmallVector<::mlir::Value, 2> results;
+};
+
 struct AnchorState {
-  AnchorState(::mlir::MLIRContext *c, ::mlir::Location l)
-      : ctx(c), loc(l) {}
+  AnchorState(::mlir::MLIRContext *c, ::mlir::Location l) : ctx(c), loc(l) {}
   ::mlir::MLIRContext *ctx = nullptr;
   ::mlir::Location loc;
   ::llvm::ArrayRef<::fabric::ConfiguredFunction> functions;
@@ -621,7 +636,9 @@ struct AnchorState {
   // fabric.op result list. Lets distinct (BodyOp,resultIndex) anchors
   // share one fabric.op emission.
   ::llvm::DenseMap<PeerKey, EmittedOp, PeerKeyInfo> emittedOps;
-  ::llvm::DenseSet<PeerKey, PeerKeyInfo> activeOps;
+  // Typed temporary results for an operation currently being emitted. A
+  // recursive lookup denotes a legal graph-region feedback edge.
+  ::llvm::DenseMap<PeerKey, PendingOp, PeerKeyInfo> pendingOps;
   // Independent physical resource positions and their complete semantic
   // mode choices. Global valid encodings are explicit combinations of these
   // resource-level tuples, never products of individual attribute fields.
@@ -847,12 +864,17 @@ EmitOutcome materializePeers(AnchorState &st, const PeerVec &peers,
     st.visited[key] = EmittedSlot{out.value};
     return out;
   }
-
-  if (!st.activeOps.insert(opKey).second) {
-    out.reason = SynthFailureReason::TopologyMismatch;
+  auto pending = st.pendingOps.find(opKey);
+  if (pending != st.pendingOps.end()) {
+    unsigned ri = peers.front().result;
+    if (ri >= pending->second.results.size()) {
+      out.reason = SynthFailureReason::TopologyMismatch;
+      return out;
+    }
+    out.ok = true;
+    out.value = pending->second.results[ri];
     return out;
   }
-  auto activeGuard = ::llvm::scope_exit([&]() { st.activeOps.erase(opKey); });
 
   // Pre-decision: distinct share-groups when intra-position muxing is
   // disabled is a `cross_share_group` failure (distinct from
@@ -862,6 +884,21 @@ EmitOutcome materializePeers(AnchorState &st, const PeerVec &peers,
     out.reason = SynthFailureReason::CrossShareGroup;
     return out;
   }
+
+  auto resultTypesOpt = liftedResultTypesForPeers(st.ctx, peers, st.functions);
+  if (!resultTypesOpt.has_value()) {
+    out.reason = SynthFailureReason::TopologyMismatch;
+    return out;
+  }
+  ::mlir::OperationState placeholderState(
+      st.loc, ::mlir::UnrealizedConversionCastOp::getOperationName());
+  placeholderState.addTypes(*resultTypesOpt);
+  ::mlir::Operation *placeholder = st.bodyBuilder->create(placeholderState);
+  PendingOp pendingSlot;
+  pendingSlot.placeholder = placeholder;
+  pendingSlot.results.assign(placeholder->getResults().begin(),
+                             placeholder->getResults().end());
+  st.pendingOps[opKey] = std::move(pendingSlot);
 
   // Recurse through exact ordered operands.
   ::llvm::SmallVector<::mlir::Value, 4> operandValues;
@@ -898,14 +935,6 @@ EmitOutcome materializePeers(AnchorState &st, const PeerVec &peers,
       out.reason = SynthFailureReason::TopologyMismatch;
     return out;
   }
-  // Compute the lifted result types from the source-side ops so multi-
-  // result body ops (e.g. dataflow.stream's idx + rwc) are emitted with
-  // matching structural fabric.op shape.
-  auto resultTypesOpt = liftedResultTypesForPeers(st.ctx, peers, st.functions);
-  if (!resultTypesOpt.has_value()) {
-    out.reason = SynthFailureReason::TopologyMismatch;
-    return out;
-  }
   EmitOpOutcome emitted = emitBodyOpPositionMulti(
       st, *decision, peers, operandValues, *resultTypesOpt);
   if (!emitted.ok) {
@@ -926,6 +955,16 @@ EmitOutcome materializePeers(AnchorState &st, const PeerVec &peers,
   }
   EmittedOp slot;
   slot.results.assign(emitted.results.begin(), emitted.results.end());
+  PendingOp &pendingResult = st.pendingOps.at(opKey);
+  if (pendingResult.results.size() != slot.results.size()) {
+    out.reason = SynthFailureReason::TopologyMismatch;
+    return out;
+  }
+  for (auto [temporary, actual] :
+       ::llvm::zip(pendingResult.results, slot.results))
+    temporary.replaceAllUsesWith(actual);
+  pendingResult.placeholder->erase();
+  st.pendingOps.erase(opKey);
   st.emittedOps[opKey] = slot;
   out.ok = true;
   out.value = emitted.results[ri];
@@ -1157,7 +1196,7 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
 
   // PE/FU outer (port-uniform) types.
   ::llvm::SmallVector<::mlir::Type, 4> wrapperInputTypes(ports.size(),
-                                                          uniformBits);
+                                                         uniformBits);
   ::llvm::SmallVector<::mlir::Type, 4> wrapperResultTypes(arity, uniformBits);
 
   ::std::string symName = wrapperName(inputs.groupName);
@@ -1169,10 +1208,9 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
   ::llvm::SmallVector<::mlir::Type, 0> moduleResultTypes;
   auto moduleFuncType = ::mlir::FunctionType::get(
       ctx, wrapperInputTypes, ::mlir::TypeRange(moduleResultTypes));
-  ::mlir::OperationState moduleState(
-      loc, ::fabric::ModuleOp::getOperationName());
-  moduleState.addAttribute(
-      "sym_name", ::mlir::StringAttr::get(ctx, symName));
+  ::mlir::OperationState moduleState(loc,
+                                     ::fabric::ModuleOp::getOperationName());
+  moduleState.addAttribute("sym_name", ::mlir::StringAttr::get(ctx, symName));
   moduleState.addAttribute("function_type",
                            ::mlir::TypeAttr::get(moduleFuncType));
   ::mlir::Region *moduleRegion = moduleState.addRegion();
@@ -1197,18 +1235,17 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
     // module's input width (uniform W) when present, else 0 (which is
     // a verifier error for empty-input wrappers, but anchor already
     // requires K>=1 above).
-    unsigned w = wrapperInputTypes.empty()
-                     ? 0u
-                     : ::llvm::cast<::fabric::BitsType>(wrapperInputTypes[0])
-                           .getWidth();
+    unsigned w =
+        wrapperInputTypes.empty()
+            ? 0u
+            : ::llvm::cast<::fabric::BitsType>(wrapperInputTypes[0]).getWidth();
     peResultTypes.push_back(::fabric::BitsType::get(ctx, w));
   }
   ::mlir::OperationState peState(loc, ::fabric::PeOp::getOperationName());
   peState.addOperands(::mlir::ValueRange(moduleEntry->getArguments()));
   peState.addTypes(peResultTypes);
-  peState.addAttribute(
-      "schedule",
-      ::fabric::ScheduleAttr::get(ctx, ::fabric::Schedule::Spatial));
+  peState.addAttribute("schedule", ::fabric::ScheduleAttr::get(
+                                       ctx, ::fabric::Schedule::Spatial));
   ::mlir::Region *peRegion = peState.addRegion();
   ::mlir::Block *peEntry = new ::mlir::Block();
   peRegion->push_back(peEntry);
@@ -1307,8 +1344,8 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
       }
     }
     if (anyWidens)
-      fuYieldState.addAttribute(
-          "declared_types", ::mlir::ArrayAttr::get(ctx, declaredAttrs));
+      fuYieldState.addAttribute("declared_types",
+                                ::mlir::ArrayAttr::get(ctx, declaredAttrs));
   }
   bodyBuilder.create(fuYieldState);
 

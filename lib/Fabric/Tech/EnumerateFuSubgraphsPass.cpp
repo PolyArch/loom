@@ -26,8 +26,8 @@ struct EnumerateFuSubgraphsPass
     return "loom-enumerate-fu-subgraphs";
   }
   ::llvm::StringRef getDescription() const final {
-    return "Enumerate dataflow.subgraphs supported by each fabric.fu and "
-           "emit them as siblings of the FU.";
+    return "Emit non-authoritative dataflow.subgraph display adapters for "
+           "each fabric.fu semantic encoding.";
   }
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
@@ -75,7 +75,6 @@ std::unique_ptr<::mlir::Pass> createEnumerateFuSubgraphsPass() {
 
 void registerFabricTechPasses() {
   ::mlir::PassRegistration<EnumerateFuSubgraphsPass>();
-  ::mlir::registerPass(createMapSubgraphToFusPass);
 }
 
 } // namespace fabric

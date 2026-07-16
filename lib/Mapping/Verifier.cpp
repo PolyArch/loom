@@ -1,5 +1,6 @@
-#include "Mapping/StructureValidator.h"
+#include "Mapping/Verifier.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -30,7 +31,7 @@ enum class EntityKind {
   Fu,
   FabricOp,
   Encoding,
-  StructuralRealization,
+  ComputeRealization,
 };
 
 using EntityKinds = std::map<std::uint64_t, EntityKind>;
@@ -97,6 +98,38 @@ struct FabricIndex {
   std::map<std::uint64_t, const FabricOpDescriptor *> operations;
   std::map<std::uint64_t, const EncodingDescriptor *> encodings;
 };
+
+bool samePortKinds(const std::vector<PortDescriptor> &lhs,
+                   const std::vector<PortDescriptor> &rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  for (auto [left, right] : llvm::zip(lhs, rhs))
+    if (left.kind != right.kind)
+      return false;
+  return true;
+}
+
+llvm::Expected<const PortDescriptor *> resolveConfiguredValue(
+    const ConfiguredValue &value,
+    const std::map<std::uint32_t, const PortDescriptor *> &inputs,
+    const std::map<std::uint64_t, const ConfiguredFabricOpDescriptor *>
+        &operations) {
+  if (const auto *input = std::get_if<FuInputValue>(&value)) {
+    auto descriptor = inputs.find(input->index);
+    if (descriptor == inputs.end())
+      return mappingError(MappingErrorCode::InvalidConfiguredFunction,
+                          "configured value names an inactive FU input");
+    return descriptor->second;
+  }
+
+  const auto &result = std::get<FabricOpResultValue>(value);
+  auto operation = operations.find(result.operation.value());
+  if (operation == operations.end() ||
+      result.index >= operation->second->outputPorts.size())
+    return mappingError(MappingErrorCode::InvalidConfiguredFunction,
+                        "configured value names an invalid fabric.op result");
+  return &operation->second->outputPorts[result.index];
+}
 
 llvm::Error requireLocalKind(const EntityKinds &entities, std::uint64_t id,
                              EntityKind expected) {
@@ -237,6 +270,67 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
     if (llvm::Error error =
             requireLocalKind(index.kinds, encoding.fu.value(), EntityKind::Fu))
       return std::move(error);
+
+    const FuDescriptor &fu = *index.functionalUnits.at(encoding.fu.value());
+    std::map<std::uint32_t, const PortDescriptor *> configuredInputs;
+    for (const ConfiguredInputDescriptor &input : encoding.inputs) {
+      if (input.fuPort >= fu.inputPorts.size() ||
+          fu.inputPorts[input.fuPort].kind != input.port.kind ||
+          !configuredInputs.emplace(input.fuPort, &input.port).second)
+        return mappingError(
+            MappingErrorCode::InvalidConfiguredFunction,
+            "encoding has an invalid or duplicate configured FU input");
+    }
+
+    std::map<std::uint64_t, const ConfiguredFabricOpDescriptor *>
+        configuredOperations;
+    for (const ConfiguredFabricOpDescriptor &configured : encoding.operations) {
+      auto operation = index.operations.find(configured.operation.value());
+      if (operation == index.operations.end() ||
+          operation->second->fu != encoding.fu ||
+          !samePortKinds(configured.inputPorts,
+                         operation->second->inputPorts) ||
+          !samePortKinds(configured.outputPorts,
+                         operation->second->outputPorts) ||
+          configured.operands.size() != configured.inputPorts.size() ||
+          !configuredOperations
+               .emplace(configured.operation.value(), &configured)
+               .second)
+        return mappingError(
+            MappingErrorCode::InvalidConfiguredFunction,
+            "encoding has an invalid or duplicate configured fabric.op");
+    }
+
+    for (const ConfiguredFabricOpDescriptor &configured : encoding.operations) {
+      for (auto [operand, expected] :
+           llvm::zip(configured.operands, configured.inputPorts)) {
+        auto source = resolveConfiguredValue(operand, configuredInputs,
+                                             configuredOperations);
+        if (!source)
+          return source.takeError();
+        if (**source != expected)
+          return mappingError(
+              MappingErrorCode::InvalidConfiguredFunction,
+              "configured fabric.op operand has the wrong semantic type");
+      }
+    }
+
+    std::set<std::uint32_t> configuredOutputs;
+    for (const ConfiguredOutputDescriptor &output : encoding.outputs) {
+      if (output.fuPort >= fu.outputPorts.size() ||
+          fu.outputPorts[output.fuPort].kind != output.port.kind ||
+          !configuredOutputs.insert(output.fuPort).second)
+        return mappingError(
+            MappingErrorCode::InvalidConfiguredFunction,
+            "encoding has an invalid or duplicate configured FU output");
+      auto source = resolveConfiguredValue(output.value, configuredInputs,
+                                           configuredOperations);
+      if (!source)
+        return source.takeError();
+      if (**source != output.port)
+        return mappingError(MappingErrorCode::InvalidConfiguredFunction,
+                            "configured FU output has the wrong semantic type");
+    }
   }
 
   return index;
@@ -306,7 +400,7 @@ resolveFuPortReference(const FuPortRef &port, const ArtifactIdentity &artifact,
 }
 
 struct RealizationActors {
-  const StructuralRealizationDraft *record;
+  const ComputeRealizationDraft *record;
   std::uint64_t graph;
   std::map<std::uint64_t, const ActorDescriptor *> actors;
 };
@@ -319,10 +413,10 @@ llvm::Expected<std::vector<RealizationActors>> resolveRealizationActors(
   std::vector<RealizationActors> resolved;
   resolved.reserve(mapping.realizations.size());
 
-  for (const StructuralRealizationDraft &realization : mapping.realizations) {
+  for (const ComputeRealizationDraft &realization : mapping.realizations) {
     if (realization.actors.empty())
       return mappingError(MappingErrorCode::EmptyActorGroup,
-                          "structural realization draft actor group is empty");
+                          "Compute Realization actor group is empty");
 
     RealizationActors actors{&realization, 0, {}};
     bool firstActor = true;
@@ -342,20 +436,25 @@ llvm::Expected<std::vector<RealizationActors>> resolveRealizationActors(
         firstActor = false;
       } else if ((*actor)->graph.value() != actors.graph) {
         return mappingError(MappingErrorCode::CrossGraphActorGroup,
-                            "structural realization draft crosses graphs");
+                            "Compute Realization crosses graphs");
       }
     }
     if (!coveredGraphs.count(actors.graph))
-      return mappingError(
-          MappingErrorCode::IncompleteGraphCoverage,
-          "structural realization draft uses an uncovered graph");
+      return mappingError(MappingErrorCode::IncompleteGraphCoverage,
+                          "Compute Realization uses an uncovered graph");
     resolved.push_back(std::move(actors));
   }
 
   return resolved;
 }
 
-llvm::Expected<const FuDescriptor *> validateActorToOpCorrespondence(
+struct ResolvedRealization {
+  const FuDescriptor *fu;
+  const EncodingDescriptor *encoding;
+  std::map<std::uint64_t, const ConfiguredFabricOpDescriptor *> actorToOp;
+};
+
+llvm::Expected<ResolvedRealization> validateActorToOpCorrespondence(
     const RealizationActors &realization, const DataflowProgramView &dataflow,
     const DataflowIndex &dataflowIndex, const FabricHardwareView &fabric,
     const FabricIndex &fabricIndex) {
@@ -373,12 +472,19 @@ llvm::Expected<const FuDescriptor *> validateActorToOpCorrespondence(
     return mappingError(MappingErrorCode::SelectedFuMismatch,
                         "selected encoding belongs to a different FU");
 
-  if (realization.record->actorToOps.size() != realization.actors.size())
+  if (realization.record->actorToOps.size() != realization.actors.size() ||
+      (*encoding)->operations.size() != realization.actors.size())
     return mappingError(MappingErrorCode::IncompleteActorToOpCorrespondence,
                         "actor-to-fabric.op correspondence is not complete");
 
+  std::map<std::uint64_t, const ConfiguredFabricOpDescriptor *>
+      configuredOperations;
+  for (const ConfiguredFabricOpDescriptor &operation : (*encoding)->operations)
+    configuredOperations.emplace(operation.operation.value(), &operation);
+
   std::set<std::uint64_t> mappedActors;
   std::set<std::uint64_t> mappedOperations;
+  ResolvedRealization resolved{*fu, *encoding, {}};
   for (const ActorToFabricOp &correspondence : realization.record->actorToOps) {
     auto actor = resolveReference(correspondence.actor, dataflow.identity,
                                   dataflowIndex.kinds, EntityKind::Actor,
@@ -399,16 +505,25 @@ llvm::Expected<const FuDescriptor *> validateActorToOpCorrespondence(
     if ((*operation)->fu != (*fu)->id)
       return mappingError(MappingErrorCode::SelectedFuMismatch,
                           "fabric.op belongs to a different FU");
-    if ((*actor)->inputPorts != (*operation)->inputPorts ||
-        (*actor)->outputPorts != (*operation)->outputPorts)
-      return mappingError(MappingErrorCode::PortSignatureMismatch,
-                          "actor and fabric.op port signatures do not match");
+    auto configured = configuredOperations.find((*operation)->id.value());
+    if (configured == configuredOperations.end())
+      return mappingError(MappingErrorCode::IncompleteActorToOpCorrespondence,
+                          "actor correspondence names an inactive fabric.op");
+    if ((*actor)->operation != configured->second->semantics ||
+        (*actor)->attributes != configured->second->attributes ||
+        (*actor)->inputPorts != configured->second->inputPorts ||
+        (*actor)->outputPorts != configured->second->outputPorts)
+      return mappingError(
+          MappingErrorCode::ConfiguredFunctionMismatch,
+          "actor semantics do not match the configured fabric.op");
+    resolved.actorToOp.emplace((*actor)->id.value(), configured->second);
   }
 
-  if (mappedActors.size() != realization.actors.size())
+  if (mappedActors.size() != realization.actors.size() ||
+      mappedOperations.size() != configuredOperations.size())
     return mappingError(MappingErrorCode::IncompleteActorToOpCorrespondence,
                         "actor-to-fabric.op correspondence is not complete");
-  return *fu;
+  return resolved;
 }
 
 std::set<EndpointKey> deriveBoundaryPorts(const RealizationActors &realization,
@@ -426,17 +541,29 @@ std::set<EndpointKey> deriveBoundaryPorts(const RealizationActors &realization,
   return boundaryPorts;
 }
 
-llvm::Error validateBoundaryCorrespondence(const RealizationActors &realization,
-                                           const FuDescriptor &selectedFu,
-                                           const DataflowProgramView &dataflow,
-                                           const DataflowIndex &dataflowIndex,
-                                           const FabricHardwareView &fabric,
-                                           const FabricIndex &fabricIndex) {
+struct ResolvedBoundary {
+  std::map<EndpointKey, std::uint32_t> actorToFuPort;
+};
+
+llvm::Expected<ResolvedBoundary> validateBoundaryCorrespondence(
+    const RealizationActors &realization, const ResolvedRealization &selected,
+    const DataflowProgramView &dataflow, const DataflowIndex &dataflowIndex,
+    const FabricHardwareView &fabric, const FabricIndex &fabricIndex) {
   const std::set<EndpointKey> expected =
       deriveBoundaryPorts(realization, dataflowIndex);
   std::set<EndpointKey> mappedActorPorts;
   std::set<std::tuple<std::uint64_t, PortDirection, std::uint32_t>>
       mappedFuPorts;
+  std::map<std::pair<PortDirection, std::uint32_t>, const PortDescriptor *>
+      configuredPorts;
+  for (const ConfiguredInputDescriptor &input : selected.encoding->inputs)
+    configuredPorts.emplace(std::make_pair(PortDirection::Input, input.fuPort),
+                            &input.port);
+  for (const ConfiguredOutputDescriptor &output : selected.encoding->outputs)
+    configuredPorts.emplace(
+        std::make_pair(PortDirection::Output, output.fuPort), &output.port);
+
+  ResolvedBoundary resolved;
 
   for (const BoundaryPortCorrespondence &correspondence :
        realization.record->boundaryPorts) {
@@ -458,21 +585,95 @@ llvm::Error validateBoundaryCorrespondence(const RealizationActors &realization,
       return mappingError(
           MappingErrorCode::IncompleteBoundaryCorrespondence,
           "software-to-FU boundary correspondence is not bijective");
-    if (fuPort->fu != selectedFu.id.value())
+    if (fuPort->fu != selected.fu->id.value())
       return mappingError(MappingErrorCode::SelectedFuMismatch,
                           "boundary correspondence uses a different FU");
     if (actorPort->key.direction != fuPort->direction)
       return mappingError(MappingErrorCode::InvalidPortConnection,
                           "boundary correspondence reverses port direction");
-    if (*actorPort->descriptor != *fuPort->descriptor)
-      return mappingError(MappingErrorCode::PortSignatureMismatch,
-                          "boundary port kind or type does not match");
+    auto configured =
+        configuredPorts.find(std::make_pair(fuPort->direction, fuPort->index));
+    if (configured == configuredPorts.end())
+      return mappingError(
+          MappingErrorCode::IncompleteBoundaryCorrespondence,
+          "boundary correspondence names an inactive configured FU port");
+    if (*actorPort->descriptor != *configured->second)
+      return mappingError(
+          MappingErrorCode::ConfiguredFunctionMismatch,
+          "software boundary type does not match the configured FU port");
+    resolved.actorToFuPort.emplace(actorPort->key, fuPort->index);
   }
 
   if (mappedActorPorts != expected)
     return mappingError(
         MappingErrorCode::UnaccountedGraphEdge,
         "declared graph edge has an unmapped boundary endpoint");
+  if (mappedFuPorts.size() != configuredPorts.size())
+    return mappingError(
+        MappingErrorCode::IncompleteBoundaryCorrespondence,
+        "configured FU boundary correspondence is not complete");
+  for (const auto &entry : configuredPorts) {
+    const auto key = std::make_tuple(selected.fu->id.value(), entry.first.first,
+                                     entry.first.second);
+    if (!mappedFuPorts.count(key))
+      return mappingError(
+          MappingErrorCode::IncompleteBoundaryCorrespondence,
+          "configured FU boundary correspondence is not complete");
+  }
+  return resolved;
+}
+
+llvm::Error validateConfiguredFunctionTopology(
+    const RealizationActors &realization, const ResolvedRealization &selected,
+    const ResolvedBoundary &boundary, const DataflowIndex &dataflowIndex) {
+  std::map<EndpointKey, const DataflowPortInfo *> drivers;
+  for (const ResolvedDataflowEdge &edge : dataflowIndex.edges)
+    drivers.emplace(edge.target.key, &edge.source);
+
+  for (const auto &entry : selected.actorToOp) {
+    const ActorDescriptor &actor = *realization.actors.at(entry.first);
+    const ConfiguredFabricOpDescriptor &configured = *entry.second;
+    for (std::size_t input = 0; input < actor.inputPorts.size(); ++input) {
+      const EndpointKey target{true, actor.id.value(), PortDirection::Input,
+                               static_cast<std::uint32_t>(input)};
+      const DataflowPortInfo &source = *drivers.at(target);
+      ConfiguredValue expected = FuInputValue{0};
+      if (source.key.actor && realization.actors.count(source.key.owner)) {
+        const ConfiguredFabricOpDescriptor &sourceOperation =
+            *selected.actorToOp.at(source.key.owner);
+        expected =
+            FabricOpResultValue{sourceOperation.operation, source.key.index};
+      } else {
+        auto port = boundary.actorToFuPort.find(target);
+        if (port == boundary.actorToFuPort.end())
+          return mappingError(
+              MappingErrorCode::ConfiguredFunctionMismatch,
+              "software operand has no configured FU input correspondence");
+        expected = FuInputValue{port->second};
+      }
+      if (configured.operands[input] != expected)
+        return mappingError(
+            MappingErrorCode::ConfiguredFunctionMismatch,
+            "configured fabric.op operand topology does not match software");
+    }
+  }
+
+  std::map<std::uint32_t, const ConfiguredOutputDescriptor *> configuredOutputs;
+  for (const ConfiguredOutputDescriptor &output : selected.encoding->outputs)
+    configuredOutputs.emplace(output.fuPort, &output);
+  for (const auto &entry : boundary.actorToFuPort) {
+    if (entry.first.direction != PortDirection::Output)
+      continue;
+    const ConfiguredFabricOpDescriptor &source =
+        *selected.actorToOp.at(entry.first.owner);
+    const ConfiguredValue expected =
+        FabricOpResultValue{source.operation, entry.first.index};
+    auto output = configuredOutputs.find(entry.second);
+    if (output == configuredOutputs.end() || output->second->value != expected)
+      return mappingError(
+          MappingErrorCode::ConfiguredFunctionMismatch,
+          "configured FU output topology does not match software");
+  }
   return llvm::Error::success();
 }
 
@@ -559,17 +760,16 @@ validateCoveredSinkAccounting(const DataflowIndex &dataflowIndex,
 
 } // namespace
 
-llvm::Expected<ValidatedTechMappingStructure>
-loom::mapping::validateTechMappingStructure(const TechMappingDraft &mapping,
-                                            const DataflowProgramView &dataflow,
-                                            const FabricHardwareView &fabric) {
+llvm::Expected<ValidatedTechMapping>
+loom::mapping::validateTechMapping(const TechMappingDraft &mapping,
+                                   const DataflowProgramView &dataflow,
+                                   const FabricHardwareView &fabric) {
   if (mapping.header.schemaVersion != supportedSchemaVersion)
     return mappingError(MappingErrorCode::UnsupportedSchemaVersion,
-                        "Mapping structural validator supports schema 1.0");
+                        "Mapping verifier supports schema 1.0");
   if (mapping.header.profile != MappingProfile::TechMapping)
-    return mappingError(
-        MappingErrorCode::WrongMappingProfile,
-        "Mapping structural validator requires the TechMapping profile");
+    return mappingError(MappingErrorCode::WrongMappingProfile,
+                        "Mapping verifier requires the TechMapping profile");
   if (mapping.header.dataflowIdentity.empty() ||
       mapping.header.fabricIdentity.empty() || dataflow.identity.empty() ||
       fabric.identity.empty())
@@ -588,9 +788,9 @@ loom::mapping::validateTechMappingStructure(const TechMappingDraft &mapping,
     return fabricIndex.takeError();
 
   EntityKinds mappingEntities;
-  for (const StructuralRealizationDraft &realization : mapping.realizations) {
+  for (const ComputeRealizationDraft &realization : mapping.realizations) {
     if (llvm::Error error = addEntity(mappingEntities, realization.id.value(),
-                                      EntityKind::StructuralRealization))
+                                      EntityKind::ComputeRealization))
       return std::move(error);
   }
 
@@ -632,13 +832,16 @@ loom::mapping::validateTechMappingStructure(const TechMappingDraft &mapping,
                         "declared graphs do not have closed actor coverage");
 
   for (const RealizationActors &realization : *realizations) {
-    auto selectedFu = validateActorToOpCorrespondence(
+    auto selected = validateActorToOpCorrespondence(
         realization, dataflow, *dataflowIndex, fabric, *fabricIndex);
-    if (!selectedFu)
-      return selectedFu.takeError();
-    if (llvm::Error error = validateBoundaryCorrespondence(
-            realization, **selectedFu, dataflow, *dataflowIndex, fabric,
-            *fabricIndex))
+    if (!selected)
+      return selected.takeError();
+    auto boundary = validateBoundaryCorrespondence(
+        realization, *selected, dataflow, *dataflowIndex, fabric, *fabricIndex);
+    if (!boundary)
+      return boundary.takeError();
+    if (llvm::Error error = validateConfiguredFunctionTopology(
+            realization, *selected, *boundary, *dataflowIndex))
       return std::move(error);
   }
 
@@ -646,5 +849,5 @@ loom::mapping::validateTechMappingStructure(const TechMappingDraft &mapping,
           *dataflowIndex, coveredGraphs, actorToRealization))
     return std::move(error);
 
-  return ValidatedTechMappingStructure(mapping);
+  return ValidatedTechMapping(mapping);
 }

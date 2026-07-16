@@ -428,7 +428,6 @@ struct Projector {
   ::llvm::DenseSet<unsigned> activeOps;
   ::llvm::DenseSet<unsigned> activeRoutes;
   ::llvm::DenseSet<Value> aliveValues;
-  ::llvm::DenseSet<unsigned> visiting;
   ::llvm::DenseMap<unsigned, Type> inputTypes;
 
   bool recordInputType(unsigned port, Type type) {
@@ -443,12 +442,70 @@ struct Projector {
     return false;
   }
 
+  std::optional<Value> traceSelectedRoute(Value value, Type expected = {}) {
+    ::llvm::DenseSet<Value> routedValues;
+    while (true) {
+      aliveValues.insert(value);
+      if (expected &&
+          !verifyPayloadCapacity(value.getType(), expected,
+                                 "selected physical path segment", error))
+        return std::nullopt;
+      auto result = ::mlir::dyn_cast<::mlir::OpResult>(value);
+      if (!result)
+        return value;
+      Operation *producer = result.getOwner();
+      auto resourceIt = resourceByOp.find(producer);
+
+      if (auto mux = ::mlir::dyn_cast<::fabric::MuxOp>(producer)) {
+        if (!routedValues.insert(value).second) {
+          error = "selected routing topology contains a cycle";
+          return std::nullopt;
+        }
+        if (resourceIt == resourceByOp.end()) {
+          error = "configured routing value is produced outside the FU body";
+          return std::nullopt;
+        }
+        auto route = encoding.routes.find(resourceIt->second);
+        if (route == encoding.routes.end()) {
+          error = "active fabric.mux has no route in the encoding";
+          return std::nullopt;
+        }
+        activeRoutes.insert(resourceIt->second);
+        value = mux.getInputs()[route->second.select];
+        continue;
+      }
+
+      if (auto demux = ::mlir::dyn_cast<::fabric::DemuxOp>(producer)) {
+        if (!routedValues.insert(value).second) {
+          error = "selected routing topology contains a cycle";
+          return std::nullopt;
+        }
+        if (resourceIt == resourceByOp.end()) {
+          error = "configured routing value is produced outside the FU body";
+          return std::nullopt;
+        }
+        auto route = encoding.routes.find(resourceIt->second);
+        if (route == encoding.routes.end()) {
+          error = "active fabric.demux has no route in the encoding";
+          return std::nullopt;
+        }
+        if (result.getResultNumber() != route->second.select) {
+          error = "encoding reaches an unselected fabric.demux output";
+          return std::nullopt;
+        }
+        activeRoutes.insert(resourceIt->second);
+        value = demux.getInput();
+        continue;
+      }
+      return value;
+    }
+  }
+
   bool markValue(Value value, Type expected = {}) {
-    aliveValues.insert(value);
-    if (expected &&
-        !verifyPayloadCapacity(value.getType(), expected,
-                               "selected physical path segment", error))
+    auto routed = traceSelectedRoute(value, expected);
+    if (!routed)
       return false;
+    value = *routed;
     if (auto argument = ::mlir::dyn_cast<::mlir::BlockArgument>(value)) {
       if (!expected) {
         error =
@@ -493,8 +550,6 @@ struct Projector {
       }
       if (!activeOps.insert(resource).second)
         return true;
-      if (!visiting.insert(resource).second)
-        return true;
       for (auto [semanticInput, physicalInput] :
            ::llvm::enumerate(mode.inputPorts)) {
         if (!markValue(op.getInputs()[physicalInput],
@@ -503,33 +558,7 @@ struct Projector {
       }
       for (unsigned physicalOutput : mode.outputPorts)
         aliveValues.insert(op.getOutputs()[physicalOutput]);
-      visiting.erase(resource);
       return true;
-    }
-
-    if (auto mux = ::mlir::dyn_cast<::fabric::MuxOp>(producer)) {
-      auto route = encoding.routes.find(resource);
-      if (route == encoding.routes.end()) {
-        error = "active fabric.mux has no route in the encoding";
-        return false;
-      }
-      activeRoutes.insert(resource);
-      return markValue(mux.getInputs()[route->second.select], expected);
-    }
-
-    if (auto demux = ::mlir::dyn_cast<::fabric::DemuxOp>(producer)) {
-      auto route = encoding.routes.find(resource);
-      if (route == encoding.routes.end()) {
-        error = "active fabric.demux has no route in the encoding";
-        return false;
-      }
-      unsigned result = ::mlir::cast<::mlir::OpResult>(value).getResultNumber();
-      if (result != route->second.select) {
-        error = "encoding reaches an unselected fabric.demux output";
-        return false;
-      }
-      activeRoutes.insert(resource);
-      return markValue(demux.getInput(), expected);
     }
 
     error = "unsupported producer in FU topology";
@@ -577,9 +606,10 @@ struct Projector {
   std::optional<ConfiguredValue>
   sourceOf(Value value, Type expected,
            const ::llvm::DenseMap<unsigned, unsigned> &nodeByResource) {
-    if (!verifyPayloadCapacity(value.getType(), expected,
-                               "selected physical path segment", error))
+    auto routed = traceSelectedRoute(value, expected);
+    if (!routed)
       return std::nullopt;
+    value = *routed;
     if (auto argument = ::mlir::dyn_cast<::mlir::BlockArgument>(value)) {
       unsigned port = argument.getArgNumber();
       if (!verifyPayloadCapacity(fuInputBoundaryType(fu, port), expected,
@@ -603,13 +633,6 @@ struct Projector {
         return std::nullopt;
       return ConfiguredValue::nodeResult(nodeByResource.lookup(resource),
                                          semanticResult);
-    }
-    if (auto mux = ::mlir::dyn_cast<::fabric::MuxOp>(producer)) {
-      const RouteMode &route = encoding.routes.lookup(resource);
-      return sourceOf(mux.getInputs()[route.select], expected, nodeByResource);
-    }
-    if (auto demux = ::mlir::dyn_cast<::fabric::DemuxOp>(producer)) {
-      return sourceOf(demux.getInput(), expected, nodeByResource);
     }
     return std::nullopt;
   }
@@ -673,22 +696,11 @@ struct Projector {
       function.inputs.push_back({port, inputTypes.lookup(port)});
 
     for (unsigned outputPort : encoding.outputPorts) {
-      Value value = yield.getValues()[outputPort];
+      auto routed = traceSelectedRoute(yield.getValues()[outputPort]);
+      if (!routed)
+        return false;
+      Value value = *routed;
       Type type;
-      if (auto result = ::mlir::dyn_cast<::mlir::OpResult>(value)) {
-        Operation *producer = result.getOwner();
-        while (auto mux = ::mlir::dyn_cast<::fabric::MuxOp>(producer)) {
-          unsigned resource = resourceByOp.lookup(producer);
-          value = mux.getInputs()[encoding.routes.lookup(resource).select];
-          if (auto next = ::mlir::dyn_cast<::mlir::OpResult>(value))
-            producer = next.getOwner();
-          else
-            break;
-        }
-        while (auto demux = ::mlir::dyn_cast_or_null<::fabric::DemuxOp>(
-                   value.getDefiningOp()))
-          value = demux.getInput();
-      }
       if (auto result = ::mlir::dyn_cast<::mlir::OpResult>(value)) {
         unsigned resource = resourceByOp.lookup(result.getOwner());
         const OpMode &mode = encoding.opModes.lookup(resource);
@@ -811,7 +823,7 @@ struct MatchState {
     FuOp fu, ::llvm::SmallVectorImpl<ConfiguredFunction> &functions,
     std::string &error) {
   functions.clear();
-  auto encodings = fu->getAttrOfType<ArrayAttr>("valid_encodings");
+  auto encodings = fu.getValidEncodingsAttr();
   if (!encodings) {
     error = "fabric.fu has no valid_encodings attribute";
     return ::mlir::failure();
@@ -942,10 +954,74 @@ bool matchConfiguredFunctions(const ConfiguredFunction &pattern,
   return ::mlir::success();
 }
 
-::mlir::LogicalResult verifyValidSemanticEncodings(FuOp fu) {
-  auto encodings = fu->getAttrOfType<ArrayAttr>("valid_encodings");
-  if (!encodings)
+static bool hasNormalizedHardwareModes(OpOp op) {
+  auto modes = op.getHwParamsAttr();
+  if (!modes || modes.empty())
+    return false;
+  return ::llvm::all_of(modes, [](Attribute attr) {
+    auto mode = ::mlir::dyn_cast<DictionaryAttr>(attr);
+    return mode && mode.get("op") && mode.get("function_type") &&
+           mode.get("input_ports") && mode.get("output_ports") &&
+           mode.get("attributes");
+  });
+}
+
+static ::mlir::LogicalResult verifyProgrammedNormalizedFu(FuOp fu) {
+  bool hasNormalizedMode = false;
+  bool hasSelectedMode = false;
+  bool hasSelectedRoute = false;
+  for (Operation &operation : fu.getBody().front().without_terminator()) {
+    if (auto op = ::mlir::dyn_cast<::fabric::OpOp>(&operation)) {
+      if (hasNormalizedHardwareModes(op)) {
+        hasNormalizedMode = true;
+        hasSelectedMode |= static_cast<bool>(op.getSwConfigsAttr());
+      }
+      continue;
+    }
+    if (auto mux = ::mlir::dyn_cast<::fabric::MuxOp>(&operation)) {
+      hasSelectedRoute |= static_cast<bool>(mux.getSelAttr());
+      continue;
+    }
+    if (auto demux = ::mlir::dyn_cast<::fabric::DemuxOp>(&operation))
+      hasSelectedRoute |= static_cast<bool>(demux.getSelAttr());
+  }
+
+  if (!hasNormalizedMode)
     return ::mlir::success();
+  if (!hasSelectedMode && !hasSelectedRoute)
+    return fu.emitOpError(
+        "normalized fabric.fu requires non-empty valid_encodings or "
+        "complete programmed selections");
+
+  for (Operation &operation : fu.getBody().front().without_terminator()) {
+    if (auto op = ::mlir::dyn_cast<::fabric::OpOp>(&operation)) {
+      if (!hasNormalizedHardwareModes(op) || !op.getSwConfigsAttr())
+        return op.emitOpError(
+            "programmed normalized fabric.fu requires a selected normalized "
+            "mode on every fabric.op");
+      continue;
+    }
+    if (auto mux = ::mlir::dyn_cast<::fabric::MuxOp>(&operation)) {
+      if (!mux.getSelAttr())
+        return mux.emitOpError(
+            "programmed normalized fabric.fu requires an explicit selection "
+            "for every routing resource");
+      continue;
+    }
+    if (auto demux = ::mlir::dyn_cast<::fabric::DemuxOp>(&operation)) {
+      if (!demux.getSelAttr())
+        return demux.emitOpError(
+            "programmed normalized fabric.fu requires an explicit selection "
+            "for every routing resource");
+    }
+  }
+  return ::mlir::success();
+}
+
+::mlir::LogicalResult verifyValidSemanticEncodings(FuOp fu) {
+  auto encodings = fu.getValidEncodingsAttr();
+  if (!encodings)
+    return verifyProgrammedNormalizedFu(fu);
   if (encodings.empty())
     return fu.emitOpError("valid_encodings must not be empty");
 
@@ -1035,7 +1111,7 @@ bool matchConfiguredFunctions(const ConfiguredFunction &pattern,
 }
 
 unsigned getValidSemanticEncodingCount(FuOp fu) {
-  if (auto encodings = fu->getAttrOfType<ArrayAttr>("valid_encodings"))
+  if (auto encodings = fu.getValidEncodingsAttr())
     return encodings.size();
   return 0;
 }

@@ -29,9 +29,13 @@
 #include "Common/SynthConfig.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/IR/FabricDialect.h"
+#include "Fabric/IR/FabricTypes.h"
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -67,6 +71,12 @@ static ::llvm::cl::opt<bool> capabilityTieBreak(
     "capability-tiebreak",
     ::llvm::cl::desc("Exercise deterministic capability-aware candidate "
                      "ranking"),
+    ::llvm::cl::init(false));
+
+static ::llvm::cl::opt<bool> synthesizeFixedVector(
+    "synthesize-fixed-vector",
+    ::llvm::cl::desc("Synthesize two identical fixed-vector configured "
+                     "functions through the canonical anchor strategy"),
     ::llvm::cl::init(false));
 
 namespace {
@@ -176,6 +186,72 @@ int doCapabilityTieBreak() {
   return 0;
 }
 
+int doFixedVectorSynthesis() {
+  ::loom::SynthConfig cfg;
+  auto synth = ::loom::fabric::tech::makeSynthesizer("anchor", cfg);
+  if (!synth)
+    return 1;
+
+  ::mlir::DialectRegistry registry;
+  registry.insert<::mlir::arith::ArithDialect, ::mlir::func::FuncDialect,
+                  ::fabric::FabricDialect, ::dataflow::DataflowDialect>();
+  ::mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto i32 = ::mlir::IntegerType::get(&context, 32);
+  auto vector = ::mlir::VectorType::get({4}, i32);
+  ::fabric::ConfiguredFunction function;
+  function.inputs.push_back({0, vector});
+  function.inputs.push_back({1, vector});
+  ::fabric::ConfiguredFunctionNode node;
+  node.operationName = "arith.addi";
+  node.functionType =
+      ::mlir::FunctionType::get(&context, {vector, vector}, {vector});
+  node.attributes = ::mlir::DictionaryAttr::get(&context);
+  node.operands.push_back(::fabric::ConfiguredValue::input(0));
+  node.operands.push_back(::fabric::ConfiguredValue::input(1));
+  function.nodes.push_back(std::move(node));
+  function.outputs.push_back(
+      {0, vector, ::fabric::ConfiguredValue::nodeResult(0, 0)});
+
+  ::llvm::SmallVector<::fabric::ConfiguredFunction, 2> functions = {function,
+                                                                    function};
+  ::loom::fabric::tech::SynthInputs inputs{
+      /*groupName=*/"fixed_vector",
+      /*functions=*/functions,
+      /*config=*/cfg,
+      /*context=*/&context,
+  };
+  auto result = synth->run(inputs);
+  if (!result.success()) {
+    ::llvm::outs() << "synthesis=failed reason="
+                   << ::loom::fabric::tech::failureReasonString(
+                          result.failureReason)
+                   << "\n";
+    for (const std::string &note : result.notes)
+      ::llvm::outs() << "note=" << note << "\n";
+    return 1;
+  }
+
+  ::fabric::FuOp fu;
+  result.wrapper->walk([&](::fabric::FuOp candidate) { fu = candidate; });
+  if (!fu)
+    return 1;
+  auto inputType = ::mlir::dyn_cast<::fabric::BitsType>(
+      fu.getBody().front().getArgument(0).getType());
+  if (!inputType)
+    return 1;
+  std::size_t covered = 0;
+  for (const auto &witness : result.coverage.witnesses)
+    covered += witness.has_value();
+  ::llvm::outs() << "synthesis=success\n"
+                 << "input_width=" << inputType.getWidth() << "\n"
+                 << "encodings=" << ::fabric::getValidSemanticEncodingCount(fu)
+                 << "\n"
+                 << "covered=" << covered << "\n";
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -205,10 +281,17 @@ int main(int argc, char **argv) {
       return rc;
     didSomething = true;
   }
+  if (synthesizeFixedVector.getValue()) {
+    int rc = doFixedVectorSynthesis();
+    if (rc != 0)
+      return rc;
+    didSomething = true;
+  }
   if (!didSomething) {
     ::llvm::errs() << "error: one of --list-strategies / "
                       "--list-failure-reasons / --make / "
-                      "--capability-tiebreak is required\n";
+                      "--capability-tiebreak / --synthesize-fixed-vector is "
+                      "required\n";
     return 1;
   }
   return 0;

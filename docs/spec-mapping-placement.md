@@ -135,12 +135,11 @@ configuration, schedule, or resource-sharing records. If the mapping
 requires a more precise target to route values, it must bind at that
 more precise resource level.
 
-For SpatialCore compute, the primary placement unit is a
-`dataflow.subgraph` bound to a compatible `fabric.fu`. This is the
-canonical software-to-hardware compute relation for CGRA mapping.
-Operation-level placement is a fallback granularity, not a replacement
-for subgraph-to-FU mapping when the software IR contains
-`dataflow.subgraph`.
+For SpatialCore compute, the primary placement unit is the Compute
+Realization owned by the Mapping Artifact. It groups Canonical Dataflow
+Program actors and binds them to one compatible `fabric.fu` encoding with
+complete actor-to-operation and boundary-port correspondence. This grouping
+does not create or mutate a `dataflow.subgraph` in the software artifact.
 
 When a `fabric.pe` contains multiple FUs, the mapping must record which
 FU is active for each use. Spatial PE use allows only one active FU for
@@ -172,9 +171,9 @@ The placement verifier checks:
 * operation binding refers to software inside the graph binding's
   software graph context;
 * operation binding targets a compatible resource;
-* subgraph-to-FU bindings are used for `dataflow.subgraph` compute
-  partitions unless the artifact explicitly records a legal finer
-  operation-level fallback;
+* every Compute Realization has exact actor coverage, selected FU and
+  encoding ownership, configured-function equality, and boundary
+  correspondence;
 * PE-level bindings identify the active FU and prove that inactive FUs
   do not consume the same PE slot;
 * shared exclusive resources have matching schedule or resource-sharing

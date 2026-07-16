@@ -8,16 +8,11 @@
 
 namespace fabric {
 
-// Walk every fabric.fu in the module and append, immediately after the FU,
-// one derived dataflow.subgraph per explicit semantic encoding. Each emitted
-// subgraph carries its `loom.from_fu_encoding` array index.
+// Emit one non-authoritative legacy display adapter per explicit FU semantic
+// encoding. Each derived dataflow.subgraph carries its
+// `loom.from_fu_encoding` array index; Mapping decisions never consume or
+// persist this projection.
 std::unique_ptr<::mlir::Pass> createEnumerateFuSubgraphsPass();
-
-// For each dataflow.subgraph annotated with `loom.is_pattern`, try to find
-// a fabric.fu in the module that can implement the pattern. On success the
-// pattern is annotated with the selected FU and encoding plus actor/op and
-// boundary-port correspondence; otherwise it is tagged `loom.unmatched`.
-std::unique_ptr<::mlir::Pass> createMapSubgraphToFusPass();
 
 // Synthesize one fabric.fu per `loom.synth_group` value out of the input
 // dataflow.subgraphs in the module. Each successfully synthesized FU is

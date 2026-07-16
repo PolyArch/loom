@@ -3,6 +3,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -13,6 +14,7 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <set>
 #include <string>
 
 using ::llvm::StringRef;
@@ -134,12 +136,17 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
 ::llvm::Error applySynthYAMLNested(::loom::SynthConfig &cfg, StringRef parent,
                                    ::llvm::yaml::MappingNode *map,
                                    ::llvm::SourceMgr &sm) {
+  ::llvm::StringSet<> seenKeys;
   for (auto &kv : *map) {
     ::llvm::SmallString<32> kbuf;
     StringRef child = scalarValue(kv.getKey(), kbuf);
     if (child.empty())
       return makeYamlSchemaErr(sm, kv.getKey(),
                                "mapping keys must be scalar strings");
+    if (!seenKeys.insert(child).second)
+      return makeYamlSchemaErr(sm, kv.getKey(),
+                               ::llvm::Twine("duplicate key 'synth.") + parent +
+                                   "." + child + "'");
     auto *valNode = kv.getValue();
 
     if (parent == "parallelism") {
@@ -225,6 +232,11 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
   return ::llvm::Error::success();
 }
 
+bool isKnownYamlSection(StringRef key) {
+  return key == "parallelism" || key == "coverage_verifier" || key == "cost" ||
+         key == "anchor";
+}
+
 ::llvm::Error applySynthYAMLEntry(::loom::SynthConfig &cfg, StringRef key,
                                   ::llvm::yaml::Node *keyNode,
                                   ::llvm::yaml::Node *value,
@@ -236,9 +248,7 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
     cfg.strategy = stripQuotes(val).str();
     return ::llvm::Error::success();
   }
-  bool knownSection = key == "parallelism" || key == "coverage_verifier" ||
-                      key == "cost" || key == "anchor";
-  if (knownSection) {
+  if (isKnownYamlSection(key)) {
     auto *map = ::llvm::dyn_cast_or_null<::llvm::yaml::MappingNode>(value);
     if (!map)
       return makeYamlSchemaErr(sm, keyNode,
@@ -352,8 +362,8 @@ bool isKnownTomlSection(StringRef section) {
 namespace loom {
 
 ::llvm::Expected<SynthConfig> parseSynthConfigYAML(StringRef body) {
-  // Hand-walk a tiny YAML subset rather than registering MappingTraits, so
-  // that unknown keys are tolerated with a precise location.
+  // Hand-walk a tiny YAML subset rather than registering MappingTraits so
+  // schema and duplicate diagnostics retain precise source locations.
   SynthConfig cfg;
   ::llvm::SourceMgr sm;
 
@@ -408,15 +418,24 @@ namespace loom {
   auto *synthKeyNode =
       ::llvm::dyn_cast<::llvm::yaml::ScalarNode>(topIt->getKey());
   if (!synthKeyNode)
-    return makeErr("yaml: top-level mapping must contain a 'synth:' key");
+    return makeYamlSchemaErr(sm, topIt->getKey(),
+                             "top-level keys must be scalar strings");
   ::llvm::SmallString<16> synthKeyBuffer;
-  if (synthKeyNode->getValue(synthKeyBuffer) != "synth")
-    return makeErr("yaml: top-level mapping must contain a 'synth:' key");
+  StringRef synthKey = synthKeyNode->getValue(synthKeyBuffer);
+  if (synthKey != "synth") {
+    if (::llvm::isa_and_nonnull<::llvm::yaml::MappingNode>(topIt->getValue()))
+      return makeYamlSchemaErr(sm, synthKeyNode,
+                               ::llvm::Twine("unknown section '") + synthKey +
+                                   "'");
+    return makeYamlSchemaErr(sm, synthKeyNode,
+                             ::llvm::Twine("unknown key '") + synthKey + "'");
+  }
   auto *synth = ::llvm::dyn_cast<::llvm::yaml::MappingNode>(topIt->getValue());
   if (!synth)
     return makeYamlSchemaErr(sm, synthKeyNode,
                              "section 'synth' must be a mapping");
 
+  ::llvm::StringSet<> seenSynthKeys;
   for (auto &kv : *synth) {
     auto *keyNode = ::llvm::dyn_cast<::llvm::yaml::ScalarNode>(kv.getKey());
     if (!keyNode)
@@ -424,6 +443,12 @@ namespace loom {
                                "mapping keys must be scalar strings");
     ::llvm::SmallString<32> kbuf;
     StringRef key = keyNode->getValue(kbuf);
+    if (!seenSynthKeys.insert(key).second) {
+      const char *kind = isKnownYamlSection(key) ? "section" : "key";
+      return makeYamlSchemaErr(sm, kv.getKey(),
+                               ::llvm::Twine("duplicate ") + kind + " 'synth." +
+                                   key + "'");
+    }
     if (auto e = applySynthYAMLEntry(cfg, key, kv.getKey(), kv.getValue(), sm))
       return std::move(e);
   }
@@ -456,6 +481,8 @@ namespace loom {
 ::llvm::Expected<SynthConfig> parseSynthConfigTOML(StringRef body) {
   SynthConfig cfg;
   StringRef section;
+  std::set<std::string> seenSections;
+  std::set<std::string> seenKeys;
   size_t lineNo = 0;
   while (!body.empty()) {
     ++lineNo;
@@ -473,6 +500,9 @@ namespace loom {
       if (!isKnownTomlSection(section))
         return makeErr("toml line " + ::llvm::Twine(lineNo) +
                        ": unknown section '" + section + "'");
+      if (!seenSections.insert(section.str()).second)
+        return makeErr("toml line " + ::llvm::Twine(lineNo) +
+                       ": duplicate section '" + section + "'");
       continue;
     }
 
@@ -482,6 +512,11 @@ namespace loom {
                      ": expected `key = value`");
     StringRef key = trim(line.substr(0, eq));
     StringRef value = trim(line.substr(eq + 1));
+    std::string fullKey =
+        section.empty() ? key.str() : (section + "." + key).str();
+    if (!seenKeys.insert(fullKey).second)
+      return makeErr("toml line " + ::llvm::Twine(lineNo) +
+                     ": duplicate key '" + fullKey + "'");
     if (auto e = applyTomlKV(cfg, section, key, value, lineNo))
       return std::move(e);
   }

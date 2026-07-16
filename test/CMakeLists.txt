@@ -19,7 +19,6 @@ set(LOOM_TEST_DEPENDS
   loom-raise
   loom-raise-opt
   loom-adg-builder-test
-  loom-alignment-test
   loom-config-test
   loom-cost-test
   loom-coverage-test

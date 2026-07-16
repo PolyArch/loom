@@ -5,6 +5,7 @@ llvm_update_compile_flags(loom-synth-base-test)
 
 target_link_libraries(loom-synth-base-test PRIVATE
   LoomCommon
+  MLIRArithDialect
   MLIRDataflow
   MLIRFabric
   MLIRFabricTech

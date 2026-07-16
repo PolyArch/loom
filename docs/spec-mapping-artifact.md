@@ -238,17 +238,13 @@ The TechMapping profile verifies at least:
 * complete actor-to-`fabric.op` and boundary-port correspondence;
 * selected FU and encoding ownership; and
 * configured-function equality for the actor group, including exact semantic
-  types, attributes, ordered edges, fanout, and boundary correspondence; and
+  types, attributes, ordered edges, fanout, and boundary correspondence;
 * all required typed realization and representation obligations.
 
 Port legality uses exact port kind and compatible payload capacity. In
 particular, `bits` and `bits_tag` do not correspond implicitly, while an
 untagged physical payload may be wider than the software requirement under the
 low-bit-aligned widening and narrowing rules owned by Fabric.
-
-Configured-function equivalence and full configuration legality remain
-required target checks even where the current structural validator has not
-implemented them yet.
 
 The Physical Mapping profile verifies the exact immutable predecessor,
 rejects copied or conflicting TechMapping authority, and checks that the

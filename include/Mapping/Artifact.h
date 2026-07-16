@@ -62,6 +62,26 @@ private:
   std::uint64_t value_;
 };
 
+class SemanticKey {
+public:
+  SemanticKey() = delete;
+  SemanticKey(std::initializer_list<std::uint8_t> bytes) : bytes_(bytes) {}
+  explicit SemanticKey(std::vector<std::uint8_t> bytes)
+      : bytes_(std::move(bytes)) {}
+
+  friend bool operator==(const SemanticKey &lhs, const SemanticKey &rhs) {
+    return lhs.bytes_ == rhs.bytes_;
+  }
+  friend bool operator!=(const SemanticKey &lhs, const SemanticKey &rhs) {
+    return !(lhs == rhs);
+  }
+
+private:
+  // Lossless canonical bytes from the owning semantic artifact view. This is
+  // an equality identity, not a truncated hash.
+  std::vector<std::uint8_t> bytes_;
+};
+
 struct PortDescriptor {
   PortKind kind;
   TypeKey type;
@@ -96,14 +116,14 @@ struct ActorIdTag;
 struct FuIdTag;
 struct FabricOpIdTag;
 struct EncodingIdTag;
-struct StructuralRealizationIdTag;
+struct ComputeRealizationIdTag;
 
 using GraphId = TypedEntityId<GraphIdTag>;
 using ActorId = TypedEntityId<ActorIdTag>;
 using FuId = TypedEntityId<FuIdTag>;
 using FabricOpId = TypedEntityId<FabricOpIdTag>;
 using EncodingId = TypedEntityId<EncodingIdTag>;
-using StructuralRealizationId = TypedEntityId<StructuralRealizationIdTag>;
+using ComputeRealizationId = TypedEntityId<ComputeRealizationIdTag>;
 
 template <typename EntityId> struct EntityReference {
   ArtifactIdentity artifact;
@@ -125,6 +145,8 @@ struct GraphDescriptor {
 struct ActorDescriptor {
   ActorId id;
   GraphId graph;
+  SemanticKey operation;
+  SemanticKey attributes;
   std::vector<PortDescriptor> inputPorts;
   std::vector<PortDescriptor> outputPorts;
 };
@@ -168,9 +190,60 @@ struct FabricOpDescriptor {
   std::vector<PortDescriptor> outputPorts;
 };
 
+struct FuInputValue {
+  std::uint32_t index;
+
+  friend bool operator==(FuInputValue lhs, FuInputValue rhs) {
+    return lhs.index == rhs.index;
+  }
+  friend bool operator!=(FuInputValue lhs, FuInputValue rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+struct FabricOpResultValue {
+  FabricOpId operation;
+  std::uint32_t index;
+
+  friend bool operator==(FabricOpResultValue lhs, FabricOpResultValue rhs) {
+    return lhs.operation == rhs.operation && lhs.index == rhs.index;
+  }
+  friend bool operator!=(FabricOpResultValue lhs, FabricOpResultValue rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+using ConfiguredValue = std::variant<FuInputValue, FabricOpResultValue>;
+
+struct ConfiguredFabricOpDescriptor {
+  FabricOpId operation;
+  SemanticKey semantics;
+  SemanticKey attributes;
+  std::vector<PortDescriptor> inputPorts;
+  std::vector<PortDescriptor> outputPorts;
+  std::vector<ConfiguredValue> operands;
+};
+
+struct ConfiguredInputDescriptor {
+  std::uint32_t fuPort;
+  PortDescriptor port;
+};
+
+struct ConfiguredOutputDescriptor {
+  std::uint32_t fuPort;
+  PortDescriptor port;
+  ConfiguredValue value;
+};
+
 struct EncodingDescriptor {
   EncodingId id;
   FuId fu;
+  // Derived lossless projection of the selected canonical ConfiguredFunction.
+  // The Mapping Artifact persists only the encoding reference and explicit
+  // correspondences, never this projection as a second software graph.
+  std::vector<ConfiguredInputDescriptor> inputs;
+  std::vector<ConfiguredFabricOpDescriptor> operations;
+  std::vector<ConfiguredOutputDescriptor> outputs;
 };
 
 struct FabricHardwareView {
@@ -202,8 +275,8 @@ struct BoundaryPortCorrespondence {
   FuPortRef fuPort;
 };
 
-struct StructuralRealizationDraft {
-  StructuralRealizationId id;
+struct ComputeRealizationDraft {
+  ComputeRealizationId id;
   std::vector<ActorRef> actors;
   FuRef fu;
   EncodingRef encoding;
@@ -229,7 +302,7 @@ struct MappingDraftHeader {
 struct TechMappingDraft {
   MappingDraftHeader header;
   std::vector<GraphRef> coveredGraphs;
-  std::vector<StructuralRealizationDraft> realizations;
+  std::vector<ComputeRealizationDraft> realizations;
 };
 
 } // namespace loom::mapping

@@ -152,10 +152,10 @@ FU similarity beyond what the verifier requires for individual FUs.
 
 Conceptually, the PE level organizes one or more FU resources and, in
 temporal mode, describes how those resources may be time-multiplexed.
-It is not the software partition boundary: `dataflow.subgraph` maps to
-`fabric.fu` candidates, and place and route operates at that
-`dataflow.subgraph` -> `fabric.fu` granularity before considering the
-enclosing PE resource context.
+It is not the software partition boundary. TechMapping records actor groups,
+selected `fabric.fu` encodings, and exact correspondence in Compute
+Realizations before place and route considers the enclosing PE resource
+context. Canonical Dataflow IR does not persist those target-specific groups.
 
 PE-level routing (input mux, output demux) is expressed entirely
 through the PE's `sw_configs`, not through nested IR ops, because PE-
