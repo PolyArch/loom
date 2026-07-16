@@ -915,9 +915,12 @@ void addTwoLoadOneStoreMem(ModuleBuilder &module) {
            BodyResultSpec{"store_done", "!fabric.bits<0>"}},
           {directBodyLine({"fabric.mem [spatial] mgr(", ")"}, {"mgr"}),
            directOperandListLine("      load(",
-                                 {"idx0", "ctrl", "idx1", "ctrl"}, ")"),
+                                 {"idx0", "load_ctrl0", "idx1",
+                                  "load_ctrl1"},
+                                 ")"),
            directOperandListLine("      store(",
-                                 {"store_idx", "store_value", "ctrl"}, ")"),
+                                 {"store_idx", "store_value", "store_ctrl"},
+                                 ")"),
            exactBodyLine(
                "      [{load_group_size = 2 : i32, store_group_size = 1 : "
                "i32}]"),

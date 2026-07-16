@@ -836,14 +836,17 @@ ModuleBuilder loom::adg::buildSharedVectorAluAdg() {
   module.addPe(std::move(syncPe));
 
   addTwoLoadOneStoreMem(module);
+  addUniformSwitch(module,
+                   {"load_ctrl0", "load_ctrl1", "store_ctrl", "sync0",
+                    "sync1", "sync2"},
+                   {"ctrl", "done0", "done1", "store_done"},
+                   "!fabric.bits<0>");
   addSpatialSwitch(module, {"bin0", "bin1", "unary"},
                    {"data0", "data1", "i32a"}, {"111", "111", "111"});
   addUniformSwitch(module, {"store_value"},
                    {"xored", "swapped", "product", "int_product", "int_sum",
                     "qsub16", "i32b"},
                    "!fabric.bits<32>");
-  addUniformSwitch(module, {"sync0", "sync1", "sync2"},
-                   {"done0", "done1", "store_done"}, "!fabric.bits<0>");
   return module;
 }
 
@@ -970,6 +973,11 @@ ModuleBuilder loom::adg::buildSharedVectorMeshAdg() {
   module.addPe(std::move(syncPe));
 
   addTwoLoadOneStoreMem(module);
+  addUniformSwitch(module,
+                   {"load_ctrl0", "load_ctrl1", "store_ctrl", "sync0",
+                    "sync1", "sync2"},
+                   {"ctrl", "done0", "done1", "store_done"},
+                   "!fabric.bits<0>");
   addSpatialSwitch(module, {"west0", "west1", "west_unary"},
                    {"data0", "data1", "i32a"}, {"111", "111", "101"});
   addSpatialSwitch(module, {"mesh_lhs", "mesh_rhs_pre"}, {"west0", "west1"},
@@ -978,7 +986,5 @@ ModuleBuilder loom::adg::buildSharedVectorMeshAdg() {
                    {"mesh_rhs_pre", "west0", "west_unary"}, {"111", "011"});
   addUniformSwitch(module, {"store_value"}, {"xored", "swapped", "i32a"},
                    "!fabric.bits<32>");
-  addUniformSwitch(module, {"sync0", "sync1", "sync2"},
-                   {"done0", "done1", "store_done"}, "!fabric.bits<0>");
   return module;
 }
