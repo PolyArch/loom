@@ -5,6 +5,7 @@
 #include "Common/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Fabric/IR/Elaboration.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 
@@ -108,30 +109,6 @@ std::optional<std::string> symbolName(mlir::Operation *op) {
     return attr.getValue().str();
   return std::nullopt;
 }
-
-bool isNamedFabricTemplate(mlir::Operation *op) {
-  llvm::StringRef name = op->getName().getStringRef();
-  if (name != "fabric.pe" && name != "fabric.fu" &&
-      name != "fabric.switch" && name != "fabric.mem")
-    return false;
-  return op->hasAttr("sym_name");
-}
-
-} // namespace
-
-bool isConcreteHardwareOperation(mlir::Operation *op,
-                                 mlir::Operation *hardwareRoot) {
-  for (mlir::Operation *current = op; current && current != hardwareRoot;
-       current = current->getParentOp()) {
-    if (isNamedFabricTemplate(current))
-      return false;
-    if (current->getName().getStringRef() == "fabric.module")
-      return false;
-  }
-  return true;
-}
-
-namespace {
 
 mlir::Operation *findSymbolOp(mlir::ModuleOp module, llvm::StringRef opName,
                               llvm::StringRef symbol) {
@@ -1451,6 +1428,12 @@ loom::pnr::createMapping(const MappingOptions &options) {
   auto selectionOrErr = selectFabricHardware(*hardware, options);
   if (!selectionOrErr)
     return selectionOrErr.takeError();
+  if (mlir::failed(fabric::elaborateInstances(
+          mlir::cast<fabric::ModuleOp>(selectionOrErr->module))))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "PnR could not elaborate selected fabric.module @%s",
+        selectionOrErr->moduleName.c_str());
 
   auto nodesOrErr = collectSoftwareNodes(graph);
   if (!nodesOrErr)

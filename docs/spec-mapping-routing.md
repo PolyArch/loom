@@ -33,10 +33,17 @@ Route search must consume the software edge's required payload width, and
 any route cache key must include that width so a path found for a narrower
 edge cannot be reused for a wider edge.
 
-The routing importer consumes fully elaborated physical occurrences.
-Unresolved `fabric.instantiate` operations are rejected explicitly; named
-templates are not counted as physical resources until elaboration creates
-instance-qualified occurrences.
+The PnR import boundary parses the Fabric Hardware Description into a private
+module, selects either the requested top-level `fabric.module` or the spatial
+`fabric.module` referenced by the selected AccCore, and calls the canonical
+`fabric::elaborateInstances` API on that root before collecting or freezing
+physical resources and topology. Elaboration is atomic: failure rejects the
+mapping without publishing a partial hardware model or modifying the input
+file. PnR does not own a second instance-expansion mechanism.
+
+Named templates without an occurrence remain declarations and are not counted
+as physical resources. Concrete instances under the selected root become the
+fresh physical occurrences consumed by mapping.
 
 For `fabric.boundary`, only the data projection carries a canonical
 software payload: `s2t` input 0 to result 0, `t2t` input 0 to result 0,

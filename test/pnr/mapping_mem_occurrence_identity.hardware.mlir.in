@@ -1,0 +1,123 @@
+module {
+  fabric.mem @MEM [spatial]
+      (memref<?x!fabric.bits<32>>,
+       !fabric.bits<32>, !fabric.bits<0>,
+       !fabric.bits<32>, !fabric.bits<0>,
+       !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>)
+       -> (!fabric.bits<32>, !fabric.bits<0>,
+           !fabric.bits<32>, !fabric.bits<0>, !fabric.bits<0>)
+      [{load_group_size = 2 : i32, store_group_size = 1 : i32}]
+
+  fabric.module @named_dual_mem_adg(
+      %mgr : memref<?x!fabric.bits<32>>,
+      %l0a : !fabric.bits<32>, %l0c : !fabric.bits<0>,
+      %l1a : !fabric.bits<32>, %l1c : !fabric.bits<0>,
+      %s0a : !fabric.bits<32>, %s0d : !fabric.bits<32>,
+      %s0c : !fabric.bits<0>,
+      %l2a : !fabric.bits<32>, %l2c : !fabric.bits<0>,
+      %l3a : !fabric.bits<32>, %l3c : !fabric.bits<0>,
+      %s1a : !fabric.bits<32>, %s1d : !fabric.bits<32>,
+      %s1c : !fabric.bits<0>) {
+    fabric.mem @UNUSED [spatial]
+        (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+         -> (!fabric.bits<32>, !fabric.bits<0>)
+        [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+    %load0, %load0_done, %load1, %load1_done, %store0_done =
+        fabric.instantiate @MEM(
+            %mgr : memref<?x!fabric.bits<32>>,
+            %l0a : !fabric.bits<32>, %l0c : !fabric.bits<0>,
+            %l1a : !fabric.bits<32>, %l1c : !fabric.bits<0>,
+            %s0a : !fabric.bits<32>, %s0d : !fabric.bits<32>,
+            %s0c : !fabric.bits<0>)
+        -> (!fabric.bits<32>, !fabric.bits<0>,
+            !fabric.bits<32>, !fabric.bits<0>, !fabric.bits<0>)
+    %load2, %load2_done, %load3, %load3_done, %store1_done =
+        fabric.instantiate @MEM(
+            %mgr : memref<?x!fabric.bits<32>>,
+            %l2a : !fabric.bits<32>, %l2c : !fabric.bits<0>,
+            %l3a : !fabric.bits<32>, %l3c : !fabric.bits<0>,
+            %s1a : !fabric.bits<32>, %s1d : !fabric.bits<32>,
+            %s1c : !fabric.bits<0>)
+        -> (!fabric.bits<32>, !fabric.bits<0>,
+            !fabric.bits<32>, !fabric.bits<0>, !fabric.bits<0>)
+    %sum0 = fabric.pe [spatial] (%pa = %load0 : !fabric.bits<32>,
+                                 %pb = %load1 : !fabric.bits<32>)
+        -> !fabric.bits<32> {
+      fabric.fu(%fa = %pa : !fabric.bits<32>,
+                %fb = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+        %result = fabric.op [@arith.addi] (%fa, %fb)
+            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        fabric.yield %result : !fabric.bits<32>
+      }
+    }
+    %sum1 = fabric.pe [spatial] (%pa = %sum0 : !fabric.bits<32>,
+                                 %pb = %load2 : !fabric.bits<32>)
+        -> !fabric.bits<32> {
+      fabric.fu(%fa = %pa : !fabric.bits<32>,
+                %fb = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+        %result = fabric.op [@arith.addi] (%fa, %fb)
+            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        fabric.yield %result : !fabric.bits<32>
+      }
+    }
+    fabric.yield
+  }
+
+  fabric.module @direct_dual_mem_adg(
+      %mgr : memref<?x!fabric.bits<32>>,
+      %l0a : !fabric.bits<32>, %l0c : !fabric.bits<0>,
+      %l1a : !fabric.bits<32>, %l1c : !fabric.bits<0>,
+      %l2a : !fabric.bits<32>, %l2c : !fabric.bits<0>,
+      %l3a : !fabric.bits<32>, %l3c : !fabric.bits<0>,
+      %s0a : !fabric.bits<32>, %s0d : !fabric.bits<32>,
+      %s0c : !fabric.bits<0>,
+      %s1a : !fabric.bits<32>, %s1d : !fabric.bits<32>,
+      %s1c : !fabric.bits<0>) {
+    fabric.mem @UNUSED [spatial]
+        (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+         -> (!fabric.bits<32>, !fabric.bits<0>)
+        [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+    %load0, %load0_done, %load1, %load1_done, %load2, %load2_done =
+        fabric.mem [spatial] mgr(%mgr)
+            load(%l0a, %l0c, %l1a, %l1c, %l2a, %l2c) store()
+        [{load_group_size = 3 : i32, store_group_size = 0 : i32}]
+        : (memref<?x!fabric.bits<32>>,
+           !fabric.bits<32>, !fabric.bits<0>,
+           !fabric.bits<32>, !fabric.bits<0>,
+           !fabric.bits<32>, !fabric.bits<0>)
+       -> (!fabric.bits<32>, !fabric.bits<0>,
+           !fabric.bits<32>, !fabric.bits<0>,
+           !fabric.bits<32>, !fabric.bits<0>)
+    %load3, %load3_done, %store0_done, %store1_done =
+        fabric.mem [spatial] mgr(%mgr) load(%l3a, %l3c)
+            store(%s0a, %s0d, %s0c, %s1a, %s1d, %s1c)
+        [{load_group_size = 1 : i32, store_group_size = 2 : i32}]
+        : (memref<?x!fabric.bits<32>>,
+           !fabric.bits<32>, !fabric.bits<0>,
+           !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>,
+           !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>)
+       -> (!fabric.bits<32>, !fabric.bits<0>,
+           !fabric.bits<0>, !fabric.bits<0>)
+    %sum0 = fabric.pe [spatial] (%pa = %load0 : !fabric.bits<32>,
+                                 %pb = %load1 : !fabric.bits<32>)
+        -> !fabric.bits<32> {
+      fabric.fu(%fa = %pa : !fabric.bits<32>,
+                %fb = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+        %result = fabric.op [@arith.addi] (%fa, %fb)
+            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        fabric.yield %result : !fabric.bits<32>
+      }
+    }
+    %sum1 = fabric.pe [spatial] (%pa = %sum0 : !fabric.bits<32>,
+                                 %pb = %load2 : !fabric.bits<32>)
+        -> !fabric.bits<32> {
+      fabric.fu(%fa = %pa : !fabric.bits<32>,
+                %fb = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+        %result = fabric.op [@arith.addi] (%fa, %fb)
+            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        fabric.yield %result : !fabric.bits<32>
+      }
+    }
+    fabric.yield
+  }
+}

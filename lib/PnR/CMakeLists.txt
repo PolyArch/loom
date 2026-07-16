@@ -1,5 +1,6 @@
 add_mlir_library(LoomPnR
   Mapping.cpp
+  MappingHardware.cpp
   MappingIO.cpp
   MappingRouting.cpp
   MappingEstimateReport.cpp

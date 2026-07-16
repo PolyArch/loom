@@ -130,8 +130,6 @@ struct RouteCache {
 };
 
 llvm::StringRef resourceKindName(ResourceKind kind);
-bool isConcreteHardwareOperation(mlir::Operation *op,
-                                 mlir::Operation *hardwareRoot);
 bool isAdapterOp(mlir::Operation *op);
 bool shouldMaterializeAdapterOp(mlir::Operation *op);
 bool isStructuredContainerOp(mlir::Operation *op);

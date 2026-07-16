@@ -1,3 +1,4 @@
+#include "MappingHardware.h"
 #include "MappingInternal.h"
 
 #include "Fabric/IR/FabricOps.h"
@@ -13,6 +14,7 @@
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -35,12 +37,6 @@ struct EndpointKey {
 };
 
 constexpr unsigned kExhaustivePlacementNodeLimit = 20;
-
-std::uint64_t integerAttrValue(mlir::Attribute attr) {
-  if (auto intAttr = llvm::dyn_cast_if_present<mlir::IntegerAttr>(attr))
-    return static_cast<std::uint64_t>(intAttr.getInt());
-  return 0;
-}
 
 std::string configValue(mlir::Attribute attr) {
   if (auto stringAttr = llvm::dyn_cast_if_present<mlir::StringAttr>(attr))
@@ -95,38 +91,30 @@ void appendHwParamOptions(mlir::Operation *op, HardwareResource &resource) {
 }
 
 void appendMemResources(mlir::Operation *op, llvm::StringRef hardwareName,
+                        const MemOccurrenceIdentity &identity,
                         llvm::SmallVectorImpl<HardwareResource> &resources) {
-  std::uint64_t loadPorts = 0;
-  std::uint64_t storePorts = 0;
-  auto hwParams = op->getAttrOfType<mlir::ArrayAttr>("hw_params");
-  if (hwParams && !hwParams.empty()) {
-    if (auto dict = llvm::dyn_cast<mlir::DictionaryAttr>(hwParams[0])) {
-      loadPorts = integerAttrValue(dict.get("load_group_size"));
-      storePorts = integerAttrValue(dict.get("store_group_size"));
-    }
-  }
   std::string schedule = nearestSchedule(op);
-  for (std::uint64_t i = 0; i < loadPorts; ++i) {
-    resources.push_back(
-        HardwareResource{(hardwareName + "::mem.load#" + llvm::Twine(i)).str(),
-                         ResourceKind::MemLoad,
-                         schedule,
-                         op,
-                         {},
-                         {},
-                         {},
-                         false});
+  for (std::uint64_t i = 0; i < identity.loadCount; ++i) {
+    resources.push_back(HardwareResource{
+        memResourceId(hardwareName, MemAccessKind::Load, identity, i),
+        ResourceKind::MemLoad,
+        schedule,
+        op,
+        {},
+        {},
+        {},
+        false});
   }
-  for (std::uint64_t i = 0; i < storePorts; ++i) {
-    resources.push_back(
-        HardwareResource{(hardwareName + "::mem.store#" + llvm::Twine(i)).str(),
-                         ResourceKind::MemStore,
-                         schedule,
-                         op,
-                         {},
-                         {},
-                         {},
-                         false});
+  for (std::uint64_t i = 0; i < identity.storeCount; ++i) {
+    resources.push_back(HardwareResource{
+        memResourceId(hardwareName, MemAccessKind::Store, identity, i),
+        ResourceKind::MemStore,
+        schedule,
+        op,
+        {},
+        {},
+        {},
+        false});
   }
 }
 
@@ -258,19 +246,6 @@ void normalizeTopologyRoutes(HardwareTopology &topology) {
   }
 }
 
-std::pair<std::uint64_t, std::uint64_t> memPortCounts(mlir::Operation *op) {
-  std::uint64_t loadPorts = 0;
-  std::uint64_t storePorts = 0;
-  auto hwParams = op->getAttrOfType<mlir::ArrayAttr>("hw_params");
-  if (hwParams && !hwParams.empty()) {
-    if (auto dict = llvm::dyn_cast<mlir::DictionaryAttr>(hwParams[0])) {
-      loadPorts = integerAttrValue(dict.get("load_group_size"));
-      storePorts = integerAttrValue(dict.get("store_group_size"));
-    }
-  }
-  return {loadPorts, storePorts};
-}
-
 unsigned memResultPortBase(mlir::Operation *op) {
   if (op->getNumResults() == 0)
     return 0;
@@ -396,6 +371,7 @@ bool isFabricBoundaryOp(llvm::StringRef opName) {
 }
 
 void addMemEndpointMaps(mlir::Operation *op, llvm::StringRef hardwareName,
+                        const MemOccurrenceIdentity &identity,
                         HardwareEndpointMap &operandEndpoints,
                         HardwareEndpointMap &resultEndpoints) {
   auto addOperand = [&](unsigned opIndex, llvm::StringRef resourceId,
@@ -420,12 +396,11 @@ void addMemEndpointMaps(mlir::Operation *op, llvm::StringRef hardwareName,
         HardwareEndpoint{endpointFor(resourceId, "result", portIndex), *shape});
   };
 
-  auto [loadPorts, storePorts] = memPortCounts(op);
   unsigned operandBase = 1;
   unsigned resultBase = memResultPortBase(op);
-  for (std::uint64_t i = 0; i < loadPorts; ++i) {
+  for (std::uint64_t i = 0; i < identity.loadCount; ++i) {
     std::string resourceId =
-        (hardwareName + "::mem.load#" + llvm::Twine(i)).str();
+        memResourceId(hardwareName, MemAccessKind::Load, identity, i);
     addOperand(operandBase, resourceId, 0);
     addOperand(operandBase + 1, resourceId, 1);
     addResult(resultBase, resourceId, 0);
@@ -433,9 +408,9 @@ void addMemEndpointMaps(mlir::Operation *op, llvm::StringRef hardwareName,
     operandBase += 2;
     resultBase += 2;
   }
-  for (std::uint64_t i = 0; i < storePorts; ++i) {
+  for (std::uint64_t i = 0; i < identity.storeCount; ++i) {
     std::string resourceId =
-        (hardwareName + "::mem.store#" + llvm::Twine(i)).str();
+        memResourceId(hardwareName, MemAccessKind::Store, identity, i);
     addOperand(operandBase, resourceId, 0);
     addOperand(operandBase + 1, resourceId, 1);
     addOperand(operandBase + 2, resourceId, 2);
@@ -575,9 +550,10 @@ hardwareResultIndexForSoftwareEndpoint(ResourceKind kind,
   llvm_unreachable("unknown resource kind");
 }
 
-HardwareTopology buildHardwareTopology(
-    mlir::Operation *hardware, llvm::StringRef hardwareName,
-    const llvm::SmallVectorImpl<HardwareResource> &resources) {
+HardwareTopology
+buildHardwareTopology(mlir::Operation *hardware, llvm::StringRef hardwareName,
+                      const llvm::SmallVectorImpl<HardwareResource> &resources,
+                      llvm::ArrayRef<ConcreteMemOccurrence> memOccurrences) {
   HardwareTopology topology;
   HardwareEndpointMap operandEndpoints;
   HardwareEndpointMap resultEndpoints;
@@ -590,6 +566,7 @@ HardwareTopology buildHardwareTopology(
 
   llvm::StringMap<unsigned> fabricBoundaryCounts;
   llvm::StringMap<unsigned> routeResourceCounts;
+  unsigned memOccurrenceIndex = 0;
   hardware->walk([&](mlir::Operation *op) {
     if (!isConcreteHardwareOperation(op, hardware))
       return;
@@ -603,7 +580,12 @@ HardwareTopology buildHardwareTopology(
       return;
     }
     if (opName == "fabric.mem") {
-      addMemEndpointMaps(op, hardwareName, operandEndpoints, resultEndpoints);
+      assert(memOccurrenceIndex < memOccurrences.size());
+      const ConcreteMemOccurrence &occurrence =
+          memOccurrences[memOccurrenceIndex++];
+      assert(occurrence.op == op);
+      addMemEndpointMaps(op, hardwareName, occurrence.identity,
+                         operandEndpoints, resultEndpoints);
       return;
     }
     if (!isRouteResourceOp(opName))
@@ -689,20 +671,6 @@ HardwareTopology buildHardwareTopology(
 
 llvm::Expected<HardwareModel> collectHardwareModel(mlir::Operation *hardware,
                                                    llvm::StringRef name) {
-  std::optional<std::string> unresolvedInstance;
-  hardware->walk([&](fabric::InstantiateOp instantiate) {
-    if (unresolvedInstance ||
-        !isConcreteHardwareOperation(instantiate, hardware))
-      return;
-    unresolvedInstance = instantiate.getCallee().str();
-  });
-  if (unresolvedInstance)
-    return llvm::createStringError(
-        std::errc::not_supported,
-        "PnR requires fully elaborated Fabric hardware; unresolved "
-        "fabric.instantiate @%s remains in @%s",
-        unresolvedInstance->c_str(), name.str().c_str());
-
   bool hasUnsupportedFuConfiguration = false;
   std::optional<std::string> malformedFuConfiguration;
   hardware->walk([&](fabric::OpOp op) {
@@ -732,6 +700,9 @@ llvm::Expected<HardwareModel> collectHardwareModel(mlir::Operation *hardware,
 
   HardwareModel model;
   unsigned fabricOpIndex = 0;
+  llvm::SmallVector<ConcreteMemOccurrence, 2> memOccurrences =
+      collectConcreteMemOccurrences(hardware);
+  unsigned memOccurrenceIndex = 0;
   hardware->walk([&](mlir::Operation *op) {
     if (!isConcreteHardwareOperation(op, hardware))
       return;
@@ -740,13 +711,19 @@ llvm::Expected<HardwareModel> collectHardwareModel(mlir::Operation *hardware,
       appendFabricOpResource(op, name, fabricOpIndex++, model.resources);
       return;
     }
-    if (opName == "fabric.mem")
-      appendMemResources(op, name, model.resources);
+    if (opName == "fabric.mem") {
+      assert(memOccurrenceIndex < memOccurrences.size());
+      const ConcreteMemOccurrence &occurrence =
+          memOccurrences[memOccurrenceIndex++];
+      assert(occurrence.op == op);
+      appendMemResources(op, name, occurrence.identity, model.resources);
+    }
   });
   if (model.resources.empty())
     return llvm::createStringError(std::errc::invalid_argument,
                                    "hardware has no mappable resources");
-  model.topology = buildHardwareTopology(hardware, name, model.resources);
+  model.topology =
+      buildHardwareTopology(hardware, name, model.resources, memOccurrences);
   return model;
 }
 
