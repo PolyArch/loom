@@ -4,6 +4,7 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <system_error>
@@ -28,10 +29,18 @@ constexpr SchemaVersion supportedSchemaVersion{2, 0};
 enum class EntityKind {
   Graph,
   Actor,
+  Edge,
+  LogicalMemoryRoot,
   Fu,
   FabricOp,
   Encoding,
   ComputeRealization,
+  MemoryServiceDomain,
+  MemoryImplementation,
+  MemoryOperationPortTemplate,
+  MemoryInternalConnection,
+  MemorySemanticEncoding,
+  MemoryRealization,
 };
 
 using EntityKinds = std::map<std::uint64_t, EntityKind>;
@@ -81,14 +90,26 @@ struct DataflowPortInfo {
 };
 
 struct ResolvedDataflowEdge {
+  EdgeId id;
   DataflowPortInfo source;
   DataflowPortInfo target;
+};
+
+using ActorPortKey = std::pair<PortDirection, std::uint32_t>;
+
+struct MemoryActorInfo {
+  const CanonicalMemoryActorView *view;
+  std::map<ActorPortKey, MemoryAccessPortRole> ports;
 };
 
 struct DataflowIndex {
   EntityKinds kinds;
   std::map<std::uint64_t, const GraphDescriptor *> graphs;
   std::map<std::uint64_t, const ActorDescriptor *> actors;
+  std::map<std::uint64_t, const LogicalMemoryRootDescriptor *>
+      logicalMemoryRoots;
+  std::map<std::uint64_t, MemoryActorInfo> memoryActors;
+  std::map<std::uint64_t, std::size_t> edgesById;
   std::vector<ResolvedDataflowEdge> edges;
 };
 
@@ -97,7 +118,84 @@ struct FabricIndex {
   std::map<std::uint64_t, const FuDescriptor *> functionalUnits;
   std::map<std::uint64_t, const FabricOpDescriptor *> operations;
   std::map<std::uint64_t, const EncodingDescriptor *> encodings;
+  std::map<std::uint64_t, const MemoryServiceDomainDescriptor *>
+      memoryServiceDomains;
+  std::map<std::uint64_t, const MemoryImplementationDescriptor *>
+      memoryImplementations;
+  std::map<std::uint64_t, const MemoryOperationPortTemplateDescriptor *>
+      memoryOperationPortTemplates;
+  std::map<std::uint64_t, const MemoryInternalConnectionDescriptor *>
+      memoryInternalConnections;
+  std::map<std::uint64_t, const MemorySemanticEncodingDescriptor *>
+      memorySemanticEncodings;
 };
+
+const std::set<MemoryAccessPortRole> &
+requiredMemoryAccessRoles(MemoryOperationKind operation) {
+  static const std::set<MemoryAccessPortRole> loadRoles{
+      MemoryAccessPortRole::Address, MemoryAccessPortRole::Control,
+      MemoryAccessPortRole::Result, MemoryAccessPortRole::Done};
+  static const std::set<MemoryAccessPortRole> storeRoles{
+      MemoryAccessPortRole::Address, MemoryAccessPortRole::Data,
+      MemoryAccessPortRole::Control, MemoryAccessPortRole::Done};
+  return operation == MemoryOperationKind::Load ? loadRoles : storeRoles;
+}
+
+bool isAllowedMemoryAccessRole(MemoryOperationKind operation,
+                               MemoryAccessPortRole role) {
+  return requiredMemoryAccessRoles(operation).count(role) ||
+         role == MemoryAccessPortRole::Mask;
+}
+
+PortDirection memoryAccessRoleDirection(MemoryAccessPortRole role) {
+  switch (role) {
+  case MemoryAccessPortRole::Address:
+  case MemoryAccessPortRole::Data:
+  case MemoryAccessPortRole::Mask:
+  case MemoryAccessPortRole::Control:
+    return PortDirection::Input;
+  case MemoryAccessPortRole::Result:
+  case MemoryAccessPortRole::Done:
+    return PortDirection::Output;
+  }
+  llvm_unreachable("unknown memory access port role");
+}
+
+llvm::Expected<MemoryActorInfo>
+validateMemoryActorView(const ActorDescriptor &actor) {
+  const CanonicalMemoryActorView &memory = *actor.memory;
+  if (memory.accessWidthBits == 0 || memory.accessSizeBytes == 0 ||
+      memory.alignmentBytes == 0 ||
+      memory.accessWidthBits !=
+          static_cast<std::uint64_t>(memory.accessSizeBytes) * 8)
+    return mappingError(MappingErrorCode::InvalidPortConnection,
+                        "memory actor has an invalid one-beat access shape");
+  std::map<ActorPortKey, MemoryAccessPortRole> ports;
+  std::set<MemoryAccessPortRole> roles;
+  for (const MemoryAccessPortDescriptor &port : memory.ports) {
+    const auto &descriptors = port.direction == PortDirection::Input
+                                  ? actor.inputPorts
+                                  : actor.outputPorts;
+    if (port.index >= descriptors.size() ||
+        memoryAccessRoleDirection(port.role) != port.direction ||
+        !isAllowedMemoryAccessRole(memory.operation, port.role) ||
+        !ports.emplace(ActorPortKey{port.direction, port.index}, port.role)
+             .second ||
+        !roles.insert(port.role).second)
+      return mappingError(
+          MappingErrorCode::InvalidPortConnection,
+          "memory actor has invalid or duplicate port semantics");
+  }
+
+  const std::set<MemoryAccessPortRole> &required =
+      requiredMemoryAccessRoles(memory.operation);
+  if (ports.size() != actor.inputPorts.size() + actor.outputPorts.size() ||
+      !std::includes(roles.begin(), roles.end(), required.begin(),
+                     required.end()))
+    return mappingError(MappingErrorCode::InvalidPortConnection,
+                        "memory actor port semantics are incomplete");
+  return MemoryActorInfo{&memory, std::move(ports)};
+}
 
 bool samePortKinds(const std::vector<PortDescriptor> &lhs,
                    const std::vector<PortDescriptor> &rhs) {
@@ -196,14 +294,81 @@ buildDataflowIndex(const DataflowProgramView &dataflow) {
       return std::move(error);
     index.actors.emplace(actor.id.value(), &actor);
   }
+  for (const LogicalMemoryRootDescriptor &root : dataflow.logicalMemoryRoots) {
+    if (llvm::Error error = addEntity(index.kinds, root.id.value(),
+                                      EntityKind::LogicalMemoryRoot))
+      return std::move(error);
+    index.logicalMemoryRoots.emplace(root.id.value(), &root);
+  }
+  for (const DataflowEdge &edge : dataflow.edges) {
+    if (llvm::Error error =
+            addEntity(index.kinds, edge.id.value(), EntityKind::Edge))
+      return std::move(error);
+  }
+
+  std::size_t graphMemoryPortCount = 0;
+  for (const GraphDescriptor &graph : dataflow.graphs) {
+    graphMemoryPortCount +=
+        llvm::count_if(graph.inputPorts, [](const PortDescriptor &port) {
+          return port.kind == PortKind::Memory;
+        });
+    graphMemoryPortCount +=
+        llvm::count_if(graph.outputPorts, [](const PortDescriptor &port) {
+          return port.kind == PortKind::Memory;
+        });
+  }
+
+  std::set<EndpointKey> rootedMemoryPorts;
+  for (const LogicalMemoryRootDescriptor &root : dataflow.logicalMemoryRoots) {
+    if (llvm::Error error = requireLocalKind(index.kinds, root.graph.value(),
+                                             EntityKind::Graph))
+      return std::move(error);
+    auto addRootPort = [&](const GraphPort &port,
+                           PortDirection direction) -> llvm::Error {
+      auto resolved = resolveDataflowPort(DataflowEndpoint{port}, index);
+      if (!resolved)
+        return resolved.takeError();
+      if (port.graph != root.graph || port.direction != direction ||
+          resolved->descriptor->kind != PortKind::Memory ||
+          !rootedMemoryPorts.insert(resolved->key).second)
+        return mappingError(
+            MappingErrorCode::InvalidPortConnection,
+            "logical memory root has an invalid graph boundary port");
+      return llvm::Error::success();
+    };
+    for (const GraphPort &port : root.importPorts)
+      if (llvm::Error error = addRootPort(port, PortDirection::Input))
+        return std::move(error);
+    for (const GraphPort &port : root.exportPorts)
+      if (llvm::Error error = addRootPort(port, PortDirection::Output))
+        return std::move(error);
+  }
+  if (rootedMemoryPorts.size() != graphMemoryPortCount)
+    return mappingError(MappingErrorCode::InvalidPortConnection,
+                        "graph memory ports are not exactly rooted");
 
   for (const ActorDescriptor &actor : dataflow.actors) {
     if (llvm::Error error = requireLocalKind(index.kinds, actor.graph.value(),
                                              EntityKind::Graph))
       return std::move(error);
+    if (!actor.memory)
+      continue;
+    if (llvm::Error error =
+            requireLocalKind(index.kinds, actor.memory->root.value(),
+                             EntityKind::LogicalMemoryRoot))
+      return std::move(error);
+    if (index.logicalMemoryRoots.at(actor.memory->root.value())->graph !=
+        actor.graph)
+      return mappingError(MappingErrorCode::InvalidPortConnection,
+                          "memory actor uses a root from another graph");
+    auto memoryActor = validateMemoryActorView(actor);
+    if (!memoryActor)
+      return memoryActor.takeError();
+    index.memoryActors.emplace(actor.id.value(), std::move(*memoryActor));
   }
 
   std::set<EdgeKey> edges;
+  index.edges.reserve(dataflow.edges.size());
   for (const DataflowEdge &edge : dataflow.edges) {
     auto source = resolveDataflowPort(edge.source, index);
     if (!source)
@@ -211,6 +376,12 @@ buildDataflowIndex(const DataflowProgramView &dataflow) {
     auto target = resolveDataflowPort(edge.target, index);
     if (!target)
       return target.takeError();
+
+    if (source->descriptor->kind == PortKind::Memory ||
+        target->descriptor->kind == PortKind::Memory)
+      return mappingError(
+          MappingErrorCode::InvalidPortConnection,
+          "memory capability ports cannot participate in dataflow edges");
 
     const bool validSource =
         source->key.actor ? source->key.direction == PortDirection::Output
@@ -230,10 +401,133 @@ buildDataflowIndex(const DataflowProgramView &dataflow) {
       return mappingError(MappingErrorCode::DuplicateEdge,
                           "dataflow edge is duplicated");
 
-    index.edges.push_back(ResolvedDataflowEdge{*source, *target});
+    index.edgesById.emplace(edge.id.value(), index.edges.size());
+    index.edges.push_back(ResolvedDataflowEdge{edge.id, *source, *target});
   }
 
   return index;
+}
+
+llvm::Error validateMemoryOperationPortTemplate(
+    const MemoryOperationPortTemplateDescriptor &operation) {
+  std::set<MemoryAccessPortRole> roles;
+  for (const MemoryOperationPortDescriptor &port : operation.ports) {
+    if (memoryAccessRoleDirection(port.role) != port.direction ||
+        !isAllowedMemoryAccessRole(operation.operation, port.role) ||
+        !roles.insert(port.role).second ||
+        (port.direction == PortDirection::Input && port.maxInternalFanout != 0))
+      return mappingError(
+          MappingErrorCode::InvalidPortConnection,
+          "memory operation template has invalid or duplicate ports");
+  }
+
+  const std::set<MemoryAccessPortRole> &required =
+      requiredMemoryAccessRoles(operation.operation);
+  if (!std::includes(roles.begin(), roles.end(), required.begin(),
+                     required.end()))
+    return mappingError(MappingErrorCode::InvalidPortConnection,
+                        "memory operation template is missing a required port");
+  if (operation.physicalDataWidthBits == 0 ||
+      operation.accessCapabilities.empty())
+    return mappingError(MappingErrorCode::InvalidPortConnection,
+                        "memory operation template has no access contract");
+  std::set<std::uint32_t> accessSizes;
+  for (const MemoryAccessCapability &capability :
+       operation.accessCapabilities) {
+    if (capability.accessSizeBytes == 0 ||
+        capability.requiredAlignmentBytes == 0 ||
+        static_cast<std::uint64_t>(capability.accessSizeBytes) * 8 >
+            operation.physicalDataWidthBits ||
+        !accessSizes.insert(capability.accessSizeBytes).second)
+      return mappingError(
+          MappingErrorCode::InvalidPortConnection,
+          "memory operation template has an invalid access capability");
+  }
+  return llvm::Error::success();
+}
+
+struct LocalMemoryOperationPortInfo {
+  const MemoryOperationPortTemplateDescriptor *operation;
+  const MemoryOperationPortDescriptor *port;
+};
+
+llvm::Expected<LocalMemoryOperationPortInfo>
+resolveLocalMemoryOperationPort(const MemoryOperationPort &reference,
+                                const FabricIndex &index) {
+  const auto operation =
+      index.memoryOperationPortTemplates.find(reference.operation.value());
+  if (operation == index.memoryOperationPortTemplates.end() ||
+      reference.index >= operation->second->ports.size())
+    return mappingError(MappingErrorCode::InvalidPortConnection,
+                        "Fabric memory connectivity has an invalid port");
+  return LocalMemoryOperationPortInfo{
+      operation->second, &operation->second->ports[reference.index]};
+}
+
+struct MemoryInternalEndpointKey {
+  bool boundary;
+  std::uint64_t owner;
+  std::uint32_t index;
+
+  friend bool operator==(const MemoryInternalEndpointKey &lhs,
+                         const MemoryInternalEndpointKey &rhs) {
+    return lhs.boundary == rhs.boundary && lhs.owner == rhs.owner &&
+           lhs.index == rhs.index;
+  }
+  friend bool operator!=(const MemoryInternalEndpointKey &lhs,
+                         const MemoryInternalEndpointKey &rhs) {
+    return !(lhs == rhs);
+  }
+
+  friend bool operator<(const MemoryInternalEndpointKey &lhs,
+                        const MemoryInternalEndpointKey &rhs) {
+    return std::tie(lhs.boundary, lhs.owner, lhs.index) <
+           std::tie(rhs.boundary, rhs.owner, rhs.index);
+  }
+};
+
+struct LocalMemoryInternalEndpointInfo {
+  MemoryInternalEndpointKey key;
+  const PortDescriptor *port;
+  std::uint32_t maxFanout;
+  bool source;
+  const MemoryOperationPortTemplateDescriptor *operation;
+};
+
+llvm::Expected<LocalMemoryInternalEndpointInfo>
+resolveLocalMemoryInternalEndpoint(const MemoryInternalEndpoint &endpoint,
+                                   MemoryImplementationId implementation,
+                                   const FabricIndex &index) {
+  if (const auto *boundary =
+          std::get_if<MemoryImplementationBoundaryPort>(&endpoint)) {
+    const auto memory =
+        index.memoryImplementations.find(implementation.value());
+    if (memory == index.memoryImplementations.end() ||
+        boundary->index >= memory->second->boundaryPorts.size())
+      return mappingError(MappingErrorCode::InvalidPortConnection,
+                          "memory connectivity has an invalid boundary port");
+    const auto &port = memory->second->boundaryPorts[boundary->index];
+    return LocalMemoryInternalEndpointInfo{
+        {true, implementation.value(), boundary->index},
+        &port.port,
+        port.maxInternalFanout,
+        port.direction == PortDirection::Input,
+        nullptr};
+  }
+
+  const auto &operationPort = std::get<MemoryOperationPort>(endpoint);
+  auto port = resolveLocalMemoryOperationPort(operationPort, index);
+  if (!port)
+    return port.takeError();
+  if (port->operation->implementation != implementation)
+    return mappingError(MappingErrorCode::InvalidPortConnection,
+                        "memory connectivity crosses implementations");
+  return LocalMemoryInternalEndpointInfo{
+      {false, operationPort.operation.value(), operationPort.index},
+      &port->port->port,
+      port->port->maxInternalFanout,
+      port->port->direction == PortDirection::Output,
+      port->operation};
 }
 
 llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
@@ -259,6 +553,43 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
             addEntity(index.kinds, encoding.id.value(), EntityKind::Encoding))
       return std::move(error);
     index.encodings.emplace(encoding.id.value(), &encoding);
+  }
+  for (const MemoryServiceDomainDescriptor &service :
+       fabric.memoryServiceDomains) {
+    if (llvm::Error error = addEntity(index.kinds, service.id.value(),
+                                      EntityKind::MemoryServiceDomain))
+      return std::move(error);
+    index.memoryServiceDomains.emplace(service.id.value(), &service);
+  }
+  for (const MemoryImplementationDescriptor &implementation :
+       fabric.memoryImplementations) {
+    if (llvm::Error error = addEntity(index.kinds, implementation.id.value(),
+                                      EntityKind::MemoryImplementation))
+      return std::move(error);
+    index.memoryImplementations.emplace(implementation.id.value(),
+                                        &implementation);
+  }
+  for (const MemoryOperationPortTemplateDescriptor &operation :
+       fabric.memoryOperationPortTemplates) {
+    if (llvm::Error error = addEntity(index.kinds, operation.id.value(),
+                                      EntityKind::MemoryOperationPortTemplate))
+      return std::move(error);
+    index.memoryOperationPortTemplates.emplace(operation.id.value(),
+                                               &operation);
+  }
+  for (const MemoryInternalConnectionDescriptor &connection :
+       fabric.memoryInternalConnections) {
+    if (llvm::Error error = addEntity(index.kinds, connection.id.value(),
+                                      EntityKind::MemoryInternalConnection))
+      return std::move(error);
+    index.memoryInternalConnections.emplace(connection.id.value(), &connection);
+  }
+  for (const MemorySemanticEncodingDescriptor &encoding :
+       fabric.memorySemanticEncodings) {
+    if (llvm::Error error = addEntity(index.kinds, encoding.id.value(),
+                                      EntityKind::MemorySemanticEncoding))
+      return std::move(error);
+    index.memorySemanticEncodings.emplace(encoding.id.value(), &encoding);
   }
 
   for (const FabricOpDescriptor &operation : fabric.operations) {
@@ -333,6 +664,111 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
     }
   }
 
+  for (const MemoryImplementationDescriptor &implementation :
+       fabric.memoryImplementations) {
+    if (llvm::Error error =
+            requireLocalKind(index.kinds, implementation.service.value(),
+                             EntityKind::MemoryServiceDomain))
+      return std::move(error);
+    for (const MemoryImplementationBoundaryPortDescriptor &port :
+         implementation.boundaryPorts)
+      if (port.direction == PortDirection::Output &&
+          port.maxInternalFanout != 0)
+        return mappingError(
+            MappingErrorCode::InvalidPortConnection,
+            "memory boundary sink declares internal fanout capacity");
+  }
+
+  for (const MemoryOperationPortTemplateDescriptor &operation :
+       fabric.memoryOperationPortTemplates) {
+    if (llvm::Error error =
+            requireLocalKind(index.kinds, operation.implementation.value(),
+                             EntityKind::MemoryImplementation))
+      return std::move(error);
+    if (llvm::Error error = validateMemoryOperationPortTemplate(operation))
+      return std::move(error);
+  }
+
+  for (const MemoryInternalConnectionDescriptor &connection :
+       fabric.memoryInternalConnections) {
+    if (llvm::Error error =
+            requireLocalKind(index.kinds, connection.implementation.value(),
+                             EntityKind::MemoryImplementation))
+      return std::move(error);
+    auto source = resolveLocalMemoryInternalEndpoint(
+        connection.source, connection.implementation, index);
+    if (!source)
+      return source.takeError();
+    auto sink = resolveLocalMemoryInternalEndpoint(
+        connection.sink, connection.implementation, index);
+    if (!sink)
+      return sink.takeError();
+    if (!source->source || sink->source || *source->port != *sink->port ||
+        source->maxFanout == 0 || (source->key.boundary && sink->key.boundary))
+      return mappingError(
+          MappingErrorCode::InvalidPortConnection,
+          "memory internal connectivity has incompatible endpoints");
+  }
+
+  for (const MemorySemanticEncodingDescriptor &encoding :
+       fabric.memorySemanticEncodings) {
+    if (llvm::Error error =
+            requireLocalKind(index.kinds, encoding.implementation.value(),
+                             EntityKind::MemoryImplementation))
+      return std::move(error);
+    std::set<std::uint64_t> operationTemplates;
+    for (MemoryOperationPortTemplateId operationId :
+         encoding.operationTemplates) {
+      if (llvm::Error error =
+              requireLocalKind(index.kinds, operationId.value(),
+                               EntityKind::MemoryOperationPortTemplate))
+        return std::move(error);
+      const auto *operation =
+          index.memoryOperationPortTemplates.at(operationId.value());
+      if (operation->implementation != encoding.implementation ||
+          !operationTemplates.insert(operationId.value()).second)
+        return mappingError(
+            MappingErrorCode::InvalidPortConnection,
+            "memory encoding has an invalid operation template");
+    }
+    if (operationTemplates.empty())
+      return mappingError(MappingErrorCode::InvalidPortConnection,
+                          "memory encoding has no operation template");
+
+    std::set<std::uint64_t> internalConnections;
+    std::map<MemoryInternalEndpointKey, std::size_t> selectedFanout;
+    for (MemoryInternalConnectionId connectionId :
+         encoding.internalConnections) {
+      if (llvm::Error error =
+              requireLocalKind(index.kinds, connectionId.value(),
+                               EntityKind::MemoryInternalConnection))
+        return std::move(error);
+      const auto *connection =
+          index.memoryInternalConnections.at(connectionId.value());
+      auto source = resolveLocalMemoryInternalEndpoint(
+          connection->source, encoding.implementation, index);
+      if (!source)
+        return source.takeError();
+      auto sink = resolveLocalMemoryInternalEndpoint(
+          connection->sink, encoding.implementation, index);
+      if (!sink)
+        return sink.takeError();
+      const bool sourceSelected =
+          !source->operation ||
+          operationTemplates.count(source->operation->id.value());
+      const bool sinkSelected =
+          !sink->operation ||
+          operationTemplates.count(sink->operation->id.value());
+      if (connection->implementation != encoding.implementation ||
+          !sourceSelected || !sinkSelected ||
+          !internalConnections.insert(connectionId.value()).second ||
+          ++selectedFanout[source->key] > source->maxFanout)
+        return mappingError(
+            MappingErrorCode::InvalidPortConnection,
+            "memory encoding has an invalid internal connection");
+    }
+  }
+
   return index;
 }
 
@@ -375,6 +811,49 @@ resolveActorPortReference(const ActorPortRef &port,
       &ports[port.index]};
 }
 
+llvm::Expected<DataflowPortInfo>
+resolveGraphPortReference(const GraphPortRef &port,
+                          const ArtifactIdentity &artifact,
+                          const DataflowIndex &index) {
+  auto graph = resolveReference(port.graph, artifact, index.kinds,
+                                EntityKind::Graph, index.graphs);
+  if (!graph)
+    return graph.takeError();
+  const auto &ports = port.direction == PortDirection::Input
+                          ? (*graph)->inputPorts
+                          : (*graph)->outputPorts;
+  if (port.index >= ports.size())
+    return mappingError(MappingErrorCode::InvalidPortConnection,
+                        "graph boundary port index is out of range");
+  return DataflowPortInfo{
+      (*graph)->id.value(),
+      EndpointKey{false, (*graph)->id.value(), port.direction, port.index},
+      &ports[port.index]};
+}
+
+struct MemoryImplementationBoundaryPortInfo {
+  const MemoryImplementationDescriptor *implementation;
+  std::uint32_t index;
+  const MemoryImplementationBoundaryPortDescriptor *descriptor;
+};
+
+llvm::Expected<MemoryImplementationBoundaryPortInfo>
+resolveMemoryImplementationBoundaryPortReference(
+    const MemoryImplementationBoundaryPortRef &port,
+    const ArtifactIdentity &artifact, const FabricIndex &index) {
+  auto implementation = resolveReference(
+      port.implementation, artifact, index.kinds,
+      EntityKind::MemoryImplementation, index.memoryImplementations);
+  if (!implementation)
+    return implementation.takeError();
+  if (port.index >= (*implementation)->boundaryPorts.size())
+    return mappingError(MappingErrorCode::InvalidPortConnection,
+                        "memory boundary port index is out of range");
+  return MemoryImplementationBoundaryPortInfo{
+      *implementation, port.index,
+      &(*implementation)->boundaryPorts[port.index]};
+}
+
 struct FuPortInfo {
   std::uint64_t fu;
   PortDirection direction;
@@ -397,6 +876,45 @@ resolveFuPortReference(const FuPortRef &port, const ArtifactIdentity &artifact,
                         "FU boundary port index is out of range");
   return FuPortInfo{(*fu)->id.value(), port.direction, port.index,
                     &ports[port.index]};
+}
+
+struct MemoryOperationPortInfo {
+  const MemoryOperationPortTemplateDescriptor *operation;
+  std::uint32_t index;
+  const MemoryOperationPortDescriptor *descriptor;
+};
+
+llvm::Expected<MemoryOperationPortInfo>
+resolveMemoryOperationPortReference(const MemoryOperationPortRef &port,
+                                    const ArtifactIdentity &artifact,
+                                    const FabricIndex &index) {
+  auto operation = resolveReference(port.operation, artifact, index.kinds,
+                                    EntityKind::MemoryOperationPortTemplate,
+                                    index.memoryOperationPortTemplates);
+  if (!operation)
+    return operation.takeError();
+  if (port.index >= (*operation)->ports.size())
+    return mappingError(MappingErrorCode::InvalidPortConnection,
+                        "memory operation port index is out of range");
+  return MemoryOperationPortInfo{*operation, port.index,
+                                 &(*operation)->ports[port.index]};
+}
+
+llvm::Expected<const ResolvedDataflowEdge *>
+resolveEdgeReference(const EdgeRef &reference,
+                     const DataflowProgramView &dataflow,
+                     const DataflowIndex &index) {
+  if (reference.artifact != dataflow.identity)
+    return mappingError(MappingErrorCode::ForeignEntityReference,
+                        "reference names a foreign artifact");
+  const auto kind = index.kinds.find(reference.entity.value());
+  if (kind == index.kinds.end())
+    return mappingError(MappingErrorCode::UnresolvedEntityId,
+                        "reference names an unresolved entity ID");
+  if (kind->second != EntityKind::Edge)
+    return mappingError(MappingErrorCode::WrongEntityKind,
+                        "reference names an entity of the wrong kind");
+  return &index.edges[index.edgesById.at(reference.entity.value())];
 }
 
 struct RealizationActors {
@@ -426,6 +944,9 @@ llvm::Expected<std::vector<RealizationActors>> resolveRealizationActors(
                                     dataflowIndex.actors);
       if (!actor)
         return actor.takeError();
+      if ((*actor)->memory)
+        return mappingError(MappingErrorCode::WrongActorRealizationKind,
+                            "Compute Realization covers a memory actor");
       if (!actors.actors.emplace((*actor)->id.value(), *actor).second ||
           !actorToRealization.emplace((*actor)->id.value(), resolved.size())
                .second)
@@ -445,6 +966,60 @@ llvm::Expected<std::vector<RealizationActors>> resolveRealizationActors(
     resolved.push_back(std::move(actors));
   }
 
+  return resolved;
+}
+
+struct MemoryRealizationActors {
+  const MemoryRealizationDraft *record;
+  std::uint64_t graph;
+  std::map<std::uint64_t, const ActorDescriptor *> actors;
+};
+
+llvm::Expected<std::vector<MemoryRealizationActors>>
+resolveMemoryRealizationActors(
+    const TechMappingDraft &mapping, const DataflowProgramView &dataflow,
+    const DataflowIndex &dataflowIndex,
+    const std::set<std::uint64_t> &coveredGraphs,
+    std::map<std::uint64_t, std::size_t> &actorToRealization) {
+  std::vector<MemoryRealizationActors> resolved;
+  resolved.reserve(mapping.memoryRealizations.size());
+
+  for (const MemoryRealizationDraft &realization : mapping.memoryRealizations) {
+    if (realization.actors.empty())
+      return mappingError(MappingErrorCode::InvalidMemoryRealization,
+                          "Memory Realization actor group is empty");
+
+    MemoryRealizationActors actors{&realization, 0, {}};
+    bool firstActor = true;
+    for (const ActorRef &actorReference : realization.actors) {
+      auto actor = resolveReference(actorReference, dataflow.identity,
+                                    dataflowIndex.kinds, EntityKind::Actor,
+                                    dataflowIndex.actors);
+      if (!actor)
+        return actor.takeError();
+      if (!(*actor)->memory)
+        return mappingError(MappingErrorCode::WrongActorRealizationKind,
+                            "Memory Realization covers a compute actor");
+      const std::size_t realizationIndex =
+          mapping.realizations.size() + resolved.size();
+      if (!actors.actors.emplace((*actor)->id.value(), *actor).second ||
+          !actorToRealization.emplace((*actor)->id.value(), realizationIndex)
+               .second)
+        return mappingError(MappingErrorCode::IncompleteGraphCoverage,
+                            "actor is covered more than once");
+      if (firstActor) {
+        actors.graph = (*actor)->graph.value();
+        firstActor = false;
+      } else if ((*actor)->graph.value() != actors.graph) {
+        return mappingError(MappingErrorCode::CrossGraphActorGroup,
+                            "Memory Realization crosses graphs");
+      }
+    }
+    if (!coveredGraphs.count(actors.graph))
+      return mappingError(MappingErrorCode::IncompleteGraphCoverage,
+                          "Memory Realization uses an uncovered graph");
+    resolved.push_back(std::move(actors));
+  }
   return resolved;
 }
 
@@ -689,6 +1264,302 @@ llvm::Error validateConfiguredFunctionTopology(
   return llvm::Error::success();
 }
 
+llvm::Error validateMemoryRealization(
+    const MemoryRealizationActors &realization,
+    const DataflowProgramView &dataflow, const DataflowIndex &dataflowIndex,
+    const FabricHardwareView &fabric, const FabricIndex &fabricIndex,
+    std::map<std::uint64_t, std::uint64_t> &rootServices) {
+  auto encoding = resolveReference(
+      realization.record->encoding, fabric.identity, fabricIndex.kinds,
+      EntityKind::MemorySemanticEncoding, fabricIndex.memorySemanticEncodings);
+  if (!encoding)
+    return encoding.takeError();
+  const MemoryImplementationDescriptor &implementation =
+      *fabricIndex.memoryImplementations.at(
+          (*encoding)->implementation.value());
+
+  if (realization.record->actorToOperations.size() != realization.actors.size())
+    return mappingError(
+        MappingErrorCode::InvalidMemoryRealization,
+        "actor-to-memory-operation correspondence is not complete");
+
+  std::set<std::uint64_t> encodingOperations;
+  for (MemoryOperationPortTemplateId operation :
+       (*encoding)->operationTemplates)
+    encodingOperations.insert(operation.value());
+
+  std::map<std::uint64_t, const MemoryOperationPortTemplateDescriptor *>
+      actorOperations;
+  std::map<EndpointKey, MemoryInternalEndpointKey> actorInternalEndpoints;
+  std::set<std::uint64_t> mappedActors;
+  std::set<std::uint64_t> mappedOperations;
+  std::set<std::uint64_t> usedRoots;
+  for (const ActorToMemoryOperation &correspondence :
+       realization.record->actorToOperations) {
+    auto actor = resolveReference(correspondence.actor, dataflow.identity,
+                                  dataflowIndex.kinds, EntityKind::Actor,
+                                  dataflowIndex.actors);
+    if (!actor)
+      return actor.takeError();
+    auto root = resolveReference(
+        correspondence.root, dataflow.identity, dataflowIndex.kinds,
+        EntityKind::LogicalMemoryRoot, dataflowIndex.logicalMemoryRoots);
+    if (!root)
+      return root.takeError();
+    auto operation = resolveReference(correspondence.operation, fabric.identity,
+                                      fabricIndex.kinds,
+                                      EntityKind::MemoryOperationPortTemplate,
+                                      fabricIndex.memoryOperationPortTemplates);
+    if (!operation)
+      return operation.takeError();
+
+    if (!realization.actors.count((*actor)->id.value()) || !(*actor)->memory ||
+        !mappedActors.insert((*actor)->id.value()).second)
+      return mappingError(
+          MappingErrorCode::InvalidMemoryRealization,
+          "actor-to-memory-operation correspondence is not exact");
+    const MemoryActorInfo &memory =
+        dataflowIndex.memoryActors.at((*actor)->id.value());
+    if (memory.view->root != (*root)->id)
+      return mappingError(MappingErrorCode::InvalidMemoryRealization,
+                          "memory actor names the wrong logical root");
+    if ((*operation)->operation != memory.view->operation)
+      return mappingError(MappingErrorCode::MemoryOperationMismatch,
+                          "memory operation kind does not match actor");
+    if ((*operation)->implementation != implementation.id ||
+        !encodingOperations.count((*operation)->id.value()))
+      return mappingError(MappingErrorCode::MemoryEncodingMismatch,
+                          "memory operation is not selected by encoding");
+
+    std::map<MemoryAccessPortRole,
+             std::pair<std::uint32_t, const MemoryOperationPortDescriptor *>>
+        hardwarePorts;
+    for (std::size_t index = 0; index < (*operation)->ports.size(); ++index) {
+      const MemoryOperationPortDescriptor &port = (*operation)->ports[index];
+      hardwarePorts.emplace(
+          port.role, std::make_pair(static_cast<std::uint32_t>(index), &port));
+    }
+    if (hardwarePorts.size() != memory.ports.size())
+      return mappingError(MappingErrorCode::MemoryOperationMismatch,
+                          "memory operation signature does not match actor");
+    for (const auto &entry : memory.ports) {
+      const auto hardware = hardwarePorts.find(entry.second);
+      const auto &softwarePorts = entry.first.first == PortDirection::Input
+                                      ? (*actor)->inputPorts
+                                      : (*actor)->outputPorts;
+      if (hardware == hardwarePorts.end() ||
+          hardware->second.second->direction != entry.first.first ||
+          hardware->second.second->port != softwarePorts[entry.first.second])
+        return mappingError(MappingErrorCode::MemoryOperationMismatch,
+                            "memory operation signature does not match actor");
+      actorInternalEndpoints.emplace(
+          EndpointKey{true, (*actor)->id.value(), entry.first.first,
+                      entry.first.second},
+          MemoryInternalEndpointKey{false, (*operation)->id.value(),
+                                    hardware->second.first});
+    }
+
+    const auto access = llvm::find_if(
+        (*operation)->accessCapabilities,
+        [&](const MemoryAccessCapability &capability) {
+          return capability.accessSizeBytes == memory.view->accessSizeBytes;
+        });
+    if (memory.view->accessWidthBits > (*operation)->physicalDataWidthBits ||
+        access == (*operation)->accessCapabilities.end() ||
+        memory.view->alignmentBytes % access->requiredAlignmentBytes != 0)
+      return mappingError(MappingErrorCode::MemoryAccessIncompatible,
+                          "memory access is not one-beat compatible");
+
+    actorOperations.emplace((*actor)->id.value(), *operation);
+    if (!mappedOperations.insert((*operation)->id.value()).second)
+      return mappingError(
+          MappingErrorCode::InvalidMemoryRealization,
+          "memory operation template is assigned to multiple actors");
+    usedRoots.insert((*root)->id.value());
+  }
+
+  if (mappedActors.size() != realization.actors.size() ||
+      mappedOperations != encodingOperations)
+    return mappingError(MappingErrorCode::InvalidMemoryRealization,
+                        "memory encoding operations are not exactly covered");
+
+  std::set<std::uint64_t> declaredRoots;
+  for (const LogicalMemoryRootRef &rootReference : realization.record->roots) {
+    auto root = resolveReference(
+        rootReference, dataflow.identity, dataflowIndex.kinds,
+        EntityKind::LogicalMemoryRoot, dataflowIndex.logicalMemoryRoots);
+    if (!root)
+      return root.takeError();
+    if (!declaredRoots.insert((*root)->id.value()).second)
+      return mappingError(MappingErrorCode::InvalidMemoryRealization,
+                          "Memory Realization repeats a logical root");
+  }
+  if (declaredRoots != usedRoots)
+    return mappingError(MappingErrorCode::InvalidMemoryRealization,
+                        "Memory Realization root set is not exact");
+  for (std::uint64_t root : declaredRoots) {
+    auto [service, inserted] =
+        rootServices.emplace(root, implementation.service.value());
+    if (!inserted && service->second != implementation.service.value())
+      return mappingError(MappingErrorCode::MemoryServiceMismatch,
+                          "logical memory root uses unrelated services");
+  }
+
+  std::set<std::uint64_t> activeConnections;
+  for (MemoryInternalConnectionId connection : (*encoding)->internalConnections)
+    activeConnections.insert(connection.value());
+
+  std::map<EndpointKey, MemoryInternalEndpointKey> graphInternalEndpoints;
+  std::set<MemoryInternalEndpointKey> mappedImplementationBoundaries;
+  for (const MemoryGraphBoundaryPortCorrespondence &correspondence :
+       realization.record->graphBoundaryPorts) {
+    auto graphPort = resolveGraphPortReference(
+        correspondence.graphPort, dataflow.identity, dataflowIndex);
+    if (!graphPort)
+      return graphPort.takeError();
+    auto implementationPort = resolveMemoryImplementationBoundaryPortReference(
+        correspondence.implementationPort, fabric.identity, fabricIndex);
+    if (!implementationPort)
+      return implementationPort.takeError();
+    const MemoryInternalEndpointKey endpoint{
+        true, implementationPort->implementation->id.value(),
+        implementationPort->index};
+    if (graphPort->graph != realization.graph ||
+        implementationPort->implementation->id != implementation.id ||
+        graphPort->key.direction != implementationPort->descriptor->direction ||
+        *graphPort->descriptor != implementationPort->descriptor->port ||
+        !graphInternalEndpoints.emplace(graphPort->key, endpoint).second ||
+        !mappedImplementationBoundaries.insert(endpoint).second)
+      return mappingError(
+          MappingErrorCode::IncompleteMemoryBoundaryCorrespondence,
+          "memory graph boundary correspondence is not exact");
+  }
+
+  std::set<std::uint64_t> internalEdges;
+  std::set<std::uint64_t> witnessedConnections;
+  std::set<EndpointKey> usedGraphBoundaries;
+  for (const MemoryInternalEdgeWitness &witness :
+       realization.record->internalEdges) {
+    auto edge = resolveEdgeReference(witness.edge, dataflow, dataflowIndex);
+    if (!edge)
+      return edge.takeError();
+    auto connection =
+        resolveReference(witness.connection, fabric.identity, fabricIndex.kinds,
+                         EntityKind::MemoryInternalConnection,
+                         fabricIndex.memoryInternalConnections);
+    if (!connection)
+      return connection.takeError();
+    if ((*edge)->source.graph != realization.graph ||
+        ((*edge)->source.key.actor &&
+         !realization.actors.count((*edge)->source.key.owner)) ||
+        ((*edge)->target.key.actor &&
+         !realization.actors.count((*edge)->target.key.owner)) ||
+        !internalEdges.insert((*edge)->id.value()).second ||
+        !witnessedConnections.insert((*connection)->id.value()).second ||
+        !activeConnections.count((*connection)->id.value()) ||
+        (*connection)->implementation != implementation.id)
+      return mappingError(MappingErrorCode::InvalidInternalEdgeWitness,
+                          "memory internal edge witness is not selected");
+
+    auto sourcePort = resolveLocalMemoryInternalEndpoint(
+        (*connection)->source, implementation.id, fabricIndex);
+    if (!sourcePort)
+      return sourcePort.takeError();
+    auto sinkPort = resolveLocalMemoryInternalEndpoint(
+        (*connection)->sink, implementation.id, fabricIndex);
+    if (!sinkPort)
+      return sinkPort.takeError();
+
+    const auto sourceExpected =
+        (*edge)->source.key.actor
+            ? actorInternalEndpoints.find((*edge)->source.key)
+            : graphInternalEndpoints.find((*edge)->source.key);
+    const auto sourceEnd = (*edge)->source.key.actor
+                               ? actorInternalEndpoints.end()
+                               : graphInternalEndpoints.end();
+    const auto sinkExpected =
+        (*edge)->target.key.actor
+            ? actorInternalEndpoints.find((*edge)->target.key)
+            : graphInternalEndpoints.find((*edge)->target.key);
+    const auto sinkEnd = (*edge)->target.key.actor
+                             ? actorInternalEndpoints.end()
+                             : graphInternalEndpoints.end();
+    if (sourceExpected == sourceEnd || sinkExpected == sinkEnd ||
+        sourceExpected->second != sourcePort->key ||
+        sinkExpected->second != sinkPort->key ||
+        *(*edge)->source.descriptor != *sourcePort->port ||
+        *(*edge)->target.descriptor != *sinkPort->port)
+      return mappingError(MappingErrorCode::InvalidInternalEdgeWitness,
+                          "memory internal edge does not match capability");
+    if (!(*edge)->source.key.actor)
+      usedGraphBoundaries.insert((*edge)->source.key);
+    if (!(*edge)->target.key.actor)
+      usedGraphBoundaries.insert((*edge)->target.key);
+  }
+  std::set<EndpointKey> mappedGraphBoundaries;
+  for (const auto &entry : graphInternalEndpoints)
+    mappedGraphBoundaries.insert(entry.first);
+  if (witnessedConnections != activeConnections ||
+      mappedGraphBoundaries != usedGraphBoundaries)
+    return mappingError(MappingErrorCode::InvalidInternalEdgeWitness,
+                        "memory internal witness set is not exact");
+
+  std::set<EndpointKey> expectedBoundaryPorts;
+  for (const ResolvedDataflowEdge &edge : dataflowIndex.edges) {
+    if (edge.source.graph != realization.graph ||
+        internalEdges.count(edge.id.value()))
+      continue;
+    if (edge.source.key.actor &&
+        realization.actors.count(edge.source.key.owner))
+      expectedBoundaryPorts.insert(edge.source.key);
+    if (edge.target.key.actor &&
+        realization.actors.count(edge.target.key.owner))
+      expectedBoundaryPorts.insert(edge.target.key);
+  }
+
+  std::set<EndpointKey> mappedBoundaryPorts;
+  for (const MemoryBoundaryPortCorrespondence &correspondence :
+       realization.record->boundaryPorts) {
+    auto actorPort = resolveActorPortReference(
+        correspondence.actorPort, dataflow.identity, dataflowIndex);
+    if (!actorPort)
+      return actorPort.takeError();
+    auto operationPort = resolveMemoryOperationPortReference(
+        correspondence.operationPort, fabric.identity, fabricIndex);
+    if (!operationPort)
+      return operationPort.takeError();
+    const ActorPortKey actorPortKey{actorPort->key.direction,
+                                    actorPort->key.index};
+    if (!realization.actors.count(actorPort->key.owner) ||
+        !expectedBoundaryPorts.count(actorPort->key) ||
+        !mappedBoundaryPorts.insert(actorPort->key).second)
+      return mappingError(
+          MappingErrorCode::IncompleteMemoryBoundaryCorrespondence,
+          "memory boundary correspondence is not exact");
+    const auto &memory = dataflowIndex.memoryActors.at(actorPort->key.owner);
+    const auto role = memory.ports.find(actorPortKey);
+    if (role == memory.ports.end() ||
+        actorOperations.at(actorPort->key.owner)->id !=
+            operationPort->operation->id)
+      return mappingError(
+          MappingErrorCode::IncompleteMemoryBoundaryCorrespondence,
+          "memory boundary correspondence is not exact");
+    if (role->second != operationPort->descriptor->role ||
+        actorPort->key.direction != operationPort->descriptor->direction)
+      return mappingError(
+          MappingErrorCode::IncompleteMemoryBoundaryCorrespondence,
+          "memory boundary correspondence uses the wrong role");
+    if (*actorPort->descriptor != operationPort->descriptor->port)
+      return mappingError(MappingErrorCode::PortSignatureMismatch,
+                          "memory boundary port type does not match");
+  }
+  if (mappedBoundaryPorts != expectedBoundaryPorts)
+    return mappingError(
+        MappingErrorCode::IncompleteMemoryBoundaryCorrespondence,
+        "memory boundary correspondence is not complete");
+  return llvm::Error::success();
+}
+
 llvm::Error validateCoveredEdgeAccounting(
     const DataflowIndex &dataflowIndex,
     const std::set<std::uint64_t> &coveredGraphs,
@@ -752,6 +1623,8 @@ validateCoveredSinkAccounting(const DataflowIndex &dataflowIndex,
     for (std::size_t index = 0; index < graph.outputPorts.size(); ++index) {
       const EndpointKey sink{false, graphId, PortDirection::Output,
                              static_cast<std::uint32_t>(index)};
+      if (graph.outputPorts[index].kind == PortKind::Memory)
+        continue;
       const std::size_t count = driverCounts[sink];
       if (count == 0)
         return mappingError(MappingErrorCode::MissingSinkDriver,
@@ -805,6 +1678,11 @@ loom::mapping::validateTechMapping(const TechMappingDraft &mapping,
                                       EntityKind::ComputeRealization))
       return std::move(error);
   }
+  for (const MemoryRealizationDraft &realization : mapping.memoryRealizations) {
+    if (llvm::Error error = addEntity(mappingEntities, realization.id.value(),
+                                      EntityKind::MemoryRealization))
+      return std::move(error);
+  }
 
   if (mapping.coveredGraphs.empty())
     return mappingError(MappingErrorCode::IncompleteGraphCoverage,
@@ -830,6 +1708,10 @@ loom::mapping::validateTechMapping(const TechMappingDraft &mapping,
       mapping, dataflow, *dataflowIndex, coveredGraphs, actorToRealization);
   if (!realizations)
     return realizations.takeError();
+  auto memoryRealizations = resolveMemoryRealizationActors(
+      mapping, dataflow, *dataflowIndex, coveredGraphs, actorToRealization);
+  if (!memoryRealizations)
+    return memoryRealizations.takeError();
 
   std::set<std::uint64_t> expectedActors;
   for (const ActorDescriptor &actor : dataflow.actors) {
@@ -854,6 +1736,13 @@ loom::mapping::validateTechMapping(const TechMappingDraft &mapping,
       return boundary.takeError();
     if (llvm::Error error = validateConfiguredFunctionTopology(
             realization, *selected, *boundary, *dataflowIndex))
+      return std::move(error);
+  }
+  std::map<std::uint64_t, std::uint64_t> rootServices;
+  for (const MemoryRealizationActors &realization : *memoryRealizations) {
+    if (llvm::Error error =
+            validateMemoryRealization(realization, dataflow, *dataflowIndex,
+                                      fabric, *fabricIndex, rootServices))
       return std::move(error);
   }
 

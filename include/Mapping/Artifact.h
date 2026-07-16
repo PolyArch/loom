@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <initializer_list>
+#include <optional>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -17,6 +18,15 @@ using ArtifactIdentity = ::loom::ArtifactIdentity;
 enum class MappingProfile { TechMapping, PhysicalMapping };
 enum class PortDirection { Input, Output };
 enum class PortKind { Value, Stream, Memory };
+enum class MemoryOperationKind { Load, Store };
+enum class MemoryAccessPortRole {
+  Address,
+  Data,
+  Mask,
+  Control,
+  Result,
+  Done,
+};
 
 class TypeKey {
 public:
@@ -84,31 +94,73 @@ private:
 
 struct GraphIdTag;
 struct ActorIdTag;
+struct EdgeIdTag;
+struct LogicalMemoryRootIdTag;
 struct FuIdTag;
 struct FabricOpIdTag;
 struct EncodingIdTag;
 struct ComputeRealizationIdTag;
+struct MemoryServiceDomainIdTag;
+struct MemoryImplementationIdTag;
+struct MemoryOperationPortTemplateIdTag;
+struct MemoryInternalConnectionIdTag;
+struct MemorySemanticEncodingIdTag;
+struct MemoryRealizationIdTag;
 
 using GraphId = TypedEntityId<GraphIdTag>;
 using ActorId = TypedEntityId<ActorIdTag>;
+using EdgeId = TypedEntityId<EdgeIdTag>;
+using LogicalMemoryRootId = TypedEntityId<LogicalMemoryRootIdTag>;
 using FuId = TypedEntityId<FuIdTag>;
 using FabricOpId = TypedEntityId<FabricOpIdTag>;
 using EncodingId = TypedEntityId<EncodingIdTag>;
 using ComputeRealizationId = TypedEntityId<ComputeRealizationIdTag>;
+using MemoryServiceDomainId = TypedEntityId<MemoryServiceDomainIdTag>;
+using MemoryImplementationId = TypedEntityId<MemoryImplementationIdTag>;
+using MemoryOperationPortTemplateId =
+    TypedEntityId<MemoryOperationPortTemplateIdTag>;
+using MemoryInternalConnectionId = TypedEntityId<MemoryInternalConnectionIdTag>;
+using MemorySemanticEncodingId = TypedEntityId<MemorySemanticEncodingIdTag>;
+using MemoryRealizationId = TypedEntityId<MemoryRealizationIdTag>;
 
 template <typename EntityId>
 using EntityReference = ::loom::ArtifactReference<EntityId>;
 
 using GraphRef = EntityReference<GraphId>;
 using ActorRef = EntityReference<ActorId>;
+using EdgeRef = EntityReference<EdgeId>;
+using LogicalMemoryRootRef = EntityReference<LogicalMemoryRootId>;
 using FuRef = EntityReference<FuId>;
 using FabricOpRef = EntityReference<FabricOpId>;
 using EncodingRef = EntityReference<EncodingId>;
+using MemoryImplementationRef = EntityReference<MemoryImplementationId>;
+using MemoryOperationPortTemplateRef =
+    EntityReference<MemoryOperationPortTemplateId>;
+using MemoryInternalConnectionRef = EntityReference<MemoryInternalConnectionId>;
+using MemorySemanticEncodingRef = EntityReference<MemorySemanticEncodingId>;
 
 struct GraphDescriptor {
   GraphId id;
   std::vector<PortDescriptor> inputPorts;
   std::vector<PortDescriptor> outputPorts;
+};
+
+struct MemoryAccessPortDescriptor {
+  MemoryAccessPortRole role;
+  PortDirection direction;
+  std::uint32_t index;
+};
+
+// Lossless importer-derived view of a canonical dataflow.load/store. The
+// Mapping verifier validates this projection as one unit; Mapping records do
+// not select or redefine these facts.
+struct CanonicalMemoryActorView {
+  MemoryOperationKind operation;
+  LogicalMemoryRootId root;
+  std::uint32_t accessWidthBits;
+  std::uint32_t accessSizeBytes;
+  std::uint32_t alignmentBytes;
+  std::vector<MemoryAccessPortDescriptor> ports;
 };
 
 struct ActorDescriptor {
@@ -118,12 +170,20 @@ struct ActorDescriptor {
   SemanticKey attributes;
   std::vector<PortDescriptor> inputPorts;
   std::vector<PortDescriptor> outputPorts;
+  std::optional<CanonicalMemoryActorView> memory;
 };
 
 struct GraphPort {
   GraphId graph;
   PortDirection direction;
   std::uint32_t index;
+};
+
+struct LogicalMemoryRootDescriptor {
+  LogicalMemoryRootId id;
+  GraphId graph;
+  std::vector<GraphPort> importPorts;
+  std::vector<GraphPort> exportPorts;
 };
 
 struct ActorPort {
@@ -135,6 +195,7 @@ struct ActorPort {
 using DataflowEndpoint = std::variant<GraphPort, ActorPort>;
 
 struct DataflowEdge {
+  EdgeId id;
   DataflowEndpoint source;
   DataflowEndpoint target;
 };
@@ -144,6 +205,7 @@ struct DataflowProgramView {
   std::vector<GraphDescriptor> graphs;
   std::vector<ActorDescriptor> actors;
   std::vector<DataflowEdge> edges;
+  std::vector<LogicalMemoryRootDescriptor> logicalMemoryRoots;
 };
 
 struct FuDescriptor {
@@ -215,15 +277,94 @@ struct EncodingDescriptor {
   std::vector<ConfiguredOutputDescriptor> outputs;
 };
 
+struct MemoryServiceDomainDescriptor {
+  MemoryServiceDomainId id;
+};
+
+struct MemoryImplementationBoundaryPortDescriptor {
+  PortDirection direction;
+  PortDescriptor port;
+  std::uint32_t maxInternalFanout;
+};
+
+struct MemoryImplementationDescriptor {
+  MemoryImplementationId id;
+  MemoryServiceDomainId service;
+  std::vector<MemoryImplementationBoundaryPortDescriptor> boundaryPorts;
+};
+
+struct MemoryOperationPortDescriptor {
+  MemoryAccessPortRole role;
+  PortDirection direction;
+  PortDescriptor port;
+  std::uint32_t maxInternalFanout;
+};
+
+struct MemoryAccessCapability {
+  std::uint32_t accessSizeBytes;
+  std::uint32_t requiredAlignmentBytes;
+};
+
+struct MemoryOperationPortTemplateDescriptor {
+  MemoryOperationPortTemplateId id;
+  MemoryImplementationId implementation;
+  MemoryOperationKind operation;
+  std::vector<MemoryOperationPortDescriptor> ports;
+  std::uint32_t physicalDataWidthBits;
+  std::vector<MemoryAccessCapability> accessCapabilities;
+};
+
+struct MemoryOperationPort {
+  MemoryOperationPortTemplateId operation;
+  std::uint32_t index;
+
+  friend bool operator==(MemoryOperationPort lhs, MemoryOperationPort rhs) {
+    return lhs.operation == rhs.operation && lhs.index == rhs.index;
+  }
+};
+
+struct MemoryImplementationBoundaryPort {
+  std::uint32_t index;
+};
+
+using MemoryInternalEndpoint =
+    std::variant<MemoryImplementationBoundaryPort, MemoryOperationPort>;
+
+struct MemoryInternalConnectionDescriptor {
+  MemoryInternalConnectionId id;
+  MemoryImplementationId implementation;
+  MemoryInternalEndpoint source;
+  MemoryInternalEndpoint sink;
+};
+
+struct MemorySemanticEncodingDescriptor {
+  MemorySemanticEncodingId id;
+  MemoryImplementationId implementation;
+  std::vector<MemoryOperationPortTemplateId> operationTemplates;
+  std::vector<MemoryInternalConnectionId> internalConnections;
+};
+
 struct FabricHardwareView {
   ArtifactIdentity identity;
   std::vector<FuDescriptor> functionalUnits;
   std::vector<FabricOpDescriptor> operations;
   std::vector<EncodingDescriptor> encodings;
+  std::vector<MemoryServiceDomainDescriptor> memoryServiceDomains;
+  std::vector<MemoryImplementationDescriptor> memoryImplementations;
+  std::vector<MemoryOperationPortTemplateDescriptor>
+      memoryOperationPortTemplates;
+  std::vector<MemoryInternalConnectionDescriptor> memoryInternalConnections;
+  std::vector<MemorySemanticEncodingDescriptor> memorySemanticEncodings;
 };
 
 struct ActorPortRef {
   ActorRef actor;
+  PortDirection direction;
+  std::uint32_t index;
+};
+
+struct GraphPortRef {
+  GraphRef graph;
   PortDirection direction;
   std::uint32_t index;
 };
@@ -244,6 +385,37 @@ struct BoundaryPortCorrespondence {
   FuPortRef fuPort;
 };
 
+struct MemoryOperationPortRef {
+  MemoryOperationPortTemplateRef operation;
+  std::uint32_t index;
+};
+
+struct MemoryImplementationBoundaryPortRef {
+  MemoryImplementationRef implementation;
+  std::uint32_t index;
+};
+
+struct ActorToMemoryOperation {
+  ActorRef actor;
+  MemoryOperationPortTemplateRef operation;
+  LogicalMemoryRootRef root;
+};
+
+struct MemoryBoundaryPortCorrespondence {
+  ActorPortRef actorPort;
+  MemoryOperationPortRef operationPort;
+};
+
+struct MemoryGraphBoundaryPortCorrespondence {
+  GraphPortRef graphPort;
+  MemoryImplementationBoundaryPortRef implementationPort;
+};
+
+struct MemoryInternalEdgeWitness {
+  EdgeRef edge;
+  MemoryInternalConnectionRef connection;
+};
+
 struct ComputeRealizationDraft {
   ComputeRealizationId id;
   std::vector<ActorRef> actors;
@@ -251,6 +423,17 @@ struct ComputeRealizationDraft {
   EncodingRef encoding;
   std::vector<ActorToFabricOp> actorToOps;
   std::vector<BoundaryPortCorrespondence> boundaryPorts;
+};
+
+struct MemoryRealizationDraft {
+  MemoryRealizationId id;
+  std::vector<ActorRef> actors;
+  std::vector<ActorToMemoryOperation> actorToOperations;
+  std::vector<LogicalMemoryRootRef> roots;
+  MemorySemanticEncodingRef encoding;
+  std::vector<MemoryBoundaryPortCorrespondence> boundaryPorts;
+  std::vector<MemoryGraphBoundaryPortCorrespondence> graphBoundaryPorts;
+  std::vector<MemoryInternalEdgeWitness> internalEdges;
 };
 
 struct MappingDraftHeader {
@@ -272,6 +455,7 @@ struct TechMappingDraft {
   MappingDraftHeader header;
   std::vector<GraphRef> coveredGraphs;
   std::vector<ComputeRealizationDraft> realizations;
+  std::vector<MemoryRealizationDraft> memoryRealizations;
 };
 
 } // namespace loom::mapping

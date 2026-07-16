@@ -29,9 +29,17 @@ enum class MappingErrorCode {
   ActorlessGraphPassthrough,
   EmptyActorGroup,
   CrossGraphActorGroup,
+  WrongActorRealizationKind,
+  InvalidMemoryRealization,
   IncompleteActorToOpCorrespondence,
   IncompleteBoundaryCorrespondence,
+  IncompleteMemoryBoundaryCorrespondence,
   SelectedFuMismatch,
+  MemoryOperationMismatch,
+  MemoryEncodingMismatch,
+  InvalidInternalEdgeWitness,
+  MemoryServiceMismatch,
+  MemoryAccessIncompatible,
   InvalidConfiguredFunction,
   ConfiguredFunctionMismatch,
   UnaccountedGraphEdge,
@@ -64,6 +72,9 @@ public:
   }
   llvm::ArrayRef<ComputeRealizationDraft> realizations() const {
     return draft_.realizations;
+  }
+  llvm::ArrayRef<MemoryRealizationDraft> memoryRealizations() const {
+    return draft_.memoryRealizations;
   }
 
 private:

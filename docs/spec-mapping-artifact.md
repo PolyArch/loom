@@ -42,12 +42,17 @@ explicit control, state, stream, and memory semantics.
 
 The Fabric Hardware Description owns hardware facts, including elaborated
 topology, FU topology, capabilities, configuration domains, ports, and
-physical implementation structure.
+physical implementation structure. Its definition-level facts include memory
+service domains, implementation families, load/store operation-port templates,
+explicit typed implementation boundary ports, normalized semantic encodings,
+typed internal connectivity, source-endpoint fanout capacities, and one-beat
+access contracts.
 
 The TechMapping-profile Mapping Artifact owns the selected logical
 realization relation between those exact artifacts. It owns
-target-specific actor grouping, selected FU realization, software-to-FU
-correspondence, and the selected Fabric-defined valid semantic encoding.
+target-specific compute actor grouping, selected FU realization,
+software-to-FU correspondence, the selected Fabric-defined valid semantic
+encoding, and Memory Realizations against exact Fabric memory semantics.
 
 The Physical-Mapping-profile artifact owns the concrete physical
 realization and legality facts added after TechMapping. At this level only
@@ -93,8 +98,9 @@ artifact.
 
 A Physical Mapping references exactly one immutable TechMapping
 predecessor. It inherits the predecessor's Canonical Dataflow Program,
-Fabric Hardware Description, coverage, and Compute Realizations. It must
-not restate or copy those facts as independent authority.
+Fabric Hardware Description, coverage, Compute Realizations, and Memory
+Realizations. It must not restate or copy those facts as independent
+authority.
 
 Conceptually:
 
@@ -114,12 +120,15 @@ separate Mapping Scope entity.
 
 Coverage is closed for every declared graph:
 
-* every real actor belongs to exactly one Compute Realization;
-* no Compute Realization crosses a graph-definition boundary;
+* every actor belongs to exactly one Compute Realization or Memory
+  Realization;
+* `dataflow.load` and `dataflow.store` actors belong only to Memory
+  Realizations, while all other actors belong only to Compute Realizations;
+* no realization crosses a graph-definition boundary;
 * every canonical edge is classified exactly once as realization-internal
   or realization-external;
-* every external software endpoint has one exact typed FU template-port
-  correspondence;
+* every external software endpoint has one exact typed FU or memory
+  operation-template port correspondence;
 * graph boundary and typed value, stream, control, state, and memory
   obligations are accounted for; and
 * there are no unmapped actors, duplicate coverage, dangling records, or
@@ -128,9 +137,9 @@ Coverage is closed for every declared graph:
 Only an immutable artifact satisfying this closed coverage gate may enter
 PnR.
 
-The profile contains Compute Realizations and any typed representation
-obligations required by those realizations. Adapter record syntax remains
-deferred.
+The profile contains Compute Realizations, Memory Realizations, and any typed
+representation obligations required by those realizations. Adapter record
+syntax remains deferred.
 
 ## Compute Realization
 
@@ -164,6 +173,72 @@ may derive transient `sw_configs = {mode = N}` values for `fabric.op`
 resources and route selections from the selected encoding, but those values
 are caches or lowering products, not another capability or type authority.
 
+## Memory Realization
+
+A Memory Realization covers a non-empty set of canonical `dataflow.load` and
+`dataflow.store` actors within one graph definition. Singleton records model
+independent accesses. Multi-actor records model a software memory subgraph
+implemented by one selected normalized `fabric.mem` semantic encoding. Memory
+Realization is orthogonal to Compute Realization and does not introduce a
+persistent common actor-realization wrapper.
+
+The neutral Dataflow importer produces one validated derived view for each
+memory actor. That view jointly owns the canonical operation kind, logical
+memory root, semantic port roles, access width, access size, and alignment.
+These facts are not Mapping-selected metadata or a second operation authority.
+Each logical root owns one graph definition and zero or more memory imports and
+exports in that graph. This covers imported-only, fresh, exported-only,
+re-exported, aliased/viewed, and non-exported scratch roots without changing
+the root model. Every graph memory port belongs to exactly one root. Import and
+export types may differ when a re-export exposes another view or layout.
+Memory capability identity is never represented as a Dataflow edge.
+
+The implemented neutral record contains:
+
+* stable actor references and bijective actor-to-operation-template
+  correspondence;
+* the logical memory root associated with each actor and the record's exact
+  root set;
+* one selected Fabric-defined normalized memory semantic encoding;
+* exact typed address/data/mask/control/result/done boundary-port
+  correspondences;
+* the minimal graph-port-to-memory-implementation-boundary correspondence
+  required by selected internal graph-boundary connections; and
+* internal-edge witnesses pairing absorbed canonical edge references with
+  selected Fabric-defined typed internal connections.
+
+Fabric internal connections use one endpoint variant: an explicit memory
+implementation boundary port or a memory operation-template port. Typed and
+directed connections may run from a boundary input to an operation input,
+from an operation output to an operation input, or from an operation output
+to a boundary output. Actor endpoints are derived from actor-to-operation
+correspondence; graph endpoints require the explicit Mapping correspondence.
+Every connection selected by the normalized encoding has exactly one canonical
+edge witness, and every witness names a selected connection. Actors in the
+same Memory Realization do not make their edges internal automatically.
+Unselected edges remain external. Fanout is legal only within the capacity
+declared once by the Fabric source endpoint.
+
+Each selected operation template supplies normalized per-access-size tuples.
+Each tuple owns one access size and its required alignment. Listing a store
+tuple means the hardware implements canonical store semantics for that exact
+shape, including preservation of bytes outside a narrow write. Hardware that
+would clobber those bytes does not list the tuple. Software width must not
+exceed physical data width, and the software alignment guarantee must be a
+multiple of the tuple's required alignment. A narrow load may use low-bit
+extraction from the physical result. The neutral core does not split accesses
+into multiple beats or hide read-modify-write behavior.
+
+Every logical memory root resolves to one coherent service-domain obligation
+across all Memory Realizations. Different roots may map many-to-one to the same
+service. A root cannot silently move between unrelated service domains.
+
+The record contains no concrete memory occurrence, physical operation port or
+context, bank, tag, base or range, route, buffer, schedule, arbitration, or
+resource-time choice. The current implementation is limited to the neutral C++
+Artifact and Verifier model; it does not add Mapping MLIR persistence, a PnR
+consumer, or physical memory binding records.
+
 ## Edge Ownership
 
 An edge whose producer and consumer actors belong to the same Compute
@@ -171,11 +246,16 @@ Realization is implemented by the configured FU topology. Its legality is
 part of the Compute Realization witness and it creates no external physical
 communication obligation.
 
-An edge crossing a Compute Realization boundary remains owned by the
-Canonical Dataflow Program. The two Compute Realizations provide exact
-typed FU template-port correspondences for its endpoints. A PnR importer
-mechanically derives the external communication obligation from those
-facts.
+An edge crossing an actor-realization boundary remains owned by the Canonical
+Dataflow Program. Its source and sink realizations provide exact typed FU or
+memory operation-template port correspondences for the exposed endpoints. A
+PnR importer mechanically derives the external communication obligation from
+those facts. A Memory Realization internal-edge witness is the only mechanism
+that removes one of its canonical edges from this external set.
+
+Graph memory imports and exports belong to the capability plane. They are
+accounted for by logical roots and service obligations, never by ordinary
+Dataflow edges or token sink accounting.
 
 Importers must not infer correspondence from textual order, symbol
 spelling, paths, or port names. Canonical fanout with one exposed producer
@@ -186,12 +266,15 @@ a duplicate persistent TechMapping netlist is not another authority.
 
 A Physical Mapping is exactly one immutable TechMapping predecessor plus
 a physical delta. The delta owns only concrete physical realization facts
-and must preserve every predecessor Compute Realization.
+and must preserve every predecessor Compute Realization and Memory
+Realization.
 
 Physical Mapping must not regroup actors, select another FU
 implementation, change the selected semantic encoding, reinterpret FU
-configuration, or guess software-to-FU correspondence. Any such change
-requires a new TechMapping artifact.
+configuration, replace a selected memory implementation or operation
+template, semantic encoding, logical-root association, or internal-edge
+witness, or guess software-to-hardware correspondence. Any such change requires
+a new TechMapping artifact.
 
 The exact physical record families and their completeness rules are not
 defined here. Route trees, resource-time claims, instruction slots,
@@ -241,7 +324,16 @@ The TechMapping profile verifies at least:
   identities;
 * resolution and type correctness of every persistent reference;
 * closed coverage for the declared graph-definition set;
+* disjoint and complete actor coverage across Compute Realizations and Memory
+  Realizations;
 * complete actor-to-`fabric.op` and boundary-port correspondence;
+* exact graph-owned memory root and import/export port partition, selected
+  normalized encoding, bijective operation-template ownership, graph and actor
+  boundary correspondence, and selected-connection/internal-edge witness
+  equality;
+* coherent service-domain consistency for each logical memory root;
+* correlated one-beat access width, size, required alignment, and narrow-store
+  legality;
 * selected FU and encoding ownership; and
 * configured-function equality for the actor group, including exact semantic
   types, attributes, ordered edges, fanout, and boundary correspondence;
