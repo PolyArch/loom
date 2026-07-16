@@ -1,4 +1,5 @@
 add_subdirectory(Common)
+add_subdirectory(Evaluation)
 add_subdirectory(ADG)
 add_subdirectory(Fabric)
 add_subdirectory(Dataflow)

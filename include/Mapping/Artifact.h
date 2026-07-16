@@ -1,6 +1,8 @@
 #ifndef LOOM_MAPPING_ARTIFACT_H
 #define LOOM_MAPPING_ARTIFACT_H
 
+#include "Common/Artifact.h"
+
 #include <cstdint>
 #include <initializer_list>
 #include <utility>
@@ -9,43 +11,12 @@
 
 namespace loom::mapping {
 
-struct SchemaVersion {
-  std::uint32_t major = 0;
-  std::uint32_t minor = 0;
-
-  friend bool operator==(SchemaVersion lhs, SchemaVersion rhs) {
-    return lhs.major == rhs.major && lhs.minor == rhs.minor;
-  }
-  friend bool operator!=(SchemaVersion lhs, SchemaVersion rhs) {
-    return !(lhs == rhs);
-  }
-};
+using SchemaVersion = ::loom::SchemaVersion;
+using ArtifactIdentity = ::loom::ArtifactIdentity;
 
 enum class MappingProfile { TechMapping, PhysicalMapping };
 enum class PortDirection { Input, Output };
 enum class PortKind { Value, Stream, Memory };
-
-class ArtifactIdentity {
-public:
-  ArtifactIdentity() = default;
-  ArtifactIdentity(std::initializer_list<std::uint8_t> bytes) : bytes_(bytes) {}
-  explicit ArtifactIdentity(std::vector<std::uint8_t> bytes)
-      : bytes_(std::move(bytes)) {}
-
-  bool empty() const { return bytes_.empty(); }
-
-  friend bool operator==(const ArtifactIdentity &lhs,
-                         const ArtifactIdentity &rhs) {
-    return lhs.bytes_ == rhs.bytes_;
-  }
-  friend bool operator!=(const ArtifactIdentity &lhs,
-                         const ArtifactIdentity &rhs) {
-    return !(lhs == rhs);
-  }
-
-private:
-  std::vector<std::uint8_t> bytes_;
-};
 
 class TypeKey {
 public:
@@ -125,10 +96,8 @@ using FabricOpId = TypedEntityId<FabricOpIdTag>;
 using EncodingId = TypedEntityId<EncodingIdTag>;
 using ComputeRealizationId = TypedEntityId<ComputeRealizationIdTag>;
 
-template <typename EntityId> struct EntityReference {
-  ArtifactIdentity artifact;
-  EntityId entity;
-};
+template <typename EntityId>
+using EntityReference = ::loom::ArtifactReference<EntityId>;
 
 using GraphRef = EntityReference<GraphId>;
 using ActorRef = EntityReference<ActorId>;
