@@ -1,0 +1,174 @@
+#ifndef LOOM_LIB_SIMULATOR_DFGSIMULATORINTERNAL_H
+#define LOOM_LIB_SIMULATOR_DFGSIMULATORINTERNAL_H
+
+#include "Simulator/DFGSimulator.h"
+
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Operation.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/Support/Compiler.h"
+#include "llvm/Support/Error.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+
+namespace loom::sim {
+namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
+
+inline constexpr std::uint64_t kLoadAddressScore = 1;
+inline constexpr std::uint64_t kStoreAddressScore = 2;
+
+struct MemoryValue;
+
+struct MemoryView {
+  std::shared_ptr<MemoryValue> memory;
+  mlir::Value root;
+  std::int64_t byteOffset = 0;
+};
+
+enum class TokenKind { None, Integer, Float, Bool, Pointer };
+
+struct Token {
+  TokenKind kind = TokenKind::None;
+  std::int64_t intValue = 0;
+  double floatValue = 0.0;
+  bool boolValue = false;
+  MemoryView pointer;
+};
+
+using ChannelMap = llvm::DenseMap<const mlir::OpOperand *, std::deque<Token>>;
+using OutputMap = llvm::DenseMap<mlir::Value, llvm::SmallVector<Token>>;
+
+struct StreamState {
+  bool initialized = false;
+  bool done = false;
+  std::uint64_t trueEmissions = 0;
+  std::int64_t current = 0;
+  std::int64_t ub = 0;
+  std::int64_t step = 0;
+};
+
+struct LoopState {
+  bool initialized = false;
+  std::optional<Token> latched;
+};
+
+struct ParallelizeState {
+  std::uint64_t pointer = 0;
+  llvm::SmallVector<std::optional<Token>, 8> slots;
+  std::uint64_t mask = 0;
+};
+
+struct MemoryValue {
+  mlir::Type elementType;
+  llvm::SmallVector<Token> elements;
+};
+
+struct MemoryFixture {
+  std::string values;
+  std::int64_t byteOffset = 0;
+};
+
+struct SimulatorState {
+  ChannelMap channels;
+  ChannelMap pendingChannels;
+  OutputMap observedOutputs;
+  OutputMap pendingObservedOutputs;
+  llvm::DenseMap<mlir::Value, std::shared_ptr<MemoryValue>> memories;
+  llvm::DenseMap<mlir::Value, MemoryFixture> rawMemoryFixtures;
+  llvm::StringMap<MemoryFixture> globalMemoryFixtures;
+  llvm::DenseMap<mlir::Operation *, StreamState> streamStates;
+  llvm::DenseMap<mlir::Operation *, LoopState> carryStates;
+  llvm::DenseMap<mlir::Operation *, LoopState> invariantStates;
+  llvm::DenseMap<mlir::Operation *, ParallelizeState> parallelizeStates;
+  llvm::DenseSet<mlir::Operation *> gateContinueStates;
+  llvm::DenseMap<mlir::Operation *, std::uint64_t> loadFireCounts;
+  llvm::DenseSet<mlir::Operation *> oneShotOps;
+  llvm::DenseMap<mlir::Operation *, std::uint64_t> structuredEffectFireCounts;
+  llvm::DenseMap<mlir::Value, std::uint64_t> seededTokenCounts;
+  llvm::SmallVector<std::string> diagnostics;
+  std::map<std::string, std::uint64_t> operationFireCounts;
+  std::map<std::string, std::uint64_t> modeledLibraryCalls;
+  std::uint64_t modeledLibraryScore = 0;
+  std::uint64_t eventCount = 0;
+  std::uint64_t memoryAddressScore = 0;
+  std::uint64_t structuredLoopIterations = 0;
+  std::uint64_t maxStructuredLoopIterations = 0;
+};
+
+Token noneToken();
+Token integerValueToken(std::int64_t value);
+Token boolValueToken(bool value);
+Token pointerToken(mlir::Value root, std::shared_ptr<MemoryValue> memory = {},
+                   std::int64_t byteOffset = 0);
+llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr);
+llvm::Expected<Token> zeroToken(mlir::Type type);
+llvm::Expected<Token> ensurePointerMemory(SimulatorState &state, Token token,
+                                          mlir::Type elementType);
+llvm::Expected<std::int64_t> gepByteOffset(mlir::LLVM::GEPOp op,
+                                           llvm::ArrayRef<Token> dynamicTokens);
+
+bool hasToken(ChannelMap &channels, mlir::OpOperand &operand);
+Token popToken(ChannelMap &channels, mlir::OpOperand &operand);
+Token peekToken(ChannelMap &channels, mlir::OpOperand &operand);
+void emitToken(SimulatorState &state, mlir::Value value, Token token);
+bool recordEvent(SimulatorState &state, llvm::StringRef opName);
+bool hasComputedAddress(mlir::Value value);
+std::int64_t integerToken(const Token &token);
+bool boolToken(const Token &token);
+llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type);
+
+std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
+                                               const Token &addr,
+                                               SimulatorState &state,
+                                               llvm::StringRef opName);
+bool isSupportedLLVMCall(mlir::LLVM::CallOp op);
+bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
+                                 llvm::ArrayRef<Token> operands, Token &result);
+bool isSupportedPointerICmp(mlir::LLVM::ICmpOp op);
+llvm::Expected<Token> evaluatePointerICmp(mlir::LLVM::ICmpOp op,
+                                          const Token &lhs, const Token &rhs);
+PrimitiveValue primitiveValueFromToken(const Token &token);
+Token tokenFromPrimitiveValue(const PrimitiveValue &value);
+std::string primitivePredicate(mlir::Operation *op);
+std::string primitiveOperationName(mlir::Operation *op);
+PrimitiveOperationDescriptor primitiveDescriptor(mlir::Operation *op,
+                                                 llvm::StringRef predicate,
+                                                 mlir::Value result);
+
+bool evaluateCont(std::int64_t current, std::int64_t ub, llvm::StringRef pred);
+std::int64_t stepIndex(std::int64_t current, std::int64_t step,
+                       llvm::StringRef stepOp);
+bool executeLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state,
+                       const Token &dst, const Token &src, const Token &len);
+bool isPointerSelect(mlir::LLVM::SelectOp op);
+std::optional<Token> evaluatePointerSelect(mlir::LLVM::SelectOp op,
+                                           const Token &condition,
+                                           const Token &trueValue,
+                                           const Token &falseValue,
+                                           SimulatorState &state);
+bool fireActorOperation(mlir::Operation *op, SimulatorState &state);
+std::optional<std::string> unsupportedActorOperation(mlir::Operation *op);
+
+bool isStructuredOperation(mlir::Operation *op);
+bool hasPendingOrderedStructuredFire(mlir::Operation *op,
+                                     const SimulatorState &state);
+bool fireStructuredOperation(mlir::Operation *op, SimulatorState &state);
+std::optional<std::string> unsupportedStructuredOperation(mlir::Operation *op);
+
+std::string unsupportedOperationLabel(mlir::Operation *op);
+
+} // namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail
+} // namespace loom::sim
+
+#endif // LOOM_LIB_SIMULATOR_DFGSIMULATORINTERNAL_H
