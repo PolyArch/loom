@@ -266,11 +266,13 @@ bool isLlvmPointerType(mlir::Type type) {
 }
 
 std::optional<unsigned> adapterBitWidth(mlir::Type type) {
-  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
-    return intType.getWidth();
-  if (mlir::isa<mlir::IndexType>(type))
-    return loom::getIndexWidth();
-  return std::nullopt;
+  if (!mlir::isa<mlir::IntegerType, mlir::IndexType>(type))
+    return std::nullopt;
+  std::string error;
+  auto width = fabric::getSemanticPayloadWidth(type, error);
+  if (mlir::failed(width))
+    return std::nullopt;
+  return *width;
 }
 
 bool isDataflowMemoryAddressUse(mlir::OpOperand &use) {
@@ -876,17 +878,11 @@ bool resourceSupportsSoftwareConfigs(const SoftwareNode &node,
 } // namespace
 
 std::optional<unsigned> softwareBitWidth(mlir::Type type) {
-  if (mlir::isa<mlir::NoneType>(type))
-    return 0;
-  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
-    return intType.getWidth();
-  if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type))
-    return floatType.getWidth();
-  if (mlir::isa<mlir::IndexType>(type))
-    return loom::getIndexWidth();
-  if (isLlvmPointerType(type))
-    return loom::getIndexWidth();
-  return std::nullopt;
+  std::string error;
+  auto width = fabric::getSemanticPayloadWidth(type, error);
+  if (mlir::failed(width))
+    return std::nullopt;
+  return *width;
 }
 
 namespace {

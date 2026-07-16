@@ -119,8 +119,6 @@ struct SynthInputs {
   // may reorder its internal handling but must produce a `CoverageReport` whose
   // witnesses are keyed by this slice's order.
   ::llvm::ArrayRef<::fabric::ConfiguredFunction> functions;
-  // Resolved synth config (already parsed; defaults applied).
-  const ::loom::SynthConfig &config;
   // Scratch MLIR context for this worker. Per the spec rule "MLIR
   // mutation is never parallel", the pass constructs a fresh
   // thread-local `MLIRContext` for each worker before invoking
@@ -173,13 +171,17 @@ public:
   virtual SynthResult run(const SynthInputs &) = 0;
 };
 
-// Factory for externally selectable canonical synthesis. Only `anchor`
-// currently implements normalized hw_params modes, explicit valid encodings,
-// and the shared coverage gate. Other historical strategy names return
-// nullptr.
-::std::unique_ptr<Synthesizer>
-makeSynthesizer(::llvm::StringRef strategyName,
-                const ::loom::SynthConfig &);
+// Strategy construction for the canonical synthesis entrypoint. Only `anchor`
+// currently implements normalized hw_params modes and explicit valid
+// encodings. Other historical strategy names return nullptr.
+::std::unique_ptr<Synthesizer> makeSynthesizer(::llvm::StringRef strategyName,
+                                               const ::loom::SynthConfig &);
+
+// The canonical synthesis entrypoint dispatches the selected strategy, then
+// applies wrapper verification, explicit encoding coverage, and capability
+// measurement exactly once before returning a successful result.
+SynthResult synthesize(const ::loom::SynthConfig &cfg,
+                       const SynthInputs &inputs);
 
 } // namespace loom::fabric::tech
 

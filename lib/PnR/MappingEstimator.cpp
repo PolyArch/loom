@@ -38,7 +38,7 @@ constexpr std::uint64_t kFunctionalUnitWeight = 1;
 constexpr std::uint64_t kLoadAddressWeight = 1;
 constexpr std::uint64_t kStoreAddressWeight = 2;
 constexpr std::uint64_t kConfigRecordsPerScoreUnit = 128;
-constexpr llvm::StringLiteral kMappingSchemaVersion = "1.0";
+constexpr llvm::StringLiteral kMappingSchemaVersion = "2.0";
 
 struct RouteStats {
   std::uint64_t routeCount = 0;

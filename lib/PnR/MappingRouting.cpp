@@ -63,30 +63,19 @@ std::string nearestSchedule(mlir::Operation *op) {
   return "spatial";
 }
 
-bool hasNormalizedHardwareModes(mlir::Operation *op) {
-  auto hwParams = op->getAttrOfType<mlir::ArrayAttr>("hw_params");
-  if (!hwParams || hwParams.empty())
-    return false;
-  auto mode = mlir::dyn_cast<mlir::DictionaryAttr>(hwParams[0]);
-  return mode && mode.get("op") && mode.get("function_type") &&
-         mode.get("input_ports") && mode.get("output_ports") &&
-         mode.get("attributes");
-}
-
-bool requiresSemanticEncodingAwarePnr(mlir::Operation *op) {
+bool requiresSemanticEncodingAwarePnr(fabric::OpOp op) {
   auto fu = op->getParentOfType<fabric::FuOp>();
   if (!fu)
     return false;
-  if (fu->getAttrOfType<mlir::ArrayAttr>("valid_encodings") ||
-      hasNormalizedHardwareModes(op))
-    return true;
-  auto swConfigs = op->getAttrOfType<mlir::DictionaryAttr>("sw_configs");
-  return swConfigs && swConfigs.get("mode");
+  return fu->getAttrOfType<mlir::ArrayAttr>("valid_encodings") ||
+         fabric::classifyFabricOpModes(op).kind !=
+             fabric::FabricOpModeKind::Legacy;
 }
 
 void appendHwParamOptions(mlir::Operation *op, HardwareResource &resource) {
   auto hwParams = op->getAttrOfType<mlir::ArrayAttr>("hw_params");
-  if (!hwParams || requiresSemanticEncodingAwarePnr(op))
+  auto fabricOp = mlir::cast<fabric::OpOp>(op);
+  if (!hwParams || requiresSemanticEncodingAwarePnr(fabricOp))
     return;
   for (mlir::Attribute paramSet : hwParams) {
     auto dict = mlir::dyn_cast<mlir::DictionaryAttr>(paramSet);
@@ -715,12 +704,25 @@ llvm::Expected<HardwareModel> collectHardwareModel(mlir::Operation *hardware,
         unresolvedInstance->c_str(), name.str().c_str());
 
   bool hasUnsupportedFuConfiguration = false;
+  std::optional<std::string> malformedFuConfiguration;
   hardware->walk([&](fabric::OpOp op) {
-    if (!hasUnsupportedFuConfiguration &&
-        isConcreteHardwareOperation(op, hardware) &&
-        requiresSemanticEncodingAwarePnr(op))
+    if (!isConcreteHardwareOperation(op, hardware))
+      return;
+    fabric::FabricOpModeClassification classification =
+        fabric::classifyFabricOpModes(op);
+    if (classification.kind == fabric::FabricOpModeKind::Malformed) {
+      if (!malformedFuConfiguration)
+        malformedFuConfiguration = classification.diagnostic;
+      return;
+    }
+    if (!hasUnsupportedFuConfiguration && requiresSemanticEncodingAwarePnr(op))
       hasUnsupportedFuConfiguration = true;
   });
+  if (malformedFuConfiguration)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "legacy PnR cannot consume malformed fabric.op hw_params in @%s: %s",
+        name.str().c_str(), malformedFuConfiguration->c_str());
   if (hasUnsupportedFuConfiguration)
     return llvm::createStringError(
         std::errc::not_supported,

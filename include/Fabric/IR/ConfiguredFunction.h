@@ -8,6 +8,7 @@
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -64,6 +65,11 @@ struct ConfiguredFunctionMatch {
   ::llvm::SmallVector<std::pair<unsigned, unsigned>, 4> outputPorts;
 };
 
+struct ConfiguredFunctionKey {
+  std::uint64_t hash = 0;
+  std::string canonical;
+};
+
 ::mlir::LogicalResult projectConfiguredFunction(FuOp fu,
                                                 ::mlir::DictionaryAttr encoding,
                                                 ConfiguredFunction &function,
@@ -77,6 +83,10 @@ bool matchConfiguredFunctions(const ConfiguredFunction &pattern,
                               const ConfiguredFunction &candidate,
                               bool preserveFuBoundaryIdentity,
                               ConfiguredFunctionMatch *witness = nullptr);
+
+ConfiguredFunctionKey
+getConfiguredFunctionKey(const ConfiguredFunction &function,
+                         bool preserveFuBoundaryIdentity);
 
 ::mlir::LogicalResult verifyValidSemanticEncodings(FuOp fu);
 

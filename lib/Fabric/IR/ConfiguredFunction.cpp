@@ -1,6 +1,5 @@
 #include "Fabric/IR/ConfiguredFunction.h"
 
-#include "Common/IndexWidth.h"
 #include "Fabric/IR/FabricTypes.h"
 
 #include "mlir/IR/AsmState.h"
@@ -19,6 +18,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/xxhash.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -77,32 +77,22 @@ static std::string printAttribute(Attribute attr) {
   return text;
 }
 
+static bool hasRepresentablePayloadTypes(Type type) {
+  if (auto function = ::mlir::dyn_cast<FunctionType>(type)) {
+    return ::llvm::all_of(function.getInputs(), hasRepresentablePayloadTypes) &&
+           ::llvm::all_of(function.getResults(), hasRepresentablePayloadTypes);
+  }
+  std::string error;
+  return ::mlir::succeeded(getSemanticPayloadWidth(type, error));
+}
+
 static bool sameType(Type lhs, Type rhs) {
-  return printType(lhs) == printType(rhs);
+  return hasRepresentablePayloadTypes(lhs) &&
+         hasRepresentablePayloadTypes(rhs) && printType(lhs) == printType(rhs);
 }
 
 static bool sameAttributes(DictionaryAttr lhs, DictionaryAttr rhs) {
   return printAttribute(lhs) == printAttribute(rhs);
-}
-
-static std::optional<unsigned> semanticBitWidth(Type type) {
-  if (auto integer = ::mlir::dyn_cast<::mlir::IntegerType>(type))
-    return integer.getWidth();
-  if (auto floating = ::mlir::dyn_cast<::mlir::FloatType>(type))
-    return floating.getWidth();
-  if (::mlir::isa<::mlir::IndexType>(type))
-    return ::loom::getIndexWidth();
-  if (::mlir::isa<::mlir::NoneType>(type))
-    return 0u;
-  if (auto vector = ::mlir::dyn_cast<::mlir::VectorType>(type)) {
-    if (vector.isScalable())
-      return std::nullopt;
-    auto elementWidth = semanticBitWidth(vector.getElementType());
-    if (!elementWidth)
-      return std::nullopt;
-    return static_cast<unsigned>(vector.getNumElements()) * *elementWidth;
-  }
-  return std::nullopt;
 }
 
 static bool verifyPayloadCapacity(Type physicalType, Type softwareType,
@@ -113,9 +103,10 @@ static bool verifyPayloadCapacity(Type physicalType, Type softwareType,
         subject.str() + " requires an untagged fabric.bits physical payload";
     return false;
   }
-  auto required = semanticBitWidth(softwareType);
-  if (!required) {
-    error = subject.str() + " has an unsupported software type";
+  std::string widthError;
+  auto required = getSemanticPayloadWidth(softwareType, widthError);
+  if (::mlir::failed(required)) {
+    error = subject.str() + " " + widthError;
     return false;
   }
   if (*required > physical.getWidth()) {
@@ -795,6 +786,153 @@ struct MatchState {
   }
 };
 
+class ConfiguredFunctionKeyBuilder {
+public:
+  ConfiguredFunctionKeyBuilder(const ConfiguredFunction &function,
+                               bool preserveBoundary)
+      : function(function), preserveBoundary(preserveBoundary), os(text) {}
+
+  ConfiguredFunctionKey build() {
+    os << "inputs=" << function.inputs.size()
+       << ";nodes=" << function.nodes.size()
+       << ";outputs=" << function.outputs.size() << ';';
+    for (const ConfiguredBoundaryOutput &output : function.outputs) {
+      os << "output{";
+      if (preserveBoundary)
+        os << "port=" << output.fuPort << ';';
+      appendToken(printType(output.type));
+      appendValue(output.value);
+      os << "};";
+    }
+    appendInputInventory();
+    appendUnreachableNodes();
+    os.flush();
+    return {::llvm::xxh3_64bits(text), std::move(text)};
+  }
+
+private:
+  const ConfiguredFunction &function;
+  bool preserveBoundary;
+  std::string text;
+  ::llvm::raw_string_ostream os;
+  ::llvm::DenseMap<unsigned, unsigned> canonicalNodes;
+  ::llvm::DenseMap<unsigned, unsigned> canonicalInputs;
+
+  void appendToken(StringRef token) { os << token.size() << ':' << token; }
+
+  const ConfiguredBoundaryInput *findInput(unsigned port) const {
+    auto input = ::llvm::find_if(function.inputs,
+                                 [&](const ConfiguredBoundaryInput &candidate) {
+                                   return candidate.fuPort == port;
+                                 });
+    return input == function.inputs.end() ? nullptr : &*input;
+  }
+
+  void appendInput(unsigned port) {
+    os << 'I';
+    if (preserveBoundary) {
+      os << port;
+    } else {
+      auto [entry, inserted] =
+          canonicalInputs.try_emplace(port, canonicalInputs.size());
+      (void)inserted;
+      os << entry->second;
+    }
+    os << '[';
+    if (const ConfiguredBoundaryInput *input = findInput(port))
+      appendToken(printType(input->type));
+    else
+      appendToken("<missing>");
+    os << ']';
+  }
+
+  void appendNode(unsigned nodeIndex, unsigned resultIndex) {
+    auto [entry, inserted] =
+        canonicalNodes.try_emplace(nodeIndex, canonicalNodes.size());
+    os << 'N' << entry->second << '.' << resultIndex;
+    if (!inserted)
+      return;
+    if (nodeIndex >= function.nodes.size()) {
+      os << "{<missing>}";
+      return;
+    }
+
+    const ConfiguredFunctionNode &node = function.nodes[nodeIndex];
+    os << '{';
+    appendToken(node.operationName);
+    appendToken(printType(node.functionType));
+    appendToken(printAttribute(node.attributes));
+    os << "operands=" << node.operands.size() << '[';
+    for (const ConfiguredValue &operand : node.operands) {
+      appendValue(operand);
+      os << ';';
+    }
+    os << "]}";
+  }
+
+  void appendValue(const ConfiguredValue &value) {
+    if (value.kind == ConfiguredValue::Kind::InputPort) {
+      appendInput(value.index);
+      return;
+    }
+    appendNode(value.index, value.result);
+  }
+
+  void appendInputInventory() {
+    os << "inputs{";
+    ::llvm::SmallVector<const ConfiguredBoundaryInput *, 4> inputs;
+    inputs.reserve(function.inputs.size());
+    for (const ConfiguredBoundaryInput &input : function.inputs)
+      inputs.push_back(&input);
+    ::llvm::sort(inputs, [&](const ConfiguredBoundaryInput *lhs,
+                             const ConfiguredBoundaryInput *rhs) {
+      if (!preserveBoundary) {
+        auto lhsMapped = canonicalInputs.find(lhs->fuPort);
+        auto rhsMapped = canonicalInputs.find(rhs->fuPort);
+        bool lhsUsed = lhsMapped != canonicalInputs.end();
+        bool rhsUsed = rhsMapped != canonicalInputs.end();
+        if (lhsUsed != rhsUsed)
+          return lhsUsed;
+        if (lhsUsed)
+          return lhsMapped->second < rhsMapped->second;
+      }
+      return lhs->fuPort < rhs->fuPort;
+    });
+    for (const ConfiguredBoundaryInput *input : inputs) {
+      if (preserveBoundary) {
+        os << 'P' << input->fuPort;
+      } else {
+        auto mapped = canonicalInputs.find(input->fuPort);
+        if (mapped == canonicalInputs.end())
+          os << 'U' << input->fuPort;
+        else
+          os << 'C' << mapped->second;
+      }
+      appendToken(printType(input->type));
+      os << ';';
+    }
+    os << "};";
+  }
+
+  void appendUnreachableNodes() {
+    os << "unreachable{";
+    for (auto [index, node] : ::llvm::enumerate(function.nodes)) {
+      if (canonicalNodes.count(index))
+        continue;
+      os << index << '{';
+      appendToken(node.operationName);
+      appendToken(printType(node.functionType));
+      appendToken(printAttribute(node.attributes));
+      for (const ConfiguredValue &operand : node.operands) {
+        os << static_cast<unsigned>(operand.kind) << ':' << operand.index << ':'
+           << operand.result << ';';
+      }
+      os << "};";
+    }
+    os << "};";
+  }
+};
+
 } // namespace
 
 ::mlir::LogicalResult projectConfiguredFunction(FuOp fu,
@@ -911,10 +1049,20 @@ bool matchConfiguredFunctions(const ConfiguredFunction &pattern,
   return true;
 }
 
+ConfiguredFunctionKey
+getConfiguredFunctionKey(const ConfiguredFunction &function,
+                         bool preserveFuBoundaryIdentity) {
+  return ConfiguredFunctionKeyBuilder(function, preserveFuBoundaryIdentity)
+      .build();
+}
+
 ::mlir::LogicalResult verifyNormalizedHardwareModes(OpOp op) {
+  FabricOpModeClassification classification = classifyFabricOpModes(op);
+  if (classification.kind == FabricOpModeKind::Malformed)
+    return op.emitOpError(classification.diagnostic);
+  if (classification.kind != FabricOpModeKind::Normalized)
+    return op.emitOpError("expected normalized hw_params modes");
   auto modes = op.getHwParamsAttr();
-  if (!modes || modes.empty())
-    return op.emitOpError("normalized hw_params must not be empty");
 
   ::llvm::StringSet<> listedOperations;
   for (auto [index, attr] : ::llvm::enumerate(op.getOpList())) {
@@ -954,25 +1102,16 @@ bool matchConfiguredFunctions(const ConfiguredFunction &pattern,
   return ::mlir::success();
 }
 
-static bool hasNormalizedHardwareModes(OpOp op) {
-  auto modes = op.getHwParamsAttr();
-  if (!modes || modes.empty())
-    return false;
-  return ::llvm::all_of(modes, [](Attribute attr) {
-    auto mode = ::mlir::dyn_cast<DictionaryAttr>(attr);
-    return mode && mode.get("op") && mode.get("function_type") &&
-           mode.get("input_ports") && mode.get("output_ports") &&
-           mode.get("attributes");
-  });
-}
-
 static ::mlir::LogicalResult verifyProgrammedNormalizedFu(FuOp fu) {
   bool hasNormalizedMode = false;
   bool hasSelectedMode = false;
   bool hasSelectedRoute = false;
   for (Operation &operation : fu.getBody().front().without_terminator()) {
     if (auto op = ::mlir::dyn_cast<::fabric::OpOp>(&operation)) {
-      if (hasNormalizedHardwareModes(op)) {
+      FabricOpModeClassification classification = classifyFabricOpModes(op);
+      if (classification.kind == FabricOpModeKind::Malformed)
+        return op.emitOpError(classification.diagnostic);
+      if (classification.kind == FabricOpModeKind::Normalized) {
         hasNormalizedMode = true;
         hasSelectedMode |= static_cast<bool>(op.getSwConfigsAttr());
       }
@@ -995,7 +1134,8 @@ static ::mlir::LogicalResult verifyProgrammedNormalizedFu(FuOp fu) {
 
   for (Operation &operation : fu.getBody().front().without_terminator()) {
     if (auto op = ::mlir::dyn_cast<::fabric::OpOp>(&operation)) {
-      if (!hasNormalizedHardwareModes(op) || !op.getSwConfigsAttr())
+      if (classifyFabricOpModes(op).kind != FabricOpModeKind::Normalized ||
+          !op.getSwConfigsAttr())
         return op.emitOpError(
             "programmed normalized fabric.fu requires a selected normalized "
             "mode on every fabric.op");
@@ -1034,12 +1174,9 @@ static ::mlir::LogicalResult verifyProgrammedNormalizedFu(FuOp fu) {
       if (configurable.getSwConfigsAttr())
         return configurable.emitOpError(
             "canonical FU capability must not persist selected sw_configs");
-      auto modes = configurable->getAttrOfType<ArrayAttr>("hw_params");
-      if (!modes || modes.empty())
-        return configurable.emitOpError(
-            "canonical FU capability requires non-empty hw_params");
       if (::mlir::failed(verifyNormalizedHardwareModes(configurable)))
         return ::mlir::failure();
+      auto modes = configurable.getHwParamsAttr();
       modeCounts[resource] = modes.size();
       continue;
     }
@@ -1097,15 +1234,24 @@ static ::mlir::LogicalResult verifyProgrammedNormalizedFu(FuOp fu) {
     }
   }
 
-  for (unsigned lhs = 0; lhs < functions.size(); ++lhs) {
-    for (unsigned rhs = lhs + 1; rhs < functions.size(); ++rhs) {
-      if (!matchConfiguredFunctions(functions[lhs], functions[rhs],
+  ::llvm::SmallVector<ConfiguredFunctionKey, 8> functionKeys;
+  functionKeys.reserve(functions.size());
+  ::llvm::DenseMap<std::uint64_t, ::llvm::SmallVector<unsigned, 2>> keyIndex;
+  for (auto [index, function] : ::llvm::enumerate(functions)) {
+    ConfiguredFunctionKey key =
+        getConfiguredFunctionKey(function, /*preserveFuBoundaryIdentity=*/true);
+    auto &collisions = keyIndex[key.hash];
+    for (unsigned prior : collisions) {
+      if (functionKeys[prior].canonical != key.canonical ||
+          !matchConfiguredFunctions(functions[prior], function,
                                     /*preserveFuBoundaryIdentity=*/true))
         continue;
       return fu.emitOpError("valid semantic encodings #")
-             << lhs << " and #" << rhs
+             << prior << " and #" << index
              << " project to isomorphic configured functions";
     }
+    collisions.push_back(index);
+    functionKeys.push_back(std::move(key));
   }
   return ::mlir::success();
 }

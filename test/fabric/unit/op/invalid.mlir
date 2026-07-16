@@ -400,3 +400,44 @@ fabric.module @op_normalized_mode_out_of_range(%a : !fabric.bits<32>,
   }
   fabric.yield
 }
+
+// -----
+// Any normalized-mode key reserves the complete tuple shape. A partial tuple
+// must not fall through to the legacy allowed-field interpretation.
+fabric.module @op_partial_normalized_mode(%a : !fabric.bits<32>,
+                                          %b : !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                      %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%fa = %pa : !fabric.bits<32>,
+              %fb = %pb : !fabric.bits<32>) -> () {
+      // expected-error @+1 {{'hw_params' entry #0 partially specifies a normalized mode}}
+      %v = fabric.op [@arith.addi] (%fa, %fb)
+           {hw_params = [{op = @arith.addi,
+             function_type = (i32, i32) -> i32,
+             input_ports = [0 : i32, 1 : i32],
+             output_ports = [0 : i32]}]}
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield
+    }
+  }
+  fabric.yield
+}
+
+// -----
+// sw_configs.mode is a normalized selection and cannot reinterpret a legacy
+// or absent hw_params dictionary.
+fabric.module @op_normalized_selection_without_modes(%a : !fabric.bits<32>,
+                                                      %b : !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                      %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%fa = %pa : !fabric.bits<32>,
+              %fb = %pb : !fabric.bits<32>) -> () {
+      // expected-error @+1 {{'sw_configs.mode' requires normalized hw_params}}
+      %v = fabric.op [@arith.addi] (%fa, %fb)
+           {sw_configs = {mode = 0 : i32}}
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield
+    }
+  }
+  fabric.yield
+}

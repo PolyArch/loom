@@ -5,13 +5,11 @@
 #include "Fabric/Tech/Synthesizer/Anchor.h"
 
 #include "Common/HwShareGroup.h"
-#include "Common/IndexWidth.h"
 #include "Common/SynthConfig.h"
 #include "Fabric/IR/ConfiguredFunction.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FabricTypes.h"
 #include "Fabric/Tech/Synthesizer/CostModel.h"
-#include "Fabric/Tech/Synthesizer/CoverageVerifier.h"
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"
 
 #include "mlir/AsmParser/AsmParser.h"
@@ -31,7 +29,6 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
-#include "mlir/IR/Verifier.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -45,7 +42,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -73,26 +69,11 @@ namespace {
 // treats as a topology mismatch). NoneType (e.g. dataflow.constant's
 // ctrl input) lifts to bits<0> -- a legitimate, zero-width port.
 ::std::optional<unsigned> tryBitWidthOf(::mlir::Type t) {
-  if (auto i = ::llvm::dyn_cast<::mlir::IntegerType>(t))
-    return i.getWidth();
-  if (auto f = ::llvm::dyn_cast<::mlir::FloatType>(t))
-    return f.getWidth();
-  if (::llvm::isa<::mlir::IndexType>(t))
-    return ::loom::getIndexWidth();
-  if (::llvm::isa<::mlir::NoneType>(t))
-    return 0u;
-  if (auto vector = ::llvm::dyn_cast<::mlir::VectorType>(t)) {
-    if (vector.isScalable())
-      return std::nullopt;
-    auto elementWidth = tryBitWidthOf(vector.getElementType());
-    if (!elementWidth)
-      return std::nullopt;
-    uint64_t width = vector.getNumElements() * uint64_t(*elementWidth);
-    if (width > std::numeric_limits<unsigned>::max())
-      return std::nullopt;
-    return static_cast<unsigned>(width);
-  }
-  return std::nullopt;
+  std::string error;
+  auto width = ::fabric::getSemanticPayloadWidth(t, error);
+  if (::mlir::failed(width))
+    return std::nullopt;
+  return *width;
 }
 
 ::std::string printType(::mlir::Type type) {
@@ -1362,26 +1343,6 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
   ::mlir::OperationState moduleYieldState(
       loc, ::fabric::YieldOp::getOperationName());
   moduleBuilder.create(moduleYieldState);
-
-  // 7. Run the MLIR verifier on the wrapper. Any verifier failure
-  // demotes the result to verifier_failed (no IR is appended).
-  if (::mlir::failed(::mlir::verify(wrapper))) {
-    wrapper.erase();
-    result.failureReason = SynthFailureReason::VerifierFailed;
-    result.notes.push_back("anchor: synthesized FU failed MLIR verifier");
-    return result;
-  }
-
-  CoverageVerifier coverageVerifier(cfg);
-  result.coverage = coverageVerifier.verify(fu, inputs.functions);
-  if (!result.coverage.allCovered()) {
-    wrapper.erase();
-    result.failureReason = SynthFailureReason::VerifierFailed;
-    result.notes.push_back(
-        "anchor: synthesized FU does not cover every input function");
-    return result;
-  }
-  result.capability = measureCapability(fu, result.coverage);
 
   // Wrap into an OwningOpRef so the worker-side thread retains
   // ownership until the main thread re-homes it.

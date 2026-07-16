@@ -3,9 +3,11 @@
 #include "Fabric/IR/ConfiguredFunction.h"
 #include "Fabric/Tech/Synthesizer/Parallel.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -28,9 +30,29 @@ CoverageReport CoverageVerifier::verify(
                                                           projectionError)))
     return report;
 
+  ::llvm::SmallVector<::fabric::ConfiguredFunctionKey, 8> candidateKeys;
+  candidateKeys.reserve(candidates.size());
+  ::llvm::DenseMap<std::uint64_t, ::llvm::SmallVector<size_t, 2>>
+      candidatesByHash;
+  for (auto [index, candidate] : ::llvm::enumerate(candidates)) {
+    candidateKeys.push_back(::fabric::getConfiguredFunctionKey(
+        candidate, /*preserveFuBoundaryIdentity=*/false));
+    candidatesByHash[candidateKeys.back().hash].push_back(index);
+  }
+  ::llvm::SmallVector<::fabric::ConfiguredFunctionKey, 8> inputKeys;
+  inputKeys.reserve(inputs.size());
+  for (const ::fabric::ConfiguredFunction &input : inputs)
+    inputKeys.push_back(::fabric::getConfiguredFunctionKey(
+        input, /*preserveFuBoundaryIdentity=*/false));
+
   auto matchOne = [&](size_t inputIndex) {
-    for (size_t encodingIndex = 0; encodingIndex < candidates.size();
-         ++encodingIndex) {
+    const ::fabric::ConfiguredFunctionKey &inputKey = inputKeys[inputIndex];
+    auto matches = candidatesByHash.find(inputKey.hash);
+    if (matches == candidatesByHash.end())
+      return;
+    for (size_t encodingIndex : matches->second) {
+      if (candidateKeys[encodingIndex].canonical != inputKey.canonical)
+        continue;
       ::fabric::ConfiguredFunctionMatch match;
       if (!::fabric::matchConfiguredFunctions(
               inputs[inputIndex], candidates[encodingIndex],

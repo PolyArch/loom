@@ -31,7 +31,7 @@ fabric.module @canonical_rejects_legacy_hw_params(%a : !fabric.bits<32>,
         attributes {valid_encodings = [{outputs = [0 : i32], resources = [
           {resource = 0 : i32, mode = 0 : i32}
         ]}]} {
-      // expected-error @+1 {{hw_params mode #0: hw_params mode requires op, function_type, and attributes}}
+      // expected-error @+1 {{expected normalized hw_params modes}}
       %v = fabric.op [@arith.addi] (%x, %y)
            {hw_params = [{}]}
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>

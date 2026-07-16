@@ -75,7 +75,7 @@ The CSV columns are:
 workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 ```
 
-The JSON artifact has `schema_version = "1.0"` and `kind = pnr_mapping`.
+The JSON artifact has `schema_version = "2.0"` and `kind = pnr_mapping`.
 Representative fields include:
 
 * workload, graph, and hardware identities;

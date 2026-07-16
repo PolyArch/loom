@@ -14,6 +14,7 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <optional>
+#include <string>
 
 #include "Fabric/IR/FabricTypes.h"
 
@@ -26,10 +27,20 @@ namespace fabric {
 inline constexpr ::llvm::StringLiteral kInnerInputTypesPropertyName =
     "inner_input_types";
 
+enum class FabricOpModeKind { Legacy, Normalized, Malformed };
+
+struct FabricOpModeClassification {
+  FabricOpModeKind kind = FabricOpModeKind::Legacy;
+  std::string diagnostic;
+};
+
 bool isFabricModulePortType(::mlir::Type type);
 bool haveSameFabricModulePortKind(::mlir::Type source,
                                   ::mlir::Type destination);
 std::optional<unsigned> getFabricBitsWidth(::mlir::Type type);
+FabricOpModeClassification classifyFabricOpModes(OpOp op);
+::mlir::FailureOr<unsigned> getSemanticPayloadWidth(::mlir::Type type,
+                                                    std::string &error);
 ::mlir::LogicalResult
 verifyInnerInputTypesProperty(::mlir::Operation *op, ::mlir::ValueRange inputs,
                               ::llvm::ArrayRef<::mlir::Type> innerInputTypes);

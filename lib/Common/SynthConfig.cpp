@@ -13,7 +13,9 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <set>
 #include <string>
 
@@ -88,13 +90,27 @@ bool stringIsKnownStrategy(StringRef s) { return s == "anchor"; }
   return out;
 }
 
+::llvm::Expected<unsigned> parseUnsigned(StringRef value, StringRef context,
+                                         bool acceptAuto) {
+  auto parsed = parseUInt(value, context, acceptAuto);
+  if (!parsed)
+    return parsed.takeError();
+  if (*parsed > std::numeric_limits<unsigned>::max())
+    return makeErr(context + " exceeds unsigned range");
+  return static_cast<unsigned>(*parsed);
+}
+
 ::llvm::Error validate(const ::loom::SynthConfig &cfg) {
   if (!stringIsKnownStrategy(cfg.strategy))
     return makeErr("synth.strategy must be 'anchor', got '" + cfg.strategy +
                    "'");
-  if (!(cfg.costMuxPenalty >= 0.0 && cfg.costDemuxPenalty >= 0.0 &&
-        cfg.costCarryPenalty >= 0.0))
-    return makeErr("synth.cost.{mux,demux,carry}_penalty must all be >= 0");
+  auto validCost = [](double value) {
+    return std::isfinite(value) && value >= 0.0;
+  };
+  if (!validCost(cfg.costMuxPenalty) || !validCost(cfg.costDemuxPenalty) ||
+      !validCost(cfg.costCarryPenalty))
+    return makeErr(
+        "synth.cost.{mux,demux,carry}_penalty must all be finite and >= 0");
   return ::llvm::Error::success();
 }
 
@@ -158,11 +174,11 @@ StringRef scalarValue(::llvm::yaml::Node *n, ::llvm::SmallString<N> &buf) {
           return v.takeError();
         cfg.parallelismCrossGroup = *v;
       } else if (child == "workers") {
-        auto v =
-            parseUInt(val, "synth.parallelism.workers", /*acceptAuto=*/true);
+        auto v = parseUnsigned(val, "synth.parallelism.workers",
+                               /*acceptAuto=*/true);
         if (!v)
           return v.takeError();
-        cfg.parallelismWorkers = static_cast<unsigned>(*v);
+        cfg.parallelismWorkers = *v;
       } else {
         return makeYamlSchemaErr(sm, kv.getKey(),
                                  ::llvm::Twine("unknown key 'synth.") + parent +
@@ -298,10 +314,10 @@ bool isKnownYamlSection(StringRef key) {
   };
   auto setUInt32 = [&](unsigned &target, StringRef ctx,
                        bool acceptAuto) -> ::llvm::Error {
-    auto v = parseUInt(value, ctx, acceptAuto);
+    auto v = parseUnsigned(value, ctx, acceptAuto);
     if (!v)
       return v.takeError();
-    target = static_cast<unsigned>(*v);
+    target = *v;
     return ::llvm::Error::success();
   };
   if (section == "synth") {

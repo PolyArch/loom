@@ -23,7 +23,7 @@ std::error_code MappingError::convertToErrorCode() const {
 
 namespace {
 
-constexpr SchemaVersion supportedSchemaVersion{1, 0};
+constexpr SchemaVersion supportedSchemaVersion{2, 0};
 
 enum class EntityKind {
   Graph,
@@ -778,7 +778,7 @@ loom::mapping::validateTechMapping(const TechMappingDraft &mapping,
                                    const FabricHardwareView &fabric) {
   if (mapping.header.schemaVersion != supportedSchemaVersion)
     return mappingError(MappingErrorCode::UnsupportedSchemaVersion,
-                        "Mapping verifier supports schema 1.0");
+                        "Mapping verifier supports schema 2.0");
   if (mapping.header.profile != MappingProfile::TechMapping)
     return mappingError(MappingErrorCode::WrongMappingProfile,
                         "Mapping verifier requires the TechMapping profile");

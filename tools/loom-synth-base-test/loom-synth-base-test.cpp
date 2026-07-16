@@ -126,6 +126,7 @@ void printFailureReasons() {
 
 int doMake(::llvm::StringRef strategy) {
   ::loom::SynthConfig cfg;
+  cfg.strategy = strategy.str();
   auto synth = ::loom::fabric::tech::makeSynthesizer(strategy, cfg);
   if (!synth) {
     ::llvm::outs() << "factory: nullptr\n";
@@ -142,11 +143,10 @@ int doMake(::llvm::StringRef strategy) {
   ::loom::fabric::tech::SynthInputs inputs{
       /*groupName=*/::llvm::StringRef("t"),
       /*functions=*/::llvm::ArrayRef<::fabric::ConfiguredFunction>(noFunctions),
-      /*config=*/cfg,
       /*context=*/&ctx,
   };
 
-  auto result = synth->run(inputs);
+  auto result = ::loom::fabric::tech::synthesize(cfg, inputs);
   ::llvm::StringRef reason =
       ::loom::fabric::tech::failureReasonString(result.failureReason);
   ::llvm::outs() << "result: success=" << (result.success() ? "true" : "false")
@@ -188,9 +188,6 @@ int doCapabilityTieBreak() {
 
 int doFixedVectorSynthesis() {
   ::loom::SynthConfig cfg;
-  auto synth = ::loom::fabric::tech::makeSynthesizer("anchor", cfg);
-  if (!synth)
-    return 1;
 
   ::mlir::DialectRegistry registry;
   registry.insert<::mlir::arith::ArithDialect, ::mlir::func::FuncDialect,
@@ -219,10 +216,9 @@ int doFixedVectorSynthesis() {
   ::loom::fabric::tech::SynthInputs inputs{
       /*groupName=*/"fixed_vector",
       /*functions=*/functions,
-      /*config=*/cfg,
       /*context=*/&context,
   };
-  auto result = synth->run(inputs);
+  auto result = ::loom::fabric::tech::synthesize(cfg, inputs);
   if (!result.success()) {
     ::llvm::outs() << "synthesis=failed reason="
                    << ::loom::fabric::tech::failureReasonString(

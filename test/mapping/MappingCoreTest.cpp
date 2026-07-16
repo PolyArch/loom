@@ -140,7 +140,7 @@ TestCase makeValidCase() {
        {ActorPortRef{ActorRef{dataflowId, addActor}, PortDirection::Output, 0},
         FuPortRef{FuRef{fabricId, fu}, PortDirection::Output, 0}}}};
 
-  TechMappingDraft mapping{MappingDraftHeader{SchemaVersion{1, 0},
+  TechMappingDraft mapping{MappingDraftHeader{SchemaVersion{2, 0},
                                               MappingProfile::TechMapping,
                                               dataflowId, fabricId},
                            {GraphRef{dataflowId, graph}},
@@ -173,6 +173,23 @@ void acceptsBoundaryInputFanout() {
   testCase.fabric.encodings[0].operations[1].inputPorts[1] = value;
   testCase.fabric.encodings[0].operations[1].operands[1] = FuInputValue{0};
   testCase.mapping.realizations[0].boundaryPorts[2].fuPort.index = 0;
+
+  auto result =
+      validateTechMapping(testCase.mapping, testCase.dataflow, testCase.fabric);
+  if (!result)
+    fail(__func__, llvm::toString(result.takeError()).c_str());
+}
+
+void acceptsBoundaryOutputFanoutWithOneCorrespondence() {
+  TestCase testCase = makeValidCase();
+  const GraphId graph(1);
+  const ActorId addActor(3);
+  const PortDescriptor value = port(PortKind::Value, type(1));
+
+  testCase.dataflow.graphs[0].outputPorts.push_back(value);
+  testCase.dataflow.edges.push_back(
+      DataflowEdge{ActorPort{addActor, PortDirection::Output, 0},
+                   GraphPort{graph, PortDirection::Output, 1}});
 
   auto result =
       validateTechMapping(testCase.mapping, testCase.dataflow, testCase.fabric);
@@ -285,7 +302,7 @@ void acceptsCrossRealizationEdgeAccounting() {
 void rejectsUnsupportedSchemaProfileAndIdentity() {
   {
     TestCase testCase = makeValidCase();
-    testCase.mapping.header.schemaVersion = SchemaVersion{1, 1};
+    testCase.mapping.header.schemaVersion = SchemaVersion{1, 0};
     expectError(__func__,
                 validateTechMapping(testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
@@ -634,6 +651,7 @@ void rejectsInvalidBoundaryCorrespondence() {
 int main() {
   acceptsValidTechMapping();
   acceptsBoundaryInputFanout();
+  acceptsBoundaryOutputFanoutWithOneCorrespondence();
   rejectsBoundaryInputCoalescing();
   acceptsCrossRealizationEdgeAccounting();
   rejectsUnsupportedSchemaProfileAndIdentity();

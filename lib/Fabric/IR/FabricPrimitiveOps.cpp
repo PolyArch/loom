@@ -553,31 +553,11 @@ LogicalResult OpOp::verify() {
   //    table remains only as a compatibility check for programmed forms that
   //    do not carry typed modes.
   ArrayAttr hwParams = getHwParamsAttr();
-  bool normalizedModes = false;
-  if (hwParams) {
-    if (hwParams.empty())
-      return emitOpError("'hw_params' must not be empty");
-    auto isMode = [](DictionaryAttr entry) {
-      return entry && entry.get("op") && entry.get("function_type") &&
-             entry.get("input_ports") && entry.get("output_ports") &&
-             entry.get("attributes");
-    };
-    for (auto [index, attr] : llvm::enumerate(hwParams)) {
-      auto entry = dyn_cast<DictionaryAttr>(attr);
-      if (!entry)
-        return emitOpError("'hw_params' entry #")
-               << index << " must be a dictionary attribute";
-      bool entryIsMode = isMode(entry);
-      if (index == 0)
-        normalizedModes = entryIsMode;
-      else if (entryIsMode != normalizedModes)
-        return emitOpError(
-            "'hw_params' must not mix normalized modes and legacy fields");
-    }
-    if (!normalizedModes && hwParams.size() != 1)
-      return emitOpError("legacy 'hw_params' must be a length-1 array, got ")
-             << hwParams.size();
-  }
+  FabricOpModeClassification modeClassification = classifyFabricOpModes(*this);
+  if (modeClassification.kind == FabricOpModeKind::Malformed)
+    return emitOpError(modeClassification.diagnostic);
+  bool normalizedModes =
+      modeClassification.kind == FabricOpModeKind::Normalized;
 
   DictionaryAttr swDict = getSwConfigsAttr();
 

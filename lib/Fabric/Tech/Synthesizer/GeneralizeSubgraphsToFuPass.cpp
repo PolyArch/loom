@@ -98,29 +98,6 @@ struct WorkerHandoff {
   std::string wrapperIR;
 };
 
-// Run the one externally selectable canonical synthesis path.
-static ::loom::fabric::tech::SynthResult
-runCanonicalSynthesis(const ::loom::SynthConfig &cfg,
-                      const ::loom::fabric::tech::SynthInputs &inputs) {
-  using ::loom::fabric::tech::makeSynthesizer;
-  using ::loom::fabric::tech::SynthResult;
-
-  auto primary = makeSynthesizer(cfg.strategy, cfg);
-  if (!primary) {
-    SynthResult r;
-    r.failureReason = ::loom::fabric::tech::SynthFailureReason::InvalidInput;
-    std::string note;
-    {
-      ::llvm::raw_string_ostream os(note);
-      os << "unknown strategy '" << cfg.strategy << "'";
-    }
-    r.notes.push_back(std::move(note));
-    return r;
-  }
-
-  return primary->run(inputs);
-}
-
 // Walk a fabric.fu body and count its top-level fabric.op / mux /
 // demux operations. Returned as a triple in the order printed by
 // `synth-stat` (op / mux / demux).
@@ -157,37 +134,6 @@ static ::fabric::FuOp findInnerFu(::fabric::ModuleOp wrapper) {
       found = fu;
   });
   return found;
-}
-
-static void enforceCanonicalSynthesisGate(
-    ::loom::fabric::tech::SynthResult &result,
-    ::llvm::ArrayRef<::fabric::ConfiguredFunction> inputs,
-    const ::loom::SynthConfig &cfg) {
-  using ::loom::fabric::tech::SynthFailureReason;
-  if (!result.success())
-    return;
-
-  ::fabric::FuOp fu = findInnerFu(result.wrapper.get());
-  if (!fu || ::mlir::failed(::mlir::verify(result.wrapper.get()))) {
-    result.wrapper = nullptr;
-    result.failureReason = SynthFailureReason::VerifierFailed;
-    result.notes.push_back(
-        "canonical synthesis gate: wrapper or FU verification failed");
-    return;
-  }
-
-  ::loom::fabric::tech::CoverageVerifier verifier(cfg);
-  result.coverage = verifier.verify(fu, inputs);
-  if (!result.coverage.allCovered()) {
-    result.wrapper = nullptr;
-    result.failureReason = SynthFailureReason::VerifierFailed;
-    result.notes.push_back(
-        "canonical synthesis gate: explicit encodings do not cover every "
-        "input function");
-    return;
-  }
-  result.capability =
-      ::loom::fabric::tech::measureCapability(fu, result.coverage);
 }
 
 class GeneralizeSubgraphsToFuPass
@@ -724,10 +670,10 @@ void GeneralizeSubgraphsToFuPass::runOnOperation() {
         scratch.appendDialectRegistry(registry);
         scratch.loadAllAvailableDialects();
 
-        ::loom::fabric::tech::SynthInputs in{job.groupName, job.functions, cfg,
+        ::loom::fabric::tech::SynthInputs in{job.groupName, job.functions,
                                              &scratch};
-        ::loom::fabric::tech::SynthResult res = runCanonicalSynthesis(cfg, in);
-        enforceCanonicalSynthesisGate(res, job.functions, cfg);
+        ::loom::fabric::tech::SynthResult res =
+            ::loom::fabric::tech::synthesize(cfg, in);
 
         WorkerHandoff out;
         if (res.success()) {

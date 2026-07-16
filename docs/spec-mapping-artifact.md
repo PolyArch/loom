@@ -28,6 +28,12 @@ non-breaking schema improvement. A profile is a verifier contract, not a
 lifecycle state. Exact Mapping dialect assembly syntax is outside this
 document.
 
+The current Mapping schema version is `2.0`. Version `2.0` requires the
+complete semantic encoding, configured-function projection, and exact
+correspondence witness described by this specification. Version `1.x` does not
+carry those required semantics and is not accepted through a compatibility
+adapter.
+
 ## Semantic Owners
 
 The Canonical Dataflow Program owns software execution semantics,

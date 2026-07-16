@@ -23,5 +23,6 @@ add_mlir_dialect_library(MLIRFabric
   LoomCommon
   MLIRArithDialect
   MLIRIR
+  MLIRLLVMDialect
   MLIRSupport
 )
