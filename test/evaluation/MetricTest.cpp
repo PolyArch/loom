@@ -255,6 +255,12 @@ void observationValidationRejectsIllegalCombinations() {
 }
 
 void metricQueryCanonicalizationIsInputOrderIndependent() {
+  require(__func__,
+          takeExpected(__func__,
+                       canonicalizeMetricQueries(llvm::ArrayRef<MetricQuery>{}))
+              .empty(),
+          "empty query list did not remain empty");
+
   MetricQuery clockWhole{MetricKind::ClockPeriod, WholeSubjectScope{}};
   MetricQuery clockEntityLate{
       MetricKind::ClockPeriod,
@@ -277,22 +283,13 @@ void metricQueryCanonicalizationIsInputOrderIndependent() {
                                            clockEntityHighId, runtimeWhole,
                                            clockEntityLate, cyclesWhole}));
 
-  require(__func__, forward.size() == 6 && reverse.size() == forward.size(),
-          "canonicalization changed the query count");
-  for (std::size_t index = 0; index < forward.size(); ++index)
-    require(__func__,
-            forward[index].metric == reverse[index].metric &&
-                forward[index].scope == reverse[index].scope,
-            "canonical order depends on input order");
+  require(__func__, forward == reverse,
+          "canonical order depends on input order");
 
   const std::vector<MetricQuery> expected = {
       clockWhole,      clockEntityLowId, clockEntityHighId,
       clockEntityLate, cyclesWhole,      runtimeWhole};
-  for (std::size_t index = 0; index < expected.size(); ++index)
-    require(__func__,
-            forward[index].metric == expected[index].metric &&
-                forward[index].scope == expected[index].scope,
-            "canonical query ordering changed");
+  require(__func__, forward == expected, "canonical query ordering changed");
 }
 
 void metricQueryDuplicatesAreRejectedWithoutCollapsingScopes() {
@@ -306,8 +303,10 @@ void metricQueryDuplicatesAreRejectedWithoutCollapsingScopes() {
 
   std::vector<MetricQuery> distinct = takeExpected(
       __func__, canonicalizeMetricQueries({secondEntity, whole, firstEntity}));
-  require(__func__, distinct.size() == 3,
-          "distinct typed scopes were collapsed");
+  require(__func__,
+          distinct ==
+              std::vector<MetricQuery>{whole, firstEntity, secondEntity},
+          "distinct typed scopes were not preserved");
   expectErrorContains(__func__,
                       canonicalizeMetricQueries(
                           {whole, firstEntity, secondEntity, firstEntity}),

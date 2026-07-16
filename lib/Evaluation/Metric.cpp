@@ -191,10 +191,6 @@ bool metricQueryLess(const MetricQuery &lhs, const MetricQuery &rhs) {
   return lhsEntity.entity.value() < rhsEntity.entity.value();
 }
 
-bool sameMetricQuery(const MetricQuery &lhs, const MetricQuery &rhs) {
-  return lhs.metric == rhs.metric && lhs.scope == rhs.scope;
-}
-
 bool isAllowedField(llvm::StringRef field,
                     std::initializer_list<llvm::StringRef> allowed) {
   return std::find(allowed.begin(), allowed.end(), field) != allowed.end();
@@ -638,7 +634,7 @@ canonicalizeMetricQueries(llvm::ArrayRef<MetricQuery> queries) {
 
   std::sort(canonical.begin(), canonical.end(), metricQueryLess);
   for (std::size_t index = 1; index < canonical.size(); ++index)
-    if (sameMetricQuery(canonical[index - 1], canonical[index]))
+    if (canonical[index - 1] == canonical[index])
       return metricError("duplicate metric query for '" +
                          toString(canonical[index].metric) + "'");
   return canonical;

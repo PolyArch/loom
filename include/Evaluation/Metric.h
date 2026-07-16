@@ -137,6 +137,13 @@ using MetricScope = std::variant<WholeSubjectScope, MetricEntityReference>;
 struct MetricQuery {
   MetricKind metric;
   MetricScope scope;
+
+  friend bool operator==(const MetricQuery &lhs, const MetricQuery &rhs) {
+    return lhs.metric == rhs.metric && lhs.scope == rhs.scope;
+  }
+  friend bool operator!=(const MetricQuery &lhs, const MetricQuery &rhs) {
+    return !(lhs == rhs);
+  }
 };
 
 llvm::Error validateMetricQuery(const MetricQuery &query);
