@@ -25,7 +25,7 @@ DSE feedback records use these fidelity classes:
 
 * `analytic_prefilter`: software static features and a default hardware
   resource model, used for quick cost or performance screening;
-* `techmap_estimate`: graph or subgraph partitioning, FU configuration,
+* `techmap_estimate`: Compute Realization grouping, selected FU encodings,
   techmap cost, and calibrated structural estimates;
 * `dfg_sim_feedback`: input-driven DFG-sim results for software
   semantics and dynamic execution baseline evidence;
@@ -66,6 +66,7 @@ DSE may consume:
 DSE may produce:
 
 * new compiler placement requests;
+* new TechMapping search requests;
 * new ADG Builder recipe requests;
 * new PnR search requests;
 * new simulator or FPA evaluation requests;
@@ -155,9 +156,9 @@ Candidate kinds include:
 
 * compiler L1 accelerator placement candidate;
 * compiler L2 graph placement candidate;
-* compiler L3 subgraph partition candidate;
+* TechMapping candidate containing Compute Realizations;
 * hardware ADG candidate;
-* mapping candidate;
+* Physical Mapping candidate;
 * simulator configuration candidate;
 * RTL/FPA profile candidate;
 * combined full-stack candidate.
@@ -166,10 +167,17 @@ Candidate kinds include:
 
 ### Compiler Placement Feedback
 
-DSE may request new L1, L2, or L3 software placement candidates. The
-request must cite reports or metrics that motivate the change. The
-compiler must produce new dataflow artifacts rather than modifying an
-old artifact in place.
+DSE may request new L1 or L2 software placement candidates. The request must
+cite reports or metrics that motivate the change. The compiler must produce
+new dataflow artifacts rather than modifying an old artifact in place.
+
+### TechMapping Feedback
+
+DSE may request a new L3 Compute Realization search over exact immutable
+Canonical Dataflow and Fabric artifacts. The result is a new TechMapping
+artifact containing selected actor groups, FU encodings, and complete
+correspondence witnesses. It must not persist a competing software partition
+or mutate either input artifact.
 
 ### Hardware Candidate Feedback
 
@@ -181,8 +189,8 @@ constraints.
 ### PnR Feedback
 
 DSE may request new PnR runs with updated objectives, constraints, or
-cost-model weights. The output is a new mapping artifact or mapping-set
-manifest.
+cost-model weights over an exact TechMapping predecessor. The output is a new
+Physical Mapping artifact or mapping-set manifest.
 
 ### Simulator And FPA Feedback
 
@@ -231,11 +239,11 @@ failure when applicable.
 
 ## Relationship To PnR
 
-PnR maps one software candidate to one hardware candidate and emits a
-mapping artifact or mapping-set manifest. DSE may run PnR repeatedly,
-compare the resulting artifacts, and select one candidate. PnR does not
-own cross-run candidate policy unless it is acting as the selected DSE
-policy for mapping search and records that policy in a manifest.
+PnR physically realizes one exact TechMapping candidate and emits a Physical
+Mapping artifact or mapping-set manifest. DSE may run PnR repeatedly, compare
+the resulting artifacts, and select one candidate. PnR does not own cross-run
+candidate policy unless it is acting as the selected DSE policy for physical
+mapping search and records that policy in a manifest.
 
 ## Relationship To Reporting
 

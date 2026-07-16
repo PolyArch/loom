@@ -161,6 +161,43 @@ void acceptsValidTechMapping() {
     fail(__func__, "validated draft lost its realization");
 }
 
+void acceptsBoundaryInputFanout() {
+  TestCase testCase = makeValidCase();
+  const PortDescriptor value = port(PortKind::Value, type(1));
+
+  testCase.dataflow.edges[3].source =
+      GraphPort{GraphId(1), PortDirection::Input, 0};
+  testCase.dataflow.actors[1].inputPorts[1] = value;
+  testCase.fabric.operations[1].inputPorts[1] = value;
+  testCase.fabric.encodings[0].inputs.pop_back();
+  testCase.fabric.encodings[0].operations[1].inputPorts[1] = value;
+  testCase.fabric.encodings[0].operations[1].operands[1] = FuInputValue{0};
+  testCase.mapping.realizations[0].boundaryPorts[2].fuPort.index = 0;
+
+  auto result =
+      validateTechMapping(testCase.mapping, testCase.dataflow, testCase.fabric);
+  if (!result)
+    fail(__func__, llvm::toString(result.takeError()).c_str());
+}
+
+void rejectsBoundaryInputCoalescing() {
+  TestCase testCase = makeValidCase();
+  const PortDescriptor value = port(PortKind::Value, type(1));
+
+  testCase.dataflow.graphs[0].inputPorts[2] = value;
+  testCase.dataflow.actors[1].inputPorts[1] = value;
+  testCase.fabric.operations[1].inputPorts[1] = value;
+  testCase.fabric.encodings[0].inputs.pop_back();
+  testCase.fabric.encodings[0].operations[1].inputPorts[1] = value;
+  testCase.fabric.encodings[0].operations[1].operands[1] = FuInputValue{0};
+  testCase.mapping.realizations[0].boundaryPorts[2].fuPort.index = 0;
+
+  expectError(
+      __func__,
+      validateTechMapping(testCase.mapping, testCase.dataflow, testCase.fabric),
+      MappingErrorCode::ConfiguredFunctionMismatch);
+}
+
 void acceptsCrossRealizationEdgeAccounting() {
   TestCase testCase = makeValidCase();
   const ArtifactIdentity &dataflowId = testCase.dataflow.identity;
@@ -596,6 +633,8 @@ void rejectsInvalidBoundaryCorrespondence() {
 
 int main() {
   acceptsValidTechMapping();
+  acceptsBoundaryInputFanout();
+  rejectsBoundaryInputCoalescing();
   acceptsCrossRealizationEdgeAccounting();
   rejectsUnsupportedSchemaProfileAndIdentity();
   rejectsForeignUnresolvedAndWrongKindReferences();

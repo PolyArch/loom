@@ -401,13 +401,28 @@ namespace loom {
       return buildParseErr();
     return cfg;
   }
+  auto rejectAdditionalDocuments = [&]() -> ::llvm::Error {
+    ++it;
+    if (stream.failed())
+      return buildParseErr();
+    if (it == stream.end())
+      return ::llvm::Error::success();
+    ::llvm::yaml::Node *extraRoot = it->getRoot();
+    if (stream.failed())
+      return buildParseErr();
+    return makeYamlSchemaErr(sm, extraRoot,
+                             "multiple YAML documents are not allowed");
+  };
   ::llvm::yaml::Node *root = it->getRoot();
   // Check the parser state immediately after the first getRoot() call so a
   // malformed body cannot fall through with a non-null but garbage `root`.
   if (stream.failed())
     return buildParseErr();
-  if (!root)
+  if (!root) {
+    if (auto e = rejectAdditionalDocuments())
+      return std::move(e);
     return cfg;
+  }
   auto *topMap = ::llvm::dyn_cast<::llvm::yaml::MappingNode>(root);
   if (!topMap)
     return makeErr("yaml: top-level must be a mapping");
@@ -473,6 +488,8 @@ namespace loom {
                              ::llvm::Twine("unknown key '") + key + "'");
   }
 
+  if (auto e = rejectAdditionalDocuments())
+    return std::move(e);
   if (auto e = validate(cfg))
     return std::move(e);
   return cfg;

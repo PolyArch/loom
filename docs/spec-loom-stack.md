@@ -334,17 +334,18 @@ operations.
 ## Software Representation
 
 The software side lowers selected LLVM/SCF regions into dataflow IR. The
-compiler owns three placement problems:
+compiler owns L1 and L2 placement; TechMapping owns the related L3 Compute
+Realization search:
 
-| Name | Boundary | Meaning |
-|------|----------|---------|
-| L1 accelerator placement | HostCore vs AccCore | Select which program regions execute on the accelerator fabric. |
-| L2 graph placement | ScalarCore vs SpatialCore | Select which code inside an accelerator kernel becomes a SpatialCore dataflow graph. |
-| L3 FU placement | Spatial graph vs fabric FU template | Partition a software graph into subgraphs that can map to function-unit templates. |
+| Name | Owner | Boundary | Meaning |
+|------|-------|----------|---------|
+| L1 accelerator placement | Compiler | HostCore vs AccCore | Select which program regions execute on the accelerator fabric. |
+| L2 graph placement | Compiler | ScalarCore vs SpatialCore | Select which code inside an accelerator kernel becomes a SpatialCore dataflow graph. |
+| L3 Compute Realization search | TechMapping | Canonical dataflow actors vs Fabric FU encoding | Select actor groups and exact valid encodings without creating another software graph. |
 
-All three are optimization problems. A deterministic baseline policy is
-allowed and useful for tests, but fixed syntactic lowering is not the
-final design.
+All three are optimization problems with explicit ownership. A deterministic
+baseline policy is allowed and useful for tests, but fixed syntactic lowering
+or a persistent adapter partition is not the final design.
 
 `dataflow.thread` is a software execution-domain carrier. A dynamic
 thread instance is a logical execution cell until later binding maps it
@@ -466,14 +467,15 @@ Loom needs two simulation levels:
   SpatialCore. Its target contract is specified in
   `docs/spec-sim-cgra.md`.
 
-PnR connects the two sides. It takes software dataflow IR plus hardware
-fabric/ADG IR and emits the independent mapping artifact specified in
-`docs/spec-mapping-artifact.md`; the PnR tool contract is specified in
-`docs/spec-pnr.md`. The artifact records placed software nodes, routed
-edges, memory bindings, resource sharing, buffers, schedule slots,
-temporal tags, diagnostics, and metrics required by the selected
-hardware mapping. Detailed mapping identity, placement, routing,
-schedule/buffer, memory, verification, visualization, and search
+TechMapping connects canonical software semantics to Fabric capability by
+recording complete Compute Realizations in the Mapping Artifact specified in
+`docs/spec-mapping-artifact.md`. PnR consumes that exact immutable predecessor
+and emits a Physical Mapping delta; its tool contract is specified in
+`docs/spec-pnr.md`. The delta records concrete resource bindings, routed
+external obligations, memory bindings, resource sharing, buffers, schedule
+slots, temporal tags, diagnostics, and metrics without restating or changing
+the predecessor Compute Realizations. Detailed mapping identity, placement,
+routing, schedule/buffer, memory, verification, visualization, and search
 contracts are specified by `docs/spec-mapping-identity.md`,
 `docs/spec-mapping-placement.md`, `docs/spec-mapping-routing.md`,
 `docs/spec-mapping-schedule-buffer.md`, `docs/spec-mapping-memory.md`,
@@ -481,10 +483,10 @@ contracts are specified by `docs/spec-mapping-identity.md`,
 `docs/spec-mapping-visualization.md`, and
 `docs/spec-mapping-search.md`.
 
-PnR chooses and records a mapping. CGRA-sim consumes that mapping plus
-runtime inputs and reports hardware-aware behavior. CGRA-sim may reject
-an inconsistent mapping artifact, but it must not choose placements,
-routes, schedules, or bindings.
+PnR chooses and records a physical realization. CGRA-sim consumes the Physical
+Mapping and its predecessor plus runtime inputs and reports hardware-aware
+behavior. CGRA-sim may reject an inconsistent Mapping Artifact, but it must not
+choose placements, routes, schedules, or bindings.
 
 Mapping artifacts and Fabric ADG may carry optional visualization
 metadata. Visualization metadata helps GUI tools draw regular

@@ -1,35 +1,40 @@
 # Loom Compiler Part 3 Placement Framework
 
-This document defines the common placement-partition framework used by
-the Loom compiler front-end. It exists because the same compiler design
-problem appears at three hardware boundaries:
+This document defines the common candidate-search framework used by Loom
+compiler placement and by the Mapping-owned Compute Realization search. The
+same separation of legality, candidate construction, cost, and policy appears
+at three hardware boundaries, but the persistent result has different owners:
 
 | Name | Input region | Placement unit | Boundary chosen |
 |------|--------------|----------------|-----------------|
 | L1 accelerator placement | LLVM / SCF-shaped host code | `loom.acc_region` | HostCore vs. AccCore |
 | L2 graph placement | `dataflow.thread` definition's body | `dataflow.graph` definition (paired with `dataflow.graph.launch` at cut site) | ScalarCore vs. SpatialCore |
-| L3 subgraph partitioning | `dataflow.graph` definition's body | `dataflow.subgraph` | SpatialCore software graph vs. FU-candidate granularity |
+| L3 Compute Realization search | Canonical Dataflow Program plus Fabric Hardware Description | TechMapping Compute Realization | Canonical actor group vs. selected valid FU encoding |
 
-The common problem is: given a structured input region, legality
-constraints, an exploration policy, and a cost model, choose a partition
-into placement units. The exact policy may start simple, but the
+The common problem is: given immutable semantic inputs, legality constraints,
+an exploration policy, and a cost model, choose a complete candidate
+assignment. L1 and L2 assignments are software partitions; L3 assignments are
+Mapping-owned Compute Realizations. The exact policy may start simple, but the
 interface must stay open to later hardware-aware, profile-guided, or
 search-based policies.
 
 Part 3 instantiates this framework immediately for L2 graph placement.
-Part 2 owns the L1 instance for `loom.acc_region` selection. The
-dataflow compiler owns the L3 software partitioning instance for
-`dataflow.subgraph` formation. Fabric tech supplies FU template
-compatibility and generalization, while PnR and the mapping artifact own
-selected binding to concrete hardware resources.
+Part 2 owns the L1 instance for `loom.acc_region` selection. A TechMapping
+producer owns L3 Compute Realization search: it groups canonical actors and
+selects a Fabric-defined valid encoding in a new immutable Mapping Artifact.
+`dataflow.subgraph` may be read only through a migration adapter and is not an
+L3 result. Fabric tech supplies FU capability and generalization, while PnR
+adds concrete physical realization in a Physical Mapping.
 
 ## Compiler Strategy Universe
 
 The compiler strategy universe includes graph partitioning, fusion,
 tiling, memory placement, and operator specialization.
 
-Graph partitioning chooses L1, L2, and L3 placement units through the
-framework in this document.
+Graph partitioning chooses L1 and L2 software placement units through the
+framework in this document. L3 reuses the candidate-search structure but
+leaves the Canonical Dataflow Program unchanged and emits Mapping-owned
+Compute Realizations.
 
 Fusion combines adjacent compatible software regions before or during
 partitioning when the fused unit preserves observable behavior, explicit
@@ -39,9 +44,10 @@ same dataflow and mapping contracts as an unfused candidate.
 
 Tiling splits iteration or data domains into smaller logical execution
 units. Tiling belongs to compiler placement when it changes logical
-software regions, thread domains, graph launches, or subgraph
-boundaries. Hardware reuse, physical placement, routing, and buffering
-remain PnR and mapping-artifact responsibilities.
+software regions, thread domains, graph launches, or canonical graph
+topology. Hardware reuse, Compute Realization selection, physical placement,
+routing, and buffering remain Mapping responsibilities at their respective
+profiles.
 
 Memory placement in the compiler chooses software-level memory intent:
 which data regions should be considered host-resident, accelerator
@@ -123,10 +129,9 @@ A candidate partition is legal only when all of the following hold:
   required by the target IR. No placed region may directly use an
   SSA value from its parent scope unless the target op explicitly
   permits that use. In the current temporary marker flow the
-  placement-unit defs --
-  `loom.acc_region` (L1, the temporary Part 2 to Part 3 marker),
-  `dataflow.graph` def (L2), and `dataflow.subgraph` (L3) -- are
-  all `IsolatedFromAbove`. `dataflow.thread`, the L1 final-form
+  placement-unit defs -- `loom.acc_region` (L1, the temporary Part 2 to
+  Part 3 marker) and `dataflow.graph` def (L2) -- are both
+  `IsolatedFromAbove`. `dataflow.thread`, the L1 final-form
   callable produced by Part 3 from `loom.acc_region`, is also
   `IsolatedFromAbove` and is the kernel the L1 placement instance
   hands off to (paired with `dataflow.thread.launch` ops at host
@@ -134,7 +139,10 @@ A candidate partition is legal only when all of the following hold:
   similarly pairs each `dataflow.graph` def with one or more
   `dataflow.graph.launch` ops inside the enclosing thread
   definition's body. The "explicitly permits" escape is therefore
-  reserved for future extensions.
+  reserved for future extensions. An L3 Compute Realization is a Mapping
+  record, not an IR region. A migration-only `dataflow.subgraph` adapter must
+  be projected into the canonical typed semantic domain and discarded before
+  TechMapping verification.
 * Effect visibility is preserved. Any op whose execution affects program
   order, memory state, or async completion must continue to declare
   effects accurately enough for generic MLIR optimizers to preserve the
@@ -303,5 +311,5 @@ baseline tests remain stable.
 * `docs/spec-fabric-reconfigurable-op.md` and
   `docs/spec-generalize-subgraphs-to-fu.md` -- fabric-side L3 context.
 * `docs/spec-pnr.md` and `docs/spec-mapping-artifact.md` -- physical
-  software-to-hardware binding after software-side placement boundaries
+  realization after compiler placement and TechMapping Compute Realizations
   are available.

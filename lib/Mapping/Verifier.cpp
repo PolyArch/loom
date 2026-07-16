@@ -576,15 +576,12 @@ llvm::Expected<ResolvedBoundary> validateBoundaryCorrespondence(
     if (!fuPort)
       return fuPort.takeError();
 
-    const auto fuKey =
-        std::make_tuple(fuPort->fu, fuPort->direction, fuPort->index);
     if (!realization.actors.count(actorPort->key.owner) ||
         !expected.count(actorPort->key) ||
-        !mappedActorPorts.insert(actorPort->key).second ||
-        !mappedFuPorts.insert(fuKey).second)
+        !mappedActorPorts.insert(actorPort->key).second)
       return mappingError(
           MappingErrorCode::IncompleteBoundaryCorrespondence,
-          "software-to-FU boundary correspondence is not bijective");
+          "software boundary endpoint correspondence is not exact");
     if (fuPort->fu != selected.fu->id.value())
       return mappingError(MappingErrorCode::SelectedFuMismatch,
                           "boundary correspondence uses a different FU");
@@ -601,6 +598,13 @@ llvm::Expected<ResolvedBoundary> validateBoundaryCorrespondence(
       return mappingError(
           MappingErrorCode::ConfiguredFunctionMismatch,
           "software boundary type does not match the configured FU port");
+    const auto fuKey =
+        std::make_tuple(fuPort->fu, fuPort->direction, fuPort->index);
+    const bool repeatedFuPort = !mappedFuPorts.insert(fuKey).second;
+    if (repeatedFuPort && fuPort->direction == PortDirection::Output)
+      return mappingError(
+          MappingErrorCode::IncompleteBoundaryCorrespondence,
+          "configured FU output correspondence is not one-to-one");
     resolved.actorToFuPort.emplace(actorPort->key, fuPort->index);
   }
 
@@ -629,6 +633,7 @@ llvm::Error validateConfiguredFunctionTopology(
   std::map<EndpointKey, const DataflowPortInfo *> drivers;
   for (const ResolvedDataflowEdge &edge : dataflowIndex.edges)
     drivers.emplace(edge.target.key, &edge.source);
+  std::map<std::uint32_t, EndpointKey> configuredInputSources;
 
   for (const auto &entry : selected.actorToOp) {
     const ActorDescriptor &actor = *realization.actors.at(entry.first);
@@ -649,6 +654,13 @@ llvm::Error validateConfiguredFunctionTopology(
           return mappingError(
               MappingErrorCode::ConfiguredFunctionMismatch,
               "software operand has no configured FU input correspondence");
+        auto [inputSource, inserted] =
+            configuredInputSources.emplace(port->second, source.key);
+        if (!inserted && !(inputSource->second == source.key))
+          return mappingError(
+              MappingErrorCode::ConfiguredFunctionMismatch,
+              "configured FU input correspondence merges distinct software "
+              "values");
         expected = FuInputValue{port->second};
       }
       if (configured.operands[input] != expected)

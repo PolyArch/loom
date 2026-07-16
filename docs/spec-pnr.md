@@ -1,9 +1,10 @@
 # PnR
 
-This document specifies Loom place-and-route. PnR establishes the
-relation between software dataflow abstractions and a concrete hardware
-Fabric ADG. Its persistent output is the independent mapping artifact
-specified in `docs/spec-mapping-artifact.md`.
+This document specifies Loom place-and-route. PnR consumes one exact immutable
+TechMapping artifact and adds concrete resource, communication, schedule, and
+storage realization for its selected Compute Realizations. Its persistent
+output is a Physical-Mapping-profile artifact specified in
+`docs/spec-mapping-artifact.md`.
 
 Detailed mapper contracts are split across:
 
@@ -18,18 +19,19 @@ Detailed mapper contracts are split across:
 
 ## Purpose
 
-PnR maps software onto hardware. It consumes:
+PnR physically realizes an existing TechMapping. It consumes:
 
-* software dataflow IR;
-* a selected `fabric.system`;
-* referenced `fabric.module` SpatialCore templates;
+* one verifier-clean TechMapping artifact;
+* its exact referenced Canonical Dataflow Program;
+* its exact referenced Fabric Hardware Description, including the selected
+  `fabric.system` and referenced `fabric.module` templates;
 * user constraints and objectives;
 * optional workload shape, profile data, or previous evaluation
   metrics.
 
 PnR produces:
 
-* one or more mapping artifacts;
+* one or more Physical Mapping artifacts referencing that TechMapping;
 * optional mapping-set manifests for DSE;
 * diagnostics for rejected, partial, or degraded mappings;
 * mapping-quality metrics used for search and reporting.
@@ -39,15 +41,16 @@ DFG-sim results, previous CGRA-sim results, or FPA estimates as cost
 inputs, but it does not execute workloads and it must not present its
 estimates as hardware-aware simulation results.
 
-The first hard PnR target is verifier-grade mapping artifacts. Such
-artifacts may be emitted by PnR, hand-authored for tests, imported from
-another mapper, or requested by DSE. PnR automation is not a prerequisite
-for consumers to use a verifier-clean artifact.
+The first hard PnR target is verifier-grade Physical Mapping artifacts. Such
+artifacts may be emitted by PnR, hand-authored for tests, imported from another
+mapper, or requested by DSE. PnR automation is not a prerequisite for
+consumers to use a verifier-clean artifact.
 
 The subsystem ownership boundary that separates dataflow facts, Fabric
 facts, mapping facts, runtime facts, and simulation facts is specified
-in `docs/spec-core-dialect-boundary.md`. PnR follows that boundary and
-serializes its choices in mapping artifacts.
+in `docs/spec-core-dialect-boundary.md`. PnR follows that boundary, references
+the exact TechMapping predecessor, and serializes only physical choices in its
+delta.
 
 ## Boundary With CGRA-sim
 
@@ -55,7 +58,7 @@ PnR and CGRA-sim have different responsibilities:
 
 | Tool | Responsibility | Persistent output |
 |------|----------------|-------------------|
-| PnR | Choose and record how software maps to hardware. | Mapping artifact and optional mapping-set manifest. |
+| PnR | Physically realize an immutable TechMapping without changing its Compute Realizations. | Physical Mapping artifact and optional mapping-set manifest. |
 | CGRA-sim | Simulate mapped software under hardware constraints for concrete inputs. | Hardware-aware simulation report. |
 
 CGRA-sim is hardware-aware simulation, not only simulation of the
@@ -69,7 +72,7 @@ PnR must not depend on CGRA-sim internal state. CGRA-sim must not choose
 placements, routes, schedules, or bindings. If simulation reveals that a
 mapping candidate is poor or invalid under a stronger model, the DSE
 loop may invoke PnR again with updated objectives, constraints, or
-feedback. The new PnR run produces a new mapping artifact.
+feedback. The new PnR run produces a new Physical Mapping artifact.
 
 ## Relation To Compiler Placement
 
@@ -79,14 +82,19 @@ partition boundaries:
 
 * L1 selects accelerator regions;
 * L2 selects SpatialCore graph regions inside selected accelerator
-  code;
-* L3 partitions graph bodies into software `dataflow.subgraph` units.
+  code.
 
-PnR happens after those software-side choices are available. PnR binds
-selected logical software entities to physical hardware resources. It
-does not rewrite L1, L2, or L3 IR boundaries unless a larger compiler
-DSE loop explicitly asks the compiler to produce a new software
-candidate.
+L3 is not another persistent software partition. A TechMapping artifact owns
+each Compute Realization: the canonical actor group, selected FU encoding,
+actor/op correspondence, and boundary-port correspondence. A legacy
+`dataflow.subgraph` may enter only through a migration adapter that produces
+those Mapping records.
+
+PnR consumes an exact immutable TechMapping artifact and adds physical
+resource, communication, schedule, and storage realization. It does not
+rewrite L1 or L2 IR boundaries, regroup actors, or select another semantic
+encoding. Such changes require a new compiler artifact or TechMapping artifact
+from the owning search.
 
 ## Core Model
 
@@ -103,9 +111,9 @@ candidate legal. A legality rule must not encode a preference unless
 violating that rule would break software semantics, hardware semantics,
 or the mapping artifact contract.
 
-The baseline PnR policy must be deterministic. Given the same software
-IR, hardware IR, mapping options, and workload shape, it must produce
-the same mapping artifact and diagnostics.
+The baseline PnR policy must be deterministic. Given the same TechMapping
+predecessor, referenced input artifacts, mapping options, and workload shape,
+it must produce the same Physical Mapping artifact and diagnostics.
 
 PnR treats hardware as an arbitrary directed graph. Coordinates, grid
 metadata, and visualization layouts are display metadata. Placement and
@@ -122,8 +130,10 @@ A complete PnR candidate contains these decisions when relevant:
 
 * thread binding;
 * graph binding;
-* operation or subgraph binding;
-* route assignment for software value, control, and memory-order edges;
+* binding of each predecessor Compute Realization to a compatible concrete
+  resource;
+* route assignment for external communication obligations mechanically
+  derived from canonical edges and predecessor boundary correspondence;
 * schedule binding;
 * temporal tag assignment;
 * buffer assignment;
@@ -132,8 +142,9 @@ A complete PnR candidate contains these decisions when relevant:
 * optional visualization overlay metadata;
 * metrics and diagnostics.
 
-The candidate is serialized as a mapping artifact. PnR-internal state is
-not a valid substitute for artifact records.
+The candidate is serialized as a Physical Mapping delta referencing its exact
+TechMapping predecessor. PnR-internal state is not a valid substitute for
+artifact records.
 
 ## Native Index Width
 
@@ -217,10 +228,10 @@ contains legal graph launches at that level.
 
 ### Operation Legality
 
-Each software operation, subgraph, or compute region must bind to a
-compatible hardware resource. Supported operation sets, data widths,
-types, port counts, and side effects must match the target `fabric.fu`,
-`fabric.pe`, `fabric.mem`, or other referenced resource.
+Each Compute Realization must bind to a concrete resource compatible with its
+selected FU and semantic encoding. PnR verifies that physical capacity and
+ports preserve the predecessor witness; it must not regroup actors, select a
+different encoding, or reinterpret operation semantics.
 
 Exclusive resources may be shared only through explicit schedule or
 temporal-tag records that make same-time conflicts impossible.
@@ -318,8 +329,7 @@ Baseline ordering requirements:
 
 * process thread instances in stable logical order;
 * process graph launches in stable software order;
-* process operations and subgraphs in stable topological order, with a
-  stable tie breaker;
+* process Compute Realizations in stable predecessor artifact order;
 * choose hardware resources using stable symbol order after filtering
   by compatibility;
 * route over the explicit hardware graph using a deterministic shortest
@@ -333,8 +343,9 @@ derive adjacency from coordinates alone.
 
 ## Outputs And Diagnostics
 
-For each candidate, PnR emits one mapping artifact. For a DSE run, PnR
-may also emit a mapping-set manifest.
+For each candidate, PnR emits one Physical Mapping artifact referencing the
+exact TechMapping predecessor. For a DSE run, PnR may also emit a mapping-set
+manifest.
 
 Diagnostics must identify:
 
@@ -353,11 +364,11 @@ CGRA-sim is specified in `docs/spec-sim-cgra.md`. It consumes:
 
 * software dataflow IR;
 * Fabric ADG;
-* a mapping artifact;
+* a Physical Mapping artifact and its TechMapping predecessor;
 * concrete runtime input data;
 * simulator configuration.
 
-PnR supplies the mapping artifact. CGRA-sim may verify artifact
+PnR supplies the Physical Mapping artifact. CGRA-sim may verify artifact
 consistency before simulation, but it does not repair or select the
 mapping. If CGRA-sim needs a schedule, buffer depth, temporal tag,
 route, or memory binding, that information must be in the mapping
@@ -375,15 +386,15 @@ manifest.
 
 PnR is complete at the target-spec level when:
 
-* it emits independent mapping artifacts rather than mutating dataflow
-  or Fabric IR;
-* it can validate and consume verifier-clean mapping artifacts regardless
-  of whether they were generated by PnR, imported, or hand-authored for
-  tests;
-* the deterministic baseline policy maps a toy graph onto a non-mesh
-  arbitrary topology;
-* the deterministic baseline policy maps a regular mesh-like topology
-  using explicit Fabric links rather than coordinate assumptions;
+* it emits Physical Mapping deltas that reference and preserve exact immutable
+  TechMapping predecessors rather than mutating Dataflow or Fabric artifacts;
+* it can validate and consume verifier-clean TechMapping artifacts regardless
+  of whether they were generated, imported, or hand-authored for tests;
+* the deterministic baseline policy physically realizes a toy TechMapping on
+  a non-mesh arbitrary topology;
+* the deterministic baseline policy physically realizes a TechMapping on a
+  regular mesh-like topology using explicit Fabric links rather than
+  coordinate assumptions;
 * route records are contiguous and reference existing hardware
   resources;
 * resource-sharing, schedule, buffer, and memory records are emitted
