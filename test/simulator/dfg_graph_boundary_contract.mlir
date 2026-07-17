@@ -56,6 +56,8 @@
 // FRESH-NEXT: "i32:7"
 // FRESH: "status": "pass"
 
+// The report contains only the final invocation's local alias class; the
+// repeated label is not a cross-invocation object identity.
 // FRESH-REENTRY: "memory_result0": "memory_root0"
 // FRESH-REENTRY: "memory_result0": [
 // FRESH-REENTRY-NEXT: "i32:9"

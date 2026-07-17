@@ -64,8 +64,12 @@ deterministic heuristic, not a timing model. `wavefront_steps` and
 `event_count` describe simulator progress and activity; neither field is a
 cycle estimate. Final outputs and visible memory state use deterministic
 encodings for functional regression checks. `final_memory_roots` maps each
-imported or exported memory port to its derived logical root label, so aliases
-are observable without treating a memory capability as scalar payload.
+imported or exported memory port to a derived invocation-local alias-class
+label, so aliases within the reported invocation are observable without
+treating a memory capability as scalar payload. These labels are not stable
+memory-object identities and may be reused across invocations. Stable
+cross-invocation identity is unimplemented and remains a blocker for consumers
+that need to correlate memory objects over time.
 
 ## PnR Mapping Outputs
 

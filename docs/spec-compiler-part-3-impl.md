@@ -137,10 +137,14 @@ the production contract.
   alternate completion event from effect scans or graph quiescence.
 * The simulator treats the declared frontier as retirement authority. It does
   not add a post-retirement quiescence rule or synthesize another completion
-  event. Imported-root re-exports and fresh `memref.alloc` exports preserve
-  logical root identity; contents remain memory observables rather than scalar
-  payloads. The report records a derived logical-root label for each imported
-  and exported memory port, separate from the memory contents.
+  event. Within one invocation, imported-root re-exports and fresh
+  `memref.alloc` exports preserve alias-class membership; contents remain
+  memory observables rather than scalar payloads. The report records a derived
+  invocation-local alias-class label for each imported and exported memory
+  port, separate from the memory contents. Numeric labels may be reused by a
+  later invocation and are not stable object identities. Stable
+  cross-invocation memory-object identity remains unimplemented and blocks any
+  artifact or simulator consumer that requires such correlation.
 
 ## 2. Testing Strategy
 
