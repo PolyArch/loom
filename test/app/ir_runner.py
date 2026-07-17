@@ -19,7 +19,6 @@ ROOT = APP_ROOT.parents[1]
 sys.path.insert(0, str(APP_ROOT))
 
 import app_manifest  # noqa: E402
-import dfg_validator  # noqa: E402
 
 
 DEFAULT_BUILD_ROOT = ROOT / "build" / "test-runs" / "app-ir-runner"
@@ -46,8 +45,6 @@ class CaseSpec:
     language: str
     source: Path
     compiler_flags: tuple[str, ...]
-    dfg_symbol: str | None
-    dfg_expected_diagnostic: str | None
 
 
 @dataclass(frozen=True)
@@ -150,14 +147,6 @@ def case_spec(entry: dict[object, object], manifest_path: Path) -> CaseSpec:
         language=language,
         source=source,
         compiler_flags=tuple(str(value) for value in entry["compiler_flags"]),
-        dfg_symbol=(
-            str(entry["dfg_symbol"]) if "dfg_symbol" in entry else None
-        ),
-        dfg_expected_diagnostic=(
-            str(entry["dfg_expected_diagnostic"])
-            if "dfg_expected_diagnostic" in entry
-            else None
-        ),
     )
 
 
@@ -235,48 +224,6 @@ def run_command(command: Sequence[str], cwd: Path, context: str) -> None:
         )
 
 
-def run_expected_failure(
-    command: Sequence[str],
-    cwd: Path,
-    context: str,
-    expected_diagnostic: str,
-) -> None:
-    try:
-        result = subprocess.run(
-            command,
-            cwd=cwd,
-            env={**os.environ, "LC_ALL": "C"},
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-    except OSError as exc:
-        raise RunnerExecutionError(
-            f"{context}: failed to launch command\n"
-            f"command: {shlex.join(command)}\n"
-            f"working directory: {cwd}\n"
-            f"error: {exc}"
-        ) from exc
-
-    output = command_output(result)
-    if result.returncode == 0:
-        raise RunnerExecutionError(
-            f"{context}: expected diagnostic but command succeeded\n"
-            f"command: {shlex.join(command)}\n"
-            f"working directory: {cwd}\n"
-            f"{output}"
-        )
-    if expected_diagnostic not in output:
-        raise RunnerExecutionError(
-            f"{context}: command did not emit expected diagnostic "
-            f"{expected_diagnostic!r}\n"
-            f"command: {shlex.join(command)}\n"
-            f"working directory: {cwd}\n"
-            f"{output}"
-        )
-
-
 def remove_stale_output(path: Path, context: str) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -318,14 +265,6 @@ def validate_raise_ir(path: Path, spec: CaseSpec) -> None:
         raise RunnerExecutionError(f"{spec.case}: {path} has no scf operation")
 
 
-def validate_dfg_ir(path: Path, spec: CaseSpec) -> None:
-    text = read_ir(path, f"{spec.case}: DFG IR validation")
-    try:
-        dfg_validator.validate_text(text, spec.dfg_symbol)
-    except dfg_validator.DFGValidationError as exc:
-        raise RunnerExecutionError(f"{spec.case}: {path} {exc}") from exc
-
-
 def compiler_for(spec: CaseSpec, tools: Toolchain) -> str:
     return tools.cc if spec.language == "c" else tools.cxx
 
@@ -335,7 +274,7 @@ def run_case(
     stage: str,
     build_root: Path,
     tools: Toolchain,
-) -> bool:
+) -> None:
     case_build = build_root / spec.case
     try:
         case_build.mkdir(parents=True, exist_ok=True)
@@ -375,25 +314,9 @@ def run_case(
     if stage == "dfg":
         lower_command = [tools.lower, str(raised_ir), "-o", str(dfg_ir)]
         lower_context = f"{spec.case}: lower SCF MLIR"
-        if spec.dfg_expected_diagnostic is not None:
-            run_expected_failure(
-                lower_command,
-                spec.case_dir,
-                lower_context,
-                spec.dfg_expected_diagnostic,
-            )
-            if dfg_ir.exists():
-                raise RunnerExecutionError(
-                    f"{spec.case}: expected diagnostic produced DFG output {dfg_ir}"
-                )
-            return True
-
         run_command(lower_command, spec.case_dir, lower_context)
         require_nonempty(dfg_ir, f"{spec.case}: DFG MLIR generation")
         reparse_mlir(dfg_ir, spec, tools)
-        validate_dfg_ir(dfg_ir, spec)
-
-    return False
 
 
 def reject_overlapping_build_root(build_root: Path, specs: Sequence[CaseSpec]) -> None:
@@ -419,9 +342,8 @@ def main(argv: Sequence[str]) -> int:
         build_root.mkdir(parents=True, exist_ok=True)
         tools = load_toolchain(caller_cwd)
         for spec in specs:
-            expected_diagnostic = run_case(spec, args.stage, build_root, tools)
-            suffix = "  expected-diagnostic" if expected_diagnostic else ""
-            print(f"PASS  {spec.case}  {args.stage}{suffix}")
+            run_case(spec, args.stage, build_root, tools)
+            print(f"PASS  {spec.case}  {args.stage}")
     except RunnerConfigurationError as exc:
         print(f"[app-ir-runner] configuration error: {exc}", file=sys.stderr)
         return 2

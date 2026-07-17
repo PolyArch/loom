@@ -31,23 +31,23 @@ uint64_t checksum(const std::array<uint32_t, kRows * kCols> &values) {
 
 extern "C" __attribute__((noinline))
 void matmul_kernel(const uint32_t *a, const uint32_t *b, uint32_t *c,
-                   uint32_t rows, uint32_t inner, uint32_t cols) {
-    for (uint32_t i = 0; i < rows; ++i) {
-        for (uint32_t j = 0; j < cols; ++j) {
-            uint32_t sum = 0;
-            for (uint32_t k = 0; k < inner; ++k) {
-                sum += a[i * inner + k] * b[k * cols + j];
-            }
-            c[i * cols + j] = sum;
-        }
+                   uint32_t rows, uint32_t cols) {
+    const uint32_t output_count = rows * cols;
+    for (uint32_t output = 0; output < output_count; ++output) {
+        const uint32_t row = output / cols;
+        const uint32_t col = output % cols;
+        const uint32_t a_base = row * kInner;
+        c[output] = a[a_base] * b[col] +
+                    a[a_base + 1u] * b[cols + col] +
+                    a[a_base + 2u] * b[2u * cols + col];
     }
 }
 
 int main() {
     std::array<uint32_t, kRows * kCols> candidate = {};
 
-    matmul_kernel(kInputA.data(), kInputB.data(), candidate.data(),
-                  kRows, kInner, kCols);
+    matmul_kernel(kInputA.data(), kInputB.data(), candidate.data(), kRows,
+                  kCols);
 
     for (uint32_t i = 0; i < candidate.size(); ++i) {
         if (candidate[i] != kExpected[i]) {

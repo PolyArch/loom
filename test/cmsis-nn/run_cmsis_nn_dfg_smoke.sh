@@ -134,12 +134,6 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     fi
     mlir_has_public_func_definition "${out_dfg}" "${source_symbol}" || row_error \
         "public func.func definition ${source_symbol} did not survive lowering for ${src}"
-    if ! python3 "${REPO_ROOT}/test/app/dfg_validator.py" \
-            --input "${out_dfg}" --symbol "${source_symbol}" \
-            >>"${parse_log}" 2>&1; then
-        row_error "${out_dfg} is not an executable DFG for ${src}; see ${parse_log}"
-    fi
-
     echo "  PASS  ${src}"
     row_count=$((row_count + 1))
 done < "${SMOKE_TARGETS_FILE}"

@@ -265,21 +265,21 @@ class CorpusInventoryTest(unittest.TestCase):
             _, diagnostics = app_manifest.validate_manifest(manifest_path)
             self.assertIn("alpha: duplicate source: main.c", diagnostics)
 
-            expected_diagnostic_entry = {
+            unsupported_field_entry = {
                 **entry,
-                "dfg_expected_diagnostic": "parallel representation is unresolved",
+                "obsolete_field": "unsupported",
             }
             manifest_path.write_text(
                 json.dumps(
                     {
                         "schema_version": app_manifest.MANIFEST_SCHEMA_VERSION,
-                        "cases": [expected_diagnostic_entry],
+                        "cases": [unsupported_field_entry],
                     }
                 )
             )
             _, diagnostics = app_manifest.validate_manifest(manifest_path)
             self.assertIn(
-                "alpha: dfg_expected_diagnostic requires dfg tier", diagnostics
+                "alpha: unsupported fields ['obsolete_field']", diagnostics
             )
 
             manifest_path.write_text(

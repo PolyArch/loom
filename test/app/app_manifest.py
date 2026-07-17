@@ -13,9 +13,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = ROOT / "test" / "app"
 DEFAULT_MANIFEST = APP_ROOT / "manifest.json"
-MANIFEST_SCHEMA_VERSION = "1.1"
+MANIFEST_SCHEMA_VERSION = "2.0"
 VALID_LANGUAGES = {"c", "cxx"}
 VALID_TIERS = {"run", "raise", "dfg"}
+CASE_FIELDS = {
+    "case",
+    "compiler_flags",
+    "expected_executables",
+    "expected_stdout",
+    "feature_tags",
+    "language",
+    "link_flags",
+    "sources",
+    "tiers",
+}
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -141,6 +152,12 @@ def validate_manifest(path: Path) -> tuple[dict[str, object], list[str]]:
             continue
         case = non_empty_string_field(entry, "case", f"case entry {index}", diagnostics)
         context = case if case else f"case entry {index}"
+        unsupported_fields = sorted(set(entry) - CASE_FIELDS)
+        require(
+            not unsupported_fields,
+            f"{context}: unsupported fields {unsupported_fields}",
+            diagnostics,
+        )
         if case:
             require(case not in seen, f"duplicate case: {case}", diagnostics)
             seen.add(case)
@@ -154,9 +171,6 @@ def validate_manifest(path: Path) -> tuple[dict[str, object], list[str]]:
             f"{context}: invalid language {language!r}",
             diagnostics,
         )
-        if "dfg_symbol" in entry:
-            non_empty_string_field(entry, "dfg_symbol", context, diagnostics)
-
         raw_sources = entry.get("sources")
         sources = non_empty_string_list_field(entry, "sources", context, diagnostics)
         duplicate_sources = sorted(
@@ -195,15 +209,6 @@ def validate_manifest(path: Path) -> tuple[dict[str, object], list[str]]:
         tiers = non_empty_string_list_field(entry, "tiers", context, diagnostics)
         invalid = sorted(set(tiers) - VALID_TIERS)
         require(not invalid, f"{context}: invalid tiers {invalid}", diagnostics)
-        if "dfg_expected_diagnostic" in entry:
-            non_empty_string_field(
-                entry, "dfg_expected_diagnostic", context, diagnostics
-            )
-            require(
-                "dfg" in tiers,
-                f"{context}: dfg_expected_diagnostic requires dfg tier",
-                diagnostics,
-            )
         string_list_field(entry, "compiler_flags", context, diagnostics)
         string_list_field(entry, "link_flags", context, diagnostics)
         raw_expected_executables = entry.get("expected_executables")

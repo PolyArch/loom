@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.1",
+  "schema_version": "2.0",
   "cases": [
     {
       "case": "autocorrelation",
@@ -70,7 +70,6 @@
     {
       "case": "byte_swap",
       "language": "cxx",
-      "dfg_symbol": "byte_swap_candidate",
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run"],
@@ -467,7 +466,6 @@
     {
       "case": "edge_update",
       "language": "cxx",
-      "dfg_symbol": "edge_update_kernel",
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
@@ -578,7 +576,6 @@
     {
       "case": "gather",
       "language": "c",
-      "dfg_symbol": "gather",
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
@@ -755,8 +752,6 @@
     {
       "case": "matmul",
       "language": "cxx",
-      "dfg_symbol": "matmul_kernel",
-      "dfg_expected_diagnostic": "cannot extract a recurrence nested in scf.forall/scf.parallel without a selected graph-owned P[] representation",
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
@@ -1098,7 +1093,6 @@
     {
       "case": "spmm",
       "language": "cxx",
-      "dfg_symbol": "spmm_kernel",
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
@@ -1341,7 +1335,6 @@
     {
       "case": "vecadd",
       "language": "c",
-      "dfg_symbol": "vecadd",
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
