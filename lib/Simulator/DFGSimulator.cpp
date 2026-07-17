@@ -1518,6 +1518,37 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
            });
   };
 
+  auto unclosedStatefulActor = [&]() -> mlir::Operation * {
+    for (mlir::Operation &op : entry.without_terminator()) {
+      if (auto stream = mlir::dyn_cast<dataflow::StreamOp>(op)) {
+        auto it = state.streamStates.find(stream.getOperation());
+        if (it != state.streamStates.end() &&
+            it->second.mode != StreamMode::Idle)
+          return &op;
+        continue;
+      }
+      if (auto carry = mlir::dyn_cast<dataflow::CarryOp>(op)) {
+        auto it = state.carryStates.find(carry.getOperation());
+        if (it != state.carryStates.end() &&
+            it->second.semanticState != PhaseSemanticState::Initial)
+          return &op;
+        continue;
+      }
+      if (auto invariant = mlir::dyn_cast<dataflow::InvariantOp>(op)) {
+        auto it = state.invariantStates.find(invariant.getOperation());
+        if (it != state.invariantStates.end() &&
+            (it->second.semanticState != PhaseSemanticState::Initial ||
+             it->second.latched.has_value()))
+          return &op;
+        continue;
+      }
+      if (auto gate = mlir::dyn_cast<dataflow::GateOp>(op))
+        if (state.gateContinueStates.contains(gate.getOperation()))
+          return &op;
+    }
+    return nullptr;
+  };
+
   bool retired = false;
   auto streamInputsCommitted = [&]() {
     for (unsigned index = 0; index < applicationInputCount; ++index) {
@@ -1548,6 +1579,14 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       report.status = "invalid";
       report.diagnostics.push_back(
           "graph retired before all stream input tokens were committed");
+      return;
+    }
+    if (mlir::Operation *actor = unclosedStatefulActor()) {
+      report.status = "invalid";
+      report.diagnostics.push_back(
+          ("graph retired before stateful actor close/reset: " +
+           actor->getName().getStringRef())
+              .str());
       return;
     }
     for (auto [index, value] : llvm::enumerate(returnObservation.values)) {

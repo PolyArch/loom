@@ -299,12 +299,23 @@ mlir::Value statefulCloseSignal(mlir::Operation *op) {
   if (auto invariant = llvm::dyn_cast<dataflow::InvariantOp>(op))
     return invariant.getCond();
   if (auto gate = llvm::dyn_cast<dataflow::GateOp>(op))
-    return gate.getBeforeCond();
+    return gate.getAfterCond();
   if (auto parallelize = llvm::dyn_cast<dataflow::ParallelizeOp>(op))
     return parallelize.getCont();
   if (auto serialize = llvm::dyn_cast<dataflow::SerializeOp>(op))
     return serialize.getCont();
   return {};
+}
+
+bool hasPhaseAlignedGateValue(dataflow::GateOp gate) {
+  mlir::Operation *def = gate.getBeforeValue().getDefiningOp();
+  if (auto carry = llvm::dyn_cast_or_null<dataflow::CarryOp>(def))
+    return carry.getOutput() == gate.getBeforeValue() &&
+           carry.getCond() == gate.getBeforeCond();
+  if (auto invariant = llvm::dyn_cast_or_null<dataflow::InvariantOp>(def))
+    return invariant.getOutput() == gate.getBeforeValue() &&
+           invariant.getCond() == gate.getBeforeCond();
+  return false;
 }
 
 void collectStreamCloseSignals(mlir::Value value,
@@ -494,6 +505,16 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
   }
 
   for (mlir::Operation &op : entry.without_terminator()) {
+    if (auto gate = llvm::dyn_cast<dataflow::GateOp>(op)) {
+      bool covered = coversFalseClose(gate.getAfterCond(), ret.getComplete());
+      if (!covered && hasPhaseAlignedGateValue(gate))
+        covered = coversFalseClose(gate.getBeforeCond(), ret.getComplete());
+      if (!covered)
+        return graphError(
+            "retirement frontier does not cover close/reset of "
+            "'dataflow.gate'");
+      continue;
+    }
     mlir::Value closeSignal = statefulCloseSignal(&op);
     if (!closeSignal)
       continue;

@@ -1,4 +1,4 @@
-// RUN: loom-dfg-sim %s --graph structured_gate_reentry --arg 0=false --arg 0=true --arg 0=false --arg 0=true --arg 0=true --arg 0=false --arg 1=0 --arg 1=1 --arg 1=2 --arg 1=3 --arg 1=4 --arg 1=5 --arg 2=0 --arg 2=1 --arg 2=10 --arg 2=3 --arg 2=104 --arg 2=10 --arg 3=true --arg 3=true --arg 3=true --arg 3=true --arg 3=true --arg 3=true --arg 3=false --arg 4=none --arg 4=none --arg 4=none --arg 4=none --arg 4=none --arg 4=none --arg 4=none --arg 5=false --arg 5=false --arg 5=false --arg 5=false --arg 5=false --arg 5=false --arg 5=true --arg 6=none --arg 6=none --arg 6=none --arg 6=none --arg 6=none --arg 6=none --arg 7=false --arg 7=false --arg 7=true --arg 8=0 --arg 8=100 --arg 8=0 --arg 9=10 --arg 9=0 --arg 9=10 --arg 10=false --arg 10=false --arg 10=true --output %t.structured-gate.json
+// RUN: loom-dfg-sim %s --graph structured_gate_reentry --arg 0=false --arg 0=true --arg 0=false --arg 0=true --arg 0=true --arg 0=false --arg 1=0 --arg 1=1 --arg 1=2 --arg 1=3 --arg 1=4 --arg 1=5 --arg 2=0 --arg 2=1 --arg 2=10 --arg 2=3 --arg 2=104 --arg 2=10 --arg 3=true --arg 3=true --arg 3=true --arg 3=true --arg 3=true --arg 3=true --arg 3=false --arg 4=none --arg 4=none --arg 4=none --arg 4=none --arg 4=none --arg 4=none --arg 4=none --arg 5=false --arg 5=false --arg 5=false --arg 5=false --arg 5=false --arg 5=false --arg 5=true --arg 6=none --arg 6=none --arg 6=none --arg 7=false --arg 7=true --arg 8=0 --arg 8=100 --arg 8=0 --arg 9=10 --arg 9=0 --arg 9=10 --arg 10=false --arg 10=false --arg 10=true --output %t.structured-gate.json
 // RUN: FileCheck %s --check-prefix=STRUCTURED-GATE < %t.structured-gate.json
 
 // STRUCTURED-GATE-DAG: "graph": "structured_gate_reentry"
@@ -31,7 +31,7 @@ module attributes {
     %acc_final:2 = dataflow.demux %acc_last, %acc
         : (i1, index) -> (index, index)
 
-    %gate_closes:2 = dataflow.demux %gate_phase, %gate_unit
+    %gate_closes:2 = dataflow.demux %after_cond, %gate_unit
         : (i1, none) -> (none, none)
     %gate_close_pair:2 = dataflow.sync %gate_closes#0, %gate_close_last
         : (none, i1) -> (none, i1)

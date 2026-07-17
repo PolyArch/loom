@@ -22,7 +22,7 @@
 // RUN: FileCheck %s --check-prefix=CARRY-FINITE < %t.carry-finite.json
 // RUN: loom-dfg-sim %s --graph invariant_reentry --arg 0=true --arg 0=false --arg 0=true --arg 0=false --arg 1=7 --arg 1=9 --arg 2=none --arg 2=none --arg 2=none --arg 2=none --arg 3=false --arg 3=true --output %t.invariant.json
 // RUN: FileCheck %s --check-prefix=INVARIANT < %t.invariant.json
-// RUN: loom-dfg-sim %s --graph gate_reentry_and_fanout --arg 0=false --arg 0=true --arg 0=false --arg 0=true --arg 0=true --arg 0=false --arg 1=0 --arg 1=10 --arg 1=11 --arg 1=20 --arg 1=21 --arg 1=22 --arg 2=none --arg 2=none --arg 2=none --arg 3=false --arg 3=false --arg 3=true --output %t.gate.json
+// RUN: loom-dfg-sim %s --graph gate_reentry_and_fanout --arg 0=false --arg 0=true --arg 0=false --arg 0=true --arg 0=true --arg 0=false --arg 1=0 --arg 1=10 --arg 1=11 --arg 1=20 --arg 1=21 --arg 1=22 --arg 2=none --arg 2=none --arg 3=false --arg 3=true --output %t.gate.json
 // RUN: FileCheck %s --check-prefix=GATE < %t.gate.json
 
 // Actor close/reset anchors check token values, exact target fire counts, and
@@ -91,7 +91,6 @@
 
 // CARRY-ZERO-DAG: "graph": "carry_zero_trip_reentry"
 // CARRY-ZERO-DAG: "dataflow.carry": 4
-// CARRY-ZERO-DAG: "dataflow.gate": 2
 // CARRY-ZERO-DAG: "i32:20"
 
 // CARRY-FINITE-DAG: "graph": "carry_finite_reentry"
@@ -104,9 +103,9 @@
 
 // GATE-DAG: "graph": "gate_reentry_and_fanout"
 // GATE-DAG: "dataflow.gate": 6
-// GATE-DAG: "dataflow.demux": 15
-// GATE-DAG: "dataflow.invariant": 9
-// GATE-DAG: "dataflow.sync": 3
+// GATE-DAG: "dataflow.demux": 11
+// GATE-DAG: "dataflow.invariant": 5
+// GATE-DAG: "dataflow.sync": 2
 
 // MEMORY-DAG: "graph": "lowered_memory_exact_k"
 // MEMORY-DAG: "dataflow.load": 3
@@ -256,7 +255,7 @@ module attributes {
       -> (i32)
       attributes {input_segments = array<i32: 0, 4, 0>,
                   result_segments = array<i32: 0, 1, 0>} {
-    %unused_phase, %no_next = dataflow.gate %phase, %init : i32
+    %no_next = arith.addi %init, %init : i32
     %value = dataflow.carry %phase, %init, %no_next : i32
     %tokens = dataflow.invariant %phase, %activation : none
     %closes:2 = dataflow.demux %phase, %tokens
@@ -312,8 +311,8 @@ module attributes {
         : (i1, i32) -> (i32, i32)
     %right:2 = dataflow.demux %child_phase, %child_value
         : (i1, i32) -> (i32, i32)
-    %tokens = dataflow.invariant %phase, %activation : none
-    %closes:2 = dataflow.demux %phase, %tokens
+    %tokens = dataflow.invariant %child_phase, %activation : none
+    %closes:2 = dataflow.demux %child_phase, %tokens
         : (i1, none) -> (none, none)
     %paired:2 = dataflow.sync %closes#0, %last
         : (none, i1) -> (none, i1)
