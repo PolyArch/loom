@@ -11,10 +11,12 @@ The target Part 3 dataflow surface uses module-scope, Symbol-bearing,
 function-like definitions for both `dataflow.thread` and
 `dataflow.graph`. Execution is materialized only by
 `dataflow.thread.launch` and `dataflow.graph.launch`. Graph control
-ports are explicit: `ctrl_in` and `done_out` are part of the
-`dataflow.graph` definition's `function_type` and of every launch
-site. Part 3 consumes the transient `loom.acc_region` op produced by
-Part 2.
+ports are explicit in the current graph ABI: `ctrl_in` and launch-facing
+`done_out` are represented in the `dataflow.graph` function type and at every
+launch site. The graph body does not return `done_out`; its structural
+`dataflow.graph.return.complete` frontier is the unique authority from which
+the launch result is derived. Part 3 consumes the transient `loom.acc_region`
+op produced by Part 2.
 The precise timing semantics of `dataflow.stream`, `dataflow.carry`,
 `dataflow.invariant`, and `dataflow.gate` are specified separately in
 `docs/spec-dataflow-part-1-streaming.md`. The precise firing semantics
@@ -240,25 +242,16 @@ each rule lands in IR.
    ScalarCore residual code and `dataflow.graph.launch` ops, but it
    never launches another thread. The verifier enforces this launch
    containment transitively (see Section 9).
-3. Every `dataflow.graph` definition has explicit control ports
-   inside its `function_type`: the inputs lead with `ctrl_in : none`,
-   the results lead with `done_out : none`, the entry block of the
-   body has a matching leading `ctrl_in : none` block argument, and
-   `dataflow.yield` has a matching leading `done_out : none` operand.
-   These `none` values are real SSA values in the operation state and
-   the function signature, because they lower to physical start/done
-   ports on hardware and because they expose the synchronization
-   contract symbolically (so launch-to-launch sequencing inside the
-   same innermost thread body can match end-to-end at the symbol-ref
-   level). Custom assembly may hide or compress them for readability,
-   but generic form and verifier logic treat them as ordinary
-   signature elements, operands, and results. At each
-   `dataflow.graph.launch` site the
-   ctrl/done slots become real per-launch SSA values: the contract
-   intends `ctrl_in` to authorize execution and `done_out` to report
-   completion. The current lowering does not yet prove zero-output
-   close or actor-reset retirement, so raw `ctrl_in`, launch start,
-   or structural control must not be used as completion evidence.
+3. Every `dataflow.graph` definition has an explicit `%start : none`
+   entry value and a structural `dataflow.graph.return` with four
+   segments: `values`, `streams`, `memories`, and `complete`.
+   `complete` is a mandatory non-empty variadic unordered all-of set of
+   `none` values. A no-work graph may return `%start` as its sole
+   completion witness; real work, including zero-output work, must expose a
+   causally derived frontier. The launch-facing result is exactly
+   `done_out = all_of(graph.return.complete)`. It never appears among the
+   return operands, and no effect scan or graph-quiescence rule can replace
+   the explicit frontier.
 4. The HostCore-to-AccCore data plane is mediated by
    `dataflow.map_info`. Every value that crosses a thread boundary
    as data (memref, partitioned-data handle) at a
@@ -773,17 +766,11 @@ traits:
 * `dataflow.graph` is a Symbol-bearing, module-scope, function-like
   callable. It does not itself execute; one or more
   `dataflow.graph.launch` ops materialize launches of it.
-* `function_type` is a `FunctionType` whose inputs and results
-  include the explicit control ports as part of the symbolic
-  signature. Inputs are `(none, T0, ..., TN)` where the leading
-  `none` is the `ctrl_in` start port and the remaining types are
-  the kernel's user-data inputs. Results are `(none, R0, ..., RM)`
-  where the leading `none` is the `done_out` completion port and
-  the remaining types are the kernel's user-data results. Keeping
-  ctrl and done in `function_type` exposes the synchronization
-  signature symbolically, so launch-to-launch sequencing inside the
-  same innermost thread body can be checked at the symbol-ref type
-  level rather than by walking graph bodies.
+* The current `function_type` ABI is `(none, T0, ..., TN) ->
+  (none, R0, ..., RM)`. The leading input is the graph `%start`; the
+  leading result is the launch-facing `done_out` slot. The body does not
+  return that result directly. `graph.return` payload segments match the
+  non-leading result types, and `graph.return.complete` derives `done_out`.
 * `sym_name` is required and module-unique. `sym_visibility` is
   required and must equal `"private"` under the baseline visibility
   policy. The verifier rejects `"public"` and `"nested"` unless
@@ -793,21 +780,25 @@ traits:
 * The entry block has the layout `(%ctrl_in : none, %arg_0 : T0,
   ..., %arg_N : TN)`, matching `function_type.inputs`. The leading
   `ctrl_in` block argument is the per-launch start signal.
-* The body's `dataflow.yield` terminator has operand list
-  `(%done_out : none, %r_0 : R0, ..., %r_M : RM)`, matching
-  `function_type.results`. The leading `done_out` operand is the
-  declared per-launch completion port. These `none` values are real
-  SSA values in the operation state and the function signature,
-  because they lower to physical start / done ports on hardware.
-  Port presence does not by itself prove retirement closure.
-* The custom parser/printer may offer a compact form for the
-  control ports, but the generic form must expose the leading
-  `none` slots. No analysis may depend on a hidden compiler-global
-  graph start or completion state.
+* The body's terminator is structural:
+
+  ```text
+  dataflow.graph.return
+    values(%final_values...)
+    streams(%output_streams...)
+    memories(%output_memories...)
+    complete(%retirement_frontier...)
+  ```
+
+  The payload segments, in that order, match the non-leading function
+  results. `complete` contains one or more `none` witnesses and is the only
+  completion truth. The compact `%complete, %values... : none, types...`
+  form is permitted when there is one witness and the stream and memory
+  segments are empty.
 * `dataflow.graph` lit tests use module-scope graph definitions with
-  deterministic symbol names and `dataflow.graph.launch` use sites.
-  The tests carry the explicit control operand, block argument,
-  result, and `done_out` plumbing through the def + launch shape.
+  deterministic symbol names and `dataflow.graph.launch` use sites. Tests
+  anchor the explicit start argument, segmented return payloads, non-empty
+  completion frontier, and launch-facing done result.
 * C++ builders construct `dataflow.graph` as a function-like
   definition from `(StringRef sym_name, FunctionType functionType,
   ArrayRef<NamedAttribute> attrs)` plus optional `arg_attrs` /
@@ -850,12 +841,13 @@ traits:
   position-by-position. The leading `none` slots are the per-launch
   ctrl/done ports; the user data slots match the def's user inputs
   and outputs.
-* The op materializes a per-launch firing of the callee at this
-  exact program point. The intended synchronous contract requires
-  `done_out` to follow structural completion, final per-partition
-  memory frontiers, and all other required completion events. The
-  zero-output close/retirement anchor is not yet defined or lowered,
-  so the current IR must not claim this closure from raw control.
+* The op materializes a per-launch firing of the callee at this exact program
+  point. `done_out` is the all-of of the callee's
+  `graph.return.complete` operands. Their causal closure covers final values,
+  stream close and boundary commit, memory capability establishment and
+  promised visibility, all observable effects, invocation-local state
+  close/reset, and non-detached async work. A graph with real work cannot use
+  raw `%start` as a fake completion witness.
 * The op must appear inside a `dataflow.thread` definition's body,
   not at host scope and not inside another `dataflow.graph`
   definition's body. The verifier enforces this placement.
@@ -955,6 +947,10 @@ This convention is required for the templates below to be mechanical.
 `dataflow.mux` is selective: it consumes only the selector and selected
 input lane. `dataflow.demux` is selective: it emits only the selected
 output lane. `dataflow.sync` is the all-input rendezvous op.
+Control-only syncs may map to a wider all-control hardware sync. A mixed
+boundary-publication sync has canonical shape `(none, T) -> (none, T)` and
+requires a hardware `dataflow.sync` resource with exact arity and
+positionally compatible semantic widths.
 
 Allowed pure compute ops inside `dataflow.graph`, such as
 `arith.*`, `math.*`, and allowed LLVM computation ops, follow strict
@@ -980,6 +976,13 @@ streams. A memref-typed structured-control result inside graph
 extraction must be rewritten to explicit memory effects, kept in
 ScalarCore code, or rejected before graph lowering.
 
+Graph memory normalization must also reject any residual LLVM store, memcpy,
+memset, volatile load, or atomic load. These operations do not expose an SSA
+completion event that can enter `graph.return.complete`; source order or an
+effect scan cannot substitute for that missing event. Ordinary residual LLVM
+loads remain value-producing reads and are covered when their observable value
+is in the declared causal closure.
+
 The templates below show user-visible SSA value lowering. The same recursive
 owner threads independent `none`-typed write and read frontiers through each
 boundary as specified in `docs/spec-compiler-part-3-mem.md`; this is not an
@@ -995,10 +998,11 @@ per-instance ctrl/done plumbing:
 
 ```mlir
 // At module scope (sibling of func.func):
-dataflow.graph @<deterministic_sym>
+dataflow.graph.func @<deterministic_sym>
     (%ctrl_in : none, <user inputs>) -> (none, <user results>) {
   // <body contents per the template>
-  dataflow.yield %done_out, <user yield values> : none, <result types>
+  dataflow.graph.return values(<user yield values>) streams() memories()
+      complete(<retirement frontier>)
 }
 
 // At the cut site inside the enclosing dataflow.thread definition's
@@ -2420,18 +2424,18 @@ Verifier rules for `dataflow.partition_layout`,
   - `function_type` inputs are `(none, T0..TN)` where the leading
     `none` is the `ctrl_in` start port and the remaining types
     are the kernel's user-data inputs. `function_type` results are
-    `(none, R0..RM)` where the leading `none` is the `done_out`
-    completion port and the remaining types are the kernel's
-    user-data results.
+    `(none, R0..RM)` where the leading `none` is the launch-facing
+    `done_out` slot and the remaining types are payload results.
   - The graph definition's body is `IsolatedFromAbove`: every SSA
     value used in the body and defined outside it is rejected.
   - Entry block argument list mirrors `function_type.inputs`
     exactly: `(%ctrl_in : none, %arg_0 : T0, ..., %arg_N : TN)`.
-  - The body's `dataflow.yield` terminator operand list mirrors
-    `function_type.results` exactly:
-    `(%done_out : none, %r_0 : R0, ..., %r_M : RM)`.
+  - The body's `dataflow.graph.return` terminator has `values`, `streams`,
+    `memories`, and mandatory non-empty `complete` segments. Concatenated
+    payload segments match `function_type.results` after its leading done
+    slot. The done slot is not a return operand.
   - Body may contain `dataflow.{stream, carry, invariant, gate,
-    mux, demux, sync, constant, load, store, yield}` plus ordinary
+    mux, demux, sync, constant, load, store, graph.return}` plus ordinary
     pure ops permitted in the graph body whitelist.
   - Body must not contain `scf.*`, `func.func`, `func.call`,
     `dataflow.thread.launch`, `dataflow.graph.launch`,
@@ -2455,6 +2459,8 @@ Verifier rules for `dataflow.partition_layout`,
   - `(none, type(results)) == callee.function_type.results`
     position-by-position; the leading `none` slot is the
     per-launch `done_out` result.
+  - `done_out = all_of(callee.graph.return.complete)`. No effect scan or
+    quiescence rule provides an alternate completion authority.
   - The op must appear inside a `dataflow.thread` definition's
     body, not at host scope and not inside another
     `dataflow.graph` definition's body.
@@ -2468,13 +2474,13 @@ Verifier rules for `dataflow.partition_layout`,
     because the launch references a sibling symbol, not a nested
     region.
 
-* `Dataflow_YieldOp`
-  - When the parent op is a `dataflow.graph` definition, the
-    operand list must equal `function_type.results` exactly, with
-    the leading `none` slot for `done_out` and user-data slots
-    matching the def's user results in declaration order.
-  - The verifier enforces that every yield operand has the
-    matching `function_type.results[i]` type.
+* `Dataflow_GraphReturnOp`
+  - `complete` is non-empty, variadic, unordered all-of, and `none`-typed.
+  - `values`, `streams`, and `memories`, in that order, match the parent
+    payload result types.
+  - A single completion witness with no stream or memory outputs may use the
+    compact `%complete, %values...` syntax; all other shapes print named
+    segments.
 
 ## 10. Non-Goals (First Milestone)
 

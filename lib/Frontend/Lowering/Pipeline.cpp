@@ -17,7 +17,9 @@
 // per-partition frontiers together. graph-constants then promotes remaining
 // top-level literals; nested literals were already gated by their recursive
 // execution context. The closing canonicalizer removes dead bridge and
-// projection values. Graph retirement remains outside this pipeline slice.
+// projection values. graph-memory also constructs graph.return's explicit
+// retirement frontier from structural execution, value publication, and final
+// per-partition read frontiers.
 
 #include "Frontend/Lowering/Passes.h"
 

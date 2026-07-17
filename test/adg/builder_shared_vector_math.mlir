@@ -34,10 +34,12 @@
 // HARDWARE-DAG: fabric.op [@llvm.zext]
 // HARDWARE-DAG: fabric.op [@llvm.trunc]
 // HARDWARE-DAG: fabric.op [@dataflow.stream]
+// HARDWARE-DAG: (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<1>)
 // HARDWARE-DAG: fabric.op [@dataflow.carry]
 // HARDWARE-DAG: fabric.op [@dataflow.invariant]
 // HARDWARE-DAG: fabric.op [@dataflow.gate]
 // HARDWARE-DAG: fabric.op [@dataflow.demux]
+// HARDWARE-DAG: fabric.op [@dataflow.mux]
 // HARDWARE-DAG: fabric.op [@arith.index_cast]
 // HARDWARE-DAG: fabric.op [@dataflow.sync]
 // HARDWARE-DAG: fabric.mem [spatial]

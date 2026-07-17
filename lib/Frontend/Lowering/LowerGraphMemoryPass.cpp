@@ -21,11 +21,12 @@
 //     hoisted, so the per-iteration pointer is reinterpreted as a
 //     memref<?xT> and read at offset 0 (or at the gep's idx).
 //
-// Loads / stores whose pointer is none of the above (e.g. derived
-// from `llvm.alloca` or `llvm.mlir.addressof` at the top level) are
-// left in place. Pointer-element loads / stores (loading/storing a
-// !llvm.ptr value) are also skipped: bridging !llvm.ptr-of-ptr to
-// memref<?x!llvm.ptr> trips the streaming load verifier.
+// Loads whose pointer is none of the above (e.g. derived from
+// `llvm.alloca` or `llvm.mlir.addressof` at the top level) remain as
+// value-producing reads. Residual writes and volatile or atomic reads are
+// rejected because LLVM memory ops do not provide an SSA completion event for
+// graph.return.complete. Pointer-element loads are also skipped: bridging
+// !llvm.ptr-of-ptr to memref<?x!llvm.ptr> trips the streaming load verifier.
 
 #include "Frontend/Lowering/Passes.h"
 
@@ -1537,6 +1538,46 @@ unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
   return rewrites;
 }
 
+::mlir::LogicalResult
+checkResidualMemoryEffects(::dataflow::GraphFuncOp graph) {
+  ::mlir::WalkResult result =
+      graph.getBody().walk([](::mlir::Operation *op) -> ::mlir::WalkResult {
+        bool lacksCompletion =
+            ::llvm::isa<::mlir::LLVM::StoreOp, ::mlir::LLVM::MemcpyOp>(op) ||
+            isLLVMMemsetOp(op);
+        if (auto load = ::llvm::dyn_cast<::mlir::LLVM::LoadOp>(op))
+          lacksCompletion =
+              load.getVolatile_() ||
+              load.getOrdering() != ::mlir::LLVM::AtomicOrdering::not_atomic;
+        if (!lacksCompletion)
+          return ::mlir::WalkResult::advance();
+
+        op->emitError()
+            << "loom-lower-graph-memory: residual memory operation '"
+            << op->getName().getStringRef()
+            << "' has no explicit completion event";
+        return ::mlir::WalkResult::interrupt();
+      });
+  return result.wasInterrupted() ? ::mlir::failure() : ::mlir::success();
+}
+
+::mlir::LogicalResult
+checkNormalizedMemoryEffects(::mlir::ModuleOp module) {
+  ::mlir::OwningOpRef<::mlir::ModuleOp> scratch(
+      ::mlir::cast<::mlir::ModuleOp>(module->clone()));
+  ::mlir::OpBuilder builder(module.getContext());
+  for (auto graph : scratch->getOps<::dataflow::GraphFuncOp>()) {
+    if (!graph.isExternal())
+      (void)rewriteOneGraph(graph, builder);
+  }
+  for (auto graph : scratch->getOps<::dataflow::GraphFuncOp>()) {
+    if (!graph.isExternal() &&
+        ::mlir::failed(checkResidualMemoryEffects(graph)))
+      return ::mlir::failure();
+  }
+  return ::mlir::success();
+}
+
 struct LowerGraphMemoryPass
     : public ::mlir::PassWrapper<LowerGraphMemoryPass,
                                  ::mlir::OperationPass<::mlir::ModuleOp>> {
@@ -1566,6 +1607,10 @@ struct LowerGraphMemoryPass
       signalPassFailure();
       return;
     }
+    if (::mlir::failed(checkNormalizedMemoryEffects(module))) {
+      signalPassFailure();
+      return;
+    }
 
     ::llvm::SmallVector<::dataflow::GraphFuncOp, 8> graphs;
     for (auto graph : module.getOps<::dataflow::GraphFuncOp>())
@@ -1575,6 +1620,11 @@ struct LowerGraphMemoryPass
       if (graph.isExternal())
         continue;
       (void)rewriteOneGraph(graph, builder);
+    }
+
+    for (::dataflow::GraphFuncOp graph : graphs) {
+      if (graph.isExternal())
+        continue;
       if (::mlir::failed(::loom::lowering::lowerGraphRegions(graph))) {
         signalPassFailure();
         return;

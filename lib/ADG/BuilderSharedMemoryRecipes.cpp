@@ -78,6 +78,7 @@ struct SharedMemoryAdgConfig {
   unsigned syncCount = 4;
   unsigned syncArity = 6;
   unsigned streamCount = 0;
+  unsigned wideStreamCount = 0;
   unsigned carryCount = 0;
   unsigned controlCarryCount = 0;
   unsigned gateCount = 0;
@@ -200,45 +201,53 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
       sinks32.push_back(acc);
     }
   };
-  auto addStreamBank = [&](llvm::StringRef prefix, unsigned count) {
+  auto addStreamBank = [&](llvm::StringRef prefix, unsigned count,
+                           llvm::StringRef dataType,
+                           std::vector<std::string> &dataSources,
+                           std::vector<std::string> &dataSinks) {
     for (unsigned index = 0; index < count; ++index) {
       std::string stem = numbered(prefix, index);
       std::string idx = stem + "_idx";
       std::string rwc = stem + "_rwc";
+      bool wide = dataType == "!fabric.bits<64>";
+      std::string rawRwc = wide ? rwc + "_wide" : rwc;
       std::string lb = stem + "_lb";
       std::string ub = stem + "_ub";
       std::string step = stem + "_step";
       PeSpec pe;
-      pe.inputs = {{"pa", lb, "!fabric.bits<32>", ""},
-                   {"pb", ub, "!fabric.bits<32>", ""},
-                   {"pc", step, "!fabric.bits<32>", ""}};
-      pe.resultNames = {idx, rwc};
-      pe.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
+      pe.inputs = {{"pa", lb, dataType.str(), ""},
+                   {"pb", ub, dataType.str(), ""},
+                   {"pc", step, dataType.str(), ""}};
+      pe.resultNames = {idx, rawRwc};
+      pe.resultTypes = {dataType.str(), dataType.str()};
       FuSpec fu;
-      fu.inputs = {{"fa", "pa", "!fabric.bits<32>", ""},
-                   {"fb", "pb", "!fabric.bits<32>", ""},
-                   {"fc", "pc", "!fabric.bits<32>", ""}};
-      fu.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
+      fu.inputs = {{"fa", "pa", dataType.str(), ""},
+                   {"fb", "pb", dataType.str(), ""},
+                   {"fc", "pc", dataType.str(), ""}};
+      fu.resultTypes = {dataType.str(), dataType.str()};
       fu.operations.push_back(FabricOpSpec{
           {"idx", "rwc"},
           {"dataflow.stream"},
           {"fa", "fb", "fc"},
-          {"!fabric.bits<32>", "!fabric.bits<32>", "!fabric.bits<32>"},
-          {"!fabric.bits<32>", "!fabric.bits<1>"},
+          {dataType.str(), dataType.str(), dataType.str()},
+          {dataType.str(), "!fabric.bits<1>"},
           {},
           {},
           StreamConfig{dataflow::StreamStepKind::Add,
                        {mlir::arith::CmpIPredicate::slt,
                         mlir::arith::CmpIPredicate::sgt}}});
       fu.yieldValues = {"idx", "rwc"};
-      fu.yieldTypes = {"!fabric.bits<32>", "!fabric.bits<1>"};
+      fu.yieldTypes = {dataType.str(), "!fabric.bits<1>"};
       pe.fus.push_back(std::move(fu));
       module.addPe(std::move(pe));
-      sources32.push_back(idx);
+      if (wide)
+        addFifo(module, rwc, rawRwc, "!fabric.bits<64>", "!fabric.bits<32>",
+                1, true, true);
+      dataSources.push_back(idx);
       sources32.push_back(rwc);
-      sinks32.push_back(lb);
-      sinks32.push_back(ub);
-      sinks32.push_back(step);
+      dataSinks.push_back(lb);
+      dataSinks.push_back(ub);
+      dataSinks.push_back(step);
     }
   };
   auto addCarryBank = [&](llvm::StringRef prefix, unsigned count,
@@ -373,7 +382,10 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
     sinks0.push_back(control);
   }
 
-  addStreamBank("stream", config.streamCount);
+  addStreamBank("stream", config.streamCount, "!fabric.bits<32>", sources32,
+                sinks32);
+  addStreamBank("wide_stream", config.wideStreamCount, "!fabric.bits<64>",
+                sources64, sinks64);
   addCarryBank("carry", config.carryCount, "!fabric.bits<32>", sources32,
                sinks32);
   addCarryBank("control_carry", config.controlCarryCount, "!fabric.bits<0>",
@@ -651,6 +663,7 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   config.wideMuxCount = 1;
   config.wideRouteBridgeCount = 2;
   config.streamCount = 1;
+  config.wideStreamCount = 1;
   config.controlCarryCount = 3;
   config.gateCount = 2;
   config.wideGateCount = 2;
@@ -941,6 +954,7 @@ ModuleBuilder loom::adg::buildSharedVectorMathAdg() {
   config.divCount = 0;
   config.unsignedDivCount = 0;
   config.muxCount = 0;
+  config.controlMuxCount = 2;
   config.demuxCount = 7;
   config.wideDemuxCount = 2;
   config.controlDemuxCount = 8;
@@ -970,7 +984,7 @@ ModuleBuilder loom::adg::buildSharedVectorMathAdg() {
   config.fpCmpCount = 0;
   config.syncCount = 16;
   config.syncArity = 16;
-  config.streamCount = 1;
+  config.wideStreamCount = 1;
   config.controlCarryCount = 4;
   config.gateCount = 3;
   config.invariantCount = 3;

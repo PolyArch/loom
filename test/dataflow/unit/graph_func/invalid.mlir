@@ -18,8 +18,16 @@ dataflow.graph.func private @g_no_done(%ctrl: none, %x: i32) -> i32 {
 // -----
 // graph.return value count must match parent results.
 dataflow.graph.func private @g_bad_return(%ctrl: none, %x: i32) -> (none, i32) {
-  // expected-error @+1 {{return value count (1) must match parent dataflow.graph.func result count (2)}}
+  // expected-error @+1 {{return output count (0) must match parent dataflow.graph.func payload result count (1)}}
   dataflow.graph.return %ctrl : none
+}
+
+// -----
+// graph.return completion is mandatory.
+dataflow.graph.func private @g_empty_complete(%ctrl: none, %x: i32)
+    -> (none, i32) {
+  // expected-error @+1 {{complete segment must not be empty}}
+  dataflow.graph.return values(%x : i32) streams() memories() complete()
 }
 
 // -----

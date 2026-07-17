@@ -6,8 +6,10 @@
 // scf.for ops without iter_args are left in place. Straight-line
 // dataflow.thread bodies are also extracted into graph.func bodies so
 // element-wise kernels have an explicit SpatialCore graph surface. The
-// graph function_type is the spec's `(none, T0..TN) -> (none, R0..RM)`:
-// leading `none` values are the per-launch ctrl_in / done_out ports.
+// graph function_type is the current `(none, T0..TN) -> (none, R0..RM)` ABI:
+// the leading values are launch-facing ctrl_in / done_out ports, while the
+// graph.return terminator carries payload segments and a separate retirement
+// frontier that derives done_out.
 
 #include "Frontend/Lowering/Passes.h"
 #include "Frontend/Lowering/StreamLoopAttrs.h"
@@ -547,14 +549,16 @@ struct LowerForToGraphPass
     for (::mlir::Operation &op : funcEntry.without_terminator())
       builder.clone(op, mapping);
     ::llvm::SmallVector<::mlir::Value, 4> returnValues;
-    returnValues.push_back(graphEntry->getArgument(0));
     if (auto returnOp =
             ::llvm::dyn_cast<::mlir::func::ReturnOp>(
                 funcEntry.getTerminator())) {
       for (::mlir::Value operand : returnOp.getOperands())
         returnValues.push_back(mapping.lookupOrDefault(operand));
     }
-    ::dataflow::GraphReturnOp::create(builder, loc, returnValues);
+    ::dataflow::GraphReturnOp::create(
+        builder, loc, returnValues, ::mlir::ValueRange{},
+        ::mlir::ValueRange{},
+        ::mlir::ValueRange{graphEntry->getArgument(0)});
   }
 
   void promoteStandaloneMemcpyFunctions(::mlir::ModuleOp module,
@@ -949,14 +953,15 @@ struct LowerForToGraphPass
     for (::mlir::Operation *op : epilogueOps)
       builder.clone(*op, mapping);
 
-    // Forward ctrl_in as done_out. Memory completion ordering remains
-    // outside this graph extraction pass.
+    // Seed the structural completion segment. Graph-region lowering replaces
+    // it with the graph's explicit execution and effect retirement frontier.
     builder.setInsertionPointToEnd(entry);
     ::llvm::SmallVector<::mlir::Value, 4> returnVals;
-    returnVals.push_back(entry->getArgument(0)); // ctrl_in -> done_out
     for (::mlir::Value value : outputValues)
       returnVals.push_back(mapping.lookup(value));
-    ::dataflow::GraphReturnOp::create(builder, loc, returnVals);
+    ::dataflow::GraphReturnOp::create(
+        builder, loc, returnVals, ::mlir::ValueRange{}, ::mlir::ValueRange{},
+        ::mlir::ValueRange{entry->getArgument(0)});
 
     // Materialize the graph.launch at the original loop site inside
     // the thread body. The `ctrl_in : none` operand comes from the
@@ -1201,7 +1206,9 @@ struct LowerForToGraphPass
     for (::mlir::Operation *op : bodyOps)
       builder.clone(*op, mapping);
     ::dataflow::GraphReturnOp::create(
-        builder, loc, ::mlir::ValueRange{graphEntry->getArgument(0)});
+        builder, loc, ::mlir::ValueRange{}, ::mlir::ValueRange{},
+        ::mlir::ValueRange{},
+        ::mlir::ValueRange{graphEntry->getArgument(0)});
 
     builder.setInsertionPoint(&threadEntry, threadEntry.begin());
     ::llvm::SmallVector<::mlir::Value, 8> launchOperands;

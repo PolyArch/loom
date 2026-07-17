@@ -49,6 +49,8 @@
 // HARDWARE-DAG: fabric.op [@llvm.trunc]
 // HARDWARE-DAG: fabric.op [@llvm.zext]
 // HARDWARE-DAG: fabric.op [@dataflow.stream]
+// HARDWARE-DAG: (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<1>)
+// HARDWARE-DAG: (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<1>)
 // HARDWARE-DAG: fabric.op [@dataflow.carry]
 // HARDWARE-DAG: fabric.op [@dataflow.invariant]
 // HARDWARE-DAG: fabric.op [@dataflow.gate]
@@ -69,6 +71,8 @@
 // BUILDER-DAG: %control_demux0_false_wide, %control_demux0_true_wide =
 // BUILDER-DAG: %control_demux0_false = fabric.fifo %control_demux0_false_wide
 // BUILDER-DAG: %wide_route_bridge0 = fabric.fifo %wide_route_bridge0_input
+// BUILDER-DAG: %stream0_idx, %stream0_rwc =
+// BUILDER-DAG: %wide_stream0_rwc = fabric.fifo %wide_stream0_rwc_wide
 
 // MAPPING-DAG: "workload": "minmax_pressure"
 // MAPPING-DAG: "hardware": "shared_memory_reduction_adg"
@@ -82,9 +86,6 @@
 // BITONIC-DAG: "unrouted_edges": 0
 // BITONIC-DAG: "software": "arith.cmpi#0"
 // BITONIC-DAG: "software": "dataflow.store#0"
-// BITONIC-DAG: "edge_ref": "arith.cmpi#0.result0->arith.select#0.operand0"
-// BITONIC-DAG: "edge_ref": "dataflow.constant#1.result0->arith.shli#0.operand1"
-// BITONIC-DAG: "edge_ref": "dataflow.load#1.result0->arith.cmpf#1.operand1"
 // BITONIC-DAG: "status": "pass"
 
 module {

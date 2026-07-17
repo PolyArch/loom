@@ -128,60 +128,6 @@ dataflow.graph.func private @g_inbounds_zero_companion(
   dataflow.graph.return %arg0 : none
 }
 
-// Negative-bail #1: a graph.func body whose llvm.load / llvm.store
-// use a base pointer derived from a global address-of (not a graph
-// block-arg) keeps the original llvm.{load, store, gep} chain.
-
-llvm.mlir.global private @global_buf(dense<0.0> : tensor<8xf32>) : !llvm.array<8 x f32>
-
-// CHECK-LABEL: dataflow.graph.func private @g_global_base
-// CHECK: %[[GLOBAL_IV:.*]], %{{.*}} = dataflow.stream
-// CHECK: %[[GBL:.*]] = llvm.mlir.addressof @global_buf
-// CHECK: %[[GEP:.*]] = llvm.getelementptr %[[GBL]][%[[GLOBAL_IV]]]
-// CHECK: llvm.load %[[GEP]]
-// CHECK-NOT: dataflow.load
-// CHECK-NOT: dataflow.store
-// CHECK: llvm.store %{{.*}}, %[[GEP]]
-dataflow.graph.func private @g_global_base(%arg0: none, %arg1: i64, %arg2: i64,
-                                           %arg3: i64, %arg5: f32)
-    -> (none, f32) {
-  %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      step add while slt : i64
-  %0 = dataflow.carry %rwc, %arg5, %3 : f32
-  %p = llvm.mlir.addressof @global_buf : !llvm.ptr
-  %1 = llvm.getelementptr %p[%index] : (!llvm.ptr, i64) -> !llvm.ptr, f32
-  %2 = llvm.load %1 : !llvm.ptr -> f32
-  %3 = arith.addf %0, %2 : f32
-  llvm.store %3, %1 : f32, !llvm.ptr
-  dataflow.graph.return %arg0, %0 : none, f32
-}
-
-// An arbitrary dynamic i8 byte offset is not known to be divisible by the f32
-// element size, so the pass must preserve the LLVM memory operations.
-
-// CHECK-LABEL: dataflow.graph.func private @g_i8_byte_offset_f32
-// CHECK-NOT: builtin.unrealized_conversion_cast
-// CHECK: %[[BYTE_IV:.*]], %{{.*}} = dataflow.stream
-// CHECK: %[[BYTE:.*]] = arith.shli %[[BYTE_IV]], %arg5 : i64
-// CHECK: %[[BYTE_PTR:.*]] = llvm.getelementptr %arg4[%[[BYTE]]] : (!llvm.ptr, i64) -> !llvm.ptr, i8
-// CHECK: llvm.load %[[BYTE_PTR]] : !llvm.ptr -> f32
-// CHECK: llvm.store %{{.*}}, %[[BYTE_PTR]] : f32, !llvm.ptr
-// CHECK-NOT: dataflow.load
-// CHECK-NOT: dataflow.store
-dataflow.graph.func private @g_i8_byte_offset_f32(
-    %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64, %arg4: !llvm.ptr,
-    %arg5: i64, %arg6: f32) -> (none, f32) {
-  %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      step add while slt : i64
-  %0 = dataflow.carry %rwc, %arg6, %4 : f32
-  %1 = arith.shli %index, %arg5 : i64
-  %2 = llvm.getelementptr %arg4[%1] : (!llvm.ptr, i64) -> !llvm.ptr, i8
-  %3 = llvm.load %2 : !llvm.ptr -> f32
-  %4 = arith.addf %0, %3 : f32
-  llvm.store %4, %2 : f32, !llvm.ptr
-  dataflow.graph.return %arg0, %0 : none, f32
-}
-
 // A dynamic aggregate-stride GEP followed by a constant byte GEP can be
 // normalized when both byte contributions convert exactly to load elements.
 
@@ -236,30 +182,6 @@ dataflow.graph.func private @g_chained_gep_negative_bias(
       : (!llvm.ptr) -> !llvm.ptr, i8
   %value = llvm.load %ptr : !llvm.ptr -> i16
   dataflow.graph.return %arg0, %value : none, i16
-}
-
-// Volatile and atomic LLVM accesses retain semantics that dataflow memory ops
-// do not represent.
-
-// CHECK-LABEL: dataflow.graph.func private @g_volatile_atomic
-// CHECK-NOT: builtin.unrealized_conversion_cast
-// CHECK: %[[MEM_INDEX:.*]], %[[MEM_RWC:.*]] = dataflow.stream
-// CHECK: %[[MEM_PTR:.*]] = llvm.getelementptr %arg4[%[[MEM_INDEX]]] : (!llvm.ptr, i64) -> !llvm.ptr, i32
-// CHECK: %[[VOLATILE_VALUE:.*]] = llvm.load volatile %[[MEM_PTR]] : !llvm.ptr -> i32
-// CHECK: llvm.store %arg5, %[[MEM_PTR]] atomic monotonic {alignment = 4 : i64} : i32, !llvm.ptr
-// CHECK-NOT: dataflow.load
-// CHECK-NOT: dataflow.store
-dataflow.graph.func private @g_volatile_atomic(
-    %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64, %arg4: !llvm.ptr,
-    %arg5: i32) -> (none, i32) {
-  %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      step add while slt : i64
-  %ptr = llvm.getelementptr %arg4[%index]
-      : (!llvm.ptr, i64) -> !llvm.ptr, i32
-  %value = llvm.load volatile %ptr : !llvm.ptr -> i32
-  llvm.store %arg5, %ptr atomic monotonic {alignment = 4 : i64}
-      : i32, !llvm.ptr
-  dataflow.graph.return %arg0, %value : none, i32
 }
 
 // -----

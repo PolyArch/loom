@@ -325,7 +325,10 @@ documentation never refers to the numeric position.
   module-scope def's body and supplies the def's
   `function_type = (none, T0..TN) -> (none, R0..RM)`, the matching
   entry block layout `(%ctrl_in : none, %arg_0..%arg_N)`, and the
-  matching `dataflow.yield (%done_out : none, %r_0..%r_M)`. The
+  structural `dataflow.graph.return` payload segments. Extraction seeds
+  `complete(%ctrl_in)`; recursive graph-region lowering replaces that seed
+  with the explicit structural, value-publication, and effect retirement
+  frontier. The
   per-launch ctrl/done plumbing lives on the launch op:
   `(%done, %r) = dataflow.graph.launch @sym(%ctrl, %args) : ...`.
   Graph-to-graph ordering is represented by ordinary SSA use of
@@ -337,16 +340,20 @@ documentation never refers to the numeric position.
   explicit graph-to-graph control dependency.
 * `dataflow.graph.launch` ops are ScalarCore launch points for
   SpatialCore work. The `ctrl_in` operand is an explicit graph-level
-  start dependency, and `done_out` is the declared graph-level
-  completion port. The current lowering does not establish
-  zero-output close/retirement closure, so the port must not be
-  synthesized from raw start control.
+  start dependency, and `done_out` is the declared graph-level retirement
+  result. Its value is exactly the all-of of the callee's non-empty
+  `graph.return.complete` segment; no raw-start shortcut or effect scan
+  defines completion.
+* Graph-memory rejects residual LLVM writes and volatile or atomic LLVM reads
+  after normalization. Those operations do not expose an SSA completion event
+  that could enter `graph.return.complete`; preserving them would create an
+  undeclared retirement path.
 * Because `dataflow.graph` (def) is `IsolatedFromAbove`, the
   extraction pass also computes every surrounding value used by
   the run's body and materializes it as an explicit launch operand
   paired with a matching def entry block argument. Values produced
   inside the run and used outside it are materialized as explicit
-  launch results paired with `dataflow.yield` operands.
+  launch results paired with `dataflow.graph.return` payload operands.
 
 ### 1.8 `loom-build-memory-dependencies`
 

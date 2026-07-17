@@ -266,21 +266,51 @@ The graph-region owner does not:
 
 ## 11. Graph Boundary
 
-This slice deliberately does not define `dataflow.graph.return` completion.
-The pass emits internal structural and memory frontiers but cannot claim that
-the existing graph ABI has a complete retirement frontier.
+`dataflow.graph.return` is a structural graph-boundary declaration, not an
+implicit runtime return. Its operand segments are:
 
-In particular:
+```text
+values(...) streams(...) memories(...) complete(...)
+```
 
-* memory `done` is not substituted into the return's leading `none` operand;
-* the removed graph-sync pass is not a hidden completion authority;
-* no effect scan retroactively defines graph retirement;
-* graph launch retirement closure and verifier coverage remain separate work.
+`complete` is mandatory, non-empty, variadic, unordered all-of, and contains
+only `none` values. The launch-facing done event is exactly:
 
-The current legacy terminator operand is preserved mechanically, but neither
-`%start` nor any partial execution or memory frontier is valid completion
-evidence. Integrating this lowering requires a separately confirmed graph
-retirement rule that also covers stateful close and reset.
+```text
+launch.done = all_of(graph.return.complete)
+```
+
+There is no hidden effect scan, graph-quiescence test, or removed sync pass
+that can define completion independently.
+
+After recursive lowering, this pass constructs the memory-owned retirement
+frontier from:
+
+```text
+execution_out
+read_frontier_out[p] for every live alias partition p
+existing explicit non-start completion obligations
+```
+
+The candidate set is deduplicated and causally transitively reduced. A graph
+with no derived work and no value publication may retain `%start`. Once a
+derived execution or memory frontier exists, the provisional `%start` witness
+is removed. The reduced frontier is joined to one publication base. Each
+transportable scalar value is passed through a `(none, T) -> (none, T)`
+`dataflow.sync` with that base; the returned values use the typed outputs and
+the `complete` segment is the all-of of the `none` outputs. Pointer and memref
+capability payloads remain boundary bookkeeping whose establishment is covered
+by the structural and memory frontier rather than by a transport sync. With no
+scalar value outputs, the reduced `none` frontier is written directly to
+`complete`.
+
+The frontier's causal closure covers final values, stream boundary close and
+commit obligations, memory capability establishment and promised visibility,
+all observable side effects, invocation-local state close/reset, and all
+non-detached async work. This pass contributes structural execution and final
+per-partition read frontiers; stream, exported-memory, and other async
+producers must contribute their explicit completion witnesses through the same
+segment. It never reconstructs them from operation order or effect metadata.
 
 ## 12. Supported Failure Modes
 
@@ -288,27 +318,30 @@ The owner rejects before mutation when:
 
 * raw parallel SCF reaches a graph;
 * an effectful or unmodeled nested operation reaches a graph;
+* a write-like LLVM memory operation or volatile/atomic LLVM load remains
+  after normalization and therefore has no explicit completion event;
 * a memref leaf is not rank one;
 * structured control carries a memref result or memref loop state;
 * the graph entry lacks the leading `none` execution value.
 
-Unsupported top-level LLVM accesses may remain unchanged under the existing
-address-normalization contract. Supported LLVM load, store, memcpy, and
-memset forms are normalized before recursive region lowering, after which the
-same frontier rules apply. An unsupported effectful operation inside a
-structured region must fail closed instead of being hoisted.
+Unsupported non-volatile, non-atomic LLVM loads may remain value-producing
+reads under the existing address-normalization contract. Supported LLVM load,
+store, memcpy, and memset forms are normalized before recursive region
+lowering, after which the same frontier rules apply. A residual LLVM store,
+memcpy, memset, volatile load, or atomic load has no explicit completion event
+and must fail closed. An unsupported effectful operation inside a structured
+region must likewise fail closed instead of being hoisted.
 
 ## 13. Non-Goals
 
 This lowering does not define:
 
-* graph ABI redesign or retirement verification;
-* Dataflow ODS changes;
 * vector, masked, gather, or scatter memory ports;
 * range-sensitive or polyhedral alias partitioning;
 * cross-graph partition identity;
 * Fabric memory banks, ports, services, or contention;
-* DFG simulator, TechMapping, or PnR behavior;
+* graph stream or exported-memory boundary binding;
+* whole-graph causal-closure proof for arbitrary hand-authored frontiers;
 * parallel schedule selection.
 
 Those concerns must consume the explicit canonical event network or be owned

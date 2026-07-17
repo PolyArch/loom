@@ -474,9 +474,9 @@ LogicalResult GraphFuncOp::verify() {
   if (isExternal())
     return success();
 
-  // The function type must lead with `none` ctrl_in and `none`
-  // done_out per spec section 5.5.1, and the entry block / return
-  // operand list must mirror that.
+  // The current function ABI leads with launch-facing ctrl_in and done_out
+  // slots. graph.return carries payload segments plus the separate frontier
+  // from which launch done is derived.
   ArrayRef<Type> inputs = getFunctionType().getInputs();
   ArrayRef<Type> results = getFunctionType().getResults();
   if (inputs.empty() || !isa<NoneType>(inputs.front()))
@@ -533,22 +533,161 @@ LogicalResult GraphFuncOp::verify() {
 // dataflow.graph.return
 //===----------------------------------------------------------------------===//
 
+namespace {
+
+ParseResult parseGraphReturnSegmentBody(
+    OpAsmParser &parser,
+    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &operands,
+    SmallVectorImpl<Type> &types) {
+  if (parser.parseLParen())
+    return failure();
+  if (succeeded(parser.parseOptionalRParen()))
+    return success();
+  if (parser.parseOperandList(operands, OpAsmParser::Delimiter::None) ||
+      parser.parseColon() || parser.parseTypeList(types) ||
+      parser.parseRParen())
+    return failure();
+  if (operands.size() != types.size())
+    return parser.emitError(parser.getCurrentLocation(),
+                            "operand count and type count differ");
+  return success();
+}
+
+void printGraphReturnSegment(OpAsmPrinter &printer, StringRef name,
+                             ValueRange values) {
+  printer << name << '(';
+  if (!values.empty()) {
+    printer.printOperands(values);
+    printer << " : ";
+    llvm::interleaveComma(values, printer, [&](Value value) {
+      printer.printType(value.getType());
+    });
+  }
+  printer << ')';
+}
+
+} // namespace
+
+ParseResult GraphReturnOp::parse(OpAsmParser &parser, OperationState &result) {
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> values;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> streams;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> memories;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> complete;
+  SmallVector<Type, 4> valueTypes;
+  SmallVector<Type, 4> streamTypes;
+  SmallVector<Type, 4> memoryTypes;
+  SmallVector<Type, 4> completeTypes;
+  SMLoc operandLoc = parser.getCurrentLocation();
+
+  if (succeeded(parser.parseOptionalKeyword("values"))) {
+    if (parseGraphReturnSegmentBody(parser, values, valueTypes) ||
+        parser.parseKeyword("streams") ||
+        parseGraphReturnSegmentBody(parser, streams, streamTypes) ||
+        parser.parseKeyword("memories") ||
+        parseGraphReturnSegmentBody(parser, memories, memoryTypes) ||
+        parser.parseKeyword("complete") ||
+        parseGraphReturnSegmentBody(parser, complete, completeTypes))
+      return failure();
+  } else {
+    SmallVector<OpAsmParser::UnresolvedOperand, 4> compactOperands;
+    SmallVector<Type, 4> compactTypes;
+    OpAsmParser::UnresolvedOperand first;
+    OptionalParseResult firstResult = parser.parseOptionalOperand(first);
+    if (firstResult.has_value()) {
+      if (failed(*firstResult))
+        return failure();
+      compactOperands.push_back(first);
+      while (succeeded(parser.parseOptionalComma())) {
+        OpAsmParser::UnresolvedOperand operand;
+        if (parser.parseOperand(operand))
+          return failure();
+        compactOperands.push_back(operand);
+      }
+      if (parser.parseColon() || parser.parseTypeList(compactTypes))
+        return failure();
+      if (compactOperands.size() != compactTypes.size())
+        return parser.emitError(parser.getCurrentLocation(),
+                                "operand count and type count differ");
+    }
+    if (!compactOperands.empty()) {
+      complete.push_back(compactOperands.front());
+      completeTypes.push_back(compactTypes.front());
+      values.append(compactOperands.begin() + 1, compactOperands.end());
+      valueTypes.append(compactTypes.begin() + 1, compactTypes.end());
+    }
+  }
+
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  if (parser.resolveOperands(values, valueTypes, operandLoc, result.operands) ||
+      parser.resolveOperands(streams, streamTypes, operandLoc,
+                             result.operands) ||
+      parser.resolveOperands(memories, memoryTypes, operandLoc,
+                             result.operands) ||
+      parser.resolveOperands(complete, completeTypes, operandLoc,
+                             result.operands))
+    return failure();
+
+  auto &properties = result.getOrAddProperties<GraphReturnOp::Properties>();
+  properties.operandSegmentSizes = {
+      static_cast<int32_t>(values.size()),
+      static_cast<int32_t>(streams.size()),
+      static_cast<int32_t>(memories.size()),
+      static_cast<int32_t>(complete.size())};
+  return success();
+}
+
+void GraphReturnOp::print(OpAsmPrinter &printer) {
+  printer << ' ';
+  if (getStreams().empty() && getMemories().empty() &&
+      getComplete().size() == 1) {
+    SmallVector<Value, 4> operands{getComplete().front()};
+    operands.append(getValues().begin(), getValues().end());
+    printer.printOperands(operands);
+    printer << " : ";
+    llvm::interleaveComma(operands, printer, [&](Value value) {
+      printer.printType(value.getType());
+    });
+  } else {
+    printGraphReturnSegment(printer, "values", getValues());
+    printer << ' ';
+    printGraphReturnSegment(printer, "streams", getStreams());
+    printer << ' ';
+    printGraphReturnSegment(printer, "memories", getMemories());
+    printer << ' ';
+    printGraphReturnSegment(printer, "complete", getComplete());
+  }
+  printer.printOptionalAttrDict((*this)->getAttrs(), {"operandSegmentSizes"});
+}
+
 LogicalResult GraphReturnOp::verify() {
   auto parent = (*this)->getParentOfType<GraphFuncOp>();
   if (!parent)
     return emitOpError("must be inside a dataflow.graph.func op");
+  if (getComplete().empty())
+    return emitOpError("complete segment must not be empty");
+
   ArrayRef<Type> results = parent.getFunctionType().getResults();
-  if (getValues().size() != results.size())
-    return emitOpError("return value count (")
-           << getValues().size() << ") must match parent dataflow.graph.func "
-           << "result count (" << results.size() << ")";
-  for (size_t i = 0, e = results.size(); i < e; ++i) {
-    Type expected = results[i];
-    Type actual = getValues()[i].getType();
+  if (results.empty())
+    return emitOpError(
+        "parent dataflow.graph.func must declare a leading done result");
+  ArrayRef<Type> payloadResults = results.drop_front();
+  SmallVector<Value, 4> outputs;
+  outputs.append(getValues().begin(), getValues().end());
+  outputs.append(getStreams().begin(), getStreams().end());
+  outputs.append(getMemories().begin(), getMemories().end());
+  if (outputs.size() != payloadResults.size())
+    return emitOpError("return output count (")
+           << outputs.size()
+           << ") must match parent dataflow.graph.func payload result count ("
+           << payloadResults.size() << ")";
+  for (size_t i = 0, e = payloadResults.size(); i < e; ++i) {
+    Type expected = payloadResults[i];
+    Type actual = outputs[i].getType();
     if (actual != expected)
-      return emitOpError("return value #")
+      return emitOpError("return output #")
              << i << " type " << actual
-             << " must match parent dataflow.graph.func result type "
+             << " must match parent dataflow.graph.func payload result type "
              << expected;
   }
   return success();

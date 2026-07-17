@@ -13,7 +13,7 @@ memref.global "private" @frontier_b : memref<16xi32>
 // CHECK: %[[R2:.*]], %[[D2:.*]] = dataflow.load %[[A_READ]][%arg2] %[[WRITE]] : memref<16xi32>
 // CHECK: [[READS]]:2 = dataflow.sync %[[D0]], %[[D1]] : (none, none) -> (none, none)
 // CHECK: %[[RB:.*]], %[[DB:.*]] = dataflow.load %[[B]][%arg1] %arg0 : memref<16xi32>
-// CHECK: dataflow.graph.return %arg0 : none
+// CHECK: dataflow.graph.return values() streams() memories() complete(%[[D2]], %[[DB]] : none, none)
 dataflow.graph.func private @frontier_straight(
     %start: none, %i: index, %j: index, %value: i32) -> none {
   %a_read = memref.get_global @frontier_a : memref<16xi32>
@@ -25,6 +25,20 @@ dataflow.graph.func private @frontier_straight(
   %r2, %read2_done = dataflow.load %a_read[%j] %start : memref<16xi32>
   %rb = memref.load %b[%i] : memref<16xi32>
   dataflow.graph.return %start : none
+}
+
+// -----
+
+// Final values are published through the same explicit retirement frontier.
+
+// CHECK-LABEL: dataflow.graph.func private @frontier_value
+// CHECK: %[[SUM:.*]] = arith.addi %arg1, %arg2 : i32
+// CHECK: %[[VALUE_RETIRE:.*]]:2 = dataflow.sync %arg0, %[[SUM]] : (none, i32) -> (none, i32)
+// CHECK: dataflow.graph.return %[[VALUE_RETIRE]]#0, %[[VALUE_RETIRE]]#1 : none, i32
+dataflow.graph.func private @frontier_value(
+    %start: none, %lhs: i32, %rhs: i32) -> (none, i32) {
+  %sum = arith.addi %lhs, %rhs : i32
+  dataflow.graph.return %start, %sum : none, i32
 }
 
 // -----
@@ -75,9 +89,10 @@ dataflow.graph.func private @frontier_unknown(
 // CHECK: %[[R_OUT:.*]] = dataflow.mux %arg3, %[[R]]#0, %[[STORE_DONE]] : (i1, none, none) -> none
 // CHECK: %[[E_OUT:.*]] = dataflow.mux %arg3, %[[E]]#0, %[[E]]#1 : (i1, none, none) -> none
 // CHECK: %[[AFTER_CTRL:.*]]:2 = dataflow.sync %[[E_OUT]], %[[W_OUT]] : (none, none) -> (none, none)
-// CHECK: dataflow.load %arg1[%arg4] %[[AFTER_CTRL]]#0 : memref<?xi32>
+// CHECK: %{{.*}}, %[[AFTER_DONE:.*]] = dataflow.load %arg1[%arg4] %[[AFTER_CTRL]]#0 : memref<?xi32>
+// CHECK: %[[IF_RETIRE:.*]]:2 = dataflow.sync %[[R_OUT]], %[[AFTER_DONE]] : (none, none) -> (none, none)
 // CHECK-NOT: arith.select
-// CHECK: dataflow.graph.return %arg0 : none
+// CHECK: dataflow.graph.return %[[IF_RETIRE]]#0 : none
 dataflow.graph.func private @frontier_if_identity(
     %start: none, %a: memref<?xi32>, %b: memref<?xi32>,
     %cond: i1, %index: index, %value: i32) -> none {
@@ -142,10 +157,14 @@ dataflow.graph.func private @frontier_for(
 // CHECK: %[[ZERO_VALUE_RAW:.*]] = dataflow.carry %[[ZERO_PHASE]], %arg5,
 // CHECK: %[[ZERO_VALUE_LANES:.*]]:2 = dataflow.demux %[[ZERO_PHASE]], %[[ZERO_VALUE_RAW]] : (i1, i32) -> (i32, i32)
 // CHECK: %[[ZERO_W_RAW:.*]] = dataflow.carry %[[ZERO_PHASE]], %arg0,
+// CHECK: %[[ZERO_R_RAW:.*]] = dataflow.carry %[[ZERO_PHASE]], %arg0,
 // CHECK: %[[ZERO_W_LANES:.*]]:2 = dataflow.demux %[[ZERO_PHASE]], %[[ZERO_W_RAW]] : (i1, none) -> (none, none)
+// CHECK: %[[ZERO_R_LANES:.*]]:2 = dataflow.demux %[[ZERO_PHASE]], %[[ZERO_R_RAW]] : (i1, none) -> (none, none)
 // CHECK: %[[ZERO_AFTER_CTRL:.*]]:2 = dataflow.sync %[[ZERO_EXEC_LANES]]#0, %[[ZERO_W_LANES]]#0 : (none, none) -> (none, none)
-// CHECK: dataflow.load %arg1[%arg4] %[[ZERO_AFTER_CTRL]]#0 : memref<?xi32>
-// CHECK: dataflow.graph.return %arg0, %[[ZERO_VALUE_LANES]]#0 : none, i32
+// CHECK: %{{.*}}, %[[ZERO_LOAD_DONE:.*]] = dataflow.load %arg1[%arg4] %[[ZERO_AFTER_CTRL]]#0 : memref<?xi32>
+// CHECK: %[[ZERO_MEMORY_RETIRE:.*]]:2 = dataflow.sync %[[ZERO_R_LANES]]#0, %[[ZERO_LOAD_DONE]] : (none, none) -> (none, none)
+// CHECK: %[[ZERO_RETIRE:.*]]:2 = dataflow.sync %[[ZERO_MEMORY_RETIRE]]#0, %[[ZERO_VALUE_LANES]]#0 : (none, i32) -> (none, i32)
+// CHECK: dataflow.graph.return %[[ZERO_RETIRE]]#0, %[[ZERO_RETIRE]]#1 : none, i32
 dataflow.graph.func private @frontier_for_zero_trip(
     %start: none, %a: memref<?xi32>, %bound: i64, %step: i64,
     %index: index, %value: i32) -> (none, i32) {
@@ -350,4 +369,18 @@ dataflow.graph.func private @frontier_nested_for_if(
     }
   }
   dataflow.graph.return %start : none
+}
+
+// -----
+
+// Pointer payloads are graph-boundary capability bookkeeping. Their
+// establishment is covered by the structural frontier, but the pointer itself
+// must not become a transport-bearing typed sync.
+
+// CHECK-LABEL: dataflow.graph.func private @frontier_pointer_payload
+// CHECK-NOT: dataflow.sync {{.*}}!llvm.ptr
+// CHECK: dataflow.graph.return %arg0, %arg1 : none, !llvm.ptr
+dataflow.graph.func private @frontier_pointer_payload(
+    %start: none, %pointer: !llvm.ptr) -> (none, !llvm.ptr) {
+  dataflow.graph.return %start, %pointer : none, !llvm.ptr
 }

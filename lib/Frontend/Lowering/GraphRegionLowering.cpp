@@ -23,6 +23,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/STLExtras.h"
 
 #include <cassert>
 #include <optional>
@@ -218,7 +219,7 @@ public:
 
     RegionResult result =
         lowerBlock(entry, entry.getArgument(0), std::move(initial));
-    (void)result;
+    finalizeReturn(::llvm::cast<::dataflow::GraphReturnOp>(anchor), result);
     return ::mlir::success();
   }
 
@@ -419,7 +420,8 @@ private:
     return causallyDependsOn(event, prerequisite, visited);
   }
 
-  ::mlir::Value joinEvents(::mlir::ValueRange inputs, ::mlir::Location loc) {
+  ::llvm::SmallVector<::mlir::Value, 4>
+  reduceEvents(::mlir::ValueRange inputs) const {
     ::llvm::SmallVector<::mlir::Value, 4> unique;
     for (::mlir::Value input : inputs)
       if (input && !::llvm::is_contained(unique, input))
@@ -437,6 +439,11 @@ private:
       if (!covered)
         reduced.push_back(unique[i]);
     }
+    return reduced;
+  }
+
+  ::mlir::Value joinEvents(::mlir::ValueRange inputs, ::mlir::Location loc) {
+    ::llvm::SmallVector<::mlir::Value, 4> reduced = reduceEvents(inputs);
     if (reduced.size() == 1)
       return reduced.front();
 
@@ -445,6 +452,54 @@ private:
                                                builder.getNoneType());
     auto sync = ::dataflow::SyncOp::create(builder, loc, types, reduced);
     return sync.getOutputs().front();
+  }
+
+  void finalizeReturn(::dataflow::GraphReturnOp returnOp,
+                      const RegionResult &result) {
+    ::llvm::SmallVector<::mlir::Value, 8> candidates{result.execution};
+    for (const MemoryFrontier &frontier : result.memory)
+      candidates.push_back(frontier.read);
+    ::mlir::Value start = entry.getArgument(0);
+    bool hasDerivedFrontier = ::llvm::any_of(
+        candidates, [&](::mlir::Value candidate) { return candidate != start; });
+    for (::mlir::Value witness : returnOp.getComplete())
+      if (witness != start || !hasDerivedFrontier)
+        candidates.push_back(witness);
+    ::llvm::SmallVector<::mlir::Value, 4> reduced =
+        reduceEvents(candidates);
+    assert(!reduced.empty() && "graph retirement must have a witness");
+
+    ::llvm::SmallVector<::mlir::Value, 4> values(returnOp.getValues().begin(),
+                                                 returnOp.getValues().end());
+    if (values.empty()) {
+      returnOp.getCompleteMutable().assign(reduced);
+      return;
+    }
+
+    auto isCapabilityValue = [](::mlir::Value value) {
+      return ::llvm::isa<::mlir::LLVM::LLVMPointerType,
+                         ::mlir::MemRefType>(value.getType());
+    };
+    if (::llvm::all_of(values, isCapabilityValue)) {
+      returnOp.getCompleteMutable().assign(reduced);
+      return;
+    }
+
+    ::mlir::Value publicationBase = joinEvents(reduced, returnOp.getLoc());
+    ::llvm::SmallVector<::mlir::Value, 4> publicationFrontier;
+    for (auto [index, value] : ::llvm::enumerate(values)) {
+      if (isCapabilityValue(value))
+        continue;
+      setInsertionPoint(returnOp.getLoc());
+      auto sync = ::dataflow::SyncOp::create(
+          builder, returnOp.getLoc(),
+          ::mlir::TypeRange{builder.getNoneType(), value.getType()},
+          ::mlir::ValueRange{publicationBase, value});
+      publicationFrontier.push_back(sync.getOutputs().front());
+      values[index] = sync.getOutputs().back();
+    }
+    returnOp.getValuesMutable().assign(values);
+    returnOp.getCompleteMutable().assign(publicationFrontier);
   }
 
   std::pair<::mlir::Value, ::mlir::Value>

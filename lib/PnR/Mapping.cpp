@@ -1237,12 +1237,26 @@ bool resourceSupportsSoftwarePortShape(const SoftwareNode &node,
       std::optional<unsigned> width = fabricBitWidth(type);
       return width && *width == 0;
     };
-    if (!llvm::all_of(node.op->getOperandTypes(), isControlToken) ||
-        !llvm::all_of(node.op->getResultTypes(), isControlToken))
+    bool controlOnly =
+        llvm::all_of(node.op->getOperandTypes(), isControlToken) &&
+        llvm::all_of(node.op->getResultTypes(), isControlToken);
+    if (controlOnly)
+      return llvm::all_of(resource.op->getOperandTypes(),
+                          isFabricControlToken) &&
+             llvm::all_of(resource.op->getResultTypes(),
+                          isFabricControlToken);
+
+    if (node.op->getNumOperands() != resource.op->getNumOperands() ||
+        node.op->getNumResults() != resource.op->getNumResults())
       return false;
-    if (!llvm::all_of(resource.op->getOperandTypes(), isFabricControlToken) ||
-        !llvm::all_of(resource.op->getResultTypes(), isFabricControlToken))
-      return false;
+    for (auto [softwareType, hardwareType] : llvm::zip(
+             node.op->getOperandTypes(), resource.op->getOperandTypes()))
+      if (!softwareTypeFitsFabricType(softwareType, hardwareType))
+        return false;
+    for (auto [softwareType, hardwareType] : llvm::zip(
+             node.op->getResultTypes(), resource.op->getResultTypes()))
+      if (!softwareTypeFitsFabricType(softwareType, hardwareType))
+        return false;
     return true;
   }
 

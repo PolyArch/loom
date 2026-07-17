@@ -7,6 +7,16 @@ dataflow.graph.func private @g_demo(%ctrl: none, %x: i32) -> (none, i32) {
   dataflow.graph.return %ctrl, %x : none, i32
 }
 
+// Multiple completion witnesses use the explicit segmented form.
+// CHECK-LABEL: dataflow.graph.func private @g_segmented
+// CHECK: dataflow.graph.return values(%{{.*}} : i32) streams() memories() complete(%{{.*}}, %{{.*}} : none, none)
+dataflow.graph.func private @g_segmented(%ctrl: none, %x: i32)
+    -> (none, i32) {
+  %done:2 = dataflow.sync %ctrl, %ctrl : (none, none) -> (none, none)
+  dataflow.graph.return values(%x : i32) streams() memories()
+      complete(%done#0, %done#1 : none, none)
+}
+
 // Synchronous launch site inside a thread body. The launch's first
 // operand is the enclosing thread's `thread_ctrl` block argument
 // (per spec section 5.4.1); its first result is the per-launch

@@ -713,12 +713,12 @@ def Dataflow_GraphFuncOp : Dataflow_Op<"graph.func", [
     `dataflow.graph.launch` ops materialise launches of it inside the
     body of a `dataflow.thread` definition.
 
-    `function_type` includes the explicit control ports as part of the
-    symbolic signature: inputs are `(none, T0, ..., TN)` (leading
-    `none` is the `ctrl_in` port), results are `(none, R0, ..., RM)`
-    (leading `none` is the `done_out` port). The body's terminator is
-    `dataflow.graph.return`, whose operand list matches the result
-    list of the function type.
+    `function_type` includes the launch-facing control ports in the current
+    ABI: inputs are `(none, T0, ..., TN)` (leading `none` is `ctrl_in`) and
+    results are `(none, R0, ..., RM)` (leading `none` is launch `done`). The
+    body's structural `dataflow.graph.return` declares the payload results in
+    value, stream, and memory segments; its separate `complete` frontier
+    derives the launch `done` event.
 
     Naming this op `graph.func` (as opposed to `graph`) avoids
     collision with the existing regional `dataflow.graph` op, which is
@@ -761,20 +761,50 @@ def Dataflow_GraphFuncOp : Dataflow_Op<"graph.func", [
 }
 
 def Dataflow_GraphReturnOp : Dataflow_Op<"graph.return", [
+    AttrSizedOperandSegments,
     Terminator,
     ParentOneOf<["::dataflow::GraphFuncOp"]>,
     Pure
 ]> {
   let summary = "Terminator for a dataflow.graph.func body";
   let description = [{
-    Supplies the values that leave the enclosing
-    `dataflow.graph.func` on its results, including the leading
-    `done_out : none` slot.
+    Structurally declares the enclosing graph's value, stream, and memory
+    outputs together with its mandatory retirement frontier. `complete` is
+    an unordered all-of set of one or more `none` values; the launch `done`
+    event is derived from that set and is not itself a return operand.
+
+    The compact assembly form `%complete, %values... : none, types...` is
+    retained for the common case with one completion witness and no stream
+    or memory outputs. Other shapes print all four named segments.
   }];
 
-  let arguments = (ins Variadic<AnyType>:$values);
+  let arguments = (ins
+      Variadic<AnyType>:$values,
+      Variadic<AnyType>:$streams,
+      Variadic<AnyType>:$memories,
+      Variadic<NoneType>:$complete);
 
-  let assemblyFormat = "($values^ `:` type($values))? attr-dict";
+  let hasCustomAssemblyFormat = 1;
+
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins
+        "::mlir::ValueRange":$values,
+        "::mlir::ValueRange":$streams,
+        "::mlir::ValueRange":$memories,
+        "::mlir::ValueRange":$complete), [{
+      $_state.addOperands(values);
+      $_state.addOperands(streams);
+      $_state.addOperands(memories);
+      $_state.addOperands(complete);
+      auto &properties = $_state.getOrAddProperties<Properties>();
+      properties.operandSegmentSizes = {
+          static_cast<int32_t>(values.size()),
+          static_cast<int32_t>(streams.size()),
+          static_cast<int32_t>(memories.size()),
+          static_cast<int32_t>(complete.size())};
+    }]>
+  ];
 
   let hasVerifier = 1;
 }
@@ -787,9 +817,9 @@ def Dataflow_GraphLaunchOp : Dataflow_Op<"graph.launch", [
     References a `dataflow.graph.func` definition by symbol from
     inside a `dataflow.thread` body. The first operand is the
     per-launch `ctrl_in : none` start signal; the remaining operands
-    are body operands. The first result is the per-launch
-    `done_out : none` completion signal; the remaining results carry
-    user data.
+    are body operands. The first result is the per-launch `done_out : none`
+    retirement signal, derived as the all-of of the callee's
+    `graph.return.complete` segment; the remaining results carry user data.
 
     The operation resolves its callee through `SymbolUserOpInterface` but does
     not project callee effects through `MemoryEffectsOpInterface`.

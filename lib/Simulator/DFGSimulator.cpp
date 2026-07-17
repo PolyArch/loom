@@ -943,13 +943,26 @@ indexGlobalMemoryArgs(llvm::ArrayRef<DFGGlobalMemoryArg> args) {
   return bySymbol;
 }
 
-static void observeReturnOperands(dataflow::GraphFuncOp graph,
-                                  llvm::SmallVectorImpl<mlir::Value> &returns) {
+struct GraphReturnObservation {
+  llvm::SmallVector<mlir::Value> complete;
+  llvm::SmallVector<mlir::Value> payloads;
+};
+
+static GraphReturnObservation
+observeReturnOperands(dataflow::GraphFuncOp graph) {
+  GraphReturnObservation observation;
   auto ret = mlir::dyn_cast_or_null<dataflow::GraphReturnOp>(
       graph.getBody().front().getTerminator());
   if (!ret)
-    return;
-  returns.append(ret.getValues().begin(), ret.getValues().end());
+    return observation;
+  observation.complete.append(ret.getComplete().begin(),
+                              ret.getComplete().end());
+  observation.payloads.append(ret.getValues().begin(), ret.getValues().end());
+  observation.payloads.append(ret.getStreams().begin(),
+                              ret.getStreams().end());
+  observation.payloads.append(ret.getMemories().begin(),
+                              ret.getMemories().end());
+  return observation;
 }
 
 static void seedBlockArgument(SimulatorState &state, mlir::BlockArgument arg,
@@ -1308,8 +1321,7 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   SimulatorState state;
   state.maxStructuredLoopIterations = options.maxEventSteps;
   state.globalMemoryFixtures = std::move(*globalMemoriesOrErr);
-  llvm::SmallVector<mlir::Value> returnValues;
-  observeReturnOperands(graph, returnValues);
+  GraphReturnObservation returnObservation = observeReturnOperands(graph);
 
   for (auto [index, arg] : llvm::enumerate(entry.getArguments())) {
     std::string key = std::to_string(index);
@@ -1419,7 +1431,23 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
 
   bool missingReturn = false;
   report.dynamicWorkItems = dynamicWorkItems(state);
-  for (mlir::Value value : returnValues) {
+  bool missingComplete = returnObservation.complete.empty();
+  for (mlir::Value witness : returnObservation.complete) {
+    auto it = state.observedOutputs.find(witness);
+    if (it == state.observedOutputs.end() || it->second.empty()) {
+      missingComplete = true;
+      break;
+    }
+  }
+  if (missingComplete) {
+    report.finalOutputs.push_back("missing");
+    missingReturn = true;
+  } else {
+    mlir::Value witness = returnObservation.complete.front();
+    report.finalOutputs.push_back(tokenToString(
+        state.observedOutputs.find(witness)->second.back(), witness.getType()));
+  }
+  for (mlir::Value value : returnObservation.payloads) {
     auto it = state.observedOutputs.find(value);
     if (it == state.observedOutputs.end() || it->second.empty()) {
       report.finalOutputs.push_back("missing");
