@@ -151,9 +151,15 @@ void addDataMuxPe(ModuleBuilder &module, llvm::StringRef result,
 void addWideDataMuxPe(ModuleBuilder &module, llvm::StringRef result,
                       llvm::StringRef pred, llvm::StringRef falseValue,
                       llvm::StringRef trueValue);
+void addControlMuxPe(ModuleBuilder &module, llvm::StringRef result,
+                     llvm::StringRef pred, llvm::StringRef falseValue,
+                     llvm::StringRef trueValue);
 void addDataDemuxPe(ModuleBuilder &module, llvm::StringRef falseResult,
                     llvm::StringRef trueResult, llvm::StringRef pred,
                     llvm::StringRef value);
+void addWideDataDemuxPe(ModuleBuilder &module, llvm::StringRef falseResult,
+                        llvm::StringRef trueResult, llvm::StringRef pred,
+                        llvm::StringRef value);
 void addControlDemuxPe(ModuleBuilder &module, llvm::StringRef falseResult,
                        llvm::StringRef trueResult, llvm::StringRef pred,
                        llvm::StringRef value);

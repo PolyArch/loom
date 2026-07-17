@@ -16,11 +16,7 @@
 // CHECK: %[[LOAD_ELEM:.*]] = arith.shrsi %[[LOAD_BYTE]], %{{.*}} : i64
 // CHECK: %[[LOAD_IDX:.*]] = arith.index_cast %[[LOAD_ELEM]] : i64 to index
 // CHECK: %{{.*}}, %[[LOAD_DONE:.*]] = dataflow.load %[[MEM]][%[[LOAD_IDX]]] %arg0 : memref<?xf32>
-// CHECK: %[[STORE_STRIDE:.*]] = arith.constant 4 : i64
-// CHECK: %[[STORE_BYTE:.*]] = arith.muli %[[STREAM]], %[[STORE_STRIDE]] : i64
-// CHECK: %[[STORE_ELEM:.*]] = arith.shrsi %[[STORE_BYTE]], %{{.*}} : i64
-// CHECK: %[[STORE_IDX:.*]] = arith.index_cast %[[STORE_ELEM]] : i64 to index
-// CHECK: dataflow.store %[[MEM]][%[[STORE_IDX]]] %{{.*}} %[[LOAD_DONE]] : memref<?xf32>
+// CHECK: dataflow.store %[[MEM]][%[[LOAD_IDX]]] %{{.*}} %[[LOAD_DONE]] : memref<?xf32>
 // CHECK-NOT: llvm.load
 // CHECK-NOT: llvm.store
 dataflow.graph.func private @g_canonical(%arg0: none, %arg1: i64, %arg2: i64,
@@ -61,6 +57,31 @@ dataflow.graph.func private @g_inbounds_element_index(
   %value = llvm.load %ptr : !llvm.ptr -> i32
   llvm.store %value, %ptr : i32, !llvm.ptr
   dataflow.graph.return %arg0 : none
+}
+
+// Nested graph-root accesses retain the memory capability at graph scope.
+// Only the address value recurs through the lowered loop.
+
+// CHECK-LABEL: dataflow.graph.func private @g_nested_static_bridge
+// CHECK-DAG: %[[NESTED_MEM:.*]] = builtin.unrealized_conversion_cast %arg1 : !llvm.ptr to memref<?xi32>
+// CHECK: %[[NESTED_IV:.*]], %[[NESTED_PHASE:.*]] = dataflow.stream
+// CHECK-NOT: dataflow.invariant {{.*}} : !llvm.ptr
+// CHECK-NOT: dataflow.demux {{.*}} : (i1, !llvm.ptr)
+// CHECK: %[[NESTED_ADDR:.*]] = arith.index_cast %[[NESTED_IV]] : i64 to index
+// CHECK: %[[NESTED_VALUE:.*]], %[[NESTED_DONE:.*]] = dataflow.load %[[NESTED_MEM]][%[[NESTED_ADDR]]]
+// CHECK: dataflow.store %[[NESTED_MEM]][%[[NESTED_ADDR]]] %[[NESTED_VALUE]] %{{.*}}
+// CHECK-NOT: llvm.getelementptr
+// CHECK-NOT: llvm.load
+// CHECK-NOT: llvm.store
+dataflow.graph.func private @g_nested_static_bridge(
+    %start: none, %base: !llvm.ptr, %lb: i64, %ub: i64, %step: i64) -> none {
+  scf.for %i = %lb to %ub step %step : i64 {
+    %ptr = llvm.getelementptr inbounds %base[%i]
+        : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+    %value = llvm.load %ptr : !llvm.ptr -> i32
+    llvm.store %value, %ptr : i32, !llvm.ptr
+  }
+  dataflow.graph.return %start : none
 }
 
 // Unsigned-only no-wrap does not prove that signed byte multiplication can be
@@ -262,8 +283,8 @@ module attributes {
 // CHECK: %{{.*}}, %[[DST_BODY:.*]] = dataflow.gate %[[PHASE]], %[[DST_RAW]] : !llvm.ptr
 // CHECK-NOT: dataflow.gate %[[PHASE]], %[[IV]] : i32
 // CHECK: %[[IDX:.*]] = arith.index_cast %[[IV]] : i32 to index
-// CHECK: dataflow.load %[[SRC]][%[[IDX]]] %arg0 : memref<?xf32>
-// CHECK: dataflow.store %[[DST]][%[[IDX]]] %{{.*}} %arg0 : memref<?xf32>
+// CHECK: %{{.*}}, %[[LOAD_DONE:.*]] = dataflow.load %[[SRC]][%[[IDX]]] %arg0 : memref<?xf32>
+// CHECK: dataflow.store %[[DST]][%[[IDX]]] %{{.*}} %[[LOAD_DONE]] : memref<?xf32>
 // CHECK-NOT: llvm.load
 // CHECK-NOT: llvm.store
 dataflow.graph.func private @g_pointer_carry_i8_f32(
@@ -304,13 +325,13 @@ dataflow.graph.func private @g_pointer_carry_i8_f32(
 // CHECK: %{{.*}}, %[[STABLE_BIAS_PRE:.*]] = dataflow.gate %[[PHASE_PRE]], %[[STABLE_BIAS_RAW_PRE]] : i32
 // CHECK: %[[ADDR_PRE:.*]] = arith.addi %[[IV_PRE]], %[[STABLE_BIAS_PRE]] : i32
 // CHECK: %[[IDX_PRE:.*]] = arith.index_cast %[[ADDR_PRE]] : i32 to index
-// CHECK: dataflow.load %[[SRC_PRE]][%[[IDX_PRE]]] %arg0 : memref<?xf32>
+// CHECK: %{{.*}}, %[[LOAD_DONE_PRE:.*]] = dataflow.load %[[SRC_PRE]][%[[IDX_PRE]]] %arg0 : memref<?xf32>
 // CHECK: %[[STORE_BIAS_PRE:.*]] = dataflow.constant %arg0 {const_value = 1 : i32} : i32
 // CHECK: %[[STORE_STABLE_BIAS_RAW_PRE:.*]] = dataflow.invariant %[[PHASE_PRE]], %[[STORE_BIAS_PRE]] : i32
 // CHECK: %{{.*}}, %[[STORE_STABLE_BIAS_PRE:.*]] = dataflow.gate %[[PHASE_PRE]], %[[STORE_STABLE_BIAS_RAW_PRE]] : i32
 // CHECK: %[[STORE_ADDR_PRE:.*]] = arith.addi %[[IV_PRE]], %[[STORE_STABLE_BIAS_PRE]] : i32
 // CHECK: %[[STORE_IDX_PRE:.*]] = arith.index_cast %[[STORE_ADDR_PRE]] : i32 to index
-// CHECK: dataflow.store %[[DST_PRE]][%[[STORE_IDX_PRE]]] %{{.*}} %arg0 : memref<?xf32>
+// CHECK: dataflow.store %[[DST_PRE]][%[[STORE_IDX_PRE]]] %{{.*}} %[[LOAD_DONE_PRE]] : memref<?xf32>
 // CHECK-NOT: llvm.load
 // CHECK-NOT: llvm.store
 dataflow.graph.func private @g_pointer_carry_preincrement_i8_f32(

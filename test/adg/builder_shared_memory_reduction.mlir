@@ -11,8 +11,19 @@
 // RUN: %loom-cc -emit-llvm -O1 -S %S/../app/bitonic_stage/main_func.c -o %t.dir/bitonic_stage/main_func.ll
 // RUN: %loom-raise %t.dir/bitonic_stage/main_func.ll -o %t.dir/bitonic_stage/main_func.scf.mlir
 // RUN: %loom-lower %t.dir/bitonic_stage/main_func.scf.mlir -o %t.dir/bitonic_stage/main_func.dfg.mlir
+// RUN: FileCheck %s --check-prefix=BITONIC-DFG < %t.dir/bitonic_stage/main_func.dfg.mlir
 // RUN: loom-pnr-map --dfg-mlir %t.dir/bitonic_stage/main_func.dfg.mlir --graph g_bitonic_stage_0 --hardware-mlir %t.dir/hardware.mlir --hardware shared_memory_reduction_adg --workload bitonic_stage --output %t.dir/bitonic_stage.mapping.csv --artifact %t.dir/bitonic_stage.mapping.json
 // RUN: FileCheck %s --check-prefix=BITONIC < %t.dir/bitonic_stage.mapping.json
+
+// BITONIC-DFG-LABEL: dataflow.graph.func private @g_bitonic_stage_0
+// BITONIC-DFG: builtin.unrealized_conversion_cast %arg1 : !llvm.ptr to memref<?xf32>
+// BITONIC-DFG-NOT: dataflow.demux {{.*}} : (i1, !llvm.ptr)
+// BITONIC-DFG-NOT: dataflow.invariant {{.*}} : !llvm.ptr
+// BITONIC-DFG: dataflow.stream
+// BITONIC-DFG: arith.index_cast {{.*}} : i64 to index
+// BITONIC-DFG-NOT: dataflow.demux {{.*}} : (i1, !llvm.ptr)
+// BITONIC-DFG-NOT: dataflow.invariant {{.*}} : !llvm.ptr
+// BITONIC-DFG: dataflow.graph.return
 
 // HARDWARE-LABEL: fabric.module @shared_memory_reduction_adg
 // HARDWARE-DAG: load_group_size = 18 : i32
@@ -37,6 +48,11 @@
 // HARDWARE-DAG: fabric.op [@dataflow.demux]
 // HARDWARE-DAG: fabric.op [@llvm.trunc]
 // HARDWARE-DAG: fabric.op [@llvm.zext]
+// HARDWARE-DAG: fabric.op [@dataflow.stream]
+// HARDWARE-DAG: fabric.op [@dataflow.carry]
+// HARDWARE-DAG: fabric.op [@dataflow.invariant]
+// HARDWARE-DAG: fabric.op [@dataflow.gate]
+// HARDWARE-DAG: fabric.op [@arith.index_cast]
 // HARDWARE-DAG: fabric.mem [spatial]
 
 // BUILDER-LABEL: fabric.module @shared_memory_reduction_adg

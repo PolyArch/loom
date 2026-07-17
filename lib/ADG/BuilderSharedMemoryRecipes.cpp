@@ -30,7 +30,9 @@ struct SharedMemoryAdgConfig {
   unsigned divCount = 0;
   unsigned unsignedDivCount = 0;
   unsigned muxCount = 0;
+  unsigned controlMuxCount = 0;
   unsigned demuxCount = 0;
+  unsigned wideDemuxCount = 0;
   unsigned controlDemuxCount = 0;
   unsigned logicCount = 8;
   unsigned shiftCount = 8;
@@ -77,8 +79,11 @@ struct SharedMemoryAdgConfig {
   unsigned syncArity = 6;
   unsigned streamCount = 0;
   unsigned carryCount = 0;
+  unsigned controlCarryCount = 0;
   unsigned gateCount = 0;
+  unsigned wideGateCount = 0;
   unsigned invariantCount = 0;
+  unsigned wideInvariantCount = 0;
   std::vector<llvm::StringRef> constantHexValues = {
       "0x00000000", "0x00000001", "0x00000002", "0x00000003",
       "0x00000004", "0x00000008", "0x00000010", "0xffffffff"};
@@ -236,97 +241,118 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
       sinks32.push_back(step);
     }
   };
-  auto addCarryBank = [&](llvm::StringRef prefix, unsigned count) {
+  auto addCarryBank = [&](llvm::StringRef prefix, unsigned count,
+                          llvm::StringRef dataType,
+                          std::vector<std::string> &dataSources,
+                          std::vector<std::string> &dataSinks) {
     for (unsigned index = 0; index < count; ++index) {
       std::string result = numbered(prefix, index);
       std::string cond = result + "_cond";
       std::string init = result + "_init";
       std::string next = result + "_next";
+      bool control = dataType == "!fabric.bits<0>";
+      llvm::StringRef peType = control ? "!fabric.bits<32>" : dataType;
+      std::string rawResult = control ? result + "_wide" : result;
       PeSpec pe;
       pe.inputs = {{"pa", cond, "!fabric.bits<32>", ""},
-                   {"pb", init, "!fabric.bits<32>", ""},
-                   {"pc", next, "!fabric.bits<32>", ""}};
-      pe.resultNames = {result};
-      pe.resultTypes = {"!fabric.bits<32>"};
-      pe.fus.push_back(
-          FuSpec{{{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-                  {"init", "pb", "!fabric.bits<32>", ""},
-                  {"next", "pc", "!fabric.bits<32>", ""}},
-                 {"!fabric.bits<32>"},
-                 {FabricOpSpec{{"carried"},
-                               {"dataflow.carry"},
-                               {"cond", "init", "next"},
-                               {"!fabric.bits<1>", "!fabric.bits<32>",
-                                "!fabric.bits<32>"},
-                               {"!fabric.bits<32>"},
-                               {},
-                               {}}},
-                 {"carried"}});
+                   {"pb", init, dataType.str(), control ? peType.str() : ""},
+                   {"pc", next, dataType.str(), control ? peType.str() : ""}};
+      pe.resultNames = {rawResult};
+      pe.resultTypes = {peType.str()};
+      pe.fus.push_back(FuSpec{
+          {{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
+           {"init", "pb", peType.str(), control ? dataType.str() : ""},
+           {"next", "pc", peType.str(), control ? dataType.str() : ""}},
+          {peType.str()},
+          {FabricOpSpec{{"carried"},
+                        {"dataflow.carry"},
+                        {"cond", "init", "next"},
+                        {"!fabric.bits<1>", dataType.str(), dataType.str()},
+                        {dataType.str()},
+                        {},
+                        {}}},
+          {"carried"},
+          {dataType.str()}});
       module.addPe(std::move(pe));
-      sources32.push_back(result);
+      if (control)
+        addFifo(module, result, rawResult, "!fabric.bits<32>",
+                "!fabric.bits<0>", 1, true, true);
+      dataSources.push_back(result);
       sinks32.push_back(cond);
-      sinks32.push_back(init);
-      sinks32.push_back(next);
+      dataSinks.push_back(init);
+      dataSinks.push_back(next);
     }
   };
-  auto addGateBank = [&](llvm::StringRef prefix, unsigned count) {
+  auto addGateBank = [&](llvm::StringRef prefix, unsigned count,
+                         llvm::StringRef dataType,
+                         std::vector<std::string> &dataSources,
+                         std::vector<std::string> &dataSinks) {
     for (unsigned index = 0; index < count; ++index) {
       std::string stem = numbered(prefix, index);
       std::string condOut = stem + "_cond";
+      bool wide = dataType == "!fabric.bits<64>";
+      std::string rawCondOut = wide ? condOut + "_wide" : condOut;
       std::string valueOut = stem + "_value";
       std::string cond = stem + "_cond_in";
       std::string value = stem + "_value_in";
       PeSpec pe;
-      pe.inputs = {{"pa", cond, "!fabric.bits<32>", ""},
-                   {"pb", value, "!fabric.bits<32>", ""}};
-      pe.resultNames = {condOut, valueOut};
-      pe.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
+      pe.inputs = {{"pa", cond, "!fabric.bits<32>", wide ? dataType.str() : ""},
+                   {"pb", value, dataType.str(), ""}};
+      pe.resultNames = {rawCondOut, valueOut};
+      pe.resultTypes = {dataType.str(), dataType.str()};
       pe.fus.push_back(
-          FuSpec{{{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-                  {"value", "pb", "!fabric.bits<32>", ""}},
-                 {"!fabric.bits<32>", "!fabric.bits<32>"},
+          FuSpec{{{"cond", "pa", dataType.str(), "!fabric.bits<1>"},
+                  {"value", "pb", dataType.str(), ""}},
+                 {dataType.str(), dataType.str()},
                  {FabricOpSpec{{"after_cond", "after_value"},
                                {"dataflow.gate"},
                                {"cond", "value"},
-                               {"!fabric.bits<1>", "!fabric.bits<32>"},
-                               {"!fabric.bits<1>", "!fabric.bits<32>"},
+                               {"!fabric.bits<1>", dataType.str()},
+                               {"!fabric.bits<1>", dataType.str()},
                                {},
                                {{"value_kind", "data"}}}},
                  {"after_cond", "after_value"},
-                 {"!fabric.bits<1>", "!fabric.bits<32>"}});
+                 {"!fabric.bits<1>", dataType.str()}});
       module.addPe(std::move(pe));
+      if (wide)
+        addFifo(module, condOut, rawCondOut, "!fabric.bits<64>",
+                "!fabric.bits<32>", 1, true, true);
       sources32.push_back(condOut);
-      sources32.push_back(valueOut);
+      dataSources.push_back(valueOut);
       sinks32.push_back(cond);
-      sinks32.push_back(value);
+      dataSinks.push_back(value);
     }
   };
-  auto addInvariantBank = [&](llvm::StringRef prefix, unsigned count) {
+  auto addInvariantBank = [&](llvm::StringRef prefix, unsigned count,
+                              llvm::StringRef dataType,
+                              std::vector<std::string> &dataSources,
+                              std::vector<std::string> &dataSinks) {
     for (unsigned index = 0; index < count; ++index) {
       std::string result = numbered(prefix, index);
       std::string cond = result + "_cond";
       std::string value = result + "_value";
+      bool wide = dataType == "!fabric.bits<64>";
       PeSpec pe;
-      pe.inputs = {{"pa", cond, "!fabric.bits<32>", ""},
-                   {"pb", value, "!fabric.bits<32>", ""}};
+      pe.inputs = {{"pa", cond, "!fabric.bits<32>", wide ? dataType.str() : ""},
+                   {"pb", value, dataType.str(), ""}};
       pe.resultNames = {result};
-      pe.resultTypes = {"!fabric.bits<32>"};
+      pe.resultTypes = {dataType.str()};
       pe.fus.push_back(
-          FuSpec{{{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-                  {"value", "pb", "!fabric.bits<32>", ""}},
-                 {"!fabric.bits<32>"},
+          FuSpec{{{"cond", "pa", dataType.str(), "!fabric.bits<1>"},
+                  {"value", "pb", dataType.str(), ""}},
+                 {dataType.str()},
                  {FabricOpSpec{{"stable"},
                                {"dataflow.invariant"},
                                {"cond", "value"},
-                               {"!fabric.bits<1>", "!fabric.bits<32>"},
-                               {"!fabric.bits<32>"},
+                               {"!fabric.bits<1>", dataType.str()},
+                               {dataType.str()},
                                {},
                                {}}},
                  {"stable"}});
       module.addPe(std::move(pe));
-      sources32.push_back(result);
+      dataSources.push_back(result);
       sinks32.push_back(cond);
-      sinks32.push_back(value);
+      dataSinks.push_back(value);
     }
   };
 
@@ -348,9 +374,17 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   }
 
   addStreamBank("stream", config.streamCount);
-  addCarryBank("carry", config.carryCount);
-  addGateBank("gate", config.gateCount);
-  addInvariantBank("invariant", config.invariantCount);
+  addCarryBank("carry", config.carryCount, "!fabric.bits<32>", sources32,
+               sinks32);
+  addCarryBank("control_carry", config.controlCarryCount, "!fabric.bits<0>",
+               sources0, sinks0);
+  addGateBank("gate", config.gateCount, "!fabric.bits<32>", sources32, sinks32);
+  addGateBank("wide_gate", config.wideGateCount, "!fabric.bits<64>", sources64,
+              sinks64);
+  addInvariantBank("invariant", config.invariantCount, "!fabric.bits<32>",
+                   sources32, sinks32);
+  addInvariantBank("wide_invariant", config.wideInvariantCount,
+                   "!fabric.bits<64>", sources64, sinks64);
 
   addBinaryBank("add", config.addCount, {"arith.addi", "arith.subi"});
   addBinaryBank("mul", config.mulCount, {"arith.muli"});
@@ -461,6 +495,20 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
     sinks32.push_back(falseValue);
     sinks32.push_back(trueValue);
   }
+  for (unsigned index = 0; index < config.controlMuxCount; ++index) {
+    std::string result = numbered("control_mux", index);
+    std::string rawResult = result + "_wide";
+    std::string pred = result + "_pred";
+    std::string falseValue = result + "_false";
+    std::string trueValue = result + "_true";
+    addControlMuxPe(module, rawResult, pred, falseValue, trueValue);
+    addFifo(module, result, rawResult, "!fabric.bits<32>", "!fabric.bits<0>", 1,
+            true, true);
+    sources0.push_back(result);
+    sinks32.push_back(pred);
+    sinks0.push_back(falseValue);
+    sinks0.push_back(trueValue);
+  }
   for (unsigned index = 0; index < config.demuxCount; ++index) {
     std::string stem = numbered("demux", index);
     std::string falseResult = stem + "_false";
@@ -472,6 +520,18 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
     sources32.push_back(trueResult);
     sinks32.push_back(pred);
     sinks32.push_back(value);
+  }
+  for (unsigned index = 0; index < config.wideDemuxCount; ++index) {
+    std::string stem = numbered("wide_demux", index);
+    std::string falseResult = stem + "_false";
+    std::string trueResult = stem + "_true";
+    std::string pred = stem + "_pred";
+    std::string value = stem + "_value";
+    addWideDataDemuxPe(module, falseResult, trueResult, pred, value);
+    sources64.push_back(falseResult);
+    sources64.push_back(trueResult);
+    sinks32.push_back(pred);
+    sinks64.push_back(value);
   }
   for (unsigned index = 0; index < config.controlDemuxCount; ++index) {
     std::string stem = numbered("control_demux", index);
@@ -574,12 +634,14 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   config.wideSelectCount = 2;
   config.unsignedDivCount = 2;
   config.muxCount = 4;
-  config.demuxCount = 2;
-  config.controlDemuxCount = 1;
+  config.controlMuxCount = 3;
+  config.demuxCount = 5;
+  config.wideDemuxCount = 2;
+  config.controlDemuxCount = 6;
   config.trunciCount = 4;
-  config.wideConstantCount = 2;
+  config.wideConstantCount = 8;
   config.wideAddCount = 2;
-  config.wideShiftCount = 1;
+  config.wideShiftCount = 3;
   config.wideCmpCount = 1;
   config.wideIndexCastCount = 6;
   config.wideIndexCastUiCount = 2;
@@ -588,6 +650,12 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   config.wideUnsignedDivCount = 2;
   config.wideMuxCount = 1;
   config.wideRouteBridgeCount = 2;
+  config.streamCount = 1;
+  config.controlCarryCount = 3;
+  config.gateCount = 2;
+  config.wideGateCount = 2;
+  config.invariantCount = 2;
+  config.wideInvariantCount = 2;
   config.constantHexValues = {
       "0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004",
       "0x00000008", "0x00000010", "0x3f800000", "0x40000000", "0xbf800000",
@@ -873,6 +941,9 @@ ModuleBuilder loom::adg::buildSharedVectorMathAdg() {
   config.divCount = 0;
   config.unsignedDivCount = 0;
   config.muxCount = 0;
+  config.demuxCount = 7;
+  config.wideDemuxCount = 2;
+  config.controlDemuxCount = 8;
   config.logicCount = 3;
   config.shiftCount = 4;
   config.castCount = 0;
@@ -881,8 +952,8 @@ ModuleBuilder loom::adg::buildSharedVectorMathAdg() {
   config.wideAddCount = 0;
   config.wideShiftCount = 0;
   config.wideCmpCount = 0;
-  config.wideCastCount = 1;
-  config.wideIndexCastCount = 0;
+  config.wideCastCount = 5;
+  config.wideIndexCastCount = 4;
   config.wideIndexCastUiCount = 0;
   config.wideSextCount = 0;
   config.wideMulCount = 0;
@@ -897,12 +968,12 @@ ModuleBuilder loom::adg::buildSharedVectorMathAdg() {
   config.fnegCount = 4;
   config.fmaCount = 12;
   config.fpCmpCount = 0;
-  config.syncCount = 1;
+  config.syncCount = 16;
   config.syncArity = 16;
-  config.streamCount = 0;
-  config.carryCount = 0;
-  config.gateCount = 0;
-  config.invariantCount = 0;
+  config.streamCount = 1;
+  config.controlCarryCount = 4;
+  config.gateCount = 3;
+  config.invariantCount = 3;
   return buildSharedMemoryLikeAdg(config);
 }
 

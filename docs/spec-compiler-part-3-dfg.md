@@ -395,6 +395,8 @@ each rule lands in IR.
   op, not on the result type.
 * **Basic alias partition.** A graph-local compiler analysis bucket keyed by
   a recognized memory root. View-like values are peeled to their root;
+  graph boundary arguments are conservatively grouped unless explicit
+  no-alias evidence distinguishes them; globals are keyed by symbol;
   unknown accesses cover every known root and one unknown bucket. Partition
   identity is not written into IR.
 * **Memory dependence edge.** An ordinary `none` SSA causal edge emitted by
@@ -1033,12 +1035,12 @@ stream `T^N F`. The final false token closes the activation and resets each
 stateful consumer, but it has no paired IV or body execution.
 
 The stream IV already has body cardinality and enters body arithmetic and
-memory directly. Parent-domain values from `carry` and `invariant` have
-`N + 1` tokens and must be projected through `dataflow.gate` before body
-use. Loop results and exit frontiers use the false lane of
-`dataflow.demux %phase, %parent_value`. A true body-local condition means
-the current body execution is not the last execution; a false body-local
-condition means it is the last execution.
+memory directly. Parent-domain captured values from `invariant` have
+`N + 1` tokens and are projected through `dataflow.gate` before body use.
+Recurrence values that also need a false-lane exit use selector-matched
+`dataflow.demux`; loop results and memory-frontier exits consume that false
+lane. A true body-local condition means the current body execution is not the
+last execution; a false body-local condition means it is the last execution.
 
 Different regions of one source loop may therefore have different phase
 streams. The loop-level phase decides whether the source loop continues
@@ -1183,8 +1185,10 @@ Emitted lowering skeleton:
   demux %cond, %b_j : (i1, B_j) -> (B_j, B_j)
 
 # The recursively lowered before exit is projected with the same selector.
-%while_done, %after_ctrl =
+%while_done, %unused_true =
   demux %cond, %before_done : (i1, none) -> (none, none)
+%after_phase, %after_ctrl =
+  gate %cond, %before_done : (i1, none) -> (i1, none)
 
 # The after region consumes %after_ctrl and %b_after_j..., then
 # produces:
@@ -1251,8 +1255,10 @@ the same selector contract in `docs/spec-compiler-part-3-mem.md`.
 This translation is implemented with condition-driven carry rings for
 execution, source inits, and each touched `W_P/R_P` component. Carry outputs
 enter before directly. After before is lowered, the false lanes are the while
-execution, result, and frontier exits; true lanes enter after. After exits
-feed the next before activation.
+execution, result, and frontier exits. `dataflow.gate` projects execution and
+captured values into after phase; true condition-argument and frontier lanes
+enter after through their selector-matched projections. After exits feed the
+next before activation.
 
 Before therefore executes `K + 1` times when after executes `K`. The final
 false before effects are included in the outgoing pair. A final-false read

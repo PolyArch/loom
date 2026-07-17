@@ -7,12 +7,15 @@
 #include "Dataflow/IR/DataflowOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/DenseMap.h"
@@ -179,6 +182,23 @@ bool hasSelectedParallelProvenance(::mlir::Operation *op) {
                         "must be normalized before graph-region lowering");
           return ::mlir::WalkResult::interrupt();
         }
+        bool modeled =
+            ::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp,
+                        ::mlir::scf::WhileOp, ::mlir::scf::YieldOp,
+                        ::mlir::scf::ConditionOp, ::mlir::memref::LoadOp,
+                        ::mlir::memref::StoreOp, ::dataflow::LoadOp,
+                        ::dataflow::StoreOp, ::dataflow::GraphReturnOp,
+                        ::mlir::LLVM::LoadOp, ::mlir::LLVM::StoreOp,
+                        ::mlir::LLVM::MemcpyOp>(op) ||
+            op->getName().getStringRef() == "llvm.intr.memset";
+        if (!modeled && (op->getNumRegions() != 0 || !::mlir::isPure(op) ||
+                         op->getName().getStringRef() == "llvm.call")) {
+          op->emitError()
+              << "loom-lower-graph-memory: effectful or unmodeled graph "
+                 "operation '"
+              << op->getName().getStringRef() << "' is unsupported";
+          return ::mlir::WalkResult::interrupt();
+        }
         return ::mlir::WalkResult::advance();
       });
   return result.wasInterrupted() ? ::mlir::failure() : ::mlir::success();
@@ -209,6 +229,8 @@ private:
   ::mlir::Operation *anchor;
   unsigned partitionCount = 0;
   ::llvm::DenseMap<::mlir::Value, unsigned> partitionByRoot;
+  ::mlir::Value sharedBoundaryRoot;
+  ::llvm::DenseMap<::mlir::FlatSymbolRefAttr, ::mlir::Value> globalRoots;
   ::llvm::DenseMap<::mlir::Operation *, ::llvm::SmallVector<unsigned, 4>>
       partitionsByAccess;
 
@@ -250,6 +272,28 @@ private:
     return std::nullopt;
   }
 
+  bool hasExplicitNoAlias(::mlir::BlockArgument argument) const {
+    ::mlir::DictionaryAttr attrs =
+        ::mlir::function_interface_impl::getArgAttrDict(
+            graph, argument.getArgNumber());
+    return attrs && attrs.contains("llvm.noalias");
+  }
+
+  ::mlir::Value canonicalizeRoot(::mlir::Value root) {
+    if (auto argument = ::llvm::dyn_cast<::mlir::BlockArgument>(root)) {
+      if (argument.getOwner() == &entry && !hasExplicitNoAlias(argument)) {
+        if (!sharedBoundaryRoot)
+          sharedBoundaryRoot = root;
+        return sharedBoundaryRoot;
+      }
+      return root;
+    }
+    if (auto global = root.getDefiningOp<::mlir::memref::GetGlobalOp>()) {
+      return globalRoots.try_emplace(global.getNameAttr(), root).first->second;
+    }
+    return root;
+  }
+
   ::mlir::Value getMemoryOperand(::mlir::Operation *op) const {
     if (auto load = ::llvm::dyn_cast<::dataflow::LoadOp>(op))
       return load.getMem();
@@ -278,6 +322,8 @@ private:
       if (!mem)
         return ::mlir::WalkResult::advance();
       std::optional<::mlir::Value> root = findKnownRoot(mem);
+      if (root)
+        root = canonicalizeRoot(*root);
       accesses.push_back({op, root});
       if (!root) {
         hasUnknown = true;
@@ -419,33 +465,38 @@ private:
         .getOutput();
   }
 
-  ::mlir::Value replayTrueLane(::mlir::Value phase, ::mlir::Value init,
-                               ::mlir::Location loc) {
+  ::mlir::Value gateTrueLane(::mlir::Value phase, ::mlir::Value value,
+                             ::mlir::Location loc) {
     setInsertionPoint(loc);
-    ::mlir::Value raw = ::dataflow::InvariantOp::create(
-                            builder, loc, init.getType(), phase, init)
-                            .getOutput();
-    return demux(phase, raw, loc).second;
+    return ::dataflow::GateOp::create(builder, loc, builder.getI1Type(),
+                                      value.getType(), phase, value)
+        .getAfterValue();
   }
 
   void projectForCaptures(::mlir::Region &region, ::mlir::ValueRange captures,
                           ::mlir::Value phase, ::mlir::Location loc) {
-    for (::mlir::Value capture : captures)
-      replaceUsesInside(capture, replayTrueLane(phase, capture, loc), region);
-  }
-
-  void projectWhileBeforeCaptures(::mlir::Region &region,
-                                  ::mlir::ValueRange captures,
-                                  ::mlir::Value condition,
-                                  ::mlir::Location loc) {
     for (::mlir::Value capture : captures) {
       setInsertionPoint(loc);
-      ::mlir::Value replayed =
-          ::dataflow::InvariantOp::create(builder, loc, capture.getType(),
-                                          condition, capture)
-              .getOutput();
-      replaceUsesInside(capture, replayed, region);
+      ::mlir::Value raw = ::dataflow::InvariantOp::create(
+                              builder, loc, capture.getType(), phase, capture)
+                              .getOutput();
+      replaceUsesInside(capture, gateTrueLane(phase, raw, loc), region);
     }
+  }
+
+  ::llvm::SmallVector<::dataflow::InvariantOp, 4>
+  projectWhileBeforeCaptures(::mlir::Region &region,
+                             ::mlir::ValueRange captures,
+                             ::mlir::Value condition, ::mlir::Location loc) {
+    ::llvm::SmallVector<::dataflow::InvariantOp, 4> invariants;
+    for (::mlir::Value capture : captures) {
+      setInsertionPoint(loc);
+      auto invariant = ::dataflow::InvariantOp::create(
+          builder, loc, capture.getType(), condition, capture);
+      replaceUsesInside(capture, invariant.getOutput(), region);
+      invariants.push_back(invariant);
+    }
+    return invariants;
   }
 
   RegionResult lowerBlock(::mlir::Block &block, ::mlir::Value execution,
@@ -505,8 +556,11 @@ private:
       if (auto constant = ::llvm::dyn_cast<::dataflow::ConstantOp>(op))
         constant.getCtrlMutable().assign(execution);
 
-      if (op->getBlock() != &entry)
+      if (op->getBlock() != &entry) {
+        assert(op->getNumRegions() == 0 && ::mlir::isPure(op) &&
+               "graph preflight admitted an unmovable operation");
         op->moveBefore(anchor);
+      }
     }
     return {execution, std::move(memory)};
   }
@@ -763,7 +817,6 @@ private:
     ::mlir::Location loc = whileOp.getLoc();
     auto condition = ::llvm::cast<::mlir::scf::ConditionOp>(
         whileOp.getBefore().front().getTerminator());
-    ::mlir::Value selector = condition.getCondition();
 
     ::llvm::SmallVector<::mlir::Value, 8> beforeCaptures =
         collectCapturedValues(whileOp.getBefore());
@@ -771,20 +824,26 @@ private:
         collectCapturedValues(whileOp.getAfter());
 
     setInsertionPoint(loc);
-    auto executionCarry = ::dataflow::CarryOp::create(
-        builder, loc, builder.getNoneType(), selector, execution, execution);
+    ::mlir::Value pendingSelector =
+        ::mlir::arith::ConstantOp::create(builder, loc, builder.getI1Type(),
+                                          builder.getBoolAttr(false))
+            .getResult();
+    auto executionCarry =
+        ::dataflow::CarryOp::create(builder, loc, builder.getNoneType(),
+                                    pendingSelector, execution, execution);
 
     ::llvm::SmallVector<::dataflow::CarryOp, 4> valueCarries;
     for (::mlir::Value init : whileOp.getInits()) {
       auto carry = ::dataflow::CarryOp::create(builder, loc, init.getType(),
-                                               selector, init, init);
+                                               pendingSelector, init, init);
       valueCarries.push_back(carry);
     }
     for (unsigned i = 0; i < valueCarries.size(); ++i)
       replaceUsesInside(whileOp.getBeforeArguments()[i],
                         valueCarries[i].getOutput(), whileOp.getBefore());
-    projectWhileBeforeCaptures(whileOp.getBefore(), beforeCaptures, selector,
-                               loc);
+    ::llvm::SmallVector<::dataflow::InvariantOp, 4> beforeInvariants =
+        projectWhileBeforeCaptures(whileOp.getBefore(), beforeCaptures,
+                                   pendingSelector, loc);
 
     ::llvm::SmallBitVector touched = touchedPartitions(whileOp.getBefore());
     touched |= touchedPartitions(whileOp.getAfter());
@@ -797,11 +856,11 @@ private:
          partition = touched.find_next(partition)) {
       setInsertionPoint(loc);
       auto writeCarry = ::dataflow::CarryOp::create(
-          builder, loc, builder.getNoneType(), selector,
+          builder, loc, builder.getNoneType(), pendingSelector,
           memory[partition].write, memory[partition].write);
       auto readCarry = ::dataflow::CarryOp::create(
-          builder, loc, builder.getNoneType(), selector, memory[partition].read,
-          memory[partition].read);
+          builder, loc, builder.getNoneType(), pendingSelector,
+          memory[partition].read, memory[partition].read);
       writeCarries[partition] = writeCarry;
       readCarries[partition] = readCarry;
       beforeMemory[partition] = {writeCarry.getOutput(), readCarry.getOutput()};
@@ -810,8 +869,24 @@ private:
     RegionResult beforeResult =
         lowerBlock(whileOp.getBefore().front(), executionCarry.getOutput(),
                    std::move(beforeMemory));
-    auto [executionExit, executionAfter] =
+    ::mlir::Value selector = condition.getCondition();
+    executionCarry.getCondMutable().assign(selector);
+    for (::dataflow::CarryOp carry : valueCarries)
+      carry.getCondMutable().assign(selector);
+    for (::dataflow::InvariantOp invariant : beforeInvariants)
+      invariant.getCondMutable().assign(selector);
+    for (int partition = touched.find_first(); partition >= 0;
+         partition = touched.find_next(partition)) {
+      writeCarries[partition]->getCondMutable().assign(selector);
+      readCarries[partition]->getCondMutable().assign(selector);
+    }
+    pendingSelector.getDefiningOp()->erase();
+
+    auto [executionExit, unusedExecution] =
         demux(selector, beforeResult.execution, loc);
+    (void)unusedExecution;
+    ::mlir::Value executionAfter =
+        gateTrueLane(selector, beforeResult.execution, loc);
 
     MemoryState afterMemory = beforeResult.memory;
     MemoryState output = memory;

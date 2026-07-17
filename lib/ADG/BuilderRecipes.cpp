@@ -809,6 +809,36 @@ void addWideDataMuxPe(ModuleBuilder &module, llvm::StringRef result,
   module.addPe(std::move(pe));
 }
 
+void addControlMuxPe(ModuleBuilder &module, llvm::StringRef result,
+                     llvm::StringRef pred, llvm::StringRef falseValue,
+                     llvm::StringRef trueValue) {
+  PeSpec pe;
+  pe.inputs = {
+      {"pred", pred.str(), "!fabric.bits<32>", ""},
+      {"false_value", falseValue.str(), "!fabric.bits<0>", "!fabric.bits<32>"},
+      {"true_value", trueValue.str(), "!fabric.bits<0>", "!fabric.bits<32>"}};
+  pe.resultNames = {result.str()};
+  pe.resultTypes = {"!fabric.bits<32>"};
+  FuSpec fu;
+  fu.inputs = {
+      {"sel", "pred", "!fabric.bits<32>", "!fabric.bits<1>"},
+      {"false_lane", "false_value", "!fabric.bits<32>", "!fabric.bits<0>"},
+      {"true_lane", "true_value", "!fabric.bits<32>", "!fabric.bits<0>"}};
+  fu.resultTypes = {"!fabric.bits<32>"};
+  fu.operations.push_back(
+      FabricOpSpec{{"selected"},
+                   {"dataflow.mux"},
+                   {"sel", "false_lane", "true_lane"},
+                   {"!fabric.bits<1>", "!fabric.bits<0>", "!fabric.bits<0>"},
+                   {"!fabric.bits<0>"},
+                   {},
+                   {}});
+  fu.yieldValues = {"selected"};
+  fu.yieldTypes = {"!fabric.bits<0>"};
+  pe.fus.push_back(std::move(fu));
+  module.addPe(std::move(pe));
+}
+
 void addDataDemuxPe(ModuleBuilder &module, llvm::StringRef falseResult,
                     llvm::StringRef trueResult, llvm::StringRef pred,
                     llvm::StringRef value) {
@@ -826,6 +856,29 @@ void addDataDemuxPe(ModuleBuilder &module, llvm::StringRef falseResult,
                            {"sel", "data"},
                            {"!fabric.bits<1>", "!fabric.bits<32>"},
                            {"!fabric.bits<32>", "!fabric.bits<32>"},
+                           {},
+                           {}}},
+             {"false_lane", "true_lane"}});
+  module.addPe(std::move(pe));
+}
+
+void addWideDataDemuxPe(ModuleBuilder &module, llvm::StringRef falseResult,
+                        llvm::StringRef trueResult, llvm::StringRef pred,
+                        llvm::StringRef value) {
+  PeSpec pe;
+  pe.inputs = {{"pred", pred.str(), "!fabric.bits<32>", "!fabric.bits<64>"},
+               {"value", value.str(), "!fabric.bits<64>", ""}};
+  pe.resultNames = {falseResult.str(), trueResult.str()};
+  pe.resultTypes = {"!fabric.bits<64>", "!fabric.bits<64>"};
+  pe.fus.push_back(
+      FuSpec{{{"sel", "pred", "!fabric.bits<64>", "!fabric.bits<1>"},
+              {"data", "value", "!fabric.bits<64>", ""}},
+             {"!fabric.bits<64>", "!fabric.bits<64>"},
+             {FabricOpSpec{{"false_lane", "true_lane"},
+                           {"dataflow.demux"},
+                           {"sel", "data"},
+                           {"!fabric.bits<1>", "!fabric.bits<64>"},
+                           {"!fabric.bits<64>", "!fabric.bits<64>"},
                            {},
                            {}}},
              {"false_lane", "true_lane"}});

@@ -59,16 +59,20 @@ Partition identity is local to one `dataflow.graph.func` lowering run.
 A known root is found by peeling supported view-like values until reaching a
 storage or boundary root. The baseline recognizes:
 
-* graph and function block arguments;
+* graph and function block arguments, conservatively grouped at the graph
+  boundary unless an argument carries explicit no-alias evidence;
 * `memref.alloc`, `memref.alloca`, and `memref.get_global` results;
 * `ViewLikeOpInterface` producers, including the standard memref view family;
 * single-input `builtin.unrealized_conversion_cast` bridges;
 * the existing view-like `dataflow.partition_layout` and
   `dataflow.map_info` boundaries.
 
-Distinct known roots are independent partitions. The analysis does not use
-address ranges, affine disjointness, bank identity, physical ports, or
-element-type compatibility to split a root.
+Distinct allocation roots are independent partitions. Repeated
+`memref.get_global` operations are keyed by global symbol. Distinct graph
+arguments are not independent merely because they occupy different ABI
+positions: launch verification permits one actual capability in several
+positions. The analysis does not use address ranges, affine disjointness,
+bank identity, physical ports, or element-type compatibility to split a root.
 
 If the root walk reaches an unrecognized producer, the access is unknown.
 The graph first discovers every known partition, then assigns each unknown
@@ -183,8 +187,8 @@ The loop owns independent recurrence rings for:
 Each ring uses `dataflow.carry` under the loop selector. A matching
 `dataflow.demux` sends true-lane values into the body and the false-lane value
 to loop exit. Captured non-memory values are replayed with
-`dataflow.invariant` and projected to the true lane. Memref capabilities are
-not replayed.
+`dataflow.invariant` and projected into body phase with `dataflow.gate`.
+Memref capabilities are not replayed.
 
 The recursively lowered body supplies all recurrence feedback values. The
 execution feedback is the body's structural exit; memory feedback is the
@@ -214,7 +218,7 @@ final false condition check.
 After recursively lowering before:
 
 * false-lane execution is `E_out`;
-* true-lane execution enters after;
+* `dataflow.gate` projects before execution into after phase;
 * false-lane condition arguments become while results;
 * true-lane condition arguments become after block values;
 * false-lane `W/R` is the loop exit state;
@@ -262,9 +266,9 @@ The graph-region owner does not:
 
 ## 11. Graph Boundary
 
-This slice deliberately does not rewrite `dataflow.graph.return` completion.
-The pass emits internal structural and memory frontiers but does not claim
-that the existing graph ABI has a complete retirement frontier.
+This slice deliberately does not define `dataflow.graph.return` completion.
+The pass emits internal structural and memory frontiers but cannot claim that
+the existing graph ABI has a complete retirement frontier.
 
 In particular:
 
@@ -273,22 +277,26 @@ In particular:
 * no effect scan retroactively defines graph retirement;
 * graph launch retirement closure and verifier coverage remain separate work.
 
-This boundary is observable in tests: a graph containing a store still
-returns its original leading graph value.
+The current legacy terminator operand is preserved mechanically, but neither
+`%start` nor any partial execution or memory frontier is valid completion
+evidence. Integrating this lowering requires a separately confirmed graph
+retirement rule that also covers stateful close and reset.
 
 ## 12. Supported Failure Modes
 
 The owner rejects before mutation when:
 
 * raw parallel SCF reaches a graph;
+* an effectful or unmodeled nested operation reaches a graph;
 * a memref leaf is not rank one;
 * structured control carries a memref result or memref loop state;
 * the graph entry lacks the leading `none` execution value.
 
-Unsupported residual LLVM accesses may remain unchanged under the existing
+Unsupported top-level LLVM accesses may remain unchanged under the existing
 address-normalization contract. Supported LLVM load, store, memcpy, and
 memset forms are normalized before recursive region lowering, after which the
-same frontier rules apply.
+same frontier rules apply. An unsupported effectful operation inside a
+structured region must fail closed instead of being hoisted.
 
 ## 13. Non-Goals
 

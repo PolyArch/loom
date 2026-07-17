@@ -121,6 +121,13 @@ struct BridgeKeyInfo {
   static bool isEqual(const BridgeKey &a, const BridgeKey &b) { return a == b; }
 };
 
+using ScopedValueCache =
+    ::llvm::DenseMap<::mlir::Block *,
+                     ::llvm::DenseMap<::mlir::Value, ::mlir::Value>>;
+using ScopedBridgeCache =
+    ::llvm::DenseMap<::mlir::Block *,
+                     ::llvm::DenseMap<BridgeKey, ::mlir::Value, BridgeKeyInfo>>;
+
 // Result of resolving the (memref-base, optional-int-index) pair for
 // one llvm.load / llvm.store. `intIndex` is null when the address
 // port should be `0 : index`.
@@ -263,6 +270,20 @@ std::optional<llvm::APInt> integerConstantValue(::mlir::Value value) {
       return intAttr.getValue();
   }
   return std::nullopt;
+}
+
+bool isKnownMultipleOfPowerOfTwo(::mlir::Value value, unsigned shift) {
+  if (shift == 0)
+    return true;
+  if (std::optional<llvm::APInt> constant = integerConstantValue(value))
+    return constant->countTrailingZeros() >= shift;
+  auto shl = value.getDefiningOp<::mlir::arith::ShLIOp>();
+  if (!shl)
+    return false;
+  std::optional<llvm::APInt> amount = integerConstantValue(shl.getRhs());
+  auto intTy = ::llvm::dyn_cast<::mlir::IntegerType>(value.getType());
+  return amount && intTy && amount->ult(intTy.getWidth()) &&
+         amount->getZExtValue() >= shift;
 }
 
 bool isZeroIntegerValue(::mlir::Value value) {
@@ -431,12 +452,16 @@ resolveLinearTopLevelGep(::mlir::LLVM::GEPOp gep, ::dataflow::GraphFuncOp graph,
       getAllocBytes(dynamicGep.getElemType());
   constexpr std::uint64_t maxSigned =
       static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+  unsigned elementShift = elementBytes ? ::llvm::Log2_64(*elementBytes) : 0;
   if (!elementBytes || !baseStrideBytes || *elementBytes > maxSigned ||
       *baseStrideBytes > maxSigned || !::llvm::isPowerOf2_64(*elementBytes) ||
-      ::llvm::Log2_64(*elementBytes) >= *indexBitWidth ||
+      elementShift >= *indexBitWidth ||
       (::llvm::isa<::mlir::IndexType>(dynamicIndex.getType()) &&
-       *elementBytes != 1) ||
-      *baseStrideBytes % *elementBytes != 0)
+       *elementBytes != 1))
+    return std::nullopt;
+  unsigned strideShift =
+      std::min<unsigned>(elementShift, ::llvm::countr_zero(*baseStrideBytes));
+  if (!isKnownMultipleOfPowerOfTwo(dynamicIndex, elementShift - strideShift))
     return std::nullopt;
 
   std::int64_t constantByteOffset = 0;
@@ -460,8 +485,7 @@ resolveLinearTopLevelGep(::mlir::LLVM::GEPOp gep, ::dataflow::GraphFuncOp graph,
       *baseStrideBytes == *elementBytes &&
       ::mlir::LLVM::bitEnumContainsAny(dynamicGep.getNoWrapFlags(),
                                        ::mlir::LLVM::GEPNoWrapFlags::nusw);
-  unsigned byteToElementShift =
-      preserveElementIndex ? 0 : ::llvm::Log2_64(*elementBytes);
+  unsigned byteToElementShift = preserveElementIndex ? 0 : elementShift;
   std::int64_t intIndexByteStride =
       preserveElementIndex ? 1 : static_cast<std::int64_t>(*baseStrideBytes);
 
@@ -597,11 +621,13 @@ resolveDirectMemcpyPointer(::mlir::Value ptr, ::dataflow::GraphFuncOp graph) {
 std::optional<AddrResolution>
 resolvePointer(::mlir::Value loadStorePtr, ::dataflow::GraphFuncOp graph,
                bool topLevel, ::mlir::Type elemTy) {
+  if (auto gep = loadStorePtr.getDefiningOp<::mlir::LLVM::GEPOp>()) {
+    if (std::optional<AddrResolution> linear =
+            resolveLinearTopLevelGep(gep, graph, elemTy))
+      return linear;
+  }
   if (topLevel) {
     if (auto gep = loadStorePtr.getDefiningOp<::mlir::LLVM::GEPOp>()) {
-      if (std::optional<AddrResolution> linear =
-              resolveLinearTopLevelGep(gep, graph, elemTy))
-        return linear;
       ::mlir::Value base = gep.getBase();
       if (auto carry = getPointerCarry(base)) {
         if (::dataflow::StreamOp stream =
@@ -651,9 +677,8 @@ resolvePointer(::mlir::Value loadStorePtr, ::dataflow::GraphFuncOp graph,
 }
 
 // Materialize (or look up) an unrealized_conversion_cast bridging
-// `ptr : !llvm.ptr` to `memref<?xElem>`. Top-level rewrites hoist
-// and cache the cast at the start of the graph body; nested rewrites
-// emit the cast at the load/store site to respect SSA dominance.
+// `ptr : !llvm.ptr` to `memref<?xElem>`. Graph-root pointers are hoisted and
+// cached at graph entry; genuinely dynamic pointers are bridged at the access.
 bool isSupportedBridgePointer(::mlir::Value ptr,
                               ::dataflow::GraphFuncOp graph) {
   auto ptrTy = ::llvm::dyn_cast<::mlir::LLVM::LLVMPointerType>(ptr.getType());
@@ -709,19 +734,19 @@ bool canMaterializeIndex(::mlir::Type type, ::mlir::Operation *scope) {
          intTy.getWidth() <= indexBits.getFixedValue();
 }
 
-::mlir::Value
-getIndexCast(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
-             ::llvm::DenseMap<::mlir::Value, ::mlir::Value> &cache,
-             ::mlir::Value iv, ::mlir::Location loc, bool topLevel,
-             ::mlir::Operation *insertBeforeIfNested) {
+::mlir::Value getIndexCast(::mlir::OpBuilder &builder,
+                           ::dataflow::GraphFuncOp graph,
+                           ScopedValueCache &cache, ::mlir::Value iv,
+                           ::mlir::Location loc, bool topLevel,
+                           ::mlir::Operation *insertBeforeIfNested) {
   if (::llvm::isa<::mlir::IndexType>(iv.getType()))
     return iv;
   if (!canMaterializeIndex(iv.getType(), insertBeforeIfNested))
     return {};
-  if (topLevel) {
-    if (auto it = cache.find(iv); it != cache.end())
-      return it->second;
-  }
+  auto &blockCache =
+      cache.try_emplace(insertBeforeIfNested->getBlock()).first->second;
+  if (auto it = blockCache.find(iv); it != blockCache.end())
+    return it->second;
   bool hoist = topLevel && ::llvm::isa<::mlir::BlockArgument>(iv);
   ::mlir::OpBuilder::InsertionGuard g(builder);
   if (hoist)
@@ -731,8 +756,7 @@ getIndexCast(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
   ::mlir::Value out = ::mlir::arith::IndexCastOp::create(
                           builder, loc, builder.getIndexType(), iv)
                           .getResult();
-  if (topLevel)
-    cache.try_emplace(iv, out);
+  blockCache.try_emplace(iv, out);
   return out;
 }
 
@@ -852,12 +876,12 @@ getIndexCast(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
       .getResult();
 }
 
-::mlir::Value
-getElementIndex(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
-                ::llvm::DenseMap<::mlir::Value, ::mlir::Value> &cache,
-                ::mlir::Value intIndex, unsigned byteToElementShift,
-                ::mlir::Value ctrl, ::mlir::Location loc, bool topLevel,
-                ::mlir::Operation *insertBeforeIfNested) {
+::mlir::Value getElementIndex(::mlir::OpBuilder &builder,
+                              ::dataflow::GraphFuncOp graph,
+                              ScopedValueCache &cache, ::mlir::Value intIndex,
+                              unsigned byteToElementShift, ::mlir::Value ctrl,
+                              ::mlir::Location loc, bool topLevel,
+                              ::mlir::Operation *insertBeforeIfNested) {
   if (byteToElementShift == 0)
     return getIndexCast(builder, graph, cache, intIndex, loc, topLevel,
                         insertBeforeIfNested);
@@ -906,17 +930,17 @@ getElementIndex(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
 }
 
 ::mlir::Value getIndexFromInt(::mlir::OpBuilder &builder,
-                              ::llvm::DenseMap<::mlir::Value, ::mlir::Value>
-                                  &cache,
-                              ::mlir::Value value, ::mlir::Location loc,
+                              ScopedValueCache &cache, ::mlir::Value value,
+                              ::mlir::Location loc,
                               ::mlir::Operation *insertBefore,
                               bool cacheResult = true) {
   if (::llvm::isa<::mlir::IndexType>(value.getType()))
     return value;
   if (!canMaterializeIndex(value.getType(), insertBefore))
     return {};
+  auto &blockCache = cache.try_emplace(insertBefore->getBlock()).first->second;
   if (cacheResult) {
-    if (auto it = cache.find(value); it != cache.end())
+    if (auto it = blockCache.find(value); it != blockCache.end())
       return it->second;
   }
   ::mlir::OpBuilder::InsertionGuard g(builder);
@@ -926,7 +950,7 @@ getElementIndex(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
                                          value)
           .getResult();
   if (cacheResult)
-    cache.try_emplace(value, idx);
+    blockCache.try_emplace(value, idx);
   return idx;
 }
 
@@ -946,7 +970,8 @@ struct RewriteCtx {
   ::dataflow::GraphFuncOp graph;
   ::mlir::Value ctrl;
   ::llvm::DenseMap<BridgeKey, ::mlir::Value, BridgeKeyInfo> bridgeCache;
-  ::llvm::DenseMap<::mlir::Value, ::mlir::Value> indexCastCache;
+  ScopedValueCache indexCastCache;
+  ScopedBridgeCache addressCache;
   ::mlir::Value zeroIdx;
   ::llvm::SmallVector<::mlir::Operation *, 8> deadGeps;
 };
@@ -1180,32 +1205,42 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
   ::mlir::OpBuilder::InsertionGuard g(builder);
   builder.setInsertionPoint(op);
   ::mlir::Value addr;
-  if (resolved->ordinalStream) {
-    ::mlir::Value ordinal = resolved->ordinalStream.getIv();
-    ordinal = getBiasedStreamOrdinal(builder, resolved->ordinalStream, ordinal,
-                                     resolved->ordinalElementBias, ctx.ctrl,
-                                     loc, op);
-    if (!ordinal)
-      return false;
-    addr = getElementIndex(builder, ctx.graph, ctx.indexCastCache, ordinal,
-                           resolved->byteToElementShift, ctx.ctrl, loc,
-                           topLevel, op);
-  } else if (resolved->intIndex) {
-    ::mlir::Value intIndex = getLinearByteIndex(
-        builder, resolved->intIndex, resolved->intIndexByteStride,
-        resolved->intIndexByteBias, loc, op);
-    if (!intIndex)
-      return false;
-    addr = getElementIndex(builder, ctx.graph, ctx.indexCastCache, intIndex,
-                           resolved->byteToElementShift, ctx.ctrl, loc,
-                           topLevel, op);
+  auto &addressCache =
+      ctx.addressCache.try_emplace(op->getBlock()).first->second;
+  BridgeKey addressKey{ptrArg, elemTy};
+  if (auto it = addressCache.find(addressKey); it != addressCache.end()) {
+    addr = it->second;
   } else {
-    addr = getZeroIndex(builder, ctx.graph, ctx.zeroIdx, loc, topLevel, op);
+    if (resolved->ordinalStream) {
+      ::mlir::Value ordinal = resolved->ordinalStream.getIv();
+      ordinal = getBiasedStreamOrdinal(builder, resolved->ordinalStream,
+                                       ordinal, resolved->ordinalElementBias,
+                                       ctx.ctrl, loc, op);
+      if (!ordinal)
+        return false;
+      addr = getElementIndex(builder, ctx.graph, ctx.indexCastCache, ordinal,
+                             resolved->byteToElementShift, ctx.ctrl, loc,
+                             topLevel, op);
+    } else if (resolved->intIndex) {
+      ::mlir::Value intIndex = getLinearByteIndex(
+          builder, resolved->intIndex, resolved->intIndexByteStride,
+          resolved->intIndexByteBias, loc, op);
+      if (!intIndex)
+        return false;
+      addr = getElementIndex(builder, ctx.graph, ctx.indexCastCache, intIndex,
+                             resolved->byteToElementShift, ctx.ctrl, loc,
+                             topLevel, op);
+    } else {
+      addr = getZeroIndex(builder, ctx.graph, ctx.zeroIdx, loc, topLevel, op);
+    }
+    if (!addr)
+      return false;
+    addressCache.try_emplace(addressKey, addr);
   }
-  if (!addr)
-    return false;
-  ::mlir::Value mem = getMemrefBridge(builder, ctx.graph, ctx.bridgeCache,
-                                      resolved->ptr, elemTy, loc, topLevel, op);
+  bool staticBinding = topLevel || isGraphPtrBlockArg(resolved->ptr, ctx.graph);
+  ::mlir::Value mem =
+      getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, resolved->ptr,
+                      elemTy, loc, staticBinding, op);
   if (!mem)
     return false;
   if (isLoad) {
