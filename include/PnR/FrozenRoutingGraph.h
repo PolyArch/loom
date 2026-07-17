@@ -95,6 +95,15 @@ public:
     return adjacencyOffsets_;
   }
   llvm::ArrayRef<FrozenRoutingArc> routingArcs() const { return routingArcs_; }
+  llvm::ArrayRef<PnrIndex> incomingAdjacencyOffsets() const {
+    return incomingAdjacencyOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> incomingSourceVertices() const {
+    return incomingSourceVertices_;
+  }
+  llvm::ArrayRef<PnrIndex> incomingForwardArcIndices() const {
+    return incomingForwardArcIndices_;
+  }
 
   friend bool operator==(const FrozenRoutingGraph &lhs,
                          const FrozenRoutingGraph &rhs) {
@@ -103,7 +112,10 @@ public:
            lhs.routingEndpoints_ == rhs.routingEndpoints_ &&
            lhs.computeEndpointVertices_ == rhs.computeEndpointVertices_ &&
            lhs.adjacencyOffsets_ == rhs.adjacencyOffsets_ &&
-           lhs.routingArcs_ == rhs.routingArcs_;
+           lhs.routingArcs_ == rhs.routingArcs_ &&
+           lhs.incomingAdjacencyOffsets_ == rhs.incomingAdjacencyOffsets_ &&
+           lhs.incomingSourceVertices_ == rhs.incomingSourceVertices_ &&
+           lhs.incomingForwardArcIndices_ == rhs.incomingForwardArcIndices_;
   }
   friend bool operator!=(const FrozenRoutingGraph &lhs,
                          const FrozenRoutingGraph &rhs) {
@@ -116,13 +128,19 @@ private:
                      std::vector<FrozenRoutingEndpoint> routingEndpoints,
                      std::vector<PnrIndex> computeEndpointVertices,
                      std::vector<PnrIndex> adjacencyOffsets,
-                     std::vector<FrozenRoutingArc> routingArcs)
+                     std::vector<FrozenRoutingArc> routingArcs,
+                     std::vector<PnrIndex> incomingAdjacencyOffsets,
+                     std::vector<PnrIndex> incomingSourceVertices,
+                     std::vector<PnrIndex> incomingForwardArcIndices)
       : transportResources_(std::move(transportResources)),
         resourceEndpointVertices_(std::move(resourceEndpointVertices)),
         routingEndpoints_(std::move(routingEndpoints)),
         computeEndpointVertices_(std::move(computeEndpointVertices)),
         adjacencyOffsets_(std::move(adjacencyOffsets)),
-        routingArcs_(std::move(routingArcs)) {}
+        routingArcs_(std::move(routingArcs)),
+        incomingAdjacencyOffsets_(std::move(incomingAdjacencyOffsets)),
+        incomingSourceVertices_(std::move(incomingSourceVertices)),
+        incomingForwardArcIndices_(std::move(incomingForwardArcIndices)) {}
 
   std::vector<FrozenTransportResource> transportResources_;
   std::vector<PnrIndex> resourceEndpointVertices_;
@@ -130,6 +148,9 @@ private:
   std::vector<PnrIndex> computeEndpointVertices_;
   std::vector<PnrIndex> adjacencyOffsets_;
   std::vector<FrozenRoutingArc> routingArcs_;
+  std::vector<PnrIndex> incomingAdjacencyOffsets_;
+  std::vector<PnrIndex> incomingSourceVertices_;
+  std::vector<PnrIndex> incomingForwardArcIndices_;
 
   friend llvm::Expected<FrozenRoutingGraph>
   freezeRoutingGraph(const mapping::FabricHardwareView &fabric,

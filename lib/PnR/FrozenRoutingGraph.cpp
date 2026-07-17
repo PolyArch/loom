@@ -54,6 +54,12 @@ constexpr PnrCapacityContext adjacencyOffsetContext{
     PnrCapacityMeasure::Offset};
 constexpr PnrCapacityContext arcCountContext{
     frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext incomingAdjacencyOffsetContext{
+    frozenArtifact, "incoming_adjacency_offsets", "routing_arcs",
+    PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext incomingSourceIndexContext{
+    frozenArtifact, "incoming_source_vertices", "routing_endpoints",
+    PnrCapacityMeasure::Index};
 
 llvm::Error freezeError(std::string message) {
   return llvm::make_error<llvm::StringError>(
@@ -247,7 +253,45 @@ loom::pnr::freezeRoutingGraph(const FabricHardwareView &fabric,
     return freezeError(
         "cannot freeze routing graph: validated arc order is inconsistent");
 
-  return FrozenRoutingGraph(std::move(resources), std::move(resourceEndpoints),
-                            std::move(endpoints), std::move(computeEndpoints),
-                            std::move(adjacencyOffsets), std::move(arcs));
+  std::vector<PnrIndex> incomingAdjacencyOffsets(
+      projection.endpoints.size() + 1, PnrIndex{0});
+  for (const FrozenRoutingArc &arc : arcs) {
+    PnrIndex &targetCount =
+        incomingAdjacencyOffsets[static_cast<std::size_t>(arc.target) + 1];
+    ++targetCount;
+  }
+  for (std::size_t endpoint = 1; endpoint < incomingAdjacencyOffsets.size();
+       ++endpoint) {
+    auto offset = checkedPnrIndexAdd(incomingAdjacencyOffsetContext,
+                                     incomingAdjacencyOffsets[endpoint - 1],
+                                     incomingAdjacencyOffsets[endpoint]);
+    if (!offset)
+      return offset.takeError();
+    incomingAdjacencyOffsets[endpoint] = *offset;
+  }
+
+  std::vector<PnrIndex> incomingSourceVertices(arcs.size());
+  std::vector<PnrIndex> incomingForwardArcIndices(arcs.size());
+  std::vector<PnrIndex> incomingCursors(incomingAdjacencyOffsets.begin(),
+                                        incomingAdjacencyOffsets.begin() +
+                                            projection.endpoints.size());
+  for (std::size_t source = 0; source < projection.endpoints.size(); ++source) {
+    auto frozenSource = checked(incomingSourceIndexContext, source);
+    if (!frozenSource)
+      return frozenSource.takeError();
+    for (PnrIndex forwardArc = adjacencyOffsets[source];
+         forwardArc < adjacencyOffsets[source + 1]; ++forwardArc) {
+      const PnrIndex target = arcs[forwardArc].target;
+      PnrIndex &cursor = incomingCursors[target];
+      const PnrIndex incoming = cursor++;
+      incomingSourceVertices[incoming] = *frozenSource;
+      incomingForwardArcIndices[incoming] = forwardArc;
+    }
+  }
+
+  return FrozenRoutingGraph(
+      std::move(resources), std::move(resourceEndpoints), std::move(endpoints),
+      std::move(computeEndpoints), std::move(adjacencyOffsets), std::move(arcs),
+      std::move(incomingAdjacencyOffsets), std::move(incomingSourceVertices),
+      std::move(incomingForwardArcIndices));
 }

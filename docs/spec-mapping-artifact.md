@@ -387,6 +387,13 @@ present, and independent effective payload and tag capacities. Each capacity
 is the minimum of the source and target endpoint capacities in that field; tag
 capacity is never added to payload capacity.
 
+The same freeze mechanically derives an incoming CSR from those forward arcs.
+Each incoming entry stores only its source vertex and dense forward-arc index;
+the forward arc table remains the sole arc record and connectivity authority.
+Within each target range, incoming entries are ordered by forward-arc index and
+do not create reverse transport arcs, reachability facts, route choices, or
+search state.
+
 The frozen routing resource table records the canonical boundary direction
 when the resource is a boundary. The frozen routing endpoint table records
 only typed identity, owner kind and dense owner index, direction, software port

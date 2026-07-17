@@ -332,6 +332,46 @@ void freezesExactDirectedAdjacencyAndIndependentCapacity() {
     fail(__func__, "routing freeze inferred an undeclared traversal");
 }
 
+void mirrorsEveryForwardArcInIncomingCsr() {
+  TestCase testCase = makeTraversalCase();
+  FrozenRoutingGraph graph = validateAndFreezeRouting(__func__, testCase);
+  if (graph.incomingAdjacencyOffsets().size() !=
+          graph.routingEndpoints().size() + 1 ||
+      graph.incomingAdjacencyOffsets().back() != graph.routingArcs().size() ||
+      graph.incomingSourceVertices().size() != graph.routingArcs().size() ||
+      graph.incomingForwardArcIndices().size() != graph.routingArcs().size())
+    fail(__func__, "incoming CSR dimensions do not mirror the forward graph");
+
+  std::vector<bool> seenForwardArc(graph.routingArcs().size());
+  for (std::size_t target = 0; target < graph.routingEndpoints().size();
+       ++target) {
+    const PnrIndex begin = graph.incomingAdjacencyOffsets()[target];
+    const PnrIndex end = graph.incomingAdjacencyOffsets()[target + 1];
+    if (begin > end || end > graph.routingArcs().size())
+      fail(__func__, "incoming CSR offsets are inconsistent");
+    for (PnrIndex incoming = begin; incoming < end; ++incoming) {
+      const PnrIndex source = graph.incomingSourceVertices()[incoming];
+      const PnrIndex forwardArc = graph.incomingForwardArcIndices()[incoming];
+      if (source >= graph.routingEndpoints().size() ||
+          forwardArc >= graph.routingArcs().size() ||
+          seenForwardArc[forwardArc])
+        fail(__func__, "incoming entry has invalid or duplicate provenance");
+      const PnrIndex forwardBegin = graph.adjacencyOffsets()[source];
+      const PnrIndex forwardEnd = graph.adjacencyOffsets()[source + 1];
+      if (forwardArc < forwardBegin || forwardArc >= forwardEnd ||
+          graph.routingArcs()[forwardArc].target != target)
+        fail(__func__, "incoming entry does not identify its forward arc");
+      if (incoming != begin &&
+          graph.incomingForwardArcIndices()[incoming - 1] >= forwardArc)
+        fail(__func__, "incoming entries are not in forward arc order");
+      seenForwardArc[forwardArc] = true;
+    }
+  }
+  if (std::find(seenForwardArc.begin(), seenForwardArc.end(), false) !=
+      seenForwardArc.end())
+    fail(__func__, "incoming CSR omitted a forward arc");
+}
+
 void validatesResourceTraversalStructure() {
   {
     TestCase testCase = makeTraversalCase();
@@ -529,6 +569,30 @@ void freezesStructurallyAcrossDescriptorPermutation() {
   FrozenRoutingGraph baseline =
       validateAndFreezeRouting(__func__, baselineCase);
   expectCanonicalTableOrdering(__func__, baseline);
+  const std::size_t target =
+      endpointIndex(__func__, baseline, TransportEndpointId(5002));
+  const std::size_t firstSource =
+      endpointIndex(__func__, baseline, TransportEndpointId(5000));
+  const std::size_t secondSource =
+      endpointIndex(__func__, baseline, TransportEndpointId(5001));
+  const PnrIndex incomingBegin = baseline.incomingAdjacencyOffsets()[target];
+  const PnrIndex incomingEnd = baseline.incomingAdjacencyOffsets()[target + 1];
+  if (incomingEnd - incomingBegin != 2)
+    fail(__func__, "multi-incoming CSR has the wrong prefix-sum range");
+  const PnrIndex firstArc = baseline.incomingForwardArcIndices()[incomingBegin];
+  const PnrIndex secondArc =
+      baseline.incomingForwardArcIndices()[incomingBegin + 1];
+  if (firstArc >= secondArc ||
+      baseline.incomingSourceVertices()[incomingBegin] != firstSource ||
+      baseline.incomingSourceVertices()[incomingBegin + 1] != secondSource ||
+      firstArc < baseline.adjacencyOffsets()[firstSource] ||
+      firstArc >= baseline.adjacencyOffsets()[firstSource + 1] ||
+      secondArc < baseline.adjacencyOffsets()[secondSource] ||
+      secondArc >= baseline.adjacencyOffsets()[secondSource + 1] ||
+      baseline.routingArcs()[firstArc].target != target ||
+      baseline.routingArcs()[secondArc].target != target)
+    fail(__func__,
+         "multi-incoming CSR lost canonical forward-arc identity order");
   TestCase permutedCase = makeIrregularReachabilityCase();
   std::reverse(permutedCase.fabric.computeOccurrences.begin(),
                permutedCase.fabric.computeOccurrences.end());
@@ -588,8 +652,28 @@ void acceptsDisconnectedTopologyAndChecksNativeCapacity() {
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
   FrozenRoutingGraph graph =
       takeExpected(__func__, freezeRoutingGraph(testCase.fabric, mapping));
-  if (graph.routingArcs().size() != 0)
-    fail(__func__, "disconnected topology gained implicit arcs");
+  if (!graph.routingArcs().empty() ||
+      graph.incomingAdjacencyOffsets().size() !=
+          graph.routingEndpoints().size() + 1 ||
+      graph.incomingAdjacencyOffsets().back() != 0 ||
+      !graph.incomingSourceVertices().empty() ||
+      !graph.incomingForwardArcIndices().empty())
+    fail(__func__, "disconnected topology gained implicit adjacency");
+
+  TestCase emptyCase = makeValidCase();
+  emptyCase.fabric.computeOccurrences.clear();
+  ValidatedTechMapping emptyMapping = validateCase(__func__, emptyCase);
+  FrozenRoutingGraph emptyGraph = takeExpected(
+      __func__, freezeRoutingGraph(emptyCase.fabric, emptyMapping));
+  if (!emptyGraph.routingEndpoints().empty() ||
+      emptyGraph.adjacencyOffsets().size() != 1 ||
+      emptyGraph.adjacencyOffsets().front() != 0 ||
+      !emptyGraph.routingArcs().empty() ||
+      emptyGraph.incomingAdjacencyOffsets().size() != 1 ||
+      emptyGraph.incomingAdjacencyOffsets().front() != 0 ||
+      !emptyGraph.incomingSourceVertices().empty() ||
+      !emptyGraph.incomingForwardArcIndices().empty())
+    fail(__func__, "empty routing graph has nonempty adjacency");
 
   llvm::Error error = loom::pnr::detail::preflightFrozenRoutingGraphCapacity(
       getPnrIndexMax(), 0, 0, 0);
@@ -619,6 +703,7 @@ static_assert(
 struct RoutingFreezeTestRunner {
   RoutingFreezeTestRunner() {
     freezesExactDirectedAdjacencyAndIndependentCapacity();
+    mirrorsEveryForwardArcInIncomingCsr();
     validatesResourceTraversalStructure();
     rejectsUnmediatedNativeTransportCrossing();
     rejectsMemoryTransportTraversal();
