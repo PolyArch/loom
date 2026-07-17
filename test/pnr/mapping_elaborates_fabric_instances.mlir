@@ -31,7 +31,9 @@
 
 module {
   dataflow.graph.func private @named_mem_graph(
-      %ctrl: none, %mem: memref<?xi32>, %index: index) -> (none, i32) {
+      %ctrl: none, %index: index, %mem: memref<?xi32>) -> (none, i32)
+      attributes {input_segments = array<i32: 1, 0, 1>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %value, %done = dataflow.load %mem[%index] %ctrl : memref<?xi32>
     dataflow.graph.return %done, %value : none, i32
   }

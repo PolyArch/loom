@@ -97,12 +97,14 @@ module {
   dataflow.graph.func private @minmax_pressure(
       %ctrl: none,
       %idx: index,
+      %x: i32,
+      %y: i32,
       %a: memref<?xi8>,
       %b: memref<?xi8>,
-      %out: memref<?xi8>,
-      %x: i32,
-      %y: i32)
-      -> none {
+      %out: memref<?xi8>)
+      -> none
+      attributes {input_segments = array<i32: 3, 0, 3>,
+                  result_segments = array<i32: 0, 0, 0>} {
     %c0 = dataflow.constant %ctrl {const_value = 0 : index} : index
     %c1 = dataflow.constant %ctrl {const_value = 1 : index} : index
     %c2 = dataflow.constant %ctrl {const_value = 2 : index} : index

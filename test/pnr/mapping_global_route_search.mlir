@@ -4,11 +4,11 @@
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
 
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// CSV-NEXT: long_add_chain,long_chain_adg,long_add_chain__long_add_chain__long_chain_adg,21,20,0,0,pass,mapped software graph to fabric resources
+// CSV-NEXT: long_add_chain,long_chain_adg,long_add_chain__long_add_chain__long_chain_adg,22,21,0,0,pass,mapped software graph to fabric resources
 
 // JSON-DAG: "status": "pass"
-// JSON-DAG: "placed_records": 21
-// JSON-DAG: "routed_edges": 20
+// JSON-DAG: "placed_records": 22
+// JSON-DAG: "routed_edges": 21
 // JSON-DAG: "unrouted_edges": 0
 
 module {
@@ -38,7 +38,8 @@ module {
     dataflow.graph.return %ctrl, %v20 : none, i32
   }
 
-  fabric.module @long_chain_adg(%seed : !fabric.bits<32>,
+  fabric.module @long_chain_adg(%ctrl : !fabric.bits<0>,
+                                %seed : !fabric.bits<32>,
                                 %rhs : !fabric.bits<32>) {
     %rhs_to_p0, %rhs_to_p1, %rhs_to_p2, %rhs_to_p3, %rhs_to_p4,
         %rhs_to_p5, %rhs_to_p6, %rhs_to_p7, %rhs_to_p8, %rhs_to_p9,
@@ -257,12 +258,18 @@ module {
       }
     }
     fabric.pe [spatial] (%lhs = %p19 : !fabric.bits<32>,
-                         %r = %rhs_to_p20 : !fabric.bits<32>)
+                         %r = %rhs_to_p20 : !fabric.bits<32>,
+                         %pc = %ctrl : !fabric.bits<0> to !fabric.bits<32>)
         -> !fabric.bits<32> {
-      fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>)
+      fabric.fu(%a = %lhs : !fabric.bits<32>, %b = %r : !fabric.bits<32>,
+                %token = %pc : !fabric.bits<32> to !fabric.bits<0>)
           -> !fabric.bits<32> {
         %sum = fabric.op [@arith.addi] (%a, %b)
             : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        %done, %published = fabric.op [@dataflow.sync] (%token, %sum)
+            {sw_configs = {bitmask = "11"}}
+            : (!fabric.bits<0>, !fabric.bits<32>)
+              -> (!fabric.bits<0>, !fabric.bits<32>)
         fabric.yield %sum : !fabric.bits<32>
       }
     }

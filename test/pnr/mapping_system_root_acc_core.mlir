@@ -37,8 +37,13 @@ module {
   dataflow.graph.func private @unsupported_loop(%ctrl: none,
                                                 %lhs: i32,
                                                 %rhs: i32)
-      -> (none, i32) {
+      -> (none, i32)
+      attributes {input_segments = array<i32: 2, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %pop = llvm.intr.ctpop(%lhs) : (i32) -> i32
-    dataflow.graph.return %ctrl, %pop : none, i32
+    %published:2 = dataflow.sync %ctrl, %pop
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%published#1 : i32) streams() memories()
+        complete(%published#0 : none)
   }
 }

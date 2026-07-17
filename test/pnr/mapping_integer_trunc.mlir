@@ -34,8 +34,10 @@
 
 module {
   dataflow.graph.func private @integer_trunc_to_store(
-      %ctrl: none, %input: memref<?xi32>, %output: memref<?xi16>,
-      %idx: index) -> none {
+      %ctrl: none, %idx: index, %input: memref<?xi32>,
+      %output: memref<?xi16>) -> none
+      attributes {input_segments = array<i32: 1, 0, 2>,
+                  result_segments = array<i32: 0, 0, 0>} {
     %data, %done = dataflow.load %input[%idx] %ctrl : memref<?xi32>
     %narrow = llvm.trunc %data : i32 to i16
     %stored = dataflow.store %output[%idx] %narrow %done : memref<?xi16>
@@ -43,8 +45,10 @@ module {
   }
 
   dataflow.graph.func private @integer_extend_trunc_to_store(
-      %ctrl: none, %input: memref<?xi16>, %output: memref<?xi16>,
-      %idx: index) -> none {
+      %ctrl: none, %idx: index, %input: memref<?xi16>,
+      %output: memref<?xi16>) -> none
+      attributes {input_segments = array<i32: 1, 0, 2>,
+                  result_segments = array<i32: 0, 0, 0>} {
     %data, %done = dataflow.load %input[%idx] %ctrl : memref<?xi16>
     %wide = llvm.sext %data : i16 to i32
     %narrow = llvm.trunc %wide : i32 to i16

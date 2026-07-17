@@ -13,6 +13,7 @@
 // HARDWARE-DAG: store_group_size = 40 : i32
 // HARDWARE-DAG: fabric.op [@dataflow.stream]
 // HARDWARE-DAG: fabric.op [@dataflow.carry]
+// HARDWARE-DAG: fabric.op [@dataflow.demux]
 // HARDWARE-DAG: fabric.op [@dataflow.gate]
 // HARDWARE-DAG: fabric.op [@dataflow.invariant]
 // HARDWARE-DAG: fabric.op [@arith.addf, @arith.subf]
@@ -38,6 +39,8 @@
 
 // MAPPING-DAG: "workload": "signal_window_pressure"
 // MAPPING-DAG: "hardware": "shared_signal_window_adg"
+// MAPPING-DAG: "operation": "dataflow.demux"
+// MAPPING-DAG: "operation": "dataflow.sync"
 // MAPPING-DAG: "unplaced_records": 0
 // MAPPING-DAG: "unrouted_edges": 0
 // MAPPING-DAG: "status": "pass"
@@ -48,13 +51,17 @@ module {
       %lb: i32,
       %ub: i32,
       %step: i32,
+      %scale: f32,
       %input: memref<?xf32>,
-      %output: memref<?xf32>,
-      %scale: f32)
-      -> none {
+      %output: memref<?xf32>)
+      -> none
+      attributes {input_segments = array<i32: 4, 0, 2>,
+                  result_segments = array<i32: 0, 0, 0>} {
     %zero = dataflow.constant %ctrl {const_value = 0 : index} : index
     %idx, %rwc = dataflow.stream %lb, %ub, %step step add while sgt : i32
     %carried = dataflow.carry %rwc, %lb, %next : i32
+    %carried_lanes:2 = dataflow.demux %rwc, %carried
+        : (i1, i32) -> (i32, i32)
     %after_cond, %active_idx = dataflow.gate %rwc, %carried : i32
     %stable_scale = dataflow.invariant %after_cond, %scale : f32
     %value, %load_done = dataflow.load %input[%zero] %ctrl : memref<?xf32>
@@ -65,6 +72,8 @@ module {
     %store_done = dataflow.store %output[%zero] %product %ctrl : memref<?xf32>
     %next = arith.addi %active_idx, %step : i32
     %done:2 = dataflow.sync %load_done, %store_done : (none, none) -> (none, none)
-    dataflow.graph.return %done#0 : none
+    %retired:2 = dataflow.sync %done#0, %carried_lanes#0
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return %retired#0 : none
   }
 }

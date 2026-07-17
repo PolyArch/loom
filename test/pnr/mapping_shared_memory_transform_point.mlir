@@ -21,14 +21,12 @@ module {
   dataflow.graph.func private @transform_point(
       %ctrl: none,
       %stride: i32,
-      %input_points: !llvm.ptr,
       %y_offset: i32,
       %z_offset: i32,
       %m01: f32,
       %m00: f32,
       %m02: f32,
       %tx: f32,
-      %output_points: !llvm.ptr,
       %m11: f32,
       %m10: f32,
       %m12: f32,
@@ -37,7 +35,11 @@ module {
       %m20: f32,
       %m22: f32,
       %tz: f32,
-      %index: index) -> none {
+      %index: index,
+      %input_points: !llvm.ptr,
+      %output_points: !llvm.ptr) -> none
+      attributes {input_segments = array<i32: 16, 0, 2>,
+                  result_segments = array<i32: 0, 0, 0>} {
     %out = builtin.unrealized_conversion_cast %output_points : !llvm.ptr to memref<?xf32>
     %in = builtin.unrealized_conversion_cast %input_points : !llvm.ptr to memref<?xf32>
     %idx_i64 = arith.index_cast %index : index to i64

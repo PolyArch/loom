@@ -4,7 +4,7 @@
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
 
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// CSV-NEXT: direct_route,direct_route_adg,direct_route__direct_route__direct_route_adg,2,1,0,0,pass
+// CSV-NEXT: direct_route,direct_route_adg,direct_route__direct_route__direct_route_adg,3,2,0,0,pass
 
 // JSON-DAG: "status": "pass"
 // JSON-DAG: "segment_kind": "resource_edge"
@@ -22,20 +22,28 @@ module {
     dataflow.graph.return %ctrl, %cmp : none, i1
   }
 
-  fabric.module @direct_route_adg(%i32a : !fabric.bits<32>,
+  fabric.module @direct_route_adg(%ctrl : !fabric.bits<0>,
+                                  %i32a : !fabric.bits<32>,
                                   %i32b : !fabric.bits<32>,
                                   %i32c : !fabric.bits<32>) {
     fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
                          %pb = %i32b : !fabric.bits<32>,
-                         %pc = %i32c : !fabric.bits<32>) -> !fabric.bits<32> {
+                         %pc = %i32c : !fabric.bits<32>,
+                         %pd = %ctrl : !fabric.bits<0> to !fabric.bits<32>)
+        -> !fabric.bits<32> {
       fabric.fu(%lhs = %pa : !fabric.bits<32>,
                 %rhs = %pb : !fabric.bits<32>,
-                %limit = %pc : !fabric.bits<32>) -> () {
+                %limit = %pc : !fabric.bits<32>,
+                %token = %pd : !fabric.bits<32> to !fabric.bits<0>) -> () {
         %sum = fabric.op [@arith.addi] (%lhs, %rhs)
                : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
         %cmp = fabric.op [@arith.cmpi] (%sum, %limit)
                {hw_params = [{predicate = ["slt"]}]}
                : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>
+        %done, %published = fabric.op [@dataflow.sync] (%token, %cmp)
+            {sw_configs = {bitmask = "11"}}
+            : (!fabric.bits<0>, !fabric.bits<1>)
+              -> (!fabric.bits<0>, !fabric.bits<1>)
         fabric.yield
       }
     }

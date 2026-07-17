@@ -14,10 +14,13 @@ module {
   dataflow.graph.func private @sync9(%ctrl: none, %a: none, %b: none, %c: none,
                                      %d: none, %e: none, %f: none, %g: none,
                                      %h: none)
-      -> none {
+      -> none
+      attributes {input_segments = array<i32: 0, 8, 0>,
+                  result_segments = array<i32: 0, 0, 0>} {
     %done:9 = dataflow.sync %ctrl, %a, %b, %c, %d, %e, %f, %g, %h
         : (none, none, none, none, none, none, none, none, none)
           -> (none, none, none, none, none, none, none, none, none)
-    dataflow.graph.return %done#0 : none
+    dataflow.graph.return values() streams() memories()
+        complete(%done#0 : none)
   }
 }

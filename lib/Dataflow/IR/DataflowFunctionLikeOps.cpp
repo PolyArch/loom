@@ -65,9 +65,8 @@ static bool containsGraphMemoryCapability(Type type) {
   return false;
 }
 
-static std::array<int32_t, 3> inferLegacyGraphSegments(TypeRange types) {
-  int32_t memories = llvm::count_if(types, isGraphMemoryCapabilityType);
-  return {static_cast<int32_t>(types.size()) - memories, 0, memories};
+static std::array<int32_t, 3> defaultGraphSegments(size_t count) {
+  return {static_cast<int32_t>(count), 0, 0};
 }
 
 static GraphPortKind graphPortKindAt(ArrayRef<int32_t> segments,
@@ -413,12 +412,12 @@ void GraphFuncOp::build(OpBuilder &builder, OperationState &state,
     });
   };
   if (!hasAttr("input_segments")) {
-    auto segments = inferLegacyGraphSegments(type.getInputs());
+    auto segments = defaultGraphSegments(type.getNumInputs());
     normalizedAttrs.push_back(builder.getNamedAttr(
         "input_segments", builder.getDenseI32ArrayAttr(segments)));
   }
   if (!hasAttr("result_segments")) {
-    auto segments = inferLegacyGraphSegments(type.getResults());
+    auto segments = defaultGraphSegments(type.getNumResults());
     normalizedAttrs.push_back(builder.getNamedAttr(
         "result_segments", builder.getDenseI32ArrayAttr(segments)));
   }
@@ -471,32 +470,8 @@ ParseResult GraphFuncOp::parse(OpAsmParser &parser, OperationState &result) {
                                                    arguments.end());
   SmallVector<Type> appResults(resultTypes.begin() + 1, resultTypes.end());
   if (!inputSegmentsAttr) {
-    SmallVector<OpAsmParser::Argument> normalizedArguments;
-    for (const OpAsmParser::Argument &arg : appArguments)
-      if (!isGraphMemoryCapabilityType(arg.type))
-        normalizedArguments.push_back(arg);
-    for (const OpAsmParser::Argument &arg : appArguments)
-      if (isGraphMemoryCapabilityType(arg.type))
-        normalizedArguments.push_back(arg);
-    appArguments = std::move(normalizedArguments);
-
-    SmallVector<Type> normalizedResults;
-    for (Type type : appResults)
-      if (!isGraphMemoryCapabilityType(type))
-        normalizedResults.push_back(type);
-    for (Type type : appResults)
-      if (isGraphMemoryCapabilityType(type))
-        normalizedResults.push_back(type);
-    appResults = std::move(normalizedResults);
-
-    int32_t memoryInputs = llvm::count_if(
-        appArguments, [](const OpAsmParser::Argument &arg) {
-          return isGraphMemoryCapabilityType(arg.type);
-        });
-    std::array<int32_t, 3> inputSegments = {
-        static_cast<int32_t>(appArguments.size()) - memoryInputs, 0,
-        memoryInputs};
-    auto resultSegments = inferLegacyGraphSegments(appResults);
+    auto inputSegments = defaultGraphSegments(appArguments.size());
+    auto resultSegments = defaultGraphSegments(appResults.size());
     result.addAttribute("input_segments",
                         builder.getDenseI32ArrayAttr(inputSegments));
     result.addAttribute("result_segments",

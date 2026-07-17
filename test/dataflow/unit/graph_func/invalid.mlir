@@ -30,6 +30,36 @@ dataflow.graph.func private @g_memory_value(%ctrl: none,
 }
 
 // -----
+// Missing segment metadata normalizes to value ports. Pointer syntax must not
+// silently redefine the graph ABI.
+// expected-error @+1 {{value input #0 contains memory capability type 'memref<?xi32>'}}
+dataflow.graph.func private @g_memory_without_classification(
+    %ctrl: none, %memory: memref<?xi32>) -> none {
+  dataflow.graph.return %ctrl : none
+}
+
+// -----
+// Capability rejection applies recursively to aggregate value ports.
+// expected-error @+1 {{value input #0 contains memory capability type 'tuple<i32, !llvm.ptr>'}}
+dataflow.graph.func private @g_nested_memory_value(
+    %ctrl: none, %aggregate: tuple<i32, !llvm.ptr>) -> none
+    attributes {input_segments = array<i32: 1, 0, 0>,
+                result_segments = array<i32: 0, 0, 0>} {
+  dataflow.graph.return %ctrl : none
+}
+
+// -----
+// A scalar cannot be declared as a memory result.
+// expected-error @+1 {{memory result #0 has non-capability type 'i32'}}
+dataflow.graph.func private @g_scalar_memory_result(%ctrl: none, %x: i32)
+    -> (none, i32)
+    attributes {input_segments = array<i32: 1, 0, 0>,
+                result_segments = array<i32: 0, 0, 1>} {
+  dataflow.graph.return values() streams() memories(%x : i32)
+      complete(%ctrl : none)
+}
+
+// -----
 // graph.return value count must match parent results.
 dataflow.graph.func private @g_bad_return(%ctrl: none, %x: i32) -> (none, i32)
     attributes {input_segments = array<i32: 1, 0, 0>,

@@ -60,6 +60,41 @@ module {
         fabric.yield %result : !fabric.bits<32>
       }
     }
+    %effects = fabric.pe [spatial] (
+        %p0 = %load0_done : !fabric.bits<0>,
+        %p1 = %load1_done : !fabric.bits<0>,
+        %p2 = %load2_done : !fabric.bits<0>,
+        %p3 = %load3_done : !fabric.bits<0>,
+        %p4 = %store0_done : !fabric.bits<0>,
+        %p5 = %store1_done : !fabric.bits<0>) -> !fabric.bits<0> {
+      fabric.fu(
+          %f0 = %p0 : !fabric.bits<0>, %f1 = %p1 : !fabric.bits<0>,
+          %f2 = %p2 : !fabric.bits<0>, %f3 = %p3 : !fabric.bits<0>,
+          %f4 = %p4 : !fabric.bits<0>, %f5 = %p5 : !fabric.bits<0>)
+          -> !fabric.bits<0> {
+        %done0, %done1, %done2, %done3, %done4, %done5 =
+            fabric.op [@dataflow.sync] (%f0, %f1, %f2, %f3, %f4, %f5)
+            {sw_configs = {bitmask = "111111"}}
+            : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>,
+               !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>)
+              -> (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>,
+                  !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>)
+        fabric.yield %done0 : !fabric.bits<0>
+      }
+    }
+    fabric.pe [spatial] (
+        %pc = %effects : !fabric.bits<0> to !fabric.bits<32>,
+        %pv = %sum1 : !fabric.bits<32>) -> !fabric.bits<32> {
+      fabric.fu(
+          %token = %pc : !fabric.bits<32> to !fabric.bits<0>,
+          %value = %pv : !fabric.bits<32>) -> !fabric.bits<32> {
+        %done, %published = fabric.op [@dataflow.sync] (%token, %value)
+            {sw_configs = {bitmask = "11"}}
+            : (!fabric.bits<0>, !fabric.bits<32>)
+              -> (!fabric.bits<0>, !fabric.bits<32>)
+        fabric.yield %published : !fabric.bits<32>
+      }
+    }
     fabric.yield
   }
 
@@ -116,6 +151,41 @@ module {
         %result = fabric.op [@arith.addi] (%fa, %fb)
             : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
         fabric.yield %result : !fabric.bits<32>
+      }
+    }
+    %effects = fabric.pe [spatial] (
+        %p0 = %load0_done : !fabric.bits<0>,
+        %p1 = %load1_done : !fabric.bits<0>,
+        %p2 = %load2_done : !fabric.bits<0>,
+        %p3 = %load3_done : !fabric.bits<0>,
+        %p4 = %store0_done : !fabric.bits<0>,
+        %p5 = %store1_done : !fabric.bits<0>) -> !fabric.bits<0> {
+      fabric.fu(
+          %f0 = %p0 : !fabric.bits<0>, %f1 = %p1 : !fabric.bits<0>,
+          %f2 = %p2 : !fabric.bits<0>, %f3 = %p3 : !fabric.bits<0>,
+          %f4 = %p4 : !fabric.bits<0>, %f5 = %p5 : !fabric.bits<0>)
+          -> !fabric.bits<0> {
+        %done0, %done1, %done2, %done3, %done4, %done5 =
+            fabric.op [@dataflow.sync] (%f0, %f1, %f2, %f3, %f4, %f5)
+            {sw_configs = {bitmask = "111111"}}
+            : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>,
+               !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>)
+              -> (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>,
+                  !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>)
+        fabric.yield %done0 : !fabric.bits<0>
+      }
+    }
+    fabric.pe [spatial] (
+        %pc = %effects : !fabric.bits<0> to !fabric.bits<32>,
+        %pv = %sum1 : !fabric.bits<32>) -> !fabric.bits<32> {
+      fabric.fu(
+          %token = %pc : !fabric.bits<32> to !fabric.bits<0>,
+          %value = %pv : !fabric.bits<32>) -> !fabric.bits<32> {
+        %done, %published = fabric.op [@dataflow.sync] (%token, %value)
+            {sw_configs = {bitmask = "11"}}
+            : (!fabric.bits<0>, !fabric.bits<32>)
+              -> (!fabric.bits<0>, !fabric.bits<32>)
+        fabric.yield %published : !fabric.bits<32>
       }
     }
     fabric.yield

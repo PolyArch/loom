@@ -12,7 +12,9 @@
 // HARDWARE-DAG: store_group_size = 9 : i32
 // HARDWARE-DAG: fabric.op [@dataflow.stream]
 // HARDWARE-DAG: fabric.op [@dataflow.carry]
+// HARDWARE-DAG: fabric.op [@dataflow.demux]
 // HARDWARE-DAG: fabric.op [@dataflow.invariant]
+// HARDWARE-DAG: fabric.op [@dataflow.sync]
 // HARDWARE-DAG: fabric.op [@dataflow.constant]
 // HARDWARE-DAG: 0x0000ffef
 // HARDWARE-DAG: 0x00000018
@@ -43,7 +45,9 @@
 // MAPPING-DAG: "hardware": "shared_quantized_window_adg"
 // MAPPING-DAG: "operation": "dataflow.stream"
 // MAPPING-DAG: "operation": "dataflow.carry"
+// MAPPING-DAG: "operation": "dataflow.demux"
 // MAPPING-DAG: "operation": "dataflow.invariant"
+// MAPPING-DAG: "operation": "dataflow.sync"
 // MAPPING-DAG: "unplaced_records": 0
 // MAPPING-DAG: "unrouted_edges": 0
 // MAPPING-DAG: "status": "pass"
@@ -53,12 +57,14 @@ module {
   dataflow.graph.func private @quantized_window_pressure(
       %ctrl: none,
       %idx: index,
+      %x: i32,
+      %y: i32,
       %in: memref<?xi8>,
       %out: memref<?xi8>,
-      %out32: memref<?xi32>,
-      %x: i32,
-      %y: i32)
-      -> none {
+      %out32: memref<?xi32>)
+      -> none
+      attributes {input_segments = array<i32: 3, 0, 3>,
+                  result_segments = array<i32: 0, 0, 0>} {
     %c0 = dataflow.constant %ctrl {const_value = 0 : index} : index
     %c1 = dataflow.constant %ctrl {const_value = 1 : index} : index
     %c2 = dataflow.constant %ctrl {const_value = 2 : index} : index
@@ -70,6 +76,8 @@ module {
     %loop_idx, %rwc = dataflow.stream %i0, %i3, %i1 step add while slt : i32
     %stable_x = dataflow.invariant %rwc, %x : i32
     %carried = dataflow.carry %rwc, %stable_x, %next : i32
+    %carried_lanes:2 = dataflow.demux %rwc, %carried
+        : (i1, i32) -> (i32, i32)
     %next = arith.addi %carried, %one : i32
     %loop_adjusted = arith.addi %loop_idx, %next : i32
     %a0, %a0_done = dataflow.load %in[%idx] %ctrl : memref<?xi8>
@@ -98,6 +106,14 @@ module {
     %store0 = dataflow.store %out[%c0] %m0 %ctrl : memref<?xi8>
     %store1 = dataflow.store %out[%c1] %m1 %ctrl : memref<?xi8>
     %store2 = dataflow.store %out32[%c2] %mux3 %ctrl : memref<?xi32>
-    dataflow.graph.return %ctrl : none
+    %reads:4 = dataflow.sync %a0_done, %a1_done, %a2_done, %a3_done
+        : (none, none, none, none) -> (none, none, none, none)
+    %writes:3 = dataflow.sync %store0, %store1, %store2
+        : (none, none, none) -> (none, none, none)
+    %memory_done:2 = dataflow.sync %reads#0, %writes#0
+        : (none, none) -> (none, none)
+    %retired:2 = dataflow.sync %memory_done#0, %carried_lanes#0
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return %retired#0 : none
   }
 }

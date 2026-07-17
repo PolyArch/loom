@@ -5,49 +5,48 @@
 // RUN: FileCheck %s --check-prefix=CSV < %t.mapping.csv
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
 
-// CSV: rle_decode,shared_memory_reduction_adg,rle_decode__rle_decode__shared_memory_reduction_adg,6,4,0,0,pass
+// CSV: rle_decode,shared_memory_reduction_adg,rle_decode__rle_decode__shared_memory_reduction_adg,10,15,0,0,pass
 
 // JSON-DAG: "status": "pass"
 // JSON-DAG: "hardware": "shared_memory_reduction_adg"
 // JSON-DAG: "operation": "arith.addi"
 // JSON-DAG: "operation": "arith.cmpi"
+// JSON-DAG: "operation": "arith.select"
 // JSON-DAG: "operation": "dataflow.load"
 // JSON-DAG: "operation": "dataflow.store"
+// JSON-DAG: "operation": "dataflow.mux"
 // JSON-NOT: "resource_pressure"
 
 module {
   dataflow.graph.func private @rle_decode(
       %ctrl: none,
-      %start: index,
-      %end: index,
-      %step: index,
-      %values: !llvm.ptr,
-      %counts: !llvm.ptr,
+      %index: index,
+      %write: i32,
       %zero: i32,
-      %output: !llvm.ptr,
-      %write_start: i32) -> (none, i32) {
-    %final = scf.for %i = %start to %end step %step iter_args(%write = %write_start) -> (i32) {
-      %values_mem = builtin.unrealized_conversion_cast %values : !llvm.ptr to memref<?xi32>
-      %value, %value_done = dataflow.load %values_mem[%i] %ctrl : memref<?xi32>
-      %counts_mem = builtin.unrealized_conversion_cast %counts : !llvm.ptr to memref<?xi32>
-      %count, %count_done = dataflow.load %counts_mem[%i] %ctrl : memref<?xi32>
-      %empty = arith.cmpi eq, %count, %zero : i32
-      %next_write = scf.if %empty -> (i32) {
-        scf.yield %write : i32
-      } else {
-        %limit_i32 = arith.addi %write, %count : i32
-        %write_index = arith.index_cast %write : i32 to index
-        %write_index_0 = arith.index_cast %write : i32 to index
-        %count_index_0 = arith.index_cast %count : i32 to index
-        %limit = arith.addi %write_index_0, %count_index_0 : index
-        scf.forall (%j) = (%write_index) to (%limit) step (1) {
-          %output_mem = builtin.unrealized_conversion_cast %output : !llvm.ptr to memref<?xi32>
-          %stored = dataflow.store %output_mem[%j] %value %ctrl : memref<?xi32>
-        }
-        scf.yield %limit_i32 : i32
-      }
-      scf.yield %next_write : i32
-    } {loom.stream_step_kind = 0 : i32, loom.stream_predicate = 2 : i64}
-    dataflow.graph.return %ctrl, %final : none, i32
+      %values: memref<?xi32>,
+      %counts: memref<?xi32>,
+      %output: memref<?xi32>) -> (none, i32)
+      attributes {input_segments = array<i32: 3, 0, 3>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %value, %value_done = dataflow.load %values[%index] %ctrl
+        : memref<?xi32>
+    %count, %count_done = dataflow.load %counts[%index] %ctrl
+        : memref<?xi32>
+    %empty = arith.cmpi eq, %count, %zero : i32
+    %limit = arith.addi %write, %count : i32
+    %next_write = arith.select %empty, %write, %limit : i32
+    %write_index = arith.index_cast %write : i32 to index
+    %loaded:2 = dataflow.sync %value_done, %count_done
+        : (none, none) -> (none, none)
+    %paths:2 = dataflow.demux %empty, %loaded#0
+        : (i1, none) -> (none, none)
+    %stored = dataflow.store %output[%write_index] %value %paths#0
+        : memref<?xi32>
+    %retired = dataflow.mux %empty, %stored, %paths#1
+        : (i1, none, none) -> none
+    %published:2 = dataflow.sync %retired, %next_write
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%published#1 : i32) streams() memories()
+        complete(%published#0 : none)
   }
 }

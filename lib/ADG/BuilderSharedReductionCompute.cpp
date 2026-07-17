@@ -960,6 +960,7 @@ void loom::adg::detail::addSharedReductionComputeResources(
                          {"pg", "store_done0", "!fabric.bits<0>", ""},
                          {"ph", "sync_lane6", "!fabric.bits<0>", ""},
                          {"pi", "sync_lane7", "!fabric.bits<0>", ""}};
+  vectorSyncPe.resultNames = {"vector_sync_done"};
   vectorSyncPe.resultTypes = {"!fabric.bits<0>"};
   vectorSyncPe.fus.push_back(FuSpec{
       {{"fa", "pa", "!fabric.bits<0>", ""},
@@ -991,6 +992,7 @@ void loom::adg::detail::addSharedReductionComputeResources(
   PeSpec syncPe;
   syncPe.inputs = {{"pc", "done0", "!fabric.bits<0>", ""},
                    {"pd", "sync_aux_done", "!fabric.bits<0>", ""}};
+  syncPe.resultNames = {"sync_done"};
   syncPe.resultTypes = {"!fabric.bits<0>"};
   syncPe.fus.push_back(
       FuSpec{{{"fc", "pc", "!fabric.bits<0>", ""},
@@ -1005,6 +1007,42 @@ void loom::adg::detail::addSharedReductionComputeResources(
                            {{"bitmask", "11"}}}},
              {"sync_done0"}});
   module.addPe(std::move(syncPe));
+
+  auto addTypedSyncPe = [&](llvm::StringRef name,
+                            llvm::StringRef boundaryType,
+                            llvm::StringRef semanticType) {
+    std::string control = (name + "_control").str();
+    std::string value = (name + "_value").str();
+    std::string rawDone = (name + "_done_wide").str();
+    std::string done = (name + "_done").str();
+    std::string published = (name + "_published").str();
+    PeSpec pe;
+    pe.inputs = {{"pc", control, "!fabric.bits<0>", boundaryType.str()},
+                 {"pv", value, boundaryType.str(), ""}};
+    pe.resultNames = {rawDone, published};
+    pe.resultTypes = {boundaryType.str(), boundaryType.str()};
+    pe.fus.push_back(
+        FuSpec{{{"control", "pc", boundaryType.str(), "!fabric.bits<0>"},
+                {"value", "pv", boundaryType.str(),
+                 boundaryType == semanticType ? "" : semanticType.str()}},
+               {boundaryType.str(), boundaryType.str()},
+               {FabricOpSpec{{"done", "published"},
+                             {"dataflow.sync"},
+                             {"control", "value"},
+                             {"!fabric.bits<0>", semanticType.str()},
+                             {"!fabric.bits<0>", semanticType.str()},
+                             {},
+                             {{"bitmask", "11"}}}},
+               {"done", "published"},
+               {"!fabric.bits<0>", semanticType.str()}});
+    module.addPe(std::move(pe));
+    addFifo(module, done, rawDone, boundaryType, "!fabric.bits<0>", 1, true,
+            true);
+  };
+  addTypedSyncPe("typed_sync_i1", "!fabric.bits<32>", "!fabric.bits<1>");
+  addTypedSyncPe("typed_sync_i8", "!fabric.bits<32>", "!fabric.bits<8>");
+  addTypedSyncPe("typed_sync_i32", "!fabric.bits<32>", "!fabric.bits<32>");
+  addTypedSyncPe("typed_sync_i64", "!fabric.bits<64>", "!fabric.bits<64>");
 
   PeSpec addrAddPe;
   addrAddPe.inputs = {{"pa", "addr_add_lhs", "!fabric.bits<32>", ""},

@@ -487,9 +487,13 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
        "scaled_reduction", "scaled_reduction_aux", "mac_result", "mac_result1",
        "mac_result2", "mac_result3", "signed_min", "signed_max"});
   addUniformSwitch(module, {"vector_sync_mid"},
-                   {"done1", "store_done0", "control_token_muxed_token"},
+                   {"done0", "done1", "store_done0",
+                    "control_token_demux_false_token",
+                    "control_token_muxed_token"},
                    "!fabric.bits<0>");
-  addUniformSwitch(module, {"sync_head"}, {"done0", "store_done0"},
+  addUniformSwitch(module, {"sync_head"},
+                   {"done0", "store_done0",
+                    "control_token_demux_false_token"},
                    "!fabric.bits<0>");
   addUniformSwitch(module, {"sync_tail"}, {"store_done0", "done2"},
                    "!fabric.bits<0>");
@@ -502,6 +506,52 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addUniformSwitch(module, {"sync_lane7"},
                    {"done2", "done5", "control_token_muxed_token"},
                    "!fabric.bits<0>");
+  const std::initializer_list<llvm::StringRef> typedSyncControls = {
+      "ctrl",       "done0",       "done1",       "done2",
+      "done3",      "done4",       "done5",       "store_done0",
+      "store_done1", "vector_sync_done", "sync_done",
+      "control_token_demux_false_token",
+      "control_token_demux_true_token", "control_token_muxed_token"};
+  addUniformSwitch(module, {"typed_sync_i1_control"}, typedSyncControls,
+                   "!fabric.bits<0>");
+  addUniformSwitch(module, {"typed_sync_i8_control"}, typedSyncControls,
+                   "!fabric.bits<0>");
+  addUniformSwitch(module, {"typed_sync_i32_control"}, typedSyncControls,
+                   "!fabric.bits<0>");
+  addUniformSwitch(module, {"typed_sync_i64_control"}, typedSyncControls,
+                   "!fabric.bits<0>");
+  const std::initializer_list<llvm::StringRef> typedSyncValues32 = {
+      "i32a",          "i32b",          "i32c",
+      "i32d",          "idx",           "aux_idx",
+      "running",       "carried_scan",  "bit_carry",
+      "state_carry",   "data0",         "data1",
+      "data2",         "data3",         "data4",
+      "data5",         "int_sum",       "addr_sum",
+      "int_product",   "int_product_aux", "int_div0",
+      "int_div1",      "int_rem",       "uint_rem",
+      "int_or",        "int_xor",       "aux_xor",
+      "logic_shifted", "addr_shifted",  "logic_masked",
+      "addr_masked",   "aux_masked",    "selected",
+      "rotated",       "packed_sat",    "leading_zero_count",
+      "cast0_result",  "cast1_result",  "cast2_result",
+      "cast3_result",  "int_extui",     "fp_running",
+      "fp_running_aux", "fp_diff",      "fp_diff_aux",
+      "fp_negated",    "scaled_reduction", "scaled_reduction_aux",
+      "control_demux_false", "control_demux_true", "compute_demux_false",
+      "compute_demux_true", "cmpi_pred",
+      "cmpi_pred_aux", "cmpf_pred"};
+  addUniformSwitch(module, {"typed_sync_i1_value"}, typedSyncValues32,
+                   "!fabric.bits<32>");
+  addUniformSwitch(module, {"typed_sync_i8_value"}, typedSyncValues32,
+                   "!fabric.bits<32>");
+  addUniformSwitch(module, {"typed_sync_i32_value"}, typedSyncValues32,
+                   "!fabric.bits<32>");
+  addUniformSwitch(
+      module, {"typed_sync_i64_value"},
+      {"i64a", "i64b", "i64c", "wide_zext0", "wide_zext1",
+       "wide_product", "wide_signed_quotient", "wide_remainder",
+       "wide_sum", "wide_sum_aux", "wide_shifted", "cmpi64_pred"},
+      "!fabric.bits<64>");
   addSingleResultBits32Switch("addr_add_lhs",
                               {"idx", "i32a", "i32b", "i32c", "squared_data",
                                "int_product", "running", "reduction_scale",
@@ -524,7 +574,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "addr_unscale_lhs", {"i32a", "addr_shifted", "bit_carry", "data0",
                            "squared_data", "int_product", "int_product_aux"});
   addSingleResultBits32Switch("addr_unscale_rhs",
-                              {"i32b", "addr_shift_const", "reduction_scale",
+                              {"i32b", "addr_shifted", "addr_shift_const",
+                               "reduction_scale",
                                "fp_invariant", "bit_invariant",
                                "bit_invariant_aux0", "bit_invariant_aux1"});
   addSingleResultBits32Switch("logic_shift_lhs",
@@ -546,8 +597,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "addr_shift_rhs",
       {"i32b", "reduction_scale", "bit_invariant", "bit_invariant_aux0",
        "bit_invariant_aux1", "addr_shift_const", "addr_aux_const",
-       "addr_bias_const", "aux_masked", "aux_xor", "aux_invariant0",
-       "aux_invariant1", "aux_invariant2", "wide_truncated",
+       "addr_bias_const", "fp_invariant", "aux_masked", "aux_xor",
+       "aux_invariant0", "aux_invariant1", "aux_invariant2", "wide_truncated",
        "wide_truncated_aux"});
   addSingleResultBits32Switch("load0_addr", {"idx",
                                              "addr_masked",

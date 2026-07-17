@@ -22,8 +22,11 @@
 
 module {
   dataflow.graph.func private @i64_modmul(
-      %ctrl: none, %input_a: memref<?xi32>, %input_b: memref<?xi32>,
-      %modulus: i64, %output: memref<?xi32>, %idx: index) -> none {
+      %ctrl: none, %modulus: i64, %idx: index,
+      %input_a: memref<?xi32>, %input_b: memref<?xi32>,
+      %output: memref<?xi32>) -> none
+      attributes {input_segments = array<i32: 2, 0, 3>,
+                  result_segments = array<i32: 0, 0, 0>} {
     %a, %a_done = dataflow.load %input_a[%idx] %ctrl : memref<?xi32>
     %a64 = llvm.zext %a : i32 to i64
     %b, %b_done = dataflow.load %input_b[%idx] %ctrl : memref<?xi32>

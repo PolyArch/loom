@@ -542,15 +542,18 @@ private:
 
   void finalizeReturn(::dataflow::GraphReturnOp returnOp,
                       const RegionResult &result) {
-    ::llvm::SmallVector<::mlir::Value, 8> candidates{result.execution};
-    for (const MemoryFrontier &frontier : result.memory)
-      candidates.push_back(frontier.read);
+    ::llvm::SmallVector<::mlir::Value, 8> candidates;
     ::mlir::Value start = graph.getStart();
-    bool hasDerivedFrontier = ::llvm::any_of(
-        candidates, [&](::mlir::Value candidate) { return candidate != start; });
+    if (result.execution != start)
+      candidates.push_back(result.execution);
+    for (const MemoryFrontier &frontier : result.memory)
+      if (frontier.read != start)
+        candidates.push_back(frontier.read);
     for (::mlir::Value witness : returnOp.getComplete())
-      if (witness != start || !hasDerivedFrontier)
+      if (witness != start)
         candidates.push_back(witness);
+    if (candidates.empty())
+      candidates.push_back(start);
     ::llvm::SmallVector<::mlir::Value, 4> reduced =
         reduceEvents(candidates);
     assert(!reduced.empty() && "graph retirement must have a witness");

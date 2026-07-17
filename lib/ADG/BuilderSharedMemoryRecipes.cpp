@@ -776,7 +776,9 @@ ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {
   config.maxCount = 11;
   config.streamCount = 4;
   config.carryCount = 8;
+  config.demuxCount = 1;
   config.invariantCount = 8;
+  config.typedSync32Count = 1;
   config.constantHexValues = {
       "0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004",
       "0x00000008", "0x0000000f", "0x00000010", "0x00000018", "0x0000001b",
@@ -837,6 +839,7 @@ ModuleBuilder loom::adg::buildSharedSignalWindowAdg() {
   config.syncArity = 20;
   config.streamCount = 4;
   config.carryCount = 28;
+  config.demuxCount = 1;
   config.gateCount = 28;
   config.invariantCount = 12;
   config.typedSync32Count = 4;

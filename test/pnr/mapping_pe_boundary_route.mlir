@@ -4,7 +4,7 @@
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
 
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// CSV-NEXT: pe_boundary_route,pe_boundary_route_adg,pe_boundary_route__pe_boundary_route__pe_boundary_route_adg,2,1,0,0,pass,mapped software graph to fabric resources
+// CSV-NEXT: pe_boundary_route,pe_boundary_route_adg,pe_boundary_route__pe_boundary_route__pe_boundary_route_adg,3,2,0,0,pass,mapped software graph to fabric resources
 
 // JSON-DAG: "status": "pass"
 // JSON-DAG: "segment_kind": "module_path"
@@ -25,7 +25,8 @@ module {
     dataflow.graph.return %ctrl, %product : none, i32
   }
 
-  fabric.module @pe_boundary_route_adg(%lhs : !fabric.bits<32>,
+  fabric.module @pe_boundary_route_adg(%ctrl : !fabric.bits<0>,
+                                       %lhs : !fabric.bits<32>,
                                        %rhs : !fabric.bits<32>) {
     %rhs_to_sum, %rhs_to_product = fabric.switch [spatial] %rhs
         [{connectivity_table = ["1", "1"]}]
@@ -42,13 +43,19 @@ module {
       }
     }
     fabric.pe [spatial] (%px = %sum : !fabric.bits<32>,
-                         %py = %rhs_to_product : !fabric.bits<32>)
+                         %py = %rhs_to_product : !fabric.bits<32>,
+                         %pc = %ctrl : !fabric.bits<0> to !fabric.bits<32>)
         -> !fabric.bits<32> {
       %fu_product = fabric.fu(%fx = %px : !fabric.bits<32>,
-                              %fy = %py : !fabric.bits<32>)
+                              %fy = %py : !fabric.bits<32>,
+                              %token = %pc : !fabric.bits<32> to !fabric.bits<0>)
           -> !fabric.bits<32> {
         %value = fabric.op [@arith.muli] (%fx, %fy)
                  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        %done, %published = fabric.op [@dataflow.sync] (%token, %value)
+            {sw_configs = {bitmask = "11"}}
+            : (!fabric.bits<0>, !fabric.bits<32>)
+              -> (!fabric.bits<0>, !fabric.bits<32>)
         fabric.yield %value : !fabric.bits<32>
       }
     }

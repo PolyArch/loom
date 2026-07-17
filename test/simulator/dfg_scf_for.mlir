@@ -276,8 +276,10 @@ module {
   }
 
   dataflow.graph.func private @structured_if_effect_batched(
-      %ctrl: none, %cond: i1, %slot: index, %mem: memref<?xi32>,
-      %value: i32) -> none {
+      %ctrl: none, %cond: i1, %slot: index, %value: i32,
+      %mem: memref<?xi32>) -> none
+      attributes {input_segments = array<i32: 3, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
     scf.if %cond {
       %stored = dataflow.store %mem[%slot] %value %ctrl : memref<?xi32>
     }
@@ -340,7 +342,9 @@ module {
 
   dataflow.graph.func private @structured_for_captures_dynamic_arg(
       %ctrl: none, %slot: index, %lb: i64, %ub: i64, %step: i64,
-      %init: i32, %addend: i32, %mem: memref<?xi32>) -> none {
+      %init: i32, %addend: i32, %mem: memref<?xi32>) -> none
+      attributes {input_segments = array<i32: 6, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
     %sum = scf.for %i = %lb to %ub step %step iter_args(%acc = %init)
         -> (i32) : i64 {
       %next = arith.addi %acc, %addend : i32
@@ -363,8 +367,10 @@ module {
   }
 
   dataflow.graph.func private @structured_for_memref_capture(
-      %ctrl: none, %lb: i64, %ub: i64, %step: i64, %mem: memref<?xi32>,
-      %init: i32) -> (none, i32) {
+      %ctrl: none, %lb: i64, %ub: i64, %step: i64, %init: i32,
+      %mem: memref<?xi32>) -> (none, i32)
+      attributes {input_segments = array<i32: 4, 0, 1>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %sum = scf.for %i = %lb to %ub step %step iter_args(%acc = %init)
         -> (i32) : i64 {
       %ptr = builtin.unrealized_conversion_cast %mem : memref<?xi32> to !llvm.ptr
@@ -376,7 +382,9 @@ module {
 
   dataflow.graph.func private @structured_for_blocks_partial_dynamic_capture(
       %ctrl: none, %slot: index, %lb: i64, %ub: i64, %step: i64,
-      %init: i32, %lhs: i32, %rhs: i32, %mem: memref<?xi32>) -> none {
+      %init: i32, %lhs: i32, %rhs: i32, %mem: memref<?xi32>) -> none
+      attributes {input_segments = array<i32: 7, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
     %addend = arith.addi %lhs, %rhs : i32
     %sum = scf.for %i = %lb to %ub step %step iter_args(%acc = %init)
         -> (i32) : i64 {
@@ -388,8 +396,10 @@ module {
   }
 
   dataflow.graph.func private @structured_for_pointer_memory(
-      %ctrl: none, %mem: !llvm.ptr, %lb: i64, %ub: i64, %step: i64,
-      %init: i32) -> (none, i32) {
+      %ctrl: none, %lb: i64, %ub: i64, %step: i64, %init: i32,
+      %mem: !llvm.ptr) -> (none, i32)
+      attributes {input_segments = array<i32: 4, 0, 1>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %view = builtin.unrealized_conversion_cast %mem
         : !llvm.ptr to memref<?xi32>
     %sum = scf.for %i = %lb to %ub step %step iter_args(%acc = %init)
@@ -406,8 +416,10 @@ module {
   }
 
   dataflow.graph.func private @structured_for_pointer_select_memory(
-      %ctrl: none, %cond: i1, %lhs: !llvm.ptr, %rhs: !llvm.ptr,
-      %slot: index) -> (none, i32) {
+      %ctrl: none, %cond: i1, %slot: index, %lhs: !llvm.ptr,
+      %rhs: !llvm.ptr) -> (none, i32)
+      attributes {input_segments = array<i32: 2, 0, 2>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %selected = llvm.select %cond, %lhs, %rhs : i1, !llvm.ptr
     %view = builtin.unrealized_conversion_cast %selected
         : !llvm.ptr to memref<?xi32>
@@ -417,7 +429,9 @@ module {
 
   dataflow.graph.func private @structured_if_nested_for_pointer_memory(
       %ctrl: none, %cond: i1, %lb: i64, %ub: i64, %step: i64,
-      %mem: !llvm.ptr, %init: f32) -> (none, f32) {
+      %init: f32, %mem: !llvm.ptr) -> (none, f32)
+      attributes {input_segments = array<i32: 5, 0, 1>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %sum = scf.if %cond -> (f32) {
       %inner = scf.for %i = %lb to %ub step %step iter_args(%acc = %init)
           -> (f32) : i64 {
@@ -438,8 +452,11 @@ module {
 
   dataflow.graph.func private @structured_for_autocorr_slice(
       %ctrl: none, %lb: i64, %ub: i64, %step: i64, %skip_lag: i64,
-      %zero: f32, %min_bound: i32, %input: !llvm.ptr, %mask: i64,
-      %output: !llvm.ptr, %dec: i32, %remaining_init: i32) -> (none, i32) {
+      %zero: f32, %min_bound: i32, %mask: i64, %dec: i32,
+      %remaining_init: i32, %input: !llvm.ptr, %output: !llvm.ptr)
+      -> (none, i32)
+      attributes {input_segments = array<i32: 9, 0, 2>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %remaining = scf.for %lag = %lb to %ub step %step
         iter_args(%remaining_arg = %remaining_init) -> (i32) : i64 {
       %skip = arith.cmpi eq, %lag, %skip_lag : i64
@@ -481,8 +498,10 @@ module {
   }
 
   dataflow.graph.func private @structured_forall_store(
-      %ctrl: none, %lb: index, %ub: index, %mem: memref<?xi32>, %addend: i32)
-      -> none {
+      %ctrl: none, %lb: index, %ub: index, %addend: i32,
+      %mem: memref<?xi32>) -> none
+      attributes {input_segments = array<i32: 3, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
     %one = dataflow.constant %ctrl {const_value = 1 : index} : index
     scf.for %i = %lb to %ub step %one {
       %value, %done = dataflow.load %mem[%i] %ctrl : memref<?xi32>
@@ -493,8 +512,10 @@ module {
   }
 
   dataflow.graph.func private @structured_forall_pointer_capture_memory(
-      %ctrl: none, %stride: i64, %src: !llvm.ptr, %dst: !llvm.ptr,
-      %row: index) -> none {
+      %ctrl: none, %stride: i64, %row: index, %src: !llvm.ptr,
+      %dst: !llvm.ptr) -> none
+      attributes {input_segments = array<i32: 2, 0, 2>,
+                  result_segments = array<i32: 0, 0, 0>} {
     %row64 = arith.index_cast %row : index to i64
     %base = arith.muli %row64, %stride : i64
     %base_index = arith.index_cast %base : i64 to index

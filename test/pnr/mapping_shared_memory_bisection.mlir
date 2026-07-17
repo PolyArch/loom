@@ -21,15 +21,17 @@
 module {
   dataflow.graph.func private @bisection_step(
       %ctrl: none,
+      %half: f32,
+      %zero: f32,
+      %index: index,
       %input_a: !llvm.ptr,
       %input_b: !llvm.ptr,
-      %half: f32,
       %input_fa: !llvm.ptr,
       %input_fc: !llvm.ptr,
-      %zero: f32,
       %output_a: !llvm.ptr,
-      %output_b: !llvm.ptr,
-      %index: index) -> none {
+      %output_b: !llvm.ptr) -> none
+      attributes {input_segments = array<i32: 3, 0, 6>,
+                  result_segments = array<i32: 0, 0, 0>} {
     %out_b = builtin.unrealized_conversion_cast %output_b : !llvm.ptr to memref<?xf32>
     %out_a = builtin.unrealized_conversion_cast %output_a : !llvm.ptr to memref<?xf32>
     %fc = builtin.unrealized_conversion_cast %input_fc : !llvm.ptr to memref<?xf32>

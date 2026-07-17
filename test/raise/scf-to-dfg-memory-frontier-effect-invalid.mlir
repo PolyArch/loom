@@ -11,7 +11,9 @@
 llvm.func @side_effect()
 
 dataflow.graph.func private @would_be_rewritten(
-    %start: none, %a: memref<?xi32>, %index: index) -> none {
+    %start: none, %index: index, %a: memref<?xi32>) -> none
+    attributes {input_segments = array<i32: 1, 0, 1>,
+                result_segments = array<i32: 0, 0, 0>} {
   %value = memref.load %a[%index] : memref<?xi32>
   dataflow.graph.return %start : none
 }

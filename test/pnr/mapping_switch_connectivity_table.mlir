@@ -8,15 +8,14 @@
 // RUN: FileCheck %s --check-prefix=ALLOW-JSON < %t.allowed.json
 
 // FORBID-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// FORBID-CSV-NEXT: switch_forbidden,switch_forbidden_adg,switch_forbidden__switch_route__switch_forbidden_adg,2,0,1,0,fail,unrouted software edges lack Fabric ADG connectivity
+// FORBID-CSV-NEXT: switch_forbidden,switch_forbidden_adg,switch_forbidden__switch_route__switch_forbidden_adg,3,2,1,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // FORBID-JSON-DAG: "status": "fail"
-// FORBID-JSON-DAG: "routed_edges": 0
+// FORBID-JSON-DAG: "routed_edges": 2
 // FORBID-JSON-DAG: "unrouted_edges": 1
-// FORBID-JSON-DAG: "routes": []
 
 // ALLOW-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// ALLOW-CSV-NEXT: switch_allowed,switch_allowed_adg,switch_allowed__switch_route__switch_allowed_adg,2,1,0,0,pass,mapped software graph to fabric resources
+// ALLOW-CSV-NEXT: switch_allowed,switch_allowed_adg,switch_allowed__switch_route__switch_allowed_adg,3,3,0,0,pass,mapped software graph to fabric resources
 
 // ALLOW-JSON-DAG: "status": "pass"
 // ALLOW-JSON-DAG: "segment_kind": "resource_edge"
@@ -31,9 +30,12 @@
 // ALLOW-JSON-NOT: ".in"
 
 module {
-  dataflow.graph.func private @switch_route(%ctrl: none, %mem: memref<?xi32>,
-                                            %idx: index, %rhs: i32)
-      -> (none, i32) {
+  dataflow.graph.func private @switch_route(%ctrl: none, %idx: index,
+                                            %rhs: i32,
+                                            %mem: memref<?xi32>)
+      -> (none, i32)
+      attributes {input_segments = array<i32: 2, 0, 1>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %data, %done = dataflow.load %mem[%idx] %ctrl : memref<?xi32>
     %sum = arith.addi %data, %rhs : i32
     dataflow.graph.return %done, %sum : none, i32
@@ -56,12 +58,18 @@ module {
          : (!fabric.bits<32>, !fabric.bits<32>)
         -> (!fabric.bits<32>, !fabric.bits<32>)
     fabric.pe [spatial] (%lhs = %to_add : !fabric.bits<32>,
-                         %right = %rhs_to_pe : !fabric.bits<32>)
+                         %right = %rhs_to_pe : !fabric.bits<32>,
+                         %pc = %done : !fabric.bits<0> to !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>,
-                %b = %right : !fabric.bits<32>) -> () {
+                %b = %right : !fabric.bits<32>,
+                %token = %pc : !fabric.bits<32> to !fabric.bits<0>) -> () {
         %sum = fabric.op [@arith.addi] (%a, %b)
                : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        %retired, %published = fabric.op [@dataflow.sync] (%token, %sum)
+            {sw_configs = {bitmask = "11"}}
+            : (!fabric.bits<0>, !fabric.bits<32>)
+              -> (!fabric.bits<0>, !fabric.bits<32>)
         fabric.yield
       }
     }
@@ -85,12 +93,18 @@ module {
          : (!fabric.bits<32>, !fabric.bits<32>)
         -> (!fabric.bits<32>, !fabric.bits<32>)
     fabric.pe [spatial] (%lhs = %to_add : !fabric.bits<32>,
-                         %right = %rhs_to_pe : !fabric.bits<32>)
+                         %right = %rhs_to_pe : !fabric.bits<32>,
+                         %pc = %done : !fabric.bits<0> to !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%a = %lhs : !fabric.bits<32>,
-                %b = %right : !fabric.bits<32>) -> () {
+                %b = %right : !fabric.bits<32>,
+                %token = %pc : !fabric.bits<32> to !fabric.bits<0>) -> () {
         %sum = fabric.op [@arith.addi] (%a, %b)
                : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        %retired, %published = fabric.op [@dataflow.sync] (%token, %sum)
+            {sw_configs = {bitmask = "11"}}
+            : (!fabric.bits<0>, !fabric.bits<32>)
+              -> (!fabric.bits<0>, !fabric.bits<32>)
         fabric.yield
       }
     }

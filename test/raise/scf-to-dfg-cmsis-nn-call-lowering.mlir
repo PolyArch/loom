@@ -7,11 +7,6 @@ module {
 
   dataflow.graph.func private @g_cmsis_vec_mat_mult(
       %ctrl: none,
-      %lhs: !llvm.ptr,
-      %rhs: !llvm.ptr,
-      %kernel_sum: !llvm.ptr,
-      %bias: !llvm.ptr,
-      %dst: !llvm.ptr,
       %lhs_offset: i32,
       %dst_offset: i32,
       %dst_multiplier: i32,
@@ -21,7 +16,14 @@ module {
       %activation_min: i32,
       %activation_max: i32,
       %address_offset: i32,
-      %rhs_offset: i32) -> (none, i32) {
+      %rhs_offset: i32,
+      %lhs: !llvm.ptr,
+      %rhs: !llvm.ptr,
+      %kernel_sum: !llvm.ptr,
+      %bias: !llvm.ptr,
+      %dst: !llvm.ptr) -> (none, i32)
+      attributes {input_segments = array<i32: 10, 0, 5>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %status = llvm.call @arm_nn_vec_mat_mult_t_s8(
         %lhs, %rhs, %kernel_sum, %bias, %dst,
         %lhs_offset, %dst_offset, %dst_multiplier, %dst_shift,

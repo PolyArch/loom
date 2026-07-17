@@ -4,10 +4,10 @@
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
 
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// CSV-NEXT: shortest_route,shortest_route_adg,shortest_route__shortest_route__shortest_route_adg,2,1,0,0,pass,mapped software graph to fabric resources
+// CSV-NEXT: shortest_route,shortest_route_adg,shortest_route__shortest_route__shortest_route_adg,3,2,0,0,pass,mapped software graph to fabric resources
 
 // JSON-DAG: "status": "pass"
-// JSON-DAG: "routed_edges": 1
+// JSON-DAG: "routed_edges": 2
 // JSON-DAG: "unrouted_edges": 0
 // JSON-DAG: "register": "segment_count"
 // JSON-DAG: "target": "shortest_route__shortest_route__shortest_route_adg::route#0"
@@ -23,7 +23,8 @@ module {
     dataflow.graph.return %ctrl, %doubled : none, i32
   }
 
-  fabric.module @shortest_route_adg(%i32a : !fabric.bits<32>,
+  fabric.module @shortest_route_adg(%ctrl : !fabric.bits<0>,
+                                    %i32a : !fabric.bits<32>,
                                     %i32b : !fabric.bits<32>) {
     %i32b_to_source, %i32b_to_sink = fabric.switch [spatial] %i32b
         [{connectivity_table = ["1", "1"]}]
@@ -56,13 +57,19 @@ module {
         : (!fabric.bits<32>, !fabric.bits<8> to !fabric.bits<32>)
        -> !fabric.bits<32>
     fabric.pe [spatial] (%value = %joined : !fabric.bits<32>,
-                         %right = %i32b_to_sink : !fabric.bits<32>)
+                         %right = %i32b_to_sink : !fabric.bits<32>,
+                         %pc = %ctrl : !fabric.bits<0> to !fabric.bits<32>)
         -> !fabric.bits<32> {
       %fu_sum = fabric.fu(%lhs = %value : !fabric.bits<32>,
-                          %rhs = %right : !fabric.bits<32>)
+                          %rhs = %right : !fabric.bits<32>,
+                          %token = %pc : !fabric.bits<32> to !fabric.bits<0>)
           -> !fabric.bits<32> {
         %sum = fabric.op [@arith.addi] (%lhs, %rhs)
                : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        %done, %published = fabric.op [@dataflow.sync] (%token, %sum)
+            {sw_configs = {bitmask = "11"}}
+            : (!fabric.bits<0>, !fabric.bits<32>)
+              -> (!fabric.bits<0>, !fabric.bits<32>)
         fabric.yield %sum : !fabric.bits<32>
       }
     }

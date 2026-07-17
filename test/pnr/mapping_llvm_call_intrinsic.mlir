@@ -13,25 +13,25 @@
 // RUN: FileCheck %s --check-prefix=SADD16-JSON < %t.sadd16.json
 
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// CSV-NEXT: arm_qsub16,arm_intrinsic_adg,arm_qsub16__arm_qsub16__arm_intrinsic_adg,1,0,0,0,pass
+// CSV-NEXT: arm_qsub16,arm_intrinsic_adg,arm_qsub16__arm_qsub16__arm_intrinsic_adg,2,1,0,0,pass
 
 // JSON-DAG: "operation": "llvm.arm.qsub16"
 // JSON-DAG: "hardware": "arm_intrinsic_adg::fabric.op#0"
 
 // QSUB8-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// QSUB8-CSV-NEXT: arm_qsub8,arm_intrinsic_adg,arm_qsub8__arm_qsub8__arm_intrinsic_adg,1,0,0,0,pass
+// QSUB8-CSV-NEXT: arm_qsub8,arm_intrinsic_adg,arm_qsub8__arm_qsub8__arm_intrinsic_adg,2,1,0,0,pass
 
 // QSUB8-JSON-DAG: "operation": "llvm.arm.qsub8"
 // QSUB8-JSON-DAG: "hardware": "arm_intrinsic_adg::fabric.op#1"
 
 // QADD16-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// QADD16-CSV-NEXT: arm_qadd16,arm_intrinsic_adg,arm_qadd16__arm_qadd16__arm_intrinsic_adg,1,0,0,0,pass
+// QADD16-CSV-NEXT: arm_qadd16,arm_intrinsic_adg,arm_qadd16__arm_qadd16__arm_intrinsic_adg,2,1,0,0,pass
 
 // QADD16-JSON-DAG: "operation": "llvm.arm.qadd16"
 // QADD16-JSON-DAG: "hardware": "arm_intrinsic_adg::fabric.op#2"
 
 // SADD16-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// SADD16-CSV-NEXT: arm_sadd16,arm_intrinsic_adg,arm_sadd16__arm_sadd16__arm_intrinsic_adg,1,0,0,0,pass
+// SADD16-CSV-NEXT: arm_sadd16,arm_intrinsic_adg,arm_sadd16__arm_sadd16__arm_intrinsic_adg,2,1,0,0,pass
 
 // SADD16-JSON-DAG: "operation": "llvm.arm.sadd16"
 // SADD16-JSON-DAG: "hardware": "arm_intrinsic_adg::fabric.op#3"
@@ -65,7 +65,8 @@ module {
     dataflow.graph.return %ctrl, %packed : none, i32
   }
 
-  fabric.module @arm_intrinsic_adg(%i32a : !fabric.bits<32>,
+  fabric.module @arm_intrinsic_adg(%ctrl : !fabric.bits<0>,
+                                   %i32a : !fabric.bits<32>,
                                    %i32b : !fabric.bits<32>) {
     %a_qsub16, %a_qsub8, %a_qadd16, %a_sadd16 =
         fabric.switch [spatial] %i32a
@@ -79,7 +80,7 @@ module {
           : (!fabric.bits<32>)
             -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
                 !fabric.bits<32>)
-    fabric.pe [spatial] (%pa = %a_qsub16 : !fabric.bits<32>,
+    %qsub16 = fabric.pe [spatial] (%pa = %a_qsub16 : !fabric.bits<32>,
                          %pb = %b_qsub16 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%zero = %pa : !fabric.bits<32>,
@@ -89,7 +90,7 @@ module {
         fabric.yield %result : !fabric.bits<32>
       }
     }
-    fabric.pe [spatial] (%pa = %a_qsub8 : !fabric.bits<32>,
+    %qsub8 = fabric.pe [spatial] (%pa = %a_qsub8 : !fabric.bits<32>,
                          %pb = %b_qsub8 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%zero = %pa : !fabric.bits<32>,
@@ -99,7 +100,7 @@ module {
         fabric.yield %result : !fabric.bits<32>
       }
     }
-    fabric.pe [spatial] (%pa = %a_qadd16 : !fabric.bits<32>,
+    %qadd16 = fabric.pe [spatial] (%pa = %a_qadd16 : !fabric.bits<32>,
                          %pb = %b_qadd16 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%lhs = %pa : !fabric.bits<32>,
@@ -109,7 +110,7 @@ module {
         fabric.yield %result : !fabric.bits<32>
       }
     }
-    fabric.pe [spatial] (%pa = %a_sadd16 : !fabric.bits<32>,
+    %sadd16 = fabric.pe [spatial] (%pa = %a_sadd16 : !fabric.bits<32>,
                          %pb = %b_sadd16 : !fabric.bits<32>)
         -> !fabric.bits<32> {
       fabric.fu(%lhs = %pa : !fabric.bits<32>,
@@ -117,6 +118,24 @@ module {
         %result = fabric.op [@llvm.arm.sadd16] (%lhs, %rhs)
             : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
         fabric.yield %result : !fabric.bits<32>
+      }
+    }
+    %published_value = fabric.switch [spatial]
+        %qsub16, %qsub8, %qadd16, %sadd16
+        [{connectivity_table = ["1111"]}]
+        : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
+           !fabric.bits<32>) -> !fabric.bits<32>
+    fabric.pe [spatial] (
+        %pc = %ctrl : !fabric.bits<0> to !fabric.bits<32>,
+        %pv = %published_value : !fabric.bits<32>) -> !fabric.bits<32> {
+      fabric.fu(
+          %token = %pc : !fabric.bits<32> to !fabric.bits<0>,
+          %value = %pv : !fabric.bits<32>) -> !fabric.bits<32> {
+        %done, %published = fabric.op [@dataflow.sync] (%token, %value)
+            {sw_configs = {bitmask = "11"}}
+            : (!fabric.bits<0>, !fabric.bits<32>)
+              -> (!fabric.bits<0>, !fabric.bits<32>)
+        fabric.yield %published : !fabric.bits<32>
       }
     }
     fabric.yield
