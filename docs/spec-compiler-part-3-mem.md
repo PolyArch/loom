@@ -54,7 +54,7 @@ or graph completion from a hidden effect scan.
 
 ## 3. Basic Alias Partitions
 
-Partition identity is local to one `dataflow.graph.func` lowering run.
+Partition identity is local to one `dataflow.graph` lowering run.
 
 A canonical root is found by peeling an accepted side-effect-free view or
 one-input conversion bridge until reaching an explicit storage or boundary
