@@ -3,23 +3,16 @@
 //
 //     loom-lower-forall-to-thread       (module-level)
 //     loom-lower-for-to-graph           (module-level)
-//     --canonicalize                    (upstream)
-//     loom-lower-known-library-calls    (module-level)
-//     loom-lower-graph-memory           (module-level)
-//     loom-lower-graph-constants        (module-level)
-//     --canonicalize                    (upstream)
+//
+// `loom-lower-for-to-graph` owns the atomic publication transaction. It
+// stages structured candidates, runs graph finalization on a scratch module,
+// validates the native result, and publishes only the completed module.
 //
 // The forall-to-thread pass runs first so that the for-to-graph pass
 // sees scf.for ops already inside dataflow.thread bodies. The
-// canonicalizer between graph extraction and graph-region lowering cleans up
-// trivial dead bridge values before the recursive owner walks each graph.
-// graph-memory owns memory normalization, structured control, values, and
-// per-partition frontiers together. graph-constants then promotes remaining
-// top-level literals; nested literals were already gated by their recursive
-// execution context. The closing canonicalizer removes dead bridge and
-// projection values. graph-memory also constructs graph.return's explicit
-// retirement frontier from structural execution, value publication, and final
-// per-partition read frontiers.
+// The remaining lowering passes stay independently registered for focused
+// diagnostics and tests, but the standard pipeline does not rerun them after
+// publication.
 
 #include "Frontend/Lowering/Passes.h"
 
@@ -39,11 +32,6 @@ void registerLowerGraphMemoryPass();
 static void buildPipelineOnOpPassManager(::mlir::OpPassManager &pm) {
   pm.addPass(createLowerForallToThreadPass());
   pm.addPass(createLowerForToGraphPass());
-  pm.addPass(::mlir::createCanonicalizerPass());
-  pm.addPass(createLowerKnownLibraryCallsPass());
-  pm.addPass(createLowerGraphMemoryPass());
-  pm.addPass(createLowerGraphConstantsPass());
-  pm.addPass(::mlir::createCanonicalizerPass());
 }
 
 void registerLoweringPasses() {

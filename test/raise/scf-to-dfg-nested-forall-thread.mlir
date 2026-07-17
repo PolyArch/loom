@@ -1,9 +1,8 @@
-// RUN: loom-raise-opt --loom-lower-for-to-graph %s | FileCheck %s
+// RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %s 2>&1 | FileCheck %s
 
-// This legacy nested-forall anchor tests only the narrow for-to-graph
-// extraction pass. It is not end-to-end full-pipeline acceptance: downstream
-// graph lowering rejects residual graph-owned scf.forall until upstream
-// Structured Program Candidate processing has selected a P[] representation.
+// Nested graph-owned parallel syntax remains a structured candidate until a
+// concrete schedule and provenance are selected. It must not be published as
+// a canonical graph.
 
 module {
   func.func @launch(%dst: !llvm.ptr) {
@@ -21,7 +20,7 @@ module {
         %row = arith.muli %i, %inner_ub : index
         %idx = arith.addi %row, %j : index
         %value = arith.index_cast %idx : index to i32
-        %done = dataflow.store %mem[%idx] %value %ctrl : memref<?xi32>
+        memref.store %value, %mem[%idx] : memref<?xi32>
       }
     }
     dataflow.thread.yield
@@ -39,7 +38,7 @@ module {
           %row = arith.muli %i, %inner_ub : index
           %idx = arith.addi %row, %j : index
           %value = arith.index_cast %idx : index to i32
-          %done = dataflow.store %mem[%idx] %value %ctrl : memref<?xi32>
+          memref.store %value, %mem[%idx] : memref<?xi32>
         }
       }
     }
@@ -47,16 +46,7 @@ module {
   }
 }
 
-// CHECK-LABEL: dataflow.thread private @t_nested_forall
-// CHECK: dataflow.graph.launch @g_t_nested_forall_0
-// CHECK-LABEL: dataflow.thread private @t_if_nested_forall
-// CHECK: dataflow.graph.launch @g_t_if_nested_forall_0
-// CHECK-LABEL: dataflow.graph private @g_t_nested_forall_0
-// CHECK: scf.forall
-// CHECK: scf.forall
-// CHECK: dataflow.store
-// CHECK-LABEL: dataflow.graph private @g_t_if_nested_forall_0
-// CHECK: scf.if
-// CHECK: scf.forall
-// CHECK: scf.forall
-// CHECK: dataflow.store
+// CHECK: error: loom-lower-graph-memory: raw scf.forall requires a selected schedule and provenance before graph-region lowering
+// CHECK: "loom.spatial_region"
+// CHECK-NOT: dataflow.graph private
+// CHECK-NOT: dataflow.graph.launch

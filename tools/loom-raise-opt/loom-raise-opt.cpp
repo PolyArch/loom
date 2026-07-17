@@ -9,6 +9,7 @@
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/IR/FabricDialect.h"
+#include "Frontend/IR/LoomDialect.h"
 #include "Frontend/Lowering/Passes.h"
 #include "Frontend/Raising/Passes.h"
 
@@ -23,7 +24,8 @@ int main(int argc, char **argv) {
   ::mlir::registerAllDialects(registry);
   ::mlir::registerAllExtensions(registry);
   ::mlir::registerAllPasses();
-  registry.insert<::fabric::FabricDialect, ::dataflow::DataflowDialect>();
+  registry.insert<::fabric::FabricDialect, ::dataflow::DataflowDialect,
+                  ::loom::LoomDialect>();
   loom::raising::registerRaisingPasses();
   loom::lowering::registerLoweringPasses();
   return ::mlir::asMainReturnCode(::mlir::MlirOptMain(

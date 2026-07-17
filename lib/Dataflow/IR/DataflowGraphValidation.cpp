@@ -601,6 +601,17 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
 llvm::Error dataflow::validateFinalizedProgram(mlir::ModuleOp module) {
   if (!module)
     return graphError("finalized program must be a module");
+  bool hasSpatialCandidate = false;
+  module.walk([&](mlir::Operation *op) {
+    if (op->getName().getStringRef() != "loom.spatial_region")
+      return mlir::WalkResult::advance();
+    hasSpatialCandidate = true;
+    return mlir::WalkResult::interrupt();
+  });
+  if (hasSpatialCandidate)
+    return graphError(
+        "finalized program contains temporary loom.spatial_region");
+
   llvm::Error error = llvm::Error::success();
   module.walk([&](GraphOp graph) {
     if (error)

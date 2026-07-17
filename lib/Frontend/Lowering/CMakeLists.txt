@@ -17,6 +17,7 @@ add_mlir_library(LoomFrontendLowering
   MLIRFuncDialect
   MLIRIR
   MLIRLLVMDialect
+  MLIRLoom
   MLIRMemRefDialect
   MLIRPass
   MLIRSCFDialect

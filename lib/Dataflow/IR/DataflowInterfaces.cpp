@@ -32,6 +32,8 @@ void dataflow::attachCanonicalDataflowActorInterfaces(MLIRContext &context) {
                     arith::ShRSIOp, arith::ShRUIOp, arith::DivSIOp,
                     arith::DivUIOp, arith::RemSIOp, arith::RemUIOp,
                     arith::CmpIOp, arith::CmpFOp, arith::SelectOp,
+                    arith::MinSIOp, arith::MaxSIOp, arith::MinUIOp,
+                    arith::MaxUIOp,
                     arith::IndexCastOp, arith::IndexCastUIOp,
                     arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
                     arith::SIToFPOp, arith::UIToFPOp, arith::FPToSIOp,

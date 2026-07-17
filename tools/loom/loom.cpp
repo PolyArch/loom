@@ -2,6 +2,7 @@
 #include "Fabric/IR/Elaboration.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/Tech/Passes.h"
+#include "Frontend/IR/LoomDialect.h"
 
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
@@ -13,7 +14,8 @@ int main(int argc, char **argv) {
   mlir::DialectRegistry registry;
   mlir::registerAllDialects(registry);
   mlir::registerAllPasses();
-  registry.insert<fabric::FabricDialect, dataflow::DataflowDialect>();
+  registry.insert<fabric::FabricDialect, dataflow::DataflowDialect,
+                  loom::LoomDialect>();
   fabric::registerFabricIRPasses();
   fabric::registerConfiguredFunctionSynthesisPass();
   return mlir::asMainReturnCode(

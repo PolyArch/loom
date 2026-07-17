@@ -15,6 +15,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowGraphValidation.h"
 #include "Fabric/IR/FabricDialect.h"
+#include "Frontend/IR/LoomDialect.h"
 #include "Frontend/Lowering/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -87,7 +88,8 @@ int main(int argc, char **argv) {
   // Set up MLIR.
   ::mlir::DialectRegistry registry;
   ::mlir::registerAllDialects(registry);
-  registry.insert<::fabric::FabricDialect, ::dataflow::DataflowDialect>();
+  registry.insert<::fabric::FabricDialect, ::dataflow::DataflowDialect,
+                  ::loom::LoomDialect>();
 
   ::mlir::MLIRContext context(registry);
   context.allowUnregisteredDialects(allowUnregisteredDialects);

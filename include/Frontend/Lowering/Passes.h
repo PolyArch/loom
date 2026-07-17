@@ -26,11 +26,11 @@ namespace lowering {
 // TODO marker.
 std::unique_ptr<::mlir::Pass> createLowerForallToThreadPass();
 
-// Module-scope pass that, for each scf.for op with iter_args found
-// inside a dataflow.thread body, emits a sibling dataflow.graph
-// definition at module scope plus a dataflow.graph.launch at the cut
-// site inside the thread. scf.for ops without iter_args are left in
-// place; only the structured-reduction shape is promoted to a graph.
+// Module-scope atomic publisher. It stages selected thread-owned structured
+// candidates in loom.spatial_region, finalizes a scratch module through the
+// graph lowering pipeline and native validator, then publishes matching
+// dataflow.graph definitions and launches only when the whole transaction
+// succeeds.
 //
 // Symbol naming: `g_<threadSym>_<seq>` where <seq> is the source-order
 // index of the scf.for cut inside the thread.
@@ -66,11 +66,9 @@ void registerLoweringPasses();
 // Append the SCF-to-DFG lowering pipeline to the given pass manager:
 //   loom-lower-forall-to-thread        (module-level)
 //   loom-lower-for-to-graph            (module-level)
-//   --canonicalize                     (upstream)
-//   loom-lower-known-library-calls     (module-level)
-//   loom-lower-graph-memory            (module-level)
-//   loom-lower-graph-constants         (module-level)
-//   --canonicalize                     (upstream)
+// The for-to-graph publisher internally owns canonicalization, known-library
+// expansion, graph memory/control lowering, constant promotion, and native
+// validation.
 void buildLoweringPipeline(::mlir::PassManager &pm);
 
 } // namespace lowering

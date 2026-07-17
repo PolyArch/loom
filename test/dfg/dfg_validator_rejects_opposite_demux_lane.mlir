@@ -12,7 +12,7 @@
 // PNR: retirement frontier does not causally cover stream output #0
 // MUX-VALUE: retirement frontier does not causally cover value output #0
 // MUX-CLOSE: retirement frontier does not cover close/reset of 'dataflow.stream'
-// LOWER: final Dataflow validation failed: retirement frontier does not causally cover stream output #0
+// LOWER: canonical Dataflow publication failed: retirement frontier does not causally cover stream output #0
 
 // The two demux outputs are selected alternatives. Completing the false lane
 // cannot retire the stream exported on the true lane merely because both
