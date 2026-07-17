@@ -43,7 +43,7 @@ llvm::Error invalidComputeOccurrence(const llvm::Twine &message) {
 
 } // namespace
 
-llvm::Expected<std::shared_ptr<const ValidatedFabricProjection>>
+llvm::Expected<std::unique_ptr<ValidatedFabricProjection>>
 loom::mapping::detail::buildValidatedFabricProjection(
     const FabricHardwareView &fabric, EntityKinds &kinds,
     const std::map<std::uint64_t, const FuDescriptor *> &functionalUnits) {
@@ -83,8 +83,7 @@ loom::mapping::detail::buildValidatedFabricProjection(
   }
 
   auto projection =
-      std::make_shared<ValidatedFabricProjection>(ValidatedFabricProjection{
-          fabric.identity, {}, {}, {}, {}, {}, {}, {}, {}});
+      std::make_unique<ValidatedFabricProjection>(fabric.identity);
   projection->computeOccurrences.reserve(occurrences.size());
   std::vector<std::pair<FuId, std::size_t>> fuOccurrencePairs;
 
@@ -152,7 +151,8 @@ loom::mapping::detail::buildValidatedFabricProjection(
       projection->computeEndpoints.push_back(
           {endpoint.id, endpoint.direction, endpoint.kind,
            endpoint.payloadCapacityBits, endpoint.tagCapacityBits,
-           compatibleTypeOffset, compatibleTypes.size(), endpoint.role});
+           compatibleTypeOffset, compatibleTypes.size(), endpoint.role,
+           endpoint.transportKind});
     }
 
     std::vector<ResolvedArc> arcs;
@@ -250,8 +250,7 @@ loom::mapping::detail::buildValidatedFabricProjection(
     begin = end;
   }
 
-  return std::shared_ptr<const ValidatedFabricProjection>(
-      std::move(projection));
+  return projection;
 }
 
 llvm::ArrayRef<std::size_t> loom::mapping::detail::findFuOccurrences(

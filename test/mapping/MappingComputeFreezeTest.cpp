@@ -96,7 +96,10 @@ void freezesFactorizedEndpointDomains() {
                                     endpointPayload,
                                     endpointTag,
                                     {endpointType},
-                                    endpointRole});
+                                    endpointRole,
+                                    endpointTag == 0
+                                        ? fabric::DataPathKind::Bits
+                                        : fabric::DataPathKind::BitsTag});
     if (connected)
       occurrence.localArcs.push_back(
           {FuPortRef{FuRef{testCase.fabric.identity, FuId(10)},

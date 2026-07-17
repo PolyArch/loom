@@ -51,6 +51,7 @@ tools = [
     "loom-cost-test",
     "loom-mapping-estimate",
     "loom-dfg-sim",
+    "loom-fabric-boundary-data-path-test",
     "loom-fabric-elaboration-alias-chain-test",
     "loom-fabric-elaboration-api-test",
     "loom-fabric-elaboration-header-test",

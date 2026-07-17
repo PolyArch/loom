@@ -1,6 +1,7 @@
 #ifndef LOOM_LIB_MAPPING_FABRICOCCURRENCEINDEX_H
 #define LOOM_LIB_MAPPING_FABRICOCCURRENCEINDEX_H
 
+#include "FabricRoutingIndex.h"
 #include "VerifierInternal.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -9,6 +10,7 @@
 #include <cstddef>
 #include <map>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace loom::mapping::detail {
@@ -22,6 +24,7 @@ struct ValidatedComputeEndpoint {
   std::size_t compatibleTypeOffset;
   std::size_t compatibleTypeCount;
   PortRoleKey role;
+  fabric::DataPathKind transportKind;
 };
 
 struct ValidatedComputeLocalArc {
@@ -61,6 +64,14 @@ struct ValidatedFuOccurrenceRange {
 };
 
 struct ValidatedFabricProjection {
+  explicit ValidatedFabricProjection(ArtifactIdentity identity)
+      : identity(std::move(identity)) {}
+  ValidatedFabricProjection(const ValidatedFabricProjection &) = delete;
+  ValidatedFabricProjection &
+  operator=(const ValidatedFabricProjection &) = delete;
+  ValidatedFabricProjection(ValidatedFabricProjection &&) = default;
+  ValidatedFabricProjection &operator=(ValidatedFabricProjection &&) = default;
+
   ArtifactIdentity identity;
   std::vector<ValidatedComputeOccurrence> computeOccurrences;
   std::vector<FuId> computeOccurrenceFuMemberships;
@@ -70,6 +81,7 @@ struct ValidatedFabricProjection {
   std::vector<ValidatedComputePortArcRange> computePortArcRanges;
   std::vector<ValidatedFuOccurrenceRange> fuOccurrenceRanges;
   std::vector<std::size_t> fuOccurrences;
+  ValidatedFabricRoutingProjection routing = {};
 };
 
 class ValidatedTechMappingAccess {
@@ -80,7 +92,7 @@ public:
   }
 };
 
-llvm::Expected<std::shared_ptr<const ValidatedFabricProjection>>
+llvm::Expected<std::unique_ptr<ValidatedFabricProjection>>
 buildValidatedFabricProjection(
     const FabricHardwareView &fabric, EntityKinds &kinds,
     const std::map<std::uint64_t, const FuDescriptor *> &functionalUnits);

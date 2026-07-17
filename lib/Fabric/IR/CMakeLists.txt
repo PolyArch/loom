@@ -1,3 +1,5 @@
+add_subdirectory(BoundaryDataPath)
+
 add_mlir_dialect_library(MLIRFabric
   ConfiguredFunction.cpp
   FabricBoundaryOps.cpp
@@ -24,6 +26,7 @@ add_mlir_dialect_library(MLIRFabric
 
   LINK_LIBS PUBLIC
   LoomCommon
+  LoomFabricBoundaryDataPath
   MLIRArithDialect
   MLIRDataflowEnums
   MLIRIR

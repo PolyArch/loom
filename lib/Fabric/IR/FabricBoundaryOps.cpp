@@ -1,5 +1,6 @@
 #include "Fabric/IR/FabricOps.h"
 
+#include "Fabric/IR/BoundaryDataPath.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricTypes.h"
 #include "mlir/IR/Builders.h"
@@ -235,6 +236,61 @@ static bool isNegativeIntLiteral(IntegerAttr attr) {
   return attr.getAPSInt().isNegative();
 }
 
+static std::optional<DataPathType> getDataPathType(Type type) {
+  if (auto bits = dyn_cast<BitsType>(type))
+    return DataPathType{DataPathKind::Bits, bits.getWidth(), 0};
+  if (auto tagged = dyn_cast<BitsTagType>(type))
+    return DataPathType{DataPathKind::BitsTag, tagged.getWidth(),
+                        tagged.getTagWidth()};
+  return std::nullopt;
+}
+
+static LogicalResult verifyBoundaryDataPath(BoundaryOp op, Type sourceType,
+                                            Type targetType) {
+  const std::optional<DataPathType> source = getDataPathType(sourceType);
+  const std::optional<DataPathType> target = getDataPathType(targetType);
+  BoundaryDataPathError error = BoundaryDataPathError::None;
+  if (!source)
+    error = BoundaryDataPathError::InvalidSource;
+  else if (!target)
+    error = BoundaryDataPathError::InvalidTarget;
+  else
+    error = checkBoundaryDataPath(op.getDirection(), *source, *target);
+  if (error == BoundaryDataPathError::None)
+    return success();
+
+  switch (op.getDirection()) {
+  case BoundaryDirection::S2t:
+    if (error == BoundaryDataPathError::InvalidTarget)
+      return op.emitOpError(
+          "[s2t] result must be a !fabric.bits_tag<BW, TW> type");
+    if (error == BoundaryDataPathError::PayloadWidthMismatch)
+      return op.emitOpError("[s2t] operand #0 bits-width ")
+             << source->payloadWidthBits << " must equal result data-width "
+             << target->payloadWidthBits;
+    return op.emitOpError("[s2t] operand #0 must be !fabric.bits<BW>, got ")
+           << sourceType;
+  case BoundaryDirection::T2t:
+    if (error == BoundaryDataPathError::PayloadWidthMismatch)
+      return op.emitOpError("[t2t] operand data-width ")
+             << source->payloadWidthBits << " must equal result data-width "
+             << target->payloadWidthBits << " (only the tag is remapped)";
+    return op.emitOpError(
+        "[t2t] operand and result must be !fabric.bits_tag<BW, TW> types");
+  case BoundaryDirection::T2s:
+    if (error == BoundaryDataPathError::InvalidSource)
+      return op.emitOpError(
+          "[t2s] operand must be a !fabric.bits_tag<BW, TW> type");
+    if (error == BoundaryDataPathError::PayloadWidthMismatch)
+      return op.emitOpError("[t2s] result #0 bits-width ")
+             << target->payloadWidthBits << " must equal operand data-width "
+             << source->payloadWidthBits;
+    return op.emitOpError("[t2s] result #0 must be !fabric.bits<BW>, got ")
+           << targetType;
+  }
+  return op.emitOpError("unknown boundary direction");
+}
+
 static LogicalResult verifyS2t(BoundaryOp op, ArrayRef<Type> inputPortTypes) {
   auto operands = op.getInputs();
   auto results = op.getOutputs();
@@ -245,20 +301,11 @@ static LogicalResult verifyS2t(BoundaryOp op, ArrayRef<Type> inputPortTypes) {
     return op.emitOpError("[s2t] expects exactly 1 result, got ")
            << results.size();
 
-  auto resultTagTy = dyn_cast<BitsTagType>(results[0].getType());
-  if (!resultTagTy)
-    return op.emitOpError(
-        "[s2t] result must be a !fabric.bits_tag<BW, TW> type");
-  unsigned resBW = resultTagTy.getWidth();
+  if (failed(
+          verifyBoundaryDataPath(op, inputPortTypes[0], results[0].getType())))
+    return failure();
+  auto resultTagTy = cast<BitsTagType>(results[0].getType());
   unsigned resTW = resultTagTy.getTagWidth();
-
-  auto in0 = dyn_cast<BitsType>(inputPortTypes[0]);
-  if (!in0)
-    return op.emitOpError("[s2t] operand #0 must be !fabric.bits<BW>, got ")
-           << inputPortTypes[0];
-  if (in0.getWidth() != resBW)
-    return op.emitOpError("[s2t] operand #0 bits-width ")
-           << in0.getWidth() << " must equal result data-width " << resBW;
 
   if (op.getHwParamsAttr())
     return op.emitOpError("[s2t] must not carry 'hw_params'");
@@ -315,20 +362,13 @@ static LogicalResult verifyT2t(BoundaryOp op, ArrayRef<Type> inputPortTypes) {
     return op.emitOpError("[t2t] expects exactly 1 result, got ")
            << results.size();
 
-  auto inTy = dyn_cast<BitsTagType>(inputPortTypes[0]);
-  auto outTy = dyn_cast<BitsTagType>(results[0].getType());
-  if (!inTy || !outTy)
-    return op.emitOpError(
-        "[t2t] operand and result must be !fabric.bits_tag<BW, TW> types");
-
-  unsigned inBW = inTy.getWidth();
-  unsigned outBW = outTy.getWidth();
+  if (failed(
+          verifyBoundaryDataPath(op, inputPortTypes[0], results[0].getType())))
+    return failure();
+  auto inTy = cast<BitsTagType>(inputPortTypes[0]);
+  auto outTy = cast<BitsTagType>(results[0].getType());
   unsigned inTW = inTy.getTagWidth();
   unsigned outTW = outTy.getTagWidth();
-  if (inBW != outBW)
-    return op.emitOpError("[t2t] operand data-width ")
-           << inBW << " must equal result data-width " << outBW
-           << " (only the tag is remapped)";
 
   // hw_params: required, length-1 array wrapping a dictionary with key
   // `lut_size` (positive integer).
@@ -429,20 +469,11 @@ static LogicalResult verifyT2s(BoundaryOp op, ArrayRef<Type> inputPortTypes) {
     return op.emitOpError("[t2s] expects 1 or 2 results, got ")
            << results.size();
 
-  auto inTy = dyn_cast<BitsTagType>(inputPortTypes[0]);
-  if (!inTy)
-    return op.emitOpError(
-        "[t2s] operand must be a !fabric.bits_tag<BW, TW> type");
-  unsigned inBW = inTy.getWidth();
+  if (failed(
+          verifyBoundaryDataPath(op, inputPortTypes[0], results[0].getType())))
+    return failure();
+  auto inTy = cast<BitsTagType>(inputPortTypes[0]);
   unsigned inTW = inTy.getTagWidth();
-
-  auto r0 = dyn_cast<BitsType>(results[0].getType());
-  if (!r0)
-    return op.emitOpError("[t2s] result #0 must be !fabric.bits<BW>, got ")
-           << results[0].getType();
-  if (r0.getWidth() != inBW)
-    return op.emitOpError("[t2s] result #0 bits-width ")
-           << r0.getWidth() << " must equal operand data-width " << inBW;
 
   if (results.size() == 2) {
     auto r1 = dyn_cast<BitsType>(results[1].getType());

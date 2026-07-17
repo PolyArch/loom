@@ -19,6 +19,8 @@ enum class EntityKind {
   Fu,
   ComputeOccurrence,
   ComputeEndpoint,
+  TransportEndpoint,
+  TransportResource,
   FabricOp,
   Encoding,
   ComputeRealization,

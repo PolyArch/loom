@@ -1,0 +1,153 @@
+#ifndef LOOM_PNR_FROZENROUTINGGRAPH_H
+#define LOOM_PNR_FROZENROUTINGGRAPH_H
+
+#include "Mapping/Verifier.h"
+#include "PnR/PnrIndex.h"
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/Error.h"
+
+#include <cstdint>
+#include <optional>
+#include <utility>
+#include <vector>
+
+namespace loom::pnr {
+
+enum class FrozenRoutingEndpointOwnerKind {
+  ComputeOccurrence,
+  TransportResource,
+};
+
+enum class FrozenRoutingArcKind {
+  PointToPoint,
+  Traversal,
+};
+
+struct FrozenTransportResource {
+  mapping::TransportResourceId id;
+  mapping::TransportResourceKind kind;
+  std::optional<fabric::BoundaryDirection> boundaryDirection;
+  PnrIndex endpointOffset;
+  PnrIndex endpointCount;
+
+  friend bool operator==(const FrozenTransportResource &lhs,
+                         const FrozenTransportResource &rhs) {
+    return lhs.id == rhs.id && lhs.kind == rhs.kind &&
+           lhs.boundaryDirection == rhs.boundaryDirection &&
+           lhs.endpointOffset == rhs.endpointOffset &&
+           lhs.endpointCount == rhs.endpointCount;
+  }
+};
+
+struct FrozenRoutingEndpoint {
+  mapping::TransportEndpointId id;
+  FrozenRoutingEndpointOwnerKind ownerKind;
+  PnrIndex owner;
+  mapping::PortDirection direction;
+  mapping::PortKind portKind;
+  fabric::DataPathKind transportKind;
+  std::uint32_t payloadCapacityBits;
+  std::uint32_t tagCapacityBits;
+
+  friend bool operator==(const FrozenRoutingEndpoint &lhs,
+                         const FrozenRoutingEndpoint &rhs) {
+    return lhs.id == rhs.id && lhs.ownerKind == rhs.ownerKind &&
+           lhs.owner == rhs.owner && lhs.direction == rhs.direction &&
+           lhs.portKind == rhs.portKind &&
+           lhs.transportKind == rhs.transportKind &&
+           lhs.payloadCapacityBits == rhs.payloadCapacityBits &&
+           lhs.tagCapacityBits == rhs.tagCapacityBits;
+  }
+};
+
+struct FrozenRoutingArc {
+  PnrIndex target;
+  FrozenRoutingArcKind kind;
+  std::optional<PnrIndex> resource;
+  std::uint32_t payloadCapacityBits;
+  std::uint32_t tagCapacityBits;
+
+  friend bool operator==(const FrozenRoutingArc &lhs,
+                         const FrozenRoutingArc &rhs) {
+    return lhs.target == rhs.target && lhs.kind == rhs.kind &&
+           lhs.resource == rhs.resource &&
+           lhs.payloadCapacityBits == rhs.payloadCapacityBits &&
+           lhs.tagCapacityBits == rhs.tagCapacityBits;
+  }
+};
+
+class FrozenRoutingGraph {
+public:
+  llvm::ArrayRef<FrozenTransportResource> transportResources() const {
+    return transportResources_;
+  }
+  llvm::ArrayRef<PnrIndex> resourceEndpointVertices() const {
+    return resourceEndpointVertices_;
+  }
+  llvm::ArrayRef<FrozenRoutingEndpoint> routingEndpoints() const {
+    return routingEndpoints_;
+  }
+  llvm::ArrayRef<PnrIndex> computeEndpointVertices() const {
+    return computeEndpointVertices_;
+  }
+  llvm::ArrayRef<PnrIndex> adjacencyOffsets() const {
+    return adjacencyOffsets_;
+  }
+  llvm::ArrayRef<FrozenRoutingArc> routingArcs() const { return routingArcs_; }
+
+  friend bool operator==(const FrozenRoutingGraph &lhs,
+                         const FrozenRoutingGraph &rhs) {
+    return lhs.transportResources_ == rhs.transportResources_ &&
+           lhs.resourceEndpointVertices_ == rhs.resourceEndpointVertices_ &&
+           lhs.routingEndpoints_ == rhs.routingEndpoints_ &&
+           lhs.computeEndpointVertices_ == rhs.computeEndpointVertices_ &&
+           lhs.adjacencyOffsets_ == rhs.adjacencyOffsets_ &&
+           lhs.routingArcs_ == rhs.routingArcs_;
+  }
+  friend bool operator!=(const FrozenRoutingGraph &lhs,
+                         const FrozenRoutingGraph &rhs) {
+    return !(lhs == rhs);
+  }
+
+private:
+  FrozenRoutingGraph(std::vector<FrozenTransportResource> transportResources,
+                     std::vector<PnrIndex> resourceEndpointVertices,
+                     std::vector<FrozenRoutingEndpoint> routingEndpoints,
+                     std::vector<PnrIndex> computeEndpointVertices,
+                     std::vector<PnrIndex> adjacencyOffsets,
+                     std::vector<FrozenRoutingArc> routingArcs)
+      : transportResources_(std::move(transportResources)),
+        resourceEndpointVertices_(std::move(resourceEndpointVertices)),
+        routingEndpoints_(std::move(routingEndpoints)),
+        computeEndpointVertices_(std::move(computeEndpointVertices)),
+        adjacencyOffsets_(std::move(adjacencyOffsets)),
+        routingArcs_(std::move(routingArcs)) {}
+
+  std::vector<FrozenTransportResource> transportResources_;
+  std::vector<PnrIndex> resourceEndpointVertices_;
+  std::vector<FrozenRoutingEndpoint> routingEndpoints_;
+  std::vector<PnrIndex> computeEndpointVertices_;
+  std::vector<PnrIndex> adjacencyOffsets_;
+  std::vector<FrozenRoutingArc> routingArcs_;
+
+  friend llvm::Expected<FrozenRoutingGraph>
+  freezeRoutingGraph(const mapping::FabricHardwareView &fabric,
+                     const mapping::ValidatedTechMapping &mapping);
+};
+
+llvm::Expected<FrozenRoutingGraph>
+freezeRoutingGraph(const mapping::FabricHardwareView &fabric,
+                   const mapping::ValidatedTechMapping &mapping);
+
+namespace detail {
+
+llvm::Error preflightFrozenRoutingGraphCapacity(
+    std::uint64_t endpointCount, std::uint64_t resourceCount,
+    std::uint64_t computeEndpointCount, std::uint64_t arcCount);
+
+} // namespace detail
+
+} // namespace loom::pnr
+
+#endif // LOOM_PNR_FROZENROUTINGGRAPH_H

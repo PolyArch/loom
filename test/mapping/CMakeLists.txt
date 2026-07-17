@@ -3,6 +3,7 @@ add_executable(loom-mapping-core-test
   MappingCoreTest.cpp
   MappingCoreTestSupport.cpp
   MappingMemoryTest.cpp
+  MappingRoutingFreezeTest.cpp
   MappingVerifierTest.cpp
 )
 

@@ -2,6 +2,7 @@
 #define LOOM_MAPPING_ARTIFACT_H
 
 #include "Common/Artifact.h"
+#include "Fabric/IR/BoundaryDataPath.h"
 
 #include <cstdint>
 #include <initializer_list>
@@ -19,6 +20,7 @@ enum class MappingProfile { TechMapping, PhysicalMapping };
 enum class PortDirection { Input, Output };
 enum class PortKind { Value, Stream, Memory };
 enum class ComputeScheduleKind { Spatial, Temporal };
+enum class TransportResourceKind { Switch, Fifo, Boundary };
 enum class MemoryOperationKind { Load, Store };
 enum class MemoryAccessPortRole {
   Address,
@@ -123,7 +125,8 @@ struct EdgeIdTag;
 struct LogicalMemoryRootIdTag;
 struct FuIdTag;
 struct ComputeOccurrenceIdTag;
-struct ComputeEndpointIdTag;
+struct TransportEndpointIdTag;
+struct TransportResourceIdTag;
 struct FabricOpIdTag;
 struct EncodingIdTag;
 struct ComputeRealizationIdTag;
@@ -140,7 +143,9 @@ using EdgeId = TypedEntityId<EdgeIdTag>;
 using LogicalMemoryRootId = TypedEntityId<LogicalMemoryRootIdTag>;
 using FuId = TypedEntityId<FuIdTag>;
 using ComputeOccurrenceId = TypedEntityId<ComputeOccurrenceIdTag>;
-using ComputeEndpointId = TypedEntityId<ComputeEndpointIdTag>;
+using TransportEndpointId = TypedEntityId<TransportEndpointIdTag>;
+using ComputeEndpointId = TransportEndpointId;
+using TransportResourceId = TypedEntityId<TransportResourceIdTag>;
 using FabricOpId = TypedEntityId<FabricOpIdTag>;
 using EncodingId = TypedEntityId<EncodingIdTag>;
 using ComputeRealizationId = TypedEntityId<ComputeRealizationIdTag>;
@@ -160,7 +165,9 @@ using ActorRef = EntityReference<ActorId>;
 using EdgeRef = EntityReference<EdgeId>;
 using LogicalMemoryRootRef = EntityReference<LogicalMemoryRootId>;
 using FuRef = EntityReference<FuId>;
-using ComputeEndpointRef = EntityReference<ComputeEndpointId>;
+using TransportEndpointRef = EntityReference<TransportEndpointId>;
+using ComputeEndpointRef = TransportEndpointRef;
+using TransportResourceRef = EntityReference<TransportResourceId>;
 using FabricOpRef = EntityReference<FabricOpId>;
 using EncodingRef = EntityReference<EncodingId>;
 using MemoryImplementationRef = EntityReference<MemoryImplementationId>;
@@ -258,6 +265,7 @@ struct ComputeEndpointDescriptor {
   std::uint32_t tagCapacityBits;
   std::vector<TypeKey> compatibleTypes;
   PortRoleKey role;
+  fabric::DataPathKind transportKind = fabric::DataPathKind::Bits;
 };
 
 struct ComputeLocalArcDescriptor {
@@ -273,6 +281,33 @@ struct ComputeOccurrenceDescriptor {
   std::vector<FuRef> functionalUnits;
   std::vector<ComputeEndpointDescriptor> endpoints;
   std::vector<ComputeLocalArcDescriptor> localArcs;
+};
+
+struct TransportEndpointDescriptor {
+  TransportEndpointId id;
+  PortDirection direction;
+  PortKind kind;
+  std::uint32_t payloadCapacityBits;
+  std::uint32_t tagCapacityBits;
+  fabric::DataPathKind transportKind = fabric::DataPathKind::Bits;
+};
+
+struct TransportResourceDescriptor {
+  TransportResourceId id;
+  TransportResourceKind kind;
+  std::vector<TransportEndpointDescriptor> endpoints;
+  std::optional<fabric::BoundaryDirection> boundaryDirection = std::nullopt;
+};
+
+struct TransportArcDescriptor {
+  TransportEndpointRef source;
+  TransportEndpointRef target;
+};
+
+struct TransportTraversalDescriptor {
+  TransportResourceRef resource;
+  TransportEndpointRef source;
+  TransportEndpointRef target;
 };
 
 struct FabricOpDescriptor {
@@ -417,6 +452,9 @@ struct FabricHardwareView {
   std::vector<MemoryInternalConnectionDescriptor> memoryInternalConnections;
   std::vector<MemorySemanticEncodingDescriptor> memorySemanticEncodings;
   std::vector<ComputeOccurrenceDescriptor> computeOccurrences;
+  std::vector<TransportResourceDescriptor> transportResources = {};
+  std::vector<TransportArcDescriptor> transportArcs = {};
+  std::vector<TransportTraversalDescriptor> transportTraversals = {};
 };
 
 struct ActorPortRef {

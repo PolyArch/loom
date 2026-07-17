@@ -32,13 +32,19 @@ ComputeOccurrenceDescriptor makeSpatialComputeOccurrence(
   auto addPort = [&](PortDirection direction, std::uint32_t index,
                      const PortDescriptor &descriptor) {
     const ComputeEndpointId endpoint(endpointBase + endpoints.size());
+    const fabric::DataPathKind transportKind =
+        descriptor.tagWidthBits == 0 ? fabric::DataPathKind::Bits
+                                     : fabric::DataPathKind::BitsTag;
+    const std::uint32_t tagCapacityBits =
+        transportKind == fabric::DataPathKind::Bits ? 0 : unbounded;
     endpoints.push_back({endpoint,
                          direction,
                          descriptor.kind,
                          unbounded,
-                         unbounded,
+                         tagCapacityBits,
                          {descriptor.type},
-                         descriptor.role});
+                         descriptor.role,
+                         transportKind});
     localArcs.push_back({FuPortRef{FuRef{fabric, fu.id}, direction, index},
                          ComputeEndpointRef{fabric, endpoint}, unbounded,
                          unbounded});

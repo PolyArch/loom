@@ -1,5 +1,6 @@
 add_library(LoomMapping
   FabricOccurrenceIndex.cpp
+  FabricRoutingIndex.cpp
   Verifier.cpp
 )
 
@@ -8,5 +9,6 @@ target_include_directories(LoomMapping PUBLIC
 )
 
 target_link_libraries(LoomMapping PUBLIC
+  LoomFabricBoundaryDataPath
   LLVMSupport
 )

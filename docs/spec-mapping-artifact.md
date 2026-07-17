@@ -44,11 +44,18 @@ The Fabric Hardware Description owns hardware facts, including elaborated
 topology, FU topology, capabilities, configuration domains, ports, and
 physical implementation structure. Its finalized facts include typed compute
 occurrences, exact FU membership, schedule kind, physical endpoints, and
-explicit directed local arcs. Its definition-level facts also include memory
-service domains, implementation families, load/store operation-port templates,
-explicit typed implementation boundary ports, normalized semantic encodings,
-typed internal connectivity, source-endpoint fanout capacities, and one-beat
-access contracts.
+explicit directed local arcs. The same transport-endpoint identity namespace
+also covers endpoints owned by typed compute-only switch, FIFO, and boundary
+resources. Fabric owns each endpoint's exact owner, direction, port kind, and
+explicit native transport kind (`bits` or `bits_tag`), together with
+independent payload and tag capacities. Fabric also owns every explicit
+directed point-to-point arc and resource traversal. Boundary resources retain
+the canonical Fabric boundary direction (`s2t`, `t2t`, or `t2s`) rather than a
+Mapping-local spelling. Fabric's definition-level facts also include memory
+service domains, implementation families, load/store operation-port
+templates, explicit typed implementation boundary ports, normalized semantic
+encodings, typed internal connectivity, source-endpoint fanout capacities,
+and one-beat access contracts.
 
 The TechMapping-profile Mapping Artifact owns the selected logical
 realization relation between those exact artifacts. It owns
@@ -328,6 +335,81 @@ revalidate the source occurrence vectors. Mutating those source vectors after
 validation cannot change frozen output, while an input identity mismatch still
 invalidates the freeze request.
 
+Fabric validation also owns one canonical routing projection. Persistent typed
+endpoint IDs are globally unique across compute and resource-owned endpoints,
+and persistent typed transport-resource IDs are globally unique across the
+Fabric artifact namespace. Resource endpoint ownership is structural: every
+resource endpoint is nested under exactly one switch, FIFO, or boundary
+resource, while every compute endpoint is nested under exactly one compute
+occurrence. Validation resolves all references against the exact Fabric
+identity before retaining the projection.
+
+A routing endpoint declares both its software port kind and its native Fabric
+transport kind. `bits` has zero tag capacity. `bits_tag` has positive tag
+capacity. The native kind is never inferred from tag capacity.
+`PortKind::Memory` compute endpoints are omitted from this compute-only
+projection, while memory resource endpoints or routing references to excluded
+memory endpoints are malformed. Memory capability and service connectivity
+remain a distinct future projection and do not enter token-routing CSR.
+
+A point-to-point arc is legal only from one output endpoint to one input
+endpoint with the same software port kind and native Fabric transport kind.
+Each output has at most one direct point-arc consumer and each input has at
+most one direct point-arc producer; fanout and fan-in therefore require
+explicit Fabric resources. A switch or FIFO traversal is legal only from an
+input endpoint to an output endpoint owned by the referenced resource, with
+the same software port kind and native Fabric transport kind. Switch
+connectivity consists solely of its explicitly listed traversals. A FIFO has
+exactly one input, one output, and one explicit forward traversal.
+
+A boundary has exactly one input, one output, one explicit forward traversal,
+and one canonical `fabric::BoundaryDirection`. Its payload path must match the
+Fabric boundary verifier exactly: `s2t` is `bits<W> -> bits_tag<W,T>`, `t2t`
+is `bits_tag<W,T1> -> bits_tag<W,T2>`, and `t2s` is
+`bits_tag<W,T> -> bits<W>`. Payload widths must be equal, and every tagged
+endpoint must have positive tag capacity. No other native-kind conversion is
+legal. The lightweight Fabric-owned `checkBoundaryDataPath` helper is the
+single authority for this data-path relation and is consumed by both Fabric IR
+verification and Mapping routing validation. Duplicate arcs, duplicate
+traversals, foreign or wrong-kind references, wrong-direction references, and
+cross-resource traversals are malformed input. Missing arcs or traversals that
+are not structurally required may leave otherwise valid endpoints or topology
+components disconnected; disconnected and unreachable topology is not a
+validation failure.
+
+The implemented `freezeRoutingGraph` projection consumes only that retained
+validated routing projection after rechecking the exact Fabric identity. It
+orders resources and endpoints by persistent typed identity, converts all
+indices and range boundaries through checked `PnrIndex` operations, and emits
+a directed CSR adjacency table. Each frozen arc records whether it is a bare
+point arc or a resource traversal, the traversal's resource index when
+present, and independent effective payload and tag capacities. Each capacity
+is the minimum of the source and target endpoint capacities in that field; tag
+capacity is never added to payload capacity.
+
+The frozen routing resource table records the canonical boundary direction
+when the resource is a boundary. The frozen routing endpoint table records
+only typed identity, owner kind and dense owner index, direction, software port
+kind, native Fabric transport kind, and the two capacities. Resource endpoint
+ranges are flat index vectors rather than nested graph objects. A separate
+`computeEndpointVertices` vector follows the non-memory subsequence of the
+exact compute-endpoint ordering already used by
+`FrozenRealizationGraph::physicalEndpoints`, so later multi-source and
+multi-target token routing can consume factorized endpoint domains without
+selecting an occurrence, endpoint, path, configuration, capacity claim, or
+route tree. The routing graph contains no strings, MLIR containers,
+coordinates, names, implicit reverse arcs, geometric adjacency, symbol-order
+adjacency, topology-specific shortcuts, reachability matrix, memory service
+connectivity, or routing-search state.
+
+Descriptor-vector permutation cannot change structural equality, canonical
+table ordering, or CSR adjacency ordering. Arc order is derived from source
+endpoint identity, target endpoint identity, arc kind, and resource identity.
+The CSR graph preserves only explicit structural capability, so an irregular
+topology may make two individually valid compute occurrences unreachable from
+one another without turning either unary candidate or the Fabric artifact into
+malformed input.
+
 Let `O`, `M`, `E`, and `A` be the occurrence, membership, endpoint, and local
 arc counts. Validation canonicalization costs sorting time over those vectors,
 bounded by `O((O + M + E + A) log(O + M + E + A))`. For a realization with
@@ -362,12 +444,15 @@ structured mapping infeasibility. Occurrence and endpoint ordering is derived
 from persistent typed identities, so harmless source-vector permutations do
 not alter the frozen result.
 
-This projection is ephemeral and has no independent artifact identity,
-persistence form, selected occurrence, selected endpoint, complete candidate
-domain, configuration, placement, route, tag, buffer, resource-time, or
-physical-memory decisions. It is a three-input bounded projection, not the
-complete four-input `FrozenModel`; `ConfigDomain` and the full
-`CandidateDomain` remain outside this boundary.
+Both frozen projections are ephemeral and have no independent artifact
+identity, serialization, canonical byte encoding, or persistence form. Their
+equality is structural only. Neither contains a selected occurrence, selected
+endpoint, complete candidate domain, configuration, placement, route, tag,
+buffer, resource-time, or physical-memory decision.
+`freezeRealizationGraph` is the three-input bounded projection;
+`freezeRoutingGraph` consumes the exact Fabric identity retained by the
+validated Mapping value. They are not the complete four-input `FrozenModel`;
+`ConfigDomain` and the full `CandidateDomain` remain outside this boundary.
 
 The structural subview intentionally retains canonical edge identities, dense
 terminal references, and deletable occurrence and endpoint-domain caches. It

@@ -6,6 +6,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <map>
+#include <memory>
 #include <set>
 #include <system_error>
 #include <tuple>
@@ -528,7 +529,13 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
                                                    index.functionalUnits);
   if (!projection)
     return projection.takeError();
-  index.projection = std::move(*projection);
+  auto routing =
+      buildValidatedFabricRoutingProjection(fabric, index.kinds, **projection);
+  if (!routing)
+    return routing.takeError();
+  (*projection)->routing = std::move(*routing);
+  index.projection =
+      std::shared_ptr<const ValidatedFabricProjection>(std::move(*projection));
   for (const FabricOpDescriptor &operation : fabric.operations) {
     if (llvm::Error error =
             requireLocalKind(index.kinds, operation.fu.value(), EntityKind::Fu))
