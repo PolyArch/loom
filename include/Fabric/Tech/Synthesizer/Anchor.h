@@ -11,7 +11,7 @@
 // Threading: the Anchor producer builds its candidate wrapper inside the
 // worker-local `MLIRContext` provided via `SynthInputs.context`. The
 // pass's main thread re-homes the returned wrapper into the user's
-// module context (see `GeneralizeSubgraphsToFuPass`'s splice loop).
+// module context (see the configured-function synthesis pass splice loop).
 
 #include "Fabric/IR/ConfiguredFunction.h"
 

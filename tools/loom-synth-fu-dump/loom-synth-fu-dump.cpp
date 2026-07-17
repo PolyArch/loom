@@ -14,7 +14,8 @@
 // Usage:
 //   loom-synth-fu-dump <input.mlir>
 //   loom-synth-fu-dump --config=<path.yaml> <input.mlir>
-//   loom-synth-fu-dump --no-print-ir --no-print-stats <input.mlir>
+//   loom-synth-fu-dump --configured-feedback -
+//   loom-synth-fu-dump --print-ir=false --print-stats=false <input.mlir>
 //   loom-synth-fu-dump --quiet <input.mlir>
 //
 // The helper drives the pass directly via `mlir::PassManager`; it does
@@ -24,9 +25,12 @@
 // confounded by stream-flush latency in CHECK pipelines).
 
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowOps.h"
+#include "Fabric/IR/ConfiguredFunction.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/Tech/Passes.h"
+#include "Fabric/Tech/Synthesizer/Synthesizer.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -59,6 +63,11 @@ namespace {
     inputPath(::llvm::cl::Positional,
               ::llvm::cl::desc("<input MLIR file or '-' for stdin>"),
               ::llvm::cl::Required);
+
+::llvm::cl::opt<bool> configuredFeedback(
+    "configured-feedback",
+    ::llvm::cl::desc("Synthesize a cyclic ConfiguredFunction carry anchor"),
+    ::llvm::cl::init(false));
 
 ::llvm::cl::opt<std::string> configPath(
     "config",
@@ -136,6 +145,66 @@ bool isSynthStatLine(::llvm::StringRef text) {
   return "diag";
 }
 
+int runConfiguredFeedback(::mlir::MLIRContext &context) {
+  auto i1 = ::mlir::IntegerType::get(&context, 1);
+  auto i32 = ::mlir::IntegerType::get(&context, 32);
+
+  ::fabric::ConfiguredFunction function;
+  function.inputs.push_back({0, i1});
+  function.inputs.push_back({1, i32});
+
+  ::fabric::ConfiguredFunctionNode carry;
+  carry.fabricResource = 0;
+  carry.operationName = ::dataflow::CarryOp::getOperationName().str();
+  carry.functionType =
+      ::mlir::FunctionType::get(&context, {i1, i32, i32}, {i32});
+  carry.attributes = ::mlir::DictionaryAttr::get(&context);
+  carry.operands.push_back(::fabric::ConfiguredValue::input(0));
+  carry.operands.push_back(::fabric::ConfiguredValue::input(1));
+  carry.operands.push_back(::fabric::ConfiguredValue::nodeResult(0, 0));
+  function.nodes.push_back(std::move(carry));
+  function.outputs.push_back(
+      {0, i32, ::fabric::ConfiguredValue::nodeResult(0, 0)});
+
+  ::llvm::SmallVector<::fabric::ConfiguredFunction, 1> functions;
+  functions.push_back(std::move(function));
+  ::loom::SynthConfig config;
+  ::loom::fabric::tech::SynthInputs inputs{
+      /*groupName=*/"feedback",
+      /*functions=*/functions,
+      /*context=*/&context,
+  };
+
+  auto start = std::chrono::steady_clock::now();
+  ::loom::fabric::tech::SynthResult result =
+      ::loom::fabric::tech::synthesize(config, inputs);
+  auto stop = std::chrono::steady_clock::now();
+  if (!result.success()) {
+    ::llvm::errs() << "loom-synth-fu-dump: configured-feedback failed: "
+                   << ::loom::fabric::tech::failureReasonString(
+                          result.failureReason)
+                   << "\n";
+    for (const std::string &note : result.notes)
+      ::llvm::errs() << "loom-synth-fu-dump: note: " << note << "\n";
+    return 1;
+  }
+
+  ::llvm::outs() << "configured-feedback: success\n";
+  if (printIr.getValue() && !quiet.getValue()) {
+    result.wrapper->print(::llvm::outs());
+    ::llvm::outs() << "\n";
+  }
+  if (printStats.getValue())
+    ::llvm::outs() << "// no synth-stat lines emitted\n";
+  if (printWallclock.getValue()) {
+    auto wallUs =
+        std::chrono::duration_cast<std::chrono::microseconds>(stop - start)
+            .count();
+    ::llvm::outs() << "wallclock_us=" << wallUs << "\n";
+  }
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -152,6 +221,9 @@ int main(int argc, char **argv) {
   registry.insert<::fabric::FabricDialect, ::dataflow::DataflowDialect>();
   ::mlir::MLIRContext ctx(registry);
   ctx.loadAllAvailableDialects();
+
+  if (configuredFeedback.getValue())
+    return runConfiguredFeedback(ctx);
 
   // Parse the input module from file or stdin.
   auto bufOrErr = ::llvm::MemoryBuffer::getFileOrSTDIN(inputPath.getValue());

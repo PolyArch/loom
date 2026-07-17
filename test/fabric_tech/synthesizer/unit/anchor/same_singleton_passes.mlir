@@ -1,6 +1,6 @@
 // RUN: loom %s -loom-synthesize-configured-functions='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
 
-// Tier A: two subgraphs that both use the SAME singleton op (math.absf,
+// Tier A: two configured functions that both use the SAME singleton op (math.absf,
 // not in any multi-member hardware-share group). Both peers map to one
 // singleton bucket whose op_list has the single entry @math.absf, so
 // the strategy emits one fabric.op (no mux) and OpOp::verify accepts

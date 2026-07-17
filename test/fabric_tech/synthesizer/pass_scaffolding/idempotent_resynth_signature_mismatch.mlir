@@ -4,7 +4,7 @@
 // and contains a real fabric.fu (so the body-shape and inner-verifier
 // checks pass), but its signature
 // `(!fabric.bits<64>) -> !fabric.bits<64>` does not match the
-// expected signature derived from the input subgraph
+// expected signature derived from the input configured function
 // `(!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>`. The
 // tightened idempotence precheck rejects this as `symbol_conflict`
 // rather than silently honoring it as an idempotent no-op (the

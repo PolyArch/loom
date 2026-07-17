@@ -1,6 +1,6 @@
 // RUN: loom %s -loom-synthesize-configured-functions='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
 
-// Subgraph with two yield operands: one is an addi/subi (single share
+// Configured functions with two outputs: one is an addi/subi (single share
 // group), the other is an andi/ori (different share group). Two inputs
 // share the same topology shape; the synthesized FU has two independent
 // physical ops. Their complete modes form four explicit legal encodings,

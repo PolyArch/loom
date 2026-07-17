@@ -1,6 +1,6 @@
 // RUN: loom %s -loom-synthesize-configured-functions='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
 
-// Tier A: two subgraphs of identical topology (yield <- bin-op of two
+// Tier A: two configured functions of identical topology (output <- bin-op of two
 // block args) sharing the arith.addi/subi hardware-share group. The
 // anchor strategy merges both ops into one fabric.op whose op_list is
 // the sorted union of observed names.

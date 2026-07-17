@@ -12,7 +12,7 @@
 //
 // Negative checks ensure the placeholder `@fu_x` is NOT bucketed as an
 // input candidate (would otherwise pick up `loom.synth_failed =
-// "invalid_input"` from the validator since it has zero subgraphs).
+// "invalid_input"` from the validator since it has zero configured functions).
 
 // CHECK: warning: {{.*}}group "x": symbol_conflict
 // CHECK: func.func private @fu_x() {

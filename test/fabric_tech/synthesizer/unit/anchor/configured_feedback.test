@@ -1,0 +1,7 @@
+# RUN: loom-synth-fu-dump --configured-feedback --print-stats=false --print-wallclock=false - | FileCheck %s
+
+# CHECK: configured-feedback: success
+# CHECK: fabric.module @fu_feedback
+# CHECK: fabric.fu
+# CHECK: %[[CARRY:.*]] = fabric.op [@dataflow.carry](%{{.*}}, %{{.*}}, %[[CARRY]])
+# CHECK: fabric.yield %[[CARRY]]

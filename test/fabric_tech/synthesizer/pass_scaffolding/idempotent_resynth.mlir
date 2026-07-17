@@ -5,7 +5,7 @@
 //   * body shape: exactly one inner `fabric.fu` plus a `func.return`
 //     terminator
 //   * inner fabric.fu passes its own verifier
-//   * signature matches the lift of the input subgraph's block-arg
+//   * signature matches the lift of the input configured function's block-arg
 //     types (i32, i32) and yield types (i32) to fabric.bits<32>
 // Re-running the pass is a no-op for that group: the precheck detects
 // the marker, validates the body shape and signature, and emits a
