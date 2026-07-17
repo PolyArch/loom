@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <optional>
 #include <poll.h>
 #include <set>
@@ -23,6 +24,7 @@
 
 #include <fcntl.h>
 #include <pthread.h>
+#include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -108,6 +110,47 @@ struct LaunchRecord {
 
 enum class InterruptKind : int { None, TimedOut, Cancelled, Abort };
 
+enum class ControlKind : int {
+  TimedOut,
+  Cancelled,
+  Abort,
+  GroupAccepted,
+};
+
+struct ControlRecord {
+  int kind;
+};
+
+struct GroupRecord {
+  pid_t processGroup;
+  pid_t reservationProcess;
+};
+
+enum class FinalSignalState : int {
+  Unpublished,
+  SupervisorOwned,
+  SupervisorSignaling,
+  CallerSignaling,
+  Complete,
+  Released,
+};
+
+struct ProcessGroupOwnership {
+  int finalSignalState;
+  int finalSignalError;
+  pid_t processGroup;
+  pid_t reservationProcess;
+};
+
+struct ProcessGroupOwnershipDeleter {
+  void operator()(ProcessGroupOwnership *ownership) const {
+    ::munmap(ownership, sizeof(*ownership));
+  }
+};
+
+using OwnedProcessGroupOwnership =
+    std::unique_ptr<ProcessGroupOwnership, ProcessGroupOwnershipDeleter>;
+
 struct WaitRecord {
   int valid;
   int waitStatus;
@@ -123,7 +166,6 @@ struct PreparedInvocation {
   std::vector<char *> argv;
   std::vector<std::string> environmentStorage;
   std::vector<char *> environment;
-  int maximumDescriptor = 0;
 };
 
 struct FileSnapshot {
@@ -382,11 +424,12 @@ prepareInvocation(const ToolInvocation &invocation) {
   for (std::string &entry : prepared.environmentStorage)
     prepared.environment.push_back(entry.data());
   prepared.environment.push_back(nullptr);
-  const long maximumDescriptor = ::sysconf(_SC_OPEN_MAX);
-  prepared.maximumDescriptor =
-      maximumDescriptor > 0 && maximumDescriptor <= INT_MAX
-          ? static_cast<int>(maximumDescriptor)
-          : 65536;
+  OwnedFileDescriptor descriptorDirectory(
+      ::open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+  if (!descriptorDirectory)
+    return systemError("could not open ToolRunner descriptor directory", errno);
+  if (llvm::Error error = moveAboveStandard(descriptorDirectory))
+    return std::move(error);
   return prepared;
 }
 
@@ -448,9 +491,62 @@ int observeLeaderCompletion(pid_t process) {
   return information.si_pid == process ? 1 : 0;
 }
 
-int freezeLeaderForInterrupt(pid_t process) {
-  if (::kill(-process, SIGSTOP) < 0 && errno != ESRCH)
-    return -errno;
+FinalSignalState loadFinalSignalState(const ProcessGroupOwnership *ownership) {
+  return static_cast<FinalSignalState>(
+      __atomic_load_n(&ownership->finalSignalState, __ATOMIC_ACQUIRE));
+}
+
+bool transferFinalSignalOwnership(ProcessGroupOwnership *ownership,
+                                  FinalSignalState expected,
+                                  FinalSignalState desired) {
+  int expectedValue = static_cast<int>(expected);
+  return __atomic_compare_exchange_n(&ownership->finalSignalState,
+                                     &expectedValue, static_cast<int>(desired),
+                                     false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+
+void storeFinalSignalState(ProcessGroupOwnership *ownership,
+                           FinalSignalState state) {
+  __atomic_store_n(&ownership->finalSignalState, static_cast<int>(state),
+                   __ATOMIC_RELEASE);
+}
+
+int signalReservedProcessGroup(ProcessGroupOwnership *ownership,
+                               FinalSignalState requiredState,
+                               int signalNumber) {
+  if (loadFinalSignalState(ownership) != requiredState ||
+      ownership->processGroup <= 0 || ownership->reservationProcess <= 0)
+    return EPROTO;
+  if (::kill(ownership->reservationProcess, 0) < 0 && errno != EPERM)
+    return errno;
+  if (loadFinalSignalState(ownership) != requiredState)
+    return EPROTO;
+  if (::kill(-ownership->processGroup, signalNumber) < 0)
+    return errno;
+  return 0;
+}
+
+int completeFinalSignal(ProcessGroupOwnership *ownership,
+                        FinalSignalState owner) {
+  const int errorNumber = signalReservedProcessGroup(ownership, owner, SIGKILL);
+  __atomic_store_n(&ownership->finalSignalError, errorNumber, __ATOMIC_RELAXED);
+  storeFinalSignalState(ownership, FinalSignalState::Complete);
+  return errorNumber;
+}
+
+int finalSignalError(const ProcessGroupOwnership *ownership) {
+  const FinalSignalState state = loadFinalSignalState(ownership);
+  if (state != FinalSignalState::Complete &&
+      state != FinalSignalState::Released)
+    return EPROTO;
+  return __atomic_load_n(&ownership->finalSignalError, __ATOMIC_RELAXED);
+}
+
+int freezeLeaderForInterrupt(pid_t process, ProcessGroupOwnership *ownership) {
+  const int stopError = signalReservedProcessGroup(
+      ownership, FinalSignalState::SupervisorOwned, SIGSTOP);
+  if (stopError != 0)
+    return -stopError;
   const timespec deadline = addMilliseconds(
       monotonicNow(), static_cast<long>(kForcefulTermination.count()));
   const timespec pause{0, 10000000L};
@@ -501,38 +597,34 @@ void reapExitedChildren() {
   }
 }
 
-int sendControlMessage(int descriptor, InterruptKind interrupt) {
-  const std::uint8_t value = static_cast<std::uint8_t>(interrupt);
+int sendControlMessage(int descriptor, ControlKind kind) {
+  const ControlRecord record{static_cast<int>(kind)};
   for (;;) {
-    const ssize_t sent =
-        ::send(descriptor, &value, sizeof(value), MSG_NOSIGNAL | MSG_DONTWAIT);
-    if (sent == static_cast<ssize_t>(sizeof(value)))
+    const ssize_t sent = ::send(descriptor, &record, sizeof(record),
+                                MSG_NOSIGNAL | MSG_DONTWAIT);
+    if (sent == static_cast<ssize_t>(sizeof(record)))
       return 0;
     if (sent < 0 && errno == EINTR)
       continue;
-    if (sent < 0 && (errno == EPIPE || errno == ECONNRESET))
-      return 0;
     return sent < 0 ? errno : EIO;
   }
 }
 
-int receiveControlMessage(int descriptor, InterruptKind &interrupt) {
-  std::uint8_t value = 0;
+int receiveControlMessage(int descriptor, ControlRecord &record) {
   const ssize_t received =
-      ::recv(descriptor, &value, sizeof(value), MSG_DONTWAIT);
+      ::recv(descriptor, &record, sizeof(record), MSG_DONTWAIT);
   if (received == 0)
-    return 0;
+    return 2;
   if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
     return 0;
   if (received < 0 && errno == EINTR)
     return 0;
   if (received < 0)
     return -errno;
-  if (received != static_cast<ssize_t>(sizeof(value)) ||
-      value < static_cast<std::uint8_t>(InterruptKind::TimedOut) ||
-      value > static_cast<std::uint8_t>(InterruptKind::Abort))
+  if (received != static_cast<ssize_t>(sizeof(record)) ||
+      record.kind < static_cast<int>(ControlKind::TimedOut) ||
+      record.kind > static_cast<int>(ControlKind::GroupAccepted))
     return -EPROTO;
-  interrupt = static_cast<InterruptKind>(value);
   return 1;
 }
 
@@ -553,88 +645,225 @@ int normalizeSignalState() {
   return 0;
 }
 
-int closeUnintendedDescriptors(int preserved, int maximumDescriptor) {
-#ifdef SYS_close_range
-  auto closeRange = [](unsigned int first, unsigned int last) -> int {
-    if (first > last)
-      return 0;
-    while (::syscall(SYS_close_range, first, last, 0) < 0) {
+struct LinuxDirectoryEntry64 {
+  std::uint64_t inode;
+  std::int64_t offset;
+  unsigned short recordLength;
+  unsigned char type;
+  char name[];
+};
+
+bool preservesDescriptor(int descriptor, const int *preserved,
+                         std::size_t preservedCount) {
+  for (std::size_t index = 0; index < preservedCount; ++index) {
+    if (preserved[index] == descriptor)
+      return true;
+  }
+  return false;
+}
+
+int closeUnintendedDescriptors(const int *preserved,
+                               std::size_t preservedCount) {
+  const int directoryDescriptor =
+      ::open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (directoryDescriptor < 0)
+    return errno;
+  if (::lseek(directoryDescriptor, 0, SEEK_SET) < 0) {
+    const int errorNumber = errno;
+    ::close(directoryDescriptor);
+    return errorNumber;
+  }
+  char bytes[4096];
+  for (;;) {
+    const long count =
+        ::syscall(SYS_getdents64, directoryDescriptor, bytes, sizeof(bytes));
+    if (count == 0)
+      break;
+    if (count < 0) {
       if (errno == EINTR)
         continue;
-      return errno;
+      const int errorNumber = errno;
+      ::close(directoryDescriptor);
+      return errorNumber;
     }
-    return 0;
-  };
-  int closeError = 0;
-  if (preserved > STDERR_FILENO + 1)
-    closeError =
-        closeRange(STDERR_FILENO + 1, static_cast<unsigned int>(preserved - 1));
-  if (closeError == 0 && preserved < INT_MAX)
-    closeError = closeRange(static_cast<unsigned int>(preserved + 1), UINT_MAX);
-  if (closeError == 0)
-    return 0;
-  if (closeError != ENOSYS && closeError != EINVAL)
-    return closeError;
-#endif
-  for (int descriptor = STDERR_FILENO + 1; descriptor < maximumDescriptor;
-       ++descriptor) {
-    if (descriptor != preserved)
-      ::close(descriptor);
+    long offset = 0;
+    while (offset < count) {
+      const auto *entry =
+          reinterpret_cast<const LinuxDirectoryEntry64 *>(bytes + offset);
+      const std::size_t minimum = offsetof(LinuxDirectoryEntry64, name) + 1;
+      if (entry->recordLength < minimum ||
+          offset + entry->recordLength > count) {
+        ::close(directoryDescriptor);
+        return EIO;
+      }
+      const std::size_t nameCapacity =
+          entry->recordLength - offsetof(LinuxDirectoryEntry64, name);
+      const char *end = static_cast<const char *>(
+          std::memchr(entry->name, '\0', nameCapacity));
+      if (!end) {
+        ::close(directoryDescriptor);
+        return EIO;
+      }
+      int descriptor = 0;
+      bool numeric = entry->name != end;
+      for (const char *digit = entry->name; numeric && digit != end; ++digit) {
+        if (*digit < '0' || *digit > '9' ||
+            descriptor > (INT_MAX - (*digit - '0')) / 10) {
+          numeric = false;
+          break;
+        }
+        descriptor = descriptor * 10 + (*digit - '0');
+      }
+      if (numeric && descriptor != directoryDescriptor &&
+          !preservesDescriptor(descriptor, preserved, preservedCount))
+        ::close(descriptor);
+      offset += entry->recordLength;
+    }
   }
+  ::close(directoryDescriptor);
   return 0;
+}
+
+bool decodeInterrupt(ControlKind kind, InterruptKind &interrupt) {
+  switch (kind) {
+  case ControlKind::TimedOut:
+    interrupt = InterruptKind::TimedOut;
+    return true;
+  case ControlKind::Cancelled:
+    interrupt = InterruptKind::Cancelled;
+    return true;
+  case ControlKind::Abort:
+    interrupt = InterruptKind::Abort;
+    return true;
+  case ControlKind::GroupAccepted:
+    return false;
+  }
+  return false;
+}
+
+int finishFinalSignalAsSupervisor(ProcessGroupOwnership *ownership) {
+  for (;;) {
+    const FinalSignalState state = loadFinalSignalState(ownership);
+    if (state == FinalSignalState::Complete ||
+        state == FinalSignalState::Released)
+      return finalSignalError(ownership);
+    if (state == FinalSignalState::SupervisorOwned &&
+        transferFinalSignalOwnership(ownership, state,
+                                     FinalSignalState::SupervisorSignaling))
+      return completeFinalSignal(ownership,
+                                 FinalSignalState::SupervisorSignaling);
+    if (state == FinalSignalState::SupervisorSignaling)
+      return completeFinalSignal(ownership,
+                                 FinalSignalState::SupervisorSignaling);
+    return EPROTO;
+  }
 }
 
 class ActiveRunGuard {
 public:
-  ActiveRunGuard(pid_t supervisor, int controlDescriptor)
-      : supervisor_(supervisor), controlDescriptor_(controlDescriptor) {}
+  ActiveRunGuard(pid_t supervisor, int controlDescriptor,
+                 ProcessGroupOwnership *ownership)
+      : supervisor_(supervisor), controlDescriptor_(controlDescriptor),
+        ownership_(ownership) {}
   ActiveRunGuard(const ActiveRunGuard &) = delete;
   ActiveRunGuard &operator=(const ActiveRunGuard &) = delete;
 
   ~ActiveRunGuard() {
     if (supervisor_ <= 0)
       return;
-    sendControlMessage(controlDescriptor_, InterruptKind::Abort);
-    const pid_t alreadyExited = ::waitpid(supervisor_, nullptr, WNOHANG);
-    if (alreadyExited == supervisor_ || (alreadyExited < 0 && errno == ECHILD))
-      return;
-
+    if (controlDescriptor_ >= 0)
+      sendControlMessage(controlDescriptor_, ControlKind::Abort);
     const timespec deadline = addMilliseconds(
         monotonicNow(),
         static_cast<long>(
             (kGracefulTermination + kForcefulTermination + kForcefulTermination)
                 .count()));
+    bool supervisorReaped = false;
     const timespec pause{0, 10000000L};
     while (before(monotonicNow(), deadline)) {
       const pid_t waited = ::waitpid(supervisor_, nullptr, WNOHANG);
-      if (waited == supervisor_ || (waited < 0 && errno == ECHILD))
-        return;
+      if (waited == supervisor_ || (waited < 0 && errno == ECHILD)) {
+        supervisorReaped = true;
+        break;
+      }
       ::nanosleep(&pause, nullptr);
     }
-    ::kill(supervisor_, SIGKILL);
-    while (::waitpid(supervisor_, nullptr, 0) < 0 && errno == EINTR) {
+    if (!supervisorReaped) {
+      ::kill(supervisor_, SIGKILL);
+      while (::waitpid(supervisor_, nullptr, 0) < 0 && errno == EINTR) {
+      }
+    }
+    finalizeAfterSupervisorExit();
+  }
+
+  int finalizeAfterSupervisorExit() {
+    for (;;) {
+      const FinalSignalState state = loadFinalSignalState(ownership_);
+      if (state == FinalSignalState::Unpublished)
+        return 0;
+      if (state == FinalSignalState::Complete ||
+          state == FinalSignalState::Released)
+        return finalSignalError(ownership_);
+      if (state == FinalSignalState::CallerSignaling)
+        return completeFinalSignal(ownership_, state);
+      if ((state == FinalSignalState::SupervisorOwned ||
+           state == FinalSignalState::SupervisorSignaling) &&
+          transferFinalSignalOwnership(ownership_, state,
+                                       FinalSignalState::CallerSignaling))
+        return completeFinalSignal(ownership_,
+                                   FinalSignalState::CallerSignaling);
     }
   }
+
+  void disableControl() { controlDescriptor_ = -1; }
 
   void release() { supervisor_ = -1; }
 
 private:
   pid_t supervisor_;
   int controlDescriptor_;
+  ProcessGroupOwnership *ownership_;
 };
 
-[[noreturn]] void superviseTool(int standardOutputRead, int standardOutputWrite,
-                                int standardErrorRead, int standardErrorWrite,
-                                int launchRead, int launchWrite,
-                                int controlParent, int controlSupervisor,
-                                int resultRead, int resultWrite,
-                                const PreparedInvocation &prepared,
-                                llvm::StringRef executablePath) {
-  ::close(standardOutputRead);
-  ::close(standardErrorRead);
-  ::close(launchRead);
-  ::close(controlParent);
-  ::close(resultRead);
+template <typename Record> int readRecord(int descriptor, Record &record) {
+  char *bytes = reinterpret_cast<char *>(&record);
+  std::size_t remaining = sizeof(record);
+  while (remaining > 0) {
+    const ssize_t count = ::read(descriptor, bytes, remaining);
+    if (count > 0) {
+      bytes += count;
+      remaining -= static_cast<std::size_t>(count);
+      continue;
+    }
+    if (count < 0 && errno == EINTR)
+      continue;
+    return count == 0 ? EPIPE : errno;
+  }
+  return 0;
+}
+
+[[noreturn]] void superviseTool(
+    int standardOutputWrite, int standardErrorWrite, int launchWrite,
+    int controlSupervisor, int resultWrite, int toolStartRead,
+    int toolStartWrite, int parentGroupReadyWrite, int supervisorGroupReadyRead,
+    int supervisorGroupReadyWrite, ProcessGroupOwnership *ownership,
+    const PreparedInvocation &prepared, llvm::StringRef executablePath) {
+  const int supervisorDescriptors[] = {
+      standardOutputWrite,      standardErrorWrite,    launchWrite,
+      controlSupervisor,        resultWrite,           toolStartRead,
+      toolStartWrite,           parentGroupReadyWrite, supervisorGroupReadyRead,
+      supervisorGroupReadyWrite};
+  const int descriptorError = closeUnintendedDescriptors(
+      supervisorDescriptors,
+      sizeof(supervisorDescriptors) / sizeof(supervisorDescriptors[0]));
+  if (descriptorError != 0) {
+    writeRecord(launchWrite,
+                LaunchRecord{static_cast<int>(LaunchStage::SupervisorSetup),
+                             descriptorError});
+    writeRecord(resultWrite, WaitRecord{0, 0, descriptorError, 0,
+                                        static_cast<int>(InterruptKind::None)});
+    ::_exit(127);
+  }
 
   const int signalError = normalizeSignalState();
   if (signalError != 0) {
@@ -656,6 +885,7 @@ private:
     ::_exit(127);
   }
 
+  const pid_t supervisorProcess = ::getpid();
   const pid_t toolProcess = ::fork();
   if (toolProcess < 0) {
     const int errorNumber = errno;
@@ -668,10 +898,38 @@ private:
   }
 
   if (toolProcess == 0) {
-    ::close(controlSupervisor);
-    ::close(resultWrite);
-    if (::setpgid(0, 0) < 0)
+    if (::prctl(PR_SET_PDEATHSIG, SIGKILL) < 0)
+      reportLaunchFailure(launchWrite, LaunchStage::SupervisorSetup, errno);
+    if (::getppid() != supervisorProcess)
+      reportLaunchFailure(launchWrite, LaunchStage::SupervisorSetup, EPIPE);
+    if (::setsid() < 0)
       reportLaunchFailure(launchWrite, LaunchStage::ProcessGroup, errno);
+
+    const pid_t toolLeader = ::getpid();
+    const pid_t reservationProcess = ::fork();
+    if (reservationProcess < 0)
+      reportLaunchFailure(launchWrite, LaunchStage::ProcessFork, errno);
+    if (reservationProcess == 0) {
+      if (::prctl(PR_SET_PDEATHSIG, SIGKILL) < 0 || ::getppid() != toolLeader ||
+          normalizeSignalState() != 0)
+        ::_exit(127);
+      struct sigaction ignoreTermination{};
+      ignoreTermination.sa_handler = SIG_IGN;
+      ::sigemptyset(&ignoreTermination.sa_mask);
+      if (::sigaction(SIGTERM, &ignoreTermination, nullptr) < 0 ||
+          ::prctl(PR_SET_PDEATHSIG, 0) < 0)
+        ::_exit(127);
+      const GroupRecord group{toolLeader, ::getpid()};
+      writeRecord(supervisorGroupReadyWrite, group);
+      writeRecord(parentGroupReadyWrite, group);
+      if (closeUnintendedDescriptors(nullptr, 0) != 0)
+        ::_exit(127);
+      for (;;)
+        ::pause();
+    }
+
+    ::close(parentGroupReadyWrite);
+    ::close(supervisorGroupReadyWrite);
     if (::chdir(prepared.scratchDirectory.c_str()) < 0)
       reportLaunchFailure(launchWrite, LaunchStage::WorkingDirectory, errno);
     if (::dup2(standardOutputWrite, STDOUT_FILENO) < 0)
@@ -682,11 +940,21 @@ private:
       ::close(standardOutputWrite);
     if (standardErrorWrite != STDERR_FILENO)
       ::close(standardErrorWrite);
-    const int descriptorError =
-        closeUnintendedDescriptors(launchWrite, prepared.maximumDescriptor);
-    if (descriptorError != 0)
+    const int toolDescriptors[] = {STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO,
+                                   launchWrite, toolStartRead};
+    const int toolDescriptorError = closeUnintendedDescriptors(
+        toolDescriptors, sizeof(toolDescriptors) / sizeof(toolDescriptors[0]));
+    if (toolDescriptorError != 0)
       reportLaunchFailure(launchWrite, LaunchStage::DescriptorIsolation,
-                          descriptorError);
+                          toolDescriptorError);
+    char start = 0;
+    ssize_t startCount = -1;
+    do {
+      startCount = ::read(toolStartRead, &start, sizeof(start));
+    } while (startCount < 0 && errno == EINTR);
+    if (startCount != static_cast<ssize_t>(sizeof(start)) || start != 1)
+      ::_exit(127);
+    ::close(toolStartRead);
     ::execve(executablePath.data(), prepared.argv.data(),
              prepared.environment.data());
     reportLaunchFailure(launchWrite, LaunchStage::Execute, errno);
@@ -694,30 +962,115 @@ private:
 
   ::close(standardOutputWrite);
   ::close(standardErrorWrite);
-
-  if (::setpgid(toolProcess, toolProcess) < 0 && errno != EACCES &&
-      errno != ESRCH) {
-    const int errorNumber = errno;
+  ::close(toolStartRead);
+  ::close(parentGroupReadyWrite);
+  ::close(supervisorGroupReadyWrite);
+  GroupRecord group{};
+  const int groupReadyError = readRecord(supervisorGroupReadyRead, group);
+  ::close(supervisorGroupReadyRead);
+  if (groupReadyError != 0 || group.processGroup != toolProcess ||
+      group.reservationProcess <= 0) {
+    const int errorNumber = groupReadyError != 0 ? groupReadyError : EPROTO;
+    ::close(toolStartWrite);
     ::kill(toolProcess, SIGKILL);
+    if (group.reservationProcess > 0)
+      ::kill(group.reservationProcess, SIGKILL);
     int status = 0;
     while (::waitpid(toolProcess, &status, 0) < 0 && errno == EINTR) {
     }
-    writeRecord(
-        launchWrite,
-        LaunchRecord{static_cast<int>(LaunchStage::ProcessGroup), errorNumber});
-    writeRecord(resultWrite, WaitRecord{1, status, 0, 1,
-                                        static_cast<int>(InterruptKind::None)});
+    const bool cleanupComplete = reapProcessGroupChildren(toolProcess);
+    reapExitedChildren();
+    writeRecord(resultWrite,
+                WaitRecord{1, status, errorNumber, cleanupComplete ? 1 : 0,
+                           static_cast<int>(InterruptKind::None)});
     ::_exit(127);
   }
   ::close(launchWrite);
 
   InterruptKind interrupt = InterruptKind::None;
+  int monitorError = 0;
+  bool groupAccepted = false;
+  while (!groupAccepted && interrupt == InterruptKind::None &&
+         monitorError == 0) {
+    pollfd controlPoll{controlSupervisor, POLLIN | POLLHUP | POLLERR | POLLNVAL,
+                       0};
+    const int pollResult = ::poll(&controlPoll, 1, -1);
+    if (pollResult < 0 && errno == EINTR)
+      continue;
+    if (pollResult < 0) {
+      monitorError = errno;
+      break;
+    }
+    ControlRecord record{};
+    const int receiveResult = receiveControlMessage(controlSupervisor, record);
+    if (receiveResult == 2) {
+      interrupt = InterruptKind::Abort;
+      break;
+    }
+    if (receiveResult < 0) {
+      monitorError = -receiveResult;
+      break;
+    }
+    if (receiveResult == 0)
+      continue;
+    const ControlKind kind = static_cast<ControlKind>(record.kind);
+    if (kind == ControlKind::GroupAccepted) {
+      groupAccepted = loadFinalSignalState(ownership) ==
+                          FinalSignalState::SupervisorOwned &&
+                      ownership->processGroup == group.processGroup &&
+                      ownership->reservationProcess == group.reservationProcess;
+      if (!groupAccepted)
+        monitorError = EPROTO;
+      break;
+    }
+    if (!decodeInterrupt(kind, interrupt))
+      monitorError = EPROTO;
+  }
+
+  if (groupAccepted && interrupt == InterruptKind::None && monitorError == 0) {
+    const char start = 1;
+    if (::write(toolStartWrite, &start, sizeof(start)) !=
+        static_cast<ssize_t>(sizeof(start)))
+      monitorError = errno != 0 ? errno : EIO;
+  }
+  ::close(toolStartWrite);
+
+  if (!groupAccepted) {
+    const bool groupPublished =
+        loadFinalSignalState(ownership) == FinalSignalState::SupervisorOwned &&
+        ownership->processGroup == group.processGroup &&
+        ownership->reservationProcess == group.reservationProcess;
+    if (groupPublished) {
+      const int finalError = finishFinalSignalAsSupervisor(ownership);
+      if (monitorError == 0)
+        monitorError = finalError;
+    } else {
+      ::kill(toolProcess, SIGKILL);
+      ::kill(group.reservationProcess, SIGKILL);
+    }
+    int status = 0;
+    pid_t waited = -1;
+    do {
+      waited = ::waitpid(toolProcess, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    const bool cleanupComplete =
+        (!groupPublished ||
+         loadFinalSignalState(ownership) == FinalSignalState::Complete) &&
+        reapProcessGroupChildren(toolProcess);
+    if (groupPublished && cleanupComplete)
+      storeFinalSignalState(ownership, FinalSignalState::Released);
+    reapExitedChildren();
+    writeRecord(resultWrite, WaitRecord{waited == toolProcess ? 1 : 0, status,
+                                        monitorError, cleanupComplete ? 1 : 0,
+                                        static_cast<int>(interrupt)});
+    ::_exit(0);
+  }
+
   bool terminationStarted = false;
   bool forceSent = false;
   bool leaderCompleted = false;
   timespec gracefulDeadline{};
   timespec forcefulDeadline{};
-  int monitorError = 0;
 
   for (;;) {
     const int completion = observeLeaderCompletion(toolProcess);
@@ -733,14 +1086,21 @@ private:
         !terminationStarted) {
       if (interrupt == InterruptKind::None)
         interrupt = InterruptKind::Abort;
-      ::kill(-toolProcess, SIGTERM);
+      const int terminationError = signalReservedProcessGroup(
+          ownership, FinalSignalState::SupervisorOwned, SIGTERM);
+      if (terminationError != 0 && monitorError == 0)
+        monitorError = terminationError;
       terminationStarted = true;
       gracefulDeadline =
           addMilliseconds(now, static_cast<long>(kGracefulTermination.count()));
     }
     if (terminationStarted && !forceSent && !before(now, gracefulDeadline)) {
-      ::kill(-toolProcess, SIGKILL);
+      const int finalError = finishFinalSignalAsSupervisor(ownership);
+      if (finalError != 0 && monitorError == 0)
+        monitorError = finalError;
       forceSent = true;
+      if (loadFinalSignalState(ownership) != FinalSignalState::Complete)
+        break;
       forcefulDeadline =
           addMilliseconds(now, static_cast<long>(kForcefulTermination.count()));
     }
@@ -750,7 +1110,8 @@ private:
       break;
     }
 
-    pollfd controlPoll{controlSupervisor, POLLIN | POLLHUP, 0};
+    pollfd controlPoll{controlSupervisor, POLLIN | POLLHUP | POLLERR | POLLNVAL,
+                       0};
     const int pollResult =
         ::poll(&controlPoll, 1, static_cast<int>(kPollInterval.count()));
     if (pollResult < 0 && errno != EINTR) {
@@ -762,13 +1123,18 @@ private:
         monitorError != 0)
       continue;
 
-    InterruptKind requested = InterruptKind::None;
+    ControlRecord record{};
     int receiveResult = 0;
     if (controlPoll.revents & POLLIN)
-      receiveResult = receiveControlMessage(controlSupervisor, requested);
-    else if (controlPoll.revents & POLLHUP) {
+      receiveResult = receiveControlMessage(controlSupervisor, record);
+    InterruptKind requested = InterruptKind::None;
+    bool syntheticAbort = false;
+    if (receiveResult == 2 ||
+        (receiveResult == 0 &&
+         (controlPoll.revents & (POLLHUP | POLLERR | POLLNVAL)))) {
       requested = InterruptKind::Abort;
       receiveResult = 1;
+      syntheticAbort = true;
     }
     if (receiveResult < 0) {
       monitorError = -receiveResult;
@@ -776,8 +1142,13 @@ private:
     }
     if (receiveResult == 0)
       continue;
+    if (!syntheticAbort &&
+        !decodeInterrupt(static_cast<ControlKind>(record.kind), requested)) {
+      monitorError = EPROTO;
+      continue;
+    }
 
-    const int freezeResult = freezeLeaderForInterrupt(toolProcess);
+    const int freezeResult = freezeLeaderForInterrupt(toolProcess, ownership);
     if (freezeResult > 0) {
       leaderCompleted = true;
       break;
@@ -787,8 +1158,14 @@ private:
       continue;
     }
     interrupt = requested;
-    ::kill(-toolProcess, SIGTERM);
-    ::kill(-toolProcess, SIGCONT);
+    const int terminationError = signalReservedProcessGroup(
+        ownership, FinalSignalState::SupervisorOwned, SIGTERM);
+    const int continueError = signalReservedProcessGroup(
+        ownership, FinalSignalState::SupervisorOwned, SIGCONT);
+    if (terminationError != 0)
+      monitorError = terminationError;
+    else if (continueError != 0)
+      monitorError = continueError;
     terminationStarted = true;
     gracefulDeadline = addMilliseconds(
         monotonicNow(), static_cast<long>(kGracefulTermination.count()));
@@ -797,14 +1174,19 @@ private:
   if (leaderCompleted) {
     const timespec now = monotonicNow();
     if (!terminationStarted) {
-      ::kill(-toolProcess, SIGTERM);
+      const int terminationError = signalReservedProcessGroup(
+          ownership, FinalSignalState::SupervisorOwned, SIGTERM);
+      if (terminationError != 0 && monitorError == 0)
+        monitorError = terminationError;
       terminationStarted = true;
       gracefulDeadline =
           addMilliseconds(now, static_cast<long>(kGracefulTermination.count()));
     }
     if (!forceSent) {
       sleepUntil(gracefulDeadline);
-      ::kill(-toolProcess, SIGKILL);
+      const int finalError = finishFinalSignalAsSupervisor(ownership);
+      if (finalError != 0 && monitorError == 0)
+        monitorError = finalError;
       forceSent = true;
     }
   }
@@ -819,7 +1201,11 @@ private:
   const int waitError =
       waited < 0 ? (monitorError != 0 ? monitorError : errno) : monitorError;
   const bool cleanupComplete =
-      leaderCompleted && reapProcessGroupChildren(toolProcess);
+      leaderCompleted && forceSent &&
+      loadFinalSignalState(ownership) == FinalSignalState::Complete &&
+      reapProcessGroupChildren(toolProcess);
+  if (cleanupComplete)
+    storeFinalSignalState(ownership, FinalSignalState::Released);
   reapExitedChildren();
   writeRecord(resultWrite,
               WaitRecord{waited == toolProcess ? 1 : 0, waitStatus, waitError,
@@ -863,18 +1249,6 @@ llvm::Error drainDescriptor(OwnedFileDescriptor &descriptor, Buffer &buffer,
     return systemError("could not read ToolRunner pipe", errno);
   }
   return llvm::Error::success();
-}
-
-template <typename Record>
-llvm::Expected<Record> decodeRecord(const std::vector<char> &bytes,
-                                    llvm::StringRef description) {
-  if (bytes.size() != sizeof(Record))
-    return llvm::createStringError(
-        std::errc::io_error, "%s record has %zu bytes, expected %zu",
-        description.str().c_str(), bytes.size(), sizeof(Record));
-  Record record;
-  std::memcpy(&record, bytes.data(), sizeof(record));
-  return record;
 }
 
 llvm::StringRef launchStageName(LaunchStage stage) {
@@ -1033,18 +1407,6 @@ std::vector<std::string> changedProducedFiles(const InventorySnapshot &before,
   return produced;
 }
 
-ToolRunOutcome baseOutcome(const ToolInvocation &invocation,
-                           std::chrono::system_clock::time_point startedAt) {
-  ToolRunOutcome outcome;
-  outcome.startedAt = startedAt;
-  outcome.toolBindingIdentity = invocation.toolBindingIdentity;
-  outcome.resourceLeaseBindingIdentities =
-      invocation.resourceLeaseBindingIdentities;
-  outcome.licenseLeaseBindingIdentities =
-      invocation.licenseLeaseBindingIdentities;
-  return outcome;
-}
-
 } // namespace
 
 llvm::Expected<ToolRunOutcome> runTool(const ToolInvocation &invocation) {
@@ -1061,7 +1423,13 @@ llvm::Expected<ToolRunOutcome> runTool(const ToolInvocation &invocation) {
 
   const auto startedAt = std::chrono::system_clock::now();
   const auto steadyStart = std::chrono::steady_clock::now();
-  ToolRunOutcome outcome = baseOutcome(invocation, startedAt);
+  ToolRunOutcome outcome;
+  outcome.startedAt = startedAt;
+  outcome.toolBindingIdentity = invocation.toolBindingIdentity;
+  outcome.resourceLeaseBindingIdentities =
+      invocation.resourceLeaseBindingIdentities;
+  outcome.licenseLeaseBindingIdentities =
+      invocation.licenseLeaseBindingIdentities;
 
   llvm::Expected<Pipe> standardOutputValue = createPipe();
   if (!standardOutputValue)
@@ -1083,6 +1451,27 @@ llvm::Expected<ToolRunOutcome> runTool(const ToolInvocation &invocation) {
   if (!resultValue)
     return resultValue.takeError();
   Pipe result = std::move(*resultValue);
+  llvm::Expected<Pipe> toolStartValue = createPipe();
+  if (!toolStartValue)
+    return toolStartValue.takeError();
+  Pipe toolStart = std::move(*toolStartValue);
+  llvm::Expected<Pipe> parentGroupReadyValue = createPipe();
+  if (!parentGroupReadyValue)
+    return parentGroupReadyValue.takeError();
+  Pipe parentGroupReady = std::move(*parentGroupReadyValue);
+  llvm::Expected<Pipe> supervisorGroupReadyValue = createPipe();
+  if (!supervisorGroupReadyValue)
+    return supervisorGroupReadyValue.takeError();
+  Pipe supervisorGroupReady = std::move(*supervisorGroupReadyValue);
+
+  void *ownershipMapping =
+      ::mmap(nullptr, sizeof(ProcessGroupOwnership), PROT_READ | PROT_WRITE,
+             MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  if (ownershipMapping == MAP_FAILED)
+    return systemError("could not allocate ToolRunner group ownership", errno);
+  OwnedProcessGroupOwnership ownership(
+      static_cast<ProcessGroupOwnership *>(ownershipMapping));
+  std::memset(ownership.get(), 0, sizeof(*ownership));
 
   sigset_t allSignals;
   sigset_t previousSignalMask;
@@ -1094,43 +1483,68 @@ llvm::Expected<ToolRunOutcome> runTool(const ToolInvocation &invocation) {
                        blockError);
 
   const pid_t supervisor = ::fork();
-  const int forkError = supervisor < 0 ? errno : 0;
+  const int supervisorForkError = supervisor < 0 ? errno : 0;
   if (supervisor == 0) {
-    superviseTool(standardOutput.read.get(), standardOutput.write.get(),
-                  standardError.read.get(), standardError.write.get(),
-                  launch.read.get(), launch.write.get(), control.parent.get(),
-                  control.supervisor.get(), result.read.get(),
-                  result.write.get(), prepared, invocation.executablePath);
+    superviseTool(standardOutput.write.get(), standardError.write.get(),
+                  launch.write.get(), control.supervisor.get(),
+                  result.write.get(), toolStart.read.get(),
+                  toolStart.write.get(), parentGroupReady.write.get(),
+                  supervisorGroupReady.read.get(),
+                  supervisorGroupReady.write.get(), ownership.get(), prepared,
+                  invocation.executablePath);
   }
 
   const int restoreMaskError =
       ::pthread_sigmask(SIG_SETMASK, &previousSignalMask, nullptr);
   if (supervisor < 0) {
-    const int errorNumber = forkError;
+    const int errorNumber = supervisorForkError;
     outcome.status = ToolRunStatus::LaunchFailure;
     outcome.launchErrorNumber = errorNumber;
     outcome.launchErrorMessage =
-        "fork: " +
+        std::string("fork: ") +
         std::error_code(errorNumber, std::generic_category()).message();
     outcome.endedAt = std::chrono::system_clock::now();
     return outcome;
   }
 
-  if (restoreMaskError != 0) {
-    sendControlMessage(control.parent.get(), InterruptKind::Abort);
-    while (::waitpid(supervisor, nullptr, 0) < 0 && errno == EINTR) {
-    }
-    return systemError("could not restore signals after ToolRunner fork",
-                       restoreMaskError);
-  }
-
-  ActiveRunGuard activeRun(supervisor, control.parent.get());
+  ActiveRunGuard activeRun(supervisor, control.parent.get(), ownership.get());
 
   standardOutput.write.reset();
   standardError.write.reset();
   launch.write.reset();
   control.supervisor.reset();
   result.write.reset();
+  toolStart.read.reset();
+  toolStart.write.reset();
+  parentGroupReady.write.reset();
+  supervisorGroupReady.read.reset();
+  supervisorGroupReady.write.reset();
+
+  GroupRecord group{};
+  const int groupReadyError = readRecord(parentGroupReady.read.get(), group);
+  parentGroupReady.read.reset();
+  if (groupReadyError == 0) {
+    if (group.processGroup <= 0 || group.reservationProcess <= 0)
+      return systemError("ToolRunner returned an invalid process group",
+                         EPROTO);
+    ownership->processGroup = group.processGroup;
+    ownership->reservationProcess = group.reservationProcess;
+    storeFinalSignalState(ownership.get(), FinalSignalState::SupervisorOwned);
+    if (restoreMaskError != 0)
+      return systemError("could not restore signals after ToolRunner fork",
+                         restoreMaskError);
+    const int acceptanceError =
+        sendControlMessage(control.parent.get(), ControlKind::GroupAccepted);
+    if (acceptanceError != 0)
+      return systemError("could not accept ToolRunner process group",
+                         acceptanceError);
+  } else if (groupReadyError != EPIPE) {
+    return systemError("could not read ToolRunner process group",
+                       groupReadyError);
+  }
+  if (restoreMaskError != 0)
+    return systemError("could not restore signals after ToolRunner fork",
+                       restoreMaskError);
 
   if (llvm::Error error = setNonBlocking(standardOutput.read.get()))
     return std::move(error);
@@ -1144,6 +1558,7 @@ llvm::Expected<ToolRunOutcome> runTool(const ToolInvocation &invocation) {
   std::vector<char> launchBytes;
   std::vector<char> resultBytes;
   bool interruptRequested = false;
+  std::optional<std::string> localInfrastructureDiagnostic;
 
   while (result.read) {
     if (llvm::Error error =
@@ -1168,13 +1583,17 @@ llvm::Expected<ToolRunOutcome> runTool(const ToolInvocation &invocation) {
       const bool timedOut =
           invocation.timeout && now - steadyStart >= *invocation.timeout;
       if (cancelled || timedOut) {
-        const InterruptKind requested =
-            cancelled ? InterruptKind::Cancelled : InterruptKind::TimedOut;
+        const ControlKind requested =
+            cancelled ? ControlKind::Cancelled : ControlKind::TimedOut;
         const int controlError =
             sendControlMessage(control.parent.get(), requested);
-        if (controlError != 0)
-          return systemError("could not interrupt ToolRunner supervisor",
-                             controlError);
+        if (controlError != 0) {
+          localInfrastructureDiagnostic =
+              "could not interrupt ToolRunner supervisor: " +
+              std::error_code(controlError, std::generic_category()).message();
+          activeRun.disableControl();
+          control.parent.reset();
+        }
         interruptRequested = true;
       }
     }
@@ -1209,45 +1628,76 @@ llvm::Expected<ToolRunOutcome> runTool(const ToolInvocation &invocation) {
   standardError.read.reset();
   launch.read.reset();
 
+  int supervisorStatus = 0;
   pid_t waitedSupervisor = -1;
   do {
-    waitedSupervisor = ::waitpid(supervisor, nullptr, 0);
+    waitedSupervisor = ::waitpid(supervisor, &supervisorStatus, 0);
   } while (waitedSupervisor < 0 && errno == EINTR);
-  if (waitedSupervisor < 0 && errno != ECHILD)
-    return systemError("could not wait for ToolRunner supervisor", errno);
-  activeRun.release();
+  const bool supervisorStatusKnown = waitedSupervisor == supervisor;
+  const bool supervisorGone =
+      supervisorStatusKnown || (waitedSupervisor < 0 && errno == ECHILD);
+  const int supervisorWaitError =
+      waitedSupervisor < 0 && errno != ECHILD ? errno : 0;
+  int finalSignalCleanupError = 0;
+  if (supervisorGone) {
+    finalSignalCleanupError = activeRun.finalizeAfterSupervisorExit();
+    activeRun.release();
+  }
 
   std::optional<LaunchRecord> launchRecord;
-  if (!launchBytes.empty()) {
-    llvm::Expected<LaunchRecord> decoded =
-        decodeRecord<LaunchRecord>(launchBytes, "launch");
-    if (!decoded)
-      return decoded.takeError();
-    launchRecord = *decoded;
+  if (launchBytes.size() == sizeof(LaunchRecord)) {
+    LaunchRecord record;
+    std::memcpy(&record, launchBytes.data(), sizeof(record));
+    launchRecord = record;
   }
 
   std::optional<WaitRecord> waitRecord;
-  if (!resultBytes.empty()) {
-    llvm::Expected<WaitRecord> decoded =
-        decodeRecord<WaitRecord>(resultBytes, "wait");
-    if (!decoded)
-      return decoded.takeError();
-    waitRecord = *decoded;
+  if (resultBytes.size() == sizeof(WaitRecord)) {
+    WaitRecord record;
+    std::memcpy(&record, resultBytes.data(), sizeof(record));
+    waitRecord = record;
   }
 
-  if (launchRecord) {
+  auto infrastructureFailure = [&](std::string message) {
+    outcome.status = ToolRunStatus::InfrastructureFailure;
+    outcome.infrastructureDiagnostic = std::move(message);
+  };
+  const bool validCompletedLeaderResult =
+      launchBytes.empty() && waitRecord && supervisorWaitError == 0 &&
+      finalSignalCleanupError == 0 &&
+      (!supervisorStatusKnown ||
+       (WIFEXITED(supervisorStatus) && WEXITSTATUS(supervisorStatus) == 0)) &&
+      waitRecord->valid && waitRecord->cleanupComplete &&
+      waitRecord->errorNumber == 0 &&
+      waitRecord->interruptKind == static_cast<int>(InterruptKind::None) &&
+      (WIFEXITED(waitRecord->waitStatus) ||
+       WIFSIGNALED(waitRecord->waitStatus));
+  if (localInfrastructureDiagnostic && !validCompletedLeaderResult) {
+    infrastructureFailure(*localInfrastructureDiagnostic);
+  } else if ((!launchBytes.empty() && !launchRecord) || !waitRecord) {
+    infrastructureFailure(
+        "ToolRunner supervisor exited without a complete result");
+  } else if (supervisorWaitError != 0) {
+    infrastructureFailure(
+        "could not wait for ToolRunner supervisor: " +
+        std::error_code(supervisorWaitError, std::generic_category())
+            .message());
+  } else if (finalSignalCleanupError != 0) {
+    infrastructureFailure(
+        "could not deliver final ToolRunner process-group signal: " +
+        std::error_code(finalSignalCleanupError, std::generic_category())
+            .message());
+  } else if (launchRecord) {
     outcome.status = ToolRunStatus::LaunchFailure;
     outcome.launchErrorNumber = launchRecord->errorNumber;
     outcome.launchErrorMessage = launchErrorMessage(*launchRecord);
+  } else if ((supervisorStatusKnown && (!WIFEXITED(supervisorStatus) ||
+                                        WEXITSTATUS(supervisorStatus) != 0)) ||
+             !waitRecord->valid || !waitRecord->cleanupComplete ||
+             waitRecord->errorNumber != 0) {
+    infrastructureFailure(
+        "ToolRunner supervisor failed during process-group cleanup");
   } else {
-    if (!waitRecord || !waitRecord->valid)
-      return systemError("ToolRunner could not wait for tool process",
-                         waitRecord ? waitRecord->errorNumber : ECHILD);
-    if (!waitRecord->cleanupComplete)
-      return llvm::createStringError(
-          std::errc::timed_out,
-          "ToolRunner could not terminate and reap the process group");
-
     if (WIFEXITED(waitRecord->waitStatus))
       outcome.exitCode = WEXITSTATUS(waitRecord->waitStatus);
     if (WIFSIGNALED(waitRecord->waitStatus))
@@ -1260,19 +1710,15 @@ llvm::Expected<ToolRunOutcome> runTool(const ToolInvocation &invocation) {
     else if (interrupt == InterruptKind::Cancelled)
       outcome.status = ToolRunStatus::Cancelled;
     else if (interrupt == InterruptKind::Abort)
-      return llvm::createStringError(std::errc::operation_canceled,
-                                     "ToolRunner supervisor aborted");
+      infrastructureFailure("ToolRunner caller control channel closed");
     else if (interrupt != InterruptKind::None)
-      return llvm::createStringError(
-          std::errc::protocol_error,
-          "ToolRunner returned an invalid interrupt");
+      infrastructureFailure("ToolRunner returned an invalid interrupt");
     else if (outcome.exitCode)
       outcome.status = ToolRunStatus::Exited;
     else if (outcome.terminationSignal)
       outcome.status = ToolRunStatus::Signaled;
     else
-      return llvm::createStringError(std::errc::io_error,
-                                     "tool returned an unknown wait status");
+      infrastructureFailure("tool returned an unknown wait status");
   }
 
   llvm::Expected<InventorySnapshot> inventoryAfter =

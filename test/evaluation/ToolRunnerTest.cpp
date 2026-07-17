@@ -4,9 +4,11 @@
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -20,10 +22,51 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <poll.h>
 #include <pthread.h>
+#include <sys/mman.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+struct NegativeSignalRecord {
+  pid_t sender;
+  pid_t target;
+  int signalNumber;
+  int reservationPresent;
+};
+
+struct NegativeSignalLog {
+  unsigned int count;
+  pid_t reservationProcess;
+  NegativeSignalRecord records[64];
+};
+
+static NegativeSignalLog *activeNegativeSignalLog = nullptr;
+
+extern "C" int kill(pid_t process, int signalNumber) noexcept {
+  NegativeSignalLog *log = activeNegativeSignalLog;
+  const pid_t sender = ::getpid();
+  if (log && process < -1) {
+    const unsigned int index =
+        __atomic_fetch_add(&log->count, 1U, __ATOMIC_RELAXED);
+    if (index < std::size(log->records)) {
+      const pid_t reservation =
+          __atomic_load_n(&log->reservationProcess, __ATOMIC_RELAXED);
+      const int reservationPresent =
+          reservation > 0 && ::syscall(SYS_kill, reservation, 0) == 0;
+      log->records[index] = NegativeSignalRecord{sender, process, signalNumber,
+                                                 reservationPresent};
+    }
+  }
+  return static_cast<int>(::syscall(SYS_kill, process, signalNumber));
+}
 
 using namespace loom;
 using namespace loom::evaluation;
@@ -44,6 +87,46 @@ void require(const char *test, bool condition, const std::string &message) {
   if (!condition)
     fail(test, message);
 }
+
+class NegativeSignalRecorder {
+public:
+  NegativeSignalRecorder() {
+    require(__func__, !activeNegativeSignalLog,
+            "negative signal recorder is already active");
+    void *mapping =
+        ::mmap(nullptr, sizeof(NegativeSignalLog), PROT_READ | PROT_WRITE,
+               MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    require(__func__, mapping != MAP_FAILED,
+            std::string("mmap failed: ") + std::strerror(errno));
+    log_ = static_cast<NegativeSignalLog *>(mapping);
+    std::memset(log_, 0, sizeof(*log_));
+    activeNegativeSignalLog = log_;
+  }
+
+  NegativeSignalRecorder(const NegativeSignalRecorder &) = delete;
+  NegativeSignalRecorder &operator=(const NegativeSignalRecorder &) = delete;
+
+  ~NegativeSignalRecorder() {
+    activeNegativeSignalLog = nullptr;
+    ::munmap(log_, sizeof(*log_));
+  }
+
+  std::vector<NegativeSignalRecord> records() const {
+    const unsigned int recorded =
+        __atomic_load_n(&log_->count, __ATOMIC_RELAXED);
+    const unsigned int count =
+        std::min(recorded, static_cast<unsigned int>(std::size(log_->records)));
+    return std::vector<NegativeSignalRecord>(log_->records,
+                                             log_->records + count);
+  }
+
+  void setReservation(pid_t process) {
+    __atomic_store_n(&log_->reservationProcess, process, __ATOMIC_RELAXED);
+  }
+
+private:
+  NegativeSignalLog *log_ = nullptr;
+};
 
 template <typename T>
 T takeExpected(const char *test, llvm::Expected<T> value) {
@@ -140,6 +223,135 @@ void requireProcessesGone(const char *test, const std::vector<pid_t> &pids) {
   require(test, pids.size() == 2, "helper did not record both process IDs");
   for (pid_t pid : pids)
     requireProcessGone(test, pid);
+}
+
+std::vector<pid_t> readProcessChildren(pid_t process) {
+  const std::filesystem::path path =
+      "/proc" / std::filesystem::path(std::to_string(process)) / "task" /
+      std::filesystem::path(std::to_string(process)) / "children";
+  std::ifstream stream(path);
+  std::vector<pid_t> children;
+  pid_t child = 0;
+  while (stream >> child)
+    children.push_back(child);
+  return children;
+}
+
+bool waitForPath(const std::filesystem::path &path) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!std::filesystem::exists(path)) {
+    if (std::chrono::steady_clock::now() >= deadline)
+      return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return true;
+}
+
+bool waitForChild(pid_t child, int &status) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  for (;;) {
+    const pid_t waited = ::waitpid(child, &status, WNOHANG);
+    if (waited == child)
+      return true;
+    if (waited < 0 && errno != EINTR)
+      return false;
+    if (std::chrono::steady_clock::now() >= deadline)
+      return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+}
+
+void observeChildExitWithoutReaping(const char *test, pid_t child) {
+  siginfo_t information{};
+  int waitResult = -1;
+  do {
+    waitResult = ::waitid(P_PID, static_cast<id_t>(child), &information,
+                          WEXITED | WNOWAIT);
+  } while (waitResult < 0 && errno == EINTR);
+  require(test, waitResult == 0 && information.si_pid == child,
+          "child exit was not observable before the late control send");
+}
+
+void terminateProcesses(const std::vector<pid_t> &pids) {
+  for (pid_t pid : pids)
+    ::kill(pid, SIGKILL);
+}
+
+std::vector<std::pair<int, std::string>> processSocketDescriptors() {
+  std::vector<std::pair<int, std::string>> sockets;
+  for (const std::filesystem::directory_entry &entry :
+       std::filesystem::directory_iterator("/proc/self/fd")) {
+    const std::string name = entry.path().filename().string();
+    char *end = nullptr;
+    const long descriptor = std::strtol(name.c_str(), &end, 10);
+    if (!end || *end != '\0' || descriptor < 0)
+      continue;
+    std::error_code error;
+    const std::filesystem::path target =
+        std::filesystem::read_symlink(entry.path(), error);
+    if (!error && llvm::StringRef(target.string()).starts_with("socket:["))
+      sockets.emplace_back(static_cast<int>(descriptor), target.string());
+  }
+  return sockets;
+}
+
+pid_t waitForSupervisor(pid_t caller) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < deadline) {
+    for (pid_t child : readProcessChildren(caller)) {
+      if (!readProcessChildren(child).empty())
+        return child;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return -1;
+}
+
+pid_t waitForReservation(pid_t toolProcess, pid_t workloadChild) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < deadline) {
+    for (pid_t child : readProcessChildren(toolProcess)) {
+      if (child != workloadChild)
+        return child;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return -1;
+}
+
+bool recordReservationWhenReady(const std::filesystem::path &pidFile,
+                                NegativeSignalRecorder &recorder) {
+  if (!std::filesystem::exists(pidFile))
+    return false;
+  const std::vector<pid_t> pids = readPids(pidFile);
+  if (pids.size() != 2)
+    return false;
+  for (pid_t child : readProcessChildren(pids.front())) {
+    if (child != pids.back()) {
+      recorder.setReservation(child);
+      return true;
+    }
+  }
+  return false;
+}
+
+void makeCloseRangeUnavailable() {
+#ifdef SYS_close_range
+  sock_filter filter[] = {
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_close_range, 0, 1),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+  };
+  sock_fprog program{static_cast<unsigned short>(std::size(filter)), filter};
+  if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0 ||
+      ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) < 0)
+    ::_exit(120);
+#endif
 }
 
 void terminateAndRequireGone(const char *test, pid_t pid) {
@@ -312,6 +524,122 @@ void descriptorsAreIsolatedAndClosedStandardFdsAreReusable() {
           "closed stderr was not remapped to its capture pipe");
 }
 
+void concurrentSupervisorsDoNotRetainPeerControlSockets() {
+  TemporaryDirectory firstScratch;
+  TemporaryDirectory secondScratch;
+  const std::filesystem::path firstPids = firstScratch.path() / "pids.txt";
+  const std::filesystem::path secondPids = secondScratch.path() / "pids.txt";
+  const std::vector<std::pair<int, std::string>> baseline =
+      processSocketDescriptors();
+  std::atomic<bool> firstReturned{false};
+  std::atomic<bool> cancelSecond{false};
+  std::optional<ToolRunOutcome> firstOutcome;
+
+  std::thread first([&] {
+    ToolInvocation invocation =
+        baseInvocation(firstScratch.path(), "--spawn-descendant");
+    invocation.argv.push_back("pids.txt");
+    invocation.declaredOutputs = {"pids.txt"};
+    llvm::Expected<ToolRunOutcome> result = runTool(invocation);
+    if (result)
+      firstOutcome = std::move(*result);
+    else
+      llvm::consumeError(result.takeError());
+    firstReturned.store(true, std::memory_order_release);
+  });
+  require(__func__, waitForPath(firstPids),
+          "first concurrent invocation did not start");
+
+  int firstControl = -1;
+  for (const auto &socket : processSocketDescriptors()) {
+    const int descriptor = socket.first;
+    const std::string &target = socket.second;
+    const auto existing =
+        std::find_if(baseline.begin(), baseline.end(), [&](const auto &entry) {
+          return entry.first == descriptor && entry.second == target;
+        });
+    if (existing == baseline.end()) {
+      require(__func__, firstControl < 0,
+              "first invocation exposed multiple parent control sockets");
+      firstControl = descriptor;
+    }
+  }
+  require(__func__, firstControl >= 0,
+          "could not identify first invocation control socket");
+
+  std::thread second([&] {
+    ToolInvocation invocation =
+        baseInvocation(secondScratch.path(), "--spawn-descendant");
+    invocation.argv.push_back("pids.txt");
+    invocation.declaredOutputs = {"pids.txt"};
+    invocation.cancellationRequested = [&] {
+      return cancelSecond.load(std::memory_order_relaxed);
+    };
+    llvm::Expected<ToolRunOutcome> result = runTool(invocation);
+    if (!result)
+      llvm::consumeError(result.takeError());
+  });
+  require(__func__, waitForPath(secondPids),
+          "second concurrent invocation did not start");
+  require(__func__, ::close(firstControl) == 0,
+          "could not close first invocation control socket");
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+  while (!firstReturned.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  const bool returnedBeforePeerExit =
+      firstReturned.load(std::memory_order_acquire);
+
+  cancelSecond.store(true, std::memory_order_relaxed);
+  second.join();
+  first.join();
+  require(__func__, returnedBeforePeerExit,
+          "a concurrent supervisor retained its peer control socket");
+  require(__func__,
+          firstOutcome &&
+              firstOutcome->status == ToolRunStatus::InfrastructureFailure,
+          "parent control EOF was not returned as infrastructure failure");
+  requireProcessesGone(__func__, readPids(firstPids));
+  requireProcessesGone(__func__, readPids(secondPids));
+}
+
+void descriptorFallbackClosesHighFdsAboveLoweredLimits() {
+  TemporaryDirectory scratch;
+  const pid_t caller = ::fork();
+  require(__func__, caller >= 0, "could not fork descriptor fallback probe");
+  if (caller == 0) {
+    const int source = ::open("/dev/null", O_RDONLY);
+    if (source < 0)
+      ::_exit(121);
+    const int inherited = ::fcntl(source, F_DUPFD, 256);
+    ::close(source);
+    if (inherited < 256)
+      ::_exit(122);
+
+    rlimit limits{64, 64};
+    if (::setrlimit(RLIMIT_NOFILE, &limits) < 0)
+      ::_exit(123);
+    makeCloseRangeUnavailable();
+
+    ToolInvocation probe = baseInvocation(scratch.path(), "--probe-fd");
+    probe.argv.push_back(std::to_string(inherited));
+    llvm::Expected<ToolRunOutcome> result = runTool(probe);
+    if (!result) {
+      llvm::consumeError(result.takeError());
+      ::_exit(124);
+    }
+    ::_exit(result->standardOutput == "closed\n" ? 0 : 125);
+  }
+
+  int status = 0;
+  require(__func__, waitForChild(caller, status),
+          "descriptor fallback probe did not return");
+  require(__func__, WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "fallback left a high descriptor open after limits were lowered");
+}
+
 void inheritedSignalStateIsNormalized() {
   TemporaryDirectory scratch;
 
@@ -359,6 +687,57 @@ void inheritedSignalStateIsNormalized() {
           "inherited SIGUSR1 state changed tool termination");
 }
 
+void invokedToolCannotEscapeItsProcessGroup() {
+  TemporaryDirectory scratch;
+  ToolInvocation invocation =
+      baseInvocation(scratch.path(), "--attempt-self-escape");
+  invocation.declaredOutputs = {"escape.txt"};
+  invocation.timeout = std::chrono::milliseconds(200);
+
+  ToolRunOutcome outcome = takeExpected(__func__, runTool(invocation));
+  std::istringstream report(readFile(scratch.path() / "escape.txt"));
+  std::string processLabel;
+  std::string groupLabel;
+  std::string deathLabel;
+  std::string sessionLabel;
+  std::string setGroupLabel;
+  pid_t process = -1;
+  pid_t processGroup = -1;
+  int deathSignal = -1;
+  int sessionResult = 0;
+  int sessionError = 0;
+  int groupResult = 0;
+  int groupError = 0;
+  report >> processLabel >> process >> groupLabel >> processGroup >>
+      deathLabel >> deathSignal >> sessionLabel >> sessionResult >>
+      sessionError >> setGroupLabel >> groupResult >> groupError;
+
+  require(__func__,
+          !report.fail() && processLabel == "pid" && groupLabel == "pgrp" &&
+              deathLabel == "pdeath" && sessionLabel == "setsid" &&
+              setGroupLabel == "setpgid" && process > 0,
+          "self-escape helper returned an invalid report");
+
+  errno = 0;
+  const bool processGone =
+      ::syscall(SYS_kill, process, 0) < 0 && errno == ESRCH;
+  if (!processGone)
+    terminateAndRequireGone(__func__, process);
+
+  require(__func__, process > 0 && processGroup == process,
+          "invoked executable did not lead its process group");
+  require(__func__, deathSignal == 0,
+          "invoked executable did not clear PDEATHSIG");
+  require(__func__, sessionResult < 0 && sessionError == EPERM,
+          "invoked executable escaped with setsid");
+  require(__func__, groupResult < 0 && groupError == EPERM,
+          "invoked executable escaped with setpgid");
+  require(__func__, processGone,
+          "invoked executable survived process-group timeout cleanup");
+  require(__func__, outcome.status == ToolRunStatus::TimedOut,
+          "self-escape attempt changed timeout classification");
+}
+
 void timeoutAndCancellationReapProcessGroups() {
   TemporaryDirectory timeoutScratch;
   ToolInvocation timeout =
@@ -392,25 +771,97 @@ void timeoutAndCancellationReapProcessGroups() {
   requireProcessesGone(__func__, readPids(pidFile));
 }
 
+void groupSignalsEndBeforePgidReservationRelease() {
+  TemporaryDirectory scratch;
+  ToolInvocation invocation =
+      baseInvocation(scratch.path(), "--spawn-descendant");
+  invocation.argv.push_back("pids.txt");
+  invocation.declaredOutputs = {"pids.txt"};
+  invocation.timeout = std::chrono::seconds(1);
+  const std::filesystem::path pidFile = scratch.path() / "pids.txt";
+
+  NegativeSignalRecorder recorder;
+  invocation.cancellationRequested = [&] {
+    return recordReservationWhenReady(pidFile, recorder);
+  };
+  struct sigaction ignoreChild{};
+  struct sigaction previousChild{};
+  ignoreChild.sa_handler = SIG_IGN;
+  ::sigemptyset(&ignoreChild.sa_mask);
+  require(__func__, ::sigaction(SIGCHLD, &ignoreChild, &previousChild) == 0,
+          "could not ignore SIGCHLD for PGID reservation probe");
+  llvm::Expected<ToolRunOutcome> result = runTool(invocation);
+  const int restoreChild = ::sigaction(SIGCHLD, &previousChild, nullptr);
+  require(__func__, restoreChild == 0,
+          "could not restore SIGCHLD for PGID reservation probe");
+
+  ToolRunOutcome outcome = takeExpected(__func__, std::move(result));
+  const std::vector<pid_t> pids = readPids(pidFile);
+  requireProcessesGone(__func__, pids);
+  require(__func__, outcome.status == ToolRunStatus::Cancelled,
+          "PGID reservation probe did not use explicit cancellation");
+
+  const std::vector<NegativeSignalRecord> signals = recorder.records();
+  const int expectedSignals[] = {SIGSTOP, SIGTERM, SIGCONT, SIGKILL};
+  require(__func__, signals.size() == std::size(expectedSignals),
+          "PGID reservation probe observed an unexpected signal count");
+  const pid_t expectedTarget = -pids.front();
+  const pid_t expectedOwner = signals.front().sender;
+  require(__func__, expectedOwner != ::getpid(),
+          "caller claimed normal process-group signal ownership");
+  for (std::size_t index = 0; index < signals.size(); ++index) {
+    require(__func__, signals[index].sender == expectedOwner,
+            "final process-group ownership changed during cleanup");
+    require(__func__, signals[index].target == expectedTarget,
+            "runner signaled a process group not led by the invoked tool");
+    require(__func__, signals[index].reservationPresent != 0,
+            "runner signaled after the PGID reservation was released");
+    require(__func__, signals[index].signalNumber == expectedSignals[index],
+            "runner changed the required process-group signal ordering");
+  }
+}
+
 void completedLeaderWinsAgainstLateCancellation() {
   TemporaryDirectory scratch;
   ToolInvocation invocation =
-      baseInvocation(scratch.path(), "--complete-with-descendant");
-  invocation.argv.push_back("pids.txt");
-  invocation.declaredOutputs = {"pids.txt"};
-  const std::filesystem::path pidFile = scratch.path() / "pids.txt";
-  invocation.cancellationRequested = [pidFile] {
-    if (!std::filesystem::exists(pidFile))
+      baseInvocation(scratch.path(), "--exit-on-signal");
+  invocation.declaredOutputs = {"ready.txt"};
+  const std::filesystem::path readyFile = scratch.path() / "ready.txt";
+  bool callbackRan = false;
+  pid_t leader = -1;
+  pid_t reservation = -1;
+  pid_t supervisor = -1;
+  invocation.cancellationRequested = [&] {
+    if (!std::filesystem::exists(readyFile))
       return false;
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    const std::vector<pid_t> pids = readPids(readyFile);
+    require(__func__, pids.size() == 1,
+            "late cancellation helper returned an invalid PID record");
+    leader = pids.front();
+    const std::vector<pid_t> children = readProcessChildren(leader);
+    require(__func__, children.size() == 1,
+            "late cancellation could not identify the PGID reservation");
+    reservation = children.front();
+    supervisor = waitForSupervisor(::getpid());
+    require(__func__, supervisor > 0,
+            "late cancellation could not identify the supervisor");
+    require(__func__, ::kill(leader, SIGUSR1) == 0,
+            "late cancellation could not complete the leader");
+    observeChildExitWithoutReaping(__func__, supervisor);
+    callbackRan = true;
     return true;
   };
 
   ToolRunOutcome outcome = takeExpected(__func__, runTool(invocation));
+  require(__func__, callbackRan,
+          "late cancellation callback did not publish the race");
   require(__func__,
-          outcome.status == ToolRunStatus::Exited && outcome.exitCode == 0,
+          outcome.status == ToolRunStatus::Exited && outcome.exitCode == 0 &&
+              !outcome.infrastructureDiagnostic,
           "late cancellation overrode an already-completed leader");
-  requireProcessesGone(__func__, readPids(pidFile));
+  requireProcessGone(__func__, leader);
+  requireProcessGone(__func__, reservation);
+  requireProcessGone(__func__, supervisor);
 }
 
 void detachedCaptureHolderDoesNotExtendTimeout() {
@@ -433,6 +884,168 @@ void detachedCaptureHolderDoesNotExtendTimeout() {
           "detached capture holder kept runTool waiting for pipe EOF");
   requireProcessGone(__func__, pids.front());
   terminateAndRequireGone(__func__, pids.back());
+}
+
+void callerDeathAbortsOwnedProcessGroup() {
+  TemporaryDirectory scratch;
+  const std::filesystem::path pidFile = scratch.path() / "pids.txt";
+  const pid_t caller = ::fork();
+  require(__func__, caller >= 0, "could not fork caller-death probe");
+  if (caller == 0) {
+    ToolInvocation invocation =
+        baseInvocation(scratch.path(), "--spawn-descendant");
+    invocation.argv.push_back("pids.txt");
+    invocation.declaredOutputs = {"pids.txt"};
+    llvm::Expected<ToolRunOutcome> result = runTool(invocation);
+    if (!result)
+      llvm::consumeError(result.takeError());
+    ::_exit(126);
+  }
+
+  require(__func__, waitForPath(pidFile),
+          "caller-death helper did not start its process group");
+  const std::vector<pid_t> ownedProcesses = readPids(pidFile);
+  require(__func__, ownedProcesses.size() == 2,
+          "caller-death helper did not record both process IDs");
+  const pid_t reservation =
+      waitForReservation(ownedProcesses.front(), ownedProcesses.back());
+  require(__func__, reservation > 0,
+          "caller-death probe could not identify the PGID reservation");
+  const std::vector<pid_t> callerChildren = readProcessChildren(caller);
+  require(__func__, !callerChildren.empty(),
+          "caller-death probe could not observe runner children");
+  require(__func__, ::kill(caller, SIGKILL) == 0,
+          "could not terminate ToolRunner caller");
+  int status = 0;
+  require(__func__, waitForChild(caller, status),
+          "terminated ToolRunner caller was not reaped");
+  require(__func__, WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL,
+          "caller-death probe changed caller termination");
+  requireProcessesGone(__func__, ownedProcesses);
+  requireProcessGone(__func__, reservation);
+  for (pid_t child : callerChildren)
+    requireProcessGone(__func__, child);
+}
+
+void supervisorDeathUsesEmergencyGroupOwnership() {
+  TemporaryDirectory scratch;
+  const std::filesystem::path pidFile = scratch.path() / "pids.txt";
+  const pid_t caller = ::fork();
+  require(__func__, caller >= 0, "could not fork supervisor-death probe");
+  if (caller == 0) {
+    ToolInvocation invocation =
+        baseInvocation(scratch.path(), "--spawn-descendant");
+    invocation.argv.push_back("pids.txt");
+    invocation.declaredOutputs = {"pids.txt"};
+    llvm::Expected<ToolRunOutcome> result = runTool(invocation);
+    if (!result) {
+      llvm::consumeError(result.takeError());
+      ::_exit(127);
+    }
+    ::_exit(result->status == ToolRunStatus::InfrastructureFailure &&
+                    result->infrastructureDiagnostic
+                ? 0
+                : 128);
+  }
+
+  require(__func__, waitForPath(pidFile),
+          "supervisor-death helper did not start its process group");
+  const std::vector<pid_t> ownedProcesses = readPids(pidFile);
+  require(__func__, ownedProcesses.size() == 2,
+          "supervisor-death helper did not record both process IDs");
+  const pid_t reservation =
+      waitForReservation(ownedProcesses.front(), ownedProcesses.back());
+  require(__func__, reservation > 0,
+          "supervisor-death probe could not identify the PGID reservation");
+  const pid_t supervisor = waitForSupervisor(caller);
+  require(__func__, supervisor > 0, "could not identify ToolRunner supervisor");
+  const std::vector<pid_t> callerChildren = readProcessChildren(caller);
+  require(__func__, ::kill(supervisor, SIGKILL) == 0,
+          "could not terminate ToolRunner supervisor");
+
+  int status = 0;
+  const bool callerReturned = waitForChild(caller, status);
+  if (!callerReturned)
+    ::kill(caller, SIGKILL);
+  if (!callerReturned || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    terminateProcesses(ownedProcesses);
+    terminateProcesses(callerChildren);
+  }
+  require(__func__, callerReturned,
+          "runTool did not return after supervisor death");
+  require(__func__, WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "supervisor death was not returned as raw infrastructure failure");
+  requireProcessesGone(__func__, ownedProcesses);
+  requireProcessGone(__func__, reservation);
+  for (pid_t child : callerChildren)
+    requireProcessGone(__func__, child);
+}
+
+void interruptTransportFailureReturnsRawOutcome() {
+  TemporaryDirectory scratch;
+  const std::filesystem::path readyFile = scratch.path() / "ready.txt";
+  ToolInvocation invocation = baseInvocation(scratch.path(), "--emit-and-wait");
+  invocation.declaredOutputs = {"ready.txt"};
+
+  bool callbackRan = false;
+  pid_t tool = -1;
+  pid_t reservation = -1;
+  pid_t supervisor = -1;
+  NegativeSignalRecorder recorder;
+  invocation.cancellationRequested = [&] {
+    if (callbackRan)
+      return true;
+    if (!std::filesystem::exists(readyFile))
+      return false;
+
+    const std::vector<pid_t> pids = readPids(readyFile);
+    require(__func__, pids.size() == 1,
+            "interrupt race helper returned an invalid PID record");
+    tool = pids.front();
+    const std::vector<pid_t> toolChildren = readProcessChildren(tool);
+    require(__func__, toolChildren.size() == 1,
+            "interrupt race could not identify the PGID reservation");
+    reservation = toolChildren.front();
+    recorder.setReservation(reservation);
+    supervisor = waitForSupervisor(::getpid());
+    require(__func__, supervisor > 0,
+            "interrupt race could not identify the supervisor");
+    require(__func__, ::kill(supervisor, SIGKILL) == 0,
+            "interrupt race could not terminate the supervisor");
+
+    observeChildExitWithoutReaping(__func__, supervisor);
+    callbackRan = true;
+    return true;
+  };
+
+  ToolRunOutcome outcome = takeExpected(__func__, runTool(invocation));
+  require(__func__, callbackRan,
+          "interrupt race did not execute the cancellation callback");
+  require(__func__,
+          outcome.status == ToolRunStatus::InfrastructureFailure &&
+              outcome.infrastructureDiagnostic,
+          "interrupt transport failure was not returned as a raw outcome");
+  require(__func__, outcome.standardOutput == "stdout-before-interrupt\n",
+          "interrupt transport failure lost captured stdout");
+  require(__func__, outcome.standardError == "stderr-before-interrupt\n",
+          "interrupt transport failure lost captured stderr");
+  require(__func__,
+          outcome.producedFiles == std::vector<std::string>{"ready.txt"},
+          "interrupt transport failure skipped output inventory");
+  require(__func__,
+          outcome.startedAt.time_since_epoch().count() != 0 &&
+              outcome.startedAt <= outcome.endedAt,
+          "interrupt transport failure lost run timestamps");
+  requireProcessGone(__func__, tool);
+  requireProcessGone(__func__, reservation);
+  requireProcessGone(__func__, supervisor);
+  const std::vector<NegativeSignalRecord> signals = recorder.records();
+  require(__func__,
+          signals.size() == 1 && signals.front().sender == ::getpid() &&
+              signals.front().target == -tool &&
+              signals.front().signalNumber == SIGKILL &&
+              signals.front().reservationPresent != 0,
+          "interrupt race did not use one reserved emergency group signal");
 }
 
 void invalidOutputPathsAreRejectedBeforeSpawn() {
@@ -460,6 +1073,72 @@ void invalidOutputPathsAreRejectedBeforeSpawn() {
   expectErrorContains(__func__, runTool(symlink), "escapes scratch");
   require(__func__, !std::filesystem::exists(scratch / "spawned.txt"),
           "tool spawned before symlink traversal validation");
+}
+
+void stablePreflightBoundariesRejectBeforeSpawn() {
+  TemporaryDirectory root;
+  const std::filesystem::path scratch = root.path() / "scratch";
+  const std::filesystem::path input = root.path() / "input.txt";
+  std::filesystem::create_directory(scratch);
+  writeFile(input, "input\n");
+
+  struct Rejection {
+    const char *name;
+    std::function<void(ToolInvocation &)> invalidate;
+    llvm::StringLiteral diagnostic;
+  };
+  const std::vector<Rejection> rejections = {
+      {"executable",
+       [](ToolInvocation &invocation) { invocation.executablePath = "tool"; },
+       "executable path"},
+      {"argv", [](ToolInvocation &invocation) { invocation.argv.clear(); },
+       "argv"},
+      {"scratch",
+       [](ToolInvocation &invocation) {
+         invocation.scratchDirectory = "relative-scratch";
+       },
+       "scratch directory"},
+      {"input",
+       [&](ToolInvocation &invocation) {
+         invocation.inputs = {
+             MaterializedInputArtifact{ArtifactIdentity(), input.string()}};
+       },
+       "artifact identity"},
+      {"environment",
+       [](ToolInvocation &invocation) {
+         invocation.environmentOverlay = {{"BAD=NAME", "value"}};
+       },
+       "environment overlay"},
+      {"timeout",
+       [](ToolInvocation &invocation) {
+         invocation.timeout = std::chrono::milliseconds(-1);
+       },
+       "timeout"},
+      {"resource lease",
+       [](ToolInvocation &invocation) {
+         invocation.resourceLeaseBindingIdentities = {""};
+       },
+       "resource lease"},
+      {"license lease",
+       [](ToolInvocation &invocation) {
+         invocation.licenseLeaseBindingIdentities = {""};
+       },
+       "license lease"},
+  };
+
+  for (const Rejection &rejection : rejections) {
+    ToolInvocation invocation = baseInvocation(scratch, "--mark-spawned");
+    rejection.invalidate(invocation);
+    llvm::Expected<ToolRunOutcome> result = runTool(invocation);
+    if (result)
+      fail(__func__, std::string(rejection.name) + " was accepted");
+    const std::string message = llvm::toString(result.takeError());
+    require(__func__, llvm::StringRef(message).contains(rejection.diagnostic),
+            std::string(rejection.name) +
+                " returned unexpected diagnostic: " + message);
+    require(__func__, !std::filesystem::exists(scratch / "spawned.txt"),
+            std::string(rejection.name) + " spawned before rejection");
+  }
 }
 
 void producedInventoryIsSortedAndScratchRelative() {
@@ -527,7 +1206,7 @@ void inventoryFailureRetainsRawOutcome() {
           "inventory read failure lacks a raw diagnostic");
 }
 
-void secretEnvironmentValuesAreNotRetained() {
+void secretEnvironmentValuesAreNotStructurallyRetained() {
   TemporaryDirectory scratch;
   ToolInvocation invocation = baseInvocation(scratch.path(), "--check-secret");
   invocation.environmentOverlay = {
@@ -546,9 +1225,9 @@ void secretEnvironmentValuesAreNotRetained() {
             "secret environment value was retained in the outcome");
   };
   requireNoSecret(outcome.toolBindingIdentity);
-  requireNoSecret(outcome.standardOutput);
-  requireNoSecret(outcome.standardError);
   requireNoSecret(outcome.launchErrorMessage);
+  if (outcome.infrastructureDiagnostic)
+    requireNoSecret(*outcome.infrastructureDiagnostic);
   if (outcome.inventoryDiagnostic)
     requireNoSecret(*outcome.inventoryDiagnostic);
   for (const std::string &value : outcome.producedFiles)
@@ -557,6 +1236,20 @@ void secretEnvironmentValuesAreNotRetained() {
     requireNoSecret(value);
   for (const std::string &value : outcome.licenseLeaseBindingIdentities)
     requireNoSecret(value);
+}
+
+void capturedStreamsRemainVerbatim() {
+  TemporaryDirectory scratch;
+  ToolInvocation invocation =
+      baseInvocation(scratch.path(), "--echo-secret-streams");
+  invocation.environmentOverlay = {
+      {"LOOM_TOOL_RUNNER_SECRET", kSecretValue.str()}};
+
+  ToolRunOutcome outcome = takeExpected(__func__, runTool(invocation));
+  require(__func__, outcome.standardOutput == kSecretValue.str(),
+          "stdout was not captured verbatim");
+  require(__func__, outcome.standardError == kSecretValue.str(),
+          "stderr was not captured verbatim");
 }
 
 [[noreturn]] void writeForever(int descriptor) {
@@ -628,6 +1321,59 @@ int runChild(int argc, char **argv) {
     std::raise(SIGUSR1);
     return 86;
   }
+  if (mode == "--attempt-self-escape") {
+    int deathSignal = -1;
+    if (::prctl(PR_SET_PDEATHSIG, 0) < 0 ||
+        ::prctl(PR_GET_PDEATHSIG, &deathSignal) < 0)
+      return 104;
+
+    errno = 0;
+    const int sessionResult = ::setsid();
+    const int sessionError = errno;
+    int ready[2];
+    if (::pipe(ready) < 0)
+      return 105;
+    const pid_t alternateGroup = ::fork();
+    if (alternateGroup < 0)
+      return 106;
+    if (alternateGroup == 0) {
+      ::close(ready[0]);
+      if (::setpgid(0, 0) < 0)
+        ::_exit(107);
+      const char marker = 'r';
+      if (::write(ready[1], &marker, 1) != 1)
+        ::_exit(108);
+      ::close(ready[1]);
+      for (;;)
+        ::pause();
+    }
+    ::close(ready[1]);
+    char marker = 0;
+    const ssize_t readyCount = ::read(ready[0], &marker, 1);
+    ::close(ready[0]);
+    if (readyCount != 1)
+      return 109;
+
+    errno = 0;
+    const int groupResult = ::setpgid(0, alternateGroup);
+    const int groupError = errno;
+    ::kill(alternateGroup, SIGKILL);
+    while (::waitpid(alternateGroup, nullptr, 0) < 0 && errno == EINTR) {
+    }
+
+    std::ofstream report("escape.txt");
+    report << "pid " << ::getpid() << '\n';
+    report << "pgrp " << ::getpgrp() << '\n';
+    report << "pdeath " << deathSignal << '\n';
+    report << "setsid " << sessionResult << ' ' << sessionError << '\n';
+    report << "setpgid " << groupResult << ' ' << groupError << '\n';
+    report.close();
+    if (!report)
+      return 110;
+    std::signal(SIGTERM, SIG_IGN);
+    for (;;)
+      ::pause();
+  }
   if (mode == "--mark-spawned") {
     writeFile("spawned.txt", "spawned\n");
     return 0;
@@ -661,6 +1407,31 @@ int runChild(int argc, char **argv) {
     std::cout << "secret-present\n";
     return 0;
   }
+  if (mode == "--echo-secret-streams") {
+    const char *secret = std::getenv("LOOM_TOOL_RUNNER_SECRET");
+    if (!secret)
+      return 102;
+    const std::size_t size = std::strlen(secret);
+    if (::write(STDOUT_FILENO, secret, size) != static_cast<ssize_t>(size) ||
+        ::write(STDERR_FILENO, secret, size) != static_cast<ssize_t>(size))
+      return 103;
+    return 0;
+  }
+  if (mode == "--emit-and-wait") {
+    const char output[] = "stdout-before-interrupt\n";
+    const char error[] = "stderr-before-interrupt\n";
+    if (::write(STDOUT_FILENO, output, sizeof(output) - 1) < 0 ||
+        ::write(STDERR_FILENO, error, sizeof(error) - 1) < 0)
+      return 111;
+    std::ofstream ready("ready.txt");
+    ready << ::getpid() << '\n';
+    ready.close();
+    if (!ready)
+      return 112;
+    std::signal(SIGTERM, SIG_IGN);
+    for (;;)
+      ::pause();
+  }
   if (mode == "--spawn-descendant") {
     if (argc != 3)
       return 83;
@@ -678,20 +1449,20 @@ int runChild(int argc, char **argv) {
     for (;;)
       ::pause();
   }
-  if (mode == "--complete-with-descendant") {
-    if (argc != 3)
+  if (mode == "--exit-on-signal") {
+    sigset_t signalSet;
+    ::sigemptyset(&signalSet);
+    ::sigaddset(&signalSet, SIGUSR1);
+    if (::pthread_sigmask(SIG_BLOCK, &signalSet, nullptr) != 0)
       return 92;
-    const pid_t child = ::fork();
-    if (child < 0)
+    std::ofstream ready("ready.txt");
+    ready << ::getpid() << '\n';
+    ready.close();
+    if (!ready)
       return 93;
-    if (child == 0) {
-      std::signal(SIGTERM, SIG_IGN);
-      for (;;)
-        ::pause();
-    }
-    std::ofstream pids(argv[2]);
-    pids << ::getpid() << '\n' << child << '\n';
-    pids.close();
+    int received = 0;
+    if (::sigwait(&signalSet, &received) != 0 || received != SIGUSR1)
+      return 94;
     return 0;
   }
   if (mode == "--spawn-detached") {
@@ -742,13 +1513,22 @@ int main(int argc, char **argv) {
   streamsExitAndLaunchFailureAreDistinct();
   continuousOutputCannotStarveControlOrOtherStreams();
   descriptorsAreIsolatedAndClosedStandardFdsAreReusable();
+  concurrentSupervisorsDoNotRetainPeerControlSockets();
+  descriptorFallbackClosesHighFdsAboveLoweredLimits();
   inheritedSignalStateIsNormalized();
   timeoutAndCancellationReapProcessGroups();
+  groupSignalsEndBeforePgidReservationRelease();
+  invokedToolCannotEscapeItsProcessGroup();
   completedLeaderWinsAgainstLateCancellation();
   detachedCaptureHolderDoesNotExtendTimeout();
+  callerDeathAbortsOwnedProcessGroup();
+  supervisorDeathUsesEmergencyGroupOwnership();
+  interruptTransportFailureReturnsRawOutcome();
   invalidOutputPathsAreRejectedBeforeSpawn();
+  stablePreflightBoundariesRejectBeforeSpawn();
   producedInventoryIsSortedAndScratchRelative();
   inventoryFailureRetainsRawOutcome();
-  secretEnvironmentValuesAreNotRetained();
+  secretEnvironmentValuesAreNotStructurallyRetained();
+  capturedStreamsRemainVerbatim();
   return 0;
 }

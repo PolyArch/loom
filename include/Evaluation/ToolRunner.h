@@ -43,6 +43,7 @@ enum class ToolRunStatus {
   Signaled,
   TimedOut,
   Cancelled,
+  InfrastructureFailure,
 };
 
 struct ToolRunOutcome {
@@ -55,6 +56,7 @@ struct ToolRunOutcome {
   std::string standardError;
   std::vector<std::string> producedFiles;
   std::optional<std::string> inventoryDiagnostic;
+  std::optional<std::string> infrastructureDiagnostic;
   std::chrono::system_clock::time_point startedAt;
   std::chrono::system_clock::time_point endedAt;
   std::string toolBindingIdentity;

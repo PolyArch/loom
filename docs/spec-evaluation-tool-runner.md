@@ -85,16 +85,34 @@ launch-status descriptor. Internal pipe descriptors are first moved above
 stdin, stdout, and stderr so initially closed standard descriptors are safely
 reused.
 
-The tool leads a dedicated process group. A private Linux subreaper supervisor
-remains outside that group and is the sole authority that commits timeout or
-cancellation, signals the group, and reaps its members. The supervisor checks
-for completed leader state, briefly stops the group, and commits an interrupt
-only after observing the leader stopped rather than exited. It then sends
-`SIGTERM` and `SIGCONT`. This prevents a leader that completed before the
-commit from being reclassified. The supervisor issues every cleanup signal
-before reaping the leader, preserving the process group identity through
-bounded `SIGTERM` to `SIGKILL` cleanup. Background members of the launched
-group are also cleaned up after a normal leader exit.
+The tool leads a dedicated Linux session and process group. Because the
+invoked executable is both session leader and process-group leader, it cannot
+move itself with `setsid` or `setpgid`. A private reservation process is
+created in that group before `execve`, and the tool is not released until the
+reservation has published the PGID directly to both the supervisor and the
+caller.
+
+A private Linux subreaper supervisor remains outside the tool session. It
+commits timeout or cancellation, sends the stop, continue, and graceful
+termination signals, and reaps group members. The supervisor checks for
+completed leader state, briefly stops the group, and commits an interrupt only
+after observing the leader stopped rather than exited. It then sends `SIGTERM`
+and `SIGCONT`. This prevents a leader that completed before the commit from
+being reclassified.
+
+Final-signal ownership is published with the reserved process group. The
+supervisor is the sole normal owner. It transitions ownership before sending
+the final negative-PGID `SIGKILL`, publishes completion, and only then reaps
+the reservation. Every negative-PGID signal first verifies the published
+reservation is still live. If the supervisor dies before publishing
+completion, the caller transfers ownership only after observing that death
+and performs the emergency final signal. A completed or released ownership
+record prevents any later caller signal. This preserves the PGID even when
+inherited `SIGCHLD` handling or another reaper would otherwise release it
+early.
+
+Background members of the launched group are cleaned up after a normal leader
+exit.
 
 Separate nonblocking pipes capture stdout and stderr concurrently. Capture is
 unbounded in total and preserves stream separation, but each descriptor has a
@@ -118,12 +136,16 @@ an independent process-tree tracker or claim ownership of arbitrary daemons.
 - `Signaled`: the tool terminated from a signal without timeout or
   cancellation;
 - `TimedOut`: the invocation timeout initiated group termination;
-- `Cancelled`: the caller's cancellation query initiated group termination.
+- `Cancelled`: the caller's cancellation query initiated group termination;
+- `InfrastructureFailure`: process launch began, but the runner could not
+  produce a complete supervised result or complete process-group cleanup.
 
 `ToolRunOutcome` contains only raw execution facts:
 
 - the status and optional exit code, termination signal, or launch errno;
 - a launch diagnostic when launch failed;
+- an optional infrastructure diagnostic when status is
+  `InfrastructureFailure`;
 - captured stdout and stderr as separate byte strings;
 - a deterministic lexicographically sorted inventory of regular files created
   or changed under declared output roots by this run;

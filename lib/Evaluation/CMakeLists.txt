@@ -1,3 +1,5 @@
+find_package(Threads REQUIRED)
+
 add_library(LoomEvaluation
   Metric.cpp
   ToolRunner.cpp
@@ -9,4 +11,5 @@ target_include_directories(LoomEvaluation PUBLIC
 
 target_link_libraries(LoomEvaluation PUBLIC
   LLVMSupport
+  Threads::Threads
 )
