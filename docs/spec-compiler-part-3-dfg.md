@@ -94,6 +94,13 @@ body, not a tensor-result returning op. Memory dependence
 construction runs in the recursive graph owner using basic graph-local alias
 roots and per-partition write/read frontiers (see
 `docs/spec-compiler-part-3-mem.md`).
+The Structured Transfer Algebra defines graph-owned parallel composition only
+after the Structured Program Candidate has materialized its P[] ownership and
+schedule form. The current implementation has no selected representation for
+that materialization: replicated lane regions, normalized parallel SCF with
+exact P[] data, and another existing representation remain distinct choices.
+It therefore preserves the raw-parallel failure boundary instead of inventing
+one during graph extraction.
 Graph placement inside each thread is governed by the L2 placement
 instance specified by the placement framework and by the implementation
 contract in `docs/spec-compiler-part-3-impl.md`.
@@ -390,9 +397,9 @@ each rule lands in IR.
 * **Basic alias partition.** A graph-local compiler analysis bucket keyed by
   a recognized memory root. View-like values are peeled to their root;
   graph boundary arguments are conservatively grouped unless explicit
-  no-alias evidence distinguishes them; globals are keyed by symbol;
-  unknown accesses cover every known root and one unknown bucket. Partition
-  identity is not written into IR.
+  no-alias evidence distinguishes them; fresh allocations have distinct
+  roots; globals and raw pointer bases must be imported explicitly before a
+  graph is finalized. Partition identity is not written into IR.
 * **Memory dependence edge.** An ordinary `none` SSA causal edge emitted by
   the recursive graph owner from the current per-partition frontier. No
   persistent dependence snapshot is retained.

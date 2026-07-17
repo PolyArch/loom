@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = ROOT / "test" / "app"
 DEFAULT_MANIFEST = APP_ROOT / "manifest.json"
-MANIFEST_SCHEMA_VERSION = "1.0"
+MANIFEST_SCHEMA_VERSION = "1.1"
 VALID_LANGUAGES = {"c", "cxx"}
 VALID_TIERS = {"run", "raise", "dfg"}
 
@@ -195,6 +195,15 @@ def validate_manifest(path: Path) -> tuple[dict[str, object], list[str]]:
         tiers = non_empty_string_list_field(entry, "tiers", context, diagnostics)
         invalid = sorted(set(tiers) - VALID_TIERS)
         require(not invalid, f"{context}: invalid tiers {invalid}", diagnostics)
+        if "dfg_expected_diagnostic" in entry:
+            non_empty_string_field(
+                entry, "dfg_expected_diagnostic", context, diagnostics
+            )
+            require(
+                "dfg" in tiers,
+                f"{context}: dfg_expected_diagnostic requires dfg tier",
+                diagnostics,
+            )
         string_list_field(entry, "compiler_flags", context, diagnostics)
         string_list_field(entry, "link_flags", context, diagnostics)
         raw_expected_executables = entry.get("expected_executables")

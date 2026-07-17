@@ -1,7 +1,7 @@
 // RUN: loom-dfg-sim %s --graph sum4 --arg 0=0 --arg 1=4 --arg 2=1 --arg 3=0.000000e+00 --arg 4=1.000000e+00 --output %t.json
 // RUN: FileCheck %s < %t.json
 
-// CHECK-DAG: "schema_version": "2.1"
+// CHECK-DAG: "schema_version": "2.2"
 // CHECK-DAG: "kind": "dfg_sim_report"
 // CHECK-DAG: "workload": "sum4"
 // CHECK-DAG: "graph": "sum4"

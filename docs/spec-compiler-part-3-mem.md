@@ -56,31 +56,32 @@ or graph completion from a hidden effect scan.
 
 Partition identity is local to one `dataflow.graph.func` lowering run.
 
-A known root is found by peeling supported view-like values until reaching a
-storage or boundary root. The baseline recognizes:
+A canonical root is found by peeling an accepted side-effect-free view or
+one-input conversion bridge until reaching an explicit storage or boundary
+root. The finalized surface recognizes:
 
-* graph and function block arguments, conservatively grouped at the graph
-  boundary unless an argument carries explicit no-alias evidence;
-* `memref.alloc`, `memref.alloca`, and `memref.get_global` results;
-* `ViewLikeOpInterface` producers, including the standard memref view family;
-* single-input `builtin.unrealized_conversion_cast` bridges;
-* the existing view-like `dataflow.partition_layout` and
-  `dataflow.map_info` boundaries.
+* a graph memory input, whose root identity comes from its launch binding;
+* a fresh `memref.alloc` result, whose root is unique for each invocation;
+* a verified side-effect-free view that preserves the source root. The current
+  implementation accepts `memref.cast`; other view forms require a matching
+  root, region, and simulator model before admission;
+* a one-input `builtin.unrealized_conversion_cast` only as a bridge from an
+  established root, never as a root of its own.
 
-Distinct allocation roots are independent partitions. Repeated
-`memref.get_global` operations are keyed by global symbol. Distinct graph
-arguments are not independent merely because they occupy different ABI
-positions: launch verification permits one actual capability in several
-positions. The analysis does not use address ranges, affine disjointness,
-bank identity, physical ports, or element-type compatibility to split a root.
+A memory input binds an established external capability. A null raw pointer is
+not a memory capability and cannot satisfy a graph memory port.
 
-If the root walk reaches an unrecognized producer, the access is unknown.
-The graph first discovers every known partition, then assigns each unknown
-access to every known partition and to one graph-local unknown bucket. This
-has two consequences:
+Distinct graph memory inputs are conservatively may-alias unless explicit
+no-alias evidence distinguishes them. Distinct fresh allocations are
+independent roots. The analysis does not use address ranges, affine
+disjointness, bank identity, physical ports, or element-type compatibility to
+split a root.
 
-* an unknown access orders against every known access;
-* unknown accesses still order against each other when no known root exists.
+`memref.get_global`, `memref.alloca`, globals, static pointer bases, and
+unrecognized capability producers are not canonical roots. A pre-final
+analysis may conservatively group an unresolved access while building an event
+network, but finalization rejects any such residual producer rather than
+granting it an external-memory authority.
 
 Access-to-partition membership is kept in a transient operation map before
 SCF operands are projected. Selector demuxing must not change alias identity.
@@ -255,6 +256,9 @@ Residual `scf.parallel` or `scf.forall` is checked across every graph before
 the pass mutates any graph. Unscheduled input fails with a diagnostic that a
 selected schedule and provenance are required. Scheduled but still residual
 parallel SCF also fails and must be normalized by its owning transformation.
+This is a mechanical boundary, not a parallel-lowering contract: graph-owned
+parallel transfer requires a Structured Program Candidate that selects a
+concrete P[] representation before this pass runs.
 
 The graph-region owner does not:
 
@@ -311,6 +315,11 @@ non-detached async work. This pass contributes structural execution and final
 per-partition read frontiers; stream, exported-memory, and other async
 producers must contribute their explicit completion witnesses through the same
 segment. It never reconstructs them from operation order or effect metadata.
+Memory exports preserve an imported root or view, or expose a fresh allocation
+root. A fresh export retains a memref result payload; a raw pointer result may
+only re-export an imported root or its verified view. Exports do not copy
+contents and do not add a memory token; completion only carries the promised
+visibility and retirement obligation.
 
 ## 12. Supported Failure Modes
 
@@ -318,19 +327,19 @@ The owner rejects before mutation when:
 
 * raw parallel SCF reaches a graph;
 * an effectful or unmodeled nested operation reaches a graph;
-* a write-like LLVM memory operation or volatile/atomic LLVM load remains
-  after normalization and therefore has no explicit completion event;
+* a residual LLVM load, store, memcpy, or memset remains after normalization
+  and therefore has no explicit completion event;
 * a memref leaf is not rank one;
 * structured control carries a memref result or memref loop state;
 * the graph entry lacks the leading `none` execution value.
 
-Unsupported non-volatile, non-atomic LLVM loads may remain value-producing
-reads under the existing address-normalization contract. Supported LLVM load,
-store, memcpy, and memset forms are normalized before recursive region
-lowering, after which the same frontier rules apply. A residual LLVM store,
-memcpy, memset, volatile load, or atomic load has no explicit completion event
-and must fail closed. An unsupported effectful operation inside a structured
-region must likewise fail closed instead of being hoisted.
+Supported LLVM load, store, memcpy, and memset forms are normalized before
+recursive region lowering, after which the same frontier rules apply. Every
+residual raw LLVM memory operation fails closed. The finalized-graph gate also
+rejects residual `memref.load`/`memref.store`, `memref.get_global`, raw pointer
+arithmetic, pointer-bearing operations other than verified boundary bridges,
+and unknown memory-capability producers. An unsupported effectful operation
+inside a structured region must likewise fail closed instead of being hoisted.
 
 ## 13. Non-Goals
 
@@ -340,7 +349,7 @@ This lowering does not define:
 * range-sensitive or polyhedral alias partitioning;
 * cross-graph partition identity;
 * Fabric memory banks, ports, services, or contention;
-* graph stream or exported-memory boundary binding;
+* runtime selection of graph stream or memory boundary bindings;
 * whole-graph causal-closure proof for arbitrary hand-authored frontiers;
 * parallel schedule selection.
 

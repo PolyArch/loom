@@ -3,9 +3,24 @@
 // RUN: FileCheck %s --check-prefix=EMPTY-STREAM < %t.empty.json
 // RUN: loom-dfg-sim %s --graph multi_stream_export --output %t.multi.json
 // RUN: FileCheck %s --check-prefix=MULTI-STREAM < %t.multi.json
-// RUN: loom-dfg-sim %s --graph memory_export --output %t.memory.json
+// RUN: loom-dfg-sim %s --graph memory_export --memref 0=2,5 --output %t.memory.json
 // RUN: FileCheck %s --check-prefix=MEMORY < %t.memory.json
+// RUN: loom-dfg-sim %s --graph view_memory_export --memref 0=2,5 --output %t.view.json
+// RUN: FileCheck %s --check-prefix=VIEW < %t.view.json
+// RUN: loom-dfg-sim %s --graph pointer_memory_export --memref 0=2,5 --output %t.pointer.json
+// RUN: FileCheck %s --check-prefix=POINTER < %t.pointer.json
+// RUN: loom-dfg-sim %s --graph fresh_memory_export --arg 0=7 --output %t.fresh.json
+// RUN: FileCheck %s --check-prefix=FRESH < %t.fresh.json
+// RUN: loom-dfg-sim %s --graph fresh_memory_export --invocations 2 --arg 0=7 --arg 0=9 --output %t.fresh-reentry.json
+// RUN: FileCheck %s --check-prefix=FRESH-REENTRY < %t.fresh-reentry.json
+// RUN: loom-dfg-sim %s --graph fresh_memory_reentry --invocations 2 --arg 0=true --arg 0=false --arg 1=7 --arg 1=9 --output %t.fresh-isolated.json
+// RUN: FileCheck %s --check-prefix=FRESH-ISOLATED < %t.fresh-isolated.json
+// RUN: loom-dfg-sim %s --graph fresh_dynamic_memory_export --arg 0=1 --arg 1=13 --output %t.dynamic.json
+// RUN: FileCheck %s --check-prefix=DYNAMIC < %t.dynamic.json
+// RUN: not loom-dfg-sim %s --graph invalid_dynamic_memory_export --arg 0=13 --output %t.invalid-dynamic.json 2>&1 | FileCheck %s --check-prefix=DYNAMIC-GATE
 // RUN: not loom-dfg-sim %s --graph invalid_memory_export --output %t.invalid-memory.json 2>&1 | FileCheck %s --check-prefix=MEMORY-GATE
+// RUN: not loom-dfg-sim %s --graph invalid_fresh_pointer_export --output %t.invalid-pointer.json 2>&1 | FileCheck %s --check-prefix=FRESH-POINTER-GATE
+// RUN: not loom-pnr-map --dfg-mlir %s --graph invalid_fresh_pointer_export --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload invalid_fresh_pointer_export --output %t.invalid-pointer.csv --artifact %t.invalid-pointer.mapping.json 2>&1 | FileCheck %s --check-prefix=FRESH-POINTER-GATE
 // RUN: loom-dfg-sim %s --graph invocation_reentry --invocations 3 --arg 0=0 --arg 0=1 --arg 0=2 --memref 1=0,0,0 --output %t.reentry.json
 // RUN: FileCheck %s --check-prefix=REENTRY < %t.reentry.json
 
@@ -20,10 +35,52 @@
 // MULTI-STREAM-DAG: "i32:0"
 // MULTI-STREAM-DAG: "i32:1"
 
-// MEMORY: memory export simulation is unsupported
-// MEMORY: "status": "unsupported"
+// MEMORY: "arg0": "memory_root0"
+// MEMORY: "memory_result0": "memory_root0"
+// MEMORY: "arg0": [
+// MEMORY-NEXT: "i32:2"
+// MEMORY-NEXT: "i32:5"
+// MEMORY: "memory_result0": [
+// MEMORY-NEXT: "i32:2"
+// MEMORY-NEXT: "i32:5"
+// MEMORY: "status": "pass"
+
+// VIEW: "arg0": "memory_root0"
+// VIEW: "memory_result0": "memory_root0"
+// VIEW: "arg0": [
+// VIEW-NEXT: "i32:2"
+// VIEW-NEXT: "i32:5"
+// VIEW: "memory_result0": [
+// VIEW-NEXT: "i32:2"
+// VIEW-NEXT: "i32:5"
+// VIEW: "status": "pass"
+
+// POINTER: "arg0": "memory_root0"
+// POINTER: "memory_result0": "memory_root0"
+// POINTER: "status": "pass"
+
+// FRESH: "memory_result0": [
+// FRESH-NEXT: "i32:7"
+// FRESH: "status": "pass"
+
+// FRESH-REENTRY: "memory_result0": "memory_root0"
+// FRESH-REENTRY: "memory_result0": [
+// FRESH-REENTRY-NEXT: "i32:9"
+// FRESH-REENTRY: "status": "pass"
+
+// FRESH-ISOLATED: "memory_result0": [
+// FRESH-ISOLATED-NEXT: "uninitialized"
+// FRESH-ISOLATED: "status": "pass"
+
+// DYNAMIC: "memory_result0": [
+// DYNAMIC-NEXT: "i32:13"
+// DYNAMIC: "status": "pass"
+
+// DYNAMIC-GATE: memref.alloc dynamic extent must be a graph value input
 
 // MEMORY-GATE: nontrivial graph uses raw start as a retirement completion witness
+
+// FRESH-POINTER-GATE: fresh memory export must use a memref result
 
 // REENTRY-DAG: "status": "pass"
 // REENTRY-DAG: "dataflow.load": 3
@@ -86,6 +143,23 @@ module {
         memories(%memory : memref<?xi32>) complete(%start : none)
   }
 
+  dataflow.graph.func private @view_memory_export(
+      %start: none, %memory: memref<2xi32>) -> (none, memref<?xi32>)
+      attributes {input_segments = array<i32: 0, 0, 1>,
+                  result_segments = array<i32: 0, 0, 1>} {
+    %view = memref.cast %memory : memref<2xi32> to memref<?xi32>
+    dataflow.graph.return values() streams()
+        memories(%view : memref<?xi32>) complete(%start : none)
+  }
+
+  dataflow.graph.func private @pointer_memory_export(
+      %start: none, %memory: !llvm.ptr) -> (none, !llvm.ptr)
+      attributes {input_segments = array<i32: 0, 0, 1>,
+                  result_segments = array<i32: 0, 0, 1>} {
+    dataflow.graph.return values() streams()
+        memories(%memory : !llvm.ptr) complete(%start : none)
+  }
+
   dataflow.graph.func private @invalid_memory_export(
       %start: none, %memory: memref<?xi32>) -> (none, memref<?xi32>)
       attributes {input_segments = array<i32: 0, 0, 1>,
@@ -93,6 +167,65 @@ module {
     %unused = dataflow.constant %start {const_value = 1 : i32} : i32
     dataflow.graph.return values() streams()
         memories(%memory : memref<?xi32>) complete(%start : none)
+  }
+
+  dataflow.graph.func private @fresh_memory_export(
+      %start: none, %value: i32) -> (none, memref<1xi32>)
+      attributes {input_segments = array<i32: 1, 0, 0>,
+                  result_segments = array<i32: 0, 0, 1>} {
+    %slot = memref.alloc() : memref<1xi32>
+    %index = dataflow.constant %start {const_value = 0 : index} : index
+    %done = dataflow.store %slot[%index] %value %start : memref<1xi32>
+    dataflow.graph.return values() streams()
+        memories(%slot : memref<1xi32>) complete(%done : none)
+  }
+
+  dataflow.graph.func private @fresh_dynamic_memory_export(
+      %start: none, %extent: index, %value: i32) -> (none, memref<?xi32>)
+      attributes {input_segments = array<i32: 2, 0, 0>,
+                  result_segments = array<i32: 0, 0, 1>} {
+    %slot = memref.alloc(%extent) : memref<?xi32>
+    %index = dataflow.constant %start {const_value = 0 : index} : index
+    %done = dataflow.store %slot[%index] %value %start : memref<?xi32>
+    dataflow.graph.return values() streams()
+        memories(%slot : memref<?xi32>) complete(%done : none)
+  }
+
+  dataflow.graph.func private @fresh_memory_reentry(
+      %start: none, %write: i1, %value: i32) -> (none, memref<1xi32>)
+      attributes {input_segments = array<i32: 2, 0, 0>,
+                  result_segments = array<i32: 0, 0, 1>} {
+    %slot = memref.alloc() : memref<1xi32>
+    %index = dataflow.constant %start {const_value = 0 : index} : index
+    %skip, %store_ctrl = dataflow.demux %write, %start
+        : (i1, none) -> (none, none)
+    %stored = dataflow.store %slot[%index] %value %store_ctrl : memref<1xi32>
+    %complete = dataflow.mux %write, %skip, %stored
+        : (i1, none, none) -> none
+    dataflow.graph.return values() streams()
+        memories(%slot : memref<1xi32>) complete(%complete : none)
+  }
+
+  dataflow.graph.func private @invalid_dynamic_memory_export(
+      %start: none, %value: i32) -> (none, memref<?xi32>)
+      attributes {input_segments = array<i32: 1, 0, 0>,
+                  result_segments = array<i32: 0, 0, 1>} {
+    %extent = dataflow.constant %start {const_value = 1 : index} : index
+    %slot = memref.alloc(%extent) : memref<?xi32>
+    %index = dataflow.constant %start {const_value = 0 : index} : index
+    %done = dataflow.store %slot[%index] %value %start : memref<?xi32>
+    dataflow.graph.return values() streams()
+        memories(%slot : memref<?xi32>) complete(%done : none)
+  }
+
+  dataflow.graph.func private @invalid_fresh_pointer_export(%start: none)
+      -> (none, !llvm.ptr)
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 0, 0, 1>} {
+    %slot = memref.alloc() : memref<1xi32>
+    %raw = builtin.unrealized_conversion_cast %slot : memref<1xi32> to !llvm.ptr
+    dataflow.graph.return values() streams()
+        memories(%raw : !llvm.ptr) complete(%start : none)
   }
 
   dataflow.graph.func private @invocation_reentry(

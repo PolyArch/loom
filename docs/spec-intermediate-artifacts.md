@@ -28,7 +28,7 @@ discover reports by scanning nearby scratch directories.
 
 ## DFG Simulation Report
 
-`loom-dfg-sim` emits a JSON object with `schema_version = "2.1"` and
+`loom-dfg-sim` emits a JSON object with `schema_version = "2.2"` and
 `kind = dfg_sim_report`.
 
 Representative fields:
@@ -52,6 +52,7 @@ Representative fields:
 * `modeled_library_calls`;
 * `final_outputs`;
 * `final_memory_state`;
+* `final_memory_roots`;
 * `diagnostics`.
 
 Scores, dynamic work counts, and operation fire counts are non-negative.
@@ -62,7 +63,9 @@ definition is
 deterministic heuristic, not a timing model. `wavefront_steps` and
 `event_count` describe simulator progress and activity; neither field is a
 cycle estimate. Final outputs and visible memory state use deterministic
-encodings for functional regression checks.
+encodings for functional regression checks. `final_memory_roots` maps each
+imported or exported memory port to its derived logical root label, so aliases
+are observable without treating a memory capability as scalar payload.
 
 ## PnR Mapping Outputs
 

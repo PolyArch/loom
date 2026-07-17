@@ -33,8 +33,7 @@
 // RUN: FileCheck %s --check-prefix=POINTER-MEMORY < %t.pointer_memory.json
 // RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_pointer_memory --arg 0=0 --arg 1=3 --arg 2=1 --arg 3=0 --memref 4=1 --output %t.pointer_memory_oob.json
 // RUN: FileCheck %s --check-prefix=POINTER-MEMORY-OOB < %t.pointer_memory_oob.json
-// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_pointer_select_memory --arg 0=false --arg 1=0 --memref 2=11 --memref 3=22 --output %t.pointer_select_memory.json
-// RUN: FileCheck %s --check-prefix=POINTER-SELECT-MEMORY < %t.pointer_select_memory.json
+// RUN: not loom-dfg-sim %t.lowered.mlir --graph structured_for_pointer_select_memory --arg 0=false --arg 1=0 --memref 2=11 --memref 3=22 --output %t.pointer_select_memory.json 2>&1 | FileCheck %s --check-prefix=POINTER-SELECT-MEMORY
 // RUN: loom-dfg-sim %t.lowered.mlir --graph structured_if_nested_for_pointer_memory --arg 0=true --arg 1=0 --arg 2=3 --arg 3=1 --arg 4=0.000000e+00 --memref 5=1.000000e+00,2.000000e+00,3.000000e+00 --output %t.if_nested_for_memory.json
 // RUN: FileCheck %s --check-prefix=IF-NESTED-FOR-MEMORY < %t.if_nested_for_memory.json
 // RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_autocorr_slice --arg 0=0 --arg 1=3 --arg 2=1 --arg 3=0 --arg 4=0.000000e+00 --arg 5=2 --arg 6=3 --arg 7=0 --arg 8=0 --memref 9=1.000000e+00,2.000000e+00,3.000000e+00,4.000000e+00 --memref 10=0.000000e+00,0.000000e+00,0.000000e+00 --output %t.autocorr_slice.json
@@ -184,13 +183,7 @@
 // POINTER-MEMORY-OOB-DAG: "dataflow.load address is out of range"
 // POINTER-MEMORY-OOB-DAG: "dataflow.load consumed 1 of 3 true stream indices"
 
-// POINTER-SELECT-MEMORY-DAG: "graph": "structured_for_pointer_select_memory"
-// POINTER-SELECT-MEMORY-DAG: "status": "pass"
-// POINTER-SELECT-MEMORY-DAG: "llvm.select": 1
-// POINTER-SELECT-MEMORY-DAG: "dataflow.load": 1
-// POINTER-SELECT-MEMORY-DAG: "final_outputs": [
-// POINTER-SELECT-MEMORY-DAG: "none"
-// POINTER-SELECT-MEMORY-DAG: "i32:22"
+// POINTER-SELECT-MEMORY: finalized graph contains residual pointer operation 'llvm.select'
 
 // IF-NESTED-FOR-MEMORY-DAG: "graph": "structured_if_nested_for_pointer_memory"
 // IF-NESTED-FOR-MEMORY-DAG: "status": "pass"

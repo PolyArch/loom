@@ -128,6 +128,15 @@ bool isNestedInReductionFor(::mlir::scf::ForOp loop) {
   return false;
 }
 
+bool isNestedInGraphParallelRegion(::mlir::scf::ForOp loop) {
+  for (::mlir::Operation *parent = loop->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (::llvm::isa<::mlir::scf::ForallOp, ::mlir::scf::ParallelOp>(parent))
+      return true;
+  }
+  return false;
+}
+
 bool isPureScalarEpilogueOp(::mlir::Operation *op) {
   if (op->getNumResults() == 0 || op->getNumRegions() != 0 ||
       op->getNumSuccessors() != 0)
@@ -936,6 +945,11 @@ struct LowerForToGraphPass
                                    ::mlir::scf::ForOp loop,
                                    ::llvm::StringRef stem, size_t seq,
                                    ::mlir::OpBuilder &builder) {
+    if (isNestedInGraphParallelRegion(loop))
+      return loop.emitOpError(
+          "cannot extract a recurrence nested in scf.forall/scf.parallel "
+          "without a selected graph-owned P[] representation");
+
     ::mlir::Location loc = loop.getLoc();
     ::mlir::Type noneType = builder.getType<::mlir::NoneType>();
     auto stepKind = ::loom::lowering::inferStreamStepKind(loop);

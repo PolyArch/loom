@@ -72,7 +72,7 @@ must not change algorithmic behavior or silently weaken result checks.
 ## Corpus Manifest
 
 The target corpus is manifest-driven. The manifest requires
-`schema_version = "1.0"`. Schema versions are strings in `X.Y` form: `X`
+`schema_version = "1.1"`. Schema versions are strings in `X.Y` form: `X`
 changes are breaking/incompatible and `Y` changes are non-breaking. A manifest
 entry for each case records:
 
@@ -84,6 +84,7 @@ entry for each case records:
 * expected executable names;
 * expected stdout or oracle mode;
 * supported validation tiers;
+* an optional expected diagnostic for a selected DFG tier;
 * required feature tags;
 * optional grouping tags such as reduction, scan, stencil, sort, graph,
   sparse, signal, bit, geometry, string, or neural.

@@ -539,13 +539,6 @@ hardwareOperandIndexForSoftwareEndpoint(ResourceKind kind, mlir::Operation *op,
       return 1;
     return std::nullopt;
   case ResourceKind::MemStore:
-    if (op && op->getName().getStringRef() == "llvm.store") {
-      if (softwareOperandIndex == 0)
-        return 1;
-      if (softwareOperandIndex == 1)
-        return 0;
-      return std::nullopt;
-    }
     if (softwareOperandIndex >= 1 && softwareOperandIndex <= 3)
       return softwareOperandIndex - 1;
     return std::nullopt;
@@ -891,7 +884,7 @@ void collectValueProducers(
             result, RouteBuilder::ProducerRef{nodeIt->second, resultIndex++});
       continue;
     }
-    if (isPointerBookkeepingOp(&op))
+    if (isMemoryCapabilitySetupOp(&op) || isPointerBookkeepingOp(&op))
       continue;
     if (!isAdapterOp(&op) || shouldMaterializeAdapterOp(&op) ||
         op.getNumOperands() == 0)

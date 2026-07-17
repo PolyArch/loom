@@ -229,29 +229,9 @@ bool expandCmsisVecMatMultTS8(::mlir::LLVM::CallOp call,
   auto rowLoopBody = [&](::mlir::OpBuilder &rowBuilder,
                          ::mlir::Location rowLoc, ::mlir::Value row,
                          ::mlir::ValueRange) {
-    ::mlir::Value nullPtr =
-        ::mlir::LLVM::ZeroOp::create(rowBuilder, rowLoc, bias.getType())
-            .getResult();
-    ::mlir::Value hasBias =
-        ::mlir::LLVM::ICmpOp::create(rowBuilder, rowLoc,
-                                     ::mlir::LLVM::ICmpPredicate::ne, bias,
-                                     nullPtr)
-            .getResult();
-    auto biasIf = ::mlir::scf::IfOp::create(
-        rowBuilder, rowLoc, ::mlir::TypeRange{i32Ty}, hasBias,
-        /*withElseRegion=*/true);
-    {
-      ::mlir::OpBuilder::InsertionGuard biasGuard(rowBuilder);
-      rowBuilder.setInsertionPointToStart(&biasIf.getThenRegion().front());
-      ::mlir::Value biasPtr = llvmGep(rowBuilder, rowLoc, bias, i32Ty, row);
-      ::mlir::Value biasValue = llvmLoad(rowBuilder, rowLoc, i32Ty, biasPtr);
-      ::mlir::scf::YieldOp::create(rowBuilder, rowLoc, biasValue);
-    }
-    {
-      ::mlir::OpBuilder::InsertionGuard biasGuard(rowBuilder);
-      rowBuilder.setInsertionPointToStart(&biasIf.getElseRegion().front());
-      ::mlir::scf::YieldOp::create(rowBuilder, rowLoc, zero);
-    }
+    // Graph memory ports are established capabilities, not nullable pointers.
+    ::mlir::Value biasPtr = llvmGep(rowBuilder, rowLoc, bias, i32Ty, row);
+    ::mlir::Value biasValue = llvmLoad(rowBuilder, rowLoc, i32Ty, biasPtr);
 
     auto colLoopBody = [&](::mlir::OpBuilder &colBuilder,
                            ::mlir::Location colLoc, ::mlir::Value col,
@@ -287,7 +267,7 @@ bool expandCmsisVecMatMultTS8(::mlir::LLVM::CallOp call,
     };
     auto colLoop =
         ::mlir::scf::ForOp::create(rowBuilder, rowLoc, zero, rhsCols, one,
-                                   ::mlir::ValueRange{biasIf.getResult(0)},
+                                   ::mlir::ValueRange{biasValue},
                                    colLoopBody);
     ::mlir::Value acc = colLoop.getResult(0);
     acc = buildCmsisRequantize(rowBuilder, rowLoc, acc, dstMultiplier, dstShift);

@@ -265,6 +265,23 @@ class CorpusInventoryTest(unittest.TestCase):
             _, diagnostics = app_manifest.validate_manifest(manifest_path)
             self.assertIn("alpha: duplicate source: main.c", diagnostics)
 
+            expected_diagnostic_entry = {
+                **entry,
+                "dfg_expected_diagnostic": "parallel representation is unresolved",
+            }
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": app_manifest.MANIFEST_SCHEMA_VERSION,
+                        "cases": [expected_diagnostic_entry],
+                    }
+                )
+            )
+            _, diagnostics = app_manifest.validate_manifest(manifest_path)
+            self.assertIn(
+                "alpha: dfg_expected_diagnostic requires dfg tier", diagnostics
+            )
+
             manifest_path.write_text(
                 json.dumps(
                     {

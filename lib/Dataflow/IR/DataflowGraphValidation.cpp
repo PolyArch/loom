@@ -21,6 +21,108 @@ bool isMemoryCapabilityType(mlir::Type type) {
                    mlir::LLVM::LLVMPointerType>(type);
 }
 
+bool isGraphMemoryInput(dataflow::GraphFuncOp graph, mlir::Value value) {
+  auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
+  return argument && argument.getOwner() == &graph.getBody().front() &&
+         argument.getArgNumber() > 0 &&
+         graph.getInputPortKind(argument.getArgNumber() - 1) ==
+             dataflow::GraphPortKind::Memory;
+}
+
+bool isLaunchAvailableValueInput(dataflow::GraphFuncOp graph,
+                                 mlir::Value value) {
+  auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
+  return argument && argument.getOwner() == &graph.getBody().front() &&
+         argument.getArgNumber() > 0 &&
+         graph.getInputPortKind(argument.getArgNumber() - 1) ==
+             dataflow::GraphPortKind::Value;
+}
+
+bool isSupportedMemoryView(mlir::Operation *op) {
+  return llvm::isa<mlir::memref::CastOp>(op);
+}
+
+bool isProtocolEstablishedMemory(dataflow::GraphFuncOp graph,
+                                 mlir::Value value) {
+  llvm::DenseSet<mlir::Value> visited;
+  while (value && visited.insert(value).second) {
+    if (isGraphMemoryInput(graph, value))
+      return true;
+    mlir::Operation *def = value.getDefiningOp();
+    if (!def)
+      return false;
+    if (llvm::isa<mlir::memref::AllocOp>(def))
+      return true;
+    if (isSupportedMemoryView(def)) {
+      value = mlir::cast<mlir::ViewLikeOpInterface>(def).getViewSource();
+      continue;
+    }
+    if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(def)) {
+      if (cast.getInputs().size() != 1 || cast.getResults().size() != 1)
+        return false;
+      value = cast.getInputs().front();
+      continue;
+    }
+    return false;
+  }
+  return false;
+}
+
+bool isFreshMemoryRoot(mlir::Value value) {
+  llvm::DenseSet<mlir::Value> visited;
+  while (value && visited.insert(value).second) {
+    mlir::Operation *def = value.getDefiningOp();
+    if (!def)
+      return false;
+    if (llvm::isa<mlir::memref::AllocOp>(def))
+      return true;
+    if (isSupportedMemoryView(def)) {
+      value = mlir::cast<mlir::ViewLikeOpInterface>(def).getViewSource();
+      continue;
+    }
+    if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(def)) {
+      if (cast.getInputs().size() != 1 || cast.getResults().size() != 1)
+        return false;
+      value = cast.getInputs().front();
+      continue;
+    }
+    return false;
+  }
+  return false;
+}
+
+bool isCanonicalMemoryBridge(dataflow::GraphFuncOp graph,
+                             mlir::Operation *op) {
+  auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(op);
+  if (!cast || cast.getInputs().size() != 1 || cast.getResults().size() != 1)
+    return false;
+  mlir::Type inputType = cast.getInputs().front().getType();
+  mlir::Type resultType = cast.getResults().front().getType();
+  const bool inputPointer = mlir::isa<mlir::LLVM::LLVMPointerType>(inputType);
+  const bool resultPointer =
+      mlir::isa<mlir::LLVM::LLVMPointerType>(resultType);
+  if (inputPointer == resultPointer ||
+      (!isMemoryCapabilityType(inputType) ||
+       !isMemoryCapabilityType(resultType)))
+    return false;
+  return isProtocolEstablishedMemory(graph, cast.getInputs().front());
+}
+
+bool isResidualLLVMMemoryOperation(mlir::Operation *op) {
+  return llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp,
+                   mlir::LLVM::MemcpyOp>(op) ||
+         op->getName().getStringRef() == "llvm.intr.memset";
+}
+
+bool hasRawPointerUse(mlir::Operation *op) {
+  return llvm::any_of(op->getOperandTypes(), [](mlir::Type type) {
+           return mlir::isa<mlir::LLVM::LLVMPointerType>(type);
+         }) ||
+         llvm::any_of(op->getResultTypes(), [](mlir::Type type) {
+           return mlir::isa<mlir::LLVM::LLVMPointerType>(type);
+         });
+}
+
 bool causallyDependsOn(mlir::Value event, mlir::Value prerequisite,
                        llvm::DenseSet<mlir::Value> &visited) {
   if (event == prerequisite)
@@ -38,6 +140,17 @@ bool causallyDependsOn(mlir::Value event, mlir::Value prerequisite,
     });
   };
 
+  if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def)) {
+    if (llvm::isa<mlir::NoneType>(event.getType()) &&
+        prerequisite.getDefiningOp() == sync.getOperation())
+      return true;
+    return dependsOnAnyOperand();
+  }
+  if (auto load = llvm::dyn_cast<dataflow::LoadOp>(def)) {
+    if (event == load.getDone() && prerequisite == load.getData())
+      return true;
+    return dependsOnAnyOperand();
+  }
   if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(def)) {
     llvm::DenseSet<mlir::Value> selectorVisited = visited;
     if (causallyDependsOn(mux.getSel(), prerequisite, selectorVisited))
@@ -100,10 +213,16 @@ bool isExplicitSyncCoverage(mlir::Value witness, mlir::Value prerequisite) {
          prerequisite.getDefiningOp() == sync.getOperation();
 }
 
+bool isExplicitLoadCoverage(mlir::Value witness, mlir::Value prerequisite) {
+  auto load = llvm::dyn_cast_or_null<dataflow::LoadOp>(witness.getDefiningOp());
+  return load && witness == load.getDone() && prerequisite == load.getData();
+}
+
 bool isCovered(mlir::Value prerequisite, mlir::ValueRange completion) {
   return llvm::any_of(completion, [&](mlir::Value witness) {
     return causallyDependsOn(witness, prerequisite) ||
-           isExplicitSyncCoverage(witness, prerequisite);
+           isExplicitSyncCoverage(witness, prerequisite) ||
+           isExplicitLoadCoverage(witness, prerequisite);
   });
 }
 
@@ -192,34 +311,6 @@ void collectStreamCloseSignals(mlir::Value value,
     collectStreamCloseSignals(operand, visited, signals);
 }
 
-bool isProtocolEstablishedMemory(dataflow::GraphFuncOp graph,
-                                 mlir::Value value) {
-  llvm::DenseSet<mlir::Value> visited;
-  while (value && visited.insert(value).second) {
-    if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(value)) {
-      return argument.getOwner() == &graph.getBody().front() &&
-             argument.getArgNumber() > 0 &&
-             graph.getInputPortKind(argument.getArgNumber() - 1) ==
-                 dataflow::GraphPortKind::Memory;
-    }
-    mlir::Operation *def = value.getDefiningOp();
-    if (!def)
-      return false;
-    if (auto view = llvm::dyn_cast<mlir::ViewLikeOpInterface>(def)) {
-      value = view.getViewSource();
-      continue;
-    }
-    if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(def)) {
-      if (cast.getInputs().size() != 1)
-        return false;
-      value = cast.getInputs().front();
-      continue;
-    }
-    return llvm::isa<mlir::memref::GetGlobalOp>(def);
-  }
-  return false;
-}
-
 bool hasObservableEffect(mlir::Operation *op) {
   auto effects = llvm::dyn_cast<mlir::MemoryEffectOpInterface>(op);
   if (effects)
@@ -268,13 +359,76 @@ llvm::Error dataflow::validateFinalizedGraph(GraphFuncOp graph) {
           op->getName().getStringRef() + "'");
       return mlir::WalkResult::interrupt();
     }
+    if (llvm::isa<mlir::memref::GetGlobalOp>(op)) {
+      structuralError = graphError(
+          "finalized graph contains forbidden memory root 'memref.get_global'");
+      return mlir::WalkResult::interrupt();
+    }
+    if (llvm::isa<mlir::memref::LoadOp, mlir::memref::StoreOp>(op) ||
+        isResidualLLVMMemoryOperation(op)) {
+      structuralError = graphError(
+          llvm::Twine("finalized graph contains residual memory operation '") +
+          op->getName().getStringRef() + "'");
+      return mlir::WalkResult::interrupt();
+    }
+    if (auto alloc = llvm::dyn_cast<mlir::memref::AllocOp>(op)) {
+      if (!llvm::all_of(alloc.getDynamicSizes(), [&](mlir::Value extent) {
+            return isLaunchAvailableValueInput(graph, extent);
+          })) {
+        structuralError = graphError(
+            "memref.alloc dynamic extent must be a graph value input");
+        return mlir::WalkResult::interrupt();
+      }
+    } else if (op->getDialect() &&
+               op->getDialect()->getNamespace() == "memref" &&
+               !isSupportedMemoryView(op)) {
+      structuralError = graphError(
+          llvm::Twine("finalized graph contains unsupported memory capability "
+                      "operation '") +
+          op->getName().getStringRef() + "'");
+      return mlir::WalkResult::interrupt();
+    }
+    if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(op)) {
+      bool hasMemoryCapability =
+          llvm::any_of(cast.getInputs(), [](mlir::Value value) {
+            return isMemoryCapabilityType(value.getType());
+          }) ||
+          llvm::any_of(cast.getResults(), [](mlir::Value value) {
+            return isMemoryCapabilityType(value.getType());
+          });
+      if (hasMemoryCapability && !isCanonicalMemoryBridge(graph, op)) {
+        structuralError = graphError(
+            "finalized graph contains unsupported memory capability bridge");
+        return mlir::WalkResult::interrupt();
+      }
+    }
+    if (hasRawPointerUse(op) && !llvm::isa<GraphReturnOp>(op) &&
+        !isCanonicalMemoryBridge(graph, op)) {
+      structuralError = graphError(
+          llvm::Twine("finalized graph contains residual pointer operation '") +
+          op->getName().getStringRef() + "'");
+      return mlir::WalkResult::interrupt();
+    }
+    if (llvm::any_of(op->getResultTypes(), isMemoryCapabilityType) &&
+        !llvm::isa<mlir::memref::AllocOp>(op) &&
+        !isSupportedMemoryView(op) && !isCanonicalMemoryBridge(graph, op)) {
+      structuralError = graphError(
+          llvm::Twine("finalized graph contains unsupported memory capability "
+                      "producer '") +
+          op->getName().getStringRef() + "'");
+      return mlir::WalkResult::interrupt();
+    }
     return mlir::WalkResult::advance();
   });
   if (structuralError)
     return structuralError;
 
   bool hasRealWork = llvm::any_of(entry.without_terminator(),
-                                  [](mlir::Operation &) { return true; });
+                                  [&](mlir::Operation &op) {
+                                    return !llvm::isa<mlir::memref::AllocOp,
+                                                       mlir::memref::CastOp>(op) &&
+                                           !isCanonicalMemoryBridge(graph, &op);
+                                  });
   if (hasRealWork && llvm::is_contained(ret.getComplete(), graph.getStart()))
     return graphError(
         "nontrivial graph uses raw start as a retirement completion witness");
@@ -299,6 +453,10 @@ llvm::Error dataflow::validateFinalizedGraph(GraphFuncOp graph) {
   }
 
   for (auto [index, memory] : llvm::enumerate(ret.getMemories())) {
+    if (isFreshMemoryRoot(memory) &&
+        !mlir::isa<mlir::MemRefType, mlir::UnrankedMemRefType>(
+            memory.getType()))
+      return graphError("fresh memory export must use a memref result");
     if (isProtocolEstablishedMemory(graph, memory)) {
       if (!isCovered(graph.getStart(), ret.getComplete()))
         return graphError(
@@ -355,7 +513,8 @@ llvm::Error dataflow::validateFinalizedGraph(GraphFuncOp graph) {
       if (covered)
         return mlir::WalkResult::advance();
     }
-    if (llvm::isa<GraphReturnOp>(op) || mlir::isPure(op))
+    if (llvm::isa<GraphReturnOp, mlir::memref::AllocOp>(op) ||
+        mlir::isPure(op))
       return mlir::WalkResult::advance();
     if (hasObservableEffect(op)) {
       effectError = graphError(

@@ -1,20 +1,9 @@
-// RUN: loom-dfg-sim %s --graph llvm_load_ptr --memref 0=100,102,105 --output %t.ptr.json
-// RUN: FileCheck %s --check-prefix=PTR < %t.ptr.json
-// RUN: loom-dfg-sim %s --graph llvm_load_gep --memref 0=100,102,105 --output %t.gep.json
-// RUN: FileCheck %s --check-prefix=GEP < %t.gep.json
+// RUN: not loom-dfg-sim %s --graph llvm_load_ptr --memref 0=100,102,105 --output %t.ptr.json 2>&1 | FileCheck %s --check-prefix=PTR
+// RUN: not loom-dfg-sim %s --graph llvm_load_gep --memref 0=100,102,105 --output %t.gep.json 2>&1 | FileCheck %s --check-prefix=GEP
 
-// PTR-DAG: "workload": "llvm_load_ptr"
-// PTR-DAG: "graph": "llvm_load_ptr"
-// PTR-DAG: "status": "pass"
-// PTR-DAG: "llvm.load": 1
-// PTR-DAG: "i32:100"
+// PTR: finalized graph contains residual memory operation 'llvm.load'
 
-// GEP-DAG: "workload": "llvm_load_gep"
-// GEP-DAG: "graph": "llvm_load_gep"
-// GEP-DAG: "status": "pass"
-// GEP-DAG: "llvm.getelementptr": 1
-// GEP-DAG: "llvm.load": 1
-// GEP-DAG: "i32:102"
+// GEP: finalized graph contains residual pointer operation 'llvm.getelementptr'
 
 module {
   dataflow.graph.func private @llvm_load_ptr(%ctrl: none, %ptr: !llvm.ptr)

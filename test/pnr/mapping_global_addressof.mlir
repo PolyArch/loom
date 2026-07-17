@@ -1,14 +1,6 @@
-// RUN: rm -rf %t.dir
-// RUN: mkdir -p %t.dir
-// RUN: loom-adg-builder-test --shared-signal-window --output %t.dir/shared-signal-window.mlir
-// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
-// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph global_table_load --hardware-mlir %t.dir/shared-signal-window.mlir --hardware shared_signal_window_adg --workload global_table_load --output %t.dir/global_table_load.mapping.csv --artifact %t.dir/global_table_load.mapping.json
-// RUN: FileCheck %s --check-prefix=JSON < %t.dir/global_table_load.mapping.json
+// RUN: not loom-pnr-map --dfg-mlir %s --graph global_table_load --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload global_table_load --output %t.mapping.csv --artifact %t.mapping.json 2>&1 | FileCheck %s --check-prefix=GLOBAL
 
-// JSON-DAG: "status": "pass"
-// JSON-DAG: "operation": "llvm.load"
-// JSON-NOT: "operation": "llvm.mlir.addressof"
-// JSON-NOT: "unsupported PnR graph operation: llvm.mlir.addressof"
+// GLOBAL: finalized graph contains residual pointer operation 'llvm.mlir.addressof'
 
 module {
   llvm.mlir.global external constant @lookup_table() : !llvm.array<3 x i32>

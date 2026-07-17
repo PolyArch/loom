@@ -1,30 +1,9 @@
-// RUN: loom-dfg-sim %s --graph pointer_icmp_top --memref 0=1 --memref 1=2 --output %t.top.json
-// RUN: FileCheck %s --check-prefix=TOP < %t.top.json
-// RUN: loom-dfg-sim %s --graph pointer_icmp_structured --arg 0=true --memref 1=1 --memref 2=2 --output %t.structured.json
-// RUN: FileCheck %s --check-prefix=STRUCTURED < %t.structured.json
+// RUN: not loom-dfg-sim %s --graph pointer_icmp_top --memref 0=1 --memref 1=2 --output %t.top.json 2>&1 | FileCheck %s --check-prefix=TOP
+// RUN: not loom-dfg-sim %s --graph pointer_icmp_structured --arg 0=true --memref 1=1 --memref 2=2 --output %t.structured.json 2>&1 | FileCheck %s --check-prefix=STRUCTURED
 
-// TOP-DAG: "graph": "pointer_icmp_top"
-// TOP-DAG: "status": "pass"
-// TOP-DAG: "llvm.mlir.zero": 1
-// TOP-DAG: "llvm.icmp": 6
-// TOP-DAG: "final_outputs": [
-// TOP-DAG: "none"
-// TOP-DAG: "i1:true"
-// TOP-DAG: "i1:false"
-// TOP-DAG: "i1:false"
-// TOP-DAG: "i1:true"
-// TOP-DAG: "i1:true"
-// TOP-DAG: "i1:false"
+// TOP: finalized graph contains residual pointer operation 'llvm.mlir.zero'
 
-// STRUCTURED-DAG: "graph": "pointer_icmp_structured"
-// STRUCTURED-DAG: "status": "pass"
-// STRUCTURED-DAG: "llvm.mlir.zero": 1
-// STRUCTURED-DAG: "llvm.icmp": 3
-// STRUCTURED-DAG: "final_outputs": [
-// STRUCTURED-DAG: "none"
-// STRUCTURED-DAG: "i1:true"
-// STRUCTURED-DAG: "i1:false"
-// STRUCTURED-DAG: "i1:true"
+// STRUCTURED: finalized graph contains residual pointer operation 'llvm.mlir.zero'
 
 module {
   dataflow.graph.func private @pointer_icmp_top(

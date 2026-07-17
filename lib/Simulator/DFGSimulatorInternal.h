@@ -11,6 +11,7 @@
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Compiler.h"
@@ -63,8 +64,10 @@ struct ParallelizeState {
 };
 
 struct MemoryValue {
+  std::uint64_t logicalRootId = 0;
   mlir::Type elementType;
   llvm::SmallVector<Token> elements;
+  llvm::SmallBitVector initialized;
 };
 
 struct MemoryFixture {
@@ -78,8 +81,8 @@ struct SimulatorState {
   OutputMap observedOutputs;
   OutputMap pendingObservedOutputs;
   llvm::DenseMap<mlir::Value, std::shared_ptr<MemoryValue>> memories;
+  llvm::DenseMap<mlir::Value, std::uint64_t> memoryRootIds;
   llvm::DenseMap<mlir::Value, MemoryFixture> rawMemoryFixtures;
-  llvm::StringMap<MemoryFixture> globalMemoryFixtures;
   llvm::DenseMap<mlir::Operation *, StreamSemanticState> streamStates;
   llvm::DenseSet<mlir::Operation *> failedStreamOps;
   llvm::DenseMap<mlir::Operation *, std::uint64_t> streamTrueEmissionCounts;
@@ -95,6 +98,7 @@ struct SimulatorState {
   llvm::SmallVector<std::string> diagnostics;
   std::map<std::string, std::uint64_t> operationFireCounts;
   std::map<std::string, std::uint64_t> modeledLibraryCalls;
+  std::uint64_t nextMemoryRootId = 0;
   std::uint64_t modeledLibraryScore = 0;
   std::uint64_t eventCount = 0;
   std::uint64_t memoryAddressScore = 0;
@@ -130,6 +134,12 @@ std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
                                                SimulatorState &state,
                                                mlir::Operation *scope,
                                                llvm::StringRef opName);
+std::optional<Token> readMemoryElement(const MemoryView &view,
+                                       std::size_t index,
+                                       SimulatorState &state,
+                                       llvm::StringRef opName);
+void writeMemoryElement(const MemoryView &view, std::size_t index,
+                        Token value);
 bool isSupportedLLVMCall(mlir::LLVM::CallOp op);
 bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
                                  llvm::ArrayRef<Token> operands, Token &result);

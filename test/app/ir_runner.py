@@ -47,6 +47,7 @@ class CaseSpec:
     source: Path
     compiler_flags: tuple[str, ...]
     dfg_symbol: str | None
+    dfg_expected_diagnostic: str | None
 
 
 @dataclass(frozen=True)
@@ -152,6 +153,11 @@ def case_spec(entry: dict[object, object], manifest_path: Path) -> CaseSpec:
         dfg_symbol=(
             str(entry["dfg_symbol"]) if "dfg_symbol" in entry else None
         ),
+        dfg_expected_diagnostic=(
+            str(entry["dfg_expected_diagnostic"])
+            if "dfg_expected_diagnostic" in entry
+            else None
+        ),
     )
 
 
@@ -229,6 +235,48 @@ def run_command(command: Sequence[str], cwd: Path, context: str) -> None:
         )
 
 
+def run_expected_failure(
+    command: Sequence[str],
+    cwd: Path,
+    context: str,
+    expected_diagnostic: str,
+) -> None:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env={**os.environ, "LC_ALL": "C"},
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as exc:
+        raise RunnerExecutionError(
+            f"{context}: failed to launch command\n"
+            f"command: {shlex.join(command)}\n"
+            f"working directory: {cwd}\n"
+            f"error: {exc}"
+        ) from exc
+
+    output = command_output(result)
+    if result.returncode == 0:
+        raise RunnerExecutionError(
+            f"{context}: expected diagnostic but command succeeded\n"
+            f"command: {shlex.join(command)}\n"
+            f"working directory: {cwd}\n"
+            f"{output}"
+        )
+    if expected_diagnostic not in output:
+        raise RunnerExecutionError(
+            f"{context}: command did not emit expected diagnostic "
+            f"{expected_diagnostic!r}\n"
+            f"command: {shlex.join(command)}\n"
+            f"working directory: {cwd}\n"
+            f"{output}"
+        )
+
+
 def remove_stale_output(path: Path, context: str) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -287,7 +335,7 @@ def run_case(
     stage: str,
     build_root: Path,
     tools: Toolchain,
-) -> None:
+) -> bool:
     case_build = build_root / spec.case
     try:
         case_build.mkdir(parents=True, exist_ok=True)
@@ -325,14 +373,27 @@ def run_case(
     validate_raise_ir(raised_ir, spec)
 
     if stage == "dfg":
-        run_command(
-            [tools.lower, str(raised_ir), "-o", str(dfg_ir)],
-            spec.case_dir,
-            f"{spec.case}: lower SCF MLIR",
-        )
+        lower_command = [tools.lower, str(raised_ir), "-o", str(dfg_ir)]
+        lower_context = f"{spec.case}: lower SCF MLIR"
+        if spec.dfg_expected_diagnostic is not None:
+            run_expected_failure(
+                lower_command,
+                spec.case_dir,
+                lower_context,
+                spec.dfg_expected_diagnostic,
+            )
+            if dfg_ir.exists():
+                raise RunnerExecutionError(
+                    f"{spec.case}: expected diagnostic produced DFG output {dfg_ir}"
+                )
+            return True
+
+        run_command(lower_command, spec.case_dir, lower_context)
         require_nonempty(dfg_ir, f"{spec.case}: DFG MLIR generation")
         reparse_mlir(dfg_ir, spec, tools)
         validate_dfg_ir(dfg_ir, spec)
+
+    return False
 
 
 def reject_overlapping_build_root(build_root: Path, specs: Sequence[CaseSpec]) -> None:
@@ -358,8 +419,9 @@ def main(argv: Sequence[str]) -> int:
         build_root.mkdir(parents=True, exist_ok=True)
         tools = load_toolchain(caller_cwd)
         for spec in specs:
-            run_case(spec, args.stage, build_root, tools)
-            print(f"PASS  {spec.case}  {args.stage}")
+            expected_diagnostic = run_case(spec, args.stage, build_root, tools)
+            suffix = "  expected-diagnostic" if expected_diagnostic else ""
+            print(f"PASS  {spec.case}  {args.stage}{suffix}")
     except RunnerConfigurationError as exc:
         print(f"[app-ir-runner] configuration error: {exc}", file=sys.stderr)
         return 2

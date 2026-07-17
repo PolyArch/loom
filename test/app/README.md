@@ -8,9 +8,10 @@ byte-for-byte with the checked-in expected output.
 
 The manifest-driven IR runner provides source-to-IR integration coverage. The
 default `raise` tier contains `vecadd`, `matmul`, `spmm`, `gather`, and
-`edge_update`. The `dfg` tier contains `vecadd` and `matmul`, the cases that
-currently produce launched graph bodies without residual SCF operations. It
-compiles only the source whose stem is `main_func`; the native runner remains
+`edge_update`. The `dfg` tier contains `vecadd` and `matmul`. The `matmul`
+entry carries an expected graph-owned parallel-representation diagnostic
+because its nested parallel recurrence has no selected P[] materialization.
+The runner compiles only the source whose stem is `main_func`; the native runner remains
 responsible for both `main_func` and `main_inline` variants.
 
 These programs intentionally have no dependency on the top-level Loom build
@@ -130,7 +131,10 @@ file, compiler flags, and link flags. The source and executable lists must
 have equal length. Every case carries the `run` tier. The `raise` and `dfg`
 tiers select the default IR integration cases; explicit IR requests are not
 restricted by those tiers. A `dfg_symbol` field ties a representative DFG case
-to the source kernel without fixing the complete generated symbol name.
+to the source kernel without fixing the complete generated symbol name. A
+`dfg_expected_diagnostic` field keeps a source-to-DFG boundary in the `dfg`
+tier when lowering must fail for a declared unsupported representation: the
+runner requires that diagnostic and rejects a produced DFG artifact.
 
 The repository-wide `test/corpus_inventory.py` command validates this manifest
 and combines its cases with the two CMSIS suites. Running `list` without case

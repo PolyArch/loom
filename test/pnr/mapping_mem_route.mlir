@@ -62,23 +62,13 @@
 // STORE-JSON-NOT: ".out"
 // STORE-JSON-NOT: ".in"
 
-// RUN: loom-pnr-map --dfg-mlir %s --graph mem_gep_store --hardware-mlir %s --hardware mem_store_route_adg --workload mem_gep_store --output %t.gep.mapping.csv --artifact %t.gep.mapping.json
-// RUN: FileCheck %s --check-prefix=GEP-CSV < %t.gep.mapping.csv
-// RUN: FileCheck %s --check-prefix=GEP-JSON < %t.gep.mapping.json
+// RUN: not loom-pnr-map --dfg-mlir %s --graph mem_gep_store --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_gep_store --output %t.gep.mapping.csv --artifact %t.gep.mapping.json 2>&1 | FileCheck %s --check-prefix=GEP
 
-// GEP-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// GEP-CSV-NEXT: mem_gep_store,mem_store_route_adg,mem_gep_store__mem_gep_store__mem_store_route_adg,2,2,0,0,pass
-
-// GEP-JSON-DAG: "status": "pass"
-// GEP-JSON-DAG: "edge_ref": "dataflow.load#0.result0->dataflow.store#0.operand2"
-// GEP-JSON-DAG: "edge_ref": "dataflow.load#0.result1->dataflow.store#0.operand3"
-// GEP-JSON-NOT: "operation": "llvm.getelementptr"
-// GEP-JSON-NOT: ".out"
-// GEP-JSON-NOT: ".in"
+// GEP: finalized graph contains residual pointer operation 'llvm.getelementptr'
 
 // RUN: not loom-pnr-map --dfg-mlir %s --graph mem_gep_pointer_store_value --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_gep_pointer_store_value --output %t.gep-store-value.mapping.csv --artifact %t.gep-store-value.mapping.json 2>&1 | FileCheck %s --check-prefix=GEPSTOREVAL
 
-// GEPSTOREVAL: nontrivial graph uses raw start as a retirement completion witness
+// GEPSTOREVAL: finalized graph contains residual pointer operation 'llvm.getelementptr'
 
 // RUN: not loom-pnr-map --dfg-mlir %s --graph mem_scf_pointer_yield_bookkeeping --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_scf_pointer_yield_bookkeeping --output %t.scfgep.mapping.csv --artifact %t.scfgep.mapping.json 2>&1 | FileCheck %s --check-prefix=SCFGEP
 
@@ -131,57 +121,21 @@
 // PREDAND-JSON-DAG: "edge_ref": "arith.andi#0.result0->arith.select#0.operand0"
 // PREDAND-JSON-NOT: "missing hardware resource for software op arith.andi"
 
-// RUN: loom-pnr-map --dfg-mlir %s --graph llvm_load_pointer --hardware-mlir %t.shared.hardware.mlir --hardware shared_reduction_adg --workload llvm_load_pointer --output %t.llvmload.mapping.csv --artifact %t.llvmload.mapping.json
-// RUN: FileCheck %s --check-prefix=LLVMLOAD-CSV < %t.llvmload.mapping.csv
-// RUN: FileCheck %s --check-prefix=LLVMLOAD-JSON < %t.llvmload.mapping.json
+// RUN: not loom-pnr-map --dfg-mlir %s --graph llvm_load_pointer --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload llvm_load_pointer --output %t.llvmload.mapping.csv --artifact %t.llvmload.mapping.json 2>&1 | FileCheck %s --check-prefix=LLVMLOAD
 
-// LLVMLOAD-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// LLVMLOAD-CSV-NEXT: llvm_load_pointer,shared_reduction_adg,llvm_load_pointer__llvm_load_pointer__shared_reduction_adg,3,2,0,0,pass
+// LLVMLOAD: finalized graph contains residual pointer operation 'llvm.getelementptr'
 
-// LLVMLOAD-JSON-DAG: "operation": "llvm.load"
-// LLVMLOAD-JSON-DAG: "resource_kind": "fabric.mem.load"
-// LLVMLOAD-JSON-DAG: "edge_ref": "llvm.load#0.result0->arith.addi#0.operand0"
-// LLVMLOAD-JSON-NOT: "operation": "llvm.getelementptr"
-// LLVMLOAD-JSON-NOT: ".out"
-// LLVMLOAD-JSON-NOT: ".in"
+// RUN: not loom-pnr-map --dfg-mlir %s --graph llvm_select_pointer_map --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload llvm_select_pointer_map --output %t.llvmselect.mapping.csv --artifact %t.llvmselect.mapping.json 2>&1 | FileCheck %s --check-prefix=LLVMSELECT
 
-// RUN: loom-pnr-map --dfg-mlir %s --graph llvm_select_pointer_map --hardware-mlir %t.shared.hardware.mlir --hardware shared_reduction_adg --workload llvm_select_pointer_map --output %t.llvmselect.mapping.csv --artifact %t.llvmselect.mapping.json
-// RUN: FileCheck %s --check-prefix=LLVMSELECT-CSV < %t.llvmselect.mapping.csv
-// RUN: FileCheck %s --check-prefix=LLVMSELECT-JSON < %t.llvmselect.mapping.json
+// LLVMSELECT: finalized graph contains residual pointer operation 'llvm.select'
 
-// LLVMSELECT-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// LLVMSELECT-CSV-NEXT: llvm_select_pointer_map,shared_reduction_adg,llvm_select_pointer_map__llvm_select_pointer_map__shared_reduction_adg,5,3,0,0,pass
+// RUN: not loom-pnr-map --dfg-mlir %s --graph llvm_select_pointer_wide_cmp_map --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload llvm_select_pointer_wide_cmp_map --output %t.llvmselectwide.mapping.csv --artifact %t.llvmselectwide.mapping.json 2>&1 | FileCheck %s --check-prefix=LLVMSELECTWIDE
 
-// LLVMSELECT-JSON-DAG: "status": "pass"
-// LLVMSELECT-JSON-DAG: "operation": "llvm.select"
-// LLVMSELECT-JSON-DAG: "resource_kind": "fabric.op"
-// LLVMSELECT-JSON-DAG: "edge_ref": "arith.cmpi#0.result0->llvm.select#0.operand0"
-// LLVMSELECT-JSON-DAG: "edge_ref": "llvm.load#0.result0->arith.addi#0.operand0"
-// LLVMSELECT-JSON-NOT: "unsupported PnR graph operation: llvm.select"
-// LLVMSELECT-JSON-NOT: ".out"
-// LLVMSELECT-JSON-NOT: ".in"
-
-// RUN: loom-pnr-map --dfg-mlir %s --graph llvm_select_pointer_wide_cmp_map --hardware-mlir %t.shared.hardware.mlir --hardware shared_reduction_adg --workload llvm_select_pointer_wide_cmp_map --output %t.llvmselectwide.mapping.csv --artifact %t.llvmselectwide.mapping.json
-// RUN: FileCheck %s --check-prefix=LLVMSELECTWIDE-CSV < %t.llvmselectwide.mapping.csv
-// RUN: FileCheck %s --check-prefix=LLVMSELECTWIDE-JSON < %t.llvmselectwide.mapping.json
-
-// LLVMSELECTWIDE-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// LLVMSELECTWIDE-CSV-NEXT: llvm_select_pointer_wide_cmp_map,shared_reduction_adg,llvm_select_pointer_wide_cmp_map__llvm_select_pointer_wide_cmp_map__shared_reduction_adg,7,4,0,0,pass
-
-// LLVMSELECTWIDE-JSON-DAG: "status": "pass"
-// LLVMSELECTWIDE-JSON-DAG: "operation": "llvm.select"
-// LLVMSELECTWIDE-JSON-DAG: "operation": "arith.cmpi"
-// LLVMSELECTWIDE-JSON-DAG: "hardware": "shared_reduction_adg::fabric.op#77"
-// LLVMSELECTWIDE-JSON-DAG: "hardware": "shared_reduction_adg::fabric.op#78"
-// LLVMSELECTWIDE-JSON-DAG: "edge_ref": "arith.cmpi#1.result0->llvm.select#0.operand0"
-// LLVMSELECTWIDE-JSON-DAG: "edge_ref": "llvm.load#0.result0->arith.addf#0.operand0"
-// LLVMSELECTWIDE-JSON-NOT: "missing hardware resource for software op arith.cmpi"
-// LLVMSELECTWIDE-JSON-NOT: ".out"
-// LLVMSELECTWIDE-JSON-NOT: ".in"
+// LLVMSELECTWIDE: finalized graph contains residual pointer operation 'llvm.select'
 
 // RUN: not loom-pnr-map --dfg-mlir %s --graph llvm_store_pointer --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload llvm_store_pointer --output %t.llvmstore.mapping.csv --artifact %t.llvmstore.mapping.json 2>&1 | FileCheck %s --check-prefix=LLVMSTORE
 
-// LLVMSTORE: finalized graph contains unsupported effect operation 'llvm.store'
+// LLVMSTORE: finalized graph contains residual memory operation 'llvm.load'
 
 // RUN: loom-pnr-map --dfg-mlir %s --graph constant_addr_load_store --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload constant_addr_load_store --output %t.constload.mapping.csv --artifact %t.constload.mapping.json
 // RUN: FileCheck %s --check-prefix=CONSTLOAD-CSV < %t.constload.mapping.csv

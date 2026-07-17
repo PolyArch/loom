@@ -1,19 +1,16 @@
-// RUN: loom-dfg-sim %s --graph cmsis_nn_vec_mat_mult_s8 --arg 0=1 --arg 1=3 --arg 2=1073741824 --arg 3=1 --arg 4=3 --arg 5=2 --arg 6=-128 --arg 7=127 --arg 8=1 --arg 9=-2 --memref 10=1,-2,3 --memref 11=4,-1,2,-3,5,1 --memref 12=0,0 --memref 13=10,-4 --memref 14=0,0 --output %t.json
+// RUN: loom-raise-opt --loom-lower-known-library-calls --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-dfg-sim %t.lowered.mlir --graph cmsis_nn_vec_mat_mult_s8 --arg 0=1 --arg 1=3 --arg 2=1073741824 --arg 3=1 --arg 4=3 --arg 5=2 --arg 6=-128 --arg 7=127 --arg 8=1 --arg 9=-2 --memref 10=1,-2,3 --memref 11=4,-1,2,-3,5,1 --memref 12=0,0 --memref 13=10,-4 --memref 14=0,0 --output %t.json
 // RUN: FileCheck %s < %t.json
 
-// CHECK-DAG: "workload": "cmsis_nn_vec_mat_mult_s8"
-// CHECK-DAG: "graph": "cmsis_nn_vec_mat_mult_s8"
-// CHECK-DAG: "status": "pass"
-// CHECK-DAG: "modeled_library_calls": {
-// CHECK-DAG: "arm_nn_vec_mat_mult_t_s8": 1
-// CHECK-DAG: "modeled_library_score": 6
-// CHECK-DAG: "operation_cost_score": 8
-// CHECK-DAG: "dataflow.sync": 1
-// CHECK-DAG: "final_outputs": [
-// CHECK-DAG: "i32:0"
-// CHECK-DAG: "arg14": [
-// CHECK-DAG: "i8:20"
-// CHECK-DAG: "i8:-18"
+// CHECK: "arg14": [
+// CHECK-NEXT: "i8:20",
+// CHECK-NEXT: "i8:-18"
+// CHECK-NEXT: ]
+// CHECK: "final_outputs": [
+// CHECK-NEXT: "none",
+// CHECK-NEXT: "i32:0"
+// CHECK-NEXT: ]
+// CHECK: "status": "pass"
 
 module {
   llvm.func @arm_nn_vec_mat_mult_t_s8(

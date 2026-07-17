@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "cases": [
     {
       "case": "autocorrelation",
@@ -756,6 +756,7 @@
       "case": "matmul",
       "language": "cxx",
       "dfg_symbol": "matmul_kernel",
+      "dfg_expected_diagnostic": "cannot extract a recurrence nested in scf.forall/scf.parallel without a selected graph-owned P[] representation",
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],

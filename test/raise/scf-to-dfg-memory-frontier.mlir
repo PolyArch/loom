@@ -1,28 +1,23 @@
 // RUN: loom-raise-opt --split-input-file --loom-lower-graph-memory %s | FileCheck %s
 
-memref.global "private" @frontier_a : memref<16xi32>
-memref.global "private" @frontier_b : memref<16xi32>
-
 // CHECK-LABEL: dataflow.graph.func private @frontier_straight
-// CHECK-DAG: %[[A_READ:.*]] = memref.get_global @frontier_a : memref<16xi32>
-// CHECK-DAG: %[[A_WRITE:.*]] = memref.get_global @frontier_a : memref<16xi32>
-// CHECK-DAG: %[[B:.*]] = memref.get_global @frontier_b : memref<16xi32>
-// CHECK: %[[R0:.*]], %[[D0:.*]] = dataflow.load %[[A_READ]][%arg1] %arg0 : memref<16xi32>
-// CHECK: %[[R1:.*]], %[[D1:.*]] = dataflow.load %[[A_READ]][%arg2] %arg0 : memref<16xi32>
-// CHECK: %[[WRITE:.*]] = dataflow.store %[[A_WRITE]][%arg1] %arg3 [[READS:%[^# ]+]]#0 : memref<16xi32>
-// CHECK: %[[R2:.*]], %[[D2:.*]] = dataflow.load %[[A_READ]][%arg2] %[[WRITE]] : memref<16xi32>
+// CHECK: %[[R0:.*]], %[[D0:.*]] = dataflow.load %arg4[%arg1] %arg0 : memref<16xi32>
+// CHECK: %[[R1:.*]], %[[D1:.*]] = dataflow.load %arg4[%arg2] %arg0 : memref<16xi32>
+// CHECK: %[[WRITE:.*]] = dataflow.store %arg4[%arg1] %arg3 [[READS:%[^# ]+]]#0 : memref<16xi32>
+// CHECK: %[[R2:.*]], %[[D2:.*]] = dataflow.load %arg4[%arg2] %[[WRITE]] : memref<16xi32>
 // CHECK: [[READS]]:2 = dataflow.sync %[[D0]], %[[D1]] : (none, none) -> (none, none)
-// CHECK: %[[RB:.*]], %[[DB:.*]] = dataflow.load %[[B]][%arg1] %arg0 : memref<16xi32>
-// CHECK: dataflow.graph.return values() streams() memories() complete(%[[D2]], %[[DB]] : none, none)
+// CHECK: %[[RB:.*]], %[[DB:.*]] = dataflow.load %arg5[%arg1] %[[WRITE]] : memref<16xi32>
+// CHECK: %[[RETIRE:.*]]:2 = dataflow.sync %[[D2]], %[[DB]] : (none, none) -> (none, none)
+// CHECK: dataflow.graph.return %[[RETIRE]]#0 : none
 dataflow.graph.func private @frontier_straight(
-    %start: none, %i: index, %j: index, %value: i32) -> none {
-  %a_read = memref.get_global @frontier_a : memref<16xi32>
-  %a_write = memref.get_global @frontier_a : memref<16xi32>
-  %b = memref.get_global @frontier_b : memref<16xi32>
-  %r0, %read0_done = dataflow.load %a_read[%i] %start : memref<16xi32>
-  %r1, %read1_done = dataflow.load %a_read[%j] %start : memref<16xi32>
-  %write_done = dataflow.store %a_write[%i] %value %start : memref<16xi32>
-  %r2, %read2_done = dataflow.load %a_read[%j] %start : memref<16xi32>
+    %start: none, %i: index, %j: index, %value: i32,
+    %a: memref<16xi32>, %b: memref<16xi32>) -> none
+    attributes {input_segments = array<i32: 3, 0, 2>,
+                result_segments = array<i32: 0, 0, 0>} {
+  %r0, %read0_done = dataflow.load %a[%i] %start : memref<16xi32>
+  %r1, %read1_done = dataflow.load %a[%j] %start : memref<16xi32>
+  %write_done = dataflow.store %a[%i] %value %start : memref<16xi32>
+  %r2, %read2_done = dataflow.load %a[%j] %start : memref<16xi32>
   %rb = memref.load %b[%i] : memref<16xi32>
   dataflow.graph.return %start : none
 }

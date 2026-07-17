@@ -7,6 +7,7 @@
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -25,6 +26,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -254,6 +256,10 @@ llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type,
 static llvm::Expected<std::shared_ptr<MemoryValue>>
 materializeMemory(SimulatorState &state, mlir::Value root, llvm::StringRef raw,
                   mlir::Type elementType) {
+  auto [rootIt, inserted] =
+      state.memoryRootIds.try_emplace(root, state.nextMemoryRootId);
+  if (inserted)
+    ++state.nextMemoryRootId;
   auto existing = state.memories.find(root);
   if (existing != state.memories.end()) {
     if (existing->second->elementType != elementType)
@@ -262,13 +268,19 @@ materializeMemory(SimulatorState &state, mlir::Value root, llvm::StringRef raw,
           "memory fixture type mismatch: existing %s, requested %s",
           typeToString(existing->second->elementType).c_str(),
           typeToString(elementType).c_str());
+    if (existing->second->logicalRootId != rootIt->second)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "memory root identity mismatch");
     return existing->second;
   }
   auto tokensOrErr = parseMemoryTokens(raw, elementType);
   if (!tokensOrErr)
     return tokensOrErr.takeError();
-  auto memory = std::make_shared<MemoryValue>(
-      MemoryValue{elementType, std::move(*tokensOrErr)});
+  llvm::SmallVector<Token> tokens = std::move(*tokensOrErr);
+  llvm::SmallBitVector initialized(tokens.size(), /*t=*/true);
+  auto memory = std::make_shared<MemoryValue>(MemoryValue{
+      rootIt->second, elementType, std::move(tokens),
+      std::move(initialized)});
   state.memories[root] = memory;
   return memory;
 }
@@ -583,8 +595,11 @@ loadIntegerPointerElement(SimulatorState &state, const Token &ptr,
                           state, scope, opName);
   if (!index)
     return std::nullopt;
-  return signExtend(integerToken(viewOrErr->pointer.memory->elements[*index]),
-                    signedWidth);
+  std::optional<Token> value =
+      readMemoryElement(viewOrErr->pointer, *index, state, opName);
+  if (!value)
+    return std::nullopt;
+  return signExtend(integerToken(*value), signedWidth);
 }
 
 static bool storeIntegerPointerElement(SimulatorState &state, const Token &ptr,
@@ -603,8 +618,8 @@ static bool storeIntegerPointerElement(SimulatorState &state, const Token &ptr,
                           state, scope, opName);
   if (!index)
     return false;
-  viewOrErr->pointer.memory->elements[*index] =
-      integerValueToken(signExtend(value, 8));
+  writeMemoryElement(viewOrErr->pointer, *index,
+                     integerValueToken(signExtend(value, 8)));
   return true;
 }
 
@@ -815,7 +830,8 @@ primitiveDescriptor(mlir::Operation *op, llvm::StringRef predicate,
 }
 
 static bool isSupportedNonEvent(mlir::Operation *op) {
-  return mlir::isa<dataflow::GraphReturnOp>(op);
+  return mlir::isa<dataflow::GraphReturnOp, mlir::memref::AllocOp,
+                   mlir::memref::CastOp>(op);
 }
 
 static void collectStreamIndexSources(
@@ -932,22 +948,6 @@ indexMemoryArgs(llvm::ArrayRef<DFGMemoryArg> args, unsigned argCount) {
   return byIndex;
 }
 
-static llvm::Expected<llvm::StringMap<MemoryFixture>>
-indexGlobalMemoryArgs(llvm::ArrayRef<DFGGlobalMemoryArg> args) {
-  llvm::StringMap<MemoryFixture> bySymbol;
-  for (const DFGGlobalMemoryArg &arg : args) {
-    if (arg.symbol.empty())
-      return llvm::createStringError(std::errc::invalid_argument,
-                                     "global memref symbol is empty");
-    if (bySymbol.contains(arg.symbol))
-      return llvm::createStringError(std::errc::invalid_argument,
-                                     "global memref symbol '%s' is repeated",
-                                     arg.symbol.c_str());
-    bySymbol.try_emplace(arg.symbol, MemoryFixture{arg.values, arg.byteOffset});
-  }
-  return bySymbol;
-}
-
 struct GraphReturnObservation {
   llvm::SmallVector<mlir::Value> complete;
   llvm::SmallVector<mlir::Value> values;
@@ -979,6 +979,77 @@ static void seedBlockArgument(SimulatorState &state, mlir::BlockArgument arg,
   ++state.seededTokenCounts[arg];
 }
 
+static llvm::Expected<std::size_t>
+allocationElementCount(mlir::memref::AllocOp alloc, SimulatorState &state) {
+  mlir::MemRefType type = alloc.getType();
+  mlir::ValueRange dynamicSizes = alloc.getDynamicSizes();
+  std::uint64_t count = 1;
+  unsigned dynamicIndex = 0;
+  for (unsigned dimension = 0; dimension < type.getRank(); ++dimension) {
+    std::uint64_t extent = 0;
+    if (type.isDynamicDim(dimension)) {
+      if (dynamicIndex == dynamicSizes.size())
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "memref.alloc has fewer dynamic extents than its result type");
+      auto observed = state.observedOutputs.find(dynamicSizes[dynamicIndex++]);
+      if (observed == state.observedOutputs.end() ||
+          observed->second.size() != 1 ||
+          observed->second.front().kind != TokenKind::Integer)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "memref.alloc dynamic extent is not an exact-one launch value");
+      if (observed->second.front().intValue < 0)
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "memref.alloc dynamic extent is negative");
+      extent = static_cast<std::uint64_t>(observed->second.front().intValue);
+    } else {
+      extent = static_cast<std::uint64_t>(type.getDimSize(dimension));
+    }
+    if (extent != 0 && count > std::numeric_limits<std::size_t>::max() / extent)
+      return llvm::createStringError(std::errc::value_too_large,
+                                     "memref.alloc is too large for DFG-sim");
+    count *= extent;
+  }
+  if (dynamicIndex != dynamicSizes.size())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "memref.alloc has more dynamic extents than its result type");
+  if (count > std::numeric_limits<unsigned>::max())
+    return llvm::createStringError(std::errc::value_too_large,
+                                   "memref.alloc is too large for DFG-sim");
+  return static_cast<std::size_t>(count);
+}
+
+static llvm::Error initializeFreshMemoryRoots(mlir::Block &entry,
+                                              SimulatorState &state) {
+  for (mlir::Operation &op : entry.getOperations()) {
+    auto alloc = llvm::dyn_cast<mlir::memref::AllocOp>(op);
+    if (!alloc)
+      continue;
+    if (state.memories.contains(alloc.getResult()))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "memref.alloc root is repeated");
+    auto countOrErr = allocationElementCount(alloc, state);
+    if (!countOrErr)
+      return countOrErr.takeError();
+    auto zeroOrErr = zeroToken(alloc.getType().getElementType());
+    if (!zeroOrErr)
+      return zeroOrErr.takeError();
+    llvm::SmallVector<Token> elements(*countOrErr, *zeroOrErr);
+    auto [rootIt, inserted] = state.memoryRootIds.try_emplace(
+        alloc.getResult(), state.nextMemoryRootId);
+    if (inserted)
+      ++state.nextMemoryRootId;
+    state.memories[alloc.getResult()] = std::make_shared<MemoryValue>(
+        MemoryValue{rootIt->second, alloc.getType().getElementType(),
+                    std::move(elements),
+                    llvm::SmallBitVector(static_cast<unsigned>(*countOrErr),
+                                         /*t=*/false)});
+  }
+  return llvm::Error::success();
+}
+
 static llvm::Error propagateMemoryAliases(mlir::Block &entry,
                                           SimulatorState &state) {
   llvm::DenseMap<mlir::Value, mlir::Type> fixtureElementTypes;
@@ -1005,11 +1076,22 @@ static llvm::Error propagateMemoryAliases(mlir::Block &entry,
   while (changed) {
     changed = false;
     for (mlir::Operation &op : entry.getOperations()) {
-      if (!mlir::isa<mlir::UnrealizedConversionCastOp>(op) ||
-          op.getNumOperands() != 1 || op.getNumResults() != 1)
+      mlir::Value source;
+      mlir::Value target;
+      if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(op)) {
+        if (cast.getInputs().size() != 1 || cast.getResults().size() != 1)
+          continue;
+        source = cast.getInputs().front();
+        target = cast.getResults().front();
+      } else if (auto cast = llvm::dyn_cast<mlir::memref::CastOp>(op)) {
+        source = cast.getSource();
+        target = cast.getDest();
+      } else {
         continue;
-      mlir::Value source = op.getOperand(0);
-      mlir::Value target = op.getResult(0);
+      }
+      if (auto rootIt = state.memoryRootIds.find(source);
+          rootIt != state.memoryRootIds.end())
+        state.memoryRootIds.try_emplace(target, rootIt->second);
       if (state.memories.contains(target))
         continue;
       auto memoryIt = state.memories.find(source);
@@ -1019,9 +1101,11 @@ static llvm::Error propagateMemoryAliases(mlir::Block &entry,
             memoryIt->second->elementType != targetMemref.getElementType())
           return llvm::createStringError(
               std::errc::invalid_argument,
-              "memory fixture type mismatch: existing %s, requested %s",
-              typeToString(memoryIt->second->elementType).c_str(),
-              typeToString(targetMemref.getElementType()).c_str());
+            "memory fixture type mismatch: existing %s, requested %s",
+            typeToString(memoryIt->second->elementType).c_str(),
+            typeToString(targetMemref.getElementType()).c_str());
+        state.memoryRootIds.try_emplace(target,
+                                        memoryIt->second->logicalRootId);
         state.memories[target] = memoryIt->second;
         changed = true;
         continue;
@@ -1037,11 +1121,56 @@ static llvm::Error propagateMemoryAliases(mlir::Block &entry,
       auto memory = *memoryOrErr;
       state.memories[source] = memory;
       state.memories[target] = memory;
+      state.memoryRootIds.try_emplace(target, memory->logicalRootId);
       state.rawMemoryFixtures[target] = rawIt->second;
       changed = true;
     }
   }
   return llvm::Error::success();
+}
+
+static std::shared_ptr<MemoryValue>
+memoryForValue(SimulatorState &state, mlir::Value value) {
+  llvm::DenseSet<mlir::Value> visited;
+  while (value && visited.insert(value).second) {
+    auto memory = state.memories.find(value);
+    if (memory != state.memories.end())
+      return memory->second;
+    if (auto cast = value.getDefiningOp<mlir::memref::CastOp>()) {
+      value = cast.getSource();
+      continue;
+    }
+    if (auto cast = value.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
+      if (cast.getInputs().size() != 1)
+        return {};
+      value = cast.getInputs().front();
+      continue;
+    }
+    return {};
+  }
+  return {};
+}
+
+static std::optional<std::uint64_t>
+memoryRootIdForValue(SimulatorState &state, mlir::Value value) {
+  llvm::DenseSet<mlir::Value> visited;
+  while (value && visited.insert(value).second) {
+    auto root = state.memoryRootIds.find(value);
+    if (root != state.memoryRootIds.end())
+      return root->second;
+    if (auto cast = value.getDefiningOp<mlir::memref::CastOp>()) {
+      value = cast.getSource();
+      continue;
+    }
+    if (auto cast = value.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
+      if (cast.getInputs().size() != 1)
+        return std::nullopt;
+      value = cast.getInputs().front();
+      continue;
+    }
+    return std::nullopt;
+  }
+  return std::nullopt;
 }
 
 static bool hasIncompleteStreamLoads(mlir::Block &entry,
@@ -1084,8 +1213,13 @@ static bool hasPendingVectorGroups(SimulatorState &state) {
 static llvm::SmallVector<std::string>
 serializeMemoryValue(const MemoryValue &memory) {
   llvm::SmallVector<std::string> values;
-  for (const Token &token : memory.elements)
+  for (auto [index, token] : llvm::enumerate(memory.elements)) {
+    if (!memory.initialized[index]) {
+      values.push_back("uninitialized");
+      continue;
+    }
     values.push_back(tokenToString(token, memory.elementType));
+  }
   return values;
 }
 
@@ -1116,11 +1250,24 @@ static void captureFinalMemoryState(dataflow::GraphFuncOp graph,
                 end = graph.getFunctionType().getNumInputs();
        index < end; ++index) {
     mlir::BlockArgument arg = entry.getArgument(index + 1);
-    auto memory = state.memories.find(arg);
-    if (memory == state.memories.end())
-      continue;
-    report.finalMemoryState[llvm::formatv("arg{0}", index).str()] =
-        serializeMemoryValue(*memory->second);
+    std::shared_ptr<MemoryValue> memory = memoryForValue(state, arg);
+    std::string port = llvm::formatv("arg{0}", index).str();
+    if (memory)
+      report.finalMemoryState[port] = serializeMemoryValue(*memory);
+    if (auto rootId = memoryRootIdForValue(state, arg))
+      report.finalMemoryRoots[port] =
+          llvm::formatv("memory_root{0}", *rootId).str();
+  }
+  auto ret = mlir::cast<dataflow::GraphReturnOp>(entry.getTerminator());
+  for (auto [index, memoryResult] : llvm::enumerate(ret.getMemories())) {
+    std::shared_ptr<MemoryValue> memory =
+        memoryForValue(state, memoryResult);
+    std::string port = llvm::formatv("memory_result{0}", index).str();
+    if (memory)
+      report.finalMemoryState[port] = serializeMemoryValue(*memory);
+    if (auto rootId = memoryRootIdForValue(state, memoryResult))
+      report.finalMemoryRoots[port] =
+          llvm::formatv("memory_root{0}", *rootId).str();
   }
 }
 
@@ -1157,20 +1304,10 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
     return std::move(error);
 
   llvm::ArrayRef<int32_t> resultSegments = graph.getResultSegmentSizes();
-  if (resultSegments[2] != 0) {
-    report.status = "unsupported";
-    report.diagnostics.push_back("memory export simulation is unsupported");
-    return report;
-  }
-
   if (options.invocations == 0)
     return llvm::createStringError(std::errc::invalid_argument,
                                    "invocations must be nonzero");
   if (options.invocations > 1) {
-    if (!options.globalMemories.empty())
-      return llvm::createStringError(
-          std::errc::not_supported,
-          "multiple invocations with global memory fixtures are unsupported");
     if (resultSegments[0] != 0 || resultSegments[1] != 0)
       return llvm::createStringError(
           std::errc::not_supported,
@@ -1236,9 +1373,10 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       for (const auto &[name, count] : singleReport.operationFireCounts)
         aggregate.operationFireCounts[name] += count;
       for (const auto &[name, count] : singleReport.modeledLibraryCalls)
-        aggregate.modeledLibraryCalls[name] += count;
+      aggregate.modeledLibraryCalls[name] += count;
       aggregate.finalOutputs = std::move(singleReport.finalOutputs);
       aggregate.finalMemoryState = std::move(singleReport.finalMemoryState);
+      aggregate.finalMemoryRoots = std::move(singleReport.finalMemoryRoots);
 
       for (const std::string &diagnostic : singleReport.diagnostics)
         aggregate.diagnostics.push_back(
@@ -1285,13 +1423,9 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   if (!memoriesOrErr)
     return memoriesOrErr.takeError();
   llvm::StringMap<MemoryFixture> memories = std::move(*memoriesOrErr);
-  auto globalMemoriesOrErr = indexGlobalMemoryArgs(options.globalMemories);
-  if (!globalMemoriesOrErr)
-    return globalMemoriesOrErr.takeError();
 
   SimulatorState state;
   state.maxStructuredLoopIterations = options.maxEventSteps;
-  state.globalMemoryFixtures = std::move(*globalMemoriesOrErr);
   GraphReturnObservation returnObservation = observeReturnOperands(graph);
   seedBlockArgument(state, graph.getStart(), noneToken());
 
@@ -1323,9 +1457,19 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
                                       "invalid memref argument %u",
                                       unsigned(index)),
               tokensOrErr.takeError());
+        llvm::SmallVector<Token> tokens = std::move(*tokensOrErr);
+        llvm::SmallBitVector initialized(tokens.size(), /*t=*/true);
+        auto [rootIt, inserted] = state.memoryRootIds.try_emplace(
+            arg, state.nextMemoryRootId);
+        if (inserted)
+          ++state.nextMemoryRootId;
         state.memories[arg] = std::make_shared<MemoryValue>(MemoryValue{
-            memrefType.getElementType(), std::move(*tokensOrErr)});
+            rootIt->second, memrefType.getElementType(),
+            std::move(tokens),
+            std::move(initialized)});
       } else {
+        if (!state.memoryRootIds.contains(arg))
+          state.memoryRootIds[arg] = state.nextMemoryRootId++;
         state.rawMemoryFixtures[arg] = memories.lookup(key);
         seedBlockArgument(
             state, arg,
@@ -1358,6 +1502,8 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
     }
   }
 
+  if (llvm::Error err = initializeFreshMemoryRoots(entry, state))
+    return std::move(err);
   if (llvm::Error err = propagateMemoryAliases(entry, state))
     return std::move(err);
 
@@ -1607,6 +1753,11 @@ loom::sim::writeDFGSimulationReportJson(llvm::StringRef outputPath,
     finalMemoryState[argument] = std::move(memoryValues);
   }
   root["final_memory_state"] = std::move(finalMemoryState);
+
+  llvm::json::Object finalMemoryRoots;
+  for (const auto &[port, rootId] : report.finalMemoryRoots)
+    finalMemoryRoots[port] = rootId;
+  root["final_memory_roots"] = std::move(finalMemoryRoots);
 
   llvm::json::Array diagnostics;
   for (const std::string &diagnostic : report.diagnostics)

@@ -57,9 +57,10 @@ accelerator regions, and final dataflow placement:
 * `dataflow.graph` is the SpatialCore leaf DFG definition produced
   by Part 3 (also Symbol-bearing, function-like, module-scope). It
   cannot contain function definitions or calls.
-  `dataflow.graph.launch` is the synchronous launcher that
+  `dataflow.graph.launch` is the asynchronous launcher that
   references a graph definition from inside a thread definition's
-  body and supplies the per-launch ctrl_in / done_out plumbing.
+  body and supplies the per-launch ctrl_in / done_out plumbing;
+  retirement remains explicit through done_out.
 
 Function calls are ScalarCore-level operations when they appear
 inside an accelerator region. Part 2 must classify any `func.call`

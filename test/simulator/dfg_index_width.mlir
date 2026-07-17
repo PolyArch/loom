@@ -23,15 +23,14 @@
 
 module {
   dataflow.graph.func private @index_width_fallback(
-      %ctrl: none, %value: i64, %base: !llvm.ptr)
+      %ctrl: none, %value: i64, %base: memref<?xi32>)
       -> (none, index, i32)
       attributes {input_segments = array<i32: 1, 0, 1>,
                   result_segments = array<i32: 2, 0, 0>} {
     %index = arith.index_cast %value : i64 to index
-    %next = llvm.getelementptr %base[1]
-        : (!llvm.ptr) -> !llvm.ptr, index
-    %loaded = llvm.load %next : !llvm.ptr -> i32
-    %published:3 = dataflow.sync %ctrl, %index, %loaded
+    %one = dataflow.constant %ctrl {const_value = 1 : index} : index
+    %loaded, %loaded_done = dataflow.load %base[%one] %ctrl : memref<?xi32>
+    %published:3 = dataflow.sync %loaded_done, %index, %loaded
         : (none, index, i32) -> (none, index, i32)
     dataflow.graph.return %published#0, %published#1, %published#2
         : none, index, i32
@@ -41,15 +40,14 @@ module {
     dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
   } {
     dataflow.graph.func private @index_width_explicit32(
-        %ctrl: none, %value: i64, %base: !llvm.ptr)
+        %ctrl: none, %value: i64, %base: memref<?xi32>)
         -> (none, index, i32)
         attributes {input_segments = array<i32: 1, 0, 1>,
                     result_segments = array<i32: 2, 0, 0>} {
       %index = arith.index_cast %value : i64 to index
-      %next = llvm.getelementptr %base[1]
-          : (!llvm.ptr) -> !llvm.ptr, index
-      %loaded = llvm.load %next : !llvm.ptr -> i32
-      %published:3 = dataflow.sync %ctrl, %index, %loaded
+      %one = dataflow.constant %ctrl {const_value = 1 : index} : index
+      %loaded, %loaded_done = dataflow.load %base[%one] %ctrl : memref<?xi32>
+      %published:3 = dataflow.sync %loaded_done, %index, %loaded
           : (none, index, i32) -> (none, index, i32)
       dataflow.graph.return %published#0, %published#1, %published#2
           : none, index, i32

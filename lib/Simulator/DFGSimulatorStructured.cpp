@@ -271,13 +271,7 @@ static bool assignLocalLLVMAddressOf(mlir::LLVM::AddressOfOp op,
                                      SimulatorState &state,
                                      LocalValueMap &locals) {
   mlir::Value result = op->getResult(0);
-  std::int64_t byteOffset = 0;
-  auto fixtureIt = state.globalMemoryFixtures.find(op.getGlobalName());
-  if (fixtureIt != state.globalMemoryFixtures.end()) {
-    state.rawMemoryFixtures[result] = fixtureIt->second;
-    byteOffset = fixtureIt->second.byteOffset;
-  }
-  locals[result] = pointerToken(result, {}, byteOffset);
+  locals[result] = pointerToken(result);
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -438,7 +432,11 @@ static bool assignLocalDataflowLoad(dataflow::LoadOp op, SimulatorState &state,
       *view, *addr, state, op.getOperation(), "dataflow.load");
   if (!index)
     return false;
-  locals[op.getData()] = view->memory->elements[*index];
+  std::optional<Token> value =
+      readMemoryElement(*view, *index, state, "dataflow.load");
+  if (!value)
+    return false;
+  locals[op.getData()] = *value;
   locals[op.getDone()] = noneToken();
   ++state.loadFireCounts[op.getOperation()];
   if (hasComputedAddress(op.getAddr()))
@@ -505,7 +503,7 @@ static bool assignLocalDataflowStore(dataflow::StoreOp op,
       *view, *addr, state, op.getOperation(), "dataflow.store");
   if (!index)
     return false;
-  view->memory->elements[*index] = *data;
+  writeMemoryElement(*view, *index, *data);
   locals[op.getDone()] = noneToken();
   if (hasComputedAddress(op.getAddr()))
     state.memoryAddressScore += kStoreAddressScore;

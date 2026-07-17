@@ -37,6 +37,8 @@ module {
 
 // CHECK-LABEL: dataflow.graph.func private @g_cmsis_vec_mat_mult
 // CHECK-NOT: llvm.call
+// CHECK-NOT: llvm.mlir.zero
+// CHECK-NOT: llvm.icmp
 // CHECK: dataflow.load
 // CHECK: arith.muli
 // CHECK: arith.select

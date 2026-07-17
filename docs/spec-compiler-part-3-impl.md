@@ -89,15 +89,17 @@ the production contract.
   index-domain materialization has local rollback and leaves the original
   recurrence intact when conversion fails.
 * Boundary memory capabilities are selected by normalized segment metadata.
-  Canonical roots are derived through views, conversion bridges, globals, and
-  static pointer bases. Boundary capabilities without explicit no-alias
-  evidence share one conservative alias root; unknown accesses cover every
-  live partition.
+  Canonical roots are explicit graph memory inputs, fresh `memref.alloc`
+  results, and verified side-effect-free views. Conversion bridges preserve an
+  established root but never create one. Globals and static pointer bases must
+  be resolved outside the graph and imported explicitly. Boundary capabilities
+  without explicit no-alias evidence share one conservative alias root.
 * Each live alias partition has exactly one
   `(write_frontier, read_frontier)` pair. Straight-line accesses and recursive
-  selection, repeat, and parallel transfer follow
-  `docs/spec-compiler-part-3-mem.md`. Structural execution remains a separate
-  state component.
+  selection and repeat transfer follow `docs/spec-compiler-part-3-mem.md`.
+  Graph-owned parallel transfer requires a preselected P[] representation and
+  is not selected by this pass. Structural execution remains a separate state
+  component.
 * Raw parallel SCF, unsupported residual containers, observable operations
   without explicit completion events, and memory capabilities transported on
   dataflow control primitives fail closed.
@@ -133,10 +135,12 @@ the production contract.
 * `done_out = all_of(graph.return.complete)`. Validation may prove that the
   declared frontier covers required behavior, but it does not synthesize an
   alternate completion event from effect scans or graph quiescence.
-* The simulator treats frontier firing as retirement and rejects subsequent
-  operation firing. Unsupported boundary behavior, including memory export
-  identity simulation, reports `unsupported` without flattening the segment
-  into scalar output.
+* The simulator treats the declared frontier as retirement authority. It does
+  not add a post-retirement quiescence rule or synthesize another completion
+  event. Imported-root re-exports and fresh `memref.alloc` exports preserve
+  logical root identity; contents remain memory observables rather than scalar
+  payloads. The report records a derived logical-root label for each imported
+  and exported memory port, separate from the memory contents.
 
 ## 2. Testing Strategy
 
@@ -153,9 +157,10 @@ Tests are organized by stable semantic boundary:
 * `test/dfg/` verifies the strict native finalized-graph gate independently
   of simulator and PnR frontends.
 * `test/simulator/` verifies retirement-time execution, value and stream
-  segments, explicit unsupported memory export, phase/reset/re-entry behavior,
-  vector pack/serialize, scalar broadcast, pointer and integer primitives,
-  dynamic extents, known library operations, and artifact simulation.
+  segments, imported-root and fresh memory exports, phase/reset/re-entry
+  behavior, vector pack/serialize, scalar broadcast, pointer and integer
+  primitives, dynamic extents, known library operations, and artifact
+  simulation.
 * `test/pnr/` verifies the same native gate at mapping entry and preserves
   placement, routing, operation, status, and diagnostic assertions for
   canonical graphs.
@@ -180,7 +185,9 @@ The Part 3 slice is coherent only when all of the following hold:
   type mismatches.
 * Recursive lowering preserves one canonical
   `(write_frontier, read_frontier)` pair per live alias partition and applies
-  the documented selection, repeat, and parallel transfer rules.
+  the documented selection and repeat transfer rules. Graph-owned parallel
+  transfer enters only after its Structured Program Candidate representation
+  has been selected.
 * Retirement is the non-empty explicit `graph.return.complete` all-of.
   Nontrivial graphs cannot use raw start, and no effect scan or quiescence rule
   creates a second completion mechanism.
@@ -191,8 +198,8 @@ The Part 3 slice is coherent only when all of the following hold:
   memory plane fail closed rather than entering dataflow carry or selection.
 * Direct simulator and PnR entry reject residual structured containers and
   validate the same ABI and retirement contract.
-* Unsupported simulator boundary semantics report `unsupported` without
-  flattening segment kinds.
+* Unsupported simulator boundary semantics fail through the shared
+  finalized-graph gate without flattening segment kinds.
 * Focused raise, DFG, simulator, PnR, and ADG suites pass, followed by the full
   locked `make test` invocation and `git diff --check`.
 

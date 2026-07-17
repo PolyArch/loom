@@ -22,11 +22,11 @@
 //     memref<?xT> and read at offset 0 (or at the gep's idx).
 //
 // Loads whose pointer is none of the above (e.g. derived from
-// `llvm.alloca` or `llvm.mlir.addressof` at the top level) remain as
-// value-producing reads. Residual writes and volatile or atomic reads are
-// rejected because LLVM memory ops do not provide an SSA completion event for
-// graph.return.complete. Pointer-element loads are also skipped: bridging
-// !llvm.ptr-of-ptr to memref<?x!llvm.ptr> trips the streaming load verifier.
+// `llvm.alloca` or `llvm.mlir.addressof` at the top level) remain untouched
+// during recognition and are rejected by the residual gate. Raw LLVM memory
+// operations do not provide the canonical dataflow completion contract.
+// Pointer-element loads are also skipped: bridging !llvm.ptr-of-ptr to
+// memref<?x!llvm.ptr> trips the streaming load verifier.
 
 #include "Frontend/Lowering/Passes.h"
 
@@ -1611,12 +1611,9 @@ checkResidualMemoryEffects(::dataflow::GraphFuncOp graph) {
   ::mlir::WalkResult result =
       graph.getBody().walk([](::mlir::Operation *op) -> ::mlir::WalkResult {
         bool lacksCompletion =
-            ::llvm::isa<::mlir::LLVM::StoreOp, ::mlir::LLVM::MemcpyOp>(op) ||
+            ::llvm::isa<::mlir::LLVM::LoadOp, ::mlir::LLVM::StoreOp,
+                         ::mlir::LLVM::MemcpyOp>(op) ||
             isLLVMMemsetOp(op);
-        if (auto load = ::llvm::dyn_cast<::mlir::LLVM::LoadOp>(op))
-          lacksCompletion =
-              load.getVolatile_() ||
-              load.getOrdering() != ::mlir::LLVM::AtomicOrdering::not_atomic;
         if (!lacksCompletion)
           return ::mlir::WalkResult::advance();
 

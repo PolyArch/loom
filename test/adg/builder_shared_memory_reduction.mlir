@@ -129,8 +129,16 @@ module {
     %store1 = dataflow.store %out[%c1] %m1 %ctrl : memref<?xi8>
     %store2 = dataflow.store %out[%c2] %m2 %ctrl : memref<?xi8>
     %store3 = dataflow.store %out[%sum_index] %m3 %ctrl : memref<?xi8>
+    %loads0:6 = dataflow.sync %a0_done, %b0_done, %a1_done, %b1_done,
+        %a2_done, %b2_done
+        : (none, none, none, none, none, none)
+          -> (none, none, none, none, none, none)
+    %loads1:6 = dataflow.sync %a3_done, %b3_done, %store0, %store1,
+        %store2, %store3
+        : (none, none, none, none, none, none)
+          -> (none, none, none, none, none, none)
     %retired:6 = dataflow.sync %store0, %store1, %store2, %store3,
-        %a0_done, %b0_done
+        %loads0#0, %loads1#0
         : (none, none, none, none, none, none)
           -> (none, none, none, none, none, none)
     dataflow.graph.return %retired#0 : none

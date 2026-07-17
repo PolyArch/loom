@@ -110,9 +110,9 @@ std::string nearestHardwareSchedule(mlir::Operation *op) {
 bool operationMatchesResourceKind(llvm::StringRef resourceKind,
                                   llvm::StringRef operation) {
   if (resourceKind == "fabric.mem.load")
-    return operation == "dataflow.load" || operation == "llvm.load";
+    return operation == "dataflow.load";
   if (resourceKind == "fabric.mem.store")
-    return operation == "dataflow.store" || operation == "llvm.store";
+    return operation == "dataflow.store";
   if (resourceKind == "fabric.op")
     return fabric::isFabricOpSupported(operation);
   return false;
@@ -413,13 +413,6 @@ hardwareOperandIndexForResourceKind(llvm::StringRef resourceKind,
     return std::nullopt;
   }
   if (resourceKind == "fabric.mem.store") {
-    if (operation == "llvm.store") {
-      if (softwareOperandIndex == 0)
-        return 1;
-      if (softwareOperandIndex == 1)
-        return 0;
-      return std::nullopt;
-    }
     if (softwareOperandIndex >= 1 && softwareOperandIndex <= 3)
       return softwareOperandIndex - 1;
     return std::nullopt;

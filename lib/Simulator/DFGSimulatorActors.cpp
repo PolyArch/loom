@@ -525,6 +525,23 @@ std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
   return static_cast<std::size_t>(index);
 }
 
+std::optional<Token> readMemoryElement(const MemoryView &view,
+                                       std::size_t index,
+                                       SimulatorState &state,
+                                       llvm::StringRef opName) {
+  if (!view.memory->initialized[index]) {
+    state.diagnostics.push_back((opName + " reads uninitialized memory").str());
+    return std::nullopt;
+  }
+  return view.memory->elements[index];
+}
+
+void writeMemoryElement(const MemoryView &view, std::size_t index,
+                        Token value) {
+  view.memory->elements[index] = value;
+  view.memory->initialized.set(index);
+}
+
 static bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   if (!hasToken(state.channels, op.getAddrMutable()) ||
       !hasToken(state.channels, op.getCtrlMutable()))
@@ -539,7 +556,11 @@ static bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
       *view, addr, state, op.getOperation(), "dataflow.load");
   if (!index)
     return false;
-  emitToken(state, op.getData(), view->memory->elements[*index]);
+  std::optional<Token> value =
+      readMemoryElement(*view, *index, state, "dataflow.load");
+  if (!value)
+    return false;
+  emitToken(state, op.getData(), *value);
   emitToken(state, op.getDone(), noneToken());
   ++state.loadFireCounts[op.getOperation()];
   if (hasComputedAddress(op.getAddr()))
@@ -562,8 +583,11 @@ static bool fireLLVMLoad(mlir::LLVM::LoadOp op, SimulatorState &state) {
                           op.getOperation(), "llvm.load");
   if (!index)
     return false;
-  emitToken(state, op->getResult(0),
-            viewOrErr->pointer.memory->elements[*index]);
+  std::optional<Token> value = readMemoryElement(
+      viewOrErr->pointer, *index, state, "llvm.load");
+  if (!value)
+    return false;
+  emitToken(state, op->getResult(0), *value);
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -585,7 +609,7 @@ static bool fireLLVMStore(mlir::LLVM::StoreOp op, SimulatorState &state) {
                           op.getOperation(), "llvm.store");
   if (!index)
     return false;
-  viewOrErr->pointer.memory->elements[*index] = value;
+  writeMemoryElement(viewOrErr->pointer, *index, value);
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -670,10 +694,15 @@ bool executeLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state,
 
   llvm::SmallVector<Token> copied;
   copied.reserve(static_cast<std::size_t>(byteLength));
-  for (std::int64_t i = 0; i < byteLength; ++i)
-    copied.push_back(srcOrErr->pointer.memory->elements[*srcStart + i]);
+  for (std::int64_t i = 0; i < byteLength; ++i) {
+    std::optional<Token> value = readMemoryElement(
+        srcOrErr->pointer, *srcStart + i, state, "llvm.intr.memcpy");
+    if (!value)
+      return false;
+    copied.push_back(*value);
+  }
   for (auto [offset, token] : llvm::enumerate(copied))
-    dstOrErr->pointer.memory->elements[*dstStart + offset] = token;
+    writeMemoryElement(dstOrErr->pointer, *dstStart + offset, token);
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -724,7 +753,7 @@ static bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
       *view, addr, state, op.getOperation(), "dataflow.store");
   if (!index)
     return false;
-  view->memory->elements[*index] = data;
+  writeMemoryElement(*view, *index, data);
   emitToken(state, op.getDone(), noneToken());
   if (hasComputedAddress(op.getAddr()))
     state.memoryAddressScore += kStoreAddressScore;
@@ -796,13 +825,7 @@ static bool fireLLVMAddressOf(mlir::LLVM::AddressOfOp op,
   if (state.oneShotOps.contains(op.getOperation()))
     return false;
   mlir::Value result = op->getResult(0);
-  std::int64_t byteOffset = 0;
-  auto fixtureIt = state.globalMemoryFixtures.find(op.getGlobalName());
-  if (fixtureIt != state.globalMemoryFixtures.end()) {
-    state.rawMemoryFixtures[result] = fixtureIt->second;
-    byteOffset = fixtureIt->second.byteOffset;
-  }
-  emitToken(state, result, pointerToken(result, {}, byteOffset));
+  emitToken(state, result, pointerToken(result));
   state.oneShotOps.insert(op.getOperation());
   return recordEvent(state, op->getName().getStringRef());
 }

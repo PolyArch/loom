@@ -135,6 +135,7 @@ llvm::StringRef resourceKindName(ResourceKind kind);
 bool isAdapterOp(mlir::Operation *op);
 bool shouldMaterializeAdapterOp(mlir::Operation *op);
 bool isStructuredContainerOp(mlir::Operation *op);
+bool isMemoryCapabilitySetupOp(mlir::Operation *op);
 bool isPointerBookkeepingOp(mlir::Operation *op);
 std::map<std::string, std::string> softwareConfigsFor(const SoftwareNode &node);
 std::optional<std::string>

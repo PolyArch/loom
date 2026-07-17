@@ -1,14 +1,11 @@
 // RUN: loom-dfg-sim %s --graph calls_external --output %t.json
 // RUN: FileCheck %s < %t.json
-// RUN: loom-dfg-sim %s --graph calls_indirect --memref 0=0 --output %t.indirect.json
-// RUN: FileCheck %s --check-prefix=INDIRECT < %t.indirect.json
+// RUN: not loom-dfg-sim %s --graph calls_indirect --memref 0=0 --output %t.indirect.json 2>&1 | FileCheck %s --check-prefix=INDIRECT
 
 // CHECK-DAG: "status": "unsupported"
 // CHECK-DAG: "unsupported op: llvm.call @opaque_callee"
 
-// INDIRECT-DAG: "status": "unsupported"
-// INDIRECT-DAG: "unsupported op: llvm.call"
-// INDIRECT-NOT: "unsupported op: llvm.call @
+// INDIRECT: finalized graph contains residual pointer operation 'llvm.call'
 
 module {
   llvm.func @opaque_callee(i32) -> i32

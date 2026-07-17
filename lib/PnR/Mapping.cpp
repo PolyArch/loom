@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/AsmState.h"
@@ -96,7 +97,8 @@ mlir::DialectRegistry makeRegistry() {
   registry.insert<dataflow::DataflowDialect, fabric::FabricDialect,
                   mlir::arith::ArithDialect, mlir::DLTIDialect,
                   mlir::func::FuncDialect, mlir::LLVM::LLVMDialect,
-                  mlir::math::MathDialect, mlir::scf::SCFDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect,
                   mlir::ub::UBDialect>();
   return registry;
 }
@@ -227,7 +229,7 @@ bool isIgnoredOp(mlir::Operation *op) {
   llvm::StringRef name = op->getName().getStringRef();
   if (name == "dataflow.graph.return")
     return true;
-  return isStructuredControlConstant(op);
+  return isMemoryCapabilitySetupOp(op) || isStructuredControlConstant(op);
 }
 
 } // namespace
@@ -236,6 +238,10 @@ bool isAdapterOp(mlir::Operation *op) {
   llvm::StringRef name = op->getName().getStringRef();
   return name == "builtin.unrealized_conversion_cast" ||
          name == "arith.index_cast" || name == "arith.index_castui";
+}
+
+bool isMemoryCapabilitySetupOp(mlir::Operation *op) {
+  return mlir::isa<mlir::memref::AllocOp, mlir::memref::CastOp>(op);
 }
 
 namespace {
@@ -621,9 +627,9 @@ std::optional<ResourceKind> resourceKindForSoftwareOp(mlir::Operation *op) {
   if (std::optional<llvm::StringRef> asmName =
           canonicalArmInlineAsmOperationName(op))
     name = *asmName;
-  if (name == "dataflow.load" || name == "llvm.load")
+  if (name == "dataflow.load")
     return ResourceKind::MemLoad;
-  if (name == "dataflow.store" || name == "llvm.store")
+  if (name == "dataflow.store")
     return ResourceKind::MemStore;
   if (fabric::isFabricOpSupported(name))
     return ResourceKind::FabricOp;

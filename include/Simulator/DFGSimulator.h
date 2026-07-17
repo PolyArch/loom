@@ -28,24 +28,17 @@ struct DFGMemoryArg {
   std::string values;
 };
 
-struct DFGGlobalMemoryArg {
-  std::string symbol;
-  std::int64_t byteOffset = 0;
-  std::string values;
-};
-
 struct DFGSimulationOptions {
   std::string graphName;
   std::string workloadName;
   llvm::SmallVector<DFGRuntimeArg> args;
   llvm::SmallVector<DFGMemoryArg> memories;
-  llvm::SmallVector<DFGGlobalMemoryArg> globalMemories;
   std::uint64_t invocations = 1;
   std::uint64_t maxEventSteps = 100000;
 };
 
 struct DFGSimulationReport {
-  std::string schemaVersion = "2.1";
+  std::string schemaVersion = "2.2";
   std::string kind = "dfg_sim_report";
   std::string workload;
   std::string graph;
@@ -67,6 +60,7 @@ struct DFGSimulationReport {
   llvm::SmallVector<std::string> finalOutputs;
   llvm::SmallVector<llvm::SmallVector<std::string>> finalStreamOutputs;
   std::map<std::string, llvm::SmallVector<std::string>> finalMemoryState;
+  std::map<std::string, std::string> finalMemoryRoots;
   llvm::SmallVector<std::string> diagnostics;
 };
 
