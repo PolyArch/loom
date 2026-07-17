@@ -224,11 +224,7 @@ static bool fireSync(dataflow::SyncOp op, SimulatorState &state) {
   for (mlir::OpOperand &operand : op->getOpOperands())
     consumed.push_back(popToken(state.channels, operand));
 
-  llvm::SmallVector<std::pair<mlir::Value, Token>> publications;
-  publications.reserve(op->getNumResults());
   for (auto [result, token] : llvm::zip_equal(op->getResults(), consumed))
-    publications.emplace_back(result, token);
-  for (auto &[result, token] : publications)
     emitToken(state, result, token);
   return recordEvent(state, op->getName().getStringRef());
 }
