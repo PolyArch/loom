@@ -5,15 +5,11 @@
 // RUN: cmp %t.dir/hardware.mlir %t.dir/hardware.second.mlir
 // RUN: FileCheck %s --check-prefix=BUILDER < %t.dir/hardware.mlir
 // RUN: loom %t.dir/hardware.mlir | FileCheck %s --check-prefix=HARDWARE
-// RUN: loom-pnr-map --dfg-mlir %s --graph minmax_pressure --hardware-mlir %t.dir/hardware.mlir --hardware shared_memory_reduction_adg --workload minmax_pressure --output %t.dir/mapping.csv --artifact %t.dir/mapping.json
-// RUN: FileCheck %s --check-prefix=MAPPING < %t.dir/mapping.json
 // RUN: mkdir -p %t.dir/bitonic_stage
 // RUN: %loom-cc -emit-llvm -O1 -S %S/../app/bitonic_stage/main_func.c -o %t.dir/bitonic_stage/main_func.ll
 // RUN: %loom-raise %t.dir/bitonic_stage/main_func.ll -o %t.dir/bitonic_stage/main_func.scf.mlir
 // RUN: %loom-lower %t.dir/bitonic_stage/main_func.scf.mlir -o %t.dir/bitonic_stage/main_func.dfg.mlir
 // RUN: FileCheck %s --check-prefix=BITONIC-DFG < %t.dir/bitonic_stage/main_func.dfg.mlir
-// RUN: loom-pnr-map --dfg-mlir %t.dir/bitonic_stage/main_func.dfg.mlir --graph g_bitonic_stage_0 --hardware-mlir %t.dir/hardware.mlir --hardware shared_memory_reduction_adg --workload bitonic_stage --output %t.dir/bitonic_stage.mapping.csv --artifact %t.dir/bitonic_stage.mapping.json
-// RUN: FileCheck %s --check-prefix=BITONIC < %t.dir/bitonic_stage.mapping.json
 
 // BITONIC-DFG-LABEL: dataflow.graph private @g_bitonic_stage_0
 // BITONIC-DFG: builtin.unrealized_conversion_cast %arg1 : !llvm.ptr to memref<?xf32>
@@ -78,20 +74,6 @@
 // BUILDER-DAG: %wide_route_bridge0 = fabric.fifo %wide_route_bridge0_input
 // BUILDER-DAG: %stream0_idx, %stream0_rwc =
 // BUILDER-DAG: %wide_stream0_rwc = fabric.fifo %wide_stream0_rwc_wide
-
-// MAPPING-DAG: "workload": "minmax_pressure"
-// MAPPING-DAG: "hardware": "shared_memory_reduction_adg"
-// MAPPING-DAG: "unplaced_records": 0
-// MAPPING-DAG: "unrouted_edges": 0
-// MAPPING-DAG: "status": "pass"
-
-// BITONIC-DAG: "workload": "bitonic_stage"
-// BITONIC-DAG: "hardware": "shared_memory_reduction_adg"
-// BITONIC-DAG: "unplaced_records": 0
-// BITONIC-DAG: "unrouted_edges": 0
-// BITONIC-DAG: "software": "arith.cmpi#0"
-// BITONIC-DAG: "software": "dataflow.store#0"
-// BITONIC-DAG: "status": "pass"
 
 module {
   dataflow.graph private @minmax_pressure(

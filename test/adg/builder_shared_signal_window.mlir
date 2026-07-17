@@ -4,8 +4,6 @@
 // RUN: loom-adg-builder-test --shared-signal-window --output %t.dir/hardware.second.mlir
 // RUN: cmp %t.dir/hardware.mlir %t.dir/hardware.second.mlir
 // RUN: loom %t.dir/hardware.mlir | FileCheck %s --check-prefix=HARDWARE
-// RUN: loom-pnr-map --dfg-mlir %s --graph signal_window_pressure --hardware-mlir %t.dir/hardware.mlir --hardware shared_signal_window_adg --workload signal_window_pressure --output %t.dir/mapping.csv --artifact %t.dir/mapping.json
-// RUN: FileCheck %s --check-prefix=MAPPING < %t.dir/mapping.json
 
 // HARDWARE-LABEL: fabric.module @shared_signal_window_adg
 // HARDWARE-DAG: %arg{{[0-9]+}} : !fabric.bits<64>
@@ -36,14 +34,6 @@
 // HARDWARE-DAG: const_hex_value = ["0x0000000000000000", "0x0000000000000001", "0x0000000000000002", "0x0000000000000003", "0x0000000000000004", "0x0000000000000008", "0x0000000000000010"]
 // HARDWARE-DAG: fabric.op [@dataflow.sync]
 // HARDWARE-DAG: fabric.mem [spatial]
-
-// MAPPING-DAG: "workload": "signal_window_pressure"
-// MAPPING-DAG: "hardware": "shared_signal_window_adg"
-// MAPPING-DAG: "operation": "dataflow.demux"
-// MAPPING-DAG: "operation": "dataflow.sync"
-// MAPPING-DAG: "unplaced_records": 0
-// MAPPING-DAG: "unrouted_edges": 0
-// MAPPING-DAG: "status": "pass"
 
 module {
   dataflow.graph private @signal_window_pressure(

@@ -4,8 +4,6 @@
 // RUN: loom-adg-builder-test --shared-quantized-window --output %t.dir/hardware.second.mlir
 // RUN: cmp %t.dir/hardware.mlir %t.dir/hardware.second.mlir
 // RUN: loom %t.dir/hardware.mlir | FileCheck %s --check-prefix=HARDWARE
-// RUN: loom-pnr-map --dfg-mlir %s --graph quantized_window_pressure --hardware-mlir %t.dir/hardware.mlir --hardware shared_quantized_window_adg --workload quantized_window_pressure --output %t.dir/mapping.csv --artifact %t.dir/mapping.json
-// RUN: FileCheck %s --check-prefix=MAPPING < %t.dir/mapping.json
 
 // HARDWARE-LABEL: fabric.module @shared_quantized_window_adg
 // HARDWARE-DAG: load_group_size = 18 : i32
@@ -40,18 +38,6 @@
 // HARDWARE-DAG: fabric.op [@arith.select]
 // HARDWARE-DAG: fabric.op [@llvm.sext]
 // HARDWARE-DAG: fabric.mem [spatial]
-
-// MAPPING-DAG: "workload": "quantized_window_pressure"
-// MAPPING-DAG: "hardware": "shared_quantized_window_adg"
-// MAPPING-DAG: "operation": "dataflow.stream"
-// MAPPING-DAG: "operation": "dataflow.carry"
-// MAPPING-DAG: "operation": "dataflow.demux"
-// MAPPING-DAG: "operation": "dataflow.invariant"
-// MAPPING-DAG: "operation": "dataflow.sync"
-// MAPPING-DAG: "unplaced_records": 0
-// MAPPING-DAG: "unrouted_edges": 0
-// MAPPING-DAG: "status": "pass"
-// MAPPING-NOT: "resource_pressure"
 
 module {
   dataflow.graph private @quantized_window_pressure(

@@ -71,57 +71,21 @@ memory-object identities and may be reused across invocations. Stable
 cross-invocation identity is unimplemented and remains a blocker for consumers
 that need to correlate memory objects over time.
 
-## PnR Mapping Outputs
+## PnR Publication Boundary
 
-`loom-pnr-map` consumes one `dataflow.graph` and one Fabric hardware root.
-It emits a compact CSV row and can also emit a JSON mapping artifact.
+The legacy graph-to-Fabric rematcher and its JSON mapping/estimate tools are
+not canonical artifact producers or consumers. They have been removed rather
+than retained as a second Mapping authority.
 
-The CSV columns are:
-
-```text
-workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-```
-
-The JSON artifact has `schema_version = "2.0"` and `kind = pnr_mapping`.
-Representative fields include:
-
-* workload, graph, and hardware identities;
-* mapping and configuration identities;
-* placement, routed-edge, unrouted-edge, and configuration counts;
-* `placements`;
-* `routes`;
-* `unrouted_edge_details`;
-* `config_bitstream`;
-* `status` and `diagnostics`.
-
-A passing mapping has no unplaced software records or unrouted edges. Counts
-must agree with their corresponding arrays. Route segments carry concrete
-endpoints consumed by mapping validation. `resource_pressure`, when present, is
-diagnostic metadata rather than a stable pass/fail policy.
-
-Consumers require the canonical `"1.0"` string.
-
-## Mapping Estimate Report
-
-`loom-mapping-estimate` consumes a PnR mapping artifact. Fabric MLIR is an
-optional validation input. The tool emits a JSON object with
-`schema_version = "1.0"` and `kind = mapping_estimate_report`.
-
-Representative fields include:
-
-* workload, hardware, and mapping identities;
-* `status` and `diagnostics`;
-* placement, route, configuration, and schedule counts;
-* weighted component scores and `total_cost_score`;
-* `score_breakdown` and `limitations`.
-
-The score is a deterministic heuristic derived from mapping artifact counts.
-It is neither a timing model nor a functional simulator and does not report
-cycle counts or program outputs.
+The implemented PnR boundary is currently the native C++ Mapping verifier plus
+`FrozenRealizationGraph` and `FrozenRoutingGraph`. A developer or product CLI
+must wait for the dedicated Mapping MLIR persistence layer and the resolved
+PnR Config, search, and Physical Mapping model. JSON may be emitted later as a
+reporting or visualization projection, but it is not a canonical Mapping
+input.
 
 ## Scope
 
-These formats cover only currently connected mapping and simulation
-boundaries. RTL manifests, EDA reports, whole-stack audit summaries, and DSE
-report bundles need separate formats when their real producers and consumers
-exist.
+These formats cover only currently connected simulation boundaries. RTL
+manifests, EDA reports, whole-stack audit summaries, and DSE report bundles
+need separate formats when their real producers and consumers exist.

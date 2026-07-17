@@ -31,12 +31,10 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-elaboration-alias-chain-test
   loom-fabric-elaboration-api-test
   loom-fabric-elaboration-header-test
-  loom-mapping-estimate
   loom-hwsg-test
   loom-mapping-core-test
   loom-parallel-test
   loom-pnr-index-test
-  loom-pnr-map
   loom-synth-base-test
   loom-synth-config-test
   loom-synth-fu-dump

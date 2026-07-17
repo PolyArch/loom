@@ -2,9 +2,7 @@
 // RUN: split-file %s %t.dir
 // RUN: not loom-dfg-sim %t.dir/memref.mlir --graph residual_memref_load --arg 0=0 --memref 1=3 --output %t.memref.json 2>&1 | FileCheck %s --check-prefix=MEMREF
 // RUN: not loom-dfg-sim %t.dir/llvm-load.mlir --graph residual_llvm_load --memref 0=3 --output %t.llvm.json 2>&1 | FileCheck %s --check-prefix=LLVM
-// RUN: not loom-pnr-map --dfg-mlir %t.dir/llvm-load.mlir --graph residual_llvm_load --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload residual_llvm_load --output %t.llvm.csv --artifact %t.llvm.mapping.json 2>&1 | FileCheck %s --check-prefix=LLVM
 // RUN: not loom-dfg-sim %t.dir/llvm-store.mlir --graph residual_llvm_store --arg 0=3 --memref 1=0 --output %t.store.json 2>&1 | FileCheck %s --check-prefix=STORE
-// RUN: not loom-pnr-map --dfg-mlir %t.dir/llvm-store.mlir --graph residual_llvm_store --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload residual_llvm_store --output %t.store.csv --artifact %t.store.mapping.json 2>&1 | FileCheck %s --check-prefix=STORE
 // RUN: not loom-dfg-sim %t.dir/global.mlir --graph residual_global --arg 0=0 --output %t.global.json 2>&1 | FileCheck %s --check-prefix=GLOBAL
 // RUN: not loom-dfg-sim %t.dir/pointer.mlir --graph residual_pointer_arithmetic --arg 0=0 --memref 1=3 --output %t.pointer.json 2>&1 | FileCheck %s --check-prefix=POINTER
 

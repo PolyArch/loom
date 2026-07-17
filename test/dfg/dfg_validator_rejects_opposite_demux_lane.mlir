@@ -1,7 +1,6 @@
 // RUN: rm -rf %t.dir
 // RUN: split-file %s %t.dir
 // RUN: not loom-dfg-sim %t.dir/demux.mlir --graph opposite_demux_completion --arg 0=true --output %t.sim.json 2>&1 | FileCheck %s --check-prefix=SIM
-// RUN: not loom-pnr-map --dfg-mlir %t.dir/demux.mlir --graph opposite_demux_completion --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload opposite_demux_completion --output %t.mapping.csv --artifact %t.mapping.json 2>&1 | FileCheck %s --check-prefix=PNR
 // RUN: not loom-dfg-sim %t.dir/mux-value.mlir --graph opposite_mux_value_completion --arg 0=false --arg 1=7 --output %t.mux-value.json 2>&1 | FileCheck %s --check-prefix=MUX-VALUE
 // RUN: not loom-dfg-sim %t.dir/mux-close.mlir --graph opposite_mux_close_completion --arg 0=false --arg 1=0 --arg 2=2 --arg 3=1 --output %t.mux-close.json 2>&1 | FileCheck %s --check-prefix=MUX-CLOSE
 // RUN: rm -f %t.published.mlir
@@ -9,7 +8,6 @@
 // RUN: test ! -e %t.published.mlir
 
 // SIM: retirement frontier does not causally cover stream output #0
-// PNR: retirement frontier does not causally cover stream output #0
 // MUX-VALUE: retirement frontier does not causally cover value output #0
 // MUX-CLOSE: retirement frontier does not cover close/reset of 'dataflow.stream'
 // LOWER: canonical Dataflow publication failed: retirement frontier does not causally cover stream output #0

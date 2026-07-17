@@ -2,8 +2,6 @@
 
 Implementation status: this document is a target contract. Loom does not
 currently build a CGRA simulator or emit a `cgra_sim_report`.
-`loom-mapping-estimate` validates mapping evidence and emits a static score;
-it is not an implementation of this contract.
 
 This document specifies Loom CGRA-sim, the hardware-aware simulator for
 mapped Loom workloads. Despite the name, CGRA-sim is not limited to

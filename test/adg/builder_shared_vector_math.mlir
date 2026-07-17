@@ -6,8 +6,6 @@
 // RUN: %loom-raise %t.dir/quat_mult.ll -o %t.dir/quat_mult.scf.mlir
 // RUN: %loom-lower %t.dir/quat_mult.scf.mlir -o %t.dir/quat_mult.dfg.mlir
 // RUN: FileCheck %s --check-prefix=DFG < %t.dir/quat_mult.dfg.mlir
-// RUN: loom-pnr-map --dfg-mlir %t.dir/quat_mult.dfg.mlir --graph g_quat_mult_kernel_0 --hardware-mlir %t.hardware.mlir --hardware shared_vector_math_adg --workload quat_mult --output %t.dir/mapping.csv --artifact %t.dir/mapping.json
-// RUN: FileCheck %s --check-prefix=MAPPING < %t.dir/mapping.json
 
 // DFG-LABEL: dataflow.graph private @g_quat_mult_kernel_0
 // DFG-DAG: builtin.unrealized_conversion_cast %arg4 : !llvm.ptr to memref<?xf32>
@@ -43,9 +41,3 @@
 // HARDWARE-DAG: fabric.op [@arith.index_cast]
 // HARDWARE-DAG: fabric.op [@dataflow.sync]
 // HARDWARE-DAG: fabric.mem [spatial]
-
-// MAPPING-DAG: "workload": "quat_mult"
-// MAPPING-DAG: "hardware": "shared_vector_math_adg"
-// MAPPING-DAG: "unplaced_records": 0
-// MAPPING-DAG: "unrouted_edges": 0
-// MAPPING-DAG: "status": "pass"

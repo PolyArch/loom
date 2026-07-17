@@ -4,7 +4,6 @@
 // RUN: not loom-dfg-sim %t.dir/dynamic.mlir --graph invalid_dynamic_memory_export --arg 0=13 --output %t.dynamic.json 2>&1 | FileCheck %s --check-prefix=DYNAMIC
 // RUN: not loom-dfg-sim %t.dir/import.mlir --graph invalid_memory_export --output %t.import.json 2>&1 | FileCheck %s --check-prefix=IMPORT
 // RUN: not loom-dfg-sim %t.dir/pointer.mlir --graph invalid_fresh_pointer_export --output %t.pointer.json 2>&1 | FileCheck %s --check-prefix=POINTER
-// RUN: not loom-pnr-map --dfg-mlir %t.dir/pointer.mlir --graph invalid_fresh_pointer_export --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload invalid_fresh_pointer_export --output %t.pointer.csv --artifact %t.pointer.mapping.json 2>&1 | FileCheck %s --check-prefix=POINTER
 
 // POST: retirement frontier does not cover close/reset of 'dataflow.stream'
 // DYNAMIC: memref.alloc dynamic extent must be a graph value input

@@ -1,0 +1,3 @@
+# RUN: not test -e %S/../../include/PnR/Mapping.h
+# RUN: not test -e %S/../../tools/loom-pnr-map
+# RUN: not test -e %S/../../tools/loom-mapping-estimate
