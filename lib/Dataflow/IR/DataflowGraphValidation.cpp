@@ -915,7 +915,7 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
           op->getName().getStringRef() + "'");
       return mlir::WalkResult::interrupt();
     }
-    if (!llvm::isa<CanonicalDataflowActorOpInterface>(op) &&
+    if (!dataflow::isCanonicalDataflowActor(op) &&
         !llvm::isa<mlir::memref::AllocOp, mlir::memref::CastOp>(op) &&
         !isCanonicalMemoryBridge(graph, op)) {
       structuralError = graphError(

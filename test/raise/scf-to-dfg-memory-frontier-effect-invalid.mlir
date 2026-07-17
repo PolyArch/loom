@@ -1,6 +1,6 @@
 // RUN: not loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %s 2>&1 | FileCheck %s
 
-// CHECK: error: loom-lower-graph-memory: effectful or unmodeled graph operation 'llvm.call' is unsupported
+// CHECK: error: loom-lower-graph-memory: operation 'llvm.call' is not a registered canonical Dataflow actor or a supported graph-lowering operation
 // CHECK-LABEL: dataflow.graph private @would_be_rewritten
 // CHECK: memref.load
 // CHECK-NOT: dataflow.load

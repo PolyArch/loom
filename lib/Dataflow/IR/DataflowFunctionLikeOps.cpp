@@ -418,6 +418,11 @@ ParseResult GraphOp::parse(OpAsmParser &parser, OperationState &result) {
     return parser.emitError(parser.getNameLoc(),
                             "graph signature must begin with explicit "
                             "start argument of type none");
+  if (arguments.front().attrs && !arguments.front().attrs.empty())
+    return parser.emitError(
+        arguments.front().ssaName.location,
+        "graph start argument is a protocol endpoint and cannot carry "
+        "application interface attributes");
   if (visibilityAttr)
     result.addAttribute(getSymVisibilityAttrName(result.name), visibilityAttr);
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
@@ -449,6 +454,9 @@ ParseResult GraphOp::parse(OpAsmParser &parser, OperationState &result) {
   result.addAttribute(
       getFunctionTypeAttrName(result.name),
       TypeAttr::get(builder.getFunctionType(inputTypes, appResults)));
+  call_interface_impl::addArgAndResultAttrs(
+      builder, result, appArguments, resultAttrs,
+      getArgAttrsAttrName(result.name), getResAttrsAttrName(result.name));
 
   Region *body = result.addRegion();
   SmallVector<OpAsmParser::Argument> bodyArguments;
@@ -466,32 +474,22 @@ void GraphOp::print(OpAsmPrinter &p) {
   p << ' ';
   p.printSymbolName(getSymName());
 
-  Block *entry = getBody().empty() ? nullptr : &getBody().front();
-  p << '(';
-  if (entry) {
-    p.printRegionArgument(entry->getArgument(0));
-    for (BlockArgument argument : entry->getArguments().drop_front()) {
-      p << ", ";
-      p.printRegionArgument(argument);
-    }
-  } else {
-    p.printType(NoneType::get(getContext()));
-    for (Type type : getFunctionType().getInputs()) {
-      p << ", ";
-      p.printType(type);
-    }
+  SmallVector<Type> signatureInputs{NoneType::get(getContext())};
+  signatureInputs.append(getFunctionType().getInputs().begin(),
+                         getFunctionType().getInputs().end());
+  ArrayAttr signatureArgAttrs;
+  if (ArrayAttr appArgAttrs = getArgAttrsAttr()) {
+    SmallVector<Attribute> attrs{
+        DictionaryAttr::get(getContext(), ArrayRef<NamedAttribute>{})};
+    attrs.append(appArgAttrs.begin(), appArgAttrs.end());
+    signatureArgAttrs = ArrayAttr::get(getContext(), attrs);
   }
-  p << ") -> ";
-  ArrayRef<Type> results = getFunctionType().getResults();
-  if (results.empty()) {
-    p << "()";
-  } else if (results.size() == 1) {
-    p.printType(results.front());
-  } else {
-    p << '(';
-    llvm::interleaveComma(results, p);
-    p << ')';
-  }
+  call_interface_impl::printFunctionSignature(
+      p, signatureInputs, signatureArgAttrs, /*isVariadic=*/false,
+      getFunctionType().getResults(), getResAttrsAttr(), &getBody(),
+      /*printEmptyResult=*/false);
+  if (getFunctionType().getResults().empty())
+    p << " -> ()";
 
   SmallVector<StringRef, 6> elidedAttrs = {
       SymbolTable::getSymbolAttrName(),

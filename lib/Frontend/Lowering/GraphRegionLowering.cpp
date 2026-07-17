@@ -29,6 +29,23 @@
 #include <cassert>
 #include <optional>
 
+namespace loom {
+namespace lowering {
+
+bool isSupportedGraphLoweringLeaf(::mlir::Operation *op) {
+  return ::dataflow::isCanonicalDataflowActor(op) ||
+         ::llvm::isa<::mlir::UnrealizedConversionCastOp,
+                     ::mlir::memref::AllocOp, ::mlir::memref::CastOp,
+                     ::mlir::memref::GetGlobalOp, ::mlir::memref::LoadOp,
+                     ::mlir::memref::StoreOp, ::mlir::LLVM::AddressOfOp,
+                     ::mlir::LLVM::GEPOp, ::mlir::LLVM::LoadOp,
+                     ::mlir::LLVM::StoreOp, ::mlir::LLVM::MemcpyOp,
+                     ::mlir::LLVM::MemsetOp>(op);
+}
+
+} // namespace lowering
+} // namespace loom
+
 namespace {
 
 struct MemoryFrontier {
@@ -72,21 +89,6 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
 bool hasSelectedParallelProvenance(::mlir::Operation *op) {
   return op->hasAttr("loom.parallel_group") ||
          op->hasAttr("loom.parallel_schedule") || op->hasAttr("mapping");
-}
-
-bool isGraphMemoryCapabilityType(::mlir::Type type) {
-  return ::llvm::isa<::mlir::MemRefType, ::mlir::UnrankedMemRefType,
-                     ::mlir::LLVM::LLVMPointerType>(type);
-}
-
-bool isKnownLeafComputation(::mlir::Operation *op) {
-  ::llvm::StringRef dialect = op->getName().getDialectNamespace();
-  if (dialect == "arith" || dialect == "math" || dialect == "ub")
-    return true;
-  if (dialect != "llvm")
-    return false;
-  return !::llvm::isa<::mlir::LLVM::CallOp, ::mlir::LLVM::StoreOp,
-                      ::mlir::LLVM::MemcpyOp>(op);
 }
 
 ::mlir::LogicalResult checkOneGraph(::dataflow::GraphOp graph) {
@@ -137,7 +139,7 @@ bool isKnownLeafComputation(::mlir::Operation *op) {
 
     auto findMemoryCapability = [&](::mlir::TypeRange types) {
       for (::mlir::Type type : types)
-        if (isGraphMemoryCapabilityType(type))
+        if (::dataflow::DataflowDialect::isMemoryCapabilityType(type))
           return type;
       return ::mlir::Type{};
     };
@@ -184,7 +186,7 @@ bool isKnownLeafComputation(::mlir::Operation *op) {
         return ::mlir::WalkResult::interrupt();
       }
     }
-    if (op->getName().getDialectNamespace() == "scf" &&
+    if (::llvm::isa<::mlir::scf::SCFDialect>(op->getDialect()) &&
         !::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp,
                      ::mlir::scf::WhileOp, ::mlir::scf::YieldOp,
                      ::mlir::scf::ConditionOp>(op)) {
@@ -195,20 +197,21 @@ bool isKnownLeafComputation(::mlir::Operation *op) {
     bool modeled =
         ::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp, ::mlir::scf::WhileOp,
                     ::mlir::scf::YieldOp, ::mlir::scf::ConditionOp,
-                    ::mlir::memref::LoadOp, ::mlir::memref::StoreOp,
-                    ::dataflow::LoadOp, ::dataflow::StoreOp,
-                    ::dataflow::GraphReturnOp, ::mlir::LLVM::LoadOp,
-                    ::mlir::LLVM::StoreOp, ::mlir::LLVM::MemcpyOp>(op) ||
-        op->getName().getStringRef() == "llvm.intr.memset";
-    bool nested = op->getBlock() != &entry;
-    bool admissibleLeaf =
-        ::mlir::isPure(op) || (!nested && isKnownLeafComputation(op));
-    if (!modeled && (op->getNumRegions() != 0 || !admissibleLeaf ||
-                     op->getName().getStringRef() == "llvm.call")) {
+                    ::dataflow::GraphReturnOp>(op) ||
+        ::loom::lowering::isSupportedGraphLoweringLeaf(op);
+    if (!modeled && (op->getNumRegions() != 0 || op->getNumSuccessors() != 0)) {
       op->emitError()
           << "loom-lower-graph-memory: effectful or unmodeled graph "
              "operation '"
           << op->getName().getStringRef() << "' is unsupported";
+      return ::mlir::WalkResult::interrupt();
+    }
+    if (!modeled) {
+      op->emitError()
+          << "loom-lower-graph-memory: operation '"
+          << op->getName().getStringRef()
+          << "' is not a registered canonical Dataflow actor or a supported "
+             "graph-lowering operation";
       return ::mlir::WalkResult::interrupt();
     }
     return ::mlir::WalkResult::advance();
@@ -273,20 +276,13 @@ private:
         value = cast.getInputs().front();
         continue;
       }
-      ::llvm::StringRef name = def->getName().getStringRef();
-      if ((name == "dataflow.partition_layout" ||
-           name == "dataflow.map_info") &&
-          def->getNumOperands() == 1) {
-        value = def->getOperand(0);
-        continue;
-      }
       return std::nullopt;
     }
     return std::nullopt;
   }
 
   bool isMemoryCapabilityCapture(::mlir::Value value) {
-    if (!isGraphMemoryCapabilityType(value.getType()))
+    if (!::dataflow::DataflowDialect::isMemoryCapabilityType(value.getType()))
       return false;
 
     ::llvm::DenseSet<::mlir::Value> visited;

@@ -12,6 +12,7 @@
 
 #include "Frontend/Lowering/Passes.h"
 #include "Frontend/Lowering/StreamLoopAttrs.h"
+#include "GraphRegionLowering.h"
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowGraphValidation.h"
@@ -240,26 +241,28 @@ bool isPureScalarEpilogueOp(::mlir::Operation *op) {
     return false;
   if (::llvm::isa<::mlir::FunctionOpInterface, ::mlir::CallOpInterface>(op))
     return false;
-  ::llvm::StringRef name = op->getName().getStringRef();
-  if (name != "arith.addf" && name != "arith.subf" && name != "arith.mulf" &&
-      name != "arith.addi" && name != "arith.muli" && name != "arith.andi" &&
-      name != "arith.ori" && name != "arith.shli" && name != "arith.shrui" &&
-      name != "arith.index_cast" && name != "llvm.zext" &&
-      name != "llvm.intr.abs" && name != "llvm.intr.bswap" &&
-      name != "llvm.intr.fabs" && name != "llvm.intr.fmuladd")
-    return false;
-  if (auto effects = ::llvm::dyn_cast<::mlir::MemoryEffectOpInterface>(op))
-    return effects.hasNoEffect();
-  return ::mlir::isPure(op);
+  return ::dataflow::isCanonicalDataflowActor(
+      op, ::dataflow::CanonicalDataflowActorKind::Compute);
 }
 
-bool isLlvmPointerType(::mlir::Type type) {
-  return ::llvm::isa<::mlir::LLVM::LLVMPointerType>(type);
-}
-
-bool isGraphMemoryPortType(::mlir::Type type) {
-  return ::llvm::isa<::mlir::MemRefType, ::mlir::UnrankedMemRefType,
-                     ::mlir::LLVM::LLVMPointerType>(type);
+::mlir::LogicalResult
+checkSelectedGraphLoweringLeaves(::mlir::Operation *root) {
+  ::mlir::WalkResult result =
+      root->walk(
+          [&](::mlir::Operation *op) -> ::mlir::WalkResult {
+            if (op->getNumRegions() != 0 || op->getNumSuccessors() != 0 ||
+                op->hasTrait<::mlir::OpTrait::IsTerminator>())
+              return ::mlir::WalkResult::advance();
+            if (::loom::lowering::isSupportedGraphLoweringLeaf(op))
+              return ::mlir::WalkResult::advance();
+            op->emitError()
+                << "loom-lower-for-to-graph: operation '"
+                << op->getName().getStringRef()
+                << "' is not a registered canonical Dataflow actor or a "
+                   "supported graph-lowering operation";
+            return ::mlir::WalkResult::interrupt();
+          });
+  return result.wasInterrupted() ? ::mlir::failure() : ::mlir::success();
 }
 
 struct ClassifiedGraphValues {
@@ -281,7 +284,7 @@ struct ClassifiedGraphValues {
 ClassifiedGraphValues classifyGraphValues(::mlir::ValueRange values) {
   ClassifiedGraphValues classified;
   for (::mlir::Value value : values) {
-    if (isGraphMemoryPortType(value.getType()))
+    if (::dataflow::DataflowDialect::isMemoryCapabilityType(value.getType()))
       classified.memories.push_back(value);
     else
       classified.values.push_back(value);
@@ -386,7 +389,8 @@ void computeGraphOutputs(::mlir::scf::ForOp loop,
   };
 
   for (::mlir::Value value : loop.getResults()) {
-    if (!isLlvmPointerType(value.getType()) || usedOutsideEpilogue(value))
+    if (!::dataflow::DataflowDialect::isMemoryCapabilityType(value.getType()) ||
+        usedOutsideEpilogue(value))
       outputs.push_back(value);
   }
   for (::mlir::Operation *op : epilogueOps) {
@@ -513,6 +517,10 @@ struct LowerForToGraphPass
       return false;
     if (::llvm::isa<::mlir::FunctionOpInterface, ::mlir::CallOpInterface>(op))
       return false;
+    if (auto kind = ::dataflow::classifyCanonicalDataflowActor(&op))
+      return *kind == ::dataflow::CanonicalDataflowActorKind::Compute;
+    if (!::loom::lowering::isSupportedGraphLoweringLeaf(&op))
+      return false;
     if (auto effects = ::llvm::dyn_cast<::mlir::MemoryEffectOpInterface>(&op))
       return effects.hasNoEffect();
     return ::mlir::isPure(&op);
@@ -551,22 +559,8 @@ struct LowerForToGraphPass
     return false;
   }
 
-  bool isBlockedStandaloneStructuredSetupOp(::mlir::Operation *op) {
-    ::llvm::StringRef name = op->getName().getStringRef();
-    return name == "arith.divsi" || name == "arith.divui" ||
-           name == "arith.remf" || name == "arith.remui" ||
-           name == "llvm.fptosi" || name == "llvm.sitofp";
-  }
-
-  bool isBlockedStandaloneStructuredBodyOp(::mlir::Operation *op) {
-    ::llvm::StringRef name = op->getName().getStringRef();
-    return name == "arith.divsi" || name == "arith.remf" ||
-           name == "arith.remui" || name == "llvm.fptosi" ||
-           name == "llvm.sitofp";
-  }
-
   bool isMemsetIntrinsic(::mlir::Operation *op) {
-    return op->getName().getStringRef() == "llvm.intr.memset";
+    return ::llvm::isa<::mlir::LLVM::MemsetOp>(op);
   }
 
   bool isZeroIntegerConstant(::mlir::Value value) {
@@ -583,23 +577,12 @@ struct LowerForToGraphPass
   }
 
   bool isSupportedStandaloneStructuredMemsetOp(::mlir::Operation *op) {
-    if (!isMemsetIntrinsic(op))
+    auto memset = ::llvm::dyn_cast<::mlir::LLVM::MemsetOp>(op);
+    if (!memset)
       return false;
-    if (auto volatileAttr = op->getAttrOfType<::mlir::BoolAttr>("isVolatile")) {
-      if (volatileAttr.getValue())
-        return false;
-    }
-    if (op->getNumOperands() != 3)
+    if (memset.getIsVolatile())
       return false;
-
-    ::mlir::Value dst = op->getOperand(0);
-    ::mlir::Value byteValue = op->getOperand(1);
-    ::mlir::Value byteCount = op->getOperand(2);
-    return ::llvm::isa<::mlir::LLVM::LLVMPointerType>(dst.getType()) &&
-           ::llvm::isa<::mlir::IntegerType>(byteValue.getType()) &&
-           ::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(
-               byteCount.getType()) &&
-           isZeroIntegerConstant(byteValue);
+    return isZeroIntegerConstant(memset.getVal());
   }
 
   bool hasUnsupportedStandaloneStructuredBody(::mlir::Operation *root) {
@@ -607,11 +590,6 @@ struct LowerForToGraphPass
     root->walk([&](::mlir::Operation *nested) -> ::mlir::WalkResult {
       if (nested == root)
         return ::mlir::WalkResult::advance();
-      if (nested->getName().getStringRef() == "llvm.inline_asm" ||
-          ::llvm::isa<::mlir::LLVM::CallIntrinsicOp>(nested)) {
-        unsupported = true;
-        return ::mlir::WalkResult::interrupt();
-      }
       if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
                       ::dataflow::GraphOp, ::dataflow::ThreadOp,
                       ::mlir::func::FuncOp>(nested)) {
@@ -634,8 +612,9 @@ struct LowerForToGraphPass
         }
       }
       if (auto whileOp = ::llvm::dyn_cast<::mlir::scf::WhileOp>(nested)) {
-        if (::llvm::any_of(whileOp.getInits().getTypes(),
-                           isGraphMemoryPortType)) {
+        if (::llvm::any_of(
+                whileOp.getInits().getTypes(),
+                ::dataflow::DataflowDialect::isMemoryCapabilityType)) {
           unsupported = true;
           return ::mlir::WalkResult::interrupt();
         }
@@ -660,6 +639,12 @@ struct LowerForToGraphPass
         unsupported = true;
         return ::mlir::WalkResult::interrupt();
       }
+      if (nested->getNumRegions() == 0 &&
+          !nested->hasTrait<::mlir::OpTrait::IsTerminator>() &&
+          !::loom::lowering::isSupportedGraphLoweringLeaf(nested)) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
       return ::mlir::WalkResult::advance();
     });
     return unsupported;
@@ -674,11 +659,13 @@ struct LowerForToGraphPass
       return false;
     if (::llvm::isa<::mlir::CallOpInterface>(op))
       return false;
-    if (::llvm::isa<::mlir::LLVM::MemcpyOp, ::mlir::LLVM::StoreOp>(op))
-      return false;
     if (op->getNumRegions() != 0 || op->getNumSuccessors() != 0)
       return false;
     if (op->hasTrait<::mlir::OpTrait::SymbolTable>())
+      return false;
+    if (::dataflow::isCanonicalDataflowActor(op))
+      return true;
+    if (!::loom::lowering::isSupportedGraphLoweringLeaf(op))
       return false;
     if (auto effects = ::llvm::dyn_cast<::mlir::MemoryEffectOpInterface>(op)) {
       if (effects.template hasEffect<::mlir::MemoryEffects::Write>() ||
@@ -814,13 +801,14 @@ struct LowerForToGraphPass
 
   bool isEntryPointerArgument(::mlir::Value value, ::mlir::Block &entry) {
     auto arg = ::llvm::dyn_cast<::mlir::BlockArgument>(value);
-    return arg && arg.getOwner() == &entry && isLlvmPointerType(arg.getType());
+    return arg && arg.getOwner() == &entry &&
+           ::dataflow::DataflowDialect::isMemoryCapabilityType(arg.getType());
   }
 
   bool isScalarNonPointerType(::mlir::Type type) {
     return ::llvm::isa<::mlir::IntegerType, ::mlir::FloatType,
                        ::mlir::IndexType>(type) &&
-           !isLlvmPointerType(type);
+           !::dataflow::DataflowDialect::isMemoryCapabilityType(type);
   }
 
   bool structuredRootStoresOnlyEntryPointers(::mlir::Operation *root,
@@ -857,7 +845,8 @@ struct LowerForToGraphPass
 
     bool hasPointerInput = false;
     for (::mlir::Type ty : func.getFunctionType().getInputs())
-      hasPointerInput |= isLlvmPointerType(ty);
+      hasPointerInput |=
+          ::dataflow::DataflowDialect::isMemoryCapabilityType(ty);
     if (!hasPointerInput)
       return false;
 
@@ -868,13 +857,8 @@ struct LowerForToGraphPass
 
     bool sawStructuredOp = false;
     bool sawStore = false;
-    bool sawBlockedSetupNumericOp = false;
-    bool sawBlockedBodyNumericOp = false;
     ::llvm::DenseSet<::mlir::Value> structuredResults;
     for (::mlir::Operation &op : entry.without_terminator()) {
-      if (!sawStructuredOp && isBlockedStandaloneStructuredSetupOp(&op))
-        sawBlockedSetupNumericOp = true;
-
       if (isSideEffectFreeSetupOp(op))
         continue;
 
@@ -884,8 +868,6 @@ struct LowerForToGraphPass
       if (hasUnsupportedStandaloneStructuredBody(&op))
         return false;
       op.walk([&](::mlir::Operation *nested) {
-        if (isBlockedStandaloneStructuredBodyOp(nested))
-          sawBlockedBodyNumericOp = true;
         if (::llvm::isa<::mlir::LLVM::StoreOp>(nested))
           sawStore = true;
       });
@@ -896,8 +878,7 @@ struct LowerForToGraphPass
 
     return sawStructuredOp && sawStore &&
            (structuredResults.contains(returnOp.getOperand(0)) ||
-            isZeroIntegerConstant(returnOp.getOperand(0))) &&
-           !sawBlockedSetupNumericOp && !sawBlockedBodyNumericOp;
+            isZeroIntegerConstant(returnOp.getOperand(0)));
   }
 
   void promoteStandaloneStructuredStatusOutParamFunctions(
@@ -928,19 +909,15 @@ struct LowerForToGraphPass
 
     bool hasPointerInput = false;
     for (::mlir::Type ty : func.getFunctionType().getInputs())
-      hasPointerInput |= isLlvmPointerType(ty);
+      hasPointerInput |=
+          ::dataflow::DataflowDialect::isMemoryCapabilityType(ty);
     if (!hasPointerInput)
       return false;
 
     bool sawStructuredOp = false;
     bool sawStore = false;
-    bool sawBlockedSetupNumericOp = false;
-    bool sawBlockedBodyNumericOp = false;
     ::llvm::DenseSet<::mlir::Value> structuredResults;
     for (::mlir::Operation &op : entry.without_terminator()) {
-      if (!sawStructuredOp && isBlockedStandaloneStructuredSetupOp(&op))
-        sawBlockedSetupNumericOp = true;
-
       if (!sawStructuredOp && isSideEffectFreeSetupOp(op))
         continue;
 
@@ -949,10 +926,6 @@ struct LowerForToGraphPass
           return false;
         if (hasUnsupportedStandaloneStructuredBody(&op))
           return false;
-        op.walk([&](::mlir::Operation *nested) {
-          if (isBlockedStandaloneStructuredBodyOp(nested))
-            sawBlockedBodyNumericOp = true;
-        });
         for (::mlir::Value result : op.getResults())
           structuredResults.insert(result);
         sawStructuredOp = true;
@@ -971,8 +944,7 @@ struct LowerForToGraphPass
       sawStore = true;
     }
 
-    return sawStructuredOp && sawStore && !sawBlockedSetupNumericOp &&
-           !sawBlockedBodyNumericOp;
+    return sawStructuredOp && sawStore;
   }
 
   void
@@ -1003,16 +975,10 @@ struct LowerForToGraphPass
     ::mlir::Block &entry = body.front();
 
     bool sawStructuredOp = false;
-    bool sawMemset = false;
-    bool sawBlockedSetupNumericOp = false;
-    bool sawBlockedBodyNumericOp = false;
     for (::mlir::Operation &op : entry.without_terminator()) {
-      if (isBlockedStandaloneStructuredSetupOp(&op))
-        sawBlockedSetupNumericOp = true;
       if (isMemsetIntrinsic(&op)) {
         if (!isSupportedStandaloneStructuredMemsetOp(&op))
           return false;
-        sawMemset = true;
         continue;
       }
       if (isSideEffectFreeSetupOp(op))
@@ -1022,17 +988,10 @@ struct LowerForToGraphPass
         return false;
       if (hasUnsupportedStandaloneStructuredBody(&op))
         return false;
-      op.walk([&](::mlir::Operation *nested) {
-        if (isBlockedStandaloneStructuredBodyOp(nested))
-          sawBlockedBodyNumericOp = true;
-        if (isMemsetIntrinsic(nested))
-          sawMemset = true;
-      });
       sawStructuredOp = true;
     }
 
-    return sawStructuredOp && (!sawMemset || (!sawBlockedSetupNumericOp &&
-                                              !sawBlockedBodyNumericOp));
+    return sawStructuredOp;
   }
 
   void promoteStandaloneStructuredFunctions(::mlir::ModuleOp module,
@@ -1055,6 +1014,8 @@ struct LowerForToGraphPass
       return loop.emitOpError(
           "cannot extract a recurrence nested in scf.forall/scf.parallel "
           "without a selected graph-owned P[] representation");
+    if (::mlir::failed(checkSelectedGraphLoweringLeaves(loop)))
+      return ::mlir::failure();
 
     ::mlir::Location loc = loop.getLoc();
     auto stepKind = ::loom::lowering::inferStreamStepKind(loop);
@@ -1083,7 +1044,7 @@ struct LowerForToGraphPass
     ::llvm::SmallVector<::mlir::Value, 4> initArgs(loop.getInitArgs().begin(),
                                                    loop.getInitArgs().end());
     for (::mlir::Value init : initArgs) {
-      if (isGraphMemoryPortType(init.getType()))
+      if (::dataflow::DataflowDialect::isMemoryCapabilityType(init.getType()))
         return loop.emitOpError()
                << "cannot extract loop-carried memory capability "
                << init.getType()
@@ -1465,8 +1426,11 @@ struct LowerForToGraphPass
                                                  ::mlir::OpBuilder &builder) {
     ::llvm::SmallVector<::dataflow::ThreadOp, 8> threads;
     for (::dataflow::ThreadOp thread : module.getOps<::dataflow::ThreadOp>()) {
-      if (isStraightLineGraphCandidate(thread))
-        threads.push_back(thread);
+      if (!isStraightLineGraphCandidate(thread))
+        continue;
+      if (::mlir::failed(checkSelectedGraphLoweringLeaves(thread)))
+        return ::mlir::failure();
+      threads.push_back(thread);
     }
 
     for (::dataflow::ThreadOp thread : threads) {

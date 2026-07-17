@@ -749,8 +749,8 @@ arguments:
   TypeAttr:$function_type,
   SymbolNameAttr:$sym_name,
   StrAttr:$sym_visibility,
-  OptionalAttr<DictionaryAttr>:$arg_attrs,
-  OptionalAttr<DictionaryAttr>:$res_attrs;
+  OptionalAttr<DictArrayAttr>:$arg_attrs,
+  OptionalAttr<DictArrayAttr>:$res_attrs;
 results:
   none;
 regions:
@@ -783,6 +783,10 @@ traits:
   ..., %arg_N : TN)`. The application arguments match
   `function_type.inputs`; the distinguished leading `ctrl_in` block argument
   is the per-launch start signal and is not part of the function type.
+  Accordingly, `arg_attrs` is indexed only by application arguments and has no
+  entry for `ctrl_in`; `res_attrs` is indexed by application results. The
+  custom assembly form preserves both arrays through textual and bytecode
+  serialization.
 * The body's terminator is structural:
 
   ```text
@@ -804,10 +808,10 @@ traits:
   completion frontier, and launch-facing done result.
 * C++ builders construct `dataflow.graph` as a function-like
   definition from `(StringRef sym_name, FunctionType functionType,
-  ArrayRef<NamedAttribute> attrs)` plus optional `arg_attrs` /
-  `res_attrs` arrays. The body is added via the standard
-  `FunctionOpInterface` body-construction path, with the entry block
-  carrying the leading `none` `ctrl_in` block argument and the
+  ArrayRef<NamedAttribute> attrs)`, with optional `arg_attrs` / `res_attrs`
+  arrays carried in the function-interface attributes. The body is added via
+  the standard `FunctionOpInterface` body-construction path, with the entry
+  block carrying the leading `none` `ctrl_in` block argument and the
   user-data block arguments.
 * The op declares `RecursiveMemoryEffects` so module-scope walkers
   can observe per-callable effects. This does not provide an alternate
@@ -937,8 +941,8 @@ boundary-publication sync has canonical shape `(none, T) -> (none, T)` and
 requires a hardware `dataflow.sync` resource with exact arity and
 positionally compatible semantic widths.
 
-Allowed pure compute ops inside `dataflow.graph`, such as
-`arith.*`, `math.*`, and allowed LLVM computation ops, follow strict
+Registered pure compute actors inside `dataflow.graph`, including the
+registered arithmetic, math, and LLVM computation operations, follow strict
 all-operand firing: each dynamic firing consumes one token from every
 operand and emits one token on every result. In particular,
 `arith.select` is an eager three-input compute op in this model, not a
@@ -2421,7 +2425,10 @@ Verifier rules for `dataflow.partition_layout`,
     payload segments match all `function_type.results`. Done is not a return
     payload or function-type slot.
   - Finalized bodies contain registered `CanonicalDataflowActorOpInterface`
-    operations plus the confirmed memory-capability primitives.
+    operations plus the confirmed memory-capability primitives. The interface
+    and shared typed Dataflow predicates are the sole actor eligibility and
+    compute/control/memory classification authority; lowering does not infer
+    actor support from dialect or operation names.
   - Body must not contain `scf.*`, `func.func`, `func.call`,
     `dataflow.thread.launch`, `dataflow.graph.launch`,
     `dataflow.thread.wait`, `dataflow.map_info`, any partitioned-data

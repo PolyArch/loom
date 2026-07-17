@@ -1,5 +1,7 @@
 #include "Dataflow/IR/DataflowInterfaces.h"
 
+#include "Dataflow/IR/DataflowOps.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -66,4 +68,25 @@ void dataflow::attachCanonicalDataflowActorInterfaces(MLIRContext &context) {
 
   context.getOrLoadDialect<ub::UBDialect>();
   attachActorModels<ub::PoisonOp>(context);
+}
+
+std::optional<dataflow::CanonicalDataflowActorKind>
+dataflow::classifyCanonicalDataflowActor(Operation *op) {
+  if (!llvm::isa<CanonicalDataflowActorOpInterface>(op))
+    return std::nullopt;
+  if (llvm::isa<LoadOp, StoreOp>(op))
+    return CanonicalDataflowActorKind::Memory;
+  if (llvm::isa<StreamOp, CarryOp, InvariantOp, GateOp, ParallelizeOp,
+                SerializeOp, ConstantOp, SyncOp, MuxOp, DemuxOp>(op))
+    return CanonicalDataflowActorKind::Control;
+  return CanonicalDataflowActorKind::Compute;
+}
+
+bool dataflow::isCanonicalDataflowActor(Operation *op) {
+  return classifyCanonicalDataflowActor(op).has_value();
+}
+
+bool dataflow::isCanonicalDataflowActor(Operation *op,
+                                        CanonicalDataflowActorKind kind) {
+  return classifyCanonicalDataflowActor(op) == kind;
 }
