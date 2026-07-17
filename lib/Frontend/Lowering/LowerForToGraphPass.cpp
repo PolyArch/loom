@@ -358,7 +358,7 @@ struct LowerForToGraphPass
       return;
     }
 
-    module->setAttrs(scratch->getAttrs());
+    module->setAttrs((*scratch)->getAttrs());
     module.getBodyRegion().takeBody(scratch->getBodyRegion());
   }
 
