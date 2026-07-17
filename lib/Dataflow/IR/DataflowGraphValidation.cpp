@@ -5,6 +5,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Errc.h"
@@ -123,20 +124,42 @@ bool hasRawPointerUse(mlir::Operation *op) {
          });
 }
 
+using SelectorLanes = llvm::DenseMap<mlir::Value, unsigned>;
+
+bool constrainSelectorLane(mlir::Value selector, unsigned lane,
+                           SelectorLanes &selectorLanes) {
+  auto [it, inserted] = selectorLanes.try_emplace(selector, lane);
+  return inserted || it->second == lane;
+}
+
+bool constrainDemuxLane(mlir::Value value, SelectorLanes &selectorLanes) {
+  auto result = llvm::dyn_cast<mlir::OpResult>(value);
+  auto demux =
+      result ? llvm::dyn_cast<dataflow::DemuxOp>(result.getOwner()) : nullptr;
+  return !demux || constrainSelectorLane(
+                       demux.getSel(), result.getResultNumber(), selectorLanes);
+}
+
 bool causallyDependsOn(mlir::Value event, mlir::Value prerequisite,
-                       llvm::DenseSet<mlir::Value> &visited) {
+                       llvm::DenseSet<mlir::Value> &visited,
+                       SelectorLanes &selectorLanes) {
+  if (!event || !constrainDemuxLane(event, selectorLanes))
+    return false;
   if (event == prerequisite)
     return true;
-  if (!event || !visited.insert(event).second)
+  if (!visited.insert(event).second)
     return false;
   mlir::Operation *def = event.getDefiningOp();
   if (!def)
     return false;
 
+  auto dependsOn = [&](mlir::Value operand, SelectorLanes branchLanes) {
+    llvm::DenseSet<mlir::Value> branchVisited = visited;
+    return causallyDependsOn(operand, prerequisite, branchVisited, branchLanes);
+  };
   auto dependsOnAnyOperand = [&]() {
     return llvm::any_of(def->getOperands(), [&](mlir::Value operand) {
-      llvm::DenseSet<mlir::Value> branchVisited = visited;
-      return causallyDependsOn(operand, prerequisite, branchVisited);
+      return dependsOn(operand, selectorLanes);
     });
   };
 
@@ -152,59 +175,50 @@ bool causallyDependsOn(mlir::Value event, mlir::Value prerequisite,
     return dependsOnAnyOperand();
   }
   if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(def)) {
-    llvm::DenseSet<mlir::Value> selectorVisited = visited;
-    if (causallyDependsOn(mux.getSel(), prerequisite, selectorVisited))
+    if (dependsOn(mux.getSel(), selectorLanes))
       return true;
-    return llvm::any_of(mux.getInputs(), [&](mlir::Value input) {
-      llvm::DenseSet<mlir::Value> laneVisited = visited;
-      return causallyDependsOn(input, prerequisite, laneVisited);
-    });
+    for (auto [lane, input] : llvm::enumerate(mux.getInputs())) {
+      SelectorLanes laneConstraints = selectorLanes;
+      if (constrainSelectorLane(mux.getSel(), lane, laneConstraints) &&
+          dependsOn(input, std::move(laneConstraints)))
+        return true;
+    }
+    return false;
   }
   if (auto select = llvm::dyn_cast<mlir::arith::SelectOp>(def)) {
-    llvm::DenseSet<mlir::Value> selectorVisited = visited;
-    if (causallyDependsOn(select.getCondition(), prerequisite,
-                          selectorVisited))
+    if (dependsOn(select.getCondition(), selectorLanes))
       return true;
-    llvm::DenseSet<mlir::Value> trueVisited = visited;
-    llvm::DenseSet<mlir::Value> falseVisited = visited;
-    return causallyDependsOn(select.getTrueValue(), prerequisite,
-                             trueVisited) ||
-           causallyDependsOn(select.getFalseValue(), prerequisite,
-                             falseVisited);
+    return dependsOn(select.getTrueValue(), selectorLanes) ||
+           dependsOn(select.getFalseValue(), selectorLanes);
   }
   if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(def)) {
-    llvm::DenseSet<mlir::Value> initVisited = visited;
-    llvm::DenseSet<mlir::Value> carryVisited = visited;
-    return causallyDependsOn(carry.getInit(), prerequisite, initVisited) ||
-           causallyDependsOn(carry.getCarry(), prerequisite, carryVisited);
+    return dependsOn(carry.getInit(), selectorLanes) ||
+           dependsOn(carry.getCarry(), selectorLanes);
   }
   if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
-    llvm::DenseSet<mlir::Value> selectorVisited = visited;
-    if (causallyDependsOn(demux.getSel(), prerequisite, selectorVisited))
+    if (dependsOn(demux.getSel(), selectorLanes))
       return true;
-    return causallyDependsOn(demux.getInput(), prerequisite, visited);
+    return dependsOn(demux.getInput(), selectorLanes);
   }
   if (auto gate = llvm::dyn_cast<dataflow::GateOp>(def)) {
-    llvm::DenseSet<mlir::Value> conditionVisited = visited;
-    if (causallyDependsOn(gate.getBeforeCond(), prerequisite,
-                          conditionVisited))
+    if (dependsOn(gate.getBeforeCond(), selectorLanes))
       return true;
-    return causallyDependsOn(gate.getBeforeValue(), prerequisite, visited);
+    return dependsOn(gate.getBeforeValue(), selectorLanes);
   }
   if (auto invariant = llvm::dyn_cast<dataflow::InvariantOp>(def)) {
-    llvm::DenseSet<mlir::Value> phaseVisited = visited;
-    if (causallyDependsOn(invariant.getCond(), prerequisite, phaseVisited))
+    if (dependsOn(invariant.getCond(), selectorLanes))
       return true;
-    return causallyDependsOn(invariant.getInit(), prerequisite, visited);
+    return dependsOn(invariant.getInit(), selectorLanes);
   }
   if (auto constant = llvm::dyn_cast<dataflow::ConstantOp>(def))
-    return causallyDependsOn(constant.getCtrl(), prerequisite, visited);
+    return dependsOn(constant.getCtrl(), selectorLanes);
   return dependsOnAnyOperand();
 }
 
 bool causallyDependsOn(mlir::Value event, mlir::Value prerequisite) {
   llvm::DenseSet<mlir::Value> visited;
-  return causallyDependsOn(event, prerequisite, visited);
+  SelectorLanes selectorLanes;
+  return causallyDependsOn(event, prerequisite, visited, selectorLanes);
 }
 
 bool isExplicitSyncCoverage(mlir::Value witness, mlir::Value prerequisite) {
@@ -227,54 +241,58 @@ bool isCovered(mlir::Value prerequisite, mlir::ValueRange completion) {
 }
 
 bool coversFalseClose(mlir::Value witness, mlir::Value closeSignal,
-                      llvm::DenseSet<mlir::Value> &visited) {
-  if (!witness || !visited.insert(witness).second)
+                      llvm::DenseSet<mlir::Value> &visited,
+                      SelectorLanes &selectorLanes) {
+  if (!witness || !constrainDemuxLane(witness, selectorLanes) ||
+      !visited.insert(witness).second)
     return false;
   mlir::Operation *def = witness.getDefiningOp();
   if (!def)
     return false;
 
+  auto covers = [&](mlir::Value value, SelectorLanes branchLanes) {
+    llvm::DenseSet<mlir::Value> branchVisited = visited;
+    return coversFalseClose(value, closeSignal, branchVisited, branchLanes);
+  };
   if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
     auto result = llvm::dyn_cast<mlir::OpResult>(witness);
     if (result && result.getResultNumber() == 0 &&
         demux.getSel() == closeSignal)
       return true;
-    return coversFalseClose(demux.getInput(), closeSignal, visited);
+    return covers(demux.getInput(), selectorLanes);
   }
   if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def)) {
     return llvm::any_of(sync.getInputs(), [&](mlir::Value input) {
-      llvm::DenseSet<mlir::Value> branchVisited = visited;
-      return coversFalseClose(input, closeSignal, branchVisited);
+      return covers(input, selectorLanes);
     });
   }
   if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(def)) {
-    return llvm::any_of(mux.getInputs(), [&](mlir::Value input) {
-      llvm::DenseSet<mlir::Value> branchVisited = visited;
-      return coversFalseClose(input, closeSignal, branchVisited);
-    });
+    for (auto [lane, input] : llvm::enumerate(mux.getInputs())) {
+      SelectorLanes laneConstraints = selectorLanes;
+      if (constrainSelectorLane(mux.getSel(), lane, laneConstraints) &&
+          covers(input, std::move(laneConstraints)))
+        return true;
+    }
+    return false;
   }
   if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(def)) {
-    llvm::DenseSet<mlir::Value> initVisited = visited;
-    llvm::DenseSet<mlir::Value> feedbackVisited = visited;
-    return coversFalseClose(carry.getInit(), closeSignal, initVisited) ||
-           coversFalseClose(carry.getCarry(), closeSignal, feedbackVisited);
+    return covers(carry.getInit(), selectorLanes) ||
+           covers(carry.getCarry(), selectorLanes);
   }
   if (auto load = llvm::dyn_cast<dataflow::LoadOp>(def)) {
-    return witness == load.getDone() &&
-           coversFalseClose(load.getCtrl(), closeSignal, visited);
+    return witness == load.getDone() && covers(load.getCtrl(), selectorLanes);
   }
   if (auto store = llvm::dyn_cast<dataflow::StoreOp>(def)) {
-    return witness == store.getDone() &&
-           coversFalseClose(store.getCtrl(), closeSignal, visited);
+    return witness == store.getDone() && covers(store.getCtrl(), selectorLanes);
   }
   return false;
 }
 
-bool coversFalseClose(mlir::Value closeSignal,
-                      mlir::ValueRange completion) {
+bool coversFalseClose(mlir::Value closeSignal, mlir::ValueRange completion) {
   return llvm::any_of(completion, [&](mlir::Value witness) {
     llvm::DenseSet<mlir::Value> visited;
-    return coversFalseClose(witness, closeSignal, visited);
+    SelectorLanes selectorLanes;
+    return coversFalseClose(witness, closeSignal, visited, selectorLanes);
   });
 }
 

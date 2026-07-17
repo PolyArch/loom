@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate that MLIR contains an executable, SCF-free dataflow graph."""
+"""Check that MLIR contains the app's expected launched dataflow graph."""
 
 from __future__ import annotations
 
@@ -20,11 +20,10 @@ GRAPH_DEFINITION = re.compile(
     re.MULTILINE,
 )
 GRAPH_LAUNCH = re.compile(r"\bdataflow\.graph\.launch\s+@([^\s(]+)")
-SCF_OPERATION = re.compile(r"\bscf\.[A-Za-z_][A-Za-z0-9_.]*\b")
 
 
 class DFGValidationError(ValueError):
-    """Raised when an MLIR artifact is not an executable DFG."""
+    """Raised when an MLIR artifact lacks the expected app DFG anchors."""
 
 
 def mask_line_comments(text: str) -> str:
@@ -56,50 +55,6 @@ def mask_line_comments(text: str) -> str:
     return "".join(chars)
 
 
-def extract_braced_body(text: str, opening_brace: int) -> str:
-    depth = 0
-    in_string = False
-    escaped = False
-    in_comment = False
-    for index in range(opening_brace, len(text)):
-        char = text[index]
-        next_char = text[index + 1] if index + 1 < len(text) else ""
-        if in_comment:
-            if char == "\n":
-                in_comment = False
-            continue
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == "/" and next_char == "/":
-            in_comment = True
-            continue
-        if char == '"':
-            in_string = True
-            continue
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return text[opening_brace + 1 : index]
-    raise DFGValidationError("unterminated dataflow.graph.func body")
-
-
-def graph_bodies(text: str) -> dict[str, str]:
-    bodies: dict[str, str] = {}
-    for match in GRAPH_DEFINITION.finditer(text):
-        opening_brace = text.find("{", match.start(), match.end())
-        if opening_brace >= 0:
-            bodies[match.group(1)] = extract_braced_body(text, opening_brace)
-    return bodies
-
-
 def validate_text(text: str, symbol: str | None = None) -> None:
     scan_text = mask_line_comments(text)
     definitions = DFG_DEFINITION.findall(scan_text)
@@ -116,15 +71,10 @@ def validate_text(text: str, symbol: str | None = None) -> None:
     if symbol and not any(symbol in target for target in launches):
         raise DFGValidationError(f"has no launched dataflow graph for {symbol}")
 
-    bodies = graph_bodies(scan_text)
+    definitions = set(GRAPH_DEFINITION.findall(scan_text))
     for target in launches:
-        body = bodies.get(target)
-        if body is None:
+        if target not in definitions:
             raise DFGValidationError(f"launches undefined graph @{target}")
-        if SCF_OPERATION.search(body):
-            raise DFGValidationError(
-                f"launched graph @{target} contains an scf operation"
-            )
 
 
 def validate_file(path: Path, symbol: str | None = None) -> None:

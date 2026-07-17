@@ -1,7 +1,7 @@
 // loom-lower: read SCF-shaped MLIR (.mlir) via mlir::parseSourceFile,
 // run the standard Loom SCF-to-DFG lowering pipeline in-process via
-// PassManager, and emit the resulting DFG-shaped MLIR text on stdout
-// or to -o <file>.
+// PassManager, validate the finalized graphs, and emit the resulting
+// DFG-shaped MLIR text on stdout or to -o <file>.
 //
 // CLI shape mirrors loom-raise / mlir-translate:
 //
@@ -13,6 +13,7 @@
 // the lowering passes run inside this binary's PassManager.
 
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowGraphValidation.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Frontend/Lowering/Passes.h"
 
@@ -36,6 +37,7 @@
 #include "mlir/Support/LogicalResult.h"
 
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
@@ -140,6 +142,22 @@ int main(int argc, char **argv) {
 
   if (failed(pm.run(*module))) {
     ::llvm::errs() << "loom-lower: pipeline failed\n";
+    return 1;
+  }
+
+  std::string invalidGraph;
+  std::string validationDiagnostic;
+  module->walk([&](::dataflow::GraphFuncOp graph) {
+    if (auto error = ::dataflow::validateFinalizedGraph(graph)) {
+      invalidGraph = graph.getSymName().str();
+      validationDiagnostic = ::llvm::toString(std::move(error));
+      return ::mlir::WalkResult::interrupt();
+    }
+    return ::mlir::WalkResult::advance();
+  });
+  if (!validationDiagnostic.empty()) {
+    ::llvm::errs() << "loom-lower: final Dataflow validation failed for @"
+                   << invalidGraph << ": " << validationDiagnostic << "\n";
     return 1;
   }
 

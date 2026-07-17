@@ -1,22 +1,27 @@
 // RUN: loom-raise-opt --loom-lower-graph-memory %s | FileCheck %s
 
-// CHECK-LABEL: dataflow.graph.func private @narrow_projected_carry
-// CHECK: %[[INIT:.*]] = arith.index_cast %arg4 : i64 to index
-// CHECK: %[[STEP:.*]] = arith.index_cast %arg3 : i64 to index
-// CHECK: %[[CARRY:.*]] = dataflow.carry %{{.*}}, %[[INIT]], %[[NEXT:.*]] : index
-// CHECK: %[[EXIT:.*]]:2 = dataflow.demux %{{.*}}, %[[CARRY]] : (i1, index) -> (index, index)
-// CHECK: %[[NEXT]] = arith.addi %{{.*}}, %{{.*}} : index
-// CHECK: dataflow.load %arg6[%{{.*}}]
-// CHECK: arith.index_cast %[[EXIT]]#0 : index to i64
-dataflow.graph.func private @narrow_projected_carry(
-    %start: none, %init: i64, %limit: i64, %step: i64, %cursor0: i64,
+// An observable recurrence remains in its source semantic width even when its
+// body projection feeds an address.
+// CHECK-LABEL: dataflow.graph.func private @preserve_observable_wide_carry
+// CHECK: %[[INIT:.*]] = dataflow.constant %arg0 {const_value = 4294967297 : i64} : i64
+// CHECK-NOT: const_value = 4294967297 : index
+// CHECK: %[[CARRY:.*]] = dataflow.carry %{{.*}}, %[[INIT]], %[[NEXT:.*]] : i64
+// CHECK: %[[EXIT:.*]]:2 = dataflow.demux %{{.*}}, %[[CARRY]] : (i1, i64) -> (i64, i64)
+// CHECK: %[[ADDR:.*]] = arith.index_cast %{{.*}} : i64 to index
+// CHECK: dataflow.load %arg5[%[[ADDR]]]
+// CHECK: %[[NEXT]] = arith.addi %{{.*}}, %{{.*}} : i64
+// CHECK: %[[PUBLISHED:.*]]:2 = dataflow.sync %{{.*}}, %[[EXIT]]#0 : (none, i64) -> (none, i64)
+// CHECK: dataflow.graph.return values(%[[PUBLISHED]]#1, %{{.*}} : i64, f32)
+dataflow.graph.func private @preserve_observable_wide_carry(
+    %start: none, %init: i64, %limit: i64, %step: i64,
     %seed: f32, %memory: memref<?xf32>) -> (none, i64, f32)
-    attributes {input_segments = array<i32: 5, 0, 1>,
+    attributes {input_segments = array<i32: 4, 0, 1>,
                 result_segments = array<i32: 2, 0, 0>} {
   %index, %phase = dataflow.stream %init, %limit, %step
       step add while slt : i64
   %step_raw = dataflow.invariant %phase, %step : i64
   %step_phase, %step_body = dataflow.gate %phase, %step_raw : i64
+  %cursor0 = dataflow.constant %start {const_value = 4294967297 : i64} : i64
   %cursor_raw = dataflow.carry %phase, %cursor0, %next : i64
   %cursor_phase, %cursor = dataflow.gate %phase, %cursor_raw : i64
   %cursor_exit:2 = dataflow.demux %phase, %cursor_raw
