@@ -38,9 +38,8 @@
 
 namespace {
 
-// The leading `none`-typed signature input is the `thread_ctrl` firing
-// token; rely on the lowering pipeline's invariant that graph.func
-// signatures always begin with `(none, ...)`.
+// The distinguished leading `none` block argument is the graph start firing
+// token; it is separate from the payload-only FunctionType.
 ::mlir::Value getThreadCtrl(::dataflow::GraphFuncOp graph) {
   ::mlir::Block &entry = graph.getBody().front();
   if (entry.getNumArguments() == 0)

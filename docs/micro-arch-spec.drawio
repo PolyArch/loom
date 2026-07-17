@@ -182,13 +182,13 @@
                 <mxCell id="df-graph-launch" value="dataflow.graph.launch @sym&lt;div style=&quot;font-size:9px&quot;&gt;sync launch of graph callable; supplies per-launch ctrl_in, receives done_out&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#dae8fc;" parent="1" vertex="1">
                     <mxGeometry x="60" y="380" width="730" height="40" as="geometry"/>
                 </mxCell>
-                <mxCell id="df-graph-outer" value="dataflow.graph @sym (definition, module-scope sibling of thread def)&lt;div&gt;dataflow.yield&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;SpatialCore leaf DFG; Symbol-bearing, function-like, IsolatedFromAbove; ctrl_in/done_out are part of function_type&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;" parent="1" vertex="1">
+                <mxCell id="df-graph-outer" value="dataflow.graph @sym (definition, module-scope sibling of thread def)&lt;div&gt;dataflow.yield&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;SpatialCore leaf DFG; Symbol-bearing, function-like, IsolatedFromAbove; ctrl_in/done_out are protocol endpoints outside the payload-only function_type&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;" parent="1" vertex="1">
                     <mxGeometry x="60" y="430" width="730" height="450" as="geometry"/>
                 </mxCell>
-                <mxCell id="df-graph-ctrl-in" value="ctrl_in : none&lt;div style=&quot;font-size:9px&quot;&gt;leading function_type input; per-launch start port&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                <mxCell id="df-graph-ctrl-in" value="ctrl_in : none&lt;div style=&quot;font-size:9px&quot;&gt;explicit per-launch start protocol port&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
                     <mxGeometry x="80" y="490" width="220" height="40" as="geometry"/>
                 </mxCell>
-                <mxCell id="df-graph-done-out" value="done_out : none&lt;div style=&quot;font-size:9px&quot;&gt;leading function_type result; per-launch completion token&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                <mxCell id="df-graph-done-out" value="done_out : none&lt;div style=&quot;font-size:9px&quot;&gt;explicit per-launch retirement protocol port&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
                     <mxGeometry x="550" y="490" width="220" height="40" as="geometry"/>
                 </mxCell>
                 <mxCell id="df-stream-frame" value="streaming primitives" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">

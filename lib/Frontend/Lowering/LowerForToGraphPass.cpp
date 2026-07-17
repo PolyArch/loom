@@ -958,8 +958,8 @@ struct LowerForToGraphPass
         builder, loc, symName, functionType, segmentAttrs);
     graphOp.setSymVisibilityAttr(builder.getStringAttr("private"));
 
-    // Build graph body. Entry block layout matches function_type
-    // inputs exactly.
+    // Build the graph body with the explicit start argument followed by the
+    // payload-only FunctionType inputs.
     ::mlir::Region &graphBody = graphOp.getBody();
     ::mlir::Block *entry = builder.createBlock(&graphBody);
     entry->addArgument(noneType, loc);

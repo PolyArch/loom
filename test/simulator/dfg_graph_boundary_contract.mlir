@@ -5,6 +5,7 @@
 // RUN: FileCheck %s --check-prefix=MULTI-STREAM < %t.multi.json
 // RUN: loom-dfg-sim %s --graph memory_export --output %t.memory.json
 // RUN: FileCheck %s --check-prefix=MEMORY < %t.memory.json
+// RUN: not loom-dfg-sim %s --graph invalid_memory_export --output %t.invalid-memory.json 2>&1 | FileCheck %s --check-prefix=MEMORY-GATE
 // RUN: loom-dfg-sim %s --graph invocation_reentry --invocations 3 --arg 0=0 --arg 0=1 --arg 0=2 --memref 1=0,0,0 --output %t.reentry.json
 // RUN: FileCheck %s --check-prefix=REENTRY < %t.reentry.json
 
@@ -21,6 +22,8 @@
 
 // MEMORY: memory export simulation is unsupported
 // MEMORY: "status": "unsupported"
+
+// MEMORY-GATE: nontrivial graph uses raw start as a retirement completion witness
 
 // REENTRY-DAG: "status": "pass"
 // REENTRY-DAG: "dataflow.load": 3
@@ -79,6 +82,15 @@ module {
       %start: none, %memory: memref<?xi32>) -> (none, memref<?xi32>)
       attributes {input_segments = array<i32: 0, 0, 1>,
                   result_segments = array<i32: 0, 0, 1>} {
+    dataflow.graph.return values() streams()
+        memories(%memory : memref<?xi32>) complete(%start : none)
+  }
+
+  dataflow.graph.func private @invalid_memory_export(
+      %start: none, %memory: memref<?xi32>) -> (none, memref<?xi32>)
+      attributes {input_segments = array<i32: 0, 0, 1>,
+                  result_segments = array<i32: 0, 0, 1>} {
+    %unused = dataflow.constant %start {const_value = 1 : i32} : i32
     dataflow.graph.return values() streams()
         memories(%memory : memref<?xi32>) complete(%start : none)
   }

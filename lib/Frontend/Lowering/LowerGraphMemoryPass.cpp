@@ -89,9 +89,8 @@ getModuleLLVMDataLayout(::mlir::Operation *scope) {
   return ::llvm::DataLayout(layoutAttr.getValue());
 }
 
-// The leading `none`-typed signature input is the `thread_ctrl`
-// firing token; we rely on the lowering pipeline's invariant that
-// graph.func signatures begin with `(none, ...)`.
+// The distinguished leading `none` block argument is the graph start firing
+// token; it is separate from the payload-only FunctionType.
 ::mlir::Value getThreadCtrl(::dataflow::GraphFuncOp graph) {
   ::mlir::Block &entry = graph.getBody().front();
   if (entry.getNumArguments() == 0)

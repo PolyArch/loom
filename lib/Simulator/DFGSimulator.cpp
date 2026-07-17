@@ -1153,14 +1153,15 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
     return report;
   }
 
+  if (llvm::Error error = dataflow::validateFinalizedGraph(graph))
+    return std::move(error);
+
   llvm::ArrayRef<int32_t> resultSegments = graph.getResultSegmentSizes();
   if (resultSegments[2] != 0) {
     report.status = "unsupported";
     report.diagnostics.push_back("memory export simulation is unsupported");
     return report;
   }
-  if (llvm::Error error = dataflow::validateFinalizedGraph(graph))
-    return std::move(error);
 
   if (options.invocations == 0)
     return llvm::createStringError(std::errc::invalid_argument,

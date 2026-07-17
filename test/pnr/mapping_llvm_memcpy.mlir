@@ -1,5 +1,8 @@
 // RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
 // RUN: FileCheck %s --check-prefix=STRUCTURED-LOWERED < %t.lowered.mlir
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph pointer_memcpy_structured_if --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload pointer_memcpy_structured_if --output %t.structured.mapping.csv --artifact %t.structured.mapping.json
+// RUN: FileCheck %s --check-prefix=STRUCTURED-CSV < %t.structured.mapping.csv
+// RUN: FileCheck %s --check-prefix=STRUCTURED-JSON < %t.structured.mapping.json
 // RUN: loom-adg-builder-test --shared-memory-reduction --output %t.hardware.mlir
 // RUN: loom-pnr-map --dfg-mlir %s --graph lowered_copy --hardware-mlir %t.hardware.mlir --hardware shared_memory_reduction_adg --workload lowered_copy --output %t.copy.mapping.csv --artifact %t.copy.mapping.json
 // RUN: FileCheck %s --check-prefix=COPY-CSV < %t.copy.mapping.csv
@@ -17,6 +20,31 @@
 // STRUCTURED-LOWERED: dataflow.store
 // STRUCTURED-LOWERED-NOT: llvm.intr.memcpy
 // STRUCTURED-LOWERED: dataflow.graph.return
+
+// The recursively lowered workload is larger than this fixed ADG. Keep the
+// resource-pressure result explicit instead of silently replacing the mapping
+// probe or widening the hardware fixture.
+// STRUCTURED-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// STRUCTURED-CSV-NEXT: pointer_memcpy_structured_if,shared_reduction_adg,pointer_memcpy_structured_if__pointer_memcpy_structured_if__shared_reduction_adg,22,9,19,16,fail,missing hardware resource for software op dataflow.demux
+// STRUCTURED-CSV-SAME: operation=dataflow.carry required=5 available=5 placed=1 missing=4
+// STRUCTURED-CSV-SAME: operation=dataflow.demux required=12 available=3 placed=3 missing=9
+// STRUCTURED-CSV-SAME: operation=dataflow.gate required=4 available=4 placed=3 missing=1
+// STRUCTURED-CSV-SAME: operation=dataflow.mux required=2 available=1 placed=1 missing=1
+// STRUCTURED-CSV-SAME: operation=dataflow.sync required=3 available=2 placed=2 missing=1
+
+// STRUCTURED-JSON-DAG: "status": "fail"
+// STRUCTURED-JSON-DAG: "placed_records": 22
+// STRUCTURED-JSON-DAG: "routed_edges": 9
+// STRUCTURED-JSON-DAG: "unrouted_edges": 19
+// STRUCTURED-JSON-DAG: "unplaced_records": 16
+// STRUCTURED-JSON-DAG: "operation": "dataflow.load"
+// STRUCTURED-JSON-DAG: "operation": "dataflow.store"
+// STRUCTURED-JSON-DAG: "operation": "dataflow.carry"
+// STRUCTURED-JSON-DAG: "required": 5
+// STRUCTURED-JSON-DAG: "operation": "dataflow.demux"
+// STRUCTURED-JSON-DAG: "required": 12
+// STRUCTURED-JSON-DAG: "operation": "dataflow.sync"
+// STRUCTURED-JSON-DAG: "required": 3
 
 // COPY-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // COPY-CSV-NEXT: lowered_copy,shared_memory_reduction_adg,lowered_copy__lowered_copy__shared_memory_reduction_adg,2,2,0,0,pass

@@ -12,8 +12,9 @@ function-like definitions for both `dataflow.thread` and
 `dataflow.graph`. Execution is materialized only by
 `dataflow.thread.launch` and `dataflow.graph.launch`. Graph control
 ports are explicit in the current graph ABI: `ctrl_in` and launch-facing
-`done_out` are represented in the `dataflow.graph` function type and at every
-launch site. The graph body does not return `done_out`; its structural
+`done_out` are invocation protocol endpoints represented at every launch
+site, not application payload slots in the `dataflow.graph` function type.
+The graph body does not return `done_out`; its structural
 `dataflow.graph.return.complete` frontier is the unique authority from which
 the launch result is derived. Part 3 consumes the transient `loom.acc_region`
 op produced by Part 2.
@@ -510,6 +511,8 @@ def + at least one launch. This split mirrors `gpu.func` /
 ```
 arguments:
   TypeAttr:$function_type,
+  DenseI32ArrayAttr:$input_segments,
+  DenseI32ArrayAttr:$result_segments,
   SymbolNameAttr:$sym_name,
   StrAttr:$sym_visibility,
   DenseI64ArrayAttr:$staticGridLowerBound,
@@ -766,11 +769,12 @@ traits:
 * `dataflow.graph` is a Symbol-bearing, module-scope, function-like
   callable. It does not itself execute; one or more
   `dataflow.graph.launch` ops materialize launches of it.
-* The current `function_type` ABI is `(none, T0, ..., TN) ->
-  (none, R0, ..., RM)`. The leading input is the graph `%start`; the
-  leading result is the launch-facing `done_out` slot. The body does not
-  return that result directly. `graph.return` payload segments match the
-  non-leading result types, and `graph.return.complete` derives `done_out`.
+* The current `function_type` ABI is `(T0, ..., TN) -> (R0, ..., RM)` and
+  contains only application payloads. `input_segments` and `result_segments`
+  classify those payloads as values, streams, and memories. The graph
+  `%start` and launch-facing `done_out` are explicit invocation protocol
+  endpoints outside the function type. `graph.return` payload segments match
+  all result types, and `graph.return.complete` derives `done_out`.
 * `sym_name` is required and module-unique. `sym_visibility` is
   required and must equal `"private"` under the baseline visibility
   policy. The verifier rejects `"public"` and `"nested"` unless
@@ -778,8 +782,9 @@ traits:
 * The body is `IsolatedFromAbove`. All values used inside the
   graph definition's body must enter through the entry block.
 * The entry block has the layout `(%ctrl_in : none, %arg_0 : T0,
-  ..., %arg_N : TN)`, matching `function_type.inputs`. The leading
-  `ctrl_in` block argument is the per-launch start signal.
+  ..., %arg_N : TN)`. The application arguments match
+  `function_type.inputs`; the distinguished leading `ctrl_in` block argument
+  is the per-launch start signal and is not part of the function type.
 * The body's terminator is structural:
 
   ```text
@@ -790,8 +795,8 @@ traits:
     complete(%retirement_frontier...)
   ```
 
-  The payload segments, in that order, match the non-leading function
-  results. `complete` contains one or more `none` witnesses and is the only
+  The payload segments, in that order, match all function results.
+  `complete` contains one or more `none` witnesses and is the only
   completion truth. The compact `%complete, %values... : none, types...`
   form is permitted when there is one witness and the stream and memory
   segments are empty.
@@ -807,12 +812,9 @@ traits:
   carrying the leading `none` `ctrl_in` block argument and the
   user-data block arguments.
 * The op declares `RecursiveMemoryEffects` so module-scope walkers
-  can observe per-callable effects without re-implementing the
-  per-launch projection. This is **not** the primary effect surface
-  seen by enclosing ScalarCore code; that is the
-  `dataflow.graph.launch` op's own `MemoryEffectsOpInterface`
-  projection (Section 5.5.2, which resolves the callee and walks the
-  callee body).
+  can observe per-callable effects. This does not provide an alternate
+  launch-completion rule; retirement remains owned exclusively by
+  `graph.return.complete`.
 
 #### 5.5.2 `dataflow.graph.launch`
 
@@ -826,21 +828,17 @@ results:
   Variadic<AnyType>:$results;
 traits:
   DeclareOpInterfaceMethods<CallOpInterface>,
-  DeclareOpInterfaceMethods<SymbolUserOpInterface>,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>.
+  DeclareOpInterfaceMethods<SymbolUserOpInterface>.
 ```
 
 * `callee` is a flat symbol reference that must resolve to a
   `dataflow.graph` definition in the same module. The verifier
   rejects launches whose `callee` cannot be resolved or whose
   resolved op is not a `dataflow.graph`.
-* The verifier checks that
-  `(none, type(bodyOperands)) == callee.function_type.inputs`
-  position-by-position, and that
-  `(none, type(results)) == callee.function_type.results`
-  position-by-position. The leading `none` slots are the per-launch
-  ctrl/done ports; the user data slots match the def's user inputs
-  and outputs.
+* The verifier checks `type(bodyOperands) == callee.function_type.inputs`
+  and `type(results) == callee.function_type.results` position-by-position.
+  The launch's separate leading `none` operand and result are the per-launch
+  ctrl/done protocol ports.
 * The op materializes a per-launch firing of the callee at this exact program
   point. `done_out` is the all-of of the callee's
   `graph.return.complete` operands. Their causal closure covers final values,
@@ -2421,19 +2419,19 @@ Verifier rules for `dataflow.partition_layout`,
   - `sym_visibility` is required and must equal `"private"` in the
     baseline visibility policy. `"public"` and `"nested"` are rejected
     unless cross-module linkage is enabled by a separate spec.
-  - `function_type` inputs are `(none, T0..TN)` where the leading
-    `none` is the `ctrl_in` start port and the remaining types
-    are the kernel's user-data inputs. `function_type` results are
-    `(none, R0..RM)` where the leading `none` is the launch-facing
-    `done_out` slot and the remaining types are payload results.
+  - `function_type` inputs are `(T0..TN)` and results are `(R0..RM)`, containing
+    only application payloads. Normalized `input_segments` and
+    `result_segments` classify value, stream, and memory ports. The graph
+    start and launch done endpoints are not function-type slots.
   - The graph definition's body is `IsolatedFromAbove`: every SSA
     value used in the body and defined outside it is rejected.
-  - Entry block argument list mirrors `function_type.inputs`
-    exactly: `(%ctrl_in : none, %arg_0 : T0, ..., %arg_N : TN)`.
+  - Entry block arguments are `(%ctrl_in : none, %arg_0 : T0, ...,
+    %arg_N : TN)`: the trailing arguments mirror `function_type.inputs`, while
+    `%ctrl_in` is the explicit start protocol endpoint.
   - The body's `dataflow.graph.return` terminator has `values`, `streams`,
     `memories`, and mandatory non-empty `complete` segments. Concatenated
-    payload segments match `function_type.results` after its leading done
-    slot. The done slot is not a return operand.
+    payload segments match all `function_type.results`. Done is not a return
+    payload or function-type slot.
   - Body may contain `dataflow.{stream, carry, invariant, gate,
     mux, demux, sync, constant, load, store, graph.return}` plus ordinary
     pure ops permitted in the graph body whitelist.
@@ -2444,35 +2442,26 @@ Verifier rules for `dataflow.partition_layout`,
     another `dataflow.graph` definition, or a `dataflow.thread`
     definition.
   - The op declares `RecursiveMemoryEffects` so module-scope
-    walkers can observe per-callable effects without re-
-    implementing the per-launch projection. The
-    primary effect surface seen by the enclosing ScalarCore code
-    is the `dataflow.graph.launch`'s manual projection (next
-    bullet group).
+    walkers can observe per-callable effects. Launch completion is still
+    defined only by the explicit return frontier.
 
 * `dataflow.graph.launch` (Section 5.5.2)
   - `callee` resolves to a `dataflow.graph` definition in the
     same module (verifier rejects unresolved or wrong-kind callee).
-  - `(none, type(bodyOperands)) == callee.function_type.inputs`
-    position-by-position; the leading `none` slot is the
-    per-launch `ctrl_in` operand.
-  - `(none, type(results)) == callee.function_type.results`
-    position-by-position; the leading `none` slot is the
-    per-launch `done_out` result.
+  - `type(bodyOperands) == callee.function_type.inputs`
+    position-by-position; the separate launch `ctrl_in : none` operand is the
+    start protocol endpoint.
+  - `type(results) == callee.function_type.results`
+    position-by-position; the separate launch `done_out : none` result is the
+    retirement protocol endpoint.
   - `done_out = all_of(callee.graph.return.complete)`. No effect scan or
     quiescence rule provides an alternate completion authority.
   - The op must appear inside a `dataflow.thread` definition's
     body, not at host scope and not inside another
     `dataflow.graph` definition's body.
-  - The op implements `MemoryEffectOpInterface` directly: it
-    resolves `callee`, walks the callee body, and reports the
-    union of body op effects through the launch boundary. If
-    callee resolution fails during partial IR construction, the
-    launch reports conservative `MemRead + MemWrite` on MLIR's
-    default memory resource. The upstream
-    `RecursiveMemoryEffects` trait is **not** appropriate here
-    because the launch references a sibling symbol, not a nested
-    region.
+  - The launch does not reconstruct completion from callee effects. Native
+    finalization validates that the explicit return frontier covers every
+    observable effect before mapping or simulation.
 
 * `Dataflow_GraphReturnOp`
   - `complete` is non-empty, variadic, unordered all-of, and `none`-typed.

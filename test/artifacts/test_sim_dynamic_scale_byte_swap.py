@@ -100,13 +100,22 @@ def run_dfg_sim(
 ) -> Path:
     report = out_dir / f"{workload}-dfg-sim-report.json"
     args = [str(artifact_test_common.find_tool(repo, "loom-dfg-sim")), str(dfg_mlir)]
-    for _ in inputs:
-        args.extend(["--arg", "0=none"])
     args.extend(["--memref", f"1={','.join(map(str, inputs))}"])
     args.extend(["--memref", f"2={','.join('0' for _ in inputs)}"])
     for index in range(len(inputs)):
-        args.extend(["--arg", f"3={index}"])
-    args.extend(["--graph", GRAPH, "--workload", workload, "--output", str(report)])
+        args.extend(["--arg", f"0={index}"])
+    args.extend(
+        [
+            "--invocations",
+            str(len(inputs)),
+            "--graph",
+            GRAPH,
+            "--workload",
+            workload,
+            "--output",
+            str(report),
+        ]
+    )
     artifact_test_common.require_success(repo, args, f"{workload} DFG simulation")
     return report
 
