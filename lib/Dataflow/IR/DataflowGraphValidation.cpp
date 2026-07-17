@@ -168,8 +168,7 @@ bool causallyDependsOn(mlir::Value event, mlir::Value prerequisite,
   };
 
   if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def)) {
-    if (llvm::isa<mlir::NoneType>(event.getType()) &&
-        prerequisite.getDefiningOp() == sync.getOperation())
+    if (prerequisite.getDefiningOp() == sync.getOperation())
       return true;
     return dependsOnAnyOperand();
   }
@@ -225,12 +224,6 @@ bool causallyDependsOn(mlir::Value event, mlir::Value prerequisite) {
   return causallyDependsOn(event, prerequisite, visited, selectorLanes);
 }
 
-bool isExplicitSyncCoverage(mlir::Value witness, mlir::Value prerequisite) {
-  auto sync = llvm::dyn_cast_or_null<dataflow::SyncOp>(witness.getDefiningOp());
-  return sync && llvm::isa<mlir::NoneType>(witness.getType()) &&
-         prerequisite.getDefiningOp() == sync.getOperation();
-}
-
 bool isExplicitLoadCoverage(mlir::Value witness, mlir::Value prerequisite) {
   auto load = llvm::dyn_cast_or_null<dataflow::LoadOp>(witness.getDefiningOp());
   return load && witness == load.getDone() && prerequisite == load.getData();
@@ -239,7 +232,6 @@ bool isExplicitLoadCoverage(mlir::Value witness, mlir::Value prerequisite) {
 bool isCovered(mlir::Value prerequisite, mlir::ValueRange completion) {
   return llvm::any_of(completion, [&](mlir::Value witness) {
     return causallyDependsOn(witness, prerequisite) ||
-           isExplicitSyncCoverage(witness, prerequisite) ||
            isExplicitLoadCoverage(witness, prerequisite);
   });
 }
