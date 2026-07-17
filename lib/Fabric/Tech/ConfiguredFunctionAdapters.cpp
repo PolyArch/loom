@@ -2,18 +2,15 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Block.h"
-#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
-#include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/Value.h"
-#include "mlir/IR/Verifier.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -23,12 +20,8 @@ namespace {
 using ::mlir::Block;
 using ::mlir::DictionaryAttr;
 using ::mlir::FunctionType;
-using ::mlir::Location;
 using ::mlir::NamedAttribute;
-using ::mlir::OpBuilder;
 using ::mlir::Operation;
-using ::mlir::OperationState;
-using ::mlir::Type;
 using ::mlir::Value;
 
 static DictionaryAttr semanticAttributes(Operation *op) {
@@ -119,114 +112,6 @@ sourceFor(Value value, Block &body,
     function.outputs.push_back(
         {static_cast<unsigned>(port), value.getType(), *source});
   }
-  return ::mlir::success();
-}
-
-::mlir::LogicalResult materializeConfiguredFunction(
-    const ConfiguredFunction &function, ::mlir::ModuleOp module,
-    ::llvm::StringRef symbolName, MaterializedConfiguredFunction &materialized,
-    std::string &error) {
-  if (!module) {
-    error = "missing destination module";
-    return ::mlir::failure();
-  }
-  auto *context = module.getContext();
-  Location loc = module.getLoc();
-
-  ::llvm::SmallVector<Type, 4> inputTypes;
-  for (const ConfiguredBoundaryInput &input : function.inputs)
-    inputTypes.push_back(input.type);
-  ::llvm::SmallVector<Type, 4> outputTypes;
-  for (const ConfiguredBoundaryOutput &output : function.outputs)
-    outputTypes.push_back(output.type);
-
-  OpBuilder moduleBuilder(module.getBody(), module.getBody()->end());
-  auto wrapper = ::mlir::func::FuncOp::create(
-      moduleBuilder, loc, symbolName,
-      FunctionType::get(context, inputTypes, outputTypes));
-  wrapper.setPrivate();
-  Block *wrapperBody = wrapper.addEntryBlock();
-  OpBuilder bodyBuilder(wrapperBody, wrapperBody->end());
-
-  ::llvm::DenseMap<unsigned, Value> inputByPort;
-  for (auto [position, input] : ::llvm::enumerate(function.inputs))
-    inputByPort[input.fuPort] = wrapperBody->getArgument(position);
-
-  using ResultKey = std::pair<unsigned, unsigned>;
-  ::llvm::DenseMap<ResultKey, Value> values;
-  ::llvm::DenseMap<ResultKey, Value> placeholders;
-  ::llvm::SmallVector<Operation *, 8> placeholderOps;
-
-  auto valueFor = [&](const ConfiguredValue &source, Type expected) -> Value {
-    if (source.kind == ConfiguredValue::Kind::InputPort)
-      return inputByPort.lookup(source.index);
-    ResultKey key{source.index, source.result};
-    if (Value value = values.lookup(key))
-      return value;
-    if (Value placeholder = placeholders.lookup(key))
-      return placeholder;
-    OperationState state(
-        loc, ::mlir::UnrealizedConversionCastOp::getOperationName());
-    state.addTypes(expected);
-    Operation *placeholder = bodyBuilder.create(state);
-    placeholderOps.push_back(placeholder);
-    placeholders[key] = placeholder->getResult(0);
-    return placeholder->getResult(0);
-  };
-
-  for (auto [nodeIndex, node] : ::llvm::enumerate(function.nodes)) {
-    ::llvm::SmallVector<Value, 4> operands;
-    for (auto [operandIndex, source] : ::llvm::enumerate(node.operands)) {
-      Value operand =
-          valueFor(source, node.functionType.getInput(operandIndex));
-      if (!operand) {
-        wrapper.erase();
-        error = "configured function references an unknown input port";
-        return ::mlir::failure();
-      }
-      operands.push_back(operand);
-    }
-    OperationState state(loc, node.operationName);
-    state.addOperands(operands);
-    state.addTypes(node.functionType.getResults());
-    state.addAttributes(node.attributes.getValue());
-    Operation *operation = bodyBuilder.create(state);
-    for (auto [resultIndex, result] :
-         ::llvm::enumerate(operation->getResults()))
-      values[{static_cast<unsigned>(nodeIndex),
-              static_cast<unsigned>(resultIndex)}] = result;
-  }
-
-  for (auto &entry : placeholders) {
-    Value real = values.lookup(entry.first);
-    if (!real) {
-      wrapper.erase();
-      error = "configured function contains an unresolved result reference";
-      return ::mlir::failure();
-    }
-    entry.second.replaceAllUsesWith(real);
-  }
-  for (Operation *placeholder : placeholderOps)
-    placeholder->erase();
-
-  ::llvm::SmallVector<Value, 4> yields;
-  for (const ConfiguredBoundaryOutput &output : function.outputs) {
-    Value value = valueFor(output.value, output.type);
-    if (!value) {
-      wrapper.erase();
-      error = "configured function output cannot be resolved";
-      return ::mlir::failure();
-    }
-    yields.push_back(value);
-  }
-  ::mlir::func::ReturnOp::create(bodyBuilder, loc, yields);
-  if (::mlir::failed(::mlir::verify(wrapper))) {
-    wrapper.erase();
-    error = "configured function materialization is not valid SSACFG";
-    return ::mlir::failure();
-  }
-
-  materialized.wrapper = wrapper;
   return ::mlir::success();
 }
 
