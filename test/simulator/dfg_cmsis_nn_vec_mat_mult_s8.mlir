@@ -17,7 +17,7 @@ module {
       !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr,
       i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32
 
-  dataflow.graph.func private @cmsis_nn_vec_mat_mult_s8(
+  dataflow.graph private @cmsis_nn_vec_mat_mult_s8(
       %ctrl: none,
       %lhs_offset: i32,
       %dst_offset: i32,
@@ -33,7 +33,7 @@ module {
       %rhs: !llvm.ptr,
       %kernel_sum: !llvm.ptr,
       %bias: !llvm.ptr,
-      %dst: !llvm.ptr) -> (none, i32)
+      %dst: !llvm.ptr) -> (i32)
       attributes {input_segments = array<i32: 10, 0, 5>,
                   result_segments = array<i32: 1, 0, 0>} {
     %status = llvm.call @arm_nn_vec_mat_mult_t_s8(

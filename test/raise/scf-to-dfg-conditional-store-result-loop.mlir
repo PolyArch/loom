@@ -5,7 +5,7 @@
 // skipped-store lanes must still produce one done token per loop item so the
 // graph rendezvous does not silently drop iterations.
 
-// CHECK-LABEL: dataflow.graph.func private @g_conditional_store_result_loop
+// CHECK-LABEL: dataflow.graph private @g_conditional_store_result_loop
 // CHECK: %[[IDX:.*]], %[[RWC:.*]] = dataflow.stream %arg1, %arg2, %arg3
 // CHECK: %[[CURSOR_RAW:.*]] = dataflow.carry %[[RWC]], %arg6,
 // CHECK: %[[CURSOR_EXIT:.*]]:2 = dataflow.demux %[[RWC]], %[[CURSOR_RAW]] : (i1, i32) -> (i32, i32)
@@ -22,10 +22,10 @@
 // CHECK-NOT: scf.for
 // CHECK-NOT: scf.if
 // CHECK: dataflow.graph.return
-dataflow.graph.func private @g_conditional_store_result_loop(
+dataflow.graph private @g_conditional_store_result_loop(
     %ctrl: none, %lb: i64, %ub: i64, %step: i64, %zero: i32,
     %one: i32, %init: i32, %input: !llvm.ptr, %output: !llvm.ptr)
-    -> (none, i32)
+    -> (i32)
     attributes {input_segments = array<i32: 6, 0, 2>,
                 result_segments = array<i32: 1, 0, 0>} {
   %r = scf.for %i = %lb to %ub step %step iter_args(%cursor = %init)
@@ -52,7 +52,7 @@ dataflow.graph.func private @g_conditional_store_result_loop(
   dataflow.graph.return %ctrl, %r : none, i32
 }
 
-// CHECK-LABEL: dataflow.graph.func private @g_conditional_store_result_then_loop
+// CHECK-LABEL: dataflow.graph private @g_conditional_store_result_then_loop
 // CHECK: %[[IDX2:.*]], %[[RWC2:.*]] = dataflow.stream %arg1, %arg2, %arg3
 // CHECK: %[[CURSOR_RAW2:.*]] = dataflow.carry %[[RWC2]], %arg6,
 // CHECK: %[[CURSOR_EXIT2:.*]]:2 = dataflow.demux %[[RWC2]], %[[CURSOR_RAW2]] : (i1, i32) -> (i32, i32)
@@ -69,10 +69,10 @@ dataflow.graph.func private @g_conditional_store_result_loop(
 // CHECK-NOT: scf.for
 // CHECK-NOT: scf.if
 // CHECK: dataflow.graph.return
-dataflow.graph.func private @g_conditional_store_result_then_loop(
+dataflow.graph private @g_conditional_store_result_then_loop(
     %ctrl: none, %lb: i64, %ub: i64, %step: i64, %zero: i32,
     %one: i32, %init: i32, %input: !llvm.ptr, %output: !llvm.ptr)
-    -> (none, i32)
+    -> (i32)
     attributes {input_segments = array<i32: 6, 0, 2>,
                 result_segments = array<i32: 1, 0, 0>} {
   %r = scf.for %i = %lb to %ub step %step iter_args(%cursor = %init)

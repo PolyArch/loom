@@ -21,10 +21,10 @@
 // JSON-NOT: ".in"
 
 module {
-  dataflow.graph.func private @i64_modmul(
+  dataflow.graph private @i64_modmul(
       %ctrl: none, %modulus: i64, %idx: index,
       %input_a: memref<?xi32>, %input_b: memref<?xi32>,
-      %output: memref<?xi32>) -> none
+      %output: memref<?xi32>) -> ()
       attributes {input_segments = array<i32: 2, 0, 3>,
                   result_segments = array<i32: 0, 0, 0>} {
     %a, %a_done = dataflow.load %input_a[%idx] %ctrl : memref<?xi32>

@@ -24,9 +24,6 @@
 // RUN: FileCheck %s --check-prefix=INVARIANT < %t.invariant.json
 // RUN: loom-dfg-sim %s --graph gate_reentry_and_fanout --arg 0=false --arg 0=true --arg 0=false --arg 0=true --arg 0=true --arg 0=false --arg 1=0 --arg 1=10 --arg 1=11 --arg 1=20 --arg 1=21 --arg 1=22 --arg 2=none --arg 2=none --arg 2=none --arg 3=false --arg 3=false --arg 3=true --output %t.gate.json
 // RUN: FileCheck %s --check-prefix=GATE < %t.gate.json
-// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
-// RUN: loom-dfg-sim %t.lowered.mlir --graph lowered_memory_exact_k --arg 0=0 --arg 1=3 --arg 2=1 --memref 3=1,2,3,99 --output %t.memory.json
-// RUN: FileCheck %s --check-prefix=MEMORY < %t.memory.json
 
 // Actor close/reset anchors check token values, exact target fire counts, and
 // explicit final-close retirement.
@@ -117,8 +114,8 @@
 module attributes {
   dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
 } {
-  dataflow.graph.func private @stream_zero_trip(
-      %ctrl: none, %init: i64, %limit: i64, %step: i64) -> (none, i1)
+  dataflow.graph private @stream_zero_trip(
+      %ctrl: none, %init: i64, %limit: i64, %step: i64) -> (i1)
       attributes {input_segments = array<i32: 3, 0, 0>,
                   result_segments = array<i32: 0, 1, 0>} {
     %iv, %phase = dataflow.stream %init, %limit, %step
@@ -131,9 +128,9 @@ module attributes {
         complete(%complete#0 : none)
   }
 
-  dataflow.graph.func private @stream_finite(
+  dataflow.graph private @stream_finite(
       %ctrl: none, %init: i64, %limit: i64, %step: i64)
-      -> (none, i64, i1)
+      -> (i64, i1)
       attributes {input_segments = array<i32: 3, 0, 0>,
                   result_segments = array<i32: 0, 2, 0>} {
     %iv, %phase = dataflow.stream %init, %limit, %step
@@ -145,10 +142,10 @@ module attributes {
         complete(%complete#0 : none)
   }
 
-  dataflow.graph.func private @stream_repeated(
+  dataflow.graph private @stream_repeated(
       %ctrl: none, %init: i64, %limit: i64, %step: i64,
       %activation: none, %last: i1)
-      -> (none, i64, i1)
+      -> (i64, i1)
       attributes {input_segments = array<i32: 0, 5, 0>,
                   result_segments = array<i32: 0, 2, 0>} {
     %iv, %phase = dataflow.stream %init, %limit, %step
@@ -164,9 +161,9 @@ module attributes {
         complete(%complete#1 : none)
   }
 
-  dataflow.graph.func private @stream_i8_signed_cont(
+  dataflow.graph private @stream_i8_signed_cont(
       %ctrl: none, %init: i8, %limit: i8, %step: i8, %unit: none)
-      -> (none, i8, i1)
+      -> (i8, i1)
       attributes {input_segments = array<i32: 3, 1, 0>,
                   result_segments = array<i32: 0, 2, 0>} {
     %iv, %phase = dataflow.stream %init, %limit, %step
@@ -180,9 +177,9 @@ module attributes {
         complete(%complete#0 : none)
   }
 
-  dataflow.graph.func private @stream_i8_unsigned_cont(
+  dataflow.graph private @stream_i8_unsigned_cont(
       %ctrl: none, %init: i8, %limit: i8, %step: i8)
-      -> (none, i8, i1)
+      -> (i8, i1)
       attributes {input_segments = array<i32: 3, 0, 0>,
                   result_segments = array<i32: 0, 2, 0>} {
     %iv, %phase = dataflow.stream %init, %limit, %step
@@ -194,9 +191,9 @@ module attributes {
         complete(%complete#0 : none)
   }
 
-  dataflow.graph.func private @stream_i8_signed_index_cast(
+  dataflow.graph private @stream_i8_signed_index_cast(
       %ctrl: none, %init: i8, %limit: i8, %step: i8)
-      -> (none, index, i1)
+      -> (index, i1)
       attributes {input_segments = array<i32: 3, 0, 0>,
                   result_segments = array<i32: 0, 2, 0>} {
     %iv, %phase = dataflow.stream %init, %limit, %step
@@ -209,8 +206,8 @@ module attributes {
         memories() complete(%complete#0 : none)
   }
 
-  dataflow.graph.func private @stream_static_signed_cast(
-      %ctrl: none, %byte: i8, %unit: none) -> (none, i64, i1)
+  dataflow.graph private @stream_static_signed_cast(
+      %ctrl: none, %byte: i8, %unit: none) -> (i64, i1)
       attributes {input_segments = array<i32: 1, 1, 0>,
                   result_segments = array<i32: 0, 2, 0>} {
     %index = arith.index_cast %byte : i8 to index
@@ -228,8 +225,8 @@ module attributes {
         complete(%complete#0 : none)
   }
 
-  dataflow.graph.func private @stream_i128_unsupported(
-      %ctrl: none, %init: i128, %limit: i128, %step: i128) -> (none, i1)
+  dataflow.graph private @stream_i128_unsupported(
+      %ctrl: none, %init: i128, %limit: i128, %step: i128) -> (i1)
       attributes {input_segments = array<i32: 3, 0, 0>,
                   result_segments = array<i32: 0, 1, 0>} {
     %iv, %phase = dataflow.stream %init, %limit, %step
@@ -241,8 +238,8 @@ module attributes {
         complete(%complete#0 : none)
   }
 
-  dataflow.graph.func private @stream_divide_by_zero(
-      %ctrl: none, %init: i64, %limit: i64, %step: i64) -> (none, i1)
+  dataflow.graph private @stream_divide_by_zero(
+      %ctrl: none, %init: i64, %limit: i64, %step: i64) -> (i1)
       attributes {input_segments = array<i32: 3, 0, 0>,
                   result_segments = array<i32: 0, 1, 0>} {
     %iv, %phase = dataflow.stream %init, %limit, %step
@@ -254,9 +251,9 @@ module attributes {
         complete(%complete#0 : none)
   }
 
-  dataflow.graph.func private @carry_zero_trip_reentry(
+  dataflow.graph private @carry_zero_trip_reentry(
       %ctrl: none, %phase: i1, %init: i32, %activation: none, %last: i1)
-      -> (none, i32)
+      -> (i32)
       attributes {input_segments = array<i32: 0, 4, 0>,
                   result_segments = array<i32: 0, 1, 0>} {
     %unused_phase, %no_next = dataflow.gate %phase, %init : i32
@@ -272,9 +269,9 @@ module attributes {
         complete(%complete#1 : none)
   }
 
-  dataflow.graph.func private @carry_finite_reentry(
+  dataflow.graph private @carry_finite_reentry(
       %ctrl: none, %phase: i1, %init: i32, %next: i32,
-      %activation: none, %last: i1) -> (none, i32)
+      %activation: none, %last: i1) -> (i32)
       attributes {input_segments = array<i32: 0, 5, 0>,
                   result_segments = array<i32: 0, 1, 0>} {
     %value = dataflow.carry %phase, %init, %next : i32
@@ -289,9 +286,9 @@ module attributes {
         complete(%complete#1 : none)
   }
 
-  dataflow.graph.func private @invariant_reentry(
+  dataflow.graph private @invariant_reentry(
       %ctrl: none, %phase: i1, %init: i32, %phase_unit: none, %last: i1)
-      -> (none, i32)
+      -> (i32)
       attributes {input_segments = array<i32: 0, 4, 0>,
                   result_segments = array<i32: 0, 1, 0>} {
     %value = dataflow.invariant %phase, %init : i32
@@ -305,9 +302,9 @@ module attributes {
         complete(%complete#1 : none)
   }
 
-  dataflow.graph.func private @gate_reentry_and_fanout(
+  dataflow.graph private @gate_reentry_and_fanout(
       %ctrl: none, %phase: i1, %value: i32, %activation: none, %last: i1)
-      -> none
+      -> ()
       attributes {input_segments = array<i32: 0, 4, 0>,
                   result_segments = array<i32: 0, 0, 0>} {
     %child_phase, %child_value = dataflow.gate %phase, %value : i32
@@ -325,16 +322,4 @@ module attributes {
     dataflow.graph.return %complete#1 : none
   }
 
-  dataflow.graph.func private @lowered_memory_exact_k(
-      %ctrl: none, %init: i32, %limit: i32, %step: i32, %ptr: !llvm.ptr)
-      -> none
-      attributes {input_segments = array<i32: 3, 0, 1>,
-                  result_segments = array<i32: 0, 0, 0>} {
-    scf.for %i = %init to %limit step %step : i32 {
-      %element = llvm.getelementptr %ptr[%i]
-          : (!llvm.ptr, i32) -> !llvm.ptr, i32
-      %value = llvm.load %element : !llvm.ptr -> i32
-    }
-    dataflow.graph.return %ctrl : none
-  }
 }

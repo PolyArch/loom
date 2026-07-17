@@ -1,4 +1,4 @@
-// RUN: loom %s -loom-generalize-subgraphs-to-fu 2>&1 | FileCheck %s
+// RUN: loom %s -loom-synthesize-configured-functions 2>&1 | FileCheck %s
 
 // The module already contains a top-level `func.func private @fu_x` that
 // does NOT carry the `loom.synthesized_for` tag. Private visibility
@@ -25,9 +25,6 @@ func.func private @fu_x() -> () {
 }
 
 func.func @pat_addi(%a: i32, %b: i32) -> i32 attributes {loom.synth_group = "x"} {
-  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
-    %s = arith.addi %x, %y : i32
-    dataflow.yield %s : i32
-  }
-  return %r : i32
+  %s = arith.addi %a, %b : i32
+  return %s : i32
 }

@@ -139,7 +139,7 @@ For SpatialCore compute, the primary placement unit is the Compute
 Realization owned by the Mapping Artifact. It groups Canonical Dataflow
 Program actors and binds them to one compatible `fabric.fu` encoding with
 complete actor-to-operation and boundary-port correspondence. This grouping
-does not create or mutate a `dataflow.subgraph` in the software artifact.
+does not create or mutate a grouping op in the software artifact.
 
 When a `fabric.pe` contains multiple FUs, the mapping must record which
 FU is active for each use. Spatial PE use allows only one active FU for

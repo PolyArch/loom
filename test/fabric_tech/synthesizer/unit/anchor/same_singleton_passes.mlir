@@ -1,4 +1,4 @@
-// RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
+// RUN: loom %s -loom-synthesize-configured-functions='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
 
 // Tier A: two subgraphs that both use the SAME singleton op (math.absf,
 // not in any multi-member hardware-share group). Both peers map to one
@@ -20,18 +20,12 @@
 
 func.func @pat_absf_a(%a: f32) -> f32
     attributes {loom.synth_group = "fpu_abs_32"} {
-  %r = dataflow.subgraph(%x = %a : f32) -> f32 {
-    %s = math.absf %x : f32
-    dataflow.yield %s : f32
-  }
-  return %r : f32
+  %s = math.absf %a : f32
+  return %s : f32
 }
 
 func.func @pat_absf_b(%a: f32) -> f32
     attributes {loom.synth_group = "fpu_abs_32"} {
-  %r = dataflow.subgraph(%x = %a : f32) -> f32 {
-    %s = math.absf %x : f32
-    dataflow.yield %s : f32
-  }
-  return %r : f32
+  %s = math.absf %a : f32
+  return %s : f32
 }

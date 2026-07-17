@@ -17,8 +17,8 @@ module {
     return
   }
 
-  dataflow.graph.func private @add_graph(%ctrl: none, %lhs: i32, %rhs: i32)
-      -> (none, i32) {
+  dataflow.graph private @add_graph(%ctrl: none, %lhs: i32, %rhs: i32)
+      -> (i32) {
     %sum = arith.addi %lhs, %rhs : i32
     dataflow.graph.return %ctrl, %sum : none, i32
   }

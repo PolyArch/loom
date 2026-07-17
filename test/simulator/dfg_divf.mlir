@@ -11,7 +11,7 @@
 // CHECK-DAG: "f32:3"
 
 module {
-  dataflow.graph.func private @divf(%ctrl: none) -> (none, f32)
+  dataflow.graph private @divf(%ctrl: none) -> (f32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %lhs = dataflow.constant %ctrl {const_value = 7.500000e+00 : f32} : f32

@@ -51,11 +51,11 @@ module {
 // CHECK: dataflow.graph.launch @g_t_nested_forall_0
 // CHECK-LABEL: dataflow.thread private @t_if_nested_forall
 // CHECK: dataflow.graph.launch @g_t_if_nested_forall_0
-// CHECK-LABEL: dataflow.graph.func private @g_t_nested_forall_0
+// CHECK-LABEL: dataflow.graph private @g_t_nested_forall_0
 // CHECK: scf.forall
 // CHECK: scf.forall
 // CHECK: dataflow.store
-// CHECK-LABEL: dataflow.graph.func private @g_t_if_nested_forall_0
+// CHECK-LABEL: dataflow.graph private @g_t_if_nested_forall_0
 // CHECK: scf.if
 // CHECK: scf.forall
 // CHECK: scf.forall

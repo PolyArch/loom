@@ -11,12 +11,12 @@ from typing import Sequence
 
 
 DFG_DEFINITION = re.compile(
-    r"^\s*dataflow\.(?:thread(?=\s)|graph\.func(?=\s))"
+    r"^\s*dataflow\.(?:thread(?=\s)|graph(?=\s))"
     r"\s+(?:private\s+)?@([^\s(]+)[^\n]*\{\s*$",
     re.MULTILINE,
 )
 GRAPH_DEFINITION = re.compile(
-    r"^\s*dataflow\.graph\.func\s+(?:private\s+)?@([^\s(]+)[^\n]*\{\s*$",
+    r"^\s*dataflow\.graph\s+(?:private\s+)?@([^\s(]+)[^\n]*\{\s*$",
     re.MULTILINE,
 )
 GRAPH_LAUNCH = re.compile(r"\bdataflow\.graph\.launch\s+@([^\s(]+)")
@@ -60,7 +60,7 @@ def validate_text(text: str, symbol: str | None = None) -> None:
     definitions = DFG_DEFINITION.findall(scan_text)
     if not definitions:
         raise DFGValidationError(
-            "has no dataflow.thread or dataflow.graph.func definition with a body"
+            "has no dataflow.thread or dataflow.graph definition with a body"
         )
     if symbol and not any(symbol in definition for definition in definitions):
         raise DFGValidationError(f"has no dataflow definition for {symbol}")

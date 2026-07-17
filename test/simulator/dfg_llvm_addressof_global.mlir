@@ -5,8 +5,8 @@
 module {
   llvm.mlir.global external constant @lookup_table() : !llvm.array<3 x i32>
 
-  dataflow.graph.func private @global_table_load(%ctrl: none, %idx: i32)
-      -> (none, i32)
+  dataflow.graph private @global_table_load(%ctrl: none, %idx: i32)
+      -> (i32)
       attributes {input_segments = array<i32: 1, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %base = llvm.mlir.addressof @lookup_table : !llvm.ptr

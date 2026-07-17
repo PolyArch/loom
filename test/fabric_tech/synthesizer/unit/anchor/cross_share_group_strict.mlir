@@ -1,4 +1,4 @@
-// RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
+// RUN: loom %s -loom-synthesize-configured-functions='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
 
 // Tier A with cross share groups (arith.addi vs arith.muli; muli is in
 // a different multi-member group, so the two cannot share one fabric.op
@@ -14,18 +14,12 @@
 
 func.func @pat_addi(%a: i32, %b: i32) -> i32
     attributes {loom.synth_group = "alu_int_32_x"} {
-  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
-    %s = arith.addi %x, %y : i32
-    dataflow.yield %s : i32
-  }
-  return %r : i32
+  %s = arith.addi %a, %b : i32
+  return %s : i32
 }
 
 func.func @pat_muli(%a: i32, %b: i32) -> i32
     attributes {loom.synth_group = "alu_int_32_x"} {
-  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
-    %s = arith.muli %x, %y : i32
-    dataflow.yield %s : i32
-  }
-  return %r : i32
+  %s = arith.muli %a, %b : i32
+  return %s : i32
 }

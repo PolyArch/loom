@@ -1,4 +1,4 @@
-// RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
+// RUN: loom %s -loom-synthesize-configured-functions='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
 
 // Subgraph with two yield operands: one is an addi/subi (single share
 // group), the other is an andi/ori (different share group). Two inputs
@@ -17,20 +17,14 @@
 
 func.func @pat_addi_andi(%a: i32, %b: i32) -> (i32, i32)
     attributes {loom.synth_group = "multi_yield"} {
-  %p, %q = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> (i32, i32) {
-    %u = arith.addi %x, %y : i32
-    %v = arith.andi %x, %y : i32
-    dataflow.yield %u, %v : i32, i32
-  }
-  return %p, %q : i32, i32
+  %u = arith.addi %a, %b : i32
+  %v = arith.andi %a, %b : i32
+  return %u, %v : i32, i32
 }
 
 func.func @pat_subi_ori(%a: i32, %b: i32) -> (i32, i32)
     attributes {loom.synth_group = "multi_yield"} {
-  %p, %q = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> (i32, i32) {
-    %u = arith.subi %x, %y : i32
-    %v = arith.ori %x, %y : i32
-    dataflow.yield %u, %v : i32, i32
-  }
-  return %p, %q : i32, i32
+  %u = arith.subi %a, %b : i32
+  %v = arith.ori %a, %b : i32
+  return %u, %v : i32, i32
 }

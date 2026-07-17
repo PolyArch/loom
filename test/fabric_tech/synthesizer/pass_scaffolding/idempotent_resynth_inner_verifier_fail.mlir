@@ -1,6 +1,6 @@
 // Documentation-only test: the inner-fabric.fu-fails-verification
 // failure path of the tightened idempotence precheck in
-// `loom-generalize-subgraphs-to-fu` is not constructible as plain MLIR
+// `loom-synthesize-configured-functions` is not constructible as plain MLIR
 // at the lit level. The MLIR parser runs verification during parsing
 // and rejects every fabric.fu / fabric.op / fabric.yield malformedness
 // the check could observe (cross-share-group op_list, body-without-

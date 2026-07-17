@@ -25,8 +25,8 @@ The central compute mapping relation is a Compute Realization in the
 Mapping Artifact: one target-specific actor group, one selected
 `fabric.fu`, one valid semantic encoding, and complete actor/port
 correspondence. The actor group is selected during TechMapping and is not
-persisted as `dataflow.subgraph` or another Canonical Dataflow Program
-partition. PE, switch, memory, and boundary records make that realization
+persisted as a Canonical Dataflow Program partition. PE, switch, memory, and
+boundary records make that realization
 executable on the selected hardware.
 
 ## Search Inputs

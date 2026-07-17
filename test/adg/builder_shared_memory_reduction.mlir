@@ -15,7 +15,7 @@
 // RUN: loom-pnr-map --dfg-mlir %t.dir/bitonic_stage/main_func.dfg.mlir --graph g_bitonic_stage_0 --hardware-mlir %t.dir/hardware.mlir --hardware shared_memory_reduction_adg --workload bitonic_stage --output %t.dir/bitonic_stage.mapping.csv --artifact %t.dir/bitonic_stage.mapping.json
 // RUN: FileCheck %s --check-prefix=BITONIC < %t.dir/bitonic_stage.mapping.json
 
-// BITONIC-DFG-LABEL: dataflow.graph.func private @g_bitonic_stage_0
+// BITONIC-DFG-LABEL: dataflow.graph private @g_bitonic_stage_0
 // BITONIC-DFG: builtin.unrealized_conversion_cast %arg1 : !llvm.ptr to memref<?xf32>
 // BITONIC-DFG-NOT: dataflow.demux {{.*}} : (i1, !llvm.ptr)
 // BITONIC-DFG-NOT: dataflow.invariant {{.*}} : !llvm.ptr
@@ -94,7 +94,7 @@
 // BITONIC-DAG: "status": "pass"
 
 module {
-  dataflow.graph.func private @minmax_pressure(
+  dataflow.graph private @minmax_pressure(
       %ctrl: none,
       %idx: index,
       %x: i32,
@@ -102,7 +102,7 @@ module {
       %a: memref<?xi8>,
       %b: memref<?xi8>,
       %out: memref<?xi8>)
-      -> none
+      -> ()
       attributes {input_segments = array<i32: 3, 0, 3>,
                   result_segments = array<i32: 0, 0, 0>} {
     %c0 = dataflow.constant %ctrl {const_value = 0 : index} : index

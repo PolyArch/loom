@@ -1,4 +1,3 @@
-// RUN: not loom-dfg-sim %s --graph post_done_state --output %t.post.json 2>&1 | FileCheck %s --check-prefix=POST
 // RUN: loom-dfg-sim %s --graph empty_stream_export --output %t.empty.json
 // RUN: FileCheck %s --check-prefix=EMPTY-STREAM < %t.empty.json
 // RUN: loom-dfg-sim %s --graph multi_stream_export --output %t.multi.json
@@ -17,14 +16,8 @@
 // RUN: FileCheck %s --check-prefix=FRESH-ISOLATED < %t.fresh-isolated.json
 // RUN: loom-dfg-sim %s --graph fresh_dynamic_memory_export --arg 0=1 --arg 1=13 --output %t.dynamic.json
 // RUN: FileCheck %s --check-prefix=DYNAMIC < %t.dynamic.json
-// RUN: not loom-dfg-sim %s --graph invalid_dynamic_memory_export --arg 0=13 --output %t.invalid-dynamic.json 2>&1 | FileCheck %s --check-prefix=DYNAMIC-GATE
-// RUN: not loom-dfg-sim %s --graph invalid_memory_export --output %t.invalid-memory.json 2>&1 | FileCheck %s --check-prefix=MEMORY-GATE
-// RUN: not loom-dfg-sim %s --graph invalid_fresh_pointer_export --output %t.invalid-pointer.json 2>&1 | FileCheck %s --check-prefix=FRESH-POINTER-GATE
-// RUN: not loom-pnr-map --dfg-mlir %s --graph invalid_fresh_pointer_export --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload invalid_fresh_pointer_export --output %t.invalid-pointer.csv --artifact %t.invalid-pointer.mapping.json 2>&1 | FileCheck %s --check-prefix=FRESH-POINTER-GATE
 // RUN: loom-dfg-sim %s --graph invocation_reentry --invocations 3 --arg 0=0 --arg 0=1 --arg 0=2 --memref 1=0,0,0 --output %t.reentry.json
 // RUN: FileCheck %s --check-prefix=REENTRY < %t.reentry.json
-
-// POST: retirement frontier does not cover close/reset of 'dataflow.stream'
 
 // EMPTY-STREAM-DAG: "status": "pass"
 // EMPTY-STREAM-DAG: "final_stream_outputs": [
@@ -76,12 +69,6 @@
 // DYNAMIC-NEXT: "i32:13"
 // DYNAMIC: "status": "pass"
 
-// DYNAMIC-GATE: memref.alloc dynamic extent must be a graph value input
-
-// MEMORY-GATE: nontrivial graph uses raw start as a retirement completion witness
-
-// FRESH-POINTER-GATE: fresh memory export must use a memref result
-
 // REENTRY-DAG: "status": "pass"
 // REENTRY-DAG: "dataflow.load": 3
 // REENTRY-DAG: "dataflow.store": 3
@@ -91,21 +78,8 @@
 // REENTRY-DAG: "i32:1"
 
 module {
-  dataflow.graph.func private @post_done_state(%start: none) -> (none, i32)
-      attributes {input_segments = array<i32: 0, 0, 0>,
-                  result_segments = array<i32: 1, 0, 0>} {
-    %c0 = dataflow.constant %start {const_value = 0 : i32} : i32
-    %c1 = dataflow.constant %start {const_value = 1 : i32} : i32
-    %c2 = dataflow.constant %start {const_value = 2 : i32} : i32
-    %iv, %phase = dataflow.stream %c0, %c2, %c1
-        step add while slt : i32
-    %published:2 = dataflow.sync %start, %iv
-        : (none, i32) -> (none, i32)
-    dataflow.graph.return %published#0, %published#1 : none, i32
-  }
-
-  dataflow.graph.func private @empty_stream_export(%start: none)
-      -> (none, i32)
+  dataflow.graph private @empty_stream_export(%start: none)
+      -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 0, 1, 0>} {
     %c0 = dataflow.constant %start {const_value = 0 : i32} : i32
@@ -119,8 +93,8 @@ module {
         complete(%complete#0 : none)
   }
 
-  dataflow.graph.func private @multi_stream_export(%start: none)
-      -> (none, i32)
+  dataflow.graph private @multi_stream_export(%start: none)
+      -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 0, 1, 0>} {
     %c0 = dataflow.constant %start {const_value = 0 : i32} : i32
@@ -135,16 +109,16 @@ module {
         complete(%complete#0 : none)
   }
 
-  dataflow.graph.func private @memory_export(
-      %start: none, %memory: memref<?xi32>) -> (none, memref<?xi32>)
+  dataflow.graph private @memory_export(
+      %start: none, %memory: memref<?xi32>) -> (memref<?xi32>)
       attributes {input_segments = array<i32: 0, 0, 1>,
                   result_segments = array<i32: 0, 0, 1>} {
     dataflow.graph.return values() streams()
         memories(%memory : memref<?xi32>) complete(%start : none)
   }
 
-  dataflow.graph.func private @view_memory_export(
-      %start: none, %memory: memref<2xi32>) -> (none, memref<?xi32>)
+  dataflow.graph private @view_memory_export(
+      %start: none, %memory: memref<2xi32>) -> (memref<?xi32>)
       attributes {input_segments = array<i32: 0, 0, 1>,
                   result_segments = array<i32: 0, 0, 1>} {
     %view = memref.cast %memory : memref<2xi32> to memref<?xi32>
@@ -152,25 +126,16 @@ module {
         memories(%view : memref<?xi32>) complete(%start : none)
   }
 
-  dataflow.graph.func private @pointer_memory_export(
-      %start: none, %memory: !llvm.ptr) -> (none, !llvm.ptr)
+  dataflow.graph private @pointer_memory_export(
+      %start: none, %memory: !llvm.ptr) -> (!llvm.ptr)
       attributes {input_segments = array<i32: 0, 0, 1>,
                   result_segments = array<i32: 0, 0, 1>} {
     dataflow.graph.return values() streams()
         memories(%memory : !llvm.ptr) complete(%start : none)
   }
 
-  dataflow.graph.func private @invalid_memory_export(
-      %start: none, %memory: memref<?xi32>) -> (none, memref<?xi32>)
-      attributes {input_segments = array<i32: 0, 0, 1>,
-                  result_segments = array<i32: 0, 0, 1>} {
-    %unused = dataflow.constant %start {const_value = 1 : i32} : i32
-    dataflow.graph.return values() streams()
-        memories(%memory : memref<?xi32>) complete(%start : none)
-  }
-
-  dataflow.graph.func private @fresh_memory_export(
-      %start: none, %value: i32) -> (none, memref<1xi32>)
+  dataflow.graph private @fresh_memory_export(
+      %start: none, %value: i32) -> (memref<1xi32>)
       attributes {input_segments = array<i32: 1, 0, 0>,
                   result_segments = array<i32: 0, 0, 1>} {
     %slot = memref.alloc() : memref<1xi32>
@@ -180,8 +145,8 @@ module {
         memories(%slot : memref<1xi32>) complete(%done : none)
   }
 
-  dataflow.graph.func private @fresh_dynamic_memory_export(
-      %start: none, %extent: index, %value: i32) -> (none, memref<?xi32>)
+  dataflow.graph private @fresh_dynamic_memory_export(
+      %start: none, %extent: index, %value: i32) -> (memref<?xi32>)
       attributes {input_segments = array<i32: 2, 0, 0>,
                   result_segments = array<i32: 0, 0, 1>} {
     %slot = memref.alloc(%extent) : memref<?xi32>
@@ -191,8 +156,8 @@ module {
         memories(%slot : memref<?xi32>) complete(%done : none)
   }
 
-  dataflow.graph.func private @fresh_memory_reentry(
-      %start: none, %write: i1, %value: i32) -> (none, memref<1xi32>)
+  dataflow.graph private @fresh_memory_reentry(
+      %start: none, %write: i1, %value: i32) -> (memref<1xi32>)
       attributes {input_segments = array<i32: 2, 0, 0>,
                   result_segments = array<i32: 0, 0, 1>} {
     %slot = memref.alloc() : memref<1xi32>
@@ -206,30 +171,8 @@ module {
         memories(%slot : memref<1xi32>) complete(%complete : none)
   }
 
-  dataflow.graph.func private @invalid_dynamic_memory_export(
-      %start: none, %value: i32) -> (none, memref<?xi32>)
-      attributes {input_segments = array<i32: 1, 0, 0>,
-                  result_segments = array<i32: 0, 0, 1>} {
-    %extent = dataflow.constant %start {const_value = 1 : index} : index
-    %slot = memref.alloc(%extent) : memref<?xi32>
-    %index = dataflow.constant %start {const_value = 0 : index} : index
-    %done = dataflow.store %slot[%index] %value %start : memref<?xi32>
-    dataflow.graph.return values() streams()
-        memories(%slot : memref<?xi32>) complete(%done : none)
-  }
-
-  dataflow.graph.func private @invalid_fresh_pointer_export(%start: none)
-      -> (none, !llvm.ptr)
-      attributes {input_segments = array<i32: 0, 0, 0>,
-                  result_segments = array<i32: 0, 0, 1>} {
-    %slot = memref.alloc() : memref<1xi32>
-    %raw = builtin.unrealized_conversion_cast %slot : memref<1xi32> to !llvm.ptr
-    dataflow.graph.return values() streams()
-        memories(%raw : !llvm.ptr) complete(%start : none)
-  }
-
-  dataflow.graph.func private @invocation_reentry(
-      %start: none, %index: index, %memory: memref<?xi32>) -> none
+  dataflow.graph private @invocation_reentry(
+      %start: none, %index: index, %memory: memref<?xi32>) -> ()
       attributes {input_segments = array<i32: 1, 0, 1>,
                   result_segments = array<i32: 0, 0, 0>} {
     %one = dataflow.constant %start {const_value = 1 : i32} : i32

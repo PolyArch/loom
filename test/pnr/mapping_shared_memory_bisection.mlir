@@ -19,7 +19,7 @@
 // JSON-NOT: "resource_pressure"
 
 module {
-  dataflow.graph.func private @bisection_step(
+  dataflow.graph private @bisection_step(
       %ctrl: none,
       %half: f32,
       %zero: f32,
@@ -29,7 +29,7 @@ module {
       %input_fa: !llvm.ptr,
       %input_fc: !llvm.ptr,
       %output_a: !llvm.ptr,
-      %output_b: !llvm.ptr) -> none
+      %output_b: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 3, 0, 6>,
                   result_segments = array<i32: 0, 0, 0>} {
     %out_b = builtin.unrealized_conversion_cast %output_b : !llvm.ptr to memref<?xf32>

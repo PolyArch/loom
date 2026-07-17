@@ -88,7 +88,7 @@
 // CTLZ-DAG: "i32:27"
 
 module {
-  dataflow.graph.func private @compare_select(%ctrl: none) -> (none, f32)
+  dataflow.graph private @compare_select(%ctrl: none) -> (f32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %lhs = dataflow.constant %ctrl {const_value = 9.000000e+00 : f32} : f32
@@ -100,7 +100,7 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, f32
   }
 
-  dataflow.graph.func private @integer_mix(%ctrl: none) -> (none, i32)
+  dataflow.graph private @integer_mix(%ctrl: none) -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %wide = dataflow.constant %ctrl {const_value = 305419896 : i64} : i64
@@ -122,7 +122,7 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i32
   }
 
-  dataflow.graph.func private @byte_swap(%ctrl: none) -> (none, i32)
+  dataflow.graph private @byte_swap(%ctrl: none) -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %value = dataflow.constant %ctrl {const_value = 305419896 : i32} : i32
@@ -132,7 +132,7 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i32
   }
 
-  dataflow.graph.func private @zext_bits(%ctrl: none) -> (none, i64)
+  dataflow.graph private @zext_bits(%ctrl: none) -> (i64)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %value = dataflow.constant %ctrl {const_value = -1 : i32} : i32
@@ -142,7 +142,7 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i64
   }
 
-  dataflow.graph.func private @uint_to_float(%ctrl: none) -> (none, f32)
+  dataflow.graph private @uint_to_float(%ctrl: none) -> (f32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %value = dataflow.constant %ctrl {const_value = 7 : i32} : i32
@@ -152,8 +152,8 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, f32
   }
 
-  dataflow.graph.func private @unsigned_extend_and_minmax(%ctrl: none)
-      -> (none, i32, i32, i32, index, i32)
+  dataflow.graph private @unsigned_extend_and_minmax(%ctrl: none)
+      -> (i32, i32, i32, index, i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 5, 0, 0>} {
     %byte = dataflow.constant %ctrl {const_value = -1 : i8} : i8
@@ -173,8 +173,8 @@ module {
         : none, i32, i32, i32, index, i32
   }
 
-  dataflow.graph.func private @unsigned_saturating_sub(%ctrl: none)
-      -> (none, i32, i32)
+  dataflow.graph private @unsigned_saturating_sub(%ctrl: none)
+      -> (i32, i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 2, 0, 0>} {
     %small = dataflow.constant %ctrl {const_value = 3 : i32} : i32
@@ -189,8 +189,8 @@ module {
         : none, i32, i32
   }
 
-  dataflow.graph.func private @signed_minmax(%ctrl: none)
-      -> (none, i8, i8)
+  dataflow.graph private @signed_minmax(%ctrl: none)
+      -> (i8, i8)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 2, 0, 0>} {
     %minus_four = dataflow.constant %ctrl {const_value = -4 : i8} : i8
@@ -203,8 +203,8 @@ module {
         : none, i8, i8
   }
 
-  dataflow.graph.func private @count_leading_zeros(%ctrl: none)
-      -> (none, i32)
+  dataflow.graph private @count_leading_zeros(%ctrl: none)
+      -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %value = dataflow.constant %ctrl {const_value = 16 : i32} : i32

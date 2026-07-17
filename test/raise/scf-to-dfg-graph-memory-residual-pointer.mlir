@@ -5,9 +5,9 @@
 module attributes {dlti.dl_spec = #dlti.dl_spec<
   #dlti.dl_entry<!llvm.ptr, dense<[8, 8, 8, 8]> : vector<4xi64>>
 >} {
-  dataflow.graph.func private @wrapped_pointer_index(
+  dataflow.graph private @wrapped_pointer_index(
       %start: none, %lower: i8, %upper: i8, %step: i8, %base: !llvm.ptr)
-      -> (none, i8)
+      -> (i8)
       attributes {input_segments = array<i32: 3, 0, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
     %index, %phase = dataflow.stream %lower, %upper, %step
@@ -25,9 +25,9 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<
   #dlti.dl_entry<index, 32>,
   #dlti.dl_entry<!llvm.ptr, dense<[64, 64, 64, 64]> : vector<4xi64>>
 >} {
-  dataflow.graph.func private @narrow_index(
+  dataflow.graph private @narrow_index(
       %start: none, %lower: i64, %upper: i64, %step: i64, %base: !llvm.ptr)
-      -> (none, i32)
+      -> (i32)
       attributes {input_segments = array<i32: 3, 0, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
     %index, %phase = dataflow.stream %lower, %upper, %step
@@ -46,9 +46,9 @@ module attributes {
     #dlti.dl_entry<!llvm.ptr<1>, dense<[64, 64, 64, 64]> : vector<4xi64>>
   >
 } {
-  dataflow.graph.func private @non_integral_pointer(
+  dataflow.graph private @non_integral_pointer(
       %start: none, %lower: i64, %upper: i64, %step: i64,
-      %base: !llvm.ptr<1>) -> (none, i32)
+      %base: !llvm.ptr<1>) -> (i32)
       attributes {input_segments = array<i32: 3, 0, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
     %index, %phase = dataflow.stream %lower, %upper, %step
@@ -63,9 +63,9 @@ module attributes {
 // -----
 
 module attributes {llvm.data_layout = "e-p:32:32"} {
-  dataflow.graph.func private @llvm_layout_pointer_index(
+  dataflow.graph private @llvm_layout_pointer_index(
       %start: none, %lower: i64, %upper: i64, %step: i64, %base: !llvm.ptr)
-      -> (none, i32)
+      -> (i32)
       attributes {input_segments = array<i32: 3, 0, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
     %index, %phase = dataflow.stream %lower, %upper, %step

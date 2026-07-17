@@ -37,29 +37,29 @@
 // SADD16-JSON-DAG: "hardware": "arm_intrinsic_adg::fabric.op#3"
 
 module {
-  dataflow.graph.func private @arm_qsub16(%ctrl: none, %zero: i32, %value: i32)
-      -> (none, i32) {
+  dataflow.graph private @arm_qsub16(%ctrl: none, %zero: i32, %value: i32)
+      -> (i32) {
     %packed = llvm.call_intrinsic "llvm.arm.qsub16"(%zero, %value)
         : (i32, i32) -> i32
     dataflow.graph.return %ctrl, %packed : none, i32
   }
 
-  dataflow.graph.func private @arm_qsub8(%ctrl: none, %zero: i32, %value: i32)
-      -> (none, i32) {
+  dataflow.graph private @arm_qsub8(%ctrl: none, %zero: i32, %value: i32)
+      -> (i32) {
     %packed = llvm.call_intrinsic "llvm.arm.qsub8"(%zero, %value)
         : (i32, i32) -> i32
     dataflow.graph.return %ctrl, %packed : none, i32
   }
 
-  dataflow.graph.func private @arm_qadd16(%ctrl: none, %lhs: i32, %rhs: i32)
-      -> (none, i32) {
+  dataflow.graph private @arm_qadd16(%ctrl: none, %lhs: i32, %rhs: i32)
+      -> (i32) {
     %packed = llvm.call_intrinsic "llvm.arm.qadd16"(%lhs, %rhs)
         : (i32, i32) -> i32
     dataflow.graph.return %ctrl, %packed : none, i32
   }
 
-  dataflow.graph.func private @arm_sadd16(%ctrl: none, %lhs: i32, %rhs: i32)
-      -> (none, i32) {
+  dataflow.graph private @arm_sadd16(%ctrl: none, %lhs: i32, %rhs: i32)
+      -> (i32) {
     %packed = llvm.call_intrinsic "llvm.arm.sadd16"(%lhs, %rhs)
         : (i32, i32) -> i32
     dataflow.graph.return %ctrl, %packed : none, i32

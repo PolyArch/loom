@@ -30,10 +30,10 @@
 // ALLOW-JSON-NOT: ".in"
 
 module {
-  dataflow.graph.func private @switch_route(%ctrl: none, %idx: index,
+  dataflow.graph private @switch_route(%ctrl: none, %idx: index,
                                             %rhs: i32,
                                             %mem: memref<?xi32>)
-      -> (none, i32)
+      -> (i32)
       attributes {input_segments = array<i32: 2, 0, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
     %data, %done = dataflow.load %mem[%idx] %ctrl : memref<?xi32>

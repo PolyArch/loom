@@ -69,7 +69,7 @@ are observable without treating a memory capability as scalar payload.
 
 ## PnR Mapping Outputs
 
-`loom-pnr-map` consumes one `dataflow.graph.func` and one Fabric hardware root.
+`loom-pnr-map` consumes one `dataflow.graph` and one Fabric hardware root.
 It emits a compact CSV row and can also emit a JSON mapping artifact.
 
 The CSV columns are:

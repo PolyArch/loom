@@ -48,7 +48,7 @@
 // DIRECT: "dataflow.store": 2
 // DIRECT: "status": "pass"
 
-// DIRECT-LOWERED-IR-LABEL: dataflow.graph.func private @pointer_memcpy_direct
+// DIRECT-LOWERED-IR-LABEL: dataflow.graph private @pointer_memcpy_direct
 // DIRECT-LOWERED-IR: arith.cmpi ult
 // DIRECT-LOWERED-IR: dataflow.carry
 // DIRECT-LOWERED-IR: dataflow.load
@@ -57,7 +57,7 @@
 // DIRECT-LOWERED-IR-NOT: scf.while
 // DIRECT-LOWERED-IR: dataflow.graph.return
 
-// DIRECT-OFFSET-LOWERED-IR-LABEL: dataflow.graph.func private @pointer_memcpy_direct_offset
+// DIRECT-OFFSET-LOWERED-IR-LABEL: dataflow.graph private @pointer_memcpy_direct_offset
 // DIRECT-OFFSET-LOWERED-IR: arith.cmpi ult
 // DIRECT-OFFSET-LOWERED-IR: dataflow.carry
 // DIRECT-OFFSET-LOWERED-IR: dataflow.invariant
@@ -124,9 +124,9 @@
 // SRCOOB-DAG: "dataflow.store": 2
 
 module {
-  dataflow.graph.func private @pointer_memcpy_stream(
+  dataflow.graph private @pointer_memcpy_stream(
       %ctrl: none, %lb: i32, %ub: i32, %step: i32, %copy_bytes: i32,
-      %dst_stride: i32, %src: !llvm.ptr, %dst: !llvm.ptr) -> none
+      %dst_stride: i32, %src: !llvm.ptr, %dst: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 5, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     scf.for %i = %lb to %ub step %step : i32 {
@@ -143,9 +143,9 @@ module {
     dataflow.graph.return %ctrl : none
   }
 
-  dataflow.graph.func private @pointer_memcpy_direct(
+  dataflow.graph private @pointer_memcpy_direct(
       %ctrl: none, %copy_bytes: i32, %src: !llvm.ptr, %dst: !llvm.ptr)
-      -> none attributes {input_segments = array<i32: 1, 0, 2>,
+      -> () attributes {input_segments = array<i32: 1, 0, 2>,
                           result_segments = array<i32: 0, 0, 0>} {
     "llvm.intr.memcpy"(%dst, %src, %copy_bytes)
       <{arg_attrs = [{llvm.align = 1 : i64}, {llvm.align = 1 : i64}, {}],
@@ -153,9 +153,9 @@ module {
     dataflow.graph.return %ctrl : none
   }
 
-  dataflow.graph.func private @pointer_memcpy_direct_offset(
+  dataflow.graph private @pointer_memcpy_direct_offset(
       %ctrl: none, %copy_bytes: i32, %dst_offset: i32,
-      %src: !llvm.ptr, %dst: !llvm.ptr) -> none
+      %src: !llvm.ptr, %dst: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 2, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     %dst_at = llvm.getelementptr inbounds|nuw %dst[%dst_offset]
@@ -166,9 +166,9 @@ module {
     dataflow.graph.return %ctrl : none
   }
 
-  dataflow.graph.func private @pointer_memcpy_structured_if(
+  dataflow.graph private @pointer_memcpy_structured_if(
       %ctrl: none, %copy_bytes: i32, %do_copy: i1,
-      %src: !llvm.ptr, %dst: !llvm.ptr) -> none
+      %src: !llvm.ptr, %dst: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 2, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     scf.if %do_copy {
@@ -179,9 +179,9 @@ module {
     dataflow.graph.return %ctrl : none
   }
 
-  dataflow.graph.func private @pointer_memcpy_structured_i32_gep(
+  dataflow.graph private @pointer_memcpy_structured_i32_gep(
       %ctrl: none, %copy_bytes: i32, %do_copy: i1, %elem_offset: i32,
-      %src: !llvm.ptr, %dst: !llvm.ptr) -> none
+      %src: !llvm.ptr, %dst: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 3, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     scf.if %do_copy {

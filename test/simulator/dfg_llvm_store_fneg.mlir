@@ -13,8 +13,8 @@
 // CHECK-DAG: "f32:3.500000"
 
 module {
-  dataflow.graph.func private @llvm_store_fneg(%ctrl: none, %src: !llvm.ptr,
-                                               %dst: !llvm.ptr) -> none
+  dataflow.graph private @llvm_store_fneg(%ctrl: none, %src: !llvm.ptr,
+                                               %dst: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 0, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     %offset = dataflow.constant %ctrl {const_value = 4 : i64} : i64

@@ -1,4 +1,4 @@
-// RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/../unit/anchor/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
+// RUN: loom %s -loom-synthesize-configured-functions='config=%p/../unit/anchor/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
 
 // Three func.funcs in two groups (`alu` x 2, `fpu` x 1). With
 // `dump-stats=true` we expect one `synth-stat` remark per group, ordered
@@ -11,23 +11,14 @@
 // CHECK-SAME: covered=1/1 nodes=1/0/0 encodings=1
 
 func.func @pat_alu_addi(%a: i32, %b: i32) -> i32 attributes {loom.synth_group = "alu"} {
-  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
-    %s = arith.addi %x, %y : i32
-    dataflow.yield %s : i32
-  }
-  return %r : i32
+  %s = arith.addi %a, %b : i32
+  return %s : i32
 }
 func.func @pat_alu_subi(%a: i32, %b: i32) -> i32 attributes {loom.synth_group = "alu"} {
-  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
-    %s = arith.subi %x, %y : i32
-    dataflow.yield %s : i32
-  }
-  return %r : i32
+  %s = arith.subi %a, %b : i32
+  return %s : i32
 }
 func.func @pat_fpu_addf(%a: f32, %b: f32) -> f32 attributes {loom.synth_group = "fpu"} {
-  %r = dataflow.subgraph(%x = %a : f32, %y = %b : f32) -> f32 {
-    %s = arith.addf %x, %y : f32
-    dataflow.yield %s : f32
-  }
-  return %r : f32
+  %s = arith.addf %a, %b : f32
+  return %s : f32
 }

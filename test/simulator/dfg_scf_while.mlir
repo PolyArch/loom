@@ -17,9 +17,9 @@
 // MIN-DAG: "i8:7"
 
 module {
-  dataflow.graph.func private @structured_while_pointer_min(
+  dataflow.graph private @structured_while_pointer_min(
       %ctrl: none, %iv0: i32, %ub: i32, %step: i32,
-      %lhs: memref<?xi8>, %rhs: memref<?xi8>, %out: memref<?xi8>) -> none
+      %lhs: memref<?xi8>, %rhs: memref<?xi8>, %out: memref<?xi8>) -> ()
       attributes {input_segments = array<i32: 3, 0, 3>,
                   result_segments = array<i32: 0, 0, 0>} {
     %done = scf.while (%iv = %iv0) : (i32) -> i32 {

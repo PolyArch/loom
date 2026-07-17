@@ -58,7 +58,7 @@ The target Loom stack must define trace edges for this path:
 C/C++ or CMSIS source
   -> LLVM IR
   -> raised MLIR / SCF-shaped representation
-  -> dataflow.thread / dataflow.graph / dataflow.subgraph
+  -> dataflow.thread / dataflow.graph
   -> DFG-sim report
   -> ADG Builder C++ hardware description
   -> fabric.system + fabric.module hardware IR

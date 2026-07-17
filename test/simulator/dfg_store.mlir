@@ -12,9 +12,9 @@
 // CHECK-DAG: "f32:7"
 
 module {
-  dataflow.graph.func private @store_then_load(
+  dataflow.graph private @store_then_load(
       %ctrl: none, %idx: index, %value: f32, %ptr: !llvm.ptr)
-      -> (none, f32)
+      -> (f32)
       attributes {input_segments = array<i32: 2, 0, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
     %store_mem = builtin.unrealized_conversion_cast %ptr : !llvm.ptr to memref<?xf32>

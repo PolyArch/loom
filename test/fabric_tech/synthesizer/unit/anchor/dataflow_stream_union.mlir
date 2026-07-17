@@ -1,4 +1,4 @@
-// RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
+// RUN: loom %s -loom-synthesize-configured-functions='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
 
 // Predicate selection produces complete modes over one fixed add datapath.
 
@@ -18,21 +18,13 @@
 
 func.func @pat_stream_inc_lt(%lb: i32, %ub: i32, %step: i32) -> i32
     attributes {loom.synth_group = "stream_axes"} {
-  %r = dataflow.subgraph(%l = %lb : i32, %u = %ub : i32, %s = %step : i32)
-                       -> i32 {
-    %i, %rwc = dataflow.stream %l, %u, %s
-                step add while slt : i32
-    dataflow.yield %i : i32
-  }
-  return %r : i32
+  %i, %rwc = dataflow.stream %lb, %ub, %step
+              step add while slt : i32
+  return %i : i32
 }
 
 func.func @pat_stream_dec_gt(%lb: i32, %ub: i32, %step: i32) -> i32
     attributes {loom.synth_group = "stream_axes"} {
-  %r = dataflow.subgraph(%l = %lb : i32, %u = %ub : i32, %s = %step : i32)
-                       -> i32 {
-    %i, %rwc = dataflow.stream %l, %u, %s step add while sgt : i32
-    dataflow.yield %i : i32
-  }
-  return %r : i32
+  %i, %rwc = dataflow.stream %lb, %ub, %step step add while sgt : i32
+  return %i : i32
 }

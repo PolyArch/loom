@@ -54,7 +54,7 @@
 // MAPPING-NOT: "resource_pressure"
 
 module {
-  dataflow.graph.func private @quantized_window_pressure(
+  dataflow.graph private @quantized_window_pressure(
       %ctrl: none,
       %idx: index,
       %x: i32,
@@ -62,7 +62,7 @@ module {
       %in: memref<?xi8>,
       %out: memref<?xi8>,
       %out32: memref<?xi32>)
-      -> none
+      -> ()
       attributes {input_segments = array<i32: 3, 0, 3>,
                   result_segments = array<i32: 0, 0, 0>} {
     %c0 = dataflow.constant %ctrl {const_value = 0 : index} : index

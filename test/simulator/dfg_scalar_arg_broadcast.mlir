@@ -23,9 +23,9 @@
 // CARRY-DAG: "i32:6"
 
 module {
-  dataflow.graph.func private @scalar_arg_broadcast_store(
+  dataflow.graph private @scalar_arg_broadcast_store(
       %ctrl: none, %slot: index, %value: i32, %bias: i32,
-      %unit: none, %last: i1, %mem: memref<?xi32>) -> none
+      %unit: none, %last: i1, %mem: memref<?xi32>) -> ()
       attributes {input_segments = array<i32: 0, 5, 1>,
                   result_segments = array<i32: 0, 0, 0>} {
     %sum = arith.addi %value, %bias : i32
@@ -35,9 +35,9 @@ module {
     dataflow.graph.return %complete#1 : none
   }
 
-  dataflow.graph.func private @scalar_carry_seed_not_broadcast(
+  dataflow.graph private @scalar_carry_seed_not_broadcast(
       %ctrl: none, %init: i32, %cond: i1, %value: i32,
-      %phase_unit: none, %last: i1) -> (none, i32)
+      %phase_unit: none, %last: i1) -> (i32)
       attributes {input_segments = array<i32: 1, 4, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %carry = dataflow.carry %cond, %init, %next : i32

@@ -15,9 +15,9 @@
 // CHECK-DAG: "f32:5.500000"
 
 module {
-  dataflow.graph.func private @offset_carry_ptr(
+  dataflow.graph private @offset_carry_ptr(
       %ctrl: none, %lb: i32, %ub: i32, %step: i32, %bias: f32,
-      %src: !llvm.ptr, %dst: !llvm.ptr) -> none
+      %src: !llvm.ptr, %dst: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 4, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     scf.for %i = %lb to %ub step %step : i32 {

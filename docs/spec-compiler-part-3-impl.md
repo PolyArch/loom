@@ -220,7 +220,7 @@ The Part 3 slice is coherent only when all of the following hold:
 * ADG support for new retirement shapes should add only the operation modes and
   routes required by canonical graphs, with deterministic builder output and
   unchanged placement/routing assertions.
-* `Dataflow_GraphFuncOp::build(...)` accepts a payload-only
+* `Dataflow_GraphOp::build(...)` accepts a payload-only
   `FunctionType` plus normalized segment attributes. The body adds the
   separate leading `start : none` argument. Per-launch start and done use the
   separate `Dataflow_GraphLaunchOp` protocol operands/results.

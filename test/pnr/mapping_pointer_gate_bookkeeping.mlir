@@ -1,6 +1,8 @@
-// RUN: not loom-pnr-map --dfg-mlir %s --graph pointer_gate_memory_rejected --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload pointer_gate_memory_rejected --output %t.rejected.csv --artifact %t.rejected.json 2>&1 | FileCheck %s --check-prefix=REJECTED
+// RUN: rm -rf %t.dir
+// RUN: split-file %s %t.dir
+// RUN: not loom-pnr-map --dfg-mlir %t.dir/rejected.mlir --graph pointer_gate_memory_rejected --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload pointer_gate_memory_rejected --output %t.rejected.csv --artifact %t.rejected.json 2>&1 | FileCheck %s --check-prefix=REJECTED
 // RUN: loom-adg-builder-test --shared-reduction --output %t.hardware.mlir
-// RUN: loom-pnr-map --dfg-mlir %s --graph projected_carry --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload projected_carry --output %t.projected.csv --artifact %t.projected.json
+// RUN: loom-pnr-map --dfg-mlir %t.dir/projected.mlir --graph projected_carry --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload projected_carry --output %t.projected.csv --artifact %t.projected.json
 // RUN: FileCheck %s --check-prefix=PROJECTED-CSV < %t.projected.csv
 // RUN: FileCheck %s --check-prefix=PROJECTED-JSON < %t.projected.json
 
@@ -19,19 +21,23 @@
 // PROJECTED-JSON-DAG: "edge_ref": "dataflow.carry#0.result0->dataflow.gate#0.operand1"
 // PROJECTED-JSON-DAG: "edge_ref": "dataflow.carry#0.result0->dataflow.demux#0.operand1"
 
+//--- rejected.mlir
 module {
-  dataflow.graph.func private @pointer_gate_memory_rejected(
-      %ctrl: none, %cond: i1, %ptr: !llvm.ptr) -> none
+  dataflow.graph private @pointer_gate_memory_rejected(
+      %ctrl: none, %cond: i1, %ptr: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 0, 1, 1>,
                   result_segments = array<i32: 0, 0, 0>} {
     %after_cond, %after_ptr = dataflow.gate %cond, %ptr : !llvm.ptr
     dataflow.graph.return values() streams() memories()
         complete(%ctrl : none)
   }
+}
 
-  dataflow.graph.func private @projected_carry(
+//--- projected.mlir
+module {
+  dataflow.graph private @projected_carry(
       %ctrl: none, %phase: i1, %init: i32, %next: i32, %unit: none)
-      -> (none, i32, i32)
+      -> (i32, i32)
       attributes {input_segments = array<i32: 0, 4, 0>,
                   result_segments = array<i32: 1, 1, 0>} {
     %raw = dataflow.carry %phase, %init, %next : i32

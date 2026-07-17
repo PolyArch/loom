@@ -1,4 +1,4 @@
-// RUN: loom %s -loom-generalize-subgraphs-to-fu 2>&1 | FileCheck %s
+// RUN: loom %s -loom-synthesize-configured-functions 2>&1 | FileCheck %s
 
 // The module already contains a top-level `func.func @fu_y` tagged with
 // `loom.synthesized_for = "y"` that is a real synthesized wrapper:
@@ -40,9 +40,6 @@ fabric.module @fu_y(%a: !fabric.bits<32>, %b: !fabric.bits<32>)
 }
 
 func.func @pat_addi(%a: i32, %b: i32) -> i32 attributes {loom.synth_group = "y"} {
-  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
-    %s = arith.addi %x, %y : i32
-    dataflow.yield %s : i32
-  }
-  return %r : i32
+  %s = arith.addi %a, %b : i32
+  return %s : i32
 }

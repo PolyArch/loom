@@ -82,8 +82,8 @@ configurations realize different internal compute graphs over the
 same hardware: they reshape the in-FU op connectivity rather than
 attaching to the FU's external inputs / outputs. Allowing back-edges
 in the body lets configurable compute ops (e.g.
-`fabric.op[@dataflow.carry]`) and user-facing cyclic
-`dataflow.subgraph`s be matched or bound to an FU through mapping.
+`fabric.op[@dataflow.carry]`) and cyclic `ConfiguredFunction` records be
+matched or bound to an FU through mapping.
 The FU body region is a graph region
 (`RegionKindInterface::Graph`).
 

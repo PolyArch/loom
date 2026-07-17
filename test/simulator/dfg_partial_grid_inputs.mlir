@@ -13,9 +13,9 @@
 // CHECK-DAG: "i32:7"
 
 module {
-  dataflow.graph.func private @partial_grid(
+  dataflow.graph private @partial_grid(
       %ctrl: none, %idx: index, %scalar: i32, %unit: none,
-      %last: i1, %mem: memref<?xi32>) -> none
+      %last: i1, %mem: memref<?xi32>) -> ()
       attributes {input_segments = array<i32: 0, 4, 1>,
                   result_segments = array<i32: 0, 0, 0>} {
     %stored = dataflow.store %mem[%idx] %scalar %unit : memref<?xi32>

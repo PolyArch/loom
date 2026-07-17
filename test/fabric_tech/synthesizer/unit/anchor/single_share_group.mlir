@@ -1,4 +1,4 @@
-// RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
+// RUN: loom %s -loom-synthesize-configured-functions='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
 
 // Tier A: two subgraphs of identical topology (yield <- bin-op of two
 // block args) sharing the arith.addi/subi hardware-share group. The
@@ -17,18 +17,12 @@
 
 func.func @pat_addi(%a: i32, %b: i32) -> i32
     attributes {loom.synth_group = "alu_int_32"} {
-  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
-    %s = arith.addi %x, %y : i32
-    dataflow.yield %s : i32
-  }
-  return %r : i32
+  %s = arith.addi %a, %b : i32
+  return %s : i32
 }
 
 func.func @pat_subi(%a: i32, %b: i32) -> i32
     attributes {loom.synth_group = "alu_int_32"} {
-  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
-    %s = arith.subi %x, %y : i32
-    dataflow.yield %s : i32
-  }
-  return %r : i32
+  %s = arith.subi %a, %b : i32
+  return %s : i32
 }

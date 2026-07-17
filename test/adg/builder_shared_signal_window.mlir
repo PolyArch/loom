@@ -46,7 +46,7 @@
 // MAPPING-DAG: "status": "pass"
 
 module {
-  dataflow.graph.func private @signal_window_pressure(
+  dataflow.graph private @signal_window_pressure(
       %ctrl: none,
       %lb: i32,
       %ub: i32,
@@ -54,7 +54,7 @@ module {
       %scale: f32,
       %input: memref<?xf32>,
       %output: memref<?xf32>)
-      -> none
+      -> ()
       attributes {input_segments = array<i32: 4, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     %zero = dataflow.constant %ctrl {const_value = 0 : index} : index

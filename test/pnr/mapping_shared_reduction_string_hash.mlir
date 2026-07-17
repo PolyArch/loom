@@ -34,11 +34,11 @@
 // WINDOW-JSON-NOT: ".in"
 
 module {
-  dataflow.graph.func private @string_hash_power(%ctrl: none, %start: i32,
+  dataflow.graph private @string_hash_power(%ctrl: none, %start: i32,
                                                   %end: i32, %step: i32,
                                                   %shift: i32, %modulus: i32,
                                                   %init: i32, %unit: none)
-      -> (none, i32)
+      -> (i32)
       attributes {input_segments = array<i32: 6, 1, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %index, %rwc = dataflow.stream %start, %end, %step
@@ -58,10 +58,10 @@ module {
         complete(%retired#0 : none)
   }
 
-  dataflow.graph.func private @string_hash_window(
+  dataflow.graph private @string_hash_window(
       %ctrl: none, %start: i64, %end: i64, %step: i64, %shift: i32,
       %modulus: i32, %init: i32, %unit: none, %input: memref<?xi32>)
-      -> (none, i32)
+      -> (i32)
       attributes {input_segments = array<i32: 6, 1, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
     %index, %rwc = dataflow.stream %start, %end, %step

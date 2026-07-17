@@ -11,8 +11,8 @@
 // ARTIFACT-DAG: "operation": "math.exp"
 
 module {
-  dataflow.graph.func private @math_exp_graph(%ctrl: none, %x: f32)
-      -> (none, f32) {
+  dataflow.graph private @math_exp_graph(%ctrl: none, %x: f32)
+      -> (f32) {
     %y = math.exp %x : f32
     dataflow.graph.return %ctrl, %y : none, f32
   }

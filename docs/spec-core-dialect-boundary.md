@@ -38,7 +38,6 @@ requests.
 |-------|------|--------------|
 | `dataflow.thread` | Logical multidimensional launch domains, async thread-completion tokens, and graph-launch containment legality. | Physical AccCore identity, route selection, schedule slots, temporal tags, topology coordinates, hardware capacity. |
 | `dataflow.graph` | Symbol-bearing SpatialCore software DFG definitions launched from thread bodies. | Host launch ABI, physical SpatialCore instance identity, hardware routes, resource-sharing assignments. |
-| `dataflow.subgraph` | Legacy adapter input for current migration passes. | Canonical software partition authority, hardware hierarchy, PE identity, route, schedule, temporal tag, time-sharing decision. |
 | `fabric.system` | System-level ADG: HostCore nodes, AccCore nodes, memories, caches, interconnect, external ports, protocol ports, directed channels, explicit one-to-one links, domains, address spaces, coherence, consistency. | Software execution semantics, selected software placement, workload schedule, simulator trace state. |
 | `fabric.module` | SpatialCore or CGRA hardware templates, including PEs, FUs, switches, memories, FIFOs, boundaries, and local hardware capabilities. | A system-level SoC graph, selected workload placement, dataflow graph definition semantics. |
 | Mapping artifact | Thread binding, graph binding, operation or subgraph binding, edge routes, schedule records, temporal tags, buffers, memory bindings, resource sharing, mapping diagnostics, mapping metrics. | New software operations, new hardware nodes or links, runtime fallback policy, simulator-only observations. |
@@ -74,13 +73,10 @@ is no conversion between the two token domains.
 
 `dataflow.graph` is the single canonical SpatialCore software DFG
 definition surface. It is symbol-bearing, function-like, module-scope,
-and executes only through `dataflow.graph.launch` from a thread body.
-The target dataflow dialect has no separate
-`dataflow.graph.func` surface.
+and executes only through `dataflow.graph.launch` from a thread body. There is
+no regional graph form or separate graph callable surface.
 
-`dataflow.subgraph` is not part of the canonical Dataflow Program. Current
-migration passes may read it through a thin adapter into the shared canonical
-function-graph model. Actor grouping and selected FU realization belong to the
+Actor grouping and selected FU realization belong to the
 Mapping artifact, not to a persistent subgraph operation.
 
 Logical partitioning constructs and thread-axis attributes may describe

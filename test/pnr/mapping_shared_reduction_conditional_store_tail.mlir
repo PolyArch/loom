@@ -19,9 +19,9 @@
 // JSON-NOT: ".in"
 
 module {
-  dataflow.graph.func private @shared_reduction_conditional_store_tail(
+  dataflow.graph private @shared_reduction_conditional_store_tail(
       %ctrl: none, %ub: i16, %lb: i16, %step: i16, %zero: i8,
-      %unit: none, %ptr: !llvm.ptr) -> none
+      %unit: none, %ptr: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 4, 1, 1>,
                   result_segments = array<i32: 0, 0, 0>} {
     %mem = builtin.unrealized_conversion_cast %ptr : !llvm.ptr to memref<?xi8>

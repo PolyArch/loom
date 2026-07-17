@@ -8,19 +8,19 @@
 // Program Candidate processing has selected a P[] representation.
 
 // scf.for with iter_args inside a dataflow.thread body lowers to a
-// sibling dataflow.graph.func definition + a dataflow.graph.launch
+// sibling dataflow.graph definition + a dataflow.graph.launch
 // at the cut site. A stand-alone host reduction remains in SCF until
 // it is owned by a real accelerator-region promotion.
 
 // The thread carries the spec-mandated thread_ctrl slot, and the
-// graph.launch consumes it directly as ctrl_in (no ub.poison).
+// graph.launch consumes it directly as a dependency (no ub.poison).
 // CHECK-LABEL: dataflow.thread private @t_existing
 // CHECK-SAME: ctrl (%[[CTRL:.*]]: none)
-// CHECK: %[[EXTRACT_DONE:.*]], %{{.*}} = dataflow.graph.launch @g_t_existing_0(%[[CTRL]]
+// CHECK: %{{.*}}, %[[EXTRACT_DONE:.*]] = dataflow.graph.launch @g_t_existing_0 deps(%[[CTRL]])
 // CHECK: dataflow.thread.yield %[[EXTRACT_DONE]] : none
 // CHECK-NOT: ub.poison : none
 // CHECK-NOT: scf.for {{.*}} iter_args
-// STREAM-ATTRS-LABEL: dataflow.graph.func private @g_t_existing_0
+// STREAM-ATTRS-LABEL: dataflow.graph private @g_t_existing_0
 // STREAM-ATTRS: scf.for
 // STREAM-ATTRS: } {loom.stream_predicate = 2 : i64, loom.stream_step_kind = 0 : i32}
 // STREAM-ATTRS-NOT: loom.stream_cont_cond
@@ -41,7 +41,7 @@ dataflow.thread private @t_existing(%buf: memref<?xf32>, %n: index) ctrl (%c: no
 // unobserved asynchronous result.
 // CHECK-LABEL: dataflow.thread private @t_straight
 // CHECK-SAME: ctrl (%[[STRAIGHT_CTRL:.*]]: none)
-// CHECK: %[[STRAIGHT_DONE:.*]] = dataflow.graph.launch @g_t_straight_0(%[[STRAIGHT_CTRL]]
+// CHECK: %[[STRAIGHT_DONE:.*]] = dataflow.graph.launch @g_t_straight_0 deps(%[[STRAIGHT_CTRL]])
 // CHECK: dataflow.thread.yield %[[STRAIGHT_DONE]] : none
 dataflow.thread private @t_straight(%x: i32) ctrl (%c: none) {
   %sum = arith.addi %x, %x : i32
@@ -50,13 +50,13 @@ dataflow.thread private @t_straight(%x: i32) ctrl (%c: none) {
 
 // CHECK-LABEL: dataflow.thread private @t_forall_store
 // CHECK-SAME: ctrl (%[[FORALL_CTRL:.*]]: none) iv
-// CHECK: dataflow.graph.launch @g_t_forall_store_0(%[[FORALL_CTRL]]
+// CHECK: dataflow.graph.launch @g_t_forall_store_0 deps(%[[FORALL_CTRL]])
 // CHECK-NOT: scf.forall
 // CHECK-LABEL: func.func @host_reduction
 // CHECK-NOT: dataflow.thread.launch @t_host_reduction
 // CHECK: scf.for {{.*}} iter_args
 // This legacy extraction anchor checks that effect-form scf.forall inside a
-// thread is outlined as a structured graph.func rather than stranded in the
+// thread is outlined as a structured graph rather than stranded in the
 // thread. It does not claim that the residual graph-owned forall is accepted
 // by the full lowering pipeline.
 dataflow.thread private @t_forall_store(%src: memref<?xi32>, %dst: memref<?xi32>,
@@ -137,7 +137,7 @@ dataflow.thread private @t_structured_index_switch(%src: memref<?xi32>, %dst: me
 }
 
 // A host-scope memcpy-only function is still an accelerator candidate:
-// the compiler must expose a graph.func surface so graph-memory lowering can
+// the compiler must expose a graph surface so graph-memory lowering can
 // turn the copy into real stream load/store ops. This is intentionally a
 // graph-only extraction; there is no synthetic host graph.launch.
 // CHECK-LABEL: func.func @standalone_memcpy
@@ -241,7 +241,7 @@ func.func private @guarded_loop_candidate(%src: !llvm.ptr, %dst: !llvm.ptr,
 // Loop-carried state belongs to the thread/reduction path. A guarded
 // iter_args loop must not also receive a standalone graph-only clone.
 // NO-CARRIED: module
-// NO-CARRIED-NOT: dataflow.graph.func private @g_guarded_carried_loop_candidate_0
+// NO-CARRIED-NOT: dataflow.graph private @g_guarded_carried_loop_candidate_0
 func.func private @guarded_carried_loop_candidate(%src: !llvm.ptr,
                                                   %dst: !llvm.ptr,
                                                   %n: i32) {
@@ -434,67 +434,67 @@ func.func private @status_outparam_candidate(%dst: !llvm.ptr, %value: i16) -> i3
   return %status : i32
 }
 
-// CHECK-LABEL: dataflow.graph.func private @g_standalone_memcpy_0
-// CHECK-SAME: (%arg0: none, %arg1: i32, %arg2: !llvm.ptr, %arg3: !llvm.ptr) -> none
+// CHECK-LABEL: dataflow.graph private @g_standalone_memcpy_0
+// CHECK-SAME: (%arg0: none, %arg1: i32, %arg2: !llvm.ptr, %arg3: !llvm.ptr) -> ()
 // CHECK: llvm.intr.memcpy
 // CHECK: dataflow.graph.return %arg0 : none
-// CHECK-LABEL: dataflow.graph.func private @g_standalone_offset_memcpy_0
-// CHECK-SAME: (%arg0: none, %arg1: i16, %arg2: i16, %arg3: i16, %arg4: i32, %arg5: !llvm.ptr, %arg6: !llvm.ptr) -> none
+// CHECK-LABEL: dataflow.graph private @g_standalone_offset_memcpy_0
+// CHECK-SAME: (%arg0: none, %arg1: i16, %arg2: i16, %arg3: i16, %arg4: i32, %arg5: !llvm.ptr, %arg6: !llvm.ptr) -> ()
 // CHECK: llvm.zext
 // CHECK: arith.muli
 // CHECK: llvm.getelementptr
 // CHECK: llvm.intr.memcpy
 // CHECK: dataflow.graph.return %arg0 : none
-// CHECK-LABEL: dataflow.graph.func private @g_constant_status_multi_structured_outparam_candidate_0
-// CHECK-SAME: (%arg0: none, %arg1: i32, %arg2: i16, %arg3: !llvm.ptr, %arg4: !llvm.ptr) -> (none, i32)
+// CHECK-LABEL: dataflow.graph private @g_constant_status_multi_structured_outparam_candidate_0
+// CHECK-SAME: (%arg0: none, %arg1: i32, %arg2: i16, %arg3: !llvm.ptr, %arg4: !llvm.ptr) -> i32
 // CHECK: scf.if
 // CHECK: scf.if
 // CHECK: llvm.store
 // CHECK: dataflow.graph.return %arg0, %{{.*}} : none, i32
-// CHECK-LABEL: dataflow.graph.func private @g_status_outparam_candidate_0
-// CHECK-SAME: (%arg0: none, %arg1: i16, %arg2: !llvm.ptr) -> (none, i32)
+// CHECK-LABEL: dataflow.graph private @g_status_outparam_candidate_0
+// CHECK-SAME: (%arg0: none, %arg1: i16, %arg2: !llvm.ptr) -> i32
 // CHECK: scf.if
 // CHECK: llvm.store
 // CHECK: dataflow.graph.return %arg0, %{{.*}} : none, i32
-// CHECK-LABEL: dataflow.graph.func private @g_structured_outparam_candidate_0
-// CHECK-SAME: (%arg0: none, %arg1: i32, %arg2: !llvm.ptr, %arg3: !llvm.ptr) -> none
+// CHECK-LABEL: dataflow.graph private @g_structured_outparam_candidate_0
+// CHECK-SAME: (%arg0: none, %arg1: i32, %arg2: !llvm.ptr, %arg3: !llvm.ptr) -> ()
 // CHECK: scf.if
 // CHECK: scf.while
 // CHECK: llvm.load
 // CHECK: llvm.store
 // CHECK: dataflow.graph.return %arg0 : none
-// CHECK-LABEL: dataflow.graph.func private @g_scatter_add_candidate_0
-// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr) -> none
+// CHECK-LABEL: dataflow.graph private @g_scatter_add_candidate_0
+// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr) -> ()
 // CHECK: scf.for
 // CHECK: scf.if
 // CHECK: llvm.load
 // CHECK: llvm.store
 // CHECK: dataflow.graph.return %arg0 : none
-// CHECK-LABEL: dataflow.graph.func private @g_guarded_loop_candidate_0
-// CHECK-SAME: (%arg0: none, %arg1: i32, %arg2: i32, %arg3: !llvm.ptr, %arg4: !llvm.ptr) -> none
+// CHECK-LABEL: dataflow.graph private @g_guarded_loop_candidate_0
+// CHECK-SAME: (%arg0: none, %arg1: i32, %arg2: i32, %arg3: !llvm.ptr, %arg4: !llvm.ptr) -> ()
 // CHECK: scf.if
 // CHECK: scf.for
 // CHECK: llvm.load
 // CHECK: llvm.store
 // CHECK: dataflow.graph.return %arg0 : none
-// CHECK-LABEL: dataflow.graph.func private @g_multi_structured_outparam_candidate_0
-// CHECK-SAME: (%arg0: none, %arg1: i32, %arg2: i16, %arg3: !llvm.ptr, %arg4: !llvm.ptr) -> none
+// CHECK-LABEL: dataflow.graph private @g_multi_structured_outparam_candidate_0
+// CHECK-SAME: (%arg0: none, %arg1: i32, %arg2: i16, %arg3: !llvm.ptr, %arg4: !llvm.ptr) -> ()
 // CHECK: scf.if
 // CHECK: scf.if
 // CHECK: llvm.store
 // CHECK: dataflow.graph.return %arg0 : none
-// CHECK-LABEL: dataflow.graph.func private @g_t_forall_store_0
+// CHECK-LABEL: dataflow.graph private @g_t_forall_store_0
 // CHECK: scf.forall
 // CHECK: memref.load
 // CHECK: memref.store
 // CHECK: dataflow.graph.return
 // CHECK-NOT: @g_t_host_reduction
-// CHECK-LABEL: dataflow.graph.func private @g_t_structured_while_0
+// CHECK-LABEL: dataflow.graph private @g_t_structured_while_0
 // CHECK: scf.if
 // CHECK: scf.while
 // CHECK: memref.store
 // CHECK: dataflow.graph.return
-// CHECK-LABEL: dataflow.graph.func private @g_t_structured_index_switch_0
+// CHECK-LABEL: dataflow.graph private @g_t_structured_index_switch_0
 // CHECK: scf.index_switch
 // CHECK: memref.store
 // CHECK: dataflow.graph.return

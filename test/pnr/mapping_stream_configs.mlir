@@ -31,9 +31,9 @@
 // CSV-CONFIG-FAIL-NEXT: stream_sdiv_sgt,stream_add_i32_adg,stream_sdiv_sgt__stream_sdiv_sgt__stream_add_i32_adg,1,0,0,1,fail,missing hardware resource for software op dataflow.stream
 
 module {
-  dataflow.graph.func private @stream_add_slt(
+  dataflow.graph private @stream_add_slt(
       %ctrl: none, %init: i32, %limit: i32, %step: i32, %unit: none)
-      -> (none, i32, i1)
+      -> (i32, i1)
       attributes {input_segments = array<i32: 3, 1, 0>,
                   result_segments = array<i32: 0, 2, 0>} {
     %iv, %phase = dataflow.stream %init, %limit, %step
@@ -44,9 +44,9 @@ module {
         complete(%complete#0 : none)
   }
 
-  dataflow.graph.func private @stream_sdiv_sgt(
+  dataflow.graph private @stream_sdiv_sgt(
       %ctrl: none, %init: i32, %limit: i32, %step: i32, %unit: none)
-      -> (none, i32, i1)
+      -> (i32, i1)
       attributes {input_segments = array<i32: 3, 1, 0>,
                   result_segments = array<i32: 0, 2, 0>} {
     %iv, %phase = dataflow.stream %init, %limit, %step
@@ -57,9 +57,9 @@ module {
         complete(%complete#0 : none)
   }
 
-  dataflow.graph.func private @stream_add_slt_i64(
+  dataflow.graph private @stream_add_slt_i64(
       %ctrl: none, %init: i64, %limit: i64, %step: i64, %unit: none)
-      -> (none, i64, i1)
+      -> (i64, i1)
       attributes {input_segments = array<i32: 3, 1, 0>,
                   result_segments = array<i32: 0, 2, 0>} {
     %iv, %phase = dataflow.stream %init, %limit, %step

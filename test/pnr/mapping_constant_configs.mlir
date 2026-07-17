@@ -63,18 +63,18 @@
 // JSON-WIDE-DAG: "status": "pass"
 
 module {
-  dataflow.graph.func private @constant_two(%ctrl: none) -> (none, i32) {
+  dataflow.graph private @constant_two(%ctrl: none) -> (i32) {
     %value = dataflow.constant %ctrl {const_value = 2 : i32} : i32
     dataflow.graph.return %ctrl, %value : none, i32
   }
 
-  dataflow.graph.func private @constant_three(%ctrl: none) -> (none, i32) {
+  dataflow.graph private @constant_three(%ctrl: none) -> (i32) {
     %value = dataflow.constant %ctrl {const_value = 3 : i32} : i32
     dataflow.graph.return %ctrl, %value : none, i32
   }
 
-  dataflow.graph.func private @shared_constant_five(%ctrl: none)
-      -> (none, i32, i32, i32, i32, i32) {
+  dataflow.graph private @shared_constant_five(%ctrl: none)
+      -> (i32, i32, i32, i32, i32) {
     %zero0 = dataflow.constant %ctrl {const_value = 0 : i32} : i32
     %one0 = dataflow.constant %ctrl {const_value = 1 : i32} : i32
     %two = dataflow.constant %ctrl {const_value = 2 : i32} : i32
@@ -84,8 +84,8 @@ module {
         : none, i32, i32, i32, i32, i32
   }
 
-  dataflow.graph.func private @structured_constant_bounds(
-      %ctrl: none, %data: i32) -> none {
+  dataflow.graph private @structured_constant_bounds(
+      %ctrl: none, %data: i32) -> () {
     %limit = dataflow.constant %ctrl {const_value = 8 : i32} : i32
     %under_limit = arith.cmpi ult, %data, %limit : i32
     %published:2 = dataflow.sync %ctrl, %under_limit
@@ -94,14 +94,14 @@ module {
         complete(%published#0 : none)
   }
 
-  dataflow.graph.func private @shared_constant_eight(%ctrl: none)
-      -> (none, i32) {
+  dataflow.graph private @shared_constant_eight(%ctrl: none)
+      -> (i32) {
     %value = dataflow.constant %ctrl {const_value = 8 : i32} : i32
     dataflow.graph.return %ctrl, %value : none, i32
   }
 
-  dataflow.graph.func private @wide_constant_thirty_one(%ctrl: none)
-      -> (none, i64) {
+  dataflow.graph private @wide_constant_thirty_one(%ctrl: none)
+      -> (i64) {
     %value = dataflow.constant %ctrl {const_value = 31 : i64} : i64
     dataflow.graph.return %ctrl, %value : none, i64
   }

@@ -200,12 +200,9 @@ silently change hierarchy shape as a verifier or parsing side effect.
   `dataflow.graph.launch`, or another `dataflow.graph` definition.
 * `dataflow.graph.launch` is the SpatialCore execution boundary
   inside a `dataflow.thread` definition's body. It references a
-  `dataflow.graph` callable by symbol, supplies the leading
-  `ctrl_in : none` and user operands, and yields a leading
-  `done_out : none` plus user results.
-* `dataflow.subgraph` is a migration-only adapter input. Canonical
-  `dataflow.graph` definitions do not persist L3 partitions; TechMapping owns
-  actor grouping and selected FU realization.
+  `dataflow.graph` callable by symbol, supplies dependency events, value
+  inputs, stream channel bindings, and memory imports, and yields value
+  outputs, memory exports, and a trailing `done : none` result.
 
 Function definitions remain module-level symbols in this design.
 `dataflow.thread` definitions are also module-level symbols (and
@@ -353,10 +350,6 @@ each rule lands in IR.
   layout descriptor; lets in-thread code query its local tile via
   `dataflow.local_range`. The domain is the same logical
   partition-domain referenced by thread-axis tags.
-* **Legacy subgraph adapter.** A `dataflow.subgraph` may appear in migration,
-  synthesis-test, or display input, but it is not part of the Canonical
-  Dataflow Program. TechMapping-owned actor grouping and FU realization live
-  only in the Mapping Artifact.
 * **Mapping attribute.** Any attribute that implements
   `mlir::DeviceMappingAttrInterface`. The target front-end ships
   `#loom.thread_axis<kind, axis, domain?>` instances and recognizes
@@ -833,14 +826,17 @@ traits:
 
 ```
 arguments:
-  none:$ctrl_in,
-  Variadic<AnyType>:$bodyOperands,
-  FlatSymbolRefAttr:$callee;
+  FlatSymbolRefAttr:$callee,
+  Variadic<NoneType>:$dependencies,
+  Variadic<AnyType>:$valueInputs,
+  Variadic<ChannelType>:$streamInputs,
+  Variadic<AnyType>:$memoryInputs,
+  Variadic<ChannelType>:$streamOutputs;
 results:
-  none:$done_out,
-  Variadic<AnyType>:$results;
+  Variadic<AnyType>:$valueResults,
+  Variadic<AnyType>:$memoryResults,
+  none:$done;
 traits:
-  DeclareOpInterfaceMethods<CallOpInterface>,
   DeclareOpInterfaceMethods<SymbolUserOpInterface>.
 ```
 
@@ -848,10 +844,11 @@ traits:
   `dataflow.graph` definition in the same module. The verifier
   rejects launches whose `callee` cannot be resolved or whose
   resolved op is not a `dataflow.graph`.
-* The verifier checks `type(bodyOperands) == callee.function_type.inputs`
-  and `type(results) == callee.function_type.results` position-by-position.
-  The launch's separate leading `none` operand and result are the per-launch
-  ctrl/done protocol ports.
+* The verifier checks each operand and result segment against the callee's
+  normalized `[value, stream, memory]` FunctionType segments. Stream payloads
+  bind to consumer or producer `!dataflow.channel<T>` endpoints; they are not
+  launch SSA data results. The mandatory trailing `done : none` result is the
+  per-launch retirement event.
 * The op materializes a per-launch firing of the callee at this exact program
   point. `done_out` is the all-of of the callee's
   `graph.return.complete` operands. Their causal closure covers final values,
@@ -862,36 +859,12 @@ traits:
 * The op must appear inside a `dataflow.thread` definition's body,
   not at host scope and not inside another `dataflow.graph`
   definition's body. The verifier enforces this placement.
-* The op implements `MemoryEffectsOpInterface` directly. Effects
-  are projected by resolving the `callee` symbol, walking the
-  callee definition's body, and reporting the union of body op
-  effects through the launch boundary. If callee resolution fails
-  during partial IR construction (e.g., the def has not been
-  emitted yet), the launch falls back to conservative
-  `MemRead + MemWrite` on MLIR's default memory resource so the
-  surrounding optimizer never sees an effect-free graph launch.
-  Note that the upstream `RecursiveMemoryEffects` trait is the
-  wrong tool here: it aggregates effects from a region nested
-  inside the op, but a graph launch references a sibling symbol
-  and has no nested region. The manual implementation above is the
-  intended substitute. The launch's recursive effect aggregation
-  is what makes a graph that contains side-effecting body ops
-  (notably `dataflow.{load, store}`) visible as a memory-touching
-  op to the surrounding ScalarCore code, so that standard
-  optimizers preserve its declared ordering with other ScalarCore
-  memory ops.
-
-* `Dataflow_YieldOp`.
-  - The verifier's parent-result-count and parent-result-type checks
-    are updated to know about the leading explicit control result of
-    the parent `dataflow.graph` definition (so the leading `none`
-    slot is required in the yield operand list, matching
-    `function_type.results`).
+* The launch does not derive retirement from effect projection. The native
+  finalized-program validator proves that the callee's explicit complete
+  frontier covers all outputs, state closure, and observable effects.
 
 * `dataflow.load` and `dataflow.store`.
-  - These dataflow primitives carry explicit memory-effect traits so that
-    `dataflow.graph.launch`'s manual effect projection correctly
-    aggregates body effects:
+  - These dataflow primitives carry explicit memory-effect traits:
     - `dataflow.load`  declares `MemoryEffects<[MemRead]>`.
     - `dataflow.store` declares `MemoryEffects<[MemWrite]>`.
   - These use MLIR's default memory resource. They are deliberately
@@ -1009,8 +982,8 @@ per-instance ctrl/done plumbing:
 
 ```mlir
 // At module scope (sibling of func.func):
-dataflow.graph.func @<deterministic_sym>
-    (%ctrl_in : none, <user inputs>) -> (none, <user results>) {
+dataflow.graph @<deterministic_sym>
+    (%start : none, <user inputs>) -> (<user results>) {
   // <body contents per the template>
   dataflow.graph.return values(<user yield values>) streams() memories()
       complete(<retirement frontier>)
@@ -1018,8 +991,12 @@ dataflow.graph.func @<deterministic_sym>
 
 // At the cut site inside the enclosing dataflow.thread definition's
 // body:
-%done, <user results> = dataflow.graph.launch @<deterministic_sym>
-    (%ctrl, <user operands>) : (none, <input types>) -> (none, <result types>)
+<user value results>, <memory results>, %done =
+    dataflow.graph.launch @<deterministic_sym>
+      deps(%dependency events) values(<value operands>)
+      stream_inputs(<consumer channels>) memories(<memory imports>)
+      stream_outputs(<producer channels>)
+      : (<operand types>) -> (<value result types>, <memory result types>, none)
 ```
 
 The deterministic symbol naming convention is
@@ -2420,23 +2397,6 @@ Verifier rules for `dataflow.partition_layout`,
 `dataflow.thread_linear_id` are specified in
 `docs/spec-compiler-part-4-partitioned-data.md`.
 
-* `dataflow.subgraph`
-  - The op is a legacy input/display adapter, not a canonical graph partition
-    and not a Mapping authority.
-  - The op is `IsolatedFromAbove`; all external values enter through
-    explicit operands and region block arguments.
-  - Operand and result types are graph-compute scalar types or `none`
-    control values. Memrefs do not cross a subgraph boundary.
-  - The body contains only ops supported by the fabric-op support
-    matrix plus `dataflow.yield`. Nested `dataflow.graph`,
-    nested `dataflow.subgraph`, `dataflow.load`, and
-    `dataflow.store` are rejected.
-  - The op carries no hardware topology, PE identity, route,
-    schedule slot, spatial / temporal mode, temporal tag, or
-    resource-sharing attribute. FU selection, semantic encoding, actor-to-op
-    correspondence, and boundary correspondence belong only to the Mapping
-    Artifact.
-
 * `dataflow.graph` (definition, Section 5.5.1)
   - The op is a Symbol-bearing, function-like callable; it must
     be a direct child of a `ModuleOp` (`HasParent<"ModuleOp">`).
@@ -2459,9 +2419,8 @@ Verifier rules for `dataflow.partition_layout`,
     `memories`, and mandatory non-empty `complete` segments. Concatenated
     payload segments match all `function_type.results`. Done is not a return
     payload or function-type slot.
-  - Body may contain `dataflow.{stream, carry, invariant, gate,
-    mux, demux, sync, constant, load, store, graph.return}` plus ordinary
-    pure ops permitted in the graph body whitelist.
+  - Finalized bodies contain registered `CanonicalDataflowActorOpInterface`
+    operations plus the confirmed memory-capability primitives.
   - Body must not contain `scf.*`, `func.func`, `func.call`,
     `dataflow.thread.launch`, `dataflow.graph.launch`,
     `dataflow.thread.wait`, `dataflow.map_info`, any partitioned-data
@@ -2475,13 +2434,10 @@ Verifier rules for `dataflow.partition_layout`,
 * `dataflow.graph.launch` (Section 5.5.2)
   - `callee` resolves to a `dataflow.graph` definition in the
     same module (verifier rejects unresolved or wrong-kind callee).
-  - `type(bodyOperands) == callee.function_type.inputs`
-    position-by-position; the separate launch `ctrl_in : none` operand is the
-    start protocol endpoint.
-  - `type(results) == callee.function_type.results`
-    position-by-position; the separate launch `done_out : none` result is the
-    retirement protocol endpoint.
-  - `done_out = all_of(callee.graph.return.complete)`. No effect scan or
+  - Operand and result segments bind mechanically to the callee's normalized
+    value, stream, and memory segments. Stream ports bind channel endpoints.
+  - The mandatory trailing `done : none` result is the retirement protocol
+    endpoint and equals `all_of(callee.graph.return.complete)`. No effect scan or
     quiescence rule provides an alternate completion authority.
   - The op must appear inside a `dataflow.thread` definition's
     body, not at host scope and not inside another

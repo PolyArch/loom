@@ -1,4 +1,4 @@
-// RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
+// RUN: loom %s -loom-synthesize-configured-functions='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
 
 // Tier A with two distinct singleton ops at the same anchor position
 // (math.absf and math.tan -- both 1-input fN -> fN, neither belongs to
@@ -18,18 +18,12 @@
 
 func.func @pat_absf(%a: f32) -> f32
     attributes {loom.synth_group = "fpu_unary_32_x"} {
-  %r = dataflow.subgraph(%x = %a : f32) -> f32 {
-    %s = math.absf %x : f32
-    dataflow.yield %s : f32
-  }
-  return %r : f32
+  %s = math.absf %a : f32
+  return %s : f32
 }
 
 func.func @pat_tan(%a: f32) -> f32
     attributes {loom.synth_group = "fpu_unary_32_x"} {
-  %r = dataflow.subgraph(%x = %a : f32) -> f32 {
-    %s = math.tan %x : f32
-    dataflow.yield %s : f32
-  }
-  return %r : f32
+  %s = math.tan %a : f32
+  return %s : f32
 }

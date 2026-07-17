@@ -4,7 +4,7 @@
 // pass must reject each recurrence before partially rewriting its memory ops.
 
 // CHECK: error: cannot lower memory capability '!llvm.ptr' through dataflow.carry
-// CHECK-LABEL: dataflow.graph.func private @g_pointer_carry_i8_f32
+// CHECK-LABEL: dataflow.graph private @g_pointer_carry_i8_f32
 // CHECK: dataflow.carry
 // CHECK: llvm.load
 // CHECK: llvm.store
@@ -12,10 +12,10 @@
 module attributes {
   dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
 } {
-  dataflow.graph.func private @g_pointer_carry_i8_f32(
+  dataflow.graph private @g_pointer_carry_i8_f32(
       %start: none, %lower: i32, %upper: i32, %step: i32, %bias: f32,
       %source: !llvm.ptr, %destination: !llvm.ptr)
-      -> (none, !llvm.ptr, !llvm.ptr)
+      -> (!llvm.ptr, !llvm.ptr)
       attributes {input_segments = array<i32: 4, 0, 2>,
                   result_segments = array<i32: 0, 0, 2>} {
     %stream_init = arith.constant 0 : i32
@@ -49,7 +49,7 @@ module attributes {
 // -----
 
 // CHECK: error: cannot lower memory capability '!llvm.ptr' through dataflow.carry
-// CHECK-LABEL: dataflow.graph.func private @g_pointer_carry_preincrement_i8_f32
+// CHECK-LABEL: dataflow.graph private @g_pointer_carry_preincrement_i8_f32
 // CHECK: dataflow.carry
 // CHECK: llvm.load
 // CHECK: llvm.store
@@ -57,10 +57,10 @@ module attributes {
 module attributes {
   dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
 } {
-  dataflow.graph.func private @g_pointer_carry_preincrement_i8_f32(
+  dataflow.graph private @g_pointer_carry_preincrement_i8_f32(
       %start: none, %lower: i32, %upper: i32, %step: i32, %bias: f32,
       %source: !llvm.ptr, %destination: !llvm.ptr)
-      -> (none, !llvm.ptr, !llvm.ptr)
+      -> (!llvm.ptr, !llvm.ptr)
       attributes {input_segments = array<i32: 4, 0, 2>,
                   result_segments = array<i32: 0, 0, 2>} {
     %stream_init = arith.constant 0 : i32
@@ -94,16 +94,16 @@ module attributes {
 // -----
 
 // CHECK: error: cannot lower memory capability '!llvm.ptr' through dataflow.carry
-// CHECK-LABEL: dataflow.graph.func private @g_pointer_carry_nonordinal_init
+// CHECK-LABEL: dataflow.graph private @g_pointer_carry_nonordinal_init
 // CHECK: dataflow.carry
 // CHECK: llvm.load
 // CHECK-NOT: dataflow.load
 module attributes {
   dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
 } {
-  dataflow.graph.func private @g_pointer_carry_nonordinal_init(
+  dataflow.graph private @g_pointer_carry_nonordinal_init(
       %start: none, %limit: i32, %step: i32, %bias: f32,
-      %source: !llvm.ptr) -> (none, !llvm.ptr)
+      %source: !llvm.ptr) -> (!llvm.ptr)
       attributes {input_segments = array<i32: 3, 0, 1>,
                   result_segments = array<i32: 0, 0, 1>} {
     %stream_init = arith.constant 4 : i32
@@ -126,12 +126,12 @@ module attributes {
 // -----
 
 // CHECK: error: cannot lower memory capability '!llvm.ptr' through dataflow.carry
-// CHECK-LABEL: dataflow.graph.func private @g_pointer_carry_widening_i8
+// CHECK-LABEL: dataflow.graph private @g_pointer_carry_widening_i8
 // CHECK: dataflow.carry
 // CHECK: llvm.load
 // CHECK-NOT: dataflow.load
-dataflow.graph.func private @g_pointer_carry_widening_i8(
-    %start: none, %limit: i8, %source: !llvm.ptr) -> (none, !llvm.ptr)
+dataflow.graph private @g_pointer_carry_widening_i8(
+    %start: none, %limit: i8, %source: !llvm.ptr) -> (!llvm.ptr)
     attributes {input_segments = array<i32: 1, 0, 1>,
                 result_segments = array<i32: 0, 0, 1>} {
   %stream_init = arith.constant 0 : i8
@@ -152,14 +152,14 @@ dataflow.graph.func private @g_pointer_carry_widening_i8(
 // -----
 
 // CHECK: error: cannot lower memory capability '!llvm.ptr' through dataflow.carry
-// CHECK-LABEL: dataflow.graph.func private @g_pointer_carry_dynamic_offset_i8_f32
+// CHECK-LABEL: dataflow.graph private @g_pointer_carry_dynamic_offset_i8_f32
 // CHECK: dataflow.carry
 // CHECK: llvm.load
 // CHECK-NOT: dataflow.load
-dataflow.graph.func private @g_pointer_carry_dynamic_offset_i8_f32(
+dataflow.graph private @g_pointer_carry_dynamic_offset_i8_f32(
     %start: none, %lower: i32, %upper: i32, %step: i32,
     %bias: f32, %dynamic_offset: i32, %source: !llvm.ptr)
-    -> (none, !llvm.ptr)
+    -> (!llvm.ptr)
     attributes {input_segments = array<i32: 5, 0, 1>,
                 result_segments = array<i32: 0, 0, 1>} {
   %index, %phase = dataflow.stream %lower, %upper, %step

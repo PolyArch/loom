@@ -165,9 +165,9 @@ The historical length-one field-wise `hw_params` dictionary remains accepted
 only for non-canonical programmed Fabric input. It is a boundary adapter and
 must not enter the projector, synthesis, coverage, or canonical FU verifier.
 
-`dataflow.subgraph` is likewise only a legacy input or display adapter. The
-projector, verifier, coverage check, and synthesis acceptance gate operate on
-`ConfiguredFunction` and explicit valid encodings.
+The projector, verifier, coverage check, and synthesis acceptance gate operate
+on `ConfiguredFunction` and explicit valid encodings. Program IR has no actor
+grouping adapter op.
 
 ## Extending Capability
 

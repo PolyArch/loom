@@ -3,7 +3,7 @@
 // CHECK: has no dataflow.graph.launch
 
 module {
-  dataflow.graph.func private @g_detached_kernel_0(%ctrl: none) -> none {
+  dataflow.graph private @g_detached_kernel_0(%ctrl: none) -> () {
     dataflow.graph.return %ctrl : none
   }
 }

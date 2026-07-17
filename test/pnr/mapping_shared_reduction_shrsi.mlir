@@ -15,8 +15,8 @@
 // JSON-NOT: "resource_kind=fabric.op operation=arith.shrsi
 
 module {
-  dataflow.graph.func private @signed_shift(%ctrl: none, %value: i32, %amount: i32)
-      -> (none, i32) {
+  dataflow.graph private @signed_shift(%ctrl: none, %value: i32, %amount: i32)
+      -> (i32) {
     %shifted = arith.shrsi %value, %amount : i32
     dataflow.graph.return %ctrl, %shifted : none, i32
   }

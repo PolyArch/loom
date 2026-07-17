@@ -9,7 +9,7 @@
 // RUN: loom-pnr-map --dfg-mlir %t.dir/quat_mult.dfg.mlir --graph g_quat_mult_kernel_0 --hardware-mlir %t.hardware.mlir --hardware shared_vector_math_adg --workload quat_mult --output %t.dir/mapping.csv --artifact %t.dir/mapping.json
 // RUN: FileCheck %s --check-prefix=MAPPING < %t.dir/mapping.json
 
-// DFG-LABEL: dataflow.graph.func private @g_quat_mult_kernel_0
+// DFG-LABEL: dataflow.graph private @g_quat_mult_kernel_0
 // DFG-DAG: builtin.unrealized_conversion_cast %arg4 : !llvm.ptr to memref<?xf32>
 // DFG-DAG: builtin.unrealized_conversion_cast %arg3 : !llvm.ptr to memref<?xf32>
 // DFG-DAG: builtin.unrealized_conversion_cast %arg2 : !llvm.ptr to memref<?xf32>

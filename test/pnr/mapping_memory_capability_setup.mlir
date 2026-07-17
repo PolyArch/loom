@@ -10,8 +10,8 @@
 // JSON-NOT: "dataflow.store#0.operand0"
 
 module {
-  dataflow.graph.func private @fresh_memory_export(
-      %start: none, %value: i32) -> (none, memref<1xi32>)
+  dataflow.graph private @fresh_memory_export(
+      %start: none, %value: i32) -> (memref<1xi32>)
       attributes {input_segments = array<i32: 1, 0, 0>,
                   result_segments = array<i32: 0, 0, 1>} {
     %slot = memref.alloc() : memref<1xi32>

@@ -40,9 +40,9 @@
 // N16-DAG: "f32:16"
 
 module {
-  dataflow.graph.func private @sum(%ctrl: none, %lb: i64, %ub: i64,
+  dataflow.graph private @sum(%ctrl: none, %lb: i64, %ub: i64,
                                    %step: i64, %init: f32, %increment: f32,
-                                   %phase_unit: none) -> (none, f32)
+                                   %phase_unit: none) -> (f32)
       attributes {input_segments = array<i32: 4, 2, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %iv, %phase = dataflow.stream %lb, %ub, %step

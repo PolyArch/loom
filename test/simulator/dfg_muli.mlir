@@ -13,7 +13,7 @@
 // CHECK-DAG: "i32:42"
 
 module {
-  dataflow.graph.func private @muli(%ctrl: none) -> (none, i32)
+  dataflow.graph private @muli(%ctrl: none) -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %lhs = dataflow.constant %ctrl {const_value = 6 : i32} : i32

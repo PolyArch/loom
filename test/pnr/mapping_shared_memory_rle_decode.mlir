@@ -18,14 +18,14 @@
 // JSON-NOT: "resource_pressure"
 
 module {
-  dataflow.graph.func private @rle_decode(
+  dataflow.graph private @rle_decode(
       %ctrl: none,
       %index: index,
       %write: i32,
       %zero: i32,
       %values: memref<?xi32>,
       %counts: memref<?xi32>,
-      %output: memref<?xi32>) -> (none, i32)
+      %output: memref<?xi32>) -> (i32)
       attributes {input_segments = array<i32: 3, 0, 3>,
                   result_segments = array<i32: 1, 0, 0>} {
     %value, %value_done = dataflow.load %values[%index] %ctrl

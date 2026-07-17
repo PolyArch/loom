@@ -14,8 +14,8 @@
 // CHECK-DAG: "i32:-65535"
 
 module {
-  dataflow.graph.func private @arm_inline_asm(%ctrl: none)
-      -> (none, i32, i32, i32, i32)
+  dataflow.graph private @arm_inline_asm(%ctrl: none)
+      -> (i32, i32, i32, i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 4, 0, 0>} {
     %pack_low = dataflow.constant %ctrl {const_value = 65538 : i32} : i32

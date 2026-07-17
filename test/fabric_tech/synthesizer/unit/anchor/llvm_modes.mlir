@@ -1,4 +1,4 @@
-// RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
+// RUN: loom %s -loom-synthesize-configured-functions='config=%p/anchor.yaml dump-stats=true' 2>&1 | FileCheck %s
 
 // CHECK: remark: {{.*}}synth-stat group=llvm_icmp strategy=anchor reason=success
 // CHECK-SAME: covered=1/1 nodes=1/0/0 encodings=1
@@ -11,18 +11,12 @@
 
 func.func @pat_llvm_trunc(%value: i64) -> i32
     attributes {loom.synth_group = "llvm_trunc"} {
-  %result = dataflow.subgraph(%arg = %value : i64) -> i32 {
-    %narrow = llvm.trunc %arg : i64 to i32
-    dataflow.yield %narrow : i32
-  }
-  return %result : i32
+  %narrow = llvm.trunc %value : i64 to i32
+  return %narrow : i32
 }
 
 func.func @pat_llvm_icmp(%lhs: i32, %rhs: i32) -> i1
     attributes {loom.synth_group = "llvm_icmp"} {
-  %result = dataflow.subgraph(%a = %lhs : i32, %b = %rhs : i32) -> i1 {
-    %predicate = llvm.icmp "slt" %a, %b : i32
-    dataflow.yield %predicate : i1
-  }
-  return %result : i1
+  %predicate = llvm.icmp "slt" %lhs, %rhs : i32
+  return %predicate : i1
 }

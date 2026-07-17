@@ -16,8 +16,8 @@
 // CSV-FAIL-NEXT: cmpf_graph,predicate_mismatch_adg,cmpf_graph__cmpf_graph__predicate_mismatch_adg,1,0,0,1,fail,missing hardware resource for software op arith.cmpf
 
 module {
-  dataflow.graph.func private @cmpf_graph(%ctrl: none, %lhs: f32,
-                                          %rhs: f32) -> (none, i1) {
+  dataflow.graph private @cmpf_graph(%ctrl: none, %lhs: f32,
+                                          %rhs: f32) -> (i1) {
     %pred = arith.cmpf ugt, %lhs, %rhs : f32
     dataflow.graph.return %ctrl, %pred : none, i1
   }

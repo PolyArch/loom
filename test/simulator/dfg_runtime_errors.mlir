@@ -15,9 +15,9 @@
 // OOB-DAG: "dataflow.load consumed 3 of 5 true stream indices"
 
 module {
-  dataflow.graph.func private @sum_load(%ctrl: none, %lb: i64, %ub: i64,
+  dataflow.graph private @sum_load(%ctrl: none, %lb: i64, %ub: i64,
                                         %step: i64, %init: f32,
-                                        %mem: memref<?xf32>) -> (none, f32)
+                                        %mem: memref<?xf32>) -> (f32)
       attributes {input_segments = array<i32: 4, 0, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
     %idx64, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i64

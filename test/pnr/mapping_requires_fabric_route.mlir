@@ -22,8 +22,8 @@
 // JSON-NOT: ".in"
 
 module {
-  dataflow.graph.func private @disconnected_route(%ctrl: none, %lhs: i32, %rhs: i32)
-      -> (none, i32) {
+  dataflow.graph private @disconnected_route(%ctrl: none, %lhs: i32, %rhs: i32)
+      -> (i32) {
     %sum = arith.addi %lhs, %rhs : i32
     %doubled = arith.addi %sum, %sum : i32
     dataflow.graph.return %ctrl, %doubled : none, i32

@@ -33,9 +33,9 @@
 // EXTEND-JSON-NOT: ".in"
 
 module {
-  dataflow.graph.func private @integer_trunc_to_store(
+  dataflow.graph private @integer_trunc_to_store(
       %ctrl: none, %idx: index, %input: memref<?xi32>,
-      %output: memref<?xi16>) -> none
+      %output: memref<?xi16>) -> ()
       attributes {input_segments = array<i32: 1, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     %data, %done = dataflow.load %input[%idx] %ctrl : memref<?xi32>
@@ -44,9 +44,9 @@ module {
     dataflow.graph.return %stored : none
   }
 
-  dataflow.graph.func private @integer_extend_trunc_to_store(
+  dataflow.graph private @integer_extend_trunc_to_store(
       %ctrl: none, %idx: index, %input: memref<?xi16>,
-      %output: memref<?xi16>) -> none
+      %output: memref<?xi16>) -> ()
       attributes {input_segments = array<i32: 1, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     %data, %done = dataflow.load %input[%idx] %ctrl : memref<?xi16>

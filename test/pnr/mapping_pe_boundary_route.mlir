@@ -18,8 +18,8 @@
 // JSON-NOT: ".in"
 
 module {
-  dataflow.graph.func private @pe_boundary_route(%ctrl: none, %lhs: i32, %rhs: i32)
-      -> (none, i32) {
+  dataflow.graph private @pe_boundary_route(%ctrl: none, %lhs: i32, %rhs: i32)
+      -> (i32) {
     %sum = arith.addi %lhs, %rhs : i32
     %product = arith.muli %sum, %rhs : i32
     dataflow.graph.return %ctrl, %product : none, i32

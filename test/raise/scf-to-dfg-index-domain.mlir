@@ -2,7 +2,7 @@
 
 // An observable recurrence remains in its source semantic width even when its
 // body projection feeds an address.
-// CHECK-LABEL: dataflow.graph.func private @preserve_observable_wide_carry
+// CHECK-LABEL: dataflow.graph private @preserve_observable_wide_carry
 // CHECK: %[[INIT:.*]] = dataflow.constant %arg0 {const_value = 4294967297 : i64} : i64
 // CHECK-NOT: const_value = 4294967297 : index
 // CHECK: %[[CARRY:.*]] = dataflow.carry %{{.*}}, %[[INIT]], %[[NEXT:.*]] : i64
@@ -12,9 +12,9 @@
 // CHECK: %[[NEXT]] = arith.addi %{{.*}}, %{{.*}} : i64
 // CHECK: %[[PUBLISHED:.*]]:2 = dataflow.sync %{{.*}}, %[[EXIT]]#0 : (none, i64) -> (none, i64)
 // CHECK: dataflow.graph.return values(%[[PUBLISHED]]#1, %{{.*}} : i64, f32)
-dataflow.graph.func private @preserve_observable_wide_carry(
+dataflow.graph private @preserve_observable_wide_carry(
     %start: none, %init: i64, %limit: i64, %step: i64,
-    %seed: f32, %memory: memref<?xf32>) -> (none, i64, f32)
+    %seed: f32, %memory: memref<?xf32>) -> (i64, f32)
     attributes {input_segments = array<i32: 4, 0, 1>,
                 result_segments = array<i32: 2, 0, 0>} {
   %index, %phase = dataflow.stream %init, %limit, %step
@@ -34,14 +34,14 @@ dataflow.graph.func private @preserve_observable_wide_carry(
 
 // Failed carry materialization must erase the speculative index constant and
 // preserve the original i64 recurrence.
-// CHECK-LABEL: dataflow.graph.func private @rollback_partial_carry
+// CHECK-LABEL: dataflow.graph private @rollback_partial_carry
 // CHECK: dataflow.constant %arg0 {const_value = 4 : i64} : i64
 // CHECK-NOT: dataflow.constant %arg0 {const_value = 4 : index} : index
 // CHECK: dataflow.carry %{{.*}} : i64
 // CHECK-NOT: dataflow.carry %{{.*}} : index
-dataflow.graph.func private @rollback_partial_carry(
+dataflow.graph private @rollback_partial_carry(
     %start: none, %init: i64, %limit: i64, %step: i64,
-    %memory: memref<?xf32>) -> (none, i64, f32)
+    %memory: memref<?xf32>) -> (i64, f32)
     attributes {input_segments = array<i32: 3, 0, 1>,
                 result_segments = array<i32: 2, 0, 0>} {
   %index, %phase = dataflow.stream %init, %limit, %step
@@ -62,14 +62,14 @@ dataflow.graph.func private @rollback_partial_carry(
 
 // Recursive address materialization must roll back all converted producers
 // when one operand is an unsupported carry.
-// CHECK-LABEL: dataflow.graph.func private @rollback_partial_address
+// CHECK-LABEL: dataflow.graph private @rollback_partial_address
 // CHECK: dataflow.constant %arg0 {const_value = 4 : i64} : i64
 // CHECK-NOT: dataflow.constant %arg0 {const_value = 4 : index} : index
 // CHECK-NOT: arith.addi {{.*}} : index
 // CHECK: arith.index_cast %{{.*}} : i64 to index
-dataflow.graph.func private @rollback_partial_address(
+dataflow.graph private @rollback_partial_address(
     %start: none, %phase: i1, %init: i64, %next: i64,
-    %memory: memref<?xf32>) -> (none, f32)
+    %memory: memref<?xf32>) -> (f32)
     attributes {input_segments = array<i32: 3, 0, 1>,
                 result_segments = array<i32: 1, 0, 0>} {
   %base = dataflow.constant %start {const_value = 4 : i64} : i64
@@ -83,15 +83,15 @@ dataflow.graph.func private @rollback_partial_address(
 
 // A comparison must roll back a materialized lhs when the rhs cannot enter
 // the index domain.
-// CHECK-LABEL: dataflow.graph.func private @rollback_partial_compare
+// CHECK-LABEL: dataflow.graph private @rollback_partial_compare
 // CHECK: %[[CMP_LHS:.*]] = dataflow.constant %arg0 {const_value = 4 : i64} : i64
 // CHECK: %[[CMP_RHS:.*]] = dataflow.carry %arg1, %arg2, %arg3 : i64
 // CHECK-NOT: dataflow.constant %arg0 {const_value = 4 : index} : index
 // CHECK: arith.cmpi slt, %[[CMP_LHS]], %[[CMP_RHS]] : i64
 // CHECK-NOT: arith.cmpi {{.*}} : index
-dataflow.graph.func private @rollback_partial_compare(
+dataflow.graph private @rollback_partial_compare(
     %start: none, %phase: i1, %init: i64, %next: i64,
-    %memory: memref<?xf32>) -> (none, f32)
+    %memory: memref<?xf32>) -> (f32)
     attributes {input_segments = array<i32: 3, 0, 1>,
                 result_segments = array<i32: 1, 0, 0>} {
   %lhs = dataflow.constant %start {const_value = 4 : i64} : i64
@@ -104,7 +104,7 @@ dataflow.graph.func private @rollback_partial_compare(
 }
 
 // Address-only offset and mask arithmetic is narrowed before mapping.
-// CHECK-LABEL: dataflow.graph.func private @narrow_address_mask
+// CHECK-LABEL: dataflow.graph private @narrow_address_mask
 // CHECK: %[[MASK_INDEX:.*]], %[[MASK_PHASE:.*]] = dataflow.stream %arg1, %arg2, %arg3
 // CHECK: %[[MASK_IV:.*]] = arith.index_cast %[[MASK_INDEX]] : i64 to index
 // CHECK: %[[MASK_OFFSET_ARG:.*]] = arith.index_cast %arg4 : i64 to index
@@ -116,9 +116,9 @@ dataflow.graph.func private @rollback_partial_compare(
 // CHECK: %{{.*}}, %[[MASK_VALUE:.*]] = dataflow.gate %[[MASK_PHASE]], %[[MASK_RAW]] : index
 // CHECK: %[[MASK_ADDR:.*]] = arith.andi %[[MASK_ADD]], %[[MASK_VALUE]] : index
 // CHECK: dataflow.load %arg6[%[[MASK_ADDR]]]
-dataflow.graph.func private @narrow_address_mask(
+dataflow.graph private @narrow_address_mask(
     %start: none, %lower: i64, %upper: i64, %step: i64,
-    %offset: i64, %mask: i64, %memory: memref<?xf32>) -> (none, f32)
+    %offset: i64, %mask: i64, %memory: memref<?xf32>) -> (f32)
     attributes {input_segments = array<i32: 5, 0, 1>,
                 result_segments = array<i32: 1, 0, 0>} {
   %index, %phase = dataflow.stream %lower, %upper, %step
@@ -135,7 +135,7 @@ dataflow.graph.func private @narrow_address_mask(
 }
 
 // Guarded address arithmetic, comparison, and select share one index domain.
-// CHECK-LABEL: dataflow.graph.func private @narrow_guarded_address
+// CHECK-LABEL: dataflow.graph private @narrow_guarded_address
 // CHECK: %[[GUARD_INDEX:.*]], %[[GUARD_PHASE:.*]] = dataflow.stream %arg1, %arg2, %arg3
 // CHECK: %[[GUARD_UB_ARG:.*]] = arith.index_cast %arg5 : i64 to index
 // CHECK: %[[GUARD_UB_RAW:.*]] = dataflow.invariant %[[GUARD_PHASE]], %[[GUARD_UB_ARG]] : index
@@ -148,10 +148,10 @@ dataflow.graph.func private @narrow_address_mask(
 // CHECK: %[[GUARD_PRED:.*]] = arith.cmpi sgt, %[[GUARD_DELTA]], %[[GUARD_LB]] : index
 // CHECK: %[[GUARD_SAFE:.*]] = arith.select %[[GUARD_PRED]], %[[GUARD_DELTA]], %{{.*}} : index
 // CHECK: dataflow.load %arg6[%[[GUARD_SAFE]]]
-dataflow.graph.func private @narrow_guarded_address(
+dataflow.graph private @narrow_guarded_address(
     %start: none, %lower: i64, %upper: i64, %step: i64,
     %lower_guard: i64, %upper_guard: i64, %memory: memref<?xf32>)
-    -> (none, f32)
+    -> (f32)
     attributes {input_segments = array<i32: 5, 0, 1>,
                 result_segments = array<i32: 1, 0, 0>} {
   %index, %phase = dataflow.stream %lower, %upper, %step
@@ -170,15 +170,15 @@ dataflow.graph.func private @narrow_guarded_address(
 }
 
 // A nonnegative i32 expression widened with llvm.zext remains address-domain.
-// CHECK-LABEL: dataflow.graph.func private @narrow_zext_address
+// CHECK-LABEL: dataflow.graph private @narrow_zext_address
 // CHECK: %[[ZEXT_LHS:.*]] = arith.index_cast %arg4 : i32 to index
 // CHECK: %[[ZEXT_RHS:.*]] = arith.index_cast %arg5 : i32 to index
 // CHECK: %[[ZEXT_ADDR:.*]] = arith.addi %[[ZEXT_LHS]], %[[ZEXT_RHS]] : index
 // CHECK-NOT: llvm.zext
 // CHECK: dataflow.load %arg6[%[[ZEXT_ADDR]]]
-dataflow.graph.func private @narrow_zext_address(
+dataflow.graph private @narrow_zext_address(
     %start: none, %lower: i64, %upper: i64, %step: i64,
-    %lhs: i32, %rhs: i32, %memory: memref<?xf32>) -> (none, f32)
+    %lhs: i32, %rhs: i32, %memory: memref<?xf32>) -> (f32)
     attributes {input_segments = array<i32: 5, 0, 1>,
                 result_segments = array<i32: 1, 0, 0>} {
   %index, %phase = dataflow.stream %lower, %upper, %step

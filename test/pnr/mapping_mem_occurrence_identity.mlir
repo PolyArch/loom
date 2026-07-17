@@ -51,12 +51,12 @@
 // DIRECT-ESTIMATE-DAG: "status": "pass"
 
 module {
-  dataflow.graph.func private @mixed_mem_resources(
+  dataflow.graph private @mixed_mem_resources(
       %ctrl: none, %index: index, %store0_value: i32, %store1_value: i32,
       %load0_mem: memref<?xi32>, %load1_mem: memref<?xi32>,
       %load2_mem: memref<?xi32>, %load3_mem: memref<?xi32>,
       %store0_mem: memref<?xi32>, %store1_mem: memref<?xi32>)
-      -> (none, i32)
+      -> (i32)
       attributes {input_segments = array<i32: 3, 0, 6>,
                   result_segments = array<i32: 1, 0, 0>} {
     %load0, %load0_done =

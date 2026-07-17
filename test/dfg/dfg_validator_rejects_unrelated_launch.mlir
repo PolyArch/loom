@@ -4,16 +4,17 @@
 
 module {
   dataflow.thread private @t_other_kernel(%ctrl: none) ctrl (%thread_ctrl: none) iv (%iv: index) {
-    %done = dataflow.graph.launch @g_t_other_kernel_0_0(%thread_ctrl) : (none) -> none
+    %done = dataflow.graph.launch @g_t_other_kernel_0_0 deps(%thread_ctrl)
+        values() stream_inputs() memories() stream_outputs() : (none) -> none
     dataflow.thread.yield
   }
 
-  dataflow.graph.func private @g_t_other_kernel_0_0(%ctrl: none) -> none {
+  dataflow.graph private @g_t_other_kernel_0_0(%ctrl: none) -> () {
     dataflow.graph.return %ctrl : none
   }
 
-  dataflow.graph.func private @g_target_kernel_0(%ctrl: none) -> none {
-    // dataflow.graph.launch @g_target_kernel_0(%ctrl) : (none) -> none
+  dataflow.graph private @g_target_kernel_0(%ctrl: none) -> () {
+    // dataflow.graph.launch @g_target_kernel_0 deps(%ctrl) values()
     dataflow.graph.return %ctrl : none
   }
 }

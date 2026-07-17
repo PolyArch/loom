@@ -17,9 +17,9 @@
 // JSON-NOT: ".in"
 
 module {
-  dataflow.graph.func private @control_token_branch_merge(
+  dataflow.graph private @control_token_branch_merge(
       %ctrl: none, %sel: i1, %idx: index, %value: i32,
-      %mem: memref<?xi32>) -> none
+      %mem: memref<?xi32>) -> ()
       attributes {input_segments = array<i32: 3, 0, 1>,
                   result_segments = array<i32: 0, 0, 0>} {
     %ctrl_false, %ctrl_true =

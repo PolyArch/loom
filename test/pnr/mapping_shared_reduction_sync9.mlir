@@ -11,10 +11,10 @@
 // JSON-NOT: "resource_kind=fabric.op operation=dataflow.sync
 
 module {
-  dataflow.graph.func private @sync9(%ctrl: none, %a: none, %b: none, %c: none,
+  dataflow.graph private @sync9(%ctrl: none, %a: none, %b: none, %c: none,
                                      %d: none, %e: none, %f: none, %g: none,
                                      %h: none)
-      -> none
+      -> ()
       attributes {input_segments = array<i32: 0, 8, 0>,
                   result_segments = array<i32: 0, 0, 0>} {
     %done:9 = dataflow.sync %ctrl, %a, %b, %c, %d, %e, %f, %g, %h

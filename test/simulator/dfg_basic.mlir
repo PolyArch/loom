@@ -15,9 +15,9 @@
 // CHECK-NOT: cycles
 
 module {
-  dataflow.graph.func private @sum4(%ctrl: none, %lb: i64, %ub: i64,
+  dataflow.graph private @sum4(%ctrl: none, %lb: i64, %ub: i64,
     %step: i64, %init: f32, %increment: f32)
-      -> (none, f32) {
+      -> (f32) {
     %iv, %phase = dataflow.stream %lb, %ub, %step
         step add while slt : i64
     %carry = dataflow.carry %phase, %init, %next : f32

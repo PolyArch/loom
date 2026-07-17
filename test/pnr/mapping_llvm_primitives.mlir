@@ -51,64 +51,64 @@
 // SMAX-NEXT: smax_graph,llvm_primitive_adg,smax_graph__smax_graph__llvm_primitive_adg,2,1,0,0,pass
 
 module {
-  dataflow.graph.func private @zext_graph(%ctrl: none, %narrow: i32)
-      -> (none, i64) {
+  dataflow.graph private @zext_graph(%ctrl: none, %narrow: i32)
+      -> (i64) {
     %wide = llvm.zext %narrow : i32 to i64
     dataflow.graph.return %ctrl, %wide : none, i64
   }
 
-  dataflow.graph.func private @sext_graph(%ctrl: none, %narrow: i16)
-      -> (none, i32) {
+  dataflow.graph private @sext_graph(%ctrl: none, %narrow: i16)
+      -> (i32) {
     %wide = llvm.sext %narrow : i16 to i32
     dataflow.graph.return %ctrl, %wide : none, i32
   }
 
-  dataflow.graph.func private @abs_graph(%ctrl: none, %value: i32)
-      -> (none, i32) {
+  dataflow.graph private @abs_graph(%ctrl: none, %value: i32)
+      -> (i32) {
     %abs = "llvm.intr.abs"(%value) <{is_int_min_poison = true}> : (i32) -> i32
     dataflow.graph.return %ctrl, %abs : none, i32
   }
 
-  dataflow.graph.func private @fabs_graph(%ctrl: none, %value: f32)
-      -> (none, f32) {
+  dataflow.graph private @fabs_graph(%ctrl: none, %value: f32)
+      -> (f32) {
     %abs = llvm.intr.fabs(%value) : (f32) -> f32
     dataflow.graph.return %ctrl, %abs : none, f32
   }
 
-  dataflow.graph.func private @fmuladd_graph(%ctrl: none, %lhs: f32,
+  dataflow.graph private @fmuladd_graph(%ctrl: none, %lhs: f32,
                                              %rhs: f32, %acc: f32)
-      -> (none, f32) {
+      -> (f32) {
     %result = llvm.intr.fmuladd(%lhs, %rhs, %acc) : (f32, f32, f32) -> f32
     dataflow.graph.return %ctrl, %result : none, f32
   }
 
-  dataflow.graph.func private @fshl_graph(%ctrl: none, %lhs: i32,
+  dataflow.graph private @fshl_graph(%ctrl: none, %lhs: i32,
                                           %rhs: i32, %amount: i32)
-      -> (none, i32) {
+      -> (i32) {
     %result = llvm.intr.fshl(%lhs, %rhs, %amount) : (i32, i32, i32) -> i32
     dataflow.graph.return %ctrl, %result : none, i32
   }
 
-  dataflow.graph.func private @bswap_graph(%ctrl: none, %value: i32)
-      -> (none, i32) {
+  dataflow.graph private @bswap_graph(%ctrl: none, %value: i32)
+      -> (i32) {
     %result = llvm.intr.bswap(%value) : (i32) -> i32
     dataflow.graph.return %ctrl, %result : none, i32
   }
 
-  dataflow.graph.func private @umax_graph(%ctrl: none, %lhs: i32, %rhs: i32)
-      -> (none, i32) {
+  dataflow.graph private @umax_graph(%ctrl: none, %lhs: i32, %rhs: i32)
+      -> (i32) {
     %result = llvm.intr.umax(%lhs, %rhs) : (i32, i32) -> i32
     dataflow.graph.return %ctrl, %result : none, i32
   }
 
-  dataflow.graph.func private @smin_graph(%ctrl: none, %lhs: i8, %rhs: i8)
-      -> (none, i8) {
+  dataflow.graph private @smin_graph(%ctrl: none, %lhs: i8, %rhs: i8)
+      -> (i8) {
     %result = llvm.intr.smin(%lhs, %rhs) : (i8, i8) -> i8
     dataflow.graph.return %ctrl, %result : none, i8
   }
 
-  dataflow.graph.func private @smax_graph(%ctrl: none, %lhs: i8, %rhs: i8)
-      -> (none, i8) {
+  dataflow.graph private @smax_graph(%ctrl: none, %lhs: i8, %rhs: i8)
+      -> (i8) {
     %result = llvm.intr.smax(%lhs, %rhs) : (i8, i8) -> i8
     dataflow.graph.return %ctrl, %result : none, i8
   }

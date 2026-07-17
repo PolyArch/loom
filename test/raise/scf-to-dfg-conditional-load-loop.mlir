@@ -5,7 +5,7 @@
 // RUN: loom-dfg-sim %t.lowered.mlir --graph g_cond_load_red --arg 0=0 --arg 1=4 --arg 2=1 --arg 3=0 --arg 4=0 --arg 5=2 --memref 6=10,20,30,40 --output %t.true-then-false.sim.json
 // RUN: FileCheck %s --check-prefix=SIM-TF < %t.true-then-false.sim.json
 
-// STRUCT-LABEL: dataflow.graph.func private @g_cond_load_red
+// STRUCT-LABEL: dataflow.graph private @g_cond_load_red
 // STRUCT: dataflow.stream
 // STRUCT: dataflow.carry
 // STRUCT: dataflow.demux
@@ -20,10 +20,10 @@
 // SIM-TF-DAG: "status": "pass"
 // SIM-TF-DAG: "f32:30"
 
-dataflow.graph.func private @g_cond_load_red(
+dataflow.graph private @g_cond_load_red(
     %ctrl: none, %lb: i64, %ub: i64, %step: i64,
     %init: f32, %lo: i64, %hi: i64, %input: memref<?xf32>)
-    -> (none, f32)
+    -> (f32)
     attributes {input_segments = array<i32: 6, 0, 1>,
                 result_segments = array<i32: 1, 0, 0>} {
   %result = scf.for %i = %lb to %ub step %step

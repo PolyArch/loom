@@ -102,7 +102,7 @@
 // TRUNCI-OVERFLOW-DAG: "arith.trunci overflow<nsw> result would be poison"
 
 module {
-  dataflow.graph.func private @signed_shift_div_rem(%ctrl: none) -> (none, i32)
+  dataflow.graph private @signed_shift_div_rem(%ctrl: none) -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %negative = dataflow.constant %ctrl {const_value = -33 : i32} : i32
@@ -117,7 +117,7 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i32
   }
 
-  dataflow.graph.func private @unsigned_division(%ctrl: none) -> (none, i32)
+  dataflow.graph private @unsigned_division(%ctrl: none) -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %wide = dataflow.constant %ctrl {const_value = -1 : i32} : i32
@@ -128,7 +128,7 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i32
   }
 
-  dataflow.graph.func private @extend_truncate(%ctrl: none) -> (none, i32, i8)
+  dataflow.graph private @extend_truncate(%ctrl: none) -> (i32, i8)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 2, 0, 0>} {
     %byte = dataflow.constant %ctrl {const_value = -2 : i8} : i8
@@ -141,9 +141,9 @@ module {
         : none, i32, i8
   }
 
-  dataflow.graph.func private @narrow_runtime_signed_compare(
+  dataflow.graph private @narrow_runtime_signed_compare(
       %ctrl: none, %lhs: i8, %zero: i8, %minus_one: i8)
-      -> (none, i1, i1, i1, i1, i1)
+      -> (i1, i1, i1, i1, i1)
       attributes {input_segments = array<i32: 3, 0, 0>,
                   result_segments = array<i32: 5, 0, 0>} {
     %slt = arith.cmpi slt, %lhs, %zero : i8
@@ -158,8 +158,8 @@ module {
         : none, i1, i1, i1, i1, i1
   }
 
-  dataflow.graph.func private @i64_wraparound(%ctrl: none)
-      -> (none, i64, i64, i64)
+  dataflow.graph private @i64_wraparound(%ctrl: none)
+      -> (i64, i64, i64)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 3, 0, 0>} {
     %max = dataflow.constant %ctrl
@@ -177,7 +177,7 @@ module {
         %published#3 : none, i64, i64, i64
   }
 
-  dataflow.graph.func private @llvm_sign_extend(%ctrl: none) -> (none, i32)
+  dataflow.graph private @llvm_sign_extend(%ctrl: none) -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %byte = dataflow.constant %ctrl {const_value = -2 : i8} : i8
@@ -187,7 +187,7 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i32
   }
 
-  dataflow.graph.func private @exact_division_poison(%ctrl: none) -> (none, i32)
+  dataflow.graph private @exact_division_poison(%ctrl: none) -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %lhs = dataflow.constant %ctrl {const_value = 5 : i32} : i32
@@ -198,7 +198,7 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i32
   }
 
-  dataflow.graph.func private @exact_shift_poison(%ctrl: none) -> (none, i8)
+  dataflow.graph private @exact_shift_poison(%ctrl: none) -> (i8)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %value = dataflow.constant %ctrl {const_value = -3 : i8} : i8
@@ -209,8 +209,8 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i8
   }
 
-  dataflow.graph.func private @exact_unsigned_shift_poison(%ctrl: none)
-      -> (none, i8)
+  dataflow.graph private @exact_unsigned_shift_poison(%ctrl: none)
+      -> (i8)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %value = dataflow.constant %ctrl {const_value = 3 : i8} : i8
@@ -221,8 +221,8 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i8
   }
 
-  dataflow.graph.func private @oversized_shift_poison(%ctrl: none)
-      -> (none, i8)
+  dataflow.graph private @oversized_shift_poison(%ctrl: none)
+      -> (i8)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %value = dataflow.constant %ctrl {const_value = -2 : i8} : i8
@@ -233,7 +233,7 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i8
   }
 
-  dataflow.graph.func private @remsi_min_minus_one(%ctrl: none) -> (none, i8)
+  dataflow.graph private @remsi_min_minus_one(%ctrl: none) -> (i8)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %min = dataflow.constant %ctrl {const_value = -128 : i8} : i8
@@ -244,8 +244,8 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i8
   }
 
-  dataflow.graph.func private @trunci_overflow_poison(%ctrl: none)
-      -> (none, i8, i8)
+  dataflow.graph private @trunci_overflow_poison(%ctrl: none)
+      -> (i8, i8)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 2, 0, 0>} {
     %nuw_source = dataflow.constant %ctrl {const_value = 256 : i32} : i32

@@ -112,17 +112,3 @@ dataflow.thread private @thread_wait_in_body(%token: !dataflow.thread_token) ctr
   }
   dataflow.thread.yield
 }
-
-// -----
-// A legacy regional graph body cannot launch a thread either.
-dataflow.thread private @regional_graph_thread_leaf() ctrl (%ctrl: none) {
-  dataflow.thread.yield
-}
-func.func @regional_graph_launches_thread() {
-  dataflow.graph() -> () {
-    // expected-error @+1 {{must appear outside any dataflow.thread or dataflow.graph definition}}
-    %token = dataflow.thread.launch @regional_graph_thread_leaf() : () -> !dataflow.thread_token
-    dataflow.yield
-  }
-  return
-}

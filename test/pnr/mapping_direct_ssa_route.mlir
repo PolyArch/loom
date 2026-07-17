@@ -15,8 +15,8 @@
 // JSON-NOT: ".in"
 
 module {
-  dataflow.graph.func private @direct_route(%ctrl: none, %lhs: i32, %rhs: i32, %limit: i32)
-      -> (none, i1) {
+  dataflow.graph private @direct_route(%ctrl: none, %lhs: i32, %rhs: i32, %limit: i32)
+      -> (i1) {
     %sum = arith.addi %lhs, %rhs : i32
     %cmp = arith.cmpi slt, %sum, %limit : i32
     dataflow.graph.return %ctrl, %cmp : none, i1

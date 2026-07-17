@@ -22,8 +22,7 @@ Part 3 instantiates this framework immediately for L2 graph placement.
 Part 2 owns the L1 instance for `loom.acc_region` selection. A TechMapping
 producer owns L3 Compute Realization search: it groups canonical actors and
 selects a Fabric-defined valid encoding in a new immutable Mapping Artifact.
-`dataflow.subgraph` may be read only through a migration adapter and is not an
-L3 result. Fabric tech supplies FU capability and generalization, while PnR
+Fabric tech supplies FU capability and generalization, while PnR
 adds concrete physical realization in a Physical Mapping.
 
 ## Compiler Strategy Universe
@@ -140,9 +139,7 @@ A candidate partition is legal only when all of the following hold:
   `dataflow.graph.launch` ops inside the enclosing thread
   definition's body. The "explicitly permits" escape is therefore
   reserved for future extensions. An L3 Compute Realization is a Mapping
-  record, not an IR region. A migration-only `dataflow.subgraph` adapter must
-  be projected into the canonical typed semantic domain and discarded before
-  TechMapping verification.
+  record, not an IR region.
 * Effect visibility is preserved. Any op whose execution affects program
   order, memory state, or async completion must continue to declare
   effects accurately enough for generic MLIR optimizers to preserve the
@@ -281,9 +278,9 @@ utilization, routing resources, reconfiguration pressure, coverage, extra
 capability, and reuse. These are mapping or evaluation facts, not Dataflow
 attributes.
 
-The former `loom-partition-graph-into-subgraphs` template-library path was
-removed because it made materialized `dataflow.subgraph` instances a competing
-mapping authority. Future L3 work must produce Compute Realization candidates
+The former template-library partition path was removed because it made
+materialized program-IR groups a competing mapping authority. Future L3 work
+must produce Compute Realization candidates
 that select Fabric-defined encodings and retain actor/op and boundary-port
 correspondence.
 

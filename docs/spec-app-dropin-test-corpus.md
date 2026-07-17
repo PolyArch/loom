@@ -143,8 +143,8 @@ diagnostic.
 
 The case lowers to dataflow IR when the selected region and lowering
 policy support it. The emitted dataflow artifact must parse, verify,
-and satisfy the target contracts for `dataflow.thread`,
-`dataflow.graph`, and `dataflow.subgraph` in the dataflow specs.
+and satisfy the target contracts for `dataflow.thread` and
+`dataflow.graph` in the dataflow specs.
 
 Unsupported regions must be diagnosed explicitly. A compatibility-mode
 run must not be marked failed solely because an optional dataflow

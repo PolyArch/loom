@@ -70,10 +70,10 @@
 // DEMUX-STORE-ACTIVE-DAG: "dataflow.store": 1
 
 module {
-  dataflow.graph.func private @mux_false_lane(%ctrl: none, %sel: i1,
+  dataflow.graph private @mux_false_lane(%ctrl: none, %sel: i1,
                                               %false_value: i64,
                                               %true_value: i64)
-      -> (none, i64)
+      -> (i64)
       attributes {input_segments = array<i32: 3, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %unused, %true_lane = dataflow.demux %sel, %true_value
@@ -84,10 +84,10 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i64
   }
 
-  dataflow.graph.func private @mux_true_lane(%ctrl: none, %sel: i1,
+  dataflow.graph private @mux_true_lane(%ctrl: none, %sel: i1,
                                              %false_value: i64,
                                              %true_value: i64)
-      -> (none, i64)
+      -> (i64)
       attributes {input_segments = array<i32: 3, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %unused, %true_lane = dataflow.demux %sel, %true_value
@@ -98,9 +98,9 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i64
   }
 
-  dataflow.graph.func private @demux_false_lane(%ctrl: none, %sel: i1,
+  dataflow.graph private @demux_false_lane(%ctrl: none, %sel: i1,
                                                 %value: i64)
-      -> (none, i64)
+      -> (i64)
       attributes {input_segments = array<i32: 2, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %false_lane, %true_lane = dataflow.demux %sel, %value : (i1, i64) -> (i64, i64)
@@ -109,9 +109,9 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i64
   }
 
-  dataflow.graph.func private @demux_true_lane(%ctrl: none, %sel: i1,
+  dataflow.graph private @demux_true_lane(%ctrl: none, %sel: i1,
                                                %value: i64)
-      -> (none, i64)
+      -> (i64)
       attributes {input_segments = array<i32: 2, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %false_lane, %true_lane = dataflow.demux %sel, %value : (i1, i64) -> (i64, i64)
@@ -120,10 +120,10 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i64
   }
 
-  dataflow.graph.func private @computed_i1_selectors(%ctrl: none, %sel: i1,
+  dataflow.graph private @computed_i1_selectors(%ctrl: none, %sel: i1,
                                                      %false_value: i64,
                                                      %true_value: i64)
-      -> (none, i64)
+      -> (i64)
       attributes {input_segments = array<i32: 3, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %computed_sel = arith.andi %sel, %sel : i1
@@ -134,10 +134,10 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i64
   }
 
-  dataflow.graph.func private @computed_i1_arith_select(%ctrl: none, %sel: i1,
+  dataflow.graph private @computed_i1_arith_select(%ctrl: none, %sel: i1,
                                                         %false_value: i64,
                                                         %true_value: i64)
-      -> (none, i64)
+      -> (i64)
       attributes {input_segments = array<i32: 3, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %computed_sel = arith.andi %sel, %sel : i1
@@ -147,10 +147,10 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i64
   }
 
-  dataflow.graph.func private @structured_mux_loop(%ctrl: none, %sel: i1,
+  dataflow.graph private @structured_mux_loop(%ctrl: none, %sel: i1,
                                                    %false_value: i64,
                                                    %true_value: i64)
-      -> (none, i64)
+      -> (i64)
       attributes {input_segments = array<i32: 3, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %out = dataflow.mux %sel, %false_value, %true_value
@@ -160,8 +160,8 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i64
   }
 
-  dataflow.graph.func private @structured_demux_store_noop(
-      %ctrl: none, %sel: i1, %value: i64, %mem: memref<?xi64>) -> none
+  dataflow.graph private @structured_demux_store_noop(
+      %ctrl: none, %sel: i1, %value: i64, %mem: memref<?xi64>) -> ()
       attributes {input_segments = array<i32: 2, 0, 1>,
                   result_segments = array<i32: 0, 0, 0>} {
     %addr = dataflow.constant %ctrl {const_value = 0 : index} : index

@@ -82,9 +82,9 @@
 // WHILE-STORE: "status": "pass"
 
 module {
-  dataflow.graph.func private @while_driven_switch_store(
+  dataflow.graph private @while_driven_switch_store(
       %ctrl: none, %row_begin: i32, %row_end: i32, %dst: i32, %value: i32,
-      %enabled: i1, %cols: !llvm.ptr, %output: !llvm.ptr) -> none
+      %enabled: i1, %cols: !llvm.ptr, %output: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 5, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     %two = dataflow.constant %ctrl {const_value = 2 : i32} : i32
@@ -131,9 +131,9 @@ module {
     dataflow.graph.return %ctrl : none
   }
 
-  dataflow.graph.func private @nested_if_switch_store(
+  dataflow.graph private @nested_if_switch_store(
       %ctrl: none, %selector: index, %slot: index, %value: i32, %enabled: i1,
-      %output: !llvm.ptr) -> none
+      %output: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 4, 0, 1>,
                   result_segments = array<i32: 0, 0, 0>} {
     %one = dataflow.constant %ctrl {const_value = 1 : index} : index
@@ -150,9 +150,9 @@ module {
     dataflow.graph.return %ctrl : none
   }
 
-  dataflow.graph.func private @effect_switch_store(
+  dataflow.graph private @effect_switch_store(
       %ctrl: none, %selector: index, %slot: index, %value: i32,
-      %output: !llvm.ptr) -> none
+      %output: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 3, 0, 1>,
                   result_segments = array<i32: 0, 0, 0>} {
     %one = dataflow.constant %ctrl {const_value = 1 : index} : index
@@ -167,9 +167,9 @@ module {
     dataflow.graph.return %ctrl : none
   }
 
-  dataflow.graph.func private @edge_update_find_slot(
+  dataflow.graph private @edge_update_find_slot(
       %ctrl: none, %row_begin: i32, %row_end: i32, %dst: i32,
-      %cols: !llvm.ptr) -> (none, i64, i32)
+      %cols: !llvm.ptr) -> (i64, i32)
       attributes {input_segments = array<i32: 3, 0, 1>,
                   result_segments = array<i32: 2, 0, 0>} {
     %two = dataflow.constant %ctrl {const_value = 2 : i32} : i32
@@ -205,10 +205,10 @@ module {
     dataflow.graph.return %ctrl, %found#1, %found#2 : none, i64, i32
   }
 
-  dataflow.graph.func private @edge_update_structured(
+  dataflow.graph private @edge_update_structured(
       %ctrl: none, %src: i32, %dst: i32, %new_weight: i32, %nodes: i32,
       %edges: i32, %row_ptr: !llvm.ptr, %cols: !llvm.ptr, %input: !llvm.ptr,
-      %output: !llvm.ptr) -> none
+      %output: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 5, 0, 4>,
                   result_segments = array<i32: 0, 0, 0>} {
     %two = dataflow.constant %ctrl {const_value = 2 : i32} : i32

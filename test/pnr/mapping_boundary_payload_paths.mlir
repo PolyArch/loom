@@ -35,8 +35,8 @@
 // T2S-TAG-JSON-DAG: "unrouted_edges": 1
 
 module {
-  dataflow.graph.func private @boundary_payload(
-      %ctrl: none, %lhs: i32, %rhs: i32) -> (none, i32) {
+  dataflow.graph private @boundary_payload(
+      %ctrl: none, %lhs: i32, %rhs: i32) -> (i32) {
     %sum = arith.addi %lhs, %rhs : i32
     %product = arith.muli %sum, %rhs : i32
     dataflow.graph.return %ctrl, %product : none, i32

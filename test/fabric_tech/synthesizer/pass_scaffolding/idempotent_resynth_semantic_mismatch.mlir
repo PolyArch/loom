@@ -1,4 +1,4 @@
-// RUN: loom %s -loom-generalize-subgraphs-to-fu 2>&1 | FileCheck %s
+// RUN: loom %s -loom-synthesize-configured-functions 2>&1 | FileCheck %s
 
 // The existing wrapper has the expected physical signature but materializes
 // only subtraction. It must not satisfy an idempotent request for addition.
@@ -34,9 +34,6 @@ fabric.module @fu_y(%a: !fabric.bits<32>, %b: !fabric.bits<32>)
 
 func.func @pat_addi(%a: i32, %b: i32) -> i32
     attributes {loom.synth_group = "y"} {
-  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
-    %sum = arith.addi %x, %y : i32
-    dataflow.yield %sum : i32
-  }
-  return %r : i32
+  %sum = arith.addi %a, %b : i32
+  return %sum : i32
 }

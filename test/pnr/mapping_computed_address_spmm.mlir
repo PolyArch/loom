@@ -21,9 +21,9 @@
 // JSON-DAG: "status": "pass"
 
 module {
-  dataflow.graph.func private @spmm_computed_address(
+  dataflow.graph private @spmm_computed_address(
       %ctrl: none, %row: i64, %input: memref<?xi32>,
-      %output: memref<?xi32>) -> none
+      %output: memref<?xi32>) -> ()
       attributes {input_segments = array<i32: 1, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     %bias_value = dataflow.constant %ctrl {const_value = 1 : i64} : i64

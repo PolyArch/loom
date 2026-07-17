@@ -19,9 +19,9 @@ module {
     return
   }
 
-  dataflow.graph.func private @sum_ptr_load(%ctrl: none, %lb: i64, %ub: i64,
+  dataflow.graph private @sum_ptr_load(%ctrl: none, %lb: i64, %ub: i64,
                                             %step: i64, %init: f32,
-                                            %ptr: !llvm.ptr) -> (none, f32)
+                                            %ptr: !llvm.ptr) -> (f32)
       attributes {input_segments = array<i32: 4, 0, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
     %mem = builtin.unrealized_conversion_cast %ptr : !llvm.ptr to memref<?xf32>

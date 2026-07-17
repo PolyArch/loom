@@ -16,9 +16,9 @@
 // PASS-DAG: "status": "pass"
 
 module {
-  dataflow.graph.func private @carry_address_relu_tail(
+  dataflow.graph private @carry_address_relu_tail(
       %ctrl: none, %ub: i16, %lb: i16, %step: i16, %zero: i8,
-      %mem: memref<?xi8>) -> none
+      %mem: memref<?xi8>) -> ()
       attributes {input_segments = array<i32: 4, 0, 1>,
                   result_segments = array<i32: 0, 0, 0>} {
     %index, %rwc = dataflow.stream %ub, %lb, %step step add while sgt : i16

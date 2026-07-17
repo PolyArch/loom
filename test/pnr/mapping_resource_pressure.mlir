@@ -37,9 +37,9 @@
 // MIXED-JSON-DAG: "missing": 1
 
 module {
-  dataflow.graph.func private @two_loads_one_port(
+  dataflow.graph private @two_loads_one_port(
       %ctrl: none, %idx: index, %a: memref<?xi32>, %b: memref<?xi32>)
-      -> (none, i32)
+      -> (i32)
       attributes {input_segments = array<i32: 1, 0, 2>,
                   result_segments = array<i32: 1, 0, 0>} {
     %lhs, %lhs_done = dataflow.load %a[%idx] %ctrl : memref<?xi32>
@@ -87,12 +87,12 @@ module {
     fabric.yield
   }
 
-  dataflow.graph.func private @mixed_addi_pressure(
+  dataflow.graph private @mixed_addi_pressure(
       %ctrl: none,
       %i32a: i32, %i32b: i32,
       %i64a: i64, %i64b: i64,
       %i32c: i32, %i32d: i32)
-      -> (none, i32, i64, i32) {
+      -> (i32, i64, i32) {
     %sum0 = arith.addi %i32a, %i32b : i32
     %sum1 = arith.addi %i64a, %i64b : i64
     %sum2 = arith.addi %i32c, %i32d : i32

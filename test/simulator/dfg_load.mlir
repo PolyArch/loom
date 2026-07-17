@@ -11,9 +11,9 @@
 // CHECK-DAG: "f32:6"
 
 module {
-  dataflow.graph.func private @sum_load(
+  dataflow.graph private @sum_load(
       %start: none, %lb: i64, %ub: i64, %step: i64, %init: f32,
-      %mem: memref<?xf32>) -> (none, f32)
+      %mem: memref<?xf32>) -> (f32)
       attributes {input_segments = array<i32: 4, 0, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
     %result = scf.for %i = %lb to %ub step %step

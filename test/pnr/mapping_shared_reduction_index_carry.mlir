@@ -33,12 +33,12 @@
 // JSON-NOT: ".in"
 
 module {
-  dataflow.graph.func private @shared_index_carry(%ctrl: none, %end: i32,
+  dataflow.graph private @shared_index_carry(%ctrl: none, %end: i32,
                                                   %start: i32, %step: i32,
                                                   %zero_f: f32,
                                                   %unit: none,
                                                   %mem: memref<?xf32>)
-      -> (none, f32)
+      -> (f32)
       attributes {input_segments = array<i32: 4, 1, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
     %index, %rwc = dataflow.stream %end, %start, %step

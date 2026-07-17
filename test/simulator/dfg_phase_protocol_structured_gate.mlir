@@ -11,12 +11,12 @@
 module attributes {
   dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
 } {
-  dataflow.graph.func private @structured_gate_reentry(
+  dataflow.graph private @structured_gate_reentry(
       %ctrl: none, %gate_phase: i1, %gate_value: index,
       %contribution: index, %acc_phase: i1, %acc_unit: none,
       %acc_last: i1, %gate_unit: none, %gate_close_last: i1,
       %bonus_true: index, %bonus_false: index, %bonus_last: i1)
-      -> (none, index)
+      -> (index)
       attributes {input_segments = array<i32: 0, 11, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %after_cond, %after_value = dataflow.gate %gate_phase, %gate_value : index

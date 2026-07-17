@@ -22,9 +22,9 @@
 // INVALID-COUNT: 1
 
 module {
-  dataflow.graph.func private @index_width_fallback(
+  dataflow.graph private @index_width_fallback(
       %ctrl: none, %value: i64, %base: memref<?xi32>)
-      -> (none, index, i32)
+      -> (index, i32)
       attributes {input_segments = array<i32: 1, 0, 1>,
                   result_segments = array<i32: 2, 0, 0>} {
     %index = arith.index_cast %value : i64 to index
@@ -39,9 +39,9 @@ module {
   module attributes {
     dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
   } {
-    dataflow.graph.func private @index_width_explicit32(
+    dataflow.graph private @index_width_explicit32(
         %ctrl: none, %value: i64, %base: memref<?xi32>)
-        -> (none, index, i32)
+        -> (index, i32)
         attributes {input_segments = array<i32: 1, 0, 1>,
                     result_segments = array<i32: 2, 0, 0>} {
       %index = arith.index_cast %value : i64 to index
@@ -57,9 +57,9 @@ module {
   module attributes {
     dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 128>>
   } {
-    dataflow.graph.func private @invalid_index_width_with_stream(
+    dataflow.graph private @invalid_index_width_with_stream(
         %ctrl: none, %value: i64, %init: i64, %limit: i64, %step: i64)
-        -> (none, index, i1)
+        -> (index, i1)
         attributes {input_segments = array<i32: 4, 0, 0>,
                     result_segments = array<i32: 1, 1, 0>} {
       %index = arith.index_cast %value : i64 to index

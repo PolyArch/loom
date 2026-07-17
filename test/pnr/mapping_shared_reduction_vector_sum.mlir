@@ -21,10 +21,10 @@
 // JSON-NOT: ".in"
 
 module {
-  dataflow.graph.func private @cmsis_vector_sum_s8(
+  dataflow.graph private @cmsis_vector_sum_s8(
       %ctrl: none, %src_index: index, %dst_index: index, %acc: i32,
       %bias: i32, %scale: i32, %src: memref<?xi8>, %dst: memref<?xi32>)
-      -> none
+      -> ()
       attributes {input_segments = array<i32: 5, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     %loaded_i8, %src_done = dataflow.load %src[%src_index] %ctrl

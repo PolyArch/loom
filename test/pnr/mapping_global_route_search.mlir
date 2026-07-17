@@ -12,8 +12,8 @@
 // JSON-DAG: "unrouted_edges": 0
 
 module {
-  dataflow.graph.func private @long_add_chain(%ctrl: none, %seed: i32,
-                                               %rhs: i32) -> (none, i32) {
+  dataflow.graph private @long_add_chain(%ctrl: none, %seed: i32,
+                                               %rhs: i32) -> (i32) {
     %v0 = arith.addi %seed, %rhs : i32
     %v1 = arith.addi %v0, %rhs : i32
     %v2 = arith.addi %v1, %rhs : i32

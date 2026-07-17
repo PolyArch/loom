@@ -42,7 +42,7 @@
 // SADD16-WRAP-DAG: "i32:-2147483645"
 
 module {
-  dataflow.graph.func private @arm_qsub16(%ctrl: none) -> (none, i32)
+  dataflow.graph private @arm_qsub16(%ctrl: none) -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %zero = dataflow.constant %ctrl {const_value = 0 : i32} : i32
@@ -54,7 +54,7 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i32
   }
 
-  dataflow.graph.func private @arm_qsub16_saturate(%ctrl: none) -> (none, i32)
+  dataflow.graph private @arm_qsub16_saturate(%ctrl: none) -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %lhs = dataflow.constant %ctrl {const_value = 2147450880 : i32} : i32
@@ -66,7 +66,7 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i32
   }
 
-  dataflow.graph.func private @arm_qsub8_saturate(%ctrl: none) -> (none, i32)
+  dataflow.graph private @arm_qsub8_saturate(%ctrl: none) -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %lhs = dataflow.constant %ctrl {const_value = 25100416 : i32} : i32
@@ -78,7 +78,7 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i32
   }
 
-  dataflow.graph.func private @arm_qadd16_saturate(%ctrl: none) -> (none, i32)
+  dataflow.graph private @arm_qadd16_saturate(%ctrl: none) -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %lhs = dataflow.constant %ctrl {const_value = 2147450879 : i32} : i32
@@ -90,7 +90,7 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i32
   }
 
-  dataflow.graph.func private @arm_sadd16_wrap(%ctrl: none) -> (none, i32)
+  dataflow.graph private @arm_sadd16_wrap(%ctrl: none) -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %lhs = dataflow.constant %ctrl {const_value = 2147418113 : i32} : i32

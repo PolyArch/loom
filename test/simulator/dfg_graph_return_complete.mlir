@@ -11,8 +11,8 @@
 // CHECK-NEXT: ]
 // CHECK: "status": "pass"
 module {
-  dataflow.graph.func private @multi_complete(
-      %start: none, %value: i32) -> (none, i32)
+  dataflow.graph private @multi_complete(
+      %start: none, %value: i32) -> (i32)
       attributes {input_segments = array<i32: 1, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %done:2 = dataflow.sync %start, %start

@@ -9,10 +9,10 @@
 // CHECK-DAG: "dynamic_work_items": 0
 // CHECK-DAG: "final_outputs": []
 // CHECK-DAG: "final_memory_state": {}
-// CHECK-DAG: "dataflow.graph.func 'missing_graph' was not found"
+// CHECK-DAG: "dataflow.graph 'missing_graph' was not found"
 
 module {
-  dataflow.graph.func private @existing_graph(%ctrl: none) -> none {
+  dataflow.graph private @existing_graph(%ctrl: none) -> () {
     dataflow.graph.return %ctrl : none
   }
 }

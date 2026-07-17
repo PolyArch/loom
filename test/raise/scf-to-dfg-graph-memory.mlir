@@ -3,7 +3,7 @@
 // Explicit graph memory inputs are normalized into canonical dataflow memory
 // operations. Their pointer bridge preserves the graph-owned import root.
 
-// CHECK-LABEL: dataflow.graph.func private @g_canonical
+// CHECK-LABEL: dataflow.graph private @g_canonical
 // CHECK-DAG: %[[MEM:.*]] = builtin.unrealized_conversion_cast %arg5 : !llvm.ptr to memref<?xf32>
 // CHECK: %[[STREAM:.*]], %[[RWC:.*]] = dataflow.stream
 // CHECK: %[[LOAD_STRIDE:.*]] = arith.constant 4 : i64
@@ -14,9 +14,9 @@
 // CHECK: dataflow.store %[[MEM]][%[[LOAD_IDX]]] %{{.*}} %[[LOAD_DONE]] : memref<?xf32>
 // CHECK-NOT: llvm.load
 // CHECK-NOT: llvm.store
-dataflow.graph.func private @g_canonical(%arg0: none, %arg1: i64, %arg2: i64,
+dataflow.graph private @g_canonical(%arg0: none, %arg1: i64, %arg2: i64,
                                          %arg3: i64, %arg5: f32,
-                                         %arg4: !llvm.ptr) -> (none, f32)
+                                         %arg4: !llvm.ptr) -> (f32)
     attributes {input_segments = array<i32: 4, 0, 1>,
                 result_segments = array<i32: 1, 0, 0>} {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
@@ -32,7 +32,7 @@ dataflow.graph.func private @g_canonical(%arg0: none, %arg1: i64, %arg2: i64,
 // A no-wrap GEP with element stride retains an element index rather than a
 // byte multiply and inverse shift.
 
-// CHECK-LABEL: dataflow.graph.func private @g_inbounds_element_index
+// CHECK-LABEL: dataflow.graph private @g_inbounds_element_index
 // CHECK-DAG: %[[INBOUNDS_MEM:.*]] = builtin.unrealized_conversion_cast %arg4 : !llvm.ptr to memref<?xi32>
 // CHECK: %[[INBOUNDS_INDEX:.*]], %[[INBOUNDS_RWC:.*]] = dataflow.stream
 // CHECK-NOT: arith.muli
@@ -43,9 +43,9 @@ dataflow.graph.func private @g_canonical(%arg0: none, %arg1: i64, %arg2: i64,
 // CHECK-NOT: llvm.getelementptr
 // CHECK-NOT: llvm.load
 // CHECK-NOT: llvm.store
-dataflow.graph.func private @g_inbounds_element_index(
+dataflow.graph private @g_inbounds_element_index(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
-    %arg4: !llvm.ptr) -> none
+    %arg4: !llvm.ptr) -> ()
     attributes {input_segments = array<i32: 3, 0, 1>,
                 result_segments = array<i32: 0, 0, 0>} {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
@@ -60,7 +60,7 @@ dataflow.graph.func private @g_inbounds_element_index(
 // Nested accesses retain the graph-scope capability while only the address
 // value recurs through the lowered loop.
 
-// CHECK-LABEL: dataflow.graph.func private @g_nested_static_bridge
+// CHECK-LABEL: dataflow.graph private @g_nested_static_bridge
 // CHECK-DAG: %[[NESTED_MEM:.*]] = builtin.unrealized_conversion_cast %arg4 : !llvm.ptr to memref<?xi32>
 // CHECK: %[[NESTED_IV:.*]], %[[NESTED_PHASE:.*]] = dataflow.stream
 // CHECK-NOT: dataflow.invariant {{.*}} : !llvm.ptr
@@ -71,8 +71,8 @@ dataflow.graph.func private @g_inbounds_element_index(
 // CHECK-NOT: llvm.getelementptr
 // CHECK-NOT: llvm.load
 // CHECK-NOT: llvm.store
-dataflow.graph.func private @g_nested_static_bridge(
-    %start: none, %lb: i64, %ub: i64, %step: i64, %base: !llvm.ptr) -> none
+dataflow.graph private @g_nested_static_bridge(
+    %start: none, %lb: i64, %ub: i64, %step: i64, %base: !llvm.ptr) -> ()
     attributes {input_segments = array<i32: 3, 0, 1>,
                 result_segments = array<i32: 0, 0, 0>} {
   scf.for %i = %lb to %ub step %step : i64 {
@@ -86,15 +86,15 @@ dataflow.graph.func private @g_nested_static_bridge(
 
 // Unsigned-only no-wrap remains on the conservative byte-normalization path.
 
-// CHECK-LABEL: dataflow.graph.func private @g_nuw_element_index
+// CHECK-LABEL: dataflow.graph private @g_nuw_element_index
 // CHECK: %[[NUW_INDEX:.*]], %[[NUW_RWC:.*]] = dataflow.stream
 // CHECK: %[[NUW_STRIDE:.*]] = arith.constant 4 : i64
 // CHECK: %[[NUW_BYTES:.*]] = arith.muli %[[NUW_INDEX]], %[[NUW_STRIDE]] : i64
 // CHECK: %[[NUW_ELEMENTS:.*]] = arith.shrsi %[[NUW_BYTES]], %{{.*}} : i64
 // CHECK: %[[NUW_ADDR:.*]] = arith.index_cast %[[NUW_ELEMENTS]] : i64 to index
-dataflow.graph.func private @g_nuw_element_index(
+dataflow.graph private @g_nuw_element_index(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
-    %arg4: !llvm.ptr) -> none
+    %arg4: !llvm.ptr) -> ()
     attributes {input_segments = array<i32: 3, 0, 1>,
                 result_segments = array<i32: 0, 0, 0>} {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
@@ -108,15 +108,15 @@ dataflow.graph.func private @g_nuw_element_index(
 
 // A zero companion GEP stays on the general byte-normalization path.
 
-// CHECK-LABEL: dataflow.graph.func private @g_inbounds_zero_companion
+// CHECK-LABEL: dataflow.graph private @g_inbounds_zero_companion
 // CHECK: %[[CHAIN_ZERO_INDEX:.*]], %[[CHAIN_ZERO_RWC:.*]] = dataflow.stream
 // CHECK: %[[CHAIN_ZERO_STRIDE:.*]] = arith.constant 4 : i64
 // CHECK: %[[CHAIN_ZERO_BYTES:.*]] = arith.muli %[[CHAIN_ZERO_INDEX]], %[[CHAIN_ZERO_STRIDE]] : i64
 // CHECK: %[[CHAIN_ZERO_ELEMENTS:.*]] = arith.shrsi %[[CHAIN_ZERO_BYTES]], %{{.*}} : i64
 // CHECK: %[[CHAIN_ZERO_ADDR:.*]] = arith.index_cast %[[CHAIN_ZERO_ELEMENTS]] : i64 to index
-dataflow.graph.func private @g_inbounds_zero_companion(
+dataflow.graph private @g_inbounds_zero_companion(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
-    %arg4: !llvm.ptr) -> none
+    %arg4: !llvm.ptr) -> ()
     attributes {input_segments = array<i32: 3, 0, 1>,
                 result_segments = array<i32: 0, 0, 0>} {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
@@ -133,7 +133,7 @@ dataflow.graph.func private @g_inbounds_zero_companion(
 // Chained byte offsets preserve exact element conversion, including a
 // negative constant bias.
 
-// CHECK-LABEL: dataflow.graph.func private @g_chained_gep_i8_i16
+// CHECK-LABEL: dataflow.graph private @g_chained_gep_i8_i16
 // CHECK-DAG: %[[MEM_CHAIN:.*]] = builtin.unrealized_conversion_cast %arg5 : !llvm.ptr to memref<?xi16>
 // CHECK: %[[STREAM_CHAIN:.*]], %[[RWC_CHAIN:.*]] = dataflow.stream
 // CHECK: %[[STRIDE_CHAIN:.*]] = arith.constant 4 : i64
@@ -145,9 +145,9 @@ dataflow.graph.func private @g_inbounds_zero_companion(
 // CHECK: dataflow.load %[[MEM_CHAIN]][%[[IDX_CHAIN]]] %arg0 : memref<?xi16>
 // CHECK-NOT: llvm.getelementptr
 // CHECK-NOT: llvm.load
-dataflow.graph.func private @g_chained_gep_i8_i16(
+dataflow.graph private @g_chained_gep_i8_i16(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64, %arg5: i16,
-    %arg4: !llvm.ptr) -> (none, i16)
+    %arg4: !llvm.ptr) -> (i16)
     attributes {input_segments = array<i32: 4, 0, 1>,
                 result_segments = array<i32: 1, 0, 0>} {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
@@ -161,7 +161,7 @@ dataflow.graph.func private @g_chained_gep_i8_i16(
   dataflow.graph.return %arg0, %0 : none, i16
 }
 
-// CHECK-LABEL: dataflow.graph.func private @g_chained_gep_negative_bias
+// CHECK-LABEL: dataflow.graph private @g_chained_gep_negative_bias
 // CHECK-DAG: %[[NEG_MEM:.*]] = builtin.unrealized_conversion_cast %arg4 : !llvm.ptr to memref<?xi16>
 // CHECK: %[[NEG_INDEX:.*]], %[[NEG_RWC:.*]] = dataflow.stream
 // CHECK: %[[NEG_STRIDE:.*]] = arith.constant 4 : i64
@@ -173,9 +173,9 @@ dataflow.graph.func private @g_chained_gep_i8_i16(
 // CHECK: dataflow.load %[[NEG_MEM]][%[[NEG_ADDR]]] %arg0 : memref<?xi16>
 // CHECK-NOT: llvm.getelementptr
 // CHECK-NOT: llvm.load
-dataflow.graph.func private @g_chained_gep_negative_bias(
+dataflow.graph private @g_chained_gep_negative_bias(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64, %arg4: !llvm.ptr)
-    -> (none, i16)
+    -> (i16)
     attributes {input_segments = array<i32: 3, 0, 1>,
                 result_segments = array<i32: 1, 0, 0>} {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3

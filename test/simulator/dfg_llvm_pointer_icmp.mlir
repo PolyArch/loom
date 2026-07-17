@@ -6,9 +6,9 @@
 // STRUCTURED: finalized graph contains residual pointer operation 'llvm.mlir.zero'
 
 module {
-  dataflow.graph.func private @pointer_icmp_top(
+  dataflow.graph private @pointer_icmp_top(
       %ctrl: none, %lhs: !llvm.ptr, %rhs: !llvm.ptr)
-      -> (none, i1, i1, i1, i1, i1, i1)
+      -> (i1, i1, i1, i1, i1, i1)
       attributes {input_segments = array<i32: 0, 0, 2>,
                   result_segments = array<i32: 6, 0, 0>} {
     %null = llvm.mlir.zero : !llvm.ptr
@@ -27,9 +27,9 @@ module {
         : none, i1, i1, i1, i1, i1, i1
   }
 
-  dataflow.graph.func private @pointer_icmp_structured(
+  dataflow.graph private @pointer_icmp_structured(
       %ctrl: none, %cond: i1, %lhs: !llvm.ptr, %rhs: !llvm.ptr)
-      -> (none, i1, i1, i1)
+      -> (i1, i1, i1)
       attributes {input_segments = array<i32: 1, 0, 2>,
                   result_segments = array<i32: 3, 0, 0>} {
     %null = llvm.mlir.zero : !llvm.ptr

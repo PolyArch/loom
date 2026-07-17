@@ -385,11 +385,9 @@ belong to binding/PnR artifacts.
 `dataflow.graph` represents SpatialCore software dataflow. The target
 form is a symbol-bearing, module-scope callable definition. It executes
 only through `dataflow.graph.launch` inside a `dataflow.thread` body.
-The target dataflow dialect has no separate
-`dataflow.graph.func` surface.
+There is no regional graph form or separate graph callable surface.
 
-`dataflow.subgraph` is a migration-only adapter form, not a canonical L3
-partition. TechMapping owns actor grouping, selected FU encodings, actor/op
+TechMapping owns actor grouping, selected FU encodings, actor/op
 correspondence, and boundary-port correspondence without persisting a second
 software graph. Resource sharing and tags remain Mapping, PnR, or Fabric facts.
 

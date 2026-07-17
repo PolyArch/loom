@@ -11,7 +11,7 @@
 // CHECK-DAG: "i64:42"
 
 module {
-  dataflow.graph.func private @zext(%ctrl: none) -> (none, i64)
+  dataflow.graph private @zext(%ctrl: none) -> (i64)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %narrow = dataflow.constant %ctrl {const_value = 42 : i32} : i32

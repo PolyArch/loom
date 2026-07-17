@@ -10,7 +10,7 @@
 // CHECK-DAG: "arith.addi": 9
 
 module {
-  dataflow.graph.func private @nested_for_accumulate(%ctrl: none) -> (none, i32)
+  dataflow.graph private @nested_for_accumulate(%ctrl: none) -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %zero = dataflow.constant %ctrl {const_value = 0 : i32} : i32

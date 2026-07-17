@@ -1,111 +1,122 @@
 // RUN: loom %s -split-input-file -verify-diagnostics
 
 // -----
-// Block argument type mismatch (the declared block arg type must match the
-// outer operand's type; the parser catches this via SSA value type unification).
-func.func @graph_bad_bbarg_type(%x: i32) {
-  // expected-note @-1 {{prior use here}}
-  // expected-error @+1 {{use of value '%x' expects different type than prior uses: 'f32' vs 'i32'}}
-  dataflow.graph(%a = %x : f32) -> () {
-    dataflow.yield
-  }
+// Normalized segment sizes must cover every application input.
+// expected-error @+1 {{input_segments must contain exactly three nonnegative sizes whose sum (0) matches the function input count (1)}}
+dataflow.graph private @g_bad_input_segments(%ctrl: none, %x: i32)
+    -> (i32)
+    attributes {input_segments = array<i32: 0, 0, 0>,
+                result_segments = array<i32: 1, 0, 0>} {
+  dataflow.graph.return %ctrl, %x : none, i32
+}
+
+// -----
+// A scalar cannot be declared as a memory capability.
+// expected-error @+1 {{memory input #0 has non-capability type 'i32'}}
+dataflow.graph private @g_scalar_memory(%ctrl: none, %x: i32) -> ()
+    attributes {input_segments = array<i32: 0, 0, 1>,
+                result_segments = array<i32: 0, 0, 0>} {
+  dataflow.graph.return %ctrl : none
+}
+
+// -----
+// A memory capability cannot be declared as an application value.
+// expected-error @+1 {{value input #0 contains memory capability type 'memref<?xi32>'}}
+dataflow.graph private @g_memory_value(%ctrl: none,
+                                             %memory: memref<?xi32>) -> ()
+    attributes {input_segments = array<i32: 1, 0, 0>,
+                result_segments = array<i32: 0, 0, 0>} {
+  dataflow.graph.return %ctrl : none
+}
+
+// -----
+// Missing segment metadata normalizes to value ports. Pointer syntax must not
+// silently redefine the graph ABI.
+// expected-error @+1 {{value input #0 contains memory capability type 'memref<?xi32>'}}
+dataflow.graph private @g_memory_without_classification(
+    %ctrl: none, %memory: memref<?xi32>) -> () {
+  dataflow.graph.return %ctrl : none
+}
+
+// -----
+// Capability rejection applies recursively to aggregate value ports.
+// expected-error @+1 {{value input #0 contains memory capability type 'tuple<i32, !llvm.ptr>'}}
+dataflow.graph private @g_nested_memory_value(
+    %ctrl: none, %aggregate: tuple<i32, !llvm.ptr>) -> ()
+    attributes {input_segments = array<i32: 1, 0, 0>,
+                result_segments = array<i32: 0, 0, 0>} {
+  dataflow.graph.return %ctrl : none
+}
+
+// -----
+// A scalar cannot be declared as a memory result.
+// expected-error @+1 {{memory result #0 has non-capability type 'i32'}}
+dataflow.graph private @g_scalar_memory_result(%ctrl: none, %x: i32)
+    -> (i32)
+    attributes {input_segments = array<i32: 1, 0, 0>,
+                result_segments = array<i32: 0, 0, 1>} {
+  dataflow.graph.return values() streams() memories(%x : i32)
+      complete(%ctrl : none)
+}
+
+// -----
+// graph.return value count must match parent results.
+dataflow.graph private @g_bad_return(%ctrl: none, %x: i32) -> (i32)
+    attributes {input_segments = array<i32: 1, 0, 0>,
+                result_segments = array<i32: 1, 0, 0>} {
+  // expected-error @+1 {{values segment count (0) must match parent result segment size (1)}}
+  dataflow.graph.return %ctrl : none
+}
+
+// -----
+// graph.return completion is mandatory.
+dataflow.graph private @g_empty_complete(%ctrl: none, %x: i32)
+    -> (i32)
+    attributes {input_segments = array<i32: 1, 0, 0>,
+                result_segments = array<i32: 1, 0, 0>} {
+  // expected-error @+1 {{complete segment must not be empty}}
+  dataflow.graph.return values(%x : i32) streams() memories() complete()
+}
+
+// -----
+// graph.launch must appear inside a dataflow.thread body. (Outside
+// any thread there is no thread_ctrl slot, so we materialise an
+// `ub.poison : none` as a placeholder dependency just to exercise the
+// "must be inside a thread" check.)
+dataflow.graph private @g_target(%ctrl: none) -> () {
+  dataflow.graph.return %ctrl : none
+}
+func.func @launch_outside_thread() {
+  %ctrl = ub.poison : none
+  // expected-error @+1 {{must appear inside a dataflow.thread body}}
+  %d = dataflow.graph.launch @g_target deps(%ctrl) values()
+      stream_inputs() memories() stream_outputs() : (none) -> none
   return
 }
 
 // -----
-// Yield value count mismatch.
-func.func @graph_bad_yield_count(%x: i32) -> (i32, i32) {
-  %r:2 = dataflow.graph(%a = %x : i32) -> (i32, i32) {
-    // expected-error @+1 {{yield value count (1) must match parent graph result count (2)}}
-    dataflow.yield %a : i32
+// Thread launches belong in the host-level
+// launch layer, not inside leaf SpatialCore graph bodies.
+dataflow.thread private @t_empty() ctrl (%thread_ctrl: none) {
+  dataflow.thread.yield
+}
+dataflow.graph private @g_rejects_thread_launch(%ctrl: none) -> () {
+  scf.execute_region {
+    // expected-error @+1 {{must appear outside any dataflow.thread or dataflow.graph definition}}
+    %tok = dataflow.thread.launch @t_empty() : () -> !dataflow.thread_token
+    scf.yield
   }
-  return %r#0, %r#1 : i32, i32
+  dataflow.graph.return %ctrl : none
 }
 
 // -----
-// Yield value type mismatch.
-func.func @graph_bad_yield_type(%x: i32) -> f32 {
-  %r = dataflow.graph(%a = %x : i32) -> f32 {
-    // expected-error @+1 {{yield value #0 type 'i32' must match parent graph result type 'f32'}}
-    dataflow.yield %a : i32
-  }
-  return %r : f32
-}
-
-// -----
-// yield outside of graph.
-func.func @yield_outside() {
-  // expected-error @+1 {{expects parent op to be one of 'dataflow.graph, dataflow.subgraph'}}
-  dataflow.yield
-}
-
-// -----
-// arith.constant is explicitly disallowed inside a graph (use dataflow.constant).
-func.func @graph_rejects_arith_constant() {
-  dataflow.graph() -> () {
-    // expected-error @+1 {{'arith.constant' op is not allowed inside dataflow.graph}}
-    %c = arith.constant 1 : i32
-    dataflow.yield
-  }
-  return
-}
-
-// -----
-// memref.alloc is not in the allowlist.
-func.func @graph_rejects_memref_alloc() {
-  dataflow.graph() -> () {
-    // expected-error @+1 {{'memref.alloc' op is not allowed inside dataflow.graph}}
-    %m = memref.alloc() : memref<4xi32>
-    dataflow.yield
-  }
-  return
-}
-
-// -----
-// func.call is not in the allowlist.
-func.func private @helper(%x: i32) -> i32
-func.func @graph_rejects_func_call(%a: i32) {
-  dataflow.graph(%x = %a : i32) -> () {
-    // expected-error @+1 {{'func.call' op is not allowed inside dataflow.graph}}
-    %r = func.call @helper(%x) : (i32) -> i32
-    dataflow.yield
-  }
-  return
-}
-
-// -----
-// graph-in-graph is forbidden; use subgraph for hierarchy.
-func.func @graph_rejects_nested_graph(%x: i32) {
-  dataflow.graph(%a = %x : i32) -> () {
-    // expected-error @+1 {{dataflow.graph cannot be nested inside another dataflow.graph}}
-    dataflow.graph(%b = %a : i32) -> () {
-      dataflow.yield
-    }
-    dataflow.yield
-  }
-  return
-}
-
-// -----
-// llvm.load is a memory op, not in the computation allowlist.
-func.func @graph_rejects_llvm_load(%n: i32) {
-  dataflow.graph(%size = %n : i32) -> () {
-    %p = llvm.alloca %size x i32 : (i32) -> !llvm.ptr
-    // expected-error @+1 {{'llvm.load' op is not allowed inside dataflow.graph}}
-    %v = llvm.load %p : !llvm.ptr -> i32
-    dataflow.yield
-  }
-  return
-}
-
-// -----
-// A regional graph body cannot wait on a caller-side completion token.
-func.func @regional_graph_rejects_thread_wait() {
-  dataflow.graph() -> () {
-    %token = ub.poison : !dataflow.thread_token
+// A graph body cannot wait on a caller-side completion token.
+dataflow.graph private @g_rejects_thread_wait(%ctrl: none) -> () {
+  %token = ub.poison : !dataflow.thread_token
+  scf.execute_region {
     // expected-error @+1 {{must appear outside any dataflow.thread or dataflow.graph definition}}
     dataflow.thread.wait %token : !dataflow.thread_token
-    dataflow.yield
+    scf.yield
   }
-  return
+  dataflow.graph.return %ctrl : none
 }

@@ -11,8 +11,8 @@
 
 //--- overlap.mlir
 module {
-  dataflow.graph.func private @pointer_memcpy_overlap(
-      %ctrl: none, %base: !llvm.ptr) -> none
+  dataflow.graph private @pointer_memcpy_overlap(
+      %ctrl: none, %base: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 0, 0, 1>,
                   result_segments = array<i32: 0, 0, 0>} {
     %len = dataflow.constant %ctrl {const_value = 2 : i32} : i32
@@ -27,8 +27,8 @@ module {
 
 //--- non-i8.mlir
 module {
-  dataflow.graph.func private @pointer_memcpy_non_i8(
-      %ctrl: none, %src: !llvm.ptr, %dst: !llvm.ptr) -> none
+  dataflow.graph private @pointer_memcpy_non_i8(
+      %ctrl: none, %src: !llvm.ptr, %dst: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 0, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     %len = dataflow.constant %ctrl {const_value = 2 : i32} : i32
@@ -42,8 +42,8 @@ module {
 
 //--- volatile.mlir
 module {
-  dataflow.graph.func private @pointer_memcpy_volatile(
-      %ctrl: none, %src: !llvm.ptr, %dst: !llvm.ptr) -> none
+  dataflow.graph private @pointer_memcpy_volatile(
+      %ctrl: none, %src: !llvm.ptr, %dst: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 0, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     %len = dataflow.constant %ctrl {const_value = 2 : i32} : i32

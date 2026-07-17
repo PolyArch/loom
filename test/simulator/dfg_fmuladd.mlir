@@ -24,7 +24,7 @@
 // SPLIT-DAG: "f32:10"
 
 module {
-  dataflow.graph.func private @fmuladd(%ctrl: none) -> (none, f32)
+  dataflow.graph private @fmuladd(%ctrl: none) -> (f32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %lhs = dataflow.constant %ctrl {const_value = 2.000000e+00 : f32} : f32
@@ -36,7 +36,7 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, f32
   }
 
-  dataflow.graph.func private @split_mulf_addf(%ctrl: none) -> (none, f32)
+  dataflow.graph private @split_mulf_addf(%ctrl: none) -> (f32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %lhs = dataflow.constant %ctrl {const_value = 2.000000e+00 : f32} : f32

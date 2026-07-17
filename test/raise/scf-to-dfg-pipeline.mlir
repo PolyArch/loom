@@ -60,8 +60,8 @@ func.func @nested_forall_reduction(%out: memref<?xi32>, %n: index) -> index {
 // CHECK: dataflow.thread private @t_vecadd_like_0
 // CHECK-SAME: ctrl (%{{.*}}: none) iv (%{{.*}}: index)
 // CHECK: dataflow.graph.launch @g_t_vecadd_like_0_0
-// CHECK-LABEL: dataflow.graph.func private @g_t_vecadd_like_0_0
-// The graph.launch's ctrl_in is the enclosing thread's thread_ctrl
+// CHECK-LABEL: dataflow.graph private @g_t_vecadd_like_0_0
+// The graph.launch dependency is the enclosing thread's thread_ctrl
 // block argument; the lowered IR contains no ub.poison.
 // CHECK-NOT: ub.poison : none
 // CHECK-NOT: _red_

@@ -10,11 +10,10 @@ software function graphs. The canonical output is Fabric topology, normalized
 physical operation modes in `fabric.op.hw_params`, and a normalized
 `valid_encodings` array.
 
-The current pass may read `dataflow.subgraph` through a thin adapter because
-legacy tests and passes still provide that form. The adapter immediately
-constructs the shared in-memory `ConfiguredFunction` model. Synthesis,
-projection, coverage, and acceptance do not use `dataflow.subgraph` as an
-authority.
+Fabric Tech pass and test inputs use single-block `func.func` fixtures only as
+a textual adapter into the shared in-memory `ConfiguredFunction` model.
+Synthesis, projection, coverage, and acceptance use `ConfiguredFunction` as
+their sole software-function authority.
 
 The central interfaces are:
 

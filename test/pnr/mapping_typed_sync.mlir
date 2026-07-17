@@ -10,8 +10,8 @@
 // JSON-DAG: "edge_ref": "arith.addi#0.result0->dataflow.sync#0.operand1"
 
 module {
-  dataflow.graph.func private @typed_sync(
-      %ctrl: none, %lhs: i32, %rhs: i32) -> (none, i32) {
+  dataflow.graph private @typed_sync(
+      %ctrl: none, %lhs: i32, %rhs: i32) -> (i32) {
     %sum = arith.addi %lhs, %rhs : i32
     %published:2 = dataflow.sync %ctrl, %sum
         : (none, i32) -> (none, i32)

@@ -80,8 +80,8 @@
 // INT-POISON-DAG: "math.absi cannot represent absolute value of signed minimum"
 
 module {
-  dataflow.graph.func private @math_unary_float(%ctrl: none)
-      -> (none, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32,
+  dataflow.graph private @math_unary_float(%ctrl: none)
+      -> (f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32,
           f32, f32, f32, f32, f32, f32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 17, 0, 0>} {
@@ -126,8 +126,8 @@ module {
           f32, f32, f32, f32, f32, f32
   }
 
-  dataflow.graph.func private @llvm_fabs_intrinsic(%ctrl: none)
-      -> (none, f32)
+  dataflow.graph private @llvm_fabs_intrinsic(%ctrl: none)
+      -> (f32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %neg = dataflow.constant %ctrl {const_value = -3.500000e+00 : f32} : f32
@@ -137,8 +137,8 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, f32
   }
 
-  dataflow.graph.func private @math_rounding_float(%ctrl: none)
-      -> (none, f32, f32, f32, f32, f32)
+  dataflow.graph private @math_rounding_float(%ctrl: none)
+      -> (f32, f32, f32, f32, f32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 5, 0, 0>} {
     %floor_in = dataflow.constant %ctrl {const_value = 2.750000e+00 : f32} : f32
@@ -158,8 +158,8 @@ module {
         : none, f32, f32, f32, f32, f32
   }
 
-  dataflow.graph.func private @math_roundeven_edges(%ctrl: none)
-      -> (none, f32, f32, f32, f32, f32)
+  dataflow.graph private @math_roundeven_edges(%ctrl: none)
+      -> (f32, f32, f32, f32, f32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 5, 0, 0>} {
     %neg_half_in = dataflow.constant %ctrl {const_value = -5.000000e-01 : f32} : f32
@@ -181,7 +181,7 @@ module {
         : none, f32, f32, f32, f32, f32
   }
 
-  dataflow.graph.func private @math_integer_abs(%ctrl: none) -> (none, i32)
+  dataflow.graph private @math_integer_abs(%ctrl: none) -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %neg = dataflow.constant %ctrl {const_value = -17 : i32} : i32
@@ -191,8 +191,8 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i32
   }
 
-  dataflow.graph.func private @math_integer_abs_poison(%ctrl: none)
-      -> (none, i8)
+  dataflow.graph private @math_integer_abs_poison(%ctrl: none)
+      -> (i8)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %min = dataflow.constant %ctrl {const_value = -128 : i8} : i8

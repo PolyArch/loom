@@ -24,10 +24,10 @@
 // JSON-NOT: ".in"
 
 module {
-  dataflow.graph.func private @crc32_shift_mix(
+  dataflow.graph private @crc32_shift_mix(
       %ctrl: none, %index: index, %carry: i32, %inner: i32,
       %byte_shift: i32, %mask: index, %input: memref<?xi32>,
-      %table: memref<?xi32>) -> (none, i32)
+      %table: memref<?xi32>) -> (i32)
       attributes {input_segments = array<i32: 5, 0, 2>,
                   result_segments = array<i32: 1, 0, 0>} {
     %data, %input_done = dataflow.load %input[%index] %ctrl : memref<?xi32>

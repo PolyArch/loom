@@ -12,7 +12,7 @@
 // CHECK-DAG: "i4:7"
 
 module {
-  dataflow.graph.func private @pack4(%ctrl: none) -> (none, i32, i4)
+  dataflow.graph private @pack4(%ctrl: none) -> (i32, i4)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 2, 0, 0>} {
     %c0 = dataflow.constant %ctrl {const_value = 0 : i8} : i8
@@ -59,9 +59,9 @@ module {
 // OVERWIDE-DAG: "dataflow.pack DFG-sim supports packed widths up to 64 bits"
 
 module {
-  dataflow.graph.func private @pack_overwide(%ctrl: none, %a: i32, %b: i32,
+  dataflow.graph private @pack_overwide(%ctrl: none, %a: i32, %b: i32,
                                              %c: i32, %d: i32, %mask: i4)
-      -> (none, i128)
+      -> (i128)
       attributes {input_segments = array<i32: 5, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %packed = dataflow.pack %a, %b, %c, %d mask %mask {vec_size = 4 : i64}
@@ -82,8 +82,8 @@ module {
 // PARTIAL-DAG: "dataflow.parallelize ended with pending lanes; emit a false continuation token to flush the partial vector group"
 
 module {
-  dataflow.graph.func private @pack_partial_unflushed(%ctrl: none)
-      -> (none, i32, i4)
+  dataflow.graph private @pack_partial_unflushed(%ctrl: none)
+      -> (i32, i4)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 2, 0, 0>} {
     %c0 = dataflow.constant %ctrl {const_value = 0 : i8} : i8

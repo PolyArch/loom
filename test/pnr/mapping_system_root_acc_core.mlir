@@ -30,14 +30,14 @@
 // ACC0-DAG: "spatialcore_template": "shared_reduction_adg"
 // ACC0-DAG: "status": "fail"
 
-// UNSUPPORTED-DIAG: graph contains unsupported operation for PnR mapping: llvm.intr.ctpop
+// UNSUPPORTED-DIAG: finalized graph contains unregistered actor 'llvm.intr.ctpop'
 // MISSING: system hardware system_dual_spatial_shared_memory_soc does not contain acc_core missing_acc
 
 module {
-  dataflow.graph.func private @unsupported_loop(%ctrl: none,
+  dataflow.graph private @unsupported_loop(%ctrl: none,
                                                 %lhs: i32,
                                                 %rhs: i32)
-      -> (none, i32)
+      -> (i32)
       attributes {input_segments = array<i32: 2, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %pop = llvm.intr.ctpop(%lhs) : (i32) -> i32

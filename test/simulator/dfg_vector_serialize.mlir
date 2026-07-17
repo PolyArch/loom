@@ -12,8 +12,8 @@
 // CHECK-DAG: "i1:false"
 
 module {
-  dataflow.graph.func private @unpack_serialize(%ctrl: none, %packed: i32,
-                                                %mask: i4) -> (none, i8, i1)
+  dataflow.graph private @unpack_serialize(%ctrl: none, %packed: i32,
+                                                %mask: i4) -> (i8, i1)
       attributes {input_segments = array<i32: 2, 0, 0>,
                   result_segments = array<i32: 0, 2, 0>} {
     %lane0, %lane1, %lane2, %lane3 =
@@ -41,10 +41,10 @@ module {
 // SIGNLESS-DAG: "i8:255"
 
 module {
-  dataflow.graph.func private @unpack_signless_bits(%ctrl: none,
+  dataflow.graph private @unpack_signless_bits(%ctrl: none,
                                                     %packed: i16,
                                                     %mask: i2)
-      -> (none, i8, i8)
+      -> (i8, i8)
       attributes {input_segments = array<i32: 2, 0, 0>,
                   result_segments = array<i32: 2, 0, 0>} {
     %lane0, %lane1 = dataflow.unpack %packed, %mask {vec_size = 2 : i64}
@@ -66,10 +66,10 @@ module {
 // BAD-STRIDE-DAG: "dataflow.parallelize stride must be positive"
 
 module {
-  dataflow.graph.func private @parallelize_bad_stride(%ctrl: none,
+  dataflow.graph private @parallelize_bad_stride(%ctrl: none,
                                                       %data: i8,
                                                       %stride: i8)
-      -> (none, i8, i4)
+      -> (i8, i4)
       attributes {input_segments = array<i32: 2, 0, 0>,
                   result_segments = array<i32: 2, 0, 0>} {
     %c0 = dataflow.constant %ctrl {const_value = 0 : i8} : i8
@@ -104,10 +104,10 @@ module {
 // ZERO-MASK-DAG: "i1:false"
 
 module {
-  dataflow.graph.func private @serialize_zero_mask_returned_data(%ctrl: none,
+  dataflow.graph private @serialize_zero_mask_returned_data(%ctrl: none,
                                                                  %packed: i32,
                                                                  %mask: i4)
-      -> (none, i8, i1)
+      -> (i8, i1)
       attributes {input_segments = array<i32: 2, 0, 0>,
                   result_segments = array<i32: 0, 2, 0>} {
     %lane0, %lane1, %lane2, %lane3 =

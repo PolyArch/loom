@@ -11,9 +11,9 @@
 // CHECK-DAG: "i32:44"
 
 module {
-  dataflow.graph.func private @grid_like(
+  dataflow.graph private @grid_like(
       %ctrl: none, %lhs: i32, %rhs: i32, %unit: none, %last: i1)
-      -> (none, i32)
+      -> (i32)
       attributes {input_segments = array<i32: 0, 4, 0>,
                   result_segments = array<i32: 0, 1, 0>} {
     %sum = arith.addi %lhs, %rhs : i32

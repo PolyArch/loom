@@ -22,12 +22,12 @@
 // JSON-NOT: ".in"
 
 module {
-  dataflow.graph.func private @signal_window_wide_control(
+  dataflow.graph private @signal_window_wide_control(
       %ctrl: none,
       %lhs: i64,
       %rhs: i64,
       %input: memref<?xi32>,
-      %output: memref<?xi32>) -> none
+      %output: memref<?xi32>) -> ()
       attributes {input_segments = array<i32: 2, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     %sum = arith.addi %lhs, %rhs : i64

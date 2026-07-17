@@ -6,8 +6,8 @@
 // CHECK-NEXT: pkhbt_graph,arm_inline_asm_adg,pkhbt_graph__pkhbt_graph__arm_inline_asm_adg,2,1,0,0,pass
 
 module {
-  dataflow.graph.func private @pkhbt_graph(%ctrl: none, %lhs: i32, %rhs: i32,
-                                           %amount: i32) -> (none, i32) {
+  dataflow.graph private @pkhbt_graph(%ctrl: none, %lhs: i32, %rhs: i32,
+                                           %amount: i32) -> (i32) {
     %result = llvm.inline_asm tail_call_kind = <tail> asm_dialect = att
         "pkhbt $0, $1, $2, lsl $3", "=r,r,r,I" %lhs, %rhs, %amount
         : (i32, i32, i32) -> i32

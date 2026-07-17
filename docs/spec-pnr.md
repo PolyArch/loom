@@ -86,9 +86,8 @@ partition boundaries:
 
 L3 is not another persistent software partition. A TechMapping artifact owns
 each Compute Realization: the canonical actor group, selected FU encoding,
-actor/op correspondence, and boundary-port correspondence. A legacy
-`dataflow.subgraph` may enter only through a migration adapter that produces
-those Mapping records.
+actor/op correspondence, and boundary-port correspondence. These facts exist
+only in Mapping records, not in Canonical Dataflow Program IR.
 
 PnR consumes an exact immutable TechMapping artifact and adds physical
 resource, communication, schedule, and storage realization. It does not

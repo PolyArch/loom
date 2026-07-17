@@ -15,8 +15,8 @@
 // JSON-NOT: "resource_kind=fabric.op operation=arith.divsi
 
 module {
-  dataflow.graph.func private @i64_signed_div(%ctrl: none, %lhs: i64, %rhs: i64)
-      -> (none, i64) {
+  dataflow.graph private @i64_signed_div(%ctrl: none, %lhs: i64, %rhs: i64)
+      -> (i64) {
     %quotient = arith.divsi %lhs, %rhs : i64
     dataflow.graph.return %ctrl, %quotient : none, i64
   }

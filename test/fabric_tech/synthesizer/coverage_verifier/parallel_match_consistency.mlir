@@ -30,20 +30,14 @@ fabric.module @fu_addi_subi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
 
 func.func @input_addi(%a: i32, %b: i32) -> i32
     attributes {loom.coverage_input = true} {
-  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
-    %s = arith.addi %x, %y : i32
-    dataflow.yield %s : i32
-  }
-  return %r : i32
+  %s = arith.addi %a, %b : i32
+  return %s : i32
 }
 
 func.func @input_subi(%a: i32, %b: i32) -> i32
     attributes {loom.coverage_input = true} {
-  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
-    %s = arith.subi %x, %y : i32
-    dataflow.yield %s : i32
-  }
-  return %r : i32
+  %s = arith.subi %a, %b : i32
+  return %s : i32
 }
 
 // CHECK: coverage[0] funcname=input_addi matched=true index=0

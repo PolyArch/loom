@@ -15,8 +15,8 @@
 // JSON-NOT: "unsupported PnR graph operation: llvm.intr.ctlz"
 
 module {
-  dataflow.graph.func private @ctlz_map(%ctrl: none, %value: i32)
-      -> (none, i32) {
+  dataflow.graph private @ctlz_map(%ctrl: none, %value: i32)
+      -> (i32) {
     %zeros = "llvm.intr.ctlz"(%value) <{is_zero_poison = false}> : (i32) -> i32
     dataflow.graph.return %ctrl, %zeros : none, i32
   }

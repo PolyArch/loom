@@ -62,42 +62,6 @@
 // STORE-JSON-NOT: ".out"
 // STORE-JSON-NOT: ".in"
 
-// RUN: not loom-pnr-map --dfg-mlir %s --graph mem_gep_store --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_gep_store --output %t.gep.mapping.csv --artifact %t.gep.mapping.json 2>&1 | FileCheck %s --check-prefix=GEP
-
-// GEP: finalized graph contains residual pointer operation 'llvm.getelementptr'
-
-// RUN: not loom-pnr-map --dfg-mlir %s --graph mem_gep_pointer_store_value --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_gep_pointer_store_value --output %t.gep-store-value.mapping.csv --artifact %t.gep-store-value.mapping.json 2>&1 | FileCheck %s --check-prefix=GEPSTOREVAL
-
-// GEPSTOREVAL: finalized graph contains residual pointer operation 'llvm.getelementptr'
-
-// RUN: not loom-pnr-map --dfg-mlir %s --graph mem_scf_pointer_yield_bookkeeping --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_scf_pointer_yield_bookkeeping --output %t.scfgep.mapping.csv --artifact %t.scfgep.mapping.json 2>&1 | FileCheck %s --check-prefix=SCFGEP
-
-// SCFGEP: finalized graph contains residual structured operation 'scf.for'
-
-// RUN: not loom-pnr-map --dfg-mlir %s --graph mem_nested_scf_pointer_yield_bookkeeping --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_nested_scf_pointer_yield_bookkeeping --output %t.nested-scfgep.mapping.csv --artifact %t.nested-scfgep.mapping.json 2>&1 | FileCheck %s --check-prefix=NESTED-SCFGEP
-
-// NESTED-SCFGEP: finalized graph contains residual structured operation 'scf.for'
-
-// RUN: not loom-pnr-map --dfg-mlir %s --graph mem_nested_scf_pointer_store_value --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_nested_scf_pointer_store_value --output %t.nested-store-value.mapping.csv --artifact %t.nested-store-value.mapping.json 2>&1 | FileCheck %s --check-prefix=NESTEDSTOREVAL
-
-// NESTEDSTOREVAL: finalized graph contains residual structured operation 'scf.for'
-
-// RUN: not loom-pnr-map --dfg-mlir %s --graph mem_scf_pointer_semantic_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_scf_pointer_semantic_return --output %t.scfptrret.mapping.csv --artifact %t.scfptrret.mapping.json 2>&1 | FileCheck %s --check-prefix=SCFPTRRET
-
-// SCFPTRRET: finalized graph contains residual structured operation 'scf.for'
-
-// RUN: not loom-pnr-map --dfg-mlir %s --graph mem_pointer_bookkeeping --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_bookkeeping --output %t.ptr.mapping.csv --artifact %t.ptr.mapping.json 2>&1 | FileCheck %s --check-prefix=PTR
-
-// PTR: finalized graph routes memory capability through 'dataflow.carry'
-
-// RUN: not loom-pnr-map --dfg-mlir %s --graph mem_pointer_bookkeeping_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_bookkeeping_return --output %t.ptrbookret.mapping.csv --artifact %t.ptrbookret.mapping.json 2>&1 | FileCheck %s --check-prefix=PTRBOOKRET
-
-// PTRBOOKRET: finalized graph routes memory capability through 'dataflow.carry'
-
-// RUN: not loom-pnr-map --dfg-mlir %s --graph mem_gep_bookkeeping_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_gep_bookkeeping_return --output %t.gepbookret.mapping.csv --artifact %t.gepbookret.mapping.json 2>&1 | FileCheck %s --check-prefix=GEPBOOKRET
-
-// GEPBOOKRET: finalized graph routes memory capability through 'dataflow.carry'
-
 // RUN: loom-pnr-map --dfg-mlir %s --graph control_mux_needs_control_resource --hardware-mlir %s --hardware data_mux_only_adg --workload control_mux_type_guard --output %t.ctrlmux.mapping.csv --artifact %t.ctrlmux.mapping.json
 // RUN: FileCheck %s --check-prefix=CTRLMUX-CSV < %t.ctrlmux.mapping.csv
 // RUN: FileCheck %s --check-prefix=CTRLMUX-JSON < %t.ctrlmux.mapping.json
@@ -120,22 +84,6 @@
 // PREDAND-JSON-DAG: "edge_ref": "arith.cmpi#1.result0->arith.andi#0.operand1"
 // PREDAND-JSON-DAG: "edge_ref": "arith.andi#0.result0->arith.select#0.operand0"
 // PREDAND-JSON-NOT: "missing hardware resource for software op arith.andi"
-
-// RUN: not loom-pnr-map --dfg-mlir %s --graph llvm_load_pointer --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload llvm_load_pointer --output %t.llvmload.mapping.csv --artifact %t.llvmload.mapping.json 2>&1 | FileCheck %s --check-prefix=LLVMLOAD
-
-// LLVMLOAD: finalized graph contains residual pointer operation 'llvm.getelementptr'
-
-// RUN: not loom-pnr-map --dfg-mlir %s --graph llvm_select_pointer_map --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload llvm_select_pointer_map --output %t.llvmselect.mapping.csv --artifact %t.llvmselect.mapping.json 2>&1 | FileCheck %s --check-prefix=LLVMSELECT
-
-// LLVMSELECT: finalized graph contains residual pointer operation 'llvm.select'
-
-// RUN: not loom-pnr-map --dfg-mlir %s --graph llvm_select_pointer_wide_cmp_map --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload llvm_select_pointer_wide_cmp_map --output %t.llvmselectwide.mapping.csv --artifact %t.llvmselectwide.mapping.json 2>&1 | FileCheck %s --check-prefix=LLVMSELECTWIDE
-
-// LLVMSELECTWIDE: finalized graph contains residual pointer operation 'llvm.select'
-
-// RUN: not loom-pnr-map --dfg-mlir %s --graph llvm_store_pointer --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload llvm_store_pointer --output %t.llvmstore.mapping.csv --artifact %t.llvmstore.mapping.json 2>&1 | FileCheck %s --check-prefix=LLVMSTORE
-
-// LLVMSTORE: finalized graph contains residual memory operation 'llvm.load'
 
 // RUN: loom-pnr-map --dfg-mlir %s --graph constant_addr_load_store --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload constant_addr_load_store --output %t.constload.mapping.csv --artifact %t.constload.mapping.json
 // RUN: FileCheck %s --check-prefix=CONSTLOAD-CSV < %t.constload.mapping.csv
@@ -171,10 +119,6 @@
 // CFFT-RED3-JSON-NOT: ".out"
 // CFFT-RED3-JSON-NOT: ".in"
 
-// RUN: not loom-pnr-map --dfg-mlir %s --graph mem_pointer_semantic_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_semantic_return --output %t.ptrsemantic.mapping.csv --artifact %t.ptrsemantic.mapping.json 2>&1 | FileCheck %s --check-prefix=PTRSEM
-
-// PTRSEM: finalized graph routes memory capability through 'dataflow.carry'
-
 // RUN: loom-pnr-map --dfg-mlir %s --graph mem_pointer_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_return --output %t.ptrret.mapping.csv --artifact %t.ptrret.mapping.json
 // RUN: FileCheck %s --check-prefix=PTRRET-CSV < %t.ptrret.mapping.csv
 // RUN: FileCheck %s --check-prefix=PTRRET-JSON < %t.ptrret.mapping.json
@@ -187,9 +131,9 @@
 // PTRRET-JSON-DAG: "routes": []
 
 module {
-  dataflow.graph.func private @mem_route(%ctrl: none, %idx: index, %rhs: i32,
+  dataflow.graph private @mem_route(%ctrl: none, %idx: index, %rhs: i32,
                                          %mem: memref<?xi32>)
-      -> (none, i32)
+      -> (i32)
       attributes {input_segments = array<i32: 2, 0, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
     %data, %done = dataflow.load %mem[%idx] %ctrl : memref<?xi32>
@@ -200,9 +144,9 @@ module {
         complete(%published#0 : none)
   }
 
-  dataflow.graph.func private @mem_two_loads_one_port(
+  dataflow.graph private @mem_two_loads_one_port(
       %ctrl: none, %lhs_idx: index, %rhs_idx: index, %mem: memref<?xi32>)
-      -> (none, i32)
+      -> (i32)
       attributes {input_segments = array<i32: 2, 0, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
     %lhs, %lhs_done = dataflow.load %mem[%lhs_idx] %ctrl : memref<?xi32>
@@ -265,8 +209,8 @@ module {
     fabric.yield
   }
 
-  dataflow.graph.func private @mem_store_route(%ctrl: none, %idx: index,
-                                               %mem: memref<?xi32>) -> none
+  dataflow.graph private @mem_store_route(%ctrl: none, %idx: index,
+                                               %mem: memref<?xi32>) -> ()
       attributes {input_segments = array<i32: 1, 0, 1>,
                   result_segments = array<i32: 0, 0, 0>} {
     %data, %done = dataflow.load %mem[%idx] %ctrl : memref<?xi32>
@@ -274,198 +218,24 @@ module {
     dataflow.graph.return %stored : none
   }
 
-  dataflow.graph.func private @mem_gep_store(%ctrl: none, %idx: index,
-                                             %src: !llvm.ptr,
-                                             %dst: !llvm.ptr) -> none
-      attributes {input_segments = array<i32: 1, 0, 2>,
-                  result_segments = array<i32: 0, 0, 0>} {
-    %src_mem = builtin.unrealized_conversion_cast %src : !llvm.ptr to memref<?xi32>
-    %dst_next = llvm.getelementptr inbounds|nuw %dst[4] : (!llvm.ptr) -> !llvm.ptr, i8
-    %dst_mem = builtin.unrealized_conversion_cast %dst_next : !llvm.ptr to memref<?xi32>
-    %data, %done = dataflow.load %src_mem[%idx] %ctrl : memref<?xi32>
-    %stored = dataflow.store %dst_mem[%idx] %data %done : memref<?xi32>
-    dataflow.graph.return %stored : none
-  }
 
-  dataflow.graph.func private @mem_gep_pointer_store_value(
-      %ctrl: none, %src: !llvm.ptr, %slot: !llvm.ptr) -> none
-      attributes {input_segments = array<i32: 0, 0, 2>,
-                  result_segments = array<i32: 0, 0, 0>} {
-    %src_next = llvm.getelementptr inbounds|nuw %src[4]
-        : (!llvm.ptr) -> !llvm.ptr, i8
-    llvm.store %src_next, %slot : !llvm.ptr, !llvm.ptr
-    dataflow.graph.return %ctrl : none
-  }
 
-  dataflow.graph.func private @mem_scf_pointer_yield_bookkeeping(
-      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %idx: index,
-      %src: !llvm.ptr, %dst: !llvm.ptr) -> none
-      attributes {input_segments = array<i32: 4, 0, 2>,
-                  result_segments = array<i32: 0, 0, 0>} {
-    %0:2 = scf.for %iv = %lb to %ub step %step iter_args(%src_cur = %src,
-                                                        %dst_cur = %dst)
-        -> (!llvm.ptr, !llvm.ptr) : i32 {
-      %src_next = llvm.getelementptr inbounds|nuw %src_cur[4]
-          : (!llvm.ptr) -> !llvm.ptr, i8
-      %src_mem = builtin.unrealized_conversion_cast %src_cur
-          : !llvm.ptr to memref<?xf32>
-      %data, %done = dataflow.load %src_mem[%idx] %ctrl : memref<?xf32>
-      %dst_next = llvm.getelementptr inbounds|nuw %dst_cur[4]
-          : (!llvm.ptr) -> !llvm.ptr, i8
-      %dst_mem = builtin.unrealized_conversion_cast %dst_cur
-          : !llvm.ptr to memref<?xf32>
-      %stored = dataflow.store %dst_mem[%idx] %data %done : memref<?xf32>
-      scf.yield %src_next, %dst_next : !llvm.ptr, !llvm.ptr
-    } {loom.stream_step_kind = 0 : i32, loom.stream_predicate = 2 : i64}
-    dataflow.graph.return %ctrl : none
-  }
 
-  dataflow.graph.func private @mem_nested_scf_pointer_yield_bookkeeping(
-      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %inner_ub: i32,
-      %active: i1, %scale: i32, %out: !llvm.ptr, %in: !llvm.ptr) -> none
-      attributes {input_segments = array<i32: 6, 0, 2>,
-                  result_segments = array<i32: 0, 0, 0>} {
-    %0:2 = scf.for %iv = %lb to %ub step %step iter_args(%out_cur = %out,
-                                                        %in_cur = %in)
-        -> (!llvm.ptr, !llvm.ptr) : i32 {
-      %1:2 = scf.if %active -> (!llvm.ptr, i32) {
-        %11:2 = scf.for %j = %lb to %inner_ub step %step
-            iter_args(%acc = %lb, %in_inner = %in_cur)
-            -> (i32, !llvm.ptr) : i32 {
-          %inner_next = llvm.getelementptr inbounds|nuw %in_inner[1]
-              : (!llvm.ptr) -> !llvm.ptr, i8
-          scf.yield %acc, %inner_next : i32, !llvm.ptr
-        }
-        %after_inner = llvm.getelementptr %in_cur[%inner_ub]
-            : (!llvm.ptr, i32) -> !llvm.ptr, i8
-        scf.yield %after_inner, %11#0 : !llvm.ptr, i32
-      } else {
-        scf.yield %in_cur, %lb : !llvm.ptr, i32
-      }
-      %in_mem = builtin.unrealized_conversion_cast %1#0
-          : !llvm.ptr to memref<?xi8>
-      %zero_in = dataflow.constant %ctrl {const_value = 0 : index} : index
-      %data_i8, %loaded_i8 =
-          dataflow.load %in_mem[%zero_in] %ctrl : memref<?xi8>
-      %out_mem = builtin.unrealized_conversion_cast %out_cur
-          : !llvm.ptr to memref<?xi8>
-      %zero_out = dataflow.constant %ctrl {const_value = 0 : index} : index
-      %stored = dataflow.store %out_mem[%zero_out] %data_i8 %loaded_i8
-          : memref<?xi8>
-      %out_next = llvm.getelementptr inbounds|nuw %out_cur[4]
-          : (!llvm.ptr) -> !llvm.ptr, i8
-      scf.yield %out_next, %1#0 : !llvm.ptr, !llvm.ptr
-    } {loom.stream_step_kind = 0 : i32, loom.stream_predicate = 2 : i64}
-    dataflow.graph.return %ctrl : none
-  }
 
-  dataflow.graph.func private @mem_nested_scf_pointer_store_value(
-      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %slot: !llvm.ptr,
-      %src: !llvm.ptr) -> none
-      attributes {input_segments = array<i32: 3, 0, 2>,
-                  result_segments = array<i32: 0, 0, 0>} {
-    %0 = scf.for %iv = %lb to %ub step %step iter_args(%src_cur = %src)
-        -> (!llvm.ptr) : i32 {
-      %active = arith.cmpi slt, %iv, %ub : i32
-      %1 = scf.if %active -> (!llvm.ptr) {
-        %next = llvm.getelementptr inbounds|nuw %src_cur[1]
-            : (!llvm.ptr) -> !llvm.ptr, i8
-        scf.yield %next : !llvm.ptr
-      } else {
-        scf.yield %src_cur : !llvm.ptr
-      }
-      scf.yield %1 : !llvm.ptr
-    } {loom.stream_step_kind = 0 : i32, loom.stream_predicate = 2 : i64}
-    llvm.store %0, %slot : !llvm.ptr, !llvm.ptr
-    dataflow.graph.return %ctrl : none
-  }
 
-  dataflow.graph.func private @mem_scf_pointer_semantic_return(
-      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %ptr: !llvm.ptr)
-      -> (none, !llvm.ptr)
-      attributes {input_segments = array<i32: 3, 0, 1>,
-                  result_segments = array<i32: 0, 0, 1>} {
-    %0 = scf.for %iv = %lb to %ub step %step iter_args(%cur = %ptr)
-        -> (!llvm.ptr) : i32 {
-      %next = llvm.getelementptr inbounds|nuw %cur[4]
-          : (!llvm.ptr) -> !llvm.ptr, i8
-      scf.yield %next : !llvm.ptr
-    } {loom.stream_step_kind = 0 : i32, loom.stream_predicate = 2 : i64}
-    dataflow.graph.return values() streams() memories(%0 : !llvm.ptr)
-        complete(%ctrl : none)
-  }
 
-  dataflow.graph.func private @mem_pointer_bookkeeping(
-      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %bias: f32,
-      %src: !llvm.ptr, %dst: !llvm.ptr) -> none
-      attributes {input_segments = array<i32: 4, 0, 2>,
-                  result_segments = array<i32: 0, 0, 0>} {
-    %src_mem = builtin.unrealized_conversion_cast %src : !llvm.ptr to memref<?xf32>
-    %dst_mem = builtin.unrealized_conversion_cast %dst : !llvm.ptr to memref<?xf32>
-    %idx, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i32
-    %addr = arith.index_cast %idx : i32 to index
-    %src_cur = dataflow.carry %rwc, %src, %src_next : !llvm.ptr
-    %dst_cur = dataflow.carry %rwc, %dst, %dst_next : !llvm.ptr
-    %src_next = llvm.getelementptr inbounds|nuw %src_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
-    %data, %done = dataflow.load %src_mem[%addr] %ctrl : memref<?xf32>
-    %sum = arith.addf %data, %bias : f32
-    %dst_next = llvm.getelementptr inbounds|nuw %dst_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
-    %stored = dataflow.store %dst_mem[%addr] %sum %ctrl : memref<?xf32>
-    %synced:2 = dataflow.sync %done, %stored : (none, none) -> (none, none)
-    dataflow.graph.return %synced#0 : none
-  }
 
-  dataflow.graph.func private @mem_pointer_bookkeeping_return(
-      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %bias: f32,
-      %src: !llvm.ptr, %dst: !llvm.ptr) -> (none, !llvm.ptr)
-      attributes {input_segments = array<i32: 4, 0, 2>,
-                  result_segments = array<i32: 0, 0, 1>} {
-    %src_mem = builtin.unrealized_conversion_cast %src : !llvm.ptr to memref<?xf32>
-    %dst_mem = builtin.unrealized_conversion_cast %dst : !llvm.ptr to memref<?xf32>
-    %idx, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i32
-    %addr = arith.index_cast %idx : i32 to index
-    %src_cur = dataflow.carry %rwc, %src, %src_next : !llvm.ptr
-    %dst_cur = dataflow.carry %rwc, %dst, %dst_next : !llvm.ptr
-    %src_next = llvm.getelementptr inbounds|nuw %src_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
-    %data, %done = dataflow.load %src_mem[%addr] %ctrl : memref<?xf32>
-    %sum = arith.addf %data, %bias : f32
-    %dst_next = llvm.getelementptr inbounds|nuw %dst_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
-    %stored = dataflow.store %dst_mem[%addr] %sum %ctrl : memref<?xf32>
-    %synced:2 = dataflow.sync %done, %stored : (none, none) -> (none, none)
-    dataflow.graph.return values() streams() memories(%dst_cur : !llvm.ptr)
-        complete(%synced#0 : none)
-  }
 
-  dataflow.graph.func private @mem_gep_bookkeeping_return(
-      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %bias: f32,
-      %src: !llvm.ptr, %dst: !llvm.ptr) -> (none, !llvm.ptr)
-      attributes {input_segments = array<i32: 4, 0, 2>,
-                  result_segments = array<i32: 0, 0, 1>} {
-    %src_mem = builtin.unrealized_conversion_cast %src : !llvm.ptr to memref<?xf32>
-    %dst_mem = builtin.unrealized_conversion_cast %dst : !llvm.ptr to memref<?xf32>
-    %idx, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i32
-    %addr = arith.index_cast %idx : i32 to index
-    %src_cur = dataflow.carry %rwc, %src, %src_next : !llvm.ptr
-    %dst_cur = dataflow.carry %rwc, %dst, %dst_next : !llvm.ptr
-    %src_next = llvm.getelementptr inbounds|nuw %src_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
-    %data, %done = dataflow.load %src_mem[%addr] %ctrl : memref<?xf32>
-    %sum = arith.addf %data, %bias : f32
-    %dst_next = llvm.getelementptr inbounds|nuw %dst_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
-    %stored = dataflow.store %dst_mem[%addr] %sum %ctrl : memref<?xf32>
-    %synced:2 = dataflow.sync %done, %stored : (none, none) -> (none, none)
-    dataflow.graph.return values() streams() memories(%dst_next : !llvm.ptr)
-        complete(%synced#0 : none)
-  }
 
-  dataflow.graph.func private @control_mux_needs_control_resource(
-      %ctrl: none, %sel: i1) -> none {
+  dataflow.graph private @control_mux_needs_control_resource(
+      %ctrl: none, %sel: i1) -> () {
     %done = dataflow.mux %sel, %ctrl, %ctrl : (i1, none, none) -> none
     dataflow.graph.return %done : none
   }
 
-  dataflow.graph.func private @predicate_and_maps_to_transport_andi(
+  dataflow.graph private @predicate_and_maps_to_transport_andi(
       %ctrl: none, %lb: i32, %ub: i32, %step: i32, %lhs0: i32, %rhs0: i32,
-      %lhs1: i32, %rhs1: i32, %mem: memref<?xf32>) -> (none, f32)
+      %lhs1: i32, %rhs1: i32, %mem: memref<?xf32>) -> (f32)
       attributes {input_segments = array<i32: 7, 0, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
     %idx, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i32
@@ -484,66 +254,12 @@ module {
         complete(%phase_lanes#0, %published#0 : none, none)
   }
 
-  dataflow.graph.func private @llvm_load_pointer(%ctrl: none, %rhs: i32,
-                                                 %ptr: !llvm.ptr)
-      -> (none, i32)
-      attributes {input_segments = array<i32: 1, 0, 1>,
-                  result_segments = array<i32: 1, 0, 0>} {
-    %next = llvm.getelementptr inbounds|nuw %ptr[4] : (!llvm.ptr) -> !llvm.ptr, i8
-    %data = llvm.load %next {alignment = 4 : i64} : !llvm.ptr -> i32
-    %sum = arith.addi %data, %rhs : i32
-    %published:2 = dataflow.sync %ctrl, %sum
-        : (none, i32) -> (none, i32)
-    dataflow.graph.return %published#0, %published#1 : none, i32
-  }
 
-  dataflow.graph.func private @llvm_select_pointer_map(
-      %ctrl: none, %lhs_value: i32, %rhs_value: i32, %bias: i32,
-      %lhs: !llvm.ptr, %rhs: !llvm.ptr) -> (none, i32)
-      attributes {input_segments = array<i32: 3, 0, 2>,
-                  result_segments = array<i32: 1, 0, 0>} {
-    %pred = arith.cmpi sgt, %lhs_value, %rhs_value : i32
-    %selected = llvm.select %pred, %lhs, %rhs : i1, !llvm.ptr
-    %data = llvm.load %selected {alignment = 4 : i64} : !llvm.ptr -> i32
-    %sum = arith.addi %data, %bias : i32
-    %published:2 = dataflow.sync %ctrl, %sum
-        : (none, i32) -> (none, i32)
-    dataflow.graph.return %published#0, %published#1 : none, i32
-  }
 
-  dataflow.graph.func private @llvm_select_pointer_wide_cmp_map(
-      %ctrl: none, %iv: i64, %pivot: i64, %limit: i64, %bias: f32,
-      %lhs: !llvm.ptr, %rhs: !llvm.ptr) -> (none, i1, f32)
-      attributes {input_segments = array<i32: 4, 0, 2>,
-                  result_segments = array<i32: 2, 0, 0>} {
-    %same = arith.cmpi eq, %iv, %pivot : i64
-    %before = arith.cmpi ult, %iv, %limit : i64
-    %selected = llvm.select %before, %lhs, %rhs : i1, !llvm.ptr
-    %data = llvm.load %selected {alignment = 4 : i64} : !llvm.ptr -> f32
-    %sum = arith.addf %data, %bias : f32
-    %published_same:2 = dataflow.sync %ctrl, %same
-        : (none, i1) -> (none, i1)
-    %published_sum:2 = dataflow.sync %ctrl, %sum
-        : (none, f32) -> (none, f32)
-    dataflow.graph.return values(%published_same#1, %published_sum#1 : i1, f32)
-        streams() memories()
-        complete(%published_same#0, %published_sum#0 : none, none)
-  }
 
-  dataflow.graph.func private @llvm_store_pointer(%ctrl: none, %src: !llvm.ptr,
-                                                  %dst: !llvm.ptr) -> none
-      attributes {input_segments = array<i32: 0, 0, 2>,
-                  result_segments = array<i32: 0, 0, 0>} {
-    %data = llvm.load %src {alignment = 4 : i64} : !llvm.ptr -> f32
-    %negated = llvm.fneg %data : f32
-    llvm.store %negated, %dst {alignment = 4 : i64} : f32, !llvm.ptr
-    %retired:2 = dataflow.sync %ctrl, %negated
-        : (none, f32) -> (none, f32)
-    dataflow.graph.return %retired#0 : none
-  }
 
-  dataflow.graph.func private @constant_addr_load_store(
-      %ctrl: none, %src: memref<?xf32>, %dst: memref<?xf32>) -> none
+  dataflow.graph private @constant_addr_load_store(
+      %ctrl: none, %src: memref<?xf32>, %dst: memref<?xf32>) -> ()
       attributes {input_segments = array<i32: 0, 0, 2>,
                   result_segments = array<i32: 0, 0, 0>} {
     %idx = dataflow.constant %ctrl {const_value = 0 : index} : index
@@ -554,9 +270,9 @@ module {
     dataflow.graph.return %done#0 : none
   }
 
-  dataflow.graph.func private @cfft_red3_fmul_pair(
+  dataflow.graph private @cfft_red3_fmul_pair(
       %ctrl: none, %lb: i32, %ub: i32, %step: i32, %twiddle: f32,
-      %buf: !llvm.ptr) -> none
+      %buf: !llvm.ptr) -> ()
       attributes {input_segments = array<i32: 4, 0, 1>,
                   result_segments = array<i32: 0, 0, 0>} {
     %mem = builtin.unrealized_conversion_cast %buf : !llvm.ptr to memref<?xf32>
@@ -596,22 +312,9 @@ module {
         complete(%execution_lanes#0, %write_lanes#0 : none, none)
   }
 
-  dataflow.graph.func private @mem_pointer_semantic_return(
-      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %src: !llvm.ptr)
-      -> (none, i32, !llvm.ptr)
-      attributes {input_segments = array<i32: 3, 0, 1>,
-                  result_segments = array<i32: 1, 0, 1>} {
-    %idx, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i32
-    %src_cur = dataflow.carry %rwc, %src, %src_next : !llvm.ptr
-    %src_next = llvm.getelementptr inbounds|nuw %src_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
-    %bits = builtin.unrealized_conversion_cast %src_cur : !llvm.ptr to i32
-    %sum = arith.addi %bits, %lb : i32
-    dataflow.graph.return values(%sum : i32) streams()
-        memories(%src_cur : !llvm.ptr) complete(%ctrl : none)
-  }
 
-  dataflow.graph.func private @mem_pointer_return(%ctrl: none, %ptr: !llvm.ptr)
-      -> (none, !llvm.ptr)
+  dataflow.graph private @mem_pointer_return(%ctrl: none, %ptr: !llvm.ptr)
+      -> (!llvm.ptr)
       attributes {input_segments = array<i32: 0, 0, 1>,
                   result_segments = array<i32: 0, 0, 1>} {
     dataflow.graph.return values() streams() memories(%ptr : !llvm.ptr)
