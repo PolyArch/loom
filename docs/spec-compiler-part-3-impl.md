@@ -125,9 +125,12 @@ the production contract.
 
 ### 1.8 Native Finalization Gate
 
-* Direct DFG simulation and PnR mapping call the same native finalized-graph
-  validator before execution or mapping. This gate is mandatory and is not
-  replaceable by Python preprocessing.
+* Direct DFG simulation calls the native finalized-graph validator before
+  execution. The native Mapping core separately validates an exact
+  TechMapping against its Canonical Dataflow Program and Fabric Hardware
+  Description before constructing `FrozenRealizationGraph` and
+  `FrozenRoutingGraph`. These gates are mandatory and are not replaceable by
+  Python preprocessing.
 * The gate rejects residual SCF/CFG/region containers, memory capabilities on
   dataflow transport primitives, nontrivial graphs that use raw start as a
   completion witness, and retirement frontiers that fail to cover payloads,
@@ -145,6 +148,9 @@ the production contract.
   later invocation and are not stable object identities. Stable
   cross-invocation memory-object identity remains unimplemented and blocks any
   artifact or simulator consumer that requires such correlation.
+* There is no direct PnR frontend in this implementation. Mapping MLIR
+  persistence and parsing, a fully resolved PnR Config, search, and the
+  Physical Mapping delta remain unimplemented.
 
 ## 2. Testing Strategy
 
@@ -159,24 +165,26 @@ Tests are organized by stable semantic boundary:
   rollback, and fail-closed diagnostics for parallel residue, pointer
   capability transport, and effects without completion events.
 * `test/dfg/` verifies the strict native finalized-graph gate independently
-  of simulator and PnR frontends.
+  of the simulator.
 * `test/simulator/` verifies retirement-time execution, value and stream
   segments, imported-root and fresh memory exports, phase/reset/re-entry
   behavior, vector pack/serialize, scalar broadcast, pointer and integer
   primitives, dynamic extents, known library operations, and artifact
   simulation.
-* `test/pnr/` verifies the same native gate at mapping entry and preserves
-  placement, routing, operation, status, and diagnostic assertions for
-  canonical graphs.
-* `test/adg/` verifies deterministic builder output, exact canonical fixtures
-  where retained, and complete placement/routing of workloads that exercise
-  retirement demux and typed publication syncs.
+* `test/mapping/` verifies exact TechMapping identity/reference closure,
+  configured-function correspondence, and deterministic realization/routing
+  freezes.
+* `test/pnr/` verifies checked native index behavior and that the removed
+  rematcher and JSON-input tools cannot return. It is not a placement or
+  routing test matrix.
+* `test/adg/` verifies deterministic builder output and exact canonical Fabric
+  fixtures where retained. It does not claim complete placement or routing.
 
 Residual-SCF execution inside a finalized graph is not a supported behavior.
 Fixtures whose only contract was leaf reconstruction through residual
 containers are represented by compact strict-finalization rejection tests.
 Operation semantics unrelated to that rejected behavior remain covered at
-their native raise, simulator, PnR, or ADG boundary.
+their native raise, simulator, Mapping, or ADG boundary.
 
 ## 3. Acceptance Criteria
 
@@ -200,12 +208,18 @@ The Part 3 slice is coherent only when all of the following hold:
   async work are causally covered by the declared frontier.
 * Pointer or memref capabilities that cannot be projected into the explicit
   memory plane fail closed rather than entering dataflow carry or selection.
-* Direct simulator and PnR entry reject residual structured containers and
-  validate the same ABI and retirement contract.
+* Direct simulation rejects residual structured containers through the native
+  finalized-program validator. TechMapping validation and realization/routing
+  freeze consume only a Canonical Dataflow Program that has passed that gate.
 * Unsupported simulator boundary semantics fail through the shared
   finalized-graph gate without flattening segment kinds.
-* Focused raise, DFG, simulator, PnR, and ADG suites pass, followed by the full
-  locked `make test` invocation and `git diff --check`.
+* Validated TechMapping plus `FrozenRealizationGraph` and
+  `FrozenRoutingGraph` are available as native C++ library boundaries.
+  Mapping MLIR persistence/parser, fully resolved PnR Config, search, and the
+  Physical Mapping delta are explicit unimplemented boundaries.
+* Focused raise, DFG, simulator, Mapping, PnR-index, Fabric-Tech, and ADG suites
+  pass, followed by the full locked `check-fabric` target and
+  `git diff --check`.
 
 ## 4. Maintenance and Extension Points
 
@@ -217,13 +231,17 @@ The Part 3 slice is coherent only when all of the following hold:
   authority. Conservative boundary aliasing remains the fallback.
 * Supporting another memory capability representation requires updating the
   graph port verifier, explicit frontend classification, canonical-root
-  traversal, simulator boundary handling, and PnR validation together.
+  traversal, simulator boundary handling, and Mapping validation together.
 * Adding a completion-bearing operation requires a causal witness that can
   enter `graph.return.complete`; effect-only acceptance without such a witness
   is not permitted.
 * ADG support for new retirement shapes should add only the operation modes and
   routes required by canonical graphs, with deterministic builder output and
-  unchanged placement/routing assertions.
+  ConfiguredFunction projection anchors where semantic correspondence changes.
+* A future PnR frontend must begin from canonical Mapping MLIR and a fully
+  resolved PnR Config, call the existing native validation/freeze APIs, and
+  emit only a Physical Mapping delta that references its exact TechMapping
+  predecessor. It must not restore graph/Fabric rematching or JSON inputs.
 * `Dataflow_GraphOp::build(...)` accepts a payload-only
   `FunctionType` plus normalized segment attributes. The body adds the
   separate leading `start : none` argument. Per-launch start and done use the

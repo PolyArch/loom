@@ -7,9 +7,8 @@
 //   loom-coverage-test <input.mlir> --project-first-encoding
 //
 // Input contract:
-//   * The module must contain exactly one `fabric.fu`. The verifier
-//     materializes that FU and matches every input against its
-//     enumerated candidates.
+//   * The module must contain exactly one `fabric.fu`. The verifier projects
+//     its canonical ConfiguredFunctions and matches every input against them.
 //   * Each input is a single-block `func.func` annotated with
 //     `loom.coverage_input = true`.
 //   * `--config` (optional): YAML/TOML SynthConfig path. Defaults

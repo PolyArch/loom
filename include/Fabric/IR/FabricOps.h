@@ -52,9 +52,7 @@ resolveInstantiateTarget(InstantiateOp instantiate,
                          ::mlir::SymbolTableCollection &symbolTables);
 
 // Returns true if the software op named by `name` is one of the operations
-// supported as a member of fabric.op's `op_list`. This is the canonical
-// allowlist of "ops a fabric tile can implement" and is also consumed by the
-// dataflow.subgraph body verifier.
+// supported as a member of fabric.op's `op_list`.
 bool isFabricOpSupported(::llvm::StringRef name);
 
 // Resolve the Loom address bit width for `op`. Walks up to the enclosing
