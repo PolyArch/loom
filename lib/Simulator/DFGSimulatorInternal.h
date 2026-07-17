@@ -51,10 +51,10 @@ using OutputMap = llvm::DenseMap<mlir::Value, llvm::SmallVector<Token>>;
 
 struct StreamState {
   bool initialized = false;
-  bool done = false;
+  bool failed = false;
   std::uint64_t trueEmissions = 0;
   std::int64_t current = 0;
-  std::int64_t ub = 0;
+  std::int64_t limit = 0;
   std::int64_t step = 0;
 };
 
@@ -94,6 +94,7 @@ struct SimulatorState {
   llvm::DenseSet<mlir::Operation *> gateContinueStates;
   llvm::DenseMap<mlir::Operation *, std::uint64_t> loadFireCounts;
   llvm::DenseSet<mlir::Operation *> oneShotOps;
+  llvm::DenseSet<mlir::Operation *> terminalPrimitiveOps;
   llvm::DenseMap<mlir::Operation *, std::uint64_t> structuredEffectFireCounts;
   llvm::DenseMap<mlir::Value, std::uint64_t> seededTokenCounts;
   llvm::SmallVector<std::string> diagnostics;
@@ -126,11 +127,13 @@ bool recordEvent(SimulatorState &state, llvm::StringRef opName);
 bool hasComputedAddress(mlir::Value value);
 std::int64_t integerToken(const Token &token);
 bool boolToken(const Token &token);
-llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type);
+llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type,
+                                            mlir::Operation *scope);
 
 std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
                                                const Token &addr,
                                                SimulatorState &state,
+                                               mlir::Operation *scope,
                                                llvm::StringRef opName);
 bool isSupportedLLVMCall(mlir::LLVM::CallOp op);
 bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
@@ -142,13 +145,15 @@ PrimitiveValue primitiveValueFromToken(const Token &token);
 Token tokenFromPrimitiveValue(const PrimitiveValue &value);
 std::string primitivePredicate(mlir::Operation *op);
 std::string primitiveOperationName(mlir::Operation *op);
-PrimitiveOperationDescriptor primitiveDescriptor(mlir::Operation *op,
-                                                 llvm::StringRef predicate,
-                                                 mlir::Value result);
+llvm::Expected<PrimitiveOperationDescriptor>
+primitiveDescriptor(mlir::Operation *op, llvm::StringRef predicate,
+                    mlir::Value result);
 
-bool evaluateCont(std::int64_t current, std::int64_t ub, llvm::StringRef pred);
-std::int64_t stepIndex(std::int64_t current, std::int64_t step,
-                       llvm::StringRef stepOp);
+llvm::Expected<bool> evaluateCont(std::int64_t current, std::int64_t limit,
+                                  llvm::StringRef pred, unsigned bitWidth);
+llvm::Expected<std::int64_t> stepIndex(std::int64_t current, std::int64_t step,
+                                       llvm::StringRef stepOp,
+                                       unsigned bitWidth);
 bool executeLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state,
                        const Token &dst, const Token &src, const Token &len);
 bool isPointerSelect(mlir::LLVM::SelectOp op);

@@ -80,9 +80,10 @@
 // NESTED-IF-DAG: "i32:22"
 
 // PARALLEL-DAG: "graph": "structured_for_scalar_with_parallel_stream"
-// PARALLEL-DAG: "status": "blocked"
+// PARALLEL-DAG: "status": "pass"
 // PARALLEL-DAG: "dynamic_work_items": 4
-// PARALLEL-DAG: "dataflow.graph.return value produced 1 of 4 dynamic work items"
+// PARALLEL-DAG: "i32:22"
+// PARALLEL-NOT: "dataflow.graph.return value produced"
 
 // CAPTURE-DAG: "graph": "structured_for_captures_top_level_constant"
 // CAPTURE-DAG: "status": "pass"

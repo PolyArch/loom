@@ -6,9 +6,10 @@
 // CHECK-DAG: "graph": "sum_ptr_load"
 // CHECK-DAG: "status": "pass"
 // CHECK-DAG: "metric_definition": "weighted_operations_plus_library_work_diversity_and_address.v1"
-// CHECK-DAG: "operation_cost_score": 42
-// CHECK-DAG: "wavefront_steps": 9
-// CHECK-DAG: "event_count": 21
+// CHECK-DAG: "dataflow.load": 3
+// CHECK-DAG: "dataflow.carry": 5
+// CHECK-DAG: "dataflow.gate": 4
+// CHECK-DAG: "dataflow.demux": 4
 // CHECK-DAG: "f32:14"
 
 module {
@@ -22,12 +23,15 @@ module {
                                             %step: i64, %ptr: !llvm.ptr,
                                             %init: f32) -> (none, f32) {
     %mem = builtin.unrealized_conversion_cast %ptr : !llvm.ptr to memref<?xf32>
-    %idx64, %rwc = dataflow.stream %lb, %ub, %step {step_op = "+=", cont_cond = "<"} : i64
-    %idx = arith.index_cast %idx64 : i64 to index
+    %iv, %phase = dataflow.stream %lb, %ub, %step
+        {step_op = "+=", cont_cond = "<"} : i64
+    %idx = arith.index_cast %iv : i64 to index
     %data, %done = dataflow.load %mem[%idx] %ctrl : memref<?xf32>
-    %carry = dataflow.carry %rwc, %init, %next : f32
-    %next = arith.addf %carry, %data : f32
+    %carry = dataflow.carry %phase, %init, %next : f32
+    %body_phase, %body_carry = dataflow.gate %phase, %carry : f32
+    %exit:2 = dataflow.demux %phase, %carry : (i1, f32) -> (f32, f32)
+    %next = arith.addf %body_carry, %data : f32
     %done_sync = dataflow.sync %done : (none) -> none
-    dataflow.graph.return %done_sync, %carry : none, f32
+    dataflow.graph.return %done_sync, %exit#0 : none, f32
   }
 }

@@ -337,8 +337,10 @@ documentation never refers to the numeric position.
   explicit graph-to-graph control dependency.
 * `dataflow.graph.launch` ops are ScalarCore launch points for
   SpatialCore work. The `ctrl_in` operand is an explicit graph-level
-  start dependency, and `done_out` is the corresponding graph-level
-  completion value.
+  start dependency, and `done_out` is the declared graph-level
+  completion port. The current lowering does not establish
+  zero-output close/retirement closure, so the port must not be
+  synthesized from raw start control.
 * Because `dataflow.graph` (def) is `IsolatedFromAbove`, the
   extraction pass also computes every surrounding value used by
   the run's body and materializes it as an explicit launch operand
@@ -360,6 +362,12 @@ documentation never refers to the numeric position.
   also performs the final parallel-SCF normalization described below.
   Keeping both tasks together ensures memory accesses cloned by
   normalization immediately enter the same deterministic id assignment.
+* The canonical memory state is the per-partition
+  `(write_frontier, read_frontier)` pair in
+  `docs/spec-compiler-part-3-mem.md`. The current snapshot and lowering do
+  not yet encode or recursively materialize that pair. Existing dependence
+  ids and loop metadata are provisional implementation aids, not a second
+  correctness authority.
 * Before assigning memory-access ids, performs the remaining
   parallel-SCF normalization inside each `dataflow.graph` definition's
   body: effect-form `scf.forall` with an empty mapping is normalized
@@ -457,8 +465,9 @@ documentation never refers to the numeric position.
   storage identity from the Section 3.1 walk, or the conservative bucket
   `U`). Two atoms in the same chain scope and same partition are the
   only direct candidates for a dep edge; cross-partition and
-  cross-scope ordering is carried by per-partition frontiers and by
-  per-`scf.*` boundary translation, never by an edge.
+  cross-scope ordering belongs to recursive per-partition `(W_P, R_P)`
+  transfer, never to an edge. RAW, WAR, and WAW may create edges;
+  RAR does not.
 * Compound `scf.*` ops still inside a `dataflow.graph` definition's
   body at this point in the pipeline participate as compound atoms
   via the Section 3.3 effect-summary lift. The builder queries the alias oracle on inner leaves
@@ -471,7 +480,7 @@ documentation never refers to the numeric position.
   propagate into the lift. Path-sensitive pruning, the parallel-
   provenance exception, the loop-carried real-edge rule, and the
   optional transitive reduction follow
-  `docs/spec-compiler-part-3-mem.md` Section 4.3.
+  `docs/spec-compiler-part-3-mem.md` Section 4.
 * The builder consumes parallel provenance from generated loops. For
   accesses in different logical iterations or different chunks of the
   same original `scf.parallel`, it must not create a dependence edge
@@ -482,21 +491,14 @@ documentation never refers to the numeric position.
 * Each parallel-provenance group has one group tail token plan. The
   group tail is the rendezvous of all chunk tail tokens. A later memory
   access that depends on the completed memory effects of the original
-  `scf.parallel` uses this group tail as its predecessor.
+  `scf.parallel` may use this group tail in the current implementation.
+  This plan is not the canonical per-partition state pair.
 * For structured loops, the builder also records per-loop memory
   plans. Each plan is keyed by a deterministic loop id and a memory
   partition id, and references memory accesses only by integer ids.
-  Each partition record has a kind: `carried` for partitions
-  requiring cross-iteration ordering (lowered to one hidden `none`
-  state-ring carry in `loom-lower-scf-to-dfg-bodies`, per
-  `docs/spec-compiler-part-3-mem.md` Section 5.2 abstract pattern), or
-  `completion` for partitions touched in the body but not requiring
-  cross-iteration ordering (lowered to one hidden completion-only
-  carry that aggregates per-iteration body-tail tokens into the
-  loop's `outgoing_P`, per `docs/spec-compiler-part-3-mem.md` Section 5.2
-  touched-but-not-carried case). Both record kinds are pinned in
-  the snapshot so `loom-lower-scf-to-dfg-bodies` does not need to
-  re-analyze.
+  Existing `carried` and `completion` record kinds describe provisional
+  implementation plans only. They do not encode both `W_P` and `R_P`
+  and cannot serve as correctness authority for loop lowering.
 * The pass leaves a stable IR snapshot so subsequent passes need no
   re-analysis: each leaf memory access gets `loom.mem_dep_id = N` and
   `loom.mem_dep_preds = [P0, P1, ...]`, where `N` and every `P*` are
@@ -504,14 +506,13 @@ documentation never refers to the numeric position.
   Only leaf memory accesses (`memref.load` / `memref.store` before
   rewrite, `dataflow.load` / `dataflow.store` after rewrite) carry
   `loom.mem_dep_id`; compound `scf.*` atoms still
-  in the graph definition's body do not get their own id, and their
-  parent-chain behavior is reconstructed by Section 2.5 / Section 2.6 of
-  `docs/spec-compiler-part-3-mem.md` applied to the boundary
-  translation rules in `docs/spec-compiler-part-3-dfg.md` Section 6. Each
+  in the graph definition's body do not get their own id. Recursive
+  pair lowering across those boundaries remains incomplete. Each
   loop with hidden memory state gets `loom.mem_loop_id = L` and
   `loom.mem_loop_states = [...]`, a loop-local memory-state plan
   whose fields are deterministic integer ids, never operation
-  references. Parallel-provenance groups are recorded with
+  references. These fields remain provisional until they encode or
+  are replaced by the canonical pair transfer. Parallel-provenance groups are recorded with
   deterministic group and chunk ids, as transient attributes such as
   `loom.parallel_group`, `loom.parallel_chunk`, and
   `loom.parallel_chunks`, or an equivalent analysis side table. They
@@ -530,25 +531,19 @@ documentation never refers to the numeric position.
   code remains structured.
 * Non-inlined ScalarCore-legal `func.call` operations remain outside
   graph definition bodies and are preserved as ScalarCore calls.
-* Memory ops (`memref.load`, `memref.store`) are rewritten in place
-  as `dataflow.load` / `dataflow.store`. The pass implements the
-  per-plane wiring rules in `docs/spec-compiler-part-3-mem.md` Section 6:
-  every leaf op's `ctrl` operand is materialized as
-  `dataflow.sync(S.struct_at_L, incoming_L_P)`, where the structural
-  permission token comes from the per-`scf.*` boundary translation in
-  `docs/spec-compiler-part-3-dfg.md` Section 6 and the memory-plane
-  predecessor token comes from the partition-`P` chain (immediate dep
-  predecessors at the same scope contribute their `done`; a sibling
-  compound atom contributes its `outgoing_P` per the cross-scope
-  resolution in mem.md Section 4.4; loop-carried predecessors contribute
-  `%mem_iter_P` or `%mem_after_P` per mem.md Section 5). Multiple
-  same-path predecessors join through `dataflow.sync`; multiple
-  mutually exclusive predecessors join through selector-matched
-  `dataflow.mux`; mixed sets compose hierarchically. The graph's
-  `done_out` yield operand is the boundary `dataflow.sync` over the
-  per-partition root `outgoing_P` tails computed at the root scope
-  (mem.md Section 6.5); when the graph touches no partition, `done_out`
-  forwards `ctrl_in` directly.
+* Memory ops are tokenized as `dataflow.load` / `dataflow.store`.
+  The current `LowerGraphMemoryPass::tryRewriteOne` implementation may wire
+  `ctx.ctrl` directly to a generated memory op's `ctrl`
+  operand. That wiring is provisional and is not the canonical memory
+  semantics.
+* The frontend has not completed recursive per-partition
+  `(write_frontier, read_frontier)` lowering for nested SCF or loops.
+  Correct implementation must apply the read/write transfer equations from
+  `docs/spec-compiler-part-3-mem.md` and keep execution permission
+  independent.
+* Graph `done_out` retirement closure is also not implemented for
+  zero-output close transitions. Raw graph control or launch start cannot be
+  used as a completion proof.
 
 ### 1.10 `loom-finalize-dfg`
 
@@ -629,12 +624,13 @@ The lit-test layout includes focused per-element fixtures under
     that must produce independent memory-state partitions under the
     active oracle.
   - The `for/` directory includes a stream phasing case:
-    `dataflow.stream` emits the trailing sentinel, `dataflow.gate`
-    normalizes the index into body phase, memory side effects consume
-    only body-phase values, no-iter-arg loops produce no data result,
-    and iter-arg loops use the `carry` / `demux` / `mux` state-ring
-    template to produce the zero-trip initial value or final body
-    yield as the loop result.
+    `dataflow.stream` emits one IV per body execution and a trailing
+    false phase token, memory side effects consume the IV directly,
+    carried and invariant body values are projected through
+    `dataflow.gate`, no-iter-arg loops produce no data result, and
+    iter-arg loops use `carry` plus a false-lane `demux` projection to
+    produce the zero-trip initial value or final body yield as the
+    loop result.
   - The `while/` directory includes a before-to-after phasing case:
     the before-region executes one more time than the after-region,
     `dataflow.gate` produces the after-region value stream plus the
@@ -713,14 +709,15 @@ following hold simultaneously:
   them independent.
 * `scf.while` lowering preserves the one-extra-before execution
   semantics: the before-to-after boundary is normalized by
-  `dataflow.gate`, after-local state is driven by the gated rwc, and
+  `dataflow.gate`, after-local state is driven by the gated phase, and
   loop results still come from the false-cycle `scf.condition`
   operands rather than from the gate.
-* `scf.for` lowering preserves stream phasing: the sentinel index is
-  not consumed by body memory effects, body-only state uses the gated
-  rwc, iter_arg state uses the loop-level rwc plus
-  `carry` / `demux` / `mux`, zero-trip loops forward initial iter_arg
-  values, and nonzero loop results come from the final body yield.
+* `scf.for` lowering preserves stream phasing: no extra index is
+  emitted, the IV stream has body cardinality, body-only state uses
+  `gate`, iter_arg state uses the loop-level phase plus
+  `carry` / `gate` / `demux`, zero-trip loops forward initial iter_arg
+  values, and nonzero loop results come from the false-lane projection
+  of the final carried value.
 * All graph and subgraph unit tests continue to pass after the
   def + launch migration.
 * `loom-finalize-dfg` rejects, with a clear diagnostic, every

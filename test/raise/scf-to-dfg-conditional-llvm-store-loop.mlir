@@ -7,7 +7,9 @@
 // dataflow.store.
 
 // CHECK-LABEL: dataflow.graph.func private @g_conditional_llvm_store_loop
-// CHECK: %[[IDX:.*]], %[[RWC:.*]] = dataflow.stream %arg1, %arg2, %arg3
+// CHECK: %[[INIT:.*]] = dataflow.constant %arg0 {const_value = 0 : i16} : i16
+// CHECK: %[[STEP:.*]] = dataflow.constant %arg0 {const_value = 1 : i16} : i16
+// CHECK: %[[IDX:.*]], %[[RWC:.*]] = dataflow.stream %[[INIT]], %arg2, %[[STEP]]
 // CHECK-SAME: cont_cond = ">"
 // CHECK: %[[ZERO:.*]] = dataflow.invariant %[[RWC]], %arg4 : i8
 // CHECK: %[[PTR_CARRY:.*]] = dataflow.carry %[[RWC]], %arg5,
@@ -21,10 +23,15 @@
 // CHECK-NOT: llvm.load
 // CHECK-NOT: llvm.store
 // CHECK: dataflow.graph.return
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 16>>
+} {
 dataflow.graph.func private @g_conditional_llvm_store_loop(
     %ctrl: none, %lb: i16, %ub: i16, %step: i16, %zero: i8,
     %buf: !llvm.ptr) -> none {
-  %r = scf.for %i = %lb to %ub step %step iter_args(%ptr = %buf)
+  %c0 = arith.constant 0 : i16
+  %c1 = arith.constant 1 : i16
+  %r = scf.for %i = %c0 to %ub step %c1 iter_args(%ptr = %buf)
       -> (!llvm.ptr) : i16 {
     %data = llvm.load %ptr : !llvm.ptr -> i8
     %neg = arith.cmpi slt, %data, %zero : i8
@@ -36,4 +43,5 @@ dataflow.graph.func private @g_conditional_llvm_store_loop(
     scf.yield %next : !llvm.ptr
   } {loom.stream_cont_cond = ">"}
   dataflow.graph.return %ctrl : none
+}
 }

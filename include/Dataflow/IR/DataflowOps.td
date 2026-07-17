@@ -24,43 +24,46 @@ def Dataflow_SubgraphType : AnyTypeOf<[
 // Streaming Ops
 //
 // Ops whose primary semantics is generating / shaping / latching a stream of
-// value tokens. They are typically driven by i1 `cond`/`rwc` tokens or by
-// integer bounds to produce index streams.
+// value tokens. They are typically driven by i1 phase tokens or by integer
+// recurrence operands that produce IV streams.
 //===----------------------------------------------------------------------===//
 
 def Dataflow_StreamOp : Dataflow_Op<"stream", [Pure,
-    AllTypesMatch<["lb", "ub", "step", "index"]>]> {
-  let summary = "produce an index stream with a trailing out-of-range sentinel";
+    AllTypesMatch<["init", "limit", "step", "iv"]>]> {
+  let summary = "produce valid IV tokens and an explicit closing phase token";
   let description = [{
-    Emits a stream of `(index, rwc)` pairs driven by three scalar integer
-    operands and two predicate attributes:
+    Executes one predicate-terminated integer recurrence per activation.
+    `step_op` selects the update applied after each true decision, and
+    `cont_cond` compares the current value against `limit`.
 
-      * `step_op`  : how `index` is advanced between emissions; one of
+      * `step_op`  : how `iv` is advanced between true emissions; one of
                      `+=`, `*=`, `-=`, `/=`, `<<=`, `>>=`.
-      * `cont_cond`: continue predicate; when true of the *current* index
-                     and `ub`, the pair is emitted with `rwc = true` and
-                     the next index is computed. When false, one final
-                     pair with `rwc = false` is emitted. One of
+      * `cont_cond`: continue predicate applied to the current value and
+                     `limit`; one of
                      `<`, `<=`, `>`, `>=`, `!=`.
 
-    `lb`, `ub`, `step` and `index` share a single signless integer type;
-    `rwc` is always `i1`.
+    Idle consumes one `init` / `limit` / `step` triple. A true decision emits
+    the current value on `iv`, emits `true` on `phase`, advances the current
+    value, and remains active. A false decision emits only `false` on `phase`
+    and returns to Idle. No sentinel IV is emitted, and subsequent activation
+    triples may reuse the same operation.
 
-    Example: `lb=0, ub=5, step=1, step_op="+=", cont_cond="<"` yields
-             `(0,T), (1,T), (2,T), (3,T), (4,T), (5,F)`.
+    `init`, `limit`, `step`, and `iv` share one signless integer-like type;
+    `phase` is always `i1`. For `init=0`, `limit=5`, `step=1`, `step_op="+="`,
+    and `cont_cond="<"`, `iv` is `0,1,2,3,4` and `phase` is `T,T,T,T,T,F`.
   }];
 
   let arguments = (ins
-      SignlessIntegerLike:$lb,
-      SignlessIntegerLike:$ub,
+      SignlessIntegerLike:$init,
+      SignlessIntegerLike:$limit,
       SignlessIntegerLike:$step,
       StrAttr:$step_op,
       StrAttr:$cont_cond
   );
-  let results = (outs SignlessIntegerLike:$index, I1:$rwc);
+  let results = (outs SignlessIntegerLike:$iv, I1:$phase);
 
   let assemblyFormat = [{
-    $lb `,` $ub `,` $step attr-dict `:` type($index)
+    $init `,` $limit `,` $step attr-dict `:` type($iv)
   }];
   let hasVerifier = 1;
 }
@@ -75,11 +78,11 @@ def Dataflow_CarryOp : Dataflow_Op<"carry", [Pure,
       * Start state is `init`.
       * In state `init`: wait for one `%init` token; forward it to
         `%output`; transition to `carry`.
-      * In state `carry`: wait for one `%cond : i1` and one `%carry`
-        token simultaneously; consume both.
-          - if `cond` is true : forward `%carry` to `%output`, stay in
-            `carry`;
-          - if `cond` is false: do not emit, return to state `init`.
+      * In state `carry`: inspect the next `%cond : i1` token.
+          - if `cond` is true : wait for and consume `%carry`, consume the
+            condition, forward `%carry` to `%output`, and stay in `carry`;
+          - if `cond` is false: consume only the condition, emit nothing, and
+            return to state `init`.
 
     `%init`, `%carry` and `%output` share a single type; `%cond` is
     `i1`.

@@ -1,12 +1,15 @@
 #include "Simulator/DFGSimulator.h"
 #include "DFGSimulatorInternal.h"
 
+#include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
@@ -180,11 +183,51 @@ static std::string typeToString(mlir::Type type) {
   return os.str();
 }
 
-llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type) {
+static llvm::Expected<unsigned> supportedBitWidth(std::uint64_t width,
+                                                  llvm::StringRef label) {
+  if (width == 0 || width > 64)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "%s bit width must be in [1, 64], got %llu",
+                                   label.str().c_str(),
+                                   static_cast<unsigned long long>(width));
+  return static_cast<unsigned>(width);
+}
+
+static bool hasExplicitIndexLayout(mlir::Operation *scope) {
+  for (mlir::Operation *op = scope; op; op = op->getParentOp()) {
+    mlir::DataLayoutSpecInterface spec;
+    if (auto module = mlir::dyn_cast<mlir::ModuleOp>(op))
+      spec = module.getDataLayoutSpec();
+    else if (auto layoutOp = mlir::dyn_cast<mlir::DataLayoutOpInterface>(op))
+      spec = layoutOp.getDataLayoutSpec();
+    if (spec && !spec.getSpecForType<mlir::IndexType>().empty())
+      return true;
+  }
+  return false;
+}
+
+static llvm::Expected<unsigned> indexBitWidth(mlir::Operation *scope) {
+  if (!hasExplicitIndexLayout(scope))
+    return supportedBitWidth(loom::getIndexWidth(), "configured index");
+
+  llvm::TypeSize width = mlir::DataLayout::closest(scope).getTypeSizeInBits(
+      mlir::IndexType::get(scope->getContext()));
+  if (width.isScalable())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "scalable index widths are unsupported");
+  return supportedBitWidth(width.getFixedValue(), "index");
+}
+
+llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type,
+                                            mlir::Operation *scope) {
   if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
     return std::max<std::int64_t>(1, (intType.getWidth() + 7) / 8);
-  if (mlir::isa<mlir::IndexType>(type))
-    return 8;
+  if (mlir::isa<mlir::IndexType>(type)) {
+    auto width = indexBitWidth(scope);
+    if (!width)
+      return width.takeError();
+    return std::max<std::int64_t>(1, (*width + 7) / 8);
+  }
   if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
     if (floatType.isF16())
       return 2;
@@ -194,7 +237,7 @@ llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type) {
       return 8;
   }
   if (auto arrayType = mlir::dyn_cast<mlir::LLVM::LLVMArrayType>(type)) {
-    auto elementSizeOrErr = byteSizeOfType(arrayType.getElementType());
+    auto elementSizeOrErr = byteSizeOfType(arrayType.getElementType(), scope);
     if (!elementSizeOrErr)
       return elementSizeOrErr.takeError();
     return static_cast<std::int64_t>(arrayType.getNumElements()) *
@@ -298,7 +341,7 @@ gepByteOffset(mlir::LLVM::GEPOp op, llvm::ArrayRef<Token> dynamicTokens) {
             typeToString(currentType).c_str());
       }
     }
-    auto strideOrErr = byteSizeOfType(strideType);
+    auto strideOrErr = byteSizeOfType(strideType, op.getOperation());
     if (!strideOrErr)
       return strideOrErr.takeError();
     std::int64_t index = rawIndex;
@@ -433,6 +476,7 @@ static bool samePointer(const MemoryView &lhs, const MemoryView &rhs) {
 std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
                                                const Token &addr,
                                                SimulatorState &state,
+                                               mlir::Operation *scope,
                                                llvm::StringRef opName);
 
 constexpr llvm::StringLiteral kCmsisNNVecMatMultTS8 =
@@ -522,14 +566,16 @@ integerOperand(llvm::ArrayRef<Token> operands, unsigned index,
 static std::optional<std::int64_t>
 loadIntegerPointerElement(SimulatorState &state, const Token &ptr,
                           mlir::Type elementType, std::int64_t elementOffset,
-                          unsigned signedWidth, llvm::StringRef opName) {
+                          unsigned signedWidth, mlir::Operation *scope,
+                          llvm::StringRef opName) {
   auto viewOrErr = ensurePointerMemory(state, ptr, elementType);
   if (!viewOrErr) {
     state.diagnostics.push_back(llvm::toString(viewOrErr.takeError()));
     return std::nullopt;
   }
-  std::optional<std::size_t> index = resolveElementIndex(
-      viewOrErr->pointer, integerValueToken(elementOffset), state, opName);
+  std::optional<std::size_t> index =
+      resolveElementIndex(viewOrErr->pointer, integerValueToken(elementOffset),
+                          state, scope, opName);
   if (!index)
     return std::nullopt;
   return signExtend(integerToken(viewOrErr->pointer.memory->elements[*index]),
@@ -540,14 +586,16 @@ static bool storeIntegerPointerElement(SimulatorState &state, const Token &ptr,
                                        mlir::Type elementType,
                                        std::int64_t elementOffset,
                                        std::int64_t value,
+                                       mlir::Operation *scope,
                                        llvm::StringRef opName) {
   auto viewOrErr = ensurePointerMemory(state, ptr, elementType);
   if (!viewOrErr) {
     state.diagnostics.push_back(llvm::toString(viewOrErr.takeError()));
     return false;
   }
-  std::optional<std::size_t> index = resolveElementIndex(
-      viewOrErr->pointer, integerValueToken(elementOffset), state, opName);
+  std::optional<std::size_t> index =
+      resolveElementIndex(viewOrErr->pointer, integerValueToken(elementOffset),
+                          state, scope, opName);
   if (!index)
     return false;
   viewOrErr->pointer.memory->elements[*index] =
@@ -601,17 +649,19 @@ bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
     std::int64_t acc = 0;
     if (hasBias) {
       std::optional<std::int64_t> bias = loadIntegerPointerElement(
-          state, operands[3], i32Type, row, 32, "arm_nn_vec_mat_mult_t_s8");
+          state, operands[3], i32Type, row, 32, op.getOperation(),
+          "arm_nn_vec_mat_mult_t_s8");
       if (!bias)
         return false;
       acc = *bias;
     }
     for (std::int64_t col = 0; col < *rhsCols; ++col) {
       std::optional<std::int64_t> lhsValue = loadIntegerPointerElement(
-          state, operands[0], i8Type, col, 8, "arm_nn_vec_mat_mult_t_s8");
+          state, operands[0], i8Type, col, 8, op.getOperation(),
+          "arm_nn_vec_mat_mult_t_s8");
       std::optional<std::int64_t> rhsValue = loadIntegerPointerElement(
           state, operands[1], i8Type, row * *rhsCols + col, 8,
-          "arm_nn_vec_mat_mult_t_s8");
+          op.getOperation(), "arm_nn_vec_mat_mult_t_s8");
       if (!lhsValue || !rhsValue)
         return false;
       *lhsValue += *lhsOffset;
@@ -625,9 +675,9 @@ bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
     acc += *dstOffset;
     acc = std::max(acc, *activationMin);
     acc = std::min(acc, *activationMax);
-    if (!storeIntegerPointerElement(state, operands[4], i8Type,
-                                    row * *addressOffset, acc,
-                                    "arm_nn_vec_mat_mult_t_s8"))
+    if (!storeIntegerPointerElement(
+            state, operands[4], i8Type, row * *addressOffset, acc,
+            op.getOperation(), "arm_nn_vec_mat_mult_t_s8"))
       return false;
   }
 
@@ -692,12 +742,13 @@ Token tokenFromPrimitiveValue(const PrimitiveValue &value) {
   return noneToken();
 }
 
-static unsigned integerBitWidth(mlir::Type type) {
+static llvm::Expected<unsigned> integerBitWidth(mlir::Type type,
+                                                mlir::Operation *scope) {
   if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
-    return intType.getWidth();
+    return supportedBitWidth(intType.getWidth(), "integer");
   if (mlir::isa<mlir::IndexType>(type))
-    return 64;
-  return 0;
+    return indexBitWidth(scope);
+  return 0u;
 }
 
 std::string primitivePredicate(mlir::Operation *op) {
@@ -728,13 +779,18 @@ std::string primitiveOperationName(mlir::Operation *op) {
   return op->getName().getStringRef().str();
 }
 
-PrimitiveOperationDescriptor primitiveDescriptor(mlir::Operation *op,
-                                                 llvm::StringRef predicate,
-                                                 mlir::Value result) {
+llvm::Expected<PrimitiveOperationDescriptor>
+primitiveDescriptor(mlir::Operation *op, llvm::StringRef predicate,
+                    mlir::Value result) {
   std::string opName = primitiveOperationName(op);
-  PrimitiveOperationDescriptor descriptor{
-      opName, predicate, integerBitWidth(result.getType()),
-      integerBitWidth(op->getOperand(0).getType())};
+  auto resultBitWidth = integerBitWidth(result.getType(), op);
+  if (!resultBitWidth)
+    return resultBitWidth.takeError();
+  auto operandBitWidth = integerBitWidth(op->getOperand(0).getType(), op);
+  if (!operandBitWidth)
+    return operandBitWidth.takeError();
+  PrimitiveOperationDescriptor descriptor{opName, predicate, *resultBitWidth,
+                                          *operandBitWidth};
   if (auto div = mlir::dyn_cast<mlir::arith::DivSIOp>(op))
     descriptor.isExact = div.getIsExact();
   if (auto div = mlir::dyn_cast<mlir::arith::DivUIOp>(op))
@@ -765,7 +821,7 @@ static void collectStreamIndexSources(
   if (auto cast = value.getDefiningOp<mlir::arith::IndexCastOp>())
     return collectStreamIndexSources(cast.getIn(), sources, seen, depth + 1);
   if (auto stream = value.getDefiningOp<dataflow::StreamOp>()) {
-    if (stream.getIndex() == value || stream.getRwc() == value)
+    if (stream.getIv() == value || stream.getPhase() == value)
       sources.insert(stream.getOperation());
     return;
   }
@@ -971,8 +1027,25 @@ static std::optional<Token> staticSeedToken(mlir::Value value,
     }
     return *tokenOrErr;
   }
-  if (auto cast = value.getDefiningOp<mlir::arith::IndexCastOp>())
-    return staticSeedToken(cast.getIn(), state);
+  mlir::Operation *def = value.getDefiningOp();
+  if (def &&
+      mlir::isa<mlir::arith::IndexCastOp, mlir::arith::IndexCastUIOp>(def)) {
+    std::optional<Token> input = staticSeedToken(def->getOperand(0), state);
+    if (!input)
+      return std::nullopt;
+    auto descriptor = primitiveDescriptor(def, "", value);
+    if (!descriptor) {
+      llvm::consumeError(descriptor.takeError());
+      return std::nullopt;
+    }
+    PrimitiveValue operands[] = {primitiveValueFromToken(*input)};
+    auto result = evaluatePrimitiveOperation(*descriptor, operands);
+    if (!result) {
+      llvm::consumeError(result.takeError());
+      return std::nullopt;
+    }
+    return tokenFromPrimitiveValue(*result);
+  }
   return std::nullopt;
 }
 
@@ -989,23 +1062,36 @@ static std::optional<std::uint64_t>
 staticStreamTripCount(dataflow::StreamOp stream, const SimulatorState &state,
                       std::uint64_t maxEventSteps) {
   std::optional<std::int64_t> current =
-      staticSeedInteger(stream->getOperand(0), state);
-  std::optional<std::int64_t> ub =
-      staticSeedInteger(stream->getOperand(1), state);
-  std::optional<std::int64_t> step =
-      staticSeedInteger(stream->getOperand(2), state);
-  if (!current || !ub || !step)
+      staticSeedInteger(stream.getInit(), state);
+  std::optional<std::int64_t> limit =
+      staticSeedInteger(stream.getLimit(), state);
+  std::optional<std::int64_t> step = staticSeedInteger(stream.getStep(), state);
+  if (!current || !limit || !step)
     return std::nullopt;
 
   std::uint64_t tripCount = 0;
+  auto bitWidth = integerBitWidth(stream.getInit().getType(), stream);
+  if (!bitWidth) {
+    llvm::consumeError(bitWidth.takeError());
+    return std::nullopt;
+  }
   for (std::uint64_t i = 0; i < maxEventSteps; ++i) {
-    if (!evaluateCont(*current, *ub, stream.getContCond()))
+    auto cont = evaluateCont(*current, *limit, stream.getContCond(), *bitWidth);
+    if (!cont) {
+      llvm::consumeError(cont.takeError());
+      return std::nullopt;
+    }
+    if (!*cont)
       return tripCount;
     ++tripCount;
-    const std::int64_t next = stepIndex(*current, *step, stream.getStepOp());
-    if (next == *current)
+    auto next = stepIndex(*current, *step, stream.getStepOp(), *bitWidth);
+    if (!next) {
+      llvm::consumeError(next.takeError());
       return std::nullopt;
-    *current = next;
+    }
+    if (*next == *current)
+      return std::nullopt;
+    *current = *next;
   }
   return std::nullopt;
 }
@@ -1137,12 +1223,6 @@ static bool hasIncompleteStreamLoads(mlir::Block &entry,
             .str());
   }
   return incomplete;
-}
-
-static bool isVectorCardinalityBoundaryValue(mlir::Value value) {
-  mlir::Operation *def = value.getDefiningOp();
-  return mlir::isa_and_nonnull<dataflow::ParallelizeOp, dataflow::PackOp,
-                               dataflow::UnpackOp, dataflow::SerializeOp>(def);
 }
 
 static bool hasPendingVectorGroups(SimulatorState &state) {
@@ -1334,28 +1414,12 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
 
   bool missingReturn = false;
   report.dynamicWorkItems = dynamicWorkItems(state);
-  std::uint64_t requiredReturnItems = nonStructuredDynamicWorkItems(state);
-  if (requiredReturnItems == 0 && state.eventCount > 0)
-    requiredReturnItems = 1;
   for (mlir::Value value : returnValues) {
     auto it = state.observedOutputs.find(value);
     if (it == state.observedOutputs.end() || it->second.empty()) {
       report.finalOutputs.push_back("missing");
       missingReturn = true;
       continue;
-    }
-    const bool requiresComplete =
-        (!mlir::isa<mlir::NoneType>(value.getType()) &&
-         !isVectorCardinalityBoundaryValue(value)) ||
-        value.getDefiningOp<dataflow::StoreOp>() != nullptr;
-    if (requiredReturnItems > 1 && requiresComplete &&
-        it->second.size() < requiredReturnItems) {
-      missingReturn = true;
-      state.diagnostics.push_back(
-          llvm::formatv("dataflow.graph.return value produced "
-                        "{0} of {1} dynamic work items",
-                        it->second.size(), requiredReturnItems)
-              .str());
     }
     report.finalOutputs.push_back(
         tokenToString(it->second.back(), value.getType()));

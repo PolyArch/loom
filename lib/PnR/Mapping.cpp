@@ -355,7 +355,7 @@ bool valueFeedsOnlyComputedMemoryAddress(mlir::Value value) {
 
 bool isDataflowStreamIndex(mlir::Value value) {
   auto stream = value.getDefiningOp<::dataflow::StreamOp>();
-  return stream && stream.getIndex() == value;
+  return stream && stream.getIv() == value;
 }
 
 } // namespace
@@ -1060,7 +1060,7 @@ bool resourceSupportsStreamIndexTrunc(const SoftwareNode &node,
       resource.op->getNumOperands() != 1 || resource.op->getNumResults() != 1)
     return false;
   auto stream = node.op->getOperand(0).getDefiningOp<::dataflow::StreamOp>();
-  if (!stream || stream.getIndex() != node.op->getOperand(0))
+  if (!stream || stream.getIv() != node.op->getOperand(0))
     return false;
 
   std::optional<unsigned> softwareInputWidth =

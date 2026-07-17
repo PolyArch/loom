@@ -9,8 +9,10 @@ add_mlir_library(LoomSimulator
   ${LOOM_SOURCE_DIR}/include/Simulator
 
   LINK_LIBS PUBLIC
+  LoomCommon
   MLIRArithDialect
   MLIRDataflow
+  MLIRDataLayoutInterfaces
   MLIRFabric
   MLIRIR
   MLIRLLVMDialect

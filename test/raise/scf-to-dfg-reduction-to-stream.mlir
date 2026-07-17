@@ -3,17 +3,20 @@
 // scf.for with iter_args(f32) inside a dataflow.graph.func body that
 // matches the simple-reduction shape (no nested SCF, no calls,
 // loop-invariant lb/ub/step) is rewritten into dataflow.stream +
-// dataflow.carry plus the body ops moved out into the graph entry
-// block. The graph.return continues to feed the carry's output.
+// dataflow.carry plus explicit true-domain body and false-domain result
+// projections. The body ops are moved into the graph entry block.
 
 // CHECK-LABEL: dataflow.graph.func private @g_simple_red
-// CHECK: %[[IDX:.*]], %[[RWC:.*]] = dataflow.stream %arg1, %arg2, %arg3
+// CHECK: %[[IV:.*]], %[[PHASE:.*]] = dataflow.stream %arg1, %arg2, %arg3
 // CHECK-SAME: cont_cond = "<"
 // CHECK-SAME: step_op = "+="
-// CHECK: %[[CARRY:.*]] = dataflow.carry %[[RWC]], %arg5,
+// CHECK: %[[CARRY:.*]] = dataflow.carry %[[PHASE]], %arg5, %[[NEXT:.*]] : f32
+// CHECK: %{{.*}}, %[[BODY_CARRY:.*]] = dataflow.gate %[[PHASE]], %[[CARRY]] : f32
+// CHECK: %[[EXIT:.*]]:2 = dataflow.demux %[[PHASE]], %[[CARRY]] : (i1, f32) -> (f32, f32)
+// CHECK: %[[NEXT]] = arith.addf %[[BODY_CARRY]],
 // CHECK-NOT: scf.for
 // CHECK-NOT: scf.yield
-// CHECK: dataflow.graph.return %arg0, %[[CARRY]] : none, f32
+// CHECK: dataflow.graph.return %arg0, %[[EXIT]]#0 : none, f32
 dataflow.graph.func private @g_simple_red(%ctrl: none, %lb: i64, %ub: i64,
                                           %step: i64, %buf: !llvm.ptr,
                                           %init: f32) -> (none, f32) {
@@ -32,13 +35,16 @@ dataflow.graph.func private @g_simple_red(%ctrl: none, %lb: i64, %ub: i64,
 
 // CHECK-LABEL: dataflow.graph.func private @g_desc_red
 // CHECK: %[[STEP:.*]] = arith.constant -1 : i64
-// CHECK: %[[IDX:.*]], %[[RWC:.*]] = dataflow.stream %arg1, %arg2, %[[STEP]]
+// CHECK: %[[IV:.*]], %[[PHASE:.*]] = dataflow.stream %arg1, %arg2, %[[STEP]]
 // CHECK-SAME: cont_cond = ">"
 // CHECK-SAME: step_op = "+="
-// CHECK: %[[CARRY:.*]] = dataflow.carry %[[RWC]], %arg4,
+// CHECK: %[[CARRY:.*]] = dataflow.carry %[[PHASE]], %arg4, %[[NEXT:.*]] : f32
+// CHECK: %{{.*}}, %[[BODY_CARRY:.*]] = dataflow.gate %[[PHASE]], %[[CARRY]] : f32
+// CHECK: %[[EXIT:.*]]:2 = dataflow.demux %[[PHASE]], %[[CARRY]] : (i1, f32) -> (f32, f32)
+// CHECK: %[[NEXT]] = arith.addf %[[BODY_CARRY]],
 // CHECK-NOT: scf.for
 // CHECK-NOT: scf.yield
-// CHECK: dataflow.graph.return %arg0, %[[CARRY]] : none, f32
+// CHECK: dataflow.graph.return %arg0, %[[EXIT]]#0 : none, f32
 dataflow.graph.func private @g_desc_red(%ctrl: none, %lb: i64, %ub: i64,
                                         %buf: !llvm.ptr,
                                         %init: f32) -> (none, f32) {
@@ -52,19 +58,21 @@ dataflow.graph.func private @g_desc_red(%ctrl: none, %lb: i64, %ub: i64,
   dataflow.graph.return %ctrl, %r : none, f32
 }
 
-// Pointer-carried reductions must not let the false stream sentinel drive
-// address-generation ops. The pointer value consumed by the lifted body is
-// routed through dataflow.gate, while non-pointer loop-carried values keep
-// the plain carry output.
+// Every loop-carried value has distinct parent, body, and exit domains.
+// This applies uniformly to pointers and scalar values.
 
 // CHECK-LABEL: dataflow.graph.func private @g_pointer_carried_red
-// CHECK: %[[IDX:.*]], %[[RWC:.*]] = dataflow.stream %arg1, %arg2, %arg3
-// CHECK: %[[PTR_CARRY:.*]] = dataflow.carry %[[RWC]], %arg4,
-// CHECK: %{{.*}}, %[[PTR_BODY:.*]] = dataflow.gate %[[RWC]], %[[PTR_CARRY]] : !llvm.ptr
-// CHECK: %[[ACC_CARRY:.*]] = dataflow.carry %[[RWC]], %arg5,
+// CHECK: %[[IV:.*]], %[[PHASE:.*]] = dataflow.stream %arg1, %arg2, %arg3
+// CHECK: %[[PTR_CARRY:.*]] = dataflow.carry %[[PHASE]], %arg4,
+// CHECK: %{{.*}}, %[[PTR_BODY:.*]] = dataflow.gate %[[PHASE]], %[[PTR_CARRY]] : !llvm.ptr
+// CHECK: %[[PTR_EXIT:.*]]:2 = dataflow.demux %[[PHASE]], %[[PTR_CARRY]] : (i1, !llvm.ptr) -> (!llvm.ptr, !llvm.ptr)
+// CHECK: %[[ACC_CARRY:.*]] = dataflow.carry %[[PHASE]], %arg5, %[[ACC_NEXT:.*]] : i32
+// CHECK: %{{.*}}, %[[ACC_BODY:.*]] = dataflow.gate %[[PHASE]], %[[ACC_CARRY]] : i32
+// CHECK: %[[ACC_EXIT:.*]]:2 = dataflow.demux %[[PHASE]], %[[ACC_CARRY]] : (i1, i32) -> (i32, i32)
 // CHECK: llvm.getelementptr %[[PTR_BODY]]
+// CHECK: %[[ACC_NEXT]] = arith.addi %[[ACC_BODY]],
 // CHECK-NOT: scf.for
-// CHECK: dataflow.graph.return %arg0, %[[ACC_CARRY]] : none, i32
+// CHECK: dataflow.graph.return %arg0, %[[ACC_EXIT]]#0 : none, i32
 dataflow.graph.func private @g_pointer_carried_red(%ctrl: none, %lb: i32,
                                                    %ub: i32, %step: i32,
                                                    %buf: !llvm.ptr,

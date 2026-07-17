@@ -242,8 +242,12 @@ static bool assignLocalPrimitiveResult(mlir::Operation *op, mlir::Value result,
     operands.push_back(primitiveValueFromToken(*token));
   }
   std::string predicate = primitivePredicate(op);
-  auto valueOrErr = evaluatePrimitiveOperation(
-      primitiveDescriptor(op, predicate, result), operands);
+  auto descriptor = primitiveDescriptor(op, predicate, result);
+  if (!descriptor) {
+    state.diagnostics.push_back(llvm::toString(descriptor.takeError()));
+    return false;
+  }
+  auto valueOrErr = evaluatePrimitiveOperation(*descriptor, operands);
   if (!valueOrErr) {
     state.diagnostics.push_back(llvm::toString(valueOrErr.takeError()));
     return false;
@@ -430,8 +434,8 @@ static bool assignLocalDataflowLoad(dataflow::LoadOp op, SimulatorState &state,
       lookupToken(op.getCtrl(), state, locals, captureIndex);
   if (!view || !addr || !ctrl)
     return false;
-  std::optional<std::size_t> index =
-      resolveElementIndex(*view, *addr, state, "dataflow.load");
+  std::optional<std::size_t> index = resolveElementIndex(
+      *view, *addr, state, op.getOperation(), "dataflow.load");
   if (!index)
     return false;
   locals[op.getData()] = view->memory->elements[*index];
@@ -497,8 +501,8 @@ static bool assignLocalDataflowStore(dataflow::StoreOp op,
   }
   if (!view || !addr || !data || !ctrl)
     return false;
-  std::optional<std::size_t> index =
-      resolveElementIndex(*view, *addr, state, "dataflow.store");
+  std::optional<std::size_t> index = resolveElementIndex(
+      *view, *addr, state, op.getOperation(), "dataflow.store");
   if (!index)
     return false;
   view->memory->elements[*index] = *data;

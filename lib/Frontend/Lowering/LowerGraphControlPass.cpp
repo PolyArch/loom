@@ -64,6 +64,8 @@
 
 #include "Frontend/Lowering/Passes.h"
 
+#include "StreamOrdinal.h"
+
 #include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
@@ -76,7 +78,6 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Interfaces/CallInterfaces.h"
-#include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -203,6 +204,12 @@ bool isLoopCarriedElseValue(::mlir::Value value, ::mlir::scf::IfOp ifOp) {
   value = stripSingleInputCasts(value);
   if (value.getDefiningOp<::dataflow::CarryOp>())
     return true;
+  if (auto gate = value.getDefiningOp<::dataflow::GateOp>()) {
+    auto carry = gate.getBeforeValue().getDefiningOp<::dataflow::CarryOp>();
+    if (gate.getAfterValue() == value && carry &&
+        gate.getBeforeCond() == carry.getCond())
+      return true;
+  }
 
   auto arg = ::llvm::dyn_cast<::mlir::BlockArgument>(value);
   if (!arg)
@@ -298,59 +305,22 @@ bool hasIntegerValue(::mlir::Value value, std::int64_t expected) {
   return attr && attr.getInt() == expected;
 }
 
-bool isDataflowIntegerConstant(::mlir::Value value, ::mlir::Value ctrl,
-                               ::mlir::Type type, std::int64_t expected) {
-  auto constant = value.getDefiningOp<::dataflow::ConstantOp>();
-  return constant && constant.getValue() == value &&
-         constant.getCtrl() == ctrl && value.getType() == type &&
-         hasIntegerValue(value, expected);
-}
-
 std::optional<::mlir::Value> getCanonicalOrdinal(::mlir::Value address,
-                                                 ::dataflow::StreamOp stream,
-                                                 ::mlir::Operation *scope) {
-  ::mlir::Type streamType = stream.getIndex().getType();
-  if (::llvm::isa<::mlir::IndexType>(streamType))
-    return address.getType() == streamType ? std::optional(address)
-                                           : std::nullopt;
-
+                                                 ::dataflow::StreamOp stream) {
   auto cast = address.getDefiningOp<::mlir::arith::IndexCastOp>();
-  auto intType = ::llvm::dyn_cast<::mlir::IntegerType>(streamType);
   if (!cast || cast.getResult() != address ||
-      cast.getIn().getType() != streamType || !intType || !intType.isSignless())
-    return std::nullopt;
-  ::mlir::DataLayout dataLayout = ::mlir::DataLayout::closest(scope);
-  ::llvm::TypeSize indexBits =
-      dataLayout.getTypeSizeInBits(::mlir::IndexType::get(scope->getContext()));
-  if (indexBits.isScalable() || intType.getWidth() > indexBits.getFixedValue())
+      cast.getIn().getType() != stream.getIv().getType())
     return std::nullopt;
   return cast.getIn();
 }
 
 bool isCanonicalStreamOrdinal(::mlir::Value address,
-                              ::dataflow::StreamOp stream, ::mlir::Value ctrl,
-                              ::mlir::Block &entry, ::mlir::Operation *scope) {
-  std::optional<::mlir::Value> ordinal =
-      getCanonicalOrdinal(address, stream, scope);
-  if (!ordinal)
+                              ::dataflow::StreamOp stream,
+                              ::mlir::Operation *scope) {
+  if (!::loom::lowering::isZeroBasedUnitOrdinalStream(stream, scope))
     return false;
-  auto carry = ordinal->getDefiningOp<::dataflow::CarryOp>();
-  ::mlir::Type ordinalType = stream.getIndex().getType();
-  if (!carry || carry->getBlock() != &entry || carry.getOutput() != *ordinal ||
-      carry.getOutput().getType() != ordinalType ||
-      carry.getCond() != stream.getRwc() ||
-      !isDataflowIntegerConstant(carry.getInit(), ctrl, ordinalType, 0))
-    return false;
-
-  auto next = carry.getCarry().getDefiningOp<::mlir::arith::AddIOp>();
-  if (!next || next->getBlock() != &entry || next.getLhs() != carry.getOutput())
-    return false;
-
-  auto invariant = next.getRhs().getDefiningOp<::dataflow::InvariantOp>();
-  return invariant && invariant->getBlock() == &entry &&
-         invariant.getOutput() == next.getRhs() &&
-         invariant.getCond() == stream.getRwc() &&
-         isDataflowIntegerConstant(invariant.getInit(), ctrl, ordinalType, 1);
+  std::optional<::mlir::Value> ordinal = getCanonicalOrdinal(address, stream);
+  return ordinal && *ordinal == stream.getIv();
 }
 
 struct UnitStridePointerCarry {
@@ -371,7 +341,8 @@ getUnitStridePointerCarry(::mlir::Value pointer, ::mlir::Type elementType,
     return std::nullopt;
   auto stream = carry.getCond().getDefiningOp<::dataflow::StreamOp>();
   if (!stream || stream->getBlock() != &entry ||
-      stream.getRwc() != carry.getCond())
+      stream.getPhase() != carry.getCond() ||
+      !::loom::lowering::isZeroBasedUnitOrdinalStream(stream, carry))
     return std::nullopt;
 
   auto gep = carry.getCarry().getDefiningOp<::mlir::LLVM::GEPOp>();
@@ -424,8 +395,8 @@ bool areSameUnitStrideCarriedAddress(::dataflow::LoadOp load,
       ::llvm::dyn_cast<::mlir::BlockArgument>(pointerCarry->carry.getInit());
   if (!initArg || initArg.getOwner() != &entry)
     return false;
-  return isCanonicalStreamOrdinal(load.getAddr(), pointerCarry->stream, ctrl,
-                                  entry, load.getOperation());
+  return isCanonicalStreamOrdinal(load.getAddr(), pointerCarry->stream,
+                                  load.getOperation());
 }
 
 bool elseRegionIsEmpty(::mlir::scf::IfOp ifOp) {
@@ -962,6 +933,29 @@ unsigned rewriteOneIf(::mlir::scf::IfOp ifOp, ::mlir::OpBuilder &builder) {
   return rewriteGateIf(ifOp, builder) ? 2 : 3;
 }
 
+class IndexMaterializationTransaction {
+public:
+  explicit IndexMaterializationTransaction(::mlir::Operation *anchor)
+      : anchor(anchor), originalPrevious(anchor->getPrevNode()) {}
+
+  ~IndexMaterializationTransaction() {
+    if (committed)
+      return;
+    while (::mlir::Operation *created = anchor->getPrevNode()) {
+      if (created == originalPrevious)
+        break;
+      created->erase();
+    }
+  }
+
+  void commit() { committed = true; }
+
+private:
+  ::mlir::Operation *anchor;
+  ::mlir::Operation *originalPrevious;
+  bool committed = false;
+};
+
 ::mlir::Value materializeIndexDomainValue(
     ::mlir::Value value, ::mlir::OpBuilder &builder,
     ::llvm::DenseMap<::mlir::Value, ::mlir::Value> &cache) {
@@ -983,79 +977,91 @@ unsigned rewriteOneIf(::mlir::scf::IfOp ifOp, ::mlir::OpBuilder &builder) {
   if (auto add = value.getDefiningOp<::mlir::arith::AddIOp>()) {
     ::mlir::Value lhs =
         materializeIndexDomainValue(add.getLhs(), builder, cache);
+    if (!lhs)
+      return {};
     ::mlir::Value rhs =
         materializeIndexDomainValue(add.getRhs(), builder, cache);
-    if (lhs && rhs) {
-      auto indexAdd =
-          ::mlir::arith::AddIOp::create(builder, add.getLoc(), lhs, rhs);
-      cache[value] = indexAdd.getResult();
-      return indexAdd.getResult();
-    }
+    if (!rhs)
+      return {};
+    auto indexAdd =
+        ::mlir::arith::AddIOp::create(builder, add.getLoc(), lhs, rhs);
+    cache[value] = indexAdd.getResult();
+    return indexAdd.getResult();
   }
 
   if (auto sub = value.getDefiningOp<::mlir::arith::SubIOp>()) {
     ::mlir::Value lhs =
         materializeIndexDomainValue(sub.getLhs(), builder, cache);
+    if (!lhs)
+      return {};
     ::mlir::Value rhs =
         materializeIndexDomainValue(sub.getRhs(), builder, cache);
-    if (lhs && rhs) {
-      auto indexSub =
-          ::mlir::arith::SubIOp::create(builder, sub.getLoc(), lhs, rhs);
-      cache[value] = indexSub.getResult();
-      return indexSub.getResult();
-    }
+    if (!rhs)
+      return {};
+    auto indexSub =
+        ::mlir::arith::SubIOp::create(builder, sub.getLoc(), lhs, rhs);
+    cache[value] = indexSub.getResult();
+    return indexSub.getResult();
   }
 
   if (auto mul = value.getDefiningOp<::mlir::arith::MulIOp>()) {
     ::mlir::Value lhs =
         materializeIndexDomainValue(mul.getLhs(), builder, cache);
+    if (!lhs)
+      return {};
     ::mlir::Value rhs =
         materializeIndexDomainValue(mul.getRhs(), builder, cache);
-    if (lhs && rhs) {
-      auto indexMul =
-          ::mlir::arith::MulIOp::create(builder, mul.getLoc(), lhs, rhs);
-      cache[value] = indexMul.getResult();
-      return indexMul.getResult();
-    }
+    if (!rhs)
+      return {};
+    auto indexMul =
+        ::mlir::arith::MulIOp::create(builder, mul.getLoc(), lhs, rhs);
+    cache[value] = indexMul.getResult();
+    return indexMul.getResult();
   }
 
   if (auto shl = value.getDefiningOp<::mlir::arith::ShLIOp>()) {
     ::mlir::Value lhs =
         materializeIndexDomainValue(shl.getLhs(), builder, cache);
+    if (!lhs)
+      return {};
     ::mlir::Value rhs =
         materializeIndexDomainValue(shl.getRhs(), builder, cache);
-    if (lhs && rhs) {
-      auto indexShl =
-          ::mlir::arith::ShLIOp::create(builder, shl.getLoc(), lhs, rhs);
-      cache[value] = indexShl.getResult();
-      return indexShl.getResult();
-    }
+    if (!rhs)
+      return {};
+    auto indexShl =
+        ::mlir::arith::ShLIOp::create(builder, shl.getLoc(), lhs, rhs);
+    cache[value] = indexShl.getResult();
+    return indexShl.getResult();
   }
 
   if (auto shr = value.getDefiningOp<::mlir::arith::ShRUIOp>()) {
     ::mlir::Value lhs =
         materializeIndexDomainValue(shr.getLhs(), builder, cache);
+    if (!lhs)
+      return {};
     ::mlir::Value rhs =
         materializeIndexDomainValue(shr.getRhs(), builder, cache);
-    if (lhs && rhs) {
-      auto indexShr =
-          ::mlir::arith::ShRUIOp::create(builder, shr.getLoc(), lhs, rhs);
-      cache[value] = indexShr.getResult();
-      return indexShr.getResult();
-    }
+    if (!rhs)
+      return {};
+    auto indexShr =
+        ::mlir::arith::ShRUIOp::create(builder, shr.getLoc(), lhs, rhs);
+    cache[value] = indexShr.getResult();
+    return indexShr.getResult();
   }
 
   if (auto andi = value.getDefiningOp<::mlir::arith::AndIOp>()) {
     ::mlir::Value lhs =
         materializeIndexDomainValue(andi.getLhs(), builder, cache);
+    if (!lhs)
+      return {};
     ::mlir::Value rhs =
         materializeIndexDomainValue(andi.getRhs(), builder, cache);
-    if (lhs && rhs) {
-      auto indexAnd =
-          ::mlir::arith::AndIOp::create(builder, andi.getLoc(), lhs, rhs);
-      cache[value] = indexAnd.getResult();
-      return indexAnd.getResult();
-    }
+    if (!rhs)
+      return {};
+    auto indexAnd =
+        ::mlir::arith::AndIOp::create(builder, andi.getLoc(), lhs, rhs);
+    cache[value] = indexAnd.getResult();
+    return indexAnd.getResult();
   }
 
   if (auto zext = value.getDefiningOp<::mlir::LLVM::ZExtOp>()) {
@@ -1068,10 +1074,10 @@ unsigned rewriteOneIf(::mlir::scf::IfOp ifOp, ::mlir::OpBuilder &builder) {
         resultType.getWidth() >= sourceType.getWidth()) {
       ::mlir::Value input =
           materializeIndexDomainValue(zext.getArg(), builder, cache);
-      if (input) {
-        cache[value] = input;
-        return input;
-      }
+      if (!input)
+        return {};
+      cache[value] = input;
+      return input;
     }
   }
 
@@ -1091,16 +1097,45 @@ unsigned rewriteOneIf(::mlir::scf::IfOp ifOp, ::mlir::OpBuilder &builder) {
   }
 
   if (auto invariant = value.getDefiningOp<::dataflow::InvariantOp>()) {
+    bool projected = !value.use_empty();
+    for (::mlir::OpOperand &use : value.getUses()) {
+      auto gate = ::llvm::dyn_cast<::dataflow::GateOp>(use.getOwner());
+      if (!gate || gate.getBeforeValue() != value ||
+          gate.getBeforeCond() != invariant.getCond()) {
+        projected = false;
+        break;
+      }
+    }
+    if (!projected)
+      return {};
     ::mlir::Value init =
         materializeIndexDomainValue(invariant.getInit(), builder, cache);
-    if (init) {
-      auto indexInvariant = ::dataflow::InvariantOp::create(
-          builder, invariant.getLoc(), builder.getIndexType(),
-          invariant.getCond(), init);
-      cache[value] = indexInvariant.getOutput();
-      return indexInvariant.getOutput();
-    }
+    if (!init)
+      return {};
+    auto indexInvariant = ::dataflow::InvariantOp::create(
+        builder, invariant.getLoc(), builder.getIndexType(),
+        invariant.getCond(), init);
+    cache[value] = indexInvariant.getOutput();
+    return indexInvariant.getOutput();
   }
+
+  if (auto gate = value.getDefiningOp<::dataflow::GateOp>()) {
+    if (gate.getAfterValue() != value)
+      return {};
+    ::mlir::Value before =
+        materializeIndexDomainValue(gate.getBeforeValue(), builder, cache);
+    if (!before)
+      return {};
+    auto indexGate = ::dataflow::GateOp::create(
+        builder, gate.getLoc(), builder.getI1Type(), builder.getIndexType(),
+        gate.getBeforeCond(), before);
+    cache[value] = indexGate.getAfterValue();
+    return indexGate.getAfterValue();
+  }
+
+  if (::llvm::isa_and_nonnull<::dataflow::CarryOp, ::dataflow::DemuxOp>(
+          value.getDefiningOp()))
+    return {};
 
   auto indexCast = ::mlir::arith::IndexCastOp::create(
       builder, value.getLoc(), builder.getIndexType(), value);
@@ -1158,30 +1193,6 @@ bool allUsesAreOperation(::mlir::Value value, ::mlir::Operation *op) {
   return true;
 }
 
-bool collectIndexDomainUses(
-    ::mlir::Value value, ::mlir::Operation *cycleUser,
-    ::llvm::SmallVectorImpl<::mlir::arith::IndexCastOp> &addressCasts,
-    ::llvm::SmallVectorImpl<std::pair<::dataflow::GraphReturnOp, unsigned>>
-        &returnUses) {
-  for (::mlir::OpOperand &use : value.getUses()) {
-    ::mlir::Operation *owner = use.getOwner();
-    if (owner == cycleUser)
-      continue;
-    if (auto cast = ::llvm::dyn_cast<::mlir::arith::IndexCastOp>(owner)) {
-      if (!isMemoryAddressIndexCast(cast))
-        return false;
-      addressCasts.push_back(cast);
-      continue;
-    }
-    if (auto ret = ::llvm::dyn_cast<::dataflow::GraphReturnOp>(owner)) {
-      returnUses.push_back({ret, use.getOperandNumber()});
-      continue;
-    }
-    return false;
-  }
-  return true;
-}
-
 void collectDirectMemoryAddressCasts(
     ::mlir::Value value,
     ::llvm::SmallVectorImpl<::mlir::arith::IndexCastOp> &addressCasts) {
@@ -1229,6 +1240,7 @@ bool rewriteOneIndexDomainCmp(::mlir::arith::CmpIOp cmp,
 
   ::mlir::OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPoint(cmp);
+  IndexMaterializationTransaction transaction(cmp);
   ::llvm::DenseMap<::mlir::Value, ::mlir::Value> cache;
   ::mlir::Value indexLhs =
       materializeIndexDomainValue(cmp.getLhs(), builder, cache);
@@ -1236,6 +1248,7 @@ bool rewriteOneIndexDomainCmp(::mlir::arith::CmpIOp cmp,
       materializeIndexDomainValue(cmp.getRhs(), builder, cache);
   if (!indexLhs || !indexRhs)
     return false;
+  transaction.commit();
 
   auto indexCmp = ::mlir::arith::CmpIOp::create(
       builder, cmp.getLoc(), cmp.getPredicate(), indexLhs, indexRhs);
@@ -1281,15 +1294,10 @@ bool rewriteIndexDomainCmps(::dataflow::GraphFuncOp graph,
 }
 
 bool eraseInternalIndexDomainCycle(
-    ::dataflow::CarryOp carry, ::mlir::arith::AddIOp next,
-    ::mlir::Operation *stepOp) {
-  ::llvm::SmallPtrSet<::mlir::Operation *, 4> internalOps;
-  internalOps.insert(carry.getOperation());
-  internalOps.insert(next.getOperation());
-  if (stepOp)
-    internalOps.insert(stepOp);
-
-  for (::mlir::Operation *op : internalOps) {
+    ::llvm::ArrayRef<::mlir::Operation *> eraseOps) {
+  ::llvm::SmallPtrSet<::mlir::Operation *, 8> internalOps;
+  internalOps.insert(eraseOps.begin(), eraseOps.end());
+  for (::mlir::Operation *op : eraseOps) {
     for (::mlir::Value result : op->getResults()) {
       for (::mlir::OpOperand &use : result.getUses()) {
         if (!internalOps.contains(use.getOwner()))
@@ -1298,17 +1306,74 @@ bool eraseInternalIndexDomainCycle(
     }
   }
 
-  ::llvm::SmallVector<::mlir::Operation *, 4> eraseOps;
-  eraseOps.push_back(next.getOperation());
-  eraseOps.push_back(carry.getOperation());
-  if (stepOp)
-    eraseOps.push_back(stepOp);
   for (::mlir::Operation *op : eraseOps)
     op->dropAllDefinedValueUses();
   for (::mlir::Operation *op : eraseOps)
     op->dropAllReferences();
   for (::mlir::Operation *op : eraseOps)
     op->erase();
+  return true;
+}
+
+struct ProjectedCarryUses {
+  ::dataflow::GateOp bodyGate;
+  ::dataflow::DemuxOp resultDemux;
+  ::llvm::SmallVector<::mlir::arith::IndexCastOp, 4> addressCasts;
+  ::llvm::SmallVector<std::pair<::dataflow::GraphReturnOp, unsigned>, 2>
+      returnUses;
+};
+
+bool matchProjectedCarryUses(::dataflow::CarryOp carry,
+                             ::mlir::arith::AddIOp next,
+                             ProjectedCarryUses &match) {
+  for (::mlir::OpOperand &use : carry.getOutput().getUses()) {
+    if (auto gate = ::llvm::dyn_cast<::dataflow::GateOp>(use.getOwner())) {
+      if (match.bodyGate || gate.getBeforeValue() != carry.getOutput() ||
+          gate.getBeforeCond() != carry.getCond())
+        return false;
+      match.bodyGate = gate;
+      continue;
+    }
+    if (auto demux = ::llvm::dyn_cast<::dataflow::DemuxOp>(use.getOwner())) {
+      if (match.resultDemux || demux.getInput() != carry.getOutput() ||
+          demux.getSel() != carry.getCond() || demux.getOutputs().size() != 2)
+        return false;
+      match.resultDemux = demux;
+      continue;
+    }
+    return false;
+  }
+  if (!match.bodyGate || !match.resultDemux)
+    return false;
+
+  bool nextUsesBody = false;
+  for (::mlir::OpOperand &use : match.bodyGate.getAfterValue().getUses()) {
+    if (use.getOwner() == next.getOperation()) {
+      nextUsesBody = true;
+      continue;
+    }
+    auto cast = ::llvm::dyn_cast<::mlir::arith::IndexCastOp>(use.getOwner());
+    if (!cast || !isMemoryAddressIndexCast(cast))
+      return false;
+    match.addressCasts.push_back(cast);
+  }
+  if (!nextUsesBody || match.addressCasts.empty())
+    return false;
+
+  ::mlir::Value falseResult = match.resultDemux.getOutputs().front();
+  for (::mlir::OpOperand &use : falseResult.getUses()) {
+    auto ret = ::llvm::dyn_cast<::dataflow::GraphReturnOp>(use.getOwner());
+    if (!ret)
+      return false;
+    match.returnUses.push_back({ret, use.getOperandNumber()});
+  }
+  if (match.returnUses.empty() ||
+      !match.resultDemux.getOutputs()[1].use_empty())
+    return false;
+
+  for (::mlir::OpOperand &use : next.getResult().getUses())
+    if (use.getOwner() != carry.getOperation())
+      return false;
   return true;
 }
 
@@ -1320,60 +1385,60 @@ bool rewriteOneIndexDomainCarry(::dataflow::CarryOp carry,
   auto next = carry.getCarry().getDefiningOp<::mlir::arith::AddIOp>();
   if (!next)
     return false;
-  ::mlir::Value carryValue = carry.getOutput();
+  ProjectedCarryUses projected;
+  if (!matchProjectedCarryUses(carry, next, projected))
+    return false;
+
+  ::mlir::Value bodyValue = projected.bodyGate.getAfterValue();
   ::mlir::Value stepValue;
-  if (next.getLhs() == carryValue)
+  if (next.getLhs() == bodyValue)
     stepValue = next.getRhs();
-  else if (next.getRhs() == carryValue)
+  else if (next.getRhs() == bodyValue)
     stepValue = next.getLhs();
   else
     return false;
 
-  ::llvm::SmallVector<::mlir::arith::IndexCastOp, 4> addressCasts;
-  ::llvm::SmallVector<std::pair<::dataflow::GraphReturnOp, unsigned>, 2>
-      carryReturnUses;
-  if (!collectIndexDomainUses(carryValue, next.getOperation(), addressCasts,
-                              carryReturnUses))
-    return false;
-
-  ::llvm::SmallVector<::mlir::arith::IndexCastOp, 2> nextAddressCasts;
-  ::llvm::SmallVector<std::pair<::dataflow::GraphReturnOp, unsigned>, 2>
-      nextReturnUses;
-  if (!collectIndexDomainUses(next.getResult(), carry.getOperation(),
-                              nextAddressCasts, nextReturnUses))
-    return false;
-
-  if (addressCasts.empty() && nextAddressCasts.empty())
-    return false;
-
-  ::mlir::Operation *stepOp = stepValue.getDefiningOp();
-  if (stepOp && ::llvm::isa<::dataflow::InvariantOp>(stepOp) &&
+  auto stepGate = stepValue.getDefiningOp<::dataflow::GateOp>();
+  if (!stepGate || stepGate.getAfterValue() != stepValue ||
+      stepGate.getBeforeCond() != carry.getCond() ||
       !allUsesAreOperation(stepValue, next.getOperation()))
     return false;
 
   ::mlir::OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPoint(carry);
+  IndexMaterializationTransaction transaction(carry);
   ::llvm::DenseMap<::mlir::Value, ::mlir::Value> cache;
   ::mlir::Value indexInit =
       materializeIndexDomainValue(carry.getInit(), builder, cache);
+  if (!indexInit)
+    return false;
   ::mlir::Value indexStep =
       materializeIndexDomainValue(stepValue, builder, cache);
-  if (!indexInit || !indexStep)
+  if (!indexStep)
     return false;
+  auto indexStepGate = indexStep.getDefiningOp<::dataflow::GateOp>();
+  if (!indexStepGate)
+    return false;
+  transaction.commit();
 
   auto indexCarry = ::dataflow::CarryOp::create(
       builder, carry.getLoc(), builder.getIndexType(), carry.getCond(),
       indexInit, indexInit);
+  auto indexBodyGate = ::dataflow::GateOp::create(
+      builder, projected.bodyGate.getLoc(), builder.getI1Type(),
+      builder.getIndexType(), carry.getCond(), indexCarry.getOutput());
+  auto indexResultDemux = ::dataflow::DemuxOp::create(
+      builder, projected.resultDemux.getLoc(),
+      ::mlir::TypeRange{builder.getIndexType(), builder.getIndexType()},
+      carry.getCond(), indexCarry.getOutput());
   auto indexNext = ::mlir::arith::AddIOp::create(
-      builder, next.getLoc(), indexCarry.getOutput(), indexStep);
+      builder, next.getLoc(), indexBodyGate.getAfterValue(), indexStep);
   indexCarry->setOperand(2, indexNext.getResult());
 
-  for (::mlir::arith::IndexCastOp cast : addressCasts) {
-    cast.replaceAllUsesWith(indexCarry.getOutput());
-    cast.erase();
-  }
-  for (::mlir::arith::IndexCastOp cast : nextAddressCasts) {
-    cast.replaceAllUsesWith(indexNext.getResult());
+  projected.bodyGate.getAfterCond().replaceAllUsesWith(
+      indexBodyGate.getAfterCond());
+  for (::mlir::arith::IndexCastOp cast : projected.addressCasts) {
+    cast.replaceAllUsesWith(indexBodyGate.getAfterValue());
     cast.erase();
   }
 
@@ -1386,12 +1451,17 @@ bool rewriteOneIndexDomainCarry(::dataflow::CarryOp carry,
         builder, ret.getLoc(), originalType, replacement);
     ret->setOperand(index, castBack.getResult());
   };
-  for (auto [ret, index] : carryReturnUses)
-    replaceReturn(ret, index, indexCarry.getOutput(), carry.getType());
-  for (auto [ret, index] : nextReturnUses)
-    replaceReturn(ret, index, indexNext.getResult(), next.getType());
+  for (auto [ret, index] : projected.returnUses)
+    replaceReturn(ret, index, indexResultDemux.getOutputs().front(),
+                  carry.getType());
 
-  if (!eraseInternalIndexDomainCycle(carry, next, stepOp))
+  stepGate.getAfterCond().replaceAllUsesWith(indexStepGate.getAfterCond());
+
+  ::mlir::Operation *eraseOps[] = {next.getOperation(), carry.getOperation(),
+                                   projected.bodyGate.getOperation(),
+                                   projected.resultDemux.getOperation(),
+                                   stepGate.getOperation()};
+  if (!eraseInternalIndexDomainCycle(eraseOps))
     return false;
   return true;
 }
@@ -1428,10 +1498,12 @@ bool rewriteAddressIndexCasts(::dataflow::GraphFuncOp graph,
       continue;
     ::llvm::DenseMap<::mlir::Value, ::mlir::Value> cache;
     builder.setInsertionPoint(cast);
+    IndexMaterializationTransaction transaction(cast);
     ::mlir::Value indexValue =
         materializeIndexDomainValue(cast.getIn(), builder, cache);
     if (!indexValue || indexValue == cast.getResult())
       continue;
+    transaction.commit();
     cast.replaceAllUsesWith(indexValue);
     cast.erase();
     changed = true;
@@ -1449,10 +1521,10 @@ void eraseDeadIndexArithmetic(::dataflow::GraphFuncOp graph) {
         return;
       if (::llvm::isa<::mlir::arith::IndexCastOp, ::mlir::arith::AddIOp,
                       ::mlir::arith::SubIOp, ::mlir::arith::MulIOp,
-                      ::mlir::arith::ShLIOp,
-                      ::mlir::arith::ShRUIOp, ::mlir::arith::AndIOp,
-                      ::mlir::LLVM::ZExtOp, ::dataflow::ConstantOp,
-                      ::dataflow::InvariantOp>(op))
+                      ::mlir::arith::ShLIOp, ::mlir::arith::ShRUIOp,
+                      ::mlir::arith::AndIOp, ::mlir::LLVM::ZExtOp,
+                      ::dataflow::ConstantOp, ::dataflow::InvariantOp,
+                      ::dataflow::GateOp>(op))
         deadOps.push_back(op);
     });
     for (::mlir::Operation *op : deadOps) {

@@ -6,6 +6,8 @@
 // RUN: FileCheck %s --check-prefix=CAST < %t.cast.json
 // RUN: loom-dfg-sim %s --graph narrow_runtime_signed_compare --arg 0=none --arg 1=255 --arg 2=0 --arg 3=-1 --output %t.narrow-cmp.json
 // RUN: FileCheck %s --check-prefix=NARROW-CMP < %t.narrow-cmp.json
+// RUN: loom-dfg-sim %s --graph i64_wraparound --arg 0=none --output %t.i64-wrap.json
+// RUN: FileCheck %s --check-prefix=I64-WRAP < %t.i64-wrap.json
 // RUN: loom-dfg-sim %s --graph llvm_sign_extend --arg 0=none --output %t.llvm-sext.json
 // RUN: FileCheck %s --check-prefix=LLVM-SEXT < %t.llvm-sext.json
 // RUN: loom-dfg-sim %s --graph exact_division_poison --arg 0=none --output %t.exact-div.json
@@ -56,6 +58,17 @@
 // NARROW-CMP-DAG: "i1:true"
 // NARROW-CMP-DAG: "i1:false"
 // NARROW-CMP-DAG: "i1:true"
+
+// I64-WRAP: "final_outputs": [
+// I64-WRAP-NEXT: "none",
+// I64-WRAP-NEXT: "i64:-9223372036854775808",
+// I64-WRAP-NEXT: "i64:9223372036854775807",
+// I64-WRAP-NEXT: "i64:-9223372036854775808"
+// I64-WRAP-DAG: "arith.addi": 1
+// I64-WRAP-DAG: "arith.subi": 1
+// I64-WRAP-DAG: "arith.muli": 1
+// I64-WRAP-DAG: "status": "pass"
+// I64-WRAP-DAG: "workload": "i64_wraparound"
 
 // LLVM-SEXT-DAG: "workload": "llvm_sign_extend"
 // LLVM-SEXT-DAG: "graph": "llvm_sign_extend"
@@ -125,6 +138,20 @@ module {
     %ugt = arith.cmpi ugt, %lhs, %zero : i8
     dataflow.graph.return %ctrl, %slt, %sgt, %eq, %ult, %ugt
         : none, i1, i1, i1, i1, i1
+  }
+
+  dataflow.graph.func private @i64_wraparound(%ctrl: none)
+      -> (none, i64, i64, i64) {
+    %max = dataflow.constant %ctrl
+        {const_value = 9223372036854775807 : i64} : i64
+    %min = dataflow.constant %ctrl
+        {const_value = -9223372036854775808 : i64} : i64
+    %one = dataflow.constant %ctrl {const_value = 1 : i64} : i64
+    %minus_one = dataflow.constant %ctrl {const_value = -1 : i64} : i64
+    %add = arith.addi %max, %one : i64
+    %sub = arith.subi %min, %one : i64
+    %mul = arith.muli %min, %minus_one : i64
+    dataflow.graph.return %ctrl, %add, %sub, %mul : none, i64, i64, i64
   }
 
   dataflow.graph.func private @llvm_sign_extend(%ctrl: none) -> (none, i32) {

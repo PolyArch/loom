@@ -89,9 +89,9 @@ The baseline semantic scope includes:
 * control, done, and memory-order token behavior required by dataflow
   graph execution.
 
-The simulator must follow the target dataflow specs for sentinel
-tokens, body-phase behavior, loop feedback, control tokens, memory
-tokens, and graph completion.
+The simulator must follow the target dataflow specs for phase close
+tokens, body-domain projection, real loop feedback cardinality, control
+tokens, memory tokens, and graph completion.
 Vector token-cardinality changes follow
 `docs/spec-dataflow-vectorization.md`.
 

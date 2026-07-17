@@ -8,9 +8,10 @@
 // STRUCT-LABEL: dataflow.graph.func private @g_cond_load_red
 // STRUCT: dataflow.stream
 // STRUCT: dataflow.carry
+// STRUCT: dataflow.gate
+// STRUCT: dataflow.demux
 // STRUCT-NOT: scf.for
 // STRUCT-NOT: scf.if
-// STRUCT-NOT: dataflow.gate
 // STRUCT: dataflow.constant %arg0 {const_value = 0 : index} : index
 // STRUCT: arith.select %{{.*}}, %{{.*}}, %{{.*}} : index
 // STRUCT: dataflow.load %arg4[%{{.*}}] %arg0 : memref<?xf32>
@@ -20,11 +21,11 @@
 
 // SIM-DAG: "status": "pass"
 // SIM-DAG: "f32:70"
-// SIM-NOT: incomplete final outputs
+// SIM-NOT: dataflow.graph.return value produced
 
 // SIM-TF-DAG: "status": "pass"
 // SIM-TF-DAG: "f32:30"
-// SIM-TF-NOT: incomplete final outputs
+// SIM-TF-NOT: dataflow.graph.return value produced
 dataflow.graph.func private @g_cond_load_red(%ctrl: none, %lb: i64, %ub: i64,
                                              %step: i64,
                                              %input: memref<?xf32>,

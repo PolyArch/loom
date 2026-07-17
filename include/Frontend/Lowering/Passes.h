@@ -59,9 +59,10 @@ std::unique_ptr<::mlir::Pass> createLowerKnownLibraryCallsPass();
 std::unique_ptr<::mlir::Pass> createLowerGraphMemoryPass();
 
 // Module-scope pass that wraps loop-invariant scalar block arguments
-// of a dataflow.graph.func body with `dataflow.invariant` carriers
-// driven by an existing `dataflow.stream`'s rwc. Graphs without a
-// stream are left unchanged.
+// of a dataflow.graph.func body with parent-domain `dataflow.invariant`
+// carriers, then gates their body uses with the phase from the unique
+// directly owned `dataflow.stream`. Graphs without exactly one such stream
+// are left unchanged.
 std::unique_ptr<::mlir::Pass> createLowerGraphInvariantPass();
 
 // Module-scope pass that promotes each used `arith.constant` op inside a

@@ -430,8 +430,8 @@ bool isEligibleReduction(::mlir::scf::ForOp loop) {
   ::mlir::Location loc = loop.getLoc();
 
   // 1. Materialize dataflow.stream right before the scf.for. The
-  //    stream consumes the loop's lb / ub / step and emits an iv
-  //    stream of the same signless integer type plus an i1 rwc
+  //    stream consumes the loop's init / limit / step and emits an IV
+  //    stream of the same signless integer type plus an i1 phase
   //    stream. Keep the signed step operand and use "+=" for the update;
   //    negative static steps therefore need a descending continuation
   //    predicate.
@@ -443,8 +443,8 @@ bool isEligibleReduction(::mlir::scf::ForOp loop) {
       builder.getI1Type(), loop.getLowerBound(), loop.getUpperBound(),
       loop.getStep(), stepOpAttr, contCondAttr);
 
-  ::mlir::Value idxVal = streamOp.getIndex();
-  ::mlir::Value rwcVal = streamOp.getRwc();
+  ::mlir::Value idxVal = streamOp.getIv();
+  ::mlir::Value phase = streamOp.getPhase();
 
   // 2. Materialize one dataflow.carry per iter_arg. The next-token
   //    feed for each carry is the corresponding scf.yield operand.
@@ -457,24 +457,23 @@ bool isEligibleReduction(::mlir::scf::ForOp loop) {
   //    position to be observed by them.
   ::mlir::Block &origBody = loop.getRegion().front();
   auto yieldOp = ::llvm::cast<::mlir::scf::YieldOp>(origBody.getTerminator());
-  ::llvm::SmallVector<::mlir::Value, 4> carryVals;
   ::llvm::SmallVector<::mlir::Value, 4> bodyIterVals;
-  carryVals.reserve(loop.getInitArgs().size());
+  ::llvm::SmallVector<::mlir::Value, 4> resultVals;
   bodyIterVals.reserve(loop.getInitArgs().size());
+  resultVals.reserve(loop.getInitArgs().size());
   for (size_t i = 0, e = loop.getInitArgs().size(); i < e; ++i) {
     ::mlir::Value initVal = loop.getInitArgs()[i];
     ::mlir::Value carryFeed = yieldOp.getOperand(i);
-    auto carryOp = ::dataflow::CarryOp::create(
-        builder, loc, initVal.getType(), rwcVal, initVal, carryFeed);
-    carryVals.push_back(carryOp.getOutput());
-    ::mlir::Value bodyVal = carryOp.getOutput();
-    if (::llvm::isa<::mlir::LLVM::LLVMPointerType>(initVal.getType())) {
-      auto gateOp = ::dataflow::GateOp::create(
-          builder, loc, builder.getI1Type(), initVal.getType(), rwcVal,
-          carryOp.getOutput());
-      bodyVal = gateOp.getAfterValue();
-    }
-    bodyIterVals.push_back(bodyVal);
+    auto carryOp = ::dataflow::CarryOp::create(builder, loc, initVal.getType(),
+                                               phase, initVal, carryFeed);
+    auto gateOp = ::dataflow::GateOp::create(builder, loc, builder.getI1Type(),
+                                             initVal.getType(), phase,
+                                             carryOp.getOutput());
+    bodyIterVals.push_back(gateOp.getAfterValue());
+    auto demuxOp = ::dataflow::DemuxOp::create(
+        builder, loc, ::mlir::TypeRange{initVal.getType(), initVal.getType()},
+        phase, carryOp.getOutput());
+    resultVals.push_back(demuxOp.getOutputs().front());
   }
 
   // 3. Rewrite uses of the loop's induction variable + iter_args
@@ -483,9 +482,9 @@ bool isEligibleReduction(::mlir::scf::ForOp loop) {
   for (size_t i = 0, e = loop.getInitArgs().size(); i < e; ++i)
     loop.getRegionIterArgs()[i].replaceAllUsesWith(bodyIterVals[i]);
 
-  // 4. Replace each loop result with the matching carry's output.
+  // 4. Replace each loop result with the matching carry's false lane.
   for (size_t i = 0, e = loop.getResults().size(); i < e; ++i)
-    loop.getResult(i).replaceAllUsesWith(carryVals[i]);
+    loop.getResult(i).replaceAllUsesWith(resultVals[i]);
 
   // 5. Move the body's compute ops (everything except scf.yield) out
   //    of the scf.for region into the graph.func entry block, right

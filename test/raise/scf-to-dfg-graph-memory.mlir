@@ -114,8 +114,9 @@ dataflow.graph.func private @g_inbounds_zero_companion(
 llvm.mlir.global private @global_buf(dense<0.0> : tensor<8xf32>) : !llvm.array<8 x f32>
 
 // CHECK-LABEL: dataflow.graph.func private @g_global_base
+// CHECK: %[[GLOBAL_IV:.*]], %{{.*}} = dataflow.stream
 // CHECK: %[[GBL:.*]] = llvm.mlir.addressof @global_buf
-// CHECK: %[[GEP:.*]] = llvm.getelementptr %[[GBL]][%index]
+// CHECK: %[[GEP:.*]] = llvm.getelementptr %[[GBL]][%[[GLOBAL_IV]]]
 // CHECK: llvm.load %[[GEP]]
 // CHECK-NOT: dataflow.load
 // CHECK-NOT: dataflow.store
@@ -139,7 +140,8 @@ dataflow.graph.func private @g_global_base(%arg0: none, %arg1: i64, %arg2: i64,
 
 // CHECK-LABEL: dataflow.graph.func private @g_i8_byte_offset_f32
 // CHECK-NOT: builtin.unrealized_conversion_cast
-// CHECK: %[[BYTE:.*]] = arith.shli %index, %arg5 : i64
+// CHECK: %[[BYTE_IV:.*]], %{{.*}} = dataflow.stream
+// CHECK: %[[BYTE:.*]] = arith.shli %[[BYTE_IV]], %arg5 : i64
 // CHECK: %[[BYTE_PTR:.*]] = llvm.getelementptr %arg4[%[[BYTE]]] : (!llvm.ptr, i64) -> !llvm.ptr, i8
 // CHECK: llvm.load %[[BYTE_PTR]] : !llvm.ptr -> f32
 // CHECK: llvm.store %{{.*}}, %[[BYTE_PTR]] : f32, !llvm.ptr
@@ -239,26 +241,27 @@ dataflow.graph.func private @g_volatile_atomic(
   dataflow.graph.return %arg0, %value : none, i32
 }
 
-// Pointer induction through a carried LLVM pointer is a memory-view
-// concern, not a fabric pointer operation. When the carried pointer advances
-// by exactly one element per stream item, memory lowering must bind the
-// memref to the original graph pointer and drive load/store addresses from a
-// zero-based ordinal counter. The loop IV stream may have nonzero lower bounds
-// or non-unit steps, so the raw stream index is not the memory-view offset.
-// The residual pointer bookkeeping may remain for graph results, but it must
-// no longer be the memory address path.
+// -----
+
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+} {
+
+// Pointer induction through a carried LLVM pointer is a memory-view concern,
+// not a fabric pointer operation. The stream IV already has exactly K tokens,
+// so memory lowering uses it directly and does not synthesize a second carry
+// recurrence or gate the IV with its phase.
 
 // CHECK-LABEL: dataflow.graph.func private @g_pointer_carry_i8_f32
 // CHECK-DAG: %[[SRC:.*]] = builtin.unrealized_conversion_cast %arg4 : !llvm.ptr to memref<?xf32>
 // CHECK-DAG: %[[DST:.*]] = builtin.unrealized_conversion_cast %arg5 : !llvm.ptr to memref<?xf32>
-// CHECK: %[[STREAM:.*]], %[[RWC:.*]] = dataflow.stream
-// CHECK: %[[ZERO:.*]] = dataflow.constant %arg0 {const_value = 0 : i32} : i32
-// CHECK: %[[ONE:.*]] = dataflow.constant %arg0 {const_value = 1 : i32} : i32
-// CHECK: %[[STABLE_ONE:.*]] = dataflow.invariant %[[RWC]], %[[ONE]] : i32
-// CHECK: %[[ORD:.*]] = dataflow.carry %[[RWC]], %[[ZERO]], %[[NEXT:.*]] : i32
-// CHECK: %[[NEXT]] = arith.addi %[[ORD]], %[[STABLE_ONE]] : i32
-// CHECK: %[[IDX:.*]] = arith.index_cast %[[ORD]] : i32 to index
-// CHECK-NOT: arith.index_cast %[[STREAM]] : i32 to index
+// CHECK: %[[IV:.*]], %[[PHASE:.*]] = dataflow.stream
+// CHECK: %[[SRC_RAW:.*]] = dataflow.carry %[[PHASE]], %arg4,
+// CHECK: %{{.*}}, %[[SRC_BODY:.*]] = dataflow.gate %[[PHASE]], %[[SRC_RAW]] : !llvm.ptr
+// CHECK: %[[DST_RAW:.*]] = dataflow.carry %[[PHASE]], %arg5,
+// CHECK: %{{.*}}, %[[DST_BODY:.*]] = dataflow.gate %[[PHASE]], %[[DST_RAW]] : !llvm.ptr
+// CHECK-NOT: dataflow.gate %[[PHASE]], %[[IV]] : i32
+// CHECK: %[[IDX:.*]] = arith.index_cast %[[IV]] : i32 to index
 // CHECK: dataflow.load %[[SRC]][%[[IDX]]] %arg0 : memref<?xf32>
 // CHECK: dataflow.store %[[DST]][%[[IDX]]] %{{.*}} %arg0 : memref<?xf32>
 // CHECK-NOT: llvm.load
@@ -266,40 +269,46 @@ dataflow.graph.func private @g_volatile_atomic(
 dataflow.graph.func private @g_pointer_carry_i8_f32(
     %arg0: none, %arg1: i32, %arg2: i32, %arg3: i32, %arg4: !llvm.ptr,
     %arg5: !llvm.ptr, %bias: f32) -> (none, !llvm.ptr, !llvm.ptr) {
-  %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
+  %stream_init = arith.constant 0 : i32
+  %stream_step = arith.constant 1 : i32
+  %index, %rwc = dataflow.stream %stream_init, %arg2, %stream_step
       {cont_cond = "<", step_op = "+="} : i32
-  %src_cur = dataflow.carry %rwc, %arg4, %src_next : !llvm.ptr
-  %dst_cur = dataflow.carry %rwc, %arg5, %dst_next : !llvm.ptr
+  %src_raw = dataflow.carry %rwc, %arg4, %src_next : !llvm.ptr
+  %src_phase, %src_cur = dataflow.gate %rwc, %src_raw : !llvm.ptr
+  %src_exit:2 = dataflow.demux %rwc, %src_raw
+      : (i1, !llvm.ptr) -> (!llvm.ptr, !llvm.ptr)
+  %dst_raw = dataflow.carry %rwc, %arg5, %dst_next : !llvm.ptr
+  %dst_phase, %dst_cur = dataflow.gate %rwc, %dst_raw : !llvm.ptr
+  %dst_exit:2 = dataflow.demux %rwc, %dst_raw
+      : (i1, !llvm.ptr) -> (!llvm.ptr, !llvm.ptr)
   %src_next = llvm.getelementptr %src_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
   %data = llvm.load %src_cur : !llvm.ptr -> f32
   %sum = arith.addf %data, %bias : f32
   %dst_next = llvm.getelementptr %dst_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
   llvm.store %sum, %dst_cur : f32, !llvm.ptr
-  dataflow.graph.return %arg0, %src_cur, %dst_cur : none, !llvm.ptr, !llvm.ptr
+  dataflow.graph.return %arg0, %src_exit#0, %dst_exit#0
+      : none, !llvm.ptr, !llvm.ptr
 }
 
-// A preincrement load/store through the carried pointer starts one element
-// after the base pointer. The stream ordinal remains zero-based for the
-// carried pointer state, so the memory address must use ordinal + 1 while the
-// runtime must still provide the memory ctrl tokens for each true item.
+// A preincrement load/store uses stream IV plus a projected invariant bias.
+// Generated invariant outputs remain in the parent domain until a gate
+// projects them into the K-cardinality body domain.
 
 // CHECK-LABEL: dataflow.graph.func private @g_pointer_carry_preincrement_i8_f32
 // CHECK-DAG: %[[SRC_PRE:.*]] = builtin.unrealized_conversion_cast %arg4 : !llvm.ptr to memref<?xf32>
 // CHECK-DAG: %[[DST_PRE:.*]] = builtin.unrealized_conversion_cast %arg5 : !llvm.ptr to memref<?xf32>
-// CHECK: %[[STREAM_PRE:.*]], %[[RWC_PRE:.*]] = dataflow.stream
-// CHECK: %[[ZERO_PRE:.*]] = dataflow.constant %arg0 {const_value = 0 : i32} : i32
-// CHECK: %[[ONE_PRE:.*]] = dataflow.constant %arg0 {const_value = 1 : i32} : i32
-// CHECK: %[[STABLE_ONE_PRE:.*]] = dataflow.invariant %[[RWC_PRE]], %[[ONE_PRE]] : i32
-// CHECK: %[[ORD_PRE:.*]] = dataflow.carry %[[RWC_PRE]], %[[ZERO_PRE]], %[[NEXT_PRE:.*]] : i32
-// CHECK: %[[NEXT_PRE]] = arith.addi %[[ORD_PRE]], %[[STABLE_ONE_PRE]] : i32
+// CHECK: %[[IV_PRE:.*]], %[[PHASE_PRE:.*]] = dataflow.stream
+// CHECK-NOT: dataflow.gate %[[PHASE_PRE]], %[[IV_PRE]] : i32
 // CHECK: %[[BIAS_PRE:.*]] = dataflow.constant %arg0 {const_value = 1 : i32} : i32
-// CHECK: %[[STABLE_BIAS_PRE:.*]] = dataflow.invariant %[[RWC_PRE]], %[[BIAS_PRE]] : i32
-// CHECK: %[[ADDR_PRE:.*]] = arith.addi %[[ORD_PRE]], %[[STABLE_BIAS_PRE]] : i32
+// CHECK: %[[STABLE_BIAS_RAW_PRE:.*]] = dataflow.invariant %[[PHASE_PRE]], %[[BIAS_PRE]] : i32
+// CHECK: %{{.*}}, %[[STABLE_BIAS_PRE:.*]] = dataflow.gate %[[PHASE_PRE]], %[[STABLE_BIAS_RAW_PRE]] : i32
+// CHECK: %[[ADDR_PRE:.*]] = arith.addi %[[IV_PRE]], %[[STABLE_BIAS_PRE]] : i32
 // CHECK: %[[IDX_PRE:.*]] = arith.index_cast %[[ADDR_PRE]] : i32 to index
 // CHECK: dataflow.load %[[SRC_PRE]][%[[IDX_PRE]]] %arg0 : memref<?xf32>
 // CHECK: %[[STORE_BIAS_PRE:.*]] = dataflow.constant %arg0 {const_value = 1 : i32} : i32
-// CHECK: %[[STORE_STABLE_BIAS_PRE:.*]] = dataflow.invariant %[[RWC_PRE]], %[[STORE_BIAS_PRE]] : i32
-// CHECK: %[[STORE_ADDR_PRE:.*]] = arith.addi %[[ORD_PRE]], %[[STORE_STABLE_BIAS_PRE]] : i32
+// CHECK: %[[STORE_STABLE_BIAS_RAW_PRE:.*]] = dataflow.invariant %[[PHASE_PRE]], %[[STORE_BIAS_PRE]] : i32
+// CHECK: %{{.*}}, %[[STORE_STABLE_BIAS_PRE:.*]] = dataflow.gate %[[PHASE_PRE]], %[[STORE_STABLE_BIAS_RAW_PRE]] : i32
+// CHECK: %[[STORE_ADDR_PRE:.*]] = arith.addi %[[IV_PRE]], %[[STORE_STABLE_BIAS_PRE]] : i32
 // CHECK: %[[STORE_IDX_PRE:.*]] = arith.index_cast %[[STORE_ADDR_PRE]] : i32 to index
 // CHECK: dataflow.store %[[DST_PRE]][%[[STORE_IDX_PRE]]] %{{.*}} %arg0 : memref<?xf32>
 // CHECK-NOT: llvm.load
@@ -307,16 +316,85 @@ dataflow.graph.func private @g_pointer_carry_i8_f32(
 dataflow.graph.func private @g_pointer_carry_preincrement_i8_f32(
     %arg0: none, %arg1: i32, %arg2: i32, %arg3: i32, %arg4: !llvm.ptr,
     %arg5: !llvm.ptr, %bias: f32) -> (none, !llvm.ptr, !llvm.ptr) {
-  %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
+  %stream_init = arith.constant 0 : i32
+  %stream_step = arith.constant 1 : i32
+  %index, %rwc = dataflow.stream %stream_init, %arg2, %stream_step
       {cont_cond = "<", step_op = "+="} : i32
-  %src_cur = dataflow.carry %rwc, %arg4, %src_next : !llvm.ptr
-  %dst_cur = dataflow.carry %rwc, %arg5, %dst_next : !llvm.ptr
+  %src_raw = dataflow.carry %rwc, %arg4, %src_next : !llvm.ptr
+  %src_phase, %src_cur = dataflow.gate %rwc, %src_raw : !llvm.ptr
+  %src_exit:2 = dataflow.demux %rwc, %src_raw
+      : (i1, !llvm.ptr) -> (!llvm.ptr, !llvm.ptr)
+  %dst_raw = dataflow.carry %rwc, %arg5, %dst_next : !llvm.ptr
+  %dst_phase, %dst_cur = dataflow.gate %rwc, %dst_raw : !llvm.ptr
+  %dst_exit:2 = dataflow.demux %rwc, %dst_raw
+      : (i1, !llvm.ptr) -> (!llvm.ptr, !llvm.ptr)
   %src_next = llvm.getelementptr %src_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
   %data = llvm.load %src_next : !llvm.ptr -> f32
   %sum = arith.addf %data, %bias : f32
   %dst_next = llvm.getelementptr %dst_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
   llvm.store %sum, %dst_next : f32, !llvm.ptr
-  dataflow.graph.return %arg0, %src_cur, %dst_cur : none, !llvm.ptr, !llvm.ptr
+  dataflow.graph.return %arg0, %src_exit#0, %dst_exit#0
+      : none, !llvm.ptr, !llvm.ptr
+}
+
+// A unit-stride pointer carry does not make an arbitrary recurrence IV an
+// iteration ordinal. With a nonzero stream init, memory lowering must retain
+// the carried pointer address instead of replacing it with base + stream.iv.
+
+// CHECK-LABEL: dataflow.graph.func private @g_pointer_carry_nonordinal_init
+// CHECK: %[[IV_NONORD:.*]], %[[PHASE_NONORD:.*]] = dataflow.stream
+// CHECK: %[[RAW_NONORD:.*]] = dataflow.carry %[[PHASE_NONORD]], %arg3,
+// CHECK: %{{.*}}, %[[CUR_NONORD:.*]] = dataflow.gate %[[PHASE_NONORD]], %[[RAW_NONORD]] : !llvm.ptr
+// CHECK-NOT: arith.index_cast %[[IV_NONORD]]
+// CHECK: llvm.load %[[CUR_NONORD]] : !llvm.ptr -> f32
+// CHECK-NOT: dataflow.load
+dataflow.graph.func private @g_pointer_carry_nonordinal_init(
+    %arg0: none, %arg1: i32, %arg2: i32, %arg3: !llvm.ptr,
+    %bias: f32) -> (none, !llvm.ptr) {
+  %stream_init = arith.constant 4 : i32
+  %stream_step = arith.constant 1 : i32
+  %index, %phase = dataflow.stream %stream_init, %arg1, %stream_step
+      {cont_cond = "<", step_op = "+="} : i32
+  %raw = dataflow.carry %phase, %arg3, %next : !llvm.ptr
+  %body_phase, %current = dataflow.gate %phase, %raw : !llvm.ptr
+  %exit:2 = dataflow.demux %phase, %raw
+      : (i1, !llvm.ptr) -> (!llvm.ptr, !llvm.ptr)
+  %data = llvm.load %current : !llvm.ptr -> f32
+  %sum = arith.addf %data, %bias : f32
+  %next = llvm.getelementptr %current[4]
+      : (!llvm.ptr) -> !llvm.ptr, i8
+  dataflow.graph.return %arg0, %exit#0 : none, !llvm.ptr
+}
+
+}
+
+// -----
+
+// Widening an i8 recurrence to the target index type does not preserve the
+// pointer-carry ordinal after the recurrence wraps. Keep the carried pointer
+// address instead of rewriting it as base + stream.iv.
+
+// CHECK-LABEL: dataflow.graph.func private @g_pointer_carry_widening_i8
+// CHECK: %[[IV_I8:.*]], %[[PHASE_I8:.*]] = dataflow.stream
+// CHECK: %[[RAW_I8:.*]] = dataflow.carry %[[PHASE_I8]], %arg2,
+// CHECK: %{{.*}}, %[[CUR_I8:.*]] = dataflow.gate %[[PHASE_I8]], %[[RAW_I8]] : !llvm.ptr
+// CHECK-NOT: arith.index_cast %[[IV_I8]] : i8 to index
+// CHECK: llvm.load %[[CUR_I8]] : !llvm.ptr -> i8
+// CHECK-NOT: dataflow.load
+dataflow.graph.func private @g_pointer_carry_widening_i8(
+    %arg0: none, %arg1: i8, %arg2: !llvm.ptr) -> (none, !llvm.ptr) {
+  %stream_init = arith.constant 0 : i8
+  %stream_step = arith.constant 1 : i8
+  %iv, %phase = dataflow.stream %stream_init, %arg1, %stream_step
+      {cont_cond = "!=", step_op = "+="} : i8
+  %raw = dataflow.carry %phase, %arg2, %next : !llvm.ptr
+  %body_phase, %current = dataflow.gate %phase, %raw : !llvm.ptr
+  %exit:2 = dataflow.demux %phase, %raw
+      : (i1, !llvm.ptr) -> (!llvm.ptr, !llvm.ptr)
+  %value = llvm.load %current : !llvm.ptr -> i8
+  %next = llvm.getelementptr %current[1]
+      : (!llvm.ptr) -> !llvm.ptr, i8
+  dataflow.graph.return %arg0, %exit#0 : none, !llvm.ptr
 }
 
 // A dynamic GEP from a carried pointer is not a constant per-item bias. Until

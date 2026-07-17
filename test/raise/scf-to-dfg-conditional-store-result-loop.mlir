@@ -7,7 +7,9 @@
 
 // CHECK-LABEL: dataflow.graph.func private @g_conditional_store_result_loop
 // CHECK: %[[IDX:.*]], %[[RWC:.*]] = dataflow.stream %arg1, %arg2, %arg3
-// CHECK: %[[CURSOR:.*]] = dataflow.carry %[[RWC]], %arg8,
+// CHECK: %[[CURSOR_RAW:.*]] = dataflow.carry %[[RWC]], %arg8,
+// CHECK: %{{.*}}, %[[CURSOR:.*]] = dataflow.gate %[[RWC]], %[[CURSOR_RAW]] : i32
+// CHECK: %[[CURSOR_EXIT:.*]]:2 = dataflow.demux %[[RWC]], %[[CURSOR_RAW]] : (i1, i32) -> (i32, i32)
 // CHECK: %[[DATA:.*]], %{{.*}} = dataflow.load
 // CHECK: %[[IS_ZERO:.*]] = arith.cmpi eq, %[[DATA]], %{{.*}} : i32
 // CHECK: %[[STORE_ADDR:.*]]:2 = dataflow.demux %[[IS_ZERO]], %{{.*}} : (i1, index) -> (index, index)
@@ -50,7 +52,9 @@ dataflow.graph.func private @g_conditional_store_result_loop(
 
 // CHECK-LABEL: dataflow.graph.func private @g_conditional_store_result_then_loop
 // CHECK: %[[IDX2:.*]], %[[RWC2:.*]] = dataflow.stream %arg1, %arg2, %arg3
-// CHECK: %[[CURSOR2:.*]] = dataflow.carry %[[RWC2]], %arg8,
+// CHECK: %[[CURSOR_RAW2:.*]] = dataflow.carry %[[RWC2]], %arg8,
+// CHECK: %{{.*}}, %[[CURSOR2:.*]] = dataflow.gate %[[RWC2]], %[[CURSOR_RAW2]] : i32
+// CHECK: %[[CURSOR_EXIT2:.*]]:2 = dataflow.demux %[[RWC2]], %[[CURSOR_RAW2]] : (i1, i32) -> (i32, i32)
 // CHECK: %[[DATA2:.*]], %{{.*}} = dataflow.load
 // CHECK: %[[IS_ZERO2:.*]] = arith.cmpi eq, %[[DATA2]], %{{.*}} : i32
 // CHECK: %[[STORE_ADDR2:.*]]:2 = dataflow.demux %[[IS_ZERO2]], %{{.*}} : (i1, index) -> (index, index)

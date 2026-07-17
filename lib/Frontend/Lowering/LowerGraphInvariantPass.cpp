@@ -3,9 +3,9 @@
 // contract makes the invariance explicit.
 //
 // Rewrite scope:
-//   For each `dataflow.graph.func` body that already contains at
-//   least one `dataflow.stream` op:
-//     1. Use the first stream's `rwc` as the gating cond for new
+//   For each `dataflow.graph.func` body that contains one directly
+//   owned `dataflow.stream` op:
+//     1. Use the stream's phase as the gating condition for new
 //        invariants.
 //     2. For each entry-block argument BA that
 //          (a) is NOT the leading `thread_ctrl : none` slot,
@@ -18,14 +18,16 @@
 //          (e) has a type that the dataflow.invariant verifier
 //              admits without further bridging (numeric / index /
 //              none),
-//        materialize `%inv = dataflow.invariant %rwc, %BA : T` once
+//        materialize `%inv = dataflow.invariant %phase, %BA : T` once,
+//        project it through `dataflow.gate`,
 //        and rewrite all in-body uses of BA (other than the new
 //        invariant op itself, each stream operand, each carry init
 //        operand, and the bridge cast) to read %inv.
 //
-// Bail conditions (graph left unchanged):
-//   * No `dataflow.stream` in the body (the loop is not yet streamed,
-//     so there is no rwc to drive the invariant).
+// Bail conditions:
+//   * No directly owned stream leaves the graph unchanged.
+//   * Multiple directly owned streams fail the pass when an eligible
+//     invariant needs an unambiguous phase owner.
 //   * Every block arg is already bridged, unused outside stream
 //     operands, or non-carriable.
 //   * The block arg has a non-numeric type that the invariant op
@@ -59,14 +61,15 @@ bool isInvariantCarriable(::mlir::Type t) {
                      ::mlir::IndexType, ::mlir::NoneType>(t);
 }
 
-// Locate the first dataflow.stream op directly inside `entry` and
-// return it (or null if there is none).
-::dataflow::StreamOp findFirstStream(::mlir::Block &entry) {
+::llvm::SmallVector<::dataflow::StreamOp, 2>
+collectDirectStreams(::mlir::Block &entry) {
+  ::llvm::SmallVector<::dataflow::StreamOp, 2> streams;
   for (::mlir::Operation &op : entry.without_terminator()) {
-    if (auto s = ::llvm::dyn_cast<::dataflow::StreamOp>(op))
-      return s;
+    auto stream = ::llvm::dyn_cast<::dataflow::StreamOp>(op);
+    if (stream)
+      streams.push_back(stream);
   }
-  return {};
+  return streams;
 }
 
 // Mark every block arg consumed by a `unrealized_conversion_cast` as
@@ -86,7 +89,7 @@ bool isStreamLoopBoundUse(::mlir::OpOperand &use) {
   if (!stream)
     return false;
   ::mlir::Value value = use.get();
-  return value == stream.getLb() || value == stream.getUb() ||
+  return value == stream.getInit() || value == stream.getLimit() ||
          value == stream.getStep();
 }
 
@@ -95,21 +98,19 @@ bool isCarryInitUse(::mlir::OpOperand &use) {
   return carry && use.getOperandNumber() == 1;
 }
 
-// Rewrite eligible block arguments of `graph` with dataflow.invariant
-// carriers driven by the first stream's rwc. Returns the number of
-// invariants emitted.
-unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
-                         ::mlir::OpBuilder &builder) {
-  ::mlir::Block &entry = graph.getBody().front();
-  ::dataflow::StreamOp stream = findFirstStream(entry);
-  if (!stream)
-    return 0;
-  ::mlir::Value rwc = stream.getRwc();
+bool isGraphReturnUse(::mlir::OpOperand &use) {
+  return ::llvm::isa<::dataflow::GraphReturnOp>(use.getOwner());
+}
 
+// Rewrite eligible block arguments of `graph` with dataflow.invariant
+// carriers driven by the unique stream's phase.
+::mlir::LogicalResult rewriteOneGraph(::dataflow::GraphFuncOp graph,
+                                      ::mlir::OpBuilder &builder) {
+  ::mlir::Block &entry = graph.getBody().front();
   ::llvm::DenseSet<::mlir::Value> bridgedPorts;
   collectBridgedArgs(entry, bridgedPorts);
 
-  unsigned added = 0;
+  ::llvm::SmallVector<::mlir::BlockArgument, 4> candidates;
   for (unsigned i = 0, e = entry.getNumArguments(); i < e; ++i) {
     ::mlir::BlockArgument ba = entry.getArgument(i);
     // (a) Skip the leading thread_ctrl slot; it is the firing token.
@@ -126,6 +127,8 @@ unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
         continue;
       if (isCarryInitUse(use))
         continue;
+      if (isGraphReturnUse(use))
+        continue;
       hasNonStreamUse = true;
       break;
     }
@@ -134,21 +137,44 @@ unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
     // (e) Skip non-carriable types (e.g. !llvm.ptr passed through).
     if (!isInvariantCarriable(ba.getType()))
       continue;
+    candidates.push_back(ba);
+  }
 
-    // Materialize the invariant just after the stream so the rwc
+  if (candidates.empty())
+    return ::mlir::success();
+
+  auto streams = collectDirectStreams(entry);
+  if (streams.empty())
+    return ::mlir::success();
+  if (streams.size() != 1) {
+    graph.emitError("loom-lower-graph-invariant: graph requires invariant "
+                    "lowering but has multiple directly owned "
+                    "dataflow.stream phase owners");
+    return ::mlir::failure();
+  }
+  ::dataflow::StreamOp stream = streams.front();
+  ::mlir::Value phase = stream.getPhase();
+
+  for (::mlir::BlockArgument ba : candidates) {
+    // Materialize the invariant just after the stream so the phase
     // dominates it textually (graph regions are non-SSA, but keeping
     // the print order tidy makes the lowered IR easier to read).
     ::mlir::OpBuilder::InsertionGuard g(builder);
     builder.setInsertionPointAfter(stream);
     auto inv = ::dataflow::InvariantOp::create(builder, ba.getLoc(),
-                                               ba.getType(), rwc, ba);
-    ::mlir::Value newVal = inv.getOutput();
+                                               ba.getType(), phase, ba);
+    builder.setInsertionPointAfter(inv);
+    auto gate =
+        ::dataflow::GateOp::create(builder, ba.getLoc(), builder.getI1Type(),
+                                   ba.getType(), phase, inv.getOutput());
+    ::mlir::Value newVal = gate.getAfterValue();
     // Replace every use of `ba` except (i) the just-created invariant
     // op (which must keep reading the raw block arg), (ii) any
     // unrealized_conversion_cast (the bridge consumes the raw arg),
-    // and (iii) any dataflow.stream operand (lb / ub / step), because
+    // and (iii) any dataflow.stream operand (init / limit / step), because
     // the stream op owns the raw loop-bound contract, and (iv) any
-    // dataflow.carry init operand, which must remain a one-shot token.
+    // dataflow.carry init operand, which must remain a one-shot token, and
+    // (v) any graph.return operand, which is already in the result domain.
     ba.replaceUsesWithIf(newVal, [&](::mlir::OpOperand &use) {
       ::mlir::Operation *owner = use.getOwner();
       if (owner == inv.getOperation())
@@ -159,11 +185,12 @@ unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
         return false;
       if (isCarryInitUse(use))
         return false;
+      if (isGraphReturnUse(use))
+        return false;
       return true;
     });
-    ++added;
   }
-  return added;
+  return ::mlir::success();
 }
 
 struct LowerGraphInvariantPass
@@ -177,7 +204,7 @@ struct LowerGraphInvariantPass
   ::llvm::StringRef getDescription() const final {
     return "Wrap loop-invariant block arguments of dataflow.graph.func "
            "bodies with dataflow.invariant carriers driven by the body's "
-           "existing dataflow.stream rwc.";
+           "unique directly owned dataflow.stream phase.";
   }
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
@@ -196,7 +223,10 @@ struct LowerGraphInvariantPass
     for (::dataflow::GraphFuncOp graph : graphs) {
       if (graph.isExternal())
         continue;
-      (void)rewriteOneGraph(graph, builder);
+      if (::mlir::failed(rewriteOneGraph(graph, builder))) {
+        signalPassFailure();
+        return;
+      }
     }
   }
 };

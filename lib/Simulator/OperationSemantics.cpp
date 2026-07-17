@@ -579,20 +579,23 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
   if (opName == "arith.addi") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
-    return integerFromSigned(asInteger(operands[0]) + asInteger(operands[1]),
-                             bitWidth);
+    return integerFromBits(toUnsignedBits(operands[0], bitWidth) +
+                               toUnsignedBits(operands[1], bitWidth),
+                           bitWidth);
   }
   if (opName == "arith.subi") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
-    return integerFromSigned(asInteger(operands[0]) - asInteger(operands[1]),
-                             bitWidth);
+    return integerFromBits(toUnsignedBits(operands[0], bitWidth) -
+                               toUnsignedBits(operands[1], bitWidth),
+                           bitWidth);
   }
   if (opName == "arith.muli") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
-    return integerFromSigned(asInteger(operands[0]) * asInteger(operands[1]),
-                             bitWidth);
+    return integerFromBits(toUnsignedBits(operands[0], bitWidth) *
+                               toUnsignedBits(operands[1], bitWidth),
+                           bitWidth);
   }
   if (opName == "arith.andi") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
@@ -724,7 +727,12 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
   if (opName == "arith.index_cast") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
-    return integerFromSigned(asInteger(operands[0]), bitWidth);
+    const unsigned sourceBitWidth =
+        normalizeBitWidth(descriptor.operandBitWidth);
+    return integerFromSigned(
+        fromUnsignedBits(toUnsignedBits(operands[0], sourceBitWidth),
+                         sourceBitWidth),
+        bitWidth);
   }
   if (opName == "arith.extsi" || opName == "llvm.sext") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
