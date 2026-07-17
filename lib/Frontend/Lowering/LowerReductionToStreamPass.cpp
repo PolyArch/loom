@@ -432,16 +432,18 @@ bool isEligibleReduction(::mlir::scf::ForOp loop) {
   // 1. Materialize dataflow.stream right before the scf.for. The
   //    stream consumes the loop's init / limit / step and emits an IV
   //    stream of the same signless integer type plus an i1 phase
-  //    stream. Keep the signed step operand and use "+=" for the update;
-  //    negative static steps therefore need a descending continuation
-  //    predicate.
+  //    stream. Source-loop configuration is preserved as typed enum values.
   builder.setInsertionPoint(loop);
-  auto stepOpAttr = builder.getStringAttr("+=");
-  auto contCondAttr = ::loom::lowering::inferStreamContCond(builder, loop);
+  auto stepKind = ::loom::lowering::inferStreamStepKind(loop);
+  if (::mlir::failed(stepKind))
+    return loop.emitOpError("has invalid 'loom.stream_step_kind'");
+  auto predicate = ::loom::lowering::inferStreamPredicate(loop);
+  if (::mlir::failed(predicate))
+    return loop.emitOpError("has invalid 'loom.stream_predicate'");
   auto streamOp = ::dataflow::StreamOp::create(
-      builder, loc, loop.getLowerBound().getType(),
-      builder.getI1Type(), loop.getLowerBound(), loop.getUpperBound(),
-      loop.getStep(), stepOpAttr, contCondAttr);
+      builder, loc, loop.getLowerBound().getType(), builder.getI1Type(),
+      loop.getLowerBound(), loop.getUpperBound(), loop.getStep(), *stepKind,
+      *predicate);
 
   ::mlir::Value idxVal = streamOp.getIv();
   ::mlir::Value phase = streamOp.getPhase();

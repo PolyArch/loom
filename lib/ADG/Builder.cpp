@@ -1,5 +1,9 @@
 #include "ADG/Builder.h"
 
+#include "Dataflow/IR/DataflowEnums.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Error.h"
@@ -292,16 +296,35 @@ void printSwConfigs(llvm::raw_ostream &os,
   os << '}';
 }
 
+void printStreamConfig(llvm::raw_ostream &os, const StreamConfig &config) {
+  os << "hw_params = [{step_kind = "
+     << static_cast<std::uint32_t>(config.stepKind) << " : i32, predicate = [";
+  for (std::size_t i = 0; i < config.predicates.size(); ++i) {
+    if (i)
+      os << ", ";
+    os << static_cast<std::uint64_t>(config.predicates[i]) << " : i64";
+  }
+  os << "]}]";
+  if (config.selectedPredicate)
+    os << ", sw_configs = {predicate = "
+       << static_cast<std::uint64_t>(*config.selectedPredicate) << " : i64}";
+}
+
 void printOpAttrs(llvm::raw_ostream &os, const FabricOpSpec &op) {
-  if (op.hwParams.empty() && op.swConfigs.empty())
+  if (op.hwParams.empty() && op.swConfigs.empty() && !op.streamConfig)
     return;
   os << " {";
-  if (!op.hwParams.empty())
+  if (op.streamConfig) {
+    printStreamConfig(os, *op.streamConfig);
+  } else if (!op.hwParams.empty()) {
     printHwParams(os, op.hwParams);
-  if (!op.hwParams.empty() && !op.swConfigs.empty())
-    os << ", ";
-  if (!op.swConfigs.empty())
-    printSwConfigs(os, op.swConfigs);
+  }
+  if (!op.streamConfig) {
+    if (!op.hwParams.empty() && !op.swConfigs.empty())
+      os << ", ";
+    if (!op.swConfigs.empty())
+      printSwConfigs(os, op.swConfigs);
+  }
   os << '}';
 }
 
@@ -390,6 +413,59 @@ llvm::Error validateFu(const FuSpec &fu) {
     return llvm::createStringError(
         std::errc::invalid_argument,
         "ADG fu yield type count must match yield value count");
+  for (const FabricOpSpec &op : fu.operations) {
+    bool isStream =
+        op.opList.size() == 1 && op.opList.front() == "dataflow.stream";
+    if (isStream && (!op.hwParams.empty() || !op.swConfigs.empty()))
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG dataflow.stream configuration cannot use generic hw_params or "
+          "sw_configs");
+    if (isStream && !op.streamConfig)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG dataflow.stream requires typed stream configuration");
+    if (!isStream && op.streamConfig)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG stream configuration requires op_list [dataflow.stream]");
+    if (!op.streamConfig)
+      continue;
+
+    const StreamConfig &config = *op.streamConfig;
+    if (!dataflow::symbolizeStreamStepKind(
+            static_cast<std::uint32_t>(config.stepKind)))
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG stream configuration has invalid step kind");
+    if (config.predicates.empty())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG stream configuration requires at least one predicate");
+    llvm::SmallSet<mlir::arith::CmpIPredicate, 16> predicates;
+    for (mlir::arith::CmpIPredicate predicate : config.predicates) {
+      if (!mlir::arith::symbolizeCmpIPredicate(
+              static_cast<std::uint64_t>(predicate)))
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "ADG stream configuration has invalid predicate");
+      if (!predicates.insert(predicate).second)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "ADG stream configuration contains a duplicate predicate");
+    }
+    if (config.selectedPredicate &&
+        !mlir::arith::symbolizeCmpIPredicate(
+            static_cast<std::uint64_t>(*config.selectedPredicate)))
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG stream configuration has invalid selected predicate");
+    if (config.selectedPredicate &&
+        !predicates.count(*config.selectedPredicate))
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG selected stream predicate is not supported by the hardware");
+  }
   return llvm::Error::success();
 }
 

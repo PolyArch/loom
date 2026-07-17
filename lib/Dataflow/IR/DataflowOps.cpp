@@ -36,19 +36,59 @@ static bool isSupportedArmInlineAsm(Operation *op) {
 
 // dataflow.stream
 
-LogicalResult StreamOp::verify() {
-  // Convert the textual attribute to the internal enum exactly once at the
-  // verifier boundary; downstream code should consume the enum value rather
-  // than recomparing strings.
-  if (!symbolizeStepOp(getStepOp()))
-    return emitOpError("'step_op' must be one of '+=', '-=', '*=', '/=', "
-                       "'<<=', '>>='; got \"")
-           << getStepOp() << "\"";
-  if (!symbolizeContCond(getContCond()))
-    return emitOpError(
-               "'cont_cond' must be one of '<', '<=', '>', '>=', '!='; got \"")
-           << getContCond() << "\"";
+ParseResult StreamOp::parse(OpAsmParser &parser, OperationState &result) {
+  SmallVector<OpAsmParser::UnresolvedOperand, 3> operands(3);
+  if (parser.parseOperand(operands[0]) || parser.parseComma() ||
+      parser.parseOperand(operands[1]) || parser.parseComma() ||
+      parser.parseOperand(operands[2]) || parser.parseKeyword("step"))
+    return failure();
+
+  StringRef stepKeyword;
+  SMLoc stepLoc = parser.getCurrentLocation();
+  if (parser.parseKeyword(&stepKeyword))
+    return failure();
+  std::optional<StreamStepKind> stepKind = symbolizeStreamStepKind(stepKeyword);
+  if (!stepKind)
+    return parser.emitError(stepLoc, "expected dataflow.stream step kind "
+                                     "'add', 'sub', 'mul', 'sdiv', 'udiv', "
+                                     "'shl', 'ashr', or 'lshr', got '")
+           << stepKeyword << "'";
+
+  if (parser.parseKeyword("while"))
+    return failure();
+  StringRef predicateKeyword;
+  SMLoc predicateLoc = parser.getCurrentLocation();
+  if (parser.parseKeyword(&predicateKeyword))
+    return failure();
+  std::optional<arith::CmpIPredicate> predicate =
+      arith::symbolizeCmpIPredicate(predicateKeyword);
+  if (!predicate)
+    return parser.emitError(predicateLoc,
+                            "expected integer comparison predicate, got '")
+           << predicateKeyword << "'";
+
+  if (parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
+    return failure();
+  Type valueType;
+  if (parser.parseType(valueType) ||
+      parser.resolveOperands(operands, valueType, result.operands))
+    return failure();
+
+  result.addAttribute("step_kind",
+                      StreamStepKindAttr::get(parser.getContext(), *stepKind));
+  result.addAttribute("predicate", arith::CmpIPredicateAttr::get(
+                                       parser.getContext(), *predicate));
+  result.addTypes({valueType, parser.getBuilder().getI1Type()});
   return success();
+}
+
+void StreamOp::print(OpAsmPrinter &printer) {
+  printer << ' ' << getInit() << ", " << getLimit() << ", " << getStep()
+          << " step " << stringifyStreamStepKind(getStepKind()) << " while "
+          << arith::stringifyCmpIPredicate(getPredicate());
+  printer.printOptionalAttrDict((*this)->getAttrs(),
+                                {"step_kind", "predicate"});
+  printer << " : " << getIv().getType();
 }
 
 // dataflow.parallelize / pack / unpack / serialize

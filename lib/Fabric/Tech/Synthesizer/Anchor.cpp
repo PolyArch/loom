@@ -6,6 +6,7 @@
 
 #include "Common/HwShareGroup.h"
 #include "Common/SynthConfig.h"
+#include "Dataflow/IR/DataflowEnums.h"
 #include "Fabric/IR/ConfiguredFunction.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FabricTypes.h"
@@ -417,6 +418,25 @@ bool peersUniformArity(const PeerVec &peers,
   return true;
 }
 
+bool peersShareStreamStepKind(
+    const PeerVec &peers,
+    ::llvm::ArrayRef<::fabric::ConfiguredFunction> functions) {
+  ::std::optional<::dataflow::StreamStepKind> fixedStep;
+  for (auto [index, source] : ::llvm::enumerate(peers)) {
+    const auto *node = nodeFor(functions[index], source);
+    if (!node || node->operationName != "dataflow.stream")
+      continue;
+    auto step = ::dataflow::getStreamStepKindFromAttr(
+        node->attributes.get("step_kind"));
+    if (!step)
+      return false;
+    if (fixedStep && *fixedStep != *step)
+      return false;
+    fixedStep = *step;
+  }
+  return true;
+}
+
 //===----------------------------------------------------------------------===//
 // fabric.op emission.
 //===----------------------------------------------------------------------===//
@@ -825,6 +845,12 @@ EmitOutcome materializePeers(AnchorState &st, const PeerVec &peers,
   }
   unsigned arity = 0;
   if (!peersUniformArity(peers, st.functions, arity)) {
+    out.reason = SynthFailureReason::TopologyMismatch;
+    return out;
+  }
+  if (!peersShareStreamStepKind(peers, st.functions)) {
+    st.notes.push_back(
+        "anchor: dataflow.stream peers require one fixed step_kind");
     out.reason = SynthFailureReason::TopologyMismatch;
     return out;
   }

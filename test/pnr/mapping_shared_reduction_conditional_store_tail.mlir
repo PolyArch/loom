@@ -20,7 +20,7 @@ module {
       %ctrl: none, %ub: i16, %lb: i16, %step: i16, %zero: i8,
       %ptr: !llvm.ptr) -> none {
     %mem = builtin.unrealized_conversion_cast %ptr : !llvm.ptr to memref<?xi8>
-    %index, %rwc = dataflow.stream %ub, %lb, %step {cont_cond = ">", step_op = "+="} : i16
+    %index, %rwc = dataflow.stream %ub, %lb, %step step add while sgt : i16
     %stable_zero = dataflow.invariant %rwc, %zero : i8
     %ptr_carried = dataflow.carry %rwc, %ptr, %next_ptr : !llvm.ptr
     %after_cond, %after_value = dataflow.gate %rwc, %ptr_carried : !llvm.ptr

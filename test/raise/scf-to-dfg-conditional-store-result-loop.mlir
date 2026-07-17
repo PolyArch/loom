@@ -46,7 +46,7 @@ dataflow.graph.func private @g_conditional_store_result_loop(
       scf.yield %inc : i32
     }
     scf.yield %next : i32
-  } {loom.stream_cont_cond = "<"}
+  } {loom.stream_step_kind = 0 : i32, loom.stream_predicate = 2 : i64}
   dataflow.graph.return %ctrl, %r : none, i32
 }
 
@@ -91,6 +91,6 @@ dataflow.graph.func private @g_conditional_store_result_then_loop(
       scf.yield %cursor : i32
     }
     scf.yield %next : i32
-  } {loom.stream_cont_cond = "<"}
+  } {loom.stream_step_kind = 0 : i32, loom.stream_predicate = 2 : i64}
   dataflow.graph.return %ctrl, %r : none, i32
 }

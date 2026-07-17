@@ -53,7 +53,7 @@ module {
       %scale: f32)
       -> none {
     %zero = dataflow.constant %ctrl {const_value = 0 : index} : index
-    %idx, %rwc = dataflow.stream %lb, %ub, %step {cont_cond = ">", step_op = "+="} : i32
+    %idx, %rwc = dataflow.stream %lb, %ub, %step step add while sgt : i32
     %carried = dataflow.carry %rwc, %lb, %next : i32
     %after_cond, %active_idx = dataflow.gate %rwc, %carried : i32
     %stable_scale = dataflow.invariant %after_cond, %scale : f32

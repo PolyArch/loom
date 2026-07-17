@@ -37,7 +37,7 @@ module {
                                                   %mem: memref<?xf32>)
       -> (none, f32) {
     %index, %rwc = dataflow.stream %end, %start, %step
-        {cont_cond = "<", step_op = "+="} : i32
+        step add while slt : i32
     %sum_carried = dataflow.carry %rwc, %zero_f, %sum : f32
     %zero = dataflow.constant %ctrl {const_value = 0 : i32} : i32
     %one = dataflow.constant %ctrl {const_value = 1 : i32} : i32

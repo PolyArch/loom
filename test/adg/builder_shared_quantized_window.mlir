@@ -67,7 +67,7 @@ module {
     %i1 = dataflow.constant %ctrl {const_value = 1 : i32} : i32
     %i3 = dataflow.constant %ctrl {const_value = 3 : i32} : i32
     %one = dataflow.constant %ctrl {const_value = 1 : i32} : i32
-    %loop_idx, %rwc = dataflow.stream %i0, %i3, %i1 {cont_cond = "<", step_op = "+="} : i32
+    %loop_idx, %rwc = dataflow.stream %i0, %i3, %i1 step add while slt : i32
     %stable_x = dataflow.invariant %rwc, %x : i32
     %carried = dataflow.carry %rwc, %stable_x, %next : i32
     %next = arith.addi %carried, %one : i32

@@ -1,5 +1,6 @@
 // RUN: loom-raise-opt --loom-lower-for-to-graph %s | FileCheck %s
 // RUN: loom-raise-opt --loom-lower-for-to-graph %s | FileCheck %s --check-prefix=NO-CARRIED
+// RUN: loom-raise-opt --loom-lower-for-to-graph %s | FileCheck %s --check-prefix=STREAM-ATTRS
 
 // scf.for with iter_args inside a dataflow.thread body lowers to a
 // sibling dataflow.graph.func definition + a dataflow.graph.launch
@@ -13,6 +14,10 @@
 // CHECK: dataflow.graph.launch @g_t_existing_0(%[[CTRL]]
 // CHECK-NOT: ub.poison : none
 // CHECK-NOT: scf.for {{.*}} iter_args
+// STREAM-ATTRS-LABEL: dataflow.graph.func private @g_t_existing_0
+// STREAM-ATTRS: scf.for
+// STREAM-ATTRS: } {loom.stream_predicate = 2 : i64, loom.stream_step_kind = 0 : i32}
+// STREAM-ATTRS-NOT: loom.stream_cont_cond
 dataflow.thread private @t_existing(%buf: memref<?xf32>, %n: index) ctrl (%c: none) {
   %f0 = arith.constant 0.0 : f32
   %c0 = arith.constant 0 : index

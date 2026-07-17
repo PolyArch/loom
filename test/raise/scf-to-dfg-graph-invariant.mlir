@@ -15,7 +15,7 @@ dataflow.graph.func private @g_scalar_invariant(%arg0: none, %arg1: i64,
                                                 %arg4: f32, %arg5: f32)
     -> (none, f32) {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %0 = dataflow.carry %rwc, %arg4, %2 : f32
   %1 = arith.mulf %arg5, %0 : f32
   %2 = arith.addf %0, %1 : f32
@@ -37,7 +37,7 @@ dataflow.graph.func private @g_step_reused(%arg0: none, %arg1: i64,
                                            %arg4: i64)
     -> (none, i64) {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %0 = dataflow.carry %rwc, %arg4, %1 : i64
   %1 = arith.addi %0, %arg3 : i64
   dataflow.graph.return %arg0, %0 : none, i64
@@ -74,7 +74,7 @@ dataflow.graph.func private @g_return_passthrough_only(
     %arg0: none, %arg1: i32, %arg2: i32, %arg3: i32,
     %arg4: i32) -> (none, i32) {
   %iv, %phase = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i32
+      step add while slt : i32
   dataflow.graph.return %arg0, %arg4 : none, i32
 }
 
@@ -91,7 +91,7 @@ dataflow.graph.func private @g_body_and_return_use(
     %arg0: none, %arg1: i32, %arg2: i32, %arg3: i32,
     %arg4: i32) -> (none, i32, i32) {
   %iv, %phase = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i32
+      step add while slt : i32
   %sum = arith.addi %iv, %arg4 : i32
   dataflow.graph.return %arg0, %arg4, %sum : none, i32, i32
 }
@@ -109,8 +109,8 @@ dataflow.graph.func private @g_multiple_streams_return_passthrough(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
     %arg4: i64, %arg5: i64) -> (none, i64) {
   %iv0, %phase0 = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %iv1, %phase1 = dataflow.stream %arg1, %arg4, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   dataflow.graph.return %arg0, %arg5 : none, i64
 }

@@ -2,6 +2,8 @@
 #define DATAFLOW_OPS_TD
 
 include "Dataflow/IR/DataflowDialect.td"
+include "Dataflow/IR/DataflowEnums.td"
+include "mlir/Dialect/Arith/IR/ArithBase.td"
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/CommonAttrConstraints.td"
 include "mlir/IR/CommonTypeConstraints.td"
@@ -33,14 +35,13 @@ def Dataflow_StreamOp : Dataflow_Op<"stream", [Pure,
   let summary = "produce valid IV tokens and an explicit closing phase token";
   let description = [{
     Executes one predicate-terminated integer recurrence per activation.
-    `step_op` selects the update applied after each true decision, and
-    `cont_cond` compares the current value against `limit`.
+    `step_kind` selects the update applied after each true decision, and
+    `predicate` compares the current value against `limit`.
 
-      * `step_op`  : how `iv` is advanced between true emissions; one of
-                     `+=`, `*=`, `-=`, `/=`, `<<=`, `>>=`.
-      * `cont_cond`: continue predicate applied to the current value and
-                     `limit`; one of
-                     `<`, `<=`, `>`, `>=`, `!=`.
+      * `step_kind`: the canonical integer update operation: `add`, `sub`,
+                     `mul`, `sdiv`, `udiv`, `shl`, `ashr`, or `lshr`.
+      * `predicate`: an upstream `arith.cmpi` predicate applied to the current
+                     value and `limit`.
 
     Idle consumes one `init` / `limit` / `step` triple. A true decision emits
     the current value on `iv`, emits `true` on `phase`, advances the current
@@ -48,24 +49,21 @@ def Dataflow_StreamOp : Dataflow_Op<"stream", [Pure,
     and returns to Idle. No sentinel IV is emitted, and subsequent activation
     triples may reuse the same operation.
 
-    `init`, `limit`, `step`, and `iv` share one signless integer-like type;
-    `phase` is always `i1`. For `init=0`, `limit=5`, `step=1`, `step_op="+="`,
-    and `cont_cond="<"`, `iv` is `0,1,2,3,4` and `phase` is `T,T,T,T,T,F`.
+    `init`, `limit`, `step`, and `iv` share one scalar signless integer type;
+    `phase` is always `i1`. For `init=0`, `limit=5`, `step=1`, `step_kind=add`,
+    and `predicate=slt`, `iv` is `0,1,2,3,4` and `phase` is `T,T,T,T,T,F`.
   }];
 
   let arguments = (ins
-      SignlessIntegerLike:$init,
-      SignlessIntegerLike:$limit,
-      SignlessIntegerLike:$step,
-      StrAttr:$step_op,
-      StrAttr:$cont_cond
+      AnySignlessInteger:$init,
+      AnySignlessInteger:$limit,
+      AnySignlessInteger:$step,
+      Dataflow_StreamStepKindAttr:$step_kind,
+      Arith_CmpIPredicateAttr:$predicate
   );
-  let results = (outs SignlessIntegerLike:$iv, I1:$phase);
+  let results = (outs AnySignlessInteger:$iv, I1:$phase);
 
-  let assemblyFormat = [{
-    $init `,` $limit `,` $step attr-dict `:` type($iv)
-  }];
-  let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
 }
 
 def Dataflow_CarryOp : Dataflow_Op<"carry", [Pure,

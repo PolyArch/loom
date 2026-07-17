@@ -1,5 +1,7 @@
 #include "MappingInternal.h"
 
+#include "Dataflow/IR/DataflowOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/FileSystem.h"
@@ -135,6 +137,23 @@ llvm::Error appendPlacementConfig(MappingSummary &summary,
     addConfig(summary.configEntries, resource.id, "sw_configs.op_sel",
               node.operation, source);
     emittedSwConfigKeys.insert("op_sel");
+  }
+  if (auto stream = mlir::dyn_cast_or_null<dataflow::StreamOp>(node.op)) {
+    const auto &config = resource.streamConfiguration;
+    std::string predicate =
+        mlir::arith::stringifyCmpIPredicate(stream.getPredicate()).str();
+    if (!config || config->stepKind != stream.getStepKind() ||
+        !config->supports(stream.getPredicate()) ||
+        (config->selectedPredicate &&
+         *config->selectedPredicate != stream.getPredicate()))
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "hardware resource %s does not support software config "
+          "predicate=%s",
+          resource.id.c_str(), predicate.c_str());
+    addConfig(summary.configEntries, resource.id, "sw_configs.predicate",
+              predicate, source);
+    emittedSwConfigKeys.insert("predicate");
   }
   for (const auto &[key, value] : softwareConfigsFor(node)) {
     std::optional<std::string> resolvedValue =

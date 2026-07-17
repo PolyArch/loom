@@ -22,7 +22,7 @@ inline ::mlir::IntegerAttr getIntegerConstantAttr(::mlir::Value value) {
 
 inline bool isZeroBasedUnitOrdinalStream(::dataflow::StreamOp stream,
                                          ::mlir::Operation *scope) {
-  if (!stream || stream.getStepOp() != "+=")
+  if (!stream || stream.getStepKind() != ::dataflow::StreamStepKind::Add)
     return false;
   auto integer =
       ::llvm::dyn_cast<::mlir::IntegerType>(stream.getIv().getType());

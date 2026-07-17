@@ -1331,7 +1331,7 @@ Lowering:
 
 ```
 # Source scf.for IVs are typed `index`. dataflow.stream requires its
-# %init / %limit / %step / iv stream to share a signless integer-like
+# %init / %limit / %step / iv stream to share a scalar signless integer
 # type (see docs/spec-dataflow-part-1-streaming.md). The lowering
 # therefore inserts arith.index_cast at the boundary: %lb / %ub /
 # %step are cast from index to a chosen iN, and the body IV %i is
@@ -1342,7 +1342,7 @@ Lowering:
 
 %lb_iN, %ub_iN, %step_iN  = arith.index_cast %lb, %ub, %step : index to iN
 %i_iN, %loop_phase = stream %lb_iN, %ub_iN, %step_iN
-                      {step_op="+=", cont_cond="<"} : iN
+                      step add while slt : iN
 %i = arith.index_cast %i_iN : iN to index
 # body memory and address computation consume %i directly
 
@@ -1394,7 +1394,7 @@ Lowering:
 # the lowering above.
 %lb_iN, %ub_iN, %step_iN  = arith.index_cast %lb, %ub, %step : index to iN
 %i_iN, %loop_phase = stream %lb_iN, %ub_iN, %step_iN
-                      {step_op="+=", cont_cond="<"} : iN
+                      step add while slt : iN
 %i = arith.index_cast %i_iN : iN to index
 
 %acc_raw = carry %loop_phase, %init, %next : i32

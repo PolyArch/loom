@@ -1,5 +1,8 @@
 #include "ADG/Builder.h"
 
+#include "Dataflow/IR/DataflowEnums.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -83,6 +86,11 @@ static llvm::cl::opt<bool> invalidYieldCount(
     llvm::cl::desc("emit an invalid ADG with mismatched FU yield values"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<std::string> invalidStreamConfig(
+    "invalid-stream-config",
+    llvm::cl::desc("emit an invalid ADG stream configuration case"),
+    llvm::cl::init(""));
+
 static llvm::cl::opt<std::string>
     outputPath("output", llvm::cl::desc("output Fabric MLIR path"),
                llvm::cl::Required);
@@ -102,6 +110,7 @@ int main(int argc, char **argv) {
       (heterogeneousSoc ? 1 : 0) + (!topologyMatrixCase.empty() ? 1 : 0) +
       (!systemMatrixCase.empty() ? 1 : 0);
   selectedRecipes += (invalidYieldTypes ? 1 : 0) + (invalidYieldCount ? 1 : 0);
+  selectedRecipes += !invalidStreamConfig.empty() ? 1 : 0;
   if (selectedRecipes == 0) {
     llvm::errs() << "error: no ADG recipe selected\n";
     return 1;
@@ -169,6 +178,51 @@ int main(int argc, char **argv) {
       fu.inputs = {{"value", "pa", "!fabric.bits<32>", ""}};
       fu.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
       fu.yieldValues = {"value"};
+      pe.fus.push_back(std::move(fu));
+      module.addPe(std::move(pe));
+      return module.print(out);
+    }
+    if (!invalidStreamConfig.empty()) {
+      loom::adg::ModuleBuilder module("invalid_stream_config_adg");
+      module.addInput("init", "!fabric.bits<32>");
+      module.addInput("limit", "!fabric.bits<32>");
+      module.addInput("step", "!fabric.bits<32>");
+
+      loom::adg::PeSpec pe;
+      pe.inputs = {{"pa", "init", "!fabric.bits<32>", ""},
+                   {"pb", "limit", "!fabric.bits<32>", ""},
+                   {"pc", "step", "!fabric.bits<32>", ""}};
+      loom::adg::FuSpec fu;
+      fu.inputs = {{"fa", "pa", "!fabric.bits<32>", ""},
+                   {"fb", "pb", "!fabric.bits<32>", ""},
+                   {"fc", "pc", "!fabric.bits<32>", ""}};
+      loom::adg::FabricOpSpec stream;
+      stream.results = {"iv", "phase"};
+      stream.opList = {"dataflow.stream"};
+      stream.operands = {"fa", "fb", "fc"};
+      stream.operandTypes = {"!fabric.bits<32>", "!fabric.bits<32>",
+                             "!fabric.bits<32>"};
+      stream.resultTypes = {"!fabric.bits<32>", "!fabric.bits<1>"};
+
+      if (invalidStreamConfig == "generic") {
+        stream.hwParams["step_kind"] = {"0"};
+        stream.hwParams["predicate"] = {"2"};
+      } else if (invalidStreamConfig == "step") {
+        stream.streamConfig =
+            loom::adg::StreamConfig{static_cast<dataflow::StreamStepKind>(99),
+                                    {mlir::arith::CmpIPredicate::slt}};
+      } else if (invalidStreamConfig == "predicate") {
+        stream.streamConfig = loom::adg::StreamConfig{
+            dataflow::StreamStepKind::Add,
+            {static_cast<mlir::arith::CmpIPredicate>(99)}};
+      } else if (invalidStreamConfig != "missing") {
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "unknown invalid stream configuration case %s",
+            invalidStreamConfig.c_str());
+      }
+
+      fu.operations.push_back(std::move(stream));
       pe.fus.push_back(std::move(fu));
       module.addPe(std::move(pe));
       return module.print(out);

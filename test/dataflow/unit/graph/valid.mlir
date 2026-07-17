@@ -24,7 +24,7 @@ func.func @graph_inputs_only(%x: i32, %y: f32) {
 func.func @graph_stream_pipeline(%lb: i32, %ub: i32, %step: i32) -> (i32, i1) {
   // CHECK: %{{.*}}:2 = dataflow.graph(%{{.*}} = %{{.*}} : i32, %{{.*}} = %{{.*}} : i32, %{{.*}} = %{{.*}} : i32) -> (i32, i1)
   %idx, %rwc = dataflow.graph(%l = %lb : i32, %u = %ub : i32, %s = %step : i32) -> (i32, i1) {
-    %i, %r = dataflow.stream %l, %u, %s {step_op = "+=", cont_cond = "<"} : i32
+    %i, %r = dataflow.stream %l, %u, %s step add while slt : i32
     dataflow.yield %i, %r : i32, i1
   }
   return %idx, %rwc : i32, i1

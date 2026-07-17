@@ -229,10 +229,12 @@ runtime sw_config knobs inside FU `i`. This is the sum of:
 * every `fabric.demux` mode field inside `fu_i` (same shape);
 * every `fabric.op` runtime axis inside `fu_i` (`op_sel` if the op_list
   has more than one member; `bitmask` for variadic `dataflow.sync` /
-  `dataflow.mux` / `dataflow.demux`; attribute axes such as `predicate`,
-  `step_op`, `cont_cond`, `const_hex_value` when restricted by
-  `hw_params`). The exact set of runtime axes is the canonical set
-  defined in `spec-fabric-reconfigurable-op.md`.
+  `dataflow.mux` / `dataflow.demux`; attribute axes such as `predicate`
+  or `const_hex_value` when restricted by `hw_params`). For
+  `dataflow.stream`, `step_kind` is a fixed hardware capability and does
+  not contribute a runtime field; only the selected supported predicate
+  is software configuration. The exact set of runtime axes is the
+  canonical set defined in `spec-fabric-reconfigurable-op.md`.
 
 Inner `fabric.op`s and inner mux/demux without runtime axes contribute
 zero bits.

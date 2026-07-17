@@ -1,5 +1,8 @@
 #include "BuilderInternal.h"
 
+#include "Dataflow/IR/DataflowEnums.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 
@@ -217,8 +220,11 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
           {"fa", "fb", "fc"},
           {"!fabric.bits<32>", "!fabric.bits<32>", "!fabric.bits<32>"},
           {"!fabric.bits<32>", "!fabric.bits<1>"},
-          {{"cont_cond", {"<", ">"}}, {"step_op", {"+="}}},
-          {{"cont_cond", "<"}, {"step_op", "+="}}});
+          {},
+          {},
+          StreamConfig{dataflow::StreamStepKind::Add,
+                       {mlir::arith::CmpIPredicate::slt,
+                        mlir::arith::CmpIPredicate::sgt}}});
       fu.yieldValues = {"idx", "rwc"};
       fu.yieldTypes = {"!fabric.bits<32>", "!fabric.bits<1>"};
       pe.fus.push_back(std::move(fu));

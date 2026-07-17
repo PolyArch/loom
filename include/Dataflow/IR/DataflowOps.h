@@ -2,6 +2,7 @@
 #define DATAFLOW_IR_DATAFLOWOPS_H
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
@@ -15,6 +16,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowEnums.h"
 
 #define GET_OP_CLASSES
 #include "Dataflow/IR/DataflowOps.h.inc"

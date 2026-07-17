@@ -3,6 +3,8 @@
 
 #include "Simulator/DFGSimulator.h"
 
+#include "Dataflow/IR/DataflowOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -150,9 +152,10 @@ primitiveDescriptor(mlir::Operation *op, llvm::StringRef predicate,
                     mlir::Value result);
 
 llvm::Expected<bool> evaluateCont(std::int64_t current, std::int64_t limit,
-                                  llvm::StringRef pred, unsigned bitWidth);
+                                  mlir::arith::CmpIPredicate predicate,
+                                  unsigned bitWidth);
 llvm::Expected<std::int64_t> stepIndex(std::int64_t current, std::int64_t step,
-                                       llvm::StringRef stepOp,
+                                       dataflow::StreamStepKind stepKind,
                                        unsigned bitWidth);
 bool executeLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state,
                        const Token &dst, const Token &src, const Token &len);

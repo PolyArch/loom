@@ -136,7 +136,7 @@ dataflow.graph.func private @g_bail_wrapping_store_ordinal(
   %mem = builtin.unrealized_conversion_cast %arg5
       : !llvm.ptr to memref<?xi8>
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = ">", step_op = "+="} : i16
+      step add while sgt : i16
   %replacement = dataflow.invariant %rwc, %arg4 : i8
   %pointer = dataflow.carry %rwc, %arg5, %next_pointer : !llvm.ptr
   %after_cond, %current_pointer = dataflow.gate %rwc, %pointer : !llvm.ptr
@@ -176,7 +176,7 @@ dataflow.graph.func private @g_bail_nonordinal_stream_address(
   %mem = builtin.unrealized_conversion_cast %arg3
       : !llvm.ptr to memref<?xi8>
   %iv, %phase = dataflow.stream %stream_init, %arg1, %stream_step
-      {cont_cond = "<", step_op = "+="} : i16
+      step add while slt : i16
   %replacement_raw = dataflow.invariant %phase, %arg2 : i8
   %replacement_phase, %replacement =
       dataflow.gate %phase, %replacement_raw : i8
@@ -213,7 +213,7 @@ dataflow.graph.func private @g_bail_widening_stream_address(
   %mem = builtin.unrealized_conversion_cast %arg3
       : !llvm.ptr to memref<?xi8>
   %iv, %phase = dataflow.stream %stream_init, %arg1, %stream_step
-      {cont_cond = "!=", step_op = "+="} : i8
+      step add while ne : i8
   %replacement_raw = dataflow.invariant %phase, %arg2 : i8
   %replacement_phase, %replacement =
       dataflow.gate %phase, %replacement_raw : i8
@@ -259,7 +259,7 @@ dataflow.graph.func private @g_index_domain_i64_carry(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
     %arg4: memref<?xf32>, %arg5: i64, %arg6: f32) -> (none, i64, f32) {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %step_raw = dataflow.invariant %rwc, %arg3 : i64
   %step_phase, %step = dataflow.gate %rwc, %step_raw : i64
   %cursor_raw = dataflow.carry %rwc, %arg5, %next : i64
@@ -287,7 +287,7 @@ dataflow.graph.func private @g_index_domain_raw_carry_bails(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
     %arg4: memref<?xf32>, %arg5: i64) -> (none, i64, f32) {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %step = dataflow.invariant %rwc, %arg3 : i64
   %cursor = dataflow.carry %rwc, %arg5, %next : i64
   %addr = arith.index_cast %cursor : i64 to index
@@ -316,7 +316,7 @@ dataflow.graph.func private @g_index_domain_partial_materialization_bails(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
     %arg4: memref<?xf32>) -> (none, i64, f32) {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %init_base = dataflow.constant %arg0 {const_value = 4 : i64} : i64
   %step_raw = dataflow.invariant %rwc, %arg3 : i64
   %unprojected_step = arith.addi %step_raw, %arg3 : i64
@@ -403,7 +403,7 @@ dataflow.graph.func private @g_index_domain_address_mask(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
     %arg4: memref<?xf32>, %arg5: i64, %arg6: i64) -> (none, f32) {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %offset_raw = dataflow.invariant %rwc, %arg5 : i64
   %offset_phase, %offset = dataflow.gate %rwc, %offset_raw : i64
   %mask_raw = dataflow.invariant %rwc, %arg6 : i64
@@ -438,7 +438,7 @@ dataflow.graph.func private @g_index_domain_guarded_address(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
     %arg4: memref<?xf32>, %arg5: i64, %arg6: i64) -> (none, f32) {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %lb_raw = dataflow.invariant %rwc, %arg5 : i64
   %lb_phase, %lb = dataflow.gate %rwc, %lb_raw : i64
   %ub_raw = dataflow.invariant %rwc, %arg6 : i64
@@ -466,7 +466,7 @@ dataflow.graph.func private @g_index_domain_zext_address(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
     %arg4: memref<?xf32>, %arg5: i32, %arg6: i32) -> (none, f32) {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %sum = arith.addi %arg5, %arg6 : i32
   %wide = llvm.zext nneg %sum : i32 to i64
   %addr = arith.index_cast %wide : i64 to index

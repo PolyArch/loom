@@ -17,7 +17,7 @@ dataflow.graph.func private @g_sync_two_loads(%arg0: none, %arg1: i64,
     -> (none, f32) {
   %c0 = arith.constant 0 : index
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %d1, %o1 = dataflow.load %arg4[%c0] %arg0 : memref<?xf32>
   %d2, %o2 = dataflow.load %arg5[%c0] %arg0 : memref<?xf32>
   %sum = arith.addf %d1, %d2 : f32
@@ -34,7 +34,7 @@ dataflow.graph.func private @g_no_memory_ops(%arg0: none, %arg1: i64,
                                              %arg2: i64, %arg3: i64,
                                              %arg4: f32) -> (none, f32) {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %0 = dataflow.invariant %rwc, %arg4 : f32
   dataflow.graph.return %arg0, %0 : none, f32
 }

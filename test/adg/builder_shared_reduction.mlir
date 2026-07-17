@@ -2,12 +2,11 @@
 // RUN: FileCheck %s --check-prefix=BUILDER < %t.hardware.mlir
 // RUN: sed -n '/^fabric.module/,$p' %S/../pnr/shared_reduction_adg.mlir > %t.fixture.mlir
 // RUN: diff %t.fixture.mlir %t.hardware.mlir
-// RUN: loom %t.hardware.mlir | FileCheck %s --check-prefix=HARDWARE
+// RUN: loom %t.hardware.mlir | FileCheck %s --check-prefix=HARDWARE --implicit-check-not='sw_configs = {predicate'
 
 // HARDWARE-LABEL: fabric.module @shared_reduction_adg
 // HARDWARE-DAG: fabric.switch [spatial] %arg8 [{connectivity_table = ["1", "1"
-// HARDWARE-DAG: fabric.op [@dataflow.stream]
-// HARDWARE-DAG: cont_cond = ["<", ">"]
+// HARDWARE-DAG: fabric.op [@dataflow.stream]{{.*}}{hw_params = [{predicate = [2, 4], step_kind = 0 : i32}]}
 // HARDWARE-DAG: fabric.op [@dataflow.carry]
 // HARDWARE-DAG: fabric.op [@dataflow.invariant]
 // HARDWARE-DAG: fabric.op [@dataflow.gate]

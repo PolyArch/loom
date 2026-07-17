@@ -274,7 +274,7 @@ module {
   dataflow.graph.func private @structured_for_scalar_with_parallel_stream(
       %ctrl: none, %lb: i64, %ub: i64, %step: i64, %init: i32, %addend: i32)
       -> (none, i32) {
-    %idx, %rwc = dataflow.stream %lb, %ub, %step {step_op = "+=", cont_cond = "<"} : i64
+    %idx, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i64
     %sum = scf.for %i = %lb to %ub step %step iter_args(%acc = %init)
         -> (i32) : i64 {
       %next = arith.addi %acc, %addend : i32

@@ -845,6 +845,17 @@ bool resourceSupportsConfig(const HardwareResource &resource,
 
 bool resourceSupportsSoftwareConfigs(const SoftwareNode &node,
                                      const HardwareResource &resource) {
+  if (auto stream = mlir::dyn_cast_or_null<dataflow::StreamOp>(node.op)) {
+    if (!resource.streamConfiguration ||
+        resource.streamConfiguration->stepKind != stream.getStepKind() ||
+        !resource.streamConfiguration->supports(stream.getPredicate()))
+      return false;
+    if (resource.streamConfiguration->selectedPredicate &&
+        *resource.streamConfiguration->selectedPredicate !=
+            stream.getPredicate())
+      return false;
+    return true;
+  }
   for (const auto &[key, value] : softwareConfigsFor(node)) {
     if (!resourceSupportsConfig(resource, key, value))
       return false;

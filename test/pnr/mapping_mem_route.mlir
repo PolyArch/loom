@@ -394,7 +394,7 @@ module {
           : !llvm.ptr to memref<?xf32>
       %stored = dataflow.store %dst_mem[%idx] %data %done : memref<?xf32>
       scf.yield %src_next, %dst_next : !llvm.ptr, !llvm.ptr
-    } {loom.stream_cont_cond = "<"}
+    } {loom.stream_step_kind = 0 : i32, loom.stream_predicate = 2 : i64}
     dataflow.graph.return %ctrl : none
   }
 
@@ -431,7 +431,7 @@ module {
       %out_next = llvm.getelementptr inbounds|nuw %out_cur[4]
           : (!llvm.ptr) -> !llvm.ptr, i8
       scf.yield %out_next, %1#0 : !llvm.ptr, !llvm.ptr
-    } {loom.stream_cont_cond = "<"}
+    } {loom.stream_step_kind = 0 : i32, loom.stream_predicate = 2 : i64}
     dataflow.graph.return %ctrl : none
   }
 
@@ -449,7 +449,7 @@ module {
         scf.yield %src_cur : !llvm.ptr
       }
       scf.yield %1 : !llvm.ptr
-    } {loom.stream_cont_cond = "<"}
+    } {loom.stream_step_kind = 0 : i32, loom.stream_predicate = 2 : i64}
     llvm.store %0, %slot : !llvm.ptr, !llvm.ptr
     dataflow.graph.return %ctrl : none
   }
@@ -462,7 +462,7 @@ module {
       %next = llvm.getelementptr inbounds|nuw %cur[4]
           : (!llvm.ptr) -> !llvm.ptr, i8
       scf.yield %next : !llvm.ptr
-    } {loom.stream_cont_cond = "<"}
+    } {loom.stream_step_kind = 0 : i32, loom.stream_predicate = 2 : i64}
     dataflow.graph.return %ctrl, %0 : none, !llvm.ptr
   }
 
@@ -471,7 +471,7 @@ module {
       %src: !llvm.ptr, %dst: !llvm.ptr) -> (none) {
     %src_mem = builtin.unrealized_conversion_cast %src : !llvm.ptr to memref<?xf32>
     %dst_mem = builtin.unrealized_conversion_cast %dst : !llvm.ptr to memref<?xf32>
-    %idx, %rwc = dataflow.stream %lb, %ub, %step {cont_cond = "<", step_op = "+="} : i32
+    %idx, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i32
     %addr = arith.index_cast %idx : i32 to index
     %src_cur = dataflow.carry %rwc, %src, %src_next : !llvm.ptr
     %dst_cur = dataflow.carry %rwc, %dst, %dst_next : !llvm.ptr
@@ -489,7 +489,7 @@ module {
       %src: !llvm.ptr, %dst: !llvm.ptr) -> (none, !llvm.ptr) {
     %src_mem = builtin.unrealized_conversion_cast %src : !llvm.ptr to memref<?xf32>
     %dst_mem = builtin.unrealized_conversion_cast %dst : !llvm.ptr to memref<?xf32>
-    %idx, %rwc = dataflow.stream %lb, %ub, %step {cont_cond = "<", step_op = "+="} : i32
+    %idx, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i32
     %addr = arith.index_cast %idx : i32 to index
     %src_cur = dataflow.carry %rwc, %src, %src_next : !llvm.ptr
     %dst_cur = dataflow.carry %rwc, %dst, %dst_next : !llvm.ptr
@@ -507,7 +507,7 @@ module {
       %src: !llvm.ptr, %dst: !llvm.ptr) -> (none, !llvm.ptr) {
     %src_mem = builtin.unrealized_conversion_cast %src : !llvm.ptr to memref<?xf32>
     %dst_mem = builtin.unrealized_conversion_cast %dst : !llvm.ptr to memref<?xf32>
-    %idx, %rwc = dataflow.stream %lb, %ub, %step {cont_cond = "<", step_op = "+="} : i32
+    %idx, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i32
     %addr = arith.index_cast %idx : i32 to index
     %src_cur = dataflow.carry %rwc, %src, %src_next : !llvm.ptr
     %dst_cur = dataflow.carry %rwc, %dst, %dst_next : !llvm.ptr
@@ -529,7 +529,7 @@ module {
   dataflow.graph.func private @predicate_and_maps_to_transport_andi(
       %ctrl: none, %lb: i32, %ub: i32, %step: i32, %lhs0: i32, %rhs0: i32,
       %lhs1: i32, %rhs1: i32, %mem: memref<?xf32>) -> (none, f32) {
-    %idx, %rwc = dataflow.stream %lb, %ub, %step {cont_cond = "<", step_op = "+="} : i32
+    %idx, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i32
     %idx_as_index = arith.index_cast %idx : i32 to index
     %p0 = arith.cmpi sgt, %lhs0, %rhs0 : i32
     %p1 = arith.cmpi slt, %lhs1, %rhs1 : i32
@@ -596,7 +596,7 @@ module {
       %ctrl: none, %lb: i32, %ub: i32, %step: i32, %twiddle: f32,
       %buf: !llvm.ptr) -> none {
     %zero = dataflow.constant %ctrl {const_value = 0 : index} : index
-    %idx, %rwc = dataflow.stream %lb, %ub, %step {cont_cond = "<", step_op = "+="} : i32
+    %idx, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i32
     %scale = dataflow.invariant %rwc, %twiddle : f32
     %cur = dataflow.carry %rwc, %buf, %next : !llvm.ptr
     %active_cond, %active = dataflow.gate %rwc, %cur : !llvm.ptr
@@ -617,7 +617,7 @@ module {
   dataflow.graph.func private @mem_pointer_semantic_return(
       %ctrl: none, %lb: i32, %ub: i32, %step: i32, %src: !llvm.ptr)
       -> (none, !llvm.ptr, i32) {
-    %idx, %rwc = dataflow.stream %lb, %ub, %step {cont_cond = "<", step_op = "+="} : i32
+    %idx, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i32
     %src_cur = dataflow.carry %rwc, %src, %src_next : !llvm.ptr
     %src_next = llvm.getelementptr inbounds|nuw %src_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
     %bits = builtin.unrealized_conversion_cast %src_cur : !llvm.ptr to i32

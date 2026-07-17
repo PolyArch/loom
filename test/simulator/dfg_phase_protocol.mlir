@@ -6,6 +6,8 @@
 // RUN: FileCheck %s --check-prefix=REPEATED < %t.repeated.json
 // RUN: loom-dfg-sim %s --graph stream_i8_signed_cont --arg 0=none --arg 1=255 --arg 2=1 --arg 3=1 --output %t.i8-cont.json
 // RUN: FileCheck %s --check-prefix=I8-CONT < %t.i8-cont.json
+// RUN: loom-dfg-sim %s --graph stream_i8_unsigned_cont --arg 0=none --arg 1=255 --arg 2=1 --arg 3=1 --output %t.i8-unsigned.json
+// RUN: FileCheck %s --check-prefix=I8-UNSIGNED < %t.i8-unsigned.json
 // RUN: loom-dfg-sim %s --graph stream_i8_signed_index_cast --arg 0=none --arg 1=255 --arg 2=0 --arg 3=1 --output %t.i8-index.json
 // RUN: FileCheck %s --check-prefix=I8-INDEX < %t.i8-index.json
 // RUN: loom-dfg-sim %s --graph stream_static_signed_cast --arg 0=none --arg 1=254 --output %t.static-cast.json
@@ -59,6 +61,13 @@
 // I8-CONT-DAG: "i8:1"
 // I8-CONT-DAG: "i1:false"
 
+// I8-UNSIGNED-DAG: "graph": "stream_i8_unsigned_cont"
+// I8-UNSIGNED-DAG: "status": "pass"
+// I8-UNSIGNED-DAG: "dynamic_work_items": 1
+// I8-UNSIGNED-DAG: "dataflow.stream": 2
+// I8-UNSIGNED-DAG: "i8:255"
+// I8-UNSIGNED-DAG: "i1:false"
+
 // I8-INDEX-DAG: "graph": "stream_i8_signed_index_cast"
 // I8-INDEX-DAG: "status": "pass"
 // I8-INDEX-DAG: "dataflow.stream": 2
@@ -110,7 +119,7 @@ module attributes {
   dataflow.graph.func private @stream_zero_trip(
       %ctrl: none, %init: i64, %limit: i64, %step: i64) -> (none, i1) {
     %iv, %phase = dataflow.stream %init, %limit, %step
-        {step_op = "+=", cont_cond = "<"} : i64
+        step add while slt : i64
     %unused = arith.addi %iv, %iv : i64
     dataflow.graph.return %ctrl, %phase : none, i1
   }
@@ -119,7 +128,7 @@ module attributes {
       %ctrl: none, %init: i64, %limit: i64, %step: i64)
       -> (none, i64, i1) {
     %iv, %phase = dataflow.stream %init, %limit, %step
-        {step_op = "+=", cont_cond = "<"} : i64
+        step add while slt : i64
     dataflow.graph.return %ctrl, %iv, %phase : none, i64, i1
   }
 
@@ -127,7 +136,7 @@ module attributes {
       %ctrl: none, %init: i64, %limit: i64, %step: i64)
       -> (none, i64, i1) {
     %iv, %phase = dataflow.stream %init, %limit, %step
-        {step_op = "+=", cont_cond = "<"} : i64
+        step add while slt : i64
     dataflow.graph.return %ctrl, %iv, %phase : none, i64, i1
   }
 
@@ -135,17 +144,25 @@ module attributes {
       %ctrl: none, %init: i8, %limit: i8, %step: i8)
       -> (none, i8, i1) {
     %iv, %phase = dataflow.stream %init, %limit, %step
-        {step_op = "+=", cont_cond = "<"} : i8
+        step add while slt : i8
     %one = dataflow.constant %ctrl {const_value = 1 : i8} : i8
     %value = arith.addi %iv, %one : i8
     dataflow.graph.return %ctrl, %value, %phase : none, i8, i1
+  }
+
+  dataflow.graph.func private @stream_i8_unsigned_cont(
+      %ctrl: none, %init: i8, %limit: i8, %step: i8)
+      -> (none, i8, i1) {
+    %iv, %phase = dataflow.stream %init, %limit, %step
+        step add while ugt : i8
+    dataflow.graph.return %ctrl, %iv, %phase : none, i8, i1
   }
 
   dataflow.graph.func private @stream_i8_signed_index_cast(
       %ctrl: none, %init: i8, %limit: i8, %step: i8)
       -> (none, index, i1) {
     %iv, %phase = dataflow.stream %init, %limit, %step
-        {step_op = "+=", cont_cond = "<"} : i8
+        step add while slt : i8
     %index = arith.index_cast %iv : i8 to index
     dataflow.graph.return %ctrl, %index, %phase : none, index, i1
   }
@@ -157,7 +174,7 @@ module attributes {
     %limit = arith.constant 0 : i64
     %step = arith.constant 1 : i64
     %iv, %phase = dataflow.stream %init, %limit, %step
-        {step_op = "+=", cont_cond = "<"} : i64
+        step add while slt : i64
     %one = dataflow.constant %ctrl {const_value = 1 : i64} : i64
     %value = arith.addi %iv, %one : i64
     dataflow.graph.return %ctrl, %value, %phase : none, i64, i1
@@ -166,14 +183,14 @@ module attributes {
   dataflow.graph.func private @stream_i128_unsupported(
       %ctrl: none, %init: i128, %limit: i128, %step: i128) -> (none, i1) {
     %iv, %phase = dataflow.stream %init, %limit, %step
-        {step_op = "+=", cont_cond = "<"} : i128
+        step add while slt : i128
     dataflow.graph.return %ctrl, %phase : none, i1
   }
 
   dataflow.graph.func private @stream_divide_by_zero(
       %ctrl: none, %init: i64, %limit: i64, %step: i64) -> (none, i1) {
     %iv, %phase = dataflow.stream %init, %limit, %step
-        {step_op = "/=", cont_cond = ">"} : i64
+        step sdiv while sgt : i64
     dataflow.graph.return %ctrl, %phase : none, i1
   }
 
@@ -212,7 +229,7 @@ module attributes {
     %c0 = arith.constant 0 : i32
     %c1 = arith.constant 1 : i32
     %iv, %phase = dataflow.stream %c0, %limit, %c1
-        {step_op = "+=", cont_cond = "<"} : i32
+        step add while slt : i32
     %raw = dataflow.carry %phase, %ptr, %next : !llvm.ptr
     %body_phase, %body_ptr = dataflow.gate %phase, %raw : !llvm.ptr
     %exit:2 = dataflow.demux %phase, %raw

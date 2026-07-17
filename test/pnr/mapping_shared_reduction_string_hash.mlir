@@ -37,7 +37,7 @@ module {
                                                   %init: i32)
       -> (none, i32) {
     %index, %rwc = dataflow.stream %start, %end, %step
-        {cont_cond = "<", step_op = "+="} : i32
+        step add while slt : i32
     %stable_modulus = dataflow.invariant %rwc, %modulus : i32
     %stable_shift = dataflow.invariant %rwc, %shift : i32
     %carried = dataflow.carry %rwc, %init, %next : i32
@@ -50,7 +50,7 @@ module {
       %ctrl: none, %start: i64, %end: i64, %step: i64, %shift: i32,
       %input: memref<?xi32>, %modulus: i32, %init: i32) -> (none, i32) {
     %index, %rwc = dataflow.stream %start, %end, %step
-        {cont_cond = "<", step_op = "+="} : i64
+        step add while slt : i64
     %stable_modulus = dataflow.invariant %rwc, %modulus : i32
     %stable_shift = dataflow.invariant %rwc, %shift : i32
     %carried = dataflow.carry %rwc, %init, %next : i32

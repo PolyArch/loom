@@ -4,6 +4,8 @@
 #include "Common/IndexWidth.h"
 #include "Fabric/IR/ConfiguredFunction.h"
 #include "Fabric/IR/FabricTypes.h"
+#include "Fabric/IR/StreamConfiguration.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/OpImplementation.h"
 #include "llvm/ADT/DenseMap.h"
@@ -758,6 +760,13 @@ LogicalResult OpOp::verify() {
             return failure();
       }
     }
+  }
+
+  if (!normalizedModes && opNames.size() == 1 &&
+      opNames.front() == "dataflow.stream") {
+    std::string error;
+    if (failed(parseStreamConfiguration(*this, error)))
+      return emitOpError(error);
   }
 
   // 6. hw_params owns the concrete datapath capability. Canonical mode tuples

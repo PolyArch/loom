@@ -24,7 +24,7 @@ module {
     %step: i64, %init: f32, %increment: f32)
       -> (none, f32) {
     %iv, %phase = dataflow.stream %lb, %ub, %step
-        {step_op = "+=", cont_cond = "<"} : i64
+        step add while slt : i64
     %carry = dataflow.carry %phase, %init, %next : f32
     %body_phase, %body_carry = dataflow.gate %phase, %carry : f32
     %exit:2 = dataflow.demux %phase, %carry : (i1, f32) -> (f32, f32)

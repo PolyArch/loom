@@ -10,31 +10,21 @@
 namespace loom::sim {
 namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
 
+static_assert(mlir::arith::getMaxEnumValForCmpIPredicate() + 1 == 10,
+              "audit the dataflow.stream predicate adapter");
+
 llvm::Expected<bool> evaluateCont(std::int64_t current, std::int64_t limit,
-                                  llvm::StringRef pred, unsigned bitWidth) {
+                                  mlir::arith::CmpIPredicate predicate,
+                                  unsigned bitWidth) {
   if (bitWidth == 0 || bitWidth > 64)
     return llvm::createStringError(
         std::errc::invalid_argument,
         "dataflow.stream integer bit width must be in [1, 64], got %u",
         bitWidth);
 
-  llvm::StringRef predicate;
-  if (pred == "<")
-    predicate = "slt";
-  else if (pred == "<=")
-    predicate = "sle";
-  else if (pred == ">")
-    predicate = "sgt";
-  else if (pred == ">=")
-    predicate = "sge";
-  else if (pred == "!=")
-    predicate = "ne";
-  else
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "unsupported dataflow.stream cont_cond '%s'",
-                                   pred.str().c_str());
-
-  PrimitiveOperationDescriptor descriptor{"arith.cmpi", predicate, 1, bitWidth};
+  PrimitiveOperationDescriptor descriptor{
+      "arith.cmpi", mlir::arith::stringifyCmpIPredicate(predicate), 1,
+      bitWidth};
   PrimitiveValue operands[] = {PrimitiveValue::integer(current),
                                PrimitiveValue::integer(limit)};
   auto result = evaluatePrimitiveOperation(descriptor, operands);
@@ -44,25 +34,37 @@ llvm::Expected<bool> evaluateCont(std::int64_t current, std::int64_t limit,
 }
 
 llvm::Expected<std::int64_t> stepIndex(std::int64_t current, std::int64_t step,
-                                       llvm::StringRef stepOp,
+                                       dataflow::StreamStepKind stepKind,
                                        unsigned bitWidth) {
+  static_assert(dataflow::getMaxEnumValForStreamStepKind() + 1 == 8,
+                "audit the dataflow.stream step adapter");
   llvm::StringRef operation;
-  if (stepOp == "+=")
+  switch (stepKind) {
+  case dataflow::StreamStepKind::Add:
     operation = "arith.addi";
-  else if (stepOp == "-=")
+    break;
+  case dataflow::StreamStepKind::Sub:
     operation = "arith.subi";
-  else if (stepOp == "*=")
+    break;
+  case dataflow::StreamStepKind::Mul:
     operation = "arith.muli";
-  else if (stepOp == "/=")
+    break;
+  case dataflow::StreamStepKind::SDiv:
     operation = "arith.divsi";
-  else if (stepOp == "<<=")
+    break;
+  case dataflow::StreamStepKind::UDiv:
+    operation = "arith.divui";
+    break;
+  case dataflow::StreamStepKind::ShL:
     operation = "arith.shli";
-  else if (stepOp == ">>=")
+    break;
+  case dataflow::StreamStepKind::AShr:
     operation = "arith.shrsi";
-  else
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "unsupported dataflow.stream step_op '%s'",
-                                   stepOp.str().c_str());
+    break;
+  case dataflow::StreamStepKind::LShr:
+    operation = "arith.shrui";
+    break;
+  }
 
   PrimitiveOperationDescriptor descriptor{
       operation.str(), {}, bitWidth, bitWidth};
@@ -138,7 +140,7 @@ static bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
 
   const unsigned bitWidth = streamIntegerBitWidth(op.getInit().getType());
   auto cont =
-      evaluateCont(stream.current, stream.limit, op.getContCond(), bitWidth);
+      evaluateCont(stream.current, stream.limit, op.getPredicate(), bitWidth);
   if (!cont) {
     state.diagnostics.push_back(llvm::toString(cont.takeError()));
     stream.failed = true;
@@ -146,7 +148,7 @@ static bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
   }
   if (*cont) {
     auto next =
-        stepIndex(stream.current, stream.step, op.getStepOp(), bitWidth);
+        stepIndex(stream.current, stream.step, op.getStepKind(), bitWidth);
     if (!next) {
       state.diagnostics.push_back(llvm::toString(next.takeError()));
       stream.failed = true;

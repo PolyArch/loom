@@ -17,7 +17,7 @@ dataflow.graph.func private @g_constant_promoted(%arg0: none, %arg1: i64,
                                                  %arg4: f32) -> (none, f32) {
   %cst = arith.constant 1.000000e+00 : f32
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %0 = dataflow.invariant %rwc, %cst : f32
   %1 = dataflow.carry %rwc, %arg4, %2 : f32
   %2 = arith.mulf %1, %0 : f32

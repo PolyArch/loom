@@ -64,7 +64,7 @@ module {
       %stored = dataflow.store %dst_store_mem[%zero_store] %updated %ctrl
           : memref<?xi32>
       scf.yield %dst_next, %1#0 : !llvm.ptr, !llvm.ptr
-    } {loom.stream_cont_cond = "<"}
+    } {loom.stream_step_kind = 0 : i32, loom.stream_predicate = 2 : i64}
     dataflow.graph.return %ctrl : none
   }
 }

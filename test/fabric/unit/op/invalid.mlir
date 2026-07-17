@@ -338,18 +338,18 @@ fabric.module @op_mux_data_mismatch(%a : !fabric.bits<16>, %b : !fabric.bits<16>
 }
 
 // -----
-// hw_params allowed-set check: sw_configs value not in hw_params allowed array.
-fabric.module @op_sw_value_not_in_hw_set(%lb : !fabric.bits<32>, %ub : !fabric.bits<32>, %step : !fabric.bits<32>) {
+// dataflow.stream step_kind is fixed hardware capability, not sw_config.
+fabric.module @op_stream_sw_step_kind(%lb : !fabric.bits<32>, %ub : !fabric.bits<32>, %step : !fabric.bits<32>) {
   fabric.pe [spatial] (%pa = %lb : !fabric.bits<32>,
                     %pb = %ub : !fabric.bits<32>,
                     %pc = %step : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>,
               %fc = %pc : !fabric.bits<32>) -> () {
-      // expected-error @+1 {{'sw_configs["step_op"]' value "%=" is not in the 'hw_params["step_op"]' allowed set}}
+      // expected-error @+1 {{@dataflow.stream must not select 'step_kind' through sw_configs}}
       %i, %r = fabric.op [@dataflow.stream] (%fa, %fb, %fc)
-               {hw_params = [{step_op = ["+=", "/="], cont_cond = ["<", ">"]}],
-                sw_configs = {step_op = "%=", cont_cond = "<"}}
+               {hw_params = [{step_kind = 0 : i32, predicate = [2 : i64]}],
+                sw_configs = {step_kind = 3 : i32, predicate = 2 : i64}}
                : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
                  -> (!fabric.bits<32>, !fabric.bits<1>)
       fabric.yield
@@ -359,20 +359,94 @@ fabric.module @op_sw_value_not_in_hw_set(%lb : !fabric.bits<32>, %ub : !fabric.b
 }
 
 // -----
-// hw_params allowed-set check: hw value for shared key must be ArrayAttr.
-fabric.module @op_hw_value_not_array(%lb : !fabric.bits<32>, %ub : !fabric.bits<32>, %step : !fabric.bits<32>) {
+// A dataflow.stream fabric.op has one fixed update datapath.
+fabric.module @op_stream_multiple_step_kinds(%lb : !fabric.bits<32>, %ub : !fabric.bits<32>, %step : !fabric.bits<32>) {
   fabric.pe [spatial] (%pa = %lb : !fabric.bits<32>,
                     %pb = %ub : !fabric.bits<32>,
                     %pc = %step : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>,
               %fc = %pc : !fabric.bits<32>) -> () {
-      // expected-error @+1 {{'hw_params["step_op"]' must be an array of allowed values}}
+      // expected-error @+1 {{@dataflow.stream requires exactly one fixed 'step_kind' capability}}
       %i, %r = fabric.op [@dataflow.stream] (%fa, %fb, %fc)
-               {hw_params = [{step_op = "+="}],
-                sw_configs = {step_op = "+=", cont_cond = "<"}}
+               {hw_params = [{step_kind = [0 : i32, 3 : i32],
+                              predicate = [2 : i64]}]}
                : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
                  -> (!fabric.bits<32>, !fabric.bits<1>)
+      fabric.yield
+    }
+  }
+  fabric.yield
+}
+
+// -----
+// A stream comparator capability must expose at least one predicate.
+fabric.module @op_stream_empty_predicates(%lb : !fabric.bits<32>, %ub : !fabric.bits<32>, %step : !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %lb : !fabric.bits<32>,
+                    %pb = %ub : !fabric.bits<32>,
+                    %pc = %step : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%fa = %pa : !fabric.bits<32>,
+              %fb = %pb : !fabric.bits<32>,
+              %fc = %pc : !fabric.bits<32>) -> () {
+      // expected-error @+1 {{@dataflow.stream requires a non-empty 'predicate' capability set}}
+      %i, %r = fabric.op [@dataflow.stream] (%fa, %fb, %fc)
+               {hw_params = [{step_kind = 0 : i32, predicate = []}]}
+               : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+                 -> (!fabric.bits<32>, !fabric.bits<1>)
+      fabric.yield
+    }
+  }
+  fabric.yield
+}
+
+// -----
+// A selected predicate must be one of the implemented comparator modes.
+fabric.module @op_stream_unsupported_predicate(%lb : !fabric.bits<32>, %ub : !fabric.bits<32>, %step : !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %lb : !fabric.bits<32>,
+                    %pb = %ub : !fabric.bits<32>,
+                    %pc = %step : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%fa = %pa : !fabric.bits<32>,
+              %fb = %pb : !fabric.bits<32>,
+              %fc = %pc : !fabric.bits<32>) -> () {
+      // expected-error @+1 {{'sw_configs["predicate"]' value 4 : i64 is not in the 'hw_params["predicate"]' allowed set}}
+      %i, %r = fabric.op [@dataflow.stream] (%fa, %fb, %fc)
+               {hw_params = [{step_kind = 0 : i32, predicate = [2 : i64]}],
+                sw_configs = {predicate = 4 : i64}}
+               : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+                 -> (!fabric.bits<32>, !fabric.bits<1>)
+      fabric.yield
+    }
+  }
+  fabric.yield
+}
+
+// -----
+// Normalized stream modes on one datapath must keep one step_kind.
+fabric.module @op_stream_mode_step_mismatch(
+    %init : !fabric.bits<32>, %limit : !fabric.bits<32>,
+    %step : !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %init : !fabric.bits<32>,
+                       %pb = %limit : !fabric.bits<32>,
+                       %pc = %step : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%fa = %pa : !fabric.bits<32>,
+              %fb = %pb : !fabric.bits<32>,
+              %fc = %pc : !fabric.bits<32>) -> () {
+      // expected-error @+1 {{@dataflow.stream hw_params modes must share one fixed 'step_kind'}}
+      %iv, %phase = fabric.op [@dataflow.stream] (%fa, %fb, %fc)
+          {hw_params = [
+            {op = @dataflow.stream,
+             function_type = (i32, i32, i32) -> (i32, i1),
+             input_ports = [0 : i32, 1 : i32, 2 : i32],
+             output_ports = [0 : i32, 1 : i32],
+             attributes = {predicate = 2 : i64, step_kind = 0 : i32}},
+            {op = @dataflow.stream,
+             function_type = (i32, i32, i32) -> (i32, i1),
+             input_ports = [0 : i32, 1 : i32, 2 : i32],
+             output_ports = [0 : i32, 1 : i32],
+             attributes = {predicate = 4 : i64, step_kind = 3 : i32}}
+          ], sw_configs = {mode = 0 : i32}}
+          : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+            -> (!fabric.bits<32>, !fabric.bits<1>)
       fabric.yield
     }
   }

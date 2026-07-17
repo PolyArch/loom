@@ -2,6 +2,7 @@
 #include "MappingInternal.h"
 
 #include "Fabric/IR/FabricOps.h"
+#include "Fabric/IR/StreamConfiguration.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -68,10 +69,20 @@ bool requiresSemanticEncodingAwarePnr(fabric::OpOp op) {
              fabric::FabricOpModeKind::Legacy;
 }
 
+bool isLegacyStreamResource(fabric::OpOp op) {
+  auto opList = op.getOpList();
+  if (opList.size() != 1)
+    return false;
+  auto symbol = mlir::dyn_cast<mlir::FlatSymbolRefAttr>(opList[0]);
+  return symbol && symbol.getValue() == "dataflow.stream";
+}
+
 void appendHwParamOptions(mlir::Operation *op, HardwareResource &resource) {
   auto hwParams = op->getAttrOfType<mlir::ArrayAttr>("hw_params");
   auto fabricOp = mlir::cast<fabric::OpOp>(op);
   if (!hwParams || requiresSemanticEncodingAwarePnr(fabricOp))
+    return;
+  if (isLegacyStreamResource(fabricOp))
     return;
   for (mlir::Attribute paramSet : hwParams) {
     auto dict = mlir::dyn_cast<mlir::DictionaryAttr>(paramSet);
@@ -103,7 +114,8 @@ void appendMemResources(mlir::Operation *op, llvm::StringRef hardwareName,
         {},
         {},
         {},
-        false});
+        false,
+        {}});
   }
   for (std::uint64_t i = 0; i < identity.storeCount; ++i) {
     resources.push_back(HardwareResource{
@@ -114,12 +126,15 @@ void appendMemResources(mlir::Operation *op, llvm::StringRef hardwareName,
         {},
         {},
         {},
-        false});
+        false,
+        {}});
   }
 }
 
 void appendFabricOpResource(
     mlir::Operation *op, llvm::StringRef hardwareName, unsigned index,
+    const llvm::DenseMap<mlir::Operation *, fabric::StreamConfiguration>
+        &streamConfigurations,
     llvm::SmallVectorImpl<HardwareResource> &resources) {
   auto opList = op->getAttrOfType<mlir::ArrayAttr>("op_list");
   if (!opList)
@@ -129,9 +144,15 @@ void appendFabricOpResource(
   resource.kind = ResourceKind::FabricOp;
   resource.schedule = nearestSchedule(op);
   resource.op = op;
+  auto streamConfig = streamConfigurations.find(op);
+  if (streamConfig != streamConfigurations.end())
+    resource.streamConfiguration = streamConfig->second;
   appendHwParamOptions(op, resource);
   if (auto swConfigs = op->getAttrOfType<mlir::DictionaryAttr>("sw_configs")) {
     for (mlir::NamedAttribute namedAttr : swConfigs) {
+      if (resource.streamConfiguration &&
+          namedAttr.getName().getValue() == "predicate")
+        continue;
       resource.swConfigs[namedAttr.getName().getValue().str()] =
           configValue(namedAttr.getValue());
     }
@@ -673,6 +694,9 @@ llvm::Expected<HardwareModel> collectHardwareModel(mlir::Operation *hardware,
                                                    llvm::StringRef name) {
   bool hasUnsupportedFuConfiguration = false;
   std::optional<std::string> malformedFuConfiguration;
+  std::optional<std::string> invalidStreamConfiguration;
+  llvm::DenseMap<mlir::Operation *, fabric::StreamConfiguration>
+      streamConfigurations;
   hardware->walk([&](fabric::OpOp op) {
     if (!isConcreteHardwareOperation(op, hardware))
       return;
@@ -685,6 +709,17 @@ llvm::Expected<HardwareModel> collectHardwareModel(mlir::Operation *hardware,
     }
     if (!hasUnsupportedFuConfiguration && requiresSemanticEncodingAwarePnr(op))
       hasUnsupportedFuConfiguration = true;
+    if (classification.kind == fabric::FabricOpModeKind::Legacy &&
+        isLegacyStreamResource(op)) {
+      std::string error;
+      auto config = fabric::parseStreamConfiguration(op, error);
+      if (mlir::failed(config)) {
+        if (!invalidStreamConfiguration)
+          invalidStreamConfiguration = std::move(error);
+        return;
+      }
+      streamConfigurations.try_emplace(op.getOperation(), std::move(*config));
+    }
   });
   if (malformedFuConfiguration)
     return llvm::createStringError(
@@ -697,6 +732,12 @@ llvm::Expected<HardwareModel> collectHardwareModel(mlir::Operation *hardware,
         "legacy PnR cannot consume normalized fabric.op hw_params in @%s; "
         "a selected fabric.fu semantic encoding is required",
         name.str().c_str());
+  if (invalidStreamConfiguration)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "legacy PnR cannot consume invalid dataflow.stream configuration in "
+        "@%s: %s",
+        name.str().c_str(), invalidStreamConfiguration->c_str());
 
   HardwareModel model;
   unsigned fabricOpIndex = 0;
@@ -708,7 +749,8 @@ llvm::Expected<HardwareModel> collectHardwareModel(mlir::Operation *hardware,
       return;
     llvm::StringRef opName = op->getName().getStringRef();
     if (opName == "fabric.op") {
-      appendFabricOpResource(op, name, fabricOpIndex++, model.resources);
+      appendFabricOpResource(op, name, fabricOpIndex++, streamConfigurations,
+                             model.resources);
       return;
     }
     if (opName == "fabric.mem") {

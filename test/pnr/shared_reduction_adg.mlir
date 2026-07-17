@@ -35,7 +35,7 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
               %init = %pi : !fabric.bits<32>,
               %next = %pn : !fabric.bits<32>,
               %scale = %ps : !fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
-      %idx, %rwc = fabric.op [@dataflow.stream] (%fa, %fb, %fc) {hw_params = [{cont_cond = ["<", ">"], step_op = ["+="]}], sw_configs = {cont_cond = "<", step_op = "+="}} : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<1>)
+      %idx, %rwc = fabric.op [@dataflow.stream] (%fa, %fb, %fc) {hw_params = [{step_kind = 0 : i32, predicate = [2 : i64, 4 : i64]}]} : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<1>)
       %carried = fabric.op [@dataflow.carry] (%rwc, %init, %next) : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       %sum = fabric.op [@arith.addi] (%sum_lhs, %sum_rhs) : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       %stable_scale = fabric.op [@dataflow.invariant] (%rwc, %scale) : (!fabric.bits<1>, !fabric.bits<32>) -> !fabric.bits<32>
@@ -48,7 +48,7 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>,
               %fc = %pc : !fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>) {
-      %aux_op_idx, %aux_op_rwc = fabric.op [@dataflow.stream] (%fa, %fb, %fc) {hw_params = [{cont_cond = ["<", ">"], step_op = ["+="]}], sw_configs = {cont_cond = "<", step_op = "+="}} : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<1>)
+      %aux_op_idx, %aux_op_rwc = fabric.op [@dataflow.stream] (%fa, %fb, %fc) {hw_params = [{step_kind = 0 : i32, predicate = [2 : i64, 4 : i64]}]} : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<1>)
       fabric.yield %aux_op_idx : !fabric.bits<32>, %aux_op_rwc : !fabric.bits<1> to !fabric.bits<32>
     }
   }

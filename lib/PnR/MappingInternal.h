@@ -3,6 +3,7 @@
 
 #include "PnR/Mapping.h"
 
+#include "Fabric/IR/StreamConfiguration.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Types.h"
@@ -43,6 +44,7 @@ struct HardwareResource {
   std::map<std::string, std::string> swConfigs;
   llvm::StringSet<> supportedOps;
   bool used = false;
+  std::optional<fabric::StreamConfiguration> streamConfiguration;
 };
 
 enum class TransportKind {
@@ -76,7 +78,7 @@ struct HardwareTopology {
 };
 
 struct HardwareModel {
-  llvm::SmallVector<HardwareResource> resources;
+  llvm::SmallVector<HardwareResource, 0> resources;
   HardwareTopology topology;
 };
 

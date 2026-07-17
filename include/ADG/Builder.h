@@ -11,7 +11,16 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
+
+namespace dataflow {
+enum class StreamStepKind : std::uint32_t;
+}
+
+namespace mlir::arith {
+enum class CmpIPredicate : std::uint64_t;
+}
 
 namespace loom {
 namespace adg {
@@ -27,6 +36,19 @@ struct PortBinding {
   std::string castType;
 };
 
+struct StreamConfig {
+  StreamConfig(dataflow::StreamStepKind stepKind,
+               std::vector<mlir::arith::CmpIPredicate> predicates,
+               std::optional<mlir::arith::CmpIPredicate> selectedPredicate =
+                   std::nullopt)
+      : stepKind(stepKind), predicates(std::move(predicates)),
+        selectedPredicate(selectedPredicate) {}
+
+  dataflow::StreamStepKind stepKind;
+  std::vector<mlir::arith::CmpIPredicate> predicates;
+  std::optional<mlir::arith::CmpIPredicate> selectedPredicate = std::nullopt;
+};
+
 struct FabricOpSpec {
   std::vector<std::string> results;
   std::vector<std::string> opList;
@@ -35,6 +57,7 @@ struct FabricOpSpec {
   std::vector<std::string> resultTypes;
   std::map<std::string, std::vector<std::string>> hwParams;
   std::map<std::string, std::string> swConfigs;
+  std::optional<StreamConfig> streamConfig = std::nullopt;
 };
 
 struct FuSpec {

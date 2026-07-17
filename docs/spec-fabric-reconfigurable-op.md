@@ -45,6 +45,20 @@ port is legal when its payload capacity is at least the corresponding software
 requirement. Historical exact-width schema checks apply only to the legacy
 programmed adapter form that has no typed mode tuple.
 
+### Stream Configuration
+
+Every normalized `@dataflow.stream` mode carries one typed `step_kind` and
+one typed `predicate`. All stream modes on the same physical `fabric.op` must
+share the same `step_kind`, because they describe one fixed recurrence-update
+datapath. Modes may differ in `predicate`; a valid encoding selects the exact
+predicate mode used by the configured function.
+
+`step_kind` is never workload-selected `sw_configs`. The legacy programmed
+adapter expresses the same hardware fact as exactly one `step_kind` plus a
+non-empty set of supported predicates, and may select only one predicate.
+Different stream step kinds require different physical datapaths and cannot be
+unioned into one stream resource by the synthesizer.
+
 ## Valid Semantic Encodings
 
 `fabric.fu.valid_encodings` is an array of complete legal configurations. An

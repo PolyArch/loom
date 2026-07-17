@@ -52,7 +52,7 @@ module {
         -> (none, index, i1) {
       %index = arith.index_cast %value : i64 to index
       %iv, %phase = dataflow.stream %init, %limit, %step
-          {step_op = "+=", cont_cond = "<"} : i64
+          step add while slt : i64
       dataflow.graph.return %ctrl, %index, %phase : none, index, i1
     }
   }

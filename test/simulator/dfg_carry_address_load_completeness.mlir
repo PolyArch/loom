@@ -21,7 +21,7 @@ module {
   dataflow.graph.func private @carry_address_relu_tail(
       %ctrl: none, %ub: i16, %lb: i16, %step: i16, %zero: i8,
       %mem: memref<?xi8>) -> none {
-    %index, %rwc = dataflow.stream %ub, %lb, %step {cont_cond = ">", step_op = "+="} : i16
+    %index, %rwc = dataflow.stream %ub, %lb, %step step add while sgt : i16
     %stable_zero = dataflow.invariant %rwc, %zero : i8
     %zero_i16 = dataflow.constant %ctrl {const_value = 0 : i16} : i16
     %one_i16 = dataflow.constant %ctrl {const_value = 1 : i16} : i16

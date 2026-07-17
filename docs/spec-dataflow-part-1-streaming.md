@@ -57,23 +57,29 @@ from scalar integer recurrence operands:
 
 ```
 %iv, %phase = dataflow.stream %init, %limit, %step
-  {step_op = "+=", cont_cond = "<"} : iN
+  step add while slt : iN
 ```
 
 The operation starts in Idle. Idle consumes one `%init`, `%limit`, `%step`
 triple and establishes a current value initialized to `%init`.
 
-* If `cont_cond(current, limit)` is true, it emits `current` on `%iv`, emits
-  `true` on `%phase`, advances the current value with `step_op`, and remains
-  active.
-* If `cont_cond(current, limit)` is false, it emits only `false` on `%phase`
+* If the `while` predicate holds for `(current, limit)`, it emits `current`
+  on `%iv`, emits `true` on `%phase`, advances the current value with the
+  selected `step` kind, and remains active.
+* If the `while` predicate does not hold, it emits only `false` on `%phase`
   and returns to Idle.
 
-The current dialect definition requires `%init`, `%limit`, `%step`, and
-`%iv` to share a signless integer-like type. `%phase` is always `i1`.
+The step kind is a `dataflow::StreamStepKind` value: `add`, `sub`, `mul`,
+`sdiv`, `udiv`, `shl`, `ashr`, or `lshr`. The continuation predicate is the
+upstream `mlir::arith::CmpIPredicate` enum. These generated enums are the
+semantic source of truth for parser, verifier, simulator, and hardware
+configuration behavior.
 
-For `init = 0`, `limit = 5`, `step = 1`, `step_op = "+="`, and
-`cont_cond = "<"`:
+The current dialect definition requires `%init`, `%limit`, `%step`, and
+`%iv` to share a scalar signless integer type. `%phase` is always `i1`.
+
+For `init = 0`, `limit = 5`, `step = 1`, step kind `add`, and predicate
+`slt`:
 
 | Result | Tokens |
 |--------|--------|

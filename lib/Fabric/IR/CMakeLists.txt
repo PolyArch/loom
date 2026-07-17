@@ -1,5 +1,4 @@
 add_mlir_dialect_library(MLIRFabric
-  ArithPredicates.cpp
   ConfiguredFunction.cpp
   FabricBoundaryOps.cpp
   FabricDialect.cpp
@@ -10,12 +9,14 @@ add_mlir_dialect_library(MLIRFabric
   FabricOps.cpp
   FabricPrimitiveOps.cpp
   FabricPeTemporalOps.cpp
+  StreamConfiguration.cpp
   FabricSwitchOp.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric
 
   DEPENDS
+  MLIRDataflowEnumsIncGen
   MLIRFabricDialectIncGen
   MLIRFabricTypesIncGen
   MLIRFabricOpsIncGen
@@ -23,6 +24,7 @@ add_mlir_dialect_library(MLIRFabric
   LINK_LIBS PUBLIC
   LoomCommon
   MLIRArithDialect
+  MLIRDataflowEnums
   MLIRIR
   MLIRLLVMDialect
   MLIRPass

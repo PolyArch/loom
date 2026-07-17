@@ -8,8 +8,7 @@
 
 // CHECK-LABEL: dataflow.graph.func private @g_simple_red
 // CHECK: %[[IV:.*]], %[[PHASE:.*]] = dataflow.stream %arg1, %arg2, %arg3
-// CHECK-SAME: cont_cond = "<"
-// CHECK-SAME: step_op = "+="
+// CHECK-SAME: step add while slt
 // CHECK: %[[CARRY:.*]] = dataflow.carry %[[PHASE]], %arg5, %[[NEXT:.*]] : f32
 // CHECK: %{{.*}}, %[[BODY_CARRY:.*]] = dataflow.gate %[[PHASE]], %[[CARRY]] : f32
 // CHECK: %[[EXIT:.*]]:2 = dataflow.demux %[[PHASE]], %[[CARRY]] : (i1, f32) -> (f32, f32)
@@ -36,8 +35,7 @@ dataflow.graph.func private @g_simple_red(%ctrl: none, %lb: i64, %ub: i64,
 // CHECK-LABEL: dataflow.graph.func private @g_desc_red
 // CHECK: %[[STEP:.*]] = arith.constant -1 : i64
 // CHECK: %[[IV:.*]], %[[PHASE:.*]] = dataflow.stream %arg1, %arg2, %[[STEP]]
-// CHECK-SAME: cont_cond = ">"
-// CHECK-SAME: step_op = "+="
+// CHECK-SAME: step add while sgt
 // CHECK: %[[CARRY:.*]] = dataflow.carry %[[PHASE]], %arg4, %[[NEXT:.*]] : f32
 // CHECK: %{{.*}}, %[[BODY_CARRY:.*]] = dataflow.gate %[[PHASE]], %[[CARRY]] : f32
 // CHECK: %[[EXIT:.*]]:2 = dataflow.demux %[[PHASE]], %[[CARRY]] : (i1, f32) -> (f32, f32)

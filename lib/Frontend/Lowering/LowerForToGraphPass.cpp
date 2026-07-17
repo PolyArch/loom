@@ -834,6 +834,12 @@ struct LowerForToGraphPass
                                    ::mlir::OpBuilder &builder) {
     ::mlir::Location loc = loop.getLoc();
     ::mlir::Type noneType = builder.getType<::mlir::NoneType>();
+    auto stepKind = ::loom::lowering::inferStreamStepKind(loop);
+    if (::mlir::failed(stepKind))
+      return loop.emitOpError("has invalid 'loom.stream_step_kind'");
+    auto predicate = ::loom::lowering::inferStreamPredicate(loop);
+    if (::mlir::failed(predicate))
+      return loop.emitOpError("has invalid 'loom.stream_predicate'");
 
     // Inputs to the graph callable (after the leading none ctrl_in):
     //   lb, ub, step,
@@ -912,8 +918,8 @@ struct LowerForToGraphPass
     auto newLoop = ::mlir::scf::ForOp::create(builder, loc, lbArg, ubArg,
                                               stepArg, initArgVals,
                                               /*bodyBuilder=*/nullptr);
-    newLoop->setAttr(::loom::lowering::streamContCondAttrName(),
-                     ::loom::lowering::inferStreamContCond(builder, loop));
+    ::loom::lowering::setStreamLoopConfiguration(builder, newLoop, *stepKind,
+                                                 *predicate);
 
     // Move the original loop body into the new loop, remapping ivs +
     // captures.

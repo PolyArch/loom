@@ -539,7 +539,8 @@ resolveMemcpyPointer(::mlir::Value ptr, ::dataflow::GraphFuncOp graph) {
 
   auto stream = carry->getCond().getDefiningOp<::dataflow::StreamOp>();
   if (!stream || stream.getPhase() != carry->getCond() ||
-      stream.getStepOp() != "+=" || stream.getContCond() != "<")
+      stream.getStepKind() != ::dataflow::StreamStepKind::Add ||
+      stream.getPredicate() != ::mlir::arith::CmpIPredicate::slt)
     return std::nullopt;
 
   return MemcpyPtrResolution{carry->getInit(), *stride, stream};
@@ -1013,8 +1014,8 @@ bool tryRewriteDirectMemcpy(::mlir::LLVM::MemcpyOp memcpy,
 
   auto copyStream = ::dataflow::StreamOp::create(
       builder, loc, lenType, builder.getI1Type(), /*init=*/zero,
-      /*limit=*/memcpy.getLen(), /*step=*/one, builder.getStringAttr("+="),
-      builder.getStringAttr("<"));
+      /*limit=*/memcpy.getLen(), /*step=*/one, ::dataflow::StreamStepKind::Add,
+      ::mlir::arith::CmpIPredicate::slt);
 
   ::mlir::Type byteTy = builder.getI8Type();
   ::mlir::Value srcMem =
@@ -1201,8 +1202,8 @@ bool tryRewriteMemcpy(::mlir::Operation *op, bool topLevel,
 
   auto copyStream = ::dataflow::StreamOp::create(
       builder, loc, lenType, builder.getI1Type(), /*init=*/zero,
-      /*limit=*/totalBytes, /*step=*/one, builder.getStringAttr("+="),
-      builder.getStringAttr("<"));
+      /*limit=*/totalBytes, /*step=*/one, ::dataflow::StreamStepKind::Add,
+      ::mlir::arith::CmpIPredicate::slt);
   ::mlir::Value activeByte = copyStream.getIv();
   ::mlir::Value copyLenRaw =
       ::dataflow::InvariantOp::create(builder, loc, lenType,
@@ -1352,8 +1353,8 @@ bool tryRewriteMemset(::mlir::Operation *op, bool topLevel,
     return false;
   auto fillStream = ::dataflow::StreamOp::create(
       builder, loc, byteCount.getType(), builder.getI1Type(), /*init=*/zero,
-      /*limit=*/elementCount, /*step=*/one, builder.getStringAttr("+="),
-      builder.getStringAttr("<"));
+      /*limit=*/elementCount, /*step=*/one, ::dataflow::StreamStepKind::Add,
+      ::mlir::arith::CmpIPredicate::slt);
   ::mlir::Value index =
       getIndexFromInt(builder, ctx.indexCastCache, fillStream.getIv(), loc, op);
   ::mlir::Value fill = makeFillValue(builder, loc);

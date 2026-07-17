@@ -148,7 +148,7 @@ module {
   dataflow.graph.func private @pointer_memcpy_stream(
       %ctrl: none, %lb: i32, %ub: i32, %step: i32, %copy_bytes: i32,
       %dst_stride: i32, %src: !llvm.ptr, %dst: !llvm.ptr) -> none {
-    %idx, %rwc = dataflow.stream %lb, %ub, %step {cont_cond = "<", step_op = "+="} : i32
+    %idx, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i32
     %bytes = dataflow.invariant %rwc, %copy_bytes : i32
     %stride = dataflow.invariant %rwc, %dst_stride : i32
     %src_cur = dataflow.carry %rwc, %src, %src_next : !llvm.ptr

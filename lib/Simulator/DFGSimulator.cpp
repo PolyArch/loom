@@ -1076,7 +1076,8 @@ staticStreamTripCount(dataflow::StreamOp stream, const SimulatorState &state,
     return std::nullopt;
   }
   for (std::uint64_t i = 0; i < maxEventSteps; ++i) {
-    auto cont = evaluateCont(*current, *limit, stream.getContCond(), *bitWidth);
+    auto cont =
+        evaluateCont(*current, *limit, stream.getPredicate(), *bitWidth);
     if (!cont) {
       llvm::consumeError(cont.takeError());
       return std::nullopt;
@@ -1084,7 +1085,7 @@ staticStreamTripCount(dataflow::StreamOp stream, const SimulatorState &state,
     if (!*cont)
       return tripCount;
     ++tripCount;
-    auto next = stepIndex(*current, *step, stream.getStepOp(), *bitWidth);
+    auto next = stepIndex(*current, *step, stream.getStepKind(), *bitWidth);
     if (!next) {
       llvm::consumeError(next.takeError());
       return std::nullopt;

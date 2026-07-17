@@ -18,7 +18,7 @@ module {
                                                 %dst: !llvm.ptr)
       -> (none, !llvm.ptr, !llvm.ptr) {
     %zero = dataflow.constant %ctrl {const_value = 0 : index} : index
-    %index, %rwc = dataflow.stream %lb, %ub, %step {cont_cond = "<", step_op = "+="} : i32
+    %index, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i32
     %bias_i = dataflow.invariant %rwc, %bias : f32
     %src_cur = dataflow.carry %rwc, %src, %src_next : !llvm.ptr
     %dst_cur = dataflow.carry %rwc, %dst, %dst_next : !llvm.ptr

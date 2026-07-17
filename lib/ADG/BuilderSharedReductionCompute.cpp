@@ -1,5 +1,8 @@
 #include "BuilderInternal.h"
 
+#include "Dataflow/IR/DataflowEnums.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+
 #include "llvm/ADT/STLExtras.h"
 
 using namespace loom::adg;
@@ -40,8 +43,11 @@ void loom::adg::detail::addSharedReductionComputeResources(
                    {"fa", "fb", "fc"},
                    {"!fabric.bits<32>", "!fabric.bits<32>", "!fabric.bits<32>"},
                    {"!fabric.bits<32>", "!fabric.bits<1>"},
-                   {{"cont_cond", {"<", ">"}}, {"step_op", {"+="}}},
-                   {{"cont_cond", "<"}, {"step_op", "+="}}});
+                   {},
+                   {},
+                   StreamConfig{dataflow::StreamStepKind::Add,
+                                {mlir::arith::CmpIPredicate::slt,
+                                 mlir::arith::CmpIPredicate::sgt}}});
   streamFu.operations.push_back(
       FabricOpSpec{{"carried"},
                    {"dataflow.carry"},
@@ -90,8 +96,11 @@ void loom::adg::detail::addSharedReductionComputeResources(
                    {"fa", "fb", "fc"},
                    {"!fabric.bits<32>", "!fabric.bits<32>", "!fabric.bits<32>"},
                    {"!fabric.bits<32>", "!fabric.bits<1>"},
-                   {{"cont_cond", {"<", ">"}}, {"step_op", {"+="}}},
-                   {{"cont_cond", "<"}, {"step_op", "+="}}});
+                   {},
+                   {},
+                   StreamConfig{dataflow::StreamStepKind::Add,
+                                {mlir::arith::CmpIPredicate::slt,
+                                 mlir::arith::CmpIPredicate::sgt}}});
   auxStreamFu.yieldValues = {"aux_op_idx", "aux_op_rwc"};
   auxStreamFu.yieldTypes = {"!fabric.bits<32>", "!fabric.bits<1>"};
   auxStreamPe.fus.push_back(std::move(auxStreamFu));

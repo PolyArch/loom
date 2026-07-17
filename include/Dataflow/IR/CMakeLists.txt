@@ -5,6 +5,11 @@ mlir_tablegen(DataflowTypes.h.inc -gen-typedef-decls -typedefs-dialect=dataflow)
 mlir_tablegen(DataflowTypes.cpp.inc -gen-typedef-defs -typedefs-dialect=dataflow)
 add_public_tablegen_target(MLIRDataflowDialectIncGen)
 
+set(LLVM_TARGET_DEFINITIONS DataflowEnums.td)
+mlir_tablegen(DataflowEnums.h.inc -gen-enum-decls)
+mlir_tablegen(DataflowEnums.cpp.inc -gen-enum-defs)
+add_public_tablegen_target(MLIRDataflowEnumsIncGen)
+
 set(LLVM_TARGET_DEFINITIONS DataflowOps.td)
 mlir_tablegen(DataflowOps.h.inc -gen-op-decls)
 mlir_tablegen(DataflowOps.cpp.inc -gen-op-defs)

@@ -1,5 +1,6 @@
 #include "Simulator/OperationSemantics.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 
 #include <algorithm>
@@ -420,33 +421,42 @@ llvm::Expected<PrimitiveValue> byteSwapInteger(llvm::StringRef opName,
   return integerFromBits(output, bitWidth);
 }
 
-bool compareInteger(llvm::StringRef predicate, const PrimitiveValue &lhs,
-                    const PrimitiveValue &rhs, unsigned bitWidth) {
+llvm::Expected<bool> compareInteger(llvm::StringRef predicate,
+                                    const PrimitiveValue &lhs,
+                                    const PrimitiveValue &rhs,
+                                    unsigned bitWidth) {
+  auto typedPredicate = mlir::arith::symbolizeCmpIPredicate(predicate);
+  if (!typedPredicate)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "arith.cmpi has unknown predicate '%s'",
+                                   predicate.str().c_str());
   const std::uint64_t lhsBits = toUnsignedBits(lhs, bitWidth);
   const std::uint64_t rhsBits = toUnsignedBits(rhs, bitWidth);
   const std::int64_t lhsSigned = fromUnsignedBits(lhsBits, bitWidth);
   const std::int64_t rhsSigned = fromUnsignedBits(rhsBits, bitWidth);
-  if (predicate == "eq")
+  switch (*typedPredicate) {
+  case mlir::arith::CmpIPredicate::eq:
     return lhsBits == rhsBits;
-  if (predicate == "ne")
+  case mlir::arith::CmpIPredicate::ne:
     return lhsBits != rhsBits;
-  if (predicate == "slt")
+  case mlir::arith::CmpIPredicate::slt:
     return lhsSigned < rhsSigned;
-  if (predicate == "sle")
+  case mlir::arith::CmpIPredicate::sle:
     return lhsSigned <= rhsSigned;
-  if (predicate == "sgt")
+  case mlir::arith::CmpIPredicate::sgt:
     return lhsSigned > rhsSigned;
-  if (predicate == "sge")
+  case mlir::arith::CmpIPredicate::sge:
     return lhsSigned >= rhsSigned;
-  if (predicate == "ult")
+  case mlir::arith::CmpIPredicate::ult:
     return lhsBits < rhsBits;
-  if (predicate == "ule")
+  case mlir::arith::CmpIPredicate::ule:
     return lhsBits <= rhsBits;
-  if (predicate == "ugt")
+  case mlir::arith::CmpIPredicate::ugt:
     return lhsBits > rhsBits;
-  if (predicate == "uge")
+  case mlir::arith::CmpIPredicate::uge:
     return lhsBits >= rhsBits;
-  return false;
+  }
+  llvm_unreachable("unknown generated arith.cmpi predicate");
 }
 
 bool compareFloat(llvm::StringRef predicate, const PrimitiveValue &lhs,
@@ -708,8 +718,11 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
       return std::move(predicate);
     const unsigned compareBitWidth =
         normalizeBitWidth(descriptor.operandBitWidth);
-    return PrimitiveValue::boolean(compareInteger(
-        descriptor.predicate, operands[0], operands[1], compareBitWidth));
+    auto comparison = compareInteger(descriptor.predicate, operands[0],
+                                     operands[1], compareBitWidth);
+    if (!comparison)
+      return comparison.takeError();
+    return PrimitiveValue::boolean(*comparison);
   }
   if (opName == "arith.cmpf") {
     if (llvm::Error arity = requireArity(opName, operands, 2))

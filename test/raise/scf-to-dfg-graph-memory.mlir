@@ -27,7 +27,7 @@ dataflow.graph.func private @g_canonical(%arg0: none, %arg1: i64, %arg2: i64,
                                          %arg3: i64, %arg4: !llvm.ptr,
                                          %arg5: f32) -> (none, f32) {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %0 = dataflow.carry %rwc, %arg5, %3 : f32
   %1 = llvm.getelementptr %arg4[%index] : (!llvm.ptr, i64) -> !llvm.ptr, f32
   %2 = llvm.load %1 : !llvm.ptr -> f32
@@ -55,7 +55,7 @@ dataflow.graph.func private @g_inbounds_element_index(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
     %arg4: !llvm.ptr) -> none {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %ptr = llvm.getelementptr inbounds %arg4[%index]
       : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
   %value = llvm.load %ptr : !llvm.ptr -> i32
@@ -76,7 +76,7 @@ dataflow.graph.func private @g_nuw_element_index(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
     %arg4: !llvm.ptr) -> none {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %ptr = llvm.getelementptr nuw %arg4[%index]
       : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
   %value = llvm.load %ptr : !llvm.ptr -> i32
@@ -97,7 +97,7 @@ dataflow.graph.func private @g_inbounds_zero_companion(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
     %arg4: !llvm.ptr) -> none {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %base = llvm.getelementptr inbounds %arg4[%index]
       : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
   %ptr = llvm.getelementptr %base[0]
@@ -125,7 +125,7 @@ dataflow.graph.func private @g_global_base(%arg0: none, %arg1: i64, %arg2: i64,
                                            %arg3: i64, %arg5: f32)
     -> (none, f32) {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %0 = dataflow.carry %rwc, %arg5, %3 : f32
   %p = llvm.mlir.addressof @global_buf : !llvm.ptr
   %1 = llvm.getelementptr %p[%index] : (!llvm.ptr, i64) -> !llvm.ptr, f32
@@ -151,7 +151,7 @@ dataflow.graph.func private @g_i8_byte_offset_f32(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64, %arg4: !llvm.ptr,
     %arg5: i64, %arg6: f32) -> (none, f32) {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %0 = dataflow.carry %rwc, %arg6, %4 : f32
   %1 = arith.shli %index, %arg5 : i64
   %2 = llvm.getelementptr %arg4[%1] : (!llvm.ptr, i64) -> !llvm.ptr, i8
@@ -180,7 +180,7 @@ dataflow.graph.func private @g_chained_gep_i8_i16(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64, %arg4: !llvm.ptr,
     %arg5: i16) -> (none, i16) {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %0 = dataflow.carry %rwc, %arg5, %4 : i16
   %1 = llvm.getelementptr %arg4[%index] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
   %2 = llvm.getelementptr %1[2] : (!llvm.ptr) -> !llvm.ptr, i8
@@ -208,7 +208,7 @@ dataflow.graph.func private @g_chained_gep_negative_bias(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64, %arg4: !llvm.ptr)
     -> (none, i16) {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %base = llvm.getelementptr %arg4[%index]
       : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
   %ptr = llvm.getelementptr %base[-2]
@@ -232,7 +232,7 @@ dataflow.graph.func private @g_volatile_atomic(
     %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64, %arg4: !llvm.ptr,
     %arg5: i32) -> (none, i32) {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i64
+      step add while slt : i64
   %ptr = llvm.getelementptr %arg4[%index]
       : (!llvm.ptr, i64) -> !llvm.ptr, i32
   %value = llvm.load volatile %ptr : !llvm.ptr -> i32
@@ -272,7 +272,7 @@ dataflow.graph.func private @g_pointer_carry_i8_f32(
   %stream_init = arith.constant 0 : i32
   %stream_step = arith.constant 1 : i32
   %index, %rwc = dataflow.stream %stream_init, %arg2, %stream_step
-      {cont_cond = "<", step_op = "+="} : i32
+      step add while slt : i32
   %src_raw = dataflow.carry %rwc, %arg4, %src_next : !llvm.ptr
   %src_phase, %src_cur = dataflow.gate %rwc, %src_raw : !llvm.ptr
   %src_exit:2 = dataflow.demux %rwc, %src_raw
@@ -319,7 +319,7 @@ dataflow.graph.func private @g_pointer_carry_preincrement_i8_f32(
   %stream_init = arith.constant 0 : i32
   %stream_step = arith.constant 1 : i32
   %index, %rwc = dataflow.stream %stream_init, %arg2, %stream_step
-      {cont_cond = "<", step_op = "+="} : i32
+      step add while slt : i32
   %src_raw = dataflow.carry %rwc, %arg4, %src_next : !llvm.ptr
   %src_phase, %src_cur = dataflow.gate %rwc, %src_raw : !llvm.ptr
   %src_exit:2 = dataflow.demux %rwc, %src_raw
@@ -354,7 +354,7 @@ dataflow.graph.func private @g_pointer_carry_nonordinal_init(
   %stream_init = arith.constant 4 : i32
   %stream_step = arith.constant 1 : i32
   %index, %phase = dataflow.stream %stream_init, %arg1, %stream_step
-      {cont_cond = "<", step_op = "+="} : i32
+      step add while slt : i32
   %raw = dataflow.carry %phase, %arg3, %next : !llvm.ptr
   %body_phase, %current = dataflow.gate %phase, %raw : !llvm.ptr
   %exit:2 = dataflow.demux %phase, %raw
@@ -386,7 +386,7 @@ dataflow.graph.func private @g_pointer_carry_widening_i8(
   %stream_init = arith.constant 0 : i8
   %stream_step = arith.constant 1 : i8
   %iv, %phase = dataflow.stream %stream_init, %arg1, %stream_step
-      {cont_cond = "!=", step_op = "+="} : i8
+      step add while ne : i8
   %raw = dataflow.carry %phase, %arg2, %next : !llvm.ptr
   %body_phase, %current = dataflow.gate %phase, %raw : !llvm.ptr
   %exit:2 = dataflow.demux %phase, %raw
@@ -412,7 +412,7 @@ dataflow.graph.func private @g_pointer_carry_dynamic_offset_i8_f32(
     %arg0: none, %arg1: i32, %arg2: i32, %arg3: i32, %arg4: !llvm.ptr,
     %bias: f32, %dyn: i32) -> (none, !llvm.ptr) {
   %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-      {cont_cond = "<", step_op = "+="} : i32
+      step add while slt : i32
   %src_cur = dataflow.carry %rwc, %arg4, %src_next : !llvm.ptr
   %src_next = llvm.getelementptr %src_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
   %offset = arith.addi %index, %dyn : i32
@@ -440,7 +440,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<
       %arg0: none, %arg1: i8, %arg2: i8, %arg3: i8, %arg4: !llvm.ptr)
       -> (none, i8) {
     %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-        {cont_cond = "<", step_op = "+="} : i8
+        step add while slt : i8
     %ptr = llvm.getelementptr %arg4[%index]
         : (!llvm.ptr, i8) -> !llvm.ptr, !llvm.array<256 x i8>
     %value = llvm.load %ptr : !llvm.ptr -> i8
@@ -466,7 +466,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<
       %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64, %arg4: !llvm.ptr)
       -> (none, i32) {
     %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-        {cont_cond = "<", step_op = "+="} : i64
+        step add while slt : i64
     %ptr = llvm.getelementptr %arg4[%index]
         : (!llvm.ptr, i64) -> !llvm.ptr, i32
     %value = llvm.load %ptr : !llvm.ptr -> i32
@@ -495,7 +495,7 @@ module attributes {
       %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
       %arg4: !llvm.ptr<1>) -> (none, i32) {
     %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-        {cont_cond = "<", step_op = "+="} : i64
+        step add while slt : i64
     %ptr = llvm.getelementptr %arg4[%index]
         : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i32
     %value = llvm.load %ptr : !llvm.ptr<1> -> i32
@@ -518,7 +518,7 @@ module attributes {llvm.data_layout = "e-p:32:32"} {
       %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64, %arg4: !llvm.ptr)
       -> (none, i32) {
     %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
-        {cont_cond = "<", step_op = "+="} : i64
+        step add while slt : i64
     %ptr = llvm.getelementptr %arg4[%index]
         : (!llvm.ptr, i64) -> !llvm.ptr, i32
     %value = llvm.load %ptr : !llvm.ptr -> i32

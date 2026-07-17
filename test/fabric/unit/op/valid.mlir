@@ -138,10 +138,44 @@ fabric.module @op_stream_programmed(%lb : !fabric.bits<32>, %ub : !fabric.bits<3
               %fc = %pc : !fabric.bits<32>) -> () {
       // CHECK: fabric.op [@dataflow.stream]
       %i, %r = fabric.op [@dataflow.stream] (%fa, %fb, %fc)
-               {hw_params = [{step_op = ["+=", "/=", "*="], cont_cond = ["<", ">"]}],
-                sw_configs = {step_op = "+=", cont_cond = "<"}}
+               {hw_params = [{step_kind = 0 : i32,
+                              predicate = [2 : i64, 4 : i64]}],
+                sw_configs = {predicate = 2 : i64}}
                : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
                  -> (!fabric.bits<32>, !fabric.bits<1>)
+      fabric.yield
+    }
+  }
+  fabric.yield
+}
+
+// CHECK-LABEL: fabric.module @op_stream_fixed_step_modes
+fabric.module @op_stream_fixed_step_modes(
+    %init : !fabric.bits<32>, %limit : !fabric.bits<32>,
+    %step : !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %init : !fabric.bits<32>,
+                       %pb = %limit : !fabric.bits<32>,
+                       %pc = %step : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%fa = %pa : !fabric.bits<32>,
+              %fb = %pb : !fabric.bits<32>,
+              %fc = %pc : !fabric.bits<32>) -> () {
+      // CHECK: attributes = {predicate = 2 : i64, step_kind = 0 : i32}
+      // CHECK: attributes = {predicate = 4 : i64, step_kind = 0 : i32}
+      %iv, %phase = fabric.op [@dataflow.stream] (%fa, %fb, %fc)
+          {hw_params = [
+            {op = @dataflow.stream,
+             function_type = (i32, i32, i32) -> (i32, i1),
+             input_ports = [0 : i32, 1 : i32, 2 : i32],
+             output_ports = [0 : i32, 1 : i32],
+             attributes = {predicate = 2 : i64, step_kind = 0 : i32}},
+            {op = @dataflow.stream,
+             function_type = (i32, i32, i32) -> (i32, i1),
+             input_ports = [0 : i32, 1 : i32, 2 : i32],
+             output_ports = [0 : i32, 1 : i32],
+             attributes = {predicate = 4 : i64, step_kind = 0 : i32}}
+          ], sw_configs = {mode = 1 : i32}}
+          : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+            -> (!fabric.bits<32>, !fabric.bits<1>)
       fabric.yield
     }
   }

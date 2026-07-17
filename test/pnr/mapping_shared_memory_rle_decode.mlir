@@ -47,7 +47,7 @@ module {
         scf.yield %limit_i32 : i32
       }
       scf.yield %next_write : i32
-    } {loom.stream_cont_cond = "<"}
+    } {loom.stream_step_kind = 0 : i32, loom.stream_predicate = 2 : i64}
     dataflow.graph.return %ctrl, %final : none, i32
   }
 }

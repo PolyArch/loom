@@ -17,7 +17,7 @@ module {
                                         %step: i64, %mem: memref<?xf32>,
                                         %init: f32) -> (none, f32) {
     %iv, %phase = dataflow.stream %lb, %ub, %step
-        {step_op = "+=", cont_cond = "<"} : i64
+        step add while slt : i64
     %idx = arith.index_cast %iv : i64 to index
     %data, %done = dataflow.load %mem[%idx] %ctrl : memref<?xf32>
     %carry = dataflow.carry %phase, %init, %next : f32

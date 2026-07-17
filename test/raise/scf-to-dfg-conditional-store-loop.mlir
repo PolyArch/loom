@@ -8,7 +8,7 @@
 
 // CHECK-LABEL: dataflow.graph.func private @g_conditional_store_loop
 // CHECK: %[[IDX:.*]], %[[RWC:.*]] = dataflow.stream %arg1, %arg2, %arg3
-// CHECK-SAME: cont_cond = ">"
+// CHECK-SAME: step add while sgt
 // CHECK: %[[ZERO:.*]] = dataflow.invariant %[[RWC]], %arg4 : i8
 // CHECK: %[[PTR_CARRY:.*]] = dataflow.carry %[[RWC]], %arg5,
 // CHECK: %{{.*}}, %[[PTR_BODY:.*]] = dataflow.gate %[[RWC]], %[[PTR_CARRY]] : !llvm.ptr
@@ -40,6 +40,6 @@ dataflow.graph.func private @g_conditional_store_loop(
     %next = llvm.getelementptr inbounds|nuw %ptr[1]
         : (!llvm.ptr) -> !llvm.ptr, i8
     scf.yield %next : !llvm.ptr
-  } {loom.stream_cont_cond = ">"}
+  } {loom.stream_step_kind = 0 : i32, loom.stream_predicate = 4 : i64}
   dataflow.graph.return %ctrl : none
 }

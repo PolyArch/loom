@@ -1,6 +1,7 @@
 #include "Fabric/IR/ConfiguredFunction.h"
 
 #include "Fabric/IR/FabricTypes.h"
+#include "Fabric/IR/StreamConfiguration.h"
 
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Block.h"
@@ -1110,6 +1111,11 @@ getConfiguredFunctionKey(const ConfiguredFunction &function,
     if (!modeOperations.count(operation))
       return op.emitOpError("op_list operation @")
              << operation << " has no hw_params mode";
+  }
+  if (modeOperations.count("dataflow.stream")) {
+    std::string error;
+    if (::mlir::failed(parseStreamConfiguration(op, error)))
+      return op.emitOpError(error);
   }
   return ::mlir::success();
 }
