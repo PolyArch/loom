@@ -2,6 +2,11 @@
 // RUN: loom-raise-opt --loom-lower-for-to-graph %s | FileCheck %s --check-prefix=NO-CARRIED
 // RUN: loom-raise-opt --loom-lower-for-to-graph %s | FileCheck %s --check-prefix=STREAM-ATTRS
 
+// The legacy forall anchor below tests only the narrow for-to-graph extraction
+// pass. It is not end-to-end full-pipeline acceptance: downstream graph
+// lowering rejects a residual graph-owned scf.forall until upstream Structured
+// Program Candidate processing has selected a P[] representation.
+
 // scf.for with iter_args inside a dataflow.thread body lowers to a
 // sibling dataflow.graph.func definition + a dataflow.graph.launch
 // at the cut site. A stand-alone host reduction remains in SCF until
@@ -50,9 +55,10 @@ dataflow.thread private @t_straight(%x: i32) ctrl (%c: none) {
 // CHECK-LABEL: func.func @host_reduction
 // CHECK-NOT: dataflow.thread.launch @t_host_reduction
 // CHECK: scf.for {{.*}} iter_args
-// Effect-form scf.forall inside a thread is still a SpatialCore graph body.
-// It must be extracted as a structured graph.func rather than leaving the
-// kernel body stranded in the thread.
+// This legacy extraction anchor checks that effect-form scf.forall inside a
+// thread is outlined as a structured graph.func rather than stranded in the
+// thread. It does not claim that the residual graph-owned forall is accepted
+// by the full lowering pipeline.
 dataflow.thread private @t_forall_store(%src: memref<?xi32>, %dst: memref<?xi32>,
                                         %n: index) ctrl (%c: none) iv (%tile: index) {
   %c4 = arith.constant 4 : index

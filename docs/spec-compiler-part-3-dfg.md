@@ -29,9 +29,9 @@ Implementation engineering -- the pass pipeline that produces this IR
 shape, the lit-test layout, the acceptance checklist, and the
 maintenance plan -- is documented in
 `docs/spec-compiler-part-3-impl.md`. The main body of this document
-keeps only the first-principles content: IR boundary contracts, SCF
-flattening templates, the memory-dependence model, and verifier
-invariants.
+keeps only the first-principles content: IR boundary contracts,
+sequential-SCF flattening templates, future upstream parallel-normalization
+templates, the memory-dependence model, and verifier invariants.
 
 Placement decisions across the compiler are described by
 `docs/spec-compiler-part-3-placement-framework.md`. Part 3 owns the
@@ -283,11 +283,13 @@ each rule lands in IR.
    `loom.acc_region` is never promoted merely because it appears in a
    `func.func`. Before promotion, every `scf.forall` must be in effect
    form: no `shared_outs`, no op results, and an empty
-   `scf.forall.in_parallel` terminator. Tensor-result aggregation is
-   lowered to explicit destination-buffer writes before this point.
-   `scf.parallel`, `scf.forall` without mapping, and plain `scf.for` /
-   `scf.while` / `scf.if` / etc. are flattened inside
-   `dataflow.graph` definition bodies.
+   `scf.forall.in_parallel` terminator. Thread promotion is a narrow
+   extraction boundary; it does not authorize a graph-owned parallel body.
+   Current Part 3 flattens plain `scf.for` / `scf.while` / `scf.if` inside
+   `dataflow.graph` definition bodies. A residual graph-owned
+   `scf.parallel` or `scf.forall` fails closed before graph mutation until
+   an upstream Structured Program Candidate has selected a concrete P[]
+   representation and emitted supported sequential structured input.
 7. `dataflow.thread` and `dataflow.graph` definitions are both
    `IsolatedFromAbove`. No operation inside either definition's body
    may directly use an SSA value defined in the surrounding scope.
@@ -364,12 +366,16 @@ each rule lands in IR.
   `mapping` array, in
   agreement with Section 6.4 lowering rules:
   - **Empty `mapping` attribute** (the array is literally empty,
-    or the attribute is absent): the forall is unmapped and is
-    flattened by Part 3's `scf.parallel` normalization path.
+    or the attribute is absent): current Part 3 does not flatten a
+    graph-owned forall. It fails closed before graph mutation; a future
+    upstream Structured Program Candidate normalization may select a P[]
+    representation and emit supported sequential input.
   - **Mapping array with at least one Loom-recognized entry and
-    no foreign entry**: the forall is promoted to a
-    `dataflow.thread` definition + a `dataflow.thread.launch` at
-    the original site.
+    no foreign entry**: the narrow thread-promotion extraction pass may
+    produce a `dataflow.thread` definition + a
+    `dataflow.thread.launch` at the original site. This is not
+    end-to-end acceptance of a residual graph-owned forall; that body still
+    requires an upstream selected P[] representation before graph lowering.
   - **Mapping array with at least one foreign (non-Loom) entry**
     (whether or not it also contains Loom-recognized entries):
     the front-end rejects it with a diagnostic. Part 2 or an
@@ -1025,11 +1031,14 @@ through their own `t_<func_sym>_<seq>` namespace. The pass that
 emits these symbols (see `docs/spec-compiler-part-3-impl.md`) must
 be deterministic for a fixed input + option set.
 
-The same convention applies to `dataflow.thread`: every promotion
-of an `scf.forall` produces a `dataflow.thread` definition at
-module scope plus a `dataflow.thread.launch` at the original
-`scf.forall` site. The thread definition's body holds whatever the
-templates below place inside the thread.
+The same convention applies to a successful narrow thread-promotion
+extraction: it produces a `dataflow.thread` definition at module scope plus a
+`dataflow.thread.launch` at the original `scf.forall` site. This extraction
+does not accept a residual graph-owned `scf.forall` or `scf.parallel`; current
+Part 3 fails either before graph mutation until upstream Structured Program
+Candidate processing has selected a `P[]` representation. The thread
+definition's body holds only the supported sequential structures described
+below.
 
 The templates therefore omit the def + launch wrap to keep the
 body's structural diff readable. The wrap is mandatory output, not
@@ -1439,27 +1448,27 @@ selector token, so init execution, values, and frontier components transfer
 unchanged. Read-only state does not create RAR order; write feedback preserves
 RAW, WAR, and WAW across source-sequential iterations.
 
-### 6.4 `scf.forall` with `scf.forall.in_parallel`
+### 6.4 Future Upstream `scf.forall` Normalization
 
-**Implementation boundary.** The recursive graph owner does not perform the
-normalization described below. A residual `scf.forall` inside any graph causes
-the module-level pass to fail before mutation. Ownership, mapping,
-aggregation, and schedule provenance must already have been resolved by an
-earlier owner.
+**Current contract.** The recursive graph owner does not normalize
+graph-owned `scf.forall` or `scf.parallel`. Either residual form causes the
+module-level pass to fail before graph mutation. Ownership, mapping,
+aggregation, schedule provenance, and the concrete P[] representation must
+already have been resolved by an upstream Structured Program Candidate.
 
-`scf.forall` is not lowered directly to streaming dataflow ops. It is
-handled as a parallel-region normalization problem before ordinary SCF
-body lowering:
+**Future upstream normalization design.** The material below is not current
+Part 3 behavior. After selecting a concrete P[] representation, an upstream
+owner may normalize a forall before ordinary graph-region lowering:
 
-1. Aggregation-form forall is materialized into effect-form forall.
-2. Mapped effect-form forall becomes a `dataflow.thread` definition
-   at module scope plus a `dataflow.thread.launch` at the original
-   forall site.
-3. Unmapped effect-form forall becomes `scf.parallel`, then follows the
-   `scf.parallel` template below.
+1. It may materialize aggregation-form forall into effect-form forall.
+2. It may turn mapped effect-form forall into a `dataflow.thread` definition
+   at module scope plus a `dataflow.thread.launch` at the original forall site.
+3. It may turn unmapped effect-form forall into `scf.parallel` and then
+   normalize that parallel form to supported sequential structured input.
 
-This keeps tensor aggregation, hardware thread mapping, and SpatialCore
-DFG construction as separate concerns.
+This future separation keeps tensor aggregation, hardware thread mapping, and
+SpatialCore DFG construction as separate concerns. It does not permit a
+residual graph-owned parallel form in the current Part 3 pipeline.
 
 For this spec, an effect-form forall has no `shared_outs`, no op
 results, and an empty `scf.forall.in_parallel` terminator:
@@ -1493,12 +1502,12 @@ combining op is `tensor.parallel_insert_slice`:
 ```
 
 `scf.forall.in_parallel` exists only to describe tensor-result
-aggregation for `scf.forall`. It must not reach final dataflow IR.
-After aggregation materialization, every `scf.forall` that Part 3
-continues to lower must be in effect form.
+aggregation for `scf.forall`. It must not reach final dataflow IR. A future
+upstream materialization must remove it and must not pass a residual
+graph-owned forall to current Part 3.
 
-Aggregation materialization rewrites each shared tensor result into an
-explicit destination buffer:
+A future upstream aggregation materialization rewrites each shared tensor
+result into an explicit destination buffer:
 
 ```mlir
 %buf = buffer_for_tensor_value(%init)
@@ -1512,7 +1521,7 @@ scf.forall (%i) in (%N) {
 %out = tensor_value_from_buffer(%buf)
 ```
 
-The materialization contract is:
+The future upstream materialization contract is:
 
 * The destination buffer's initial contents are equivalent to the
   corresponding `shared_out` tensor.
@@ -1531,23 +1540,23 @@ The materialization contract is:
   Read/write conflicts through the shared destination are treated the
   same way: the source forall did not provide an inter-invocation
   order, so materialization must not invent one.
-* The pass preserves forall bounds, steps, induction variables, and
+* The upstream transformation preserves forall bounds, steps, induction variables, and
   `mapping` attributes.
 * The produced buffers are ordinary values for boundary analysis. If a
   destination buffer crosses a mapped forall boundary, the
   boundary-promotion step that inserts `dataflow.map_info` treats it
   like any other memref-like value.
 * If any non-empty `scf.forall.in_parallel` combining action cannot be
-  materialized, lowering emits a diagnostic. Dropping the combining
-  action is never legal.
+  materialized, the upstream transformation emits a diagnostic. Dropping the
+  combining action is never legal.
 * Nested aggregation-form forall follows the same materialization
   contract recursively. An inner shared destination that denotes a view
   of an outer shared destination is rewritten to the corresponding
   buffer view, and the inner combining actions become writes through
   that view.
 
-Mapped effect-form forall is a thread boundary. A mapped forall is one
-whose non-empty `mapping` attribute contains Loom-recognized
+In the future upstream design, a mapped effect-form forall is a thread
+boundary. A mapped forall is one whose non-empty `mapping` attribute contains Loom-recognized
 `#loom.thread_axis<...>` entries:
 
 ```mlir
@@ -1557,8 +1566,8 @@ scf.forall (%tx) in (%N) {
 } {mapping = [#loom.thread_axis<parallel, 0>]}
 ```
 
-It is promoted to a `dataflow.thread` definition + a
-`dataflow.thread.launch` by the thread-skeleton pipeline:
+It may be promoted to a `dataflow.thread` definition + a
+`dataflow.thread.launch` by that upstream thread-skeleton pipeline:
 
 ```mlir
 // At module scope (sibling of func.func):
@@ -1580,34 +1589,34 @@ dataflow.thread @t_<funcSym>_<seq>(%B_arg : memref<?xf32>, ...)
 dataflow.thread.wait %tok : !dataflow.thread_token
 ```
 
-The forall grid bounds and mapping become the def's grid attributes
-and `mapping`. The mapping array length must equal the forall rank;
-this is already an upstream `scf.forall` verifier invariant and is
-repeated here as an input requirement for thread promotion. The
-forall induction variables become the trailing `iv_*` block-args of
-the def's entry block (after the leading `args_*` and `thread_ctrl`,
-per Section 5.4.1's `(args_*, thread_ctrl, iv_*)` layout). Values captured
-from outside the forall become explicit launch operands at the use
-site and matching def block-args (the leading `args_*` of the entry
-block). The empty `scf.forall.in_parallel` terminator becomes
-`dataflow.thread.yield` inside the def's body.
+In that future design, the forall grid bounds and mapping become the def's
+grid attributes and `mapping`. The mapping array length must equal the forall
+rank; this is already an upstream `scf.forall` verifier invariant and is
+repeated here as an input requirement for thread promotion. The forall
+induction variables become the trailing `iv_*` block-args of the def's entry
+block (after the leading `args_*` and `thread_ctrl`, per Section 5.4.1's
+`(args_*, thread_ctrl, iv_*)` layout). Values captured from outside the forall
+become explicit launch operands at the use site and matching def block-args
+(the leading `args_*` of the entry block). The empty
+`scf.forall.in_parallel` terminator becomes `dataflow.thread.yield` inside the
+def's body.
 
-This promotion creates the AccCore boundary only. Code inside the
-thread definition's body is still ScalarCore code until graph
-extraction moves an eligible region into a `dataflow.graph`
-definition (referenced by a `dataflow.graph.launch` at the cut
-site). Only the graph definition's body is later lowered to
-SpatialCore dataflow operations. Memory operations that remain
-outside any graph stay in the ScalarCore part of the thread
-definition's body.
+Such a future promotion creates the AccCore boundary only. Code inside the
+thread definition's body is still ScalarCore code until graph extraction moves
+an eligible nonparallel region into a `dataflow.graph` definition (referenced
+by a `dataflow.graph.launch` at the cut site). Current Part 3 still rejects a
+residual graph-owned `scf.forall` or `scf.parallel` before mutation. Memory
+operations that remain outside any graph stay in the ScalarCore part of the
+thread definition's body.
 
-The implicit synchronization point of `scf.forall` becomes explicit
-thread-token ordering. The produced `!dataflow.thread_token` is either
-consumed by a following thread-like op as a dependency or waited on with
-`dataflow.thread.wait` at the original continuation point.
+The future promotion would make the implicit synchronization point of
+`scf.forall` explicit thread-token ordering. The produced
+`!dataflow.thread_token` is either consumed by a following thread-like op as a
+dependency or waited on with `dataflow.thread.wait` at the original
+continuation point.
 
-Unmapped effect-form forall is generic parallel work, not a hardware
-thread boundary:
+In the future upstream design, unmapped effect-form forall is generic parallel
+work, not a hardware thread boundary:
 
 ```mlir
 scf.forall (%i) in (%N) {
@@ -1616,7 +1625,7 @@ scf.forall (%i) in (%N) {
 }
 ```
 
-It normalizes to `scf.parallel`:
+It may normalize to `scf.parallel`:
 
 ```mlir
 scf.parallel (%i) = (%c0) to (%N) step (%c1) {
@@ -1632,23 +1641,25 @@ effect-form case, because the forall has no outputs and its empty
 normalization to `scf.for` loop nests does not invent
 cross-invocation memory order.
 
-By the time this normalization runs, every Loom-recognized mapped
-forall has already been promoted to `dataflow.thread`. Therefore, a
-forall that reaches this path must have an empty mapping attribute.
-A non-empty non-Loom mapping is rejected before normalization.
+Within that future upstream normalization, every Loom-recognized mapped forall
+has already been promoted to `dataflow.thread`. Therefore, a forall that
+reaches this path must have an empty mapping attribute. A non-empty non-Loom
+mapping is rejected before normalization.
 
-If a forall has a non-empty `mapping` attribute that Part 3 does not
-recognize as a Loom mapping, the pipeline must not silently ignore it
-inside an accelerator region. Part 2 or an earlier Part 3 pass must
-either remove or translate that mapping with an explicit downgrade
-decision, or emit a diagnostic before this template runs.
+If a forall has a non-empty `mapping` attribute that current Part 3 does not
+recognize as a Loom mapping, the pipeline must not silently ignore it inside an
+accelerator region. It fails before graph mutation. A future upstream resolver
+must either remove or translate that mapping with an explicit downgrade
+decision before its normalization template runs.
 
 #### Forall Boundary Translation
 
 Mapped forall belongs to thread construction and must be removed before a
-graph definition is lowered. Any graph-owned parallel realization must also
-be normalized before the recursive graph owner runs. No forall boundary,
-partition id, or dependence summary survives into canonical graph IR.
+graph definition is lowered. Current Part 3 rejects any residual graph-owned
+`scf.forall` or `scf.parallel` before mutation. After an upstream Structured
+Program Candidate selects P[] materialization, its future normalization may
+emit supported sequential input. No forall boundary, partition id, or
+dependence summary survives into canonical graph IR.
 
 ### 6.5 `scf.parallel` with `scf.reduce`
 
@@ -1658,14 +1669,20 @@ A residual `scf.parallel` inside any graph fails before mutation. The detailed
 normalization below is an upstream contract and must produce supported
 `scf.if`/`scf.for`/`scf.while` input before graph-region lowering.
 
+**Future upstream normalization design.** Every reference to parallel
+normalization, chunking, or flattening in this subsection describes only the
+upstream owner after it has selected a concrete P[] representation. It is not
+current Part 3 behavior: residual graph-owned `scf.parallel` and `scf.forall`
+fail closed before graph mutation.
+
 `scf.parallel` is not a second dataflow loop primitive. A future upstream
 schedule owner may normalize it to supported structured input after making
 the required ownership and order decisions. The current pipeline has no
 graph-local parallel normalization owner. No new `dataflow.parallel`,
 `dataflow.reduce`, or reduction enum is introduced by this slice.
 
-A user-written `scf.parallel` with a non-empty `mapping` attribute is
-rejected by Part 3. Mapping has Loom semantics only on
+A user-written graph-owned `scf.parallel` with a non-empty `mapping` attribute
+is rejected by Part 3. Mapping has Loom semantics only on
 `scf.forall`, because mapped forall is the construct that establishes a
 `dataflow.thread` boundary.
 
@@ -1679,7 +1696,7 @@ provenance or weaken loop recurrence: only an explicitly selected
 source-sequential realization may reach it as `scf.for`. Any residual
 parallel region fails before graph mutation.
 
-The deferred normalization design below uses a positive split factor `K`.
+The future upstream normalization design below uses a positive split factor `K`.
 No `--parallel-split-factor` option or default `K` policy is implemented by
 the current pipeline, and the recursive graph owner must not choose one.
 The N-Dim Parallel With M Reductions subsection below permits the
@@ -1774,23 +1791,24 @@ scf.for %i = %mid to %N step %c1 {
 
 Both generated loop nests carry the same `parallel provenance` id and
 different chunk ordinals. They represent independent chunks of one
-parallel iteration space, not two source-ordered loops. If the
-normalizer materializes them as adjacent SCF operations, Part 3 must
-use the shared provenance id to lower them as one chunk group: all
-chunks receive the group's incoming control, and their done tokens are
-joined before the continuation.
+parallel iteration space, not two source-ordered loops. If the future upstream
+normalizer materializes them as adjacent SCF operations, its selected P[]
+representation must preserve the shared provenance and join the chunk tails
+before the continuation. Only then may it emit supported sequential input for
+current Part 3.
 
-If the `scf.parallel` has no results, the upstream
+If the `scf.parallel` has no results, the future upstream
 `scf-parallel-for-to-nested-fors` conversion may be reused for the
 `K = 1` case. That upstream conversion is not sufficient for resultful
 `scf.parallel`, because it rejects `scf.parallel` ops with results.
-Loom must lower resultful `scf.parallel` itself.
+The future upstream owner must lower resultful `scf.parallel` itself; current
+Part 3 rejects it before graph mutation.
 
-For resultful `scf.parallel`, each result position is associated with
+For a future upstream lowering of resultful `scf.parallel`, each result position is associated with
 one initial value, one `scf.reduce` operand, and one `scf.reduce`
 region. The reduction region is the reduction operator; Loom does not
-encode the reduction kind as an attribute. The region is inlined at
-normalization time by substituting:
+encode the reduction kind as an attribute. The future upstream owner inlines
+the region during normalization by substituting:
 
 * the first reduction block argument with the current accumulator;
 * the second reduction block argument with the current iteration's
@@ -1812,7 +1830,7 @@ For `K = 1`, this becomes the same structure as `scf.for` with
 }
 ```
 
-normalizes to:
+may normalize to:
 
 ```mlir
 %sum = scf.for %i = %c0 to %N step %c1
@@ -1873,14 +1891,14 @@ properties, a tree merge or target-specific reduction network may be
 selected as an optimization, but that is not part of the required
 normalization contract.
 
-#### N-Dim Parallel With M Reductions
+#### Future Upstream N-Dim Parallel With M Reductions
 
 The single-dimensional, multi-result discussion above does not by
 itself pin the IR shape for the multi-dimensional case. This
 subsection extends the partial-and-merge scheme to a `scf.parallel`
 over `N` parallel dimensions with `M` reduction results.
 
-**Generated loop-nest layout.** After parallel-SCF normalization (per
+**Generated loop-nest layout.** After future upstream parallel-SCF normalization (per
 `docs/spec-compiler-part-3-impl.md` Section 1.8), an `N`-dim `scf.parallel`
 becomes one or more `scf.for` loop nests that share a single
 parallel-provenance group, plus any required reduction-merge
@@ -1925,8 +1943,8 @@ The seed at the outer per-chunk loop's iter_arg is the dummy seed
 loop's final tuple; the outermost per-chunk loop yields the
 chunk-tuple's `(valid, partial_r)` pair. Without this pass-through
 each outer-loop iteration would restart the inner reduction from
-the seed and lose the accumulated partial. An equivalent canonical
-representation flattens the intra-chunk N-D iteration space into a
+the seed and lose the accumulated partial. An equivalent future upstream
+representation may flatten the intra-chunk N-D iteration space into a
 single linearized `scf.for`, in which case each reduction has a
 single `iter_arg` on that one loop. Implementations may choose
 either canonical form.
@@ -2000,7 +2018,7 @@ outermost per-chunk loop into the merge `scf.if`; this is the same
 pass-through-through-all-dims rule as the multi-chunk case, just
 without the outer K-chunk wrapper. The reduction iter_args still
 do their actual update at the innermost per-chunk loop's body, but
-they are not hung directly on that innermost loop alone. An
+they are not hung directly on that innermost loop alone. An upstream
 implementation that flattens the intra-chunk N-D iteration space
 into a single linearized `scf.for` is the equivalent canonical
 form and may carry each reduction as a single iter_arg on that one
@@ -2025,7 +2043,7 @@ K-chunk nest entirely.
 }
 ```
 
-For the implementation choice `K_i = K_j = 2` (two chunks per dim,
+For a future upstream implementation choice `K_i = K_j = 2` (two chunks per dim,
 four chunk-tuples total), the normalized loop nest has the shape:
 
 ```mlir
@@ -2104,17 +2122,19 @@ extends the running accumulators' iter_arg threading through it;
 the per-chunk-tuple body and the per-reduction `%iter_arg`
 placement on the innermost per-chunk loop are unchanged.
 
-After normalization, all generated `scf.for` and `scf.if` operations
-use the templates in this section. Their stream, carry, gate,
-demux, mux, and memory-order behavior is inherited from those templates.
+After future upstream normalization, all generated `scf.for` and `scf.if`
+operations use the supported sequential templates in this section. Their
+stream, carry, gate, demux, mux, and memory-order behavior is inherited from
+those templates.
 
 #### Parallel Boundary Translation
 
 There is no parallel boundary translation in the current graph owner. An
-upstream transformation must resolve ownership and schedule, prove legality,
-and emit supported structured input. If it leaves raw parallel SCF, lowering
-fails atomically. Traversal order is never used to invent a cross-iteration
-memory order.
+upstream Structured Program Candidate must select the P[] representation,
+resolve ownership and schedule, prove legality, and emit supported sequential
+structured input. If it leaves graph-owned raw `scf.parallel` or
+`scf.forall`, lowering fails atomically before graph mutation. Traversal order
+is never used to invent a cross-iteration memory order.
 
 ### 6.6 `scf.index_switch`
 

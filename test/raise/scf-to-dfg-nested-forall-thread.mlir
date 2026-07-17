@@ -1,5 +1,10 @@
 // RUN: loom-raise-opt --loom-lower-for-to-graph %s | FileCheck %s
 
+// This legacy nested-forall anchor tests only the narrow for-to-graph
+// extraction pass. It is not end-to-end full-pipeline acceptance: downstream
+// graph lowering rejects residual graph-owned scf.forall until upstream
+// Structured Program Candidate processing has selected a P[] representation.
+
 module {
   func.func @launch(%dst: !llvm.ptr) {
     %c4 = arith.constant 4 : index
