@@ -1,4 +1,5 @@
 add_mlir_library(LoomCommon
+  ArtifactText.cpp
   HwShareGroup.cpp
   IndexWidth.cpp
   LoomConstants.cpp

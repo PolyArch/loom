@@ -16,6 +16,12 @@ Mapping preserves source names through aliases to the Common types. Loom does
 not preserve the old internal C++ mangled ABI and defines no compatibility
 wrapper, second representation, or conversion path.
 
+`include/Common/ArtifactText.h` owns canonical `X.Y` schema-version text and
+lowercase hexadecimal `ArtifactIdentity` text. Individual artifact schemas
+still own their supported schema identities and versions, and contextual typed
+references still own nonempty-identity validation. These text codecs assign no
+digest algorithm, artifact-finalization, or content-addressing semantics.
+
 ## Metric Registry
 
 The closed registry contains only metrics used by this slice:

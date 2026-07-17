@@ -10,6 +10,7 @@ target_include_directories(LoomEvaluation PUBLIC
 )
 
 target_link_libraries(LoomEvaluation PUBLIC
+  LoomCommon
   LLVMSupport
   Threads::Threads
 )

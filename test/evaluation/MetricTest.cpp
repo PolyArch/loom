@@ -1,5 +1,6 @@
 #include "Evaluation/Metric.h"
 #include "Common/Artifact.h"
+#include "Common/ArtifactText.h"
 #include "Mapping/Artifact.h"
 
 #include "llvm/Support/Error.h"
@@ -89,6 +90,57 @@ void sharedArtifactAtomsAreSingleSource() {
           "Mapping reference lost the common artifact identity");
   require(__func__, commonReference.entity == loom::mapping::ActorId(7),
           "Mapping reference lost its typed entity ID");
+}
+
+void schemaVersionTextCodecIsCanonical() {
+  const std::vector<std::pair<SchemaVersion, std::string>> canonical = {
+      {{0, 0}, "0.0"},
+      {{1, 0}, "1.0"},
+      {{std::numeric_limits<std::uint32_t>::max(),
+        std::numeric_limits<std::uint32_t>::max()},
+       "4294967295.4294967295"},
+  };
+
+  for (const auto &[version, spelling] : canonical) {
+    require(__func__, formatSchemaVersion(version) == spelling,
+            "schema version formatting changed for " + spelling);
+    SchemaVersion parsed = takeExpected(__func__, parseSchemaVersion(spelling));
+    require(__func__, parsed == version,
+            "schema version parsing changed for " + spelling);
+    require(__func__, formatSchemaVersion(parsed) == spelling,
+            "schema version round trip was not canonical for " + spelling);
+  }
+
+  for (llvm::StringRef spelling :
+       {"",     "1",    "1.",   ".1",           "1.0.0",        "+1.0", "-1.0",
+        "1.+0", "1.-0", " 1.0", "1.0 ",         "1 .0",         "1. 0", "01.0",
+        "1.00", "00.0", "0.01", "4294967296.0", "0.4294967296", "1.a"})
+    expectErrorContains(__func__, parseSchemaVersion(spelling),
+                        "schema version");
+}
+
+void artifactIdentityTextCodecIsCanonical() {
+  const ArtifactIdentity empty;
+  require(__func__, formatArtifactIdentityHex(empty).empty(),
+          "empty artifact identity did not format as empty text");
+  require(__func__,
+          takeExpected(__func__, parseArtifactIdentityHex("")) == empty,
+          "empty artifact identity did not round-trip");
+
+  const ArtifactIdentity identity({0x00, 0x01, 0xab, 0xff});
+  const std::string spelling = "0001abff";
+  require(__func__, formatArtifactIdentityHex(identity) == spelling,
+          "artifact identity formatting changed");
+  ArtifactIdentity parsed =
+      takeExpected(__func__, parseArtifactIdentityHex(spelling));
+  require(__func__, parsed == identity, "artifact identity parsing changed");
+  require(__func__, formatArtifactIdentityHex(parsed) == spelling,
+          "artifact identity round trip was not canonical");
+
+  for (llvm::StringRef malformed :
+       {"0", "abc", "AB", "0g", "g0", " 0", "0 ", "0\t", "\n0"})
+    expectErrorContains(__func__, parseArtifactIdentityHex(malformed),
+                        "artifact identity");
 }
 
 void metricRegistryIsClosedAndTyped() {
@@ -496,6 +548,8 @@ void canonicalJsonIsStableAndStrict() {
 
 int main() {
   sharedArtifactAtomsAreSingleSource();
+  schemaVersionTextCodecIsCanonical();
+  artifactIdentityTextCodecIsCanonical();
   metricRegistryIsClosedAndTyped();
   decimalValuesNormalizeCanonically();
   observationValidationRejectsIllegalCombinations();

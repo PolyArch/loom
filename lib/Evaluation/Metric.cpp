@@ -1,4 +1,5 @@
 #include "Evaluation/Metric.h"
+#include "Common/ArtifactText.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Twine.h"
@@ -61,10 +62,6 @@ const std::array<MetricDescriptor, 3> metricDescriptors = {{
 
 llvm::Error metricError(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
-}
-
-std::string schemaVersionString(SchemaVersion version) {
-  return std::to_string(version.major) + "." + std::to_string(version.minor);
 }
 
 template <typename Enum>
@@ -249,40 +246,6 @@ requireObject(const llvm::json::Object &object, llvm::StringRef key,
   return value;
 }
 
-std::string artifactIdentityString(const ArtifactIdentity &identity) {
-  static constexpr char hex[] = "0123456789abcdef";
-  std::string result;
-  result.reserve(identity.bytes().size() * 2);
-  for (std::uint8_t byte : identity.bytes()) {
-    result.push_back(hex[byte >> 4]);
-    result.push_back(hex[byte & 0x0f]);
-  }
-  return result;
-}
-
-llvm::Expected<ArtifactIdentity>
-parseArtifactIdentity(llvm::StringRef spelling) {
-  if ((spelling.size() % 2) != 0)
-    return metricError("artifact identity must contain whole bytes");
-  std::vector<std::uint8_t> bytes;
-  bytes.reserve(spelling.size() / 2);
-  auto nibble = [](char value) -> std::optional<std::uint8_t> {
-    if (value >= '0' && value <= '9')
-      return static_cast<std::uint8_t>(value - '0');
-    if (value >= 'a' && value <= 'f')
-      return static_cast<std::uint8_t>(value - 'a' + 10);
-    return std::nullopt;
-  };
-  for (std::size_t index = 0; index < spelling.size(); index += 2) {
-    std::optional<std::uint8_t> high = nibble(spelling[index]);
-    std::optional<std::uint8_t> low = nibble(spelling[index + 1]);
-    if (!high || !low)
-      return metricError("artifact identity must use lowercase hexadecimal");
-    bytes.push_back(static_cast<std::uint8_t>((*high << 4) | *low));
-  }
-  return ArtifactIdentity(std::move(bytes));
-}
-
 void writeMetricValue(llvm::json::OStream &json, const MetricValue &value) {
   json.object([&] {
     if (const auto *integer = std::get_if<IntegerValue>(&value)) {
@@ -306,7 +269,7 @@ void writeScope(llvm::json::OStream &json, const MetricScope &scope) {
     const MetricEntityReference &entity =
         std::get<MetricEntityReference>(scope);
     json.attribute("kind", "entity");
-    json.attribute("artifact", artifactIdentityString(entity.artifact));
+    json.attribute("artifact", formatArtifactIdentityHex(entity.artifact));
     json.attribute("entity_id", entity.entity.value());
   });
 }
@@ -414,7 +377,7 @@ llvm::Expected<MetricScope> parseMetricScope(const llvm::json::Object &object) {
     auto artifactSpelling = requireString(object, "artifact", "metric scope");
     if (!artifactSpelling)
       return artifactSpelling.takeError();
-    auto artifact = parseArtifactIdentity(*artifactSpelling);
+    auto artifact = parseArtifactIdentityHex(*artifactSpelling);
     if (!artifact)
       return artifact.takeError();
     auto entity = requireUnsigned(object, "entity_id", "metric scope");
@@ -652,7 +615,7 @@ llvm::Expected<std::string> serializeMetricQuery(const MetricQuery &query) {
   json.object([&] {
     json.attribute("schema", metricQuerySchemaIdentity);
     json.attribute("schema_version",
-                   schemaVersionString(metricQuerySchemaVersion));
+                   formatSchemaVersion(metricQuerySchemaVersion));
     json.attribute("metric", toString(query.metric));
     json.attributeBegin("scope");
     writeScope(json, query.scope);
@@ -682,7 +645,10 @@ llvm::Expected<MetricQuery> parseMetricQuery(llvm::StringRef json) {
       requireString(*root, "schema_version", "evaluation.metric_query root");
   if (!version)
     return version.takeError();
-  if (*version != schemaVersionString(metricQuerySchemaVersion))
+  auto parsedVersion = parseSchemaVersion(*version);
+  if (!parsedVersion)
+    return parsedVersion.takeError();
+  if (*parsedVersion != metricQuerySchemaVersion)
     return metricError("unsupported evaluation.metric_query version '" +
                        *version + "'");
 
@@ -780,7 +746,7 @@ serializeMetricObservation(const MetricObservation &observation) {
   llvm::json::OStream json(output);
   json.object([&] {
     json.attribute("schema", metricSchemaIdentity);
-    json.attribute("schema_version", schemaVersionString(metricSchemaVersion));
+    json.attribute("schema_version", formatSchemaVersion(metricSchemaVersion));
     json.attribute("metric", toString(observation.metric));
     json.attributeBegin("scope");
     writeScope(json, observation.scope);
@@ -815,7 +781,10 @@ llvm::Expected<MetricObservation> parseMetricObservation(llvm::StringRef json) {
       requireString(*root, "schema_version", "evaluation.metric root");
   if (!version)
     return version.takeError();
-  if (*version != schemaVersionString(metricSchemaVersion))
+  auto parsedVersion = parseSchemaVersion(*version);
+  if (!parsedVersion)
+    return parsedVersion.takeError();
+  if (*parsedVersion != metricSchemaVersion)
     return metricError("unsupported evaluation.metric version '" + *version +
                        "'");
 
