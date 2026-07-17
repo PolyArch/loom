@@ -26,6 +26,7 @@ set(LOOM_TEST_DEPENDS
   loom-coverage-test
   loom-dfg-sim
   loom-evaluation-metric-test
+  loom-evaluation-tool-runner-test
   loom-fabric-elaboration-alias-chain-test
   loom-fabric-elaboration-api-test
   loom-fabric-elaboration-header-test

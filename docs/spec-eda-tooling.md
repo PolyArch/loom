@@ -168,6 +168,10 @@ kinds are:
 * FPGA report;
 * normalized FPA report specified in `docs/spec-fpa-estimation.md`.
 
+Structured local process execution is owned by
+`docs/spec-evaluation-tool-runner.md`; EDA adapters retain ownership of
+tool-specific report parsing and normalization.
+
 Adapters normalize backend-specific output into Loom reports. Backend
 log text is evidence, but normalized reports are the stable interface
 used by DSE and user-facing summaries.

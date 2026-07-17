@@ -1,5 +1,6 @@
 add_library(LoomEvaluation
   Metric.cpp
+  ToolRunner.cpp
 )
 
 target_include_directories(LoomEvaluation PUBLIC
