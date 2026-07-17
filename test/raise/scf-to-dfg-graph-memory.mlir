@@ -15,12 +15,12 @@
 // CHECK: %[[LOAD_BYTE:.*]] = arith.muli %[[STREAM]], %[[LOAD_STRIDE]] : i64
 // CHECK: %[[LOAD_ELEM:.*]] = arith.shrsi %[[LOAD_BYTE]], %{{.*}} : i64
 // CHECK: %[[LOAD_IDX:.*]] = arith.index_cast %[[LOAD_ELEM]] : i64 to index
-// CHECK: dataflow.load %[[MEM]][%[[LOAD_IDX]]] %arg0 : memref<?xf32>
+// CHECK: %{{.*}}, %[[LOAD_DONE:.*]] = dataflow.load %[[MEM]][%[[LOAD_IDX]]] %arg0 : memref<?xf32>
 // CHECK: %[[STORE_STRIDE:.*]] = arith.constant 4 : i64
 // CHECK: %[[STORE_BYTE:.*]] = arith.muli %[[STREAM]], %[[STORE_STRIDE]] : i64
 // CHECK: %[[STORE_ELEM:.*]] = arith.shrsi %[[STORE_BYTE]], %{{.*}} : i64
 // CHECK: %[[STORE_IDX:.*]] = arith.index_cast %[[STORE_ELEM]] : i64 to index
-// CHECK: dataflow.store %[[MEM]][%[[STORE_IDX]]] %{{.*}} %arg0 : memref<?xf32>
+// CHECK: dataflow.store %[[MEM]][%[[STORE_IDX]]] %{{.*}} %[[LOAD_DONE]] : memref<?xf32>
 // CHECK-NOT: llvm.load
 // CHECK-NOT: llvm.store
 dataflow.graph.func private @g_canonical(%arg0: none, %arg1: i64, %arg2: i64,
@@ -47,7 +47,7 @@ dataflow.graph.func private @g_canonical(%arg0: none, %arg1: i64, %arg2: i64,
 // CHECK-NOT: arith.shrsi
 // CHECK: %[[INBOUNDS_ADDR:.*]] = arith.index_cast %[[INBOUNDS_INDEX]] : i64 to index
 // CHECK: %[[INBOUNDS_DATA:.*]], %[[INBOUNDS_DONE:.*]] = dataflow.load %[[INBOUNDS_MEM]][%[[INBOUNDS_ADDR]]] %arg0 : memref<?xi32>
-// CHECK: dataflow.store %[[INBOUNDS_MEM]][%[[INBOUNDS_ADDR]]] %[[INBOUNDS_DATA]] %arg0 : memref<?xi32>
+// CHECK: dataflow.store %[[INBOUNDS_MEM]][%[[INBOUNDS_ADDR]]] %[[INBOUNDS_DATA]] %[[INBOUNDS_DONE]] : memref<?xi32>
 // CHECK-NOT: llvm.getelementptr
 // CHECK-NOT: llvm.load
 // CHECK-NOT: llvm.store

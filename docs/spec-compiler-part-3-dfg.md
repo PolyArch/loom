@@ -78,20 +78,18 @@ symbols holding ordinary HostCore or ScalarCore code; module-level
 `dataflow.thread.launch` ops; and module-level `dataflow.graph`
 definitions reached by zero or more `dataflow.graph.launch` ops
 inside thread definitions. No `scf.*` op is left inside any
-`dataflow.graph` definition's body. All `scf` ops are
-supported inside accelerator regions:
-`scf.if`, `scf.while` with `scf.condition`, `scf.for` with
-`scf.yield`, `scf.forall` with `scf.forall.in_parallel`,
-`scf.parallel` with `scf.reduce` and `scf.reduce.return`,
-`scf.index_switch`, `scf.execute_region`. Tensor-result aggregation
-in `scf.forall` is supported by materializing
-`scf.forall.in_parallel` combining actions into explicit
-destination-buffer effects before thread promotion. The
+`dataflow.graph` definition's body after successful graph-region lowering.
+The implemented recursive graph owner accepts arbitrary nesting of
+`scf.if`, source-sequential `scf.for`, and `scf.while`. Other SCF forms must
+be normalized by their owning transformation before they reach a graph.
+Residual `scf.parallel` and `scf.forall` fail before any graph is mutated;
+the graph owner does not infer ownership, width, serialization, unrolling,
+or reduction order. The
 `dataflow.thread.launch` op carries the completion token and
 mapped-memory data transfer; the def remains a callable kernel
 body, not a tensor-result returning op. Memory dependence
-construction runs in this part; alias analysis is only the
-conflict oracle used by that builder (see
+construction runs in the recursive graph owner using basic graph-local alias
+roots and per-partition write/read frontiers (see
 `docs/spec-compiler-part-3-mem.md`).
 Graph placement inside each thread is governed by the L2 placement
 instance specified by the placement framework and by the implementation
@@ -267,22 +265,13 @@ each rule lands in IR.
    `dataflow.thread.launch` op must be the direct SSA result of one
    `dataflow.map_info` op in the launch's enclosing context, before
    being consumed inside the thread definition's body.
-5. Memory dependence construction runs in the front-end. Alias
-   analysis answers whether two memory accesses can conflict; program
-   order and structured-control-flow order give edge direction; the
-   dependence builder wires `ctrl` and `done` tokens inside each graph.
-   Front-end passes that need alias information must obtain it only
-   through the `MemAliasOracle` C++ interface; bypassing the interface
-   to call upstream MLIR analysis APIs directly is forbidden. Two
-   implementations ship in the same library and are interchangeable
-   through that interface: a simple SSA-source-of-memref oracle and a
-   stronger oracle based on `mlir::AliasAnalysis`. The basic oracle
-   is the baseline default. The stronger oracle is a refinement policy
-   whose output must remain structurally compatible with the basic
-   oracle while allowing fewer dependence predecessors where MLIR AA
-   proves `MustNotAlias`. The
-   compositional chain model and the oracle / builder / loop-state /
-   wiring details are specified in
+5. Graph-local memory ordering is constructed in the front-end by one
+   recursive graph-region owner. It discovers basic root alias partitions,
+   threads independent write and read frontiers through sequential and
+   structured control, and emits ordinary Dataflow event edges. Unknown
+   accesses conservatively cover every known partition. There is no
+   persistent alias oracle, dependence snapshot, or later wiring pass. The
+   complete transfer rules are specified in
    `docs/spec-compiler-part-3-mem.md`.
 6. `loom.acc_region` is the explicit AccCore selection boundary
    consumed by this part. `scf.forall` with a
@@ -404,21 +393,18 @@ each rule lands in IR.
   consumed as a `dataflow.thread.launch` body operand. Direction
   and optional bound information live as attributes on the producing
   op, not on the result type.
-* **`MemAliasOracle`.** The C++ interface (canonical spelling
-  matches the C++ class name) returning
-  `MustNotAlias` / `MayAlias` / `MustAlias` for any pair of memory
-  access ops inside one `dataflow.graph` definition's body. It
-  answers conflict only; it does not define execution order.
-  Specified in `docs/spec-compiler-part-3-mem.md` Section 3.
-* **Memory dependence edge.** A directed edge `p -> o` saying memory
-  access `o` must wait for memory access `p` before issuing its
-  side effect or externally visible read. Specified in
-  `docs/spec-compiler-part-3-mem.md` Section 4.
+* **Basic alias partition.** A graph-local compiler analysis bucket keyed by
+  a recognized memory root. View-like values are peeled to their root;
+  unknown accesses cover every known root and one unknown bucket. Partition
+  identity is not written into IR.
+* **Memory dependence edge.** An ordinary `none` SSA causal edge emitted by
+  the recursive graph owner from the current per-partition frontier. No
+  persistent dependence snapshot is retained.
 * **Loop-carried memory state.** The canonical
   `(write_frontier, read_frontier)` pair carried recursively for one
-  alias partition. Its concrete `none`-typed SSA representation is
-  pending. Specified in
-  `docs/spec-compiler-part-3-mem.md` Section 5.
+  alias partition. Touched components are materialized with independent
+  `dataflow.carry` and false/true `dataflow.demux` projections. Specified in
+  `docs/spec-compiler-part-3-mem.md`.
 * **Phase bit.** A loop-control bit produced by `dataflow.stream` for
   counted loops: it fires `true` once per body iteration and one
   trailing `false` token that closes the activation. The combined
@@ -439,8 +425,8 @@ each rule lands in IR.
   `dataflow.graph` definition's body. Each per-partition state pair
   (see Section 2.4 of
   `docs/spec-compiler-part-3-mem.md`) flows through its own
-  memory-order tokens; the leaf rendezvous in Section 6.4 of that
-  document combines a structural permission token with a
+  memory-order tokens; the leaf transfer in that document combines a
+  structural permission token with a
   memory-order predecessor token at each load / store. Memory-order
   tokens do not encode dynamic execution path (that is the
   structural execution role of Section 2.1 there).
@@ -917,10 +903,26 @@ traits:
 
 ## 6. Per-scf Lowering Templates
 
-This section gives the canonical pseudocode template for each
-`scf` op in terms of dataflow primitives. The supported op list in
-"Scope and Contract" maps these templates: implement and lit-test the
-simpler ops first.
+The implemented graph-region owner is `loom-lower-graph-memory`. It lowers
+execution permission, captured values, and per-partition
+`(write_frontier, read_frontier)` state in one recursive traversal. The
+compiler-local transfer is:
+
+```text
+lower_region(E_in, values_in, {W_in[p], R_in[p]})
+  -> (E_out, values_out, {W_out[p], R_out[p]})
+```
+
+This transfer is not an IR object. The final graph contains only ordinary SSA
+values and the existing Dataflow primitives. Memref bindings remain static;
+only values, addresses, data, selectors, and event streams are projected.
+Leaf memory completion updates `W/R` but never silently replaces execution
+permission.
+
+This section records Dataflow templates for SCF boundaries. The current
+recursive owner implements only `scf.if`, source-sequential `scf.for`, and
+`scf.while`; other subsections are explicitly marked as upstream or deferred
+contracts and are rejected if they remain in a graph.
 
 The dataflow primitive set is
 (`stream`, `carry`, `invariant`, `gate`, `mux`, `demux`, `sync`,
@@ -976,10 +978,10 @@ streams. A memref-typed structured-control result inside graph
 extraction must be rewritten to explicit memory effects, kept in
 ScalarCore code, or rejected before graph lowering.
 
-The templates below show user-visible SSA value lowering. Loop-carried
-memory ordering is added by the compositional chain model in
-`docs/spec-compiler-part-3-mem.md` as hidden `none`-typed state; it is
-not an optional optimization.
+The templates below show user-visible SSA value lowering. The same recursive
+owner threads independent `none`-typed write and read frontiers through each
+boundary as specified in `docs/spec-compiler-part-3-mem.md`; this is not an
+optional optimization or a later reconstruction pass.
 
 ### Def + Launch Output Convention
 
@@ -1127,31 +1129,16 @@ position.
 
 #### If Boundary Translation
 
-This template instantiates the boundary translation contract of
-`docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.if`.
+This translation is implemented by the recursive graph owner. The condition
+demuxes execution, captured non-memref values, and both frontier components
+for every partition touched by either branch. Each branch is lowered
+recursively. The same condition then muxes execution, each result position,
+`W_P`, and `R_P` componentwise.
 
-**Structural plane.** The compound's `struct_in` enters
-`demux %cond` at the entry, splitting into a then-lane structural-
-permission token and an else-lane structural-permission token. Each
-inner region is its own chain scope per
-`docs/spec-compiler-part-3-mem.md` Section 2.2 and uses its lane's token as
-its `S.struct_at_*` source per
-`docs/spec-compiler-part-3-mem.md` Section 6.2. The compound's `struct_done`
-is `mux %cond` over the two branches' `struct_done` tokens, following
-the Section 6 selector convention (lane 0 = false-lane = else, lane 1 =
-true-lane = then). The same `mux` shape is reused for any data
-result of the `scf.if`.
-
-**Memory plane (target contract).** Each branch receives the same incoming
-`(W_P, R_P)` pair logically and applies the recursive transfer from
-`docs/spec-compiler-part-3-mem.md` under its selected execution permission.
-The compound joins the two resulting pairs componentwise with `%cond`.
-A branch with no access forwards both components unchanged. `scf.if`
-introduces no loop-carried memory state.
-
-The concrete selector-safe SSA projection for both components is part of the
-pending recursive pair lowering. It must not be replaced by treating the
-structural branch token as a memory frontier.
+A missing else is an identity false lane. An unexecuted path forwards its
+incoming frontier and never performs a safe-address access or emits a fake
+completion. Same-path prerequisites use `sync`; mutually exclusive exits use
+`mux`. Execution remains distinct from both memory components.
 
 ### 6.2 `scf.while` with `scf.condition`
 
@@ -1175,7 +1162,7 @@ executes `K + 1` times. The `scf.condition` operands are therefore in
 before phase: true-cycle operands enter the after region; the single
 false-cycle operand tuple becomes the while result tuple.
 
-Canonical lowering skeleton:
+Emitted lowering skeleton:
 
 ```
 # Structural loop entry and loop-back control. This exists even when
@@ -1191,16 +1178,13 @@ Canonical lowering skeleton:
 #   %before_done : none, the tail of before-region side effects
 
 # scf.condition true operands enter after; false operands are results.
-# Lane convention: lane 0 = false, lane 1 = true. demux yields
-# (false-lane, true-lane); mux operand order is (false-lane,
-# true-lane).
+# Lane convention: lane 0 = false, lane 1 = true.
 %b_exit_j, %b_after_j =
   demux %cond, %b_j : (i1, B_j) -> (B_j, B_j)
 
-# The same before tail opens the after execution stream and produces an
-# after-local close stream.
-%after_rwc, %after_ctrl =
-  gate %cond, %before_done : none
+# The recursively lowered before exit is projected with the same selector.
+%while_done, %after_ctrl =
+  demux %cond, %before_done : (i1, none) -> (none, none)
 
 # The after region consumes %after_ctrl and %b_after_j..., then
 # produces:
@@ -1215,38 +1199,23 @@ Canonical lowering skeleton:
 * `%cond` is the i1 token computed by the before-region's
   `scf.condition`. There is no `stream` op here; an arbitrary `i1`
   stream produced by before-region computation drives the loop.
-* The before-region executes once more than the after-region. The
-  `gate` on `%before_done` captures that phase relation:
-  `%after_ctrl` has exactly one token per after execution, while
-  `%after_rwc` is the after-region's local close stream. A true
-  `%after_rwc` token means the corresponding after execution is not
-  the last one; a false token means it is the last one.
-* `%after_rwc` is not an after-entry token. It must not be placed on
-  the critical path that completes the same after execution. Otherwise
-  the first after execution would wait for an `%after_rwc` token that
-  is only produced after the next before execution, creating a cycle:
-  after completion -> next before -> `%after_rwc` -> same after
-  completion. After-region main computation is started by
-  `%after_ctrl` and `%b_after_j`; after-local stateful streaming ops
-  may use `%after_rwc` to advance or reset state for subsequent
-  after executions.
-* `%b_exit_j` becomes the loop result. `demux` is required because
-  `gate` intentionally drops the false-cycle value.
+* The before-region executes once more than the after-region. Demuxing the
+  before exit gives exactly `K` after permissions and one while exit. The
+  final false before execution is therefore part of loop completion.
+* `%b_exit_j` becomes the loop result. The same selector projects values,
+  execution, and memory-frontier components into matching phases.
 * Each `%a_next_i` has length `K`, one value from each after-region
   execution. `dataflow.carry` consumes a next value only with
   `cond=true`; `cond=false` closes and resets the carry without
   consuming feedback.
 * Before-region invariants use the before-phase `%cond` stream.
-  After-region-only invariants must be projected into after phase; a
-  robust lowering first replays the value in before phase, then routes
-  it through `gate %cond`. This keeps zero-trip loops from producing
-  an after-only value.
-* For each loop-carried memory partition, the loop also has a hidden
-  `none` carry following the same structure as `%iter_ctrl`. The
-  before-region starts from that partition's incoming memory state.
-  On the true path, the after-region tail feeds the next iteration's
-  memory state. On the false path, the before-region tail is the
-  loop-exit memory state. This preserves memory effects performed by
+  After-region-only invariants are replayed in before phase and projected
+  through a true-lane demux. This keeps zero-trip loops from producing an
+  after-only value.
+* Each touched partition has independent write-frontier and read-frontier
+  carries following the same structure as `%iter_ctrl`. Before starts from
+  their outputs. True lanes enter after and feed the next before activation;
+  false lanes are the loop exits. This preserves memory effects performed by
   the final condition-checking iteration.
 
 For `K = 2`, the dynamic sequence is:
@@ -1269,48 +1238,26 @@ The corresponding token lengths are:
 | `%b_after_j` | `[b0, b1]` |
 | `%b_exit_j` | `[b2]` |
 | `%after_ctrl` | `[before_done0, before_done1]` |
-| `%after_rwc` | `[T, F]` |
+| `%while_done` | `[before_done2]` |
 | `%a_next_i` | `[a1, a2]` |
 
 The final `%cond = false` token is consumed without `%a_next_i` or
 `%after_done`. It emits no new before value and returns each carry to
-its init state. This actor rule does not select the representation of
-loop-carried memory state; that remains the pair-level contract in
-`docs/spec-compiler-part-3-mem.md`.
+its init state. Independent write-frontier and read-frontier carries follow
+the same selector contract in `docs/spec-compiler-part-3-mem.md`.
 
 #### While Boundary Translation
 
-This template instantiates the boundary translation contract of
-`docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.while`.
+This translation is implemented with condition-driven carry rings for
+execution, source inits, and each touched `W_P/R_P` component. Carry outputs
+enter before directly. After before is lowered, the false lanes are the while
+execution, result, and frontier exits; true lanes enter after. After exits
+feed the next before activation.
 
-**Structural plane.** The compound's `struct_in` initializes the
-structural carry `%iter_ctrl = carry %cond, %entry_ctrl,
-%after_done`. The before-region is its own chain scope and uses
-`%iter_ctrl` as its `S.struct_at_*` source. The after-region is a
-separate chain scope; its structural-permission source is
-`%after_ctrl` from `gate %cond, %before_done` per the while
-structural template. The compound's `struct_done` is the false-cycle exit
-projection of the carry, equivalently the false-lane of `demux %cond,
-%before_done` reused at the boundary. The before-region executes
-`K + 1` times for `K` after-region executions, matching the structural
-template.
-
-**Memory plane (target contract).** For each touched alias partition `P`,
-the while boundary recursively carries the canonical
-`(W_P, R_P)` pair from `docs/spec-compiler-part-3-mem.md`. The
-before-region executes on every condition check, including the final false
-check, and applies its transfer to the incoming pair. On a true condition,
-the resulting pair enters the after-region and the after-region's result
-feeds the next condition check. On a false condition, the final
-before-region pair is the loop's outgoing pair. Zero-trip execution therefore
-still includes memory effects from the first before-region check.
-
-Execution permission for the before and after regions is derived from the
-structural template above and remains separate from both memory frontiers.
-The exact SSA topology that carries and projects both components through
-`scf.while` is pending. No single carried token is the canonical partition
-state, and the current frontend does not yet implement this recursive pair
-lowering.
+Before therefore executes `K + 1` times when after executes `K`. The final
+false before effects are included in the outgoing pair. A final-false read
+updates `R_P` at loop exit and a following write must wait for it. False does
+not consume dummy feedback.
 
 ### 6.3 `scf.for` with `scf.yield`
 
@@ -1335,10 +1282,8 @@ Lowering:
 # type (see docs/spec-dataflow-part-1-streaming.md). The lowering
 # therefore inserts arith.index_cast at the boundary: %lb / %ub /
 # %step are cast from index to a chosen iN, and the body IV %i is
-# cast back to index before memref indexing. The chosen iN
-# is the smallest signless int wide enough to hold the loop's bound
-# range; iN here is shorthand for that choice (typically i32 or
-# i64).
+# cast back to index before memref indexing. The chosen iN is Loom's
+# configured index-width integer type.
 
 %lb_iN, %ub_iN, %step_iN  = arith.index_cast %lb, %ub, %step : index to iN
 %i_iN, %loop_phase = stream %lb_iN, %ub_iN, %step_iN
@@ -1346,10 +1291,9 @@ Lowering:
 %i = arith.index_cast %i_iN : iN to index
 # body memory and address computation consume %i directly
 
-# Optional structured control stream when body side effects need one:
-%ctrl_raw = invariant %loop_phase, %ctrl_in : none
-%body_phase, %body_ctrl = gate %loop_phase, %ctrl_raw : none
-%loop_exit_ctrl, %unused_ctrl =
+# Source-sequential execution recurrence and zero-trip exit:
+%ctrl_raw = carry %loop_phase, %ctrl_in, %body_done : none
+%loop_exit_ctrl, %body_ctrl =
   demux %loop_phase, %ctrl_raw : (i1, none) -> (none, none)
 ```
 
@@ -1359,17 +1303,15 @@ For `N` dynamic body executions:
 |--------|--------|---------|
 | `%loop_phase` | `N + 1` | `N` true tokens plus one false close |
 | `%i_iN` / `%i` | `N` | body induction values |
-| `%ctrl_raw` | `N + 1` | optional repeated control token |
-| `%body_ctrl` | `N` | optional body control tokens |
-| `%body_phase` | `N` | body-local phase, empty when `N = 0` |
-| `%loop_exit_ctrl` | `1` | optional structured exit token |
+| `%ctrl_raw` | `N + 1` | initial permission plus body feedback |
+| `%body_ctrl` | `N` | source-sequential body permissions |
+| `%loop_exit_ctrl` | `1` | structured exit token |
 
 The no-result case has no data loop result to compute. The stream emits
-exactly one IV per body execution and no IV for the close transition.
-If the body contains memory side effects, their ctrl operands
-are wired by the compositional chain model in
-`docs/spec-compiler-part-3-mem.md`; `%body_ctrl` above is only the
-canonical structured-control source when such a token is needed.
+exactly one IV per body execution and no IV for the close transition. The
+recursively lowered body returns `%body_done`, which authorizes the next
+source iteration. Memory leaves additionally wait on their partition
+frontiers as specified in `docs/spec-compiler-part-3-mem.md`.
 Loop-invariant memref operands are not replayed with
 `dataflow.invariant`; they remain memory bindings on the lowered
 loads and stores.
@@ -1399,8 +1341,7 @@ Lowering:
 
 %acc_raw = carry %loop_phase, %init, %next : i32
 
-%body_phase, %acc_body = gate %loop_phase, %acc_raw : i32
-%acc_exit, %unused_acc =
+%acc_exit, %acc_body =
   demux %loop_phase, %acc_raw : (i1, i32) -> (i32, i32)
 
 # body executes only in body phase
@@ -1413,11 +1354,9 @@ Lowering:
 The iter-arg state stream is deliberately in loop phase, not body
 phase. `carry` sees `%loop_phase`, so it emits an `N + 1` state stream:
 the initial value, then one carried value after each true iteration.
-The same `%loop_phase` projects that state stream:
-
-* `gate` -> `%acc_body`, exactly `N` values consumed by the body;
-* false lane -> `%acc_exit`, exactly one value used as the loop
-  result.
+The same `%loop_phase` demuxes that state stream. The true lane produces
+exactly `N` `%acc_body` values and the false lane produces exactly one
+`%acc_exit` value used as the loop result.
 
 The feedback to `carry` has length `N`: `%next` is produced once per
 true iteration. On the final false phase, `carry` consumes no next
@@ -1429,7 +1368,6 @@ For `N = 0`:
 |--------|--------|
 | `%loop_phase` | `[F]` |
 | `%i` | `[]` |
-| `%body_phase` | `[]` |
 | `%acc_raw` | `[init]` |
 | `%acc_body` | `[]` |
 | `%next` | `[]` |
@@ -1442,7 +1380,6 @@ For `N = 1`:
 |--------|--------|
 | `%loop_phase` | `[T, F]` |
 | `%i` | `[0]` |
-| `%body_phase` | `[F]` |
 | `%acc_raw` | `[init, next0]` |
 | `%acc_body` | `[init]` |
 | `%next` | `[next0]` |
@@ -1455,7 +1392,6 @@ For `N = 2`:
 |--------|--------|
 | `%loop_phase` | `[T, T, F]` |
 | `%i` | `[0, 1]` |
-| `%body_phase` | `[T, F]` |
 | `%acc_raw` | `[init, next0, next1]` |
 | `%acc_body` | `[init, next0]` |
 | `%next` | `[next0, next1]` |
@@ -1463,65 +1399,38 @@ For `N = 2`:
 | `%sum` | `next1` |
 
 Multiple iter_args lower independently using the same pattern, one
-`carry` / `gate` / `demux` state ring per iter_arg. Body operations may
+`carry` / `demux` state ring per iter_arg. Body operations may
 freely combine the body-lane values from multiple iter_args before
 feeding the corresponding yielded values directly to their carries.
 Memref operands are not iter_arg-like stream state; only explicit
 `none` memory-order state is carried for memory dependences.
 
-* For each loop-carried memory partition, the loop has a hidden
-  `none` carry initialized by the memory state before the first
-  dynamic iteration. It follows the same loop-phase rule as iter_args:
-  the carry is driven by `%loop_phase`, body accesses consume the
-  gated state, and the false lane is the loop-exit
-  memory state. The zero-trip case forwards the initial memory state.
+* For each touched memory partition, the loop has independent hidden
+  `none` carries for `W_P` and `R_P`. Both are initialized from the incoming
+  frontier pair, driven by `%loop_phase`, sent to the body on the true lane,
+  and returned as loop exits on the false lane. The zero-trip case forwards
+  both initial components.
 
 #### For Boundary Translation
 
-This template instantiates the boundary translation contract of
-`docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.for`.
+This translation is implemented with one loop selector from
+`dataflow.stream` and independent `carry -> demux` rings for execution,
+iter_args, and each touched `W_P/R_P` component. True lanes enter the
+recursively lowered body; false lanes are loop exits. Captured non-memref
+values use `invariant` followed by true-lane projection.
 
-**Structural plane.** `dataflow.stream` produces the loop-level
-phase, which doubles as the structural selector. Both data-value
-template cases above (No Iter Args and With Iter Args) share the
-same structural-plane shape:
-
-* The compound's `struct_in` is replicated by `dataflow.invariant`
-  into the phase-driven parent ctrl stream. `gate %loop_phase,
-  %ctrl_raw` projects the body ctrl and body-local phase, while
-  `demux %loop_phase, %ctrl_raw` projects the false-lane
-  `%loop_exit_ctrl`.
-* The body region is a single chain scope under
-  `docs/spec-compiler-part-3-mem.md` Section 2.2 and uses the
-  body-phase ctrl as its `S.struct_at_*` source per
-  `docs/spec-compiler-part-3-mem.md` Section 6.2.
-* The compound's `struct_done` is `%loop_exit_ctrl`, taken
-  unchanged from the false-lane projection above. No additional
-  `dataflow.carry` is introduced on the structural plane; the
-  `dataflow.carry` rings present in the With Iter Args template
-  are data-value rings for iter_args, not structural-plane state.
-
-The structural plane is therefore independent of whether the
-loop has iter_args; the iter_args contribute additional
-data-value `carry` / `gate` / `demux` primitives that the data
-plane uses but that do not enter the structural plane wiring.
-
-**Memory plane (target contract).** For every touched alias partition `P`,
-the loop body is a recursive transfer of the canonical `(W_P, R_P)` pair
-defined in `docs/spec-compiler-part-3-mem.md`. A true loop phase applies
-the body transfer and feeds the resulting pair to the next iteration. A
-zero-trip loop forwards the incoming pair unchanged. Reads update only
-`R_P`; writes wait for `R_P` and assign their completion to both
-components, so RAR remains unordered while RAW, WAR, and WAW are preserved.
-
-The body execution permission comes from the structural projection above and
-is independent of the memory pair. The exact `dataflow` topology for
-carrying both components through `scf.for` is pending; the current frontend
-does not yet implement recursive per-partition pair lowering. In particular,
-the stream phase and a raw graph control value are not memory-completion
-frontiers.
+The body feeds every ring independently. Zero trip produces only the false
+selector token, so init execution, values, and frontier components transfer
+unchanged. Read-only state does not create RAR order; write feedback preserves
+RAW, WAR, and WAW across source-sequential iterations.
 
 ### 6.4 `scf.forall` with `scf.forall.in_parallel`
+
+**Implementation boundary.** The recursive graph owner does not perform the
+normalization described below. A residual `scf.forall` inside any graph causes
+the module-level pass to fail before mutation. Ownership, mapping,
+aggregation, and schedule provenance must already have been resolved by an
+earlier owner.
 
 `scf.forall` is not lowered directly to streaming dataflow ops. It is
 handled as a parallel-region normalization problem before ordinary SCF
@@ -1721,33 +1630,24 @@ decision, or emit a diagnostic before this template runs.
 
 #### Forall Boundary Translation
 
-This template instantiates the boundary translation contract of
-`docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.forall`.
-
-A mapped `scf.forall` is promoted to a `dataflow.thread` by
-`loom-build-thread-skeleton` (per
-`docs/spec-compiler-part-3-impl.md` Section 1.5) before the
-`dataflow.graph` chain model ever runs over it. Mapped foralls
-therefore never appear as compound atoms inside a chain scope;
-their launch and completion are governed by the
-`!dataflow.thread_token` async protocol, which is explicitly
-out of scope for the chain model per
-`docs/spec-compiler-part-3-mem.md` Section 2.9.
-
-An empty-mapping `scf.forall` does reach a chain scope. The pass
-`loom-build-memory-dependencies` (per
-`docs/spec-compiler-part-3-impl.md` Section 1.8) normalizes such a
-forall to `scf.parallel` and from there to one or more `scf.for`
-loop nests with parallel-provenance metadata. The compound that
-stands for the original forall in the chain is therefore the
-parallel-provenance compound described in Section 6.5 below.
+Mapped forall belongs to thread construction and must be removed before a
+graph definition is lowered. Any graph-owned parallel realization must also
+be normalized before the recursive graph owner runs. No forall boundary,
+partition id, or dependence summary survives into canonical graph IR.
 
 ### 6.5 `scf.parallel` with `scf.reduce`
 
-`scf.parallel` is not a second dataflow loop primitive. Part 3 first
-normalizes it to one or more ordinary `scf.for` loop nests, then reuses
-the already specified `scf.for` template. No new `dataflow.parallel`,
-`dataflow.reduce`, or reduction enum is introduced.
+**Implementation boundary.** The recursive graph owner does not choose a
+split factor, serialize iterations, unroll lanes, or choose reduction order.
+A residual `scf.parallel` inside any graph fails before mutation. The detailed
+normalization below is an upstream contract and must produce supported
+`scf.if`/`scf.for`/`scf.while` input before graph-region lowering.
+
+`scf.parallel` is not a second dataflow loop primitive. A future upstream
+schedule owner may normalize it to supported structured input after making
+the required ownership and order decisions. The current pipeline has no
+graph-local parallel normalization owner. No new `dataflow.parallel`,
+`dataflow.reduce`, or reduction enum is introduced by this slice.
 
 A user-written `scf.parallel` with a non-empty `mapping` attribute is
 rejected by Part 3. Mapping has Loom semantics only on
@@ -1758,31 +1658,29 @@ The important semantic difference from `scf.for` is the absence of a
 cross-iteration program order. The source `scf.parallel` iteration
 space may execute in any order and may execute concurrently. If two
 iterations race through memory, the source behavior is undefined.
-Therefore, the normalization must preserve a `parallel provenance`
-marker on the generated loop nests. The memory-dependence builder uses
-that marker to avoid inventing loop-carried memory order between
-different logical iterations or chunks of the same original
-`scf.parallel`.
+Therefore, schedule normalization must retain enough provenance to justify
+the selected realization. The recursive graph owner does not interpret such
+provenance or weaken loop recurrence: only an explicitly selected
+source-sequential realization may reach it as `scf.for`. Any residual
+parallel region fails before graph mutation.
 
-The normalization has a tunable split factor `K`. The pipeline option
-`--parallel-split-factor=<K>` controls this value; the default is
-`K = 1`, and `K` must be positive. The baseline policy applies one
-global split factor to every `scf.parallel` that reaches this
-normalization. There is no per-loop override in the baseline policy.
+The deferred normalization design below uses a positive split factor `K`.
+No `--parallel-split-factor` option or default `K` policy is implemented by
+the current pipeline, and the recursive graph owner must not choose one.
 The N-Dim Parallel With M Reductions subsection below permits the
 per-dim chunk count `K_d` to differ across dims under a cost-model-
 driven policy; the carry-placement and merge contract specified there
 is independent of the K choice, so per-dim K does not change the IR
 contract.
 
-* `K = 1` is the required baseline. The whole iteration domain becomes
-  one lexicographic `scf.for` loop nest.
+* `K = 1` is the proposed deferred baseline. The whole iteration domain
+  becomes one lexicographic `scf.for` loop nest.
 * `K > 1` is an exploration point. The iteration domain is partitioned
   into `K` ordered, disjoint chunks whose union is the original domain.
   Each chunk becomes an independent `scf.for` loop nest with the same
   body. Lowering those loop nests later naturally duplicates the
   stream/carry/gate DFG structure.
-* The implementation may initially split one selected dimension into
+* A future schedule owner may split one selected dimension into
   contiguous subranges whose boundaries are aligned to that dimension's
   step. The default selected dimension is the outermost dimension; a
   later cost model may choose another dimension, but the choice must be
@@ -1815,10 +1713,9 @@ contract.
   All chunk tails in one parallel-provenance group rendezvous into a
   group tail token. Any later memory access that must observe the
   parallel's memory effects depends on this group tail.
-* The provenance marker must be mechanically available to Part 3
-  lowering. It may be a transient `DictionaryAttr` on the generated
-  loops or an analysis side table, but it is consumed before final
-  `dataflow.graph` verification. It is not a final dataflow IR feature.
+* Any provenance needed by that future transformation must be consumed before
+  recursive graph-region lowering. The current owner does not interpret a
+  marker, choose ownership, or weaken source-sequential `scf.for` recurrence.
 * Different `K` values may produce different reduction results when the
   user's reduction region is not both associative and commutative. All
   such results are allowed by `scf.parallel`'s unspecified reduction
@@ -2182,8 +2079,8 @@ prior chunk-tuple in canonical order. The outermost K-chunk loop's
 results `%sum_final` and `%max_final` are the `scf.parallel`'s two
 results.
 
-The K choice (chunks per parallel dim) is implementation-defined;
-this section pins the carry placement and merge structure
+Within this deferred design, the K choice is policy-defined; this section
+records the proposed carry placement and merge structure
 regardless of K, so an implementation policy may pick K based on
 cost-model decisions without changing the IR contract. In
 particular, switching any dim from `K_d = 1` to `K_d > 1` only
@@ -2198,40 +2095,18 @@ demux, mux, and memory-order behavior is inherited from those templates.
 
 #### Parallel Boundary Translation
 
-This template instantiates the boundary translation contract of
-`docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.parallel`.
-
-After parallel-SCF normalization (per
-`docs/spec-compiler-part-3-impl.md` Section 1.8), `scf.parallel` becomes one
-or more `scf.for` loop nests with parallel-provenance attributes. The
-outer compound that "stands for" the original `scf.parallel` in the
-chain model is the parallel-provenance compound: it is the analysis-
-visible group of generated chunk loops sharing one
-`loom.parallel_group` id, not a new IR op. Each chunk loop body is
-its own chain scope per `docs/spec-compiler-part-3-mem.md` Section 2.2.
-
-**Structural plane.** The compound's `struct_in` forks: every chunk
-receives the same SSA value as its structural-permission input
-(shared `struct_in` across chunks under the Section 2.8 boundary
-contract). Each chunk's `struct_done` is the
-`scf.for` template's `struct_done` for that chunk. The compound's
-`struct_done` is `dataflow.sync` over all chunk `struct_done` tokens,
-matching the rendezvous in `docs/spec-compiler-part-3-mem.md` Section 2.6
-for parallel-provenance compound atoms.
-
-**Memory plane (target contract).** For each partition `P`, chunks receive
-the same incoming `(W_P, R_P)` pair only where source-parallel semantics and
-alias proof permit unordered execution. Each chunk applies the recursive
-transfer independently. The compound rendezvous joins the resulting
-completion frontiers componentwise before exposing its outgoing pair.
-Traversal order alone must not create cross-chunk dependences, and no
-source-ordered loop recurrence is inferred for parallel-provenance chunks.
-
-The exact componentwise fork/join topology is pending with the recursive pair
-lowering. Structural chunk start and completion tokens remain execution
-permission; they are not substitutes for `W_P` or `R_P`.
+There is no parallel boundary translation in the current graph owner. An
+upstream transformation must resolve ownership and schedule, prove legality,
+and emit supported structured input. If it leaves raw parallel SCF, lowering
+fails atomically. Traversal order is never used to invent a cross-iteration
+memory order.
 
 ### 6.6 `scf.index_switch`
+
+**Implementation boundary.** Residual `scf.index_switch` is currently
+rejected before graph mutation. The selector template below is retained as a
+future extension and is not claimed as implemented by
+`loom-lower-graph-memory`.
 
 `scf.index_switch` has the same selected-region shape as `scf.if`, but
 its source selector is an arbitrary `index` value matched against a
@@ -2310,10 +2185,9 @@ firing and leaves no residue.
   position, all driven by the same normalized selector.
 * If a live-in is used by only some selected regions, projections for
   unused lanes are dead outputs and are discarded by target lowering.
-* The zero-case form is spliced during scf body lowering, before the
-  surrounding graph body is finalized. Memory-dependence snapshots
-  continue to identify memory ops by their assigned deterministic
-  ids; the splice does not create a selector-dependent memory path.
+* A future zero-case form should be inlined before recursive graph lowering;
+  its memory leaves are then analyzed directly with no assigned ids or
+  dependence snapshot.
 
 For cases `[2, 5]` and argument stream `[2, 7, 5]`, the normalized
 selector stream is `[1, 0, 2]`:
@@ -2338,70 +2212,38 @@ selector stream is `[1, 0, 2]`:
 
 #### Index Switch Boundary Translation
 
-This template instantiates the boundary translation contract of
-`docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.index_switch`.
-
-**Structural plane.** The compound's `struct_in` enters an `(N + 1)`
-way `dataflow.demux` keyed on the normalized lane id `%lane` per the
-structural template (lane 0 = default region, lane `i + 1` = case
-region `i`). Each selected region is its own chain scope per
-`docs/spec-compiler-part-3-mem.md` Section 2.2 and uses its lane's structural-
-permission token as its `S.struct_at_*` source per
-`docs/spec-compiler-part-3-mem.md` Section 6.2. The compound's `struct_done`
-is `dataflow.mux` over all `(N + 1)` regions' `struct_done` tokens,
-keyed on the same `%lane`. The same `(N + 1)` way `mux` shape
-applies to every data result of the `scf.index_switch`.
-
-**Memory plane (target contract).** Every region receives the same incoming
-`(W_P, R_P)` pair logically and applies the recursive transfer under its
-selected execution permission. The compound joins all resulting pairs
-componentwise with the normalized lane selector. A region with no access
-forwards both components unchanged. No loop-carried memory state is created.
-
-Concrete selector-safe projection of both components remains part of the
-pending recursive pair lowering.
+This boundary is not implemented. A future implementation must generalize the
+implemented `scf.if` rule to a normalized N-way selector and use that same
+selector for execution, values, `W_P`, and `R_P`. Until then, residual
+`scf.index_switch` is rejected.
 
 ### 6.7 `scf.execute_region`
 
-* No control structure to flatten. The pass inlines the region body
-  into the surrounding scope and rewires SSA values; ctrl/done
-  forwarding follows program order.
+**Implementation boundary.** Residual `scf.execute_region` is currently
+rejected before graph mutation. Producers should inline it before invoking
+the recursive graph owner.
+
+The current owner does not inline this op; it requires an earlier canonical
+inlining transformation.
 
 #### Execute Region Boundary Translation
 
-This template instantiates the boundary translation contract of
-`docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.execute_region`.
-
-**Structural plane.** Pass-through. `scf.execute_region` has a single
-inner region with no control selector. The inner region's chain
-scope inherits the compound's `struct_in` directly as its
-`S.struct_at_*` source per `docs/spec-compiler-part-3-mem.md` Section 6.2,
-and its `struct_done` directly becomes the compound's `struct_done`.
-No `dataflow.demux` / `dataflow.mux` / `dataflow.carry` /
-`dataflow.gate` is introduced by the boundary translation.
-
-**Memory plane (target contract).** Pass the incoming `(W_P, R_P)` pair
-into the inner region and expose the region's resulting pair unchanged.
-No selector or loop-carried state is required. The region's structural
-permission remains separate from both components.
-
-If the inlining pass described above runs first, the compound boundary
-disappears and the inner region's atoms become direct children of the
-enclosing scope, with the same effective wiring as the pass-through
-description above.
+After upstream inlining, the contents participate in ordinary sequential
+recursive lowering. No dedicated Dataflow actor or persistent region summary
+is required.
 
 ### 6.8 `scf.yield`
 
 * Already a thin terminator. The lowering of the parent op produces
   the yield's effect; the standalone yield is removed.
 
-## 7. Memory Dependence Model
+## 7. Memory Frontier Model
 
-The compositional chain model, alias oracle, dependence builder,
-loop-carried memory state, and token wiring rules are specified in
-`docs/spec-compiler-part-3-mem.md`. Per-`scf.*` boundary translation
-rules in Section 6 instantiate that model with op-specific structural and
-memory-plane wiring.
+`docs/spec-compiler-part-3-mem.md` specifies the single recursive owner,
+basic graph-local alias partitions, leaf transfer equations, and independent
+write/read recurrence state. Section 6 of this document specifies how the
+same selectors project execution, values, and both frontier components at
+each supported SCF boundary.
 
 ## 8. Partitioned Data
 
@@ -2665,11 +2507,9 @@ contract:
 * `docs/spec-compiler-part-3-impl.md` -- pass pipeline, lit-test
   layout, acceptance checklist, and maintenance plan
   for the SCF-to-DFG front-end.
-* `docs/spec-compiler-part-3-mem.md` -- compositional chain model,
-  alias oracle, dependence builder, loop-carried memory state, and
-  token-wiring rules used inside each `dataflow.graph`. Per-`scf.*`
-  boundary translation rules in Section 6 of this document instantiate
-  that model.
+* `docs/spec-compiler-part-3-mem.md` -- recursive graph-region memory
+  lowering, basic alias partitions, write/read frontier transfers, and
+  structured recurrence used inside each `dataflow.graph`.
 * `docs/spec-compiler-part-3-placement-framework.md` -- common
   placement-partition framework; Part 3 owns the L2 graph-placement
   instance.

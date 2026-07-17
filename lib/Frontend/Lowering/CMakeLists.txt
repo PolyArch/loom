@@ -1,13 +1,10 @@
 add_mlir_library(LoomFrontendLowering
+  GraphRegionLowering.cpp
   LowerForallToThreadPass.cpp
   LowerForToGraphPass.cpp
   LowerGraphConstantsPass.cpp
-  LowerGraphControlPass.cpp
-  LowerGraphInvariantPass.cpp
   LowerKnownLibraryCallsPass.cpp
   LowerGraphMemoryPass.cpp
-  LowerGraphSyncPass.cpp
-  LowerReductionToStreamPass.cpp
   Pipeline.cpp
 
   ADDITIONAL_HEADER_DIRS

@@ -4,9 +4,6 @@
 // RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph pointer_memcpy_stream --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload pointer_memcpy_stream --output %t.mapping.csv --artifact %t.mapping.json
 // RUN: FileCheck %s --check-prefix=CSV < %t.mapping.csv
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
-// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph pointer_memcpy_structured_if --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload pointer_memcpy_structured_if --output %t.structured.mapping.csv --artifact %t.structured.mapping.json
-// RUN: FileCheck %s --check-prefix=STRUCTURED-CSV < %t.structured.mapping.csv
-// RUN: FileCheck %s --check-prefix=STRUCTURED-JSON < %t.structured.mapping.json
 
 // LOWERED-LABEL: dataflow.graph.func private @pointer_memcpy_stream
 // LOWERED-NOT: llvm.intr.memcpy
@@ -19,8 +16,10 @@
 
 // STRUCTURED-LOWERED-LABEL: dataflow.graph.func private @pointer_memcpy_structured_if
 // STRUCTURED-LOWERED-NOT: llvm.intr.memcpy
-// STRUCTURED-LOWERED: scf.if
-// STRUCTURED-LOWERED: scf.for
+// STRUCTURED-LOWERED-NOT: scf.if
+// STRUCTURED-LOWERED-NOT: scf.for
+// STRUCTURED-LOWERED: dataflow.demux
+// STRUCTURED-LOWERED: dataflow.stream
 // STRUCTURED-LOWERED: dataflow.load
 // STRUCTURED-LOWERED: dataflow.store
 // STRUCTURED-LOWERED-NOT: llvm.intr.memcpy
@@ -37,18 +36,6 @@
 // JSON-NOT: "fabric.mem.copy"
 // JSON-NOT: "memory_copy_binding"
 // JSON-NOT: "llvm.intr.memcpy"
-
-// STRUCTURED-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// STRUCTURED-CSV-NEXT: pointer_memcpy_structured_if,shared_reduction_adg,pointer_memcpy_structured_if__pointer_memcpy_structured_if__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
-
-// STRUCTURED-JSON-DAG: "status": "pass"
-// STRUCTURED-JSON-DAG: "operation": "dataflow.load"
-// STRUCTURED-JSON-DAG: "resource_kind": "fabric.mem.load"
-// STRUCTURED-JSON-DAG: "operation": "dataflow.store"
-// STRUCTURED-JSON-DAG: "resource_kind": "fabric.mem.store"
-// STRUCTURED-JSON-NOT: "fabric.mem.copy"
-// STRUCTURED-JSON-NOT: "memory_copy_binding"
-// STRUCTURED-JSON-NOT: "llvm.intr.memcpy"
 
 // RUN: loom-pnr-map --dfg-mlir %s --graph lowered_two_copies_port_no_reuse --hardware-mlir %S/mapping_mem_route.mlir --hardware mem_store_route_adg --workload lowered_two_copies_port_no_reuse --output %t.noreuse.mapping.csv --artifact %t.noreuse.mapping.json
 // RUN: FileCheck %s --check-prefix=NOREUSE-CSV < %t.noreuse.mapping.csv

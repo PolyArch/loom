@@ -29,6 +29,7 @@
 
 #include "Frontend/Lowering/Passes.h"
 
+#include "GraphRegionLowering.h"
 #include "StreamOrdinal.h"
 
 #include "Dataflow/IR/DataflowDialect.h"
@@ -146,6 +147,36 @@ struct DirectMemcpyPtrResolution {
   ::mlir::Value offset;
   ::mlir::Operation *gepToErase = nullptr;
 };
+
+unsigned getElementByteWidth(::mlir::Type elemTy);
+
+std::optional<AddrResolution>
+resolveNestedMemcpyStaticPointer(::mlir::Value ptr,
+                                 ::dataflow::GraphFuncOp graph) {
+  if (isGraphPtrBlockArg(ptr, graph))
+    return AddrResolution{ptr, {}, {}, 0, 0, nullptr};
+
+  auto gep = ptr.getDefiningOp<::mlir::LLVM::GEPOp>();
+  if (!gep || !isGraphPtrBlockArg(gep.getBase(), graph))
+    return std::nullopt;
+  auto rawIndices = gep.getRawConstantIndices();
+  auto dynamicIndices = gep.getDynamicIndices();
+  if (rawIndices.size() != 1 || dynamicIndices.size() != 1 ||
+      rawIndices.front() != ::mlir::LLVM::GEPOp::kDynamicIndex)
+    return std::nullopt;
+  ::mlir::Value dynamicIndex = dynamicIndices.front();
+  if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(
+          dynamicIndex.getType()))
+    return std::nullopt;
+  unsigned byteStride = getElementByteWidth(gep.getElemType());
+  if (byteStride == 0)
+    return std::nullopt;
+
+  AddrResolution resolution{gep.getBase(), dynamicIndex, {}, 0, 0,
+                            gep.getOperation()};
+  resolution.intIndexByteStride = byteStride;
+  return resolution;
+}
 
 bool pointerUsesBase(::mlir::Value ptr, ::mlir::Value base) {
   if (ptr == base)
@@ -944,6 +975,13 @@ bool tryRewriteNestedMemcpy(::mlir::LLVM::MemcpyOp memcpy,
   ::mlir::OpBuilder::InsertionGuard g(builder);
   builder.setInsertionPoint(memcpy);
 
+  std::optional<AddrResolution> src =
+      resolveNestedMemcpyStaticPointer(memcpy.getSrc(), ctx.graph);
+  std::optional<AddrResolution> dst =
+      resolveNestedMemcpyStaticPointer(memcpy.getDst(), ctx.graph);
+  bool useStaticBindings =
+      src && dst && !src->ordinalStream && !dst->ordinalStream;
+
   ::mlir::Value lower =
       getDataflowConstant(builder, builder.getIndexType(), ctx.ctrl, 0, loc);
   ::mlir::Value step =
@@ -954,24 +992,54 @@ bool tryRewriteNestedMemcpy(::mlir::LLVM::MemcpyOp memcpy,
   if (!lower || !step || !upper)
     return false;
 
-  ::mlir::Value srcMem =
-      getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, memcpy.getSrc(),
-                      byteTy, loc, /*topLevel=*/false, memcpy);
-  ::mlir::Value dstMem =
-      getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, memcpy.getDst(),
-                      byteTy, loc, /*topLevel=*/false, memcpy);
+  ::mlir::Value srcMem = getMemrefBridge(
+      builder, ctx.graph, ctx.bridgeCache,
+      useStaticBindings ? src->ptr : memcpy.getSrc(), byteTy, loc,
+      /*topLevel=*/useStaticBindings, memcpy);
+  ::mlir::Value dstMem = getMemrefBridge(
+      builder, ctx.graph, ctx.bridgeCache,
+      useStaticBindings ? dst->ptr : memcpy.getDst(), byteTy, loc,
+      /*topLevel=*/useStaticBindings, memcpy);
   if (!srcMem || !dstMem)
+    return false;
+
+  auto materializeOffset = [&](const AddrResolution &resolution)
+      -> ::mlir::Value {
+    if (!resolution.intIndex)
+      return {};
+    ::mlir::Value byteOffset = getLinearByteIndex(
+        builder, resolution.intIndex, resolution.intIndexByteStride,
+        resolution.intIndexByteBias, loc, memcpy);
+    if (!byteOffset)
+      return {};
+    return getIndexFromInt(builder, ctx.indexCastCache, byteOffset, loc,
+                           memcpy, /*cacheResult=*/false);
+  };
+  ::mlir::Value srcOffset = useStaticBindings ? materializeOffset(*src)
+                                               : ::mlir::Value{};
+  ::mlir::Value dstOffset = useStaticBindings ? materializeOffset(*dst)
+                                               : ::mlir::Value{};
+  if (useStaticBindings &&
+      ((src->intIndex && !srcOffset) || (dst->intIndex && !dstOffset)))
     return false;
 
   auto buildBody = [&](::mlir::OpBuilder &bodyBuilder, ::mlir::Location bodyLoc,
                        ::mlir::Value iv, ::mlir::ValueRange) {
+    auto addOffset = [&](::mlir::Value offset) {
+      if (!offset)
+        return iv;
+      return ::mlir::arith::AddIOp::create(bodyBuilder, bodyLoc, iv, offset)
+          .getResult();
+    };
+    ::mlir::Value srcAddress = addOffset(srcOffset);
+    ::mlir::Value dstAddress = addOffset(dstOffset);
     auto load = ::dataflow::LoadOp::create(
         bodyBuilder, bodyLoc, /*data=*/byteTy,
         /*done=*/bodyBuilder.getNoneType(), /*mem=*/srcMem,
-        /*addr=*/iv, /*ctrl=*/ctx.ctrl);
+        /*addr=*/srcAddress, /*ctrl=*/ctx.ctrl);
     ::dataflow::StoreOp::create(bodyBuilder, bodyLoc,
                                 /*done=*/bodyBuilder.getNoneType(),
-                                /*mem=*/dstMem, /*addr=*/iv,
+                                /*mem=*/dstMem, /*addr=*/dstAddress,
                                 /*data=*/load.getData(),
                                 /*ctrl=*/load.getDone());
     ::mlir::scf::YieldOp::create(bodyBuilder, bodyLoc);
@@ -979,6 +1047,16 @@ bool tryRewriteNestedMemcpy(::mlir::LLVM::MemcpyOp memcpy,
   ::mlir::scf::ForOp::create(builder, loc, lower, upper, step,
                              ::mlir::ValueRange{}, buildBody);
   memcpy->erase();
+  if (useStaticBindings) {
+    if (src->gepToErase)
+      ctx.deadGeps.push_back(src->gepToErase);
+    if (src->baseGepToErase)
+      ctx.deadGeps.push_back(src->baseGepToErase);
+    if (dst->gepToErase)
+      ctx.deadGeps.push_back(dst->gepToErase);
+    if (dst->baseGepToErase)
+      ctx.deadGeps.push_back(dst->baseGepToErase);
+  }
   return true;
 }
 
@@ -1433,9 +1511,9 @@ struct LowerGraphMemoryPass
     return "loom-lower-graph-memory";
   }
   ::llvm::StringRef getDescription() const final {
-    return "Tokenize residual llvm.load / llvm.store ops inside "
-           "dataflow.graph.func bodies into dataflow.load / dataflow.store "
-           "with an unrealized_conversion_cast pointer-to-memref bridge.";
+    return "Lower graph-local memory accesses and recursively flatten "
+           "structured graph regions with per-alias-partition memory "
+           "frontiers.";
   }
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
@@ -1448,6 +1526,12 @@ struct LowerGraphMemoryPass
     ::mlir::ModuleOp module = getOperation();
     ::mlir::OpBuilder builder(&getContext());
 
+    if (::mlir::failed(
+            ::loom::lowering::checkGraphRegionLoweringPreconditions(module))) {
+      signalPassFailure();
+      return;
+    }
+
     ::llvm::SmallVector<::dataflow::GraphFuncOp, 8> graphs;
     for (auto graph : module.getOps<::dataflow::GraphFuncOp>())
       graphs.push_back(graph);
@@ -1456,6 +1540,10 @@ struct LowerGraphMemoryPass
       if (graph.isExternal())
         continue;
       (void)rewriteOneGraph(graph, builder);
+      if (::mlir::failed(::loom::lowering::lowerGraphRegions(graph))) {
+        signalPassFailure();
+        return;
+      }
     }
   }
 };
