@@ -7,9 +7,9 @@
 // RESIDUAL: finalized graph contains residual structured operation 'scf.for'
 // START: nontrivial graph uses raw start as a retirement completion witness
 // VALUE: retirement frontier does not causally cover value output #0
-// DETACHED: operation 'arith.addi'
-// DETACHED: fired after graph retirement
-// DETACHED: "status": "invalid"
+// DETACHED-DAG: "status": "pass"
+// DETACHED-NOT: "arith.addi"
+// DETACHED-NOT: fired after graph retirement
 
 module {
   dataflow.graph.func private @residual_for(

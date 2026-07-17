@@ -11,7 +11,8 @@
 // graph.launch consumes it directly as ctrl_in (no ub.poison).
 // CHECK-LABEL: dataflow.thread private @t_existing
 // CHECK-SAME: ctrl (%[[CTRL:.*]]: none)
-// CHECK: dataflow.graph.launch @g_t_existing_0(%[[CTRL]]
+// CHECK: %[[EXTRACT_DONE:.*]], %{{.*}} = dataflow.graph.launch @g_t_existing_0(%[[CTRL]]
+// CHECK: dataflow.thread.yield %[[EXTRACT_DONE]] : none
 // CHECK-NOT: ub.poison : none
 // CHECK-NOT: scf.for {{.*}} iter_args
 // STREAM-ATTRS-LABEL: dataflow.graph.func private @g_t_existing_0
@@ -27,6 +28,18 @@ dataflow.thread private @t_existing(%buf: memref<?xf32>, %n: index) ctrl (%c: no
     %s = arith.addf %acc, %v : f32
     scf.yield %s : f32
   }
+  dataflow.thread.yield
+}
+
+// A thread with no structured loop still receives a graph definition. Its
+// launch completion is the thread's retirement frontier rather than an
+// unobserved asynchronous result.
+// CHECK-LABEL: dataflow.thread private @t_straight
+// CHECK-SAME: ctrl (%[[STRAIGHT_CTRL:.*]]: none)
+// CHECK: %[[STRAIGHT_DONE:.*]] = dataflow.graph.launch @g_t_straight_0(%[[STRAIGHT_CTRL]]
+// CHECK: dataflow.thread.yield %[[STRAIGHT_DONE]] : none
+dataflow.thread private @t_straight(%x: i32) ctrl (%c: none) {
+  %sum = arith.addi %x, %x : i32
   dataflow.thread.yield
 }
 

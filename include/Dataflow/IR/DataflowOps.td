@@ -838,12 +838,13 @@ def Dataflow_GraphReturnOp : Dataflow_Op<"graph.return", [
 def Dataflow_GraphLaunchOp : Dataflow_Op<"graph.launch", [
     DeclareOpInterfaceMethods<SymbolUserOpInterface>
 ]> {
-  let summary = "Synchronous launch of a dataflow.graph.func callable";
+  let summary = "Asynchronous launch of a dataflow.graph.func callable";
   let description = [{
     References a `dataflow.graph.func` definition by symbol from
     inside a `dataflow.thread` body. The first operand is the per-launch
     `ctrl_in : none` start signal; the remaining operands bind application
-    inputs. The first result is the per-launch `done_out : none` retirement
+    inputs. Issuing the launch does not wait for graph retirement. The first
+    result is the per-launch `done_out : none` retirement
     signal, derived as the all-of of the callee's `graph.return.complete`
     segment; the remaining results carry application outputs. Start and done
     are protocol endpoints, not members of the callee function type.

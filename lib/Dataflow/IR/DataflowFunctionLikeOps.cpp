@@ -1,7 +1,7 @@
 // Implementation of the symbol-bearing function-like ops added to the
 // dataflow dialect for SCF-to-DFG lowering: dataflow.thread (def),
 // dataflow.thread.launch (async launcher), dataflow.thread.yield
-// (terminator), dataflow.graph.func (def), dataflow.graph.launch (sync
+// (terminator), dataflow.graph.func (def), dataflow.graph.launch (async
 // launcher), and dataflow.graph.return (terminator).
 //
 // The regional dataflow.graph and dataflow.subgraph ops, plus their

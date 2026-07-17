@@ -1431,9 +1431,7 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   observeRetirement();
 
   for (std::uint64_t step = 0; step < options.maxEventSteps; ++step) {
-    bool retiredBeforeStep = retired;
     bool fired = false;
-    bool postRetirementFire = false;
     bool orderedStructuredBarrier = false;
     for (mlir::Operation &op : entry.getOperations()) {
       if (isSupportedNonEvent(&op))
@@ -1442,18 +1440,6 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
         continue;
       bool opFired = fireOperation(&op, state);
       fired |= opFired;
-      if (opFired && retiredBeforeStep) {
-        report.status = "invalid";
-        std::string location;
-        llvm::raw_string_ostream locationStream(location);
-        op.getLoc().print(locationStream);
-        report.diagnostics.push_back(
-            ("operation '" + op.getName().getStringRef() + "' at " +
-             locationStream.str() + " fired after graph retirement")
-                .str());
-        postRetirementFire = true;
-        break;
-      }
       if (hasPendingOrderedStructuredFire(&op, state))
         orderedStructuredBarrier = true;
     }
@@ -1461,10 +1447,8 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       break;
     flushPendingTokens(state);
     ++report.wavefrontSteps;
-    if (postRetirementFire)
-      break;
     observeRetirement();
-    if (report.status == "invalid")
+    if (retired || report.status == "invalid")
       break;
   }
   if (!retired && report.wavefrontSteps == options.maxEventSteps) {

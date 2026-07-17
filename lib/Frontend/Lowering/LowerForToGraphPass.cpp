@@ -66,6 +66,52 @@ std::string uniqueSymbol(::mlir::ModuleOp module, ::llvm::StringRef stem) {
   }
 }
 
+bool causallyDependsOn(::mlir::Value event, ::mlir::Value prerequisite,
+                       ::llvm::DenseSet<::mlir::Value> &visited) {
+  if (event == prerequisite)
+    return true;
+  if (!event || !visited.insert(event).second)
+    return false;
+  ::mlir::Operation *definition = event.getDefiningOp();
+  if (!definition)
+    return false;
+  return ::llvm::any_of(definition->getOperands(),
+                        [&](::mlir::Value operand) {
+                          ::llvm::DenseSet<::mlir::Value> branchVisited =
+                              visited;
+                          return causallyDependsOn(operand, prerequisite,
+                                                   branchVisited);
+                        });
+}
+
+void addThreadCompletionFrontier(::dataflow::ThreadOp thread,
+                                 ::mlir::Value completion) {
+  auto yield = ::mlir::cast<::dataflow::ThreadYieldOp>(
+      thread.getBody().front().getTerminator());
+  ::llvm::SmallVector<::mlir::Value, 4> candidates(
+      yield.getCompletionFrontier().begin(),
+      yield.getCompletionFrontier().end());
+  if (!::llvm::is_contained(candidates, completion))
+    candidates.push_back(completion);
+
+  ::llvm::SmallVector<::mlir::Value, 4> frontier;
+  for (unsigned i = 0; i < candidates.size(); ++i) {
+    bool covered = false;
+    for (unsigned j = 0; j < candidates.size(); ++j) {
+      if (i == j)
+        continue;
+      ::llvm::DenseSet<::mlir::Value> visited;
+      if (causallyDependsOn(candidates[j], candidates[i], visited)) {
+        covered = true;
+        break;
+      }
+    }
+    if (!covered)
+      frontier.push_back(candidates[i]);
+  }
+  yield.getCompletionFrontierMutable().assign(frontier);
+}
+
 // Collect every value used inside the loop region that is defined above it.
 void collectExternalUses(::mlir::scf::ForOp loop,
                          ::llvm::SetVector<::mlir::Value> &captures) {
@@ -1055,6 +1101,7 @@ struct LowerForToGraphPass
     auto launchOp = ::dataflow::GraphLaunchOp::create(
         builder, loc, /*doneOut=*/noneType, /*results=*/launchResultTypes,
         callee, ctrlIn, launchOperands);
+    addThreadCompletionFrontier(enclosingThread, launchOp.getDoneOut());
 
     // Replace the selected graph outputs with the graph.launch's
     // user-data results (skip leading done_out), then erase the
@@ -1275,9 +1322,10 @@ struct LowerForToGraphPass
 
     auto callee =
         ::mlir::FlatSymbolRefAttr::get(builder.getContext(), graphName);
-    ::dataflow::GraphLaunchOp::create(builder, loc, /*doneOut=*/noneType,
-                                      /*results=*/::mlir::TypeRange{}, callee,
-                                      threadCtrl, launchOperands);
+    auto launch = ::dataflow::GraphLaunchOp::create(
+        builder, loc, /*doneOut=*/noneType, /*results=*/::mlir::TypeRange{},
+        callee, threadCtrl, launchOperands);
+    addThreadCompletionFrontier(thread, launch.getDoneOut());
 
     for (::mlir::Operation *op : ::llvm::reverse(bodyOps))
       op->erase();

@@ -25,9 +25,6 @@ bool causallyDependsOn(mlir::Value event, mlir::Value prerequisite,
                        llvm::DenseSet<mlir::Value> &visited) {
   if (event == prerequisite)
     return true;
-  if (event.getDefiningOp() &&
-      event.getDefiningOp() == prerequisite.getDefiningOp())
-    return true;
   if (!event || !visited.insert(event).second)
     return false;
   mlir::Operation *def = event.getDefiningOp();
@@ -97,9 +94,16 @@ bool causallyDependsOn(mlir::Value event, mlir::Value prerequisite) {
   return causallyDependsOn(event, prerequisite, visited);
 }
 
+bool isExplicitSyncCoverage(mlir::Value witness, mlir::Value prerequisite) {
+  auto sync = llvm::dyn_cast_or_null<dataflow::SyncOp>(witness.getDefiningOp());
+  return sync && llvm::isa<mlir::NoneType>(witness.getType()) &&
+         prerequisite.getDefiningOp() == sync.getOperation();
+}
+
 bool isCovered(mlir::Value prerequisite, mlir::ValueRange completion) {
   return llvm::any_of(completion, [&](mlir::Value witness) {
-    return causallyDependsOn(witness, prerequisite);
+    return causallyDependsOn(witness, prerequisite) ||
+           isExplicitSyncCoverage(witness, prerequisite);
   });
 }
 

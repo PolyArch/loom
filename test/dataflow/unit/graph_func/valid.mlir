@@ -40,7 +40,7 @@ dataflow.graph.func private @g_memory(%ctrl: none, %x: i32,
       memories(%memory : memref<?xi32>) complete(%ctrl : none)
 }
 
-// Synchronous launch site inside a thread body. The launch's first
+// Asynchronous launch site inside a thread body. The launch's first
 // operand is the enclosing thread's `thread_ctrl` block argument
 // (per spec section 5.4.1); its first result is the per-launch
 // `done_out`.
