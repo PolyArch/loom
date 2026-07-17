@@ -1,11 +1,8 @@
-// Implementation of the symbol-bearing function-like ops added to the
-// dataflow dialect for SCF-to-DFG lowering: dataflow.thread (def),
+// Implementation of the symbol-bearing function-like ops used by
+// SCF-to-DFG lowering: dataflow.thread (def),
 // dataflow.thread.launch (async launcher), dataflow.thread.yield
-// (terminator), dataflow.graph.func (def), dataflow.graph.launch (async
+// (terminator), dataflow.graph (def), dataflow.graph.launch (async
 // launcher), and dataflow.graph.return (terminator).
-//
-// The regional dataflow.graph and dataflow.subgraph ops, plus their
-// dataflow.yield terminator, remain implemented in DataflowOps.cpp.
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
@@ -18,9 +15,9 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <array>
@@ -33,18 +30,6 @@ using namespace dataflow;
 //===----------------------------------------------------------------------===//
 
 namespace {
-
-static bool isSupportedArmInlineAsm(Operation *op) {
-  if (op->getName().getStringRef() != "llvm.inline_asm")
-    return false;
-  auto asmString = op->getAttrOfType<StringAttr>("asm_string");
-  if (!asmString)
-    return false;
-  StringRef text = asmString.getValue();
-  return text == "pkhbt $0, $1, $2, lsl $3" ||
-         text == "pkhtb $0, $1, $2, asr $3" ||
-         text == "sxtab16 $0, $1, $2" || text == "sxtb16 $0, $1";
-}
 
 static bool isGraphMemoryCapabilityType(Type type) {
   return isa<MemRefType, UnrankedMemRefType, LLVM::LLVMPointerType>(type);
@@ -96,24 +81,23 @@ static LogicalResult verifyGraphPortType(Operation *op, Type type,
                                          unsigned kindIndex) {
   if (kind == GraphPortKind::Memory) {
     if (!isGraphMemoryCapabilityType(type))
-      return op->emitOpError()
-             << "memory " << direction << " #" << kindIndex
-             << " has non-capability type " << type;
+      return op->emitOpError() << "memory " << direction << " #" << kindIndex
+                               << " has non-capability type " << type;
     return success();
   }
   if (containsGraphMemoryCapability(type))
     return op->emitOpError()
-           << graphPortKindName(kind) << " " << direction << " #"
-           << kindIndex << " contains memory capability type " << type;
+           << graphPortKindName(kind) << " " << direction << " #" << kindIndex
+           << " contains memory capability type " << type;
   if (kind == GraphPortKind::Value && isa<NoneType>(type))
     return op->emitOpError()
-           << graphPortKindName(kind) << " " << direction << " #"
-           << kindIndex << " must not use protocol type none";
+           << graphPortKindName(kind) << " " << direction << " #" << kindIndex
+           << " must not use protocol type none";
   return success();
 }
 
 // Build a generic `func.func`-shaped op state for our function-like
-// ops. Used by both ThreadOp and GraphFuncOp.
+// ops. Used by both ThreadOp and GraphOp.
 template <typename Op>
 void buildFunctionLike(OpBuilder &builder, OperationState &state,
                        StringRef name, FunctionType type,
@@ -140,8 +124,7 @@ ParseResult parseFunctionLike(OpAsmParser &parser, OperationState &result) {
       Op::getResAttrsAttrName(result.name));
 }
 
-template <typename Op>
-void printFunctionLike(OpAsmPrinter &p, Op op) {
+template <typename Op> void printFunctionLike(OpAsmPrinter &p, Op op) {
   function_interface_impl::printFunctionOp(
       p, op, /*isVariadic=*/false, op.getFunctionTypeAttrName(),
       op.getArgAttrsAttrName(), op.getResAttrsAttrName());
@@ -347,7 +330,8 @@ LogicalResult ThreadOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult ThreadLaunchOp::verifySymbolUses(SymbolTableCollection &symbols) {
-  auto callee = symbols.lookupNearestSymbolFrom<ThreadOp>(*this, getCalleeAttr());
+  auto callee =
+      symbols.lookupNearestSymbolFrom<ThreadOp>(*this, getCalleeAttr());
   if (!callee)
     return emitOpError("'")
            << getCallee()
@@ -359,22 +343,21 @@ LogicalResult ThreadLaunchOp::verifySymbolUses(SymbolTableCollection &symbols) {
   if (getBodyOperands().size() != calleeInputs.size())
     return emitOpError("body operand count (")
            << getBodyOperands().size()
-           << ") does not match callee input count ("
-           << calleeInputs.size() << ")";
+           << ") does not match callee input count (" << calleeInputs.size()
+           << ")";
   for (size_t i = 0, e = calleeInputs.size(); i < e; ++i) {
     Type expected = calleeInputs[i];
     Type actual = getBodyOperands()[i].getType();
     if (actual != expected)
       return emitOpError("body operand #")
-             << i << " type " << actual
-             << " does not match callee input type " << expected;
+             << i << " type " << actual << " does not match callee input type "
+             << expected;
   }
   return success();
 }
 
 LogicalResult ThreadLaunchOp::verify() {
   if ((*this)->getParentOfType<ThreadOp>() ||
-      (*this)->getParentOfType<GraphFuncOp>() ||
       (*this)->getParentOfType<GraphOp>())
     return emitOpError(
         "must appear outside any dataflow.thread or dataflow.graph "
@@ -390,7 +373,6 @@ LogicalResult ThreadLaunchOp::verify() {
 
 LogicalResult ThreadWaitOp::verify() {
   if ((*this)->getParentOfType<ThreadOp>() ||
-      (*this)->getParentOfType<GraphFuncOp>() ||
       (*this)->getParentOfType<GraphOp>())
     return emitOpError(
         "must appear outside any dataflow.thread or dataflow.graph "
@@ -399,12 +381,11 @@ LogicalResult ThreadWaitOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
-// dataflow.graph.func (definition)
+// dataflow.graph (definition)
 //===----------------------------------------------------------------------===//
 
-void GraphFuncOp::build(OpBuilder &builder, OperationState &state,
-                        StringRef name, FunctionType type,
-                        ArrayRef<NamedAttribute> attrs) {
+void GraphOp::build(OpBuilder &builder, OperationState &state, StringRef name,
+                    FunctionType type, ArrayRef<NamedAttribute> attrs) {
   SmallVector<NamedAttribute, 8> normalizedAttrs(attrs.begin(), attrs.end());
   auto hasAttr = [&](StringRef name) {
     return llvm::any_of(normalizedAttrs, [&](NamedAttribute attr) {
@@ -421,10 +402,10 @@ void GraphFuncOp::build(OpBuilder &builder, OperationState &state,
     normalizedAttrs.push_back(builder.getNamedAttr(
         "result_segments", builder.getDenseI32ArrayAttr(segments)));
   }
-  buildFunctionLike<GraphFuncOp>(builder, state, name, type, normalizedAttrs);
+  buildFunctionLike<GraphOp>(builder, state, name, type, normalizedAttrs);
 }
 
-ParseResult GraphFuncOp::parse(OpAsmParser &parser, OperationState &result) {
+ParseResult GraphOp::parse(OpAsmParser &parser, OperationState &result) {
   Builder &builder = parser.getBuilder();
   StringAttr visibilityAttr;
   StringRef visibility;
@@ -448,11 +429,6 @@ ParseResult GraphFuncOp::parse(OpAsmParser &parser, OperationState &result) {
     return parser.emitError(parser.getNameLoc(),
                             "graph signature must begin with explicit "
                             "start argument of type none");
-  if (resultTypes.empty() || !isa<NoneType>(resultTypes.front()))
-    return parser.emitError(parser.getNameLoc(),
-                            "graph signature must begin results with explicit "
-                            "done protocol type none");
-
   if (visibilityAttr)
     result.addAttribute(getSymVisibilityAttrName(result.name), visibilityAttr);
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
@@ -467,8 +443,8 @@ ParseResult GraphFuncOp::parse(OpAsmParser &parser, OperationState &result) {
                             "specified together");
 
   SmallVector<OpAsmParser::Argument> appArguments(arguments.begin() + 1,
-                                                   arguments.end());
-  SmallVector<Type> appResults(resultTypes.begin() + 1, resultTypes.end());
+                                                  arguments.end());
+  SmallVector<Type> appResults(resultTypes.begin(), resultTypes.end());
   if (!inputSegmentsAttr) {
     auto inputSegments = defaultGraphSegments(appArguments.size());
     auto resultSegments = defaultGraphSegments(appResults.size());
@@ -481,9 +457,9 @@ ParseResult GraphFuncOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<Type> inputTypes;
   llvm::transform(appArguments, std::back_inserter(inputTypes),
                   [](const OpAsmParser::Argument &arg) { return arg.type; });
-  result.addAttribute(getFunctionTypeAttrName(result.name),
-                      TypeAttr::get(builder.getFunctionType(inputTypes,
-                                                            appResults)));
+  result.addAttribute(
+      getFunctionTypeAttrName(result.name),
+      TypeAttr::get(builder.getFunctionType(inputTypes, appResults)));
 
   Region *body = result.addRegion();
   SmallVector<OpAsmParser::Argument> bodyArguments;
@@ -495,7 +471,7 @@ ParseResult GraphFuncOp::parse(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
-void GraphFuncOp::print(OpAsmPrinter &p) {
+void GraphOp::print(OpAsmPrinter &p) {
   if (auto vis = getSymVisibility())
     p << ' ' << *vis;
   p << ' ';
@@ -519,20 +495,20 @@ void GraphFuncOp::print(OpAsmPrinter &p) {
   p << ") -> ";
   ArrayRef<Type> results = getFunctionType().getResults();
   if (results.empty()) {
-    p.printType(NoneType::get(getContext()));
+    p << "()";
+  } else if (results.size() == 1) {
+    p.printType(results.front());
   } else {
     p << '(';
-    p.printType(NoneType::get(getContext()));
-    for (Type type : results) {
-      p << ", ";
-      p.printType(type);
-    }
+    llvm::interleaveComma(results, p);
     p << ')';
   }
 
   SmallVector<StringRef, 6> elidedAttrs = {
-      SymbolTable::getSymbolAttrName(), getFunctionTypeAttrName(),
-      getSymVisibilityAttrName(),      getArgAttrsAttrName(),
+      SymbolTable::getSymbolAttrName(),
+      getFunctionTypeAttrName(),
+      getSymVisibilityAttrName(),
+      getArgAttrsAttrName(),
       getResAttrsAttrName(),
   };
   p.printOptionalAttrDictWithKeyword((*this)->getAttrs(), elidedAttrs);
@@ -541,147 +517,31 @@ void GraphFuncOp::print(OpAsmPrinter &p) {
                 /*printBlockTerminators=*/true);
 }
 
-BlockArgument GraphFuncOp::getStart() {
+BlockArgument GraphOp::getStart() {
   assert(!isExternal() && "external graph has no start argument");
   return getBody().front().getArgument(0);
 }
 
-ArrayRef<int32_t> GraphFuncOp::getInputSegmentSizes() {
-  return getInputSegments();
-}
+ArrayRef<int32_t> GraphOp::getInputSegmentSizes() { return getInputSegments(); }
 
-ArrayRef<int32_t> GraphFuncOp::getResultSegmentSizes() {
+ArrayRef<int32_t> GraphOp::getResultSegmentSizes() {
   return getResultSegments();
 }
 
-GraphPortKind GraphFuncOp::getInputPortKind(unsigned index) {
+GraphPortKind GraphOp::getInputPortKind(unsigned index) {
   return graphPortKindAt(getInputSegmentSizes(), index);
 }
 
-GraphPortKind GraphFuncOp::getResultPortKind(unsigned index) {
+GraphPortKind GraphOp::getResultPortKind(unsigned index) {
   return graphPortKindAt(getResultSegmentSizes(), index);
 }
 
-// `dataflow.graph.func` carries the SpatialCore body of a leaf
-// dataflow graph. Per the streaming spec (see
-// docs/spec-dataflow-part-1-streaming.md), graph regions allow
-// feedback edges, i.e., values produced by an op can be referenced
-// by an earlier op in program order. Mirror the regional
-// `dataflow.graph` op's region kind so feedback-edge ops like
-// `dataflow.carry` (whose `next` operand is computed downstream)
-// verify cleanly inside the function body.
-RegionKind GraphFuncOp::getRegionKind(unsigned /*index*/) {
+// Graph regions permit explicit feedback edges without CFG dominance.
+RegionKind GraphOp::getRegionKind(unsigned /*index*/) {
   return RegionKind::Graph;
 }
 
-// Whitelist for ops permitted directly or transitively inside a
-// `dataflow.graph.func` body. The body is the SpatialCore image of a
-// leaf graph; the SCF-to-DFG frontend pipeline only ever emits ops
-// from a tightly bounded set: the dataflow streaming/control
-// primitives, residual SCF envelopes (for control shapes the lowering
-// has not collapsed yet), arith/math computation, the LLVM
-// computation/intrinsic ops we lift through `loom-cc`, and the
-// `builtin.unrealized_conversion_cast` bridge between `!llvm.ptr`
-// memory ops and the dataflow load/store memref shape. Anything else
-// indicates the body has been polluted with content that does not
-// belong on SpatialCore (e.g., a nested function symbol definition or
-// a direct `func.call` into ScalarCore) and should be rejected at
-// verifier time so regressions trip immediately rather than silently
-// passing through `loom-raise-opt`.
-static bool isAllowedInDataflowGraphFuncBody(::mlir::Operation *op) {
-  // Symbol-defining ops (modules, nested functions, globals, etc.)
-  // never belong inside a graph.func body. The graph.func itself is
-  // module-level; its body is leaf compute, not a place to anchor
-  // further symbol definitions.
-  if (op->hasTrait<::mlir::OpTrait::SymbolTable>())
-    return false;
-  if (::llvm::isa<::mlir::FunctionOpInterface>(op))
-    return false;
-
-  ::mlir::StringRef dialect =
-      op->getDialect() ? op->getDialect()->getNamespace() : ::mlir::StringRef{};
-  ::mlir::StringRef name = op->getName().getStringRef();
-
-  // dataflow.* is broadly allowed for leaf streaming primitives,
-  // control routing, and the graph.return terminator. A graph launch is
-  // never valid in another graph. ThreadLaunchOp owns its containment
-  // invariant so every thread/graph surface reports one canonical error.
-  if (::llvm::isa<GraphLaunchOp>(op))
-    return false;
-  if (dialect == "dataflow")
-    return true;
-  // arith.*, math.*, and memref.* are entire-dialect allowlists: every
-  // scalar computation primitive plus the memref load/store/alloc surface
-  // the SCF input uses before the graph-memory pass converts it into
-  // dataflow ops. The corpus lit tests feed graph.func bodies that
-  // still carry raw `memref.load` / `memref.store` ops, so the
-  // verifier needs to admit them mid-pipeline.
-  if (dialect == "arith" || dialect == "math" || dialect == "memref")
-    return true;
-  // ub.poison shows up as a none-typed placeholder in some lowering
-  // residuals.
-  if (dialect == "ub")
-    return true;
-  // SCF envelopes the SCF-to-DFG layer has not collapsed yet survive
-  // here so the verifier admits the IR mid-pipeline. Only
-  // structured-control-flow ops are listed -- ops that escape the
-  // body (e.g., scf.execute_region.yield) are terminator-traited and
-  // covered separately below.
-  if (dialect == "scf")
-    return true;
-  // Plain CFG ops (cf.br/cond_br/switch) round-trip through some
-  // late-stage IRs.
-  if (dialect == "cf")
-    return true;
-  // Permit unrealized_conversion_cast: the !llvm.ptr -> memref<?xT>
-  // bridge between LLVM-load/store and dataflow load/store ops.
-  if (op->getName().getStringRef() == "builtin.unrealized_conversion_cast")
-    return true;
-  // LLVM dialect: allow the computation/intrinsic surface that
-  // `loom-cc` lifts onto graph.func bodies. We list the ops we know
-  // appear (computation, conversion, compare, intrinsics, GEP,
-  // load/store, the call/call_intrinsic forms used for
-  // CMSIS-NN-style shared subroutines and ARM SIMD intrinsics) and
-  // permit `llvm.intr.*` permissively for forward-compat with new
-  // intrinsics.
-  if (dialect == "llvm") {
-    if (isSupportedArmInlineAsm(op))
-      return true;
-    if (name.starts_with("llvm.intr."))
-      return true;
-    if (name.starts_with("llvm.mlir."))
-      return true;
-    static const ::llvm::StringSet<> llvmAllowed = {
-        // Memory and address arithmetic.
-        "llvm.getelementptr", "llvm.load", "llvm.store",
-        "llvm.alloca",        "llvm.bitcast",
-        // Calls (computation and intrinsics).
-        "llvm.call", "llvm.call_intrinsic",
-        // Computation: integer arithmetic and bitwise.
-        "llvm.add",  "llvm.sub",  "llvm.mul",  "llvm.sdiv", "llvm.udiv",
-        "llvm.srem", "llvm.urem", "llvm.and",  "llvm.or",   "llvm.xor",
-        "llvm.shl",  "llvm.lshr", "llvm.ashr",
-        // Floating-point arithmetic.
-        "llvm.fadd", "llvm.fsub", "llvm.fmul", "llvm.fdiv", "llvm.frem",
-        "llvm.fneg",
-        // Compare.
-        "llvm.icmp", "llvm.fcmp",
-        // Conversions.
-        "llvm.trunc",  "llvm.zext",        "llvm.sext",       "llvm.fpext",
-        "llvm.fptrunc", "llvm.uitofp",     "llvm.sitofp",     "llvm.fptoui",
-        "llvm.fptosi", "llvm.ptrtoint",    "llvm.inttoptr",   "llvm.addrspacecast",
-        // Element-wise / select / freeze.
-        "llvm.select", "llvm.freeze",
-        // Vector and aggregate ops.
-        "llvm.extractelement", "llvm.insertelement", "llvm.extractvalue",
-        "llvm.insertvalue",    "llvm.shufflevector",
-    };
-    return llvmAllowed.contains(name);
-  }
-  return false;
-}
-
-LogicalResult GraphFuncOp::verify() {
+LogicalResult GraphOp::verify() {
   if (auto vis = getSymVisibility()) {
     if (*vis != "private" && *vis != "")
       return emitOpError("sym_visibility must be 'private'; got \"")
@@ -704,8 +564,8 @@ LogicalResult GraphFuncOp::verify() {
              << name
              << " must contain exactly three nonnegative sizes whose sum ("
              << sum << ") matches the function "
-             << (name == "input_segments" ? "input" : "result")
-             << " count (" << count << ")";
+             << (name == "input_segments" ? "input" : "result") << " count ("
+             << count << ")";
     return success();
   };
   if (failed(verifySegments(getInputSegmentSizes(), "input_segments",
@@ -730,6 +590,29 @@ LogicalResult GraphFuncOp::verify() {
       failed(verifyTypes(results, getResultSegmentSizes(), "result")))
     return failure();
 
+  for (auto [index, type] : llvm::enumerate(inputs)) {
+    if (!DataflowDialect::containsChannelOrThreadToken(type))
+      continue;
+    if (isa<ChannelType>(type))
+      return emitOpError("function_type input #")
+             << index << " must not be a dataflow channel type";
+    return emitOpError("function_type input #")
+           << index
+           << " must not contain !dataflow.channel or "
+              "!dataflow.thread_token";
+  }
+  for (auto [index, type] : llvm::enumerate(results)) {
+    if (!DataflowDialect::containsChannelOrThreadToken(type))
+      continue;
+    if (isa<ChannelType>(type))
+      return emitOpError("function_type result #")
+             << index << " must not be a dataflow channel type";
+    return emitOpError("function_type result #")
+           << index
+           << " must not contain !dataflow.channel or "
+              "!dataflow.thread_token";
+  }
+
   if (isExternal())
     return success();
 
@@ -749,28 +632,6 @@ LogicalResult GraphFuncOp::verify() {
              << " must match function_type input type " << ty;
   }
 
-  // Body content whitelist: walk every op transitively contained in
-  // the body and reject anything outside the SCF-to-DFG residual
-  // surface. The walk uses pre-order so a disallowed parent (e.g.,
-  // a nested `func.func` symbol definition) is reported before the
-  // verifier dives into its body and complains about the inner
-  // `func.return` instead. Each op's own verifier remains
-  // responsible for checking its own arguments and semantics; this
-  // loop only enforces the dialect-membership policy.
-  ::mlir::WalkResult contentResult = getBody().walk<::mlir::WalkOrder::PreOrder>(
-      [](::mlir::Operation *op) -> ::mlir::WalkResult {
-        if (!isAllowedInDataflowGraphFuncBody(op)) {
-          op->emitOpError(
-              "is not allowed inside a dataflow.graph.func body; permitted "
-              "ops are leaf dataflow.* primitives, arith.*, math.*, ub.*, scf.*, cf.*, "
-              "builtin.unrealized_conversion_cast, and a curated llvm.* "
-              "computation/conversion/intrinsic surface");
-          return ::mlir::WalkResult::interrupt();
-        }
-        return ::mlir::WalkResult::advance();
-      });
-  if (contentResult.wasInterrupted())
-    return failure();
   return success();
 }
 
@@ -881,11 +742,10 @@ ParseResult GraphReturnOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
 
   auto &properties = result.getOrAddProperties<GraphReturnOp::Properties>();
-  properties.operandSegmentSizes = {
-      static_cast<int32_t>(values.size()),
-      static_cast<int32_t>(streams.size()),
-      static_cast<int32_t>(memories.size()),
-      static_cast<int32_t>(complete.size())};
+  properties.operandSegmentSizes = {static_cast<int32_t>(values.size()),
+                                    static_cast<int32_t>(streams.size()),
+                                    static_cast<int32_t>(memories.size()),
+                                    static_cast<int32_t>(complete.size())};
   return success();
 }
 
@@ -913,9 +773,9 @@ void GraphReturnOp::print(OpAsmPrinter &printer) {
 }
 
 LogicalResult GraphReturnOp::verify() {
-  auto parent = (*this)->getParentOfType<GraphFuncOp>();
+  auto parent = (*this)->getParentOfType<GraphOp>();
   if (!parent)
-    return emitOpError("must be inside a dataflow.graph.func op");
+    return emitOpError("must be inside a dataflow.graph op");
   if (getComplete().empty())
     return emitOpError("complete segment must not be empty");
 
@@ -924,10 +784,10 @@ LogicalResult GraphReturnOp::verify() {
   StringRef names[] = {"values", "streams", "memories"};
   for (unsigned segment = 0; segment < 3; ++segment) {
     if (ranges[segment].size() != static_cast<size_t>(segments[segment]))
-      return emitOpError()
-             << names[segment] << " segment count (" << ranges[segment].size()
-             << ") must match parent result segment size ("
-             << segments[segment] << ")";
+      return emitOpError() << names[segment] << " segment count ("
+                           << ranges[segment].size()
+                           << ") must match parent result segment size ("
+                           << segments[segment] << ")";
   }
 
   ArrayRef<Type> expectedResults = parent.getFunctionType().getResults();
@@ -938,10 +798,9 @@ LogicalResult GraphReturnOp::verify() {
       Type expected = expectedResults[resultIndex++];
       Type actual = value.getType();
       if (actual != expected)
-        return emitOpError()
-               << graphPortKindName(kind) << " output #" << kindIndex
-               << " type " << actual
-               << " must match parent result type " << expected;
+        return emitOpError() << graphPortKindName(kind) << " output #"
+                             << kindIndex << " type " << actual
+                             << " must match parent result type " << expected;
       if (failed(verifyGraphPortType(getOperation(), actual, kind, "output",
                                      kindIndex)))
         return failure();
@@ -954,49 +813,208 @@ LogicalResult GraphReturnOp::verify() {
 // dataflow.graph.launch
 //===----------------------------------------------------------------------===//
 
-LogicalResult GraphLaunchOp::verifySymbolUses(SymbolTableCollection &symbols) {
-  auto callee =
-      symbols.lookupNearestSymbolFrom<GraphFuncOp>(*this, getCalleeAttr());
-  if (!callee)
-    return emitOpError("'")
-           << getCallee()
-           << "' does not reference a valid 'dataflow.graph.func' op";
+namespace {
 
-  // Start is an explicit launch operand, not part of the callee FunctionType.
-  ArrayRef<Type> calleeInputs = callee.getFunctionType().getInputs();
-  if (calleeInputs.size() != getBodyOperands().size())
-    return emitOpError("application operand count (")
-           << getBodyOperands().size() << ") does not match callee input count ("
-           << calleeInputs.size() << ")";
-  for (size_t i = 0; i < calleeInputs.size(); ++i) {
-    Type expected = calleeInputs[i];
-    Type actual = getBodyOperands()[i].getType();
-    if (actual != expected)
-      return emitOpError("body operand #")
-             << i << " type " << actual
-             << " does not match callee input type " << expected;
-  }
-
-  // Done is an explicit launch result, not part of the callee FunctionType.
-  ArrayRef<Type> calleeResults = callee.getFunctionType().getResults();
-  if (calleeResults.size() != getResults().size())
-    return emitOpError("application result count (")
-           << getResults().size() << ") does not match callee result count ("
-           << calleeResults.size() << ")";
-  for (size_t i = 0; i < calleeResults.size(); ++i) {
-    Type expected = calleeResults[i];
-    Type actual = getResults()[i].getType();
-    if (actual != expected)
-      return emitOpError("body result #")
-             << i << " type " << actual
-             << " does not match callee result type " << expected;
-  }
-
-  // The op must appear inside a dataflow.thread definition's body.
-  if (!(*this)->getParentOfType<ThreadOp>())
-    return emitOpError(
-        "must appear inside a dataflow.thread body (per spec section 5.5)");
+ParseResult parseGraphLaunchOperandSegment(
+    OpAsmParser &parser, StringRef keyword,
+    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &operands) {
+  if (parser.parseKeyword(keyword) ||
+      parser.parseOperandList(operands, OpAsmParser::Delimiter::Paren))
+    return failure();
   return success();
 }
 
-LogicalResult GraphLaunchOp::verify() { return success(); }
+void printGraphLaunchOperandSegment(OpAsmPrinter &printer, StringRef keyword,
+                                    ValueRange operands) {
+  printer << ' ' << keyword << '(';
+  printer.printOperands(operands);
+  printer << ')';
+}
+
+} // namespace
+
+ParseResult GraphLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
+  FlatSymbolRefAttr callee;
+  if (parser.parseAttribute(callee, getCalleeAttrName(result.name),
+                            result.attributes))
+    return failure();
+
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> dependencies;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> valueInputs;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> streamInputs;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> memoryInputs;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> streamOutputs;
+  SMLoc operandsLoc = parser.getCurrentLocation();
+  if (parseGraphLaunchOperandSegment(parser, "deps", dependencies) ||
+      parseGraphLaunchOperandSegment(parser, "values", valueInputs) ||
+      parseGraphLaunchOperandSegment(parser, "stream_inputs", streamInputs) ||
+      parseGraphLaunchOperandSegment(parser, "memories", memoryInputs) ||
+      parseGraphLaunchOperandSegment(parser, "stream_outputs", streamOutputs) ||
+      parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  FunctionType type;
+  if (parser.parseColonType(type))
+    return failure();
+  size_t operandCount = dependencies.size() + valueInputs.size() +
+                        streamInputs.size() + memoryInputs.size() +
+                        streamOutputs.size();
+  if (type.getNumInputs() != operandCount)
+    return parser.emitError(parser.getCurrentLocation())
+           << "operand count (" << operandCount
+           << ") does not match function type input count ("
+           << type.getNumInputs() << ")";
+
+  SmallVector<OpAsmParser::UnresolvedOperand, 8> operands;
+  operands.append(dependencies);
+  operands.append(valueInputs);
+  operands.append(streamInputs);
+  operands.append(memoryInputs);
+  operands.append(streamOutputs);
+  if (parser.resolveOperands(operands, type.getInputs(), operandsLoc,
+                             result.operands))
+    return failure();
+
+  ArrayRef<Type> resultTypes = type.getResults();
+  if (resultTypes.empty() || !isa<NoneType>(resultTypes.back()))
+    return parser.emitError(parser.getCurrentLocation(),
+                            "graph launch requires a trailing none result");
+  unsigned valueResultCount = 0;
+  unsigned memoryResultCount = 0;
+  bool sawMemory = false;
+  for (Type resultType : resultTypes.drop_back()) {
+    if (isGraphMemoryCapabilityType(resultType)) {
+      sawMemory = true;
+      ++memoryResultCount;
+      continue;
+    }
+    if (sawMemory)
+      return parser.emitError(
+          parser.getCurrentLocation(),
+          "value result must not follow a memory capability result");
+    ++valueResultCount;
+  }
+  result.addTypes(resultTypes);
+
+  auto &properties = result.getOrAddProperties<GraphLaunchOp::Properties>();
+  properties.operandSegmentSizes = {static_cast<int32_t>(dependencies.size()),
+                                    static_cast<int32_t>(valueInputs.size()),
+                                    static_cast<int32_t>(streamInputs.size()),
+                                    static_cast<int32_t>(memoryInputs.size()),
+                                    static_cast<int32_t>(streamOutputs.size())};
+  properties.resultSegmentSizes = {static_cast<int32_t>(valueResultCount),
+                                   static_cast<int32_t>(memoryResultCount), 1};
+  return success();
+}
+
+void GraphLaunchOp::print(OpAsmPrinter &printer) {
+  printer << ' ';
+  printer.printAttributeWithoutType(getCalleeAttr());
+  printGraphLaunchOperandSegment(printer, "deps", getDependencies());
+  printGraphLaunchOperandSegment(printer, "values", getValueInputs());
+  printGraphLaunchOperandSegment(printer, "stream_inputs", getStreamInputs());
+  printGraphLaunchOperandSegment(printer, "memories", getMemoryInputs());
+  printGraphLaunchOperandSegment(printer, "stream_outputs", getStreamOutputs());
+  printer.printOptionalAttrDict(
+      (*this)->getAttrs(),
+      {getCalleeAttrName(), "operandSegmentSizes", "resultSegmentSizes"});
+  printer << " : ";
+  printer.printFunctionalType(getOperandTypes(), getResultTypes());
+}
+
+LogicalResult GraphLaunchOp::verifySymbolUses(SymbolTableCollection &symbols) {
+  auto callee =
+      symbols.lookupNearestSymbolFrom<GraphOp>(*this, getCalleeAttr());
+  if (!callee)
+    return emitOpError("'")
+           << getCallee() << "' does not reference a valid 'dataflow.graph' op";
+
+  ArrayRef<int32_t> inputSegments = callee.getInputSegmentSizes();
+  ArrayRef<int32_t> resultSegments = callee.getResultSegmentSizes();
+  ArrayRef<Type> inputs = callee.getFunctionType().getInputs();
+  ArrayRef<Type> results = callee.getFunctionType().getResults();
+
+  auto verifyCount = [&](size_t actual, int32_t expected,
+                         StringRef label) -> LogicalResult {
+    if (actual == static_cast<size_t>(expected))
+      return success();
+    return emitOpError() << label << " count (" << actual
+                         << ") does not match callee segment size (" << expected
+                         << ")";
+  };
+  if (failed(verifyCount(getValueInputs().size(), inputSegments[0],
+                         "value input")) ||
+      failed(verifyCount(getStreamInputs().size(), inputSegments[1],
+                         "stream input binding")) ||
+      failed(verifyCount(getMemoryInputs().size(), inputSegments[2],
+                         "memory input")) ||
+      failed(verifyCount(getValueResults().size(), resultSegments[0],
+                         "value result")) ||
+      failed(verifyCount(getStreamOutputs().size(), resultSegments[1],
+                         "stream output binding")) ||
+      failed(verifyCount(getMemoryResults().size(), resultSegments[2],
+                         "memory result")))
+    return failure();
+
+  unsigned inputIndex = 0;
+  for (auto [index, value] : llvm::enumerate(getValueInputs())) {
+    if (value.getType() != inputs[inputIndex])
+      return emitOpError("value input #")
+             << index << " type " << value.getType()
+             << " does not match callee payload type " << inputs[inputIndex];
+    ++inputIndex;
+  }
+  for (auto [index, channel] : llvm::enumerate(getStreamInputs())) {
+    Type payload = cast<ChannelType>(channel.getType()).getElementType();
+    if (payload != inputs[inputIndex])
+      return emitOpError("stream input binding #")
+             << index << " payload type " << payload
+             << " does not match callee payload type " << inputs[inputIndex];
+    ++inputIndex;
+  }
+  for (auto [index, memory] : llvm::enumerate(getMemoryInputs())) {
+    if (memory.getType() != inputs[inputIndex])
+      return emitOpError("memory input #")
+             << index << " type " << memory.getType()
+             << " does not match callee payload type " << inputs[inputIndex];
+    ++inputIndex;
+  }
+
+  unsigned resultIndex = 0;
+  for (auto [index, value] : llvm::enumerate(getValueResults())) {
+    if (value.getType() != results[resultIndex])
+      return emitOpError("value result #")
+             << index << " type " << value.getType()
+             << " does not match callee payload type " << results[resultIndex];
+    ++resultIndex;
+  }
+  for (auto [index, channel] : llvm::enumerate(getStreamOutputs())) {
+    Type payload = cast<ChannelType>(channel.getType()).getElementType();
+    if (payload != results[resultIndex])
+      return emitOpError("stream output binding #")
+             << index << " payload type " << payload
+             << " does not match callee payload type " << results[resultIndex];
+    ++resultIndex;
+  }
+  for (auto [index, memory] : llvm::enumerate(getMemoryResults())) {
+    if (memory.getType() != results[resultIndex])
+      return emitOpError("memory result #")
+             << index << " type " << memory.getType()
+             << " does not match callee payload type " << results[resultIndex];
+    ++resultIndex;
+  }
+
+  llvm::SmallDenseSet<Value, 4> producerBindings;
+  for (Value channel : getStreamOutputs()) {
+    if (!producerBindings.insert(channel).second)
+      return emitOpError(
+          "the same channel cannot bind more than one stream output port");
+  }
+  return success();
+}
+
+LogicalResult GraphLaunchOp::verify() {
+  if (!(*this)->getParentOfType<ThreadOp>())
+    return emitOpError("must appear inside a dataflow.thread body");
+  return success();
+}

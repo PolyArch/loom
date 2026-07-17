@@ -1,8 +1,9 @@
 #ifndef LOOM_FABRIC_TECH_SYNTHESIZER_PARALLEL_H
 #define LOOM_FABRIC_TECH_SYNTHESIZER_PARALLEL_H
 
-// Thin wrapper over llvm::ThreadPool used by the loom-generalize-subgraphs-to-fu
-// pass for cross-group, coverage-verifier, and strategy-internal parallelism.
+// Thin wrapper over llvm::ThreadPool used by the
+// loom-synthesize-configured-functions pass for cross-group, coverage-verifier,
+// and strategy-internal parallelism.
 //
 // Contract for callers:
 //
@@ -58,9 +59,8 @@ public:
   // thread. `R` must be default-constructible (slots are pre-allocated
   // so each worker can write its result by index).
   template <class T, class R>
-  ::llvm::SmallVector<R, 8>
-  parallelMap(::llvm::ArrayRef<T> inputs,
-              ::llvm::function_ref<R(const T &)> fn) {
+  ::llvm::SmallVector<R, 8> parallelMap(::llvm::ArrayRef<T> inputs,
+                                        ::llvm::function_ref<R(const T &)> fn) {
     static_assert(std::is_default_constructible_v<R>,
                   "WorkerPool::parallelMap requires default-constructible R");
     ::llvm::SmallVector<R, 8> results;

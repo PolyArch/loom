@@ -15,8 +15,10 @@ add_mlir_library(MLIRDataflowEnums
 )
 
 add_mlir_dialect_library(MLIRDataflow
+  DataflowChannelOps.cpp
   DataflowDialect.cpp
   DataflowGraphValidation.cpp
+  DataflowInterfaces.cpp
   DataflowFunctionLikeOps.cpp
   DataflowOps.cpp
 
@@ -27,14 +29,18 @@ add_mlir_dialect_library(MLIRDataflow
 
   DEPENDS
   MLIRDataflowDialectIncGen
+  MLIRDataflowInterfacesIncGen
   MLIRDataflowOpsIncGen
 
   LINK_LIBS PUBLIC
   MLIRCallInterfaces
+  MLIRArithDialect
   MLIRDataflowEnums
-  MLIRFabric
   MLIRFunctionInterfaces
   MLIRIR
+  MLIRLLVMDialect
+  MLIRMathDialect
   MLIRSideEffectInterfaces
   MLIRSupport
+  MLIRUBDialect
 )

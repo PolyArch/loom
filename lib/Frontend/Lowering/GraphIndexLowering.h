@@ -6,7 +6,7 @@
 namespace loom {
 namespace lowering {
 
-void lowerGraphIndexDomains(::dataflow::GraphFuncOp graph);
+void lowerGraphIndexDomains(::dataflow::GraphOp graph);
 
 } // namespace lowering
 } // namespace loom

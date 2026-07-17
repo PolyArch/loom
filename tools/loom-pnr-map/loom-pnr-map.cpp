@@ -11,7 +11,7 @@ static llvm::cl::opt<std::string>
                 llvm::cl::Required);
 
 static llvm::cl::opt<std::string>
-    graphName("graph", llvm::cl::desc("dataflow.graph.func symbol"),
+    graphName("graph", llvm::cl::desc("dataflow.graph symbol"),
               llvm::cl::Required);
 
 static llvm::cl::opt<std::string>
@@ -23,19 +23,19 @@ static llvm::cl::opt<std::string>
                  llvm::cl::desc("fabric.module or fabric.system symbol"),
                  llvm::cl::Required);
 
-static llvm::cl::opt<std::string> hardwareRootKind(
-    "hardware-root-kind",
-    llvm::cl::desc("hardware root kind: module or system"),
-    llvm::cl::init("module"));
+static llvm::cl::opt<std::string>
+    hardwareRootKind("hardware-root-kind",
+                     llvm::cl::desc("hardware root kind: module or system"),
+                     llvm::cl::init("module"));
 
 static llvm::cl::opt<std::string>
     accCoreName("acc-core",
                 llvm::cl::desc("fabric.system acc_core node to map onto"),
                 llvm::cl::init(""));
 
-static llvm::cl::opt<std::string>
-    workloadName("workload", llvm::cl::desc("workload name"),
-                 llvm::cl::init(""));
+static llvm::cl::opt<std::string> workloadName("workload",
+                                               llvm::cl::desc("workload name"),
+                                               llvm::cl::init(""));
 
 static llvm::cl::opt<std::string>
     outputPath("output", llvm::cl::desc("mapping summary CSV"),
@@ -67,7 +67,8 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (llvm::Error err = loom::pnr::writeMappingCsv(outputPath, {*summaryOrErr})) {
+  if (llvm::Error err =
+          loom::pnr::writeMappingCsv(outputPath, {*summaryOrErr})) {
     llvm::errs() << "error: " << llvm::toString(std::move(err)) << "\n";
     return 1;
   }

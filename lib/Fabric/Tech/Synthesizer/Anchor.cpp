@@ -60,11 +60,10 @@ namespace {
 // Type lifting helpers.
 //===----------------------------------------------------------------------===//
 //
-// Input subgraph block-arg types are software types (iN / fN / index /
+// Configured-function input types are software types (iN / fN / index /
 // i1). The synthesized FU's signature exposes `fabric.bits<N>` ports
-// only. Mirror the forward direction's bit-width assignments so the
-// inverse lifting agrees with `SubgraphEnumerator::computePortLiftMap`
-// and `liftFor`.
+// only. Mirror the projection path's bit-width assignments so forward
+// synthesis and inverse lifting agree.
 
 // Bit width of an MLIR software type expressible as a fabric.bits<N>
 // port. Returns std::nullopt when the type cannot be lifted (caller
@@ -1118,6 +1117,16 @@ static SynthResult runAnchorSynthesis(const ::loom::SynthConfig &cfg,
     result.failureReason = SynthFailureReason::InvalidInput;
     result.notes.push_back("anchor: missing scratch MLIRContext");
     return result;
+  }
+  for (const ::fabric::ConfiguredFunction &function : inputs.functions) {
+    for (const ::fabric::ConfiguredFunctionNode &node : function.nodes) {
+      if (::fabric::isFabricOpSupported(node.operationName))
+        continue;
+      result.failureReason = SynthFailureReason::UnsupportedOp;
+      result.notes.push_back("anchor: unsupported operation " +
+                             node.operationName);
+      return result;
+    }
   }
 
   ::mlir::MLIRContext *ctx = inputs.context;

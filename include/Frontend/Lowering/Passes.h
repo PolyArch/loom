@@ -27,7 +27,7 @@ namespace lowering {
 std::unique_ptr<::mlir::Pass> createLowerForallToThreadPass();
 
 // Module-scope pass that, for each scf.for op with iter_args found
-// inside a dataflow.thread body, emits a sibling dataflow.graph.func
+// inside a dataflow.thread body, emits a sibling dataflow.graph
 // definition at module scope plus a dataflow.graph.launch at the cut
 // site inside the thread. scf.for ops without iter_args are left in
 // place; only the structured-reduction shape is promoted to a graph.
@@ -37,7 +37,7 @@ std::unique_ptr<::mlir::Pass> createLowerForallToThreadPass();
 std::unique_ptr<::mlir::Pass> createLowerForToGraphPass();
 
 // Module-scope pass that expands known library helper calls inside
-// dataflow.graph.func bodies into primitive operations before PnR.
+// dataflow.graph bodies into primitive operations before PnR.
 // Unknown calls are left in place for the existing unsupported-call
 // diagnostics.
 std::unique_ptr<::mlir::Pass> createLowerKnownLibraryCallsPass();
@@ -50,7 +50,7 @@ std::unique_ptr<::mlir::Pass> createLowerKnownLibraryCallsPass();
 std::unique_ptr<::mlir::Pass> createLowerGraphMemoryPass();
 
 // Module-scope pass that promotes each used `arith.constant` op inside a
-// dataflow.graph.func body into a `dataflow.constant` op driven by the body's
+// dataflow.graph body into a `dataflow.constant` op driven by the body's
 // leading `thread_ctrl` block argument. Graph-local scalar literals therefore
 // remain visible to PnR as configurable hardware constants, including literals
 // feeding scalar arithmetic, structured loop bounds, or streaming primitives.

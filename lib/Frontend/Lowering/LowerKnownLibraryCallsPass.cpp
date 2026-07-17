@@ -1,4 +1,4 @@
-// Expand known library helper calls inside dataflow.graph.func bodies into
+// Expand known library helper calls inside dataflow.graph bodies into
 // primitive operations before PnR sees the graph. Unknown calls are left in
 // place so the existing unsupported-call diagnostics remain the SSOT.
 
@@ -23,16 +23,16 @@ namespace {
 constexpr ::llvm::StringLiteral kCmsisVecMatMultTS8 =
     "arm_nn_vec_mat_mult_t_s8";
 
-::mlir::Value makeI32Constant(::mlir::OpBuilder &builder,
-                              ::mlir::Location loc, std::int32_t value) {
+::mlir::Value makeI32Constant(::mlir::OpBuilder &builder, ::mlir::Location loc,
+                              std::int32_t value) {
   return ::mlir::arith::ConstantOp::create(
              builder, loc, builder.getI32Type(),
              builder.getIntegerAttr(builder.getI32Type(), value))
       .getResult();
 }
 
-::mlir::Value makeI64Constant(::mlir::OpBuilder &builder,
-                              ::mlir::Location loc, std::int64_t value) {
+::mlir::Value makeI64Constant(::mlir::OpBuilder &builder, ::mlir::Location loc,
+                              std::int64_t value) {
   return ::mlir::arith::ConstantOp::create(
              builder, loc, builder.getI64Type(),
              builder.getIntegerAttr(builder.getI64Type(), value))
@@ -43,8 +43,9 @@ constexpr ::llvm::StringLiteral kCmsisVecMatMultTS8 =
                       ::mlir::Value base, ::mlir::Type elemTy,
                       ::mlir::Value index) {
   return ::mlir::LLVM::GEPOp::create(
-             builder, loc, ::mlir::LLVM::LLVMPointerType::get(builder.getContext()),
-             elemTy, base, ::mlir::ValueRange{index})
+             builder, loc,
+             ::mlir::LLVM::LLVMPointerType::get(builder.getContext()), elemTy,
+             base, ::mlir::ValueRange{index})
       .getResult();
 }
 
@@ -78,9 +79,8 @@ void llvmStore(::mlir::OpBuilder &builder, ::mlir::Location loc,
 
 ::mlir::Value llvmTrunc(::mlir::OpBuilder &builder, ::mlir::Location loc,
                         ::mlir::Value value, ::mlir::Type resultTy) {
-  return ::mlir::LLVM::TruncOp::create(
-             builder, loc, resultTy, value,
-             ::mlir::LLVM::IntegerOverflowFlags::none)
+  return ::mlir::LLVM::TruncOp::create(builder, loc, resultTy, value,
+                                       ::mlir::LLVM::IntegerOverflowFlags::none)
       .getResult();
 }
 
@@ -110,9 +110,9 @@ void llvmStore(::mlir::OpBuilder &builder, ::mlir::Location loc,
   auto hasRightShift = ::mlir::arith::CmpIOp::create(
       builder, loc, ::mlir::arith::CmpIPredicate::sgt, exponent, zero);
 
-  auto ifOp = ::mlir::scf::IfOp::create(
-      builder, loc, ::mlir::TypeRange{i32Ty}, hasRightShift,
-      /*withElseRegion=*/true);
+  auto ifOp = ::mlir::scf::IfOp::create(builder, loc, ::mlir::TypeRange{i32Ty},
+                                        hasRightShift,
+                                        /*withElseRegion=*/true);
 
   {
     ::mlir::OpBuilder::InsertionGuard guard(builder);
@@ -136,17 +136,16 @@ void llvmStore(::mlir::OpBuilder &builder, ::mlir::Location loc,
         builder, loc, ::mlir::arith::CmpIPredicate::slt, result, zero);
     ::mlir::Value thresholdPlusOne =
         ::mlir::arith::AddIOp::create(builder, loc, threshold, one).getResult();
-    threshold = ::mlir::arith::SelectOp::create(
-                    builder, loc, resultIsNegative, thresholdPlusOne, threshold)
+    threshold = ::mlir::arith::SelectOp::create(builder, loc, resultIsNegative,
+                                                thresholdPlusOne, threshold)
                     .getResult();
     auto shouldRoundUp = ::mlir::arith::CmpIOp::create(
         builder, loc, ::mlir::arith::CmpIPredicate::sgt, remainder, threshold);
     ::mlir::Value rounded =
         ::mlir::arith::AddIOp::create(builder, loc, result, one).getResult();
-    ::mlir::Value selected =
-        ::mlir::arith::SelectOp::create(builder, loc, shouldRoundUp, rounded,
-                                       result)
-            .getResult();
+    ::mlir::Value selected = ::mlir::arith::SelectOp::create(
+                                 builder, loc, shouldRoundUp, rounded, result)
+                                 .getResult();
     ::mlir::scf::YieldOp::create(builder, loc, selected);
   }
 
@@ -226,9 +225,8 @@ bool expandCmsisVecMatMultTS8(::mlir::LLVM::CallOp call,
   ::mlir::Value zero = makeI32Constant(builder, loc, 0);
   ::mlir::Value one = makeI32Constant(builder, loc, 1);
 
-  auto rowLoopBody = [&](::mlir::OpBuilder &rowBuilder,
-                         ::mlir::Location rowLoc, ::mlir::Value row,
-                         ::mlir::ValueRange) {
+  auto rowLoopBody = [&](::mlir::OpBuilder &rowBuilder, ::mlir::Location rowLoc,
+                         ::mlir::Value row, ::mlir::ValueRange) {
     // Graph memory ports are established capabilities, not nullable pointers.
     ::mlir::Value biasPtr = llvmGep(rowBuilder, rowLoc, bias, i32Ty, row);
     ::mlir::Value biasValue = llvmLoad(rowBuilder, rowLoc, i32Ty, biasPtr);
@@ -267,10 +265,10 @@ bool expandCmsisVecMatMultTS8(::mlir::LLVM::CallOp call,
     };
     auto colLoop =
         ::mlir::scf::ForOp::create(rowBuilder, rowLoc, zero, rhsCols, one,
-                                   ::mlir::ValueRange{biasValue},
-                                   colLoopBody);
+                                   ::mlir::ValueRange{biasValue}, colLoopBody);
     ::mlir::Value acc = colLoop.getResult(0);
-    acc = buildCmsisRequantize(rowBuilder, rowLoc, acc, dstMultiplier, dstShift);
+    acc =
+        buildCmsisRequantize(rowBuilder, rowLoc, acc, dstMultiplier, dstShift);
     acc = ::mlir::arith::AddIOp::create(rowBuilder, rowLoc, acc, dstOffset)
               .getResult();
     acc = selectMaxI32(rowBuilder, rowLoc, acc, activationMin);
@@ -292,8 +290,7 @@ bool expandCmsisVecMatMultTS8(::mlir::LLVM::CallOp call,
   return true;
 }
 
-unsigned rewriteGraph(::dataflow::GraphFuncOp graph,
-                      ::mlir::OpBuilder &builder) {
+unsigned rewriteGraph(::dataflow::GraphOp graph, ::mlir::OpBuilder &builder) {
   ::llvm::SmallVector<::mlir::LLVM::CallOp, 4> calls;
   graph.walk([&](::mlir::LLVM::CallOp call) {
     if (isDirectCmsisVecMatMultTS8(call))
@@ -315,7 +312,7 @@ struct LowerKnownLibraryCallsPass
     return "loom-lower-known-library-calls";
   }
   ::llvm::StringRef getDescription() const final {
-    return "Expand known library calls inside dataflow.graph.func bodies "
+    return "Expand known library calls inside dataflow.graph bodies "
            "before graph memory lowering and PnR.";
   }
 
@@ -329,11 +326,11 @@ struct LowerKnownLibraryCallsPass
     ::mlir::ModuleOp module = getOperation();
     ::mlir::OpBuilder builder(&getContext());
 
-    ::llvm::SmallVector<::dataflow::GraphFuncOp, 8> graphs;
-    for (auto graph : module.getOps<::dataflow::GraphFuncOp>())
+    ::llvm::SmallVector<::dataflow::GraphOp, 8> graphs;
+    for (auto graph : module.getOps<::dataflow::GraphOp>())
       graphs.push_back(graph);
 
-    for (::dataflow::GraphFuncOp graph : graphs) {
+    for (::dataflow::GraphOp graph : graphs) {
       if (graph.isExternal())
         continue;
       (void)rewriteGraph(graph, builder);

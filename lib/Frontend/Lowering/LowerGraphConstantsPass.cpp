@@ -1,4 +1,4 @@
-// Replace graph-local scalar value sources inside `dataflow.graph.func` bodies
+// Replace graph-local scalar value sources inside `dataflow.graph` bodies
 // with a `dataflow.constant` fired by the graph body's `thread_ctrl` block
 // argument.
 //
@@ -9,8 +9,8 @@
 // non-fabric ops.
 //
 // Bail conditions (graph left unchanged):
-//   * The graph.func is external (no body to walk).
-//   * The graph.func has no convertible scalar source ops with users.
+//   * The graph is external (no body to walk).
+//   * The graph has no convertible scalar source ops with users.
 //
 // Per-source skip (source left in place):
 //   * The source has no users at all (DCE will pick it up).
@@ -40,7 +40,7 @@ namespace {
 
 // The distinguished leading `none` block argument is the graph start firing
 // token; it is separate from the payload-only FunctionType.
-::mlir::Value getThreadCtrl(::dataflow::GraphFuncOp graph) {
+::mlir::Value getThreadCtrl(::dataflow::GraphOp graph) {
   ::mlir::Block &entry = graph.getBody().front();
   if (entry.getNumArguments() == 0)
     return {};
@@ -64,11 +64,11 @@ struct ScalarSource {
 // `dataflow.constant` driven by `ctrl`. The walk descends into
 // nested scf regions because the memory pass routinely materializes
 // the `%c0 : index` constant inside an scf.for / scf.while body when
-// the graph's load/store ops are themselves nested. The graph.func's
+// the graph's load/store ops are themselves nested. The graph's
 // `thread_ctrl` block argument is visible from every nested region,
 // so the rewrite is SSA-legal regardless of the constant's depth.
 // Returns the number of sources converted.
-unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph, ::mlir::Value ctrl,
+unsigned rewriteOneGraph(::dataflow::GraphOp graph, ::mlir::Value ctrl,
                          ::mlir::OpBuilder &builder) {
   // Collect targets up front so the walk is independent of the
   // mutations performed below.
@@ -111,7 +111,7 @@ struct LowerGraphConstantsPass
     return "loom-lower-graph-constants";
   }
   ::llvm::StringRef getDescription() const final {
-    return "Promote arith.constant ops inside dataflow.graph.func bodies "
+    return "Promote arith.constant ops inside dataflow.graph bodies "
            "to dataflow.constant ops driven by the body's leading "
            "thread_ctrl block argument.";
   }
@@ -125,11 +125,11 @@ struct LowerGraphConstantsPass
     ::mlir::ModuleOp module = getOperation();
     ::mlir::OpBuilder builder(&getContext());
 
-    ::llvm::SmallVector<::dataflow::GraphFuncOp, 8> graphs;
-    for (auto graph : module.getOps<::dataflow::GraphFuncOp>())
+    ::llvm::SmallVector<::dataflow::GraphOp, 8> graphs;
+    for (auto graph : module.getOps<::dataflow::GraphOp>())
       graphs.push_back(graph);
 
-    for (::dataflow::GraphFuncOp graph : graphs) {
+    for (::dataflow::GraphOp graph : graphs) {
       if (graph.isExternal())
         continue;
       ::mlir::Value ctrl = getThreadCtrl(graph);

@@ -21,10 +21,10 @@
 #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/STLExtras.h"
 
 #include <cassert>
 #include <optional>
@@ -84,7 +84,7 @@ bool isKnownLeafComputation(::mlir::Operation *op) {
                       ::mlir::LLVM::MemcpyOp>(op);
 }
 
-::mlir::LogicalResult checkOneGraph(::dataflow::GraphFuncOp graph) {
+::mlir::LogicalResult checkOneGraph(::dataflow::GraphOp graph) {
   ::mlir::Block &entry = graph.getBody().front();
   if (entry.getNumArguments() == 0 ||
       !::llvm::isa<::mlir::NoneType>(entry.getArgument(0).getType()))
@@ -111,116 +111,109 @@ bool isKnownLeafComputation(::mlir::Operation *op) {
     return ::mlir::failure();
   }
 
-  ::mlir::WalkResult result =
-      graph.getBody().walk([&](::mlir::Operation *op) -> ::mlir::WalkResult {
-        if (auto load = ::llvm::dyn_cast<::mlir::memref::LoadOp>(op)) {
-          if (load.getMemRefType().getRank() != 1 ||
-              load.getIndices().size() != 1) {
-            load.emitError("loom-lower-graph-memory: only rank-one memref.load "
-                           "is supported by dataflow.load");
-            return ::mlir::WalkResult::interrupt();
-          }
-        } else if (auto store = ::llvm::dyn_cast<::mlir::memref::StoreOp>(op)) {
-          if (store.getMemRefType().getRank() != 1 ||
-              store.getIndices().size() != 1) {
-            store.emitError(
-                "loom-lower-graph-memory: only rank-one memref.store is "
-                "supported by dataflow.store");
-            return ::mlir::WalkResult::interrupt();
-          }
-        }
+  ::mlir::WalkResult result = graph.getBody().walk([&](::mlir::Operation *op)
+                                                       -> ::mlir::WalkResult {
+    if (auto load = ::llvm::dyn_cast<::mlir::memref::LoadOp>(op)) {
+      if (load.getMemRefType().getRank() != 1 ||
+          load.getIndices().size() != 1) {
+        load.emitError("loom-lower-graph-memory: only rank-one memref.load "
+                       "is supported by dataflow.load");
+        return ::mlir::WalkResult::interrupt();
+      }
+    } else if (auto store = ::llvm::dyn_cast<::mlir::memref::StoreOp>(op)) {
+      if (store.getMemRefType().getRank() != 1 ||
+          store.getIndices().size() != 1) {
+        store.emitError(
+            "loom-lower-graph-memory: only rank-one memref.store is "
+            "supported by dataflow.store");
+        return ::mlir::WalkResult::interrupt();
+      }
+    }
 
-        auto findMemoryCapability = [&](::mlir::TypeRange types) {
-          for (::mlir::Type type : types)
-            if (isGraphMemoryCapabilityType(type))
-              return type;
-          return ::mlir::Type{};
-        };
-        if (::llvm::isa<::dataflow::CarryOp, ::dataflow::MuxOp,
-                        ::dataflow::DemuxOp, ::dataflow::GateOp,
-                        ::dataflow::InvariantOp>(op)) {
-          ::mlir::Type memory = findMemoryCapability(op->getOperandTypes());
-          if (!memory)
-            memory = findMemoryCapability(op->getResultTypes());
-          if (memory) {
-            op->emitError() << "cannot lower memory capability " << memory
-                            << " through " << op->getName().getStringRef();
-            return ::mlir::WalkResult::interrupt();
-          }
-        } else if (auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(op)) {
-          ::mlir::Type memory = findMemoryCapability(ifOp.getResultTypes());
-          if (memory) {
-            ifOp.emitError()
-                << "cannot lower selected memory capability " << memory
-                << " through dataflow.mux/demux";
-            return ::mlir::WalkResult::interrupt();
-          }
-        } else if (auto forOp = ::llvm::dyn_cast<::mlir::scf::ForOp>(op)) {
-          ::mlir::Type memory =
-              findMemoryCapability(forOp.getInitArgs().getTypes());
-          if (memory) {
-            forOp.emitError()
-                << "cannot lower loop-carried memory capability " << memory
-                << " through dataflow.carry";
-            return ::mlir::WalkResult::interrupt();
-          }
-          if (::mlir::failed(::loom::lowering::inferStreamStepKind(forOp))) {
-            forOp.emitError("loom-lower-graph-memory: scf.for has invalid "
-                            "'loom.stream_step_kind'");
-            return ::mlir::WalkResult::interrupt();
-          }
-          if (::mlir::failed(::loom::lowering::inferStreamPredicate(forOp))) {
-            forOp.emitError("loom-lower-graph-memory: scf.for has invalid "
-                            "'loom.stream_predicate'");
-            return ::mlir::WalkResult::interrupt();
-          }
-        } else if (auto whileOp = ::llvm::dyn_cast<::mlir::scf::WhileOp>(op)) {
-          ::mlir::Type memory =
-              findMemoryCapability(whileOp.getInits().getTypes());
-          if (memory) {
-            whileOp.emitError()
-                << "cannot lower loop-carried memory capability " << memory
-                << " through dataflow.carry";
-            return ::mlir::WalkResult::interrupt();
-          }
-        }
-        if (op->getName().getDialectNamespace() == "scf" &&
-            !::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp,
-                         ::mlir::scf::WhileOp, ::mlir::scf::YieldOp,
-                         ::mlir::scf::ConditionOp>(op)) {
-          op->emitError("loom-lower-graph-memory: unsupported residual SCF "
-                        "must be normalized before graph-region lowering");
-          return ::mlir::WalkResult::interrupt();
-        }
-        bool modeled =
-            ::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp,
-                        ::mlir::scf::WhileOp, ::mlir::scf::YieldOp,
-                        ::mlir::scf::ConditionOp, ::mlir::memref::LoadOp,
-                        ::mlir::memref::StoreOp, ::dataflow::LoadOp,
-                        ::dataflow::StoreOp, ::dataflow::GraphReturnOp,
-                        ::mlir::LLVM::LoadOp, ::mlir::LLVM::StoreOp,
-                        ::mlir::LLVM::MemcpyOp>(op) ||
-            op->getName().getStringRef() == "llvm.intr.memset";
-        bool nested = op->getBlock() != &entry;
-        bool admissibleLeaf = ::mlir::isPure(op) ||
-                              (!nested && isKnownLeafComputation(op));
-        if (!modeled &&
-            (op->getNumRegions() != 0 || !admissibleLeaf ||
-             op->getName().getStringRef() == "llvm.call")) {
-          op->emitError()
-              << "loom-lower-graph-memory: effectful or unmodeled graph "
-                 "operation '"
-              << op->getName().getStringRef() << "' is unsupported";
-          return ::mlir::WalkResult::interrupt();
-        }
-        return ::mlir::WalkResult::advance();
-      });
+    auto findMemoryCapability = [&](::mlir::TypeRange types) {
+      for (::mlir::Type type : types)
+        if (isGraphMemoryCapabilityType(type))
+          return type;
+      return ::mlir::Type{};
+    };
+    if (::llvm::isa<::dataflow::CarryOp, ::dataflow::MuxOp, ::dataflow::DemuxOp,
+                    ::dataflow::GateOp, ::dataflow::InvariantOp>(op)) {
+      ::mlir::Type memory = findMemoryCapability(op->getOperandTypes());
+      if (!memory)
+        memory = findMemoryCapability(op->getResultTypes());
+      if (memory) {
+        op->emitError() << "cannot lower memory capability " << memory
+                        << " through " << op->getName().getStringRef();
+        return ::mlir::WalkResult::interrupt();
+      }
+    } else if (auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(op)) {
+      ::mlir::Type memory = findMemoryCapability(ifOp.getResultTypes());
+      if (memory) {
+        ifOp.emitError() << "cannot lower selected memory capability " << memory
+                         << " through dataflow.mux/demux";
+        return ::mlir::WalkResult::interrupt();
+      }
+    } else if (auto forOp = ::llvm::dyn_cast<::mlir::scf::ForOp>(op)) {
+      ::mlir::Type memory =
+          findMemoryCapability(forOp.getInitArgs().getTypes());
+      if (memory) {
+        forOp.emitError() << "cannot lower loop-carried memory capability "
+                          << memory << " through dataflow.carry";
+        return ::mlir::WalkResult::interrupt();
+      }
+      if (::mlir::failed(::loom::lowering::inferStreamStepKind(forOp))) {
+        forOp.emitError("loom-lower-graph-memory: scf.for has invalid "
+                        "'loom.stream_step_kind'");
+        return ::mlir::WalkResult::interrupt();
+      }
+      if (::mlir::failed(::loom::lowering::inferStreamPredicate(forOp))) {
+        forOp.emitError("loom-lower-graph-memory: scf.for has invalid "
+                        "'loom.stream_predicate'");
+        return ::mlir::WalkResult::interrupt();
+      }
+    } else if (auto whileOp = ::llvm::dyn_cast<::mlir::scf::WhileOp>(op)) {
+      ::mlir::Type memory = findMemoryCapability(whileOp.getInits().getTypes());
+      if (memory) {
+        whileOp.emitError() << "cannot lower loop-carried memory capability "
+                            << memory << " through dataflow.carry";
+        return ::mlir::WalkResult::interrupt();
+      }
+    }
+    if (op->getName().getDialectNamespace() == "scf" &&
+        !::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp,
+                     ::mlir::scf::WhileOp, ::mlir::scf::YieldOp,
+                     ::mlir::scf::ConditionOp>(op)) {
+      op->emitError("loom-lower-graph-memory: unsupported residual SCF "
+                    "must be normalized before graph-region lowering");
+      return ::mlir::WalkResult::interrupt();
+    }
+    bool modeled =
+        ::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp, ::mlir::scf::WhileOp,
+                    ::mlir::scf::YieldOp, ::mlir::scf::ConditionOp,
+                    ::mlir::memref::LoadOp, ::mlir::memref::StoreOp,
+                    ::dataflow::LoadOp, ::dataflow::StoreOp,
+                    ::dataflow::GraphReturnOp, ::mlir::LLVM::LoadOp,
+                    ::mlir::LLVM::StoreOp, ::mlir::LLVM::MemcpyOp>(op) ||
+        op->getName().getStringRef() == "llvm.intr.memset";
+    bool nested = op->getBlock() != &entry;
+    bool admissibleLeaf =
+        ::mlir::isPure(op) || (!nested && isKnownLeafComputation(op));
+    if (!modeled && (op->getNumRegions() != 0 || !admissibleLeaf ||
+                     op->getName().getStringRef() == "llvm.call")) {
+      op->emitError()
+          << "loom-lower-graph-memory: effectful or unmodeled graph "
+             "operation '"
+          << op->getName().getStringRef() << "' is unsupported";
+      return ::mlir::WalkResult::interrupt();
+    }
+    return ::mlir::WalkResult::advance();
+  });
   return result.wasInterrupted() ? ::mlir::failure() : ::mlir::success();
 }
 
 class GraphRegionLowerer {
 public:
-  explicit GraphRegionLowerer(::dataflow::GraphFuncOp graph)
+  explicit GraphRegionLowerer(::dataflow::GraphOp graph)
       : graph(graph), builder(graph.getContext()),
         entry(graph.getBody().front()), anchor(entry.getTerminator()) {}
 
@@ -230,14 +223,15 @@ public:
     for (MemoryFrontier &frontier : initial)
       frontier = {graph.getStart(), graph.getStart()};
 
-    RegionResult result = lowerBlock(entry, graph.getStart(), std::move(initial));
+    RegionResult result =
+        lowerBlock(entry, graph.getStart(), std::move(initial));
     ::loom::lowering::lowerGraphIndexDomains(graph);
     finalizeReturn(::llvm::cast<::dataflow::GraphReturnOp>(anchor), result);
     return ::mlir::success();
   }
 
 private:
-  ::dataflow::GraphFuncOp graph;
+  ::dataflow::GraphOp graph;
   ::mlir::OpBuilder builder;
   ::mlir::Block &entry;
   ::mlir::Operation *anchor;
@@ -303,8 +297,8 @@ private:
       if (!def)
         return true;
       if (::llvm::isa<::mlir::memref::AllocOp, ::mlir::memref::AllocaOp,
-                      ::mlir::memref::GetGlobalOp,
-                      ::mlir::LLVM::AddressOfOp>(def))
+                      ::mlir::memref::GetGlobalOp, ::mlir::LLVM::AddressOfOp>(
+              def))
         return true;
       if (auto view = ::llvm::dyn_cast<::mlir::ViewLikeOpInterface>(def)) {
         value = view.getViewSource();
@@ -554,8 +548,7 @@ private:
         candidates.push_back(witness);
     if (candidates.empty())
       candidates.push_back(start);
-    ::llvm::SmallVector<::mlir::Value, 4> reduced =
-        reduceEvents(candidates);
+    ::llvm::SmallVector<::mlir::Value, 4> reduced = reduceEvents(candidates);
     assert(!reduced.empty() && "graph retirement must have a witness");
 
     ::llvm::SmallVector<::mlir::Value, 4> values(returnOp.getValues().begin(),
@@ -803,12 +796,10 @@ private:
     }
 
     ::llvm::SetVector<::mlir::Value> captures;
-    for (::mlir::Value value :
-         collectProjectedCaptures(ifOp.getThenRegion()))
+    for (::mlir::Value value : collectProjectedCaptures(ifOp.getThenRegion()))
       captures.insert(value);
     if (!ifOp.getElseRegion().empty())
-      for (::mlir::Value value :
-           collectProjectedCaptures(ifOp.getElseRegion()))
+      for (::mlir::Value value : collectProjectedCaptures(ifOp.getElseRegion()))
         captures.insert(value);
     for (::mlir::Value capture : captures) {
       auto [falseValue, trueValue] = demux(selector, capture, loc);
@@ -1082,7 +1073,7 @@ namespace lowering {
 ::mlir::LogicalResult
 checkGraphRegionLoweringPreconditions(::mlir::ModuleOp module) {
   ::mlir::WalkResult result =
-      module.walk([&](::dataflow::GraphFuncOp graph) -> ::mlir::WalkResult {
+      module.walk([&](::dataflow::GraphOp graph) -> ::mlir::WalkResult {
         if (!graph.isExternal() && ::mlir::failed(checkOneGraph(graph)))
           return ::mlir::WalkResult::interrupt();
         return ::mlir::WalkResult::advance();
@@ -1090,7 +1081,7 @@ checkGraphRegionLoweringPreconditions(::mlir::ModuleOp module) {
   return result.wasInterrupted() ? ::mlir::failure() : ::mlir::success();
 }
 
-::mlir::LogicalResult lowerGraphRegions(::dataflow::GraphFuncOp graph) {
+::mlir::LogicalResult lowerGraphRegions(::dataflow::GraphOp graph) {
   return GraphRegionLowerer(graph).run();
 }
 

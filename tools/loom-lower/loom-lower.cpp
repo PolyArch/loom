@@ -49,14 +49,15 @@
 
 namespace {
 
-::llvm::cl::opt<std::string> inputFilename(
-    ::llvm::cl::Positional,
-    ::llvm::cl::desc("<input SCF MLIR (.mlir), or - for stdin>"),
-    ::llvm::cl::init("-"));
+::llvm::cl::opt<std::string>
+    inputFilename(::llvm::cl::Positional,
+                  ::llvm::cl::desc("<input SCF MLIR (.mlir), or - for stdin>"),
+                  ::llvm::cl::init("-"));
 
-::llvm::cl::opt<std::string> outputFilename(
-    "o", ::llvm::cl::desc("Output filename"),
-    ::llvm::cl::value_desc("filename"), ::llvm::cl::init("-"));
+::llvm::cl::opt<std::string> outputFilename("o",
+                                            ::llvm::cl::desc("Output filename"),
+                                            ::llvm::cl::value_desc("filename"),
+                                            ::llvm::cl::init("-"));
 
 ::llvm::cl::opt<bool> allowUnregisteredDialects(
     "allow-unregistered-dialects",
@@ -91,12 +92,12 @@ int main(int argc, char **argv) {
   ::mlir::MLIRContext context(registry);
   context.allowUnregisteredDialects(allowUnregisteredDialects);
   context.loadAllAvailableDialects();
-  context.loadDialect<::mlir::arith::ArithDialect, ::mlir::cf::ControlFlowDialect,
-                      ::mlir::func::FuncDialect, ::mlir::LLVM::LLVMDialect,
-                      ::mlir::math::MathDialect,
-                      ::mlir::memref::MemRefDialect, ::mlir::scf::SCFDialect,
-                      ::mlir::ub::UBDialect, ::dataflow::DataflowDialect,
-                      ::fabric::FabricDialect>();
+  context
+      .loadDialect<::mlir::arith::ArithDialect, ::mlir::cf::ControlFlowDialect,
+                   ::mlir::func::FuncDialect, ::mlir::LLVM::LLVMDialect,
+                   ::mlir::math::MathDialect, ::mlir::memref::MemRefDialect,
+                   ::mlir::scf::SCFDialect, ::mlir::ub::UBDialect,
+                   ::dataflow::DataflowDialect, ::fabric::FabricDialect>();
 
   // Parse input.
   std::string errMsg;
@@ -145,19 +146,9 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  std::string invalidGraph;
-  std::string validationDiagnostic;
-  module->walk([&](::dataflow::GraphFuncOp graph) {
-    if (auto error = ::dataflow::validateFinalizedGraph(graph)) {
-      invalidGraph = graph.getSymName().str();
-      validationDiagnostic = ::llvm::toString(std::move(error));
-      return ::mlir::WalkResult::interrupt();
-    }
-    return ::mlir::WalkResult::advance();
-  });
-  if (!validationDiagnostic.empty()) {
-    ::llvm::errs() << "loom-lower: final Dataflow validation failed for @"
-                   << invalidGraph << ": " << validationDiagnostic << "\n";
+  if (auto error = ::dataflow::validateFinalizedProgram(*module)) {
+    ::llvm::errs() << "loom-lower: final Dataflow validation failed: "
+                   << ::llvm::toString(std::move(error)) << "\n";
     return 1;
   }
 

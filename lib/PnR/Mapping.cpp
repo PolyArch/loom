@@ -98,8 +98,7 @@ mlir::DialectRegistry makeRegistry() {
                   mlir::arith::ArithDialect, mlir::DLTIDialect,
                   mlir::func::FuncDialect, mlir::LLVM::LLVMDialect,
                   mlir::math::MathDialect, mlir::memref::MemRefDialect,
-                  mlir::scf::SCFDialect,
-                  mlir::ub::UBDialect>();
+                  mlir::scf::SCFDialect, mlir::ub::UBDialect>();
   return registry;
 }
 
@@ -155,15 +154,15 @@ selectFabricHardware(mlir::ModuleOp module, const MappingOptions &options) {
       return llvm::createStringError(std::errc::invalid_argument,
                                      "could not find fabric hardware %s",
                                      options.hardwareName.c_str());
-    return HardwareSelection{hardwareOp, options.hardwareName, *rootKindOrErr,
-                             "", "", options.hardwareName};
+    return HardwareSelection{
+        hardwareOp, options.hardwareName, *rootKindOrErr, "",
+        "",         options.hardwareName};
   }
 
   if (options.accCoreName.empty())
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "system hardware %s requires --acc-core",
-        options.hardwareName.c_str());
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "system hardware %s requires --acc-core",
+                                   options.hardwareName.c_str());
 
   mlir::Operation *systemOp =
       findSymbolOp(module, "fabric.system", options.hardwareName);
@@ -203,7 +202,10 @@ selectFabricHardware(mlir::ModuleOp module, const MappingOptions &options) {
         spatialName.c_str());
 
   return HardwareSelection{
-      moduleOp, spatialName, *rootKindOrErr, options.hardwareName,
+      moduleOp,
+      spatialName,
+      *rootKindOrErr,
+      options.hardwareName,
       options.accCoreName,
       systemCoreHardwareIdentity(options.hardwareName, options.accCoreName)};
 }
@@ -271,10 +273,9 @@ bool isAddressArithmeticOp(mlir::Operation *op) {
   if (!op || op->getNumResults() != 1)
     return false;
   llvm::StringRef name = op->getName().getStringRef();
-  return name == "arith.addi" || name == "arith.subi" ||
-         name == "arith.muli" || name == "arith.shli" ||
-         name == "arith.shrsi" || name == "arith.shrui" ||
-         name == "arith.andi" || name == "arith.ori" ||
+  return name == "arith.addi" || name == "arith.subi" || name == "arith.muli" ||
+         name == "arith.shli" || name == "arith.shrsi" ||
+         name == "arith.shrui" || name == "arith.andi" || name == "arith.ori" ||
          name == "arith.xori";
 }
 
@@ -282,8 +283,7 @@ bool isAddressShiftOp(mlir::Operation *op) {
   if (!op)
     return false;
   llvm::StringRef name = op->getName().getStringRef();
-  return name == "arith.shli" || name == "arith.shrsi" ||
-         name == "arith.shrui";
+  return name == "arith.shli" || name == "arith.shrsi" || name == "arith.shrui";
 }
 
 bool valueFeedsOnlyDirectMemoryAddress(mlir::Value value) {
@@ -295,8 +295,9 @@ bool valueFeedsOnlyDirectMemoryAddress(mlir::Value value) {
   return true;
 }
 
-bool valueFeedsOnlyShiftedMemoryAddress(
-    mlir::Value value, llvm::DenseSet<mlir::Value> &active, bool &sawShift) {
+bool valueFeedsOnlyShiftedMemoryAddress(mlir::Value value,
+                                        llvm::DenseSet<mlir::Value> &active,
+                                        bool &sawShift) {
   if (value.use_empty())
     return false;
   if (!active.insert(value).second)
@@ -598,8 +599,8 @@ bool isPointerBookkeepingOp(mlir::Operation *op) {
 
 namespace {
 
-std::optional<llvm::StringRef> canonicalArmInlineAsmOperationName(
-    mlir::Operation *op) {
+std::optional<llvm::StringRef>
+canonicalArmInlineAsmOperationName(mlir::Operation *op) {
   if (op->getName().getStringRef() != "llvm.inline_asm")
     return std::nullopt;
   auto asmString = op->getAttrOfType<mlir::StringAttr>("asm_string");
@@ -1233,18 +1234,17 @@ bool resourceSupportsSoftwarePortShape(const SoftwareNode &node,
     if (controlOnly)
       return llvm::all_of(resource.op->getOperandTypes(),
                           isFabricControlToken) &&
-             llvm::all_of(resource.op->getResultTypes(),
-                          isFabricControlToken);
+             llvm::all_of(resource.op->getResultTypes(), isFabricControlToken);
 
     if (node.op->getNumOperands() != resource.op->getNumOperands() ||
         node.op->getNumResults() != resource.op->getNumResults())
       return false;
-    for (auto [softwareType, hardwareType] : llvm::zip(
-             node.op->getOperandTypes(), resource.op->getOperandTypes()))
+    for (auto [softwareType, hardwareType] :
+         llvm::zip(node.op->getOperandTypes(), resource.op->getOperandTypes()))
       if (!softwareTypeFitsFabricType(softwareType, hardwareType))
         return false;
-    for (auto [softwareType, hardwareType] : llvm::zip(
-             node.op->getResultTypes(), resource.op->getResultTypes()))
+    for (auto [softwareType, hardwareType] :
+         llvm::zip(node.op->getResultTypes(), resource.op->getResultTypes()))
       if (!softwareTypeFitsFabricType(softwareType, hardwareType))
         return false;
     return true;
@@ -1310,8 +1310,8 @@ claimResource(SoftwareNode &node,
 PlacementRecord makePlacementRecord(const SoftwareNode &node,
                                     const HardwareResource &resource) {
   return PlacementRecord{node.id, node.operation,
-                         resourceKindName(node.resourceKind).str(),
-                         resource.id, resource.schedule};
+                         resourceKindName(node.resourceKind).str(), resource.id,
+                         resource.schedule};
 }
 
 bool resourceIsCompatible(const SoftwareNode &node,
@@ -1438,16 +1438,16 @@ loom::pnr::createMapping(const MappingOptions &options) {
                                    "could not parse hardware MLIR");
 
   mlir::Operation *graph =
-      findSymbolOp(*dfg, "dataflow.graph.func", options.graphName);
+      findSymbolOp(*dfg, "dataflow.graph", options.graphName);
   if (!graph)
     return llvm::createStringError(std::errc::invalid_argument,
                                    "could not find dataflow graph %s",
                                    options.graphName.c_str());
-  auto graphFunc = mlir::dyn_cast<dataflow::GraphFuncOp>(graph);
+  auto graphFunc = mlir::dyn_cast<dataflow::GraphOp>(graph);
   if (!graphFunc)
     return llvm::createStringError(std::errc::invalid_argument,
                                    "selected graph has invalid operation kind");
-  if (llvm::Error error = dataflow::validateFinalizedGraph(graphFunc))
+  if (llvm::Error error = dataflow::validateFinalizedProgram(*dfg))
     return std::move(error);
   auto selectionOrErr = selectFabricHardware(*hardware, options);
   if (!selectionOrErr)
@@ -1491,10 +1491,9 @@ loom::pnr::createMapping(const MappingOptions &options) {
     return routingProblemOrErr.takeError();
   RoutingProblem routingProblem = std::move(*routingProblemOrErr);
   RouteCache routeCache;
-  if (!placeRouteFeasible(*nodesOrErr, routingProblem,
-                          hardwareModelOrErr->resources,
-                          hardwareModelOrErr->topology, summary.placements,
-                          routeCache)) {
+  if (!placeRouteFeasible(
+          *nodesOrErr, routingProblem, hardwareModelOrErr->resources,
+          hardwareModelOrErr->topology, summary.placements, routeCache)) {
     for (HardwareResource &resource : hardwareModelOrErr->resources)
       resource.used = false;
     for (SoftwareNode &node : *nodesOrErr) {

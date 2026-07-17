@@ -1,5 +1,5 @@
 // CLI helper for lit tests: drives `loom::fabric::tech::CoverageVerifier`
-// over a single fabric.fu and a list of input dataflow.subgraphs in the
+// over a single fabric.fu and a list of configured-function fixtures in the
 // input MLIR module.
 //
 // Usage:
@@ -10,22 +10,19 @@
 //   * The module must contain exactly one `fabric.fu`. The verifier
 //     materializes that FU and matches every input against its
 //     enumerated candidates.
-//   * Each input subgraph lives in its own `func.func` body (one
-//     `dataflow.subgraph` per func.func) annotated with attribute
-//     `loom.coverage_input = true`. The annotation lets the helper
-//     distinguish coverage inputs from the FU's wrapper func.func.
+//   * Each input is a single-block `func.func` annotated with
+//     `loom.coverage_input = true`.
 //   * `--config` (optional): YAML/TOML SynthConfig path. Defaults
 //     to a default-constructed SynthConfig (parallel_match=true).
 //   * `--check-isolation` (optional): after `verify` returns, walks
 //     the user's module and prints `user_funcs_after=<N>` plus a
 //     `candidate_in_user=<bool>` line for whether any func.func name
-//     starts with `candidate_` (the prefix the verifier passes to
-//     `enumerateFuSubgraphs`). Used by the isolation lit test.
+//     starts with `candidate_`. Used by the isolation lit test.
 //   * `--project-first-encoding` parses without running operation verifiers and
 //     invokes `projectConfiguredFunction` directly on the first encoding. This
 //     is reserved for malformed-input projector regressions.
 //
-// Output (one line per input subgraph, in module order):
+// Output (one line per configured function, in module order):
 //   coverage[i] funcname=<name> matched=<true|false> index=<n_or_none>
 //
 // Final line:
@@ -59,9 +56,9 @@
 #include <string>
 #include <utility>
 
-static ::llvm::cl::opt<std::string>
-    inputPath(::llvm::cl::Positional, ::llvm::cl::desc("<input>"),
-              ::llvm::cl::Required);
+static ::llvm::cl::opt<std::string> inputPath(::llvm::cl::Positional,
+                                              ::llvm::cl::desc("<input>"),
+                                              ::llvm::cl::Required);
 
 static ::llvm::cl::opt<std::string>
     configPath("config",
@@ -69,12 +66,12 @@ static ::llvm::cl::opt<std::string>
                                 "Defaults to a default-constructed config."),
                ::llvm::cl::init(""));
 
-static ::llvm::cl::opt<bool>
-    checkIsolation("check-isolation",
-                   ::llvm::cl::desc("After verify, print isolation diagnostics: "
-                                    "user_funcs_after=<N> and "
-                                    "candidate_in_user=<bool>."),
-                   ::llvm::cl::init(false));
+static ::llvm::cl::opt<bool> checkIsolation(
+    "check-isolation",
+    ::llvm::cl::desc("After verify, print isolation diagnostics: "
+                     "user_funcs_after=<N> and "
+                     "candidate_in_user=<bool>."),
+    ::llvm::cl::init(false));
 
 static ::llvm::cl::opt<bool> projectFirstEncoding(
     "project-first-encoding",
@@ -171,31 +168,16 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  // Gather coverage-input subgraphs in module order. We iterate
-  // top-level func.funcs and pick the unique dataflow.subgraph from
-  // every one tagged with `loom.coverage_input`.
-  ::llvm::SmallVector<::dataflow::SubgraphOp, 4> inputs;
+  // Gather configured-function fixtures in module order.
   ::llvm::SmallVector<::fabric::ConfiguredFunction, 4> functions;
   ::llvm::SmallVector<std::string, 4> inputNames;
   for (::mlir::func::FuncOp f : mod->getOps<::mlir::func::FuncOp>()) {
     if (!hasCoverageInputAttr(f))
       continue;
-    ::dataflow::SubgraphOp found;
-    f.walk([&](::dataflow::SubgraphOp sg) {
-      if (!found)
-        found = sg;
-    });
-    if (!found) {
-      ::llvm::errs() << "error: func @" << f.getSymName()
-                     << " is loom.coverage_input but contains no "
-                        "dataflow.subgraph\n";
-      return 1;
-    }
-    inputs.push_back(found);
     ::fabric::ConfiguredFunction function;
     std::string adapterError;
-    if (::mlir::failed(::fabric::configuredFunctionFromSubgraph(
-            found, function, adapterError))) {
+    if (::mlir::failed(
+            ::fabric::configuredFunctionFromFunc(f, function, adapterError))) {
       ::llvm::errs() << "error: func @" << f.getSymName() << ": "
                      << adapterError << "\n";
       return 1;
@@ -209,7 +191,7 @@ int main(int argc, char **argv) {
   ::loom::fabric::tech::CoverageReport report = verifier.verify(fu, functions);
 
   // Emit results. The report contains one optional witness per input.
-  for (size_t i = 0; i < inputs.size(); ++i) {
+  for (size_t i = 0; i < functions.size(); ++i) {
     const auto &witness = report.witnesses[i];
     ::llvm::outs() << "coverage[" << i << "] funcname=" << inputNames[i]
                    << " matched=" << (witness.has_value() ? "true" : "false")

@@ -6,17 +6,16 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/STLExtras.h"
 
 #include <cstdint>
 
 namespace {
 
 ::mlir::TypedAttr getIntegerLikeAttr(::mlir::OpBuilder &builder,
-                                     ::mlir::Type type,
-                                     std::int64_t value) {
+                                     ::mlir::Type type, std::int64_t value) {
   if (auto integer = ::llvm::dyn_cast<::mlir::IntegerType>(type))
     return builder.getIntegerAttr(integer, value);
   if (::llvm::isa<::mlir::IndexType>(type))
@@ -271,10 +270,8 @@ bool rewriteOneIndexDomainCmp(::mlir::arith::CmpIOp cmp,
   builder.setInsertionPoint(cmp);
   IndexMaterializationTransaction transaction(cmp);
   ::llvm::DenseMap<::mlir::Value, ::mlir::Value> cache;
-  ::mlir::Value lhs =
-      materializeIndexDomainValue(cmp.getLhs(), builder, cache);
-  ::mlir::Value rhs =
-      materializeIndexDomainValue(cmp.getRhs(), builder, cache);
+  ::mlir::Value lhs = materializeIndexDomainValue(cmp.getLhs(), builder, cache);
+  ::mlir::Value rhs = materializeIndexDomainValue(cmp.getRhs(), builder, cache);
   if (!lhs || !rhs)
     return false;
   transaction.commit();
@@ -282,28 +279,28 @@ bool rewriteOneIndexDomainCmp(::mlir::arith::CmpIOp cmp,
   auto replacement = ::mlir::arith::CmpIOp::create(
       builder, cmp.getLoc(), cmp.getPredicate(), lhs, rhs);
   cmp.getResult().replaceAllUsesWith(replacement.getResult());
-  auto replaceAddressCasts = [](
-                                 ::mlir::Value replacement,
-                                 ::llvm::ArrayRef<
-                                     ::mlir::arith::IndexCastOp> casts) {
-    for (::mlir::arith::IndexCastOp cast : casts) {
-      if (!cast.getOperation()->getBlock())
-        continue;
-      if (::mlir::Operation *def = replacement.getDefiningOp()) {
-        if (def->getBlock() != cast->getBlock() || cast->isBeforeInBlock(def))
-          continue;
-      }
-      cast.replaceAllUsesWith(replacement);
-      cast.erase();
-    }
-  };
+  auto replaceAddressCasts =
+      [](::mlir::Value replacement,
+         ::llvm::ArrayRef<::mlir::arith::IndexCastOp> casts) {
+        for (::mlir::arith::IndexCastOp cast : casts) {
+          if (!cast.getOperation()->getBlock())
+            continue;
+          if (::mlir::Operation *def = replacement.getDefiningOp()) {
+            if (def->getBlock() != cast->getBlock() ||
+                cast->isBeforeInBlock(def))
+              continue;
+          }
+          cast.replaceAllUsesWith(replacement);
+          cast.erase();
+        }
+      };
   replaceAddressCasts(lhs, lhsAddressCasts);
   replaceAddressCasts(rhs, rhsAddressCasts);
   cmp.erase();
   return true;
 }
 
-bool rewriteIndexDomainCmps(::dataflow::GraphFuncOp graph,
+bool rewriteIndexDomainCmps(::dataflow::GraphOp graph,
                             ::mlir::OpBuilder &builder) {
   ::llvm::SmallVector<::mlir::arith::CmpIOp, 8> comparisons;
   graph.getBody().walk([&](::mlir::arith::CmpIOp cmp) {
@@ -318,7 +315,7 @@ bool rewriteIndexDomainCmps(::dataflow::GraphFuncOp graph,
   return changed;
 }
 
-bool rewriteAddressIndexCasts(::dataflow::GraphFuncOp graph,
+bool rewriteAddressIndexCasts(::dataflow::GraphOp graph,
                               ::mlir::OpBuilder &builder) {
   ::llvm::SmallVector<::mlir::arith::IndexCastOp, 8> casts;
   graph.getBody().walk([&](::mlir::arith::IndexCastOp cast) {
@@ -346,7 +343,7 @@ bool rewriteAddressIndexCasts(::dataflow::GraphFuncOp graph,
   return changed;
 }
 
-void eraseDeadIndexArithmetic(::dataflow::GraphFuncOp graph) {
+void eraseDeadIndexArithmetic(::dataflow::GraphOp graph) {
   bool changed = true;
   while (changed) {
     changed = false;
@@ -374,7 +371,7 @@ void eraseDeadIndexArithmetic(::dataflow::GraphFuncOp graph) {
 namespace loom {
 namespace lowering {
 
-void lowerGraphIndexDomains(::dataflow::GraphFuncOp graph) {
+void lowerGraphIndexDomains(::dataflow::GraphOp graph) {
   ::mlir::OpBuilder builder(graph.getContext());
   bool changed = rewriteIndexDomainCmps(graph, builder);
   changed |= rewriteAddressIndexCasts(graph, builder);

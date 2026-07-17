@@ -16,6 +16,9 @@ def Dataflow_Dialect : Dialect {
   }];
   let cppNamespace = "::dataflow";
   let useDefaultTypePrinterParser = 1;
+  let extraClassDeclaration = [{
+    static bool containsChannelOrThreadToken(::mlir::Type type);
+  }];
 }
 
 class Dataflow_Op<string mnemonic, list<Trait> traits = []>
@@ -38,6 +41,18 @@ def Dataflow_ThreadTokenType
     dataflow dialect.
   }];
   let assemblyFormat = "";
+}
+
+def Dataflow_ChannelType : Dataflow_Type<"Channel", "channel"> {
+  let summary = "typed handle for ordered thread-level message transport";
+  let description = [{
+    A thread-level channel handle carrying ordered messages of one exact
+    element type. Channel handles and thread completion tokens are distinct
+    carriers and cannot be used as channel message payloads.
+  }];
+  let parameters = (ins "::mlir::Type":$elementType);
+  let assemblyFormat = "`<` $elementType `>`";
+  let genVerifyDecl = 1;
 }
 
 #endif // DATAFLOW_DIALECT_TD

@@ -23,4 +23,6 @@ void DataflowDialect::initialize() {
 #define GET_TYPEDEF_LIST
 #include "Dataflow/IR/DataflowTypes.cpp.inc"
       >();
+
+  attachCanonicalDataflowActorInterfaces(*getContext());
 }

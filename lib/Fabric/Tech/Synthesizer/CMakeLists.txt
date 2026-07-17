@@ -2,7 +2,7 @@ add_mlir_library(MLIRFabricTechSynthesizer
   Anchor.cpp
   CostModel.cpp
   CoverageVerifier.cpp
-  GeneralizeSubgraphsToFuPass.cpp
+  SynthesizeConfiguredFunctionsPass.cpp
   Parallel.cpp
   Synthesizer.cpp
 

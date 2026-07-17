@@ -22,7 +22,7 @@
 // `function_type.inputs`, then a `none`-typed thread_ctrl slot, then
 // one `index`-typed grid iv slot per forall induction variable. The
 // thread_ctrl slot is the per-launch AccCore start signal that root
-// `dataflow.graph.launch` ops in the body consume as their `ctrl_in`.
+// `dataflow.graph.launch` ops in the body consume as a dependency event.
 
 #include "Frontend/Lowering/Passes.h"
 
@@ -213,7 +213,7 @@ bool isEffectFormStructuredBodyCandidate(::mlir::Block *body) {
     return true;
   for (::mlir::Operation &nested : body->without_terminator()) {
     if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
-                    ::dataflow::GraphFuncOp, ::dataflow::ThreadOp,
+                    ::dataflow::GraphOp, ::dataflow::ThreadOp,
                     ::mlir::scf::ForOp, ::mlir::scf::WhileOp>(&nested))
       return false;
     if (::llvm::isa<::mlir::FunctionOpInterface, ::mlir::CallOpInterface>(
@@ -257,7 +257,7 @@ bool hasUnsupportedStandaloneStructuredBody(::mlir::Operation *root) {
     if (nested == root)
       return ::mlir::WalkResult::advance();
     if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
-                    ::dataflow::GraphFuncOp, ::dataflow::ThreadOp,
+                    ::dataflow::GraphOp, ::dataflow::ThreadOp,
                     ::mlir::func::FuncOp>(nested)) {
       unsupported = true;
       return ::mlir::WalkResult::interrupt();

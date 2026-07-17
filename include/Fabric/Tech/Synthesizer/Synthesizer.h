@@ -2,7 +2,7 @@
 #define LOOM_FABRIC_TECH_SYNTHESIZER_SYNTHESIZER_H
 
 // Canonical FU synthesis interface used by
-// `loom-generalize-subgraphs-to-fu` for each configured-function group.
+// `loom-synthesize-configured-functions` for each configured-function group.
 //
 // `synthesize` dispatches `SynthConfig.strategy`, runs the internal producer,
 // and applies verification, coverage, and capability measurement before a
@@ -48,17 +48,17 @@ namespace loom::fabric::tech {
 // enum) are PascalCase; the on-IR `loom.synth_failed` attribute string
 // must be the snake_case spec wording produced by `failureReasonString`.
 enum class SynthFailureReason : uint8_t {
-  None = 0,                  // success sentinel
-  CrossShareGroup,           // "cross_share_group"
-  TopologyMismatch,          // "topology_mismatch"
-  FeedbackAlignConflict,     // "feedback_align_conflict"
-  Timeout,                   // "timeout"
-  ResourceExhausted,         // "resource_exhausted"
-  UnsupportedOp,             // "unsupported_op"
-  InvalidInput,              // "invalid_input"
-  VerifierFailed,            // "verifier_failed"
-  SymbolConflict,            // "symbol_conflict"
-  ConfigParseFailed,         // "config_parse_failed"
+  None = 0,              // success sentinel
+  CrossShareGroup,       // "cross_share_group"
+  TopologyMismatch,      // "topology_mismatch"
+  FeedbackAlignConflict, // "feedback_align_conflict"
+  Timeout,               // "timeout"
+  ResourceExhausted,     // "resource_exhausted"
+  UnsupportedOp,         // "unsupported_op"
+  InvalidInput,          // "invalid_input"
+  VerifierFailed,        // "verifier_failed"
+  SymbolConflict,        // "symbol_conflict"
+  ConfigParseFailed,     // "config_parse_failed"
 };
 
 // Inverse: snake_case spec string for the attribute / diagnostic.

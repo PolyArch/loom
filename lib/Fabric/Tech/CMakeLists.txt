@@ -1,7 +1,5 @@
 add_mlir_library(MLIRFabricTech
   ConfiguredFunctionAdapters.cpp
-  EnumerateFuSubgraphsPass.cpp
-  SubgraphEnumerator.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric/Tech
@@ -9,7 +7,6 @@ add_mlir_library(MLIRFabricTech
   LINK_LIBS PUBLIC
   LoomCommon
   MLIRArithDialect
-  MLIRDataflow
   MLIRFabric
   MLIRFuncDialect
   MLIRIR

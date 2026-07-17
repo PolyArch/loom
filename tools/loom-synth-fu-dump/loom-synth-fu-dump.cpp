@@ -1,6 +1,6 @@
-// CLI helper for lit perf tests: parse an MLIR module containing
-// `dataflow.subgraph`s grouped by `loom.synth_group`, run the
-// `loom-generalize-subgraphs-to-fu` pass with a supplied SynthConfig,
+// CLI helper for lit tests: parse an MLIR module containing configured
+// functions grouped by `loom.synth_group`, run the
+// `loom-synthesize-configured-functions` pass with a supplied SynthConfig,
 // and print three stable artifacts FileCheck can lock onto:
 //
 //   1. The synthesized FU IR for every `func.func` in the post-pass
@@ -141,18 +141,17 @@ bool isSynthStatLine(::llvm::StringRef text) {
 int main(int argc, char **argv) {
   ::llvm::cl::ParseCommandLineOptions(
       argc, argv,
-      "loom-synth-fu-dump: run loom-generalize-subgraphs-to-fu on the "
+      "loom-synth-fu-dump: run loom-synthesize-configured-functions on the "
       "input module and print the synthesized FUs, the canonical "
       "synth-stat lines, and the wall-clock cost.\n");
 
-  // Register every standard MLIR dialect plus our two custom dialects so
-  // any input the perf tests throw at us parses without further glue.
+  // Register every standard MLIR dialect plus the Loom dialects used by
+  // configured-function fixtures and synthesized outputs.
   ::mlir::DialectRegistry registry;
   ::mlir::registerAllDialects(registry);
   registry.insert<::fabric::FabricDialect, ::dataflow::DataflowDialect>();
   ::mlir::MLIRContext ctx(registry);
   ctx.loadAllAvailableDialects();
-  ctx.allowUnregisteredDialects(true);
 
   // Parse the input module from file or stdin.
   auto bufOrErr = ::llvm::MemoryBuffer::getFileOrSTDIN(inputPath.getValue());
@@ -174,21 +173,20 @@ int main(int argc, char **argv) {
   // lines for the dedicated stats section and forward the rest to
   // stderr (mirroring `loom`'s behavior) unless `--quiet` is set.
   std::vector<CapturedDiagnostic> diagnostics;
-  ::mlir::ScopedDiagnosticHandler diagHandler(
-      &ctx, [&](::mlir::Diagnostic &d) {
-        std::string text;
-        ::llvm::raw_string_ostream os(text);
-        os << d;
-        os.flush();
-        diagnostics.push_back({d.getSeverity(), std::move(text)});
-        // Returning `success()` marks the diagnostic as fully handled
-        // so MLIR's default printer does not also dump it.
-        return ::mlir::success();
-      });
+  ::mlir::ScopedDiagnosticHandler diagHandler(&ctx, [&](::mlir::Diagnostic &d) {
+    std::string text;
+    ::llvm::raw_string_ostream os(text);
+    os << d;
+    os.flush();
+    diagnostics.push_back({d.getSeverity(), std::move(text)});
+    // Returning `success()` marks the diagnostic as fully handled
+    // so MLIR's default printer does not also dump it.
+    return ::mlir::success();
+  });
 
   // Build a single-pass PassManager around the synthesizer pass.
   ::mlir::PassManager pm(&ctx);
-  pm.addPass(::fabric::createGeneralizeSubgraphsToFuPass(
+  pm.addPass(::fabric::createSynthesizeConfiguredFunctionsPass(
       configPath.getValue(), failAsError.getValue(),
       /*dumpStats=*/printStats.getValue()));
 
@@ -219,8 +217,8 @@ int main(int argc, char **argv) {
   // outputs the pass appended (and ignore pre-existing helper
   // ops). Wrappers are printed in their final module order, which is
   // lexically sorted by group name per the pass's splice rule. Both
-  // the canonical fabric.module wrapper and any legacy func.func
-  // wrapper carrying the marker attribute are printed.
+  // canonical fabric.module outputs carrying the marker attribute are
+  // printed.
   if (printIr.getValue() && !quiet.getValue()) {
     bool any = false;
     for (::mlir::Operation &op : mod->getBody()->getOperations()) {

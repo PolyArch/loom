@@ -3,6 +3,7 @@
 
 include "Dataflow/IR/DataflowDialect.td"
 include "Dataflow/IR/DataflowEnums.td"
+include "Dataflow/IR/DataflowInterfaces.td"
 include "mlir/Dialect/Arith/IR/ArithBase.td"
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/CommonAttrConstraints.td"
@@ -19,8 +20,43 @@ include "mlir/IR/RegionKindInterface.td"
 def Dataflow_GraphType : AnyTypeOf<[
     AnyInteger, AnyFloat, Index, NoneType, AnyMemRef]>;
 
-def Dataflow_SubgraphType : AnyTypeOf<[
-    AnyInteger, AnyFloat, Index, NoneType]>;
+//===----------------------------------------------------------------------===//
+// Thread Channel Endpoint Ops
+//===----------------------------------------------------------------------===//
+
+def Dataflow_ChannelSendOp : Dataflow_Op<"channel.send", [
+    TypesMatchWith<"'message' type matches channel element type",
+                   "channel", "message",
+                   "::llvm::cast<::dataflow::ChannelType>($_self).getElementType()">
+]> {
+  let summary = "send one message through a thread-level channel";
+  let description = [{
+    Blocks as required to submit one message to the ordered channel. This
+    operation is valid only transitively inside a `dataflow.thread` body.
+  }];
+
+  let arguments = (ins Dataflow_ChannelType:$channel, AnyType:$message);
+  let assemblyFormat =
+      "$channel `,` $message attr-dict `:` qualified(type($channel))";
+  let hasVerifier = 1;
+}
+
+def Dataflow_ChannelReceiveOp : Dataflow_Op<"channel.receive", [
+    TypesMatchWith<"'message' type matches channel element type",
+                   "channel", "message",
+                   "::llvm::cast<::dataflow::ChannelType>($_self).getElementType()">
+]> {
+  let summary = "receive one message from a thread-level channel";
+  let description = [{
+    Blocks until the next ordered message is available and returns it. This
+    operation is valid only transitively inside a `dataflow.thread` body.
+  }];
+
+  let arguments = (ins Dataflow_ChannelType:$channel);
+  let results = (outs AnyType:$message);
+  let assemblyFormat = "$channel attr-dict `:` qualified(type($channel))";
+  let hasVerifier = 1;
+}
 
 //===----------------------------------------------------------------------===//
 // Streaming Ops
@@ -31,6 +67,7 @@ def Dataflow_SubgraphType : AnyTypeOf<[
 //===----------------------------------------------------------------------===//
 
 def Dataflow_StreamOp : Dataflow_Op<"stream", [Pure,
+    CanonicalDataflowActor,
     AllTypesMatch<["init", "limit", "step", "iv"]>]> {
   let summary = "produce valid IV tokens and an explicit closing phase token";
   let description = [{
@@ -67,6 +104,7 @@ def Dataflow_StreamOp : Dataflow_Op<"stream", [Pure,
 }
 
 def Dataflow_CarryOp : Dataflow_Op<"carry", [Pure,
+    CanonicalDataflowActor,
     AllTypesMatch<["init", "carry", "output"]>]> {
   let summary =
       "two-state carry: emit init once, then gate subsequent carries by cond";
@@ -95,6 +133,7 @@ def Dataflow_CarryOp : Dataflow_Op<"carry", [Pure,
 }
 
 def Dataflow_InvariantOp : Dataflow_Op<"invariant", [Pure,
+    CanonicalDataflowActor,
     AllTypesMatch<["init", "output"]>]> {
   let summary =
       "latch an init value and replay it once per true cond until reset";
@@ -123,6 +162,7 @@ def Dataflow_InvariantOp : Dataflow_Op<"invariant", [Pure,
 }
 
 def Dataflow_GateOp : Dataflow_Op<"gate", [Pure,
+    CanonicalDataflowActor,
     AllTypesMatch<["before_value", "after_value"]>]> {
   let summary =
       "open a value channel on the first true, reclose on the next false";
@@ -154,7 +194,8 @@ def Dataflow_GateOp : Dataflow_Op<"gate", [Pure,
   }];
 }
 
-def Dataflow_ParallelizeOp : Dataflow_Op<"parallelize", [Pure]> {
+def Dataflow_ParallelizeOp : Dataflow_Op<"parallelize", [
+    Pure, CanonicalDataflowActor]> {
   let summary = "group scalar tokens into fixed-width lane streams plus mask";
   let description = [{
     Groups a scalar integer stream and a continuation stream into
@@ -182,7 +223,7 @@ def Dataflow_ParallelizeOp : Dataflow_Op<"parallelize", [Pure]> {
   let hasVerifier = 1;
 }
 
-def Dataflow_PackOp : Dataflow_Op<"pack", [Pure]> {
+def Dataflow_PackOp : Dataflow_Op<"pack", [Pure, CanonicalDataflowActor]> {
   let summary = "pack masked lane streams into one wide integer stream";
   let description = [{
     Waits for one mask token, consumes only the lane tokens whose mask
@@ -202,7 +243,7 @@ def Dataflow_PackOp : Dataflow_Op<"pack", [Pure]> {
   let hasVerifier = 1;
 }
 
-def Dataflow_UnpackOp : Dataflow_Op<"unpack", [Pure]> {
+def Dataflow_UnpackOp : Dataflow_Op<"unpack", [Pure, CanonicalDataflowActor]> {
   let summary = "unpack a wide integer stream into masked lane streams";
   let description = [{
     Consumes one packed integer token and one mask token. For each set
@@ -222,7 +263,8 @@ def Dataflow_UnpackOp : Dataflow_Op<"unpack", [Pure]> {
   let hasVerifier = 1;
 }
 
-def Dataflow_SerializeOp : Dataflow_Op<"serialize", [Pure]> {
+def Dataflow_SerializeOp : Dataflow_Op<"serialize", [
+    Pure, CanonicalDataflowActor]> {
   let summary = "serialize masked lane streams into scalar data and cont";
   let description = [{
     Waits for one mask token, consumes only active lane tokens in lane
@@ -250,7 +292,8 @@ def Dataflow_SerializeOp : Dataflow_Op<"serialize", [Pure]> {
 // selection routing (mux / demux).
 //===----------------------------------------------------------------------===//
 
-def Dataflow_ConstantOp : Dataflow_Op<"constant", [Pure]> {
+def Dataflow_ConstantOp : Dataflow_Op<"constant", [
+    Pure, CanonicalDataflowActor]> {
   let summary = "emit a recorded constant on each incoming ctrl token";
   let description = [{
     One-shot trigger: on every `%ctrl : none` token that arrives, the
@@ -268,7 +311,7 @@ def Dataflow_ConstantOp : Dataflow_Op<"constant", [Pure]> {
   let hasVerifier = 1;
 }
 
-def Dataflow_SyncOp : Dataflow_Op<"sync", [Pure]> {
+def Dataflow_SyncOp : Dataflow_Op<"sync", [Pure, CanonicalDataflowActor]> {
   let summary = "wait for all inputs, then forward them all as outputs";
   let description = [{
     Variadic rendezvous. Once every input has a token, all tokens are
@@ -286,7 +329,7 @@ def Dataflow_SyncOp : Dataflow_Op<"sync", [Pure]> {
   let hasVerifier = 1;
 }
 
-def Dataflow_MuxOp : Dataflow_Op<"mux", [Pure]> {
+def Dataflow_MuxOp : Dataflow_Op<"mux", [Pure, CanonicalDataflowActor]> {
   let summary = "N-to-1 selection: forward the sel-picked input to output";
   let description = [{
     N-input, 1-output multiplexer (N > 1). `sel` picks one input port
@@ -312,7 +355,7 @@ def Dataflow_MuxOp : Dataflow_Op<"mux", [Pure]> {
   let hasVerifier = 1;
 }
 
-def Dataflow_DemuxOp : Dataflow_Op<"demux", [Pure]> {
+def Dataflow_DemuxOp : Dataflow_Op<"demux", [Pure, CanonicalDataflowActor]> {
   let summary = "1-to-N selection: route the input to the sel-picked output";
   let description = [{
     1-input, N-output demultiplexer (N > 1). `sel` picks one output
@@ -345,6 +388,7 @@ def Dataflow_DemuxOp : Dataflow_Op<"demux", [Pure]> {
 //===----------------------------------------------------------------------===//
 
 def Dataflow_LoadOp : Dataflow_Op<"load", [
+    CanonicalDataflowActor,
     TypesMatchWith<"'data' type matches memref element type",
                    "mem", "data",
                    "::llvm::cast<::mlir::MemRefType>($_self).getElementType()">
@@ -368,6 +412,7 @@ def Dataflow_LoadOp : Dataflow_Op<"load", [
 }
 
 def Dataflow_StoreOp : Dataflow_Op<"store", [
+    CanonicalDataflowActor,
     TypesMatchWith<"'data' type matches memref element type",
                    "mem", "data",
                    "::llvm::cast<::mlir::MemRefType>($_self).getElementType()">
@@ -390,98 +435,9 @@ def Dataflow_StoreOp : Dataflow_Op<"store", [
 }
 
 //===----------------------------------------------------------------------===//
-// Region Ops
-//
-// The graph-region container and its terminator. Inside a dataflow.graph
-// region classical SSA dominance does not hold: any op may use values
-// produced later in program order (feedback edges are legal).
-//===----------------------------------------------------------------------===//
-
-def Dataflow_SubgraphOp : Dataflow_Op<"subgraph", [
-    IsolatedFromAbove,
-    SingleBlockImplicitTerminator<"YieldOp">,
-    DeclareOpInterfaceMethods<RegionKindInterface>
-]> {
-  let summary = "dataflow subgraph: a hierarchical block scoped to fabric.op";
-  let description = [{
-    A nested compute region inside a `dataflow.graph`. Same syntactic
-    shape as `dataflow.graph` and same graph-region semantics (no SSA
-    dominance), but two extra restrictions:
-
-      * Inputs and results may not be `memref` (memref I/O is reserved
-        for the enclosing `dataflow.graph`).
-      * The body may contain only ops that are supported by
-        `fabric.op`'s `op_list` (plus `dataflow.yield`). In particular,
-        `dataflow.{load, store, graph, subgraph}`, `llvm.alloca`,
-        `ub.poison` and `arith.constant` are not permitted.
-  }];
-
-  let arguments = (ins Variadic<Dataflow_SubgraphType>:$inputs);
-  let results = (outs Variadic<Dataflow_SubgraphType>:$outputs);
-  let regions = (region SizedRegion<1>:$body);
-
-  let hasCustomAssemblyFormat = 1;
-  let hasVerifier = 1;
-}
-
-def Dataflow_GraphOp : Dataflow_Op<"graph", [
-    IsolatedFromAbove,
-    SingleBlockImplicitTerminator<"YieldOp">,
-    DeclareOpInterfaceMethods<RegionKindInterface>
-]> {
-  let summary = "dataflow graph region (non-SSA; feedback allowed)";
-  let description = [{
-    Container for a dataflow subgraph. Inputs map to region block
-    arguments; results are produced by the terminator `dataflow.yield`.
-    The body is a single graph-kind region: ops may reference values
-    produced by later ops in program order (cycles / feedback edges
-    are permitted).
-
-    Argument and result types must be numeric (integer / float /
-    index), `none`, or `memref`.
-  }];
-
-  let arguments = (ins Variadic<Dataflow_GraphType>:$inputs);
-  let results = (outs Variadic<Dataflow_GraphType>:$outputs);
-  let regions = (region SizedRegion<1>:$body);
-
-  let hasCustomAssemblyFormat = 1;
-  let hasVerifier = 1;
-}
-
-def Dataflow_YieldOp : Dataflow_Op<"yield", [
-    Terminator,
-    ParentOneOf<["::dataflow::GraphOp", "::dataflow::SubgraphOp"]>,
-    Pure
-]> {
-  let summary = "terminator of a dataflow.graph / dataflow.subgraph region";
-  let description = [{
-    Supplies the values that leave the enclosing `dataflow.graph` or
-    `dataflow.subgraph` on its results. The number and types of
-    `$values` must match the parent op's result count and types.
-  }];
-
-  let arguments = (ins Variadic<Dataflow_GraphType>:$values);
-
-  let assemblyFormat = "($values^ `:` type($values))? attr-dict";
-  let hasVerifier = 1;
-
-  let builders = [
-    OpBuilder<(ins), [{
-      build($_builder, $_state, ::mlir::ValueRange{});
-    }]>
-  ];
-}
-
-//===----------------------------------------------------------------------===//
 // Symbol-bearing function-like ops
 //
-// The canonical "definition + launch" shape per the Part 3 spec. The
-// regional `dataflow.graph` op above is preserved unchanged so existing
-// techmap / fabric tests (which build graph bodies inline) keep working.
-// The symbol-bearing variant for graphs is named `dataflow.graph.func`
-// in IR text to avoid colliding with the regional name; thread bodies
-// have no regional precursor and use `dataflow.thread` directly.
+// The canonical module-scope definition and launch surfaces.
 //===----------------------------------------------------------------------===//
 
 def Dataflow_ThreadOp : Dataflow_Op<"thread", [
@@ -508,7 +464,7 @@ def Dataflow_ThreadOp : Dataflow_Op<"thread", [
       * Args[N]          is `none` -- the per-launch `thread_ctrl`
                          slot, used as the AccCore start signal and
                          consumed by root `dataflow.graph.launch` ops
-                         in the body as their `ctrl_in` operand.
+                         in the body as a dependency event.
       * Args[N+1 .. end] are all `index` -- one per grid dim.
 
     The custom assembly format prints these trailing extras after the
@@ -698,7 +654,7 @@ def Dataflow_ThreadWaitOp : Dataflow_Op<"thread.wait", [
   let hasVerifier = 1;
 }
 
-def Dataflow_GraphFuncOp : Dataflow_Op<"graph.func", [
+def Dataflow_GraphOp : Dataflow_Op<"graph", [
     IsolatedFromAbove,
     HasParent<"::mlir::ModuleOp">,
     SingleBlockImplicitTerminator<"GraphReturnOp">,
@@ -720,10 +676,7 @@ def Dataflow_GraphFuncOp : Dataflow_Op<"graph.func", [
     is derived exclusively from `dataflow.graph.return.complete`; neither is
     stored in the function type.
 
-    Naming this op `graph.func` (as opposed to `graph`) avoids
-    collision with the existing regional `dataflow.graph` op, which is
-    preserved for backwards compatibility with the techmap, fabric,
-    and dataflow lit corpora.
+    This is the only canonical graph definition surface.
   }];
 
   let arguments = (ins
@@ -789,10 +742,10 @@ def Dataflow_GraphFuncOp : Dataflow_Op<"graph.func", [
 def Dataflow_GraphReturnOp : Dataflow_Op<"graph.return", [
     AttrSizedOperandSegments,
     Terminator,
-    ParentOneOf<["::dataflow::GraphFuncOp"]>,
+    ParentOneOf<["::dataflow::GraphOp"]>,
     Pure
 ]> {
-  let summary = "Terminator for a dataflow.graph.func body";
+  let summary = "Terminator for a dataflow.graph body";
   let description = [{
     Structurally declares the enclosing graph's value, stream, and memory
     outputs together with its mandatory retirement frontier. `complete` is
@@ -836,18 +789,17 @@ def Dataflow_GraphReturnOp : Dataflow_Op<"graph.return", [
 }
 
 def Dataflow_GraphLaunchOp : Dataflow_Op<"graph.launch", [
+    AttrSizedOperandSegments,
+    AttrSizedResultSegments,
     DeclareOpInterfaceMethods<SymbolUserOpInterface>
 ]> {
-  let summary = "Asynchronous launch of a dataflow.graph.func callable";
+  let summary = "Asynchronous launch of a dataflow.graph callable";
   let description = [{
-    References a `dataflow.graph.func` definition by symbol from
-    inside a `dataflow.thread` body. The first operand is the per-launch
-    `ctrl_in : none` start signal; the remaining operands bind application
-    inputs. Issuing the launch does not wait for graph retirement. The first
-    result is the per-launch `done_out : none` retirement
-    signal, derived as the all-of of the callee's `graph.return.complete`
-    segment; the remaining results carry application outputs. Start and done
-    are protocol endpoints, not members of the callee function type.
+    References a `dataflow.graph` definition by symbol from inside a
+    `dataflow.thread` body. Dependencies, value inputs, stream input channel
+    bindings, memory imports, and stream output channel bindings are explicit
+    operand segments. Value outputs and memory exports are SSA results; the
+    trailing `done` result is the graph retirement event.
 
     The operation resolves its callee through `SymbolUserOpInterface` but does
     not project callee effects through `MemoryEffectsOpInterface`.
@@ -855,20 +807,18 @@ def Dataflow_GraphLaunchOp : Dataflow_Op<"graph.launch", [
 
   let arguments = (ins
       FlatSymbolRefAttr:$callee,
-      NoneType:$ctrlIn,
-      Variadic<AnyType>:$bodyOperands);
+      Variadic<NoneType>:$dependencies,
+      Variadic<AnyType>:$valueInputs,
+      Variadic<Dataflow_ChannelType>:$streamInputs,
+      Variadic<AnyType>:$memoryInputs,
+      Variadic<Dataflow_ChannelType>:$streamOutputs);
 
   let results = (outs
-      NoneType:$doneOut,
-      Variadic<AnyType>:$results);
+      Variadic<AnyType>:$valueResults,
+      Variadic<AnyType>:$memoryResults,
+      NoneType:$done);
 
-  let assemblyFormat = [{
-    $callee
-    `(` $ctrlIn ( `,` $bodyOperands^ )? `)`
-    attr-dict `:`
-    functional-type(operands, results)
-  }];
-
+  let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 }
 

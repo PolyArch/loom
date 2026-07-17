@@ -17,6 +17,7 @@
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowEnums.h"
+#include "Dataflow/IR/DataflowInterfaces.h"
 
 namespace dataflow {
 

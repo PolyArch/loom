@@ -29,7 +29,7 @@ static llvm::cl::opt<std::string> inputPath(llvm::cl::Positional,
                                             llvm::cl::Required);
 
 static llvm::cl::opt<std::string>
-    graphName("graph", llvm::cl::desc("dataflow.graph.func symbol to run"),
+    graphName("graph", llvm::cl::desc("dataflow.graph symbol to run"),
               llvm::cl::Required);
 
 static llvm::cl::opt<std::string>
@@ -110,8 +110,7 @@ parseMemoryArgs() {
 int main(int argc, char **argv) {
   llvm::InitLLVM init(argc, argv);
   llvm::cl::ParseCommandLineOptions(
-      argc, argv,
-      "loom-dfg-sim: execute a pure dataflow.graph.func token model\n");
+      argc, argv, "loom-dfg-sim: execute a pure dataflow.graph token model\n");
 
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,

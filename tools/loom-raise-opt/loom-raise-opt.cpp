@@ -5,7 +5,7 @@
 // loom-scf-for-to-forall, loom-lower-forall-to-thread,
 // loom-lower-for-to-graph, loom-lower-scf-to-dfg). The Loom dataflow
 // and fabric dialects are also registered so hand-written .mlir lit
-// tests can exercise dataflow.thread / dataflow.graph.func op shapes.
+// tests can exercise dataflow.thread / dataflow.graph op shapes.
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/IR/FabricDialect.h"
@@ -26,8 +26,6 @@ int main(int argc, char **argv) {
   registry.insert<::fabric::FabricDialect, ::dataflow::DataflowDialect>();
   loom::raising::registerRaisingPasses();
   loom::lowering::registerLoweringPasses();
-  return ::mlir::asMainReturnCode(
-      ::mlir::MlirOptMain(argc, argv,
-                          "Loom raising-pass MLIR optimizer driver\n",
-                          registry));
+  return ::mlir::asMainReturnCode(::mlir::MlirOptMain(
+      argc, argv, "Loom raising-pass MLIR optimizer driver\n", registry));
 }

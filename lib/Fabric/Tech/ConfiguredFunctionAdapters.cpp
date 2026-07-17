@@ -9,6 +9,7 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/Value.h"
+#include "mlir/IR/Verifier.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -59,19 +60,19 @@ sourceFor(Value value, Block &body,
 
 } // namespace
 
-::mlir::LogicalResult
-configuredFunctionFromSubgraph(::dataflow::SubgraphOp subgraph,
-                               ConfiguredFunction &function,
-                               std::string &error) {
+::mlir::LogicalResult configuredFunctionFromFunc(::mlir::func::FuncOp source,
+                                                 ConfiguredFunction &function,
+                                                 std::string &error) {
   function = {};
-  if (!subgraph || subgraph.getBody().empty()) {
-    error = "missing dataflow.subgraph body";
+  if (!source || source.isExternal() || !source.getBody().hasOneBlock()) {
+    error = "configured function must have one body block";
     return ::mlir::failure();
   }
-  Block &body = subgraph.getBody().front();
-  auto yield = ::mlir::dyn_cast<::dataflow::YieldOp>(body.getTerminator());
-  if (!yield) {
-    error = "dataflow.subgraph body has no dataflow.yield terminator";
+  Block &body = source.getBody().front();
+  auto returnOp =
+      ::mlir::dyn_cast<::mlir::func::ReturnOp>(body.getTerminator());
+  if (!returnOp) {
+    error = "configured function body has no func.return terminator";
     return ::mlir::failure();
   }
 
@@ -81,6 +82,11 @@ configuredFunctionFromSubgraph(::dataflow::SubgraphOp subgraph,
 
   ::llvm::DenseMap<Operation *, unsigned> nodeByOp;
   for (Operation &op : body.without_terminator()) {
+    if (op.getNumRegions() != 0 || op.getNumSuccessors() != 0) {
+      error = "configured function nodes must not contain regions or "
+              "successors";
+      return ::mlir::failure();
+    }
     unsigned node = function.nodes.size();
     nodeByOp[&op] = node;
     ConfiguredFunctionNode configured;
@@ -97,17 +103,17 @@ configuredFunctionFromSubgraph(::dataflow::SubgraphOp subgraph,
     for (Value operand : op.getOperands()) {
       auto source = sourceFor(operand, body, nodeByOp);
       if (!source) {
-        error = "dataflow.subgraph operand is defined outside the function";
+        error = "configured function operand is defined outside the function";
         return ::mlir::failure();
       }
       node.operands.push_back(*source);
     }
   }
 
-  for (auto [port, value] : ::llvm::enumerate(yield.getValues())) {
+  for (auto [port, value] : ::llvm::enumerate(returnOp.getOperands())) {
     auto source = sourceFor(value, body, nodeByOp);
     if (!source) {
-      error = "dataflow.subgraph yield value is defined outside the function";
+      error = "configured function result is defined outside the function";
       return ::mlir::failure();
     }
     function.outputs.push_back(
@@ -118,7 +124,7 @@ configuredFunctionFromSubgraph(::dataflow::SubgraphOp subgraph,
 
 ::mlir::LogicalResult materializeConfiguredFunction(
     const ConfiguredFunction &function, ::mlir::ModuleOp module,
-    ::llvm::StringRef symbolName, MaterializedSubgraph &materialized,
+    ::llvm::StringRef symbolName, MaterializedConfiguredFunction &materialized,
     std::string &error) {
   if (!module) {
     error = "missing destination module";
@@ -140,23 +146,11 @@ configuredFunctionFromSubgraph(::dataflow::SubgraphOp subgraph,
       FunctionType::get(context, inputTypes, outputTypes));
   wrapper.setPrivate();
   Block *wrapperBody = wrapper.addEntryBlock();
-  OpBuilder wrapperBuilder(wrapperBody, wrapperBody->end());
-
-  OperationState subgraphState(loc, ::dataflow::SubgraphOp::getOperationName());
-  subgraphState.addOperands(wrapperBody->getArguments());
-  subgraphState.addTypes(outputTypes);
-  ::mlir::Region *region = subgraphState.addRegion();
-  Block *body = new Block();
-  region->push_back(body);
-  ::llvm::SmallVector<Location, 4> argumentLocations(inputTypes.size(), loc);
-  body->addArguments(inputTypes, argumentLocations);
-  auto subgraph = ::mlir::cast<::dataflow::SubgraphOp>(
-      wrapperBuilder.create(subgraphState));
-  OpBuilder bodyBuilder(body, body->end());
+  OpBuilder bodyBuilder(wrapperBody, wrapperBody->end());
 
   ::llvm::DenseMap<unsigned, Value> inputByPort;
   for (auto [position, input] : ::llvm::enumerate(function.inputs))
-    inputByPort[input.fuPort] = body->getArgument(position);
+    inputByPort[input.fuPort] = wrapperBody->getArgument(position);
 
   using ResultKey = std::pair<unsigned, unsigned>;
   ::llvm::DenseMap<ResultKey, Value> values;
@@ -225,11 +219,14 @@ configuredFunctionFromSubgraph(::dataflow::SubgraphOp subgraph,
     }
     yields.push_back(value);
   }
-  ::dataflow::YieldOp::create(bodyBuilder, loc, yields);
-  ::mlir::func::ReturnOp::create(wrapperBuilder, loc, subgraph.getResults());
+  ::mlir::func::ReturnOp::create(bodyBuilder, loc, yields);
+  if (::mlir::failed(::mlir::verify(wrapper))) {
+    wrapper.erase();
+    error = "configured function materialization is not valid SSACFG";
+    return ::mlir::failure();
+  }
 
   materialized.wrapper = wrapper;
-  materialized.subgraph = subgraph;
   return ::mlir::success();
 }
 

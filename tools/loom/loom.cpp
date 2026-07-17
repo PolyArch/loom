@@ -15,8 +15,7 @@ int main(int argc, char **argv) {
   mlir::registerAllPasses();
   registry.insert<fabric::FabricDialect, dataflow::DataflowDialect>();
   fabric::registerFabricIRPasses();
-  fabric::registerFabricTechPasses();
-  fabric::registerFabricTechSynthesizerPasses();
+  fabric::registerConfiguredFunctionSynthesisPass();
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "Loom dialects optimizer\n", registry));
 }

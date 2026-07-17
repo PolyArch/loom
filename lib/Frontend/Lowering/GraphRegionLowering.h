@@ -12,7 +12,7 @@ namespace lowering {
 ::mlir::LogicalResult
 checkGraphRegionLoweringPreconditions(::mlir::ModuleOp module);
 
-::mlir::LogicalResult lowerGraphRegions(::dataflow::GraphFuncOp graph);
+::mlir::LogicalResult lowerGraphRegions(::dataflow::GraphOp graph);
 
 } // namespace lowering
 } // namespace loom
