@@ -51,17 +51,8 @@ struct Token {
 using ChannelMap = llvm::DenseMap<const mlir::OpOperand *, std::deque<Token>>;
 using OutputMap = llvm::DenseMap<mlir::Value, llvm::SmallVector<Token>>;
 
-struct StreamState {
-  bool initialized = false;
-  bool failed = false;
-  std::uint64_t trueEmissions = 0;
-  std::int64_t current = 0;
-  std::int64_t limit = 0;
-  std::int64_t step = 0;
-};
-
 struct LoopState {
-  bool initialized = false;
+  PhaseSemanticState semanticState = PhaseSemanticState::Initial;
   std::optional<Token> latched;
 };
 
@@ -89,7 +80,9 @@ struct SimulatorState {
   llvm::DenseMap<mlir::Value, std::shared_ptr<MemoryValue>> memories;
   llvm::DenseMap<mlir::Value, MemoryFixture> rawMemoryFixtures;
   llvm::StringMap<MemoryFixture> globalMemoryFixtures;
-  llvm::DenseMap<mlir::Operation *, StreamState> streamStates;
+  llvm::DenseMap<mlir::Operation *, StreamSemanticState> streamStates;
+  llvm::DenseSet<mlir::Operation *> failedStreamOps;
+  llvm::DenseMap<mlir::Operation *, std::uint64_t> streamTrueEmissionCounts;
   llvm::DenseMap<mlir::Operation *, LoopState> carryStates;
   llvm::DenseMap<mlir::Operation *, LoopState> invariantStates;
   llvm::DenseMap<mlir::Operation *, ParallelizeState> parallelizeStates;
@@ -151,12 +144,6 @@ llvm::Expected<PrimitiveOperationDescriptor>
 primitiveDescriptor(mlir::Operation *op, llvm::StringRef predicate,
                     mlir::Value result);
 
-llvm::Expected<bool> evaluateCont(std::int64_t current, std::int64_t limit,
-                                  mlir::arith::CmpIPredicate predicate,
-                                  unsigned bitWidth);
-llvm::Expected<std::int64_t> stepIndex(std::int64_t current, std::int64_t step,
-                                       dataflow::StreamStepKind stepKind,
-                                       unsigned bitWidth);
 bool executeLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state,
                        const Token &dst, const Token &src, const Token &len);
 bool isPointerSelect(mlir::LLVM::SelectOp op);

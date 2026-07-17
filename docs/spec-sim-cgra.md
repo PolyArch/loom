@@ -59,6 +59,12 @@ CGRA-sim may reuse DFG-sim semantic components for dataflow operation
 behavior, token semantics, and memory-order semantics. It must not
 replace those semantics with a different interpretation of dataflow IR.
 
+For `dataflow.stream`, `dataflow.carry`, `dataflow.invariant`, and
+`dataflow.gate`, CGRA-sim must use the shared functional transitions owned by
+`OperationSemantics`. CGRA-sim owns mapped-resource timing, buffering,
+contention, backpressure, and firing schedules around those transitions. It
+does not own a second functional state machine for the same operations.
+
 The comparison protocol is specified in
 `docs/spec-sim-comparison.md`.
 

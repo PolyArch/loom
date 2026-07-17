@@ -421,20 +421,15 @@ llvm::Expected<PrimitiveValue> byteSwapInteger(llvm::StringRef opName,
   return integerFromBits(output, bitWidth);
 }
 
-llvm::Expected<bool> compareInteger(llvm::StringRef predicate,
+llvm::Expected<bool> compareInteger(mlir::arith::CmpIPredicate predicate,
                                     const PrimitiveValue &lhs,
                                     const PrimitiveValue &rhs,
                                     unsigned bitWidth) {
-  auto typedPredicate = mlir::arith::symbolizeCmpIPredicate(predicate);
-  if (!typedPredicate)
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "arith.cmpi has unknown predicate '%s'",
-                                   predicate.str().c_str());
   const std::uint64_t lhsBits = toUnsignedBits(lhs, bitWidth);
   const std::uint64_t rhsBits = toUnsignedBits(rhs, bitWidth);
   const std::int64_t lhsSigned = fromUnsignedBits(lhsBits, bitWidth);
   const std::int64_t rhsSigned = fromUnsignedBits(rhsBits, bitWidth);
-  switch (*typedPredicate) {
+  switch (predicate) {
   case mlir::arith::CmpIPredicate::eq:
     return lhsBits == rhsBits;
   case mlir::arith::CmpIPredicate::ne:
@@ -457,6 +452,18 @@ llvm::Expected<bool> compareInteger(llvm::StringRef predicate,
     return lhsBits >= rhsBits;
   }
   llvm_unreachable("unknown generated arith.cmpi predicate");
+}
+
+llvm::Expected<bool> compareInteger(llvm::StringRef predicate,
+                                    const PrimitiveValue &lhs,
+                                    const PrimitiveValue &rhs,
+                                    unsigned bitWidth) {
+  auto typedPredicate = mlir::arith::symbolizeCmpIPredicate(predicate);
+  if (!typedPredicate)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "arith.cmpi has unknown predicate '%s'",
+                                   predicate.str().c_str());
+  return compareInteger(*typedPredicate, lhs, rhs, bitWidth);
 }
 
 bool compareFloat(llvm::StringRef predicate, const PrimitiveValue &lhs,
@@ -510,6 +517,21 @@ llvm::Error requirePredicate(llvm::StringRef opName,
                                  opName.str().c_str());
 }
 
+llvm::Error requireStreamBitWidth(unsigned bitWidth) {
+  if (bitWidth >= 1 && bitWidth <= 64)
+    return llvm::Error::success();
+  return llvm::createStringError(
+      std::errc::invalid_argument,
+      "dataflow.stream integer bit width must be in [1, 64], got %u", bitWidth);
+}
+
+SemanticFiringDecision firingDecision(SemanticInputMask requiredInputs,
+                                      SemanticInputMask availableInputs) {
+  const bool ready = (availableInputs & requiredInputs) == requiredInputs;
+  return SemanticFiringDecision{
+      requiredInputs, ready ? requiredInputs : SemanticInputMask{0}, ready};
+}
+
 } // namespace
 
 PrimitiveValue PrimitiveValue::none() { return PrimitiveValue{}; }
@@ -533,6 +555,207 @@ PrimitiveValue PrimitiveValue::boolean(bool value) {
   result.kind = PrimitiveValueKind::Bool;
   result.boolValue = value;
   return result;
+}
+
+static llvm::Expected<bool>
+evaluateStreamPredicate(std::int64_t current, std::int64_t limit,
+                        mlir::arith::CmpIPredicate predicate,
+                        unsigned bitWidth) {
+  if (llvm::Error width = requireStreamBitWidth(bitWidth))
+    return std::move(width);
+  static_assert(mlir::arith::getMaxEnumValForCmpIPredicate() + 1 == 10,
+                "audit dataflow.stream predicate semantics");
+  return compareInteger(predicate, PrimitiveValue::integer(current),
+                        PrimitiveValue::integer(limit), bitWidth);
+}
+
+static llvm::Expected<std::int64_t>
+evaluateStreamStep(std::int64_t current, std::int64_t step,
+                   dataflow::StreamStepKind stepKind, unsigned bitWidth) {
+  if (llvm::Error width = requireStreamBitWidth(bitWidth))
+    return std::move(width);
+  static_assert(dataflow::getMaxEnumValForStreamStepKind() + 1 == 8,
+                "audit dataflow.stream step semantics");
+  llvm::StringRef operation;
+  switch (stepKind) {
+  case dataflow::StreamStepKind::Add:
+    operation = "arith.addi";
+    break;
+  case dataflow::StreamStepKind::Sub:
+    operation = "arith.subi";
+    break;
+  case dataflow::StreamStepKind::Mul:
+    operation = "arith.muli";
+    break;
+  case dataflow::StreamStepKind::SDiv:
+    operation = "arith.divsi";
+    break;
+  case dataflow::StreamStepKind::UDiv:
+    operation = "arith.divui";
+    break;
+  case dataflow::StreamStepKind::ShL:
+    operation = "arith.shli";
+    break;
+  case dataflow::StreamStepKind::AShr:
+    operation = "arith.shrsi";
+    break;
+  case dataflow::StreamStepKind::LShr:
+    operation = "arith.shrui";
+    break;
+  }
+
+  PrimitiveOperationDescriptor descriptor{
+      operation.str(), {}, bitWidth, bitWidth};
+  PrimitiveValue operands[] = {PrimitiveValue::integer(current),
+                               PrimitiveValue::integer(step)};
+  auto result = evaluatePrimitiveOperation(descriptor, operands);
+  if (!result)
+    return result.takeError();
+  return result->intValue;
+}
+
+llvm::Expected<StreamTransition> loom::sim::evaluateStreamTransition(
+    const StreamSemanticState &state, const StreamSemanticConfig &config,
+    std::optional<StreamActivation> activation) {
+  StreamTransition transition;
+  transition.nextState = state;
+
+  StreamSemanticState active = state;
+  if (state.mode == StreamMode::Idle) {
+    const SemanticInputMask required = semanticInput(StreamInput::Init) |
+                                       semanticInput(StreamInput::Limit) |
+                                       semanticInput(StreamInput::Step);
+    transition.firing =
+        firingDecision(required, activation ? required : SemanticInputMask{0});
+    if (!transition.firing.ready)
+      return transition;
+    active = StreamSemanticState{StreamMode::Running, activation->init,
+                                 activation->limit, activation->step};
+  } else {
+    transition.firing = firingDecision(0, 0);
+  }
+
+  auto cont = evaluateStreamPredicate(active.current, active.limit,
+                                      config.predicate, config.bitWidth);
+  if (!cont)
+    return cont.takeError();
+
+  transition.emitPhase = true;
+  transition.phase = *cont;
+  if (!*cont) {
+    transition.nextState = StreamSemanticState{};
+    return transition;
+  }
+
+  auto next = evaluateStreamStep(active.current, active.step, config.stepKind,
+                                 config.bitWidth);
+  if (!next)
+    return next.takeError();
+  transition.emitIv = true;
+  transition.iv = active.current;
+  transition.nextState = StreamSemanticState{StreamMode::Running, *next,
+                                             active.limit, active.step};
+  return transition;
+}
+
+CarryTransition loom::sim::evaluateCarryTransition(CarrySemanticState state,
+                                                   std::optional<bool> phase,
+                                                   bool initAvailable,
+                                                   bool nextAvailable) {
+  CarryTransition transition;
+  transition.nextState = state;
+  if (state == CarrySemanticState::Initial) {
+    const SemanticInputMask required = semanticInput(CarryInput::Init);
+    transition.firing = firingDecision(
+        required, initAvailable ? required : SemanticInputMask{0});
+    if (transition.firing.ready) {
+      transition.nextState = CarrySemanticState::Running;
+      transition.forwardedInput = CarryInput::Init;
+    }
+    return transition;
+  }
+
+  SemanticInputMask required = semanticInput(CarryInput::Phase);
+  SemanticInputMask available = phase ? required : SemanticInputMask{0};
+  if (phase && *phase) {
+    required |= semanticInput(CarryInput::Next);
+    if (nextAvailable)
+      available |= semanticInput(CarryInput::Next);
+  }
+  transition.firing = firingDecision(required, available);
+  if (!transition.firing.ready)
+    return transition;
+  if (*phase) {
+    transition.forwardedInput = CarryInput::Next;
+  } else {
+    transition.nextState = CarrySemanticState::Initial;
+  }
+  return transition;
+}
+
+InvariantTransition
+loom::sim::evaluateInvariantTransition(InvariantSemanticState state,
+                                       std::optional<bool> phase,
+                                       bool initAvailable) {
+  InvariantTransition transition;
+  transition.nextState = state;
+  if (state == InvariantSemanticState::Initial) {
+    const SemanticInputMask required = semanticInput(InvariantInput::Init);
+    transition.firing = firingDecision(
+        required, initAvailable ? required : SemanticInputMask{0});
+    if (transition.firing.ready) {
+      transition.nextState = InvariantSemanticState::Running;
+      transition.output = InvariantOutputSource::InitInput;
+      transition.latchInput = InvariantInput::Init;
+    }
+    return transition;
+  }
+
+  const SemanticInputMask required = semanticInput(InvariantInput::Phase);
+  transition.firing =
+      firingDecision(required, phase ? required : SemanticInputMask{0});
+  if (!transition.firing.ready)
+    return transition;
+  if (*phase) {
+    transition.output = InvariantOutputSource::Latched;
+  } else {
+    transition.nextState = InvariantSemanticState::Initial;
+    transition.clearLatch = true;
+  }
+  return transition;
+}
+
+GateTransition loom::sim::evaluateGateTransition(GateSemanticState state,
+                                                 std::optional<bool> phase,
+                                                 bool valueAvailable) {
+  GateTransition transition;
+  transition.nextState = state;
+  const SemanticInputMask required =
+      semanticInput(GateInput::Phase) | semanticInput(GateInput::Value);
+  SemanticInputMask available =
+      valueAvailable ? semanticInput(GateInput::Value) : SemanticInputMask{0};
+  if (phase)
+    available |= semanticInput(GateInput::Phase);
+  transition.firing = firingDecision(required, available);
+  if (!transition.firing.ready)
+    return transition;
+
+  if (state == GateSemanticState::Closed) {
+    if (*phase) {
+      transition.nextState = GateSemanticState::Open;
+      transition.forwardedInput = GateInput::Value;
+    }
+    return transition;
+  }
+
+  transition.emitPhase = true;
+  transition.phase = *phase;
+  if (*phase) {
+    transition.forwardedInput = GateInput::Value;
+  } else {
+    transition.nextState = GateSemanticState::Closed;
+  }
+  return transition;
 }
 
 bool loom::sim::isSupportedPrimitiveOperation(llvm::StringRef opName) {

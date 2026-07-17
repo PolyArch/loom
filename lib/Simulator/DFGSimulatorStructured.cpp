@@ -554,22 +554,23 @@ static bool assignLocalGate(dataflow::GateOp op, SimulatorState &state,
       lookupToken(op.getBeforeValue(), state, locals, captureIndex);
   if (!cond || !value)
     return false;
-  const bool isContinue = state.gateContinueStates.contains(op.getOperation());
-  const bool open = boolToken(*cond);
-  if (!isContinue) {
-    if (open) {
-      locals[op.getAfterValue()] = *value;
-      state.gateContinueStates.insert(op.getOperation());
-    }
-    return recordEvent(state, op->getName().getStringRef());
-  }
-  if (open) {
-    locals[op.getAfterCond()] = boolValueToken(true);
+  const GateSemanticState gate =
+      state.gateContinueStates.contains(op.getOperation())
+          ? GateSemanticState::Open
+          : GateSemanticState::Closed;
+  GateTransition transition = evaluateGateTransition(
+      gate, std::optional<bool>{boolToken(*cond)}, /*valueAvailable=*/true);
+  if (!transition.firing.ready)
+    return false;
+
+  if (transition.emitPhase)
+    locals[op.getAfterCond()] = boolValueToken(transition.phase);
+  if (transition.forwardedInput == GateInput::Value)
     locals[op.getAfterValue()] = *value;
-  } else {
-    locals[op.getAfterCond()] = boolValueToken(false);
+  if (transition.nextState == GateSemanticState::Open)
+    state.gateContinueStates.insert(op.getOperation());
+  else
     state.gateContinueStates.erase(op.getOperation());
-  }
   return recordEvent(state, op->getName().getStringRef());
 }
 

@@ -62,6 +62,22 @@ dimensionless operation weights and model identity used by the implemented
 report score. A cost entry does not establish functional support, and a
 functional operation does not derive its behavior from a cost entry.
 
+`OperationSemantics` also owns the canonical functional transitions for
+`dataflow.stream`, `dataflow.carry`, `dataflow.invariant`, and
+`dataflow.gate`. Its shared decisions expose semantic state, readiness,
+required and consumed input selectors and counts, next state, and output
+obligations. Carry, invariant, and gate decisions identify the input whose
+value is forwarded while leaving the payload representation to the simulator
+backend.
+
+The DFG actor adapter retains token queues, MLIR value identity, payload
+storage, event scheduling, counts, diagnostics, and reporting. Stream actor
+execution and static trip-count analysis use the same typed predicate and
+recurrence helpers, which delegate exact-width integer behavior to the
+primitive evaluator. A false close emits no sentinel IV or dummy carry
+feedback and returns the corresponding semantic state to its canonical
+initial value, so a later activation enters normally.
+
 The operation cost model is not an abstract timing profile or a hardware
 timing model. Its base and repeat scores are not latency, initiation interval,
 throughput, critical-path length, or cycle counts. This separation does not

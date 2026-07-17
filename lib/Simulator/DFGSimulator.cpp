@@ -426,8 +426,8 @@ static std::uint64_t estimateWeightedOperationScore(
 static std::uint64_t
 nonStructuredDynamicWorkItems(const SimulatorState &state) {
   std::uint64_t maxStreamItems = 0;
-  for (const auto &entry : state.streamStates)
-    maxStreamItems = std::max(maxStreamItems, entry.second.trueEmissions);
+  for (const auto &entry : state.streamTrueEmissionCounts)
+    maxStreamItems = std::max(maxStreamItems, entry.second);
   std::uint64_t maxSeededItems = 0;
   for (const auto &entry : state.seededTokenCounts)
     maxSeededItems = std::max(maxSeededItems, entry.second);
@@ -1061,38 +1061,42 @@ staticSeedInteger(mlir::Value value, const SimulatorState &state) {
 static std::optional<std::uint64_t>
 staticStreamTripCount(dataflow::StreamOp stream, const SimulatorState &state,
                       std::uint64_t maxEventSteps) {
-  std::optional<std::int64_t> current =
-      staticSeedInteger(stream.getInit(), state);
+  std::optional<std::int64_t> init = staticSeedInteger(stream.getInit(), state);
   std::optional<std::int64_t> limit =
       staticSeedInteger(stream.getLimit(), state);
   std::optional<std::int64_t> step = staticSeedInteger(stream.getStep(), state);
-  if (!current || !limit || !step)
+  if (!init || !limit || !step)
     return std::nullopt;
 
-  std::uint64_t tripCount = 0;
   auto bitWidth = integerBitWidth(stream.getInit().getType(), stream);
   if (!bitWidth) {
     llvm::consumeError(bitWidth.takeError());
     return std::nullopt;
   }
+
+  StreamSemanticState streamState;
+  std::optional<StreamActivation> activation =
+      StreamActivation{*init, *limit, *step};
+  const StreamSemanticConfig config{stream.getStepKind(), stream.getPredicate(),
+                                    *bitWidth};
+  std::uint64_t tripCount = 0;
   for (std::uint64_t i = 0; i < maxEventSteps; ++i) {
-    auto cont =
-        evaluateCont(*current, *limit, stream.getPredicate(), *bitWidth);
-    if (!cont) {
-      llvm::consumeError(cont.takeError());
+    auto transition = evaluateStreamTransition(streamState, config, activation);
+    if (!transition) {
+      llvm::consumeError(transition.takeError());
       return std::nullopt;
     }
-    if (!*cont)
+    if (!transition->firing.ready || !transition->emitPhase)
+      return std::nullopt;
+    if (!transition->phase)
       return tripCount;
+    if (!transition->emitIv)
+      return std::nullopt;
     ++tripCount;
-    auto next = stepIndex(*current, *step, stream.getStepKind(), *bitWidth);
-    if (!next) {
-      llvm::consumeError(next.takeError());
+    if (transition->nextState.current == transition->iv)
       return std::nullopt;
-    }
-    if (*next == *current)
-      return std::nullopt;
-    *current = *next;
+    streamState = transition->nextState;
+    activation.reset();
   }
   return std::nullopt;
 }
@@ -1213,7 +1217,7 @@ static bool hasIncompleteStreamLoads(mlir::Block &entry,
     if (!stream)
       continue;
     const std::uint64_t required =
-        state.streamStates[stream.getOperation()].trueEmissions;
+        state.streamTrueEmissionCounts[stream.getOperation()];
     const std::uint64_t actual = state.loadFireCounts[load.getOperation()];
     if (actual >= required)
       continue;

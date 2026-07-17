@@ -5,81 +5,20 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "llvm/ADT/TypeSwitch.h"
 
-#include <system_error>
-
 namespace loom::sim {
 namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
-
-static_assert(mlir::arith::getMaxEnumValForCmpIPredicate() + 1 == 10,
-              "audit the dataflow.stream predicate adapter");
-
-llvm::Expected<bool> evaluateCont(std::int64_t current, std::int64_t limit,
-                                  mlir::arith::CmpIPredicate predicate,
-                                  unsigned bitWidth) {
-  if (bitWidth == 0 || bitWidth > 64)
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "dataflow.stream integer bit width must be in [1, 64], got %u",
-        bitWidth);
-
-  PrimitiveOperationDescriptor descriptor{
-      "arith.cmpi", mlir::arith::stringifyCmpIPredicate(predicate), 1,
-      bitWidth};
-  PrimitiveValue operands[] = {PrimitiveValue::integer(current),
-                               PrimitiveValue::integer(limit)};
-  auto result = evaluatePrimitiveOperation(descriptor, operands);
-  if (!result)
-    return result.takeError();
-  return result->boolValue;
-}
-
-llvm::Expected<std::int64_t> stepIndex(std::int64_t current, std::int64_t step,
-                                       dataflow::StreamStepKind stepKind,
-                                       unsigned bitWidth) {
-  static_assert(dataflow::getMaxEnumValForStreamStepKind() + 1 == 8,
-                "audit the dataflow.stream step adapter");
-  llvm::StringRef operation;
-  switch (stepKind) {
-  case dataflow::StreamStepKind::Add:
-    operation = "arith.addi";
-    break;
-  case dataflow::StreamStepKind::Sub:
-    operation = "arith.subi";
-    break;
-  case dataflow::StreamStepKind::Mul:
-    operation = "arith.muli";
-    break;
-  case dataflow::StreamStepKind::SDiv:
-    operation = "arith.divsi";
-    break;
-  case dataflow::StreamStepKind::UDiv:
-    operation = "arith.divui";
-    break;
-  case dataflow::StreamStepKind::ShL:
-    operation = "arith.shli";
-    break;
-  case dataflow::StreamStepKind::AShr:
-    operation = "arith.shrsi";
-    break;
-  case dataflow::StreamStepKind::LShr:
-    operation = "arith.shrui";
-    break;
-  }
-
-  PrimitiveOperationDescriptor descriptor{
-      operation.str(), {}, bitWidth, bitWidth};
-  PrimitiveValue operands[] = {PrimitiveValue::integer(current),
-                               PrimitiveValue::integer(step)};
-  auto result = evaluatePrimitiveOperation(descriptor, operands);
-  if (!result)
-    return result.takeError();
-  return result->intValue;
-}
 
 static unsigned streamIntegerBitWidth(mlir::Type type) {
   if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
     return intType.getWidth();
   return 0;
+}
+
+static std::optional<bool> peekBoolToken(ChannelMap &channels,
+                                         mlir::OpOperand &operand) {
+  if (!hasToken(channels, operand))
+    return std::nullopt;
+  return boolToken(peekToken(channels, operand));
 }
 
 static std::optional<unsigned> vectorSizeAttr(mlir::Operation *op,
@@ -122,46 +61,51 @@ static std::uint64_t tokenBits(const Token &token, unsigned width) {
 }
 
 static bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
-  StreamState &stream = state.streamStates[op.getOperation()];
-  if (stream.failed)
+  if (state.failedStreamOps.contains(op.getOperation()))
     return false;
 
-  if (!stream.initialized) {
-    if (!hasToken(state.channels, op->getOpOperand(0)) ||
-        !hasToken(state.channels, op->getOpOperand(1)) ||
-        !hasToken(state.channels, op->getOpOperand(2)))
-      return false;
-    stream.current =
-        integerToken(popToken(state.channels, op->getOpOperand(0)));
-    stream.limit = integerToken(popToken(state.channels, op->getOpOperand(1)));
-    stream.step = integerToken(popToken(state.channels, op->getOpOperand(2)));
-    stream.initialized = true;
+  StreamSemanticState &stream = state.streamStates[op.getOperation()];
+  std::optional<StreamActivation> activation;
+  if (stream.mode == StreamMode::Idle &&
+      hasToken(state.channels, op->getOpOperand(0)) &&
+      hasToken(state.channels, op->getOpOperand(1)) &&
+      hasToken(state.channels, op->getOpOperand(2))) {
+    activation = StreamActivation{
+        integerToken(peekToken(state.channels, op->getOpOperand(0))),
+        integerToken(peekToken(state.channels, op->getOpOperand(1))),
+        integerToken(peekToken(state.channels, op->getOpOperand(2)))};
   }
 
-  const unsigned bitWidth = streamIntegerBitWidth(op.getInit().getType());
-  auto cont =
-      evaluateCont(stream.current, stream.limit, op.getPredicate(), bitWidth);
-  if (!cont) {
-    state.diagnostics.push_back(llvm::toString(cont.takeError()));
-    stream.failed = true;
+  auto transition = evaluateStreamTransition(
+      stream,
+      StreamSemanticConfig{op.getStepKind(), op.getPredicate(),
+                           streamIntegerBitWidth(op.getInit().getType())},
+      activation);
+  if (!transition) {
+    state.diagnostics.push_back(llvm::toString(transition.takeError()));
+    state.failedStreamOps.insert(op.getOperation());
     return false;
   }
-  if (*cont) {
-    auto next =
-        stepIndex(stream.current, stream.step, op.getStepKind(), bitWidth);
-    if (!next) {
-      state.diagnostics.push_back(llvm::toString(next.takeError()));
-      stream.failed = true;
-      return false;
-    }
-    emitToken(state, op.getIv(), integerValueToken(stream.current));
-    emitToken(state, op.getPhase(), boolValueToken(true));
-    ++stream.trueEmissions;
-    stream.current = *next;
-  } else {
-    emitToken(state, op.getPhase(), boolValueToken(false));
-    stream.initialized = false;
+  if (!transition->firing.ready)
+    return false;
+
+  if (selectsSemanticInput(transition->firing.consumedInputs,
+                           StreamInput::Init))
+    (void)popToken(state.channels, op->getOpOperand(0));
+  if (selectsSemanticInput(transition->firing.consumedInputs,
+                           StreamInput::Limit))
+    (void)popToken(state.channels, op->getOpOperand(1));
+  if (selectsSemanticInput(transition->firing.consumedInputs,
+                           StreamInput::Step))
+    (void)popToken(state.channels, op->getOpOperand(2));
+
+  if (transition->emitIv) {
+    emitToken(state, op.getIv(), integerValueToken(transition->iv));
+    ++state.streamTrueEmissionCounts[op.getOperation()];
   }
+  if (transition->emitPhase)
+    emitToken(state, op.getPhase(), boolValueToken(transition->phase));
+  stream = transition->nextState;
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -185,81 +129,87 @@ static bool fireConstant(dataflow::ConstantOp op, SimulatorState &state) {
 
 static bool fireCarry(dataflow::CarryOp op, SimulatorState &state) {
   LoopState &carry = state.carryStates[op.getOperation()];
-  if (!carry.initialized) {
-    if (!hasToken(state.channels, op->getOpOperand(1)))
-      return false;
-    Token init = popToken(state.channels, op->getOpOperand(1));
-    emitToken(state, op.getOutput(), init);
-    carry.initialized = true;
-    return recordEvent(state, op->getName().getStringRef());
-  }
-
-  mlir::OpOperand &condOperand = op->getOpOperand(0);
-  if (!hasToken(state.channels, condOperand))
-    return false;
-  const bool cont = boolToken(peekToken(state.channels, condOperand));
-  mlir::OpOperand &carryOperand = op->getOpOperand(2);
-  if (cont && !hasToken(state.channels, carryOperand))
+  auto transition = evaluateCarryTransition(
+      carry.semanticState, peekBoolToken(state.channels, op->getOpOperand(0)),
+      hasToken(state.channels, op->getOpOperand(1)),
+      hasToken(state.channels, op->getOpOperand(2)));
+  if (!transition.firing.ready)
     return false;
 
-  (void)popToken(state.channels, condOperand);
-  if (cont) {
-    Token value = popToken(state.channels, carryOperand);
-    emitToken(state, op.getOutput(), value);
-  } else {
-    carry.initialized = false;
+  std::optional<Token> forwarded;
+  if (selectsSemanticInput(transition.firing.consumedInputs, CarryInput::Phase))
+    (void)popToken(state.channels, op->getOpOperand(0));
+  if (selectsSemanticInput(transition.firing.consumedInputs,
+                           CarryInput::Init)) {
+    Token value = popToken(state.channels, op->getOpOperand(1));
+    if (transition.forwardedInput == CarryInput::Init)
+      forwarded = value;
   }
+  if (selectsSemanticInput(transition.firing.consumedInputs,
+                           CarryInput::Next)) {
+    Token value = popToken(state.channels, op->getOpOperand(2));
+    if (transition.forwardedInput == CarryInput::Next)
+      forwarded = value;
+  }
+  if (forwarded)
+    emitToken(state, op.getOutput(), *forwarded);
+  carry.semanticState = transition.nextState;
   return recordEvent(state, op->getName().getStringRef());
 }
 
 static bool fireInvariant(dataflow::InvariantOp op, SimulatorState &state) {
   LoopState &invariant = state.invariantStates[op.getOperation()];
-  if (!invariant.initialized) {
-    if (!hasToken(state.channels, op->getOpOperand(1)))
-      return false;
-    Token init = popToken(state.channels, op->getOpOperand(1));
-    invariant.latched = init;
-    invariant.initialized = true;
-    emitToken(state, op.getOutput(), init);
-    return recordEvent(state, op->getName().getStringRef());
-  }
-
-  if (!hasToken(state.channels, op->getOpOperand(0)))
+  auto transition = evaluateInvariantTransition(
+      invariant.semanticState,
+      peekBoolToken(state.channels, op->getOpOperand(0)),
+      hasToken(state.channels, op->getOpOperand(1)));
+  if (!transition.firing.ready)
     return false;
-  Token cond = popToken(state.channels, op->getOpOperand(0));
-  if (boolToken(cond)) {
+
+  if (selectsSemanticInput(transition.firing.consumedInputs,
+                           InvariantInput::Phase))
+    (void)popToken(state.channels, op->getOpOperand(0));
+  std::optional<Token> init;
+  if (selectsSemanticInput(transition.firing.consumedInputs,
+                           InvariantInput::Init))
+    init = popToken(state.channels, op->getOpOperand(1));
+  if (transition.latchInput == InvariantInput::Init)
+    invariant.latched = *init;
+
+  if (transition.output == InvariantOutputSource::InitInput)
+    emitToken(state, op.getOutput(), *init);
+  else if (transition.output == InvariantOutputSource::Latched)
     emitToken(state, op.getOutput(), *invariant.latched);
-  } else {
-    invariant.initialized = false;
+  if (transition.clearLatch)
     invariant.latched.reset();
-  }
+  invariant.semanticState = transition.nextState;
   return recordEvent(state, op->getName().getStringRef());
 }
 
 static bool fireGate(dataflow::GateOp op, SimulatorState &state) {
-  if (!hasToken(state.channels, op.getBeforeCondMutable()) ||
-      !hasToken(state.channels, op.getBeforeValueMutable()))
+  const GateSemanticState gate =
+      state.gateContinueStates.contains(op.getOperation())
+          ? GateSemanticState::Open
+          : GateSemanticState::Closed;
+  auto transition = evaluateGateTransition(
+      gate, peekBoolToken(state.channels, op.getBeforeCondMutable()),
+      hasToken(state.channels, op.getBeforeValueMutable()));
+  if (!transition.firing.ready)
     return false;
-  Token cond = popToken(state.channels, op.getBeforeCondMutable());
-  Token value = popToken(state.channels, op.getBeforeValueMutable());
-  const bool isContinue = state.gateContinueStates.contains(op.getOperation());
-  const bool open = boolToken(cond);
 
-  if (!isContinue) {
-    if (open) {
-      emitToken(state, op.getAfterValue(), value);
-      state.gateContinueStates.insert(op.getOperation());
-    }
-    return recordEvent(state, op->getName().getStringRef());
-  }
-
-  if (open) {
-    emitToken(state, op.getAfterCond(), boolValueToken(true));
-    emitToken(state, op.getAfterValue(), value);
-  } else {
-    emitToken(state, op.getAfterCond(), boolValueToken(false));
+  if (selectsSemanticInput(transition.firing.consumedInputs, GateInput::Phase))
+    (void)popToken(state.channels, op.getBeforeCondMutable());
+  std::optional<Token> value;
+  if (selectsSemanticInput(transition.firing.consumedInputs, GateInput::Value))
+    value = popToken(state.channels, op.getBeforeValueMutable());
+  if (transition.emitPhase)
+    emitToken(state, op.getAfterCond(), boolValueToken(transition.phase));
+  if (transition.forwardedInput == GateInput::Value)
+    emitToken(state, op.getAfterValue(), *value);
+  if (transition.nextState == GateSemanticState::Open)
+    state.gateContinueStates.insert(op.getOperation());
+  else
     state.gateContinueStates.erase(op.getOperation());
-  }
   return recordEvent(state, op->getName().getStringRef());
 }
 
