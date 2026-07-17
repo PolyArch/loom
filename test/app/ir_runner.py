@@ -265,6 +265,16 @@ def validate_raise_ir(path: Path, spec: CaseSpec) -> None:
         raise RunnerExecutionError(f"{spec.case}: {path} has no scf operation")
 
 
+def require_dfg_artifact(path: Path, case: str) -> None:
+    text = read_ir(path, f"{case}: DFG artifact check")
+    if "dataflow.graph " not in text:
+        raise RunnerExecutionError(
+            f"{case}: {path} has no dataflow.graph definition"
+        )
+    if "dataflow.graph.launch " not in text:
+        raise RunnerExecutionError(f"{case}: {path} has no dataflow.graph.launch")
+
+
 def compiler_for(spec: CaseSpec, tools: Toolchain) -> str:
     return tools.cc if spec.language == "c" else tools.cxx
 
@@ -317,6 +327,7 @@ def run_case(
         run_command(lower_command, spec.case_dir, lower_context)
         require_nonempty(dfg_ir, f"{spec.case}: DFG MLIR generation")
         reparse_mlir(dfg_ir, spec, tools)
+        require_dfg_artifact(dfg_ir, spec.case)
 
 
 def reject_overlapping_build_root(build_root: Path, specs: Sequence[CaseSpec]) -> None:

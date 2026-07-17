@@ -1,4 +1,7 @@
 # RUN: not %python -c "import sys; sys.path.insert(0, r'%S/../app'); import native_runner as n; n.safe_filename('../escape', 'case')" 2>&1 | FileCheck %s
 # RUN: %python -c "import dataclasses, os, sys; from pathlib import Path; sys.path.insert(0, r'%S/../app'); import native_runner as n; spec = n.load_case_specs(Path(r'%S/../app/manifest.json'), ['vecadd'])[0]; result = n.run_case(dataclasses.replace(spec, expected_stdout=Path('/dev/null')), Path(r'%t.dir'), r'%loom-cc', r'%loom-c++', dict(os.environ)); assert not result.passed and 'stdout mismatch' in result.diagnostic"
+# RUN: echo 'module {}' > %t.empty.mlir
+# RUN: not %python -c "import sys; from pathlib import Path; sys.path.insert(0, r'%S/../app'); import ir_runner as r; r.require_dfg_artifact(Path(r'%t.empty.mlir'), 'empty')" 2>&1 | FileCheck %s --check-prefix=DFG
 
 # CHECK: RunnerConfigurationError: case must be a single file name
+# DFG: RunnerExecutionError: empty: {{.*}} has no dataflow.graph definition
