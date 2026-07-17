@@ -84,19 +84,97 @@ fabric.module @m_explicit_switch_broadcast(%a : !fabric.bits<32>,
   fabric.yield %out#0, %out#1 : !fabric.bits<32>, !fabric.bits<32>
 }
 
-// memref input/output: must round-trip exactly (no width relaxation).
-// CHECK-LABEL: fabric.module @m_memref_passthrough
-// CHECK-SAME: (%{{.*}}: memref<8xi32>) -> memref<8xi32>
-fabric.module @m_memref_passthrough(%mem : memref<8xi32>) -> (memref<8xi32>) {
-  fabric.yield %mem : memref<8xi32>
+// A fabric.mem subordinate capability may satisfy a module memory export.
+// CHECK-LABEL: fabric.module @m_memref_sub_export
+// CHECK: %[[MEM:[0-9]+]]:3 = fabric.mem [spatial]
+// CHECK: fabric.yield %[[MEM]]#0 : memref<?x!fabric.bits<16>>
+fabric.module @m_memref_sub_export(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>)
+    -> (memref<?x!fabric.bits<16>>) {
+  %sub, %data, %done = fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl)
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+      -> (memref<?x!fabric.bits<16>>, !fabric.bits<32>, !fabric.bits<0>)
+  fabric.yield %sub : memref<?x!fabric.bits<16>>
 }
 
-// Memory capabilities are not token transports and may have multiple uses.
-// CHECK-LABEL: fabric.module @m_memref_multiuse
-// CHECK: fabric.yield %{{.*}}, %{{.*}} : memref<8xi32>, memref<8xi32>
-fabric.module @m_memref_multiuse(%mem : memref<8xi32>)
-    -> (memref<8xi32>, memref<8xi32>) {
-  fabric.yield %mem, %mem : memref<8xi32>, memref<8xi32>
+// An instantiate result preserves the subordinate role of the target
+// module's memory result.
+// CHECK-LABEL: fabric.module @m_instantiate_memref_sub_export
+// CHECK: %[[SUB:[0-9]+]] = fabric.instantiate @m_memref_sub_export
+// CHECK: fabric.yield %[[SUB]] : memref<?x!fabric.bits<16>>
+fabric.module @m_instantiate_memref_sub_export(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>)
+    -> (memref<?x!fabric.bits<16>>) {
+  %sub = fabric.instantiate @m_memref_sub_export(
+      %mgr : memref<?x!fabric.bits<32>>,
+      %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>)
+      -> (memref<?x!fabric.bits<16>>)
+  fabric.yield %sub : memref<?x!fabric.bits<16>>
+}
+
+// A subordinate provider result may connect to a manager/requester operand
+// and remain available for another provider-side use such as module export.
+// CHECK-LABEL: fabric.module @m_memref_sub_to_mgr
+// CHECK: %[[PROVIDER:[0-9]+]]:3 = fabric.mem [spatial]
+// CHECK: fabric.mem [spatial] mgr(%[[PROVIDER]]#0)
+// CHECK: fabric.yield %[[PROVIDER]]#0 : memref<?x!fabric.bits<32>>
+fabric.module @m_memref_sub_to_mgr(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr0 : !fabric.bits<32>, %ctrl0 : !fabric.bits<0>,
+    %addr1 : !fabric.bits<32>, %ctrl1 : !fabric.bits<0>)
+    -> (memref<?x!fabric.bits<32>>) {
+  %sub, %data0, %done0 =
+      fabric.mem [spatial] mgr(%mgr) load(%addr0, %ctrl0)
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+      -> (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+  %data1, %done1 = fabric.mem [spatial] mgr(%sub) load(%addr1, %ctrl1)
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+      -> (!fabric.bits<32>, !fabric.bits<0>)
+  fabric.yield %sub : memref<?x!fabric.bits<32>>
+}
+
+// An instantiated provider result may likewise connect to a manager operand.
+// CHECK-LABEL: fabric.module @m_instantiate_memref_sub_to_mgr
+// CHECK: %[[PROVIDER:[0-9]+]] = fabric.instantiate @m_memref_sub_export
+// CHECK: fabric.mem [spatial] mgr(%[[PROVIDER]])
+fabric.module @m_instantiate_memref_sub_to_mgr(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr0 : !fabric.bits<32>, %ctrl0 : !fabric.bits<0>,
+    %addr1 : !fabric.bits<32>, %ctrl1 : !fabric.bits<0>) {
+  %sub = fabric.instantiate @m_memref_sub_export(
+      %mgr : memref<?x!fabric.bits<32>>,
+      %addr0 : !fabric.bits<32>, %ctrl0 : !fabric.bits<0>)
+      -> (memref<?x!fabric.bits<16>>)
+  %data, %done = fabric.mem [spatial] mgr(%sub) load(%addr1, %ctrl1)
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+      : (memref<?x!fabric.bits<16>>, !fabric.bits<32>, !fabric.bits<0>)
+      -> (!fabric.bits<16>, !fabric.bits<0>)
+  fabric.yield
+}
+
+// Manager capabilities are not token transports and may feed multiple
+// manager-side consumers.
+// CHECK-LABEL: fabric.module @m_memref_manager_multiuse
+// CHECK: fabric.mem [spatial] mgr(%[[MGR:[a-zA-Z0-9_]+]])
+// CHECK: fabric.mem [spatial] mgr(%[[MGR]])
+fabric.module @m_memref_manager_multiuse(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr0 : !fabric.bits<32>, %ctrl0 : !fabric.bits<0>,
+    %addr1 : !fabric.bits<32>, %ctrl1 : !fabric.bits<0>) {
+  %data0, %done0 = fabric.mem [spatial] mgr(%mgr) load(%addr0, %ctrl0)
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+      -> (!fabric.bits<32>, !fabric.bits<0>)
+  %data1, %done1 = fabric.mem [spatial] mgr(%mgr) load(%addr1, %ctrl1)
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+      -> (!fabric.bits<32>, !fabric.bits<0>)
+  fabric.yield
 }
 
 // Width relaxation at module-input -> pe operand: the source is

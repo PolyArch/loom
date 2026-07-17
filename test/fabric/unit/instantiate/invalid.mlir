@@ -105,13 +105,12 @@ fabric.module @host_out_mismatch(%a : !fabric.bits<32>) {
 // -----
 // memref operands cannot use the 'to <inner-type>' clause: memref types
 // must match exactly (no width relaxation on memref).
-fabric.module @leaf_mem(%m : memref<8xi32>) -> (memref<8xi32>) {
-  fabric.yield %m : memref<8xi32>
+fabric.module @leaf_mem(%m : memref<8xi32>) {
+  fabric.yield
 }
 fabric.module @host_mem_relax(%m : memref<8xi32>) {
   // expected-error @+1 {{memref operands cannot use the 'to <inner-type>' clause}}
-  %r = fabric.instantiate @leaf_mem(%m : memref<8xi32> to memref<4xi32>)
-       -> (memref<8xi32>)
+  fabric.instantiate @leaf_mem(%m : memref<8xi32> to memref<4xi32>) -> ()
   fabric.yield
 }
 

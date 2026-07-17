@@ -39,12 +39,27 @@ fabric.module @m_yield_kind_mismatch(%a : !fabric.bits_tag<8, 2>)
 }
 
 // -----
-// memref width/shape mismatch on yield: source memref must equal the
-// module result memref exactly.
-fabric.module @m_yield_memref_mismatch(%a : memref<8xi32>)
-    -> (memref<4xi32>) {
-  // expected-error @+1 {{declared destination type 'memref<8xi32>' does not match the module's result type 'memref<4xi32>'}}
-  fabric.yield %a : memref<8xi32>
+// A manager capability imported through the module signature cannot become a
+// subordinate capability merely because the exported memref type is equal.
+fabric.module @m_manager_to_subordinate_passthrough(%mgr : memref<8xi32>)
+    -> (memref<8xi32>) {
+  // expected-error @+1 {{memref module result #0 must originate from a subordinate provider result}}
+  fabric.yield %mgr : memref<8xi32>
+}
+
+// -----
+// memref width/shape mismatch on yield: a subordinate source memref must equal
+// the module result memref exactly.
+fabric.module @m_yield_memref_mismatch(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>)
+    -> (memref<?x!fabric.bits<4>>) {
+  %sub, %data, %done = fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl)
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+      -> (memref<?x!fabric.bits<8>>, !fabric.bits<32>, !fabric.bits<0>)
+  // expected-error @+1 {{declared destination type 'memref<?x!fabric.bits<8>>' does not match the module's result type 'memref<?x!fabric.bits<4>>'}}
+  fabric.yield %sub : memref<?x!fabric.bits<8>>
 }
 
 // -----

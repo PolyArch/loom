@@ -4,7 +4,8 @@ This document specifies `fabric.module`, the SpatialCore or CGRA
 template container of the fabric dialect. `fabric.system` is the
 SoC/system container. Implementation locations that must mirror this
 spec include `Fabric_ModuleOp` in `include/Fabric/IR/FabricOps.td` and
-the parser, printer, and verifier logic in `lib/Fabric/IR/FabricOps.cpp`.
+the parser and printer in `lib/Fabric/IR/FabricOps.cpp` plus the verifier
+in `lib/Fabric/IR/FabricModuleOp.cpp`.
 
 `fabric.module` is the SpatialCore or CGRA-level ADG container. It is
 not a system-level SoC container and it does not use `fabric.link` for
@@ -43,7 +44,7 @@ Allowed input types:
 |---------------------------|---------|-----------------------------------------------|
 | `!fabric.bits<W>`         | yes     | Native handshake-bearing fabric port.         |
 | `!fabric.bits_tag<W, T>`  | yes     | Native fabric port; `W = 0` is the tag-only form. |
-| `memref<...>`             | yes     | Memory ports use MLIR's native memref.        |
+| `memref<...>`             | yes     | Manager/requester memory capability import.   |
 | Any other MLIR type       | no      | Rejected by the verifier.                     |
 
 `i32`, `f32`, `vector`, `tensor`, `index`, etc. are not valid module
@@ -63,10 +64,11 @@ fabric.module @top(...) -> (!fabric.bits<32>, memref<8xi32>) {
 }
 ```
 
-The same allowed-type table applies to outputs. Outputs are produced by
-the `fabric.yield` terminator inside the body. The yield value count
-must equal the module's declared output count, and yield value types
-must conform to the physical connection compatibility rule below.
+The same allowed-type table applies to outputs. A `memref` output is a
+subordinate/target memory capability export. Outputs are produced by the
+`fabric.yield` terminator inside the body. The yield value count must equal
+the module's declared output count, and yield values must conform to the
+physical connection compatibility and memory-role rules below.
 
 A module may have zero outputs (`-> ()`) or zero inputs
 (`fabric.module @top()`).
@@ -115,6 +117,38 @@ level.
 support constructs for buffering, spatial/temporal domain conversion,
 and template reuse. They do not replace the core tile matrix.
 
+## Memory Capability Roles
+
+Memory boundary direction determines protocol role without adding role
+attributes or a second memory type family:
+
+* every `fabric.module` `memref` input is a manager/requester capability;
+* every `fabric.module` `memref` result is a subordinate/target capability;
+* the first `memref` operand of anonymous `fabric.mem` is manager-side, and
+  its optional first `memref` result is subordinate-side;
+* `fabric.instantiate` preserves the target signature roles mechanically:
+  target `memref` inputs become manager-side operands and target `memref`
+  results become subordinate-side results.
+
+Manager and subordinate are endpoint-relative roles, not permanent roles
+attached to an SSA memref value. Legal connections include:
+
+* forwarding a module manager input to one or more internal manager operands;
+* connecting a subordinate provider result to a manager/requester operand;
+* forwarding a subordinate provider result to a module subordinate output;
+* using the same imported or provided capability at multiple endpoints.
+
+The provider-to-requester case is ordinary memory-service composition. A
+`fabric.mem` `memref_sub` result may feed another `fabric.mem` `memref_mgr`,
+and an equivalent `fabric.instantiate` result may feed a manager operand.
+
+The module export invariant is narrower: each yielded module `memref` result
+must originate from an anonymous `fabric.mem` optional `memref_sub` result or
+from a `memref` result of `fabric.instantiate`. Directly yielding a module
+manager input is invalid because no subordinate provider was introduced.
+The verifier does not impose token linearity or infer service capacity from
+SSA use count.
+
 ## Physical Connection Type Compatibility
 
 This section is the single source of truth for ordinary directed
@@ -134,6 +168,10 @@ The source and destination must have the same port kind:
 * `bits` may connect only to `bits`;
 * `bits_tag` may connect only to `bits_tag`;
 * `memref` may connect only to an exactly matching `memref` type.
+
+Memory endpoint roles determine whether a connection is boundary forwarding
+or complementary provider-to-requester service composition. They do not add
+another type-compatibility rule to the SSA value.
 
 An ordinary connection must not convert `bits` to `bits_tag` or
 `bits_tag` to `bits`. Such a spatial/temporal domain transition requires
@@ -178,7 +216,9 @@ consumers must derive it from the connected endpoint types and must not
 invent an adapter record for a pure same-kind width change.
 
 For `memref<...>` no width relaxation is allowed. Source and destination
-must have the same element type, shape, layout, and memory space.
+must have the same element type, shape, layout, and memory space. Exact type
+equality remains independent from module export provenance: it does not make
+a module manager input a subordinate provider.
 
 ### IR Expression
 
@@ -283,6 +323,19 @@ artifact that claims visualization evidence.
 * Every direct module-body `bits` or `bits_tag` transport source has at
   most one direct module-body consuming use. `fabric.yield` counts as a
   consumer; `memref` values and nested PE/FU region values are excluded.
+* Memory roles are endpoint-relative. Module inputs and internal manager
+  operands are requester endpoints; `fabric.mem` optional memref results,
+  qualifying `fabric.instantiate` results, and module results are provider
+  endpoints.
+* A subordinate provider result may connect to a manager operand and may also
+  be forwarded to a module output.
+* Each yielded module `memref` result must originate from an anonymous
+  `fabric.mem` optional memref result or a memref result of
+  `fabric.instantiate`. Direct module-input passthrough is rejected.
+* Imported and provided memory capabilities may have multiple uses; no token
+  linearity check is applied to `memref` values.
+* Existing operation and `fabric.yield` verifiers own operand/result shape,
+  exact type matching, and `to`-clause legality.
 * `fabric.yield` inside `fabric.module` must have exactly as many
   operands as the module's declared result count, and each yield value
   must satisfy the physical connection compatibility rule against the
@@ -301,6 +354,8 @@ The `fabric.module` target universe includes:
 * template instantiation rules for module, PE, switch, memory, and FU symbols;
 * point-to-point Graph-region SSA connectivity and same-kind
   width-normalization points;
+* endpoint-relative manager/subordinate memory roles, complementary
+  provider-to-requester connections, and module export provenance;
 * optional module-level Loom address and memory-bus overrides.
 
 The target universe does not include module-internal `fabric.link`.
@@ -375,6 +430,7 @@ The verifier exercises the following rejections (see
 * Yield type-kind mismatch (e.g. yielding a `bits_tag` for a `bits`
   result).
 * `memref` width or shape mismatch on yield.
+* Direct module manager input yielded as a subordinate module result.
 * `to T_inner` clause used on a `memref` operand.
 * Direct module-body transport fanout without an explicit routing
   resource.
@@ -397,9 +453,9 @@ Implementation locations that must mirror this spec are:
 
 * `Fabric_ModuleOp` in `include/Fabric/IR/FabricOps.td` for the IR
   shape;
-* `ModuleOp::parse`, `ModuleOp::print`, and `ModuleOp::verify` in
-  `lib/Fabric/IR/FabricOps.cpp` for parser, printer, and verifier
-  logic.
+* `ModuleOp::parse` and `ModuleOp::print` in
+  `lib/Fabric/IR/FabricOps.cpp`;
+* `ModuleOp::verify` in `lib/Fabric/IR/FabricModuleOp.cpp`.
 
 When adding a new whitelisted body op (e.g., `fabric.mem`), update both
 the verifier's whitelist and the diagnostic message that lists the

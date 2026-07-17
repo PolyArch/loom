@@ -26,6 +26,23 @@ fabric dialect. The canonical IR source is `Fabric_MemOp` in
 * Allowed only inside a `fabric.module` body; the module body
   whitelist was extended to admit `fabric.mem`.
 
+## Memory capability roles
+
+The first `memref` input is `memref_mgr`, a manager/requester capability.
+The optional first `memref` result is `memref_sub`, a subordinate/target
+capability. These are roles of the operation endpoints; they are not encoded
+as attributes, distinct memory types, or permanent properties of the SSA
+memref value.
+
+At a `fabric.module` boundary, a module `memref` input may feed
+`memref_mgr`, including multiple manager-side consumers. A module `memref`
+result must come from a subordinate producer such as `memref_sub` or a
+`fabric.instantiate` result whose target signature has a `memref` result.
+A `memref_sub` or equivalent instantiate result may also feed another
+`memref_mgr`; this is the normal complementary provider-to-requester service
+connection. Imported and provided capabilities may both have multiple uses.
+The module verifier checks only provider provenance for module exports.
+
 ## Schedule predicate and port types
 
 The schedule predicate selects the port type kind of every per-port
@@ -64,22 +81,23 @@ signature.
 
 `fabric.mem` exposes two memref interfaces:
 
-* `memref_mgr` (Manager-side, **required**): the first SSA operand. It
-  is the memref this fabric.mem actively manages on its inward side --
-  every internal load and store port goes through `memref_mgr`. The
-  element type **must** be `!fabric.bits<W_mgr>`. `W_mgr` is derived
-  from the element type and is the canonical bus-width of the
-  internal load/store data ports.
+* `memref_mgr` (Manager-side, **required**): the first SSA operand. It is the
+  manager/requester capability through which the tile issues every internal
+  load and store transaction. The element type **must** be
+  `!fabric.bits<W_mgr>`. `W_mgr` is derived from the element type and is the
+  canonical bus-width of the internal load/store data ports.
 * `memref_sub` (Subordinate-side, **optional**): when present, it is
   the **first SSA result** (detected by checking the first result's
-  type for a memref). It exposes a memref to downstream consumers as
-  an independent bypass. Its element type **must** be
+  type for a memref). It exposes the tile's subordinate/target capability.
+  Its element type **must** be
   `!fabric.bits<W_sub>`. `W_sub` MAY differ from `W_mgr`.
 
 The internal load/store ports are independent of `memref_sub`. The
 M2.A decision is: load/store ports always operate against
-`memref_mgr`; `memref_sub` is exposed inward as an independent bypass
-for downstream consumers and does not affect port type rules.
+`memref_mgr`; `memref_sub` is an independent subordinate interface and does
+not affect port type rules. Connecting `memref_sub` to another `memref_mgr`
+is direct provider-to-requester composition and requires no role conversion
+or adapter.
 
 The verifier requires `!fabric.bits<W>`-element memrefs only;
 `memref<?xiN>` and other element types are rejected.
@@ -88,7 +106,7 @@ The verifier requires `!fabric.bits<W>`-element memrefs only;
 
 In order:
 
-1. `memref_mgr : memref<?x!fabric.bits<W_mgr>>`
+1. `memref_mgr : memref<?x!fabric.bits<W_mgr>>`, manager role.
 2. For each load port `i in [0, load_group_size)`:
    `(addr_i, ctrl_i)` -- two SSA operands.
 3. For each store port `j in [0, store_group_size)`:
@@ -100,9 +118,9 @@ Total operand count: `1 + 2 * load_group_size + 3 * store_group_size`.
 
 In order:
 
-1. Optional `memref_sub : memref<?x!fabric.bits<W_sub>>` (when present
-   it is the first result; presence is detected from the result type
-   alone; no syntactic marker is needed).
+1. Optional `memref_sub : memref<?x!fabric.bits<W_sub>>`, subordinate role
+   (when present it is the first result; presence is detected from the result
+   type alone; no syntactic marker is needed).
 2. For each load port `i`: `(data_i, done_i)` -- two SSA results.
 3. For each store port `j`: `done_j` -- one SSA result.
 
@@ -299,7 +317,8 @@ fabric.mem @MyMem [spatial]
 The named form has zero SSA operands and zero SSA results in the
 enclosing `fabric.module` body; the port signature is captured in a
 `function_type` attribute. Actual usage of a named `fabric.mem` goes
-through `fabric.instantiate`.
+through `fabric.instantiate`, whose memory operand/result roles follow this
+signature direction mechanically.
 
 ## Verifier checklist
 
@@ -314,6 +333,9 @@ through `fabric.instantiate`.
   `W_mgr`.
 * Optional `memref_sub` (first result if it is a memref) element type
   is `!fabric.bits<W_sub>`. `W_sub` is independent of `W_mgr`.
+* `memref_mgr` is a manager/requester endpoint and optional `memref_sub` is a
+  subordinate/provider endpoint. A `memref_sub` result may legally connect to
+  another manager operand; `fabric.module` only verifies export provenance.
 * Operand count equals `1 + 2*load_group_size + 3*store_group_size`.
 * Result count equals
   `(has_sub ? 1 : 0) + 2*load_group_size + store_group_size`.
