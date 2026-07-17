@@ -798,8 +798,10 @@ def Dataflow_GraphLaunchOp : Dataflow_Op<"graph.launch", [
     References a `dataflow.graph` definition by symbol from inside a
     `dataflow.thread` body. Dependencies, value inputs, stream input channel
     bindings, memory imports, and stream output channel bindings are explicit
-    operand segments. Value outputs and memory exports are SSA results; the
-    trailing `done` result is the graph retirement event.
+    operand segments. Each stream input binding carries one affine
+    `source_map` from the enclosing consumer thread domain to its producer
+    domain. Value outputs and memory exports are SSA results; the trailing
+    `done` result is the graph retirement event.
 
     The operation resolves its callee through `SymbolUserOpInterface` but does
     not project callee effects through `MemoryEffectsOpInterface`.
@@ -807,6 +809,7 @@ def Dataflow_GraphLaunchOp : Dataflow_Op<"graph.launch", [
 
   let arguments = (ins
       FlatSymbolRefAttr:$callee,
+      AffineMapArrayAttr:$source_maps,
       Variadic<NoneType>:$dependencies,
       Variadic<AnyType>:$valueInputs,
       Variadic<Dataflow_ChannelType>:$streamInputs,

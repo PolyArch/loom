@@ -1,6 +1,8 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+
 using namespace mlir;
 using namespace dataflow;
 
@@ -17,6 +19,20 @@ LogicalResult verifyChannelEndpoint(Operation *op) {
 
 } // namespace
 
+bool DataflowDialect::isMemoryCapabilityType(Type type) {
+  return isa<MemRefType, UnrankedMemRefType, LLVM::LLVMPointerType>(type);
+}
+
+bool DataflowDialect::containsMemoryCapability(Type type) {
+  return type
+      .walk<WalkOrder::PreOrder>([](Type nested) -> WalkResult {
+        return DataflowDialect::isMemoryCapabilityType(nested)
+                   ? WalkResult::interrupt()
+                   : WalkResult::advance();
+      })
+      .wasInterrupted();
+}
+
 bool DataflowDialect::containsChannelOrThreadToken(Type type) {
   return type
       .walk<WalkOrder::PreOrder>([](Type nested) -> WalkResult {
@@ -30,16 +46,19 @@ bool DataflowDialect::containsChannelOrThreadToken(Type type) {
 LogicalResult
 ChannelType::verify(llvm::function_ref<InFlightDiagnostic()> emitError,
                     Type elementType) {
-  if (!DataflowDialect::containsChannelOrThreadToken(elementType))
-    return success();
   if (isa<ChannelType>(elementType))
     return emitError()
            << "channel element type must not be another dataflow channel";
   if (isa<ThreadTokenType>(elementType))
     return emitError()
            << "channel element type must not be !dataflow.thread_token";
-  return emitError() << "channel element type must not contain "
-                        "!dataflow.channel or !dataflow.thread_token";
+  if (DataflowDialect::containsChannelOrThreadToken(elementType))
+    return emitError() << "channel element type must not contain "
+                          "!dataflow.channel or !dataflow.thread_token";
+  if (DataflowDialect::containsMemoryCapability(elementType))
+    return emitError()
+           << "channel element type must not contain a memory capability";
+  return success();
 }
 
 LogicalResult ChannelSendOp::verify() {

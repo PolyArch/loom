@@ -1,6 +1,8 @@
 // RUN: loom %s | loom | FileCheck %s
 // RUN: loom %s --mlir-print-op-generic | FileCheck %s --check-prefix=GENERIC
 
+// CHECK: #map = affine_map<() -> ()>
+
 // Graph definition with explicit start/done protocol syntax. The stored
 // FunctionType contains only application payloads.
 // CHECK-LABEL: dataflow.graph private @g_demo(%{{.*}}: none, %{{.*}}: i32) -> i32
@@ -64,9 +66,10 @@ dataflow.graph private @g_stream(%start: none, %input: i32) -> i32
 dataflow.thread private @t_stream(
     %input: !dataflow.channel<i32>,
     %output: !dataflow.channel<i32>) ctrl (%ctrl: none) {
-  // CHECK: %{{.*}} = dataflow.graph.launch @g_stream deps(%{{.*}}) values() stream_inputs(%{{.*}}) memories() stream_outputs(%{{.*}}) : (none, !dataflow.channel<i32>, !dataflow.channel<i32>) -> none
+  // CHECK: %{{.*}} = dataflow.graph.launch @g_stream deps(%{{.*}}) values() stream_inputs(%{{.*}} source_map #map) memories() stream_outputs(%{{.*}}) : (none, !dataflow.channel<i32>, !dataflow.channel<i32>) -> none
   %done = dataflow.graph.launch @g_stream deps(%ctrl) values()
-      stream_inputs(%input) memories() stream_outputs(%output)
+      stream_inputs(%input source_map affine_map<() -> ()>)
+      memories() stream_outputs(%output)
       : (none, !dataflow.channel<i32>, !dataflow.channel<i32>) -> none
   dataflow.thread.yield %done : none
 }

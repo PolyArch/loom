@@ -1101,8 +1101,9 @@ struct LowerForToGraphPass
     auto callee = ::mlir::FlatSymbolRefAttr::get(builder.getContext(), symName);
     auto launchOp = ::dataflow::GraphLaunchOp::create(
         builder, loc, valueResultTypes, memoryResultTypes, noneType, callee,
-        ::mlir::ValueRange{ctrlIn}, graphInputs.values, ::mlir::ValueRange{},
-        graphInputs.memories, ::mlir::ValueRange{});
+        builder.getArrayAttr({}), ::mlir::ValueRange{ctrlIn},
+        graphInputs.values, ::mlir::ValueRange{}, graphInputs.memories,
+        ::mlir::ValueRange{});
     addThreadCompletionFrontier(enclosingThread, launchOp.getDone());
 
     // Replace the selected graph outputs with the graph.launch's
@@ -1324,8 +1325,9 @@ struct LowerForToGraphPass
         ::mlir::FlatSymbolRefAttr::get(builder.getContext(), graphName);
     auto launch = ::dataflow::GraphLaunchOp::create(
         builder, loc, ::mlir::TypeRange{}, ::mlir::TypeRange{}, noneType,
-        callee, ::mlir::ValueRange{threadCtrl}, graphInputs.values,
-        ::mlir::ValueRange{}, graphInputs.memories, ::mlir::ValueRange{});
+        callee, builder.getArrayAttr({}), ::mlir::ValueRange{threadCtrl},
+        graphInputs.values, ::mlir::ValueRange{}, graphInputs.memories,
+        ::mlir::ValueRange{});
     addThreadCompletionFrontier(thread, launch.getDone());
 
     for (::mlir::Operation *op : ::llvm::reverse(bodyOps))

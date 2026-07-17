@@ -17,8 +17,17 @@ llvm::Error graphError(const llvm::Twine &message) {
 }
 
 bool isMemoryCapabilityType(mlir::Type type) {
-  return llvm::isa<mlir::MemRefType, mlir::UnrankedMemRefType,
-                   mlir::LLVM::LLVMPointerType>(type);
+  return dataflow::DataflowDialect::isMemoryCapabilityType(type);
+}
+
+bool containsChannelType(mlir::Type type) {
+  return type
+      .walk<mlir::WalkOrder::PreOrder>([](mlir::Type nested) {
+        return llvm::isa<dataflow::ChannelType>(nested)
+                   ? mlir::WalkResult::interrupt()
+                   : mlir::WalkResult::advance();
+      })
+      .wasInterrupted();
 }
 
 bool isGraphMemoryInput(dataflow::GraphOp graph, mlir::Value value) {
@@ -371,6 +380,20 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
   graph.getBody().walk<mlir::WalkOrder::PreOrder>([&](mlir::Operation *op) {
     if (structuralError || llvm::isa<GraphReturnOp>(op))
       return mlir::WalkResult::interrupt();
+    if (llvm::any_of(op->getResultTypes(), containsChannelType)) {
+      structuralError = graphError(
+          llvm::Twine("finalized graph contains channel-typed result produced "
+                      "by '") +
+          op->getName().getStringRef() + "'");
+      return mlir::WalkResult::interrupt();
+    }
+    if (llvm::any_of(op->getOperandTypes(), containsChannelType)) {
+      structuralError = graphError(
+          llvm::Twine("finalized graph contains channel-typed operand consumed "
+                      "by '") +
+          op->getName().getStringRef() + "'");
+      return mlir::WalkResult::interrupt();
+    }
     if (op->getName().getDialectNamespace() == "scf" ||
         op->getName().getDialectNamespace() == "cf" ||
         op->getNumRegions() != 0 || op->getNumSuccessors() != 0) {

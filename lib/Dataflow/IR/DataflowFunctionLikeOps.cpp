@@ -32,22 +32,11 @@ using namespace dataflow;
 namespace {
 
 static bool isGraphMemoryCapabilityType(Type type) {
-  return isa<MemRefType, UnrankedMemRefType, LLVM::LLVMPointerType>(type);
+  return DataflowDialect::isMemoryCapabilityType(type);
 }
 
 static bool containsGraphMemoryCapability(Type type) {
-  if (isGraphMemoryCapabilityType(type))
-    return true;
-  if (auto tuple = dyn_cast<TupleType>(type))
-    return llvm::any_of(tuple.getTypes(), containsGraphMemoryCapability);
-  if (auto structure = dyn_cast<LLVM::LLVMStructType>(type))
-    return !structure.isOpaque() &&
-           llvm::any_of(structure.getBody(), containsGraphMemoryCapability);
-  if (auto shaped = dyn_cast<ShapedType>(type))
-    return containsGraphMemoryCapability(shaped.getElementType());
-  if (auto complex = dyn_cast<ComplexType>(type))
-    return containsGraphMemoryCapability(complex.getElementType());
-  return false;
+  return DataflowDialect::containsMemoryCapability(type);
 }
 
 static std::array<int32_t, 3> defaultGraphSegments(size_t count) {
@@ -831,6 +820,44 @@ void printGraphLaunchOperandSegment(OpAsmPrinter &printer, StringRef keyword,
   printer << ')';
 }
 
+ParseResult parseGraphLaunchStreamInputs(
+    OpAsmParser &parser,
+    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &operands,
+    SmallVectorImpl<AffineMap> &sourceMaps) {
+  if (parser.parseKeyword("stream_inputs") || parser.parseLParen())
+    return failure();
+  if (succeeded(parser.parseOptionalRParen()))
+    return success();
+
+  do {
+    if (parser.parseOperand(operands.emplace_back()))
+      return failure();
+    if (failed(parser.parseOptionalKeyword("source_map")))
+      return parser.emitError(
+          parser.getCurrentLocation(),
+          "expected 'source_map' after stream input binding");
+    AffineMapAttr sourceMap;
+    if (parser.parseAttribute(sourceMap))
+      return failure();
+    sourceMaps.push_back(sourceMap.getValue());
+  } while (succeeded(parser.parseOptionalComma()));
+  return parser.parseRParen();
+}
+
+void printGraphLaunchStreamInputs(OpAsmPrinter &printer, ValueRange operands,
+                                  ArrayAttr sourceMaps) {
+  printer << " stream_inputs(";
+  for (auto [index, operand] : llvm::enumerate(operands)) {
+    if (index != 0)
+      printer << ", ";
+    printer.printOperand(operand);
+    printer << " source_map ";
+    printer.printAttributeWithoutType(
+        llvm::cast<AffineMapAttr>(sourceMaps[index]));
+  }
+  printer << ')';
+}
+
 } // namespace
 
 ParseResult GraphLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -842,12 +869,13 @@ ParseResult GraphLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::UnresolvedOperand, 4> dependencies;
   SmallVector<OpAsmParser::UnresolvedOperand, 4> valueInputs;
   SmallVector<OpAsmParser::UnresolvedOperand, 4> streamInputs;
+  SmallVector<AffineMap, 4> sourceMaps;
   SmallVector<OpAsmParser::UnresolvedOperand, 4> memoryInputs;
   SmallVector<OpAsmParser::UnresolvedOperand, 4> streamOutputs;
   SMLoc operandsLoc = parser.getCurrentLocation();
   if (parseGraphLaunchOperandSegment(parser, "deps", dependencies) ||
       parseGraphLaunchOperandSegment(parser, "values", valueInputs) ||
-      parseGraphLaunchOperandSegment(parser, "stream_inputs", streamInputs) ||
+      parseGraphLaunchStreamInputs(parser, streamInputs, sourceMaps) ||
       parseGraphLaunchOperandSegment(parser, "memories", memoryInputs) ||
       parseGraphLaunchOperandSegment(parser, "stream_outputs", streamOutputs) ||
       parser.parseOptionalAttrDict(result.attributes))
@@ -904,6 +932,8 @@ ParseResult GraphLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
                                     static_cast<int32_t>(streamOutputs.size())};
   properties.resultSegmentSizes = {static_cast<int32_t>(valueResultCount),
                                    static_cast<int32_t>(memoryResultCount), 1};
+  result.addAttribute("source_maps",
+                      parser.getBuilder().getAffineMapArrayAttr(sourceMaps));
   return success();
 }
 
@@ -912,12 +942,13 @@ void GraphLaunchOp::print(OpAsmPrinter &printer) {
   printer.printAttributeWithoutType(getCalleeAttr());
   printGraphLaunchOperandSegment(printer, "deps", getDependencies());
   printGraphLaunchOperandSegment(printer, "values", getValueInputs());
-  printGraphLaunchOperandSegment(printer, "stream_inputs", getStreamInputs());
+  printGraphLaunchStreamInputs(printer, getStreamInputs(), getSourceMaps());
   printGraphLaunchOperandSegment(printer, "memories", getMemoryInputs());
   printGraphLaunchOperandSegment(printer, "stream_outputs", getStreamOutputs());
   printer.printOptionalAttrDict(
       (*this)->getAttrs(),
-      {getCalleeAttrName(), "operandSegmentSizes", "resultSegmentSizes"});
+      {getCalleeAttrName(), getSourceMapsAttrName(), "operandSegmentSizes",
+       "resultSegmentSizes"});
   printer << " : ";
   printer.printFunctionalType(getOperandTypes(), getResultTypes());
 }
@@ -1014,7 +1045,29 @@ LogicalResult GraphLaunchOp::verifySymbolUses(SymbolTableCollection &symbols) {
 }
 
 LogicalResult GraphLaunchOp::verify() {
-  if (!(*this)->getParentOfType<ThreadOp>())
+  auto thread = (*this)->getParentOfType<ThreadOp>();
+  if (!thread)
     return emitOpError("must appear inside a dataflow.thread body");
+
+  ArrayAttr sourceMaps = getSourceMaps();
+  if (sourceMaps.size() != getStreamInputs().size())
+    return emitOpError("source_maps count (")
+           << sourceMaps.size() << ") must match stream input binding count ("
+           << getStreamInputs().size() << ')';
+
+  Block &entry = thread.getBody().front();
+  unsigned consumerRank =
+      entry.getNumArguments() - thread.getFunctionType().getNumInputs() - 1;
+  for (auto [index, attr] : llvm::enumerate(sourceMaps)) {
+    AffineMap map = cast<AffineMapAttr>(attr).getValue();
+    if (map.getNumDims() != consumerRank)
+      return emitOpError("stream input source_map #")
+             << index << " has " << map.getNumDims()
+             << " dimensions but consumer thread domain has rank "
+             << consumerRank;
+    if (map.getNumSymbols() != 0)
+      return emitOpError("stream input source_map #")
+             << index << " must not contain symbols";
+  }
   return success();
 }
