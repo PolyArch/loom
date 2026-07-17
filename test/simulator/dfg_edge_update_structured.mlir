@@ -1,16 +1,17 @@
-// RUN: loom-dfg-sim %s --graph edge_update_structured --arg 0=none --memref 1=0,2,4,7,10,12,14,15,16 --memref 2=1,2,0,3,0,4,5,1,2,6,3,7,4,6,7,5 --memref 3=1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 --memref 4=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 --arg 5=2 --arg 6=4 --arg 7=100 --arg 8=8 --arg 9=16 --output %t.update.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-dfg-sim %t.lowered.mlir --graph edge_update_structured --arg 0=2 --arg 1=4 --arg 2=100 --arg 3=8 --arg 4=16 --memref 5=0,2,4,7,10,12,14,15,16 --memref 6=1,2,0,3,0,4,5,1,2,6,3,7,4,6,7,5 --memref 7=1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 --memref 8=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 --output %t.update.json
 // RUN: FileCheck %s --check-prefix=UPDATE < %t.update.json
-// RUN: loom-dfg-sim %s --graph edge_update_find_slot --arg 0=none --memref 1=1,2,0,3,0,4,5,1,2,6,3,7,4,6,7,5 --arg 2=4 --arg 3=7 --arg 4=4 --output %t.find.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph edge_update_find_slot --arg 0=4 --arg 1=7 --arg 2=4 --memref 3=1,2,0,3,0,4,5,1,2,6,3,7,4,6,7,5 --output %t.find.json
 // RUN: FileCheck %s --check-prefix=FIND < %t.find.json
-// RUN: loom-dfg-sim %s --graph effect_switch_store --arg 0=none --memref 1=0,0,0,0,0,0,0,0 --arg 2=2 --arg 3=5 --arg 4=100 --output %t.switch-store.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph effect_switch_store --arg 0=2 --arg 1=5 --arg 2=100 --memref 3=0,0,0,0,0,0,0,0 --output %t.switch-store.json
 // RUN: FileCheck %s --check-prefix=SWITCH-STORE < %t.switch-store.json
-// RUN: loom-dfg-sim %s --graph nested_if_switch_store --arg 0=none --memref 1=0,0,0,0,0,0,0,0 --arg 2=2 --arg 3=5 --arg 4=100 --arg 5=true --output %t.nested-store.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph nested_if_switch_store --arg 0=2 --arg 1=5 --arg 2=100 --arg 3=true --memref 4=0,0,0,0,0,0,0,0 --output %t.nested-store.json
 // RUN: FileCheck %s --check-prefix=NESTED-STORE < %t.nested-store.json
-// RUN: loom-dfg-sim %s --graph while_driven_switch_store --arg 0=none --memref 1=1,2,0,3,0,4,5,1,2,6,3,7,4,6,7,5 --memref 2=0,0,0,0,0,0,0,0 --arg 3=4 --arg 4=7 --arg 5=4 --arg 6=100 --arg 7=true --output %t.while-store.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph while_driven_switch_store --arg 0=4 --arg 1=7 --arg 2=4 --arg 3=100 --arg 4=true --memref 5=1,2,0,3,0,4,5,1,2,6,3,7,4,6,7,5 --memref 6=0,0,0,0,0,0,0,0 --output %t.while-store.json
 // RUN: FileCheck %s --check-prefix=WHILE-STORE < %t.while-store.json
 
 // UPDATE: "final_memory_state": {
-// UPDATE: "arg4": [
+// UPDATE: "arg8": [
 // UPDATE-NEXT: "i32:1",
 // UPDATE-NEXT: "i32:2",
 // UPDATE-NEXT: "i32:3",
@@ -20,8 +21,10 @@
 // UPDATE-NEXT: "i32:7",
 // UPDATE: "graph": "edge_update_structured"
 // UPDATE: "operation_fire_counts": {
-// UPDATE-DAG: "scf.if": 3
-// UPDATE-DAG: "scf.index_switch": 1
+// UPDATE-DAG: "dataflow.stream": 17
+// UPDATE-DAG: "dataflow.demux": 95
+// UPDATE-DAG: "dataflow.mux": 17
+// UPDATE-DAG: "dataflow.load": 20
 // UPDATE-DAG: "dataflow.store": 17
 // UPDATE: "status": "pass"
 // UPDATE: "workload": "edge_update_structured"
@@ -33,7 +36,7 @@
 // FIND: "status": "pass"
 
 // SWITCH-STORE: "final_memory_state": {
-// SWITCH-STORE: "arg1": [
+// SWITCH-STORE: "arg3": [
 // SWITCH-STORE-NEXT: "i32:0",
 // SWITCH-STORE-NEXT: "i32:0",
 // SWITCH-STORE-NEXT: "i32:0",
@@ -41,11 +44,14 @@
 // SWITCH-STORE-NEXT: "i32:0",
 // SWITCH-STORE-NEXT: "i32:100",
 // SWITCH-STORE-NEXT: "i32:0",
-// SWITCH-STORE: "scf.index_switch": 1
+// SWITCH-STORE: "arith.cmpi": 1
+// SWITCH-STORE: "dataflow.demux": 5
+// SWITCH-STORE: "dataflow.mux": 2
+// SWITCH-STORE: "dataflow.store": 1
 // SWITCH-STORE: "status": "pass"
 
 // NESTED-STORE: "final_memory_state": {
-// NESTED-STORE: "arg1": [
+// NESTED-STORE: "arg4": [
 // NESTED-STORE-NEXT: "i32:0",
 // NESTED-STORE-NEXT: "i32:0",
 // NESTED-STORE-NEXT: "i32:0",
@@ -53,12 +59,14 @@
 // NESTED-STORE-NEXT: "i32:0",
 // NESTED-STORE-NEXT: "i32:100",
 // NESTED-STORE-NEXT: "i32:0",
-// NESTED-STORE: "scf.if": 1
-// NESTED-STORE: "scf.index_switch": 1
+// NESTED-STORE: "arith.cmpi": 1
+// NESTED-STORE: "dataflow.demux": 12
+// NESTED-STORE: "dataflow.mux": 5
+// NESTED-STORE: "dataflow.store": 1
 // NESTED-STORE: "status": "pass"
 
 // WHILE-STORE: "final_memory_state": {
-// WHILE-STORE: "arg2": [
+// WHILE-STORE: "arg6": [
 // WHILE-STORE-NEXT: "i32:0",
 // WHILE-STORE-NEXT: "i32:0",
 // WHILE-STORE-NEXT: "i32:0",
@@ -66,14 +74,19 @@
 // WHILE-STORE-NEXT: "i32:0",
 // WHILE-STORE-NEXT: "i32:100",
 // WHILE-STORE-NEXT: "i32:0",
-// WHILE-STORE: "scf.if": 1
-// WHILE-STORE: "scf.index_switch": 1
+// WHILE-STORE-DAG: "arith.cmpi": 7
+// WHILE-STORE-DAG: "dataflow.demux": 28
+// WHILE-STORE-DAG: "dataflow.mux": 11
+// WHILE-STORE-DAG: "dataflow.load": 2
+// WHILE-STORE-DAG: "dataflow.store": 1
 // WHILE-STORE: "status": "pass"
 
 module {
   dataflow.graph.func private @while_driven_switch_store(
-      %ctrl: none, %cols: !llvm.ptr, %output: !llvm.ptr, %row_begin: i32,
-      %row_end: i32, %dst: i32, %value: i32, %enabled: i1) -> none {
+      %ctrl: none, %row_begin: i32, %row_end: i32, %dst: i32, %value: i32,
+      %enabled: i1, %cols: !llvm.ptr, %output: !llvm.ptr) -> none
+      attributes {input_segments = array<i32: 5, 0, 2>,
+                  result_segments = array<i32: 0, 0, 0>} {
     %two = dataflow.constant %ctrl {const_value = 2 : i32} : i32
     %zero = dataflow.constant %ctrl {const_value = 0 : i32} : i32
     %one = dataflow.constant %ctrl {const_value = 1 : i32} : i32
@@ -105,12 +118,9 @@ module {
       ^bb0(%cursor: i32, %write_index: i64, %status: i32):
         scf.yield %cursor : i32
       }
-      %status_index = arith.index_castui %found#2 : i32 to index
-      scf.index_switch %status_index
-      case 1 {
-        scf.yield
-      }
-      default {
+      %skip_store = arith.cmpi eq, %found#2, %one : i32
+      scf.if %skip_store {
+      } else {
         %output_view = builtin.unrealized_conversion_cast %output
             : !llvm.ptr to memref<?xi32>
         %slot = arith.index_cast %found#1 : i64 to index
@@ -122,14 +132,15 @@ module {
   }
 
   dataflow.graph.func private @nested_if_switch_store(
-      %ctrl: none, %output: !llvm.ptr, %selector: index, %slot: index,
-      %value: i32, %enabled: i1) -> none {
+      %ctrl: none, %selector: index, %slot: index, %value: i32, %enabled: i1,
+      %output: !llvm.ptr) -> none
+      attributes {input_segments = array<i32: 4, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %one = dataflow.constant %ctrl {const_value = 1 : index} : index
     scf.if %enabled {
-      scf.index_switch %selector
-      case 1 {
-        scf.yield
-      }
-      default {
+      %skip_store = arith.cmpi eq, %selector, %one : index
+      scf.if %skip_store {
+      } else {
         %output_view = builtin.unrealized_conversion_cast %output
             : !llvm.ptr to memref<?xi32>
         %store_done = dataflow.store %output_view[%slot] %value %ctrl
@@ -140,13 +151,14 @@ module {
   }
 
   dataflow.graph.func private @effect_switch_store(
-      %ctrl: none, %output: !llvm.ptr, %selector: index, %slot: index,
-      %value: i32) -> none {
-    scf.index_switch %selector
-    case 1 {
-      scf.yield
-    }
-    default {
+      %ctrl: none, %selector: index, %slot: index, %value: i32,
+      %output: !llvm.ptr) -> none
+      attributes {input_segments = array<i32: 3, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %one = dataflow.constant %ctrl {const_value = 1 : index} : index
+    %skip_store = arith.cmpi eq, %selector, %one : index
+    scf.if %skip_store {
+    } else {
       %output_view = builtin.unrealized_conversion_cast %output
           : !llvm.ptr to memref<?xi32>
       %store_done = dataflow.store %output_view[%slot] %value %ctrl
@@ -156,8 +168,10 @@ module {
   }
 
   dataflow.graph.func private @edge_update_find_slot(
-      %ctrl: none, %cols: !llvm.ptr, %row_begin: i32, %row_end: i32,
-      %dst: i32) -> (none, i64, i32) {
+      %ctrl: none, %row_begin: i32, %row_end: i32, %dst: i32,
+      %cols: !llvm.ptr) -> (none, i64, i32)
+      attributes {input_segments = array<i32: 3, 0, 1>,
+                  result_segments = array<i32: 2, 0, 0>} {
     %two = dataflow.constant %ctrl {const_value = 2 : i32} : i32
     %zero = dataflow.constant %ctrl {const_value = 0 : i32} : i32
     %one = dataflow.constant %ctrl {const_value = 1 : i32} : i32
@@ -192,18 +206,22 @@ module {
   }
 
   dataflow.graph.func private @edge_update_structured(
-      %ctrl: none, %row_ptr: !llvm.ptr, %cols: !llvm.ptr, %input: !llvm.ptr,
-      %output: !llvm.ptr, %src: i32, %dst: i32, %new_weight: i32,
-      %nodes: i32, %edges: i32) -> none {
+      %ctrl: none, %src: i32, %dst: i32, %new_weight: i32, %nodes: i32,
+      %edges: i32, %row_ptr: !llvm.ptr, %cols: !llvm.ptr, %input: !llvm.ptr,
+      %output: !llvm.ptr) -> none
+      attributes {input_segments = array<i32: 5, 0, 4>,
+                  result_segments = array<i32: 0, 0, 0>} {
     %two = dataflow.constant %ctrl {const_value = 2 : i32} : i32
     %zero = dataflow.constant %ctrl {const_value = 0 : i32} : i32
     %one = dataflow.constant %ctrl {const_value = 1 : i32} : i32
     %zero_0 = dataflow.constant %ctrl {const_value = 0 : i32} : i32
+    %zero_index = dataflow.constant %ctrl {const_value = 0 : index} : index
+    %step_index = dataflow.constant %ctrl {const_value = 1 : index} : index
     %no_edges = arith.cmpi eq, %edges, %zero_0 : i32
     scf.if %no_edges {
     } else {
       %extent = arith.index_cast %edges : i32 to index
-      scf.forall (%i) in (%extent) {
+      scf.for %i = %zero_index to %extent step %step_index {
         %input_view = builtin.unrealized_conversion_cast %input
             : !llvm.ptr to memref<?xi32>
         %value, %load_done = dataflow.load %input_view[%i] %ctrl
@@ -256,12 +274,9 @@ module {
         ^bb0(%cursor: i32, %write_index: i64, %status: i32):
           scf.yield %cursor : i32
         }
-        %status_index = arith.index_castui %found#2 : i32 to index
-        scf.index_switch %status_index
-        case 1 {
-          scf.yield
-        }
-        default {
+        %skip_store = arith.cmpi eq, %found#2, %one : i32
+        scf.if %skip_store {
+        } else {
           %output_view = builtin.unrealized_conversion_cast %output
               : !llvm.ptr to memref<?xi32>
           %slot = arith.index_cast %found#1 : i64 to index

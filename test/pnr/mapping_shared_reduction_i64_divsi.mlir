@@ -1,4 +1,5 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph i64_signed_div --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload i64_signed_div --output %t.mapping.csv --artifact %t.mapping.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph i64_signed_div --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload i64_signed_div --output %t.mapping.csv --artifact %t.mapping.json
 // RUN: FileCheck %s --check-prefix=CSV < %t.mapping.csv
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
 

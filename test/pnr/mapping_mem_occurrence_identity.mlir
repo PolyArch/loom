@@ -1,8 +1,9 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph mixed_mem_resources --hardware-mlir %S/mapping_mem_occurrence_identity.hardware.mlir.in --hardware named_dual_mem_adg --workload named_dual_mem --output %t.named.csv --artifact %t.named.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph mixed_mem_resources --hardware-mlir %S/mapping_mem_occurrence_identity.hardware.mlir.in --hardware named_dual_mem_adg --workload named_dual_mem --output %t.named.csv --artifact %t.named.json
 // RUN: FileCheck %s --check-prefix=NAMED < %t.named.json
 // RUN: loom-mapping-estimate --mapping-artifact %t.named.json --hardware-mlir %S/mapping_mem_occurrence_identity.hardware.mlir.in --output %t.named.estimate.json
 // RUN: FileCheck %s --check-prefix=NAMED-ESTIMATE < %t.named.estimate.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph mixed_mem_resources --hardware-mlir %S/mapping_mem_occurrence_identity.hardware.mlir.in --hardware direct_dual_mem_adg --workload direct_dual_mem --output %t.direct.csv --artifact %t.direct.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph mixed_mem_resources --hardware-mlir %S/mapping_mem_occurrence_identity.hardware.mlir.in --hardware direct_dual_mem_adg --workload direct_dual_mem --output %t.direct.csv --artifact %t.direct.json
 // RUN: FileCheck %s --check-prefix=DIRECT < %t.direct.json
 // RUN: loom-mapping-estimate --mapping-artifact %t.direct.json --hardware-mlir %S/mapping_mem_occurrence_identity.hardware.mlir.in --output %t.direct.estimate.json
 // RUN: FileCheck %s --check-prefix=DIRECT-ESTIMATE < %t.direct.estimate.json

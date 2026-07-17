@@ -1,37 +1,35 @@
-// RUN: loom-dfg-sim %s --graph pointer_memcpy_stream --arg 0=none --arg 1=0 --arg 2=2 --arg 3=1 --arg 4=2 --arg 5=2 --memref 6=1,2,3,4 --memref 7=0,0,0,0,0,0 --output %t.json
-// RUN: FileCheck %s < %t.json
-// RUN: loom-dfg-sim %s --graph pointer_memcpy_direct --arg 0=none --arg 0=none --memref 1=1,2,3,4 --memref 2=0,0,0,0 --arg 3=2 --arg 3=2 --output %t.direct.json
-// RUN: FileCheck %s --check-prefix=DIRECT < %t.direct.json
-// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered-direct.mlir
-// RUN: FileCheck %s --check-prefix=DIRECT-LOWERED-IR < %t.lowered-direct.mlir
-// RUN: loom-dfg-sim %t.lowered-direct.mlir --graph pointer_memcpy_direct --arg 0=none --arg 0=none --memref 1=1,2,3,4 --memref 2=0,0,0,0 --arg 3=2 --output %t.direct-lowered.json
-// RUN: FileCheck %s --check-prefix=DIRECT-LOWERED < %t.direct-lowered.json
-// RUN: FileCheck %s --check-prefix=DIRECT-OFFSET-LOWERED-IR < %t.lowered-direct.mlir
-// RUN: loom-dfg-sim %t.lowered-direct.mlir --graph pointer_memcpy_direct_offset --arg 0=none --arg 0=none --memref 1=1,2,3,4 --memref 2=0,0,0,0,0,0 --arg 3=2 --arg 4=2 --output %t.direct-offset-lowered.json
-// RUN: FileCheck %s --check-prefix=DIRECT-OFFSET-LOWERED < %t.direct-offset-lowered.json
-// RUN: loom-dfg-sim %s --graph pointer_memcpy_structured_if --arg 0=none --memref 1=5,6,7 --memref 2=0,0,0 --arg 3=2 --arg 4=true --output %t.structured-if.json
-// RUN: FileCheck %s --check-prefix=STRUCTURED-IF < %t.structured-if.json
 // RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
-// RUN: loom-dfg-sim %t.lowered.mlir --graph pointer_memcpy_structured_i32_gep --arg 0=none --arg 1=2 --arg 2=true --arg 3=1 --memref 4=10,11,12,13,20,21,22,23 --memref 5=0,0,0,0 --output %t.structured-i32-gep.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph pointer_memcpy_stream --arg 0=0 --arg 1=2 --arg 2=1 --arg 3=2 --arg 4=2 --memref 5=1,2,3,4 --memref 6=0,0,0,0,0,0 --output %t.json
+// RUN: FileCheck %s < %t.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph pointer_memcpy_direct --arg 0=2 --memref 1=1,2,3,4 --memref 2=0,0,0,0 --output %t.direct.json
+// RUN: FileCheck %s --check-prefix=DIRECT < %t.direct.json
+// RUN: FileCheck %s --check-prefix=DIRECT-LOWERED-IR < %t.lowered.mlir
+// RUN: FileCheck %s --check-prefix=DIRECT-OFFSET-LOWERED-IR < %t.lowered.mlir
+// RUN: loom-dfg-sim %t.lowered.mlir --graph pointer_memcpy_direct_offset --arg 0=2 --arg 1=2 --memref 2=1,2,3,4 --memref 3=0,0,0,0,0,0 --output %t.direct-offset-lowered.json
+// RUN: FileCheck %s --check-prefix=DIRECT-OFFSET-LOWERED < %t.direct-offset-lowered.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph pointer_memcpy_structured_if --arg 0=2 --arg 1=true --memref 2=5,6,7 --memref 3=0,0,0 --output %t.structured-if.json
+// RUN: FileCheck %s --check-prefix=STRUCTURED-IF < %t.structured-if.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph pointer_memcpy_structured_i32_gep --arg 0=2 --arg 1=true --arg 2=1 --memref 3=10,11,12,13,20,21,22,23 --memref 4=0,0,0,0 --output %t.structured-i32-gep.json
 // RUN: FileCheck %s --check-prefix=STRUCTURED-I32-GEP < %t.structured-i32-gep.json
-// RUN: loom-dfg-sim %s --graph pointer_memcpy_stream --arg 0=none --arg 1=0 --arg 2=2 --arg 3=1 --arg 4=2 --arg 5=2 --memref 6=1,2,3,4 --memref 7=0,0,0 --output %t.oob.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph pointer_memcpy_stream --arg 0=0 --arg 1=2 --arg 2=1 --arg 3=2 --arg 4=2 --memref 5=1,2,3,4 --memref 6=0,0,0 --output %t.oob.json
 // RUN: FileCheck %s --check-prefix=OOB < %t.oob.json
-// RUN: loom-dfg-sim %s --graph pointer_memcpy_direct --arg 0=none --memref 1=1,2 --memref 2=0,0 --arg 3=-1 --output %t.negative.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph pointer_memcpy_direct --arg 0=-1 --memref 1=1,2 --memref 2=0,0 --output %t.negative.json
 // RUN: FileCheck %s --check-prefix=NEGATIVE < %t.negative.json
-// RUN: loom-dfg-sim %s --graph pointer_memcpy_direct --arg 0=none --memref 1=1,2 --memref 2=0,0,0 --arg 3=3 --output %t.srcoob.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph pointer_memcpy_direct --arg 0=3 --memref 1=1,2 --memref 2=0,0,0 --output %t.srcoob.json
 // RUN: FileCheck %s --check-prefix=SRCOOB < %t.srcoob.json
 
 // CHECK-DAG: "kind": "dfg_sim_report"
 // CHECK-DAG: "graph": "pointer_memcpy_stream"
 // CHECK-DAG: "status": "pass"
 // CHECK-DAG: "dynamic_work_items": 2
-// CHECK-DAG: "llvm.intr.memcpy": 2
-// CHECK-DAG: "arg6": [
+// CHECK-DAG: "dataflow.load": 4
+// CHECK-DAG: "dataflow.store": 4
+// CHECK-DAG: "arg5": [
 // CHECK-DAG: "i8:1"
 // CHECK-DAG: "i8:2"
 // CHECK-DAG: "i8:3"
 // CHECK-DAG: "i8:4"
-// CHECK-DAG: "arg7": [
+// CHECK-DAG: "arg6": [
 // CHECK-DAG: "i8:1"
 // CHECK-DAG: "i8:2"
 // CHECK-DAG: "i8:3"
@@ -39,37 +37,29 @@
 // CHECK-DAG: "i8:0"
 // CHECK-DAG: "i8:0"
 
-// DIRECT: "dynamic_work_items": 2
+// DIRECT: "dynamic_work_items": 1
 // DIRECT: "final_memory_state": {
 // DIRECT: "arg2": [
 // DIRECT-NEXT: "i8:1",
 // DIRECT-NEXT: "i8:2",
 // DIRECT-NEXT: "i8:0",
 // DIRECT-NEXT: "i8:0"
-// DIRECT: "llvm.intr.memcpy": 2
+// DIRECT: "dataflow.load": 2
+// DIRECT: "dataflow.store": 2
 // DIRECT: "status": "pass"
 
 // DIRECT-LOWERED-IR-LABEL: dataflow.graph.func private @pointer_memcpy_direct
-// DIRECT-LOWERED-IR: dataflow.stream
+// DIRECT-LOWERED-IR: arith.cmpi ult
+// DIRECT-LOWERED-IR: dataflow.carry
 // DIRECT-LOWERED-IR: dataflow.load
 // DIRECT-LOWERED-IR: dataflow.store
 // DIRECT-LOWERED-IR-NOT: llvm.intr.memcpy
+// DIRECT-LOWERED-IR-NOT: scf.while
 // DIRECT-LOWERED-IR: dataflow.graph.return
 
-// DIRECT-LOWERED: "dynamic_work_items": 2
-// DIRECT-LOWERED: "final_memory_state": {
-// DIRECT-LOWERED: "arg2": [
-// DIRECT-LOWERED-NEXT: "i8:1",
-// DIRECT-LOWERED-NEXT: "i8:2",
-// DIRECT-LOWERED-NEXT: "i8:0",
-// DIRECT-LOWERED-NEXT: "i8:0"
-// DIRECT-LOWERED: "dataflow.load": 2
-// DIRECT-LOWERED: "dataflow.store": 2
-// DIRECT-LOWERED-NOT: "llvm.intr.memcpy"
-// DIRECT-LOWERED: "status": "pass"
-
 // DIRECT-OFFSET-LOWERED-IR-LABEL: dataflow.graph.func private @pointer_memcpy_direct_offset
-// DIRECT-OFFSET-LOWERED-IR: dataflow.stream
+// DIRECT-OFFSET-LOWERED-IR: arith.cmpi ult
+// DIRECT-OFFSET-LOWERED-IR: dataflow.carry
 // DIRECT-OFFSET-LOWERED-IR: dataflow.invariant
 // DIRECT-OFFSET-LOWERED-IR: arith.addi
 // DIRECT-OFFSET-LOWERED-IR: dataflow.load
@@ -77,9 +67,9 @@
 // DIRECT-OFFSET-LOWERED-IR-NOT: llvm.intr.memcpy
 // DIRECT-OFFSET-LOWERED-IR: dataflow.graph.return
 
-// DIRECT-OFFSET-LOWERED: "dynamic_work_items": 2
+// DIRECT-OFFSET-LOWERED: "dynamic_work_items": 1
 // DIRECT-OFFSET-LOWERED: "final_memory_state": {
-// DIRECT-OFFSET-LOWERED: "arg2": [
+// DIRECT-OFFSET-LOWERED: "arg3": [
 // DIRECT-OFFSET-LOWERED-NEXT: "i8:0",
 // DIRECT-OFFSET-LOWERED-NEXT: "i8:0",
 // DIRECT-OFFSET-LOWERED-NEXT: "i8:1",
@@ -93,16 +83,18 @@
 
 // STRUCTURED-IF: "dynamic_work_items": 1
 // STRUCTURED-IF: "final_memory_state": {
-// STRUCTURED-IF: "arg2": [
+// STRUCTURED-IF: "arg3": [
 // STRUCTURED-IF-NEXT: "i8:5",
 // STRUCTURED-IF-NEXT: "i8:6",
 // STRUCTURED-IF-NEXT: "i8:0"
-// STRUCTURED-IF: "llvm.intr.memcpy": 1
-// STRUCTURED-IF: "scf.if": 1
+// STRUCTURED-IF: "dataflow.load": 2
+// STRUCTURED-IF: "dataflow.store": 2
+// STRUCTURED-IF-NOT: "llvm.intr.memcpy"
+// STRUCTURED-IF-NOT: "scf.if"
 // STRUCTURED-IF: "status": "pass"
 
 // STRUCTURED-I32-GEP: "final_memory_state": {
-// STRUCTURED-I32-GEP: "arg5": [
+// STRUCTURED-I32-GEP: "arg4": [
 // STRUCTURED-I32-GEP-NEXT: "i8:20",
 // STRUCTURED-I32-GEP-NEXT: "i8:21",
 // STRUCTURED-I32-GEP-NEXT: "i8:0",
@@ -111,45 +103,50 @@
 // STRUCTURED-I32-GEP: "status": "pass"
 
 // OOB-DAG: "status": "blocked"
-// OOB-DAG: "llvm.intr.memcpy destination range is out of range"
-// OOB-DAG: "llvm.intr.memcpy": 1
-// OOB-DAG: "arg7": [
+// OOB-DAG: "dataflow.store address is out of range"
+// OOB-DAG: "dataflow.load": 4
+// OOB-DAG: "dataflow.store": 3
+// OOB-DAG: "arg6": [
 // OOB-DAG: "i8:1"
 // OOB-DAG: "i8:2"
-// OOB-DAG: "i8:0"
+// OOB-DAG: "i8:3"
 
 // NEGATIVE-DAG: "status": "blocked"
-// NEGATIVE-DAG: "llvm.intr.memcpy length is negative"
-// NEGATIVE-NOT: "llvm.intr.memcpy": 1
+// NEGATIVE-DAG: "graph did not fire its retirement frontier"
+// NEGATIVE-DAG: "dataflow.load address is out of range"
+// NEGATIVE-DAG: "dataflow.load": 2
+// NEGATIVE-DAG: "dataflow.store": 2
+// NEGATIVE-NOT: maximum event steps reached
 
 // SRCOOB-DAG: "status": "blocked"
-// SRCOOB-DAG: "llvm.intr.memcpy source range is out of range"
-// SRCOOB-NOT: "llvm.intr.memcpy": 1
+// SRCOOB-DAG: "dataflow.load address is out of range"
+// SRCOOB-DAG: "dataflow.load": 2
+// SRCOOB-DAG: "dataflow.store": 2
 
 module {
   dataflow.graph.func private @pointer_memcpy_stream(
       %ctrl: none, %lb: i32, %ub: i32, %step: i32, %copy_bytes: i32,
-      %dst_stride: i32, %src: !llvm.ptr, %dst: !llvm.ptr) -> none {
-    %idx, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i32
-    %bytes = dataflow.invariant %rwc, %copy_bytes : i32
-    %stride = dataflow.invariant %rwc, %dst_stride : i32
-    %src_cur = dataflow.carry %rwc, %src, %src_next : !llvm.ptr
-    %src_live_cond, %src_live = dataflow.gate %rwc, %src_cur : !llvm.ptr
-    %dst_cur = dataflow.carry %rwc, %dst, %dst_next : !llvm.ptr
-    %dst_live_cond, %dst_live = dataflow.gate %rwc, %dst_cur : !llvm.ptr
-    "llvm.intr.memcpy"(%dst_live, %src_live, %bytes)
-      <{arg_attrs = [{llvm.align = 1 : i64}, {llvm.align = 1 : i64}, {}],
-         isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i32) -> ()
-    %src_next = llvm.getelementptr inbounds|nuw %src_live[%bytes]
-      : (!llvm.ptr, i32) -> !llvm.ptr, i8
-    %dst_next = llvm.getelementptr inbounds|nuw %dst_live[%stride]
-      : (!llvm.ptr, i32) -> !llvm.ptr, i8
+      %dst_stride: i32, %src: !llvm.ptr, %dst: !llvm.ptr) -> none
+      attributes {input_segments = array<i32: 5, 0, 2>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    scf.for %i = %lb to %ub step %step : i32 {
+      %src_offset = arith.muli %i, %copy_bytes : i32
+      %dst_offset = arith.muli %i, %dst_stride : i32
+      %src_at = llvm.getelementptr inbounds|nuw %src[%src_offset]
+          : (!llvm.ptr, i32) -> !llvm.ptr, i8
+      %dst_at = llvm.getelementptr inbounds|nuw %dst[%dst_offset]
+          : (!llvm.ptr, i32) -> !llvm.ptr, i8
+      "llvm.intr.memcpy"(%dst_at, %src_at, %copy_bytes)
+        <{arg_attrs = [{llvm.align = 1 : i64}, {llvm.align = 1 : i64}, {}],
+           isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i32) -> ()
+    }
     dataflow.graph.return %ctrl : none
   }
 
   dataflow.graph.func private @pointer_memcpy_direct(
-      %ctrl: none, %src: !llvm.ptr, %dst: !llvm.ptr, %copy_bytes: i32)
-      -> none {
+      %ctrl: none, %copy_bytes: i32, %src: !llvm.ptr, %dst: !llvm.ptr)
+      -> none attributes {input_segments = array<i32: 1, 0, 2>,
+                          result_segments = array<i32: 0, 0, 0>} {
     "llvm.intr.memcpy"(%dst, %src, %copy_bytes)
       <{arg_attrs = [{llvm.align = 1 : i64}, {llvm.align = 1 : i64}, {}],
          isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i32) -> ()
@@ -157,8 +154,10 @@ module {
   }
 
   dataflow.graph.func private @pointer_memcpy_direct_offset(
-      %ctrl: none, %src: !llvm.ptr, %dst: !llvm.ptr, %copy_bytes: i32,
-      %dst_offset: i32) -> none {
+      %ctrl: none, %copy_bytes: i32, %dst_offset: i32,
+      %src: !llvm.ptr, %dst: !llvm.ptr) -> none
+      attributes {input_segments = array<i32: 2, 0, 2>,
+                  result_segments = array<i32: 0, 0, 0>} {
     %dst_at = llvm.getelementptr inbounds|nuw %dst[%dst_offset]
         : (!llvm.ptr, i32) -> !llvm.ptr, i8
     "llvm.intr.memcpy"(%dst_at, %src, %copy_bytes)
@@ -168,8 +167,10 @@ module {
   }
 
   dataflow.graph.func private @pointer_memcpy_structured_if(
-      %ctrl: none, %src: !llvm.ptr, %dst: !llvm.ptr, %copy_bytes: i32,
-      %do_copy: i1) -> none {
+      %ctrl: none, %copy_bytes: i32, %do_copy: i1,
+      %src: !llvm.ptr, %dst: !llvm.ptr) -> none
+      attributes {input_segments = array<i32: 2, 0, 2>,
+                  result_segments = array<i32: 0, 0, 0>} {
     scf.if %do_copy {
       "llvm.intr.memcpy"(%dst, %src, %copy_bytes)
         <{arg_attrs = [{llvm.align = 1 : i64}, {llvm.align = 1 : i64}, {}],
@@ -180,7 +181,9 @@ module {
 
   dataflow.graph.func private @pointer_memcpy_structured_i32_gep(
       %ctrl: none, %copy_bytes: i32, %do_copy: i1, %elem_offset: i32,
-      %src: !llvm.ptr, %dst: !llvm.ptr) -> none {
+      %src: !llvm.ptr, %dst: !llvm.ptr) -> none
+      attributes {input_segments = array<i32: 3, 0, 2>,
+                  result_segments = array<i32: 0, 0, 0>} {
     scf.if %do_copy {
       %src_at = llvm.getelementptr %src[%elem_offset]
           : (!llvm.ptr, i32) -> !llvm.ptr, i32

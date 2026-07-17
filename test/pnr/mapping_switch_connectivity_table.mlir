@@ -1,8 +1,9 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph switch_route --hardware-mlir %s --hardware switch_forbidden_adg --workload switch_forbidden --output %t.forbidden.csv --artifact %t.forbidden.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph switch_route --hardware-mlir %s --hardware switch_forbidden_adg --workload switch_forbidden --output %t.forbidden.csv --artifact %t.forbidden.json
 // RUN: FileCheck %s --check-prefix=FORBID-CSV < %t.forbidden.csv
 // RUN: FileCheck %s --check-prefix=FORBID-JSON < %t.forbidden.json
 
-// RUN: loom-pnr-map --dfg-mlir %s --graph switch_route --hardware-mlir %s --hardware switch_allowed_adg --workload switch_allowed --output %t.allowed.csv --artifact %t.allowed.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph switch_route --hardware-mlir %s --hardware switch_allowed_adg --workload switch_allowed --output %t.allowed.csv --artifact %t.allowed.json
 // RUN: FileCheck %s --check-prefix=ALLOW-CSV < %t.allowed.csv
 // RUN: FileCheck %s --check-prefix=ALLOW-JSON < %t.allowed.json
 

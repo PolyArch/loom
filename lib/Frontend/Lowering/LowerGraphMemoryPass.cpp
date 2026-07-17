@@ -1008,14 +1008,11 @@ bool tryRewriteNestedMemcpy(::mlir::LLVM::MemcpyOp memcpy,
   bool useStaticBindings =
       src && dst && !src->ordinalStream && !dst->ordinalStream;
 
-  ::mlir::Value lower =
-      getDataflowConstant(builder, builder.getIndexType(), ctx.ctrl, 0, loc);
-  ::mlir::Value step =
-      getDataflowConstant(builder, builder.getIndexType(), ctx.ctrl, 1, loc);
-  ::mlir::Value upper = getIndexFromInt(builder, ctx.indexCastCache,
-                                        memcpy.getLen(), loc, memcpy,
-                                        /*cacheResult=*/false);
-  if (!lower || !step || !upper)
+  ::mlir::Value zero =
+      getDataflowConstant(builder, lenType, ctx.ctrl, 0, loc);
+  ::mlir::Value one =
+      getDataflowConstant(builder, lenType, ctx.ctrl, 1, loc);
+  if (!zero || !one)
     return false;
 
   ::mlir::Value srcMem = getMemrefBridge(
@@ -1049,12 +1046,39 @@ bool tryRewriteNestedMemcpy(::mlir::LLVM::MemcpyOp memcpy,
       ((src->intIndex && !srcOffset) || (dst->intIndex && !dstOffset)))
     return false;
 
-  auto buildBody = [&](::mlir::OpBuilder &bodyBuilder, ::mlir::Location bodyLoc,
-                       ::mlir::Value iv, ::mlir::ValueRange) {
+  auto buildBefore = [&](::mlir::OpBuilder &bodyBuilder,
+                         ::mlir::Location bodyLoc,
+                         ::mlir::ValueRange arguments) {
+    ::mlir::Value iv = arguments.front();
+    ::mlir::Value execution = arguments[1];
+    auto synchronized = ::dataflow::SyncOp::create(
+        bodyBuilder, bodyLoc,
+        ::mlir::TypeRange{iv.getType(), bodyBuilder.getNoneType()},
+        ::mlir::ValueRange{iv, execution});
+    iv = synchronized.getOutputs()[0];
+    execution = synchronized.getOutputs()[1];
+    ::mlir::Value active = ::mlir::arith::CmpIOp::create(
+        bodyBuilder, bodyLoc, ::mlir::arith::CmpIPredicate::ult, iv,
+        memcpy.getLen());
+    ::mlir::scf::ConditionOp::create(
+        bodyBuilder, bodyLoc, active,
+        ::mlir::ValueRange{iv, execution});
+  };
+  auto buildAfter = [&](::mlir::OpBuilder &bodyBuilder,
+                        ::mlir::Location bodyLoc,
+    ::mlir::ValueRange arguments) {
+    ::mlir::Value iv = arguments.front();
+    ::mlir::Value execution = arguments[1];
+    ::mlir::Value address = iv;
+    if (!::llvm::isa<::mlir::IndexType>(iv.getType()))
+      address = ::mlir::arith::IndexCastUIOp::create(
+                    bodyBuilder, bodyLoc, bodyBuilder.getIndexType(), iv)
+                    .getResult();
     auto addOffset = [&](::mlir::Value offset) {
       if (!offset)
-        return iv;
-      return ::mlir::arith::AddIOp::create(bodyBuilder, bodyLoc, iv, offset)
+        return address;
+      return ::mlir::arith::AddIOp::create(bodyBuilder, bodyLoc, address,
+                                           offset)
           .getResult();
     };
     ::mlir::Value srcAddress = addOffset(srcOffset);
@@ -1062,16 +1086,21 @@ bool tryRewriteNestedMemcpy(::mlir::LLVM::MemcpyOp memcpy,
     auto load = ::dataflow::LoadOp::create(
         bodyBuilder, bodyLoc, /*data=*/byteTy,
         /*done=*/bodyBuilder.getNoneType(), /*mem=*/srcMem,
-        /*addr=*/srcAddress, /*ctrl=*/ctx.ctrl);
-    ::dataflow::StoreOp::create(bodyBuilder, bodyLoc,
-                                /*done=*/bodyBuilder.getNoneType(),
-                                /*mem=*/dstMem, /*addr=*/dstAddress,
-                                /*data=*/load.getData(),
-                                /*ctrl=*/load.getDone());
-    ::mlir::scf::YieldOp::create(bodyBuilder, bodyLoc);
+        /*addr=*/srcAddress, /*ctrl=*/execution);
+    auto store = ::dataflow::StoreOp::create(
+        bodyBuilder, bodyLoc, /*done=*/bodyBuilder.getNoneType(),
+        /*mem=*/dstMem, /*addr=*/dstAddress, /*data=*/load.getData(),
+        /*ctrl=*/load.getDone());
+    ::mlir::Value next = ::mlir::arith::AddIOp::create(bodyBuilder, bodyLoc,
+                                                       iv, one);
+    ::mlir::scf::YieldOp::create(
+        bodyBuilder, bodyLoc,
+        ::mlir::ValueRange{next, store.getDone()});
   };
-  ::mlir::scf::ForOp::create(builder, loc, lower, upper, step,
-                             ::mlir::ValueRange{}, buildBody);
+  ::mlir::scf::WhileOp::create(
+      builder, loc,
+      ::mlir::TypeRange{lenType, builder.getNoneType()},
+      ::mlir::ValueRange{zero, ctx.ctrl}, buildBefore, buildAfter);
   memcpy->erase();
   if (useStaticBindings) {
     if (src->gepToErase)
@@ -1088,11 +1117,19 @@ bool tryRewriteNestedMemcpy(::mlir::LLVM::MemcpyOp memcpy,
 
 bool tryRewriteDirectMemcpy(::mlir::LLVM::MemcpyOp memcpy,
                             ::mlir::OpBuilder &builder, RewriteCtx &ctx) {
-  if (memcpy.getIsVolatile())
-    return false;
   ::mlir::Type lenType = memcpy.getLen().getType();
   if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(lenType))
     return false;
+
+  auto pointerRoot = [](mlir::Value pointer) {
+    if (auto gep = pointer.getDefiningOp<::mlir::LLVM::GEPOp>())
+      return gep.getBase();
+    return pointer;
+  };
+  if (pointerRoot(memcpy.getSrc()) == pointerRoot(memcpy.getDst())) {
+    memcpy.emitError("llvm.intr.memcpy overlapping ranges are unsupported");
+    return false;
+  }
 
   std::optional<DirectMemcpyPtrResolution> src =
       resolveDirectMemcpyPointer(memcpy.getSrc(), ctx.graph);
@@ -1111,16 +1148,6 @@ bool tryRewriteDirectMemcpy(::mlir::LLVM::MemcpyOp memcpy,
   ::mlir::OpBuilder::InsertionGuard g(builder);
   builder.setInsertionPoint(memcpy);
 
-  ::mlir::Value zero = getDataflowConstant(builder, lenType, ctx.ctrl, 0, loc);
-  ::mlir::Value one = getDataflowConstant(builder, lenType, ctx.ctrl, 1, loc);
-  if (!zero || !one)
-    return false;
-
-  auto copyStream = ::dataflow::StreamOp::create(
-      builder, loc, lenType, builder.getI1Type(), /*init=*/zero,
-      /*limit=*/memcpy.getLen(), /*step=*/one, ::dataflow::StreamStepKind::Add,
-      ::mlir::arith::CmpIPredicate::slt);
-
   ::mlir::Type byteTy = builder.getI8Type();
   ::mlir::Value srcMem =
       getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, src->basePtr, byteTy,
@@ -1128,37 +1155,75 @@ bool tryRewriteDirectMemcpy(::mlir::LLVM::MemcpyOp memcpy,
   ::mlir::Value dstMem =
       getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, dst->basePtr, byteTy,
                       loc, /*topLevel=*/true, memcpy);
-  ::mlir::Value index = getIndexFromInt(builder, ctx.indexCastCache,
-                                        copyStream.getIv(), loc, memcpy);
-  if (!srcMem || !dstMem || !index)
-    return false;
-  auto addOffset = [&](::mlir::Value baseIndex,
-                       ::mlir::Value offset) -> ::mlir::Value {
+  ::mlir::Value zero =
+      getDataflowConstant(builder, lenType, ctx.ctrl, 0, loc);
+  ::mlir::Value one =
+      getDataflowConstant(builder, lenType, ctx.ctrl, 1, loc);
+  auto materializeOffset = [&](::mlir::Value offset) -> ::mlir::Value {
     if (!offset)
-      return baseIndex;
-    ::mlir::Value offsetRaw = ::dataflow::InvariantOp::create(
-                                  builder, loc, copyStream.getPhase(), offset)
-                                  .getOutput();
-    offset = projectStreamValue(builder, copyStream, offsetRaw, loc);
-    ::mlir::Value offsetIndex =
-        getIndexFromInt(builder, ctx.indexCastCache, offset, loc, memcpy);
-    if (!offsetIndex)
       return {};
-    return ::mlir::arith::AddIOp::create(builder, loc, baseIndex, offsetIndex)
-        .getResult();
+    return getIndexFromInt(builder, ctx.indexCastCache, offset, loc, memcpy,
+                           /*cacheResult=*/false);
   };
-  ::mlir::Value srcIndex = addOffset(index, src->offset);
-  ::mlir::Value dstIndex = addOffset(index, dst->offset);
-  if (!srcIndex || !dstIndex)
+  ::mlir::Value srcOffset = materializeOffset(src->offset);
+  ::mlir::Value dstOffset = materializeOffset(dst->offset);
+  if (!srcMem || !dstMem || !zero || !one ||
+      (src->offset && !srcOffset) || (dst->offset && !dstOffset))
     return false;
 
-  auto load = ::dataflow::LoadOp::create(
-      builder, loc, /*data=*/byteTy, /*done=*/builder.getNoneType(),
-      /*mem=*/srcMem, /*addr=*/srcIndex, /*ctrl=*/ctx.ctrl);
-  ::dataflow::StoreOp::create(builder, loc, /*done=*/builder.getNoneType(),
-                              /*mem=*/dstMem, /*addr=*/dstIndex,
-                              /*data=*/load.getData(),
-                              /*ctrl=*/load.getDone());
+  auto buildBefore = [&](::mlir::OpBuilder &bodyBuilder,
+                         ::mlir::Location bodyLoc,
+                         ::mlir::ValueRange arguments) {
+    ::mlir::Value iv = arguments.front();
+    ::mlir::Value execution = arguments[1];
+    auto synchronized = ::dataflow::SyncOp::create(
+        bodyBuilder, bodyLoc,
+        ::mlir::TypeRange{iv.getType(), bodyBuilder.getNoneType()},
+        ::mlir::ValueRange{iv, execution});
+    iv = synchronized.getOutputs()[0];
+    execution = synchronized.getOutputs()[1];
+    ::mlir::Value active = ::mlir::arith::CmpIOp::create(
+        bodyBuilder, bodyLoc, ::mlir::arith::CmpIPredicate::ult, iv,
+        memcpy.getLen());
+    ::mlir::scf::ConditionOp::create(
+        bodyBuilder, bodyLoc, active,
+        ::mlir::ValueRange{iv, execution});
+  };
+  auto buildAfter = [&](::mlir::OpBuilder &bodyBuilder,
+                        ::mlir::Location bodyLoc,
+    ::mlir::ValueRange arguments) {
+    ::mlir::Value iv = arguments.front();
+    ::mlir::Value execution = arguments[1];
+    ::mlir::Value address = iv;
+    if (!::llvm::isa<::mlir::IndexType>(iv.getType()))
+      address = ::mlir::arith::IndexCastUIOp::create(
+                    bodyBuilder, bodyLoc, bodyBuilder.getIndexType(), iv)
+                    .getResult();
+    auto addOffset = [&](::mlir::Value offset) {
+      if (!offset)
+        return address;
+      return ::mlir::arith::AddIOp::create(bodyBuilder, bodyLoc, address,
+                                           offset)
+          .getResult();
+    };
+    auto load = ::dataflow::LoadOp::create(
+        bodyBuilder, bodyLoc, /*data=*/byteTy,
+        /*done=*/bodyBuilder.getNoneType(), /*mem=*/srcMem,
+        /*addr=*/addOffset(srcOffset), /*ctrl=*/execution);
+    auto store = ::dataflow::StoreOp::create(
+        bodyBuilder, bodyLoc, /*done=*/bodyBuilder.getNoneType(),
+        /*mem=*/dstMem, /*addr=*/addOffset(dstOffset),
+        /*data=*/load.getData(), /*ctrl=*/load.getDone());
+    ::mlir::Value next = ::mlir::arith::AddIOp::create(bodyBuilder, bodyLoc,
+                                                       iv, one);
+    ::mlir::scf::YieldOp::create(
+        bodyBuilder, bodyLoc,
+        ::mlir::ValueRange{next, store.getDone()});
+  };
+  ::mlir::scf::WhileOp::create(
+      builder, loc,
+      ::mlir::TypeRange{lenType, builder.getNoneType()},
+      ::mlir::ValueRange{zero, ctx.ctrl}, buildBefore, buildAfter);
   memcpy->erase();
   if (src->gepToErase && src->gepToErase->use_empty())
     src->gepToErase->erase();
@@ -1267,8 +1332,12 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
 bool tryRewriteMemcpy(::mlir::Operation *op, bool topLevel,
                       ::mlir::OpBuilder &builder, RewriteCtx &ctx) {
   auto memcpy = ::llvm::dyn_cast<::mlir::LLVM::MemcpyOp>(op);
-  if (!memcpy || memcpy.getIsVolatile())
+  if (!memcpy)
     return false;
+  if (memcpy.getIsVolatile()) {
+    memcpy.emitError("volatile llvm.intr.memcpy is unsupported");
+    return false;
+  }
   if (!topLevel)
     return tryRewriteNestedMemcpy(memcpy, builder, ctx);
 
@@ -1566,11 +1635,13 @@ checkNormalizedMemoryEffects(::mlir::ModuleOp module) {
   ::mlir::OwningOpRef<::mlir::ModuleOp> scratch(
       ::mlir::cast<::mlir::ModuleOp>(module->clone()));
   ::mlir::OpBuilder builder(module.getContext());
-  for (auto graph : scratch->getOps<::dataflow::GraphFuncOp>()) {
+  ::llvm::SmallVector<::dataflow::GraphFuncOp, 8> graphs;
+  scratch->walk([&](::dataflow::GraphFuncOp graph) { graphs.push_back(graph); });
+  for (auto graph : graphs) {
     if (!graph.isExternal())
       (void)rewriteOneGraph(graph, builder);
   }
-  for (auto graph : scratch->getOps<::dataflow::GraphFuncOp>()) {
+  for (auto graph : graphs) {
     if (!graph.isExternal() &&
         ::mlir::failed(checkResidualMemoryEffects(graph)))
       return ::mlir::failure();
@@ -1613,8 +1684,8 @@ struct LowerGraphMemoryPass
     }
 
     ::llvm::SmallVector<::dataflow::GraphFuncOp, 8> graphs;
-    for (auto graph : module.getOps<::dataflow::GraphFuncOp>())
-      graphs.push_back(graph);
+    module.walk(
+        [&](::dataflow::GraphFuncOp graph) { graphs.push_back(graph); });
 
     for (::dataflow::GraphFuncOp graph : graphs) {
       if (graph.isExternal())

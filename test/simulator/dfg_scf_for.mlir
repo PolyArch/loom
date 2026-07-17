@@ -1,40 +1,47 @@
-// RUN: loom-dfg-sim %s --graph structured_for_sum --arg 0=none --arg 1=0 --arg 2=4 --arg 3=1 --arg 4=10 --arg 5=3 --output %t.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_sum --arg 0=0 --arg 1=4 --arg 2=1 --arg 3=10 --arg 4=3 --output %t.json
 // RUN: FileCheck %s < %t.json
-// RUN: loom-dfg-sim %s --graph structured_if_scalar --arg 0=none --arg 1=true --arg 2=7 --arg 3=5 --output %t.if.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_if_scalar --arg 0=true --arg 1=7 --arg 2=5 --output %t.if.json
 // RUN: FileCheck %s --check-prefix=IF < %t.if.json
-// RUN: loom-dfg-sim %s --graph structured_if_waits_for_delayed_capture --arg 0=none --arg 1=true --arg 2=7 --output %t.if_wait.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_if_waits_for_delayed_capture --arg 0=true --arg 1=7 --output %t.if_wait.json
 // RUN: FileCheck %s --check-prefix=IF-WAIT < %t.if_wait.json
-// RUN: loom-dfg-sim %s --graph structured_if_effect_batched --arg 0=none --arg 0=none --arg 1=true --arg 1=true --arg 2=0 --arg 2=1 --memref 3=0,0 --arg 4=10 --arg 4=20 --output %t.if_effect_batched.json
-// RUN: FileCheck %s --check-prefix=IF-EFFECT-BATCHED < %t.if_effect_batched.json
-// RUN: loom-dfg-sim %s --graph structured_for_nested_if --arg 0=none --arg 1=0 --arg 2=4 --arg 3=1 --arg 4=10 --arg 5=3 --arg 6=true --output %t.nested_if.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_if_effect_batched --arg 0=true --arg 1=0 --arg 2=10 --memref 3=0,0 --output %t.if_effect_first.json
+// RUN: FileCheck %s --check-prefix=IF-EFFECT-FIRST < %t.if_effect_first.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_if_effect_batched --arg 0=true --arg 1=1 --arg 2=20 --memref 3=10,0 --output %t.if_effect_second.json
+// RUN: FileCheck %s --check-prefix=IF-EFFECT-SECOND < %t.if_effect_second.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_nested_if --arg 0=0 --arg 1=4 --arg 2=1 --arg 3=10 --arg 4=3 --arg 5=true --output %t.nested_if.json
 // RUN: FileCheck %s --check-prefix=NESTED-IF < %t.nested_if.json
-// RUN: loom-dfg-sim %s --graph structured_for_scalar_with_parallel_stream --arg 0=none --arg 1=0 --arg 2=4 --arg 3=1 --arg 4=10 --arg 5=3 --output %t.parallel.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_scalar_with_parallel_stream --arg 0=0 --arg 1=4 --arg 2=1 --arg 3=10 --arg 4=3 --output %t.parallel.json
 // RUN: FileCheck %s --check-prefix=PARALLEL < %t.parallel.json
-// RUN: loom-dfg-sim %s --graph structured_for_captures_top_level_constant --arg 0=none --arg 1=0 --arg 2=4 --arg 3=1 --arg 4=10 --output %t.capture.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_captures_top_level_constant --arg 0=0 --arg 1=4 --arg 2=1 --arg 3=10 --output %t.capture.json
 // RUN: FileCheck %s --check-prefix=CAPTURE < %t.capture.json
-// RUN: loom-dfg-sim %s --graph structured_for_captures_dynamic_arg --arg 0=none --arg 0=none --arg 1=0 --arg 1=1 --arg 2=0 --arg 2=0 --arg 3=1 --arg 3=1 --arg 4=1 --arg 4=1 --arg 5=10 --arg 5=20 --arg 6=3 --arg 6=5 --memref 7=0,0 --output %t.dynamic_capture.json
-// RUN: FileCheck %s --check-prefix=DYNAMIC-CAPTURE < %t.dynamic_capture.json
-// RUN: loom-dfg-sim %s --graph structured_for_batched_return --arg 0=none --arg 0=none --arg 1=0 --arg 1=0 --arg 2=4 --arg 2=4 --arg 3=1 --arg 3=1 --arg 4=10 --arg 4=20 --output %t.batched_return.json
-// RUN: FileCheck %s --check-prefix=BATCHED-RETURN < %t.batched_return.json
-// RUN: loom-dfg-sim %s --graph structured_for_rejects_memref_operand_cast --arg 0=none --arg 1=0 --arg 2=1 --arg 3=1 --memref 4=0 --arg 5=7 --output %t.memref_cast.json
-// RUN: FileCheck %s --check-prefix=MEMREF-CAST < %t.memref_cast.json
-// RUN: loom-dfg-sim %s --graph structured_for_blocks_partial_dynamic_capture --arg 0=none --arg 0=none --arg 1=0 --arg 1=1 --arg 2=0 --arg 2=0 --arg 3=1 --arg 3=1 --arg 4=1 --arg 4=1 --arg 5=10 --arg 5=20 --arg 6=3 --arg 6=5 --arg 7=0 --memref 8=0,0 --output %t.partial_capture.json
-// RUN: FileCheck %s --check-prefix=PARTIAL-CAPTURE < %t.partial_capture.json
-// RUN: loom-dfg-sim %s --graph structured_for_pointer_memory --arg 0=none --memref 1=1,2,3 --arg 2=0 --arg 3=3 --arg 4=1 --arg 5=0 --output %t.pointer_memory.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_captures_dynamic_arg --arg 0=0 --arg 1=0 --arg 2=1 --arg 3=1 --arg 4=10 --arg 5=3 --memref 6=0,0 --output %t.dynamic_capture_first.json
+// RUN: FileCheck %s --check-prefix=DYNAMIC-CAPTURE-FIRST < %t.dynamic_capture_first.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_captures_dynamic_arg --arg 0=1 --arg 1=0 --arg 2=1 --arg 3=1 --arg 4=20 --arg 5=5 --memref 6=13,0 --output %t.dynamic_capture_second.json
+// RUN: FileCheck %s --check-prefix=DYNAMIC-CAPTURE-SECOND < %t.dynamic_capture_second.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_batched_return --arg 0=0 --arg 1=4 --arg 2=1 --arg 3=10 --output %t.return_first.json
+// RUN: FileCheck %s --check-prefix=RETURN-FIRST < %t.return_first.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_batched_return --arg 0=0 --arg 1=4 --arg 2=1 --arg 3=20 --output %t.return_second.json
+// RUN: FileCheck %s --check-prefix=RETURN-SECOND < %t.return_second.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_memref_capture --arg 0=0 --arg 1=1 --arg 2=1 --arg 3=7 --memref 4=0 --output %t.memref_capture.json
+// RUN: FileCheck %s --check-prefix=MEMREF-CAPTURE < %t.memref_capture.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_blocks_partial_dynamic_capture --arg 0=0 --arg 1=0 --arg 2=1 --arg 3=1 --arg 4=10 --arg 5=3 --arg 6=0 --memref 7=0,0 --output %t.partial_capture_first.json
+// RUN: FileCheck %s --check-prefix=PARTIAL-CAPTURE-FIRST < %t.partial_capture_first.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_blocks_partial_dynamic_capture --arg 0=1 --arg 1=0 --arg 2=1 --arg 3=1 --arg 4=20 --arg 5=5 --arg 6=0 --memref 7=13,0 --output %t.partial_capture_second.json
+// RUN: FileCheck %s --check-prefix=PARTIAL-CAPTURE-SECOND < %t.partial_capture_second.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_pointer_memory --arg 0=0 --arg 1=3 --arg 2=1 --arg 3=0 --memref 4=1,2,3 --output %t.pointer_memory.json
 // RUN: FileCheck %s --check-prefix=POINTER-MEMORY < %t.pointer_memory.json
-// RUN: loom-dfg-sim %s --graph structured_for_pointer_memory --arg 0=none --memref 1=1 --arg 2=0 --arg 3=3 --arg 4=1 --arg 5=0 --output %t.pointer_memory_oob.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_pointer_memory --arg 0=0 --arg 1=3 --arg 2=1 --arg 3=0 --memref 4=1 --output %t.pointer_memory_oob.json
 // RUN: FileCheck %s --check-prefix=POINTER-MEMORY-OOB < %t.pointer_memory_oob.json
-// RUN: loom-dfg-sim %s --graph structured_for_carried_pointer_memory --arg 0=none --memref 1=1 --arg 2=0 --arg 3=1 --arg 4=1 --arg 5=0 --output %t.carried_pointer_memory.json
-// RUN: FileCheck %s --check-prefix=CARRIED-POINTER-MEMORY < %t.carried_pointer_memory.json
-// RUN: loom-dfg-sim %s --graph structured_for_pointer_select_memory --arg 0=none --arg 1=false --memref 2=11 --memref 3=22 --arg 4=0 --output %t.pointer_select_memory.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_pointer_select_memory --arg 0=false --arg 1=0 --memref 2=11 --memref 3=22 --output %t.pointer_select_memory.json
 // RUN: FileCheck %s --check-prefix=POINTER-SELECT-MEMORY < %t.pointer_select_memory.json
-// RUN: loom-dfg-sim %s --graph structured_if_nested_for_pointer_memory --arg 0=none --arg 1=true --arg 2=0 --arg 3=3 --arg 4=1 --memref 5=1.000000e+00,2.000000e+00,3.000000e+00 --arg 6=0.000000e+00 --output %t.if_nested_for_memory.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_if_nested_for_pointer_memory --arg 0=true --arg 1=0 --arg 2=3 --arg 3=1 --arg 4=0.000000e+00 --memref 5=1.000000e+00,2.000000e+00,3.000000e+00 --output %t.if_nested_for_memory.json
 // RUN: FileCheck %s --check-prefix=IF-NESTED-FOR-MEMORY < %t.if_nested_for_memory.json
-// RUN: loom-dfg-sim %s --graph structured_for_autocorr_slice --arg 0=none --arg 1=0 --arg 2=3 --arg 3=1 --arg 4=0 --arg 5=0.000000e+00 --arg 6=2 --memref 7=1.000000e+00,2.000000e+00,3.000000e+00,4.000000e+00 --arg 8=3 --memref 9=0.000000e+00,0.000000e+00,0.000000e+00 --arg 10=0 --arg 11=0 --output %t.autocorr_slice.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_for_autocorr_slice --arg 0=0 --arg 1=3 --arg 2=1 --arg 3=0 --arg 4=0.000000e+00 --arg 5=2 --arg 6=3 --arg 7=0 --arg 8=0 --memref 9=1.000000e+00,2.000000e+00,3.000000e+00,4.000000e+00 --memref 10=0.000000e+00,0.000000e+00,0.000000e+00 --output %t.autocorr_slice.json
 // RUN: FileCheck %s --check-prefix=AUTOCORR-SLICE < %t.autocorr_slice.json
-// RUN: loom-dfg-sim %s --graph structured_forall_store --arg 0=none --arg 1=0 --arg 2=3 --memref 3=1,2,3 --arg 4=10 --output %t.forall_store.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_forall_store --arg 0=0 --arg 1=3 --arg 2=10 --memref 3=1,2,3 --output %t.forall_store.json
 // RUN: FileCheck %s --check-prefix=FORALL-STORE < %t.forall_store.json
-// RUN: loom-dfg-sim %s --graph structured_forall_pointer_capture_memory --arg 0=none --arg 1=4 --memref 2=10,20,30,40,50 --memref 3=0,0,0,0,0 --arg 4=1 --output %t.forall_pointer_capture.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph structured_forall_pointer_capture_memory --arg 0=1 --arg 1=1 --memref 2=10,20,30,40,50 --memref 3=0,0,0,0,0 --output %t.forall_pointer_capture.json
 // RUN: FileCheck %s --check-prefix=FORALL-POINTER-CAPTURE < %t.forall_pointer_capture.json
 
 // CHECK-DAG: "graph": "structured_for_sum"
@@ -47,7 +54,8 @@
 
 // IF-DAG: "graph": "structured_if_scalar"
 // IF-DAG: "status": "pass"
-// IF-DAG: "scf.if": 1
+// IF-DAG: "dataflow.demux": 3
+// IF-DAG: "dataflow.mux": 2
 // IF-DAG: "arith.addi": 1
 // IF-DAG: "final_outputs": [
 // IF-DAG: "none"
@@ -57,23 +65,35 @@
 // IF-WAIT-DAG: "status": "pass"
 // IF-WAIT-DAG: "dataflow.constant": 1
 // IF-WAIT-DAG: "arith.addi": 1
-// IF-WAIT-DAG: "scf.if": 1
+// IF-WAIT-DAG: "dataflow.demux": 3
+// IF-WAIT-DAG: "dataflow.mux": 2
 // IF-WAIT-DAG: "final_outputs": [
 // IF-WAIT-DAG: "none"
 // IF-WAIT-DAG: "i32:8"
 
-// IF-EFFECT-BATCHED-DAG: "graph": "structured_if_effect_batched"
-// IF-EFFECT-BATCHED-DAG: "status": "pass"
-// IF-EFFECT-BATCHED-DAG: "scf.if": 2
-// IF-EFFECT-BATCHED-DAG: "dataflow.store": 2
-// IF-EFFECT-BATCHED-DAG: "arg3": [
-// IF-EFFECT-BATCHED-DAG: "i32:10"
-// IF-EFFECT-BATCHED-DAG: "i32:20"
+// IF-EFFECT-FIRST-DAG: "graph": "structured_if_effect_batched"
+// IF-EFFECT-FIRST-DAG: "status": "pass"
+// IF-EFFECT-FIRST-DAG: "dataflow.demux": 5
+// IF-EFFECT-FIRST-DAG: "dataflow.mux": 2
+// IF-EFFECT-FIRST-DAG: "dataflow.store": 1
+// IF-EFFECT-FIRST-DAG: "arg3": [
+// IF-EFFECT-FIRST-DAG: "i32:10"
+// IF-EFFECT-FIRST-DAG: "i32:0"
+
+// IF-EFFECT-SECOND-DAG: "graph": "structured_if_effect_batched"
+// IF-EFFECT-SECOND-DAG: "status": "pass"
+// IF-EFFECT-SECOND-DAG: "dataflow.demux": 5
+// IF-EFFECT-SECOND-DAG: "dataflow.mux": 2
+// IF-EFFECT-SECOND-DAG: "dataflow.store": 1
+// IF-EFFECT-SECOND-DAG: "arg3": [
+// IF-EFFECT-SECOND-DAG: "i32:10"
+// IF-EFFECT-SECOND-DAG: "i32:20"
 
 // NESTED-IF-DAG: "graph": "structured_for_nested_if"
 // NESTED-IF-DAG: "status": "pass"
 // NESTED-IF-DAG: "dynamic_work_items": 4
-// NESTED-IF-DAG: "scf.if": 4
+// NESTED-IF-DAG: "dataflow.demux": 22
+// NESTED-IF-DAG: "dataflow.mux": 8
 // NESTED-IF-DAG: "arith.addi": 4
 // NESTED-IF-DAG: "final_outputs": [
 // NESTED-IF-DAG: "none"
@@ -91,61 +111,78 @@
 // CAPTURE-DAG: "i32:18"
 // CAPTURE-NOT: "structured scf.for operand is unavailable"
 
-// DYNAMIC-CAPTURE-DAG: "graph": "structured_for_captures_dynamic_arg"
-// DYNAMIC-CAPTURE-DAG: "status": "pass"
-// DYNAMIC-CAPTURE-DAG: "arg7": [
-// DYNAMIC-CAPTURE-DAG: "i32:13"
-// DYNAMIC-CAPTURE-DAG: "i32:25"
-// DYNAMIC-CAPTURE-NOT: "i32:15"
+// DYNAMIC-CAPTURE-FIRST-DAG: "graph": "structured_for_captures_dynamic_arg"
+// DYNAMIC-CAPTURE-FIRST-DAG: "status": "pass"
+// DYNAMIC-CAPTURE-FIRST-DAG: "arith.addi": 1
+// DYNAMIC-CAPTURE-FIRST-DAG: "dataflow.store": 1
+// DYNAMIC-CAPTURE-FIRST-DAG: "arg6": [
+// DYNAMIC-CAPTURE-FIRST-DAG: "i32:13"
+// DYNAMIC-CAPTURE-FIRST-DAG: "i32:0"
 
-// BATCHED-RETURN-DAG: "graph": "structured_for_batched_return"
-// BATCHED-RETURN-DAG: "status": "pass"
-// BATCHED-RETURN-DAG: "dynamic_work_items": 4
-// BATCHED-RETURN-DAG: "i32:20"
-// BATCHED-RETURN-DAG: "i32:28"
-// BATCHED-RETURN-NOT: "dataflow.graph.return value produced 2 of 4 dynamic work items"
+// DYNAMIC-CAPTURE-SECOND-DAG: "graph": "structured_for_captures_dynamic_arg"
+// DYNAMIC-CAPTURE-SECOND-DAG: "status": "pass"
+// DYNAMIC-CAPTURE-SECOND-DAG: "arith.addi": 1
+// DYNAMIC-CAPTURE-SECOND-DAG: "dataflow.store": 1
+// DYNAMIC-CAPTURE-SECOND-DAG: "arg6": [
+// DYNAMIC-CAPTURE-SECOND-DAG: "i32:13"
+// DYNAMIC-CAPTURE-SECOND-DAG: "i32:25"
+// DYNAMIC-CAPTURE-SECOND-NOT: "i32:15"
 
-// MEMREF-CAST-DAG: "graph": "structured_for_rejects_memref_operand_cast"
-// MEMREF-CAST-DAG: "status": "unsupported"
-// MEMREF-CAST-DAG: "unsupported op: builtin.unrealized_conversion_cast"
+// RETURN-FIRST-DAG: "graph": "structured_for_batched_return"
+// RETURN-FIRST-DAG: "status": "pass"
+// RETURN-FIRST-DAG: "dynamic_work_items": 4
+// RETURN-FIRST-DAG: "i32:10"
+// RETURN-FIRST-DAG: "i32:18"
 
-// PARTIAL-CAPTURE-DAG: "graph": "structured_for_blocks_partial_dynamic_capture"
-// PARTIAL-CAPTURE-DAG: "status": "pass"
-// PARTIAL-CAPTURE-DAG: "arith.addi": 4
-// PARTIAL-CAPTURE-DAG: "dataflow.store": 2
-// PARTIAL-CAPTURE-DAG: "arg8": [
-// PARTIAL-CAPTURE-DAG: "i32:13"
-// PARTIAL-CAPTURE-DAG: "i32:25"
-// PARTIAL-CAPTURE-NOT: "dataflow.graph.return value produced"
+// RETURN-SECOND-DAG: "graph": "structured_for_batched_return"
+// RETURN-SECOND-DAG: "status": "pass"
+// RETURN-SECOND-DAG: "dynamic_work_items": 4
+// RETURN-SECOND-DAG: "i32:20"
+// RETURN-SECOND-DAG: "i32:28"
+
+// MEMREF-CAPTURE-DAG: "graph": "structured_for_memref_capture"
+// MEMREF-CAPTURE-DAG: "status": "pass"
+// MEMREF-CAPTURE-DAG: "arith.addi": 1
+// MEMREF-CAPTURE-DAG: "dataflow.carry": 6
+// MEMREF-CAPTURE-DAG: "dataflow.demux": 4
+// MEMREF-CAPTURE-DAG: "i32:14"
+
+// PARTIAL-CAPTURE-FIRST-DAG: "graph": "structured_for_blocks_partial_dynamic_capture"
+// PARTIAL-CAPTURE-FIRST-DAG: "status": "pass"
+// PARTIAL-CAPTURE-FIRST-DAG: "arith.addi": 2
+// PARTIAL-CAPTURE-FIRST-DAG: "dataflow.store": 1
+// PARTIAL-CAPTURE-FIRST-DAG: "arg7": [
+// PARTIAL-CAPTURE-FIRST-DAG: "i32:13"
+// PARTIAL-CAPTURE-FIRST-DAG: "i32:0"
+
+// PARTIAL-CAPTURE-SECOND-DAG: "graph": "structured_for_blocks_partial_dynamic_capture"
+// PARTIAL-CAPTURE-SECOND-DAG: "status": "pass"
+// PARTIAL-CAPTURE-SECOND-DAG: "arith.addi": 2
+// PARTIAL-CAPTURE-SECOND-DAG: "dataflow.store": 1
+// PARTIAL-CAPTURE-SECOND-DAG: "arg7": [
+// PARTIAL-CAPTURE-SECOND-DAG: "i32:13"
+// PARTIAL-CAPTURE-SECOND-DAG: "i32:25"
+// PARTIAL-CAPTURE-SECOND-NOT: "dataflow.graph.return value produced"
 
 // POINTER-MEMORY-DAG: "graph": "structured_for_pointer_memory"
 // POINTER-MEMORY-DAG: "status": "pass"
 // POINTER-MEMORY-DAG: "dynamic_work_items": 3
-// POINTER-MEMORY-DAG: "llvm.getelementptr": 3
+// POINTER-MEMORY-DAG: "arith.index_cast": 3
 // POINTER-MEMORY-DAG: "dataflow.load": 3
 // POINTER-MEMORY-DAG: "dataflow.store": 3
 // POINTER-MEMORY-DAG: "final_outputs": [
 // POINTER-MEMORY-DAG: "none"
 // POINTER-MEMORY-DAG: "i32:6"
-// POINTER-MEMORY-DAG: "arg1": [
+// POINTER-MEMORY-DAG: "arg4": [
 // POINTER-MEMORY-DAG: "i32:2"
 // POINTER-MEMORY-DAG: "i32:3"
 // POINTER-MEMORY-DAG: "i32:4"
 
 // POINTER-MEMORY-OOB-DAG: "graph": "structured_for_pointer_memory"
 // POINTER-MEMORY-OOB-DAG: "status": "blocked"
+// POINTER-MEMORY-OOB-DAG: "graph did not fire its retirement frontier"
 // POINTER-MEMORY-OOB-DAG: "dataflow.load address is out of range"
-// POINTER-MEMORY-OOB-DAG: "DFG-sim stopped before all returned values produced complete outputs"
-
-// CARRIED-POINTER-MEMORY-DAG: "graph": "structured_for_carried_pointer_memory"
-// CARRIED-POINTER-MEMORY-DAG: "status": "pass"
-// CARRIED-POINTER-MEMORY-DAG: "dynamic_work_items": 1
-// CARRIED-POINTER-MEMORY-DAG: "dataflow.load": 1
-// CARRIED-POINTER-MEMORY-DAG: "dataflow.store": 1
-// CARRIED-POINTER-MEMORY-DAG: "final_outputs": [
-// CARRIED-POINTER-MEMORY-DAG: "none"
-// CARRIED-POINTER-MEMORY-DAG: "i32:1"
-// CARRIED-POINTER-MEMORY-DAG: "arg1": [
+// POINTER-MEMORY-OOB-DAG: "dataflow.load consumed 1 of 3 true stream indices"
 
 // POINTER-SELECT-MEMORY-DAG: "graph": "structured_for_pointer_select_memory"
 // POINTER-SELECT-MEMORY-DAG: "status": "pass"
@@ -154,13 +191,12 @@
 // POINTER-SELECT-MEMORY-DAG: "final_outputs": [
 // POINTER-SELECT-MEMORY-DAG: "none"
 // POINTER-SELECT-MEMORY-DAG: "i32:22"
-// CARRIED-POINTER-MEMORY-DAG: "i32:2"
-// CARRIED-POINTER-MEMORY-NOT: "i32:3"
 
 // IF-NESTED-FOR-MEMORY-DAG: "graph": "structured_if_nested_for_pointer_memory"
 // IF-NESTED-FOR-MEMORY-DAG: "status": "pass"
 // IF-NESTED-FOR-MEMORY-DAG: "dynamic_work_items": 3
-// IF-NESTED-FOR-MEMORY-DAG: "scf.if": 1
+// IF-NESTED-FOR-MEMORY-DAG: "dataflow.demux": 23
+// IF-NESTED-FOR-MEMORY-DAG: "dataflow.mux": 3
 // IF-NESTED-FOR-MEMORY-DAG: "dataflow.load": 3
 // IF-NESTED-FOR-MEMORY-DAG: "final_outputs": [
 // IF-NESTED-FOR-MEMORY-DAG: "none"
@@ -168,8 +204,9 @@
 
 // AUTOCORR-SLICE-DAG: "graph": "structured_for_autocorr_slice"
 // AUTOCORR-SLICE-DAG: "status": "pass"
-// AUTOCORR-SLICE-DAG: "dynamic_work_items": 3
-// AUTOCORR-SLICE-DAG: "scf.if": 3
+// AUTOCORR-SLICE-DAG: "dynamic_work_items": 4
+// AUTOCORR-SLICE-DAG: "dataflow.demux": 70
+// AUTOCORR-SLICE-DAG: "dataflow.mux": 12
 // AUTOCORR-SLICE-DAG: "llvm.intr.umax": 2
 // AUTOCORR-SLICE-DAG: "llvm.intr.fmuladd": 4
 // AUTOCORR-SLICE-DAG: "dataflow.load": 8
@@ -177,7 +214,7 @@
 // AUTOCORR-SLICE-DAG: "final_outputs": [
 // AUTOCORR-SLICE-DAG: "none"
 // AUTOCORR-SLICE-DAG: "i32:0"
-// AUTOCORR-SLICE-DAG: "arg9": [
+// AUTOCORR-SLICE-DAG: "arg10": [
 // AUTOCORR-SLICE-DAG: "f32:0"
 // AUTOCORR-SLICE-DAG: "f32:8"
 // AUTOCORR-SLICE-DAG: "f32:11"
@@ -185,7 +222,9 @@
 // FORALL-STORE-DAG: "graph": "structured_forall_store"
 // FORALL-STORE-DAG: "status": "pass"
 // FORALL-STORE-DAG: "dynamic_work_items": 3
-// FORALL-STORE-DAG: "scf.forall": 1
+// FORALL-STORE-DAG: "dataflow.stream": 4
+// FORALL-STORE-DAG: "dataflow.carry": 15
+// FORALL-STORE-DAG: "dataflow.demux": 12
 // FORALL-STORE-DAG: "dataflow.load": 3
 // FORALL-STORE-DAG: "dataflow.store": 3
 // FORALL-STORE-DAG: "arith.addi": 3
@@ -199,7 +238,9 @@
 // FORALL-POINTER-CAPTURE-DAG: "graph": "structured_forall_pointer_capture_memory"
 // FORALL-POINTER-CAPTURE-DAG: "status": "pass"
 // FORALL-POINTER-CAPTURE-DAG: "dynamic_work_items": 3
-// FORALL-POINTER-CAPTURE-DAG: "scf.forall": 1
+// FORALL-POINTER-CAPTURE-DAG: "dataflow.stream": 4
+// FORALL-POINTER-CAPTURE-DAG: "dataflow.carry": 15
+// FORALL-POINTER-CAPTURE-DAG: "dataflow.demux": 12
 // FORALL-POINTER-CAPTURE-DAG: "dataflow.load": 3
 // FORALL-POINTER-CAPTURE-DAG: "dataflow.store": 3
 // FORALL-POINTER-CAPTURE-DAG: "arg3": [
@@ -208,7 +249,6 @@
 // FORALL-POINTER-CAPTURE-DAG: "i32:30"
 // FORALL-POINTER-CAPTURE-DAG: "i32:40"
 // FORALL-POINTER-CAPTURE-DAG: "i32:0"
-// FORALL-POINTER-CAPTURE-NOT: "structured scf.forall failed"
 
 module {
   dataflow.graph.func private @structured_if_scalar(
@@ -275,12 +315,15 @@ module {
       %ctrl: none, %lb: i64, %ub: i64, %step: i64, %init: i32, %addend: i32)
       -> (none, i32) {
     %idx, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i64
+    %parallel_tokens = dataflow.invariant %rwc, %ctrl : none
+    %parallel_close:2 = dataflow.demux %rwc, %parallel_tokens
+        : (i1, none) -> (none, none)
     %sum = scf.for %i = %lb to %ub step %step iter_args(%acc = %init)
         -> (i32) : i64 {
       %next = arith.addi %acc, %addend : i32
       scf.yield %next : i32
     }
-    dataflow.graph.return %ctrl, %sum : none, i32
+    dataflow.graph.return %parallel_close#0, %sum : none, i32
   }
 
   dataflow.graph.func private @structured_for_captures_top_level_constant(
@@ -319,7 +362,7 @@ module {
     dataflow.graph.return %ctrl, %init, %sum : none, i32, i32
   }
 
-  dataflow.graph.func private @structured_for_rejects_memref_operand_cast(
+  dataflow.graph.func private @structured_for_memref_capture(
       %ctrl: none, %lb: i64, %ub: i64, %step: i64, %mem: memref<?xi32>,
       %init: i32) -> (none, i32) {
     %sum = scf.for %i = %lb to %ub step %step iter_args(%acc = %init)
@@ -347,40 +390,17 @@ module {
   dataflow.graph.func private @structured_for_pointer_memory(
       %ctrl: none, %mem: !llvm.ptr, %lb: i64, %ub: i64, %step: i64,
       %init: i32) -> (none, i32) {
+    %view = builtin.unrealized_conversion_cast %mem
+        : !llvm.ptr to memref<?xi32>
     %sum = scf.for %i = %lb to %ub step %step iter_args(%acc = %init)
         -> (i32) : i64 {
-      %ptr = llvm.getelementptr inbounds|nuw %mem[%i]
-          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
-      %view = builtin.unrealized_conversion_cast %ptr
-          : !llvm.ptr to memref<?xi32>
-      %slot = dataflow.constant %ctrl {const_value = 0 : index} : index
+      %slot = arith.index_cast %i : i64 to index
       %value, %load_done = dataflow.load %view[%slot] %ctrl : memref<?xi32>
       %one = arith.constant 1 : i32
       %stored = arith.addi %value, %one : i32
       %store_done = dataflow.store %view[%slot] %stored %ctrl : memref<?xi32>
       %next = arith.addi %acc, %value : i32
       scf.yield %next : i32
-    }
-    dataflow.graph.return %ctrl, %sum : none, i32
-  }
-
-  dataflow.graph.func private @structured_for_carried_pointer_memory(
-      %ctrl: none, %mem: !llvm.ptr, %lb: i64, %ub: i64, %step: i64,
-      %init: i32) -> (none, i32) {
-    %view = builtin.unrealized_conversion_cast %mem
-        : !llvm.ptr to memref<?xi32>
-    %sum, %view_out = scf.for %i = %lb to %ub step %step
-        iter_args(%acc = %init, %carried = %view)
-        -> (i32, memref<?xi32>) : i64 {
-      %slot = dataflow.constant %ctrl {const_value = 0 : index} : index
-      %value, %load_done = dataflow.load %carried[%slot] %ctrl
-          : memref<?xi32>
-      %one = arith.constant 1 : i32
-      %stored = arith.addi %value, %one : i32
-      %store_done = dataflow.store %carried[%slot] %stored %ctrl
-          : memref<?xi32>
-      %next = arith.addi %acc, %value : i32
-      scf.yield %next, %carried : i32, memref<?xi32>
     }
     dataflow.graph.return %ctrl, %sum : none, i32
   }
@@ -463,7 +483,8 @@ module {
   dataflow.graph.func private @structured_forall_store(
       %ctrl: none, %lb: index, %ub: index, %mem: memref<?xi32>, %addend: i32)
       -> none {
-    scf.forall (%i) = (%lb) to (%ub) step (1) {
+    %one = dataflow.constant %ctrl {const_value = 1 : index} : index
+    scf.for %i = %lb to %ub step %one {
       %value, %done = dataflow.load %mem[%i] %ctrl : memref<?xi32>
       %stored = arith.addi %value, %addend : i32
       %store_done = dataflow.store %mem[%i] %stored %ctrl : memref<?xi32>
@@ -476,18 +497,19 @@ module {
       %row: index) -> none {
     %row64 = arith.index_cast %row : index to i64
     %base = arith.muli %row64, %stride : i64
-    %src_at = llvm.getelementptr inbounds %src[%base]
-        : (!llvm.ptr, i64) -> !llvm.ptr, i8
-    %dst_at = llvm.getelementptr inbounds %dst[%base]
-        : (!llvm.ptr, i64) -> !llvm.ptr, i8
-    scf.forall (%i) in (3) {
-      %src_view = builtin.unrealized_conversion_cast %src_at
-          : !llvm.ptr to memref<?xi32>
-      %value, %load_done = dataflow.load %src_view[%i] %ctrl
+    %base_index = arith.index_cast %base : i64 to index
+    %src_view = builtin.unrealized_conversion_cast %src
+        : !llvm.ptr to memref<?xi32>
+    %dst_view = builtin.unrealized_conversion_cast %dst
+        : !llvm.ptr to memref<?xi32>
+    %zero = dataflow.constant %ctrl {const_value = 0 : index} : index
+    %three = dataflow.constant %ctrl {const_value = 3 : index} : index
+    %one = dataflow.constant %ctrl {const_value = 1 : index} : index
+    scf.for %i = %zero to %three step %one {
+      %slot = arith.addi %base_index, %i : index
+      %value, %load_done = dataflow.load %src_view[%slot] %ctrl
           : memref<?xi32>
-      %dst_view = builtin.unrealized_conversion_cast %dst_at
-          : !llvm.ptr to memref<?xi32>
-      %store_done = dataflow.store %dst_view[%i] %value %ctrl
+      %store_done = dataflow.store %dst_view[%slot] %value %ctrl
           : memref<?xi32>
     }
     dataflow.graph.return %ctrl : none

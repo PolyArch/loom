@@ -1,8 +1,9 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph two_loads_one_port --hardware-mlir %s --hardware one_load_adg --workload two_loads_one_port --output %t.csv --artifact %t.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph two_loads_one_port --hardware-mlir %s --hardware one_load_adg --workload two_loads_one_port --output %t.csv --artifact %t.json
 // RUN: FileCheck %s --check-prefix=CSV < %t.csv
 // RUN: FileCheck %s --check-prefix=JSON < %t.json
 
-// RUN: loom-pnr-map --dfg-mlir %s --graph mixed_addi_pressure --hardware-mlir %s --hardware mixed_addi_adg --workload mixed_addi_pressure --output %t.mixed.csv --artifact %t.mixed.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph mixed_addi_pressure --hardware-mlir %s --hardware mixed_addi_adg --workload mixed_addi_pressure --output %t.mixed.csv --artifact %t.mixed.json
 // RUN: FileCheck %s --check-prefix=MIXED-CSV < %t.mixed.csv
 // RUN: FileCheck %s --check-prefix=MIXED-JSON < %t.mixed.json
 

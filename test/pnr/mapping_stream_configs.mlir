@@ -1,13 +1,14 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph stream_add_slt --hardware-mlir %s --hardware stream_add_i32_adg --workload stream_add_slt --output %t.i32-pass.csv --artifact %t.i32-pass.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph stream_add_slt --hardware-mlir %s --hardware stream_add_i32_adg --workload stream_add_slt --output %t.i32-pass.csv --artifact %t.i32-pass.json
 // RUN: FileCheck %s --check-prefix=CSV-I32-PASS < %t.i32-pass.csv
 // RUN: FileCheck %s --check-prefix=JSON-I32-PASS < %t.i32-pass.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph stream_add_slt_i64 --hardware-mlir %s --hardware stream_add_i64_adg --workload stream_add_slt_i64 --output %t.i64-pass.csv --artifact %t.i64-pass.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph stream_add_slt_i64 --hardware-mlir %s --hardware stream_add_i64_adg --workload stream_add_slt_i64 --output %t.i64-pass.csv --artifact %t.i64-pass.json
 // RUN: FileCheck %s --check-prefix=CSV-I64-PASS < %t.i64-pass.csv
-// RUN: loom-pnr-map --dfg-mlir %s --graph stream_add_slt_i64 --hardware-mlir %s --hardware stream_add_i32_adg --workload stream_i64_on_i32 --output %t.i64-on-i32.csv --artifact %t.i64-on-i32.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph stream_add_slt_i64 --hardware-mlir %s --hardware stream_add_i32_adg --workload stream_i64_on_i32 --output %t.i64-on-i32.csv --artifact %t.i64-on-i32.json
 // RUN: FileCheck %s --check-prefix=CSV-I64-ON-I32 < %t.i64-on-i32.csv
-// RUN: loom-pnr-map --dfg-mlir %s --graph stream_add_slt --hardware-mlir %s --hardware stream_add_i64_adg --workload stream_i32_on_i64 --output %t.i32-on-i64.csv --artifact %t.i32-on-i64.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph stream_add_slt --hardware-mlir %s --hardware stream_add_i64_adg --workload stream_i32_on_i64 --output %t.i32-on-i64.csv --artifact %t.i32-on-i64.json
 // RUN: FileCheck %s --check-prefix=CSV-I32-ON-I64 < %t.i32-on-i64.csv
-// RUN: loom-pnr-map --dfg-mlir %s --graph stream_sdiv_sgt --hardware-mlir %s --hardware stream_add_i32_adg --workload stream_sdiv_sgt --output %t.config-fail.csv --artifact %t.config-fail.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph stream_sdiv_sgt --hardware-mlir %s --hardware stream_add_i32_adg --workload stream_sdiv_sgt --output %t.config-fail.csv --artifact %t.config-fail.json
 // RUN: FileCheck %s --check-prefix=CSV-CONFIG-FAIL < %t.config-fail.csv
 
 // CSV-I32-PASS: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic

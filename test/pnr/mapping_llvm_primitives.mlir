@@ -1,13 +1,14 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph zext_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload zext_graph --output %t.zext.csv --artifact %t.zext.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph sext_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload sext_graph --output %t.sext.csv --artifact %t.sext.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph abs_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload abs_graph --output %t.abs.csv --artifact %t.abs.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph fabs_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload fabs_graph --output %t.fabs.csv --artifact %t.fabs.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph fmuladd_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload fmuladd_graph --output %t.fmuladd.csv --artifact %t.fmuladd.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph fshl_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload fshl_graph --output %t.fshl.csv --artifact %t.fshl.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph bswap_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload bswap_graph --output %t.bswap.csv --artifact %t.bswap.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph umax_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload umax_graph --output %t.umax.csv --artifact %t.umax.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph smin_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload smin_graph --output %t.smin.csv --artifact %t.smin.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph smax_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload smax_graph --output %t.smax.csv --artifact %t.smax.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph zext_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload zext_graph --output %t.zext.csv --artifact %t.zext.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph sext_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload sext_graph --output %t.sext.csv --artifact %t.sext.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph abs_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload abs_graph --output %t.abs.csv --artifact %t.abs.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph fabs_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload fabs_graph --output %t.fabs.csv --artifact %t.fabs.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph fmuladd_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload fmuladd_graph --output %t.fmuladd.csv --artifact %t.fmuladd.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph fshl_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload fshl_graph --output %t.fshl.csv --artifact %t.fshl.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph bswap_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload bswap_graph --output %t.bswap.csv --artifact %t.bswap.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph umax_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload umax_graph --output %t.umax.csv --artifact %t.umax.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph smin_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload smin_graph --output %t.smin.csv --artifact %t.smin.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph smax_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload smax_graph --output %t.smax.csv --artifact %t.smax.json
 // RUN: FileCheck %s --check-prefix=ZEXT < %t.zext.csv
 // RUN: FileCheck %s --check-prefix=SEXT < %t.sext.csv
 // RUN: FileCheck %s --check-prefix=ABS < %t.abs.csv

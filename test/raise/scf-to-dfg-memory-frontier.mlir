@@ -379,8 +379,9 @@ dataflow.graph.func private @frontier_nested_for_if(
 
 // CHECK-LABEL: dataflow.graph.func private @frontier_pointer_payload
 // CHECK-NOT: dataflow.sync {{.*}}!llvm.ptr
-// CHECK: dataflow.graph.return %arg0, %arg1 : none, !llvm.ptr
+// CHECK: dataflow.graph.return values() streams() memories(%arg1 : !llvm.ptr) complete(%arg0 : none)
 dataflow.graph.func private @frontier_pointer_payload(
     %start: none, %pointer: !llvm.ptr) -> (none, !llvm.ptr) {
-  dataflow.graph.return %start, %pointer : none, !llvm.ptr
+  dataflow.graph.return values() streams() memories(%pointer : !llvm.ptr)
+      complete(%start : none)
 }

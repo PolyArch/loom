@@ -1,13 +1,14 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph boundary_payload --hardware-mlir %s --hardware boundary_data_adg --workload boundary_data --output %t.data.csv --artifact %t.data.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph boundary_payload --hardware-mlir %s --hardware boundary_data_adg --workload boundary_data --output %t.data.csv --artifact %t.data.json
 // RUN: FileCheck %s --check-prefix=DATA-CSV < %t.data.csv
 // RUN: FileCheck %s --check-prefix=DATA-JSON < %t.data.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph boundary_payload --hardware-mlir %s --hardware boundary_tag_adg --workload boundary_tag --output %t.tag.csv --artifact %t.tag.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph boundary_payload --hardware-mlir %s --hardware boundary_tag_adg --workload boundary_tag --output %t.tag.csv --artifact %t.tag.json
 // RUN: FileCheck %s --check-prefix=TAG-CSV < %t.tag.csv
 // RUN: FileCheck %s --check-prefix=TAG-JSON < %t.tag.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph boundary_payload --hardware-mlir %s --hardware boundary_t2t_adg --workload boundary_t2t --output %t.t2t.csv --artifact %t.t2t.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph boundary_payload --hardware-mlir %s --hardware boundary_t2t_adg --workload boundary_t2t --output %t.t2t.csv --artifact %t.t2t.json
 // RUN: FileCheck %s --check-prefix=T2T-CSV < %t.t2t.csv
 // RUN: FileCheck %s --check-prefix=T2T-JSON < %t.t2t.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph boundary_payload --hardware-mlir %s --hardware boundary_t2s_tag_adg --workload boundary_t2s_tag --output %t.t2s-tag.csv --artifact %t.t2s-tag.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph boundary_payload --hardware-mlir %s --hardware boundary_t2s_tag_adg --workload boundary_t2s_tag --output %t.t2s-tag.csv --artifact %t.t2s-tag.json
 // RUN: FileCheck %s --check-prefix=T2S-TAG-CSV < %t.t2s-tag.csv
 // RUN: FileCheck %s --check-prefix=T2S-TAG-JSON < %t.t2s-tag.json
 

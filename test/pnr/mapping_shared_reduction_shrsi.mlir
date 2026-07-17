@@ -1,4 +1,5 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph signed_shift --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload signed_shift --output %t.mapping.csv --artifact %t.mapping.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph signed_shift --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload signed_shift --output %t.mapping.csv --artifact %t.mapping.json
 // RUN: FileCheck %s --check-prefix=CSV < %t.mapping.csv
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
 

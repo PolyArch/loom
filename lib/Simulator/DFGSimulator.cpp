@@ -1,6 +1,8 @@
 #include "Simulator/DFGSimulator.h"
 #include "DFGSimulatorInternal.h"
 
+#include "Dataflow/IR/DataflowGraphValidation.h"
+
 #include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -429,8 +431,11 @@ nonStructuredDynamicWorkItems(const SimulatorState &state) {
   for (const auto &entry : state.streamTrueEmissionCounts)
     maxStreamItems = std::max(maxStreamItems, entry.second);
   std::uint64_t maxSeededItems = 0;
-  for (const auto &entry : state.seededTokenCounts)
+  for (const auto &entry : state.seededTokenCounts) {
+    if (mlir::isa<mlir::NoneType>(entry.first.getType()))
+      continue;
     maxSeededItems = std::max(maxSeededItems, entry.second);
+  }
   return std::max(maxStreamItems, maxSeededItems);
 }
 
@@ -945,7 +950,9 @@ indexGlobalMemoryArgs(llvm::ArrayRef<DFGGlobalMemoryArg> args) {
 
 struct GraphReturnObservation {
   llvm::SmallVector<mlir::Value> complete;
-  llvm::SmallVector<mlir::Value> payloads;
+  llvm::SmallVector<mlir::Value> values;
+  llvm::SmallVector<mlir::Value> streams;
+  llvm::SmallVector<mlir::Value> memories;
 };
 
 static GraphReturnObservation
@@ -957,10 +964,9 @@ observeReturnOperands(dataflow::GraphFuncOp graph) {
     return observation;
   observation.complete.append(ret.getComplete().begin(),
                               ret.getComplete().end());
-  observation.payloads.append(ret.getValues().begin(), ret.getValues().end());
-  observation.payloads.append(ret.getStreams().begin(),
-                              ret.getStreams().end());
-  observation.payloads.append(ret.getMemories().begin(),
+  observation.values.append(ret.getValues().begin(), ret.getValues().end());
+  observation.streams.append(ret.getStreams().begin(), ret.getStreams().end());
+  observation.memories.append(ret.getMemories().begin(),
                               ret.getMemories().end());
   return observation;
 }
@@ -973,217 +979,28 @@ static void seedBlockArgument(SimulatorState &state, mlir::BlockArgument arg,
   ++state.seededTokenCounts[arg];
 }
 
-static bool hasDirectLLVMAddressUse(mlir::BlockArgument arg) {
-  for (mlir::OpOperand &use : arg.getUses()) {
-    mlir::Operation *owner = use.getOwner();
-    if (mlir::isa<mlir::LLVM::LoadOp>(owner) ||
-        mlir::isa<mlir::LLVM::StoreOp>(owner) ||
-        mlir::isa<mlir::LLVM::GEPOp>(owner) ||
-        mlir::isa<mlir::LLVM::MemcpyOp>(owner))
-      return true;
-  }
-  return false;
-}
-
-static bool hasDataflowStreamUse(mlir::BlockArgument arg) {
-  for (mlir::OpOperand &use : arg.getUses()) {
-    if (mlir::isa<dataflow::StreamOp>(use.getOwner()))
-      return true;
-  }
-  return false;
-}
-
-static bool hasDataflowCarryUse(mlir::BlockArgument arg) {
-  for (mlir::OpOperand &use : arg.getUses()) {
-    if (mlir::isa<dataflow::CarryOp>(use.getOwner()))
-      return true;
-  }
-  return false;
-}
-
-static bool isScalarBroadcastArgument(mlir::BlockArgument arg) {
-  mlir::Type type = arg.getType();
-  if (mlir::isa<mlir::MemRefType, mlir::LLVM::LLVMPointerType>(type))
-    return false;
-  if (hasDataflowStreamUse(arg) || hasDataflowCarryUse(arg))
-    return false;
-  return true;
-}
-
-static std::optional<Token> staticSeedToken(mlir::Value value,
-                                            const SimulatorState &state) {
-  if (auto arg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
-    auto it = state.observedOutputs.find(arg);
-    if (it == state.observedOutputs.end() || it->second.empty())
-      return std::nullopt;
-    return it->second.front();
-  }
-  if (auto constant = value.getDefiningOp<mlir::arith::ConstantOp>()) {
-    auto attr = mlir::dyn_cast<mlir::TypedAttr>(constant.getValue());
-    if (!attr)
-      return std::nullopt;
-    auto tokenOrErr = tokenFromTypedAttr(attr);
-    if (!tokenOrErr) {
-      llvm::consumeError(tokenOrErr.takeError());
-      return std::nullopt;
-    }
-    return *tokenOrErr;
-  }
-  if (auto constant = value.getDefiningOp<dataflow::ConstantOp>()) {
-    auto attr = mlir::dyn_cast<mlir::TypedAttr>(constant.getConstValue());
-    if (!attr)
-      return std::nullopt;
-    auto tokenOrErr = tokenFromTypedAttr(attr);
-    if (!tokenOrErr) {
-      llvm::consumeError(tokenOrErr.takeError());
-      return std::nullopt;
-    }
-    return *tokenOrErr;
-  }
-  mlir::Operation *def = value.getDefiningOp();
-  if (def &&
-      mlir::isa<mlir::arith::IndexCastOp, mlir::arith::IndexCastUIOp>(def)) {
-    std::optional<Token> input = staticSeedToken(def->getOperand(0), state);
-    if (!input)
-      return std::nullopt;
-    auto descriptor = primitiveDescriptor(def, "", value);
-    if (!descriptor) {
-      llvm::consumeError(descriptor.takeError());
-      return std::nullopt;
-    }
-    PrimitiveValue operands[] = {primitiveValueFromToken(*input)};
-    auto result = evaluatePrimitiveOperation(*descriptor, operands);
-    if (!result) {
-      llvm::consumeError(result.takeError());
-      return std::nullopt;
-    }
-    return tokenFromPrimitiveValue(*result);
-  }
-  return std::nullopt;
-}
-
-static std::optional<std::int64_t>
-staticSeedInteger(mlir::Value value, const SimulatorState &state) {
-  std::optional<Token> token = staticSeedToken(value, state);
-  if (!token ||
-      (token->kind != TokenKind::Integer && token->kind != TokenKind::Bool))
-    return std::nullopt;
-  return integerToken(*token);
-}
-
-static std::optional<std::uint64_t>
-staticStreamTripCount(dataflow::StreamOp stream, const SimulatorState &state,
-                      std::uint64_t maxEventSteps) {
-  std::optional<std::int64_t> init = staticSeedInteger(stream.getInit(), state);
-  std::optional<std::int64_t> limit =
-      staticSeedInteger(stream.getLimit(), state);
-  std::optional<std::int64_t> step = staticSeedInteger(stream.getStep(), state);
-  if (!init || !limit || !step)
-    return std::nullopt;
-
-  auto bitWidth = integerBitWidth(stream.getInit().getType(), stream);
-  if (!bitWidth) {
-    llvm::consumeError(bitWidth.takeError());
-    return std::nullopt;
-  }
-
-  StreamSemanticState streamState;
-  std::optional<StreamActivation> activation =
-      StreamActivation{*init, *limit, *step};
-  const StreamSemanticConfig config{stream.getStepKind(), stream.getPredicate(),
-                                    *bitWidth};
-  std::uint64_t tripCount = 0;
-  for (std::uint64_t i = 0; i < maxEventSteps; ++i) {
-    auto transition = evaluateStreamTransition(streamState, config, activation);
-    if (!transition) {
-      llvm::consumeError(transition.takeError());
-      return std::nullopt;
-    }
-    if (!transition->firing.ready || !transition->emitPhase)
-      return std::nullopt;
-    if (!transition->phase)
-      return tripCount;
-    if (!transition->emitIv)
-      return std::nullopt;
-    ++tripCount;
-    if (transition->nextState.current == transition->iv)
-      return std::nullopt;
-    streamState = transition->nextState;
-    activation.reset();
-  }
-  return std::nullopt;
-}
-
-static std::uint64_t staticStreamCardinality(mlir::Block &entry,
-                                             const SimulatorState &state,
-                                             std::uint64_t maxEventSteps) {
-  std::uint64_t cardinality = 0;
-  for (mlir::Operation &op : entry.getOperations()) {
-    auto stream = mlir::dyn_cast<dataflow::StreamOp>(op);
-    if (!stream)
-      continue;
-    std::optional<std::uint64_t> tripCount =
-        staticStreamTripCount(stream, state, maxEventSteps);
-    if (!tripCount)
-      continue;
-    cardinality = std::max(cardinality, *tripCount);
-  }
-  return cardinality;
-}
-
-static std::uint64_t maxSeededArgumentCardinality(const SimulatorState &state) {
-  std::uint64_t targetCount = 0;
-  for (const auto &seeded : state.seededTokenCounts)
-    targetCount = std::max(targetCount, seeded.second);
-  return targetCount;
-}
-
-static void broadcastScalarArguments(mlir::Block &entry, SimulatorState &state,
-                                     std::uint64_t seededTargetCount,
-                                     std::uint64_t streamTargetCount) {
-  for (mlir::BlockArgument arg : entry.getArguments()) {
-    if (!isScalarBroadcastArgument(arg))
-      continue;
-    std::uint64_t targetCount = seededTargetCount;
-    if (mlir::isa<mlir::NoneType>(arg.getType()))
-      targetCount = std::max(targetCount, streamTargetCount);
-    if (targetCount <= 1)
-      continue;
-    auto countIt = state.seededTokenCounts.find(arg);
-    if (countIt == state.seededTokenCounts.end() || countIt->second != 1)
-      continue;
-    auto observedIt = state.observedOutputs.find(arg);
-    if (observedIt == state.observedOutputs.end() || observedIt->second.empty())
-      continue;
-    const Token token = observedIt->second.front();
-    while (state.seededTokenCounts[arg] < targetCount)
-      seedBlockArgument(state, arg, token);
-  }
-}
-
-static void broadcastRawPointerArguments(mlir::Block &entry,
-                                         SimulatorState &state,
-                                         std::uint64_t targetCount) {
-  if (targetCount <= 1)
-    return;
-
-  for (mlir::BlockArgument arg : entry.getArguments()) {
-    if (!mlir::isa<mlir::LLVM::LLVMPointerType>(arg.getType()))
-      continue;
-    if (!state.rawMemoryFixtures.contains(arg) || !hasDirectLLVMAddressUse(arg))
-      continue;
-    std::uint64_t current = state.seededTokenCounts[arg];
-    while (current < targetCount) {
-      seedBlockArgument(
-          state, arg,
-          pointerToken(arg, {}, state.rawMemoryFixtures[arg].byteOffset));
-      ++current;
-    }
-  }
-}
-
 static llvm::Error propagateMemoryAliases(mlir::Block &entry,
                                           SimulatorState &state) {
+  llvm::DenseMap<mlir::Value, mlir::Type> fixtureElementTypes;
+  for (mlir::Operation &op : entry.getOperations()) {
+    if (!mlir::isa<mlir::UnrealizedConversionCastOp>(op) ||
+        op.getNumOperands() != 1 || op.getNumResults() != 1)
+      continue;
+    mlir::Value source = op.getOperand(0);
+    auto targetMemref =
+        mlir::dyn_cast<mlir::MemRefType>(op.getResult(0).getType());
+    if (!targetMemref || !state.rawMemoryFixtures.contains(source))
+      continue;
+    auto [it, inserted] = fixtureElementTypes.try_emplace(
+        source, targetMemref.getElementType());
+    if (!inserted && it->second != targetMemref.getElementType())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "memory fixture type mismatch: existing %s, requested %s",
+          typeToString(it->second).c_str(),
+          typeToString(targetMemref.getElementType()).c_str());
+  }
+
   bool changed = true;
   while (changed) {
     changed = false;
@@ -1197,6 +1014,14 @@ static llvm::Error propagateMemoryAliases(mlir::Block &entry,
         continue;
       auto memoryIt = state.memories.find(source);
       if (memoryIt != state.memories.end()) {
+        auto targetMemref = mlir::dyn_cast<mlir::MemRefType>(target.getType());
+        if (targetMemref &&
+            memoryIt->second->elementType != targetMemref.getElementType())
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "memory fixture type mismatch: existing %s, requested %s",
+              typeToString(memoryIt->second->elementType).c_str(),
+              typeToString(targetMemref.getElementType()).c_str());
         state.memories[target] = memoryIt->second;
         changed = true;
         continue;
@@ -1264,9 +1089,33 @@ serializeMemoryValue(const MemoryValue &memory) {
   return values;
 }
 
-static void captureFinalMemoryState(mlir::Block &entry, SimulatorState &state,
+static llvm::Expected<std::string>
+memoryFixtureFromSerializedValues(llvm::ArrayRef<std::string> values) {
+  std::string fixture;
+  llvm::raw_string_ostream os(fixture);
+  for (auto [index, value] : llvm::enumerate(values)) {
+    llvm::StringRef serialized(value);
+    size_t separator = serialized.find(':');
+    if (separator == llvm::StringRef::npos)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "cannot reuse serialized memory value '%s' for another invocation",
+          value.c_str());
+    if (index != 0)
+      os << ',';
+    os << serialized.drop_front(separator + 1);
+  }
+  return os.str();
+}
+
+static void captureFinalMemoryState(dataflow::GraphFuncOp graph,
+                                    SimulatorState &state,
                                     DFGSimulationReport &report) {
-  for (auto [index, arg] : llvm::enumerate(entry.getArguments())) {
+  mlir::Block &entry = graph.getBody().front();
+  for (unsigned index = 0,
+                end = graph.getFunctionType().getNumInputs();
+       index < end; ++index) {
+    mlir::BlockArgument arg = entry.getArgument(index + 1);
     auto memory = state.memories.find(arg);
     if (memory == state.memories.end())
       continue;
@@ -1304,13 +1153,134 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
     return report;
   }
 
+  llvm::ArrayRef<int32_t> resultSegments = graph.getResultSegmentSizes();
+  if (resultSegments[2] != 0) {
+    report.status = "unsupported";
+    report.diagnostics.push_back("memory export simulation is unsupported");
+    return report;
+  }
+  if (llvm::Error error = dataflow::validateFinalizedGraph(graph))
+    return std::move(error);
+
+  if (options.invocations == 0)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "invocations must be nonzero");
+  if (options.invocations > 1) {
+    if (!options.globalMemories.empty())
+      return llvm::createStringError(
+          std::errc::not_supported,
+          "multiple invocations with global memory fixtures are unsupported");
+    if (resultSegments[0] != 0 || resultSegments[1] != 0)
+      return llvm::createStringError(
+          std::errc::not_supported,
+          "multiple invocations with value or stream results are unsupported");
+
+    unsigned applicationInputCount = graph.getFunctionType().getNumInputs();
+    auto groupedArgsOrErr =
+        indexRuntimeArgs(options.args, applicationInputCount);
+    if (!groupedArgsOrErr)
+      return groupedArgsOrErr.takeError();
+    llvm::StringMap<llvm::SmallVector<std::string>> groupedArgs =
+        std::move(*groupedArgsOrErr);
+    for (unsigned index = 0; index < applicationInputCount; ++index) {
+      dataflow::GraphPortKind kind = graph.getInputPortKind(index);
+      if (kind == dataflow::GraphPortKind::Memory)
+        continue;
+      if (kind == dataflow::GraphPortKind::Stream)
+        return llvm::createStringError(
+            std::errc::not_supported,
+            "multiple invocations with stream inputs are unsupported");
+      std::string key = std::to_string(index);
+      auto it = groupedArgs.find(key);
+      if (it == groupedArgs.end() ||
+          it->second.size() != options.invocations)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "value argument %u requires exactly one token per invocation",
+            index);
+    }
+
+    DFGSimulationReport aggregate = report;
+    llvm::SmallVector<DFGMemoryArg> currentMemories = options.memories;
+    for (const DFGMemoryArg &memory : currentMemories)
+      if (memory.byteOffset != 0)
+        return llvm::createStringError(
+            std::errc::not_supported,
+            "multiple invocations with nonzero memory fixture offsets are "
+            "unsupported");
+
+    for (std::uint64_t invocation = 0; invocation < options.invocations;
+         ++invocation) {
+      DFGSimulationOptions single = options;
+      single.invocations = 1;
+      single.args.clear();
+      single.memories = currentMemories;
+      for (unsigned index = 0; index < applicationInputCount; ++index) {
+        if (graph.getInputPortKind(index) != dataflow::GraphPortKind::Value)
+          continue;
+        std::string key = std::to_string(index);
+        single.args.push_back(
+            {index, groupedArgs.lookup(key)[invocation]});
+      }
+
+      auto singleReportOrErr = simulateDataflowGraph(module, single);
+      if (!singleReportOrErr)
+        return singleReportOrErr.takeError();
+      DFGSimulationReport singleReport = std::move(*singleReportOrErr);
+      aggregate.wavefrontSteps += singleReport.wavefrontSteps;
+      aggregate.eventCount += singleReport.eventCount;
+      aggregate.dynamicWorkItems += singleReport.dynamicWorkItems;
+      aggregate.modeledLibraryScore += singleReport.modeledLibraryScore;
+      aggregate.memoryAddressScore += singleReport.memoryAddressScore;
+      for (const auto &[name, count] : singleReport.operationFireCounts)
+        aggregate.operationFireCounts[name] += count;
+      for (const auto &[name, count] : singleReport.modeledLibraryCalls)
+        aggregate.modeledLibraryCalls[name] += count;
+      aggregate.finalOutputs = std::move(singleReport.finalOutputs);
+      aggregate.finalMemoryState = std::move(singleReport.finalMemoryState);
+
+      for (const std::string &diagnostic : singleReport.diagnostics)
+        aggregate.diagnostics.push_back(
+            llvm::formatv("invocation {0}: {1}", invocation, diagnostic)
+                .str());
+      if (singleReport.status != "pass") {
+        aggregate.status = singleReport.status;
+        break;
+      }
+
+      for (DFGMemoryArg &memory : currentMemories) {
+        std::string key = llvm::formatv("arg{0}", memory.index).str();
+        auto stateIt = aggregate.finalMemoryState.find(key);
+        if (stateIt == aggregate.finalMemoryState.end())
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "memory argument %u was not materialized by invocation %llu",
+              memory.index, static_cast<unsigned long long>(invocation));
+        auto fixtureOrErr =
+            memoryFixtureFromSerializedValues(stateIt->second);
+        if (!fixtureOrErr)
+          return fixtureOrErr.takeError();
+        memory.values = std::move(*fixtureOrErr);
+      }
+    }
+
+    aggregate.weightedOperationScore = estimateWeightedOperationScore(
+        aggregate.operationFireCounts, aggregate.diagnostics);
+    aggregate.operationDiversityScore = aggregate.operationFireCounts.size();
+    aggregate.operationCostScore =
+        aggregate.weightedOperationScore + aggregate.modeledLibraryScore +
+        aggregate.operationDiversityScore + aggregate.memoryAddressScore;
+    return aggregate;
+  }
+
   mlir::Block &entry = graph.getBody().front();
-  auto argsOrErr = indexRuntimeArgs(options.args, entry.getNumArguments());
+  unsigned applicationInputCount = graph.getFunctionType().getNumInputs();
+  auto argsOrErr = indexRuntimeArgs(options.args, applicationInputCount);
   if (!argsOrErr)
     return argsOrErr.takeError();
   llvm::StringMap<llvm::SmallVector<std::string>> args = std::move(*argsOrErr);
   auto memoriesOrErr =
-      indexMemoryArgs(options.memories, entry.getNumArguments());
+      indexMemoryArgs(options.memories, applicationInputCount);
   if (!memoriesOrErr)
     return memoriesOrErr.takeError();
   llvm::StringMap<MemoryFixture> memories = std::move(*memoriesOrErr);
@@ -1322,57 +1292,60 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   state.maxStructuredLoopIterations = options.maxEventSteps;
   state.globalMemoryFixtures = std::move(*globalMemoriesOrErr);
   GraphReturnObservation returnObservation = observeReturnOperands(graph);
+  seedBlockArgument(state, graph.getStart(), noneToken());
 
-  for (auto [index, arg] : llvm::enumerate(entry.getArguments())) {
+  for (unsigned index = 0; index < applicationInputCount; ++index) {
+    mlir::BlockArgument arg = entry.getArgument(index + 1);
     std::string key = std::to_string(index);
-    if (auto memrefType = mlir::dyn_cast<mlir::MemRefType>(arg.getType())) {
+    dataflow::GraphPortKind kind = graph.getInputPortKind(index);
+    if (kind == dataflow::GraphPortKind::Memory) {
       if (!memories.contains(key))
         return llvm::createStringError(std::errc::invalid_argument,
-                                       "missing memref fixture for argument %u",
+                                       "missing memory fixture for argument %u",
                                        unsigned(index));
       if (args.contains(key))
         return llvm::createStringError(std::errc::invalid_argument,
-                                       "memref argument %u must use --memref",
+                                       "memory argument %u must use --memref",
                                        unsigned(index));
-      if (memories.lookup(key).byteOffset != 0)
-        return llvm::createStringError(std::errc::invalid_argument,
-                                       "memref argument %u cannot use a "
-                                       "nonzero memory fixture byte offset",
-                                       unsigned(index));
-      auto tokensOrErr = parseMemoryTokens(memories.lookup(key).values,
-                                           memrefType.getElementType());
-      if (!tokensOrErr)
-        return llvm::joinErrors(
-            llvm::createStringError(std::errc::invalid_argument,
-                                    "invalid memref argument %u",
-                                    unsigned(index)),
-            tokensOrErr.takeError());
-      state.memories[arg] = std::make_shared<MemoryValue>(
-          MemoryValue{memrefType.getElementType(), std::move(*tokensOrErr)});
+      if (auto memrefType = mlir::dyn_cast<mlir::MemRefType>(arg.getType())) {
+        if (memories.lookup(key).byteOffset != 0)
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "memref argument %u cannot use a nonzero memory fixture byte "
+              "offset",
+              unsigned(index));
+        auto tokensOrErr = parseMemoryTokens(memories.lookup(key).values,
+                                             memrefType.getElementType());
+        if (!tokensOrErr)
+          return llvm::joinErrors(
+              llvm::createStringError(std::errc::invalid_argument,
+                                      "invalid memref argument %u",
+                                      unsigned(index)),
+              tokensOrErr.takeError());
+        state.memories[arg] = std::make_shared<MemoryValue>(MemoryValue{
+            memrefType.getElementType(), std::move(*tokensOrErr)});
+      } else {
+        state.rawMemoryFixtures[arg] = memories.lookup(key);
+        seedBlockArgument(
+            state, arg,
+            pointerToken(arg, {}, memories.lookup(key).byteOffset));
+      }
       continue;
     }
 
-    if (memories.contains(key)) {
-      if (args.contains(key))
-        return llvm::createStringError(
-            std::errc::invalid_argument,
-            "memory fixture argument %u must not also use --arg",
-            unsigned(index));
-      if (!mlir::isa<mlir::LLVM::LLVMPointerType>(arg.getType()))
-        return llvm::createStringError(
-            std::errc::invalid_argument,
-            "memory fixture argument %u must be memref or !llvm.ptr",
-            unsigned(index));
-      state.rawMemoryFixtures[arg] = memories.lookup(key);
-      seedBlockArgument(state, arg,
-                        pointerToken(arg, {}, memories.lookup(key).byteOffset));
-      continue;
-    }
+    if (memories.contains(key))
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "value argument %u must not use --memref", unsigned(index));
     auto argIt = args.find(key);
     if (argIt == args.end())
       return llvm::createStringError(std::errc::invalid_argument,
                                      "missing runtime argument %u",
                                      unsigned(index));
+    if (kind == dataflow::GraphPortKind::Value && argIt->second.size() != 1)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "value argument %u requires exactly one token", unsigned(index));
     for (llvm::StringRef rawToken : argIt->second) {
       auto tokenOrErr = parseRuntimeToken(rawToken, arg.getType());
       if (!tokenOrErr)
@@ -1383,13 +1356,6 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       seedBlockArgument(state, arg, *tokenOrErr);
     }
   }
-  const std::uint64_t seededBroadcastCardinality =
-      maxSeededArgumentCardinality(state);
-  const std::uint64_t streamBroadcastCardinality =
-      staticStreamCardinality(entry, state, options.maxEventSteps);
-  broadcastScalarArguments(entry, state, seededBroadcastCardinality,
-                           streamBroadcastCardinality);
-  broadcastRawPointerArguments(entry, state, seededBroadcastCardinality);
 
   if (llvm::Error err = propagateMemoryAliases(entry, state))
     return std::move(err);
@@ -1406,8 +1372,67 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
     return report;
   }
 
+  auto outputCount = [&](mlir::Value value) -> size_t {
+    auto it = state.observedOutputs.find(value);
+    return it == state.observedOutputs.end() ? 0 : it->second.size();
+  };
+  auto completionReady = [&]() {
+    return !returnObservation.complete.empty() &&
+           llvm::all_of(returnObservation.complete, [&](mlir::Value witness) {
+             return outputCount(witness) != 0;
+           });
+  };
+
+  bool retired = false;
+  auto streamInputsCommitted = [&]() {
+    for (unsigned index = 0; index < applicationInputCount; ++index) {
+      if (graph.getInputPortKind(index) != dataflow::GraphPortKind::Stream)
+        continue;
+      mlir::BlockArgument arg = entry.getArgument(index + 1);
+      for (mlir::OpOperand &use : arg.getUses()) {
+        auto channel = state.channels.find(&use);
+        if (channel != state.channels.end() && !channel->second.empty())
+          return false;
+      }
+    }
+    return true;
+  };
+  auto observeRetirement = [&]() {
+    if (retired || !completionReady())
+      return;
+    retired = true;
+    for (mlir::Value witness : returnObservation.complete) {
+      if (outputCount(witness) != 1) {
+        report.status = "invalid";
+        report.diagnostics.push_back(
+            "completion witness produced multiple tokens before retirement");
+        return;
+      }
+    }
+    if (!streamInputsCommitted()) {
+      report.status = "invalid";
+      report.diagnostics.push_back(
+          "graph retired before all stream input tokens were committed");
+      return;
+    }
+    for (auto [index, value] : llvm::enumerate(returnObservation.values)) {
+      size_t count = outputCount(value);
+      if (count == 1)
+        continue;
+      report.status = "invalid";
+      report.diagnostics.push_back(
+          llvm::formatv("value output #{0} produced {1} tokens at retirement",
+                        index, count)
+              .str());
+      return;
+    }
+  };
+  observeRetirement();
+
   for (std::uint64_t step = 0; step < options.maxEventSteps; ++step) {
+    bool retiredBeforeStep = retired;
     bool fired = false;
+    bool postRetirementFire = false;
     bool orderedStructuredBarrier = false;
     for (mlir::Operation &op : entry.getOperations()) {
       if (isSupportedNonEvent(&op))
@@ -1416,6 +1441,18 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
         continue;
       bool opFired = fireOperation(&op, state);
       fired |= opFired;
+      if (opFired && retiredBeforeStep) {
+        report.status = "invalid";
+        std::string location;
+        llvm::raw_string_ostream locationStream(location);
+        op.getLoc().print(locationStream);
+        report.diagnostics.push_back(
+            ("operation '" + op.getName().getStringRef() + "' at " +
+             locationStream.str() + " fired after graph retirement")
+                .str());
+        postRetirementFire = true;
+        break;
+      }
       if (hasPendingOrderedStructuredFire(&op, state))
         orderedStructuredBarrier = true;
     }
@@ -1423,31 +1460,28 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       break;
     flushPendingTokens(state);
     ++report.wavefrontSteps;
+    if (postRetirementFire)
+      break;
+    observeRetirement();
+    if (report.status == "invalid")
+      break;
   }
-  if (report.wavefrontSteps == options.maxEventSteps) {
+  if (!retired && report.wavefrontSteps == options.maxEventSteps) {
     report.status = "blocked";
     report.diagnostics.push_back("maximum event steps reached");
   }
 
   bool missingReturn = false;
   report.dynamicWorkItems = dynamicWorkItems(state);
-  bool missingComplete = returnObservation.complete.empty();
-  for (mlir::Value witness : returnObservation.complete) {
-    auto it = state.observedOutputs.find(witness);
-    if (it == state.observedOutputs.end() || it->second.empty()) {
-      missingComplete = true;
-      break;
-    }
-  }
-  if (missingComplete) {
+  if (!retired) {
     report.finalOutputs.push_back("missing");
     missingReturn = true;
   } else {
     mlir::Value witness = returnObservation.complete.front();
     report.finalOutputs.push_back(tokenToString(
-        state.observedOutputs.find(witness)->second.back(), witness.getType()));
+        state.observedOutputs.find(witness)->second.front(), witness.getType()));
   }
-  for (mlir::Value value : returnObservation.payloads) {
+  for (mlir::Value value : returnObservation.values) {
     auto it = state.observedOutputs.find(value);
     if (it == state.observedOutputs.end() || it->second.empty()) {
       report.finalOutputs.push_back("missing");
@@ -1455,24 +1489,33 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       continue;
     }
     report.finalOutputs.push_back(
-        tokenToString(it->second.back(), value.getType()));
+        tokenToString(it->second.front(), value.getType()));
   }
-  captureFinalMemoryState(entry, state, report);
+  for (mlir::Value stream : returnObservation.streams) {
+    llvm::SmallVector<std::string> tokens;
+    auto it = state.observedOutputs.find(stream);
+    if (it != state.observedOutputs.end())
+      for (const Token &token : it->second)
+        tokens.push_back(tokenToString(token, stream.getType()));
+    report.finalStreamOutputs.push_back(std::move(tokens));
+  }
+  captureFinalMemoryState(graph, state, report);
   const bool pendingVectorGroups = hasPendingVectorGroups(state);
   const bool incompleteLoads = hasIncompleteStreamLoads(entry, state);
+  if (report.status == "pass" && !retired) {
+    report.status = "blocked";
+    report.diagnostics.push_back("graph did not fire its retirement frontier");
+  }
   if (report.status == "pass" && !state.diagnostics.empty()) {
     report.status = "blocked";
     report.diagnostics.push_back("DFG-sim stopped with runtime diagnostics");
   }
   if (report.status == "pass" &&
       (missingReturn || incompleteLoads || pendingVectorGroups)) {
-    report.status = "blocked";
-    report.diagnostics.push_back(
-        "DFG-sim stopped before all returned values produced complete outputs");
-  } else if (report.status == "blocked" &&
-             (missingReturn || incompleteLoads || pendingVectorGroups)) {
-    report.diagnostics.push_back(
-        "DFG-sim stopped before all returned values produced complete outputs");
+    report.status = retired ? "invalid" : "blocked";
+    report.diagnostics.push_back(retired
+                                     ? "graph retired with incomplete internal state"
+                                     : "graph stopped before retirement outputs were complete");
   }
   report.eventCount = state.eventCount;
   report.operationFireCounts = state.operationFireCounts;
@@ -1561,6 +1604,15 @@ loom::sim::writeDFGSimulationReportJson(llvm::StringRef outputPath,
   for (const std::string &value : report.finalOutputs)
     outputs.push_back(value);
   root["final_outputs"] = std::move(outputs);
+
+  llvm::json::Array streamOutputs;
+  for (const auto &stream : report.finalStreamOutputs) {
+    llvm::json::Array streamValues;
+    for (const std::string &value : stream)
+      streamValues.push_back(value);
+    streamOutputs.push_back(std::move(streamValues));
+  }
+  root["final_stream_outputs"] = std::move(streamOutputs);
 
   llvm::json::Object finalMemoryState;
   for (const auto &[argument, values] : report.finalMemoryState) {

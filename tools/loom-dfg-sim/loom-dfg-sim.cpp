@@ -57,6 +57,11 @@ static llvm::cl::opt<std::uint64_t>
     maxEventSteps("max-event-steps", llvm::cl::desc("maximum event steps"),
                   llvm::cl::init(100000));
 
+static llvm::cl::opt<std::uint64_t> invocations(
+    "invocations",
+    llvm::cl::desc("number of sequential graph protocol invocations"),
+    llvm::cl::init(1));
+
 static llvm::Expected<llvm::SmallVector<loom::sim::DFGRuntimeArg>>
 parseRuntimeArgs() {
   llvm::SmallVector<loom::sim::DFGRuntimeArg> parsed;
@@ -202,6 +207,7 @@ int main(int argc, char **argv) {
   options.args = std::move(*argsOrErr);
   options.memories = std::move(*memoriesOrErr);
   options.globalMemories = std::move(*globalMemoriesOrErr);
+  options.invocations = invocations;
   options.maxEventSteps = maxEventSteps;
 
   auto reportOrErr = loom::sim::simulateDataflowGraph(*module, options);

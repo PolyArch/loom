@@ -1,4 +1,5 @@
 #include "GraphRegionLowering.h"
+#include "GraphIndexLowering.h"
 
 #include "Common/IndexWidth.h"
 #include "Frontend/Lowering/StreamLoopAttrs.h"
@@ -63,33 +64,24 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
       to, [&](::mlir::OpOperand &use) { return isUseInside(use, region); });
 }
 
-::llvm::SmallVector<::mlir::Value, 8>
-collectCapturedValues(::mlir::Region &region) {
-  ::llvm::SetVector<::mlir::Value> candidates;
-  ::mlir::getUsedValuesDefinedAbove(region, region, candidates);
-
-  ::llvm::SmallVector<::mlir::Value, 8> captures;
-  for (::mlir::Value value : candidates) {
-    if (::llvm::isa<::mlir::MemRefType>(value.getType()))
-      continue;
-    bool hasSemanticUse = false;
-    for (::mlir::OpOperand &use : value.getUses()) {
-      if (!isUseInside(use, region))
-        continue;
-      if (!isCompilerOwnedControlUse(use)) {
-        hasSemanticUse = true;
-        break;
-      }
-    }
-    if (hasSemanticUse)
-      captures.push_back(value);
-  }
-  return captures;
-}
-
 bool hasSelectedParallelProvenance(::mlir::Operation *op) {
   return op->hasAttr("loom.parallel_group") ||
          op->hasAttr("loom.parallel_schedule") || op->hasAttr("mapping");
+}
+
+bool isGraphMemoryCapabilityType(::mlir::Type type) {
+  return ::llvm::isa<::mlir::MemRefType, ::mlir::UnrankedMemRefType,
+                     ::mlir::LLVM::LLVMPointerType>(type);
+}
+
+bool isKnownLeafComputation(::mlir::Operation *op) {
+  ::llvm::StringRef dialect = op->getName().getDialectNamespace();
+  if (dialect == "arith" || dialect == "math" || dialect == "ub")
+    return true;
+  if (dialect != "llvm")
+    return false;
+  return !::llvm::isa<::mlir::LLVM::CallOp, ::mlir::LLVM::StoreOp,
+                      ::mlir::LLVM::MemcpyOp>(op);
 }
 
 ::mlir::LogicalResult checkOneGraph(::dataflow::GraphFuncOp graph) {
@@ -138,22 +130,38 @@ bool hasSelectedParallelProvenance(::mlir::Operation *op) {
           }
         }
 
-        auto rejectMemrefControlValues = [&](::mlir::TypeRange types) {
-          return ::llvm::any_of(types, [](auto type) {
-            return ::llvm::isa<::mlir::MemRefType>(type);
-          });
+        auto findMemoryCapability = [&](::mlir::TypeRange types) {
+          for (::mlir::Type type : types)
+            if (isGraphMemoryCapabilityType(type))
+              return type;
+          return ::mlir::Type{};
         };
-        if (auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(op)) {
-          if (rejectMemrefControlValues(ifOp.getResultTypes())) {
-            ifOp.emitError("loom-lower-graph-memory: scf.if memref results "
-                           "must be eliminated before graph-region lowering");
+        if (::llvm::isa<::dataflow::CarryOp, ::dataflow::MuxOp,
+                        ::dataflow::DemuxOp, ::dataflow::GateOp,
+                        ::dataflow::InvariantOp>(op)) {
+          ::mlir::Type memory = findMemoryCapability(op->getOperandTypes());
+          if (!memory)
+            memory = findMemoryCapability(op->getResultTypes());
+          if (memory) {
+            op->emitError() << "cannot lower memory capability " << memory
+                            << " through " << op->getName().getStringRef();
+            return ::mlir::WalkResult::interrupt();
+          }
+        } else if (auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(op)) {
+          ::mlir::Type memory = findMemoryCapability(ifOp.getResultTypes());
+          if (memory) {
+            ifOp.emitError()
+                << "cannot lower selected memory capability " << memory
+                << " through dataflow.mux/demux";
             return ::mlir::WalkResult::interrupt();
           }
         } else if (auto forOp = ::llvm::dyn_cast<::mlir::scf::ForOp>(op)) {
-          if (rejectMemrefControlValues(forOp.getResultTypes()) ||
-              rejectMemrefControlValues(forOp.getInitArgs().getTypes())) {
-            forOp.emitError("loom-lower-graph-memory: scf.for memref state "
-                            "must be eliminated before graph-region lowering");
+          ::mlir::Type memory =
+              findMemoryCapability(forOp.getInitArgs().getTypes());
+          if (memory) {
+            forOp.emitError()
+                << "cannot lower loop-carried memory capability " << memory
+                << " through dataflow.carry";
             return ::mlir::WalkResult::interrupt();
           }
           if (::mlir::failed(::loom::lowering::inferStreamStepKind(forOp))) {
@@ -167,11 +175,12 @@ bool hasSelectedParallelProvenance(::mlir::Operation *op) {
             return ::mlir::WalkResult::interrupt();
           }
         } else if (auto whileOp = ::llvm::dyn_cast<::mlir::scf::WhileOp>(op)) {
-          if (rejectMemrefControlValues(whileOp.getResultTypes()) ||
-              rejectMemrefControlValues(whileOp.getInits().getTypes())) {
-            whileOp.emitError(
-                "loom-lower-graph-memory: scf.while memref state must be "
-                "eliminated before graph-region lowering");
+          ::mlir::Type memory =
+              findMemoryCapability(whileOp.getInits().getTypes());
+          if (memory) {
+            whileOp.emitError()
+                << "cannot lower loop-carried memory capability " << memory
+                << " through dataflow.carry";
             return ::mlir::WalkResult::interrupt();
           }
         }
@@ -192,8 +201,12 @@ bool hasSelectedParallelProvenance(::mlir::Operation *op) {
                         ::mlir::LLVM::LoadOp, ::mlir::LLVM::StoreOp,
                         ::mlir::LLVM::MemcpyOp>(op) ||
             op->getName().getStringRef() == "llvm.intr.memset";
-        if (!modeled && (op->getNumRegions() != 0 || !::mlir::isPure(op) ||
-                         op->getName().getStringRef() == "llvm.call")) {
+        bool nested = op->getBlock() != &entry;
+        bool admissibleLeaf = ::mlir::isPure(op) ||
+                              (!nested && isKnownLeafComputation(op));
+        if (!modeled &&
+            (op->getNumRegions() != 0 || !admissibleLeaf ||
+             op->getName().getStringRef() == "llvm.call")) {
           op->emitError()
               << "loom-lower-graph-memory: effectful or unmodeled graph "
                  "operation '"
@@ -215,10 +228,10 @@ public:
     collectPartitions();
     MemoryState initial(partitionCount);
     for (MemoryFrontier &frontier : initial)
-      frontier = {entry.getArgument(0), entry.getArgument(0)};
+      frontier = {graph.getStart(), graph.getStart()};
 
-    RegionResult result =
-        lowerBlock(entry, entry.getArgument(0), std::move(initial));
+    RegionResult result = lowerBlock(entry, graph.getStart(), std::move(initial));
+    ::loom::lowering::lowerGraphIndexDomains(graph);
     finalizeReturn(::llvm::cast<::dataflow::GraphReturnOp>(anchor), result);
     return ::mlir::success();
   }
@@ -273,15 +286,88 @@ private:
     return std::nullopt;
   }
 
+  bool isMemoryCapabilityCapture(::mlir::Value value) {
+    if (!isGraphMemoryCapabilityType(value.getType()))
+      return false;
+
+    ::llvm::DenseSet<::mlir::Value> visited;
+    while (value && visited.insert(value).second) {
+      if (auto argument = ::llvm::dyn_cast<::mlir::BlockArgument>(value)) {
+        if (argument.getOwner() != &entry || argument.getArgNumber() == 0)
+          return true;
+        return graph.getInputPortKind(argument.getArgNumber() - 1) ==
+               ::dataflow::GraphPortKind::Memory;
+      }
+
+      ::mlir::Operation *def = value.getDefiningOp();
+      if (!def)
+        return true;
+      if (::llvm::isa<::mlir::memref::AllocOp, ::mlir::memref::AllocaOp,
+                      ::mlir::memref::GetGlobalOp,
+                      ::mlir::LLVM::AddressOfOp>(def))
+        return true;
+      if (auto view = ::llvm::dyn_cast<::mlir::ViewLikeOpInterface>(def)) {
+        value = view.getViewSource();
+        continue;
+      }
+      if (auto cast =
+              ::llvm::dyn_cast<::mlir::UnrealizedConversionCastOp>(def)) {
+        if (cast.getInputs().size() != 1)
+          return true;
+        value = cast.getInputs().front();
+        continue;
+      }
+      if (auto gep = ::llvm::dyn_cast<::mlir::LLVM::GEPOp>(def)) {
+        value = gep.getBase();
+        continue;
+      }
+      return true;
+    }
+    return true;
+  }
+
+  ::llvm::SmallVector<::mlir::Value, 8>
+  collectProjectedCaptures(::mlir::Region &region) {
+    ::llvm::SetVector<::mlir::Value> candidates;
+    ::mlir::getUsedValuesDefinedAbove(region, region, candidates);
+
+    ::llvm::SmallVector<::mlir::Value, 8> captures;
+    for (::mlir::Value value : candidates) {
+      if (isMemoryCapabilityCapture(value))
+        continue;
+      bool hasSemanticUse = false;
+      for (::mlir::OpOperand &use : value.getUses()) {
+        if (!isUseInside(use, region))
+          continue;
+        if (!isCompilerOwnedControlUse(use)) {
+          hasSemanticUse = true;
+          break;
+        }
+      }
+      if (hasSemanticUse)
+        captures.push_back(value);
+    }
+    return captures;
+  }
+
   bool hasExplicitNoAlias(::mlir::BlockArgument argument) const {
+    if (argument.getOwner() != &entry || argument.getArgNumber() == 0)
+      return false;
     ::mlir::DictionaryAttr attrs =
         ::mlir::function_interface_impl::getArgAttrDict(
-            graph, argument.getArgNumber());
+            graph, argument.getArgNumber() - 1);
     return attrs && attrs.contains("llvm.noalias");
   }
 
   ::mlir::Value canonicalizeRoot(::mlir::Value root) {
     if (auto argument = ::llvm::dyn_cast<::mlir::BlockArgument>(root)) {
+      if (argument.getOwner() == &entry) {
+        assert(argument.getArgNumber() > 0 &&
+               "start cannot be a memory capability root");
+        assert(graph.getInputPortKind(argument.getArgNumber() - 1) ==
+                   ::dataflow::GraphPortKind::Memory &&
+               "boundary memory root must come from the memory segment");
+      }
       if (argument.getOwner() == &entry && !hasExplicitNoAlias(argument)) {
         if (!sharedBoundaryRoot)
           sharedBoundaryRoot = root;
@@ -459,7 +545,7 @@ private:
     ::llvm::SmallVector<::mlir::Value, 8> candidates{result.execution};
     for (const MemoryFrontier &frontier : result.memory)
       candidates.push_back(frontier.read);
-    ::mlir::Value start = entry.getArgument(0);
+    ::mlir::Value start = graph.getStart();
     bool hasDerivedFrontier = ::llvm::any_of(
         candidates, [&](::mlir::Value candidate) { return candidate != start; });
     for (::mlir::Value witness : returnOp.getComplete())
@@ -471,25 +557,22 @@ private:
 
     ::llvm::SmallVector<::mlir::Value, 4> values(returnOp.getValues().begin(),
                                                  returnOp.getValues().end());
+    auto eraseUnusedWriteFrontierMuxes = [&]() {
+      for (const MemoryFrontier &frontier : result.memory) {
+        auto mux = frontier.write.getDefiningOp<::dataflow::MuxOp>();
+        if (mux && mux.getOutput().use_empty())
+          mux.erase();
+      }
+    };
     if (values.empty()) {
       returnOp.getCompleteMutable().assign(reduced);
-      return;
-    }
-
-    auto isCapabilityValue = [](::mlir::Value value) {
-      return ::llvm::isa<::mlir::LLVM::LLVMPointerType,
-                         ::mlir::MemRefType>(value.getType());
-    };
-    if (::llvm::all_of(values, isCapabilityValue)) {
-      returnOp.getCompleteMutable().assign(reduced);
+      eraseUnusedWriteFrontierMuxes();
       return;
     }
 
     ::mlir::Value publicationBase = joinEvents(reduced, returnOp.getLoc());
     ::llvm::SmallVector<::mlir::Value, 4> publicationFrontier;
     for (auto [index, value] : ::llvm::enumerate(values)) {
-      if (isCapabilityValue(value))
-        continue;
       setInsertionPoint(returnOp.getLoc());
       auto sync = ::dataflow::SyncOp::create(
           builder, returnOp.getLoc(),
@@ -500,6 +583,7 @@ private:
     }
     returnOp.getValuesMutable().assign(values);
     returnOp.getCompleteMutable().assign(publicationFrontier);
+    eraseUnusedWriteFrontierMuxes();
   }
 
   std::pair<::mlir::Value, ::mlir::Value>
@@ -716,10 +800,12 @@ private:
     }
 
     ::llvm::SetVector<::mlir::Value> captures;
-    for (::mlir::Value value : collectCapturedValues(ifOp.getThenRegion()))
+    for (::mlir::Value value :
+         collectProjectedCaptures(ifOp.getThenRegion()))
       captures.insert(value);
     if (!ifOp.getElseRegion().empty())
-      for (::mlir::Value value : collectCapturedValues(ifOp.getElseRegion()))
+      for (::mlir::Value value :
+           collectProjectedCaptures(ifOp.getElseRegion()))
         captures.insert(value);
     for (::mlir::Value capture : captures) {
       auto [falseValue, trueValue] = demux(selector, capture, loc);
@@ -802,7 +888,7 @@ private:
         demux(phase, executionCarry.getOutput(), loc);
 
     ::llvm::SmallVector<::mlir::Value, 8> captures =
-        collectCapturedValues(forOp.getRegion());
+        collectProjectedCaptures(forOp.getRegion());
     ::llvm::SmallVector<::dataflow::CarryOp, 4> valueCarries;
     ::llvm::SmallVector<::mlir::Value, 4> valueExits;
     for (::mlir::Value init : forOp.getInitArgs()) {
@@ -874,9 +960,9 @@ private:
         whileOp.getBefore().front().getTerminator());
 
     ::llvm::SmallVector<::mlir::Value, 8> beforeCaptures =
-        collectCapturedValues(whileOp.getBefore());
+        collectProjectedCaptures(whileOp.getBefore());
     ::llvm::SmallVector<::mlir::Value, 8> afterCaptures =
-        collectCapturedValues(whileOp.getAfter());
+        collectProjectedCaptures(whileOp.getAfter());
 
     setInsertionPoint(loc);
     ::mlir::Value pendingSelector =
@@ -992,11 +1078,13 @@ namespace lowering {
 
 ::mlir::LogicalResult
 checkGraphRegionLoweringPreconditions(::mlir::ModuleOp module) {
-  for (auto graph : module.getOps<::dataflow::GraphFuncOp>()) {
-    if (!graph.isExternal() && ::mlir::failed(checkOneGraph(graph)))
-      return ::mlir::failure();
-  }
-  return ::mlir::success();
+  ::mlir::WalkResult result =
+      module.walk([&](::dataflow::GraphFuncOp graph) -> ::mlir::WalkResult {
+        if (!graph.isExternal() && ::mlir::failed(checkOneGraph(graph)))
+          return ::mlir::WalkResult::interrupt();
+        return ::mlir::WalkResult::advance();
+      });
+  return result.wasInterrupted() ? ::mlir::failure() : ::mlir::success();
 }
 
 ::mlir::LogicalResult lowerGraphRegions(::dataflow::GraphFuncOp graph) {

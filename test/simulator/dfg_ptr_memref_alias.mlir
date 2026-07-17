@@ -1,4 +1,4 @@
-// RUN: loom-dfg-sim %s --graph sum_ptr_load --arg 0=none --arg 0=none --arg 0=none --arg 1=0 --arg 2=3 --arg 3=1 --memref 4=2.000000e+00,4.000000e+00,8.000000e+00 --arg 5=0.000000e+00 --output %t.json
+// RUN: loom-dfg-sim %s --graph sum_ptr_load --arg 0=0 --arg 1=3 --arg 2=1 --arg 3=0.000000e+00 --memref 4=2.000000e+00,4.000000e+00,8.000000e+00 --output %t.json
 // RUN: FileCheck %s < %t.json
 
 // CHECK-DAG: "kind": "dfg_sim_report"
@@ -7,9 +7,9 @@
 // CHECK-DAG: "status": "pass"
 // CHECK-DAG: "metric_definition": "weighted_operations_plus_library_work_diversity_and_address.v1"
 // CHECK-DAG: "dataflow.load": 3
-// CHECK-DAG: "dataflow.carry": 5
+// CHECK-DAG: "dataflow.carry": 10
 // CHECK-DAG: "dataflow.gate": 4
-// CHECK-DAG: "dataflow.demux": 4
+// CHECK-DAG: "dataflow.demux": 8
 // CHECK-DAG: "f32:14"
 
 module {
@@ -20,18 +20,25 @@ module {
   }
 
   dataflow.graph.func private @sum_ptr_load(%ctrl: none, %lb: i64, %ub: i64,
-                                            %step: i64, %ptr: !llvm.ptr,
-                                            %init: f32) -> (none, f32) {
+                                            %step: i64, %init: f32,
+                                            %ptr: !llvm.ptr) -> (none, f32)
+      attributes {input_segments = array<i32: 4, 0, 1>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %mem = builtin.unrealized_conversion_cast %ptr : !llvm.ptr to memref<?xf32>
     %iv, %phase = dataflow.stream %lb, %ub, %step
         step add while slt : i64
+    %read_frontier = dataflow.carry %phase, %ctrl, %done : none
+    %read_lane:2 = dataflow.demux %phase, %read_frontier
+        : (i1, none) -> (none, none)
     %idx = arith.index_cast %iv : i64 to index
-    %data, %done = dataflow.load %mem[%idx] %ctrl : memref<?xf32>
+    %data, %done = dataflow.load %mem[%idx] %read_lane#1 : memref<?xf32>
     %carry = dataflow.carry %phase, %init, %next : f32
     %body_phase, %body_carry = dataflow.gate %phase, %carry : f32
     %exit:2 = dataflow.demux %phase, %carry : (i1, f32) -> (f32, f32)
     %next = arith.addf %body_carry, %data : f32
-    %done_sync = dataflow.sync %done : (none) -> none
-    dataflow.graph.return %done_sync, %exit#0 : none, f32
+    %retired:2 = dataflow.sync %read_lane#0, %exit#0
+        : (none, f32) -> (none, f32)
+    dataflow.graph.return values(%retired#1 : f32) streams() memories()
+        complete(%retired#0 : none)
   }
 }

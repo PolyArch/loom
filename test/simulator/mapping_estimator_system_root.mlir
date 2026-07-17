@@ -2,7 +2,7 @@
 // RUN: mkdir -p %t.dir
 // RUN: loom-adg-builder-test --system-matrix-case dual-spatial-shared-memory --output %t.dir/system.mlir
 // RUN: env LOOM_CC=%loom-cc LOOM_CXX=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt %python %S/../app/ir_runner.py --stage dfg --case byte_swap --build-root %t.dir
-// RUN: loom-dfg-sim %t.dir/byte_swap/main_func.dfg.mlir --arg 0=none --arg 0=none --arg 0=none --arg 0=none --arg 0=none --arg 0=none --arg 0=none --arg 0=none --memref 1=0,-1,305419896,287454020,-16777216,255,-1412567295,16909060 --memref 2=0,0,0,0,0,0,0,0 --arg 3=0 --arg 3=1 --arg 3=2 --arg 3=3 --arg 3=4 --arg 3=5 --arg 3=6 --arg 3=7 --graph g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0 --workload byte_swap --output %t.dir/byte.dfg.json
+// RUN: loom-dfg-sim %t.dir/byte_swap/main_func.dfg.mlir --invocations 8 --arg 0=0 --arg 0=1 --arg 0=2 --arg 0=3 --arg 0=4 --arg 0=5 --arg 0=6 --arg 0=7 --memref 1=0,-1,305419896,287454020,-16777216,255,-1412567295,16909060 --memref 2=0,0,0,0,0,0,0,0 --graph g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0 --workload byte_swap --output %t.dir/byte.dfg.json
 // RUN: FileCheck %s --check-prefix=DFG < %t.dir/byte.dfg.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/byte_swap/main_func.dfg.mlir --graph g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0 --hardware-mlir %t.dir/system.mlir --hardware system_dual_spatial_shared_memory_soc --hardware-root-kind system --acc-core acc1 --workload byte_swap --output %t.dir/byte.system.mapping.csv --artifact %t.dir/byte.system.mapping.json
 // RUN: FileCheck %s --check-prefix=MAPPING < %t.dir/byte.system.mapping.json

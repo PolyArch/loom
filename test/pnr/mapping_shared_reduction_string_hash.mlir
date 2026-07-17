@@ -1,7 +1,8 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph string_hash_power --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload string_hash_power --output %t.power.mapping.csv --artifact %t.power.mapping.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph string_hash_power --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload string_hash_power --output %t.power.mapping.csv --artifact %t.power.mapping.json
 // RUN: FileCheck %s --check-prefix=POWER-CSV < %t.power.mapping.csv
 // RUN: FileCheck %s --check-prefix=POWER-JSON < %t.power.mapping.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph string_hash_window --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload string_hash_window --output %t.window.mapping.csv --artifact %t.window.mapping.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph string_hash_window --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload string_hash_window --output %t.window.mapping.csv --artifact %t.window.mapping.json
 // RUN: FileCheck %s --check-prefix=WINDOW-CSV < %t.window.mapping.csv
 // RUN: FileCheck %s --check-prefix=WINDOW-JSON < %t.window.mapping.json
 

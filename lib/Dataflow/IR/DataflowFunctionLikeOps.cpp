@@ -10,6 +10,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
@@ -21,6 +22,8 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TypeSwitch.h"
+
+#include <array>
 
 using namespace mlir;
 using namespace dataflow;
@@ -41,6 +44,73 @@ static bool isSupportedArmInlineAsm(Operation *op) {
   return text == "pkhbt $0, $1, $2, lsl $3" ||
          text == "pkhtb $0, $1, $2, asr $3" ||
          text == "sxtab16 $0, $1, $2" || text == "sxtb16 $0, $1";
+}
+
+static bool isGraphMemoryCapabilityType(Type type) {
+  return isa<MemRefType, UnrankedMemRefType, LLVM::LLVMPointerType>(type);
+}
+
+static bool containsGraphMemoryCapability(Type type) {
+  if (isGraphMemoryCapabilityType(type))
+    return true;
+  if (auto tuple = dyn_cast<TupleType>(type))
+    return llvm::any_of(tuple.getTypes(), containsGraphMemoryCapability);
+  if (auto structure = dyn_cast<LLVM::LLVMStructType>(type))
+    return !structure.isOpaque() &&
+           llvm::any_of(structure.getBody(), containsGraphMemoryCapability);
+  if (auto shaped = dyn_cast<ShapedType>(type))
+    return containsGraphMemoryCapability(shaped.getElementType());
+  if (auto complex = dyn_cast<ComplexType>(type))
+    return containsGraphMemoryCapability(complex.getElementType());
+  return false;
+}
+
+static std::array<int32_t, 3> inferLegacyGraphSegments(TypeRange types) {
+  int32_t memories = llvm::count_if(types, isGraphMemoryCapabilityType);
+  return {static_cast<int32_t>(types.size()) - memories, 0, memories};
+}
+
+static GraphPortKind graphPortKindAt(ArrayRef<int32_t> segments,
+                                     unsigned index) {
+  if (index < static_cast<unsigned>(segments[0]))
+    return GraphPortKind::Value;
+  if (index < static_cast<unsigned>(segments[0] + segments[1]))
+    return GraphPortKind::Stream;
+  return GraphPortKind::Memory;
+}
+
+static StringRef graphPortKindName(GraphPortKind kind) {
+  switch (kind) {
+  case GraphPortKind::Value:
+    return "value";
+  case GraphPortKind::Stream:
+    return "stream";
+  case GraphPortKind::Memory:
+    return "memory";
+  }
+  llvm_unreachable("unknown graph port kind");
+}
+
+static LogicalResult verifyGraphPortType(Operation *op, Type type,
+                                         GraphPortKind kind,
+                                         StringRef direction,
+                                         unsigned kindIndex) {
+  if (kind == GraphPortKind::Memory) {
+    if (!isGraphMemoryCapabilityType(type))
+      return op->emitOpError()
+             << "memory " << direction << " #" << kindIndex
+             << " has non-capability type " << type;
+    return success();
+  }
+  if (containsGraphMemoryCapability(type))
+    return op->emitOpError()
+           << graphPortKindName(kind) << " " << direction << " #"
+           << kindIndex << " contains memory capability type " << type;
+  if (kind == GraphPortKind::Value && isa<NoneType>(type))
+    return op->emitOpError()
+           << graphPortKindName(kind) << " " << direction << " #"
+           << kindIndex << " must not use protocol type none";
+  return success();
 }
 
 // Build a generic `func.func`-shaped op state for our function-like
@@ -336,14 +406,186 @@ LogicalResult ThreadWaitOp::verify() {
 void GraphFuncOp::build(OpBuilder &builder, OperationState &state,
                         StringRef name, FunctionType type,
                         ArrayRef<NamedAttribute> attrs) {
-  buildFunctionLike<GraphFuncOp>(builder, state, name, type, attrs);
+  SmallVector<NamedAttribute, 8> normalizedAttrs(attrs.begin(), attrs.end());
+  auto hasAttr = [&](StringRef name) {
+    return llvm::any_of(normalizedAttrs, [&](NamedAttribute attr) {
+      return attr.getName().strref() == name;
+    });
+  };
+  if (!hasAttr("input_segments")) {
+    auto segments = inferLegacyGraphSegments(type.getInputs());
+    normalizedAttrs.push_back(builder.getNamedAttr(
+        "input_segments", builder.getDenseI32ArrayAttr(segments)));
+  }
+  if (!hasAttr("result_segments")) {
+    auto segments = inferLegacyGraphSegments(type.getResults());
+    normalizedAttrs.push_back(builder.getNamedAttr(
+        "result_segments", builder.getDenseI32ArrayAttr(segments)));
+  }
+  buildFunctionLike<GraphFuncOp>(builder, state, name, type, normalizedAttrs);
 }
 
 ParseResult GraphFuncOp::parse(OpAsmParser &parser, OperationState &result) {
-  return parseFunctionLike<GraphFuncOp>(parser, result);
+  Builder &builder = parser.getBuilder();
+  StringAttr visibilityAttr;
+  StringRef visibility;
+  if (succeeded(parser.parseOptionalKeyword(&visibility, {"private"})))
+    visibilityAttr = builder.getStringAttr(visibility);
+
+  StringAttr nameAttr;
+  if (parser.parseSymbolName(nameAttr, SymbolTable::getSymbolAttrName(),
+                             result.attributes))
+    return failure();
+
+  SmallVector<OpAsmParser::Argument> arguments;
+  SmallVector<Type> resultTypes;
+  SmallVector<DictionaryAttr> resultAttrs;
+  bool isVariadic = false;
+  if (function_interface_impl::parseFunctionSignatureWithArguments(
+          parser, /*allowVariadic=*/false, arguments, isVariadic, resultTypes,
+          resultAttrs))
+    return failure();
+  if (arguments.empty() || !isa<NoneType>(arguments.front().type))
+    return parser.emitError(parser.getNameLoc(),
+                            "graph signature must begin with explicit "
+                            "start argument of type none");
+  if (resultTypes.empty() || !isa<NoneType>(resultTypes.front()))
+    return parser.emitError(parser.getNameLoc(),
+                            "graph signature must begin results with explicit "
+                            "done protocol type none");
+
+  if (visibilityAttr)
+    result.addAttribute(getSymVisibilityAttrName(result.name), visibilityAttr);
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+
+  Attribute inputSegmentsAttr = result.attributes.get("input_segments");
+  Attribute resultSegmentsAttr = result.attributes.get("result_segments");
+  if (static_cast<bool>(inputSegmentsAttr) !=
+      static_cast<bool>(resultSegmentsAttr))
+    return parser.emitError(parser.getNameLoc(),
+                            "input_segments and result_segments must be "
+                            "specified together");
+
+  SmallVector<OpAsmParser::Argument> appArguments(arguments.begin() + 1,
+                                                   arguments.end());
+  SmallVector<Type> appResults(resultTypes.begin() + 1, resultTypes.end());
+  if (!inputSegmentsAttr) {
+    SmallVector<OpAsmParser::Argument> normalizedArguments;
+    for (const OpAsmParser::Argument &arg : appArguments)
+      if (!isGraphMemoryCapabilityType(arg.type))
+        normalizedArguments.push_back(arg);
+    for (const OpAsmParser::Argument &arg : appArguments)
+      if (isGraphMemoryCapabilityType(arg.type))
+        normalizedArguments.push_back(arg);
+    appArguments = std::move(normalizedArguments);
+
+    SmallVector<Type> normalizedResults;
+    for (Type type : appResults)
+      if (!isGraphMemoryCapabilityType(type))
+        normalizedResults.push_back(type);
+    for (Type type : appResults)
+      if (isGraphMemoryCapabilityType(type))
+        normalizedResults.push_back(type);
+    appResults = std::move(normalizedResults);
+
+    int32_t memoryInputs = llvm::count_if(
+        appArguments, [](const OpAsmParser::Argument &arg) {
+          return isGraphMemoryCapabilityType(arg.type);
+        });
+    std::array<int32_t, 3> inputSegments = {
+        static_cast<int32_t>(appArguments.size()) - memoryInputs, 0,
+        memoryInputs};
+    auto resultSegments = inferLegacyGraphSegments(appResults);
+    result.addAttribute("input_segments",
+                        builder.getDenseI32ArrayAttr(inputSegments));
+    result.addAttribute("result_segments",
+                        builder.getDenseI32ArrayAttr(resultSegments));
+  }
+
+  SmallVector<Type> inputTypes;
+  llvm::transform(appArguments, std::back_inserter(inputTypes),
+                  [](const OpAsmParser::Argument &arg) { return arg.type; });
+  result.addAttribute(getFunctionTypeAttrName(result.name),
+                      TypeAttr::get(builder.getFunctionType(inputTypes,
+                                                            appResults)));
+
+  Region *body = result.addRegion();
+  SmallVector<OpAsmParser::Argument> bodyArguments;
+  bodyArguments.push_back(arguments.front());
+  bodyArguments.append(appArguments.begin(), appArguments.end());
+  if (parser.parseRegion(*body, bodyArguments,
+                         /*enableNameShadowing=*/false))
+    return failure();
+  return success();
 }
 
-void GraphFuncOp::print(OpAsmPrinter &p) { printFunctionLike(p, *this); }
+void GraphFuncOp::print(OpAsmPrinter &p) {
+  if (auto vis = getSymVisibility())
+    p << ' ' << *vis;
+  p << ' ';
+  p.printSymbolName(getSymName());
+
+  Block *entry = getBody().empty() ? nullptr : &getBody().front();
+  p << '(';
+  if (entry) {
+    p.printRegionArgument(entry->getArgument(0));
+    for (BlockArgument argument : entry->getArguments().drop_front()) {
+      p << ", ";
+      p.printRegionArgument(argument);
+    }
+  } else {
+    p.printType(NoneType::get(getContext()));
+    for (Type type : getFunctionType().getInputs()) {
+      p << ", ";
+      p.printType(type);
+    }
+  }
+  p << ") -> ";
+  ArrayRef<Type> results = getFunctionType().getResults();
+  if (results.empty()) {
+    p.printType(NoneType::get(getContext()));
+  } else {
+    p << '(';
+    p.printType(NoneType::get(getContext()));
+    for (Type type : results) {
+      p << ", ";
+      p.printType(type);
+    }
+    p << ')';
+  }
+
+  SmallVector<StringRef, 6> elidedAttrs = {
+      SymbolTable::getSymbolAttrName(), getFunctionTypeAttrName(),
+      getSymVisibilityAttrName(),      getArgAttrsAttrName(),
+      getResAttrsAttrName(),
+  };
+  p.printOptionalAttrDictWithKeyword((*this)->getAttrs(), elidedAttrs);
+  p << ' ';
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/true);
+}
+
+BlockArgument GraphFuncOp::getStart() {
+  assert(!isExternal() && "external graph has no start argument");
+  return getBody().front().getArgument(0);
+}
+
+ArrayRef<int32_t> GraphFuncOp::getInputSegmentSizes() {
+  return getInputSegments();
+}
+
+ArrayRef<int32_t> GraphFuncOp::getResultSegmentSizes() {
+  return getResultSegments();
+}
+
+GraphPortKind GraphFuncOp::getInputPortKind(unsigned index) {
+  return graphPortKindAt(getInputSegmentSizes(), index);
+}
+
+GraphPortKind GraphFuncOp::getResultPortKind(unsigned index) {
+  return graphPortKindAt(getResultSegmentSizes(), index);
+}
 
 // `dataflow.graph.func` carries the SpatialCore body of a leaf
 // dataflow graph. Per the streaming spec (see
@@ -471,31 +713,64 @@ LogicalResult GraphFuncOp::verify() {
              << *vis << "\"";
   }
 
+  ArrayRef<Type> inputs = getFunctionType().getInputs();
+  ArrayRef<Type> results = getFunctionType().getResults();
+
+  auto verifySegments = [&](ArrayRef<int32_t> segments, StringRef name,
+                            size_t count) -> LogicalResult {
+    int64_t sum = 0;
+    bool nonnegative = segments.size() == 3;
+    for (int32_t size : segments) {
+      nonnegative &= size >= 0;
+      sum += size;
+    }
+    if (!nonnegative || sum != static_cast<int64_t>(count))
+      return emitOpError()
+             << name
+             << " must contain exactly three nonnegative sizes whose sum ("
+             << sum << ") matches the function "
+             << (name == "input_segments" ? "input" : "result")
+             << " count (" << count << ")";
+    return success();
+  };
+  if (failed(verifySegments(getInputSegmentSizes(), "input_segments",
+                            inputs.size())) ||
+      failed(verifySegments(getResultSegmentSizes(), "result_segments",
+                            results.size())))
+    return failure();
+
+  auto verifyTypes = [&](ArrayRef<Type> types, ArrayRef<int32_t> segments,
+                         StringRef direction) -> LogicalResult {
+    unsigned kindIndices[] = {0, 0, 0};
+    for (auto [index, type] : llvm::enumerate(types)) {
+      GraphPortKind kind = graphPortKindAt(segments, index);
+      unsigned kindOrdinal = static_cast<unsigned>(kind);
+      if (failed(verifyGraphPortType(getOperation(), type, kind, direction,
+                                     kindIndices[kindOrdinal]++)))
+        return failure();
+    }
+    return success();
+  };
+  if (failed(verifyTypes(inputs, getInputSegmentSizes(), "input")) ||
+      failed(verifyTypes(results, getResultSegmentSizes(), "result")))
+    return failure();
+
   if (isExternal())
     return success();
 
-  // The current function ABI leads with launch-facing ctrl_in and done_out
-  // slots. graph.return carries payload segments plus the separate frontier
-  // from which launch done is derived.
-  ArrayRef<Type> inputs = getFunctionType().getInputs();
-  ArrayRef<Type> results = getFunctionType().getResults();
-  if (inputs.empty() || !isa<NoneType>(inputs.front()))
-    return emitOpError(
-        "function_type inputs must lead with a `none` ctrl_in slot");
-  if (results.empty() || !isa<NoneType>(results.front()))
-    return emitOpError(
-        "function_type results must lead with a `none` done_out slot");
-
   Block &entry = getBody().front();
-  if (entry.getNumArguments() != inputs.size())
+  if (entry.getNumArguments() != inputs.size() + 1)
     return emitOpError("entry block argument count (")
-           << entry.getNumArguments() << ") must equal function_type input count ("
+           << entry.getNumArguments()
+           << ") must equal one start argument plus function_type input count ("
            << inputs.size() << ")";
+  if (!isa<NoneType>(entry.getArgument(0).getType()))
+    return emitOpError("entry block argument #0 must be start type none");
   for (size_t i = 0, e = inputs.size(); i < e; ++i) {
     Type ty = inputs[i];
-    if (entry.getArgument(i).getType() != ty)
+    if (entry.getArgument(i + 1).getType() != ty)
       return emitOpError("entry block argument #")
-             << i << " type " << entry.getArgument(i).getType()
+             << (i + 1) << " type " << entry.getArgument(i + 1).getType()
              << " must match function_type input type " << ty;
   }
 
@@ -612,8 +887,10 @@ ParseResult GraphReturnOp::parse(OpAsmParser &parser, OperationState &result) {
     if (!compactOperands.empty()) {
       complete.push_back(compactOperands.front());
       completeTypes.push_back(compactTypes.front());
-      values.append(compactOperands.begin() + 1, compactOperands.end());
-      valueTypes.append(compactTypes.begin() + 1, compactTypes.end());
+      for (size_t i = 1, e = compactOperands.size(); i < e; ++i) {
+        values.push_back(compactOperands[i]);
+        valueTypes.push_back(compactTypes[i]);
+      }
     }
   }
 
@@ -667,28 +944,33 @@ LogicalResult GraphReturnOp::verify() {
   if (getComplete().empty())
     return emitOpError("complete segment must not be empty");
 
-  ArrayRef<Type> results = parent.getFunctionType().getResults();
-  if (results.empty())
-    return emitOpError(
-        "parent dataflow.graph.func must declare a leading done result");
-  ArrayRef<Type> payloadResults = results.drop_front();
-  SmallVector<Value, 4> outputs;
-  outputs.append(getValues().begin(), getValues().end());
-  outputs.append(getStreams().begin(), getStreams().end());
-  outputs.append(getMemories().begin(), getMemories().end());
-  if (outputs.size() != payloadResults.size())
-    return emitOpError("return output count (")
-           << outputs.size()
-           << ") must match parent dataflow.graph.func payload result count ("
-           << payloadResults.size() << ")";
-  for (size_t i = 0, e = payloadResults.size(); i < e; ++i) {
-    Type expected = payloadResults[i];
-    Type actual = outputs[i].getType();
-    if (actual != expected)
-      return emitOpError("return output #")
-             << i << " type " << actual
-             << " must match parent dataflow.graph.func payload result type "
-             << expected;
+  ArrayRef<int32_t> segments = parent.getResultSegmentSizes();
+  ValueRange ranges[] = {getValues(), getStreams(), getMemories()};
+  StringRef names[] = {"values", "streams", "memories"};
+  for (unsigned segment = 0; segment < 3; ++segment) {
+    if (ranges[segment].size() != static_cast<size_t>(segments[segment]))
+      return emitOpError()
+             << names[segment] << " segment count (" << ranges[segment].size()
+             << ") must match parent result segment size ("
+             << segments[segment] << ")";
+  }
+
+  ArrayRef<Type> expectedResults = parent.getFunctionType().getResults();
+  unsigned resultIndex = 0;
+  for (unsigned segment = 0; segment < 3; ++segment) {
+    GraphPortKind kind = static_cast<GraphPortKind>(segment);
+    for (auto [kindIndex, value] : llvm::enumerate(ranges[segment])) {
+      Type expected = expectedResults[resultIndex++];
+      Type actual = value.getType();
+      if (actual != expected)
+        return emitOpError()
+               << graphPortKindName(kind) << " output #" << kindIndex
+               << " type " << actual
+               << " must match parent result type " << expected;
+      if (failed(verifyGraphPortType(getOperation(), actual, kind, "output",
+                                     kindIndex)))
+        return failure();
+    }
   }
   return success();
 }
@@ -705,37 +987,33 @@ LogicalResult GraphLaunchOp::verifySymbolUses(SymbolTableCollection &symbols) {
            << getCallee()
            << "' does not reference a valid 'dataflow.graph.func' op";
 
-  // (none, type(bodyOperands)) must equal callee.function_type.inputs
+  // Start is an explicit launch operand, not part of the callee FunctionType.
   ArrayRef<Type> calleeInputs = callee.getFunctionType().getInputs();
-  size_t expectedOperands = getBodyOperands().size() + 1;
-  if (calleeInputs.size() != expectedOperands)
-    return emitOpError("operand count (ctrl_in + body operands = ")
-           << expectedOperands << ") does not match callee input count ("
+  if (calleeInputs.size() != getBodyOperands().size())
+    return emitOpError("application operand count (")
+           << getBodyOperands().size() << ") does not match callee input count ("
            << calleeInputs.size() << ")";
-  // Slot 0 is ctrl_in : none on both sides; tablegen already enforces
-  // ctrl_in's type. Skip slot 0 and check the rest.
-  for (size_t i = 1; i < calleeInputs.size(); ++i) {
+  for (size_t i = 0; i < calleeInputs.size(); ++i) {
     Type expected = calleeInputs[i];
-    Type actual = getBodyOperands()[i - 1].getType();
+    Type actual = getBodyOperands()[i].getType();
     if (actual != expected)
       return emitOpError("body operand #")
-             << (i - 1) << " type " << actual
+             << i << " type " << actual
              << " does not match callee input type " << expected;
   }
 
-  // (none, type(results)) must equal callee.function_type.results
+  // Done is an explicit launch result, not part of the callee FunctionType.
   ArrayRef<Type> calleeResults = callee.getFunctionType().getResults();
-  size_t expectedResults = getResults().size() + 1;
-  if (calleeResults.size() != expectedResults)
-    return emitOpError("result count (done_out + body results = ")
-           << expectedResults << ") does not match callee result count ("
+  if (calleeResults.size() != getResults().size())
+    return emitOpError("application result count (")
+           << getResults().size() << ") does not match callee result count ("
            << calleeResults.size() << ")";
-  for (size_t i = 1; i < calleeResults.size(); ++i) {
+  for (size_t i = 0; i < calleeResults.size(); ++i) {
     Type expected = calleeResults[i];
-    Type actual = getResults()[i - 1].getType();
+    Type actual = getResults()[i].getType();
     if (actual != expected)
       return emitOpError("body result #")
-             << (i - 1) << " type " << actual
+             << i << " type " << actual
              << " does not match callee result type " << expected;
   }
 

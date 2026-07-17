@@ -77,6 +77,10 @@ struct SharedMemoryAdgConfig {
   unsigned fpCmpCount = 4;
   unsigned syncCount = 4;
   unsigned syncArity = 6;
+  unsigned typedSync1Count = 0;
+  unsigned typedSync8Count = 0;
+  unsigned typedSync32Count = 0;
+  unsigned typedSync64Count = 0;
   unsigned streamCount = 0;
   unsigned wideStreamCount = 0;
   unsigned carryCount = 0;
@@ -364,6 +368,46 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
       dataSinks.push_back(value);
     }
   };
+  auto addTypedSyncBank = [&](llvm::StringRef prefix, unsigned count,
+                              llvm::StringRef boundaryType,
+                              llvm::StringRef semanticType,
+                              std::vector<std::string> &dataSources,
+                              std::vector<std::string> &dataSinks) {
+    for (unsigned index = 0; index < count; ++index) {
+      std::string stem = numbered(prefix, index);
+      std::string control = stem + "_control";
+      std::string value = stem + "_value";
+      std::string done = stem + "_done";
+      std::string rawDone = done + "_wide";
+      std::string published = stem + "_published";
+      PeSpec pe;
+      pe.inputs = {{"pc", control, "!fabric.bits<0>", boundaryType.str()},
+                   {"pv", value, boundaryType.str(), ""}};
+      pe.resultNames = {rawDone, published};
+      pe.resultTypes = {boundaryType.str(), boundaryType.str()};
+      pe.fus.push_back(
+          FuSpec{{{"control", "pc", boundaryType.str(), "!fabric.bits<0>"},
+                  {"value", "pv", boundaryType.str(),
+                   boundaryType == semanticType ? "" : semanticType.str()}},
+                 {boundaryType.str(), boundaryType.str()},
+                 {FabricOpSpec{{"done", "published"},
+                               {"dataflow.sync"},
+                               {"control", "value"},
+                               {"!fabric.bits<0>", semanticType.str()},
+                               {"!fabric.bits<0>", semanticType.str()},
+                               {},
+                               {{"bitmask", "11"}}}},
+                 {"done", "published"},
+                 {"!fabric.bits<0>", semanticType.str()}});
+      module.addPe(std::move(pe));
+      addFifo(module, done, rawDone, boundaryType, "!fabric.bits<0>", 1,
+              true, true);
+      sinks0.push_back(control);
+      sources0.push_back(done);
+      dataSinks.push_back(value);
+      dataSources.push_back(published);
+    }
+  };
 
   for (unsigned index = 0; index < config.constantCount; ++index) {
     std::string result = numbered("const", index);
@@ -600,6 +644,18 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
           (prefix + llvm::Twine("_done") + llvm::Twine(lane)).str());
     }
   }
+  addTypedSyncBank("typed_sync_i1", config.typedSync1Count,
+                   "!fabric.bits<32>", "!fabric.bits<1>", sources32,
+                   sinks32);
+  addTypedSyncBank("typed_sync_i8", config.typedSync8Count,
+                   "!fabric.bits<32>", "!fabric.bits<8>", sources32,
+                   sinks32);
+  addTypedSyncBank("typed_sync_i32", config.typedSync32Count,
+                   "!fabric.bits<32>", "!fabric.bits<32>", sources32,
+                   sinks32);
+  addTypedSyncBank("typed_sync_i64", config.typedSync64Count,
+                   "!fabric.bits<64>", "!fabric.bits<64>", sources64,
+                   sinks64);
 
   for (unsigned index = 0; index < config.loadCount; ++index) {
     sources32.push_back(numbered("data", index));
@@ -669,6 +725,11 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   config.wideGateCount = 2;
   config.invariantCount = 2;
   config.wideInvariantCount = 2;
+  config.fnegCount = 1;
+  config.typedSync1Count = 2;
+  config.typedSync8Count = 2;
+  config.typedSync32Count = 8;
+  config.typedSync64Count = 4;
   config.constantHexValues = {
       "0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004",
       "0x00000008", "0x00000010", "0x3f800000", "0x40000000", "0xbf800000",
@@ -778,6 +839,8 @@ ModuleBuilder loom::adg::buildSharedSignalWindowAdg() {
   config.carryCount = 28;
   config.gateCount = 28;
   config.invariantCount = 12;
+  config.typedSync32Count = 4;
+  config.typedSync64Count = 2;
   return buildSharedMemoryLikeAdg(config);
 }
 

@@ -18,6 +18,12 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowEnums.h"
 
+namespace dataflow {
+
+enum class GraphPortKind { Value, Stream, Memory };
+
+} // namespace dataflow
+
 #define GET_OP_CLASSES
 #include "Dataflow/IR/DataflowOps.h.inc"
 

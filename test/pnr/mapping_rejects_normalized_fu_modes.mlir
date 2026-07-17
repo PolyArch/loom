@@ -1,4 +1,5 @@
-// RUN: not loom-pnr-map --dfg-mlir %s --graph normalized_add \
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: not loom-pnr-map --dfg-mlir %t.lowered.mlir --graph normalized_add \
 // RUN:   --hardware-mlir %s --hardware normalized_add_adg \
 // RUN:   --workload normalized_add --output %t.csv --artifact %t.json 2>&1 \
 // RUN:   | FileCheck %s

@@ -1,4 +1,5 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph long_add_chain --hardware-mlir %s --hardware long_chain_adg --workload long_add_chain --output %t.mapping.csv --artifact %t.mapping.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph long_add_chain --hardware-mlir %s --hardware long_chain_adg --workload long_add_chain --output %t.mapping.csv --artifact %t.mapping.json
 // RUN: FileCheck %s --check-prefix=CSV < %t.mapping.csv
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
 

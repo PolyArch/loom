@@ -1,7 +1,8 @@
 // RUN: rm -rf %t.dir
 // RUN: mkdir -p %t.dir
 // RUN: loom-adg-builder-test --shared-memory-reduction --output %t.dir/shared-memory-reduction.mlir
-// RUN: loom-pnr-map --dfg-mlir %s --graph spmm_computed_address --hardware-mlir %t.dir/shared-memory-reduction.mlir --hardware shared_memory_reduction_adg --workload spmm_computed_address --output %t.csv --artifact %t.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph spmm_computed_address --hardware-mlir %t.dir/shared-memory-reduction.mlir --hardware shared_memory_reduction_adg --workload spmm_computed_address --output %t.csv --artifact %t.json
 // RUN: FileCheck %s --check-prefix=CSV < %t.csv
 // RUN: FileCheck %s --check-prefix=JSON < %t.json
 

@@ -275,18 +275,19 @@
 // CONSTLOAD-JSON-NOT: ".out"
 // CONSTLOAD-JSON-NOT: ".in"
 
-// RUN: loom-pnr-map --dfg-mlir %s --graph cfft_red3_fmul_pair --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload cfft_red3_fmul_pair --output %t.cfftred3.mapping.csv --artifact %t.cfftred3.mapping.json
+// RUN: loom-adg-builder-test --shared-memory-reduction --output %t.cfftred3.hardware.mlir
+// RUN: loom-pnr-map --dfg-mlir %s --graph cfft_red3_fmul_pair --hardware-mlir %t.cfftred3.hardware.mlir --hardware shared_memory_reduction_adg --workload cfft_red3_fmul_pair --output %t.cfftred3.mapping.csv --artifact %t.cfftred3.mapping.json
 // RUN: FileCheck %s --check-prefix=CFFT-RED3-CSV < %t.cfftred3.mapping.csv
 // RUN: FileCheck %s --check-prefix=CFFT-RED3-JSON < %t.cfftred3.mapping.json
 
 // CFFT-RED3-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// CFFT-RED3-CSV-NEXT: cfft_red3_fmul_pair,shared_reduction_adg,cfft_red3_fmul_pair__cfft_red3_fmul_pair__shared_reduction_adg,11,{{[1-9][0-9]*}},0,0,pass,mapped software graph to fabric resources
+// CFFT-RED3-CSV-NEXT: cfft_red3_fmul_pair,shared_memory_reduction_adg,cfft_red3_fmul_pair__cfft_red3_fmul_pair__shared_memory_reduction_adg,23,42,0,0,pass,mapped software graph to fabric resources
 
 // CFFT-RED3-JSON-DAG: "status": "pass"
 // CFFT-RED3-JSON-DAG: "operation": "arith.mulf"
-// CFFT-RED3-JSON-DAG: "edge_ref": "dataflow.invariant#0.result0->arith.mulf#0.operand0"
+// CFFT-RED3-JSON-DAG: "edge_ref": "dataflow.gate#1.result1->arith.mulf#0.operand0"
 // CFFT-RED3-JSON-DAG: "edge_ref": "dataflow.load#0.result0->arith.mulf#0.operand1"
-// CFFT-RED3-JSON-DAG: "edge_ref": "dataflow.invariant#0.result0->arith.mulf#1.operand0"
+// CFFT-RED3-JSON-DAG: "edge_ref": "dataflow.gate#1.result1->arith.mulf#1.operand0"
 // CFFT-RED3-JSON-DAG: "edge_ref": "llvm.fneg#0.result0->arith.mulf#1.operand1"
 // CFFT-RED3-JSON-NOT: "unrouted"
 // CFFT-RED3-JSON-NOT: ".out"
@@ -463,7 +464,8 @@ module {
           : (!llvm.ptr) -> !llvm.ptr, i8
       scf.yield %next : !llvm.ptr
     } {loom.stream_step_kind = 0 : i32, loom.stream_predicate = 2 : i64}
-    dataflow.graph.return %ctrl, %0 : none, !llvm.ptr
+    dataflow.graph.return values() streams() memories(%0 : !llvm.ptr)
+        complete(%ctrl : none)
   }
 
   dataflow.graph.func private @mem_pointer_bookkeeping(
@@ -499,7 +501,8 @@ module {
     %dst_next = llvm.getelementptr inbounds|nuw %dst_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
     %stored = dataflow.store %dst_mem[%addr] %sum %ctrl : memref<?xf32>
     %synced:2 = dataflow.sync %done, %stored : (none, none) -> (none, none)
-    dataflow.graph.return %synced#0, %dst_cur : none, !llvm.ptr
+    dataflow.graph.return values() streams() memories(%dst_cur : !llvm.ptr)
+        complete(%synced#0 : none)
   }
 
   dataflow.graph.func private @mem_gep_bookkeeping_return(
@@ -517,7 +520,8 @@ module {
     %dst_next = llvm.getelementptr inbounds|nuw %dst_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
     %stored = dataflow.store %dst_mem[%addr] %sum %ctrl : memref<?xf32>
     %synced:2 = dataflow.sync %done, %stored : (none, none) -> (none, none)
-    dataflow.graph.return %synced#0, %dst_next : none, !llvm.ptr
+    dataflow.graph.return values() streams() memories(%dst_next : !llvm.ptr)
+        complete(%synced#0 : none)
   }
 
   dataflow.graph.func private @control_mux_needs_control_resource(
@@ -594,24 +598,44 @@ module {
 
   dataflow.graph.func private @cfft_red3_fmul_pair(
       %ctrl: none, %lb: i32, %ub: i32, %step: i32, %twiddle: f32,
-      %buf: !llvm.ptr) -> none {
-    %zero = dataflow.constant %ctrl {const_value = 0 : index} : index
-    %idx, %rwc = dataflow.stream %lb, %ub, %step step add while slt : i32
-    %scale = dataflow.invariant %rwc, %twiddle : f32
-    %cur = dataflow.carry %rwc, %buf, %next : !llvm.ptr
-    %active_cond, %active = dataflow.gate %rwc, %cur : !llvm.ptr
-    %mem = builtin.unrealized_conversion_cast %active : !llvm.ptr to memref<?xf32>
-    %slot1 = llvm.getelementptr inbounds|nuw %active[4] : (!llvm.ptr) -> !llvm.ptr, i8
-    %data, %loaded = dataflow.load %mem[%zero] %ctrl : memref<?xf32>
-    %scaled0 = arith.mulf %scale, %data : f32
-    %stored0 = dataflow.store %mem[%zero] %scaled0 %ctrl : memref<?xf32>
-    %data1 = llvm.load %slot1 {alignment = 4 : i64} : !llvm.ptr -> f32
+      %buf: !llvm.ptr) -> none
+      attributes {input_segments = array<i32: 4, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %mem = builtin.unrealized_conversion_cast %buf : !llvm.ptr to memref<?xf32>
+    %one = dataflow.constant %ctrl {const_value = 1 : index} : index
+    %iv, %phase = dataflow.stream %lb, %ub, %step step add while slt : i32
+    %execution = dataflow.carry %phase, %ctrl, %iteration_done : none
+    %execution_lanes:2 = dataflow.demux %phase, %execution
+        : (i1, none) -> (none, none)
+    %one_each = dataflow.invariant %phase, %one : index
+    %one_cond, %one_active = dataflow.gate %phase, %one_each : index
+    %scale_each = dataflow.invariant %phase, %twiddle : f32
+    %scale_cond, %scale = dataflow.gate %phase, %scale_each : f32
+    %read_frontier = dataflow.carry %phase, %ctrl, %iteration_done : none
+    %write_frontier = dataflow.carry %phase, %ctrl, %iteration_done : none
+    %read_lanes:2 = dataflow.demux %phase, %read_frontier
+        : (i1, none) -> (none, none)
+    %write_lanes:2 = dataflow.demux %phase, %write_frontier
+        : (i1, none) -> (none, none)
+    %index = arith.index_cast %iv : i32 to index
+    %base = arith.addi %index, %index : index
+    %next = arith.addi %base, %one_active : index
+    %load_ready:2 = dataflow.sync %execution_lanes#1, %read_lanes#1
+        : (none, none) -> (none, none)
+    %store_ready:2 = dataflow.sync %write_lanes#1, %loaded0
+        : (none, none) -> (none, none)
+    %data0, %loaded0 = dataflow.load %mem[%base] %load_ready#0
+        : memref<?xf32>
+    %scaled0 = arith.mulf %scale, %data0 : f32
+    %stored0 = dataflow.store %mem[%base] %scaled0 %store_ready#0
+        : memref<?xf32>
+    %data1, %loaded1 = dataflow.load %mem[%next] %stored0 : memref<?xf32>
     %neg = llvm.fneg %data1 : f32
     %scaled1 = arith.mulf %scale, %neg : f32
-    llvm.store %scaled1, %slot1 {alignment = 4 : i64} : f32, !llvm.ptr
-    %next = llvm.getelementptr inbounds|nuw %active[8] : (!llvm.ptr) -> !llvm.ptr, i8
-    %done:2 = dataflow.sync %loaded, %stored0 : (none, none) -> (none, none)
-    dataflow.graph.return %done#0 : none
+    %iteration_done = dataflow.store %mem[%next] %scaled1 %loaded1
+        : memref<?xf32>
+    dataflow.graph.return values() streams() memories()
+        complete(%execution_lanes#0, %write_lanes#0 : none, none)
   }
 
   dataflow.graph.func private @mem_pointer_semantic_return(
@@ -622,12 +646,14 @@ module {
     %src_next = llvm.getelementptr inbounds|nuw %src_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
     %bits = builtin.unrealized_conversion_cast %src_cur : !llvm.ptr to i32
     %sum = arith.addi %bits, %lb : i32
-    dataflow.graph.return %ctrl, %src_cur, %sum : none, !llvm.ptr, i32
+    dataflow.graph.return values(%sum : i32) streams()
+        memories(%src_cur : !llvm.ptr) complete(%ctrl : none)
   }
 
   dataflow.graph.func private @mem_pointer_return(%ctrl: none, %ptr: !llvm.ptr)
       -> (none, !llvm.ptr) {
-    dataflow.graph.return %ctrl, %ptr : none, !llvm.ptr
+    dataflow.graph.return values() streams() memories(%ptr : !llvm.ptr)
+        complete(%ctrl : none)
   }
 
   fabric.module @mem_store_route_adg(%mgr : memref<?x!fabric.bits<32>>,

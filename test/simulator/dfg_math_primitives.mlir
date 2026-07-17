@@ -1,14 +1,14 @@
-// RUN: loom-dfg-sim %s --graph math_unary_float --arg 0=none --output %t.float.json
+// RUN: loom-dfg-sim %s --graph math_unary_float --output %t.float.json
 // RUN: FileCheck %s --check-prefix=FLOAT < %t.float.json
-// RUN: loom-dfg-sim %s --graph llvm_fabs_intrinsic --arg 0=none --output %t.llvm-fabs.json
+// RUN: loom-dfg-sim %s --graph llvm_fabs_intrinsic --output %t.llvm-fabs.json
 // RUN: FileCheck %s --check-prefix=LLVM-FABS < %t.llvm-fabs.json
-// RUN: loom-dfg-sim %s --graph math_rounding_float --arg 0=none --output %t.round.json
+// RUN: loom-dfg-sim %s --graph math_rounding_float --output %t.round.json
 // RUN: FileCheck %s --check-prefix=ROUND < %t.round.json
-// RUN: loom-dfg-sim %s --graph math_roundeven_edges --arg 0=none --output %t.roundeven.json
+// RUN: loom-dfg-sim %s --graph math_roundeven_edges --output %t.roundeven.json
 // RUN: FileCheck %s --check-prefix=EVEN < %t.roundeven.json
-// RUN: loom-dfg-sim %s --graph math_integer_abs --arg 0=none --output %t.int.json
+// RUN: loom-dfg-sim %s --graph math_integer_abs --output %t.int.json
 // RUN: FileCheck %s --check-prefix=INT < %t.int.json
-// RUN: loom-dfg-sim %s --graph math_integer_abs_poison --arg 0=none --output %t.int-poison.json
+// RUN: loom-dfg-sim %s --graph math_integer_abs_poison --output %t.int-poison.json
 // RUN: FileCheck %s --check-prefix=INT-POISON < %t.int-poison.json
 
 // FLOAT-DAG: "workload": "math_unary_float"
@@ -82,7 +82,9 @@
 module {
   dataflow.graph.func private @math_unary_float(%ctrl: none)
       -> (none, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32,
-          f32, f32, f32, f32, f32, f32) {
+          f32, f32, f32, f32, f32, f32)
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 17, 0, 0>} {
     %neg = dataflow.constant %ctrl {const_value = -3.000000e+00 : f32} : f32
     %abs = math.absf %neg : f32
     %sixteen = dataflow.constant %ctrl {const_value = 1.600000e+01 : f32} : f32
@@ -108,21 +110,37 @@ module {
     %log10 = math.log10 %hundred : f32
     %log1p = math.log1p %zero : f32
     %erf = math.erf %zero : f32
-    dataflow.graph.return %ctrl, %abs, %sqrt, %rsqrt, %sin, %cos, %tan,
-        %sinh, %cosh, %tanh, %exp, %exp2, %expm1, %log, %log2, %log10,
-        %log1p, %erf : none, f32, f32, f32, f32, f32, f32, f32, f32,
-        f32, f32, f32, f32, f32, f32, f32, f32, f32
+    %published:18 = dataflow.sync %ctrl, %abs, %sqrt, %rsqrt, %sin, %cos,
+        %tan, %sinh, %cosh, %tanh, %exp, %exp2, %expm1, %log, %log2,
+        %log10, %log1p, %erf
+        : (none, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32,
+           f32, f32, f32, f32, f32, f32)
+          -> (none, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32,
+              f32, f32, f32, f32, f32, f32, f32)
+    dataflow.graph.return %published#0, %published#1, %published#2,
+        %published#3, %published#4, %published#5, %published#6,
+        %published#7, %published#8, %published#9, %published#10,
+        %published#11, %published#12, %published#13, %published#14,
+        %published#15, %published#16, %published#17
+        : none, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32,
+          f32, f32, f32, f32, f32, f32
   }
 
   dataflow.graph.func private @llvm_fabs_intrinsic(%ctrl: none)
-      -> (none, f32) {
+      -> (none, f32)
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %neg = dataflow.constant %ctrl {const_value = -3.500000e+00 : f32} : f32
     %abs = llvm.intr.fabs(%neg) : (f32) -> f32
-    dataflow.graph.return %ctrl, %abs : none, f32
+    %published:2 = dataflow.sync %ctrl, %abs
+        : (none, f32) -> (none, f32)
+    dataflow.graph.return %published#0, %published#1 : none, f32
   }
 
   dataflow.graph.func private @math_rounding_float(%ctrl: none)
-      -> (none, f32, f32, f32, f32, f32) {
+      -> (none, f32, f32, f32, f32, f32)
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 5, 0, 0>} {
     %floor_in = dataflow.constant %ctrl {const_value = 2.750000e+00 : f32} : f32
     %floor = math.floor %floor_in : f32
     %ceil_in = dataflow.constant %ctrl {const_value = 2.250000e+00 : f32} : f32
@@ -132,12 +150,18 @@ module {
     %trunc_in = dataflow.constant %ctrl {const_value = -2.750000e+00 : f32} : f32
     %trunc = math.trunc %trunc_in : f32
     %even = math.roundeven %round_in : f32
-    dataflow.graph.return %ctrl, %floor, %ceil, %round, %trunc, %even
+    %published:6 = dataflow.sync %ctrl, %floor, %ceil, %round, %trunc, %even
+        : (none, f32, f32, f32, f32, f32)
+          -> (none, f32, f32, f32, f32, f32)
+    dataflow.graph.return %published#0, %published#1, %published#2,
+        %published#3, %published#4, %published#5
         : none, f32, f32, f32, f32, f32
   }
 
   dataflow.graph.func private @math_roundeven_edges(%ctrl: none)
-      -> (none, f32, f32, f32, f32, f32) {
+      -> (none, f32, f32, f32, f32, f32)
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 5, 0, 0>} {
     %neg_half_in = dataflow.constant %ctrl {const_value = -5.000000e-01 : f32} : f32
     %neg_half = math.roundeven %neg_half_in : f32
     %pos_half_in = dataflow.constant %ctrl {const_value = 5.000000e-01 : f32} : f32
@@ -148,19 +172,33 @@ module {
     %two_half = math.roundeven %two_half_in : f32
     %three_half_in = dataflow.constant %ctrl {const_value = 3.500000e+00 : f32} : f32
     %three_half = math.roundeven %three_half_in : f32
-    dataflow.graph.return %ctrl, %neg_half, %pos_half, %one_half, %two_half,
-        %three_half : none, f32, f32, f32, f32, f32
+    %published:6 = dataflow.sync %ctrl, %neg_half, %pos_half, %one_half,
+        %two_half, %three_half
+        : (none, f32, f32, f32, f32, f32)
+          -> (none, f32, f32, f32, f32, f32)
+    dataflow.graph.return %published#0, %published#1, %published#2,
+        %published#3, %published#4, %published#5
+        : none, f32, f32, f32, f32, f32
   }
 
-  dataflow.graph.func private @math_integer_abs(%ctrl: none) -> (none, i32) {
+  dataflow.graph.func private @math_integer_abs(%ctrl: none) -> (none, i32)
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %neg = dataflow.constant %ctrl {const_value = -17 : i32} : i32
     %abs = math.absi %neg : i32
-    dataflow.graph.return %ctrl, %abs : none, i32
+    %published:2 = dataflow.sync %ctrl, %abs
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return %published#0, %published#1 : none, i32
   }
 
-  dataflow.graph.func private @math_integer_abs_poison(%ctrl: none) -> (none, i8) {
+  dataflow.graph.func private @math_integer_abs_poison(%ctrl: none)
+      -> (none, i8)
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %min = dataflow.constant %ctrl {const_value = -128 : i8} : i8
     %abs = math.absi %min : i8
-    dataflow.graph.return %ctrl, %abs : none, i8
+    %published:2 = dataflow.sync %ctrl, %abs
+        : (none, i8) -> (none, i8)
+    dataflow.graph.return %published#0, %published#1 : none, i8
   }
 }

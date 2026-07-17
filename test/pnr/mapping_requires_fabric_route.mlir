@@ -1,4 +1,5 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph disconnected_route --hardware-mlir %s --hardware disconnected_adg --workload disconnected_route --output %t.mapping.csv --artifact %t.mapping.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph disconnected_route --hardware-mlir %s --hardware disconnected_adg --workload disconnected_route --output %t.mapping.csv --artifact %t.mapping.json
 // RUN: FileCheck %s --check-prefix=CSV < %t.mapping.csv
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
 

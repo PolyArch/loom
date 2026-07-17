@@ -713,12 +713,12 @@ def Dataflow_GraphFuncOp : Dataflow_Op<"graph.func", [
     `dataflow.graph.launch` ops materialise launches of it inside the
     body of a `dataflow.thread` definition.
 
-    `function_type` includes the launch-facing control ports in the current
-    ABI: inputs are `(none, T0, ..., TN)` (leading `none` is `ctrl_in`) and
-    results are `(none, R0, ..., RM)` (leading `none` is launch `done`). The
-    body's structural `dataflow.graph.return` declares the payload results in
-    value, stream, and memory segments; its separate `complete` frontier
-    derives the launch `done` event.
+    `function_type` contains only application payload ports. Normalized
+    `input_segments` and `result_segments` classify those payloads as value,
+    stream, and memory ports. The body's distinguished leading `none` block
+    argument is the invocation start protocol endpoint, while launch `done`
+    is derived exclusively from `dataflow.graph.return.complete`; neither is
+    stored in the function type.
 
     Naming this op `graph.func` (as opposed to `graph`) avoids
     collision with the existing regional `dataflow.graph` op, which is
@@ -729,6 +729,8 @@ def Dataflow_GraphFuncOp : Dataflow_Op<"graph.func", [
   let arguments = (ins
       SymbolNameAttr:$sym_name,
       TypeAttrOf<FunctionType>:$function_type,
+      DenseI32ArrayAttr:$input_segments,
+      DenseI32ArrayAttr:$result_segments,
       OptionalAttr<StrAttr>:$sym_visibility,
       OptionalAttr<DictArrayAttr>:$arg_attrs,
       OptionalAttr<DictArrayAttr>:$res_attrs);
@@ -757,6 +759,30 @@ def Dataflow_GraphFuncOp : Dataflow_Op<"graph.func", [
       return isExternal() ? nullptr : &getBody();
     }
     bool isExternal() { return getBody().empty(); }
+    ::mlir::BlockArgument getStart();
+    ::llvm::ArrayRef<int32_t> getInputSegmentSizes();
+    ::llvm::ArrayRef<int32_t> getResultSegmentSizes();
+    GraphPortKind getInputPortKind(unsigned index);
+    GraphPortKind getResultPortKind(unsigned index);
+    ::llvm::LogicalResult verifyBody() {
+      if (isExternal())
+        return ::mlir::success();
+      ::mlir::Block &entry = getBody().front();
+      ::llvm::ArrayRef<::mlir::Type> inputs = getFunctionType().getInputs();
+      if (entry.getNumArguments() != inputs.size() + 1)
+        return emitOpError("entry block must have one start argument plus ")
+               << inputs.size() << " application inputs";
+      if (!::llvm::isa<::mlir::NoneType>(entry.getArgument(0).getType()))
+        return emitOpError("entry block argument #0 must be start type none");
+      for (size_t i = 0, e = inputs.size(); i < e; ++i) {
+        if (entry.getArgument(i + 1).getType() != inputs[i])
+          return emitOpError("entry block argument #")
+                 << (i + 1) << " type "
+                 << entry.getArgument(i + 1).getType()
+                 << " must match function input type " << inputs[i];
+      }
+      return ::mlir::success();
+    }
   }];
 }
 
@@ -815,11 +841,12 @@ def Dataflow_GraphLaunchOp : Dataflow_Op<"graph.launch", [
   let summary = "Synchronous launch of a dataflow.graph.func callable";
   let description = [{
     References a `dataflow.graph.func` definition by symbol from
-    inside a `dataflow.thread` body. The first operand is the
-    per-launch `ctrl_in : none` start signal; the remaining operands
-    are body operands. The first result is the per-launch `done_out : none`
-    retirement signal, derived as the all-of of the callee's
-    `graph.return.complete` segment; the remaining results carry user data.
+    inside a `dataflow.thread` body. The first operand is the per-launch
+    `ctrl_in : none` start signal; the remaining operands bind application
+    inputs. The first result is the per-launch `done_out : none` retirement
+    signal, derived as the all-of of the callee's `graph.return.complete`
+    segment; the remaining results carry application outputs. Start and done
+    are protocol endpoints, not members of the callee function type.
 
     The operation resolves its callee through `SymbolUserOpInterface` but does
     not project callee effects through `MemoryEffectsOpInterface`.

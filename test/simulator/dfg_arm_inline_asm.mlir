@@ -1,4 +1,4 @@
-// RUN: loom-dfg-sim %s --graph arm_inline_asm --arg 0=none --output %t.json
+// RUN: loom-dfg-sim %s --graph arm_inline_asm --output %t.json
 // RUN: FileCheck %s < %t.json
 
 // CHECK-DAG: "workload": "arm_inline_asm"
@@ -15,7 +15,9 @@
 
 module {
   dataflow.graph.func private @arm_inline_asm(%ctrl: none)
-      -> (none, i32, i32, i32, i32) {
+      -> (none, i32, i32, i32, i32)
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 4, 0, 0>} {
     %pack_low = dataflow.constant %ctrl {const_value = 65538 : i32} : i32
     %pack_high = dataflow.constant %ctrl {const_value = 196612 : i32} : i32
     %shift16 = dataflow.constant %ctrl {const_value = 16 : i32} : i32
@@ -37,7 +39,9 @@ module {
     %sxtb16 = llvm.inline_asm tail_call_kind = <tail> asm_dialect = att
         "sxtb16 $0, $1", "=r,r" %bytes : (i32) -> i32
 
-    dataflow.graph.return %ctrl, %pkhbt, %pkhtb, %sxtab16, %sxtb16
-        : none, i32, i32, i32, i32
+    %published:5 = dataflow.sync %ctrl, %pkhbt, %pkhtb, %sxtab16, %sxtb16
+        : (none, i32, i32, i32, i32) -> (none, i32, i32, i32, i32)
+    dataflow.graph.return %published#0, %published#1, %published#2,
+        %published#3, %published#4 : none, i32, i32, i32, i32
   }
 }

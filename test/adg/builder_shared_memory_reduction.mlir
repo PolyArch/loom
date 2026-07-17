@@ -52,6 +52,11 @@
 // HARDWARE-DAG: (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<1>)
 // HARDWARE-DAG: (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> (!fabric.bits<64>, !fabric.bits<1>)
 // HARDWARE-DAG: fabric.op [@dataflow.carry]
+// HARDWARE-DAG: fabric.op [@llvm.fneg]
+// HARDWARE-DAG: fabric.op [@dataflow.sync]{{.*}} : (!fabric.bits<0>, !fabric.bits<1>) -> (!fabric.bits<0>, !fabric.bits<1>)
+// HARDWARE-DAG: fabric.op [@dataflow.sync]{{.*}} : (!fabric.bits<0>, !fabric.bits<8>) -> (!fabric.bits<0>, !fabric.bits<8>)
+// HARDWARE-DAG: fabric.op [@dataflow.sync]{{.*}} : (!fabric.bits<0>, !fabric.bits<32>) -> (!fabric.bits<0>, !fabric.bits<32>)
+// HARDWARE-DAG: fabric.op [@dataflow.sync]{{.*}} : (!fabric.bits<0>, !fabric.bits<64>) -> (!fabric.bits<0>, !fabric.bits<64>)
 // HARDWARE-DAG: fabric.op [@dataflow.invariant]
 // HARDWARE-DAG: fabric.op [@dataflow.gate]
 // HARDWARE-DAG: fabric.op [@arith.index_cast]
@@ -115,12 +120,17 @@ module {
     %p = arith.cmpi sgt, %x, %y : i32
     %s = arith.select %p, %x, %y : i32
     %sum = arith.addi %s, %x : i32
+    %sum_index = arith.index_cast %sum : i32 to index
     %m2 = llvm.intr.smin(%a2, %b2) : (i8, i8) -> i8
     %m3 = llvm.intr.smax(%a3, %b3) : (i8, i8) -> i8
     %store0 = dataflow.store %out[%c0] %m0 %ctrl : memref<?xi8>
     %store1 = dataflow.store %out[%c1] %m1 %ctrl : memref<?xi8>
     %store2 = dataflow.store %out[%c2] %m2 %ctrl : memref<?xi8>
-    %store3 = dataflow.store %out[%c3] %m3 %ctrl : memref<?xi8>
-    dataflow.graph.return %ctrl : none
+    %store3 = dataflow.store %out[%sum_index] %m3 %ctrl : memref<?xi8>
+    %retired:6 = dataflow.sync %store0, %store1, %store2, %store3,
+        %a0_done, %b0_done
+        : (none, none, none, none, none, none)
+          -> (none, none, none, none, none, none)
+    dataflow.graph.return %retired#0 : none
   }
 }

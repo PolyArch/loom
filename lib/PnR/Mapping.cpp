@@ -1,4 +1,6 @@
 #include "PnR/Mapping.h"
+
+#include "Dataflow/IR/DataflowGraphValidation.h"
 #include "MappingInternal.h"
 
 #include "Common/IndexWidth.h"
@@ -590,13 +592,6 @@ bool isPointerBookkeepingOp(mlir::Operation *op) {
 
 namespace {
 
-bool isPointerBookkeepingReturnValue(mlir::Value value) {
-  mlir::Operation *owner = value.getDefiningOp();
-  if (!owner)
-    return false;
-  return isPointerBookkeepingOp(owner);
-}
-
 std::optional<llvm::StringRef> canonicalArmInlineAsmOperationName(
     mlir::Operation *op) {
   if (op->getName().getStringRef() != "llvm.inline_asm")
@@ -698,17 +693,6 @@ llvm::Expected<llvm::SmallVector<SoftwareNode>>
 collectSoftwareNodes(mlir::Operation *graph) {
   llvm::SmallVector<SoftwareNode> nodes;
   llvm::StringMap<unsigned> counts;
-  for (mlir::Operation &op : graph->getRegion(0).front()) {
-    if (!isGraphReturnOp(&op))
-      continue;
-    for (mlir::Value value : op.getOperands()) {
-      if (isLlvmPointerType(value.getType()) &&
-          !isPointerBookkeepingReturnValue(value))
-        return llvm::createStringError(
-            std::errc::invalid_argument,
-            "graph returns unsupported pointer value for PnR mapping");
-    }
-  }
   if (llvm::Error err = collectSoftwareNodesInBlock(graph->getRegion(0).front(),
                                                     nodes, counts))
     return std::move(err);
@@ -1453,6 +1437,12 @@ loom::pnr::createMapping(const MappingOptions &options) {
     return llvm::createStringError(std::errc::invalid_argument,
                                    "could not find dataflow graph %s",
                                    options.graphName.c_str());
+  auto graphFunc = mlir::dyn_cast<dataflow::GraphFuncOp>(graph);
+  if (!graphFunc)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "selected graph has invalid operation kind");
+  if (llvm::Error error = dataflow::validateFinalizedGraph(graphFunc))
+    return std::move(error);
   auto selectionOrErr = selectFabricHardware(*hardware, options);
   if (!selectionOrErr)
     return selectionOrErr.takeError();

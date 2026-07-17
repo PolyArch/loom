@@ -45,7 +45,8 @@ module {
     %after_cond, %after_ptr = dataflow.gate %cond, %ptr : !llvm.ptr
     %carried = dataflow.carry %cond, %zero, %next : i32
     %next = arith.addi %carried, %one : i32
-    dataflow.graph.return %ctrl, %carried, %after_ptr : none, i32, !llvm.ptr
+    dataflow.graph.return values(%carried : i32) streams()
+        memories(%after_ptr : !llvm.ptr) complete(%ctrl : none)
   }
 
   dataflow.graph.func private @pointer_gate_cond_used(

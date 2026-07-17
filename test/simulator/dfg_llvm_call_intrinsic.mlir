@@ -1,19 +1,19 @@
-// RUN: loom-dfg-sim %s --graph arm_qsub16 --arg 0=none --output %t.qsub16.json
+// RUN: loom-dfg-sim %s --graph arm_qsub16 --output %t.qsub16.json
 // RUN: FileCheck %s --check-prefix=QSUB16 < %t.qsub16.json
-// RUN: loom-dfg-sim %s --graph arm_qsub16_saturate --arg 0=none --output %t.qsub16.saturate.json
+// RUN: loom-dfg-sim %s --graph arm_qsub16_saturate --output %t.qsub16.saturate.json
 // RUN: FileCheck %s --check-prefix=QSUB16-SAT < %t.qsub16.saturate.json
-// RUN: loom-dfg-sim %s --graph arm_qsub8_saturate --arg 0=none --output %t.qsub8.saturate.json
+// RUN: loom-dfg-sim %s --graph arm_qsub8_saturate --output %t.qsub8.saturate.json
 // RUN: FileCheck %s --check-prefix=QSUB8-SAT < %t.qsub8.saturate.json
-// RUN: loom-dfg-sim %s --graph arm_qadd16_saturate --arg 0=none --output %t.qadd16.saturate.json
+// RUN: loom-dfg-sim %s --graph arm_qadd16_saturate --output %t.qadd16.saturate.json
 // RUN: FileCheck %s --check-prefix=QADD16-SAT < %t.qadd16.saturate.json
-// RUN: loom-dfg-sim %s --graph arm_sadd16_wrap --arg 0=none --output %t.sadd16.wrap.json
+// RUN: loom-dfg-sim %s --graph arm_sadd16_wrap --output %t.sadd16.wrap.json
 // RUN: FileCheck %s --check-prefix=SADD16-WRAP < %t.sadd16.wrap.json
 
 // QSUB16-DAG: "workload": "arm_qsub16"
 // QSUB16-DAG: "graph": "arm_qsub16"
 // QSUB16-DAG: "status": "pass"
-// QSUB16-DAG: "operation_cost_score": 5
-// QSUB16-DAG: "event_count": 3
+// QSUB16-DAG: "operation_cost_score": 7
+// QSUB16-DAG: "event_count": 4
 // QSUB16-DAG: "llvm.arm.qsub16": 1
 // QSUB16-DAG: "i32:-1"
 
@@ -42,43 +42,63 @@
 // SADD16-WRAP-DAG: "i32:-2147483645"
 
 module {
-  dataflow.graph.func private @arm_qsub16(%ctrl: none) -> (none, i32) {
+  dataflow.graph.func private @arm_qsub16(%ctrl: none) -> (none, i32)
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %zero = dataflow.constant %ctrl {const_value = 0 : i32} : i32
     %value = dataflow.constant %ctrl {const_value = 65537 : i32} : i32
     %packed = llvm.call_intrinsic "llvm.arm.qsub16"(%zero, %value)
         : (i32, i32) -> i32
-    dataflow.graph.return %ctrl, %packed : none, i32
+    %published:2 = dataflow.sync %ctrl, %packed
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return %published#0, %published#1 : none, i32
   }
 
-  dataflow.graph.func private @arm_qsub16_saturate(%ctrl: none) -> (none, i32) {
+  dataflow.graph.func private @arm_qsub16_saturate(%ctrl: none) -> (none, i32)
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %lhs = dataflow.constant %ctrl {const_value = 2147450880 : i32} : i32
     %rhs = dataflow.constant %ctrl {const_value = -65535 : i32} : i32
     %packed = llvm.call_intrinsic "llvm.arm.qsub16"(%lhs, %rhs)
         : (i32, i32) -> i32
-    dataflow.graph.return %ctrl, %packed : none, i32
+    %published:2 = dataflow.sync %ctrl, %packed
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return %published#0, %published#1 : none, i32
   }
 
-  dataflow.graph.func private @arm_qsub8_saturate(%ctrl: none) -> (none, i32) {
+  dataflow.graph.func private @arm_qsub8_saturate(%ctrl: none) -> (none, i32)
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %lhs = dataflow.constant %ctrl {const_value = 25100416 : i32} : i32
     %rhs = dataflow.constant %ctrl {const_value = -2130706687 : i32} : i32
     %packed = llvm.call_intrinsic "llvm.arm.qsub8"(%lhs, %rhs)
         : (i32, i32) -> i32
-    dataflow.graph.return %ctrl, %packed : none, i32
+    %published:2 = dataflow.sync %ctrl, %packed
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return %published#0, %published#1 : none, i32
   }
 
-  dataflow.graph.func private @arm_qadd16_saturate(%ctrl: none) -> (none, i32) {
+  dataflow.graph.func private @arm_qadd16_saturate(%ctrl: none) -> (none, i32)
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %lhs = dataflow.constant %ctrl {const_value = 2147450879 : i32} : i32
     %rhs = dataflow.constant %ctrl {const_value = 65537 : i32} : i32
     %packed = llvm.call_intrinsic "llvm.arm.qadd16"(%lhs, %rhs)
         : (i32, i32) -> i32
-    dataflow.graph.return %ctrl, %packed : none, i32
+    %published:2 = dataflow.sync %ctrl, %packed
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return %published#0, %published#1 : none, i32
   }
 
-  dataflow.graph.func private @arm_sadd16_wrap(%ctrl: none) -> (none, i32) {
+  dataflow.graph.func private @arm_sadd16_wrap(%ctrl: none) -> (none, i32)
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
     %lhs = dataflow.constant %ctrl {const_value = 2147418113 : i32} : i32
     %rhs = dataflow.constant %ctrl {const_value = 65538 : i32} : i32
     %packed = llvm.call_intrinsic "llvm.arm.sadd16"(%lhs, %rhs)
         : (i32, i32) -> i32
-    dataflow.graph.return %ctrl, %packed : none, i32
+    %published:2 = dataflow.sync %ctrl, %packed
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return %published#0, %published#1 : none, i32
   }
 }

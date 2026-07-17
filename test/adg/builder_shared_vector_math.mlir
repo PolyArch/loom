@@ -10,9 +10,9 @@
 // RUN: FileCheck %s --check-prefix=MAPPING < %t.dir/mapping.json
 
 // DFG-LABEL: dataflow.graph.func private @g_quat_mult_kernel_0
-// DFG-DAG: builtin.unrealized_conversion_cast %arg1 : !llvm.ptr to memref<?xf32>
-// DFG-DAG: builtin.unrealized_conversion_cast %arg2 : !llvm.ptr to memref<?xf32>
+// DFG-DAG: builtin.unrealized_conversion_cast %arg4 : !llvm.ptr to memref<?xf32>
 // DFG-DAG: builtin.unrealized_conversion_cast %arg3 : !llvm.ptr to memref<?xf32>
+// DFG-DAG: builtin.unrealized_conversion_cast %arg2 : !llvm.ptr to memref<?xf32>
 // DFG-NOT: dataflow.demux {{.*}} : (i1, !llvm.ptr)
 // DFG-NOT: dataflow.invariant {{.*}} : !llvm.ptr
 // DFG: dataflow.stream

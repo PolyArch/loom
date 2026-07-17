@@ -1,13 +1,14 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph arm_qsub16 --hardware-mlir %s --hardware arm_intrinsic_adg --workload arm_qsub16 --output %t.csv --artifact %t.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph arm_qsub16 --hardware-mlir %s --hardware arm_intrinsic_adg --workload arm_qsub16 --output %t.csv --artifact %t.json
 // RUN: FileCheck %s --check-prefix=CSV < %t.csv
 // RUN: FileCheck %s --check-prefix=JSON < %t.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph arm_qsub8 --hardware-mlir %s --hardware arm_intrinsic_adg --workload arm_qsub8 --output %t.qsub8.csv --artifact %t.qsub8.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph arm_qsub8 --hardware-mlir %s --hardware arm_intrinsic_adg --workload arm_qsub8 --output %t.qsub8.csv --artifact %t.qsub8.json
 // RUN: FileCheck %s --check-prefix=QSUB8-CSV < %t.qsub8.csv
 // RUN: FileCheck %s --check-prefix=QSUB8-JSON < %t.qsub8.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph arm_qadd16 --hardware-mlir %s --hardware arm_intrinsic_adg --workload arm_qadd16 --output %t.qadd16.csv --artifact %t.qadd16.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph arm_qadd16 --hardware-mlir %s --hardware arm_intrinsic_adg --workload arm_qadd16 --output %t.qadd16.csv --artifact %t.qadd16.json
 // RUN: FileCheck %s --check-prefix=QADD16-CSV < %t.qadd16.csv
 // RUN: FileCheck %s --check-prefix=QADD16-JSON < %t.qadd16.json
-// RUN: loom-pnr-map --dfg-mlir %s --graph arm_sadd16 --hardware-mlir %s --hardware arm_intrinsic_adg --workload arm_sadd16 --output %t.sadd16.csv --artifact %t.sadd16.json
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph arm_sadd16 --hardware-mlir %s --hardware arm_intrinsic_adg --workload arm_sadd16 --output %t.sadd16.csv --artifact %t.sadd16.json
 // RUN: FileCheck %s --check-prefix=SADD16-CSV < %t.sadd16.csv
 // RUN: FileCheck %s --check-prefix=SADD16-JSON < %t.sadd16.json
 

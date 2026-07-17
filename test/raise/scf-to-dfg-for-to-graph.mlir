@@ -30,12 +30,6 @@ dataflow.thread private @t_existing(%buf: memref<?xf32>, %n: index) ctrl (%c: no
   dataflow.thread.yield
 }
 
-// Unused loop results must not become graph user-data returns. Pointer-walking
-// loops often carry source/destination pointers only to drive memory accesses;
-// if the enclosing thread does not use the final pointers, exposing them as
-// graph results forces downstream mapping to model fake live pointer outputs.
-// CHECK-LABEL: dataflow.thread private @t_unused_ptr_walk
-// CHECK: dataflow.graph.launch @g_t_unused_ptr_walk_0(%{{.*}}) : (none, index, index, index, !llvm.ptr, !llvm.ptr) -> none
 // CHECK-LABEL: dataflow.thread private @t_forall_store
 // CHECK-SAME: ctrl (%[[FORALL_CTRL:.*]]: none) iv
 // CHECK: dataflow.graph.launch @g_t_forall_store_0(%[[FORALL_CTRL]]
@@ -43,19 +37,6 @@ dataflow.thread private @t_existing(%buf: memref<?xf32>, %n: index) ctrl (%c: no
 // CHECK-LABEL: func.func @host_reduction
 // CHECK-NOT: dataflow.thread.launch @t_host_reduction
 // CHECK: scf.for {{.*}} iter_args
-dataflow.thread private @t_unused_ptr_walk(%src: !llvm.ptr, %dst: !llvm.ptr,
-                                           %n: index) ctrl (%c: none) {
-  %c0 = arith.constant 0 : index
-  %c1 = arith.constant 1 : index
-  %unused:2 = scf.for %i = %c0 to %n step %c1 iter_args(%s = %src, %d = %dst)
-      -> (!llvm.ptr, !llvm.ptr) {
-    %s_next = llvm.getelementptr %s[4] : (!llvm.ptr) -> !llvm.ptr, i8
-    %d_next = llvm.getelementptr %d[4] : (!llvm.ptr) -> !llvm.ptr, i8
-    scf.yield %s_next, %d_next : !llvm.ptr, !llvm.ptr
-  }
-  dataflow.thread.yield
-}
-
 // Effect-form scf.forall inside a thread is still a SpatialCore graph body.
 // It must be extracted as a structured graph.func rather than leaving the
 // kernel body stranded in the thread.
@@ -435,29 +416,29 @@ func.func private @status_outparam_candidate(%dst: !llvm.ptr, %value: i16) -> i3
 }
 
 // CHECK-LABEL: dataflow.graph.func private @g_standalone_memcpy_0
-// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32) -> none
+// CHECK-SAME: (%arg0: none, %arg1: i32, %arg2: !llvm.ptr, %arg3: !llvm.ptr) -> none
 // CHECK: llvm.intr.memcpy
 // CHECK: dataflow.graph.return %arg0 : none
 // CHECK-LABEL: dataflow.graph.func private @g_standalone_offset_memcpy_0
-// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: i16, %arg3: i16, %arg4: i16, %arg5: !llvm.ptr, %arg6: i32) -> none
+// CHECK-SAME: (%arg0: none, %arg1: i16, %arg2: i16, %arg3: i16, %arg4: i32, %arg5: !llvm.ptr, %arg6: !llvm.ptr) -> none
 // CHECK: llvm.zext
 // CHECK: arith.muli
 // CHECK: llvm.getelementptr
 // CHECK: llvm.intr.memcpy
 // CHECK: dataflow.graph.return %arg0 : none
 // CHECK-LABEL: dataflow.graph.func private @g_constant_status_multi_structured_outparam_candidate_0
-// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32, %arg4: i16) -> (none, i32)
+// CHECK-SAME: (%arg0: none, %arg1: i32, %arg2: i16, %arg3: !llvm.ptr, %arg4: !llvm.ptr) -> (none, i32)
 // CHECK: scf.if
 // CHECK: scf.if
 // CHECK: llvm.store
 // CHECK: dataflow.graph.return %arg0, %{{.*}} : none, i32
 // CHECK-LABEL: dataflow.graph.func private @g_status_outparam_candidate_0
-// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: i16) -> (none, i32)
+// CHECK-SAME: (%arg0: none, %arg1: i16, %arg2: !llvm.ptr) -> (none, i32)
 // CHECK: scf.if
 // CHECK: llvm.store
 // CHECK: dataflow.graph.return %arg0, %{{.*}} : none, i32
 // CHECK-LABEL: dataflow.graph.func private @g_structured_outparam_candidate_0
-// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32) -> none
+// CHECK-SAME: (%arg0: none, %arg1: i32, %arg2: !llvm.ptr, %arg3: !llvm.ptr) -> none
 // CHECK: scf.if
 // CHECK: scf.while
 // CHECK: llvm.load
@@ -471,21 +452,18 @@ func.func private @status_outparam_candidate(%dst: !llvm.ptr, %value: i16) -> i3
 // CHECK: llvm.store
 // CHECK: dataflow.graph.return %arg0 : none
 // CHECK-LABEL: dataflow.graph.func private @g_guarded_loop_candidate_0
-// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32, %arg4: i32) -> none
+// CHECK-SAME: (%arg0: none, %arg1: i32, %arg2: i32, %arg3: !llvm.ptr, %arg4: !llvm.ptr) -> none
 // CHECK: scf.if
 // CHECK: scf.for
 // CHECK: llvm.load
 // CHECK: llvm.store
 // CHECK: dataflow.graph.return %arg0 : none
 // CHECK-LABEL: dataflow.graph.func private @g_multi_structured_outparam_candidate_0
-// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32, %arg4: i16) -> none
+// CHECK-SAME: (%arg0: none, %arg1: i32, %arg2: i16, %arg3: !llvm.ptr, %arg4: !llvm.ptr) -> none
 // CHECK: scf.if
 // CHECK: scf.if
 // CHECK: llvm.store
 // CHECK: dataflow.graph.return %arg0 : none
-// CHECK-LABEL: dataflow.graph.func private @g_t_unused_ptr_walk_0
-// CHECK-SAME: -> none
-// CHECK: dataflow.graph.return %{{.*}} : none
 // CHECK-LABEL: dataflow.graph.func private @g_t_forall_store_0
 // CHECK: scf.forall
 // CHECK: memref.load

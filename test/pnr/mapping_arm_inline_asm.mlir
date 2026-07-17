@@ -1,4 +1,5 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph pkhbt_graph --hardware-mlir %s --hardware arm_inline_asm_adg --workload pkhbt_graph --output %t.csv --artifact %t.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-pnr-map --dfg-mlir %t.lowered.mlir --graph pkhbt_graph --hardware-mlir %s --hardware arm_inline_asm_adg --workload pkhbt_graph --output %t.csv --artifact %t.json
 // RUN: FileCheck %s < %t.csv
 
 // CHECK: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic

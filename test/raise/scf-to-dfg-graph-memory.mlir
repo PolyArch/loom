@@ -306,7 +306,8 @@ dataflow.graph.func private @g_pointer_carry_nonordinal_init(
   %sum = arith.addf %data, %bias : f32
   %next = llvm.getelementptr %current[4]
       : (!llvm.ptr) -> !llvm.ptr, i8
-  dataflow.graph.return %arg0, %exit#0 : none, !llvm.ptr
+  dataflow.graph.return values() streams() memories(%exit#0 : !llvm.ptr)
+      complete(%arg0 : none)
 }
 
 }
@@ -337,7 +338,8 @@ dataflow.graph.func private @g_pointer_carry_widening_i8(
   %value = llvm.load %current : !llvm.ptr -> i8
   %next = llvm.getelementptr %current[1]
       : (!llvm.ptr) -> !llvm.ptr, i8
-  dataflow.graph.return %arg0, %exit#0 : none, !llvm.ptr
+  dataflow.graph.return values() streams() memories(%exit#0 : !llvm.ptr)
+      complete(%arg0 : none)
 }
 
 // A dynamic GEP from a carried pointer is not a constant per-item bias. Until
@@ -362,7 +364,8 @@ dataflow.graph.func private @g_pointer_carry_dynamic_offset_i8_f32(
   %src_dyn = llvm.getelementptr %src_cur[%offset] : (!llvm.ptr, i32) -> !llvm.ptr, i8
   %data = llvm.load %src_dyn : !llvm.ptr -> f32
   %sum = arith.addf %data, %bias : f32
-  dataflow.graph.return %arg0, %src_cur : none, !llvm.ptr
+  dataflow.graph.return values() streams() memories(%src_cur : !llvm.ptr)
+      complete(%arg0 : none)
 }
 
 // -----
