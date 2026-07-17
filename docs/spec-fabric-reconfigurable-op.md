@@ -31,6 +31,28 @@ by the concrete datapath. Every mode contains:
 mode. `input_ports` and `output_ports` map ordered software operands and
 results to physical `fabric.op` ports.
 
+### Wide Sync Lane Inventory
+
+A canonical wide `dataflow.sync` is one full-width physical capability. Its
+Fabric descriptor owns one complete `paired_lanes` inventory. Each lane record
+contains exactly:
+
+```text
+{ input_port, output_port, mask_bit }
+```
+
+The inventory covers the complete physical input/output signature exactly
+once. Input endpoints, output endpoints, and mask positions are independently
+unique and in range; input port, output port, and mask position are not assumed
+to have the same index. Mask positions form a dense `0..N-1` encoding for the
+`N` declared lanes. Inventory order is the complete configured software lane
+order; it is capability structure, not an active subset.
+
+The wide-sync typed mode describes the complete `N`-lane software capability.
+It does not select an active subset, and valid semantic encodings or configured
+function identity do not vary with a workload's lane choice. Ordered software
+subset correspondence belongs only to the Mapping Artifact.
+
 These fields are Fabric-owned capability facts. They do not compete with the
 Hardware Sharing Group registry: the registry admits the operation family,
 while the mode selects a concrete typed and attributed member of that family.
@@ -160,6 +182,12 @@ when every inner `fabric.op` carries normalized modes plus one explicit
 complete route selection. Partial or mixed programmed state is invalid. This
 form is non-canonical boundary input; it does not become a capability source or
 a substitute for normalized valid semantic encodings.
+
+Raw `sw_configs.bitmask` remains accepted only on the legacy programmed
+`dataflow.sync` adapter so that already-programmed Fabric can be verified. A
+canonical capability or Mapping input never persists that selected mask;
+later lowering derives it mechanically from the Fabric lane inventory and the
+Mapping-owned `ActorToFabricOp` correspondence.
 
 The historical length-one field-wise `hw_params` dictionary remains accepted
 only for non-canonical programmed Fabric input. It is a boundary adapter and

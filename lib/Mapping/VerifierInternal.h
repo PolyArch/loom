@@ -8,6 +8,8 @@
 
 #include <cstdint>
 #include <map>
+#include <string>
+#include <vector>
 
 namespace loom::mapping::detail {
 
@@ -38,6 +40,33 @@ llvm::Error mappingError(MappingErrorCode code, const llvm::Twine &message);
 llvm::Error addEntity(EntityKinds &entities, std::uint64_t id, EntityKind kind);
 llvm::Error requireLocalKind(const EntityKinds &entities, std::uint64_t id,
                              EntityKind expected);
+llvm::Error validatePairedLaneCapability(const FabricOpDescriptor &operation);
+bool validPairedConfiguredPorts(const ConfiguredFabricOpDescriptor &configured,
+                                const FabricOpDescriptor &operation);
+
+struct PairedLaneProjection {
+  std::vector<std::uint32_t> laneIndices;
+  std::string bitmask;
+};
+
+struct ValidatedConfiguredBoundaryPort {
+  PortDirection direction;
+  std::uint32_t fuPort;
+  PortDescriptor descriptor;
+};
+
+llvm::Expected<PairedLaneProjection>
+validateAndProjectPairedLaneSelection(const ArtifactIdentity &fabricIdentity,
+                                      const FabricOpDescriptor &operation,
+                                      const ActorToFabricOp &correspondence);
+
+std::vector<ValidatedConfiguredBoundaryPort>
+deriveActiveConfiguredBoundaryPorts(
+    const EncodingDescriptor &encoding,
+    const std::map<std::uint64_t, const ConfiguredFabricOpDescriptor *>
+        &actorToOp,
+    const std::map<std::uint64_t, PairedLaneProjection>
+        &actorToLaneProjections);
 
 template <typename Id, typename Descriptor>
 llvm::Expected<const Descriptor *>

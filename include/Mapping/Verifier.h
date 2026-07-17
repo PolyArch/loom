@@ -10,11 +10,13 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace loom::mapping {
 
 namespace detail {
 struct ValidatedFabricProjection;
+struct ValidatedTechMappingProjection;
 class ValidatedTechMappingAccess;
 } // namespace detail
 
@@ -86,12 +88,17 @@ public:
 private:
   ValidatedTechMapping(
       TechMappingDraft draft,
-      std::shared_ptr<const detail::ValidatedFabricProjection> fabricProjection)
+      std::shared_ptr<const detail::ValidatedFabricProjection> fabricProjection,
+      std::shared_ptr<const detail::ValidatedTechMappingProjection>
+          mappingProjection)
       : draft_(std::move(draft)),
-        fabricProjection_(std::move(fabricProjection)) {}
+        fabricProjection_(std::move(fabricProjection)),
+        mappingProjection_(std::move(mappingProjection)) {}
 
   TechMappingDraft draft_;
   std::shared_ptr<const detail::ValidatedFabricProjection> fabricProjection_;
+  std::shared_ptr<const detail::ValidatedTechMappingProjection>
+      mappingProjection_;
 
   friend class detail::ValidatedTechMappingAccess;
   friend llvm::Expected<ValidatedTechMapping>

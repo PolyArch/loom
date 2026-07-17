@@ -534,6 +534,9 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
     if (llvm::Error error =
             requireLocalKind(index.kinds, operation.fu.value(), EntityKind::Fu))
       return std::move(error);
+    if (!operation.pairedLanes.empty())
+      if (llvm::Error error = validatePairedLaneCapability(operation))
+        return std::move(error);
   }
   for (const EncodingDescriptor &encoding : fabric.encodings) {
     if (llvm::Error error =
@@ -556,10 +559,6 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
       auto operation = index.operations.find(configured.operation.value());
       if (operation == index.operations.end() ||
           operation->second->fu != encoding.fu ||
-          !samePortClasses(configured.inputPorts,
-                           operation->second->inputPorts) ||
-          !samePortClasses(configured.outputPorts,
-                           operation->second->outputPorts) ||
           configured.operands.size() != configured.inputPorts.size() ||
           !configuredOperations
                .emplace(configured.operation.value(), &configured)
@@ -567,6 +566,17 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
         return mappingError(
             MappingErrorCode::InvalidConfiguredFunction,
             "encoding has an invalid or duplicate configured fabric.op");
+      const bool validPorts =
+          operation->second->pairedLanes.empty()
+              ? samePortClasses(configured.inputPorts,
+                                operation->second->inputPorts) &&
+                    samePortClasses(configured.outputPorts,
+                                    operation->second->outputPorts)
+              : validPairedConfiguredPorts(configured, *operation->second);
+      if (!validPorts)
+        return mappingError(
+            MappingErrorCode::InvalidConfiguredFunction,
+            "configured fabric.op ports do not match its physical capability");
     }
     for (const ConfiguredFabricOpDescriptor &configured : encoding.operations) {
       for (auto [operand, expected] :
@@ -940,7 +950,18 @@ struct ResolvedRealization {
   const FuDescriptor *fu;
   const EncodingDescriptor *encoding;
   std::map<std::uint64_t, const ConfiguredFabricOpDescriptor *> actorToOp;
+  std::map<std::uint64_t, PairedLaneProjection> actorToLaneProjections;
+  std::vector<ValidatedConfiguredBoundaryPort> activeBoundaryPorts;
 };
+
+std::uint32_t configuredPortIndex(const ResolvedRealization &selected,
+                                  std::uint64_t actor,
+                                  std::uint32_t softwarePort) {
+  auto lanes = selected.actorToLaneProjections.find(actor);
+  return lanes == selected.actorToLaneProjections.end()
+             ? softwarePort
+             : lanes->second.laneIndices[softwarePort];
+}
 
 llvm::Expected<ResolvedRealization> validateActorToOpCorrespondence(
     const RealizationActors &realization, const DataflowProgramView &dataflow,
@@ -972,7 +993,7 @@ llvm::Expected<ResolvedRealization> validateActorToOpCorrespondence(
 
   std::set<std::uint64_t> mappedActors;
   std::set<std::uint64_t> mappedOperations;
-  ResolvedRealization resolved{*fu, *encoding, {}};
+  ResolvedRealization resolved{*fu, *encoding, {}, {}, {}};
   for (const ActorToFabricOp &correspondence : realization.record->actorToOps) {
     auto actor = resolveReference(correspondence.actor, dataflow.identity,
                                   dataflowIndex.kinds, EntityKind::Actor,
@@ -998,12 +1019,48 @@ llvm::Expected<ResolvedRealization> validateActorToOpCorrespondence(
       return mappingError(MappingErrorCode::IncompleteActorToOpCorrespondence,
                           "actor correspondence names an inactive fabric.op");
     if ((*actor)->operation != configured->second->semantics ||
-        (*actor)->attributes != configured->second->attributes ||
-        (*actor)->inputPorts != configured->second->inputPorts ||
-        (*actor)->outputPorts != configured->second->outputPorts)
+        (*actor)->attributes != configured->second->attributes)
       return mappingError(
           MappingErrorCode::ConfiguredFunctionMismatch,
           "actor semantics do not match the configured fabric.op");
+
+    const bool subsetArity =
+        (*actor)->inputPorts.size() != configured->second->inputPorts.size() ||
+        (*actor)->outputPorts.size() != configured->second->outputPorts.size();
+    if ((*operation)->pairedLanes.empty()) {
+      if (subsetArity)
+        return mappingError(
+            MappingErrorCode::ConfiguredFunctionMismatch,
+            "subset arity requires an explicit paired-lane capability");
+      if (!correspondence.laneSelections.empty() ||
+          (*actor)->inputPorts != configured->second->inputPorts ||
+          (*actor)->outputPorts != configured->second->outputPorts)
+        return mappingError(
+            MappingErrorCode::ConfiguredFunctionMismatch,
+            "ordinary actor semantics do not match the configured fabric.op");
+    } else {
+      if ((*actor)->inputPorts.size() != correspondence.laneSelections.size() ||
+          (*actor)->outputPorts.size() != correspondence.laneSelections.size())
+        return mappingError(MappingErrorCode::ConfiguredFunctionMismatch,
+                            "paired-lane correspondence is incomplete");
+      auto projection = validateAndProjectPairedLaneSelection(
+          fabric.identity, **operation, correspondence);
+      if (!projection)
+        return projection.takeError();
+      for (std::size_t softwarePort = 0;
+           softwarePort < projection->laneIndices.size(); ++softwarePort) {
+        const std::uint32_t lane = projection->laneIndices[softwarePort];
+        if ((*actor)->inputPorts[softwarePort] !=
+                configured->second->inputPorts[lane] ||
+            (*actor)->outputPorts[softwarePort] !=
+                configured->second->outputPorts[lane])
+          return mappingError(
+              MappingErrorCode::ConfiguredFunctionMismatch,
+              "actor lane type does not match the configured fabric.op");
+      }
+      resolved.actorToLaneProjections.emplace((*actor)->id.value(),
+                                              std::move(*projection));
+    }
     resolved.actorToOp.emplace((*actor)->id.value(), configured->second);
   }
 
@@ -1100,17 +1157,18 @@ llvm::Expected<ResolvedBoundary> validateBoundaryCorrespondence(
     return mappingError(
         MappingErrorCode::UnaccountedGraphEdge,
         "declared graph edge has an unmapped boundary endpoint");
-  if (mappedFuPorts.size() != configuredPorts.size())
+  if (mappedFuPorts.size() != selected.activeBoundaryPorts.size())
     return mappingError(
         MappingErrorCode::IncompleteBoundaryCorrespondence,
-        "configured FU boundary correspondence is not complete");
-  for (const auto &entry : configuredPorts) {
-    const auto key = std::make_tuple(selected.fu->id.value(), entry.first.first,
-                                     entry.first.second);
+        "active configured FU boundary correspondence is not complete");
+  for (const ValidatedConfiguredBoundaryPort &port :
+       selected.activeBoundaryPorts) {
+    const auto key =
+        std::make_tuple(selected.fu->id.value(), port.direction, port.fuPort);
     if (!mappedFuPorts.count(key))
       return mappingError(
           MappingErrorCode::IncompleteBoundaryCorrespondence,
-          "configured FU boundary correspondence is not complete");
+          "active configured FU boundary correspondence is not complete");
   }
   return resolved;
 }
@@ -1134,8 +1192,9 @@ llvm::Error validateConfiguredFunctionTopology(
       if (source.key.actor && realization.actors.count(source.key.owner)) {
         const ConfiguredFabricOpDescriptor &sourceOperation =
             *selected.actorToOp.at(source.key.owner);
-        expected =
-            FabricOpResultValue{sourceOperation.operation, source.key.index};
+        expected = FabricOpResultValue{
+            sourceOperation.operation,
+            configuredPortIndex(selected, source.key.owner, source.key.index)};
       } else {
         auto port = boundary.actorToFuPort.find(target);
         if (port == boundary.actorToFuPort.end())
@@ -1151,7 +1210,9 @@ llvm::Error validateConfiguredFunctionTopology(
               "values");
         expected = FuInputValue{port->second};
       }
-      if (configured.operands[input] != expected)
+      const std::uint32_t configuredInput = configuredPortIndex(
+          selected, actor.id.value(), static_cast<std::uint32_t>(input));
+      if (configured.operands[configuredInput] != expected)
         return mappingError(
             MappingErrorCode::ConfiguredFunctionMismatch,
             "configured fabric.op operand topology does not match software");
@@ -1166,8 +1227,9 @@ llvm::Error validateConfiguredFunctionTopology(
       continue;
     const ConfiguredFabricOpDescriptor &source =
         *selected.actorToOp.at(entry.first.owner);
-    const ConfiguredValue expected =
-        FabricOpResultValue{source.operation, entry.first.index};
+    const ConfiguredValue expected = FabricOpResultValue{
+        source.operation,
+        configuredPortIndex(selected, entry.first.owner, entry.first.index)};
     auto output = configuredOutputs.find(entry.second);
     if (output == configuredOutputs.end() || output->second->value != expected)
       return mappingError(
@@ -1556,6 +1618,7 @@ validateCoveredSinkAccounting(const DataflowIndex &dataflowIndex,
   return llvm::Error::success();
 }
 } // namespace
+
 llvm::Expected<ValidatedTechMapping>
 loom::mapping::validateTechMapping(const TechMappingDraft &mapping,
                                    const DataflowProgramView &dataflow,
@@ -1631,11 +1694,16 @@ loom::mapping::validateTechMapping(const TechMappingDraft &mapping,
     return mappingError(MappingErrorCode::IncompleteGraphCoverage,
                         "declared graphs do not have closed actor coverage");
 
+  auto mappingProjection = std::make_shared<ValidatedTechMappingProjection>();
+  mappingProjection->computeRealizations.reserve(realizations->size());
   for (const RealizationActors &realization : *realizations) {
     auto selected = validateActorToOpCorrespondence(
         realization, dataflow, *dataflowIndex, fabric, *fabricIndex);
     if (!selected)
       return selected.takeError();
+    selected->activeBoundaryPorts = deriveActiveConfiguredBoundaryPorts(
+        *selected->encoding, selected->actorToOp,
+        selected->actorToLaneProjections);
     auto boundary = validateBoundaryCorrespondence(
         realization, *selected, dataflow, *dataflowIndex, fabric, *fabricIndex);
     if (!boundary)
@@ -1643,6 +1711,22 @@ loom::mapping::validateTechMapping(const TechMappingDraft &mapping,
     if (llvm::Error error = validateConfiguredFunctionTopology(
             realization, *selected, *boundary, *dataflowIndex))
       return std::move(error);
+
+    ValidatedComputeRealizationProjection projected{
+        realization.record->id,
+        selected->fu->id,
+        selected->encoding->id,
+        std::move(selected->activeBoundaryPorts),
+        {}};
+    projected.pairedLaneProjections.reserve(
+        selected->actorToLaneProjections.size());
+    for (auto &entry : selected->actorToLaneProjections) {
+      PairedLaneProjection &lanes = entry.second;
+      projected.pairedLaneProjections.push_back(
+          {ActorId(entry.first), selected->actorToOp.at(entry.first)->operation,
+           std::move(lanes.laneIndices), std::move(lanes.bitmask)});
+    }
+    mappingProjection->computeRealizations.push_back(std::move(projected));
   }
   std::map<std::uint64_t, std::uint64_t> rootServices;
   for (const MemoryRealizationActors &realization : *memoryRealizations) {
@@ -1656,5 +1740,12 @@ loom::mapping::validateTechMapping(const TechMappingDraft &mapping,
           *dataflowIndex, coveredGraphs, actorToRealization))
     return std::move(error);
 
-  return ValidatedTechMapping(mapping, fabricIndex->projection);
+  std::sort(mappingProjection->computeRealizations.begin(),
+            mappingProjection->computeRealizations.end(),
+            [](const ValidatedComputeRealizationProjection &lhs,
+               const ValidatedComputeRealizationProjection &rhs) {
+              return lhs.id.value() < rhs.id.value();
+            });
+  return ValidatedTechMapping(mapping, fabricIndex->projection,
+                              std::move(mappingProjection));
 }

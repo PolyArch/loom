@@ -4,15 +4,12 @@
 
 #include "llvm/Support/Error.h"
 
-#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <map>
 #include <string>
 #include <system_error>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -239,9 +236,14 @@ loom::pnr::detail::buildFrozenComputeDomains(
     llvm::ArrayRef<const ComputeRealizationDraft *> realizations) {
   const ValidatedFabricProjection &projection =
       ValidatedTechMappingAccess::fabricProjection(mapping);
+  const ValidatedTechMappingProjection &mappingProjection =
+      ValidatedTechMappingAccess::mappingProjection(mapping);
   if (projection.identity != fabric.identity)
     return freezeError("cannot freeze compute domains: validated Fabric "
                        "projection identity does not match the input");
+  if (mappingProjection.computeRealizations.size() != realizations.size())
+    return freezeError("cannot freeze compute domains: validated Mapping "
+                       "projection is incomplete");
 
   if (llvm::Error error = preflight(computeCountContext, realizations.size()))
     return std::move(error);
@@ -359,10 +361,6 @@ loom::pnr::detail::buildFrozenComputeDomains(
     }
   }
 
-  std::map<std::uint64_t, const EncodingDescriptor *> encodings;
-  for (const EncodingDescriptor &encoding : fabric.encodings)
-    encodings.emplace(encoding.id.value(), &encoding);
-
   result.realizations.reserve(realizations.size());
   EndpointMatchingScratch scratch;
   for (std::size_t realizationIndex = 0; realizationIndex < realizations.size();
@@ -373,27 +371,18 @@ loom::pnr::detail::buildFrozenComputeDomains(
         checked(realizationIndexContext, realizationIndex);
     if (!frozenRealizationIndex)
       return frozenRealizationIndex.takeError();
-    const auto selectedEncoding =
-        encodings.find(realization.encoding.entity.value());
-    if (selectedEncoding == encodings.end() ||
-        selectedEncoding->second->fu != realization.fu.entity)
-      return freezeError("cannot freeze compute domains: selected encoding is "
-                         "unresolved or has the wrong FU");
+    const ValidatedComputeRealizationProjection &selected =
+        mappingProjection.computeRealizations[realizationIndex];
+    if (selected.id != realization.id || selected.fu != realization.fu.entity ||
+        selected.encoding != realization.encoding.entity)
+      return freezeError("cannot freeze compute domains: validated Mapping "
+                         "projection does not match the realization");
 
     std::vector<PortDemandDraft> demands;
-    demands.reserve(selectedEncoding->second->inputs.size() +
-                    selectedEncoding->second->outputs.size());
-    for (const ConfiguredInputDescriptor &input :
-         selectedEncoding->second->inputs)
-      demands.push_back({PortDirection::Input, input.fuPort, &input.port});
-    for (const ConfiguredOutputDescriptor &output :
-         selectedEncoding->second->outputs)
-      demands.push_back({PortDirection::Output, output.fuPort, &output.port});
-    std::sort(demands.begin(), demands.end(),
-              [](const PortDemandDraft &lhs, const PortDemandDraft &rhs) {
-                return std::tie(lhs.direction, lhs.port) <
-                       std::tie(rhs.direction, rhs.port);
-              });
+    demands.reserve(selected.activeBoundaryPorts.size());
+    for (const ValidatedConfiguredBoundaryPort &port :
+         selected.activeBoundaryPorts)
+      demands.push_back({port.direction, port.fuPort, &port.descriptor});
 
     auto implDomainOffset = checked(implementationOffsetContext,
                                     result.implementationOccurrences.size());

@@ -1,7 +1,115 @@
 #include "MappingCoreTestSupport.h"
 
+#include "Mapping/FabricOccurrenceIndex.h"
+
 namespace loom::mapping::test {
 namespace {
+
+void acceptsMultipleMappingsOfOneWideSyncCapability() {
+  TestCase testCase = makeWideSyncCase();
+  if (testCase.fabric.encodings.size() != 1 ||
+      testCase.fabric.encodings.front().operations.front().inputPorts.size() !=
+          4 ||
+      testCase.fabric.encodings.front().operations.front().outputPorts.size() !=
+          4)
+    fail(__func__, "wide sync subset was encoded as a Fabric mode");
+  TechMappingDraft prefix = testCase.mapping;
+  auto prefixResult =
+      validateTechMapping(prefix, testCase.dataflow, testCase.fabric);
+  if (!prefixResult)
+    fail(__func__, llvm::toString(prefixResult.takeError()).c_str());
+
+  selectWideSyncLanes(testCase, {1, 3});
+  auto nonPrefixResult =
+      validateTechMapping(testCase.mapping, testCase.dataflow, testCase.fabric);
+  if (!nonPrefixResult)
+    fail(__func__, llvm::toString(nonPrefixResult.takeError()).c_str());
+
+  const detail::ValidatedTechMappingProjection &projection =
+      detail::ValidatedTechMappingAccess::mappingProjection(*nonPrefixResult);
+  if (projection.computeRealizations.size() != 1 ||
+      projection.computeRealizations.front().pairedLaneProjections.size() != 1)
+    fail(__func__, "validated Mapping lost its wide-sync lane projection");
+  const detail::ValidatedActorPairedLaneProjection &lanes =
+      projection.computeRealizations.front().pairedLaneProjections.front();
+  if (lanes.laneIndices != std::vector<std::uint32_t>({1, 3}) ||
+      lanes.bitmask != "1100")
+    fail(__func__, "wide sync projection used positional lane encoding");
+
+  FabricHardwareView reorderedFabric = testCase.fabric;
+  std::swap(reorderedFabric.operations.front().pairedLanes[1].maskBit,
+            reorderedFabric.operations.front().pairedLanes[2].maskBit);
+  ValidatedTechMapping reordered = takeExpected(
+      __func__, validateTechMapping(testCase.mapping, testCase.dataflow,
+                                    reorderedFabric));
+  const detail::ValidatedActorPairedLaneProjection &reorderedLanes =
+      detail::ValidatedTechMappingAccess::mappingProjection(reordered)
+          .computeRealizations.front()
+          .pairedLaneProjections.front();
+  if (reorderedLanes.laneIndices != lanes.laneIndices ||
+      reorderedLanes.bitmask != "0110")
+    fail(__func__, "wide sync bitmask was persisted instead of derived");
+}
+
+void rejectsInvalidWideSyncLaneCorrespondence() {
+  auto expectInvalidMapping = [&](auto mutate) {
+    TestCase testCase = makeWideSyncCase();
+    ActorToFabricOp &correspondence =
+        testCase.mapping.realizations.front().actorToOps.front();
+    mutate(correspondence);
+    expectMapError(__func__, testCase,
+                   MappingErrorCode::ConfiguredFunctionMismatch);
+  };
+
+  expectInvalidMapping([](ActorToFabricOp &correspondence) {
+    correspondence.laneSelections = {{2, 3}, {0, 1}};
+  });
+  expectInvalidMapping([](ActorToFabricOp &correspondence) {
+    correspondence.laneSelections = {{2, 1}, {2, 1}};
+  });
+  expectInvalidMapping([](ActorToFabricOp &correspondence) {
+    correspondence.laneSelections.front().inputPort = 4;
+  });
+  expectInvalidMapping([](ActorToFabricOp &correspondence) {
+    correspondence.laneSelections.front().outputPort = 4;
+  });
+  expectInvalidMapping([](ActorToFabricOp &correspondence) {
+    correspondence.laneSelections.pop_back();
+  });
+
+  TestCase missingCapability = makeWideSyncCase();
+  missingCapability.fabric.operations.front().pairedLanes.clear();
+  expectMapError(__func__, missingCapability,
+                 MappingErrorCode::ConfiguredFunctionMismatch);
+}
+
+void rejectsMalformedWideSyncLaneCapability() {
+  auto expectMalformed = [&](auto mutate) {
+    TestCase testCase = makeWideSyncCase();
+    mutate(testCase.fabric.operations.front().pairedLanes);
+    expectMapError(__func__, testCase,
+                   MappingErrorCode::InvalidConfiguredFunction);
+  };
+
+  expectMalformed([](std::vector<PairedLaneDescriptor> &lanes) {
+    lanes[1].inputPort = lanes[0].inputPort;
+  });
+  expectMalformed([](std::vector<PairedLaneDescriptor> &lanes) {
+    lanes[1].outputPort = lanes[0].outputPort;
+  });
+  expectMalformed([](std::vector<PairedLaneDescriptor> &lanes) {
+    lanes[1].maskBit = lanes[0].maskBit;
+  });
+  expectMalformed(
+      [](std::vector<PairedLaneDescriptor> &lanes) { lanes[0].maskBit = 4; });
+  expectMalformed(
+      [](std::vector<PairedLaneDescriptor> &lanes) { lanes[0].inputPort = 4; });
+  expectMalformed([](std::vector<PairedLaneDescriptor> &lanes) {
+    lanes[0].outputPort = 4;
+  });
+  expectMalformed(
+      [](std::vector<PairedLaneDescriptor> &lanes) { lanes.pop_back(); });
+}
 
 void acceptsValidTechMapping() {
   TestCase testCase = makeValidCase();
@@ -509,6 +617,15 @@ void rejectsConfiguredFunctionMismatch() {
                                     testCase.fabric),
                 MappingErrorCode::ConfiguredFunctionMismatch);
   }
+  {
+    TestCase testCase = makeValidCase();
+    ActorToFabricOp &ordinary = testCase.mapping.realizations[0].actorToOps[0];
+    ordinary.laneSelections = {{0, 0}};
+    expectError(__func__,
+                validateTechMapping(testCase.mapping, testCase.dataflow,
+                                    testCase.fabric),
+                MappingErrorCode::ConfiguredFunctionMismatch);
+  }
 }
 
 void rejectsInvalidBoundaryCorrespondence() {
@@ -618,6 +735,9 @@ void rejectsInvalidComputeOccurrences() {
 } // namespace
 
 void runMappingVerifierTests() {
+  acceptsMultipleMappingsOfOneWideSyncCapability();
+  rejectsInvalidWideSyncLaneCorrespondence();
+  rejectsMalformedWideSyncLaneCapability();
   acceptsValidTechMapping();
   acceptsBoundaryInputFanout();
   acceptsBoundaryOutputFanoutWithOneCorrespondence();

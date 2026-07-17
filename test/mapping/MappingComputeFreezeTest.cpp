@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <set>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -68,6 +69,37 @@ void rejectsEmptyImplementationDomainAsMappingInfeasibility() {
       __func__,
       freezeRealizationGraph(testCase.dataflow, testCase.fabric, mapping),
       FrozenMappingInfeasibilityCode::EmptyImplementationDomain);
+}
+void freezesOnlyActiveWideSyncBoundaryPorts() {
+  TestCase testCase = makeWideSyncCase();
+  selectWideSyncLanes(testCase, {1, 3});
+  ComputeOccurrenceDescriptor &occurrence =
+      testCase.fabric.computeOccurrences.front();
+  occurrence.localArcs.erase(
+      std::remove_if(
+          occurrence.localArcs.begin(), occurrence.localArcs.end(),
+          [](const ComputeLocalArcDescriptor &arc) {
+            return (arc.fuPort.direction == PortDirection::Input &&
+                    (arc.fuPort.index == 2 || arc.fuPort.index == 3)) ||
+                   (arc.fuPort.direction == PortDirection::Output &&
+                    (arc.fuPort.index == 0 || arc.fuPort.index == 1));
+          }),
+      occurrence.localArcs.end());
+
+  FrozenRealizationGraph graph = validateAndFreeze(__func__, testCase);
+  std::set<std::pair<PortDirection, std::uint32_t>> demands;
+  for (const FrozenPortDemand &demand : graph.portDemands()) {
+    if (demand.endpointCount == 0)
+      fail(__func__, "active wide-sync demand has no compatible endpoint");
+    demands.emplace(demand.direction, static_cast<std::uint32_t>(demand.port));
+  }
+  const std::set<std::pair<PortDirection, std::uint32_t>> expected{
+      {PortDirection::Input, 0},
+      {PortDirection::Input, 1},
+      {PortDirection::Output, 2},
+      {PortDirection::Output, 3}};
+  if (demands != expected || graph.portDemands().size() != expected.size())
+    fail(__func__, "freeze retained inactive wide-sync boundary demands");
 }
 void freezesFactorizedEndpointDomains() {
   TestCase testCase = makeValidCase();
@@ -302,6 +334,7 @@ static_assert(
 void runComputeFreezeTests() {
   freezesOrderedImplementationDomainFromExactFuMembership();
   rejectsEmptyImplementationDomainAsMappingInfeasibility();
+  freezesOnlyActiveWideSyncBoundaryPorts();
   freezesFactorizedEndpointDomains();
   rejectsSpatialHallInfeasibilityWithoutEndpointVariants();
   acceptsSpatialAugmentingPathReassignment();

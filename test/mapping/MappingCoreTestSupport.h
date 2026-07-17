@@ -6,6 +6,7 @@
 #include "PnR/FrozenRealizationGraph.h"
 #include "PnR/PnrIndex.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -66,6 +67,9 @@ void expectMapError(const char *test, const TestCase &testCase,
                     MappingErrorCode expected);
 
 TestCase makeValidCase();
+TestCase makeWideSyncCase();
+void selectWideSyncLanes(TestCase &testCase,
+                         llvm::ArrayRef<std::uint32_t> laneIndices);
 TestCase makeMemoryAnchorCase();
 void selectInternalMemoryGraph(TestCase &testCase);
 

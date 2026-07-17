@@ -1,6 +1,8 @@
 add_library(LoomMapping
+  ConfiguredBoundaryProjection.cpp
   FabricOccurrenceIndex.cpp
   FabricRoutingIndex.cpp
+  PairedLane.cpp
   Verifier.cpp
 )
 

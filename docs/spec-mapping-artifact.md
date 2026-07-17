@@ -162,7 +162,8 @@ Its confirmed conceptual content is:
 * a persistent record identity;
 * one or more actor references within one graph definition;
 * one exact FU implementation reference in the referenced Fabric artifact;
-* complete actor-to-`fabric.op` correspondence;
+* complete actor-to-`fabric.op` correspondence, including ordered software
+  input/result port correspondence to physical `fabric.op` ports;
 * complete typed software-boundary-to-FU-template-port correspondence;
 * a reference to the selected Fabric-defined valid semantic encoding; and
 * the typed legality and representation obligations for the match.
@@ -176,6 +177,32 @@ the selected FU topology under the selected encoding.
 It is used to verify the actor group, but it is not persisted as a second
 software graph, does not receive independent program identity, and does
 not replace either input artifact.
+
+For a mapped `dataflow.sync`, each software lane must correspond to one unique
+Fabric-declared paired lane. `ActorToFabricOp` is the sole persistent owner of
+the ordered software input/result-to-physical-endpoint correspondence. It
+stores one ordered selection record `{input_port, output_port}` per software
+lane. The vector must be complete, select one unique lane per software
+position, stay within the physical signature, and resolve each record to one
+declared lane. Non-prefix selections are legal.
+
+The active lane set is the image of that correspondence. Mapping validation
+derives the ordered lane-record indices, active configured FU boundary ports,
+and `sw_configs.bitmask` once from the Fabric-owned `{input_port, output_port,
+mask_bit}` inventory plus `ActorToFabricOp`. These values belong to the
+transient validated Mapping projection. Frozen PnR domains consume that
+projection directly and do not reinterpret raw Fabric encodings. Mapping does
+not persist `active_lanes`, `selected_mask`, a bitmask, or an equivalent second
+authority. Canonical Fabric configured-operation descriptors likewise do not
+copy selected lane records.
+
+The neutral C++ verifier treats a missing lane inventory as an ordinary exact
+configured function. Because `SemanticKey` is opaque, it cannot identify an
+exact-full-width `dataflow.sync` solely from semantic identity. Any subset-
+arity mapping therefore requires the explicit paired-lane capability and is
+rejected when that capability is missing or malformed. Canonical Fabric
+producers remain responsible for attaching the inventory to every wide-sync
+capability, including exact-full-width uses.
 
 Mapping does not copy selected `sw_configs` into canonical Fabric. A backend
 may derive transient `sw_configs = {mode = N}` values for `fabric.op`
