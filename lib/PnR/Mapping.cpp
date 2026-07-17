@@ -599,35 +599,8 @@ bool isPointerBookkeepingOp(mlir::Operation *op) {
 
 namespace {
 
-std::optional<llvm::StringRef>
-canonicalArmInlineAsmOperationName(mlir::Operation *op) {
-  if (op->getName().getStringRef() != "llvm.inline_asm")
-    return std::nullopt;
-  auto asmString = op->getAttrOfType<mlir::StringAttr>("asm_string");
-  if (!asmString)
-    return std::nullopt;
-  llvm::StringRef text = asmString.getValue();
-  if (text == "pkhbt $0, $1, $2, lsl $3")
-    return llvm::StringRef("llvm.arm.pkhbt");
-  if (text == "pkhtb $0, $1, $2, asr $3")
-    return llvm::StringRef("llvm.arm.pkhtb");
-  if (text == "sxtab16 $0, $1, $2")
-    return llvm::StringRef("llvm.arm.sxtab16");
-  if (text == "sxtb16 $0, $1")
-    return llvm::StringRef("llvm.arm.sxtb16");
-  return std::nullopt;
-}
-
 std::optional<ResourceKind> resourceKindForSoftwareOp(mlir::Operation *op) {
-  std::string nameStorage;
   llvm::StringRef name = op->getName().getStringRef();
-  if (auto intrinsic = mlir::dyn_cast<mlir::LLVM::CallIntrinsicOp>(op)) {
-    nameStorage = intrinsic.getIntrin().str();
-    name = nameStorage;
-  }
-  if (std::optional<llvm::StringRef> asmName =
-          canonicalArmInlineAsmOperationName(op))
-    name = *asmName;
   if (name == "dataflow.load")
     return ResourceKind::MemLoad;
   if (name == "dataflow.store")
@@ -638,11 +611,6 @@ std::optional<ResourceKind> resourceKindForSoftwareOp(mlir::Operation *op) {
 }
 
 std::string softwareOperationName(mlir::Operation *op) {
-  if (auto intrinsic = mlir::dyn_cast<mlir::LLVM::CallIntrinsicOp>(op))
-    return intrinsic.getIntrin().str();
-  if (std::optional<llvm::StringRef> asmName =
-          canonicalArmInlineAsmOperationName(op))
-    return asmName->str();
   return op->getName().getStringRef().str();
 }
 

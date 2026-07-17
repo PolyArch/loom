@@ -326,7 +326,11 @@ void collectStreamCloseSignals(mlir::Value value,
   mlir::Operation *def = value.getDefiningOp();
   if (!def)
     return;
-  if (mlir::Value signal = statefulCloseSignal(def)) {
+  mlir::Value signal = statefulCloseSignal(def);
+  if (auto gate = llvm::dyn_cast<dataflow::GateOp>(def))
+    if (hasPhaseAlignedGateValue(gate))
+      signal = gate.getBeforeCond();
+  if (signal) {
     if (!llvm::is_contained(signals, signal))
       signals.push_back(signal);
     return;
