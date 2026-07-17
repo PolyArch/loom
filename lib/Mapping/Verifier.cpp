@@ -1,9 +1,9 @@
 #include "Mapping/Verifier.h"
-
+#include "FabricOccurrenceIndex.h"
+#include "VerifierInternal.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/raw_ostream.h"
-
 #include <algorithm>
 #include <map>
 #include <set>
@@ -11,97 +11,72 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-
 using namespace loom::mapping;
-
+using namespace loom::mapping::detail;
 char MappingError::ID;
-
 void MappingError::log(llvm::raw_ostream &stream) const { stream << message_; }
-
 std::error_code MappingError::convertToErrorCode() const {
   return std::make_error_code(std::errc::invalid_argument);
 }
-
-namespace {
-
-constexpr SchemaVersion supportedSchemaVersion{2, 0};
-
-enum class EntityKind {
-  Graph,
-  Actor,
-  Edge,
-  LogicalMemoryRoot,
-  Fu,
-  FabricOp,
-  Encoding,
-  ComputeRealization,
-  MemoryServiceDomain,
-  MemoryImplementation,
-  MemoryOperationPortTemplate,
-  MemoryInternalConnection,
-  MemorySemanticEncoding,
-  MemoryRealization,
-};
-
-using EntityKinds = std::map<std::uint64_t, EntityKind>;
-
-llvm::Error mappingError(MappingErrorCode code, const llvm::Twine &message) {
+llvm::Error loom::mapping::detail::mappingError(MappingErrorCode code,
+                                                const llvm::Twine &message) {
   return llvm::make_error<MappingError>(code, message.str());
 }
-
-llvm::Error addEntity(EntityKinds &entities, std::uint64_t id,
-                      EntityKind kind) {
+llvm::Error loom::mapping::detail::addEntity(EntityKinds &entities,
+                                             std::uint64_t id,
+                                             EntityKind kind) {
   if (!entities.emplace(id, kind).second)
     return mappingError(MappingErrorCode::DuplicateEntityId,
                         "duplicate local entity ID");
   return llvm::Error::success();
 }
-
+llvm::Error loom::mapping::detail::requireLocalKind(const EntityKinds &entities,
+                                                    std::uint64_t id,
+                                                    EntityKind expected) {
+  const auto entity = entities.find(id);
+  if (entity == entities.end() || entity->second != expected)
+    return mappingError(MappingErrorCode::InvalidPortConnection,
+                        "semantic view contains an invalid local reference");
+  return llvm::Error::success();
+}
+namespace {
+constexpr SchemaVersion supportedSchemaVersion{2, 0};
 struct EndpointKey {
   bool actor;
   std::uint64_t owner;
   PortDirection direction;
   std::uint32_t index;
-
   friend bool operator==(const EndpointKey &lhs, const EndpointKey &rhs) {
     return lhs.actor == rhs.actor && lhs.owner == rhs.owner &&
            lhs.direction == rhs.direction && lhs.index == rhs.index;
   }
-
   friend bool operator<(const EndpointKey &lhs, const EndpointKey &rhs) {
     return std::tie(lhs.actor, lhs.owner, lhs.direction, lhs.index) <
            std::tie(rhs.actor, rhs.owner, rhs.direction, rhs.index);
   }
 };
-
 struct EdgeKey {
   EndpointKey source;
   EndpointKey target;
-
   friend bool operator<(const EdgeKey &lhs, const EdgeKey &rhs) {
     return std::tie(lhs.source, lhs.target) < std::tie(rhs.source, rhs.target);
   }
 };
-
 struct DataflowPortInfo {
   std::uint64_t graph;
   EndpointKey key;
   const PortDescriptor *descriptor;
 };
-
 struct ResolvedDataflowEdge {
   EdgeId id;
   DataflowPortInfo source;
   DataflowPortInfo target;
 };
-
 using ActorPortKey = std::pair<PortDirection, std::uint32_t>;
-
 struct MemoryActorInfo {
   const CanonicalMemoryActorView *view;
   std::map<ActorPortKey, MemoryAccessPortRole> ports;
 };
-
 struct DataflowIndex {
   EntityKinds kinds;
   std::map<std::uint64_t, const GraphDescriptor *> graphs;
@@ -112,7 +87,6 @@ struct DataflowIndex {
   std::map<std::uint64_t, std::size_t> edgesById;
   std::vector<ResolvedDataflowEdge> edges;
 };
-
 struct FabricIndex {
   EntityKinds kinds;
   std::map<std::uint64_t, const FuDescriptor *> functionalUnits;
@@ -128,8 +102,8 @@ struct FabricIndex {
       memoryInternalConnections;
   std::map<std::uint64_t, const MemorySemanticEncodingDescriptor *>
       memorySemanticEncodings;
+  std::shared_ptr<const ValidatedFabricProjection> projection;
 };
-
 const std::set<MemoryAccessPortRole> &
 requiredMemoryAccessRoles(MemoryOperationKind operation) {
   static const std::set<MemoryAccessPortRole> loadRoles{
@@ -140,13 +114,11 @@ requiredMemoryAccessRoles(MemoryOperationKind operation) {
       MemoryAccessPortRole::Control, MemoryAccessPortRole::Done};
   return operation == MemoryOperationKind::Load ? loadRoles : storeRoles;
 }
-
 bool isAllowedMemoryAccessRole(MemoryOperationKind operation,
                                MemoryAccessPortRole role) {
   return requiredMemoryAccessRoles(operation).count(role) ||
          role == MemoryAccessPortRole::Mask;
 }
-
 PortDirection memoryAccessRoleDirection(MemoryAccessPortRole role) {
   switch (role) {
   case MemoryAccessPortRole::Address:
@@ -160,7 +132,6 @@ PortDirection memoryAccessRoleDirection(MemoryAccessPortRole role) {
   }
   llvm_unreachable("unknown memory access port role");
 }
-
 llvm::Expected<MemoryActorInfo>
 validateMemoryActorView(const ActorDescriptor &actor) {
   const CanonicalMemoryActorView &memory = *actor.memory;
@@ -186,7 +157,6 @@ validateMemoryActorView(const ActorDescriptor &actor) {
           MappingErrorCode::InvalidPortConnection,
           "memory actor has invalid or duplicate port semantics");
   }
-
   const std::set<MemoryAccessPortRole> &required =
       requiredMemoryAccessRoles(memory.operation);
   if (ports.size() != actor.inputPorts.size() + actor.outputPorts.size() ||
@@ -196,17 +166,15 @@ validateMemoryActorView(const ActorDescriptor &actor) {
                         "memory actor port semantics are incomplete");
   return MemoryActorInfo{&memory, std::move(ports)};
 }
-
-bool samePortKinds(const std::vector<PortDescriptor> &lhs,
-                   const std::vector<PortDescriptor> &rhs) {
+bool samePortClasses(const std::vector<PortDescriptor> &lhs,
+                     const std::vector<PortDescriptor> &rhs) {
   if (lhs.size() != rhs.size())
     return false;
   for (auto [left, right] : llvm::zip(lhs, rhs))
-    if (left.kind != right.kind)
+    if (left.kind != right.kind || left.role != right.role)
       return false;
   return true;
 }
-
 llvm::Expected<const PortDescriptor *> resolveConfiguredValue(
     const ConfiguredValue &value,
     const std::map<std::uint32_t, const PortDescriptor *> &inputs,
@@ -219,7 +187,6 @@ llvm::Expected<const PortDescriptor *> resolveConfiguredValue(
                           "configured value names an inactive FU input");
     return descriptor->second;
   }
-
   const auto &result = std::get<FabricOpResultValue>(value);
   auto operation = operations.find(result.operation.value());
   if (operation == operations.end() ||
@@ -228,16 +195,6 @@ llvm::Expected<const PortDescriptor *> resolveConfiguredValue(
                         "configured value names an invalid fabric.op result");
   return &operation->second->outputPorts[result.index];
 }
-
-llvm::Error requireLocalKind(const EntityKinds &entities, std::uint64_t id,
-                             EntityKind expected) {
-  const auto entity = entities.find(id);
-  if (entity == entities.end() || entity->second != expected)
-    return mappingError(MappingErrorCode::InvalidPortConnection,
-                        "semantic view contains an invalid local reference");
-  return llvm::Error::success();
-}
-
 llvm::Expected<DataflowPortInfo>
 resolveDataflowPort(const DataflowEndpoint &endpoint,
                     const DataflowIndex &index) {
@@ -257,7 +214,6 @@ resolveDataflowPort(const DataflowEndpoint &endpoint,
         EndpointKey{false, port->graph.value(), port->direction, port->index},
         &ports[port->index]};
   }
-
   const auto &port = std::get<ActorPort>(endpoint);
   if (llvm::Error error =
           requireLocalKind(index.kinds, port.actor.value(), EntityKind::Actor))
@@ -274,13 +230,11 @@ resolveDataflowPort(const DataflowEndpoint &endpoint,
       EndpointKey{true, actor.id.value(), port.direction, port.index},
       &ports[port.index]};
 }
-
 llvm::Expected<DataflowIndex>
 buildDataflowIndex(const DataflowProgramView &dataflow) {
   if (dataflow.identity.empty())
     return mappingError(MappingErrorCode::InvalidArtifactIdentity,
                         "Dataflow artifact identity is empty");
-
   DataflowIndex index;
   for (const GraphDescriptor &graph : dataflow.graphs) {
     if (llvm::Error error =
@@ -305,7 +259,6 @@ buildDataflowIndex(const DataflowProgramView &dataflow) {
             addEntity(index.kinds, edge.id.value(), EntityKind::Edge))
       return std::move(error);
   }
-
   std::size_t graphMemoryPortCount = 0;
   for (const GraphDescriptor &graph : dataflow.graphs) {
     graphMemoryPortCount +=
@@ -317,7 +270,6 @@ buildDataflowIndex(const DataflowProgramView &dataflow) {
           return port.kind == PortKind::Memory;
         });
   }
-
   std::set<EndpointKey> rootedMemoryPorts;
   for (const LogicalMemoryRootDescriptor &root : dataflow.logicalMemoryRoots) {
     if (llvm::Error error = requireLocalKind(index.kinds, root.graph.value(),
@@ -346,7 +298,6 @@ buildDataflowIndex(const DataflowProgramView &dataflow) {
   if (rootedMemoryPorts.size() != graphMemoryPortCount)
     return mappingError(MappingErrorCode::InvalidPortConnection,
                         "graph memory ports are not exactly rooted");
-
   for (const ActorDescriptor &actor : dataflow.actors) {
     if (llvm::Error error = requireLocalKind(index.kinds, actor.graph.value(),
                                              EntityKind::Graph))
@@ -366,7 +317,6 @@ buildDataflowIndex(const DataflowProgramView &dataflow) {
       return memoryActor.takeError();
     index.memoryActors.emplace(actor.id.value(), std::move(*memoryActor));
   }
-
   std::set<EdgeKey> edges;
   index.edges.reserve(dataflow.edges.size());
   for (const DataflowEdge &edge : dataflow.edges) {
@@ -376,13 +326,11 @@ buildDataflowIndex(const DataflowProgramView &dataflow) {
     auto target = resolveDataflowPort(edge.target, index);
     if (!target)
       return target.takeError();
-
     if (source->descriptor->kind == PortKind::Memory ||
         target->descriptor->kind == PortKind::Memory)
       return mappingError(
           MappingErrorCode::InvalidPortConnection,
           "memory capability ports cannot participate in dataflow edges");
-
     const bool validSource =
         source->key.actor ? source->key.direction == PortDirection::Output
                           : source->key.direction == PortDirection::Input;
@@ -395,19 +343,15 @@ buildDataflowIndex(const DataflowProgramView &dataflow) {
     if (*source->descriptor != *target->descriptor)
       return mappingError(MappingErrorCode::PortSignatureMismatch,
                           "dataflow edge port kind or type does not match");
-
     const EdgeKey edgeKey{source->key, target->key};
     if (!edges.insert(edgeKey).second)
       return mappingError(MappingErrorCode::DuplicateEdge,
                           "dataflow edge is duplicated");
-
     index.edgesById.emplace(edge.id.value(), index.edges.size());
     index.edges.push_back(ResolvedDataflowEdge{edge.id, *source, *target});
   }
-
   return index;
 }
-
 llvm::Error validateMemoryOperationPortTemplate(
     const MemoryOperationPortTemplateDescriptor &operation) {
   std::set<MemoryAccessPortRole> roles;
@@ -420,7 +364,6 @@ llvm::Error validateMemoryOperationPortTemplate(
           MappingErrorCode::InvalidPortConnection,
           "memory operation template has invalid or duplicate ports");
   }
-
   const std::set<MemoryAccessPortRole> &required =
       requiredMemoryAccessRoles(operation.operation);
   if (!std::includes(roles.begin(), roles.end(), required.begin(),
@@ -445,12 +388,10 @@ llvm::Error validateMemoryOperationPortTemplate(
   }
   return llvm::Error::success();
 }
-
 struct LocalMemoryOperationPortInfo {
   const MemoryOperationPortTemplateDescriptor *operation;
   const MemoryOperationPortDescriptor *port;
 };
-
 llvm::Expected<LocalMemoryOperationPortInfo>
 resolveLocalMemoryOperationPort(const MemoryOperationPort &reference,
                                 const FabricIndex &index) {
@@ -463,12 +404,10 @@ resolveLocalMemoryOperationPort(const MemoryOperationPort &reference,
   return LocalMemoryOperationPortInfo{
       operation->second, &operation->second->ports[reference.index]};
 }
-
 struct MemoryInternalEndpointKey {
   bool boundary;
   std::uint64_t owner;
   std::uint32_t index;
-
   friend bool operator==(const MemoryInternalEndpointKey &lhs,
                          const MemoryInternalEndpointKey &rhs) {
     return lhs.boundary == rhs.boundary && lhs.owner == rhs.owner &&
@@ -478,14 +417,12 @@ struct MemoryInternalEndpointKey {
                          const MemoryInternalEndpointKey &rhs) {
     return !(lhs == rhs);
   }
-
   friend bool operator<(const MemoryInternalEndpointKey &lhs,
                         const MemoryInternalEndpointKey &rhs) {
     return std::tie(lhs.boundary, lhs.owner, lhs.index) <
            std::tie(rhs.boundary, rhs.owner, rhs.index);
   }
 };
-
 struct LocalMemoryInternalEndpointInfo {
   MemoryInternalEndpointKey key;
   const PortDescriptor *port;
@@ -493,7 +430,6 @@ struct LocalMemoryInternalEndpointInfo {
   bool source;
   const MemoryOperationPortTemplateDescriptor *operation;
 };
-
 llvm::Expected<LocalMemoryInternalEndpointInfo>
 resolveLocalMemoryInternalEndpoint(const MemoryInternalEndpoint &endpoint,
                                    MemoryImplementationId implementation,
@@ -514,7 +450,6 @@ resolveLocalMemoryInternalEndpoint(const MemoryInternalEndpoint &endpoint,
         port.direction == PortDirection::Input,
         nullptr};
   }
-
   const auto &operationPort = std::get<MemoryOperationPort>(endpoint);
   auto port = resolveLocalMemoryOperationPort(operationPort, index);
   if (!port)
@@ -529,12 +464,10 @@ resolveLocalMemoryInternalEndpoint(const MemoryInternalEndpoint &endpoint,
       port->port->direction == PortDirection::Output,
       port->operation};
 }
-
 llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
   if (fabric.identity.empty())
     return mappingError(MappingErrorCode::InvalidArtifactIdentity,
                         "Fabric artifact identity is empty");
-
   FabricIndex index;
   for (const FuDescriptor &fu : fabric.functionalUnits) {
     if (llvm::Error error =
@@ -591,7 +524,11 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
       return std::move(error);
     index.memorySemanticEncodings.emplace(encoding.id.value(), &encoding);
   }
-
+  auto projection = buildValidatedFabricProjection(fabric, index.kinds,
+                                                   index.functionalUnits);
+  if (!projection)
+    return projection.takeError();
+  index.projection = std::move(*projection);
   for (const FabricOpDescriptor &operation : fabric.operations) {
     if (llvm::Error error =
             requireLocalKind(index.kinds, operation.fu.value(), EntityKind::Fu))
@@ -601,28 +538,27 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
     if (llvm::Error error =
             requireLocalKind(index.kinds, encoding.fu.value(), EntityKind::Fu))
       return std::move(error);
-
     const FuDescriptor &fu = *index.functionalUnits.at(encoding.fu.value());
     std::map<std::uint32_t, const PortDescriptor *> configuredInputs;
     for (const ConfiguredInputDescriptor &input : encoding.inputs) {
       if (input.fuPort >= fu.inputPorts.size() ||
           fu.inputPorts[input.fuPort].kind != input.port.kind ||
+          fu.inputPorts[input.fuPort].role != input.port.role ||
           !configuredInputs.emplace(input.fuPort, &input.port).second)
         return mappingError(
             MappingErrorCode::InvalidConfiguredFunction,
             "encoding has an invalid or duplicate configured FU input");
     }
-
     std::map<std::uint64_t, const ConfiguredFabricOpDescriptor *>
         configuredOperations;
     for (const ConfiguredFabricOpDescriptor &configured : encoding.operations) {
       auto operation = index.operations.find(configured.operation.value());
       if (operation == index.operations.end() ||
           operation->second->fu != encoding.fu ||
-          !samePortKinds(configured.inputPorts,
-                         operation->second->inputPorts) ||
-          !samePortKinds(configured.outputPorts,
-                         operation->second->outputPorts) ||
+          !samePortClasses(configured.inputPorts,
+                           operation->second->inputPorts) ||
+          !samePortClasses(configured.outputPorts,
+                           operation->second->outputPorts) ||
           configured.operands.size() != configured.inputPorts.size() ||
           !configuredOperations
                .emplace(configured.operation.value(), &configured)
@@ -631,7 +567,6 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
             MappingErrorCode::InvalidConfiguredFunction,
             "encoding has an invalid or duplicate configured fabric.op");
     }
-
     for (const ConfiguredFabricOpDescriptor &configured : encoding.operations) {
       for (auto [operand, expected] :
            llvm::zip(configured.operands, configured.inputPorts)) {
@@ -645,11 +580,11 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
               "configured fabric.op operand has the wrong semantic type");
       }
     }
-
     std::set<std::uint32_t> configuredOutputs;
     for (const ConfiguredOutputDescriptor &output : encoding.outputs) {
       if (output.fuPort >= fu.outputPorts.size() ||
           fu.outputPorts[output.fuPort].kind != output.port.kind ||
+          fu.outputPorts[output.fuPort].role != output.port.role ||
           !configuredOutputs.insert(output.fuPort).second)
         return mappingError(
             MappingErrorCode::InvalidConfiguredFunction,
@@ -663,7 +598,6 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
                             "configured FU output has the wrong semantic type");
     }
   }
-
   for (const MemoryImplementationDescriptor &implementation :
        fabric.memoryImplementations) {
     if (llvm::Error error =
@@ -678,7 +612,6 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
             MappingErrorCode::InvalidPortConnection,
             "memory boundary sink declares internal fanout capacity");
   }
-
   for (const MemoryOperationPortTemplateDescriptor &operation :
        fabric.memoryOperationPortTemplates) {
     if (llvm::Error error =
@@ -688,7 +621,6 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
     if (llvm::Error error = validateMemoryOperationPortTemplate(operation))
       return std::move(error);
   }
-
   for (const MemoryInternalConnectionDescriptor &connection :
        fabric.memoryInternalConnections) {
     if (llvm::Error error =
@@ -771,26 +703,6 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
 
   return index;
 }
-
-template <typename Id, typename Descriptor>
-llvm::Expected<const Descriptor *>
-resolveReference(const EntityReference<Id> &reference,
-                 const ArtifactIdentity &artifact, const EntityKinds &kinds,
-                 EntityKind expected,
-                 const std::map<std::uint64_t, const Descriptor *> &entities) {
-  if (reference.artifact != artifact)
-    return mappingError(MappingErrorCode::ForeignEntityReference,
-                        "reference names a foreign artifact");
-  const auto kind = kinds.find(reference.entity.value());
-  if (kind == kinds.end())
-    return mappingError(MappingErrorCode::UnresolvedEntityId,
-                        "reference names an unresolved entity ID");
-  if (kind->second != expected)
-    return mappingError(MappingErrorCode::WrongEntityKind,
-                        "reference names an entity of the wrong kind");
-  return entities.at(reference.entity.value());
-}
-
 llvm::Expected<DataflowPortInfo>
 resolveActorPortReference(const ActorPortRef &port,
                           const ArtifactIdentity &artifact,
@@ -1642,9 +1554,7 @@ validateCoveredSinkAccounting(const DataflowIndex &dataflowIndex,
 
   return llvm::Error::success();
 }
-
 } // namespace
-
 llvm::Expected<ValidatedTechMapping>
 loom::mapping::validateTechMapping(const TechMappingDraft &mapping,
                                    const DataflowProgramView &dataflow,
@@ -1750,5 +1660,5 @@ loom::mapping::validateTechMapping(const TechMappingDraft &mapping,
           *dataflowIndex, coveredGraphs, actorToRealization))
     return std::move(error);
 
-  return ValidatedTechMapping(mapping);
+  return ValidatedTechMapping(mapping, fabricIndex->projection);
 }

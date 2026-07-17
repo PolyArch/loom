@@ -1,4 +1,5 @@
 add_library(LoomMapping
+  FabricOccurrenceIndex.cpp
   Verifier.cpp
 )
 

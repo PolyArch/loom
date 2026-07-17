@@ -6,11 +6,17 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <memory>
 #include <string>
 #include <system_error>
 #include <utility>
 
 namespace loom::mapping {
+
+namespace detail {
+struct ValidatedFabricProjection;
+class ValidatedTechMappingAccess;
+} // namespace detail
 
 enum class MappingErrorCode {
   UnsupportedSchemaVersion,
@@ -22,6 +28,7 @@ enum class MappingErrorCode {
   UnresolvedEntityId,
   WrongEntityKind,
   InvalidPortConnection,
+  InvalidComputeOccurrence,
   PortSignatureMismatch,
   DuplicateEdge,
   MissingSinkDriver,
@@ -78,11 +85,16 @@ public:
   }
 
 private:
-  explicit ValidatedTechMapping(TechMappingDraft draft)
-      : draft_(std::move(draft)) {}
+  ValidatedTechMapping(
+      TechMappingDraft draft,
+      std::shared_ptr<const detail::ValidatedFabricProjection> fabricProjection)
+      : draft_(std::move(draft)),
+        fabricProjection_(std::move(fabricProjection)) {}
 
   TechMappingDraft draft_;
+  std::shared_ptr<const detail::ValidatedFabricProjection> fabricProjection_;
 
+  friend class detail::ValidatedTechMappingAccess;
   friend llvm::Expected<ValidatedTechMapping>
   validateTechMapping(const TechMappingDraft &mapping,
                       const DataflowProgramView &dataflow,

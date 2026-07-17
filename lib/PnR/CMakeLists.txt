@@ -1,4 +1,5 @@
 add_mlir_library(LoomPnR
+  FrozenComputeDomains.cpp
   FrozenRealizationGraph.cpp
   Mapping.cpp
   MappingHardware.cpp
@@ -27,4 +28,8 @@ add_mlir_library(LoomPnR
   MLIRSupport
   MLIRUBDialect
   LLVMSupport
+)
+
+target_include_directories(LoomPnR PRIVATE
+  ${LOOM_SOURCE_DIR}/lib
 )

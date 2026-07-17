@@ -8,11 +8,39 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <string>
+#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
 
 namespace loom::pnr {
+
+enum class FrozenMappingInfeasibilityCode {
+  EmptyImplementationDomain,
+  EmptyUnaryEligibleDomain,
+};
+
+class FrozenMappingInfeasibility final
+    : public llvm::ErrorInfo<FrozenMappingInfeasibility> {
+public:
+  static char ID;
+
+  FrozenMappingInfeasibility(FrozenMappingInfeasibilityCode code,
+                             mapping::ComputeRealizationId realization,
+                             std::string message)
+      : code_(code), realization_(realization), message_(std::move(message)) {}
+
+  FrozenMappingInfeasibilityCode code() const { return code_; }
+  mapping::ComputeRealizationId realization() const { return realization_; }
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  FrozenMappingInfeasibilityCode code_;
+  mapping::ComputeRealizationId realization_;
+  std::string message_;
+};
 
 enum class FrozenRealizationKind { Compute, Memory };
 
@@ -32,10 +60,122 @@ struct FrozenComputeRealization {
   mapping::ComputeRealizationId id;
   mapping::FuId fu;
   mapping::EncodingId encoding;
+  PnrIndex implDomainOffset;
+  PnrIndex implDomainCount;
 
   friend bool operator==(const FrozenComputeRealization &lhs,
                          const FrozenComputeRealization &rhs) {
-    return lhs.id == rhs.id && lhs.fu == rhs.fu && lhs.encoding == rhs.encoding;
+    return lhs.id == rhs.id && lhs.fu == rhs.fu &&
+           lhs.encoding == rhs.encoding &&
+           lhs.implDomainOffset == rhs.implDomainOffset &&
+           lhs.implDomainCount == rhs.implDomainCount;
+  }
+};
+
+struct FrozenComputeOccurrence {
+  mapping::ComputeOccurrenceId id;
+  mapping::ComputeScheduleKind schedule;
+  PnrIndex fuMembershipOffset;
+  PnrIndex fuMembershipCount;
+  PnrIndex endpointOffset;
+  PnrIndex endpointCount;
+  PnrIndex localArcOffset;
+  PnrIndex localArcCount;
+
+  friend bool operator==(const FrozenComputeOccurrence &lhs,
+                         const FrozenComputeOccurrence &rhs) {
+    return lhs.id == rhs.id && lhs.schedule == rhs.schedule &&
+           lhs.fuMembershipOffset == rhs.fuMembershipOffset &&
+           lhs.fuMembershipCount == rhs.fuMembershipCount &&
+           lhs.endpointOffset == rhs.endpointOffset &&
+           lhs.endpointCount == rhs.endpointCount &&
+           lhs.localArcOffset == rhs.localArcOffset &&
+           lhs.localArcCount == rhs.localArcCount;
+  }
+};
+
+struct FrozenPhysicalEndpoint {
+  PnrIndex occurrence;
+  mapping::ComputeEndpointId id;
+  mapping::PortDirection direction;
+  mapping::PortKind kind;
+  std::uint32_t payloadCapacityBits;
+  std::uint32_t tagCapacityBits;
+  PnrIndex compatibleTypeOffset;
+  PnrIndex compatibleTypeCount;
+  mapping::PortRoleKey role;
+
+  friend bool operator==(const FrozenPhysicalEndpoint &lhs,
+                         const FrozenPhysicalEndpoint &rhs) {
+    return lhs.occurrence == rhs.occurrence && lhs.id == rhs.id &&
+           lhs.direction == rhs.direction && lhs.kind == rhs.kind &&
+           lhs.payloadCapacityBits == rhs.payloadCapacityBits &&
+           lhs.tagCapacityBits == rhs.tagCapacityBits &&
+           lhs.compatibleTypeOffset == rhs.compatibleTypeOffset &&
+           lhs.compatibleTypeCount == rhs.compatibleTypeCount &&
+           lhs.role == rhs.role;
+  }
+};
+
+struct FrozenComputeLocalArc {
+  PnrIndex occurrence;
+  mapping::FuId fu;
+  mapping::PortDirection direction;
+  PnrIndex port;
+  PnrIndex endpoint;
+  std::uint32_t payloadCapacityBits;
+  std::uint32_t tagCapacityBits;
+
+  friend bool operator==(const FrozenComputeLocalArc &lhs,
+                         const FrozenComputeLocalArc &rhs) {
+    return lhs.occurrence == rhs.occurrence && lhs.fu == rhs.fu &&
+           lhs.direction == rhs.direction && lhs.port == rhs.port &&
+           lhs.endpoint == rhs.endpoint &&
+           lhs.payloadCapacityBits == rhs.payloadCapacityBits &&
+           lhs.tagCapacityBits == rhs.tagCapacityBits;
+  }
+};
+
+struct FrozenImplementationOccurrence {
+  PnrIndex realization;
+  PnrIndex occurrence;
+  PnrIndex portDemandOffset;
+  PnrIndex portDemandCount;
+  bool unaryEligible;
+
+  friend bool operator==(const FrozenImplementationOccurrence &lhs,
+                         const FrozenImplementationOccurrence &rhs) {
+    return lhs.realization == rhs.realization &&
+           lhs.occurrence == rhs.occurrence &&
+           lhs.portDemandOffset == rhs.portDemandOffset &&
+           lhs.portDemandCount == rhs.portDemandCount &&
+           lhs.unaryEligible == rhs.unaryEligible;
+  }
+};
+
+struct FrozenPortDemand {
+  PnrIndex implementation;
+  mapping::FuId fu;
+  mapping::PortDirection direction;
+  PnrIndex port;
+  mapping::PortKind kind;
+  mapping::TypeKey type;
+  mapping::PortRoleKey role;
+  std::uint32_t payloadWidthBits;
+  std::uint32_t tagWidthBits;
+  PnrIndex endpointOffset;
+  PnrIndex endpointCount;
+
+  friend bool operator==(const FrozenPortDemand &lhs,
+                         const FrozenPortDemand &rhs) {
+    return lhs.implementation == rhs.implementation && lhs.fu == rhs.fu &&
+           lhs.direction == rhs.direction && lhs.port == rhs.port &&
+           lhs.kind == rhs.kind && lhs.type == rhs.type &&
+           lhs.role == rhs.role &&
+           lhs.payloadWidthBits == rhs.payloadWidthBits &&
+           lhs.tagWidthBits == rhs.tagWidthBits &&
+           lhs.endpointOffset == rhs.endpointOffset &&
+           lhs.endpointCount == rhs.endpointCount;
   }
 };
 
@@ -147,6 +287,29 @@ public:
   llvm::ArrayRef<FrozenComputeRealization> computeRealizations() const {
     return computeRealizations_;
   }
+  llvm::ArrayRef<FrozenComputeOccurrence> computeOccurrences() const {
+    return computeOccurrences_;
+  }
+  llvm::ArrayRef<mapping::FuId> computeOccurrenceFuMemberships() const {
+    return computeOccurrenceFuMemberships_;
+  }
+  llvm::ArrayRef<FrozenPhysicalEndpoint> physicalEndpoints() const {
+    return physicalEndpoints_;
+  }
+  llvm::ArrayRef<mapping::TypeKey> physicalEndpointCompatibleTypes() const {
+    return physicalEndpointCompatibleTypes_;
+  }
+  llvm::ArrayRef<FrozenComputeLocalArc> computeLocalArcs() const {
+    return computeLocalArcs_;
+  }
+  llvm::ArrayRef<FrozenImplementationOccurrence>
+  implementationOccurrences() const {
+    return implementationOccurrences_;
+  }
+  llvm::ArrayRef<FrozenPortDemand> portDemands() const { return portDemands_; }
+  llvm::ArrayRef<PnrIndex> compatibleEndpoints() const {
+    return compatibleEndpoints_;
+  }
   llvm::ArrayRef<FrozenMemoryRealization> memoryRealizations() const {
     return memoryRealizations_;
   }
@@ -166,6 +329,16 @@ public:
                          const FrozenRealizationGraph &rhs) {
     return lhs.actorOwnerships_ == rhs.actorOwnerships_ &&
            lhs.computeRealizations_ == rhs.computeRealizations_ &&
+           lhs.computeOccurrences_ == rhs.computeOccurrences_ &&
+           lhs.computeOccurrenceFuMemberships_ ==
+               rhs.computeOccurrenceFuMemberships_ &&
+           lhs.physicalEndpoints_ == rhs.physicalEndpoints_ &&
+           lhs.physicalEndpointCompatibleTypes_ ==
+               rhs.physicalEndpointCompatibleTypes_ &&
+           lhs.computeLocalArcs_ == rhs.computeLocalArcs_ &&
+           lhs.implementationOccurrences_ == rhs.implementationOccurrences_ &&
+           lhs.portDemands_ == rhs.portDemands_ &&
+           lhs.compatibleEndpoints_ == rhs.compatibleEndpoints_ &&
            lhs.memoryRealizations_ == rhs.memoryRealizations_ &&
            lhs.templateTerminals_ == rhs.templateTerminals_ &&
            lhs.logicalNets_ == rhs.logicalNets_ &&
@@ -181,6 +354,14 @@ private:
   FrozenRealizationGraph(
       std::vector<FrozenActorOwnership> actorOwnerships,
       std::vector<FrozenComputeRealization> computeRealizations,
+      std::vector<FrozenComputeOccurrence> computeOccurrences,
+      std::vector<mapping::FuId> computeOccurrenceFuMemberships,
+      std::vector<FrozenPhysicalEndpoint> physicalEndpoints,
+      std::vector<mapping::TypeKey> physicalEndpointCompatibleTypes,
+      std::vector<FrozenComputeLocalArc> computeLocalArcs,
+      std::vector<FrozenImplementationOccurrence> implementationOccurrences,
+      std::vector<FrozenPortDemand> portDemands,
+      std::vector<PnrIndex> compatibleEndpoints,
       std::vector<FrozenMemoryRealization> memoryRealizations,
       std::vector<FrozenTemplateTerminal> templateTerminals,
       std::vector<FrozenLogicalNet> logicalNets,
@@ -188,6 +369,16 @@ private:
       std::vector<FrozenMemoryServiceObligation> memoryServiceObligations)
       : actorOwnerships_(std::move(actorOwnerships)),
         computeRealizations_(std::move(computeRealizations)),
+        computeOccurrences_(std::move(computeOccurrences)),
+        computeOccurrenceFuMemberships_(
+            std::move(computeOccurrenceFuMemberships)),
+        physicalEndpoints_(std::move(physicalEndpoints)),
+        physicalEndpointCompatibleTypes_(
+            std::move(physicalEndpointCompatibleTypes)),
+        computeLocalArcs_(std::move(computeLocalArcs)),
+        implementationOccurrences_(std::move(implementationOccurrences)),
+        portDemands_(std::move(portDemands)),
+        compatibleEndpoints_(std::move(compatibleEndpoints)),
         memoryRealizations_(std::move(memoryRealizations)),
         templateTerminals_(std::move(templateTerminals)),
         logicalNets_(std::move(logicalNets)),
@@ -196,6 +387,14 @@ private:
 
   std::vector<FrozenActorOwnership> actorOwnerships_;
   std::vector<FrozenComputeRealization> computeRealizations_;
+  std::vector<FrozenComputeOccurrence> computeOccurrences_;
+  std::vector<mapping::FuId> computeOccurrenceFuMemberships_;
+  std::vector<FrozenPhysicalEndpoint> physicalEndpoints_;
+  std::vector<mapping::TypeKey> physicalEndpointCompatibleTypes_;
+  std::vector<FrozenComputeLocalArc> computeLocalArcs_;
+  std::vector<FrozenImplementationOccurrence> implementationOccurrences_;
+  std::vector<FrozenPortDemand> portDemands_;
+  std::vector<PnrIndex> compatibleEndpoints_;
   std::vector<FrozenMemoryRealization> memoryRealizations_;
   std::vector<FrozenTemplateTerminal> templateTerminals_;
   std::vector<FrozenLogicalNet> logicalNets_;
@@ -214,6 +413,10 @@ freezeRealizationGraph(const mapping::DataflowProgramView &dataflow,
                        const mapping::ValidatedTechMapping &mapping);
 
 namespace detail {
+
+llvm::Error preflightFrozenRangeCapacity(PnrCapacityContext context,
+                                         std::uint64_t offset,
+                                         std::uint64_t count);
 
 llvm::Error preflightFrozenRealizationGraphCapacity(
     llvm::ArrayRef<mapping::ComputeRealizationDraft> computeRealizations,

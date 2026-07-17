@@ -18,6 +18,7 @@ using ArtifactIdentity = ::loom::ArtifactIdentity;
 enum class MappingProfile { TechMapping, PhysicalMapping };
 enum class PortDirection { Input, Output };
 enum class PortKind { Value, Stream, Memory };
+enum class ComputeScheduleKind { Spatial, Temporal };
 enum class MemoryOperationKind { Load, Store };
 enum class MemoryAccessPortRole {
   Address,
@@ -38,6 +39,25 @@ public:
   friend constexpr bool operator!=(TypeKey lhs, TypeKey rhs) {
     return !(lhs == rhs);
   }
+
+  constexpr std::uint64_t value() const { return value_; }
+
+private:
+  std::uint64_t value_;
+};
+
+class PortRoleKey {
+public:
+  explicit constexpr PortRoleKey(std::uint64_t value) : value_(value) {}
+
+  friend constexpr bool operator==(PortRoleKey lhs, PortRoleKey rhs) {
+    return lhs.value_ == rhs.value_;
+  }
+  friend constexpr bool operator!=(PortRoleKey lhs, PortRoleKey rhs) {
+    return !(lhs == rhs);
+  }
+
+  constexpr std::uint64_t value() const { return value_; }
 
 private:
   std::uint64_t value_;
@@ -66,9 +86,14 @@ private:
 struct PortDescriptor {
   PortKind kind;
   TypeKey type;
+  std::uint32_t payloadWidthBits = 0;
+  std::uint32_t tagWidthBits = 0;
+  PortRoleKey role = PortRoleKey(0);
 
   friend bool operator==(const PortDescriptor &lhs, const PortDescriptor &rhs) {
-    return lhs.kind == rhs.kind && lhs.type == rhs.type;
+    return lhs.kind == rhs.kind && lhs.type == rhs.type &&
+           lhs.payloadWidthBits == rhs.payloadWidthBits &&
+           lhs.tagWidthBits == rhs.tagWidthBits && lhs.role == rhs.role;
   }
   friend bool operator!=(const PortDescriptor &lhs, const PortDescriptor &rhs) {
     return !(lhs == rhs);
@@ -97,6 +122,8 @@ struct ActorIdTag;
 struct EdgeIdTag;
 struct LogicalMemoryRootIdTag;
 struct FuIdTag;
+struct ComputeOccurrenceIdTag;
+struct ComputeEndpointIdTag;
 struct FabricOpIdTag;
 struct EncodingIdTag;
 struct ComputeRealizationIdTag;
@@ -112,6 +139,8 @@ using ActorId = TypedEntityId<ActorIdTag>;
 using EdgeId = TypedEntityId<EdgeIdTag>;
 using LogicalMemoryRootId = TypedEntityId<LogicalMemoryRootIdTag>;
 using FuId = TypedEntityId<FuIdTag>;
+using ComputeOccurrenceId = TypedEntityId<ComputeOccurrenceIdTag>;
+using ComputeEndpointId = TypedEntityId<ComputeEndpointIdTag>;
 using FabricOpId = TypedEntityId<FabricOpIdTag>;
 using EncodingId = TypedEntityId<EncodingIdTag>;
 using ComputeRealizationId = TypedEntityId<ComputeRealizationIdTag>;
@@ -131,6 +160,7 @@ using ActorRef = EntityReference<ActorId>;
 using EdgeRef = EntityReference<EdgeId>;
 using LogicalMemoryRootRef = EntityReference<LogicalMemoryRootId>;
 using FuRef = EntityReference<FuId>;
+using ComputeEndpointRef = EntityReference<ComputeEndpointId>;
 using FabricOpRef = EntityReference<FabricOpId>;
 using EncodingRef = EntityReference<EncodingId>;
 using MemoryImplementationRef = EntityReference<MemoryImplementationId>;
@@ -138,6 +168,12 @@ using MemoryOperationPortTemplateRef =
     EntityReference<MemoryOperationPortTemplateId>;
 using MemoryInternalConnectionRef = EntityReference<MemoryInternalConnectionId>;
 using MemorySemanticEncodingRef = EntityReference<MemorySemanticEncodingId>;
+
+struct FuPortRef {
+  FuRef fu;
+  PortDirection direction;
+  std::uint32_t index;
+};
 
 struct GraphDescriptor {
   GraphId id;
@@ -212,6 +248,31 @@ struct FuDescriptor {
   FuId id;
   std::vector<PortDescriptor> inputPorts;
   std::vector<PortDescriptor> outputPorts;
+};
+
+struct ComputeEndpointDescriptor {
+  ComputeEndpointId id;
+  PortDirection direction;
+  PortKind kind;
+  std::uint32_t payloadCapacityBits;
+  std::uint32_t tagCapacityBits;
+  std::vector<TypeKey> compatibleTypes;
+  PortRoleKey role;
+};
+
+struct ComputeLocalArcDescriptor {
+  FuPortRef fuPort;
+  ComputeEndpointRef endpoint;
+  std::uint32_t payloadCapacityBits;
+  std::uint32_t tagCapacityBits;
+};
+
+struct ComputeOccurrenceDescriptor {
+  ComputeOccurrenceId id;
+  ComputeScheduleKind schedule;
+  std::vector<FuRef> functionalUnits;
+  std::vector<ComputeEndpointDescriptor> endpoints;
+  std::vector<ComputeLocalArcDescriptor> localArcs;
 };
 
 struct FabricOpDescriptor {
@@ -355,6 +416,7 @@ struct FabricHardwareView {
       memoryOperationPortTemplates;
   std::vector<MemoryInternalConnectionDescriptor> memoryInternalConnections;
   std::vector<MemorySemanticEncodingDescriptor> memorySemanticEncodings;
+  std::vector<ComputeOccurrenceDescriptor> computeOccurrences;
 };
 
 struct ActorPortRef {
@@ -365,12 +427,6 @@ struct ActorPortRef {
 
 struct GraphPortRef {
   GraphRef graph;
-  PortDirection direction;
-  std::uint32_t index;
-};
-
-struct FuPortRef {
-  FuRef fu;
   PortDirection direction;
   std::uint32_t index;
 };

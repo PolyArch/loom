@@ -42,7 +42,9 @@ explicit control, state, stream, and memory semantics.
 
 The Fabric Hardware Description owns hardware facts, including elaborated
 topology, FU topology, capabilities, configuration domains, ports, and
-physical implementation structure. Its definition-level facts include memory
+physical implementation structure. Its finalized facts include typed compute
+occurrences, exact FU membership, schedule kind, physical endpoints, and
+explicit directed local arcs. Its definition-level facts also include memory
 service domains, implementation families, load/store operation-port templates,
 explicit typed implementation boundary ports, normalized semantic encodings,
 typed internal connectivity, source-endpoint fanout capacities, and one-beat
@@ -294,9 +296,10 @@ inputs and the producing algorithm semantics.
 
 The implemented `freezeRealizationGraph` projection is the bounded
 Dataflow/TechMapping/Fabric structural input to later PnR construction. It
-rechecks the two exact input identities, assigns dense native indices by
-persistent entity identity, records actor ownership, derives external
-multi-sink logical nets from canonical edges and exact boundary
+rechecks the two exact input identities, consumes the immutable canonical
+compute-occurrence projection produced by Fabric validation, assigns dense
+native indices by persistent entity identity, records actor ownership, derives
+external multi-sink logical nets from canonical edges and exact boundary
 correspondence, and derives logical-memory-root service obligations from
 selected Memory Realizations. Its dense terminal table contains only selected
 FU or memory operation-template terminals needed by those logical nets. Graph
@@ -304,17 +307,72 @@ boundary endpoints remain embedded typed terminal variants in logical-net
 sources and sinks. Graph memory import and export capability ports are not
 token terminals.
 
-This projection is ephemeral and has no independent artifact identity,
-persistence form, occurrence or candidate state, configuration, placement,
-route, tag, buffer, resource-time, or physical-memory decisions. It is a
-three-input structural subview, not the complete four-input `FrozenModel`.
+For each Compute Realization, the projection derives `ImplDomain` solely from
+exact selected-FU membership in the finalized occurrence table. Each
+implementation occurrence retains factorized `PortDemand` records and flat
+compatible-endpoint ranges derived from the explicit local arc, direction,
+port kind, payload and tag capacity, and intrinsic role and compatible type
+facts owned by Fabric. Spatial unary feasibility uses bipartite matching to
+prove that all exposed FU ports can bind distinct endpoints. It does not
+enumerate endpoint permutations or persist Cartesian local configurations.
+Temporal endpoint ranges are only structural capability; tag sharing and
+resource-time legality remain deferred.
 
-The structural subview intentionally retains canonical edge identities and
-dense terminal references. The next endpoint-domain builder must consume and
-identity-check the same exact `DataflowProgramView`, `FabricHardwareView`, and
-`ValidatedTechMapping` to recover canonical port kind, type, payload, and
-control facts. It may cache those derived facts, but it must not reinterpret
-them or create a second authority.
+Fabric validation is the single semantic owner of occurrence identity,
+cross-kind uniqueness, exact FU membership, schedule kind, endpoint/type facts,
+and local arcs. It copies those facts into deterministic vectors, builds one
+sorted FU-to-occurrence range table and one sorted
+occurrence/FU/direction/port-to-arc range table, and retains that immutable
+projection with the validated Mapping value. Freeze does not inspect or
+revalidate the source occurrence vectors. Mutating those source vectors after
+validation cannot change frozen output, while an input identity mismatch still
+invalidates the freeze request.
+
+Let `O`, `M`, `E`, and `A` be the occurrence, membership, endpoint, and local
+arc counts. Validation canonicalization costs sorting time over those vectors,
+bounded by `O((O + M + E + A) log(O + M + E + A))`. For a realization with
+`P` exposed FU ports and `K` occurrences in its exact FU range, `ImplDomain`
+lookup costs `O(log F + K)` for `F` indexed FUs. A port domain lookup costs
+`O(log Q_o + sum(log(1 + T_e)))` for `Q_o` keyed port ranges in that occurrence
+and the compatible-type counts `T_e` of the relevant arcs' endpoints. If `R_o`
+is the number of relevant arcs examined, this is bounded by
+`O(log Q_o + R_o log(1 + T_max))`. Spatial matching uses occurrence-local
+endpoint indices and a reused augmenting-path workspace; for `D_o` compatible
+domain edges it costs `O(P * D_o)` time. The workspace retains buffers sized
+to the largest observed `P`, `E_o`, and `D_o`, so scratch is
+`O(P_max + E_max + D_max)` and allocation occurs only through amortized vector
+growth. Matching and visit marks use 64-bit generations: a candidate does not
+clear matching state across the endpoint range, and each augmenting-path probe
+touches only endpoints it visits. A full mark reset occurs only on generation
+rollover after `2^64 - 1` generations. Thus constant-port construction is
+bounded by
+`O(log F + K log Q_max + sum(R_o log(1 + T_max) + D_o))` after
+canonicalization, including matching, rather than cubic or quartic in
+artifact-wide occurrence or endpoint counts.
+
+Malformed Fabric structure or references are rejected during validation and
+cannot be represented as an empty domain. `InvalidComputeOccurrence` is the
+single category for an invalid schedule, empty or repeated FU membership,
+invalid endpoint signatures, repeated compatible types, and invalid local-arc
+structure. Foreign, unresolved, or wrong-kind references retain their precise
+reference categories, and malformed graph or memory port connections retain
+`InvalidPortConnection`. A well-formed realization with no exact
+implementation occurrence or no unary-eligible occurrence instead produces
+structured mapping infeasibility. Occurrence and endpoint ordering is derived
+from persistent typed identities, so harmless source-vector permutations do
+not alter the frozen result.
+
+This projection is ephemeral and has no independent artifact identity,
+persistence form, selected occurrence, selected endpoint, complete candidate
+domain, configuration, placement, route, tag, buffer, resource-time, or
+physical-memory decisions. It is a three-input bounded projection, not the
+complete four-input `FrozenModel`; `ConfigDomain` and the full
+`CandidateDomain` remain outside this boundary.
+
+The structural subview intentionally retains canonical edge identities, dense
+terminal references, and deletable occurrence and endpoint-domain caches. It
+must not reinterpret Fabric facts or create a second occurrence-membership,
+local-connectivity, or legacy routing authority.
 
 A cache must not transfer mapping coverage, artifact-local references,
 current-Fabric legality conclusions, or physical decisions into another
@@ -348,6 +406,8 @@ The TechMapping profile verifies at least:
 * exact Canonical Dataflow Program and Fabric Hardware Description
   identities;
 * resolution and type correctness of every persistent reference;
+* unique finalized compute occurrence and endpoint identities, exact local FU
+  membership, valid endpoint ownership, and explicit local FU-port arcs;
 * closed coverage for the declared graph-definition set;
 * disjoint and complete actor coverage across Compute Realizations and Memory
   Realizations;
@@ -364,10 +424,10 @@ The TechMapping profile verifies at least:
   types, attributes, ordered edges, fanout, and boundary correspondence;
 * all required typed realization and representation obligations.
 
-Port legality uses exact port kind and compatible payload capacity. In
-particular, `bits` and `bits_tag` do not correspond implicitly, while an
-untagged physical payload may be wider than the software requirement under the
-low-bit-aligned widening and narrowing rules owned by Fabric.
+Port legality uses exact port kind and intrinsic role plus compatible payload
+capacity. In particular, `bits` and `bits_tag` do not correspond implicitly,
+while an untagged physical payload may be wider than the software requirement
+under the low-bit-aligned widening and narrowing rules owned by Fabric.
 
 The Physical Mapping profile verifies the exact immutable predecessor,
 rejects copied or conflicting TechMapping authority, and checks that the
@@ -383,7 +443,8 @@ This document does not define:
 * route-tree, resource-time, schedule, tag, buffer, memory, or boundary
   schemas;
 * the complete four-input `FrozenModel` and later physical PnR data layout;
-* candidate-domain formulas or search algorithms;
+* `ConfigDomain`, the complete `CandidateDomain`, placement choice, endpoint
+  selection, or route search;
 * Hardware Sharing Group registry syntax;
 * SystemMapping composition; or
 * bitstream format.

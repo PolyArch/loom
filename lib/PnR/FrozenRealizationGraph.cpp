@@ -1,4 +1,5 @@
 #include "PnR/FrozenRealizationGraph.h"
+#include "FrozenComputeDomains.h"
 
 #include "llvm/Support/Error.h"
 
@@ -17,6 +18,16 @@
 using namespace loom;
 using namespace loom::mapping;
 using namespace loom::pnr;
+
+char FrozenMappingInfeasibility::ID;
+
+void FrozenMappingInfeasibility::log(llvm::raw_ostream &stream) const {
+  stream << message_;
+}
+
+std::error_code FrozenMappingInfeasibility::convertToErrorCode() const {
+  return std::make_error_code(std::errc::operation_not_permitted);
+}
 
 namespace {
 
@@ -285,6 +296,14 @@ freezeTerminal(const TerminalKey &terminal,
 
 } // namespace
 
+llvm::Error loom::pnr::detail::preflightFrozenRangeCapacity(
+    PnrCapacityContext context, std::uint64_t offset, std::uint64_t count) {
+  auto end = checkedPnrIndexAdd(context, offset, count);
+  if (!end)
+    return end.takeError();
+  return llvm::Error::success();
+}
+
 llvm::Error loom::pnr::detail::preflightFrozenRealizationGraphCapacity(
     llvm::ArrayRef<ComputeRealizationDraft> computeRealizations,
     llvm::ArrayRef<MemoryRealizationDraft> memoryRealizations,
@@ -372,23 +391,22 @@ loom::pnr::freezeRealizationGraph(const DataflowProgramView &dataflow,
         return lhs->id.value() < rhs->id.value();
       });
 
-  if (llvm::Error error = preflight(computeCountContext, computeDrafts.size()))
-    return std::move(error);
   if (llvm::Error error = preflight(memoryCountContext, memoryDrafts.size()))
     return std::move(error);
 
+  auto frozenCompute =
+      detail::buildFrozenComputeDomains(fabric, mapping, computeDrafts);
+  if (!frozenCompute)
+    return frozenCompute.takeError();
+  detail::FrozenComputeDomains compute = std::move(*frozenCompute);
+
   std::map<std::uint64_t, OwnershipInfo> ownershipByActor;
   std::map<ActorPort, TemplateTerminalKey, ActorPortLess> actorTerminals;
-  std::vector<FrozenComputeRealization> computeRealizations;
-  computeRealizations.reserve(computeDrafts.size());
-
   for (std::size_t index = 0; index < computeDrafts.size(); ++index) {
     const ComputeRealizationDraft &draft = *computeDrafts[index];
     auto denseIndex = checked(realizationIndexContext, index);
     if (!denseIndex)
       return denseIndex.takeError();
-    computeRealizations.push_back(
-        {draft.id, draft.fu.entity, draft.encoding.entity});
     for (const ActorRef &actor : draft.actors) {
       if (!ownershipByActor
                .emplace(
@@ -642,7 +660,12 @@ loom::pnr::freezeRealizationGraph(const DataflowProgramView &dataflow,
     memoryServiceObligations.push_back({LogicalMemoryRootId(root), service});
 
   return FrozenRealizationGraph(
-      std::move(actorOwnerships), std::move(computeRealizations),
+      std::move(actorOwnerships), std::move(compute.realizations),
+      std::move(compute.occurrences),
+      std::move(compute.occurrenceFuMemberships), std::move(compute.endpoints),
+      std::move(compute.endpointCompatibleTypes), std::move(compute.localArcs),
+      std::move(compute.implementationOccurrences),
+      std::move(compute.portDemands), std::move(compute.compatibleEndpoints),
       std::move(memoryRealizations), std::move(templateTerminals),
       std::move(logicalNets), std::move(logicalNetSinks),
       std::move(memoryServiceObligations));
