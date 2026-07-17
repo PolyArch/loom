@@ -1198,27 +1198,30 @@ bool resourceSupportsSoftwarePortShape(const SoftwareNode &node,
   if (node.operation == "dataflow.stream") {
     if (resource.op->getNumOperands() != 3 || resource.op->getNumResults() != 2)
       return false;
-    for (mlir::Type type : node.op->getOperandTypes()) {
-      if (!mlir::isa<mlir::IntegerType, mlir::IndexType>(type))
+    for (auto [softwareType, hardwareType] : llvm::zip(
+             node.op->getOperandTypes(), resource.op->getOperandTypes())) {
+      if (!mlir::isa<mlir::IntegerType>(softwareType))
+        return false;
+      std::optional<unsigned> softwareWidth = softwareBitWidth(softwareType);
+      std::optional<unsigned> hardwareWidth = fabricBitWidth(hardwareType);
+      if (!softwareWidth || !hardwareWidth || *softwareWidth != *hardwareWidth)
         return false;
     }
-    if (!mlir::isa<mlir::IntegerType, mlir::IndexType>(
-            node.op->getResult(0).getType()) ||
-        !mlir::isa<mlir::IntegerType>(node.op->getResult(1).getType()))
+    mlir::Type softwareIvType = node.op->getResult(0).getType();
+    mlir::Type softwarePhaseType = node.op->getResult(1).getType();
+    if (!mlir::isa<mlir::IntegerType>(softwareIvType) ||
+        !mlir::isa<mlir::IntegerType>(softwarePhaseType))
       return false;
-    if (node.op->getResult(1).getType().getIntOrFloatBitWidth() != 1)
+    if (softwarePhaseType.getIntOrFloatBitWidth() != 1)
       return false;
-    for (mlir::Type type : resource.op->getOperandTypes()) {
-      std::optional<unsigned> width = fabricBitWidth(type);
-      if (!width || *width != loom::getIndexWidth())
-        return false;
-    }
-    std::optional<unsigned> indexWidth =
+    std::optional<unsigned> softwareIvWidth = softwareBitWidth(softwareIvType);
+    std::optional<unsigned> hardwareIvWidth =
         fabricBitWidth(resource.op->getResult(0).getType());
-    std::optional<unsigned> rwcWidth =
+    std::optional<unsigned> hardwarePhaseWidth =
         fabricBitWidth(resource.op->getResult(1).getType());
-    return indexWidth && *indexWidth == loom::getIndexWidth() && rwcWidth &&
-           *rwcWidth == 1;
+    return softwareIvWidth && hardwareIvWidth &&
+           *softwareIvWidth == *hardwareIvWidth && hardwarePhaseWidth &&
+           *hardwarePhaseWidth == 1;
   }
 
   if (node.operation == "dataflow.sync") {

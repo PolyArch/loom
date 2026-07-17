@@ -236,6 +236,17 @@ different encoding, or reinterpret operation semantics.
 Exclusive resources may be shared only through explicit schedule or
 temporal-tag records that make same-time conflicts impossible.
 
+#### Stream Resource Compatibility
+
+For `dataflow.stream`, PnR derives the computation width from the declared
+scalar signless integer types of the `init`, `limit`, and `step` operands and
+the IV result. ODS requires these types to match. Each corresponding
+`fabric.op` data operand and IV result must have exactly that width. A wider
+computation port is not compatible unless Fabric semantics explicitly define
+the required signed or unsigned subword behavior. The physical phase result
+must be exactly one bit, and the selected step and predicate must remain
+compatible with the typed Fabric stream capability.
+
 ### Route Legality
 
 Routes must use explicit hardware connectivity. System-level routes use

@@ -3,12 +3,14 @@
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
 
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// CSV-NEXT: shared_reduction_conditional_store_tail,shared_reduction_adg,shared_reduction_conditional_store_tail__shared_reduction_conditional_store_tail__shared_reduction_adg,13,18,0,0,pass,mapped software graph to fabric resources
+// CSV-NEXT: shared_reduction_conditional_store_tail,shared_reduction_adg,shared_reduction_conditional_store_tail__shared_reduction_conditional_store_tail__shared_reduction_adg,12,15,0,1,fail,missing hardware resource for software op dataflow.stream
 
-// JSON-DAG: "status": "pass"
-// JSON-DAG: "placed_records": 13
-// JSON-DAG: "routed_edges": 18
+// JSON-DAG: "status": "fail"
+// JSON-DAG: "placed_records": 12
+// JSON-DAG: "unplaced_records": 1
+// JSON-DAG: "routed_edges": 15
 // JSON-DAG: "unrouted_edges": 0
+// JSON-DAG: "missing hardware resource for software op dataflow.stream
 // JSON-DAG: "edge_ref": "dataflow.invariant#0.result0->arith.select#0.operand1"
 // JSON-DAG: "edge_ref": "dataflow.constant#2.result0->dataflow.store#0.operand1"
 // JSON-DAG: "sink_endpoint": "shared_reduction_adg::mem.store#0.operand0"

@@ -17,8 +17,9 @@
 // POWER-JSON-NOT: ".in"
 
 // WINDOW-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// WINDOW-CSV-NEXT: string_hash_window,shared_reduction_adg,string_hash_window__string_hash_window__shared_reduction_adg,9,{{[0-9]+}},0,0,pass,mapped software graph to fabric resources
-// WINDOW-JSON-DAG: "status": "pass"
+// WINDOW-CSV-NEXT: string_hash_window,shared_reduction_adg,string_hash_window__string_hash_window__shared_reduction_adg,8,7,1,1,fail,missing hardware resource for software op dataflow.stream
+// WINDOW-JSON-DAG: "status": "fail"
+// WINDOW-JSON-DAG: "unplaced_records": 1
 // WINDOW-JSON-DAG: "operation": "dataflow.load"
 // WINDOW-JSON-DAG: "operation": "arith.addi"
 // WINDOW-JSON-DAG: "operation": "arith.shli"
@@ -26,7 +27,8 @@
 // WINDOW-JSON-DAG: "edge_ref": "arith.shli#0.result0->arith.addi#0.operand1"
 // WINDOW-JSON-DAG: "edge_ref": "arith.addi#0.result0->arith.remui#0.operand0"
 // WINDOW-JSON-DAG: "edge_ref": "arith.remui#0.result0->dataflow.carry#0.operand2"
-// WINDOW-JSON-DAG: "unrouted_edges": 0
+// WINDOW-JSON-DAG: "unrouted_edges": 1
+// WINDOW-JSON-DAG: "missing hardware resource for software op dataflow.stream
 // WINDOW-JSON-NOT: ".out"
 // WINDOW-JSON-NOT: ".in"
 
