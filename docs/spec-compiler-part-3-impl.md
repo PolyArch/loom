@@ -150,7 +150,7 @@ the production contract.
 
 Tests are organized by stable semantic boundary:
 
-* `test/dataflow/unit/graph_func/` verifies the payload-only function type,
+* `test/dataflow/unit/graph/` verifies the payload-only function type,
   normalized segment sizes, exact per-segment kinds and types, mandatory
   non-empty completion, and launch symbol/type matching.
 * `test/raise/` verifies graph extraction, recursive SCF lowering, canonical
