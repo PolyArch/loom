@@ -94,23 +94,21 @@ module {
 //--- masked-epilogues.mlir
 module {
   dataflow.thread private @pack_epilogue(
-      %limit: index, %mask: i2, %seed0: i8, %seed1: i8,
-      %out: memref<?xi16>)
+      %limit: index, %seed: vector<2xi8>, %out: memref<?xi16>)
       ctrl (%ctrl: none) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %lane0, %lane1 = scf.for %i = %c0 to %limit step %c1
-        iter_args(%value0 = %seed0, %value1 = %seed1) -> (i8, i8) {
-      scf.yield %value0, %value1 : i8, i8
+    %vector = scf.for %i = %c0 to %limit step %c1
+        iter_args(%value = %seed) -> vector<2xi8> {
+      scf.yield %value : vector<2xi8>
     }
-    %packed = dataflow.pack %lane0, %lane1 mask %mask {vec_size = 2 : i64}
-        : (i8, i8, i2) -> i16
+    %packed = dataflow.pack %vector : vector<2xi8> -> i16
     memref.store %packed, %out[%c0] : memref<?xi16>
     dataflow.thread.yield
   }
 
   dataflow.thread private @unpack_epilogue(
-      %limit: index, %mask: i2, %seed: i16, %out: memref<?xi8>)
+      %limit: index, %seed: i16, %out: memref<?xi16>)
       ctrl (%ctrl: none) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -118,10 +116,9 @@ module {
         iter_args(%value = %seed) -> (i16) {
       scf.yield %value : i16
     }
-    %lane0, %lane1 =
-      dataflow.unpack %packed, %mask {vec_size = 2 : i64}
-        : (i16, i2) -> (i8, i8)
-    memref.store %lane0, %out[%c0] : memref<?xi8>
+    %vector = dataflow.unpack %packed : i16 -> vector<2xi8>
+    %roundtrip = dataflow.pack %vector : vector<2xi8> -> i16
+    memref.store %roundtrip, %out[%c0] : memref<?xi16>
     dataflow.thread.yield
   }
 }

@@ -109,7 +109,11 @@ The simulator must follow the target dataflow specs for phase close
 tokens, body-domain projection, real loop feedback cardinality, control
 tokens, memory tokens, and graph completion.
 Vector token-cardinality changes follow
-`docs/spec-dataflow-vectorization.md`.
+`docs/spec-dataflow-vectorization.md`. The graph verifier and simulator use
+the same `DataflowActorSemantics` transitions for scalar/group phase
+consumption, publication, close propagation, and reset. Packed and vector
+token bit patterns use arbitrary-width representation; host 64-bit integers
+are not a semantic limit.
 
 Unsupported operations must produce structured diagnostics. Unsupported
 operations must not be silently approximated.

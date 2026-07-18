@@ -47,9 +47,10 @@ routing, explicit memory access, and synchronization primitives such as
 `dataflow.store`, `dataflow.sync`, `dataflow.mux`, and
 `dataflow.demux`. The vector boundary primitives
 `dataflow.parallelize`, `dataflow.pack`, `dataflow.unpack`, and
-`dataflow.serialize` adapt scalar streams to packed and masked vector
-forms; their SSOT is `docs/spec-dataflow-vectorization.md`. These are
-the semantic base for DFG simulation and for later hardware mapping.
+`dataflow.serialize` adapt scalar streams to canonical fixed-size rank-1
+MLIR vectors, explicit vector masks, and packed bit representations; their
+SSOT is `docs/spec-dataflow-vectorization.md`. These are the semantic base
+for DFG simulation and for later hardware mapping.
 
 ## CIRCT And LLVM Dependency Pinning
 

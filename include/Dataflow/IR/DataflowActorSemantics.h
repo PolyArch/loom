@@ -134,6 +134,43 @@ GateTransition evaluateGateTransition(GateSemanticState state,
                                       std::optional<bool> phase,
                                       bool valueAvailable);
 
+enum class ParallelizeInput : std::uint8_t { Phase, Data };
+
+struct ParallelizeSemanticState {
+  std::uint64_t pendingItems = 0;
+};
+
+struct ParallelizeTransition {
+  SemanticFiringDecision firing;
+  ParallelizeSemanticState nextState;
+  bool emitGroup = false;
+  std::uint64_t activeItems = 0;
+  bool emitTruePhase = false;
+  bool emitFalsePhase = false;
+};
+
+ParallelizeTransition evaluateParallelizeTransition(
+    const ParallelizeSemanticState &state, std::uint64_t vectorLength,
+    std::optional<bool> scalarPhase, bool dataAvailable);
+
+enum class SerializeInput : std::uint8_t { Phase, Vector, Mask };
+
+struct SerializeTransition {
+  SemanticFiringDecision firing;
+  bool emitActiveItems = false;
+  bool emitFalsePhase = false;
+};
+
+SerializeTransition evaluateSerializeTransition(std::optional<bool> groupPhase,
+                                                bool vectorAvailable,
+                                                bool maskAvailable);
+
+bool isStatelessOneTokenVectorBoundary(mlir::Operation *op);
+
+std::optional<mlir::Value> getVectorBoundaryInputPhase(mlir::Operation *op);
+
+std::optional<mlir::Value> getVectorBoundaryOutputPhase(mlir::Operation *op);
+
 std::optional<mlir::Value> getStreamActivation(dataflow::StreamOp stream);
 
 std::optional<mlir::Value> getCloseActivation(mlir::Value value);

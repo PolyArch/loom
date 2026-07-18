@@ -259,9 +259,21 @@ bool coversFalseClose(mlir::Value witness, mlir::Value closeSignal,
   };
   if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
     auto result = llvm::dyn_cast<mlir::OpResult>(witness);
-    if (result && result.getResultNumber() == 0 &&
-        demux.getSel() == closeSignal)
-      return true;
+    if (result && result.getResultNumber() == 0) {
+      mlir::Value phase = demux.getSel();
+      llvm::DenseSet<mlir::Value> phaseVisited;
+      while (phase && phaseVisited.insert(phase).second) {
+        if (phase == closeSignal)
+          return true;
+        mlir::Operation *phaseDef = phase.getDefiningOp();
+        auto output =
+            dataflow::semantics::getVectorBoundaryOutputPhase(phaseDef);
+        auto input = dataflow::semantics::getVectorBoundaryInputPhase(phaseDef);
+        if (!output || !input || *output != phase)
+          break;
+        phase = *input;
+      }
+    }
     return covers(demux.getInput(), selectorLanes);
   }
   if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def)) {
@@ -327,10 +339,8 @@ mlir::Value statefulCloseSignal(mlir::Operation *op) {
     return invariant.getCond();
   if (auto gate = llvm::dyn_cast<dataflow::GateOp>(op))
     return gate.getAfterCond();
-  if (auto parallelize = llvm::dyn_cast<dataflow::ParallelizeOp>(op))
-    return parallelize.getCont();
-  if (auto serialize = llvm::dyn_cast<dataflow::SerializeOp>(op))
-    return serialize.getCont();
+  if (auto phase = dataflow::semantics::getVectorBoundaryOutputPhase(op))
+    return *phase;
   return {};
 }
 
@@ -587,60 +597,6 @@ private:
     }
     for (mlir::Value operand : def->getOperands())
       collectStreamCloseSignals(operand, visited, signals);
-  }
-
-  bool isUnpackLaneExact(dataflow::UnpackOp unpack, unsigned lane) {
-    if (!isExactOne(unpack.getPacked()) || !isExactOne(unpack.getMask()))
-      return false;
-    auto mask = getKnownUnsigned(unpack.getMask());
-    return mask && lane < 64 && ((*mask >> lane) & 1) != 0;
-  }
-
-  bool packInputsMatchUnpack(dataflow::PackOp pack) {
-    dataflow::UnpackOp unpack;
-    for (auto [lane, input] : llvm::enumerate(pack.getInputs())) {
-      auto result = llvm::dyn_cast<mlir::OpResult>(input);
-      auto candidate =
-          result ? llvm::dyn_cast<dataflow::UnpackOp>(result.getOwner())
-                 : nullptr;
-      if (!candidate || result.getResultNumber() != lane)
-        return false;
-      if (!unpack)
-        unpack = candidate;
-      if (candidate != unpack)
-        return false;
-    }
-    return unpack && unpack.getMask() == pack.getMask() &&
-           isExactOne(unpack.getPacked()) && isExactOne(unpack.getMask());
-  }
-
-  bool isPackExact(dataflow::PackOp pack) {
-    if (!isExactOne(pack.getMask()))
-      return false;
-    if (llvm::all_of(pack.getInputs(),
-                     [&](mlir::Value input) { return isExactOne(input); }))
-      return true;
-    return packInputsMatchUnpack(pack);
-  }
-
-  bool isSerializeActivationExact(dataflow::SerializeOp serialize) {
-    if (!isExactOne(serialize.getMask()))
-      return false;
-    dataflow::UnpackOp unpack;
-    for (auto [lane, input] : llvm::enumerate(serialize.getInputs())) {
-      auto result = llvm::dyn_cast<mlir::OpResult>(input);
-      auto candidate =
-          result ? llvm::dyn_cast<dataflow::UnpackOp>(result.getOwner())
-                 : nullptr;
-      if (!candidate || result.getResultNumber() != lane)
-        return false;
-      if (!unpack)
-        unpack = candidate;
-      if (candidate != unpack)
-        return false;
-    }
-    return unpack && unpack.getMask() == serialize.getMask() &&
-           isExactOne(unpack.getPacked()) && isExactOne(unpack.getMask());
   }
 
   bool isExactOneWhenSelected(mlir::Value value, mlir::Value selector,
@@ -1053,9 +1009,12 @@ private:
                dataflow::semantics::gateAlwaysCloses(gate) &&
                isOneClosePhase(gate.getBeforeCond()) &&
                isPhaseAligned(gate.getBeforeValue(), gate.getBeforeCond());
-    } else if (auto serialize = value.getDefiningOp<dataflow::SerializeOp>()) {
-      result =
-          value == serialize.getCont() && isSerializeActivationExact(serialize);
+    } else if (auto output = dataflow::semantics::getVectorBoundaryOutputPhase(
+                   value.getDefiningOp());
+               output && value == *output) {
+      auto input = dataflow::semantics::getVectorBoundaryInputPhase(
+          value.getDefiningOp());
+      result = input && isOneClosePhase(*input);
     } else if (auto sync = value.getDefiningOp<dataflow::SyncOp>()) {
       unsigned closeInputs = 0;
       result = true;
@@ -1125,10 +1084,9 @@ private:
       return lane == 0 && isOneClosePhase(demux.getSel()) &&
              isPhaseAligned(demux.getInput(), demux.getSel());
     }
-    if (auto unpack = llvm::dyn_cast<dataflow::UnpackOp>(def))
-      return isUnpackLaneExact(unpack, result.getResultNumber());
-    if (auto pack = llvm::dyn_cast<dataflow::PackOp>(def))
-      return isPackExact(pack);
+    if (dataflow::semantics::isStatelessOneTokenVectorBoundary(def))
+      return result.getResultNumber() == 0 && def->getNumOperands() == 1 &&
+             isExactOne(def->getOperand(0));
     if (llvm::isa<dataflow::StreamOp, dataflow::CarryOp, dataflow::InvariantOp,
                   dataflow::GateOp, dataflow::ParallelizeOp,
                   dataflow::SerializeOp>(def))

@@ -63,6 +63,8 @@ using dataflow::semantics::CarryTransition;
 using dataflow::semantics::evaluateCarryTransition;
 using dataflow::semantics::evaluateGateTransition;
 using dataflow::semantics::evaluateInvariantTransition;
+using dataflow::semantics::evaluateParallelizeTransition;
+using dataflow::semantics::evaluateSerializeTransition;
 using dataflow::semantics::GateInput;
 using dataflow::semantics::GateSemanticState;
 using dataflow::semantics::GateTransition;
@@ -70,7 +72,12 @@ using dataflow::semantics::InvariantInput;
 using dataflow::semantics::InvariantOutputSource;
 using dataflow::semantics::InvariantSemanticState;
 using dataflow::semantics::InvariantTransition;
+using dataflow::semantics::ParallelizeInput;
+using dataflow::semantics::ParallelizeSemanticState;
+using dataflow::semantics::ParallelizeTransition;
 using dataflow::semantics::PhaseSemanticState;
+using dataflow::semantics::SerializeInput;
+using dataflow::semantics::SerializeTransition;
 
 bool isSupportedPrimitiveOperation(llvm::StringRef opName);
 

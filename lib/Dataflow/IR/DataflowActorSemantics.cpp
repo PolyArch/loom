@@ -9,6 +9,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/MathExtras.h"
 
+#include <cassert>
 #include <optional>
 #include <system_error>
 
@@ -891,6 +892,96 @@ dataflow::semantics::GateTransition dataflow::semantics::evaluateGateTransition(
     transition.nextState = GateSemanticState::Closed;
   }
   return transition;
+}
+
+dataflow::semantics::ParallelizeTransition
+dataflow::semantics::evaluateParallelizeTransition(
+    const ParallelizeSemanticState &state, std::uint64_t vectorLength,
+    std::optional<bool> scalarPhase, bool dataAvailable) {
+  assert(vectorLength != 0 && state.pendingItems < vectorLength);
+  ParallelizeTransition transition;
+  transition.nextState = state;
+
+  SemanticInputMask required = semanticInput(ParallelizeInput::Phase);
+  SemanticInputMask available = scalarPhase ? required : SemanticInputMask{0};
+  if (scalarPhase && *scalarPhase) {
+    required |= semanticInput(ParallelizeInput::Data);
+    if (dataAvailable)
+      available |= semanticInput(ParallelizeInput::Data);
+  }
+  transition.firing = makeSemanticFiringDecision(required, available);
+  if (!transition.firing.ready)
+    return transition;
+
+  if (!*scalarPhase) {
+    if (state.pendingItems != 0) {
+      transition.emitGroup = true;
+      transition.activeItems = state.pendingItems;
+      transition.emitTruePhase = true;
+    }
+    transition.emitFalsePhase = true;
+    transition.nextState = {};
+    return transition;
+  }
+
+  transition.nextState.pendingItems = state.pendingItems + 1;
+  if (transition.nextState.pendingItems == vectorLength) {
+    transition.emitGroup = true;
+    transition.activeItems = vectorLength;
+    transition.emitTruePhase = true;
+    transition.nextState = {};
+  }
+  return transition;
+}
+
+dataflow::semantics::SerializeTransition
+dataflow::semantics::evaluateSerializeTransition(std::optional<bool> groupPhase,
+                                                 bool vectorAvailable,
+                                                 bool maskAvailable) {
+  SerializeTransition transition;
+  SemanticInputMask required = semanticInput(SerializeInput::Phase);
+  SemanticInputMask available = groupPhase ? required : SemanticInputMask{0};
+  if (groupPhase && *groupPhase) {
+    required |= semanticInput(SerializeInput::Vector) |
+                semanticInput(SerializeInput::Mask);
+    if (vectorAvailable)
+      available |= semanticInput(SerializeInput::Vector);
+    if (maskAvailable)
+      available |= semanticInput(SerializeInput::Mask);
+  }
+  transition.firing = makeSemanticFiringDecision(required, available);
+  if (!transition.firing.ready)
+    return transition;
+  transition.emitActiveItems = *groupPhase;
+  transition.emitFalsePhase = !*groupPhase;
+  return transition;
+}
+
+bool dataflow::semantics::isStatelessOneTokenVectorBoundary(
+    mlir::Operation *op) {
+  return op && llvm::isa<dataflow::PackOp, dataflow::UnpackOp>(op);
+}
+
+std::optional<mlir::Value>
+dataflow::semantics::getVectorBoundaryInputPhase(mlir::Operation *op) {
+  if (!op)
+    return std::nullopt;
+  if (auto parallelize = llvm::dyn_cast<dataflow::ParallelizeOp>(op))
+    return parallelize.getScalarPhase();
+  if (auto serialize = llvm::dyn_cast<dataflow::SerializeOp>(op))
+    return serialize.getGroupPhase();
+  return std::nullopt;
+}
+
+std::optional<mlir::Value>
+dataflow::semantics::getVectorBoundaryOutputPhase(mlir::Operation *op) {
+  if (!op)
+    return std::nullopt;
+  if (auto parallelize = llvm::dyn_cast<dataflow::ParallelizeOp>(op))
+    return parallelize.getGroupPhase();
+  if (auto serialize = llvm::dyn_cast<dataflow::SerializeOp>(op))
+    return serialize.getScalarPhase();
+  return std::nullopt;
 }
 
 std::optional<mlir::Value>

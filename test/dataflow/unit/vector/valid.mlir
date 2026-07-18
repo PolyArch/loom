@@ -1,27 +1,53 @@
 // RUN: loom %s | loom | FileCheck %s
 
-// CHECK-LABEL: @parallelize_pack_i8x4
-func.func @parallelize_pack_i8x4(%data: i8, %cont: i1) -> (i8, i8, i8, i8, i4, i32) {
+// CHECK-LABEL: @canonical_i8x3_boundary
+func.func @canonical_i8x3_boundary(
+    %data: i8, %scalar_phase: i1) -> (vector<3xi8>, vector<3xi1>, i1,
+                                      i24, i3, i8, i1) {
   // CHECK: dataflow.parallelize
-  %lane0, %lane1, %lane2, %lane3, %mask =
-    dataflow.parallelize %data, %cont {vec_size = 4 : i64}
-      : (i8, i1) -> (i8, i8, i8, i8, i4)
+  %vector, %mask, %group_phase =
+    dataflow.parallelize %data, %scalar_phase
+      : (i8, i1) -> (vector<3xi8>, vector<3xi1>, i1)
   // CHECK: dataflow.pack
-  %packed = dataflow.pack %lane0, %lane1, %lane2, %lane3 mask %mask
-      {vec_size = 4 : i64} : (i8, i8, i8, i8, i4) -> i32
-  return %lane0, %lane1, %lane2, %lane3, %mask, %packed
-      : i8, i8, i8, i8, i4, i32
+  %packed = dataflow.pack %vector : vector<3xi8> -> i24
+  %packed_mask = dataflow.pack %mask : vector<3xi1> -> i3
+  // CHECK: dataflow.serialize
+  %scalar, %next_scalar_phase =
+    dataflow.serialize %vector, %mask, %group_phase
+      : (vector<3xi8>, vector<3xi1>, i1) -> (i8, i1)
+  return %vector, %mask, %group_phase, %packed, %packed_mask, %scalar,
+      %next_scalar_phase
+      : vector<3xi8>, vector<3xi1>, i1, i24, i3, i8, i1
 }
 
-// CHECK-LABEL: @unpack_serialize_i8x4
-func.func @unpack_serialize_i8x4(%packed: i32, %mask: i4) -> (i8, i8, i8, i8, i8, i1) {
+// CHECK-LABEL: @float_i96_roundtrip
+func.func @float_i96_roundtrip(%packed: i96) -> i96 {
   // CHECK: dataflow.unpack
-  %lane0, %lane1, %lane2, %lane3 =
-    dataflow.unpack %packed, %mask {vec_size = 4 : i64}
-      : (i32, i4) -> (i8, i8, i8, i8)
-  // CHECK: dataflow.serialize
-  %data, %cont = dataflow.serialize %lane0, %lane1, %lane2, %lane3 mask %mask
-      {vec_size = 4 : i64} : (i8, i8, i8, i8, i4) -> (i8, i1)
-  return %lane0, %lane1, %lane2, %lane3, %data, %cont
-      : i8, i8, i8, i8, i8, i1
+  %vector = dataflow.unpack %packed : i96 -> vector<3xf32>
+  // CHECK: dataflow.pack
+  %roundtrip = dataflow.pack %vector : vector<3xf32> -> i96
+  return %roundtrip : i96
+}
+
+// CHECK-LABEL: @mask_i65_roundtrip
+func.func @mask_i65_roundtrip(%packed: i65) -> i65 {
+  // CHECK: dataflow.unpack
+  %mask = dataflow.unpack %packed : i65 -> vector<65xi1>
+  // CHECK: dataflow.pack
+  %roundtrip = dataflow.pack %mask : vector<65xi1> -> i65
+  return %roundtrip : i65
+}
+
+// CHECK-LABEL: @standard_vector_compute
+func.func @standard_vector_compute(
+    %lhs: vector<3xi32>, %rhs: vector<3xi32>, %value: vector<3xf32>)
+    -> (vector<3xi32>, vector<3xi1>, vector<3xf32>) {
+  // CHECK: arith.addi
+  %sum = arith.addi %lhs, %rhs : vector<3xi32>
+  // CHECK: arith.cmpi
+  %ordered = arith.cmpi slt, %lhs, %rhs : vector<3xi32>
+  // CHECK: math.sqrt
+  %root = math.sqrt %value : vector<3xf32>
+  return %sum, %ordered, %root
+      : vector<3xi32>, vector<3xi1>, vector<3xf32>
 }

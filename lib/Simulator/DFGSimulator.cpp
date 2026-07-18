@@ -88,8 +88,19 @@ static std::string tokenToString(const Token &token, mlir::Type type) {
     return "none";
   if (token.kind == TokenKind::Bool)
     return typePrefix(type) + ":" + (token.boolValue ? "true" : "false");
-  if (token.kind == TokenKind::Integer)
+  if (token.kind == TokenKind::Integer) {
+    if (token.bitPattern && token.bitPattern->getBitWidth() > 64) {
+      llvm::SmallString<64> value;
+      token.bitPattern->toString(value, 10, /*Signed=*/false);
+      return typePrefix(type) + ":" + value.str().str();
+    }
     return typePrefix(type) + ":" + std::to_string(token.intValue);
+  }
+  if (token.kind == TokenKind::Vector) {
+    llvm::SmallString<64> value;
+    token.bitPattern->toString(value, 16, /*Signed=*/false);
+    return typePrefix(type) + ":0x" + value.str().str();
+  }
   if (token.kind == TokenKind::Pointer)
     return typePrefix(type) + ":ptr+" +
            std::to_string(token.pointer.byteOffset);
@@ -111,10 +122,14 @@ llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr) {
   if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr)) {
     if (intAttr.getType().isInteger(1))
       return boolValueToken(intAttr.getValue().isOne());
+    if (auto intType = mlir::dyn_cast<mlir::IntegerType>(intAttr.getType());
+        intType && intType.getWidth() > 64)
+      return tokenFromBitPattern(intAttr.getValue(), intType);
     return integerValueToken(intAttr.getValue().getSExtValue());
   }
   if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(attr))
-    return floatValueToken(floatAttr.getValueAsDouble());
+    return tokenFromBitPattern(floatAttr.getValue().bitcastToAPInt(),
+                               floatAttr.getType());
   return llvm::createStringError(std::errc::invalid_argument,
                                  "unsupported dataflow.constant attribute");
 }
@@ -137,11 +152,26 @@ static llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw,
       return llvm::createStringError(std::errc::invalid_argument,
                                      "i1 argument expects true/false/0/1");
     }
-    std::int64_t value = 0;
-    if (raw.getAsInteger(10, value))
-      return llvm::createStringError(std::errc::invalid_argument,
-                                     "integer argument is not base-10");
-    return integerValueToken(value);
+    if (intType.getWidth() <= 64) {
+      std::int64_t value = 0;
+      if (raw.getAsInteger(10, value))
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "integer argument is not base-10");
+      return integerValueToken(value);
+    }
+
+    bool negative = raw.consume_front("-");
+    (void)raw.consume_front("+");
+    llvm::APInt magnitude;
+    if (raw.getAsInteger(10, magnitude) ||
+        magnitude.getActiveBits() > intType.getWidth())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "integer argument does not fit its declared bit width");
+    llvm::APInt bits = magnitude.zextOrTrunc(intType.getWidth());
+    if (negative)
+      bits.negate();
+    return tokenFromBitPattern(bits, type);
   }
   if (mlir::isa<mlir::IndexType>(type)) {
     std::int64_t value = 0;
@@ -478,12 +508,16 @@ static void flushPendingTokens(SimulatorState &state) {
 std::int64_t integerToken(const Token &token) {
   if (token.kind == TokenKind::Bool)
     return token.boolValue ? 1 : 0;
+  if (token.bitPattern && token.bitPattern->getBitWidth() <= 64)
+    return static_cast<std::int64_t>(token.bitPattern->getZExtValue());
   return token.intValue;
 }
 
 bool boolToken(const Token &token) {
   if (token.kind == TokenKind::Bool)
     return token.boolValue;
+  if (token.bitPattern)
+    return !token.bitPattern->isZero();
   return token.intValue != 0;
 }
 
@@ -743,6 +777,8 @@ PrimitiveValue primitiveValueFromToken(const Token &token) {
     return PrimitiveValue::floating(token.floatValue);
   case TokenKind::Bool:
     return PrimitiveValue::boolean(token.boolValue);
+  case TokenKind::Vector:
+    return PrimitiveValue::none();
   case TokenKind::Pointer:
     return PrimitiveValue::none();
   }
@@ -1127,7 +1163,7 @@ static std::optional<std::uint64_t> memoryRootIdForValue(SimulatorState &state,
 static bool hasPendingVectorGroups(SimulatorState &state) {
   bool pending = false;
   for (auto &entry : state.parallelizeStates) {
-    if (entry.second.mask == 0)
+    if (entry.second.semanticState.pendingItems == 0)
       continue;
     pending = true;
     state.diagnostics.push_back(

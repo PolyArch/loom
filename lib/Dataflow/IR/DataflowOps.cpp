@@ -5,6 +5,8 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
 
+#include <limits>
+
 using namespace mlir;
 using namespace dataflow;
 
@@ -74,121 +76,99 @@ void StreamOp::print(OpAsmPrinter &printer) {
 
 // dataflow.parallelize / pack / unpack / serialize
 
-static FailureOr<unsigned> verifyVecSizeAttr(Operation *op) {
-  auto attr = op->getAttrOfType<IntegerAttr>("vec_size");
-  if (!attr)
-    return op->emitOpError("requires integer attribute 'vec_size'");
-  int64_t value = attr.getInt();
-  if (value < 1 || value > 64 || (value & (value - 1)) != 0)
+static bool isSupportedVectorElementType(Type type) {
+  if (auto integer = dyn_cast<IntegerType>(type))
+    return integer.getWidth() != 0;
+  return isa<FloatType>(type);
+}
+
+static FailureOr<VectorType> verifyDataVector(Operation *op, Type type) {
+  auto vector = dyn_cast<VectorType>(type);
+  if (!vector || vector.getRank() != 1 || vector.isScalable())
+    return op->emitOpError("data vector must be a fixed-size rank-1 vector");
+  if (!isSupportedVectorElementType(vector.getElementType()))
     return op->emitOpError(
-        "'vec_size' must be a power of two in the range [1, 64]");
-  return static_cast<unsigned>(value);
+        "data vector element type must be a nonzero-width integer or "
+        "floating-point type");
+  return vector;
 }
 
-static unsigned signlessIntegerWidth(Type type) {
-  auto intType = dyn_cast<IntegerType>(type);
-  if (!intType || !intType.isSignless())
-    return 0;
-  return intType.getWidth();
-}
-
-static LogicalResult verifyMaskWidth(Operation *op, Type maskType,
-                                     unsigned vecSize) {
-  unsigned maskWidth = signlessIntegerWidth(maskType);
-  if (maskWidth != vecSize)
-    return op->emitOpError("mask type width ")
-           << maskWidth << " must match 'vec_size' " << vecSize;
+static LogicalResult verifyMaskVector(Operation *op, VectorType dataVector,
+                                      Type type) {
+  auto mask = dyn_cast<VectorType>(type);
+  if (!mask || mask.getRank() != 1 || mask.isScalable())
+    return op->emitOpError("mask vector must be a fixed-size rank-1 vector");
+  if (!mask.getElementType().isInteger(1))
+    return op->emitOpError("mask vector element type must be 'i1'");
+  if (mask.getShape() != dataVector.getShape())
+    return op->emitOpError("mask vector shape ")
+           << mask << " must match data vector shape " << dataVector;
   return success();
 }
 
-static LogicalResult verifyLaneTypes(Operation *op, TypeRange lanes,
-                                     Type expected, unsigned vecSize) {
-  if (lanes.size() != vecSize)
-    return op->emitOpError("lane count ")
-           << lanes.size() << " must match 'vec_size' " << vecSize;
-  for (auto [i, laneType] : llvm::enumerate(lanes)) {
-    if (laneType != expected)
-      return op->emitOpError("lane #")
-             << i << " type " << laneType << " must match lane #0 type "
-             << expected;
-  }
-  return success();
+static uint64_t getElementBitWidth(Type type) {
+  if (auto integer = dyn_cast<IntegerType>(type))
+    return integer.getWidth();
+  return cast<FloatType>(type).getWidth();
 }
 
-static LogicalResult verifyPackedWidth(Operation *op, Type packedType,
-                                       Type laneType, unsigned vecSize) {
-  unsigned packedWidth = signlessIntegerWidth(packedType);
-  unsigned laneWidth = signlessIntegerWidth(laneType);
-  if (packedWidth != laneWidth * vecSize)
-    return op->emitOpError("packed type width ")
-           << packedWidth << " must equal lane width " << laneWidth
-           << " times 'vec_size' " << vecSize;
+static LogicalResult verifyPackedWidth(Operation *op, VectorType vector,
+                                       Type packedType) {
+  auto packed = dyn_cast<IntegerType>(packedType);
+  if (!packed || !packed.isSignless())
+    return op->emitOpError("packed type must be a signless integer");
+  const uint64_t lanes = vector.getShape().front();
+  const uint64_t elementWidth = getElementBitWidth(vector.getElementType());
+  if (lanes > std::numeric_limits<unsigned>::max() / elementWidth)
+    return op->emitOpError(
+        "vector bit width exceeds the signless integer width limit");
+  const unsigned vectorWidth = static_cast<unsigned>(lanes * elementWidth);
+  if (packed.getWidth() != vectorWidth)
+    return op->emitOpError("packed integer width ")
+           << packed.getWidth() << " must equal vector bit width "
+           << vectorWidth;
   return success();
 }
 
 LogicalResult ParallelizeOp::verify() {
-  FailureOr<unsigned> vecSize = verifyVecSizeAttr(getOperation());
-  if (failed(vecSize))
+  FailureOr<VectorType> vector =
+      verifyDataVector(getOperation(), getVector().getType());
+  if (failed(vector))
     return failure();
-  if (failed(verifyLaneTypes(getOperation(), getOutputs().getTypes(),
-                             getData().getType(), *vecSize)))
-    return failure();
-  if (failed(verifyMaskWidth(getOperation(), getMask().getType(), *vecSize)))
-    return failure();
-  if (getStride() && getStride().getType() != getData().getType())
-    return emitOpError("stride type ")
-           << getStride().getType() << " must match data type "
+  if ((*vector).getElementType() != getData().getType())
+    return emitOpError("data vector element type ")
+           << (*vector).getElementType() << " must match scalar type "
            << getData().getType();
-  return success();
+  return verifyMaskVector(getOperation(), *vector, getMask().getType());
 }
 
 LogicalResult PackOp::verify() {
-  FailureOr<unsigned> vecSize = verifyVecSizeAttr(getOperation());
-  if (failed(vecSize))
+  FailureOr<VectorType> vector =
+      verifyDataVector(getOperation(), getVector().getType());
+  if (failed(vector))
     return failure();
-  if (getInputs().empty())
-    return emitOpError("requires at least one lane input");
-  Type laneType = getInputs().front().getType();
-  if (failed(verifyLaneTypes(getOperation(), getInputs().getTypes(), laneType,
-                             *vecSize)))
-    return failure();
-  if (failed(verifyMaskWidth(getOperation(), getMask().getType(), *vecSize)))
-    return failure();
-  return verifyPackedWidth(getOperation(), getPacked().getType(), laneType,
-                           *vecSize);
+  return verifyPackedWidth(getOperation(), *vector, getPacked().getType());
 }
 
 LogicalResult UnpackOp::verify() {
-  FailureOr<unsigned> vecSize = verifyVecSizeAttr(getOperation());
-  if (failed(vecSize))
+  FailureOr<VectorType> vector =
+      verifyDataVector(getOperation(), getVector().getType());
+  if (failed(vector))
     return failure();
-  if (getOutputs().empty())
-    return emitOpError("requires at least one lane output");
-  Type laneType = getOutputs().front().getType();
-  if (failed(verifyLaneTypes(getOperation(), getOutputs().getTypes(), laneType,
-                             *vecSize)))
-    return failure();
-  if (failed(verifyMaskWidth(getOperation(), getMask().getType(), *vecSize)))
-    return failure();
-  return verifyPackedWidth(getOperation(), getPacked().getType(), laneType,
-                           *vecSize);
+  return verifyPackedWidth(getOperation(), *vector, getPacked().getType());
 }
 
 LogicalResult SerializeOp::verify() {
-  FailureOr<unsigned> vecSize = verifyVecSizeAttr(getOperation());
-  if (failed(vecSize))
+  FailureOr<VectorType> vector =
+      verifyDataVector(getOperation(), getVector().getType());
+  if (failed(vector))
     return failure();
-  if (getInputs().empty())
-    return emitOpError("requires at least one lane input");
-  Type laneType = getInputs().front().getType();
-  if (failed(verifyLaneTypes(getOperation(), getInputs().getTypes(), laneType,
-                             *vecSize)))
+  if (failed(verifyMaskVector(getOperation(), *vector, getMask().getType())))
     return failure();
-  if (failed(verifyMaskWidth(getOperation(), getMask().getType(), *vecSize)))
-    return failure();
-  if (getData().getType() != laneType)
-    return emitOpError("data result type ")
-           << getData().getType() << " must match lane type " << laneType;
+  if (getData().getType() != (*vector).getElementType())
+    return emitOpError("scalar result type ")
+           << getData().getType() << " must match data vector element type "
+           << (*vector).getElementType();
   return success();
 }
 

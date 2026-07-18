@@ -1,37 +1,86 @@
 // RUN: loom %s -split-input-file -verify-diagnostics
 
 // -----
-// vec_size must be a power of two.
-func.func @parallelize_bad_vec_size(%data: i8, %cont: i1) -> (i8, i8, i8, i4) {
-  // expected-error @+1 {{'vec_size' must be a power of two in the range [1, 64]}}
-  %a, %b, %c, %mask = dataflow.parallelize %data, %cont {vec_size = 3 : i64}
-    : (i8, i1) -> (i8, i8, i8, i4)
-  return %a, %b, %c, %mask : i8, i8, i8, i4
+func.func @parallelize_rejects_rank_two(%data: i8, %phase: i1) {
+  // expected-error @+1 {{data vector must be a fixed-size rank-1 vector}}
+  %vector, %mask, %group_phase = dataflow.parallelize %data, %phase
+    : (i8, i1) -> (vector<2x2xi8>, vector<4xi1>, i1)
+  return
 }
 
 // -----
-// Lane count must match vec_size.
-func.func @pack_wrong_lane_count(%a: i8, %b: i8, %mask: i2) -> i16 {
-  // expected-error @+1 {{lane count 2 must match 'vec_size' 4}}
-  %packed = dataflow.pack %a, %b mask %mask {vec_size = 4 : i64}
-    : (i8, i8, i2) -> i16
-  return %packed : i16
+func.func @parallelize_rejects_scalable(%data: i8, %phase: i1) {
+  // expected-error @+1 {{data vector must be a fixed-size rank-1 vector}}
+  %vector, %mask, %group_phase = dataflow.parallelize %data, %phase
+    : (i8, i1) -> (vector<[4]xi8>, vector<4xi1>, i1)
+  return
 }
 
 // -----
-// Mask width must match vec_size.
-func.func @unpack_bad_mask(%packed: i32, %mask: i8) -> (i8, i8, i8, i8) {
-  // expected-error @+1 {{mask type width 8 must match 'vec_size' 4}}
-  %a, %b, %c, %d = dataflow.unpack %packed, %mask {vec_size = 4 : i64}
-    : (i32, i8) -> (i8, i8, i8, i8)
-  return %a, %b, %c, %d : i8, i8, i8, i8
+func.func @parallelize_rejects_element_mismatch(%data: i8, %phase: i1) {
+  // expected-error @+1 {{data vector element type 'i16' must match scalar type 'i8'}}
+  %vector, %mask, %group_phase = dataflow.parallelize %data, %phase
+    : (i8, i1) -> (vector<3xi16>, vector<3xi1>, i1)
+  return
 }
 
 // -----
-// Packed width must equal lane width times vec_size.
-func.func @serialize_bad_lane_type(%a: i8, %b: i16, %mask: i2) -> (i8, i1) {
-  // expected-error @+1 {{lane #1 type 'i16' must match lane #0 type 'i8'}}
-  %data, %cont = dataflow.serialize %a, %b mask %mask {vec_size = 2 : i64}
-    : (i8, i16, i2) -> (i8, i1)
-  return %data, %cont : i8, i1
+func.func @parallelize_rejects_mask_shape(%data: f32, %phase: i1) {
+  // expected-error @+1 {{mask vector shape 'vector<4xi1>' must match data vector shape 'vector<3xf32>'}}
+  %vector, %mask, %group_phase = dataflow.parallelize %data, %phase
+    : (f32, i1) -> (vector<3xf32>, vector<4xi1>, i1)
+  return
+}
+
+// -----
+func.func @serialize_rejects_mask_element(
+    %vector: vector<3xf32>, %mask: vector<3xi8>, %phase: i1) {
+  // expected-error @+1 {{mask vector element type must be 'i1'}}
+  %data, %scalar_phase = dataflow.serialize %vector, %mask, %phase
+    : (vector<3xf32>, vector<3xi8>, i1) -> (f32, i1)
+  return
+}
+
+// -----
+func.func @serialize_rejects_scalar_mismatch(
+    %vector: vector<3xf32>, %mask: vector<3xi1>, %phase: i1) {
+  // expected-error @+1 {{scalar result type 'f64' must match data vector element type 'f32'}}
+  %data, %scalar_phase = dataflow.serialize %vector, %mask, %phase
+    : (vector<3xf32>, vector<3xi1>, i1) -> (f64, i1)
+  return
+}
+
+// -----
+func.func @pack_rejects_rank_two(%vector: vector<2x2xi8>) {
+  // expected-error @+1 {{data vector must be a fixed-size rank-1 vector}}
+  %packed = dataflow.pack %vector : vector<2x2xi8> -> i32
+  return
+}
+
+// -----
+func.func @pack_rejects_index(%vector: vector<3xindex>) {
+  // expected-error @+1 {{data vector element type must be a nonzero-width integer or floating-point type}}
+  %packed = dataflow.pack %vector : vector<3xindex> -> i192
+  return
+}
+
+// -----
+func.func @pack_rejects_zero_width(%vector: vector<3xi0>) {
+  // expected-error @+1 {{data vector element type must be a nonzero-width integer or floating-point type}}
+  %packed = dataflow.pack %vector : vector<3xi0> -> i0
+  return
+}
+
+// -----
+func.func @pack_rejects_packed_width(%vector: vector<3xf32>) {
+  // expected-error @+1 {{packed integer width 64 must equal vector bit width 96}}
+  %packed = dataflow.pack %vector : vector<3xf32> -> i64
+  return
+}
+
+// -----
+func.func @unpack_rejects_packed_width(%packed: i65) {
+  // expected-error @+1 {{packed integer width 65 must equal vector bit width 96}}
+  %vector = dataflow.unpack %packed : i65 -> vector<3xi32>
+  return
 }

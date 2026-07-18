@@ -196,90 +196,81 @@ def Dataflow_GateOp : Dataflow_Op<"gate", [Pure,
 
 def Dataflow_ParallelizeOp : Dataflow_Op<"parallelize", [
     Pure, CanonicalDataflowActor]> {
-  let summary = "group scalar tokens into fixed-width lane streams plus mask";
+  let summary = "group scalar tokens into semantic vectors";
   let description = [{
-    Groups a scalar integer stream and a continuation stream into
-    `vec_size` parallel lane streams and one `iN` mask stream. True
-    continuation tokens fill pending lanes; a false continuation token
-    flushes any pending partial group and resets the lane pointer.
-
-    The optional stride operand advances the lane pointer by a dynamic
-    amount. If omitted, stride is one.
+    Groups a scalar integer or floating-point stream into fixed-size
+    rank-1 vectors. Each published data vector has a same-shape `i1`
+    active-lane mask and a true group phase token. A false scalar phase
+    flushes a zero-filled partial group when present, publishes one
+    false group phase token, and resets the group.
   }];
 
   let arguments = (ins
-      AnySignlessInteger:$data,
-      I1:$cont,
-      Optional<AnySignlessInteger>:$stride,
-      I64Attr:$vec_size);
+      AnyTypeOf<[AnyInteger, AnyFloat]>:$data,
+      I1:$scalar_phase);
   let results = (outs
-      Variadic<AnySignlessInteger>:$outputs,
-      AnySignlessInteger:$mask);
+      AnyVectorOfAnyRank:$vector,
+      AnyVectorOfAnyRank:$mask,
+      I1:$group_phase);
 
   let assemblyFormat = [{
-    $data `,` $cont (`,` $stride^)? attr-dict `:`
-    functional-type(operands, results)
+    $data `,` $scalar_phase attr-dict `:` functional-type(operands, results)
   }];
   let hasVerifier = 1;
 }
 
 def Dataflow_PackOp : Dataflow_Op<"pack", [Pure, CanonicalDataflowActor]> {
-  let summary = "pack masked lane streams into one wide integer stream";
+  let summary = "pack one semantic vector into one wide integer";
   let description = [{
-    Waits for one mask token, consumes only the lane tokens whose mask
-    bits are set, and emits a wide signless integer whose least
-    significant slot is lane zero. Inactive slots are zero-filled.
+    Stateless one-token-in, one-token-out bit representation adapter.
+    Lane zero occupies the least significant bit slice. Integer and
+    floating-point elements preserve their exact bit representation.
   }];
 
-  let arguments = (ins
-      Variadic<AnySignlessInteger>:$inputs,
-      AnySignlessInteger:$mask,
-      I64Attr:$vec_size);
+  let arguments = (ins AnyVectorOfAnyRank:$vector);
   let results = (outs AnySignlessInteger:$packed);
 
-  let assemblyFormat = [{
-    $inputs `mask` $mask attr-dict `:` functional-type(operands, results)
-  }];
+  let assemblyFormat = "$vector attr-dict `:` type($vector) `->` type($packed)";
   let hasVerifier = 1;
 }
 
 def Dataflow_UnpackOp : Dataflow_Op<"unpack", [Pure, CanonicalDataflowActor]> {
-  let summary = "unpack a wide integer stream into masked lane streams";
+  let summary = "unpack one wide integer into one semantic vector";
   let description = [{
-    Consumes one packed integer token and one mask token. For each set
-    mask bit, emits the corresponding lane value; unset lanes emit no
-    token. Lane zero is the least significant packed slot.
+    Stateless one-token-in, one-token-out inverse of `dataflow.pack`.
+    Lane zero occupies the least significant bit slice. Integer and
+    floating-point elements preserve their exact bit representation.
   }];
 
-  let arguments = (ins
-      AnySignlessInteger:$packed,
-      AnySignlessInteger:$mask,
-      I64Attr:$vec_size);
-  let results = (outs Variadic<AnySignlessInteger>:$outputs);
+  let arguments = (ins AnySignlessInteger:$packed);
+  let results = (outs AnyVectorOfAnyRank:$vector);
 
-  let assemblyFormat = [{
-    $packed `,` $mask attr-dict `:` functional-type(operands, results)
-  }];
+  let assemblyFormat = "$packed attr-dict `:` type($packed) `->` type($vector)";
   let hasVerifier = 1;
 }
 
 def Dataflow_SerializeOp : Dataflow_Op<"serialize", [
     Pure, CanonicalDataflowActor]> {
-  let summary = "serialize masked lane streams into scalar data and cont";
+  let summary = "serialize semantic vector groups into scalar tokens";
   let description = [{
-    Waits for one mask token, consumes only active lane tokens in lane
-    order, emits each active lane on the scalar data stream with a true
-    continuation token, and emits one trailing false continuation token.
+    A true group phase consumes one data vector and one mask vector,
+    then emits active lanes in lane order with true scalar phase tokens.
+    A false group phase consumes no vector or mask, emits one false
+    scalar phase token, and resets the activation. An all-zero mask is
+    a legal true group.
   }];
 
   let arguments = (ins
-      Variadic<AnySignlessInteger>:$inputs,
-      AnySignlessInteger:$mask,
-      I64Attr:$vec_size);
-  let results = (outs AnySignlessInteger:$data, I1:$cont);
+      AnyVectorOfAnyRank:$vector,
+      AnyVectorOfAnyRank:$mask,
+      I1:$group_phase);
+  let results = (outs
+      AnyTypeOf<[AnyInteger, AnyFloat]>:$data,
+      I1:$scalar_phase);
 
   let assemblyFormat = [{
-    $inputs `mask` $mask attr-dict `:` functional-type(operands, results)
+    $vector `,` $mask `,` $group_phase attr-dict `:`
+    functional-type(operands, results)
   }];
   let hasVerifier = 1;
 }

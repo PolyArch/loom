@@ -9,6 +9,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallBitVector.h"
@@ -39,13 +40,14 @@ struct MemoryView {
   std::int64_t byteOffset = 0;
 };
 
-enum class TokenKind { None, Integer, Float, Bool, Pointer };
+enum class TokenKind { None, Integer, Float, Bool, Vector, Pointer };
 
 struct Token {
   TokenKind kind = TokenKind::None;
   std::int64_t intValue = 0;
   double floatValue = 0.0;
   bool boolValue = false;
+  std::optional<llvm::APInt> bitPattern;
   MemoryView pointer;
 };
 
@@ -58,9 +60,8 @@ struct LoopState {
 };
 
 struct ParallelizeState {
-  std::uint64_t pointer = 0;
+  ParallelizeSemanticState semanticState;
   llvm::SmallVector<std::optional<Token>, 8> slots;
-  std::uint64_t mask = 0;
 };
 
 struct MemoryValue {
@@ -109,6 +110,10 @@ struct SimulatorState {
 Token noneToken();
 Token integerValueToken(std::int64_t value);
 Token boolValueToken(bool value);
+llvm::Expected<llvm::APInt> tokenBitPattern(const Token &token,
+                                            mlir::Type type);
+llvm::Expected<Token> tokenFromBitPattern(const llvm::APInt &bits,
+                                          mlir::Type type);
 Token pointerToken(mlir::Value root, std::shared_ptr<MemoryValue> memory = {},
                    std::int64_t byteOffset = 0);
 llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr);

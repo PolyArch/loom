@@ -5,6 +5,8 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "llvm/ADT/TypeSwitch.h"
 
+#include <limits>
+
 namespace loom::sim {
 namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
 
@@ -21,43 +23,23 @@ static std::optional<bool> peekBoolToken(ChannelMap &channels,
   return boolToken(peekToken(channels, operand));
 }
 
-static std::optional<unsigned> vectorSizeAttr(mlir::Operation *op,
-                                              SimulatorState &state) {
-  auto attr = op->getAttrOfType<mlir::IntegerAttr>("vec_size");
-  if (!attr) {
-    state.diagnostics.push_back(
-        (op->getName().getStringRef() + " missing vec_size attribute").str());
-    return std::nullopt;
-  }
-  int64_t value = attr.getInt();
-  if (value < 1 || value > 64 || (value & (value - 1)) != 0) {
-    state.diagnostics.push_back(
-        (op->getName().getStringRef() + " has invalid vec_size").str());
-    return std::nullopt;
-  }
-  return static_cast<unsigned>(value);
+static unsigned vectorElementBitWidth(mlir::VectorType type) {
+  if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type.getElementType()))
+    return integer.getWidth();
+  return mlir::cast<mlir::FloatType>(type.getElementType()).getWidth();
 }
 
-static std::optional<unsigned>
-signlessIntegerBitWidthForVector(mlir::Type type, SimulatorState &state,
-                                 llvm::StringRef op) {
-  auto intType = mlir::dyn_cast<mlir::IntegerType>(type);
-  if (!intType || !intType.isSignless()) {
+static std::optional<unsigned> vectorBitWidth(mlir::VectorType type,
+                                              SimulatorState &state,
+                                              llvm::StringRef opName) {
+  const uint64_t lanes = type.getShape().front();
+  const unsigned elementWidth = vectorElementBitWidth(type);
+  if (lanes > std::numeric_limits<unsigned>::max() / elementWidth) {
     state.diagnostics.push_back(
-        (op + " requires signless integer lanes").str());
+        (opName + " vector bit width is unsupported").str());
     return std::nullopt;
   }
-  return intType.getWidth();
-}
-
-static std::uint64_t lowBitsMask(unsigned width) {
-  if (width >= 64)
-    return ~std::uint64_t{0};
-  return (std::uint64_t{1} << width) - 1;
-}
-
-static std::uint64_t tokenBits(const Token &token, unsigned width) {
-  return static_cast<std::uint64_t>(integerToken(token)) & lowBitsMask(width);
+  return static_cast<unsigned>(lanes * elementWidth);
 }
 
 static bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
@@ -279,161 +261,161 @@ static bool fireDemux(dataflow::DemuxOp op, SimulatorState &state) {
   return recordEvent(state, op->getName().getStringRef());
 }
 
-static void emitParallelizeGroup(dataflow::ParallelizeOp op,
+static bool emitParallelizeGroup(dataflow::ParallelizeOp op,
                                  SimulatorState &state,
-                                 ParallelizeState &parallel) {
-  for (auto [i, output] : llvm::enumerate(op.getOutputs())) {
-    if (i < parallel.slots.size() && parallel.slots[i])
-      emitToken(state, output, *parallel.slots[i]);
+                                 ParallelizeState &parallel,
+                                 std::uint64_t activeItems) {
+  mlir::VectorType vectorType = op.getVector().getType();
+  const unsigned laneWidth = vectorElementBitWidth(vectorType);
+  auto totalWidth = vectorBitWidth(vectorType, state, "dataflow.parallelize");
+  if (!totalWidth)
+    return false;
+
+  llvm::APInt vectorBits(*totalWidth, 0);
+  llvm::APInt maskBits(static_cast<unsigned>(vectorType.getShape().front()), 0);
+  for (unsigned lane = 0; lane < activeItems; ++lane) {
+    if (!parallel.slots[lane]) {
+      state.diagnostics.push_back(
+          "dataflow.parallelize active lane has no scalar token");
+      return false;
+    }
+    auto laneBits =
+        tokenBitPattern(*parallel.slots[lane], vectorType.getElementType());
+    if (!laneBits) {
+      state.diagnostics.push_back(llvm::toString(laneBits.takeError()));
+      return false;
+    }
+    vectorBits.insertBits(*laneBits, laneWidth * lane);
+    maskBits.setBit(lane);
   }
-  emitToken(state, op.getMask(), integerValueToken(parallel.mask));
-  parallel.slots.assign(op.getOutputs().size(), std::nullopt);
-  parallel.mask = 0;
+
+  auto vectorToken = tokenFromBitPattern(vectorBits, vectorType);
+  auto maskToken = tokenFromBitPattern(maskBits, op.getMask().getType());
+  if (!vectorToken || !maskToken) {
+    if (!vectorToken)
+      state.diagnostics.push_back(llvm::toString(vectorToken.takeError()));
+    if (!maskToken)
+      state.diagnostics.push_back(llvm::toString(maskToken.takeError()));
+    return false;
+  }
+  emitToken(state, op.getVector(), *vectorToken);
+  emitToken(state, op.getMask(), *maskToken);
+  parallel.slots.assign(vectorType.getShape().front(), std::nullopt);
+  return true;
 }
 
 static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
-  std::optional<unsigned> vecSize = vectorSizeAttr(op.getOperation(), state);
-  if (!vecSize)
-    return false;
+  mlir::VectorType vectorType = op.getVector().getType();
+  const std::uint64_t vectorLength = vectorType.getShape().front();
   ParallelizeState &parallel = state.parallelizeStates[op.getOperation()];
-  if (parallel.slots.size() != *vecSize)
-    parallel.slots.assign(*vecSize, std::nullopt);
+  if (parallel.slots.size() != vectorLength)
+    parallel.slots.assign(vectorLength, std::nullopt);
 
-  if (!hasToken(state.channels, op.getContMutable()))
-    return false;
-  const Token &contToken = peekToken(state.channels, op.getContMutable());
-  const bool cont = boolToken(contToken);
-  if (!hasToken(state.channels, op.getDataMutable()))
-    return false;
-  if (cont && op.getStride() && !hasToken(state.channels, op->getOpOperand(2)))
+  auto transition = evaluateParallelizeTransition(
+      parallel.semanticState, vectorLength,
+      peekBoolToken(state.channels, op.getScalarPhaseMutable()),
+      hasToken(state.channels, op.getDataMutable()));
+  if (!transition.firing.ready)
     return false;
 
-  (void)popToken(state, op.getContMutable());
-  Token data = popToken(state, op.getDataMutable());
-  if (!cont) {
-    if (parallel.mask != 0)
-      emitParallelizeGroup(op, state, parallel);
-    parallel.pointer = 0;
-    return recordEvent(state, op->getName().getStringRef());
+  if (selectsSemanticInput(transition.firing.consumedInputs,
+                           ParallelizeInput::Phase))
+    (void)popToken(state, op.getScalarPhaseMutable());
+  if (selectsSemanticInput(transition.firing.consumedInputs,
+                           ParallelizeInput::Data)) {
+    const std::uint64_t lane = parallel.semanticState.pendingItems;
+    parallel.slots[lane] = popToken(state, op.getDataMutable());
   }
-
-  std::uint64_t stride = 1;
-  if (op.getStride()) {
-    Token strideToken = popToken(state, op->getOpOperand(2));
-    std::int64_t strideValue = integerToken(strideToken);
-    if (strideValue <= 0) {
-      state.diagnostics.push_back(
-          "dataflow.parallelize stride must be positive");
-      return false;
-    }
-    stride = static_cast<std::uint64_t>(strideValue);
-  }
-
-  const std::uint64_t slot = parallel.pointer % *vecSize;
-  parallel.slots[slot] = data;
-  parallel.mask |= std::uint64_t{1} << slot;
-  parallel.pointer += stride;
-  if (parallel.pointer >= *vecSize) {
-    emitParallelizeGroup(op, state, parallel);
-    parallel.pointer %= *vecSize;
-  }
+  if (transition.emitGroup &&
+      !emitParallelizeGroup(op, state, parallel, transition.activeItems))
+    return false;
+  parallel.semanticState = transition.nextState;
+  if (transition.emitTruePhase)
+    emitToken(state, op.getGroupPhase(), boolValueToken(true));
+  if (transition.emitFalsePhase)
+    emitToken(state, op.getGroupPhase(), boolValueToken(false));
   return recordEvent(state, op->getName().getStringRef());
 }
 
 static bool firePack(dataflow::PackOp op, SimulatorState &state) {
-  std::optional<unsigned> vecSize = vectorSizeAttr(op.getOperation(), state);
-  if (!vecSize)
+  if (!hasToken(state.channels, op.getVectorMutable()))
     return false;
-  if (!hasToken(state.channels, op.getMaskMutable()))
-    return false;
-  const Token &maskToken = peekToken(state.channels, op.getMaskMutable());
-  const std::uint64_t mask = tokenBits(maskToken, *vecSize);
-  for (unsigned i = 0; i < *vecSize; ++i) {
-    if ((mask & (std::uint64_t{1} << i)) == 0)
-      continue;
-    if (!hasToken(state.channels, op->getOpOperand(i)))
-      return false;
-  }
-  std::optional<unsigned> laneWidth = signlessIntegerBitWidthForVector(
-      op.getInputs().front().getType(), state, "dataflow.pack");
-  if (!laneWidth)
-    return false;
-  if ((*laneWidth) * (*vecSize) > 64) {
-    state.diagnostics.push_back(
-        "dataflow.pack DFG-sim supports packed widths up to 64 bits");
+  Token vector = popToken(state, op.getVectorMutable());
+  auto bits = tokenBitPattern(vector, op.getVector().getType());
+  if (!bits) {
+    state.diagnostics.push_back(llvm::toString(bits.takeError()));
     return false;
   }
-
-  (void)popToken(state, op.getMaskMutable());
-  std::uint64_t packed = 0;
-  for (unsigned i = 0; i < *vecSize; ++i) {
-    if ((mask & (std::uint64_t{1} << i)) == 0)
-      continue;
-    Token lane = popToken(state, op->getOpOperand(i));
-    packed |= tokenBits(lane, *laneWidth) << ((*laneWidth) * i);
+  auto packed = tokenFromBitPattern(*bits, op.getPacked().getType());
+  if (!packed) {
+    state.diagnostics.push_back(llvm::toString(packed.takeError()));
+    return false;
   }
-  emitToken(state, op.getPacked(),
-            integerValueToken(static_cast<std::int64_t>(packed)));
+  emitToken(state, op.getPacked(), *packed);
   return recordEvent(state, op->getName().getStringRef());
 }
 
 static bool fireUnpack(dataflow::UnpackOp op, SimulatorState &state) {
-  std::optional<unsigned> vecSize = vectorSizeAttr(op.getOperation(), state);
-  if (!vecSize)
+  if (!hasToken(state.channels, op.getPackedMutable()))
     return false;
-  if (!hasToken(state.channels, op.getPackedMutable()) ||
-      !hasToken(state.channels, op.getMaskMutable()))
-    return false;
-  std::optional<unsigned> laneWidth = signlessIntegerBitWidthForVector(
-      op.getOutputs().front().getType(), state, "dataflow.unpack");
-  if (!laneWidth)
-    return false;
-  if ((*laneWidth) * (*vecSize) > 64) {
-    state.diagnostics.push_back(
-        "dataflow.unpack DFG-sim supports packed widths up to 64 bits");
-    return false;
-  }
-
   Token packedToken = popToken(state, op.getPackedMutable());
-  Token maskToken = popToken(state, op.getMaskMutable());
-  const std::uint64_t packed =
-      tokenBits(packedToken, (*laneWidth) * (*vecSize));
-  const std::uint64_t mask = tokenBits(maskToken, *vecSize);
-  const std::uint64_t laneMask = lowBitsMask(*laneWidth);
-  for (unsigned i = 0; i < *vecSize; ++i) {
-    if ((mask & (std::uint64_t{1} << i)) == 0)
-      continue;
-    std::uint64_t laneBits = (packed >> ((*laneWidth) * i)) & laneMask;
-    emitToken(state, op.getOutputs()[i],
-              integerValueToken(static_cast<std::int64_t>(laneBits)));
+  auto bits = tokenBitPattern(packedToken, op.getPacked().getType());
+  if (!bits) {
+    state.diagnostics.push_back(llvm::toString(bits.takeError()));
+    return false;
   }
+  auto vector = tokenFromBitPattern(*bits, op.getVector().getType());
+  if (!vector) {
+    state.diagnostics.push_back(llvm::toString(vector.takeError()));
+    return false;
+  }
+  emitToken(state, op.getVector(), *vector);
   return recordEvent(state, op->getName().getStringRef());
 }
 
 static bool fireSerialize(dataflow::SerializeOp op, SimulatorState &state) {
-  std::optional<unsigned> vecSize = vectorSizeAttr(op.getOperation(), state);
-  if (!vecSize)
+  auto transition = evaluateSerializeTransition(
+      peekBoolToken(state.channels, op.getGroupPhaseMutable()),
+      hasToken(state.channels, op.getVectorMutable()),
+      hasToken(state.channels, op.getMaskMutable()));
+  if (!transition.firing.ready)
     return false;
-  if (!hasToken(state.channels, op.getMaskMutable()))
-    return false;
-  const Token &maskToken = peekToken(state.channels, op.getMaskMutable());
-  const std::uint64_t mask = tokenBits(maskToken, *vecSize);
-  for (unsigned i = 0; i < *vecSize; ++i) {
-    if ((mask & (std::uint64_t{1} << i)) == 0)
-      continue;
-    if (!hasToken(state.channels, op->getOpOperand(i)))
-      return false;
-  }
 
-  (void)popToken(state, op.getMaskMutable());
-  for (unsigned i = 0; i < *vecSize; ++i) {
-    if ((mask & (std::uint64_t{1} << i)) == 0)
-      continue;
-    Token lane = popToken(state, op->getOpOperand(i));
-    emitToken(state, op.getData(), lane);
-    emitToken(state, op.getCont(), boolValueToken(true));
+  if (selectsSemanticInput(transition.firing.consumedInputs,
+                           SerializeInput::Phase))
+    (void)popToken(state, op.getGroupPhaseMutable());
+  if (transition.emitActiveItems) {
+    Token vectorToken = popToken(state, op.getVectorMutable());
+    Token maskToken = popToken(state, op.getMaskMutable());
+    mlir::VectorType vectorType = op.getVector().getType();
+    auto vectorBits = tokenBitPattern(vectorToken, vectorType);
+    auto maskBits = tokenBitPattern(maskToken, op.getMask().getType());
+    if (!vectorBits || !maskBits) {
+      if (!vectorBits)
+        state.diagnostics.push_back(llvm::toString(vectorBits.takeError()));
+      if (!maskBits)
+        state.diagnostics.push_back(llvm::toString(maskBits.takeError()));
+      return false;
+    }
+
+    const unsigned laneWidth = vectorElementBitWidth(vectorType);
+    for (unsigned lane = 0; lane < vectorType.getShape().front(); ++lane) {
+      if (!(*maskBits)[lane])
+        continue;
+      llvm::APInt laneBits =
+          vectorBits->extractBits(laneWidth, laneWidth * lane);
+      auto laneToken =
+          tokenFromBitPattern(laneBits, vectorType.getElementType());
+      if (!laneToken) {
+        state.diagnostics.push_back(llvm::toString(laneToken.takeError()));
+        return false;
+      }
+      emitToken(state, op.getData(), *laneToken);
+      emitToken(state, op.getScalarPhase(), boolValueToken(true));
+    }
   }
-  emitToken(state, op.getCont(), boolValueToken(false));
+  if (transition.emitFalsePhase)
+    emitToken(state, op.getScalarPhase(), boolValueToken(false));
   return recordEvent(state, op->getName().getStringRef());
 }
 
