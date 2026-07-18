@@ -109,11 +109,15 @@ struct SimulatorState {
 
 Token noneToken();
 Token integerValueToken(std::int64_t value);
+Token floatValueToken(double value);
 Token boolValueToken(bool value);
+llvm::Expected<unsigned> tokenTypeBitWidth(mlir::Type type);
 llvm::Expected<llvm::APInt> tokenBitPattern(const Token &token,
                                             mlir::Type type);
 llvm::Expected<Token> tokenFromBitPattern(const llvm::APInt &bits,
                                           mlir::Type type);
+llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type);
+std::string tokenToString(const Token &token, mlir::Type type);
 Token pointerToken(mlir::Value root, std::shared_ptr<MemoryValue> memory = {},
                    std::int64_t byteOffset = 0);
 llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr);
@@ -149,13 +153,23 @@ bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
 bool isSupportedPointerICmp(mlir::LLVM::ICmpOp op);
 llvm::Expected<Token> evaluatePointerICmp(mlir::LLVM::ICmpOp op,
                                           const Token &lhs, const Token &rhs);
-PrimitiveValue primitiveValueFromToken(const Token &token);
-Token tokenFromPrimitiveValue(const PrimitiveValue &value);
+llvm::Expected<PrimitiveValue> primitiveValueFromToken(const Token &token,
+                                                       mlir::Type type);
+llvm::Expected<Token> tokenFromPrimitiveValue(const PrimitiveValue &value,
+                                              mlir::Type type);
 std::string primitivePredicate(mlir::Operation *op);
 std::string primitiveOperationName(mlir::Operation *op);
 llvm::Expected<PrimitiveOperationDescriptor>
 primitiveDescriptor(mlir::Operation *op, llvm::StringRef predicate,
                     mlir::Value result);
+llvm::Expected<PrimitiveOperationDescriptor>
+primitiveDescriptor(mlir::Operation *op, llvm::StringRef predicate,
+                    mlir::Type resultType, mlir::Type operandType);
+llvm::Error validatePrimitiveTokenTypes(mlir::Operation *op,
+                                        mlir::Value result);
+llvm::Expected<Token> evaluatePrimitiveToken(mlir::Operation *op,
+                                             mlir::Value result,
+                                             llvm::ArrayRef<Token> inputTokens);
 
 bool executeLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state,
                        const Token &dst, const Token &src, const Token &len);

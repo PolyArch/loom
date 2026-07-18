@@ -2,14 +2,98 @@
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/raw_ostream.h"
 
+#include <cmath>
 #include <limits>
+#include <string>
 #include <system_error>
 
 namespace loom::sim {
 namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
 
-static llvm::Expected<unsigned> tokenTypeBitWidth(mlir::Type type) {
+Token noneToken() { return Token{}; }
+
+Token integerValueToken(std::int64_t value) {
+  Token token;
+  token.kind = TokenKind::Integer;
+  token.intValue = value;
+  return token;
+}
+
+Token floatValueToken(double value) {
+  Token token;
+  token.kind = TokenKind::Float;
+  token.floatValue = value;
+  return token;
+}
+
+Token boolValueToken(bool value) {
+  Token token;
+  token.kind = TokenKind::Bool;
+  token.boolValue = value;
+  return token;
+}
+
+static std::string typePrefix(mlir::Type type) {
+  if (mlir::isa<mlir::NoneType>(type))
+    return "none";
+  if (mlir::isa<mlir::IndexType>(type))
+    return "index";
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
+    return llvm::formatv("i{0}", intType.getWidth()).str();
+  if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
+    if (floatType.isF16())
+      return "f16";
+    if (floatType.isF32())
+      return "f32";
+    if (floatType.isF64())
+      return "f64";
+  }
+  std::string storage;
+  llvm::raw_string_ostream os(storage);
+  type.print(os);
+  return storage;
+}
+
+std::string tokenToString(const Token &token, mlir::Type type) {
+  if (token.kind == TokenKind::None)
+    return "none";
+  if (token.kind == TokenKind::Bool)
+    return typePrefix(type) + ":" + (token.boolValue ? "true" : "false");
+  if (token.kind == TokenKind::Integer) {
+    if (mlir::isa<mlir::IndexType>(type))
+      return typePrefix(type) + ":" + std::to_string(token.intValue);
+    llvm::APInt bits = llvm::cantFail(tokenBitPattern(token, type));
+    llvm::SmallString<64> value;
+    bits.toString(value, 10, /*Signed=*/true);
+    return typePrefix(type) + ":" + value.str().str();
+  }
+  if (token.kind == TokenKind::Vector) {
+    llvm::APInt bits = llvm::cantFail(tokenBitPattern(token, type));
+    llvm::SmallString<64> value;
+    bits.toString(value, 16, /*Signed=*/false);
+    return typePrefix(type) + ":0x" + value.str().str();
+  }
+  if (token.kind == TokenKind::Pointer)
+    return typePrefix(type) + ":ptr+" +
+           std::to_string(token.pointer.byteOffset);
+  std::string storage;
+  llvm::raw_string_ostream os(storage);
+  os << typePrefix(type) << ':';
+  if (token.floatValue == 0.0 && std::signbit(token.floatValue))
+    os << "-0";
+  else if (std::floor(token.floatValue) == token.floatValue)
+    os << static_cast<std::int64_t>(token.floatValue);
+  else
+    os << llvm::formatv("{0:f6}", token.floatValue);
+  return os.str();
+}
+
+llvm::Expected<unsigned> tokenTypeBitWidth(mlir::Type type) {
   if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type)) {
     if (integer.getWidth() == 0)
       return llvm::createStringError(std::errc::invalid_argument,
@@ -89,8 +173,6 @@ llvm::Expected<Token> tokenFromBitPattern(const llvm::APInt &bits,
       return token;
     }
     token.kind = TokenKind::Integer;
-    if (integer.getWidth() <= 64)
-      token.intValue = static_cast<std::int64_t>(bits.getZExtValue());
     return token;
   }
   if (auto floating = mlir::dyn_cast<mlir::FloatType>(type)) {
@@ -105,6 +187,97 @@ llvm::Expected<Token> tokenFromBitPattern(const llvm::APInt &bits,
   }
   return llvm::createStringError(std::errc::invalid_argument,
                                  "unsupported bit-pattern destination type");
+}
+
+llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr) {
+  if (mlir::isa<mlir::NoneType>(attr.getType()))
+    return noneToken();
+  if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr)) {
+    if (auto intType = mlir::dyn_cast<mlir::IntegerType>(intAttr.getType()))
+      return tokenFromBitPattern(intAttr.getValue(), intType);
+    return integerValueToken(intAttr.getValue().getSExtValue());
+  }
+  if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(attr))
+    return tokenFromBitPattern(floatAttr.getValue().bitcastToAPInt(),
+                               floatAttr.getType());
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "unsupported dataflow.constant attribute");
+}
+
+static llvm::Expected<llvm::APInt> parseIntegerBitPattern(llvm::StringRef raw,
+                                                          unsigned bitWidth) {
+  raw = raw.trim();
+  if (bitWidth == 0)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "integer token bit width must be nonzero");
+
+  bool negative = false;
+  if (!raw.empty() && (raw.front() == '-' || raw.front() == '+')) {
+    negative = raw.front() == '-';
+    raw = raw.drop_front();
+  }
+  if (raw.empty() ||
+      !llvm::all_of(raw, [](char c) { return c >= '0' && c <= '9'; }))
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "integer argument is not canonical base-10");
+
+  llvm::APInt magnitude;
+  if (raw.getAsInteger(10, magnitude))
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "integer argument is not canonical base-10");
+
+  bool fits = magnitude.getActiveBits() <= bitWidth;
+  if (negative && magnitude.getActiveBits() == bitWidth)
+    fits = magnitude.isPowerOf2();
+  if (!fits)
+    return llvm::createStringError(
+        std::errc::result_out_of_range,
+        "integer argument does not fit its declared bit width");
+
+  llvm::APInt bits = magnitude.zextOrTrunc(bitWidth);
+  if (negative)
+    bits.negate();
+  return bits;
+}
+
+llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type) {
+  raw = raw.trim();
+  if (mlir::isa<mlir::NoneType>(type)) {
+    if (raw == "none")
+      return noneToken();
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "none argument expects value 'none'");
+  }
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type)) {
+    if (intType.getWidth() == 1) {
+      if (raw == "true" || raw == "1")
+        return boolValueToken(true);
+      if (raw == "false" || raw == "0")
+        return boolValueToken(false);
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "i1 argument expects true/false/0/1");
+    }
+    auto bits = parseIntegerBitPattern(raw, intType.getWidth());
+    if (!bits)
+      return bits.takeError();
+    return tokenFromBitPattern(*bits, type);
+  }
+  if (mlir::isa<mlir::IndexType>(type)) {
+    std::int64_t value = 0;
+    if (raw.getAsInteger(10, value))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "index argument is not base-10");
+    return integerValueToken(value);
+  }
+  if (mlir::isa<mlir::FloatType>(type)) {
+    double value = 0.0;
+    if (raw.getAsDouble(value))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "float argument is not parseable");
+    return floatValueToken(value);
+  }
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "unsupported runtime argument type");
 }
 
 } // namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail

@@ -13,6 +13,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
@@ -24,7 +25,6 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -38,158 +38,6 @@ using namespace loom::sim::detail;
 
 namespace loom::sim {
 namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
-
-Token noneToken() { return Token{}; }
-
-Token integerValueToken(std::int64_t value) {
-  Token token;
-  token.kind = TokenKind::Integer;
-  token.intValue = value;
-  return token;
-}
-
-static Token floatValueToken(double value) {
-  Token token;
-  token.kind = TokenKind::Float;
-  token.floatValue = value;
-  return token;
-}
-
-Token boolValueToken(bool value) {
-  Token token;
-  token.kind = TokenKind::Bool;
-  token.boolValue = value;
-  return token;
-}
-
-static std::string typePrefix(mlir::Type type) {
-  if (mlir::isa<mlir::NoneType>(type))
-    return "none";
-  if (mlir::isa<mlir::IndexType>(type))
-    return "index";
-  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
-    return llvm::formatv("i{0}", intType.getWidth()).str();
-  if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
-    if (floatType.isF16())
-      return "f16";
-    if (floatType.isF32())
-      return "f32";
-    if (floatType.isF64())
-      return "f64";
-  }
-  std::string storage;
-  llvm::raw_string_ostream os(storage);
-  type.print(os);
-  return storage;
-}
-
-static std::string tokenToString(const Token &token, mlir::Type type) {
-  if (token.kind == TokenKind::None)
-    return "none";
-  if (token.kind == TokenKind::Bool)
-    return typePrefix(type) + ":" + (token.boolValue ? "true" : "false");
-  if (token.kind == TokenKind::Integer) {
-    if (token.bitPattern && token.bitPattern->getBitWidth() > 64) {
-      llvm::SmallString<64> value;
-      token.bitPattern->toString(value, 10, /*Signed=*/false);
-      return typePrefix(type) + ":" + value.str().str();
-    }
-    return typePrefix(type) + ":" + std::to_string(token.intValue);
-  }
-  if (token.kind == TokenKind::Vector) {
-    llvm::SmallString<64> value;
-    token.bitPattern->toString(value, 16, /*Signed=*/false);
-    return typePrefix(type) + ":0x" + value.str().str();
-  }
-  if (token.kind == TokenKind::Pointer)
-    return typePrefix(type) + ":ptr+" +
-           std::to_string(token.pointer.byteOffset);
-  std::string storage;
-  llvm::raw_string_ostream os(storage);
-  os << typePrefix(type) << ':';
-  if (token.floatValue == 0.0 && std::signbit(token.floatValue))
-    os << "-0";
-  else if (std::floor(token.floatValue) == token.floatValue)
-    os << static_cast<std::int64_t>(token.floatValue);
-  else
-    os << llvm::formatv("{0:f6}", token.floatValue);
-  return os.str();
-}
-
-llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr) {
-  if (mlir::isa<mlir::NoneType>(attr.getType()))
-    return noneToken();
-  if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr)) {
-    if (intAttr.getType().isInteger(1))
-      return boolValueToken(intAttr.getValue().isOne());
-    if (auto intType = mlir::dyn_cast<mlir::IntegerType>(intAttr.getType());
-        intType && intType.getWidth() > 64)
-      return tokenFromBitPattern(intAttr.getValue(), intType);
-    return integerValueToken(intAttr.getValue().getSExtValue());
-  }
-  if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(attr))
-    return tokenFromBitPattern(floatAttr.getValue().bitcastToAPInt(),
-                               floatAttr.getType());
-  return llvm::createStringError(std::errc::invalid_argument,
-                                 "unsupported dataflow.constant attribute");
-}
-
-static llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw,
-                                               mlir::Type type) {
-  raw = raw.trim();
-  if (mlir::isa<mlir::NoneType>(type)) {
-    if (raw == "none")
-      return noneToken();
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "none argument expects value 'none'");
-  }
-  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type)) {
-    if (intType.getWidth() == 1) {
-      if (raw == "true" || raw == "1")
-        return boolValueToken(true);
-      if (raw == "false" || raw == "0")
-        return boolValueToken(false);
-      return llvm::createStringError(std::errc::invalid_argument,
-                                     "i1 argument expects true/false/0/1");
-    }
-    if (intType.getWidth() <= 64) {
-      std::int64_t value = 0;
-      if (raw.getAsInteger(10, value))
-        return llvm::createStringError(std::errc::invalid_argument,
-                                       "integer argument is not base-10");
-      return integerValueToken(value);
-    }
-
-    bool negative = raw.consume_front("-");
-    (void)raw.consume_front("+");
-    llvm::APInt magnitude;
-    if (raw.getAsInteger(10, magnitude) ||
-        magnitude.getActiveBits() > intType.getWidth())
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "integer argument does not fit its declared bit width");
-    llvm::APInt bits = magnitude.zextOrTrunc(intType.getWidth());
-    if (negative)
-      bits.negate();
-    return tokenFromBitPattern(bits, type);
-  }
-  if (mlir::isa<mlir::IndexType>(type)) {
-    std::int64_t value = 0;
-    if (raw.getAsInteger(10, value))
-      return llvm::createStringError(std::errc::invalid_argument,
-                                     "index argument is not base-10");
-    return integerValueToken(value);
-  }
-  if (mlir::isa<mlir::FloatType>(type)) {
-    double value = 0.0;
-    if (raw.getAsDouble(value))
-      return llvm::createStringError(std::errc::invalid_argument,
-                                     "float argument is not parseable");
-    return floatValueToken(value);
-  }
-  return llvm::createStringError(std::errc::invalid_argument,
-                                 "unsupported runtime argument type");
-}
 
 static llvm::Expected<llvm::SmallVector<Token>>
 parseMemoryTokens(llvm::StringRef raw, mlir::Type type) {
@@ -327,11 +175,8 @@ llvm::Expected<Token> zeroToken(mlir::Type type) {
     return pointerToken(mlir::Value{});
   if (mlir::isa<mlir::IndexType>(type))
     return integerValueToken(0);
-  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type)) {
-    if (intType.getWidth() == 1)
-      return boolValueToken(false);
-    return integerValueToken(0);
-  }
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
+    return tokenFromBitPattern(llvm::APInt(intType.getWidth(), 0), intType);
   if (mlir::isa<mlir::FloatType>(type))
     return floatValueToken(0.0);
   return llvm::createStringError(std::errc::invalid_argument,
@@ -508,8 +353,8 @@ static void flushPendingTokens(SimulatorState &state) {
 std::int64_t integerToken(const Token &token) {
   if (token.kind == TokenKind::Bool)
     return token.boolValue ? 1 : 0;
-  if (token.bitPattern && token.bitPattern->getBitWidth() <= 64)
-    return static_cast<std::int64_t>(token.bitPattern->getZExtValue());
+  if (token.bitPattern)
+    return token.bitPattern->sextOrTrunc(64).getSExtValue();
   return token.intValue;
 }
 
@@ -767,36 +612,79 @@ llvm::Expected<Token> evaluatePointerICmp(mlir::LLVM::ICmpOp op,
   return boolValueToken(equal);
 }
 
-PrimitiveValue primitiveValueFromToken(const Token &token) {
-  switch (token.kind) {
-  case TokenKind::None:
-    return PrimitiveValue::none();
-  case TokenKind::Integer:
-    return PrimitiveValue::integer(token.intValue);
-  case TokenKind::Float:
-    return PrimitiveValue::floating(token.floatValue);
-  case TokenKind::Bool:
-    return PrimitiveValue::boolean(token.boolValue);
-  case TokenKind::Vector:
-    return PrimitiveValue::none();
-  case TokenKind::Pointer:
-    return PrimitiveValue::none();
+llvm::Expected<PrimitiveValue> primitiveValueFromToken(const Token &token,
+                                                       mlir::Type type) {
+  if (mlir::isa<mlir::IndexType>(type)) {
+    if (token.kind != TokenKind::Integer && token.kind != TokenKind::Bool)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "index primitive operand is not integer");
+    return PrimitiveValue::integer(integerToken(token));
   }
-  return PrimitiveValue::none();
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type)) {
+    auto width = supportedBitWidth(intType.getWidth(), "primitive integer");
+    if (!width)
+      return width.takeError();
+    auto bits = tokenBitPattern(token, intType);
+    if (!bits)
+      return bits.takeError();
+    if (*width == 1)
+      return PrimitiveValue::boolean(bits->isOne());
+    return PrimitiveValue::integer(bits->getSExtValue());
+  }
+  if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
+    auto bits = tokenBitPattern(token, floatType);
+    if (!bits)
+      return bits.takeError();
+    return PrimitiveValue::floating(
+        llvm::APFloat(floatType.getFloatSemantics(), *bits).convertToDouble());
+  }
+  return llvm::createStringError(
+      std::errc::invalid_argument,
+      "primitive operand type has no scalar simulator representation");
 }
 
-Token tokenFromPrimitiveValue(const PrimitiveValue &value) {
-  switch (value.kind) {
-  case PrimitiveValueKind::None:
-    return noneToken();
-  case PrimitiveValueKind::Integer:
-    return integerValueToken(value.intValue);
-  case PrimitiveValueKind::Float:
-    return floatValueToken(value.floatValue);
-  case PrimitiveValueKind::Bool:
-    return boolValueToken(value.boolValue);
+llvm::Expected<Token> tokenFromPrimitiveValue(const PrimitiveValue &value,
+                                              mlir::Type type) {
+  if (mlir::isa<mlir::IndexType>(type)) {
+    if (value.kind == PrimitiveValueKind::Bool)
+      return integerValueToken(value.boolValue ? 1 : 0);
+    if (value.kind == PrimitiveValueKind::Integer)
+      return integerValueToken(value.intValue);
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "index primitive result is not integer");
   }
-  return noneToken();
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type)) {
+    auto width = supportedBitWidth(intType.getWidth(), "primitive integer");
+    if (!width)
+      return width.takeError();
+    std::int64_t integer = 0;
+    if (value.kind == PrimitiveValueKind::Bool)
+      integer = value.boolValue ? 1 : 0;
+    else if (value.kind == PrimitiveValueKind::Integer)
+      integer = value.intValue;
+    else
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "integer primitive result has incompatible value kind");
+    return tokenFromBitPattern(
+        llvm::APInt(*width, static_cast<std::uint64_t>(integer),
+                    /*isSigned=*/true, /*implicitTrunc=*/true),
+        intType);
+  }
+  if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
+    if (value.kind != PrimitiveValueKind::Float)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "floating-point primitive result has incompatible value kind");
+    llvm::APFloat result(value.floatValue);
+    bool losesInfo = false;
+    (void)result.convert(floatType.getFloatSemantics(),
+                         llvm::APFloat::rmNearestTiesToEven, &losesInfo);
+    return tokenFromBitPattern(result.bitcastToAPInt(), floatType);
+  }
+  return llvm::createStringError(
+      std::errc::invalid_argument,
+      "primitive result type has no scalar simulator representation");
 }
 
 static llvm::Expected<unsigned> integerBitWidth(mlir::Type type,
@@ -823,11 +711,18 @@ std::string primitiveOperationName(mlir::Operation *op) {
 llvm::Expected<PrimitiveOperationDescriptor>
 primitiveDescriptor(mlir::Operation *op, llvm::StringRef predicate,
                     mlir::Value result) {
+  return primitiveDescriptor(op, predicate, result.getType(),
+                             op->getOperand(0).getType());
+}
+
+llvm::Expected<PrimitiveOperationDescriptor>
+primitiveDescriptor(mlir::Operation *op, llvm::StringRef predicate,
+                    mlir::Type resultType, mlir::Type operandType) {
   std::string opName = primitiveOperationName(op);
-  auto resultBitWidth = integerBitWidth(result.getType(), op);
+  auto resultBitWidth = integerBitWidth(resultType, op);
   if (!resultBitWidth)
     return resultBitWidth.takeError();
-  auto operandBitWidth = integerBitWidth(op->getOperand(0).getType(), op);
+  auto operandBitWidth = integerBitWidth(operandType, op);
   if (!operandBitWidth)
     return operandBitWidth.takeError();
   PrimitiveOperationDescriptor descriptor{opName, predicate, *resultBitWidth,
@@ -985,11 +880,12 @@ allocationElementCount(mlir::memref::AllocOp alloc, SimulatorState &state) {
         return llvm::createStringError(
             std::errc::invalid_argument,
             "memref.alloc dynamic extent is not an exact-one launch value");
-      if (observed->second.front().intValue < 0)
+      const std::int64_t dynamicExtent = integerToken(observed->second.front());
+      if (dynamicExtent < 0)
         return llvm::createStringError(
             std::errc::invalid_argument,
             "memref.alloc dynamic extent is negative");
-      extent = static_cast<std::uint64_t>(observed->second.front().intValue);
+      extent = static_cast<std::uint64_t>(dynamicExtent);
     } else {
       extent = static_cast<std::uint64_t>(type.getDimSize(dimension));
     }

@@ -3,9 +3,10 @@
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 
-#include <limits>
+#include <system_error>
 
 namespace loom::sim {
 namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
@@ -21,25 +22,6 @@ static std::optional<bool> peekBoolToken(ChannelMap &channels,
   if (!hasToken(channels, operand))
     return std::nullopt;
   return boolToken(peekToken(channels, operand));
-}
-
-static unsigned vectorElementBitWidth(mlir::VectorType type) {
-  if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type.getElementType()))
-    return integer.getWidth();
-  return mlir::cast<mlir::FloatType>(type.getElementType()).getWidth();
-}
-
-static std::optional<unsigned> vectorBitWidth(mlir::VectorType type,
-                                              SimulatorState &state,
-                                              llvm::StringRef opName) {
-  const uint64_t lanes = type.getShape().front();
-  const unsigned elementWidth = vectorElementBitWidth(type);
-  if (lanes > std::numeric_limits<unsigned>::max() / elementWidth) {
-    state.diagnostics.push_back(
-        (opName + " vector bit width is unsupported").str());
-    return std::nullopt;
-  }
-  return static_cast<unsigned>(lanes * elementWidth);
 }
 
 static bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
@@ -261,75 +243,117 @@ static bool fireDemux(dataflow::DemuxOp op, SimulatorState &state) {
   return recordEvent(state, op->getName().getStringRef());
 }
 
-static bool emitParallelizeGroup(dataflow::ParallelizeOp op,
-                                 SimulatorState &state,
-                                 ParallelizeState &parallel,
-                                 std::uint64_t activeItems) {
+struct ParallelizeGroup {
+  Token vector;
+  Token mask;
+};
+
+static llvm::Expected<ParallelizeGroup>
+buildParallelizeGroup(dataflow::ParallelizeOp op,
+                      const ParallelizeState &parallel,
+                      std::uint64_t activeItems) {
   mlir::VectorType vectorType = op.getVector().getType();
-  const unsigned laneWidth = vectorElementBitWidth(vectorType);
-  auto totalWidth = vectorBitWidth(vectorType, state, "dataflow.parallelize");
+  auto laneWidth = tokenTypeBitWidth(vectorType.getElementType());
+  if (!laneWidth)
+    return laneWidth.takeError();
+  auto totalWidth = tokenTypeBitWidth(vectorType);
   if (!totalWidth)
-    return false;
+    return totalWidth.takeError();
+  auto maskWidth = tokenTypeBitWidth(op.getMask().getType());
+  if (!maskWidth)
+    return maskWidth.takeError();
+  if (activeItems > parallel.slots.size())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "dataflow.parallelize active lane count exceeds actor state");
 
   llvm::APInt vectorBits(*totalWidth, 0);
-  llvm::APInt maskBits(static_cast<unsigned>(vectorType.getShape().front()), 0);
-  for (unsigned lane = 0; lane < activeItems; ++lane) {
+  llvm::APInt maskBits(*maskWidth, 0);
+  for (std::uint64_t lane = 0; lane < activeItems; ++lane) {
     if (!parallel.slots[lane]) {
-      state.diagnostics.push_back(
+      return llvm::createStringError(
+          std::errc::invalid_argument,
           "dataflow.parallelize active lane has no scalar token");
-      return false;
     }
     auto laneBits =
         tokenBitPattern(*parallel.slots[lane], vectorType.getElementType());
-    if (!laneBits) {
-      state.diagnostics.push_back(llvm::toString(laneBits.takeError()));
-      return false;
-    }
-    vectorBits.insertBits(*laneBits, laneWidth * lane);
-    maskBits.setBit(lane);
+    if (!laneBits)
+      return laneBits.takeError();
+    vectorBits.insertBits(*laneBits, *laneWidth * static_cast<unsigned>(lane));
+    maskBits.setBit(static_cast<unsigned>(lane));
   }
 
   auto vectorToken = tokenFromBitPattern(vectorBits, vectorType);
+  if (!vectorToken)
+    return vectorToken.takeError();
   auto maskToken = tokenFromBitPattern(maskBits, op.getMask().getType());
-  if (!vectorToken || !maskToken) {
-    if (!vectorToken)
-      state.diagnostics.push_back(llvm::toString(vectorToken.takeError()));
-    if (!maskToken)
-      state.diagnostics.push_back(llvm::toString(maskToken.takeError()));
-    return false;
-  }
-  emitToken(state, op.getVector(), *vectorToken);
-  emitToken(state, op.getMask(), *maskToken);
-  parallel.slots.assign(vectorType.getShape().front(), std::nullopt);
-  return true;
+  if (!maskToken)
+    return maskToken.takeError();
+  return ParallelizeGroup{*vectorToken, *maskToken};
 }
 
 static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
   mlir::VectorType vectorType = op.getVector().getType();
   const std::uint64_t vectorLength = vectorType.getShape().front();
-  ParallelizeState &parallel = state.parallelizeStates[op.getOperation()];
-  if (parallel.slots.size() != vectorLength)
-    parallel.slots.assign(vectorLength, std::nullopt);
+  ParallelizeState next;
+  auto current = state.parallelizeStates.find(op.getOperation());
+  if (current != state.parallelizeStates.end())
+    next = current->second;
+  if (next.slots.size() != vectorLength) {
+    if (next.semanticState.pendingItems != 0) {
+      state.diagnostics.push_back(
+          "dataflow.parallelize state does not match its vector length");
+      return false;
+    }
+    next.slots.assign(vectorLength, std::nullopt);
+  }
 
   auto transition = evaluateParallelizeTransition(
-      parallel.semanticState, vectorLength,
+      next.semanticState, vectorLength,
       peekBoolToken(state.channels, op.getScalarPhaseMutable()),
       hasToken(state.channels, op.getDataMutable()));
   if (!transition.firing.ready)
     return false;
 
+  std::optional<ParallelizeGroup> group;
+  if (selectsSemanticInput(transition.firing.consumedInputs,
+                           ParallelizeInput::Data)) {
+    const Token data = peekToken(state.channels, op.getDataMutable());
+    auto laneBits = tokenBitPattern(data, vectorType.getElementType());
+    if (!laneBits) {
+      state.diagnostics.push_back(llvm::toString(laneBits.takeError()));
+      return false;
+    }
+    const std::uint64_t lane = next.semanticState.pendingItems;
+    if (lane >= next.slots.size()) {
+      state.diagnostics.push_back(
+          "dataflow.parallelize pending lane is out of range");
+      return false;
+    }
+    next.slots[lane] = data;
+  }
+  if (transition.emitGroup) {
+    auto groupOrErr = buildParallelizeGroup(op, next, transition.activeItems);
+    if (!groupOrErr) {
+      state.diagnostics.push_back(llvm::toString(groupOrErr.takeError()));
+      return false;
+    }
+    group = *groupOrErr;
+    next.slots.assign(vectorLength, std::nullopt);
+  }
+  next.semanticState = transition.nextState;
+
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            ParallelizeInput::Phase))
     (void)popToken(state, op.getScalarPhaseMutable());
   if (selectsSemanticInput(transition.firing.consumedInputs,
-                           ParallelizeInput::Data)) {
-    const std::uint64_t lane = parallel.semanticState.pendingItems;
-    parallel.slots[lane] = popToken(state, op.getDataMutable());
+                           ParallelizeInput::Data))
+    (void)popToken(state, op.getDataMutable());
+  state.parallelizeStates[op.getOperation()] = std::move(next);
+  if (group) {
+    emitToken(state, op.getVector(), group->vector);
+    emitToken(state, op.getMask(), group->mask);
   }
-  if (transition.emitGroup &&
-      !emitParallelizeGroup(op, state, parallel, transition.activeItems))
-    return false;
-  parallel.semanticState = transition.nextState;
   if (transition.emitTruePhase)
     emitToken(state, op.getGroupPhase(), boolValueToken(true));
   if (transition.emitFalsePhase)
@@ -340,7 +364,7 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
 static bool firePack(dataflow::PackOp op, SimulatorState &state) {
   if (!hasToken(state.channels, op.getVectorMutable()))
     return false;
-  Token vector = popToken(state, op.getVectorMutable());
+  Token vector = peekToken(state.channels, op.getVectorMutable());
   auto bits = tokenBitPattern(vector, op.getVector().getType());
   if (!bits) {
     state.diagnostics.push_back(llvm::toString(bits.takeError()));
@@ -351,6 +375,7 @@ static bool firePack(dataflow::PackOp op, SimulatorState &state) {
     state.diagnostics.push_back(llvm::toString(packed.takeError()));
     return false;
   }
+  (void)popToken(state, op.getVectorMutable());
   emitToken(state, op.getPacked(), *packed);
   return recordEvent(state, op->getName().getStringRef());
 }
@@ -358,7 +383,7 @@ static bool firePack(dataflow::PackOp op, SimulatorState &state) {
 static bool fireUnpack(dataflow::UnpackOp op, SimulatorState &state) {
   if (!hasToken(state.channels, op.getPackedMutable()))
     return false;
-  Token packedToken = popToken(state, op.getPackedMutable());
+  Token packedToken = peekToken(state.channels, op.getPackedMutable());
   auto bits = tokenBitPattern(packedToken, op.getPacked().getType());
   if (!bits) {
     state.diagnostics.push_back(llvm::toString(bits.takeError()));
@@ -369,6 +394,7 @@ static bool fireUnpack(dataflow::UnpackOp op, SimulatorState &state) {
     state.diagnostics.push_back(llvm::toString(vector.takeError()));
     return false;
   }
+  (void)popToken(state, op.getPackedMutable());
   emitToken(state, op.getVector(), *vector);
   return recordEvent(state, op->getName().getStringRef());
 }
@@ -381,12 +407,10 @@ static bool fireSerialize(dataflow::SerializeOp op, SimulatorState &state) {
   if (!transition.firing.ready)
     return false;
 
-  if (selectsSemanticInput(transition.firing.consumedInputs,
-                           SerializeInput::Phase))
-    (void)popToken(state, op.getGroupPhaseMutable());
+  llvm::SmallVector<Token> activeLanes;
   if (transition.emitActiveItems) {
-    Token vectorToken = popToken(state, op.getVectorMutable());
-    Token maskToken = popToken(state, op.getMaskMutable());
+    Token vectorToken = peekToken(state.channels, op.getVectorMutable());
+    Token maskToken = peekToken(state.channels, op.getMaskMutable());
     mlir::VectorType vectorType = op.getVector().getType();
     auto vectorBits = tokenBitPattern(vectorToken, vectorType);
     auto maskBits = tokenBitPattern(maskToken, op.getMask().getType());
@@ -398,21 +422,38 @@ static bool fireSerialize(dataflow::SerializeOp op, SimulatorState &state) {
       return false;
     }
 
-    const unsigned laneWidth = vectorElementBitWidth(vectorType);
+    auto laneWidth = tokenTypeBitWidth(vectorType.getElementType());
+    if (!laneWidth) {
+      state.diagnostics.push_back(llvm::toString(laneWidth.takeError()));
+      return false;
+    }
     for (unsigned lane = 0; lane < vectorType.getShape().front(); ++lane) {
       if (!(*maskBits)[lane])
         continue;
       llvm::APInt laneBits =
-          vectorBits->extractBits(laneWidth, laneWidth * lane);
+          vectorBits->extractBits(*laneWidth, *laneWidth * lane);
       auto laneToken =
           tokenFromBitPattern(laneBits, vectorType.getElementType());
       if (!laneToken) {
         state.diagnostics.push_back(llvm::toString(laneToken.takeError()));
         return false;
       }
-      emitToken(state, op.getData(), *laneToken);
-      emitToken(state, op.getScalarPhase(), boolValueToken(true));
+      activeLanes.push_back(*laneToken);
     }
+  }
+
+  if (selectsSemanticInput(transition.firing.consumedInputs,
+                           SerializeInput::Phase))
+    (void)popToken(state, op.getGroupPhaseMutable());
+  if (selectsSemanticInput(transition.firing.consumedInputs,
+                           SerializeInput::Vector))
+    (void)popToken(state, op.getVectorMutable());
+  if (selectsSemanticInput(transition.firing.consumedInputs,
+                           SerializeInput::Mask))
+    (void)popToken(state, op.getMaskMutable());
+  for (const Token &lane : activeLanes) {
+    emitToken(state, op.getData(), lane);
+    emitToken(state, op.getScalarPhase(), boolValueToken(true));
   }
   if (transition.emitFalsePhase)
     emitToken(state, op.getScalarPhase(), boolValueToken(false));
@@ -743,6 +784,185 @@ static bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   return recordEvent(state, op->getName().getStringRef());
 }
 
+static bool hasVectorPrimitiveType(mlir::Operation *op) {
+  return llvm::any_of(op->getOperandTypes(),
+                      [](mlir::Type type) {
+                        return mlir::isa<mlir::VectorType>(type);
+                      }) ||
+         llvm::any_of(op->getResultTypes(), [](mlir::Type type) {
+           return mlir::isa<mlir::VectorType>(type);
+         });
+}
+
+static llvm::Error validatePrimitiveElementType(mlir::Type type,
+                                                llvm::StringRef role) {
+  if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type)) {
+    if (integer.getWidth() == 0 || integer.getWidth() > 64)
+      return llvm::createStringError(
+          std::errc::not_supported,
+          "%s integer element width is outside scalar primitive support",
+          role.str().c_str());
+    return llvm::Error::success();
+  }
+  if (mlir::isa<mlir::FloatType>(type))
+    return llvm::Error::success();
+  return llvm::createStringError(
+      std::errc::not_supported,
+      "%s element type has no scalar primitive representation",
+      role.str().c_str());
+}
+
+static llvm::Expected<mlir::VectorType>
+validateElementwiseVectorPrimitive(mlir::Operation *op, mlir::Value result) {
+  auto resultType = mlir::dyn_cast<mlir::VectorType>(result.getType());
+  if (!resultType)
+    return llvm::createStringError(
+        std::errc::not_supported,
+        "vector primitive must produce a vector result");
+  if (resultType.getRank() != 1 || resultType.isScalable())
+    return llvm::createStringError(
+        std::errc::not_supported,
+        "vector primitive result must be fixed-size and rank-1");
+  if (llvm::Error error =
+          validatePrimitiveElementType(resultType.getElementType(), "result"))
+    return std::move(error);
+  if (op->getNumOperands() == 0)
+    return llvm::createStringError(std::errc::not_supported,
+                                   "vector primitive has no operands");
+
+  for (mlir::Type type : op->getOperandTypes()) {
+    auto vectorType = mlir::dyn_cast<mlir::VectorType>(type);
+    if (!vectorType || vectorType.getRank() != 1 || vectorType.isScalable())
+      return llvm::createStringError(
+          std::errc::not_supported,
+          "vector primitive operands must be fixed-size and rank-1");
+    if (vectorType.getShape() != resultType.getShape())
+      return llvm::createStringError(
+          std::errc::not_supported,
+          "vector primitive operand and result shapes must match");
+    if (llvm::Error error = validatePrimitiveElementType(
+            vectorType.getElementType(), "operand"))
+      return std::move(error);
+  }
+  return resultType;
+}
+
+llvm::Error validatePrimitiveTokenTypes(mlir::Operation *op,
+                                        mlir::Value result) {
+  if (!hasVectorPrimitiveType(op))
+    return llvm::Error::success();
+  auto vectorType = validateElementwiseVectorPrimitive(op, result);
+  if (!vectorType)
+    return vectorType.takeError();
+  return llvm::Error::success();
+}
+
+static llvm::Expected<Token>
+evaluateElementwiseVectorPrimitive(mlir::Operation *op, mlir::Value result,
+                                   llvm::ArrayRef<Token> inputTokens) {
+  auto resultTypeOrErr = validateElementwiseVectorPrimitive(op, result);
+  if (!resultTypeOrErr)
+    return resultTypeOrErr.takeError();
+  mlir::VectorType resultType = *resultTypeOrErr;
+  std::string predicate = primitivePredicate(op);
+  auto firstOperandType =
+      mlir::cast<mlir::VectorType>(op->getOperand(0).getType());
+  auto descriptor =
+      primitiveDescriptor(op, predicate, resultType.getElementType(),
+                          firstOperandType.getElementType());
+  if (!descriptor)
+    return descriptor.takeError();
+
+  llvm::SmallVector<llvm::APInt> operandBits;
+  llvm::SmallVector<unsigned> operandWidths;
+  operandBits.reserve(inputTokens.size());
+  operandWidths.reserve(inputTokens.size());
+  for (auto [operand, token] :
+       llvm::zip_equal(op->getOpOperands(), inputTokens)) {
+    auto vectorType = mlir::cast<mlir::VectorType>(operand.get().getType());
+    auto bits = tokenBitPattern(token, vectorType);
+    if (!bits)
+      return bits.takeError();
+    auto width = tokenTypeBitWidth(vectorType.getElementType());
+    if (!width)
+      return width.takeError();
+    operandBits.push_back(*bits);
+    operandWidths.push_back(*width);
+  }
+
+  auto resultWidth = tokenTypeBitWidth(resultType);
+  if (!resultWidth)
+    return resultWidth.takeError();
+  auto resultElementWidth = tokenTypeBitWidth(resultType.getElementType());
+  if (!resultElementWidth)
+    return resultElementWidth.takeError();
+  llvm::APInt resultBits(*resultWidth, 0);
+  for (unsigned lane = 0; lane < resultType.getShape().front(); ++lane) {
+    llvm::SmallVector<PrimitiveValue> laneOperands;
+    laneOperands.reserve(inputTokens.size());
+    for (auto [operand, bits, width] :
+         llvm::zip_equal(op->getOpOperands(), operandBits, operandWidths)) {
+      auto vectorType = mlir::cast<mlir::VectorType>(operand.get().getType());
+      llvm::APInt laneBits = bits.extractBits(width, width * lane);
+      auto laneToken =
+          tokenFromBitPattern(laneBits, vectorType.getElementType());
+      if (!laneToken)
+        return laneToken.takeError();
+      auto laneValue =
+          primitiveValueFromToken(*laneToken, vectorType.getElementType());
+      if (!laneValue)
+        return laneValue.takeError();
+      laneOperands.push_back(*laneValue);
+    }
+
+    auto laneResult = evaluatePrimitiveOperation(*descriptor, laneOperands);
+    if (!laneResult)
+      return llvm::joinErrors(
+          llvm::createStringError(std::errc::invalid_argument,
+                                  "%s failed for vector lane %u",
+                                  descriptor->name.c_str(), lane),
+          laneResult.takeError());
+    auto laneToken =
+        tokenFromPrimitiveValue(*laneResult, resultType.getElementType());
+    if (!laneToken)
+      return laneToken.takeError();
+    auto laneBits = tokenBitPattern(*laneToken, resultType.getElementType());
+    if (!laneBits)
+      return laneBits.takeError();
+    resultBits.insertBits(*laneBits, *resultElementWidth * lane);
+  }
+  return tokenFromBitPattern(resultBits, resultType);
+}
+
+llvm::Expected<Token>
+evaluatePrimitiveToken(mlir::Operation *op, mlir::Value result,
+                       llvm::ArrayRef<Token> inputTokens) {
+  if (inputTokens.size() != op->getNumOperands())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "primitive token count does not match operation operands");
+  if (hasVectorPrimitiveType(op))
+    return evaluateElementwiseVectorPrimitive(op, result, inputTokens);
+
+  std::string predicate = primitivePredicate(op);
+  auto descriptor = primitiveDescriptor(op, predicate, result);
+  if (!descriptor)
+    return descriptor.takeError();
+  llvm::SmallVector<PrimitiveValue> operands;
+  operands.reserve(inputTokens.size());
+  for (auto [operand, token] :
+       llvm::zip_equal(op->getOpOperands(), inputTokens)) {
+    auto value = primitiveValueFromToken(token, operand.get().getType());
+    if (!value)
+      return value.takeError();
+    operands.push_back(*value);
+  }
+  auto value = evaluatePrimitiveOperation(*descriptor, operands);
+  if (!value)
+    return value.takeError();
+  return tokenFromPrimitiveValue(*value, result.getType());
+}
+
 static bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
                                    SimulatorState &state) {
   if (state.terminalPrimitiveOps.contains(op))
@@ -751,22 +971,20 @@ static bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
     if (!hasToken(state.channels, operand))
       return false;
   }
-  std::string predicate = primitivePredicate(op);
-  auto descriptor = primitiveDescriptor(op, predicate, result);
-  if (!descriptor) {
-    state.diagnostics.push_back(llvm::toString(descriptor.takeError()));
+
+  llvm::SmallVector<Token> operands;
+  operands.reserve(op->getNumOperands());
+  for (mlir::OpOperand &operand : op->getOpOperands())
+    operands.push_back(peekToken(state.channels, operand));
+  auto resultToken = evaluatePrimitiveToken(op, result, operands);
+  if (!resultToken) {
+    state.diagnostics.push_back(llvm::toString(resultToken.takeError()));
     state.terminalPrimitiveOps.insert(op);
     return false;
   }
-  llvm::SmallVector<PrimitiveValue> operands;
   for (mlir::OpOperand &operand : op->getOpOperands())
-    operands.push_back(primitiveValueFromToken(popToken(state, operand)));
-  auto valueOrErr = evaluatePrimitiveOperation(*descriptor, operands);
-  if (!valueOrErr) {
-    state.diagnostics.push_back(llvm::toString(valueOrErr.takeError()));
-    return false;
-  }
-  emitToken(state, result, tokenFromPrimitiveValue(*valueOrErr));
+    (void)popToken(state, operand);
+  emitToken(state, result, *resultToken);
   return recordEvent(state, primitiveOperationName(op));
 }
 
@@ -953,8 +1171,13 @@ bool fireActorOperation(mlir::Operation *op, SimulatorState &state) {
 
 std::optional<std::string> unsupportedActorOperation(mlir::Operation *op) {
   if (op->getNumResults() == 1 &&
-      isSupportedPrimitiveOperation(primitiveOperationName(op)))
+      isSupportedPrimitiveOperation(primitiveOperationName(op))) {
+    if (llvm::Error error = validatePrimitiveTokenTypes(op, op->getResult(0))) {
+      llvm::consumeError(std::move(error));
+      return unsupportedOperationLabel(op);
+    }
     return std::nullopt;
+  }
   if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(op)) {
     if (isSupportedPointerICmp(icmp))
       return std::nullopt;

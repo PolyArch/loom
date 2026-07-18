@@ -233,26 +233,20 @@ static bool assignLocalPrimitiveResult(mlir::Operation *op, mlir::Value result,
                                        SimulatorState &state,
                                        LocalValueMap &locals,
                                        unsigned captureIndex) {
-  llvm::SmallVector<PrimitiveValue> operands;
+  llvm::SmallVector<Token> operands;
   for (mlir::Value operand : op->getOperands()) {
     std::optional<Token> token =
         lookupToken(operand, state, locals, captureIndex);
     if (!token)
       return false;
-    operands.push_back(primitiveValueFromToken(*token));
+    operands.push_back(*token);
   }
-  std::string predicate = primitivePredicate(op);
-  auto descriptor = primitiveDescriptor(op, predicate, result);
-  if (!descriptor) {
-    state.diagnostics.push_back(llvm::toString(descriptor.takeError()));
+  auto tokenOrErr = evaluatePrimitiveToken(op, result, operands);
+  if (!tokenOrErr) {
+    state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
     return false;
   }
-  auto valueOrErr = evaluatePrimitiveOperation(*descriptor, operands);
-  if (!valueOrErr) {
-    state.diagnostics.push_back(llvm::toString(valueOrErr.takeError()));
-    return false;
-  }
-  locals[result] = tokenFromPrimitiveValue(*valueOrErr);
+  locals[result] = *tokenOrErr;
   return recordEvent(state, primitiveOperationName(op));
 }
 
@@ -885,8 +879,13 @@ unsupportedStructuredBodyOperation(mlir::Operation *op) {
                 mlir::LLVM::MemcpyOp, mlir::ub::PoisonOp>(op))
     return std::nullopt;
   if (op->getNumResults() == 1 &&
-      isSupportedPrimitiveOperation(primitiveOperationName(op)))
+      isSupportedPrimitiveOperation(primitiveOperationName(op))) {
+    if (llvm::Error error = validatePrimitiveTokenTypes(op, op->getResult(0))) {
+      llvm::consumeError(std::move(error));
+      return unsupportedOperationLabel(op);
+    }
     return std::nullopt;
+  }
   return unsupportedOperationLabel(op);
 }
 

@@ -29,6 +29,7 @@ module {
     %vector, %mask, %group_phase =
       dataflow.parallelize %data, %phase
         : (i8, i1) -> (vector<2xi8>, vector<2xi1>, i1)
+    %packed = dataflow.pack %vector : vector<2xi8> -> i16
     return
   }
 
@@ -60,8 +61,15 @@ template <typename T> T takeExpected(llvm::Expected<T> value) {
 }
 
 Token tokenWithBits(mlir::Type type, uint64_t value) {
-  unsigned width = mlir::cast<mlir::IntegerType>(type).getWidth();
+  unsigned width = takeExpected(tokenTypeBitWidth(type));
   return takeExpected(tokenFromBitPattern(llvm::APInt(width, value), type));
+}
+
+Token malformedToken(TokenKind kind, unsigned width) {
+  Token token;
+  token.kind = kind;
+  token.bitPattern = llvm::APInt(width, 0);
+  return token;
 }
 
 uint64_t bitsOf(const Token &token, mlir::Type type) {
@@ -180,6 +188,101 @@ void serializePreservesQueuedActivation(dataflow::SerializeOp op,
                "serialize emitted the wrong activation phases");
 }
 
+void parallelizeFailureIsAtomic(dataflow::ParallelizeOp op) {
+  {
+    SimulatorState state;
+    state.channels[&op.getDataMutable()].push_back(
+        malformedToken(TokenKind::Integer, 16));
+    state.channels[&op.getScalarPhaseMutable()].push_back(boolValueToken(true));
+
+    require(!fireActorOperation(op, state),
+            "parallelize accepted a malformed scalar token");
+    require(state.channels[&op.getDataMutable()].size() == 1 &&
+                state.channels[&op.getScalarPhaseMutable()].size() == 1,
+            "parallelize consumed input on conversion failure");
+    require(!state.parallelizeStates.contains(op.getOperation()),
+            "parallelize changed actor state on conversion failure");
+    require(state.pendingChannels.empty() &&
+                state.pendingObservedOutputs.empty() &&
+                state.actorMutationEpoch == 0,
+            "parallelize published output on conversion failure");
+  }
+
+  {
+    SimulatorState state;
+    ParallelizeState pending;
+    pending.semanticState.pendingItems = 1;
+    pending.slots.resize(2);
+    pending.slots[0] = malformedToken(TokenKind::Integer, 16);
+    state.parallelizeStates[op.getOperation()] = pending;
+    state.channels[&op.getScalarPhaseMutable()].push_back(
+        boolValueToken(false));
+
+    require(!fireActorOperation(op, state),
+            "parallelize assembled a malformed pending group");
+    const ParallelizeState &preserved =
+        state.parallelizeStates.find(op.getOperation())->second;
+    require(preserved.semanticState.pendingItems == 1 && preserved.slots[0] &&
+                preserved.slots[0]->bitPattern->getBitWidth() == 16,
+            "parallelize changed pending state on group construction failure");
+    require(state.channels[&op.getScalarPhaseMutable()].size() == 1,
+            "parallelize consumed phase on group construction failure");
+    require(state.pendingChannels.empty() &&
+                state.pendingObservedOutputs.empty() &&
+                state.actorMutationEpoch == 0,
+            "parallelize published a malformed pending group");
+  }
+}
+
+void packFailureIsAtomic(dataflow::PackOp op) {
+  SimulatorState state;
+  state.channels[&op.getVectorMutable()].push_back(
+      malformedToken(TokenKind::Vector, 8));
+
+  require(!fireActorOperation(op, state), "pack accepted a malformed vector");
+  require(state.channels[&op.getVectorMutable()].size() == 1,
+          "pack consumed input on conversion failure");
+  require(state.pendingChannels.empty() &&
+              state.pendingObservedOutputs.empty() &&
+              state.actorMutationEpoch == 0,
+          "pack published output on conversion failure");
+}
+
+void unpackFailureIsAtomic(dataflow::UnpackOp op) {
+  SimulatorState state;
+  state.channels[&op.getPackedMutable()].push_back(
+      malformedToken(TokenKind::Integer, 8));
+
+  require(!fireActorOperation(op, state),
+          "unpack accepted a malformed packed token");
+  require(state.channels[&op.getPackedMutable()].size() == 1,
+          "unpack consumed input on conversion failure");
+  require(state.pendingChannels.empty() &&
+              state.pendingObservedOutputs.empty() &&
+              state.actorMutationEpoch == 0,
+          "unpack published output on conversion failure");
+}
+
+void serializeFailureIsAtomic(dataflow::SerializeOp op) {
+  SimulatorState state;
+  state.channels[&op.getVectorMutable()].push_back(
+      malformedToken(TokenKind::Vector, 8));
+  state.channels[&op.getMaskMutable()].push_back(
+      tokenWithBits(op.getMask().getType(), 1));
+  state.channels[&op.getGroupPhaseMutable()].push_back(boolValueToken(true));
+
+  require(!fireActorOperation(op, state),
+          "serialize accepted a malformed vector");
+  require(state.channels[&op.getVectorMutable()].size() == 1 &&
+              state.channels[&op.getMaskMutable()].size() == 1 &&
+              state.channels[&op.getGroupPhaseMutable()].size() == 1,
+          "serialize consumed input on conversion failure");
+  require(state.pendingChannels.empty() &&
+              state.pendingObservedOutputs.empty() &&
+              state.actorMutationEpoch == 0,
+          "serialize published output on conversion failure");
+}
+
 } // namespace
 
 int main() {
@@ -192,12 +295,14 @@ int main() {
   require(static_cast<bool>(module), "unable to parse fixture");
 
   dataflow::ParallelizeOp parallelize;
+  dataflow::PackOp pack;
   dataflow::SerializeOp serialize;
   llvm::SmallVector<dataflow::UnpackOp, 2> unpacks;
   module->walk([&](dataflow::ParallelizeOp op) { parallelize = op; });
+  module->walk([&](dataflow::PackOp op) { pack = op; });
   module->walk([&](dataflow::SerializeOp op) { serialize = op; });
   module->walk([&](dataflow::UnpackOp op) { unpacks.push_back(op); });
-  require(parallelize && serialize && unpacks.size() == 2,
+  require(parallelize && pack && serialize && unpacks.size() == 2,
           "fixture actors are missing");
 
   dataflow::UnpackOp vectorUnpack = unpacks[0];
@@ -209,5 +314,9 @@ int main() {
 
   parallelizePreservesQueuedActivation(parallelize);
   serializePreservesQueuedActivation(serialize, vectorUnpack, maskUnpack);
+  parallelizeFailureIsAtomic(parallelize);
+  packFailureIsAtomic(pack);
+  unpackFailureIsAtomic(vectorUnpack);
+  serializeFailureIsAtomic(serialize);
   return 0;
 }
