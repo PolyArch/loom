@@ -1,4 +1,4 @@
-// RUN: loom-dfg-sim %s --graph sum4 --arg 0=0 --arg 1=4 --arg 2=1 --arg 3=0.000000e+00 --arg 4=1.000000e+00 --output %t.json
+// RUN: loom-dfg-sim %s --graph sum4 --arg 0=0.000000e+00 --arg 1=1.000000e+00 --output %t.json
 // RUN: FileCheck %s < %t.json
 
 // CHECK-DAG: "schema_version": "2.2"
@@ -15,9 +15,11 @@
 // CHECK-NOT: cycles
 
 module {
-  dataflow.graph private @sum4(%ctrl: none, %lb: i64, %ub: i64,
-    %step: i64, %init: f32, %increment: f32)
-      -> (f32) {
+  dataflow.graph private @sum4(
+      %ctrl: none, %init: f32, %increment: f32) -> (f32) {
+    %lb = dataflow.constant %ctrl {const_value = 0 : i64} : i64
+    %ub = dataflow.constant %ctrl {const_value = 4 : i64} : i64
+    %step = dataflow.constant %ctrl {const_value = 1 : i64} : i64
     %iv, %phase = dataflow.stream %lb, %ub, %step
         step add while slt : i64
     %carry = dataflow.carry %phase, %init, %next : f32

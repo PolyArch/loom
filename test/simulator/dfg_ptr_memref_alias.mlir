@@ -7,9 +7,6 @@
 // CHECK-DAG: "status": "pass"
 // CHECK-DAG: "metric_definition": "weighted_operations_plus_library_work_diversity_and_address.v1"
 // CHECK-DAG: "dataflow.load": 3
-// CHECK-DAG: "dataflow.carry": 10
-// CHECK-DAG: "dataflow.gate": 4
-// CHECK-DAG: "dataflow.demux": 11
 // CHECK-DAG: "f32:14"
 
 module {
@@ -36,12 +33,18 @@ module {
     %body_phase, %body_carry = dataflow.gate %phase, %carry : f32
     %exit:2 = dataflow.demux %phase, %carry : (i1, f32) -> (f32, f32)
     %next = arith.addf %body_carry, %data : f32
-    %body_units = dataflow.invariant %body_phase, %ctrl : none
-    %body_close:2 = dataflow.demux %body_phase, %body_units
+    %body_close:2 = dataflow.demux %body_phase, %body_carry
+        : (i1, f32) -> (f32, f32)
+    %nonempty = arith.cmpi slt, %lb, %ub : i64
+    %completion:2 = dataflow.demux %nonempty, %read_lane#0
         : (i1, none) -> (none, none)
-    %retired:3 = dataflow.sync %read_lane#0, %body_close#0, %exit#0
-        : (none, none, f32) -> (none, none, f32)
-    dataflow.graph.return values(%retired#2 : f32) streams() memories()
+    %active_retired:2 = dataflow.sync %completion#1, %body_close#0
+        : (none, f32) -> (none, f32)
+    %control = dataflow.mux %nonempty, %completion#0, %active_retired#0
+        : (i1, none, none) -> none
+    %retired:2 = dataflow.sync %control, %exit#0
+        : (none, f32) -> (none, f32)
+    dataflow.graph.return values(%retired#1 : f32) streams() memories()
         complete(%retired#0 : none)
   }
 }

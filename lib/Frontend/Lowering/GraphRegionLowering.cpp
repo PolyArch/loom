@@ -117,6 +117,11 @@ struct StreamOutputSlot {
   unsigned index;
 };
 
+struct StreamRepeatUse {
+  ::mlir::Operation *user;
+  ::mlir::Operation *placeholder;
+};
+
 std::optional<int64_t> getConstantIndex(::mlir::Value value) {
   ::mlir::APInt constant;
   if (!::mlir::matchPattern(value, ::mlir::m_ConstantInt(&constant)) ||
@@ -408,6 +413,10 @@ public:
         lowerBlock(entry, graph.getStart(), std::move(initial));
     assert(routedStreamInputs.empty() && streamOutputSlots.empty() &&
            "stream endpoint maps must be retired before publication");
+    assert(streamChoiceUsers.empty() &&
+           "stream choice selectors must be bound before SCF erasure");
+    assert(streamRepeatUsers.empty() &&
+           "stream repeat selectors must be bound before SCF erasure");
     ::loom::lowering::lowerGraphIndexDomains(graph);
     auto returnOp = ::llvm::cast<::dataflow::GraphReturnOp>(anchor);
     if (transientStreamBoundary) {
@@ -435,6 +444,11 @@ private:
   std::vector<std::unique_ptr<StreamLoweringPlan>> streamPlans;
   ::llvm::DenseMap<::mlir::Operation *, ::mlir::Value> routedStreamInputs;
   ::llvm::DenseMap<::mlir::Operation *, StreamOutputSlot> streamOutputSlots;
+  ::llvm::DenseMap<::mlir::Operation *,
+                   ::llvm::SmallVector<::mlir::Operation *, 2>>
+      streamChoiceUsers;
+  ::llvm::DenseMap<::mlir::Operation *, ::llvm::SmallVector<StreamRepeatUse, 2>>
+      streamRepeatUsers;
   unsigned partitionCount = 0;
   ::llvm::DenseMap<::mlir::Value, unsigned> partitionByRoot;
   ::mlir::Value sharedBoundaryRoot;
@@ -491,6 +505,11 @@ private:
       plan->selector = materialization.selector;
       plan->event = materialization.event;
       plan->close = materialization.close;
+      for (const auto &choiceUse : materialization.choiceSelectorUses)
+        streamChoiceUsers[choiceUse.choice].push_back(choiceUse.user);
+      for (const auto &repeatUse : materialization.repeatSelectorUses)
+        streamRepeatUsers[repeatUse.repeat].push_back(
+            {repeatUse.user, repeatUse.placeholder});
 
       if (plan->input) {
         ::mlir::Value input = streamInputByChannel.lookup(plan->channel);
@@ -855,13 +874,32 @@ private:
 
   ::mlir::Value joinEvents(::mlir::ValueRange inputs, ::mlir::Location loc) {
     ::llvm::SmallVector<::mlir::Value, 4> reduced = reduceEvents(inputs);
-    if (reduced.size() == 1)
-      return reduced.front();
+    ::mlir::Value control;
+    for (::mlir::Value input : reduced)
+      if (::llvm::isa<::mlir::NoneType>(input.getType())) {
+        control = input;
+        break;
+      }
+    if (!control)
+      for (::mlir::Value input : inputs)
+        if (input && ::llvm::isa<::mlir::NoneType>(input.getType())) {
+          control = input;
+          break;
+        }
+    assert(control && "event join requires a none-typed control token");
+
+    ::llvm::SmallVector<::mlir::Value, 4> rendezvous{control};
+    for (::mlir::Value input : reduced)
+      if (input != control)
+        rendezvous.push_back(input);
+    if (rendezvous.size() == 1)
+      return control;
 
     setInsertionPoint(loc);
-    ::llvm::SmallVector<::mlir::Type, 4> types(reduced.size(),
-                                               builder.getNoneType());
-    auto sync = ::dataflow::SyncOp::create(builder, loc, types, reduced);
+    ::llvm::SmallVector<::mlir::Type, 4> types;
+    for (::mlir::Value input : rendezvous)
+      types.push_back(input.getType());
+    auto sync = ::dataflow::SyncOp::create(builder, loc, types, rendezvous);
     return sync.getOutputs().front();
   }
 
@@ -946,13 +984,9 @@ private:
     setInsertionPoint(loc);
     auto gate = ::dataflow::GateOp::create(builder, loc, builder.getI1Type(),
                                            value.getType(), phase, value);
-    auto units =
-        ::dataflow::InvariantOp::create(builder, loc, builder.getNoneType(),
-                                        gate.getAfterCond(), graph.getStart());
     auto close = ::dataflow::DemuxOp::create(
-        builder, loc,
-        ::mlir::TypeRange{builder.getNoneType(), builder.getNoneType()},
-        gate.getAfterCond(), units.getOutput());
+        builder, loc, ::mlir::TypeRange{value.getType(), value.getType()},
+        gate.getAfterCond(), gate.getAfterValue());
     return {gate.getAfterValue(), close.getOutputs()[0]};
   }
 
@@ -1279,6 +1313,12 @@ private:
                        MemoryState memory) {
     ::mlir::Location loc = ifOp.getLoc();
     ::mlir::Value selector = ifOp.getCondition();
+    if (auto uses = streamChoiceUsers.find(ifOp);
+        uses != streamChoiceUsers.end()) {
+      for (::mlir::Operation *user : uses->second)
+        user->setOperand(0, selector);
+      streamChoiceUsers.erase(uses);
+    }
     auto [falseExecution, trueExecution] = demux(selector, execution, loc);
 
     ::llvm::SmallBitVector touched = touchedPartitions(ifOp.getThenRegion());
@@ -1399,6 +1439,31 @@ private:
     replaceUsesInside(forOp.getInductionVar(), bodyIv, forOp.getRegion());
     ::llvm::SmallVector<::mlir::Value, 4> captureCloses =
         projectForCaptures(forOp.getRegion(), captures, phase, loc);
+    if (auto uses = streamRepeatUsers.find(forOp);
+        uses != streamRepeatUsers.end()) {
+      setInsertionPoint(loc);
+      auto active =
+          ::dataflow::ConstantOp::create(builder, loc, builder.getI1Type(),
+                                         execution, builder.getBoolAttr(true));
+      auto invariant = ::dataflow::InvariantOp::create(
+          builder, loc, builder.getI1Type(), phase, active.getValue());
+      auto projected = ::dataflow::DemuxOp::create(
+          builder, loc,
+          ::mlir::TypeRange{builder.getI1Type(), builder.getI1Type()}, phase,
+          invariant.getOutput());
+      for (const StreamRepeatUse &use : uses->second) {
+        use.user->setOperand(0, projected.getOutputs()[1]);
+        assert(use.placeholder->use_empty() &&
+               "stream repeat placeholder must be fully retired");
+        use.placeholder->erase();
+      }
+      auto close = ::dataflow::SyncOp::create(
+          builder, loc,
+          ::mlir::TypeRange{builder.getNoneType(), builder.getI1Type()},
+          ::mlir::ValueRange{executionExit, projected.getOutputs()[0]});
+      executionExit = close.getOutputs()[0];
+      streamRepeatUsers.erase(uses);
+    }
 
     ::llvm::SmallBitVector touched = touchedPartitions(forOp.getRegion());
     MemoryState bodyMemory = memory;
@@ -1445,9 +1510,17 @@ private:
     }
     for (unsigned i = 0; i < forOp.getNumResults(); ++i)
       forOp.getResult(i).replaceAllUsesWith(valueExits[i]);
+    if (!captureCloses.empty()) {
+      setInsertionPoint(loc);
+      ::mlir::Value nonEmpty =
+          ::mlir::arith::CmpIOp::create(builder, loc, *predicate, lower, upper);
+      auto [emptyExit, activeExit] = demux(nonEmpty, executionExit, loc);
+      captureCloses.insert(captureCloses.begin(), activeExit);
+      executionExit =
+          mux(nonEmpty, emptyExit, joinEvents(captureCloses, loc), loc);
+    }
     forOp.erase();
-    captureCloses.insert(captureCloses.begin(), executionExit);
-    return {joinEvents(captureCloses, loc), std::move(output)};
+    return {executionExit, std::move(output)};
   }
 
   RegionResult lowerWhile(::mlir::scf::WhileOp whileOp, ::mlir::Value execution,

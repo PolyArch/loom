@@ -7,18 +7,24 @@
 // RUN: not loom-lower %t.dir/completion.mlir -o %t.dir/completion.out.mlir 2>&1 | FileCheck %s --check-prefix=COMPLETION
 // RUN: not loom-lower %t.dir/direct-stream-rendezvous.mlir -o %t.dir/direct.out.mlir 2>&1 | FileCheck %s --check-prefix=DIRECT
 // RUN: not loom-dfg-sim %t.dir/direct-stream-rendezvous.mlir --graph direct_stream_rendezvous --arg 0=7 --arg 0=9 --output %t.dir/direct.json 2>&1 | FileCheck %s --check-prefix=DIRECT
+// RUN: not loom-dfg-sim %t.dir/stream-activated-schedule.mlir --graph stream_activated_schedule --arg 0=0 --arg 1=7 --output %t.dir/stream-activated.json 2>&1 | FileCheck %s --check-prefix=STREAM-ACTIVATED
+// RUN: not loom-dfg-sim %t.dir/stateful-activated-schedule.mlir --graph stateful_activated_schedule --arg 0=7 --arg 0=9 --output %t.dir/stateful-activated.json 2>&1 | FileCheck %s --check-prefix=STATEFUL-ACTIVATED
 // RUN: test ! -e %t.dir/value.out.mlir
 // RUN: test ! -e %t.dir/filtered-value.out.mlir
 // RUN: test ! -e %t.dir/stream.out.mlir
 // RUN: test ! -e %t.dir/completion.out.mlir
 // RUN: test ! -e %t.dir/direct.out.mlir
 // RUN: test ! -e %t.dir/direct.json
+// RUN: test ! -e %t.dir/stream-activated.json
+// RUN: test ! -e %t.dir/stateful-activated.json
 
 // VALUE: graph @stream_to_value value output #0 is not statically exact-one
 // FILTERED-VALUE: graph @filtered_stream_to_value value output #0 is not statically exact-one
 // STREAM: graph @partial_stream_commit stream output #0 has no statically proven close/commit
 // COMPLETION: graph @stream_driven_completion completion witness #0 is not statically one-shot
 // DIRECT: graph @direct_stream_rendezvous value output #0 is not statically exact-one
+// STREAM-ACTIVATED: graph @stream_activated_schedule value output #0 is not statically exact-one
+// STATEFUL-ACTIVATED: graph @stateful_activated_schedule value output #0 is not statically exact-one
 
 // A loop selected by one branch has one close event only on that branch. The
 // final mux publishes that close or the one-shot bypass from the same outer
@@ -146,5 +152,62 @@ module {
         : (none, i32) -> (none, i32)
     dataflow.graph.return values(%published#1 : i32) streams() memories()
         complete(%published#0 : none)
+  }
+}
+
+// A stream token cannot become a one-shot schedule activation merely because
+// arithmetic cancels its payload value.
+//--- stream-activated-schedule.mlir
+module {
+  dataflow.graph private @stream_activated_schedule(
+      %start: none, %activity: i32, %input: i32) -> i32
+      attributes {input_segments = array<i32: 0, 2, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %zero = dataflow.constant %start {const_value = 0 : i32} : i32
+    %one = dataflow.constant %start {const_value = 1 : i32} : i32
+    %two = dataflow.constant %start {const_value = 2 : i32} : i32
+    %masked = arith.subi %activity, %activity : i32
+    %limit = arith.addi %two, %masked : i32
+    %iv, %phase = dataflow.stream %zero, %limit, %one
+        step add while slt : i32
+    %route = arith.trunci %iv : i32 to i1
+    %lanes:2 = dataflow.demux %route, %input
+        : (i1, i32) -> (i32, i32)
+    %complete = dataflow.sync %start : (none) -> none
+    dataflow.graph.return values(%lanes#0 : i32) streams() memories()
+        complete(%complete : none)
+  }
+}
+
+// A stateful actor output is not a one-shot activation even when downstream
+// arithmetic maps every payload to the same schedule domain.
+//--- stateful-activated-schedule.mlir
+module {
+  dataflow.graph private @stateful_activated_schedule(
+      %start: none, %input: i32) -> i32
+      attributes {input_segments = array<i32: 0, 1, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %zero = dataflow.constant %start {const_value = 0 : i32} : i32
+    %one = dataflow.constant %start {const_value = 1 : i32} : i32
+    %two = dataflow.constant %start {const_value = 2 : i32} : i32
+    %source_iv, %source_phase = dataflow.stream %zero, %two, %one
+        step add while slt : i32
+    %dynamic_zero = arith.subi %source_iv, %source_iv : i32
+    %dynamic_one = arith.addi %dynamic_zero, %one : i32
+    %iv, %phase = dataflow.stream %dynamic_zero, %dynamic_one, %dynamic_one
+        step add while slt : i32
+    %source_control = dataflow.invariant %source_phase, %start : none
+    %source_close:2 = dataflow.demux %source_phase, %source_control
+        : (i1, none) -> (none, none)
+    %schedule_control = dataflow.invariant %phase, %start : none
+    %schedule_close:2 = dataflow.demux %phase, %schedule_control
+        : (i1, none) -> (none, none)
+    %route = arith.trunci %iv : i32 to i1
+    %lanes:2 = dataflow.demux %route, %input
+        : (i1, i32) -> (i32, i32)
+    %complete:2 = dataflow.sync %source_close#0, %schedule_close#0
+        : (none, none) -> (none, none)
+    dataflow.graph.return values(%lanes#0 : i32) streams() memories()
+        complete(%complete#0 : none)
   }
 }

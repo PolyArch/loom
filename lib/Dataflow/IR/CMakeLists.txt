@@ -15,6 +15,7 @@ add_mlir_library(MLIRDataflowEnums
 )
 
 add_mlir_dialect_library(MLIRDataflow
+  DataflowActorSemantics.cpp
   DataflowChannelOps.cpp
   DataflowDialect.cpp
   DataflowGraphValidation.cpp

@@ -47,15 +47,18 @@ module {
     %units = dataflow.invariant %phase, %ctrl : none
     %closed:2 = dataflow.demux %phase, %units
         : (i1, none) -> (none, none)
-    %body_units = dataflow.invariant %body_phase, %ctrl : none
-    %body_closed:2 = dataflow.demux %body_phase, %body_units
+    %body_closed:2 = dataflow.demux %body_phase, %body_carry
+        : (i1, f32) -> (f32, f32)
+    %increment_closed:2 = dataflow.demux %increment_phase, %body_increment
+        : (i1, f32) -> (f32, f32)
+    %nonempty = arith.cmpi slt, %lb, %ub : i64
+    %completion:2 = dataflow.demux %nonempty, %closed#0
         : (i1, none) -> (none, none)
-    %increment_units = dataflow.invariant %increment_phase, %ctrl : none
-    %increment_closed:2 = dataflow.demux %increment_phase, %increment_units
-        : (i1, none) -> (none, none)
-    %retired:3 = dataflow.sync %closed#0, %body_closed#0,
-        %increment_closed#0 : (none, none, none) -> (none, none, none)
-    %published:2 = dataflow.sync %retired#0, %exit#0
+    %active_retired:3 = dataflow.sync %completion#1, %body_closed#0,
+        %increment_closed#0 : (none, f32, f32) -> (none, f32, f32)
+    %retired = dataflow.mux %nonempty, %completion#0, %active_retired#0
+        : (i1, none, none) -> none
+    %published:2 = dataflow.sync %retired, %exit#0
         : (none, f32) -> (none, f32)
     dataflow.graph.return %published#0, %published#1 : none, f32
   }

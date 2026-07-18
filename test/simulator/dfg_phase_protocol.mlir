@@ -1,4 +1,4 @@
-// RUN: loom-dfg-sim %s --graph stateful_close --arg 0=0 --arg 1=4 --arg 2=1 --arg 3=0 --arg 4=1 --output %t.stateful.json
+// RUN: loom-dfg-sim %s --graph stateful_close --arg 0=0 --arg 1=1 --output %t.stateful.json
 // RUN: FileCheck %s --check-prefix=STATEFUL < %t.stateful.json
 // RUN: loom-dfg-sim %s --graph stream_output --arg 0=0 --arg 1=3 --arg 2=1 --output %t.stream.json
 // RUN: FileCheck %s --check-prefix=STREAM < %t.stream.json
@@ -20,10 +20,12 @@
 
 module {
   dataflow.graph private @stateful_close(
-      %start: none, %lower: i32, %upper: i32, %step: i32,
-      %initial: i32, %increment: i32) -> i32
-      attributes {input_segments = array<i32: 5, 0, 0>,
+      %start: none, %initial: i32, %increment: i32) -> i32
+      attributes {input_segments = array<i32: 2, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
+    %lower = dataflow.constant %start {const_value = 0 : i32} : i32
+    %upper = dataflow.constant %start {const_value = 4 : i32} : i32
+    %step = dataflow.constant %start {const_value = 1 : i32} : i32
     %iv, %phase = dataflow.stream %lower, %upper, %step
         step add while slt : i32
     %carry = dataflow.carry %phase, %initial, %next : i32

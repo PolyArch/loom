@@ -8,11 +8,11 @@
 // CHECK-LABEL: dataflow.graph private @conditional_gate_close
 // CHECK: %[[EMPTY:.*]] = arith.cmpi eq,
 // CHECK: %[[GATE_PHASE:.*]], %[[BODY_VALUE:.*]] = dataflow.gate
-// CHECK: %[[CLOSE_UNITS:.*]] = dataflow.invariant %[[GATE_PHASE]], %arg0 : none
-// CHECK: %[[GATE_CLOSE:.*]]:2 = dataflow.demux %[[GATE_PHASE]], %[[CLOSE_UNITS]] : (i1, none) -> (none, none)
+// CHECK: %[[GATE_CLOSE:.*]]:2 = dataflow.demux %[[GATE_PHASE]], %[[BODY_VALUE]] : (i1, i32) -> (i32, i32)
 // CHECK: dataflow.store {{.*}} %[[BODY_VALUE]]
-// CHECK: %[[BRANCH_COMPLETE:.*]]:2 = dataflow.sync {{.*}}, %[[GATE_CLOSE]]#0 : (none, none) -> (none, none)
-// CHECK: dataflow.mux %[[EMPTY]], %[[BRANCH_COMPLETE]]#0, {{.*}} : (i1, none, none) -> none
+// CHECK: %[[ACTIVE_COMPLETE:.*]]:2 = dataflow.sync {{.*}}, %[[GATE_CLOSE]]#0 : (none, i32) -> (none, i32)
+// CHECK: %[[LOOP_COMPLETE:.*]] = dataflow.mux {{.*}}, {{.*}}, %[[ACTIVE_COMPLETE]]#0 : (i1, none, none) -> none
+// CHECK: dataflow.mux %[[EMPTY]], %[[LOOP_COMPLETE]], {{.*}} : (i1, none, none) -> none
 // CHECK: dataflow.graph.return
 
 dataflow.graph private @conditional_gate_close(

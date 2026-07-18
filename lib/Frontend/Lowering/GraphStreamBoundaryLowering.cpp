@@ -2,9 +2,11 @@
 
 #include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Frontend/Lowering/StreamLoopAttrs.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <cassert>
@@ -14,6 +16,7 @@
 namespace {
 
 using ::loom::lowering::detail::StreamBindingPlan;
+using ::loom::lowering::detail::StreamScheduleMaterialization;
 using ::loom::lowering::detail::StreamScheduleNode;
 
 struct StreamChoiceLeg {
@@ -24,6 +27,7 @@ struct StreamChoiceLeg {
 struct ScheduledStreamEndpoint {
   ::mlir::Operation *endpoint;
   ::llvm::SmallVector<StreamChoiceLeg, 4> path;
+  ::llvm::SmallVector<::mlir::Operation *, 2> repeats;
 };
 
 bool isStreamEndpoint(::mlir::Operation *op, ::mlir::Value channel,
@@ -143,7 +147,7 @@ void collectScheduledEndpoints(
     ::llvm::SmallVectorImpl<StreamChoiceLeg> &path,
     ::llvm::SmallVectorImpl<ScheduledStreamEndpoint> &endpoints) {
   if (schedule.kind == StreamScheduleNode::Kind::Endpoint) {
-    endpoints.push_back({schedule.endpoint, {path.begin(), path.end()}});
+    endpoints.push_back({schedule.endpoint, {path.begin(), path.end()}, {}});
     return;
   }
   if (schedule.kind == StreamScheduleNode::Kind::Choice) {
@@ -156,6 +160,14 @@ void collectScheduledEndpoints(
     path.pop_back();
     return;
   }
+  if (schedule.kind == StreamScheduleNode::Kind::Repeat) {
+    assert(schedule.children.size() == 1 && "stream repeat must have one body");
+    size_t begin = endpoints.size();
+    collectScheduledEndpoints(*schedule.children.front(), path, endpoints);
+    for (size_t index = begin; index < endpoints.size(); ++index)
+      endpoints[index].repeats.push_back(schedule.repeat);
+    return;
+  }
   for (const auto &child : schedule.children)
     collectScheduledEndpoints(*child, path, endpoints);
 }
@@ -163,7 +175,8 @@ void collectScheduledEndpoints(
 ::mlir::Value
 materializeEndpointActivity(const ScheduledStreamEndpoint &endpoint,
                             ::mlir::Value event, ::mlir::OpBuilder &builder,
-                            ::mlir::Operation *anchor) {
+                            ::mlir::Operation *anchor,
+                            StreamScheduleMaterialization &materialization) {
   auto i1 = builder.getI1Type();
   ::mlir::Location loc = endpoint.endpoint->getLoc();
   ::mlir::Value active = scheduleConstant(event, i1, 1, loc, builder, anchor);
@@ -176,13 +189,27 @@ materializeEndpointActivity(const ScheduledStreamEndpoint &endpoint,
                               loc, builder, anchor)
                         : mux(condition, ::mlir::ValueRange{active, inactive},
                               loc, builder, anchor);
+    materialization.choiceSelectorUses.push_back(
+        {leg.choice, active.getDefiningOp()});
+  }
+  for (::mlir::Operation *repeat : ::llvm::reverse(endpoint.repeats)) {
+    setInsertionPoint(builder, anchor);
+    auto placeholder = ::mlir::arith::ConstantOp::create(
+        builder, loc, i1, builder.getBoolAttr(false));
+    ::mlir::Value inactive =
+        scheduleConstant(event, i1, 0, loc, builder, anchor);
+    active = mux(placeholder, ::mlir::ValueRange{inactive, active}, loc,
+                 builder, anchor);
+    materialization.repeatSelectorUses.push_back(
+        {repeat, active.getDefiningOp(), placeholder});
   }
   return active;
 }
 
 ::mlir::LogicalResult
 buildStreamSchedule(::mlir::Block &block, ::mlir::Value channel, bool input,
-                    std::unique_ptr<StreamScheduleNode> &schedule) {
+                    std::unique_ptr<StreamScheduleNode> &schedule,
+                    ::llvm::ArrayRef<::mlir::scf::ForOp> repetitions = {}) {
   std::vector<std::unique_ptr<StreamScheduleNode>> children;
   unsigned siteCount = 0;
   for (::mlir::Operation &op : block.without_terminator()) {
@@ -197,11 +224,13 @@ buildStreamSchedule(::mlir::Block &block, ::mlir::Value channel, bool input,
       std::unique_ptr<StreamScheduleNode> falseSchedule;
       std::unique_ptr<StreamScheduleNode> trueSchedule;
       if (::mlir::failed(buildStreamSchedule(ifOp.getThenRegion().front(),
-                                             channel, input, trueSchedule)))
+                                             channel, input, trueSchedule,
+                                             repetitions)))
         return ::mlir::failure();
       if (!ifOp.getElseRegion().empty() &&
           ::mlir::failed(buildStreamSchedule(ifOp.getElseRegion().front(),
-                                             channel, input, falseSchedule)))
+                                             channel, input, falseSchedule,
+                                             repetitions)))
         return ::mlir::failure();
       if (!falseSchedule)
         falseSchedule = makeEmptySchedule(ifOp.getLoc());
@@ -218,6 +247,46 @@ buildStreamSchedule(::mlir::Block &block, ::mlir::Value channel, bool input,
       children.push_back(std::move(choice));
       continue;
     }
+
+    auto forOp = ::llvm::dyn_cast<::mlir::scf::ForOp>(&op);
+    if (forOp && containsStreamEndpoint(&op, channel, input)) {
+      auto stepKind = ::loom::lowering::inferStreamStepKind(forOp);
+      auto predicate = ::loom::lowering::inferStreamPredicate(forOp);
+      if (::mlir::failed(stepKind) || ::mlir::failed(predicate) ||
+          *stepKind != ::dataflow::StreamStepKind::Add ||
+          *predicate != ::mlir::arith::CmpIPredicate::slt)
+        return forOp.emitError(
+            "loom-lower-graph-memory: cross-scope stream repetition requires "
+            "an additive increasing scf.for domain");
+      for (::mlir::scf::ForOp repetition : repetitions)
+        if (!repetition.isDefinedOutsideOfLoop(forOp.getLowerBound()) ||
+            !repetition.isDefinedOutsideOfLoop(forOp.getUpperBound()) ||
+            !repetition.isDefinedOutsideOfLoop(forOp.getStep()))
+          return forOp.emitError(
+              "loom-lower-graph-memory: nested cross-scope stream repetition "
+              "requires a loop-invariant inner domain");
+
+      std::unique_ptr<StreamScheduleNode> bodySchedule;
+      ::llvm::SmallVector<::mlir::scf::ForOp, 4> nested(repetitions);
+      nested.push_back(forOp);
+      if (::mlir::failed(buildStreamSchedule(forOp.getRegion().front(), channel,
+                                             input, bodySchedule, nested)))
+        return ::mlir::failure();
+      auto repeat = std::make_unique<StreamScheduleNode>(
+          StreamScheduleNode::Kind::Repeat, forOp.getLoc());
+      repeat->siteCount = bodySchedule->siteCount;
+      repeat->repeat = forOp;
+      repeat->children.push_back(std::move(bodySchedule));
+      siteCount += repeat->siteCount;
+      children.push_back(std::move(repeat));
+      continue;
+    }
+
+    if (::llvm::isa<::mlir::scf::WhileOp>(&op) &&
+        containsStreamEndpoint(&op, channel, input))
+      return op.emitError(
+          "loom-lower-graph-memory: cross-scope stream repetition through "
+          "scf.while requires an online ordered event transfer");
 
     if (containsStreamEndpoint(&op, channel, input))
       return op.emitError(
@@ -240,6 +309,243 @@ buildStreamSchedule(::mlir::Block &block, ::mlir::Value channel, bool input,
   schedule->children = std::move(children);
   return ::mlir::success();
 }
+
+bool containsRepeat(const StreamScheduleNode &schedule) {
+  if (schedule.kind == StreamScheduleNode::Kind::Repeat)
+    return true;
+  return ::llvm::any_of(schedule.children, [](const auto &child) {
+    return containsRepeat(*child);
+  });
+}
+
+class ScheduleNetworkBuilder {
+public:
+  ScheduleNetworkBuilder(const StreamScheduleNode &schedule,
+                         ::mlir::Value execution, ::mlir::OpBuilder &builder,
+                         ::mlir::Operation *anchor,
+                         ::llvm::ArrayRef<ScheduledStreamEndpoint> endpoints)
+      : execution(execution), builder(builder), anchor(anchor),
+        recurrenceType(::mlir::IntegerType::get(builder.getContext(),
+                                                ::loom::getIndexWidth())) {
+    for (auto [lane, endpoint] : ::llvm::enumerate(endpoints))
+      laneByEndpoint.try_emplace(endpoint.endpoint, lane);
+    (void)count(schedule);
+  }
+
+  ::mlir::Value count(const StreamScheduleNode &schedule) {
+    auto known = counts.find(&schedule);
+    if (known != counts.end())
+      return known->second;
+
+    if (!containsRepeat(schedule)) {
+      ::mlir::Value result = constant(schedule.siteCount, schedule.loc);
+      counts.try_emplace(&schedule, result);
+      return result;
+    }
+
+    ::mlir::Value result;
+    switch (schedule.kind) {
+    case StreamScheduleNode::Kind::Empty:
+    case StreamScheduleNode::Kind::Endpoint:
+      llvm_unreachable("static stream schedule handled above");
+    case StreamScheduleNode::Kind::Sequence:
+    case StreamScheduleNode::Kind::Choice: {
+      uint64_t staticCount = 0;
+      for (const auto &child : schedule.children) {
+        if (!containsRepeat(*child)) {
+          staticCount += child->siteCount;
+          continue;
+        }
+        ::mlir::Value childCount = count(*child);
+        result = result ? add(result, childCount, schedule.loc) : childCount;
+      }
+      if (staticCount != 0) {
+        ::mlir::Value fixed = constant(staticCount, schedule.loc);
+        result = result ? add(result, fixed, schedule.loc) : fixed;
+      }
+      if (!result)
+        result = constant(0, schedule.loc);
+      break;
+    }
+    case StreamScheduleNode::Kind::Repeat: {
+      assert(schedule.children.size() == 1 &&
+             "stream repeat must have one body");
+      result = multiply(repeatCount(schedule), count(*schedule.children[0]),
+                        schedule.loc);
+      break;
+    }
+    }
+    counts.try_emplace(&schedule, result);
+    return result;
+  }
+
+  void setPhase(::mlir::Value value) { phase = value; }
+
+  ::mlir::Value route(const StreamScheduleNode &schedule, ::mlir::Value ordinal,
+                      ::mlir::Value event) {
+    switch (schedule.kind) {
+    case StreamScheduleNode::Kind::Empty:
+      return eventConstant(event, 0, schedule.loc);
+    case StreamScheduleNode::Kind::Endpoint:
+      return eventConstant(event, laneByEndpoint.lookup(schedule.endpoint),
+                           schedule.loc);
+    case StreamScheduleNode::Kind::Repeat: {
+      assert(schedule.children.size() == 1 &&
+             "stream repeat must have one body");
+      ::mlir::Value childCount = project(count(*schedule.children[0]));
+      ::mlir::Value zero = eventConstant(event, 0, schedule.loc);
+      ::mlir::Value one = eventConstant(event, 1, schedule.loc);
+      setInsertionPoint(builder, anchor);
+      ::mlir::Value isEmpty =
+          ::mlir::arith::CmpIOp::create(builder, schedule.loc,
+                                        ::mlir::arith::CmpIPredicate::eq,
+                                        childCount, zero)
+              .getResult();
+      ::mlir::Value divisor =
+          ::mlir::arith::SelectOp::create(builder, schedule.loc, isEmpty, one,
+                                          childCount)
+              .getResult();
+      ::mlir::Value local = ::mlir::arith::RemUIOp::create(
+                                builder, schedule.loc, ordinal, divisor)
+                                .getResult();
+      return route(*schedule.children[0], local, event);
+    }
+    case StreamScheduleNode::Kind::Sequence:
+    case StreamScheduleNode::Kind::Choice:
+      break;
+    }
+
+    assert(!schedule.children.empty() &&
+           "non-empty schedule composition needs children");
+    ::llvm::SmallVector<::mlir::Value, 4> routes;
+    ::llvm::SmallVector<::mlir::Value, 4> boundaries;
+    ::mlir::Value prefix = constant(0, schedule.loc);
+    for (const auto &child : schedule.children) {
+      ::mlir::Value local = ordinal;
+      if (routes.size() != 0) {
+        setInsertionPoint(builder, anchor);
+        local = ::mlir::arith::SubIOp::create(builder, schedule.loc, ordinal,
+                                              project(prefix))
+                    .getResult();
+      }
+      routes.push_back(route(*child, local, event));
+      prefix = add(prefix, count(*child), schedule.loc);
+      boundaries.push_back(prefix);
+    }
+
+    ::mlir::Value selected = routes.back();
+    for (size_t index = routes.size() - 1; index != 0; --index) {
+      setInsertionPoint(builder, anchor);
+      ::mlir::Value before =
+          ::mlir::arith::CmpIOp::create(builder, schedule.loc,
+                                        ::mlir::arith::CmpIPredicate::ult,
+                                        ordinal, project(boundaries[index - 1]))
+              .getResult();
+      selected = ::mlir::arith::SelectOp::create(builder, schedule.loc, before,
+                                                 routes[index - 1], selected)
+                     .getResult();
+    }
+    return selected;
+  }
+
+private:
+  ::mlir::Value execution;
+  ::mlir::OpBuilder &builder;
+  ::mlir::Operation *anchor;
+  ::mlir::IntegerType recurrenceType;
+  ::mlir::Value phase;
+  ::llvm::DenseMap<const StreamScheduleNode *, ::mlir::Value> counts;
+  ::llvm::DenseMap<int64_t, ::mlir::Value> constants;
+  ::llvm::DenseMap<::mlir::Value, ::mlir::Value> projections;
+  ::llvm::DenseMap<::mlir::Operation *, unsigned> laneByEndpoint;
+
+  ::mlir::Value constant(int64_t value, ::mlir::Location loc) {
+    auto known = constants.find(value);
+    if (known != constants.end())
+      return known->second;
+    ::mlir::Value result = scheduleConstant(execution, recurrenceType, value,
+                                            loc, builder, anchor);
+    constants.try_emplace(value, result);
+    return result;
+  }
+
+  ::mlir::Value eventConstant(::mlir::Value event, int64_t value,
+                              ::mlir::Location loc) {
+    return scheduleConstant(event, recurrenceType, value, loc, builder, anchor);
+  }
+
+  ::mlir::Value add(::mlir::Value lhs, ::mlir::Value rhs,
+                    ::mlir::Location loc) {
+    setInsertionPoint(builder, anchor);
+    return ::mlir::arith::AddIOp::create(builder, loc, lhs, rhs).getResult();
+  }
+
+  ::mlir::Value multiply(::mlir::Value lhs, ::mlir::Value rhs,
+                         ::mlir::Location loc) {
+    setInsertionPoint(builder, anchor);
+    return ::mlir::arith::MulIOp::create(builder, loc, lhs, rhs).getResult();
+  }
+
+  ::mlir::Value castToRecurrence(::mlir::Value value, ::mlir::Location loc) {
+    if (value.getType() == recurrenceType)
+      return value;
+    assert(::llvm::isa<::mlir::IndexType>(value.getType()) &&
+           "scf.for schedule domains must use index values");
+    setInsertionPoint(builder, anchor);
+    return ::mlir::arith::IndexCastOp::create(builder, loc, recurrenceType,
+                                              value)
+        .getResult();
+  }
+
+  ::mlir::Value repeatCount(const StreamScheduleNode &schedule) {
+    auto forOp = ::llvm::cast<::mlir::scf::ForOp>(schedule.repeat);
+    ::mlir::Location loc = schedule.loc;
+    ::mlir::Value lower = castToRecurrence(forOp.getLowerBound(), loc);
+    ::mlir::Value upper = castToRecurrence(forOp.getUpperBound(), loc);
+    ::mlir::Value step = castToRecurrence(forOp.getStep(), loc);
+    ::mlir::Value zero = constant(0, loc);
+    ::mlir::Value one = constant(1, loc);
+
+    setInsertionPoint(builder, anchor);
+    ::mlir::Value nonEmpty =
+        ::mlir::arith::CmpIOp::create(
+            builder, loc, ::mlir::arith::CmpIPredicate::slt, lower, upper)
+            .getResult();
+    ::mlir::Value delta =
+        ::mlir::arith::SubIOp::create(builder, loc, upper, lower).getResult();
+    delta = ::mlir::arith::SelectOp::create(builder, loc, nonEmpty, delta, zero)
+                .getResult();
+    ::mlir::Value quotient =
+        ::mlir::arith::DivUIOp::create(builder, loc, delta, step).getResult();
+    ::mlir::Value remainder =
+        ::mlir::arith::RemUIOp::create(builder, loc, delta, step).getResult();
+    ::mlir::Value hasRemainder =
+        ::mlir::arith::CmpIOp::create(
+            builder, loc, ::mlir::arith::CmpIPredicate::ne, remainder, zero)
+            .getResult();
+    ::mlir::Value extra =
+        ::mlir::arith::SelectOp::create(builder, loc, hasRemainder, one, zero)
+            .getResult();
+    return add(quotient, extra, loc);
+  }
+
+  ::mlir::Value project(::mlir::Value value) {
+    assert(phase && "schedule phase must exist before projection");
+    auto known = projections.find(value);
+    if (known != projections.end())
+      return known->second;
+    setInsertionPoint(builder, anchor);
+    auto invariant = ::dataflow::InvariantOp::create(
+        builder, value.getLoc(), value.getType(), phase, value);
+    auto lanes = ::dataflow::DemuxOp::create(
+        builder, value.getLoc(),
+        ::mlir::TypeRange{value.getType(), value.getType()}, phase,
+        invariant.getOutput());
+    ::mlir::Value projected = lanes.getOutputs()[1];
+    projections.try_emplace(value, projected);
+    return projected;
+  }
+};
 
 } // namespace
 
@@ -407,13 +713,19 @@ materializeStreamSchedule(const StreamScheduleNode &schedule,
     return result;
   }
 
+  bool repeated = containsRepeat(schedule);
+  std::unique_ptr<ScheduleNetworkBuilder> network;
+  if (repeated)
+    network = std::make_unique<ScheduleNetworkBuilder>(
+        schedule, execution, builder, anchor, endpoints);
   auto recurrenceType =
       ::mlir::IntegerType::get(builder.getContext(), ::loom::getIndexWidth());
   ::mlir::Value init = scheduleConstant(execution, recurrenceType, 0,
                                         schedule.loc, builder, anchor);
   ::mlir::Value limit =
-      scheduleConstant(execution, recurrenceType, schedule.siteCount,
-                       schedule.loc, builder, anchor);
+      repeated ? network->count(schedule)
+               : scheduleConstant(execution, recurrenceType, schedule.siteCount,
+                                  schedule.loc, builder, anchor);
   ::mlir::Value step = scheduleConstant(execution, recurrenceType, 1,
                                         schedule.loc, builder, anchor);
   setInsertionPoint(builder, anchor);
@@ -431,9 +743,18 @@ materializeStreamSchedule(const StreamScheduleNode &schedule,
   ::mlir::Value ordinal = stream.getIv();
   result.event = phases.getOutputs()[1];
   result.close = phases.getOutputs()[0];
-  if (schedule.siteCount > 1)
-    result.selector = scheduleSelector(ordinal, schedule.siteCount,
+  ::mlir::Value route = ordinal;
+  if (repeated) {
+    network->setPhase(stream.getPhase());
+    route = network->route(schedule, ordinal, result.event);
+  }
+  if (schedule.siteCount > 1) {
+    result.selector = scheduleSelector(route, schedule.siteCount, schedule.loc,
+                                       builder, anchor);
+  } else {
+    result.selector = scheduleConstant(result.event, builder.getI1Type(), 1,
                                        schedule.loc, builder, anchor);
+  }
 
   if (!::llvm::any_of(endpoints, [](const ScheduledStreamEndpoint &endpoint) {
         return !endpoint.path.empty();
@@ -450,18 +771,22 @@ materializeStreamSchedule(const StreamScheduleNode &schedule,
   ::llvm::SmallVector<::mlir::Value, 4> activities;
   for (auto [endpoint, event] : ::llvm::zip_equal(endpoints, events))
     activities.push_back(
-        materializeEndpointActivity(endpoint, event, builder, anchor));
+        materializeEndpointActivity(endpoint, event, builder, anchor, result));
   ::mlir::Value active =
       activities.size() == 1
           ? activities.front()
           : mux(result.selector, activities, schedule.loc, builder, anchor);
 
-  ordinal = demux(active, ordinal, schedule.loc, builder, anchor).second;
+  route = demux(active, route, schedule.loc, builder, anchor).second;
   result.event =
       demux(active, result.event, schedule.loc, builder, anchor).second;
-  if (schedule.siteCount > 1)
-    result.selector = scheduleSelector(ordinal, schedule.siteCount,
+  if (schedule.siteCount > 1) {
+    result.selector = scheduleSelector(route, schedule.siteCount, schedule.loc,
+                                       builder, anchor);
+  } else {
+    result.selector = scheduleConstant(result.event, builder.getI1Type(), 1,
                                        schedule.loc, builder, anchor);
+  }
   return result;
 }
 

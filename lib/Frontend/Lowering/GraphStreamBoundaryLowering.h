@@ -27,7 +27,7 @@ struct StreamBoundaryInfo {
 };
 
 struct StreamScheduleNode {
-  enum class Kind { Empty, Endpoint, Sequence, Choice };
+  enum class Kind { Empty, Endpoint, Sequence, Choice, Repeat };
 
   StreamScheduleNode(Kind kind, ::mlir::Location loc) : kind(kind), loc(loc) {}
 
@@ -35,6 +35,7 @@ struct StreamScheduleNode {
   unsigned siteCount = 0;
   ::mlir::Operation *endpoint = nullptr;
   ::mlir::Operation *choice = nullptr;
+  ::mlir::Operation *repeat = nullptr;
   ::mlir::Location loc;
   std::vector<std::unique_ptr<StreamScheduleNode>> children;
 };
@@ -45,7 +46,20 @@ struct StreamBindingPlan {
 };
 
 struct StreamScheduleMaterialization {
+  struct ChoiceSelectorUse {
+    ::mlir::Operation *choice;
+    ::mlir::Operation *user;
+  };
+
+  struct RepeatSelectorUse {
+    ::mlir::Operation *repeat;
+    ::mlir::Operation *user;
+    ::mlir::Operation *placeholder;
+  };
+
   ::llvm::SmallVector<::mlir::Operation *, 4> endpoints;
+  ::llvm::SmallVector<ChoiceSelectorUse, 4> choiceSelectorUses;
+  ::llvm::SmallVector<RepeatSelectorUse, 4> repeatSelectorUses;
   ::mlir::Value selector;
   ::mlir::Value event;
   ::mlir::Value close;
