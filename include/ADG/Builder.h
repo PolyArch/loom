@@ -112,8 +112,10 @@ struct MemSpec {
   std::string manager;
   std::vector<MemLoadPort> loads;
   std::vector<MemStorePort> stores;
+  unsigned dataWidth = 0;
   unsigned temporalTagWidth = 0;
-  unsigned temporalAddrTableSize = 0;
+  unsigned temporalOperationTableSize = 0;
+  std::vector<std::vector<unsigned>> temporalDispatchEligibility;
 };
 
 class ModuleBuilder {

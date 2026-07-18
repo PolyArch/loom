@@ -1,415 +1,211 @@
-# Fabric Mem
+# Fabric Memory Operation Engine
 
-This document specifies `fabric.mem`, the leaf-level memory tile of the
-fabric dialect. The canonical IR source is `Fabric_MemOp` in
-`include/Fabric/IR/FabricOps.td`; verifier and parser/printer live in
-`lib/Fabric/IR/FabricMemOp.cpp`.
+## Scope
 
-## Identity
+`fabric.mem` describes a Fabric-owned memory operation-engine hardware
+capability. The accepted ABI contains:
 
-* Mnemonic: `mem`. C++ class: `::fabric::MemOp`.
-* The op wraps `dataflow.load` / `dataflow.store` semantics into a
-  fabric-domain leaf op. See the dataflow load/store specs for the
-  semantic origin.
-* Vector lane masks and their software semantics are specified in
-  `docs/spec-dataflow-vectorization.md`. This document owns the Fabric
-  projection from those masks to memory-port structure and byte enables.
-* Variadic SSA operands and variadic SSA results (anonymous form) or a
-  zero-operand / zero-result template (named form) whose port signature
-  is captured in a `function_type` attribute.
-* Carries a mandatory `Fabric_ScheduleAttr` predicate `[spatial]` or
-  `[temporal]` (reused from `fabric.pe`).
-* Optional `sym_name` so a memory tile can be referenced by
-  `fabric.instantiate` (mirrors `fabric.pe`, `fabric.fu`,
-  `fabric.switch`).
-* The op has no body region; behavior is fully described by attributes.
-* Allowed only inside a `fabric.module` body; the module body
-  whitelist was extended to admit `fabric.mem`.
+* one operation engine;
+* one or more manager/requester memory endpoints;
+* zero or more subordinate/provider memory endpoints;
+* `L` physical load operation ports;
+* `S` physical store operation ports;
+* an independent physical operation data width `W`;
+* a Spatial or Temporal operation schedule;
+* fixed Temporal slot-to-physical-port dispatch eligibility.
 
-## Memory capability roles
+The complete architecture permits an optional Local Memory Service, but that
+subresource is not accepted by this ABI. Its canonical typed service contract
+is not yet represented. Engine-plus-local and storage-only forms therefore
+remain unsupported. An engine-only occurrence requires at least one manager
+endpoint as its backing path.
 
-The first `memref` input is `memref_mgr`, a manager/requester capability.
-The optional first `memref` result is `memref_sub`, a subordinate/target
-capability. These are roles of the operation endpoints; they are not encoded
-as attributes, distinct memory types, or permanent properties of the SSA
-memref value.
+This operation owns hardware capability only. It does not own workload memory
+bindings, active dispatch, configured accesses, service target selection, or
+bitstream state.
 
-At a `fabric.module` boundary, a module `memref` input may feed
-`memref_mgr`, including multiple manager-side consumers. A module `memref`
-result must come from a subordinate producer such as `memref_sub` or a
-`fabric.instantiate` result whose target signature has a `memref` result.
-A `memref_sub` or equivalent instantiate result may also feed another
-`memref_mgr`; this is the normal complementary provider-to-requester service
-connection. Imported and provided capabilities may both have multiple uses.
-The module verifier checks only provider provenance for module exports.
+## Assembly
 
-## Schedule predicate and port types
+Anonymous form:
 
-The schedule predicate selects the port type kind of every per-port
-input and output of the op. The two cases are mutually exclusive.
-
-| Schedule    | Per-port type              | Notes                                      |
-|-------------|----------------------------|--------------------------------------------|
-| `spatial`   | `!fabric.bits<W>`          | `ctrl`/`done` use `bits<0>`.               |
-| `temporal`  | `!fabric.bits_tag<W, T>`   | `ctrl`/`done` use `bits_tag<0, T>`.        |
-
-Spatial ports may not use `bits_tag`; temporal ports may not use
-`bits`. The verifier emits a "schedule mismatch with port kind"
-diagnostic on violation.
-
-For anonymous `fabric.mem`, the types in the per-port rules below are
-the memory resource's destination input-port types. An incoming
-connection may spell both endpoints as
-`source-type to destination-port-type`. The source type resolves the
-SSA operand; the destination type is checked against the memory port
-signature. `bits` may connect only to `bits`, and `bits_tag` only to
-`bits_tag`; widths may differ with the module-level LSB-aligned
-truncation or zero-extension semantics. A kind change is rejected.
-`memref_mgr` is a memory capability rather than token transport and
-must match exactly without a `to` conversion.
-
-Differing destination input-port types are retained in the ODS-owned
-typed `inner_input_types : ArrayRef<Type>` property. The custom parser
-leaves the property empty when every source and destination type is
-equal, and the printer reconstructs each required `to` clause from it.
-A non-empty property has one entry per operand and must contain at least
-one actual endpoint-type difference.
-Named template forms remain governed by their exact `function_type`
-signature.
-
-## Memref interfaces (M2.A model)
-
-`fabric.mem` exposes two memref interfaces:
-
-* `memref_mgr` (Manager-side, **required**): the first SSA operand. It is the
-  manager/requester capability through which the tile issues every internal
-  load and store transaction. The element type **must** be
-  `!fabric.bits<W_mgr>`. `W_mgr` is derived from the element type and is the
-  canonical bus-width of the internal load/store data ports.
-* `memref_sub` (Subordinate-side, **optional**): when present, it is
-  the **first SSA result** (detected by checking the first result's
-  type for a memref). It exposes the tile's subordinate/target capability.
-  Its element type **must** be
-  `!fabric.bits<W_sub>`. `W_sub` MAY differ from `W_mgr`.
-
-The internal load/store ports are independent of `memref_sub`. The
-M2.A decision is: load/store ports always operate against
-`memref_mgr`; `memref_sub` is an independent subordinate interface and does
-not affect port type rules. Connecting `memref_sub` to another `memref_mgr`
-is direct provider-to-requester composition and requires no role conversion
-or adapter.
-
-The verifier requires `!fabric.bits<W>`-element memrefs only;
-`memref<?xiN>` and other element types are rejected.
-
-## Operand layout (anonymous form)
-
-In order:
-
-1. `memref_mgr : memref<?x!fabric.bits<W_mgr>>`, manager role.
-2. For each load port `i in [0, load_group_size)`:
-   `(addr_i, ctrl_i)` -- two SSA operands.
-3. For each store port `j in [0, store_group_size)`:
-   `(addr_j, data_j, ctrl_j)` -- three SSA operands.
-
-Total operand count: `1 + 2 * load_group_size + 3 * store_group_size`.
-
-## Result layout (anonymous form)
-
-In order:
-
-1. Optional `memref_sub : memref<?x!fabric.bits<W_sub>>`, subordinate role
-   (when present it is the first result; presence is detected from the result
-   type alone; no syntactic marker is needed).
-2. For each load port `i`: `(data_i, done_i)` -- two SSA results.
-3. For each store port `j`: `done_j` -- one SSA result.
-
-Total result count: `(0 or 1) + 2 * load_group_size + store_group_size`.
-
-## Per-port type rules
-
-Let `index_width = loom::getIndexWidth()` (existing helper at
-`lib/Common/IndexWidth.{h,cpp}`).
-
-For each load port:
-
-| Operand/result | Spatial type           | Temporal type                |
-|----------------|------------------------|------------------------------|
-| `addr_i`       | `bits<index_width>`    | `bits_tag<index_width, T>`   |
-| `ctrl_i`       | `bits<0>`              | `bits_tag<0, T>`             |
-| `data_i`       | `bits<W_mgr>`          | `bits_tag<W_mgr, T>`         |
-| `done_i`       | `bits<0>`              | `bits_tag<0, T>`             |
-
-For each store port:
-
-| Operand/result | Spatial type           | Temporal type                |
-|----------------|------------------------|------------------------------|
-| `addr_j`       | `bits<index_width>`    | `bits_tag<index_width, T>`   |
-| `data_j`       | `bits<W_mgr>`          | `bits_tag<W_mgr, T>`         |
-| `ctrl_j`       | `bits<0>`              | `bits_tag<0, T>`             |
-| `done_j`       | `bits<0>`              | `bits_tag<0, T>`             |
-
-`W_mgr` is the inferred element width of `memref_mgr`; `T` is
-`tag_width` (temporal only).
-
-These tables constrain destination resource-port types. The anonymous
-form's source SSA types may have different widths only under the
-same-kind incoming connection rule above.
-
-## Hardware parameters
-
-Hardware parameters live in `hw_params`, an ArrayAttr of length 1
-wrapping a DictionaryAttr (the same `[ ... ]` convention used by
-other fabric ops). `fabric.mem` requires `hw_params` to be present.
-
-```
-[{load_group_size = N : i32, store_group_size = M : i32}]                                 // spatial
-[{load_group_size = N : i32, store_group_size = M : i32,
-  tag_width = T : i32, addr_table_size = K : i32}]                                        // temporal
+```text
+fabric.mem [spatial|temporal]
+  mgr(manager-operands)
+  load(load-operands)
+  store(store-operands)
+  [{hardware-parameters}]
+  : (input-types) -> (result-types)
 ```
 
-Constraints:
+The `load` and `store` clauses are omitted when their respective physical port
+counts are zero. `mgr()` is syntactically variadic, although the implemented
+engine-only form rejects an empty manager list.
 
-* `load_group_size >= 0`, `store_group_size >= 0`,
-  `load_group_size + store_group_size >= 1`.
-* Temporal: `tag_width >= 1`, `addr_table_size >= 1`.
-* Spatial: `tag_width` and `addr_table_size` MUST be absent.
+Named templates place `@name` before the schedule and replace SSA operands and
+results with a function type:
 
-## Software configuration
-
-Software parameters live in `addr_table` (ArrayAttr of DictionaryAttr)
-and `mem_enable` (BoolAttr, the PE/clock/power-gating equivalent),
-printed in `{ ... }`. They follow the fabric all-or-nothing rule:
-both present (programmed) or both absent (hw-only).
-
-`addr_table.base_addr` is a physical address or a physical-region
-offset after mapping/runtime binding. It never encodes a virtual
-address. Region identity and host pointer translation belong to
-`fabric.system`, mapping artifacts, runtime descriptors, or platform
-adapters, not to `fabric.mem`.
-
-### Spatial entry shape
-
-One entry per port, total `load_group_size + store_group_size`. Entry
-indices `[0, load_group_size)` correspond to load ports
-`0..load_group_size-1`; entry indices
-`[load_group_size, load_group_size + store_group_size)` correspond to
-store ports `0..store_group_size-1`.
-
-```
-{base_addr = ... : iN_addr, element_log2_size = ... : i4, valid = true}
+```text
+fabric.mem @name [spatial|temporal]
+  (input-types) -> (result-types)
+  [{hardware-parameters}]
 ```
 
-Spatial entries MUST NOT carry the `tag` key.
+The schedule is surface shorthand for the operation engine's
+`operation_schedule`. Because this ABI accepts only occurrences with an
+operation engine, every accepted `fabric.mem` carries the shorthand.
 
-### Temporal entry shape (CAM lookup by tag)
+## Signature
 
-Exactly `addr_table_size` entries:
+For `L = load_group_size` and `S = store_group_size`, inputs are ordered as:
 
-```
-{base_addr = ... : iN_addr, element_log2_size = ... : i4,
- tag = ... : iT, valid = true}
-```
+1. every manager endpoint memref;
+2. `L` load groups `(addr, ctrl)`;
+3. `S` store groups `(addr, data, ctrl)`.
 
-Among entries with `valid == true`, all `tag` values must be
-distinct.
+Results are ordered as:
 
-### Per-entry verifier rules
+1. every subordinate endpoint memref;
+2. `L` load groups `(data, done)`;
+3. `S` store `done` results.
 
-* `base_addr` is an IntegerAttr whose integer width equals the
-  resolved `loom_addr_bits` (see "Global constants" below).
-* `element_log2_size` is an IntegerAttr of width 4 (`i4`). It is
-  treated as an unsigned 4-bit value. Its value MUST satisfy
-  `element_log2_size <= log2(loom_mem_bus_width / 8)` against the
-  resolved `loom_mem_bus_width`.
-* `valid` is a BoolAttr.
-* Temporal: `tag` is an IntegerAttr whose integer width equals
-  `tag_width`. `tag` is interpreted as an unsigned `tag_width`-bit
-  value.
+Manager and subordinate counts are the leading signature lengths left after
+subtracting the operation groups. They are not duplicated as attributes.
 
-The 4-bit `element_log2_size` field encodes values 0..15. The maximum
-valid value is derived from the resolved `loom_mem_bus_width`.
-Module-level overrides may further reduce this maximum (see below).
+Every capability endpoint is a memref whose element type is
+`!fabric.bits<width>`. Endpoint widths are independent of each other and of
+`W`. Capability endpoints never carry a Dataflow tag.
 
-## Global constants and per-module overrides
+Incoming operation operands may use
+`source-type to destination-operation-port-type` when both types have the same
+`bits` or `bits_tag` kind. Memref capability types must match exactly and
+cannot use this normalization syntax.
 
-`docs/spec-config-ssot.md` owns the resolved global values for Loom
-address width and memory bus width. Compatibility inputs such as
-environment variables may feed the configuration resolver, but they are
-not independent hidden defaults. They must be recorded as explicit
-configuration provenance when used.
+## Hardware Parameters
 
-`fabric.module` carries two new optional attributes that override
-these resolved values for ops nested inside the module body:
+`hw_params` is a length-one array containing a closed dictionary. Every
+integer parameter is a signless `i32`.
 
-```
-fabric.module @top(...) attributes {
-  loom_addr_bits = 32 : i32,
-  loom_mem_bus_width = 1024 : i32
-} { ... }
+A Spatial engine requires exactly:
+
+```text
+load_group_size  = L, where L >= 0
+store_group_size = S, where S >= 0
+data_width       = W, where W > 0
 ```
 
-The verifier uses helpers
+A Temporal engine additionally requires exactly:
 
-```cpp
-namespace fabric {
-unsigned resolveLoomAddrBits(Operation *op);       // walks to enclosing fabric.module
-unsigned resolveLoomMemBusWidth(Operation *op);
-}
+```text
+tag_width             = T, where T > 0
+operation_table_size  = K, where K > 0
+dispatch_eligibility  = H_dispatch
 ```
 
-to read the per-module override (if any) or fall back to the resolved
-configuration values.
+`L + S` must be greater than zero. Define:
 
-## Custom assembly format
-
-Anonymous form (readable named-group syntax):
-
-```mlir
-%sub_or_void, %d0, %dn0, %d1, %dn1, %sd0 = fabric.mem [spatial] mgr(%mgr)
-    load(%la0, %lc0, %la1, %lc1)
-    store(%sa0, %sd0_data, %sc0)
-    [{load_group_size = 2 : i32, store_group_size = 1 : i32}]
-    {addr_table = [
-       {base_addr = 65536  : i48, element_log2_size = 2 : i4, valid = true},
-       {base_addr = 65792  : i48, element_log2_size = 2 : i4, valid = true},
-       {base_addr = 131072 : i48, element_log2_size = 2 : i4, valid = true}
-     ], mem_enable = true}
-    : (memref<?x!fabric.bits<32>>,
-       !fabric.bits<64> to !fabric.bits<32>,
-       !fabric.bits<8> to !fabric.bits<0>,
-       !fabric.bits<32>, !fabric.bits<0>,
-       !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>)
-    -> (memref<?x!fabric.bits<32>>,
-        !fabric.bits<32>, !fabric.bits<0>,
-        !fabric.bits<32>, !fabric.bits<0>,
-        !fabric.bits<0>)
+```text
+P = L + S
 ```
 
-* `mgr(%mgr)` is required. The actual memref operand appears here.
-* `load(...)` and `store(...)` appear in this fixed order. Both are
-  optional (`load_group_size` or `store_group_size` may be `0`). The
-  per-port operands are flat in a single comma-separated list inside
-  each clause; each load port contributes 2 operands `(addr, ctrl)`
-  and each store port contributes 3 operands `(addr, data, ctrl)`.
-* `[ ... ]` carries `hw_params`. `{ ... }` carries the
-  `addr_table` / `mem_enable` pair.
-* The trailing functional-type signature lists the operand types
-  followed by `->` and the result types. The optional `memref_sub`
-  appears in the result-type list directly; the verifier detects it
-  from the first result's type (memref vs bits/bits_tag).
+`P` is the number of concrete physical operation ports. `K` is the number of
+resident Temporal configured slots. `K` is independent of `P` and is not
+derived from `2^T`. In particular, `K != P` is legal.
 
-Named template form (declaration only):
+`W` is an explicit hardware fact. It is never inferred from a manager endpoint
+element width.
 
-```mlir
-fabric.mem @MyMem [spatial]
-       (memref<?x!fabric.bits<32>>,
-        !fabric.bits<32>, !fabric.bits<0>,
-        !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>)
-       -> (!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<0>)
-       [{load_group_size = 1 : i32, store_group_size = 1 : i32}]
-       {addr_table = [
-           {base_addr = 0    : i48, element_log2_size = 2 : i4, valid = true},
-           {base_addr = 4096 : i48, element_log2_size = 2 : i4, valid = true}
-         ], mem_enable = true}
+Unknown hardware keys are rejected. Spatial engines reject all Temporal-only
+keys.
+
+## Operation Ports
+
+Spatial operation ports use:
+
+```text
+addr      : !fabric.bits<index_width>
+data      : !fabric.bits<W>
+ctrl/done : !fabric.bits<0>
 ```
 
-The named form has zero SSA operands and zero SSA results in the
-enclosing `fabric.module` body; the port signature is captured in a
-`function_type` attribute. Actual usage of a named `fabric.mem` goes
-through `fabric.instantiate`, whose memory operand/result roles follow this
-signature direction mechanically.
+Temporal operation ports replace each type with:
 
-## Verifier checklist
+```text
+addr      : !fabric.bits_tag<index_width, T>
+data      : !fabric.bits_tag<W, T>
+ctrl/done : !fabric.bits_tag<0, T>
+```
 
-* Schedule branch correctness:
-  * Spatial: per-port operands/results use `bits<W>`; addr port uses
-    `bits<index_width>`; ctrl/done use `bits<0>`; data uses
-    `bits<W_mgr>`.
-  * Temporal: per-port operands/results use `bits_tag<W, T>`; addr
-    uses `bits_tag<index_width, T>`; ctrl/done use `bits_tag<0, T>`;
-    data uses `bits_tag<W_mgr, T>`.
-* `memref_mgr` element type is `!fabric.bits<W_mgr>` for some
-  `W_mgr`.
-* Optional `memref_sub` (first result if it is a memref) element type
-  is `!fabric.bits<W_sub>`. `W_sub` is independent of `W_mgr`.
-* `memref_mgr` is a manager/requester endpoint and optional `memref_sub` is a
-  subordinate/provider endpoint. A `memref_sub` result may legally connect to
-  another manager operand; `fabric.module` only verifies export provenance.
-* Operand count equals `1 + 2*load_group_size + 3*store_group_size`.
-* Result count equals
-  `(has_sub ? 1 : 0) + 2*load_group_size + store_group_size`.
-* `load_group_size + store_group_size >= 1`.
-* Temporal-only attrs (`tag_width`, `addr_table_size`) are absent on
-  spatial; required on temporal.
-* All-or-nothing on `(addr_table, mem_enable)`.
-* Programmed (spatial): `addr_table` length =
-  `load_group_size + store_group_size`; entries MUST NOT carry
-  `tag`.
-* Programmed (temporal): `addr_table` length = `addr_table_size`;
-  among `valid = true` entries, `tag` values are distinct; `tag`
-  width = `T`.
-* Each entry: `base_addr` width = `loom_addr_bits` (resolved);
-  `element_log2_size` is 4-bit and `<= log2(loom_mem_bus_width / 8)`;
-  `valid` is BoolAttr.
-* Named template form: 0 SSA operands AND 0 SSA results;
-  `function_type` required.
-* Anonymous form: `function_type` absent.
-* Anonymous incoming connections:
-  * destination type count equals operand count;
-  * source and destination transport types have the same `bits` or
-    `bits_tag` kind;
-  * `memref_mgr` remains exact and cannot use `to`.
+Each load port consumes `(addr, ctrl)` and produces `(data, done)`. Each store
+port consumes `(addr, data, ctrl)` and produces only `done`.
 
-## Negative tests
+## Dispatch Eligibility
 
-The verifier exercises the following rejections (see
-`test/fabric/unit/mem/invalid.mlir`):
+`dispatch_eligibility` is the Fabric-owned fixed `H_dispatch` relation between
+Temporal configured slots and physical operation ports:
 
-* Bad schedule keyword.
-* `load_group_size + store_group_size` both zero.
-* `tag_width` present in spatial.
-* `tag_width` or `addr_table_size` missing in temporal.
-* `memref_mgr` element type not `!fabric.bits<W>`.
-* `memref_sub` element type not `!fabric.bits<W_sub>`.
-* Per-port operand/result type does not match the schedule's expected
-  `addr` / `ctrl` / `data` shape.
-* Incoming source and destination endpoint types have different
-  transport kinds.
-* `memref_mgr` uses a `to` clause instead of an exact capability type.
-* Store data port width does not equal `memref_mgr` element width.
-* `addr_table` length does not match the expected per-schedule
-  count.
-* `element_log2_size` exceeds `log2(loom_mem_bus_width / 8)`.
-* Temporal duplicate `tag` value among `valid = true` entries.
-* All-or-nothing violation (`addr_table` without `mem_enable` or vice
-  versa).
+```text
+dispatch_eligibility = [
+  [physical-port-id, ...],  // slot 0
+  [physical-port-id, ...],  // slot 1
+  ...
+]
+```
 
-## Cross-references
+Physical operation-port identity is closed and mechanical:
 
-* `spec-fabric-module.md` -- SpatialCore/CGRA template container and the body
-  whitelist.
-* `spec-fabric-pe.md` -- schedule predicate `[spatial] | [temporal]`.
-* `spec-fabric-pe-temporal.md` -- temporal-domain background and
-  tag-stream handshake.
-* `spec-fabric-switch.md` -- sibling leaf op with the same
-  schedule-predicate / hw-params / sw-configs / function-type
-  pattern.
-* `spec-fabric-instantiate.md` -- instantiation of a named
-  `fabric.mem` template into a `fabric.module` body.
+```text
+0 .. L-1       load ports
+L .. L+S-1     store ports
+```
 
-## Maintenance
+The outer array has exactly `K` entries. Every slot domain is non-empty. Each
+domain contains signless `i32` identities in strictly increasing order, and
+every identity is in `[0, P)`. Strict ordering gives one canonical encoding
+and rejects duplicates.
 
-Implementation locations that must mirror this spec are:
+This relation says only which physical ports a slot is eligible to use. It
+does not select a port for a workload. Active `C_dispatch`, operation kind,
+physical port selection, tags, addresses, memory bindings, and service paths
+remain outside canonical Fabric hardware capability.
 
-* `Fabric_MemOp` in `include/Fabric/IR/FabricOps.td` for the IR shape;
-* `MemOp::parse`, `MemOp::print`, and `MemOp::verify` in
-  `lib/Fabric/IR/FabricMemOp.cpp` for parser, printer, and verifier
-  logic;
-* `loom::getDefaultLoomAddrBits` /
-  `loom::getDefaultLoomMemBusWidth` in
-  the configuration SSOT implementation for the resolved global values;
-* `fabric::resolveLoomAddrBits` /
-  `fabric::resolveLoomMemBusWidth` in
-  `lib/Fabric/IR/FabricMemOp.cpp` for the per-module override
-  walker.
+Spatial operation occurrences are already identified by their concrete
+physical operation ports and do not carry configured-slot capacity or
+`dispatch_eligibility`.
+
+## Module Provenance
+
+A `fabric.module` memref input is an imported manager/requester capability and
+may feed one or more manager endpoints.
+
+A module memref result must originate from a subordinate/provider result of an
+anonymous `fabric.mem`, or from a memref result of `fabric.instantiate`.
+Every signature-derived subordinate result of `fabric.mem` has provider
+provenance. Export is not restricted to the first subordinate result.
+
+A subordinate result may also feed a manager endpoint. Capability values are
+not subject to the point-to-point transport-use restriction applied to
+`bits` and `bits_tag` values.
+
+## Rejected State
+
+Canonical `fabric.mem` has no workload configuration clause. The parser and
+verifier reject:
+
+* `addr_table`;
+* `mem_enable`;
+* `memory_operation_table`.
+
+The ABI also has no local storage/service/refinement dictionary, configured
+rows, service target selector, Memory Binding, Access Entry, persistent Memory
+Realization, provider decode, response-route configuration, or bitstream
+finalizer.
+
+These exclusions preserve a single authority: Fabric describes fixed hardware
+capability, while workload mapping choices remain outside the Fabric IR.
+
+## Implementation
+
+The operation definition is `Fabric_MemOp` in
+`include/Fabric/IR/FabricOps.td`. Its custom parser, printer, and verifier are
+implemented in `lib/Fabric/IR/FabricMemOp.cpp`. Module memory-export
+provenance is verified in `lib/Fabric/IR/FabricModuleOp.cpp`.

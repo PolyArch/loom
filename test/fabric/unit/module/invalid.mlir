@@ -55,7 +55,8 @@ fabric.module @m_yield_memref_mismatch(
     %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>)
     -> (memref<?x!fabric.bits<4>>) {
   %sub, %data, %done = fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl)
-      [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32,
+        data_width = 32 : i32}]
       : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
       -> (memref<?x!fabric.bits<8>>, !fabric.bits<32>, !fabric.bits<0>)
   // expected-error @+1 {{declared destination type 'memref<?x!fabric.bits<8>>' does not match the module's result type 'memref<?x!fabric.bits<4>>'}}

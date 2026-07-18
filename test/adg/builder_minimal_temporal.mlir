@@ -10,4 +10,6 @@
 // HARDWARE-DAG: fabric.switch [temporal] %[[LHS_FANOUT]]#1, %[[RHS_FANOUT]]#1
 // HARDWARE-DAG: route_table_size = 1 : i32
 // HARDWARE-DAG: fabric.mem [temporal]
-// HARDWARE-DAG: addr_table_size = 1 : i32
+// HARDWARE-DAG: data_width = 32 : i32
+// HARDWARE-DAG: operation_table_size = 1 : i32
+// HARDWARE-DAG: {{dispatch_eligibility = \[\[0 : i32\]\]}}

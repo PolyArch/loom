@@ -8,3 +8,4 @@
 // HARDWARE-DAG: fabric.pe [spatial] ({{.*}}%[[LHS_FANOUT]]#0{{.*}}%[[RHS_FANOUT]]#0
 // HARDWARE-DAG: fabric.switch [spatial] %[[LHS_FANOUT]]#1, %[[RHS_FANOUT]]#1 [{connectivity_table = ["11", "11"]}]
 // HARDWARE-DAG: fabric.mem [spatial]
+// HARDWARE-DAG: data_width = 32 : i32

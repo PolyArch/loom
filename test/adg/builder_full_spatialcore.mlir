@@ -8,6 +8,8 @@
 // HARDWARE-DAG: fabric.switch [temporal]
 // HARDWARE-DAG: fabric.mem [spatial]
 // HARDWARE-DAG: fabric.mem [temporal]
+// HARDWARE-DAG: operation_table_size = 2 : i32
+// HARDWARE-DAG: {{dispatch_eligibility = \[\[0 : i32, 1 : i32\], \[0 : i32, 1 : i32\]\]}}
 // HARDWARE-DAG: fabric.boundary [s2t]
 // HARDWARE-DAG: fabric.fifo
 // HARDWARE-DAG: fabric.pe @ALU

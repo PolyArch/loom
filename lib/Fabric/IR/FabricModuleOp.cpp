@@ -15,8 +15,7 @@ static bool isSubordinateProviderResult(Value value) {
     return false;
 
   if (auto mem = dyn_cast<MemOp>(result.getOwner()))
-    return !mem.getSymNameAttr() && result.getResultNumber() == 0 &&
-           isa<MemRefType>(result.getType());
+    return !mem.getSymNameAttr() && isa<MemRefType>(result.getType());
 
   return isa<InstantiateOp>(result.getOwner()) &&
          isa<MemRefType>(result.getType());

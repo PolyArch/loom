@@ -1,31 +1,9 @@
 //===- FabricMemOp.cpp - Parser/printer/verifier for fabric.mem -----------===//
 //
-// Implements parser, printer, and verifier for fabric.mem. The op is a
-// leaf-level memory tile with a `[spatial]` or `[temporal]` schedule
-// predicate. It wraps `dataflow.load`/`dataflow.store` semantics into a
-// single fabric-domain op that owns a Manager-side `memref_mgr` (always
-// present, the first SSA operand) and exposes an optional Subordinate-side
-// `memref_sub` (when present, the first SSA result).
-//
-// Operand layout:
-//   memref_mgr,
-//   per load port `i`:    addr_i, ctrl_i,
-//   per store port `j`:   addr_j, data_j, ctrl_j.
-//
-// Result layout:
-//   [memref_sub,]
-//   per load port `i`:    data_i, done_i,
-//   per store port `j`:   done_j.
-//
-// Hardware parameters in `[ ... ]`:
-//   spatial:  load_group_size, store_group_size
-//   temporal: load_group_size, store_group_size, tag_width, addr_table_size
-//
-// Software configuration in `{ ... }` (all-or-nothing):
-//   addr_table = [ {base_addr, element_log2_size, [tag,] valid}, ... ]
-//   mem_enable = true|false
-//
-// See `docs/spec-fabric-mem.md` for the full per-schedule rules.
+// Implements the operation-engine hardware capability ABI for fabric.mem.
+// Manager and subordinate endpoint counts are derived from the signature.
+// The hardware dictionary owns independent L, S, and W parameters. Temporal
+// engines additionally own T, K, and fixed slot-to-physical-port eligibility.
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,25 +17,21 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/SymbolTable.h"
-#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 
 using namespace mlir;
 using namespace fabric;
 
-//===----------------------------------------------------------------------===//
-// resolveLoomAddrBits / resolveLoomMemBusWidth
-//===----------------------------------------------------------------------===//
-
 namespace fabric {
 
 unsigned resolveLoomAddrBits(Operation *op) {
   Operation *cur = op;
   while (cur) {
-    if (auto m = dyn_cast<ModuleOp>(cur)) {
-      if (auto a = m.getLoomAddrBitsAttr())
-        return static_cast<unsigned>(a.getInt());
+    if (auto module = dyn_cast<ModuleOp>(cur)) {
+      if (auto attr = module.getLoomAddrBitsAttr())
+        return static_cast<unsigned>(attr.getInt());
       break;
     }
     cur = cur->getParentOp();
@@ -68,9 +42,9 @@ unsigned resolveLoomAddrBits(Operation *op) {
 unsigned resolveLoomMemBusWidth(Operation *op) {
   Operation *cur = op;
   while (cur) {
-    if (auto m = dyn_cast<ModuleOp>(cur)) {
-      if (auto a = m.getLoomMemBusWidthAttr())
-        return static_cast<unsigned>(a.getInt());
+    if (auto module = dyn_cast<ModuleOp>(cur)) {
+      if (auto attr = module.getLoomMemBusWidthAttr())
+        return static_cast<unsigned>(attr.getInt());
       break;
     }
     cur = cur->getParentOp();
@@ -80,409 +54,138 @@ unsigned resolveLoomMemBusWidth(Operation *op) {
 
 } // namespace fabric
 
-//===----------------------------------------------------------------------===//
-// Helpers
-//===----------------------------------------------------------------------===//
-
 namespace {
 
-// Integer log2 of a power-of-two-or-larger positive integer. Returns the
-// floor of log2(x).
-static unsigned floorLog2(uint64_t x) {
-  if (x == 0)
-    return 0;
-  unsigned r = 0;
-  while ((x >> r) > 1)
-    ++r;
-  return r;
-}
+constexpr StringLiteral kLoadGroupSize = "load_group_size";
+constexpr StringLiteral kStoreGroupSize = "store_group_size";
+constexpr StringLiteral kDataWidth = "data_width";
+constexpr StringLiteral kTagWidth = "tag_width";
+constexpr StringLiteral kOperationTableSize = "operation_table_size";
+constexpr StringLiteral kDispatchEligibility = "dispatch_eligibility";
+constexpr StringLiteral kRejectedConfiguration = "workload_configuration";
 
-} // namespace
+struct EngineInfo {
+  unsigned loadCount = 0;
+  unsigned storeCount = 0;
+  unsigned dataWidth = 0;
+  unsigned tagWidth = 0;
+  unsigned operationTableSize = 0;
+};
 
-//===----------------------------------------------------------------------===//
-// fabric.mem: parser
-//===----------------------------------------------------------------------===//
+struct SignatureLayout {
+  unsigned managerCount = 0;
+  unsigned subordinateCount = 0;
+  unsigned loadOperandBase = 0;
+  unsigned storeOperandBase = 0;
+  unsigned loadResultBase = 0;
+  unsigned storeResultBase = 0;
+};
 
-ParseResult MemOp::parse(OpAsmParser &parser, OperationState &result) {
-  // Optional `@sym_name` immediately after the op keyword. When present
-  // the parser switches to the named template form.
-  StringAttr nameAttr;
-  bool isNamed = succeeded(parser.parseOptionalSymbolName(
-      nameAttr, ::mlir::SymbolTable::getSymbolAttrName(), result.attributes));
-
-  // Mandatory `[<schedule>]` predicate.
-  StringRef scheduleKw;
-  SMLoc scheduleLoc = parser.getCurrentLocation();
-  if (parser.parseLSquare() || parser.parseKeyword(&scheduleKw) ||
-      parser.parseRSquare())
-    return failure();
-  auto sym = symbolizeSchedule(scheduleKw);
-  if (!sym)
-    return parser.emitError(scheduleLoc, "expected fabric mem schedule keyword "
-                                         "'spatial' or 'temporal', got '")
-           << scheduleKw << "'";
-  result.addAttribute("schedule", ScheduleAttr::get(parser.getContext(), *sym));
-
-  if (isNamed) {
-    // Named template form: parse function-type signature
-    //   `(<input-types>) -> (<result-types>)`.
-    SmallVector<Type, 4> argTypes;
-    if (parser.parseLParen())
-      return failure();
-    if (failed(parser.parseOptionalRParen())) {
-      if (parser.parseTypeList(argTypes) || parser.parseRParen())
-        return failure();
-    }
-    if (parser.parseArrow())
-      return failure();
-    SmallVector<Type, 4> resultTypes;
-    if (succeeded(parser.parseOptionalLParen())) {
-      if (failed(parser.parseOptionalRParen())) {
-        if (parser.parseTypeList(resultTypes) || parser.parseRParen())
-          return failure();
-      }
-    } else {
-      Type ty;
-      if (parser.parseType(ty))
-        return failure();
-      resultTypes.push_back(ty);
-    }
-    auto funcType =
-        FunctionType::get(parser.getContext(), argTypes, resultTypes);
-    result.addAttribute("function_type", TypeAttr::get(funcType));
-
-    // Parse optional `[ hw_params ]` and `{ ... }`.
-    if (succeeded(parser.parseOptionalLSquare())) {
-      SmallVector<Attribute, 1> hwElems;
-      auto parseOneHw = [&]() -> ParseResult {
-        DictionaryAttr d;
-        if (parser.parseAttribute(d))
-          return failure();
-        hwElems.push_back(d);
-        return success();
-      };
-      if (failed(parser.parseOptionalRSquare())) {
-        if (parseOneHw())
-          return failure();
-        while (succeeded(parser.parseOptionalComma()))
-          if (parseOneHw())
-            return failure();
-        if (parser.parseRSquare())
-          return failure();
-      }
-      result.addAttribute("hw_params",
-                          ArrayAttr::get(parser.getContext(), hwElems));
-    }
-    {
-      DictionaryAttr d;
-      OptionalParseResult opr = parser.parseOptionalAttribute(d);
-      if (opr.has_value()) {
-        if (failed(*opr))
-          return failure();
-        // Lift `addr_table` and `mem_enable` to op attributes; reject any
-        // other key in this dict (the verifier will produce a more
-        // informative error if needed).
-        if (auto at = d.get("addr_table"))
-          result.addAttribute("addr_table", at);
-        if (auto en = d.get("mem_enable"))
-          result.addAttribute("mem_enable", en);
-      }
-    }
-    return success();
-  }
-
-  // Anonymous form. Layout:
-  //   mgr(%mgr)
-  //     load(%la0, %lc0; %la1, %lc1; ...)
-  //     store(%sa0, %sd0, %sc0; ...)
-  //     [ hw_params ] { sw_configs }
-  //     : (operand-types) -> (result-types)
-
-  // mgr(%mgr).
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> operands;
-  SMLoc operandsLoc = parser.getCurrentLocation();
-  if (parser.parseKeyword("mgr") || parser.parseLParen())
-    return failure();
-  OpAsmParser::UnresolvedOperand mgr;
-  if (parser.parseOperand(mgr))
-    return failure();
-  operands.push_back(mgr);
-  if (parser.parseRParen())
-    return failure();
-
-  // Optional load(...). Ports are separated by `;`; per-port operands
-  // (`addr`, `ctrl`) are separated by `,`. The MLIR parser exposes no
-  // primitive for `;`, so we use `parseOperandList` (returns a flat list
-  // of operands separated by `,`) and an alternate per-port keyword
-  // separator below. To keep round-trip clean, callers must spell each
-  // port's operands as `%a, %c` and separate ports with `,` as well --
-  // i.e. all load operands appear as one comma-separated list.
-  if (succeeded(parser.parseOptionalKeyword("load"))) {
-    SmallVector<OpAsmParser::UnresolvedOperand, 4> loadOps;
-    if (parser.parseOperandList(loadOps, OpAsmParser::Delimiter::Paren))
-      return failure();
-    for (auto &o : loadOps)
-      operands.push_back(o);
-  }
-
-  // Optional store(...). Same flat comma-separated list; each port has 3
-  // operands (`addr`, `data`, `ctrl`).
-  if (succeeded(parser.parseOptionalKeyword("store"))) {
-    SmallVector<OpAsmParser::UnresolvedOperand, 4> storeOps;
-    if (parser.parseOperandList(storeOps, OpAsmParser::Delimiter::Paren))
-      return failure();
-    for (auto &o : storeOps)
-      operands.push_back(o);
-  }
-
-  // Optional `[ hw_params ]`.
-  if (succeeded(parser.parseOptionalLSquare())) {
-    SmallVector<Attribute, 1> hwElems;
-    auto parseOneHw = [&]() -> ParseResult {
-      DictionaryAttr d;
-      if (parser.parseAttribute(d))
-        return failure();
-      hwElems.push_back(d);
-      return success();
-    };
-    if (failed(parser.parseOptionalRSquare())) {
-      if (parseOneHw())
-        return failure();
-      while (succeeded(parser.parseOptionalComma()))
-        if (parseOneHw())
-          return failure();
-      if (parser.parseRSquare())
-        return failure();
-    }
-    result.addAttribute("hw_params",
-                        ArrayAttr::get(parser.getContext(), hwElems));
-  }
-
-  // Optional `{ sw_configs }`.
-  {
-    DictionaryAttr d;
-    OptionalParseResult opr = parser.parseOptionalAttribute(d);
-    if (opr.has_value()) {
-      if (failed(*opr))
-        return failure();
-      if (auto at = d.get("addr_table"))
-        result.addAttribute("addr_table", at);
-      if (auto en = d.get("mem_enable"))
-        result.addAttribute("mem_enable", en);
-    }
-  }
-
-  if (parser.parseColon())
-    return failure();
-
-  SmallVector<Type, 8> sourceTypes;
-  SmallVector<Type, 8> inputPortTypes;
+static ParseResult parseFunctionType(OpAsmParser &parser,
+                                     OperationState &result) {
+  SmallVector<Type> inputs;
   if (parser.parseLParen())
     return failure();
   if (failed(parser.parseOptionalRParen())) {
-    auto parseOneType = [&]() -> ParseResult {
-      Type sourceType;
-      if (parser.parseType(sourceType))
-        return failure();
-      Type inputPortType = sourceType;
-      if (succeeded(parser.parseOptionalKeyword("to")))
-        if (parser.parseType(inputPortType))
-          return failure();
-      sourceTypes.push_back(sourceType);
-      inputPortTypes.push_back(inputPortType);
-      return success();
-    };
-    if (parseOneType())
-      return failure();
-    while (succeeded(parser.parseOptionalComma()))
-      if (parseOneType())
-        return failure();
-    if (parser.parseRParen())
+    if (parser.parseTypeList(inputs) || parser.parseRParen())
       return failure();
   }
   if (parser.parseArrow())
     return failure();
-  SmallVector<Type, 8> resultTypes;
+
+  SmallVector<Type> results;
   if (succeeded(parser.parseOptionalLParen())) {
     if (failed(parser.parseOptionalRParen())) {
-      if (parser.parseTypeList(resultTypes) || parser.parseRParen())
+      if (parser.parseTypeList(results) || parser.parseRParen())
         return failure();
     }
   } else {
-    Type ty;
-    if (parser.parseType(ty))
+    Type type;
+    if (parser.parseType(type))
       return failure();
-    resultTypes.push_back(ty);
+    results.push_back(type);
   }
-  if (sourceTypes.size() != operands.size())
-    return parser.emitError(operandsLoc,
-                            "operand count does not match type list count");
-  if (parser.resolveOperands(operands, sourceTypes, operandsLoc,
-                             result.operands))
-    return failure();
-  bool anyDiffer = false;
-  for (auto [sourceType, inputPortType] :
-       llvm::zip(sourceTypes, inputPortTypes))
-    if (sourceType != inputPortType) {
-      anyDiffer = true;
-      break;
-    }
-  if (anyDiffer) {
-    result.getOrAddProperties<Properties>().setInnerInputTypes(inputPortTypes);
-  }
-  result.addTypes(resultTypes);
+
+  result.addAttribute(
+      "function_type",
+      TypeAttr::get(FunctionType::get(parser.getContext(), inputs, results)));
   return success();
 }
 
-//===----------------------------------------------------------------------===//
-// fabric.mem: printer
-//===----------------------------------------------------------------------===//
+static ParseResult parseHardwareParameters(OpAsmParser &parser,
+                                           OperationState &result) {
+  if (failed(parser.parseOptionalLSquare()))
+    return success();
 
-void MemOp::print(OpAsmPrinter &p) {
-  bool isNamed = static_cast<bool>(getSymNameAttr());
-  if (isNamed) {
-    p << ' ';
-    p.printSymbolName(getSymNameAttr().getValue());
-  }
-  p << " [" << stringifySchedule(getSchedule()) << "]";
+  SmallVector<Attribute, 1> elements;
+  auto parseElement = [&]() -> ParseResult {
+    DictionaryAttr dictionary;
+    if (parser.parseAttribute(dictionary))
+      return failure();
+    elements.push_back(dictionary);
+    return success();
+  };
 
-  if (isNamed) {
-    FunctionType ft;
-    if (auto fta = getFunctionTypeAttr())
-      ft = cast<FunctionType>(fta.getValue());
-    p << " (";
-    if (ft)
-      llvm::interleaveComma(ft.getInputs(), p);
-    p << ") -> ";
-    if (ft && ft.getNumResults() == 1) {
-      p << ft.getResult(0);
-    } else {
-      p << '(';
-      if (ft)
-        llvm::interleaveComma(ft.getResults(), p);
-      p << ')';
-    }
-  } else {
-    // Anonymous form: print mgr(%mgr) load(...) store(...).
-    auto inputs = getInputs();
-    p << " mgr(" << inputs[0] << ")";
-
-    // Determine load_group_size and store_group_size from hw_params if
-    // present; otherwise from operand count assuming no load ports.
-    unsigned loadN = 0, storeN = 0;
-    if (auto hp = getHwParamsAttr()) {
-      if (hp.size() == 1) {
-        if (auto d = dyn_cast<DictionaryAttr>(hp[0])) {
-          if (auto la = d.get("load_group_size"))
-            if (auto i = dyn_cast<IntegerAttr>(la))
-              loadN = static_cast<unsigned>(i.getInt());
-          if (auto sa = d.get("store_group_size"))
-            if (auto i = dyn_cast<IntegerAttr>(sa))
-              storeN = static_cast<unsigned>(i.getInt());
-        }
-      }
-    }
-
-    // load(...): all per-port operands flat in a single comma-separated
-    // list. Each port contributes 2 operands (addr, ctrl).
-    if (loadN > 0) {
-      p << " load(";
-      for (unsigned i = 0; i < loadN; ++i) {
-        if (i)
-          p << ", ";
-        unsigned base = 1 + 2 * i;
-        if (base + 1 < inputs.size())
-          p << inputs[base] << ", " << inputs[base + 1];
-      }
-      p << ")";
-    }
-
-    // store(...): each port contributes 3 operands (addr, data, ctrl).
-    if (storeN > 0) {
-      p << " store(";
-      unsigned storeBase = 1 + 2 * loadN;
-      for (unsigned j = 0; j < storeN; ++j) {
-        if (j)
-          p << ", ";
-        unsigned base = storeBase + 3 * j;
-        if (base + 2 < inputs.size())
-          p << inputs[base] << ", " << inputs[base + 1] << ", "
-            << inputs[base + 2];
-      }
-      p << ")";
-    }
+  if (failed(parser.parseOptionalRSquare())) {
+    if (parseElement())
+      return failure();
+    while (succeeded(parser.parseOptionalComma()))
+      if (parseElement())
+        return failure();
+    if (parser.parseRSquare())
+      return failure();
   }
 
-  // hw_params in `[ ... ]`.
-  if (auto hp = getHwParamsAttr()) {
-    p << ' ' << '[';
-    llvm::interleaveComma(hp, p, [&](Attribute a) { p.printAttribute(a); });
-    p << ']';
-  }
-
-  // sw_configs in `{ ... }` -- assemble from addr_table/mem_enable.
-  ArrayAttr at = getAddrTableAttr();
-  BoolAttr en = getMemEnableAttr();
-  if (at || en) {
-    p << " {";
-    bool first = true;
-    if (at) {
-      if (!first)
-        p << ", ";
-      first = false;
-      p << "addr_table = ";
-      p.printAttribute(at);
-    }
-    if (en) {
-      if (!first)
-        p << ", ";
-      first = false;
-      p << "mem_enable = ";
-      p.printAttribute(en);
-    }
-    p << "}";
-  }
-
-  if (!isNamed) {
-    ArrayRef<Type> innerTypes = getInnerInputTypes();
-    SmallVector<Type, 8> inputPortTypes;
-    inputPortTypes.reserve(getInputs().size());
-    if (!innerTypes.empty() && innerTypes.size() == getInputs().size()) {
-      inputPortTypes.append(innerTypes.begin(), innerTypes.end());
-    } else {
-      for (Value input : getInputs())
-        inputPortTypes.push_back(input.getType());
-    }
-    p << " : (";
-    llvm::interleaveComma(llvm::zip(getInputs(), inputPortTypes), p,
-                          [&](auto pair) {
-                            Value input;
-                            Type inputPortType;
-                            std::tie(input, inputPortType) = pair;
-                            Type sourceType = input.getType();
-                            p << sourceType;
-                            if (inputPortType && inputPortType != sourceType)
-                              p << " to " << inputPortType;
-                          });
-    p << ") -> ";
-    auto rTypes = getResultTypes();
-    if (rTypes.size() == 1) {
-      p << rTypes.front();
-    } else {
-      p << '(';
-      llvm::interleaveComma(rTypes, p);
-      p << ')';
-    }
-  }
+  result.addAttribute("hw_params",
+                      ArrayAttr::get(parser.getContext(), elements));
+  return success();
 }
 
-bool MemOp::isOptionalSymbol() { return true; }
+static ParseResult parseRejectedConfiguration(OpAsmParser &parser,
+                                              OperationState &result) {
+  DictionaryAttr dictionary;
+  OptionalParseResult parsed = parser.parseOptionalAttribute(dictionary);
+  if (!parsed.has_value())
+    return success();
+  if (failed(*parsed))
+    return failure();
 
-//===----------------------------------------------------------------------===//
-// fabric.mem: verifier helpers
-//===----------------------------------------------------------------------===//
+  result.addAttribute(kRejectedConfiguration, dictionary);
+  return success();
+}
 
-namespace {
+static void printFunctionType(OpAsmPrinter &printer, FunctionType type) {
+  printer << " (";
+  if (type)
+    llvm::interleaveComma(type.getInputs(), printer);
+  printer << ") -> ";
+  if (type && type.getNumResults() == 1) {
+    printer << type.getResult(0);
+    return;
+  }
+  printer << '(';
+  if (type)
+    llvm::interleaveComma(type.getResults(), printer);
+  printer << ')';
+}
+
+static void readCountsForPrinting(ArrayAttr parameters, unsigned &loadCount,
+                                  unsigned &storeCount) {
+  loadCount = 0;
+  storeCount = 0;
+  if (!parameters || parameters.size() != 1)
+    return;
+  auto dictionary = dyn_cast<DictionaryAttr>(parameters[0]);
+  if (!dictionary)
+    return;
+  if (auto attr = dyn_cast_or_null<IntegerAttr>(dictionary.get(kLoadGroupSize)))
+    if (attr.getInt() >= 0)
+      loadCount = static_cast<unsigned>(attr.getInt());
+  if (auto attr =
+          dyn_cast_or_null<IntegerAttr>(dictionary.get(kStoreGroupSize)))
+    if (attr.getInt() >= 0)
+      storeCount = static_cast<unsigned>(attr.getInt());
+}
 
 static LogicalResult
 collectAnonymousInputPortTypes(MemOp op,
@@ -495,7 +198,7 @@ collectAnonymousInputPortTypes(MemOp op,
       inputPortTypes.push_back(input.getType());
   }
 
-  for (auto [i, pair] :
+  for (auto [index, pair] :
        llvm::enumerate(llvm::zip(op.getInputs(), inputPortTypes))) {
     Value input;
     Type inputPortType;
@@ -504,7 +207,7 @@ collectAnonymousInputPortTypes(MemOp op,
     if (isa<MemRefType>(sourceType) || isa<MemRefType>(inputPortType)) {
       if (sourceType != inputPortType)
         return op.emitOpError("incoming connection operand #")
-               << i
+               << index
                << ": memref capabilities cannot use the 'to "
                   "<destination-type>' clause; memref types must match "
                   "exactly";
@@ -512,355 +215,522 @@ collectAnonymousInputPortTypes(MemOp op,
     }
     if (!haveSameFabricModulePortKind(sourceType, inputPortType))
       return op.emitOpError("incoming connection operand #")
-             << i << " source type " << sourceType
+             << index << " source type " << sourceType
              << " and destination port type " << inputPortType
              << " must share the same fabric kind (bits or bits_tag)";
   }
   return success();
 }
 
-// Decode hw_params length-1-array-of-dict pattern. Returns the dict on
-// success.
-static LogicalResult readHwParams(MemOp op, DictionaryAttr &outDict) {
-  auto hp = op.getHwParamsAttr();
-  if (!hp)
-    return op.emitOpError("requires 'hw_params' with 'load_group_size' and "
-                          "'store_group_size'");
-  if (hp.size() != 1)
+static LogicalResult readHardwareParameters(MemOp op,
+                                            DictionaryAttr &dictionary) {
+  ArrayAttr parameters = op.getHwParamsAttr();
+  if (!parameters)
+    return op.emitOpError(
+        "requires 'hw_params' with operation-engine hardware parameters");
+  if (parameters.size() != 1)
     return op.emitOpError(
                "'hw_params' must be a length-1 array wrapping a dictionary, "
                "got length ")
-           << hp.size();
-  auto d = dyn_cast<DictionaryAttr>(hp[0]);
-  if (!d)
-    return op.emitOpError("'hw_params' inner element must be a DictionaryAttr");
-  outDict = d;
+           << parameters.size();
+  dictionary = dyn_cast<DictionaryAttr>(parameters[0]);
+  if (!dictionary)
+    return op.emitOpError("'hw_params' inner element must be a dictionary");
   return success();
 }
 
-static LogicalResult readSizeKey(MemOp op, DictionaryAttr d, StringRef key,
-                                 int64_t &out, int64_t minVal) {
-  auto a = d.get(key);
-  if (!a)
+static LogicalResult readI32(MemOp op, DictionaryAttr dictionary, StringRef key,
+                             int64_t minimum, unsigned &value) {
+  Attribute raw = dictionary.get(key);
+  if (!raw)
     return op.emitOpError("'hw_params' missing required key '") << key << "'";
-  auto i = dyn_cast<IntegerAttr>(a);
-  if (!i)
-    return op.emitOpError("'") << key << "' must be an IntegerAttr";
-  int64_t v = i.getValue().getSExtValue();
-  if (v < minVal)
-    return op.emitOpError("'")
-           << key << "' must be >= " << minVal << ", got " << v;
-  out = v;
+  auto attr = dyn_cast<IntegerAttr>(raw);
+  auto type = attr ? dyn_cast<IntegerType>(attr.getType()) : IntegerType{};
+  if (!attr || !type || !type.isSignless() || type.getWidth() != 32)
+    return op.emitOpError("'hw_params' key '")
+           << key << "' must be a signless i32";
+  int64_t signedValue = attr.getInt();
+  if (signedValue < minimum)
+    return op.emitOpError("'hw_params' key '")
+           << key << "' must be >= " << minimum << ", got " << signedValue;
+  value = static_cast<unsigned>(signedValue);
   return success();
+}
+
+static LogicalResult verifyHardwareKeys(MemOp op, DictionaryAttr dictionary,
+                                        ArrayRef<StringRef> allowed) {
+  for (NamedAttribute field : dictionary) {
+    StringRef name = field.getName().getValue();
+    if (llvm::is_contained(allowed, name))
+      continue;
+    return op.emitOpError("'hw_params' contains unsupported key '")
+           << name << "'";
+  }
+  return success();
+}
+
+static LogicalResult verifyOperationEngine(MemOp op, DictionaryAttr dictionary,
+                                           EngineInfo &engine) {
+  bool temporal = op.getSchedule() == Schedule::Temporal;
+  if (!temporal) {
+    for (StringRef key : {StringRef(kTagWidth), StringRef(kOperationTableSize),
+                          StringRef(kDispatchEligibility)})
+      if (dictionary.get(key))
+        return op.emitOpError("spatial fabric.mem must not carry "
+                              "temporal-only key '")
+               << key << "'";
+  }
+
+  const StringRef spatialKeys[] = {kLoadGroupSize, kStoreGroupSize, kDataWidth};
+  const StringRef temporalKeys[] = {kLoadGroupSize,      kStoreGroupSize,
+                                    kDataWidth,          kTagWidth,
+                                    kOperationTableSize, kDispatchEligibility};
+  if (failed(verifyHardwareKeys(op, dictionary,
+                                temporal ? ArrayRef<StringRef>(temporalKeys)
+                                         : ArrayRef<StringRef>(spatialKeys))))
+    return failure();
+
+  if (failed(readI32(op, dictionary, kLoadGroupSize, 0, engine.loadCount)) ||
+      failed(readI32(op, dictionary, kStoreGroupSize, 0, engine.storeCount)) ||
+      failed(readI32(op, dictionary, kDataWidth, 1, engine.dataWidth)))
+    return failure();
+  if (engine.loadCount + engine.storeCount == 0)
+    return op.emitOpError(
+        "load_group_size + store_group_size must be greater than zero");
+
+  if (!temporal)
+    return success();
+  if (failed(readI32(op, dictionary, kTagWidth, 1, engine.tagWidth)) ||
+      failed(readI32(op, dictionary, kOperationTableSize, 1,
+                     engine.operationTableSize)))
+    return failure();
+  return success();
+}
+
+static LogicalResult deriveSignatureLayout(MemOp op, ArrayRef<Type> inputs,
+                                           ArrayRef<Type> results,
+                                           const EngineInfo &engine,
+                                           SignatureLayout &layout) {
+  uint64_t operationInputs = 2ull * engine.loadCount + 3ull * engine.storeCount;
+  uint64_t operationResults =
+      2ull * engine.loadCount + static_cast<uint64_t>(engine.storeCount);
+  if (inputs.size() < operationInputs)
+    return op.emitOpError("signature has ")
+           << inputs.size() << " input types but the operation engine requires "
+           << operationInputs << " operation input types";
+  if (results.size() < operationResults)
+    return op.emitOpError("signature has ")
+           << results.size()
+           << " result types but the operation engine requires "
+           << operationResults << " operation result types";
+
+  layout.managerCount = static_cast<unsigned>(inputs.size() - operationInputs);
+  layout.subordinateCount =
+      static_cast<unsigned>(results.size() - operationResults);
+  layout.loadOperandBase = layout.managerCount;
+  layout.storeOperandBase = layout.loadOperandBase + 2 * engine.loadCount;
+  layout.loadResultBase = layout.subordinateCount;
+  layout.storeResultBase = layout.loadResultBase + 2 * engine.loadCount;
+  return success();
+}
+
+static LogicalResult verifyCapabilityEndpoint(MemOp op, Type type,
+                                              StringRef role, unsigned index) {
+  auto memref = dyn_cast<MemRefType>(type);
+  if (!memref)
+    return op.emitOpError(role)
+           << " endpoint #" << index << " must be a memref type, got " << type;
+  if (!isa<BitsType>(memref.getElementType()))
+    return op.emitOpError(role)
+           << " endpoint #" << index
+           << " element type must be '!fabric.bits<W>', got "
+           << memref.getElementType();
+  return success();
+}
+
+static LogicalResult verifyOperationPortTypes(MemOp op, ArrayRef<Type> inputs,
+                                              ArrayRef<Type> results,
+                                              const EngineInfo &engine,
+                                              const SignatureLayout &layout) {
+  bool temporal = op.getSchedule() == Schedule::Temporal;
+  auto makePortType = [&](unsigned width) -> Type {
+    if (temporal)
+      return BitsTagType::get(op.getContext(), width, engine.tagWidth);
+    return BitsType::get(op.getContext(), width);
+  };
+  Type expectedAddress = makePortType(::loom::getIndexWidth());
+  Type expectedData = makePortType(engine.dataWidth);
+  Type expectedControl = makePortType(0);
+
+  auto checkType = [&](Type actual, Type expected, StringRef role,
+                       unsigned index) -> LogicalResult {
+    if (actual == expected)
+      return success();
+    return op.emitOpError(role) << " #" << index << " must have type "
+                                << expected << ", got " << actual;
+  };
+
+  for (unsigned index = 0; index < engine.loadCount; ++index) {
+    unsigned base = layout.loadOperandBase + 2 * index;
+    if (failed(checkType(inputs[base], expectedAddress, "load address port",
+                         index)) ||
+        failed(checkType(inputs[base + 1], expectedControl, "load control port",
+                         index)))
+      return failure();
+  }
+
+  for (unsigned index = 0; index < engine.storeCount; ++index) {
+    unsigned base = layout.storeOperandBase + 3 * index;
+    if (failed(checkType(inputs[base], expectedAddress, "store address port",
+                         index)))
+      return failure();
+    if (inputs[base + 1] != expectedData)
+      return op.emitOpError("store data port #")
+             << index << " must have operation data width " << engine.dataWidth
+             << ", got " << inputs[base + 1];
+    if (failed(checkType(inputs[base + 2], expectedControl,
+                         "store control port", index)))
+      return failure();
+  }
+
+  for (unsigned index = 0; index < engine.loadCount; ++index) {
+    unsigned base = layout.loadResultBase + 2 * index;
+    if (results[base] != expectedData)
+      return op.emitOpError("load data port #")
+             << index << " must have operation data width " << engine.dataWidth
+             << ", got " << results[base];
+    if (failed(checkType(results[base + 1], expectedControl,
+                         "load completion port", index)))
+      return failure();
+  }
+
+  for (unsigned index = 0; index < engine.storeCount; ++index)
+    if (failed(checkType(results[layout.storeResultBase + index],
+                         expectedControl, "store completion port", index)))
+      return failure();
+  return success();
+}
+
+static LogicalResult verifyDispatchEligibility(MemOp op,
+                                               DictionaryAttr dictionary,
+                                               const EngineInfo &engine) {
+  auto eligibility =
+      dyn_cast_or_null<ArrayAttr>(dictionary.get(kDispatchEligibility));
+  if (!eligibility)
+    return op.emitOpError(
+        "'hw_params' key 'dispatch_eligibility' must be an array");
+  if (eligibility.size() != engine.operationTableSize)
+    return op.emitOpError("dispatch_eligibility length ")
+           << eligibility.size() << " must equal operation_table_size "
+           << engine.operationTableSize;
+
+  unsigned physicalPortCount = engine.loadCount + engine.storeCount;
+  for (auto [slot, entry] : llvm::enumerate(eligibility)) {
+    auto domain = dyn_cast<ArrayAttr>(entry);
+    if (!domain)
+      return op.emitOpError("dispatch_eligibility entry #")
+             << slot << " must be an array";
+    if (domain.empty())
+      return op.emitOpError("dispatch_eligibility entry #")
+             << slot << " must be non-empty";
+
+    int64_t previous = -1;
+    for (Attribute rawPort : domain) {
+      auto port = dyn_cast<IntegerAttr>(rawPort);
+      auto type = port ? dyn_cast<IntegerType>(port.getType()) : IntegerType{};
+      if (!port || !type || !type.isSignless() || type.getWidth() != 32)
+        return op.emitOpError("dispatch_eligibility entry #")
+               << slot << " port identities must be signless i32 values";
+      int64_t value = port.getInt();
+      if (value < 0 || static_cast<uint64_t>(value) >= physicalPortCount)
+        return op.emitOpError("dispatch_eligibility entry #")
+               << slot << " port identity " << value << " is outside [0, "
+               << physicalPortCount << ")";
+      if (value <= previous)
+        return op.emitOpError("dispatch_eligibility entry #")
+               << slot << " must be strictly increasing";
+      previous = value;
+    }
+  }
+  return success();
+}
+
+static LogicalResult verifyRejectedConfiguration(MemOp op) {
+  for (StringRef key : {StringRef("addr_table"), StringRef("mem_enable"),
+                        StringRef("memory_operation_table")})
+    if (op->getAttr(key))
+      return op.emitOpError("does not accept workload configuration '")
+             << key << "'";
+
+  auto dictionary = op->getAttrOfType<DictionaryAttr>(kRejectedConfiguration);
+  if (!dictionary)
+    return success();
+  if (dictionary.empty())
+    return op.emitOpError("does not accept workload configuration");
+  return op.emitOpError("does not accept workload configuration '")
+         << dictionary.begin()->getName().getValue() << "'";
 }
 
 } // namespace
 
-//===----------------------------------------------------------------------===//
-// fabric.mem: verifier
-//===----------------------------------------------------------------------===//
+ParseResult MemOp::parse(OpAsmParser &parser, OperationState &result) {
+  StringAttr name;
+  bool named = succeeded(parser.parseOptionalSymbolName(
+      name, SymbolTable::getSymbolAttrName(), result.attributes));
+
+  StringRef scheduleKeyword;
+  SMLoc scheduleLocation = parser.getCurrentLocation();
+  if (parser.parseLSquare() || parser.parseKeyword(&scheduleKeyword) ||
+      parser.parseRSquare())
+    return failure();
+  std::optional<Schedule> schedule = symbolizeSchedule(scheduleKeyword);
+  if (!schedule)
+    return parser.emitError(scheduleLocation,
+                            "expected fabric mem schedule keyword 'spatial' or "
+                            "'temporal', got '")
+           << scheduleKeyword << "'";
+  result.addAttribute("schedule",
+                      ScheduleAttr::get(parser.getContext(), *schedule));
+
+  if (named) {
+    if (parseFunctionType(parser, result) ||
+        parseHardwareParameters(parser, result) ||
+        parseRejectedConfiguration(parser, result))
+      return failure();
+    return success();
+  }
+
+  SmallVector<OpAsmParser::UnresolvedOperand> operands;
+  SMLoc operandsLocation = parser.getCurrentLocation();
+  if (parser.parseKeyword("mgr"))
+    return failure();
+  SmallVector<OpAsmParser::UnresolvedOperand> managers;
+  if (parser.parseOperandList(managers, OpAsmParser::Delimiter::Paren))
+    return failure();
+  operands.append(managers);
+
+  if (succeeded(parser.parseOptionalKeyword("load"))) {
+    SmallVector<OpAsmParser::UnresolvedOperand> loadOperands;
+    if (parser.parseOperandList(loadOperands, OpAsmParser::Delimiter::Paren))
+      return failure();
+    operands.append(loadOperands);
+  }
+
+  if (succeeded(parser.parseOptionalKeyword("store"))) {
+    SmallVector<OpAsmParser::UnresolvedOperand> storeOperands;
+    if (parser.parseOperandList(storeOperands, OpAsmParser::Delimiter::Paren))
+      return failure();
+    operands.append(storeOperands);
+  }
+
+  if (parseHardwareParameters(parser, result) ||
+      parseRejectedConfiguration(parser, result) || parser.parseColon())
+    return failure();
+
+  SmallVector<Type> sourceTypes;
+  SmallVector<Type> inputPortTypes;
+  if (parser.parseLParen())
+    return failure();
+  if (failed(parser.parseOptionalRParen())) {
+    auto parseInputType = [&]() -> ParseResult {
+      Type sourceType;
+      if (parser.parseType(sourceType))
+        return failure();
+      Type inputPortType = sourceType;
+      if (succeeded(parser.parseOptionalKeyword("to")) &&
+          parser.parseType(inputPortType))
+        return failure();
+      sourceTypes.push_back(sourceType);
+      inputPortTypes.push_back(inputPortType);
+      return success();
+    };
+    if (parseInputType())
+      return failure();
+    while (succeeded(parser.parseOptionalComma()))
+      if (parseInputType())
+        return failure();
+    if (parser.parseRParen())
+      return failure();
+  }
+
+  if (parser.parseArrow())
+    return failure();
+  SmallVector<Type> resultTypes;
+  if (succeeded(parser.parseOptionalLParen())) {
+    if (failed(parser.parseOptionalRParen())) {
+      if (parser.parseTypeList(resultTypes) || parser.parseRParen())
+        return failure();
+    }
+  } else {
+    Type type;
+    if (parser.parseType(type))
+      return failure();
+    resultTypes.push_back(type);
+  }
+
+  if (sourceTypes.size() != operands.size())
+    return parser.emitError(operandsLocation,
+                            "operand count does not match type list count");
+  if (parser.resolveOperands(operands, sourceTypes, operandsLocation,
+                             result.operands))
+    return failure();
+
+  if (!llvm::equal(sourceTypes, inputPortTypes))
+    result.getOrAddProperties<Properties>().setInnerInputTypes(inputPortTypes);
+  result.addTypes(resultTypes);
+  return success();
+}
+
+void MemOp::print(OpAsmPrinter &printer) {
+  bool named = static_cast<bool>(getSymNameAttr());
+  if (named) {
+    printer << ' ';
+    printer.printSymbolName(getSymNameAttr().getValue());
+  }
+  printer << " [" << stringifySchedule(getSchedule()) << "]";
+
+  unsigned loadCount = 0;
+  unsigned storeCount = 0;
+  readCountsForPrinting(getHwParamsAttr(), loadCount, storeCount);
+
+  if (named) {
+    FunctionType type;
+    if (auto attr = getFunctionTypeAttr())
+      type = dyn_cast<FunctionType>(attr.getValue());
+    printFunctionType(printer, type);
+  } else {
+    uint64_t operationInputs = 2ull * loadCount + 3ull * storeCount;
+    unsigned managerCount =
+        getInputs().size() >= operationInputs
+            ? static_cast<unsigned>(getInputs().size() - operationInputs)
+            : 0;
+    printer << " mgr(";
+    llvm::interleaveComma(getInputs().take_front(managerCount), printer);
+    printer << ')';
+
+    if (loadCount) {
+      printer << " load(";
+      llvm::interleaveComma(getInputs().slice(managerCount, 2 * loadCount),
+                            printer);
+      printer << ')';
+    }
+    if (storeCount) {
+      printer << " store(";
+      llvm::interleaveComma(
+          getInputs().slice(managerCount + 2 * loadCount, 3 * storeCount),
+          printer);
+      printer << ')';
+    }
+  }
+
+  if (ArrayAttr parameters = getHwParamsAttr()) {
+    printer << " [";
+    llvm::interleaveComma(parameters, printer, [&](Attribute attr) {
+      printer.printAttribute(attr);
+    });
+    printer << ']';
+  }
+
+  if (named)
+    return;
+
+  ArrayRef<Type> innerTypes = getInnerInputTypes();
+  SmallVector<Type> inputPortTypes;
+  if (!innerTypes.empty() && innerTypes.size() == getInputs().size()) {
+    inputPortTypes.append(innerTypes.begin(), innerTypes.end());
+  } else {
+    for (Value input : getInputs())
+      inputPortTypes.push_back(input.getType());
+  }
+
+  printer << " : (";
+  llvm::interleaveComma(llvm::zip(getInputs(), inputPortTypes), printer,
+                        [&](auto pair) {
+                          Value input;
+                          Type inputPortType;
+                          std::tie(input, inputPortType) = pair;
+                          printer << input.getType();
+                          if (inputPortType != input.getType())
+                            printer << " to " << inputPortType;
+                        });
+  printer << ") -> ";
+  if (getNumResults() == 1) {
+    printer << getResultTypes().front();
+  } else {
+    printer << '(';
+    llvm::interleaveComma(getResultTypes(), printer);
+    printer << ')';
+  }
+}
+
+bool MemOp::isOptionalSymbol() { return true; }
 
 LogicalResult MemOp::verify() {
+  if (failed(verifyRejectedConfiguration(*this)))
+    return failure();
   if (failed(verifyInnerInputTypesProperty(getOperation(), getInputs(),
                                            getInnerInputTypes())))
     return failure();
 
-  // Form selection.
-  bool isNamed = static_cast<bool>(getSymNameAttr());
-  SmallVector<Type, 8> inTys, outTys;
-  if (isNamed) {
+  bool named = static_cast<bool>(getSymNameAttr());
+  SmallVector<Type> inputs;
+  SmallVector<Type> results;
+  if (named) {
     if (!getInputs().empty())
       return emitOpError(
                  "named fabric.mem template must have zero SSA operands; got ")
              << getInputs().size();
-    if (!getResultTypes().empty())
+    if (getNumResults())
       return emitOpError(
                  "named fabric.mem template must have zero SSA results; got ")
-             << getResultTypes().size();
+             << getNumResults();
     if (!getInnerInputTypes().empty())
       return emitOpError("named fabric.mem template must not carry '")
              << kInnerInputTypesPropertyName << "'";
-    auto fta = getFunctionTypeAttr();
-    if (!fta)
+    auto attr = getFunctionTypeAttr();
+    if (!attr)
       return emitOpError(
           "named fabric.mem template requires a 'function_type' attribute");
-    auto ft = dyn_cast<FunctionType>(fta.getValue());
-    if (!ft)
+    auto type = dyn_cast<FunctionType>(attr.getValue());
+    if (!type)
       return emitOpError("'function_type' must be a FunctionType");
-    inTys.assign(ft.getInputs().begin(), ft.getInputs().end());
-    outTys.assign(ft.getResults().begin(), ft.getResults().end());
+    inputs.append(type.getInputs().begin(), type.getInputs().end());
+    results.append(type.getResults().begin(), type.getResults().end());
   } else {
     if (getFunctionTypeAttr())
       return emitOpError(
           "anonymous fabric.mem must not carry a 'function_type' attribute");
-    if (failed(collectAnonymousInputPortTypes(*this, inTys)))
+    if (failed(collectAnonymousInputPortTypes(*this, inputs)))
       return failure();
-    for (Type t : getResultTypes())
-      outTys.push_back(t);
+    results.append(getResultTypes().begin(), getResultTypes().end());
   }
 
-  // hw_params -> load_group_size / store_group_size + temporal-only keys.
-  DictionaryAttr hwDict;
-  if (failed(readHwParams(*this, hwDict)))
+  DictionaryAttr hardware;
+  if (failed(readHardwareParameters(*this, hardware)))
     return failure();
-  int64_t loadN = 0, storeN = 0;
-  if (failed(readSizeKey(*this, hwDict, "load_group_size", loadN, 0)))
+  EngineInfo engine;
+  if (failed(verifyOperationEngine(*this, hardware, engine)))
     return failure();
-  if (failed(readSizeKey(*this, hwDict, "store_group_size", storeN, 0)))
+
+  SignatureLayout layout;
+  if (failed(deriveSignatureLayout(*this, inputs, results, engine, layout)))
     return failure();
-  if (loadN + storeN < 1)
-    return emitOpError("load_group_size + store_group_size must be >= 1 (got "
-                       "load_group_size = ")
-           << loadN << ", store_group_size = " << storeN << ")";
-
-  bool isTemporal = (getSchedule() == Schedule::Temporal);
-  int64_t tagWidth = 0, addrTableSize = 0;
-  if (isTemporal) {
-    if (failed(readSizeKey(*this, hwDict, "tag_width", tagWidth, 1)))
-      return failure();
-    if (failed(readSizeKey(*this, hwDict, "addr_table_size", addrTableSize, 1)))
-      return failure();
-  } else {
-    if (hwDict.get("tag_width"))
-      return emitOpError(
-          "spatial fabric.mem must not carry temporal-only attribute "
-          "'tag_width'");
-    if (hwDict.get("addr_table_size"))
-      return emitOpError(
-          "spatial fabric.mem must not carry temporal-only attribute "
-          "'addr_table_size'");
-  }
-
-  // Operand count: 1 + 2*loadN + 3*storeN.
-  uint64_t expectedOps = 1u + 2u * (uint64_t)loadN + 3u * (uint64_t)storeN;
-  if ((uint64_t)inTys.size() != expectedOps)
-    return emitOpError("expected ")
-           << expectedOps << " operand types (1 memref_mgr + 2*" << loadN
-           << " load + 3*" << storeN << " store), got " << inTys.size();
-
-  // memref_mgr type.
-  auto mgrMemref = dyn_cast<MemRefType>(inTys[0]);
-  if (!mgrMemref)
-    return emitOpError("first operand 'memref_mgr' must be a memref type, got ")
-           << inTys[0];
-  auto mgrElem = dyn_cast<BitsType>(mgrMemref.getElementType());
-  if (!mgrElem)
+  if (layout.managerCount == 0)
     return emitOpError(
-               "memref_mgr element type must be '!fabric.bits<W>', got ")
-           << mgrMemref.getElementType();
-  unsigned wMgr = mgrElem.getWidth();
+        "operation engine requires at least one manager endpoint");
+  for (unsigned index = 0; index < layout.managerCount; ++index)
+    if (failed(
+            verifyCapabilityEndpoint(*this, inputs[index], "manager", index)))
+      return failure();
+  for (unsigned index = 0; index < layout.subordinateCount; ++index)
+    if (failed(verifyCapabilityEndpoint(*this, results[index], "subordinate",
+                                        index)))
+      return failure();
 
-  // memref_sub: optional first result if it's a memref.
-  bool hasSub = false;
-  unsigned subIdx = 0; // result index where load/store result list starts.
-  if (!outTys.empty() && isa<MemRefType>(outTys[0])) {
-    hasSub = true;
-    auto subMemref = cast<MemRefType>(outTys[0]);
-    auto subElem = dyn_cast<BitsType>(subMemref.getElementType());
-    if (!subElem)
-      return emitOpError(
-                 "memref_sub element type must be '!fabric.bits<W_sub>', got ")
-             << subMemref.getElementType();
-    subIdx = 1;
-  }
-
-  uint64_t expectedRes =
-      (uint64_t)(hasSub ? 1 : 0) + 2u * (uint64_t)loadN + (uint64_t)storeN;
-  if ((uint64_t)outTys.size() != expectedRes)
-    return emitOpError("expected ")
-           << expectedRes << " result types ("
-           << (hasSub ? "1 memref_sub + " : "") << "2*" << loadN << " load + "
-           << storeN << " store), got " << outTys.size();
-
-  // Per-port type checks.
-  unsigned indexW = ::loom::getIndexWidth();
-  unsigned T = (unsigned)tagWidth;
-
-  auto mkExpectAddr = [&](unsigned width) -> Type {
-    if (isTemporal)
-      return BitsTagType::get(getContext(), width, T);
-    return BitsType::get(getContext(), width);
-  };
-  auto mkExpectCtrl = [&]() -> Type { return mkExpectAddr(0); };
-  auto mkExpectData = [&]() -> Type { return mkExpectAddr(wMgr); };
-
-  Type expectAddr = mkExpectAddr(indexW);
-  Type expectCtrl = mkExpectCtrl();
-  Type expectData = mkExpectData();
-
-  StringRef portKindMsg =
-      isTemporal ? "temporal fabric.mem requires '!fabric.bits_tag<W, T>' ports"
-                 : "spatial fabric.mem requires '!fabric.bits<W>' ports";
-
-  // Load ports (operands).
-  for (int64_t i = 0; i < loadN; ++i) {
-    unsigned base = 1 + 2 * (unsigned)i;
-    Type a = inTys[base];
-    Type c = inTys[base + 1];
-    if (a != expectAddr)
-      return emitOpError("schedule mismatch with port kind: ")
-             << portKindMsg << "; load port #" << i << " addr type " << a
-             << " (expected " << expectAddr << ")";
-    if (c != expectCtrl)
-      return emitOpError("schedule mismatch with port kind: ")
-             << portKindMsg << "; load port #" << i << " ctrl type " << c
-             << " (expected " << expectCtrl << ")";
-  }
-  // Store ports (operands).
-  for (int64_t j = 0; j < storeN; ++j) {
-    unsigned base = 1 + 2 * (unsigned)loadN + 3 * (unsigned)j;
-    Type a = inTys[base];
-    Type d = inTys[base + 1];
-    Type c = inTys[base + 2];
-    if (a != expectAddr)
-      return emitOpError("schedule mismatch with port kind: ")
-             << portKindMsg << "; store port #" << j << " addr type " << a
-             << " (expected " << expectAddr << ")";
-    if (d != expectData)
-      return emitOpError(
-                 "store data port width mismatch with memref_mgr element "
-                 "width; store port #")
-             << j << " data type " << d << " (expected " << expectData
-             << " from memref_mgr element width " << wMgr << ")";
-    if (c != expectCtrl)
-      return emitOpError("schedule mismatch with port kind: ")
-             << portKindMsg << "; store port #" << j << " ctrl type " << c
-             << " (expected " << expectCtrl << ")";
-  }
-
-  // Load ports (results).
-  for (int64_t i = 0; i < loadN; ++i) {
-    unsigned base = subIdx + 2 * (unsigned)i;
-    Type d = outTys[base];
-    Type dn = outTys[base + 1];
-    if (d != expectData)
-      return emitOpError(
-                 "load data port width mismatch with memref_mgr element "
-                 "width; load port #")
-             << i << " data type " << d << " (expected " << expectData
-             << " from memref_mgr element width " << wMgr << ")";
-    if (dn != expectCtrl)
-      return emitOpError("schedule mismatch with port kind: ")
-             << portKindMsg << "; load port #" << i << " done type " << dn
-             << " (expected " << expectCtrl << ")";
-  }
-  // Store ports (results: done only).
-  for (int64_t j = 0; j < storeN; ++j) {
-    unsigned idx = subIdx + 2 * (unsigned)loadN + (unsigned)j;
-    Type dn = outTys[idx];
-    if (dn != expectCtrl)
-      return emitOpError("schedule mismatch with port kind: ")
-             << portKindMsg << "; store port #" << j << " done type " << dn
-             << " (expected " << expectCtrl << ")";
-  }
-
-  // sw_configs: all-or-nothing on (addr_table, mem_enable).
-  ArrayAttr addrTable = getAddrTableAttr();
-  BoolAttr memEnable = getMemEnableAttr();
-  if ((bool)addrTable != (bool)memEnable) {
-    if (addrTable && !memEnable)
-      return emitOpError(
-          "all-or-nothing violation: 'addr_table' is present but "
-          "'mem_enable' is missing");
-    return emitOpError("all-or-nothing violation: 'mem_enable' is present but "
-                       "'addr_table' is missing");
-  }
-  if (!addrTable)
-    return success();
-
-  // Programmed branch.
-  unsigned addrBits = ::fabric::resolveLoomAddrBits(*this);
-  unsigned busWidth = ::fabric::resolveLoomMemBusWidth(*this);
-  unsigned maxLog2 = floorLog2((uint64_t)busWidth / 8u);
-
-  uint64_t expectedEntries =
-      isTemporal ? (uint64_t)addrTableSize : (uint64_t)(loadN + storeN);
-  if ((uint64_t)addrTable.size() != expectedEntries)
-    return emitOpError("'addr_table' length ")
-           << addrTable.size() << " must equal "
-           << (isTemporal ? "addr_table_size ("
-                          : "load_group_size + store_group_size (")
-           << expectedEntries << ")";
-
-  llvm::DenseSet<uint64_t> seenValidTags;
-  for (size_t i = 0; i < addrTable.size(); ++i) {
-    auto entry = dyn_cast<DictionaryAttr>(addrTable[i]);
-    if (!entry)
-      return emitOpError("'addr_table' entry #")
-             << i << " must be a DictionaryAttr";
-
-    auto baseAttr = entry.get("base_addr");
-    auto elsAttr = entry.get("element_log2_size");
-    auto validAttr = entry.get("valid");
-    if (!baseAttr || !elsAttr || !validAttr)
-      return emitOpError("'addr_table' entry #")
-             << i
-             << " must have keys 'base_addr', 'element_log2_size', and 'valid'";
-
-    auto baseInt = dyn_cast<IntegerAttr>(baseAttr);
-    if (!baseInt)
-      return emitOpError("'addr_table' entry #")
-             << i << " 'base_addr' must be an IntegerAttr";
-    auto baseTy = dyn_cast<IntegerType>(baseInt.getType());
-    if (!baseTy)
-      return emitOpError("'addr_table' entry #")
-             << i << " 'base_addr' must have IntegerType";
-    if (baseTy.getWidth() != addrBits)
-      return emitOpError("'base_addr' integer width ")
-             << baseTy.getWidth() << " must equal loom_addr_bits (" << addrBits
-             << ") (entry #" << i << ")";
-
-    auto elsInt = dyn_cast<IntegerAttr>(elsAttr);
-    if (!elsInt)
-      return emitOpError("'addr_table' entry #")
-             << i << " 'element_log2_size' must be an IntegerAttr";
-    auto elsTy = dyn_cast<IntegerType>(elsInt.getType());
-    if (!elsTy)
-      return emitOpError("'addr_table' entry #")
-             << i << " 'element_log2_size' must have IntegerType";
-    if (elsTy.getWidth() != 4)
-      return emitOpError("'element_log2_size' integer width ")
-             << elsTy.getWidth() << " must equal 4 (entry #" << i << ")";
-    // element_log2_size is treated as an unsigned 4-bit value.
-    uint64_t elsVal = elsInt.getValue().getZExtValue();
-    if (elsVal > maxLog2)
-      return emitOpError("'element_log2_size' value ")
-             << elsVal << " exceeds log2(loom_mem_bus_width / 8) = " << maxLog2
-             << " (entry #" << i << ")";
-
-    auto validBool = dyn_cast<BoolAttr>(validAttr);
-    if (!validBool)
-      return emitOpError("'addr_table' entry #")
-             << i << " 'valid' must be a BoolAttr";
-
-    if (isTemporal) {
-      auto tagAttr = entry.get("tag");
-      if (!tagAttr)
-        return emitOpError("'addr_table' entry #")
-               << i << " temporal mode requires 'tag' key";
-      auto tagInt = dyn_cast<IntegerAttr>(tagAttr);
-      if (!tagInt)
-        return emitOpError("'addr_table' entry #")
-               << i << " 'tag' must be an IntegerAttr";
-      auto tagTy = dyn_cast<IntegerType>(tagInt.getType());
-      if (!tagTy)
-        return emitOpError("'addr_table' entry #")
-               << i << " 'tag' must have IntegerType";
-      if (tagTy.getWidth() != T)
-        return emitOpError("'tag' integer width ")
-               << tagTy.getWidth() << " must equal tag_width " << T
-               << " (entry #" << i << ")";
-      if (validBool.getValue()) {
-        uint64_t key = tagInt.getValue().getZExtValue();
-        if (!seenValidTags.insert(key).second)
-          return emitOpError("temporal duplicate valid tag value ") << key;
-      }
-    } else {
-      if (entry.get("tag"))
-        return emitOpError("'addr_table' entry #")
-               << i << " spatial mode must not carry 'tag' (temporal-only key)";
-    }
-  }
-
+  if (failed(verifyOperationPortTypes(*this, inputs, results, engine, layout)))
+    return failure();
+  if (getSchedule() == Schedule::Temporal &&
+      failed(verifyDispatchEligibility(*this, hardware, engine)))
+    return failure();
   return success();
 }

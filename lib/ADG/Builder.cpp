@@ -636,6 +636,88 @@ llvm::Error validateSwitch(const SwitchSpec &sw,
   return llvm::Error::success();
 }
 
+llvm::Error validateMem(const MemSpec &mem) {
+  unsigned physicalPortCount =
+      static_cast<unsigned>(mem.loads.size() + mem.stores.size());
+  if (physicalPortCount == 0)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "ADG mem has no operation ports");
+  if (mem.dataWidth == 0)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "ADG mem requires operation data width");
+
+  if (mem.schedule == Schedule::Spatial) {
+    if (mem.temporalTagWidth != 0 || mem.temporalOperationTableSize != 0 ||
+        !mem.temporalDispatchEligibility.empty())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "spatial ADG mem must not carry temporal hardware capability");
+    return llvm::Error::success();
+  }
+
+  if (mem.temporalTagWidth == 0)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "temporal ADG mem requires tag width");
+  if (mem.temporalOperationTableSize == 0)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "temporal ADG mem requires operation table size");
+  if (mem.temporalDispatchEligibility.size() != mem.temporalOperationTableSize)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "temporal ADG mem dispatch eligibility must have one domain per "
+        "operation table slot");
+
+  for (auto [slot, domain] : llvm::enumerate(mem.temporalDispatchEligibility)) {
+    if (domain.empty())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "temporal ADG mem dispatch eligibility slot %zu is empty", slot);
+    std::optional<unsigned> previous;
+    for (unsigned port : domain) {
+      if (port >= physicalPortCount)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "temporal ADG mem dispatch eligibility slot %zu port %u is "
+            "outside [0, %u)",
+            slot, port, physicalPortCount);
+      if (previous && port <= *previous)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "temporal ADG mem dispatch eligibility slot %zu is not strictly "
+            "increasing",
+            slot);
+      previous = port;
+    }
+  }
+  return llvm::Error::success();
+}
+
+std::string memDataType(const MemSpec &mem) {
+  if (mem.schedule == Schedule::Temporal)
+    return (llvm::Twine("!fabric.bits_tag<") + llvm::Twine(mem.dataWidth) +
+            ", " + llvm::Twine(mem.temporalTagWidth) + ">")
+        .str();
+  return (llvm::Twine("!fabric.bits<") + llvm::Twine(mem.dataWidth) + ">")
+      .str();
+}
+
+void printMemDispatchEligibility(llvm::raw_ostream &os, const MemSpec &mem) {
+  os << '[';
+  for (auto [slot, domain] : llvm::enumerate(mem.temporalDispatchEligibility)) {
+    if (slot)
+      os << ", ";
+    os << '[';
+    for (auto [index, port] : llvm::enumerate(domain)) {
+      if (index)
+        os << ", ";
+      os << port << " : i32";
+    }
+    os << ']';
+  }
+  os << ']';
+}
+
 } // namespace
 
 ModuleBuilder::ModuleBuilder(std::string name) : name(std::move(name)) {}
@@ -901,6 +983,8 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
   }
   for (auto [memIndex, entry] : llvm::enumerate(mems)) {
     const MemSpec &mem = entry.spec;
+    if (llvm::Error err = validateMem(mem))
+      return err;
     std::size_t expectedUseCount =
         1 + mem.loads.size() * 2 + mem.stores.size() * 3;
     if (entry.useIds.size() != expectedUseCount)
@@ -919,7 +1003,7 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
               defineValue((llvm::Twine("mem") + llvm::Twine(memIndex) +
                            "_data" + llvm::Twine(i))
                               .str(),
-                          addressType))
+                          memDataType(mem)))
         return err;
       if (llvm::Error err =
               defineValue((llvm::Twine("mem") + llvm::Twine(memIndex) +
@@ -1033,11 +1117,14 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
     os << "\n        [{load_group_size = "
        << static_cast<unsigned>(mem.loads.size())
        << " : i32, store_group_size = "
-       << static_cast<unsigned>(mem.stores.size()) << " : i32";
-    if (mem.schedule == Schedule::Temporal)
+       << static_cast<unsigned>(mem.stores.size())
+       << " : i32, data_width = " << mem.dataWidth << " : i32";
+    if (mem.schedule == Schedule::Temporal) {
       os << ", tag_width = " << mem.temporalTagWidth
-         << " : i32, addr_table_size = " << mem.temporalAddrTableSize
-         << " : i32";
+         << " : i32, operation_table_size = " << mem.temporalOperationTableSize
+         << " : i32, dispatch_eligibility = ";
+      printMemDispatchEligibility(os, mem);
+    }
     os << "}]\n";
 
     llvm::SmallVector<std::string> operandTypes;
@@ -1047,8 +1134,8 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
     useIndex = 1;
     for (const MemLoadPort &load : mem.loads) {
       (void)load;
-      resultTypes.push_back(
-          valueTypes.lookup(directUses[entry.useIds[useIndex++]].sourceName));
+      ++useIndex;
+      resultTypes.push_back(memDataType(mem));
       resultTypes.push_back(
           valueTypes.lookup(directUses[entry.useIds[useIndex++]].sourceName));
     }

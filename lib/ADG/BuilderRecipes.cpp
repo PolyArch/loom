@@ -360,7 +360,7 @@ void addSpatialMemLoad(ModuleBuilder &module) {
                           {"mgr", "addr", "ctrl"}),
            exactBodyLine(
                "      [{load_group_size = 1 : i32, store_group_size = 0 : "
-               "i32}]"),
+               "i32, data_width = 32 : i32}]"),
            exactBodyLine(
                "      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, "
                "!fabric.bits<0>)")},
@@ -952,7 +952,8 @@ void addMemoryReductionMem(ModuleBuilder &module, unsigned loadCount,
                    exactBodyLine("      [{load_group_size = " +
                                  std::to_string(loadCount) +
                                  " : i32, store_group_size = " +
-                                 std::to_string(storeCount) + " : i32}]"),
+                                 std::to_string(storeCount) +
+                                 " : i32, data_width = 32 : i32}]"),
                    exactBodyLine("      : " + operandTypes)},
                   "      -> "));
 }
@@ -976,7 +977,7 @@ void addTwoLoadOneStoreMem(ModuleBuilder &module) {
                                  ")"),
            exactBodyLine(
                "      [{load_group_size = 2 : i32, store_group_size = 1 : "
-               "i32}]"),
+               "i32, data_width = 32 : i32}]"),
            exactBodyLine(
                "      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, "
                "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
@@ -1618,7 +1619,12 @@ ModuleBuilder loom::adg::buildMinimalSpatialAdg() {
                               {"!fabric.bits<32>", "!fabric.bits<32>"},
                               {"11", "11"},
                               0});
-  module.addMem(MemSpec{Schedule::Spatial, "mgr", {{"addr", "ctrl"}}, {}});
+  MemSpec mem;
+  mem.schedule = Schedule::Spatial;
+  mem.manager = "mgr";
+  mem.loads = {{"addr", "ctrl"}};
+  mem.dataWidth = 32;
+  module.addMem(std::move(mem));
   return module;
 }
 
@@ -1650,8 +1656,10 @@ ModuleBuilder loom::adg::buildMinimalTemporalAdg() {
   mem.schedule = Schedule::Temporal;
   mem.manager = "mgr";
   mem.loads = {{"addr", "ctrl"}};
+  mem.dataWidth = 32;
   mem.temporalTagWidth = 4;
-  mem.temporalAddrTableSize = 1;
+  mem.temporalOperationTableSize = 1;
+  mem.temporalDispatchEligibility = {{0}};
   module.addMem(std::move(mem));
   return module;
 }

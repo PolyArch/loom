@@ -16,7 +16,7 @@ fabric.module @minimal_spatial_adg(%mgr : memref<?x!fabric.bits<32>>,
          : (!fabric.bits<32>, !fabric.bits<32>)
         -> (!fabric.bits<32>, !fabric.bits<32>)
   %mem0_data0, %mem0_done0 = fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl)
-        [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+        [{load_group_size = 1 : i32, store_group_size = 0 : i32, data_width = 32 : i32}]
         : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
         -> (!fabric.bits<32>, !fabric.bits<0>)
   %transport_fanout0_out0, %transport_fanout0_out1 = fabric.switch [spatial] %lhs

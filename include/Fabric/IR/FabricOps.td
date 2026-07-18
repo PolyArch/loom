@@ -552,32 +552,26 @@ def Fabric_SwitchOp : Fabric_Op<"switch", [
 def Fabric_MemOp : Fabric_Op<"mem", [
     DeclareOpInterfaceMethods<Symbol, ["isOptionalSymbol"]>
 ]> {
-  let summary =
-      "fabric memory: a multi-port load/store memory tile with a schedule "
-      "predicate (spatial or temporal)";
+  let summary = "fabric memory operation-engine hardware capability";
   let description = [{
-    Leaf-level memory op wrapping `dataflow.load` / `dataflow.store`
-    semantics into a fabric-domain tile. Carries a mandatory `schedule`
-    predicate (`spatial` | `temporal`) that selects port type kinds.
-    The op exists in two disjoint syntactic forms by `sym_name`
-    presence:
+    The accepted ABI describes one operation engine. Local memory service
+    remains unsupported until its typed service contract is defined.
 
-    Anonymous form has SSA operands and SSA results. Operand layout:
-    `memref_mgr` first, then per load port `(addr, ctrl)` two operands,
-    then per store port `(addr, data, ctrl)` three operands. Result
-    layout: optional `memref_sub` first (detected from result type),
-    then per load port `(data, done)` two results, then per store port
-    `done` one result. Incoming transport operands may use
-    `source-type to destination-port-type` for same-kind width
-    normalization. Differing destination types are retained in the ODS-owned
-    typed `inner_input_types` property.
+    Anonymous operands contain all manager/requester memrefs, followed by
+    per-load `(addr, ctrl)` groups and per-store `(addr, data, ctrl)` groups.
+    Results contain all subordinate/provider memrefs, followed by per-load
+    `(data, done)` groups and per-store `done` results. Endpoint counts are
+    derived from the signature and are not repeated as attributes. Incoming
+    transport operands may use `source-type to destination-port-type` for
+    same-kind width normalization.
 
     Named template form has zero SSA operands and zero SSA results in
-    the host scope; the port signature is captured in the
-    `function_type` attribute. Hardware parameters live in `hw_params`
-    (an ArrayAttr wrapping a single DictionaryAttr) printed in
-    `[ ... ]`. Software configuration lives in `addr_table` /
-    `mem_enable` (all-or-nothing) printed in `{ ... }`.
+    the host scope; the port signature is captured in `function_type`.
+    `hw_params` is a length-one array containing the closed operation-engine
+    hardware dictionary. It owns independent load/store port counts and
+    operation data width. Temporal engines additionally own tag width,
+    configured-slot capacity, and fixed slot-to-physical-port dispatch
+    eligibility.
 
     See `docs/spec-fabric-mem.md` for the full per-schedule rules.
   }];
@@ -588,9 +582,7 @@ def Fabric_MemOp : Fabric_Op<"mem", [
       OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
       Fabric_ScheduleAttr:$schedule,
       Fabric_InnerInputTypesProp:$inner_input_types,
-      OptionalAttr<ArrayAttr>:$hw_params,
-      OptionalAttr<ArrayAttr>:$addr_table,
-      OptionalAttr<BoolAttr>:$mem_enable
+      OptionalAttr<ArrayAttr>:$hw_params
   );
   let results = (outs Variadic<Fabric_ModulePortType>:$outputs);
 

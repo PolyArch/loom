@@ -93,7 +93,8 @@ fabric.module @m_memref_sub_export(
     %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>)
     -> (memref<?x!fabric.bits<16>>) {
   %sub, %data, %done = fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl)
-      [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32,
+        data_width = 32 : i32}]
       : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
       -> (memref<?x!fabric.bits<16>>, !fabric.bits<32>, !fabric.bits<0>)
   fabric.yield %sub : memref<?x!fabric.bits<16>>
@@ -128,11 +129,13 @@ fabric.module @m_memref_sub_to_mgr(
     -> (memref<?x!fabric.bits<32>>) {
   %sub, %data0, %done0 =
       fabric.mem [spatial] mgr(%mgr) load(%addr0, %ctrl0)
-      [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32,
+        data_width = 32 : i32}]
       : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
       -> (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
   %data1, %done1 = fabric.mem [spatial] mgr(%sub) load(%addr1, %ctrl1)
-      [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32,
+        data_width = 32 : i32}]
       : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
       -> (!fabric.bits<32>, !fabric.bits<0>)
   fabric.yield %sub : memref<?x!fabric.bits<32>>
@@ -151,7 +154,8 @@ fabric.module @m_instantiate_memref_sub_to_mgr(
       %addr0 : !fabric.bits<32>, %ctrl0 : !fabric.bits<0>)
       -> (memref<?x!fabric.bits<16>>)
   %data, %done = fabric.mem [spatial] mgr(%sub) load(%addr1, %ctrl1)
-      [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32,
+        data_width = 16 : i32}]
       : (memref<?x!fabric.bits<16>>, !fabric.bits<32>, !fabric.bits<0>)
       -> (!fabric.bits<16>, !fabric.bits<0>)
   fabric.yield
@@ -167,11 +171,13 @@ fabric.module @m_memref_manager_multiuse(
     %addr0 : !fabric.bits<32>, %ctrl0 : !fabric.bits<0>,
     %addr1 : !fabric.bits<32>, %ctrl1 : !fabric.bits<0>) {
   %data0, %done0 = fabric.mem [spatial] mgr(%mgr) load(%addr0, %ctrl0)
-      [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32,
+        data_width = 32 : i32}]
       : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
       -> (!fabric.bits<32>, !fabric.bits<0>)
   %data1, %done1 = fabric.mem [spatial] mgr(%mgr) load(%addr1, %ctrl1)
-      [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32,
+        data_width = 32 : i32}]
       : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
       -> (!fabric.bits<32>, !fabric.bits<0>)
   fabric.yield
