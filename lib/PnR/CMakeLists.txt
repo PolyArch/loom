@@ -4,6 +4,7 @@ add_mlir_library(LoomPnR
   FrozenRoutingGraph.cpp
   PnrIndex.cpp
   PnrProblemInputs.cpp
+  RouteTreeState.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/PnR

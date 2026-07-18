@@ -38,6 +38,7 @@ set(LOOM_TEST_DEPENDS
   loom-mapping-core-test
   loom-parallel-test
   loom-pnr-index-test
+  loom-pnr-route-tree-state-test
   loom-simulator-vector-boundary-test
   loom-synth-base-test
   loom-synth-config-test
