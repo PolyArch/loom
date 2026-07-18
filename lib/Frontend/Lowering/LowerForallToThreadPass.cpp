@@ -37,6 +37,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -449,6 +450,22 @@ struct LowerForallToThreadPass
         builder, loc, symName, functionType,
         ::llvm::ArrayRef<::mlir::NamedAttribute>{});
     threadOp.setSymVisibilityAttr(builder.getStringAttr("private"));
+    auto parentFunc = forall->getParentOfType<::mlir::func::FuncOp>();
+    ::llvm::SmallVector<::mlir::DictionaryAttr, 8> payloadAttrs;
+    payloadAttrs.reserve(captures.size());
+    for (::mlir::Value captured : captures) {
+      ::mlir::DictionaryAttr attrs;
+      if (auto argument = ::llvm::dyn_cast<::mlir::BlockArgument>(captured)) {
+        if (argument.getOwner() == &parentFunc.getBody().front() &&
+            argument.getArgNumber() <
+                parentFunc.getFunctionType().getNumInputs())
+          attrs = ::mlir::function_interface_impl::getArgAttrDict(
+              parentFunc, argument.getArgNumber());
+      }
+      ::mlir::NamedAttrList normalized(attrs);
+      payloadAttrs.push_back(normalized.getDictionary(builder.getContext()));
+    }
+    ::mlir::function_interface_impl::setAllArgAttrDicts(threadOp, payloadAttrs);
 
     // Build the thread body. Entry block layout: captured args first,
     // then a `none`-typed `thread_ctrl` slot (per spec section 5.4.1),

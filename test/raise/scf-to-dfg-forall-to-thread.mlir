@@ -58,6 +58,27 @@ func.func @guarded_parallel_store(%src: memref<?xf32>, %dst: memref<?xf32>,
     return
 }
 
+// Captured payload metadata follows capture order rather than source argument
+// order. The grid bound metadata does not belong to the new ctrl or IV args.
+// CHECK-LABEL: func.func @payload_attrs(
+// CHECK-SAME: %[[LEFT:.*]]: memref<?xi32> {llvm.noalias, test.arg = "left"},
+// CHECK-SAME: %[[BIAS:.*]]: i32 {test.arg = "bias"},
+// CHECK-SAME: %[[RIGHT:.*]]: memref<?xi32> {llvm.noalias, test.arg = "right"},
+// CHECK-SAME: %[[COUNT:.*]]: index {test.arg = "count"})
+// CHECK: dataflow.thread.launch @t_payload_attrs_0(%[[RIGHT]], %[[BIAS]], %[[LEFT]]) grid(%[[COUNT]])
+func.func @payload_attrs(
+    %left: memref<?xi32> {llvm.noalias, test.arg = "left"},
+    %bias: i32 {test.arg = "bias"},
+    %right: memref<?xi32> {llvm.noalias, test.arg = "right"},
+    %count: index {test.arg = "count"}) {
+  scf.forall (%i) in (%count) {
+    %from_right = memref.load %right[%i] : memref<?xi32>
+    %sum = arith.addi %from_right, %bias : i32
+    memref.store %sum, %left[%i] : memref<?xi32>
+  }
+  return
+}
+
 // All thread defs land at module scope after the func.func bodies.
 // Each thread carries the spec-mandated thread_ctrl + iv slots
 // (per spec section 5.4.1) on its entry block.
@@ -65,3 +86,9 @@ func.func @guarded_parallel_store(%src: memref<?xf32>, %dst: memref<?xf32>,
 // CHECK-DAG: dataflow.thread private @t_two_foralls_0(%{{.*}}) ctrl (%{{.*}}: none) iv (%{{.*}}: index)
 // CHECK-DAG: dataflow.thread private @t_two_foralls_1(%{{.*}}) ctrl (%{{.*}}: none) iv (%{{.*}}: index)
 // CHECK-DAG: dataflow.thread private @t_guarded_parallel_store_0(%{{.*}}) ctrl (%{{.*}}: none) iv (%{{.*}}: index)
+// CHECK-LABEL: dataflow.thread private @t_payload_attrs_0(
+// CHECK-SAME: %{{.*}}: memref<?xi32> {llvm.noalias, test.arg = "right"},
+// CHECK-SAME: %{{.*}}: i32 {test.arg = "bias"},
+// CHECK-SAME: %{{.*}}: memref<?xi32> {llvm.noalias, test.arg = "left"})
+// CHECK-SAME: ctrl (%{{.*}}: none) iv (%{{.*}}: index)
+// CHECK-NOT: test.arg = "count"

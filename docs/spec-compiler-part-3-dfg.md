@@ -586,6 +586,11 @@ traits:
     this value as their `ctrl_in` operand.
   - `iv_0, ..., iv_K : index` are the per-instance grid iteration
     indices, one per static-grid rank entry, in source-dim order.
+* `arg_attrs` is indexed only by the `args_*` payload prefix. Forall
+  promotion copies each captured source function argument dictionary,
+  including arbitrary attributes such as `llvm.noalias`, into capture order.
+  Locally defined captures have an empty dictionary. `thread_ctrl` and
+  `iv_*` are not payload arguments and never inherit source argument metadata.
 * The body is `IsolatedFromAbove`. No SSA value defined outside
   the def's body may be used inside it; the launch's body operands
   are the only inputs.

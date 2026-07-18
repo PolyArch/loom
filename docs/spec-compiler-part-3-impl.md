@@ -51,6 +51,9 @@ the production contract.
   module-scope `dataflow.thread` definitions.
 * Materializes explicit thread launch dependencies and preserves ScalarCore
   code outside promoted regions.
+* Copies source function argument dictionaries onto captured thread payload
+  arguments in capture order. The separately introduced ctrl and IV arguments
+  have no payload metadata.
 * Leaves graph-local structured control for the recursive graph owner.
 
 ### 1.2 `loom-lower-for-to-graph`
