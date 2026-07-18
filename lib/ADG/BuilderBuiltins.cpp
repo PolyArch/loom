@@ -67,17 +67,13 @@ ModuleBuilder loom::adg::buildFullSpatialCoreAdg() {
   module.addMem(std::move(temporalMem));
   module.addOutput("temporal_subordinate1");
 
-  std::vector<BodyResultSpec> taggedResults = {
-      BodyResultSpec{"tagged", "!fabric.bits_tag<32, 4>"}};
-  appendBodyOp(
-      module,
-      BodyOpSpec{taggedResults,
-                 {directBodyLine({"fabric.boundary [s2t] ", ", ",
-                                  " : (!fabric.bits<32>, !fabric.bits<4>) -> " +
-                                      bodyResultTypes(taggedResults)},
-                                 {"lhs", "tag"})}});
-  addFifo(module, "queued", "tagged", "!fabric.bits_tag<32, 4>",
-          "!fabric.bits_tag<32, 4>", 4, true);
+  module
+      .addBoundary(BoundarySpec{::fabric::BoundaryDirection::S2t,
+                                {{"lhs"}, {"tag"}},
+                                {"tagged"},
+                                {"!fabric.bits_tag<32, 4>"}})
+      .addFifo(
+          FifoSpec{"queued", "tagged", "!fabric.bits_tag<32, 4>", 4, true});
   appendBodyOp(
       module,
       BodyOpSpec{

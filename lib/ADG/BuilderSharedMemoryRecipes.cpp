@@ -160,8 +160,8 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
       std::string wideResult = result + "_wide";
       std::string input = result + "_input";
       addWideTruncPe(module, wideResult, input);
-      addFifo(module, result, wideResult, "!fabric.bits<64>",
-              "!fabric.bits<32>", 1, true, true);
+      module.addFifo(
+          FifoSpec{result, wideResult, "!fabric.bits<32>", 1, true, true});
       sources32.push_back(result);
       sinks64.push_back(input);
     }
@@ -173,8 +173,8 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
       std::string wideResult = result + "_wide";
       std::string input = result + "_input";
       addWideNarrowingPe(module, wideResult, input, opName);
-      addFifo(module, result, wideResult, "!fabric.bits<64>",
-              "!fabric.bits<32>", 1, true, true);
+      module.addFifo(
+          FifoSpec{result, wideResult, "!fabric.bits<32>", 1, true, true});
       sources32.push_back(result);
       sinks64.push_back(input);
     }
@@ -245,8 +245,8 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
       pe.fus.push_back(std::move(fu));
       module.addPe(std::move(pe));
       if (wide)
-        addFifo(module, rwc, rawRwc, "!fabric.bits<64>", "!fabric.bits<32>",
-                1, true, true);
+        module.addFifo(
+            FifoSpec{rwc, rawRwc, "!fabric.bits<32>", 1, true, true});
       dataSources.push_back(idx);
       sources32.push_back(rwc);
       dataSinks.push_back(lb);
@@ -288,8 +288,8 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
           {dataType.str()}});
       module.addPe(std::move(pe));
       if (control)
-        addFifo(module, result, rawResult, "!fabric.bits<32>",
-                "!fabric.bits<0>", 1, true, true);
+        module.addFifo(
+            FifoSpec{result, rawResult, "!fabric.bits<0>", 1, true, true});
       dataSources.push_back(result);
       sinks32.push_back(cond);
       dataSinks.push_back(init);
@@ -328,8 +328,8 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
                  {"!fabric.bits<1>", dataType.str()}});
       module.addPe(std::move(pe));
       if (wide)
-        addFifo(module, condOut, rawCondOut, "!fabric.bits<64>",
-                "!fabric.bits<32>", 1, true, true);
+        module.addFifo(
+            FifoSpec{condOut, rawCondOut, "!fabric.bits<32>", 1, true, true});
       sources32.push_back(condOut);
       dataSources.push_back(valueOut);
       sinks32.push_back(cond);
@@ -400,8 +400,7 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
                  {"done", "published"},
                  {"!fabric.bits<0>", semanticType.str()}});
       module.addPe(std::move(pe));
-      addFifo(module, done, rawDone, boundaryType, "!fabric.bits<0>", 1,
-              true, true);
+      module.addFifo(FifoSpec{done, rawDone, "!fabric.bits<0>", 1, true, true});
       sinks0.push_back(control);
       sources0.push_back(done);
       dataSinks.push_back(value);
@@ -501,8 +500,7 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
     std::string lhs = result + "_lhs";
     std::string rhs = result + "_rhs";
     addWideCmpPe(module, result, lhs, rhs);
-    addFifo(module, pred, result, "!fabric.bits<64>", "!fabric.bits<32>", 1,
-            true, true);
+    module.addFifo(FifoSpec{pred, result, "!fabric.bits<32>", 1, true, true});
     sources32.push_back(pred);
     sinks64.push_back(lhs);
     sinks64.push_back(rhs);
@@ -558,8 +556,8 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
     std::string falseValue = result + "_false";
     std::string trueValue = result + "_true";
     addControlMuxPe(module, rawResult, pred, falseValue, trueValue);
-    addFifo(module, result, rawResult, "!fabric.bits<32>", "!fabric.bits<0>", 1,
-            true, true);
+    module.addFifo(
+        FifoSpec{result, rawResult, "!fabric.bits<0>", 1, true, true});
     sources0.push_back(result);
     sinks32.push_back(pred);
     sinks0.push_back(falseValue);
@@ -598,10 +596,10 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
     std::string pred = stem + "_pred";
     std::string value = stem + "_value";
     addControlDemuxPe(module, falseWide, trueWide, pred, value);
-    addFifo(module, falseResult, falseWide, "!fabric.bits<32>",
-            "!fabric.bits<0>", 1, true, true);
-    addFifo(module, trueResult, trueWide, "!fabric.bits<32>", "!fabric.bits<0>",
-            1, true, true);
+    module.addFifo(
+        FifoSpec{falseResult, falseWide, "!fabric.bits<0>", 1, true, true});
+    module.addFifo(
+        FifoSpec{trueResult, trueWide, "!fabric.bits<0>", 1, true, true});
     sources0.push_back(falseResult);
     sources0.push_back(trueResult);
     sinks32.push_back(pred);
@@ -683,8 +681,7 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   addUniformSwitch(module, sinks32, sources32, "!fabric.bits<32>");
   for (auto [input, result] :
        llvm::zip(wideRouteBridgeInputs, wideRouteBridgeResults)) {
-    addFifo(module, result, input, "!fabric.bits<32>", "!fabric.bits<64>", 1,
-            true, true);
+    module.addFifo(FifoSpec{result, input, "!fabric.bits<64>", 1, true, true});
     sources64.push_back(result);
   }
   addUniformSwitch(module, sinks64, sources64, "!fabric.bits<64>");

@@ -8,6 +8,8 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstdint>
+#include <limits>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -15,6 +17,8 @@
 static_assert(
     std::is_same_v<decltype(loom::adg::TemporalPeConfig::operandBufferMode),
                    ::fabric::OperandBufferMode>);
+static_assert(std::is_same_v<decltype(loom::adg::BoundarySpec::direction),
+                             ::fabric::BoundaryDirection>);
 
 static llvm::cl::opt<bool>
     sharedReduction("shared-reduction",
@@ -96,6 +100,21 @@ static llvm::cl::opt<std::string> invalidStreamConfig(
     llvm::cl::desc("emit an invalid ADG stream configuration case"),
     llvm::cl::init(""));
 
+static llvm::cl::opt<bool> publicFifoBoundary(
+    "public-fifo-boundary",
+    llvm::cl::desc("emit FIFO and boundary ops through the public ADG API"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<std::string> invalidFifoSpec(
+    "invalid-fifo-spec",
+    llvm::cl::desc("emit an invalid public ADG FIFO specification"),
+    llvm::cl::init(""));
+
+static llvm::cl::opt<std::string> invalidBoundarySpec(
+    "invalid-boundary-spec",
+    llvm::cl::desc("emit an invalid public ADG boundary specification"),
+    llvm::cl::init(""));
+
 static llvm::cl::opt<std::string>
     outputPath("output", llvm::cl::desc("output Fabric MLIR path"),
                llvm::cl::Required);
@@ -129,6 +148,27 @@ static llvm::Error writeTemporalMemCapacityAnchors(llvm::raw_ostream &out) {
   return module.print(out);
 }
 
+static llvm::Error writePublicFifoBoundary(llvm::raw_ostream &out) {
+  loom::adg::ModuleBuilder module("public_fifo_boundary_adg");
+  module.addInput("data", "!fabric.bits<32>")
+      .addInput("tag", "!fabric.bits<4>")
+      .addBoundary(
+          loom::adg::BoundarySpec{::fabric::BoundaryDirection::S2t,
+                                  {{"data", "!fabric.bits<16>"}, {"tag"}},
+                                  {"tagged"},
+                                  {"!fabric.bits_tag<16, 4>"}})
+      .addFifo(loom::adg::FifoSpec{"queued", "tagged", "!fabric.bits_tag<8, 4>",
+                                   4, true, false})
+      .addBoundary(loom::adg::BoundarySpec{::fabric::BoundaryDirection::T2s,
+                                           {{"queued"}},
+                                           {"untagged", "split_tag"},
+                                           {"!fabric.bits<8>",
+                                            "!fabric.bits<4>"}})
+      .addOutput("untagged")
+      .addOutput("split_tag");
+  return module.print(out);
+}
+
 int main(int argc, char **argv) {
   llvm::cl::ParseCommandLineOptions(
       argc, argv,
@@ -145,6 +185,9 @@ int main(int argc, char **argv) {
       (!systemMatrixCase.empty() ? 1 : 0);
   selectedRecipes += (invalidYieldTypes ? 1 : 0) + (invalidYieldCount ? 1 : 0);
   selectedRecipes += !invalidStreamConfig.empty() ? 1 : 0;
+  selectedRecipes += publicFifoBoundary ? 1 : 0;
+  selectedRecipes += !invalidFifoSpec.empty() ? 1 : 0;
+  selectedRecipes += !invalidBoundarySpec.empty() ? 1 : 0;
   if (selectedRecipes == 0) {
     llvm::errs() << "error: no ADG recipe selected\n";
     return 1;
@@ -191,6 +234,8 @@ int main(int argc, char **argv) {
       return loom::adg::writeSpatialTopologyMatrixAdg(out, topologyMatrixCase);
     if (!systemMatrixCase.empty())
       return loom::adg::writeSystemTopologyMatrixAdg(out, systemMatrixCase);
+    if (publicFifoBoundary)
+      return writePublicFifoBoundary(out);
     if (invalidYieldTypes) {
       loom::adg::ModuleBuilder module("invalid_yield_types_adg");
       module.addInput("lhs", "!fabric.bits<32>");
@@ -263,6 +308,74 @@ int main(int argc, char **argv) {
       fu.operations.push_back(std::move(stream));
       pe.fus.push_back(std::move(fu));
       module.addPe(std::move(pe));
+      return module.print(out);
+    }
+    if (!invalidFifoSpec.empty()) {
+      loom::adg::ModuleBuilder module("invalid_fifo_spec_adg");
+      module.addInput("input", "!fabric.bits<8>");
+      if (invalidFifoSpec == "depth") {
+        module.addFifo(loom::adg::FifoSpec{"output", "input", "!fabric.bits<8>",
+                                           0, false});
+      } else if (invalidFifoSpec == "overflow") {
+        module.addFifo(loom::adg::FifoSpec{
+            "output", "input", "!fabric.bits<8>",
+            static_cast<unsigned>(std::numeric_limits<std::int32_t>::max()) +
+                1U,
+            false});
+      } else if (invalidFifoSpec == "kind") {
+        module.addFifo(loom::adg::FifoSpec{
+            "output", "input", "!fabric.bits_tag<8, 4>", 1, false});
+      } else if (invalidFifoSpec == "bypass") {
+        module.addFifo(loom::adg::FifoSpec{"output", "input", "!fabric.bits<8>",
+                                           1, false, true});
+      } else {
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "unknown invalid FIFO case %s",
+                                       invalidFifoSpec.c_str());
+      }
+      return module.print(out);
+    }
+    if (!invalidBoundarySpec.empty()) {
+      loom::adg::ModuleBuilder module("invalid_boundary_spec_adg");
+      module.addInput("data", "!fabric.bits<32>")
+          .addInput("tag", "!fabric.bits<4>")
+          .addInput("tagged", "!fabric.bits_tag<32, 4>");
+      if (invalidBoundarySpec == "shape") {
+        module.addBoundary(
+            loom::adg::BoundarySpec{::fabric::BoundaryDirection::S2t,
+                                    {{"data"}},
+                                    {"tagged"},
+                                    {"!fabric.bits_tag<32, 4>"}});
+      } else if (invalidBoundarySpec == "direction") {
+        module.addBoundary(loom::adg::BoundarySpec{
+            static_cast<::fabric::BoundaryDirection>(99),
+            {{"data"}, {"tag"}},
+            {"tagged"},
+            {"!fabric.bits_tag<32, 4>"}});
+      } else if (invalidBoundarySpec == "t2t") {
+        module.addBoundary(
+            loom::adg::BoundarySpec{::fabric::BoundaryDirection::T2t,
+                                    {{"data"}},
+                                    {"tagged"},
+                                    {"!fabric.bits_tag<32, 4>"}});
+      } else if (invalidBoundarySpec == "t2s-spatial") {
+        module.addBoundary(
+            loom::adg::BoundarySpec{::fabric::BoundaryDirection::T2s,
+                                    {{"data"}},
+                                    {"untagged"},
+                                    {"!fabric.bits<32>"}});
+      } else if (invalidBoundarySpec == "t2s-tag-width") {
+        module.addBoundary(
+            loom::adg::BoundarySpec{::fabric::BoundaryDirection::T2s,
+                                    {{"tagged"}},
+                                    {"untagged", "split_tag"},
+                                    {"!fabric.bits<32>",
+                                     "!fabric.bits<8>"}});
+      } else {
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "unknown invalid boundary case %s",
+                                       invalidBoundarySpec.c_str());
+      }
       return module.print(out);
     }
     return loom::adg::writeSharedReductionAdg(out);

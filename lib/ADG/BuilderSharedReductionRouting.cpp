@@ -289,13 +289,14 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                               {"logic_masked", "addr_masked", "cmpi_pred",
                                "cmpi_pred_aux", "cmpi64_pred_aux_narrow",
                                "cmpf_pred", "fp_gate", "i32a"});
-  addFifo(module, "control_token_demux_false_token",
-          "control_token_demux_false", "!fabric.bits<32>", "!fabric.bits<0>", 1,
-          true, true);
-  addFifo(module, "control_token_demux_true_token", "control_token_demux_true",
-          "!fabric.bits<32>", "!fabric.bits<0>", 1, true, true);
-  addFifo(module, "control_token_muxed_token", "control_token_muxed",
-          "!fabric.bits<32>", "!fabric.bits<0>", 1, true, true);
+  module.addFifo(FifoSpec{"control_token_demux_false_token",
+                          "control_token_demux_false", "!fabric.bits<0>", 1,
+                          true, true});
+  module.addFifo(FifoSpec{"control_token_demux_true_token",
+                          "control_token_demux_true", "!fabric.bits<0>", 1,
+                          true, true});
+  module.addFifo(FifoSpec{"control_token_muxed_token", "control_token_muxed",
+                          "!fabric.bits<0>", 1, true, true});
   addSingleResultBits32Switch("control_token_mux_sel",
                               {"logic_masked", "addr_masked", "cmpi_pred",
                                "cmpi_pred_aux", "cmpi64_pred_aux_narrow",

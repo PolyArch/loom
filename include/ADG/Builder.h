@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace dataflow {
@@ -98,6 +99,47 @@ struct SwitchSpec {
   unsigned temporalRouteTableSize = 0;
 };
 
+struct FifoSpec {
+  FifoSpec(std::string resultName, std::string sourceName,
+           std::string resultType, unsigned maxDepth, bool bypassable,
+           std::optional<bool> bypassed = std::nullopt)
+      : resultName(std::move(resultName)), sourceName(std::move(sourceName)),
+        resultType(std::move(resultType)), maxDepth(maxDepth),
+        bypassable(bypassable), bypassed(bypassed) {}
+
+  std::string resultName;
+  std::string sourceName;
+  std::string resultType;
+  unsigned maxDepth;
+  bool bypassable;
+  std::optional<bool> bypassed = std::nullopt;
+};
+
+struct BoundaryInput {
+  BoundaryInput(std::string sourceName,
+                std::optional<std::string> destinationType = std::nullopt)
+      : sourceName(std::move(sourceName)),
+        destinationType(std::move(destinationType)) {}
+
+  std::string sourceName;
+  std::optional<std::string> destinationType = std::nullopt;
+};
+
+struct BoundarySpec {
+  BoundarySpec(::fabric::BoundaryDirection direction,
+               std::vector<BoundaryInput> inputs,
+               std::vector<std::string> resultNames,
+               std::vector<std::string> resultTypes)
+      : direction(direction), inputs(std::move(inputs)),
+        resultNames(std::move(resultNames)),
+        resultTypes(std::move(resultTypes)) {}
+
+  ::fabric::BoundaryDirection direction;
+  std::vector<BoundaryInput> inputs;
+  std::vector<std::string> resultNames;
+  std::vector<std::string> resultTypes;
+};
+
 struct MemLoadPort {
   std::string address;
   std::string control;
@@ -146,6 +188,8 @@ public:
   ModuleBuilder &addOutput(std::string sourceName);
   ModuleBuilder &addPe(PeSpec pe);
   ModuleBuilder &addSwitch(SwitchSpec sw);
+  ModuleBuilder &addFifo(FifoSpec fifo);
+  ModuleBuilder &addBoundary(BoundarySpec boundary);
   ModuleBuilder &addMem(MemSpec mem);
   ModuleBuilder &addAttribute(std::string name, std::string value);
 
@@ -208,6 +252,18 @@ private:
     std::vector<std::vector<std::size_t>> lineUseIds;
   };
 
+  struct FifoEntry {
+    FifoSpec spec;
+    std::size_t useId;
+  };
+
+  struct BoundaryEntry {
+    BoundarySpec spec;
+    std::vector<std::size_t> useIds;
+  };
+
+  using BodyEntry = std::variant<BodyOpEntry, FifoEntry, BoundaryEntry>;
+
   std::size_t registerDirectUse(std::string sourceName);
   ModuleBuilder &addBodyOp(BodyOpSpec op);
 
@@ -219,7 +275,7 @@ private:
   std::vector<PeEntry> pes;
   std::vector<SwitchEntry> switches;
   std::vector<MemEntry> mems;
-  std::vector<BodyOpEntry> bodyOps;
+  std::vector<BodyEntry> bodyEntries;
 };
 
 struct SystemNodeSpec {

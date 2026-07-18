@@ -1,7 +1,12 @@
 #include "ADG/Builder.h"
 
 #include "Dataflow/IR/DataflowEnums.h"
+#include "Fabric/IR/FabricDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringMap.h"
@@ -21,6 +26,31 @@ using namespace loom::adg;
 
 namespace {
 
+llvm::Error validateFabricModule(llvm::StringRef text) {
+  mlir::MLIRContext context;
+  context.getOrLoadDialect<::fabric::FabricDialect>();
+
+  std::string diagnostic;
+  mlir::ScopedDiagnosticHandler capture(
+      &context, [&](mlir::Diagnostic &emitted) {
+        if (diagnostic.empty() &&
+            emitted.getSeverity() == mlir::DiagnosticSeverity::Error)
+          diagnostic = emitted.str();
+        return mlir::success();
+      });
+  mlir::ParserConfig config(&context, /*verifyAfterParse=*/true);
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(text, config, "<adg-builder>");
+  if (module)
+    return llvm::Error::success();
+
+  if (diagnostic.empty())
+    diagnostic = "Fabric parser or verifier rejected the generated module";
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "ADG Fabric validation failed: %s",
+                                 diagnostic.c_str());
+}
+
 llvm::StringRef scheduleName(Schedule schedule) {
   switch (schedule) {
   case Schedule::Spatial:
@@ -29,6 +59,77 @@ llvm::StringRef scheduleName(Schedule schedule) {
     return "temporal";
   }
   llvm_unreachable("unknown ADG schedule");
+}
+
+llvm::Error validateFifoSpec(const FifoSpec &fifo) {
+  if (fifo.resultName.empty() || fifo.sourceName.empty() ||
+      fifo.resultType.empty())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "ADG fifo specification is incomplete");
+  if (fifo.maxDepth == 0)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "ADG fifo max depth must be greater than zero");
+  if (fifo.maxDepth >
+      static_cast<unsigned>(std::numeric_limits<std::int32_t>::max()))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "ADG fifo max depth exceeds signed i32 range");
+  if (fifo.bypassed && !fifo.bypassable)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "ADG fifo bypass configuration requires bypassable hardware");
+  return llvm::Error::success();
+}
+
+llvm::Error validateBoundarySpec(const BoundarySpec &boundary) {
+  if (!::fabric::symbolizeBoundaryDirection(
+          static_cast<std::uint32_t>(boundary.direction)))
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "ADG boundary direction is invalid");
+
+  switch (boundary.direction) {
+  case ::fabric::BoundaryDirection::S2t:
+    if (boundary.inputs.size() != 2 || boundary.resultNames.size() != 1)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG s2t boundary requires exactly two inputs and one result");
+    break;
+  case ::fabric::BoundaryDirection::T2s:
+    if (boundary.inputs.size() != 1 || boundary.resultNames.empty() ||
+        boundary.resultNames.size() > 2)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG t2s boundary requires exactly one input and one or two "
+          "results");
+    break;
+  case ::fabric::BoundaryDirection::T2t:
+    return llvm::createStringError(
+        std::errc::not_supported,
+        "ADG t2t boundary construction is not supported");
+  }
+
+  if (boundary.resultTypes.size() != boundary.resultNames.size())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "ADG boundary result type count must match result name count");
+  for (const BoundaryInput &input : boundary.inputs) {
+    if (input.sourceName.empty())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG boundary specification contains an empty source name");
+    if (input.destinationType && input.destinationType->empty())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG boundary specification contains an empty destination type");
+  }
+  for (auto [resultName, resultType] :
+       llvm::zip(boundary.resultNames, boundary.resultTypes))
+    if (resultName.empty() || resultType.empty())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG boundary specification contains an incomplete result");
+  return llvm::Error::success();
 }
 
 std::string canonicalValueName(llvm::StringRef name) {
@@ -221,6 +322,52 @@ void printResultTypes(llvm::raw_ostream &os,
     return;
   }
   printTypeList(os, types);
+}
+
+void printFifo(llvm::raw_ostream &os, const FifoSpec &fifo,
+               llvm::StringRef resolvedSource, llvm::StringRef sourceType) {
+  os << "  " << valueName(fifo.resultName) << " = fabric.fifo "
+     << valueName(resolvedSource) << " [max_depth = " << fifo.maxDepth
+     << ", bypassable = " << (fifo.bypassable ? "true" : "false") << ']';
+  if (fifo.bypassed)
+    os << " {bypassed = " << (*fifo.bypassed ? "true" : "false") << '}';
+  os << "\n    : " << sourceType;
+  if (sourceType != fifo.resultType)
+    os << " to " << fifo.resultType;
+  os << '\n';
+}
+
+void printBoundary(llvm::raw_ostream &os, const BoundarySpec &boundary,
+                   llvm::ArrayRef<std::string> resolvedSources,
+                   llvm::ArrayRef<std::string> sourceTypes) {
+  for (std::size_t index = 0; index < boundary.resultNames.size(); ++index) {
+    os << (index == 0 ? "  " : ", ") << valueName(boundary.resultNames[index]);
+  }
+  os << " = fabric.boundary ["
+     << ::fabric::stringifyBoundaryDirection(boundary.direction) << "] ";
+  for (std::size_t index = 0; index < resolvedSources.size(); ++index) {
+    if (index)
+      os << ", ";
+    os << valueName(resolvedSources[index]);
+  }
+  os << " : ";
+  bool multipleInputs = sourceTypes.size() != 1;
+  if (multipleInputs)
+    os << '(';
+  for (std::size_t index = 0; index < sourceTypes.size(); ++index) {
+    if (index)
+      os << ", ";
+    os << sourceTypes[index];
+    const std::optional<std::string> &destinationType =
+        boundary.inputs[index].destinationType;
+    if (destinationType && sourceTypes[index] != *destinationType)
+      os << " to " << *destinationType;
+  }
+  if (multipleInputs)
+    os << ')';
+  os << " -> ";
+  printResultTypes(os, boundary.resultTypes);
+  os << '\n';
 }
 
 void printBindings(llvm::raw_ostream &os, llvm::ArrayRef<PortBinding> bindings,
@@ -807,6 +954,22 @@ ModuleBuilder &ModuleBuilder::addSwitch(SwitchSpec sw) {
   return *this;
 }
 
+ModuleBuilder &ModuleBuilder::addFifo(FifoSpec fifo) {
+  std::size_t useId = registerDirectUse(fifo.sourceName);
+  bodyEntries.emplace_back(FifoEntry{std::move(fifo), useId});
+  return *this;
+}
+
+ModuleBuilder &ModuleBuilder::addBoundary(BoundarySpec boundary) {
+  std::vector<std::size_t> useIds;
+  useIds.reserve(boundary.inputs.size());
+  for (const BoundaryInput &input : boundary.inputs)
+    useIds.push_back(registerDirectUse(input.sourceName));
+  bodyEntries.emplace_back(
+      BoundaryEntry{std::move(boundary), std::move(useIds)});
+  return *this;
+}
+
 ModuleBuilder &ModuleBuilder::addMem(MemSpec mem) {
   std::vector<std::size_t> useIds;
   useIds.reserve(mem.managerInputs.size() + mem.loads.size() * 2 +
@@ -836,7 +999,7 @@ ModuleBuilder &ModuleBuilder::addBodyOp(BodyOpSpec op) {
       useIds.push_back(registerDirectUse(operand));
     lineUseIds.push_back(std::move(useIds));
   }
-  bodyOps.push_back(BodyOpEntry{std::move(op), std::move(lineUseIds)});
+  bodyEntries.emplace_back(BodyOpEntry{std::move(op), std::move(lineUseIds)});
   return *this;
 }
 
@@ -934,7 +1097,7 @@ SystemBuilder &SystemBuilder::connect(std::string srcNode, std::string srcPort,
   return *this;
 }
 
-llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
+llvm::Error ModuleBuilder::print(llvm::raw_ostream &destination) const {
   if (name.empty())
     return llvm::createStringError(std::errc::invalid_argument,
                                    "ADG module name is empty");
@@ -1008,36 +1171,60 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
         return err;
     }
   }
-  for (const BodyOpEntry &entry : bodyOps) {
-    const BodyOpSpec &op = entry.spec;
-    if (!op.results.empty() && op.lines.empty())
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "ADG body op with results must have an operation line");
-    if (entry.lineUseIds.size() != op.lines.size())
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "ADG body op direct use line count is invalid");
-    for (auto [line, useIds] : llvm::zip(op.lines, entry.lineUseIds)) {
-      if (line.fragments.size() != line.operands.size() + 1)
+  for (const BodyEntry &body : bodyEntries) {
+    if (const auto *entry = std::get_if<BodyOpEntry>(&body)) {
+      const BodyOpSpec &op = entry->spec;
+      if (!op.results.empty() && op.lines.empty())
         return llvm::createStringError(
             std::errc::invalid_argument,
-            "ADG body line fragment count must be one greater than operand "
-            "count");
-      if (useIds.size() != line.operands.size())
+            "ADG body op with results must have an operation line");
+      if (entry->lineUseIds.size() != op.lines.size())
         return llvm::createStringError(
             std::errc::invalid_argument,
-            "ADG body line direct use count is invalid");
-      if (line.moduleScope)
-        for (const std::string &fragment : line.fragments)
-          if (fragmentHidesDirectUse(fragment))
-            return llvm::createStringError(
-                std::errc::invalid_argument,
-                "ADG body literal fragment hides a module SSA value; direct "
-                "uses must be declared as operands");
+            "ADG body op direct use line count is invalid");
+      for (auto [line, useIds] : llvm::zip(op.lines, entry->lineUseIds)) {
+        if (line.fragments.size() != line.operands.size() + 1)
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "ADG body line fragment count must be one greater than operand "
+              "count");
+        if (useIds.size() != line.operands.size())
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "ADG body line direct use count is invalid");
+        if (line.moduleScope)
+          for (const std::string &fragment : line.fragments)
+            if (fragmentHidesDirectUse(fragment))
+              return llvm::createStringError(
+                  std::errc::invalid_argument,
+                  "ADG body literal fragment hides a module SSA value; "
+                  "direct uses must be declared as operands");
+      }
+      for (const BodyResultSpec &result : op.results)
+        if (llvm::Error err = defineValue(result.name, result.type))
+          return err;
+      continue;
     }
-    for (const BodyResultSpec &result : op.results)
-      if (llvm::Error err = defineValue(result.name, result.type))
+
+    if (const auto *entry = std::get_if<FifoEntry>(&body)) {
+      if (llvm::Error err = validateFifoSpec(entry->spec))
+        return err;
+      if (llvm::Error err =
+              defineValue(entry->spec.resultName, entry->spec.resultType))
+        return err;
+      continue;
+    }
+
+    const auto &entry = std::get<BoundaryEntry>(body);
+    if (llvm::Error err = validateBoundarySpec(entry.spec))
+      return err;
+    if (entry.useIds.size() != entry.spec.inputs.size())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG boundary direct use count is invalid");
+    for (auto [resultName, resultType] :
+         llvm::zip(entry.spec.resultNames, entry.spec.resultTypes))
+      if (llvm::Error err = defineValue(resultName, resultType))
         return err;
   }
   for (auto [memIndex, entry] : llvm::enumerate(mems)) {
@@ -1091,6 +1278,27 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
     }
   }
 
+  for (const BodyEntry &body : bodyEntries) {
+    if (const auto *entry = std::get_if<FifoEntry>(&body)) {
+      llvm::StringRef sourceName = directUses[entry->useId].sourceName;
+      if (!valueTypes.contains(sourceName))
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "ADG fifo source %s is unknown",
+                                       sourceName.str().c_str());
+      continue;
+    }
+    const auto *entry = std::get_if<BoundaryEntry>(&body);
+    if (!entry)
+      continue;
+    for (std::size_t useId : entry->useIds) {
+      llvm::StringRef sourceName = directUses[useId].sourceName;
+      if (!valueTypes.contains(sourceName))
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "ADG boundary source %s is unknown",
+                                       sourceName.str().c_str());
+    }
+  }
+
   llvm::SmallVector<std::string> outputTypes;
   outputTypes.reserve(outputs.size());
   for (const Output &output : outputs) {
@@ -1116,6 +1324,8 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
     return planOrErr.takeError();
   TransportPlan plan = std::move(*planOrErr);
 
+  std::string text;
+  llvm::raw_string_ostream os(text);
   os << "fabric.module @" << name << '(';
   for (std::size_t i = 0; i < inputs.size(); ++i) {
     if (i)
@@ -1247,25 +1457,47 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
     printResultTypes(os, resultTypes);
     os << '\n';
   }
-  for (const BodyOpEntry &entry : bodyOps) {
-    for (std::size_t lineIndex = 0; lineIndex < entry.spec.lines.size();
-         ++lineIndex) {
-      const BodyLineSpec &line = entry.spec.lines[lineIndex];
-      llvm::ArrayRef<std::size_t> useIds = entry.lineUseIds[lineIndex];
-      os << "  ";
-      if (lineIndex == 0 && !entry.spec.results.empty()) {
-        for (std::size_t i = 0; i < entry.spec.results.size(); ++i) {
-          if (i)
-            os << ", ";
-          os << valueName(entry.spec.results[i].name);
+  for (const BodyEntry &body : bodyEntries) {
+    if (const auto *entry = std::get_if<BodyOpEntry>(&body)) {
+      for (std::size_t lineIndex = 0; lineIndex < entry->spec.lines.size();
+           ++lineIndex) {
+        const BodyLineSpec &line = entry->spec.lines[lineIndex];
+        llvm::ArrayRef<std::size_t> useIds = entry->lineUseIds[lineIndex];
+        os << "  ";
+        if (lineIndex == 0 && !entry->spec.results.empty()) {
+          for (std::size_t i = 0; i < entry->spec.results.size(); ++i) {
+            if (i)
+              os << ", ";
+            os << valueName(entry->spec.results[i].name);
+          }
+          os << " = ";
         }
-        os << " = ";
+        os << line.fragments.front();
+        for (std::size_t i = 0; i < line.operands.size(); ++i)
+          os << valueName(plan.resolvedUses[useIds[i]])
+             << line.fragments[i + 1];
+        os << '\n';
       }
-      os << line.fragments.front();
-      for (std::size_t i = 0; i < line.operands.size(); ++i)
-        os << valueName(plan.resolvedUses[useIds[i]]) << line.fragments[i + 1];
-      os << '\n';
+      continue;
     }
+
+    if (const auto *entry = std::get_if<FifoEntry>(&body)) {
+      std::string sourceType =
+          valueTypes.lookup(directUses[entry->useId].sourceName);
+      printFifo(os, entry->spec, plan.resolvedUses[entry->useId], sourceType);
+      continue;
+    }
+
+    const auto &entry = std::get<BoundaryEntry>(body);
+    llvm::SmallVector<std::string> resolvedSources;
+    llvm::SmallVector<std::string> sourceTypes;
+    resolvedSources.reserve(entry.useIds.size());
+    sourceTypes.reserve(entry.useIds.size());
+    for (std::size_t useId : entry.useIds) {
+      resolvedSources.push_back(plan.resolvedUses[useId]);
+      sourceTypes.push_back(valueTypes.lookup(directUses[useId].sourceName));
+    }
+    printBoundary(os, entry.spec, resolvedSources, sourceTypes);
   }
   // Resolve original top-level source names before parsing generated fanouts.
   for (const TransportFanout &fanout : plan.fanouts)
@@ -1287,6 +1519,10 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
   }
   os << '\n';
   os << "}\n";
+  os.flush();
+  if (llvm::Error err = validateFabricModule(text))
+    return err;
+  destination << text;
   return llvm::Error::success();
 }
 

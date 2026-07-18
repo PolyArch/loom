@@ -261,26 +261,6 @@ BodyLineSpec directHeadAndListLine(std::string prefix, std::string head,
   return directBodyLine(std::move(fragments), std::move(allOperands));
 }
 
-void addFifo(ModuleBuilder &module, llvm::StringRef result,
-             llvm::StringRef input, llvm::StringRef sourceType,
-             llvm::StringRef resultType, unsigned maxDepth, bool bypassable,
-             std::optional<bool> bypassed) {
-  std::string suffix =
-      " [max_depth = " + std::to_string(maxDepth) + ", bypassable = " +
-      (bypassable ? std::string("true") : std::string("false")) + "]";
-  if (bypassed)
-    suffix += " {bypassed = " +
-              (*bypassed ? std::string("true") : std::string("false")) + "}";
-  std::string typeLine = "  : " + sourceType.str();
-  if (sourceType != resultType)
-    typeLine += " to " + resultType.str();
-  appendBodyOp(
-      module,
-      BodyOpSpec{{BodyResultSpec{result.str(), resultType.str()}},
-                 {directBodyLine({"fabric.fifo ", suffix}, {input.str()}),
-                  exactBodyLine(std::move(typeLine))}});
-}
-
 std::string switchConnectivity(llvm::ArrayRef<llvm::StringRef> rows) {
   std::string text = "[{connectivity_table = [";
   for (std::size_t index = 0; index < rows.size(); ++index) {
@@ -1210,25 +1190,16 @@ ModuleBuilder buildMixedTemporalBridgeAdg() {
                                 std::move(temporal)));
   addSpatialMemLoad(module);
   addSpatialAddPe(module, "spatial0", "data", "a");
-  std::vector<BodyResultSpec> taggedResults = {
-      BodyResultSpec{"tagged", "!fabric.bits_tag<32, 4>"}};
-  appendBodyOp(
-      module,
-      BodyOpSpec{taggedResults,
-                 {directBodyLine({"fabric.boundary [s2t] ", ", ",
-                                  " : (!fabric.bits<32>, !fabric.bits<4>) -> " +
-                                      bodyResultTypes(taggedResults)},
-                                 {"spatial0", "tag"})}});
-  addFifo(module, "queued", "tagged", "!fabric.bits_tag<32, 4>",
-          "!fabric.bits_tag<32, 4>", 4, true);
-  std::vector<BodyResultSpec> untaggedResults = {
-      BodyResultSpec{"untagged", "!fabric.bits<32>"}};
-  appendBodyOp(
-      module, BodyOpSpec{untaggedResults,
-                         {directBodyLine({"fabric.boundary [t2s] ",
-                                          " : !fabric.bits_tag<32, 4> -> " +
-                                              bodyResultTypes(untaggedResults)},
-                                         {"queued"})}});
+  module
+      .addBoundary(BoundarySpec{::fabric::BoundaryDirection::S2t,
+                                {{"spatial0"}, {"tag"}},
+                                {"tagged"},
+                                {"!fabric.bits_tag<32, 4>"}})
+      .addFifo(FifoSpec{"queued", "tagged", "!fabric.bits_tag<32, 4>", 4, true})
+      .addBoundary(BoundarySpec{::fabric::BoundaryDirection::T2s,
+                                {{"queued"}},
+                                {"untagged"},
+                                {"!fabric.bits<32>"}});
   addSpatialSwitch(module, {"bridge_out"}, {"untagged", "b", "c"}, {"111"});
   addSpatialAddPe(module, "spatial1", "bridge_out", "d");
   return module;

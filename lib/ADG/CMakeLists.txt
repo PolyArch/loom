@@ -17,6 +17,8 @@ add_mlir_library(LoomADGBuilder
   LLVMSupport
   MLIRArithDialect
   MLIRDataflowEnums
+  MLIRFabric
   MLIRFabricEnums
   MLIRIR
+  MLIRParser
 )

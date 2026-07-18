@@ -748,14 +748,14 @@ void loom::adg::detail::addSharedReductionComputeResources(
                      "arith.index_cast");
   addWideNarrowingPe(module, "wide_index_cast1", "wide_index_cast1_input",
                      "arith.index_cast");
-  addFifo(module, "wide_truncated", "wide_truncated_wide", "!fabric.bits<64>",
-          "!fabric.bits<32>", 1, true, true);
-  addFifo(module, "wide_truncated_aux", "wide_truncated_aux_wide",
-          "!fabric.bits<64>", "!fabric.bits<32>", 1, true, true);
-  addFifo(module, "wide_index_cast0_narrow", "wide_index_cast0",
-          "!fabric.bits<64>", "!fabric.bits<32>", 1, true, true);
-  addFifo(module, "wide_index_cast1_narrow", "wide_index_cast1",
-          "!fabric.bits<64>", "!fabric.bits<32>", 1, true, true);
+  module.addFifo(FifoSpec{"wide_truncated", "wide_truncated_wide",
+                          "!fabric.bits<32>", 1, true, true});
+  module.addFifo(FifoSpec{"wide_truncated_aux", "wide_truncated_aux_wide",
+                          "!fabric.bits<32>", 1, true, true});
+  module.addFifo(FifoSpec{"wide_index_cast0_narrow", "wide_index_cast0",
+                          "!fabric.bits<32>", 1, true, true});
+  module.addFifo(FifoSpec{"wide_index_cast1_narrow", "wide_index_cast1",
+                          "!fabric.bits<32>", 1, true, true});
 
   addUnary32YieldPe("fp", "llvm.uitofp");
   addUnary32YieldPe("fp_negated", "llvm.fneg", "fp_negated_input");
@@ -814,8 +814,8 @@ void loom::adg::detail::addSharedReductionComputeResources(
   };
   addWideCmpPe("cmpi64_pred", "!fabric.bits<64>");
   addWideCmpPe("cmpi64_pred_aux", "!fabric.bits<64>");
-  addFifo(module, "cmpi64_pred_aux_narrow", "cmpi64_pred_aux",
-          "!fabric.bits<64>", "!fabric.bits<32>", 1, true, true);
+  module.addFifo(FifoSpec{"cmpi64_pred_aux_narrow", "cmpi64_pred_aux",
+                          "!fabric.bits<32>", 1, true, true});
 
   PeSpec widePredExtuiPe;
   widePredExtuiPe.inputs = {{"pa", "cmpi64_pred", "!fabric.bits<64>", ""}};
@@ -1008,8 +1008,7 @@ void loom::adg::detail::addSharedReductionComputeResources(
              {"sync_done0"}});
   module.addPe(std::move(syncPe));
 
-  auto addTypedSyncPe = [&](llvm::StringRef name,
-                            llvm::StringRef boundaryType,
+  auto addTypedSyncPe = [&](llvm::StringRef name, llvm::StringRef boundaryType,
                             llvm::StringRef semanticType) {
     std::string control = (name + "_control").str();
     std::string value = (name + "_value").str();
@@ -1036,8 +1035,7 @@ void loom::adg::detail::addSharedReductionComputeResources(
                {"done", "published"},
                {"!fabric.bits<0>", semanticType.str()}});
     module.addPe(std::move(pe));
-    addFifo(module, done, rawDone, boundaryType, "!fabric.bits<0>", 1, true,
-            true);
+    module.addFifo(FifoSpec{done, rawDone, "!fabric.bits<0>", 1, true, true});
   };
   addTypedSyncPe("typed_sync_i1", "!fabric.bits<32>", "!fabric.bits<1>");
   addTypedSyncPe("typed_sync_i8", "!fabric.bits<32>", "!fabric.bits<8>");

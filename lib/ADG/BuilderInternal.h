@@ -9,7 +9,6 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <initializer_list>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -85,10 +84,6 @@ BodyLineSpec directHeadAndListLine(std::string prefix, std::string head,
                                    llvm::ArrayRef<std::string> operands,
                                    std::string suffix);
 
-void addFifo(ModuleBuilder &module, llvm::StringRef result,
-             llvm::StringRef input, llvm::StringRef sourceType,
-             llvm::StringRef resultType, unsigned maxDepth, bool bypassable,
-             std::optional<bool> bypassed = std::nullopt);
 void addUniformSwitch(ModuleBuilder &module,
                       llvm::ArrayRef<std::string> results,
                       llvm::ArrayRef<std::string> inputs, llvm::StringRef type);
