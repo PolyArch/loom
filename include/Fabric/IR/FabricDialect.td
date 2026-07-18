@@ -8,6 +8,7 @@ def Fabric_Dialect : Dialect {
   let name = "fabric";
   let summary = "Fabric dialect for reconfigurable CGRA architecture description";
   let cppNamespace = "::fabric";
+  let useDefaultAttributePrinterParser = 1;
   let useDefaultTypePrinterParser = 1;
 }
 

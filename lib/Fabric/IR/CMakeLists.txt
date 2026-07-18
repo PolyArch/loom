@@ -1,5 +1,21 @@
 add_subdirectory(BoundaryDataPath)
 
+add_mlir_library(MLIRFabricEnums
+  FabricEnums.cpp
+
+  PARTIAL_SOURCES_INTENDED
+
+  ADDITIONAL_HEADER_DIRS
+  ${LOOM_SOURCE_DIR}/include/Fabric
+
+  DEPENDS
+  MLIRFabricEnumsIncGen
+
+  LINK_LIBS PUBLIC
+  MLIRIR
+  MLIRSupport
+)
+
 add_mlir_dialect_library(MLIRFabric
   ConfiguredFunction.cpp
   FabricBoundaryOps.cpp
@@ -21,6 +37,7 @@ add_mlir_dialect_library(MLIRFabric
   DEPENDS
   MLIRDataflowEnumsIncGen
   MLIRFabricDialectIncGen
+  MLIRFabricEnumsIncGen
   MLIRFabricTypesIncGen
   MLIRFabricOpsIncGen
 
@@ -29,6 +46,7 @@ add_mlir_dialect_library(MLIRFabric
   LoomFabricBoundaryDataPath
   MLIRArithDialect
   MLIRDataflowEnums
+  MLIRFabricEnums
   MLIRIR
   MLIRLLVMDialect
   MLIRPass

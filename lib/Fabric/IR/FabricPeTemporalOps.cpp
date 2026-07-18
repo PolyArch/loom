@@ -180,12 +180,9 @@ static LogicalResult verifySelEntry(PeOp op, DictionaryAttr d, unsigned instIdx,
   return success();
 }
 
-// String constants for the two temporal-PE keyword attributes.
+// String constants for the remaining string-valued temporal-PE attribute.
 static constexpr StringRef kFuCfgPerInstr = "per_instruction_fu_config";
 static constexpr StringRef kFuCfgPerFu = "per_fu_config";
-static constexpr StringRef kBufPerInstr = "per_instruction";
-static constexpr StringRef kBufPerInputPort = "per_input_port";
-static constexpr StringRef kBufAllFuShare = "all_fu_share";
 
 static LogicalResult
 verifyInstructionEntry(PeOp op, unsigned instIdx, DictionaryAttr d,
@@ -648,30 +645,27 @@ static LogicalResult verifyTemporalHwParams(PeOp op, unsigned T) {
            << kFuCfgPerInstr << "' or '" << kFuCfgPerFu << "', got '"
            << fuCfgMode << "'";
 
-  // 7. operand_buffer_mode: required, must be one of the known keywords.
+  // 7. operand_buffer_mode: required typed enum.
   auto bufModeAttr = op.getOperandBufferModeAttr();
   if (!bufModeAttr)
     return op.emitOpError(
         "temporal fabric.pe requires 'operand_buffer_mode' attribute");
-  StringRef bufMode = bufModeAttr.getValue();
-  if (bufMode != kBufPerInstr && bufMode != kBufPerInputPort &&
-      bufMode != kBufAllFuShare)
-    return op.emitOpError("'operand_buffer_mode' must be one of '")
-           << kBufPerInstr << "', '" << kBufPerInputPort << "', or '"
-           << kBufAllFuShare << "', got '" << bufMode << "'";
+  OperandBufferMode bufMode = bufModeAttr.getValue();
+  StringRef perInstruction =
+      stringifyOperandBufferMode(OperandBufferMode::PerInstruction);
 
   // 8. operand_buffer_size: required iff mode != per_instruction.
   auto bufSize = getOptInt(op, "operand_buffer_size");
-  if (bufMode == kBufPerInstr) {
+  if (bufMode == OperandBufferMode::PerInstruction) {
     if (bufSize)
-      return op.emitOpError(
-          "'operand_buffer_size' must be absent when 'operand_buffer_mode' is "
-          "'per_instruction'");
+      return op.emitOpError("'operand_buffer_size' must be absent when "
+                            "'operand_buffer_mode' is '")
+             << perInstruction << "'";
   } else {
     if (!bufSize)
-      return op.emitOpError(
-          "'operand_buffer_size' is required when 'operand_buffer_mode' is "
-          "not 'per_instruction'");
+      return op.emitOpError("'operand_buffer_size' is required when "
+                            "'operand_buffer_mode' is not '")
+             << perInstruction << "'";
     if (*bufSize < 1)
       return op.emitOpError("'operand_buffer_size' must be >= 1, got ")
              << *bufSize;

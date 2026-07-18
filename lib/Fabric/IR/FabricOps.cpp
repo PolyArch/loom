@@ -22,8 +22,6 @@
 using namespace mlir;
 using namespace fabric;
 
-#include "Fabric/IR/FabricEnums.cpp.inc"
-
 #define GET_OP_CLASSES
 #include "Fabric/IR/FabricOps.cpp.inc"
 

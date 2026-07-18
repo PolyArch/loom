@@ -8,6 +8,7 @@ target_include_directories(LoomFabricBoundaryDataPath PUBLIC
 
 add_dependencies(LoomFabricBoundaryDataPath
   MLIRFabricDialectIncGen
+  MLIRFabricEnumsIncGen
   MLIRFabricTypesIncGen
   MLIRFabricOpsIncGen
 )

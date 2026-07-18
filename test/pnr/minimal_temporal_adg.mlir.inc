@@ -8,7 +8,7 @@ fabric.module @minimal_temporal_adg(%mgr : memref<?x!fabric.bits<32>>,
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction"
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>) -> !fabric.bits<32> {

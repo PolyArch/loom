@@ -1,6 +1,14 @@
 // RUN: loom %s -split-input-file -verify-diagnostics
 
 // -----
+// Unknown operand-buffer mode rejected by the typed attribute parser.
+// expected-error @+3 {{expected ::fabric::OperandBufferMode to be one of: per_instruction, per_input_port, all_fu_share}}
+// expected-error @+2 {{failed to parse Fabric_OperandBufferModeAttr parameter 'value'}}
+builtin.module attributes {
+  operand_buffer_mode = #fabric.operand_buffer_mode<unknown>
+}
+
+// -----
 // Spatial PE rejecting any temporal-only attribute (forbidden cross-branch).
 fabric.module @spatial_with_tag_width(%a : !fabric.bits<32>) {
   // expected-error @+1 {{spatial fabric.pe must not carry temporal-only attribute 'tag_width'}}
@@ -24,7 +32,7 @@ fabric.module @temp_non_tag_port(%a : !fabric.bits<32>) {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction"
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
@@ -46,7 +54,7 @@ fabric.module @temp_mismatched_W(%a : !fabric.bits_tag<32, 4>) {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction"
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
@@ -68,7 +76,7 @@ fabric.module @temp_mismatched_T(%a : !fabric.bits_tag<32, 4>) {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction"
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
@@ -90,7 +98,7 @@ fabric.module @temp_tag_width_mismatch(%a : !fabric.bits_tag<32, 4>) {
          tag_width = 3 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction"
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
@@ -112,7 +120,7 @@ fabric.module @temp_zero_instructions(%a : !fabric.bits_tag<32, 4>) {
          tag_width = 4 : i32,
          num_instruction = 0 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction"
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
@@ -135,7 +143,7 @@ fabric.module @temp_reg_fifo_no_depth(%a : !fabric.bits_tag<32, 4>) {
          num_instruction = 1 : i32,
          num_reg_fifo = 4 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction"
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
@@ -158,7 +166,7 @@ fabric.module @temp_reg_fifo_depth_no_regs(%a : !fabric.bits_tag<32, 4>) {
          num_instruction = 1 : i32,
          reg_fifo_depth = 4 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction"
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
@@ -180,7 +188,7 @@ fabric.module @temp_buffer_size_per_instruction(%a : !fabric.bits_tag<32, 4>) {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction",
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
          operand_buffer_size = 4 : i32
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
@@ -203,7 +211,30 @@ fabric.module @temp_buffer_size_missing(%a : !fabric.bits_tag<32, 4>) {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_input_port"
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_input_port>
+       } {
+    fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
+      %v = fabric.op [@arith.addi] (%fa, %fa)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %v : !fabric.bits<32>
+    }
+  }
+  fabric.yield
+}
+
+// -----
+// Temporal PE: shared operand buffer size must be positive.
+fabric.module @temp_buffer_size_nonpositive(%a : !fabric.bits_tag<32, 4>) {
+  // expected-error @+1 {{'operand_buffer_size' must be >= 1, got 0}}
+  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<32, 4>
+                                       to !fabric.bits<32>)
+                            -> !fabric.bits_tag<32, 4>
+       attributes {
+         tag_width = 4 : i32,
+         num_instruction = 1 : i32,
+         fu_config_mode = "per_fu_config",
+         operand_buffer_mode = #fabric.operand_buffer_mode<all_fu_share>,
+         operand_buffer_size = 0 : i32
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
@@ -225,7 +256,7 @@ fabric.module @temp_discard_disconnect(%a : !fabric.bits_tag<32, 4>) {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction",
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
          pe_enable = true,
          instruction_mem = [
            {
@@ -263,7 +294,7 @@ fabric.module @temp_reg_src_no_regs(%a : !fabric.bits_tag<32, 4>) {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction",
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
          pe_enable = true,
          instruction_mem = [
            {
@@ -301,7 +332,7 @@ fabric.module @temp_src_sel_oor(%a : !fabric.bits_tag<32, 4>) {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction",
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
          pe_enable = true,
          instruction_mem = [
            {
@@ -339,7 +370,7 @@ fabric.module @temp_opcode_oor(%a : !fabric.bits_tag<32, 4>) {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction",
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
          pe_enable = true,
          instruction_mem = [
            {
@@ -377,7 +408,7 @@ fabric.module @temp_inst_count_mismatch(%a : !fabric.bits_tag<32, 4>) {
          tag_width = 4 : i32,
          num_instruction = 2 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction",
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
          pe_enable = true,
          instruction_mem = [
            {
@@ -415,7 +446,7 @@ fabric.module @temp_partial_sw_configs(%a : !fabric.bits_tag<32, 4>) {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction",
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
          pe_enable = true
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
@@ -438,7 +469,7 @@ fabric.module @temp_per_fu_count_mismatch(%a : !fabric.bits_tag<32, 4>) {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction",
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
          pe_enable = true,
          instruction_mem = [
            {
@@ -476,7 +507,7 @@ fabric.module @temp_per_inst_no_fu_cfg(%a : !fabric.bits_tag<32, 4>) {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_instruction_fu_config",
-         operand_buffer_mode = "per_instruction",
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
          pe_enable = true,
          instruction_mem = [
            {
@@ -513,7 +544,7 @@ fabric.module @temp_empty_body(%a : !fabric.bits_tag<32, 4>) {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction"
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
        } {
   }
   fabric.yield
@@ -528,7 +559,7 @@ fabric.module @temp_missing_num_instruction(%a : !fabric.bits_tag<32, 4>) {
        attributes {
          tag_width = 4 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction"
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
@@ -550,7 +581,7 @@ fabric.module @temp_named_arg_is_tag() {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction"
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
        } {
   ^bb0(%pa: !fabric.bits_tag<32, 4>):
     fabric.fu() -> (!fabric.bits<32>) {
@@ -575,7 +606,7 @@ fabric.module @temp_named_arg_too_wide() {
          tag_width = 2 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction"
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
        } {
   ^bb0(%pa: !fabric.bits<32>):
     fabric.fu() -> (!fabric.bits<16>) {
@@ -601,7 +632,7 @@ fabric.module @temp_named_yield_width_mismatch() {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction"
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
        } {
   ^bb0(%pa: !fabric.bits<16>):
     fabric.fu(%fa = %pa : !fabric.bits<16>) -> (!fabric.bits<32>) {
@@ -627,7 +658,7 @@ fabric.module @temp_anon_inner_too_wide(%a : !fabric.bits_tag<16, 2>) {
          tag_width = 2 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction"
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<16>) {
       %k = fabric.op [@dataflow.constant] (%fa)

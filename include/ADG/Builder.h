@@ -1,6 +1,7 @@
 #ifndef LOOM_ADG_BUILDER_H
 #define LOOM_ADG_BUILDER_H
 
+#include "Fabric/IR/FabricEnums.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -72,7 +73,8 @@ struct TemporalPeConfig {
   unsigned tagWidth = 0;
   unsigned numInstruction = 0;
   std::string fuConfigMode;
-  std::string operandBufferMode;
+  ::fabric::OperandBufferMode operandBufferMode =
+      ::fabric::OperandBufferMode::PerInstruction;
   unsigned operandBufferSize = 0;
   unsigned numRegFifo = 0;
   unsigned regFifoDepth = 0;

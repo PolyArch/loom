@@ -1203,7 +1203,7 @@ ModuleBuilder buildMixedTemporalBridgeAdg() {
   temporal.tagWidth = 4;
   temporal.numInstruction = 3;
   temporal.fuConfigMode = "per_fu_config";
-  temporal.operandBufferMode = "per_input_port";
+  temporal.operandBufferMode = ::fabric::OperandBufferMode::PerInputPort;
   temporal.operandBufferSize = 4;
   module.addPe(makeMinimalAddPe(Schedule::Temporal, "lhs_t", "rhs_t",
                                 "!fabric.bits_tag<32, 4>", "!fabric.bits<32>",
@@ -1254,7 +1254,7 @@ ModuleBuilder buildHeterogeneousIslandsAdg() {
   temporal.tagWidth = 4;
   temporal.numInstruction = 2;
   temporal.fuConfigMode = "per_fu_config";
-  temporal.operandBufferMode = "per_input_port";
+  temporal.operandBufferMode = ::fabric::OperandBufferMode::PerInputPort;
   temporal.operandBufferSize = 2;
   module.addPe(makeMinimalAddPe(Schedule::Temporal, "lhs_t", "rhs_t",
                                 "!fabric.bits_tag<32, 4>", "!fabric.bits<32>",
@@ -1652,7 +1652,7 @@ ModuleBuilder loom::adg::buildMinimalTemporalAdg() {
   temporal.tagWidth = 4;
   temporal.numInstruction = 1;
   temporal.fuConfigMode = "per_fu_config";
-  temporal.operandBufferMode = "per_instruction";
+  temporal.operandBufferMode = ::fabric::OperandBufferMode::PerInstruction;
   module.addPe(makeMinimalAddPe(Schedule::Temporal, "!fabric.bits_tag<32, 4>",
                                 "!fabric.bits<32>", std::move(temporal)));
 

@@ -11,10 +11,12 @@ add_mlir_library(LoomADGBuilder
 
   DEPENDS
   MLIRDataflowEnumsIncGen
+  MLIRFabricEnumsIncGen
 
   LINK_LIBS PUBLIC
   LLVMSupport
   MLIRArithDialect
   MLIRDataflowEnums
+  MLIRFabricEnums
   MLIRIR
 )

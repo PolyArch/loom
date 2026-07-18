@@ -9,7 +9,12 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <string>
+#include <type_traits>
 #include <utility>
+
+static_assert(
+    std::is_same_v<decltype(loom::adg::TemporalPeConfig::operandBufferMode),
+                   ::fabric::OperandBufferMode>);
 
 static llvm::cl::opt<bool>
     sharedReduction("shared-reduction",

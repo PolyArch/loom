@@ -26,7 +26,7 @@ ModuleBuilder loom::adg::buildFullSpatialCoreAdg() {
   temporal.tagWidth = 4;
   temporal.numInstruction = 2;
   temporal.fuConfigMode = "per_fu_config";
-  temporal.operandBufferMode = "per_input_port";
+  temporal.operandBufferMode = ::fabric::OperandBufferMode::PerInputPort;
   temporal.operandBufferSize = 2;
   temporal.numRegFifo = 2;
   temporal.regFifoDepth = 4;

@@ -1,5 +1,6 @@
 #include "Fabric/IR/FabricDialect.h"
 
+#include "Fabric/IR/FabricAttrs.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/FabricTypes.h"
 #include "mlir/IR/Builders.h"
@@ -23,6 +24,10 @@ LogicalResult BitsTagType::verify(
 }
 
 void FabricDialect::initialize() {
+  addAttributes<
+#define GET_ATTRDEF_LIST
+#include "Fabric/IR/FabricAttrs.cpp.inc"
+      >();
   addTypes<
 #define GET_TYPEDEF_LIST
 #include "Fabric/IR/FabricTypes.cpp.inc"
@@ -32,3 +37,6 @@ void FabricDialect::initialize() {
 #include "Fabric/IR/FabricOps.cpp.inc"
       >();
 }
+
+#define GET_ATTRDEF_CLASSES
+#include "Fabric/IR/FabricAttrs.cpp.inc"

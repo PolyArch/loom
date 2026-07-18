@@ -2,35 +2,16 @@
 #define FABRIC_OPS_TD
 
 include "Fabric/IR/FabricDialect.td"
+include "Fabric/IR/FabricEnums.td"
 include "Fabric/IR/FabricTypes.td"
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/CommonAttrConstraints.td"
-include "mlir/IR/EnumAttr.td"
 include "mlir/IR/Properties.td"
 include "mlir/IR/RegionKindInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
-
-def Fabric_ScheduleAttr : I32EnumAttr<"Schedule",
-    "fabric container schedule (spatial vs temporal time-share)",
-    [
-      I32EnumAttrCase<"Spatial",  0, "spatial">,
-      I32EnumAttrCase<"Temporal", 1, "temporal">
-    ]> {
-  let cppNamespace = "::fabric";
-}
-
-def Fabric_BoundaryDirectionAttr : I32EnumAttr<"BoundaryDirection",
-    "fabric.boundary direction (s2t / t2t / t2s)",
-    [
-      I32EnumAttrCase<"S2t", 0, "s2t">,
-      I32EnumAttrCase<"T2t", 1, "t2t">,
-      I32EnumAttrCase<"T2s", 2, "t2s">
-    ]> {
-  let cppNamespace = "::fabric";
-}
 
 def Fabric_TypeProp : Property<"::mlir::Type", "MLIR type"> {
   let convertFromAttribute = [{
@@ -61,14 +42,6 @@ def Fabric_InnerInputTypesProp : ArrayProp<Fabric_TypeProp,
   let defaultValue = "::llvm::ArrayRef<::mlir::Type>{}";
   let storageTypeValueOverride = "::llvm::SmallVector<::mlir::Type>{}";
 }
-
-// Temporal-PE FU configuration mode and operand buffer mode are stored
-// as string-valued attributes ("per_instruction_fu_config" /
-// "per_fu_config"; "per_instruction" / "per_input_port" /
-// "all_fu_share"). The verifier validates the keyword set; the
-// configuration generator interprets the keyword. We avoid a
-// dedicated dialect attribute parser/printer here to keep the dialect
-// initialization minimal.
 
 def Fabric_MuxOp : Fabric_Op<"mux", [Pure, SameOperandsAndResultType]> {
   let summary = "fabric multiplexer with handshake";
@@ -344,7 +317,7 @@ def Fabric_PeOp : Fabric_Op<"pe", [
       OptionalAttr<I32Attr>:$reg_fifo_depth,
       OptionalAttr<I32Attr>:$reg_fifo_ports,
       OptionalAttr<StrAttr>:$fu_config_mode,
-      OptionalAttr<StrAttr>:$operand_buffer_mode,
+      OptionalAttr<Fabric_OperandBufferModeAttr>:$operand_buffer_mode,
       OptionalAttr<I32Attr>:$operand_buffer_size,
       // Temporal-only software configuration trio (all-or-nothing).
       OptionalAttr<BoolAttr>:$pe_enable,

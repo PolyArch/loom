@@ -481,7 +481,8 @@ void printTemporalPeAttributes(llvm::raw_ostream &os,
   if (config.regFifoPorts)
     os << "         reg_fifo_ports = " << config.regFifoPorts << " : i32,\n";
   os << "         fu_config_mode = \"" << config.fuConfigMode << "\",\n"
-     << "         operand_buffer_mode = \"" << config.operandBufferMode << "\"";
+     << "         operand_buffer_mode = #fabric.operand_buffer_mode<"
+     << ::fabric::stringifyOperandBufferMode(config.operandBufferMode) << ">";
   if (config.operandBufferSize)
     os << ",\n         operand_buffer_size = " << config.operandBufferSize
        << " : i32";

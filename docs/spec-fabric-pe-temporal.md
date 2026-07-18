@@ -24,7 +24,7 @@ Both anonymous and named-template forms are accepted:
          tag_width = 4 : i32,
          num_instruction = 4 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = "per_instruction"
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
        } { ... }
 
 fabric.pe @TempPe [temporal] (!fabric.bits_tag<32, 4>)
@@ -112,8 +112,8 @@ attributes).
 | `reg_fifo_depth`      | `I32Attr`        | required iff `num_reg_fifo > 0`; absent or `0` otherwise        |
 | `reg_fifo_ports`      | `I32Attr`        | optional (default 1); must be `1` or `2`                        |
 | `fu_config_mode`      | `StrAttr`        | required, `"per_instruction_fu_config"` or `"per_fu_config"`    |
-| `operand_buffer_mode` | `StrAttr`        | required, `"per_instruction"` / `"per_input_port"` / `"all_fu_share"` |
-| `operand_buffer_size` | `I32Attr`        | required iff `operand_buffer_mode != "per_instruction"`; absent otherwise |
+| `operand_buffer_mode` | `OperandBufferModeAttr` | required, `#fabric.operand_buffer_mode<per_instruction>` / `#fabric.operand_buffer_mode<per_input_port>` / `#fabric.operand_buffer_mode<all_fu_share>` |
+| `operand_buffer_size` | `I32Attr`        | absent for `per_instruction`; otherwise required and positive          |
 
 The `K = numInputs()` and `L = numOutputs()` shape parameters are
 read from the op signature (anonymous form) or the `function_type`
@@ -236,16 +236,24 @@ FIFO instead of a PE port; `src_sel`/`dst_sel` is the FIFO index in
 
 ## Operand buffer modes
 
-* `per_instruction`: each instruction slot owns a depth-1 operand buffer
-  per FU input (no `operand_buffer_size`).
-* `per_input_port`: one operand buffer per FU input port, shared across
-  instructions. Depth `operand_buffer_size` per buffer.
-* `all_fu_share`: a single shared buffer of total depth
-  `operand_buffer_size` serves all FU inputs.
+All three modes expose the same logical FIFO semantics. A logical operand
+queue is determined by the configured instruction context and FU ingress
+selected by ingress routing and tag dispatch. The mode changes only the
+physical storage organization:
 
-All three are ordered-dataflow models: tokens leave the buffer in
-arrival order; an instruction fires when the first token at each
-selected operand source carries the matching tag.
+* `per_instruction`: each logical operand queue has dedicated storage.
+  `operand_buffer_size` is absent.
+* `per_input_port`: logical queues associated with one FU ingress bank share
+  an entry pool of size `operand_buffer_size`.
+* `all_fu_share`: all logical operand queues in the PE share one entry pool
+  of size `operand_buffer_size`.
+
+Every shared pool maintains independent FIFO head and tail state for each
+logical queue. Allocation may use a shared free-entry pool, but dequeue
+eligibility is determined from the selected logical queue's head. A shared
+mode must not merge different contexts, tags, or logical streams into one
+global arrival-order FIFO head; that organization can introduce
+implementation-induced head-of-line deadlock.
 
 ## Trigger condition
 
@@ -253,10 +261,13 @@ An instruction at slot `i` fires when:
 
 1. Slot `i` is enabled (`pe_enable && instruction_mem[i].enable`).
 2. For every `operand_sel[j]` with `is_port == true` and
-   `discard|disconnect == false`, the head token of the selected source
-   (PE input port `src_sel` or reg FIFO `src_sel`) is available with a
-   tag matching `operand_sel[j].tag`.
-3. The selected FU (`opcode`) is ready to consume.
+   `discard|disconnect == false`, the head token of the selected logical
+   operand queue is available. PE-ingress tag dispatch places tokens into
+   that queue.
+3. For every `operand_sel[j]` with `is_port == false` and
+   `discard|disconnect == false`, the selected register FIFO has a head token
+   available under the register-FIFO semantics above.
+4. The selected FU (`opcode`) is ready to consume.
 
 `discard` drains the input slot regardless of consumption; `disconnect`
 treats the source as unconnected for that slot. `discard && disconnect`
