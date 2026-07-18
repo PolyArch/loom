@@ -171,6 +171,11 @@ std::optional<mlir::Value> getVectorBoundaryInputPhase(mlir::Operation *op);
 
 std::optional<mlir::Value> getVectorBoundaryOutputPhase(mlir::Operation *op);
 
+mlir::ValueRange getVectorBoundaryTruePhaseInputPayloads(mlir::Operation *op);
+
+bool isVectorBoundaryTruePhaseOutputPayload(mlir::Value value,
+                                            mlir::Value phase);
+
 std::optional<mlir::Value> getStreamActivation(dataflow::StreamOp stream);
 
 std::optional<mlir::Value> getCloseActivation(mlir::Value value);

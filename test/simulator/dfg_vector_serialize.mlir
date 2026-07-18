@@ -121,8 +121,13 @@ module {
     %one = dataflow.constant %start {const_value = 1 : i8} : i8
     %ordinal, %group_phase = dataflow.stream %zero, %one, %one
         step add while ult : i8
-    %packed = dataflow.constant %start {const_value = 197121 : i32} : i32
-    %packed_mask = dataflow.constant %start {const_value = 0 : i4} : i4
+    %group_units = dataflow.invariant %group_phase, %start : none
+    %group_events:2 = dataflow.demux %group_phase, %group_units
+        : (i1, none) -> (none, none)
+    %packed = dataflow.constant %group_events#1
+        {const_value = 197121 : i32} : i32
+    %packed_mask = dataflow.constant %group_events#1
+        {const_value = 0 : i4} : i4
     %vector = dataflow.unpack %packed : i32 -> vector<4xi8>
     %mask = dataflow.unpack %packed_mask : i4 -> vector<4xi1>
     %scalar, %scalar_phase =

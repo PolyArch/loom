@@ -10,6 +10,8 @@
 // RUN: not loom-dfg-sim %t.dir/stream-activated-schedule.mlir --graph stream_activated_schedule --arg 0=0 --arg 1=7 --output %t.dir/stream-activated.json 2>&1 | FileCheck %s --check-prefix=STREAM-ACTIVATED
 // RUN: not loom-dfg-sim %t.dir/stateful-activated-schedule.mlir --graph stateful_activated_schedule --arg 0=7 --arg 0=9 --output %t.dir/stateful-activated.json 2>&1 | FileCheck %s --check-prefix=STATEFUL-ACTIVATED
 // RUN: not loom-lower %t.dir/recursive-nested-activation.mlir -o %t.dir/recursive.out.mlir 2>&1 | FileCheck %s --check-prefix=RECURSIVE-NESTED
+// RUN: not loom-lower %t.dir/parallelize-under-supplied.mlir -o %t.dir/parallelize-under-supplied.out.mlir 2>&1 | FileCheck %s --check-prefix=PARALLELIZE-UNDER-SUPPLIED
+// RUN: not loom-lower %t.dir/serialize-under-supplied.mlir -o %t.dir/serialize-under-supplied.out.mlir 2>&1 | FileCheck %s --check-prefix=SERIALIZE-UNDER-SUPPLIED
 // RUN: test ! -e %t.dir/value.out.mlir
 // RUN: test ! -e %t.dir/filtered-value.out.mlir
 // RUN: test ! -e %t.dir/stream.out.mlir
@@ -19,6 +21,8 @@
 // RUN: test ! -e %t.dir/stream-activated.json
 // RUN: test ! -e %t.dir/stateful-activated.json
 // RUN: test ! -e %t.dir/recursive.out.mlir
+// RUN: test ! -e %t.dir/parallelize-under-supplied.out.mlir
+// RUN: test ! -e %t.dir/serialize-under-supplied.out.mlir
 
 // VALUE: graph @stream_to_value value output #0 is not statically exact-one
 // FILTERED-VALUE: graph @filtered_stream_to_value value output #0 is not statically exact-one
@@ -28,6 +32,8 @@
 // STREAM-ACTIVATED: graph @stream_activated_schedule value output #0 is not statically exact-one
 // STATEFUL-ACTIVATED: graph @stateful_activated_schedule value output #0 is not statically exact-one
 // RECURSIVE-NESTED: graph @recursive_nested_activation value output #0 is not statically exact-one
+// PARALLELIZE-UNDER-SUPPLIED: graph @parallelize_under_supplied stream output #0 has no statically proven close/commit
+// SERIALIZE-UNDER-SUPPLIED: graph @serialize_under_supplied stream output #0 has no statically proven close/commit
 
 // A loop selected by one branch has one close event only on that branch. The
 // final mux publishes that close or the one-shot bypass from the same outer
@@ -240,5 +246,56 @@ module {
         : (none, none) -> (none, none)
     dataflow.graph.return values(%lanes#0 : i32) streams() memories()
         complete(%complete#0 : none)
+  }
+}
+
+// A scalar phase close cannot project through parallelize when only one data
+// token is available for two true scalar phase items.
+//--- parallelize-under-supplied.mlir
+module {
+  dataflow.graph private @parallelize_under_supplied(%start: none) -> i1
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 0, 1, 0>} {
+    %zero = dataflow.constant %start {const_value = 0 : i8} : i8
+    %two = dataflow.constant %start {const_value = 2 : i8} : i8
+    %one = dataflow.constant %start {const_value = 1 : i8} : i8
+    %item, %scalar_phase = dataflow.stream %zero, %two, %one
+        step add while ult : i8
+    %only_item = dataflow.constant %start {const_value = 7 : i8} : i8
+    %vector, %mask, %group_phase =
+      dataflow.parallelize %only_item, %scalar_phase
+        : (i8, i1) -> (vector<2xi8>, vector<2xi1>, i1)
+    %units = dataflow.invariant %group_phase, %start : none
+    %close:2 = dataflow.demux %group_phase, %units
+        : (i1, none) -> (none, none)
+    dataflow.graph.return values() streams(%group_phase : i1) memories()
+        complete(%close#0 : none)
+  }
+}
+
+// A group phase close cannot project through serialize when one vector and
+// mask pair cannot cover both true group phase items.
+//--- serialize-under-supplied.mlir
+module {
+  dataflow.graph private @serialize_under_supplied(%start: none) -> i1
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 0, 1, 0>} {
+    %zero = dataflow.constant %start {const_value = 0 : i8} : i8
+    %two = dataflow.constant %start {const_value = 2 : i8} : i8
+    %one = dataflow.constant %start {const_value = 1 : i8} : i8
+    %ordinal, %group_phase = dataflow.stream %zero, %two, %one
+        step add while ult : i8
+    %packed = dataflow.constant %start {const_value = 513 : i16} : i16
+    %packed_mask = dataflow.constant %start {const_value = 3 : i2} : i2
+    %vector = dataflow.unpack %packed : i16 -> vector<2xi8>
+    %mask = dataflow.unpack %packed_mask : i2 -> vector<2xi1>
+    %scalar, %scalar_phase =
+      dataflow.serialize %vector, %mask, %group_phase
+        : (vector<2xi8>, vector<2xi1>, i1) -> (i8, i1)
+    %units = dataflow.invariant %scalar_phase, %start : none
+    %close:2 = dataflow.demux %scalar_phase, %units
+        : (i1, none) -> (none, none)
+    dataflow.graph.return values() streams(%scalar_phase : i1) memories()
+        complete(%close#0 : none)
   }
 }

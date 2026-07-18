@@ -8,7 +8,10 @@
 // RUN: loom-dfg-sim %t.dir/canonical-backend-gap.mlir --graph canonical_backend_gap --arg 0=1 --arg 1=2 --output %t.canonical-backend-gap.json
 // RUN: FileCheck %s --check-prefix=CANONICAL-BACKEND-GAP < %t.canonical-backend-gap.json
 // RUN: not loom-dfg-sim %t.dir/unregistered-graph.mlir --graph unregistered_graph_actor --arg 0=1 --output %t.unregistered.json 2>&1 | FileCheck %s --check-prefix=VALIDATOR-REJECT
-// RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/masked-epilogues.mlir | FileCheck %s --check-prefix=MASKED-EPILOGUE
+// RUN: not loom-raise-opt --loom-lower-graph-memory %t.dir/vector-to-integer-bitcast.mlir 2>&1 | FileCheck %s --check-prefix=GRAPH-BITCAST-REJECT
+// RUN: not loom-raise-opt --loom-lower-for-to-graph %t.dir/integer-to-vector-bitcast.mlir 2>&1 | FileCheck %s --check-prefix=THREAD-BITCAST-REJECT
+// RUN: not loom-dfg-sim %t.dir/vector-to-integer-bitcast.mlir --graph vector_to_integer_bitcast --arg 0=513 --output %t.vector-bitcast.json 2>&1 | FileCheck %s --check-prefix=VALIDATOR-BITCAST-REJECT
+// RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/vector-boundary-epilogues.mlir | FileCheck %s --check-prefix=VECTOR-BOUNDARY
 
 //--- registered.mlir
 module {
@@ -20,15 +23,15 @@ module {
         iter_args(%value = %seed) -> (f32) : i32 {
       scf.yield %value : f32
     }
-    %converted = llvm.fptosi %result : f32 to i32
-    %swapped = llvm.intr.bswap(%converted) : (i32) -> i32
+    %bits = llvm.bitcast %result : f32 to i32
+    %swapped = llvm.intr.bswap(%bits) : (i32) -> i32
     llvm.store %swapped, %dst : i32, !llvm.ptr
     dataflow.thread.yield
   }
 }
 
 // REGISTERED-LABEL: dataflow.graph private @g_registered_llvm_compute_0
-// REGISTERED: llvm.fptosi
+// REGISTERED: llvm.bitcast
 // REGISTERED: llvm.intr.bswap
 // REGISTERED: dataflow.graph.return
 
@@ -91,7 +94,32 @@ module {
 
 // THREAD-REJECT: error: loom-lower-for-to-graph: operation 'llvm.mlir.undef' is not a registered canonical Dataflow actor or a supported graph-lowering operation
 
-//--- masked-epilogues.mlir
+//--- vector-to-integer-bitcast.mlir
+module {
+  dataflow.graph private @vector_to_integer_bitcast(
+      %start: none, %input: vector<2xi8>) -> i16 {
+    %packed = llvm.bitcast %input : vector<2xi8> to i16
+    %published:2 = dataflow.sync %start, %packed
+        : (none, i16) -> (none, i16)
+    dataflow.graph.return %published#0, %published#1 : none, i16
+  }
+}
+
+// GRAPH-BITCAST-REJECT: error: loom-lower-graph-memory: operation 'llvm.bitcast' is not a registered canonical Dataflow actor or a supported graph-lowering operation
+// VALIDATOR-BITCAST-REJECT: finalized graph contains unregistered actor 'llvm.bitcast'
+
+//--- integer-to-vector-bitcast.mlir
+module {
+  dataflow.thread private @integer_to_vector_bitcast(%input: i16)
+      ctrl (%ctrl: none) {
+    %vector = llvm.bitcast %input : i16 to vector<2xi8>
+    dataflow.thread.yield
+  }
+}
+
+// THREAD-BITCAST-REJECT: error: loom-lower-for-to-graph: operation 'llvm.bitcast' is not a registered canonical Dataflow actor or a supported graph-lowering operation
+
+//--- vector-boundary-epilogues.mlir
 module {
   dataflow.thread private @pack_epilogue(
       %limit: index, %seed: vector<2xi8>, %out: memref<?xi16>)
@@ -123,13 +151,13 @@ module {
   }
 }
 
-// MASKED-EPILOGUE-LABEL: dataflow.thread private @pack_epilogue
-// MASKED-EPILOGUE: dataflow.pack
-// MASKED-EPILOGUE-LABEL: dataflow.thread private @unpack_epilogue
-// MASKED-EPILOGUE: dataflow.unpack
-// MASKED-EPILOGUE-LABEL: dataflow.graph private @g_pack_epilogue_0
-// MASKED-EPILOGUE-NOT: dataflow.pack
-// MASKED-EPILOGUE: dataflow.graph.return
-// MASKED-EPILOGUE-LABEL: dataflow.graph private @g_unpack_epilogue_0
-// MASKED-EPILOGUE-NOT: dataflow.unpack
-// MASKED-EPILOGUE: dataflow.graph.return
+// VECTOR-BOUNDARY-LABEL: dataflow.thread private @pack_epilogue
+// VECTOR-BOUNDARY: dataflow.pack
+// VECTOR-BOUNDARY-LABEL: dataflow.thread private @unpack_epilogue
+// VECTOR-BOUNDARY: dataflow.unpack
+// VECTOR-BOUNDARY-LABEL: dataflow.graph private @g_pack_epilogue_0
+// VECTOR-BOUNDARY-NOT: dataflow.pack
+// VECTOR-BOUNDARY: dataflow.graph.return
+// VECTOR-BOUNDARY-LABEL: dataflow.graph private @g_unpack_epilogue_0
+// VECTOR-BOUNDARY-NOT: dataflow.unpack
+// VECTOR-BOUNDARY: dataflow.graph.return

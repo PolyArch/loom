@@ -1,0 +1,213 @@
+#include "DFGSimulatorInternal.h"
+
+#include "Dataflow/IR/DataflowDialect.h"
+
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
+#include "llvm/ADT/APInt.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <cstdint>
+#include <cstdlib>
+#include <initializer_list>
+#include <utility>
+
+using namespace loom::sim::detail;
+
+namespace {
+
+constexpr llvm::StringLiteral fixture = R"mlir(
+module {
+  func.func @parallelize(%data: i8, %phase: i1) {
+    %vector, %mask, %group_phase =
+      dataflow.parallelize %data, %phase
+        : (i8, i1) -> (vector<2xi8>, vector<2xi1>, i1)
+    return
+  }
+
+  func.func @serialize(%packed: i32, %packed_mask: i4, %group_phase: i1) {
+    %vector = dataflow.unpack %packed : i32 -> vector<4xi8>
+    %mask = dataflow.unpack %packed_mask : i4 -> vector<4xi1>
+    %data, %scalar_phase =
+      dataflow.serialize %vector, %mask, %group_phase
+        : (vector<4xi8>, vector<4xi1>, i1) -> (i8, i1)
+    return
+  }
+}
+)mlir";
+
+[[noreturn]] void fail(llvm::StringRef message) {
+  llvm::errs() << "DFGVectorBoundaryTest: " << message << "\n";
+  std::exit(1);
+}
+
+void require(bool condition, llvm::StringRef message) {
+  if (!condition)
+    fail(message);
+}
+
+template <typename T> T takeExpected(llvm::Expected<T> value) {
+  if (!value)
+    fail(llvm::toString(value.takeError()));
+  return std::move(*value);
+}
+
+Token tokenWithBits(mlir::Type type, uint64_t value) {
+  unsigned width = mlir::cast<mlir::IntegerType>(type).getWidth();
+  return takeExpected(tokenFromBitPattern(llvm::APInt(width, value), type));
+}
+
+uint64_t bitsOf(const Token &token, mlir::Type type) {
+  return takeExpected(tokenBitPattern(token, type)).getZExtValue();
+}
+
+void expectBits(llvm::ArrayRef<Token> tokens, mlir::Type type,
+                std::initializer_list<uint64_t> expected,
+                llvm::StringRef message) {
+  require(tokens.size() == expected.size(), message);
+  for (auto [token, value] : llvm::zip_equal(tokens, expected))
+    require(bitsOf(token, type) == value, message);
+}
+
+void expectPhases(llvm::ArrayRef<Token> tokens,
+                  std::initializer_list<bool> expected,
+                  llvm::StringRef message) {
+  require(tokens.size() == expected.size(), message);
+  for (auto [token, value] : llvm::zip_equal(tokens, expected))
+    require(boolToken(token) == value, message);
+}
+
+void flushPending(SimulatorState &state) {
+  for (auto &entry : state.pendingChannels) {
+    auto &target = state.channels[entry.first];
+    while (!entry.second.empty()) {
+      target.push_back(entry.second.front());
+      entry.second.pop_front();
+    }
+  }
+  state.pendingChannels.clear();
+  for (auto &entry : state.pendingObservedOutputs) {
+    auto &target = state.observedOutputs[entry.first];
+    target.append(entry.second.begin(), entry.second.end());
+  }
+  state.pendingObservedOutputs.clear();
+}
+
+void parallelizePreservesQueuedActivation(dataflow::ParallelizeOp op) {
+  SimulatorState state;
+  auto &data = state.channels[&op.getDataMutable()];
+  data.push_back(tokenWithBits(op.getData().getType(), 17));
+  data.push_back(tokenWithBits(op.getData().getType(), 18));
+  auto &phase = state.channels[&op.getScalarPhaseMutable()];
+  phase.push_back(boolValueToken(true));
+  phase.push_back(boolValueToken(false));
+  phase.push_back(boolValueToken(true));
+  phase.push_back(boolValueToken(false));
+
+  require(fireActorOperation(op, state), "first scalar true did not fire");
+  require(data.size() == 1, "first scalar true consumed the wrong payload");
+  require(fireActorOperation(op, state), "first scalar false did not fire");
+  require(data.size() == 1,
+          "scalar false consumed the next activation payload");
+  require(fireActorOperation(op, state), "second scalar true did not fire");
+  require(fireActorOperation(op, state), "second scalar false did not fire");
+
+  expectBits(state.pendingObservedOutputs[op.getVector()],
+             op.getVector().getType(), {17, 18},
+             "parallelize did not reset zero-filled lanes");
+  expectBits(state.pendingObservedOutputs[op.getMask()], op.getMask().getType(),
+             {1, 1}, "parallelize did not reset active masks");
+  expectPhases(state.pendingObservedOutputs[op.getGroupPhase()],
+               {true, false, true, false},
+               "parallelize emitted the wrong activation phases");
+}
+
+void serializePreservesQueuedActivation(dataflow::SerializeOp op,
+                                        dataflow::UnpackOp vectorUnpack,
+                                        dataflow::UnpackOp maskUnpack) {
+  SimulatorState state;
+  auto &packed = state.channels[&vectorUnpack.getPackedMutable()];
+  packed.push_back(
+      tokenWithBits(vectorUnpack.getPacked().getType(), 0x44332211U));
+  packed.push_back(
+      tokenWithBits(vectorUnpack.getPacked().getType(), 0x44332211U));
+  auto &packedMask = state.channels[&maskUnpack.getPackedMutable()];
+  packedMask.push_back(tokenWithBits(maskUnpack.getPacked().getType(), 0));
+  packedMask.push_back(tokenWithBits(maskUnpack.getPacked().getType(), 5));
+
+  require(fireActorOperation(vectorUnpack, state),
+          "first vector unpack did not fire");
+  require(fireActorOperation(vectorUnpack, state),
+          "second vector unpack did not fire");
+  require(fireActorOperation(maskUnpack, state),
+          "first mask unpack did not fire");
+  require(fireActorOperation(maskUnpack, state),
+          "second mask unpack did not fire");
+  flushPending(state);
+
+  auto &vectors = state.channels[&op.getVectorMutable()];
+  auto &masks = state.channels[&op.getMaskMutable()];
+  require(vectors.size() == 2 && masks.size() == 2,
+          "unpack did not queue both activation payloads");
+  auto &phase = state.channels[&op.getGroupPhaseMutable()];
+  phase.push_back(boolValueToken(true));
+  phase.push_back(boolValueToken(false));
+  phase.push_back(boolValueToken(true));
+  phase.push_back(boolValueToken(false));
+
+  require(fireActorOperation(op, state), "all-zero true group did not fire");
+  require(vectors.size() == 1 && masks.size() == 1,
+          "all-zero true group did not consume its payload");
+  require(state.pendingObservedOutputs[op.getData()].empty(),
+          "all-zero group emitted scalar data");
+  require(fireActorOperation(op, state), "first group false did not fire");
+  require(vectors.size() == 1 && masks.size() == 1,
+          "group false consumed the next activation payload");
+  require(fireActorOperation(op, state), "sparse true group did not fire");
+  require(fireActorOperation(op, state), "second group false did not fire");
+
+  expectBits(state.pendingObservedOutputs[op.getData()], op.getData().getType(),
+             {0x11, 0x33}, "serialize did not preserve low-slice lane order");
+  expectPhases(state.pendingObservedOutputs[op.getScalarPhase()],
+               {false, true, true, false},
+               "serialize emitted the wrong activation phases");
+}
+
+} // namespace
+
+int main() {
+  mlir::DialectRegistry registry;
+  registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(fixture, &context);
+  require(static_cast<bool>(module), "unable to parse fixture");
+
+  dataflow::ParallelizeOp parallelize;
+  dataflow::SerializeOp serialize;
+  llvm::SmallVector<dataflow::UnpackOp, 2> unpacks;
+  module->walk([&](dataflow::ParallelizeOp op) { parallelize = op; });
+  module->walk([&](dataflow::SerializeOp op) { serialize = op; });
+  module->walk([&](dataflow::UnpackOp op) { unpacks.push_back(op); });
+  require(parallelize && serialize && unpacks.size() == 2,
+          "fixture actors are missing");
+
+  dataflow::UnpackOp vectorUnpack = unpacks[0];
+  dataflow::UnpackOp maskUnpack = unpacks[1];
+  if (mlir::cast<mlir::VectorType>(vectorUnpack.getVector().getType())
+          .getElementType()
+          .isInteger(1))
+    std::swap(vectorUnpack, maskUnpack);
+
+  parallelizePreservesQueuedActivation(parallelize);
+  serializePreservesQueuedActivation(serialize, vectorUnpack, maskUnpack);
+  return 0;
+}

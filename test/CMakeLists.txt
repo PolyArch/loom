@@ -5,6 +5,7 @@ add_subdirectory(evaluation)
 add_subdirectory(mapping)
 add_subdirectory(pnr)
 add_subdirectory(fabric)
+add_subdirectory(simulator)
 
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
@@ -37,6 +38,7 @@ set(LOOM_TEST_DEPENDS
   loom-mapping-core-test
   loom-parallel-test
   loom-pnr-index-test
+  loom-simulator-vector-boundary-test
   loom-synth-base-test
   loom-synth-config-test
   loom-synth-fu-dump

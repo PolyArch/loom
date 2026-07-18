@@ -1,5 +1,7 @@
 #include "Dataflow/IR/DataflowActorSemantics.h"
 
+#include "Dataflow/IR/DataflowInterfaces.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Matchers.h"
 #include "llvm/ADT/APInt.h"
@@ -161,7 +163,7 @@ mlir::Value getActivationSource(mlir::Value value,
                 dataflow::GateOp, dataflow::DemuxOp, dataflow::ParallelizeOp,
                 dataflow::SerializeOp, dataflow::UnpackOp>(def))
     return {};
-  if (!llvm::isa<dataflow::CanonicalDataflowActorOpInterface>(def) &&
+  if (!dataflow::isCanonicalDataflowActor(def) &&
       !llvm::isa<mlir::UnrealizedConversionCastOp>(def))
     return {};
 
@@ -982,6 +984,24 @@ dataflow::semantics::getVectorBoundaryOutputPhase(mlir::Operation *op) {
   if (auto serialize = llvm::dyn_cast<dataflow::SerializeOp>(op))
     return serialize.getScalarPhase();
   return std::nullopt;
+}
+
+mlir::ValueRange dataflow::semantics::getVectorBoundaryTruePhaseInputPayloads(
+    mlir::Operation *op) {
+  if (!op || !llvm::isa<dataflow::ParallelizeOp, dataflow::SerializeOp>(op))
+    return {};
+  return op->getOperands().drop_back();
+}
+
+bool dataflow::semantics::isVectorBoundaryTruePhaseOutputPayload(
+    mlir::Value value, mlir::Value phase) {
+  mlir::Operation *def = value.getDefiningOp();
+  if (auto parallelize = llvm::dyn_cast_or_null<dataflow::ParallelizeOp>(def))
+    return phase == parallelize.getGroupPhase() &&
+           (value == parallelize.getVector() || value == parallelize.getMask());
+  if (auto serialize = llvm::dyn_cast_or_null<dataflow::SerializeOp>(def))
+    return phase == serialize.getScalarPhase() && value == serialize.getData();
+  return false;
 }
 
 std::optional<mlir::Value>

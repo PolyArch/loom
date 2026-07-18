@@ -1,6 +1,7 @@
 #include "Dataflow/IR/DataflowGraphValidation.h"
 
 #include "Dataflow/IR/DataflowActorSemantics.h"
+#include "Dataflow/IR/DataflowInterfaces.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -652,7 +653,7 @@ private:
                   dataflow::UnpackOp, dataflow::SerializeOp, dataflow::MuxOp>(
             def))
       return false;
-    if (!llvm::isa<dataflow::CanonicalDataflowActorOpInterface>(def) &&
+    if (!dataflow::isCanonicalDataflowActor(def) &&
         !llvm::isa<mlir::memref::CastOp, mlir::UnrealizedConversionCastOp>(def))
       return false;
     return llvm::all_of(def->getOperands(), [&](mlir::Value operand) {
@@ -716,7 +717,7 @@ private:
                   dataflow::UnpackOp, dataflow::SerializeOp, dataflow::MuxOp>(
             def))
       return false;
-    if (!llvm::isa<dataflow::CanonicalDataflowActorOpInterface>(def) &&
+    if (!dataflow::isCanonicalDataflowActor(def) &&
         !llvm::isa<mlir::memref::CastOp, mlir::UnrealizedConversionCastOp>(def))
       return false;
     bool hasSelectedOperand = false;
@@ -915,11 +916,21 @@ private:
       }
       return true;
     }
+    if (dataflow::semantics::isVectorBoundaryTruePhaseOutputPayload(value,
+                                                                    phase))
+      return truePhaseOnly;
+    if (dataflow::semantics::isStatelessOneTokenVectorBoundary(def)) {
+      if (result.getResultNumber() != 0 || def->getNumOperands() != 1)
+        return false;
+      llvm::DenseSet<mlir::Value> inputVisited = visited;
+      return isAligned(def->getOperand(0), phase, assumption, truePhaseOnly,
+                       inputVisited);
+    }
     if (llvm::isa<dataflow::StreamOp, dataflow::GateOp, dataflow::ParallelizeOp,
                   dataflow::PackOp, dataflow::UnpackOp, dataflow::SerializeOp,
                   dataflow::DemuxOp>(def))
       return false;
-    if (!llvm::isa<dataflow::CanonicalDataflowActorOpInterface>(def) &&
+    if (!dataflow::isCanonicalDataflowActor(def) &&
         !llvm::isa<mlir::memref::CastOp, mlir::UnrealizedConversionCastOp>(def))
       return false;
 
@@ -979,7 +990,8 @@ private:
     return aligned;
   }
 
-  bool isPhaseAligned(mlir::Value value, mlir::Value phase) {
+  bool isAlignedToPhase(mlir::Value value, mlir::Value phase,
+                        bool truePhaseOnly) {
     if (!isCarrySystemAligned(phase))
       return false;
     llvm::SmallVector<dataflow::CarryOp, 4> carries;
@@ -987,11 +999,18 @@ private:
     for (dataflow::CarryOp carry : carries)
       insertAlignedCarryAssumption(carry.getOutput());
     llvm::DenseSet<mlir::Value> visited;
-    bool aligned =
-        isAligned(value, phase, {}, /*truePhaseOnly=*/false, visited);
+    bool aligned = isAligned(value, phase, {}, truePhaseOnly, visited);
     for (dataflow::CarryOp carry : carries)
       eraseAlignedCarryAssumption(carry.getOutput());
     return aligned;
+  }
+
+  bool isTruePhaseAligned(mlir::Value value, mlir::Value phase) {
+    return isAlignedToPhase(value, phase, /*truePhaseOnly=*/true);
+  }
+
+  bool isPhaseAligned(mlir::Value value, mlir::Value phase) {
+    return isAlignedToPhase(value, phase, /*truePhaseOnly=*/false);
   }
 
   bool isOneClosePhase(mlir::Value value) {
@@ -1014,7 +1033,13 @@ private:
                output && value == *output) {
       auto input = dataflow::semantics::getVectorBoundaryInputPhase(
           value.getDefiningOp());
-      result = input && isOneClosePhase(*input);
+      result = input && isOneClosePhase(*input) &&
+               llvm::all_of(
+                   dataflow::semantics::getVectorBoundaryTruePhaseInputPayloads(
+                       value.getDefiningOp()),
+                   [&](mlir::Value payload) {
+                     return isTruePhaseAligned(payload, *input);
+                   });
     } else if (auto sync = value.getDefiningOp<dataflow::SyncOp>()) {
       unsigned closeInputs = 0;
       result = true;
@@ -1098,7 +1123,7 @@ private:
     if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(def))
       return llvm::all_of(cast.getInputs(),
                           [&](mlir::Value input) { return isExactOne(input); });
-    if (llvm::isa<dataflow::CanonicalDataflowActorOpInterface>(def))
+    if (dataflow::isCanonicalDataflowActor(def))
       return allOperandsExact(def);
     return false;
   }

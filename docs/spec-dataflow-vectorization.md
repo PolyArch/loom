@@ -48,6 +48,11 @@ resets.
 variable true-token cardinality and exactly one terminal false token per
 activation.
 
+`dataflow.pack` and `dataflow.unpack` are the only canonical
+vector-to-integer representation boundary. An `llvm.bitcast` between a
+vector and an integer is not a canonical Dataflow actor. Other legal LLVM
+bitcasts are outside this representation rule.
+
 ## `dataflow.parallelize`
 
 The canonical signature is:
@@ -151,7 +156,10 @@ statically exact-one.
 The group phase from `parallelize` closes when its scalar phase closes. The
 scalar phase from `serialize` closes when its group phase closes. Retirement
 coverage may project a downstream false close through either adapter to the
-corresponding upstream close.
+corresponding upstream close only when graph analysis proves all payloads
+required by every true input phase are aligned to that phase. This requires
+scalar data for `parallelize`, and both a data vector and mask vector for
+`serialize`. Without those proofs, finalized graph validation fails closed.
 
 Data vectors and masks from `parallelize` have one token for each true group
 phase and no token for the false group phase. `serialize` requires both

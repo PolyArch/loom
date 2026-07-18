@@ -2444,11 +2444,12 @@ Verifier rules for `dataflow.partition_layout`,
     `memories`, and mandatory non-empty `complete` segments. Concatenated
     payload segments match all `function_type.results`. Done is not a return
     payload or function-type slot.
-  - Finalized bodies contain registered `CanonicalDataflowActorOpInterface`
-    operations plus the confirmed memory-capability primitives. The interface
-    and shared typed Dataflow predicates are the sole actor eligibility and
-    compute/control/memory classification authority; lowering does not infer
-    actor support from dialect or operation names.
+  - Finalized bodies contain operations accepted by the shared canonical
+    Dataflow actor classifier plus the confirmed memory-capability primitives.
+    Registered `CanonicalDataflowActorOpInterface` models provide the normal
+    typed actor set, while the classifier remains the sole final eligibility
+    and compute/control/memory authority for instance-sensitive exclusions.
+    Lowering does not infer actor support from dialect or operation names.
   - Body must not contain `scf.*`, `func.func`, `func.call`,
     `dataflow.thread.launch`, `dataflow.graph.launch`,
     `dataflow.thread.wait`, `dataflow.map_info`, any partitioned-data

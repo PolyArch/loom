@@ -23,6 +23,13 @@ void attachActorModels(MLIRContext &context) {
   (OpTys::template attachInterface<CanonicalActorModel<OpTys>>(context), ...);
 }
 
+bool isVectorIntegerBitcast(LLVM::BitcastOp bitcast) {
+  Type input = bitcast.getArg().getType();
+  Type result = bitcast.getRes().getType();
+  return (llvm::isa<VectorType>(input) && llvm::isa<IntegerType>(result)) ||
+         (llvm::isa<IntegerType>(input) && llvm::isa<VectorType>(result));
+}
+
 } // namespace
 
 void dataflow::attachCanonicalDataflowActorInterfaces(MLIRContext &context) {
@@ -56,15 +63,14 @@ void dataflow::attachCanonicalDataflowActorInterfaces(MLIRContext &context) {
       LLVM::SRemOp, LLVM::URemOp, LLVM::AndOp, LLVM::OrOp, LLVM::XOrOp,
       LLVM::ShlOp, LLVM::LShrOp, LLVM::AShrOp, LLVM::FAddOp, LLVM::FSubOp,
       LLVM::FMulOp, LLVM::FDivOp, LLVM::FRemOp, LLVM::FNegOp, LLVM::ICmpOp,
-      LLVM::FCmpOp, LLVM::BitcastOp, LLVM::TruncOp, LLVM::ZExtOp,
-      LLVM::SExtOp, LLVM::FPTruncOp, LLVM::FPExtOp, LLVM::SIToFPOp,
-      LLVM::UIToFPOp, LLVM::FPToSIOp, LLVM::FPToUIOp, LLVM::SelectOp,
-      LLVM::FreezeOp, LLVM::ExtractElementOp, LLVM::InsertElementOp,
-      LLVM::ExtractValueOp, LLVM::InsertValueOp, LLVM::ShuffleVectorOp,
-      LLVM::FshlOp, LLVM::ByteSwapOp, LLVM::UMinOp, LLVM::UMaxOp,
-      LLVM::USubSat, LLVM::SMinOp, LLVM::SMaxOp,
-      LLVM::CountLeadingZerosOp, LLVM::FMulAddOp, LLVM::AbsOp,
-      LLVM::FAbsOp>(context);
+      LLVM::FCmpOp, LLVM::TruncOp, LLVM::ZExtOp, LLVM::SExtOp, LLVM::FPTruncOp,
+      LLVM::FPExtOp, LLVM::SIToFPOp, LLVM::UIToFPOp, LLVM::FPToSIOp,
+      LLVM::FPToUIOp, LLVM::SelectOp, LLVM::FreezeOp, LLVM::ExtractElementOp,
+      LLVM::InsertElementOp, LLVM::ExtractValueOp, LLVM::InsertValueOp,
+      LLVM::ShuffleVectorOp, LLVM::FshlOp, LLVM::ByteSwapOp, LLVM::UMinOp,
+      LLVM::UMaxOp, LLVM::USubSat, LLVM::SMinOp, LLVM::SMaxOp,
+      LLVM::CountLeadingZerosOp, LLVM::FMulAddOp, LLVM::AbsOp, LLVM::FAbsOp>(
+      context);
 
   context.getOrLoadDialect<ub::UBDialect>();
   attachActorModels<ub::PoisonOp>(context);
@@ -72,6 +78,11 @@ void dataflow::attachCanonicalDataflowActorInterfaces(MLIRContext &context) {
 
 std::optional<dataflow::CanonicalDataflowActorKind>
 dataflow::classifyCanonicalDataflowActor(Operation *op) {
+  if (auto bitcast = llvm::dyn_cast<LLVM::BitcastOp>(op)) {
+    if (isVectorIntegerBitcast(bitcast))
+      return std::nullopt;
+    return CanonicalDataflowActorKind::Compute;
+  }
   if (!llvm::isa<CanonicalDataflowActorOpInterface>(op))
     return std::nullopt;
   if (llvm::isa<LoadOp, StoreOp>(op))
