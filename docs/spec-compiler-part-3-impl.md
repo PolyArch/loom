@@ -74,14 +74,17 @@ the production contract.
   input binding preserves its `source_map`. The recursive graph owner
   rendezvous each receive/send with its structured execution frontier, removes
   the endpoint, and erases every transient channel argument before
-  verification. A lowering-only schedule tree flattens sequential sites and
-  pairs equal-width mutually exclusive paths within one fixed dynamic scope.
-  A recurrence selector routes graph stream inputs to ordered receive
-  positions and muxes ordered send positions back to one graph stream; branch
-  selectors provide the nested demux/mux choices. Enclosing loop execution
-  repeatedly activates that schedule, and local selector close/reset joins
-  the recursive execution frontier. Parallel endpoint sites remain ambiguous
-  and fail atomically without deriving an order from traversal.
+  verification. A lowering-only schedule tree gives every sequential or
+  structured mutually exclusive static site one binding-wide ordinal. Each
+  activation emits that fixed ordinal sequence and mechanically filters
+  inactive choice sites, so unequal or empty branches remain one ordered
+  dynamic sequence without making later branch conditions startup
+  dependencies. The filtered ordinal demuxes graph stream inputs and muxes
+  graph stream outputs. Choice selectors are materialized before structured
+  control is erased, enclosing loops repeatedly activate the schedule, and
+  schedule close/reset joins the recursive execution frontier. Parallel
+  endpoint sites without a deterministic total order remain ambiguous and
+  fail atomically without deriving an order from traversal.
 * The graph `FunctionType` contains only application payloads; normalized
   `input_segments` and `result_segments` record value, stream, and memory
   kinds.
@@ -205,7 +208,8 @@ Tests are organized by stable semantic boundary:
   per-partition memory frontiers, zero-trip and descending loops, nested
   selection/repeat structure, index-domain carry narrowing, transactional
   rollback, fixed-width graph parallel transfer, one-shot and looped stream
-  boundary publication, fail-closed diagnostics for unselected parallel
+  boundary publication, unequal and empty stream choices, stream choices
+  driven by earlier receives, fail-closed diagnostics for unselected parallel
   residue, pointer capability transport, and effects without completion
   events.
 * `test/dfg/` verifies the strict native finalized-graph gate independently

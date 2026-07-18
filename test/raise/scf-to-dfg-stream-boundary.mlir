@@ -1,4 +1,36 @@
-// RUN: loom-raise-opt --loom-lower-for-to-graph %s | FileCheck %s
+// RUN: loom-raise-opt --loom-lower-for-to-graph %s > %t.lowered.mlir
+// RUN: FileCheck %s < %t.lowered.mlir
+// RUN: loom-dfg-sim %t.lowered.mlir --graph branch_relay_graph --arg 0=true --arg 1=2 --arg 2=7 --arg 2=9 --arg 2=11 --arg 2=13 --output %t.branch-true.json
+// RUN: FileCheck %s --check-prefix=BRANCH-TRUE < %t.branch-true.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph branch_relay_graph --arg 0=false --arg 1=2 --arg 2=5 --arg 2=6 --output %t.branch-false.json
+// RUN: FileCheck %s --check-prefix=BRANCH-FALSE < %t.branch-false.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph dependent_consumer_graph --arg 0=7 --arg 0=9 --memref 1=0,0 --output %t.dependent-true.json
+// RUN: FileCheck %s --check-prefix=DEPENDENT-TRUE < %t.dependent-true.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph dependent_consumer_graph --arg 0=0 --memref 1=5,6 --output %t.dependent-false.json
+// RUN: FileCheck %s --check-prefix=DEPENDENT-FALSE < %t.dependent-false.json
+
+// BRANCH-TRUE: "final_stream_outputs": [
+// BRANCH-TRUE-NEXT: [
+// BRANCH-TRUE-NEXT: "i32:7",
+// BRANCH-TRUE-NEXT: "i32:9",
+// BRANCH-TRUE-NEXT: "i32:11",
+// BRANCH-TRUE-NEXT: "i32:13"
+// BRANCH-TRUE: "status": "pass"
+// BRANCH-FALSE: "final_stream_outputs": [
+// BRANCH-FALSE-NEXT: [
+// BRANCH-FALSE-NEXT: "i32:5",
+// BRANCH-FALSE-NEXT: "i32:6"
+// BRANCH-FALSE: "status": "pass"
+// DEPENDENT-TRUE: "final_memory_state": {
+// DEPENDENT-TRUE-NEXT: "arg1": [
+// DEPENDENT-TRUE-NEXT: "i32:7",
+// DEPENDENT-TRUE-NEXT: "i32:9"
+// DEPENDENT-TRUE: "status": "pass"
+// DEPENDENT-FALSE: "final_memory_state": {
+// DEPENDENT-FALSE-NEXT: "arg1": [
+// DEPENDENT-FALSE-NEXT: "i32:0",
+// DEPENDENT-FALSE-NEXT: "i32:6"
+// DEPENDENT-FALSE: "status": "pass"
 
 // CHECK: #[[SOURCE_MAP:.*]] = affine_map<() -> ()>
 // CHECK-LABEL: dataflow.thread private @stream_producer
@@ -25,6 +57,12 @@
 // CHECK: dataflow.graph.launch @branch_relay_graph
 // CHECK-SAME: stream_inputs(%arg0 source_map #[[SOURCE_MAP]])
 // CHECK-SAME: stream_outputs(%arg1)
+// CHECK-LABEL: dataflow.thread private @optional_stream_producer
+// CHECK: dataflow.graph.launch @optional_producer_graph
+// CHECK-SAME: stream_outputs(%arg0)
+// CHECK-LABEL: dataflow.thread private @dependent_stream_consumer
+// CHECK: dataflow.graph.launch @dependent_consumer_graph
+// CHECK-SAME: stream_inputs(%arg0 source_map #[[SOURCE_MAP]])
 // CHECK-LABEL: dataflow.graph private @producer_graph(
 // CHECK-SAME: %{{.*}}: none, %{{.*}}: i32) -> i32
 // CHECK-SAME: input_segments = array<i32: 1, 0, 0>
@@ -79,10 +117,44 @@
 // CHECK-SAME: %{{.*}}: none, %[[BRANCH_SELECT:[[:alnum:]_]+]]: i1, %{{.*}}: index, %[[BRANCH_INPUT:[[:alnum:]_]+]]: i32) -> i32
 // CHECK: dataflow.invariant %{{.*}}, %[[BRANCH_SELECT]] : i1
 // CHECK: %{{.*}}, %[[BRANCH_GATE:[[:alnum:]_]+]] = dataflow.gate
-// CHECK: dataflow.demux %[[BRANCH_GATE]], %[[BRANCH_INPUT]] : (i1, i32) -> (i32, i32)
-// CHECK: dataflow.mux %[[BRANCH_GATE]], %{{.*}}, %{{.*}} : (i1, i32, i32) -> i32
+// CHECK: %[[INPUT_LIMIT:[[:alnum:]_]+]] = dataflow.constant %{{.*}} {const_value = 3 : i32} : i32
+// CHECK: %[[INPUT_IV:[[:alnum:]_]+]], %{{.*}} = dataflow.stream %{{.*}}, %[[INPUT_LIMIT]], %{{.*}} step add while slt : i32
+// CHECK: %[[INPUT_STATIC:[[:alnum:]_]+]] = arith.index_cast %[[INPUT_IV]] : i32 to index
+// CHECK: dataflow.mux %[[BRANCH_GATE]], %{{.*}}, %{{.*}} : (i1, i1, i1) -> i1
+// CHECK: %[[INPUT_ACTIVE:[[:alnum:]_]+]] = dataflow.mux %[[INPUT_STATIC]], %{{.*}}, %{{.*}}, %{{.*}} : (index, i1, i1, i1) -> i1
+// CHECK: %[[INPUT_ACTIVE_ORDINALS:[[:alnum:]_]+]]:2 = dataflow.demux %[[INPUT_ACTIVE]], %[[INPUT_IV]] : (i1, i32) -> (i32, i32)
+// CHECK: %[[INPUT_ORDINAL:[[:alnum:]_]+]] = arith.index_cast %[[INPUT_ACTIVE_ORDINALS]]#1 : i32 to index
+// CHECK: dataflow.demux %[[INPUT_ORDINAL]], %[[BRANCH_INPUT]] : (index, i32) -> (i32, i32, i32)
+// CHECK: %[[OUTPUT_LIMIT:[[:alnum:]_]+]] = dataflow.constant %{{.*}} {const_value = 3 : i32} : i32
+// CHECK: %[[OUTPUT_IV:[[:alnum:]_]+]], %{{.*}} = dataflow.stream %{{.*}}, %[[OUTPUT_LIMIT]], %{{.*}} step add while slt : i32
+// CHECK: %[[OUTPUT_STATIC:[[:alnum:]_]+]] = arith.index_cast %[[OUTPUT_IV]] : i32 to index
+// CHECK: %[[OUTPUT_ACTIVE:[[:alnum:]_]+]] = dataflow.mux %[[OUTPUT_STATIC]], %{{.*}}, %{{.*}}, %{{.*}} : (index, i1, i1, i1) -> i1
+// CHECK: %[[OUTPUT_ACTIVE_ORDINALS:[[:alnum:]_]+]]:2 = dataflow.demux %[[OUTPUT_ACTIVE]], %[[OUTPUT_IV]] : (i1, i32) -> (i32, i32)
+// CHECK: %[[OUTPUT_ORDINAL:[[:alnum:]_]+]] = arith.index_cast %[[OUTPUT_ACTIVE_ORDINALS]]#1 : i32 to index
+// CHECK: dataflow.mux %[[OUTPUT_ORDINAL]], %{{.*}}, %{{.*}}, %{{.*}} : (index, i32, i32, i32) -> i32
 // CHECK-NOT: dataflow.channel
 // CHECK: dataflow.graph.return values() streams(%{{.*}} : i32)
+// CHECK-LABEL: dataflow.graph private @optional_producer_graph(
+// CHECK: %{{.*}}, %[[OPTIONAL_PHASE:[[:alnum:]_]+]] = dataflow.stream
+// CHECK: %[[OPTIONAL_EVENTS:[[:alnum:]_]+]]:2 = dataflow.demux %[[OPTIONAL_PHASE]], %{{.*}} : (i1, none) -> (none, none)
+// CHECK: %[[OPTIONAL_ACTIVE:[[:alnum:]_]+]] = dataflow.mux %{{.*}}, %{{.*}}, %{{.*}} : (i1, i1, i1) -> i1
+// CHECK: %[[OPTIONAL_ACTIVE_EVENTS:[[:alnum:]_]+]]:2 = dataflow.demux %[[OPTIONAL_ACTIVE]], %[[OPTIONAL_EVENTS]]#1 : (i1, none) -> (none, none)
+// CHECK: dataflow.sync %[[OPTIONAL_ACTIVE_EVENTS]]#1, %{{.*}} : (none, i32) -> (none, i32)
+// CHECK-NOT: dataflow.channel
+// CHECK: dataflow.graph.return values() streams(%{{.*}} : i32)
+// CHECK-LABEL: dataflow.graph private @dependent_consumer_graph(
+// CHECK-SAME: %{{.*}}: none, %[[DEPENDENT_INPUT:[[:alnum:]_]+]]: i32, %{{.*}}: memref<2xi32>)
+// CHECK: %[[DEPENDENT_CONDITION:[[:alnum:]_]+]] = arith.cmpi ne, %[[FIRST_SYNC:[[:alnum:]_]+]]#1, %{{.*}} : i32
+// CHECK: %[[DEPENDENT_IV:[[:alnum:]_]+]], %{{.*}} = dataflow.stream
+// CHECK: %[[DEPENDENT_STATIC:[[:alnum:]_]+]] = arith.trunci %[[DEPENDENT_IV]] : i32 to i1
+// CHECK: dataflow.mux %[[DEPENDENT_CONDITION]], %{{.*}}, %{{.*}} : (i1, i1, i1) -> i1
+// CHECK: %[[DEPENDENT_ACTIVE:[[:alnum:]_]+]] = dataflow.mux %[[DEPENDENT_STATIC]], %{{.*}}, %{{.*}} : (i1, i1, i1) -> i1
+// CHECK: %[[DEPENDENT_ACTIVE_ORDINALS:[[:alnum:]_]+]]:2 = dataflow.demux %[[DEPENDENT_ACTIVE]], %[[DEPENDENT_IV]] : (i1, i32) -> (i32, i32)
+// CHECK: %[[DEPENDENT_ROUTE:[[:alnum:]_]+]] = arith.trunci %[[DEPENDENT_ACTIVE_ORDINALS]]#1 : i32 to i1
+// CHECK: %[[DEPENDENT_LANES:[[:alnum:]_]+]]:2 = dataflow.demux %[[DEPENDENT_ROUTE]], %[[DEPENDENT_INPUT]] : (i1, i32) -> (i32, i32)
+// CHECK: %[[FIRST_SYNC]]:2 = dataflow.sync %{{.*}}, %[[DEPENDENT_LANES]]#0 : (none, i32) -> (none, i32)
+// CHECK-NOT: dataflow.channel
+// CHECK: dataflow.graph.return
 // CHECK-NOT: loom.spatial_region
 
 module {
@@ -230,9 +302,14 @@ module {
         %one = arith.constant 1 : index
         scf.for %iteration = %zero to %limit step %one {
           scf.if %select {
-            %on_true = dataflow.channel.receive %source
+            %on_true_first = dataflow.channel.receive %source
                 : !dataflow.channel<i32>
-            dataflow.channel.send %sink, %on_true : !dataflow.channel<i32>
+            dataflow.channel.send %sink, %on_true_first
+                : !dataflow.channel<i32>
+            %on_true_second = dataflow.channel.receive %source
+                : !dataflow.channel<i32>
+            dataflow.channel.send %sink, %on_true_second
+                : !dataflow.channel<i32>
           } else {
             %on_false = dataflow.channel.receive %source
                 : !dataflow.channel<i32>
@@ -245,6 +322,52 @@ module {
       graph_name = "branch_relay_graph",
       source_maps = [affine_map<() -> ()>]
     } : (i1, index, !dataflow.channel<i32>, !dataflow.channel<i32>) -> ()
+    dataflow.thread.yield
+  }
+
+  dataflow.thread private @optional_stream_producer(
+      %output: !dataflow.channel<i32>, %condition: i1, %message: i32)
+      ctrl (%ctrl: none) {
+    "loom.spatial_region"(%condition, %message, %output)
+        <{operandSegmentSizes = array<i32: 2, 0, 0, 1>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%select: i1, %payload: i32,
+           %sink: !dataflow.channel<i32>):
+        scf.if %select {
+          dataflow.channel.send %sink, %payload : !dataflow.channel<i32>
+        }
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "optional_producer_graph", source_maps = []} :
+        (i1, i32, !dataflow.channel<i32>) -> ()
+    dataflow.thread.yield
+  }
+
+  dataflow.thread private @dependent_stream_consumer(
+      %input: !dataflow.channel<i32>, %memory: memref<2xi32>)
+      ctrl (%ctrl: none) {
+    "loom.spatial_region"(%input, %memory)
+        <{operandSegmentSizes = array<i32: 0, 1, 1, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%channel: !dataflow.channel<i32>, %target: memref<2xi32>):
+        %first = dataflow.channel.receive %channel
+            : !dataflow.channel<i32>
+        %zero_value = arith.constant 0 : i32
+        %condition = arith.cmpi ne, %first, %zero_value : i32
+        %zero = arith.constant 0 : index
+        memref.store %first, %target[%zero] : memref<2xi32>
+        scf.if %condition {
+          %second = dataflow.channel.receive %channel
+              : !dataflow.channel<i32>
+          %one = arith.constant 1 : index
+          memref.store %second, %target[%one] : memref<2xi32>
+        }
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {
+      graph_name = "dependent_consumer_graph",
+      source_maps = [affine_map<() -> ()>]
+    } : (!dataflow.channel<i32>, memref<2xi32>) -> ()
     dataflow.thread.yield
   }
 

@@ -281,14 +281,15 @@ each rule lands in IR.
    `source_map` attributes are preserved exactly, and channel handles never
    enter the canonical graph body. One binding denotes one ordered dynamic
    event sequence. A fixed structured scope may contain multiple sequential
-   sites and equal-width mutually exclusive paths: lowering emits an explicit
-   fixed selector stream, demuxes each input position through the structured
-   branch selectors, and muxes output positions in source order. Enclosing
-   loops repeatedly activate the same schedule, so one or several static body
-   sites may each fire dynamically. Endpoint sites nested under
-   `scf.parallel` or `scf.forall` have no inferred traversal order and fail
-   before publication. Unselected or non-fixed graph-owned parallel forms
-   also fail closed.
+   or structured mutually exclusive sites. Lowering emits one fixed ordinal
+   schedule, filters inactive branch sites, demuxes each input from the
+   filtered ordinal, and muxes outputs back into that same dynamic order.
+   Branches may have unequal or empty site sets, and a later branch selector
+   may depend on an earlier input event. Enclosing loops repeatedly activate
+   the same schedule, so one or several static body sites may each fire
+   dynamically. Endpoint sites nested under `scf.parallel` or `scf.forall`
+   have no inferred traversal order and fail before publication. Unselected
+   or non-fixed graph-owned parallel forms also fail closed.
 7. `dataflow.thread` and `dataflow.graph` definitions are both
    `IsolatedFromAbove`. No operation inside either definition's body
    may directly use an SSA value defined in the surrounding scope.
@@ -2508,8 +2509,11 @@ contract:
 * Channel routing or thread-endpoint simulation. Graph publication preserves
   typed stream input/output bindings and `source_map` while mechanically
   converting region-local endpoints to the canonical graph stream network.
-  It does not invent routing, endpoint creation, a parallel channel mode, or a
-  traversal order for ambiguous parallel endpoint sites.
+  One binding owns one ordered dynamic event sequence: sequential and
+  structured mutually exclusive static sites share a fixed ordinal schedule,
+  with inactive choice sites filtered from that sequence. It does not invent
+  routing, endpoint creation, a parallel channel mode, or a traversal order
+  for ambiguous parallel endpoint sites.
 
 ## 11. References
 

@@ -63,8 +63,10 @@ bool hasGraphOwnedParallelProvenance(::mlir::Operation *op) {
 namespace {
 
 using ::loom::lowering::detail::analyzeStreamBinding;
-using ::loom::lowering::detail::collectStreamEndpoints;
-using ::loom::lowering::detail::StreamBindingPlan;
+using ::loom::lowering::detail::analyzeStreamBoundary;
+using ::loom::lowering::detail::checkStreamBoundaryUses;
+using ::loom::lowering::detail::materializeStreamSchedule;
+using ::loom::lowering::detail::StreamBoundaryInfo;
 using ::loom::lowering::detail::StreamScheduleNode;
 
 struct MemoryFrontier {
@@ -90,73 +92,30 @@ struct FixedParallelDomain {
   ::llvm::SmallVector<int64_t, 4> step;
 };
 
-struct StreamBoundaryInfo {
-  ::llvm::SmallVector<::mlir::BlockArgument, 4> inputChannels;
-  ::llvm::SmallVector<::mlir::Value, 4> inputPayloads;
-  ::llvm::SmallVector<::mlir::BlockArgument, 4> outputChannels;
+struct StreamLoweringPlan {
+  StreamLoweringPlan(::mlir::Block *scope, ::mlir::Value channel, bool input,
+                     unsigned boundaryIndex,
+                     std::unique_ptr<StreamScheduleNode> schedule)
+      : scope(scope), channel(channel), input(input),
+        boundaryIndex(boundaryIndex), loc(schedule->loc),
+        schedule(std::move(schedule)) {}
 
-  bool isTransient() const {
-    return !inputChannels.empty() || !outputChannels.empty();
-  }
-};
-
-struct FixedSequenceControl {
+  ::mlir::Block *scope;
+  ::mlir::Value channel;
+  bool input;
+  unsigned boundaryIndex;
+  ::mlir::Location loc;
+  std::unique_ptr<StreamScheduleNode> schedule;
   ::mlir::Value selector;
+  ::mlir::Value event;
   ::mlir::Value close;
+  ::llvm::SmallVector<::mlir::Value, 4> outputs;
 };
 
-::mlir::FailureOr<StreamBoundaryInfo>
-analyzeStreamBoundary(::dataflow::GraphOp graph) {
-  StreamBoundaryInfo info;
-  ::mlir::Block &entry = graph.getBody().front();
-  size_t canonicalArgumentCount = graph.getFunctionType().getNumInputs() + 1;
-  if (entry.getNumArguments() == canonicalArgumentCount)
-    return info;
-
-  ::llvm::ArrayRef<int32_t> inputSegments = graph.getInputSegmentSizes();
-  ::llvm::ArrayRef<int32_t> resultSegments = graph.getResultSegmentSizes();
-  size_t inputCount = static_cast<size_t>(inputSegments[1]);
-  size_t outputCount = static_cast<size_t>(resultSegments[1]);
-  if (entry.getNumArguments() !=
-      canonicalArgumentCount + inputCount + outputCount)
-    return graph.emitError(
-        "loom-lower-graph-memory: graph entry argument count does not match "
-        "either the canonical ABI or a transient stream boundary");
-
-  ::llvm::ArrayRef<::mlir::Type> inputTypes =
-      graph.getFunctionType().getInputs();
-  ::llvm::ArrayRef<::mlir::Type> resultTypes =
-      graph.getFunctionType().getResults();
-  size_t inputPayloadBegin = static_cast<size_t>(inputSegments[0]);
-  size_t outputPayloadBegin = static_cast<size_t>(resultSegments[0]);
-  for (size_t index = 0; index < inputCount; ++index) {
-    auto channel = ::llvm::dyn_cast<::mlir::BlockArgument>(
-        entry.getArgument(canonicalArgumentCount + index));
-    auto channelType =
-        ::llvm::dyn_cast<::dataflow::ChannelType>(channel.getType());
-    ::mlir::Type payloadType = inputTypes[inputPayloadBegin + index];
-    if (!channelType || channelType.getElementType() != payloadType)
-      return graph.emitError(
-          "loom-lower-graph-memory: transient stream input channel type "
-          "does not match its graph payload port");
-    info.inputChannels.push_back(channel);
-    info.inputPayloads.push_back(
-        entry.getArgument(inputPayloadBegin + index + 1));
-  }
-  for (size_t index = 0; index < outputCount; ++index) {
-    auto channel = ::llvm::dyn_cast<::mlir::BlockArgument>(
-        entry.getArgument(canonicalArgumentCount + inputCount + index));
-    auto channelType =
-        ::llvm::dyn_cast<::dataflow::ChannelType>(channel.getType());
-    ::mlir::Type payloadType = resultTypes[outputPayloadBegin + index];
-    if (!channelType || channelType.getElementType() != payloadType)
-      return graph.emitError(
-          "loom-lower-graph-memory: transient stream output channel type "
-          "does not match its graph payload port");
-    info.outputChannels.push_back(channel);
-  }
-  return info;
-}
+struct StreamOutputSlot {
+  StreamLoweringPlan *plan;
+  unsigned index;
+};
 
 std::optional<int64_t> getConstantIndex(::mlir::Value value) {
   ::mlir::APInt constant;
@@ -288,57 +247,6 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
                        ::mlir::Region &region) {
   from.replaceUsesWithIf(
       to, [&](::mlir::OpOperand &use) { return isUseInside(use, region); });
-}
-
-bool isNestedInParallelRegion(::mlir::Operation *op,
-                              ::dataflow::GraphOp graph) {
-  for (::mlir::Operation *parent = op->getParentOp();
-       parent && parent != graph.getOperation(); parent = parent->getParentOp())
-    if (::llvm::isa<::mlir::scf::ParallelOp, ::mlir::scf::ForallOp>(parent))
-      return true;
-  return false;
-}
-
-::mlir::LogicalResult
-checkStreamBoundaryUses(::dataflow::GraphOp graph,
-                        const StreamBoundaryInfo &boundary) {
-  auto checkBinding = [&](::mlir::BlockArgument channel,
-                          bool input) -> ::mlir::LogicalResult {
-    unsigned endpointCount = 0;
-    for (::mlir::OpOperand &use : channel.getUses()) {
-      ::mlir::Operation *owner = use.getOwner();
-      bool endpoint = input ? ::llvm::isa<::dataflow::ChannelReceiveOp>(owner)
-                            : ::llvm::isa<::dataflow::ChannelSendOp>(owner);
-      if (!endpoint || use.getOperandNumber() != 0)
-        return owner->emitError()
-               << "loom-lower-graph-memory: transient stream "
-               << (input ? "input" : "output")
-               << " channel has a non-endpoint use";
-      if (isNestedInParallelRegion(owner, graph))
-        return owner->emitError(
-            "loom-lower-graph-memory: one stream binding cannot contain "
-            "parallel endpoint sites without a deterministic merge");
-      ++endpointCount;
-    }
-    if (endpointCount == 0)
-      return graph.emitError() << "loom-lower-graph-memory: stream "
-                               << (input ? "input" : "output")
-                               << " binding requires at least one static "
-                               << (input ? "receive" : "send")
-                               << " site for mechanical publication";
-    if (endpointCount > 1 &&
-        ::mlir::failed(analyzeStreamBinding(channel, input)))
-      return ::mlir::failure();
-    return ::mlir::success();
-  };
-
-  for (::mlir::BlockArgument channel : boundary.inputChannels)
-    if (::mlir::failed(checkBinding(channel, true)))
-      return ::mlir::failure();
-  for (::mlir::BlockArgument channel : boundary.outputChannels)
-    if (::mlir::failed(checkBinding(channel, false)))
-      return ::mlir::failure();
-  return ::mlir::success();
 }
 
 ::mlir::LogicalResult checkOneGraph(::dataflow::GraphOp graph,
@@ -498,6 +406,8 @@ public:
 
     RegionResult result =
         lowerBlock(entry, graph.getStart(), std::move(initial));
+    assert(routedStreamInputs.empty() && streamOutputSlots.empty() &&
+           "stream endpoint maps must be retired before publication");
     ::loom::lowering::lowerGraphIndexDomains(graph);
     auto returnOp = ::llvm::cast<::dataflow::GraphReturnOp>(anchor);
     if (transientStreamBoundary) {
@@ -522,13 +432,9 @@ private:
   ::llvm::DenseMap<::mlir::Value, ::mlir::Value> streamInputByChannel;
   ::llvm::DenseMap<::mlir::Value, unsigned> streamOutputByChannel;
   ::llvm::SmallVector<::mlir::Value, 4> streamOutputs;
-  std::vector<std::unique_ptr<StreamBindingPlan>> streamPlans;
-  ::llvm::DenseMap<StreamBindingPlan *, FixedSequenceControl>
-      streamPlanControls;
+  std::vector<std::unique_ptr<StreamLoweringPlan>> streamPlans;
   ::llvm::DenseMap<::mlir::Operation *, ::mlir::Value> routedStreamInputs;
-  ::llvm::DenseMap<::mlir::Operation *, StreamBindingPlan *>
-      streamOutputPlanByEndpoint;
-  ::llvm::DenseMap<::mlir::Operation *, ::mlir::Value> loweredStreamOutputs;
+  ::llvm::DenseMap<::mlir::Operation *, StreamOutputSlot> streamOutputSlots;
   unsigned partitionCount = 0;
   ::llvm::DenseMap<::mlir::Value, unsigned> partitionByRoot;
   ::mlir::Value sharedBoundaryRoot;
@@ -543,56 +449,15 @@ private:
 
   void registerStreamPlan(::mlir::Value channel, bool input,
                           unsigned boundaryIndex) {
-    if (collectStreamEndpoints(channel, input).size() <= 1)
-      return;
     auto plan = analyzeStreamBinding(channel, input);
     assert(::mlir::succeeded(plan) &&
            "stream plan preflight must agree with graph lowering");
-    (*plan)->boundaryIndex = boundaryIndex;
-    StreamBindingPlan *raw = plan->get();
-    if (!input)
-      for (::mlir::Operation *endpoint : collectStreamEndpoints(channel, input))
-        streamOutputPlanByEndpoint.try_emplace(endpoint, raw);
-    streamPlans.push_back(std::move(*plan));
-  }
-
-  FixedSequenceControl createFixedSequenceControl(::mlir::Value execution,
-                                                  unsigned width,
-                                                  ::mlir::Location loc) {
-    assert(width > 1 && "one endpoint needs no fixed sequence selector");
-    setInsertionPoint(loc);
-    auto recurrenceType =
-        ::mlir::IntegerType::get(graph.getContext(), ::loom::getIndexWidth());
-    auto makeConstant = [&](int64_t value) {
-      return ::dataflow::ConstantOp::create(
-                 builder, loc, recurrenceType, execution,
-                 builder.getIntegerAttr(recurrenceType, value))
-          .getValue();
-    };
-    ::mlir::Value init = makeConstant(0);
-    ::mlir::Value limit = makeConstant(width);
-    ::mlir::Value step = makeConstant(1);
-    auto stream = ::dataflow::StreamOp::create(
-        builder, loc, recurrenceType, builder.getI1Type(), init, limit, step,
-        ::dataflow::StreamStepKind::Add, ::mlir::arith::CmpIPredicate::slt);
-
-    ::mlir::Value selector;
-    if (width == 2)
-      selector = ::mlir::arith::TruncIOp::create(
-                     builder, loc, builder.getI1Type(), stream.getIv())
-                     .getResult();
-    else
-      selector = ::mlir::arith::IndexCastOp::create(
-                     builder, loc, builder.getIndexType(), stream.getIv())
-                     .getResult();
-
-    auto activations = ::dataflow::InvariantOp::create(
-        builder, loc, builder.getNoneType(), stream.getPhase(), execution);
-    auto close = ::dataflow::DemuxOp::create(
-        builder, loc,
-        ::mlir::TypeRange{builder.getNoneType(), builder.getNoneType()},
-        stream.getPhase(), activations.getOutput());
-    return {selector, close.getOutputs()[0]};
+    if ((*plan)->schedule->kind == StreamScheduleNode::Kind::Endpoint)
+      return;
+    auto loweringPlan = std::make_unique<StreamLoweringPlan>(
+        (*plan)->scope, channel, input, boundaryIndex,
+        std::move((*plan)->schedule));
+    streamPlans.push_back(std::move(loweringPlan));
   }
 
   ::llvm::SmallVector<::mlir::Value, 4> demux(::mlir::Value selector,
@@ -615,149 +480,78 @@ private:
         .getOutput();
   }
 
-  ::mlir::Value streamChoiceSelector(const StreamScheduleNode &schedule) {
-    assert(schedule.kind == StreamScheduleNode::Kind::Choice &&
-           "only a stream choice has a branch selector");
-    if (schedule.choice)
-      return ::mlir::cast<::mlir::scf::IfOp>(schedule.choice).getCondition();
-    assert(schedule.selector &&
-           "an erased stream choice must retain its lowered selector");
-    return schedule.selector;
-  }
-
-  void freezeStreamChoice(StreamScheduleNode &schedule, ::mlir::scf::IfOp ifOp,
-                          ::mlir::Value selector) {
-    if (schedule.kind == StreamScheduleNode::Kind::Choice &&
-        schedule.choice == ifOp) {
-      schedule.choice = nullptr;
-      schedule.selector = selector;
-    }
-    for (auto &child : schedule.children)
-      freezeStreamChoice(*child, ifOp, selector);
-  }
-
-  void freezeStreamChoices(::mlir::scf::IfOp ifOp, ::mlir::Value selector) {
-    for (auto &plan : streamPlans)
-      freezeStreamChoice(*plan->schedule, ifOp, selector);
-  }
-
-  void routeStreamInputs(const StreamScheduleNode &schedule,
-                         ::mlir::ValueRange inputs) {
-    assert(inputs.size() == schedule.width &&
-           "stream schedule width must match routed inputs");
-    if (schedule.kind == StreamScheduleNode::Kind::Endpoint) {
-      routedStreamInputs.try_emplace(schedule.endpoint, inputs.front());
-      return;
-    }
-    if (schedule.kind == StreamScheduleNode::Kind::Sequence) {
-      unsigned offset = 0;
-      for (const auto &child : schedule.children) {
-        routeStreamInputs(*child, inputs.slice(offset, child->width));
-        offset += child->width;
-      }
-      return;
-    }
-
-    assert(schedule.children.size() == 2 &&
-           "stream choice must have false and true paths");
-    ::llvm::SmallVector<::mlir::Value, 4> falseInputs;
-    ::llvm::SmallVector<::mlir::Value, 4> trueInputs;
-    ::mlir::Value selector = streamChoiceSelector(schedule);
-    for (::mlir::Value input : inputs) {
-      auto [onFalse, onTrue] = demux(selector, input, schedule.loc);
-      falseInputs.push_back(onFalse);
-      trueInputs.push_back(onTrue);
-    }
-    routeStreamInputs(*schedule.children[0], falseInputs);
-    routeStreamInputs(*schedule.children[1], trueInputs);
-  }
-
-  ::llvm::SmallVector<::mlir::Value, 4>
-  materializeStreamOutputs(const StreamScheduleNode &schedule) {
-    if (schedule.kind == StreamScheduleNode::Kind::Endpoint) {
-      ::mlir::Value value = loweredStreamOutputs.lookup(schedule.endpoint);
-      assert(value && "every stream output endpoint must be lowered");
-      return {value};
-    }
-    if (schedule.kind == StreamScheduleNode::Kind::Sequence) {
-      ::llvm::SmallVector<::mlir::Value, 4> outputs;
-      for (const auto &child : schedule.children)
-        outputs.append(materializeStreamOutputs(*child));
-      return outputs;
-    }
-
-    assert(schedule.children.size() == 2 &&
-           "stream choice must have false and true paths");
-    ::llvm::SmallVector<::mlir::Value, 4> falseOutputs =
-        materializeStreamOutputs(*schedule.children[0]);
-    ::llvm::SmallVector<::mlir::Value, 4> trueOutputs =
-        materializeStreamOutputs(*schedule.children[1]);
-    assert(falseOutputs.size() == trueOutputs.size() &&
-           "stream choice paths must have the same width");
-    ::llvm::SmallVector<::mlir::Value, 4> outputs;
-    ::mlir::Value selector = streamChoiceSelector(schedule);
-    for (auto [onFalse, onTrue] : ::llvm::zip_equal(falseOutputs, trueOutputs))
-      outputs.push_back(mux(selector, onFalse, onTrue, schedule.loc));
-    return outputs;
-  }
-
   void prepareStreamPlans(::mlir::Block &block, ::mlir::Value execution) {
     for (const auto &ownedPlan : streamPlans) {
-      StreamBindingPlan *plan = ownedPlan.get();
+      StreamLoweringPlan *plan = ownedPlan.get();
       if (plan->scope != &block)
         continue;
 
-      FixedSequenceControl control;
-      if (plan->schedule->width > 1)
-        control = createFixedSequenceControl(execution, plan->schedule->width,
-                                             plan->schedule->loc);
-      streamPlanControls.try_emplace(plan, control);
-      if (!plan->input)
-        continue;
+      auto materialization = materializeStreamSchedule(
+          *plan->schedule, execution, builder, anchor);
+      plan->selector = materialization.selector;
+      plan->event = materialization.event;
+      plan->close = materialization.close;
 
-      ::mlir::Value input = streamInputByChannel.lookup(plan->channel);
-      assert(input && "stream input plan must reference a graph stream port");
-      ::llvm::SmallVector<::mlir::Value, 4> routed;
-      if (plan->schedule->width == 1)
-        routed.push_back(input);
-      else
-        routed = demux(control.selector, input, plan->schedule->width,
-                       plan->schedule->loc);
-      routeStreamInputs(*plan->schedule, routed);
+      if (plan->input) {
+        ::mlir::Value input = streamInputByChannel.lookup(plan->channel);
+        assert(input && "stream input plan must reference a graph stream port");
+        ::llvm::SmallVector<::mlir::Value, 4> routed;
+        if (materialization.endpoints.size() == 1)
+          routed.push_back(input);
+        else
+          routed = demux(plan->selector, input,
+                         materialization.endpoints.size(), plan->loc);
+        for (auto [endpoint, payload] :
+             ::llvm::zip_equal(materialization.endpoints, routed))
+          routedStreamInputs.try_emplace(endpoint, payload);
+      } else {
+        plan->outputs.resize(materialization.endpoints.size());
+        for (auto [index, endpoint] :
+             ::llvm::enumerate(materialization.endpoints))
+          streamOutputSlots.try_emplace(
+              endpoint, StreamOutputSlot{plan, static_cast<unsigned>(index)});
+      }
+      plan->schedule.reset();
     }
   }
 
   RegionResult finishStreamPlans(::mlir::Block &block, RegionResult result) {
     ::llvm::SmallVector<::mlir::Value, 4> closeEvents;
     for (const auto &ownedPlan : streamPlans) {
-      StreamBindingPlan *plan = ownedPlan.get();
+      StreamLoweringPlan *plan = ownedPlan.get();
       if (plan->scope != &block)
         continue;
 
-      FixedSequenceControl control = streamPlanControls.lookup(plan);
-      if (control.close)
-        closeEvents.push_back(control.close);
-      if (plan->input)
-        continue;
-
-      ::llvm::SmallVector<::mlir::Value, 4> outputs =
-          materializeStreamOutputs(*plan->schedule);
-      ::mlir::Value output =
-          outputs.size() == 1
-              ? outputs.front()
-              : mux(control.selector, outputs, plan->schedule->loc);
-      if (outputs.size() == 1) {
-        setInsertionPoint(plan->schedule->loc);
-        auto publication = ::dataflow::SyncOp::create(
-            builder, plan->schedule->loc,
-            ::mlir::TypeRange{builder.getNoneType(), output.getType()},
-            ::mlir::ValueRange{result.execution, output});
-        result.execution = publication.getOutputs()[0];
-        output = publication.getOutputs()[1];
+      if (plan->close)
+        closeEvents.push_back(plan->close);
+      if (!plan->input) {
+        assert(::llvm::all_of(plan->outputs,
+                              [](const ::mlir::Value &value) {
+                                return static_cast<bool>(value);
+                              }) &&
+               "every stream output endpoint must be lowered");
+        ::mlir::Value output =
+            plan->outputs.size() == 1
+                ? plan->outputs.front()
+                : mux(plan->selector, plan->outputs, plan->loc);
+        if (plan->outputs.size() == 1) {
+          setInsertionPoint(plan->loc);
+          auto publication = ::dataflow::SyncOp::create(
+              builder, plan->loc,
+              ::mlir::TypeRange{builder.getNoneType(), output.getType()},
+              ::mlir::ValueRange{plan->event, output});
+          output = publication.getOutputs()[1];
+        }
+        assert(!streamOutputs[plan->boundaryIndex] &&
+               "stream output binding must be materialized once");
+        streamOutputs[plan->boundaryIndex] = output;
       }
-      assert(!streamOutputs[plan->boundaryIndex] &&
-             "stream output binding must be materialized once");
-      streamOutputs[plan->boundaryIndex] = output;
+      plan->scope = nullptr;
+      plan->channel = {};
+      plan->selector = {};
+      plan->event = {};
+      plan->close = {};
+      plan->outputs.clear();
     }
     if (!closeEvents.empty()) {
       closeEvents.insert(closeEvents.begin(), result.execution);
@@ -1139,11 +933,11 @@ private:
   GatedValue gateTrueLane(::mlir::Value phase, ::mlir::Value value,
                           ::mlir::Location loc) {
     setInsertionPoint(loc);
-    auto gate = ::dataflow::GateOp::create(
-        builder, loc, builder.getI1Type(), value.getType(), phase, value);
-    auto units = ::dataflow::InvariantOp::create(
-        builder, loc, builder.getNoneType(), gate.getAfterCond(),
-        graph.getStart());
+    auto gate = ::dataflow::GateOp::create(builder, loc, builder.getI1Type(),
+                                           value.getType(), phase, value);
+    auto units =
+        ::dataflow::InvariantOp::create(builder, loc, builder.getNoneType(),
+                                        gate.getAfterCond(), graph.getStart());
     auto close = ::dataflow::DemuxOp::create(
         builder, loc,
         ::mlir::TypeRange{builder.getNoneType(), builder.getNoneType()},
@@ -1220,9 +1014,14 @@ private:
         continue;
       }
       if (auto receive = ::llvm::dyn_cast<::dataflow::ChannelReceiveOp>(op)) {
-        ::mlir::Value payload = routedStreamInputs.lookup(op);
-        if (!payload)
+        ::mlir::Value payload;
+        if (auto routed = routedStreamInputs.find(op);
+            routed != routedStreamInputs.end()) {
+          payload = routed->second;
+          routedStreamInputs.erase(routed);
+        } else {
           payload = streamInputByChannel.lookup(receive.getChannel());
+        }
         assert(payload && "stream receive must use a published input binding");
         setInsertionPoint(receive.getLoc());
         auto sync = ::dataflow::SyncOp::create(
@@ -1244,8 +1043,13 @@ private:
             ::mlir::TypeRange{builder.getNoneType(),
                               send.getMessage().getType()},
             ::mlir::ValueRange{execution, send.getMessage()});
-        if (streamOutputPlanByEndpoint.contains(op)) {
-          loweredStreamOutputs.try_emplace(op, sync.getOutputs()[1]);
+        if (auto slot = streamOutputSlots.find(op);
+            slot != streamOutputSlots.end()) {
+          StreamOutputSlot target = slot->second;
+          assert(!target.plan->outputs[target.index] &&
+                 "stream endpoint must be lowered once");
+          target.plan->outputs[target.index] = sync.getOutputs()[1];
+          streamOutputSlots.erase(slot);
         } else {
           assert(!streamOutputs[output->second] &&
                  "single-site stream binding must be materialized once");
@@ -1520,7 +1324,6 @@ private:
     }
     ::mlir::Value outputExecution =
         mux(selector, falseResult.execution, trueResult.execution, loc);
-    freezeStreamChoices(ifOp, selector);
     ifOp.erase();
     return {outputExecution, std::move(output)};
   }
@@ -1708,8 +1511,7 @@ private:
     GatedValue gatedExecution =
         gateTrueLane(selector, beforeResult.execution, loc);
     ::mlir::Value executionAfter = gatedExecution.value;
-    ::llvm::SmallVector<::mlir::Value, 4> closeEvents{
-        gatedExecution.close};
+    ::llvm::SmallVector<::mlir::Value, 4> closeEvents{gatedExecution.close};
 
     MemoryState afterMemory = beforeResult.memory;
     MemoryState output = memory;
