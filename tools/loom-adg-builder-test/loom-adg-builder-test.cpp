@@ -119,7 +119,7 @@ static llvm::Error writeTemporalMemCapacityAnchors(llvm::raw_ostream &out) {
   wideTag.loads = {{"wide_addr", "wide_ctrl"}};
   wideTag.dataWidth = 32;
   wideTag.temporalTagWidth = 64;
-  wideTag.temporalOperationTableSize = 1;
+  wideTag.temporalOperationTableSize = 2147483647u;
   module.addMem(std::move(wideTag));
   return module.print(out);
 }

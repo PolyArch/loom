@@ -33,4 +33,4 @@
 // HARDWARE: fabric.mem [temporal]
 // HARDWARE-DAG: load_group_size = 1 : i32
 // HARDWARE-DAG: tag_width = 64 : i32
-// HARDWARE-DAG: operation_table_size = 1 : i32
+// HARDWARE-DAG: operation_table_size = 2147483647 : i32

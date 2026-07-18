@@ -96,11 +96,11 @@ fabric.mem @TemporalCrossPortCapacity [temporal]
         subordinate_requests = []
       }}]
 
-// T=64 reaches the overflow-safe capacity branch without requiring a large K.
+// T=64 accepts the full positive signless-i32 K domain without overflow.
 
 // CHECK-LABEL: fabric.mem @TemporalWideTagCapacity [temporal]
 // CHECK-DAG: tag_width = 64 : i32
-// CHECK-DAG: operation_table_size = 1 : i32
+// CHECK-DAG: operation_table_size = 2147483647 : i32
 fabric.mem @TemporalWideTagCapacity [temporal]
     (memref<?x!fabric.bits<32>>,
      !fabric.bits_tag<32, 64>, !fabric.bits_tag<0, 64>)
@@ -109,7 +109,7 @@ fabric.mem @TemporalWideTagCapacity [temporal]
       store_group_size = 0 : i32,
       data_width = 32 : i32,
       tag_width = 64 : i32,
-      operation_table_size = 1 : i32,
+      operation_table_size = 2147483647 : i32,
       dispatch_eligibility = {
         operation_port_requests = [[0 : i32]],
         subordinate_requests = []
