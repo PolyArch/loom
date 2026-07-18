@@ -1,7 +1,7 @@
 #ifndef LOOM_PNR_FROZENROUTINGGRAPH_H
 #define LOOM_PNR_FROZENROUTINGGRAPH_H
 
-#include "Mapping/Verifier.h"
+#include "Mapping/Artifact.h"
 #include "PnR/PnrIndex.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -13,6 +13,8 @@
 #include <vector>
 
 namespace loom::pnr {
+
+struct PnrProblemInputs;
 
 enum class FrozenRoutingEndpointOwnerKind {
   ComputeOccurrence,
@@ -153,13 +155,11 @@ private:
   std::vector<PnrIndex> incomingForwardArcIndices_;
 
   friend llvm::Expected<FrozenRoutingGraph>
-  freezeRoutingGraph(const mapping::FabricHardwareView &fabric,
-                     const mapping::ValidatedTechMapping &mapping);
+  freezeRoutingGraph(const PnrProblemInputs &inputs);
 };
 
 llvm::Expected<FrozenRoutingGraph>
-freezeRoutingGraph(const mapping::FabricHardwareView &fabric,
-                   const mapping::ValidatedTechMapping &mapping);
+freezeRoutingGraph(const PnrProblemInputs &inputs);
 
 namespace detail {
 

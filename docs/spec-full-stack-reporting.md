@@ -41,7 +41,7 @@ Required fields:
 * runtime input identity;
 * selected hardware candidate identity;
 * selected mapping artifact identity when hardware mapping is used;
-* input artifact identities and fingerprints;
+* exact input artifact identities;
 * runtime evidence summary when runtime packaging is used;
 * structured diagnostic records;
 * report status;
@@ -83,7 +83,7 @@ Required fields:
 * RTL manifest identity when available;
 * EDA and FPA report identities when available;
 * supported workload classes;
-* input artifact identities and fingerprints;
+* exact input artifact identities;
 * structured diagnostic records;
 * diagnostics summary.
 
@@ -110,7 +110,7 @@ Required fields:
 * referenced workload report bundle identities;
 * referenced hardware candidate report bundle identities;
 * referenced DSE candidate artifact identities;
-* input artifact identities and fingerprints;
+* exact input artifact identities;
 * structured diagnostic records;
 * diagnostics summary.
 
@@ -233,8 +233,8 @@ for tests and DSE.
 
 ## Privacy And Portability
 
-Portable report bundles prefer artifact ids, fingerprints, profile ids,
-and logical paths. They must not require private workstation paths,
+Portable report bundles prefer artifact identities, profile ids, and
+logical paths. They must not require private workstation paths,
 license details, credentials, user names, or host names for
 interpretation.
 

@@ -10,17 +10,18 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace loom::mapping {
 
 namespace detail {
 struct ValidatedFabricProjection;
+struct ValidatedTechMappingProjection;
 class ValidatedTechMappingAccess;
 } // namespace detail
 
 enum class MappingErrorCode {
   UnsupportedSchemaVersion,
-  InvalidArtifactIdentity,
   WrongMappingProfile,
   ArtifactIdentityMismatch,
   DuplicateEntityId,
@@ -72,6 +73,12 @@ private:
 
 class ValidatedTechMapping {
 public:
+  // Rvalue construction intentionally copies so existing borrows stay valid.
+  ValidatedTechMapping(const ValidatedTechMapping &) = default;
+  ValidatedTechMapping &operator=(const ValidatedTechMapping &) = delete;
+  ValidatedTechMapping &operator=(ValidatedTechMapping &&) = delete;
+
+  const ArtifactIdentity &identity() const { return identity_; }
   MappingProfile profile() const { return draft_.header.profile; }
   const MappingDraftHeader &header() const { return draft_.header; }
   llvm::ArrayRef<GraphRef> coveredGraphs() const {
@@ -86,23 +93,28 @@ public:
 
 private:
   ValidatedTechMapping(
-      TechMappingDraft draft,
-      std::shared_ptr<const detail::ValidatedFabricProjection> fabricProjection)
-      : draft_(std::move(draft)),
-        fabricProjection_(std::move(fabricProjection)) {}
+      ArtifactIdentity identity, TechMappingDraft draft,
+      std::shared_ptr<const detail::ValidatedFabricProjection> fabricProjection,
+      std::shared_ptr<const detail::ValidatedTechMappingProjection>
+          mappingProjection)
+      : identity_(std::move(identity)), draft_(std::move(draft)),
+        fabricProjection_(std::move(fabricProjection)),
+        mappingProjection_(std::move(mappingProjection)) {}
 
+  ArtifactIdentity identity_;
   TechMappingDraft draft_;
   std::shared_ptr<const detail::ValidatedFabricProjection> fabricProjection_;
+  std::shared_ptr<const detail::ValidatedTechMappingProjection>
+      mappingProjection_;
 
   friend class detail::ValidatedTechMappingAccess;
-  friend llvm::Expected<ValidatedTechMapping>
-  validateTechMapping(const TechMappingDraft &mapping,
-                      const DataflowProgramView &dataflow,
-                      const FabricHardwareView &fabric);
+  friend llvm::Expected<ValidatedTechMapping> validateTechMapping(
+      ArtifactIdentity identity, const TechMappingDraft &mapping,
+      const DataflowProgramView &dataflow, const FabricHardwareView &fabric);
 };
 
 llvm::Expected<ValidatedTechMapping>
-validateTechMapping(const TechMappingDraft &mapping,
+validateTechMapping(ArtifactIdentity identity, const TechMappingDraft &mapping,
                     const DataflowProgramView &dataflow,
                     const FabricHardwareView &fabric);
 

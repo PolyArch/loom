@@ -3,10 +3,110 @@
 namespace loom::mapping::test {
 namespace {
 
+void acceptsMultipleMappingsOfOneWideSyncCapability() {
+  TestCase testCase = makeWideSyncCase();
+  if (testCase.fabric.encodings.size() != 1 ||
+      testCase.fabric.encodings.front().operations.front().inputPorts.size() !=
+          4 ||
+      testCase.fabric.encodings.front().operations.front().outputPorts.size() !=
+          4)
+    fail(__func__, "wide sync subset was encoded as a Fabric mode");
+  TechMappingDraft prefix = testCase.mapping;
+  auto prefixResult = validateTechMapping(artifact(34), prefix,
+                                          testCase.dataflow, testCase.fabric);
+  if (!prefixResult)
+    fail(__func__, llvm::toString(prefixResult.takeError()).c_str());
+
+  selectWideSyncLanes(testCase, {1, 3});
+  auto nonPrefixResult =
+      validateTechMapping(testCase.techMappingIdentity, testCase.mapping,
+                          testCase.dataflow, testCase.fabric);
+  if (!nonPrefixResult)
+    fail(__func__, llvm::toString(nonPrefixResult.takeError()).c_str());
+}
+
+void rejectsInvalidWideSyncLaneCorrespondence() {
+  auto expectInvalidMapping = [&](auto mutate) {
+    TestCase testCase = makeWideSyncCase();
+    ActorToFabricOp &correspondence =
+        testCase.mapping.realizations.front().actorToOps.front();
+    mutate(correspondence);
+    expectMapError(__func__, testCase,
+                   MappingErrorCode::ConfiguredFunctionMismatch);
+  };
+
+  expectInvalidMapping([](ActorToFabricOp &correspondence) {
+    correspondence.laneSelections = {{2, 3}, {0, 1}};
+  });
+  expectInvalidMapping([](ActorToFabricOp &correspondence) {
+    correspondence.laneSelections = {{2, 1}, {2, 1}};
+  });
+  expectInvalidMapping([](ActorToFabricOp &correspondence) {
+    correspondence.laneSelections.front().inputPort = 4;
+  });
+  expectInvalidMapping([](ActorToFabricOp &correspondence) {
+    correspondence.laneSelections.front().outputPort = 4;
+  });
+  expectInvalidMapping([](ActorToFabricOp &correspondence) {
+    correspondence.laneSelections.pop_back();
+  });
+
+  TestCase missingCapability = makeWideSyncCase();
+  missingCapability.fabric.operations.front().pairedLanes.clear();
+  expectMapError(__func__, missingCapability,
+                 MappingErrorCode::ConfiguredFunctionMismatch);
+}
+
+void rejectsMissingWideSyncPassthroughBoundary() {
+  TestCase testCase = makeWideSyncCase();
+  selectWideSyncLanes(testCase, {1, 3});
+  const PortDescriptor passthrough = port(PortKind::Value, type(41), 16);
+  FuDescriptor &fu = testCase.fabric.functionalUnits.front();
+  fu.inputPorts.push_back(passthrough);
+  fu.outputPorts.push_back(passthrough);
+  EncodingDescriptor &encoding = testCase.fabric.encodings.front();
+  encoding.inputs.push_back({4, passthrough});
+  encoding.outputs.push_back({4, passthrough, FuInputValue{4}});
+  testCase.fabric.computeOccurrences.front() = makeSpatialComputeOccurrence(
+      testCase.fabric.identity, ComputeOccurrenceId(3100), fu, 3200);
+
+  expectMapError(__func__, testCase,
+                 MappingErrorCode::IncompleteBoundaryCorrespondence);
+}
+
+void rejectsMalformedWideSyncLaneCapability() {
+  auto expectMalformed = [&](auto mutate) {
+    TestCase testCase = makeWideSyncCase();
+    mutate(testCase.fabric.operations.front().pairedLanes);
+    expectMapError(__func__, testCase,
+                   MappingErrorCode::InvalidConfiguredFunction);
+  };
+
+  expectMalformed([](std::vector<PairedLaneDescriptor> &lanes) {
+    lanes[1].inputPort = lanes[0].inputPort;
+  });
+  expectMalformed([](std::vector<PairedLaneDescriptor> &lanes) {
+    lanes[1].outputPort = lanes[0].outputPort;
+  });
+  expectMalformed([](std::vector<PairedLaneDescriptor> &lanes) {
+    lanes[1].maskBit = lanes[0].maskBit;
+  });
+  expectMalformed(
+      [](std::vector<PairedLaneDescriptor> &lanes) { lanes[0].maskBit = 4; });
+  expectMalformed(
+      [](std::vector<PairedLaneDescriptor> &lanes) { lanes[0].inputPort = 4; });
+  expectMalformed([](std::vector<PairedLaneDescriptor> &lanes) {
+    lanes[0].outputPort = 4;
+  });
+  expectMalformed(
+      [](std::vector<PairedLaneDescriptor> &lanes) { lanes.pop_back(); });
+}
+
 void acceptsValidTechMapping() {
   TestCase testCase = makeValidCase();
   auto result =
-      validateTechMapping(testCase.mapping, testCase.dataflow, testCase.fabric);
+      validateTechMapping(testCase.techMappingIdentity, testCase.mapping,
+                          testCase.dataflow, testCase.fabric);
   if (!result)
     fail(__func__, llvm::toString(result.takeError()).c_str());
   if (result->profile() != MappingProfile::TechMapping)
@@ -69,7 +169,8 @@ void acceptsBoundaryOutputFanoutWithOneCorrespondence() {
       DataflowEdge{EdgeId(200), ActorPort{addActor, PortDirection::Output, 0},
                    GraphPort{graph, PortDirection::Output, 1}});
   auto result =
-      validateTechMapping(testCase.mapping, testCase.dataflow, testCase.fabric);
+      validateTechMapping(testCase.techMappingIdentity, testCase.mapping,
+                          testCase.dataflow, testCase.fabric);
   if (!result)
     fail(__func__, llvm::toString(result.takeError()).c_str());
 }
@@ -89,10 +190,11 @@ void rejectsDistinctBoundaryOutputsSharingFuOutput() {
       {ActorPortRef{ActorRef{dataflowId, multiplyActor}, PortDirection::Output,
                     0},
        FuPortRef{FuRef{fabricId, fu}, PortDirection::Output, 0}});
-  expectError(
-      __func__,
-      validateTechMapping(testCase.mapping, testCase.dataflow, testCase.fabric),
-      MappingErrorCode::IncompleteBoundaryCorrespondence);
+  expectError(__func__,
+              validateTechMapping(testCase.techMappingIdentity,
+                                  testCase.mapping, testCase.dataflow,
+                                  testCase.fabric),
+              MappingErrorCode::IncompleteBoundaryCorrespondence);
 }
 void rejectsBoundaryInputCoalescing() {
   TestCase testCase = makeValidCase();
@@ -104,10 +206,11 @@ void rejectsBoundaryInputCoalescing() {
   testCase.fabric.encodings[0].operations[1].inputPorts[1] = value;
   testCase.fabric.encodings[0].operations[1].operands[1] = FuInputValue{0};
   testCase.mapping.realizations[0].boundaryPorts[2].fuPort.index = 0;
-  expectError(
-      __func__,
-      validateTechMapping(testCase.mapping, testCase.dataflow, testCase.fabric),
-      MappingErrorCode::ConfiguredFunctionMismatch);
+  expectError(__func__,
+              validateTechMapping(testCase.techMappingIdentity,
+                                  testCase.mapping, testCase.dataflow,
+                                  testCase.fabric),
+              MappingErrorCode::ConfiguredFunctionMismatch);
 }
 void acceptsCrossRealizationEdgeAccounting() {
   TestCase testCase = makeValidCase();
@@ -190,7 +293,8 @@ void acceptsCrossRealizationEdgeAccounting() {
   testCase.mapping.realizations = {std::move(multiplyRealization),
                                    std::move(addRealization)};
   auto result =
-      validateTechMapping(testCase.mapping, testCase.dataflow, testCase.fabric);
+      validateTechMapping(testCase.techMappingIdentity, testCase.mapping,
+                          testCase.dataflow, testCase.fabric);
   if (!result)
     fail(__func__, llvm::toString(result.takeError()).c_str());
 }
@@ -199,7 +303,8 @@ void rejectsUnsupportedSchemaProfileAndIdentity() {
     TestCase testCase = makeValidCase();
     testCase.mapping.header.schemaVersion = SchemaVersion{1, 0};
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::UnsupportedSchemaVersion);
   }
@@ -207,23 +312,17 @@ void rejectsUnsupportedSchemaProfileAndIdentity() {
     TestCase testCase = makeValidCase();
     testCase.mapping.header.profile = MappingProfile::PhysicalMapping;
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::WrongMappingProfile);
   }
   {
     TestCase testCase = makeValidCase();
-    testCase.mapping.header.dataflowIdentity = ArtifactIdentity();
-    expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
-                                    testCase.fabric),
-                MappingErrorCode::InvalidArtifactIdentity);
-  }
-  {
-    TestCase testCase = makeValidCase();
     testCase.mapping.header.dataflowIdentity = artifact(99);
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::ArtifactIdentityMismatch);
   }
@@ -233,7 +332,8 @@ void rejectsForeignUnresolvedAndWrongKindReferences() {
     TestCase testCase = makeValidCase();
     testCase.mapping.realizations[0].actors[0].artifact = artifact(99);
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::ForeignEntityReference);
   }
@@ -241,7 +341,8 @@ void rejectsForeignUnresolvedAndWrongKindReferences() {
     TestCase testCase = makeValidCase();
     testCase.mapping.realizations[0].actors[0].entity = ActorId(999);
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::UnresolvedEntityId);
   }
@@ -249,7 +350,8 @@ void rejectsForeignUnresolvedAndWrongKindReferences() {
     TestCase testCase = makeValidCase();
     testCase.mapping.realizations[0].actors[0].entity = ActorId(1);
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::WrongEntityKind);
   }
@@ -265,7 +367,8 @@ void rejectsDuplicateEntityIdsInArtifactNamespaces() {
                                                        {},
                                                        std::nullopt});
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::DuplicateEntityId);
   }
@@ -274,7 +377,8 @@ void rejectsDuplicateEntityIdsInArtifactNamespaces() {
     testCase.fabric.operations.push_back(
         FabricOpDescriptor{FabricOpId(10), FuId(10), {}, {}});
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::DuplicateEntityId);
   }
@@ -283,7 +387,8 @@ void rejectsDuplicateEntityIdsInArtifactNamespaces() {
     testCase.mapping.realizations.push_back(
         testCase.mapping.realizations.front());
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::DuplicateEntityId);
   }
@@ -296,7 +401,8 @@ void rejectsInvalidDataflowEdges() {
     duplicate.id = EdgeId(200);
     testCase.dataflow.edges.push_back(std::move(duplicate));
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::DuplicateEdge);
   }
@@ -305,7 +411,8 @@ void rejectsInvalidDataflowEdges() {
     testCase.dataflow.edges[0].source =
         ActorPort{ActorId(2), PortDirection::Input, 0};
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::InvalidPortConnection);
   }
@@ -313,7 +420,8 @@ void rejectsInvalidDataflowEdges() {
     TestCase testCase = makeValidCase();
     testCase.dataflow.actors[0].inputPorts[1].kind = PortKind::Memory;
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::InvalidPortConnection);
   }
@@ -324,7 +432,8 @@ void rejectsInvalidCoveredSinkAccounting() {
     TestCase testCase = makeValidCase();
     testCase.dataflow.edges.erase(testCase.dataflow.edges.begin());
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::MissingSinkDriver);
   }
@@ -332,7 +441,8 @@ void rejectsInvalidCoveredSinkAccounting() {
     TestCase testCase = makeValidCase();
     testCase.dataflow.edges.pop_back();
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::MissingSinkDriver);
   }
@@ -342,7 +452,8 @@ void rejectsInvalidCoveredSinkAccounting() {
         EdgeId(200), ActorPort{ActorId(2), PortDirection::Output, 0},
         GraphPort{GraphId(1), PortDirection::Output, 0}});
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::MultipleSinkDrivers);
   }
@@ -352,7 +463,8 @@ void rejectsInvalidCoveredSinkAccounting() {
         EdgeId(200), ActorPort{ActorId(3), PortDirection::Output, 0},
         ActorPort{ActorId(2), PortDirection::Input, 0}});
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::MultipleSinkDrivers);
   }
@@ -368,7 +480,8 @@ void acceptsUncoveredActorlessPassthrough() {
                    GraphPort{GraphId(4), PortDirection::Output, 0}});
 
   auto result =
-      validateTechMapping(testCase.mapping, testCase.dataflow, testCase.fabric);
+      validateTechMapping(testCase.techMappingIdentity, testCase.mapping,
+                          testCase.dataflow, testCase.fabric);
   if (!result)
     fail(__func__, llvm::toString(result.takeError()).c_str());
 }
@@ -385,7 +498,8 @@ void rejectsCoveredActorlessPassthroughAndUnaccountedEdges() {
     testCase.mapping.coveredGraphs.push_back(
         GraphRef{testCase.dataflow.identity, GraphId(4)});
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::ActorlessGraphPassthrough);
   }
@@ -393,7 +507,8 @@ void rejectsCoveredActorlessPassthroughAndUnaccountedEdges() {
     TestCase testCase = makeValidCase();
     testCase.mapping.realizations[0].boundaryPorts.pop_back();
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::UnaccountedGraphEdge);
   }
@@ -404,7 +519,8 @@ void rejectsInvalidActorGroupsAndCoverage() {
     TestCase testCase = makeValidCase();
     testCase.mapping.realizations[0].actors.clear();
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::EmptyActorGroup);
   }
@@ -425,7 +541,8 @@ void rejectsInvalidActorGroupsAndCoverage() {
     testCase.mapping.realizations[0].actors.push_back(
         ActorRef{testCase.dataflow.identity, otherActor});
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::CrossGraphActorGroup);
   }
@@ -433,7 +550,8 @@ void rejectsInvalidActorGroupsAndCoverage() {
     TestCase testCase = makeValidCase();
     testCase.mapping.realizations.clear();
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::IncompleteGraphCoverage);
   }
@@ -444,7 +562,8 @@ void rejectsInvalidComputeRealization() {
     TestCase testCase = makeValidCase();
     testCase.mapping.realizations[0].actorToOps.pop_back();
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::IncompleteActorToOpCorrespondence);
   }
@@ -453,7 +572,8 @@ void rejectsInvalidComputeRealization() {
     testCase.mapping.realizations[0].actorToOps[1].fabricOp =
         testCase.mapping.realizations[0].actorToOps[0].fabricOp;
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::IncompleteActorToOpCorrespondence);
   }
@@ -472,7 +592,8 @@ void rejectsInvalidComputeRealization() {
         {port(PortKind::Value, type(1))}});
     testCase.mapping.realizations[0].actorToOps[1].fabricOp.entity = otherOp;
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::SelectedFuMismatch);
   }
@@ -485,7 +606,8 @@ void rejectsInvalidComputeRealization() {
         EncodingDescriptor{otherEncoding, otherFu, {}, {}, {}});
     testCase.mapping.realizations[0].encoding.entity = otherEncoding;
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::SelectedFuMismatch);
   }
@@ -496,7 +618,8 @@ void rejectsConfiguredFunctionMismatch() {
     TestCase testCase = makeValidCase();
     testCase.dataflow.actors[1].operation = semantic(99);
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::ConfiguredFunctionMismatch);
   }
@@ -504,7 +627,8 @@ void rejectsConfiguredFunctionMismatch() {
     TestCase testCase = makeValidCase();
     testCase.dataflow.actors[1].attributes = semantic(99);
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::ConfiguredFunctionMismatch);
   }
@@ -513,7 +637,18 @@ void rejectsConfiguredFunctionMismatch() {
     auto &add = testCase.fabric.encodings[0].operations[1];
     add.operands[0] = FuInputValue{0};
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
+                                    testCase.fabric),
+                MappingErrorCode::ConfiguredFunctionMismatch);
+  }
+  {
+    TestCase testCase = makeValidCase();
+    ActorToFabricOp &ordinary = testCase.mapping.realizations[0].actorToOps[0];
+    ordinary.laneSelections = {{0, 0}};
+    expectError(__func__,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::ConfiguredFunctionMismatch);
   }
@@ -525,7 +660,8 @@ void rejectsInvalidBoundaryCorrespondence() {
     testCase.mapping.realizations[0].boundaryPorts.push_back(
         testCase.mapping.realizations[0].boundaryPorts.front());
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::IncompleteBoundaryCorrespondence);
   }
@@ -533,7 +669,8 @@ void rejectsInvalidBoundaryCorrespondence() {
     TestCase testCase = makeValidCase();
     testCase.mapping.realizations[0].boundaryPorts[1].fuPort.index = 2;
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::ConfiguredFunctionMismatch);
   }
@@ -545,7 +682,8 @@ void rejectsInvalidBoundaryCorrespondence() {
     testCase.mapping.realizations[0].boundaryPorts[0].fuPort.fu.entity =
         otherFu;
     expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
+                validateTechMapping(testCase.techMappingIdentity,
+                                    testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
                 MappingErrorCode::SelectedFuMismatch);
   }
@@ -626,6 +764,10 @@ void rejectsInvalidComputeOccurrences() {
 } // namespace
 
 void runMappingVerifierTests() {
+  acceptsMultipleMappingsOfOneWideSyncCapability();
+  rejectsInvalidWideSyncLaneCorrespondence();
+  rejectsMissingWideSyncPassthroughBoundary();
+  rejectsMalformedWideSyncLaneCapability();
   acceptsValidTechMapping();
   acceptsBoundaryInputFanout();
   acceptsBoundaryOutputFanoutWithOneCorrespondence();

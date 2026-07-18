@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <map>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -84,11 +85,35 @@ struct ValidatedFabricProjection {
   ValidatedFabricRoutingProjection routing = {};
 };
 
+struct ValidatedActorPairedLaneProjection {
+  ActorId actor;
+  FabricOpId operation;
+  std::vector<std::uint32_t> laneIndices;
+  std::string bitmask;
+};
+
+struct ValidatedComputeRealizationProjection {
+  ComputeRealizationId id;
+  FuId fu;
+  EncodingId encoding;
+  std::vector<ValidatedConfiguredBoundaryPort> activeBoundaryPorts;
+  std::vector<ValidatedActorPairedLaneProjection> pairedLaneProjections;
+};
+
+struct ValidatedTechMappingProjection {
+  std::vector<ValidatedComputeRealizationProjection> computeRealizations;
+};
+
 class ValidatedTechMappingAccess {
 public:
   static const ValidatedFabricProjection &
   fabricProjection(const ValidatedTechMapping &mapping) {
     return *mapping.fabricProjection_;
+  }
+
+  static const ValidatedTechMappingProjection &
+  mappingProjection(const ValidatedTechMapping &mapping) {
+    return *mapping.mappingProjection_;
   }
 };
 

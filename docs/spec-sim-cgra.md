@@ -170,13 +170,11 @@ A CGRA-sim report must identify:
 * selected `fabric.system`;
 * Fabric ADG artifact identity or path when the simulator is invoked
   with an explicit hardware artifact;
-* mapping artifact identity and fingerprint when available;
+* mapping ArtifactIdentity when available;
 * simulator schema version;
-* runtime input identity or fingerprint when available;
+* runtime input ArtifactIdentity when available;
 * simulator configuration and fidelity level;
-* resolved configuration identity and fingerprint;
-* component configuration-view identity;
-* component configuration-view fingerprint;
+* resolved configuration ArtifactIdentity;
 * functional outputs and memory diffs;
 * hardware-aware metrics;
 * trace location or inline trace summary;
@@ -208,7 +206,7 @@ CGRA-sim is complete at the target-spec level when:
 * it consumes dataflow IR, Fabric ADG, a mapping artifact, and runtime
   input data;
 * it rejects stale or inconsistent mapping artifacts;
-* it rejects incompatible configuration fingerprints across consumed
+* it rejects incompatible ResolvedConfig ArtifactIdentities across consumed
   artifacts;
 * it preserves DFG-sim functional behavior for legal mappings;
 * it reports hardware-aware cycles, activity, stalls, route activity,

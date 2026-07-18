@@ -310,11 +310,19 @@ struct TransportTraversalDescriptor {
   TransportEndpointRef target;
 };
 
+struct PairedLaneDescriptor {
+  std::uint32_t inputPort;
+  std::uint32_t outputPort;
+  std::uint32_t maskBit;
+};
+
 struct FabricOpDescriptor {
   FabricOpId id;
   FuId fu;
   std::vector<PortDescriptor> inputPorts;
   std::vector<PortDescriptor> outputPorts;
+  // Inventory order is the complete configured lane order.
+  std::vector<PairedLaneDescriptor> pairedLanes = {};
 };
 
 struct FuInputValue {
@@ -469,9 +477,16 @@ struct GraphPortRef {
   std::uint32_t index;
 };
 
+struct PairedLaneSelection {
+  std::uint32_t inputPort;
+  std::uint32_t outputPort;
+};
+
 struct ActorToFabricOp {
   ActorRef actor;
   FabricOpRef fabricOp;
+  // Sole persistent owner of ordered software-to-physical lane selection.
+  std::vector<PairedLaneSelection> laneSelections = {};
 };
 
 struct BoundaryPortCorrespondence {

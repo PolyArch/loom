@@ -3,6 +3,7 @@ add_mlir_library(LoomPnR
   FrozenRealizationGraph.cpp
   FrozenRoutingGraph.cpp
   PnrIndex.cpp
+  PnrProblemInputs.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/PnR

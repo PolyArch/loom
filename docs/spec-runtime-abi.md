@@ -226,7 +226,7 @@ Fabric ADG. Runtime simulator routing must honor those boundaries.
 Runtime diagnostics must distinguish:
 
 * missing runtime package;
-* stale artifact fingerprint;
+* stale artifact identity;
 * missing mapping artifact;
 * missing Fabric ADG;
 * unsupported target profile;

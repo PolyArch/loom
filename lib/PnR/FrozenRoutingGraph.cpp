@@ -1,6 +1,8 @@
 #include "PnR/FrozenRoutingGraph.h"
 
 #include "Mapping/FabricOccurrenceIndex.h"
+#include "Mapping/Verifier.h"
+#include "PnR/PnrProblemInputs.h"
 
 #include "llvm/Support/Error.h"
 
@@ -125,8 +127,12 @@ llvm::Error loom::pnr::detail::preflightFrozenRoutingGraphCapacity(
 }
 
 llvm::Expected<FrozenRoutingGraph>
-loom::pnr::freezeRoutingGraph(const FabricHardwareView &fabric,
-                              const ValidatedTechMapping &mapping) {
+loom::pnr::freezeRoutingGraph(const PnrProblemInputs &inputs) {
+  if (llvm::Error error = validatePnrProblemInputs(inputs))
+    return std::move(error);
+
+  const FabricHardwareView &fabric = inputs.fabric;
+  const ValidatedTechMapping &mapping = inputs.techMapping;
   const ValidatedFabricProjection &fabricProjection =
       ValidatedTechMappingAccess::fabricProjection(mapping);
   if (fabricProjection.identity != fabric.identity)

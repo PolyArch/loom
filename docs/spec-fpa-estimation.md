@@ -152,8 +152,7 @@ A normalized FPA report must identify:
 * optional mapping artifact identity;
 * optional CGRA-sim report identity;
 * optional RTL manifest identity;
-* resolved configuration identity and fingerprint;
-* FPA component configuration-view identity and fingerprint;
+* resolved configuration ArtifactIdentity;
 * selected tool profile id;
 * selected library profile id;
 * estimation configuration;
@@ -207,7 +206,7 @@ FPA estimation must distinguish:
 * timing violation;
 * incomplete power evidence;
 * incompatible activity source;
-* stale fingerprints.
+* stale artifact identities.
 
 Diagnostics must be structured and must not silently downgrade fidelity
 without recording that downgrade.

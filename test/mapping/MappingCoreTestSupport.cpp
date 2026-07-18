@@ -13,7 +13,9 @@ namespace loom::mapping::test {
 static_assert(!std::is_default_constructible_v<MappingDraftHeader>);
 static_assert(!std::is_default_constructible_v<TechMappingDraft>);
 ArtifactIdentity artifact(std::uint8_t value) {
-  return ArtifactIdentity({value});
+  ArtifactIdentity::Storage bytes{};
+  bytes.front() = value;
+  return llvm::cantFail(ArtifactIdentity::fromBytes(bytes));
 }
 TypeKey type(std::uint64_t value) { return TypeKey(value); }
 PortRoleKey role(std::uint64_t value) { return PortRoleKey(value); }
@@ -73,21 +75,147 @@ MappingErrorCode takeCode(llvm::Error error) {
   return code;
 }
 ValidatedTechMapping validateCase(const char *test, const TestCase &testCase) {
-  return takeExpected(test,
-                      validateTechMapping(testCase.mapping, testCase.dataflow,
-                                          testCase.fabric));
+  return takeExpected(
+      test, validateTechMapping(testCase.techMappingIdentity, testCase.mapping,
+                                testCase.dataflow, testCase.fabric));
+}
+PnrProblemInputs makePnrProblemInputs(TestCase &testCase,
+                                      ValidatedTechMapping &mapping,
+                                      ResolvedPnrConfigView &config) {
+  return PnrProblemInputs{
+      testCase.dataflow,
+      mapping,
+      testCase.fabric,
+      config,
+      artifact(241),
+      MappingConstraintSetInput{artifact(242), testCase.dataflow.identity,
+                                mapping.identity(), testCase.fabric.identity}};
 }
 FrozenRealizationGraph validateAndFreeze(const char *test, TestCase &testCase) {
   ValidatedTechMapping mapping = validateCase(test, testCase);
-  return takeExpected(test, freezeRealizationGraph(testCase.dataflow,
-                                                   testCase.fabric, mapping));
+  ResolvedPnrConfigView config;
+  return takeExpected(test, freezeRealizationGraph(makePnrProblemInputs(
+                                testCase, mapping, config)));
 }
 void expectMapError(const char *test, const TestCase &testCase,
                     MappingErrorCode expected) {
-  expectError(
-      test,
-      validateTechMapping(testCase.mapping, testCase.dataflow, testCase.fabric),
-      expected);
+  expectError(test,
+              validateTechMapping(testCase.techMappingIdentity,
+                                  testCase.mapping, testCase.dataflow,
+                                  testCase.fabric),
+              expected);
+}
+void selectWideSyncLanes(TestCase &testCase,
+                         llvm::ArrayRef<std::uint32_t> laneIndices) {
+  const FabricOpDescriptor &operation = testCase.fabric.operations.front();
+  ActorToFabricOp &correspondence =
+      testCase.mapping.realizations.front().actorToOps.front();
+  correspondence.laneSelections.clear();
+  testCase.mapping.realizations.front().boundaryPorts.clear();
+
+  const ArtifactIdentity &dataflowId = testCase.dataflow.identity;
+  const ArtifactIdentity &fabricId = testCase.fabric.identity;
+  const ActorId actor = testCase.dataflow.actors.front().id;
+  const FuId fu = testCase.fabric.functionalUnits.front().id;
+  for (auto [softwareLane, laneIndex] : llvm::enumerate(laneIndices)) {
+    const PairedLaneDescriptor &lane = operation.pairedLanes[laneIndex];
+    correspondence.laneSelections.push_back({lane.inputPort, lane.outputPort});
+    testCase.mapping.realizations.front().boundaryPorts.push_back(
+        {ActorPortRef{ActorRef{dataflowId, actor}, PortDirection::Input,
+                      static_cast<std::uint32_t>(softwareLane)},
+         FuPortRef{FuRef{fabricId, fu}, PortDirection::Input, lane.inputPort}});
+    testCase.mapping.realizations.front().boundaryPorts.push_back(
+        {ActorPortRef{ActorRef{dataflowId, actor}, PortDirection::Output,
+                      static_cast<std::uint32_t>(softwareLane)},
+         FuPortRef{FuRef{fabricId, fu}, PortDirection::Output,
+                   lane.outputPort}});
+  }
+}
+TestCase makeWideSyncCase() {
+  const ArtifactIdentity dataflowId = artifact(31);
+  const ArtifactIdentity fabricId = artifact(32);
+  const PortDescriptor value = port(PortKind::Value, type(31), 32);
+  const GraphId graph(31);
+  const ActorId syncActor(32);
+  const SemanticKey sync = semantic(31);
+  const SemanticKey noAttributes = semantic(32);
+  const FuId fu(33);
+  const FabricOpId syncOp(34);
+  const EncodingId encoding(35);
+
+  DataflowProgramView dataflow{
+      dataflowId,
+      {GraphDescriptor{graph, {value, value}, {value, value}}},
+      {ActorDescriptor{syncActor,
+                       graph,
+                       sync,
+                       noAttributes,
+                       {value, value},
+                       {value, value},
+                       std::nullopt}},
+      {DataflowEdge{EdgeId(310), GraphPort{graph, PortDirection::Input, 0},
+                    ActorPort{syncActor, PortDirection::Input, 0}},
+       DataflowEdge{EdgeId(311), GraphPort{graph, PortDirection::Input, 1},
+                    ActorPort{syncActor, PortDirection::Input, 1}},
+       DataflowEdge{EdgeId(312), ActorPort{syncActor, PortDirection::Output, 0},
+                    GraphPort{graph, PortDirection::Output, 0}},
+       DataflowEdge{EdgeId(313), ActorPort{syncActor, PortDirection::Output, 1},
+                    GraphPort{graph, PortDirection::Output, 1}}},
+      {}};
+
+  FabricHardwareView fabric{
+      fabricId,
+      {FuDescriptor{
+          fu, {value, value, value, value}, {value, value, value, value}}},
+      {FabricOpDescriptor{
+          syncOp,
+          fu,
+          {value, value, value, value},
+          {value, value, value, value},
+          {PairedLaneDescriptor{2, 1, 3}, PairedLaneDescriptor{0, 3, 0},
+           PairedLaneDescriptor{3, 0, 2}, PairedLaneDescriptor{1, 2, 1}}}},
+      {EncodingDescriptor{
+          encoding,
+          fu,
+          {{0, value}, {1, value}, {2, value}, {3, value}},
+          {ConfiguredFabricOpDescriptor{syncOp,
+                                        sync,
+                                        noAttributes,
+                                        {value, value, value, value},
+                                        {value, value, value, value},
+                                        {FuInputValue{2}, FuInputValue{0},
+                                         FuInputValue{3}, FuInputValue{1}}}},
+          {{1, value, FabricOpResultValue{syncOp, 0}},
+           {3, value, FabricOpResultValue{syncOp, 1}},
+           {0, value, FabricOpResultValue{syncOp, 2}},
+           {2, value, FabricOpResultValue{syncOp, 3}}}}},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {}};
+  fabric.computeOccurrences.push_back(
+      makeSpatialComputeOccurrence(fabricId, ComputeOccurrenceId(3100),
+                                   fabric.functionalUnits.front(), 3200));
+
+  ComputeRealizationDraft realization{
+      ComputeRealizationId(36),
+      {ActorRef{dataflowId, syncActor}},
+      FuRef{fabricId, fu},
+      EncodingRef{fabricId, encoding},
+      {{ActorRef{dataflowId, syncActor}, FabricOpRef{fabricId, syncOp}, {}}},
+      {}};
+  TechMappingDraft mapping{MappingDraftHeader{SchemaVersion{2, 0},
+                                              MappingProfile::TechMapping,
+                                              dataflowId, fabricId},
+                           {GraphRef{dataflowId, graph}},
+                           {std::move(realization)},
+                           {}};
+  TestCase testCase{std::move(dataflow), std::move(fabric), artifact(33),
+                    std::move(mapping)};
+  selectWideSyncLanes(testCase, {0, 1});
+  return testCase;
 }
 TestCase makeValidCase() {
   const ArtifactIdentity dataflowId = artifact(1);
@@ -190,7 +318,8 @@ TestCase makeValidCase() {
                            {GraphRef{dataflowId, graph}},
                            {std::move(realization)},
                            {}};
-  return TestCase{std::move(dataflow), std::move(fabric), std::move(mapping)};
+  return TestCase{std::move(dataflow), std::move(fabric), artifact(3),
+                  std::move(mapping)};
 }
 TestCase makeMemoryAnchorCase() {
   const ArtifactIdentity dataflowId = artifact(1);
@@ -515,7 +644,8 @@ TestCase makeMemoryAnchorCase() {
       {std::move(pairRealization), std::move(multiplyRealization),
        std::move(subtractRealization), std::move(finalAddRealization)},
       {std::move(loadRealization), std::move(storeRealization)}};
-  return TestCase{std::move(dataflow), std::move(fabric), std::move(mapping)};
+  return TestCase{std::move(dataflow), std::move(fabric), artifact(4),
+                  std::move(mapping)};
 }
 void selectInternalMemoryGraph(TestCase &testCase) {
   const ArtifactIdentity &dataflowId = testCase.dataflow.identity;

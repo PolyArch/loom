@@ -1,8 +1,13 @@
 #ifndef LOOM_COMMON_ARTIFACT_H
 #define LOOM_COMMON_ARTIFACT_H
 
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
+
+#include <array>
+#include <cstddef>
 #include <cstdint>
-#include <initializer_list>
 #include <utility>
 #include <vector>
 
@@ -20,15 +25,36 @@ struct SchemaVersion {
   }
 };
 
-class ArtifactIdentity {
+struct ArtifactSchemaDescriptor {
+  llvm::StringLiteral identity;
+  SchemaVersion version;
+};
+
+class CanonicalSemanticBytes {
 public:
-  ArtifactIdentity() = default;
-  ArtifactIdentity(std::initializer_list<std::uint8_t> bytes) : bytes_(bytes) {}
-  explicit ArtifactIdentity(std::vector<std::uint8_t> bytes)
+  explicit CanonicalSemanticBytes(std::vector<std::uint8_t> bytes)
       : bytes_(std::move(bytes)) {}
 
-  bool empty() const { return bytes_.empty(); }
-  const std::vector<std::uint8_t> &bytes() const { return bytes_; }
+  llvm::ArrayRef<std::uint8_t> bytes() const { return bytes_; }
+
+private:
+  std::vector<std::uint8_t> bytes_;
+};
+
+class ArtifactIdentity {
+public:
+  using Storage = std::array<std::uint8_t, 32>;
+  static constexpr std::size_t byteSize = 32;
+
+  ArtifactIdentity(const ArtifactIdentity &) = default;
+  ArtifactIdentity(ArtifactIdentity &&) = default;
+  ArtifactIdentity &operator=(const ArtifactIdentity &) = default;
+  ArtifactIdentity &operator=(ArtifactIdentity &&) = default;
+
+  static llvm::Expected<ArtifactIdentity>
+  fromBytes(llvm::ArrayRef<std::uint8_t> bytes);
+
+  const Storage &bytes() const { return bytes_; }
 
   friend bool operator==(const ArtifactIdentity &lhs,
                          const ArtifactIdentity &rhs) {
@@ -40,7 +66,13 @@ public:
   }
 
 private:
-  std::vector<std::uint8_t> bytes_;
+  explicit ArtifactIdentity(Storage bytes) : bytes_(bytes) {}
+
+  friend ArtifactIdentity
+  finalizeArtifactIdentity(const ArtifactSchemaDescriptor &schema,
+                           const CanonicalSemanticBytes &canonicalBytes);
+
+  Storage bytes_;
 };
 
 template <typename EntityId> struct ArtifactReference {

@@ -1,10 +1,13 @@
 # PnR
 
-This document specifies Loom place-and-route. PnR consumes one exact immutable
-TechMapping artifact and adds concrete resource, communication, schedule, and
-storage realization for its selected Compute Realizations. Its persistent
-output is a Physical-Mapping-profile artifact specified in
-`docs/spec-mapping-artifact.md`.
+This document specifies Loom place-and-route. Spatial PnR consumes one exact
+coupling of a Canonical Dataflow Program artifact, a TechMapping-profile
+Mapping artifact, a fully elaborated Fabric Hardware Description artifact, an
+immutable PnR configuration view derived from one exact ResolvedConfig
+artifact, and a MappingConstraintSet artifact. It adds concrete resource,
+communication, schedule, and storage realization for the selected Compute
+Realizations. Its persistent output is a Physical-Mapping-profile artifact
+specified in `docs/spec-mapping-artifact.md`.
 
 Detailed mapper contracts are split across:
 
@@ -21,13 +24,36 @@ Detailed mapper contracts are split across:
 
 PnR physically realizes an existing TechMapping. It consumes:
 
-* one verifier-clean TechMapping artifact;
-* its exact referenced Canonical Dataflow Program;
-* its exact referenced Fabric Hardware Description, including the selected
-  `fabric.system` and referenced `fabric.module` templates;
-* user constraints and objectives;
-* optional workload shape, profile data, or previous evaluation
-  metrics.
+* one Canonical Dataflow Program artifact `D`;
+* one verifier-clean TechMapping artifact `T` that references exact `D` and
+  `F`;
+* one fully elaborated Fabric Hardware Description artifact `F`, including the
+  selected `fabric.system` and referenced `fabric.module` templates;
+* one immutable `ResolvedPnrConfigView` `C` mechanically derived from an exact
+  ResolvedConfig artifact; and
+* one immutable MappingConstraintSet artifact `K` that references exact
+  `D`, `T`, and `F`.
+
+The persistent authorities are `D`, `T`, `F`, the complete ResolvedConfig
+artifact, and `K`. `C` is a typed projection with no independent artifact
+identity. The TechMapping validation/import boundary requires the exact trusted
+`T` identity and retains it immutably with the validated witness.
+`PnrProblemInputs` borrows that combined value rather than carrying a
+separately mutable `T` label. It groups the five inputs with the complete
+ResolvedConfig identity from which `C` was derived and `K`'s identity and exact
+`D/T/F` bindings. The grouping has no identity and does not define a PnR
+request artifact.
+
+The validation/import boundary trusts the `T` identity supplied by the owning
+artifact boundary. It does not compute or rehash Mapping content; persistent
+Mapping canonicalization remains outside this C++ validation boundary.
+
+Before capacity planning, native allocation, or search, PnR rejects
+`T.D != D.id`, `T.F != F.id`, or any
+`K.D/T/F != D.id/T.id/F.id` mismatch with a structured input error. The
+fixed-width identity contract has no absent or sentinel value; even a
+constraint set with no clauses is an exact `K` artifact bound to this
+`D/T/F`.
 
 PnR produces:
 
@@ -36,10 +62,11 @@ PnR produces:
 * diagnostics for rejected, partial, or degraded mappings;
 * mapping-quality metrics used for search and reporting.
 
-PnR is not a simulator. It may use analytical estimates, profile data,
-DFG-sim results, previous CGRA-sim results, or FPA estimates as cost
-inputs, but it does not execute workloads and it must not present its
-estimates as hardware-aware simulation results.
+PnR is not a simulator. Upstream policy construction may use analytical
+estimates, profile data, DFG-sim results, previous CGRA-sim results, or FPA
+estimates when producing the exact PnR inputs, but freeze does not accept them
+as parallel semantic inputs. PnR does not execute workloads and it must not
+present its estimates as hardware-aware simulation results.
 
 The first hard PnR target is verifier-grade Physical Mapping artifacts. Such
 artifacts may be emitted by PnR, hand-authored for tests, imported from another
@@ -89,11 +116,11 @@ each Compute Realization: the canonical actor group, selected FU encoding,
 actor/op correspondence, and boundary-port correspondence. These facts exist
 only in Mapping records, not in Canonical Dataflow Program IR.
 
-PnR consumes an exact immutable TechMapping artifact and adds physical
-resource, communication, schedule, and storage realization. It does not
-rewrite L1 or L2 IR boundaries, regroup actors, or select another semantic
-encoding. Such changes require a new compiler artifact or TechMapping artifact
-from the owning search.
+PnR consumes the exact five-input boundary around an immutable TechMapping
+artifact and adds physical resource, communication, schedule, and storage
+realization. It does not rewrite L1 or L2 IR boundaries, regroup actors, or
+select another semantic encoding. Such changes require a new compiler artifact
+or TechMapping artifact from the owning search.
 
 ## Core Model
 
@@ -110,9 +137,8 @@ candidate legal. A legality rule must not encode a preference unless
 violating that rule would break software semantics, hardware semantics,
 or the mapping artifact contract.
 
-The baseline PnR policy must be deterministic. Given the same TechMapping
-predecessor, referenced input artifacts, mapping options, and workload shape,
-it must produce the same Physical Mapping artifact and diagnostics.
+The baseline PnR policy must be deterministic. Given the same exact `D/T/F/C/K`
+inputs, it must produce the same Physical Mapping artifact and diagnostics.
 
 PnR treats hardware as an arbitrary directed graph. Coordinates, grid
 metadata, and visualization layouts are display metadata. Placement and
@@ -200,8 +226,8 @@ PnR legality includes at least the following rule families.
 ### Reference Legality
 
 Every software and hardware reference used by a candidate must resolve.
-Fingerprints must match when provided. PnR must diagnose stale or
-ambiguous references.
+Artifact identities must match their exact references. PnR must diagnose
+stale or ambiguous references.
 
 ### Thread Legality
 
@@ -400,6 +426,8 @@ PnR is complete at the target-spec level when:
   TechMapping predecessors rather than mutating Dataflow or Fabric artifacts;
 * it can validate and consume verifier-clean TechMapping artifacts regardless
   of whether they were generated, imported, or hand-authored for tests;
+* it rejects every exact-coupling mismatch before native capacity planning or
+  allocation;
 * the deterministic baseline policy physically realizes a toy TechMapping on
   a non-mesh arbitrary topology;
 * the deterministic baseline policy physically realizes a TechMapping on a

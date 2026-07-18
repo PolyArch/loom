@@ -162,7 +162,8 @@ Its confirmed conceptual content is:
 * a persistent record identity;
 * one or more actor references within one graph definition;
 * one exact FU implementation reference in the referenced Fabric artifact;
-* complete actor-to-`fabric.op` correspondence;
+* complete actor-to-`fabric.op` correspondence, including ordered software
+  input/result port correspondence to physical `fabric.op` ports;
 * complete typed software-boundary-to-FU-template-port correspondence;
 * a reference to the selected Fabric-defined valid semantic encoding; and
 * the typed legality and representation obligations for the match.
@@ -176,6 +177,37 @@ the selected FU topology under the selected encoding.
 It is used to verify the actor group, but it is not persisted as a second
 software graph, does not receive independent program identity, and does
 not replace either input artifact.
+
+For a mapped `dataflow.sync`, each software lane must correspond to one unique
+Fabric-declared paired lane. `ActorToFabricOp` is the sole persistent owner of
+the ordered software input/result-to-physical-endpoint correspondence. It
+stores one ordered selection record `{input_port, output_port}` per software
+lane. The vector must be complete, select one unique lane per software
+position, stay within the physical signature, and resolve each record to one
+declared lane. Non-prefix selections are legal.
+
+The active lane set is the image of that correspondence. Mapping validation
+derives the ordered lane-record indices, active configured FU boundary ports,
+and `sw_configs.bitmask` once from the Fabric-owned `{input_port, output_port,
+mask_bit}` inventory plus `ActorToFabricOp`. These values belong to the
+transient validated Mapping projection. Frozen PnR domains consume that
+projection directly and do not reinterpret raw Fabric encodings. Mapping does
+not persist `active_lanes`, `selected_mask`, a bitmask, or an equivalent second
+authority. Canonical Fabric configured-operation descriptors likewise do not
+copy selected lane records.
+
+Lane selection deactivates only configured FU boundary ports used exclusively
+by inactive paired lanes. Boundaries shared with active or ordinary operations,
+unused unrelated boundaries, and direct `FuInputValue` passthrough inputs and
+outputs remain active.
+
+The neutral C++ verifier treats a missing lane inventory as an ordinary exact
+configured function. Because `SemanticKey` is opaque, it cannot identify an
+exact-full-width `dataflow.sync` solely from semantic identity. Any subset-
+arity mapping therefore requires the explicit paired-lane capability and is
+rejected when that capability is missing or malformed. Canonical Fabric
+producers remain responsible for attaching the inventory to every wide-sync
+capability, including exact-full-width uses.
 
 Mapping does not copy selected `sw_configs` into canonical Fabric. A backend
 may derive transient `sw_configs = {mode = N}` values for `fabric.op`
@@ -301,18 +333,43 @@ Every projection is non-authoritative, deletable, and deterministically
 rebuildable from exact finalized inputs. Cache keys bind all semantic
 inputs and the producing algorithm semantics.
 
-The implemented `freezeRealizationGraph` projection is the bounded
-Dataflow/TechMapping/Fabric structural input to later PnR construction. It
-rechecks the two exact input identities, consumes the immutable canonical
-compute-occurrence projection produced by Fabric validation, assigns dense
-native indices by persistent entity identity, records actor ownership, derives
-external multi-sink logical nets from canonical edges and exact boundary
-correspondence, and derives logical-memory-root service obligations from
-selected Memory Realizations. Its dense terminal table contains only selected
-FU or memory operation-template terminals needed by those logical nets. Graph
-boundary endpoints remain embedded typed terminal variants in logical-net
-sources and sinks. Graph memory import and export capability ports are not
-token terminals.
+The public PnR freeze entry points consume one `PnrProblemInputs` value. This
+ordinary non-artifact grouping borrows the exact Dataflow, validated
+TechMapping, Fabric, and `ResolvedPnrConfigView` values. The validated
+TechMapping immutably retains the exact trusted artifact identity supplied at
+its validation/import boundary. The grouping cannot detach or relabel that
+identity. It also carries the exact complete ResolvedConfig identity from which
+the config view was derived and the MappingConstraintSet artifact identity
+with its required Dataflow, TechMapping, and Fabric binding identities. The
+grouping has no identity and is not a PnR request artifact. The config view has
+no independent artifact identity.
+
+TechMapping validation does not compute or rehash Mapping content. It trusts
+the identity supplied by the owning artifact boundary; persistent Mapping
+canonicalization remains separate work.
+
+The current C++ MappingConstraintSet input is only the already-confirmed
+artifact identity and exact `D/T/F` binding boundary. It does not define
+constraint clauses, target universes, canonical serialization, hot indices, or
+the complete frozen constraint projection.
+
+Shared preflight rejects `T.D != D.id`, `T.F != F.id`, and
+`K.D/T/F != D.id/T.id/F.id` with typed errors before either freeze performs
+capacity planning or allocates native arrays. Because every
+`ArtifactIdentity` is a fixed-width value, preflight does not apply empty,
+null, or sentinel identity checks.
+
+After that preflight, the implemented `freezeRealizationGraph` projection
+preserves the bounded Dataflow/TechMapping/Fabric structural behavior. It
+consumes the immutable canonical compute-occurrence projection produced by
+Fabric validation, assigns dense native indices by persistent entity identity,
+records actor ownership, derives external multi-sink logical nets from
+canonical edges and exact boundary correspondence, and derives
+logical-memory-root service obligations from selected Memory Realizations. Its
+dense terminal table contains only selected FU or memory operation-template
+terminals needed by those logical nets. Graph boundary endpoints remain
+embedded typed terminal variants in logical-net sources and sinks. Graph
+memory import and export capability ports are not token terminals.
 
 For each Compute Realization, the projection derives `ImplDomain` solely from
 exact selected-FU membership in the finalized occurrence table. Each
@@ -377,15 +434,15 @@ are not structurally required may leave otherwise valid endpoints or topology
 components disconnected; disconnected and unreachable topology is not a
 validation failure.
 
-The implemented `freezeRoutingGraph` projection consumes only that retained
-validated routing projection after rechecking the exact Fabric identity. It
-orders resources and endpoints by persistent typed identity, converts all
-indices and range boundaries through checked `PnrIndex` operations, and emits
-a directed CSR adjacency table. Each frozen arc records whether it is a bare
-point arc or a resource traversal, the traversal's resource index when
-present, and independent effective payload and tag capacities. Each capacity
-is the minimum of the source and target endpoint capacities in that field; tag
-capacity is never added to payload capacity.
+After the same five-input preflight, the implemented `freezeRoutingGraph`
+projection consumes only that retained validated routing projection. It orders
+resources and endpoints by persistent typed identity, converts all indices and
+range boundaries through checked `PnrIndex` operations, and emits a directed
+CSR adjacency table. Each frozen arc records whether it is a bare point arc or
+a resource traversal, the traversal's resource index when present, and
+independent effective payload and tag capacities. Each capacity is the minimum
+of the source and target endpoint capacities in that field; tag capacity is
+never added to payload capacity.
 
 The same freeze mechanically derives an incoming CSR from those forward arcs.
 Each incoming entry stores only its source vertex and dense forward-arc index;
@@ -456,10 +513,9 @@ identity, serialization, canonical byte encoding, or persistence form. Their
 equality is structural only. Neither contains a selected occurrence, selected
 endpoint, complete candidate domain, configuration, placement, route, tag,
 buffer, resource-time, or physical-memory decision.
-`freezeRealizationGraph` is the three-input bounded projection;
-`freezeRoutingGraph` consumes the exact Fabric identity retained by the
-validated Mapping value. They are not the complete four-input `FrozenModel`;
-`ConfigDomain` and the full `CandidateDomain` remain outside this boundary.
+Both are reached only through the exact five-input authority boundary. They are
+not the complete `FrozenModel`; config and constraint projections and the full
+`CandidateDomain` remain outside the implemented structural views.
 
 The structural subview intentionally retains canonical edge identities, dense
 terminal references, and deletable occurrence and endpoint-domain caches. It
@@ -534,7 +590,7 @@ This document does not define:
 * physical delta record schemas;
 * route-tree, resource-time, schedule, tag, buffer, memory, or boundary
   schemas;
-* the complete four-input `FrozenModel` and later physical PnR data layout;
+* the complete five-input `FrozenModel` and later physical PnR data layout;
 * `ConfigDomain`, the complete `CandidateDomain`, placement choice, endpoint
   selection, or route search;
 * Hardware Sharing Group registry syntax;

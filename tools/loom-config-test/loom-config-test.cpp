@@ -4,6 +4,8 @@
 
 #include "Common/ResolvedConfig.h"
 
+#include "Common/ArtifactText.h"
+
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -17,31 +19,16 @@ static ::llvm::cl::opt<bool>
                  ::llvm::cl::init(false));
 
 static ::llvm::cl::opt<bool>
-    resolvedFingerprint("resolved-fingerprint",
-                        ::llvm::cl::desc("dump resolved config fingerprint"),
-                        ::llvm::cl::init(false));
-
-static ::llvm::cl::opt<bool> componentFingerprint(
-    "component-fingerprint",
-    ::llvm::cl::desc("dump typed component config view fingerprint"),
-    ::llvm::cl::init(false));
-
-static ::llvm::cl::opt<std::string>
-    componentView("component-view",
-                  ::llvm::cl::desc("component config view identity"),
-                  ::llvm::cl::init(""));
+    resolvedIdentity("resolved-identity",
+                     ::llvm::cl::desc("dump resolved config ArtifactIdentity"),
+                     ::llvm::cl::init(false));
 
 int main(int argc, char **argv) {
   ::llvm::cl::ParseCommandLineOptions(argc, argv,
                                       "loom-config-test: parse and dump a "
                                       "resolved configuration file\n");
-  if (!(resolvedJson || resolvedFingerprint || componentFingerprint)) {
+  if (!(resolvedJson || resolvedIdentity)) {
     ::llvm::errs() << "error: expected a resolved config output option\n";
-    return 1;
-  }
-  if (componentFingerprint && componentView.empty()) {
-    ::llvm::errs() << "error: --component-fingerprint requires "
-                      "--component-view <view-id>\n";
     return 1;
   }
 
@@ -56,10 +43,9 @@ int main(int argc, char **argv) {
 
   if (resolvedJson)
     ::llvm::outs() << ::loom::canonicalResolvedConfigJson(*cfg) << "\n";
-  if (resolvedFingerprint)
-    ::llvm::outs() << ::loom::resolvedConfigFingerprint(*cfg) << "\n";
-  if (componentFingerprint)
-    ::llvm::outs() << ::loom::componentConfigFingerprint(*cfg, componentView)
+  if (resolvedIdentity)
+    ::llvm::outs() << ::loom::formatArtifactIdentityHex(
+                          ::loom::resolvedConfigIdentity(*cfg))
                    << "\n";
   return 0;
 }

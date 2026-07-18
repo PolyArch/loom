@@ -166,8 +166,6 @@ llvm::Error validateMetricScope(const MetricDescriptor &descriptor,
     return llvm::Error::success();
   if (!descriptor.permitsEntityScope)
     return metricError(descriptor.spelling + " does not permit entity scope");
-  if (entity->artifact.empty())
-    return metricError("entity scope requires an artifact identity");
   return llvm::Error::success();
 }
 

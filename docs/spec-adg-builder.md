@@ -375,7 +375,7 @@ example-run reports. Each example must identify:
 * the emitted Fabric root symbol;
 * whether the root is a `fabric.module`, a `fabric.system`, or both;
 * verifier status and diagnostics;
-* stable output identity or fingerprint when used by later artifacts.
+* stable output ArtifactIdentity when used by later artifacts.
 
 ## Objective Verification
 

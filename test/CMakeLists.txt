@@ -1,5 +1,6 @@
 llvm_canonicalize_cmake_booleans(MLIR_ENABLE_BINDINGS_PYTHON)
 
+add_subdirectory(common)
 add_subdirectory(evaluation)
 add_subdirectory(mapping)
 add_subdirectory(pnr)
@@ -22,6 +23,7 @@ set(LOOM_TEST_DEPENDS
   loom-raise-opt
   loom-adg-builder-test
   loom-config-test
+  loom-common-artifact-test
   loom-cost-test
   loom-coverage-test
   loom-dfg-sim

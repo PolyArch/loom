@@ -1,7 +1,7 @@
 #ifndef LOOM_PNR_FROZENREALIZATIONGRAPH_H
 #define LOOM_PNR_FROZENREALIZATIONGRAPH_H
 
-#include "Mapping/Verifier.h"
+#include "Mapping/Artifact.h"
 #include "PnR/PnrIndex.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -15,6 +15,8 @@
 #include <vector>
 
 namespace loom::pnr {
+
+struct PnrProblemInputs;
 
 enum class FrozenMappingInfeasibilityCode {
   EmptyImplementationDomain,
@@ -402,15 +404,11 @@ private:
   std::vector<FrozenMemoryServiceObligation> memoryServiceObligations_;
 
   friend llvm::Expected<FrozenRealizationGraph>
-  freezeRealizationGraph(const mapping::DataflowProgramView &dataflow,
-                         const mapping::FabricHardwareView &fabric,
-                         const mapping::ValidatedTechMapping &mapping);
+  freezeRealizationGraph(const PnrProblemInputs &inputs);
 };
 
 llvm::Expected<FrozenRealizationGraph>
-freezeRealizationGraph(const mapping::DataflowProgramView &dataflow,
-                       const mapping::FabricHardwareView &fabric,
-                       const mapping::ValidatedTechMapping &mapping);
+freezeRealizationGraph(const PnrProblemInputs &inputs);
 
 namespace detail {
 

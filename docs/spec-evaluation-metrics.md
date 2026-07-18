@@ -18,9 +18,11 @@ wrapper, second representation, or conversion path.
 
 `include/Common/ArtifactText.h` owns canonical `X.Y` schema-version text and
 lowercase hexadecimal `ArtifactIdentity` text. Individual artifact schemas
-still own their supported schema identities and versions, and contextual typed
-references still own nonempty-identity validation. These text codecs assign no
-digest algorithm, artifact-finalization, or content-addressing semantics.
+still own their supported schema identities, versions, and canonical semantic
+bytes. A required contextual reference structurally contains a valid,
+fixed-width `ArtifactIdentity`; absence is represented outside the reference.
+These text codecs parse and format the Common value without defining a second
+identity recipe.
 
 ## Metric Registry
 
@@ -49,9 +51,9 @@ adds them to the exponent. Zero is always represented as coefficient zero and
 exponent zero. Normalization that would overflow the exponent is rejected.
 
 `MetricScope` is either the whole subject or one
-`ArtifactReference<MetricEntityId>`. An entity scope requires a nonempty exact
-artifact identity. Multi-entity relations and string paths are outside this
-slice.
+`ArtifactReference<MetricEntityId>`. An entity scope always contains an exact
+finalized artifact identity. Multi-entity relations and string paths are
+outside this slice.
 
 ## Metric Queries
 

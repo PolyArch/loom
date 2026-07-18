@@ -1,11 +1,12 @@
 #include "Evaluation/Metric.h"
 #include "Common/Artifact.h"
-#include "Common/ArtifactText.h"
 #include "Mapping/Artifact.h"
 
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <cstdlib>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -53,18 +54,20 @@ void expectErrorContains(const char *test, llvm::Error error,
           "unexpected error: " + message);
 }
 
-std::string takeErrorMessage(const char *test, llvm::Error error) {
-  if (!error)
-    fail(test, "expected an error");
-  return llvm::toString(std::move(error));
-}
-
 template <typename T>
 void expectErrorContains(const char *test, llvm::Expected<T> value,
                          llvm::StringRef expected) {
   if (value)
     fail(test, "expected an error");
   expectErrorContains(test, value.takeError(), expected);
+}
+
+ArtifactIdentity testArtifact(std::initializer_list<std::uint8_t> prefix) {
+  ArtifactIdentity::Storage bytes{};
+  require(__func__, prefix.size() <= bytes.size(),
+          "test identity prefix is too long");
+  std::copy(prefix.begin(), prefix.end(), bytes.begin());
+  return takeExpected(__func__, ArtifactIdentity::fromBytes(bytes));
 }
 
 DecimalValue decimal(const char *test, std::int64_t coefficient,
@@ -79,9 +82,10 @@ MetricObservation cyclePoint(std::int64_t cycles) {
 }
 
 void sharedArtifactAtomsAreSingleSource() {
-  ArtifactIdentity identity({0x01, 0xab});
-  require(__func__, !identity.empty(), "identity unexpectedly empty");
-  require(__func__, identity.bytes().size() == 2,
+  ArtifactIdentity identity = testArtifact({0x01, 0xab});
+  require(__func__, identity.bytes().size() == ArtifactIdentity::byteSize,
+          "identity width changed");
+  require(__func__, identity.bytes()[0] == 0x01 && identity.bytes()[1] == 0xab,
           "identity bytes were not preserved");
 
   loom::mapping::ActorRef mappingReference{identity, loom::mapping::ActorId(7)};
@@ -90,57 +94,6 @@ void sharedArtifactAtomsAreSingleSource() {
           "Mapping reference lost the common artifact identity");
   require(__func__, commonReference.entity == loom::mapping::ActorId(7),
           "Mapping reference lost its typed entity ID");
-}
-
-void schemaVersionTextCodecIsCanonical() {
-  const std::vector<std::pair<SchemaVersion, std::string>> canonical = {
-      {{0, 0}, "0.0"},
-      {{1, 0}, "1.0"},
-      {{std::numeric_limits<std::uint32_t>::max(),
-        std::numeric_limits<std::uint32_t>::max()},
-       "4294967295.4294967295"},
-  };
-
-  for (const auto &[version, spelling] : canonical) {
-    require(__func__, formatSchemaVersion(version) == spelling,
-            "schema version formatting changed for " + spelling);
-    SchemaVersion parsed = takeExpected(__func__, parseSchemaVersion(spelling));
-    require(__func__, parsed == version,
-            "schema version parsing changed for " + spelling);
-    require(__func__, formatSchemaVersion(parsed) == spelling,
-            "schema version round trip was not canonical for " + spelling);
-  }
-
-  for (llvm::StringRef spelling :
-       {"",     "1",    "1.",   ".1",           "1.0.0",        "+1.0", "-1.0",
-        "1.+0", "1.-0", " 1.0", "1.0 ",         "1 .0",         "1. 0", "01.0",
-        "1.00", "00.0", "0.01", "4294967296.0", "0.4294967296", "1.a"})
-    expectErrorContains(__func__, parseSchemaVersion(spelling),
-                        "schema version");
-}
-
-void artifactIdentityTextCodecIsCanonical() {
-  const ArtifactIdentity empty;
-  require(__func__, formatArtifactIdentityHex(empty).empty(),
-          "empty artifact identity did not format as empty text");
-  require(__func__,
-          takeExpected(__func__, parseArtifactIdentityHex("")) == empty,
-          "empty artifact identity did not round-trip");
-
-  const ArtifactIdentity identity({0x00, 0x01, 0xab, 0xff});
-  const std::string spelling = "0001abff";
-  require(__func__, formatArtifactIdentityHex(identity) == spelling,
-          "artifact identity formatting changed");
-  ArtifactIdentity parsed =
-      takeExpected(__func__, parseArtifactIdentityHex(spelling));
-  require(__func__, parsed == identity, "artifact identity parsing changed");
-  require(__func__, formatArtifactIdentityHex(parsed) == spelling,
-          "artifact identity round trip was not canonical");
-
-  for (llvm::StringRef malformed :
-       {"0", "abc", "AB", "0g", "g0", " 0", "0 ", "0\t", "\n0"})
-    expectErrorContains(__func__, parseArtifactIdentityHex(malformed),
-                        "artifact identity");
 }
 
 void metricRegistryIsClosedAndTyped() {
@@ -296,14 +249,6 @@ void observationValidationRejectsIllegalCombinations() {
       NotApplicableObservation{NotApplicableReason::UndefinedForSubject}};
   expectErrorContains(__func__, validateMetricObservation(invalidNotApplicable),
                       "not_applicable requires unknown uncertainty");
-
-  MetricObservation emptyEntityScope{
-      MetricKind::CycleCount,
-      MetricEntityReference{ArtifactIdentity(), MetricEntityId(7)},
-      UncertaintyKind::ExactWithinModel,
-      PointObservation{MetricValue{IntegerValue(1)}}};
-  expectErrorContains(__func__, validateMetricObservation(emptyEntityScope),
-                      "entity scope requires an artifact identity");
 }
 
 void metricQueryCanonicalizationIsInputOrderIndependent() {
@@ -316,13 +261,13 @@ void metricQueryCanonicalizationIsInputOrderIndependent() {
   MetricQuery clockWhole{MetricKind::ClockPeriod, WholeSubjectScope{}};
   MetricQuery clockEntityLate{
       MetricKind::ClockPeriod,
-      MetricEntityReference{ArtifactIdentity({0x02}), MetricEntityId(1)}};
+      MetricEntityReference{testArtifact({0x02}), MetricEntityId(1)}};
   MetricQuery clockEntityHighId{
       MetricKind::ClockPeriod,
-      MetricEntityReference{ArtifactIdentity({0x01}), MetricEntityId(9)}};
+      MetricEntityReference{testArtifact({0x01}), MetricEntityId(9)}};
   MetricQuery clockEntityLowId{
       MetricKind::ClockPeriod,
-      MetricEntityReference{ArtifactIdentity({0x01}), MetricEntityId(3)}};
+      MetricEntityReference{testArtifact({0x01}), MetricEntityId(3)}};
   MetricQuery cyclesWhole{MetricKind::CycleCount, WholeSubjectScope{}};
   MetricQuery runtimeWhole{MetricKind::Runtime, WholeSubjectScope{}};
 
@@ -348,10 +293,10 @@ void metricQueryDuplicatesAreRejectedWithoutCollapsingScopes() {
   MetricQuery whole{MetricKind::CycleCount, WholeSubjectScope{}};
   MetricQuery firstEntity{
       MetricKind::CycleCount,
-      MetricEntityReference{ArtifactIdentity({0x01}), MetricEntityId(1)}};
+      MetricEntityReference{testArtifact({0x01}), MetricEntityId(1)}};
   MetricQuery secondEntity{
       MetricKind::CycleCount,
-      MetricEntityReference{ArtifactIdentity({0x01}), MetricEntityId(2)}};
+      MetricEntityReference{testArtifact({0x01}), MetricEntityId(2)}};
 
   std::vector<MetricQuery> distinct = takeExpected(
       __func__, canonicalizeMetricQueries({secondEntity, whole, firstEntity}));
@@ -365,36 +310,14 @@ void metricQueryDuplicatesAreRejectedWithoutCollapsingScopes() {
                       "duplicate metric query");
 }
 
-void metricQueryUsesSharedScopeValidation() {
-  MetricQuery query{
-      MetricKind::CycleCount,
-      MetricEntityReference{ArtifactIdentity(), MetricEntityId(7)}};
-  MetricObservation observation{
-      MetricKind::CycleCount,
-      MetricEntityReference{ArtifactIdentity(), MetricEntityId(7)},
-      UncertaintyKind::ExactWithinModel,
-      PointObservation{MetricValue{IntegerValue(1)}}};
-
-  const std::string queryError =
-      takeErrorMessage(__func__, validateMetricQuery(query));
-  const std::string observationError =
-      takeErrorMessage(__func__, validateMetricObservation(observation));
-  require(__func__, queryError == observationError,
-          "query and observation scope validation diverged");
-  require(__func__,
-          llvm::StringRef(queryError)
-              .contains("entity scope requires an artifact identity"),
-          "invalid entity scope produced an unclear error");
-}
-
 void metricQueryJsonRoundTripsCanonically() {
   MetricQuery query{
       MetricKind::ClockPeriod,
       MetricEntityReference{
-          ArtifactIdentity({0x01, 0xab}),
+          testArtifact({0x01, 0xab}),
           MetricEntityId(std::numeric_limits<std::uint64_t>::max())}};
   const std::string expected =
-      R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"clock_period","scope":{"kind":"entity","artifact":"01ab","entity_id":18446744073709551615}})";
+      R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"clock_period","scope":{"kind":"entity","artifact":"01ab000000000000000000000000000000000000000000000000000000000000","entity_id":18446744073709551615}})";
 
   std::string serialized = takeExpected(__func__, serializeMetricQuery(query));
   require(__func__, serialized == expected,
@@ -430,16 +353,16 @@ void metricQueryJsonRoundTripsCanonically() {
       __func__,
       parseMetricQuery(
           R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"entity","artifact":"","entity_id":7}})"),
-      "entity scope requires an artifact identity");
+      "exactly 64 lowercase hexadecimal characters");
   expectErrorContains(
       __func__,
       parseMetricQuery(
-          R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"entity","artifact":"01AB","entity_id":7}})"),
+          R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"entity","artifact":"01AB000000000000000000000000000000000000000000000000000000000000","entity_id":7}})"),
       "artifact identity must use lowercase hexadecimal");
   expectErrorContains(
       __func__,
       parseMetricQuery(
-          R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"entity","artifact":"01ab","entity_id":-1}})"),
+          R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"entity","artifact":"01ab000000000000000000000000000000000000000000000000000000000000","entity_id":-1}})"),
       "entity_id' must be an unsigned integer");
   auto trailing = parseMetricQuery(
       R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"whole_subject"}})"
@@ -457,14 +380,14 @@ void canonicalJsonIsStableAndStrict() {
   MetricObservation observation{
       MetricKind::ClockPeriod,
       MetricEntityReference{
-          ArtifactIdentity({0x01, 0xab}),
+          testArtifact({0x01, 0xab}),
           MetricEntityId(std::numeric_limits<std::uint64_t>::max())},
       UncertaintyKind::Bounded,
       IntervalObservation{MetricValue{decimal(__func__, 9, -10)},
                           MetricValue{decimal(__func__, 11, -10)}}};
 
   const std::string expected =
-      R"({"schema":"evaluation.metric","schema_version":"1.0","metric":"clock_period","scope":{"kind":"entity","artifact":"01ab","entity_id":18446744073709551615},"uncertainty":"bounded","observation":{"form":"interval","lower":{"kind":"decimal","coefficient":9,"base10_exponent":-10},"upper":{"kind":"decimal","coefficient":11,"base10_exponent":-10}}})";
+      R"({"schema":"evaluation.metric","schema_version":"1.0","metric":"clock_period","scope":{"kind":"entity","artifact":"01ab000000000000000000000000000000000000000000000000000000000000","entity_id":18446744073709551615},"uncertainty":"bounded","observation":{"form":"interval","lower":{"kind":"decimal","coefficient":9,"base10_exponent":-10},"upper":{"kind":"decimal","coefficient":11,"base10_exponent":-10}}})";
   std::string serialized =
       takeExpected(__func__, serializeMetricObservation(observation));
   require(__func__, serialized == expected,
@@ -526,7 +449,7 @@ void canonicalJsonIsStableAndStrict() {
   expectErrorContains(
       __func__,
       parseMetricObservation(
-          R"({"schema":"evaluation.metric","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"entity","artifact":"01AB","entity_id":7},"uncertainty":"exact_within_model","observation":{"form":"point","value":{"kind":"integer","value":1}}})"),
+          R"({"schema":"evaluation.metric","schema_version":"1.0","metric":"cycle_count","scope":{"kind":"entity","artifact":"01AB000000000000000000000000000000000000000000000000000000000000","entity_id":7},"uncertainty":"exact_within_model","observation":{"form":"point","value":{"kind":"integer","value":1}}})"),
       "artifact identity must use lowercase hexadecimal");
   expectErrorContains(
       __func__,
@@ -548,14 +471,11 @@ void canonicalJsonIsStableAndStrict() {
 
 int main() {
   sharedArtifactAtomsAreSingleSource();
-  schemaVersionTextCodecIsCanonical();
-  artifactIdentityTextCodecIsCanonical();
   metricRegistryIsClosedAndTyped();
   decimalValuesNormalizeCanonically();
   observationValidationRejectsIllegalCombinations();
   metricQueryCanonicalizationIsInputOrderIndependent();
   metricQueryDuplicatesAreRejectedWithoutCollapsingScopes();
-  metricQueryUsesSharedScopeValidation();
   metricQueryJsonRoundTripsCanonically();
   canonicalJsonIsStableAndStrict();
   return 0;

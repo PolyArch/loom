@@ -160,7 +160,7 @@ the authority.
 Configuration follows the same source-of-truth rule.
 `docs/spec-config-ssot.md` owns the global contract for loadable
 configuration, centralized defaults, strict resolution, early-fail
-behavior, configuration fingerprints, and the boundary between
+behavior, ResolvedConfig artifact identity, and the boundary between
 configurable parameters and semantic verifier constants. Component specs
 may reference configuration views, but they must not define independent
 defaults for the same canonical parameter.
@@ -207,9 +207,9 @@ simulation, RTL/FPA, and DSE/reporting evidence together.
 
 ## Required Evidence
 
-Evidence that counts toward target completion must be explicit,
-fingerprinted when practical, and consumable by downstream tools without
-reading private state. Required evidence classes include:
+Evidence that counts toward target completion must be explicit, finalized
+with an ArtifactIdentity when persistent, and consumable by downstream
+tools without reading private state. Required evidence classes include:
 
 * source, LLVM IR, raised MLIR, and dataflow artifacts for supported
   workloads;
@@ -223,8 +223,8 @@ reading private state. Required evidence classes include:
   metric records;
 * full-stack report bundles and artifact manifests for traceability;
 * DSE candidate, objective, selection, and rejection records;
-* resolved configuration identity, configuration fingerprints, and
-  component configuration-view identities for every configured artifact.
+* the exact resolved configuration ArtifactIdentity for every configured
+  artifact.
 
 Fake or stub artifacts must not satisfy any target requirement. Scaffold
 artifacts may exist while a component is being built, but they must be
@@ -243,10 +243,10 @@ verification policy is:
   checks;
 * every machine-consumed report must identify schema version, producer,
   input artifact identities, and diagnostics;
-* each DSE candidate must be immutable and must carry artifact identity
-  and fingerprint records for its inputs and outputs;
+* each DSE candidate must be immutable and must carry exact artifact
+  identities for its inputs and outputs;
 * every configured artifact must carry the resolved configuration
-  identity and fingerprint required by `docs/spec-config-ssot.md`;
+  ArtifactIdentity required by `docs/spec-config-ssot.md`;
 * cross-artifact contradictions must block acceptance rather than being
   reduced to warnings.
 
@@ -443,14 +443,15 @@ Loom needs two simulation levels:
 
 TechMapping connects canonical software semantics to Fabric capability by
 recording complete Compute Realizations in the Mapping Artifact specified in
-`docs/spec-mapping-artifact.md`. PnR consumes that exact immutable predecessor
-and emits a Physical Mapping delta; its tool contract is specified in
-`docs/spec-pnr.md`. The delta records concrete resource bindings, routed
-external obligations, memory bindings, resource sharing, buffers, schedule
-slots, temporal tags, diagnostics, and metrics without restating or changing
-the predecessor Compute Realizations. Detailed mapping identity, placement,
-routing, schedule/buffer, memory, verification, visualization, and search
-contracts are specified by `docs/spec-mapping-identity.md`,
+`docs/spec-mapping-artifact.md`. PnR consumes that predecessor as `T` in the
+exact `D/T/F/C/K` authority boundary and emits a Physical Mapping delta; its
+tool contract is specified in `docs/spec-pnr.md`. The delta records concrete
+resource bindings, routed external obligations, memory bindings, resource
+sharing, buffers, schedule slots, temporal tags, diagnostics, and metrics
+without restating or changing the predecessor Compute Realizations. Detailed
+mapping identity, placement, routing, schedule/buffer, memory, verification,
+visualization, and search contracts are specified by
+`docs/spec-mapping-identity.md`,
 `docs/spec-mapping-placement.md`, `docs/spec-mapping-routing.md`,
 `docs/spec-mapping-schedule-buffer.md`, `docs/spec-mapping-memory.md`,
 `docs/spec-mapping-verification.md`,

@@ -1,12 +1,17 @@
 #ifndef LOOM_LIB_PNR_FROZENCOMPUTEDOMAINS_H
 #define LOOM_LIB_PNR_FROZENCOMPUTEDOMAINS_H
 
+#include "Mapping/Artifact.h"
 #include "PnR/FrozenRealizationGraph.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <vector>
+
+namespace loom::mapping {
+class ValidatedTechMapping;
+} // namespace loom::mapping
 
 namespace loom::pnr::detail {
 

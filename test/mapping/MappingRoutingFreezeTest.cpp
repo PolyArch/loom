@@ -69,7 +69,9 @@ ComputeOccurrenceDescriptor singlePortOccurrence(
 FrozenRoutingGraph validateAndFreezeRouting(const char *test,
                                             TestCase &testCase) {
   ValidatedTechMapping mapping = validateCase(test, testCase);
-  return takeExpected(test, freezeRoutingGraph(testCase.fabric, mapping));
+  ResolvedPnrConfigView config;
+  return takeExpected(test, freezeRoutingGraph(makePnrProblemInputs(
+                                testCase, mapping, config)));
 }
 
 std::size_t endpointIndex(const char *test, const FrozenRoutingGraph &graph,
@@ -630,11 +632,12 @@ void preservesIrregularReachabilityWithoutTopologyAssumptions() {
 void linksFactorizedComputeDomainsToRoutingVertices() {
   TestCase testCase = makeValidCase();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
+  ResolvedPnrConfigView config;
+  PnrProblemInputs inputs = makePnrProblemInputs(testCase, mapping, config);
   FrozenRealizationGraph realizations =
-      takeExpected(__func__, freezeRealizationGraph(testCase.dataflow,
-                                                    testCase.fabric, mapping));
+      takeExpected(__func__, freezeRealizationGraph(inputs));
   FrozenRoutingGraph routing =
-      takeExpected(__func__, freezeRoutingGraph(testCase.fabric, mapping));
+      takeExpected(__func__, freezeRoutingGraph(inputs));
   if (realizations.physicalEndpoints().size() !=
       routing.computeEndpointVertices().size())
     fail(__func__, "compute endpoint projection sizes disagree");
@@ -650,8 +653,10 @@ void linksFactorizedComputeDomainsToRoutingVertices() {
 void acceptsDisconnectedTopologyAndChecksNativeCapacity() {
   TestCase testCase = makeValidCase();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
-  FrozenRoutingGraph graph =
-      takeExpected(__func__, freezeRoutingGraph(testCase.fabric, mapping));
+  ResolvedPnrConfigView config;
+  FrozenRoutingGraph graph = takeExpected(
+      __func__,
+      freezeRoutingGraph(makePnrProblemInputs(testCase, mapping, config)));
   if (!graph.routingArcs().empty() ||
       graph.incomingAdjacencyOffsets().size() !=
           graph.routingEndpoints().size() + 1 ||
@@ -663,8 +668,10 @@ void acceptsDisconnectedTopologyAndChecksNativeCapacity() {
   TestCase emptyCase = makeValidCase();
   emptyCase.fabric.computeOccurrences.clear();
   ValidatedTechMapping emptyMapping = validateCase(__func__, emptyCase);
-  FrozenRoutingGraph emptyGraph = takeExpected(
-      __func__, freezeRoutingGraph(emptyCase.fabric, emptyMapping));
+  ResolvedPnrConfigView emptyConfig;
+  FrozenRoutingGraph emptyGraph =
+      takeExpected(__func__, freezeRoutingGraph(makePnrProblemInputs(
+                                 emptyCase, emptyMapping, emptyConfig)));
   if (!emptyGraph.routingEndpoints().empty() ||
       emptyGraph.adjacencyOffsets().size() != 1 ||
       emptyGraph.adjacencyOffsets().front() != 0 ||

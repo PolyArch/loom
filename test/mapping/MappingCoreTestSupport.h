@@ -5,7 +5,9 @@
 #include "Mapping/Verifier.h"
 #include "PnR/FrozenRealizationGraph.h"
 #include "PnR/PnrIndex.h"
+#include "PnR/PnrProblemInputs.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -19,6 +21,7 @@ using namespace loom::pnr;
 struct TestCase {
   DataflowProgramView dataflow;
   FabricHardwareView fabric;
+  ArtifactIdentity techMappingIdentity;
   TechMappingDraft mapping;
 };
 
@@ -61,17 +64,24 @@ void expectAnyError(const char *test, llvm::Expected<T> result) {
 }
 
 ValidatedTechMapping validateCase(const char *test, const TestCase &testCase);
+PnrProblemInputs makePnrProblemInputs(TestCase &testCase,
+                                      ValidatedTechMapping &mapping,
+                                      ResolvedPnrConfigView &config);
 FrozenRealizationGraph validateAndFreeze(const char *test, TestCase &testCase);
 void expectMapError(const char *test, const TestCase &testCase,
                     MappingErrorCode expected);
 
 TestCase makeValidCase();
+TestCase makeWideSyncCase();
+void selectWideSyncLanes(TestCase &testCase,
+                         llvm::ArrayRef<std::uint32_t> laneIndices);
 TestCase makeMemoryAnchorCase();
 void selectInternalMemoryGraph(TestCase &testCase);
 
 void runComputeFreezeTests();
 void runMemoryMappingTests();
 void runMappingVerifierTests();
+void runPnrProblemInputsTests();
 
 } // namespace loom::mapping::test
 

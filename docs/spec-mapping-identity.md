@@ -61,10 +61,12 @@ artifact.
 
 ## Artifact Identity
 
-Artifact identity is conceptually derived from the artifact schema identity
-and version plus canonical semantic serialization. The concrete digest
-encoding is not fixed here, but collisions must be detected rather than
-silently accepted.
+Mapping uses the repository-wide fixed `ArtifactIdentity` contract defined
+by the Artifact Identity section of
+`docs/spec-full-stack-traceability.md`. Mapping artifact families provide
+their typed schema descriptors and canonical semantic bytes to that Common
+finalizer; this specification does not define another preimage, digest, or
+external spelling.
 
 Canonical semantic serialization includes every typed upstream artifact
 reference that is part of the artifact's semantics. A TechMapping artifact
@@ -78,9 +80,9 @@ content identity unless their semantic projection is explicitly part of
 the artifact content. Derivation lineage and execution settings belong to
 manifests or Evaluation Evidence.
 
-Optional fingerprints, symbols, or compatibility labels cannot substitute
-for required artifact identity. A mismatch is an identity failure, not
-permission to reinterpret or heuristically rebind a reference.
+Optional symbols or compatibility labels cannot substitute for required
+artifact identity. A mismatch is an identity failure, not permission to
+reinterpret or heuristically rebind a reference.
 
 ## Artifact-Global EntityId Namespace
 
