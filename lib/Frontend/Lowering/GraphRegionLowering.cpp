@@ -317,6 +317,20 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
                          << " through dataflow.mux/demux";
         return ::mlir::WalkResult::interrupt();
       }
+    } else if (auto switchOp =
+                   ::llvm::dyn_cast<::mlir::scf::IndexSwitchOp>(op)) {
+      if (switchOp.getNumCases() == 0) {
+        switchOp.emitError(
+            "loom-lower-graph-memory: zero-case scf.index_switch requires "
+            "upstream normalization before graph-region lowering");
+        return ::mlir::WalkResult::interrupt();
+      }
+      ::mlir::Type memory = findMemoryCapability(switchOp.getResultTypes());
+      if (memory) {
+        switchOp.emitError() << "cannot lower selected memory capability "
+                             << memory << " through dataflow.mux/demux";
+        return ::mlir::WalkResult::interrupt();
+      }
     } else if (auto forOp = ::llvm::dyn_cast<::mlir::scf::ForOp>(op)) {
       ::mlir::Type memory =
           findMemoryCapability(forOp.getInitArgs().getTypes());
@@ -345,20 +359,20 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
     }
     if (::llvm::isa<::mlir::scf::SCFDialect>(op->getDialect()) &&
         !::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp,
-                     ::mlir::scf::WhileOp, ::mlir::scf::ParallelOp,
-                     ::mlir::scf::ForallOp, ::mlir::scf::YieldOp,
-                     ::mlir::scf::ConditionOp, ::mlir::scf::ReduceOp,
-                     ::mlir::scf::InParallelOp>(op)) {
+                     ::mlir::scf::WhileOp, ::mlir::scf::IndexSwitchOp,
+                     ::mlir::scf::ParallelOp, ::mlir::scf::ForallOp,
+                     ::mlir::scf::YieldOp, ::mlir::scf::ConditionOp,
+                     ::mlir::scf::ReduceOp, ::mlir::scf::InParallelOp>(op)) {
       op->emitError("loom-lower-graph-memory: unsupported residual SCF "
                     "must be normalized before graph-region lowering");
       return ::mlir::WalkResult::interrupt();
     }
     bool modeled =
         ::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp, ::mlir::scf::WhileOp,
-                    ::mlir::scf::ParallelOp, ::mlir::scf::ForallOp,
-                    ::mlir::scf::YieldOp, ::mlir::scf::ConditionOp,
-                    ::mlir::scf::ReduceOp, ::mlir::scf::InParallelOp,
-                    ::dataflow::GraphReturnOp>(op) ||
+                    ::mlir::scf::IndexSwitchOp, ::mlir::scf::ParallelOp,
+                    ::mlir::scf::ForallOp, ::mlir::scf::YieldOp,
+                    ::mlir::scf::ConditionOp, ::mlir::scf::ReduceOp,
+                    ::mlir::scf::InParallelOp, ::dataflow::GraphReturnOp>(op) ||
         ::loom::lowering::isSupportedGraphLoweringLeaf(op);
     if (::llvm::isa<::dataflow::ChannelSendOp, ::dataflow::ChannelReceiveOp>(
             op))
@@ -1030,6 +1044,13 @@ private:
         memory = std::move(result.memory);
         continue;
       }
+      if (auto switchOp = ::llvm::dyn_cast<::mlir::scf::IndexSwitchOp>(op)) {
+        RegionResult result =
+            lowerIndexSwitch(switchOp, execution, std::move(memory));
+        execution = result.execution;
+        memory = std::move(result.memory);
+        continue;
+      }
       if (auto forOp = ::llvm::dyn_cast<::mlir::scf::ForOp>(op)) {
         RegionResult result = lowerFor(forOp, execution, std::move(memory));
         execution = result.execution;
@@ -1309,78 +1330,151 @@ private:
       store->moveBefore(anchor);
   }
 
-  RegionResult lowerIf(::mlir::scf::IfOp ifOp, ::mlir::Value execution,
-                       MemoryState memory) {
-    ::mlir::Location loc = ifOp.getLoc();
-    ::mlir::Value selector = ifOp.getCondition();
-    if (auto uses = streamChoiceUsers.find(ifOp);
+  RegionResult lowerSelection(::mlir::Operation *selection,
+                              ::mlir::Value selector,
+                              ::llvm::ArrayRef<::mlir::Region *> laneRegions,
+                              ::mlir::Value execution, MemoryState memory) {
+    assert(laneRegions.size() > 1 && "selection requires multiple lanes");
+    ::mlir::Location loc = selection->getLoc();
+    if (auto uses = streamChoiceUsers.find(selection);
         uses != streamChoiceUsers.end()) {
       for (::mlir::Operation *user : uses->second)
         user->setOperand(0, selector);
       streamChoiceUsers.erase(uses);
     }
-    auto [falseExecution, trueExecution] = demux(selector, execution, loc);
+    ::llvm::SmallVector<::mlir::Value, 4> laneExecutions =
+        demux(selector, execution, laneRegions.size(), loc);
 
-    ::llvm::SmallBitVector touched = touchedPartitions(ifOp.getThenRegion());
-    if (!ifOp.getElseRegion().empty())
-      touched |= touchedPartitions(ifOp.getElseRegion());
+    ::llvm::SmallBitVector touched(partitionCount);
+    for (::mlir::Region *region : laneRegions)
+      if (region)
+        touched |= touchedPartitions(*region);
 
-    MemoryState falseMemory = memory;
-    MemoryState trueMemory = memory;
+    std::vector<MemoryState> laneMemory(laneRegions.size(), memory);
     for (int partition = touched.find_first(); partition >= 0;
          partition = touched.find_next(partition)) {
-      auto [falseWrite, trueWrite] =
-          demux(selector, memory[partition].write, loc);
-      auto [falseRead, trueRead] = demux(selector, memory[partition].read, loc);
-      falseMemory[partition] = {falseWrite, falseRead};
-      trueMemory[partition] = {trueWrite, trueRead};
+      ::llvm::SmallVector<::mlir::Value, 4> writes =
+          demux(selector, memory[partition].write, laneRegions.size(), loc);
+      ::llvm::SmallVector<::mlir::Value, 4> reads =
+          demux(selector, memory[partition].read, laneRegions.size(), loc);
+      for (unsigned lane = 0; lane < laneRegions.size(); ++lane)
+        laneMemory[lane][partition] = {writes[lane], reads[lane]};
     }
 
     ::llvm::SetVector<::mlir::Value> captures;
-    for (::mlir::Value value : collectProjectedCaptures(ifOp.getThenRegion()))
-      captures.insert(value);
-    if (!ifOp.getElseRegion().empty())
-      for (::mlir::Value value : collectProjectedCaptures(ifOp.getElseRegion()))
-        captures.insert(value);
+    for (::mlir::Region &region : selection->getRegions())
+      if (!region.empty())
+        for (::mlir::Value value : collectProjectedCaptures(region))
+          captures.insert(value);
     for (::mlir::Value capture : captures) {
-      auto [falseValue, trueValue] = demux(selector, capture, loc);
-      replaceUsesInside(capture, trueValue, ifOp.getThenRegion());
-      if (!ifOp.getElseRegion().empty())
-        replaceUsesInside(capture, falseValue, ifOp.getElseRegion());
+      ::llvm::SmallVector<::mlir::Value, 4> projected =
+          demux(selector, capture, laneRegions.size(), loc);
+      for (auto [lane, region] : ::llvm::enumerate(laneRegions))
+        if (region)
+          replaceUsesInside(capture, projected[lane], *region);
     }
 
-    RegionResult trueResult = lowerBlock(ifOp.getThenRegion().front(),
-                                         trueExecution, std::move(trueMemory));
-    RegionResult falseResult{falseExecution, std::move(falseMemory)};
-    if (!ifOp.getElseRegion().empty())
-      falseResult = lowerBlock(ifOp.getElseRegion().front(), falseExecution,
-                               std::move(falseResult.memory));
+    ::llvm::SmallVector<RegionResult, 4> laneResults;
+    laneResults.reserve(laneRegions.size());
+    for (auto [lane, region] : ::llvm::enumerate(laneRegions)) {
+      if (!region) {
+        laneResults.push_back(
+            {laneExecutions[lane], std::move(laneMemory[lane])});
+        continue;
+      }
+      laneResults.push_back(lowerBlock(region->front(), laneExecutions[lane],
+                                       std::move(laneMemory[lane])));
+    }
 
-    auto thenYield = ::llvm::cast<::mlir::scf::YieldOp>(
-        ifOp.getThenRegion().front().getTerminator());
-    ::mlir::scf::YieldOp elseYield;
-    if (!ifOp.getElseRegion().empty())
-      elseYield = ::llvm::cast<::mlir::scf::YieldOp>(
-          ifOp.getElseRegion().front().getTerminator());
-    for (unsigned i = 0; i < ifOp.getNumResults(); ++i) {
-      ::mlir::Value result =
-          mux(selector, elseYield.getOperand(i), thenYield.getOperand(i), loc);
-      ifOp.getResult(i).replaceAllUsesWith(result);
+    for (unsigned resultIndex = 0; resultIndex < selection->getNumResults();
+         ++resultIndex) {
+      ::llvm::SmallVector<::mlir::Value, 4> inputs;
+      for (::mlir::Region *region : laneRegions) {
+        assert(region && "value-producing selection requires every lane");
+        auto yield =
+            ::llvm::cast<::mlir::scf::YieldOp>(region->front().getTerminator());
+        inputs.push_back(yield.getOperand(resultIndex));
+      }
+      selection->getResult(resultIndex)
+          .replaceAllUsesWith(mux(selector, inputs, loc));
     }
 
     MemoryState output = memory;
     for (int partition = touched.find_first(); partition >= 0;
          partition = touched.find_next(partition)) {
-      output[partition].write =
-          mux(selector, falseResult.memory[partition].write,
-              trueResult.memory[partition].write, loc);
-      output[partition].read = mux(selector, falseResult.memory[partition].read,
-                                   trueResult.memory[partition].read, loc);
+      ::llvm::SmallVector<::mlir::Value, 4> writes;
+      ::llvm::SmallVector<::mlir::Value, 4> reads;
+      for (const RegionResult &lane : laneResults) {
+        writes.push_back(lane.memory[partition].write);
+        reads.push_back(lane.memory[partition].read);
+      }
+      output[partition] = {mux(selector, writes, loc),
+                           mux(selector, reads, loc)};
     }
-    ::mlir::Value outputExecution =
-        mux(selector, falseResult.execution, trueResult.execution, loc);
-    ifOp.erase();
+    ::llvm::SmallVector<::mlir::Value, 4> completions;
+    for (const RegionResult &lane : laneResults)
+      completions.push_back(lane.execution);
+    ::mlir::Value outputExecution = mux(selector, completions, loc);
+    selection->erase();
     return {outputExecution, std::move(output)};
+  }
+
+  ::mlir::Value
+  normalizeIndexSwitchSelector(::mlir::scf::IndexSwitchOp switchOp,
+                               ::mlir::Value execution) {
+    assert(switchOp.getNumCases() > 0 &&
+           "zero-case switch must fail graph preflight");
+    ::mlir::Location loc = switchOp.getLoc();
+    auto controlledIndex = [&](int64_t value) {
+      setInsertionPoint(loc);
+      return ::dataflow::ConstantOp::create(builder, loc,
+                                            builder.getIndexType(), execution,
+                                            builder.getIndexAttr(value))
+          .getValue();
+    };
+    auto caseMatch = [&](int64_t value) {
+      ::mlir::Value constant = controlledIndex(value);
+      setInsertionPoint(loc);
+      return ::mlir::arith::CmpIOp::create(builder, loc,
+                                           ::mlir::arith::CmpIPredicate::eq,
+                                           switchOp.getArg(), constant)
+          .getResult();
+    };
+
+    if (switchOp.getNumCases() == 1)
+      return caseMatch(switchOp.getCases().front());
+
+    ::mlir::Value selector = controlledIndex(0);
+    for (auto [caseIndex, caseValue] : ::llvm::enumerate(switchOp.getCases())) {
+      ::mlir::Value match = caseMatch(caseValue);
+      ::mlir::Value lane = controlledIndex(caseIndex + 1);
+      setInsertionPoint(loc);
+      selector =
+          ::mlir::arith::SelectOp::create(builder, loc, match, lane, selector)
+              .getResult();
+    }
+    return selector;
+  }
+
+  RegionResult lowerIf(::mlir::scf::IfOp ifOp, ::mlir::Value execution,
+                       MemoryState memory) {
+    ::llvm::SmallVector<::mlir::Region *, 2> lanes;
+    lanes.push_back(ifOp.getElseRegion().empty() ? nullptr
+                                                 : &ifOp.getElseRegion());
+    lanes.push_back(&ifOp.getThenRegion());
+    return lowerSelection(ifOp, ifOp.getCondition(), lanes, execution,
+                          std::move(memory));
+  }
+
+  RegionResult lowerIndexSwitch(::mlir::scf::IndexSwitchOp switchOp,
+                                ::mlir::Value execution, MemoryState memory) {
+    ::mlir::Value selector = normalizeIndexSwitchSelector(switchOp, execution);
+    ::llvm::SmallVector<::mlir::Region *, 4> lanes;
+    lanes.push_back(&switchOp.getDefaultRegion());
+    for (::mlir::Region &region : switchOp.getCaseRegions())
+      lanes.push_back(&region);
+    return lowerSelection(switchOp, selector, lanes, execution,
+                          std::move(memory));
   }
 
   RegionResult lowerFor(::mlir::scf::ForOp forOp, ::mlir::Value execution,

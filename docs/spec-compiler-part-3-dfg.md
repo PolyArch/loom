@@ -921,10 +921,12 @@ Leaf memory completion updates `W/R` but never silently replaces execution
 permission.
 
 This section records Dataflow templates for SCF boundaries. The current
-recursive owner implements `scf.if`, source-sequential `scf.for`, `scf.while`,
-and provenance-marked fixed-domain effect-form `scf.parallel` / `scf.forall`.
-Other subsections are explicitly marked as upstream or deferred contracts and
-are rejected if they remain in a graph.
+recursive owner implements `scf.if`, nonzero-case `scf.index_switch`,
+source-sequential `scf.for`, `scf.while`, and provenance-marked fixed-domain
+effect-form `scf.parallel` / `scf.forall`. Zero-case `scf.index_switch` remains
+fail-closed pending upstream normalization ownership. Other subsections are
+explicitly marked as upstream or deferred contracts and are rejected if they
+remain in a graph.
 
 The dataflow primitive set is
 (`stream`, `carry`, `invariant`, `gate`, `mux`, `demux`, `sync`,
@@ -2140,10 +2142,13 @@ Traversal order is never used to invent a cross-iteration memory order.
 
 ### 6.6 `scf.index_switch`
 
-**Implementation boundary.** Residual `scf.index_switch` is currently
-rejected before graph mutation. The selector template below is retained as a
-future extension and is not claimed as implemented by
-`loom-lower-graph-memory`.
+**Implementation boundary.** `loom-lower-graph-memory` lowers every nonzero-
+case `scf.index_switch` through the same recursive selection transfer used by
+`scf.if`. The canonical graph contains only ordinary selector arithmetic and
+the existing `dataflow.demux` / `dataflow.mux` actors; it does not retain SCF
+or introduce a second switch abstraction. A zero-case switch is rejected
+before graph mutation because ownership of that normalization is not yet
+implemented.
 
 `scf.index_switch` has the same selected-region shape as `scf.if`, but
 its source selector is an arbitrary `index` value matched against a
@@ -2160,11 +2165,11 @@ lane 0     = default region
 lane i + 1 = case region i
 ```
 
-The zero-case form has only the default region and lowers by inlining
-that region into the surrounding graph. There is no selector, demux, or
-mux. The one-case form has two dynamic lanes and uses an `i1` selector:
-`false` selects default, `true` selects the single case. With two or
-more cases, the normalized selector has `index` type.
+The one-case form has two dynamic lanes and uses an `i1` selector: `false`
+selects default and `true` selects the single case. With two or more cases,
+the normalized selector has `index` type. The zero-case form has only the
+default region, but this lowering fails closed instead of choosing or
+implementing an upstream inlining owner.
 
 For two or more cases, the normalized selector is computed as ordinary
 data, not with `dataflow.mux`. A `dataflow.mux` is selective and would
@@ -2222,9 +2227,9 @@ firing and leaves no residue.
   position, all driven by the same normalized selector.
 * If a live-in is used by only some selected regions, projections for
   unused lanes are dead outputs and are discarded by target lowering.
-* A future zero-case form should be inlined before recursive graph lowering;
-  its memory leaves are then analyzed directly with no assigned ids or
-  dependence snapshot.
+* A zero-case form is rejected atomically before recursive graph lowering.
+  No selector, branch transfer, memory-frontier projection, or graph mutation
+  is created for it.
 
 For cases `[2, 5]` and argument stream `[2, 7, 5]`, the normalized
 selector stream is `[1, 0, 2]`:
@@ -2249,10 +2254,16 @@ selector stream is `[1, 0, 2]`:
 
 #### Index Switch Boundary Translation
 
-This boundary is not implemented. A future implementation must generalize the
-implemented `scf.if` rule to a normalized N-way selector and use that same
-selector for execution, values, `W_P`, and `R_P`. Until then, residual
-`scf.index_switch` is rejected.
+`GraphRegionLowering` normalizes the source argument once, orders lanes as
+default followed by source case order, and invokes the shared recursive
+selection transfer. That exact selector drives execution permission,
+projected non-memory captures, every result mux, selected execution
+completion, and each touched partition's `W_P` and `R_P` demux/mux pair.
+Each region is recursively lowered only from its lane-specific inputs, so an
+unselected region receives no execution or frontier token and its effects do
+not execute. Multiple results produce one mux per result position. A branch
+that does not touch a partition returns its lane-specific incoming frontier,
+while a selected branch contributes its recursively reduced causal frontier.
 
 ### 6.7 `scf.execute_region`
 
