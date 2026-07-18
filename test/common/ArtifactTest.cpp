@@ -15,8 +15,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
+#include <fcntl.h>
 #include <limits>
 #include <string>
 #include <sys/socket.h>
@@ -448,15 +450,27 @@ void nonRegularStoredObjectsAreRejectedOnRead() {
   if (std::error_code error = llvm::sys::fs::remove(path))
     fail(__func__,
          "unable to remove stored-object directory: " + error.message());
+  const std::string root = directory.path().str();
+  int storeDirectory;
+  do {
+    storeDirectory =
+        ::open(root.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
+  } while (storeDirectory == -1 && errno == EINTR);
+  if (storeDirectory == -1)
+    fail(__func__, "unable to open artifact store directory: " +
+                       llvm::errnoAsErrorCode().message());
   int socket = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (socket == -1)
     fail(__func__, "unable to create stored-object socket: " +
                        llvm::errnoAsErrorCode().message());
+  const std::string socketPath = "/proc/self/fd/" +
+                                 std::to_string(storeDirectory) + "/" +
+                                 formatArtifactIdentityHex(identity);
   sockaddr_un address{};
   address.sun_family = AF_UNIX;
-  require(__func__, path.size() < sizeof(address.sun_path),
-          "stored-object socket path is too long");
-  std::copy(path.begin(), path.end(), address.sun_path);
+  require(__func__, socketPath.size() < sizeof(address.sun_path),
+          "stored-object socket alias is too long");
+  std::copy(socketPath.begin(), socketPath.end(), address.sun_path);
   if (::bind(socket, reinterpret_cast<const sockaddr *>(&address),
              sizeof(address)) == -1)
     fail(__func__, "unable to bind stored-object socket: " +
@@ -465,6 +479,9 @@ void nonRegularStoredObjectsAreRejectedOnRead() {
                       "artifact_store_corruption");
   if (std::error_code error = llvm::sys::fs::closeFile(socket))
     fail(__func__, "unable to close stored-object socket: " + error.message());
+  if (std::error_code error = llvm::sys::fs::closeFile(storeDirectory))
+    fail(__func__,
+         "unable to close artifact store directory: " + error.message());
 }
 
 void malformedStoredPreimagesAreRejected() {
