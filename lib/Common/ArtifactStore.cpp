@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <memory>
 #include <string>
+#include <sys/stat.h>
 #include <system_error>
 #include <unistd.h>
 #include <vector>
@@ -106,11 +107,23 @@ llvm::Expected<int> openStoredObject(int directory,
                     O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   } while (file == -1 && errno == EINTR);
   if (file == -1) {
-    if (errno == ENOENT)
-      return storeError("artifact_store_missing", "stored object is missing");
-    if (errno == ELOOP)
+    const int openError = errno;
+    struct stat status;
+    int statusResult;
+    do {
+      statusResult =
+          ::fstatat(directory, name.c_str(), &status, AT_SYMLINK_NOFOLLOW);
+    } while (statusResult == -1 && errno == EINTR);
+
+    if (statusResult == 0 && !S_ISREG(status.st_mode))
       return storeError("artifact_store_corruption",
-                        "stored object is a symbolic link");
+                        "stored object is not a regular file");
+    if (statusResult == -1 && errno == ENOENT)
+      return storeError("artifact_store_missing", "stored object is missing");
+    if (statusResult == -1)
+      return storeErrno("artifact_store_io",
+                        "unable to inspect stored object after open failure");
+    errno = openError;
     return storeErrno("artifact_store_io", "unable to open stored object");
   }
   return file;

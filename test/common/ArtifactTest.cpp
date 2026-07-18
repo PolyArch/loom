@@ -13,11 +13,14 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
 #include <string>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -441,6 +444,27 @@ void nonRegularStoredObjectsAreRejectedOnRead() {
          "unable to create stored-object directory: " + error.message());
   expectErrorContains(__func__, store.get(testSchema, identity),
                       "artifact_store_corruption");
+
+  if (std::error_code error = llvm::sys::fs::remove(path))
+    fail(__func__,
+         "unable to remove stored-object directory: " + error.message());
+  int socket = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (socket == -1)
+    fail(__func__, "unable to create stored-object socket: " +
+                       llvm::errnoAsErrorCode().message());
+  sockaddr_un address{};
+  address.sun_family = AF_UNIX;
+  require(__func__, path.size() < sizeof(address.sun_path),
+          "stored-object socket path is too long");
+  std::copy(path.begin(), path.end(), address.sun_path);
+  if (::bind(socket, reinterpret_cast<const sockaddr *>(&address),
+             sizeof(address)) == -1)
+    fail(__func__, "unable to bind stored-object socket: " +
+                       llvm::errnoAsErrorCode().message());
+  expectErrorContains(__func__, store.get(testSchema, identity),
+                      "artifact_store_corruption");
+  if (std::error_code error = llvm::sys::fs::closeFile(socket))
+    fail(__func__, "unable to close stored-object socket: " + error.message());
 }
 
 void malformedStoredPreimagesAreRejected() {
