@@ -61,25 +61,12 @@ artifact.
 
 ## Artifact Identity
 
-Artifact identity is computed from exactly one fixed preimage:
-
-```text
-bytes("loom.artifact.identity.v1\0")
-|| u32be(length(schema_identity))
-|| bytes(schema_identity)
-|| u32be(schema_version.major)
-|| u32be(schema_version.minor)
-|| u64be(length(canonical_semantic_bytes))
-|| canonical_semantic_bytes
-```
-
-`ArtifactIdentity` is SHA-256 of this preimage. SHA-256, the domain tag,
-the framing, and the 32-byte output width are fixed and not configurable.
-The external spelling is exactly 64 lowercase hexadecimal characters.
-An Artifact Store compares the exact full preimage when a derived key
-already exists. An identical preimage deduplicates, a different valid
-preimage under the same key is an identity collision, and an invalid or
-unreconstructable object is store corruption.
+Mapping uses the repository-wide fixed `ArtifactIdentity` contract defined
+by the Artifact Identity section of
+`docs/spec-full-stack-traceability.md`. Mapping artifact families provide
+their typed schema descriptors and canonical semantic bytes to that Common
+finalizer; this specification does not define another preimage, digest, or
+external spelling.
 
 Canonical semantic serialization includes every typed upstream artifact
 reference that is part of the artifact's semantics. A TechMapping artifact

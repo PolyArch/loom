@@ -271,6 +271,12 @@ The external spelling is exactly 64 lowercase hexadecimal characters.
 Each artifact family owns its schema descriptor and canonical semantic
 serialization; Common owns only framing and hashing.
 
+The local Artifact Store stores and compares the exact full preimage under
+the derived identity key. An identical preimage deduplicates, a different
+valid preimage with the same identity is an identity collision, and an
+invalid preimage or key mismatch is store corruption. Publication never
+overwrites an existing key.
+
 Logical names, producer and invocation data, configuration records,
 timestamps, host paths, diagnostics, and parent lineage belong in
 manifests, reports, or Evaluation Evidence. They are not identity inputs

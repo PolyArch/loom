@@ -10,11 +10,13 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -154,6 +156,34 @@ void writeFile(const char *test, llvm::StringRef path,
   }
 }
 
+void schemaVersionTextCodecIsCanonical() {
+  const std::vector<std::pair<SchemaVersion, std::string>> canonical = {
+      {{0, 0}, "0.0"},
+      {{1, 0}, "1.0"},
+      {{std::numeric_limits<std::uint32_t>::max(),
+        std::numeric_limits<std::uint32_t>::max()},
+       "4294967295.4294967295"},
+  };
+
+  for (const auto &[version, spelling] : canonical) {
+    require(__func__, formatSchemaVersion(version) == spelling,
+            "schema version formatting changed for " + spelling);
+    const SchemaVersion parsed =
+        takeExpected(__func__, parseSchemaVersion(spelling));
+    require(__func__, parsed == version,
+            "schema version parsing changed for " + spelling);
+    require(__func__, formatSchemaVersion(parsed) == spelling,
+            "schema version round trip was not canonical for " + spelling);
+  }
+
+  for (llvm::StringRef spelling :
+       {"",     "1",    "1.",   ".1",           "1.0.0",        "+1.0", "-1.0",
+        "1.+0", "1.-0", " 1.0", "1.0 ",         "1 .0",         "1. 0", "01.0",
+        "1.00", "00.0", "0.01", "4294967296.0", "0.4294967296", "1.a"})
+    expectErrorContains(__func__, parseSchemaVersion(spelling),
+                        "schema version");
+}
+
 void finalizerMatchesKnownEnvelopeAndDigest() {
   const CanonicalSemanticBytes bytes = semantic({0x00, 0x10, 0xff});
   const std::vector<std::uint8_t> preimage =
@@ -191,6 +221,10 @@ void finalizerMatchesKnownEnvelopeAndDigest() {
       regularFiles(__func__, directory.path());
   require(__func__, files.size() == 1,
           "ArtifactStore did not publish exactly one object");
+  llvm::SmallString<128> expectedPath(directory.path());
+  llvm::sys::path::append(expectedPath, formatArtifactIdentityHex(identity));
+  require(__func__, files.front() == expectedPath,
+          "ArtifactStore left a temporary object instead of the derived key");
   require(__func__, readFile(__func__, files.front()) == preimage,
           "stored object is not the exact identity preimage");
 }
@@ -303,6 +337,29 @@ void existingWrongOrCorruptObjectIsRejected() {
                       "artifact_store_corruption");
 }
 
+void existingSymlinkObjectIsRejected() {
+  TemporaryDirectory directory(__func__);
+  const CanonicalSemanticBytes bytes = semantic({0x40, 0x41});
+  const ArtifactIdentity identity = finalizeArtifactIdentity(testSchema, bytes);
+
+  llvm::SmallString<128> targetPath(directory.path());
+  llvm::sys::path::append(targetPath, ".symlink-target");
+  writeFile(__func__, targetPath, expectedPreimage(testSchema, bytes));
+
+  llvm::SmallString<128> objectPath(directory.path());
+  llvm::sys::path::append(objectPath, formatArtifactIdentityHex(identity));
+  if (std::error_code error =
+          llvm::sys::fs::create_symlink(targetPath, objectPath))
+    fail(__func__,
+         "unable to create stored-object symlink: " + error.message());
+
+  ArtifactStore store(directory.path());
+  expectErrorContains(__func__, store.put(testSchema, bytes),
+                      "artifact_store_corruption");
+  require(__func__, llvm::sys::fs::is_symlink_file(objectPath),
+          "ArtifactStore replaced an existing symlink object");
+}
+
 void resolvedConfigUsesArtifactFinalization() {
   require(__func__,
           ResolvedConfig::artifactSchema.identity ==
@@ -333,10 +390,12 @@ void resolvedConfigUsesArtifactFinalization() {
 } // namespace
 
 int main() {
+  schemaVersionTextCodecIsCanonical();
   finalizerMatchesKnownEnvelopeAndDigest();
   identityBoundariesRejectInvalidValues();
   concurrentIdenticalPublishDeduplicates();
   existingWrongOrCorruptObjectIsRejected();
+  existingSymlinkObjectIsRejected();
   resolvedConfigUsesArtifactFinalization();
   return 0;
 }
