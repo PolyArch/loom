@@ -75,23 +75,21 @@ MappingErrorCode takeCode(llvm::Error error) {
   return code;
 }
 ValidatedTechMapping validateCase(const char *test, const TestCase &testCase) {
-  return takeExpected(test,
-                      validateTechMapping(testCase.mapping, testCase.dataflow,
-                                          testCase.fabric));
+  return takeExpected(
+      test, validateTechMapping(testCase.techMappingIdentity, testCase.mapping,
+                                testCase.dataflow, testCase.fabric));
 }
 PnrProblemInputs makePnrProblemInputs(const TestCase &testCase,
                                       const ValidatedTechMapping &mapping,
                                       const ResolvedPnrConfigView &config) {
-  const ArtifactIdentity techMappingIdentity = artifact(240);
   return PnrProblemInputs{
       testCase.dataflow,
       mapping,
-      techMappingIdentity,
       testCase.fabric,
       config,
       artifact(241),
       MappingConstraintSetInput{artifact(242), testCase.dataflow.identity,
-                                techMappingIdentity, testCase.fabric.identity}};
+                                mapping.identity(), testCase.fabric.identity}};
 }
 FrozenRealizationGraph validateAndFreeze(const char *test, TestCase &testCase) {
   ValidatedTechMapping mapping = validateCase(test, testCase);
@@ -101,10 +99,11 @@ FrozenRealizationGraph validateAndFreeze(const char *test, TestCase &testCase) {
 }
 void expectMapError(const char *test, const TestCase &testCase,
                     MappingErrorCode expected) {
-  expectError(
-      test,
-      validateTechMapping(testCase.mapping, testCase.dataflow, testCase.fabric),
-      expected);
+  expectError(test,
+              validateTechMapping(testCase.techMappingIdentity,
+                                  testCase.mapping, testCase.dataflow,
+                                  testCase.fabric),
+              expected);
 }
 void selectWideSyncLanes(TestCase &testCase,
                          llvm::ArrayRef<std::uint32_t> laneIndices) {
@@ -213,7 +212,8 @@ TestCase makeWideSyncCase() {
                            {GraphRef{dataflowId, graph}},
                            {std::move(realization)},
                            {}};
-  TestCase testCase{std::move(dataflow), std::move(fabric), std::move(mapping)};
+  TestCase testCase{std::move(dataflow), std::move(fabric), artifact(33),
+                    std::move(mapping)};
   selectWideSyncLanes(testCase, {0, 1});
   return testCase;
 }
@@ -318,7 +318,8 @@ TestCase makeValidCase() {
                            {GraphRef{dataflowId, graph}},
                            {std::move(realization)},
                            {}};
-  return TestCase{std::move(dataflow), std::move(fabric), std::move(mapping)};
+  return TestCase{std::move(dataflow), std::move(fabric), artifact(3),
+                  std::move(mapping)};
 }
 TestCase makeMemoryAnchorCase() {
   const ArtifactIdentity dataflowId = artifact(1);
@@ -643,7 +644,8 @@ TestCase makeMemoryAnchorCase() {
       {std::move(pairRealization), std::move(multiplyRealization),
        std::move(subtractRealization), std::move(finalAddRealization)},
       {std::move(loadRealization), std::move(storeRealization)}};
-  return TestCase{std::move(dataflow), std::move(fabric), std::move(mapping)};
+  return TestCase{std::move(dataflow), std::move(fabric), artifact(4),
+                  std::move(mapping)};
 }
 void selectInternalMemoryGraph(TestCase &testCase) {
   const ArtifactIdentity &dataflowId = testCase.dataflow.identity;

@@ -73,6 +73,7 @@ private:
 
 class ValidatedTechMapping {
 public:
+  const ArtifactIdentity &identity() const { return identity_; }
   MappingProfile profile() const { return draft_.header.profile; }
   const MappingDraftHeader &header() const { return draft_.header; }
   llvm::ArrayRef<GraphRef> coveredGraphs() const {
@@ -87,28 +88,28 @@ public:
 
 private:
   ValidatedTechMapping(
-      TechMappingDraft draft,
+      ArtifactIdentity identity, TechMappingDraft draft,
       std::shared_ptr<const detail::ValidatedFabricProjection> fabricProjection,
       std::shared_ptr<const detail::ValidatedTechMappingProjection>
           mappingProjection)
-      : draft_(std::move(draft)),
+      : identity_(std::move(identity)), draft_(std::move(draft)),
         fabricProjection_(std::move(fabricProjection)),
         mappingProjection_(std::move(mappingProjection)) {}
 
+  ArtifactIdentity identity_;
   TechMappingDraft draft_;
   std::shared_ptr<const detail::ValidatedFabricProjection> fabricProjection_;
   std::shared_ptr<const detail::ValidatedTechMappingProjection>
       mappingProjection_;
 
   friend class detail::ValidatedTechMappingAccess;
-  friend llvm::Expected<ValidatedTechMapping>
-  validateTechMapping(const TechMappingDraft &mapping,
-                      const DataflowProgramView &dataflow,
-                      const FabricHardwareView &fabric);
+  friend llvm::Expected<ValidatedTechMapping> validateTechMapping(
+      ArtifactIdentity identity, const TechMappingDraft &mapping,
+      const DataflowProgramView &dataflow, const FabricHardwareView &fabric);
 };
 
 llvm::Expected<ValidatedTechMapping>
-validateTechMapping(const TechMappingDraft &mapping,
+validateTechMapping(ArtifactIdentity identity, const TechMappingDraft &mapping,
                     const DataflowProgramView &dataflow,
                     const FabricHardwareView &fabric);
 

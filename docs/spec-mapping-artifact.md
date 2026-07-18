@@ -335,12 +335,18 @@ inputs and the producing algorithm semantics.
 
 The public PnR freeze entry points consume one `PnrProblemInputs` value. This
 ordinary non-artifact grouping borrows the exact Dataflow, validated
-TechMapping, Fabric, and `ResolvedPnrConfigView` values. It also carries the
-TechMapping artifact identity, the exact complete ResolvedConfig identity from
-which the config view was derived, and the MappingConstraintSet artifact
-identity with its required Dataflow, TechMapping, and Fabric binding
-identities. The grouping has no identity and is not a PnR request artifact.
-The config view has no independent artifact identity.
+TechMapping, Fabric, and `ResolvedPnrConfigView` values. The validated
+TechMapping immutably retains the exact trusted artifact identity supplied at
+its validation/import boundary. The grouping cannot detach or relabel that
+identity. It also carries the exact complete ResolvedConfig identity from which
+the config view was derived and the MappingConstraintSet artifact identity
+with its required Dataflow, TechMapping, and Fabric binding identities. The
+grouping has no identity and is not a PnR request artifact. The config view has
+no independent artifact identity.
+
+TechMapping validation does not compute or rehash Mapping content. It trusts
+the identity supplied by the owning artifact boundary; persistent Mapping
+canonicalization remains separate work.
 
 The current C++ MappingConstraintSet input is only the already-confirmed
 artifact identity and exact `D/T/F` binding boundary. It does not define

@@ -16,25 +16,32 @@ template <typename T>
 struct HasArtifactIdentityMember<
     T, std::void_t<decltype(std::declval<T>().identity)>> : std::true_type {};
 
+template <typename T, typename = void>
+struct HasDetachedTechMappingIdentityMember : std::false_type {};
+
+template <typename T>
+struct HasDetachedTechMappingIdentityMember<
+    T, std::void_t<decltype(std::declval<T>().techMappingIdentity)>>
+    : std::true_type {};
+
 static_assert(!HasArtifactIdentityMember<PnrProblemInputs>::value);
 static_assert(!HasArtifactIdentityMember<ResolvedPnrConfigView>::value);
+static_assert(!HasDetachedTechMappingIdentityMember<PnrProblemInputs>::value);
 static_assert(!std::is_default_constructible_v<MappingConstraintSetInput>);
 
 PnrProblemInputs
 makeProblemInputs(const TestCase &testCase, const ValidatedTechMapping &mapping,
                   const ResolvedPnrConfigView &config,
-                  ArtifactIdentity techMappingIdentity = artifact(3),
                   ArtifactIdentity resolvedConfigIdentity = artifact(4),
                   ArtifactIdentity constraintSetIdentity = artifact(5)) {
   return PnrProblemInputs{testCase.dataflow,
                           mapping,
-                          techMappingIdentity,
                           testCase.fabric,
                           config,
                           resolvedConfigIdentity,
                           MappingConstraintSetInput{
                               constraintSetIdentity, testCase.dataflow.identity,
-                              techMappingIdentity, testCase.fabric.identity}};
+                              mapping.identity(), testCase.fabric.identity}};
 }
 
 void expectProblemInputError(const char *test, llvm::Error error,
@@ -143,11 +150,11 @@ void rejectsEachExactCouplingMismatch() {
   expectProblemInputError(
       __func__, validatePnrProblemInputs(mismatchedMapping),
       PnrProblemInputErrorCode::ConstraintSetTechMappingIdentityMismatch,
-      inputs.techMappingIdentity, foreignIdentity);
+      inputs.techMapping.identity(), foreignIdentity);
   expectFreezeInputError(
       __func__, freezeRoutingGraph(mismatchedMapping),
       PnrProblemInputErrorCode::ConstraintSetTechMappingIdentityMismatch,
-      inputs.techMappingIdentity, foreignIdentity);
+      inputs.techMapping.identity(), foreignIdentity);
 
   PnrProblemInputs mismatchedFabric = inputs;
   mismatchedFabric.constraints.fabricIdentity = foreignIdentity;
@@ -166,10 +173,10 @@ void keepsConfigAndConstraintArtifactIdentitiesIndependent() {
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
   ResolvedPnrConfigView firstConfig;
   ResolvedPnrConfigView secondConfig;
-  PnrProblemInputs first = makeProblemInputs(
-      testCase, mapping, firstConfig, artifact(3), artifact(4), artifact(5));
-  PnrProblemInputs second = makeProblemInputs(
-      testCase, mapping, secondConfig, artifact(3), artifact(40), artifact(50));
+  PnrProblemInputs first = makeProblemInputs(testCase, mapping, firstConfig,
+                                             artifact(4), artifact(5));
+  PnrProblemInputs second = makeProblemInputs(testCase, mapping, secondConfig,
+                                              artifact(40), artifact(50));
 
   if (first.resolvedConfigIdentity == second.resolvedConfigIdentity ||
       first.constraints.identity == second.constraints.identity)
@@ -180,12 +187,42 @@ void keepsConfigAndConstraintArtifactIdentitiesIndependent() {
     fail(__func__, llvm::toString(std::move(error)).c_str());
 }
 
+void bindsTechMappingIdentityAtValidationBoundary() {
+  TestCase testCase = makeValidCase();
+  const ArtifactIdentity firstIdentity = artifact(60);
+  const ArtifactIdentity secondIdentity = artifact(61);
+  ValidatedTechMapping first = takeExpected(
+      __func__, validateTechMapping(firstIdentity, testCase.mapping,
+                                    testCase.dataflow, testCase.fabric));
+  ResolvedPnrConfigView config;
+  PnrProblemInputs firstInputs = makeProblemInputs(testCase, first, config);
+
+  PnrProblemInputs relabeledConstraints = firstInputs;
+  relabeledConstraints.constraints.techMappingIdentity = secondIdentity;
+  expectProblemInputError(
+      __func__, validatePnrProblemInputs(relabeledConstraints),
+      PnrProblemInputErrorCode::ConstraintSetTechMappingIdentityMismatch,
+      firstIdentity, secondIdentity);
+
+  ValidatedTechMapping second = takeExpected(
+      __func__, validateTechMapping(secondIdentity, testCase.mapping,
+                                    testCase.dataflow, testCase.fabric));
+  PnrProblemInputs secondInputs = makeProblemInputs(testCase, second, config);
+  if (first.identity() != firstIdentity ||
+      second.identity() != secondIdentity ||
+      first.identity() == second.identity())
+    fail(__func__, "validated mappings did not retain their imported identity");
+  if (llvm::Error error = validatePnrProblemInputs(secondInputs))
+    fail(__func__, llvm::toString(std::move(error)).c_str());
+}
+
 } // namespace
 
 void runPnrProblemInputsTests() {
   exactFiveInputBindingReachesExistingFreezeBehavior();
   rejectsEachExactCouplingMismatch();
   keepsConfigAndConstraintArtifactIdentitiesIndependent();
+  bindsTechMappingIdentityAtValidationBoundary();
 }
 
 } // namespace loom::mapping::test

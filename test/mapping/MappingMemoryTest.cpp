@@ -83,8 +83,9 @@ void rejectsInconsistentFrozenMemoryService() {
 void acceptsExternalAndInternalMemoryAnchor() {
   {
     TestCase testCase = makeMemoryAnchorCase();
-    auto result = validateTechMapping(testCase.mapping, testCase.dataflow,
-                                      testCase.fabric);
+    auto result =
+        validateTechMapping(testCase.techMappingIdentity, testCase.mapping,
+                            testCase.dataflow, testCase.fabric);
     if (!result)
       fail(__func__, llvm::toString(result.takeError()).c_str());
     if (result->realizations().size() != 4 ||
@@ -94,8 +95,9 @@ void acceptsExternalAndInternalMemoryAnchor() {
   {
     TestCase testCase = makeMemoryAnchorCase();
     selectInternalMemoryGraph(testCase);
-    auto result = validateTechMapping(testCase.mapping, testCase.dataflow,
-                                      testCase.fabric);
+    auto result =
+        validateTechMapping(testCase.techMappingIdentity, testCase.mapping,
+                            testCase.dataflow, testCase.fabric);
     if (!result)
       fail(__func__, llvm::toString(result.takeError()).c_str());
     if (result->memoryRealizations().size() != 1)
@@ -245,8 +247,9 @@ void validatesLogicalMemoryRootCapabilities() {
     MemoryRealizationDraft &store = testCase.mapping.memoryRealizations[1];
     store.actorToOperations[0].root.entity = LogicalMemoryRootId(23);
     store.roots[0].entity = LogicalMemoryRootId(23);
-    auto result = validateTechMapping(testCase.mapping, testCase.dataflow,
-                                      testCase.fabric);
+    auto result =
+        validateTechMapping(testCase.techMappingIdentity, testCase.mapping,
+                            testCase.dataflow, testCase.fabric);
     if (!result)
       fail(__func__, llvm::toString(result.takeError()).c_str());
   }

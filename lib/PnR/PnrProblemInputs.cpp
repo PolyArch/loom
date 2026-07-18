@@ -49,10 +49,10 @@ loom::pnr::validatePnrProblemInputs(const PnrProblemInputs &inputs) {
         inputs.dataflow.identity, inputs.constraints.dataflowIdentity,
         "MappingConstraintSet dataflow identity does not match the PnR "
         "dataflow input");
-  if (inputs.constraints.techMappingIdentity != inputs.techMappingIdentity)
+  if (inputs.constraints.techMappingIdentity != inputs.techMapping.identity())
     return identityMismatch(
         PnrProblemInputErrorCode::ConstraintSetTechMappingIdentityMismatch,
-        inputs.techMappingIdentity, inputs.constraints.techMappingIdentity,
+        inputs.techMapping.identity(), inputs.constraints.techMappingIdentity,
         "MappingConstraintSet TechMapping identity does not match the PnR "
         "TechMapping input");
   if (inputs.constraints.fabricIdentity != inputs.fabric.identity)

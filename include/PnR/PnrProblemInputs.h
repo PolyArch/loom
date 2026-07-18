@@ -23,7 +23,6 @@ struct MappingConstraintSetInput {
 struct PnrProblemInputs {
   const mapping::DataflowProgramView &dataflow;
   const mapping::ValidatedTechMapping &techMapping;
-  mapping::ArtifactIdentity techMappingIdentity;
   const mapping::FabricHardwareView &fabric;
   const ResolvedPnrConfigView &config;
   mapping::ArtifactIdentity resolvedConfigIdentity;

@@ -21,6 +21,7 @@ using namespace loom::pnr;
 struct TestCase {
   DataflowProgramView dataflow;
   FabricHardwareView fabric;
+  ArtifactIdentity techMappingIdentity;
   TechMappingDraft mapping;
 };
 

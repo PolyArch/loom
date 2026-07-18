@@ -36,10 +36,17 @@ PnR physically realizes an existing TechMapping. It consumes:
 
 The persistent authorities are `D`, `T`, `F`, the complete ResolvedConfig
 artifact, and `K`. `C` is a typed projection with no independent artifact
-identity. `PnrProblemInputs` is an ordinary borrowed value boundary that groups
-the five inputs with `T`'s identity, the complete ResolvedConfig identity from
-which `C` was derived, and `K`'s identity and exact `D/T/F` bindings. It has no
-identity and does not define a PnR request artifact.
+identity. The TechMapping validation/import boundary requires the exact trusted
+`T` identity and retains it immutably with the validated witness.
+`PnrProblemInputs` borrows that combined value rather than carrying a
+separately mutable `T` label. It groups the five inputs with the complete
+ResolvedConfig identity from which `C` was derived and `K`'s identity and exact
+`D/T/F` bindings. The grouping has no identity and does not define a PnR
+request artifact.
+
+The validation/import boundary trusts the `T` identity supplied by the owning
+artifact boundary. It does not compute or rehash Mapping content; persistent
+Mapping canonicalization remains outside this C++ validation boundary.
 
 Before capacity planning, native allocation, or search, PnR rejects
 `T.D != D.id`, `T.F != F.id`, or any

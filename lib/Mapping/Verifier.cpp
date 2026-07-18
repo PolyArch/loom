@@ -1636,10 +1636,9 @@ validateCoveredSinkAccounting(const DataflowIndex &dataflowIndex,
 }
 } // namespace
 
-llvm::Expected<ValidatedTechMapping>
-loom::mapping::validateTechMapping(const TechMappingDraft &mapping,
-                                   const DataflowProgramView &dataflow,
-                                   const FabricHardwareView &fabric) {
+llvm::Expected<ValidatedTechMapping> loom::mapping::validateTechMapping(
+    ArtifactIdentity identity, const TechMappingDraft &mapping,
+    const DataflowProgramView &dataflow, const FabricHardwareView &fabric) {
   if (mapping.header.schemaVersion != supportedSchemaVersion)
     return mappingError(MappingErrorCode::UnsupportedSchemaVersion,
                         "Mapping verifier supports schema 2.0");
@@ -1768,6 +1767,7 @@ loom::mapping::validateTechMapping(const TechMappingDraft &mapping,
                const ValidatedComputeRealizationProjection &rhs) {
               return lhs.id.value() < rhs.id.value();
             });
-  return ValidatedTechMapping(mapping, fabricIndex->projection,
+  return ValidatedTechMapping(std::move(identity), mapping,
+                              fabricIndex->projection,
                               std::move(mappingProjection));
 }
