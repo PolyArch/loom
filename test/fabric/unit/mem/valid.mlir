@@ -75,3 +75,24 @@ fabric.mem @MemTemplate [spatial]
     [{load_group_size = 1 : i32,
       store_group_size = 0 : i32,
       data_width = 32 : i32}]
+
+// Generic syntax accepts the same closed canonical property set and
+// round-trips through the custom printer.
+
+// CHECK-LABEL: fabric.module @mem_generic_properties
+// CHECK: fabric.mem [spatial]
+fabric.module @mem_generic_properties(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>) {
+  %data, %done = "fabric.mem"(%mgr, %addr, %ctrl) <{
+    hw_params = [{
+      data_width = 32 : i32,
+      load_group_size = 1 : i32,
+      store_group_size = 0 : i32
+    }],
+    inner_input_types = [],
+    schedule = 0 : i32
+  }> : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+      -> (!fabric.bits<32>, !fabric.bits<0>)
+  fabric.yield
+}

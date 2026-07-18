@@ -23,6 +23,14 @@
 #define GET_OP_CLASSES
 #include "Fabric/IR/FabricOps.h.inc"
 
+namespace mlir {
+template <>
+LogicalResult
+RegisteredOperationName::Model<::fabric::MemOp>::setPropertiesFromAttr(
+    OperationName opName, PropertyRef properties, Attribute attr,
+    function_ref<InFlightDiagnostic()> emitError);
+} // namespace mlir
+
 namespace fabric {
 inline constexpr ::llvm::StringLiteral kInnerInputTypesPropertyName =
     "inner_input_types";

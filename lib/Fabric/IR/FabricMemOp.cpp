@@ -24,6 +24,20 @@
 using namespace mlir;
 using namespace fabric;
 
+namespace mlir {
+
+template <>
+LogicalResult
+RegisteredOperationName::Model<::fabric::MemOp>::setPropertiesFromAttr(
+    OperationName, PropertyRef properties, Attribute attr,
+    function_ref<InFlightDiagnostic()> emitError) {
+  auto *memProperties = properties.as<::fabric::MemOp::Properties *>();
+  return ::fabric::MemOp::setPropertiesFromParsedAttr(*memProperties, attr,
+                                                      emitError);
+}
+
+} // namespace mlir
+
 namespace fabric {
 
 unsigned resolveLoomAddrBits(Operation *op) {

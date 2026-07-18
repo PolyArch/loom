@@ -255,3 +255,36 @@ fabric.module @mem_dispatch_non_i32_identity(
       -> (!fabric.bits_tag<32, 3>, !fabric.bits_tag<0, 3>)
   fabric.yield
 }
+
+// -----
+// Unknown generic properties must fail before generated decoding can drop
+// them.
+fabric.module @mem_reject_generic_addr_table_property(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>) {
+  // expected-error @+1 {{invalid properties}}
+  %data, %done = "fabric.mem"(%mgr, %addr, %ctrl) <{
+    addr_table = []
+  }> : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+      -> (!fabric.bits<32>, !fabric.bits<0>)
+  fabric.yield
+}
+
+// -----
+fabric.module @mem_reject_arbitrary_generic_property(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>) {
+  // expected-error @+1 {{unknown key}}
+  %data, %done = "fabric.mem"(%mgr, %addr, %ctrl) <{
+    hw_params = [{
+      data_width = 32 : i32,
+      load_group_size = 1 : i32,
+      store_group_size = 0 : i32
+    }],
+    inner_input_types = [],
+    schedule = 0 : i32,
+    unowned_property = "state"
+  }> : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+      -> (!fabric.bits<32>, !fabric.bits<0>)
+  fabric.yield
+}
