@@ -72,6 +72,9 @@ public:
   operator=(RouteTreeTransactionScratch &&) = delete;
   ~RouteTreeTransactionScratch();
 
+  // Counts retained lookup entry storage, excluding allocator metadata.
+  std::size_t retainedLookupRollbackStorageBytes() const;
+
 private:
   enum class DeltaKind {
     ModifiedNode,
@@ -202,6 +205,7 @@ public:
   llvm::Error ripUpSubtree(PnrIndex subtreeRootEndpoint);
   llvm::Error ripUpWholeNet();
 
+  llvm::Error verify() const;
   llvm::Error commit();
   void rollback() noexcept;
 

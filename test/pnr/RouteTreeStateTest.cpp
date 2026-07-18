@@ -663,6 +663,70 @@ void rejectsNestedTransactionsAndRollsBackOnDestruction() {
   reused.rollback();
 }
 
+void preservesLookupAcrossCapacityGrowthBeforeRollback() {
+  Fixture fixture;
+  RouteTreeStateHandle state = makeUnrouted(__func__, fixture);
+  RouteTreeTransactionScratch scratch;
+  RouteTreeTransaction initial =
+      takeValue(__func__, state->beginTransaction(scratch));
+  requireSuccess(__func__, initial.bindSource(fixture.root));
+  requireSuccess(__func__, initial.bindSink(sinkObligationA, fixture.sinkB));
+  const std::array<PnrIndex, 3> pathB{fixture.rootToTrunk, fixture.trunkToB,
+                                      fixture.branchBToSink};
+  requireSuccess(__func__,
+                 initial.attachPath(fixture.root, pathB, sinkObligationA));
+  requireSuccess(__func__, initial.bindSink(sinkObligationB, fixture.sinkB));
+  requireSuccess(__func__,
+                 initial.attachPath(fixture.sinkB, {}, sinkObligationB));
+  requireSuccess(__func__, initial.commit());
+
+  const std::array<PnrIndex, 4> preGrowthEndpoints{
+      fixture.root, fixture.trunk, fixture.branchB, fixture.sinkB};
+  for (PnrIndex endpoint : preGrowthEndpoints)
+    require(__func__, state->findNode(endpoint).has_value(),
+            "capacity-8 lookup lost a reached endpoint");
+
+  RouteTreeTransaction growth =
+      takeValue(__func__, state->beginTransaction(scratch));
+  requireSuccess(__func__, growth.ripUpSink(sinkObligationB));
+  requireSuccess(__func__, growth.bindSink(sinkObligationB, fixture.sinkA));
+  const std::array<PnrIndex, 4> pathA{
+      fixture.trunkToA, fixture.branchAToMergeInput,
+      fixture.mergeInputAToOutput, fixture.mergeOutputToSink};
+  requireSuccess(__func__,
+                 growth.attachPath(fixture.trunk, pathA, sinkObligationB));
+
+  const std::array<PnrIndex, 8> grownEndpoints{
+      fixture.root,    fixture.trunk,       fixture.branchB,     fixture.sinkB,
+      fixture.branchA, fixture.mergeInputA, fixture.mergeOutput, fixture.sinkA};
+  for (PnrIndex endpoint : grownEndpoints) {
+    const std::optional<PnrIndex> nodeSlot = state->findNode(endpoint);
+    require(__func__, nodeSlot.has_value(),
+            "capacity growth lost a reached endpoint");
+    require(__func__,
+            static_cast<std::size_t>(*nodeSlot) < state->nodeStorage().size(),
+            "capacity growth resolved an endpoint outside node storage");
+    const RouteTreeNode &resolvedNode = state->nodeStorage()[*nodeSlot];
+    require(__func__,
+            resolvedNode.isActive() && resolvedNode.endpoint == endpoint,
+            "capacity growth resolved an endpoint to the wrong node");
+  }
+  requireSuccess(__func__, growth.verify());
+  growth.rollback();
+  for (PnrIndex endpoint : preGrowthEndpoints)
+    require(__func__, state->findNode(endpoint).has_value(),
+            "capacity-growth rollback lost a pre-growth endpoint");
+  for (PnrIndex endpoint : {fixture.branchA, fixture.mergeInputA,
+                            fixture.mergeOutput, fixture.sinkA})
+    require(__func__, !state->findNode(endpoint).has_value(),
+            "capacity-growth rollback retained a post-growth endpoint");
+  require(__func__,
+          state->sinkEndpoint(sinkObligationA) == fixture.sinkB &&
+              state->sinkEndpoint(sinkObligationB) == fixture.sinkB,
+          "capacity-growth rollback lost shared sink bindings");
+  requireSuccess(__func__, state->verify());
+}
+
 void preservesLookupCollisionChainsAfterDeletion() {
   FrozenRoutingGraphHandle graph = makeCollisionRoutingGraph(__func__);
   const PnrIndex source = endpoint(__func__, graph, 1144);
@@ -717,7 +781,7 @@ void preservesLookupCollisionChainsAfterDeletion() {
   requireSuccess(__func__, state->verify());
 }
 
-void restoresLookupAfterRepeatedSameCapacityRehashes() {
+void boundsLookupRollbackStorageAcrossManyRehashes() {
   FrozenRoutingGraphHandle graph = makeCollisionRoutingGraph(__func__);
   const std::array<PnrIndex, 4> oldEndpoints{
       endpoint(__func__, graph, 1100), endpoint(__func__, graph, 1110),
@@ -756,15 +820,30 @@ void restoresLookupAfterRepeatedSameCapacityRehashes() {
 
   const std::vector<RouteTreeNode> originalNodes(state->nodeStorage().begin(),
                                                  state->nodeStorage().end());
-  for (unsigned iteration = 0; iteration < 3; ++iteration) {
+  std::size_t retainedLookupBytes = 0;
+  for (unsigned transactionIndex = 0; transactionIndex < 2;
+       ++transactionIndex) {
     RouteTreeTransaction replacement =
         takeValue(__func__, state->beginTransaction(scratch));
-    requireSuccess(__func__, replacement.ripUpWholeNet());
-    attachTree(replacement, replacementEndpoints[2], replacementEndpoints[0],
-               replacementEndpoints[3], replacementEndpoints[1]);
-    requireSuccess(__func__, replacement.ripUpWholeNet());
-    attachTree(replacement, oldEndpoints[3], oldEndpoints[0], oldEndpoints[1],
-               oldEndpoints[2]);
+    for (unsigned rehashIndex = 0; rehashIndex < 64; ++rehashIndex) {
+      requireSuccess(__func__, replacement.ripUpWholeNet());
+      if ((rehashIndex & 1U) == 0) {
+        attachTree(replacement, replacementEndpoints[2],
+                   replacementEndpoints[0], replacementEndpoints[3],
+                   replacementEndpoints[1]);
+      } else {
+        attachTree(replacement, oldEndpoints[3], oldEndpoints[0],
+                   oldEndpoints[1], oldEndpoints[2]);
+      }
+      const std::size_t currentRetainedBytes =
+          scratch.retainedLookupRollbackStorageBytes();
+      require(__func__, currentRetainedBytes != 0,
+              "lookup rollback retained no baseline storage");
+      if (retainedLookupBytes == 0)
+        retainedLookupBytes = currentRetainedBytes;
+      require(__func__, currentRetainedBytes == retainedLookupBytes,
+              "lookup rollback storage grew with the rehash count");
+    }
     replacement.rollback();
 
     require(__func__,
@@ -816,8 +895,9 @@ int main() {
   keepsActiveTransactionAliveAcrossOwnerMove();
   keepsFactoryOwnedStateAliveAndInvalidatesExpiredScratch();
   rejectsNestedTransactionsAndRollsBackOnDestruction();
+  preservesLookupAcrossCapacityGrowthBeforeRollback();
   preservesLookupCollisionChainsAfterDeletion();
-  restoresLookupAfterRepeatedSameCapacityRehashes();
+  boundsLookupRollbackStorageAcrossManyRehashes();
   checksPnrIndexCapacityBoundaries();
   return 0;
 }

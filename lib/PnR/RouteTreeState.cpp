@@ -47,6 +47,11 @@ RouteTreeTransactionScratch::~RouteTreeTransactionScratch() {
     activeTransaction_->rollback();
 }
 
+std::size_t
+RouteTreeTransactionScratch::retainedLookupRollbackStorageBytes() const {
+  return lookupBaseline_.capacity() * sizeof(detail::RouteTreeLookupEntry);
+}
+
 void RouteTreeTransactionScratch::resetTransaction() {
   deltas_.clear();
   worklist_.clear();
@@ -963,6 +968,12 @@ llvm::Error RouteTreeTransaction::ripUpWholeNet() {
     if (state_->nodes_[slot].isActive())
       removeNode(static_cast<PnrIndex>(slot));
   return llvm::Error::success();
+}
+
+llvm::Error RouteTreeTransaction::verify() const {
+  if (!state_)
+    return routeTreeError("transaction is no longer active");
+  return state_->verifyState();
 }
 
 llvm::Error RouteTreeTransaction::commit() {
