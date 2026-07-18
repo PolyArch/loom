@@ -915,9 +915,10 @@ Leaf memory completion updates `W/R` but never silently replaces execution
 permission.
 
 This section records Dataflow templates for SCF boundaries. The current
-recursive owner implements only `scf.if`, source-sequential `scf.for`, and
-`scf.while`; other subsections are explicitly marked as upstream or deferred
-contracts and are rejected if they remain in a graph.
+recursive owner implements `scf.if`, source-sequential `scf.for`, `scf.while`,
+and provenance-marked fixed-domain effect-form `scf.parallel` / `scf.forall`.
+Other subsections are explicitly marked as upstream or deferred contracts and
+are rejected if they remain in a graph.
 
 The dataflow primitive set is
 (`stream`, `carry`, `invariant`, `gate`, `mux`, `demux`, `sync`,
