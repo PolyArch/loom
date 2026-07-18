@@ -356,6 +356,7 @@ llvm::Error verifyThreadCompletionFrontiers(mlir::ModuleOp module) {
     auto yield = llvm::cast<dataflow::ThreadYieldOp>(
         thread.getBody().front().getTerminator());
     mlir::ValueRange frontier = yield.getCompletionFrontier();
+    dataflow::ThreadCompletionCoverageAnalysis coverage;
 
     llvm::DenseSet<mlir::Value> seen;
     for (mlir::Value event : frontier)
@@ -365,9 +366,8 @@ llvm::Error verifyThreadCompletionFrontiers(mlir::ModuleOp module) {
 
     for (unsigned first = 0; first < frontier.size(); ++first) {
       for (unsigned second = first + 1; second < frontier.size(); ++second) {
-        if (dataflow::completionEventCovers(frontier[first],
-                                            frontier[second]) ||
-            dataflow::completionEventCovers(frontier[second], frontier[first]))
+        if (coverage.covers(frontier[first], frontier[second]) ||
+            coverage.covers(frontier[second], frontier[first]))
           return programError(
               llvm::Twine("thread @") + thread.getSymName() +
               " has a causally redundant completion frontier event");
@@ -381,7 +381,7 @@ llvm::Error verifyThreadCompletionFrontiers(mlir::ModuleOp module) {
 
     for (mlir::Value completion : graphLaunchCompletions)
       if (!llvm::any_of(frontier, [&](mlir::Value terminal) {
-            return dataflow::completionEventCovers(terminal, completion);
+            return coverage.covers(terminal, completion);
           }))
         return programError(
             llvm::Twine("thread @") + thread.getSymName() +
@@ -389,8 +389,8 @@ llvm::Error verifyThreadCompletionFrontiers(mlir::ModuleOp module) {
             "frontier");
 
     for (unsigned index = 0; index < frontier.size(); ++index)
-      if (!dataflow::isThreadCompletionFrontierMemberNecessary(
-              frontier, index, graphLaunchCompletions))
+      if (!coverage.isFrontierMemberNecessary(frontier, index,
+                                              graphLaunchCompletions))
         return programError(
             llvm::Twine("thread @") + thread.getSymName() +
             " has a completion frontier event unnecessary for graph launch "

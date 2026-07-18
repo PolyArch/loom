@@ -3,19 +3,28 @@
 
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+
+#include <utility>
 
 namespace dataflow {
 
-bool completionEventCovers(mlir::Value terminal, mlir::Value event);
+class ThreadCompletionCoverageAnalysis {
+public:
+  bool covers(mlir::Value terminal, mlir::Value event);
 
-bool isThreadCompletionFrontierMemberNecessary(
-    mlir::ValueRange frontier, unsigned memberIndex,
-    mlir::ValueRange graphLaunchCompletions);
+  bool isFrontierMemberNecessary(mlir::ValueRange frontier,
+                                 unsigned memberIndex,
+                                 mlir::ValueRange graphLaunchCompletions);
 
-llvm::SmallVector<mlir::Value, 4>
-computeMinimalThreadCompletionFrontier(mlir::ValueRange candidates,
-                                       mlir::ValueRange graphLaunchCompletions);
+  llvm::SmallVector<mlir::Value, 4>
+  computeMinimalFrontier(mlir::ValueRange candidates,
+                         mlir::ValueRange graphLaunchCompletions);
+
+private:
+  llvm::DenseMap<std::pair<mlir::Value, mlir::Value>, bool> coverage;
+};
 
 } // namespace dataflow
 

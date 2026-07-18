@@ -93,9 +93,9 @@ void addThreadCompletionFrontier(::dataflow::ThreadOp thread,
   thread.walk([&](::dataflow::GraphLaunchOp launch) {
     graphLaunchCompletions.push_back(launch.getDone());
   });
+  ::dataflow::ThreadCompletionCoverageAnalysis coverage;
   ::llvm::SmallVector<::mlir::Value, 4> frontier =
-      ::dataflow::computeMinimalThreadCompletionFrontier(
-          candidates, graphLaunchCompletions);
+      coverage.computeMinimalFrontier(candidates, graphLaunchCompletions);
   yield.getCompletionFrontierMutable().assign(frontier);
 }
 
