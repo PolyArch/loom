@@ -8,12 +8,12 @@ Placement records do not create software work or hardware capacity. They
 only record the selected relation between existing software objects and
 existing hardware objects.
 
-## Implemented Compute Freeze Boundary
+## Implemented Realization Freeze Boundary
 
-The implemented compute boundary stops before any selected placement record.
-`FrozenRealizationGraph` derives an ephemeral base domain for each Compute
-Realization from the selected FU implementation in TechMapping and the fully
-validated Fabric occurrence view.
+The implemented realization boundary stops before any selected placement
+record. `FrozenRealizationGraph` derives ephemeral base domains for Compute and
+Memory Realizations from the implementations selected by TechMapping and the
+fully validated Fabric occurrence view.
 
 The Fabric occurrence view distinguishes PE and FU occurrences. Its structural
 references are:
@@ -46,17 +46,40 @@ diagnostics. A valid Compute Realization with no concrete occurrence of its
 selected implementation produces typed `EmptyConcreteFuDomain`
 infeasibility.
 
-This boundary does not select an FU or instruction context and does not define
-Physical Mapping records, constraint projections, persistent Mapping syntax,
-sharing legality, scheduling, configuration, routing, port binding, tags, or
-memory occurrence domains. Those decisions remain outside this implemented
-freeze view.
+For a Memory Realization, Fabric validation preserves each concrete memory
+occurrence separately from compute occurrences. The structural reference is:
+
+```text
+FabricMemoryOccurrenceRef = MemoryOccurrenceId
+```
+
+Each occurrence names one instantiated Memory Implementation and owns explicit
+load/store operation attachment endpoints. The frozen implementation domain is
+the deterministic set of occurrences matching the Memory Semantic Encoding
+selected by TechMapping. Factorized memory port demands include only external
+operation ports. An edge proved by a selected memory internal-edge witness is
+not emitted as a route obligation, while remaining fanout such as one address
+source driving load and store ports stays one external multi-sink logical net.
+
+The routing freeze places compute endpoints, memory operation endpoints, and
+transport-resource endpoints in one directed CSR. Route-domain reachability is
+derived from explicit arcs and traversals with endpoint port-kind and
+payload/tag-capacity filtering. Wider `bits` endpoints may carry narrower
+payloads, but any path containing an endpoint or arc below the required payload
+width is excluded. Traversal resource identity, not occurrence naming or a
+macro-family rule, is the source of later shared-capacity conflicts.
+
+This boundary does not select an FU, instruction context, memory occurrence,
+attachment endpoint, or route. It does not define Physical Mapping records,
+constraint projections, persistent Mapping syntax, sharing legality,
+scheduling, configuration, tags, or memory service scheduling. Those decisions
+remain outside this implemented freeze view.
 
 ## Placement Families
 
 The selected placement records below describe the boundary that a later
 Physical Mapping artifact must satisfy. They are not produced by the
-implemented compute freeze view.
+implemented realization freeze view.
 
 The placement part of a mapping artifact contains three record families:
 

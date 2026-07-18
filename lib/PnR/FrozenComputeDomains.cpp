@@ -92,8 +92,8 @@ llvm::Error freezeError(std::string message) {
 llvm::Error mappingInfeasibility(FrozenMappingInfeasibilityCode code,
                                  ComputeRealizationId realization,
                                  std::string message) {
-  return llvm::make_error<FrozenMappingInfeasibility>(code, realization,
-                                                      std::move(message));
+  return llvm::make_error<FrozenMappingInfeasibility>(
+      code, FrozenRealizationId{realization}, std::move(message));
 }
 
 std::uint64_t sizeValue(std::size_t size) {

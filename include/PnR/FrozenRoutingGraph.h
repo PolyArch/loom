@@ -18,6 +18,7 @@ struct PnrProblemInputs;
 
 enum class FrozenRoutingEndpointOwnerKind {
   ComputeOccurrence,
+  MemoryOccurrence,
   TransportResource,
 };
 
@@ -93,6 +94,9 @@ public:
   llvm::ArrayRef<PnrIndex> computeEndpointVertices() const {
     return computeEndpointVertices_;
   }
+  llvm::ArrayRef<PnrIndex> memoryEndpointVertices() const {
+    return memoryEndpointVertices_;
+  }
   llvm::ArrayRef<PnrIndex> adjacencyOffsets() const {
     return adjacencyOffsets_;
   }
@@ -106,6 +110,10 @@ public:
   llvm::ArrayRef<PnrIndex> incomingForwardArcIndices() const {
     return incomingForwardArcIndices_;
   }
+  bool hasCompatiblePath(PnrIndex source, PnrIndex target,
+                         mapping::PortKind portKind,
+                         std::uint32_t payloadWidthBits,
+                         std::uint32_t tagWidthBits) const;
 
   friend bool operator==(const FrozenRoutingGraph &lhs,
                          const FrozenRoutingGraph &rhs) {
@@ -113,6 +121,7 @@ public:
            lhs.resourceEndpointVertices_ == rhs.resourceEndpointVertices_ &&
            lhs.routingEndpoints_ == rhs.routingEndpoints_ &&
            lhs.computeEndpointVertices_ == rhs.computeEndpointVertices_ &&
+           lhs.memoryEndpointVertices_ == rhs.memoryEndpointVertices_ &&
            lhs.adjacencyOffsets_ == rhs.adjacencyOffsets_ &&
            lhs.routingArcs_ == rhs.routingArcs_ &&
            lhs.incomingAdjacencyOffsets_ == rhs.incomingAdjacencyOffsets_ &&
@@ -129,6 +138,7 @@ private:
                      std::vector<PnrIndex> resourceEndpointVertices,
                      std::vector<FrozenRoutingEndpoint> routingEndpoints,
                      std::vector<PnrIndex> computeEndpointVertices,
+                     std::vector<PnrIndex> memoryEndpointVertices,
                      std::vector<PnrIndex> adjacencyOffsets,
                      std::vector<FrozenRoutingArc> routingArcs,
                      std::vector<PnrIndex> incomingAdjacencyOffsets,
@@ -138,6 +148,7 @@ private:
         resourceEndpointVertices_(std::move(resourceEndpointVertices)),
         routingEndpoints_(std::move(routingEndpoints)),
         computeEndpointVertices_(std::move(computeEndpointVertices)),
+        memoryEndpointVertices_(std::move(memoryEndpointVertices)),
         adjacencyOffsets_(std::move(adjacencyOffsets)),
         routingArcs_(std::move(routingArcs)),
         incomingAdjacencyOffsets_(std::move(incomingAdjacencyOffsets)),
@@ -148,6 +159,7 @@ private:
   std::vector<PnrIndex> resourceEndpointVertices_;
   std::vector<FrozenRoutingEndpoint> routingEndpoints_;
   std::vector<PnrIndex> computeEndpointVertices_;
+  std::vector<PnrIndex> memoryEndpointVertices_;
   std::vector<PnrIndex> adjacencyOffsets_;
   std::vector<FrozenRoutingArc> routingArcs_;
   std::vector<PnrIndex> incomingAdjacencyOffsets_;
@@ -165,7 +177,8 @@ namespace detail {
 
 llvm::Error preflightFrozenRoutingGraphCapacity(
     std::uint64_t endpointCount, std::uint64_t resourceCount,
-    std::uint64_t computeEndpointCount, std::uint64_t arcCount);
+    std::uint64_t computeEndpointCount, std::uint64_t arcCount,
+    std::uint64_t memoryEndpointCount = 0);
 
 } // namespace detail
 

@@ -24,6 +24,14 @@ struct ResolvedArc {
   std::size_t endpoint;
 };
 
+struct ResolvedMemoryArc {
+  const MemoryLocalArcDescriptor *descriptor;
+  MemoryOperationPortTemplateId operation;
+  PortDirection direction;
+  MemoryEndpointId endpointId;
+  std::size_t endpoint;
+};
+
 bool sameArc(const ResolvedArc &lhs, const ResolvedArc &rhs) {
   return lhs.fuOccurrence == rhs.fuOccurrence &&
          lhs.descriptor->fuPort.direction == rhs.descriptor->fuPort.direction &&
@@ -37,8 +45,26 @@ bool samePort(const ResolvedArc &lhs, const ResolvedArc &rhs) {
          lhs.descriptor->fuPort.index == rhs.descriptor->fuPort.index;
 }
 
+bool sameMemoryArc(const ResolvedMemoryArc &lhs, const ResolvedMemoryArc &rhs) {
+  return lhs.operation == rhs.operation && lhs.direction == rhs.direction &&
+         lhs.descriptor->operationPort.index ==
+             rhs.descriptor->operationPort.index &&
+         lhs.endpointId == rhs.endpointId;
+}
+
+bool sameMemoryPort(const ResolvedMemoryArc &lhs,
+                    const ResolvedMemoryArc &rhs) {
+  return lhs.operation == rhs.operation && lhs.direction == rhs.direction &&
+         lhs.descriptor->operationPort.index ==
+             rhs.descriptor->operationPort.index;
+}
+
 llvm::Error invalidComputeOccurrence(const llvm::Twine &message) {
   return mappingError(MappingErrorCode::InvalidComputeOccurrence, message);
+}
+
+llvm::Error invalidMemoryOccurrence(const llvm::Twine &message) {
+  return mappingError(MappingErrorCode::InvalidMemoryOccurrence, message);
 }
 
 llvm::Error malformedFuParentLinkage(const llvm::Twine &message) {
@@ -62,12 +88,31 @@ llvm::Expected<const FuDescriptor *> resolveFuImplementation(
   return functionalUnits.at(reference.entity.value());
 }
 
+llvm::Expected<MemoryImplementationId>
+resolveMemoryImplementation(const MemoryImplementationRef &reference,
+                            const ArtifactIdentity &fabric,
+                            const EntityKinds &kinds) {
+  if (reference.artifact != fabric)
+    return mappingError(MappingErrorCode::ForeignEntityReference,
+                        "memory occurrence names a foreign implementation");
+  const auto kind = kinds.find(reference.entity.value());
+  if (kind == kinds.end())
+    return mappingError(MappingErrorCode::UnresolvedEntityId,
+                        "memory occurrence names a missing implementation");
+  if (kind->second != EntityKind::MemoryImplementation)
+    return mappingError(MappingErrorCode::WrongEntityKind,
+                        "memory occurrence names an entity of the wrong kind");
+  return reference.entity;
+}
+
 } // namespace
 
 llvm::Expected<std::unique_ptr<ValidatedFabricProjection>>
 loom::mapping::detail::buildValidatedFabricProjection(
     const FabricHardwareView &fabric, EntityKinds &kinds,
-    const std::map<std::uint64_t, const FuDescriptor *> &functionalUnits) {
+    const std::map<std::uint64_t, const FuDescriptor *> &functionalUnits,
+    const std::map<std::uint64_t, const MemoryOperationPortTemplateDescriptor *>
+        &memoryOperationPortTemplates) {
   std::vector<const ComputeOccurrenceDescriptor *> occurrences;
   occurrences.reserve(fabric.computeOccurrences.size());
   for (const ComputeOccurrenceDescriptor &occurrence :
@@ -284,6 +329,181 @@ loom::mapping::detail::buildValidatedFabricProjection(
     begin = end;
   }
 
+  std::vector<const MemoryOccurrenceDescriptor *> memoryOccurrences;
+  memoryOccurrences.reserve(fabric.memoryOccurrences.size());
+  for (const MemoryOccurrenceDescriptor &occurrence : fabric.memoryOccurrences)
+    memoryOccurrences.push_back(&occurrence);
+  std::sort(memoryOccurrences.begin(), memoryOccurrences.end(),
+            [](const MemoryOccurrenceDescriptor *lhs,
+               const MemoryOccurrenceDescriptor *rhs) {
+              return lhs->id.value() < rhs->id.value();
+            });
+
+  std::map<std::uint64_t, const MemoryEndpointDescriptor *> memoryEndpointsById;
+  std::map<std::uint64_t, const MemoryOccurrenceDescriptor *>
+      memoryEndpointOwners;
+  for (const MemoryOccurrenceDescriptor *occurrence : memoryOccurrences) {
+    if (llvm::Error error = addEntity(kinds, occurrence->id.value(),
+                                      EntityKind::MemoryOccurrence))
+      return std::move(error);
+    std::vector<const MemoryEndpointDescriptor *> endpoints;
+    endpoints.reserve(occurrence->endpoints.size());
+    for (const MemoryEndpointDescriptor &endpoint : occurrence->endpoints)
+      endpoints.push_back(&endpoint);
+    std::sort(endpoints.begin(), endpoints.end(),
+              [](const MemoryEndpointDescriptor *lhs,
+                 const MemoryEndpointDescriptor *rhs) {
+                return lhs->id.value() < rhs->id.value();
+              });
+    for (const MemoryEndpointDescriptor *endpoint : endpoints) {
+      if (llvm::Error error = addEntity(kinds, endpoint->id.value(),
+                                        EntityKind::MemoryEndpoint))
+        return std::move(error);
+      memoryEndpointsById.emplace(endpoint->id.value(), endpoint);
+      memoryEndpointOwners.emplace(endpoint->id.value(), occurrence);
+    }
+  }
+
+  projection->memoryOccurrences.reserve(memoryOccurrences.size());
+  std::vector<std::pair<MemoryImplementationId, std::size_t>>
+      memoryOccurrencePairs;
+  for (const MemoryOccurrenceDescriptor *occurrence : memoryOccurrences) {
+    auto implementation = resolveMemoryImplementation(
+        occurrence->implementation, fabric.identity, kinds);
+    if (!implementation)
+      return implementation.takeError();
+    const std::size_t memoryOccurrence = projection->memoryOccurrences.size();
+    const std::size_t endpointOffset = projection->memoryEndpoints.size();
+    std::vector<const MemoryEndpointDescriptor *> endpoints;
+    endpoints.reserve(occurrence->endpoints.size());
+    for (const MemoryEndpointDescriptor &endpoint : occurrence->endpoints)
+      endpoints.push_back(&endpoint);
+    std::sort(endpoints.begin(), endpoints.end(),
+              [](const MemoryEndpointDescriptor *lhs,
+                 const MemoryEndpointDescriptor *rhs) {
+                return lhs->id.value() < rhs->id.value();
+              });
+    std::map<std::uint64_t, std::size_t> localEndpointIndices;
+    for (std::size_t endpointIndex = 0; endpointIndex < endpoints.size();
+         ++endpointIndex) {
+      const MemoryEndpointDescriptor &endpoint = *endpoints[endpointIndex];
+      if ((endpoint.direction != PortDirection::Input &&
+           endpoint.direction != PortDirection::Output) ||
+          (endpoint.kind != PortKind::Value &&
+           endpoint.kind != PortKind::Stream) ||
+          endpoint.compatibleTypes.empty())
+        return invalidMemoryOccurrence(
+            "memory occurrence endpoint has an invalid signature");
+      std::vector<TypeKey> compatibleTypes = endpoint.compatibleTypes;
+      std::sort(compatibleTypes.begin(), compatibleTypes.end(), TypeKeyLess{});
+      if (std::adjacent_find(compatibleTypes.begin(), compatibleTypes.end()) !=
+          compatibleTypes.end())
+        return invalidMemoryOccurrence(
+            "memory occurrence endpoint repeats a compatible type");
+      const std::size_t compatibleTypeOffset =
+          projection->memoryEndpointCompatibleTypes.size();
+      projection->memoryEndpointCompatibleTypes.insert(
+          projection->memoryEndpointCompatibleTypes.end(),
+          compatibleTypes.begin(), compatibleTypes.end());
+      localEndpointIndices.emplace(endpoint.id.value(), endpointIndex);
+      projection->memoryEndpoints.push_back(
+          {endpoint.id, endpoint.direction, endpoint.kind,
+           endpoint.payloadCapacityBits, endpoint.tagCapacityBits,
+           compatibleTypeOffset, compatibleTypes.size(), endpoint.role,
+           endpoint.transportKind});
+    }
+
+    std::vector<ResolvedMemoryArc> arcs;
+    arcs.reserve(occurrence->localArcs.size());
+    for (const MemoryLocalArcDescriptor &arc : occurrence->localArcs) {
+      auto operation =
+          resolveReference(arc.operationPort.operation, fabric.identity, kinds,
+                           EntityKind::MemoryOperationPortTemplate,
+                           memoryOperationPortTemplates);
+      if (!operation)
+        return operation.takeError();
+      auto endpoint =
+          resolveReference(arc.endpoint, fabric.identity, kinds,
+                           EntityKind::MemoryEndpoint, memoryEndpointsById);
+      if (!endpoint)
+        return endpoint.takeError();
+      const auto localEndpoint =
+          localEndpointIndices.find((*endpoint)->id.value());
+      if ((*operation)->implementation != *implementation ||
+          arc.operationPort.index >= (*operation)->ports.size() ||
+          memoryEndpointOwners.at((*endpoint)->id.value()) != occurrence ||
+          localEndpoint == localEndpointIndices.end())
+        return invalidMemoryOccurrence(
+            "memory local arc does not belong to its occurrence");
+      const MemoryOperationPortDescriptor &port =
+          (*operation)->ports[arc.operationPort.index];
+      if ((*endpoint)->direction != port.direction)
+        return invalidMemoryOccurrence(
+            "memory local arc reverses operation port direction");
+      arcs.push_back({&arc, (*operation)->id, port.direction, (*endpoint)->id,
+                      localEndpoint->second});
+    }
+    std::sort(arcs.begin(), arcs.end(),
+              [](const ResolvedMemoryArc &lhs, const ResolvedMemoryArc &rhs) {
+                return std::make_tuple(lhs.operation.value(), lhs.direction,
+                                       lhs.descriptor->operationPort.index,
+                                       lhs.endpointId.value()) <
+                       std::make_tuple(rhs.operation.value(), rhs.direction,
+                                       rhs.descriptor->operationPort.index,
+                                       rhs.endpointId.value());
+              });
+    if (std::adjacent_find(arcs.begin(), arcs.end(), sameMemoryArc) !=
+        arcs.end())
+      return invalidMemoryOccurrence("memory occurrence repeats a local arc");
+
+    const std::size_t localArcOffset = projection->memoryLocalArcs.size();
+    for (const ResolvedMemoryArc &arc : arcs) {
+      projection->memoryLocalArcs.push_back(
+          {memoryOccurrence, arc.operation, arc.direction,
+           arc.descriptor->operationPort.index, arc.endpoint,
+           arc.descriptor->payloadCapacityBits,
+           arc.descriptor->tagCapacityBits});
+    }
+    const std::size_t portArcRangeOffset =
+        projection->memoryPortArcRanges.size();
+    for (std::size_t begin = 0; begin < arcs.size();) {
+      std::size_t end = begin + 1;
+      while (end < arcs.size() && sameMemoryPort(arcs[begin], arcs[end]))
+        ++end;
+      projection->memoryPortArcRanges.push_back(
+          {memoryOccurrence, arcs[begin].operation, arcs[begin].direction,
+           arcs[begin].descriptor->operationPort.index, localArcOffset + begin,
+           end - begin});
+      begin = end;
+    }
+    projection->memoryOccurrences.push_back(
+        {occurrence->id, *implementation, endpointOffset, endpoints.size(),
+         localArcOffset, arcs.size(), portArcRangeOffset,
+         projection->memoryPortArcRanges.size() - portArcRangeOffset});
+    memoryOccurrencePairs.emplace_back(*implementation, memoryOccurrence);
+  }
+
+  std::sort(memoryOccurrencePairs.begin(), memoryOccurrencePairs.end(),
+            [](const auto &lhs, const auto &rhs) {
+              return std::make_tuple(lhs.first.value(), lhs.second) <
+                     std::make_tuple(rhs.first.value(), rhs.second);
+            });
+  for (std::size_t begin = 0; begin < memoryOccurrencePairs.size();) {
+    std::size_t end = begin + 1;
+    while (end < memoryOccurrencePairs.size() &&
+           memoryOccurrencePairs[end].first ==
+               memoryOccurrencePairs[begin].first)
+      ++end;
+    const std::size_t occurrenceOffset =
+        projection->implementationMemoryOccurrences.size();
+    for (std::size_t index = begin; index < end; ++index)
+      projection->implementationMemoryOccurrences.push_back(
+          memoryOccurrencePairs[index].second);
+    projection->implementationMemoryOccurrenceRanges.push_back(
+        {memoryOccurrencePairs[begin].first, occurrenceOffset, end - begin});
+    begin = end;
+  }
+
   return projection;
 }
 
@@ -299,6 +519,23 @@ llvm::ArrayRef<std::size_t> loom::mapping::detail::findFuOccurrences(
       range->implementation != implementation)
     return {};
   return llvm::ArrayRef<std::size_t>(projection.implementationFuOccurrences)
+      .slice(range->occurrenceOffset, range->occurrenceCount);
+}
+
+llvm::ArrayRef<std::size_t> loom::mapping::detail::findMemoryOccurrences(
+    const ValidatedFabricProjection &projection,
+    MemoryImplementationId implementation) {
+  const auto range = std::lower_bound(
+      projection.implementationMemoryOccurrenceRanges.begin(),
+      projection.implementationMemoryOccurrenceRanges.end(), implementation,
+      [](const ValidatedMemoryOccurrenceRange &candidate,
+         MemoryImplementationId expected) {
+        return candidate.implementation.value() < expected.value();
+      });
+  if (range == projection.implementationMemoryOccurrenceRanges.end() ||
+      range->implementation != implementation)
+    return {};
+  return llvm::ArrayRef<std::size_t>(projection.implementationMemoryOccurrences)
       .slice(range->occurrenceOffset, range->occurrenceCount);
 }
 
@@ -324,5 +561,34 @@ loom::mapping::detail::findComputePortArcs(
       range->direction != direction || range->port != port)
     return {};
   return llvm::ArrayRef<ValidatedComputeLocalArc>(projection.computeLocalArcs)
+      .slice(range->arcOffset, range->arcCount);
+}
+
+llvm::ArrayRef<ValidatedMemoryLocalArc>
+loom::mapping::detail::findMemoryPortArcs(
+    const ValidatedFabricProjection &projection, std::size_t memoryOccurrence,
+    MemoryOperationPortTemplateId operation, PortDirection direction,
+    std::uint32_t port) {
+  if (memoryOccurrence >= projection.memoryOccurrences.size())
+    return {};
+  const ValidatedMemoryOccurrence &occurrence =
+      projection.memoryOccurrences[memoryOccurrence];
+  llvm::ArrayRef<ValidatedMemoryPortArcRange> ranges(
+      projection.memoryPortArcRanges);
+  ranges =
+      ranges.slice(occurrence.portArcRangeOffset, occurrence.portArcRangeCount);
+  const auto range = std::lower_bound(
+      ranges.begin(), ranges.end(),
+      std::make_tuple(memoryOccurrence, operation.value(), direction, port),
+      [](const ValidatedMemoryPortArcRange &candidate, const auto &expected) {
+        return std::make_tuple(candidate.memoryOccurrence,
+                               candidate.operation.value(), candidate.direction,
+                               candidate.port) < expected;
+      });
+  if (range == ranges.end() || range->memoryOccurrence != memoryOccurrence ||
+      range->operation != operation || range->direction != direction ||
+      range->port != port)
+    return {};
+  return llvm::ArrayRef<ValidatedMemoryLocalArc>(projection.memoryLocalArcs)
       .slice(range->arcOffset, range->arcCount);
 }

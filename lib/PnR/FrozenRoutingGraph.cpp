@@ -39,6 +39,12 @@ constexpr PnrCapacityContext occurrenceCountContext{
 constexpr PnrCapacityContext occurrenceIndexContext{
     frozenArtifact, "routing_endpoints", "compute_occurrences",
     PnrCapacityMeasure::Index};
+constexpr PnrCapacityContext memoryOccurrenceCountContext{
+    frozenArtifact, "routing_endpoints", "memory_occurrences",
+    PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext memoryOccurrenceIndexContext{
+    frozenArtifact, "routing_endpoints", "memory_occurrences",
+    PnrCapacityMeasure::Index};
 constexpr PnrCapacityContext resourceEndpointCountContext{
     frozenArtifact, "resource_endpoint_vertices", "transport_endpoints",
     PnrCapacityMeasure::Count};
@@ -47,6 +53,9 @@ constexpr PnrCapacityContext resourceEndpointOffsetContext{
     PnrCapacityMeasure::Offset};
 constexpr PnrCapacityContext computeEndpointCountContext{
     frozenArtifact, "compute_endpoint_vertices", "compute_endpoints",
+    PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext memoryEndpointCountContext{
+    frozenArtifact, "memory_endpoint_vertices", "memory_endpoints",
     PnrCapacityMeasure::Count};
 constexpr PnrCapacityContext adjacencyCountContext{
     frozenArtifact, "adjacency_offsets", "routing_endpoints",
@@ -87,6 +96,8 @@ freezeOwnerKind(ValidatedRoutingEndpointOwnerKind kind) {
   switch (kind) {
   case ValidatedRoutingEndpointOwnerKind::ComputeOccurrence:
     return FrozenRoutingEndpointOwnerKind::ComputeOccurrence;
+  case ValidatedRoutingEndpointOwnerKind::MemoryOccurrence:
+    return FrozenRoutingEndpointOwnerKind::MemoryOccurrence;
   case ValidatedRoutingEndpointOwnerKind::TransportResource:
     return FrozenRoutingEndpointOwnerKind::TransportResource;
   }
@@ -107,7 +118,8 @@ FrozenRoutingArcKind freezeArcKind(ValidatedRoutingArcKind kind) {
 
 llvm::Error loom::pnr::detail::preflightFrozenRoutingGraphCapacity(
     std::uint64_t endpointCount, std::uint64_t resourceCount,
-    std::uint64_t computeEndpointCount, std::uint64_t arcCount) {
+    std::uint64_t computeEndpointCount, std::uint64_t arcCount,
+    std::uint64_t memoryEndpointCount) {
   if (llvm::Error error =
           preflightPnrIndexCapacity(endpointCountContext, endpointCount))
     return error;
@@ -116,6 +128,9 @@ llvm::Error loom::pnr::detail::preflightFrozenRoutingGraphCapacity(
     return error;
   if (llvm::Error error = preflightPnrIndexCapacity(computeEndpointCountContext,
                                                     computeEndpointCount))
+    return error;
+  if (llvm::Error error = preflightPnrIndexCapacity(memoryEndpointCountContext,
+                                                    memoryEndpointCount))
     return error;
   if (llvm::Error error = preflightPnrIndexCapacity(arcCountContext, arcCount))
     return error;
@@ -145,15 +160,20 @@ loom::pnr::freezeRoutingGraph(const PnrProblemInputs &inputs) {
                     [](const ValidatedComputeEndpoint &endpoint) {
                       return endpoint.kind != PortKind::Memory;
                     }));
+  const std::size_t memoryEndpointCount =
+      fabricProjection.memoryEndpoints.size();
 
   if (llvm::Error error = detail::preflightFrozenRoutingGraphCapacity(
           sizeValue(projection.endpoints.size()),
           sizeValue(projection.resources.size()),
           sizeValue(routableComputeEndpointCount),
-          sizeValue(projection.arcs.size())))
+          sizeValue(projection.arcs.size()), sizeValue(memoryEndpointCount)))
     return std::move(error);
   if (llvm::Error error = preflight(occurrenceCountContext,
                                     fabricProjection.peOccurrences.size()))
+    return std::move(error);
+  if (llvm::Error error = preflight(memoryOccurrenceCountContext,
+                                    fabricProjection.memoryOccurrences.size()))
     return std::move(error);
   if (llvm::Error error = preflight(resourceEndpointCountContext,
                                     projection.resourceEndpoints.size()))
@@ -192,11 +212,17 @@ loom::pnr::freezeRoutingGraph(const PnrProblemInputs &inputs) {
   std::vector<FrozenRoutingEndpoint> endpoints;
   endpoints.reserve(projection.endpoints.size());
   for (const ValidatedRoutingEndpoint &endpoint : projection.endpoints) {
-    const PnrCapacityContext ownerContext =
-        endpoint.ownerKind ==
-                ValidatedRoutingEndpointOwnerKind::ComputeOccurrence
-            ? occurrenceIndexContext
-            : resourceIndexContext;
+    PnrCapacityContext ownerContext = resourceIndexContext;
+    switch (endpoint.ownerKind) {
+    case ValidatedRoutingEndpointOwnerKind::ComputeOccurrence:
+      ownerContext = occurrenceIndexContext;
+      break;
+    case ValidatedRoutingEndpointOwnerKind::MemoryOccurrence:
+      ownerContext = memoryOccurrenceIndexContext;
+      break;
+    case ValidatedRoutingEndpointOwnerKind::TransportResource:
+      break;
+    }
     auto owner = checked(ownerContext, endpoint.owner);
     if (!owner)
       return owner.takeError();
@@ -204,6 +230,21 @@ loom::pnr::freezeRoutingGraph(const PnrProblemInputs &inputs) {
                          *owner, endpoint.direction, endpoint.portKind,
                          endpoint.transportKind, endpoint.payloadCapacityBits,
                          endpoint.tagCapacityBits});
+  }
+
+  std::vector<PnrIndex> memoryEndpoints;
+  memoryEndpoints.reserve(memoryEndpointCount);
+  for (const ValidatedMemoryEndpoint &memoryEndpoint :
+       fabricProjection.memoryEndpoints) {
+    const std::optional<std::size_t> endpoint =
+        findRoutingEndpoint(projection, memoryEndpoint.id);
+    if (!endpoint)
+      return freezeError("cannot freeze routing graph: memory endpoint is "
+                         "missing from the validated routing projection");
+    auto frozenEndpoint = checked(endpointIndexContext, *endpoint);
+    if (!frozenEndpoint)
+      return frozenEndpoint.takeError();
+    memoryEndpoints.push_back(*frozenEndpoint);
   }
 
   std::vector<PnrIndex> computeEndpoints;
@@ -297,7 +338,43 @@ loom::pnr::freezeRoutingGraph(const PnrProblemInputs &inputs) {
 
   return FrozenRoutingGraph(
       std::move(resources), std::move(resourceEndpoints), std::move(endpoints),
-      std::move(computeEndpoints), std::move(adjacencyOffsets), std::move(arcs),
+      std::move(computeEndpoints), std::move(memoryEndpoints),
+      std::move(adjacencyOffsets), std::move(arcs),
       std::move(incomingAdjacencyOffsets), std::move(incomingSourceVertices),
       std::move(incomingForwardArcIndices));
+}
+
+bool loom::pnr::FrozenRoutingGraph::hasCompatiblePath(
+    PnrIndex source, PnrIndex target, mapping::PortKind portKind,
+    std::uint32_t payloadWidthBits, std::uint32_t tagWidthBits) const {
+  if (source >= routingEndpoints_.size() || target >= routingEndpoints_.size())
+    return false;
+  auto supports = [&](PnrIndex endpoint) {
+    const FrozenRoutingEndpoint &candidate = routingEndpoints_[endpoint];
+    return candidate.portKind == portKind &&
+           candidate.payloadCapacityBits >= payloadWidthBits &&
+           candidate.tagCapacityBits >= tagWidthBits;
+  };
+  if (!supports(source) || !supports(target))
+    return false;
+
+  std::vector<bool> visited(routingEndpoints_.size());
+  std::vector<PnrIndex> worklist{source};
+  visited[source] = true;
+  for (std::size_t cursor = 0; cursor < worklist.size(); ++cursor) {
+    const PnrIndex current = worklist[cursor];
+    if (current == target)
+      return true;
+    for (PnrIndex arc = adjacencyOffsets_[current];
+         arc < adjacencyOffsets_[current + 1]; ++arc) {
+      const FrozenRoutingArc &candidate = routingArcs_[arc];
+      if (candidate.payloadCapacityBits < payloadWidthBits ||
+          candidate.tagCapacityBits < tagWidthBits ||
+          visited[candidate.target] || !supports(candidate.target))
+        continue;
+      visited[candidate.target] = true;
+      worklist.push_back(candidate.target);
+    }
+  }
+  return false;
 }

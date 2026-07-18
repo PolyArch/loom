@@ -125,6 +125,7 @@ struct EdgeIdTag;
 struct LogicalMemoryRootIdTag;
 struct FuIdTag;
 struct ComputeOccurrenceIdTag;
+struct MemoryOccurrenceIdTag;
 struct TransportEndpointIdTag;
 struct TransportResourceIdTag;
 struct FabricOpIdTag;
@@ -143,8 +144,10 @@ using EdgeId = TypedEntityId<EdgeIdTag>;
 using LogicalMemoryRootId = TypedEntityId<LogicalMemoryRootIdTag>;
 using FuId = TypedEntityId<FuIdTag>;
 using ComputeOccurrenceId = TypedEntityId<ComputeOccurrenceIdTag>;
+using MemoryOccurrenceId = TypedEntityId<MemoryOccurrenceIdTag>;
 using TransportEndpointId = TypedEntityId<TransportEndpointIdTag>;
 using ComputeEndpointId = TransportEndpointId;
+using MemoryEndpointId = TransportEndpointId;
 using TransportResourceId = TypedEntityId<TransportResourceIdTag>;
 using FabricOpId = TypedEntityId<FabricOpIdTag>;
 using EncodingId = TypedEntityId<EncodingIdTag>;
@@ -167,6 +170,7 @@ using LogicalMemoryRootRef = EntityReference<LogicalMemoryRootId>;
 using FuRef = EntityReference<FuId>;
 using TransportEndpointRef = EntityReference<TransportEndpointId>;
 using ComputeEndpointRef = TransportEndpointRef;
+using MemoryEndpointRef = TransportEndpointRef;
 using TransportResourceRef = EntityReference<TransportResourceId>;
 using FabricOpRef = EntityReference<FabricOpId>;
 using EncodingRef = EntityReference<EncodingId>;
@@ -283,6 +287,36 @@ struct ComputeOccurrenceDescriptor {
   std::vector<ComputeLocalArcDescriptor> localArcs;
   // Fabric PE capability: one for Spatial, num_instruction for Temporal.
   std::int64_t instructionContextCapacity;
+};
+
+struct MemoryOperationPortRef {
+  MemoryOperationPortTemplateRef operation;
+  std::uint32_t index;
+};
+
+struct MemoryEndpointDescriptor {
+  MemoryEndpointId id;
+  PortDirection direction;
+  PortKind kind;
+  std::uint32_t payloadCapacityBits;
+  std::uint32_t tagCapacityBits;
+  std::vector<TypeKey> compatibleTypes;
+  PortRoleKey role;
+  fabric::DataPathKind transportKind = fabric::DataPathKind::Bits;
+};
+
+struct MemoryLocalArcDescriptor {
+  MemoryOperationPortRef operationPort;
+  MemoryEndpointRef endpoint;
+  std::uint32_t payloadCapacityBits;
+  std::uint32_t tagCapacityBits;
+};
+
+struct MemoryOccurrenceDescriptor {
+  MemoryOccurrenceId id;
+  MemoryImplementationRef implementation;
+  std::vector<MemoryEndpointDescriptor> endpoints;
+  std::vector<MemoryLocalArcDescriptor> localArcs;
 };
 
 struct TransportEndpointDescriptor {
@@ -465,6 +499,7 @@ struct FabricHardwareView {
   std::vector<TransportResourceDescriptor> transportResources = {};
   std::vector<TransportArcDescriptor> transportArcs = {};
   std::vector<TransportTraversalDescriptor> transportTraversals = {};
+  std::vector<MemoryOccurrenceDescriptor> memoryOccurrences = {};
 };
 
 struct ActorPortRef {
@@ -494,11 +529,6 @@ struct ActorToFabricOp {
 struct BoundaryPortCorrespondence {
   ActorPortRef actorPort;
   FuPortRef fuPort;
-};
-
-struct MemoryOperationPortRef {
-  MemoryOperationPortTemplateRef operation;
-  std::uint32_t index;
 };
 
 struct MemoryImplementationBoundaryPortRef {

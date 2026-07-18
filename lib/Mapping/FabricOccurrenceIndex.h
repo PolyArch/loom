@@ -70,6 +70,54 @@ struct ValidatedFuOccurrenceRange {
   std::size_t occurrenceCount;
 };
 
+struct ValidatedMemoryEndpoint {
+  MemoryEndpointId id;
+  PortDirection direction;
+  PortKind kind;
+  std::uint32_t payloadCapacityBits;
+  std::uint32_t tagCapacityBits;
+  std::size_t compatibleTypeOffset;
+  std::size_t compatibleTypeCount;
+  PortRoleKey role;
+  fabric::DataPathKind transportKind;
+};
+
+struct ValidatedMemoryLocalArc {
+  std::size_t memoryOccurrence;
+  MemoryOperationPortTemplateId operation;
+  PortDirection direction;
+  std::uint32_t port;
+  std::size_t endpoint;
+  std::uint32_t payloadCapacityBits;
+  std::uint32_t tagCapacityBits;
+};
+
+struct ValidatedMemoryPortArcRange {
+  std::size_t memoryOccurrence;
+  MemoryOperationPortTemplateId operation;
+  PortDirection direction;
+  std::uint32_t port;
+  std::size_t arcOffset;
+  std::size_t arcCount;
+};
+
+struct ValidatedMemoryOccurrence {
+  MemoryOccurrenceId id;
+  MemoryImplementationId implementation;
+  std::size_t endpointOffset;
+  std::size_t endpointCount;
+  std::size_t localArcOffset;
+  std::size_t localArcCount;
+  std::size_t portArcRangeOffset;
+  std::size_t portArcRangeCount;
+};
+
+struct ValidatedMemoryOccurrenceRange {
+  MemoryImplementationId implementation;
+  std::size_t occurrenceOffset;
+  std::size_t occurrenceCount;
+};
+
 struct ValidatedFabricProjection {
   explicit ValidatedFabricProjection(ArtifactIdentity identity)
       : identity(std::move(identity)) {}
@@ -88,6 +136,14 @@ struct ValidatedFabricProjection {
   std::vector<ValidatedComputePortArcRange> computePortArcRanges;
   std::vector<ValidatedFuOccurrenceRange> implementationFuOccurrenceRanges;
   std::vector<std::size_t> implementationFuOccurrences;
+  std::vector<ValidatedMemoryOccurrence> memoryOccurrences;
+  std::vector<ValidatedMemoryEndpoint> memoryEndpoints;
+  std::vector<TypeKey> memoryEndpointCompatibleTypes;
+  std::vector<ValidatedMemoryLocalArc> memoryLocalArcs;
+  std::vector<ValidatedMemoryPortArcRange> memoryPortArcRanges;
+  std::vector<ValidatedMemoryOccurrenceRange>
+      implementationMemoryOccurrenceRanges;
+  std::vector<std::size_t> implementationMemoryOccurrences;
   ValidatedFabricRoutingProjection routing = {};
 };
 
@@ -106,8 +162,24 @@ struct ValidatedComputeRealizationProjection {
   std::vector<ValidatedActorPairedLaneProjection> pairedLaneProjections;
 };
 
+struct ValidatedMemoryBoundaryPort {
+  MemoryOperationPortTemplateId operation;
+  PortDirection direction;
+  std::uint32_t port;
+  PortDescriptor descriptor;
+};
+
+struct ValidatedMemoryRealizationProjection {
+  MemoryRealizationId id;
+  MemorySemanticEncodingId encoding;
+  MemoryImplementationId implementation;
+  MemoryServiceDomainId service;
+  std::vector<ValidatedMemoryBoundaryPort> activeBoundaryPorts;
+};
+
 struct ValidatedTechMappingProjection {
   std::vector<ValidatedComputeRealizationProjection> computeRealizations;
+  std::vector<ValidatedMemoryRealizationProjection> memoryRealizations;
 };
 
 class ValidatedTechMappingAccess {
@@ -126,16 +198,28 @@ public:
 llvm::Expected<std::unique_ptr<ValidatedFabricProjection>>
 buildValidatedFabricProjection(
     const FabricHardwareView &fabric, EntityKinds &kinds,
-    const std::map<std::uint64_t, const FuDescriptor *> &functionalUnits);
+    const std::map<std::uint64_t, const FuDescriptor *> &functionalUnits,
+    const std::map<std::uint64_t, const MemoryOperationPortTemplateDescriptor *>
+        &memoryOperationPortTemplates);
 
 llvm::ArrayRef<std::size_t>
 findFuOccurrences(const ValidatedFabricProjection &projection,
                   FuId implementation);
 
+llvm::ArrayRef<std::size_t>
+findMemoryOccurrences(const ValidatedFabricProjection &projection,
+                      MemoryImplementationId implementation);
+
 llvm::ArrayRef<ValidatedComputeLocalArc>
 findComputePortArcs(const ValidatedFabricProjection &projection,
                     std::size_t fuOccurrence, PortDirection direction,
                     std::uint32_t port);
+
+llvm::ArrayRef<ValidatedMemoryLocalArc>
+findMemoryPortArcs(const ValidatedFabricProjection &projection,
+                   std::size_t memoryOccurrence,
+                   MemoryOperationPortTemplateId operation,
+                   PortDirection direction, std::uint32_t port);
 
 } // namespace loom::mapping::detail
 

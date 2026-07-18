@@ -325,7 +325,7 @@ TestCase makeValidCase() {
 TestCase makeMemoryAnchorCase() {
   const ArtifactIdentity dataflowId = artifact(1);
   const ArtifactIdentity fabricId = artifact(2);
-  const PortDescriptor value = port(PortKind::Value, type(1));
+  const PortDescriptor value = port(PortKind::Value, type(1), 16);
   const PortDescriptor control = port(PortKind::Value, type(2));
   const PortDescriptor memory = port(PortKind::Memory, type(3));
   const SemanticKey noAttributes = semantic(20);
@@ -540,11 +540,10 @@ TestCase makeMemoryAnchorCase() {
            loadEncoding, implementation, {loadTemplate}, {}},
        MemorySemanticEncodingDescriptor{
            storeEncoding, implementation, {storeTemplate}, {}},
-       MemorySemanticEncodingDescriptor{
-           groupedEncoding,
-           implementation,
-           {loadTemplate, storeTemplate},
-           {addressToLoad, addressToStore, doneToControl, doneToBoundary}},
+       MemorySemanticEncodingDescriptor{groupedEncoding,
+                                        implementation,
+                                        {loadTemplate, storeTemplate},
+                                        {doneToControl}},
        MemorySemanticEncodingDescriptor{
            otherStoreEncoding, otherImplementation, {otherStoreTemplate}, {}}},
       {}};
@@ -553,6 +552,40 @@ TestCase makeMemoryAnchorCase() {
         fabricId, ComputeOccurrenceId(1000 + index),
         fabric.functionalUnits[index], 2000 + index * 100));
   }
+  auto memoryOccurrence = [&](MemoryOccurrenceId occurrence,
+                              std::uint64_t endpointBase) {
+    constexpr std::uint32_t unbounded =
+        std::numeric_limits<std::uint32_t>::max();
+    MemoryOccurrenceDescriptor result{
+        occurrence, MemoryImplementationRef{fabricId, implementation}, {}, {}};
+    auto addPort = [&](MemoryOperationPortTemplateId operation,
+                       std::uint32_t portIndex,
+                       const MemoryOperationPortDescriptor &descriptor) {
+      const MemoryEndpointId endpoint(endpointBase + result.endpoints.size());
+      result.endpoints.push_back({endpoint,
+                                  descriptor.direction,
+                                  descriptor.port.kind,
+                                  unbounded,
+                                  0,
+                                  {descriptor.port.type},
+                                  descriptor.port.role,
+                                  fabric::DataPathKind::Bits});
+      result.localArcs.push_back(
+          {MemoryOperationPortRef{
+               MemoryOperationPortTemplateRef{fabricId, operation}, portIndex},
+           MemoryEndpointRef{fabricId, endpoint}, unbounded, unbounded});
+    };
+    addPort(loadTemplate, 0, loadPorts[0]);
+    addPort(loadTemplate, 1, loadPorts[1]);
+    addPort(loadTemplate, 2, loadPorts[2]);
+    addPort(storeTemplate, 0, storePorts[0]);
+    addPort(storeTemplate, 1, storePorts[1]);
+    addPort(storeTemplate, 3, storePorts[3]);
+    return result;
+  };
+  fabric.memoryOccurrences = {
+      memoryOccurrence(MemoryOccurrenceId(3000), 30000),
+      memoryOccurrence(MemoryOccurrenceId(4000), 40000)};
   auto actorRef = [&](ActorId actor) { return ActorRef{dataflowId, actor}; };
   auto actorPort = [&](ActorId actor, PortDirection direction,
                        std::uint32_t index) {
@@ -653,29 +686,18 @@ void selectInternalMemoryGraph(TestCase &testCase) {
   const ArtifactIdentity &fabricId = testCase.fabric.identity;
   const MemoryRealizationDraft &load = testCase.mapping.memoryRealizations[0];
   const MemoryRealizationDraft &store = testCase.mapping.memoryRealizations[1];
-  const GraphRef graph{dataflowId, GraphId(1)};
-  const MemoryImplementationRef implementation{fabricId,
-                                               MemoryImplementationId(32)};
   MemoryRealizationDraft grouped{
       MemoryRealizationId(60),
       {load.actors.front(), store.actors.front()},
       {load.actorToOperations.front(), store.actorToOperations.front()},
       {LogicalMemoryRootRef{dataflowId, LogicalMemoryRootId(20)}},
       MemorySemanticEncodingRef{fabricId, MemorySemanticEncodingId(43)},
-      {load.boundaryPorts[1], load.boundaryPorts[2], store.boundaryPorts[1]},
-      {{GraphPortRef{graph, PortDirection::Input, 1},
-        MemoryImplementationBoundaryPortRef{implementation, 0}},
-       {GraphPortRef{graph, PortDirection::Output, 1},
-        MemoryImplementationBoundaryPortRef{implementation, 1}}},
-      {{EdgeRef{dataflowId, EdgeId(100)},
-        MemoryInternalConnectionRef{fabricId, MemoryInternalConnectionId(37)}},
-       {EdgeRef{dataflowId, EdgeId(113)},
-        MemoryInternalConnectionRef{fabricId, MemoryInternalConnectionId(38)}},
-       {EdgeRef{dataflowId, EdgeId(114)},
-        MemoryInternalConnectionRef{fabricId, MemoryInternalConnectionId(39)}},
-       {EdgeRef{dataflowId, EdgeId(115)},
+      {load.boundaryPorts[0], load.boundaryPorts[1], load.boundaryPorts[2],
+       store.boundaryPorts[0], store.boundaryPorts[1], store.boundaryPorts[3]},
+      {},
+      {{EdgeRef{dataflowId, EdgeId(114)},
         MemoryInternalConnectionRef{fabricId,
-                                    MemoryInternalConnectionId(40)}}}};
+                                    MemoryInternalConnectionId(39)}}}};
   testCase.mapping.memoryRealizations = {std::move(grouped)};
 }
 

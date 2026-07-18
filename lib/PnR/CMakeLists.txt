@@ -1,5 +1,6 @@
 add_mlir_library(LoomPnR
   FrozenComputeDomains.cpp
+  FrozenMemoryDomains.cpp
   FrozenRealizationGraph.cpp
   FrozenRoutingGraph.cpp
   PnrIndex.cpp

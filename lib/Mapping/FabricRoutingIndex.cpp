@@ -62,14 +62,14 @@ resolveEndpoint(const TransportEndpointRef &reference,
     return mappingError(MappingErrorCode::UnresolvedEntityId,
                         "reference names an unresolved entity ID");
   if (kind->second != EntityKind::ComputeEndpoint &&
+      kind->second != EntityKind::MemoryEndpoint &&
       kind->second != EntityKind::TransportEndpoint)
     return mappingError(MappingErrorCode::WrongEntityKind,
                         "reference names an entity of the wrong kind");
   const auto endpoint = endpoints.find(reference.entity.value());
   if (endpoint == endpoints.end())
     return invalidTransport(
-        "reference names an endpoint outside the compute-only transport "
-        "domain");
+        "reference names an endpoint outside the token transport domain");
   return endpoint->second;
 }
 
@@ -129,7 +129,8 @@ loom::mapping::detail::buildValidatedFabricRoutingProjection(
   }
 
   ValidatedFabricRoutingProjection projection;
-  projection.endpoints.reserve(computeProjection.computeEndpoints.size());
+  projection.endpoints.reserve(computeProjection.computeEndpoints.size() +
+                               computeProjection.memoryEndpoints.size());
   for (std::size_t occurrenceIndex = 0;
        occurrenceIndex < computeProjection.peOccurrences.size();
        ++occurrenceIndex) {
@@ -154,6 +155,34 @@ loom::mapping::detail::buildValidatedFabricRoutingProjection(
             "compute endpoint has an invalid transport signature");
       projection.endpoints.push_back(
           {endpoint.id, ValidatedRoutingEndpointOwnerKind::ComputeOccurrence,
+           occurrenceIndex, endpoint.direction, endpoint.kind,
+           endpoint.transportKind, endpoint.payloadCapacityBits,
+           endpoint.tagCapacityBits});
+    }
+  }
+
+  for (std::size_t occurrenceIndex = 0;
+       occurrenceIndex < computeProjection.memoryOccurrences.size();
+       ++occurrenceIndex) {
+    const ValidatedMemoryOccurrence &occurrence =
+        computeProjection.memoryOccurrences[occurrenceIndex];
+    for (std::size_t endpointIndex = occurrence.endpointOffset;
+         endpointIndex < occurrence.endpointOffset + occurrence.endpointCount;
+         ++endpointIndex) {
+      const ValidatedMemoryEndpoint &endpoint =
+          computeProjection.memoryEndpoints[endpointIndex];
+      if (llvm::Error error = requireLocalKind(kinds, endpoint.id.value(),
+                                               EntityKind::MemoryEndpoint))
+        return std::move(error);
+      if (!validRoutingPortKind(endpoint.kind) ||
+          !fabric::DataPathType{endpoint.transportKind,
+                                endpoint.payloadCapacityBits,
+                                endpoint.tagCapacityBits}
+               .isWellFormed())
+        return invalidTransport(
+            "memory endpoint has an invalid transport signature");
+      projection.endpoints.push_back(
+          {endpoint.id, ValidatedRoutingEndpointOwnerKind::MemoryOccurrence,
            occurrenceIndex, endpoint.direction, endpoint.kind,
            endpoint.transportKind, endpoint.payloadCapacityBits,
            endpoint.tagCapacityBits});

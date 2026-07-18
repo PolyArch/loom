@@ -30,6 +30,7 @@ enum class MappingErrorCode {
   WrongEntityKind,
   InvalidPortConnection,
   InvalidComputeOccurrence,
+  InvalidMemoryOccurrence,
   MissingFuImplementation,
   MalformedFuParentLinkage,
   InvalidInstructionContextCapacity,

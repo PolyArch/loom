@@ -1,6 +1,9 @@
 #include "MappingCoreTestSupport.h"
 
+#include "PnR/FrozenRoutingGraph.h"
+
 #include <algorithm>
+#include <limits>
 
 namespace loom::mapping::test {
 namespace {
@@ -14,6 +17,189 @@ bool isGraphMemoryCapabilityPort(const FrozenTerminal &terminal) {
   const auto *graph = std::get_if<FrozenGraphBoundaryTerminal>(&terminal);
   return graph && graph->port == 0;
 }
+TransportEndpointRef endpointRef(const ArtifactIdentity &fabric,
+                                 std::uint64_t id) {
+  return TransportEndpointRef{fabric, TransportEndpointId(id)};
+}
+TransportResourceRef resourceRef(const ArtifactIdentity &fabric,
+                                 std::uint64_t id) {
+  return TransportResourceRef{fabric, TransportResourceId(id)};
+}
+TransportEndpointDescriptor
+transportEndpoint(std::uint64_t id, PortDirection direction,
+                  std::uint32_t payloadCapacityBits) {
+  return {TransportEndpointId(id), direction, PortKind::Value,
+          payloadCapacityBits,     0,         fabric::DataPathKind::Bits};
+}
+TestCase makeMemoryRouteDomainCase() {
+  TestCase testCase = makeMemoryAnchorCase();
+  selectInternalMemoryGraph(testCase);
+  const ArtifactIdentity &fabric = testCase.fabric.identity;
+  testCase.fabric.computeOccurrences.push_back(
+      makeSpatialComputeOccurrence(fabric, ComputeOccurrenceId(1100),
+                                   testCase.fabric.functionalUnits[0], 2400));
+  testCase.fabric.computeOccurrences.push_back(
+      makeSpatialComputeOccurrence(fabric, ComputeOccurrenceId(1103),
+                                   testCase.fabric.functionalUnits[3], 2500));
+
+  testCase.fabric.transportResources = {
+      {TransportResourceId(5000),
+       TransportResourceKind::Switch,
+       {transportEndpoint(50000, PortDirection::Input, 32),
+        transportEndpoint(50001, PortDirection::Output, 32),
+        transportEndpoint(50002, PortDirection::Output, 8),
+        transportEndpoint(53000, PortDirection::Input, 64),
+        transportEndpoint(53001, PortDirection::Input, 8),
+        transportEndpoint(53002, PortDirection::Output, 64)}},
+      {TransportResourceId(5100),
+       TransportResourceKind::Switch,
+       {transportEndpoint(51000, PortDirection::Input, 64),
+        transportEndpoint(51001, PortDirection::Input, 8),
+        transportEndpoint(51002, PortDirection::Output, 64),
+        transportEndpoint(52000, PortDirection::Input, 32),
+        transportEndpoint(52001, PortDirection::Output, 32),
+        transportEndpoint(52002, PortDirection::Output, 8)}}};
+  testCase.fabric.transportArcs = {
+      {endpointRef(fabric, 30002), endpointRef(fabric, 50000)},
+      {endpointRef(fabric, 50001), endpointRef(fabric, 2000)},
+      {endpointRef(fabric, 50002), endpointRef(fabric, 51001)},
+      {endpointRef(fabric, 40002), endpointRef(fabric, 51000)},
+      {endpointRef(fabric, 51002), endpointRef(fabric, 2400)},
+      {endpointRef(fabric, 2302), endpointRef(fabric, 52000)},
+      {endpointRef(fabric, 52001), endpointRef(fabric, 40004)},
+      {endpointRef(fabric, 52002), endpointRef(fabric, 53001)},
+      {endpointRef(fabric, 2502), endpointRef(fabric, 53000)},
+      {endpointRef(fabric, 53002), endpointRef(fabric, 30004)}};
+  testCase.fabric.transportTraversals = {
+      {resourceRef(fabric, 5000), endpointRef(fabric, 50000),
+       endpointRef(fabric, 50001)},
+      {resourceRef(fabric, 5000), endpointRef(fabric, 50000),
+       endpointRef(fabric, 50002)},
+      {resourceRef(fabric, 5100), endpointRef(fabric, 51000),
+       endpointRef(fabric, 51002)},
+      {resourceRef(fabric, 5100), endpointRef(fabric, 51001),
+       endpointRef(fabric, 51002)},
+      {resourceRef(fabric, 5100), endpointRef(fabric, 52000),
+       endpointRef(fabric, 52001)},
+      {resourceRef(fabric, 5100), endpointRef(fabric, 52000),
+       endpointRef(fabric, 52002)},
+      {resourceRef(fabric, 5000), endpointRef(fabric, 53000),
+       endpointRef(fabric, 53002)},
+      {resourceRef(fabric, 5000), endpointRef(fabric, 53001),
+       endpointRef(fabric, 53002)}};
+  return testCase;
+}
+const FrozenMemoryRealization &
+memoryRealization(const char *test, const FrozenRealizationGraph &graph,
+                  MemoryRealizationId id) {
+  const auto found =
+      llvm::find_if(graph.memoryRealizations(),
+                    [&](const FrozenMemoryRealization &candidate) {
+                      return candidate.id == id;
+                    });
+  if (found == graph.memoryRealizations().end())
+    fail(test, "memory realization is missing");
+  return *found;
+}
+const FrozenComputeRealization &
+computeRealization(const char *test, const FrozenRealizationGraph &graph,
+                   ComputeRealizationId id) {
+  const auto found =
+      llvm::find_if(graph.computeRealizations(),
+                    [&](const FrozenComputeRealization &candidate) {
+                      return candidate.id == id;
+                    });
+  if (found == graph.computeRealizations().end())
+    fail(test, "compute realization is missing");
+  return *found;
+}
+const FrozenMemoryImplementationOccurrence &
+memoryCandidate(const char *test, const FrozenRealizationGraph &graph,
+                const FrozenMemoryRealization &realization,
+                MemoryOccurrenceId occurrence) {
+  const auto candidates = graph.memoryImplementationOccurrences().slice(
+      realization.implDomainOffset, realization.implDomainCount);
+  const auto found = llvm::find_if(candidates, [&](const auto &candidate) {
+    return candidate.memoryOccurrence.occurrence == occurrence;
+  });
+  if (found == candidates.end())
+    fail(test, "memory candidate is missing");
+  return *found;
+}
+const FrozenImplementationOccurrence &
+computeCandidate(const char *test, const FrozenRealizationGraph &graph,
+                 const FrozenComputeRealization &realization,
+                 ComputeOccurrenceId occurrence) {
+  const auto candidates = graph.implementationOccurrences().slice(
+      realization.implDomainOffset, realization.implDomainCount);
+  const auto found = llvm::find_if(candidates, [&](const auto &candidate) {
+    return candidate.fuOccurrence.parentPe.occurrence == occurrence;
+  });
+  if (found == candidates.end())
+    fail(test, "compute candidate is missing");
+  return *found;
+}
+PnrIndex memoryVertex(const char *test, const FrozenRealizationGraph &graph,
+                      const FrozenRoutingGraph &routing,
+                      const FrozenMemoryImplementationOccurrence &candidate,
+                      MemoryOperationPortTemplateId operation,
+                      PortDirection direction, PnrIndex port) {
+  const auto demands = graph.memoryPortDemands().slice(
+      candidate.portDemandOffset, candidate.portDemandCount);
+  const auto found = llvm::find_if(demands, [&](const auto &demand) {
+    return demand.operation == operation && demand.direction == direction &&
+           demand.port == port;
+  });
+  if (found == demands.end() || found->endpointCount != 1)
+    fail(test, "memory endpoint domain is not a singleton");
+  const PnrIndex physical =
+      graph.compatibleMemoryEndpoints()[found->endpointOffset];
+  return routing.memoryEndpointVertices()[physical];
+}
+PnrIndex computeVertex(const char *test, const FrozenRealizationGraph &graph,
+                       const FrozenRoutingGraph &routing,
+                       const FrozenImplementationOccurrence &candidate,
+                       PortDirection direction, PnrIndex port) {
+  const auto demands = graph.portDemands().slice(candidate.portDemandOffset,
+                                                 candidate.portDemandCount);
+  const auto found = llvm::find_if(demands, [&](const auto &demand) {
+    return demand.direction == direction && demand.port == port;
+  });
+  if (found == demands.end() || found->endpointCount != 1)
+    fail(test, "compute endpoint domain is not a singleton");
+  const PnrIndex physical = graph.compatibleEndpoints()[found->endpointOffset];
+  return routing.computeEndpointVertices()[physical];
+}
+bool hasI16Path(const FrozenRoutingGraph &routing, PnrIndex source,
+                PnrIndex target) {
+  return routing.hasCompatiblePath(source, target, PortKind::Value, 16, 0);
+}
+const FrozenRoutingArc &routingArc(const char *test,
+                                   const FrozenRoutingGraph &routing,
+                                   TransportEndpointId source,
+                                   TransportEndpointId target) {
+  const auto sourceVertex = llvm::find_if(
+      routing.routingEndpoints(), [&](const FrozenRoutingEndpoint &endpoint) {
+        return endpoint.id == source;
+      });
+  const auto targetVertex = llvm::find_if(
+      routing.routingEndpoints(), [&](const FrozenRoutingEndpoint &endpoint) {
+        return endpoint.id == target;
+      });
+  if (sourceVertex == routing.routingEndpoints().end() ||
+      targetVertex == routing.routingEndpoints().end())
+    fail(test, "routing arc endpoint is missing");
+  const PnrIndex sourceIndex =
+      static_cast<PnrIndex>(sourceVertex - routing.routingEndpoints().begin());
+  const PnrIndex targetIndex =
+      static_cast<PnrIndex>(targetVertex - routing.routingEndpoints().begin());
+  for (PnrIndex arc = routing.adjacencyOffsets()[sourceIndex];
+       arc < routing.adjacencyOffsets()[sourceIndex + 1]; ++arc) {
+    if (routing.routingArcs()[arc].target == targetIndex)
+      return routing.routingArcs()[arc];
+  }
+  fail(test, "routing arc is missing");
+}
 void freezesInternalMemoryAnchor() {
   TestCase testCase = makeMemoryAnchorCase();
   selectInternalMemoryGraph(testCase);
@@ -24,10 +210,28 @@ void freezesInternalMemoryAnchor() {
     fail(__func__, "frozen graph has the wrong compute realization count");
   if (graph.memoryRealizations().size() != 1)
     fail(__func__, "frozen graph has the wrong memory realization count");
-  for (std::uint64_t edge : {100, 104, 113, 114, 115}) {
+  for (std::uint64_t edge : {104, 114}) {
     if (containsExternalEdge(graph, EdgeId(edge)))
       fail(__func__, "internal edge escaped into the external net cache");
   }
+  if (!containsExternalEdge(graph, EdgeId(100)) ||
+      !containsExternalEdge(graph, EdgeId(113)) ||
+      !containsExternalEdge(graph, EdgeId(115)))
+    fail(__func__, "external memory edge was absorbed by the realization");
+  const FrozenLogicalNet *addressFanout = nullptr;
+  for (const FrozenLogicalNet &net : graph.logicalNets()) {
+    const auto *source = std::get_if<FrozenGraphBoundaryTerminal>(&net.source);
+    if (source && source->direction == PortDirection::Input &&
+        source->port == 1) {
+      addressFanout = &net;
+      break;
+    }
+  }
+  if (!addressFanout || addressFanout->sinkCount != 2 ||
+      graph.logicalNetSinks()[addressFanout->sinkOffset].edge != EdgeId(100) ||
+      graph.logicalNetSinks()[addressFanout->sinkOffset + 1].edge !=
+          EdgeId(113))
+    fail(__func__, "address fanout did not remain one external logical net");
   const FrozenLogicalNet *fanout = nullptr;
   for (const FrozenLogicalNet &net : graph.logicalNets()) {
     const auto *reference = std::get_if<FrozenTemplateTerminalRef>(&net.source);
@@ -115,35 +319,161 @@ void rejectsInexactMemoryInternalGraph() {
   {
     TestCase testCase = makeMemoryAnchorCase();
     selectInternalMemoryGraph(testCase);
-    testCase.mapping.memoryRealizations[0].internalEdges[1].connection =
-        testCase.mapping.memoryRealizations[0].internalEdges[0].connection;
-    expectMapError(__func__, testCase,
-                   MappingErrorCode::InvalidInternalEdgeWitness);
-  }
-  {
-    TestCase testCase = makeMemoryAnchorCase();
-    selectInternalMemoryGraph(testCase);
     testCase.fabric.memorySemanticEncodings[2].internalConnections.pop_back();
     expectMapError(__func__, testCase,
                    MappingErrorCode::InvalidInternalEdgeWitness);
   }
-  {
-    TestCase testCase = makeMemoryAnchorCase();
-    selectInternalMemoryGraph(testCase);
-    testCase.fabric.memoryImplementations[0]
-        .boundaryPorts[0]
-        .maxInternalFanout = 1;
-    expectMapError(__func__, testCase, MappingErrorCode::InvalidPortConnection);
+}
+void freezesPhysicalMemoryRouteDomains() {
+  TestCase testCase = makeMemoryRouteDomainCase();
+  ValidatedTechMapping mapping = validateCase(__func__, testCase);
+  ResolvedPnrConfigView config;
+  PnrProblemInputs inputs = makePnrProblemInputs(testCase, mapping, config);
+  FrozenRealizationGraph realizations =
+      takeExpected(__func__, freezeRealizationGraph(inputs));
+  FrozenRoutingGraph routing =
+      takeExpected(__func__, freezeRoutingGraph(inputs));
+
+  const auto memoryOccurrences = realizations.fabricMemoryOccurrences();
+  if (memoryOccurrences.size() != 2 ||
+      memoryOccurrences[0].ref.occurrence != MemoryOccurrenceId(3000) ||
+      memoryOccurrences[1].ref.occurrence != MemoryOccurrenceId(4000) ||
+      memoryOccurrences[0].ref == memoryOccurrences[1].ref)
+    fail(__func__, "memory occurrence identity or ordering was lost");
+  const FrozenMemoryRealization &memory =
+      memoryRealization(__func__, realizations, MemoryRealizationId(60));
+  if (memory.implDomainCount != 2)
+    fail(__func__, "memory implementation domain has the wrong size");
+  const FrozenMemoryImplementationOccurrence &memoryA =
+      memoryCandidate(__func__, realizations, memory, MemoryOccurrenceId(3000));
+  const FrozenMemoryImplementationOccurrence &memoryB =
+      memoryCandidate(__func__, realizations, memory, MemoryOccurrenceId(4000));
+  if (!memoryA.unaryEligible || !memoryB.unaryEligible)
+    fail(__func__, "compatible memory occurrence was rejected");
+  for (const FrozenMemoryImplementationOccurrence *candidate :
+       {&memoryA, &memoryB}) {
+    const auto demands = realizations.memoryPortDemands().slice(
+        candidate->portDemandOffset, candidate->portDemandCount);
+    if (demands.size() != 6 ||
+        llvm::any_of(demands, [](const FrozenMemoryPortDemand &demand) {
+          return (demand.operation == MemoryOperationPortTemplateId(34) &&
+                  demand.direction == PortDirection::Output &&
+                  demand.port == 3) ||
+                 (demand.operation == MemoryOperationPortTemplateId(35) &&
+                  demand.direction == PortDirection::Input && demand.port == 2);
+        }))
+      fail(__func__, "internal WAR ports escaped into physical demands");
   }
-  {
-    TestCase testCase = makeMemoryAnchorCase();
-    selectInternalMemoryGraph(testCase);
-    testCase.mapping.memoryRealizations[0]
-        .graphBoundaryPorts[0]
-        .implementationPort.index = 1;
-    expectMapError(__func__, testCase,
-                   MappingErrorCode::IncompleteMemoryBoundaryCorrespondence);
+
+  const FrozenComputeRealization &cr0 =
+      computeRealization(__func__, realizations, ComputeRealizationId(50));
+  const FrozenComputeRealization &cr3 =
+      computeRealization(__func__, realizations, ComputeRealizationId(53));
+  const FrozenImplementationOccurrence &cr0A =
+      computeCandidate(__func__, realizations, cr0, ComputeOccurrenceId(1000));
+  const FrozenImplementationOccurrence &cr0B =
+      computeCandidate(__func__, realizations, cr0, ComputeOccurrenceId(1100));
+  const FrozenImplementationOccurrence &cr3A =
+      computeCandidate(__func__, realizations, cr3, ComputeOccurrenceId(1003));
+  const FrozenImplementationOccurrence &cr3B =
+      computeCandidate(__func__, realizations, cr3, ComputeOccurrenceId(1103));
+
+  const PnrIndex loadA =
+      memoryVertex(__func__, realizations, routing, memoryA,
+                   MemoryOperationPortTemplateId(34), PortDirection::Output, 2);
+  const PnrIndex loadB =
+      memoryVertex(__func__, realizations, routing, memoryB,
+                   MemoryOperationPortTemplateId(34), PortDirection::Output, 2);
+  const PnrIndex cr0InputA = computeVertex(__func__, realizations, routing,
+                                           cr0A, PortDirection::Input, 0);
+  const PnrIndex cr0InputB = computeVertex(__func__, realizations, routing,
+                                           cr0B, PortDirection::Input, 0);
+  if (!hasI16Path(routing, loadA, cr0InputA) ||
+      hasI16Path(routing, loadA, cr0InputB) ||
+      hasI16Path(routing, loadB, cr0InputA) ||
+      !hasI16Path(routing, loadB, cr0InputB))
+    fail(__func__, "load route domain did not follow directed width capacity");
+  if (!routing.hasCompatiblePath(loadA, cr0InputB, PortKind::Value, 8, 0))
+    fail(__func__, "narrow connected load path was not represented");
+
+  const PnrIndex cr3OutputA = computeVertex(__func__, realizations, routing,
+                                            cr3A, PortDirection::Output, 0);
+  const PnrIndex cr3OutputB = computeVertex(__func__, realizations, routing,
+                                            cr3B, PortDirection::Output, 0);
+  const PnrIndex storeA =
+      memoryVertex(__func__, realizations, routing, memoryA,
+                   MemoryOperationPortTemplateId(35), PortDirection::Input, 1);
+  const PnrIndex storeB =
+      memoryVertex(__func__, realizations, routing, memoryB,
+                   MemoryOperationPortTemplateId(35), PortDirection::Input, 1);
+  if (hasI16Path(routing, cr3OutputA, storeA) ||
+      !hasI16Path(routing, cr3OutputA, storeB) ||
+      !hasI16Path(routing, cr3OutputB, storeA) ||
+      hasI16Path(routing, cr3OutputB, storeB))
+    fail(__func__, "store route domain did not follow directed width capacity");
+  if (!routing.hasCompatiblePath(cr3OutputA, storeA, PortKind::Value, 8, 0))
+    fail(__func__, "narrow connected store path was not represented");
+
+  const FrozenRoutingArc &familyALoad =
+      routingArc(__func__, routing, TransportEndpointId(50000),
+                 TransportEndpointId(50001));
+  const FrozenRoutingArc &familyAStore =
+      routingArc(__func__, routing, TransportEndpointId(53000),
+                 TransportEndpointId(53002));
+  const FrozenRoutingArc &familyBLoad =
+      routingArc(__func__, routing, TransportEndpointId(51000),
+                 TransportEndpointId(51002));
+  const FrozenRoutingArc &familyBStore =
+      routingArc(__func__, routing, TransportEndpointId(52000),
+                 TransportEndpointId(52001));
+  if (!familyALoad.resource || familyALoad.resource != familyAStore.resource ||
+      !familyBLoad.resource || familyBLoad.resource != familyBStore.resource ||
+      familyALoad.resource == familyBLoad.resource)
+    fail(__func__, "shared route capacity did not follow resource identity");
+
+  if (realizations.memoryPhysicalEndpoints().size() !=
+      routing.memoryEndpointVertices().size())
+    fail(__func__, "memory endpoint projections have different sizes");
+  for (std::size_t index = 0;
+       index < realizations.memoryPhysicalEndpoints().size(); ++index) {
+    const PnrIndex vertex = routing.memoryEndpointVertices()[index];
+    if (routing.routingEndpoints()[vertex].id !=
+        realizations.memoryPhysicalEndpoints()[index].id)
+      fail(__func__, "memory endpoint domain cannot address routing graph");
   }
+
+  testCase.fabric.memoryOccurrences.clear();
+  if (realizations != takeExpected(__func__, freezeRealizationGraph(inputs)) ||
+      routing != takeExpected(__func__, freezeRoutingGraph(inputs)))
+    fail(__func__, "validated memory occurrence projection was not retained");
+
+  TestCase permutedCase = makeMemoryRouteDomainCase();
+  std::reverse(permutedCase.fabric.memoryOccurrences.begin(),
+               permutedCase.fabric.memoryOccurrences.end());
+  for (MemoryOccurrenceDescriptor &occurrence :
+       permutedCase.fabric.memoryOccurrences) {
+    std::reverse(occurrence.endpoints.begin(), occurrence.endpoints.end());
+    std::reverse(occurrence.localArcs.begin(), occurrence.localArcs.end());
+  }
+  std::reverse(permutedCase.fabric.computeOccurrences.begin(),
+               permutedCase.fabric.computeOccurrences.end());
+  std::reverse(permutedCase.fabric.transportResources.begin(),
+               permutedCase.fabric.transportResources.end());
+  for (TransportResourceDescriptor &resource :
+       permutedCase.fabric.transportResources)
+    std::reverse(resource.endpoints.begin(), resource.endpoints.end());
+  std::reverse(permutedCase.fabric.transportArcs.begin(),
+               permutedCase.fabric.transportArcs.end());
+  std::reverse(permutedCase.fabric.transportTraversals.begin(),
+               permutedCase.fabric.transportTraversals.end());
+  ValidatedTechMapping permutedMapping = validateCase(__func__, permutedCase);
+  ResolvedPnrConfigView permutedConfig;
+  PnrProblemInputs permutedInputs =
+      makePnrProblemInputs(permutedCase, permutedMapping, permutedConfig);
+  if (realizations !=
+          takeExpected(__func__, freezeRealizationGraph(permutedInputs)) ||
+      routing != takeExpected(__func__, freezeRoutingGraph(permutedInputs)))
+    fail(__func__, "descriptor permutation changed memory route domains");
 }
 void validatesCorrelatedMemoryAccessCapabilities() {
   {
@@ -207,8 +537,6 @@ void rejectsSharedMemoryOperationTemplate() {
                    ActorPort{ActorId(9), PortDirection::Input, 1}});
   MemoryRealizationDraft &load = testCase.mapping.memoryRealizations[0];
   const ActorRef actor{testCase.dataflow.identity, ActorId(9)};
-  const MemoryOperationPortTemplateRef operation{
-      testCase.fabric.identity, MemoryOperationPortTemplateId(34)};
   load.actors.push_back(actor);
   ActorToMemoryOperation actorMapping = load.actorToOperations.front();
   actorMapping.actor = actor;
@@ -347,6 +675,7 @@ void rejectsAnchorMemoryCoverageAndReferences() {
 
 void runMemoryMappingTests() {
   freezesInternalMemoryAnchor();
+  freezesPhysicalMemoryRouteDomains();
   rejectsInconsistentFrozenMemoryService();
   acceptsExternalAndInternalMemoryAnchor();
   rejectsInexactMemoryInternalGraph();

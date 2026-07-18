@@ -361,15 +361,15 @@ null, or sentinel identity checks.
 
 After that preflight, the implemented `freezeRealizationGraph` projection
 preserves the bounded Dataflow/TechMapping/Fabric structural behavior. It
-consumes the immutable canonical PE- and FU-occurrence projection produced by
-Fabric validation, assigns dense native indices where needed, records actor
-ownership, derives external multi-sink logical nets from canonical edges and
-exact boundary correspondence, and derives logical-memory-root service
-obligations from selected Memory Realizations. Its dense terminal table
-contains only selected FU or memory operation-template terminals needed by
-those logical nets. Graph boundary endpoints remain embedded typed terminal
-variants in logical-net sources and sinks. Graph memory import and export
-capability ports are not token terminals.
+consumes the immutable canonical compute- and memory-occurrence projections
+produced by Fabric validation, assigns dense native indices where needed,
+records actor ownership, derives external multi-sink logical nets from
+canonical edges and exact boundary correspondence, and derives
+logical-memory-root service obligations from selected Memory Realizations. Its
+dense terminal table contains only selected FU or memory operation-template
+terminals needed by those logical nets. Graph boundary endpoints remain
+embedded typed terminal variants in logical-net sources and sinks. Graph
+memory import and export capability ports are not token terminals.
 
 A Fabric FU occurrence is not its containing PE occurrence. The frozen
 structural key is the exact pair
@@ -399,39 +399,55 @@ compatible-endpoint ranges derived from explicit local arcs and the
 direction, port kind, payload and tag capacity, intrinsic role, and compatible
 type facts owned by Fabric.
 
+A concrete Fabric memory occurrence is a separate physical category with
+structural key `FabricMemoryOccurrenceRef = MemoryOccurrenceId`. It names one
+instantiation of a Fabric-owned Memory Implementation and owns its memory
+operation attachment endpoints and local arcs. Two occurrences of the same
+implementation remain distinct candidates. For each Memory Realization, the
+freeze derives `ImplDomain` from exactly those concrete occurrences whose
+implementation matches the selected Memory Semantic Encoding. Separate memory
+port-demand and compatible-endpoint arrays retain only realization-external
+operation ports; operation ports consumed by selected internal-edge witnesses
+do not become route terminals. Memory candidate ordering is derived from typed
+occurrence identity and is independent of descriptor order.
+
 Spatial unary feasibility uses bipartite matching to prove that all exposed FU
 ports can bind distinct endpoints. It does not enumerate endpoint
 permutations or persist Cartesian local configurations. Temporal endpoint
 ranges are only structural capability; tag sharing, configuration
 compatibility, and resource-time legality remain deferred.
+Spatial memory occurrences use the same factorized feasibility rule over
+their exposed operation ports and explicit local arcs.
 
 Fabric validation is the single semantic owner of PE identity, concrete FU
-parentage, instruction-context capacity, cross-kind uniqueness, exact FU
-membership, schedule kind, endpoint/type facts, and local arcs. It copies those
-facts into deterministic vectors, builds one sorted range table from
-implementation identity to FU occurrence and one sorted
-FU-occurrence/direction/port-to-arc range table, and retains that immutable
-projection with the validated Mapping value. Freeze does not inspect or
-revalidate the source occurrence vectors. Mutating those source vectors after
-validation cannot change frozen output, while an input identity mismatch still
-invalidates the freeze request.
+parentage, instruction-context capacity, concrete memory occurrence identity,
+cross-kind uniqueness, exact implementation membership, schedule kind,
+endpoint/type facts, and local arcs. It copies those facts into deterministic
+vectors, builds sorted implementation-to-occurrence and
+occurrence/port-to-arc range tables for both categories, and retains that
+immutable projection with the validated Mapping value. Freeze does not inspect
+or revalidate the source occurrence vectors. Mutating those source vectors
+after validation cannot change frozen output, while an input identity mismatch
+still invalidates the freeze request.
 
 Fabric validation also owns one canonical routing projection. Persistent typed
-endpoint IDs are globally unique across compute and resource-owned endpoints,
-and persistent typed transport-resource IDs are globally unique across the
-Fabric artifact namespace. Resource endpoint ownership is structural: every
-resource endpoint is nested under exactly one switch, FIFO, or boundary
-resource, while every compute endpoint is nested under exactly one compute
-occurrence. Validation resolves all references against the exact Fabric
-identity before retaining the projection.
+endpoint IDs are globally unique across compute, memory, and resource-owned
+endpoints, and persistent typed transport-resource IDs are globally unique
+across the Fabric artifact namespace. Resource endpoint ownership is
+structural: every resource endpoint is nested under exactly one switch, FIFO,
+or boundary resource, every compute endpoint is nested under exactly one
+compute occurrence, and every memory operation endpoint is nested under
+exactly one memory occurrence. Validation resolves all references against the
+exact Fabric identity before retaining the projection.
 
 A routing endpoint declares both its software port kind and its native Fabric
 transport kind. `bits` has zero tag capacity. `bits_tag` has positive tag
 capacity. The native kind is never inferred from tag capacity.
 `PortKind::Memory` compute endpoints are omitted from this compute-only
-projection, while memory resource endpoints or routing references to excluded
-memory endpoints are malformed. Memory capability and service connectivity
-remain a distinct future projection and do not enter token-routing CSR.
+subsequence because memory capabilities are not token routes. Concrete memory
+occurrence endpoints for exposed load/store operation ports are ordinary typed
+token-routing vertices. Storage-service identity remains a separate obligation
+and does not become a routing endpoint or arc.
 
 A point-to-point arc is legal only from one output endpoint to one input
 endpoint with the same software port kind and native Fabric transport kind.
@@ -482,21 +498,26 @@ kind, native Fabric transport kind, and the two capacities. Resource endpoint
 ranges are flat index vectors rather than nested graph objects. A separate
 `computeEndpointVertices` vector follows the non-memory subsequence of the
 exact compute-endpoint ordering already used by
-`FrozenRealizationGraph::physicalEndpoints`, so later multi-source and
-multi-target token routing can consume factorized endpoint domains without
-selecting an occurrence, endpoint, path, configuration, capacity claim, or
-route tree. The routing graph contains no strings, MLIR containers,
-coordinates, names, implicit reverse arcs, geometric adjacency, symbol-order
-adjacency, topology-specific shortcuts, reachability matrix, memory service
+`FrozenRealizationGraph::physicalEndpoints`. The parallel
+`memoryEndpointVertices` vector follows the exact memory-endpoint ordering used
+by `FrozenRealizationGraph::memoryPhysicalEndpoints`. Later multi-source and
+multi-target token routing can therefore consume either factorized endpoint
+domain without selecting an occurrence, endpoint, path, configuration,
+capacity claim, or route tree. `hasCompatiblePath` derives directed
+reachability on demand from the same CSR while filtering every endpoint and arc
+by software port kind and required payload/tag capacity. It does not persist an
+all-pairs matrix or route choice. The routing graph contains no strings, MLIR
+containers, coordinates, names, implicit reverse arcs, geometric adjacency,
+symbol-order adjacency, topology-specific shortcuts, memory service
 connectivity, or routing-search state.
 
 Descriptor-vector permutation cannot change structural equality, canonical
 table ordering, or CSR adjacency ordering. Arc order is derived from source
 endpoint identity, target endpoint identity, arc kind, and resource identity.
 The CSR graph preserves only explicit structural capability, so an irregular
-topology may make two individually valid compute occurrences unreachable from
-one another without turning either unary candidate or the Fabric artifact into
-malformed input.
+topology may make individually valid compute or memory occurrences unreachable
+from one another without turning either unary candidate or the Fabric artifact
+into malformed input.
 
 Let `P_e`, `F_o`, `E`, and `A` be the PE occurrence, FU occurrence, endpoint,
 and local arc counts. Validation canonicalization costs sorting time over those
@@ -532,8 +553,12 @@ and wrong-kind references retain their precise reference categories, and
 malformed graph or memory port connections retain `InvalidPortConnection`. A
 well-formed realization with no concrete occurrence of its selected
 implementation produces `EmptyConcreteFuDomain`; one with no unary-eligible
-candidate produces `EmptyUnaryEligibleDomain`. PE, FU occurrence, and endpoint
-ordering is derived from typed structural identities, so harmless
+candidate produces `EmptyUnaryEligibleDomain`. `InvalidMemoryOccurrence`
+separately covers malformed memory occurrence endpoints and local arcs. A
+well-formed Memory Realization with no matching concrete occurrence produces
+`EmptyConcreteMemoryDomain`; one with no unary-eligible occurrence produces
+`EmptyMemoryUnaryEligibleDomain`. PE, FU occurrence, memory occurrence, and
+endpoint ordering is derived from typed structural identities, so harmless
 source-vector permutations do not alter the frozen result.
 
 Both frozen projections are ephemeral and have no independent artifact

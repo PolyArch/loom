@@ -522,8 +522,9 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
       return std::move(error);
     index.memorySemanticEncodings.emplace(encoding.id.value(), &encoding);
   }
-  auto projection = buildValidatedFabricProjection(fabric, index.kinds,
-                                                   index.functionalUnits);
+  auto projection =
+      buildValidatedFabricProjection(fabric, index.kinds, index.functionalUnits,
+                                     index.memoryOperationPortTemplates);
   if (!projection)
     return projection.takeError();
   auto routing =
@@ -1712,6 +1713,7 @@ llvm::Expected<ValidatedTechMapping> loom::mapping::validateTechMapping(
 
   auto mappingProjection = std::make_shared<ValidatedTechMappingProjection>();
   mappingProjection->computeRealizations.reserve(realizations->size());
+  mappingProjection->memoryRealizations.reserve(memoryRealizations->size());
   for (const RealizationActors &realization : *realizations) {
     auto selected = validateActorToOpCorrespondence(
         realization, dataflow, *dataflowIndex, fabric, *fabricIndex);
@@ -1755,6 +1757,39 @@ llvm::Expected<ValidatedTechMapping> loom::mapping::validateTechMapping(
             validateMemoryRealization(realization, dataflow, *dataflowIndex,
                                       fabric, *fabricIndex, rootServices))
       return std::move(error);
+    const MemorySemanticEncodingDescriptor &encoding =
+        *fabricIndex->memorySemanticEncodings.at(
+            realization.record->encoding.entity.value());
+    const MemoryImplementationDescriptor &implementation =
+        *fabricIndex->memoryImplementations.at(encoding.implementation.value());
+    ValidatedMemoryRealizationProjection projected{realization.record->id,
+                                                   encoding.id,
+                                                   implementation.id,
+                                                   implementation.service,
+                                                   {}};
+    projected.activeBoundaryPorts.reserve(
+        realization.record->boundaryPorts.size());
+    for (const MemoryBoundaryPortCorrespondence &boundary :
+         realization.record->boundaryPorts) {
+      const MemoryOperationPortTemplateDescriptor &operation =
+          *fabricIndex->memoryOperationPortTemplates.at(
+              boundary.operationPort.operation.entity.value());
+      const MemoryOperationPortDescriptor &port =
+          operation.ports[boundary.operationPort.index];
+      projected.activeBoundaryPorts.push_back({operation.id, port.direction,
+                                               boundary.operationPort.index,
+                                               port.port});
+    }
+    std::sort(projected.activeBoundaryPorts.begin(),
+              projected.activeBoundaryPorts.end(),
+              [](const ValidatedMemoryBoundaryPort &lhs,
+                 const ValidatedMemoryBoundaryPort &rhs) {
+                return std::make_tuple(lhs.operation.value(), lhs.direction,
+                                       lhs.port) <
+                       std::make_tuple(rhs.operation.value(), rhs.direction,
+                                       rhs.port);
+              });
+    mappingProjection->memoryRealizations.push_back(std::move(projected));
   }
 
   if (llvm::Error error = validateCoveredEdgeAccounting(
@@ -1765,6 +1800,12 @@ llvm::Expected<ValidatedTechMapping> loom::mapping::validateTechMapping(
             mappingProjection->computeRealizations.end(),
             [](const ValidatedComputeRealizationProjection &lhs,
                const ValidatedComputeRealizationProjection &rhs) {
+              return lhs.id.value() < rhs.id.value();
+            });
+  std::sort(mappingProjection->memoryRealizations.begin(),
+            mappingProjection->memoryRealizations.end(),
+            [](const ValidatedMemoryRealizationProjection &lhs,
+               const ValidatedMemoryRealizationProjection &rhs) {
               return lhs.id.value() < rhs.id.value();
             });
   return ValidatedTechMapping(std::move(identity), mapping,

@@ -22,7 +22,12 @@ struct PnrProblemInputs;
 enum class FrozenMappingInfeasibilityCode {
   EmptyConcreteFuDomain,
   EmptyUnaryEligibleDomain,
+  EmptyConcreteMemoryDomain,
+  EmptyMemoryUnaryEligibleDomain,
 };
+
+using FrozenRealizationId =
+    std::variant<mapping::ComputeRealizationId, mapping::MemoryRealizationId>;
 
 class FrozenMappingInfeasibility final
     : public llvm::ErrorInfo<FrozenMappingInfeasibility> {
@@ -30,18 +35,21 @@ public:
   static char ID;
 
   FrozenMappingInfeasibility(FrozenMappingInfeasibilityCode code,
-                             mapping::ComputeRealizationId realization,
+                             FrozenRealizationId realization,
                              std::string message)
       : code_(code), realization_(realization), message_(std::move(message)) {}
 
   FrozenMappingInfeasibilityCode code() const { return code_; }
-  mapping::ComputeRealizationId realization() const { return realization_; }
+  mapping::ComputeRealizationId realization() const {
+    return std::get<mapping::ComputeRealizationId>(realization_);
+  }
+  const FrozenRealizationId &realizationId() const { return realization_; }
   void log(llvm::raw_ostream &stream) const override;
   std::error_code convertToErrorCode() const override;
 
 private:
   FrozenMappingInfeasibilityCode code_;
-  mapping::ComputeRealizationId realization_;
+  FrozenRealizationId realization_;
   std::string message_;
 };
 
@@ -76,6 +84,23 @@ struct FabricFuOccurrenceRef {
     if (lhs.parentPe != rhs.parentPe)
       return lhs.parentPe < rhs.parentPe;
     return lhs.implementation.value() < rhs.implementation.value();
+  }
+};
+
+struct FabricMemoryOccurrenceRef {
+  mapping::MemoryOccurrenceId occurrence;
+
+  friend bool operator==(FabricMemoryOccurrenceRef lhs,
+                         FabricMemoryOccurrenceRef rhs) {
+    return lhs.occurrence == rhs.occurrence;
+  }
+  friend bool operator!=(FabricMemoryOccurrenceRef lhs,
+                         FabricMemoryOccurrenceRef rhs) {
+    return !(lhs == rhs);
+  }
+  friend bool operator<(FabricMemoryOccurrenceRef lhs,
+                        FabricMemoryOccurrenceRef rhs) {
+    return lhs.occurrence.value() < rhs.occurrence.value();
   }
 };
 
@@ -218,6 +243,66 @@ struct FrozenComputeLocalArc {
   }
 };
 
+struct FrozenFabricMemoryOccurrence {
+  FabricMemoryOccurrenceRef ref;
+  mapping::MemoryImplementationId implementation;
+  PnrIndex endpointOffset;
+  PnrIndex endpointCount;
+  PnrIndex localArcOffset;
+  PnrIndex localArcCount;
+
+  friend bool operator==(const FrozenFabricMemoryOccurrence &lhs,
+                         const FrozenFabricMemoryOccurrence &rhs) {
+    return lhs.ref == rhs.ref && lhs.implementation == rhs.implementation &&
+           lhs.endpointOffset == rhs.endpointOffset &&
+           lhs.endpointCount == rhs.endpointCount &&
+           lhs.localArcOffset == rhs.localArcOffset &&
+           lhs.localArcCount == rhs.localArcCount;
+  }
+};
+
+struct FrozenMemoryPhysicalEndpoint {
+  FabricMemoryOccurrenceRef parentMemory;
+  mapping::MemoryEndpointId id;
+  mapping::PortDirection direction;
+  mapping::PortKind kind;
+  std::uint32_t payloadCapacityBits;
+  std::uint32_t tagCapacityBits;
+  PnrIndex compatibleTypeOffset;
+  PnrIndex compatibleTypeCount;
+  mapping::PortRoleKey role;
+
+  friend bool operator==(const FrozenMemoryPhysicalEndpoint &lhs,
+                         const FrozenMemoryPhysicalEndpoint &rhs) {
+    return lhs.parentMemory == rhs.parentMemory && lhs.id == rhs.id &&
+           lhs.direction == rhs.direction && lhs.kind == rhs.kind &&
+           lhs.payloadCapacityBits == rhs.payloadCapacityBits &&
+           lhs.tagCapacityBits == rhs.tagCapacityBits &&
+           lhs.compatibleTypeOffset == rhs.compatibleTypeOffset &&
+           lhs.compatibleTypeCount == rhs.compatibleTypeCount &&
+           lhs.role == rhs.role;
+  }
+};
+
+struct FrozenMemoryLocalArc {
+  FabricMemoryOccurrenceRef memoryOccurrence;
+  mapping::MemoryOperationPortTemplateId operation;
+  mapping::PortDirection direction;
+  PnrIndex port;
+  PnrIndex endpoint;
+  std::uint32_t payloadCapacityBits;
+  std::uint32_t tagCapacityBits;
+
+  friend bool operator==(const FrozenMemoryLocalArc &lhs,
+                         const FrozenMemoryLocalArc &rhs) {
+    return lhs.memoryOccurrence == rhs.memoryOccurrence &&
+           lhs.operation == rhs.operation && lhs.direction == rhs.direction &&
+           lhs.port == rhs.port && lhs.endpoint == rhs.endpoint &&
+           lhs.payloadCapacityBits == rhs.payloadCapacityBits &&
+           lhs.tagCapacityBits == rhs.tagCapacityBits;
+  }
+};
+
 struct FrozenImplementationOccurrence {
   PnrIndex realization;
   FabricFuOccurrenceRef fuOccurrence;
@@ -229,6 +314,23 @@ struct FrozenImplementationOccurrence {
                          const FrozenImplementationOccurrence &rhs) {
     return lhs.realization == rhs.realization &&
            lhs.fuOccurrence == rhs.fuOccurrence &&
+           lhs.portDemandOffset == rhs.portDemandOffset &&
+           lhs.portDemandCount == rhs.portDemandCount &&
+           lhs.unaryEligible == rhs.unaryEligible;
+  }
+};
+
+struct FrozenMemoryImplementationOccurrence {
+  PnrIndex realization;
+  FabricMemoryOccurrenceRef memoryOccurrence;
+  PnrIndex portDemandOffset;
+  PnrIndex portDemandCount;
+  bool unaryEligible;
+
+  friend bool operator==(const FrozenMemoryImplementationOccurrence &lhs,
+                         const FrozenMemoryImplementationOccurrence &rhs) {
+    return lhs.realization == rhs.realization &&
+           lhs.memoryOccurrence == rhs.memoryOccurrence &&
            lhs.portDemandOffset == rhs.portDemandOffset &&
            lhs.portDemandCount == rhs.portDemandCount &&
            lhs.unaryEligible == rhs.unaryEligible;
@@ -261,17 +363,47 @@ struct FrozenPortDemand {
   }
 };
 
+struct FrozenMemoryPortDemand {
+  PnrIndex implementation;
+  mapping::MemoryOperationPortTemplateId operation;
+  mapping::PortDirection direction;
+  PnrIndex port;
+  mapping::PortKind kind;
+  mapping::TypeKey type;
+  mapping::PortRoleKey role;
+  std::uint32_t payloadWidthBits;
+  std::uint32_t tagWidthBits;
+  PnrIndex endpointOffset;
+  PnrIndex endpointCount;
+
+  friend bool operator==(const FrozenMemoryPortDemand &lhs,
+                         const FrozenMemoryPortDemand &rhs) {
+    return lhs.implementation == rhs.implementation &&
+           lhs.operation == rhs.operation && lhs.direction == rhs.direction &&
+           lhs.port == rhs.port && lhs.kind == rhs.kind &&
+           lhs.type == rhs.type && lhs.role == rhs.role &&
+           lhs.payloadWidthBits == rhs.payloadWidthBits &&
+           lhs.tagWidthBits == rhs.tagWidthBits &&
+           lhs.endpointOffset == rhs.endpointOffset &&
+           lhs.endpointCount == rhs.endpointCount;
+  }
+};
+
 struct FrozenMemoryRealization {
   mapping::MemoryRealizationId id;
   mapping::MemorySemanticEncodingId encoding;
   mapping::MemoryImplementationId implementation;
   mapping::MemoryServiceDomainId service;
+  PnrIndex implDomainOffset;
+  PnrIndex implDomainCount;
 
   friend bool operator==(const FrozenMemoryRealization &lhs,
                          const FrozenMemoryRealization &rhs) {
     return lhs.id == rhs.id && lhs.encoding == rhs.encoding &&
            lhs.implementation == rhs.implementation &&
-           lhs.service == rhs.service;
+           lhs.service == rhs.service &&
+           lhs.implDomainOffset == rhs.implDomainOffset &&
+           lhs.implDomainCount == rhs.implDomainCount;
   }
 };
 
@@ -399,6 +531,31 @@ public:
   llvm::ArrayRef<PnrIndex> compatibleEndpoints() const {
     return compatibleEndpoints_;
   }
+  llvm::ArrayRef<FrozenFabricMemoryOccurrence> fabricMemoryOccurrences() const {
+    return fabricMemoryOccurrences_;
+  }
+  const FrozenFabricMemoryOccurrence *
+  findFabricMemoryOccurrence(FabricMemoryOccurrenceRef ref) const;
+  llvm::ArrayRef<FrozenMemoryPhysicalEndpoint> memoryPhysicalEndpoints() const {
+    return memoryPhysicalEndpoints_;
+  }
+  llvm::ArrayRef<mapping::TypeKey>
+  memoryPhysicalEndpointCompatibleTypes() const {
+    return memoryPhysicalEndpointCompatibleTypes_;
+  }
+  llvm::ArrayRef<FrozenMemoryLocalArc> memoryLocalArcs() const {
+    return memoryLocalArcs_;
+  }
+  llvm::ArrayRef<FrozenMemoryImplementationOccurrence>
+  memoryImplementationOccurrences() const {
+    return memoryImplementationOccurrences_;
+  }
+  llvm::ArrayRef<FrozenMemoryPortDemand> memoryPortDemands() const {
+    return memoryPortDemands_;
+  }
+  llvm::ArrayRef<PnrIndex> compatibleMemoryEndpoints() const {
+    return compatibleMemoryEndpoints_;
+  }
   llvm::ArrayRef<FrozenMemoryRealization> memoryRealizations() const {
     return memoryRealizations_;
   }
@@ -427,6 +584,15 @@ public:
            lhs.implementationOccurrences_ == rhs.implementationOccurrences_ &&
            lhs.portDemands_ == rhs.portDemands_ &&
            lhs.compatibleEndpoints_ == rhs.compatibleEndpoints_ &&
+           lhs.fabricMemoryOccurrences_ == rhs.fabricMemoryOccurrences_ &&
+           lhs.memoryPhysicalEndpoints_ == rhs.memoryPhysicalEndpoints_ &&
+           lhs.memoryPhysicalEndpointCompatibleTypes_ ==
+               rhs.memoryPhysicalEndpointCompatibleTypes_ &&
+           lhs.memoryLocalArcs_ == rhs.memoryLocalArcs_ &&
+           lhs.memoryImplementationOccurrences_ ==
+               rhs.memoryImplementationOccurrences_ &&
+           lhs.memoryPortDemands_ == rhs.memoryPortDemands_ &&
+           lhs.compatibleMemoryEndpoints_ == rhs.compatibleMemoryEndpoints_ &&
            lhs.memoryRealizations_ == rhs.memoryRealizations_ &&
            lhs.templateTerminals_ == rhs.templateTerminals_ &&
            lhs.logicalNets_ == rhs.logicalNets_ &&
@@ -450,6 +616,14 @@ private:
       std::vector<FrozenImplementationOccurrence> implementationOccurrences,
       std::vector<FrozenPortDemand> portDemands,
       std::vector<PnrIndex> compatibleEndpoints,
+      std::vector<FrozenFabricMemoryOccurrence> fabricMemoryOccurrences,
+      std::vector<FrozenMemoryPhysicalEndpoint> memoryPhysicalEndpoints,
+      std::vector<mapping::TypeKey> memoryPhysicalEndpointCompatibleTypes,
+      std::vector<FrozenMemoryLocalArc> memoryLocalArcs,
+      std::vector<FrozenMemoryImplementationOccurrence>
+          memoryImplementationOccurrences,
+      std::vector<FrozenMemoryPortDemand> memoryPortDemands,
+      std::vector<PnrIndex> compatibleMemoryEndpoints,
       std::vector<FrozenMemoryRealization> memoryRealizations,
       std::vector<FrozenTemplateTerminal> templateTerminals,
       std::vector<FrozenLogicalNet> logicalNets,
@@ -466,6 +640,15 @@ private:
         implementationOccurrences_(std::move(implementationOccurrences)),
         portDemands_(std::move(portDemands)),
         compatibleEndpoints_(std::move(compatibleEndpoints)),
+        fabricMemoryOccurrences_(std::move(fabricMemoryOccurrences)),
+        memoryPhysicalEndpoints_(std::move(memoryPhysicalEndpoints)),
+        memoryPhysicalEndpointCompatibleTypes_(
+            std::move(memoryPhysicalEndpointCompatibleTypes)),
+        memoryLocalArcs_(std::move(memoryLocalArcs)),
+        memoryImplementationOccurrences_(
+            std::move(memoryImplementationOccurrences)),
+        memoryPortDemands_(std::move(memoryPortDemands)),
+        compatibleMemoryEndpoints_(std::move(compatibleMemoryEndpoints)),
         memoryRealizations_(std::move(memoryRealizations)),
         templateTerminals_(std::move(templateTerminals)),
         logicalNets_(std::move(logicalNets)),
@@ -482,6 +665,14 @@ private:
   std::vector<FrozenImplementationOccurrence> implementationOccurrences_;
   std::vector<FrozenPortDemand> portDemands_;
   std::vector<PnrIndex> compatibleEndpoints_;
+  std::vector<FrozenFabricMemoryOccurrence> fabricMemoryOccurrences_;
+  std::vector<FrozenMemoryPhysicalEndpoint> memoryPhysicalEndpoints_;
+  std::vector<mapping::TypeKey> memoryPhysicalEndpointCompatibleTypes_;
+  std::vector<FrozenMemoryLocalArc> memoryLocalArcs_;
+  std::vector<FrozenMemoryImplementationOccurrence>
+      memoryImplementationOccurrences_;
+  std::vector<FrozenMemoryPortDemand> memoryPortDemands_;
+  std::vector<PnrIndex> compatibleMemoryEndpoints_;
   std::vector<FrozenMemoryRealization> memoryRealizations_;
   std::vector<FrozenTemplateTerminal> templateTerminals_;
   std::vector<FrozenLogicalNet> logicalNets_;

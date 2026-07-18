@@ -15,6 +15,7 @@ struct ValidatedFabricProjection;
 
 enum class ValidatedRoutingEndpointOwnerKind {
   ComputeOccurrence,
+  MemoryOccurrence,
   TransportResource,
 };
 

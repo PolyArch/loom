@@ -1,5 +1,6 @@
 #include "PnR/FrozenRealizationGraph.h"
 #include "FrozenComputeDomains.h"
+#include "FrozenMemoryDomains.h"
 
 #include "Mapping/Verifier.h"
 #include "PnR/PnrProblemInputs.h"
@@ -50,6 +51,20 @@ const FrozenFabricFuOccurrence *FrozenRealizationGraph::findFabricFuOccurrence(
       [](const FrozenFabricFuOccurrence &candidate,
          FabricFuOccurrenceRef expected) { return candidate.ref < expected; });
   if (occurrence == fabricFuOccurrences_.end() || occurrence->ref != ref)
+    return nullptr;
+  return &*occurrence;
+}
+
+const FrozenFabricMemoryOccurrence *
+FrozenRealizationGraph::findFabricMemoryOccurrence(
+    FabricMemoryOccurrenceRef ref) const {
+  const auto occurrence = std::lower_bound(
+      fabricMemoryOccurrences_.begin(), fabricMemoryOccurrences_.end(), ref,
+      [](const FrozenFabricMemoryOccurrence &candidate,
+         FabricMemoryOccurrenceRef expected) {
+        return candidate.ref < expected;
+      });
+  if (occurrence == fabricMemoryOccurrences_.end() || occurrence->ref != ref)
     return nullptr;
   return &*occurrence;
 }
@@ -249,15 +264,6 @@ struct ExternalEdgeLess {
   }
 };
 
-template <typename Descriptor, typename Id>
-const Descriptor *findDescriptor(const std::vector<Descriptor> &descriptors,
-                                 Id id) {
-  auto iterator = std::find_if(
-      descriptors.begin(), descriptors.end(),
-      [&](const Descriptor &descriptor) { return descriptor.id == id; });
-  return iterator == descriptors.end() ? nullptr : &*iterator;
-}
-
 llvm::Expected<GraphId> endpointGraph(
     const DataflowEndpoint &endpoint,
     const std::map<std::uint64_t, const ActorDescriptor *> &actorsById) {
@@ -435,6 +441,11 @@ loom::pnr::freezeRealizationGraph(const PnrProblemInputs &inputs) {
   if (!frozenCompute)
     return frozenCompute.takeError();
   detail::FrozenComputeDomains compute = std::move(*frozenCompute);
+  auto frozenMemory =
+      detail::buildFrozenMemoryDomains(fabric, mapping, memoryDrafts);
+  if (!frozenMemory)
+    return frozenMemory.takeError();
+  detail::FrozenMemoryDomains memory = std::move(*frozenMemory);
 
   std::map<std::uint64_t, OwnershipInfo> ownershipByActor;
   std::map<ActorPort, TemplateTerminalKey, ActorPortLess> actorTerminals;
@@ -465,30 +476,16 @@ loom::pnr::freezeRealizationGraph(const PnrProblemInputs &inputs) {
   }
 
   std::map<std::uint64_t, MemoryServiceDomainId> servicesByRoot;
-  std::vector<FrozenMemoryRealization> memoryRealizations;
-  memoryRealizations.reserve(memoryDrafts.size());
 
   for (std::size_t index = 0; index < memoryDrafts.size(); ++index) {
     const MemoryRealizationDraft &draft = *memoryDrafts[index];
     auto denseIndex = checked(realizationIndexContext, index);
     if (!denseIndex)
       return denseIndex.takeError();
-    const MemorySemanticEncodingDescriptor *encoding =
-        findDescriptor(fabric.memorySemanticEncodings, draft.encoding.entity);
-    if (!encoding)
-      return freezeError("cannot freeze realization graph: selected memory "
-                         "encoding is unresolved");
-    const MemoryImplementationDescriptor *implementation =
-        findDescriptor(fabric.memoryImplementations, encoding->implementation);
-    if (!implementation)
-      return freezeError("cannot freeze realization graph: selected memory "
-                         "implementation is unresolved");
-    if (!findDescriptor(fabric.memoryServiceDomains, implementation->service))
-      return freezeError("cannot freeze realization graph: selected memory "
-                         "service is unresolved");
-
-    memoryRealizations.push_back({draft.id, draft.encoding.entity,
-                                  implementation->id, implementation->service});
+    const FrozenMemoryRealization &selected = memory.realizations[index];
+    if (selected.id != draft.id || selected.encoding != draft.encoding.entity)
+      return freezeError("cannot freeze realization graph: frozen memory "
+                         "domain does not match the realization");
     for (const ActorRef &actor : draft.actors) {
       if (!ownershipByActor
                .emplace(
@@ -511,8 +508,8 @@ loom::pnr::freezeRealizationGraph(const PnrProblemInputs &inputs) {
     }
     for (const LogicalMemoryRootRef &root : draft.roots) {
       auto [iterator, inserted] =
-          servicesByRoot.emplace(root.entity.value(), implementation->service);
-      if (!inserted && iterator->second != implementation->service)
+          servicesByRoot.emplace(root.entity.value(), selected.service);
+      if (!inserted && iterator->second != selected.service)
         return freezeError("cannot freeze realization graph: logical memory "
                            "root resolves to inconsistent services");
     }
@@ -702,7 +699,11 @@ loom::pnr::freezeRealizationGraph(const PnrProblemInputs &inputs) {
       std::move(compute.localArcs),
       std::move(compute.implementationOccurrences),
       std::move(compute.portDemands), std::move(compute.compatibleEndpoints),
-      std::move(memoryRealizations), std::move(templateTerminals),
+      std::move(memory.occurrences), std::move(memory.endpoints),
+      std::move(memory.endpointCompatibleTypes), std::move(memory.localArcs),
+      std::move(memory.implementationOccurrences),
+      std::move(memory.portDemands), std::move(memory.compatibleEndpoints),
+      std::move(memory.realizations), std::move(templateTerminals),
       std::move(logicalNets), std::move(logicalNetSinks),
       std::move(memoryServiceObligations));
 }
