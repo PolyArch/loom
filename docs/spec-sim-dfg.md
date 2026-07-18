@@ -155,6 +155,7 @@ The implemented report includes:
 
 * functional output values;
 * final visible memory state;
+* invocation-local final memory-root labels;
 * operation fire count;
 * modeled library call count;
 * event count;
@@ -192,7 +193,7 @@ The target DFG-sim report contract must identify:
 * trace location or inline trace summary;
 * diagnostics.
 
-The implemented `2.1` intermediate report is described in
+The implemented `2.2` intermediate report is described in
 `docs/spec-intermediate-artifacts.md`. Runtime input identity, resolved
 configuration ArtifactIdentity, and trace references remain target fields
 until their producers are connected to
