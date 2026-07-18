@@ -296,14 +296,14 @@ each rule lands in IR.
    operands and results are the explicit SpatialCore data/control
    ports. A `dataflow.thread.launch` completion token expresses
    launch-retirement causality only. The
-   `dataflow.graph.launch` op also implements
-   `MemoryEffectsOpInterface` directly: it resolves the callee
-   symbol and walks the callee body to project effects (a
-   sibling-symbol launch has no nested region, so the upstream
-   `RecursiveMemoryEffects` trait is the wrong tool here). Each def
-   carries `RecursiveMemoryEffects` so module-scope walkers can
-   observe per-callable effects without re-implementing the
-   boundary projection.
+   `dataflow.graph.launch` op resolves its callee through
+   `SymbolUserOpInterface`; it does not implement
+   `MemoryEffectsOpInterface` or project sibling-callee effects.
+   Each definition carries `RecursiveMemoryEffects` so walkers of
+   that callable can observe its body effects. Launch-site ordering
+   and retirement are represented by explicit dependencies, the
+   segmented memory-capability ABI, the `done` result, and native
+   finalized-program validation.
 8. Effect visibility contract. Every front-end op whose execution
    affects memory state must declare its effects through MLIR's
    `MemoryEffectOpInterface` (or an equivalent recursive trait)
@@ -874,9 +874,11 @@ traits:
 * The op must appear inside a `dataflow.thread` definition's body,
   not at host scope and not inside another `dataflow.graph`
   definition's body. The verifier enforces this placement.
-* The launch does not derive retirement from effect projection. The native
+* The launch intentionally does not implement `MemoryEffectsOpInterface` and
+  does not project effects from its sibling callee. The native
   finalized-program validator proves that the callee's explicit complete
-  frontier covers all outputs, state closure, and observable effects.
+  frontier covers all outputs, state closure, and observable effects; explicit
+  dependencies and memory capability ports carry launch-site ordering.
 
 * `dataflow.load` and `dataflow.store`.
   - These dataflow primitives carry explicit memory-effect traits:
@@ -885,9 +887,9 @@ traits:
   - These use MLIR's default memory resource. They are deliberately
     coarse in the baseline policy: any load may-read all memory,
     any store may-write all memory. This is sufficient for graph
-    body effects to roll up correctly through the launch's manual
-    projection and for surrounding optimizers to keep ScalarCore
-    memory ops correctly ordered relative to graph launches.
+    body effects to roll up through the graph definition's
+    `RecursiveMemoryEffects` trait. It does not create launch-site
+    effect projection.
   - Tightening these effects to a per-`$mem`-operand declaration
     (so two loads on disjoint memrefs become reorderable) is
     an explicit dataflow dialect extension.
