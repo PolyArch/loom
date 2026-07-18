@@ -22,6 +22,8 @@ using namespace loom::pnr;
 namespace {
 
 constexpr std::uint32_t unbounded = std::numeric_limits<std::uint32_t>::max();
+constexpr PnrIndex sinkObligationA = 0;
+constexpr PnrIndex sinkObligationB = 1;
 
 TransportEndpointRef endpointRef(const ArtifactIdentity &fabric,
                                  std::uint64_t id) {
@@ -104,6 +106,28 @@ FrozenRoutingGraph makeRoutingGraph(const char *test) {
                              makePnrProblemInputs(testCase, mapping, config)));
 }
 
+FrozenRoutingGraph makeCollisionRoutingGraph(const char *test) {
+  TestCase testCase = makeValidCase();
+  const ArtifactIdentity &fabric = testCase.fabric.identity;
+  std::vector<TransportEndpointDescriptor> endpoints;
+  for (std::uint64_t id = 5000; id <= 5002; ++id)
+    endpoints.push_back(transportEndpoint(
+        id, id == 5001 ? PortDirection::Input : PortDirection::Output));
+  testCase.fabric.transportResources = {{TransportResourceId(300),
+                                         TransportResourceKind::Switch,
+                                         std::move(endpoints)}};
+  testCase.fabric.transportTraversals = {
+      {resourceRef(fabric, 300), endpointRef(fabric, 5001),
+       endpointRef(fabric, 5000)},
+      {resourceRef(fabric, 300), endpointRef(fabric, 5001),
+       endpointRef(fabric, 5002)}};
+
+  ValidatedTechMapping mapping = validateCase(test, testCase);
+  ResolvedPnrConfigView config;
+  return takeValue(test, freezeRoutingGraph(
+                             makePnrProblemInputs(testCase, mapping, config)));
+}
+
 PnrIndex endpoint(const char *test, const FrozenRoutingGraph &graph,
                   std::uint64_t id) {
   const auto endpoints = graph.routingEndpoints();
@@ -173,22 +197,25 @@ struct Fixture {
 };
 
 RouteTreeState makeUnrouted(const char *test, const Fixture &fixture) {
-  const std::array<PnrIndex, 2> sinks{fixture.sinkA, fixture.sinkB};
-  return takeValue(test,
-                   RouteTreeState::create(fixture.graph, fixture.root, sinks));
+  return takeValue(test, RouteTreeState::create(fixture.graph, 2));
 }
 
 void attachInitialTree(const char *test, const Fixture &fixture,
-                       RouteTreeState &state) {
-  RouteTreeTransaction transaction = takeValue(test, state.beginTransaction());
+                       RouteTreeState &state,
+                       RouteTreeTransactionScratch &scratch) {
+  RouteTreeTransaction transaction =
+      takeValue(test, state.beginTransaction(scratch));
   const std::array<PnrIndex, 5> pathA{
       fixture.rootToTrunk, fixture.trunkToA, fixture.branchAToMergeInput,
       fixture.mergeInputAToOutput, fixture.mergeOutputToSink};
   const std::array<PnrIndex, 2> pathB{fixture.trunkToB, fixture.branchBToSink};
+  requireSuccess(test, transaction.bindSource(fixture.root));
+  requireSuccess(test, transaction.bindSink(sinkObligationA, fixture.sinkA));
   requireSuccess(test,
-                 transaction.attachPath(fixture.root, pathA, fixture.sinkA));
+                 transaction.attachPath(fixture.root, pathA, sinkObligationA));
+  requireSuccess(test, transaction.bindSink(sinkObligationB, fixture.sinkB));
   requireSuccess(test,
-                 transaction.attachPath(fixture.trunk, pathB, fixture.sinkB));
+                 transaction.attachPath(fixture.trunk, pathB, sinkObligationB));
   requireSuccess(test, transaction.commit());
 }
 
@@ -203,23 +230,35 @@ PnrIndex slot(const char *test, const RouteTreeState &state,
 void buildsOnlyAValidRootedArborescence() {
   Fixture fixture;
   RouteTreeState state = makeUnrouted(__func__, fixture);
+  RouteTreeTransactionScratch scratch;
   require(__func__, state.isUnrouted(), "new state is not explicitly unrouted");
+  require(__func__, !state.sourceEndpoint().has_value(),
+          "new state fixed a physical source endpoint");
+  require(__func__,
+          !state.sinkEndpoint(sinkObligationA).has_value() &&
+              !state.sinkEndpoint(sinkObligationB).has_value(),
+          "new state fixed a physical sink endpoint");
 
   RouteTreeTransaction transaction =
-      takeValue(__func__, state.beginTransaction());
+      takeValue(__func__, state.beginTransaction(scratch));
   const std::array<PnrIndex, 5> pathA{
       fixture.rootToTrunk, fixture.trunkToA, fixture.branchAToMergeInput,
       fixture.mergeInputAToOutput, fixture.mergeOutputToSink};
+  requireSuccess(__func__, transaction.bindSource(fixture.root));
   requireSuccess(__func__,
-                 transaction.attachPath(fixture.root, pathA, fixture.sinkA));
+                 transaction.bindSink(sinkObligationA, fixture.sinkA));
+  requireSuccess(__func__,
+                 transaction.attachPath(fixture.root, pathA, sinkObligationA));
 
   const std::vector<RouteTreeNode> beforeInvalid(state.nodeStorage().begin(),
                                                  state.nodeStorage().end());
   const std::array<PnrIndex, 3> reenteringPath{
       fixture.rootToTrunk, fixture.trunkToB, fixture.branchBToSink};
+  requireSuccess(__func__,
+                 transaction.bindSink(sinkObligationB, fixture.sinkB));
   requireErrorContains(
       __func__,
-      transaction.attachPath(fixture.root, reenteringPath, fixture.sinkB),
+      transaction.attachPath(fixture.root, reenteringPath, sinkObligationB),
       "re-enters");
   require(__func__,
           std::equal(beforeInvalid.begin(), beforeInvalid.end(),
@@ -230,15 +269,16 @@ void buildsOnlyAValidRootedArborescence() {
                                                  fixture.branchBToSink};
   requireErrorContains(
       __func__,
-      transaction.attachPath(fixture.root, disconnectedPath, fixture.sinkB),
+      transaction.attachPath(fixture.root, disconnectedPath, sinkObligationB),
       "does not continue");
   require(__func__,
           std::equal(beforeInvalid.begin(), beforeInvalid.end(),
                      state.nodeStorage().begin(), state.nodeStorage().end()),
           "rejected directed path changed the tree");
 
-  requireSuccess(__func__, transaction.attachPath(
-                               fixture.trunk, disconnectedPath, fixture.sinkB));
+  requireSuccess(
+      __func__,
+      transaction.attachPath(fixture.trunk, disconnectedPath, sinkObligationB));
   requireSuccess(__func__, transaction.commit());
   requireSuccess(__func__, state.verify());
 
@@ -257,18 +297,24 @@ void buildsOnlyAValidRootedArborescence() {
   require(__func__,
           sinkA.sinkObligationCount == 1 && sinkB.sinkObligationCount == 1,
           "sink metadata does not cover both obligations");
+  require(__func__,
+          state.sourceEndpoint() == fixture.root &&
+              state.sinkEndpoint(sinkObligationA) == fixture.sinkA &&
+              state.sinkEndpoint(sinkObligationB) == fixture.sinkB,
+          "committed bindings do not match the routed tree");
 }
 
 void preservesSharedPrefixAcrossPruneAndReroute() {
   Fixture fixture;
   RouteTreeState state = makeUnrouted(__func__, fixture);
-  attachInitialTree(__func__, fixture, state);
+  RouteTreeTransactionScratch scratch;
+  attachInitialTree(__func__, fixture, state, scratch);
   const PnrIndex rootSlot = slot(__func__, state, fixture.root);
   const PnrIndex trunkSlot = slot(__func__, state, fixture.trunk);
   const PnrIndex sinkBSlot = slot(__func__, state, fixture.sinkB);
 
   RouteTreeTransaction transaction =
-      takeValue(__func__, state.beginTransaction());
+      takeValue(__func__, state.beginTransaction(scratch));
   requireSuccess(__func__, transaction.ripUpSubtree(fixture.branchA));
   require(__func__,
           state.findNode(fixture.root) == rootSlot &&
@@ -282,8 +328,10 @@ void preservesSharedPrefixAcrossPruneAndReroute() {
   const std::array<PnrIndex, 4> alternatePath{
       fixture.trunkToAlternateA, fixture.alternateAToMergeInput,
       fixture.mergeInputAlternateAToOutput, fixture.mergeOutputToSink};
+  requireSuccess(__func__,
+                 transaction.bindSink(sinkObligationA, fixture.sinkA));
   requireSuccess(__func__, transaction.attachPath(fixture.trunk, alternatePath,
-                                                  fixture.sinkA));
+                                                  sinkObligationA));
   requireSuccess(__func__, transaction.commit());
   requireSuccess(__func__, state.verify());
   require(__func__,
@@ -295,22 +343,29 @@ void preservesSharedPrefixAcrossPruneAndReroute() {
           "reroute did not install the alternate branch");
 }
 
-void rollsBackExactTreeState() {
+void reusesScratchAndRollsBackExactTreeState() {
   Fixture fixture;
   RouteTreeState state = makeUnrouted(__func__, fixture);
-  attachInitialTree(__func__, fixture, state);
+  RouteTreeTransactionScratch scratch;
+  attachInitialTree(__func__, fixture, state, scratch);
   const std::vector<RouteTreeNode> before(state.nodeStorage().begin(),
                                           state.nodeStorage().end());
   const PnrIndex beforeCount = state.activeNodeCount();
+  const std::size_t deltaCapacity = scratch.deltaCapacity();
+  const std::size_t workspaceCapacity = scratch.workspaceCapacity();
+  require(__func__, deltaCapacity != 0 && workspaceCapacity != 0,
+          "committed transaction did not retain scratch capacity");
 
   RouteTreeTransaction transaction =
-      takeValue(__func__, state.beginTransaction());
-  requireSuccess(__func__, transaction.ripUpSink(fixture.sinkA));
+      takeValue(__func__, state.beginTransaction(scratch));
+  requireSuccess(__func__, transaction.ripUpSink(sinkObligationA));
   const std::array<PnrIndex, 4> alternatePath{
       fixture.trunkToAlternateA, fixture.alternateAToMergeInput,
       fixture.mergeInputAlternateAToOutput, fixture.mergeOutputToSink};
+  requireSuccess(__func__,
+                 transaction.bindSink(sinkObligationA, fixture.sinkA));
   requireSuccess(__func__, transaction.attachPath(fixture.trunk, alternatePath,
-                                                  fixture.sinkA));
+                                                  sinkObligationA));
   transaction.rollback();
 
   require(__func__, state.isRouted(), "rollback changed routed state");
@@ -324,28 +379,162 @@ void rollsBackExactTreeState() {
           state.findNode(fixture.branchA).has_value() &&
               !state.findNode(fixture.alternateA),
           "rollback did not restore endpoint lookup");
+  require(__func__,
+          state.sourceEndpoint() == fixture.root &&
+              state.sinkEndpoint(sinkObligationA) == fixture.sinkA,
+          "rollback did not restore physical bindings");
+  require(__func__,
+          scratch.deltaCapacity() >= deltaCapacity &&
+              scratch.workspaceCapacity() >= workspaceCapacity,
+          "rollback discarded reusable scratch capacity");
   requireSuccess(__func__, state.verify());
+
+  RouteTreeTransaction committed =
+      takeValue(__func__, state.beginTransaction(scratch));
+  requireSuccess(__func__, committed.ripUpSink(sinkObligationA));
+  requireSuccess(__func__, committed.bindSink(sinkObligationA, fixture.sinkA));
+  requireSuccess(__func__, committed.attachPath(fixture.trunk, alternatePath,
+                                                sinkObligationA));
+  requireSuccess(__func__, committed.commit());
+  require(__func__,
+          scratch.deltaCapacity() >= deltaCapacity &&
+              scratch.workspaceCapacity() >= workspaceCapacity,
+          "second commit discarded reusable scratch capacity");
 }
 
 void enforcesCoverageOrExplicitUnroutedState() {
   Fixture fixture;
   RouteTreeState state = makeUnrouted(__func__, fixture);
-  attachInitialTree(__func__, fixture, state);
+  RouteTreeTransactionScratch scratch;
+  attachInitialTree(__func__, fixture, state, scratch);
 
   RouteTreeTransaction incomplete =
-      takeValue(__func__, state.beginTransaction());
-  requireSuccess(__func__, incomplete.ripUpSink(fixture.sinkA));
+      takeValue(__func__, state.beginTransaction(scratch));
+  requireSuccess(__func__, incomplete.ripUpSink(sinkObligationA));
   requireErrorContains(__func__, incomplete.commit(), "not covered");
   incomplete.rollback();
   requireSuccess(__func__, state.verify());
 
-  RouteTreeTransaction wholeNet = takeValue(__func__, state.beginTransaction());
+  RouteTreeTransaction wholeNet =
+      takeValue(__func__, state.beginTransaction(scratch));
   requireSuccess(__func__, wholeNet.ripUpWholeNet());
   requireSuccess(__func__, wholeNet.commit());
   require(__func__, state.isUnrouted() && state.activeNodeCount() == 0,
           "whole-net rip-up did not commit explicit unrouted state");
   require(__func__, state.nodeStorage().empty(),
           "whole-net rip-up retained sparse node storage");
+  require(__func__,
+          !state.sourceEndpoint().has_value() &&
+              !state.sinkEndpoint(sinkObligationA).has_value() &&
+              !state.sinkEndpoint(sinkObligationB).has_value(),
+          "whole-net rip-up retained physical bindings");
+}
+
+void independentlyRebindsDuplicateSinkObligations() {
+  Fixture fixture;
+  RouteTreeState state = makeUnrouted(__func__, fixture);
+  RouteTreeTransactionScratch scratch;
+  const std::array<PnrIndex, 5> pathA{
+      fixture.rootToTrunk, fixture.trunkToA, fixture.branchAToMergeInput,
+      fixture.mergeInputAToOutput, fixture.mergeOutputToSink};
+
+  RouteTreeTransaction initial =
+      takeValue(__func__, state.beginTransaction(scratch));
+  requireSuccess(__func__, initial.bindSource(fixture.root));
+  requireSuccess(__func__, initial.bindSink(sinkObligationA, fixture.sinkA));
+  requireSuccess(__func__,
+                 initial.attachPath(fixture.root, pathA, sinkObligationA));
+  requireSuccess(__func__, initial.bindSink(sinkObligationB, fixture.sinkA));
+  requireSuccess(__func__,
+                 initial.attachPath(fixture.sinkA, {}, sinkObligationB));
+  requireSuccess(__func__, initial.commit());
+  require(__func__,
+          state.sinkEndpoint(sinkObligationA) == fixture.sinkA &&
+              state.sinkEndpoint(sinkObligationB) == fixture.sinkA,
+          "duplicate endpoint bindings lost obligation identity");
+  require(
+      __func__,
+      state.node(slot(__func__, state, fixture.sinkA)).sinkObligationCount == 2,
+      "shared sink node does not count both obligations");
+
+  const std::vector<RouteTreeNode> before(state.nodeStorage().begin(),
+                                          state.nodeStorage().end());
+  RouteTreeTransaction rolledBack =
+      takeValue(__func__, state.beginTransaction(scratch));
+  requireSuccess(__func__, rolledBack.ripUpSink(sinkObligationA));
+  requireSuccess(__func__, rolledBack.bindSink(sinkObligationA, fixture.sinkB));
+  const std::array<PnrIndex, 2> pathB{fixture.trunkToB, fixture.branchBToSink};
+  requireSuccess(__func__,
+                 rolledBack.attachPath(fixture.trunk, pathB, sinkObligationA));
+  require(__func__,
+          state.sinkEndpoint(sinkObligationA) == fixture.sinkB &&
+              state.sinkEndpoint(sinkObligationB) == fixture.sinkA,
+          "single-obligation rebind changed its peer");
+  rolledBack.rollback();
+  require(__func__,
+          state.sinkEndpoint(sinkObligationA) == fixture.sinkA &&
+              state.sinkEndpoint(sinkObligationB) == fixture.sinkA,
+          "rollback did not restore duplicate endpoint bindings");
+  require(__func__,
+          std::equal(before.begin(), before.end(), state.nodeStorage().begin(),
+                     state.nodeStorage().end()),
+          "duplicate-binding rollback changed the route tree");
+
+  RouteTreeTransaction committed =
+      takeValue(__func__, state.beginTransaction(scratch));
+  requireSuccess(__func__, committed.ripUpSink(sinkObligationA));
+  requireSuccess(__func__, committed.bindSink(sinkObligationA, fixture.sinkB));
+  requireSuccess(__func__,
+                 committed.attachPath(fixture.trunk, pathB, sinkObligationA));
+  requireSuccess(__func__, committed.commit());
+  require(__func__,
+          state.sinkEndpoint(sinkObligationA) == fixture.sinkB &&
+              state.sinkEndpoint(sinkObligationB) == fixture.sinkA &&
+              state.node(slot(__func__, state, fixture.sinkA))
+                      .sinkObligationCount == 1,
+          "committed rebind did not preserve the peer obligation");
+
+  RouteTreeTransaction sourceRollback =
+      takeValue(__func__, state.beginTransaction(scratch));
+  requireSuccess(__func__, sourceRollback.ripUpWholeNet());
+  requireSuccess(__func__, sourceRollback.bindSource(fixture.trunk));
+  sourceRollback.rollback();
+  require(__func__, state.sourceEndpoint() == fixture.root,
+          "source binding rollback did not restore the producer endpoint");
+}
+
+void preservesLookupCollisionChainsAfterDeletion() {
+  FrozenRoutingGraph graph = makeCollisionRoutingGraph(__func__);
+  const PnrIndex sinkA = endpoint(__func__, graph, 5000);
+  const PnrIndex source = endpoint(__func__, graph, 5001);
+  const PnrIndex sinkB = endpoint(__func__, graph, 5002);
+  require(__func__, sinkA == 4 && source == 5 && sinkB == 6,
+          "collision fixture endpoint ordering changed");
+  const std::array<PnrIndex, 1> pathA{arc(__func__, graph, source, sinkA)};
+  const std::array<PnrIndex, 1> pathB{arc(__func__, graph, source, sinkB)};
+
+  RouteTreeState state = takeValue(__func__, RouteTreeState::create(graph, 2));
+  RouteTreeTransactionScratch scratch;
+  RouteTreeTransaction initial =
+      takeValue(__func__, state.beginTransaction(scratch));
+  requireSuccess(__func__, initial.bindSource(source));
+  requireSuccess(__func__, initial.bindSink(sinkObligationA, sinkA));
+  requireSuccess(__func__, initial.attachPath(source, pathA, sinkObligationA));
+  requireSuccess(__func__, initial.bindSink(sinkObligationB, sinkB));
+  requireSuccess(__func__, initial.attachPath(source, pathB, sinkObligationB));
+  requireSuccess(__func__, initial.commit());
+
+  RouteTreeTransaction deletion =
+      takeValue(__func__, state.beginTransaction(scratch));
+  requireSuccess(__func__, deletion.ripUpSink(sinkObligationA));
+  require(__func__,
+          state.findNode(source).has_value() &&
+              state.findNode(sinkB).has_value(),
+          "open-addressed deletion broke a collision chain");
+  requireSuccess(__func__, deletion.bindSink(sinkObligationA, sinkB));
+  requireSuccess(__func__, deletion.attachPath(sinkB, {}, sinkObligationA));
+  requireSuccess(__func__, deletion.commit());
+  requireSuccess(__func__, state.verify());
 }
 
 void checksPnrIndexCapacityBoundaries() {
@@ -360,13 +549,15 @@ void checksPnrIndexCapacityBoundaries() {
   }
 
   Fixture fixture;
-  const std::array<PnrIndex, 1> sink{fixture.sinkA};
-  llvm::Expected<RouteTreeState> invalid = RouteTreeState::create(
-      fixture.graph,
-      static_cast<PnrIndex>(fixture.graph.routingEndpoints().size()), sink);
-  if (invalid)
-    fail(__func__, "accepted producer endpoint beyond the routing graph");
-  requireErrorContains(__func__, invalid.takeError(), "producer endpoint");
+  RouteTreeState state =
+      takeValue(__func__, RouteTreeState::create(fixture.graph, 1));
+  RouteTreeTransactionScratch scratch;
+  RouteTreeTransaction transaction =
+      takeValue(__func__, state.beginTransaction(scratch));
+  requireErrorContains(__func__,
+                       transaction.bindSource(static_cast<PnrIndex>(
+                           fixture.graph.routingEndpoints().size())),
+                       "source endpoint");
 }
 
 } // namespace
@@ -374,8 +565,10 @@ void checksPnrIndexCapacityBoundaries() {
 int main() {
   buildsOnlyAValidRootedArborescence();
   preservesSharedPrefixAcrossPruneAndReroute();
-  rollsBackExactTreeState();
+  reusesScratchAndRollsBackExactTreeState();
   enforcesCoverageOrExplicitUnroutedState();
+  independentlyRebindsDuplicateSinkObligations();
+  preservesLookupCollisionChainsAfterDeletion();
   checksPnrIndexCapacityBoundaries();
   return 0;
 }
