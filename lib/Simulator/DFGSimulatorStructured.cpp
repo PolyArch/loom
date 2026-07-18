@@ -1011,7 +1011,7 @@ static bool fireStructuredIf(mlir::scf::IfOp op, SimulatorState &state) {
   }
 
   LocalValueMap locals;
-  locals[op.getCondition()] = popToken(state.channels, op->getOpOperand(0));
+  locals[op.getCondition()] = popToken(state, op->getOpOperand(0));
   llvm::SmallVector<Token> yielded;
   if (!evaluateStructuredIf(op, state, locals, captureIndex, yielded))
     return false;
@@ -1046,7 +1046,7 @@ static bool fireStructuredIndexSwitch(mlir::scf::IndexSwitchOp op,
   }
 
   LocalValueMap locals;
-  locals[op.getArg()] = popToken(state.channels, op->getOpOperand(0));
+  locals[op.getArg()] = popToken(state, op->getOpOperand(0));
   llvm::SmallVector<Token> yielded;
   if (!evaluateStructuredIndexSwitch(op, state, locals, captureIndex, yielded))
     return false;
@@ -1151,7 +1151,7 @@ static bool fireStructuredFor(mlir::scf::ForOp op, SimulatorState &state) {
   }
 
   for (unsigned operandIndex = 0; operandIndex < operandCount; ++operandIndex)
-    (void)popToken(state.channels, op->getOpOperand(operandIndex));
+    (void)popToken(state, op->getOpOperand(operandIndex));
   llvm::SmallVector<Token> results;
   if (!executeStructuredFor(op, state, operands, captureIndex, results))
     return false;
@@ -1303,7 +1303,7 @@ static bool fireStructuredWhile(mlir::scf::WhileOp op, SimulatorState &state) {
   }
 
   for (unsigned operandIndex = 0; operandIndex < operandCount; ++operandIndex)
-    (void)popToken(state.channels, op->getOpOperand(operandIndex));
+    (void)popToken(state, op->getOpOperand(operandIndex));
   llvm::SmallVector<Token> results;
   if (!executeStructuredWhile(op, state, operands, captureIndex, results))
     return false;
@@ -1459,7 +1459,7 @@ static bool fireStructuredForall(mlir::scf::ForallOp op,
   }
 
   for (mlir::OpOperand &operand : op->getOpOperands())
-    operands[operand.get()] = popToken(state.channels, operand);
+    operands[operand.get()] = popToken(state, operand);
   if (!executeStructuredForall(op, state, operands))
     return false;
   recordStructuredEffectFire(state, op.getOperation());

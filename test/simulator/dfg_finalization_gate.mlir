@@ -5,12 +5,17 @@
 // RUN: not loom-dfg-sim %t.dir/value.mlir --graph uncovered_value --output %t.value.json 2>&1 | FileCheck %s --check-prefix=VALUE
 // RUN: loom-dfg-sim %t.dir/detached.mlir --graph detached_actor --arg 0=1 --output %t.detached.json
 // RUN: FileCheck %s --check-prefix=DETACHED < %t.detached.json
+// RUN: loom-dfg-sim %t.dir/detached-failure.mlir --graph detached_failure --arg 0=7 --output %t.detached-failure.json
+// RUN: FileCheck %s --check-prefix=DETACHED-FAILURE < %t.detached-failure.json
 
 // RESIDUAL: finalized graph contains residual structured operation 'scf.for'
 // START: nontrivial graph uses raw start as a retirement completion witness
 // VALUE: retirement frontier does not causally cover value output #0
 // DETACHED-DAG: "status": "invalid"
 // DETACHED-DAG: actor 'arith.addi' fired after graph retirement
+// DETACHED-FAILURE-DAG: "status": "invalid"
+// DETACHED-FAILURE-DAG: arith.divsi divisor must be non-zero
+// DETACHED-FAILURE-DAG: actor 'arith.divsi' failed after graph retirement
 
 //--- residual.mlir
 module {
@@ -21,6 +26,20 @@ module {
     scf.for %i = %lb to %ub step %step {
     }
     dataflow.graph.return %start : none
+  }
+}
+
+//--- detached-failure.mlir
+module {
+  dataflow.graph private @detached_failure(%start: none, %input: i32)
+      -> (i32)
+      attributes {input_segments = array<i32: 1, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %zero = dataflow.constant %start {const_value = 0 : i32} : i32
+    %published:2 = dataflow.sync %start, %input
+        : (none, i32) -> (none, i32)
+    %quotient = arith.divsi %input, %zero : i32
+    dataflow.graph.return %published#0, %published#1 : none, i32
   }
 }
 

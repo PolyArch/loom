@@ -1,6 +1,6 @@
-# A raw parallel region must be scheduled before graph-region lowering.
+# A raw parallel region without selected provenance must not publish a graph.
 #
 # RUN: not env LOOM_CC=%loom-cc LOOM_CXX=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt %python %S/../app/ir_runner.py --stage dfg --case matmul --build-root %t 2>&1 | FileCheck %s
 #
-# CHECK: matmul: lower SCF MLIR
-# CHECK: loom-lower-graph-memory: raw scf.forall requires a selected schedule and provenance before graph-region lowering
+# CHECK: [app-ir-runner] ERROR: matmul:
+# CHECK-SAME: has no dataflow.graph definition

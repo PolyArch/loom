@@ -103,6 +103,7 @@ struct SimulatorState {
   std::uint64_t memoryAddressScore = 0;
   std::uint64_t structuredLoopIterations = 0;
   std::uint64_t maxStructuredLoopIterations = 0;
+  std::uint64_t actorMutationEpoch = 0;
 };
 
 Token noneToken();
@@ -118,7 +119,7 @@ llvm::Expected<std::int64_t> gepByteOffset(mlir::LLVM::GEPOp op,
                                            llvm::ArrayRef<Token> dynamicTokens);
 
 bool hasToken(ChannelMap &channels, mlir::OpOperand &operand);
-Token popToken(ChannelMap &channels, mlir::OpOperand &operand);
+Token popToken(SimulatorState &state, mlir::OpOperand &operand);
 Token peekToken(ChannelMap &channels, mlir::OpOperand &operand);
 void emitToken(SimulatorState &state, mlir::Value value, Token token);
 bool recordEvent(SimulatorState &state, llvm::StringRef opName);

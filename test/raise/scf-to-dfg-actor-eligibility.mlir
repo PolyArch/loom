@@ -54,15 +54,17 @@ module {
   dataflow.graph private @canonical_backend_gap(
       %start: none, %lhs: i32, %rhs: i32) -> i32 {
     %sum = llvm.add %lhs, %rhs : i32
+    %either = llvm.or %lhs, %rhs : i32
     %published:2 = dataflow.sync %start, %sum
         : (none, i32) -> (none, i32)
     dataflow.graph.return %published#0, %published#1 : none, i32
   }
 }
 
-// CANONICAL-BACKEND-GAP-DAG: "graph": "canonical_backend_gap"
-// CANONICAL-BACKEND-GAP-DAG: "status": "unsupported"
-// CANONICAL-BACKEND-GAP-DAG: "unsupported op: llvm.add"
+// CANONICAL-BACKEND-GAP: "unsupported op: llvm.add"
+// CANONICAL-BACKEND-GAP-NEXT: "unsupported op: llvm.or"
+// CANONICAL-BACKEND-GAP: "graph": "canonical_backend_gap"
+// CANONICAL-BACKEND-GAP: "status": "unsupported"
 
 //--- unregistered-graph.mlir
 module {

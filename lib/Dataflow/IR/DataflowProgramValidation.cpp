@@ -4,6 +4,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Errc.h"
 
 namespace {
@@ -283,6 +284,7 @@ llvm::Error verifyChannelTopology(mlir::ModuleOp module) {
 
   mlir::SymbolTableCollection symbols;
   llvm::DenseMap<mlir::Value, ChannelTopology> topologies;
+  llvm::SmallVector<mlir::Value> topologyOrder;
   llvm::Error error = llvm::Error::success();
   module.walk([&](mlir::Operation *op) {
     for (mlir::Region &region : op->getRegions()) {
@@ -298,7 +300,8 @@ llvm::Error verifyChannelTopology(mlir::ModuleOp module) {
             error = std::move(rootError);
             return mlir::WalkResult::interrupt();
           }
-          topologies.try_emplace(argument);
+          if (topologies.try_emplace(argument).second)
+            topologyOrder.push_back(argument);
         }
       }
     }
@@ -338,8 +341,9 @@ llvm::Error verifyChannelTopology(mlir::ModuleOp module) {
   });
   if (error)
     return error;
-  for (auto &[root, topology] : topologies)
-    if (llvm::Error topologyError = verifyTopology(topology))
+  for (mlir::Value root : topologyOrder)
+    if (llvm::Error topologyError =
+            verifyTopology(topologies.find(root)->second))
       return topologyError;
   return llvm::Error::success();
 }

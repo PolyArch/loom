@@ -10,8 +10,12 @@
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Errc.h"
+
+#include <limits>
+#include <memory>
 
 namespace {
 
@@ -359,9 +363,97 @@ bool hasObservableEffect(mlir::Operation *op) {
   return true;
 }
 
+enum class NestedAlignmentKind : uint8_t {
+  Close,
+  GateClose,
+};
+
+struct NestedAlignmentQuery {
+  uint64_t alignmentRevision;
+  mlir::Value value;
+  mlir::Value parentPhase;
+  mlir::Value parentAssumption;
+  mlir::Value selector;
+  unsigned lane;
+  NestedAlignmentKind kind;
+
+  bool operator==(const NestedAlignmentQuery &other) const {
+    return alignmentRevision == other.alignmentRevision &&
+           value == other.value && parentPhase == other.parentPhase &&
+           parentAssumption == other.parentAssumption &&
+           selector == other.selector && lane == other.lane &&
+           kind == other.kind;
+  }
+};
+
+struct NestedAlignmentQueryInfo {
+  static NestedAlignmentQuery getEmptyKey() {
+    return {std::numeric_limits<uint64_t>::max(),
+            {},
+            {},
+            {},
+            {},
+            0,
+            NestedAlignmentKind::Close};
+  }
+
+  static NestedAlignmentQuery getTombstoneKey() {
+    return {std::numeric_limits<uint64_t>::max() - 1,
+            {},
+            {},
+            {},
+            {},
+            0,
+            NestedAlignmentKind::Close};
+  }
+
+  static unsigned getHashValue(const NestedAlignmentQuery &query) {
+    auto opaque = [](mlir::Value value) {
+      return value ? value.getAsOpaquePointer() : nullptr;
+    };
+    return llvm::hash_combine(query.alignmentRevision, opaque(query.value),
+                              opaque(query.parentPhase),
+                              opaque(query.parentAssumption),
+                              opaque(query.selector), query.lane, query.kind);
+  }
+
+  static bool isEqual(const NestedAlignmentQuery &lhs,
+                      const NestedAlignmentQuery &rhs) {
+    return lhs == rhs;
+  }
+};
+
+struct CardinalityGraphIndex {
+  explicit CardinalityGraphIndex(dataflow::GraphOp graph) {
+    for (mlir::Operation &op : graph.getBody().front().without_terminator()) {
+      if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(op)) {
+        carriesByPhase[carry.getCond()].push_back(carry);
+        activationInputsByPhase[carry.getCond()].push_back(carry.getInit());
+        continue;
+      }
+      if (auto invariant = llvm::dyn_cast<dataflow::InvariantOp>(op)) {
+        activationInputsByPhase[invariant.getCond()].push_back(
+            invariant.getInit());
+        continue;
+      }
+      if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(op))
+        demuxesBySelector[demux.getSel()].push_back(demux);
+    }
+  }
+
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<dataflow::CarryOp, 4>>
+      carriesByPhase;
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<mlir::Value, 4>>
+      activationInputsByPhase;
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<dataflow::DemuxOp, 4>>
+      demuxesBySelector;
+};
+
 class GraphCardinalityAnalysis {
 public:
-  explicit GraphCardinalityAnalysis(dataflow::GraphOp graph) : graph(graph) {}
+  explicit GraphCardinalityAnalysis(dataflow::GraphOp graph)
+      : graph(graph),
+        graphIndex(std::make_shared<CardinalityGraphIndex>(graph)) {}
 
   bool isExactOne(mlir::Value value) {
     auto known = exactOne.find(value);
@@ -393,7 +485,17 @@ public:
   }
 
 private:
+  GraphCardinalityAnalysis(dataflow::GraphOp graph,
+                           std::shared_ptr<CardinalityGraphIndex> graphIndex)
+      : graph(graph), graphIndex(std::move(graphIndex)) {}
+
   dataflow::GraphOp graph;
+  std::shared_ptr<CardinalityGraphIndex> graphIndex;
+  uint64_t alignmentRevision = 0;
+  llvm::DenseMap<NestedAlignmentQuery, bool, NestedAlignmentQueryInfo>
+      nestedAlignment;
+  llvm::DenseSet<NestedAlignmentQuery, NestedAlignmentQueryInfo>
+      nestedAlignmentActive;
   llvm::DenseMap<mlir::Value, bool> exactOne;
   llvm::DenseSet<mlir::Value> exactOneActive;
   llvm::DenseMap<mlir::Value, bool> oneClosePhase;
@@ -402,6 +504,32 @@ private:
   llvm::DenseMap<mlir::Value, bool> alignedCarrySystems;
   llvm::DenseSet<mlir::Value> alignedCarrySystemsActive;
   llvm::DenseSet<mlir::Value> exactOneAssumptions;
+
+  bool insertAlignedCarryAssumption(mlir::Value value) {
+    bool inserted = alignedCarryAssumptions.insert(value).second;
+    if (inserted)
+      ++alignmentRevision;
+    return inserted;
+  }
+
+  void eraseAlignedCarryAssumption(mlir::Value value) {
+    if (alignedCarryAssumptions.erase(value))
+      ++alignmentRevision;
+  }
+
+  template <typename Compute>
+  bool evaluateNestedAlignment(const NestedAlignmentQuery &query,
+                               Compute &&compute) {
+    auto known = nestedAlignment.find(query);
+    if (known != nestedAlignment.end())
+      return known->second;
+    if (!nestedAlignmentActive.insert(query).second)
+      return false;
+    bool result = compute();
+    nestedAlignmentActive.erase(query);
+    nestedAlignment.try_emplace(query, result);
+    return result;
+  }
 
   bool allOperandsExact(mlir::Operation *op) {
     return llvm::all_of(op->getOperands(),
@@ -517,13 +645,14 @@ private:
 
   bool isExactOneWhenSelected(mlir::Value value, mlir::Value selector,
                               unsigned lane) {
-    GraphCardinalityAnalysis branch(graph);
-    for (mlir::Operation &op : graph.getBody().front().without_terminator()) {
-      auto demux = llvm::dyn_cast<dataflow::DemuxOp>(op);
-      if (!demux || demux.getSel() != selector ||
-          lane >= demux.getOutputs().size() || !isExactOne(demux.getInput()))
-        continue;
-      branch.exactOneAssumptions.insert(demux.getOutputs()[lane]);
+    GraphCardinalityAnalysis branch(graph, graphIndex);
+    auto demuxes = graphIndex->demuxesBySelector.find(selector);
+    if (demuxes != graphIndex->demuxesBySelector.end()) {
+      for (dataflow::DemuxOp demux : demuxes->second) {
+        if (lane >= demux.getOutputs().size() || !isExactOne(demux.getInput()))
+          continue;
+        branch.exactOneAssumptions.insert(demux.getOutputs()[lane]);
+      }
     }
     return branch.isExactOne(value);
   }
@@ -669,18 +798,11 @@ private:
         !assumeExact(stream.getStep()))
       return false;
 
-    for (mlir::Operation &op : graph.getBody().front().without_terminator()) {
-      if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(op)) {
-        if (carry.getCond() == stream.getPhase() &&
-            !assumeExact(carry.getInit()))
+    auto inputs = graphIndex->activationInputsByPhase.find(stream.getPhase());
+    if (inputs != graphIndex->activationInputsByPhase.end())
+      for (mlir::Value input : inputs->second)
+        if (!assumeExact(input))
           return false;
-        continue;
-      }
-      if (auto invariant = llvm::dyn_cast<dataflow::InvariantOp>(op))
-        if (invariant.getCond() == stream.getPhase() &&
-            !assumeExact(invariant.getInit()))
-          return false;
-    }
     return true;
   }
 
@@ -693,10 +815,15 @@ private:
     if (!stream || close.getSel() != stream.getPhase())
       return false;
 
-    GraphCardinalityAnalysis activation(graph);
-    return initializeNestedActivation(stream, parentPhase, parentAssumption,
-                                      activation) &&
-           activation.isPhaseAligned(close.getInput(), stream.getPhase());
+    NestedAlignmentQuery query{alignmentRevision,         result, parentPhase,
+                               parentAssumption,          {},     0,
+                               NestedAlignmentKind::Close};
+    return evaluateNestedAlignment(query, [&] {
+      GraphCardinalityAnalysis activation(graph, graphIndex);
+      return initializeNestedActivation(stream, parentPhase, parentAssumption,
+                                        activation) &&
+             activation.isPhaseAligned(close.getInput(), stream.getPhase());
+    });
   }
 
   bool isNestedGateCloseAligned(mlir::Value value, mlir::Value selector,
@@ -713,11 +840,21 @@ private:
     if (!stream || gate->getBeforeCond() != stream.getPhase())
       return false;
 
-    GraphCardinalityAnalysis activation(graph);
-    return initializeNestedActivation(stream, parentPhase, parentAssumption,
-                                      activation) &&
-           activation.isOneClosePhase(stream.getPhase()) &&
-           activation.isPhaseAligned(gate->getBeforeValue(), stream.getPhase());
+    NestedAlignmentQuery query{alignmentRevision,
+                               value,
+                               parentPhase,
+                               parentAssumption,
+                               selector,
+                               lane,
+                               NestedAlignmentKind::GateClose};
+    return evaluateNestedAlignment(query, [&] {
+      GraphCardinalityAnalysis activation(graph, graphIndex);
+      return initializeNestedActivation(stream, parentPhase, parentAssumption,
+                                        activation) &&
+             activation.isOneClosePhase(stream.getPhase()) &&
+             activation.isPhaseAligned(gate->getBeforeValue(),
+                                       stream.getPhase());
+    });
   }
 
   bool isAligned(mlir::Value value, mlir::Value phase, mlir::Value assumption,
@@ -779,13 +916,13 @@ private:
       if (truePhaseOnly || value != carry.getOutput() ||
           carry.getCond() != phase || !isExactOne(carry.getInit()))
         return false;
-      bool inserted = alignedCarryAssumptions.insert(carry.getOutput()).second;
+      bool inserted = insertAlignedCarryAssumption(carry.getOutput());
       if (!inserted)
         return true;
       llvm::DenseSet<mlir::Value> feedbackVisited = visited;
       bool aligned = isAligned(carry.getCarry(), phase, carry.getOutput(),
                                /*truePhaseOnly=*/true, feedbackVisited);
-      alignedCarryAssumptions.erase(carry.getOutput());
+      eraseAlignedCarryAssumption(carry.getOutput());
       return aligned;
     }
     if (auto gate = llvm::dyn_cast<dataflow::GateOp>(def)) {
@@ -853,11 +990,12 @@ private:
   void
   collectAlignedCarries(mlir::Value phase,
                         llvm::SmallVectorImpl<dataflow::CarryOp> &carries) {
-    for (mlir::Operation &op : graph.getBody().front().without_terminator()) {
-      auto carry = llvm::dyn_cast<dataflow::CarryOp>(op);
-      if (carry && carry.getCond() == phase && isExactOne(carry.getInit()))
+    auto phaseCarries = graphIndex->carriesByPhase.find(phase);
+    if (phaseCarries == graphIndex->carriesByPhase.end())
+      return;
+    for (dataflow::CarryOp carry : phaseCarries->second)
+      if (isExactOne(carry.getInit()))
         carries.push_back(carry);
-    }
   }
 
   bool isCarrySystemAligned(mlir::Value phase) {
@@ -870,7 +1008,7 @@ private:
     llvm::SmallVector<dataflow::CarryOp, 4> carries;
     collectAlignedCarries(phase, carries);
     for (dataflow::CarryOp carry : carries)
-      alignedCarryAssumptions.insert(carry.getOutput());
+      insertAlignedCarryAssumption(carry.getOutput());
 
     bool aligned = llvm::all_of(carries, [&](dataflow::CarryOp carry) {
       llvm::DenseSet<mlir::Value> visited;
@@ -879,7 +1017,7 @@ private:
     });
 
     for (dataflow::CarryOp carry : carries)
-      alignedCarryAssumptions.erase(carry.getOutput());
+      eraseAlignedCarryAssumption(carry.getOutput());
     alignedCarrySystemsActive.erase(phase);
     alignedCarrySystems.try_emplace(phase, aligned);
     return aligned;
@@ -891,12 +1029,12 @@ private:
     llvm::SmallVector<dataflow::CarryOp, 4> carries;
     collectAlignedCarries(phase, carries);
     for (dataflow::CarryOp carry : carries)
-      alignedCarryAssumptions.insert(carry.getOutput());
+      insertAlignedCarryAssumption(carry.getOutput());
     llvm::DenseSet<mlir::Value> visited;
     bool aligned =
         isAligned(value, phase, {}, /*truePhaseOnly=*/false, visited);
     for (dataflow::CarryOp carry : carries)
-      alignedCarryAssumptions.erase(carry.getOutput());
+      eraseAlignedCarryAssumption(carry.getOutput());
     return aligned;
   }
 

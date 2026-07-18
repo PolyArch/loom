@@ -710,7 +710,8 @@ struct LowerForToGraphPass
         }
       }
       if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(nested)) {
-        if (isEffectFormForallGraphCandidate(forall))
+        if (::loom::lowering::hasGraphOwnedParallelProvenance(forall) &&
+            isEffectFormForallGraphCandidate(forall))
           return ::mlir::WalkResult::advance();
         unsupported = true;
         return ::mlir::WalkResult::interrupt();
@@ -1001,8 +1002,6 @@ struct LowerForToGraphPass
       return false;
     if (func.getSymName() == "main")
       return false;
-    if (func.getSymName().starts_with("arm_"))
-      return false;
     if (!func.getFunctionType().getResults().empty())
       return false;
     if (!func.getBody().hasOneBlock())
@@ -1066,8 +1065,6 @@ struct LowerForToGraphPass
     if (func.isExternal())
       return false;
     if (func.getSymName() == "main")
-      return false;
-    if (func.getSymName().starts_with("arm_"))
       return false;
     if (!func.getFunctionType().getResults().empty())
       return false;

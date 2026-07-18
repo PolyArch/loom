@@ -9,6 +9,7 @@
 // RUN: not loom-dfg-sim %t.dir/direct-stream-rendezvous.mlir --graph direct_stream_rendezvous --arg 0=7 --arg 0=9 --output %t.dir/direct.json 2>&1 | FileCheck %s --check-prefix=DIRECT
 // RUN: not loom-dfg-sim %t.dir/stream-activated-schedule.mlir --graph stream_activated_schedule --arg 0=0 --arg 1=7 --output %t.dir/stream-activated.json 2>&1 | FileCheck %s --check-prefix=STREAM-ACTIVATED
 // RUN: not loom-dfg-sim %t.dir/stateful-activated-schedule.mlir --graph stateful_activated_schedule --arg 0=7 --arg 0=9 --output %t.dir/stateful-activated.json 2>&1 | FileCheck %s --check-prefix=STATEFUL-ACTIVATED
+// RUN: not loom-lower %t.dir/recursive-nested-activation.mlir -o %t.dir/recursive.out.mlir 2>&1 | FileCheck %s --check-prefix=RECURSIVE-NESTED
 // RUN: test ! -e %t.dir/value.out.mlir
 // RUN: test ! -e %t.dir/filtered-value.out.mlir
 // RUN: test ! -e %t.dir/stream.out.mlir
@@ -17,6 +18,7 @@
 // RUN: test ! -e %t.dir/direct.json
 // RUN: test ! -e %t.dir/stream-activated.json
 // RUN: test ! -e %t.dir/stateful-activated.json
+// RUN: test ! -e %t.dir/recursive.out.mlir
 
 // VALUE: graph @stream_to_value value output #0 is not statically exact-one
 // FILTERED-VALUE: graph @filtered_stream_to_value value output #0 is not statically exact-one
@@ -25,6 +27,7 @@
 // DIRECT: graph @direct_stream_rendezvous value output #0 is not statically exact-one
 // STREAM-ACTIVATED: graph @stream_activated_schedule value output #0 is not statically exact-one
 // STATEFUL-ACTIVATED: graph @stateful_activated_schedule value output #0 is not statically exact-one
+// RECURSIVE-NESTED: graph @recursive_nested_activation value output #0 is not statically exact-one
 
 // A loop selected by one branch has one close event only on that branch. The
 // final mux publishes that close or the one-shot bypass from the same outer
@@ -54,6 +57,34 @@ module {
     %complete = dataflow.mux %empty, %lanes#0, %starts#1
         : (i1, none, none) -> none
     dataflow.graph.return %complete : none
+  }
+}
+
+// A nested schedule cannot establish its own activation through its false
+// close. The cyclic activation must fail cardinality analysis without
+// recursively rebuilding the same nested analysis.
+//--- recursive-nested-activation.mlir
+module {
+  dataflow.graph private @recursive_nested_activation(%start: none) -> i32
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %zero = dataflow.constant %start {const_value = 0 : i32} : i32
+    %one = dataflow.constant %start {const_value = 1 : i32} : i32
+    %outer_iv, %outer_phase = dataflow.stream %zero, %one, %one
+        step add while slt : i32
+    %inner_iv, %inner_phase = dataflow.stream %inner_close#0, %one, %one
+        step add while slt : i32
+    %inner_value = dataflow.invariant %inner_phase, %zero : i32
+    %inner_close:2 = dataflow.demux %inner_phase, %inner_value
+        : (i1, i32) -> (i32, i32)
+    %outer_value = dataflow.carry %outer_phase, %zero, %inner_close#0 : i32
+    %value_close:2 = dataflow.demux %outer_phase, %outer_value
+        : (i1, i32) -> (i32, i32)
+    %control = dataflow.invariant %outer_phase, %start : none
+    %complete:2 = dataflow.demux %outer_phase, %control
+        : (i1, none) -> (none, none)
+    dataflow.graph.return values(%value_close#0 : i32) streams() memories()
+        complete(%complete#0 : none)
   }
 }
 

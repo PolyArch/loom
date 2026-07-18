@@ -382,10 +382,11 @@ bool hasToken(ChannelMap &channels, mlir::OpOperand &operand) {
   return it != channels.end() && !it->second.empty();
 }
 
-Token popToken(ChannelMap &channels, mlir::OpOperand &operand) {
-  auto &queue = channels[&operand];
+Token popToken(SimulatorState &state, mlir::OpOperand &operand) {
+  auto &queue = state.channels[&operand];
   Token token = queue.front();
   queue.pop_front();
+  ++state.actorMutationEpoch;
   return token;
 }
 
@@ -397,6 +398,7 @@ void emitToken(SimulatorState &state, mlir::Value value, Token token) {
   for (mlir::OpOperand &use : value.getUses())
     state.pendingChannels[&use].push_back(token);
   state.pendingObservedOutputs[value].push_back(token);
+  ++state.actorMutationEpoch;
 }
 
 bool recordEvent(SimulatorState &state, llvm::StringRef opName) {
@@ -817,10 +819,23 @@ static bool isSupportedNonEvent(mlir::Operation *op) {
                    mlir::memref::CastOp>(op);
 }
 
-static bool fireOperation(mlir::Operation *op, SimulatorState &state) {
-  if (isStructuredOperation(op))
-    return fireStructuredOperation(op, state);
-  return fireActorOperation(op, state);
+enum class FireOutcome {
+  NotReady,
+  Fired,
+  Failed,
+};
+
+static FireOutcome fireOperation(mlir::Operation *op, SimulatorState &state) {
+  const std::uint64_t mutationEpoch = state.actorMutationEpoch;
+  const std::size_t diagnosticCount = state.diagnostics.size();
+  bool fired = isStructuredOperation(op) ? fireStructuredOperation(op, state)
+                                         : fireActorOperation(op, state);
+  if (fired)
+    return FireOutcome::Fired;
+  if (state.actorMutationEpoch != mutationEpoch ||
+      state.diagnostics.size() != diagnosticCount)
+    return FireOutcome::Failed;
+  return FireOutcome::NotReady;
 }
 
 std::string unsupportedOperationLabel(mlir::Operation *op) {
@@ -1415,8 +1430,12 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   }
   if (!unsupported.empty()) {
     report.status = "unsupported";
+    llvm::SmallVector<llvm::StringRef> labels;
     for (const auto &entry : unsupported)
-      report.diagnostics.push_back("unsupported op: " + entry.getKey().str());
+      labels.push_back(entry.getKey());
+    llvm::sort(labels);
+    for (llvm::StringRef label : labels)
+      report.diagnostics.push_back("unsupported op: " + label.str());
     return report;
   }
 
@@ -1525,15 +1544,17 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
         continue;
       if (orderedStructuredBarrier && isStructuredOperation(&op))
         continue;
-      bool opFired = fireOperation(&op, state);
-      if (retired && opFired) {
+      FireOutcome outcome = fireOperation(&op, state);
+      if (retired && outcome != FireOutcome::NotReady) {
         report.status = "invalid";
         report.diagnostics.push_back(("actor '" + op.getName().getStringRef() +
-                                      "' fired after graph retirement")
+                                      (outcome == FireOutcome::Fired
+                                           ? "' fired after graph retirement"
+                                           : "' failed after graph retirement"))
                                          .str());
         break;
       }
-      fired |= opFired;
+      fired |= outcome == FireOutcome::Fired;
       if (hasPendingOrderedStructuredFire(&op, state))
         orderedStructuredBarrier = true;
     }
