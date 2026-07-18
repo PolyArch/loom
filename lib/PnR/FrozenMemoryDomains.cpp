@@ -1,4 +1,5 @@
 #include "FrozenMemoryDomains.h"
+#include "EndpointMatching.h"
 
 #include "Mapping/FabricOccurrenceIndex.h"
 #include "Mapping/Verifier.h"
@@ -92,10 +93,6 @@ std::uint64_t sizeValue(std::size_t size) {
   return static_cast<std::uint64_t>(size);
 }
 
-llvm::Error preflight(PnrCapacityContext context, std::size_t size) {
-  return preflightPnrIndexCapacity(context, sizeValue(size));
-}
-
 llvm::Expected<PnrIndex> checked(PnrCapacityContext context,
                                  std::size_t value) {
   return checkedPnrIndex(context, sizeValue(value));
@@ -126,37 +123,26 @@ bool supportsDemand(const ValidatedMemoryEndpoint &endpoint,
                             descriptor.type, TypeKeyLess{});
 }
 
-bool augment(std::size_t demand,
-             const std::vector<std::vector<std::size_t>> &domains,
-             std::vector<std::size_t> &matchedDemand,
-             std::vector<bool> &matched, std::vector<bool> &visited) {
-  for (std::size_t endpoint : domains[demand]) {
-    if (visited[endpoint])
-      continue;
-    visited[endpoint] = true;
-    if (!matched[endpoint] || augment(matchedDemand[endpoint], domains,
-                                      matchedDemand, matched, visited)) {
-      matched[endpoint] = true;
-      matchedDemand[endpoint] = demand;
-      return true;
-    }
-  }
-  return false;
-}
-
-bool hasInjectiveBinding(const std::vector<std::vector<std::size_t>> &domains,
-                         std::size_t endpointCount) {
-  std::vector<std::size_t> matchedDemand(endpointCount);
-  std::vector<bool> matched(endpointCount);
-  for (std::size_t demand = 0; demand < domains.size(); ++demand) {
-    std::vector<bool> visited(endpointCount);
-    if (!augment(demand, domains, matchedDemand, matched, visited))
-      return false;
-  }
-  return true;
-}
-
 } // namespace
+
+llvm::Error loom::pnr::detail::preflightFrozenMemoryDomainsCapacity(
+    std::uint64_t memoryRealizationCount, std::uint64_t memoryOccurrenceCount,
+    std::uint64_t memoryEndpointCount, std::uint64_t compatibleTypeCount,
+    std::uint64_t localArcCount) {
+  if (llvm::Error error =
+          preflightPnrIndexCapacity(memoryCountContext, memoryRealizationCount))
+    return error;
+  if (llvm::Error error = preflightPnrIndexCapacity(occurrenceCountContext,
+                                                    memoryOccurrenceCount))
+    return error;
+  if (llvm::Error error =
+          preflightPnrIndexCapacity(endpointCountContext, memoryEndpointCount))
+    return error;
+  if (llvm::Error error = preflightPnrIndexCapacity(endpointTypeCountContext,
+                                                    compatibleTypeCount))
+    return error;
+  return preflightPnrIndexCapacity(localArcCountContext, localArcCount);
+}
 
 llvm::Expected<FrozenMemoryDomains> loom::pnr::detail::buildFrozenMemoryDomains(
     const FabricHardwareView &fabric, const ValidatedTechMapping &mapping,
@@ -172,20 +158,12 @@ llvm::Expected<FrozenMemoryDomains> loom::pnr::detail::buildFrozenMemoryDomains(
     return freezeError("cannot freeze memory domains: validated Mapping "
                        "projection is incomplete");
 
-  if (llvm::Error error = preflight(memoryCountContext, realizations.size()))
-    return std::move(error);
-  if (llvm::Error error = preflight(occurrenceCountContext,
-                                    projection.memoryOccurrences.size()))
-    return std::move(error);
-  if (llvm::Error error =
-          preflight(endpointCountContext, projection.memoryEndpoints.size()))
-    return std::move(error);
-  if (llvm::Error error =
-          preflight(endpointTypeCountContext,
-                    projection.memoryEndpointCompatibleTypes.size()))
-    return std::move(error);
-  if (llvm::Error error =
-          preflight(localArcCountContext, projection.memoryLocalArcs.size()))
+  if (llvm::Error error = preflightFrozenMemoryDomainsCapacity(
+          sizeValue(realizations.size()),
+          sizeValue(projection.memoryOccurrences.size()),
+          sizeValue(projection.memoryEndpoints.size()),
+          sizeValue(projection.memoryEndpointCompatibleTypes.size()),
+          sizeValue(projection.memoryLocalArcs.size())))
     return std::move(error);
 
   FrozenMemoryDomains result;
@@ -265,6 +243,7 @@ llvm::Expected<FrozenMemoryDomains> loom::pnr::detail::buildFrozenMemoryDomains(
   }
 
   result.realizations.reserve(realizations.size());
+  EndpointMatchingScratch scratch;
   for (std::size_t realizationIndex = 0; realizationIndex < realizations.size();
        ++realizationIndex) {
     const MemoryRealizationDraft &realization = *realizations[realizationIndex];
@@ -302,8 +281,7 @@ llvm::Expected<FrozenMemoryDomains> loom::pnr::detail::buildFrozenMemoryDomains(
           checked(portDemandOffsetContext, result.portDemands.size());
       if (!portDemandOffset)
         return portDemandOffset.takeError();
-      std::vector<std::vector<std::size_t>> domains;
-      domains.reserve(selected.activeBoundaryPorts.size());
+      scratch.reset(occurrence.endpointCount);
 
       for (const ValidatedMemoryBoundaryPort &demand :
            selected.activeBoundaryPorts) {
@@ -311,7 +289,7 @@ llvm::Expected<FrozenMemoryDomains> loom::pnr::detail::buildFrozenMemoryDomains(
                                             result.compatibleEndpoints.size());
         if (!endpointDomainOffset)
           return endpointDomainOffset.takeError();
-        std::vector<std::size_t> domain;
+        const std::size_t scratchOffset = scratch.beginDomain();
         for (const ValidatedMemoryLocalArc &arc : findMemoryPortArcs(
                  projection, memoryOccurrenceIndex, demand.operation,
                  demand.direction, demand.port)) {
@@ -323,17 +301,18 @@ llvm::Expected<FrozenMemoryDomains> loom::pnr::detail::buildFrozenMemoryDomains(
           compatibleTypes = compatibleTypes.slice(endpoint.compatibleTypeOffset,
                                                   endpoint.compatibleTypeCount);
           if (supportsDemand(endpoint, compatibleTypes, arc, demand))
-            domain.push_back(arc.endpoint);
+            scratch.addEndpoint(arc.endpoint);
         }
+        const EndpointDomainRange domain = scratch.endDomain(scratchOffset);
         auto endpointDomainCount =
-            checked(endpointDomainCountContext, domain.size());
+            checked(endpointDomainCountContext, domain.count);
         if (!endpointDomainCount)
           return endpointDomainCount.takeError();
         if (llvm::Error error = preflightFrozenRangeCapacity(
                 endpointDomainOffsetContext, *endpointDomainOffset,
                 *endpointDomainCount))
           return std::move(error);
-        for (std::size_t localEndpoint : domain) {
+        for (std::size_t localEndpoint : scratch.endpoints(domain)) {
           auto endpoint = checkedPnrIndexAdd(
               endpointIndexContext, sizeValue(occurrence.endpointOffset),
               sizeValue(localEndpoint));
@@ -350,13 +329,9 @@ llvm::Expected<FrozenMemoryDomains> loom::pnr::detail::buildFrozenMemoryDomains(
              descriptor.kind, descriptor.type, descriptor.role,
              descriptor.payloadWidthBits, descriptor.tagWidthBits,
              *endpointDomainOffset, *endpointDomainCount});
-        domains.push_back(std::move(domain));
       }
 
-      bool unaryEligible =
-          llvm::all_of(domains,
-                       [](const auto &domain) { return !domain.empty(); }) &&
-          hasInjectiveBinding(domains, occurrence.endpointCount);
+      const bool unaryEligible = scratch.hasInjectiveBinding();
       auto portDemandCount =
           checked(portDemandCountContext, selected.activeBoundaryPorts.size());
       if (!portDemandCount)

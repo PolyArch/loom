@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -344,37 +345,46 @@ loom::pnr::freezeRoutingGraph(const PnrProblemInputs &inputs) {
       std::move(incomingForwardArcIndices));
 }
 
-bool loom::pnr::FrozenRoutingGraph::hasCompatiblePath(
-    PnrIndex source, PnrIndex target, mapping::PortKind portKind,
-    std::uint32_t payloadWidthBits, std::uint32_t tagWidthBits) const {
-  if (source >= routingEndpoints_.size() || target >= routingEndpoints_.size())
-    return false;
+void loom::pnr::FrozenRoutingGraph::computeCompatibleReachability(
+    PnrIndex source, mapping::PortKind portKind, std::uint32_t payloadWidthBits,
+    std::uint32_t tagWidthBits,
+    FrozenRoutingReachabilityScratch &scratch) const {
+  if (scratch.reachedGeneration_.size() < routingEndpoints_.size())
+    scratch.reachedGeneration_.resize(routingEndpoints_.size());
+  if (scratch.generation_ == std::numeric_limits<std::uint64_t>::max()) {
+    std::fill(scratch.reachedGeneration_.begin(),
+              scratch.reachedGeneration_.end(), 0);
+    scratch.generation_ = 1;
+  } else {
+    ++scratch.generation_;
+  }
+  scratch.worklist_.clear();
+
+  if (source >= routingEndpoints_.size())
+    return;
   auto supports = [&](PnrIndex endpoint) {
     const FrozenRoutingEndpoint &candidate = routingEndpoints_[endpoint];
     return candidate.portKind == portKind &&
            candidate.payloadCapacityBits >= payloadWidthBits &&
            candidate.tagCapacityBits >= tagWidthBits;
   };
-  if (!supports(source) || !supports(target))
-    return false;
+  if (!supports(source))
+    return;
 
-  std::vector<bool> visited(routingEndpoints_.size());
-  std::vector<PnrIndex> worklist{source};
-  visited[source] = true;
-  for (std::size_t cursor = 0; cursor < worklist.size(); ++cursor) {
-    const PnrIndex current = worklist[cursor];
-    if (current == target)
-      return true;
+  scratch.worklist_.push_back(source);
+  scratch.reachedGeneration_[source] = scratch.generation_;
+  for (std::size_t cursor = 0; cursor < scratch.worklist_.size(); ++cursor) {
+    const PnrIndex current = scratch.worklist_[cursor];
     for (PnrIndex arc = adjacencyOffsets_[current];
          arc < adjacencyOffsets_[current + 1]; ++arc) {
       const FrozenRoutingArc &candidate = routingArcs_[arc];
       if (candidate.payloadCapacityBits < payloadWidthBits ||
           candidate.tagCapacityBits < tagWidthBits ||
-          visited[candidate.target] || !supports(candidate.target))
+          scratch.reachedGeneration_[candidate.target] == scratch.generation_ ||
+          !supports(candidate.target))
         continue;
-      visited[candidate.target] = true;
-      worklist.push_back(candidate.target);
+      scratch.reachedGeneration_[candidate.target] = scratch.generation_;
+      scratch.worklist_.push_back(candidate.target);
     }
   }
-  return false;
 }

@@ -43,19 +43,20 @@ explicit control, state, stream, and memory semantics.
 The Fabric Hardware Description owns hardware facts, including elaborated
 topology, FU topology, capabilities, configuration domains, ports, and
 physical implementation structure. Its finalized facts include typed compute
-occurrences, exact FU membership, schedule kind, physical endpoints, and
-explicit directed local arcs. The same transport-endpoint identity namespace
-also covers endpoints owned by typed compute-only switch, FIFO, and boundary
-resources. Fabric owns each endpoint's exact owner, direction, port kind, and
-explicit native transport kind (`bits` or `bits_tag`), together with
-independent payload and tag capacities. Fabric also owns every explicit
-directed point-to-point arc and resource traversal. Boundary resources retain
-the canonical Fabric boundary direction (`s2t`, `t2t`, or `t2s`) rather than a
-Mapping-local spelling. Fabric's definition-level facts also include memory
-service domains, implementation families, load/store operation-port
-templates, explicit typed implementation boundary ports, normalized semantic
-encodings, typed internal connectivity, source-endpoint fanout capacities,
-and one-beat access contracts.
+occurrences with exact FU membership and schedule kind, typed memory
+occurrences with exact Memory Implementation membership, physical endpoints,
+and explicit directed local arcs. The same transport
+endpoint identity namespace covers endpoints owned by compute occurrences,
+memory occurrences, switches, FIFOs, and boundary resources. Fabric owns each
+endpoint's exact owner, direction, port kind, and explicit native transport
+kind (`bits` or `bits_tag`), together with independent payload and tag
+capacities. Fabric also owns every explicit directed point-to-point arc and
+resource traversal. Boundary resources retain the canonical Fabric boundary
+direction (`s2t`, `t2t`, or `t2s`) rather than a Mapping-local spelling.
+Fabric's definition-level facts also include memory service domains,
+implementation families, load/store operation-port templates, explicit typed
+implementation boundary ports, normalized semantic encodings, typed internal
+connectivity, source-endpoint fanout capacities, and one-beat access contracts.
 
 The TechMapping-profile Mapping Artifact owns the selected logical
 realization relation between those exact artifacts. It owns
@@ -443,11 +444,11 @@ exact Fabric identity before retaining the projection.
 A routing endpoint declares both its software port kind and its native Fabric
 transport kind. `bits` has zero tag capacity. `bits_tag` has positive tag
 capacity. The native kind is never inferred from tag capacity.
-`PortKind::Memory` compute endpoints are omitted from this compute-only
-subsequence because memory capabilities are not token routes. Concrete memory
-occurrence endpoints for exposed load/store operation ports are ordinary typed
-token-routing vertices. Storage-service identity remains a separate obligation
-and does not become a routing endpoint or arc.
+`PortKind::Memory` compute endpoints are omitted from the routable compute
+endpoint subsequence because memory capabilities are not token routes.
+Concrete memory occurrence endpoints for exposed load/store operation ports
+are ordinary typed token-routing vertices. Storage-service identity remains a
+separate obligation and does not become a routing endpoint or arc.
 
 A point-to-point arc is legal only from one output endpoint to one input
 endpoint with the same software port kind and native Fabric transport kind.
@@ -503,12 +504,14 @@ exact compute-endpoint ordering already used by
 by `FrozenRealizationGraph::memoryPhysicalEndpoints`. Later multi-source and
 multi-target token routing can therefore consume either factorized endpoint
 domain without selecting an occurrence, endpoint, path, configuration,
-capacity claim, or route tree. `hasCompatiblePath` derives directed
-reachability on demand from the same CSR while filtering every endpoint and arc
-by software port kind and required payload/tag capacity. It does not persist an
-all-pairs matrix or route choice. The routing graph contains no strings, MLIR
-containers, coordinates, names, implicit reverse arcs, geometric adjacency,
-symbol-order adjacency, topology-specific shortcuts, memory service
+capacity claim, or route tree. A caller-owned
+`FrozenRoutingReachabilityScratch` derives one source and required
+port-kind/payload/tag signature at a time from the same CSR. Its generation
+marks and worklist are reused across queries, and all targets for that source
+and signature are then constant-time membership checks. It persists neither an
+all-pairs matrix nor a route choice. The routing graph contains no strings,
+MLIR containers, coordinates, names, implicit reverse arcs, geometric
+adjacency, symbol-order adjacency, topology-specific shortcuts, memory service
 connectivity, or routing-search state.
 
 Descriptor-vector permutation cannot change structural equality, canonical
@@ -523,25 +526,31 @@ Let `P_e`, `F_o`, `E`, and `A` be the PE occurrence, FU occurrence, endpoint,
 and local arc counts. Validation canonicalization costs sorting time over those
 vectors, bounded by
 `O((P_e + F_o + E + A) log(P_e + F_o + E + A))`. For a realization with `P`
-exposed FU ports and `K` concrete occurrences in its exact implementation
+exposed FU or memory operation-template ports and `K` concrete occurrences in
+its exact implementation
 range, `ImplDomain` lookup costs `O(log F + K)` for `F` indexed
 implementations. A port domain lookup costs
 `O(log Q_o + sum(log(1 + T_e)))` for `Q_o` keyed port ranges in that occurrence
 and the compatible-type counts `T_e` of the relevant arcs' endpoints. If `R_o`
 is the number of relevant arcs examined, this is bounded by
 `O(log Q_o + R_o log(1 + T_max))`. Spatial matching uses occurrence-local
-endpoint indices and a reused augmenting-path workspace; for `D_o` compatible
-domain edges it costs `O(P * D_o)` time. The workspace retains buffers sized
-to the largest observed `P`, `E_o`, and `D_o`, so scratch is
-`O(P_max + E_max + D_max)` and allocation occurs only through amortized vector
-growth. Matching and visit marks use 64-bit generations: a candidate does not
-clear matching state across the endpoint range, and each augmenting-path probe
-touches only endpoints it visits. A full mark reset occurs only on generation
-rollover after `2^64 - 1` generations. Thus constant-port construction is
-bounded by
+endpoint indices and the same reused augmenting-path workspace for compute and
+memory occurrences; for `D_o` compatible domain edges it costs
+`O(P * D_o)` time. The workspace retains buffers sized to the largest observed
+`P`, `E_o`, and `D_o`, so scratch is `O(P_max + E_max + D_max)` and allocation
+occurs only through amortized vector growth. Matching and visit marks use
+64-bit generations: a candidate does not clear matching state across the
+endpoint range, and each augmenting-path probe touches only endpoints it
+visits. A full mark reset occurs only on generation rollover after
+`2^64 - 1` generations. Thus constant-port construction is bounded by
 `O(log F + K log Q_max + sum(R_o log(1 + T_max) + D_o))` after
 canonicalization, including matching, rather than cubic or quartic in
 artifact-wide occurrence or endpoint counts.
+
+For a routing source and required port-kind/payload/tag signature, compatible
+reachability costs `O(V + A_r)` over routing vertices and arcs and reuses
+`O(V)` generation-mark and worklist scratch. Every target membership query
+against that derived source/signature result is `O(1)`.
 
 Malformed Fabric structure or references are rejected during validation and
 cannot be represented as an empty domain. Missing FU implementations,
@@ -563,14 +572,15 @@ source-vector permutations do not alter the frozen result.
 
 Both frozen projections are ephemeral and have no independent artifact
 identity, serialization, canonical byte encoding, or persistence form. Their
-equality is structural only. The compute projection contains the base
-concrete-FU and correlated context candidates, but no selected FU, selected
-context, selected endpoint, configuration, route, tag, buffer, resource-time,
-sharing, or physical-memory decision. It is not a Physical Mapping record.
-Both projections are reached only through the exact five-input authority
-boundary. They are not the complete `FrozenModel`; config, constraint,
-memory-occurrence, and search-state projections remain outside the implemented
-structural views.
+equality is structural only. The realization projection contains base
+concrete-FU and correlated context candidates plus concrete memory-occurrence
+and external operation-endpoint candidates. It contains no selected FU,
+selected context, selected memory occurrence, selected endpoint,
+configuration, route, tag, buffer, resource-time, sharing, or physical-memory
+decision. It is not a Physical Mapping record. Both projections are reached
+only through the exact five-input authority boundary. They are not the
+complete `FrozenModel`; config, constraint, search-state, and complete physical
+legality projections remain outside the implemented structural views.
 
 The structural subview intentionally retains canonical edge identities, dense
 terminal references, and deletable occurrence and endpoint-domain caches. It

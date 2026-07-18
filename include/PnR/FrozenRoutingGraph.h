@@ -80,6 +80,21 @@ struct FrozenRoutingArc {
   }
 };
 
+class FrozenRoutingReachabilityScratch {
+public:
+  bool contains(PnrIndex endpoint) const {
+    return generation_ != 0 && endpoint < reachedGeneration_.size() &&
+           reachedGeneration_[endpoint] == generation_;
+  }
+
+private:
+  friend class FrozenRoutingGraph;
+
+  std::vector<std::uint64_t> reachedGeneration_;
+  std::vector<PnrIndex> worklist_;
+  std::uint64_t generation_ = 0;
+};
+
 class FrozenRoutingGraph {
 public:
   llvm::ArrayRef<FrozenTransportResource> transportResources() const {
@@ -110,10 +125,10 @@ public:
   llvm::ArrayRef<PnrIndex> incomingForwardArcIndices() const {
     return incomingForwardArcIndices_;
   }
-  bool hasCompatiblePath(PnrIndex source, PnrIndex target,
-                         mapping::PortKind portKind,
-                         std::uint32_t payloadWidthBits,
-                         std::uint32_t tagWidthBits) const;
+  void computeCompatibleReachability(
+      PnrIndex source, mapping::PortKind portKind,
+      std::uint32_t payloadWidthBits, std::uint32_t tagWidthBits,
+      FrozenRoutingReachabilityScratch &scratch) const;
 
   friend bool operator==(const FrozenRoutingGraph &lhs,
                          const FrozenRoutingGraph &rhs) {

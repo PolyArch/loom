@@ -4,9 +4,22 @@
 
 #include <algorithm>
 #include <limits>
+#include <string>
+#include <type_traits>
+#include <utility>
 
 namespace loom::mapping::test {
 namespace {
+
+template <typename T, typename = void>
+struct HasLegacyRealizationAccessor : std::false_type {};
+
+template <typename T>
+struct HasLegacyRealizationAccessor<
+    T, std::void_t<decltype(std::declval<const T &>().realization())>>
+    : std::true_type {};
+
+static_assert(!HasLegacyRealizationAccessor<FrozenMappingInfeasibility>::value);
 
 bool containsExternalEdge(const FrozenRealizationGraph &graph, EdgeId edge) {
   return std::any_of(
@@ -30,6 +43,36 @@ transportEndpoint(std::uint64_t id, PortDirection direction,
                   std::uint32_t payloadCapacityBits) {
   return {TransportEndpointId(id), direction, PortKind::Value,
           payloadCapacityBits,     0,         fabric::DataPathKind::Bits};
+}
+void selectAddressInternalMemoryGraph(TestCase &testCase) {
+  selectInternalMemoryGraph(testCase);
+  const ArtifactIdentity &dataflow = testCase.dataflow.identity;
+  const ArtifactIdentity &fabric = testCase.fabric.identity;
+  MemoryRealizationDraft &realization = testCase.mapping.memoryRealizations[0];
+  const MemoryBoundaryPortCorrespondence loadControl =
+      realization.boundaryPorts[1];
+  const MemoryBoundaryPortCorrespondence loadResult =
+      realization.boundaryPorts[2];
+  const MemoryBoundaryPortCorrespondence storeData =
+      realization.boundaryPorts[4];
+  const MemoryBoundaryPortCorrespondence storeDone =
+      realization.boundaryPorts[5];
+  realization.boundaryPorts = {loadControl, loadResult, storeData, storeDone};
+  testCase.fabric.memorySemanticEncodings[2].internalConnections = {
+      MemoryInternalConnectionId(37), MemoryInternalConnectionId(38),
+      MemoryInternalConnectionId(39)};
+  const GraphRef graph{dataflow, GraphId(1)};
+  const MemoryImplementationRef implementation{fabric,
+                                               MemoryImplementationId(32)};
+  realization.graphBoundaryPorts = {
+      {GraphPortRef{graph, PortDirection::Input, 1},
+       MemoryImplementationBoundaryPortRef{implementation, 0}}};
+  realization.internalEdges.insert(
+      realization.internalEdges.begin(),
+      {{EdgeRef{dataflow, EdgeId(100)},
+        MemoryInternalConnectionRef{fabric, MemoryInternalConnectionId(37)}},
+       {EdgeRef{dataflow, EdgeId(113)},
+        MemoryInternalConnectionRef{fabric, MemoryInternalConnectionId(38)}}});
 }
 TestCase makeMemoryRouteDomainCase() {
   TestCase testCase = makeMemoryAnchorCase();
@@ -139,6 +182,35 @@ computeCandidate(const char *test, const FrozenRealizationGraph &graph,
     fail(test, "compute candidate is missing");
   return *found;
 }
+void expectMemoryInfeasibility(const char *test,
+                               llvm::Expected<FrozenRealizationGraph> result,
+                               FrozenMappingInfeasibilityCode expectedCode,
+                               MemoryRealizationId expectedRealization) {
+  if (result)
+    fail(test, "expected memory mapping infeasibility");
+  bool sawInfeasibility = false;
+  llvm::Error remaining = llvm::handleErrors(
+      result.takeError(),
+      [&](const FrozenMappingInfeasibility &error) -> llvm::Error {
+        sawInfeasibility = true;
+        if (error.code() != expectedCode || error.computeRealization() ||
+            error.memoryRealization() == nullptr ||
+            *error.memoryRealization() != expectedRealization)
+          fail(test, "memory infeasibility has the wrong typed identity");
+        const auto *variantRealization =
+            std::get_if<MemoryRealizationId>(&error.realizationId());
+        if (variantRealization == nullptr ||
+            *variantRealization != expectedRealization)
+          fail(test, "memory infeasibility variant identity is wrong");
+        return llvm::Error::success();
+      });
+  if (remaining) {
+    llvm::consumeError(std::move(remaining));
+    fail(test, "received a different freeze error category");
+  }
+  if (!sawInfeasibility)
+    fail(test, "memory mapping infeasibility was not handled");
+}
 PnrIndex memoryVertex(const char *test, const FrozenRealizationGraph &graph,
                       const FrozenRoutingGraph &routing,
                       const FrozenMemoryImplementationOccurrence &candidate,
@@ -169,10 +241,6 @@ PnrIndex computeVertex(const char *test, const FrozenRealizationGraph &graph,
     fail(test, "compute endpoint domain is not a singleton");
   const PnrIndex physical = graph.compatibleEndpoints()[found->endpointOffset];
   return routing.computeEndpointVertices()[physical];
-}
-bool hasI16Path(const FrozenRoutingGraph &routing, PnrIndex source,
-                PnrIndex target) {
-  return routing.hasCompatiblePath(source, target, PortKind::Value, 16, 0);
 }
 const FrozenRoutingArc &routingArc(const char *test,
                                    const FrozenRoutingGraph &routing,
@@ -318,13 +386,40 @@ void rejectsInexactMemoryInternalGraph() {
   }
   {
     TestCase testCase = makeMemoryAnchorCase();
+    selectAddressInternalMemoryGraph(testCase);
+    auto &internalEdges = testCase.mapping.memoryRealizations[0].internalEdges;
+    if (internalEdges[0].edge == internalEdges[1].edge)
+      fail(__func__, "fixture did not provide distinct internal edges");
+    internalEdges[1].connection = internalEdges[0].connection;
+    expectMapError(__func__, testCase,
+                   MappingErrorCode::InvalidInternalEdgeWitness);
+  }
+  {
+    TestCase testCase = makeMemoryAnchorCase();
     selectInternalMemoryGraph(testCase);
     testCase.fabric.memorySemanticEncodings[2].internalConnections.pop_back();
     expectMapError(__func__, testCase,
                    MappingErrorCode::InvalidInternalEdgeWitness);
   }
+  {
+    TestCase testCase = makeMemoryAnchorCase();
+    selectAddressInternalMemoryGraph(testCase);
+    testCase.fabric.memoryImplementations[0]
+        .boundaryPorts[0]
+        .maxInternalFanout = 1;
+    expectMapError(__func__, testCase, MappingErrorCode::InvalidPortConnection);
+  }
+  {
+    TestCase testCase = makeMemoryAnchorCase();
+    selectAddressInternalMemoryGraph(testCase);
+    testCase.mapping.memoryRealizations[0]
+        .graphBoundaryPorts[0]
+        .implementationPort.index = 1;
+    expectMapError(__func__, testCase,
+                   MappingErrorCode::IncompleteMemoryBoundaryCorrespondence);
+  }
 }
-void freezesPhysicalMemoryRouteDomains() {
+void freezesPhysicalMemoryOccurrenceDomains() {
   TestCase testCase = makeMemoryRouteDomainCase();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
   ResolvedPnrConfigView config;
@@ -365,6 +460,34 @@ void freezesPhysicalMemoryRouteDomains() {
       fail(__func__, "internal WAR ports escaped into physical demands");
   }
 
+  if (realizations.memoryPhysicalEndpoints().size() !=
+      routing.memoryEndpointVertices().size())
+    fail(__func__, "memory endpoint projections have different sizes");
+  for (std::size_t index = 0;
+       index < realizations.memoryPhysicalEndpoints().size(); ++index) {
+    const PnrIndex vertex = routing.memoryEndpointVertices()[index];
+    if (routing.routingEndpoints()[vertex].id !=
+        realizations.memoryPhysicalEndpoints()[index].id)
+      fail(__func__, "memory endpoint domain cannot address routing graph");
+  }
+}
+
+void derivesDirectedMemoryReachability() {
+  TestCase testCase = makeMemoryRouteDomainCase();
+  ValidatedTechMapping mapping = validateCase(__func__, testCase);
+  ResolvedPnrConfigView config;
+  PnrProblemInputs inputs = makePnrProblemInputs(testCase, mapping, config);
+  FrozenRealizationGraph realizations =
+      takeExpected(__func__, freezeRealizationGraph(inputs));
+  FrozenRoutingGraph routing =
+      takeExpected(__func__, freezeRoutingGraph(inputs));
+
+  const FrozenMemoryRealization &memory =
+      memoryRealization(__func__, realizations, MemoryRealizationId(60));
+  const FrozenMemoryImplementationOccurrence &memoryA =
+      memoryCandidate(__func__, realizations, memory, MemoryOccurrenceId(3000));
+  const FrozenMemoryImplementationOccurrence &memoryB =
+      memoryCandidate(__func__, realizations, memory, MemoryOccurrenceId(4000));
   const FrozenComputeRealization &cr0 =
       computeRealization(__func__, realizations, ComputeRealizationId(50));
   const FrozenComputeRealization &cr3 =
@@ -388,13 +511,27 @@ void freezesPhysicalMemoryRouteDomains() {
                                            cr0A, PortDirection::Input, 0);
   const PnrIndex cr0InputB = computeVertex(__func__, realizations, routing,
                                            cr0B, PortDirection::Input, 0);
-  if (!hasI16Path(routing, loadA, cr0InputA) ||
-      hasI16Path(routing, loadA, cr0InputB) ||
-      hasI16Path(routing, loadB, cr0InputA) ||
-      !hasI16Path(routing, loadB, cr0InputB))
-    fail(__func__, "load route domain did not follow directed width capacity");
-  if (!routing.hasCompatiblePath(loadA, cr0InputB, PortKind::Value, 8, 0))
+  FrozenRoutingReachabilityScratch reachability;
+  routing.computeCompatibleReachability(loadA, PortKind::Value, 16, 0,
+                                        reachability);
+  if (!reachability.contains(cr0InputA) || reachability.contains(cr0InputB))
+    fail(__func__, "MEM_A load reachability is wrong");
+  routing.computeCompatibleReachability(loadB, PortKind::Value, 16, 0,
+                                        reachability);
+  if (reachability.contains(cr0InputA) || !reachability.contains(cr0InputB))
+    fail(__func__, "MEM_B load reachability is wrong");
+  routing.computeCompatibleReachability(loadA, PortKind::Value, 8, 0,
+                                        reachability);
+  if (!reachability.contains(cr0InputB))
     fail(__func__, "narrow connected load path was not represented");
+  routing.computeCompatibleReachability(loadA, PortKind::Stream, 8, 0,
+                                        reachability);
+  if (reachability.contains(cr0InputA) || reachability.contains(cr0InputB))
+    fail(__func__, "route reachability ignored the required port kind");
+  routing.computeCompatibleReachability(loadA, PortKind::Value, 8, 1,
+                                        reachability);
+  if (reachability.contains(cr0InputA) || reachability.contains(cr0InputB))
+    fail(__func__, "route reachability ignored nonzero tag capacity");
 
   const PnrIndex cr3OutputA = computeVertex(__func__, realizations, routing,
                                             cr3A, PortDirection::Output, 0);
@@ -406,13 +543,27 @@ void freezesPhysicalMemoryRouteDomains() {
   const PnrIndex storeB =
       memoryVertex(__func__, realizations, routing, memoryB,
                    MemoryOperationPortTemplateId(35), PortDirection::Input, 1);
-  if (hasI16Path(routing, cr3OutputA, storeA) ||
-      !hasI16Path(routing, cr3OutputA, storeB) ||
-      !hasI16Path(routing, cr3OutputB, storeA) ||
-      hasI16Path(routing, cr3OutputB, storeB))
-    fail(__func__, "store route domain did not follow directed width capacity");
-  if (!routing.hasCompatiblePath(cr3OutputA, storeA, PortKind::Value, 8, 0))
+  routing.computeCompatibleReachability(cr3OutputA, PortKind::Value, 16, 0,
+                                        reachability);
+  if (reachability.contains(storeA) || !reachability.contains(storeB))
+    fail(__func__, "CR3_A store reachability is wrong");
+  routing.computeCompatibleReachability(cr3OutputB, PortKind::Value, 16, 0,
+                                        reachability);
+  if (!reachability.contains(storeA) || reachability.contains(storeB))
+    fail(__func__, "CR3_B store reachability is wrong");
+  routing.computeCompatibleReachability(cr3OutputA, PortKind::Value, 8, 0,
+                                        reachability);
+  if (!reachability.contains(storeA))
     fail(__func__, "narrow connected store path was not represented");
+}
+
+void derivesMemoryRouteResourceConflicts() {
+  TestCase testCase = makeMemoryRouteDomainCase();
+  ValidatedTechMapping mapping = validateCase(__func__, testCase);
+  ResolvedPnrConfigView config;
+  FrozenRoutingGraph routing = takeExpected(
+      __func__,
+      freezeRoutingGraph(makePnrProblemInputs(testCase, mapping, config)));
 
   const FrozenRoutingArc &familyALoad =
       routingArc(__func__, routing, TransportEndpointId(50000),
@@ -430,17 +581,17 @@ void freezesPhysicalMemoryRouteDomains() {
       !familyBLoad.resource || familyBLoad.resource != familyBStore.resource ||
       familyALoad.resource == familyBLoad.resource)
     fail(__func__, "shared route capacity did not follow resource identity");
+}
 
-  if (realizations.memoryPhysicalEndpoints().size() !=
-      routing.memoryEndpointVertices().size())
-    fail(__func__, "memory endpoint projections have different sizes");
-  for (std::size_t index = 0;
-       index < realizations.memoryPhysicalEndpoints().size(); ++index) {
-    const PnrIndex vertex = routing.memoryEndpointVertices()[index];
-    if (routing.routingEndpoints()[vertex].id !=
-        realizations.memoryPhysicalEndpoints()[index].id)
-      fail(__func__, "memory endpoint domain cannot address routing graph");
-  }
+void retainsDeterministicMemoryProjection() {
+  TestCase testCase = makeMemoryRouteDomainCase();
+  ValidatedTechMapping mapping = validateCase(__func__, testCase);
+  ResolvedPnrConfigView config;
+  PnrProblemInputs inputs = makePnrProblemInputs(testCase, mapping, config);
+  FrozenRealizationGraph realizations =
+      takeExpected(__func__, freezeRealizationGraph(inputs));
+  FrozenRoutingGraph routing =
+      takeExpected(__func__, freezeRoutingGraph(inputs));
 
   testCase.fabric.memoryOccurrences.clear();
   if (realizations != takeExpected(__func__, freezeRealizationGraph(inputs)) ||
@@ -474,6 +625,71 @@ void freezesPhysicalMemoryRouteDomains() {
           takeExpected(__func__, freezeRealizationGraph(permutedInputs)) ||
       routing != takeExpected(__func__, freezeRoutingGraph(permutedInputs)))
     fail(__func__, "descriptor permutation changed memory route domains");
+}
+
+void rejectsInvalidMemoryOccurrence() {
+  TestCase testCase = makeMemoryAnchorCase();
+  auto &types =
+      testCase.fabric.memoryOccurrences[0].endpoints[0].compatibleTypes;
+  types.push_back(types.front());
+  expectMapError(__func__, testCase, MappingErrorCode::InvalidMemoryOccurrence);
+}
+
+void reportsMemoryDomainInfeasibility() {
+  {
+    TestCase testCase = makeMemoryAnchorCase();
+    selectInternalMemoryGraph(testCase);
+    testCase.fabric.memoryOccurrences.clear();
+    ValidatedTechMapping mapping = validateCase(__func__, testCase);
+    ResolvedPnrConfigView config;
+    expectMemoryInfeasibility(
+        __func__,
+        freezeRealizationGraph(makePnrProblemInputs(testCase, mapping, config)),
+        FrozenMappingInfeasibilityCode::EmptyConcreteMemoryDomain,
+        MemoryRealizationId(60));
+  }
+  {
+    TestCase testCase = makeMemoryAnchorCase();
+    selectInternalMemoryGraph(testCase);
+    for (MemoryOccurrenceDescriptor &occurrence :
+         testCase.fabric.memoryOccurrences)
+      for (MemoryEndpointDescriptor &endpoint : occurrence.endpoints)
+        endpoint.payloadCapacityBits = 8;
+    ValidatedTechMapping mapping = validateCase(__func__, testCase);
+    ResolvedPnrConfigView config;
+    expectMemoryInfeasibility(
+        __func__,
+        freezeRealizationGraph(makePnrProblemInputs(testCase, mapping, config)),
+        FrozenMappingInfeasibilityCode::EmptyMemoryUnaryEligibleDomain,
+        MemoryRealizationId(60));
+  }
+}
+
+void preflightsMemoryProjectionCapacity() {
+#if LOOM_PNR_INDEX_BITS == 32
+  llvm::Error error = loom::pnr::detail::preflightFrozenMemoryDomainsCapacity(
+      0, 0, getPnrIndexMax() + std::uint64_t{1}, 0, 0);
+  if (!error)
+    fail(__func__, "expected memory projection capacity failure");
+  bool sawCapacityError = false;
+  llvm::handleAllErrors(
+      std::move(error), [&](const PnrIndexCapacityError &capacityError) {
+        sawCapacityError = true;
+        std::string message;
+        llvm::raw_string_ostream stream(message);
+        capacityError.log(stream);
+        if (message.find("table 'memory_physical_endpoints'") ==
+            std::string::npos)
+          fail(__func__, "capacity failure named the wrong memory table");
+      });
+  if (!sawCapacityError)
+    fail(__func__, "received a different capacity error category");
+#else
+  if (llvm::Error error =
+          loom::pnr::detail::preflightFrozenMemoryDomainsCapacity(
+              0, 0, getPnrIndexMax(), 0, 0))
+    fail(__func__, llvm::toString(std::move(error)).c_str());
+#endif
 }
 void validatesCorrelatedMemoryAccessCapabilities() {
   {
@@ -675,7 +891,13 @@ void rejectsAnchorMemoryCoverageAndReferences() {
 
 void runMemoryMappingTests() {
   freezesInternalMemoryAnchor();
-  freezesPhysicalMemoryRouteDomains();
+  freezesPhysicalMemoryOccurrenceDomains();
+  derivesDirectedMemoryReachability();
+  derivesMemoryRouteResourceConflicts();
+  retainsDeterministicMemoryProjection();
+  rejectsInvalidMemoryOccurrence();
+  reportsMemoryDomainInfeasibility();
+  preflightsMemoryProjectionCapacity();
   rejectsInconsistentFrozenMemoryService();
   acceptsExternalAndInternalMemoryAnchor();
   rejectsInexactMemoryInternalGraph();

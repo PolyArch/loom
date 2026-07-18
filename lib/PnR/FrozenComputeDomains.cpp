@@ -1,14 +1,13 @@
 #include "FrozenComputeDomains.h"
+#include "EndpointMatching.h"
 
 #include "Mapping/FabricOccurrenceIndex.h"
 #include "Mapping/Verifier.h"
 
 #include "llvm/Support/Error.h"
 
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -140,94 +139,6 @@ bool supportsDemand(const ValidatedComputeEndpoint &endpoint,
          std::binary_search(compatibleTypes.begin(), compatibleTypes.end(),
                             descriptor.type, TypeKeyLess{});
 }
-
-struct DomainRange {
-  std::size_t offset;
-  std::size_t count;
-};
-
-class EndpointMatchingScratch {
-public:
-  void reset(std::size_t endpointCount) {
-    endpoints_.clear();
-    domains_.clear();
-    activeEndpointCount_ = endpointCount;
-    if (matchedDemand_.size() < endpointCount) {
-      matchedDemand_.resize(endpointCount);
-      matchedGeneration_.resize(endpointCount);
-      visitedGeneration_.resize(endpointCount);
-    }
-  }
-
-  std::size_t beginDomain() const { return endpoints_.size(); }
-
-  void addEndpoint(std::size_t endpoint) { endpoints_.push_back(endpoint); }
-
-  DomainRange endDomain(std::size_t offset) {
-    DomainRange range{offset, endpoints_.size() - offset};
-    domains_.push_back(range);
-    return range;
-  }
-
-  llvm::ArrayRef<std::size_t> endpoints(DomainRange range) const {
-    return llvm::ArrayRef<std::size_t>(endpoints_)
-        .slice(range.offset, range.count);
-  }
-
-  bool allDomainsNonEmpty() const {
-    return llvm::all_of(domains_,
-                        [](DomainRange range) { return range.count != 0; });
-  }
-
-  bool hasInjectiveBinding() {
-    if (!allDomainsNonEmpty())
-      return false;
-    advanceGeneration(matchingGeneration_, matchedGeneration_);
-    for (std::size_t demand = 0; demand < domains_.size(); ++demand) {
-      advanceGeneration(probeGeneration_, visitedGeneration_);
-      if (!augment(demand))
-        return false;
-    }
-    return true;
-  }
-
-private:
-  static void advanceGeneration(std::uint64_t &generation,
-                                std::vector<std::uint64_t> &marks) {
-    if (generation == std::numeric_limits<std::uint64_t>::max()) {
-      std::fill(marks.begin(), marks.end(), 0);
-      generation = 1;
-      return;
-    }
-    ++generation;
-  }
-
-  bool augment(std::size_t demand) {
-    const DomainRange range = domains_[demand];
-    for (std::size_t endpoint : endpoints(range)) {
-      assert(endpoint < activeEndpointCount_);
-      if (visitedGeneration_[endpoint] == probeGeneration_)
-        continue;
-      visitedGeneration_[endpoint] = probeGeneration_;
-      if (matchedGeneration_[endpoint] != matchingGeneration_ ||
-          augment(matchedDemand_[endpoint])) {
-        matchedDemand_[endpoint] = demand;
-        matchedGeneration_[endpoint] = matchingGeneration_;
-        return true;
-      }
-    }
-    return false;
-  }
-
-  std::vector<std::size_t> endpoints_;
-  std::vector<DomainRange> domains_;
-  std::vector<std::size_t> matchedDemand_;
-  std::vector<std::uint64_t> matchedGeneration_;
-  std::vector<std::uint64_t> visitedGeneration_;
-  std::size_t activeEndpointCount_ = 0;
-  std::uint64_t matchingGeneration_ = 0;
-  std::uint64_t probeGeneration_ = 0;
-};
 
 } // namespace
 
@@ -433,7 +344,7 @@ loom::pnr::detail::buildFrozenComputeDomains(
           if (supportsDemand(endpoint, compatibleTypes, arc, demand))
             scratch.addEndpoint(arc.endpoint);
         }
-        const DomainRange domain = scratch.endDomain(scratchOffset);
+        const EndpointDomainRange domain = scratch.endDomain(scratchOffset);
         auto endpointDomainCount =
             checked(endpointDomainCountContext, domain.count);
         if (!endpointDomainCount)

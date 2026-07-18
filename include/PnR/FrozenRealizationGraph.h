@@ -40,8 +40,11 @@ public:
       : code_(code), realization_(realization), message_(std::move(message)) {}
 
   FrozenMappingInfeasibilityCode code() const { return code_; }
-  mapping::ComputeRealizationId realization() const {
-    return std::get<mapping::ComputeRealizationId>(realization_);
+  const mapping::ComputeRealizationId *computeRealization() const {
+    return std::get_if<mapping::ComputeRealizationId>(&realization_);
+  }
+  const mapping::MemoryRealizationId *memoryRealization() const {
+    return std::get_if<mapping::MemoryRealizationId>(&realization_);
   }
   const FrozenRealizationId &realizationId() const { return realization_; }
   void log(llvm::raw_ostream &stream) const override;
@@ -696,6 +699,11 @@ llvm::Error preflightFrozenRealizationGraphCapacity(
     llvm::ArrayRef<mapping::ComputeRealizationDraft> computeRealizations,
     llvm::ArrayRef<mapping::MemoryRealizationDraft> memoryRealizations,
     std::uint64_t canonicalEdgeCount);
+
+llvm::Error preflightFrozenMemoryDomainsCapacity(
+    std::uint64_t memoryRealizationCount, std::uint64_t memoryOccurrenceCount,
+    std::uint64_t memoryEndpointCount, std::uint64_t compatibleTypeCount,
+    std::uint64_t localArcCount);
 
 } // namespace detail
 
