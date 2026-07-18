@@ -1,6 +1,9 @@
 #include "PnR/FrozenRealizationGraph.h"
 #include "FrozenComputeDomains.h"
 
+#include "Mapping/Verifier.h"
+#include "PnR/PnrProblemInputs.h"
+
 #include "llvm/Support/Error.h"
 
 #include <algorithm>

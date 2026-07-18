@@ -73,6 +73,11 @@ private:
 
 class ValidatedTechMapping {
 public:
+  // Rvalue construction intentionally copies so existing borrows stay valid.
+  ValidatedTechMapping(const ValidatedTechMapping &) = default;
+  ValidatedTechMapping &operator=(const ValidatedTechMapping &) = delete;
+  ValidatedTechMapping &operator=(ValidatedTechMapping &&) = delete;
+
   const ArtifactIdentity &identity() const { return identity_; }
   MappingProfile profile() const { return draft_.header.profile; }
   const MappingDraftHeader &header() const { return draft_.header; }

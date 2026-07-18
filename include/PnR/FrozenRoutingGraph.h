@@ -1,8 +1,8 @@
 #ifndef LOOM_PNR_FROZENROUTINGGRAPH_H
 #define LOOM_PNR_FROZENROUTINGGRAPH_H
 
+#include "Mapping/Artifact.h"
 #include "PnR/PnrIndex.h"
-#include "PnR/PnrProblemInputs.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -13,6 +13,8 @@
 #include <vector>
 
 namespace loom::pnr {
+
+struct PnrProblemInputs;
 
 enum class FrozenRoutingEndpointOwnerKind {
   ComputeOccurrence,

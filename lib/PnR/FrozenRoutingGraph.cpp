@@ -1,6 +1,8 @@
 #include "PnR/FrozenRoutingGraph.h"
 
 #include "Mapping/FabricOccurrenceIndex.h"
+#include "Mapping/Verifier.h"
+#include "PnR/PnrProblemInputs.h"
 
 #include "llvm/Support/Error.h"
 

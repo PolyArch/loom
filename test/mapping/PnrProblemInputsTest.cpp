@@ -3,6 +3,7 @@
 #include "PnR/FrozenRoutingGraph.h"
 #include "PnR/PnrProblemInputs.h"
 
+#include <functional>
 #include <type_traits>
 #include <utility>
 
@@ -24,16 +25,71 @@ struct HasDetachedTechMappingIdentityMember<
     T, std::void_t<decltype(std::declval<T>().techMappingIdentity)>>
     : std::true_type {};
 
+template <typename... Args>
+auto testPnrProblemInputsListInitialization(int)
+    -> decltype(PnrProblemInputs{std::declval<Args>()...}, std::true_type{});
+
+template <typename... Args>
+auto testPnrProblemInputsListInitialization(...) -> std::false_type;
+
+template <typename... Args>
+inline constexpr bool canListInitializePnrProblemInputs =
+    decltype(testPnrProblemInputsListInitialization<Args...>(0))::value;
+
 static_assert(!HasArtifactIdentityMember<PnrProblemInputs>::value);
 static_assert(!HasArtifactIdentityMember<ResolvedPnrConfigView>::value);
 static_assert(!HasDetachedTechMappingIdentityMember<PnrProblemInputs>::value);
 static_assert(!std::is_default_constructible_v<MappingConstraintSetInput>);
+static_assert(std::is_copy_constructible_v<ValidatedTechMapping>);
+static_assert(std::is_move_constructible_v<ValidatedTechMapping>);
+static_assert(!std::is_copy_assignable_v<ValidatedTechMapping>);
+static_assert(!std::is_move_assignable_v<ValidatedTechMapping>);
 
-PnrProblemInputs
-makeProblemInputs(const TestCase &testCase, const ValidatedTechMapping &mapping,
-                  const ResolvedPnrConfigView &config,
-                  ArtifactIdentity resolvedConfigIdentity = artifact(4),
-                  ArtifactIdentity constraintSetIdentity = artifact(5)) {
+static_assert(canListInitializePnrProblemInputs<
+              const DataflowProgramView &, const ValidatedTechMapping &,
+              const FabricHardwareView &, const ResolvedPnrConfigView &,
+              ArtifactIdentity, MappingConstraintSetInput>);
+static_assert(!canListInitializePnrProblemInputs<
+              DataflowProgramView &&, const ValidatedTechMapping &,
+              const FabricHardwareView &, const ResolvedPnrConfigView &,
+              ArtifactIdentity, MappingConstraintSetInput>);
+static_assert(!canListInitializePnrProblemInputs<
+              const DataflowProgramView &, ValidatedTechMapping &&,
+              const FabricHardwareView &, const ResolvedPnrConfigView &,
+              ArtifactIdentity, MappingConstraintSetInput>);
+static_assert(!canListInitializePnrProblemInputs<
+              const DataflowProgramView &, const ValidatedTechMapping &,
+              FabricHardwareView &&, const ResolvedPnrConfigView &,
+              ArtifactIdentity, MappingConstraintSetInput>);
+static_assert(!canListInitializePnrProblemInputs<
+              const DataflowProgramView &, const ValidatedTechMapping &,
+              const FabricHardwareView &, ResolvedPnrConfigView &&,
+              ArtifactIdentity, MappingConstraintSetInput>);
+
+using MakePnrProblemInputsFunction = decltype(&makePnrProblemInputs);
+
+static_assert(std::is_invocable_v<
+              MakePnrProblemInputsFunction, const TestCase &,
+              const ValidatedTechMapping &, const ResolvedPnrConfigView &>);
+static_assert(!std::is_invocable_v<MakePnrProblemInputsFunction, TestCase &&,
+                                   const ValidatedTechMapping &,
+                                   const ResolvedPnrConfigView &>);
+static_assert(!std::is_invocable_v<MakePnrProblemInputsFunction,
+                                   const TestCase &, ValidatedTechMapping &&,
+                                   const ResolvedPnrConfigView &>);
+static_assert(!std::is_invocable_v<
+              MakePnrProblemInputsFunction, const TestCase &,
+              const ValidatedTechMapping &, ResolvedPnrConfigView &&>);
+
+PnrProblemInputs makeProblemInputs(
+    std::reference_wrapper<const TestCase> testCaseBorrow,
+    std::reference_wrapper<const ValidatedTechMapping> mappingBorrow,
+    std::reference_wrapper<const ResolvedPnrConfigView> configBorrow,
+    ArtifactIdentity resolvedConfigIdentity = artifact(4),
+    ArtifactIdentity constraintSetIdentity = artifact(5)) {
+  const TestCase &testCase = testCaseBorrow.get();
+  const ValidatedTechMapping &mapping = mappingBorrow.get();
+  const ResolvedPnrConfigView &config = configBorrow.get();
   return PnrProblemInputs{testCase.dataflow,
                           mapping,
                           testCase.fabric,
@@ -216,6 +272,27 @@ void bindsTechMappingIdentityAtValidationBoundary() {
     fail(__func__, llvm::toString(std::move(error)).c_str());
 }
 
+void keepsBorrowedMappingUsableAfterRvalueConstruction() {
+  TestCase testCase = makeValidCase();
+  ValidatedTechMapping mapping = validateCase(__func__, testCase);
+  ResolvedPnrConfigView config;
+  PnrProblemInputs inputs = makeProblemInputs(testCase, mapping, config);
+
+  ValidatedTechMapping copiedFromRvalue(std::move(mapping));
+  if (copiedFromRvalue.identity() != testCase.techMappingIdentity)
+    fail(__func__, "rvalue construction changed the mapping identity");
+  if (llvm::Error error = validatePnrProblemInputs(inputs))
+    fail(__func__, llvm::toString(std::move(error)).c_str());
+
+  FrozenRealizationGraph realizations =
+      takeExpected(__func__, freezeRealizationGraph(inputs));
+  FrozenRoutingGraph routing =
+      takeExpected(__func__, freezeRoutingGraph(inputs));
+  if (realizations.computeRealizations().empty() ||
+      routing.computeEndpointVertices().empty())
+    fail(__func__, "rvalue construction invalidated a borrowed mapping");
+}
+
 } // namespace
 
 void runPnrProblemInputsTests() {
@@ -223,6 +300,7 @@ void runPnrProblemInputsTests() {
   rejectsEachExactCouplingMismatch();
   keepsConfigAndConstraintArtifactIdentitiesIndependent();
   bindsTechMappingIdentityAtValidationBoundary();
+  keepsBorrowedMappingUsableAfterRvalueConstruction();
 }
 
 } // namespace loom::mapping::test

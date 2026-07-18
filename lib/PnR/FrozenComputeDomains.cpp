@@ -1,6 +1,7 @@
 #include "FrozenComputeDomains.h"
 
 #include "Mapping/FabricOccurrenceIndex.h"
+#include "Mapping/Verifier.h"
 
 #include "llvm/Support/Error.h"
 

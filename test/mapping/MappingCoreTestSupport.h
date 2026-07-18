@@ -11,6 +11,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <functional>
 #include <utility>
 
 namespace loom::mapping::test {
@@ -64,9 +65,10 @@ void expectAnyError(const char *test, llvm::Expected<T> result) {
 }
 
 ValidatedTechMapping validateCase(const char *test, const TestCase &testCase);
-PnrProblemInputs makePnrProblemInputs(const TestCase &testCase,
-                                      const ValidatedTechMapping &mapping,
-                                      const ResolvedPnrConfigView &config);
+PnrProblemInputs makePnrProblemInputs(
+    std::reference_wrapper<const TestCase> testCase,
+    std::reference_wrapper<const ValidatedTechMapping> mapping,
+    std::reference_wrapper<const ResolvedPnrConfigView> config);
 FrozenRealizationGraph validateAndFreeze(const char *test, TestCase &testCase);
 void expectMapError(const char *test, const TestCase &testCase,
                     MappingErrorCode expected);

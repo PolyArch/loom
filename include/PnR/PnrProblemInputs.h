@@ -1,13 +1,18 @@
 #ifndef LOOM_PNR_PNRPROBLEMINPUTS_H
 #define LOOM_PNR_PNRPROBLEMINPUTS_H
 
-#include "Mapping/Verifier.h"
+#include "Mapping/Artifact.h"
 
 #include "llvm/Support/Error.h"
 
+#include <functional>
 #include <string>
 #include <system_error>
 #include <utility>
+
+namespace loom::mapping {
+class ValidatedTechMapping;
+} // namespace loom::mapping
 
 namespace loom::pnr {
 
@@ -21,6 +26,18 @@ struct MappingConstraintSetInput {
 };
 
 struct PnrProblemInputs {
+  PnrProblemInputs(
+      std::reference_wrapper<const mapping::DataflowProgramView> dataflow,
+      std::reference_wrapper<const mapping::ValidatedTechMapping> techMapping,
+      std::reference_wrapper<const mapping::FabricHardwareView> fabric,
+      std::reference_wrapper<const ResolvedPnrConfigView> config,
+      mapping::ArtifactIdentity resolvedConfigIdentity,
+      MappingConstraintSetInput constraints)
+      : dataflow(dataflow.get()), techMapping(techMapping.get()),
+        fabric(fabric.get()), config(config.get()),
+        resolvedConfigIdentity(std::move(resolvedConfigIdentity)),
+        constraints(std::move(constraints)) {}
+
   const mapping::DataflowProgramView &dataflow;
   const mapping::ValidatedTechMapping &techMapping;
   const mapping::FabricHardwareView &fabric;

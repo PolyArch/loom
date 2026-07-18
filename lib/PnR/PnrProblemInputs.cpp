@@ -1,5 +1,7 @@
 #include "PnR/PnrProblemInputs.h"
 
+#include "Mapping/Verifier.h"
+
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/raw_ostream.h"
 
