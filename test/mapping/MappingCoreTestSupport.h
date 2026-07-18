@@ -5,6 +5,7 @@
 #include "Mapping/Verifier.h"
 #include "PnR/FrozenRealizationGraph.h"
 #include "PnR/PnrIndex.h"
+#include "PnR/PnrProblemInputs.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -62,6 +63,9 @@ void expectAnyError(const char *test, llvm::Expected<T> result) {
 }
 
 ValidatedTechMapping validateCase(const char *test, const TestCase &testCase);
+PnrProblemInputs makePnrProblemInputs(const TestCase &testCase,
+                                      const ValidatedTechMapping &mapping,
+                                      const ResolvedPnrConfigView &config);
 FrozenRealizationGraph validateAndFreeze(const char *test, TestCase &testCase);
 void expectMapError(const char *test, const TestCase &testCase,
                     MappingErrorCode expected);
@@ -76,6 +80,7 @@ void selectInternalMemoryGraph(TestCase &testCase);
 void runComputeFreezeTests();
 void runMemoryMappingTests();
 void runMappingVerifierTests();
+void runPnrProblemInputsTests();
 
 } // namespace loom::mapping::test
 

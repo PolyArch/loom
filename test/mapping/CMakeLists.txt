@@ -5,6 +5,7 @@ add_executable(loom-mapping-core-test
   MappingMemoryTest.cpp
   MappingRoutingFreezeTest.cpp
   MappingVerifierTest.cpp
+  PnrProblemInputsTest.cpp
 )
 
 target_link_libraries(loom-mapping-core-test PRIVATE

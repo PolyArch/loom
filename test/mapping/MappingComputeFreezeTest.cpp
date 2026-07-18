@@ -65,9 +65,10 @@ void rejectsEmptyImplementationDomainAsMappingInfeasibility() {
   TestCase testCase = makeValidCase();
   testCase.fabric.computeOccurrences.clear();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
+  ResolvedPnrConfigView config;
   expectFreezeInfeasibility(
       __func__,
-      freezeRealizationGraph(testCase.dataflow, testCase.fabric, mapping),
+      freezeRealizationGraph(makePnrProblemInputs(testCase, mapping, config)),
       FrozenMappingInfeasibilityCode::EmptyImplementationDomain);
 }
 void freezesOnlyActiveWideSyncBoundaryPorts() {
@@ -181,9 +182,10 @@ void rejectsSpatialHallInfeasibilityWithoutEndpointVariants() {
        std::numeric_limits<std::uint32_t>::max(),
        std::numeric_limits<std::uint32_t>::max()});
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
+  ResolvedPnrConfigView config;
   expectFreezeInfeasibility(
       __func__,
-      freezeRealizationGraph(testCase.dataflow, testCase.fabric, mapping),
+      freezeRealizationGraph(makePnrProblemInputs(testCase, mapping, config)),
       FrozenMappingInfeasibilityCode::EmptyUnaryEligibleDomain);
 }
 void acceptsSpatialAugmentingPathReassignment() {
@@ -275,16 +277,20 @@ void freezesDeterministicallyAcrossInputPermutation() {
 void enforcesFrozenInputIdentityBoundary() {
   TestCase testCase = makeValidCase();
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
-  DataflowProgramView foreignDataflow = testCase.dataflow;
-  foreignDataflow.identity = artifact(99);
-  expectAnyError(__func__, freezeRealizationGraph(foreignDataflow,
-                                                  testCase.fabric, mapping));
-  FabricHardwareView foreignFabric = testCase.fabric;
-  foreignFabric.identity = artifact(99);
-  expectAnyError(__func__, freezeRealizationGraph(testCase.dataflow,
-                                                  foreignFabric, mapping));
-  takeExpected(__func__, freezeRealizationGraph(testCase.dataflow,
-                                                testCase.fabric, mapping));
+  ResolvedPnrConfigView config;
+  PnrProblemInputs validInputs =
+      makePnrProblemInputs(testCase, mapping, config);
+  takeExpected(__func__, freezeRealizationGraph(validInputs));
+
+  TestCase foreignDataflowCase = testCase;
+  foreignDataflowCase.dataflow.identity = artifact(99);
+  expectAnyError(__func__, freezeRealizationGraph(makePnrProblemInputs(
+                               foreignDataflowCase, mapping, config)));
+
+  TestCase foreignFabricCase = testCase;
+  foreignFabricCase.fabric.identity = artifact(99);
+  expectAnyError(__func__, freezeRealizationGraph(makePnrProblemInputs(
+                               foreignFabricCase, mapping, config)));
 }
 void preflightsFrozenCapacityPlanning() {
   TestCase testCase = makeValidCase();

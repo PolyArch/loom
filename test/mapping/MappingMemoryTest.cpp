@@ -76,8 +76,9 @@ void rejectsInconsistentFrozenMemoryService() {
   ValidatedTechMapping mapping = validateCase(__func__, testCase);
   testCase.fabric.memorySemanticEncodings[1].implementation =
       MemoryImplementationId(33);
-  expectAnyError(__func__, freezeRealizationGraph(testCase.dataflow,
-                                                  testCase.fabric, mapping));
+  ResolvedPnrConfigView config;
+  expectAnyError(__func__, freezeRealizationGraph(makePnrProblemInputs(
+                               testCase, mapping, config)));
 }
 void acceptsExternalAndInternalMemoryAnchor() {
   {

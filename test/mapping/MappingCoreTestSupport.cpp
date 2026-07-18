@@ -79,10 +79,25 @@ ValidatedTechMapping validateCase(const char *test, const TestCase &testCase) {
                       validateTechMapping(testCase.mapping, testCase.dataflow,
                                           testCase.fabric));
 }
+PnrProblemInputs makePnrProblemInputs(const TestCase &testCase,
+                                      const ValidatedTechMapping &mapping,
+                                      const ResolvedPnrConfigView &config) {
+  const ArtifactIdentity techMappingIdentity = artifact(240);
+  return PnrProblemInputs{
+      testCase.dataflow,
+      mapping,
+      techMappingIdentity,
+      testCase.fabric,
+      config,
+      artifact(241),
+      MappingConstraintSetInput{artifact(242), testCase.dataflow.identity,
+                                techMappingIdentity, testCase.fabric.identity}};
+}
 FrozenRealizationGraph validateAndFreeze(const char *test, TestCase &testCase) {
   ValidatedTechMapping mapping = validateCase(test, testCase);
-  return takeExpected(test, freezeRealizationGraph(testCase.dataflow,
-                                                   testCase.fabric, mapping));
+  ResolvedPnrConfigView config;
+  return takeExpected(test, freezeRealizationGraph(makePnrProblemInputs(
+                                testCase, mapping, config)));
 }
 void expectMapError(const char *test, const TestCase &testCase,
                     MappingErrorCode expected) {

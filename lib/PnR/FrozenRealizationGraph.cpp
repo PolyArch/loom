@@ -356,15 +356,13 @@ llvm::Error loom::pnr::detail::preflightFrozenRealizationGraphCapacity(
 }
 
 llvm::Expected<FrozenRealizationGraph>
-loom::pnr::freezeRealizationGraph(const DataflowProgramView &dataflow,
-                                  const FabricHardwareView &fabric,
-                                  const ValidatedTechMapping &mapping) {
-  if (dataflow.identity != mapping.header().dataflowIdentity)
-    return freezeError("cannot freeze realization graph: dataflow identity "
-                       "does not match validated TechMapping header");
-  if (fabric.identity != mapping.header().fabricIdentity)
-    return freezeError("cannot freeze realization graph: fabric identity does "
-                       "not match validated TechMapping header");
+loom::pnr::freezeRealizationGraph(const PnrProblemInputs &inputs) {
+  if (llvm::Error error = validatePnrProblemInputs(inputs))
+    return std::move(error);
+
+  const DataflowProgramView &dataflow = inputs.dataflow;
+  const FabricHardwareView &fabric = inputs.fabric;
+  const ValidatedTechMapping &mapping = inputs.techMapping;
 
   if (llvm::Error error = detail::preflightFrozenRealizationGraphCapacity(
           mapping.realizations(), mapping.memoryRealizations(),

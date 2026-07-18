@@ -9,6 +9,7 @@ add_mlir_library(LoomPnR
   MappingEstimateReport.cpp
   MappingEstimator.cpp
   PnrIndex.cpp
+  PnrProblemInputs.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/PnR

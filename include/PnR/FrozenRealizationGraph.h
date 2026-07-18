@@ -1,8 +1,8 @@
 #ifndef LOOM_PNR_FROZENREALIZATIONGRAPH_H
 #define LOOM_PNR_FROZENREALIZATIONGRAPH_H
 
-#include "Mapping/Verifier.h"
 #include "PnR/PnrIndex.h"
+#include "PnR/PnrProblemInputs.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -402,15 +402,11 @@ private:
   std::vector<FrozenMemoryServiceObligation> memoryServiceObligations_;
 
   friend llvm::Expected<FrozenRealizationGraph>
-  freezeRealizationGraph(const mapping::DataflowProgramView &dataflow,
-                         const mapping::FabricHardwareView &fabric,
-                         const mapping::ValidatedTechMapping &mapping);
+  freezeRealizationGraph(const PnrProblemInputs &inputs);
 };
 
 llvm::Expected<FrozenRealizationGraph>
-freezeRealizationGraph(const mapping::DataflowProgramView &dataflow,
-                       const mapping::FabricHardwareView &fabric,
-                       const mapping::ValidatedTechMapping &mapping);
+freezeRealizationGraph(const PnrProblemInputs &inputs);
 
 namespace detail {
 

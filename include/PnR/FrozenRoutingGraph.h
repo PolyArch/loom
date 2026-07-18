@@ -1,8 +1,8 @@
 #ifndef LOOM_PNR_FROZENROUTINGGRAPH_H
 #define LOOM_PNR_FROZENROUTINGGRAPH_H
 
-#include "Mapping/Verifier.h"
 #include "PnR/PnrIndex.h"
+#include "PnR/PnrProblemInputs.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -153,13 +153,11 @@ private:
   std::vector<PnrIndex> incomingForwardArcIndices_;
 
   friend llvm::Expected<FrozenRoutingGraph>
-  freezeRoutingGraph(const mapping::FabricHardwareView &fabric,
-                     const mapping::ValidatedTechMapping &mapping);
+  freezeRoutingGraph(const PnrProblemInputs &inputs);
 };
 
 llvm::Expected<FrozenRoutingGraph>
-freezeRoutingGraph(const mapping::FabricHardwareView &fabric,
-                   const mapping::ValidatedTechMapping &mapping);
+freezeRoutingGraph(const PnrProblemInputs &inputs);
 
 namespace detail {
 
