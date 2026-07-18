@@ -43,6 +43,11 @@ struct RegionResult {
   MemoryState memory;
 };
 
+struct GatedValue {
+  ::mlir::Value value;
+  ::mlir::Value close;
+};
+
 bool isCompilerOwnedControlUse(::mlir::OpOperand &use) {
   ::mlir::Operation *owner = use.getOwner();
   if (auto load = ::llvm::dyn_cast<::dataflow::LoadOp>(owner))
@@ -546,6 +551,7 @@ private:
     for (::mlir::Value witness : returnOp.getComplete())
       if (witness != start)
         candidates.push_back(witness);
+
     if (candidates.empty())
       candidates.push_back(start);
     ::llvm::SmallVector<::mlir::Value, 4> reduced = reduceEvents(candidates);
@@ -600,23 +606,35 @@ private:
         .getOutput();
   }
 
-  ::mlir::Value gateTrueLane(::mlir::Value phase, ::mlir::Value value,
-                             ::mlir::Location loc) {
+  GatedValue gateTrueLane(::mlir::Value phase, ::mlir::Value value,
+                          ::mlir::Location loc) {
     setInsertionPoint(loc);
-    return ::dataflow::GateOp::create(builder, loc, builder.getI1Type(),
-                                      value.getType(), phase, value)
-        .getAfterValue();
+    auto gate = ::dataflow::GateOp::create(
+        builder, loc, builder.getI1Type(), value.getType(), phase, value);
+    auto units = ::dataflow::InvariantOp::create(
+        builder, loc, builder.getNoneType(), gate.getAfterCond(),
+        graph.getStart());
+    auto close = ::dataflow::DemuxOp::create(
+        builder, loc,
+        ::mlir::TypeRange{builder.getNoneType(), builder.getNoneType()},
+        gate.getAfterCond(), units.getOutput());
+    return {gate.getAfterValue(), close.getOutputs()[0]};
   }
 
-  void projectForCaptures(::mlir::Region &region, ::mlir::ValueRange captures,
-                          ::mlir::Value phase, ::mlir::Location loc) {
+  ::llvm::SmallVector<::mlir::Value, 4>
+  projectForCaptures(::mlir::Region &region, ::mlir::ValueRange captures,
+                     ::mlir::Value phase, ::mlir::Location loc) {
+    ::llvm::SmallVector<::mlir::Value, 4> closeEvents;
     for (::mlir::Value capture : captures) {
       setInsertionPoint(loc);
       ::mlir::Value raw = ::dataflow::InvariantOp::create(
                               builder, loc, capture.getType(), phase, capture)
                               .getOutput();
-      replaceUsesInside(capture, gateTrueLane(phase, raw, loc), region);
+      GatedValue gated = gateTrueLane(phase, raw, loc);
+      replaceUsesInside(capture, gated.value, region);
+      closeEvents.push_back(gated.close);
     }
+    return closeEvents;
   }
 
   ::llvm::SmallVector<::dataflow::InvariantOp, 4>
@@ -896,7 +914,8 @@ private:
                         body, forOp.getRegion());
     }
     replaceUsesInside(forOp.getInductionVar(), bodyIv, forOp.getRegion());
-    projectForCaptures(forOp.getRegion(), captures, phase, loc);
+    ::llvm::SmallVector<::mlir::Value, 4> captureCloses =
+        projectForCaptures(forOp.getRegion(), captures, phase, loc);
 
     ::llvm::SmallBitVector touched = touchedPartitions(forOp.getRegion());
     MemoryState bodyMemory = memory;
@@ -944,7 +963,8 @@ private:
     for (unsigned i = 0; i < forOp.getNumResults(); ++i)
       forOp.getResult(i).replaceAllUsesWith(valueExits[i]);
     forOp.erase();
-    return {executionExit, std::move(output)};
+    captureCloses.insert(captureCloses.begin(), executionExit);
+    return {joinEvents(captureCloses, loc), std::move(output)};
   }
 
   RegionResult lowerWhile(::mlir::scf::WhileOp whileOp, ::mlir::Value execution,
@@ -1020,8 +1040,11 @@ private:
     auto [executionExit, unusedExecution] =
         demux(selector, beforeResult.execution, loc);
     (void)unusedExecution;
-    ::mlir::Value executionAfter =
+    GatedValue gatedExecution =
         gateTrueLane(selector, beforeResult.execution, loc);
+    ::mlir::Value executionAfter = gatedExecution.value;
+    ::llvm::SmallVector<::mlir::Value, 4> closeEvents{
+        gatedExecution.close};
 
     MemoryState afterMemory = beforeResult.memory;
     MemoryState output = memory;
@@ -1042,7 +1065,9 @@ private:
       replaceUsesInside(whileOp.getAfterArguments()[resultValues.size() - 1],
                         after, whileOp.getAfter());
     }
-    projectForCaptures(whileOp.getAfter(), afterCaptures, selector, loc);
+    ::llvm::SmallVector<::mlir::Value, 4> afterCaptureCloses =
+        projectForCaptures(whileOp.getAfter(), afterCaptures, selector, loc);
+    closeEvents.append(afterCaptureCloses);
 
     RegionResult afterResult = lowerBlock(
         whileOp.getAfter().front(), executionAfter, std::move(afterMemory));
@@ -1061,7 +1086,8 @@ private:
     for (unsigned i = 0; i < whileOp.getNumResults(); ++i)
       whileOp.getResult(i).replaceAllUsesWith(resultValues[i]);
     whileOp.erase();
-    return {executionExit, std::move(output)};
+    closeEvents.insert(closeEvents.begin(), executionExit);
+    return {joinEvents(closeEvents, loc), std::move(output)};
   }
 };
 

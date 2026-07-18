@@ -20,7 +20,7 @@ module {
     %c2 = dataflow.constant %start {const_value = 2 : i32} : i32
     %iv, %phase = dataflow.stream %c0, %c2, %c1
         step add while slt : i32
-    %published:2 = dataflow.sync %start, %iv
+    %published:2 = dataflow.sync %start, %c0
         : (none, i32) -> (none, i32)
     dataflow.graph.return %published#0, %published#1 : none, i32
   }

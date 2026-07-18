@@ -27,8 +27,15 @@ module {
     %increment_phase, %body_increment =
         dataflow.gate %phase, %increment_raw : f32
     %next = arith.addf %body_carry, %body_increment : f32
-    %published:2 = dataflow.sync %ctrl, %exit#0
-        : (none, f32) -> (none, f32)
-    dataflow.graph.return %published#0, %published#1 : none, f32
+    %body_units = dataflow.invariant %body_phase, %ctrl : none
+    %body_close:2 = dataflow.demux %body_phase, %body_units
+        : (i1, none) -> (none, none)
+    %increment_units = dataflow.invariant %increment_phase, %ctrl : none
+    %increment_close:2 = dataflow.demux %increment_phase, %increment_units
+        : (i1, none) -> (none, none)
+    %published:4 = dataflow.sync %ctrl, %body_close#0,
+        %increment_close#0, %exit#0
+        : (none, none, none, f32) -> (none, none, none, f32)
+    dataflow.graph.return %published#0, %published#3 : none, f32
   }
 }

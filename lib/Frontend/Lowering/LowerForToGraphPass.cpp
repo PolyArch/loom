@@ -118,6 +118,93 @@ void addThreadCompletionFrontier(::dataflow::ThreadOp thread,
   yield.getCompletionFrontierMutable().assign(frontier);
 }
 
+::mlir::FailureOr<::mlir::Value>
+propagateIfCompletion(::mlir::scf::IfOp ifOp, ::mlir::Value completion,
+                      ::mlir::Value fallback, ::mlir::OpBuilder &builder) {
+  ::mlir::Region *completionRegion =
+      completion.getDefiningOp()->getParentRegion();
+  bool inThen = ifOp.getThenRegion().isAncestor(completionRegion);
+  bool inElse = ifOp.getElseRegion().isAncestor(completionRegion);
+  if (inThen == inElse)
+    return ::mlir::failure();
+
+  ::llvm::SmallVector<::mlir::Type, 4> resultTypes(
+      ifOp.getResultTypes().begin(), ifOp.getResultTypes().end());
+  resultTypes.push_back(builder.getNoneType());
+  builder.setInsertionPoint(ifOp);
+  auto replacement = ::mlir::scf::IfOp::create(
+      builder, ifOp.getLoc(), resultTypes, ifOp.getCondition(),
+      /*withElseRegion=*/true);
+
+  auto moveBranch = [&](::mlir::Region &source, ::mlir::Region &target,
+                        ::mlir::Value branchCompletion) {
+    ::mlir::Block &targetBlock = target.front();
+    ::mlir::scf::YieldOp defaultYield;
+    if (!targetBlock.empty())
+      defaultYield = ::llvm::dyn_cast<::mlir::scf::YieldOp>(
+          targetBlock.back());
+    ::llvm::SmallVector<::mlir::Value, 4> yielded;
+    if (!source.empty()) {
+      ::mlir::Block &sourceBlock = source.front();
+      auto sourceYield = ::mlir::cast<::mlir::scf::YieldOp>(
+          sourceBlock.getTerminator());
+      yielded.append(sourceYield.getResults().begin(),
+                     sourceYield.getResults().end());
+      targetBlock.getOperations().splice(
+          defaultYield ? defaultYield->getIterator() : targetBlock.end(),
+          sourceBlock.getOperations(),
+          sourceBlock.begin(), sourceYield->getIterator());
+      sourceYield.erase();
+    }
+    yielded.push_back(branchCompletion);
+    if (defaultYield)
+      builder.setInsertionPoint(defaultYield);
+    else
+      builder.setInsertionPointToEnd(&targetBlock);
+    ::mlir::scf::YieldOp::create(builder, ifOp.getLoc(), yielded);
+    if (defaultYield)
+      defaultYield.erase();
+  };
+
+  moveBranch(ifOp.getThenRegion(), replacement.getThenRegion(),
+             inThen ? completion : fallback);
+  moveBranch(ifOp.getElseRegion(), replacement.getElseRegion(),
+             inElse ? completion : fallback);
+
+  for (auto [oldResult, newResult] :
+       ::llvm::zip_equal(ifOp.getResults(),
+                         replacement.getResults().take_front(
+                             ifOp.getNumResults())))
+    oldResult.replaceAllUsesWith(newResult);
+  ::mlir::Value propagated = replacement.getResult(ifOp.getNumResults());
+  ifOp.erase();
+  return propagated;
+}
+
+::mlir::FailureOr<::mlir::Value>
+propagateCompletionToThread(::dataflow::ThreadOp thread,
+                            ::mlir::Value completion,
+                            ::mlir::Value fallback,
+                            ::mlir::OpBuilder &builder) {
+  while (completion.getDefiningOp()->getParentOfType<::dataflow::ThreadOp>() ==
+             thread &&
+         completion.getDefiningOp()->getBlock() != &thread.getBody().front()) {
+    ::mlir::Operation *parent = completion.getDefiningOp()->getParentOp();
+    while (parent && parent != thread.getOperation() &&
+           !::llvm::isa<::mlir::scf::IfOp>(parent))
+      parent = parent->getParentOp();
+    auto ifOp = ::llvm::dyn_cast_or_null<::mlir::scf::IfOp>(parent);
+    if (!ifOp)
+      return ::mlir::failure();
+    auto propagated =
+        propagateIfCompletion(ifOp, completion, fallback, builder);
+    if (::mlir::failed(propagated))
+      return ::mlir::failure();
+    completion = *propagated;
+  }
+  return completion;
+}
+
 // Collect every value used inside the loop region that is defined above it.
 void collectExternalUses(::mlir::scf::ForOp loop,
                          ::llvm::SetVector<::mlir::Value> &captures) {
@@ -1111,10 +1198,40 @@ struct LowerForToGraphPass
     });
 
     for (::loom::SpatialRegionOp spatial : regions) {
-      if (!spatial.getStreamInputs().empty() ||
+      bool hasChannelOperand = ::llvm::any_of(
+          spatial->getOperands(), [](::mlir::Value operand) {
+            return ::llvm::isa<::dataflow::ChannelType>(operand.getType());
+          });
+      bool hasChannelEndpoint = false;
+      spatial.walk([&](::mlir::Operation *op) {
+        if (::llvm::isa<::dataflow::ChannelSendOp,
+                        ::dataflow::ChannelReceiveOp>(op))
+          hasChannelEndpoint = true;
+      });
+      if (hasChannelOperand || hasChannelEndpoint ||
+          !spatial.getStreamInputs().empty() ||
           !spatial.getStreamOutputs().empty())
         return spatial.emitOpError(
-            "stream endpoint lowering is not part of graph publication");
+            "stream endpoint conversion is not implemented; spatial "
+            "candidate cannot be published");
+
+      auto thread = spatial->getParentOfType<::dataflow::ThreadOp>();
+      if (!thread)
+        return spatial.emitOpError(
+            "expected staged candidate inside dataflow.thread");
+      for (::mlir::Operation *parent = spatial->getParentOp();
+           parent && parent != thread.getOperation();
+           parent = parent->getParentOp()) {
+        if (!::llvm::isa<::mlir::scf::IfOp>(parent))
+          return spatial.emitOpError(
+              "completion propagation through enclosing '")
+                 << parent->getName()
+                 << "' is not implemented; spatial candidate cannot be "
+                    "published";
+      }
+    }
+
+    for (::loom::SpatialRegionOp spatial : regions) {
 
       auto thread = spatial->getParentOfType<::dataflow::ThreadOp>();
       if (!thread)
@@ -1195,7 +1312,13 @@ struct LowerForToGraphPass
           ::mlir::ValueRange{threadCtrl}, spatial.getValueInputs(),
           spatial.getStreamInputs(), spatial.getMemoryInputs(),
           spatial.getStreamOutputs());
-      addThreadCompletionFrontier(thread, launch.getDone());
+      auto propagated = propagateCompletionToThread(
+          thread, launch.getDone(), threadCtrl, builder);
+      if (::mlir::failed(propagated))
+        return launch.emitOpError(
+            "failed to propagate completion through enclosing structured "
+            "control");
+      addThreadCompletionFrontier(thread, *propagated);
       for (auto [index, result] :
            ::llvm::enumerate(spatial.getValueResults()))
         result.replaceAllUsesWith(launch.getValueResults()[index]);

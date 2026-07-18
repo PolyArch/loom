@@ -2,6 +2,7 @@
 // RUN: split-file %s %t.dir
 // RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/success.mlir | FileCheck %s --check-prefix=SUCCESS
 // RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/failure.mlir 2>&1 | FileCheck %s --check-prefix=FAILURE
+// RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/channel.mlir 2>&1 | FileCheck %s --check-prefix=CHANNEL
 
 // SUCCESS-LABEL: dataflow.thread private @reduction
 // SUCCESS: dataflow.graph.launch @g_reduction_0
@@ -17,6 +18,11 @@
 // FAILURE-COUNT-2: "loom.spatial_region"
 // FAILURE-NOT: dataflow.graph private
 // FAILURE-NOT: dataflow.graph.launch
+
+// CHANNEL: stream endpoint conversion is not implemented; spatial candidate cannot be published
+// CHANNEL: "loom.spatial_region"
+// CHANNEL-NOT: dataflow.graph private
+// CHANNEL-NOT: dataflow.graph.launch
 
 //--- success.mlir
 dataflow.thread private @reduction(%buffer: memref<?xi32>, %count: index)
@@ -47,5 +53,12 @@ dataflow.thread private @parallel_candidate(%source: memref<?xi32>,
     %value = memref.load %source[%index] : memref<?xi32>
     memref.store %value, %target[%index] : memref<?xi32>
   }
+  dataflow.thread.yield
+}
+
+//--- channel.mlir
+dataflow.thread private @channel_sender(
+    %channel: !dataflow.channel<i32>, %message: i32) ctrl (%start: none) {
+  dataflow.channel.send %channel, %message : !dataflow.channel<i32>
   dataflow.thread.yield
 }

@@ -3,8 +3,8 @@
 // RUN: not loom-dfg-sim %t.dir/poison.mlir --graph poison_channel --output %t.poison.json 2>&1 | FileCheck %s --check-prefix=POISON
 // RUN: not loom-dfg-sim %t.dir/call.mlir --graph call_channel --output %t.call.json 2>&1 | FileCheck %s --check-prefix=CALL
 
-// POISON: finalized graph contains channel-typed result produced by 'ub.poison'
-// CALL: finalized graph contains channel-typed result produced by 'func.call'
+// POISON: finalized program contains channel producer 'ub.poison'
+// CALL: finalized program contains channel producer 'func.call'
 
 //--- poison.mlir
 module {

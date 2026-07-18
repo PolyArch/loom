@@ -3,6 +3,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/DenseMap.h"
@@ -358,6 +359,457 @@ bool hasObservableEffect(mlir::Operation *op) {
   return true;
 }
 
+class GraphCardinalityAnalysis {
+public:
+  explicit GraphCardinalityAnalysis(dataflow::GraphOp graph) : graph(graph) {}
+
+  bool isExactOne(mlir::Value value) {
+    auto known = exactOne.find(value);
+    if (known != exactOne.end())
+      return known->second;
+    if (!exactOneActive.insert(value).second)
+      return false;
+    bool result = computeExactOne(value);
+    exactOneActive.erase(value);
+    exactOne.try_emplace(value, result);
+    return result;
+  }
+
+  bool hasProvenStreamCommit(mlir::Value value) {
+    if (isExactOne(value))
+      return true;
+    llvm::DenseSet<mlir::Value> visited;
+    llvm::SmallVector<mlir::Value, 2> closeSignals;
+    collectStreamCloseSignals(value, visited, closeSignals);
+    return !closeSignals.empty() &&
+           llvm::all_of(closeSignals, [&](mlir::Value signal) {
+             return isOneClosePhase(signal);
+           });
+  }
+
+private:
+  dataflow::GraphOp graph;
+  llvm::DenseMap<mlir::Value, bool> exactOne;
+  llvm::DenseSet<mlir::Value> exactOneActive;
+  llvm::DenseMap<mlir::Value, bool> oneClosePhase;
+  llvm::DenseSet<mlir::Value> oneCloseActive;
+  llvm::DenseSet<mlir::Value> alignedCarryAssumptions;
+  llvm::DenseMap<mlir::Value, bool> alignedCarrySystems;
+  llvm::DenseSet<mlir::Value> alignedCarrySystemsActive;
+  llvm::DenseSet<mlir::Value> exactOneAssumptions;
+
+  bool allOperandsExact(mlir::Operation *op) {
+    return llvm::all_of(op->getOperands(),
+                        [&](mlir::Value value) { return isExactOne(value); });
+  }
+
+  std::optional<uint64_t> getKnownUnsigned(mlir::Value value) {
+    if (auto constant = value.getDefiningOp<dataflow::ConstantOp>()) {
+      auto integer = llvm::dyn_cast<mlir::IntegerAttr>(constant.getConstValue());
+      if (integer && !integer.getValue().isNegative())
+        return integer.getValue().getZExtValue();
+    }
+    mlir::APInt constant;
+    if (mlir::matchPattern(value, mlir::m_ConstantInt(&constant)) &&
+        !constant.isNegative())
+      return constant.getZExtValue();
+    return std::nullopt;
+  }
+
+  bool isUnpackLaneExact(dataflow::UnpackOp unpack, unsigned lane) {
+    if (!isExactOne(unpack.getPacked()) || !isExactOne(unpack.getMask()))
+      return false;
+    auto mask = getKnownUnsigned(unpack.getMask());
+    return mask && lane < 64 && ((*mask >> lane) & 1) != 0;
+  }
+
+  bool packInputsMatchUnpack(dataflow::PackOp pack) {
+    dataflow::UnpackOp unpack;
+    for (auto [lane, input] : llvm::enumerate(pack.getInputs())) {
+      auto result = llvm::dyn_cast<mlir::OpResult>(input);
+      auto candidate =
+          result ? llvm::dyn_cast<dataflow::UnpackOp>(result.getOwner())
+                 : nullptr;
+      if (!candidate || result.getResultNumber() != lane)
+        return false;
+      if (!unpack)
+        unpack = candidate;
+      if (candidate != unpack)
+        return false;
+    }
+    return unpack && unpack.getMask() == pack.getMask() &&
+           isExactOne(unpack.getPacked()) && isExactOne(unpack.getMask());
+  }
+
+  bool isPackExact(dataflow::PackOp pack) {
+    if (!isExactOne(pack.getMask()))
+      return false;
+    if (llvm::all_of(pack.getInputs(),
+                     [&](mlir::Value input) { return isExactOne(input); }))
+      return true;
+    return packInputsMatchUnpack(pack);
+  }
+
+  bool isSerializeActivationExact(dataflow::SerializeOp serialize) {
+    if (!isExactOne(serialize.getMask()))
+      return false;
+    dataflow::UnpackOp unpack;
+    for (auto [lane, input] : llvm::enumerate(serialize.getInputs())) {
+      auto result = llvm::dyn_cast<mlir::OpResult>(input);
+      auto candidate =
+          result ? llvm::dyn_cast<dataflow::UnpackOp>(result.getOwner())
+                 : nullptr;
+      if (!candidate || result.getResultNumber() != lane)
+        return false;
+      if (!unpack)
+        unpack = candidate;
+      if (candidate != unpack)
+        return false;
+    }
+    return unpack && unpack.getMask() == serialize.getMask() &&
+           isExactOne(unpack.getPacked()) && isExactOne(unpack.getMask());
+  }
+
+  bool isExactOneWhenSelected(mlir::Value value, mlir::Value selector,
+                              unsigned lane) {
+    GraphCardinalityAnalysis branch(graph);
+    for (mlir::Operation &op : graph.getBody().front().without_terminator()) {
+      auto demux = llvm::dyn_cast<dataflow::DemuxOp>(op);
+      if (!demux || demux.getSel() != selector ||
+          lane >= demux.getOutputs().size() || !isExactOne(demux.getInput()))
+        continue;
+      branch.exactOneAssumptions.insert(demux.getOutputs()[lane]);
+    }
+    return branch.isExactOne(value);
+  }
+
+  bool availableWhenSelected(mlir::Value value, mlir::Value selector,
+                             unsigned lane,
+                             llvm::DenseSet<mlir::Value> &visited) {
+    if (isExactOne(value))
+      return true;
+    if (!visited.insert(value).second)
+      return false;
+    auto result = llvm::dyn_cast<mlir::OpResult>(value);
+    mlir::Operation *def = result ? result.getOwner() : nullptr;
+    if (!def)
+      return false;
+    if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def))
+      if (demux.getSel() == selector)
+        return result.getResultNumber() == lane &&
+               isExactOne(demux.getInput());
+    if (isExactOneWhenSelected(value, selector, lane))
+      return true;
+    if (llvm::isa<dataflow::StreamOp, dataflow::CarryOp,
+                  dataflow::InvariantOp, dataflow::GateOp,
+                  dataflow::ParallelizeOp, dataflow::PackOp,
+                  dataflow::UnpackOp, dataflow::SerializeOp,
+                  dataflow::MuxOp>(def))
+      return false;
+    if (!llvm::isa<dataflow::CanonicalDataflowActorOpInterface>(def) &&
+        !llvm::isa<mlir::memref::CastOp,
+                   mlir::UnrealizedConversionCastOp>(def))
+      return false;
+    return llvm::all_of(def->getOperands(), [&](mlir::Value operand) {
+      llvm::DenseSet<mlir::Value> branchVisited = visited;
+      return availableWhenSelected(operand, selector, lane, branchVisited);
+    });
+  }
+
+  bool availableWhenSelected(mlir::Value value, mlir::Value selector,
+                             unsigned lane) {
+    llvm::DenseSet<mlir::Value> visited;
+    return availableWhenSelected(value, selector, lane, visited);
+  }
+
+  bool availableWhenSelectedAndAligned(
+      mlir::Value value, mlir::Value selector, unsigned lane,
+      mlir::Value phase, mlir::Value assumption, bool truePhaseOnly,
+      llvm::DenseSet<mlir::Value> &visited) {
+    if (!visited.insert(value).second)
+      return false;
+    auto result = llvm::dyn_cast<mlir::OpResult>(value);
+    mlir::Operation *def = result ? result.getOwner() : nullptr;
+    if (!def)
+      return false;
+    if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
+      if (demux.getSel() != selector || result.getResultNumber() != lane)
+        return false;
+      llvm::DenseSet<mlir::Value> inputVisited = visited;
+      return isAligned(demux.getInput(), phase, assumption, truePhaseOnly,
+                       inputVisited);
+    }
+    if (llvm::isa<dataflow::StreamOp, dataflow::CarryOp,
+                  dataflow::InvariantOp, dataflow::GateOp,
+                  dataflow::ParallelizeOp, dataflow::PackOp,
+                  dataflow::UnpackOp, dataflow::SerializeOp,
+                  dataflow::MuxOp>(def))
+      return false;
+    if (!llvm::isa<dataflow::CanonicalDataflowActorOpInterface>(def) &&
+        !llvm::isa<mlir::memref::CastOp,
+                   mlir::UnrealizedConversionCastOp>(def))
+      return false;
+    bool hasSelectedOperand = false;
+    for (mlir::Value operand : def->getOperands()) {
+      if (isMemoryCapabilityType(operand.getType()))
+        continue;
+      llvm::DenseSet<mlir::Value> branchVisited = visited;
+      if (availableWhenSelectedAndAligned(
+              operand, selector, lane, phase, assumption, truePhaseOnly,
+              branchVisited)) {
+        hasSelectedOperand = true;
+        continue;
+      }
+      llvm::DenseSet<mlir::Value> alignedVisited = visited;
+      if (!isAligned(operand, phase, assumption, truePhaseOnly,
+                     alignedVisited))
+        return false;
+    }
+    return hasSelectedOperand;
+  }
+
+  bool isAligned(mlir::Value value, mlir::Value phase,
+                 mlir::Value assumption, bool truePhaseOnly,
+                 llvm::DenseSet<mlir::Value> &visited) {
+    if (value == assumption || alignedCarryAssumptions.contains(value))
+      return true;
+    if (value == phase)
+      return !truePhaseOnly;
+    if (!visited.insert(value).second)
+      return truePhaseOnly &&
+             llvm::any_of(alignedCarryAssumptions,
+                          [&](mlir::Value carryOutput) {
+                            return causallyDependsOn(value, carryOutput);
+                          });
+    auto result = llvm::dyn_cast<mlir::OpResult>(value);
+    mlir::Operation *def = result ? result.getOwner() : nullptr;
+    if (!def)
+      return false;
+    if (auto stream = llvm::dyn_cast<dataflow::StreamOp>(def))
+      return truePhaseOnly && value == stream.getIv() &&
+             phase == stream.getPhase();
+    if (auto invariant = llvm::dyn_cast<dataflow::InvariantOp>(def))
+      return !truePhaseOnly && value == invariant.getOutput() &&
+             invariant.getCond() == phase &&
+             isExactOne(invariant.getInit());
+    if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(def)) {
+      if (truePhaseOnly || value != carry.getOutput() ||
+          carry.getCond() != phase ||
+          !isExactOne(carry.getInit()))
+        return false;
+      bool inserted = alignedCarryAssumptions.insert(carry.getOutput()).second;
+      if (!inserted)
+        return true;
+      llvm::DenseSet<mlir::Value> feedbackVisited = visited;
+      bool aligned = isAligned(carry.getCarry(), phase, carry.getOutput(),
+                               /*truePhaseOnly=*/true, feedbackVisited);
+      alignedCarryAssumptions.erase(carry.getOutput());
+      return aligned;
+    }
+    if (auto gate = llvm::dyn_cast<dataflow::GateOp>(def)) {
+      if (!truePhaseOnly || value != gate.getAfterValue() ||
+          gate.getBeforeCond() != phase)
+        return false;
+      llvm::DenseSet<mlir::Value> branchVisited = visited;
+      return isAligned(gate.getBeforeValue(), phase, assumption,
+                       /*truePhaseOnly=*/false, branchVisited);
+    }
+    if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
+      if (!truePhaseOnly || demux.getSel() != phase ||
+          result.getResultNumber() != 1)
+        return false;
+      llvm::DenseSet<mlir::Value> branchVisited = visited;
+      return isAligned(demux.getInput(), phase, assumption,
+                       /*truePhaseOnly=*/false, branchVisited);
+    }
+    if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(def)) {
+      llvm::DenseSet<mlir::Value> selectorVisited = visited;
+      if (!isAligned(mux.getSel(), phase, assumption, truePhaseOnly,
+                     selectorVisited))
+        return false;
+      for (auto [lane, input] : llvm::enumerate(mux.getInputs())) {
+        llvm::DenseSet<mlir::Value> branchVisited = visited;
+        if (!availableWhenSelectedAndAligned(
+                input, mux.getSel(), lane, phase, assumption, truePhaseOnly,
+                branchVisited))
+          return false;
+      }
+      return true;
+    }
+    if (llvm::isa<dataflow::StreamOp, dataflow::GateOp,
+                  dataflow::ParallelizeOp, dataflow::PackOp,
+                  dataflow::UnpackOp, dataflow::SerializeOp,
+                  dataflow::DemuxOp>(def))
+      return false;
+    if (!llvm::isa<dataflow::CanonicalDataflowActorOpInterface>(def) &&
+        !llvm::isa<mlir::memref::CastOp,
+                   mlir::UnrealizedConversionCastOp>(def))
+      return false;
+
+    bool hasRequiredOperand = false;
+    for (mlir::Value operand : def->getOperands()) {
+      if (isMemoryCapabilityType(operand.getType()))
+        continue;
+      llvm::DenseSet<mlir::Value> requiredVisited = visited;
+      if (isAligned(operand, phase, assumption, truePhaseOnly,
+                    requiredVisited)) {
+        hasRequiredOperand = true;
+        continue;
+      }
+      if (!truePhaseOnly)
+        return false;
+      llvm::DenseSet<mlir::Value> fullVisited = visited;
+      if (!isAligned(operand, phase, assumption,
+                     /*truePhaseOnly=*/false, fullVisited))
+        return false;
+    }
+    return hasRequiredOperand;
+  }
+
+  void collectAlignedCarries(mlir::Value phase,
+                             llvm::SmallVectorImpl<dataflow::CarryOp> &carries) {
+    for (mlir::Operation &op : graph.getBody().front().without_terminator()) {
+      auto carry = llvm::dyn_cast<dataflow::CarryOp>(op);
+      if (carry && carry.getCond() == phase && isExactOne(carry.getInit()))
+        carries.push_back(carry);
+    }
+  }
+
+  bool isCarrySystemAligned(mlir::Value phase) {
+    auto known = alignedCarrySystems.find(phase);
+    if (known != alignedCarrySystems.end())
+      return known->second;
+    if (!alignedCarrySystemsActive.insert(phase).second)
+      return true;
+
+    llvm::SmallVector<dataflow::CarryOp, 4> carries;
+    collectAlignedCarries(phase, carries);
+    for (dataflow::CarryOp carry : carries)
+      alignedCarryAssumptions.insert(carry.getOutput());
+
+    bool aligned = llvm::all_of(carries, [&](dataflow::CarryOp carry) {
+      llvm::DenseSet<mlir::Value> visited;
+      return isAligned(carry.getCarry(), phase, carry.getOutput(),
+                       /*truePhaseOnly=*/true, visited);
+    });
+
+    for (dataflow::CarryOp carry : carries)
+      alignedCarryAssumptions.erase(carry.getOutput());
+    alignedCarrySystemsActive.erase(phase);
+    alignedCarrySystems.try_emplace(phase, aligned);
+    return aligned;
+  }
+
+  bool isPhaseAligned(mlir::Value value, mlir::Value phase) {
+    if (!isCarrySystemAligned(phase))
+      return false;
+    llvm::SmallVector<dataflow::CarryOp, 4> carries;
+    collectAlignedCarries(phase, carries);
+    for (dataflow::CarryOp carry : carries)
+      alignedCarryAssumptions.insert(carry.getOutput());
+    llvm::DenseSet<mlir::Value> visited;
+    bool aligned =
+        isAligned(value, phase, {}, /*truePhaseOnly=*/false, visited);
+    for (dataflow::CarryOp carry : carries)
+      alignedCarryAssumptions.erase(carry.getOutput());
+    return aligned;
+  }
+
+  bool isOneClosePhase(mlir::Value value) {
+    auto known = oneClosePhase.find(value);
+    if (known != oneClosePhase.end())
+      return known->second;
+    if (!oneCloseActive.insert(value).second)
+      return false;
+    bool result = false;
+    if (auto stream = value.getDefiningOp<dataflow::StreamOp>()) {
+      result = value == stream.getPhase() &&
+               isExactOne(stream.getInit()) &&
+               isExactOne(stream.getLimit()) &&
+               isExactOne(stream.getStep());
+    } else if (auto gate = value.getDefiningOp<dataflow::GateOp>()) {
+      result = value == gate.getAfterCond() &&
+               isOneClosePhase(gate.getBeforeCond()) &&
+               isPhaseAligned(gate.getBeforeValue(), gate.getBeforeCond());
+    } else if (auto serialize = value.getDefiningOp<dataflow::SerializeOp>()) {
+      result = value == serialize.getCont() &&
+               isSerializeActivationExact(serialize);
+    } else if (auto sync = value.getDefiningOp<dataflow::SyncOp>()) {
+      unsigned closeInputs = 0;
+      result = true;
+      for (mlir::Value input : sync.getInputs()) {
+        if (isOneClosePhase(input)) {
+          ++closeInputs;
+          continue;
+        }
+        if (!isExactOne(input)) {
+          result = false;
+          break;
+        }
+      }
+      result &= closeInputs == 1;
+    }
+    oneCloseActive.erase(value);
+    oneClosePhase.try_emplace(value, result);
+    return result;
+  }
+
+  bool computeExactOne(mlir::Value value) {
+    if (exactOneAssumptions.contains(value))
+      return true;
+    if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(value)) {
+      if (argument.getOwner() != &graph.getBody().front())
+        return false;
+      if (argument.getArgNumber() == 0)
+        return true;
+      return graph.getInputPortKind(argument.getArgNumber() - 1) !=
+             dataflow::GraphPortKind::Stream;
+    }
+
+    auto result = llvm::dyn_cast<mlir::OpResult>(value);
+    mlir::Operation *def = result ? result.getOwner() : nullptr;
+    if (!def)
+      return false;
+    if (auto constant = llvm::dyn_cast<dataflow::ConstantOp>(def))
+      return isExactOne(constant.getCtrl());
+    if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def))
+      return allOperandsExact(sync);
+    if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(def)) {
+      if (!isExactOne(mux.getSel()))
+        return false;
+      for (auto [lane, input] : llvm::enumerate(mux.getInputs()))
+        if (!availableWhenSelected(input, mux.getSel(), lane))
+          return false;
+      return true;
+    }
+    if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
+      unsigned lane = result.getResultNumber();
+      if (auto selected = getKnownUnsigned(demux.getSel()))
+        return *selected == lane && isExactOne(demux.getInput());
+      return lane == 0 && isOneClosePhase(demux.getSel()) &&
+             isPhaseAligned(demux.getInput(), demux.getSel());
+    }
+    if (auto unpack = llvm::dyn_cast<dataflow::UnpackOp>(def))
+      return isUnpackLaneExact(unpack, result.getResultNumber());
+    if (auto pack = llvm::dyn_cast<dataflow::PackOp>(def))
+      return isPackExact(pack);
+    if (llvm::isa<dataflow::StreamOp, dataflow::CarryOp,
+                  dataflow::InvariantOp, dataflow::GateOp,
+                  dataflow::ParallelizeOp, dataflow::SerializeOp>(def))
+      return false;
+    if (llvm::isa<mlir::memref::AllocOp>(def))
+      return true;
+    if (auto cast = llvm::dyn_cast<mlir::memref::CastOp>(def))
+      return isExactOne(cast.getSource());
+    if (auto cast = llvm::dyn_cast<mlir::UnrealizedConversionCastOp>(def))
+      return llvm::all_of(cast.getInputs(),
+                          [&](mlir::Value input) { return isExactOne(input); });
+    if (llvm::isa<dataflow::CanonicalDataflowActorOpInterface>(def))
+      return allOperandsExact(def);
+    return false;
+  }
+};
+
 } // namespace
 
 llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
@@ -485,6 +937,23 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
     return graphError(
         "nontrivial graph uses raw start as a retirement completion witness");
 
+  GraphCardinalityAnalysis cardinality(graph);
+  for (auto [index, value] : llvm::enumerate(ret.getValues()))
+    if (!cardinality.isExactOne(value))
+      return graphError(llvm::Twine("graph @") + graph.getSymName() +
+                        " value output #" + llvm::Twine(index) +
+                        " is not statically exact-one");
+  for (auto [index, stream] : llvm::enumerate(ret.getStreams()))
+    if (!cardinality.hasProvenStreamCommit(stream))
+      return graphError(llvm::Twine("graph @") + graph.getSymName() +
+                        " stream output #" + llvm::Twine(index) +
+                        " has no statically proven close/commit");
+  for (auto [index, witness] : llvm::enumerate(ret.getComplete()))
+    if (!cardinality.isExactOne(witness))
+      return graphError(llvm::Twine("graph @") + graph.getSymName() +
+                        " completion witness #" + llvm::Twine(index) +
+                        " is not statically one-shot");
+
   for (auto [index, value] : llvm::enumerate(ret.getValues()))
     if (!isCovered(value, ret.getComplete()))
       return graphError(llvm::Twine("retirement frontier does not causally ") +
@@ -526,8 +995,6 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
   for (mlir::Operation &op : entry.without_terminator()) {
     if (auto gate = llvm::dyn_cast<dataflow::GateOp>(op)) {
       bool covered = coversFalseClose(gate.getAfterCond(), ret.getComplete());
-      if (!covered && hasPhaseAlignedGateValue(gate))
-        covered = coversFalseClose(gate.getBeforeCond(), ret.getComplete());
       if (!covered)
         return graphError(
             "retirement frontier does not cover close/reset of "
@@ -588,28 +1055,4 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
     return mlir::WalkResult::advance();
   });
   return effectError;
-}
-
-llvm::Error dataflow::validateFinalizedProgram(mlir::ModuleOp module) {
-  if (!module)
-    return graphError("finalized program must be a module");
-  bool hasSpatialCandidate = false;
-  module.walk([&](mlir::Operation *op) {
-    if (op->getName().getStringRef() != "loom.spatial_region")
-      return mlir::WalkResult::advance();
-    hasSpatialCandidate = true;
-    return mlir::WalkResult::interrupt();
-  });
-  if (hasSpatialCandidate)
-    return graphError(
-        "finalized program contains temporary loom.spatial_region");
-
-  llvm::Error error = llvm::Error::success();
-  module.walk([&](GraphOp graph) {
-    if (error)
-      return mlir::WalkResult::interrupt();
-    error = validateFinalizedGraph(graph);
-    return error ? mlir::WalkResult::interrupt() : mlir::WalkResult::advance();
-  });
-  return error;
 }

@@ -18,6 +18,7 @@ add_mlir_dialect_library(MLIRDataflow
   DataflowChannelOps.cpp
   DataflowDialect.cpp
   DataflowGraphValidation.cpp
+  DataflowProgramValidation.cpp
   DataflowInterfaces.cpp
   DataflowFunctionLikeOps.cpp
   DataflowOps.cpp

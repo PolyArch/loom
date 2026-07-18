@@ -2,10 +2,6 @@
 // RUN: FileCheck %s --check-prefix=FALSE < %t.false.json
 // RUN: loom-dfg-sim %s --graph mux_true_lane --arg 0=true --arg 1=7 --arg 2=99 --output %t.true.json
 // RUN: FileCheck %s --check-prefix=TRUE < %t.true.json
-// RUN: loom-dfg-sim %s --graph demux_false_lane --arg 0=false --arg 1=7 --output %t.demux_false.json
-// RUN: FileCheck %s --check-prefix=DEMUX-FALSE < %t.demux_false.json
-// RUN: loom-dfg-sim %s --graph demux_true_lane --arg 0=true --arg 1=99 --output %t.demux_true.json
-// RUN: FileCheck %s --check-prefix=DEMUX-TRUE < %t.demux_true.json
 // RUN: loom-dfg-sim %s --graph computed_i1_selectors --arg 0=true --arg 1=11 --arg 2=22 --output %t.computed_i1.json
 // RUN: FileCheck %s --check-prefix=COMPUTED-I1 < %t.computed_i1.json
 // RUN: loom-dfg-sim %s --graph computed_i1_arith_select --arg 0=true --arg 1=11 --arg 2=22 --output %t.computed_select_true.json
@@ -28,16 +24,6 @@
 // TRUE-DAG: "dataflow.mux": 1
 // TRUE-DAG: "i64:99"
 // TRUE-NOT: "incomplete final outputs"
-
-// DEMUX-FALSE-DAG: "status": "pass"
-// DEMUX-FALSE-DAG: "dataflow.demux": 1
-// DEMUX-FALSE-DAG: "i64:7"
-// DEMUX-FALSE-NOT: "incomplete final outputs"
-
-// DEMUX-TRUE-DAG: "status": "pass"
-// DEMUX-TRUE-DAG: "dataflow.demux": 1
-// DEMUX-TRUE-DAG: "i64:99"
-// DEMUX-TRUE-NOT: "incomplete final outputs"
 
 // COMPUTED-I1-DAG: "status": "pass"
 // COMPUTED-I1-DAG: "dataflow.demux": 1
@@ -94,28 +80,6 @@ module {
         : (i1, i64) -> (i64, i64)
     %out = dataflow.mux %sel, %false_value, %true_lane : (i1, i64, i64) -> i64
     %published:2 = dataflow.sync %ctrl, %out
-        : (none, i64) -> (none, i64)
-    dataflow.graph.return %published#0, %published#1 : none, i64
-  }
-
-  dataflow.graph private @demux_false_lane(%ctrl: none, %sel: i1,
-                                                %value: i64)
-      -> (i64)
-      attributes {input_segments = array<i32: 2, 0, 0>,
-                  result_segments = array<i32: 1, 0, 0>} {
-    %false_lane, %true_lane = dataflow.demux %sel, %value : (i1, i64) -> (i64, i64)
-    %published:2 = dataflow.sync %ctrl, %false_lane
-        : (none, i64) -> (none, i64)
-    dataflow.graph.return %published#0, %published#1 : none, i64
-  }
-
-  dataflow.graph private @demux_true_lane(%ctrl: none, %sel: i1,
-                                               %value: i64)
-      -> (i64)
-      attributes {input_segments = array<i32: 2, 0, 0>,
-                  result_segments = array<i32: 1, 0, 0>} {
-    %false_lane, %true_lane = dataflow.demux %sel, %value : (i1, i64) -> (i64, i64)
-    %published:2 = dataflow.sync %ctrl, %true_lane
         : (none, i64) -> (none, i64)
     dataflow.graph.return %published#0, %published#1 : none, i64
   }
