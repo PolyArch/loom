@@ -56,6 +56,23 @@ void rejectsInvalidWideSyncLaneCorrespondence() {
                  MappingErrorCode::ConfiguredFunctionMismatch);
 }
 
+void rejectsMissingWideSyncPassthroughBoundary() {
+  TestCase testCase = makeWideSyncCase();
+  selectWideSyncLanes(testCase, {1, 3});
+  const PortDescriptor passthrough = port(PortKind::Value, type(41), 16);
+  FuDescriptor &fu = testCase.fabric.functionalUnits.front();
+  fu.inputPorts.push_back(passthrough);
+  fu.outputPorts.push_back(passthrough);
+  EncodingDescriptor &encoding = testCase.fabric.encodings.front();
+  encoding.inputs.push_back({4, passthrough});
+  encoding.outputs.push_back({4, passthrough, FuInputValue{4}});
+  testCase.fabric.computeOccurrences.front() = makeSpatialComputeOccurrence(
+      testCase.fabric.identity, ComputeOccurrenceId(3100), fu, 3200);
+
+  expectMapError(__func__, testCase,
+                 MappingErrorCode::IncompleteBoundaryCorrespondence);
+}
+
 void rejectsMalformedWideSyncLaneCapability() {
   auto expectMalformed = [&](auto mutate) {
     TestCase testCase = makeWideSyncCase();
@@ -710,6 +727,7 @@ void rejectsInvalidComputeOccurrences() {
 void runMappingVerifierTests() {
   acceptsMultipleMappingsOfOneWideSyncCapability();
   rejectsInvalidWideSyncLaneCorrespondence();
+  rejectsMissingWideSyncPassthroughBoundary();
   rejectsMalformedWideSyncLaneCapability();
   acceptsValidTechMapping();
   acceptsBoundaryInputFanout();

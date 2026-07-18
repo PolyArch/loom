@@ -6,9 +6,12 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace loom::mapping::detail {
@@ -40,9 +43,16 @@ llvm::Error mappingError(MappingErrorCode code, const llvm::Twine &message);
 llvm::Error addEntity(EntityKinds &entities, std::uint64_t id, EntityKind kind);
 llvm::Error requireLocalKind(const EntityKinds &entities, std::uint64_t id,
                              EntityKind expected);
-llvm::Error validatePairedLaneCapability(const FabricOpDescriptor &operation);
 bool validPairedConfiguredPorts(const ConfiguredFabricOpDescriptor &configured,
                                 const FabricOpDescriptor &operation);
+
+struct ValidatedPairedLaneCapability {
+  std::vector<std::uint32_t> laneByInputPort;
+  std::vector<std::uint32_t> laneByOutputPort;
+};
+
+llvm::Expected<ValidatedPairedLaneCapability>
+buildValidatedPairedLaneCapability(const FabricOpDescriptor &operation);
 
 struct PairedLaneProjection {
   std::vector<std::uint32_t> laneIndices;
@@ -55,14 +65,33 @@ struct ValidatedConfiguredBoundaryPort {
   PortDescriptor descriptor;
 };
 
-llvm::Expected<PairedLaneProjection>
-validateAndProjectPairedLaneSelection(const ArtifactIdentity &fabricIdentity,
-                                      const FabricOpDescriptor &operation,
-                                      const ActorToFabricOp &correspondence);
+struct ValidatedConfiguredBoundaryOperation {
+  FabricOpId operation;
+  std::vector<std::optional<std::size_t>> inputOperands;
+};
+
+struct ValidatedConfiguredBoundaryOutput {
+  ValidatedConfiguredBoundaryPort port;
+  std::variant<std::size_t, FabricOpResultValue> source;
+};
+
+struct ValidatedConfiguredBoundaryIndex {
+  std::vector<ValidatedConfiguredBoundaryPort> inputs;
+  std::vector<ValidatedConfiguredBoundaryOperation> operations;
+  std::vector<ValidatedConfiguredBoundaryOutput> outputs;
+};
+
+llvm::Expected<ValidatedConfiguredBoundaryIndex>
+buildValidatedConfiguredBoundaryIndex(const EncodingDescriptor &encoding);
+
+llvm::Expected<PairedLaneProjection> validateAndProjectPairedLaneSelection(
+    const ArtifactIdentity &fabricIdentity, const FabricOpDescriptor &operation,
+    const ValidatedPairedLaneCapability &capability,
+    const ActorToFabricOp &correspondence);
 
 std::vector<ValidatedConfiguredBoundaryPort>
 deriveActiveConfiguredBoundaryPorts(
-    const EncodingDescriptor &encoding,
+    const ValidatedConfiguredBoundaryIndex &index,
     const std::map<std::uint64_t, const ConfiguredFabricOpDescriptor *>
         &actorToOp,
     const std::map<std::uint64_t, PairedLaneProjection>

@@ -93,6 +93,9 @@ struct FabricIndex {
   std::map<std::uint64_t, const FuDescriptor *> functionalUnits;
   std::map<std::uint64_t, const FabricOpDescriptor *> operations;
   std::map<std::uint64_t, const EncodingDescriptor *> encodings;
+  std::map<std::uint64_t, ValidatedPairedLaneCapability> pairedLaneCapabilities;
+  std::map<std::uint64_t, ValidatedConfiguredBoundaryIndex>
+      configuredBoundaryIndexes;
   std::map<std::uint64_t, const MemoryServiceDomainDescriptor *>
       memoryServiceDomains;
   std::map<std::uint64_t, const MemoryImplementationDescriptor *>
@@ -534,9 +537,13 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
     if (llvm::Error error =
             requireLocalKind(index.kinds, operation.fu.value(), EntityKind::Fu))
       return std::move(error);
-    if (!operation.pairedLanes.empty())
-      if (llvm::Error error = validatePairedLaneCapability(operation))
-        return std::move(error);
+    if (!operation.pairedLanes.empty()) {
+      auto capability = buildValidatedPairedLaneCapability(operation);
+      if (!capability)
+        return capability.takeError();
+      index.pairedLaneCapabilities.emplace(operation.id.value(),
+                                           std::move(*capability));
+    }
   }
   for (const EncodingDescriptor &encoding : fabric.encodings) {
     if (llvm::Error error =
@@ -608,6 +615,11 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
         return mappingError(MappingErrorCode::InvalidConfiguredFunction,
                             "configured FU output has the wrong semantic type");
     }
+    auto boundaryIndex = buildValidatedConfiguredBoundaryIndex(encoding);
+    if (!boundaryIndex)
+      return boundaryIndex.takeError();
+    index.configuredBoundaryIndexes.emplace(encoding.id.value(),
+                                            std::move(*boundaryIndex));
   }
   for (const MemoryImplementationDescriptor &implementation :
        fabric.memoryImplementations) {
@@ -1043,8 +1055,13 @@ llvm::Expected<ResolvedRealization> validateActorToOpCorrespondence(
           (*actor)->outputPorts.size() != correspondence.laneSelections.size())
         return mappingError(MappingErrorCode::ConfiguredFunctionMismatch,
                             "paired-lane correspondence is incomplete");
+      auto capability =
+          fabricIndex.pairedLaneCapabilities.find((*operation)->id.value());
+      if (capability == fabricIndex.pairedLaneCapabilities.end())
+        return mappingError(MappingErrorCode::InternalError,
+                            "validated paired-lane capability is missing");
       auto projection = validateAndProjectPairedLaneSelection(
-          fabric.identity, **operation, correspondence);
+          fabric.identity, **operation, capability->second, correspondence);
       if (!projection)
         return projection.takeError();
       for (std::size_t softwarePort = 0;
@@ -1701,8 +1718,13 @@ loom::mapping::validateTechMapping(const TechMappingDraft &mapping,
         realization, dataflow, *dataflowIndex, fabric, *fabricIndex);
     if (!selected)
       return selected.takeError();
+    auto boundaryIndex = fabricIndex->configuredBoundaryIndexes.find(
+        selected->encoding->id.value());
+    if (boundaryIndex == fabricIndex->configuredBoundaryIndexes.end())
+      return mappingError(MappingErrorCode::InternalError,
+                          "validated configured boundary index is missing");
     selected->activeBoundaryPorts = deriveActiveConfiguredBoundaryPorts(
-        *selected->encoding, selected->actorToOp,
+        boundaryIndex->second, selected->actorToOp,
         selected->actorToLaneProjections);
     auto boundary = validateBoundaryCorrespondence(
         realization, *selected, dataflow, *dataflowIndex, fabric, *fabricIndex);

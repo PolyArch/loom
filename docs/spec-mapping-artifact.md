@@ -196,6 +196,11 @@ not persist `active_lanes`, `selected_mask`, a bitmask, or an equivalent second
 authority. Canonical Fabric configured-operation descriptors likewise do not
 copy selected lane records.
 
+Lane selection deactivates only configured FU boundary ports used exclusively
+by inactive paired lanes. Boundaries shared with active or ordinary operations,
+unused unrelated boundaries, and direct `FuInputValue` passthrough inputs and
+outputs remain active.
+
 The neutral C++ verifier treats a missing lane inventory as an ordinary exact
 configured function. Because `SemanticKey` is opaque, it cannot identify an
 exact-full-width `dataflow.sync` solely from semantic identity. Any subset-
