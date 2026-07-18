@@ -375,54 +375,77 @@ def Dataflow_DemuxOp : Dataflow_Op<"demux", [Pure, CanonicalDataflowActor]> {
 // Memory Ops
 //
 // Streaming load / store against a memref, orchestrated by none-typed ctrl /
-// done tokens. The memref's element type constrains the data port type.
+// done tokens. The memref's element type constrains the scalar data type or
+// vector element type.
 //===----------------------------------------------------------------------===//
 
-def Dataflow_LoadOp : Dataflow_Op<"load", [
-    CanonicalDataflowActor,
-    TypesMatchWith<"'data' type matches memref element type",
-                   "mem", "data",
-                   "::llvm::cast<::mlir::MemRefType>($_self).getElementType()">
-]> {
-  let summary = "streaming load: addr + ctrl -> data + done";
+def Dataflow_LoadOp : Dataflow_Op<"load", [CanonicalDataflowActor]> {
+  let summary = "streaming scalar or contiguous vector load";
   let description = [{
     On the simultaneous arrival of an `%addr : index` token and a
-    `%ctrl : none` token, consumes both, loads
-    `%mem[%addr]`, emits the read value on `%data`, and emits a
-    `none` token on `%done`.
+    `%ctrl : none` token, consumes both and fires one memory actor.
+    Scalar data loads `%mem[%addr]`. A fixed-size rank-1 vector result
+    loads contiguous elements starting at `%addr`.
 
-    The memref element type constrains `%data`'s type.
+    An optional same-shape `vector<Nxi1>` mask restricts a vector load
+    to active lanes. Inactive lanes do not access memory and are
+    deterministically zero-filled. After all active lanes retire, the
+    op emits one data token and one `none` token on `%done`.
   }];
 
-  let arguments = (ins AnyMemRef:$mem, Index:$addr, NoneType:$ctrl);
+  let arguments = (ins AnyMemRef:$mem, Index:$addr, NoneType:$ctrl,
+                       Optional<AnyVectorOfAnyRank>:$mask);
   let results = (outs AnyType:$data, NoneType:$done);
 
-  let assemblyFormat = [{
-    $mem `[` $addr `]` $ctrl attr-dict `:` type($mem)
-  }];
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+  let builders = [
+    OpBuilder<(ins
+        "::mlir::Type":$data,
+        "::mlir::Type":$done,
+        "::mlir::Value":$mem,
+        "::mlir::Value":$addr,
+        "::mlir::Value":$ctrl)>,
+    OpBuilder<(ins
+        "::mlir::Value":$mem,
+        "::mlir::Value":$addr,
+        "::mlir::Value":$ctrl)>
+  ];
 }
 
-def Dataflow_StoreOp : Dataflow_Op<"store", [
-    CanonicalDataflowActor,
-    TypesMatchWith<"'data' type matches memref element type",
-                   "mem", "data",
-                   "::llvm::cast<::mlir::MemRefType>($_self).getElementType()">
-]> {
-  let summary = "streaming store: addr + data + ctrl -> done";
+def Dataflow_StoreOp : Dataflow_Op<"store", [CanonicalDataflowActor]> {
+  let summary = "streaming scalar or contiguous vector store";
   let description = [{
     On the simultaneous arrival of an `%addr : index`, a `%data` value
-    (of the memref element type), and a `%ctrl : none`, consumes all
-    three, writes `%data` into `%mem[%addr]`, and emits a `none` token
-    on `%done`.
+    and a `%ctrl : none`, consumes all three and fires one memory actor.
+    Scalar data writes `%mem[%addr]`. Fixed-size rank-1 vector
+    data writes contiguous elements starting at `%addr`.
+
+    An optional same-shape `vector<Nxi1>` mask restricts a vector store
+    to active lanes. Inactive lanes do not access memory. After all
+    active lanes retire, the op emits one `none` token on `%done`.
   }];
 
   let arguments = (ins AnyMemRef:$mem, Index:$addr, AnyType:$data,
-                       NoneType:$ctrl);
+                       NoneType:$ctrl,
+                       Optional<AnyVectorOfAnyRank>:$mask);
   let results = (outs NoneType:$done);
 
-  let assemblyFormat = [{
-    $mem `[` $addr `]` $data $ctrl attr-dict `:` type($mem)
-  }];
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+  let builders = [
+    OpBuilder<(ins
+        "::mlir::Type":$done,
+        "::mlir::Value":$mem,
+        "::mlir::Value":$addr,
+        "::mlir::Value":$data,
+        "::mlir::Value":$ctrl)>,
+    OpBuilder<(ins
+        "::mlir::Value":$mem,
+        "::mlir::Value":$addr,
+        "::mlir::Value":$data,
+        "::mlir::Value":$ctrl)>
+  ];
 }
 
 //===----------------------------------------------------------------------===//

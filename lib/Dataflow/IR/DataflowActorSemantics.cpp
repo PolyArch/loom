@@ -10,14 +10,29 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <cassert>
 #include <optional>
+#include <string>
 #include <system_error>
 
 namespace {
 
 using dataflow::semantics::getStreamActivation;
+
+bool isSupportedVectorElementType(mlir::Type type) {
+  if (auto integer = llvm::dyn_cast<mlir::IntegerType>(type))
+    return integer.getWidth() != 0;
+  return llvm::isa<mlir::FloatType>(type);
+}
+
+std::string typeToString(mlir::Type type) {
+  std::string storage;
+  llvm::raw_string_ostream stream(storage);
+  type.print(stream);
+  return storage;
+}
 
 llvm::Error requireStreamBitWidth(unsigned bitWidth) {
   if (bitWidth >= 1 && bitWidth <= 64)
@@ -751,6 +766,74 @@ findSynchronization(mlir::Value value, mlir::Value branchSelector,
 }
 
 } // namespace
+
+llvm::Expected<mlir::VectorType>
+dataflow::semantics::analyzeFixedRankOneDataVector(mlir::Type type) {
+  auto vector = llvm::dyn_cast<mlir::VectorType>(type);
+  if (!vector || vector.getRank() != 1 || vector.isScalable())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "data vector must be a fixed-size rank-1 vector");
+  if (!isSupportedVectorElementType(vector.getElementType()))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "data vector element type must be a nonzero-width integer or "
+        "floating-point type");
+  return vector;
+}
+
+llvm::Error
+dataflow::semantics::validateVectorMaskType(mlir::VectorType dataVector,
+                                            mlir::Type maskType) {
+  auto mask = llvm::dyn_cast<mlir::VectorType>(maskType);
+  if (!mask || mask.getRank() != 1 || mask.isScalable())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "mask vector must be a fixed-size rank-1 vector");
+  if (!mask.getElementType().isInteger(1))
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "mask vector element type must be 'i1'");
+  if (mask.getShape() != dataVector.getShape())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "mask vector shape '%s' must match data vector shape '%s'",
+        typeToString(mask).c_str(), typeToString(dataVector).c_str());
+  return llvm::Error::success();
+}
+
+llvm::Expected<dataflow::semantics::MemoryAccessType>
+dataflow::semantics::analyzeMemoryAccessType(mlir::MemRefType memoryType,
+                                             mlir::Type dataType,
+                                             mlir::Type maskType) {
+  mlir::Type elementType = memoryType.getElementType();
+  if (dataType == elementType) {
+    if (maskType)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "mask is only valid for a vector memory access");
+    return MemoryAccessType{elementType, {}};
+  }
+
+  if (llvm::isa<mlir::VectorType>(dataType)) {
+    auto vector = analyzeFixedRankOneDataVector(dataType);
+    if (!vector)
+      return vector.takeError();
+    if (vector->getElementType() != elementType)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "data vector element type %s must match memory element type %s",
+          typeToString(vector->getElementType()).c_str(),
+          typeToString(elementType).c_str());
+    if (maskType)
+      if (llvm::Error error = validateVectorMaskType(*vector, maskType))
+        return std::move(error);
+    return MemoryAccessType{elementType, *vector};
+  }
+
+  return llvm::createStringError(
+      std::errc::invalid_argument,
+      "failed to verify that 'data' type matches memref element type");
+}
 
 llvm::Expected<dataflow::semantics::StreamTransition>
 dataflow::semantics::evaluateStreamTransition(

@@ -165,6 +165,27 @@ SerializeTransition evaluateSerializeTransition(std::optional<bool> groupPhase,
                                                 bool vectorAvailable,
                                                 bool maskAvailable);
 
+struct MemoryAccessType {
+  mlir::Type elementType;
+  mlir::VectorType vectorType;
+
+  bool isVector() const { return static_cast<bool>(vectorType); }
+  std::uint64_t laneCount() const {
+    return isVector()
+               ? static_cast<std::uint64_t>(vectorType.getShape().front())
+               : 1;
+  }
+};
+
+llvm::Expected<mlir::VectorType> analyzeFixedRankOneDataVector(mlir::Type type);
+
+llvm::Error validateVectorMaskType(mlir::VectorType dataVector,
+                                   mlir::Type maskType);
+
+llvm::Expected<MemoryAccessType>
+analyzeMemoryAccessType(mlir::MemRefType memoryType, mlir::Type dataType,
+                        mlir::Type maskType = {});
+
 bool isStatelessOneTokenVectorBoundary(mlir::Operation *op);
 
 std::optional<mlir::Value> getVectorBoundaryInputPhase(mlir::Operation *op);

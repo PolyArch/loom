@@ -1,5 +1,6 @@
 #include "Dataflow/IR/DataflowOps.h"
 
+#include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowEnums.h"
 #include "mlir/IR/Builders.h"
@@ -76,33 +77,17 @@ void StreamOp::print(OpAsmPrinter &printer) {
 
 // dataflow.parallelize / pack / unpack / serialize
 
-static bool isSupportedVectorElementType(Type type) {
-  if (auto integer = dyn_cast<IntegerType>(type))
-    return integer.getWidth() != 0;
-  return isa<FloatType>(type);
-}
-
 static FailureOr<VectorType> verifyDataVector(Operation *op, Type type) {
-  auto vector = dyn_cast<VectorType>(type);
-  if (!vector || vector.getRank() != 1 || vector.isScalable())
-    return op->emitOpError("data vector must be a fixed-size rank-1 vector");
-  if (!isSupportedVectorElementType(vector.getElementType()))
-    return op->emitOpError(
-        "data vector element type must be a nonzero-width integer or "
-        "floating-point type");
-  return vector;
+  auto vector = semantics::analyzeFixedRankOneDataVector(type);
+  if (!vector)
+    return op->emitOpError(llvm::toString(vector.takeError()));
+  return *vector;
 }
 
 static LogicalResult verifyMaskVector(Operation *op, VectorType dataVector,
                                       Type type) {
-  auto mask = dyn_cast<VectorType>(type);
-  if (!mask || mask.getRank() != 1 || mask.isScalable())
-    return op->emitOpError("mask vector must be a fixed-size rank-1 vector");
-  if (!mask.getElementType().isInteger(1))
-    return op->emitOpError("mask vector element type must be 'i1'");
-  if (mask.getShape() != dataVector.getShape())
-    return op->emitOpError("mask vector shape ")
-           << mask << " must match data vector shape " << dataVector;
+  if (llvm::Error error = semantics::validateVectorMaskType(dataVector, type))
+    return op->emitOpError(llvm::toString(std::move(error)));
   return success();
 }
 
@@ -170,6 +155,193 @@ LogicalResult SerializeOp::verify() {
            << getData().getType() << " must match data vector element type "
            << (*vector).getElementType();
   return success();
+}
+
+//===----------------------------------------------------------------------===//
+// Memory Ops
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+struct ParsedMemoryAccessTypes {
+  MemRefType memoryType;
+  Type dataType;
+};
+
+ParseResult parseMemoryAccessTypes(OpAsmParser &parser,
+                                   ParsedMemoryAccessTypes &types) {
+  Type parsedMemoryType;
+  if (parser.parseColon() || parser.parseType(parsedMemoryType))
+    return failure();
+  types.memoryType = dyn_cast<MemRefType>(parsedMemoryType);
+  if (!types.memoryType)
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected memref memory type");
+  types.dataType = types.memoryType.getElementType();
+  if (succeeded(parser.parseOptionalComma()) &&
+      parser.parseType(types.dataType))
+    return failure();
+  return success();
+}
+
+FailureOr<VectorType> getParsedDataVector(OpAsmParser &parser, Type dataType) {
+  auto vector = dyn_cast<VectorType>(dataType);
+  if (!vector)
+    return parser.emitError(
+        parser.getCurrentLocation(),
+        "masked memory access requires an explicit vector data type");
+  return vector;
+}
+
+Type getMaskType(OpAsmParser &parser, VectorType dataVector) {
+  return VectorType::get(dataVector.getShape(), parser.getBuilder().getI1Type(),
+                         dataVector.getScalableDims());
+}
+
+LogicalResult verifyMemoryAccess(Operation *op, Value memory, Type dataType,
+                                 Value mask) {
+  auto access = semantics::analyzeMemoryAccessType(
+      cast<MemRefType>(memory.getType()), dataType,
+      mask ? mask.getType() : Type{});
+  if (!access)
+    return op->emitOpError(llvm::toString(access.takeError()));
+  return success();
+}
+
+bool hasExplicitMemoryDataType(Value memory, Type dataType) {
+  return dataType != cast<MemRefType>(memory.getType()).getElementType();
+}
+
+} // namespace
+
+ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand memory;
+  OpAsmParser::UnresolvedOperand address;
+  OpAsmParser::UnresolvedOperand control;
+  OpAsmParser::UnresolvedOperand mask;
+  if (parser.parseOperand(memory) || parser.parseLSquare() ||
+      parser.parseOperand(address) || parser.parseRSquare() ||
+      parser.parseOperand(control))
+    return failure();
+
+  bool hasMask = succeeded(parser.parseOptionalKeyword("mask"));
+  if (hasMask && parser.parseOperand(mask))
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  ParsedMemoryAccessTypes types;
+  if (failed(parseMemoryAccessTypes(parser, types)))
+    return failure();
+
+  if (parser.resolveOperand(memory, types.memoryType, result.operands) ||
+      parser.resolveOperand(address, parser.getBuilder().getIndexType(),
+                            result.operands) ||
+      parser.resolveOperand(control, parser.getBuilder().getNoneType(),
+                            result.operands))
+    return failure();
+  if (hasMask) {
+    FailureOr<VectorType> vector = getParsedDataVector(parser, types.dataType);
+    if (failed(vector) ||
+        parser.resolveOperand(mask, getMaskType(parser, *vector),
+                              result.operands))
+      return failure();
+  }
+  result.addTypes({types.dataType, parser.getBuilder().getNoneType()});
+  return success();
+}
+
+void LoadOp::print(OpAsmPrinter &printer) {
+  printer << ' ' << getMem() << '[' << getAddr() << "] " << getCtrl();
+  if (getMask())
+    printer << " mask " << getMask();
+  printer.printOptionalAttrDict((*this)->getAttrs());
+  printer << " : " << getMem().getType();
+  if (hasExplicitMemoryDataType(getMem(), getData().getType()))
+    printer << ", " << getData().getType();
+}
+
+void LoadOp::build(OpBuilder &builder, OperationState &state, Type data,
+                   Type done, Value memory, Value address, Value control) {
+  state.addOperands({memory, address, control});
+  state.addTypes({data, done});
+}
+
+void LoadOp::build(OpBuilder &builder, OperationState &state, Value memory,
+                   Value address, Value control) {
+  Type data = cast<MemRefType>(memory.getType()).getElementType();
+  build(builder, state, data, builder.getNoneType(), memory, address, control);
+}
+
+LogicalResult LoadOp::verify() {
+  return verifyMemoryAccess(getOperation(), getMem(), getData().getType(),
+                            getMask());
+}
+
+ParseResult StoreOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand memory;
+  OpAsmParser::UnresolvedOperand address;
+  OpAsmParser::UnresolvedOperand data;
+  OpAsmParser::UnresolvedOperand control;
+  OpAsmParser::UnresolvedOperand mask;
+  if (parser.parseOperand(memory) || parser.parseLSquare() ||
+      parser.parseOperand(address) || parser.parseRSquare() ||
+      parser.parseOperand(data) || parser.parseOperand(control))
+    return failure();
+
+  bool hasMask = succeeded(parser.parseOptionalKeyword("mask"));
+  if (hasMask && parser.parseOperand(mask))
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  ParsedMemoryAccessTypes types;
+  if (failed(parseMemoryAccessTypes(parser, types)))
+    return failure();
+
+  if (parser.resolveOperand(memory, types.memoryType, result.operands) ||
+      parser.resolveOperand(address, parser.getBuilder().getIndexType(),
+                            result.operands) ||
+      parser.resolveOperand(data, types.dataType, result.operands) ||
+      parser.resolveOperand(control, parser.getBuilder().getNoneType(),
+                            result.operands))
+    return failure();
+  if (hasMask) {
+    FailureOr<VectorType> vector = getParsedDataVector(parser, types.dataType);
+    if (failed(vector) ||
+        parser.resolveOperand(mask, getMaskType(parser, *vector),
+                              result.operands))
+      return failure();
+  }
+  result.addTypes(parser.getBuilder().getNoneType());
+  return success();
+}
+
+void StoreOp::print(OpAsmPrinter &printer) {
+  printer << ' ' << getMem() << '[' << getAddr() << "] " << getData() << ' '
+          << getCtrl();
+  if (getMask())
+    printer << " mask " << getMask();
+  printer.printOptionalAttrDict((*this)->getAttrs());
+  printer << " : " << getMem().getType();
+  if (hasExplicitMemoryDataType(getMem(), getData().getType()))
+    printer << ", " << getData().getType();
+}
+
+void StoreOp::build(OpBuilder &builder, OperationState &state, Type done,
+                    Value memory, Value address, Value data, Value control) {
+  state.addOperands({memory, address, data, control});
+  state.addTypes(done);
+}
+
+void StoreOp::build(OpBuilder &builder, OperationState &state, Value memory,
+                    Value address, Value data, Value control) {
+  build(builder, state, builder.getNoneType(), memory, address, data, control);
+}
+
+LogicalResult StoreOp::verify() {
+  return verifyMemoryAccess(getOperation(), getMem(), getData().getType(),
+                            getMask());
 }
 
 //===----------------------------------------------------------------------===//

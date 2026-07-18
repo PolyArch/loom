@@ -20,3 +20,33 @@ func.func @store_2d_i64(%mem: memref<4x4xi64>, %addr: index, %data: i64, %ctrl: 
   %done = dataflow.store %mem[%addr] %data %ctrl : memref<4x4xi64>
   return %done : none
 }
+
+// CHECK-LABEL: @store_vector_i32
+func.func @store_vector_i32(
+    %mem: memref<10xi32>, %addr: index, %data: vector<4xi32>, %ctrl: none)
+    -> none {
+  // CHECK: dataflow.store %{{.*}}[%{{.*}}] %{{.*}} %{{.*}} : memref<10xi32>, vector<4xi32>
+  %done =
+      dataflow.store %mem[%addr] %data %ctrl : memref<10xi32>, vector<4xi32>
+  return %done : none
+}
+
+// CHECK-LABEL: @store_masked_vector_i32
+func.func @store_masked_vector_i32(
+    %mem: memref<10xi32>, %addr: index, %data: vector<4xi32>,
+    %mask: vector<4xi1>, %ctrl: none) -> none {
+  // CHECK: dataflow.store %{{.*}}[%{{.*}}] %{{.*}} %{{.*}} mask %{{.*}} : memref<10xi32>, vector<4xi32>
+  %done = dataflow.store %mem[%addr] %data %ctrl mask %mask
+      : memref<10xi32>, vector<4xi32>
+  return %done : none
+}
+
+// CHECK-LABEL: @store_scalar_vector_element
+func.func @store_scalar_vector_element(
+    %mem: memref<10xvector<2xi32>>, %addr: index, %data: vector<2xi32>,
+    %ctrl: none) -> none {
+  // CHECK: dataflow.store %{{.*}}[%{{.*}}] %{{.*}} %{{.*}} : memref<10xvector<2xi32>>
+  %done =
+      dataflow.store %mem[%addr] %data %ctrl : memref<10xvector<2xi32>>
+  return %done : none
+}

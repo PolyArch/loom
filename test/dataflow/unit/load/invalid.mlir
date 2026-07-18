@@ -31,3 +31,36 @@ func.func @load_bad_done(%mem: memref<10xi32>, %addr: index, %ctrl: none) -> (i3
   %data, %done = "dataflow.load"(%mem, %addr, %ctrl) : (memref<10xi32>, index, none) -> (i32, i1)
   return %data, %done : i32, i1
 }
+
+// -----
+// Vector data must have fixed rank one.
+func.func @load_bad_vector_rank(
+    %mem: memref<10xi32>, %addr: index, %ctrl: none)
+    -> (vector<2x2xi32>, none) {
+  // expected-error @+1 {{data vector must be a fixed-size rank-1 vector}}
+  %data, %done = "dataflow.load"(%mem, %addr, %ctrl)
+      : (memref<10xi32>, index, none) -> (vector<2x2xi32>, none)
+  return %data, %done : vector<2x2xi32>, none
+}
+
+// -----
+// A mask is illegal on a scalar access.
+func.func @load_scalar_mask(
+    %mem: memref<10xi32>, %addr: index, %mask: vector<4xi1>, %ctrl: none)
+    -> (i32, none) {
+  // expected-error @+1 {{mask is only valid for a vector memory access}}
+  %data, %done = "dataflow.load"(%mem, %addr, %ctrl, %mask)
+      : (memref<10xi32>, index, none, vector<4xi1>) -> (i32, none)
+  return %data, %done : i32, none
+}
+
+// -----
+// Mask shape must match vector data shape.
+func.func @load_bad_mask_shape(
+    %mem: memref<10xi32>, %addr: index, %mask: vector<2xi1>, %ctrl: none)
+    -> (vector<4xi32>, none) {
+  // expected-error @+1 {{mask vector shape 'vector<2xi1>' must match data vector shape 'vector<4xi32>'}}
+  %data, %done = "dataflow.load"(%mem, %addr, %ctrl, %mask)
+      : (memref<10xi32>, index, none, vector<2xi1>) -> (vector<4xi32>, none)
+  return %data, %done : vector<4xi32>, none
+}

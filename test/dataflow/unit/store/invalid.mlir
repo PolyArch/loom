@@ -31,3 +31,25 @@ func.func @store_bad_done(%mem: memref<10xi32>, %addr: index, %data: i32, %ctrl:
   %done = "dataflow.store"(%mem, %addr, %data, %ctrl) : (memref<10xi32>, index, i32, none) -> i1
   return %done : i1
 }
+
+// -----
+// Vector element type must match the memory element type.
+func.func @store_bad_vector_element(
+    %mem: memref<10xi32>, %addr: index, %data: vector<4xi16>, %ctrl: none)
+    -> none {
+  // expected-error @+1 {{data vector element type i16 must match memory element type i32}}
+  %done = "dataflow.store"(%mem, %addr, %data, %ctrl)
+      : (memref<10xi32>, index, vector<4xi16>, none) -> none
+  return %done : none
+}
+
+// -----
+// Mask element type must be i1.
+func.func @store_bad_mask_element(
+    %mem: memref<10xi32>, %addr: index, %data: vector<4xi32>,
+    %mask: vector<4xi8>, %ctrl: none) -> none {
+  // expected-error @+1 {{mask vector element type must be 'i1'}}
+  %done = "dataflow.store"(%mem, %addr, %data, %ctrl, %mask)
+      : (memref<10xi32>, index, vector<4xi32>, none, vector<4xi8>) -> none
+  return %done : none
+}

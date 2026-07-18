@@ -370,12 +370,6 @@ static bool samePointer(const MemoryView &lhs, const MemoryView &rhs) {
   return lhs.root == rhs.root && lhs.byteOffset == rhs.byteOffset;
 }
 
-std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
-                                               const Token &addr,
-                                               SimulatorState &state,
-                                               mlir::Operation *scope,
-                                               llvm::StringRef opName);
-
 constexpr llvm::StringLiteral kCmsisNNVecMatMultTS8 =
     "arm_nn_vec_mat_mult_t_s8";
 

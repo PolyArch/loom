@@ -1,8 +1,10 @@
-# Loom Dataflow Vector Boundary
+# Loom Dataflow Vector Semantics
 
 This document specifies Loom's canonical one-dimensional dataflow vector
-boundary. The four boundary operations are `dataflow.parallelize`,
-`dataflow.serialize`, `dataflow.pack`, and `dataflow.unpack`.
+semantics. It covers the four stream and representation boundary operations
+`dataflow.parallelize`, `dataflow.serialize`, `dataflow.pack`, and
+`dataflow.unpack`, plus contiguous vector access through the canonical
+`dataflow.load` and `dataflow.store` operations.
 
 The semantic data and mask types are standard MLIR `vector<NxT>` and
 `vector<Nxi1>`. Those types are the only source of vector length, shape,
@@ -24,18 +26,23 @@ define duplicate vector compute operations.
 
 The following concerns are outside this contract:
 
-* vector load and store operations;
-* gather and scatter operations;
+* ranked vectors beyond rank one;
+* vector-address gather and scatter operations;
+* duplicate scatter-address policy;
 * software-to-Fabric port adaptation;
 * Fabric memory masks;
 * PnR routing for vector ports;
+* alignment, burst, and coalescing policy;
+* atomic, read-modify-write, fence, and volatile semantics;
+* source or structured-control vectorization and lowering;
 * vectorization search or DSE policy.
 
 ## Semantic Ownership
 
 `include/Dataflow/IR/DataflowOps.td` defines the canonical operation
-signatures. `lib/Dataflow/IR/DataflowOps.cpp` verifies type and shape
-invariants.
+signatures. `DataflowActorSemantics` owns fixed-rank-1 data-vector legality,
+mask compatibility, and the scalar-versus-vector memory-access type relation.
+Operation verification and DFG simulation consume that shared contract.
 
 Scalar/group firing and reset rules are owned by
 `DataflowActorSemantics`. Graph cardinality validation and DFG simulation
@@ -152,11 +159,71 @@ pack(unpack(bits)) = bits
 The bit representation uses arbitrary-width integers. Host 64-bit integer
 width is not a semantic limit.
 
+## Contiguous Vector Memory
+
+The existing `dataflow.load` and `dataflow.store` operations support scalar
+and fixed-rank-1 contiguous access. They remain the only canonical plain
+memory-access mnemonics. A vector access uses one scalar linear element
+address; lane `i` addresses memory element `%addr + i`.
+
+The vector forms are:
+
+```mlir
+%data, %done = dataflow.load %mem[%addr] %ctrl
+    : memref<?xT>, vector<NxT>
+%data, %done = dataflow.load %mem[%addr] %ctrl mask %mask
+    : memref<?xT>, vector<NxT>
+
+%done = dataflow.store %mem[%addr] %data %ctrl
+    : memref<?xT>, vector<NxT>
+%done = dataflow.store %mem[%addr] %data %ctrl mask %mask
+    : memref<?xT>, vector<NxT>
+```
+
+The optional mask type is `vector<Nxi1>` with exactly the data vector's
+shape. Scalar accesses reject masks. Omitting the mask makes every lane
+active. A data type exactly equal to the memref element type remains a scalar
+element access even when that element type is itself a vector; that scalar
+access also rejects masks.
+
+Only active lanes evaluate an element address or access memory. An inactive
+lane may therefore correspond to an out-of-range element address. A masked
+load fills every inactive result lane with the element type's all-zero bit
+representation. A masked store leaves every inactive memory element
+unchanged.
+
+An all-zero mask still consumes the firing's address, mask, and control
+operands, plus store data when present. It performs no memory access. A load
+publishes one zero-filled vector and one done token; a store publishes one
+done token.
+
+Load data and done become visible together after all active lanes have read
+their elements. Store done becomes visible only after all active lanes have
+written their elements. Each firing publishes exactly one load data token
+and one done token, or exactly one store done token. The existing explicit
+`ctrl` to `done` event network remains the sole memory-ordering authority.
+
+DFG simulation visits active lanes in ascending lane-index order against its
+element-indexed abstract memory. It uses the existing arbitrary-width vector
+token bit representation, with lane zero in the least-significant bit slice.
+This ordering is deterministic functional semantics, not a burst,
+coalescing, port-width, or hardware-lane policy.
+
+These accesses are plain, non-atomic, and non-volatile. Vector addresses,
+ranked vectors beyond rank one, gather/scatter semantics, alignment policy,
+and physical memory-mask projection are not part of this boundary.
+
 ## Graph Cardinality
 
 Graph validation treats `pack` and `unpack` as one-token-in,
 one-token-out actors. Their result is statically exact-one when their input is
 statically exact-one.
+
+Scalar and vector `load` and `store` use the existing canonical-actor
+cardinality rule. Load data and done, or store done, are statically exact-one
+when every dynamic operand is statically exact-one. A mask changes lane
+activity inside one firing; it does not change actor token cardinality or
+create a separate ordering network.
 
 The group phase from `parallelize` closes when its scalar phase closes. The
 scalar phase from `serialize` closes when its group phase closes. Retirement
@@ -182,4 +249,6 @@ Verification rejects:
 * scalar and vector element-type mismatches;
 * mask shapes that differ from the data vector shape;
 * mask element types other than `i1`;
-* packed integer widths other than `N * bitwidth(T)`.
+* packed integer widths other than `N * bitwidth(T)`;
+* vector memory element types that differ from the memory element type;
+* masks on scalar memory accesses.

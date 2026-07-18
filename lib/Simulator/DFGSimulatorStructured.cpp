@@ -420,19 +420,21 @@ static bool assignLocalDataflowLoad(dataflow::LoadOp op, SimulatorState &state,
       lookupToken(op.getAddr(), state, locals, captureIndex);
   std::optional<Token> ctrl =
       lookupToken(op.getCtrl(), state, locals, captureIndex);
-  if (!view || !addr || !ctrl)
+  std::optional<Token> mask;
+  if (op.getMask())
+    mask = lookupToken(op.getMask(), state, locals, captureIndex);
+  if (!view || !addr || !ctrl || (op.getMask() && !mask))
     return false;
-  std::optional<std::size_t> index = resolveElementIndex(
-      *view, *addr, state, op.getOperation(), "dataflow.load");
-  if (!index)
-    return false;
-  std::optional<Token> value =
-      readMemoryElement(*view, *index, state, "dataflow.load");
+  auto value = readDataflowMemory(
+      *view, *addr, mlir::cast<mlir::MemRefType>(op.getMem().getType()),
+      op.getData().getType(), mask ? &*mask : nullptr,
+      op.getMask() ? op.getMask().getType() : mlir::Type{}, state,
+      op.getOperation());
   if (!value)
     return false;
-  locals[op.getData()] = *value;
+  locals[op.getData()] = value->data;
   locals[op.getDone()] = noneToken();
-  if (hasComputedAddress(op.getAddr()))
+  if (value->accessedMemory && hasComputedAddress(op.getAddr()))
     state.memoryAddressScore += kLoadAddressScore;
   return recordEvent(state, op->getName().getStringRef());
 }
@@ -490,15 +492,20 @@ static bool assignLocalDataflowStore(dataflow::StoreOp op,
       return true;
     }
   }
-  if (!view || !addr || !data || !ctrl)
+  std::optional<Token> mask;
+  if (op.getMask())
+    mask = lookupToken(op.getMask(), state, locals, captureIndex);
+  if (!view || !addr || !data || !ctrl || (op.getMask() && !mask))
     return false;
-  std::optional<std::size_t> index = resolveElementIndex(
-      *view, *addr, state, op.getOperation(), "dataflow.store");
-  if (!index)
+  auto accessed = writeDataflowMemory(
+      *view, *addr, *data, mlir::cast<mlir::MemRefType>(op.getMem().getType()),
+      op.getData().getType(), mask ? &*mask : nullptr,
+      op.getMask() ? op.getMask().getType() : mlir::Type{}, state,
+      op.getOperation());
+  if (!accessed)
     return false;
-  writeMemoryElement(*view, *index, *data);
   locals[op.getDone()] = noneToken();
-  if (hasComputedAddress(op.getAddr()))
+  if (*accessed && hasComputedAddress(op.getAddr()))
     state.memoryAddressScore += kStoreAddressScore;
   return recordEvent(state, op->getName().getStringRef());
 }

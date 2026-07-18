@@ -52,6 +52,11 @@ struct Token {
   MemoryView pointer;
 };
 
+struct DataflowMemoryRead {
+  Token data;
+  bool accessedMemory = false;
+};
+
 using ChannelMap = llvm::DenseMap<const mlir::OpOperand *, std::deque<Token>>;
 using OutputMap = llvm::DenseMap<mlir::Value, llvm::SmallVector<Token>>;
 
@@ -144,15 +149,24 @@ bool boolToken(const Token &token);
 llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type,
                                             mlir::Operation *scope);
 
-std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
-                                               const Token &addr,
-                                               SimulatorState &state,
-                                               mlir::Operation *scope,
-                                               llvm::StringRef opName);
+std::optional<std::size_t>
+resolveElementIndex(const MemoryView &view, const Token &addr,
+                    SimulatorState &state, mlir::Operation *scope,
+                    llvm::StringRef opName, std::uint64_t laneOffset = 0);
 std::optional<Token> readMemoryElement(const MemoryView &view,
                                        std::size_t index, SimulatorState &state,
                                        llvm::StringRef opName);
 void writeMemoryElement(const MemoryView &view, std::size_t index, Token value);
+std::optional<DataflowMemoryRead>
+readDataflowMemory(const MemoryView &view, const Token &addr,
+                   mlir::MemRefType memoryType, mlir::Type dataType,
+                   const Token *mask, mlir::Type maskType,
+                   SimulatorState &state, mlir::Operation *scope);
+std::optional<bool>
+writeDataflowMemory(const MemoryView &view, const Token &addr,
+                    const Token &data, mlir::MemRefType memoryType,
+                    mlir::Type dataType, const Token *mask, mlir::Type maskType,
+                    SimulatorState &state, mlir::Operation *scope);
 bool isSupportedLLVMCall(mlir::LLVM::CallOp op);
 bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
                                  llvm::ArrayRef<Token> operands, Token &result);
