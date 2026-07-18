@@ -155,11 +155,12 @@ fabric.module @mem_reject_memory_operation_table(
 }
 
 // -----
-// Local service remains unsupported without its confirmed typed contract.
+// The confirmed optional LocalMemoryService is outside this manager-backed
+// operation-engine implementation slice.
 fabric.module @mem_reject_local_service(
     %mgr : memref<?x!fabric.bits<32>>,
     %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>) {
-  // expected-error @+1 {{'hw_params' contains unsupported key 'local_memory_service'}}
+  // expected-error @+1 {{'hw_params' key 'local_memory_service' describes the confirmed optional LocalMemoryService, which is outside this manager-backed operation-engine implementation slice}}
   %data, %done = fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl)
       [{load_group_size = 1 : i32, store_group_size = 0 : i32,
         data_width = 32 : i32,

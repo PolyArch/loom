@@ -81,6 +81,7 @@ constexpr StringLiteral kOperationTableSize = "operation_table_size";
 constexpr StringLiteral kDispatchEligibility = "dispatch_eligibility";
 constexpr StringLiteral kOperationPortRequests = "operation_port_requests";
 constexpr StringLiteral kSubordinateRequests = "subordinate_requests";
+constexpr StringLiteral kLocalMemoryService = "local_memory_service";
 
 struct EngineInfo {
   unsigned loadCount = 0;
@@ -290,6 +291,13 @@ static LogicalResult verifyDictionaryKeys(MemOp op, DictionaryAttr dictionary,
 
 static LogicalResult verifyOperationEngine(MemOp op, DictionaryAttr dictionary,
                                            EngineInfo &engine) {
+  if (dictionary.get(kLocalMemoryService))
+    return op.emitOpError("'hw_params' key '")
+           << kLocalMemoryService
+           << "' describes the confirmed optional LocalMemoryService, which "
+              "is outside this manager-backed operation-engine "
+              "implementation slice";
+
   bool temporal = op.getSchedule() == Schedule::Temporal;
   if (!temporal) {
     for (StringRef key : {StringRef(kTagWidth), StringRef(kOperationTableSize)})

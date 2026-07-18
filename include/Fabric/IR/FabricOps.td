@@ -554,8 +554,9 @@ def Fabric_MemOp : Fabric_Op<"mem", [
 ]> {
   let summary = "fabric memory operation-engine hardware capability";
   let description = [{
-    The accepted ABI describes one operation engine. Local memory service
-    remains unsupported until its typed service contract is defined.
+    The accepted ABI describes one manager-backed operation engine. The
+    confirmed optional LocalMemoryService contract is outside this
+    implementation slice.
 
     Anonymous operands contain all manager/requester memrefs, followed by
     per-load `(addr, ctrl)` groups and per-store `(addr, data, ctrl)` groups.
