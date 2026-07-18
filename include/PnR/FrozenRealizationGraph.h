@@ -8,6 +8,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -19,7 +20,7 @@ namespace loom::pnr {
 struct PnrProblemInputs;
 
 enum class FrozenMappingInfeasibilityCode {
-  EmptyImplementationDomain,
+  EmptyConcreteFuDomain,
   EmptyUnaryEligibleDomain,
 };
 
@@ -45,6 +46,75 @@ private:
 };
 
 enum class FrozenRealizationKind { Compute, Memory };
+
+struct FabricPeOccurrenceRef {
+  mapping::ComputeOccurrenceId occurrence;
+
+  friend bool operator==(FabricPeOccurrenceRef lhs, FabricPeOccurrenceRef rhs) {
+    return lhs.occurrence == rhs.occurrence;
+  }
+  friend bool operator!=(FabricPeOccurrenceRef lhs, FabricPeOccurrenceRef rhs) {
+    return !(lhs == rhs);
+  }
+  friend bool operator<(FabricPeOccurrenceRef lhs, FabricPeOccurrenceRef rhs) {
+    return lhs.occurrence.value() < rhs.occurrence.value();
+  }
+};
+
+struct FabricFuOccurrenceRef {
+  FabricPeOccurrenceRef parentPe;
+  mapping::FuId implementation;
+
+  friend bool operator==(FabricFuOccurrenceRef lhs, FabricFuOccurrenceRef rhs) {
+    return lhs.parentPe == rhs.parentPe &&
+           lhs.implementation == rhs.implementation;
+  }
+  friend bool operator!=(FabricFuOccurrenceRef lhs, FabricFuOccurrenceRef rhs) {
+    return !(lhs == rhs);
+  }
+  friend bool operator<(FabricFuOccurrenceRef lhs, FabricFuOccurrenceRef rhs) {
+    if (lhs.parentPe != rhs.parentPe)
+      return lhs.parentPe < rhs.parentPe;
+    return lhs.implementation.value() < rhs.implementation.value();
+  }
+};
+
+class ContextOrdinal {
+public:
+  explicit constexpr ContextOrdinal(std::uint64_t value) : value_(value) {}
+
+  constexpr std::uint64_t value() const { return value_; }
+
+  friend constexpr bool operator==(ContextOrdinal lhs, ContextOrdinal rhs) {
+    return lhs.value_ == rhs.value_;
+  }
+  friend constexpr bool operator!=(ContextOrdinal lhs, ContextOrdinal rhs) {
+    return !(lhs == rhs);
+  }
+  friend constexpr bool operator<(ContextOrdinal lhs, ContextOrdinal rhs) {
+    return lhs.value_ < rhs.value_;
+  }
+
+private:
+  std::uint64_t value_;
+};
+
+struct InstructionContextRef {
+  FabricPeOccurrenceRef pe;
+  ContextOrdinal ordinal;
+
+  friend bool operator==(InstructionContextRef lhs, InstructionContextRef rhs) {
+    return lhs.pe == rhs.pe && lhs.ordinal == rhs.ordinal;
+  }
+  friend bool operator!=(InstructionContextRef lhs, InstructionContextRef rhs) {
+    return !(lhs == rhs);
+  }
+  friend bool operator<(InstructionContextRef lhs, InstructionContextRef rhs) {
+    if (lhs.pe != rhs.pe)
+      return lhs.pe < rhs.pe;
+    return lhs.ordinal < rhs.ordinal;
+  }
+};
 
 struct FrozenActorOwnership {
   mapping::ActorId actor;
@@ -74,21 +144,23 @@ struct FrozenComputeRealization {
   }
 };
 
-struct FrozenComputeOccurrence {
-  mapping::ComputeOccurrenceId id;
+struct FrozenFabricPeOccurrence {
+  FabricPeOccurrenceRef ref;
   mapping::ComputeScheduleKind schedule;
-  PnrIndex fuMembershipOffset;
-  PnrIndex fuMembershipCount;
+  PnrIndex contextCount;
+  PnrIndex fuOccurrenceOffset;
+  PnrIndex fuOccurrenceCount;
   PnrIndex endpointOffset;
   PnrIndex endpointCount;
   PnrIndex localArcOffset;
   PnrIndex localArcCount;
 
-  friend bool operator==(const FrozenComputeOccurrence &lhs,
-                         const FrozenComputeOccurrence &rhs) {
-    return lhs.id == rhs.id && lhs.schedule == rhs.schedule &&
-           lhs.fuMembershipOffset == rhs.fuMembershipOffset &&
-           lhs.fuMembershipCount == rhs.fuMembershipCount &&
+  friend bool operator==(const FrozenFabricPeOccurrence &lhs,
+                         const FrozenFabricPeOccurrence &rhs) {
+    return lhs.ref == rhs.ref && lhs.schedule == rhs.schedule &&
+           lhs.contextCount == rhs.contextCount &&
+           lhs.fuOccurrenceOffset == rhs.fuOccurrenceOffset &&
+           lhs.fuOccurrenceCount == rhs.fuOccurrenceCount &&
            lhs.endpointOffset == rhs.endpointOffset &&
            lhs.endpointCount == rhs.endpointCount &&
            lhs.localArcOffset == rhs.localArcOffset &&
@@ -96,8 +168,17 @@ struct FrozenComputeOccurrence {
   }
 };
 
+struct FrozenFabricFuOccurrence {
+  FabricFuOccurrenceRef ref;
+
+  friend bool operator==(const FrozenFabricFuOccurrence &lhs,
+                         const FrozenFabricFuOccurrence &rhs) {
+    return lhs.ref == rhs.ref;
+  }
+};
+
 struct FrozenPhysicalEndpoint {
-  PnrIndex occurrence;
+  FabricPeOccurrenceRef parentPe;
   mapping::ComputeEndpointId id;
   mapping::PortDirection direction;
   mapping::PortKind kind;
@@ -109,7 +190,7 @@ struct FrozenPhysicalEndpoint {
 
   friend bool operator==(const FrozenPhysicalEndpoint &lhs,
                          const FrozenPhysicalEndpoint &rhs) {
-    return lhs.occurrence == rhs.occurrence && lhs.id == rhs.id &&
+    return lhs.parentPe == rhs.parentPe && lhs.id == rhs.id &&
            lhs.direction == rhs.direction && lhs.kind == rhs.kind &&
            lhs.payloadCapacityBits == rhs.payloadCapacityBits &&
            lhs.tagCapacityBits == rhs.tagCapacityBits &&
@@ -120,8 +201,7 @@ struct FrozenPhysicalEndpoint {
 };
 
 struct FrozenComputeLocalArc {
-  PnrIndex occurrence;
-  mapping::FuId fu;
+  FabricFuOccurrenceRef fuOccurrence;
   mapping::PortDirection direction;
   PnrIndex port;
   PnrIndex endpoint;
@@ -130,7 +210,7 @@ struct FrozenComputeLocalArc {
 
   friend bool operator==(const FrozenComputeLocalArc &lhs,
                          const FrozenComputeLocalArc &rhs) {
-    return lhs.occurrence == rhs.occurrence && lhs.fu == rhs.fu &&
+    return lhs.fuOccurrence == rhs.fuOccurrence &&
            lhs.direction == rhs.direction && lhs.port == rhs.port &&
            lhs.endpoint == rhs.endpoint &&
            lhs.payloadCapacityBits == rhs.payloadCapacityBits &&
@@ -140,7 +220,7 @@ struct FrozenComputeLocalArc {
 
 struct FrozenImplementationOccurrence {
   PnrIndex realization;
-  PnrIndex occurrence;
+  FabricFuOccurrenceRef fuOccurrence;
   PnrIndex portDemandOffset;
   PnrIndex portDemandCount;
   bool unaryEligible;
@@ -148,7 +228,7 @@ struct FrozenImplementationOccurrence {
   friend bool operator==(const FrozenImplementationOccurrence &lhs,
                          const FrozenImplementationOccurrence &rhs) {
     return lhs.realization == rhs.realization &&
-           lhs.occurrence == rhs.occurrence &&
+           lhs.fuOccurrence == rhs.fuOccurrence &&
            lhs.portDemandOffset == rhs.portDemandOffset &&
            lhs.portDemandCount == rhs.portDemandCount &&
            lhs.unaryEligible == rhs.unaryEligible;
@@ -289,12 +369,19 @@ public:
   llvm::ArrayRef<FrozenComputeRealization> computeRealizations() const {
     return computeRealizations_;
   }
-  llvm::ArrayRef<FrozenComputeOccurrence> computeOccurrences() const {
-    return computeOccurrences_;
+  llvm::ArrayRef<FrozenFabricPeOccurrence> fabricPeOccurrences() const {
+    return fabricPeOccurrences_;
   }
-  llvm::ArrayRef<mapping::FuId> computeOccurrenceFuMemberships() const {
-    return computeOccurrenceFuMemberships_;
+  llvm::ArrayRef<FrozenFabricFuOccurrence> fabricFuOccurrences() const {
+    return fabricFuOccurrences_;
   }
+  const FrozenFabricPeOccurrence *
+  findFabricPeOccurrence(FabricPeOccurrenceRef ref) const;
+  const FrozenFabricFuOccurrence *
+  findFabricFuOccurrence(FabricFuOccurrenceRef ref) const;
+  std::optional<InstructionContextRef>
+  instructionContext(FabricFuOccurrenceRef fuOccurrence,
+                     ContextOrdinal ordinal) const;
   llvm::ArrayRef<FrozenPhysicalEndpoint> physicalEndpoints() const {
     return physicalEndpoints_;
   }
@@ -331,9 +418,8 @@ public:
                          const FrozenRealizationGraph &rhs) {
     return lhs.actorOwnerships_ == rhs.actorOwnerships_ &&
            lhs.computeRealizations_ == rhs.computeRealizations_ &&
-           lhs.computeOccurrences_ == rhs.computeOccurrences_ &&
-           lhs.computeOccurrenceFuMemberships_ ==
-               rhs.computeOccurrenceFuMemberships_ &&
+           lhs.fabricPeOccurrences_ == rhs.fabricPeOccurrences_ &&
+           lhs.fabricFuOccurrences_ == rhs.fabricFuOccurrences_ &&
            lhs.physicalEndpoints_ == rhs.physicalEndpoints_ &&
            lhs.physicalEndpointCompatibleTypes_ ==
                rhs.physicalEndpointCompatibleTypes_ &&
@@ -356,8 +442,8 @@ private:
   FrozenRealizationGraph(
       std::vector<FrozenActorOwnership> actorOwnerships,
       std::vector<FrozenComputeRealization> computeRealizations,
-      std::vector<FrozenComputeOccurrence> computeOccurrences,
-      std::vector<mapping::FuId> computeOccurrenceFuMemberships,
+      std::vector<FrozenFabricPeOccurrence> fabricPeOccurrences,
+      std::vector<FrozenFabricFuOccurrence> fabricFuOccurrences,
       std::vector<FrozenPhysicalEndpoint> physicalEndpoints,
       std::vector<mapping::TypeKey> physicalEndpointCompatibleTypes,
       std::vector<FrozenComputeLocalArc> computeLocalArcs,
@@ -371,9 +457,8 @@ private:
       std::vector<FrozenMemoryServiceObligation> memoryServiceObligations)
       : actorOwnerships_(std::move(actorOwnerships)),
         computeRealizations_(std::move(computeRealizations)),
-        computeOccurrences_(std::move(computeOccurrences)),
-        computeOccurrenceFuMemberships_(
-            std::move(computeOccurrenceFuMemberships)),
+        fabricPeOccurrences_(std::move(fabricPeOccurrences)),
+        fabricFuOccurrences_(std::move(fabricFuOccurrences)),
         physicalEndpoints_(std::move(physicalEndpoints)),
         physicalEndpointCompatibleTypes_(
             std::move(physicalEndpointCompatibleTypes)),
@@ -389,8 +474,8 @@ private:
 
   std::vector<FrozenActorOwnership> actorOwnerships_;
   std::vector<FrozenComputeRealization> computeRealizations_;
-  std::vector<FrozenComputeOccurrence> computeOccurrences_;
-  std::vector<mapping::FuId> computeOccurrenceFuMemberships_;
+  std::vector<FrozenFabricPeOccurrence> fabricPeOccurrences_;
+  std::vector<FrozenFabricFuOccurrence> fabricFuOccurrences_;
   std::vector<FrozenPhysicalEndpoint> physicalEndpoints_;
   std::vector<mapping::TypeKey> physicalEndpointCompatibleTypes_;
   std::vector<FrozenComputeLocalArc> computeLocalArcs_;

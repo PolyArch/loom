@@ -281,6 +281,8 @@ struct ComputeOccurrenceDescriptor {
   std::vector<FuRef> functionalUnits;
   std::vector<ComputeEndpointDescriptor> endpoints;
   std::vector<ComputeLocalArcDescriptor> localArcs;
+  // Fabric PE capability: one for Spatial, num_instruction for Temporal.
+  std::int64_t instructionContextCapacity;
 };
 
 struct TransportEndpointDescriptor {

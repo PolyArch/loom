@@ -361,32 +361,56 @@ null, or sentinel identity checks.
 
 After that preflight, the implemented `freezeRealizationGraph` projection
 preserves the bounded Dataflow/TechMapping/Fabric structural behavior. It
-consumes the immutable canonical compute-occurrence projection produced by
-Fabric validation, assigns dense native indices by persistent entity identity,
-records actor ownership, derives external multi-sink logical nets from
-canonical edges and exact boundary correspondence, and derives
-logical-memory-root service obligations from selected Memory Realizations. Its
-dense terminal table contains only selected FU or memory operation-template
-terminals needed by those logical nets. Graph boundary endpoints remain
-embedded typed terminal variants in logical-net sources and sinks. Graph
-memory import and export capability ports are not token terminals.
+consumes the immutable canonical PE- and FU-occurrence projection produced by
+Fabric validation, assigns dense native indices where needed, records actor
+ownership, derives external multi-sink logical nets from canonical edges and
+exact boundary correspondence, and derives logical-memory-root service
+obligations from selected Memory Realizations. Its dense terminal table
+contains only selected FU or memory operation-template terminals needed by
+those logical nets. Graph boundary endpoints remain embedded typed terminal
+variants in logical-net sources and sinks. Graph memory import and export
+capability ports are not token terminals.
+
+A Fabric FU occurrence is not its containing PE occurrence. The frozen
+structural key is the exact pair
+`FabricFuOccurrenceRef = (FabricPeOccurrenceRef, FuId)`, where `FuId` names the
+Fabric-owned implementation and the PE component is its mechanical parent.
+FU occurrence descriptors are ordered first by parent PE identity and then by
+implementation identity. PE descriptors and their endpoint ranges remain
+separate. Exact lookup therefore cannot return a PE descriptor as FU identity,
+including when one PE contains several FU occurrences.
+
+Fabric validation also owns instruction-context capacity. A Spatial PE has
+exactly one context. A Temporal PE has the positive context count supplied by
+its `num_instruction` capability. The only context reference is
+`InstructionContextRef = (FabricPeOccurrenceRef, ContextOrdinal)`, with
+ordinals beginning at zero. It has no optional slot, sentinel value, separate
+Spatial or Temporal reference type, or independent entity identity.
 
 For each Compute Realization, the projection derives `ImplDomain` solely from
-exact selected-FU membership in the finalized occurrence table. Each
-implementation occurrence retains factorized `PortDemand` records and flat
-compatible-endpoint ranges derived from the explicit local arc, direction,
-port kind, payload and tag capacity, and intrinsic role and compatible type
-facts owned by Fabric. Spatial unary feasibility uses bipartite matching to
-prove that all exposed FU ports can bind distinct endpoints. It does not
-enumerate endpoint permutations or persist Cartesian local configurations.
-Temporal endpoint ranges are only structural capability; tag sharing and
-resource-time legality remain deferred.
+concrete FU occurrences of its selected implementation. Each candidate stores
+the complete `FabricFuOccurrenceRef`; its context domain is mechanically the
+ordinal range of that FU occurrence's parent PE. Context lookup accepts an FU
+occurrence and ordinal and derives the PE component, so the native
+representation preserves the `(FU occurrence, instruction context)`
+correlation without materializing or accepting a cross-PE Cartesian product.
+Each candidate also retains factorized `PortDemand` records and flat
+compatible-endpoint ranges derived from explicit local arcs and the
+direction, port kind, payload and tag capacity, intrinsic role, and compatible
+type facts owned by Fabric.
 
-Fabric validation is the single semantic owner of occurrence identity,
-cross-kind uniqueness, exact FU membership, schedule kind, endpoint/type facts,
-and local arcs. It copies those facts into deterministic vectors, builds one
-sorted FU-to-occurrence range table and one sorted
-occurrence/FU/direction/port-to-arc range table, and retains that immutable
+Spatial unary feasibility uses bipartite matching to prove that all exposed FU
+ports can bind distinct endpoints. It does not enumerate endpoint
+permutations or persist Cartesian local configurations. Temporal endpoint
+ranges are only structural capability; tag sharing, configuration
+compatibility, and resource-time legality remain deferred.
+
+Fabric validation is the single semantic owner of PE identity, concrete FU
+parentage, instruction-context capacity, cross-kind uniqueness, exact FU
+membership, schedule kind, endpoint/type facts, and local arcs. It copies those
+facts into deterministic vectors, builds one sorted range table from
+implementation identity to FU occurrence and one sorted
+FU-occurrence/direction/port-to-arc range table, and retains that immutable
 projection with the validated Mapping value. Freeze does not inspect or
 revalidate the source occurrence vectors. Mutating those source vectors after
 validation cannot change frozen output, while an input identity mismatch still
@@ -474,11 +498,13 @@ topology may make two individually valid compute occurrences unreachable from
 one another without turning either unary candidate or the Fabric artifact into
 malformed input.
 
-Let `O`, `M`, `E`, and `A` be the occurrence, membership, endpoint, and local
-arc counts. Validation canonicalization costs sorting time over those vectors,
-bounded by `O((O + M + E + A) log(O + M + E + A))`. For a realization with
-`P` exposed FU ports and `K` occurrences in its exact FU range, `ImplDomain`
-lookup costs `O(log F + K)` for `F` indexed FUs. A port domain lookup costs
+Let `P_e`, `F_o`, `E`, and `A` be the PE occurrence, FU occurrence, endpoint,
+and local arc counts. Validation canonicalization costs sorting time over those
+vectors, bounded by
+`O((P_e + F_o + E + A) log(P_e + F_o + E + A))`. For a realization with `P`
+exposed FU ports and `K` concrete occurrences in its exact implementation
+range, `ImplDomain` lookup costs `O(log F + K)` for `F` indexed
+implementations. A port domain lookup costs
 `O(log Q_o + sum(log(1 + T_e)))` for `Q_o` keyed port ranges in that occurrence
 and the compatible-type counts `T_e` of the relevant arcs' endpoints. If `R_o`
 is the number of relevant arcs examined, this is bounded by
@@ -497,30 +523,34 @@ canonicalization, including matching, rather than cubic or quartic in
 artifact-wide occurrence or endpoint counts.
 
 Malformed Fabric structure or references are rejected during validation and
-cannot be represented as an empty domain. `InvalidComputeOccurrence` is the
-single category for an invalid schedule, empty or repeated FU membership,
-invalid endpoint signatures, repeated compatible types, and invalid local-arc
-structure. Foreign, unresolved, or wrong-kind references retain their precise
-reference categories, and malformed graph or memory port connections retain
-`InvalidPortConnection`. A well-formed realization with no exact
-implementation occurrence or no unary-eligible occurrence instead produces
-structured mapping infeasibility. Occurrence and endpoint ordering is derived
-from persistent typed identities, so harmless source-vector permutations do
-not alter the frozen result.
+cannot be represented as an empty domain. Missing FU implementations,
+malformed FU-to-PE parent linkage, and invalid instruction-context capacity
+have distinct typed diagnostic codes. `InvalidComputeOccurrence` remains the
+category for invalid schedule, empty FU membership, invalid endpoint
+signatures, repeated compatible types, and invalid local-arc shape. Foreign
+and wrong-kind references retain their precise reference categories, and
+malformed graph or memory port connections retain `InvalidPortConnection`. A
+well-formed realization with no concrete occurrence of its selected
+implementation produces `EmptyConcreteFuDomain`; one with no unary-eligible
+candidate produces `EmptyUnaryEligibleDomain`. PE, FU occurrence, and endpoint
+ordering is derived from typed structural identities, so harmless
+source-vector permutations do not alter the frozen result.
 
 Both frozen projections are ephemeral and have no independent artifact
 identity, serialization, canonical byte encoding, or persistence form. Their
-equality is structural only. Neither contains a selected occurrence, selected
-endpoint, complete candidate domain, configuration, placement, route, tag,
-buffer, resource-time, or physical-memory decision.
-Both are reached only through the exact five-input authority boundary. They are
-not the complete `FrozenModel`; config and constraint projections and the full
-`CandidateDomain` remain outside the implemented structural views.
+equality is structural only. The compute projection contains the base
+concrete-FU and correlated context candidates, but no selected FU, selected
+context, selected endpoint, configuration, route, tag, buffer, resource-time,
+sharing, or physical-memory decision. It is not a Physical Mapping record.
+Both projections are reached only through the exact five-input authority
+boundary. They are not the complete `FrozenModel`; config, constraint,
+memory-occurrence, and search-state projections remain outside the implemented
+structural views.
 
 The structural subview intentionally retains canonical edge identities, dense
 terminal references, and deletable occurrence and endpoint-domain caches. It
-must not reinterpret Fabric facts or create a second occurrence-membership,
-local-connectivity, or legacy routing authority.
+must not reinterpret Fabric facts or create a second FU parentage,
+instruction-context-capacity, local-connectivity, or legacy routing authority.
 
 A cache must not transfer mapping coverage, artifact-local references,
 current-Fabric legality conclusions, or physical decisions into another

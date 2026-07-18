@@ -32,6 +32,41 @@ std::error_code FrozenMappingInfeasibility::convertToErrorCode() const {
   return std::make_error_code(std::errc::operation_not_permitted);
 }
 
+const FrozenFabricPeOccurrence *FrozenRealizationGraph::findFabricPeOccurrence(
+    FabricPeOccurrenceRef ref) const {
+  const auto occurrence = std::lower_bound(
+      fabricPeOccurrences_.begin(), fabricPeOccurrences_.end(), ref,
+      [](const FrozenFabricPeOccurrence &candidate,
+         FabricPeOccurrenceRef expected) { return candidate.ref < expected; });
+  if (occurrence == fabricPeOccurrences_.end() || occurrence->ref != ref)
+    return nullptr;
+  return &*occurrence;
+}
+
+const FrozenFabricFuOccurrence *FrozenRealizationGraph::findFabricFuOccurrence(
+    FabricFuOccurrenceRef ref) const {
+  const auto occurrence = std::lower_bound(
+      fabricFuOccurrences_.begin(), fabricFuOccurrences_.end(), ref,
+      [](const FrozenFabricFuOccurrence &candidate,
+         FabricFuOccurrenceRef expected) { return candidate.ref < expected; });
+  if (occurrence == fabricFuOccurrences_.end() || occurrence->ref != ref)
+    return nullptr;
+  return &*occurrence;
+}
+
+std::optional<InstructionContextRef>
+FrozenRealizationGraph::instructionContext(FabricFuOccurrenceRef fuOccurrence,
+                                           ContextOrdinal ordinal) const {
+  const FrozenFabricFuOccurrence *fu = findFabricFuOccurrence(fuOccurrence);
+  if (fu == nullptr)
+    return std::nullopt;
+  const FrozenFabricPeOccurrence *parent =
+      findFabricPeOccurrence(fu->ref.parentPe);
+  if (parent == nullptr || ordinal.value() >= parent->contextCount)
+    return std::nullopt;
+  return InstructionContextRef{fu->ref.parentPe, ordinal};
+}
+
 namespace {
 
 constexpr llvm::StringLiteral frozenArtifact = "FrozenRealizationGraph";
@@ -662,9 +697,9 @@ loom::pnr::freezeRealizationGraph(const PnrProblemInputs &inputs) {
 
   return FrozenRealizationGraph(
       std::move(actorOwnerships), std::move(compute.realizations),
-      std::move(compute.occurrences),
-      std::move(compute.occurrenceFuMemberships), std::move(compute.endpoints),
-      std::move(compute.endpointCompatibleTypes), std::move(compute.localArcs),
+      std::move(compute.peOccurrences), std::move(compute.fuOccurrences),
+      std::move(compute.endpoints), std::move(compute.endpointCompatibleTypes),
+      std::move(compute.localArcs),
       std::move(compute.implementationOccurrences),
       std::move(compute.portDemands), std::move(compute.compatibleEndpoints),
       std::move(memoryRealizations), std::move(templateTerminals),

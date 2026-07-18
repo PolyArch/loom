@@ -710,6 +710,13 @@ void rejectsInvalidComputeOccurrences() {
       [](TestCase &testCase) {
         testCase.fabric.computeOccurrences.front()
             .functionalUnits.front()
+            .entity = FuId(9999);
+      },
+      MappingErrorCode::MissingFuImplementation);
+  expectInvalid(
+      [](TestCase &testCase) {
+        testCase.fabric.computeOccurrences.front()
+            .functionalUnits.front()
             .artifact = artifact(99);
       },
       MappingErrorCode::ForeignEntityReference);
@@ -720,7 +727,21 @@ void rejectsInvalidComputeOccurrences() {
         occurrence.functionalUnits.push_back(
             occurrence.functionalUnits.front());
       },
-      MappingErrorCode::InvalidComputeOccurrence);
+      MappingErrorCode::MalformedFuParentLinkage);
+  expectInvalid(
+      [](TestCase &testCase) {
+        ComputeOccurrenceDescriptor &occurrence =
+            testCase.fabric.computeOccurrences.front();
+        occurrence.schedule = ComputeScheduleKind::Temporal;
+        occurrence.instructionContextCapacity = 0;
+      },
+      MappingErrorCode::InvalidInstructionContextCapacity);
+  expectInvalid(
+      [](TestCase &testCase) {
+        testCase.fabric.computeOccurrences.front().instructionContextCapacity =
+            2;
+      },
+      MappingErrorCode::InvalidInstructionContextCapacity);
   expectInvalid(
       [](TestCase &testCase) {
         testCase.fabric.computeOccurrences.front()
@@ -751,6 +772,17 @@ void rejectsInvalidComputeOccurrences() {
       MappingErrorCode::InvalidComputeOccurrence);
   expectInvalid(
       [](TestCase &testCase) {
+        const FuDescriptor selectedFu = testCase.fabric.functionalUnits.front();
+        const FuDescriptor otherFu{FuId(999), selectedFu.inputPorts,
+                                   selectedFu.outputPorts};
+        testCase.fabric.functionalUnits.push_back(otherFu);
+        testCase.fabric.computeOccurrences.front()
+            .localArcs.front()
+            .fuPort.fu.entity = otherFu.id;
+      },
+      MappingErrorCode::MalformedFuParentLinkage);
+  expectInvalid(
+      [](TestCase &testCase) {
         ComputeOccurrenceDescriptor other = makeSpatialComputeOccurrence(
             testCase.fabric.identity, ComputeOccurrenceId(1001),
             testCase.fabric.functionalUnits.front(), 3000);
@@ -759,7 +791,7 @@ void rejectsInvalidComputeOccurrences() {
                                other.endpoints.front().id};
         testCase.fabric.computeOccurrences.push_back(std::move(other));
       },
-      MappingErrorCode::InvalidComputeOccurrence);
+      MappingErrorCode::MalformedFuParentLinkage);
 }
 } // namespace
 

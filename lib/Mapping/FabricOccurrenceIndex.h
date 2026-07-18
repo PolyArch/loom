@@ -29,7 +29,7 @@ struct ValidatedComputeEndpoint {
 };
 
 struct ValidatedComputeLocalArc {
-  FuId fu;
+  std::size_t fuOccurrence;
   PortDirection direction;
   std::uint32_t port;
   std::size_t endpoint;
@@ -38,18 +38,19 @@ struct ValidatedComputeLocalArc {
 };
 
 struct ValidatedComputePortArcRange {
-  FuId fu;
+  std::size_t fuOccurrence;
   PortDirection direction;
   std::uint32_t port;
   std::size_t arcOffset;
   std::size_t arcCount;
 };
 
-struct ValidatedComputeOccurrence {
+struct ValidatedPeOccurrence {
   ComputeOccurrenceId id;
   ComputeScheduleKind schedule;
-  std::size_t fuMembershipOffset;
-  std::size_t fuMembershipCount;
+  std::uint64_t instructionContextCapacity;
+  std::size_t fuOccurrenceOffset;
+  std::size_t fuOccurrenceCount;
   std::size_t endpointOffset;
   std::size_t endpointCount;
   std::size_t localArcOffset;
@@ -58,8 +59,13 @@ struct ValidatedComputeOccurrence {
   std::size_t portArcRangeCount;
 };
 
+struct ValidatedFuOccurrence {
+  FuId implementation;
+  std::size_t parentPe;
+};
+
 struct ValidatedFuOccurrenceRange {
-  FuId fu;
+  FuId implementation;
   std::size_t occurrenceOffset;
   std::size_t occurrenceCount;
 };
@@ -74,14 +80,14 @@ struct ValidatedFabricProjection {
   ValidatedFabricProjection &operator=(ValidatedFabricProjection &&) = default;
 
   ArtifactIdentity identity;
-  std::vector<ValidatedComputeOccurrence> computeOccurrences;
-  std::vector<FuId> computeOccurrenceFuMemberships;
+  std::vector<ValidatedPeOccurrence> peOccurrences;
+  std::vector<ValidatedFuOccurrence> fuOccurrences;
   std::vector<ValidatedComputeEndpoint> computeEndpoints;
   std::vector<TypeKey> computeEndpointCompatibleTypes;
   std::vector<ValidatedComputeLocalArc> computeLocalArcs;
   std::vector<ValidatedComputePortArcRange> computePortArcRanges;
-  std::vector<ValidatedFuOccurrenceRange> fuOccurrenceRanges;
-  std::vector<std::size_t> fuOccurrences;
+  std::vector<ValidatedFuOccurrenceRange> implementationFuOccurrenceRanges;
+  std::vector<std::size_t> implementationFuOccurrences;
   ValidatedFabricRoutingProjection routing = {};
 };
 
@@ -123,11 +129,12 @@ buildValidatedFabricProjection(
     const std::map<std::uint64_t, const FuDescriptor *> &functionalUnits);
 
 llvm::ArrayRef<std::size_t>
-findFuOccurrences(const ValidatedFabricProjection &projection, FuId fu);
+findFuOccurrences(const ValidatedFabricProjection &projection,
+                  FuId implementation);
 
 llvm::ArrayRef<ValidatedComputeLocalArc>
 findComputePortArcs(const ValidatedFabricProjection &projection,
-                    std::size_t occurrence, FuId fu, PortDirection direction,
+                    std::size_t fuOccurrence, PortDirection direction,
                     std::uint32_t port);
 
 } // namespace loom::mapping::detail

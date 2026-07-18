@@ -153,7 +153,7 @@ loom::pnr::freezeRoutingGraph(const PnrProblemInputs &inputs) {
           sizeValue(projection.arcs.size())))
     return std::move(error);
   if (llvm::Error error = preflight(occurrenceCountContext,
-                                    fabricProjection.computeOccurrences.size()))
+                                    fabricProjection.peOccurrences.size()))
     return std::move(error);
   if (llvm::Error error = preflight(resourceEndpointCountContext,
                                     projection.resourceEndpoints.size()))

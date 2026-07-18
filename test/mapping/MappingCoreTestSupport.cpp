@@ -61,7 +61,8 @@ ComputeOccurrenceDescriptor makeSpatialComputeOccurrence(
                                      ComputeScheduleKind::Spatial,
                                      {FuRef{fabric, fu.id}},
                                      std::move(endpoints),
-                                     std::move(localArcs)};
+                                     std::move(localArcs),
+                                     1};
 }
 [[noreturn]] void fail(const char *test, const char *message) {
   std::cerr << test << ": " << message << '\n';

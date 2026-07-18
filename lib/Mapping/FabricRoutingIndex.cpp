@@ -131,10 +131,10 @@ loom::mapping::detail::buildValidatedFabricRoutingProjection(
   ValidatedFabricRoutingProjection projection;
   projection.endpoints.reserve(computeProjection.computeEndpoints.size());
   for (std::size_t occurrenceIndex = 0;
-       occurrenceIndex < computeProjection.computeOccurrences.size();
+       occurrenceIndex < computeProjection.peOccurrences.size();
        ++occurrenceIndex) {
-    const ValidatedComputeOccurrence &occurrence =
-        computeProjection.computeOccurrences[occurrenceIndex];
+    const ValidatedPeOccurrence &occurrence =
+        computeProjection.peOccurrences[occurrenceIndex];
     for (std::size_t endpointIndex = occurrence.endpointOffset;
          endpointIndex < occurrence.endpointOffset + occurrence.endpointCount;
          ++endpointIndex) {

@@ -8,7 +8,55 @@ Placement records do not create software work or hardware capacity. They
 only record the selected relation between existing software objects and
 existing hardware objects.
 
+## Implemented Compute Freeze Boundary
+
+The implemented compute boundary stops before any selected placement record.
+`FrozenRealizationGraph` derives an ephemeral base domain for each Compute
+Realization from the selected FU implementation in TechMapping and the fully
+validated Fabric occurrence view.
+
+The Fabric occurrence view distinguishes PE and FU occurrences. Its structural
+references are:
+
+```text
+FabricFuOccurrenceRef =
+  (FabricPeOccurrenceRef, FuId)
+
+InstructionContextRef =
+  (FabricPeOccurrenceRef, ContextOrdinal)
+```
+
+`FuId` names the Fabric-owned implementation. The PE component of an FU
+occurrence is its mechanical parent. A Spatial PE has only context ordinal
+zero. A Temporal PE has the positive ordinal range defined by its
+`num_instruction` capability. Contexts have no optional slot, sentinel,
+parallel schedule-specific type, or independent entity identity.
+
+Each Compute Realization candidate contains one complete FU occurrence
+reference. Its context candidates are exactly the contexts of that
+occurrence's parent PE. The frozen representation derives a context from the
+FU occurrence and ordinal instead of storing independent FU and PE domains, so
+it cannot form cross-PE Cartesian pairs. PE descriptors, FU descriptors,
+implementation-domain entries, and exact lookups use deterministic structural
+ordering.
+
+Fabric validation rejects a missing FU implementation, malformed FU parent
+linkage, or invalid instruction-context capacity with distinct typed
+diagnostics. A valid Compute Realization with no concrete occurrence of its
+selected implementation produces typed `EmptyConcreteFuDomain`
+infeasibility.
+
+This boundary does not select an FU or instruction context and does not define
+Physical Mapping records, constraint projections, persistent Mapping syntax,
+sharing legality, scheduling, configuration, routing, port binding, tags, or
+memory occurrence domains. Those decisions remain outside this implemented
+freeze view.
+
 ## Placement Families
+
+The selected placement records below describe the boundary that a later
+Physical Mapping artifact must satisfy. They are not produced by the
+implemented compute freeze view.
 
 The placement part of a mapping artifact contains three record families:
 
@@ -135,17 +183,12 @@ configuration, schedule, or resource-sharing records. If the mapping
 requires a more precise target to route values, it must bind at that
 more precise resource level.
 
-For SpatialCore compute, the primary placement unit is the Compute
-Realization owned by the Mapping Artifact. It groups Canonical Dataflow
-Program actors and binds them to one compatible `fabric.fu` encoding with
-complete actor-to-operation and boundary-port correspondence. This grouping
-does not create or mutate a grouping op in the software artifact.
-
-When a `fabric.pe` contains multiple FUs, the mapping must record which
-FU is active for each use. Spatial PE use allows only one active FU for
-the selected configuration. Temporal PE use may time-multiplex multiple
-software uses, but every active FU selection must be separated by legal
-schedule, tag, or reconfiguration evidence.
+For SpatialCore compute, TechMapping owns the Compute Realization, selected FU
+implementation and encoding, actor-to-operation correspondence, and boundary
+port correspondence. The implemented freeze boundary derives concrete FU and
+instruction-context candidates from those facts but does not create an
+operation-binding record. A later Physical Mapping must select an exact FU
+occurrence and a context of that occurrence's parent PE.
 
 ## Exclusivity and Sharing
 

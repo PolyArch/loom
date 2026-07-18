@@ -25,18 +25,18 @@ constexpr llvm::StringLiteral frozenArtifact = "FrozenRealizationGraph";
 constexpr PnrCapacityContext computeCountContext{
     frozenArtifact, "compute_realizations", "compute_realizations",
     PnrCapacityMeasure::Count};
-constexpr PnrCapacityContext occurrenceCountContext{
-    frozenArtifact, "compute_occurrences", "compute_occurrences",
+constexpr PnrCapacityContext peOccurrenceCountContext{
+    frozenArtifact, "fabric_pe_occurrences", "fabric_pe_occurrences",
     PnrCapacityMeasure::Count};
-constexpr PnrCapacityContext occurrenceIndexContext{
-    frozenArtifact, "compute_occurrences", "compute_occurrences",
-    PnrCapacityMeasure::Index};
-constexpr PnrCapacityContext occurrenceMembershipCountContext{
-    frozenArtifact, "compute_occurrence_fu_memberships", "functional_units",
+constexpr PnrCapacityContext fuOccurrenceCountContext{
+    frozenArtifact, "fabric_fu_occurrences", "fabric_fu_occurrences",
     PnrCapacityMeasure::Count};
-constexpr PnrCapacityContext occurrenceMembershipOffsetContext{
-    frozenArtifact, "compute_occurrences", "compute_occurrence_fu_memberships",
+constexpr PnrCapacityContext fuOccurrenceOffsetContext{
+    frozenArtifact, "fabric_pe_occurrences", "fabric_fu_occurrences",
     PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext instructionContextCountContext{
+    frozenArtifact, "fabric_pe_occurrences", "instruction_contexts",
+    PnrCapacityMeasure::Count};
 constexpr PnrCapacityContext endpointCountContext{
     frozenArtifact, "physical_endpoints", "compute_endpoints",
     PnrCapacityMeasure::Count};
@@ -44,7 +44,7 @@ constexpr PnrCapacityContext endpointIndexContext{
     frozenArtifact, "physical_endpoints", "compute_endpoints",
     PnrCapacityMeasure::Index};
 constexpr PnrCapacityContext endpointOffsetContext{
-    frozenArtifact, "compute_occurrences", "physical_endpoints",
+    frozenArtifact, "fabric_pe_occurrences", "physical_endpoints",
     PnrCapacityMeasure::Offset};
 constexpr PnrCapacityContext endpointTypeCountContext{
     frozenArtifact, "physical_endpoint_compatible_types", "types",
@@ -56,7 +56,7 @@ constexpr PnrCapacityContext localArcCountContext{
     frozenArtifact, "compute_local_arcs", "compute_local_arcs",
     PnrCapacityMeasure::Count};
 constexpr PnrCapacityContext localArcOffsetContext{
-    frozenArtifact, "compute_occurrences", "compute_local_arcs",
+    frozenArtifact, "fabric_pe_occurrences", "compute_local_arcs",
     PnrCapacityMeasure::Offset};
 constexpr PnrCapacityContext implementationCountContext{
     frozenArtifact, "implementation_occurrences", "implementation_occurrences",
@@ -248,12 +248,11 @@ loom::pnr::detail::buildFrozenComputeDomains(
 
   if (llvm::Error error = preflight(computeCountContext, realizations.size()))
     return std::move(error);
-  if (llvm::Error error = preflight(occurrenceCountContext,
-                                    projection.computeOccurrences.size()))
+  if (llvm::Error error =
+          preflight(peOccurrenceCountContext, projection.peOccurrences.size()))
     return std::move(error);
   if (llvm::Error error =
-          preflight(occurrenceMembershipCountContext,
-                    projection.computeOccurrenceFuMemberships.size()))
+          preflight(fuOccurrenceCountContext, projection.fuOccurrences.size()))
     return std::move(error);
   if (llvm::Error error =
           preflight(endpointCountContext, projection.computeEndpoints.size()))
@@ -267,32 +266,35 @@ loom::pnr::detail::buildFrozenComputeDomains(
     return std::move(error);
 
   FrozenComputeDomains result;
-  result.occurrences.reserve(projection.computeOccurrences.size());
-  result.occurrenceFuMemberships = projection.computeOccurrenceFuMemberships;
+  result.peOccurrences.reserve(projection.peOccurrences.size());
+  result.fuOccurrences.reserve(projection.fuOccurrences.size());
   result.endpoints.reserve(projection.computeEndpoints.size());
   result.endpointCompatibleTypes = projection.computeEndpointCompatibleTypes;
   result.localArcs.reserve(projection.computeLocalArcs.size());
 
-  for (std::size_t occurrenceIndex = 0;
-       occurrenceIndex < projection.computeOccurrences.size();
-       ++occurrenceIndex) {
-    const ValidatedComputeOccurrence &occurrence =
-        projection.computeOccurrences[occurrenceIndex];
-    auto frozenOccurrenceIndex =
-        checked(occurrenceIndexContext, occurrenceIndex);
-    if (!frozenOccurrenceIndex)
-      return frozenOccurrenceIndex.takeError();
-    auto membershipOffset = checked(occurrenceMembershipOffsetContext,
-                                    occurrence.fuMembershipOffset);
-    if (!membershipOffset)
-      return membershipOffset.takeError();
-    auto membershipCount =
-        checked(occurrenceMembershipCountContext, occurrence.fuMembershipCount);
-    if (!membershipCount)
-      return membershipCount.takeError();
-    if (llvm::Error error =
-            preflightFrozenRangeCapacity(occurrenceMembershipOffsetContext,
-                                         *membershipOffset, *membershipCount))
+  for (const ValidatedFuOccurrence &fuOccurrence : projection.fuOccurrences) {
+    const ValidatedPeOccurrence &parent =
+        projection.peOccurrences[fuOccurrence.parentPe];
+    result.fuOccurrences.push_back({FabricFuOccurrenceRef{
+        FabricPeOccurrenceRef{parent.id}, fuOccurrence.implementation}});
+  }
+
+  for (const ValidatedPeOccurrence &occurrence : projection.peOccurrences) {
+    const FabricPeOccurrenceRef peRef{occurrence.id};
+    auto contextCount = checked(instructionContextCountContext,
+                                occurrence.instructionContextCapacity);
+    if (!contextCount)
+      return contextCount.takeError();
+    auto fuOccurrenceOffset =
+        checked(fuOccurrenceOffsetContext, occurrence.fuOccurrenceOffset);
+    if (!fuOccurrenceOffset)
+      return fuOccurrenceOffset.takeError();
+    auto fuOccurrenceCount =
+        checked(fuOccurrenceCountContext, occurrence.fuOccurrenceCount);
+    if (!fuOccurrenceCount)
+      return fuOccurrenceCount.takeError();
+    if (llvm::Error error = preflightFrozenRangeCapacity(
+            fuOccurrenceOffsetContext, *fuOccurrenceOffset, *fuOccurrenceCount))
       return std::move(error);
     auto endpointOffset =
         checked(endpointOffsetContext, occurrence.endpointOffset);
@@ -316,10 +318,10 @@ loom::pnr::detail::buildFrozenComputeDomains(
     if (llvm::Error error = preflightFrozenRangeCapacity(
             localArcOffsetContext, *localArcOffset, *localArcCount))
       return std::move(error);
-    result.occurrences.push_back({occurrence.id, occurrence.schedule,
-                                  *membershipOffset, *membershipCount,
-                                  *endpointOffset, *endpointCount,
-                                  *localArcOffset, *localArcCount});
+    result.peOccurrences.push_back({peRef, occurrence.schedule, *contextCount,
+                                    *fuOccurrenceOffset, *fuOccurrenceCount,
+                                    *endpointOffset, *endpointCount,
+                                    *localArcOffset, *localArcCount});
 
     llvm::ArrayRef<ValidatedComputeEndpoint> endpoints(
         projection.computeEndpoints);
@@ -337,10 +339,10 @@ loom::pnr::detail::buildFrozenComputeDomains(
       if (llvm::Error error = preflightFrozenRangeCapacity(
               endpointTypeOffsetContext, *typeOffset, *typeCount))
         return std::move(error);
-      result.endpoints.push_back(
-          {*frozenOccurrenceIndex, endpoint.id, endpoint.direction,
-           endpoint.kind, endpoint.payloadCapacityBits,
-           endpoint.tagCapacityBits, *typeOffset, *typeCount, endpoint.role});
+      result.endpoints.push_back({peRef, endpoint.id, endpoint.direction,
+                                  endpoint.kind, endpoint.payloadCapacityBits,
+                                  endpoint.tagCapacityBits, *typeOffset,
+                                  *typeCount, endpoint.role});
     }
 
     llvm::ArrayRef<ValidatedComputeLocalArc> localArcs(
@@ -356,9 +358,9 @@ loom::pnr::detail::buildFrozenComputeDomains(
                                          sizeValue(arc.endpoint));
       if (!endpoint)
         return endpoint.takeError();
-      result.localArcs.push_back({*frozenOccurrenceIndex, arc.fu, arc.direction,
-                                  *port, *endpoint, arc.payloadCapacityBits,
-                                  arc.tagCapacityBits});
+      result.localArcs.push_back(
+          {result.fuOccurrences[arc.fuOccurrence].ref, arc.direction, *port,
+           *endpoint, arc.payloadCapacityBits, arc.tagCapacityBits});
     }
   }
 
@@ -393,14 +395,15 @@ loom::pnr::detail::buildFrozenComputeDomains(
         findFuOccurrences(projection, realization.fu.entity);
     if (candidates.empty())
       return mappingInfeasibility(
-          FrozenMappingInfeasibilityCode::EmptyImplementationDomain,
-          realization.id,
-          "compute realization has an empty exact implementation domain");
+          FrozenMappingInfeasibilityCode::EmptyConcreteFuDomain, realization.id,
+          "compute realization has an empty concrete FU domain");
 
     bool hasUnaryEligibleOccurrence = false;
-    for (std::size_t occurrenceIndex : candidates) {
-      const ValidatedComputeOccurrence &occurrence =
-          projection.computeOccurrences[occurrenceIndex];
+    for (std::size_t fuOccurrenceIndex : candidates) {
+      const ValidatedFuOccurrence &fuOccurrence =
+          projection.fuOccurrences[fuOccurrenceIndex];
+      const ValidatedPeOccurrence &parentPe =
+          projection.peOccurrences[fuOccurrence.parentPe];
       auto implementationIndex = checked(
           implementationIndexContext, result.implementationOccurrences.size());
       if (!implementationIndex)
@@ -409,7 +412,7 @@ loom::pnr::detail::buildFrozenComputeDomains(
           checked(portDemandOffsetContext, result.portDemands.size());
       if (!portDemandOffset)
         return portDemandOffset.takeError();
-      scratch.reset(occurrence.endpointCount);
+      scratch.reset(parentPe.endpointCount);
 
       for (const PortDemandDraft &demand : demands) {
         auto endpointDomainOffset = checked(endpointDomainOffsetContext,
@@ -417,12 +420,12 @@ loom::pnr::detail::buildFrozenComputeDomains(
         if (!endpointDomainOffset)
           return endpointDomainOffset.takeError();
         const std::size_t scratchOffset = scratch.beginDomain();
-        for (const ValidatedComputeLocalArc &arc : findComputePortArcs(
-                 projection, occurrenceIndex, realization.fu.entity,
-                 demand.direction, demand.port)) {
+        for (const ValidatedComputeLocalArc &arc :
+             findComputePortArcs(projection, fuOccurrenceIndex,
+                                 demand.direction, demand.port)) {
           const ValidatedComputeEndpoint &endpoint =
               projection
-                  .computeEndpoints[occurrence.endpointOffset + arc.endpoint];
+                  .computeEndpoints[parentPe.endpointOffset + arc.endpoint];
           llvm::ArrayRef<TypeKey> compatibleTypes(
               projection.computeEndpointCompatibleTypes);
           compatibleTypes = compatibleTypes.slice(endpoint.compatibleTypeOffset,
@@ -440,9 +443,9 @@ loom::pnr::detail::buildFrozenComputeDomains(
                 *endpointDomainCount))
           return std::move(error);
         for (std::size_t localEndpoint : scratch.endpoints(domain)) {
-          auto endpoint = checkedPnrIndexAdd(
-              endpointIndexContext, sizeValue(occurrence.endpointOffset),
-              sizeValue(localEndpoint));
+          auto endpoint = checkedPnrIndexAdd(endpointIndexContext,
+                                             sizeValue(parentPe.endpointOffset),
+                                             sizeValue(localEndpoint));
           if (!endpoint)
             return endpoint.takeError();
           result.compatibleEndpoints.push_back(*endpoint);
@@ -459,7 +462,7 @@ loom::pnr::detail::buildFrozenComputeDomains(
       }
 
       bool unaryEligible = scratch.allDomainsNonEmpty();
-      if (unaryEligible && occurrence.schedule == ComputeScheduleKind::Spatial)
+      if (unaryEligible && parentPe.schedule == ComputeScheduleKind::Spatial)
         unaryEligible = scratch.hasInjectiveBinding();
       auto portDemandCount = checked(portDemandCountContext, demands.size());
       if (!portDemandCount)
@@ -467,13 +470,9 @@ loom::pnr::detail::buildFrozenComputeDomains(
       if (llvm::Error error = preflightFrozenRangeCapacity(
               portDemandOffsetContext, *portDemandOffset, *portDemandCount))
         return std::move(error);
-      auto frozenOccurrenceIndex =
-          checked(occurrenceIndexContext, occurrenceIndex);
-      if (!frozenOccurrenceIndex)
-        return frozenOccurrenceIndex.takeError();
       result.implementationOccurrences.push_back(
-          {*frozenRealizationIndex, *frozenOccurrenceIndex, *portDemandOffset,
-           *portDemandCount, unaryEligible});
+          {*frozenRealizationIndex, result.fuOccurrences[fuOccurrenceIndex].ref,
+           *portDemandOffset, *portDemandCount, unaryEligible});
       hasUnaryEligibleOccurrence |= unaryEligible;
     }
 

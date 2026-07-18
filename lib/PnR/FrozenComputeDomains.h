@@ -17,8 +17,8 @@ namespace loom::pnr::detail {
 
 struct FrozenComputeDomains {
   std::vector<FrozenComputeRealization> realizations;
-  std::vector<FrozenComputeOccurrence> occurrences;
-  std::vector<mapping::FuId> occurrenceFuMemberships;
+  std::vector<FrozenFabricPeOccurrence> peOccurrences;
+  std::vector<FrozenFabricFuOccurrence> fuOccurrences;
   std::vector<FrozenPhysicalEndpoint> endpoints;
   std::vector<mapping::TypeKey> endpointCompatibleTypes;
   std::vector<FrozenComputeLocalArc> localArcs;

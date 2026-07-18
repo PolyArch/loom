@@ -19,26 +19,47 @@ struct TypeKeyLess {
 
 struct ResolvedArc {
   const ComputeLocalArcDescriptor *descriptor;
-  FuId fu;
+  std::size_t fuOccurrence;
   ComputeEndpointId endpointId;
   std::size_t endpoint;
 };
 
 bool sameArc(const ResolvedArc &lhs, const ResolvedArc &rhs) {
-  return lhs.fu == rhs.fu &&
+  return lhs.fuOccurrence == rhs.fuOccurrence &&
          lhs.descriptor->fuPort.direction == rhs.descriptor->fuPort.direction &&
          lhs.descriptor->fuPort.index == rhs.descriptor->fuPort.index &&
          lhs.endpointId == rhs.endpointId;
 }
 
 bool samePort(const ResolvedArc &lhs, const ResolvedArc &rhs) {
-  return lhs.fu == rhs.fu &&
+  return lhs.fuOccurrence == rhs.fuOccurrence &&
          lhs.descriptor->fuPort.direction == rhs.descriptor->fuPort.direction &&
          lhs.descriptor->fuPort.index == rhs.descriptor->fuPort.index;
 }
 
 llvm::Error invalidComputeOccurrence(const llvm::Twine &message) {
   return mappingError(MappingErrorCode::InvalidComputeOccurrence, message);
+}
+
+llvm::Error malformedFuParentLinkage(const llvm::Twine &message) {
+  return mappingError(MappingErrorCode::MalformedFuParentLinkage, message);
+}
+
+llvm::Expected<const FuDescriptor *> resolveFuImplementation(
+    const FuRef &reference, const ArtifactIdentity &fabric,
+    const EntityKinds &kinds,
+    const std::map<std::uint64_t, const FuDescriptor *> &functionalUnits) {
+  if (reference.artifact != fabric)
+    return mappingError(MappingErrorCode::ForeignEntityReference,
+                        "FU occurrence names a foreign implementation");
+  const auto kind = kinds.find(reference.entity.value());
+  if (kind == kinds.end())
+    return mappingError(MappingErrorCode::MissingFuImplementation,
+                        "FU occurrence names a missing implementation");
+  if (kind->second != EntityKind::Fu)
+    return mappingError(MappingErrorCode::WrongEntityKind,
+                        "FU occurrence names an entity of the wrong kind");
+  return functionalUnits.at(reference.entity.value());
 }
 
 } // namespace
@@ -84,7 +105,7 @@ loom::mapping::detail::buildValidatedFabricProjection(
 
   auto projection =
       std::make_unique<ValidatedFabricProjection>(fabric.identity);
-  projection->computeOccurrences.reserve(occurrences.size());
+  projection->peOccurrences.reserve(occurrences.size());
   std::vector<std::pair<FuId, std::size_t>> fuOccurrencePairs;
 
   for (const ComputeOccurrenceDescriptor *occurrence : occurrences) {
@@ -93,12 +114,18 @@ loom::mapping::detail::buildValidatedFabricProjection(
         occurrence->functionalUnits.empty())
       return invalidComputeOccurrence(
           "compute occurrence has an invalid schedule or empty FU membership");
+    if (occurrence->instructionContextCapacity <= 0 ||
+        (occurrence->schedule == ComputeScheduleKind::Spatial &&
+         occurrence->instructionContextCapacity != 1))
+      return mappingError(
+          MappingErrorCode::InvalidInstructionContextCapacity,
+          "PE occurrence has an invalid instruction context capacity");
 
     std::vector<FuId> members;
     members.reserve(occurrence->functionalUnits.size());
     for (const FuRef &reference : occurrence->functionalUnits) {
-      auto fu = resolveReference(reference, fabric.identity, kinds,
-                                 EntityKind::Fu, functionalUnits);
+      auto fu = resolveFuImplementation(reference, fabric.identity, kinds,
+                                        functionalUnits);
       if (!fu)
         return fu.takeError();
       members.push_back((*fu)->id);
@@ -106,13 +133,18 @@ loom::mapping::detail::buildValidatedFabricProjection(
     std::sort(members.begin(), members.end(),
               [](FuId lhs, FuId rhs) { return lhs.value() < rhs.value(); });
     if (std::adjacent_find(members.begin(), members.end()) != members.end())
-      return invalidComputeOccurrence(
-          "compute occurrence repeats an FU member");
-    const std::size_t membershipOffset =
-        projection->computeOccurrenceFuMemberships.size();
-    projection->computeOccurrenceFuMemberships.insert(
-        projection->computeOccurrenceFuMemberships.end(), members.begin(),
-        members.end());
+      return malformedFuParentLinkage(
+          "PE occurrence repeats one FU implementation");
+
+    const std::size_t peOccurrence = projection->peOccurrences.size();
+    const std::size_t fuOccurrenceOffset = projection->fuOccurrences.size();
+    std::map<std::uint64_t, std::size_t> localFuOccurrences;
+    for (FuId member : members) {
+      const std::size_t fuOccurrence = projection->fuOccurrences.size();
+      projection->fuOccurrences.push_back({member, peOccurrence});
+      localFuOccurrences.emplace(member.value(), fuOccurrence);
+      fuOccurrencePairs.emplace_back(member, fuOccurrence);
+    }
 
     std::vector<const ComputeEndpointDescriptor *> endpoints;
     endpoints.reserve(occurrence->endpoints.size());
@@ -162,8 +194,8 @@ loom::mapping::detail::buildValidatedFabricProjection(
           arc.fuPort.direction != PortDirection::Output)
         return invalidComputeOccurrence(
             "compute local arc has an invalid direction");
-      auto fu = resolveReference(arc.fuPort.fu, fabric.identity, kinds,
-                                 EntityKind::Fu, functionalUnits);
+      auto fu = resolveFuImplementation(arc.fuPort.fu, fabric.identity, kinds,
+                                        functionalUnits);
       if (!fu)
         return fu.takeError();
       auto endpoint =
@@ -174,26 +206,28 @@ loom::mapping::detail::buildValidatedFabricProjection(
       const auto &ports = arc.fuPort.direction == PortDirection::Input
                               ? (*fu)->inputPorts
                               : (*fu)->outputPorts;
+      const auto localFu = localFuOccurrences.find((*fu)->id.value());
       const auto localEndpoint =
           localEndpointIndices.find((*endpoint)->id.value());
-      if (!std::binary_search(
-              members.begin(), members.end(), (*fu)->id,
-              [](FuId lhs, FuId rhs) { return lhs.value() < rhs.value(); }) ||
-          arc.fuPort.index >= ports.size() ||
-          endpointOwners.at((*endpoint)->id.value()) != occurrence ||
+      if (localFu == localFuOccurrences.end() ||
+          endpointOwners.at((*endpoint)->id.value()) != occurrence)
+        return malformedFuParentLinkage(
+            "compute local arc crosses its FU occurrence parent PE");
+      if (arc.fuPort.index >= ports.size() ||
           (*endpoint)->direction != arc.fuPort.direction ||
           localEndpoint == localEndpointIndices.end())
         return invalidComputeOccurrence(
             "compute local arc does not belong to its occurrence");
-      arcs.push_back({&arc, (*fu)->id, (*endpoint)->id, localEndpoint->second});
+      arcs.push_back(
+          {&arc, localFu->second, (*endpoint)->id, localEndpoint->second});
     }
     std::sort(arcs.begin(), arcs.end(),
               [](const ResolvedArc &lhs, const ResolvedArc &rhs) {
-                return std::make_tuple(lhs.fu.value(),
+                return std::make_tuple(lhs.fuOccurrence,
                                        lhs.descriptor->fuPort.direction,
                                        lhs.descriptor->fuPort.index,
                                        lhs.endpointId.value()) <
-                       std::make_tuple(rhs.fu.value(),
+                       std::make_tuple(rhs.fuOccurrence,
                                        rhs.descriptor->fuPort.direction,
                                        rhs.descriptor->fuPort.index,
                                        rhs.endpointId.value());
@@ -204,7 +238,7 @@ loom::mapping::detail::buildValidatedFabricProjection(
     const std::size_t localArcOffset = projection->computeLocalArcs.size();
     for (const ResolvedArc &arc : arcs) {
       projection->computeLocalArcs.push_back(
-          {arc.fu, arc.descriptor->fuPort.direction,
+          {arc.fuOccurrence, arc.descriptor->fuPort.direction,
            arc.descriptor->fuPort.index, arc.endpoint,
            arc.descriptor->payloadCapacityBits,
            arc.descriptor->tagCapacityBits});
@@ -216,20 +250,18 @@ loom::mapping::detail::buildValidatedFabricProjection(
       while (end < arcs.size() && samePort(arcs[begin], arcs[end]))
         ++end;
       projection->computePortArcRanges.push_back(
-          {arcs[begin].fu, arcs[begin].descriptor->fuPort.direction,
+          {arcs[begin].fuOccurrence, arcs[begin].descriptor->fuPort.direction,
            arcs[begin].descriptor->fuPort.index, localArcOffset + begin,
            end - begin});
       begin = end;
     }
 
-    const std::size_t occurrenceIndex = projection->computeOccurrences.size();
-    projection->computeOccurrences.push_back(
-        {occurrence->id, occurrence->schedule, membershipOffset, members.size(),
-         endpointOffset, endpoints.size(), localArcOffset, arcs.size(),
-         portArcRangeOffset,
+    projection->peOccurrences.push_back(
+        {occurrence->id, occurrence->schedule,
+         static_cast<std::uint64_t>(occurrence->instructionContextCapacity),
+         fuOccurrenceOffset, members.size(), endpointOffset, endpoints.size(),
+         localArcOffset, arcs.size(), portArcRangeOffset,
          projection->computePortArcRanges.size() - portArcRangeOffset});
-    for (FuId member : members)
-      fuOccurrencePairs.emplace_back(member, occurrenceIndex);
   }
 
   std::sort(fuOccurrencePairs.begin(), fuOccurrencePairs.end(),
@@ -242,10 +274,12 @@ loom::mapping::detail::buildValidatedFabricProjection(
     while (end < fuOccurrencePairs.size() &&
            fuOccurrencePairs[end].first == fuOccurrencePairs[begin].first)
       ++end;
-    const std::size_t occurrenceOffset = projection->fuOccurrences.size();
+    const std::size_t occurrenceOffset =
+        projection->implementationFuOccurrences.size();
     for (std::size_t index = begin; index < end; ++index)
-      projection->fuOccurrences.push_back(fuOccurrencePairs[index].second);
-    projection->fuOccurrenceRanges.push_back(
+      projection->implementationFuOccurrences.push_back(
+          fuOccurrencePairs[index].second);
+    projection->implementationFuOccurrenceRanges.push_back(
         {fuOccurrencePairs[begin].first, occurrenceOffset, end - begin});
     begin = end;
   }
@@ -254,38 +288,39 @@ loom::mapping::detail::buildValidatedFabricProjection(
 }
 
 llvm::ArrayRef<std::size_t> loom::mapping::detail::findFuOccurrences(
-    const ValidatedFabricProjection &projection, FuId fu) {
+    const ValidatedFabricProjection &projection, FuId implementation) {
   const auto range = std::lower_bound(
-      projection.fuOccurrenceRanges.begin(),
-      projection.fuOccurrenceRanges.end(), fu,
+      projection.implementationFuOccurrenceRanges.begin(),
+      projection.implementationFuOccurrenceRanges.end(), implementation,
       [](const ValidatedFuOccurrenceRange &candidate, FuId expected) {
-        return candidate.fu.value() < expected.value();
+        return candidate.implementation.value() < expected.value();
       });
-  if (range == projection.fuOccurrenceRanges.end() || range->fu != fu)
+  if (range == projection.implementationFuOccurrenceRanges.end() ||
+      range->implementation != implementation)
     return {};
-  return llvm::ArrayRef<std::size_t>(projection.fuOccurrences)
+  return llvm::ArrayRef<std::size_t>(projection.implementationFuOccurrences)
       .slice(range->occurrenceOffset, range->occurrenceCount);
 }
 
 llvm::ArrayRef<ValidatedComputeLocalArc>
 loom::mapping::detail::findComputePortArcs(
-    const ValidatedFabricProjection &projection, std::size_t occurrence,
-    FuId fu, PortDirection direction, std::uint32_t port) {
-  if (occurrence >= projection.computeOccurrences.size())
+    const ValidatedFabricProjection &projection, std::size_t fuOccurrence,
+    PortDirection direction, std::uint32_t port) {
+  if (fuOccurrence >= projection.fuOccurrences.size())
     return {};
-  const ValidatedComputeOccurrence &owner =
-      projection.computeOccurrences[occurrence];
+  const ValidatedFuOccurrence &fu = projection.fuOccurrences[fuOccurrence];
+  const ValidatedPeOccurrence &owner = projection.peOccurrences[fu.parentPe];
   llvm::ArrayRef<ValidatedComputePortArcRange> ranges(
       projection.computePortArcRanges);
   ranges = ranges.slice(owner.portArcRangeOffset, owner.portArcRangeCount);
   const auto range = std::lower_bound(
       ranges.begin(), ranges.end(),
-      std::make_tuple(fu.value(), direction, port),
+      std::make_tuple(fuOccurrence, direction, port),
       [](const ValidatedComputePortArcRange &candidate, const auto &expected) {
-        return std::make_tuple(candidate.fu.value(), candidate.direction,
+        return std::make_tuple(candidate.fuOccurrence, candidate.direction,
                                candidate.port) < expected;
       });
-  if (range == ranges.end() || range->fu != fu ||
+  if (range == ranges.end() || range->fuOccurrence != fuOccurrence ||
       range->direction != direction || range->port != port)
     return {};
   return llvm::ArrayRef<ValidatedComputeLocalArc>(projection.computeLocalArcs)

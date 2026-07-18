@@ -63,7 +63,8 @@ ComputeOccurrenceDescriptor singlePortOccurrence(
         role(0),
         transportKind}},
       {{FuPortRef{FuRef{fabric, fu.id}, direction, portIndex},
-        ComputeEndpointRef{fabric, endpoint}, unbounded, unbounded}}};
+        ComputeEndpointRef{fabric, endpoint}, unbounded, unbounded}},
+      1};
 }
 
 FrozenRoutingGraph validateAndFreezeRouting(const char *test,
