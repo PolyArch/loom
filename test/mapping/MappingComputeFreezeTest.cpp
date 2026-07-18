@@ -3,6 +3,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <set>
@@ -47,14 +48,24 @@ void freezesCorrelatedFuAndInstructionContextDomains() {
                                         std::move(spatial)};
 
   FrozenRealizationGraph graph = validateAndFreeze(__func__, testCase);
-  if (graph.fabricPeOccurrences().size() != 2 ||
-      graph.fabricPeOccurrences()[0].ref !=
-          FabricPeOccurrenceRef{ComputeOccurrenceId(100)} ||
-      graph.fabricPeOccurrences()[0].contextCount != 1 ||
-      graph.fabricPeOccurrences()[1].ref !=
-          FabricPeOccurrenceRef{ComputeOccurrenceId(300)} ||
-      graph.fabricPeOccurrences()[1].contextCount != 3)
+  const llvm::ArrayRef<FrozenFabricPeOccurrence> peOccurrences =
+      graph.fabricPeOccurrences();
+  if (peOccurrences.size() != 2 ||
+      peOccurrences[0].ref != FabricPeOccurrenceRef{ComputeOccurrenceId(100)} ||
+      peOccurrences[0].contextCount != 1 ||
+      peOccurrences[1].ref != FabricPeOccurrenceRef{ComputeOccurrenceId(300)} ||
+      peOccurrences[1].contextCount != 3)
     fail(__func__, "PE occurrence descriptors are not canonical");
+  if (graph.findFabricPeOccurrence(peOccurrences[0].ref) != &peOccurrences[0] ||
+      graph.findFabricPeOccurrence(peOccurrences[1].ref) != &peOccurrences[1])
+    fail(__func__, "PE occurrence lookup is not exact");
+  if (graph.findFabricPeOccurrence(
+          FabricPeOccurrenceRef{ComputeOccurrenceId(99)}) ||
+      graph.findFabricPeOccurrence(
+          FabricPeOccurrenceRef{ComputeOccurrenceId(200)}) ||
+      graph.findFabricPeOccurrence(
+          FabricPeOccurrenceRef{ComputeOccurrenceId(301)}))
+    fail(__func__, "PE occurrence lookup accepted a missing key");
 
   const llvm::ArrayRef<FrozenFabricFuOccurrence> fuOccurrences =
       graph.fabricFuOccurrences();
@@ -71,8 +82,33 @@ void freezesCorrelatedFuAndInstructionContextDomains() {
       fuOccurrences[0].ref == fuOccurrences[1].ref)
     fail(__func__, "FU occurrence descriptors lost concrete identity");
   if (graph.findFabricFuOccurrence(fuOccurrences[0].ref) != &fuOccurrences[0] ||
-      graph.findFabricFuOccurrence(fuOccurrences[1].ref) != &fuOccurrences[1])
+      graph.findFabricFuOccurrence(fuOccurrences[1].ref) != &fuOccurrences[1] ||
+      graph.findFabricFuOccurrence(fuOccurrences[2].ref) != &fuOccurrences[2])
     fail(__func__, "FU occurrence lookup is not exact");
+  if (graph.findFabricFuOccurrence(FabricFuOccurrenceRef{
+          FabricPeOccurrenceRef{ComputeOccurrenceId(99)}, FuId(10)}) ||
+      graph.findFabricFuOccurrence(FabricFuOccurrenceRef{
+          FabricPeOccurrenceRef{ComputeOccurrenceId(100)}, FuId(20)}) ||
+      graph.findFabricFuOccurrence(FabricFuOccurrenceRef{
+          FabricPeOccurrenceRef{ComputeOccurrenceId(301)}, FuId(10)}))
+    fail(__func__, "FU occurrence lookup accepted a missing key");
+
+  std::size_t nextFuOccurrence = 0;
+  for (const FrozenFabricPeOccurrence &pe : peOccurrences) {
+    const std::size_t offset = static_cast<std::size_t>(pe.fuOccurrenceOffset);
+    const std::size_t count = static_cast<std::size_t>(pe.fuOccurrenceCount);
+    if (offset != nextFuOccurrence || offset > fuOccurrences.size() ||
+        count > fuOccurrences.size() - offset)
+      fail(__func__, "PE FU occurrence ranges are not bounded and disjoint");
+    for (std::size_t index = offset; index < offset + count; ++index) {
+      if (fuOccurrences[index].ref.parentPe != pe.ref)
+        fail(__func__, "PE FU occurrence range contains a foreign parent");
+    }
+    nextFuOccurrence = offset + count;
+  }
+  if (nextFuOccurrence != fuOccurrences.size())
+    fail(__func__, "PE FU occurrence ranges do not cover every FU");
+
   const std::optional<InstructionContextRef> selectedSpatialContext =
       graph.instructionContext(fuOccurrences[0].ref, ContextOrdinal(0));
   const std::optional<InstructionContextRef> otherSpatialContext =
@@ -83,6 +119,15 @@ void freezesCorrelatedFuAndInstructionContextDomains() {
       *selectedSpatialContext != *otherSpatialContext ||
       selectedSpatialContext->pe == temporalContext->pe)
     fail(__func__, "instruction contexts lost parent-PE correlation");
+  const std::optional<InstructionContextRef> lastTemporalContext =
+      graph.instructionContext(fuOccurrences[2].ref, ContextOrdinal(2));
+  if (!lastTemporalContext ||
+      lastTemporalContext->pe != fuOccurrences[2].ref.parentPe ||
+      lastTemporalContext->ordinal != ContextOrdinal(2))
+    fail(__func__, "temporal context domain rejected its maximum ordinal");
+  if (graph.instructionContext(fuOccurrences[2].ref, ContextOrdinal(3)))
+    fail(__func__,
+         "temporal context domain accepted its first invalid ordinal");
 
   const FrozenComputeRealization &realization =
       graph.computeRealizations().front();
@@ -120,14 +165,33 @@ void freezesCorrelatedFuAndInstructionContextDomains() {
   }
 }
 void rejectsEmptyConcreteFuDomainAsMappingInfeasibility() {
-  TestCase testCase = makeValidCase();
-  testCase.fabric.computeOccurrences.clear();
-  ValidatedTechMapping mapping = validateCase(__func__, testCase);
-  ResolvedPnrConfigView config;
-  expectFreezeInfeasibility(
-      __func__,
-      freezeRealizationGraph(makePnrProblemInputs(testCase, mapping, config)),
-      FrozenMappingInfeasibilityCode::EmptyConcreteFuDomain);
+  {
+    TestCase testCase = makeValidCase();
+    testCase.fabric.computeOccurrences.clear();
+    ValidatedTechMapping mapping = validateCase(__func__, testCase);
+    ResolvedPnrConfigView config;
+    expectFreezeInfeasibility(
+        __func__,
+        freezeRealizationGraph(makePnrProblemInputs(testCase, mapping, config)),
+        FrozenMappingInfeasibilityCode::EmptyConcreteFuDomain);
+  }
+  {
+    TestCase testCase = makeValidCase();
+    const ArtifactIdentity &fabricId = testCase.fabric.identity;
+    const FuDescriptor selectedFu = testCase.fabric.functionalUnits.front();
+    const FuDescriptor otherFu{FuId(30), selectedFu.inputPorts,
+                               selectedFu.outputPorts};
+    testCase.fabric.functionalUnits.push_back(otherFu);
+    testCase.fabric.computeOccurrences = {makeSpatialComputeOccurrence(
+        fabricId, ComputeOccurrenceId(100), otherFu, 3000)};
+
+    ValidatedTechMapping mapping = validateCase(__func__, testCase);
+    ResolvedPnrConfigView config;
+    expectFreezeInfeasibility(
+        __func__,
+        freezeRealizationGraph(makePnrProblemInputs(testCase, mapping, config)),
+        FrozenMappingInfeasibilityCode::EmptyConcreteFuDomain);
+  }
 }
 void freezesOnlyActiveWideSyncBoundaryPorts() {
   TestCase testCase = makeWideSyncCase();
@@ -379,6 +443,57 @@ void preflightsFrozenCapacityPlanning() {
     fail(__func__, "expected frozen range capacity failure");
   llvm::consumeError(std::move(error));
 }
+void checksInstructionContextNativeIndexBoundary() {
+#if LOOM_PNR_INDEX_BITS == 32
+  constexpr std::uint64_t maximum = getPnrIndexMax();
+  constexpr std::uint64_t oversized = maximum + std::uint64_t{1};
+  static_assert(oversized <= static_cast<std::uint64_t>(
+                                 std::numeric_limits<std::int64_t>::max()));
+
+  TestCase testCase = makeValidCase();
+  ComputeOccurrenceDescriptor &occurrence =
+      testCase.fabric.computeOccurrences.front();
+  occurrence.schedule = ComputeScheduleKind::Temporal;
+  occurrence.instructionContextCapacity = static_cast<std::int64_t>(maximum);
+
+  FrozenRealizationGraph graph = validateAndFreeze(__func__, testCase);
+  const FabricFuOccurrenceRef fuOccurrence =
+      graph.fabricFuOccurrences().front().ref;
+  const std::optional<InstructionContextRef> lastContext =
+      graph.instructionContext(fuOccurrence, ContextOrdinal(maximum - 1));
+  if (!lastContext || lastContext->pe != fuOccurrence.parentPe ||
+      lastContext->ordinal != ContextOrdinal(maximum - 1))
+    fail(__func__, "maximum native context ordinal is not addressable");
+  if (graph.instructionContext(fuOccurrence, ContextOrdinal(maximum)))
+    fail(__func__, "first ordinal beyond the native context range was valid");
+
+  occurrence.instructionContextCapacity = static_cast<std::int64_t>(oversized);
+  ValidatedTechMapping mapping = validateCase(__func__, testCase);
+  ResolvedPnrConfigView config;
+  llvm::Expected<FrozenRealizationGraph> result =
+      freezeRealizationGraph(makePnrProblemInputs(testCase, mapping, config));
+  if (result)
+    fail(__func__, "expected instruction context capacity failure");
+  bool sawCapacityError = false;
+  llvm::handleAllErrors(
+      result.takeError(), [&](const PnrIndexCapacityError &capacityError) {
+        sawCapacityError = true;
+        std::string message;
+        llvm::raw_string_ostream stream(message);
+        capacityError.log(stream);
+        if (message.find("table 'fabric_pe_occurrences'") ==
+                std::string::npos ||
+            message.find("domain 'instruction_contexts'") == std::string::npos)
+          fail(__func__, "capacity failure named the wrong frozen domain");
+      });
+  if (!sawCapacityError)
+    fail(__func__, "received a different capacity error category");
+#else
+  static_assert(
+      getPnrIndexMax() >
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()));
+#endif
+}
 template <typename T> constexpr bool isPnrIndex = std::is_same_v<T, PnrIndex>;
 static_assert(!std::is_default_constructible_v<ContextOrdinal>);
 static_assert(
@@ -411,6 +526,7 @@ void runComputeFreezeTests() {
   freezesDeterministicallyAcrossInputPermutation();
   enforcesFrozenInputIdentityBoundary();
   preflightsFrozenCapacityPlanning();
+  checksInstructionContextNativeIndexBoundary();
 }
 
 } // namespace loom::mapping::test

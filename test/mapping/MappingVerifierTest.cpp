@@ -738,6 +738,14 @@ void rejectsInvalidComputeOccurrences() {
       MappingErrorCode::InvalidInstructionContextCapacity);
   expectInvalid(
       [](TestCase &testCase) {
+        ComputeOccurrenceDescriptor &occurrence =
+            testCase.fabric.computeOccurrences.front();
+        occurrence.schedule = ComputeScheduleKind::Temporal;
+        occurrence.instructionContextCapacity = -1;
+      },
+      MappingErrorCode::InvalidInstructionContextCapacity);
+  expectInvalid(
+      [](TestCase &testCase) {
         testCase.fabric.computeOccurrences.front().instructionContextCapacity =
             2;
       },
