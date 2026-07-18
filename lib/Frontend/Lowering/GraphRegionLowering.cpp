@@ -82,6 +82,69 @@ struct FixedParallelDomain {
   ::llvm::SmallVector<int64_t, 4> step;
 };
 
+struct StreamBoundaryInfo {
+  ::llvm::SmallVector<::mlir::BlockArgument, 4> inputChannels;
+  ::llvm::SmallVector<::mlir::Value, 4> inputPayloads;
+  ::llvm::SmallVector<::mlir::BlockArgument, 4> outputChannels;
+
+  bool isTransient() const {
+    return !inputChannels.empty() || !outputChannels.empty();
+  }
+};
+
+::mlir::FailureOr<StreamBoundaryInfo>
+analyzeStreamBoundary(::dataflow::GraphOp graph) {
+  StreamBoundaryInfo info;
+  ::mlir::Block &entry = graph.getBody().front();
+  size_t canonicalArgumentCount = graph.getFunctionType().getNumInputs() + 1;
+  if (entry.getNumArguments() == canonicalArgumentCount)
+    return info;
+
+  ::llvm::ArrayRef<int32_t> inputSegments = graph.getInputSegmentSizes();
+  ::llvm::ArrayRef<int32_t> resultSegments = graph.getResultSegmentSizes();
+  size_t inputCount = static_cast<size_t>(inputSegments[1]);
+  size_t outputCount = static_cast<size_t>(resultSegments[1]);
+  if (entry.getNumArguments() !=
+      canonicalArgumentCount + inputCount + outputCount)
+    return graph.emitError(
+        "loom-lower-graph-memory: graph entry argument count does not match "
+        "either the canonical ABI or a transient stream boundary");
+
+  ::llvm::ArrayRef<::mlir::Type> inputTypes =
+      graph.getFunctionType().getInputs();
+  ::llvm::ArrayRef<::mlir::Type> resultTypes =
+      graph.getFunctionType().getResults();
+  size_t inputPayloadBegin = static_cast<size_t>(inputSegments[0]);
+  size_t outputPayloadBegin = static_cast<size_t>(resultSegments[0]);
+  for (size_t index = 0; index < inputCount; ++index) {
+    auto channel = ::llvm::dyn_cast<::mlir::BlockArgument>(
+        entry.getArgument(canonicalArgumentCount + index));
+    auto channelType =
+        ::llvm::dyn_cast<::dataflow::ChannelType>(channel.getType());
+    ::mlir::Type payloadType = inputTypes[inputPayloadBegin + index];
+    if (!channelType || channelType.getElementType() != payloadType)
+      return graph.emitError(
+          "loom-lower-graph-memory: transient stream input channel type "
+          "does not match its graph payload port");
+    info.inputChannels.push_back(channel);
+    info.inputPayloads.push_back(
+        entry.getArgument(inputPayloadBegin + index + 1));
+  }
+  for (size_t index = 0; index < outputCount; ++index) {
+    auto channel = ::llvm::dyn_cast<::mlir::BlockArgument>(
+        entry.getArgument(canonicalArgumentCount + inputCount + index));
+    auto channelType =
+        ::llvm::dyn_cast<::dataflow::ChannelType>(channel.getType());
+    ::mlir::Type payloadType = resultTypes[outputPayloadBegin + index];
+    if (!channelType || channelType.getElementType() != payloadType)
+      return graph.emitError(
+          "loom-lower-graph-memory: transient stream output channel type "
+          "does not match its graph payload port");
+    info.outputChannels.push_back(channel);
+  }
+  return info;
+}
+
 std::optional<int64_t> getConstantIndex(::mlir::Value value) {
   ::mlir::APInt constant;
   if (!::mlir::matchPattern(value, ::mlir::m_ConstantInt(&constant)) ||
@@ -214,12 +277,63 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
       to, [&](::mlir::OpOperand &use) { return isUseInside(use, region); });
 }
 
-::mlir::LogicalResult checkOneGraph(::dataflow::GraphOp graph) {
+bool isNestedInParallelRegion(::mlir::Operation *op,
+                              ::dataflow::GraphOp graph) {
+  for (::mlir::Operation *parent = op->getParentOp();
+       parent && parent != graph.getOperation(); parent = parent->getParentOp())
+    if (::llvm::isa<::mlir::scf::ParallelOp, ::mlir::scf::ForallOp>(parent))
+      return true;
+  return false;
+}
+
+::mlir::LogicalResult
+checkStreamBoundaryUses(::dataflow::GraphOp graph,
+                        const StreamBoundaryInfo &boundary) {
+  auto checkBinding = [&](::mlir::BlockArgument channel,
+                          bool input) -> ::mlir::LogicalResult {
+    unsigned endpointCount = 0;
+    for (::mlir::OpOperand &use : channel.getUses()) {
+      ::mlir::Operation *owner = use.getOwner();
+      bool endpoint = input ? ::llvm::isa<::dataflow::ChannelReceiveOp>(owner)
+                            : ::llvm::isa<::dataflow::ChannelSendOp>(owner);
+      if (!endpoint || use.getOperandNumber() != 0)
+        return owner->emitError()
+               << "loom-lower-graph-memory: transient stream "
+               << (input ? "input" : "output")
+               << " channel has a non-endpoint use";
+      if (isNestedInParallelRegion(owner, graph))
+        return owner->emitError(
+            "loom-lower-graph-memory: one stream binding cannot contain "
+            "parallel endpoint sites without a deterministic merge");
+      ++endpointCount;
+    }
+    if (endpointCount != 1)
+      return graph.emitError() << "loom-lower-graph-memory: stream "
+                               << (input ? "input" : "output")
+                               << " binding requires exactly one static "
+                               << (input ? "receive" : "send")
+                               << " site for mechanical publication";
+    return ::mlir::success();
+  };
+
+  for (::mlir::BlockArgument channel : boundary.inputChannels)
+    if (::mlir::failed(checkBinding(channel, true)))
+      return ::mlir::failure();
+  for (::mlir::BlockArgument channel : boundary.outputChannels)
+    if (::mlir::failed(checkBinding(channel, false)))
+      return ::mlir::failure();
+  return ::mlir::success();
+}
+
+::mlir::LogicalResult checkOneGraph(::dataflow::GraphOp graph,
+                                    const StreamBoundaryInfo &boundary) {
   ::mlir::Block &entry = graph.getBody().front();
   if (entry.getNumArguments() == 0 ||
       !::llvm::isa<::mlir::NoneType>(entry.getArgument(0).getType()))
     return graph.emitError(
         "loom-lower-graph-memory: graph entry must start with none");
+  if (::mlir::failed(checkStreamBoundaryUses(graph, boundary)))
+    return ::mlir::failure();
 
   ::mlir::WalkResult parallelResult =
       graph.getBody().walk([&](::mlir::Operation *op) {
@@ -317,6 +431,9 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
                     ::mlir::scf::ReduceOp, ::mlir::scf::InParallelOp,
                     ::dataflow::GraphReturnOp>(op) ||
         ::loom::lowering::isSupportedGraphLoweringLeaf(op);
+    if (::llvm::isa<::dataflow::ChannelSendOp, ::dataflow::ChannelReceiveOp>(
+            op))
+      modeled = boundary.isTransient();
     if (!modeled && (op->getNumRegions() != 0 || op->getNumSuccessors() != 0)) {
       op->emitError()
           << "loom-lower-graph-memory: effectful or unmodeled graph "
@@ -339,9 +456,17 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
 
 class GraphRegionLowerer {
 public:
-  explicit GraphRegionLowerer(::dataflow::GraphOp graph)
+  GraphRegionLowerer(::dataflow::GraphOp graph,
+                     const StreamBoundaryInfo &boundary)
       : graph(graph), builder(graph.getContext()),
-        entry(graph.getBody().front()), anchor(entry.getTerminator()) {}
+        entry(graph.getBody().front()), anchor(entry.getTerminator()) {
+    for (auto [channel, payload] :
+         ::llvm::zip_equal(boundary.inputChannels, boundary.inputPayloads))
+      streamInputByChannel.try_emplace(channel, payload);
+    for (auto [index, channel] : ::llvm::enumerate(boundary.outputChannels))
+      streamOutputByChannel.try_emplace(channel, index);
+    streamOutputs.resize(boundary.outputChannels.size());
+  }
 
   ::mlir::LogicalResult run() {
     collectParallelDomains();
@@ -353,7 +478,14 @@ public:
     RegionResult result =
         lowerBlock(entry, graph.getStart(), std::move(initial));
     ::loom::lowering::lowerGraphIndexDomains(graph);
-    finalizeReturn(::llvm::cast<::dataflow::GraphReturnOp>(anchor), result);
+    if (::llvm::any_of(streamOutputs,
+                       [](const ::mlir::Value &value) { return !value; }))
+      return graph.emitError(
+          "loom-lower-graph-memory: stream output binding was not lowered");
+    auto returnOp = ::llvm::cast<::dataflow::GraphReturnOp>(anchor);
+    returnOp.getStreamsMutable().assign(streamOutputs);
+    finalizeReturn(returnOp, result);
+    eraseTransientChannelArguments();
     return ::mlir::success();
   }
 
@@ -362,6 +494,9 @@ private:
   ::mlir::OpBuilder builder;
   ::mlir::Block &entry;
   ::mlir::Operation *anchor;
+  ::llvm::DenseMap<::mlir::Value, ::mlir::Value> streamInputByChannel;
+  ::llvm::DenseMap<::mlir::Value, unsigned> streamOutputByChannel;
+  ::llvm::SmallVector<::mlir::Value, 4> streamOutputs;
   unsigned partitionCount = 0;
   ::llvm::DenseMap<::mlir::Value, unsigned> partitionByRoot;
   ::mlir::Value sharedBoundaryRoot;
@@ -372,6 +507,16 @@ private:
 
   void setInsertionPoint(::mlir::Location) {
     builder.setInsertionPoint(anchor);
+  }
+
+  void eraseTransientChannelArguments() {
+    size_t canonicalArgumentCount = graph.getFunctionType().getNumInputs() + 1;
+    while (entry.getNumArguments() > canonicalArgumentCount) {
+      ::mlir::BlockArgument argument = entry.getArguments().back();
+      assert(argument.use_empty() &&
+             "stream endpoint lowering must remove every channel use");
+      entry.eraseArgument(entry.getNumArguments() - 1);
+    }
   }
 
   std::optional<::mlir::Value> findKnownRoot(::mlir::Value value) const {
@@ -448,7 +593,8 @@ private:
 
     ::llvm::SmallVector<::mlir::Value, 8> captures;
     for (::mlir::Value value : candidates) {
-      if (isMemoryCapabilityCapture(value))
+      if (isMemoryCapabilityCapture(value) ||
+          ::llvm::isa<::dataflow::ChannelType>(value.getType()))
         continue;
       bool hasSemanticUse = false;
       for (::mlir::OpOperand &use : value.getUses()) {
@@ -814,6 +960,37 @@ private:
                           forall.getInductionVars(), execution, memory);
         execution = result.execution;
         memory = std::move(result.memory);
+        continue;
+      }
+      if (auto receive = ::llvm::dyn_cast<::dataflow::ChannelReceiveOp>(op)) {
+        ::mlir::Value payload =
+            streamInputByChannel.lookup(receive.getChannel());
+        assert(payload && "stream receive must use a published input binding");
+        setInsertionPoint(receive.getLoc());
+        auto sync = ::dataflow::SyncOp::create(
+            builder, receive.getLoc(),
+            ::mlir::TypeRange{builder.getNoneType(), payload.getType()},
+            ::mlir::ValueRange{execution, payload});
+        receive.getMessage().replaceAllUsesWith(sync.getOutputs()[1]);
+        execution = sync.getOutputs()[0];
+        receive.erase();
+        continue;
+      }
+      if (auto send = ::llvm::dyn_cast<::dataflow::ChannelSendOp>(op)) {
+        auto output = streamOutputByChannel.find(send.getChannel());
+        assert(output != streamOutputByChannel.end() &&
+               "stream send must use a published output binding");
+        setInsertionPoint(send.getLoc());
+        auto sync = ::dataflow::SyncOp::create(
+            builder, send.getLoc(),
+            ::mlir::TypeRange{builder.getNoneType(),
+                              send.getMessage().getType()},
+            ::mlir::ValueRange{execution, send.getMessage()});
+        assert(!streamOutputs[output->second] &&
+               "stream binding must have one static send site");
+        streamOutputs[output->second] = sync.getOutputs()[1];
+        execution = sync.getOutputs()[0];
+        send.erase();
         continue;
       }
       if (auto load = ::llvm::dyn_cast<::mlir::memref::LoadOp>(op)) {
@@ -1323,7 +1500,11 @@ namespace lowering {
 checkGraphRegionLoweringPreconditions(::mlir::ModuleOp module) {
   ::mlir::WalkResult result =
       module.walk([&](::dataflow::GraphOp graph) -> ::mlir::WalkResult {
-        if (!graph.isExternal() && ::mlir::failed(checkOneGraph(graph)))
+        if (graph.isExternal())
+          return ::mlir::WalkResult::advance();
+        auto boundary = analyzeStreamBoundary(graph);
+        if (::mlir::failed(boundary) ||
+            ::mlir::failed(checkOneGraph(graph, *boundary)))
           return ::mlir::WalkResult::interrupt();
         return ::mlir::WalkResult::advance();
       });
@@ -1331,7 +1512,10 @@ checkGraphRegionLoweringPreconditions(::mlir::ModuleOp module) {
 }
 
 ::mlir::LogicalResult lowerGraphRegions(::dataflow::GraphOp graph) {
-  return GraphRegionLowerer(graph).run();
+  auto boundary = analyzeStreamBoundary(graph);
+  if (::mlir::failed(boundary))
+    return ::mlir::failure();
+  return GraphRegionLowerer(graph, *boundary).run();
 }
 
 } // namespace lowering

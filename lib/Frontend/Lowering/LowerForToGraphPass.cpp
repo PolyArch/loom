@@ -31,6 +31,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -372,12 +373,17 @@ reorderGraphInterfaceAttrs(::mlir::ValueRange values, GetAttr getAttr) {
 ::llvm::SmallVector<::mlir::NamedAttribute, 2>
 graphSegmentAttrs(::mlir::OpBuilder &builder,
                   const ClassifiedGraphValues &inputs,
-                  const ClassifiedGraphValues &results) {
+                  const ClassifiedGraphValues &results,
+                  int32_t inputStreamCount = 0, int32_t resultStreamCount = 0) {
+  std::array<int32_t, 3> inputSegments = inputs.segments();
+  std::array<int32_t, 3> resultSegments = results.segments();
+  inputSegments[1] = inputStreamCount;
+  resultSegments[1] = resultStreamCount;
   return {
       builder.getNamedAttr("input_segments",
-                           builder.getDenseI32ArrayAttr(inputs.segments())),
+                           builder.getDenseI32ArrayAttr(inputSegments)),
       builder.getNamedAttr("result_segments",
-                           builder.getDenseI32ArrayAttr(results.segments())),
+                           builder.getDenseI32ArrayAttr(resultSegments)),
   };
 }
 
@@ -567,11 +573,18 @@ struct LowerForToGraphPass
   }
 
   ::mlir::LogicalResult finalizePublishedModule(::mlir::ModuleOp module) {
+    // Stream endpoints temporarily retain channel block arguments in the
+    // scratch module until graph-region lowering replaces them with ports.
+    ::mlir::PassManager lowerer(module.getContext());
+    lowerer.enableVerifier(false);
+    lowerer.addPass(::mlir::createCanonicalizerPass());
+    lowerer.addPass(::loom::lowering::createLowerKnownLibraryCallsPass());
+    lowerer.addPass(::loom::lowering::createLowerGraphMemoryPass());
+    if (::mlir::failed(lowerer.run(module)) || ::mlir::failed(verify(module)))
+      return ::mlir::failure();
+
     ::mlir::PassManager finalizer(module.getContext());
     finalizer.enableVerifier(true);
-    finalizer.addPass(::mlir::createCanonicalizerPass());
-    finalizer.addPass(::loom::lowering::createLowerKnownLibraryCallsPass());
-    finalizer.addPass(::loom::lowering::createLowerGraphMemoryPass());
     finalizer.addPass(::loom::lowering::createLowerGraphConstantsPass());
     finalizer.addPass(::mlir::createCanonicalizerPass());
     if (::mlir::failed(finalizer.run(module)))
@@ -1248,23 +1261,6 @@ struct LowerForToGraphPass
     });
 
     for (::loom::SpatialRegionOp spatial : regions) {
-      bool hasChannelOperand = ::llvm::any_of(
-          spatial->getOperands(), [](::mlir::Value operand) {
-            return ::llvm::isa<::dataflow::ChannelType>(operand.getType());
-          });
-      bool hasChannelEndpoint = false;
-      spatial.walk([&](::mlir::Operation *op) {
-        if (::llvm::isa<::dataflow::ChannelSendOp,
-                        ::dataflow::ChannelReceiveOp>(op))
-          hasChannelEndpoint = true;
-      });
-      if (hasChannelOperand || hasChannelEndpoint ||
-          !spatial.getStreamInputs().empty() ||
-          !spatial.getStreamOutputs().empty())
-        return spatial.emitOpError(
-            "stream endpoint conversion is not implemented; spatial "
-            "candidate cannot be published");
-
       auto thread = spatial->getParentOfType<::dataflow::ThreadOp>();
       if (!thread)
         return spatial.emitOpError(
@@ -1304,16 +1300,29 @@ struct LowerForToGraphPass
       graphResults.memories.append(spatial.getMemoryResults().begin(),
                                    spatial.getMemoryResults().end());
 
-      ::llvm::SmallVector<::mlir::Value, 8> orderedInputs =
-          graphInputs.ordered();
       ::llvm::SmallVector<::mlir::Type, 8> inputTypes;
-      for (::mlir::Value value : orderedInputs)
+      for (::mlir::Value value : graphInputs.values)
         inputTypes.push_back(value.getType());
+      for (::mlir::Value channel : spatial.getStreamInputs())
+        inputTypes.push_back(
+            ::llvm::cast<::dataflow::ChannelType>(channel.getType())
+                .getElementType());
+      for (::mlir::Value memory : graphInputs.memories)
+        inputTypes.push_back(memory.getType());
       ::llvm::SmallVector<::mlir::Type, 4> resultTypes;
-      for (::mlir::Value value : graphResults.ordered())
+      for (::mlir::Value value : graphResults.values)
         resultTypes.push_back(value.getType());
+      for (::mlir::Value channel : spatial.getStreamOutputs())
+        resultTypes.push_back(
+            ::llvm::cast<::dataflow::ChannelType>(channel.getType())
+                .getElementType());
+      for (::mlir::Value memory : graphResults.memories)
+        resultTypes.push_back(memory.getType());
       auto functionType = builder.getFunctionType(inputTypes, resultTypes);
-      auto segmentAttrs = graphSegmentAttrs(builder, graphInputs, graphResults);
+      auto segmentAttrs = graphSegmentAttrs(
+          builder, graphInputs, graphResults,
+          static_cast<int32_t>(spatial.getStreamInputs().size()),
+          static_cast<int32_t>(spatial.getStreamOutputs().size()));
 
       std::string graphName = uniqueSymbol(
           module, spatial.getGraphName().value_or("g_spatial_candidate"));
@@ -1323,14 +1332,13 @@ struct LowerForToGraphPass
           builder, loc, graphName, functionType, segmentAttrs);
       graph.setSymVisibilityAttr(builder.getStringAttr("private"));
 
-      ::llvm::SmallVector<::mlir::Value, 8> memoryRoots(orderedInputs.size());
+      ::llvm::SmallVector<::mlir::Value, 8> memoryRoots(
+          graphInputs.memories.size());
       ::llvm::DenseMap<::mlir::Value, unsigned> capturedRootCounts;
       bool hasUnknownMemoryRoot = false;
-      for (auto [index, input] : ::llvm::enumerate(orderedInputs)) {
-        if (!::dataflow::DataflowDialect::isMemoryCapabilityType(
-                input.getType()))
-          continue;
-        ::mlir::Value root = findGraphPublicationMemoryRoot(input, threadEntry);
+      for (auto [index, memory] : ::llvm::enumerate(graphInputs.memories)) {
+        ::mlir::Value root =
+            findGraphPublicationMemoryRoot(memory, threadEntry);
         memoryRoots[index] = root;
         if (root)
           ++capturedRootCounts[root];
@@ -1350,22 +1358,25 @@ struct LowerForToGraphPass
       };
 
       ::llvm::SmallVector<::mlir::DictionaryAttr, 8> graphArgAttrs;
-      graphArgAttrs.reserve(orderedInputs.size());
-      for (auto [index, input] : ::llvm::enumerate(orderedInputs)) {
+      graphArgAttrs.reserve(inputTypes.size());
+      for (::mlir::Value input : graphInputs.values) {
         ::mlir::NamedAttrList attrs(getThreadArgAttrs(input));
-        if (::dataflow::DataflowDialect::isMemoryCapabilityType(
-                input.getType())) {
-          ::mlir::Value root = memoryRoots[index];
-          ::mlir::DictionaryAttr rootAttrs = getThreadArgAttrs(root);
-          ::mlir::Attribute noAlias =
-              rootAttrs ? rootAttrs.get("llvm.noalias") : ::mlir::Attribute{};
-          bool uniqueKnownRoot = !hasUnknownMemoryRoot && root &&
-                                 capturedRootCounts.lookup(root) == 1;
-          if (uniqueKnownRoot && noAlias)
-            attrs.set("llvm.noalias", noAlias);
-          else
-            attrs.erase("llvm.noalias");
-        }
+        graphArgAttrs.push_back(attrs.getDictionary(builder.getContext()));
+      }
+      for ([[maybe_unused]] ::mlir::Value channel : spatial.getStreamInputs())
+        graphArgAttrs.push_back(builder.getDictionaryAttr({}));
+      for (auto [index, memory] : ::llvm::enumerate(graphInputs.memories)) {
+        ::mlir::NamedAttrList attrs(getThreadArgAttrs(memory));
+        ::mlir::Value root = memoryRoots[index];
+        ::mlir::DictionaryAttr rootAttrs = getThreadArgAttrs(root);
+        ::mlir::Attribute noAlias =
+            rootAttrs ? rootAttrs.get("llvm.noalias") : ::mlir::Attribute{};
+        bool uniqueKnownRoot = !hasUnknownMemoryRoot && root &&
+                               capturedRootCounts.lookup(root) == 1;
+        if (uniqueKnownRoot && noAlias)
+          attrs.set("llvm.noalias", noAlias);
+        else
+          attrs.erase("llvm.noalias");
         graphArgAttrs.push_back(attrs.getDictionary(builder.getContext()));
       }
       ::mlir::function_interface_impl::setAllArgAttrDicts(graph, graphArgAttrs);
@@ -1377,9 +1388,27 @@ struct LowerForToGraphPass
 
       ::mlir::IRMapping mapping;
       ::mlir::Block &spatialEntry = spatial.getBody().front();
-      for (auto [index, argument] :
-           ::llvm::enumerate(spatialEntry.getArguments()))
-        mapping.map(argument, graphEntry->getArgument(index + 1));
+      size_t spatialArgument = 0;
+      size_t graphArgument = 1;
+      for ([[maybe_unused]] ::mlir::Value input : spatial.getValueInputs())
+        mapping.map(spatialEntry.getArgument(spatialArgument++),
+                    graphEntry->getArgument(graphArgument++));
+      graphArgument += spatial.getStreamInputs().size();
+      size_t inputChannelArgument = graphEntry->getNumArguments();
+      for (::mlir::Value channel : spatial.getStreamInputs()) {
+        graphEntry->addArgument(channel.getType(), loc);
+        mapping.map(spatialEntry.getArgument(spatialArgument++),
+                    graphEntry->getArgument(inputChannelArgument++));
+      }
+      for ([[maybe_unused]] ::mlir::Value memory : spatial.getMemoryInputs())
+        mapping.map(spatialEntry.getArgument(spatialArgument++),
+                    graphEntry->getArgument(graphArgument++));
+      size_t outputChannelArgument = graphEntry->getNumArguments();
+      for (::mlir::Value channel : spatial.getStreamOutputs()) {
+        graphEntry->addArgument(channel.getType(), loc);
+        mapping.map(spatialEntry.getArgument(spatialArgument++),
+                    graphEntry->getArgument(outputChannelArgument++));
+      }
 
       builder.setInsertionPointToEnd(graphEntry);
       for (::mlir::Operation &op : spatialEntry.without_terminator())
@@ -1481,6 +1510,9 @@ struct LowerForToGraphPass
       hasBodyOp = true;
       if (::llvm::isa<::loom::SpatialRegionOp, ::dataflow::GraphLaunchOp,
                       ::dataflow::ThreadLaunchOp>(op))
+        return false;
+      if (::llvm::isa<::dataflow::ChannelSendOp, ::dataflow::ChannelReceiveOp>(
+              op))
         return false;
       for (::mlir::Value result : op.getResults())
         if (::llvm::any_of(result.getUses(), [&](::mlir::OpOperand &use) {

@@ -66,9 +66,15 @@ the production contract.
 * Propagates a nested graph launch completion through enclosing `scf.if`
   results before adding it to the thread completion frontier. Other enclosing
   structured controls fail before publication.
-* Stream endpoint conversion is not implemented. Candidates with stream
-  bindings or channel send/receive operations fail before publication rather
-  than emitting a partial graph.
+* Stream input/output channel segments become payload-typed graph stream
+  ports and remain channel bindings only at `dataflow.graph.launch`. Each
+  input binding preserves its `source_map`. The recursive graph owner
+  rendezvous each receive/send with its structured execution frontier, removes
+  the endpoint, and erases every transient channel argument before
+  verification. One static endpoint site may represent a dynamic sequence
+  inside sequential structured control. Multiple or parallel sites on one
+  binding require a pre-materialized deterministic merge and otherwise fail
+  atomically.
 * The graph `FunctionType` contains only application payloads; normalized
   `input_segments` and `result_segments` record value, stream, and memory
   kinds.
@@ -115,6 +121,10 @@ the production contract.
   recursively from the same incoming state, and incomparable execution and
   per-partition frontier exits join with all-of. Structural execution remains
   a separate state component.
+* A graph stream input remains unbounded payload. A receive rendezvous is
+  aligned by its structured execution input, and a send's completion becomes
+  part of that same execution frontier. Channel handles and channel endpoint
+  operations never survive in the graph body.
 * Unselected, dynamic-width, resource-mapped, resultful, or reduction-bearing
   parallel SCF, unsupported residual containers, observable operations without
   explicit completion events, and memory capabilities transported on dataflow
@@ -154,7 +164,8 @@ the production contract.
 * The gate statically requires exact-one value outputs and completion
   witnesses and a proven close/commit for stream outputs. A zero-or-more
   stream path does not become exact-one merely by passing through
-  `dataflow.sync`.
+  `dataflow.sync`; the narrow exception is a direct graph stream input
+  rendezvous limited by an exact-one activation input.
 * The program-level portion is the single owner of channel topology. It
   rejects channel producers, escapes, missing or duplicate producer bindings,
   missing consumers, rank mismatches, and `source_map` relations that cannot
@@ -186,9 +197,10 @@ Tests are organized by stable semantic boundary:
 * `test/raise/` verifies graph extraction, recursive SCF lowering, canonical
   per-partition memory frontiers, zero-trip and descending loops, nested
   selection/repeat structure, index-domain carry narrowing, transactional
-  rollback, fixed-width graph parallel transfer, fail-closed diagnostics for
-  unselected parallel residue, pointer capability transport, and effects
-  without completion events.
+  rollback, fixed-width graph parallel transfer, one-shot and looped stream
+  boundary publication, fail-closed diagnostics for unselected parallel
+  residue, pointer capability transport, and effects without completion
+  events.
 * `test/dfg/` verifies the strict native finalized-graph gate independently
   of the simulator.
 * `test/simulator/` verifies retirement-time execution, value and stream

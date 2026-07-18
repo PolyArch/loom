@@ -275,10 +275,15 @@ each rule lands in IR.
    module, and replaces the live module only on success. A public pass failure
    therefore leaves temporary candidates and never exposes a partial
    canonical graph. Current publication supports nested `scf.if` completion
-   propagation. Stream endpoint conversion is not yet implemented, so a
-   candidate with stream bindings or `dataflow.channel.send` / `receive`
-   fails before publication. Unselected or non-fixed graph-owned
-   `scf.parallel` and `scf.forall` forms also fail closed.
+   propagation. Stream channel segments become payload-typed graph stream
+   ports plus launch-site channel bindings; receive/send sites rendezvous with
+   the recursively lowered execution frontier and are removed. Input
+   `source_map` attributes are preserved exactly, and channel handles never
+   enter the canonical graph body. A static endpoint site may produce a
+   dynamic sequence through sequential structured control. Multiple or
+   parallel sites on one binding require a pre-materialized deterministic
+   merge. Unselected or non-fixed graph-owned `scf.parallel` and `scf.forall`
+   forms also fail closed.
 7. `dataflow.thread` and `dataflow.graph` definitions are both
    `IsolatedFromAbove`. No operation inside either definition's body
    may directly use an SSA value defined in the surrounding scope.
@@ -2487,11 +2492,11 @@ contract:
   default mapping from a
   `dataflow.partition_domain @D` point to any `fabric.pe` /
   `fabric.mem` instance.
-* Channel routing or simulation. The temporary `loom.spatial_region` contract
-  preserves typed stream input/output bindings and `source_map`, but current
-  graph publication rejects such candidates until endpoint conversion is
-  implemented. It does not invent routing, endpoint creation, or a parallel
-  channel mode.
+* Channel routing or thread-endpoint simulation. Graph publication preserves
+  typed stream input/output bindings and `source_map` while mechanically
+  converting region-local endpoints to the canonical graph stream network.
+  It does not invent routing, endpoint creation, a parallel channel mode, or a
+  deterministic merge for ambiguous multi-site bindings.
 
 ## 11. References
 

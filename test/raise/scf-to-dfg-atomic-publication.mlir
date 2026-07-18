@@ -2,7 +2,7 @@
 // RUN: split-file %s %t.dir
 // RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/success.mlir | FileCheck %s --check-prefix=SUCCESS
 // RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/failure.mlir 2>&1 | FileCheck %s --check-prefix=FAILURE --implicit-check-not=loom.spatial_region --implicit-check-not="dataflow.graph private" --implicit-check-not=dataflow.graph.launch
-// RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/channel.mlir 2>&1 | FileCheck %s --check-prefix=CHANNEL
+// RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/channel.mlir | FileCheck %s --check-prefix=CHANNEL
 
 // SUCCESS-LABEL: dataflow.thread private @reduction
 // SUCCESS: dataflow.graph.launch @g_reduction_0
@@ -24,12 +24,14 @@
 // FAILURE: memref.store
 // FAILURE: dataflow.thread.yield
 
-// CHANNEL: operation 'dataflow.channel.send' is not a registered canonical Dataflow actor or a supported graph-lowering operation
 // CHANNEL-LABEL: dataflow.thread private @channel_sender
-// CHANNEL: dataflow.channel.send
+// CHANNEL: dataflow.graph.launch @g_channel_sender_0
+// CHANNEL-LABEL: dataflow.graph private @g_channel_sender_0
+// CHANNEL-SAME: -> i32
+// CHANNEL: dataflow.sync
+// CHANNEL-NOT: dataflow.channel.send
 // CHANNEL-NOT: loom.spatial_region
-// CHANNEL-NOT: dataflow.graph private
-// CHANNEL-NOT: dataflow.graph.launch
+// CHANNEL: dataflow.graph.return values() streams(%{{.*}} : i32)
 
 //--- success.mlir
 dataflow.thread private @reduction(%buffer: memref<?xi32>, %count: index)
@@ -66,6 +68,14 @@ dataflow.thread private @parallel_candidate(%source: memref<?xi32>,
 //--- channel.mlir
 dataflow.thread private @channel_sender(
     %channel: !dataflow.channel<i32>, %message: i32) ctrl (%start: none) {
-  dataflow.channel.send %channel, %message : !dataflow.channel<i32>
+  "loom.spatial_region"(%message, %channel)
+      <{operandSegmentSizes = array<i32: 1, 0, 0, 1>,
+        resultSegmentSizes = array<i32: 0, 0>}> ({
+    ^bb0(%payload: i32, %output: !dataflow.channel<i32>):
+      dataflow.channel.send %output, %payload : !dataflow.channel<i32>
+      "loom.spatial_yield"()
+          <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+  }) {graph_name = "g_channel_sender_0", source_maps = []} :
+      (i32, !dataflow.channel<i32>) -> ()
   dataflow.thread.yield
 }

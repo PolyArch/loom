@@ -403,6 +403,14 @@ private:
                         [&](mlir::Value value) { return isExactOne(value); });
   }
 
+  bool isGraphStreamInput(mlir::Value value) {
+    auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
+    return argument && argument.getOwner() == &graph.getBody().front() &&
+           argument.getArgNumber() != 0 &&
+           graph.getInputPortKind(argument.getArgNumber() - 1) ==
+               dataflow::GraphPortKind::Stream;
+  }
+
   std::optional<uint64_t> getKnownUnsigned(mlir::Value value) {
     if (auto constant = value.getDefiningOp<dataflow::ConstantOp>()) {
       auto integer = llvm::dyn_cast<mlir::IntegerAttr>(constant.getConstValue());
@@ -585,6 +593,19 @@ private:
     mlir::Operation *def = result ? result.getOwner() : nullptr;
     if (!def)
       return false;
+    if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def)) {
+      bool hasAlignedInput = false;
+      for (mlir::Value input : sync.getInputs()) {
+        llvm::DenseSet<mlir::Value> inputVisited = visited;
+        if (isAligned(input, phase, assumption, truePhaseOnly, inputVisited)) {
+          hasAlignedInput = true;
+          continue;
+        }
+        if (!isGraphStreamInput(input))
+          return false;
+      }
+      return hasAlignedInput;
+    }
     if (auto stream = llvm::dyn_cast<dataflow::StreamOp>(def))
       return truePhaseOnly && value == stream.getIv() &&
              phase == stream.getPhase();
@@ -772,8 +793,18 @@ private:
       return false;
     if (auto constant = llvm::dyn_cast<dataflow::ConstantOp>(def))
       return isExactOne(constant.getCtrl());
-    if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def))
-      return allOperandsExact(sync);
+    if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def)) {
+      bool hasExactInput = false;
+      for (mlir::Value input : sync.getInputs()) {
+        if (isExactOne(input)) {
+          hasExactInput = true;
+          continue;
+        }
+        if (!isGraphStreamInput(input))
+          return false;
+      }
+      return hasExactInput;
+    }
     if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(def)) {
       if (!isExactOne(mux.getSel()))
         return false;
