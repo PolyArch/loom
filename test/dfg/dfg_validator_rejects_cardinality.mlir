@@ -43,32 +43,31 @@ module {
   }
 }
 
-// A stream path transformed before rendezvous remains zero-or-more. It does
-// not qualify for the narrow direct-input receive rendezvous rule.
+// A direct stream synchronized only with scalar data is not execution-bounded.
 //--- value.mlir
 module {
   dataflow.graph private @stream_to_value(
-      %start: none, %input: i32, %phase: i1) -> i32
-      attributes {input_segments = array<i32: 0, 2, 0>,
+      %start: none, %scalar: i32, %input: i32) -> i32
+      attributes {input_segments = array<i32: 1, 1, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
-    %unbounded = dataflow.invariant %phase, %input : i32
-    %published:2 = dataflow.sync %start, %unbounded
-        : (none, i32) -> (none, i32)
+    %published:2 = dataflow.sync %scalar, %input
+        : (i32, i32) -> (i32, i32)
+    %complete = dataflow.sync %start : (none) -> none
     dataflow.graph.return values(%published#1 : i32) streams() memories()
-        complete(%published#0 : none)
+        complete(%complete : none)
   }
 }
 
-// A single observed payload cannot commit an entire zero-or-more stream.
+// Multiple direct stream inputs do not form one receive or one committed
+// output stream.
 //--- stream.mlir
 module {
   dataflow.graph private @partial_stream_commit(
-      %start: none, %input: i32, %phase: i1) -> i32
+      %start: none, %input: i32, %other: i32) -> i32
       attributes {input_segments = array<i32: 0, 2, 0>,
                   result_segments = array<i32: 0, 1, 0>} {
-    %unbounded = dataflow.invariant %phase, %input : i32
-    %published:2 = dataflow.sync %start, %unbounded
-        : (none, i32) -> (none, i32)
+    %published:3 = dataflow.sync %start, %input, %other
+        : (none, i32, i32) -> (none, i32, i32)
     dataflow.graph.return values() streams(%published#1 : i32) memories()
         complete(%published#0 : none)
   }
@@ -78,12 +77,11 @@ module {
 //--- completion.mlir
 module {
   dataflow.graph private @stream_driven_completion(
-      %start: none, %input: none, %phase: i1) -> ()
+      %start: none, %input: none, %other: none) -> ()
       attributes {input_segments = array<i32: 0, 2, 0>,
                   result_segments = array<i32: 0, 0, 0>} {
-    %unbounded = dataflow.invariant %phase, %input : none
-    %published:2 = dataflow.sync %start, %unbounded
-        : (none, none) -> (none, none)
+    %published:3 = dataflow.sync %start, %input, %other
+        : (none, none, none) -> (none, none, none)
     dataflow.graph.return values() streams() memories()
         complete(%published#0 : none)
   }
