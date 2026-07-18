@@ -76,8 +76,8 @@ dataflow::classifyCanonicalDataflowActor(Operation *op) {
     return std::nullopt;
   if (llvm::isa<LoadOp, StoreOp>(op))
     return CanonicalDataflowActorKind::Memory;
-  if (llvm::isa<StreamOp, CarryOp, InvariantOp, GateOp, ParallelizeOp,
-                SerializeOp, ConstantOp, SyncOp, MuxOp, DemuxOp>(op))
+  if (llvm::isa<StreamOp, CarryOp, InvariantOp, GateOp, ParallelizeOp, PackOp,
+                UnpackOp, SerializeOp, ConstantOp, SyncOp, MuxOp, DemuxOp>(op))
     return CanonicalDataflowActorKind::Control;
   return CanonicalDataflowActorKind::Compute;
 }

@@ -1326,6 +1326,8 @@ struct LowerForToGraphPass
       }
 
       auto getThreadArgAttrs = [&](::mlir::Value value) {
+        if (!value)
+          return ::mlir::DictionaryAttr{};
         auto argument = ::llvm::dyn_cast<::mlir::BlockArgument>(value);
         if (!argument || argument.getOwner() != &threadEntry ||
             argument.getArgNumber() >= thread.getFunctionType().getNumInputs())

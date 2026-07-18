@@ -5,6 +5,7 @@
 // RUN: loom %t.dir/thread.mlir | loom | FileCheck %s --check-prefix=THREAD-ROUNDTRIP
 // RUN: loom %t.dir/thread.mlir --emit-bytecode | loom | FileCheck %s --check-prefix=THREAD-ROUNDTRIP
 // RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/same-root-cast.mlir | FileCheck %s --check-prefix=SAME-ROOT
+// RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/unknown-root.mlir | FileCheck %s --check-prefix=UNKNOWN-ROOT
 
 //--- function.mlir
 module {
@@ -81,3 +82,29 @@ module {
 // SAME-ROOT-LABEL: dataflow.graph private @g_same_root_cast_0
 // SAME-ROOT: %[[STORE_DONE:.*]] = dataflow.store
 // SAME-ROOT: %{{.*}}, %{{.*}} = dataflow.load {{.*}} %[[STORE_DONE]]
+
+//--- unknown-root.mlir
+module {
+  dataflow.thread private @unknown_root(
+      %direct: memref<?xi32> {llvm.noalias, test.arg = "direct"},
+      %other: memref<?xi32>, %limit: index, %seed: i32)
+      ctrl (%ctrl: none) {
+    %unknown = builtin.unrealized_conversion_cast %direct, %other
+        : memref<?xi32>, memref<?xi32> to memref<?xi32>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %result = scf.for %i = %c0 to %limit step %c1
+        iter_args(%value = %seed) -> (i32) {
+      memref.store %value, %direct[%i] : memref<?xi32>
+      %loaded = memref.load %unknown[%i] : memref<?xi32>
+      scf.yield %loaded : i32
+    }
+    dataflow.thread.yield
+  }
+}
+
+// UNKNOWN-ROOT-LABEL: dataflow.graph private @g_unknown_root_0(
+// UNKNOWN-ROOT-SAME: memref<?xi32> {test.arg = "direct"}
+// UNKNOWN-ROOT-NOT: llvm.noalias
+// UNKNOWN-ROOT: %[[UNKNOWN_STORE_DONE:.*]] = dataflow.store
+// UNKNOWN-ROOT: %{{.*}}, %{{.*}} = dataflow.load {{.*}} %[[UNKNOWN_STORE_DONE]]

@@ -6,6 +6,7 @@
 // RUN: loom-dfg-sim %t.dir/registered-final.mlir --graph registered_final --output %t.registered.json
 // RUN: FileCheck %s --check-prefix=VALIDATOR-REGISTERED < %t.registered.json
 // RUN: not loom-dfg-sim %t.dir/unregistered-graph.mlir --graph unregistered_graph_actor --arg 0=1 --output %t.unregistered.json 2>&1 | FileCheck %s --check-prefix=VALIDATOR-REJECT
+// RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/masked-epilogues.mlir | FileCheck %s --check-prefix=MASKED-EPILOGUE
 
 //--- registered.mlir
 module {
@@ -70,3 +71,49 @@ module {
 }
 
 // THREAD-REJECT: error: loom-lower-for-to-graph: operation 'llvm.mlir.undef' is not a registered canonical Dataflow actor or a supported graph-lowering operation
+
+//--- masked-epilogues.mlir
+module {
+  dataflow.thread private @pack_epilogue(
+      %limit: index, %mask: i2, %seed0: i8, %seed1: i8,
+      %out: memref<?xi16>)
+      ctrl (%ctrl: none) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %lane0, %lane1 = scf.for %i = %c0 to %limit step %c1
+        iter_args(%value0 = %seed0, %value1 = %seed1) -> (i8, i8) {
+      scf.yield %value0, %value1 : i8, i8
+    }
+    %packed = dataflow.pack %lane0, %lane1 mask %mask {vec_size = 2 : i64}
+        : (i8, i8, i2) -> i16
+    memref.store %packed, %out[%c0] : memref<?xi16>
+    dataflow.thread.yield
+  }
+
+  dataflow.thread private @unpack_epilogue(
+      %limit: index, %mask: i2, %seed: i16, %out: memref<?xi8>)
+      ctrl (%ctrl: none) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %packed = scf.for %i = %c0 to %limit step %c1
+        iter_args(%value = %seed) -> (i16) {
+      scf.yield %value : i16
+    }
+    %lane0, %lane1 =
+      dataflow.unpack %packed, %mask {vec_size = 2 : i64}
+        : (i16, i2) -> (i8, i8)
+    memref.store %lane0, %out[%c0] : memref<?xi8>
+    dataflow.thread.yield
+  }
+}
+
+// MASKED-EPILOGUE-LABEL: dataflow.thread private @pack_epilogue
+// MASKED-EPILOGUE: dataflow.pack
+// MASKED-EPILOGUE-LABEL: dataflow.thread private @unpack_epilogue
+// MASKED-EPILOGUE: dataflow.unpack
+// MASKED-EPILOGUE-LABEL: dataflow.graph private @g_pack_epilogue_0
+// MASKED-EPILOGUE-NOT: dataflow.pack
+// MASKED-EPILOGUE: dataflow.graph.return
+// MASKED-EPILOGUE-LABEL: dataflow.graph private @g_unpack_epilogue_0
+// MASKED-EPILOGUE-NOT: dataflow.unpack
+// MASKED-EPILOGUE: dataflow.graph.return
