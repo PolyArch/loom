@@ -74,10 +74,14 @@ the production contract.
   input binding preserves its `source_map`. The recursive graph owner
   rendezvous each receive/send with its structured execution frontier, removes
   the endpoint, and erases every transient channel argument before
-  verification. One static endpoint site may represent a dynamic sequence
-  inside sequential structured control. Multiple or parallel sites on one
-  binding require a pre-materialized deterministic merge and otherwise fail
-  atomically.
+  verification. A lowering-only schedule tree flattens sequential sites and
+  pairs equal-width mutually exclusive paths within one fixed dynamic scope.
+  A recurrence selector routes graph stream inputs to ordered receive
+  positions and muxes ordered send positions back to one graph stream; branch
+  selectors provide the nested demux/mux choices. Enclosing loop execution
+  repeatedly activates that schedule, and local selector close/reset joins
+  the recursive execution frontier. Parallel endpoint sites remain ambiguous
+  and fail atomically without deriving an order from traversal.
 * The graph `FunctionType` contains only application payloads; normalized
   `input_segments` and `result_segments` record value, stream, and memory
   kinds.

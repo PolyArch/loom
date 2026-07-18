@@ -279,11 +279,16 @@ each rule lands in IR.
    ports plus launch-site channel bindings; receive/send sites rendezvous with
    the recursively lowered execution frontier and are removed. Input
    `source_map` attributes are preserved exactly, and channel handles never
-   enter the canonical graph body. A static endpoint site may produce a
-   dynamic sequence through sequential structured control. Multiple or
-   parallel sites on one binding require a pre-materialized deterministic
-   merge. Unselected or non-fixed graph-owned `scf.parallel` and `scf.forall`
-   forms also fail closed.
+   enter the canonical graph body. One binding denotes one ordered dynamic
+   event sequence. A fixed structured scope may contain multiple sequential
+   sites and equal-width mutually exclusive paths: lowering emits an explicit
+   fixed selector stream, demuxes each input position through the structured
+   branch selectors, and muxes output positions in source order. Enclosing
+   loops repeatedly activate the same schedule, so one or several static body
+   sites may each fire dynamically. Endpoint sites nested under
+   `scf.parallel` or `scf.forall` have no inferred traversal order and fail
+   before publication. Unselected or non-fixed graph-owned parallel forms
+   also fail closed.
 7. `dataflow.thread` and `dataflow.graph` definitions are both
    `IsolatedFromAbove`. No operation inside either definition's body
    may directly use an SSA value defined in the surrounding scope.
@@ -2504,7 +2509,7 @@ contract:
   typed stream input/output bindings and `source_map` while mechanically
   converting region-local endpoints to the canonical graph stream network.
   It does not invent routing, endpoint creation, a parallel channel mode, or a
-  deterministic merge for ambiguous multi-site bindings.
+  traversal order for ambiguous parallel endpoint sites.
 
 ## 11. References
 
