@@ -473,16 +473,44 @@ void malformedStoredPreimagesAreRejected() {
   const CanonicalSemanticBytes bytes = semantic({0x53});
   const ArtifactIdentity identity = finalizeArtifactIdentity(testSchema, bytes);
   const std::string path = objectPath(directory.path(), identity);
+  const std::vector<std::uint8_t> valid = expectedPreimage(testSchema, bytes);
+  constexpr std::size_t identityDomainSize =
+      sizeof("loom.artifact.identity.v1\0") - 1;
+  constexpr std::size_t schemaLengthSize = 4;
+  constexpr std::size_t schemaVersionSize = 8;
+  constexpr std::size_t semanticLengthSize = 8;
+  const std::size_t semanticLengthOffset =
+      identityDomainSize + schemaLengthSize + testSchema.identity.size() +
+      schemaVersionSize;
 
-  writeFile(__func__, path, std::vector<std::uint8_t>{'b', 'a', 'd'});
-  expectErrorContains(__func__, store.get(testSchema, identity),
-                      "artifact_store_corruption");
+  std::vector<std::uint8_t> truncatedU32(
+      valid.begin(), valid.begin() + identityDomainSize + 3);
+  std::vector<std::uint8_t> truncatedU64(valid.begin(),
+                                         valid.begin() + semanticLengthOffset +
+                                             semanticLengthSize - 1);
+  std::vector<std::uint8_t> oversizedSchemaLength = valid;
+  std::fill_n(oversizedSchemaLength.begin() + identityDomainSize,
+              schemaLengthSize, 0xff);
+  std::vector<std::uint8_t> oversizedSemanticLength = valid;
+  std::fill_n(oversizedSemanticLength.begin() + semanticLengthOffset,
+              semanticLengthSize, 0xff);
+  std::vector<std::uint8_t> truncatedSemanticBytes = valid;
+  truncatedSemanticBytes.pop_back();
 
-  std::vector<std::uint8_t> truncated = expectedPreimage(testSchema, bytes);
-  truncated.pop_back();
-  writeFile(__func__, path, truncated);
-  expectErrorContains(__func__, store.get(testSchema, identity),
-                      "artifact_store_corruption");
+  std::vector<std::vector<std::uint8_t>> malformed = {
+      {'b', 'a', 'd'},
+      std::move(truncatedU32),
+      std::move(truncatedU64),
+      std::move(oversizedSchemaLength),
+      std::move(oversizedSemanticLength),
+      std::move(truncatedSemanticBytes),
+  };
+
+  for (const std::vector<std::uint8_t> &preimage : malformed) {
+    writeFile(__func__, path, preimage);
+    expectErrorContains(__func__, store.get(testSchema, identity),
+                        "artifact_store_corruption");
+  }
 }
 
 void wrongKeyValidPreimageIsRejected() {

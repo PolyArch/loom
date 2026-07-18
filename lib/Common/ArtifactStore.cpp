@@ -19,9 +19,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <fcntl.h>
-#include <memory>
 #include <string>
-#include <sys/stat.h>
 #include <system_error>
 #include <unistd.h>
 #include <vector>
@@ -31,13 +29,7 @@ namespace {
 
 struct OpenedArtifactObject {
   llvm::sys::fs::file_status status;
-  std::unique_ptr<llvm::MemoryBuffer> contents;
-
-  llvm::ArrayRef<std::uint8_t> preimage() const {
-    const llvm::StringRef buffer = contents->getBuffer();
-    return llvm::ArrayRef<std::uint8_t>(
-        reinterpret_cast<const std::uint8_t *>(buffer.data()), buffer.size());
-  }
+  std::vector<std::uint8_t> preimage;
 };
 
 llvm::Error storeError(llvm::StringRef code, const llvm::Twine &detail) {
@@ -77,13 +69,16 @@ readOpenedObject(int file, llvm::StringRef description,
     return storeError("artifact_store_io", llvm::Twine("unable to read ") +
                                                description + ": " +
                                                error.message());
-  return OpenedArtifactObject{*status, std::move(*buffer)};
+  const llvm::StringRef contents = (*buffer)->getBuffer();
+  return OpenedArtifactObject{
+      *status,
+      std::vector<std::uint8_t>(contents.bytes_begin(), contents.bytes_end())};
 }
 
 llvm::Expected<detail::ParsedArtifactIdentityPreimage> validateStoredObject(
     const OpenedArtifactObject &object, llvm::StringRef description,
     const ArtifactIdentity &expectedIdentity, llvm::StringRef objectErrorCode) {
-  auto parsed = detail::parseArtifactIdentityPreimage(object.preimage());
+  auto parsed = detail::parseArtifactIdentityPreimage(object.preimage);
   if (!parsed)
     return storeError(objectErrorCode,
                       llvm::Twine(description) +
@@ -91,41 +86,61 @@ llvm::Expected<detail::ParsedArtifactIdentityPreimage> validateStoredObject(
                           llvm::toString(parsed.takeError()));
 
   const ArtifactIdentity actualIdentity =
-      detail::finalizeArtifactIdentityPreimage(object.preimage());
+      detail::finalizeArtifactIdentityPreimage(object.preimage);
   if (actualIdentity != expectedIdentity)
     return storeError(objectErrorCode, llvm::Twine(description) +
                                            " does not match its derived key");
   return *parsed;
 }
 
+llvm::Error closeFile(int &file, llvm::StringRef description) {
+  if (std::error_code error = llvm::sys::fs::closeFile(file))
+    return storeError("artifact_store_io", llvm::Twine("unable to close ") +
+                                               description + ": " +
+                                               error.message());
+  return llvm::Error::success();
+}
+
 llvm::Expected<int> openStoredObject(int directory,
                                      llvm::StringRef objectName) {
   const std::string name = objectName.str();
+  int handle;
+  do {
+    handle = ::openat(directory, name.c_str(), O_PATH | O_CLOEXEC | O_NOFOLLOW);
+  } while (handle == -1 && errno == EINTR);
+  if (handle == -1) {
+    if (errno == ENOENT)
+      return storeError("artifact_store_missing", "stored object is missing");
+    return storeErrno("artifact_store_io",
+                      "unable to open stored object handle");
+  }
+  llvm::scope_exit closeHandle([&] {
+    if (handle != -1)
+      llvm::consumeError(closeFile(handle, "stored object handle"));
+  });
+
+  auto status =
+      regularFileStatus(handle, "artifact_store_corruption", "stored object");
+  if (!status)
+    return status.takeError();
+
+  const std::string handlePath = "/proc/self/fd/" + std::to_string(handle);
   int file;
   do {
-    file = ::openat(directory, name.c_str(),
-                    O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    file = ::open(handlePath.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
   } while (file == -1 && errno == EINTR);
-  if (file == -1) {
-    const int openError = errno;
-    struct stat status;
-    int statusResult;
-    do {
-      statusResult =
-          ::fstatat(directory, name.c_str(), &status, AT_SYMLINK_NOFOLLOW);
-    } while (statusResult == -1 && errno == EINTR);
+  if (file == -1)
+    return storeErrno("artifact_store_io",
+                      "unable to open stored object for reading");
+  llvm::scope_exit closeFileOnFailure([&] {
+    if (file != -1)
+      llvm::consumeError(closeFile(file, "stored object"));
+  });
 
-    if (statusResult == 0 && !S_ISREG(status.st_mode))
-      return storeError("artifact_store_corruption",
-                        "stored object is not a regular file");
-    if (statusResult == -1 && errno == ENOENT)
-      return storeError("artifact_store_missing", "stored object is missing");
-    if (statusResult == -1)
-      return storeErrno("artifact_store_io",
-                        "unable to inspect stored object after open failure");
-    errno = openError;
-    return storeErrno("artifact_store_io", "unable to open stored object");
-  }
+  if (llvm::Error error = closeFile(handle, "stored object handle"))
+    return std::move(error);
+  closeHandle.release();
+  closeFileOnFailure.release();
   return file;
 }
 
@@ -150,14 +165,6 @@ llvm::Error syncFile(int file, llvm::StringRef description) {
   if (result == -1)
     return storeErrno("artifact_store_io",
                       llvm::Twine("unable to sync ") + description);
-  return llvm::Error::success();
-}
-
-llvm::Error closeFile(int &file, llvm::StringRef description) {
-  if (std::error_code error = llvm::sys::fs::closeFile(file))
-    return storeError("artifact_store_io", llvm::Twine("unable to close ") +
-                                               description + ": " +
-                                               error.message());
   return llvm::Error::success();
 }
 
@@ -239,7 +246,7 @@ ArtifactStore::put(const ArtifactSchemaDescriptor &schema,
       *temporaryObject, "temporary object", identity, "artifact_store_io");
   if (!parsedTemporary)
     return parsedTemporary.takeError();
-  if (!temporaryObject->preimage().equals(preimage))
+  if (!llvm::ArrayRef<std::uint8_t>(temporaryObject->preimage).equals(preimage))
     return storeError("artifact_identity_collision",
                       "different identity preimages share one digest");
 
@@ -284,7 +291,8 @@ ArtifactStore::put(const ArtifactSchemaDescriptor &schema,
                              "artifact_store_corruption");
     if (!parsedExisting)
       return parsedExisting.takeError();
-    if (!existingObject->preimage().equals(preimage))
+    if (!llvm::ArrayRef<std::uint8_t>(existingObject->preimage)
+             .equals(preimage))
       return storeError("artifact_identity_collision",
                         "different identity preimages share one digest");
     if (llvm::Error error = closeFile(existingFile, "existing object"))
