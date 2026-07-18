@@ -61,6 +61,18 @@ static_assert(!canConstructPnrProblemInputs<
 static_assert(!canConstructPnrProblemInputs<
               const DataflowProgramView &, const ValidatedTechMapping &,
               const FabricHardwareView &, ResolvedPnrConfigView &&>);
+static_assert(!canConstructPnrProblemInputs<
+              const DataflowProgramView &&, const ValidatedTechMapping &,
+              const FabricHardwareView &, const ResolvedPnrConfigView &>);
+static_assert(!canConstructPnrProblemInputs<
+              const DataflowProgramView &, const ValidatedTechMapping &&,
+              const FabricHardwareView &, const ResolvedPnrConfigView &>);
+static_assert(!canConstructPnrProblemInputs<
+              const DataflowProgramView &, const ValidatedTechMapping &,
+              const FabricHardwareView &&, const ResolvedPnrConfigView &>);
+static_assert(!canConstructPnrProblemInputs<
+              const DataflowProgramView &, const ValidatedTechMapping &,
+              const FabricHardwareView &, const ResolvedPnrConfigView &&>);
 static_assert(
     !canConstructPnrProblemInputs<
         OwningInputProxy<DataflowProgramView> &&, const ValidatedTechMapping &,

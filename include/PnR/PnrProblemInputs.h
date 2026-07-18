@@ -28,17 +28,24 @@ struct MappingConstraintSetInput {
 struct PnrProblemInputs {
   template <
       typename Dataflow, typename TechMapping, typename Fabric, typename Config,
-      std::enable_if_t<std::is_same_v<std::remove_const_t<Dataflow>,
-                                      mapping::DataflowProgramView> &&
-                           std::is_same_v<std::remove_const_t<TechMapping>,
-                                          mapping::ValidatedTechMapping> &&
-                           std::is_same_v<std::remove_const_t<Fabric>,
-                                          mapping::FabricHardwareView> &&
-                           std::is_same_v<std::remove_const_t<Config>,
-                                          ResolvedPnrConfigView>,
-                       int> = 0>
-  PnrProblemInputs(Dataflow &dataflow, TechMapping &techMapping, Fabric &fabric,
-                   Config &config,
+      std::enable_if_t<
+          std::is_lvalue_reference_v<Dataflow &&> &&
+              std::is_same_v<
+                  std::remove_cv_t<std::remove_reference_t<Dataflow>>,
+                  mapping::DataflowProgramView> &&
+              std::is_lvalue_reference_v<TechMapping &&> &&
+              std::is_same_v<
+                  std::remove_cv_t<std::remove_reference_t<TechMapping>>,
+                  mapping::ValidatedTechMapping> &&
+              std::is_lvalue_reference_v<Fabric &&> &&
+              std::is_same_v<std::remove_cv_t<std::remove_reference_t<Fabric>>,
+                             mapping::FabricHardwareView> &&
+              std::is_lvalue_reference_v<Config &&> &&
+              std::is_same_v<std::remove_cv_t<std::remove_reference_t<Config>>,
+                             ResolvedPnrConfigView>,
+          int> = 0>
+  PnrProblemInputs(Dataflow &&dataflow, TechMapping &&techMapping,
+                   Fabric &&fabric, Config &&config,
                    mapping::ArtifactIdentity resolvedConfigIdentity,
                    MappingConstraintSetInput constraints)
       : dataflow(dataflow), techMapping(techMapping), fabric(fabric),
