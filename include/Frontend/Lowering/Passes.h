@@ -12,18 +12,9 @@ class PassManager;
 namespace loom {
 namespace lowering {
 
-// Module-scope pass that walks every func.func and, for each top-level
-// scf.forall, emits a sibling dataflow.thread definition at module
-// scope plus a dataflow.thread.launch at the original site. The
-// forall body is moved into the thread def body and the
-// scf.forall.in_parallel terminator is replaced with
-// dataflow.thread.yield.
-//
-// Symbol naming: `t_<funcSym>_<seq>` where <seq> is the source-order
-// index of the forall in the function.
-//
-// Nested foralls are not yet handled; they are left in place with a
-// TODO marker.
+// Module-scope diagnostic pass that rejects implicit host scf.forall thread
+// promotion until a recognized Loom thread mapping and a faithfully
+// represented domain have been selected by the structured owner.
 std::unique_ptr<::mlir::Pass> createLowerForallToThreadPass();
 
 // Module-scope atomic publisher. It stages selected thread-owned structured
@@ -64,7 +55,6 @@ std::unique_ptr<::mlir::Pass> createLowerGraphConstantsPass();
 void registerLoweringPasses();
 
 // Append the SCF-to-DFG lowering pipeline to the given pass manager:
-//   loom-lower-forall-to-thread        (module-level)
 //   loom-lower-for-to-graph            (module-level)
 // The for-to-graph publisher internally owns canonicalization, known-library
 // expansion, graph memory/control lowering, constant promotion, and native

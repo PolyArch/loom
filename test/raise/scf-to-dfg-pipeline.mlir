@@ -1,12 +1,11 @@
 // RUN: loom-raise-opt --loom-lower-scf-to-dfg %s | FileCheck %s
 
-// The combined --loom-lower-scf-to-dfg pipeline runs forall-to-thread
-// and graph extraction in sequence. Parallel work is exposed through
-// a thread and graph. Host reductions remain in SCF until a real
-// accelerator-region promotion owns their execution semantics.
+// The production pipeline does not infer thread ownership for an unmapped
+// host forall. It may still lower already-owned dataflow.thread candidates.
 
 // CHECK-LABEL: func.func @vecadd_like
-// CHECK: dataflow.thread.launch @t_vecadd_like_0
+// CHECK: scf.forall
+// CHECK-NOT: dataflow.thread.launch @t_vecadd_like_0
 // CHECK-NOT: dataflow.thread.launch @t_vecadd_like_red
 func.func @vecadd_like(%a: memref<?xf32>, %b: memref<?xf32>, %n: index) -> f32 {
   scf.forall (%i) in (%n) {
@@ -57,11 +56,5 @@ func.func @nested_forall_reduction(%out: memref<?xi32>, %n: index) -> index {
   return %sum : index
 }
 
-// CHECK: dataflow.thread private @t_vecadd_like_0
-// CHECK-SAME: ctrl (%{{.*}}: none) iv (%{{.*}}: index)
-// CHECK: dataflow.graph.launch @g_t_vecadd_like_0_0
-// CHECK-LABEL: dataflow.graph private @g_t_vecadd_like_0_0
-// The graph.launch dependency is the enclosing thread's thread_ctrl
-// block argument; the lowered IR contains no ub.poison.
-// CHECK-NOT: ub.poison : none
+// CHECK-NOT: dataflow.thread private @t_vecadd_like_0
 // CHECK-NOT: _red_

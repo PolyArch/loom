@@ -452,7 +452,7 @@ private:
     auto plan = analyzeStreamBinding(channel, input);
     assert(::mlir::succeeded(plan) &&
            "stream plan preflight must agree with graph lowering");
-    if ((*plan)->schedule->kind == StreamScheduleNode::Kind::Endpoint)
+    if ((*plan)->schedule->kind == StreamScheduleNode::Kind::Endpoint && !input)
       return;
     auto loweringPlan = std::make_unique<StreamLoweringPlan>(
         (*plan)->scope, channel, input, boundaryIndex,
@@ -496,11 +496,13 @@ private:
         ::mlir::Value input = streamInputByChannel.lookup(plan->channel);
         assert(input && "stream input plan must reference a graph stream port");
         ::llvm::SmallVector<::mlir::Value, 4> routed;
-        if (materialization.endpoints.size() == 1)
-          routed.push_back(input);
-        else
+        if (materialization.endpoints.size() == 1) {
+          auto lanes = demux(materialization.selector, input, 2, plan->loc);
+          routed.push_back(lanes[1]);
+        } else {
           routed = demux(plan->selector, input,
                          materialization.endpoints.size(), plan->loc);
+        }
         for (auto [endpoint, payload] :
              ::llvm::zip_equal(materialization.endpoints, routed))
           routedStreamInputs.try_emplace(endpoint, payload);
@@ -863,6 +865,15 @@ private:
     return sync.getOutputs().front();
   }
 
+  ::mlir::Value programOrderControl(::mlir::Value execution,
+                                    const MemoryState &memory,
+                                    ::mlir::Location loc) {
+    ::llvm::SmallVector<::mlir::Value, 8> inputs{execution};
+    for (const MemoryFrontier &frontier : memory)
+      inputs.push_back(frontier.read);
+    return joinEvents(inputs, loc);
+  }
+
   void finalizeReturn(::dataflow::GraphReturnOp returnOp,
                       const RegionResult &result) {
     ::llvm::SmallVector<::mlir::Value, 8> candidates;
@@ -1023,11 +1034,13 @@ private:
           payload = streamInputByChannel.lookup(receive.getChannel());
         }
         assert(payload && "stream receive must use a published input binding");
+        ::mlir::Value control =
+            programOrderControl(execution, memory, receive.getLoc());
         setInsertionPoint(receive.getLoc());
         auto sync = ::dataflow::SyncOp::create(
             builder, receive.getLoc(),
             ::mlir::TypeRange{builder.getNoneType(), payload.getType()},
-            ::mlir::ValueRange{execution, payload});
+            ::mlir::ValueRange{control, payload});
         receive.getMessage().replaceAllUsesWith(sync.getOutputs()[1]);
         execution = sync.getOutputs()[0];
         receive.erase();
@@ -1037,12 +1050,14 @@ private:
         auto output = streamOutputByChannel.find(send.getChannel());
         assert(output != streamOutputByChannel.end() &&
                "stream send must use a published output binding");
+        ::mlir::Value control =
+            programOrderControl(execution, memory, send.getLoc());
         setInsertionPoint(send.getLoc());
         auto sync = ::dataflow::SyncOp::create(
             builder, send.getLoc(),
             ::mlir::TypeRange{builder.getNoneType(),
                               send.getMessage().getType()},
-            ::mlir::ValueRange{execution, send.getMessage()});
+            ::mlir::ValueRange{control, send.getMessage()});
         if (auto slot = streamOutputSlots.find(op);
             slot != streamOutputSlots.end()) {
           StreamOutputSlot target = slot->second;

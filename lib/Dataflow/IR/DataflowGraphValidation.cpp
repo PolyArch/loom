@@ -425,6 +425,9 @@ private:
 
   std::optional<uint64_t> getKnownUnsigned(mlir::Value value) {
     if (auto constant = value.getDefiningOp<dataflow::ConstantOp>()) {
+      if (auto boolean =
+              llvm::dyn_cast<mlir::BoolAttr>(constant.getConstValue()))
+        return boolean.getValue();
       auto integer =
           llvm::dyn_cast<mlir::IntegerAttr>(constant.getConstValue());
       if (integer && !integer.getValue().isNegative())
@@ -863,22 +866,15 @@ private:
         }
     if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def)) {
       bool hasAlignedInput = false;
-      bool hasAlignedActivation = false;
-      unsigned directStreamInputs = 0;
       for (mlir::Value input : sync.getInputs()) {
         llvm::DenseSet<mlir::Value> inputVisited = visited;
         if (isAligned(input, phase, assumption, truePhaseOnly, inputVisited)) {
           hasAlignedInput = true;
-          hasAlignedActivation |= llvm::isa<mlir::NoneType>(input.getType());
           continue;
         }
-        if (!isGraphStreamInput(input))
-          return false;
-        ++directStreamInputs;
+        return false;
       }
-      if (directStreamInputs == 0)
-        return hasAlignedInput;
-      return directStreamInputs == 1 && hasAlignedActivation;
+      return hasAlignedInput;
     }
     if (auto stream = llvm::dyn_cast<dataflow::StreamOp>(def))
       return truePhaseOnly && value == stream.getIv() &&
@@ -1062,21 +1058,8 @@ private:
       return false;
     if (auto constant = llvm::dyn_cast<dataflow::ConstantOp>(def))
       return isExactOne(constant.getCtrl());
-    if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def)) {
-      bool hasExactActivation = false;
-      unsigned directStreamInputs = 0;
-      for (mlir::Value input : sync.getInputs()) {
-        if (isExactOne(input)) {
-          hasExactActivation |= llvm::isa<mlir::NoneType>(input.getType());
-          continue;
-        }
-        if (!isGraphStreamInput(input))
-          return false;
-        ++directStreamInputs;
-      }
-      return directStreamInputs == 0 ||
-             (directStreamInputs == 1 && hasExactActivation);
-    }
+    if (llvm::isa<dataflow::SyncOp>(def))
+      return allOperandsExact(def);
     if (auto mux = llvm::dyn_cast<dataflow::MuxOp>(def)) {
       if (!isExactOne(mux.getSel()))
         return false;
@@ -1087,8 +1070,11 @@ private:
     }
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
       unsigned lane = result.getResultNumber();
-      if (auto selected = getKnownUnsigned(demux.getSel()))
+      if (auto selected = getKnownUnsigned(demux.getSel())) {
+        if (isGraphStreamInput(demux.getInput()))
+          return *selected == lane && isExactOne(demux.getSel());
         return *selected == lane && isExactOne(demux.getInput());
+      }
       if (isGraphStreamInput(demux.getInput())) {
         if (selectorVisitsEveryLaneOnce(demux.getSel(),
                                         demux.getOutputs().size()))

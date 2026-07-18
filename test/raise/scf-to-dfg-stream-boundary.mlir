@@ -36,6 +36,7 @@
 // CHECK-LABEL: dataflow.thread private @stream_producer
 // CHECK: dataflow.graph.launch @producer_graph
 // CHECK-SAME: stream_inputs()
+// CHECK-SAME: memories(%arg1)
 // CHECK-SAME: stream_outputs(%arg0)
 // CHECK-LABEL: dataflow.thread private @stream_consumer
 // CHECK: dataflow.graph.launch @consumer_graph
@@ -64,10 +65,11 @@
 // CHECK: dataflow.graph.launch @dependent_consumer_graph
 // CHECK-SAME: stream_inputs(%arg0 source_map #[[SOURCE_MAP]])
 // CHECK-LABEL: dataflow.graph private @producer_graph(
-// CHECK-SAME: %{{.*}}: none, %{{.*}}: i32) -> i32
-// CHECK-SAME: input_segments = array<i32: 1, 0, 0>
+// CHECK-SAME: %{{.*}}: none, %[[PRODUCER_PAYLOAD:[[:alnum:]_]+]]: i32, %{{.*}}: memref<1xi32>) -> i32
+// CHECK-SAME: input_segments = array<i32: 1, 0, 1>
 // CHECK-SAME: result_segments = array<i32: 0, 1, 0>
-// CHECK: dataflow.sync
+// CHECK: %[[PRODUCER_STORE_DONE:[[:alnum:]_]+]] = dataflow.store
+// CHECK: dataflow.sync %[[PRODUCER_STORE_DONE]], %[[PRODUCER_PAYLOAD]] : (none, i32) -> (none, i32)
 // CHECK-NOT: dataflow.channel
 // CHECK: dataflow.graph.return values() streams(%{{.*}} : i32)
 // CHECK-LABEL: dataflow.graph private @consumer_graph(
@@ -159,17 +161,22 @@
 
 module {
   dataflow.thread private @stream_producer(
-      %output: !dataflow.channel<i32>, %message: i32) ctrl (%ctrl: none) {
-    "loom.spatial_region"(%message, %output)
-        <{operandSegmentSizes = array<i32: 1, 0, 0, 1>,
+      %output: !dataflow.channel<i32>, %memory: memref<1xi32>, %message: i32)
+      ctrl (%ctrl: none) {
+    "loom.spatial_region"(%message, %memory, %output)
+        <{operandSegmentSizes = array<i32: 1, 0, 1, 1>,
           resultSegmentSizes = array<i32: 0, 0>}> ({
-      ^bb0(%payload: i32, %channel: !dataflow.channel<i32>):
+      ^bb0(%payload: i32, %target: memref<1xi32>,
+           %channel: !dataflow.channel<i32>):
+        %zero = arith.constant 0 : index
+        %stored = arith.constant 42 : i32
+        memref.store %stored, %target[%zero] : memref<1xi32>
         dataflow.channel.send %channel, %payload
             : !dataflow.channel<i32>
         "loom.spatial_yield"()
             <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
     }) {graph_name = "producer_graph", source_maps = []} :
-        (i32, !dataflow.channel<i32>) -> ()
+        (i32, memref<1xi32>, !dataflow.channel<i32>) -> ()
     dataflow.thread.yield
   }
 
@@ -374,8 +381,10 @@ module {
   func.func @bind_stream(
       %channel: !dataflow.channel<i32>, %message: i32,
       %memory: memref<1xi32>) {
-    %producer = dataflow.thread.launch @stream_producer(%channel, %message)
-        : (!dataflow.channel<i32>, i32) -> !dataflow.thread_token
+    %producer = dataflow.thread.launch
+        @stream_producer(%channel, %memory, %message)
+        : (!dataflow.channel<i32>, memref<1xi32>, i32)
+          -> !dataflow.thread_token
     %consumer = dataflow.thread.launch @stream_consumer(%channel, %memory)
         : (!dataflow.channel<i32>, memref<1xi32>)
           -> !dataflow.thread_token

@@ -1,18 +1,15 @@
 // Pipeline glue and pass-registry hooks for the SCF-to-DFG lowering
 // passes. The standard pipeline runs:
 //
-//     loom-lower-forall-to-thread       (module-level)
 //     loom-lower-for-to-graph           (module-level)
 //
 // `loom-lower-for-to-graph` owns the atomic publication transaction. It
 // stages structured candidates, runs graph finalization on a scratch module,
 // validates the native result, and publishes only the completed module.
 //
-// The forall-to-thread pass runs first so that the for-to-graph pass
-// sees scf.for ops already inside dataflow.thread bodies. The
-// The remaining lowering passes stay independently registered for focused
-// diagnostics and tests, but the standard pipeline does not rerun them after
-// publication.
+// Thread ownership must already be present in the Structured Program
+// Candidate. The independently registered forall pass only diagnoses raw
+// implicit promotion requests.
 
 #include "Frontend/Lowering/Passes.h"
 
@@ -30,7 +27,6 @@ void registerLowerKnownLibraryCallsPass();
 void registerLowerGraphMemoryPass();
 
 static void buildPipelineOnOpPassManager(::mlir::OpPassManager &pm) {
-  pm.addPass(createLowerForallToThreadPass());
   pm.addPass(createLowerForToGraphPass());
 }
 

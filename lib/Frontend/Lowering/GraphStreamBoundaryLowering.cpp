@@ -400,6 +400,13 @@ materializeStreamSchedule(const StreamScheduleNode &schedule,
   for (const ScheduledStreamEndpoint &endpoint : endpoints)
     result.endpoints.push_back(endpoint.endpoint);
 
+  if (schedule.kind == StreamScheduleNode::Kind::Endpoint) {
+    result.event = execution;
+    result.selector = scheduleConstant(execution, builder.getI1Type(), 1,
+                                       schedule.loc, builder, anchor);
+    return result;
+  }
+
   auto recurrenceType =
       ::mlir::IntegerType::get(builder.getContext(), ::loom::getIndexWidth());
   ::mlir::Value init = scheduleConstant(execution, recurrenceType, 0,

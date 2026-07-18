@@ -2,6 +2,7 @@
 // RUN: split-file %s %t.dir
 // RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/success.mlir | FileCheck %s --check-prefix=SUCCESS
 // RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/failure.mlir 2>&1 | FileCheck %s --check-prefix=FAILURE --implicit-check-not=loom.spatial_region --implicit-check-not="dataflow.graph private" --implicit-check-not=dataflow.graph.launch
+// RUN: not loom-raise-opt --loom-lower-scf-to-dfg --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/failure.mlir 2>&1 | FileCheck %s --check-prefix=FAILURE --implicit-check-not=loom.spatial_region --implicit-check-not="dataflow.graph private" --implicit-check-not=dataflow.graph.launch
 // RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/channel.mlir | FileCheck %s --check-prefix=CHANNEL
 // RUN: not loom-raise-opt --loom-lower-for-to-graph %t.dir/parallel-channel.mlir 2>&1 | FileCheck %s --check-prefix=PARALLEL-CHANNEL
 
@@ -16,6 +17,8 @@
 // SUCCESS: dataflow.graph.return
 
 // FAILURE: error: loom-lower-graph-memory: raw scf.forall requires a selected schedule and provenance before graph-region lowering
+// FAILURE-LABEL: func.func @unmapped_host
+// FAILURE: scf.forall
 // FAILURE-LABEL: dataflow.thread private @valid_candidate
 // FAILURE: %{{.*}} = arith.addi %{{.*}}, %{{.*}} : i32
 // FAILURE: dataflow.thread.yield
@@ -52,6 +55,14 @@ dataflow.thread private @reduction(%buffer: memref<?xi32>, %count: index)
 }
 
 //--- failure.mlir
+func.func @unmapped_host(%target: memref<?xi32>) {
+  %value = arith.constant 1 : i32
+  scf.forall (%index) in (4) {
+    memref.store %value, %target[%index] : memref<?xi32>
+  }
+  return
+}
+
 dataflow.thread private @valid_candidate(%value: i32) ctrl (%start: none) {
   %sum = arith.addi %value, %value : i32
   dataflow.thread.yield

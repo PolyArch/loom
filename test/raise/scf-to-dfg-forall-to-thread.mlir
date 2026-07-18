@@ -1,94 +1,26 @@
-// RUN: loom-raise-opt --loom-lower-forall-to-thread %s | FileCheck %s
+// RUN: not loom-raise-opt --loom-lower-forall-to-thread \
+// RUN:   --mlir-disable-threading --mlir-print-ir-after-failure \
+// RUN:   --mlir-print-ir-module-scope %s 2>&1 | FileCheck %s
 
-// Top-level scf.forall in a func.func body lowers to a sibling
-// dataflow.thread definition + a dataflow.thread.launch at the
-// original site. The forall's induction variable becomes a trailing
-// `iv` block argument on the thread; captured outside-defined values
-// (here %buf and %f0) flow as launch body operands.
-//
-// Two foralls in the same function get distinct sequential symbol
-// names: t_<func>_0 and t_<func>_1.
+// Thread promotion must not infer ownership for an unmapped forall. The
+// thread launch ABI cannot represent this offset, strided domain, so failure
+// must preserve the complete source domain rather than treating the upper
+// bound as a zero-based grid extent.
 
-// CHECK-LABEL: func.func @parallel_init
-// CHECK: %[[PARALLEL_TOKEN:.*]] = dataflow.thread.launch @t_parallel_init_0
-// CHECK-NEXT: dataflow.thread.wait %[[PARALLEL_TOKEN]] : !dataflow.thread_token
-// CHECK-NOT: scf.forall
-func.func @parallel_init(%buf: memref<?xf32>, %n: index) {
-    %f0 = arith.constant 0.0 : f32
-    scf.forall (%i) in (%n) {
-      memref.store %f0, %buf[%i] : memref<?xf32>
-    }
-    return
-}
+// CHECK: error: loom-lower-forall-to-thread: raw scf.forall has no recognized Loom thread mapping
+// CHECK-LABEL: func.func @offset_strided(
+// CHECK: scf.forall
+// CHECK-SAME: (%{{.*}}) = (%{{.*}}) to (%{{.*}}) step (%{{.*}})
+// CHECK-NOT: dataflow.thread.launch
+// CHECK-NOT: dataflow.thread private
 
-// CHECK-LABEL: func.func @two_foralls
-// CHECK: %[[FIRST_TOKEN:.*]] = dataflow.thread.launch @t_two_foralls_0
-// CHECK-NEXT: dataflow.thread.wait %[[FIRST_TOKEN]] : !dataflow.thread_token
-// CHECK: %[[SECOND_TOKEN:.*]] = dataflow.thread.launch @t_two_foralls_1
-// CHECK-NEXT: dataflow.thread.wait %[[SECOND_TOKEN]] : !dataflow.thread_token
-func.func @two_foralls(%a: memref<?xf32>, %b: memref<?xf32>, %n: index) {
-    %f0 = arith.constant 0.0 : f32
-    %f1 = arith.constant 1.0 : f32
-    scf.forall (%i) in (%n) {
-      memref.store %f0, %a[%i] : memref<?xf32>
-    }
-    scf.forall (%j) in (%n) {
-      memref.store %f1, %b[%j] : memref<?xf32>
-    }
-    return
-}
-
-// A guard around an effect-form forall should preserve the guard while still
-// exposing the forall body as a dataflow.thread. This is the shape emitted for
-// simple store loops that are protected by an `n > 0` check.
-// CHECK-LABEL: func.func @guarded_parallel_store
-// CHECK: scf.if
-// CHECK-NEXT: %[[GUARDED_TOKEN:.*]] = dataflow.thread.launch @t_guarded_parallel_store_0
-// CHECK-NEXT: dataflow.thread.wait %[[GUARDED_TOKEN]] : !dataflow.thread_token
-// CHECK-NEXT: }
-// CHECK-NOT: scf.forall
-func.func @guarded_parallel_store(%src: memref<?xf32>, %dst: memref<?xf32>,
-                                  %n: index, %cond: i1) {
-    scf.if %cond {
-      scf.forall (%i) in (%n) {
-        %v = memref.load %src[%i] : memref<?xf32>
-        memref.store %v, %dst[%i] : memref<?xf32>
-      }
-    }
-    return
-}
-
-// Captured payload metadata follows capture order rather than source argument
-// order. The grid bound metadata does not belong to the new ctrl or IV args.
-// CHECK-LABEL: func.func @payload_attrs(
-// CHECK-SAME: %[[LEFT:.*]]: memref<?xi32> {llvm.noalias, test.arg = "left"},
-// CHECK-SAME: %[[BIAS:.*]]: i32 {test.arg = "bias"},
-// CHECK-SAME: %[[RIGHT:.*]]: memref<?xi32> {llvm.noalias, test.arg = "right"},
-// CHECK-SAME: %[[COUNT:.*]]: index {test.arg = "count"})
-// CHECK: dataflow.thread.launch @t_payload_attrs_0(%[[RIGHT]], %[[BIAS]], %[[LEFT]]) grid(%[[COUNT]])
-func.func @payload_attrs(
-    %left: memref<?xi32> {llvm.noalias, test.arg = "left"},
-    %bias: i32 {test.arg = "bias"},
-    %right: memref<?xi32> {llvm.noalias, test.arg = "right"},
-    %count: index {test.arg = "count"}) {
-  scf.forall (%i) in (%count) {
-    %from_right = memref.load %right[%i] : memref<?xi32>
-    %sum = arith.addi %from_right, %bias : i32
-    memref.store %sum, %left[%i] : memref<?xi32>
+func.func @offset_strided(%buffer: memref<?xi32>) {
+  %lower = arith.constant 5 : index
+  %upper = arith.constant 9 : index
+  %step = arith.constant 2 : index
+  %value = arith.constant 7 : i32
+  scf.forall (%index) = (%lower) to (%upper) step (%step) {
+    memref.store %value, %buffer[%index] : memref<?xi32>
   }
   return
 }
-
-// All thread defs land at module scope after the func.func bodies.
-// Each thread carries the spec-mandated thread_ctrl + iv slots
-// (per spec section 5.4.1) on its entry block.
-// CHECK-DAG: dataflow.thread private @t_parallel_init_0(%{{.*}}) ctrl (%{{.*}}: none) iv (%{{.*}}: index)
-// CHECK-DAG: dataflow.thread private @t_two_foralls_0(%{{.*}}) ctrl (%{{.*}}: none) iv (%{{.*}}: index)
-// CHECK-DAG: dataflow.thread private @t_two_foralls_1(%{{.*}}) ctrl (%{{.*}}: none) iv (%{{.*}}: index)
-// CHECK-DAG: dataflow.thread private @t_guarded_parallel_store_0(%{{.*}}) ctrl (%{{.*}}: none) iv (%{{.*}}: index)
-// CHECK-LABEL: dataflow.thread private @t_payload_attrs_0(
-// CHECK-SAME: %{{.*}}: memref<?xi32> {llvm.noalias, test.arg = "right"},
-// CHECK-SAME: %{{.*}}: i32 {test.arg = "bias"},
-// CHECK-SAME: %{{.*}}: memref<?xi32> {llvm.noalias, test.arg = "left"})
-// CHECK-SAME: ctrl (%{{.*}}: none) iv (%{{.*}}: index)
-// CHECK-NOT: test.arg = "count"

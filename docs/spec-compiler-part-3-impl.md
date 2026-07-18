@@ -174,8 +174,8 @@ the production contract.
 * The gate statically requires exact-one value outputs and completion
   witnesses and a proven close/commit for stream outputs. A zero-or-more
   stream path does not become exact-one merely by passing through
-  `dataflow.sync`; the narrow exception is a direct graph stream input
-  rendezvous limited by an exact-one activation input.
+  `dataflow.sync`; every participating input must already satisfy the
+  exact-one contract.
 * The program-level portion is the single owner of channel topology. It
   rejects channel producers, escapes, missing or duplicate producer bindings,
   missing consumers, rank mismatches, and `source_map` relations that cannot

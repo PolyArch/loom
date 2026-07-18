@@ -5,15 +5,20 @@
 // RUN: not loom-lower %t.dir/filtered-value.mlir -o %t.dir/filtered-value.out.mlir 2>&1 | FileCheck %s --check-prefix=FILTERED-VALUE
 // RUN: not loom-lower %t.dir/stream.mlir -o %t.dir/stream.out.mlir 2>&1 | FileCheck %s --check-prefix=STREAM
 // RUN: not loom-lower %t.dir/completion.mlir -o %t.dir/completion.out.mlir 2>&1 | FileCheck %s --check-prefix=COMPLETION
+// RUN: not loom-lower %t.dir/direct-stream-rendezvous.mlir -o %t.dir/direct.out.mlir 2>&1 | FileCheck %s --check-prefix=DIRECT
+// RUN: not loom-dfg-sim %t.dir/direct-stream-rendezvous.mlir --graph direct_stream_rendezvous --arg 0=7 --arg 0=9 --output %t.dir/direct.json 2>&1 | FileCheck %s --check-prefix=DIRECT
 // RUN: test ! -e %t.dir/value.out.mlir
 // RUN: test ! -e %t.dir/filtered-value.out.mlir
 // RUN: test ! -e %t.dir/stream.out.mlir
 // RUN: test ! -e %t.dir/completion.out.mlir
+// RUN: test ! -e %t.dir/direct.out.mlir
+// RUN: test ! -e %t.dir/direct.json
 
 // VALUE: graph @stream_to_value value output #0 is not statically exact-one
 // FILTERED-VALUE: graph @filtered_stream_to_value value output #0 is not statically exact-one
 // STREAM: graph @partial_stream_commit stream output #0 has no statically proven close/commit
 // COMPLETION: graph @stream_driven_completion completion witness #0 is not statically one-shot
+// DIRECT: graph @direct_stream_rendezvous value output #0 is not statically exact-one
 
 // A loop selected by one branch has one close event only on that branch. The
 // final mux publishes that close or the one-shot bypass from the same outer
@@ -125,6 +130,21 @@ module {
     %published:3 = dataflow.sync %start, %input, %other
         : (none, none, none) -> (none, none, none)
     dataflow.graph.return values() streams() memories()
+        complete(%published#0 : none)
+  }
+}
+
+// An exact-one activation does not bound a direct stream input. Both the
+// publication gate and the simulator entry gate must reject the same graph.
+//--- direct-stream-rendezvous.mlir
+module {
+  dataflow.graph private @direct_stream_rendezvous(
+      %start: none, %input: i32) -> i32
+      attributes {input_segments = array<i32: 0, 1, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %published:2 = dataflow.sync %start, %input
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%published#1 : i32) streams() memories()
         complete(%published#0 : none)
   }
 }
