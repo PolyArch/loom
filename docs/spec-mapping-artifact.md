@@ -333,18 +333,37 @@ Every projection is non-authoritative, deletable, and deterministically
 rebuildable from exact finalized inputs. Cache keys bind all semantic
 inputs and the producing algorithm semantics.
 
-The implemented `freezeRealizationGraph` projection is the bounded
-Dataflow/TechMapping/Fabric structural input to later PnR construction. It
-rechecks the two exact input identities, consumes the immutable canonical
-compute-occurrence projection produced by Fabric validation, assigns dense
-native indices by persistent entity identity, records actor ownership, derives
-external multi-sink logical nets from canonical edges and exact boundary
-correspondence, and derives logical-memory-root service obligations from
-selected Memory Realizations. Its dense terminal table contains only selected
-FU or memory operation-template terminals needed by those logical nets. Graph
-boundary endpoints remain embedded typed terminal variants in logical-net
-sources and sinks. Graph memory import and export capability ports are not
-token terminals.
+The public PnR freeze entry points consume one `PnrProblemInputs` value. This
+ordinary non-artifact grouping borrows the exact Dataflow, validated
+TechMapping, Fabric, and `ResolvedPnrConfigView` values. It also carries the
+TechMapping artifact identity, the exact complete ResolvedConfig identity from
+which the config view was derived, and the MappingConstraintSet artifact
+identity with its required Dataflow, TechMapping, and Fabric binding
+identities. The grouping has no identity and is not a PnR request artifact.
+The config view has no independent artifact identity.
+
+The current C++ MappingConstraintSet input is only the already-confirmed
+artifact identity and exact `D/T/F` binding boundary. It does not define
+constraint clauses, target universes, canonical serialization, hot indices, or
+the complete frozen constraint projection.
+
+Shared preflight rejects `T.D != D.id`, `T.F != F.id`, and
+`K.D/T/F != D.id/T.id/F.id` with typed errors before either freeze performs
+capacity planning or allocates native arrays. Because every
+`ArtifactIdentity` is a fixed-width value, preflight does not apply empty,
+null, or sentinel identity checks.
+
+After that preflight, the implemented `freezeRealizationGraph` projection
+preserves the bounded Dataflow/TechMapping/Fabric structural behavior. It
+consumes the immutable canonical compute-occurrence projection produced by
+Fabric validation, assigns dense native indices by persistent entity identity,
+records actor ownership, derives external multi-sink logical nets from
+canonical edges and exact boundary correspondence, and derives
+logical-memory-root service obligations from selected Memory Realizations. Its
+dense terminal table contains only selected FU or memory operation-template
+terminals needed by those logical nets. Graph boundary endpoints remain
+embedded typed terminal variants in logical-net sources and sinks. Graph
+memory import and export capability ports are not token terminals.
 
 For each Compute Realization, the projection derives `ImplDomain` solely from
 exact selected-FU membership in the finalized occurrence table. Each
@@ -409,15 +428,15 @@ are not structurally required may leave otherwise valid endpoints or topology
 components disconnected; disconnected and unreachable topology is not a
 validation failure.
 
-The implemented `freezeRoutingGraph` projection consumes only that retained
-validated routing projection after rechecking the exact Fabric identity. It
-orders resources and endpoints by persistent typed identity, converts all
-indices and range boundaries through checked `PnrIndex` operations, and emits
-a directed CSR adjacency table. Each frozen arc records whether it is a bare
-point arc or a resource traversal, the traversal's resource index when
-present, and independent effective payload and tag capacities. Each capacity
-is the minimum of the source and target endpoint capacities in that field; tag
-capacity is never added to payload capacity.
+After the same five-input preflight, the implemented `freezeRoutingGraph`
+projection consumes only that retained validated routing projection. It orders
+resources and endpoints by persistent typed identity, converts all indices and
+range boundaries through checked `PnrIndex` operations, and emits a directed
+CSR adjacency table. Each frozen arc records whether it is a bare point arc or
+a resource traversal, the traversal's resource index when present, and
+independent effective payload and tag capacities. Each capacity is the minimum
+of the source and target endpoint capacities in that field; tag capacity is
+never added to payload capacity.
 
 The same freeze mechanically derives an incoming CSR from those forward arcs.
 Each incoming entry stores only its source vertex and dense forward-arc index;
@@ -488,10 +507,9 @@ identity, serialization, canonical byte encoding, or persistence form. Their
 equality is structural only. Neither contains a selected occurrence, selected
 endpoint, complete candidate domain, configuration, placement, route, tag,
 buffer, resource-time, or physical-memory decision.
-`freezeRealizationGraph` is the three-input bounded projection;
-`freezeRoutingGraph` consumes the exact Fabric identity retained by the
-validated Mapping value. They are not the complete four-input `FrozenModel`;
-`ConfigDomain` and the full `CandidateDomain` remain outside this boundary.
+Both are reached only through the exact five-input authority boundary. They are
+not the complete `FrozenModel`; config and constraint projections and the full
+`CandidateDomain` remain outside the implemented structural views.
 
 The structural subview intentionally retains canonical edge identities, dense
 terminal references, and deletable occurrence and endpoint-domain caches. It
@@ -566,7 +584,7 @@ This document does not define:
 * physical delta record schemas;
 * route-tree, resource-time, schedule, tag, buffer, memory, or boundary
   schemas;
-* the complete four-input `FrozenModel` and later physical PnR data layout;
+* the complete five-input `FrozenModel` and later physical PnR data layout;
 * `ConfigDomain`, the complete `CandidateDomain`, placement choice, endpoint
   selection, or route search;
 * Hardware Sharing Group registry syntax;

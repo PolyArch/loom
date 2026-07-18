@@ -445,14 +445,15 @@ Loom needs two simulation levels:
 
 TechMapping connects canonical software semantics to Fabric capability by
 recording complete Compute Realizations in the Mapping Artifact specified in
-`docs/spec-mapping-artifact.md`. PnR consumes that exact immutable predecessor
-and emits a Physical Mapping delta; its tool contract is specified in
-`docs/spec-pnr.md`. The delta records concrete resource bindings, routed
-external obligations, memory bindings, resource sharing, buffers, schedule
-slots, temporal tags, diagnostics, and metrics without restating or changing
-the predecessor Compute Realizations. Detailed mapping identity, placement,
-routing, schedule/buffer, memory, verification, visualization, and search
-contracts are specified by `docs/spec-mapping-identity.md`,
+`docs/spec-mapping-artifact.md`. PnR consumes that predecessor as `T` in the
+exact `D/T/F/C/K` authority boundary and emits a Physical Mapping delta; its
+tool contract is specified in `docs/spec-pnr.md`. The delta records concrete
+resource bindings, routed external obligations, memory bindings, resource
+sharing, buffers, schedule slots, temporal tags, diagnostics, and metrics
+without restating or changing the predecessor Compute Realizations. Detailed
+mapping identity, placement, routing, schedule/buffer, memory, verification,
+visualization, and search contracts are specified by
+`docs/spec-mapping-identity.md`,
 `docs/spec-mapping-placement.md`, `docs/spec-mapping-routing.md`,
 `docs/spec-mapping-schedule-buffer.md`, `docs/spec-mapping-memory.md`,
 `docs/spec-mapping-verification.md`,
