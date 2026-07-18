@@ -15,6 +15,16 @@
 // CHECK-LABEL: dataflow.thread private @loop_stream_consumer
 // CHECK: dataflow.graph.launch @loop_consumer_graph
 // CHECK-SAME: stream_inputs(%arg2 source_map #[[SOURCE_MAP]])
+// CHECK-LABEL: dataflow.thread private @sequential_stream_producer
+// CHECK: dataflow.graph.launch @sequential_producer_graph
+// CHECK-SAME: stream_outputs(%arg0)
+// CHECK-LABEL: dataflow.thread private @sequential_stream_consumer
+// CHECK: dataflow.graph.launch @sequential_consumer_graph
+// CHECK-SAME: stream_inputs(%arg0 source_map #[[SOURCE_MAP]])
+// CHECK-LABEL: dataflow.thread private @branch_stream_relay
+// CHECK: dataflow.graph.launch @branch_relay_graph
+// CHECK-SAME: stream_inputs(%arg0 source_map #[[SOURCE_MAP]])
+// CHECK-SAME: stream_outputs(%arg1)
 // CHECK-LABEL: dataflow.graph private @producer_graph(
 // CHECK-SAME: %{{.*}}: none, %{{.*}}: i32) -> i32
 // CHECK-SAME: input_segments = array<i32: 1, 0, 0>
@@ -49,6 +59,27 @@
 // CHECK: dataflow.store
 // CHECK-NOT: dataflow.channel
 // CHECK: dataflow.graph.return
+// CHECK-LABEL: dataflow.graph private @sequential_producer_graph(
+// CHECK-SAME: -> i32
+// CHECK: dataflow.stream
+// CHECK: arith.index_cast
+// CHECK: dataflow.mux
+// CHECK-NOT: dataflow.channel
+// CHECK: dataflow.graph.return values() streams(%{{.*}} : i32)
+// CHECK-LABEL: dataflow.graph private @sequential_consumer_graph(
+// CHECK-SAME: %{{.*}}: none, %{{.*}}: i32, %{{.*}}: memref<2xi32>)
+// CHECK: dataflow.stream
+// CHECK: dataflow.demux
+// CHECK: dataflow.store
+// CHECK: dataflow.store
+// CHECK-NOT: dataflow.channel
+// CHECK: dataflow.graph.return
+// CHECK-LABEL: dataflow.graph private @branch_relay_graph(
+// CHECK-SAME: -> i32
+// CHECK: dataflow.demux
+// CHECK: dataflow.mux
+// CHECK-NOT: dataflow.channel
+// CHECK: dataflow.graph.return values() streams(%{{.*}} : i32)
 // CHECK-NOT: loom.spatial_region
 
 module {
@@ -101,6 +132,8 @@ module {
           %message = memref.load %memory[%index] : memref<?xi32>
           dataflow.channel.send %channel, %message
               : !dataflow.channel<i32>
+          dataflow.channel.send %channel, %message
+              : !dataflow.channel<i32>
         }
         "loom.spatial_yield"()
             <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
@@ -120,9 +153,12 @@ module {
         %zero = arith.constant 0 : index
         %one = arith.constant 1 : index
         scf.for %index = %zero to %limit step %one {
-          %message = dataflow.channel.receive %channel
+          %first = dataflow.channel.receive %channel
               : !dataflow.channel<i32>
-          memref.store %message, %memory[%index] : memref<?xi32>
+          %second = dataflow.channel.receive %channel
+              : !dataflow.channel<i32>
+          memref.store %first, %memory[%index] : memref<?xi32>
+          memref.store %second, %memory[%index] : memref<?xi32>
         }
         "loom.spatial_yield"()
             <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
@@ -130,6 +166,77 @@ module {
       graph_name = "loop_consumer_graph",
       source_maps = [affine_map<() -> ()>]
     } : (index, !dataflow.channel<i32>, memref<?xi32>) -> ()
+    dataflow.thread.yield
+  }
+
+  dataflow.thread private @sequential_stream_producer(
+      %output: !dataflow.channel<i32>, %first: i32, %second: i32,
+      %third: i32) ctrl (%ctrl: none) {
+    "loom.spatial_region"(%first, %second, %third, %output)
+        <{operandSegmentSizes = array<i32: 3, 0, 0, 1>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%first_message: i32, %second_message: i32,
+           %third_message: i32, %channel: !dataflow.channel<i32>):
+        dataflow.channel.send %channel, %first_message
+            : !dataflow.channel<i32>
+        dataflow.channel.send %channel, %second_message
+            : !dataflow.channel<i32>
+        dataflow.channel.send %channel, %third_message
+            : !dataflow.channel<i32>
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "sequential_producer_graph", source_maps = []} :
+        (i32, i32, i32, !dataflow.channel<i32>) -> ()
+    dataflow.thread.yield
+  }
+
+  dataflow.thread private @sequential_stream_consumer(
+      %input: !dataflow.channel<i32>, %memory: memref<2xi32>)
+      ctrl (%ctrl: none) {
+    "loom.spatial_region"(%input, %memory)
+        <{operandSegmentSizes = array<i32: 0, 1, 1, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%channel: !dataflow.channel<i32>, %target: memref<2xi32>):
+        %first = dataflow.channel.receive %channel
+            : !dataflow.channel<i32>
+        %second = dataflow.channel.receive %channel
+            : !dataflow.channel<i32>
+        %zero = arith.constant 0 : index
+        %one = arith.constant 1 : index
+        memref.store %first, %target[%zero] : memref<2xi32>
+        memref.store %second, %target[%one] : memref<2xi32>
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {
+      graph_name = "sequential_consumer_graph",
+      source_maps = [affine_map<() -> ()>]
+    } : (!dataflow.channel<i32>, memref<2xi32>) -> ()
+    dataflow.thread.yield
+  }
+
+  dataflow.thread private @branch_stream_relay(
+      %input: !dataflow.channel<i32>, %output: !dataflow.channel<i32>,
+      %condition: i1) ctrl (%ctrl: none) {
+    "loom.spatial_region"(%condition, %input, %output)
+        <{operandSegmentSizes = array<i32: 1, 1, 0, 1>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%select: i1, %source: !dataflow.channel<i32>,
+           %sink: !dataflow.channel<i32>):
+        scf.if %select {
+          %on_true = dataflow.channel.receive %source
+              : !dataflow.channel<i32>
+          dataflow.channel.send %sink, %on_true : !dataflow.channel<i32>
+        } else {
+          %on_false = dataflow.channel.receive %source
+              : !dataflow.channel<i32>
+          dataflow.channel.send %sink, %on_false : !dataflow.channel<i32>
+        }
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {
+      graph_name = "branch_relay_graph",
+      source_maps = [affine_map<() -> ()>]
+    } : (i1, !dataflow.channel<i32>, !dataflow.channel<i32>) -> ()
     dataflow.thread.yield
   }
 

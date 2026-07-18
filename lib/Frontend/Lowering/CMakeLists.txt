@@ -1,5 +1,6 @@
 add_mlir_library(LoomFrontendLowering
   GraphRegionLowering.cpp
+  GraphStreamBoundaryLowering.cpp
   GraphIndexLowering.cpp
   LowerForallToThreadPass.cpp
   LowerForToGraphPass.cpp

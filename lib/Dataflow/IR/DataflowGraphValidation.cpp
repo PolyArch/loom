@@ -320,6 +320,34 @@ bool hasPhaseAlignedGateValue(dataflow::GateOp gate) {
   return false;
 }
 
+std::optional<mlir::Value>
+getFixedSequenceStreamActivation(dataflow::StreamOp stream,
+                                 std::optional<unsigned> expectedWidth) {
+  auto initConstant = stream.getInit().getDefiningOp<dataflow::ConstantOp>();
+  auto limitConstant = stream.getLimit().getDefiningOp<dataflow::ConstantOp>();
+  auto stepConstant = stream.getStep().getDefiningOp<dataflow::ConstantOp>();
+  if (!initConstant || !limitConstant || !stepConstant ||
+      initConstant.getCtrl() != limitConstant.getCtrl() ||
+      initConstant.getCtrl() != stepConstant.getCtrl() ||
+      stream.getStepKind() != dataflow::StreamStepKind::Add ||
+      stream.getPredicate() != mlir::arith::CmpIPredicate::slt)
+    return std::nullopt;
+
+  auto getKnownUnsigned = [](dataflow::ConstantOp constant) {
+    auto integer = llvm::dyn_cast<mlir::IntegerAttr>(constant.getConstValue());
+    if (!integer || integer.getValue().isNegative())
+      return std::optional<uint64_t>{};
+    return std::optional<uint64_t>{integer.getValue().getZExtValue()};
+  };
+  auto init = getKnownUnsigned(initConstant);
+  auto limit = getKnownUnsigned(limitConstant);
+  auto step = getKnownUnsigned(stepConstant);
+  if (!init || !limit || !step || *init != 0 || *limit < 2 || *step != 1 ||
+      (expectedWidth && *limit != *expectedWidth))
+    return std::nullopt;
+  return initConstant.getCtrl();
+}
+
 void collectStreamCloseSignals(mlir::Value value,
                                llvm::DenseSet<mlir::Value> &visited,
                                llvm::SmallVectorImpl<mlir::Value> &signals) {
@@ -329,6 +357,19 @@ void collectStreamCloseSignals(mlir::Value value,
   if (!def)
     return;
   mlir::Value signal = statefulCloseSignal(def);
+  if (auto stream = llvm::dyn_cast<dataflow::StreamOp>(def)) {
+    llvm::SmallVector<mlir::Value, 2> activationCloses;
+    if (auto activation =
+            getFixedSequenceStreamActivation(stream, std::nullopt)) {
+      collectStreamCloseSignals(*activation, visited, activationCloses);
+      if (!activationCloses.empty()) {
+        for (mlir::Value close : activationCloses)
+          if (!llvm::is_contained(signals, close))
+            signals.push_back(close);
+        return;
+      }
+    }
+  }
   if (auto gate = llvm::dyn_cast<dataflow::GateOp>(def))
     if (hasPhaseAlignedGateValue(gate))
       signal = gate.getBeforeCond();
@@ -424,6 +465,48 @@ private:
     return std::nullopt;
   }
 
+  std::optional<mlir::Value>
+  getFixedSequenceSelectorActivation(mlir::Value selector, unsigned arity) {
+    mlir::Value ordinal;
+    if (arity == 2) {
+      auto trunc = selector.getDefiningOp<mlir::arith::TruncIOp>();
+      if (!trunc || !selector.getType().isInteger(1))
+        return std::nullopt;
+      ordinal = trunc.getIn();
+    } else {
+      auto cast = selector.getDefiningOp<mlir::arith::IndexCastOp>();
+      if (!cast || !mlir::isa<mlir::IndexType>(selector.getType()))
+        return std::nullopt;
+      ordinal = cast.getIn();
+    }
+    auto stream = ordinal.getDefiningOp<dataflow::StreamOp>();
+    if (!stream || ordinal != stream.getIv())
+      return std::nullopt;
+    return getFixedSequenceStreamActivation(stream, arity);
+  }
+
+  bool selectorVisitsEveryLaneOnce(mlir::Value selector, unsigned arity) {
+    auto activation = getFixedSequenceSelectorActivation(selector, arity);
+    return activation && isExactOne(*activation);
+  }
+
+  std::optional<mlir::Value> getFixedSequenceActivation(mlir::Value value) {
+    auto result = llvm::dyn_cast<mlir::OpResult>(value);
+    auto close =
+        result ? llvm::dyn_cast<dataflow::DemuxOp>(result.getOwner()) : nullptr;
+    if (!close || result.getResultNumber() != 0)
+      return std::nullopt;
+    auto stream = close.getSel().getDefiningOp<dataflow::StreamOp>();
+    auto activations = close.getInput().getDefiningOp<dataflow::InvariantOp>();
+    if (!stream || close.getSel() != stream.getPhase() || !activations ||
+        activations.getCond() != stream.getPhase())
+      return std::nullopt;
+    auto activation = getFixedSequenceStreamActivation(stream, std::nullopt);
+    if (!activation || *activation != activations.getInit())
+      return std::nullopt;
+    return *activation;
+  }
+
   bool isUnpackLaneExact(dataflow::UnpackOp unpack, unsigned lane) {
     if (!isExactOne(unpack.getPacked()) || !isExactOne(unpack.getMask()))
       return false;
@@ -505,7 +588,8 @@ private:
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def))
       if (demux.getSel() == selector)
         return result.getResultNumber() == lane &&
-               isExactOne(demux.getInput());
+               (isExactOne(demux.getInput()) ||
+                isGraphStreamInput(demux.getInput()));
     if (isExactOneWhenSelected(value, selector, lane))
       return true;
     if (llvm::isa<dataflow::StreamOp, dataflow::CarryOp,
@@ -593,6 +677,21 @@ private:
     mlir::Operation *def = result ? result.getOwner() : nullptr;
     if (!def)
       return false;
+    if (truePhaseOnly)
+      if (auto activation = getFixedSequenceActivation(value)) {
+        llvm::DenseSet<mlir::Value> activationVisited = visited;
+        return isAligned(*activation, phase, assumption,
+                         /*truePhaseOnly=*/true, activationVisited);
+      }
+    if (truePhaseOnly)
+      if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def);
+          demux && isGraphStreamInput(demux.getInput()))
+        if (auto activation = getFixedSequenceSelectorActivation(
+                demux.getSel(), demux.getOutputs().size())) {
+          llvm::DenseSet<mlir::Value> activationVisited = visited;
+          return isAligned(*activation, phase, assumption,
+                           /*truePhaseOnly=*/true, activationVisited);
+        }
     if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(def)) {
       bool hasAlignedInput = false;
       bool hasAlignedActivation = false;
@@ -826,6 +925,10 @@ private:
       unsigned lane = result.getResultNumber();
       if (auto selected = getKnownUnsigned(demux.getSel()))
         return *selected == lane && isExactOne(demux.getInput());
+      if (isGraphStreamInput(demux.getInput()) &&
+          selectorVisitsEveryLaneOnce(demux.getSel(),
+                                      demux.getOutputs().size()))
+        return true;
       return lane == 0 && isOneClosePhase(demux.getSel()) &&
              isPhaseAligned(demux.getInput(), demux.getSel());
     }

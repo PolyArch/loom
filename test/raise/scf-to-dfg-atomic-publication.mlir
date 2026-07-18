@@ -3,6 +3,7 @@
 // RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/success.mlir | FileCheck %s --check-prefix=SUCCESS
 // RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/failure.mlir 2>&1 | FileCheck %s --check-prefix=FAILURE --implicit-check-not=loom.spatial_region --implicit-check-not="dataflow.graph private" --implicit-check-not=dataflow.graph.launch
 // RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/channel.mlir | FileCheck %s --check-prefix=CHANNEL
+// RUN: not loom-raise-opt --loom-lower-for-to-graph %t.dir/parallel-channel.mlir 2>&1 | FileCheck %s --check-prefix=PARALLEL-CHANNEL
 
 // SUCCESS-LABEL: dataflow.thread private @reduction
 // SUCCESS: dataflow.graph.launch @g_reduction_0
@@ -32,6 +33,8 @@
 // CHANNEL-NOT: dataflow.channel.send
 // CHANNEL-NOT: loom.spatial_region
 // CHANNEL: dataflow.graph.return values() streams(%{{.*}} : i32)
+
+// PARALLEL-CHANNEL: error: loom-lower-graph-memory: one stream binding cannot contain parallel endpoint sites without a deterministic merge
 
 //--- success.mlir
 dataflow.thread private @reduction(%buffer: memref<?xi32>, %count: index)
@@ -76,6 +79,23 @@ dataflow.thread private @channel_sender(
       "loom.spatial_yield"()
           <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
   }) {graph_name = "g_channel_sender_0", source_maps = []} :
+      (i32, !dataflow.channel<i32>) -> ()
+  dataflow.thread.yield
+}
+
+//--- parallel-channel.mlir
+dataflow.thread private @parallel_channel_sender(
+    %channel: !dataflow.channel<i32>, %message: i32) ctrl (%start: none) {
+  "loom.spatial_region"(%message, %channel)
+      <{operandSegmentSizes = array<i32: 1, 0, 0, 1>,
+        resultSegmentSizes = array<i32: 0, 0>}> ({
+    ^bb0(%payload: i32, %output: !dataflow.channel<i32>):
+      scf.forall (%lane) in (2) {
+        dataflow.channel.send %output, %payload : !dataflow.channel<i32>
+      } {loom.parallel_group = 0 : i64}
+      "loom.spatial_yield"()
+          <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+  }) {graph_name = "g_parallel_channel_sender", source_maps = []} :
       (i32, !dataflow.channel<i32>) -> ()
   dataflow.thread.yield
 }
