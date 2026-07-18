@@ -490,16 +490,14 @@ struct LowerForToGraphPass
   void runOnOperation() final {
     ::mlir::ModuleOp module = getOperation();
     ::mlir::MLIRContext *ctx = &getContext();
-    ::mlir::OpBuilder builder(ctx);
-
-    if (::mlir::failed(stageThreadCandidates(module, builder))) {
+    ::mlir::OwningOpRef<::mlir::ModuleOp> scratch(
+        ::mlir::cast<::mlir::ModuleOp>(module->clone()));
+    ::mlir::OpBuilder scratchBuilder(ctx);
+    if (::mlir::failed(stageThreadCandidates(*scratch, scratchBuilder))) {
       signalPassFailure();
       return;
     }
 
-    ::mlir::OwningOpRef<::mlir::ModuleOp> scratch(
-        ::mlir::cast<::mlir::ModuleOp>(module->clone()));
-    ::mlir::OpBuilder scratchBuilder(ctx);
     promoteStandaloneMemcpyFunctions(*scratch, scratchBuilder);
     promoteStandaloneScalarReturnFunctions(*scratch, scratchBuilder);
     promoteStandaloneStructuredStatusOutParamFunctions(*scratch,

@@ -1,7 +1,7 @@
 // RUN: rm -rf %t.dir
 // RUN: split-file %s %t.dir
 // RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/success.mlir | FileCheck %s --check-prefix=SUCCESS
-// RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/failure.mlir 2>&1 | FileCheck %s --check-prefix=FAILURE
+// RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/failure.mlir 2>&1 | FileCheck %s --check-prefix=FAILURE --implicit-check-not=loom.spatial_region --implicit-check-not="dataflow.graph private" --implicit-check-not=dataflow.graph.launch
 // RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/channel.mlir 2>&1 | FileCheck %s --check-prefix=CHANNEL
 
 // SUCCESS-LABEL: dataflow.thread private @reduction
@@ -15,9 +15,14 @@
 // SUCCESS: dataflow.graph.return
 
 // FAILURE: error: loom-lower-graph-memory: raw scf.forall requires a selected schedule and provenance before graph-region lowering
-// FAILURE-COUNT-2: "loom.spatial_region"
-// FAILURE-NOT: dataflow.graph private
-// FAILURE-NOT: dataflow.graph.launch
+// FAILURE-LABEL: dataflow.thread private @valid_candidate
+// FAILURE: %{{.*}} = arith.addi %{{.*}}, %{{.*}} : i32
+// FAILURE: dataflow.thread.yield
+// FAILURE-LABEL: dataflow.thread private @parallel_candidate
+// FAILURE: scf.forall
+// FAILURE: memref.load
+// FAILURE: memref.store
+// FAILURE: dataflow.thread.yield
 
 // CHANNEL: operation 'dataflow.channel.send' is not a registered canonical Dataflow actor or a supported graph-lowering operation
 // CHANNEL-LABEL: dataflow.thread private @channel_sender
