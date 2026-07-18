@@ -34,6 +34,7 @@
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -315,6 +316,44 @@ reorderGraphInterfaceAttrs(::mlir::ValueRange values, GetAttr getAttr) {
   for (unsigned index : graphPortOrder(values))
     attrs.push_back(getAttr(index));
   return attrs;
+}
+
+::mlir::Value findGraphPublicationMemoryRoot(::mlir::Value value,
+                                             ::mlir::Block &threadEntry) {
+  ::llvm::DenseSet<::mlir::Value> visited;
+  while (value && visited.insert(value).second) {
+    if (auto argument = ::llvm::dyn_cast<::mlir::BlockArgument>(value))
+      return argument.getOwner() == &threadEntry ? value : ::mlir::Value{};
+    ::mlir::Operation *def = value.getDefiningOp();
+    if (!def)
+      return {};
+    if (::llvm::isa<::mlir::memref::AllocOp, ::mlir::memref::AllocaOp,
+                    ::mlir::memref::GetGlobalOp, ::mlir::LLVM::AddressOfOp>(
+            def))
+      return value;
+    if (auto view = ::llvm::dyn_cast<::mlir::ViewLikeOpInterface>(def)) {
+      if (value != view.getViewDest())
+        return {};
+      value = view.getViewSource();
+      continue;
+    }
+    if (auto cast = ::llvm::dyn_cast<::mlir::UnrealizedConversionCastOp>(def)) {
+      if (cast.getInputs().size() != 1)
+        return {};
+      value = cast.getInputs().front();
+      continue;
+    }
+    if (auto gep = ::llvm::dyn_cast<::mlir::LLVM::GEPOp>(def)) {
+      value = gep.getBase();
+      continue;
+    }
+    if (auto bitcast = ::llvm::dyn_cast<::mlir::LLVM::BitcastOp>(def)) {
+      value = bitcast.getArg();
+      continue;
+    }
+    return {};
+  }
+  return {};
 }
 
 ::llvm::SmallVector<::mlir::NamedAttribute, 2>
@@ -1270,18 +1309,49 @@ struct LowerForToGraphPass
       auto graph = ::dataflow::GraphOp::create(
           builder, loc, graphName, functionType, segmentAttrs);
       graph.setSymVisibilityAttr(builder.getStringAttr("private"));
+
+      ::llvm::SmallVector<::mlir::Value, 8> memoryRoots(orderedInputs.size());
+      ::llvm::DenseMap<::mlir::Value, unsigned> capturedRootCounts;
+      bool hasUnknownMemoryRoot = false;
+      for (auto [index, input] : ::llvm::enumerate(orderedInputs)) {
+        if (!::dataflow::DataflowDialect::isMemoryCapabilityType(
+                input.getType()))
+          continue;
+        ::mlir::Value root = findGraphPublicationMemoryRoot(input, threadEntry);
+        memoryRoots[index] = root;
+        if (root)
+          ++capturedRootCounts[root];
+        else
+          hasUnknownMemoryRoot = true;
+      }
+
+      auto getThreadArgAttrs = [&](::mlir::Value value) {
+        auto argument = ::llvm::dyn_cast<::mlir::BlockArgument>(value);
+        if (!argument || argument.getOwner() != &threadEntry ||
+            argument.getArgNumber() >= thread.getFunctionType().getNumInputs())
+          return ::mlir::DictionaryAttr{};
+        return ::mlir::function_interface_impl::getArgAttrDict(
+            thread, argument.getArgNumber());
+      };
+
       ::llvm::SmallVector<::mlir::DictionaryAttr, 8> graphArgAttrs;
       graphArgAttrs.reserve(orderedInputs.size());
-      for (::mlir::Value input : orderedInputs) {
-        auto argument = ::llvm::dyn_cast<::mlir::BlockArgument>(input);
-        if (!argument || argument.getOwner() != &threadEntry ||
-            argument.getArgNumber() >=
-                thread.getFunctionType().getNumInputs()) {
-          graphArgAttrs.push_back({});
-          continue;
+      for (auto [index, input] : ::llvm::enumerate(orderedInputs)) {
+        ::mlir::NamedAttrList attrs(getThreadArgAttrs(input));
+        if (::dataflow::DataflowDialect::isMemoryCapabilityType(
+                input.getType())) {
+          ::mlir::Value root = memoryRoots[index];
+          ::mlir::DictionaryAttr rootAttrs = getThreadArgAttrs(root);
+          ::mlir::Attribute noAlias =
+              rootAttrs ? rootAttrs.get("llvm.noalias") : ::mlir::Attribute{};
+          bool uniqueKnownRoot = !hasUnknownMemoryRoot && root &&
+                                 capturedRootCounts.lookup(root) == 1;
+          if (uniqueKnownRoot && noAlias)
+            attrs.set("llvm.noalias", noAlias);
+          else
+            attrs.erase("llvm.noalias");
         }
-        graphArgAttrs.push_back(::mlir::function_interface_impl::getArgAttrDict(
-            thread, argument.getArgNumber()));
+        graphArgAttrs.push_back(attrs.getDictionary(builder.getContext()));
       }
       ::mlir::function_interface_impl::setAllArgAttrDicts(graph, graphArgAttrs);
 

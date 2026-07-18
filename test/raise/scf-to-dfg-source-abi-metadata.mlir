@@ -2,6 +2,9 @@
 // RUN: split-file %s %t.dir
 // RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/function.mlir | FileCheck %s --check-prefix=FUNCTION
 // RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/thread.mlir | FileCheck %s --check-prefix=THREAD
+// RUN: loom %t.dir/thread.mlir | loom | FileCheck %s --check-prefix=THREAD-ROUNDTRIP
+// RUN: loom %t.dir/thread.mlir --emit-bytecode | loom | FileCheck %s --check-prefix=THREAD-ROUNDTRIP
+// RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/same-root-cast.mlir | FileCheck %s --check-prefix=SAME-ROOT
 
 //--- function.mlir
 module {
@@ -50,3 +53,31 @@ module {
 // THREAD: %{{.*}} = dataflow.store %[[LEFT]][%[[INDEX]]] %[[VALUE]] %[[START]] : memref<?xi32>
 // THREAD: %{{.*}}, %{{.*}} = dataflow.load %[[RIGHT]][%[[INDEX]]] %[[START]] : memref<?xi32>
 // THREAD: %{{.*}} = dataflow.store %[[LEFT]][%[[INDEX]]] %{{.*}} %{{.*}} : memref<?xi32>
+
+// THREAD-ROUNDTRIP-LABEL: dataflow.thread private @source_noalias(
+// THREAD-ROUNDTRIP-SAME: %{{.*}}: memref<?xi32> {llvm.noalias, test.arg = "left"},
+// THREAD-ROUNDTRIP-SAME: %{{.*}}: index {test.arg = "index"},
+// THREAD-ROUNDTRIP-SAME: %{{.*}}: memref<?xi32> {llvm.noalias, test.arg = "right"},
+// THREAD-ROUNDTRIP-SAME: %{{.*}}: i32 {test.arg = "value"})
+
+//--- same-root-cast.mlir
+module {
+  dataflow.thread private @same_root_cast(
+      %memory: memref<4xi32> {llvm.noalias},
+      %limit: index, %seed: i32) ctrl (%ctrl: none) {
+    %view = memref.cast %memory : memref<4xi32> to memref<?xi32>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %result = scf.for %i = %c0 to %limit step %c1
+        iter_args(%value = %seed) -> (i32) {
+      memref.store %value, %memory[%i] : memref<4xi32>
+      %loaded = memref.load %view[%i] : memref<?xi32>
+      scf.yield %loaded : i32
+    }
+    dataflow.thread.yield
+  }
+}
+
+// SAME-ROOT-LABEL: dataflow.graph private @g_same_root_cast_0
+// SAME-ROOT: %[[STORE_DONE:.*]] = dataflow.store
+// SAME-ROOT: %{{.*}}, %{{.*}} = dataflow.load {{.*}} %[[STORE_DONE]]
