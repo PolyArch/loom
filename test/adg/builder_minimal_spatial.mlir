@@ -9,3 +9,6 @@
 // HARDWARE-DAG: fabric.switch [spatial] %[[LHS_FANOUT]]#1, %[[RHS_FANOUT]]#1 [{connectivity_table = ["11", "11"]}]
 // HARDWARE-DAG: fabric.mem [spatial]
 // HARDWARE-DAG: data_width = 32 : i32
+// HARDWARE-DAG: dispatch_eligibility = {
+// HARDWARE-DAG: operation_port_requests = {{\[\[0 : i32\]\]}}
+// HARDWARE-DAG: subordinate_requests = {{\[\]}}

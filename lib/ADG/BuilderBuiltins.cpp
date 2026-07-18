@@ -47,7 +47,8 @@ ModuleBuilder loom::adg::buildFullSpatialCoreAdg() {
                  {"11", "11"},
                  2});
 
-  MemSpec spatialMem(Schedule::Spatial, {"mgr"}, {});
+  MemSpec spatialMem(Schedule::Spatial, {"mgr"}, {},
+                     MemDispatchEligibility{{{0}, {0}}, {}});
   spatialMem.loads = {{"addr", "ctrl"}};
   spatialMem.stores = {{"addr", "lhs", "ctrl"}};
   spatialMem.dataWidth = 32;
@@ -56,13 +57,13 @@ ModuleBuilder loom::adg::buildFullSpatialCoreAdg() {
   MemSpec temporalMem(
       Schedule::Temporal, {"mgr", "mgr_aux"},
       {{"temporal_subordinate0", "memref<?x!fabric.bits<8>>"},
-       {"temporal_subordinate1", "memref<?x!fabric.bits<16>>"}});
+       {"temporal_subordinate1", "memref<?x!fabric.bits<16>>"}},
+      MemDispatchEligibility{{{0, 1}, {0, 1}}, {{0, 1}, {0, 1}}});
   temporalMem.loads = {{"addr_t", "ctrl_t"}};
   temporalMem.stores = {{"addr_t", "lhs_t", "ctrl_t"}};
   temporalMem.dataWidth = 32;
   temporalMem.temporalTagWidth = 4;
   temporalMem.temporalOperationTableSize = 2;
-  temporalMem.temporalDispatchEligibility = {{0, 1}, {0, 1}};
   module.addMem(std::move(temporalMem));
   module.addOutput("temporal_subordinate1");
 

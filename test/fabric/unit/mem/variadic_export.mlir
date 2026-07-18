@@ -2,8 +2,8 @@
 
 // This anchor exercises the complete operation-engine ABI in one round trip:
 // two manager endpoints, two subordinate endpoints, W independent of endpoint
-// widths, K != P, fixed temporal slot eligibility, and export of the second
-// subordinate result.
+// widths, K != P, fixed manager-target dispatch eligibility, and export of the
+// second subordinate result.
 
 // CHECK-LABEL: fabric.module @mem_operation_engine_anchor
 // CHECK: %[[MEM:.*]]:5 = fabric.mem [temporal] mgr(%{{[^,]+}}, %{{[^)]+}})
@@ -26,9 +26,14 @@ fabric.module @mem_operation_engine_anchor(
           data_width = 32 : i32,
           tag_width = 4 : i32,
           operation_table_size = 3 : i32,
-          dispatch_eligibility = [
-            [0 : i32], [1 : i32], [0 : i32, 1 : i32]
-          ]}]
+          dispatch_eligibility = {
+            operation_port_requests = [
+              [0 : i32, 1 : i32], [0 : i32, 1 : i32]
+            ],
+            subordinate_requests = [
+              [0 : i32], [1 : i32]
+            ]
+          }}]
         : (memref<?x!fabric.bits<64>>, memref<?x!fabric.bits<8>>,
            !fabric.bits_tag<32, 4>, !fabric.bits_tag<0, 4>,
            !fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>,

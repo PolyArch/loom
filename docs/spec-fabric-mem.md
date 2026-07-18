@@ -12,7 +12,7 @@ capability. The accepted ABI contains:
 * `S` physical store operation ports;
 * an independent physical operation data width `W`;
 * a Spatial or Temporal operation schedule;
-* fixed Temporal slot-to-physical-port dispatch eligibility.
+* fixed request-source-to-manager dispatch eligibility.
 
 The complete architecture permits an optional Local Memory Service, but that
 subresource is not accepted by this ABI. Its canonical typed service contract
@@ -88,9 +88,10 @@ integer parameter is a signless `i32`.
 A Spatial engine requires exactly:
 
 ```text
-load_group_size  = L, where L >= 0
-store_group_size = S, where S >= 0
-data_width       = W, where W > 0
+load_group_size     = L, where L >= 0
+store_group_size    = S, where S >= 0
+data_width          = W, where W > 0
+dispatch_eligibility = H_dispatch
 ```
 
 A Temporal engine additionally requires exactly:
@@ -98,7 +99,6 @@ A Temporal engine additionally requires exactly:
 ```text
 tag_width             = T, where T > 0
 operation_table_size  = K, where K > 0
-dispatch_eligibility  = H_dispatch
 ```
 
 `L + S` must be greater than zero. Define:
@@ -108,8 +108,20 @@ P = L + S
 ```
 
 `P` is the number of concrete physical operation ports. `K` is the number of
-resident Temporal configured slots. `K` is independent of `P` and is not
+resident Temporal configured rows. `K` is independent of `P` and is not
 derived from `2^T`. In particular, `K != P` is legal.
+
+A valid Temporal row is uniquely matched by
+`(operation_kind, physical_port_sel, tag_match)`. A homogeneous engine has
+`P * 2^T` representable physical match tuples, so it requires:
+
+```text
+K <= P * 2^T
+```
+
+The verifier checks this inequality without overflowing. It is a capacity
+constraint, not an equality or a derivation of `K`. A tag may be reused on a
+different physical port because those ports are distinct match domains.
 
 `W` is an explicit hardware fact. It is never inferred from a manager endpoint
 element width.
@@ -140,37 +152,57 @@ port consumes `(addr, data, ctrl)` and produces only `done`.
 
 ## Dispatch Eligibility
 
-`dispatch_eligibility` is the Fabric-owned fixed `H_dispatch` relation between
-Temporal configured slots and physical operation ports:
+`dispatch_eligibility` is the manager-only projection of the Fabric-owned fixed
+`H_dispatch` relation:
 
 ```text
-dispatch_eligibility = [
-  [physical-port-id, ...],  // slot 0
-  [physical-port-id, ...],  // slot 1
-  ...
-]
+dispatch_eligibility = {
+  operation_port_requests = [
+    [manager-endpoint-id, ...],  // physical operation port 0
+    ...
+  ],
+  subordinate_requests = [
+    [manager-endpoint-id, ...],  // subordinate endpoint 0
+    ...
+  ]
+}
 ```
 
-Physical operation-port identity is closed and mechanical:
+The complete architecture also permits a Local Memory Service target, but that
+target is absent because this engine-only ABI does not represent the required
+typed service contract. Every accepted request source therefore has a
+nonempty domain of manager endpoint targets.
+
+Request-source identities are closed and mechanical. Physical operation-port
+sources are ordered:
 
 ```text
 0 .. L-1       load ports
 L .. L+S-1     store ports
 ```
 
-The outer array has exactly `K` entries. Every slot domain is non-empty. Each
-domain contains signless `i32` identities in strictly increasing order, and
-every identity is in `[0, P)`. Strict ordering gives one canonical encoding
-and rejects duplicates.
+Subordinate request sources use subordinate result order. The
+`operation_port_requests` outer array has exactly `P` entries, and the
+`subordinate_requests` outer array has exactly the signature-derived
+subordinate endpoint count. Manager target identity is manager operand order
+in `[0, M)`.
 
-This relation says only which physical ports a slot is eligible to use. It
-does not select a port for a workload. Active `C_dispatch`, operation kind,
-physical port selection, tags, addresses, memory bindings, and service paths
+Every source domain is a nonempty array of signless `i32` manager identities in
+strictly increasing order. Strict ordering gives one canonical encoding and
+rejects duplicates. The dictionary is closed and accepts only the two source
+domain arrays above.
+
+This relation states which manager services each physical request source can
+reach. It does not select a service for a workload. Active `C_dispatch`,
+selected service targets, addresses, memory bindings, and configured rows
 remain outside canonical Fabric hardware capability.
 
-Spatial operation occurrences are already identified by their concrete
-physical operation ports and do not carry configured-slot capacity or
-`dispatch_eligibility`.
+Spatial and Temporal engines carry the same fixed relation. Spatial operation
+requests are already identified by physical port. A configured Temporal row
+separately selects `operation_kind`, a compatible load/store
+`physical_port_sel`, and `tag_match`; these are configured row fields, not
+Fabric `H_dispatch`. The hardware ABI therefore has no per-slot
+physical-port-eligibility array.
 
 ## Module Provenance
 

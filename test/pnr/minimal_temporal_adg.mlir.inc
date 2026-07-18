@@ -21,7 +21,7 @@ fabric.module @minimal_temporal_adg(%mgr : memref<?x!fabric.bits<32>>,
          : (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
         -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
   %mem0_data0, %mem0_done0 = fabric.mem [temporal] mgr(%mgr) load(%addr, %ctrl)
-        [{load_group_size = 1 : i32, store_group_size = 0 : i32, data_width = 32 : i32, tag_width = 4 : i32, operation_table_size = 1 : i32, dispatch_eligibility = [[0 : i32]]}]
+        [{load_group_size = 1 : i32, store_group_size = 0 : i32, data_width = 32 : i32, tag_width = 4 : i32, operation_table_size = 1 : i32, dispatch_eligibility = {operation_port_requests = [[0 : i32]], subordinate_requests = []}}]
         : (memref<?x!fabric.bits<32>>, !fabric.bits_tag<32, 4>, !fabric.bits_tag<0, 4>)
         -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<0, 4>)
   %transport_fanout0_out0, %transport_fanout0_out1 = fabric.switch [temporal] %lhs

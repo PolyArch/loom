@@ -12,4 +12,6 @@
 // HARDWARE-DAG: fabric.mem [temporal]
 // HARDWARE-DAG: data_width = 32 : i32
 // HARDWARE-DAG: operation_table_size = 1 : i32
-// HARDWARE-DAG: {{dispatch_eligibility = \[\[0 : i32\]\]}}
+// HARDWARE-DAG: dispatch_eligibility = {
+// HARDWARE-DAG: operation_port_requests = {{\[\[0 : i32\]\]}}
+// HARDWARE-DAG: subordinate_requests = {{\[\]}}

@@ -3,7 +3,8 @@
 // Implements the operation-engine hardware capability ABI for fabric.mem.
 // Manager and subordinate endpoint counts are derived from the signature.
 // The hardware dictionary owns independent L, S, and W parameters. Temporal
-// engines additionally own T, K, and fixed slot-to-physical-port eligibility.
+// engines additionally own T and K. Fixed dispatch eligibility connects each
+// operation-port or subordinate request source to manager endpoints.
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,6 +21,8 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+
+#include <limits>
 
 using namespace mlir;
 using namespace fabric;
@@ -76,6 +79,8 @@ constexpr StringLiteral kDataWidth = "data_width";
 constexpr StringLiteral kTagWidth = "tag_width";
 constexpr StringLiteral kOperationTableSize = "operation_table_size";
 constexpr StringLiteral kDispatchEligibility = "dispatch_eligibility";
+constexpr StringLiteral kOperationPortRequests = "operation_port_requests";
+constexpr StringLiteral kSubordinateRequests = "subordinate_requests";
 
 struct EngineInfo {
   unsigned loadCount = 0;
@@ -270,14 +275,15 @@ static LogicalResult readI32(MemOp op, DictionaryAttr dictionary, StringRef key,
   return success();
 }
 
-static LogicalResult verifyHardwareKeys(MemOp op, DictionaryAttr dictionary,
-                                        ArrayRef<StringRef> allowed) {
+static LogicalResult verifyDictionaryKeys(MemOp op, DictionaryAttr dictionary,
+                                          StringRef dictionaryName,
+                                          ArrayRef<StringRef> allowed) {
   for (NamedAttribute field : dictionary) {
     StringRef name = field.getName().getValue();
     if (llvm::is_contained(allowed, name))
       continue;
-    return op.emitOpError("'hw_params' contains unsupported key '")
-           << name << "'";
+    return op.emitOpError(dictionaryName)
+           << " contains unsupported key '" << name << "'";
   }
   return success();
 }
@@ -286,21 +292,21 @@ static LogicalResult verifyOperationEngine(MemOp op, DictionaryAttr dictionary,
                                            EngineInfo &engine) {
   bool temporal = op.getSchedule() == Schedule::Temporal;
   if (!temporal) {
-    for (StringRef key : {StringRef(kTagWidth), StringRef(kOperationTableSize),
-                          StringRef(kDispatchEligibility)})
+    for (StringRef key : {StringRef(kTagWidth), StringRef(kOperationTableSize)})
       if (dictionary.get(key))
         return op.emitOpError("spatial fabric.mem must not carry "
                               "temporal-only key '")
                << key << "'";
   }
 
-  const StringRef spatialKeys[] = {kLoadGroupSize, kStoreGroupSize, kDataWidth};
+  const StringRef spatialKeys[] = {kLoadGroupSize, kStoreGroupSize, kDataWidth,
+                                   kDispatchEligibility};
   const StringRef temporalKeys[] = {kLoadGroupSize,      kStoreGroupSize,
                                     kDataWidth,          kTagWidth,
                                     kOperationTableSize, kDispatchEligibility};
-  if (failed(verifyHardwareKeys(op, dictionary,
-                                temporal ? ArrayRef<StringRef>(temporalKeys)
-                                         : ArrayRef<StringRef>(spatialKeys))))
+  if (failed(verifyDictionaryKeys(op, dictionary, "'hw_params'",
+                                  temporal ? ArrayRef<StringRef>(temporalKeys)
+                                           : ArrayRef<StringRef>(spatialKeys))))
     return failure();
 
   if (failed(readI32(op, dictionary, kLoadGroupSize, 0, engine.loadCount)) ||
@@ -317,6 +323,27 @@ static LogicalResult verifyOperationEngine(MemOp op, DictionaryAttr dictionary,
       failed(readI32(op, dictionary, kOperationTableSize, 1,
                      engine.operationTableSize)))
     return failure();
+  return success();
+}
+
+static LogicalResult verifyTemporalResidentCapacity(MemOp op,
+                                                    const EngineInfo &engine) {
+  if (op.getSchedule() != Schedule::Temporal)
+    return success();
+
+  uint64_t physicalPortCount =
+      static_cast<uint64_t>(engine.loadCount) + engine.storeCount;
+  uint64_t representableRows = std::numeric_limits<uint64_t>::max();
+  if (engine.tagWidth < std::numeric_limits<uint64_t>::digits) {
+    uint64_t tagCount = uint64_t{1} << engine.tagWidth;
+    if (physicalPortCount <= std::numeric_limits<uint64_t>::max() / tagCount)
+      representableRows = physicalPortCount * tagCount;
+  }
+  if (engine.operationTableSize > representableRows)
+    return op.emitOpError("operation_table_size ")
+           << engine.operationTableSize
+           << " exceeds representable temporal row capacity "
+           << representableRows;
   return success();
 }
 
@@ -426,45 +453,69 @@ static LogicalResult verifyOperationPortTypes(MemOp op, ArrayRef<Type> inputs,
 
 static LogicalResult verifyDispatchEligibility(MemOp op,
                                                DictionaryAttr dictionary,
-                                               const EngineInfo &engine) {
+                                               const EngineInfo &engine,
+                                               const SignatureLayout &layout) {
   auto eligibility =
-      dyn_cast_or_null<ArrayAttr>(dictionary.get(kDispatchEligibility));
+      dyn_cast_or_null<DictionaryAttr>(dictionary.get(kDispatchEligibility));
   if (!eligibility)
     return op.emitOpError(
-        "'hw_params' key 'dispatch_eligibility' must be an array");
-  if (eligibility.size() != engine.operationTableSize)
-    return op.emitOpError("dispatch_eligibility length ")
-           << eligibility.size() << " must equal operation_table_size "
-           << engine.operationTableSize;
+        "'hw_params' key 'dispatch_eligibility' must be a dictionary");
+
+  const StringRef eligibilityKeys[] = {kOperationPortRequests,
+                                       kSubordinateRequests};
+  if (failed(verifyDictionaryKeys(op, eligibility, "dispatch_eligibility",
+                                  eligibilityKeys)))
+    return failure();
+
+  auto verifyDomains = [&](StringRef key, unsigned sourceCount,
+                           StringRef sourceCountName) -> LogicalResult {
+    auto domains = dyn_cast_or_null<ArrayAttr>(eligibility.get(key));
+    if (!domains)
+      return op.emitOpError("dispatch_eligibility key '")
+             << key << "' must be an array";
+    if (domains.size() != sourceCount)
+      return op.emitOpError(key)
+             << " length " << domains.size() << " must equal "
+             << sourceCountName << ' ' << sourceCount;
+
+    for (auto [source, entry] : llvm::enumerate(domains)) {
+      auto domain = dyn_cast<ArrayAttr>(entry);
+      if (!domain)
+        return op.emitOpError(key)
+               << " entry #" << source << " must be an array";
+      if (domain.empty())
+        return op.emitOpError(key)
+               << " entry #" << source << " must be non-empty";
+
+      int64_t previous = -1;
+      for (Attribute rawTarget : domain) {
+        auto target = dyn_cast<IntegerAttr>(rawTarget);
+        auto type =
+            target ? dyn_cast<IntegerType>(target.getType()) : IntegerType{};
+        if (!target || !type || !type.isSignless() || type.getWidth() != 32)
+          return op.emitOpError(key)
+                 << " entry #" << source
+                 << " manager target identities must be signless i32 values";
+        int64_t value = target.getInt();
+        if (value < 0 || static_cast<uint64_t>(value) >= layout.managerCount)
+          return op.emitOpError(key)
+                 << " entry #" << source << " manager target identity " << value
+                 << " is outside [0, " << layout.managerCount << ")";
+        if (value <= previous)
+          return op.emitOpError(key)
+                 << " entry #" << source << " must be strictly increasing";
+        previous = value;
+      }
+    }
+    return success();
+  };
 
   unsigned physicalPortCount = engine.loadCount + engine.storeCount;
-  for (auto [slot, entry] : llvm::enumerate(eligibility)) {
-    auto domain = dyn_cast<ArrayAttr>(entry);
-    if (!domain)
-      return op.emitOpError("dispatch_eligibility entry #")
-             << slot << " must be an array";
-    if (domain.empty())
-      return op.emitOpError("dispatch_eligibility entry #")
-             << slot << " must be non-empty";
-
-    int64_t previous = -1;
-    for (Attribute rawPort : domain) {
-      auto port = dyn_cast<IntegerAttr>(rawPort);
-      auto type = port ? dyn_cast<IntegerType>(port.getType()) : IntegerType{};
-      if (!port || !type || !type.isSignless() || type.getWidth() != 32)
-        return op.emitOpError("dispatch_eligibility entry #")
-               << slot << " port identities must be signless i32 values";
-      int64_t value = port.getInt();
-      if (value < 0 || static_cast<uint64_t>(value) >= physicalPortCount)
-        return op.emitOpError("dispatch_eligibility entry #")
-               << slot << " port identity " << value << " is outside [0, "
-               << physicalPortCount << ")";
-      if (value <= previous)
-        return op.emitOpError("dispatch_eligibility entry #")
-               << slot << " must be strictly increasing";
-      previous = value;
-    }
-  }
+  if (failed(verifyDomains(kOperationPortRequests, physicalPortCount,
+                           "physical operation port count")) ||
+      failed(verifyDomains(kSubordinateRequests, layout.subordinateCount,
+                           "subordinate endpoint count")))
+    return failure();
   return success();
 }
 
@@ -719,6 +770,8 @@ LogicalResult MemOp::verify() {
   EngineInfo engine;
   if (failed(verifyOperationEngine(*this, hardware, engine)))
     return failure();
+  if (failed(verifyTemporalResidentCapacity(*this, engine)))
+    return failure();
 
   SignatureLayout layout;
   if (failed(deriveSignatureLayout(*this, inputs, results, engine, layout)))
@@ -737,8 +790,7 @@ LogicalResult MemOp::verify() {
 
   if (failed(verifyOperationPortTypes(*this, inputs, results, engine, layout)))
     return failure();
-  if (getSchedule() == Schedule::Temporal &&
-      failed(verifyDispatchEligibility(*this, hardware, engine)))
+  if (failed(verifyDispatchEligibility(*this, hardware, engine, layout)))
     return failure();
   return success();
 }

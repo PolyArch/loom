@@ -569,10 +569,10 @@ def Fabric_MemOp : Fabric_Op<"mem", [
     the host scope; the port signature is captured in `function_type`.
     `hw_params` is a length-one array containing the closed operation-engine
     hardware dictionary. It owns independent load/store port counts and
-    operation data width. Temporal engines additionally own tag width,
-    configured-slot capacity, and fixed slot-to-physical-port dispatch
-    eligibility. The registered schema is the closed canonical attribute set;
-    the operation accepts no discardable attributes.
+    operation data width, plus fixed request-source-to-manager dispatch
+    eligibility. Temporal engines additionally own tag width and
+    configured-row capacity. The registered schema is the closed canonical
+    attribute set; the operation accepts no discardable attributes.
 
     See `docs/spec-fabric-mem.md` for the full per-schedule rules.
   }];

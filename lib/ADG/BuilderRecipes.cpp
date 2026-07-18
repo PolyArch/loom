@@ -350,6 +350,17 @@ void addUniformSwitch(ModuleBuilder &module,
   addUniformSwitch(module, resultNames, inputs, type);
 }
 
+std::string singleManagerDispatchEligibility(unsigned requestSourceCount) {
+  std::string text = ", dispatch_eligibility = {operation_port_requests = [";
+  for (unsigned source = 0; source < requestSourceCount; ++source) {
+    if (source)
+      text += ", ";
+    text += "[0 : i32]";
+  }
+  text += "], subordinate_requests = []}";
+  return text;
+}
+
 void addSpatialMemLoad(ModuleBuilder &module) {
   appendBodyOp(
       module,
@@ -360,7 +371,8 @@ void addSpatialMemLoad(ModuleBuilder &module) {
                           {"mgr", "addr", "ctrl"}),
            exactBodyLine(
                "      [{load_group_size = 1 : i32, store_group_size = 0 : "
-               "i32, data_width = 32 : i32}]"),
+               "i32, data_width = 32 : i32" +
+               singleManagerDispatchEligibility(1) + "}]"),
            exactBodyLine(
                "      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, "
                "!fabric.bits<0>)")},
@@ -943,19 +955,20 @@ void addMemoryReductionMem(ModuleBuilder &module, unsigned loadCount,
   operandTypes += ")";
 
   appendBodyOp(
-      module, bodyOpWithResultLine(
-                  std::move(results),
-                  {directHeadAndListLine("fabric.mem [spatial] mgr(", "mgr",
-                                         ") load(", loadOperands, ")"),
-                   directOperandListLine("                              store(",
-                                         storeOperands, ")"),
-                   exactBodyLine("      [{load_group_size = " +
-                                 std::to_string(loadCount) +
-                                 " : i32, store_group_size = " +
-                                 std::to_string(storeCount) +
-                                 " : i32, data_width = 32 : i32}]"),
-                   exactBodyLine("      : " + operandTypes)},
-                  "      -> "));
+      module,
+      bodyOpWithResultLine(
+          std::move(results),
+          {directHeadAndListLine("fabric.mem [spatial] mgr(", "mgr", ") load(",
+                                 loadOperands, ")"),
+           directOperandListLine("                              store(",
+                                 storeOperands, ")"),
+           exactBodyLine(
+               "      [{load_group_size = " + std::to_string(loadCount) +
+               " : i32, store_group_size = " + std::to_string(storeCount) +
+               " : i32, data_width = 32 : i32" +
+               singleManagerDispatchEligibility(loadCount + storeCount) + "}]"),
+           exactBodyLine("      : " + operandTypes)},
+          "      -> "));
 }
 
 void addTwoLoadOneStoreMem(ModuleBuilder &module) {
@@ -969,15 +982,14 @@ void addTwoLoadOneStoreMem(ModuleBuilder &module) {
            BodyResultSpec{"store_done", "!fabric.bits<0>"}},
           {directBodyLine({"fabric.mem [spatial] mgr(", ")"}, {"mgr"}),
            directOperandListLine("      load(",
-                                 {"idx0", "load_ctrl0", "idx1",
-                                  "load_ctrl1"},
+                                 {"idx0", "load_ctrl0", "idx1", "load_ctrl1"},
                                  ")"),
-           directOperandListLine("      store(",
-                                 {"store_idx", "store_value", "store_ctrl"},
-                                 ")"),
+           directOperandListLine(
+               "      store(", {"store_idx", "store_value", "store_ctrl"}, ")"),
            exactBodyLine(
                "      [{load_group_size = 2 : i32, store_group_size = 1 : "
-               "i32, data_width = 32 : i32}]"),
+               "i32, data_width = 32 : i32" +
+               singleManagerDispatchEligibility(3) + "}]"),
            exactBodyLine(
                "      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, "
                "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
@@ -1619,7 +1631,8 @@ ModuleBuilder loom::adg::buildMinimalSpatialAdg() {
                               {"!fabric.bits<32>", "!fabric.bits<32>"},
                               {"11", "11"},
                               0});
-  MemSpec mem(Schedule::Spatial, {"mgr"}, {});
+  MemSpec mem(Schedule::Spatial, {"mgr"}, {},
+              MemDispatchEligibility{{{0}}, {}});
   mem.loads = {{"addr", "ctrl"}};
   mem.dataWidth = 32;
   module.addMem(std::move(mem));
@@ -1650,12 +1663,12 @@ ModuleBuilder loom::adg::buildMinimalTemporalAdg() {
                  {"11", "11"},
                  1});
 
-  MemSpec mem(Schedule::Temporal, {"mgr"}, {});
+  MemSpec mem(Schedule::Temporal, {"mgr"}, {},
+              MemDispatchEligibility{{{0}}, {}});
   mem.loads = {{"addr", "ctrl"}};
   mem.dataWidth = 32;
   mem.temporalTagWidth = 4;
   mem.temporalOperationTableSize = 1;
-  mem.temporalDispatchEligibility = {{0}};
   module.addMem(std::move(mem));
   return module;
 }

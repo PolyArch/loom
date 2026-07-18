@@ -17,9 +17,9 @@
 // HARDWARE-DAG: fabric.instantiate @ALU
 // HARDWARE: fabric.yield %[[MEM]]#1 : memref<?x!fabric.bits<16>>
 
+// DISPATCH: fabric.mem [spatial]
+// DISPATCH-DAG: operation_port_requests = {{\[\[0 : i32\], \[0 : i32\]\]}}
+// DISPATCH-DAG: subordinate_requests = {{\[\]}}
 // DISPATCH: fabric.mem [temporal]
-// DISPATCH: dispatch_eligibility = [
-// DISPATCH: [0 : i32
-// DISPATCH: 1 : i32]
-// DISPATCH: [0 : i32
-// DISPATCH: 1 : i32]
+// DISPATCH-DAG: operation_port_requests = {{\[\[0 : i32, 1 : i32\], \[0 : i32, 1 : i32\]\]}}
+// DISPATCH-DAG: subordinate_requests = {{\[\[0 : i32, 1 : i32\], \[0 : i32, 1 : i32\]\]}}

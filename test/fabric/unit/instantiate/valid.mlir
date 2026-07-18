@@ -94,7 +94,11 @@ fabric.module @named_mem_host(%mgr : memref<?x!fabric.bits<32>>,
        (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
         -> (!fabric.bits<32>, !fabric.bits<0>)
        [{load_group_size = 1 : i32, store_group_size = 0 : i32,
-         data_width = 32 : i32}]
+         data_width = 32 : i32,
+         dispatch_eligibility = {
+           operation_port_requests = [[0 : i32]],
+           subordinate_requests = []
+         }}]
   %data, %done = fabric.instantiate @MEM(
        %mgr : memref<?x!fabric.bits<32>>,
        %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>)

@@ -659,9 +659,49 @@ llvm::Error validateMem(const MemSpec &mem) {
     return llvm::createStringError(std::errc::invalid_argument,
                                    "ADG mem requires operation data width");
 
+  auto validateDomains = [&](llvm::StringRef name,
+                             const std::vector<std::vector<unsigned>> &domains,
+                             std::size_t sourceCount,
+                             llvm::StringRef sourceCountName) -> llvm::Error {
+    if (domains.size() != sourceCount)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG mem %s length %zu must equal %s %zu", name.str().c_str(),
+          domains.size(), sourceCountName.str().c_str(), sourceCount);
+    for (auto [source, domain] : llvm::enumerate(domains)) {
+      if (domain.empty())
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "ADG mem %s entry #%zu is empty",
+                                       name.str().c_str(), source);
+      std::optional<unsigned> previous;
+      for (unsigned manager : domain) {
+        if (manager >= mem.managerInputs.size())
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "ADG mem %s entry #%zu manager target %u is outside [0, %zu)",
+              name.str().c_str(), source, manager, mem.managerInputs.size());
+        if (previous && manager <= *previous)
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "ADG mem %s entry #%zu is not strictly increasing",
+              name.str().c_str(), source);
+        previous = manager;
+      }
+    }
+    return llvm::Error::success();
+  };
+  if (llvm::Error err =
+          validateDomains("operation_port_requests",
+                          mem.dispatchEligibility.operationPortRequests,
+                          physicalPortCount, "physical operation port count"))
+    return err;
+  if (llvm::Error err = validateDomains(
+          "subordinate_requests", mem.dispatchEligibility.subordinateRequests,
+          mem.subordinateOutputs.size(), "subordinate endpoint count"))
+    return err;
+
   if (mem.schedule == Schedule::Spatial) {
-    if (mem.temporalTagWidth != 0 || mem.temporalOperationTableSize != 0 ||
-        !mem.temporalDispatchEligibility.empty())
+    if (mem.temporalTagWidth != 0 || mem.temporalOperationTableSize != 0)
       return llvm::createStringError(
           std::errc::invalid_argument,
           "spatial ADG mem must not carry temporal hardware capability");
@@ -675,34 +715,20 @@ llvm::Error validateMem(const MemSpec &mem) {
     return llvm::createStringError(
         std::errc::invalid_argument,
         "temporal ADG mem requires operation table size");
-  if (mem.temporalDispatchEligibility.size() != mem.temporalOperationTableSize)
+
+  uint64_t representableRows = std::numeric_limits<uint64_t>::max();
+  if (mem.temporalTagWidth < std::numeric_limits<uint64_t>::digits) {
+    uint64_t tagCount = uint64_t{1} << mem.temporalTagWidth;
+    if (physicalPortCount <= std::numeric_limits<uint64_t>::max() / tagCount)
+      representableRows = static_cast<uint64_t>(physicalPortCount) * tagCount;
+  }
+  if (mem.temporalOperationTableSize > representableRows)
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "temporal ADG mem dispatch eligibility must have one domain per "
-        "operation table slot");
-
-  for (auto [slot, domain] : llvm::enumerate(mem.temporalDispatchEligibility)) {
-    if (domain.empty())
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "temporal ADG mem dispatch eligibility slot %zu is empty", slot);
-    std::optional<unsigned> previous;
-    for (unsigned port : domain) {
-      if (port >= physicalPortCount)
-        return llvm::createStringError(
-            std::errc::invalid_argument,
-            "temporal ADG mem dispatch eligibility slot %zu port %u is "
-            "outside [0, %u)",
-            slot, port, physicalPortCount);
-      if (previous && port <= *previous)
-        return llvm::createStringError(
-            std::errc::invalid_argument,
-            "temporal ADG mem dispatch eligibility slot %zu is not strictly "
-            "increasing",
-            slot);
-      previous = port;
-    }
-  }
+        "temporal ADG mem operation table size %u exceeds representable row "
+        "capacity %llu",
+        mem.temporalOperationTableSize,
+        static_cast<unsigned long long>(representableRows));
   return llvm::Error::success();
 }
 
@@ -715,20 +741,30 @@ std::string memDataType(const MemSpec &mem) {
       .str();
 }
 
-void printMemDispatchEligibility(llvm::raw_ostream &os, const MemSpec &mem) {
+void printMemManagerTargetDomains(
+    llvm::raw_ostream &os, const std::vector<std::vector<unsigned>> &domains) {
   os << '[';
-  for (auto [slot, domain] : llvm::enumerate(mem.temporalDispatchEligibility)) {
-    if (slot)
+  for (auto [source, domain] : llvm::enumerate(domains)) {
+    if (source)
       os << ", ";
     os << '[';
-    for (auto [index, port] : llvm::enumerate(domain)) {
+    for (auto [index, manager] : llvm::enumerate(domain)) {
       if (index)
         os << ", ";
-      os << port << " : i32";
+      os << manager << " : i32";
     }
     os << ']';
   }
   os << ']';
+}
+
+void printMemDispatchEligibility(llvm::raw_ostream &os, const MemSpec &mem) {
+  os << "{operation_port_requests = ";
+  printMemManagerTargetDomains(os,
+                               mem.dispatchEligibility.operationPortRequests);
+  os << ", subordinate_requests = ";
+  printMemManagerTargetDomains(os, mem.dispatchEligibility.subordinateRequests);
+  os << '}';
 }
 
 } // namespace
@@ -1178,9 +1214,10 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
     if (mem.schedule == Schedule::Temporal) {
       os << ", tag_width = " << mem.temporalTagWidth
          << " : i32, operation_table_size = " << mem.temporalOperationTableSize
-         << " : i32, dispatch_eligibility = ";
-      printMemDispatchEligibility(os, mem);
+         << " : i32";
     }
+    os << ", dispatch_eligibility = ";
+    printMemDispatchEligibility(os, mem);
     os << "}]\n";
 
     llvm::SmallVector<std::string> operandTypes;

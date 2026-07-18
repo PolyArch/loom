@@ -19,7 +19,15 @@ fabric.module @mem_spatial(
         store(%store_addr, %store_data, %store_ctrl)
         [{load_group_size = 1 : i32,
           store_group_size = 1 : i32,
-          data_width = 32 : i32}]
+          data_width = 32 : i32,
+          dispatch_eligibility = {
+            operation_port_requests = [
+              [0 : i32, 1 : i32], [1 : i32]
+            ],
+            subordinate_requests = [
+              [0 : i32], [0 : i32, 1 : i32]
+            ]
+          }}]
         : (memref<?x!fabric.bits<64>>, memref<?x!fabric.bits<16>>,
            !fabric.bits<64> to !fabric.bits<32>,
            !fabric.bits<8> to !fabric.bits<0>,
@@ -31,7 +39,7 @@ fabric.module @mem_spatial(
   fabric.yield
 }
 
-// Temporal configured-slot capacity is independent of physical operation-port
+// Temporal configured-row capacity is independent of physical operation-port
 // count. Port identities are load ports followed by store ports.
 
 // CHECK-LABEL: fabric.module @mem_temporal
@@ -52,9 +60,10 @@ fabric.module @mem_temporal(
           data_width = 24 : i32,
           tag_width = 4 : i32,
           operation_table_size = 3 : i32,
-          dispatch_eligibility = [
-            [0 : i32], [1 : i32], [0 : i32, 1 : i32]
-          ]}]
+          dispatch_eligibility = {
+            operation_port_requests = [[0 : i32], [0 : i32]],
+            subordinate_requests = []
+          }}]
         : (memref<?x!fabric.bits<64>>,
            !fabric.bits_tag<32, 4>, !fabric.bits_tag<0, 4>,
            !fabric.bits_tag<32, 4>, !fabric.bits_tag<24, 4>,
@@ -74,7 +83,11 @@ fabric.mem @MemTemplate [spatial]
         !fabric.bits<32>, !fabric.bits<0>)
     [{load_group_size = 1 : i32,
       store_group_size = 0 : i32,
-      data_width = 32 : i32}]
+      data_width = 32 : i32,
+      dispatch_eligibility = {
+        operation_port_requests = [[0 : i32, 1 : i32]],
+        subordinate_requests = [[0 : i32], [1 : i32]]
+      }}]
 
 // Generic syntax accepts the same closed canonical property set and
 // round-trips through the custom printer.
@@ -87,6 +100,10 @@ fabric.module @mem_generic_properties(
   %data, %done = "fabric.mem"(%mgr, %addr, %ctrl) <{
     hw_params = [{
       data_width = 32 : i32,
+      dispatch_eligibility = {
+        operation_port_requests = [[0 : i32]],
+        subordinate_requests = []
+      },
       load_group_size = 1 : i32,
       store_group_size = 0 : i32
     }],

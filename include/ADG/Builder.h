@@ -112,21 +112,28 @@ struct MemSubordinateOutput {
   std::string type;
 };
 
+struct MemDispatchEligibility {
+  std::vector<std::vector<unsigned>> operationPortRequests;
+  std::vector<std::vector<unsigned>> subordinateRequests;
+};
+
 struct MemSpec {
   MemSpec(Schedule schedule, std::vector<std::string> managerInputs,
-          std::vector<MemSubordinateOutput> subordinateOutputs)
+          std::vector<MemSubordinateOutput> subordinateOutputs,
+          MemDispatchEligibility dispatchEligibility)
       : schedule(schedule), managerInputs(std::move(managerInputs)),
-        subordinateOutputs(std::move(subordinateOutputs)) {}
+        subordinateOutputs(std::move(subordinateOutputs)),
+        dispatchEligibility(std::move(dispatchEligibility)) {}
 
   Schedule schedule;
   std::vector<std::string> managerInputs;
   std::vector<MemSubordinateOutput> subordinateOutputs;
+  MemDispatchEligibility dispatchEligibility;
   std::vector<MemLoadPort> loads;
   std::vector<MemStorePort> stores;
   unsigned dataWidth = 0;
   unsigned temporalTagWidth = 0;
   unsigned temporalOperationTableSize = 0;
-  std::vector<std::vector<unsigned>> temporalDispatchEligibility;
 };
 
 class ModuleBuilder {

@@ -717,7 +717,10 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                  reductionStoreOperands, ")"),
            exactBodyLine(
                "      [{load_group_size = 6 : i32, store_group_size = 2 : "
-               "i32, data_width = 32 : i32}]"),
+               "i32, data_width = 32 : i32, dispatch_eligibility = "
+               "{operation_port_requests = [[0 : i32], [0 : i32], "
+               "[0 : i32], [0 : i32], [0 : i32], [0 : i32], [0 : i32], "
+               "[0 : i32]], subordinate_requests = []}}]"),
            exactBodyLine(
                "      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, "
                "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
