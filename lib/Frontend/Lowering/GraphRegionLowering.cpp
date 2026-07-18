@@ -459,7 +459,8 @@ public:
   GraphRegionLowerer(::dataflow::GraphOp graph,
                      const StreamBoundaryInfo &boundary)
       : graph(graph), builder(graph.getContext()),
-        entry(graph.getBody().front()), anchor(entry.getTerminator()) {
+        entry(graph.getBody().front()), anchor(entry.getTerminator()),
+        transientStreamBoundary(boundary.isTransient()) {
     for (auto [channel, payload] :
          ::llvm::zip_equal(boundary.inputChannels, boundary.inputPayloads))
       streamInputByChannel.try_emplace(channel, payload);
@@ -478,14 +479,17 @@ public:
     RegionResult result =
         lowerBlock(entry, graph.getStart(), std::move(initial));
     ::loom::lowering::lowerGraphIndexDomains(graph);
-    if (::llvm::any_of(streamOutputs,
-                       [](const ::mlir::Value &value) { return !value; }))
-      return graph.emitError(
-          "loom-lower-graph-memory: stream output binding was not lowered");
     auto returnOp = ::llvm::cast<::dataflow::GraphReturnOp>(anchor);
-    returnOp.getStreamsMutable().assign(streamOutputs);
+    if (transientStreamBoundary) {
+      if (::llvm::any_of(streamOutputs,
+                         [](const ::mlir::Value &value) { return !value; }))
+        return graph.emitError(
+            "loom-lower-graph-memory: stream output binding was not lowered");
+      returnOp.getStreamsMutable().assign(streamOutputs);
+    }
     finalizeReturn(returnOp, result);
-    eraseTransientChannelArguments();
+    if (transientStreamBoundary)
+      eraseTransientChannelArguments();
     return ::mlir::success();
   }
 
@@ -494,6 +498,7 @@ private:
   ::mlir::OpBuilder builder;
   ::mlir::Block &entry;
   ::mlir::Operation *anchor;
+  bool transientStreamBoundary;
   ::llvm::DenseMap<::mlir::Value, ::mlir::Value> streamInputByChannel;
   ::llvm::DenseMap<::mlir::Value, unsigned> streamOutputByChannel;
   ::llvm::SmallVector<::mlir::Value, 4> streamOutputs;
