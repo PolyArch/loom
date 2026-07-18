@@ -38,6 +38,11 @@ Token boolValueToken(bool value) {
   return token;
 }
 
+static bool usesDoubleFloatText(mlir::FloatType type) {
+  return llvm::APFloat::isRepresentableBy(type.getFloatSemantics(),
+                                          llvm::APFloat::IEEEdouble());
+}
+
 static std::string typePrefix(mlir::Type type) {
   if (mlir::isa<mlir::NoneType>(type))
     return "none";
@@ -59,6 +64,21 @@ static std::string typePrefix(mlir::Type type) {
   return storage;
 }
 
+static std::string formatHexBitPattern(const llvm::APInt &bits,
+                                       unsigned minimumDigits = 0) {
+  llvm::SmallString<64> value;
+  bits.toString(value, 16, /*Signed=*/false);
+  std::string formatted = "0x";
+  if (minimumDigits > value.size())
+    formatted.append(minimumDigits - value.size(), '0');
+  formatted.append(value.begin(), value.end());
+  return formatted;
+}
+
+static unsigned hexDigitCount(unsigned bitWidth) {
+  return bitWidth / 4 + (bitWidth % 4 != 0);
+}
+
 std::string tokenToString(const Token &token, mlir::Type type) {
   if (token.kind == TokenKind::None)
     return "none";
@@ -77,9 +97,15 @@ std::string tokenToString(const Token &token, mlir::Type type) {
   }
   if (token.kind == TokenKind::Vector) {
     llvm::APInt bits = llvm::cantFail(tokenBitPattern(token, type));
-    llvm::SmallString<64> value;
-    bits.toString(value, 16, /*Signed=*/false);
-    return typePrefix(type) + ":0x" + value.str().str();
+    return typePrefix(type) + ":" + formatHexBitPattern(bits);
+  }
+  if (token.kind == TokenKind::Float) {
+    auto floating = mlir::cast<mlir::FloatType>(type);
+    if (!usesDoubleFloatText(floating)) {
+      llvm::APInt bits = llvm::cantFail(tokenBitPattern(token, type));
+      return typePrefix(type) + ":" +
+             formatHexBitPattern(bits, hexDigitCount(bits.getBitWidth()));
+    }
   }
   if (token.kind == TokenKind::Pointer)
     return typePrefix(type) + ":ptr+" +
@@ -184,8 +210,7 @@ llvm::Expected<Token> tokenFromBitPattern(const llvm::APInt &bits,
   }
   if (auto floating = mlir::dyn_cast<mlir::FloatType>(type)) {
     token.kind = TokenKind::Float;
-    if (llvm::APFloat::isRepresentableBy(floating.getFloatSemantics(),
-                                         llvm::APFloat::IEEEdouble())) {
+    if (usesDoubleFloatText(floating)) {
       token.floatValue =
           llvm::APFloat(floating.getFloatSemantics(), bits).convertToDouble();
     }
@@ -256,8 +281,9 @@ static llvm::Expected<llvm::APInt> parseIntegerBitPattern(llvm::StringRef raw,
   return bits;
 }
 
-static llvm::Expected<llvm::APInt> parsePackedBitPattern(llvm::StringRef raw,
-                                                         unsigned bitWidth) {
+static llvm::Expected<llvm::APInt>
+parsePackedBitPattern(llvm::StringRef raw, unsigned bitWidth,
+                      llvm::StringRef argumentKind) {
   raw = raw.trim();
   unsigned radix = 10;
   if (raw.consume_front("0x") || raw.consume_front("0X"))
@@ -265,18 +291,49 @@ static llvm::Expected<llvm::APInt> parsePackedBitPattern(llvm::StringRef raw,
   if (raw.empty() || raw.starts_with("+") || raw.starts_with("-"))
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "vector argument is not an unsigned packed integer");
+        "%s argument is not an unsigned packed integer",
+        argumentKind.str().c_str());
 
   llvm::APInt bits;
   if (raw.getAsInteger(radix, bits))
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "vector argument is not an unsigned packed integer");
+        "%s argument is not an unsigned packed integer",
+        argumentKind.str().c_str());
   if (bits.getActiveBits() > bitWidth)
     return llvm::createStringError(
         std::errc::result_out_of_range,
-        "vector argument does not fit its declared bit width");
+        "%s argument does not fit its declared bit width",
+        argumentKind.str().c_str());
   return bits.zextOrTrunc(bitWidth);
+}
+
+static llvm::Expected<llvm::APInt>
+parseExactFloatBitPattern(llvm::StringRef raw, mlir::FloatType type) {
+  raw = raw.trim();
+  llvm::StringRef payload = raw;
+  const std::string typeName = typePrefix(type);
+  if (!payload.consume_front("0x"))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "exact %s argument must use 0x-prefixed hexadecimal", typeName.c_str());
+
+  auto width = tokenTypeBitWidth(type);
+  if (!width)
+    return width.takeError();
+  const unsigned digits = hexDigitCount(*width);
+  if (payload.size() != digits)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "exact %s argument requires %u hexadecimal digits", typeName.c_str(),
+        digits);
+  if (!llvm::all_of(payload, [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F');
+      }))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "exact %s argument is not canonical hexadecimal", typeName.c_str());
+  return parsePackedBitPattern(raw, *width, "float");
 }
 
 llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type) {
@@ -313,7 +370,13 @@ llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type) {
                                      "index argument is not base-10");
     return integerValueToken(value);
   }
-  if (mlir::isa<mlir::FloatType>(type)) {
+  if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
+    if (!usesDoubleFloatText(floatType)) {
+      auto bits = parseExactFloatBitPattern(raw, floatType);
+      if (!bits)
+        return bits.takeError();
+      return tokenFromBitPattern(*bits, type);
+    }
     double value = 0.0;
     if (raw.getAsDouble(value))
       return llvm::createStringError(std::errc::invalid_argument,
@@ -324,7 +387,7 @@ llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type) {
     auto width = tokenTypeBitWidth(type);
     if (!width)
       return width.takeError();
-    auto bits = parsePackedBitPattern(raw, *width);
+    auto bits = parsePackedBitPattern(raw, *width, "vector");
     if (!bits)
       return bits.takeError();
     return tokenFromBitPattern(*bits, type);
