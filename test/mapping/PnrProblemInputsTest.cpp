@@ -3,7 +3,6 @@
 #include "PnR/FrozenRoutingGraph.h"
 #include "PnR/PnrProblemInputs.h"
 
-#include <functional>
 #include <type_traits>
 #include <utility>
 
@@ -25,16 +24,18 @@ struct HasDetachedTechMappingIdentityMember<
     T, std::void_t<decltype(std::declval<T>().techMappingIdentity)>>
     : std::true_type {};
 
-template <typename... Args>
-auto testPnrProblemInputsListInitialization(int)
-    -> decltype(PnrProblemInputs{std::declval<Args>()...}, std::true_type{});
+template <typename T> struct OwningInputProxy {
+  T value;
 
-template <typename... Args>
-auto testPnrProblemInputsListInitialization(...) -> std::false_type;
+  operator const T &() const { return value; }
+};
 
-template <typename... Args>
-inline constexpr bool canListInitializePnrProblemInputs =
-    decltype(testPnrProblemInputsListInitialization<Args...>(0))::value;
+template <typename Dataflow, typename TechMapping, typename Fabric,
+          typename Config>
+inline constexpr bool canConstructPnrProblemInputs =
+    std::is_constructible_v<PnrProblemInputs, Dataflow, TechMapping, Fabric,
+                            Config, ArtifactIdentity,
+                            MappingConstraintSetInput>;
 
 static_assert(!HasArtifactIdentityMember<PnrProblemInputs>::value);
 static_assert(!HasArtifactIdentityMember<ResolvedPnrConfigView>::value);
@@ -45,51 +46,43 @@ static_assert(std::is_move_constructible_v<ValidatedTechMapping>);
 static_assert(!std::is_copy_assignable_v<ValidatedTechMapping>);
 static_assert(!std::is_move_assignable_v<ValidatedTechMapping>);
 
-static_assert(canListInitializePnrProblemInputs<
+static_assert(canConstructPnrProblemInputs<
               const DataflowProgramView &, const ValidatedTechMapping &,
-              const FabricHardwareView &, const ResolvedPnrConfigView &,
-              ArtifactIdentity, MappingConstraintSetInput>);
-static_assert(!canListInitializePnrProblemInputs<
+              const FabricHardwareView &, const ResolvedPnrConfigView &>);
+static_assert(!canConstructPnrProblemInputs<
               DataflowProgramView &&, const ValidatedTechMapping &,
-              const FabricHardwareView &, const ResolvedPnrConfigView &,
-              ArtifactIdentity, MappingConstraintSetInput>);
-static_assert(!canListInitializePnrProblemInputs<
+              const FabricHardwareView &, const ResolvedPnrConfigView &>);
+static_assert(!canConstructPnrProblemInputs<
               const DataflowProgramView &, ValidatedTechMapping &&,
-              const FabricHardwareView &, const ResolvedPnrConfigView &,
-              ArtifactIdentity, MappingConstraintSetInput>);
-static_assert(!canListInitializePnrProblemInputs<
+              const FabricHardwareView &, const ResolvedPnrConfigView &>);
+static_assert(!canConstructPnrProblemInputs<
               const DataflowProgramView &, const ValidatedTechMapping &,
-              FabricHardwareView &&, const ResolvedPnrConfigView &,
-              ArtifactIdentity, MappingConstraintSetInput>);
-static_assert(!canListInitializePnrProblemInputs<
+              FabricHardwareView &&, const ResolvedPnrConfigView &>);
+static_assert(!canConstructPnrProblemInputs<
               const DataflowProgramView &, const ValidatedTechMapping &,
-              const FabricHardwareView &, ResolvedPnrConfigView &&,
-              ArtifactIdentity, MappingConstraintSetInput>);
+              const FabricHardwareView &, ResolvedPnrConfigView &&>);
+static_assert(
+    !canConstructPnrProblemInputs<
+        OwningInputProxy<DataflowProgramView> &&, const ValidatedTechMapping &,
+        const FabricHardwareView &, const ResolvedPnrConfigView &>);
+static_assert(
+    !canConstructPnrProblemInputs<
+        const DataflowProgramView &, OwningInputProxy<ValidatedTechMapping> &&,
+        const FabricHardwareView &, const ResolvedPnrConfigView &>);
+static_assert(!canConstructPnrProblemInputs<
+              const DataflowProgramView &, const ValidatedTechMapping &,
+              OwningInputProxy<FabricHardwareView> &&,
+              const ResolvedPnrConfigView &>);
+static_assert(!canConstructPnrProblemInputs<
+              const DataflowProgramView &, const ValidatedTechMapping &,
+              const FabricHardwareView &,
+              OwningInputProxy<ResolvedPnrConfigView> &&>);
 
-using MakePnrProblemInputsFunction = decltype(&makePnrProblemInputs);
-
-static_assert(std::is_invocable_v<
-              MakePnrProblemInputsFunction, const TestCase &,
-              const ValidatedTechMapping &, const ResolvedPnrConfigView &>);
-static_assert(!std::is_invocable_v<MakePnrProblemInputsFunction, TestCase &&,
-                                   const ValidatedTechMapping &,
-                                   const ResolvedPnrConfigView &>);
-static_assert(!std::is_invocable_v<MakePnrProblemInputsFunction,
-                                   const TestCase &, ValidatedTechMapping &&,
-                                   const ResolvedPnrConfigView &>);
-static_assert(!std::is_invocable_v<
-              MakePnrProblemInputsFunction, const TestCase &,
-              const ValidatedTechMapping &, ResolvedPnrConfigView &&>);
-
-PnrProblemInputs makeProblemInputs(
-    std::reference_wrapper<const TestCase> testCaseBorrow,
-    std::reference_wrapper<const ValidatedTechMapping> mappingBorrow,
-    std::reference_wrapper<const ResolvedPnrConfigView> configBorrow,
-    ArtifactIdentity resolvedConfigIdentity = artifact(4),
-    ArtifactIdentity constraintSetIdentity = artifact(5)) {
-  const TestCase &testCase = testCaseBorrow.get();
-  const ValidatedTechMapping &mapping = mappingBorrow.get();
-  const ResolvedPnrConfigView &config = configBorrow.get();
+PnrProblemInputs
+makeProblemInputs(TestCase &testCase, ValidatedTechMapping &mapping,
+                  ResolvedPnrConfigView &config,
+                  ArtifactIdentity resolvedConfigIdentity = artifact(4),
+                  ArtifactIdentity constraintSetIdentity = artifact(5)) {
   return PnrProblemInputs{testCase.dataflow,
                           mapping,
                           testCase.fabric,

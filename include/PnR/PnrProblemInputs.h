@@ -5,9 +5,9 @@
 
 #include "llvm/Support/Error.h"
 
-#include <functional>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 
 namespace loom::mapping {
@@ -26,15 +26,23 @@ struct MappingConstraintSetInput {
 };
 
 struct PnrProblemInputs {
-  PnrProblemInputs(
-      std::reference_wrapper<const mapping::DataflowProgramView> dataflow,
-      std::reference_wrapper<const mapping::ValidatedTechMapping> techMapping,
-      std::reference_wrapper<const mapping::FabricHardwareView> fabric,
-      std::reference_wrapper<const ResolvedPnrConfigView> config,
-      mapping::ArtifactIdentity resolvedConfigIdentity,
-      MappingConstraintSetInput constraints)
-      : dataflow(dataflow.get()), techMapping(techMapping.get()),
-        fabric(fabric.get()), config(config.get()),
+  template <
+      typename Dataflow, typename TechMapping, typename Fabric, typename Config,
+      std::enable_if_t<std::is_same_v<std::remove_const_t<Dataflow>,
+                                      mapping::DataflowProgramView> &&
+                           std::is_same_v<std::remove_const_t<TechMapping>,
+                                          mapping::ValidatedTechMapping> &&
+                           std::is_same_v<std::remove_const_t<Fabric>,
+                                          mapping::FabricHardwareView> &&
+                           std::is_same_v<std::remove_const_t<Config>,
+                                          ResolvedPnrConfigView>,
+                       int> = 0>
+  PnrProblemInputs(Dataflow &dataflow, TechMapping &techMapping, Fabric &fabric,
+                   Config &config,
+                   mapping::ArtifactIdentity resolvedConfigIdentity,
+                   MappingConstraintSetInput constraints)
+      : dataflow(dataflow), techMapping(techMapping), fabric(fabric),
+        config(config),
         resolvedConfigIdentity(std::move(resolvedConfigIdentity)),
         constraints(std::move(constraints)) {}
 

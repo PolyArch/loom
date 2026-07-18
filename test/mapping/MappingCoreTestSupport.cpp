@@ -79,13 +79,9 @@ ValidatedTechMapping validateCase(const char *test, const TestCase &testCase) {
       test, validateTechMapping(testCase.techMappingIdentity, testCase.mapping,
                                 testCase.dataflow, testCase.fabric));
 }
-PnrProblemInputs makePnrProblemInputs(
-    std::reference_wrapper<const TestCase> testCaseBorrow,
-    std::reference_wrapper<const ValidatedTechMapping> mappingBorrow,
-    std::reference_wrapper<const ResolvedPnrConfigView> configBorrow) {
-  const TestCase &testCase = testCaseBorrow.get();
-  const ValidatedTechMapping &mapping = mappingBorrow.get();
-  const ResolvedPnrConfigView &config = configBorrow.get();
+PnrProblemInputs makePnrProblemInputs(TestCase &testCase,
+                                      ValidatedTechMapping &mapping,
+                                      ResolvedPnrConfigView &config) {
   return PnrProblemInputs{
       testCase.dataflow,
       mapping,
