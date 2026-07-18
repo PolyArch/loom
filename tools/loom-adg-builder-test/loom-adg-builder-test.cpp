@@ -95,6 +95,35 @@ static llvm::cl::opt<std::string>
     outputPath("output", llvm::cl::desc("output Fabric MLIR path"),
                llvm::cl::Required);
 
+static llvm::Error writeTemporalMemCapacityAnchors(llvm::raw_ostream &out) {
+  loom::adg::ModuleBuilder module("temporal_mem_capacity_anchors_adg");
+  module.addInput("mgr", "memref<?x!fabric.bits<32>>")
+      .addInput("addr0", "!fabric.bits_tag<32, 4>")
+      .addInput("ctrl0", "!fabric.bits_tag<0, 4>")
+      .addInput("addr1", "!fabric.bits_tag<32, 4>")
+      .addInput("ctrl1", "!fabric.bits_tag<0, 4>")
+      .addInput("wide_addr", "!fabric.bits_tag<32, 64>")
+      .addInput("wide_ctrl", "!fabric.bits_tag<0, 64>");
+
+  loom::adg::MemSpec capacity(
+      loom::adg::Schedule::Temporal, {"mgr"}, {},
+      loom::adg::MemDispatchEligibility{{{0}, {0}}, {}});
+  capacity.loads = {{"addr0", "ctrl0"}, {"addr1", "ctrl1"}};
+  capacity.dataWidth = 32;
+  capacity.temporalTagWidth = 4;
+  capacity.temporalOperationTableSize = 17;
+  module.addMem(std::move(capacity));
+
+  loom::adg::MemSpec wideTag(loom::adg::Schedule::Temporal, {"mgr"}, {},
+                             loom::adg::MemDispatchEligibility{{{0}}, {}});
+  wideTag.loads = {{"wide_addr", "wide_ctrl"}};
+  wideTag.dataWidth = 32;
+  wideTag.temporalTagWidth = 64;
+  wideTag.temporalOperationTableSize = 1;
+  module.addMem(std::move(wideTag));
+  return module.print(out);
+}
+
 int main(int argc, char **argv) {
   llvm::cl::ParseCommandLineOptions(
       argc, argv,
@@ -145,8 +174,12 @@ int main(int argc, char **argv) {
       return loom::adg::writeSharedVectorMathAdg(out);
     if (sharedVectorMesh)
       return loom::adg::writeSharedVectorMeshAdg(out);
-    if (fullSpatialCore)
-      return loom::adg::writeFullSpatialCoreAdg(out);
+    if (fullSpatialCore) {
+      if (llvm::Error err = loom::adg::writeFullSpatialCoreAdg(out))
+        return err;
+      out << '\n';
+      return writeTemporalMemCapacityAnchors(out);
+    }
     if (heterogeneousSoc)
       return loom::adg::writeHeterogeneousSocAdg(out);
     if (!topologyMatrixCase.empty())

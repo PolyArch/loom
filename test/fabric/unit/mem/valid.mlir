@@ -73,6 +73,48 @@ fabric.module @mem_temporal(
   fabric.yield
 }
 
+// K=17 exceeds 2^T but fits the two physical match domains. This requires the
+// P multiplier and permits tag reuse across physical ports.
+
+// CHECK-LABEL: fabric.mem @TemporalCrossPortCapacity [temporal]
+// CHECK-DAG: load_group_size = 2 : i32
+// CHECK-DAG: tag_width = 4 : i32
+// CHECK-DAG: operation_table_size = 17 : i32
+fabric.mem @TemporalCrossPortCapacity [temporal]
+    (memref<?x!fabric.bits<32>>,
+     !fabric.bits_tag<32, 4>, !fabric.bits_tag<0, 4>,
+     !fabric.bits_tag<32, 4>, !fabric.bits_tag<0, 4>)
+    -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<0, 4>,
+        !fabric.bits_tag<32, 4>, !fabric.bits_tag<0, 4>)
+    [{load_group_size = 2 : i32,
+      store_group_size = 0 : i32,
+      data_width = 32 : i32,
+      tag_width = 4 : i32,
+      operation_table_size = 17 : i32,
+      dispatch_eligibility = {
+        operation_port_requests = [[0 : i32], [0 : i32]],
+        subordinate_requests = []
+      }}]
+
+// T=64 reaches the overflow-safe capacity branch without requiring a large K.
+
+// CHECK-LABEL: fabric.mem @TemporalWideTagCapacity [temporal]
+// CHECK-DAG: tag_width = 64 : i32
+// CHECK-DAG: operation_table_size = 1 : i32
+fabric.mem @TemporalWideTagCapacity [temporal]
+    (memref<?x!fabric.bits<32>>,
+     !fabric.bits_tag<32, 64>, !fabric.bits_tag<0, 64>)
+    -> (!fabric.bits_tag<32, 64>, !fabric.bits_tag<0, 64>)
+    [{load_group_size = 1 : i32,
+      store_group_size = 0 : i32,
+      data_width = 32 : i32,
+      tag_width = 64 : i32,
+      operation_table_size = 1 : i32,
+      dispatch_eligibility = {
+        operation_port_requests = [[0 : i32]],
+        subordinate_requests = []
+      }}]
+
 // Named templates use the same signature-derived endpoint layout.
 
 // CHECK-LABEL: fabric.mem @MemTemplate [spatial]

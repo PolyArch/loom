@@ -348,23 +348,29 @@ fabric.module @mem_subordinate_dispatch_size_mismatch(
 }
 
 // -----
-// One physical match domain with one tag bit represents only two rows.
+// Two physical match domains with one tag bit represent only four rows.
 fabric.module @mem_temporal_resident_capacity(
     %mgr : memref<?x!fabric.bits<32>>,
-    %addr : !fabric.bits_tag<32, 1>,
-    %ctrl : !fabric.bits_tag<0, 1>) {
-  // expected-error @+1 {{operation_table_size 3 exceeds representable temporal row capacity 2}}
-  %data, %done = fabric.mem [temporal] mgr(%mgr) load(%addr, %ctrl)
-      [{load_group_size = 1 : i32, store_group_size = 0 : i32,
+    %addr0 : !fabric.bits_tag<32, 1>,
+    %ctrl0 : !fabric.bits_tag<0, 1>,
+    %addr1 : !fabric.bits_tag<32, 1>,
+    %ctrl1 : !fabric.bits_tag<0, 1>) {
+  // expected-error @+2 {{operation_table_size 5 exceeds representable temporal row capacity 4}}
+  %data0, %done0, %data1, %done1 =
+      fabric.mem [temporal] mgr(%mgr)
+        load(%addr0, %ctrl0, %addr1, %ctrl1)
+      [{load_group_size = 2 : i32, store_group_size = 0 : i32,
         data_width = 32 : i32, tag_width = 1 : i32,
-        operation_table_size = 3 : i32,
+        operation_table_size = 5 : i32,
         dispatch_eligibility = {
-          operation_port_requests = [[0 : i32]],
+          operation_port_requests = [[0 : i32], [0 : i32]],
           subordinate_requests = []
         }}]
       : (memref<?x!fabric.bits<32>>,
+         !fabric.bits_tag<32, 1>, !fabric.bits_tag<0, 1>,
          !fabric.bits_tag<32, 1>, !fabric.bits_tag<0, 1>)
-      -> (!fabric.bits_tag<32, 1>, !fabric.bits_tag<0, 1>)
+      -> (!fabric.bits_tag<32, 1>, !fabric.bits_tag<0, 1>,
+          !fabric.bits_tag<32, 1>, !fabric.bits_tag<0, 1>)
   fabric.yield
 }
 

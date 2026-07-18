@@ -23,3 +23,14 @@
 // DISPATCH: fabric.mem [temporal]
 // DISPATCH-DAG: operation_port_requests = {{\[\[0 : i32, 1 : i32\], \[0 : i32, 1 : i32\]\]}}
 // DISPATCH-DAG: subordinate_requests = {{\[\[0 : i32, 1 : i32\], \[0 : i32, 1 : i32\]\]}}
+
+// HARDWARE-LABEL: fabric.module @temporal_mem_capacity_anchors_adg(
+// HARDWARE: fabric.mem [temporal]
+// HARDWARE-DAG: load_group_size = 2 : i32
+// HARDWARE-DAG: tag_width = 4 : i32
+// HARDWARE-DAG: operation_table_size = 17 : i32
+
+// HARDWARE: fabric.mem [temporal]
+// HARDWARE-DAG: load_group_size = 1 : i32
+// HARDWARE-DAG: tag_width = 64 : i32
+// HARDWARE-DAG: operation_table_size = 1 : i32
