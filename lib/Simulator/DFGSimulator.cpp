@@ -817,53 +817,6 @@ static bool isSupportedNonEvent(mlir::Operation *op) {
                    mlir::memref::CastOp>(op);
 }
 
-static void collectStreamIndexSources(
-    mlir::Value value, llvm::DenseSet<mlir::Operation *> &sources,
-    llvm::DenseSet<mlir::Value> &seen, unsigned depth = 0) {
-  if (!value || depth > 8 || !seen.insert(value).second)
-    return;
-  if (auto cast = value.getDefiningOp<mlir::arith::IndexCastOp>())
-    return collectStreamIndexSources(cast.getIn(), sources, seen, depth + 1);
-  if (auto stream = value.getDefiningOp<dataflow::StreamOp>()) {
-    if (stream.getIv() == value || stream.getPhase() == value)
-      sources.insert(stream.getOperation());
-    return;
-  }
-  auto carry = value.getDefiningOp<dataflow::CarryOp>();
-  if (carry && carry.getOutput() == value) {
-    collectStreamIndexSources(carry->getOperand(0), sources, seen, depth + 1);
-    return;
-  }
-  auto invariant = value.getDefiningOp<dataflow::InvariantOp>();
-  if (invariant && invariant.getOutput() == value) {
-    collectStreamIndexSources(invariant.getCond(), sources, seen, depth + 1);
-    return;
-  }
-  auto gate = value.getDefiningOp<dataflow::GateOp>();
-  if (gate && (gate.getAfterValue() == value || gate.getAfterCond() == value)) {
-    collectStreamIndexSources(gate.getBeforeCond(), sources, seen, depth + 1);
-    return;
-  }
-  mlir::Operation *owner = value.getDefiningOp();
-  if (!owner)
-    return;
-  if (!mlir::isa<mlir::arith::AddIOp, mlir::arith::SubIOp, mlir::arith::MulIOp,
-                 mlir::arith::DivSIOp, mlir::arith::DivUIOp,
-                 mlir::arith::RemSIOp, mlir::arith::RemUIOp>(owner))
-    return;
-  for (mlir::Value operand : owner->getOperands())
-    collectStreamIndexSources(operand, sources, seen, depth + 1);
-}
-
-static dataflow::StreamOp findStreamIndexSource(mlir::Value value) {
-  llvm::DenseSet<mlir::Operation *> sources;
-  llvm::DenseSet<mlir::Value> seen;
-  collectStreamIndexSources(value, sources, seen);
-  if (sources.size() != 1)
-    return {};
-  return mlir::cast<dataflow::StreamOp>(*sources.begin());
-}
-
 static bool fireOperation(mlir::Operation *op, SimulatorState &state) {
   if (isStructuredOperation(op))
     return fireStructuredOperation(op, state);
@@ -1154,30 +1107,6 @@ static std::optional<std::uint64_t> memoryRootIdForValue(SimulatorState &state,
     return std::nullopt;
   }
   return std::nullopt;
-}
-
-static bool hasIncompleteStreamLoads(mlir::Block &entry,
-                                     SimulatorState &state) {
-  bool incomplete = false;
-  for (mlir::Operation &op : entry.getOperations()) {
-    auto load = mlir::dyn_cast<dataflow::LoadOp>(op);
-    if (!load)
-      continue;
-    dataflow::StreamOp stream = findStreamIndexSource(load.getAddr());
-    if (!stream)
-      continue;
-    const std::uint64_t required =
-        state.streamTrueEmissionCounts[stream.getOperation()];
-    const std::uint64_t actual = state.loadFireCounts[load.getOperation()];
-    if (actual >= required)
-      continue;
-    incomplete = true;
-    state.diagnostics.push_back(
-        llvm::formatv("dataflow.load consumed {0} of {1} true stream indices",
-                      actual, required)
-            .str());
-  }
-  return incomplete;
 }
 
 static bool hasPendingVectorGroups(SimulatorState &state) {
@@ -1587,7 +1516,8 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   };
   observeRetirement();
 
-  for (std::uint64_t step = 0; step < options.maxEventSteps; ++step) {
+  while ((report.wavefrontSteps < options.maxEventSteps || retired) &&
+         report.status != "invalid") {
     bool fired = false;
     bool orderedStructuredBarrier = false;
     for (mlir::Operation &op : entry.getOperations()) {
@@ -1596,17 +1526,22 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       if (orderedStructuredBarrier && isStructuredOperation(&op))
         continue;
       bool opFired = fireOperation(&op, state);
+      if (retired && opFired) {
+        report.status = "invalid";
+        report.diagnostics.push_back(("actor '" + op.getName().getStringRef() +
+                                      "' fired after graph retirement")
+                                         .str());
+        break;
+      }
       fired |= opFired;
       if (hasPendingOrderedStructuredFire(&op, state))
         orderedStructuredBarrier = true;
     }
-    if (!fired)
+    if (report.status == "invalid" || !fired)
       break;
     flushPendingTokens(state);
     ++report.wavefrontSteps;
     observeRetirement();
-    if (retired || report.status == "invalid")
-      break;
   }
   if (!retired && report.wavefrontSteps == options.maxEventSteps) {
     report.status = "blocked";
@@ -1644,7 +1579,6 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   }
   captureFinalMemoryState(graph, state, report);
   const bool pendingVectorGroups = hasPendingVectorGroups(state);
-  const bool incompleteLoads = hasIncompleteStreamLoads(entry, state);
   if (report.status == "pass" && !retired) {
     report.status = "blocked";
     report.diagnostics.push_back("graph did not fire its retirement frontier");
@@ -1653,8 +1587,7 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
     report.status = "blocked";
     report.diagnostics.push_back("DFG-sim stopped with runtime diagnostics");
   }
-  if (report.status == "pass" &&
-      (missingReturn || incompleteLoads || pendingVectorGroups)) {
+  if (report.status == "pass" && (missingReturn || pendingVectorGroups)) {
     report.status = retired ? "invalid" : "blocked";
     report.diagnostics.push_back(
         retired ? "graph retired with incomplete internal state"

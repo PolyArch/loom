@@ -27,7 +27,7 @@ struct StreamChoiceLeg {
 struct ScheduledStreamEndpoint {
   ::mlir::Operation *endpoint;
   ::llvm::SmallVector<StreamChoiceLeg, 4> path;
-  ::llvm::SmallVector<::mlir::Operation *, 2> repeats;
+  ::mlir::Operation *repeat = nullptr;
 };
 
 bool isStreamEndpoint(::mlir::Operation *op, ::mlir::Value channel,
@@ -147,7 +147,8 @@ void collectScheduledEndpoints(
     ::llvm::SmallVectorImpl<StreamChoiceLeg> &path,
     ::llvm::SmallVectorImpl<ScheduledStreamEndpoint> &endpoints) {
   if (schedule.kind == StreamScheduleNode::Kind::Endpoint) {
-    endpoints.push_back({schedule.endpoint, {path.begin(), path.end()}, {}});
+    endpoints.push_back(
+        {schedule.endpoint, {path.begin(), path.end()}, nullptr});
     return;
   }
   if (schedule.kind == StreamScheduleNode::Kind::Choice) {
@@ -164,8 +165,10 @@ void collectScheduledEndpoints(
     assert(schedule.children.size() == 1 && "stream repeat must have one body");
     size_t begin = endpoints.size();
     collectScheduledEndpoints(*schedule.children.front(), path, endpoints);
+    // The innermost repeat selector already implies all structured ancestors.
     for (size_t index = begin; index < endpoints.size(); ++index)
-      endpoints[index].repeats.push_back(schedule.repeat);
+      if (!endpoints[index].repeat)
+        endpoints[index].repeat = schedule.repeat;
     return;
   }
   for (const auto &child : schedule.children)
@@ -192,7 +195,7 @@ materializeEndpointActivity(const ScheduledStreamEndpoint &endpoint,
     materialization.choiceSelectorUses.push_back(
         {leg.choice, active.getDefiningOp()});
   }
-  for (::mlir::Operation *repeat : ::llvm::reverse(endpoint.repeats)) {
+  if (endpoint.repeat) {
     setInsertionPoint(builder, anchor);
     auto placeholder = ::mlir::arith::ConstantOp::create(
         builder, loc, i1, builder.getBoolAttr(false));
@@ -201,7 +204,7 @@ materializeEndpointActivity(const ScheduledStreamEndpoint &endpoint,
     active = mux(placeholder, ::mlir::ValueRange{inactive, active}, loc,
                  builder, anchor);
     materialization.repeatSelectorUses.push_back(
-        {repeat, active.getDefiningOp(), placeholder});
+        {endpoint.repeat, active.getDefiningOp(), placeholder});
   }
   return active;
 }

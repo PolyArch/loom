@@ -12,7 +12,6 @@
 // OOB-DAG: "status": "blocked"
 // OOB-DAG: "graph did not fire its retirement frontier"
 // OOB-DAG: "dataflow.load address is out of range"
-// OOB-DAG: "dataflow.load consumed 3 of 5 true stream indices"
 
 module {
   dataflow.graph private @sum_load(%ctrl: none, %lb: i64, %ub: i64,

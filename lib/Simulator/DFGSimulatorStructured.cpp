@@ -438,7 +438,6 @@ static bool assignLocalDataflowLoad(dataflow::LoadOp op, SimulatorState &state,
     return false;
   locals[op.getData()] = *value;
   locals[op.getDone()] = noneToken();
-  ++state.loadFireCounts[op.getOperation()];
   if (hasComputedAddress(op.getAddr()))
     state.memoryAddressScore += kLoadAddressScore;
   return recordEvent(state, op->getName().getStringRef());

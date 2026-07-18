@@ -529,8 +529,7 @@ std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
 }
 
 std::optional<Token> readMemoryElement(const MemoryView &view,
-                                       std::size_t index,
-                                       SimulatorState &state,
+                                       std::size_t index, SimulatorState &state,
                                        llvm::StringRef opName) {
   if (!view.memory->initialized[index]) {
     state.diagnostics.push_back((opName + " reads uninitialized memory").str());
@@ -565,7 +564,6 @@ static bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
     return false;
   emitToken(state, op.getData(), *value);
   emitToken(state, op.getDone(), noneToken());
-  ++state.loadFireCounts[op.getOperation()];
   if (hasComputedAddress(op.getAddr()))
     state.memoryAddressScore += kLoadAddressScore;
   return recordEvent(state, op->getName().getStringRef());
@@ -586,8 +584,8 @@ static bool fireLLVMLoad(mlir::LLVM::LoadOp op, SimulatorState &state) {
                           op.getOperation(), "llvm.load");
   if (!index)
     return false;
-  std::optional<Token> value = readMemoryElement(
-      viewOrErr->pointer, *index, state, "llvm.load");
+  std::optional<Token> value =
+      readMemoryElement(viewOrErr->pointer, *index, state, "llvm.load");
   if (!value)
     return false;
   emitToken(state, op->getResult(0), *value);

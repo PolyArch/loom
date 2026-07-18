@@ -8,10 +8,12 @@ byte-for-byte with the checked-in expected output.
 
 The manifest-driven IR runner provides source-to-IR integration coverage. The
 default `raise` tier contains `vecadd`, `matmul`, `spmm`, `gather`, and
-`edge_update`. The `dfg` tier contains `vecadd` and `matmul`; every selected
-case must publish a native-valid canonical Dataflow artifact.
-The runner compiles only the source whose stem is `main_func`; the native runner remains
-responsible for both `main_func` and `main_inline` variants.
+`edge_update`. No manifest case currently belongs to the `dfg` tier. A default
+source-to-DFG tier requires a legal schedule provenance or DSE selection path;
+unsupported explicit requests fail closed instead of publishing an incomplete
+graph. The runner compiles only the source whose stem is `main_func`; the
+native runner remains responsible for both `main_func` and `main_inline`
+variants.
 
 These programs intentionally have no dependency on the top-level Loom build
 or libraries. Stock `gcc`/`g++` and compatible drop-in drivers can compile the
@@ -69,23 +71,19 @@ Run the five default source-to-SCF cases:
 python3 test/app/ir_runner.py --stage raise
 ```
 
-Run the default source-to-DFG cases:
-
-```sh
-python3 test/app/ir_runner.py --stage dfg
-```
-
 Use one or more explicit `--case` options to run named manifest entries:
 
 ```sh
-python3 test/app/ir_runner.py --stage dfg \
+python3 test/app/ir_runner.py --stage raise \
   --case vecadd \
-  --case byte_swap
+  --case matmul
 ```
 
 Explicit cases do not need to belong to the selected stage's default tier.
-This permits focused PnR, simulator, and artifact consumers to request IR for
-any manifest case without broadening the default integration set.
+This permits focused consumers to request IR without broadening the default
+integration set. An explicit `--stage dfg --case matmul` request is the
+fail-closed provenance anchor and returns a nonzero status until a legal
+schedule selection path is available.
 
 The IR runner executes cases sequentially and applies each case's
 `compiler_flags`. It writes these artifacts below
@@ -125,13 +123,14 @@ provide overrides before the `gcc` and `g++` defaults.
 ## Manifest controls
 
 `--manifest` selects an alternate manifest. Each case entry supplies its
-language, ordered source list, expected executable names, expected stdout
-file, compiler flags, and link flags. The source and executable lists must
-have equal length. Every case carries the `run` tier. The `raise` and `dfg`
-tiers select the default IR integration cases; explicit IR requests are not
-restricted by those tiers. Successful `loom-lower` publication is the DFG
-semantic validity gate; the runner retains only artifact and parseability
-checks after that native validation.
+language, ordered source list, expected executable names, expected stdout file,
+compiler flags, and link flags. The source and executable lists must have equal
+length. Every case carries the `run` tier. The `raise` tier selects the default
+IR integration cases; the `dfg` tier is empty until source lowering can supply
+legal schedule provenance. Explicit IR requests are not restricted by those
+tiers. Successful `loom-lower` publication is the DFG semantic validity gate;
+the runner retains only artifact and parseability checks after that native
+validation.
 
 The repository-wide `test/corpus_inventory.py` command validates this manifest
 and combines its cases with the two CMSIS suites. Running `list` without case

@@ -2,6 +2,8 @@
 // RUN: FileCheck %s --check-prefix=STATEFUL < %t.stateful.json
 // RUN: loom-dfg-sim %s --graph stream_output --arg 0=0 --arg 1=3 --arg 2=1 --output %t.stream.json
 // RUN: FileCheck %s --check-prefix=STREAM < %t.stream.json
+// RUN: loom-dfg-sim %s --graph stream_i8_signed_wrap --arg 0=127 --arg 1=124 --arg 2=1 --output %t.i8-wrap.json
+// RUN: FileCheck %s --check-prefix=I8-WRAP < %t.i8-wrap.json
 
 // STATEFUL-DAG: "graph": "stateful_close"
 // STATEFUL-DAG: "status": "pass"
@@ -17,6 +19,14 @@
 // STREAM-DAG: "i32:0"
 // STREAM-DAG: "i32:2"
 // STREAM-DAG: "i1:false"
+
+// I8-WRAP-DAG: "graph": "stream_i8_signed_wrap"
+// I8-WRAP-DAG: "status": "pass"
+// I8-WRAP-DAG: "dynamic_work_items": 1
+// I8-WRAP-DAG: "i8:127"
+// I8-WRAP-DAG: "i1:true"
+// I8-WRAP-DAG: "i1:false"
+// I8-WRAP-NOT: "i8:-128"
 
 module {
   dataflow.graph private @stateful_close(
@@ -64,6 +74,19 @@ module {
     %close:2 = dataflow.demux %phase, %units
         : (i1, none) -> (none, none)
     dataflow.graph.return values() streams(%iv, %phase : i32, i1) memories()
+        complete(%close#0 : none)
+  }
+
+  dataflow.graph private @stream_i8_signed_wrap(
+      %start: none, %lower: i8, %upper: i8, %step: i8) -> (i8, i1)
+      attributes {input_segments = array<i32: 3, 0, 0>,
+                  result_segments = array<i32: 0, 2, 0>} {
+    %iv, %phase = dataflow.stream %lower, %upper, %step
+        step add while sgt : i8
+    %units = dataflow.invariant %phase, %start : none
+    %close:2 = dataflow.demux %phase, %units
+        : (i1, none) -> (none, none)
+    dataflow.graph.return values() streams(%iv, %phase : i8, i1) memories()
         complete(%close#0 : none)
   }
 }

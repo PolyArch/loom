@@ -140,8 +140,8 @@ mlir::Value graphStartForArgument(mlir::Value value) {
   return graph.getStart();
 }
 
-mlir::Value getOneShotActivation(mlir::Value value,
-                                 llvm::DenseSet<mlir::Value> &visited) {
+mlir::Value getActivationSource(mlir::Value value,
+                                llvm::DenseSet<mlir::Value> &visited) {
   if (!value || !visited.insert(value).second)
     return {};
   if (mlir::Value start = graphStartForArgument(value))
@@ -152,6 +152,8 @@ mlir::Value getOneShotActivation(mlir::Value value,
     return {};
   if (auto constant = llvm::dyn_cast<dataflow::ConstantOp>(def))
     return constant.getCtrl();
+  if (auto gate = llvm::dyn_cast<dataflow::GateOp>(def))
+    return value == gate.getAfterValue() ? gate.getBeforeCond() : mlir::Value{};
   if (llvm::isa<mlir::arith::ConstantOp>(def))
     return {};
   if (llvm::isa<dataflow::StreamOp, dataflow::CarryOp, dataflow::InvariantOp,
@@ -167,7 +169,7 @@ mlir::Value getOneShotActivation(mlir::Value value,
     if (operand.getDefiningOp<mlir::arith::ConstantOp>())
       continue;
     llvm::DenseSet<mlir::Value> branchVisited = visited;
-    mlir::Value activation = getOneShotActivation(operand, branchVisited);
+    mlir::Value activation = getActivationSource(operand, branchVisited);
     if (!activation)
       return {};
     if (common && activation != common)
@@ -177,9 +179,9 @@ mlir::Value getOneShotActivation(mlir::Value value,
   return common;
 }
 
-mlir::Value getOneShotActivation(mlir::Value value) {
+mlir::Value getActivationSource(mlir::Value value) {
   llvm::DenseSet<mlir::Value> visited;
-  return getOneShotActivation(value, visited);
+  return getActivationSource(value, visited);
 }
 
 mlir::Value unwrapSelectorOrdinal(mlir::Value selector, unsigned arity) {
@@ -895,9 +897,9 @@ std::optional<mlir::Value>
 dataflow::semantics::getStreamActivation(dataflow::StreamOp stream) {
   if (!stream)
     return std::nullopt;
-  mlir::Value init = getOneShotActivation(stream.getInit());
-  mlir::Value limit = getOneShotActivation(stream.getLimit());
-  mlir::Value step = getOneShotActivation(stream.getStep());
+  mlir::Value init = getActivationSource(stream.getInit());
+  mlir::Value limit = getActivationSource(stream.getLimit());
+  mlir::Value step = getActivationSource(stream.getStep());
   if (!init || init != limit || init != step)
     return std::nullopt;
   return init;

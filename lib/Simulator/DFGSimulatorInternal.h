@@ -90,7 +90,6 @@ struct SimulatorState {
   llvm::DenseMap<mlir::Operation *, LoopState> invariantStates;
   llvm::DenseMap<mlir::Operation *, ParallelizeState> parallelizeStates;
   llvm::DenseSet<mlir::Operation *> gateContinueStates;
-  llvm::DenseMap<mlir::Operation *, std::uint64_t> loadFireCounts;
   llvm::DenseSet<mlir::Operation *> oneShotOps;
   llvm::DenseSet<mlir::Operation *> terminalPrimitiveOps;
   llvm::DenseMap<mlir::Operation *, std::uint64_t> structuredEffectFireCounts;
@@ -135,11 +134,9 @@ std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
                                                mlir::Operation *scope,
                                                llvm::StringRef opName);
 std::optional<Token> readMemoryElement(const MemoryView &view,
-                                       std::size_t index,
-                                       SimulatorState &state,
+                                       std::size_t index, SimulatorState &state,
                                        llvm::StringRef opName);
-void writeMemoryElement(const MemoryView &view, std::size_t index,
-                        Token value);
+void writeMemoryElement(const MemoryView &view, std::size_t index, Token value);
 bool isSupportedLLVMCall(mlir::LLVM::CallOp op);
 bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
                                  llvm::ArrayRef<Token> operands, Token &result);

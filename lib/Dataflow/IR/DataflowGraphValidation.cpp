@@ -593,6 +593,9 @@ private:
     mlir::Operation *def = result ? result.getOwner() : nullptr;
     if (!def)
       return false;
+    if (truePhaseOnly &&
+        isNestedGateCloseAligned(value, selector, lane, phase, assumption))
+      return true;
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
       if (demux.getSel() == selector && result.getResultNumber() == lane) {
         if (!isGraphStreamInput(demux.getInput())) {
@@ -647,6 +650,74 @@ private:
         return false;
     }
     return hasSelectedOperand;
+  }
+
+  bool initializeNestedActivation(dataflow::StreamOp stream,
+                                  mlir::Value parentPhase,
+                                  mlir::Value parentAssumption,
+                                  GraphCardinalityAnalysis &activation) {
+    // Parent-aligned inputs are exact-one within each child activation.
+    auto assumeExact = [&](mlir::Value value) {
+      llvm::DenseSet<mlir::Value> visited;
+      if (!isAligned(value, parentPhase, parentAssumption,
+                     /*truePhaseOnly=*/true, visited))
+        return false;
+      activation.exactOneAssumptions.insert(value);
+      return true;
+    };
+    if (!assumeExact(stream.getInit()) || !assumeExact(stream.getLimit()) ||
+        !assumeExact(stream.getStep()))
+      return false;
+
+    for (mlir::Operation &op : graph.getBody().front().without_terminator()) {
+      if (auto carry = llvm::dyn_cast<dataflow::CarryOp>(op)) {
+        if (carry.getCond() == stream.getPhase() &&
+            !assumeExact(carry.getInit()))
+          return false;
+        continue;
+      }
+      if (auto invariant = llvm::dyn_cast<dataflow::InvariantOp>(op))
+        if (invariant.getCond() == stream.getPhase() &&
+            !assumeExact(invariant.getInit()))
+          return false;
+    }
+    return true;
+  }
+
+  bool isNestedCloseAligned(dataflow::DemuxOp close, mlir::OpResult result,
+                            mlir::Value parentPhase,
+                            mlir::Value parentAssumption) {
+    if (result.getResultNumber() != 0 || close.getOutputs().size() != 2)
+      return false;
+    auto stream = close.getSel().getDefiningOp<dataflow::StreamOp>();
+    if (!stream || close.getSel() != stream.getPhase())
+      return false;
+
+    GraphCardinalityAnalysis activation(graph);
+    return initializeNestedActivation(stream, parentPhase, parentAssumption,
+                                      activation) &&
+           activation.isPhaseAligned(close.getInput(), stream.getPhase());
+  }
+
+  bool isNestedGateCloseAligned(mlir::Value value, mlir::Value selector,
+                                unsigned lane, mlir::Value parentPhase,
+                                mlir::Value parentAssumption) {
+    auto gate = dataflow::semantics::getGateCloseProjection(value);
+    if (!gate)
+      return false;
+    auto closes =
+        dataflow::semantics::gateClosesWhenSelected(*gate, selector, lane);
+    if (!closes || !*closes)
+      return false;
+    auto stream = gate->getBeforeCond().getDefiningOp<dataflow::StreamOp>();
+    if (!stream || gate->getBeforeCond() != stream.getPhase())
+      return false;
+
+    GraphCardinalityAnalysis activation(graph);
+    return initializeNestedActivation(stream, parentPhase, parentAssumption,
+                                      activation) &&
+           activation.isOneClosePhase(stream.getPhase()) &&
+           activation.isPhaseAligned(gate->getBeforeValue(), stream.getPhase());
   }
 
   bool isAligned(mlir::Value value, mlir::Value phase, mlir::Value assumption,
@@ -726,8 +797,12 @@ private:
                        /*truePhaseOnly=*/false, branchVisited);
     }
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
-      if (!truePhaseOnly || demux.getSel() != phase ||
-          result.getResultNumber() != 1)
+      if (!truePhaseOnly)
+        return false;
+      if (result.getResultNumber() == 0 &&
+          isNestedCloseAligned(demux, result, phase, assumption))
+        return true;
+      if (demux.getSel() != phase || result.getResultNumber() != 1)
         return false;
       llvm::DenseSet<mlir::Value> branchVisited = visited;
       return isAligned(demux.getInput(), phase, assumption,

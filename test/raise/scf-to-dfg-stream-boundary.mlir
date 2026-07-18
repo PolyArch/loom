@@ -1,8 +1,8 @@
 // RUN: loom-raise-opt --loom-lower-for-to-graph %s > %t.lowered.mlir
 // RUN: FileCheck %s < %t.lowered.mlir
-// RUN: loom-dfg-sim %t.lowered.mlir --graph branch_relay_graph --arg 0=true --arg 1=2 --arg 2=3 --arg 2=7 --arg 2=9 --arg 2=11 --arg 2=13 --arg 2=17 --output %t.branch-true.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph branch_relay_graph --arg 0=true --arg 1=2 --arg 2=3 --arg 2=7 --arg 2=9 --arg 2=11 --arg 2=13 --arg 2=15 --arg 2=17 --arg 2=19 --arg 2=21 --arg 2=23 --output %t.branch-true.json
 // RUN: FileCheck %s --check-prefix=BRANCH-TRUE < %t.branch-true.json
-// RUN: loom-dfg-sim %t.lowered.mlir --graph branch_relay_graph --arg 0=false --arg 1=2 --arg 2=3 --arg 2=5 --arg 2=6 --arg 2=17 --output %t.branch-false.json
+// RUN: loom-dfg-sim %t.lowered.mlir --graph branch_relay_graph --arg 0=false --arg 1=2 --arg 2=3 --arg 2=5 --arg 2=7 --arg 2=9 --arg 2=11 --arg 2=13 --output %t.branch-false.json
 // RUN: FileCheck %s --check-prefix=BRANCH-FALSE < %t.branch-false.json
 // RUN: loom-dfg-sim %t.lowered.mlir --graph branch_relay_graph --arg 0=true --arg 1=0 --arg 2=21 --arg 2=23 --output %t.branch-zero.json
 // RUN: FileCheck %s --check-prefix=BRANCH-ZERO < %t.branch-zero.json
@@ -18,14 +18,20 @@
 // BRANCH-TRUE-NEXT: "i32:9",
 // BRANCH-TRUE-NEXT: "i32:11",
 // BRANCH-TRUE-NEXT: "i32:13",
-// BRANCH-TRUE-NEXT: "i32:17"
+// BRANCH-TRUE-NEXT: "i32:15",
+// BRANCH-TRUE-NEXT: "i32:17",
+// BRANCH-TRUE-NEXT: "i32:19",
+// BRANCH-TRUE-NEXT: "i32:21",
+// BRANCH-TRUE-NEXT: "i32:23"
 // BRANCH-TRUE: "status": "pass"
 // BRANCH-FALSE: "final_stream_outputs": [
 // BRANCH-FALSE-NEXT: [
 // BRANCH-FALSE-NEXT: "i32:3",
 // BRANCH-FALSE-NEXT: "i32:5",
-// BRANCH-FALSE-NEXT: "i32:6",
-// BRANCH-FALSE-NEXT: "i32:17"
+// BRANCH-FALSE-NEXT: "i32:7",
+// BRANCH-FALSE-NEXT: "i32:9",
+// BRANCH-FALSE-NEXT: "i32:11",
+// BRANCH-FALSE-NEXT: "i32:13"
 // BRANCH-FALSE: "status": "pass"
 // BRANCH-ZERO: "final_stream_outputs": [
 // BRANCH-ZERO-NEXT: [
@@ -307,23 +313,27 @@ module {
            %sink: !dataflow.channel<i32>):
         %zero = arith.constant 0 : index
         %one = arith.constant 1 : index
+        %two = arith.constant 2 : index
         %prefix = dataflow.channel.receive %source
             : !dataflow.channel<i32>
         dataflow.channel.send %sink, %prefix : !dataflow.channel<i32>
         scf.for %iteration = %zero to %limit step %one {
-          scf.if %select {
-            %on_true_first = dataflow.channel.receive %source
-                : !dataflow.channel<i32>
-            dataflow.channel.send %sink, %on_true_first
-                : !dataflow.channel<i32>
-            %on_true_second = dataflow.channel.receive %source
-                : !dataflow.channel<i32>
-            dataflow.channel.send %sink, %on_true_second
-                : !dataflow.channel<i32>
-          } else {
-            %on_false = dataflow.channel.receive %source
-                : !dataflow.channel<i32>
-            dataflow.channel.send %sink, %on_false : !dataflow.channel<i32>
+          scf.for %inner = %zero to %two step %one {
+            scf.if %select {
+              %on_true_first = dataflow.channel.receive %source
+                  : !dataflow.channel<i32>
+              dataflow.channel.send %sink, %on_true_first
+                  : !dataflow.channel<i32>
+              %on_true_second = dataflow.channel.receive %source
+                  : !dataflow.channel<i32>
+              dataflow.channel.send %sink, %on_true_second
+                  : !dataflow.channel<i32>
+            } else {
+              %on_false = dataflow.channel.receive %source
+                  : !dataflow.channel<i32>
+              dataflow.channel.send %sink, %on_false
+                  : !dataflow.channel<i32>
+            }
           }
         }
         %suffix = dataflow.channel.receive %source

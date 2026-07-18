@@ -9,9 +9,8 @@
 // RESIDUAL: finalized graph contains residual structured operation 'scf.for'
 // START: nontrivial graph uses raw start as a retirement completion witness
 // VALUE: retirement frontier does not causally cover value output #0
-// DETACHED-DAG: "status": "pass"
-// DETACHED-NOT: "arith.addi"
-// DETACHED-NOT: fired after graph retirement
+// DETACHED-DAG: "status": "invalid"
+// DETACHED-DAG: actor 'arith.addi' fired after graph retirement
 
 //--- residual.mlir
 module {
