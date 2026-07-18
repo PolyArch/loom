@@ -23,6 +23,7 @@ add_mlir_dialect_library(MLIRDataflow
   DataflowInterfaces.cpp
   DataflowFunctionLikeOps.cpp
   DataflowOps.cpp
+  DataflowThreadCompletion.cpp
 
   PARTIAL_SOURCES_INTENDED
 
@@ -37,6 +38,7 @@ add_mlir_dialect_library(MLIRDataflow
   LINK_LIBS PUBLIC
   MLIRCallInterfaces
   MLIRArithDialect
+  MLIRControlFlowInterfaces
   MLIRDataflowEnums
   MLIRFunctionInterfaces
   MLIRIR

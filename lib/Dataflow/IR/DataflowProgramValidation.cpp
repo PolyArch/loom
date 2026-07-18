@@ -1,4 +1,5 @@
 #include "Dataflow/IR/DataflowGraphValidation.h"
+#include "Dataflow/IR/DataflowThreadCompletion.h"
 
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/SymbolTable.h"
@@ -348,6 +349,51 @@ llvm::Error verifyChannelTopology(mlir::ModuleOp module) {
   return llvm::Error::success();
 }
 
+llvm::Error verifyThreadCompletionFrontiers(mlir::ModuleOp module) {
+  for (dataflow::ThreadOp thread : module.getOps<dataflow::ThreadOp>()) {
+    if (thread.isExternal())
+      continue;
+    auto yield = llvm::cast<dataflow::ThreadYieldOp>(
+        thread.getBody().front().getTerminator());
+    mlir::ValueRange frontier = yield.getCompletionFrontier();
+
+    llvm::DenseSet<mlir::Value> seen;
+    for (mlir::Value event : frontier)
+      if (!seen.insert(event).second)
+        return programError(llvm::Twine("thread @") + thread.getSymName() +
+                            " has a duplicate completion frontier event");
+
+    for (unsigned first = 0; first < frontier.size(); ++first) {
+      for (unsigned second = first + 1; second < frontier.size(); ++second) {
+        if (dataflow::completionEventCovers(frontier[first],
+                                            frontier[second]) ||
+            dataflow::completionEventCovers(frontier[second], frontier[first]))
+          return programError(
+              llvm::Twine("thread @") + thread.getSymName() +
+              " has a causally redundant completion frontier event");
+      }
+    }
+
+    llvm::Error error = llvm::Error::success();
+    thread.walk([&](dataflow::GraphLaunchOp launch) {
+      if (error)
+        return mlir::WalkResult::interrupt();
+      if (llvm::any_of(frontier, [&](mlir::Value terminal) {
+            return dataflow::completionEventCovers(terminal, launch.getDone());
+          }))
+        return mlir::WalkResult::advance();
+      error = programError(
+          llvm::Twine("thread @") + thread.getSymName() +
+          " has graph launch completion not covered by its completion "
+          "frontier");
+      return mlir::WalkResult::interrupt();
+    });
+    if (error)
+      return error;
+  }
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::Error dataflow::validateFinalizedProgram(mlir::ModuleOp module) {
@@ -363,6 +409,8 @@ llvm::Error dataflow::validateFinalizedProgram(mlir::ModuleOp module) {
   if (hasSpatialCandidate)
     return programError(
         "finalized program contains temporary loom.spatial_region");
+  if (llvm::Error error = verifyThreadCompletionFrontiers(module))
+    return error;
   if (llvm::Error error = verifyChannelTopology(module))
     return error;
 

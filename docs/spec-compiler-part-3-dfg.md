@@ -669,8 +669,19 @@ traits:
 
 * `completionFrontier` is a variadic unordered all-of frontier of
   `none` values. Structural verification checks only that each operand
-  has type `none` and that the op terminates a `dataflow.thread` body;
-  it does not prove transitive reduction or asynchronous coverage.
+  has type `none` and that the op terminates a `dataflow.thread` body.
+  Finalized-program validation additionally requires the frontier to be a
+  duplicate-free minimal terminal antichain for every
+  `dataflow.graph.launch` in the thread body. Each launch's mandatory
+  `done : none` must be yielded directly or lie in the causal closure of a
+  yielded terminal event through `none` SSA dependencies and SCF
+  `RegionBranchOpInterface` forwarding. Two distinct yielded events are
+  invalid when either causally covers the other. Independent launch events
+  must all be covered, while a chain yields only its terminal event. A thread
+  with no graph launch may use an empty frontier. These checks derive from SSA
+  causality and never from textual operation order. This thread-level contract
+  does not infer additional completion obligations from effects, DMA, or other
+  operations.
   Tensor-result aggregation remains materialized as explicit
   destination-buffer writes, so the frontier carries no thread data
   result.

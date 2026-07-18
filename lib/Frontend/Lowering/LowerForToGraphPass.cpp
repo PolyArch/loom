@@ -17,6 +17,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowGraphValidation.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/DataflowThreadCompletion.h"
 #include "Frontend/IR/LoomDialect.h"
 #include "Frontend/IR/LoomOps.h"
 
@@ -79,21 +80,6 @@ std::string uniqueSymbol(::mlir::ModuleOp module, ::llvm::StringRef stem) {
   }
 }
 
-bool causallyDependsOn(::mlir::Value event, ::mlir::Value prerequisite,
-                       ::llvm::DenseSet<::mlir::Value> &visited) {
-  if (event == prerequisite)
-    return true;
-  if (!event || !visited.insert(event).second)
-    return false;
-  ::mlir::Operation *definition = event.getDefiningOp();
-  if (!definition)
-    return false;
-  return ::llvm::any_of(definition->getOperands(), [&](::mlir::Value operand) {
-    ::llvm::DenseSet<::mlir::Value> branchVisited = visited;
-    return causallyDependsOn(operand, prerequisite, branchVisited);
-  });
-}
-
 void addThreadCompletionFrontier(::dataflow::ThreadOp thread,
                                  ::mlir::Value completion) {
   auto yield = ::mlir::cast<::dataflow::ThreadYieldOp>(
@@ -103,22 +89,8 @@ void addThreadCompletionFrontier(::dataflow::ThreadOp thread,
       yield.getCompletionFrontier().end());
   if (!::llvm::is_contained(candidates, completion))
     candidates.push_back(completion);
-
-  ::llvm::SmallVector<::mlir::Value, 4> frontier;
-  for (unsigned i = 0; i < candidates.size(); ++i) {
-    bool covered = false;
-    for (unsigned j = 0; j < candidates.size(); ++j) {
-      if (i == j)
-        continue;
-      ::llvm::DenseSet<::mlir::Value> visited;
-      if (causallyDependsOn(candidates[j], candidates[i], visited)) {
-        covered = true;
-        break;
-      }
-    }
-    if (!covered)
-      frontier.push_back(candidates[i]);
-  }
+  ::llvm::SmallVector<::mlir::Value, 4> frontier =
+      ::dataflow::computeMinimalThreadCompletionFrontier(candidates);
   yield.getCompletionFrontierMutable().assign(frontier);
 }
 
