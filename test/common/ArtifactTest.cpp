@@ -184,6 +184,20 @@ void schemaVersionTextCodecIsCanonical() {
                         "schema version");
 }
 
+void missingStoreRootIsRejected() {
+  TemporaryDirectory parent(__func__);
+  llvm::SmallString<128> missingParent(parent.path());
+  llvm::sys::path::append(missingParent, "missing");
+  llvm::SmallString<128> root(missingParent);
+  llvm::sys::path::append(root, "store");
+
+  ArtifactStore store(root);
+  expectErrorContains(__func__, store.put(testSchema, semantic({0x01})),
+                      "artifact_store_io");
+  require(__func__, !llvm::sys::fs::exists(missingParent),
+          "ArtifactStore created part of its missing root chain");
+}
+
 void finalizerMatchesKnownEnvelopeAndDigest() {
   const CanonicalSemanticBytes bytes = semantic({0x00, 0x10, 0xff});
   const std::vector<std::uint8_t> preimage =
@@ -391,6 +405,7 @@ void resolvedConfigUsesArtifactFinalization() {
 
 int main() {
   schemaVersionTextCodecIsCanonical();
+  missingStoreRootIsRejected();
   finalizerMatchesKnownEnvelopeAndDigest();
   identityBoundariesRejectInvalidValues();
   concurrentIdenticalPublishDeduplicates();

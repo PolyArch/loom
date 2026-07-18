@@ -12,6 +12,7 @@ namespace loom {
 
 class ArtifactStore {
 public:
+  /// Root must name an existing, durably provisioned non-symlink directory.
   explicit ArtifactStore(llvm::StringRef root) : root_(root.str()) {}
 
   llvm::Expected<ArtifactIdentity>

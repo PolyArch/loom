@@ -38,14 +38,15 @@ llvm::Error storeErrno(llvm::StringRef code, const llvm::Twine &detail) {
 }
 
 llvm::Expected<llvm::sys::fs::file_status>
-regularFileStatus(int file, llvm::StringRef errorCode,
+regularFileStatus(int file, llvm::StringRef nonRegularErrorCode,
                   llvm::StringRef description) {
   llvm::sys::fs::file_status status;
   if (std::error_code error = llvm::sys::fs::status(file, status))
-    return storeError(errorCode, llvm::Twine("unable to inspect ") +
-                                     description + ": " + error.message());
+    return storeError("artifact_store_io", llvm::Twine("unable to inspect ") +
+                                               description + ": " +
+                                               error.message());
   if (!llvm::sys::fs::is_regular_file(status))
-    return storeError(errorCode,
+    return storeError(nonRegularErrorCode,
                       llvm::Twine(description) + " is not a regular file");
   return status;
 }
@@ -62,12 +63,15 @@ validateOpenedObject(int file, llvm::StringRef description,
   auto buffer = llvm::MemoryBuffer::getOpenFile(file, description,
                                                 status->getSize(), false, true);
   if (std::error_code error = buffer.getError())
-    return storeError(objectErrorCode, llvm::Twine("unable to read ") +
-                                           description + ": " +
-                                           error.message());
+    return storeError("artifact_store_io", llvm::Twine("unable to read ") +
+                                               description + ": " +
+                                               error.message());
   const llvm::StringRef contents = (*buffer)->getBuffer();
   const llvm::ArrayRef<std::uint8_t> object(
       reinterpret_cast<const std::uint8_t *>(contents.data()), contents.size());
+
+  if (object.equals(expectedPreimage))
+    return *status;
 
   if (llvm::Error error = detail::validateArtifactIdentityPreimage(object)) {
     llvm::consumeError(std::move(error));
@@ -81,10 +85,8 @@ validateOpenedObject(int file, llvm::StringRef description,
   if (actualIdentity != expectedIdentity)
     return storeError(objectErrorCode, llvm::Twine(description) +
                                            " does not match its derived key");
-  if (!object.equals(expectedPreimage))
-    return storeError("artifact_identity_collision",
-                      "different identity preimages share one digest");
-  return *status;
+  return storeError("artifact_identity_collision",
+                    "different identity preimages share one digest");
 }
 
 llvm::Expected<int> openStoredObject(int directory,
@@ -95,9 +97,12 @@ llvm::Expected<int> openStoredObject(int directory,
     file = ::openat(directory, name.c_str(),
                     O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   } while (file == -1 && errno == EINTR);
-  if (file == -1)
-    return storeErrno("artifact_store_corruption",
-                      "unable to open stored object");
+  if (file == -1) {
+    if (errno == ELOOP)
+      return storeError("artifact_store_corruption",
+                        "stored object is a symbolic link");
+    return storeErrno("artifact_store_io", "unable to open stored object");
+  }
   return file;
 }
 
@@ -154,17 +159,14 @@ ArtifactStore::put(const ArtifactSchemaDescriptor &schema,
       detail::finalizeArtifactIdentityPreimage(preimage);
   const std::string objectName = formatArtifactIdentityHex(identity);
 
-  if (std::error_code error = llvm::sys::fs::create_directories(root_))
-    return storeError("artifact_store_io",
-                      llvm::Twine("unable to create store directory: ") +
-                          error.message());
-
   int directory;
   do {
-    directory = ::open(root_.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY);
+    directory =
+        ::open(root_.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
   } while (directory == -1 && errno == EINTR);
   if (directory == -1)
-    return storeErrno("artifact_store_io", "unable to open store directory");
+    return storeErrno("artifact_store_io",
+                      "unable to open required store root directory");
   llvm::scope_exit closeDirectoryOnFailure([&] {
     if (directory != -1)
       llvm::consumeError(closeFile(directory, "store directory"));

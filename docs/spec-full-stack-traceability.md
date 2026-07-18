@@ -277,6 +277,10 @@ valid preimage with the same identity is an identity collision, and an
 invalid preimage or key mismatch is store corruption. Publication never
 overwrites an existing key.
 
+The store root is a caller-provisioned, durably established non-symlink
+directory. `ArtifactStore` does not create the root or any containing
+directory.
+
 Logical names, producer and invocation data, configuration records,
 timestamps, host paths, diagnostics, and parent lineage belong in
 manifests, reports, or Evaluation Evidence. They are not identity inputs
