@@ -72,7 +72,7 @@ must not change algorithmic behavior or silently weaken result checks.
 ## Corpus Manifest
 
 The target corpus is manifest-driven. The manifest requires
-`schema_version = "1.1"`. Schema versions are strings in `X.Y` form: `X`
+`schema_version = "2.0"`. Schema versions are strings in `X.Y` form: `X`
 changes are breaking/incompatible and `Y` changes are non-breaking. A manifest
 entry for each case records:
 
@@ -83,11 +83,14 @@ entry for each case records:
 * link flags;
 * expected executable names;
 * expected stdout or oracle mode;
-* supported validation tiers;
-* an optional expected diagnostic for a selected DFG tier;
-* required feature tags;
-* optional grouping tags such as reduction, scan, stencil, sort, graph,
-  sparse, signal, bit, geometry, string, or neural.
+* selected manifest tiers from `run`, `raise`, and `dfg`;
+* non-empty feature tags, which may include groups such as reduction, scan,
+  stencil, sort, graph, sparse, signal, bit, geometry, string, or neural.
+
+The schema has no expected-diagnostic field. Selecting the `dfg` tier asserts
+that the case produces a native-valid canonical Dataflow artifact and passes
+the DFG suite. An unsupported lowering is a tier failure, not a passing
+diagnostic fixture.
 
 Each source identity must appear only once within its manifest case. The
 combined inventory must also reject a canonical source path claimed by more
@@ -146,9 +149,10 @@ policy support it. The emitted dataflow artifact must parse, verify,
 and satisfy the target contracts for `dataflow.thread` and
 `dataflow.graph` in the dataflow specs.
 
-Unsupported regions must be diagnosed explicitly. A compatibility-mode
-run must not be marked failed solely because an optional dataflow
-artifact is unsupported.
+For a case selected into the manifest `dfg` tier, an unsupported region is a
+suite failure: the tier must produce a canonical artifact or fail. Cases not
+selected for `dfg` may still pass compatibility-mode `run` without requesting
+an optional dataflow artifact.
 
 ### Tier 5: DFG-sim
 
@@ -186,8 +190,9 @@ The app runner stack must provide:
   source symbols.
 
 Diagnostics for an attempted unsupported path must satisfy the Unsupported
-Scope Policy in `docs/spec-loom-stack.md` and may add component-specific
-case, tier, runner, or expected-output fields.
+Scope Policy in `docs/spec-loom-stack.md` and may add component-specific case,
+tier, runner, or expected-output fields. Diagnostics do not convert a selected
+DFG-tier failure into a pass.
 
 ## Artifact Requirements
 

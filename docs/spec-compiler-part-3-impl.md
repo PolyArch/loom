@@ -55,10 +55,23 @@ the production contract.
 
 ### 1.2 `loom-lower-for-to-graph`
 
-* Selects graph boundary classification before moving or cloning body
-  operations. The graph `FunctionType` contains only application payloads;
-  normalized `input_segments` and `result_segments` record value, stream,
-  and memory kinds.
+* Stages each selected structured candidate in `loom.spatial_region` before
+  creating any canonical graph. The candidate boundary records normalized
+  value, stream-channel, and memory segments plus one `source_map` per stream
+  input.
+* Publishes graphs on a cloned scratch module and replaces the live module
+  only after every candidate converts and the native finalized-program
+  validator succeeds. Failure leaves temporary candidates and cannot expose a
+  canonical graph containing SCF or CFG.
+* Propagates a nested graph launch completion through enclosing `scf.if`
+  results before adding it to the thread completion frontier. Other enclosing
+  structured controls fail before publication.
+* Stream endpoint conversion is not implemented. Candidates with stream
+  bindings or channel send/receive operations fail before publication rather
+  than emitting a partial graph.
+* The graph `FunctionType` contains only application payloads; normalized
+  `input_segments` and `result_segments` record value, stream, and memory
+  kinds.
 * Creates the distinguished leading `start : none` entry argument and a
   structural `graph.return` seed separately from the payload function type.
 * Reorders application payloads into normalized segment order and rewires the
@@ -135,6 +148,14 @@ the production contract.
   dataflow transport primitives, nontrivial graphs that use raw start as a
   completion witness, and retirement frontiers that fail to cover payloads,
   memory operations, observable effects, or stateful close/reset.
+* The gate statically requires exact-one value outputs and completion
+  witnesses and a proven close/commit for stream outputs. A zero-or-more
+  stream path does not become exact-one merely by passing through
+  `dataflow.sync`.
+* The program-level portion is the single owner of channel topology. It
+  rejects channel producers, escapes, missing or duplicate producer bindings,
+  missing consumers, rank mismatches, and `source_map` relations that cannot
+  be proven in bounds over the consumer domain.
 * `done_out = all_of(graph.return.complete)`. Validation may prove that the
   declared frontier covers required behavior, but it does not synthesize an
   alternate completion event from effect scans or graph quiescence.
@@ -206,6 +227,15 @@ The Part 3 slice is coherent only when all of the following hold:
 * Final values, stream close/boundary commit, memory capability establishment
   and visibility, observable effects, stateful close/reset, and non-detached
   async work are causally covered by the declared frontier.
+* Value outputs and completion witnesses are statically exact-one, and stream
+  outputs have a statically proven close/commit. Dynamic simulator success is
+  not a substitute for this proof.
+* Every finalized channel root has exactly one producer binding, at least one
+  consumer binding, and a valid `source_map` relation. Channel use and topology
+  are checked once at program scope.
+* `loom.spatial_region` never appears in a finalized program. Graph and launch
+  publication is atomic across all staged candidates, and unsupported stream
+  endpoint conversion fails without exposing partial canonical IR.
 * Pointer or memref capabilities that cannot be projected into the explicit
   memory plane fail closed rather than entering dataflow carry or selection.
 * Direct simulation rejects residual structured containers through the native
@@ -254,9 +284,8 @@ The Part 3 slice is coherent only when all of the following hold:
 * `docs/spec-compiler-part-3-mem.md` -- canonical alias partitions,
   recursive `(write_frontier, read_frontier)` state, and token wiring owned by
   graph-region lowering.
-* `docs/spec-compiler-part-3-placement-framework.md` -- common
-  placement-partition framework and the L2 graph-placement model used during
-  graph extraction.
+* `docs/spec-compiler-part-3-placement-framework.md` -- software placement
+  policy outside the canonical graph ABI and publication mechanics.
 * `docs/spec-compiler-part-4-partitioned-data.md` -- partitioned-data spec; the
   test plan above defers to Part 4 for partitioned-data unit-test
   coverage.

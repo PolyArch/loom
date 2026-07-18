@@ -16,8 +16,10 @@ ports are explicit in the current graph ABI: `ctrl_in` and launch-facing
 site, not application payload slots in the `dataflow.graph` function type.
 The graph body does not return `done_out`; its structural
 `dataflow.graph.return.complete` frontier is the unique authority from which
-the launch result is derived. Part 3 consumes the transient `loom.acc_region`
-op produced by Part 2.
+the launch result is derived. Part 3 stages each structured graph candidate in
+a temporary `loom.spatial_region` inside its owning `dataflow.thread` and
+publishes the corresponding graph definition and launch only after complete
+conversion and native finalization succeed.
 The precise timing semantics of `dataflow.stream`, `dataflow.carry`,
 `dataflow.invariant`, and `dataflow.gate` are specified separately in
 `docs/spec-dataflow-part-1-streaming.md`. The precise firing semantics
@@ -33,14 +35,11 @@ keeps only the first-principles content: IR boundary contracts,
 sequential-SCF flattening templates, future upstream parallel-normalization
 templates, the memory-dependence model, and verifier invariants.
 
-Placement decisions across the compiler are described by
-`docs/spec-compiler-part-3-placement-framework.md`. Part 3 owns the
-L2 instance: choosing which code inside a `dataflow.thread`
-definition's body becomes a `dataflow.graph` definition + a
-`dataflow.graph.launch` at the cut site. The placement framework
-does not weaken the verifier or IR contracts in this document; it
-only states how legal partitions are generated, ranked, and made
-replaceable by later cost-aware policies.
+Target placement and actor-to-FU grouping are Mapping Artifact concerns. Part
+3 performs only structural eligibility, temporary candidate staging, and
+canonical graph publication inside an already established
+`dataflow.thread`; it does not assign a target or retain target-specific
+grouping in program IR.
 
 ## 1. Scope and Contract
 
@@ -51,29 +50,23 @@ The compiler front-end is documented in four parts:
   participate if it can emit that contract; embedded clang for C / C++
   is the first limited provider.
 * **Part 2, LLVM to SCF.** LLVM/CFG-shaped input is raised to
-  SCF-shaped MLIR. This part selects accelerator regions, recognizes
-  parallel loops, and materializes memory-region metadata. Its output
-  uses `loom.acc_region` to mark code selected for AccCore execution.
+  SCF-shaped MLIR. This part recognizes structured execution boundaries,
+  parallel loops, and memory-region metadata needed by thread construction.
 * **Part 3, SCF to DFG.** This document. It consumes SCF-shaped
-  accelerator regions and lowers them to `dataflow.thread`
-  definitions + `dataflow.thread.launch` ops, plus
-  `dataflow.graph` definitions + `dataflow.graph.launch` ops at
-  the cut sites. The accompanying
+  code inside `dataflow.thread` definitions, stages eligible graph candidates
+  in `loom.spatial_region`, and publishes `dataflow.graph` definitions plus
+  `dataflow.graph.launch` ops at the candidate sites. The accompanying
   `docs/spec-compiler-part-3-impl.md` documents the pass pipeline,
-  testing, and acceptance for this part. L2 graph placement follows
-  the common placement framework in
-  `docs/spec-compiler-part-3-placement-framework.md`.
+  testing, and acceptance for this part.
 * **Part 4, partitioned data.** Annotation and in-thread queries for
   tile-and-domain memrefs, plus the extension point for neighborhood
   communication / distributed-buffer protocols (see
   `docs/spec-compiler-part-4-partitioned-data.md`).
 
-Input to this part is an MLIR module with `func.func` host containers.
-Host code may remain outside accelerator regions. AccCore code must be
-inside explicit `loom.acc_region` ops, except in the
-`wrap-standalone-kernel` test mode (see
-`docs/spec-compiler-part-3-impl.md`). A `func.func` is therefore an
-ABI and ownership container, not an implicit accelerator boundary.
+Input to graph extraction is an MLIR module containing module-scope
+`dataflow.thread` definitions with SCF-shaped code. Host `func.func` code may
+coexist in the module, but a function is an ABI and ownership container, not
+an implicit graph boundary.
 
 Output is the canonical Loom front-end IR: module-level `func.func`
 symbols holding ordinary HostCore or ScalarCore code; module-level
@@ -101,9 +94,9 @@ that materialization: replicated lane regions, normalized parallel SCF with
 exact P[] data, and another existing representation remain distinct choices.
 It therefore preserves the raw-parallel failure boundary instead of inventing
 one during graph extraction.
-Graph placement inside each thread is governed by the L2 placement
-instance specified by the placement framework and by the implementation
-contract in `docs/spec-compiler-part-3-impl.md`.
+Graph candidate eligibility and atomic publication are governed by this
+document and the implementation contract in
+`docs/spec-compiler-part-3-impl.md`. Physical placement is outside this IR.
 
 ## 2. Hardware Model
 
@@ -147,11 +140,9 @@ Every `dataflow.thread` body may contain ScalarCore residual code and
 Dynamic instances become physical AccCore execution slots only after
 binding/PnR.
 
-A ScalarCore-only thread body is legal, but this is
-only an IR legality statement. Such a thread remains AccCore work only
-when L1 placement, explicit source intent, or a DSE policy selected the
-enclosing region for accelerator execution. L2 graph placement failure
-must not synthesize a new accelerator offload from unselected host code.
+A ScalarCore-only thread body is legal. Failure to form a canonical graph
+must not synthesize a new accelerator boundary or move unselected host code
+into a thread.
 
 Thread completion and graph/dataflow control are distinct token domains.
 `!dataflow.thread_token` is the inter-thread asynchronous completion
@@ -178,9 +169,10 @@ silently change hierarchy shape as a verifier or parsing side effect.
   choose HostCore or AccCore placement. A function may be HostCore-only,
   ScalarCore-callable, or legal in both contexts depending on the
   Part 2 call-context classification.
-* `loom.acc_region` is a transient Part 2 to Part 3 marker for a
-  structured region selected for AccCore execution. This part consumes
-  it and erases it.
+* `loom.spatial_region` is temporary compiler IR inside a
+  `dataflow.thread`. It owns one structured graph candidate with normalized
+  value, stream-channel, and memory boundary segments. It never appears in a
+  finalized Canonical Dataflow Program.
 * `dataflow.thread` is the logical accelerator execution-domain
   **definition** (Symbol-bearing, module-scope, function-like). It
   owns the kernel body, the static grid shape, and the mapping
@@ -271,22 +263,22 @@ each rule lands in IR.
    persistent alias oracle, dependence snapshot, or later wiring pass. The
    complete transfer rules are specified in
    `docs/spec-compiler-part-3-mem.md`.
-6. `loom.acc_region` is the explicit AccCore selection boundary
-   consumed by this part. `scf.forall` with a
-   `mapping = [#loom.thread_axis<...>, ...]`
-   attribute is the trigger for thread promotion only inside such a
-   region. A scalar-only accelerator region may be normalized into a
-   synthetic 1x1 mapped `scf.forall`, but ordinary host code outside
-   `loom.acc_region` is never promoted merely because it appears in a
-   `func.func`. Before promotion, every `scf.forall` must be in effect
-   form: no `shared_outs`, no op results, and an empty
-   `scf.forall.in_parallel` terminator. Thread promotion is a narrow
-   extraction boundary; it does not authorize a graph-owned parallel body.
-   Current Part 3 flattens plain `scf.for` / `scf.while` / `scf.if` inside
-   `dataflow.graph` definition bodies. A residual graph-owned
-   `scf.parallel` or `scf.forall` fails closed before graph mutation until
-   an upstream Structured Program Candidate has selected a concrete P[]
-   representation and emitted supported sequential structured input.
+6. `loom.spatial_region` is the temporary publication boundary inside an
+   existing `dataflow.thread`. Its operands are normalized as value inputs,
+   stream input channels, memory inputs, and stream output channels; its
+   results are value outputs followed by memory outputs. Each stream input
+   has one affine `source_map` from the consumer thread domain to the producer
+   thread domain. The lowering stages all candidates before attempting
+   publication, performs conversion and native validation on a scratch
+   module, and replaces the live module only on success. A public pass failure
+   therefore leaves temporary candidates and never exposes a partial
+   canonical graph. Current publication supports nested `scf.if` completion
+   propagation. Stream endpoint conversion is not yet implemented, so a
+   candidate with stream bindings or `dataflow.channel.send` / `receive`
+   fails before publication. A residual graph-owned `scf.parallel` or
+   `scf.forall` also fails closed until an upstream Structured Program
+   Candidate has selected a concrete P[] representation and emitted
+   supported sequential structured input.
 7. `dataflow.thread` and `dataflow.graph` definitions are both
    `IsolatedFromAbove`. No operation inside either definition's body
    may directly use an SSA value defined in the surrounding scope.
@@ -849,6 +841,15 @@ traits:
   bind to consumer or producer `!dataflow.channel<T>` endpoints; they are not
   launch SSA data results. The mandatory trailing `done : none` result is the
   per-launch retirement event.
+* Each stream input binding carries one symbol-free affine `source_map`. Its
+  dimensions are the consumer thread coordinates and its results select the
+  producer thread coordinates. Direction is derived from the launch operand
+  segment: stream inputs are consumer bindings and stream outputs are producer
+  bindings. There is no independent channel direction or mode attribute.
+  Graph-launch verification owns local count and consumer-domain checks. The
+  finalized-program validator owns the cross-launch relation: one producer,
+  at least one consumer, producer/result-rank agreement, bounds over the full
+  consumer domain, and complete permitted channel use topology.
 * The op materializes a per-launch firing of the callee at this exact program
   point. `done_out` is the all-of of the callee's
   `graph.return.complete` operands. Their causal closure covers final values,
@@ -2478,6 +2479,11 @@ contract:
   default mapping from a
   `dataflow.partition_domain @D` point to any `fabric.pe` /
   `fabric.mem` instance.
+* Channel routing or simulation. The temporary `loom.spatial_region` contract
+  preserves typed stream input/output bindings and `source_map`, but current
+  graph publication rejects such candidates until endpoint conversion is
+  implemented. It does not invent routing, endpoint creation, or a parallel
+  channel mode.
 
 ## 11. References
 
@@ -2486,17 +2492,17 @@ contract:
   output eventually targets.
 * `docs/spec-compiler-part-1-source.md` -- high-level source
   integration and metadata emission.
-* `docs/spec-compiler-part-2-scf.md` -- LLVM-to-SCF raising,
-  accelerator-region selection, and `loom.acc_region`.
+* `docs/spec-compiler-part-2-scf.md` -- LLVM-to-SCF raising and structured
+  thread-boundary preparation.
 * `docs/spec-compiler-part-3-impl.md` -- pass pipeline, lit-test
   layout, acceptance checklist, and maintenance plan
   for the SCF-to-DFG front-end.
 * `docs/spec-compiler-part-3-mem.md` -- recursive graph-region memory
   lowering, basic alias partitions, write/read frontier transfers, and
   structured recurrence used inside each `dataflow.graph`.
-* `docs/spec-compiler-part-3-placement-framework.md` -- common
-  placement-partition framework; Part 3 owns the L2 graph-placement
-  instance.
+* `docs/spec-compiler-part-3-placement-framework.md` -- software placement
+  policy outside the canonical graph ABI; target-specific grouping remains a
+  Mapping Artifact concern.
 * `docs/spec-compiler-part-4-partitioned-data.md` -- partitioned-data
   annotation, in-thread queries, and the extension point for neighborhood
   communication / distributed-buffer protocols.
