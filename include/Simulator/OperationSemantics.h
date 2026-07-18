@@ -161,8 +161,6 @@ GateTransition evaluateGateTransition(GateSemanticState state,
 
 bool isSupportedPrimitiveOperation(llvm::StringRef opName);
 
-bool isSupportedMappedOperation(llvm::StringRef opName);
-
 llvm::Expected<PrimitiveValue>
 evaluatePrimitiveOperation(llvm::StringRef opName,
                            llvm::ArrayRef<PrimitiveValue> operands);

@@ -14,122 +14,32 @@ using namespace loom::sim;
 
 namespace {
 
-enum class OperationSupport : std::uint8_t {
-  None = 0,
-  Primitive = 1,
-  Mapped = 2,
-  PrimitiveAndMapped = 3,
+constexpr const char *kSupportedPrimitiveOperations[] = {
+    "arith.addf",         "arith.subf",        "arith.mulf",
+    "arith.divf",         "arith.addi",        "arith.subi",
+    "arith.muli",         "arith.andi",        "arith.ori",
+    "arith.xori",         "arith.shli",        "arith.shrsi",
+    "arith.shrui",        "arith.divsi",       "arith.divui",
+    "arith.remsi",        "arith.remui",       "arith.cmpi",
+    "arith.cmpf",         "arith.select",      "arith.index_cast",
+    "arith.index_castui", "arith.extsi",       "arith.extui",
+    "arith.trunci",       "arith.sitofp",      "arith.uitofp",
+    "arith.fptosi",       "arith.fptoui",      "llvm.trunc",
+    "llvm.sext",          "llvm.zext",         "llvm.sitofp",
+    "llvm.uitofp",        "llvm.fptosi",       "llvm.fptoui",
+    "llvm.fneg",          "llvm.select",       "llvm.intr.fshl",
+    "llvm.intr.bswap",    "llvm.intr.umin",    "llvm.intr.umax",
+    "llvm.intr.usub.sat", "llvm.intr.smin",    "llvm.intr.smax",
+    "llvm.intr.ctlz",     "llvm.intr.fmuladd", "llvm.intr.abs",
+    "llvm.intr.fabs",     "math.absf",         "math.absi",
+    "math.sin",           "math.cos",          "math.tan",
+    "math.sinh",          "math.cosh",         "math.tanh",
+    "math.exp",           "math.exp2",         "math.expm1",
+    "math.log",           "math.log2",         "math.log10",
+    "math.log1p",         "math.floor",        "math.ceil",
+    "math.round",         "math.trunc",        "math.roundeven",
+    "math.sqrt",          "math.rsqrt",        "math.erf",
 };
-
-struct OperationSupportEntry {
-  const char *name;
-  OperationSupport support;
-};
-
-constexpr OperationSupportEntry kOperationSupport[] = {
-    {"arith.addf", OperationSupport::PrimitiveAndMapped},
-    {"arith.subf", OperationSupport::PrimitiveAndMapped},
-    {"arith.mulf", OperationSupport::PrimitiveAndMapped},
-    {"arith.divf", OperationSupport::PrimitiveAndMapped},
-    {"arith.addi", OperationSupport::PrimitiveAndMapped},
-    {"arith.subi", OperationSupport::PrimitiveAndMapped},
-    {"arith.muli", OperationSupport::PrimitiveAndMapped},
-    {"arith.andi", OperationSupport::PrimitiveAndMapped},
-    {"arith.ori", OperationSupport::PrimitiveAndMapped},
-    {"arith.xori", OperationSupport::PrimitiveAndMapped},
-    {"arith.shli", OperationSupport::PrimitiveAndMapped},
-    {"arith.shrsi", OperationSupport::PrimitiveAndMapped},
-    {"arith.shrui", OperationSupport::PrimitiveAndMapped},
-    {"arith.divsi", OperationSupport::PrimitiveAndMapped},
-    {"arith.divui", OperationSupport::PrimitiveAndMapped},
-    {"arith.remsi", OperationSupport::PrimitiveAndMapped},
-    {"arith.remui", OperationSupport::PrimitiveAndMapped},
-    {"arith.cmpi", OperationSupport::PrimitiveAndMapped},
-    {"arith.cmpf", OperationSupport::PrimitiveAndMapped},
-    {"arith.select", OperationSupport::PrimitiveAndMapped},
-    {"arith.index_cast", OperationSupport::PrimitiveAndMapped},
-    {"arith.index_castui", OperationSupport::Primitive},
-    {"arith.extsi", OperationSupport::PrimitiveAndMapped},
-    {"arith.extui", OperationSupport::PrimitiveAndMapped},
-    {"arith.trunci", OperationSupport::PrimitiveAndMapped},
-    {"arith.sitofp", OperationSupport::PrimitiveAndMapped},
-    {"arith.uitofp", OperationSupport::PrimitiveAndMapped},
-    {"arith.fptosi", OperationSupport::PrimitiveAndMapped},
-    {"arith.fptoui", OperationSupport::PrimitiveAndMapped},
-    {"llvm.trunc", OperationSupport::PrimitiveAndMapped},
-    {"llvm.sext", OperationSupport::PrimitiveAndMapped},
-    {"llvm.zext", OperationSupport::PrimitiveAndMapped},
-    {"llvm.sitofp", OperationSupport::PrimitiveAndMapped},
-    {"llvm.uitofp", OperationSupport::PrimitiveAndMapped},
-    {"llvm.fptosi", OperationSupport::PrimitiveAndMapped},
-    {"llvm.fptoui", OperationSupport::PrimitiveAndMapped},
-    {"llvm.fneg", OperationSupport::PrimitiveAndMapped},
-    {"llvm.load", OperationSupport::Mapped},
-    {"llvm.store", OperationSupport::Mapped},
-    {"llvm.select", OperationSupport::PrimitiveAndMapped},
-    {"llvm.icmp", OperationSupport::Mapped},
-    {"llvm.intr.fshl", OperationSupport::PrimitiveAndMapped},
-    {"llvm.intr.bswap", OperationSupport::PrimitiveAndMapped},
-    {"llvm.intr.umin", OperationSupport::PrimitiveAndMapped},
-    {"llvm.intr.umax", OperationSupport::PrimitiveAndMapped},
-    {"llvm.intr.usub.sat", OperationSupport::PrimitiveAndMapped},
-    {"llvm.intr.smin", OperationSupport::PrimitiveAndMapped},
-    {"llvm.intr.smax", OperationSupport::PrimitiveAndMapped},
-    {"llvm.intr.ctlz", OperationSupport::PrimitiveAndMapped},
-    {"llvm.intr.fmuladd", OperationSupport::PrimitiveAndMapped},
-    {"llvm.intr.abs", OperationSupport::PrimitiveAndMapped},
-    {"llvm.intr.fabs", OperationSupport::PrimitiveAndMapped},
-    {"math.absf", OperationSupport::PrimitiveAndMapped},
-    {"math.absi", OperationSupport::PrimitiveAndMapped},
-    {"math.sin", OperationSupport::PrimitiveAndMapped},
-    {"math.cos", OperationSupport::PrimitiveAndMapped},
-    {"math.tan", OperationSupport::PrimitiveAndMapped},
-    {"math.sinh", OperationSupport::PrimitiveAndMapped},
-    {"math.cosh", OperationSupport::PrimitiveAndMapped},
-    {"math.tanh", OperationSupport::PrimitiveAndMapped},
-    {"math.exp", OperationSupport::PrimitiveAndMapped},
-    {"math.exp2", OperationSupport::PrimitiveAndMapped},
-    {"math.expm1", OperationSupport::PrimitiveAndMapped},
-    {"math.log", OperationSupport::PrimitiveAndMapped},
-    {"math.log2", OperationSupport::PrimitiveAndMapped},
-    {"math.log10", OperationSupport::PrimitiveAndMapped},
-    {"math.log1p", OperationSupport::PrimitiveAndMapped},
-    {"math.floor", OperationSupport::PrimitiveAndMapped},
-    {"math.ceil", OperationSupport::PrimitiveAndMapped},
-    {"math.round", OperationSupport::PrimitiveAndMapped},
-    {"math.trunc", OperationSupport::PrimitiveAndMapped},
-    {"math.roundeven", OperationSupport::PrimitiveAndMapped},
-    {"math.sqrt", OperationSupport::PrimitiveAndMapped},
-    {"math.rsqrt", OperationSupport::PrimitiveAndMapped},
-    {"math.erf", OperationSupport::PrimitiveAndMapped},
-    {"dataflow.stream", OperationSupport::Mapped},
-    {"dataflow.carry", OperationSupport::Mapped},
-    {"dataflow.invariant", OperationSupport::Mapped},
-    {"dataflow.constant", OperationSupport::Mapped},
-    {"dataflow.sync", OperationSupport::Mapped},
-    {"dataflow.load", OperationSupport::Mapped},
-    {"dataflow.store", OperationSupport::Mapped},
-    {"dataflow.mux", OperationSupport::Mapped},
-    {"dataflow.demux", OperationSupport::Mapped},
-    {"dataflow.parallelize", OperationSupport::Mapped},
-    {"dataflow.pack", OperationSupport::Mapped},
-    {"dataflow.unpack", OperationSupport::Mapped},
-    {"dataflow.serialize", OperationSupport::Mapped},
-    {"dataflow.gate", OperationSupport::Mapped},
-};
-
-OperationSupport lookupOperationSupport(llvm::StringRef opName) {
-  for (const OperationSupportEntry &entry : kOperationSupport) {
-    if (opName == entry.name)
-      return entry.support;
-  }
-  return OperationSupport::None;
-}
-
-bool hasOperationSupport(OperationSupport support, OperationSupport required) {
-  return (static_cast<std::uint8_t>(support) &
-          static_cast<std::uint8_t>(required)) != 0;
-}
 
 llvm::Error requireArity(llvm::StringRef opName,
                          llvm::ArrayRef<PrimitiveValue> operands,
@@ -687,13 +597,11 @@ GateTransition loom::sim::evaluateGateTransition(GateSemanticState state,
 }
 
 bool loom::sim::isSupportedPrimitiveOperation(llvm::StringRef opName) {
-  return hasOperationSupport(lookupOperationSupport(opName),
-                             OperationSupport::Primitive);
-}
-
-bool loom::sim::isSupportedMappedOperation(llvm::StringRef opName) {
-  return hasOperationSupport(lookupOperationSupport(opName),
-                             OperationSupport::Mapped);
+  for (const char *supported : kSupportedPrimitiveOperations) {
+    if (opName == supported)
+      return true;
+  }
+  return false;
 }
 
 llvm::Expected<PrimitiveValue>

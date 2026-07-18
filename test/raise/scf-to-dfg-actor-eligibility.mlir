@@ -5,6 +5,8 @@
 // RUN: not loom-raise-opt --loom-lower-for-to-graph %t.dir/unregistered-thread.mlir 2>&1 | FileCheck %s --check-prefix=THREAD-REJECT
 // RUN: loom-dfg-sim %t.dir/registered-final.mlir --graph registered_final --output %t.registered.json
 // RUN: FileCheck %s --check-prefix=VALIDATOR-REGISTERED < %t.registered.json
+// RUN: loom-dfg-sim %t.dir/canonical-backend-gap.mlir --graph canonical_backend_gap --arg 0=1 --arg 1=2 --output %t.canonical-backend-gap.json
+// RUN: FileCheck %s --check-prefix=CANONICAL-BACKEND-GAP < %t.canonical-backend-gap.json
 // RUN: not loom-dfg-sim %t.dir/unregistered-graph.mlir --graph unregistered_graph_actor --arg 0=1 --output %t.unregistered.json 2>&1 | FileCheck %s --check-prefix=VALIDATOR-REJECT
 // RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/masked-epilogues.mlir | FileCheck %s --check-prefix=MASKED-EPILOGUE
 
@@ -46,6 +48,21 @@ module {
 
 // VALIDATOR-REGISTERED: "graph": "registered_final"
 // VALIDATOR-REGISTERED: "status": "pass"
+
+//--- canonical-backend-gap.mlir
+module {
+  dataflow.graph private @canonical_backend_gap(
+      %start: none, %lhs: i32, %rhs: i32) -> i32 {
+    %sum = llvm.add %lhs, %rhs : i32
+    %published:2 = dataflow.sync %start, %sum
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return %published#0, %published#1 : none, i32
+  }
+}
+
+// CANONICAL-BACKEND-GAP-DAG: "graph": "canonical_backend_gap"
+// CANONICAL-BACKEND-GAP-DAG: "status": "unsupported"
+// CANONICAL-BACKEND-GAP-DAG: "unsupported op: llvm.add"
 
 //--- unregistered-graph.mlir
 module {
