@@ -184,8 +184,11 @@ llvm::Expected<Token> tokenFromBitPattern(const llvm::APInt &bits,
   }
   if (auto floating = mlir::dyn_cast<mlir::FloatType>(type)) {
     token.kind = TokenKind::Float;
-    token.floatValue =
-        llvm::APFloat(floating.getFloatSemantics(), bits).convertToDouble();
+    if (llvm::APFloat::isRepresentableBy(floating.getFloatSemantics(),
+                                         llvm::APFloat::IEEEdouble())) {
+      token.floatValue =
+          llvm::APFloat(floating.getFloatSemantics(), bits).convertToDouble();
+    }
     return token;
   }
   if (mlir::isa<mlir::VectorType>(type)) {

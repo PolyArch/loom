@@ -20,6 +20,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -100,27 +101,31 @@ static llvm::Expected<unsigned> indexBitWidth(mlir::Operation *scope) {
   return supportedBitWidth(width.getFixedValue(), "index");
 }
 
-static std::int64_t byteSizeForBitWidth(std::uint64_t width) {
-  return std::max<std::int64_t>(1, width / 8 + (width % 8 != 0));
+static llvm::Expected<std::int64_t> byteSizeForBitWidth(std::uint64_t width) {
+  if (width == 0)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "token bit width must be nonzero");
+  const std::uint64_t bytes = llvm::divideCeil(width, std::uint64_t{8});
+  if (bytes >
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+    return llvm::createStringError(std::errc::value_too_large,
+                                   "token byte size is unsupported");
+  return static_cast<std::int64_t>(bytes);
 }
 
 llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type,
                                             mlir::Operation *scope) {
-  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
-    return byteSizeForBitWidth(intType.getWidth());
+  if (mlir::isa<mlir::IntegerType, mlir::FloatType, mlir::VectorType>(type)) {
+    auto width = tokenTypeBitWidth(type);
+    if (!width)
+      return width.takeError();
+    return byteSizeForBitWidth(*width);
+  }
   if (mlir::isa<mlir::IndexType>(type)) {
     auto width = indexBitWidth(scope);
     if (!width)
       return width.takeError();
     return byteSizeForBitWidth(*width);
-  }
-  if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
-    if (floatType.isF16())
-      return 2;
-    if (floatType.isF32())
-      return 4;
-    if (floatType.isF64())
-      return 8;
   }
   if (auto arrayType = mlir::dyn_cast<mlir::LLVM::LLVMArrayType>(type)) {
     auto elementSizeOrErr = byteSizeOfType(arrayType.getElementType(), scope);
@@ -128,12 +133,6 @@ llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type,
       return elementSizeOrErr.takeError();
     return static_cast<std::int64_t>(arrayType.getNumElements()) *
            *elementSizeOrErr;
-  }
-  if (mlir::isa<mlir::VectorType>(type)) {
-    auto width = tokenTypeBitWidth(type);
-    if (!width)
-      return width.takeError();
-    return byteSizeForBitWidth(*width);
   }
   return llvm::createStringError(
       std::errc::invalid_argument,
