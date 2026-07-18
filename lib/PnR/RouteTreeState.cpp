@@ -42,14 +42,14 @@ std::uint64_t sizeValue(std::size_t size) {
 
 } // namespace
 
-void RouteTreeTransactionScratch::clearRetainingCapacity() {
+RouteTreeTransactionScratch::~RouteTreeTransactionScratch() {
+  if (activeTransaction_)
+    activeTransaction_->rollback();
+}
+
+void RouteTreeTransactionScratch::resetTransaction() {
   deltas_.clear();
   worklist_.clear();
-  childReferences_.clear();
-  visited_.clear();
-  sinkCounts_.clear();
-  pathMarks_.clear();
-  pathGeneration_ = 0;
 }
 
 llvm::Error loom::pnr::detail::preflightRouteTreeStateCapacity(
@@ -80,12 +80,28 @@ RouteTreeState::RouteTreeState(RouteTreeState &&other) noexcept
       sinkBindings_(std::move(other.sinkBindings_)),
       nodes_(std::move(other.nodes_)), freeSlots_(std::move(other.freeSlots_)),
       endpointSlots_(std::move(other.endpointSlots_)),
-      activeNodeCount_(other.activeNodeCount_), routed_(other.routed_) {
-  assert(!other.transactionActive_ &&
-         "cannot move route tree with an active transaction");
+      activeNodeCount_(other.activeNodeCount_),
+      lookupTombstoneCount_(other.lookupTombstoneCount_),
+      boundSinkObligationCount_(other.boundSinkObligationCount_),
+      attachedSinkObligationCount_(other.attachedSinkObligationCount_),
+      activeTransaction_(other.activeTransaction_) {
+  if (activeTransaction_)
+    activeTransaction_->state_ = this;
   other.sourceEndpoint_ = getInvalidPnrIndex();
+  other.sinkBindings_.clear();
+  other.nodes_.clear();
+  other.freeSlots_.clear();
+  other.endpointSlots_.clear();
   other.activeNodeCount_ = 0;
-  other.routed_ = false;
+  other.lookupTombstoneCount_ = 0;
+  other.boundSinkObligationCount_ = 0;
+  other.attachedSinkObligationCount_ = 0;
+  other.activeTransaction_ = nullptr;
+}
+
+RouteTreeState::~RouteTreeState() {
+  if (activeTransaction_)
+    activeTransaction_->rollback();
 }
 
 std::size_t RouteTreeState::hashEndpoint(PnrIndex endpoint) {
@@ -105,9 +121,9 @@ std::optional<PnrIndex> RouteTreeState::lookupSlot(PnrIndex endpoint) const {
   std::size_t bucket = hashEndpoint(endpoint) & mask;
   for (std::size_t probe = 0; probe < endpointSlots_.size(); ++probe) {
     const LookupEntry &entry = endpointSlots_[bucket];
-    if (!entry.isOccupied())
+    if (entry.isEmpty())
       return std::nullopt;
-    if (entry.endpoint == endpoint)
+    if (entry.isOccupied() && entry.endpoint == endpoint)
       return entry.slot;
     bucket = (bucket + 1) & mask;
   }
@@ -125,7 +141,10 @@ llvm::Error RouteTreeState::ensureLookupCapacity(PnrIndex requiredCount) {
       return routeTreeError("endpoint-to-slot lookup capacity overflow");
     capacity *= 2;
   }
-  if (capacity != endpointSlots_.size())
+  const std::size_t tombstones =
+      static_cast<std::size_t>(lookupTombstoneCount_);
+  const bool shouldPurgeTombstones = tombstones > capacity / 2 - required;
+  if (capacity != endpointSlots_.size() || shouldPurgeTombstones)
     rehashLookup(capacity);
   return llvm::Error::success();
 }
@@ -133,40 +152,54 @@ llvm::Error RouteTreeState::ensureLookupCapacity(PnrIndex requiredCount) {
 void RouteTreeState::insertLookup(PnrIndex endpoint, PnrIndex slot) {
   assert(!endpointSlots_.empty());
   const std::size_t mask = endpointSlots_.size() - 1;
+  const std::size_t noBucket = std::numeric_limits<std::size_t>::max();
+  std::size_t firstTombstone = noBucket;
   std::size_t bucket = hashEndpoint(endpoint) & mask;
-  while (endpointSlots_[bucket].isOccupied()) {
-    assert(endpointSlots_[bucket].endpoint != endpoint &&
-           "duplicate reached endpoint");
+  for (std::size_t probe = 0; probe < endpointSlots_.size(); ++probe) {
+    LookupEntry &entry = endpointSlots_[bucket];
+    if (entry.isOccupied()) {
+      assert(entry.endpoint != endpoint && "duplicate reached endpoint");
+    } else if (entry.tombstone) {
+      if (firstTombstone == noBucket)
+        firstTombstone = bucket;
+    } else {
+      const std::size_t destination =
+          firstTombstone == noBucket ? bucket : firstTombstone;
+      if (firstTombstone != noBucket)
+        --lookupTombstoneCount_;
+      endpointSlots_[destination] = {endpoint, slot, false};
+      return;
+    }
     bucket = (bucket + 1) & mask;
   }
-  endpointSlots_[bucket] = {endpoint, slot};
+  assert(firstTombstone != noBucket && "endpoint lookup has no insert slot");
+  --lookupTombstoneCount_;
+  endpointSlots_[firstTombstone] = {endpoint, slot, false};
 }
 
 void RouteTreeState::eraseLookup(PnrIndex endpoint) {
   assert(!endpointSlots_.empty());
   const std::size_t mask = endpointSlots_.size() - 1;
   std::size_t bucket = hashEndpoint(endpoint) & mask;
-  while (endpointSlots_[bucket].isOccupied() &&
-         endpointSlots_[bucket].endpoint != endpoint)
+  for (std::size_t probe = 0; probe < endpointSlots_.size(); ++probe) {
+    LookupEntry &entry = endpointSlots_[bucket];
+    if (entry.isEmpty())
+      break;
+    if (entry.isOccupied() && entry.endpoint == endpoint) {
+      entry = {getInvalidPnrIndex(), getInvalidPnrIndex(), true};
+      ++lookupTombstoneCount_;
+      return;
+    }
     bucket = (bucket + 1) & mask;
-  assert(endpointSlots_[bucket].isOccupied() &&
-         "erasing an endpoint absent from the lookup");
-  endpointSlots_[bucket] = {};
-
-  std::size_t next = (bucket + 1) & mask;
-  while (endpointSlots_[next].isOccupied()) {
-    const LookupEntry displaced = endpointSlots_[next];
-    endpointSlots_[next] = {};
-    insertLookup(displaced.endpoint, displaced.slot);
-    next = (next + 1) & mask;
   }
+  assert(false && "erasing an endpoint absent from the lookup");
 }
 
 void RouteTreeState::rehashLookup(std::size_t capacity) {
-  std::vector<LookupEntry> previous;
-  previous.swap(endpointSlots_);
-  endpointSlots_.assign(capacity, {});
-  for (const LookupEntry &entry : previous)
+  std::vector<LookupEntry> replacement(capacity);
+  replacement.swap(endpointSlots_);
+  lookupTombstoneCount_ = 0;
+  for (const LookupEntry &entry : replacement)
     if (entry.isOccupied())
       insertLookup(entry.endpoint, entry.slot);
 }
@@ -202,53 +235,86 @@ const RouteTreeNode &RouteTreeState::node(PnrIndex slot) const {
 }
 
 llvm::Error RouteTreeState::verify() const {
-  if (transactionActive_)
+  if (activeTransaction_)
     return routeTreeError("cannot verify while a transaction is active");
-  RouteTreeTransactionScratch scratch;
-  return verifyCandidate(routed_, scratch);
+  return verifyState();
 }
 
-llvm::Error
-RouteTreeState::verifyCandidate(bool routedCandidate,
-                                RouteTreeTransactionScratch &scratch) const {
-  scratch.childReferences_.assign(nodes_.size(), 0);
-  scratch.visited_.assign(nodes_.size(), 0);
-  scratch.sinkCounts_.assign(nodes_.size(), 0);
-  scratch.worklist_.clear();
+llvm::Error RouteTreeState::verifyState() const {
+  if (!endpointSlots_.empty() &&
+      (endpointSlots_.size() < 8 ||
+       (endpointSlots_.size() & (endpointSlots_.size() - 1)) != 0))
+    return routeTreeError("endpoint-to-slot lookup capacity is invalid");
+
+  std::size_t lookupCount = 0;
+  std::size_t tombstoneCount = 0;
+  for (const LookupEntry &entry : endpointSlots_) {
+    if (entry.isOccupied()) {
+      ++lookupCount;
+      if (entry.tombstone || entry.slot >= nodes_.size() ||
+          !nodes_[entry.slot].isActive() ||
+          nodes_[entry.slot].endpoint != entry.endpoint ||
+          lookupSlot(entry.endpoint) != entry.slot)
+        return routeTreeError("endpoint-to-slot lookup diverges from nodes");
+      continue;
+    }
+    if (entry.tombstone) {
+      ++tombstoneCount;
+      if (entry.slot != getInvalidPnrIndex())
+        return routeTreeError("lookup tombstone retains a node slot");
+    } else if (entry.slot != getInvalidPnrIndex()) {
+      return routeTreeError("empty lookup bucket retains a node slot");
+    }
+  }
+  if (tombstoneCount != lookupTombstoneCount_)
+    return routeTreeError("lookup tombstone accounting is inconsistent");
+
+  std::vector<std::uint8_t> visited(nodes_.size(), 0);
+  for (PnrIndex slot : freeSlots_) {
+    if (slot >= nodes_.size() || nodes_[slot].isActive())
+      return routeTreeError("free slot is outside inactive node storage");
+    if (visited[slot])
+      return routeTreeError("free slot is duplicated");
+    visited[slot] = 1;
+  }
 
   std::size_t activeCount = 0;
-  std::size_t lookupCount = 0;
-  for (const LookupEntry &entry : endpointSlots_)
-    lookupCount += entry.isOccupied();
   for (std::size_t slot = 0; slot < nodes_.size(); ++slot) {
-    if (!nodes_[slot].isActive())
+    const RouteTreeNode &node = nodes_[slot];
+    if (!node.isActive()) {
+      if (!visited[slot])
+        return routeTreeError("inactive node is absent from free slots");
       continue;
+    }
+    if (visited[slot])
+      return routeTreeError("active node appears in free slots");
     ++activeCount;
-    if (nodes_[slot].endpoint >= graph_.routingEndpoints().size())
+    if (node.endpoint >= graph_.routingEndpoints().size())
       return routeTreeError("node endpoint is outside FrozenRoutingGraph");
-    if (lookupSlot(nodes_[slot].endpoint) != slot)
+    if (lookupSlot(node.endpoint) != slot)
       return routeTreeError("endpoint-to-slot lookup diverges from nodes");
   }
   if (activeCount != activeNodeCount_ || lookupCount != activeCount)
     return routeTreeError("active-node accounting is inconsistent");
 
-  if (!routedCandidate) {
-    if (activeCount != 0 || lookupCount != 0)
-      return routeTreeError("explicit unrouted state retains route nodes");
-    if (sourceEndpoint_ != getInvalidPnrIndex())
-      return routeTreeError("explicit unrouted state retains source binding");
+  if (activeCount == 0) {
+    if (sourceEndpoint_ != getInvalidPnrIndex() ||
+        boundSinkObligationCount_ != 0 || attachedSinkObligationCount_ != 0)
+      return routeTreeError("explicit unrouted state retains bindings");
     for (const SinkBinding &binding : sinkBindings_)
       if (binding.endpoint != getInvalidPnrIndex() ||
-          binding.nodeSlot != getInvalidPnrIndex())
+          binding.nodeSlot != getInvalidPnrIndex() ||
+          binding.previousAtNode != getInvalidPnrIndex() ||
+          binding.nextAtNode != getInvalidPnrIndex())
         return routeTreeError("explicit unrouted state retains sink binding");
+    if (!nodes_.empty() || !freeSlots_.empty() || !endpointSlots_.empty())
+      return routeTreeError("explicit unrouted state retains route storage");
     return llvm::Error::success();
   }
-  if (activeCount == 0)
-    return routeTreeError("routed state has no root");
+
   if (sourceEndpoint_ == getInvalidPnrIndex() ||
       sourceEndpoint_ >= graph_.routingEndpoints().size())
     return routeTreeError("routed state has no valid source binding");
-
   const std::optional<PnrIndex> rootSlot = lookupSlot(sourceEndpoint_);
   if (!rootSlot)
     return routeTreeError("routed state is missing its source root");
@@ -258,20 +324,73 @@ RouteTreeState::verifyCandidate(bool routedCandidate,
       root.nextSibling != getInvalidPnrIndex())
     return routeTreeError("source root has parent or sibling linkage");
 
+  std::vector<PnrIndex> sinkCounts(nodes_.size(), 0);
+  std::vector<std::uint8_t> obligationReferences(sinkBindings_.size(), 0);
+  std::size_t boundCount = 0;
+  std::size_t attachedCount = 0;
   for (const SinkBinding &binding : sinkBindings_) {
-    if (binding.endpoint == getInvalidPnrIndex() ||
-        binding.nodeSlot == getInvalidPnrIndex() ||
-        binding.nodeSlot >= nodes_.size() ||
+    if (binding.endpoint == getInvalidPnrIndex()) {
+      if (binding.nodeSlot != getInvalidPnrIndex() ||
+          binding.previousAtNode != getInvalidPnrIndex() ||
+          binding.nextAtNode != getInvalidPnrIndex())
+        return routeTreeError("unbound sink retains node linkage");
+      continue;
+    }
+    ++boundCount;
+    if (binding.endpoint >= graph_.routingEndpoints().size())
+      return routeTreeError("sink binding is outside FrozenRoutingGraph");
+    if (binding.nodeSlot == getInvalidPnrIndex()) {
+      if (binding.previousAtNode != getInvalidPnrIndex() ||
+          binding.nextAtNode != getInvalidPnrIndex())
+        return routeTreeError("unattached sink retains node linkage");
+      continue;
+    }
+    ++attachedCount;
+    if (binding.nodeSlot >= nodes_.size() ||
         !nodes_[binding.nodeSlot].isActive() ||
         nodes_[binding.nodeSlot].endpoint != binding.endpoint)
       return routeTreeError("sink obligation is not covered");
-    ++scratch.sinkCounts_[binding.nodeSlot];
+    ++sinkCounts[binding.nodeSlot];
   }
-  for (std::size_t slot = 0; slot < nodes_.size(); ++slot)
-    if (nodes_[slot].isActive() &&
-        nodes_[slot].sinkObligationCount != scratch.sinkCounts_[slot])
-      return routeTreeError("node sink metadata diverges from bindings");
+  if (boundCount != boundSinkObligationCount_ ||
+      attachedCount != attachedSinkObligationCount_)
+    return routeTreeError("sink binding accounting is inconsistent");
+  if (attachedCount != sinkBindings_.size())
+    return routeTreeError("sink obligation is not covered");
 
+  for (std::size_t slot = 0; slot < nodes_.size(); ++slot) {
+    const RouteTreeNode &node = nodes_[slot];
+    if (!node.isActive())
+      continue;
+    PnrIndex previous = getInvalidPnrIndex();
+    PnrIndex obligation = node.firstSinkObligation;
+    PnrIndex count = 0;
+    while (obligation != getInvalidPnrIndex()) {
+      if (obligation >= sinkBindings_.size())
+        return routeTreeError("node sink linkage is outside the freeze");
+      const SinkBinding &binding = sinkBindings_[obligation];
+      if (binding.nodeSlot != slot || binding.endpoint != node.endpoint ||
+          binding.previousAtNode != previous)
+        return routeTreeError("node sink linkage is inconsistent");
+      if (obligationReferences[obligation])
+        return routeTreeError("sink obligation appears at multiple nodes");
+      obligationReferences[obligation] = 1;
+      previous = obligation;
+      obligation = binding.nextAtNode;
+      ++count;
+    }
+    if (count != node.sinkObligationCount || count != sinkCounts[slot])
+      return routeTreeError("node sink metadata diverges from bindings");
+  }
+  for (std::size_t obligation = 0; obligation < sinkBindings_.size();
+       ++obligation) {
+    const bool attached =
+        sinkBindings_[obligation].nodeSlot != getInvalidPnrIndex();
+    if (obligationReferences[obligation] != static_cast<std::uint8_t>(attached))
+      return routeTreeError("sink obligation is absent from node metadata");
+  }
+
+  std::vector<std::uint8_t> childReferences(nodes_.size(), 0);
   for (std::size_t parentSlot = 0; parentSlot < nodes_.size(); ++parentSlot) {
     const RouteTreeNode &parent = nodes_[parentSlot];
     if (!parent.isActive())
@@ -294,33 +413,34 @@ RouteTreeState::verifyCandidate(bool routedCandidate,
               childNode.endpoint ||
           arcSourceEndpoint(childNode.parentArc) != parent.endpoint)
         return routeTreeError("parent arc disagrees with tree linkage");
-      if (++scratch.childReferences_[child] != 1)
+      if (++childReferences[child] != 1)
         return routeTreeError("reached endpoint has multiple parents");
       previous = child;
       child = childNode.nextSibling;
     }
   }
-
   for (std::size_t slot = 0; slot < nodes_.size(); ++slot) {
     if (!nodes_[slot].isActive())
       continue;
     const std::uint8_t expected = slot == *rootSlot ? 0 : 1;
-    if (scratch.childReferences_[slot] != expected)
+    if (childReferences[slot] != expected)
       return routeTreeError("route tree is disconnected or reconvergent");
   }
 
-  scratch.worklist_.push_back(*rootSlot);
+  std::fill(visited.begin(), visited.end(), 0);
+  std::vector<PnrIndex> worklist;
+  worklist.push_back(*rootSlot);
   std::size_t visitedCount = 0;
-  while (!scratch.worklist_.empty()) {
-    const PnrIndex current = scratch.worklist_.back();
-    scratch.worklist_.pop_back();
-    if (scratch.visited_[current])
+  while (!worklist.empty()) {
+    const PnrIndex current = worklist.back();
+    worklist.pop_back();
+    if (visited[current])
       return routeTreeError("route tree contains a cycle or reconvergence");
-    scratch.visited_[current] = 1;
+    visited[current] = 1;
     ++visitedCount;
     for (PnrIndex child = nodes_[current].firstChild;
          child != getInvalidPnrIndex(); child = nodes_[child].nextSibling)
-      scratch.worklist_.push_back(child);
+      worklist.push_back(child);
   }
   if (visitedCount != activeCount)
     return routeTreeError("parent chain does not reach the source root");
@@ -328,14 +448,12 @@ RouteTreeState::verifyCandidate(bool routedCandidate,
 }
 
 llvm::Expected<RouteTreeTransaction>
-RouteTreeState::beginTransaction(RouteTreeTransactionScratch &scratch) {
-  if (transactionActive_)
+RouteTreeState::beginTransaction(RouteTreeTransactionScratch &scratch) & {
+  if (activeTransaction_)
     return routeTreeError("another transaction is already active");
-  if (scratch.inUse_)
+  if (scratch.activeTransaction_)
     return routeTreeError("transaction scratch is already in use");
-  scratch.clearRetainingCapacity();
-  scratch.inUse_ = true;
-  transactionActive_ = true;
+  scratch.resetTransaction();
   return RouteTreeTransaction(*this, scratch);
 }
 
@@ -344,14 +462,24 @@ RouteTreeTransaction::RouteTreeTransaction(RouteTreeState &state,
     : state_(&state), scratch_(&scratch),
       initialNodeStorageSize_(state.nodes_.size()),
       initialActiveNodeCount_(state.activeNodeCount_),
-      initialRouted_(state.routed_) {}
+      initialBoundSinkObligationCount_(state.boundSinkObligationCount_),
+      initialAttachedSinkObligationCount_(state.attachedSinkObligationCount_) {
+  state.activeTransaction_ = this;
+  scratch.activeTransaction_ = this;
+}
 
 RouteTreeTransaction::RouteTreeTransaction(
     RouteTreeTransaction &&other) noexcept
     : state_(other.state_), scratch_(other.scratch_),
       initialNodeStorageSize_(other.initialNodeStorageSize_),
       initialActiveNodeCount_(other.initialActiveNodeCount_),
-      initialRouted_(other.initialRouted_) {
+      initialBoundSinkObligationCount_(other.initialBoundSinkObligationCount_),
+      initialAttachedSinkObligationCount_(
+          other.initialAttachedSinkObligationCount_) {
+  if (state_)
+    state_->activeTransaction_ = this;
+  if (scratch_)
+    scratch_->activeTransaction_ = this;
   other.state_ = nullptr;
   other.scratch_ = nullptr;
 }
@@ -367,15 +495,6 @@ void RouteTreeTransaction::recordModifiedNode(PnrIndex slot) {
        state_->nodes_[slot]});
 }
 
-void RouteTreeTransaction::setSinkMetadata(PnrIndex slot, PnrIndex count) {
-  RouteTreeTransactionScratch::Delta delta;
-  delta.kind = RouteTreeTransactionScratch::DeltaKind::SinkMetadata;
-  delta.key = slot;
-  delta.value0 = state_->nodes_[slot].sinkObligationCount;
-  scratch_->deltas_.push_back(delta);
-  state_->nodes_[slot].sinkObligationCount = count;
-}
-
 void RouteTreeTransaction::setSourceBinding(PnrIndex endpoint) {
   RouteTreeTransactionScratch::Delta delta;
   delta.kind = RouteTreeTransactionScratch::DeltaKind::SourceBinding;
@@ -385,8 +504,9 @@ void RouteTreeTransaction::setSourceBinding(PnrIndex endpoint) {
 }
 
 void RouteTreeTransaction::setSinkBinding(PnrIndex obligation,
-                                          PnrIndex endpoint,
-                                          PnrIndex nodeSlot) {
+                                          PnrIndex endpoint, PnrIndex nodeSlot,
+                                          PnrIndex previousAtNode,
+                                          PnrIndex nextAtNode) {
   const RouteTreeState::SinkBinding previous =
       state_->sinkBindings_[obligation];
   RouteTreeTransactionScratch::Delta delta;
@@ -394,8 +514,64 @@ void RouteTreeTransaction::setSinkBinding(PnrIndex obligation,
   delta.key = obligation;
   delta.value0 = previous.endpoint;
   delta.value1 = previous.nodeSlot;
+  delta.value2 = previous.previousAtNode;
+  delta.value3 = previous.nextAtNode;
   scratch_->deltas_.push_back(delta);
-  state_->sinkBindings_[obligation] = {endpoint, nodeSlot};
+
+  const bool wasBound = previous.endpoint != getInvalidPnrIndex();
+  const bool isBound = endpoint != getInvalidPnrIndex();
+  const bool wasAttached = previous.nodeSlot != getInvalidPnrIndex();
+  const bool isAttached = nodeSlot != getInvalidPnrIndex();
+  if (!wasBound && isBound)
+    ++state_->boundSinkObligationCount_;
+  else if (wasBound && !isBound)
+    --state_->boundSinkObligationCount_;
+  if (!wasAttached && isAttached)
+    ++state_->attachedSinkObligationCount_;
+  else if (wasAttached && !isAttached)
+    --state_->attachedSinkObligationCount_;
+  state_->sinkBindings_[obligation] = {endpoint, nodeSlot, previousAtNode,
+                                       nextAtNode};
+}
+
+void RouteTreeTransaction::attachSinkBinding(PnrIndex obligation,
+                                             PnrIndex nodeSlot,
+                                             PnrIndex finalSinkCount) {
+  RouteTreeNode &node = state_->nodes_[nodeSlot];
+  const PnrIndex oldHead = node.firstSinkObligation;
+  const PnrIndex endpoint = state_->sinkBindings_[obligation].endpoint;
+  recordModifiedNode(nodeSlot);
+  if (oldHead != getInvalidPnrIndex()) {
+    const RouteTreeState::SinkBinding head = state_->sinkBindings_[oldHead];
+    setSinkBinding(oldHead, head.endpoint, head.nodeSlot, obligation,
+                   head.nextAtNode);
+  }
+  setSinkBinding(obligation, endpoint, nodeSlot, getInvalidPnrIndex(), oldHead);
+  node.firstSinkObligation = obligation;
+  node.sinkObligationCount = finalSinkCount;
+}
+
+void RouteTreeTransaction::unlinkSinkBinding(PnrIndex obligation) {
+  const RouteTreeState::SinkBinding binding = state_->sinkBindings_[obligation];
+  RouteTreeNode &node = state_->nodes_[binding.nodeSlot];
+  recordModifiedNode(binding.nodeSlot);
+  if (binding.previousAtNode == getInvalidPnrIndex()) {
+    node.firstSinkObligation = binding.nextAtNode;
+  } else {
+    const RouteTreeState::SinkBinding previous =
+        state_->sinkBindings_[binding.previousAtNode];
+    setSinkBinding(binding.previousAtNode, previous.endpoint, previous.nodeSlot,
+                   previous.previousAtNode, binding.nextAtNode);
+  }
+  if (binding.nextAtNode != getInvalidPnrIndex()) {
+    const RouteTreeState::SinkBinding next =
+        state_->sinkBindings_[binding.nextAtNode];
+    setSinkBinding(binding.nextAtNode, next.endpoint, next.nodeSlot,
+                   binding.previousAtNode, next.nextAtNode);
+  }
+  --node.sinkObligationCount;
+  setSinkBinding(obligation, getInvalidPnrIndex(), getInvalidPnrIndex(),
+                 getInvalidPnrIndex(), getInvalidPnrIndex());
 }
 
 llvm::Expected<PnrIndex> RouteTreeTransaction::addNode(PnrIndex endpoint,
@@ -489,8 +665,10 @@ llvm::Error RouteTreeTransaction::bindSource(PnrIndex endpoint) {
     return routeTreeError("source endpoint is outside FrozenRoutingGraph");
   if (state_->activeNodeCount_ != 0 && state_->sourceEndpoint_ != endpoint)
     return routeTreeError("routed source requires whole-net rip-up");
-  if (state_->sourceEndpoint_ != endpoint)
+  if (state_->sourceEndpoint_ != endpoint) {
+    scratch_->deltas_.reserve(scratch_->deltas_.size() + 1);
     setSourceBinding(endpoint);
+  }
   return llvm::Error::success();
 }
 
@@ -506,8 +684,11 @@ llvm::Error RouteTreeTransaction::bindSink(PnrIndex obligation,
       state_->sinkBindings_[obligation];
   if (binding.nodeSlot != getInvalidPnrIndex())
     return routeTreeError("attached sink obligation requires rip-up");
-  if (binding.endpoint != endpoint)
-    setSinkBinding(obligation, endpoint, getInvalidPnrIndex());
+  if (binding.endpoint != endpoint) {
+    scratch_->deltas_.reserve(scratch_->deltas_.size() + 1);
+    setSinkBinding(obligation, endpoint, getInvalidPnrIndex(),
+                   getInvalidPnrIndex(), getInvalidPnrIndex());
+  }
   return llvm::Error::success();
 }
 
@@ -519,7 +700,7 @@ RouteTreeTransaction::attachPath(PnrIndex attachmentEndpoint,
     return routeTreeError("transaction is no longer active");
   if (sinkObligation >= state_->sinkBindings_.size())
     return routeTreeError("sink obligation ordinal is outside the freeze");
-  const RouteTreeState::SinkBinding &binding =
+  const RouteTreeState::SinkBinding binding =
       state_->sinkBindings_[sinkObligation];
   if (binding.endpoint == getInvalidPnrIndex())
     return routeTreeError("sink obligation has no endpoint binding");
@@ -583,15 +764,15 @@ RouteTreeTransaction::attachPath(PnrIndex attachmentEndpoint,
       nodeCountContext, state_->activeNodeCount_, addedCount);
   if (!finalNodeCount)
     return finalNodeCount.takeError();
-  if (llvm::Error error = state_->ensureLookupCapacity(*finalNodeCount))
-    return error;
 
   const std::size_t reused =
       std::min<std::size_t>(state_->freeSlots_.size(), addedCount);
   state_->nodes_.reserve(state_->nodes_.size() +
                          static_cast<std::size_t>(addedCount) - reused);
   scratch_->deltas_.reserve(scratch_->deltas_.size() +
-                            static_cast<std::size_t>(addedCount) * 3 + 2);
+                            static_cast<std::size_t>(addedCount) * 3 + 3);
+  if (llvm::Error error = state_->ensureLookupCapacity(*finalNodeCount))
+    return error;
 
   if (emptyTree) {
     auto root = addNode(state_->sourceEndpoint_, getInvalidPnrIndex());
@@ -609,8 +790,7 @@ RouteTreeTransaction::attachPath(PnrIndex attachmentEndpoint,
     linkChild(parent, *child);
     parent = *child;
   }
-  setSinkMetadata(parent, *finalSinkCount);
-  setSinkBinding(sinkObligation, binding.endpoint, parent);
+  attachSinkBinding(sinkObligation, parent, *finalSinkCount);
   return llvm::Error::success();
 }
 
@@ -624,7 +804,9 @@ llvm::Error RouteTreeTransaction::ripUpSink(PnrIndex sinkObligation) {
   if (binding.endpoint == getInvalidPnrIndex())
     return routeTreeError("sink obligation has no endpoint binding");
   if (binding.nodeSlot == getInvalidPnrIndex()) {
-    setSinkBinding(sinkObligation, getInvalidPnrIndex(), getInvalidPnrIndex());
+    scratch_->deltas_.reserve(scratch_->deltas_.size() + 1);
+    setSinkBinding(sinkObligation, getInvalidPnrIndex(), getInvalidPnrIndex(),
+                   getInvalidPnrIndex(), getInvalidPnrIndex());
     return llvm::Error::success();
   }
   if (binding.nodeSlot >= state_->nodes_.size() ||
@@ -633,24 +815,36 @@ llvm::Error RouteTreeTransaction::ripUpSink(PnrIndex sinkObligation) {
       state_->nodes_[binding.nodeSlot].sinkObligationCount == 0)
     return routeTreeError("sink binding diverges from the route tree");
 
-  scratch_->deltas_.reserve(scratch_->deltas_.size() +
-                            state_->nodes_.size() * 4 + 2);
-  state_->freeSlots_.reserve(state_->freeSlots_.size() +
-                             state_->activeNodeCount_);
-  PnrIndex current = binding.nodeSlot;
-  setSinkMetadata(current, state_->nodes_[current].sinkObligationCount - 1);
-  setSinkBinding(sinkObligation, getInvalidPnrIndex(), getInvalidPnrIndex());
-
   const std::optional<PnrIndex> root =
       state_->lookupSlot(state_->sourceEndpoint_);
-  assert(root);
-  while (current != *root &&
-         state_->nodes_[current].firstChild == getInvalidPnrIndex() &&
-         state_->nodes_[current].sinkObligationCount == 0) {
-    const PnrIndex parent = parentSlot(current);
-    detachNode(current, parent);
-    removeNode(current);
-    current = parent;
+  if (!root)
+    return routeTreeError("routed state is missing its source root");
+  scratch_->worklist_.clear();
+  if (state_->nodes_[binding.nodeSlot].firstChild == getInvalidPnrIndex() &&
+      state_->nodes_[binding.nodeSlot].sinkObligationCount == 1) {
+    PnrIndex child = binding.nodeSlot;
+    while (child != *root) {
+      scratch_->worklist_.push_back(child);
+      const PnrIndex parent = parentSlot(child);
+      const RouteTreeNode &childNode = state_->nodes_[child];
+      const RouteTreeNode &parentNode = state_->nodes_[parent];
+      if (parentNode.sinkObligationCount != 0 ||
+          parentNode.firstChild != child ||
+          childNode.previousSibling != getInvalidPnrIndex() ||
+          childNode.nextSibling != getInvalidPnrIndex())
+        break;
+      child = parent;
+    }
+  }
+
+  const std::size_t pruneCount = scratch_->worklist_.size();
+  scratch_->deltas_.reserve(scratch_->deltas_.size() + 4 + pruneCount * 4);
+  state_->freeSlots_.reserve(state_->freeSlots_.size() + pruneCount);
+  unlinkSinkBinding(sinkObligation);
+  for (PnrIndex slot : scratch_->worklist_) {
+    const PnrIndex parent = parentSlot(slot);
+    detachNode(slot, parent);
+    removeNode(slot);
   }
   return llvm::Error::success();
 }
@@ -664,7 +858,8 @@ llvm::Error RouteTreeTransaction::ripUpSubtree(PnrIndex subtreeRootEndpoint) {
     return routeTreeError("subtree root endpoint is not reached");
   const std::optional<PnrIndex> root =
       state_->lookupSlot(state_->sourceEndpoint_);
-  assert(root);
+  if (!root)
+    return routeTreeError("routed state is missing its source root");
   if (*subtreeRoot == *root)
     return ripUpWholeNet();
 
@@ -677,20 +872,27 @@ llvm::Error RouteTreeTransaction::ripUpSubtree(PnrIndex subtreeRootEndpoint) {
          child = state_->nodes_[child].nextSibling)
       scratch_->worklist_.push_back(child);
   }
-  scratch_->visited_.assign(state_->nodes_.size(), 0);
-  for (PnrIndex slot : scratch_->worklist_)
-    scratch_->visited_[slot] = 1;
-  for (PnrIndex obligation = 0; obligation < state_->sinkBindings_.size();
-       ++obligation) {
-    const PnrIndex nodeSlot = state_->sinkBindings_[obligation].nodeSlot;
-    if (nodeSlot != getInvalidPnrIndex() && scratch_->visited_[nodeSlot])
-      setSinkBinding(obligation, getInvalidPnrIndex(), getInvalidPnrIndex());
-  }
 
-  scratch_->deltas_.reserve(scratch_->deltas_.size() +
+  std::size_t bindingCount = 0;
+  for (PnrIndex slot : scratch_->worklist_)
+    for (PnrIndex obligation = state_->nodes_[slot].firstSinkObligation;
+         obligation != getInvalidPnrIndex();
+         obligation = state_->sinkBindings_[obligation].nextAtNode)
+      ++bindingCount;
+  scratch_->deltas_.reserve(scratch_->deltas_.size() + bindingCount +
                             scratch_->worklist_.size() + 3);
   state_->freeSlots_.reserve(state_->freeSlots_.size() +
                              scratch_->worklist_.size());
+
+  for (PnrIndex slot : scratch_->worklist_) {
+    PnrIndex obligation = state_->nodes_[slot].firstSinkObligation;
+    while (obligation != getInvalidPnrIndex()) {
+      const PnrIndex next = state_->sinkBindings_[obligation].nextAtNode;
+      setSinkBinding(obligation, getInvalidPnrIndex(), getInvalidPnrIndex(),
+                     getInvalidPnrIndex(), getInvalidPnrIndex());
+      obligation = next;
+    }
+  }
   const PnrIndex parent = parentSlot(*subtreeRoot);
   detachNode(*subtreeRoot, parent);
   for (PnrIndex slot : scratch_->worklist_)
@@ -703,20 +905,20 @@ llvm::Error RouteTreeTransaction::ripUpWholeNet() {
     return routeTreeError("transaction is no longer active");
   scratch_->deltas_.reserve(scratch_->deltas_.size() +
                             state_->activeNodeCount_ +
-                            state_->sinkBindings_.size() + 1);
+                            state_->boundSinkObligationCount_ + 1);
+  state_->freeSlots_.reserve(state_->freeSlots_.size() +
+                             state_->activeNodeCount_);
+
   for (PnrIndex obligation = 0; obligation < state_->sinkBindings_.size();
        ++obligation) {
     const RouteTreeState::SinkBinding &binding =
         state_->sinkBindings_[obligation];
-    if (binding.endpoint != getInvalidPnrIndex() ||
-        binding.nodeSlot != getInvalidPnrIndex())
-      setSinkBinding(obligation, getInvalidPnrIndex(), getInvalidPnrIndex());
+    if (binding.endpoint != getInvalidPnrIndex())
+      setSinkBinding(obligation, getInvalidPnrIndex(), getInvalidPnrIndex(),
+                     getInvalidPnrIndex(), getInvalidPnrIndex());
   }
   if (state_->sourceEndpoint_ != getInvalidPnrIndex())
     setSourceBinding(getInvalidPnrIndex());
-
-  state_->freeSlots_.reserve(state_->freeSlots_.size() +
-                             state_->activeNodeCount_);
   for (std::size_t slot = 0; slot < state_->nodes_.size(); ++slot)
     if (state_->nodes_[slot].isActive())
       removeNode(static_cast<PnrIndex>(slot));
@@ -726,24 +928,36 @@ llvm::Error RouteTreeTransaction::ripUpWholeNet() {
 llvm::Error RouteTreeTransaction::commit() {
   if (!state_)
     return routeTreeError("transaction is no longer active");
-  const bool routedCandidate = state_->activeNodeCount_ != 0;
-  if (llvm::Error error = state_->verifyCandidate(routedCandidate, *scratch_))
-    return error;
-
-  state_->routed_ = routedCandidate;
-  if (!routedCandidate) {
+  if (state_->activeNodeCount_ == 0) {
+    if (state_->sourceEndpoint_ != getInvalidPnrIndex() ||
+        state_->boundSinkObligationCount_ != 0 ||
+        state_->attachedSinkObligationCount_ != 0)
+      return routeTreeError(
+          "explicit unrouted candidate retains physical bindings");
     state_->nodes_.clear();
     state_->freeSlots_.clear();
     state_->endpointSlots_.clear();
+    state_->lookupTombstoneCount_ = 0;
+    finish();
+    return llvm::Error::success();
   }
+
+  if (state_->sourceEndpoint_ == getInvalidPnrIndex() ||
+      state_->boundSinkObligationCount_ != state_->sinkBindings_.size() ||
+      state_->attachedSinkObligationCount_ != state_->sinkBindings_.size())
+    return routeTreeError("sink obligation is not covered");
+  const std::optional<PnrIndex> root =
+      state_->lookupSlot(state_->sourceEndpoint_);
+  if (!root || state_->nodes_[*root].parentArc != getInvalidPnrIndex())
+    return routeTreeError("routed state is missing its source root");
   finish();
   return llvm::Error::success();
 }
 
 void RouteTreeTransaction::finish() {
-  state_->transactionActive_ = false;
-  scratch_->inUse_ = false;
-  scratch_->clearRetainingCapacity();
+  state_->activeTransaction_ = nullptr;
+  scratch_->activeTransaction_ = nullptr;
+  scratch_->resetTransaction();
   state_ = nullptr;
   scratch_ = nullptr;
 }
@@ -777,19 +991,22 @@ void RouteTreeTransaction::rollback() noexcept {
         state_->freeSlots_.push_back(delta->key);
       }
       break;
-    case RouteTreeTransactionScratch::DeltaKind::SinkMetadata:
-      state_->nodes_[delta->key].sinkObligationCount = delta->value0;
-      break;
     case RouteTreeTransactionScratch::DeltaKind::SourceBinding:
       state_->sourceEndpoint_ = delta->value0;
       break;
     case RouteTreeTransactionScratch::DeltaKind::SinkBinding:
-      state_->sinkBindings_[delta->key] = {delta->value0, delta->value1};
+      state_->sinkBindings_[delta->key] = {delta->value0, delta->value1,
+                                           delta->value2, delta->value3};
       break;
     }
   }
+  if (initialActiveNodeCount_ == 0) {
+    state_->endpointSlots_.clear();
+    state_->lookupTombstoneCount_ = 0;
+  }
   assert(state_->nodes_.size() == initialNodeStorageSize_);
   assert(state_->activeNodeCount_ == initialActiveNodeCount_);
-  state_->routed_ = initialRouted_;
+  state_->boundSinkObligationCount_ = initialBoundSinkObligationCount_;
+  state_->attachedSinkObligationCount_ = initialAttachedSinkObligationCount_;
   finish();
 }

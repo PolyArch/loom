@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -24,6 +25,29 @@ namespace {
 constexpr std::uint32_t unbounded = std::numeric_limits<std::uint32_t>::max();
 constexpr PnrIndex sinkObligationA = 0;
 constexpr PnrIndex sinkObligationB = 1;
+
+template <typename Graph, typename = void>
+struct CanCreateRouteTree : std::false_type {};
+
+template <typename Graph>
+struct CanCreateRouteTree<Graph, std::void_t<decltype(RouteTreeState::create(
+                                     std::declval<Graph>(), PnrIndex{1}))>>
+    : std::true_type {};
+
+template <typename State, typename = void>
+struct CanBeginRouteTreeTransaction : std::false_type {};
+
+template <typename State>
+struct CanBeginRouteTreeTransaction<
+    State, std::void_t<decltype(std::declval<State>().beginTransaction(
+               std::declval<RouteTreeTransactionScratch &>()))>>
+    : std::true_type {};
+
+static_assert(CanCreateRouteTree<FrozenRoutingGraph &>::value);
+static_assert(!CanCreateRouteTree<FrozenRoutingGraph &&>::value);
+static_assert(!CanCreateRouteTree<const FrozenRoutingGraph &&>::value);
+static_assert(CanBeginRouteTreeTransaction<RouteTreeState &>::value);
+static_assert(!CanBeginRouteTreeTransaction<RouteTreeState &&>::value);
 
 TransportEndpointRef endpointRef(const ArtifactIdentity &fabric,
                                  std::uint64_t id) {
@@ -65,6 +89,14 @@ template <typename T> T takeValue(const char *test, llvm::Expected<T> value) {
   if (!value)
     fail(test, llvm::toString(value.takeError()).c_str());
   return std::move(*value);
+}
+
+template <typename T>
+void requireExpectedErrorContains(const char *test, llvm::Expected<T> value,
+                                  std::string_view expected) {
+  if (value)
+    fail(test, "expected route-tree failure");
+  requireErrorContains(test, value.takeError(), expected);
 }
 
 FrozenRoutingGraph makeRoutingGraph(const char *test) {
@@ -343,7 +375,7 @@ void preservesSharedPrefixAcrossPruneAndReroute() {
           "reroute did not install the alternate branch");
 }
 
-void reusesScratchAndRollsBackExactTreeState() {
+void reusesScratchGenerationsAndRollsBackExactTreeState() {
   Fixture fixture;
   RouteTreeState state = makeUnrouted(__func__, fixture);
   RouteTreeTransactionScratch scratch;
@@ -351,10 +383,6 @@ void reusesScratchAndRollsBackExactTreeState() {
   const std::vector<RouteTreeNode> before(state.nodeStorage().begin(),
                                           state.nodeStorage().end());
   const PnrIndex beforeCount = state.activeNodeCount();
-  const std::size_t deltaCapacity = scratch.deltaCapacity();
-  const std::size_t workspaceCapacity = scratch.workspaceCapacity();
-  require(__func__, deltaCapacity != 0 && workspaceCapacity != 0,
-          "committed transaction did not retain scratch capacity");
 
   RouteTreeTransaction transaction =
       takeValue(__func__, state.beginTransaction(scratch));
@@ -383,10 +411,6 @@ void reusesScratchAndRollsBackExactTreeState() {
           state.sourceEndpoint() == fixture.root &&
               state.sinkEndpoint(sinkObligationA) == fixture.sinkA,
           "rollback did not restore physical bindings");
-  require(__func__,
-          scratch.deltaCapacity() >= deltaCapacity &&
-              scratch.workspaceCapacity() >= workspaceCapacity,
-          "rollback discarded reusable scratch capacity");
   requireSuccess(__func__, state.verify());
 
   RouteTreeTransaction committed =
@@ -396,10 +420,7 @@ void reusesScratchAndRollsBackExactTreeState() {
   requireSuccess(__func__, committed.attachPath(fixture.trunk, alternatePath,
                                                 sinkObligationA));
   requireSuccess(__func__, committed.commit());
-  require(__func__,
-          scratch.deltaCapacity() >= deltaCapacity &&
-              scratch.workspaceCapacity() >= workspaceCapacity,
-          "second commit discarded reusable scratch capacity");
+  requireSuccess(__func__, state.verify());
 }
 
 void enforcesCoverageOrExplicitUnroutedState() {
@@ -503,6 +524,88 @@ void independentlyRebindsDuplicateSinkObligations() {
           "source binding rollback did not restore the producer endpoint");
 }
 
+void migratesActiveTransactionAcrossStateMove() {
+  Fixture fixture;
+  RouteTreeState source = makeUnrouted(__func__, fixture);
+  RouteTreeTransactionScratch scratch;
+  RouteTreeTransaction transaction =
+      takeValue(__func__, source.beginTransaction(scratch));
+  requireSuccess(__func__, transaction.bindSource(fixture.root));
+  requireSuccess(__func__,
+                 transaction.bindSink(sinkObligationA, fixture.sinkA));
+
+  RouteTreeState destination(std::move(source));
+  requireSuccess(__func__, source.verify());
+  const std::array<PnrIndex, 5> pathA{
+      fixture.rootToTrunk, fixture.trunkToA, fixture.branchAToMergeInput,
+      fixture.mergeInputAToOutput, fixture.mergeOutputToSink};
+  const std::array<PnrIndex, 2> pathB{fixture.trunkToB, fixture.branchBToSink};
+  requireSuccess(__func__,
+                 transaction.attachPath(fixture.root, pathA, sinkObligationA));
+  requireSuccess(__func__,
+                 transaction.bindSink(sinkObligationB, fixture.sinkB));
+  requireSuccess(__func__,
+                 transaction.attachPath(fixture.trunk, pathB, sinkObligationB));
+  requireSuccess(__func__, transaction.commit());
+  requireSuccess(__func__, destination.verify());
+}
+
+void invalidatesTransactionsWhenBorrowedOwnersExpire() {
+  Fixture fixture;
+  RouteTreeTransactionScratch scratch;
+  std::optional<RouteTreeTransaction> transaction;
+  {
+    RouteTreeState state = makeUnrouted(__func__, fixture);
+    transaction.emplace(takeValue(__func__, state.beginTransaction(scratch)));
+    requireSuccess(__func__, transaction->bindSource(fixture.root));
+  }
+  requireErrorContains(__func__, transaction->commit(), "no longer active");
+
+  RouteTreeState state = makeUnrouted(__func__, fixture);
+  transaction.reset();
+  {
+    RouteTreeTransactionScratch expiringScratch;
+    transaction.emplace(
+        takeValue(__func__, state.beginTransaction(expiringScratch)));
+    requireSuccess(__func__, transaction->bindSource(fixture.root));
+  }
+  requireErrorContains(__func__, transaction->commit(), "no longer active");
+  require(__func__, state.isUnrouted() && !state.sourceEndpoint(),
+          "expiring scratch did not roll back its active transaction");
+  requireSuccess(__func__, state.verify());
+}
+
+void rejectsNestedTransactionsAndRollsBackOnDestruction() {
+  Fixture fixture;
+  RouteTreeState state = makeUnrouted(__func__, fixture);
+  RouteTreeState other = makeUnrouted(__func__, fixture);
+  RouteTreeTransactionScratch scratch;
+  RouteTreeTransactionScratch otherScratch;
+  {
+    RouteTreeTransaction transaction =
+        takeValue(__func__, state.beginTransaction(scratch));
+    requireExpectedErrorContains(__func__, state.beginTransaction(otherScratch),
+                                 "another transaction is already active");
+    requireExpectedErrorContains(__func__, other.beginTransaction(scratch),
+                                 "scratch is already in use");
+    requireSuccess(__func__, transaction.bindSource(fixture.root));
+    requireSuccess(__func__,
+                   transaction.bindSink(sinkObligationA, fixture.sinkA));
+    const std::array<PnrIndex, 5> pathA{
+        fixture.rootToTrunk, fixture.trunkToA, fixture.branchAToMergeInput,
+        fixture.mergeInputAToOutput, fixture.mergeOutputToSink};
+    requireSuccess(
+        __func__, transaction.attachPath(fixture.root, pathA, sinkObligationA));
+  }
+  require(__func__, state.isUnrouted() && !state.sourceEndpoint(),
+          "transaction destructor did not roll back the candidate");
+  requireSuccess(__func__, state.verify());
+
+  RouteTreeTransaction reused =
+      takeValue(__func__, other.beginTransaction(scratch));
+  reused.rollback();
+}
+
 void preservesLookupCollisionChainsAfterDeletion() {
   FrozenRoutingGraph graph = makeCollisionRoutingGraph(__func__);
   const PnrIndex sinkA = endpoint(__func__, graph, 5000);
@@ -529,11 +632,30 @@ void preservesLookupCollisionChainsAfterDeletion() {
   requireSuccess(__func__, deletion.ripUpSink(sinkObligationA));
   require(__func__,
           state.findNode(source).has_value() &&
-              state.findNode(sinkB).has_value(),
-          "open-addressed deletion broke a collision chain");
-  requireSuccess(__func__, deletion.bindSink(sinkObligationA, sinkB));
-  requireSuccess(__func__, deletion.attachPath(sinkB, {}, sinkObligationA));
-  requireSuccess(__func__, deletion.commit());
+              state.findNode(sinkB).has_value() && !state.findNode(sinkA),
+          "tombstone deletion broke a collision chain");
+  deletion.rollback();
+  requireSuccess(__func__, state.verify());
+
+  RouteTreeTransaction repeated =
+      takeValue(__func__, state.beginTransaction(scratch));
+  requireSuccess(__func__, repeated.ripUpSink(sinkObligationA));
+  requireSuccess(__func__, repeated.bindSink(sinkObligationA, sinkB));
+  requireSuccess(__func__, repeated.attachPath(sinkB, {}, sinkObligationA));
+  requireSuccess(__func__, repeated.commit());
+  require(__func__,
+          state.node(slot(__func__, state, sinkB)).sinkObligationCount == 2,
+          "repeated erase lost a shared sink obligation");
+
+  RouteTreeTransaction reinsert =
+      takeValue(__func__, state.beginTransaction(scratch));
+  requireSuccess(__func__, reinsert.ripUpSink(sinkObligationA));
+  requireSuccess(__func__, reinsert.ripUpSink(sinkObligationB));
+  requireSuccess(__func__, reinsert.bindSink(sinkObligationA, sinkA));
+  requireSuccess(__func__, reinsert.attachPath(source, pathA, sinkObligationA));
+  requireSuccess(__func__, reinsert.bindSink(sinkObligationB, sinkA));
+  requireSuccess(__func__, reinsert.attachPath(sinkA, {}, sinkObligationB));
+  requireSuccess(__func__, reinsert.commit());
   requireSuccess(__func__, state.verify());
 }
 
@@ -565,9 +687,12 @@ void checksPnrIndexCapacityBoundaries() {
 int main() {
   buildsOnlyAValidRootedArborescence();
   preservesSharedPrefixAcrossPruneAndReroute();
-  reusesScratchAndRollsBackExactTreeState();
+  reusesScratchGenerationsAndRollsBackExactTreeState();
   enforcesCoverageOrExplicitUnroutedState();
   independentlyRebindsDuplicateSinkObligations();
+  migratesActiveTransactionAcrossStateMove();
+  invalidatesTransactionsWhenBorrowedOwnersExpire();
+  rejectsNestedTransactionsAndRollsBackOnDestruction();
   preservesLookupCollisionChainsAfterDeletion();
   checksPnrIndexCapacityBoundaries();
   return 0;

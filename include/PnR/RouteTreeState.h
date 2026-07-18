@@ -5,6 +5,7 @@
 #include "PnR/PnrIndex.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
@@ -24,6 +25,7 @@ struct RouteTreeNode {
   PnrIndex firstChild = getInvalidPnrIndex();
   PnrIndex nextSibling = getInvalidPnrIndex();
   PnrIndex previousSibling = getInvalidPnrIndex();
+  PnrIndex firstSinkObligation = getInvalidPnrIndex();
   PnrIndex sinkObligationCount = 0;
 
   bool isActive() const { return endpoint != getInvalidPnrIndex(); }
@@ -33,6 +35,7 @@ struct RouteTreeNode {
            lhs.firstChild == rhs.firstChild &&
            lhs.nextSibling == rhs.nextSibling &&
            lhs.previousSibling == rhs.previousSibling &&
+           lhs.firstSinkObligation == rhs.firstSinkObligation &&
            lhs.sinkObligationCount == rhs.sinkObligationCount;
   }
 };
@@ -40,6 +43,8 @@ struct RouteTreeNode {
 class RouteTreeState;
 class RouteTreeTransaction;
 
+// A scratch object must normally outlive its active transaction. Early
+// destruction rolls the transaction back and invalidates its handle.
 class RouteTreeTransactionScratch {
 public:
   RouteTreeTransactionScratch() = default;
@@ -49,19 +54,13 @@ public:
   RouteTreeTransactionScratch(RouteTreeTransactionScratch &&) = delete;
   RouteTreeTransactionScratch &
   operator=(RouteTreeTransactionScratch &&) = delete;
-
-  std::size_t deltaCapacity() const { return deltas_.capacity(); }
-  std::size_t workspaceCapacity() const {
-    return worklist_.capacity() + childReferences_.capacity() +
-           visited_.capacity() + sinkCounts_.capacity() + pathMarks_.capacity();
-  }
+  ~RouteTreeTransactionScratch();
 
 private:
   enum class DeltaKind {
     ModifiedNode,
     RemovedNode,
     AddedNode,
-    SinkMetadata,
     SourceBinding,
     SinkBinding,
   };
@@ -73,35 +72,44 @@ private:
     bool appended = false;
     PnrIndex value0 = getInvalidPnrIndex();
     PnrIndex value1 = getInvalidPnrIndex();
+    PnrIndex value2 = getInvalidPnrIndex();
+    PnrIndex value3 = getInvalidPnrIndex();
   };
 
-  void clearRetainingCapacity();
+  void resetTransaction();
 
   std::vector<Delta> deltas_;
   std::vector<PnrIndex> worklist_;
-  std::vector<std::uint8_t> childReferences_;
-  std::vector<std::uint8_t> visited_;
-  std::vector<PnrIndex> sinkCounts_;
   std::vector<std::uint64_t> pathMarks_;
   std::uint64_t pathGeneration_ = 0;
-  bool inUse_ = false;
+  RouteTreeTransaction *activeTransaction_ = nullptr;
 
   friend class RouteTreeState;
   friend class RouteTreeTransaction;
 };
 
+// FrozenRoutingGraph is borrowed and must outlive this state. An active
+// transaction normally has a shorter lifetime; moving the state migrates it,
+// while early state destruction rolls it back and invalidates its handle.
 class RouteTreeState {
 public:
-  static llvm::Expected<RouteTreeState> create(const FrozenRoutingGraph &graph,
-                                               PnrIndex sinkObligationCount);
+  static llvm::Expected<RouteTreeState>
+  create(const FrozenRoutingGraph &graph LLVM_LIFETIME_BOUND,
+         PnrIndex sinkObligationCount);
+  static llvm::Expected<RouteTreeState>
+  create(FrozenRoutingGraph &&graph, PnrIndex sinkObligationCount) = delete;
+  static llvm::Expected<RouteTreeState>
+  create(const FrozenRoutingGraph &&graph,
+         PnrIndex sinkObligationCount) = delete;
 
   RouteTreeState(RouteTreeState &&other) noexcept;
   RouteTreeState(const RouteTreeState &) = delete;
   RouteTreeState &operator=(const RouteTreeState &) = delete;
   RouteTreeState &operator=(RouteTreeState &&) = delete;
+  ~RouteTreeState();
 
-  bool isRouted() const { return routed_; }
-  bool isUnrouted() const { return !routed_; }
+  bool isRouted() const { return activeNodeCount_ != 0; }
+  bool isUnrouted() const { return activeNodeCount_ == 0; }
   PnrIndex activeNodeCount() const { return activeNodeCount_; }
   PnrIndex sinkObligationCount() const {
     return static_cast<PnrIndex>(sinkBindings_.size());
@@ -114,20 +122,27 @@ public:
   const RouteTreeNode &node(PnrIndex slot) const;
 
   llvm::Error verify() const;
+  llvm::Expected<RouteTreeTransaction> beginTransaction(
+      RouteTreeTransactionScratch &scratch LLVM_LIFETIME_BOUND) &
+      LLVM_LIFETIME_BOUND;
   llvm::Expected<RouteTreeTransaction>
-  beginTransaction(RouteTreeTransactionScratch &scratch);
+  beginTransaction(RouteTreeTransactionScratch &scratch) && = delete;
 
 private:
   struct SinkBinding {
     PnrIndex endpoint = getInvalidPnrIndex();
     PnrIndex nodeSlot = getInvalidPnrIndex();
+    PnrIndex previousAtNode = getInvalidPnrIndex();
+    PnrIndex nextAtNode = getInvalidPnrIndex();
   };
 
   struct LookupEntry {
     PnrIndex endpoint = getInvalidPnrIndex();
     PnrIndex slot = getInvalidPnrIndex();
+    bool tombstone = false;
 
     bool isOccupied() const { return endpoint != getInvalidPnrIndex(); }
+    bool isEmpty() const { return !isOccupied() && !tombstone; }
   };
 
   RouteTreeState(const FrozenRoutingGraph &graph,
@@ -141,8 +156,7 @@ private:
   void rehashLookup(std::size_t capacity);
 
   PnrIndex arcSourceEndpoint(PnrIndex arc) const;
-  llvm::Error verifyCandidate(bool routedCandidate,
-                              RouteTreeTransactionScratch &scratch) const;
+  llvm::Error verifyState() const;
 
   const FrozenRoutingGraph &graph_;
   PnrIndex sourceEndpoint_ = getInvalidPnrIndex();
@@ -151,8 +165,10 @@ private:
   std::vector<PnrIndex> freeSlots_;
   std::vector<LookupEntry> endpointSlots_;
   PnrIndex activeNodeCount_ = 0;
-  bool routed_ = false;
-  bool transactionActive_ = false;
+  PnrIndex lookupTombstoneCount_ = 0;
+  PnrIndex boundSinkObligationCount_ = 0;
+  PnrIndex attachedSinkObligationCount_ = 0;
+  RouteTreeTransaction *activeTransaction_ = nullptr;
 
   friend class RouteTreeTransaction;
 };
@@ -182,10 +198,12 @@ private:
                        RouteTreeTransactionScratch &scratch);
 
   void recordModifiedNode(PnrIndex slot);
-  void setSinkMetadata(PnrIndex slot, PnrIndex count);
   void setSourceBinding(PnrIndex endpoint);
-  void setSinkBinding(PnrIndex obligation, PnrIndex endpoint,
-                      PnrIndex nodeSlot);
+  void setSinkBinding(PnrIndex obligation, PnrIndex endpoint, PnrIndex nodeSlot,
+                      PnrIndex previousAtNode, PnrIndex nextAtNode);
+  void attachSinkBinding(PnrIndex obligation, PnrIndex nodeSlot,
+                         PnrIndex finalSinkCount);
+  void unlinkSinkBinding(PnrIndex obligation);
   llvm::Expected<PnrIndex> addNode(PnrIndex endpoint, PnrIndex parentArc);
   void linkChild(PnrIndex parentSlot, PnrIndex childSlot);
   PnrIndex parentSlot(PnrIndex childSlot) const;
@@ -197,9 +215,11 @@ private:
   RouteTreeTransactionScratch *scratch_;
   std::size_t initialNodeStorageSize_;
   PnrIndex initialActiveNodeCount_;
-  bool initialRouted_;
+  PnrIndex initialBoundSinkObligationCount_;
+  PnrIndex initialAttachedSinkObligationCount_;
 
   friend class RouteTreeState;
+  friend class RouteTreeTransactionScratch;
 };
 
 namespace detail {
