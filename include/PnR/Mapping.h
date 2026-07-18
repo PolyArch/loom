@@ -1,6 +1,8 @@
 #ifndef LOOM_PNR_MAPPING_H
 #define LOOM_PNR_MAPPING_H
 
+#include "Common/Artifact.h"
+
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -8,6 +10,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 
 namespace loom {
 namespace pnr {
@@ -78,6 +81,9 @@ struct ResourcePressureRecord {
 };
 
 struct MappingSummary {
+  explicit MappingSummary(ArtifactIdentity resolvedConfigIdentity)
+      : resolvedConfigIdentity(std::move(resolvedConfigIdentity)) {}
+
   std::string workload;
   std::string hardware;
   std::string hardwareRootKind;
@@ -87,9 +93,7 @@ struct MappingSummary {
   std::string graph;
   std::string mappingId;
   std::string configId;
-  std::string configFingerprint;
-  std::string componentConfigView;
-  std::string componentConfigFingerprint;
+  ArtifactIdentity resolvedConfigIdentity;
   std::string status;
   std::string diagnostic;
   llvm::SmallVector<PlacementRecord> placements;

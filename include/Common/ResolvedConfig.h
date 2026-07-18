@@ -1,6 +1,8 @@
 #ifndef LOOM_COMMON_RESOLVEDCONFIG_H
 #define LOOM_COMMON_RESOLVEDCONFIG_H
 
+#include "Common/Artifact.h"
+
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
@@ -26,6 +28,9 @@ struct ResolvedDseConfig {
 };
 
 struct ResolvedConfig {
+  static constexpr ArtifactSchemaDescriptor artifactSchema{
+      "loom.config.resolved", SchemaVersion{1, 0}};
+
   std::string configId = "loom.default";
   ResolvedGlobalConfig global;
   ResolvedDseConfig dse;
@@ -38,14 +43,9 @@ llvm::Expected<ResolvedConfig> parseResolvedConfig(llvm::StringRef body,
                                                    llvm::StringRef sourceName);
 
 std::string canonicalResolvedConfigJson(const ResolvedConfig &config);
-std::string resolvedConfigFingerprint(const ResolvedConfig &config);
-
-std::string canonicalComponentConfigViewJson(const ResolvedConfig &config,
-                                             llvm::StringRef viewId);
-std::string componentConfigFingerprint(const ResolvedConfig &config,
-                                       llvm::StringRef viewId);
-
-bool isResolvedConfigFingerprint(llvm::StringRef fingerprint);
+CanonicalSemanticBytes
+canonicalResolvedConfigBytes(const ResolvedConfig &config);
+ArtifactIdentity resolvedConfigIdentity(const ResolvedConfig &config);
 
 } // namespace loom
 

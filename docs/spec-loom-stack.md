@@ -160,7 +160,7 @@ the authority.
 Configuration follows the same source-of-truth rule.
 `docs/spec-config-ssot.md` owns the global contract for loadable
 configuration, centralized defaults, strict resolution, early-fail
-behavior, configuration fingerprints, and the boundary between
+behavior, ResolvedConfig artifact identity, and the boundary between
 configurable parameters and semantic verifier constants. Component specs
 may reference configuration views, but they must not define independent
 defaults for the same canonical parameter.
@@ -223,8 +223,9 @@ reading private state. Required evidence classes include:
   metric records;
 * full-stack report bundles and artifact manifests for traceability;
 * DSE candidate, objective, selection, and rejection records;
-* resolved configuration identity, configuration fingerprints, and
-  component configuration-view identities for every configured artifact.
+* resolved configuration ArtifactIdentity and any declared component
+  configuration-view descriptor plus canonical semantic bytes for every
+  configured artifact.
 
 Fake or stub artifacts must not satisfy any target requirement. Scaffold
 artifacts may exist while a component is being built, but they must be
@@ -246,7 +247,7 @@ verification policy is:
 * each DSE candidate must be immutable and must carry artifact identity
   and fingerprint records for its inputs and outputs;
 * every configured artifact must carry the resolved configuration
-  identity and fingerprint required by `docs/spec-config-ssot.md`;
+  ArtifactIdentity required by `docs/spec-config-ssot.md`;
 * cross-artifact contradictions must block acceptance rather than being
   reduced to warnings.
 

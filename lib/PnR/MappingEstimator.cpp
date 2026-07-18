@@ -1,6 +1,7 @@
 #include "PnR/MappingEstimator.h"
 #include "MappingHardware.h"
 
+#include "Common/ArtifactText.h"
 #include "Common/ResolvedConfig.h"
 #include "Fabric/IR/Elaboration.h"
 #include "Fabric/IR/FabricDialect.h"
@@ -45,7 +46,7 @@ constexpr std::uint64_t kFunctionalUnitWeight = 1;
 constexpr std::uint64_t kLoadAddressWeight = 1;
 constexpr std::uint64_t kStoreAddressWeight = 2;
 constexpr std::uint64_t kConfigRecordsPerScoreUnit = 128;
-constexpr llvm::StringLiteral kMappingSchemaVersion = "2.0";
+constexpr llvm::StringLiteral kMappingSchemaVersion = "3.0";
 
 struct RouteStats {
   std::uint64_t routeCount = 0;
@@ -1178,16 +1179,15 @@ llvm::Error validateMappingCounts(const llvm::json::Object &mapping,
   return llvm::Error::success();
 }
 
-llvm::Error
-validateMappingConfigFingerprint(const llvm::json::Object &mapping,
-                                 llvm::StringRef mappingPath,
-                                 const loom::ResolvedConfig &config) {
-  std::optional<llvm::StringRef> fingerprint =
-      mapping.getString("config_fingerprint");
-  if (!fingerprint)
+llvm::Error validateMappingConfigIdentity(const llvm::json::Object &mapping,
+                                          llvm::StringRef mappingPath,
+                                          const loom::ResolvedConfig &config) {
+  std::optional<llvm::StringRef> identitySpelling =
+      mapping.getString("resolved_config_identity");
+  if (!identitySpelling)
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "config_missing_required_profile: %s lacks config_fingerprint",
+        "config_missing_required_profile: %s lacks resolved_config_identity",
         mappingPath.str().c_str());
 
   std::optional<llvm::StringRef> configId = mapping.getString("config_id");
@@ -1199,38 +1199,27 @@ validateMappingConfigFingerprint(const llvm::json::Object &mapping,
   if (*configId != config.configId)
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "config_fingerprint_mismatch: mapping config_id %s does not match "
+        "config_identity_mismatch: mapping config_id %s does not match "
         "resolved config_id %s",
         configId->str().c_str(), config.configId.c_str());
 
-  std::string expected = loom::resolvedConfigFingerprint(config);
-  if (!loom::isResolvedConfigFingerprint(*fingerprint) ||
-      *fingerprint != expected)
+  auto parsedIdentity = loom::parseArtifactIdentityHex(*identitySpelling);
+  if (!parsedIdentity) {
+    llvm::consumeError(parsedIdentity.takeError());
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "config_fingerprint_mismatch: mapping config_fingerprint %s does not "
-        "match resolved config_fingerprint %s",
-        fingerprint->str().c_str(), expected.c_str());
+        "config_identity_mismatch: mapping resolved_config_identity is not a "
+        "valid ArtifactIdentity");
+  }
 
-  std::optional<llvm::StringRef> componentView =
-      mapping.getString("component_config_view");
-  if (!componentView || *componentView != "pnr.mapping.v1")
+  const loom::ArtifactIdentity expected = loom::resolvedConfigIdentity(config);
+  if (*parsedIdentity != expected)
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "config_missing_required_profile: mapping component_config_view must "
-        "be pnr.mapping.v1");
-
-  std::optional<llvm::StringRef> componentFingerprint =
-      mapping.getString("component_config_fingerprint");
-  std::string expectedComponent =
-      loom::componentConfigFingerprint(config, "pnr.mapping.v1");
-  if (!componentFingerprint ||
-      !loom::isResolvedConfigFingerprint(*componentFingerprint) ||
-      *componentFingerprint != expectedComponent)
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "config_fingerprint_mismatch: mapping component_config_fingerprint "
-        "does not match pnr.mapping.v1");
+        "config_identity_mismatch: mapping resolved_config_identity %s does "
+        "not match resolved configuration %s",
+        identitySpelling->str().c_str(),
+        loom::formatArtifactIdentityHex(expected).c_str());
 
   return llvm::Error::success();
 }
@@ -1627,16 +1616,12 @@ loom::pnr::estimateMapping(const MappingEstimateOptions &options) {
     return std::move(err);
 
   loom::ResolvedConfig resolvedConfig = loom::defaultResolvedConfig();
-  if (llvm::Error err = validateMappingConfigFingerprint(
+  if (llvm::Error err = validateMappingConfigIdentity(
           *mappingOrErr, options.mappingArtifactPath, resolvedConfig))
     return std::move(err);
 
-  MappingEstimateReport report;
+  MappingEstimateReport report(loom::resolvedConfigIdentity(resolvedConfig));
   report.configId = resolvedConfig.configId;
-  report.configFingerprint = loom::resolvedConfigFingerprint(resolvedConfig);
-  report.componentConfigView = "mapping.estimate.v1";
-  report.componentConfigFingerprint = loom::componentConfigFingerprint(
-      resolvedConfig, report.componentConfigView);
   auto workloadOrErr =
       requireString(*mappingOrErr, "workload", options.mappingArtifactPath);
   if (!workloadOrErr)

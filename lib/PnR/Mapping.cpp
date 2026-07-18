@@ -1457,7 +1457,8 @@ loom::pnr::createMapping(const MappingOptions &options) {
   if (!hardwareModelOrErr)
     return hardwareModelOrErr.takeError();
 
-  MappingSummary summary;
+  loom::ResolvedConfig resolvedConfig = loom::defaultResolvedConfig();
+  MappingSummary summary(loom::resolvedConfigIdentity(resolvedConfig));
   summary.workload =
       options.workload.empty() ? options.graphName : options.workload;
   summary.hardware = selectionOrErr->summaryHardware;
@@ -1468,12 +1469,7 @@ loom::pnr::createMapping(const MappingOptions &options) {
   summary.graph = options.graphName;
   summary.mappingId =
       mappingId(summary.workload, summary.graph, summary.hardware);
-  loom::ResolvedConfig resolvedConfig = loom::defaultResolvedConfig();
   summary.configId = resolvedConfig.configId;
-  summary.configFingerprint = loom::resolvedConfigFingerprint(resolvedConfig);
-  summary.componentConfigView = "pnr.mapping.v1";
-  summary.componentConfigFingerprint = loom::componentConfigFingerprint(
-      resolvedConfig, summary.componentConfigView);
   summary.status = "pass";
 
   auto routingProblemOrErr = buildRoutingProblem(*nodesOrErr, graph);

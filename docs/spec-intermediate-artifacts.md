@@ -75,11 +75,11 @@ The CSV columns are:
 workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 ```
 
-The JSON artifact has `schema_version = "2.0"` and `kind = pnr_mapping`.
+The JSON artifact has `schema_version = "3.0"` and `kind = pnr_mapping`.
 Representative fields include:
 
 * workload, graph, and hardware identities;
-* mapping and configuration identities;
+* mapping identity and `resolved_config_identity`;
 * placement, routed-edge, unrouted-edge, and configuration counts;
 * `placements`;
 * `routes`;
@@ -92,17 +92,18 @@ must agree with their corresponding arrays. Route segments carry concrete
 endpoints consumed by mapping validation. `resource_pressure`, when present, is
 diagnostic metadata rather than a stable pass/fail policy.
 
-Consumers require the canonical `"1.0"` string.
+Consumers require the canonical `"3.0"` string.
 
 ## Mapping Estimate Report
 
 `loom-mapping-estimate` consumes a PnR mapping artifact. Fabric MLIR is an
 optional validation input. The tool emits a JSON object with
-`schema_version = "1.0"` and `kind = mapping_estimate_report`.
+`schema_version = "2.0"` and `kind = mapping_estimate_report`.
 
 Representative fields include:
 
 * workload, hardware, and mapping identities;
+* `resolved_config_identity`;
 * `status` and `diagnostics`;
 * placement, route, configuration, and schedule counts;
 * weighted component scores and `total_cost_score`;

@@ -13,7 +13,9 @@ namespace loom::mapping::test {
 static_assert(!std::is_default_constructible_v<MappingDraftHeader>);
 static_assert(!std::is_default_constructible_v<TechMappingDraft>);
 ArtifactIdentity artifact(std::uint8_t value) {
-  return ArtifactIdentity({value});
+  ArtifactIdentity::Storage bytes{};
+  bytes.front() = value;
+  return llvm::cantFail(ArtifactIdentity::fromBytes(bytes));
 }
 TypeKey type(std::uint64_t value) { return TypeKey(value); }
 PortRoleKey role(std::uint64_t value) { return PortRoleKey(value); }

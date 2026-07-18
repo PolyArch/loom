@@ -20,7 +20,6 @@ class ValidatedTechMappingAccess;
 
 enum class MappingErrorCode {
   UnsupportedSchemaVersion,
-  InvalidArtifactIdentity,
   WrongMappingProfile,
   ArtifactIdentityMismatch,
   DuplicateEntityId,

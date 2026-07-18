@@ -233,9 +233,6 @@ resolveDataflowPort(const DataflowEndpoint &endpoint,
 }
 llvm::Expected<DataflowIndex>
 buildDataflowIndex(const DataflowProgramView &dataflow) {
-  if (dataflow.identity.empty())
-    return mappingError(MappingErrorCode::InvalidArtifactIdentity,
-                        "Dataflow artifact identity is empty");
   DataflowIndex index;
   for (const GraphDescriptor &graph : dataflow.graphs) {
     if (llvm::Error error =
@@ -466,9 +463,6 @@ resolveLocalMemoryInternalEndpoint(const MemoryInternalEndpoint &endpoint,
       port->operation};
 }
 llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
-  if (fabric.identity.empty())
-    return mappingError(MappingErrorCode::InvalidArtifactIdentity,
-                        "Fabric artifact identity is empty");
   FabricIndex index;
   for (const FuDescriptor &fu : fabric.functionalUnits) {
     if (llvm::Error error =
@@ -1572,11 +1566,6 @@ loom::mapping::validateTechMapping(const TechMappingDraft &mapping,
   if (mapping.header.profile != MappingProfile::TechMapping)
     return mappingError(MappingErrorCode::WrongMappingProfile,
                         "Mapping verifier requires the TechMapping profile");
-  if (mapping.header.dataflowIdentity.empty() ||
-      mapping.header.fabricIdentity.empty() || dataflow.identity.empty() ||
-      fabric.identity.empty())
-    return mappingError(MappingErrorCode::InvalidArtifactIdentity,
-                        "Mapping inputs require non-empty artifact identities");
   if (mapping.header.dataflowIdentity != dataflow.identity ||
       mapping.header.fabricIdentity != fabric.identity)
     return mappingError(MappingErrorCode::ArtifactIdentityMismatch,

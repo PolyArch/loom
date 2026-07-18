@@ -53,11 +53,12 @@ extension-less path does not declare a format.
 TOML may be accepted for backward compatibility, but it is not a
 separate semantic model. A TOML input must resolve through the same
 schema, provenance, validation, canonical JSON emission, and
-fingerprint rules as YAML and JSON.
+artifact finalization rules as YAML and JSON.
 
 The canonical program-to-program output is resolved JSON. The
-configuration fingerprint is computed from canonical resolved JSON, not
-from the original YAML, JSON, TOML, file order, comments, or whitespace.
+ResolvedConfig ArtifactIdentity is finalized from its typed schema descriptor
+and canonical resolved JSON bytes. It does not depend on the original YAML,
+JSON, TOML, file order, comments, or whitespace.
 
 ## Resolution Model
 
@@ -107,10 +108,10 @@ simulation, DSE, RTL, or reporting when any of these conditions hold:
   referring to the canonical resolved key;
 * a command-line option changes a config-owned value without recording
   an explicit override;
-* a component artifact names a configuration fingerprint that differs
+* a component artifact names a ResolvedConfig ArtifactIdentity that differs
   from one of its required input artifacts;
 * a DSE candidate combines evidence produced under incompatible
-  configuration fingerprints.
+  ResolvedConfig identities.
 
 Repeating the same literal value in multiple layers is still a
 source-of-truth violation unless one occurrence is a declared default
@@ -141,11 +142,9 @@ required-key sets, and mapping-route endpoint-contiguity checks.
 Every machine-consumed artifact produced under a resolved configuration
 must carry:
 
-* configuration identity;
-* configuration fingerprint for the canonical resolved configuration;
-* producer component configuration view identity when the component
-  consumes only a typed subset;
-* producer component configuration view fingerprint;
+* the ResolvedConfig ArtifactIdentity;
+* the producer component configuration-view descriptor and deterministic
+  canonical semantic bytes when the component consumes a typed subset;
 * profile identities used by the producer;
 * override provenance when overrides affected the producer;
 * diagnostics for absent optional configuration evidence.
@@ -154,13 +153,12 @@ CSV summaries may project those fields. JSON artifacts and MLIR
 attributes or manifests are the preferred SSOT carriers.
 
 When a tool consumes multiple configured artifacts, it must compare
-their canonical configuration fingerprints. A mismatch is a structured
+their ResolvedConfig ArtifactIdentities. A mismatch is a structured
 failure or blocked condition unless the tool has an explicit migration
 rule that records both configurations and proves the difference is
-irrelevant to the consumed evidence. Component configuration view
-fingerprints are compared only across semantically comparable views,
-such as two reports that both declare the same simulator-operation
-semantics view identity.
+irrelevant to the consumed evidence. Component configuration views are
+compared only when their descriptors match, using their canonical semantic
+bytes rather than an independent identity.
 
 ## Configuration Domains
 
@@ -188,7 +186,7 @@ They are not independent files with independent defaults.
 
 FU synthesis settings remain on the dedicated consumed `SynthConfig` surface.
 An unconsumed `fabric_techmap` domain must not appear in `ResolvedConfig`,
-canonical resolved JSON, or configuration fingerprints.
+canonical resolved JSON, or the ResolvedConfig ArtifactIdentity.
 
 ## DSE Weights
 
@@ -213,7 +211,7 @@ Required diagnostic classes include:
 * `config_range_violation`;
 * `config_conflicting_sources`;
 * `config_unrecorded_override`;
-* `config_fingerprint_mismatch`;
+* `config_identity_mismatch`;
 * `config_missing_required_profile`;
 * `config_unknown_policy`;
 * `config_unknown_objective`.
@@ -228,14 +226,13 @@ The configuration SSOT target is complete when:
 * YAML and JSON inputs can describe equivalent runs and emit identical
   canonical resolved JSON;
 * the built-in default configuration can be emitted, validated, and
-  fingerprinted through the same path as user configuration;
+  finalized through the same path as user configuration;
 * component tools consume typed views from one resolved configuration;
 * component-local defaults are removed or become compatibility adapters
   over the centralized default configuration;
 * unknown keys, duplicate keys, conflicting sources, unknown objectives,
   and unknown policies fail before downstream work starts;
-* configured artifacts carry configuration identity and fingerprint;
-* cross-artifact consumers reject incompatible configuration
-  fingerprints;
+* configured artifacts carry the ResolvedConfig ArtifactIdentity;
+* cross-artifact consumers reject incompatible ResolvedConfig identities;
 * tests distinguish movable configuration defaults from semantic
   verifier/schema constants and fixture data.

@@ -186,9 +186,8 @@ The target DFG-sim report contract must identify:
 * simulator schema version;
 * runtime input identity or fingerprint when available;
 * simulator configuration;
-* resolved configuration identity and fingerprint;
-* component configuration-view identity;
-* component configuration-view fingerprint;
+* resolved configuration ArtifactIdentity;
+* component configuration-view descriptor and canonical semantic bytes;
 * functional outputs and memory diffs;
 * activity metrics and heuristic score definitions;
 * trace location or inline trace summary;
@@ -196,8 +195,9 @@ The target DFG-sim report contract must identify:
 
 The implemented `2.1` intermediate report is described in
 `docs/spec-intermediate-artifacts.md`. Runtime input identity, resolved
-configuration identity, component fingerprints, and trace references remain
-target fields until their producers are connected to `loom-dfg-sim`.
+configuration ArtifactIdentity, component-view canonical bytes, and trace
+references remain target fields until their producers are connected to
+`loom-dfg-sim`.
 
 Reports may be consumed by PnR as cost feedback and by the simulation
 comparison protocol. Reports must not contain hardware placement,
@@ -229,7 +229,7 @@ DFG-sim is complete at the target-spec level when:
   structured diagnostics;
 * reports expose functional outputs, visible memory state, operation counts,
   event counts, and heuristic scores;
-* reports carry configuration identity, canonical fingerprint, and
-  component-view fingerprint;
+* reports carry the resolved configuration ArtifactIdentity and any declared
+  component-view descriptor plus canonical semantic bytes;
 * the same workload and input can be compared against CGRA-sim through
   `docs/spec-sim-comparison.md`.

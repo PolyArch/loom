@@ -49,9 +49,9 @@ adds them to the exponent. Zero is always represented as coefficient zero and
 exponent zero. Normalization that would overflow the exponent is rejected.
 
 `MetricScope` is either the whole subject or one
-`ArtifactReference<MetricEntityId>`. An entity scope requires a nonempty exact
-artifact identity. Multi-entity relations and string paths are outside this
-slice.
+`ArtifactReference<MetricEntityId>`. An entity scope always contains an exact
+finalized artifact identity. Multi-entity relations and string paths are
+outside this slice.
 
 ## Metric Queries
 

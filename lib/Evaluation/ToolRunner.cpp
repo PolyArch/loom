@@ -322,8 +322,6 @@ prepareInvocation(const ToolInvocation &invocation) {
                            std::string(std::strerror(errno)));
 
   for (const MaterializedInputArtifact &input : invocation.inputs) {
-    if (input.artifact.empty())
-      return invocationError("materialized input artifact identity is empty");
     if (input.path.empty() || containsNull(input.path))
       return invocationError(
           "materialized input path is empty or contains NUL");

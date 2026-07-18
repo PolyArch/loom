@@ -1,4 +1,6 @@
 add_mlir_library(LoomCommon
+  ArtifactFinalizer.cpp
+  ArtifactStore.cpp
   ArtifactText.cpp
   HwShareGroup.cpp
   IndexWidth.cpp
@@ -10,5 +12,6 @@ add_mlir_library(LoomCommon
   ${LOOM_SOURCE_DIR}/include/Common
 
   LINK_LIBS PUBLIC
+  LLVMSupport
   MLIRSupport
 )

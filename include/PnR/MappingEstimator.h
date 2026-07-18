@@ -1,11 +1,14 @@
 #ifndef LOOM_PNR_MAPPING_ESTIMATOR_H
 #define LOOM_PNR_MAPPING_ESTIMATOR_H
 
+#include "Common/Artifact.h"
+
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
 #include <string>
+#include <utility>
 
 namespace loom {
 namespace pnr {
@@ -16,14 +19,15 @@ struct MappingEstimateOptions {
 };
 
 struct MappingEstimateReport {
+  explicit MappingEstimateReport(ArtifactIdentity resolvedConfigIdentity)
+      : resolvedConfigIdentity(std::move(resolvedConfigIdentity)) {}
+
   std::string workload;
   std::string hardware;
   std::string hardwareArtifact;
   std::string mappingId;
   std::string configId;
-  std::string configFingerprint;
-  std::string componentConfigView;
-  std::string componentConfigFingerprint;
+  ArtifactIdentity resolvedConfigIdentity;
   std::string status;
   std::string diagnostic;
   std::uint64_t routeSegmentScore = 0;

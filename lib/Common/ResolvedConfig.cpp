@@ -1,5 +1,7 @@
 #include "Common/ResolvedConfig.h"
 
+#include "Common/ArtifactFinalizer.h"
+
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
@@ -10,13 +12,10 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/SHA256.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/YAMLParser.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <algorithm>
-#include <cctype>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -452,14 +451,6 @@ parseConfigPatchFromMapping(llvm::yaml::MappingNode &topMap,
   return merged;
 }
 
-std::string hashString(llvm::StringRef text) {
-  llvm::SHA256 hasher;
-  hasher.update(text);
-  auto digest = hasher.final();
-  return llvm::toHex(llvm::ArrayRef<std::uint8_t>(digest.data(), digest.size()),
-                     true);
-}
-
 llvm::json::Array objectivesJson(const loom::ResolvedConfig &config) {
   llvm::json::Array objectives;
   for (const loom::ResolvedDseObjective &objective : config.dse.objectives) {
@@ -550,32 +541,15 @@ loom::canonicalResolvedConfigJson(const loom::ResolvedConfig &config) {
       .str();
 }
 
-std::string
-loom::resolvedConfigFingerprint(const loom::ResolvedConfig &config) {
-  return hashString(canonicalResolvedConfigJson(config));
+loom::CanonicalSemanticBytes
+loom::canonicalResolvedConfigBytes(const loom::ResolvedConfig &config) {
+  const std::string json = canonicalResolvedConfigJson(config);
+  return CanonicalSemanticBytes(
+      std::vector<std::uint8_t>(json.begin(), json.end()));
 }
 
-std::string
-loom::canonicalComponentConfigViewJson(const loom::ResolvedConfig &config,
-                                       llvm::StringRef viewId) {
-  llvm::json::Object root{
-      {"config_id", config.configId},
-      {"view_id", viewId.str()},
-      {"resolved_config_fingerprint", resolvedConfigFingerprint(config)},
-  };
-  return llvm::formatv("{0:2}", llvm::json::Value(std::move(root))).str();
-}
-
-std::string loom::componentConfigFingerprint(const loom::ResolvedConfig &config,
-                                             llvm::StringRef viewId) {
-  return hashString(canonicalComponentConfigViewJson(config, viewId));
-}
-
-bool loom::isResolvedConfigFingerprint(llvm::StringRef fingerprint) {
-  if (fingerprint.size() != 64)
-    return false;
-  return std::all_of(fingerprint.begin(), fingerprint.end(), [](char c) {
-    return std::isdigit(static_cast<unsigned char>(c)) ||
-           (c >= 'a' && c <= 'f');
-  });
+loom::ArtifactIdentity
+loom::resolvedConfigIdentity(const loom::ResolvedConfig &config) {
+  return finalizeArtifactIdentity(ResolvedConfig::artifactSchema,
+                                  canonicalResolvedConfigBytes(config));
 }

@@ -1,5 +1,6 @@
 #include "MappingInternal.h"
 
+#include "Common/ArtifactText.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "llvm/ADT/SmallString.h"
@@ -389,16 +390,15 @@ llvm::Error loom::pnr::writeMappingJson(llvm::StringRef outputPath,
     resourcePressure.push_back(resourcePressureJson(record));
 
   llvm::json::Object root{
-      {"schema_version", "2.0"},
+      {"schema_version", "3.0"},
       {"kind", "pnr_mapping"},
       {"workload", summary.workload},
       {"hardware", summary.hardware},
       {"graph", summary.graph},
       {"mapping_id", summary.mappingId},
       {"config_id", summary.configId},
-      {"config_fingerprint", summary.configFingerprint},
-      {"component_config_view", summary.componentConfigView},
-      {"component_config_fingerprint", summary.componentConfigFingerprint},
+      {"resolved_config_identity",
+       formatArtifactIdentityHex(summary.resolvedConfigIdentity)},
       {"status", summary.status},
       {"placed_records", static_cast<int64_t>(summary.placements.size())},
       {"routed_edges", static_cast<int64_t>(summary.routes.size())},

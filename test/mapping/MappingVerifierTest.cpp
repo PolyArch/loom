@@ -213,14 +213,6 @@ void rejectsUnsupportedSchemaProfileAndIdentity() {
   }
   {
     TestCase testCase = makeValidCase();
-    testCase.mapping.header.dataflowIdentity = ArtifactIdentity();
-    expectError(__func__,
-                validateTechMapping(testCase.mapping, testCase.dataflow,
-                                    testCase.fabric),
-                MappingErrorCode::InvalidArtifactIdentity);
-  }
-  {
-    TestCase testCase = makeValidCase();
     testCase.mapping.header.dataflowIdentity = artifact(99);
     expectError(__func__,
                 validateTechMapping(testCase.mapping, testCase.dataflow,

@@ -2,12 +2,11 @@
 
 #include "llvm/ADT/Twine.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <string>
-#include <utility>
-#include <vector>
 
 namespace loom {
 namespace {
@@ -63,7 +62,7 @@ llvm::Expected<SchemaVersion> parseSchemaVersion(llvm::StringRef spelling) {
 std::string formatArtifactIdentityHex(const ArtifactIdentity &identity) {
   static constexpr char hex[] = "0123456789abcdef";
   std::string result;
-  result.reserve(identity.bytes().size() * 2);
+  result.reserve(ArtifactIdentity::byteSize * 2);
   for (std::uint8_t byte : identity.bytes()) {
     result.push_back(hex[byte >> 4]);
     result.push_back(hex[byte & 0x0f]);
@@ -73,8 +72,9 @@ std::string formatArtifactIdentityHex(const ArtifactIdentity &identity) {
 
 llvm::Expected<ArtifactIdentity>
 parseArtifactIdentityHex(llvm::StringRef spelling) {
-  if ((spelling.size() % 2) != 0)
-    return artifactTextError("artifact identity must contain whole bytes");
+  if (spelling.size() != ArtifactIdentity::byteSize * 2)
+    return artifactTextError("artifact identity must use exactly 64 lowercase "
+                             "hexadecimal characters");
 
   auto parseNibble = [](char character) -> int {
     if (character >= '0' && character <= '9')
@@ -84,17 +84,16 @@ parseArtifactIdentityHex(llvm::StringRef spelling) {
     return -1;
   };
 
-  std::vector<std::uint8_t> bytes;
-  bytes.reserve(spelling.size() / 2);
+  std::array<std::uint8_t, ArtifactIdentity::byteSize> bytes;
   for (std::size_t index = 0; index < spelling.size(); index += 2) {
     const int high = parseNibble(spelling[index]);
     const int low = parseNibble(spelling[index + 1]);
     if (high < 0 || low < 0)
       return artifactTextError(
           "artifact identity must use lowercase hexadecimal");
-    bytes.push_back(static_cast<std::uint8_t>((high << 4) | low));
+    bytes[index / 2] = static_cast<std::uint8_t>((high << 4) | low);
   }
-  return ArtifactIdentity(std::move(bytes));
+  return ArtifactIdentity::fromBytes(bytes);
 }
 
 } // namespace loom

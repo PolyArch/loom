@@ -1,5 +1,7 @@
 #include "PnR/MappingEstimator.h"
 
+#include "Common/ArtifactText.h"
+
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -95,15 +97,14 @@ loom::pnr::writeMappingEstimateReportJson(llvm::StringRef outputPath,
   limitations.push_back("no_memory_bank_conflict_model");
 
   llvm::json::Object root{
-      {"schema_version", "1.0"},
+      {"schema_version", "2.0"},
       {"kind", "mapping_estimate_report"},
       {"workload", report.workload},
       {"hardware", report.hardware},
       {"mapping_id", report.mappingId},
       {"config_id", report.configId},
-      {"config_fingerprint", report.configFingerprint},
-      {"component_config_view", report.componentConfigView},
-      {"component_config_fingerprint", report.componentConfigFingerprint},
+      {"resolved_config_identity",
+       formatArtifactIdentityHex(report.resolvedConfigIdentity)},
       {"status", report.status},
       {"fidelity_level", "static_mapping_heuristic"},
       {"metric_definition", "weighted_mapping_artifact_counts.v1"},

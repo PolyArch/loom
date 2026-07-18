@@ -135,6 +135,12 @@ T takeExpected(const char *test, llvm::Expected<T> value) {
   return std::move(*value);
 }
 
+ArtifactIdentity artifact(std::uint8_t value) {
+  ArtifactIdentity::Storage bytes{};
+  bytes.front() = value;
+  return takeExpected(__func__, ArtifactIdentity::fromBytes(bytes));
+}
+
 template <typename T>
 void expectErrorContains(const char *test, llvm::Expected<T> value,
                          llvm::StringRef expected) {
@@ -382,7 +388,7 @@ void literalInvocationUsesOverlayAndScratch() {
   invocation.argv.push_back(metacharacters);
   invocation.environmentOverlay = {{"LOOM_TOOL_RUNNER_ENV", "overlay"}};
   invocation.inputs = {
-      MaterializedInputArtifact{ArtifactIdentity({0x01}), inputPath.string()}};
+      MaterializedInputArtifact{artifact(0x01), inputPath.string()}};
   invocation.declaredOutputs = {"report/invocation.txt"};
   invocation.resourceLeaseBindingIdentities = {"cpu-slot/7"};
   invocation.licenseLeaseBindingIdentities = {"license/token-3"};
@@ -1078,9 +1084,7 @@ void invalidOutputPathsAreRejectedBeforeSpawn() {
 void stablePreflightBoundariesRejectBeforeSpawn() {
   TemporaryDirectory root;
   const std::filesystem::path scratch = root.path() / "scratch";
-  const std::filesystem::path input = root.path() / "input.txt";
   std::filesystem::create_directory(scratch);
-  writeFile(input, "input\n");
 
   struct Rejection {
     const char *name;
@@ -1098,12 +1102,6 @@ void stablePreflightBoundariesRejectBeforeSpawn() {
          invocation.scratchDirectory = "relative-scratch";
        },
        "scratch directory"},
-      {"input",
-       [&](ToolInvocation &invocation) {
-         invocation.inputs = {
-             MaterializedInputArtifact{ArtifactIdentity(), input.string()}};
-       },
-       "artifact identity"},
       {"environment",
        [](ToolInvocation &invocation) {
          invocation.environmentOverlay = {{"BAD=NAME", "value"}};
