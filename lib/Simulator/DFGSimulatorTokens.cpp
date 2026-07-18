@@ -79,7 +79,8 @@ static unsigned hexDigitCount(unsigned bitWidth) {
   return bitWidth / 4 + (bitWidth % 4 != 0);
 }
 
-std::string tokenToString(const Token &token, mlir::Type type) {
+llvm::Expected<std::string> tokenToString(const Token &token, mlir::Type type,
+                                          mlir::Operation *scope) {
   if (token.kind == TokenKind::None)
     return "none";
   if (token.kind == TokenKind::Bool)
@@ -90,21 +91,30 @@ std::string tokenToString(const Token &token, mlir::Type type) {
     auto integer = mlir::cast<mlir::IntegerType>(type);
     if (integer.getWidth() <= 64)
       return typePrefix(type) + ":" + std::to_string(token.intValue);
-    llvm::APInt bits = llvm::cantFail(tokenBitPattern(token, integer));
+    auto bits = tokenBitPattern(token, integer);
+    if (!bits)
+      return bits.takeError();
     llvm::SmallString<64> value;
-    bits.toString(value, 10, /*Signed=*/false);
+    bits->toString(value, 10, /*Signed=*/false);
     return typePrefix(type) + ":" + value.str().str();
   }
   if (token.kind == TokenKind::Vector) {
-    llvm::APInt bits = llvm::cantFail(tokenBitPattern(token, type));
-    return typePrefix(type) + ":" + formatHexBitPattern(bits);
+    auto vector = mlir::dyn_cast<mlir::VectorType>(type);
+    auto bits = vector && mlir::isa<mlir::IndexType>(vector.getElementType())
+                    ? vectorIndexTokenBitPattern(token, vector, scope)
+                    : tokenBitPattern(token, type);
+    if (!bits)
+      return bits.takeError();
+    return typePrefix(type) + ":" + formatHexBitPattern(*bits);
   }
   if (token.kind == TokenKind::Float) {
     auto floating = mlir::cast<mlir::FloatType>(type);
     if (!usesDoubleFloatText(floating)) {
-      llvm::APInt bits = llvm::cantFail(tokenBitPattern(token, type));
+      auto bits = tokenBitPattern(token, type);
+      if (!bits)
+        return bits.takeError();
       return typePrefix(type) + ":" +
-             formatHexBitPattern(bits, hexDigitCount(bits.getBitWidth()));
+             formatHexBitPattern(*bits, hexDigitCount(bits->getBitWidth()));
     }
   }
   if (token.kind == TokenKind::Pointer)
@@ -394,6 +404,58 @@ llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type) {
   }
   return llvm::createStringError(std::errc::invalid_argument,
                                  "unsupported runtime argument type");
+}
+
+llvm::Expected<llvm::APInt> vectorIndexTokenBitPattern(const Token &token,
+                                                       mlir::VectorType type,
+                                                       mlir::Operation *scope) {
+  if (type.getRank() != 1 || type.isScalable() ||
+      !mlir::isa<mlir::IndexType>(type.getElementType()))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "vector index token type must be fixed-size and rank-1");
+  auto elementWidth = indexBitWidth(scope);
+  if (!elementWidth)
+    return elementWidth.takeError();
+  const std::uint64_t lanes = type.getShape().front();
+  if (lanes > std::numeric_limits<unsigned>::max() / *elementWidth)
+    return llvm::createStringError(std::errc::value_too_large,
+                                   "vector index token bit width is "
+                                   "unsupported");
+  const unsigned width = static_cast<unsigned>(lanes * *elementWidth);
+  if (!token.bitPattern || token.bitPattern->getBitWidth() != width)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "vector index token bit pattern width does not match its MLIR type");
+  return *token.bitPattern;
+}
+
+llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type,
+                                        mlir::Operation *scope) {
+  auto vector = mlir::dyn_cast<mlir::VectorType>(type);
+  if (!vector || !mlir::isa<mlir::IndexType>(vector.getElementType()))
+    return parseRuntimeToken(raw, type);
+
+  auto elementWidth = indexBitWidth(scope);
+  if (!elementWidth)
+    return elementWidth.takeError();
+  if (vector.getRank() != 1 || vector.isScalable())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "vector index token type must be fixed-size and rank-1");
+  const std::uint64_t lanes = vector.getShape().front();
+  if (lanes > std::numeric_limits<unsigned>::max() / *elementWidth)
+    return llvm::createStringError(std::errc::value_too_large,
+                                   "vector index token bit width is "
+                                   "unsupported");
+  const unsigned width = static_cast<unsigned>(lanes * *elementWidth);
+  auto bits = parsePackedBitPattern(raw.trim(), width, "vector");
+  if (!bits)
+    return bits.takeError();
+  Token token;
+  token.kind = TokenKind::Vector;
+  token.bitPattern = *bits;
+  return token;
 }
 
 } // namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail

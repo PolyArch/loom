@@ -64,3 +64,58 @@ func.func @load_bad_mask_shape(
       : (memref<10xi32>, index, none, vector<2xi1>) -> (vector<4xi32>, none)
   return %data, %done : vector<4xi32>, none
 }
+
+// -----
+// Two explicit types require a vector address type.
+func.func @load_scalar_first_explicit_type(
+    %mem: memref<?xi32>, %addr: index, %ctrl: none)
+    -> (vector<4xi32>, none) {
+  // expected-error @+1 {{first explicit type must be a vector address type}}
+  %data, %done = dataflow.load %mem[%addr] %ctrl : memref<?xi32>, index, vector<4xi32>
+  return %data, %done : vector<4xi32>, none
+}
+
+// -----
+// Gather address lanes must match result lanes.
+func.func @load_bad_gather_address_shape(
+    %mem: memref<10xi32>, %addr: vector<2xindex>, %ctrl: none)
+    -> (vector<4xi32>, none) {
+  // expected-error @+1 {{address vector shape 'vector<2xindex>' must match data vector shape 'vector<4xi32>'}}
+  %data, %done = "dataflow.load"(%mem, %addr, %ctrl)
+      : (memref<10xi32>, vector<2xindex>, none) -> (vector<4xi32>, none)
+  return %data, %done : vector<4xi32>, none
+}
+
+// -----
+// Gather addresses must contain index elements.
+func.func @load_bad_gather_address_element(
+    %mem: memref<10xi32>, %addr: vector<4xi32>, %ctrl: none)
+    -> (vector<4xi32>, none) {
+  // expected-error @+1 {{address vector element type must be 'index'}}
+  %data, %done = "dataflow.load"(%mem, %addr, %ctrl)
+      : (memref<10xi32>, vector<4xi32>, none) -> (vector<4xi32>, none)
+  return %data, %done : vector<4xi32>, none
+}
+
+// -----
+// Gather addresses must have fixed rank one.
+func.func @load_bad_gather_address_rank(
+    %mem: memref<10xi32>, %addr: vector<2x2xindex>, %ctrl: none)
+    -> (vector<4xi32>, none) {
+  // expected-error @+1 {{address vector must be a fixed-size rank-1 vector}}
+  %data, %done = "dataflow.load"(%mem, %addr, %ctrl)
+      : (memref<10xi32>, vector<2x2xindex>, none) -> (vector<4xi32>, none)
+  return %data, %done : vector<4xi32>, none
+}
+
+// -----
+// Gather mask lanes must match result lanes.
+func.func @load_bad_gather_mask_shape(
+    %mem: memref<10xi32>, %addr: vector<4xindex>,
+    %mask: vector<2xi1>, %ctrl: none) -> (vector<4xi32>, none) {
+  // expected-error @+1 {{mask vector shape 'vector<2xi1>' must match data vector shape 'vector<4xi32>'}}
+  %data, %done = "dataflow.load"(%mem, %addr, %ctrl, %mask)
+      : (memref<10xi32>, vector<4xindex>, none, vector<2xi1>)
+          -> (vector<4xi32>, none)
+  return %data, %done : vector<4xi32>, none
+}

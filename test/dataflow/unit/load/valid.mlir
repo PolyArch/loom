@@ -31,6 +31,16 @@ func.func @load_vector_i32(
   return %data, %done : vector<4xi32>, none
 }
 
+// CHECK-LABEL: @load_explicit_vector_index_data
+func.func @load_explicit_vector_index_data(
+    %mem: memref<?xvector<4xindex>>, %addr: index, %ctrl: none)
+    -> (vector<4xindex>, none) {
+  // CHECK: dataflow.load %{{.*}}[%{{.*}}] %{{.*}} : memref<?xvector<4xindex>>
+  %data, %done = dataflow.load %mem[%addr] %ctrl
+      : memref<?xvector<4xindex>>, vector<4xindex>
+  return %data, %done : vector<4xindex>, none
+}
+
 // CHECK-LABEL: @load_masked_vector_i32
 func.func @load_masked_vector_i32(
     %mem: memref<10xi32>, %addr: index, %mask: vector<4xi1>, %ctrl: none)
@@ -38,6 +48,16 @@ func.func @load_masked_vector_i32(
   // CHECK: dataflow.load %{{.*}}[%{{.*}}] %{{.*}} mask %{{.*}} : memref<10xi32>, vector<4xi32>
   %data, %done = dataflow.load %mem[%addr] %ctrl mask %mask
       : memref<10xi32>, vector<4xi32>
+  return %data, %done : vector<4xi32>, none
+}
+
+// CHECK-LABEL: @load_gather_i32
+func.func @load_gather_i32(
+    %mem: memref<10xi32>, %addr: vector<4xindex>, %mask: vector<4xi1>,
+    %ctrl: none) -> (vector<4xi32>, none) {
+  // CHECK: dataflow.load %{{.*}}[%{{.*}}] %{{.*}} mask %{{.*}} : memref<10xi32>, vector<4xindex>, vector<4xi32>
+  %data, %done = dataflow.load %mem[%addr] %ctrl mask %mask
+      : memref<10xi32>, vector<4xindex>, vector<4xi32>
   return %data, %done : vector<4xi32>, none
 }
 

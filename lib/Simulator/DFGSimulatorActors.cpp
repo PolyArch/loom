@@ -604,9 +604,10 @@ getActiveMemoryLanes(const dataflow::semantics::MemoryAccessType &access,
 
 static std::optional<dataflow::semantics::MemoryAccessType>
 getMemoryAccessType(mlir::MemRefType memoryType, mlir::Type dataType,
-                    mlir::Type maskType, SimulatorState &state) {
+                    mlir::Type addressType, mlir::Type maskType,
+                    SimulatorState &state) {
   auto access = dataflow::semantics::analyzeMemoryAccessType(
-      memoryType, dataType, maskType);
+      memoryType, dataType, addressType, maskType);
   if (!access) {
     state.diagnostics.push_back(llvm::toString(access.takeError()));
     return std::nullopt;
@@ -616,10 +617,11 @@ getMemoryAccessType(mlir::MemRefType memoryType, mlir::Type dataType,
 
 std::optional<DataflowMemoryRead>
 readDataflowMemory(const MemoryView &view, const Token &addr,
-                   mlir::MemRefType memoryType, mlir::Type dataType,
-                   const Token *mask, mlir::Type maskType,
+                   mlir::MemRefType memoryType, mlir::Type addressType,
+                   mlir::Type dataType, const Token *mask, mlir::Type maskType,
                    SimulatorState &state, mlir::Operation *scope) {
-  auto access = getMemoryAccessType(memoryType, dataType, maskType, state);
+  auto access =
+      getMemoryAccessType(memoryType, dataType, addressType, maskType, state);
   if (!access)
     return std::nullopt;
   if (!access->isVector()) {
@@ -644,11 +646,35 @@ readDataflowMemory(const MemoryView &view, const Token &addr,
   }
 
   llvm::APInt resultBits(*vectorWidth, 0);
+  std::optional<llvm::APInt> addressBits;
+  unsigned addressElementWidth = 0;
+  if (access->isGather() && !activeLanes->isZero()) {
+    auto bits =
+        vectorIndexTokenBitPattern(addr, access->addressVectorType, scope);
+    auto width = indexBitWidth(scope);
+    if (!bits || !width) {
+      if (!bits)
+        state.diagnostics.push_back(llvm::toString(bits.takeError()));
+      if (!width)
+        state.diagnostics.push_back(llvm::toString(width.takeError()));
+      return std::nullopt;
+    }
+    addressBits = *bits;
+    addressElementWidth = *width;
+  }
   for (unsigned lane = 0; lane < access->laneCount(); ++lane) {
     if (!(*activeLanes)[lane])
       continue;
-    auto index =
-        resolveElementIndex(view, addr, state, scope, "dataflow.load", lane);
+    Token laneAddress = addr;
+    std::uint64_t laneOffset = lane;
+    if (access->isGather()) {
+      llvm::APInt laneBits = addressBits->extractBits(
+          addressElementWidth, addressElementWidth * lane);
+      laneAddress = integerValueToken(laneBits.getSExtValue());
+      laneOffset = 0;
+    }
+    auto index = resolveElementIndex(view, laneAddress, state, scope,
+                                     "dataflow.load", laneOffset);
     if (!index)
       return std::nullopt;
     auto element = readMemoryElement(view, *index, state, "dataflow.load");
@@ -673,11 +699,18 @@ readDataflowMemory(const MemoryView &view, const Token &addr,
 std::optional<bool>
 writeDataflowMemory(const MemoryView &view, const Token &addr,
                     const Token &data, mlir::MemRefType memoryType,
-                    mlir::Type dataType, const Token *mask, mlir::Type maskType,
+                    mlir::Type addressType, mlir::Type dataType,
+                    const Token *mask, mlir::Type maskType,
                     SimulatorState &state, mlir::Operation *scope) {
-  auto access = getMemoryAccessType(memoryType, dataType, maskType, state);
+  auto access =
+      getMemoryAccessType(memoryType, dataType, addressType, maskType, state);
   if (!access)
     return std::nullopt;
+  if (access->isGather()) {
+    state.diagnostics.push_back(
+        "vector address is unsupported for dataflow.store");
+    return std::nullopt;
+  }
   if (!access->isVector()) {
     auto index =
         resolveElementIndex(view, addr, state, scope, "dataflow.store");
@@ -750,7 +783,7 @@ static bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
     mask = popToken(state, *maskOperand);
   auto value = readDataflowMemory(
       *view, addr, mlir::cast<mlir::MemRefType>(op.getMem().getType()),
-      op.getData().getType(), mask ? &*mask : nullptr,
+      op.getAddr().getType(), op.getData().getType(), mask ? &*mask : nullptr,
       op.getMask() ? op.getMask().getType() : mlir::Type{}, state,
       op.getOperation());
   if (!value)
@@ -951,7 +984,7 @@ static bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
     mask = popToken(state, *maskOperand);
   auto accessed = writeDataflowMemory(
       *view, addr, data, mlir::cast<mlir::MemRefType>(op.getMem().getType()),
-      op.getData().getType(), mask ? &*mask : nullptr,
+      op.getAddr().getType(), op.getData().getType(), mask ? &*mask : nullptr,
       op.getMask() ? op.getMask().getType() : mlir::Type{}, state,
       op.getOperation());
   if (!accessed)

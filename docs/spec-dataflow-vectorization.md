@@ -3,8 +3,8 @@
 This document specifies Loom's canonical one-dimensional dataflow vector
 semantics. It covers the four stream and representation boundary operations
 `dataflow.parallelize`, `dataflow.serialize`, `dataflow.pack`, and
-`dataflow.unpack`, plus contiguous vector access through the canonical
-`dataflow.load` and `dataflow.store` operations.
+`dataflow.unpack`, plus contiguous vector access through `dataflow.load` and
+`dataflow.store` and rank-1 gather access through `dataflow.load`.
 
 The semantic data and mask types are standard MLIR `vector<NxT>` and
 `vector<Nxi1>`. Those types are the only source of vector length, shape,
@@ -27,7 +27,7 @@ define duplicate vector compute operations.
 The following concerns are outside this contract:
 
 * ranked vectors beyond rank one;
-* vector-address gather and scatter operations;
+* vector-address scatter operations;
 * duplicate scatter-address policy;
 * software-to-Fabric port adaptation;
 * Fabric memory masks;
@@ -159,12 +159,18 @@ pack(unpack(bits)) = bits
 The bit representation uses arbitrary-width integers. Host 64-bit integer
 width is not a semantic limit.
 
-## Contiguous Vector Memory
+## Rank-1 Vector Memory
 
 The existing `dataflow.load` and `dataflow.store` operations support scalar
-and fixed-rank-1 contiguous access. They remain the only canonical plain
-memory-access mnemonics. A vector access uses one scalar linear element
-address; lane `i` addresses memory element `%addr + i`.
+and fixed-rank-1 contiguous access. `dataflow.load` additionally supports
+fixed-rank-1 gather access. They remain the only canonical plain
+memory-access mnemonics.
+
+A scalar access uses one `%addr : index` and returns or stores one `T`. A
+contiguous vector access uses one `%addr : index` and a `vector<NxT>` value;
+lane `i` addresses memory element `%addr + i`. A gather load instead uses
+`%addresses : vector<Nxindex>` and returns `vector<NxT>` with the same `N`;
+result lane `i` reads the memory element named by address lane `i`.
 
 The vector forms are:
 
@@ -173,6 +179,10 @@ The vector forms are:
     : memref<?xT>, vector<NxT>
 %data, %done = dataflow.load %mem[%addr] %ctrl mask %mask
     : memref<?xT>, vector<NxT>
+%data, %done = dataflow.load %mem[%addresses] %ctrl
+    : memref<?xT>, vector<Nxindex>, vector<NxT>
+%data, %done = dataflow.load %mem[%addresses] %ctrl mask %mask
+    : memref<?xT>, vector<Nxindex>, vector<NxT>
 
 %done = dataflow.store %mem[%addr] %data %ctrl
     : memref<?xT>, vector<NxT>
@@ -181,10 +191,11 @@ The vector forms are:
 ```
 
 The optional mask type is `vector<Nxi1>` with exactly the data vector's
-shape. Scalar accesses reject masks. Omitting the mask makes every lane
-active. A data type exactly equal to the memref element type remains a scalar
-element access even when that element type is itself a vector; that scalar
-access also rejects masks.
+shape. A gather address must be a fixed-size rank-1 `vector<Nxindex>` with
+the same `N`. Scalar accesses reject masks. Omitting the mask makes every
+lane active. A data type exactly equal to the memref element type remains a
+scalar element access even when that element type is itself a vector; that
+scalar access also rejects masks.
 
 Only active lanes evaluate an element address or access memory. An inactive
 lane may therefore correspond to an out-of-range element address. A masked
@@ -204,14 +215,18 @@ and one done token, or exactly one store done token. The existing explicit
 `ctrl` to `done` event network remains the sole memory-ordering authority.
 
 DFG simulation visits active lanes in ascending lane-index order against its
-element-indexed abstract memory. It uses the existing arbitrary-width vector
-token bit representation, with lane zero in the least-significant bit slice.
+element-indexed abstract memory. Contiguous access evaluates `%addr + i`;
+gather access evaluates address lane `i`. Repeated gather addresses are
+legal and preserve result lane order. Vector index tokens place lane zero in
+the least-significant bit slice and derive each lane's width from the
+enclosing MLIR DataLayout or the existing configured index-width fallback.
 This ordering is deterministic functional semantics, not a burst,
 coalescing, port-width, or hardware-lane policy.
 
-These accesses are plain, non-atomic, and non-volatile. Vector addresses,
-ranked vectors beyond rank one, gather/scatter semantics, alignment policy,
-and physical memory-mask projection are not part of this boundary.
+These accesses are plain, non-atomic, and non-volatile. Ranked vectors beyond
+rank one, alignment policy, and physical memory-mask projection are not part
+of this boundary. Vector-address store and scatter semantics remain
+unimplemented and are explicitly rejected.
 
 ## Graph Cardinality
 
@@ -251,4 +266,8 @@ Verification rejects:
 * mask element types other than `i1`;
 * packed integer widths other than `N * bitwidth(T)`;
 * vector memory element types that differ from the memory element type;
-* masks on scalar memory accesses.
+* masks on scalar memory accesses;
+* gather address vectors that are scalable, not rank one, or do not contain
+  `index` elements;
+* gather address or mask lane counts that differ from the load result;
+* vector addresses on `dataflow.store`.

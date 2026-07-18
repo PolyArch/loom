@@ -31,6 +31,16 @@ func.func @store_vector_i32(
   return %done : none
 }
 
+// CHECK-LABEL: @store_explicit_vector_index_data
+func.func @store_explicit_vector_index_data(
+    %mem: memref<?xvector<4xindex>>, %addr: index,
+    %data: vector<4xindex>, %ctrl: none) -> none {
+  // CHECK: dataflow.store %{{.*}}[%{{.*}}] %{{.*}} %{{.*}} : memref<?xvector<4xindex>>
+  %done = dataflow.store %mem[%addr] %data %ctrl
+      : memref<?xvector<4xindex>>, vector<4xindex>
+  return %done : none
+}
+
 // CHECK-LABEL: @store_masked_vector_i32
 func.func @store_masked_vector_i32(
     %mem: memref<10xi32>, %addr: index, %data: vector<4xi32>,

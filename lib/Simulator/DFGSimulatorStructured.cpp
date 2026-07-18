@@ -427,7 +427,7 @@ static bool assignLocalDataflowLoad(dataflow::LoadOp op, SimulatorState &state,
     return false;
   auto value = readDataflowMemory(
       *view, *addr, mlir::cast<mlir::MemRefType>(op.getMem().getType()),
-      op.getData().getType(), mask ? &*mask : nullptr,
+      op.getAddr().getType(), op.getData().getType(), mask ? &*mask : nullptr,
       op.getMask() ? op.getMask().getType() : mlir::Type{}, state,
       op.getOperation());
   if (!value)
@@ -499,7 +499,7 @@ static bool assignLocalDataflowStore(dataflow::StoreOp op,
     return false;
   auto accessed = writeDataflowMemory(
       *view, *addr, *data, mlir::cast<mlir::MemRefType>(op.getMem().getType()),
-      op.getData().getType(), mask ? &*mask : nullptr,
+      op.getAddr().getType(), op.getData().getType(), mask ? &*mask : nullptr,
       op.getMask() ? op.getMask().getType() : mlir::Type{}, state,
       op.getOperation());
   if (!accessed)

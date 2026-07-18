@@ -53,3 +53,24 @@ func.func @store_bad_mask_element(
       : (memref<10xi32>, index, vector<4xi32>, none, vector<4xi8>) -> none
   return %done : none
 }
+
+// -----
+// Two explicit types require a vector address type.
+func.func @store_scalar_first_explicit_type(
+    %mem: memref<?xi32>, %addr: index, %data: vector<4xi32>,
+    %ctrl: none) -> none {
+  // expected-error @+1 {{first explicit type must be a vector address type}}
+  %done = dataflow.store %mem[%addr] %data %ctrl : memref<?xi32>, index, vector<4xi32>
+  return %done : none
+}
+
+// -----
+// Vector-address stores remain unsupported.
+func.func @store_vector_address(
+    %mem: memref<10xi32>, %addr: vector<4xindex>,
+    %data: vector<4xi32>, %ctrl: none) -> none {
+  // expected-error @+1 {{vector address is unsupported for dataflow.store}}
+  %done = dataflow.store %mem[%addr] %data %ctrl
+      : memref<10xi32>, vector<4xindex>, vector<4xi32>
+  return %done : none
+}

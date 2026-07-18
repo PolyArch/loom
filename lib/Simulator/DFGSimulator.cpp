@@ -89,7 +89,7 @@ static bool hasExplicitIndexLayout(mlir::Operation *scope) {
   return false;
 }
 
-static llvm::Expected<unsigned> indexBitWidth(mlir::Operation *scope) {
+llvm::Expected<unsigned> indexBitWidth(mlir::Operation *scope) {
   if (!hasExplicitIndexLayout(scope))
     return supportedBitWidth(loom::getIndexWidth(), "configured index");
 
@@ -1083,15 +1083,18 @@ static bool hasPendingVectorGroups(SimulatorState &state) {
   return pending;
 }
 
-static llvm::SmallVector<std::string>
-serializeMemoryValue(const MemoryValue &memory) {
+static llvm::Expected<llvm::SmallVector<std::string>>
+serializeMemoryValue(const MemoryValue &memory, mlir::Operation *scope) {
   llvm::SmallVector<std::string> values;
   for (auto [index, token] : llvm::enumerate(memory.elements)) {
     if (!memory.initialized[index]) {
       values.push_back("uninitialized");
       continue;
     }
-    values.push_back(tokenToString(token, memory.elementType));
+    auto value = tokenToString(token, memory.elementType, scope);
+    if (!value)
+      return value.takeError();
+    values.push_back(std::move(*value));
   }
   return values;
 }
@@ -1115,17 +1118,21 @@ memoryFixtureFromSerializedValues(llvm::ArrayRef<std::string> values) {
   return os.str();
 }
 
-static void captureFinalMemoryState(dataflow::GraphOp graph,
-                                    SimulatorState &state,
-                                    DFGSimulationReport &report) {
+static llvm::Error captureFinalMemoryState(dataflow::GraphOp graph,
+                                           SimulatorState &state,
+                                           DFGSimulationReport &report) {
   mlir::Block &entry = graph.getBody().front();
   for (unsigned index = 0, end = graph.getFunctionType().getNumInputs();
        index < end; ++index) {
     mlir::BlockArgument arg = entry.getArgument(index + 1);
     std::shared_ptr<MemoryValue> memory = memoryForValue(state, arg);
     std::string port = llvm::formatv("arg{0}", index).str();
-    if (memory)
-      report.finalMemoryState[port] = serializeMemoryValue(*memory);
+    if (memory) {
+      auto values = serializeMemoryValue(*memory, graph);
+      if (!values)
+        return values.takeError();
+      report.finalMemoryState[port] = std::move(*values);
+    }
     if (auto rootId = memoryRootIdForValue(state, arg))
       report.finalMemoryRoots[port] =
           llvm::formatv("memory_root{0}", *rootId).str();
@@ -1134,12 +1141,17 @@ static void captureFinalMemoryState(dataflow::GraphOp graph,
   for (auto [index, memoryResult] : llvm::enumerate(ret.getMemories())) {
     std::shared_ptr<MemoryValue> memory = memoryForValue(state, memoryResult);
     std::string port = llvm::formatv("memory_result{0}", index).str();
-    if (memory)
-      report.finalMemoryState[port] = serializeMemoryValue(*memory);
+    if (memory) {
+      auto values = serializeMemoryValue(*memory, graph);
+      if (!values)
+        return values.takeError();
+      report.finalMemoryState[port] = std::move(*values);
+    }
     if (auto rootId = memoryRootIdForValue(state, memoryResult))
       report.finalMemoryRoots[port] =
           llvm::formatv("memory_root{0}", *rootId).str();
   }
+  return llvm::Error::success();
 }
 
 } // namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail
@@ -1354,7 +1366,7 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
           std::errc::invalid_argument,
           "value argument %u requires exactly one token", unsigned(index));
     for (llvm::StringRef rawToken : argIt->second) {
-      auto tokenOrErr = parseRuntimeToken(rawToken, arg.getType());
+      auto tokenOrErr = parseRuntimeToken(rawToken, arg.getType(), graph);
       if (!tokenOrErr)
         return llvm::joinErrors(
             llvm::createStringError(std::errc::invalid_argument,
@@ -1522,9 +1534,12 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
     missingReturn = true;
   } else {
     mlir::Value witness = returnObservation.complete.front();
-    report.finalOutputs.push_back(
-        tokenToString(state.observedOutputs.find(witness)->second.front(),
-                      witness.getType()));
+    auto serialized = tokenToString(
+        state.observedOutputs.find(witness)->second.front(), witness.getType(),
+        graph);
+    if (!serialized)
+      return serialized.takeError();
+    report.finalOutputs.push_back(std::move(*serialized));
   }
   for (mlir::Value value : returnObservation.values) {
     auto it = state.observedOutputs.find(value);
@@ -1533,18 +1548,25 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       missingReturn = true;
       continue;
     }
-    report.finalOutputs.push_back(
-        tokenToString(it->second.front(), value.getType()));
+    auto serialized = tokenToString(it->second.front(), value.getType(), graph);
+    if (!serialized)
+      return serialized.takeError();
+    report.finalOutputs.push_back(std::move(*serialized));
   }
   for (mlir::Value stream : returnObservation.streams) {
     llvm::SmallVector<std::string> tokens;
     auto it = state.observedOutputs.find(stream);
     if (it != state.observedOutputs.end())
-      for (const Token &token : it->second)
-        tokens.push_back(tokenToString(token, stream.getType()));
+      for (const Token &token : it->second) {
+        auto serialized = tokenToString(token, stream.getType(), graph);
+        if (!serialized)
+          return serialized.takeError();
+        tokens.push_back(std::move(*serialized));
+      }
     report.finalStreamOutputs.push_back(std::move(tokens));
   }
-  captureFinalMemoryState(graph, state, report);
+  if (llvm::Error error = captureFinalMemoryState(graph, state, report))
+    return std::move(error);
   const bool pendingVectorGroups = hasPendingVectorGroups(state);
   if (report.status == "pass" && !retired) {
     report.status = "blocked";

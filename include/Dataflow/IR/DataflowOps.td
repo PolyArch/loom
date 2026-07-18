@@ -380,14 +380,17 @@ def Dataflow_DemuxOp : Dataflow_Op<"demux", [Pure, CanonicalDataflowActor]> {
 //===----------------------------------------------------------------------===//
 
 def Dataflow_LoadOp : Dataflow_Op<"load", [CanonicalDataflowActor]> {
-  let summary = "streaming scalar-element or contiguous vector load";
+  let summary = "streaming scalar-element, contiguous vector, or gather load";
   let description = [{
-    On the simultaneous arrival of an `%addr : index` token and a
-    `%ctrl : none` token, consumes both and fires one memory actor.
+    On the simultaneous arrival of an address token and a `%ctrl : none`
+    token, consumes both and fires one memory actor.
     A result type exactly equal to the memref element type loads one
     memory element, including when that element type is itself a vector.
     Otherwise, a fixed-size rank-1 `vector<NxT>` result loads contiguous
-    elements starting at `%addr` only when `T` is the memref element type.
+    elements starting at a scalar `%addr : index` only when `T` is the
+    memref element type. A fixed-size rank-1 `%addr : vector<Nxindex>`
+    instead gathers one element for each result lane from the corresponding
+    element-index address.
 
     An optional same-shape `vector<Nxi1>` mask restricts a vector load
     to active lanes. Inactive lanes do not access memory and are
@@ -395,7 +398,7 @@ def Dataflow_LoadOp : Dataflow_Op<"load", [CanonicalDataflowActor]> {
     op emits one data token and one `none` token on `%done`.
   }];
 
-  let arguments = (ins AnyMemRef:$mem, Index:$addr, NoneType:$ctrl,
+  let arguments = (ins AnyMemRef:$mem, AnyType:$addr, NoneType:$ctrl,
                        Optional<AnyVectorOfAnyRank>:$mask);
   let results = (outs AnyType:$data, NoneType:$done);
 
@@ -430,7 +433,7 @@ def Dataflow_StoreOp : Dataflow_Op<"store", [CanonicalDataflowActor]> {
     active lanes retire, the op emits one `none` token on `%done`.
   }];
 
-  let arguments = (ins AnyMemRef:$mem, Index:$addr, AnyType:$data,
+  let arguments = (ins AnyMemRef:$mem, AnyType:$addr, AnyType:$data,
                        NoneType:$ctrl,
                        Optional<AnyVectorOfAnyRank>:$mask);
   let results = (outs NoneType:$done);

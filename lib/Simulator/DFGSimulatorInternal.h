@@ -128,7 +128,10 @@ llvm::Expected<llvm::APInt> tokenBitPattern(const Token &token,
 llvm::Expected<Token> tokenFromBitPattern(const llvm::APInt &bits,
                                           mlir::Type type);
 llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type);
-std::string tokenToString(const Token &token, mlir::Type type);
+llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type,
+                                        mlir::Operation *scope);
+llvm::Expected<std::string> tokenToString(const Token &token, mlir::Type type,
+                                          mlir::Operation *scope);
 Token pointerToken(mlir::Value root, std::shared_ptr<MemoryValue> memory = {},
                    std::int64_t byteOffset = 0);
 llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr);
@@ -146,6 +149,10 @@ bool recordEvent(SimulatorState &state, llvm::StringRef opName);
 bool hasComputedAddress(mlir::Value value);
 std::int64_t integerToken(const Token &token);
 bool boolToken(const Token &token);
+llvm::Expected<unsigned> indexBitWidth(mlir::Operation *scope);
+llvm::Expected<llvm::APInt> vectorIndexTokenBitPattern(const Token &token,
+                                                       mlir::VectorType type,
+                                                       mlir::Operation *scope);
 llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type,
                                             mlir::Operation *scope);
 
@@ -159,13 +166,14 @@ std::optional<Token> readMemoryElement(const MemoryView &view,
 void writeMemoryElement(const MemoryView &view, std::size_t index, Token value);
 std::optional<DataflowMemoryRead>
 readDataflowMemory(const MemoryView &view, const Token &addr,
-                   mlir::MemRefType memoryType, mlir::Type dataType,
-                   const Token *mask, mlir::Type maskType,
+                   mlir::MemRefType memoryType, mlir::Type addressType,
+                   mlir::Type dataType, const Token *mask, mlir::Type maskType,
                    SimulatorState &state, mlir::Operation *scope);
 std::optional<bool>
 writeDataflowMemory(const MemoryView &view, const Token &addr,
                     const Token &data, mlir::MemRefType memoryType,
-                    mlir::Type dataType, const Token *mask, mlir::Type maskType,
+                    mlir::Type addressType, mlir::Type dataType,
+                    const Token *mask, mlir::Type maskType,
                     SimulatorState &state, mlir::Operation *scope);
 bool isSupportedLLVMCall(mlir::LLVM::CallOp op);
 bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,

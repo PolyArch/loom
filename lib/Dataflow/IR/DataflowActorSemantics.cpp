@@ -804,17 +804,17 @@ dataflow::semantics::validateVectorMaskType(mlir::VectorType dataVector,
 llvm::Expected<dataflow::semantics::MemoryAccessType>
 dataflow::semantics::analyzeMemoryAccessType(mlir::MemRefType memoryType,
                                              mlir::Type dataType,
+                                             mlir::Type addressType,
                                              mlir::Type maskType) {
   mlir::Type elementType = memoryType.getElementType();
+  MemoryAccessType access;
+  access.elementType = elementType;
   if (dataType == elementType) {
     if (maskType)
       return llvm::createStringError(
           std::errc::invalid_argument,
           "mask is only valid for a vector memory access");
-    return MemoryAccessType{elementType, {}};
-  }
-
-  if (llvm::isa<mlir::VectorType>(dataType)) {
+  } else if (llvm::isa<mlir::VectorType>(dataType)) {
     auto vector = analyzeFixedRankOneDataVector(dataType);
     if (!vector)
       return vector.takeError();
@@ -827,12 +827,41 @@ dataflow::semantics::analyzeMemoryAccessType(mlir::MemRefType memoryType,
     if (maskType)
       if (llvm::Error error = validateVectorMaskType(*vector, maskType))
         return std::move(error);
-    return MemoryAccessType{elementType, *vector};
+    access.vectorType = *vector;
+  } else {
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "failed to verify that 'data' type matches memref element type");
   }
 
-  return llvm::createStringError(
-      std::errc::invalid_argument,
-      "failed to verify that 'data' type matches memref element type");
+  if (llvm::isa<mlir::IndexType>(addressType))
+    return access;
+
+  auto addressVector = llvm::dyn_cast<mlir::VectorType>(addressType);
+  if (!addressVector)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "operand #1 must be index or a fixed-size rank-1 vector of index");
+  if (addressVector.getRank() != 1 || addressVector.isScalable())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "address vector must be a fixed-size rank-1 vector");
+  if (!llvm::isa<mlir::IndexType>(addressVector.getElementType()))
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "address vector element type must be "
+                                   "'index'");
+  if (!access.isVector())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "vector address requires a fixed-size rank-1 vector data type");
+  if (addressVector.getShape() != access.vectorType.getShape())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "address vector shape '%s' must match data vector shape '%s'",
+        typeToString(addressVector).c_str(),
+        typeToString(access.vectorType).c_str());
+  access.addressVectorType = addressVector;
+  return access;
 }
 
 llvm::Expected<dataflow::semantics::StreamTransition>

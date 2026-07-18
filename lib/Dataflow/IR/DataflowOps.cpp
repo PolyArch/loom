@@ -165,6 +165,7 @@ namespace {
 
 struct ParsedMemoryAccessTypes {
   MemRefType memoryType;
+  Type addressType;
   Type dataType;
 };
 
@@ -177,11 +178,24 @@ ParseResult parseMemoryAccessTypes(OpAsmParser &parser,
   if (!types.memoryType)
     return parser.emitError(parser.getCurrentLocation(),
                             "expected memref memory type");
+  types.addressType = parser.getBuilder().getIndexType();
   types.dataType = types.memoryType.getElementType();
-  if (succeeded(parser.parseOptionalComma()) &&
-      parser.parseType(types.dataType))
+  if (failed(parser.parseOptionalComma()))
+    return success();
+
+  Type firstExplicitType;
+  if (parser.parseType(firstExplicitType))
     return failure();
-  return success();
+  if (failed(parser.parseOptionalComma())) {
+    types.dataType = firstExplicitType;
+    return success();
+  }
+  if (!isa<VectorType>(firstExplicitType))
+    return parser.emitError(parser.getCurrentLocation(),
+                            "first explicit type must be a vector address type");
+
+  types.addressType = firstExplicitType;
+  return parser.parseType(types.dataType);
 }
 
 FailureOr<VectorType> getParsedDataVector(OpAsmParser &parser, Type dataType) {
@@ -198,13 +212,16 @@ Type getMaskType(OpAsmParser &parser, VectorType dataVector) {
                          dataVector.getScalableDims());
 }
 
-LogicalResult verifyMemoryAccess(Operation *op, Value memory, Type dataType,
-                                 Value mask) {
+LogicalResult verifyMemoryAccess(Operation *op, Value memory, Value address,
+                                 Type dataType, Value mask,
+                                 bool allowVectorAddress) {
   auto access = semantics::analyzeMemoryAccessType(
-      cast<MemRefType>(memory.getType()), dataType,
+      cast<MemRefType>(memory.getType()), dataType, address.getType(),
       mask ? mask.getType() : Type{});
   if (!access)
     return op->emitOpError(llvm::toString(access.takeError()));
+  if (access->isGather() && !allowVectorAddress)
+    return op->emitOpError("vector address is unsupported for dataflow.store");
   return success();
 }
 
@@ -235,8 +252,7 @@ ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
 
   if (parser.resolveOperand(memory, types.memoryType, result.operands) ||
-      parser.resolveOperand(address, parser.getBuilder().getIndexType(),
-                            result.operands) ||
+      parser.resolveOperand(address, types.addressType, result.operands) ||
       parser.resolveOperand(control, parser.getBuilder().getNoneType(),
                             result.operands))
     return failure();
@@ -257,6 +273,8 @@ void LoadOp::print(OpAsmPrinter &printer) {
     printer << " mask " << getMask();
   printer.printOptionalAttrDict((*this)->getAttrs());
   printer << " : " << getMem().getType();
+  if (isa<VectorType>(getAddr().getType()))
+    printer << ", " << getAddr().getType();
   if (hasExplicitMemoryDataType(getMem(), getData().getType()))
     printer << ", " << getData().getType();
 }
@@ -274,8 +292,9 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Value memory,
 }
 
 LogicalResult LoadOp::verify() {
-  return verifyMemoryAccess(getOperation(), getMem(), getData().getType(),
-                            getMask());
+  return verifyMemoryAccess(getOperation(), getMem(), getAddr(),
+                            getData().getType(), getMask(),
+                            /*allowVectorAddress=*/true);
 }
 
 ParseResult StoreOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -300,8 +319,7 @@ ParseResult StoreOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
 
   if (parser.resolveOperand(memory, types.memoryType, result.operands) ||
-      parser.resolveOperand(address, parser.getBuilder().getIndexType(),
-                            result.operands) ||
+      parser.resolveOperand(address, types.addressType, result.operands) ||
       parser.resolveOperand(data, types.dataType, result.operands) ||
       parser.resolveOperand(control, parser.getBuilder().getNoneType(),
                             result.operands))
@@ -340,8 +358,9 @@ void StoreOp::build(OpBuilder &builder, OperationState &state, Value memory,
 }
 
 LogicalResult StoreOp::verify() {
-  return verifyMemoryAccess(getOperation(), getMem(), getData().getType(),
-                            getMask());
+  return verifyMemoryAccess(getOperation(), getMem(), getAddr(),
+                            getData().getType(), getMask(),
+                            /*allowVectorAddress=*/false);
 }
 
 //===----------------------------------------------------------------------===//
