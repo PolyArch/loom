@@ -19,6 +19,10 @@ public:
   put(const ArtifactSchemaDescriptor &schema,
       const CanonicalSemanticBytes &canonicalBytes) const;
 
+  llvm::Expected<CanonicalSemanticBytes>
+  get(const ArtifactSchemaDescriptor &expectedSchema,
+      const ArtifactIdentity &identity) const;
+
 private:
   std::string root_;
 };

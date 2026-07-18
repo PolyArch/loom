@@ -277,6 +277,15 @@ valid preimage with the same identity is an identity collision, and an
 invalid preimage or key mismatch is store corruption. Publication never
 overwrites an existing key.
 
+Validated reads take an expected schema descriptor and an
+`ArtifactIdentity`. The object path is derived only from the identity. The
+reader rejects missing objects, symbolic links, and non-regular files; parses
+the fixed identity domain, schema descriptor, and canonical byte length;
+recomputes SHA-256 against the path identity; and returns exactly the stored
+canonical semantic bytes. A key-valid object with a different schema identity
+or version is a schema mismatch. A malformed preimage or identity-key mismatch
+is store corruption.
+
 The store root is a caller-provisioned, durably established non-symlink
 directory. `ArtifactStore` does not create the root or any containing
 directory.

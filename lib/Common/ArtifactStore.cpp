@@ -19,6 +19,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <fcntl.h>
+#include <memory>
 #include <string>
 #include <system_error>
 #include <unistd.h>
@@ -26,6 +27,17 @@
 
 namespace loom {
 namespace {
+
+struct OpenedArtifactObject {
+  llvm::sys::fs::file_status status;
+  std::unique_ptr<llvm::MemoryBuffer> contents;
+
+  llvm::ArrayRef<std::uint8_t> preimage() const {
+    const llvm::StringRef buffer = contents->getBuffer();
+    return llvm::ArrayRef<std::uint8_t>(
+        reinterpret_cast<const std::uint8_t *>(buffer.data()), buffer.size());
+  }
+};
 
 llvm::Error storeError(llvm::StringRef code, const llvm::Twine &detail) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -51,11 +63,9 @@ regularFileStatus(int file, llvm::StringRef nonRegularErrorCode,
   return status;
 }
 
-llvm::Expected<llvm::sys::fs::file_status>
-validateOpenedObject(int file, llvm::StringRef description,
-                     const ArtifactIdentity &expectedIdentity,
-                     llvm::ArrayRef<std::uint8_t> expectedPreimage,
-                     llvm::StringRef objectErrorCode) {
+llvm::Expected<OpenedArtifactObject>
+readOpenedObject(int file, llvm::StringRef description,
+                 llvm::StringRef objectErrorCode) {
   auto status = regularFileStatus(file, objectErrorCode, description);
   if (!status)
     return status.takeError();
@@ -66,27 +76,25 @@ validateOpenedObject(int file, llvm::StringRef description,
     return storeError("artifact_store_io", llvm::Twine("unable to read ") +
                                                description + ": " +
                                                error.message());
-  const llvm::StringRef contents = (*buffer)->getBuffer();
-  const llvm::ArrayRef<std::uint8_t> object(
-      reinterpret_cast<const std::uint8_t *>(contents.data()), contents.size());
+  return OpenedArtifactObject{*status, std::move(*buffer)};
+}
 
-  if (object.equals(expectedPreimage))
-    return *status;
-
-  if (llvm::Error error = detail::validateArtifactIdentityPreimage(object)) {
-    llvm::consumeError(std::move(error));
+llvm::Expected<detail::ParsedArtifactIdentityPreimage> validateStoredObject(
+    const OpenedArtifactObject &object, llvm::StringRef description,
+    const ArtifactIdentity &expectedIdentity, llvm::StringRef objectErrorCode) {
+  auto parsed = detail::parseArtifactIdentityPreimage(object.preimage());
+  if (!parsed)
     return storeError(objectErrorCode,
                       llvm::Twine(description) +
-                          " is not a reconstructable identity preimage");
-  }
+                          " has an invalid identity preimage: " +
+                          llvm::toString(parsed.takeError()));
 
   const ArtifactIdentity actualIdentity =
-      detail::finalizeArtifactIdentityPreimage(object);
+      detail::finalizeArtifactIdentityPreimage(object.preimage());
   if (actualIdentity != expectedIdentity)
     return storeError(objectErrorCode, llvm::Twine(description) +
                                            " does not match its derived key");
-  return storeError("artifact_identity_collision",
-                    "different identity preimages share one digest");
+  return *parsed;
 }
 
 llvm::Expected<int> openStoredObject(int directory,
@@ -98,12 +106,27 @@ llvm::Expected<int> openStoredObject(int directory,
                     O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   } while (file == -1 && errno == EINTR);
   if (file == -1) {
+    if (errno == ENOENT)
+      return storeError("artifact_store_missing", "stored object is missing");
     if (errno == ELOOP)
       return storeError("artifact_store_corruption",
                         "stored object is a symbolic link");
     return storeErrno("artifact_store_io", "unable to open stored object");
   }
   return file;
+}
+
+llvm::Expected<int> openStoreDirectory(llvm::StringRef root) {
+  const std::string path = root.str();
+  int directory;
+  do {
+    directory =
+        ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
+  } while (directory == -1 && errno == EINTR);
+  if (directory == -1)
+    return storeErrno("artifact_store_io",
+                      "unable to open required store root directory");
+  return directory;
 }
 
 llvm::Error syncFile(int file, llvm::StringRef description) {
@@ -159,14 +182,10 @@ ArtifactStore::put(const ArtifactSchemaDescriptor &schema,
       detail::finalizeArtifactIdentityPreimage(preimage);
   const std::string objectName = formatArtifactIdentityHex(identity);
 
-  int directory;
-  do {
-    directory =
-        ::open(root_.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
-  } while (directory == -1 && errno == EINTR);
-  if (directory == -1)
-    return storeErrno("artifact_store_io",
-                      "unable to open required store root directory");
+  auto directoryOrError = openStoreDirectory(root_);
+  if (!directoryOrError)
+    return directoryOrError.takeError();
+  int directory = *directoryOrError;
   llvm::scope_exit closeDirectoryOnFailure([&] {
     if (directory != -1)
       llvm::consumeError(closeFile(directory, "store directory"));
@@ -199,11 +218,17 @@ ArtifactStore::put(const ArtifactSchemaDescriptor &schema,
 
   if (llvm::Error error = syncFile(temporary.FD, "temporary object"))
     return std::move(error);
-  auto temporaryStatus =
-      validateOpenedObject(temporary.FD, "temporary object", identity, preimage,
-                           "artifact_store_io");
-  if (!temporaryStatus)
-    return temporaryStatus.takeError();
+  auto temporaryObject =
+      readOpenedObject(temporary.FD, "temporary object", "artifact_store_io");
+  if (!temporaryObject)
+    return temporaryObject.takeError();
+  auto parsedTemporary = validateStoredObject(
+      *temporaryObject, "temporary object", identity, "artifact_store_io");
+  if (!parsedTemporary)
+    return parsedTemporary.takeError();
+  if (!temporaryObject->preimage().equals(preimage))
+    return storeError("artifact_identity_collision",
+                      "different identity preimages share one digest");
 
   const std::error_code publishError =
       publishNoReplace(temporary.FD, directory, objectName);
@@ -221,7 +246,7 @@ ArtifactStore::put(const ArtifactSchemaDescriptor &schema,
         publishedFile, "artifact_store_corruption", "published object");
     if (!publishedStatus)
       return publishedStatus.takeError();
-    if (publishedStatus->getUniqueID() != temporaryStatus->getUniqueID())
+    if (publishedStatus->getUniqueID() != temporaryObject->status.getUniqueID())
       return storeError("artifact_store_corruption",
                         "published object is not the validated inode");
     if (llvm::Error error = closeFile(publishedFile, "published object"))
@@ -237,11 +262,18 @@ ArtifactStore::put(const ArtifactSchemaDescriptor &schema,
         llvm::consumeError(closeFile(existingFile, "existing object"));
     });
 
-    auto existingStatus =
-        validateOpenedObject(existingFile, "existing object", identity,
-                             preimage, "artifact_store_corruption");
-    if (!existingStatus)
-      return existingStatus.takeError();
+    auto existingObject = readOpenedObject(existingFile, "existing object",
+                                           "artifact_store_corruption");
+    if (!existingObject)
+      return existingObject.takeError();
+    auto parsedExisting =
+        validateStoredObject(*existingObject, "existing object", identity,
+                             "artifact_store_corruption");
+    if (!parsedExisting)
+      return parsedExisting.takeError();
+    if (!existingObject->preimage().equals(preimage))
+      return storeError("artifact_identity_collision",
+                        "different identity preimages share one digest");
     if (llvm::Error error = closeFile(existingFile, "existing object"))
       return std::move(error);
     closeExistingOnFailure.release();
@@ -262,6 +294,58 @@ ArtifactStore::put(const ArtifactSchemaDescriptor &schema,
     return std::move(error);
   closeDirectoryOnFailure.release();
   return identity;
+}
+
+llvm::Expected<CanonicalSemanticBytes>
+ArtifactStore::get(const ArtifactSchemaDescriptor &expectedSchema,
+                   const ArtifactIdentity &identity) const {
+  auto directoryOrError = openStoreDirectory(root_);
+  if (!directoryOrError)
+    return directoryOrError.takeError();
+  int directory = *directoryOrError;
+  llvm::scope_exit closeDirectory([&] {
+    if (directory != -1)
+      llvm::consumeError(closeFile(directory, "store directory"));
+  });
+
+  const std::string objectName = formatArtifactIdentityHex(identity);
+  auto fileOrError = openStoredObject(directory, objectName);
+  if (!fileOrError)
+    return fileOrError.takeError();
+  int file = *fileOrError;
+  llvm::scope_exit closeObject([&] {
+    if (file != -1)
+      llvm::consumeError(closeFile(file, "stored object"));
+  });
+
+  auto object =
+      readOpenedObject(file, "stored object", "artifact_store_corruption");
+  if (!object)
+    return object.takeError();
+  auto parsed = validateStoredObject(*object, "stored object", identity,
+                                     "artifact_store_corruption");
+  if (!parsed)
+    return parsed.takeError();
+
+  if (parsed->schemaIdentity != expectedSchema.identity)
+    return storeError("artifact_schema_mismatch",
+                      "stored object schema identity does not match expected "
+                      "schema identity");
+  if (parsed->schemaVersion != expectedSchema.version)
+    return storeError("artifact_schema_mismatch",
+                      "stored object schema version does not match expected "
+                      "schema version");
+
+  std::vector<std::uint8_t> canonicalBytes(
+      parsed->canonicalSemanticBytes.begin(),
+      parsed->canonicalSemanticBytes.end());
+  if (llvm::Error error = closeFile(file, "stored object"))
+    return std::move(error);
+  closeObject.release();
+  if (llvm::Error error = closeFile(directory, "store directory"))
+    return std::move(error);
+  closeDirectory.release();
+  return CanonicalSemanticBytes(std::move(canonicalBytes));
 }
 
 } // namespace loom

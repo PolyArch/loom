@@ -142,6 +142,12 @@ std::vector<std::uint8_t> readFile(const char *test, llvm::StringRef path) {
                                    contents.bytes_end());
 }
 
+std::string objectPath(llvm::StringRef root, const ArtifactIdentity &identity) {
+  llvm::SmallString<128> path(root);
+  llvm::sys::path::append(path, formatArtifactIdentityHex(identity));
+  return path.str().str();
+}
+
 void writeFile(const char *test, llvm::StringRef path,
                llvm::ArrayRef<std::uint8_t> bytes) {
   std::error_code error;
@@ -374,6 +380,116 @@ void existingSymlinkObjectIsRejected() {
           "ArtifactStore replaced an existing symlink object");
 }
 
+void storedCanonicalBytesRoundTrip() {
+  TemporaryDirectory directory(__func__);
+  ArtifactStore store(directory.path());
+
+  for (const CanonicalSemanticBytes &bytes :
+       {semantic({}), semantic({0x00, 0x7f, 0xff})}) {
+    const ArtifactIdentity identity =
+        takeExpected(__func__, store.put(testSchema, bytes));
+    const CanonicalSemanticBytes loaded =
+        takeExpected(__func__, store.get(testSchema, identity));
+    require(__func__, loaded.bytes().equals(bytes.bytes()),
+            "ArtifactStore returned different canonical semantic bytes");
+  }
+}
+
+void storedSchemaMismatchIsRejected() {
+  TemporaryDirectory directory(__func__);
+  ArtifactStore store(directory.path());
+  const ArtifactIdentity identity =
+      takeExpected(__func__, store.put(testSchema, semantic({0x50})));
+
+  expectErrorContains(__func__, store.get(otherSchema, identity),
+                      "artifact_schema_mismatch");
+  expectErrorContains(__func__, store.get(otherVersion, identity),
+                      "artifact_schema_mismatch");
+}
+
+void missingStoredObjectIsRejected() {
+  TemporaryDirectory directory(__func__);
+  ArtifactStore store(directory.path());
+  const ArtifactIdentity identity =
+      finalizeArtifactIdentity(testSchema, semantic({0x51}));
+
+  expectErrorContains(__func__, store.get(testSchema, identity),
+                      "artifact_store_missing");
+}
+
+void nonRegularStoredObjectsAreRejectedOnRead() {
+  TemporaryDirectory directory(__func__);
+  ArtifactStore store(directory.path());
+  const CanonicalSemanticBytes bytes = semantic({0x52});
+  const ArtifactIdentity identity = finalizeArtifactIdentity(testSchema, bytes);
+  const std::string path = objectPath(directory.path(), identity);
+
+  llvm::SmallString<128> targetPath(directory.path());
+  llvm::sys::path::append(targetPath, ".symlink-target");
+  writeFile(__func__, targetPath, expectedPreimage(testSchema, bytes));
+  if (std::error_code error = llvm::sys::fs::create_symlink(targetPath, path))
+    fail(__func__,
+         "unable to create stored-object symlink: " + error.message());
+  expectErrorContains(__func__, store.get(testSchema, identity),
+                      "artifact_store_corruption");
+
+  if (std::error_code error = llvm::sys::fs::remove(path))
+    fail(__func__,
+         "unable to remove stored-object symlink: " + error.message());
+  if (std::error_code error = llvm::sys::fs::create_directory(path))
+    fail(__func__,
+         "unable to create stored-object directory: " + error.message());
+  expectErrorContains(__func__, store.get(testSchema, identity),
+                      "artifact_store_corruption");
+}
+
+void malformedStoredPreimagesAreRejected() {
+  TemporaryDirectory directory(__func__);
+  ArtifactStore store(directory.path());
+  const CanonicalSemanticBytes bytes = semantic({0x53});
+  const ArtifactIdentity identity = finalizeArtifactIdentity(testSchema, bytes);
+  const std::string path = objectPath(directory.path(), identity);
+
+  writeFile(__func__, path, std::vector<std::uint8_t>{'b', 'a', 'd'});
+  expectErrorContains(__func__, store.get(testSchema, identity),
+                      "artifact_store_corruption");
+
+  std::vector<std::uint8_t> truncated = expectedPreimage(testSchema, bytes);
+  truncated.pop_back();
+  writeFile(__func__, path, truncated);
+  expectErrorContains(__func__, store.get(testSchema, identity),
+                      "artifact_store_corruption");
+}
+
+void wrongKeyValidPreimageIsRejected() {
+  TemporaryDirectory directory(__func__);
+  ArtifactStore store(directory.path());
+  const CanonicalSemanticBytes expectedBytes = semantic({0x54});
+  const ArtifactIdentity identity =
+      finalizeArtifactIdentity(testSchema, expectedBytes);
+  const std::vector<std::uint8_t> wrongPreimage =
+      expectedPreimage(otherSchema, semantic({0x55}));
+  writeFile(__func__, objectPath(directory.path(), identity), wrongPreimage);
+
+  expectErrorContains(__func__, store.get(testSchema, identity),
+                      "artifact_store_corruption");
+}
+
+void tamperedSemanticBytesAreRejected() {
+  TemporaryDirectory directory(__func__);
+  ArtifactStore store(directory.path());
+  const CanonicalSemanticBytes bytes = semantic({0x56, 0x57});
+  const ArtifactIdentity identity =
+      takeExpected(__func__, store.put(testSchema, bytes));
+  const std::string path = objectPath(directory.path(), identity);
+  std::vector<std::uint8_t> tampered = readFile(__func__, path);
+  tampered.back() ^= 0xff;
+  writeFile(__func__, path, tampered);
+
+  expectErrorContains(__func__, store.get(testSchema, identity),
+                      "artifact_store_corruption");
+}
+
 void resolvedConfigUsesArtifactFinalization() {
   require(__func__,
           ResolvedConfig::artifactSchema.identity ==
@@ -411,6 +527,13 @@ int main() {
   concurrentIdenticalPublishDeduplicates();
   existingWrongOrCorruptObjectIsRejected();
   existingSymlinkObjectIsRejected();
+  storedCanonicalBytesRoundTrip();
+  storedSchemaMismatchIsRejected();
+  missingStoredObjectIsRejected();
+  nonRegularStoredObjectsAreRejectedOnRead();
+  malformedStoredPreimagesAreRejected();
+  wrongKeyValidPreimageIsRejected();
+  tamperedSemanticBytesAreRejected();
   resolvedConfigUsesArtifactFinalization();
   return 0;
 }

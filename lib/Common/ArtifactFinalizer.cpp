@@ -97,8 +97,8 @@ std::vector<std::uint8_t> detail::buildArtifactIdentityPreimage(
   return preimage;
 }
 
-llvm::Error detail::validateArtifactIdentityPreimage(
-    llvm::ArrayRef<std::uint8_t> preimage) {
+llvm::Expected<detail::ParsedArtifactIdentityPreimage>
+detail::parseArtifactIdentityPreimage(llvm::ArrayRef<std::uint8_t> preimage) {
   if (preimage.size() < identityDomainSize ||
       !std::equal(identityDomain, identityDomain + identityDomainSize,
                   preimage.begin()))
@@ -110,6 +110,8 @@ llvm::Error detail::validateArtifactIdentityPreimage(
     return schemaLength.takeError();
   if (*schemaLength > preimage.size() - offset)
     return invalidPreimage("truncated artifact schema identity");
+  const llvm::StringRef schemaIdentity(
+      reinterpret_cast<const char *>(preimage.data() + offset), *schemaLength);
   offset += *schemaLength;
 
   auto major = readU32Be(preimage, offset);
@@ -123,7 +125,8 @@ llvm::Error detail::validateArtifactIdentityPreimage(
     return semanticLength.takeError();
   if (*semanticLength != preimage.size() - offset)
     return invalidPreimage("artifact semantic byte length mismatch");
-  return llvm::Error::success();
+  return detail::ParsedArtifactIdentityPreimage{
+      schemaIdentity, SchemaVersion{*major, *minor}, preimage.slice(offset)};
 }
 
 ArtifactIdentity detail::finalizeArtifactIdentityPreimage(
