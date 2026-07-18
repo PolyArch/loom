@@ -68,12 +68,19 @@ that zero-width requirement. The transfer carries event occurrence; it
 does not require a separate control-specific route schema or a synthetic
 payload representation.
 
-## Deferred Routing Model
+## Mutable Route Hot State
+
+PnR uses a confirmed per-net mutable rooted arborescence with shared-prefix
+routes. `RouteTreeState` implements this hot search representation. It does
+not define the persistent Physical Mapping route-tree record or its canonical
+serialization.
+
+## Deferred Routing Schema
 
 The following remain deliberately unspecified here:
 
-* route-tree and shared-trunk representation;
-* route, segment, or symbolic record identifiers;
+* persistent Physical Mapping route-tree record spelling, identifiers, and
+  canonical serialization;
 * resource-time claims and contention proof;
 * temporal-tag allocation, remapping, and `t2t` behavior;
 * schedule, instruction-slot, and reconfiguration records;
@@ -82,5 +89,5 @@ The following remain deliberately unspecified here:
 * Physical Mapping completeness checks for those facts.
 
 In particular, this document does not adopt the old one-edge-one-route
-model. Those topics remain owned by their unresolved architecture work and
-must not be inferred from this minimal constraint set.
+model. These persistent schema topics remain owned by their unresolved
+architecture work and must not be inferred from the mutable hot state.

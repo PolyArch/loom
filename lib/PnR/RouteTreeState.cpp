@@ -50,6 +50,7 @@ RouteTreeTransactionScratch::~RouteTreeTransactionScratch() {
 void RouteTreeTransactionScratch::resetTransaction() {
   deltas_.clear();
   worklist_.clear();
+  lookupSnapshotCount_ = 0;
 }
 
 llvm::Error loom::pnr::detail::preflightRouteTreeStateCapacity(
@@ -60,49 +61,22 @@ llvm::Error loom::pnr::detail::preflightRouteTreeStateCapacity(
   return preflightPnrIndexCapacity(sinkCountContext, sinkObligationCount);
 }
 
-llvm::Expected<RouteTreeState>
-RouteTreeState::create(const FrozenRoutingGraph &graph,
+llvm::Expected<RouteTreeStateHandle>
+RouteTreeState::create(FrozenRoutingGraphHandle graph,
                        PnrIndex sinkObligationCount) {
+  if (!graph)
+    return routeTreeError("FrozenRoutingGraph owner is null");
   if (llvm::Error error = detail::preflightRouteTreeStateCapacity(
-          sizeValue(graph.routingEndpoints().size()), sinkObligationCount))
+          sizeValue(graph->routingEndpoints().size()), sinkObligationCount))
     return std::move(error);
-  return RouteTreeState(
-      graph,
-      std::vector<SinkBinding>(static_cast<std::size_t>(sinkObligationCount)));
+  return RouteTreeStateHandle(new RouteTreeState(
+      std::move(graph),
+      std::vector<SinkBinding>(static_cast<std::size_t>(sinkObligationCount))));
 }
 
-RouteTreeState::RouteTreeState(const FrozenRoutingGraph &graph,
+RouteTreeState::RouteTreeState(FrozenRoutingGraphHandle graph,
                                std::vector<SinkBinding> sinkBindings)
-    : graph_(graph), sinkBindings_(std::move(sinkBindings)) {}
-
-RouteTreeState::RouteTreeState(RouteTreeState &&other) noexcept
-    : graph_(other.graph_), sourceEndpoint_(other.sourceEndpoint_),
-      sinkBindings_(std::move(other.sinkBindings_)),
-      nodes_(std::move(other.nodes_)), freeSlots_(std::move(other.freeSlots_)),
-      endpointSlots_(std::move(other.endpointSlots_)),
-      activeNodeCount_(other.activeNodeCount_),
-      lookupTombstoneCount_(other.lookupTombstoneCount_),
-      boundSinkObligationCount_(other.boundSinkObligationCount_),
-      attachedSinkObligationCount_(other.attachedSinkObligationCount_),
-      activeTransaction_(other.activeTransaction_) {
-  if (activeTransaction_)
-    activeTransaction_->state_ = this;
-  other.sourceEndpoint_ = getInvalidPnrIndex();
-  other.sinkBindings_.clear();
-  other.nodes_.clear();
-  other.freeSlots_.clear();
-  other.endpointSlots_.clear();
-  other.activeNodeCount_ = 0;
-  other.lookupTombstoneCount_ = 0;
-  other.boundSinkObligationCount_ = 0;
-  other.attachedSinkObligationCount_ = 0;
-  other.activeTransaction_ = nullptr;
-}
-
-RouteTreeState::~RouteTreeState() {
-  if (activeTransaction_)
-    activeTransaction_->rollback();
-}
+    : graph_(std::move(graph)), sinkBindings_(std::move(sinkBindings)) {}
 
 std::size_t RouteTreeState::hashEndpoint(PnrIndex endpoint) {
   std::uint64_t value = static_cast<std::uint64_t>(endpoint);
@@ -130,33 +104,43 @@ std::optional<PnrIndex> RouteTreeState::lookupSlot(PnrIndex endpoint) const {
   return std::nullopt;
 }
 
-llvm::Error RouteTreeState::ensureLookupCapacity(PnrIndex requiredCount) {
+llvm::Error RouteTreeTransaction::ensureLookupCapacity(PnrIndex requiredCount) {
   if (requiredCount == 0)
     return llvm::Error::success();
 
-  std::size_t capacity = endpointSlots_.empty() ? 8 : endpointSlots_.size();
+  std::size_t capacity =
+      state_->endpointSlots_.empty() ? 8 : state_->endpointSlots_.size();
   const std::size_t required = static_cast<std::size_t>(requiredCount);
   while (required > capacity / 2) {
     if (capacity > std::numeric_limits<std::size_t>::max() / 2)
       return routeTreeError("endpoint-to-slot lookup capacity overflow");
     capacity *= 2;
   }
-  const std::size_t tombstones =
-      static_cast<std::size_t>(lookupTombstoneCount_);
-  const bool shouldPurgeTombstones = tombstones > capacity / 2 - required;
-  if (capacity != endpointSlots_.size() || shouldPurgeTombstones)
+  const bool shouldPurgeTombstones =
+      state_->lookupTombstoneCount_ > capacity / 2 - required;
+  if (capacity != state_->endpointSlots_.size() || shouldPurgeTombstones)
     rehashLookup(capacity);
   return llvm::Error::success();
 }
 
-void RouteTreeState::insertLookup(PnrIndex endpoint, PnrIndex slot) {
-  assert(!endpointSlots_.empty());
-  const std::size_t mask = endpointSlots_.size() - 1;
+void RouteTreeTransaction::recordLookupBucket(std::size_t bucket) {
+  RouteTreeTransactionScratch::Delta delta;
+  delta.kind = RouteTreeTransactionScratch::DeltaKind::LookupBucket;
+  delta.lookupIndex = bucket;
+  delta.lookupTombstoneCount = state_->lookupTombstoneCount_;
+  delta.lookupEntry = state_->endpointSlots_[bucket];
+  scratch_->deltas_.push_back(delta);
+}
+
+void RouteTreeTransaction::insertLookupWithoutDelta(PnrIndex endpoint,
+                                                    PnrIndex slot) {
+  assert(!state_->endpointSlots_.empty());
+  const std::size_t mask = state_->endpointSlots_.size() - 1;
   const std::size_t noBucket = std::numeric_limits<std::size_t>::max();
   std::size_t firstTombstone = noBucket;
-  std::size_t bucket = hashEndpoint(endpoint) & mask;
-  for (std::size_t probe = 0; probe < endpointSlots_.size(); ++probe) {
-    LookupEntry &entry = endpointSlots_[bucket];
+  std::size_t bucket = RouteTreeState::hashEndpoint(endpoint) & mask;
+  for (std::size_t probe = 0; probe < state_->endpointSlots_.size(); ++probe) {
+    RouteTreeState::LookupEntry &entry = state_->endpointSlots_[bucket];
     if (entry.isOccupied()) {
       assert(entry.endpoint != endpoint && "duplicate reached endpoint");
     } else if (entry.tombstone) {
@@ -166,28 +150,59 @@ void RouteTreeState::insertLookup(PnrIndex endpoint, PnrIndex slot) {
       const std::size_t destination =
           firstTombstone == noBucket ? bucket : firstTombstone;
       if (firstTombstone != noBucket)
-        --lookupTombstoneCount_;
-      endpointSlots_[destination] = {endpoint, slot, false};
+        --state_->lookupTombstoneCount_;
+      state_->endpointSlots_[destination] = {endpoint, slot, false};
       return;
     }
     bucket = (bucket + 1) & mask;
   }
   assert(firstTombstone != noBucket && "endpoint lookup has no insert slot");
-  --lookupTombstoneCount_;
-  endpointSlots_[firstTombstone] = {endpoint, slot, false};
+  --state_->lookupTombstoneCount_;
+  state_->endpointSlots_[firstTombstone] = {endpoint, slot, false};
 }
 
-void RouteTreeState::eraseLookup(PnrIndex endpoint) {
-  assert(!endpointSlots_.empty());
-  const std::size_t mask = endpointSlots_.size() - 1;
-  std::size_t bucket = hashEndpoint(endpoint) & mask;
-  for (std::size_t probe = 0; probe < endpointSlots_.size(); ++probe) {
-    LookupEntry &entry = endpointSlots_[bucket];
+void RouteTreeTransaction::insertLookup(PnrIndex endpoint, PnrIndex slot) {
+  assert(!state_->endpointSlots_.empty());
+  const std::size_t mask = state_->endpointSlots_.size() - 1;
+  const std::size_t noBucket = std::numeric_limits<std::size_t>::max();
+  std::size_t firstTombstone = noBucket;
+  std::size_t bucket = RouteTreeState::hashEndpoint(endpoint) & mask;
+  for (std::size_t probe = 0; probe < state_->endpointSlots_.size(); ++probe) {
+    const RouteTreeState::LookupEntry &entry = state_->endpointSlots_[bucket];
+    if (entry.isOccupied()) {
+      assert(entry.endpoint != endpoint && "duplicate reached endpoint");
+    } else if (entry.tombstone) {
+      if (firstTombstone == noBucket)
+        firstTombstone = bucket;
+    } else {
+      const std::size_t destination =
+          firstTombstone == noBucket ? bucket : firstTombstone;
+      recordLookupBucket(destination);
+      if (firstTombstone != noBucket)
+        --state_->lookupTombstoneCount_;
+      state_->endpointSlots_[destination] = {endpoint, slot, false};
+      return;
+    }
+    bucket = (bucket + 1) & mask;
+  }
+  assert(firstTombstone != noBucket && "endpoint lookup has no insert slot");
+  recordLookupBucket(firstTombstone);
+  --state_->lookupTombstoneCount_;
+  state_->endpointSlots_[firstTombstone] = {endpoint, slot, false};
+}
+
+void RouteTreeTransaction::eraseLookup(PnrIndex endpoint) {
+  assert(!state_->endpointSlots_.empty());
+  const std::size_t mask = state_->endpointSlots_.size() - 1;
+  std::size_t bucket = RouteTreeState::hashEndpoint(endpoint) & mask;
+  for (std::size_t probe = 0; probe < state_->endpointSlots_.size(); ++probe) {
+    RouteTreeState::LookupEntry &entry = state_->endpointSlots_[bucket];
     if (entry.isEmpty())
       break;
     if (entry.isOccupied() && entry.endpoint == endpoint) {
+      recordLookupBucket(bucket);
       entry = {getInvalidPnrIndex(), getInvalidPnrIndex(), true};
-      ++lookupTombstoneCount_;
+      ++state_->lookupTombstoneCount_;
       return;
     }
     bucket = (bucket + 1) & mask;
@@ -195,13 +210,28 @@ void RouteTreeState::eraseLookup(PnrIndex endpoint) {
   assert(false && "erasing an endpoint absent from the lookup");
 }
 
-void RouteTreeState::rehashLookup(std::size_t capacity) {
-  std::vector<LookupEntry> replacement(capacity);
-  replacement.swap(endpointSlots_);
-  lookupTombstoneCount_ = 0;
-  for (const LookupEntry &entry : replacement)
+void RouteTreeTransaction::rehashLookup(std::size_t capacity) {
+  std::vector<RouteTreeState::LookupEntry> replacement(capacity);
+  const std::size_t snapshotIndex = scratch_->lookupSnapshotCount_;
+  if (snapshotIndex == scratch_->lookupSnapshots_.size())
+    scratch_->lookupSnapshots_.emplace_back();
+  std::vector<RouteTreeState::LookupEntry> &snapshot =
+      scratch_->lookupSnapshots_[snapshotIndex];
+  snapshot.clear();
+
+  RouteTreeTransactionScratch::Delta delta;
+  delta.kind = RouteTreeTransactionScratch::DeltaKind::LookupTable;
+  delta.lookupIndex = snapshotIndex;
+  delta.lookupTombstoneCount = state_->lookupTombstoneCount_;
+  scratch_->deltas_.push_back(delta);
+  ++scratch_->lookupSnapshotCount_;
+
+  snapshot.swap(state_->endpointSlots_);
+  replacement.swap(state_->endpointSlots_);
+  state_->lookupTombstoneCount_ = 0;
+  for (const RouteTreeState::LookupEntry &entry : snapshot)
     if (entry.isOccupied())
-      insertLookup(entry.endpoint, entry.slot);
+      insertLookupWithoutDelta(entry.endpoint, entry.slot);
 }
 
 std::optional<PnrIndex> RouteTreeState::sourceEndpoint() const {
@@ -219,7 +249,7 @@ RouteTreeState::sinkEndpoint(PnrIndex obligation) const {
 }
 
 PnrIndex RouteTreeState::arcSourceEndpoint(PnrIndex arc) const {
-  const llvm::ArrayRef<PnrIndex> offsets = graph_.adjacencyOffsets();
+  const llvm::ArrayRef<PnrIndex> offsets = graph_->adjacencyOffsets();
   const auto sourceEnd = std::upper_bound(offsets.begin(), offsets.end(), arc);
   assert(sourceEnd != offsets.begin() && sourceEnd != offsets.end());
   return static_cast<PnrIndex>(std::distance(offsets.begin(), sourceEnd) - 1);
@@ -268,6 +298,8 @@ llvm::Error RouteTreeState::verifyState() const {
   }
   if (tombstoneCount != lookupTombstoneCount_)
     return routeTreeError("lookup tombstone accounting is inconsistent");
+  if (lookupCount + tombstoneCount > endpointSlots_.size() / 2)
+    return routeTreeError("endpoint lookup probe occupancy is saturated");
 
   std::vector<std::uint8_t> visited(nodes_.size(), 0);
   for (PnrIndex slot : freeSlots_) {
@@ -289,7 +321,7 @@ llvm::Error RouteTreeState::verifyState() const {
     if (visited[slot])
       return routeTreeError("active node appears in free slots");
     ++activeCount;
-    if (node.endpoint >= graph_.routingEndpoints().size())
+    if (node.endpoint >= graph_->routingEndpoints().size())
       return routeTreeError("node endpoint is outside FrozenRoutingGraph");
     if (lookupSlot(node.endpoint) != slot)
       return routeTreeError("endpoint-to-slot lookup diverges from nodes");
@@ -313,7 +345,7 @@ llvm::Error RouteTreeState::verifyState() const {
   }
 
   if (sourceEndpoint_ == getInvalidPnrIndex() ||
-      sourceEndpoint_ >= graph_.routingEndpoints().size())
+      sourceEndpoint_ >= graph_->routingEndpoints().size())
     return routeTreeError("routed state has no valid source binding");
   const std::optional<PnrIndex> rootSlot = lookupSlot(sourceEndpoint_);
   if (!rootSlot)
@@ -337,7 +369,7 @@ llvm::Error RouteTreeState::verifyState() const {
       continue;
     }
     ++boundCount;
-    if (binding.endpoint >= graph_.routingEndpoints().size())
+    if (binding.endpoint >= graph_->routingEndpoints().size())
       return routeTreeError("sink binding is outside FrozenRoutingGraph");
     if (binding.nodeSlot == getInvalidPnrIndex()) {
       if (binding.previousAtNode != getInvalidPnrIndex() ||
@@ -407,9 +439,9 @@ llvm::Error RouteTreeState::verifyState() const {
       if (childNode.previousSibling != previous)
         return routeTreeError("sibling linkage is inconsistent");
       if (childNode.parentArc == getInvalidPnrIndex() ||
-          childNode.parentArc >= graph_.routingArcs().size())
+          childNode.parentArc >= graph_->routingArcs().size())
         return routeTreeError("non-root node has no valid parent arc");
-      if (graph_.routingArcs()[childNode.parentArc].target !=
+      if (graph_->routingArcs()[childNode.parentArc].target !=
               childNode.endpoint ||
           arcSourceEndpoint(childNode.parentArc) != parent.endpoint)
         return routeTreeError("parent arc disagrees with tree linkage");
@@ -454,23 +486,24 @@ RouteTreeState::beginTransaction(RouteTreeTransactionScratch &scratch) & {
   if (scratch.activeTransaction_)
     return routeTreeError("transaction scratch is already in use");
   scratch.resetTransaction();
-  return RouteTreeTransaction(*this, scratch);
+  return RouteTreeTransaction(shared_from_this(), scratch);
 }
 
-RouteTreeTransaction::RouteTreeTransaction(RouteTreeState &state,
+RouteTreeTransaction::RouteTreeTransaction(RouteTreeStateHandle state,
                                            RouteTreeTransactionScratch &scratch)
-    : state_(&state), scratch_(&scratch),
-      initialNodeStorageSize_(state.nodes_.size()),
-      initialActiveNodeCount_(state.activeNodeCount_),
-      initialBoundSinkObligationCount_(state.boundSinkObligationCount_),
-      initialAttachedSinkObligationCount_(state.attachedSinkObligationCount_) {
-  state.activeTransaction_ = this;
+    : state_(std::move(state)), scratch_(&scratch),
+      initialNodeStorageSize_(state_->nodes_.size()),
+      initialActiveNodeCount_(state_->activeNodeCount_),
+      initialBoundSinkObligationCount_(state_->boundSinkObligationCount_),
+      initialAttachedSinkObligationCount_(
+          state_->attachedSinkObligationCount_) {
+  state_->activeTransaction_ = this;
   scratch.activeTransaction_ = this;
 }
 
 RouteTreeTransaction::RouteTreeTransaction(
     RouteTreeTransaction &&other) noexcept
-    : state_(other.state_), scratch_(other.scratch_),
+    : state_(std::move(other.state_)), scratch_(other.scratch_),
       initialNodeStorageSize_(other.initialNodeStorageSize_),
       initialActiveNodeCount_(other.initialActiveNodeCount_),
       initialBoundSinkObligationCount_(other.initialBoundSinkObligationCount_),
@@ -480,7 +513,6 @@ RouteTreeTransaction::RouteTreeTransaction(
     state_->activeTransaction_ = this;
   if (scratch_)
     scratch_->activeTransaction_ = this;
-  other.state_ = nullptr;
   other.scratch_ = nullptr;
 }
 
@@ -490,9 +522,11 @@ RouteTreeTransaction::~RouteTreeTransaction() {
 }
 
 void RouteTreeTransaction::recordModifiedNode(PnrIndex slot) {
-  scratch_->deltas_.push_back(
-      {RouteTreeTransactionScratch::DeltaKind::ModifiedNode, slot,
-       state_->nodes_[slot]});
+  RouteTreeTransactionScratch::Delta delta;
+  delta.kind = RouteTreeTransactionScratch::DeltaKind::ModifiedNode;
+  delta.key = slot;
+  delta.node = state_->nodes_[slot];
+  scratch_->deltas_.push_back(delta);
 }
 
 void RouteTreeTransaction::setSourceBinding(PnrIndex endpoint) {
@@ -603,7 +637,7 @@ llvm::Expected<PnrIndex> RouteTreeTransaction::addNode(PnrIndex endpoint,
   node = {};
   node.endpoint = endpoint;
   node.parentArc = parentArc;
-  state_->insertLookup(endpoint, slot);
+  insertLookup(endpoint, slot);
   ++state_->activeNodeCount_;
   return slot;
 }
@@ -650,9 +684,12 @@ void RouteTreeTransaction::detachNode(PnrIndex slot, PnrIndex parentSlot) {
 
 void RouteTreeTransaction::removeNode(PnrIndex slot) {
   const RouteTreeNode snapshot = state_->nodes_[slot];
-  scratch_->deltas_.push_back(
-      {RouteTreeTransactionScratch::DeltaKind::RemovedNode, slot, snapshot});
-  state_->eraseLookup(snapshot.endpoint);
+  RouteTreeTransactionScratch::Delta delta;
+  delta.kind = RouteTreeTransactionScratch::DeltaKind::RemovedNode;
+  delta.key = slot;
+  delta.node = snapshot;
+  scratch_->deltas_.push_back(delta);
+  eraseLookup(snapshot.endpoint);
   state_->nodes_[slot] = {};
   state_->freeSlots_.push_back(slot);
   --state_->activeNodeCount_;
@@ -661,7 +698,7 @@ void RouteTreeTransaction::removeNode(PnrIndex slot) {
 llvm::Error RouteTreeTransaction::bindSource(PnrIndex endpoint) {
   if (!state_)
     return routeTreeError("transaction is no longer active");
-  if (endpoint >= state_->graph_.routingEndpoints().size())
+  if (endpoint >= state_->graph_->routingEndpoints().size())
     return routeTreeError("source endpoint is outside FrozenRoutingGraph");
   if (state_->activeNodeCount_ != 0 && state_->sourceEndpoint_ != endpoint)
     return routeTreeError("routed source requires whole-net rip-up");
@@ -678,7 +715,7 @@ llvm::Error RouteTreeTransaction::bindSink(PnrIndex obligation,
     return routeTreeError("transaction is no longer active");
   if (obligation >= state_->sinkBindings_.size())
     return routeTreeError("sink obligation ordinal is outside the freeze");
-  if (endpoint >= state_->graph_.routingEndpoints().size())
+  if (endpoint >= state_->graph_->routingEndpoints().size())
     return routeTreeError("sink endpoint is outside FrozenRoutingGraph");
   const RouteTreeState::SinkBinding &binding =
       state_->sinkBindings_[obligation];
@@ -719,8 +756,8 @@ RouteTreeTransaction::attachPath(PnrIndex attachmentEndpoint,
     return routeTreeError("path attachment endpoint is not reached");
   }
 
-  if (scratch_->pathMarks_.size() < state_->graph_.routingEndpoints().size())
-    scratch_->pathMarks_.resize(state_->graph_.routingEndpoints().size(), 0);
+  if (scratch_->pathMarks_.size() < state_->graph_->routingEndpoints().size())
+    scratch_->pathMarks_.resize(state_->graph_->routingEndpoints().size(), 0);
   if (scratch_->pathGeneration_ == std::numeric_limits<std::uint64_t>::max()) {
     std::fill(scratch_->pathMarks_.begin(), scratch_->pathMarks_.end(), 0);
     scratch_->pathGeneration_ = 1;
@@ -733,11 +770,11 @@ RouteTreeTransaction::attachPath(PnrIndex attachmentEndpoint,
 
   PnrIndex current = attachmentEndpoint;
   for (PnrIndex forwardArc : forwardArcs) {
-    if (forwardArc >= state_->graph_.routingArcs().size())
+    if (forwardArc >= state_->graph_->routingArcs().size())
       return routeTreeError("path arc is outside FrozenRoutingGraph");
     if (state_->arcSourceEndpoint(forwardArc) != current)
       return routeTreeError("path arc does not continue from endpoint");
-    const PnrIndex target = state_->graph_.routingArcs()[forwardArc].target;
+    const PnrIndex target = state_->graph_->routingArcs()[forwardArc].target;
     if (state_->lookupSlot(target))
       return routeTreeError("path leaves the tree and re-enters it");
     if (scratch_->pathMarks_[target] == generation)
@@ -770,8 +807,8 @@ RouteTreeTransaction::attachPath(PnrIndex attachmentEndpoint,
   state_->nodes_.reserve(state_->nodes_.size() +
                          static_cast<std::size_t>(addedCount) - reused);
   scratch_->deltas_.reserve(scratch_->deltas_.size() +
-                            static_cast<std::size_t>(addedCount) * 3 + 3);
-  if (llvm::Error error = state_->ensureLookupCapacity(*finalNodeCount))
+                            static_cast<std::size_t>(addedCount) * 3 + 5);
+  if (llvm::Error error = ensureLookupCapacity(*finalNodeCount))
     return error;
 
   if (emptyTree) {
@@ -838,7 +875,7 @@ llvm::Error RouteTreeTransaction::ripUpSink(PnrIndex sinkObligation) {
   }
 
   const std::size_t pruneCount = scratch_->worklist_.size();
-  scratch_->deltas_.reserve(scratch_->deltas_.size() + 4 + pruneCount * 4);
+  scratch_->deltas_.reserve(scratch_->deltas_.size() + 4 + pruneCount * 5);
   state_->freeSlots_.reserve(state_->freeSlots_.size() + pruneCount);
   unlinkSinkBinding(sinkObligation);
   for (PnrIndex slot : scratch_->worklist_) {
@@ -880,7 +917,7 @@ llvm::Error RouteTreeTransaction::ripUpSubtree(PnrIndex subtreeRootEndpoint) {
          obligation = state_->sinkBindings_[obligation].nextAtNode)
       ++bindingCount;
   scratch_->deltas_.reserve(scratch_->deltas_.size() + bindingCount +
-                            scratch_->worklist_.size() + 3);
+                            scratch_->worklist_.size() * 2 + 3);
   state_->freeSlots_.reserve(state_->freeSlots_.size() +
                              scratch_->worklist_.size());
 
@@ -903,11 +940,13 @@ llvm::Error RouteTreeTransaction::ripUpSubtree(PnrIndex subtreeRootEndpoint) {
 llvm::Error RouteTreeTransaction::ripUpWholeNet() {
   if (!state_)
     return routeTreeError("transaction is no longer active");
-  scratch_->deltas_.reserve(scratch_->deltas_.size() +
-                            state_->activeNodeCount_ +
-                            state_->boundSinkObligationCount_ + 1);
-  state_->freeSlots_.reserve(state_->freeSlots_.size() +
-                             state_->activeNodeCount_);
+  const std::size_t activeNodeCount =
+      static_cast<std::size_t>(state_->activeNodeCount_);
+  const std::size_t boundSinkCount =
+      static_cast<std::size_t>(state_->boundSinkObligationCount_);
+  scratch_->deltas_.reserve(scratch_->deltas_.size() + activeNodeCount * 2 +
+                            boundSinkCount + 1);
+  state_->freeSlots_.reserve(state_->freeSlots_.size() + activeNodeCount);
 
   for (PnrIndex obligation = 0; obligation < state_->sinkBindings_.size();
        ++obligation) {
@@ -976,12 +1015,10 @@ void RouteTreeTransaction::rollback() noexcept {
              state_->freeSlots_.back() == delta->key);
       state_->freeSlots_.pop_back();
       state_->nodes_[delta->key] = delta->node;
-      state_->insertLookup(delta->node.endpoint, delta->key);
       ++state_->activeNodeCount_;
       break;
     case RouteTreeTransactionScratch::DeltaKind::AddedNode:
       assert(state_->nodes_[delta->key].isActive());
-      state_->eraseLookup(state_->nodes_[delta->key].endpoint);
       --state_->activeNodeCount_;
       if (delta->appended) {
         assert(delta->key + 1 == state_->nodes_.size());
@@ -998,11 +1035,16 @@ void RouteTreeTransaction::rollback() noexcept {
       state_->sinkBindings_[delta->key] = {delta->value0, delta->value1,
                                            delta->value2, delta->value3};
       break;
+    case RouteTreeTransactionScratch::DeltaKind::LookupBucket:
+      state_->endpointSlots_[delta->lookupIndex] = delta->lookupEntry;
+      state_->lookupTombstoneCount_ = delta->lookupTombstoneCount;
+      break;
+    case RouteTreeTransactionScratch::DeltaKind::LookupTable:
+      state_->endpointSlots_.swap(
+          scratch_->lookupSnapshots_[delta->lookupIndex]);
+      state_->lookupTombstoneCount_ = delta->lookupTombstoneCount;
+      break;
     }
-  }
-  if (initialActiveNodeCount_ == 0) {
-    state_->endpointSlots_.clear();
-    state_->lookupTombstoneCount_ = 0;
   }
   assert(state_->nodes_.size() == initialNodeStorageSize_);
   assert(state_->activeNodeCount_ == initialActiveNodeCount_);
