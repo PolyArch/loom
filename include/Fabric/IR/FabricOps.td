@@ -571,7 +571,8 @@ def Fabric_MemOp : Fabric_Op<"mem", [
     hardware dictionary. It owns independent load/store port counts and
     operation data width. Temporal engines additionally own tag width,
     configured-slot capacity, and fixed slot-to-physical-port dispatch
-    eligibility.
+    eligibility. The registered schema is the closed canonical attribute set;
+    the operation accepts no discardable attributes.
 
     See `docs/spec-fabric-mem.md` for the full per-schedule rules.
   }];

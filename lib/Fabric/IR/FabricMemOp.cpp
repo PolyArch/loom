@@ -62,7 +62,6 @@ constexpr StringLiteral kDataWidth = "data_width";
 constexpr StringLiteral kTagWidth = "tag_width";
 constexpr StringLiteral kOperationTableSize = "operation_table_size";
 constexpr StringLiteral kDispatchEligibility = "dispatch_eligibility";
-constexpr StringLiteral kRejectedConfiguration = "workload_configuration";
 
 struct EngineInfo {
   unsigned loadCount = 0;
@@ -141,7 +140,7 @@ static ParseResult parseHardwareParameters(OpAsmParser &parser,
   return success();
 }
 
-static ParseResult parseRejectedConfiguration(OpAsmParser &parser,
+static ParseResult parseDiscardableAttributes(OpAsmParser &parser,
                                               OperationState &result) {
   DictionaryAttr dictionary;
   OptionalParseResult parsed = parser.parseOptionalAttribute(dictionary);
@@ -150,7 +149,7 @@ static ParseResult parseRejectedConfiguration(OpAsmParser &parser,
   if (failed(*parsed))
     return failure();
 
-  result.addAttribute(kRejectedConfiguration, dictionary);
+  result.addAttributes(dictionary.getValue());
   return success();
 }
 
@@ -455,20 +454,11 @@ static LogicalResult verifyDispatchEligibility(MemOp op,
   return success();
 }
 
-static LogicalResult verifyRejectedConfiguration(MemOp op) {
-  for (StringRef key : {StringRef("addr_table"), StringRef("mem_enable"),
-                        StringRef("memory_operation_table")})
-    if (op->getAttr(key))
-      return op.emitOpError("does not accept workload configuration '")
-             << key << "'";
-
-  auto dictionary = op->getAttrOfType<DictionaryAttr>(kRejectedConfiguration);
-  if (!dictionary)
-    return success();
-  if (dictionary.empty())
-    return op.emitOpError("does not accept workload configuration");
-  return op.emitOpError("does not accept workload configuration '")
-         << dictionary.begin()->getName().getValue() << "'";
+static LogicalResult verifyCanonicalAttributeSet(MemOp op) {
+  for (NamedAttribute attribute : op->getDiscardableAttrs())
+    return op.emitOpError("has non-canonical discardable attribute '")
+           << attribute.getName().getValue() << "'";
+  return success();
 }
 
 } // namespace
@@ -495,7 +485,7 @@ ParseResult MemOp::parse(OpAsmParser &parser, OperationState &result) {
   if (named) {
     if (parseFunctionType(parser, result) ||
         parseHardwareParameters(parser, result) ||
-        parseRejectedConfiguration(parser, result))
+        parseDiscardableAttributes(parser, result))
       return failure();
     return success();
   }
@@ -524,7 +514,7 @@ ParseResult MemOp::parse(OpAsmParser &parser, OperationState &result) {
   }
 
   if (parseHardwareParameters(parser, result) ||
-      parseRejectedConfiguration(parser, result) || parser.parseColon())
+      parseDiscardableAttributes(parser, result) || parser.parseColon())
     return failure();
 
   SmallVector<Type> sourceTypes;
@@ -631,6 +621,10 @@ void MemOp::print(OpAsmPrinter &printer) {
     printer << ']';
   }
 
+  SmallVector<NamedAttribute> discardableAttributes =
+      llvm::to_vector(getOperation()->getDiscardableAttrs());
+  printer.printOptionalAttrDict(discardableAttributes);
+
   if (named)
     return;
 
@@ -666,7 +660,7 @@ void MemOp::print(OpAsmPrinter &printer) {
 bool MemOp::isOptionalSymbol() { return true; }
 
 LogicalResult MemOp::verify() {
-  if (failed(verifyRejectedConfiguration(*this)))
+  if (failed(verifyCanonicalAttributeSet(*this)))
     return failure();
   if (failed(verifyInnerInputTypesProperty(getOperation(), getInputs(),
                                            getInnerInputTypes())))

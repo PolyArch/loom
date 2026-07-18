@@ -86,7 +86,7 @@ fabric.module @mem_out_of_range_eligibility(
 fabric.module @mem_reject_addr_table(
     %mgr : memref<?x!fabric.bits<32>>,
     %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>) {
-  // expected-error @+1 {{does not accept workload configuration 'addr_table'}}
+  // expected-error @+1 {{non-canonical discardable attribute 'addr_table'}}
   %data, %done = fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl)
       [{load_group_size = 1 : i32, store_group_size = 0 : i32,
         data_width = 32 : i32}]
@@ -100,7 +100,7 @@ fabric.module @mem_reject_addr_table(
 fabric.module @mem_reject_mem_enable(
     %mgr : memref<?x!fabric.bits<32>>,
     %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>) {
-  // expected-error @+1 {{does not accept workload configuration 'mem_enable'}}
+  // expected-error @+1 {{non-canonical discardable attribute 'mem_enable'}}
   %data, %done = fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl)
       [{load_group_size = 1 : i32, store_group_size = 0 : i32,
         data_width = 32 : i32}]
@@ -114,7 +114,7 @@ fabric.module @mem_reject_mem_enable(
 fabric.module @mem_reject_memory_operation_table(
     %mgr : memref<?x!fabric.bits<32>>,
     %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>) {
-  // expected-error @+1 {{does not accept workload configuration 'memory_operation_table'}}
+  // expected-error @+1 {{non-canonical discardable attribute 'memory_operation_table'}}
   %data, %done = fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl)
       [{load_group_size = 1 : i32, store_group_size = 0 : i32,
         data_width = 32 : i32}]
@@ -162,5 +162,96 @@ fabric.module @mem_spatial_dispatch(
         data_width = 32 : i32, dispatch_eligibility = [[0 : i32]]}]
       : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
       -> (!fabric.bits<32>, !fabric.bits<0>)
+  fabric.yield
+}
+
+// -----
+// Generic syntax must not bypass the canonical attribute set.
+fabric.module @mem_reject_generic_discardable(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr : !fabric.bits<32>, %ctrl : !fabric.bits<0>) {
+  // expected-error @+1 {{non-canonical discardable attribute 'service_target_selection'}}
+  %data, %done = "fabric.mem"(%mgr, %addr, %ctrl) <{
+    hw_params = [{
+      data_width = 32 : i32,
+      load_group_size = 1 : i32,
+      store_group_size = 0 : i32
+    }],
+    inner_input_types = [],
+    schedule = 0 : i32
+  }> {service_target_selection = 0 : i32}
+      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+      -> (!fabric.bits<32>, !fabric.bits<0>)
+  fabric.yield
+}
+
+// -----
+// Temporal hardware requires an explicit dispatch relation.
+fabric.module @mem_missing_dispatch_eligibility(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr : !fabric.bits_tag<32, 3>,
+    %ctrl : !fabric.bits_tag<0, 3>) {
+  // expected-error @+1 {{'hw_params' key 'dispatch_eligibility' must be an array}}
+  %data, %done = fabric.mem [temporal] mgr(%mgr) load(%addr, %ctrl)
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32,
+        data_width = 32 : i32, tag_width = 3 : i32,
+        operation_table_size = 1 : i32}]
+      : (memref<?x!fabric.bits<32>>,
+         !fabric.bits_tag<32, 3>, !fabric.bits_tag<0, 3>)
+      -> (!fabric.bits_tag<32, 3>, !fabric.bits_tag<0, 3>)
+  fabric.yield
+}
+
+// -----
+// The outer relation cardinality is exactly K.
+fabric.module @mem_dispatch_size_mismatch(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr : !fabric.bits_tag<32, 3>,
+    %ctrl : !fabric.bits_tag<0, 3>) {
+  // expected-error @+1 {{dispatch_eligibility length 1 must equal operation_table_size 2}}
+  %data, %done = fabric.mem [temporal] mgr(%mgr) load(%addr, %ctrl)
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32,
+        data_width = 32 : i32, tag_width = 3 : i32,
+        operation_table_size = 2 : i32,
+        dispatch_eligibility = [[0 : i32]]}]
+      : (memref<?x!fabric.bits<32>>,
+         !fabric.bits_tag<32, 3>, !fabric.bits_tag<0, 3>)
+      -> (!fabric.bits_tag<32, 3>, !fabric.bits_tag<0, 3>)
+  fabric.yield
+}
+
+// -----
+// Every configured slot has an explicit array domain.
+fabric.module @mem_dispatch_non_array_row(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr : !fabric.bits_tag<32, 3>,
+    %ctrl : !fabric.bits_tag<0, 3>) {
+  // expected-error @+1 {{dispatch_eligibility entry #0 must be an array}}
+  %data, %done = fabric.mem [temporal] mgr(%mgr) load(%addr, %ctrl)
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32,
+        data_width = 32 : i32, tag_width = 3 : i32,
+        operation_table_size = 1 : i32,
+        dispatch_eligibility = [0 : i32]}]
+      : (memref<?x!fabric.bits<32>>,
+         !fabric.bits_tag<32, 3>, !fabric.bits_tag<0, 3>)
+      -> (!fabric.bits_tag<32, 3>, !fabric.bits_tag<0, 3>)
+  fabric.yield
+}
+
+// -----
+// Physical port identities have one canonical signless i32 representation.
+fabric.module @mem_dispatch_non_i32_identity(
+    %mgr : memref<?x!fabric.bits<32>>,
+    %addr : !fabric.bits_tag<32, 3>,
+    %ctrl : !fabric.bits_tag<0, 3>) {
+  // expected-error @+1 {{dispatch_eligibility entry #0 port identities must be signless i32 values}}
+  %data, %done = fabric.mem [temporal] mgr(%mgr) load(%addr, %ctrl)
+      [{load_group_size = 1 : i32, store_group_size = 0 : i32,
+        data_width = 32 : i32, tag_width = 3 : i32,
+        operation_table_size = 1 : i32,
+        dispatch_eligibility = [[0 : i64]]}]
+      : (memref<?x!fabric.bits<32>>,
+         !fabric.bits_tag<32, 3>, !fabric.bits_tag<0, 3>)
+      -> (!fabric.bits_tag<32, 3>, !fabric.bits_tag<0, 3>)
   fabric.yield
 }

@@ -637,6 +637,19 @@ llvm::Error validateSwitch(const SwitchSpec &sw,
 }
 
 llvm::Error validateMem(const MemSpec &mem) {
+  if (mem.managerInputs.empty())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "ADG mem has no manager endpoints");
+  if (llvm::any_of(mem.managerInputs,
+                   [](const std::string &manager) { return manager.empty(); }))
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "ADG mem manager endpoint is empty");
+  for (const MemSubordinateOutput &subordinate : mem.subordinateOutputs)
+    if (subordinate.name.empty() || subordinate.type.empty())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG mem subordinate output capability is incomplete");
+
   unsigned physicalPortCount =
       static_cast<unsigned>(mem.loads.size() + mem.stores.size());
   if (physicalPortCount == 0)
@@ -728,6 +741,12 @@ ModuleBuilder &ModuleBuilder::addInput(std::string inputName,
   return *this;
 }
 
+ModuleBuilder &ModuleBuilder::addOutput(std::string sourceName) {
+  std::size_t useId = registerDirectUse(std::move(sourceName));
+  outputs.push_back(Output{useId});
+  return *this;
+}
+
 std::size_t ModuleBuilder::registerDirectUse(std::string sourceName) {
   directUses.push_back(DirectUse{canonicalValueName(sourceName)});
   return directUses.size() - 1;
@@ -753,7 +772,10 @@ ModuleBuilder &ModuleBuilder::addSwitch(SwitchSpec sw) {
 
 ModuleBuilder &ModuleBuilder::addMem(MemSpec mem) {
   std::vector<std::size_t> useIds;
-  useIds.push_back(registerDirectUse(mem.manager));
+  useIds.reserve(mem.managerInputs.size() + mem.loads.size() * 2 +
+                 mem.stores.size() * 3);
+  for (const std::string &manager : mem.managerInputs)
+    useIds.push_back(registerDirectUse(manager));
   for (const MemLoadPort &load : mem.loads) {
     useIds.push_back(registerDirectUse(load.address));
     useIds.push_back(registerDirectUse(load.control));
@@ -986,11 +1008,14 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
     if (llvm::Error err = validateMem(mem))
       return err;
     std::size_t expectedUseCount =
-        1 + mem.loads.size() * 2 + mem.stores.size() * 3;
+        mem.managerInputs.size() + mem.loads.size() * 2 + mem.stores.size() * 3;
     if (entry.useIds.size() != expectedUseCount)
       return llvm::createStringError(std::errc::invalid_argument,
                                      "ADG mem direct use count is invalid");
-    std::size_t useIndex = 1;
+    for (const MemSubordinateOutput &subordinate : mem.subordinateOutputs)
+      if (llvm::Error err = defineValue(subordinate.name, subordinate.type))
+        return err;
+    std::size_t useIndex = mem.managerInputs.size();
     for (std::size_t i = 0; i < mem.loads.size(); ++i) {
       std::string addressType =
           valueTypes.lookup(directUses[entry.useIds[useIndex]].sourceName);
@@ -1029,6 +1054,17 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
     }
   }
 
+  llvm::SmallVector<std::string> outputTypes;
+  outputTypes.reserve(outputs.size());
+  for (const Output &output : outputs) {
+    std::string sourceType =
+        valueTypes.lookup(directUses[output.useId].sourceName);
+    if (sourceType.empty())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "ADG module output source is unknown");
+    outputTypes.push_back(std::move(sourceType));
+  }
+
   for (const SwitchEntry &entry : switches)
     if (llvm::Error err = validateSwitch(entry.spec, valueTypes))
       return err;
@@ -1050,6 +1086,15 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
     os << valueName(inputs[i].name) << " : " << inputs[i].type;
   }
   os << ')';
+  if (!outputs.empty()) {
+    os << "\n    -> (";
+    for (std::size_t i = 0; i < outputs.size(); ++i) {
+      if (i)
+        os << ", ";
+      os << outputTypes[i];
+    }
+    os << ')';
+  }
   if (!attributes.empty()) {
     os << " attributes {";
     for (std::size_t i = 0; i < attributes.size(); ++i) {
@@ -1078,6 +1123,12 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
     std::size_t useIndex = 0;
     os << "  ";
     bool hasResult = false;
+    for (const MemSubordinateOutput &subordinate : mem.subordinateOutputs) {
+      if (hasResult)
+        os << ", ";
+      os << valueName(subordinate.name);
+      hasResult = true;
+    }
     for (std::size_t i = 0; i < mem.loads.size(); ++i) {
       if (hasResult)
         os << ", ";
@@ -1091,8 +1142,13 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
       os << "%mem" << memIndex << "_store_done" << i;
       hasResult = true;
     }
-    os << " = fabric.mem [" << scheduleName(mem.schedule) << "] mgr("
-       << valueName(plan.resolvedUses[entry.useIds[useIndex++]]) << ')';
+    os << " = fabric.mem [" << scheduleName(mem.schedule) << "] mgr(";
+    for (std::size_t i = 0; i < mem.managerInputs.size(); ++i) {
+      if (i)
+        os << ", ";
+      os << valueName(plan.resolvedUses[entry.useIds[useIndex++]]);
+    }
+    os << ')';
     if (!mem.loads.empty()) {
       os << " load(";
       for (std::size_t i = 0; i < mem.loads.size(); ++i) {
@@ -1131,7 +1187,9 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
     for (std::size_t useId : entry.useIds)
       operandTypes.push_back(valueTypes.lookup(directUses[useId].sourceName));
     llvm::SmallVector<std::string> resultTypes;
-    useIndex = 1;
+    for (const MemSubordinateOutput &subordinate : mem.subordinateOutputs)
+      resultTypes.push_back(subordinate.type);
+    useIndex = mem.managerInputs.size();
     for (const MemLoadPort &load : mem.loads) {
       (void)load;
       ++useIndex;
@@ -1174,7 +1232,22 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
   // Resolve original top-level source names before parsing generated fanouts.
   for (const TransportFanout &fanout : plan.fanouts)
     printTransportFanout(os, fanout);
-  os << "  fabric.yield\n";
+  os << "  fabric.yield";
+  if (!outputs.empty()) {
+    os << ' ';
+    for (std::size_t i = 0; i < outputs.size(); ++i) {
+      if (i)
+        os << ", ";
+      os << valueName(plan.resolvedUses[outputs[i].useId]);
+    }
+    os << " : ";
+    for (std::size_t i = 0; i < outputs.size(); ++i) {
+      if (i)
+        os << ", ";
+      os << outputTypes[i];
+    }
+  }
+  os << '\n';
   os << "}\n";
   return llvm::Error::success();
 }

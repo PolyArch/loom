@@ -8,6 +8,7 @@ using namespace loom::adg::detail;
 ModuleBuilder loom::adg::buildFullSpatialCoreAdg() {
   ModuleBuilder module("full_spatialcore_adg");
   module.addInput("mgr", "memref<?x!fabric.bits<32>>")
+      .addInput("mgr_aux", "memref<?x!fabric.bits<64>>")
       .addInput("lhs", "!fabric.bits<32>")
       .addInput("rhs", "!fabric.bits<32>")
       .addInput("addr", "!fabric.bits<32>")
@@ -46,17 +47,16 @@ ModuleBuilder loom::adg::buildFullSpatialCoreAdg() {
                  {"11", "11"},
                  2});
 
-  MemSpec spatialMem;
-  spatialMem.schedule = Schedule::Spatial;
-  spatialMem.manager = "mgr";
+  MemSpec spatialMem(Schedule::Spatial, {"mgr"}, {});
   spatialMem.loads = {{"addr", "ctrl"}};
   spatialMem.stores = {{"addr", "lhs", "ctrl"}};
   spatialMem.dataWidth = 32;
   module.addMem(std::move(spatialMem));
 
-  MemSpec temporalMem;
-  temporalMem.schedule = Schedule::Temporal;
-  temporalMem.manager = "mgr";
+  MemSpec temporalMem(
+      Schedule::Temporal, {"mgr", "mgr_aux"},
+      {{"temporal_subordinate0", "memref<?x!fabric.bits<8>>"},
+       {"temporal_subordinate1", "memref<?x!fabric.bits<16>>"}});
   temporalMem.loads = {{"addr_t", "ctrl_t"}};
   temporalMem.stores = {{"addr_t", "lhs_t", "ctrl_t"}};
   temporalMem.dataWidth = 32;
@@ -64,6 +64,7 @@ ModuleBuilder loom::adg::buildFullSpatialCoreAdg() {
   temporalMem.temporalOperationTableSize = 2;
   temporalMem.temporalDispatchEligibility = {{0, 1}, {0, 1}};
   module.addMem(std::move(temporalMem));
+  module.addOutput("temporal_subordinate1");
 
   std::vector<BodyResultSpec> taggedResults = {
       BodyResultSpec{"tagged", "!fabric.bits_tag<32, 4>"}};

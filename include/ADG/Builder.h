@@ -107,9 +107,20 @@ struct MemStorePort {
   std::string control;
 };
 
+struct MemSubordinateOutput {
+  std::string name;
+  std::string type;
+};
+
 struct MemSpec {
-  Schedule schedule = Schedule::Spatial;
-  std::string manager;
+  MemSpec(Schedule schedule, std::vector<std::string> managerInputs,
+          std::vector<MemSubordinateOutput> subordinateOutputs)
+      : schedule(schedule), managerInputs(std::move(managerInputs)),
+        subordinateOutputs(std::move(subordinateOutputs)) {}
+
+  Schedule schedule;
+  std::vector<std::string> managerInputs;
+  std::vector<MemSubordinateOutput> subordinateOutputs;
   std::vector<MemLoadPort> loads;
   std::vector<MemStorePort> stores;
   unsigned dataWidth = 0;
@@ -123,6 +134,7 @@ public:
   explicit ModuleBuilder(std::string name);
 
   ModuleBuilder &addInput(std::string name, std::string type);
+  ModuleBuilder &addOutput(std::string sourceName);
   ModuleBuilder &addPe(PeSpec pe);
   ModuleBuilder &addSwitch(SwitchSpec sw);
   ModuleBuilder &addMem(MemSpec mem);
@@ -152,6 +164,10 @@ private:
   struct Input {
     std::string name;
     std::string type;
+  };
+
+  struct Output {
+    std::size_t useId;
   };
 
   struct Attribute {
@@ -188,6 +204,7 @@ private:
 
   std::string name;
   std::vector<Input> inputs;
+  std::vector<Output> outputs;
   std::vector<Attribute> attributes;
   std::vector<DirectUse> directUses;
   std::vector<PeEntry> pes;

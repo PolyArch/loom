@@ -124,8 +124,9 @@ attributes or a second memory type family:
 
 * every `fabric.module` `memref` input is a manager/requester capability;
 * every `fabric.module` `memref` result is a subordinate/target capability;
-* the first `memref` operand of anonymous `fabric.mem` is manager-side, and
-  its optional first `memref` result is subordinate-side;
+* all `memref` operands of anonymous `fabric.mem`, in signature order, are
+  manager-side imports, and all `memref` results, in signature order, are
+  subordinate-side exports;
 * `fabric.instantiate` preserves the target signature roles mechanically:
   target `memref` inputs become manager-side operands and target `memref`
   results become subordinate-side results.
@@ -138,16 +139,17 @@ attached to an SSA memref value. Legal connections include:
 * forwarding a subordinate provider result to a module subordinate output;
 * using the same imported or provided capability at multiple endpoints.
 
-The provider-to-requester case is ordinary memory-service composition. A
-`fabric.mem` `memref_sub` result may feed another `fabric.mem` `memref_mgr`,
-and an equivalent `fabric.instantiate` result may feed a manager operand.
+The provider-to-requester case is ordinary memory-service composition. Any
+`fabric.mem` subordinate result may feed any `fabric.mem` manager operand, and
+an equivalent `fabric.instantiate` result may feed a manager operand.
 
 The module export invariant is narrower: each yielded module `memref` result
-must originate from an anonymous `fabric.mem` optional `memref_sub` result or
-from a `memref` result of `fabric.instantiate`. Directly yielding a module
-manager input is invalid because no subordinate provider was introduced.
-The verifier does not impose token linearity or infer service capacity from
-SSA use count.
+must originate from any signature-derived subordinate result of an anonymous
+`fabric.mem` or from a `memref` result of `fabric.instantiate`. Export
+provenance is not restricted to the first subordinate result. Directly
+yielding a module manager input is invalid because no subordinate provider was
+introduced. The verifier does not impose token linearity or infer service
+capacity from SSA use count.
 
 ## Physical Connection Type Compatibility
 
@@ -323,14 +325,14 @@ artifact that claims visualization evidence.
 * Every direct module-body `bits` or `bits_tag` transport source has at
   most one direct module-body consuming use. `fabric.yield` counts as a
   consumer; `memref` values and nested PE/FU region values are excluded.
-* Memory roles are endpoint-relative. Module inputs and internal manager
-  operands are requester endpoints; `fabric.mem` optional memref results,
+* Memory roles are endpoint-relative. Module inputs and all `fabric.mem`
+  memref operands are requester endpoints; all `fabric.mem` memref results,
   qualifying `fabric.instantiate` results, and module results are provider
   endpoints.
 * A subordinate provider result may connect to a manager operand and may also
   be forwarded to a module output.
-* Each yielded module `memref` result must originate from an anonymous
-  `fabric.mem` optional memref result or a memref result of
+* Each yielded module `memref` result must originate from any subordinate
+  result of an anonymous `fabric.mem` or a memref result of
   `fabric.instantiate`. Direct module-input passthrough is rejected.
 * Imported and provided memory capabilities may have multiple uses; no token
   linearity check is applied to `memref` values.

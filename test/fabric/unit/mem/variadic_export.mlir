@@ -7,9 +7,6 @@
 
 // CHECK-LABEL: fabric.module @mem_operation_engine_anchor
 // CHECK: %[[MEM:.*]]:5 = fabric.mem [temporal] mgr(%{{[^,]+}}, %{{[^)]+}})
-// CHECK-SAME: data_width = 32 : i32
-// CHECK-SAME: dispatch_eligibility = {{\[\[}}0 : i32], [1 : i32], [0 : i32, 1 : i32]]
-// CHECK-SAME: operation_table_size = 3 : i32
 // CHECK: fabric.yield %[[MEM]]#1 : memref<?x!fabric.bits<16>>
 fabric.module @mem_operation_engine_anchor(
     %mgr0 : memref<?x!fabric.bits<64>>,

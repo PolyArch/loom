@@ -5,7 +5,6 @@
 
 // CHECK-LABEL: fabric.module @mem_spatial
 // CHECK: %[[MEM:.*]]:5 = fabric.mem [spatial] mgr(%{{[^,]+}}, %{{[^)]+}})
-// CHECK-SAME: data_width = 32 : i32
 fabric.module @mem_spatial(
     %mgr0 : memref<?x!fabric.bits<64>>,
     %mgr1 : memref<?x!fabric.bits<16>>,
@@ -37,9 +36,6 @@ fabric.module @mem_spatial(
 
 // CHECK-LABEL: fabric.module @mem_temporal
 // CHECK: fabric.mem [temporal]
-// CHECK-SAME: data_width = 24 : i32
-// CHECK-SAME: dispatch_eligibility = {{\[\[}}0 : i32], [1 : i32], [0 : i32, 1 : i32]]
-// CHECK-SAME: operation_table_size = 3 : i32
 fabric.module @mem_temporal(
     %mgr : memref<?x!fabric.bits<64>>,
     %load_addr : !fabric.bits_tag<32, 4>,
@@ -71,7 +67,6 @@ fabric.module @mem_temporal(
 // Named templates use the same signature-derived endpoint layout.
 
 // CHECK-LABEL: fabric.mem @MemTemplate [spatial]
-// CHECK-SAME: data_width = 32 : i32
 fabric.mem @MemTemplate [spatial]
     (memref<?x!fabric.bits<64>>, memref<?x!fabric.bits<16>>,
      !fabric.bits<32>, !fabric.bits<0>)

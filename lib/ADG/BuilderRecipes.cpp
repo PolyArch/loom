@@ -1619,9 +1619,7 @@ ModuleBuilder loom::adg::buildMinimalSpatialAdg() {
                               {"!fabric.bits<32>", "!fabric.bits<32>"},
                               {"11", "11"},
                               0});
-  MemSpec mem;
-  mem.schedule = Schedule::Spatial;
-  mem.manager = "mgr";
+  MemSpec mem(Schedule::Spatial, {"mgr"}, {});
   mem.loads = {{"addr", "ctrl"}};
   mem.dataWidth = 32;
   module.addMem(std::move(mem));
@@ -1652,9 +1650,7 @@ ModuleBuilder loom::adg::buildMinimalTemporalAdg() {
                  {"11", "11"},
                  1});
 
-  MemSpec mem;
-  mem.schedule = Schedule::Temporal;
-  mem.manager = "mgr";
+  MemSpec mem(Schedule::Temporal, {"mgr"}, {});
   mem.loads = {{"addr", "ctrl"}};
   mem.dataWidth = 32;
   mem.temporalTagWidth = 4;

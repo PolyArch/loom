@@ -188,8 +188,13 @@ not subject to the point-to-point transport-use restriction applied to
 
 ## Rejected State
 
-Canonical `fabric.mem` has no workload configuration clause. The parser and
-verifier reject:
+Canonical `fabric.mem` has a closed attribute set defined by its registered op
+schema and this hardware ABI. It accepts no discardable attributes. Generic
+operation syntax therefore cannot attach workload, local-service, dispatch
+selection, or other unowned state. The custom printer preserves such invalid
+attributes for diagnostics rather than silently dropping them.
+
+The parser and verifier reject legacy workload configuration including:
 
 * `addr_table`;
 * `mem_enable`;
