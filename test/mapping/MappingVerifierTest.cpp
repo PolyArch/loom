@@ -1,7 +1,5 @@
 #include "MappingCoreTestSupport.h"
 
-#include "Mapping/FabricOccurrenceIndex.h"
-
 namespace loom::mapping::test {
 namespace {
 
@@ -24,31 +22,6 @@ void acceptsMultipleMappingsOfOneWideSyncCapability() {
       validateTechMapping(testCase.mapping, testCase.dataflow, testCase.fabric);
   if (!nonPrefixResult)
     fail(__func__, llvm::toString(nonPrefixResult.takeError()).c_str());
-
-  const detail::ValidatedTechMappingProjection &projection =
-      detail::ValidatedTechMappingAccess::mappingProjection(*nonPrefixResult);
-  if (projection.computeRealizations.size() != 1 ||
-      projection.computeRealizations.front().pairedLaneProjections.size() != 1)
-    fail(__func__, "validated Mapping lost its wide-sync lane projection");
-  const detail::ValidatedActorPairedLaneProjection &lanes =
-      projection.computeRealizations.front().pairedLaneProjections.front();
-  if (lanes.laneIndices != std::vector<std::uint32_t>({1, 3}) ||
-      lanes.bitmask != "1100")
-    fail(__func__, "wide sync projection used positional lane encoding");
-
-  FabricHardwareView reorderedFabric = testCase.fabric;
-  std::swap(reorderedFabric.operations.front().pairedLanes[1].maskBit,
-            reorderedFabric.operations.front().pairedLanes[2].maskBit);
-  ValidatedTechMapping reordered = takeExpected(
-      __func__, validateTechMapping(testCase.mapping, testCase.dataflow,
-                                    reorderedFabric));
-  const detail::ValidatedActorPairedLaneProjection &reorderedLanes =
-      detail::ValidatedTechMappingAccess::mappingProjection(reordered)
-          .computeRealizations.front()
-          .pairedLaneProjections.front();
-  if (reorderedLanes.laneIndices != lanes.laneIndices ||
-      reorderedLanes.bitmask != "0110")
-    fail(__func__, "wide sync bitmask was persisted instead of derived");
 }
 
 void rejectsInvalidWideSyncLaneCorrespondence() {

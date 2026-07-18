@@ -7,10 +7,6 @@ add_executable(loom-mapping-core-test
   MappingVerifierTest.cpp
 )
 
-target_include_directories(loom-mapping-core-test PRIVATE
-  ${LOOM_SOURCE_DIR}/lib
-)
-
 target_link_libraries(loom-mapping-core-test PRIVATE
   LoomMapping
   LoomPnR
