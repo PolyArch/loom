@@ -2,11 +2,16 @@
 // RUN: FileCheck %s --check-prefix=FLOAT < %t.float.json
 // RUN: loom-dfg-sim %s --graph wide_bits --arg 0=78876037339089764361607826927 --output %t.wide.json
 // RUN: FileCheck %s --check-prefix=WIDE < %t.wide.json
+// RUN: loom-dfg-sim %s --graph f80_bits --arg 0=1 --output %t.f80.json
+// RUN: FileCheck %s --check-prefix=F80 < %t.f80.json
 // RUN: loom-dfg-sim %s --graph vector_add --arg 0=513 --arg 1=1027 --output %t.add.json
 // RUN: FileCheck %s --check-prefix=ADD < %t.add.json
 // RUN: loom-dfg-sim %s --graph unsupported_vector_add \
 // RUN:   --arg 0=1 --arg 1=2 --output %t.unsupported-add.json
 // RUN: FileCheck %s --check-prefix=UNSUPPORTED-ADD < %t.unsupported-add.json
+// RUN: loom-dfg-sim %s --graph unsupported_f80_add \
+// RUN:   --arg 0=0 --arg 1=0 --output %t.unsupported-f80.json
+// RUN: FileCheck %s --check-prefix=UNSUPPORTED-F80 < %t.unsupported-f80.json
 
 // FLOAT-DAG: "graph": "float_bits"
 // FLOAT-DAG: "status": "pass"
@@ -18,7 +23,13 @@
 // WIDE-DAG: "status": "pass"
 // WIDE-DAG: "dataflow.unpack": 1
 // WIDE-DAG: "dataflow.pack": 1
-// WIDE-DAG: "i96:-352125175174573231936123409"
+// WIDE-DAG: "i96:78876037339089764361607826927"
+
+// F80-DAG: "graph": "f80_bits"
+// F80-DAG: "status": "pass"
+// F80-DAG: "dataflow.unpack": 1
+// F80-DAG: "dataflow.pack": 1
+// F80-DAG: "i80:1"
 
 // ADD-DAG: "graph": "vector_add"
 // ADD-DAG: "status": "pass"
@@ -27,7 +38,11 @@
 
 // UNSUPPORTED-ADD-DAG: "event_count": 0
 // UNSUPPORTED-ADD-DAG: "status": "unsupported"
-// UNSUPPORTED-ADD-DAG: "unsupported op: arith.addi"
+// UNSUPPORTED-ADD-DAG: "unsupported op: arith.addi: result element type i96 has width 96; scalar primitive evaluator supports integer lane widths from 1 to 64"
+
+// UNSUPPORTED-F80-DAG: "event_count": 0
+// UNSUPPORTED-F80-DAG: "status": "unsupported"
+// UNSUPPORTED-F80-DAG: "unsupported op: arith.addf: result element type f80 has 80-bit floating-point semantics not exactly representable by the scalar evaluator's f64 lane model"
 
 module {
   dataflow.graph private @float_bits(
@@ -50,6 +65,17 @@ module {
     %published:2 = dataflow.sync %start, %roundtrip
         : (none, i96) -> (none, i96)
     dataflow.graph.return %published#0, %published#1 : none, i96
+  }
+
+  dataflow.graph private @f80_bits(
+      %start: none, %packed: i80) -> i80
+      attributes {input_segments = array<i32: 1, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %vector = dataflow.unpack %packed : i80 -> vector<1xf80>
+    %roundtrip = dataflow.pack %vector : vector<1xf80> -> i80
+    %published:2 = dataflow.sync %start, %roundtrip
+        : (none, i80) -> (none, i80)
+    dataflow.graph.return %published#0, %published#1 : none, i80
   }
 
   dataflow.graph private @vector_add(
@@ -76,5 +102,18 @@ module {
         : (none, vector<2xi96>) -> (none, vector<2xi96>)
     dataflow.graph.return %published#0, %published#1
         : none, vector<2xi96>
+  }
+
+  dataflow.graph private @unsupported_f80_add(
+      %start: none, %packed_lhs: i80, %packed_rhs: i80) -> vector<1xf80>
+      attributes {input_segments = array<i32: 2, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %lhs = dataflow.unpack %packed_lhs : i80 -> vector<1xf80>
+    %rhs = dataflow.unpack %packed_rhs : i80 -> vector<1xf80>
+    %sum = arith.addf %lhs, %rhs : vector<1xf80>
+    %published:2 = dataflow.sync %start, %sum
+        : (none, vector<1xf80>) -> (none, vector<1xf80>)
+    dataflow.graph.return %published#0, %published#1
+        : none, vector<1xf80>
   }
 }

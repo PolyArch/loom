@@ -44,6 +44,7 @@ enum class TokenKind { None, Integer, Float, Bool, Vector, Pointer };
 
 struct Token {
   TokenKind kind = TokenKind::None;
+  // Index storage and the schema 2.2 projection for integers up to 64 bits.
   std::int64_t intValue = 0;
   double floatValue = 0.0;
   bool boolValue = false;
@@ -105,6 +106,11 @@ struct SimulatorState {
   std::uint64_t structuredLoopIterations = 0;
   std::uint64_t maxStructuredLoopIterations = 0;
   std::uint64_t actorMutationEpoch = 0;
+};
+
+struct UnsupportedOperation {
+  std::string label;
+  std::string reason;
 };
 
 Token noneToken();
@@ -180,13 +186,15 @@ std::optional<Token> evaluatePointerSelect(mlir::LLVM::SelectOp op,
                                            const Token &falseValue,
                                            SimulatorState &state);
 bool fireActorOperation(mlir::Operation *op, SimulatorState &state);
-std::optional<std::string> unsupportedActorOperation(mlir::Operation *op);
+std::optional<UnsupportedOperation>
+unsupportedActorOperation(mlir::Operation *op);
 
 bool isStructuredOperation(mlir::Operation *op);
 bool hasPendingOrderedStructuredFire(mlir::Operation *op,
                                      const SimulatorState &state);
 bool fireStructuredOperation(mlir::Operation *op, SimulatorState &state);
-std::optional<std::string> unsupportedStructuredOperation(mlir::Operation *op);
+std::optional<UnsupportedOperation>
+unsupportedStructuredOperation(mlir::Operation *op);
 
 std::string unsupportedOperationLabel(mlir::Operation *op);
 

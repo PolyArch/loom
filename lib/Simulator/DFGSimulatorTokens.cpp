@@ -67,9 +67,12 @@ std::string tokenToString(const Token &token, mlir::Type type) {
   if (token.kind == TokenKind::Integer) {
     if (mlir::isa<mlir::IndexType>(type))
       return typePrefix(type) + ":" + std::to_string(token.intValue);
-    llvm::APInt bits = llvm::cantFail(tokenBitPattern(token, type));
+    auto integer = mlir::cast<mlir::IntegerType>(type);
+    if (integer.getWidth() <= 64)
+      return typePrefix(type) + ":" + std::to_string(token.intValue);
+    llvm::APInt bits = llvm::cantFail(tokenBitPattern(token, integer));
     llvm::SmallString<64> value;
-    bits.toString(value, 10, /*Signed=*/true);
+    bits.toString(value, 10, /*Signed=*/false);
     return typePrefix(type) + ":" + value.str().str();
   }
   if (token.kind == TokenKind::Vector) {
@@ -173,6 +176,10 @@ llvm::Expected<Token> tokenFromBitPattern(const llvm::APInt &bits,
       return token;
     }
     token.kind = TokenKind::Integer;
+    if (integer.getWidth() < 64)
+      token.intValue = static_cast<std::int64_t>(bits.getZExtValue());
+    else if (integer.getWidth() == 64)
+      token.intValue = bits.getSExtValue();
     return token;
   }
   if (auto floating = mlir::dyn_cast<mlir::FloatType>(type)) {
@@ -193,8 +200,14 @@ llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr) {
   if (mlir::isa<mlir::NoneType>(attr.getType()))
     return noneToken();
   if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr)) {
-    if (auto intType = mlir::dyn_cast<mlir::IntegerType>(intAttr.getType()))
-      return tokenFromBitPattern(intAttr.getValue(), intType);
+    if (auto intType = mlir::dyn_cast<mlir::IntegerType>(intAttr.getType())) {
+      auto token = tokenFromBitPattern(intAttr.getValue(), intType);
+      if (!token)
+        return token.takeError();
+      if (intType.getWidth() <= 64)
+        token->intValue = intAttr.getValue().getSExtValue();
+      return *token;
+    }
     return integerValueToken(intAttr.getValue().getSExtValue());
   }
   if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(attr))
@@ -260,7 +273,12 @@ llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type) {
     auto bits = parseIntegerBitPattern(raw, intType.getWidth());
     if (!bits)
       return bits.takeError();
-    return tokenFromBitPattern(*bits, type);
+    auto token = tokenFromBitPattern(*bits, type);
+    if (!token)
+      return token.takeError();
+    if (intType.getWidth() <= 64 && raw.starts_with("-"))
+      token->intValue = bits->getSExtValue();
+    return *token;
   }
   if (mlir::isa<mlir::IndexType>(type)) {
     std::int64_t value = 0;

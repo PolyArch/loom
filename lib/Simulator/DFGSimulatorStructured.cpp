@@ -829,22 +829,31 @@ static bool executeStructuredForBodyOp(mlir::Operation *op,
   return false;
 }
 
-static std::optional<std::string>
-unsupportedStructuredIfOperation(mlir::scf::IfOp op);
+using UnsupportedResult = std::optional<UnsupportedOperation>;
 
-static std::optional<std::string>
+static UnsupportedOperation unsupportedDiagnostic(llvm::StringRef label) {
+  return UnsupportedOperation{label.str(), ""};
+}
+
+static UnsupportedOperation unsupportedDiagnostic(mlir::Operation *op,
+                                                  std::string reason = "") {
+  return UnsupportedOperation{unsupportedOperationLabel(op), std::move(reason)};
+}
+
+static UnsupportedResult unsupportedStructuredIfOperation(mlir::scf::IfOp op);
+
+static UnsupportedResult
 unsupportedStructuredIndexSwitchOperation(mlir::scf::IndexSwitchOp op);
 
-static std::optional<std::string>
-unsupportedStructuredForOperation(mlir::scf::ForOp op);
+static UnsupportedResult unsupportedStructuredForOperation(mlir::scf::ForOp op);
 
-static std::optional<std::string>
+static UnsupportedResult
 unsupportedStructuredWhileOperation(mlir::scf::WhileOp op);
 
-static std::optional<std::string>
+static UnsupportedResult
 unsupportedStructuredForallOperation(mlir::scf::ForallOp op);
 
-static std::optional<std::string>
+static UnsupportedResult
 unsupportedStructuredBodyOperation(mlir::Operation *op) {
   if (mlir::isa<mlir::arith::ConstantOp>(op))
     return std::nullopt;
@@ -861,17 +870,17 @@ unsupportedStructuredBodyOperation(mlir::Operation *op) {
   if (auto cast = mlir::dyn_cast<mlir::UnrealizedConversionCastOp>(op)) {
     if (isSupportedStructuredCast(cast))
       return std::nullopt;
-    return unsupportedOperationLabel(op);
+    return unsupportedDiagnostic(op);
   }
   if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(op)) {
     if (isSupportedPointerICmp(icmp))
       return std::nullopt;
-    return unsupportedOperationLabel(op);
+    return unsupportedDiagnostic(op);
   }
   if (auto call = mlir::dyn_cast<mlir::LLVM::CallOp>(op)) {
     if (isSupportedLLVMCall(call))
       return std::nullopt;
-    return unsupportedOperationLabel(op);
+    return unsupportedDiagnostic(op);
   }
   if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                 dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
@@ -881,108 +890,107 @@ unsupportedStructuredBodyOperation(mlir::Operation *op) {
   if (op->getNumResults() == 1 &&
       isSupportedPrimitiveOperation(primitiveOperationName(op))) {
     if (llvm::Error error = validatePrimitiveTokenTypes(op, op->getResult(0))) {
-      llvm::consumeError(std::move(error));
-      return unsupportedOperationLabel(op);
+      return unsupportedDiagnostic(op, llvm::toString(std::move(error)));
     }
     return std::nullopt;
   }
-  return unsupportedOperationLabel(op);
+  return unsupportedDiagnostic(op);
 }
 
-static std::optional<std::string>
+static UnsupportedResult
 unsupportedStructuredBodyOperations(mlir::Block *block) {
   for (mlir::Operation &bodyOp : block->without_terminator())
-    if (auto name = unsupportedStructuredBodyOperation(&bodyOp))
-      return name;
+    if (auto diagnostic = unsupportedStructuredBodyOperation(&bodyOp))
+      return diagnostic;
   return std::nullopt;
 }
 
-static std::optional<std::string>
+static UnsupportedResult
 unsupportedStructuredYieldRegion(mlir::Operation *parent, mlir::Block *block,
                                  llvm::StringRef opName) {
   if (!block)
     return parent->getNumResults() == 0
-               ? std::nullopt
-               : std::optional<std::string>(opName.str());
+               ? UnsupportedResult{}
+               : UnsupportedResult{unsupportedDiagnostic(opName)};
   auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(block->getTerminator());
   if (!yield || yield.getNumOperands() != parent->getNumResults())
-    return "scf.yield";
+    return unsupportedDiagnostic("scf.yield");
   return unsupportedStructuredBodyOperations(block);
 }
 
-static std::optional<std::string>
-unsupportedStructuredIfOperation(mlir::scf::IfOp op) {
+static UnsupportedResult unsupportedStructuredIfOperation(mlir::scf::IfOp op) {
   if (op.getThenRegion().empty())
-    return "scf.if";
-  if (auto name = unsupportedStructuredYieldRegion(op.getOperation(),
-                                                   op.thenBlock(), "scf.if"))
-    return name;
+    return unsupportedDiagnostic("scf.if");
+  if (auto diagnostic = unsupportedStructuredYieldRegion(
+          op.getOperation(), op.thenBlock(), "scf.if"))
+    return diagnostic;
   if (op.getElseRegion().empty())
-    return op->getNumResults() == 0 ? std::nullopt
-                                    : std::optional<std::string>("scf.if");
+    return op->getNumResults() == 0
+               ? UnsupportedResult{}
+               : UnsupportedResult{unsupportedDiagnostic("scf.if")};
   return unsupportedStructuredYieldRegion(op.getOperation(), op.elseBlock(),
                                           "scf.if");
 }
 
-static std::optional<std::string>
+static UnsupportedResult
 unsupportedStructuredIndexSwitchOperation(mlir::scf::IndexSwitchOp op) {
   if (op.getDefaultRegion().empty())
-    return "scf.index_switch";
-  if (auto name = unsupportedStructuredYieldRegion(
+    return unsupportedDiagnostic("scf.index_switch");
+  if (auto diagnostic = unsupportedStructuredYieldRegion(
           op.getOperation(), &op.getDefaultBlock(), "scf.index_switch"))
-    return name;
+    return diagnostic;
   for (unsigned index = 0, end = op.getNumCases(); index < end; ++index)
-    if (auto name = unsupportedStructuredYieldRegion(
+    if (auto diagnostic = unsupportedStructuredYieldRegion(
             op.getOperation(), &op.getCaseBlock(index), "scf.index_switch"))
-      return name;
+      return diagnostic;
   return std::nullopt;
 }
 
-static std::optional<std::string>
+static UnsupportedResult
 unsupportedStructuredForOperation(mlir::scf::ForOp op) {
   auto yield =
       mlir::dyn_cast<mlir::scf::YieldOp>(op.getBody()->getTerminator());
   if (!yield)
-    return "scf.for";
+    return unsupportedDiagnostic("scf.for");
   if (yield.getNumOperands() != op->getNumResults())
-    return "scf.yield";
+    return unsupportedDiagnostic("scf.yield");
   return unsupportedStructuredBodyOperations(op.getBody());
 }
 
-static std::optional<std::string>
+static UnsupportedResult
 unsupportedStructuredWhileBody(mlir::Block *block,
                                llvm::StringRef terminatorName) {
   if (!block)
-    return "scf.while";
+    return unsupportedDiagnostic("scf.while");
   mlir::Operation *terminator = block->getTerminator();
   if (!terminator || terminator->getName().getStringRef() != terminatorName)
-    return terminatorName.str();
+    return unsupportedDiagnostic(terminatorName);
   return unsupportedStructuredBodyOperations(block);
 }
 
-static std::optional<std::string>
+static UnsupportedResult
 unsupportedStructuredWhileOperation(mlir::scf::WhileOp op) {
   if (!op.getBeforeBody() || !op.getAfterBody())
-    return "scf.while";
+    return unsupportedDiagnostic("scf.while");
   auto condition = op.getConditionOp();
   if (!condition || condition.getArgs().size() != op->getNumResults())
-    return "scf.condition";
+    return unsupportedDiagnostic("scf.condition");
   auto yield = op.getYieldOp();
   if (!yield || yield.getResults().size() != op->getNumOperands())
-    return "scf.yield";
-  if (auto name =
+    return unsupportedDiagnostic("scf.yield");
+  if (auto diagnostic =
           unsupportedStructuredWhileBody(op.getBeforeBody(), "scf.condition"))
-    return name;
+    return diagnostic;
   return unsupportedStructuredWhileBody(op.getAfterBody(), "scf.yield");
 }
 
-static std::optional<std::string>
+static UnsupportedResult
 unsupportedStructuredForallOperation(mlir::scf::ForallOp op) {
   if (!op.getOutputs().empty() || op->getNumResults() != 0)
-    return "scf.forall";
+    return unsupportedDiagnostic("scf.forall");
   auto inParallel = op.getTerminator();
   if (inParallel.getRegion().empty() || !inParallel.getRegion().front().empty())
-    return "scf.forall.in_parallel";
+    return unsupportedDiagnostic("scf.forall.in_parallel");
   return unsupportedStructuredBodyOperations(op.getBody());
 }
 
@@ -1487,15 +1495,16 @@ bool fireStructuredOperation(mlir::Operation *op, SimulatorState &state) {
       .Default([](mlir::Operation *) { return false; });
 }
 
-std::optional<std::string> unsupportedStructuredOperation(mlir::Operation *op) {
-  return llvm::TypeSwitch<mlir::Operation *, std::optional<std::string>>(op)
+std::optional<UnsupportedOperation>
+unsupportedStructuredOperation(mlir::Operation *op) {
+  return llvm::TypeSwitch<mlir::Operation *, UnsupportedResult>(op)
       .Case<mlir::scf::IfOp>(unsupportedStructuredIfOperation)
       .Case<mlir::scf::IndexSwitchOp>(unsupportedStructuredIndexSwitchOperation)
       .Case<mlir::scf::ForOp>(unsupportedStructuredForOperation)
       .Case<mlir::scf::WhileOp>(unsupportedStructuredWhileOperation)
       .Case<mlir::scf::ForallOp>(unsupportedStructuredForallOperation)
       .Default([](mlir::Operation *unknown) {
-        return std::optional<std::string>(unsupportedOperationLabel(unknown));
+        return UnsupportedResult{unsupportedDiagnostic(unknown)};
       });
 }
 

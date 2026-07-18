@@ -17,7 +17,6 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
-#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
@@ -30,6 +29,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <system_error>
 
@@ -666,10 +666,14 @@ llvm::Expected<Token> tokenFromPrimitiveValue(const PrimitiveValue &value,
       return llvm::createStringError(
           std::errc::invalid_argument,
           "integer primitive result has incompatible value kind");
-    return tokenFromBitPattern(
+    auto token = tokenFromBitPattern(
         llvm::APInt(*width, static_cast<std::uint64_t>(integer),
                     /*isSigned=*/true, /*implicitTrunc=*/true),
         intType);
+    if (!token)
+      return token.takeError();
+    token->intValue = integer;
+    return *token;
   }
   if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
     if (value.kind != PrimitiveValueKind::Float)
@@ -779,7 +783,8 @@ std::string unsupportedOperationLabel(mlir::Operation *op) {
   return op->getName().getStringRef().str();
 }
 
-static std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
+static std::optional<UnsupportedOperation>
+unsupportedOperation(mlir::Operation *op) {
   if (isSupportedNonEvent(op))
     return std::nullopt;
   if (isStructuredOperation(op))
@@ -1355,19 +1360,19 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   if (llvm::Error err = propagateMemoryAliases(entry, state))
     return std::move(err);
 
-  llvm::StringSet<> unsupported;
+  std::set<std::pair<std::string, std::string>> unsupported;
   for (mlir::Operation &op : entry.getOperations()) {
-    if (auto name = unsupportedOperation(&op))
-      unsupported.insert(*name);
+    if (auto diagnostic = unsupportedOperation(&op))
+      unsupported.emplace(diagnostic->label, diagnostic->reason);
   }
   if (!unsupported.empty()) {
     report.status = "unsupported";
-    llvm::SmallVector<llvm::StringRef> labels;
-    for (const auto &entry : unsupported)
-      labels.push_back(entry.getKey());
-    llvm::sort(labels);
-    for (llvm::StringRef label : labels)
-      report.diagnostics.push_back("unsupported op: " + label.str());
+    for (const auto &[label, reason] : unsupported) {
+      std::string diagnostic = "unsupported op: " + label;
+      if (!reason.empty())
+        diagnostic += ": " + reason;
+      report.diagnostics.push_back(std::move(diagnostic));
+    }
     return report;
   }
 

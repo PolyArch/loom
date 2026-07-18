@@ -3,8 +3,10 @@
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/FormatVariadic.h"
 
 #include <system_error>
 
@@ -800,16 +802,28 @@ static llvm::Error validatePrimitiveElementType(mlir::Type type,
     if (integer.getWidth() == 0 || integer.getWidth() > 64)
       return llvm::createStringError(
           std::errc::not_supported,
-          "%s integer element width is outside scalar primitive support",
-          role.str().c_str());
+          "%s element type i%u has width %u; scalar primitive evaluator "
+          "supports integer lane widths from 1 to 64",
+          role.str().c_str(), integer.getWidth(), integer.getWidth());
     return llvm::Error::success();
   }
-  if (mlir::isa<mlir::FloatType>(type))
+  if (auto floating = mlir::dyn_cast<mlir::FloatType>(type)) {
+    if (!llvm::APFloat::isRepresentableBy(floating.getFloatSemantics(),
+                                          llvm::APFloat::IEEEdouble())) {
+      std::string typeName = llvm::formatv("{0}", floating).str();
+      return llvm::createStringError(
+          std::errc::not_supported,
+          "%s element type %s has %u-bit floating-point semantics not exactly "
+          "representable by the scalar evaluator's f64 lane model",
+          role.str().c_str(), typeName.c_str(), floating.getWidth());
+    }
     return llvm::Error::success();
+  }
+  std::string typeName = llvm::formatv("{0}", type).str();
   return llvm::createStringError(
       std::errc::not_supported,
-      "%s element type has no scalar primitive representation",
-      role.str().c_str());
+      "%s element type %s has no scalar primitive representation",
+      role.str().c_str(), typeName.c_str());
 }
 
 static llvm::Expected<mlir::VectorType>
@@ -1169,24 +1183,25 @@ bool fireActorOperation(mlir::Operation *op, SimulatorState &state) {
       });
 }
 
-std::optional<std::string> unsupportedActorOperation(mlir::Operation *op) {
+std::optional<UnsupportedOperation>
+unsupportedActorOperation(mlir::Operation *op) {
   if (op->getNumResults() == 1 &&
       isSupportedPrimitiveOperation(primitiveOperationName(op))) {
     if (llvm::Error error = validatePrimitiveTokenTypes(op, op->getResult(0))) {
-      llvm::consumeError(std::move(error));
-      return unsupportedOperationLabel(op);
+      return UnsupportedOperation{unsupportedOperationLabel(op),
+                                  llvm::toString(std::move(error))};
     }
     return std::nullopt;
   }
   if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(op)) {
     if (isSupportedPointerICmp(icmp))
       return std::nullopt;
-    return unsupportedOperationLabel(op);
+    return UnsupportedOperation{unsupportedOperationLabel(op), ""};
   }
   if (auto call = mlir::dyn_cast<mlir::LLVM::CallOp>(op)) {
     if (isSupportedLLVMCall(call))
       return std::nullopt;
-    return unsupportedOperationLabel(op);
+    return UnsupportedOperation{unsupportedOperationLabel(op), ""};
   }
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
                 dataflow::InvariantOp, dataflow::GateOp, dataflow::SyncOp,
@@ -1198,7 +1213,7 @@ std::optional<std::string> unsupportedActorOperation(mlir::Operation *op) {
                 mlir::LLVM::StoreOp, mlir::LLVM::MemcpyOp,
                 mlir::arith::ConstantOp, mlir::ub::PoisonOp>(op))
     return std::nullopt;
-  return unsupportedOperationLabel(op);
+  return UnsupportedOperation{unsupportedOperationLabel(op), ""};
 }
 
 } // namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail

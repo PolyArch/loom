@@ -53,13 +53,6 @@ vector-to-integer representation boundary. An `llvm.bitcast` between a
 vector and an integer is not a canonical Dataflow actor. Other legal LLVM
 bitcasts are outside this representation rule.
 
-DFG simulation stores integer runtime arguments and integer attributes as
-width-exact bit patterns. Decimal input permits one optional leading sign.
-A nonnegative magnitude may occupy all declared bits; a negative value must
-fit the signed range of the declared width. Reports format every signless
-integer width as signed two's-complement decimal, without a host-width
-special case.
-
 Standard elementwise `arith` and `math` vector actors use the same scalar
 primitive semantics independently for each lane. The simulator accepts only
 fixed-size rank-1 vectors whose shapes and scalar element types are compatible
