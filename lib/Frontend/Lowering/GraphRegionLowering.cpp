@@ -615,6 +615,32 @@ private:
         .getOutput();
   }
 
+  ::mlir::Value streamChoiceSelector(const StreamScheduleNode &schedule) {
+    assert(schedule.kind == StreamScheduleNode::Kind::Choice &&
+           "only a stream choice has a branch selector");
+    if (schedule.choice)
+      return ::mlir::cast<::mlir::scf::IfOp>(schedule.choice).getCondition();
+    assert(schedule.selector &&
+           "an erased stream choice must retain its lowered selector");
+    return schedule.selector;
+  }
+
+  void freezeStreamChoice(StreamScheduleNode &schedule, ::mlir::scf::IfOp ifOp,
+                          ::mlir::Value selector) {
+    if (schedule.kind == StreamScheduleNode::Kind::Choice &&
+        schedule.choice == ifOp) {
+      schedule.choice = nullptr;
+      schedule.selector = selector;
+    }
+    for (auto &child : schedule.children)
+      freezeStreamChoice(*child, ifOp, selector);
+  }
+
+  void freezeStreamChoices(::mlir::scf::IfOp ifOp, ::mlir::Value selector) {
+    for (auto &plan : streamPlans)
+      freezeStreamChoice(*plan->schedule, ifOp, selector);
+  }
+
   void routeStreamInputs(const StreamScheduleNode &schedule,
                          ::mlir::ValueRange inputs) {
     assert(inputs.size() == schedule.width &&
@@ -636,8 +662,9 @@ private:
            "stream choice must have false and true paths");
     ::llvm::SmallVector<::mlir::Value, 4> falseInputs;
     ::llvm::SmallVector<::mlir::Value, 4> trueInputs;
+    ::mlir::Value selector = streamChoiceSelector(schedule);
     for (::mlir::Value input : inputs) {
-      auto [onFalse, onTrue] = demux(schedule.selector, input, schedule.loc);
+      auto [onFalse, onTrue] = demux(selector, input, schedule.loc);
       falseInputs.push_back(onFalse);
       trueInputs.push_back(onTrue);
     }
@@ -668,8 +695,9 @@ private:
     assert(falseOutputs.size() == trueOutputs.size() &&
            "stream choice paths must have the same width");
     ::llvm::SmallVector<::mlir::Value, 4> outputs;
+    ::mlir::Value selector = streamChoiceSelector(schedule);
     for (auto [onFalse, onTrue] : ::llvm::zip_equal(falseOutputs, trueOutputs))
-      outputs.push_back(mux(schedule.selector, onFalse, onTrue, schedule.loc));
+      outputs.push_back(mux(selector, onFalse, onTrue, schedule.loc));
     return outputs;
   }
 
@@ -1492,6 +1520,7 @@ private:
     }
     ::mlir::Value outputExecution =
         mux(selector, falseResult.execution, trueResult.execution, loc);
+    freezeStreamChoices(ifOp, selector);
     ifOp.erase();
     return {outputExecution, std::move(output)};
   }

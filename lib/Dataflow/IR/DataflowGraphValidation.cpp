@@ -627,6 +627,11 @@ private:
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
       if (demux.getSel() != selector || result.getResultNumber() != lane)
         return false;
+      if (isGraphStreamInput(demux.getInput())) {
+        llvm::DenseSet<mlir::Value> selectorVisited = visited;
+        return isAligned(selector, phase, assumption, truePhaseOnly,
+                         selectorVisited);
+      }
       llvm::DenseSet<mlir::Value> inputVisited = visited;
       return isAligned(demux.getInput(), phase, assumption, truePhaseOnly,
                        inputVisited);

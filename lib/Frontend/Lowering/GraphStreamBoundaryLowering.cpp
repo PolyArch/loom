@@ -82,7 +82,7 @@ buildStreamSchedule(::mlir::Block &block, ::mlir::Value channel, bool input,
       auto choice = std::make_unique<StreamScheduleNode>(
           StreamScheduleNode::Kind::Choice, ifOp.getLoc());
       choice->width = trueSchedule->width;
-      choice->selector = ifOp.getCondition();
+      choice->choice = ifOp;
       choice->children.push_back(std::move(falseSchedule));
       choice->children.push_back(std::move(trueSchedule));
       width += choice->width;

@@ -76,9 +76,11 @@
 // CHECK-NOT: dataflow.channel
 // CHECK: dataflow.graph.return
 // CHECK-LABEL: dataflow.graph private @branch_relay_graph(
-// CHECK-SAME: %{{.*}}: none, %[[BRANCH_SELECT:[[:alnum:]_]+]]: i1, %[[BRANCH_INPUT:[[:alnum:]_]+]]: i32) -> i32
-// CHECK: dataflow.demux %[[BRANCH_SELECT]], %[[BRANCH_INPUT]] : (i1, i32) -> (i32, i32)
-// CHECK: dataflow.mux %[[BRANCH_SELECT]], %{{.*}}, %{{.*}} : (i1, i32, i32) -> i32
+// CHECK-SAME: %{{.*}}: none, %[[BRANCH_SELECT:[[:alnum:]_]+]]: i1, %{{.*}}: index, %[[BRANCH_INPUT:[[:alnum:]_]+]]: i32) -> i32
+// CHECK: dataflow.invariant %{{.*}}, %[[BRANCH_SELECT]] : i1
+// CHECK: %{{.*}}, %[[BRANCH_GATE:[[:alnum:]_]+]] = dataflow.gate
+// CHECK: dataflow.demux %[[BRANCH_GATE]], %[[BRANCH_INPUT]] : (i1, i32) -> (i32, i32)
+// CHECK: dataflow.mux %[[BRANCH_GATE]], %{{.*}}, %{{.*}} : (i1, i32, i32) -> i32
 // CHECK-NOT: dataflow.channel
 // CHECK: dataflow.graph.return values() streams(%{{.*}} : i32)
 // CHECK-NOT: loom.spatial_region
@@ -217,27 +219,32 @@ module {
 
   dataflow.thread private @branch_stream_relay(
       %input: !dataflow.channel<i32>, %output: !dataflow.channel<i32>,
-      %condition: i1) ctrl (%ctrl: none) {
-    "loom.spatial_region"(%condition, %input, %output)
-        <{operandSegmentSizes = array<i32: 1, 1, 0, 1>,
+      %condition: i1, %count: index) ctrl (%ctrl: none) {
+    "loom.spatial_region"(%condition, %count, %input, %output)
+        <{operandSegmentSizes = array<i32: 2, 1, 0, 1>,
           resultSegmentSizes = array<i32: 0, 0>}> ({
-      ^bb0(%select: i1, %source: !dataflow.channel<i32>,
+      ^bb0(%select: i1, %limit: index,
+           %source: !dataflow.channel<i32>,
            %sink: !dataflow.channel<i32>):
-        scf.if %select {
-          %on_true = dataflow.channel.receive %source
-              : !dataflow.channel<i32>
-          dataflow.channel.send %sink, %on_true : !dataflow.channel<i32>
-        } else {
-          %on_false = dataflow.channel.receive %source
-              : !dataflow.channel<i32>
-          dataflow.channel.send %sink, %on_false : !dataflow.channel<i32>
+        %zero = arith.constant 0 : index
+        %one = arith.constant 1 : index
+        scf.for %iteration = %zero to %limit step %one {
+          scf.if %select {
+            %on_true = dataflow.channel.receive %source
+                : !dataflow.channel<i32>
+            dataflow.channel.send %sink, %on_true : !dataflow.channel<i32>
+          } else {
+            %on_false = dataflow.channel.receive %source
+                : !dataflow.channel<i32>
+            dataflow.channel.send %sink, %on_false : !dataflow.channel<i32>
+          }
         }
         "loom.spatial_yield"()
             <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
     }) {
       graph_name = "branch_relay_graph",
       source_maps = [affine_map<() -> ()>]
-    } : (i1, !dataflow.channel<i32>, !dataflow.channel<i32>) -> ()
+    } : (i1, index, !dataflow.channel<i32>, !dataflow.channel<i32>) -> ()
     dataflow.thread.yield
   }
 

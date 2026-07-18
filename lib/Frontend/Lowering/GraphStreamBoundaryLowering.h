@@ -21,6 +21,7 @@ struct StreamScheduleNode {
   Kind kind;
   unsigned width = 0;
   ::mlir::Operation *endpoint = nullptr;
+  ::mlir::Operation *choice = nullptr;
   ::mlir::Value selector;
   ::mlir::Location loc;
   std::vector<std::unique_ptr<StreamScheduleNode>> children;
