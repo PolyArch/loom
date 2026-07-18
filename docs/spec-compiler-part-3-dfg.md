@@ -673,15 +673,25 @@ traits:
   Finalized-program validation additionally requires the frontier to be a
   duplicate-free minimal terminal antichain for every
   `dataflow.graph.launch` in the thread body. Each launch's mandatory
-  `done : none` must be yielded directly or lie in the causal closure of a
-  yielded terminal event through `none` SSA dependencies and SCF
-  `RegionBranchOpInterface` forwarding. Two distinct yielded events are
-  invalid when either causally covers the other. Independent launch events
-  must all be covered, while a chain yields only its terminal event. A thread
-  with no graph launch may use an empty frontier. These checks derive from SSA
-  causality and never from textual operation order. This thread-level contract
-  does not infer additional completion obligations from effects, DMA, or other
-  operations.
+  `done : none` must be yielded directly or lie in the path-aware causal
+  closure of a yielded terminal event. Every executable SCF predecessor on
+  which the launch exists must forward or cover its completion; a fallback is
+  valid only on a mutually exclusive path where that branch-local launch does
+  not exist. A `dataflow.mux` similarly covers a completion only on every
+  selector lane where the completion may exist. Matching `dataflow.demux`
+  activation can prove a launch absent from the other lanes.
+
+  Non-region causal edges come only from explicit completion semantics:
+  `dataflow.graph.launch` done follows its dependencies, and `dataflow.sync`
+  waits for all inputs. Other operations do not acquire completion semantics
+  merely by accepting a `none` operand. Two distinct yielded events are
+  invalid when either causally covers the other. Each remaining frontier
+  member must also be necessary for at least one graph-launch completion that
+  no other member covers. Independent launch events must all be covered, while
+  a chain yields only its terminal event. A thread with no graph launch has an
+  empty frontier. These checks derive from SSA and structured-control
+  causality, never from textual operation order, and do not infer additional
+  completion obligations from effects, DMA, or other operations.
   Tensor-result aggregation remains materialized as explicit
   destination-buffer writes, so the frontier carries no thread data
   result.

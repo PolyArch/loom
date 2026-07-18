@@ -374,22 +374,27 @@ llvm::Error verifyThreadCompletionFrontiers(mlir::ModuleOp module) {
       }
     }
 
-    llvm::Error error = llvm::Error::success();
+    llvm::SmallVector<mlir::Value, 4> graphLaunchCompletions;
     thread.walk([&](dataflow::GraphLaunchOp launch) {
-      if (error)
-        return mlir::WalkResult::interrupt();
-      if (llvm::any_of(frontier, [&](mlir::Value terminal) {
-            return dataflow::completionEventCovers(terminal, launch.getDone());
-          }))
-        return mlir::WalkResult::advance();
-      error = programError(
-          llvm::Twine("thread @") + thread.getSymName() +
-          " has graph launch completion not covered by its completion "
-          "frontier");
-      return mlir::WalkResult::interrupt();
+      graphLaunchCompletions.push_back(launch.getDone());
     });
-    if (error)
-      return error;
+
+    for (mlir::Value completion : graphLaunchCompletions)
+      if (!llvm::any_of(frontier, [&](mlir::Value terminal) {
+            return dataflow::completionEventCovers(terminal, completion);
+          }))
+        return programError(
+            llvm::Twine("thread @") + thread.getSymName() +
+            " has graph launch completion not covered by its completion "
+            "frontier");
+
+    for (unsigned index = 0; index < frontier.size(); ++index)
+      if (!dataflow::isThreadCompletionFrontierMemberNecessary(
+              frontier, index, graphLaunchCompletions))
+        return programError(
+            llvm::Twine("thread @") + thread.getSymName() +
+            " has a completion frontier event unnecessary for graph launch "
+            "coverage");
   }
   return llvm::Error::success();
 }

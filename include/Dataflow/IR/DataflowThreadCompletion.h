@@ -9,8 +9,13 @@ namespace dataflow {
 
 bool completionEventCovers(mlir::Value terminal, mlir::Value event);
 
+bool isThreadCompletionFrontierMemberNecessary(
+    mlir::ValueRange frontier, unsigned memberIndex,
+    mlir::ValueRange graphLaunchCompletions);
+
 llvm::SmallVector<mlir::Value, 4>
-computeMinimalThreadCompletionFrontier(mlir::ValueRange candidates);
+computeMinimalThreadCompletionFrontier(mlir::ValueRange candidates,
+                                       mlir::ValueRange graphLaunchCompletions);
 
 } // namespace dataflow
 

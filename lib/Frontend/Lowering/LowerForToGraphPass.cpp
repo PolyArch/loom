@@ -89,8 +89,13 @@ void addThreadCompletionFrontier(::dataflow::ThreadOp thread,
       yield.getCompletionFrontier().end());
   if (!::llvm::is_contained(candidates, completion))
     candidates.push_back(completion);
+  ::llvm::SmallVector<::mlir::Value, 4> graphLaunchCompletions;
+  thread.walk([&](::dataflow::GraphLaunchOp launch) {
+    graphLaunchCompletions.push_back(launch.getDone());
+  });
   ::llvm::SmallVector<::mlir::Value, 4> frontier =
-      ::dataflow::computeMinimalThreadCompletionFrontier(candidates);
+      ::dataflow::computeMinimalThreadCompletionFrontier(
+          candidates, graphLaunchCompletions);
   yield.getCompletionFrontierMutable().assign(frontier);
 }
 
