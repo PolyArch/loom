@@ -61,10 +61,25 @@ artifact.
 
 ## Artifact Identity
 
-Artifact identity is conceptually derived from the artifact schema identity
-and version plus canonical semantic serialization. The concrete digest
-encoding is not fixed here, but collisions must be detected rather than
-silently accepted.
+Artifact identity is computed from exactly one fixed preimage:
+
+```text
+bytes("loom.artifact.identity.v1\0")
+|| u32be(length(schema_identity))
+|| bytes(schema_identity)
+|| u32be(schema_version.major)
+|| u32be(schema_version.minor)
+|| u64be(length(canonical_semantic_bytes))
+|| canonical_semantic_bytes
+```
+
+`ArtifactIdentity` is SHA-256 of this preimage. SHA-256, the domain tag,
+the framing, and the 32-byte output width are fixed and not configurable.
+The external spelling is exactly 64 lowercase hexadecimal characters.
+An Artifact Store compares the exact full preimage when a derived key
+already exists. An identical preimage deduplicates, a different valid
+preimage under the same key is an identity collision, and an invalid or
+unreconstructable object is store corruption.
 
 Canonical semantic serialization includes every typed upstream artifact
 reference that is part of the artifact's semantics. A TechMapping artifact
@@ -78,9 +93,9 @@ content identity unless their semantic projection is explicitly part of
 the artifact content. Derivation lineage and execution settings belong to
 manifests or Evaluation Evidence.
 
-Optional fingerprints, symbols, or compatibility labels cannot substitute
-for required artifact identity. A mismatch is an identity failure, not
-permission to reinterpret or heuristically rebind a reference.
+Optional symbols or compatibility labels cannot substitute for required
+artifact identity. A mismatch is an identity failure, not permission to
+reinterpret or heuristically rebind a reference.
 
 ## Artifact-Global EntityId Namespace
 

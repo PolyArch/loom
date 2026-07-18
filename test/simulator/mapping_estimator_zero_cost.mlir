@@ -2,6 +2,7 @@
 // RUN: loom-mapping-estimate --mapping-artifact %t.mapping.json --output %t.estimate.json
 // RUN: FileCheck %s < %t.estimate.json
 
+// CHECK-DAG: "schema_version": "2.0"
 // CHECK-DAG: "kind": "mapping_estimate_report"
 // CHECK-DAG: "workload": "toy"
 // CHECK-DAG: "status": "pass"

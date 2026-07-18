@@ -77,7 +77,7 @@ The base diagnostic-code set includes:
 * `schema_missing_required_field`
 * `schema_unknown_required_family`
 * `reference_unresolved`
-* `fingerprint_mismatch`
+* `artifact_identity_mismatch`
 * `placement_incompatible_resource`
 * `placement_missing_scalar_fallback`
 * `route_non_contiguous`
@@ -150,7 +150,7 @@ The verifier validates itself through conformance tests:
 
 * one negative test per required diagnostic code;
 * one positive test per detailed mapping spec;
-* stale fingerprint rejection;
+* stale artifact identity rejection;
 * arbitrary-topology route validation;
 * compound-protocol channel endpoint validation;
 * CGRA-sim consumer-profile completeness;

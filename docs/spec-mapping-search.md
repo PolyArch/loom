@@ -36,7 +36,7 @@ Required inputs:
 * software dataflow IR after compiler placement boundaries are chosen;
 * selected `fabric.system`;
 * every referenced `fabric.module` template;
-* PnR configuration-view descriptor and canonical semantic bytes;
+* resolved configuration ArtifactIdentity;
 * workload shape when the mapping is shape-dependent.
 
 Optional inputs:
@@ -157,9 +157,8 @@ The PnR cost model ranks legal candidates. Required baseline terms:
 The baseline cost model must define a total deterministic order.
 Additional policies may use weighted objectives, lexicographic
 objectives, constraints plus objectives, or Pareto ranking. The chosen
-cost configuration-view descriptor and canonical semantic bytes must be
-recorded in the
-mapping artifact metrics or mapping-set manifest.
+mapping artifact or mapping-set manifest must record the exact
+`ResolvedConfig` `ArtifactIdentity` used by the policy.
 
 ## Diagnostics During Search
 
@@ -188,7 +187,6 @@ manifest. Required fields:
 * shared software input references;
 * shared hardware input references;
 * resolved configuration ArtifactIdentity;
-* PnR policy-view descriptor and canonical semantic bytes;
 * objective functions;
 * candidate artifact list;
 * rejected-candidate summaries;

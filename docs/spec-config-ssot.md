@@ -89,7 +89,15 @@ Every resolved key has:
 
 Component tools receive typed configuration views derived from the
 canonical tree. A typed view may rename fields for local API
-convenience, but it must not own independent defaults.
+convenience, but it must not own independent defaults or an independent
+`ArtifactIdentity`. Current artifacts record the exact `ResolvedConfig`
+`ArtifactIdentity`; they do not acquire generic component-view descriptor
+or canonical-byte fields.
+
+A future cache family may include a closed typed-view descriptor and its
+deterministic canonical bytes after that view and cache contract are
+defined. Such a cache key is neither an `ArtifactIdentity` nor
+configuration authority.
 
 ## Early-Fail Rules
 
@@ -143,8 +151,6 @@ Every machine-consumed artifact produced under a resolved configuration
 must carry:
 
 * the ResolvedConfig ArtifactIdentity;
-* the producer component configuration-view descriptor and deterministic
-  canonical semantic bytes when the component consumes a typed subset;
 * profile identities used by the producer;
 * override provenance when overrides affected the producer;
 * diagnostics for absent optional configuration evidence.
@@ -156,9 +162,8 @@ When a tool consumes multiple configured artifacts, it must compare
 their ResolvedConfig ArtifactIdentities. A mismatch is a structured
 failure or blocked condition unless the tool has an explicit migration
 rule that records both configurations and proves the difference is
-irrelevant to the consumed evidence. Component configuration views are
-compared only when their descriptors match, using their canonical semantic
-bytes rather than an independent identity.
+irrelevant to the consumed evidence. A derived component view does not add
+a second configuration identity.
 
 ## Configuration Domains
 

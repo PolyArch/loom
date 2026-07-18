@@ -214,14 +214,14 @@ Higher-fidelity hardware evidence may refine or override lower-fidelity
 estimates only in derived summaries that explicitly cite the newer
 evidence. The original lower-fidelity report remains unchanged.
 
-## Fingerprint Mismatch Handling
+## Artifact Identity Mismatch Handling
 
-Reports must reject mismatched fingerprints when fingerprints are
-present. If a required fingerprint is absent, the report may proceed
-only when the selected reproducibility mode permits missing
-fingerprints and records that reduced confidence.
+Reports must reject mismatched `ArtifactIdentity` values for required
+artifact references. A required reference structurally contains a valid
+identity. An optional artifact is represented by an explicit optional
+reference, and every present reference contains a valid identity.
 
-Fingerprint checks apply to:
+Identity checks apply to:
 
 * dataflow IR;
 * Fabric ADG;
@@ -258,7 +258,6 @@ The fidelity ladder target is complete when:
 * every metric record names its fidelity level and evidence source;
 * unsupported metrics are diagnosed instead of defaulted silently;
 * combined reports preserve input metric identities;
-* stale or mismatched inputs are rejected when fingerprints are
-  available;
+* stale or mismatched artifact inputs are rejected by exact identity;
 * DSE can compare candidate reports without confusing optimistic
   software evidence with hardware-constrained evidence.

@@ -18,9 +18,11 @@ wrapper, second representation, or conversion path.
 
 `include/Common/ArtifactText.h` owns canonical `X.Y` schema-version text and
 lowercase hexadecimal `ArtifactIdentity` text. Individual artifact schemas
-still own their supported schema identities and versions, and contextual typed
-references still own nonempty-identity validation. These text codecs assign no
-digest algorithm, artifact-finalization, or content-addressing semantics.
+still own their supported schema identities, versions, and canonical semantic
+bytes. A required contextual reference structurally contains a valid,
+fixed-width `ArtifactIdentity`; absence is represented outside the reference.
+These text codecs parse and format the Common value without defining a second
+identity recipe.
 
 ## Metric Registry
 

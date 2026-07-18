@@ -207,9 +207,9 @@ simulation, RTL/FPA, and DSE/reporting evidence together.
 
 ## Required Evidence
 
-Evidence that counts toward target completion must be explicit,
-fingerprinted when practical, and consumable by downstream tools without
-reading private state. Required evidence classes include:
+Evidence that counts toward target completion must be explicit, finalized
+with an ArtifactIdentity when persistent, and consumable by downstream
+tools without reading private state. Required evidence classes include:
 
 * source, LLVM IR, raised MLIR, and dataflow artifacts for supported
   workloads;
@@ -223,9 +223,8 @@ reading private state. Required evidence classes include:
   metric records;
 * full-stack report bundles and artifact manifests for traceability;
 * DSE candidate, objective, selection, and rejection records;
-* resolved configuration ArtifactIdentity and any declared component
-  configuration-view descriptor plus canonical semantic bytes for every
-  configured artifact.
+* the exact resolved configuration ArtifactIdentity for every configured
+  artifact.
 
 Fake or stub artifacts must not satisfy any target requirement. Scaffold
 artifacts may exist while a component is being built, but they must be
@@ -244,8 +243,8 @@ verification policy is:
   checks;
 * every machine-consumed report must identify schema version, producer,
   input artifact identities, and diagnostics;
-* each DSE candidate must be immutable and must carry artifact identity
-  and fingerprint records for its inputs and outputs;
+* each DSE candidate must be immutable and must carry exact artifact
+  identities for its inputs and outputs;
 * every configured artifact must carry the resolved configuration
   ArtifactIdentity required by `docs/spec-config-ssot.md`;
 * cross-artifact contradictions must block acceptance rather than being

@@ -201,8 +201,8 @@ PnR legality includes at least the following rule families.
 ### Reference Legality
 
 Every software and hardware reference used by a candidate must resolve.
-Fingerprints must match when provided. PnR must diagnose stale or
-ambiguous references.
+Artifact identities must match their exact references. PnR must diagnose
+stale or ambiguous references.
 
 ### Thread Legality
 

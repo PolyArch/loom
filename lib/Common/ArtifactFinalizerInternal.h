@@ -15,6 +15,9 @@ std::vector<std::uint8_t>
 buildArtifactIdentityPreimage(const ArtifactSchemaDescriptor &schema,
                               const CanonicalSemanticBytes &canonicalBytes);
 
+ArtifactIdentity
+finalizeArtifactIdentityPreimage(llvm::ArrayRef<std::uint8_t> preimage);
+
 llvm::Error
 validateArtifactIdentityPreimage(llvm::ArrayRef<std::uint8_t> preimage);
 

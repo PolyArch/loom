@@ -38,9 +38,8 @@ It produces:
 ## Shared Identity
 
 Reports are comparable only when they refer to the same workload
-identity and runtime input identity. When fingerprints are present, the
-comparison tool must check them. A mismatch is a comparison diagnostic,
-not a performance result.
+ArtifactIdentity and runtime input ArtifactIdentity. A mismatch is a
+comparison diagnostic, not a performance result.
 
 The CGRA-sim report must also identify the mapping artifact it consumed.
 The DFG-sim report does not need a mapping artifact because DFG-sim
@@ -103,8 +102,8 @@ The comparison report classifies each difference as one of:
 * `mapping_invalid`: CGRA-sim rejected or diagnosed the mapping;
 * `functional_mismatch`: outputs or visible memory state differ without
   an accepted explanation;
-* `report_mismatch`: workload identity, input identity, schema, or
-  fingerprint does not match.
+* `report_mismatch`: workload ArtifactIdentity, input ArtifactIdentity,
+  or schema does not match.
 
 `functional_mismatch` and `report_mismatch` are failing outcomes for
 tests unless the test explicitly expects the diagnostic.

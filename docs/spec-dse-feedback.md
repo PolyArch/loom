@@ -206,7 +206,7 @@ DSE feedback must record:
 * policy configuration;
 * resolved configuration ArtifactIdentity;
 * random seed when stochastic search is used;
-* input artifact identities and fingerprints when available;
+* input artifact identities when available;
 * objective records;
 * candidate ordering rule;
 * selected candidate or Pareto set;
@@ -228,7 +228,7 @@ DSE diagnostics must distinguish:
 * unsupported feedback target;
 * conflicting hard constraints;
 * no candidate satisfies constraints;
-* stale artifact fingerprint;
+* stale artifact identity;
 * incompatible report fidelity;
 * non-reproducible stochastic run without seed;
 * custom model unavailable;

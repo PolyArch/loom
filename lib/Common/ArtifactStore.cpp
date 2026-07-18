@@ -1,7 +1,6 @@
 #include "Common/ArtifactStore.h"
 
 #include "ArtifactFinalizerInternal.h"
-#include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactText.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -11,7 +10,6 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/SHA256.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
@@ -53,7 +51,7 @@ llvm::Error validateObject(llvm::StringRef path,
   }
 
   const ArtifactIdentity actualIdentity =
-      llvm::cantFail(ArtifactIdentity::fromBytes(llvm::SHA256::hash(*object)));
+      detail::finalizeArtifactIdentityPreimage(*object);
   if (actualIdentity != expectedIdentity)
     return storeError("artifact_store_corruption",
                       "stored object does not match its derived key");
@@ -71,7 +69,7 @@ ArtifactStore::put(const ArtifactSchemaDescriptor &schema,
   const std::vector<std::uint8_t> preimage =
       detail::buildArtifactIdentityPreimage(schema, canonicalBytes);
   const ArtifactIdentity identity =
-      finalizeArtifactIdentity(schema, canonicalBytes);
+      detail::finalizeArtifactIdentityPreimage(preimage);
 
   if (std::error_code error = llvm::sys::fs::create_directories(root_))
     return storeError("artifact_store_io",

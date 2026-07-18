@@ -126,12 +126,18 @@ llvm::Error detail::validateArtifactIdentityPreimage(
   return llvm::Error::success();
 }
 
+ArtifactIdentity detail::finalizeArtifactIdentityPreimage(
+    llvm::ArrayRef<std::uint8_t> preimage) {
+  return llvm::cantFail(
+      ArtifactIdentity::fromBytes(llvm::SHA256::hash(preimage)));
+}
+
 ArtifactIdentity
 finalizeArtifactIdentity(const ArtifactSchemaDescriptor &schema,
                          const CanonicalSemanticBytes &canonicalBytes) {
   const std::vector<std::uint8_t> preimage =
       detail::buildArtifactIdentityPreimage(schema, canonicalBytes);
-  return ArtifactIdentity(llvm::SHA256::hash(preimage));
+  return detail::finalizeArtifactIdentityPreimage(preimage);
 }
 
 } // namespace loom

@@ -34,8 +34,8 @@ edge has these required fields:
 * public spec owner;
 * schema or verifier name;
 * validation command role;
-* required input identities or fingerprints;
-* produced output identities or fingerprints;
+* required input artifact identities;
+* produced output artifact identities;
 * negative diagnostic classes;
 * minimal positive demonstrator requirement.
 
@@ -162,7 +162,7 @@ Spec owners: `docs/spec-pnr.md`,
 `docs/spec-mapping-*.md` files.
 
 Required diagnostics include unresolved software reference, unresolved
-hardware reference, fingerprint mismatch, incompatible placement,
+hardware reference, artifact identity mismatch, incompatible placement,
 illegal route, missing buffer, illegal schedule, invalid temporal tag,
 illegal memory binding, and no legal candidate.
 
@@ -235,7 +235,7 @@ Spec owners: `docs/spec-fpa-estimation.md` and
 Required diagnostics include unsupported fidelity request, missing
 activity source, incompatible activity source, missing timing evidence,
 missing area evidence, missing power evidence, and stale input
-fingerprint.
+identity.
 
 ### Reports To DSE Feedback
 
@@ -252,19 +252,30 @@ and non-reproducible candidate identity.
 
 ## Artifact Identity
 
-Every artifact that can cross a tool boundary must have an identity.
-The identity includes:
+Every finalized artifact that can cross a tool boundary has an
+`ArtifactIdentity` computed from exactly one fixed preimage:
 
-* artifact kind;
-* schema version;
-* stable logical name;
-* producer component and configuration identity;
-* optional content fingerprint;
-* optional parent artifact identities;
-* diagnostics summary.
+```text
+bytes("loom.artifact.identity.v1\0")
+|| u32be(length(schema_identity))
+|| bytes(schema_identity)
+|| u32be(schema_version.major)
+|| u32be(schema_version.minor)
+|| u64be(length(canonical_semantic_bytes))
+|| canonical_semantic_bytes
+```
 
-Fingerprints are optional for early bring-up but required for
-reproducible DSE and for rejecting stale report chains.
+`ArtifactIdentity` is SHA-256 of this preimage. SHA-256, the domain tag,
+the framing, and the 32-byte output width are fixed and not configurable.
+The external spelling is exactly 64 lowercase hexadecimal characters.
+Each artifact family owns its schema descriptor and canonical semantic
+serialization; Common owns only framing and hashing.
+
+Logical names, producer and invocation data, configuration records,
+timestamps, host paths, diagnostics, and parent lineage belong in
+manifests, reports, or Evaluation Evidence. They are not identity inputs
+unless the artifact family's canonical semantic bytes explicitly contain
+a typed upstream artifact reference.
 
 Current mapping and simulation artifact formats are described in
 `docs/spec-intermediate-artifacts.md`. They do not replace the artifact
@@ -278,7 +289,7 @@ The traceability verifier checks that:
 * every edge has a producer, consumer, artifact kinds, and diagnostic
   classes;
 * referenced artifacts resolve;
-* fingerprints match when present;
+* required artifact identities match exactly;
 * unsupported-scope records are explicit;
 * reports identify the artifacts they summarize;
 * DSE feedback refers to immutable candidate artifacts.

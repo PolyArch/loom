@@ -144,7 +144,7 @@ A library profile identifies:
 * supported corners;
 * supported voltage and temperature metadata when available;
 * logical file roles required by tools;
-* optional fingerprints;
+* optional source release identifiers;
 * confidentiality level.
 
 Public library profiles must avoid private paths. Local profiles may
@@ -186,7 +186,7 @@ Every backend run must record:
 
 * selected tool profile id;
 * selected library profile id;
-* input artifact identities or fingerprints when available;
+* input artifact identities when available;
 * backend command role;
 * backend version when available;
 * report parser version;
@@ -194,7 +194,7 @@ Every backend run must record:
 * diagnostics.
 
 Local paths may appear in private run logs, but portable report
-summaries should prefer profile ids, fingerprints, and artifact ids.
+summaries should prefer profile ids and artifact identities.
 
 ## Error Handling
 
