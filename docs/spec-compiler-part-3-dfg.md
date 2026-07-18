@@ -76,10 +76,13 @@ definitions reached by zero or more `dataflow.graph.launch` ops
 inside thread definitions. No `scf.*` op is left inside any
 `dataflow.graph` definition's body after successful graph-region lowering.
 The implemented recursive graph owner accepts arbitrary nesting of
-`scf.if`, source-sequential `scf.for`, and `scf.while`. Other SCF forms must
-be normalized by their owning transformation before they reach a graph.
-Residual `scf.parallel` and `scf.forall` fail before any graph is mutated;
-the graph owner does not infer ownership, width, serialization, unrolling,
+`scf.if`, source-sequential `scf.for`, `scf.while`, and fixed-width
+graph-owned `scf.parallel` or effect-form `scf.forall`. A graph-owned parallel
+op must carry selected schedule provenance and a compile-time fixed domain.
+That provenance certifies that the Structured Program Candidate owner already
+resolved ownership, width, and cross-lane legality. Unmarked, dynamic-width,
+resource-mapped, and result or reduction forms fail before any graph is
+mutated; the graph owner does not infer ownership, serialization, unrolling,
 or reduction order. The
 `dataflow.thread.launch` op carries the completion token and
 mapped-memory data transfer; the def remains a callable kernel
@@ -89,11 +92,10 @@ roots and per-partition write/read frontiers (see
 `docs/spec-compiler-part-3-mem.md`).
 The Structured Transfer Algebra defines graph-owned parallel composition only
 after the Structured Program Candidate has materialized its P[] ownership and
-schedule form. The current implementation has no selected representation for
-that materialization: replicated lane regions, normalized parallel SCF with
-exact P[] data, and another existing representation remain distinct choices.
-It therefore preserves the raw-parallel failure boundary instead of inventing
-one during graph extraction.
+schedule form. The selected fixed-domain SCF plus provenance is the transient
+input representation for mechanical lowering. It is recursively replicated
+into static lanes and removed; no parallel control op or schedule record
+survives in canonical graph IR.
 Graph candidate eligibility and atomic publication are governed by this
 document and the implementation contract in
 `docs/spec-compiler-part-3-impl.md`. Physical placement is outside this IR.
@@ -275,10 +277,8 @@ each rule lands in IR.
    canonical graph. Current publication supports nested `scf.if` completion
    propagation. Stream endpoint conversion is not yet implemented, so a
    candidate with stream bindings or `dataflow.channel.send` / `receive`
-   fails before publication. A residual graph-owned `scf.parallel` or
-   `scf.forall` also fails closed until an upstream Structured Program
-   Candidate has selected a concrete P[] representation and emitted
-   supported sequential structured input.
+   fails before publication. Unselected or non-fixed graph-owned
+   `scf.parallel` and `scf.forall` forms also fail closed.
 7. `dataflow.thread` and `dataflow.graph` definitions are both
    `IsolatedFromAbove`. No operation inside either definition's body
    may directly use an SSA value defined in the surrounding scope.
@@ -351,16 +351,16 @@ each rule lands in IR.
   `mapping` array, in
   agreement with Section 6.4 lowering rules:
   - **Empty `mapping` attribute** (the array is literally empty,
-    or the attribute is absent): current Part 3 does not flatten a
-    graph-owned forall. It fails closed before graph mutation; a future
-    upstream Structured Program Candidate normalization may select a P[]
-    representation and emit supported sequential input.
+    or the attribute is absent): an effect-form forall is graph-owned only
+    when the Structured Program Candidate has attached selected schedule
+    provenance and fixed compile-time bounds. The recursive graph owner then
+    materializes its fixed P[] lanes. Otherwise it fails closed before graph
+    mutation.
   - **Mapping array with at least one Loom-recognized entry and
     no foreign entry**: the narrow thread-promotion extraction pass may
     produce a `dataflow.thread` definition + a
-    `dataflow.thread.launch` at the original site. This is not
-    end-to-end acceptance of a residual graph-owned forall; that body still
-    requires an upstream selected P[] representation before graph lowering.
+    `dataflow.thread.launch` at the original site. Resource mapping establishes
+    a thread boundary and must not remain on a graph-owned forall.
   - **Mapping array with at least one foreign (non-Loom) entry**
     (whether or not it also contains Loom-recognized entries):
     the front-end rejects it with a diagnostic. Part 2 or an
@@ -1015,12 +1015,10 @@ be deterministic for a fixed input + option set.
 
 The same convention applies to a successful narrow thread-promotion
 extraction: it produces a `dataflow.thread` definition at module scope plus a
-`dataflow.thread.launch` at the original `scf.forall` site. This extraction
-does not accept a residual graph-owned `scf.forall` or `scf.parallel`; current
-Part 3 fails either before graph mutation until upstream Structured Program
-Candidate processing has selected a `P[]` representation. The thread
-definition's body holds only the supported sequential structures described
-below.
+`dataflow.thread.launch` at the original `scf.forall` site. Graph-owned
+parallel work inside the resulting thread must already be in the selected,
+fixed-domain provenance form. Unselected or resource-mapped parallel residue
+fails before graph mutation.
 
 The templates therefore omit the def + launch wrap to keep the
 body's structural diff readable. The wrap is mandatory output, not
@@ -1430,13 +1428,17 @@ selector token, so init execution, values, and frontier components transfer
 unchanged. Read-only state does not create RAR order; write feedback preserves
 RAW, WAR, and WAW across source-sequential iterations.
 
-### 6.4 Future Upstream `scf.forall` Normalization
+### 6.4 `scf.forall` Ownership and Upstream Normalization
 
-**Current contract.** The recursive graph owner does not normalize
-graph-owned `scf.forall` or `scf.parallel`. Either residual form causes the
-module-level pass to fail before graph mutation. Ownership, mapping,
-aggregation, schedule provenance, and the concrete P[] representation must
-already have been resolved by an upstream Structured Program Candidate.
+**Current contract.** The recursive graph owner mechanically lowers an
+effect-form, fixed-domain `scf.forall` only when selected schedule provenance
+certifies that an upstream Structured Program Candidate has resolved
+ownership, P[] width, and cross-lane legality. Every lane starts from the same
+incoming execution and per-partition memory frontier, lowers recursively, and
+contributes its terminal frontiers to fixed-arity all-of joins. The forall and
+its empty `scf.forall.in_parallel` terminator are removed. A mapping attribute,
+dynamic domain, shared output, result, combining action, or missing provenance
+causes atomic failure.
 
 **Future upstream normalization design.** The material below is not current
 Part 3 behavior. After selecting a concrete P[] representation, an upstream
@@ -1445,12 +1447,13 @@ owner may normalize a forall before ordinary graph-region lowering:
 1. It may materialize aggregation-form forall into effect-form forall.
 2. It may turn mapped effect-form forall into a `dataflow.thread` definition
    at module scope plus a `dataflow.thread.launch` at the original forall site.
-3. It may turn unmapped effect-form forall into `scf.parallel` and then
-   normalize that parallel form to supported sequential structured input.
+3. It may turn unmapped effect-form forall into fixed-domain,
+   provenance-marked `scf.parallel` for graph-owned mechanical lowering.
 
-This future separation keeps tensor aggregation, hardware thread mapping, and
-SpatialCore DFG construction as separate concerns. It does not permit a
-residual graph-owned parallel form in the current Part 3 pipeline.
+This separation keeps tensor aggregation, hardware thread mapping, schedule
+selection, and SpatialCore DFG construction as separate concerns. Mechanical
+lowering accepts the selected fixed-domain representation but makes none of
+those choices.
 
 For this spec, an effect-form forall has no `shared_outs`, no op
 results, and an empty `scf.forall.in_parallel` terminator:
@@ -1483,10 +1486,9 @@ combining op is `tensor.parallel_insert_slice`:
 }
 ```
 
-`scf.forall.in_parallel` exists only to describe tensor-result
-aggregation for `scf.forall`. It must not reach final dataflow IR. A future
-upstream materialization must remove it and must not pass a residual
-graph-owned forall to current Part 3.
+`scf.forall.in_parallel` exists only to describe tensor-result aggregation for
+`scf.forall`. It must not reach final dataflow IR. An upstream materialization
+must remove every combining action before graph-owned fixed-lane lowering.
 
 A future upstream aggregation materialization rewrites each shared tensor
 result into an explicit destination buffer:
@@ -1585,11 +1587,10 @@ def's body.
 
 Such a future promotion creates the AccCore boundary only. Code inside the
 thread definition's body is still ScalarCore code until graph extraction moves
-an eligible nonparallel region into a `dataflow.graph` definition (referenced
-by a `dataflow.graph.launch` at the cut site). Current Part 3 still rejects a
-residual graph-owned `scf.forall` or `scf.parallel` before mutation. Memory
-operations that remain outside any graph stay in the ScalarCore part of the
-thread definition's body.
+an eligible region into a `dataflow.graph` definition (referenced by a
+`dataflow.graph.launch` at the cut site). Nested graph-owned parallel work must
+be fixed-domain and provenance-marked. Memory operations that remain outside
+any graph stay in the ScalarCore part of the thread definition's body.
 
 The future promotion would make the implicit synchronization point of
 `scf.forall` explicit thread-token ordering. The produced
@@ -1624,9 +1625,9 @@ normalization to `scf.for` loop nests does not invent
 cross-invocation memory order.
 
 Within that future upstream normalization, every Loom-recognized mapped forall
-has already been promoted to `dataflow.thread`. Therefore, a forall that
-reaches this path must have an empty mapping attribute. A non-empty non-Loom
-mapping is rejected before normalization.
+has already been promoted to `dataflow.thread`. Therefore, a graph-owned
+forall must have an empty mapping attribute and selected schedule provenance.
+A non-empty non-Loom mapping is rejected before normalization.
 
 If a forall has a non-empty `mapping` attribute that current Part 3 does not
 recognize as a Loom mapping, the pipeline must not silently ignore it inside an
@@ -1637,31 +1638,31 @@ decision before its normalization template runs.
 #### Forall Boundary Translation
 
 Mapped forall belongs to thread construction and must be removed before a
-graph definition is lowered. Current Part 3 rejects any residual graph-owned
-`scf.forall` or `scf.parallel` before mutation. After an upstream Structured
-Program Candidate selects P[] materialization, its future normalization may
-emit supported sequential input. No forall boundary, partition id, or
-dependence summary survives into canonical graph IR.
+graph definition is lowered. A selected fixed-domain graph-owned forall is
+recursively replicated into static lanes; each active lane transfers execution
+and `(W, R)` independently, and lane exits are reduced with fixed-arity
+all-of. Empty domains are identity transfers. No forall boundary, partition
+id, dependence summary, or traversal order survives into canonical graph IR.
 
 ### 6.5 `scf.parallel` with `scf.reduce`
 
 **Implementation boundary.** The recursive graph owner does not choose a
-split factor, serialize iterations, unroll lanes, or choose reduction order.
-A residual `scf.parallel` inside any graph fails before mutation. The detailed
-normalization below is an upstream contract and must produce supported
-`scf.if`/`scf.for`/`scf.while` input before graph-region lowering.
+split factor, serialize iterations, select P[], or choose reduction order. It
+mechanically lowers a fixed-domain, provenance-marked, effect-form
+`scf.parallel`; all other forms fail before mutation. The detailed
+normalization below remains an upstream contract for dynamic domains,
+aggregation, and schedule selection.
 
 **Future upstream normalization design.** Every reference to parallel
 normalization, chunking, or flattening in this subsection describes only the
-upstream owner after it has selected a concrete P[] representation. It is not
-current Part 3 behavior: residual graph-owned `scf.parallel` and `scf.forall`
-fail closed before graph mutation.
+upstream owner that selects a concrete P[] representation. It is not a choice
+made by graph-region lowering.
 
-`scf.parallel` is not a second dataflow loop primitive. A future upstream
-schedule owner may normalize it to supported structured input after making
-the required ownership and order decisions. The current pipeline has no
-graph-local parallel normalization owner. No new `dataflow.parallel`,
-`dataflow.reduce`, or reduction enum is introduced by this slice.
+`scf.parallel` is not a second dataflow loop primitive. The upstream schedule
+owner makes the required ownership and legality decisions and attaches
+provenance. Graph-region lowering replicates the fixed lanes and recursively
+lowers their existing structured bodies. No new `dataflow.parallel`,
+`dataflow.reduce`, or reduction enum is introduced.
 
 A user-written graph-owned `scf.parallel` with a non-empty `mapping` attribute
 is rejected by Part 3. Mapping has Loom semantics only on
@@ -1672,11 +1673,10 @@ The important semantic difference from `scf.for` is the absence of a
 cross-iteration program order. The source `scf.parallel` iteration
 space may execute in any order and may execute concurrently. If two
 iterations race through memory, the source behavior is undefined.
-Therefore, schedule normalization must retain enough provenance to justify
-the selected realization. The recursive graph owner does not interpret such
-provenance or weaken loop recurrence: only an explicitly selected
-source-sequential realization may reach it as `scf.for`. Any residual
-parallel region fails before graph mutation.
+Therefore, schedule normalization must retain provenance that certifies the
+selected realization. The recursive graph owner treats that provenance as the
+upstream legality certificate and never imposes source traversal order between
+lanes. A parallel region without that certificate fails before graph mutation.
 
 The future upstream normalization design below uses a positive split factor `K`.
 No `--parallel-split-factor` option or default `K` policy is implemented by
@@ -2111,12 +2111,13 @@ those templates.
 
 #### Parallel Boundary Translation
 
-There is no parallel boundary translation in the current graph owner. An
-upstream Structured Program Candidate must select the P[] representation,
-resolve ownership and schedule, prove legality, and emit supported sequential
-structured input. If it leaves graph-owned raw `scf.parallel` or
-`scf.forall`, lowering fails atomically before graph mutation. Traversal order
-is never used to invent a cross-iteration memory order.
+An upstream Structured Program Candidate must select the P[] representation,
+resolve ownership and schedule, and prove legality. The graph owner then
+recursively lowers each point in the fixed domain from the same incoming
+execution and `(W, R)` state and joins incomparable exits with all-of. Nested
+repeat and select use the same recursive transfers as any other lane body.
+Unmarked, dynamic-width, mapped, and reduction-bearing forms fail atomically.
+Traversal order is never used to invent a cross-iteration memory order.
 
 ### 6.6 `scf.index_switch`
 

@@ -110,12 +110,15 @@ the production contract.
 * Each live alias partition has exactly one
   `(write_frontier, read_frontier)` pair. Straight-line accesses and recursive
   selection and repeat transfer follow `docs/spec-compiler-part-3-mem.md`.
-  Graph-owned parallel transfer requires a preselected P[] representation and
-  is not selected by this pass. Structural execution remains a separate state
-  component.
-* Raw parallel SCF, unsupported residual containers, observable operations
-  without explicit completion events, and memory capabilities transported on
-  dataflow control primitives fail closed.
+  Graph-owned parallel transfer requires a provenance-marked, compile-time
+  fixed P[] representation selected by an upstream owner. Each lane lowers
+  recursively from the same incoming state, and incomparable execution and
+  per-partition frontier exits join with all-of. Structural execution remains
+  a separate state component.
+* Unselected, dynamic-width, resource-mapped, resultful, or reduction-bearing
+  parallel SCF, unsupported residual containers, observable operations without
+  explicit completion events, and memory capabilities transported on dataflow
+  control primitives fail closed.
 * Supported memory leaves become `dataflow.load` and `dataflow.store`.
   Retirement combines structural execution with every live partition's final
   read frontier after causal transitive reduction. Final values are published
@@ -183,8 +186,9 @@ Tests are organized by stable semantic boundary:
 * `test/raise/` verifies graph extraction, recursive SCF lowering, canonical
   per-partition memory frontiers, zero-trip and descending loops, nested
   selection/repeat structure, index-domain carry narrowing, transactional
-  rollback, and fail-closed diagnostics for parallel residue, pointer
-  capability transport, and effects without completion events.
+  rollback, fixed-width graph parallel transfer, fail-closed diagnostics for
+  unselected parallel residue, pointer capability transport, and effects
+  without completion events.
 * `test/dfg/` verifies the strict native finalized-graph gate independently
   of the simulator.
 * `test/simulator/` verifies retirement-time execution, value and stream

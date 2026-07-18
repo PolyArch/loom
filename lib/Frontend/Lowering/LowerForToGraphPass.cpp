@@ -233,6 +233,19 @@ bool isNestedInGraphParallelRegion(::mlir::scf::ForOp loop) {
   return false;
 }
 
+bool isNestedInSelectedGraphParallelRegion(::mlir::scf::ForOp loop) {
+  bool sawParallel = false;
+  for (::mlir::Operation *parent = loop->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (!::llvm::isa<::mlir::scf::ForallOp, ::mlir::scf::ParallelOp>(parent))
+      continue;
+    sawParallel = true;
+    if (!::loom::lowering::hasGraphOwnedParallelProvenance(parent))
+      return false;
+  }
+  return sawParallel;
+}
+
 bool isPureScalarEpilogueOp(::mlir::Operation *op) {
   if (op->getNumResults() == 0 || op->getNumRegions() != 0 ||
       op->getNumSuccessors() != 0)
@@ -529,6 +542,8 @@ struct LowerForToGraphPass
         if (loop.getInitArgs().empty())
           return; // No iter_args: keep as scf.for in the thread body.
         if (isNestedInReductionFor(loop))
+          return;
+        if (isNestedInSelectedGraphParallelRegion(loop))
           return;
         // Skip loops already owned by a graph boundary.
         if (loop->getParentOfType<::dataflow::GraphOp>())
@@ -1420,7 +1435,13 @@ struct LowerForToGraphPass
       if (nested == root)
         return ::mlir::WalkResult::advance();
       if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
-                      ::mlir::scf::ForOp>(nested)) {
+                      ::dataflow::GraphOp, ::dataflow::ThreadOp>(nested)) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+      if (auto parallel = ::llvm::dyn_cast<::mlir::scf::ParallelOp>(nested)) {
+        if (isEffectFormParallelGraphCandidate(parallel))
+          return ::mlir::WalkResult::advance();
         unsupported = true;
         return ::mlir::WalkResult::interrupt();
       }
@@ -1439,8 +1460,9 @@ struct LowerForToGraphPass
         return ::mlir::WalkResult::interrupt();
       }
       if (nested->getNumRegions() != 0 &&
-          !::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::WhileOp,
-                       ::mlir::scf::IndexSwitchOp>(nested)) {
+          !::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp,
+                       ::mlir::scf::WhileOp, ::mlir::scf::IndexSwitchOp>(
+              nested)) {
         unsupported = true;
         return ::mlir::WalkResult::interrupt();
       }
@@ -1470,6 +1492,11 @@ struct LowerForToGraphPass
         return false;
       if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(op)) {
         if (!isEffectFormForallGraphCandidate(forall))
+          return false;
+        continue;
+      }
+      if (auto parallel = ::llvm::dyn_cast<::mlir::scf::ParallelOp>(op)) {
+        if (!isEffectFormParallelGraphCandidate(parallel))
           return false;
         continue;
       }
@@ -1504,6 +1531,12 @@ struct LowerForToGraphPass
     return isEffectFormStructuredBodyCandidate(forall.getBody());
   }
 
+  bool isEffectFormParallelGraphCandidate(::mlir::scf::ParallelOp parallel) {
+    if (!parallel.getInitVals().empty() || parallel.getNumResults() != 0)
+      return false;
+    return isEffectFormStructuredBodyCandidate(&parallel.getRegion().front());
+  }
+
   bool isEffectFormStructuredRegionCandidate(::mlir::Region &region) {
     if (region.empty())
       return true;
@@ -1517,12 +1550,27 @@ struct LowerForToGraphPass
       return true;
     for (::mlir::Operation &nested : body->without_terminator()) {
       if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
-                      ::dataflow::GraphOp, ::dataflow::ThreadOp,
-                      ::mlir::scf::ForOp, ::mlir::scf::WhileOp>(&nested))
+                      ::dataflow::GraphOp, ::dataflow::ThreadOp>(&nested))
         return false;
       if (::llvm::isa<::mlir::FunctionOpInterface, ::mlir::CallOpInterface>(
               &nested))
         return false;
+      if (auto forOp = ::llvm::dyn_cast<::mlir::scf::ForOp>(&nested)) {
+        if (!isEffectFormStructuredBodyCandidate(forOp.getBody()))
+          return false;
+        continue;
+      }
+      if (auto whileOp = ::llvm::dyn_cast<::mlir::scf::WhileOp>(&nested)) {
+        if (!isEffectFormStructuredRegionCandidate(whileOp.getBefore()) ||
+            !isEffectFormStructuredRegionCandidate(whileOp.getAfter()))
+          return false;
+        continue;
+      }
+      if (auto parallel = ::llvm::dyn_cast<::mlir::scf::ParallelOp>(&nested)) {
+        if (!isEffectFormParallelGraphCandidate(parallel))
+          return false;
+        continue;
+      }
       if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(&nested)) {
         if (!isEffectFormForallGraphCandidate(forall))
           return false;

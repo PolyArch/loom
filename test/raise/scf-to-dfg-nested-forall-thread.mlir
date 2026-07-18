@@ -1,4 +1,4 @@
-// RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %s 2>&1 | FileCheck %s
+// RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %s 2>&1 | FileCheck %s --implicit-check-not=loom.spatial_region --implicit-check-not="dataflow.graph private" --implicit-check-not=dataflow.graph.launch
 
 // Nested graph-owned parallel syntax remains a structured candidate until a
 // concrete schedule and provenance are selected. It must not be published as
@@ -47,6 +47,9 @@ module {
 }
 
 // CHECK: error: loom-lower-graph-memory: raw scf.forall requires a selected schedule and provenance before graph-region lowering
-// CHECK: "loom.spatial_region"
-// CHECK-NOT: dataflow.graph private
-// CHECK-NOT: dataflow.graph.launch
+// CHECK-LABEL: dataflow.thread private @t_nested_forall
+// CHECK: scf.forall
+// CHECK: scf.forall
+// CHECK-LABEL: dataflow.thread private @t_if_nested_forall
+// CHECK: scf.if
+// CHECK: scf.forall

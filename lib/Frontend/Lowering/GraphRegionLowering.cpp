@@ -11,9 +11,12 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -22,11 +25,14 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cassert>
+#include <cstdint>
+#include <limits>
 #include <optional>
 
 namespace loom {
@@ -41,6 +47,11 @@ bool isSupportedGraphLoweringLeaf(::mlir::Operation *op) {
                      ::mlir::LLVM::GEPOp, ::mlir::LLVM::LoadOp,
                      ::mlir::LLVM::StoreOp, ::mlir::LLVM::MemcpyOp,
                      ::mlir::LLVM::MemsetOp>(op);
+}
+
+bool hasGraphOwnedParallelProvenance(::mlir::Operation *op) {
+  return op->hasAttr("loom.parallel_group") ||
+         op->hasAttr("loom.parallel_schedule");
 }
 
 } // namespace lowering
@@ -65,6 +76,123 @@ struct GatedValue {
   ::mlir::Value close;
 };
 
+struct FixedParallelDomain {
+  ::llvm::SmallVector<int64_t, 4> lower;
+  ::llvm::SmallVector<int64_t, 4> upper;
+  ::llvm::SmallVector<int64_t, 4> step;
+};
+
+std::optional<int64_t> getConstantIndex(::mlir::Value value) {
+  ::mlir::APInt constant;
+  if (!::mlir::matchPattern(value, ::mlir::m_ConstantInt(&constant)) ||
+      !constant.isSignedIntN(64))
+    return std::nullopt;
+  return constant.getSExtValue();
+}
+
+std::optional<FixedParallelDomain>
+getFixedParallelDomain(::mlir::scf::ForallOp forall) {
+  auto lower = ::mlir::getConstantIntValues(forall.getMixedLowerBound());
+  auto upper = ::mlir::getConstantIntValues(forall.getMixedUpperBound());
+  auto step = ::mlir::getConstantIntValues(forall.getMixedStep());
+  if (!lower || !upper || !step)
+    return std::nullopt;
+  return FixedParallelDomain{std::move(*lower), std::move(*upper),
+                             std::move(*step)};
+}
+
+std::optional<FixedParallelDomain>
+getFixedParallelDomain(::mlir::scf::ParallelOp parallel) {
+  FixedParallelDomain domain;
+  for (::mlir::Value value : parallel.getLowerBound()) {
+    auto constant = getConstantIndex(value);
+    if (!constant)
+      return std::nullopt;
+    domain.lower.push_back(*constant);
+  }
+  for (::mlir::Value value : parallel.getUpperBound()) {
+    auto constant = getConstantIndex(value);
+    if (!constant)
+      return std::nullopt;
+    domain.upper.push_back(*constant);
+  }
+  for (::mlir::Value value : parallel.getStep()) {
+    auto constant = getConstantIndex(value);
+    if (!constant)
+      return std::nullopt;
+    domain.step.push_back(*constant);
+  }
+  return domain;
+}
+
+std::optional<FixedParallelDomain>
+getFixedParallelDomain(::mlir::Operation *op) {
+  if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(op))
+    return getFixedParallelDomain(forall);
+  if (auto parallel = ::llvm::dyn_cast<::mlir::scf::ParallelOp>(op))
+    return getFixedParallelDomain(parallel);
+  return std::nullopt;
+}
+
+::mlir::LogicalResult checkSelectedParallel(::mlir::Operation *op) {
+  if (!::loom::lowering::hasGraphOwnedParallelProvenance(op)) {
+    op->emitError() << "loom-lower-graph-memory: raw "
+                    << op->getName().getStringRef()
+                    << " requires a selected schedule and provenance before "
+                       "graph-region lowering";
+    return ::mlir::failure();
+  }
+  if (auto mapping = op->getAttrOfType<::mlir::ArrayAttr>("mapping");
+      mapping && !mapping.empty())
+    return op->emitError(
+        "loom-lower-graph-memory: graph-owned parallel SCF must not retain "
+        "an execution-resource mapping");
+  if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(op)) {
+    auto inParallel = forall.getTerminator();
+    if (!forall.getOutputs().empty() || forall.getNumResults() != 0 ||
+        inParallel.getRegion().empty() ||
+        !inParallel.getRegion().front().empty())
+      return forall.emitError(
+          "loom-lower-graph-memory: graph-owned scf.forall must be in "
+          "effect form before fixed-lane lowering");
+  }
+  if (auto parallel = ::llvm::dyn_cast<::mlir::scf::ParallelOp>(op)) {
+    if (!parallel.getInitVals().empty() || parallel.getNumResults() != 0)
+      return parallel.emitError(
+          "loom-lower-graph-memory: graph-owned scf.parallel reductions "
+          "must be normalized before fixed-lane lowering");
+  }
+  auto domain = getFixedParallelDomain(op);
+  if (!domain)
+    return op->emitError(
+        "loom-lower-graph-memory: selected graph-owned parallel SCF requires "
+        "a fixed compile-time lane domain");
+  if (::llvm::any_of(domain->step, [](int64_t step) { return step <= 0; }))
+    return op->emitError(
+        "loom-lower-graph-memory: selected graph-owned parallel SCF requires "
+        "positive fixed lane steps");
+  return ::mlir::success();
+}
+
+void forEachParallelPoint(
+    const FixedParallelDomain &domain, unsigned dimension,
+    ::llvm::SmallVectorImpl<int64_t> &point,
+    ::llvm::function_ref<void(::llvm::ArrayRef<int64_t>)> callback) {
+  if (dimension == domain.lower.size()) {
+    callback(point);
+    return;
+  }
+  int64_t value = domain.lower[dimension];
+  while (value < domain.upper[dimension]) {
+    point.push_back(value);
+    forEachParallelPoint(domain, dimension + 1, point, callback);
+    point.pop_back();
+    if (value > std::numeric_limits<int64_t>::max() - domain.step[dimension])
+      break;
+    value += domain.step[dimension];
+  }
+}
+
 bool isCompilerOwnedControlUse(::mlir::OpOperand &use) {
   ::mlir::Operation *owner = use.getOwner();
   if (auto load = ::llvm::dyn_cast<::dataflow::LoadOp>(owner))
@@ -86,11 +214,6 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
       to, [&](::mlir::OpOperand &use) { return isUseInside(use, region); });
 }
 
-bool hasSelectedParallelProvenance(::mlir::Operation *op) {
-  return op->hasAttr("loom.parallel_group") ||
-         op->hasAttr("loom.parallel_schedule") || op->hasAttr("mapping");
-}
-
 ::mlir::LogicalResult checkOneGraph(::dataflow::GraphOp graph) {
   ::mlir::Block &entry = graph.getBody().front();
   if (entry.getNumArguments() == 0 ||
@@ -98,25 +221,16 @@ bool hasSelectedParallelProvenance(::mlir::Operation *op) {
     return graph.emitError(
         "loom-lower-graph-memory: graph entry must start with none");
 
-  ::mlir::Operation *parallel = nullptr;
-  graph.getBody().walk([&](::mlir::Operation *op) {
-    if (!::llvm::isa<::mlir::scf::ParallelOp, ::mlir::scf::ForallOp>(op))
-      return ::mlir::WalkResult::advance();
-    parallel = op;
-    return ::mlir::WalkResult::interrupt();
-  });
-  if (parallel) {
-    if (hasSelectedParallelProvenance(parallel))
-      parallel->emitError("loom-lower-graph-memory: scheduled parallel SCF "
-                          "must be normalized before graph-region lowering");
-    else
-      parallel->emitError()
-          << "loom-lower-graph-memory: raw "
-          << parallel->getName().getStringRef()
-          << " requires a selected schedule and provenance before "
-             "graph-region lowering";
+  ::mlir::WalkResult parallelResult =
+      graph.getBody().walk([&](::mlir::Operation *op) {
+        if (!::llvm::isa<::mlir::scf::ParallelOp, ::mlir::scf::ForallOp>(op))
+          return ::mlir::WalkResult::advance();
+        if (::mlir::failed(checkSelectedParallel(op)))
+          return ::mlir::WalkResult::interrupt();
+        return ::mlir::WalkResult::advance();
+      });
+  if (parallelResult.wasInterrupted())
     return ::mlir::failure();
-  }
 
   ::mlir::WalkResult result = graph.getBody().walk([&](::mlir::Operation *op)
                                                        -> ::mlir::WalkResult {
@@ -188,15 +302,19 @@ bool hasSelectedParallelProvenance(::mlir::Operation *op) {
     }
     if (::llvm::isa<::mlir::scf::SCFDialect>(op->getDialect()) &&
         !::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp,
-                     ::mlir::scf::WhileOp, ::mlir::scf::YieldOp,
-                     ::mlir::scf::ConditionOp>(op)) {
+                     ::mlir::scf::WhileOp, ::mlir::scf::ParallelOp,
+                     ::mlir::scf::ForallOp, ::mlir::scf::YieldOp,
+                     ::mlir::scf::ConditionOp, ::mlir::scf::ReduceOp,
+                     ::mlir::scf::InParallelOp>(op)) {
       op->emitError("loom-lower-graph-memory: unsupported residual SCF "
                     "must be normalized before graph-region lowering");
       return ::mlir::WalkResult::interrupt();
     }
     bool modeled =
         ::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp, ::mlir::scf::WhileOp,
+                    ::mlir::scf::ParallelOp, ::mlir::scf::ForallOp,
                     ::mlir::scf::YieldOp, ::mlir::scf::ConditionOp,
+                    ::mlir::scf::ReduceOp, ::mlir::scf::InParallelOp,
                     ::dataflow::GraphReturnOp>(op) ||
         ::loom::lowering::isSupportedGraphLoweringLeaf(op);
     if (!modeled && (op->getNumRegions() != 0 || op->getNumSuccessors() != 0)) {
@@ -226,6 +344,7 @@ public:
         entry(graph.getBody().front()), anchor(entry.getTerminator()) {}
 
   ::mlir::LogicalResult run() {
+    collectParallelDomains();
     collectPartitions();
     MemoryState initial(partitionCount);
     for (MemoryFrontier &frontier : initial)
@@ -249,6 +368,7 @@ private:
   ::llvm::DenseMap<::mlir::FlatSymbolRefAttr, ::mlir::Value> globalRoots;
   ::llvm::DenseMap<::mlir::Operation *, ::llvm::SmallVector<unsigned, 4>>
       partitionsByAccess;
+  ::llvm::DenseMap<::mlir::Operation *, FixedParallelDomain> parallelDomains;
 
   void setInsertionPoint(::mlir::Location) {
     builder.setInsertionPoint(anchor);
@@ -390,6 +510,17 @@ private:
 
   bool isMemoryLeaf(::mlir::Operation *op) const {
     return static_cast<bool>(getMemoryOperand(op));
+  }
+
+  void collectParallelDomains() {
+    graph.getBody().walk([&](::mlir::Operation *op) {
+      if (!::llvm::isa<::mlir::scf::ParallelOp, ::mlir::scf::ForallOp>(op))
+        return ::mlir::WalkResult::advance();
+      auto domain = getFixedParallelDomain(op);
+      assert(domain && "parallel preflight must establish a fixed lane domain");
+      parallelDomains.try_emplace(op, std::move(*domain));
+      return ::mlir::WalkResult::advance();
+    });
   }
 
   void collectPartitions() {
@@ -648,12 +779,8 @@ private:
     return invariants;
   }
 
-  RegionResult lowerBlock(::mlir::Block &block, ::mlir::Value execution,
-                          MemoryState memory) {
-    ::llvm::SmallVector<::mlir::Operation *, 16> operations;
-    for (::mlir::Operation &op : block.without_terminator())
-      operations.push_back(&op);
-
+  RegionResult lowerOperations(::llvm::ArrayRef<::mlir::Operation *> operations,
+                               ::mlir::Value execution, MemoryState memory) {
     for (::mlir::Operation *op : operations) {
       if (auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(op)) {
         RegionResult result = lowerIf(ifOp, execution, std::move(memory));
@@ -669,6 +796,22 @@ private:
       }
       if (auto whileOp = ::llvm::dyn_cast<::mlir::scf::WhileOp>(op)) {
         RegionResult result = lowerWhile(whileOp, execution, std::move(memory));
+        execution = result.execution;
+        memory = std::move(result.memory);
+        continue;
+      }
+      if (auto parallel = ::llvm::dyn_cast<::mlir::scf::ParallelOp>(op)) {
+        RegionResult result =
+            lowerParallel(parallel.getOperation(), parallel.getRegion().front(),
+                          parallel.getInductionVars(), execution, memory);
+        execution = result.execution;
+        memory = std::move(result.memory);
+        continue;
+      }
+      if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(op)) {
+        RegionResult result =
+            lowerParallel(forall.getOperation(), forall.getRegion().front(),
+                          forall.getInductionVars(), execution, memory);
         execution = result.execution;
         memory = std::move(result.memory);
         continue;
@@ -712,6 +855,90 @@ private:
       }
     }
     return {execution, std::move(memory)};
+  }
+
+  RegionResult lowerBlock(::mlir::Block &block, ::mlir::Value execution,
+                          MemoryState memory) {
+    ::llvm::SmallVector<::mlir::Operation *, 16> operations;
+    for (::mlir::Operation &op : block.without_terminator())
+      operations.push_back(&op);
+    return lowerOperations(operations, execution, std::move(memory));
+  }
+
+  void registerClonedMemoryAccesses(::mlir::Block &source,
+                                    ::mlir::IRMapping &mapping) {
+    source.walk([&](::mlir::Operation *op) {
+      if (::llvm::isa<::mlir::scf::ParallelOp, ::mlir::scf::ForallOp>(op)) {
+        ::mlir::Operation *clone = mapping.lookupOrNull(op);
+        assert(clone && "cloned parallel op must be present in IR mapping");
+        auto domain = parallelDomains.find(op);
+        assert(domain != parallelDomains.end() &&
+               "cloned parallel op must have a fixed domain");
+        parallelDomains.try_emplace(clone, domain->second);
+      }
+      if (!isMemoryLeaf(op))
+        return ::mlir::WalkResult::advance();
+      ::mlir::Operation *clone = mapping.lookupOrNull(op);
+      assert(clone && "cloned memory access must be present in IR mapping");
+      partitionsByAccess.try_emplace(clone, partitionsFor(op));
+      return ::mlir::WalkResult::advance();
+    });
+  }
+
+  RegionResult lowerParallel(::mlir::Operation *parallel, ::mlir::Block &body,
+                             ::mlir::ValueRange inductionVars,
+                             ::mlir::Value execution, MemoryState memory) {
+    auto domain = parallelDomains.find(parallel);
+    assert(domain != parallelDomains.end() &&
+           "parallel preflight must establish a fixed lane domain");
+    ::mlir::Location loc = parallel->getLoc();
+    ::llvm::SmallVector<RegionResult, 4> lanes;
+    ::llvm::SmallVector<int64_t, 4> point;
+    forEachParallelPoint(
+        domain->second, 0, point, [&](::llvm::ArrayRef<int64_t> coordinates) {
+          ::mlir::IRMapping mapping;
+          ::llvm::SmallVector<::mlir::Operation *, 16> laneOperations;
+          builder.setInsertionPoint(parallel);
+          for (auto [iv, coordinate] :
+               ::llvm::zip_equal(inductionVars, coordinates)) {
+            auto constant = ::mlir::arith::ConstantOp::create(
+                builder, loc, builder.getIndexAttr(coordinate));
+            mapping.map(iv, constant.getResult());
+            laneOperations.push_back(constant);
+          }
+          for (::mlir::Operation &op : body.without_terminator())
+            laneOperations.push_back(builder.clone(op, mapping));
+          registerClonedMemoryAccesses(body, mapping);
+          lanes.push_back(lowerOperations(laneOperations, execution, memory));
+        });
+
+    if (lanes.empty()) {
+      parallel->erase();
+      return {execution, std::move(memory)};
+    }
+
+    ::llvm::SmallVector<::mlir::Value, 8> laneEvents;
+    laneEvents.reserve(lanes.size());
+    for (const RegionResult &lane : lanes)
+      laneEvents.push_back(lane.execution);
+    ::mlir::Value outputExecution = joinEvents(laneEvents, loc);
+
+    MemoryState output = memory;
+    for (unsigned partition = 0; partition < partitionCount; ++partition) {
+      ::llvm::SmallVector<::mlir::Value, 8> writes;
+      ::llvm::SmallVector<::mlir::Value, 8> reads;
+      writes.reserve(lanes.size());
+      reads.reserve(lanes.size());
+      for (const RegionResult &lane : lanes) {
+        writes.push_back(lane.memory[partition].write);
+        reads.push_back(lane.memory[partition].read);
+      }
+      ::mlir::Value write = joinEvents(writes, loc);
+      ::mlir::Value read = writes == reads ? write : joinEvents(reads, loc);
+      output[partition] = {write, read};
+    }
+    parallel->erase();
+    return {outputExecution, std::move(output)};
   }
 
   void updateReadFrontiers(::mlir::Operation *op, ::mlir::Value done,
