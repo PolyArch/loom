@@ -25,6 +25,7 @@
 #include <sys/un.h>
 #include <thread>
 #include <type_traits>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -427,6 +428,7 @@ void nonRegularStoredObjectsAreRejectedOnRead() {
   ArtifactStore store(directory.path());
   const CanonicalSemanticBytes bytes = semantic({0x52});
   const ArtifactIdentity identity = finalizeArtifactIdentity(testSchema, bytes);
+  const std::string objectName = formatArtifactIdentityHex(identity);
   const std::string path = objectPath(directory.path(), identity);
 
   llvm::SmallString<128> targetPath(directory.path());
@@ -463,9 +465,8 @@ void nonRegularStoredObjectsAreRejectedOnRead() {
   if (socket == -1)
     fail(__func__, "unable to create stored-object socket: " +
                        llvm::errnoAsErrorCode().message());
-  const std::string socketPath = "/proc/self/fd/" +
-                                 std::to_string(storeDirectory) + "/" +
-                                 formatArtifactIdentityHex(identity);
+  const std::string socketPath =
+      "/proc/self/fd/" + std::to_string(storeDirectory) + "/" + objectName;
   sockaddr_un address{};
   address.sun_family = AF_UNIX;
   require(__func__, socketPath.size() < sizeof(address.sun_path),
@@ -479,6 +480,13 @@ void nonRegularStoredObjectsAreRejectedOnRead() {
                       "artifact_store_corruption");
   if (std::error_code error = llvm::sys::fs::closeFile(socket))
     fail(__func__, "unable to close stored-object socket: " + error.message());
+  int unlinkResult;
+  do {
+    unlinkResult = ::unlinkat(storeDirectory, objectName.c_str(), 0);
+  } while (unlinkResult == -1 && errno == EINTR);
+  if (unlinkResult == -1)
+    fail(__func__, "unable to remove stored-object socket: " +
+                       llvm::errnoAsErrorCode().message());
   if (std::error_code error = llvm::sys::fs::closeFile(storeDirectory))
     fail(__func__,
          "unable to close artifact store directory: " + error.message());
