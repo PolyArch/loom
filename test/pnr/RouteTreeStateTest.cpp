@@ -641,12 +641,18 @@ void rejectsNestedTransactionsAndRollsBackOnDestruction() {
                                  "scratch is already in use");
     requireSuccess(__func__, transaction.bindSource(fixture.root));
     requireSuccess(__func__,
-                   transaction.bindSink(sinkObligationA, fixture.sinkA));
-    const std::array<PnrIndex, 5> pathA{
-        fixture.rootToTrunk, fixture.trunkToA, fixture.branchAToMergeInput,
-        fixture.mergeInputAToOutput, fixture.mergeOutputToSink};
+                   transaction.bindSink(sinkObligationA, fixture.sinkB));
+    const std::array<PnrIndex, 3> pathB{fixture.rootToTrunk, fixture.trunkToB,
+                                        fixture.branchBToSink};
     requireSuccess(
-        __func__, transaction.attachPath(fixture.root, pathA, sinkObligationA));
+        __func__, transaction.attachPath(fixture.root, pathB, sinkObligationA));
+    requireSuccess(__func__,
+                   transaction.bindSink(sinkObligationB, fixture.sinkA));
+    const std::array<PnrIndex, 4> pathA{
+        fixture.trunkToA, fixture.branchAToMergeInput,
+        fixture.mergeInputAToOutput, fixture.mergeOutputToSink};
+    requireSuccess(__func__, transaction.attachPath(fixture.trunk, pathA,
+                                                    sinkObligationB));
   }
   require(__func__, state->isUnrouted() && !state->sourceEndpoint(),
           "transaction destructor did not roll back the candidate");
@@ -711,7 +717,7 @@ void preservesLookupCollisionChainsAfterDeletion() {
   requireSuccess(__func__, state->verify());
 }
 
-void restoresSaturatedLookupAfterWholeNetRollback() {
+void restoresLookupAfterRepeatedSameCapacityRehashes() {
   FrozenRoutingGraphHandle graph = makeCollisionRoutingGraph(__func__);
   const std::array<PnrIndex, 4> oldEndpoints{
       endpoint(__func__, graph, 1100), endpoint(__func__, graph, 1110),
@@ -727,50 +733,53 @@ void restoresSaturatedLookupAfterWholeNetRollback() {
   RouteTreeStateHandle state =
       takeValue(__func__, RouteTreeState::create(graph, 2));
   RouteTreeTransactionScratch scratch;
+  const auto attachTree = [&](RouteTreeTransaction &transaction,
+                              PnrIndex source, PnrIndex sinkA, PnrIndex middle,
+                              PnrIndex sinkB) {
+    requireSuccess(__func__, transaction.bindSource(source));
+    requireSuccess(__func__, transaction.bindSink(sinkObligationA, sinkA));
+    const std::array<PnrIndex, 1> pathA{arc(__func__, graph, source, sinkA)};
+    requireSuccess(__func__,
+                   transaction.attachPath(source, pathA, sinkObligationA));
+    requireSuccess(__func__, transaction.bindSink(sinkObligationB, sinkB));
+    const std::array<PnrIndex, 2> pathB{arc(__func__, graph, source, middle),
+                                        arc(__func__, graph, middle, sinkB)};
+    requireSuccess(__func__,
+                   transaction.attachPath(source, pathB, sinkObligationB));
+  };
+
   RouteTreeTransaction initial =
       takeValue(__func__, state->beginTransaction(scratch));
-  requireSuccess(__func__, initial.bindSource(oldEndpoints[3]));
-  requireSuccess(__func__, initial.bindSink(sinkObligationA, oldEndpoints[0]));
-  const std::array<PnrIndex, 1> oldPathA{
-      arc(__func__, graph, oldEndpoints[3], oldEndpoints[0])};
-  requireSuccess(
-      __func__, initial.attachPath(oldEndpoints[3], oldPathA, sinkObligationA));
-  requireSuccess(__func__, initial.bindSink(sinkObligationB, oldEndpoints[2]));
-  const std::array<PnrIndex, 2> oldPathB{
-      arc(__func__, graph, oldEndpoints[3], oldEndpoints[1]),
-      arc(__func__, graph, oldEndpoints[1], oldEndpoints[2])};
-  requireSuccess(
-      __func__, initial.attachPath(oldEndpoints[3], oldPathB, sinkObligationB));
+  attachTree(initial, oldEndpoints[3], oldEndpoints[0], oldEndpoints[1],
+             oldEndpoints[2]);
   requireSuccess(__func__, initial.commit());
 
-  RouteTreeTransaction replacement =
-      takeValue(__func__, state->beginTransaction(scratch));
-  requireSuccess(__func__, replacement.ripUpWholeNet());
-  requireSuccess(__func__, replacement.bindSource(replacementEndpoints[2]));
-  requireSuccess(
-      __func__, replacement.bindSink(sinkObligationA, replacementEndpoints[0]));
-  const std::array<PnrIndex, 1> replacementPathA{
-      arc(__func__, graph, replacementEndpoints[2], replacementEndpoints[0])};
-  requireSuccess(__func__,
-                 replacement.attachPath(replacementEndpoints[2],
-                                        replacementPathA, sinkObligationA));
-  requireSuccess(
-      __func__, replacement.bindSink(sinkObligationB, replacementEndpoints[1]));
-  const std::array<PnrIndex, 2> replacementPathB{
-      arc(__func__, graph, replacementEndpoints[2], replacementEndpoints[3]),
-      arc(__func__, graph, replacementEndpoints[3], replacementEndpoints[1])};
-  requireSuccess(__func__,
-                 replacement.attachPath(replacementEndpoints[2],
-                                        replacementPathB, sinkObligationB));
-  replacement.rollback();
+  const std::vector<RouteTreeNode> originalNodes(state->nodeStorage().begin(),
+                                                 state->nodeStorage().end());
+  for (unsigned iteration = 0; iteration < 3; ++iteration) {
+    RouteTreeTransaction replacement =
+        takeValue(__func__, state->beginTransaction(scratch));
+    requireSuccess(__func__, replacement.ripUpWholeNet());
+    attachTree(replacement, replacementEndpoints[2], replacementEndpoints[0],
+               replacementEndpoints[3], replacementEndpoints[1]);
+    requireSuccess(__func__, replacement.ripUpWholeNet());
+    attachTree(replacement, oldEndpoints[3], oldEndpoints[0], oldEndpoints[1],
+               oldEndpoints[2]);
+    replacement.rollback();
 
-  for (PnrIndex endpoint : oldEndpoints)
-    require(__func__, state->findNode(endpoint).has_value(),
-            "rollback lost an original lookup entry");
-  for (PnrIndex endpoint : replacementEndpoints)
-    require(__func__, !state->findNode(endpoint).has_value(),
-            "rollback retained a replacement lookup entry");
-  requireSuccess(__func__, state->verify());
+    require(__func__,
+            std::equal(originalNodes.begin(), originalNodes.end(),
+                       state->nodeStorage().begin(),
+                       state->nodeStorage().end()),
+            "rollback changed original node storage");
+    for (PnrIndex endpoint : oldEndpoints)
+      require(__func__, state->findNode(endpoint).has_value(),
+              "rollback lost an original lookup entry");
+    for (PnrIndex endpoint : replacementEndpoints)
+      require(__func__, !state->findNode(endpoint).has_value(),
+              "rollback retained a replacement lookup entry");
+    requireSuccess(__func__, state->verify());
+  }
 }
 
 void checksPnrIndexCapacityBoundaries() {
@@ -808,7 +817,7 @@ int main() {
   keepsFactoryOwnedStateAliveAndInvalidatesExpiredScratch();
   rejectsNestedTransactionsAndRollsBackOnDestruction();
   preservesLookupCollisionChainsAfterDeletion();
-  restoresSaturatedLookupAfterWholeNetRollback();
+  restoresLookupAfterRepeatedSameCapacityRehashes();
   checksPnrIndexCapacityBoundaries();
   return 0;
 }

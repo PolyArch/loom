@@ -50,7 +50,7 @@ RouteTreeTransactionScratch::~RouteTreeTransactionScratch() {
 void RouteTreeTransactionScratch::resetTransaction() {
   deltas_.clear();
   worklist_.clear();
-  lookupSnapshotCount_ = 0;
+  lookupBaselineActive_ = false;
 }
 
 llvm::Error loom::pnr::detail::preflightRouteTreeStateCapacity(
@@ -124,6 +124,8 @@ llvm::Error RouteTreeTransaction::ensureLookupCapacity(PnrIndex requiredCount) {
 }
 
 void RouteTreeTransaction::recordLookupBucket(std::size_t bucket) {
+  if (scratch_->lookupBaselineActive_)
+    return;
   RouteTreeTransactionScratch::Delta delta;
   delta.kind = RouteTreeTransactionScratch::DeltaKind::LookupBucket;
   delta.lookupIndex = bucket;
@@ -212,24 +214,23 @@ void RouteTreeTransaction::eraseLookup(PnrIndex endpoint) {
 
 void RouteTreeTransaction::rehashLookup(std::size_t capacity) {
   std::vector<RouteTreeState::LookupEntry> replacement(capacity);
-  const std::size_t snapshotIndex = scratch_->lookupSnapshotCount_;
-  if (snapshotIndex == scratch_->lookupSnapshots_.size())
-    scratch_->lookupSnapshots_.emplace_back();
-  std::vector<RouteTreeState::LookupEntry> &snapshot =
-      scratch_->lookupSnapshots_[snapshotIndex];
-  snapshot.clear();
-
-  RouteTreeTransactionScratch::Delta delta;
-  delta.kind = RouteTreeTransactionScratch::DeltaKind::LookupTable;
-  delta.lookupIndex = snapshotIndex;
-  delta.lookupTombstoneCount = state_->lookupTombstoneCount_;
-  scratch_->deltas_.push_back(delta);
-  ++scratch_->lookupSnapshotCount_;
-
-  snapshot.swap(state_->endpointSlots_);
+  std::vector<RouteTreeState::LookupEntry> discarded;
+  const bool hadBaseline = scratch_->lookupBaselineActive_;
+  if (!hadBaseline) {
+    RouteTreeTransactionScratch::Delta delta;
+    delta.kind = RouteTreeTransactionScratch::DeltaKind::LookupBaseline;
+    delta.lookupTombstoneCount = state_->lookupTombstoneCount_;
+    scratch_->deltas_.push_back(delta);
+    scratch_->lookupBaselineActive_ = true;
+    scratch_->lookupBaseline_.swap(state_->endpointSlots_);
+  } else {
+    discarded.swap(state_->endpointSlots_);
+  }
   replacement.swap(state_->endpointSlots_);
   state_->lookupTombstoneCount_ = 0;
-  for (const RouteTreeState::LookupEntry &entry : snapshot)
+  const std::vector<RouteTreeState::LookupEntry> &previous =
+      hadBaseline ? discarded : scratch_->lookupBaseline_;
+  for (const RouteTreeState::LookupEntry &entry : previous)
     if (entry.isOccupied())
       insertLookupWithoutDelta(entry.endpoint, entry.slot);
 }
@@ -1039,9 +1040,8 @@ void RouteTreeTransaction::rollback() noexcept {
       state_->endpointSlots_[delta->lookupIndex] = delta->lookupEntry;
       state_->lookupTombstoneCount_ = delta->lookupTombstoneCount;
       break;
-    case RouteTreeTransactionScratch::DeltaKind::LookupTable:
-      state_->endpointSlots_.swap(
-          scratch_->lookupSnapshots_[delta->lookupIndex]);
+    case RouteTreeTransactionScratch::DeltaKind::LookupBaseline:
+      state_->endpointSlots_.swap(scratch_->lookupBaseline_);
       state_->lookupTombstoneCount_ = delta->lookupTombstoneCount;
       break;
     }

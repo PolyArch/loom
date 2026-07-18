@@ -80,7 +80,7 @@ private:
     SourceBinding,
     SinkBinding,
     LookupBucket,
-    LookupTable,
+    LookupBaseline,
   };
 
   struct Delta {
@@ -102,8 +102,8 @@ private:
   std::vector<Delta> deltas_;
   std::vector<PnrIndex> worklist_;
   std::vector<std::uint64_t> pathMarks_;
-  std::vector<std::vector<detail::RouteTreeLookupEntry>> lookupSnapshots_;
-  std::size_t lookupSnapshotCount_ = 0;
+  std::vector<detail::RouteTreeLookupEntry> lookupBaseline_;
+  bool lookupBaselineActive_ = false;
   std::uint64_t pathGeneration_ = 0;
   RouteTreeTransaction *activeTransaction_ = nullptr;
 
