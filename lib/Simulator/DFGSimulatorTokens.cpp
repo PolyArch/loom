@@ -253,6 +253,29 @@ static llvm::Expected<llvm::APInt> parseIntegerBitPattern(llvm::StringRef raw,
   return bits;
 }
 
+static llvm::Expected<llvm::APInt> parsePackedBitPattern(llvm::StringRef raw,
+                                                         unsigned bitWidth) {
+  raw = raw.trim();
+  unsigned radix = 10;
+  if (raw.consume_front("0x") || raw.consume_front("0X"))
+    radix = 16;
+  if (raw.empty() || raw.starts_with("+") || raw.starts_with("-"))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "vector argument is not an unsigned packed integer");
+
+  llvm::APInt bits;
+  if (raw.getAsInteger(radix, bits))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "vector argument is not an unsigned packed integer");
+  if (bits.getActiveBits() > bitWidth)
+    return llvm::createStringError(
+        std::errc::result_out_of_range,
+        "vector argument does not fit its declared bit width");
+  return bits.zextOrTrunc(bitWidth);
+}
+
 llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type) {
   raw = raw.trim();
   if (mlir::isa<mlir::NoneType>(type)) {
@@ -293,6 +316,15 @@ llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type) {
       return llvm::createStringError(std::errc::invalid_argument,
                                      "float argument is not parseable");
     return floatValueToken(value);
+  }
+  if (mlir::isa<mlir::VectorType>(type)) {
+    auto width = tokenTypeBitWidth(type);
+    if (!width)
+      return width.takeError();
+    auto bits = parsePackedBitPattern(raw, *width);
+    if (!bits)
+      return bits.takeError();
+    return tokenFromBitPattern(*bits, type);
   }
   return llvm::createStringError(std::errc::invalid_argument,
                                  "unsupported runtime argument type");

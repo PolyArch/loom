@@ -380,12 +380,14 @@ def Dataflow_DemuxOp : Dataflow_Op<"demux", [Pure, CanonicalDataflowActor]> {
 //===----------------------------------------------------------------------===//
 
 def Dataflow_LoadOp : Dataflow_Op<"load", [CanonicalDataflowActor]> {
-  let summary = "streaming scalar or contiguous vector load";
+  let summary = "streaming scalar-element or contiguous vector load";
   let description = [{
     On the simultaneous arrival of an `%addr : index` token and a
     `%ctrl : none` token, consumes both and fires one memory actor.
-    Scalar data loads `%mem[%addr]`. A fixed-size rank-1 vector result
-    loads contiguous elements starting at `%addr`.
+    A result type exactly equal to the memref element type loads one
+    memory element, including when that element type is itself a vector.
+    Otherwise, a fixed-size rank-1 `vector<NxT>` result loads contiguous
+    elements starting at `%addr` only when `T` is the memref element type.
 
     An optional same-shape `vector<Nxi1>` mask restricts a vector load
     to active lanes. Inactive lanes do not access memory and are
@@ -414,12 +416,14 @@ def Dataflow_LoadOp : Dataflow_Op<"load", [CanonicalDataflowActor]> {
 }
 
 def Dataflow_StoreOp : Dataflow_Op<"store", [CanonicalDataflowActor]> {
-  let summary = "streaming scalar or contiguous vector store";
+  let summary = "streaming scalar-element or contiguous vector store";
   let description = [{
     On the simultaneous arrival of an `%addr : index`, a `%data` value
     and a `%ctrl : none`, consumes all three and fires one memory actor.
-    Scalar data writes `%mem[%addr]`. Fixed-size rank-1 vector
-    data writes contiguous elements starting at `%addr`.
+    Data whose type exactly equals the memref element type writes one
+    memory element, including when that element type is itself a vector.
+    Otherwise, fixed-size rank-1 `vector<NxT>` data writes contiguous
+    elements starting at `%addr` only when `T` is the memref element type.
 
     An optional same-shape `vector<Nxi1>` mask restricts a vector store
     to active lanes. Inactive lanes do not access memory. After all

@@ -3,6 +3,8 @@
 #include "Dataflow/IR/DataflowDialect.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
@@ -40,6 +42,21 @@ module {
       dataflow.serialize %vector, %mask, %group_phase
         : (vector<4xi8>, vector<4xi1>, i1) -> (i8, i1)
     return
+  }
+
+  func.func @structured_vector_memory(
+      %take: i1, %start: none, %idx: index, %value: vector<4xi8>,
+      %mem: memref<?xi8>) -> (vector<4xi8>, none) {
+    %result:2 = scf.if %take -> (vector<4xi8>, none) {
+      %stored = dataflow.store %mem[%idx] %value %start
+          : memref<?xi8>, vector<4xi8>
+      %loaded, %done = dataflow.load %mem[%idx] %stored
+          : memref<?xi8>, vector<4xi8>
+      scf.yield %loaded, %done : vector<4xi8>, none
+    } else {
+      scf.yield %value, %start : vector<4xi8>, none
+    }
+    return %result#0, %result#1 : vector<4xi8>, none
   }
 }
 )mlir";
@@ -283,11 +300,58 @@ void serializeFailureIsAtomic(dataflow::SerializeOp op) {
           "serialize published output on conversion failure");
 }
 
+void structuredVectorMemoryUsesSharedLaneSemantics(mlir::scf::IfOp op) {
+  mlir::Block &entry =
+      op->getParentOfType<mlir::func::FuncOp>().getBody().front();
+  mlir::Value start = entry.getArgument(1);
+  mlir::Value index = entry.getArgument(2);
+  mlir::Value value = entry.getArgument(3);
+  mlir::Value memory = entry.getArgument(4);
+  mlir::Type elementType =
+      mlir::cast<mlir::MemRefType>(memory.getType()).getElementType();
+
+  SimulatorState state;
+  state.channels[&op->getOpOperand(0)].push_back(boolValueToken(true));
+  state.observedOutputs[start].push_back(noneToken());
+  state.observedOutputs[index].push_back(integerValueToken(1));
+  state.observedOutputs[value].push_back(
+      tokenWithBits(value.getType(), 0x44332211U));
+
+  llvm::SmallVector<Token> elements;
+  for (uint64_t byte : {9U, 8U, 7U, 6U, 5U, 4U})
+    elements.push_back(tokenWithBits(elementType, byte));
+  state.memories[memory] = std::make_shared<MemoryValue>(
+      MemoryValue{0, elementType, std::move(elements),
+                  llvm::SmallBitVector(6, /*t=*/true)});
+
+  require(fireStructuredOperation(op, state),
+          "structured vector memory did not fire");
+  require(state.channels[&op->getOpOperand(0)].empty(),
+          "structured vector memory did not consume its condition");
+  expectBits(state.pendingObservedOutputs[op->getResult(0)],
+             op->getResult(0).getType(), {0x44332211U},
+             "structured vector load returned the wrong lane order");
+  llvm::ArrayRef<Token> completions =
+      state.pendingObservedOutputs[op->getResult(1)];
+  require(completions.size() == 1 &&
+              completions.front().kind == TokenKind::None,
+          "structured vector memory did not publish one completion");
+
+  expectBits(state.memories[memory]->elements, elementType,
+             {9, 17, 34, 51, 68, 4},
+             "structured vector store wrote the wrong lanes");
+  require(state.operationFireCounts["dataflow.store"] == 1 &&
+              state.operationFireCounts["dataflow.load"] == 1 &&
+              state.operationFireCounts["scf.if"] == 1,
+          "structured vector memory fired an operation more than once");
+}
+
 } // namespace
 
 int main() {
   mlir::DialectRegistry registry;
-  registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();
+  registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect,
+                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
   mlir::OwningOpRef<mlir::ModuleOp> module =
@@ -297,12 +361,15 @@ int main() {
   dataflow::ParallelizeOp parallelize;
   dataflow::PackOp pack;
   dataflow::SerializeOp serialize;
+  mlir::scf::IfOp structuredVectorMemory;
   llvm::SmallVector<dataflow::UnpackOp, 2> unpacks;
   module->walk([&](dataflow::ParallelizeOp op) { parallelize = op; });
   module->walk([&](dataflow::PackOp op) { pack = op; });
   module->walk([&](dataflow::SerializeOp op) { serialize = op; });
+  module->walk([&](mlir::scf::IfOp op) { structuredVectorMemory = op; });
   module->walk([&](dataflow::UnpackOp op) { unpacks.push_back(op); });
-  require(parallelize && pack && serialize && unpacks.size() == 2,
+  require(parallelize && pack && serialize && structuredVectorMemory &&
+              unpacks.size() == 2,
           "fixture actors are missing");
 
   dataflow::UnpackOp vectorUnpack = unpacks[0];
@@ -318,5 +385,6 @@ int main() {
   packFailureIsAtomic(pack);
   unpackFailureIsAtomic(vectorUnpack);
   serializeFailureIsAtomic(serialize);
+  structuredVectorMemoryUsesSharedLaneSemantics(structuredVectorMemory);
   return 0;
 }

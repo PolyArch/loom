@@ -100,15 +100,19 @@ static llvm::Expected<unsigned> indexBitWidth(mlir::Operation *scope) {
   return supportedBitWidth(width.getFixedValue(), "index");
 }
 
+static std::int64_t byteSizeForBitWidth(std::uint64_t width) {
+  return std::max<std::int64_t>(1, width / 8 + (width % 8 != 0));
+}
+
 llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type,
                                             mlir::Operation *scope) {
   if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
-    return std::max<std::int64_t>(1, (intType.getWidth() + 7) / 8);
+    return byteSizeForBitWidth(intType.getWidth());
   if (mlir::isa<mlir::IndexType>(type)) {
     auto width = indexBitWidth(scope);
     if (!width)
       return width.takeError();
-    return std::max<std::int64_t>(1, (*width + 7) / 8);
+    return byteSizeForBitWidth(*width);
   }
   if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
     if (floatType.isF16())
@@ -124,6 +128,12 @@ llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type,
       return elementSizeOrErr.takeError();
     return static_cast<std::int64_t>(arrayType.getNumElements()) *
            *elementSizeOrErr;
+  }
+  if (mlir::isa<mlir::VectorType>(type)) {
+    auto width = tokenTypeBitWidth(type);
+    if (!width)
+      return width.takeError();
+    return byteSizeForBitWidth(*width);
   }
   return llvm::createStringError(
       std::errc::invalid_argument,
@@ -179,6 +189,12 @@ llvm::Expected<Token> zeroToken(mlir::Type type) {
     return tokenFromBitPattern(llvm::APInt(intType.getWidth(), 0), intType);
   if (mlir::isa<mlir::FloatType>(type))
     return floatValueToken(0.0);
+  if (mlir::isa<mlir::VectorType>(type)) {
+    auto width = tokenTypeBitWidth(type);
+    if (!width)
+      return width.takeError();
+    return tokenFromBitPattern(llvm::APInt(*width, 0), type);
+  }
   return llvm::createStringError(std::errc::invalid_argument,
                                  "unsupported llvm.mlir.zero type: %s",
                                  typeToString(type).c_str());
