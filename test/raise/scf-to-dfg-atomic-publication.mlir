@@ -19,8 +19,10 @@
 // FAILURE-NOT: dataflow.graph private
 // FAILURE-NOT: dataflow.graph.launch
 
-// CHANNEL: stream endpoint conversion is not implemented; spatial candidate cannot be published
-// CHANNEL: "loom.spatial_region"
+// CHANNEL: operation 'dataflow.channel.send' is not a registered canonical Dataflow actor or a supported graph-lowering operation
+// CHANNEL-LABEL: dataflow.thread private @channel_sender
+// CHANNEL: dataflow.channel.send
+// CHANNEL-NOT: loom.spatial_region
 // CHANNEL-NOT: dataflow.graph private
 // CHANNEL-NOT: dataflow.graph.launch
 
