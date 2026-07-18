@@ -62,22 +62,23 @@
 // CHECK-LABEL: dataflow.graph private @sequential_producer_graph(
 // CHECK-SAME: -> i32
 // CHECK: dataflow.stream
-// CHECK: arith.index_cast
-// CHECK: dataflow.mux
+// CHECK: %[[SEQUENCE_ORDINAL:[[:alnum:]_]+]] = arith.index_cast
+// CHECK: dataflow.mux %[[SEQUENCE_ORDINAL]], %{{.*}}, %{{.*}}, %{{.*}} : (index, i32, i32, i32) -> i32
 // CHECK-NOT: dataflow.channel
 // CHECK: dataflow.graph.return values() streams(%{{.*}} : i32)
 // CHECK-LABEL: dataflow.graph private @sequential_consumer_graph(
-// CHECK-SAME: %{{.*}}: none, %{{.*}}: i32, %{{.*}}: memref<2xi32>)
+// CHECK-SAME: %{{.*}}: none, %[[SEQUENCE_INPUT:[[:alnum:]_]+]]: i32, %{{.*}}: memref<2xi32>)
 // CHECK: dataflow.stream
-// CHECK: dataflow.demux
+// CHECK: %[[SEQUENCE_LANE:[[:alnum:]_]+]] = arith.trunci
+// CHECK: dataflow.demux %[[SEQUENCE_LANE]], %[[SEQUENCE_INPUT]] : (i1, i32) -> (i32, i32)
 // CHECK: dataflow.store
 // CHECK: dataflow.store
 // CHECK-NOT: dataflow.channel
 // CHECK: dataflow.graph.return
 // CHECK-LABEL: dataflow.graph private @branch_relay_graph(
-// CHECK-SAME: -> i32
-// CHECK: dataflow.demux
-// CHECK: dataflow.mux
+// CHECK-SAME: %{{.*}}: none, %[[BRANCH_SELECT:[[:alnum:]_]+]]: i1, %[[BRANCH_INPUT:[[:alnum:]_]+]]: i32) -> i32
+// CHECK: dataflow.demux %[[BRANCH_SELECT]], %[[BRANCH_INPUT]] : (i1, i32) -> (i32, i32)
+// CHECK: dataflow.mux %[[BRANCH_SELECT]], %{{.*}}, %{{.*}} : (i1, i32, i32) -> i32
 // CHECK-NOT: dataflow.channel
 // CHECK: dataflow.graph.return values() streams(%{{.*}} : i32)
 // CHECK-NOT: loom.spatial_region
