@@ -58,7 +58,7 @@ Preflight completes before any process is spawned. It rejects:
 - a missing, non-regular, non-executable, or non-absolute executable path;
 - an empty `argv` or strings that cannot be represented by POSIX `execve`;
 - a missing, non-directory, non-writable, or non-absolute scratch path;
-- empty artifact identities, missing input paths, or non-absolute input paths;
+- missing input paths or non-absolute input paths;
 - invalid or duplicate environment overlay names;
 - negative timeouts;
 - empty resource or license binding identities;
