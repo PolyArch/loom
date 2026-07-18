@@ -11,6 +11,24 @@ dataflow.graph private @g_bad_input_segments(%ctrl: none, %x: i32)
 }
 
 // -----
+// Input segment vectors have exactly value/stream/memory entries.
+// expected-error @+1 {{input_segments must contain exactly three nonnegative sizes whose sum (1) matches the function input count (1)}}
+dataflow.graph private @g_short_input_segments(%ctrl: none, %x: i32) -> ()
+    attributes {input_segments = array<i32: 1, 0>,
+                result_segments = array<i32: 0, 0, 0>} {
+  dataflow.graph.return %ctrl : none
+}
+
+// -----
+// Result segment vectors have exactly value/stream/memory entries.
+// expected-error @+1 {{result_segments must contain exactly three nonnegative sizes whose sum (1) matches the function result count (1)}}
+dataflow.graph private @g_long_result_segments(%ctrl: none, %x: i32) -> i32
+    attributes {input_segments = array<i32: 1, 0, 0>,
+                result_segments = array<i32: 1, 0, 0, 0>} {
+  dataflow.graph.return %ctrl, %x : none, i32
+}
+
+// -----
 // A scalar cannot be declared as a memory capability.
 // expected-error @+1 {{memory input #0 has non-capability type 'i32'}}
 dataflow.graph private @g_scalar_memory(%ctrl: none, %x: i32) -> ()

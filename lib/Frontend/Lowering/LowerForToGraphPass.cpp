@@ -32,12 +32,13 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/CallInterfaces.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
-#include "mlir/Transforms/RegionUtils.h"
 #include "mlir/Transforms/Passes.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
@@ -281,15 +282,39 @@ struct ClassifiedGraphValues {
   }
 };
 
+::llvm::SmallVector<unsigned, 8> graphPortOrder(::mlir::ValueRange values) {
+  ::llvm::SmallVector<unsigned, 8> order;
+  order.reserve(values.size());
+  for (bool memory : {false, true}) {
+    for (auto [index, value] : ::llvm::enumerate(values)) {
+      if (::dataflow::DataflowDialect::isMemoryCapabilityType(
+              value.getType()) == memory)
+        order.push_back(index);
+    }
+  }
+  return order;
+}
+
 ClassifiedGraphValues classifyGraphValues(::mlir::ValueRange values) {
   ClassifiedGraphValues classified;
-  for (::mlir::Value value : values) {
+  for (unsigned index : graphPortOrder(values)) {
+    ::mlir::Value value = values[index];
     if (::dataflow::DataflowDialect::isMemoryCapabilityType(value.getType()))
       classified.memories.push_back(value);
     else
       classified.values.push_back(value);
   }
   return classified;
+}
+
+template <typename GetAttr>
+::llvm::SmallVector<::mlir::DictionaryAttr, 8>
+reorderGraphInterfaceAttrs(::mlir::ValueRange values, GetAttr getAttr) {
+  ::llvm::SmallVector<::mlir::DictionaryAttr, 8> attrs;
+  attrs.reserve(values.size());
+  for (unsigned index : graphPortOrder(values))
+    attrs.push_back(getAttr(index));
+  return attrs;
 }
 
 ::llvm::SmallVector<::mlir::NamedAttribute, 2>
@@ -726,6 +751,15 @@ struct LowerForToGraphPass
     ::llvm::SmallVector<::mlir::Value, 8> orderedInputs = graphInputs.ordered();
     ::llvm::SmallVector<::mlir::Value, 8> orderedResults =
         graphResults.ordered();
+    auto graphArgAttrs = reorderGraphInterfaceAttrs(
+        funcEntry.getArguments(), [&](unsigned index) {
+          return ::mlir::function_interface_impl::getArgAttrDict(func, index);
+        });
+    auto graphResultAttrs =
+        reorderGraphInterfaceAttrs(returnOp.getOperands(), [&](unsigned index) {
+          return ::mlir::function_interface_impl::getResultAttrDict(func,
+                                                                    index);
+        });
     ::llvm::SmallVector<::mlir::Type, 8> inputTypes;
     for (::mlir::Value value : orderedInputs)
       inputTypes.push_back(value.getType());
@@ -740,6 +774,9 @@ struct LowerForToGraphPass
     auto graph = ::dataflow::GraphOp::create(builder, loc, graphName, graphType,
                                              segmentAttrs);
     graph.setSymVisibilityAttr(builder.getStringAttr("private"));
+    ::mlir::function_interface_impl::setAllArgAttrDicts(graph, graphArgAttrs);
+    ::mlir::function_interface_impl::setAllResultAttrDicts(graph,
+                                                           graphResultAttrs);
 
     ::mlir::Block *graphEntry = builder.createBlock(&graph.getBody());
     graphEntry->addArgument(noneType, loc);
@@ -1215,8 +1252,10 @@ struct LowerForToGraphPass
       graphResults.memories.append(spatial.getMemoryResults().begin(),
                                    spatial.getMemoryResults().end());
 
+      ::llvm::SmallVector<::mlir::Value, 8> orderedInputs =
+          graphInputs.ordered();
       ::llvm::SmallVector<::mlir::Type, 8> inputTypes;
-      for (::mlir::Value value : graphInputs.ordered())
+      for (::mlir::Value value : orderedInputs)
         inputTypes.push_back(value.getType());
       ::llvm::SmallVector<::mlir::Type, 4> resultTypes;
       for (::mlir::Value value : graphResults.ordered())
@@ -1231,6 +1270,20 @@ struct LowerForToGraphPass
       auto graph = ::dataflow::GraphOp::create(
           builder, loc, graphName, functionType, segmentAttrs);
       graph.setSymVisibilityAttr(builder.getStringAttr("private"));
+      ::llvm::SmallVector<::mlir::DictionaryAttr, 8> graphArgAttrs;
+      graphArgAttrs.reserve(orderedInputs.size());
+      for (::mlir::Value input : orderedInputs) {
+        auto argument = ::llvm::dyn_cast<::mlir::BlockArgument>(input);
+        if (!argument || argument.getOwner() != &threadEntry ||
+            argument.getArgNumber() >=
+                thread.getFunctionType().getNumInputs()) {
+          graphArgAttrs.push_back({});
+          continue;
+        }
+        graphArgAttrs.push_back(::mlir::function_interface_impl::getArgAttrDict(
+            thread, argument.getArgNumber()));
+      }
+      ::mlir::function_interface_impl::setAllArgAttrDicts(graph, graphArgAttrs);
 
       ::mlir::Block *graphEntry = builder.createBlock(&graph.getBody());
       graphEntry->addArgument(builder.getNoneType(), loc);

@@ -177,6 +177,9 @@ ParseResult ThreadOp::parse(OpAsmParser &parser, OperationState &result) {
   auto funcType = builder.getFunctionType(argTypes, /*results=*/{});
   result.addAttribute(getFunctionTypeAttrName(result.name),
                       TypeAttr::get(funcType));
+  call_interface_impl::addArgAndResultAttrs(
+      builder, result, arguments, resultAttrs, getArgAttrsAttrName(result.name),
+      getResAttrsAttrName(result.name));
 
   // Helper: parse a parenthesized comma-separated list of typed
   // arguments into the given vector. Allows an empty list `()`.
@@ -240,20 +243,10 @@ void ThreadOp::print(OpAsmPrinter &p) {
   p.printSymbolName(getSymName());
   ArrayRef<Type> argTypes = getArgumentTypes();
   Block *entry = getBody().empty() ? nullptr : &getBody().front();
-  // Print function-signature arguments inline as the function's
-  // argument list. When the op is external (no body) we have to
-  // synthesize them from `argTypes`.
-  p << '(';
-  for (size_t i = 0, e = argTypes.size(); i < e; ++i) {
-    if (i)
-      p << ", ";
-    if (entry) {
-      p.printRegionArgument(entry->getArgument(i));
-    } else {
-      p.printType(argTypes[i]);
-    }
-  }
-  p << ')';
+  call_interface_impl::printFunctionSignature(
+      p, argTypes, getArgAttrsAttr(), /*isVariadic=*/false, ::mlir::TypeRange{},
+      getResAttrsAttr(), &getBody(),
+      /*printEmptyResult=*/false);
 
   // Print the optional `ctrl ( ... )` and `iv ( ... )` clauses.
   if (entry && entry->getNumArguments() > argTypes.size()) {
