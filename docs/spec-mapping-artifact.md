@@ -5,34 +5,31 @@ Mapping Artifact. A Mapping Artifact records one selected realization of
 one finalized Canonical Dataflow Program on one finalized Fabric Hardware
 Description. It does not mutate either input.
 
-The persistent model has one Mapping schema. TechMapping and Physical
-Mapping are immutable artifacts checked under different closed verifier
-profiles of that schema. They are not competing formats or mutable states
-of one artifact.
+The persistent model has one Mapping artifact family. Its target immutable,
+profile-complete outputs are TechMapping, SpatialMapping, and SystemMapping.
+They are not competing formats or mutable states of one artifact. The current
+neutral C++ draft implements TechMapping only; it does not define placeholder
+SpatialMapping or SystemMapping records.
 
 Persistent identity and reference rules are specified by
 `docs/spec-mapping-identity.md`.
 
-## Artifact Header
+## Persistent Schema Boundary
 
-Every Mapping Artifact has one canonical header containing at least:
+The persistent Mapping MLIR schema is not closed. This document does not
+assign a Mapping schema version, profile discriminator spelling, header field
+order, assembly syntax, serializer, or compatibility policy.
 
-* a Mapping schema identity and version in `X.Y` form;
-* one closed completeness profile, initially `tech_mapping` or
-  `physical_mapping`;
-* its content-derived artifact identity; and
-* the exact upstream artifact references required by that profile.
+Any future persistent Mapping Artifact must use the Common artifact identity
+and schema-version contract and carry the exact upstream references required
+by its completeness profile. Those generic requirements do not make the
+current C++ structures a persistent schema authority.
 
-`X` denotes a breaking or incompatible schema change. `Y` denotes a
-non-breaking schema improvement. A profile is a verifier contract, not a
-lifecycle state. Exact Mapping dialect assembly syntax is outside this
-document.
-
-The current Mapping schema version is `2.0`. Version `2.0` requires the
-complete semantic encoding, configured-function projection, and exact
-correspondence witness described by this specification. Version `1.x` does not
-carry those required semantics and is not accepted through a compatibility
-adapter.
+`TechMappingDraft` and `ValidatedTechMapping` are nonpersistent construction
+and validation types. Their header carries only the exact Canonical Dataflow
+Program and Fabric Hardware Description identities needed by the implemented
+verifier. It does not encode a Mapping schema version or a future persistent
+profile representation.
 
 ## Semantic Owners
 
@@ -58,21 +55,26 @@ implementation families, load/store operation-port templates, explicit typed
 implementation boundary ports, normalized semantic encodings, typed internal
 connectivity, source-endpoint fanout capacities, and one-beat access contracts.
 
-The TechMapping-profile Mapping Artifact owns the selected logical
+The TechMapping profile owns the selected logical
 realization relation between those exact artifacts. It owns
 target-specific compute actor grouping, selected FU realization,
 software-to-FU correspondence, the selected Fabric-defined valid semantic
 encoding, and Memory Realizations against exact Fabric memory semantics.
 
-The Physical-Mapping-profile artifact owns the concrete physical
-realization and legality facts added after TechMapping. At this level only
-the ownership categories are fixed: resource binding, communication
-realization, temporal and resource use, and storage realization. Their
-persistent record schemas remain deferred.
+The SpatialMapping profile consumes one exact immutable TechMapping
+predecessor and owns selected spatial binding, communication realization,
+event-relative resource use, tags, buffers, memory/service realization, and
+mapping-visible physical configuration. Its exact persistent records remain
+open.
 
-Evaluation Evidence owns measured or estimated results, cost, metrics,
-diagnostics, and fidelity. It references Mapping Artifact identities and
-must not copy mapping decisions into a second authority.
+The SystemMapping profile owns cross-AccCore execution binding, service
+realization, and resource use. Its exact persistent records and SpatialMapping
+cardinality remain open.
+
+Evaluation Evidence owns measured or estimated observations and metrics. The
+central DSE controller owns objectives, ranking, acceptance, and promotion.
+Failures and diagnostics are ordinary typed results or reports. None may copy
+Mapping decisions into a second authority.
 
 ## Immutability
 
@@ -80,14 +82,14 @@ A persistent Mapping Artifact is finalized, immutable, serializable, and
 profile-verifiable. Producers may use mutable builders, solver state, or
 failed candidates internally, but those objects are not Mapping Artifacts.
 
-There is no persistent `partial` to `complete` lifecycle. A TechMapping
-artifact either satisfies its profile for its declared coverage or is
-invalid. A Physical Mapping either composes with its exact TechMapping
-predecessor to satisfy its profile or is invalid.
+There is no persistent `partial`, `rejected`, or `degraded` lifecycle. A
+Mapping artifact either satisfies its complete profile contract or is
+invalid.
 
-Rejected candidates, incomplete construction state, search queues, and
-failed-attempt diagnostics belong to producer state or Evaluation
-Evidence.
+Rejected candidates, incomplete construction state, search queues,
+unsupported results, budget exhaustion, and failed-attempt diagnostics belong
+to producer state, ordinary reports, or Evaluation Evidence when an
+evaluation was requested.
 
 ## Exact Input Coupling
 
@@ -106,20 +108,24 @@ but it cannot replace the exact Fabric artifact identity in a persistent
 reference. A different Fabric identity requires a different TechMapping
 artifact.
 
-A Physical Mapping references exactly one immutable TechMapping
-predecessor. It inherits the predecessor's Canonical Dataflow Program,
-Fabric Hardware Description, coverage, Compute Realizations, and Memory
-Realizations. It must not restate or copy those facts as independent
-authority.
+A SpatialMapping references exactly one immutable TechMapping predecessor. It
+inherits the predecessor's Canonical Dataflow Program, Fabric Hardware
+Description, coverage, Compute Realizations, and Memory Realizations. It must
+not restate or copy those facts as independent authority.
+
+SystemMapping lineage must reference exact immutable predecessors. Its exact
+SpatialMapping set cardinality remains open and must not be approximated with
+dummy records.
 
 Conceptually:
 
 ```text
 TechMapping = realization witness for exact D + F
-PhysicalMapping = exact TechMapping predecessor + physical delta
+SpatialMapping = exact TechMapping predecessor + spatial realization
 ```
 
-This relation does not define final Mapping assembly syntax.
+SystemMapping predecessor cardinality remains open. These relations do not
+define final Mapping assembly syntax.
 
 ## TechMapping Profile
 
@@ -246,8 +252,9 @@ The implemented neutral record contains:
   correspondences;
 * the minimal graph-port-to-memory-implementation-boundary correspondence
   required by selected internal graph-boundary connections; and
-* internal-edge witnesses pairing absorbed canonical edge references with
-  selected Fabric-defined typed internal connections.
+* internal-edge witnesses pairing an exact Dataflow artifact identity and
+  typed producer/consumer endpoint pair with a selected Fabric-defined typed
+  internal connection.
 
 Fabric internal connections use one endpoint variant: an explicit memory
 implementation boundary port or a memory operation-template port. Typed and
@@ -300,29 +307,30 @@ Graph memory imports and exports belong to the capability plane. They are
 accounted for by logical roots and service obligations, never by ordinary
 Dataflow edges or token sink accounting.
 
-Importers must not infer correspondence from textual order, symbol
-spelling, paths, or port names. Canonical fanout groups edges with the same
-exact canonical source endpoint into one multi-sink logical obligation; a
-duplicate persistent TechMapping netlist is not another authority.
+Importers must not infer correspondence from textual order, symbol spelling,
+paths, port names, edge numbers, printer order, or builder insertion order. A
+software edge is uniquely identified by its typed producer endpoint plus typed
+consumer endpoint. Canonical fanout groups edges with the same exact producer
+endpoint into one multi-sink logical obligation; a duplicate persistent
+TechMapping netlist is not another authority.
 
-## Physical Mapping Profile
+## Target Spatial And System Profiles
 
-A Physical Mapping is exactly one immutable TechMapping predecessor plus
-a physical delta. The delta owns only concrete physical realization facts
-and must preserve every predecessor Compute Realization and Memory
-Realization.
+A SpatialMapping is exactly one immutable TechMapping predecessor plus
+selected spatial realization facts. It must preserve every predecessor
+Compute Realization and Memory Realization.
 
-Physical Mapping must not regroup actors, select another FU
-implementation, change the selected semantic encoding, reinterpret FU
-configuration, replace a selected memory implementation or operation
-template, semantic encoding, logical-root association, or internal-edge
-witness, or guess software-to-hardware correspondence. Any such change requires
-a new TechMapping artifact.
+SpatialMapping must not regroup actors, select another FU implementation,
+change the selected semantic encoding, reinterpret FU configuration, replace a
+selected memory implementation or operation template, semantic encoding,
+logical-root association, or internal-edge witness, or guess software-to-
+hardware correspondence. Any such change requires a new TechMapping artifact.
 
-The exact physical record families and their completeness rules are not
-defined here. Route trees, resource-time claims, instruction slots,
-temporal tags, schedules, buffers, memory bindings, boundary realization,
-and related schemas remain subject to their owning discussions and specs.
+The confirmed SystemMapping persistent families are `ExecutionBinding`,
+`ServiceRealization`, and `ResourceUse`. Their fields and cardinality are not
+defined here. Exact SpatialMapping Route Tree, resource-use, Physical Tag,
+buffer, memory/service, and mapping-visible configuration records also remain
+open. No placeholder records may be introduced for either profile.
 
 ## Derived Projections And Caches
 
@@ -577,15 +585,16 @@ concrete-FU and correlated context candidates plus concrete memory-occurrence
 and external operation-endpoint candidates. It contains no selected FU,
 selected context, selected memory occurrence, selected endpoint,
 configuration, route, tag, buffer, resource-time, sharing, or physical-memory
-decision. It is not a Physical Mapping record. Both projections are reached
+decision. It is not a SpatialMapping record. Both projections are reached
 only through the exact five-input authority boundary. They are not the
 complete `FrozenModel`; config, constraint, search-state, and complete physical
 legality projections remain outside the implemented structural views.
 
-The structural subview intentionally retains canonical edge identities, dense
-terminal references, and deletable occurrence and endpoint-domain caches. It
-must not reinterpret Fabric facts or create a second FU parentage,
-instruction-context-capacity, local-connectivity, or legacy routing authority.
+The structural subview intentionally retains canonical endpoint-pair edge
+identity, dense terminal references, and deletable occurrence and endpoint-
+domain caches. It must not reinterpret Fabric facts or create a second FU
+parentage, instruction-context-capacity, local-connectivity, or legacy routing
+authority.
 
 A cache must not transfer mapping coverage, artifact-local references,
 current-Fabric legality conclusions, or physical decisions into another
@@ -632,9 +641,10 @@ The TechMapping profile verifies at least:
 * coherent service-domain consistency for each logical memory root;
 * correlated one-beat access width, size, required alignment, and narrow-store
   legality;
-* selected FU and encoding ownership; and
+* selected FU and encoding ownership;
 * configured-function equality for the actor group, including exact semantic
-  types, attributes, ordered edges, fanout, and boundary correspondence;
+  types, attributes, endpoint-pair topology, fanout, and boundary
+  correspondence; and
 * all required typed realization and representation obligations.
 
 Port legality uses exact port kind and intrinsic role plus compatible payload
@@ -642,17 +652,17 @@ capacity. In particular, `bits` and `bits_tag` do not correspond implicitly,
 while an untagged physical payload may be wider than the software requirement
 under the low-bit-aligned widening and narrowing rules owned by Fabric.
 
-The Physical Mapping profile verifies the exact immutable predecessor,
-rejects copied or conflicting TechMapping authority, and checks that the
-physical delta preserves the predecessor. Detailed physical completeness
-checks remain deferred with their record schemas.
+SpatialMapping and SystemMapping verification must reject copied or
+conflicting predecessor authority and recompute closure from their exact inputs
+and selected records. Their detailed completeness checks remain deferred with
+their persistent schemas.
 
 ## Non-Goals
 
 This document does not define:
 
 * Mapping dialect assembly syntax;
-* physical delta record schemas;
+* SpatialMapping and SystemMapping record schemas;
 * route-tree, resource-time, schedule, tag, buffer, memory, or boundary
   schemas;
 * the complete five-input `FrozenModel` and later physical PnR data layout;

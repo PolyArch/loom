@@ -244,7 +244,8 @@ report contract.
 ## Relationship To Runtime
 
 Runtime execution may produce or update dynamic run evidence such as
-launch status, simulator status, output buffers, and fallback records.
+launch status, simulator status, output buffers, and execution-disposition
+records.
 Runtime must not mutate source IR, Fabric IR, or mapping artifacts.
 The report bundle records runtime evidence by reference.
 

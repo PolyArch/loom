@@ -21,12 +21,11 @@ class ValidatedTechMappingAccess;
 } // namespace detail
 
 enum class MappingErrorCode {
-  UnsupportedSchemaVersion,
-  WrongMappingProfile,
   ArtifactIdentityMismatch,
   DuplicateEntityId,
-  ForeignEntityReference,
+  ForeignReference,
   UnresolvedEntityId,
+  UnresolvedEdgeReference,
   WrongEntityKind,
   InvalidPortConnection,
   InvalidComputeOccurrence,
@@ -83,7 +82,6 @@ public:
   ValidatedTechMapping &operator=(ValidatedTechMapping &&) = delete;
 
   const ArtifactIdentity &identity() const { return identity_; }
-  MappingProfile profile() const { return draft_.header.profile; }
   const MappingDraftHeader &header() const { return draft_.header; }
   llvm::ArrayRef<GraphRef> coveredGraphs() const {
     return draft_.coveredGraphs;

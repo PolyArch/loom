@@ -76,7 +76,7 @@ llvm::Expected<const FuDescriptor *> resolveFuImplementation(
     const EntityKinds &kinds,
     const std::map<std::uint64_t, const FuDescriptor *> &functionalUnits) {
   if (reference.artifact != fabric)
-    return mappingError(MappingErrorCode::ForeignEntityReference,
+    return mappingError(MappingErrorCode::ForeignReference,
                         "FU occurrence names a foreign implementation");
   const auto kind = kinds.find(reference.entity.value());
   if (kind == kinds.end())
@@ -93,7 +93,7 @@ resolveMemoryImplementation(const MemoryImplementationRef &reference,
                             const ArtifactIdentity &fabric,
                             const EntityKinds &kinds) {
   if (reference.artifact != fabric)
-    return mappingError(MappingErrorCode::ForeignEntityReference,
+    return mappingError(MappingErrorCode::ForeignReference,
                         "memory occurrence names a foreign implementation");
   const auto kind = kinds.find(reference.entity.value());
   if (kind == kinds.end())

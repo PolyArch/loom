@@ -551,7 +551,7 @@ void rejectsDuplicateForeignWrongKindAndWrongDirectionReferences() {
     TestCase testCase = makeTraversalCase();
     testCase.fabric.transportArcs.front().source.artifact = artifact(99);
     expectMapError(__func__, testCase,
-                   MappingErrorCode::ForeignEntityReference);
+                   MappingErrorCode::ForeignReference);
   }
   {
     TestCase testCase = makeTraversalCase();

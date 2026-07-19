@@ -59,7 +59,7 @@ Input artifacts:
 * ordinary compiler flags;
 * runtime input data;
 * selected Fabric ADG;
-* selected mapping and simulator profiles;
+* selected TechMapping, PnR, and simulator configurations;
 * selected RTL and FPA profiles when available.
 
 Required generated artifacts:
@@ -69,11 +69,12 @@ Required generated artifacts:
 * raised MLIR;
 * dataflow IR;
 * DFG-sim report;
-* mapping artifact;
+* validated TechMapping and one complete SpatialMapping;
 * CGRA-sim report;
 * simulation comparison report;
 * simulator metric comparison table when comparable metrics exist;
-* runtime package or launch descriptor;
+* deployable runtime package with separate Thread Dispatch and Spatial Launch
+  bindings when those consumer schemas are available;
 * RTL manifest and SystemVerilog source set;
 * EDA reports when selected;
 * FPA report;
@@ -118,7 +119,7 @@ Input artifacts:
 
 * ADG Builder C++ description with one HostCore and at least two
   heterogeneous AccCores;
-* explicit non-mesh links;
+* explicit non-mesh Transport Architecture connectivity;
 * memory hierarchy and external memory;
 * coherence and consistency declarations.
 
@@ -131,9 +132,10 @@ Required generated artifacts:
 * EDA/FPA report for at least one selected profile;
 * hardware candidate report bundle.
 
-Minimum positive behavior: every hardware connection is represented by
-explicit one-to-one directed channel links, and the emitted hardware
-passes Fabric verification.
+Minimum positive behavior: every hardware connection is represented by typed
+resources, endpoints, and directed connectivity, and the emitted hardware
+passes Fabric verification. Exact system record syntax remains open until the
+typed Fabric schema is closed.
 
 ### Regular-Topology Hardware Demonstrator
 
@@ -144,7 +146,7 @@ Input artifacts:
 
 * ADG Builder C++ description for a mesh-like, array-like, or
   systolic-like accelerator;
-* explicit links for every adjacency;
+* explicit typed connectivity for every adjacency;
 * optional `grid2d` or `grid3d` visualization metadata.
 
 Required generated artifacts:
@@ -160,21 +162,23 @@ lowering, or FPA estimation.
 
 ### Mapped Workload Demonstrator
 
-Purpose: prove the boundary between PnR and CGRA-sim and the combined
-cycle/frequency/power/area report.
+Purpose: prove TechMapping production, the boundary between Spatial PnR and
+CGRA-sim, and the combined cycle/frequency/power/area report.
 
 Input artifacts:
 
 * supported dataflow workload;
 * selected Fabric ADG;
+* TechMapping producer or search configuration;
 * PnR configuration;
 * runtime input data;
 * selected simulator and FPA profiles.
 
 Required generated artifacts:
 
-* mapping artifact;
-* mapping verifier report;
+* validated TechMapping;
+* one complete SpatialMapping emitted by Spatial PnR;
+* TechMapping and SpatialMapping verifier reports;
 * CGRA-sim report;
 * DFG-sim report for comparison;
 * simulation comparison report;
@@ -185,10 +189,11 @@ Required generated artifacts:
 * intermediate artifact gate rows covering mapping, simulation, FPA,
   and reporting evidence.
 
-Minimum positive behavior: PnR emits the mapping artifact, CGRA-sim
-consumes it without choosing a new mapping, functional results match
-DFG-sim for a legal mapping, and the full-stack report cites the cycle
-and FPA sources separately.
+Minimum positive behavior: TechMapping search or another validated producer
+emits the exact TechMapping predecessor, Spatial PnR consumes that predecessor
+and emits one complete SpatialMapping, CGRA-sim consumes the SpatialMapping
+without choosing a new mapping, functional results match DFG-sim for a legal
+mapping, and the full-stack report cites the cycle and FPA sources separately.
 
 ## Negative Demonstrators
 
@@ -199,7 +204,7 @@ masked:
 * compatibility-mode app run produces a wrong oracle result;
 * dataflow lowering requests unsupported scope;
 * PnR has no legal route over explicit topology;
-* CGRA-sim receives a stale mapping artifact;
+* CGRA-sim receives a stale SpatialMapping;
 * RTL lowering sees an unsupported Fabric primitive;
 * EDA profile is missing or fails activation;
 * FPA receives incomplete activity evidence;

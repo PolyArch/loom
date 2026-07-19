@@ -49,7 +49,7 @@ the production contract.
 
 * Runs before graph extraction so mapped parallel work is represented inside
   module-scope `dataflow.thread` definitions.
-* Materializes explicit thread launch dependencies and preserves ScalarCore
+* Materializes explicit thread launch dependencies and preserves InstructionCore
   code outside promoted regions.
 * Copies source function argument dictionaries onto captured thread payload
   arguments in capture order. The separately introduced ctrl and IV arguments
@@ -195,7 +195,7 @@ the production contract.
   artifact or simulator consumer that requires such correlation.
 * There is no direct PnR frontend in this implementation. Mapping MLIR
   persistence and parsing, a fully resolved PnR Config, search, and the
-  Physical Mapping delta remain unimplemented.
+  persistent SpatialMapping schema remain unimplemented.
 
 ## 2. Testing Strategy
 
@@ -273,7 +273,7 @@ The Part 3 slice is coherent only when all of the following hold:
 * Validated TechMapping plus `FrozenRealizationGraph` and
   `FrozenRoutingGraph` are available as native C++ library boundaries.
   Mapping MLIR persistence/parser, fully resolved PnR Config, search, and the
-  Physical Mapping delta are explicit unimplemented boundaries.
+  persistent SpatialMapping records are explicit unimplemented boundaries.
 * Focused raise, DFG, simulator, Mapping, PnR-index, Fabric-Tech, and ADG suites
   pass, followed by the full locked `check-fabric` target and
   `git diff --check`.
@@ -297,8 +297,10 @@ The Part 3 slice is coherent only when all of the following hold:
   ConfiguredFunction projection anchors where semantic correspondence changes.
 * A future PnR frontend must begin from canonical Mapping MLIR and a fully
   resolved PnR Config, call the existing native validation/freeze APIs, and
-  emit only a Physical Mapping delta that references its exact TechMapping
-  predecessor. It must not restore graph/Fabric rematching or JSON inputs.
+  emit one complete SpatialMapping that references its exact TechMapping
+  predecessor once the persistent record schema is closed. It must not restore
+  graph/Fabric rematching, invent placeholder records, or accept JSON as a
+  canonical Mapping input.
 * `Dataflow_GraphOp::build(...)` accepts a payload-only
   `FunctionType` plus normalized segment attributes. The body adds the
   separate leading `start : none` argument. Per-launch start and done use the

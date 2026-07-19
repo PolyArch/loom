@@ -154,13 +154,13 @@ TestCase makeWideSyncCase() {
                        {value, value},
                        {value, value},
                        std::nullopt}},
-      {DataflowEdge{EdgeId(310), GraphPort{graph, PortDirection::Input, 0},
+      {DataflowEdge{GraphPort{graph, PortDirection::Input, 0},
                     ActorPort{syncActor, PortDirection::Input, 0}},
-       DataflowEdge{EdgeId(311), GraphPort{graph, PortDirection::Input, 1},
+       DataflowEdge{GraphPort{graph, PortDirection::Input, 1},
                     ActorPort{syncActor, PortDirection::Input, 1}},
-       DataflowEdge{EdgeId(312), ActorPort{syncActor, PortDirection::Output, 0},
+       DataflowEdge{ActorPort{syncActor, PortDirection::Output, 0},
                     GraphPort{graph, PortDirection::Output, 0}},
-       DataflowEdge{EdgeId(313), ActorPort{syncActor, PortDirection::Output, 1},
+       DataflowEdge{ActorPort{syncActor, PortDirection::Output, 1},
                     GraphPort{graph, PortDirection::Output, 1}}},
       {}};
 
@@ -207,12 +207,11 @@ TestCase makeWideSyncCase() {
       EncodingRef{fabricId, encoding},
       {{ActorRef{dataflowId, syncActor}, FabricOpRef{fabricId, syncOp}, {}}},
       {}};
-  TechMappingDraft mapping{MappingDraftHeader{SchemaVersion{2, 0},
-                                              MappingProfile::TechMapping,
-                                              dataflowId, fabricId},
-                           {GraphRef{dataflowId, graph}},
-                           {std::move(realization)},
-                           {}};
+  TechMappingDraft mapping{
+      MappingDraftHeader{dataflowId, fabricId},
+      {GraphRef{dataflowId, graph}},
+      {std::move(realization)},
+      {}};
   TestCase testCase{std::move(dataflow), std::move(fabric), artifact(33),
                     std::move(mapping)};
   selectWideSyncLanes(testCase, {0, 1});
@@ -248,16 +247,15 @@ TestCase makeValidCase() {
                        {value, auxiliary},
                        {value},
                        std::nullopt}},
-      {DataflowEdge{EdgeId(100), GraphPort{graph, PortDirection::Input, 0},
+      {DataflowEdge{GraphPort{graph, PortDirection::Input, 0},
                     ActorPort{multiplyActor, PortDirection::Input, 0}},
-       DataflowEdge{EdgeId(101), GraphPort{graph, PortDirection::Input, 1},
+       DataflowEdge{GraphPort{graph, PortDirection::Input, 1},
                     ActorPort{multiplyActor, PortDirection::Input, 1}},
-       DataflowEdge{EdgeId(102),
-                    ActorPort{multiplyActor, PortDirection::Output, 0},
+       DataflowEdge{ActorPort{multiplyActor, PortDirection::Output, 0},
                     ActorPort{addActor, PortDirection::Input, 0}},
-       DataflowEdge{EdgeId(103), GraphPort{graph, PortDirection::Input, 2},
+       DataflowEdge{GraphPort{graph, PortDirection::Input, 2},
                     ActorPort{addActor, PortDirection::Input, 1}},
-       DataflowEdge{EdgeId(104), ActorPort{addActor, PortDirection::Output, 0},
+       DataflowEdge{ActorPort{addActor, PortDirection::Output, 0},
                     GraphPort{graph, PortDirection::Output, 0}}},
       {}};
   const FuId fu(10);
@@ -313,12 +311,11 @@ TestCase makeValidCase() {
         FuPortRef{FuRef{fabricId, fu}, PortDirection::Input, 2}},
        {ActorPortRef{ActorRef{dataflowId, addActor}, PortDirection::Output, 0},
         FuPortRef{FuRef{fabricId, fu}, PortDirection::Output, 0}}}};
-  TechMappingDraft mapping{MappingDraftHeader{SchemaVersion{2, 0},
-                                              MappingProfile::TechMapping,
-                                              dataflowId, fabricId},
-                           {GraphRef{dataflowId, graph}},
-                           {std::move(realization)},
-                           {}};
+  TechMappingDraft mapping{
+      MappingDraftHeader{dataflowId, fabricId},
+      {GraphRef{dataflowId, graph}},
+      {std::move(realization)},
+      {}};
   return TestCase{std::move(dataflow), std::move(fabric), artifact(3),
                   std::move(mapping)};
 }
@@ -343,16 +340,14 @@ TestCase makeMemoryAnchorCase() {
                            noAttributes, {value, value}, {value},
                            std::nullopt};
   };
-  auto graphInputEdge = [&](std::uint64_t id, std::uint32_t input,
-                            ActorId target, std::uint32_t port) {
-    return DataflowEdge{EdgeId(id),
-                        GraphPort{graph, PortDirection::Input, input},
+  auto graphInputEdge = [&](std::uint32_t input, ActorId target,
+                            std::uint32_t port) {
+    return DataflowEdge{GraphPort{graph, PortDirection::Input, input},
                         ActorPort{target, PortDirection::Input, port}};
   };
-  auto actorEdge = [&](std::uint64_t id, ActorId source, std::uint32_t result,
-                       ActorId target, std::uint32_t operand) {
-    return DataflowEdge{EdgeId(id),
-                        ActorPort{source, PortDirection::Output, result},
+  auto actorEdge = [&](ActorId source, std::uint32_t result, ActorId target,
+                       std::uint32_t operand) {
+    return DataflowEdge{ActorPort{source, PortDirection::Output, result},
                         ActorPort{target, PortDirection::Input, operand}};
   };
   DataflowProgramView dataflow{
@@ -397,23 +392,18 @@ TestCase makeMemoryAnchorCase() {
                 {MemoryAccessPortRole::Data, PortDirection::Input, 1},
                 {MemoryAccessPortRole::Control, PortDirection::Input, 2},
                 {MemoryAccessPortRole::Done, PortDirection::Output, 0}}}}},
-      {graphInputEdge(100, 1, loadActor, 0),
-       graphInputEdge(101, 2, loadActor, 1),
-       actorEdge(102, loadActor, 0, xoriActor, 0),
-       graphInputEdge(103, 3, xoriActor, 1),
-       actorEdge(104, xoriActor, 0, preAddActor, 0),
-       graphInputEdge(105, 4, preAddActor, 1),
-       actorEdge(106, preAddActor, 0, multiplyActor, 0),
-       actorEdge(107, preAddActor, 0, subtractActor, 0),
-       graphInputEdge(108, 5, multiplyActor, 1),
-       graphInputEdge(109, 6, subtractActor, 1),
-       actorEdge(110, multiplyActor, 0, finalAddActor, 0),
-       actorEdge(111, subtractActor, 0, finalAddActor, 1),
-       actorEdge(112, finalAddActor, 0, storeActor, 1),
-       graphInputEdge(113, 1, storeActor, 0),
-       actorEdge(114, loadActor, 1, storeActor, 2),
-       DataflowEdge{EdgeId(115),
-                    ActorPort{storeActor, PortDirection::Output, 0},
+      {graphInputEdge(1, loadActor, 0), graphInputEdge(2, loadActor, 1),
+       actorEdge(loadActor, 0, xoriActor, 0), graphInputEdge(3, xoriActor, 1),
+       actorEdge(xoriActor, 0, preAddActor, 0),
+       graphInputEdge(4, preAddActor, 1),
+       actorEdge(preAddActor, 0, multiplyActor, 0),
+       actorEdge(preAddActor, 0, subtractActor, 0),
+       graphInputEdge(5, multiplyActor, 1), graphInputEdge(6, subtractActor, 1),
+       actorEdge(multiplyActor, 0, finalAddActor, 0),
+       actorEdge(subtractActor, 0, finalAddActor, 1),
+       actorEdge(finalAddActor, 0, storeActor, 1),
+       graphInputEdge(1, storeActor, 0), actorEdge(loadActor, 1, storeActor, 2),
+       DataflowEdge{ActorPort{storeActor, PortDirection::Output, 0},
                     GraphPort{graph, PortDirection::Output, 1}}},
       {LogicalMemoryRootDescriptor{
           root,
@@ -672,8 +662,7 @@ TestCase makeMemoryAnchorCase() {
       {},
       {}};
   TechMappingDraft mapping{
-      MappingDraftHeader{SchemaVersion{2, 0}, MappingProfile::TechMapping,
-                         dataflowId, fabricId},
+      MappingDraftHeader{dataflowId, fabricId},
       {GraphRef{dataflowId, graph}},
       {std::move(pairRealization), std::move(multiplyRealization),
        std::move(subtractRealization), std::move(finalAddRealization)},
@@ -695,7 +684,10 @@ void selectInternalMemoryGraph(TestCase &testCase) {
       {load.boundaryPorts[0], load.boundaryPorts[1], load.boundaryPorts[2],
        store.boundaryPorts[0], store.boundaryPorts[1], store.boundaryPorts[3]},
       {},
-      {{EdgeRef{dataflowId, EdgeId(114)},
+      {{DataflowEdgeRef{
+            dataflowId,
+            DataflowEdge{ActorPort{ActorId(2), PortDirection::Output, 1},
+                         ActorPort{ActorId(8), PortDirection::Input, 2}}},
         MemoryInternalConnectionRef{fabricId,
                                     MemoryInternalConnectionId(39)}}}};
   testCase.mapping.memoryRealizations = {std::move(grouped)};

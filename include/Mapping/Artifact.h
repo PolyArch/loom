@@ -13,10 +13,8 @@
 
 namespace loom::mapping {
 
-using SchemaVersion = ::loom::SchemaVersion;
 using ArtifactIdentity = ::loom::ArtifactIdentity;
 
-enum class MappingProfile { TechMapping, PhysicalMapping };
 enum class PortDirection { Input, Output };
 enum class PortKind { Value, Stream, Memory };
 enum class ComputeScheduleKind { Spatial, Temporal };
@@ -121,7 +119,6 @@ private:
 
 struct GraphIdTag;
 struct ActorIdTag;
-struct EdgeIdTag;
 struct LogicalMemoryRootIdTag;
 struct FuIdTag;
 struct ComputeOccurrenceIdTag;
@@ -140,7 +137,6 @@ struct MemoryRealizationIdTag;
 
 using GraphId = TypedEntityId<GraphIdTag>;
 using ActorId = TypedEntityId<ActorIdTag>;
-using EdgeId = TypedEntityId<EdgeIdTag>;
 using LogicalMemoryRootId = TypedEntityId<LogicalMemoryRootIdTag>;
 using FuId = TypedEntityId<FuIdTag>;
 using ComputeOccurrenceId = TypedEntityId<ComputeOccurrenceIdTag>;
@@ -165,7 +161,6 @@ using EntityReference = ::loom::ArtifactReference<EntityId>;
 
 using GraphRef = EntityReference<GraphId>;
 using ActorRef = EntityReference<ActorId>;
-using EdgeRef = EntityReference<EdgeId>;
 using LogicalMemoryRootRef = EntityReference<LogicalMemoryRootId>;
 using FuRef = EntityReference<FuId>;
 using TransportEndpointRef = EntityReference<TransportEndpointId>;
@@ -224,6 +219,14 @@ struct GraphPort {
   GraphId graph;
   PortDirection direction;
   std::uint32_t index;
+
+  friend constexpr bool operator==(GraphPort lhs, GraphPort rhs) {
+    return lhs.graph == rhs.graph && lhs.direction == rhs.direction &&
+           lhs.index == rhs.index;
+  }
+  friend constexpr bool operator!=(GraphPort lhs, GraphPort rhs) {
+    return !(lhs == rhs);
+  }
 };
 
 struct LogicalMemoryRootDescriptor {
@@ -237,14 +240,42 @@ struct ActorPort {
   ActorId actor;
   PortDirection direction;
   std::uint32_t index;
+
+  friend constexpr bool operator==(ActorPort lhs, ActorPort rhs) {
+    return lhs.actor == rhs.actor && lhs.direction == rhs.direction &&
+           lhs.index == rhs.index;
+  }
+  friend constexpr bool operator!=(ActorPort lhs, ActorPort rhs) {
+    return !(lhs == rhs);
+  }
 };
 
 using DataflowEndpoint = std::variant<GraphPort, ActorPort>;
 
 struct DataflowEdge {
-  EdgeId id;
   DataflowEndpoint source;
   DataflowEndpoint target;
+
+  friend bool operator==(const DataflowEdge &lhs, const DataflowEdge &rhs) {
+    return lhs.source == rhs.source && lhs.target == rhs.target;
+  }
+  friend bool operator!=(const DataflowEdge &lhs, const DataflowEdge &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+struct DataflowEdgeRef {
+  ArtifactIdentity artifact;
+  DataflowEdge edge;
+
+  friend bool operator==(const DataflowEdgeRef &lhs,
+                         const DataflowEdgeRef &rhs) {
+    return lhs.artifact == rhs.artifact && lhs.edge == rhs.edge;
+  }
+  friend bool operator!=(const DataflowEdgeRef &lhs,
+                         const DataflowEdgeRef &rhs) {
+    return !(lhs == rhs);
+  }
 };
 
 struct DataflowProgramView {
@@ -553,7 +584,7 @@ struct MemoryGraphBoundaryPortCorrespondence {
 };
 
 struct MemoryInternalEdgeWitness {
-  EdgeRef edge;
+  DataflowEdgeRef edge;
   MemoryInternalConnectionRef connection;
 };
 
@@ -579,15 +610,11 @@ struct MemoryRealizationDraft {
 
 struct MappingDraftHeader {
   MappingDraftHeader() = delete;
-  MappingDraftHeader(SchemaVersion schemaVersion, MappingProfile profile,
-                     ArtifactIdentity dataflowIdentity,
+  MappingDraftHeader(ArtifactIdentity dataflowIdentity,
                      ArtifactIdentity fabricIdentity)
-      : schemaVersion(schemaVersion), profile(profile),
-        dataflowIdentity(std::move(dataflowIdentity)),
+      : dataflowIdentity(std::move(dataflowIdentity)),
         fabricIdentity(std::move(fabricIdentity)) {}
 
-  SchemaVersion schemaVersion;
-  MappingProfile profile;
   ArtifactIdentity dataflowIdentity;
   ArtifactIdentity fabricIdentity;
 };

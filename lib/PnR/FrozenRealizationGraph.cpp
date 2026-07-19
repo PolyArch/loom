@@ -204,10 +204,16 @@ struct EndpointLess {
   }
 };
 
-bool sameEndpoint(const DataflowEndpoint &lhs, const DataflowEndpoint &rhs) {
-  EndpointLess less;
-  return !less(lhs, rhs) && !less(rhs, lhs);
-}
+struct DataflowEdgeLess {
+  bool operator()(const DataflowEdge &lhs, const DataflowEdge &rhs) const {
+    EndpointLess endpointLess;
+    if (endpointLess(lhs.source, rhs.source))
+      return true;
+    if (endpointLess(rhs.source, lhs.source))
+      return false;
+    return endpointLess(lhs.target, rhs.target);
+  }
+};
 
 struct ActorPortLess {
   bool operator()(const ActorPort &lhs, const ActorPort &rhs) const {
@@ -242,25 +248,14 @@ struct TemplateTerminalLess {
 };
 
 struct ExternalEdge {
-  EdgeId edge;
-  DataflowEndpoint sourceEndpoint;
-  DataflowEndpoint targetEndpoint;
+  DataflowEdge edge;
   TerminalKey source;
   TerminalKey target;
 };
 
 struct ExternalEdgeLess {
   bool operator()(const ExternalEdge &lhs, const ExternalEdge &rhs) const {
-    EndpointLess endpointLess;
-    if (endpointLess(lhs.sourceEndpoint, rhs.sourceEndpoint))
-      return true;
-    if (endpointLess(rhs.sourceEndpoint, lhs.sourceEndpoint))
-      return false;
-    if (endpointLess(lhs.targetEndpoint, rhs.targetEndpoint))
-      return true;
-    if (endpointLess(rhs.targetEndpoint, lhs.targetEndpoint))
-      return false;
-    return lhs.edge.value() < rhs.edge.value();
+    return DataflowEdgeLess{}(lhs.edge, rhs.edge);
   }
 };
 
@@ -534,10 +529,10 @@ loom::pnr::freezeRealizationGraph(const PnrProblemInputs &inputs) {
   for (const GraphRef &graph : mapping.coveredGraphs())
     coveredGraphs.insert(graph.entity.value());
 
-  std::set<std::uint64_t> memoryInternalEdges;
+  std::set<DataflowEdge, DataflowEdgeLess> memoryInternalEdges;
   for (const MemoryRealizationDraft *draft : memoryDrafts) {
     for (const MemoryInternalEdgeWitness &witness : draft->internalEdges)
-      memoryInternalEdges.insert(witness.edge.entity.value());
+      memoryInternalEdges.insert(witness.edge.edge);
   }
 
   auto resolveTerminal =
@@ -569,7 +564,7 @@ loom::pnr::freezeRealizationGraph(const PnrProblemInputs &inputs) {
     if (!coveredGraphs.count(graph->value()))
       continue;
 
-    bool internal = memoryInternalEdges.count(edge.id.value()) != 0;
+    bool internal = memoryInternalEdges.count(edge) != 0;
     const auto *sourceActor = std::get_if<ActorPort>(&edge.source);
     const auto *targetActor = std::get_if<ActorPort>(&edge.target);
     if (!internal && sourceActor && targetActor) {
@@ -593,8 +588,7 @@ loom::pnr::freezeRealizationGraph(const PnrProblemInputs &inputs) {
     auto target = resolveTerminal(edge.target);
     if (!target)
       return target.takeError();
-    externalEdges.push_back(
-        {edge.id, edge.source, edge.target, *source, *target});
+    externalEdges.push_back({edge, *source, *target});
   }
   std::sort(externalEdges.begin(), externalEdges.end(), ExternalEdgeLess{});
 
@@ -622,8 +616,7 @@ loom::pnr::freezeRealizationGraph(const PnrProblemInputs &inputs) {
   for (std::size_t begin = 0; begin < externalEdges.size();) {
     std::size_t end = begin + 1;
     while (end < externalEdges.size() &&
-           sameEndpoint(externalEdges[begin].sourceEndpoint,
-                        externalEdges[end].sourceEndpoint))
+           externalEdges[begin].edge.source == externalEdges[end].edge.source)
       ++end;
     ++logicalNetCount;
     maximumNetSinkCount = std::max(maximumNetSinkCount, end - begin);
@@ -661,8 +654,7 @@ loom::pnr::freezeRealizationGraph(const PnrProblemInputs &inputs) {
   for (std::size_t begin = 0; begin < externalEdges.size();) {
     std::size_t end = begin + 1;
     while (end < externalEdges.size() &&
-           sameEndpoint(externalEdges[begin].sourceEndpoint,
-                        externalEdges[end].sourceEndpoint))
+           externalEdges[begin].edge.source == externalEdges[end].edge.source)
       ++end;
 
     auto source =
@@ -675,14 +667,16 @@ loom::pnr::freezeRealizationGraph(const PnrProblemInputs &inputs) {
     auto sinkCount = checked(sinkCountContext, end - begin);
     if (!sinkCount)
       return sinkCount.takeError();
-    logicalNets.push_back({*source, *sinkOffset, *sinkCount});
+    logicalNets.push_back(
+        {externalEdges[begin].edge.source, *source, *sinkOffset, *sinkCount});
 
     for (std::size_t index = begin; index < end; ++index) {
       auto terminal =
           freezeTerminal(externalEdges[index].target, templateTerminalKeys);
       if (!terminal)
         return terminal.takeError();
-      logicalNetSinks.push_back({externalEdges[index].edge, *terminal});
+      logicalNetSinks.push_back(
+          {externalEdges[index].edge.target, *terminal});
     }
     begin = end;
   }

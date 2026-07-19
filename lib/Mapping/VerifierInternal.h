@@ -19,7 +19,6 @@ namespace loom::mapping::detail {
 enum class EntityKind {
   Graph,
   Actor,
-  Edge,
   LogicalMemoryRoot,
   Fu,
   ComputeOccurrence,
@@ -106,7 +105,7 @@ resolveReference(const EntityReference<Id> &reference,
                  EntityKind expected,
                  const std::map<std::uint64_t, const Descriptor *> &entities) {
   if (reference.artifact != artifact)
-    return mappingError(MappingErrorCode::ForeignEntityReference,
+    return mappingError(MappingErrorCode::ForeignReference,
                         "reference names a foreign artifact");
   const auto kind = kinds.find(reference.entity.value());
   if (kind == kinds.end())

@@ -42,7 +42,6 @@ llvm::Error loom::mapping::detail::requireLocalKind(const EntityKinds &entities,
   return llvm::Error::success();
 }
 namespace {
-constexpr SchemaVersion supportedSchemaVersion{2, 0};
 struct EndpointKey {
   bool actor;
   std::uint64_t owner;
@@ -57,20 +56,13 @@ struct EndpointKey {
            std::tie(rhs.actor, rhs.owner, rhs.direction, rhs.index);
   }
 };
-struct EdgeKey {
-  EndpointKey source;
-  EndpointKey target;
-  friend bool operator<(const EdgeKey &lhs, const EdgeKey &rhs) {
-    return std::tie(lhs.source, lhs.target) < std::tie(rhs.source, rhs.target);
-  }
-};
+using EdgeKey = std::pair<EndpointKey, EndpointKey>;
 struct DataflowPortInfo {
   std::uint64_t graph;
   EndpointKey key;
   const PortDescriptor *descriptor;
 };
 struct ResolvedDataflowEdge {
-  EdgeId id;
   DataflowPortInfo source;
   DataflowPortInfo target;
 };
@@ -86,7 +78,7 @@ struct DataflowIndex {
   std::map<std::uint64_t, const LogicalMemoryRootDescriptor *>
       logicalMemoryRoots;
   std::map<std::uint64_t, MemoryActorInfo> memoryActors;
-  std::map<std::uint64_t, std::size_t> edgesById;
+  std::map<EdgeKey, std::size_t> edgesByKey;
   std::vector<ResolvedDataflowEdge> edges;
 };
 struct FabricIndex {
@@ -256,11 +248,6 @@ buildDataflowIndex(const DataflowProgramView &dataflow) {
       return std::move(error);
     index.logicalMemoryRoots.emplace(root.id.value(), &root);
   }
-  for (const DataflowEdge &edge : dataflow.edges) {
-    if (llvm::Error error =
-            addEntity(index.kinds, edge.id.value(), EntityKind::Edge))
-      return std::move(error);
-  }
   std::size_t graphMemoryPortCount = 0;
   for (const GraphDescriptor &graph : dataflow.graphs) {
     graphMemoryPortCount +=
@@ -319,7 +306,6 @@ buildDataflowIndex(const DataflowProgramView &dataflow) {
       return memoryActor.takeError();
     index.memoryActors.emplace(actor.id.value(), std::move(*memoryActor));
   }
-  std::set<EdgeKey> edges;
   index.edges.reserve(dataflow.edges.size());
   for (const DataflowEdge &edge : dataflow.edges) {
     auto source = resolveDataflowPort(edge.source, index);
@@ -346,11 +332,10 @@ buildDataflowIndex(const DataflowProgramView &dataflow) {
       return mappingError(MappingErrorCode::PortSignatureMismatch,
                           "dataflow edge port kind or type does not match");
     const EdgeKey edgeKey{source->key, target->key};
-    if (!edges.insert(edgeKey).second)
+    if (!index.edgesByKey.emplace(edgeKey, index.edges.size()).second)
       return mappingError(MappingErrorCode::DuplicateEdge,
                           "dataflow edge is duplicated");
-    index.edgesById.emplace(edge.id.value(), index.edges.size());
-    index.edges.push_back(ResolvedDataflowEdge{edge.id, *source, *target});
+    index.edges.push_back(ResolvedDataflowEdge{*source, *target});
   }
   return index;
 }
@@ -838,20 +823,23 @@ resolveMemoryOperationPortReference(const MemoryOperationPortRef &port,
 }
 
 llvm::Expected<const ResolvedDataflowEdge *>
-resolveEdgeReference(const EdgeRef &reference,
+resolveEdgeReference(const DataflowEdgeRef &reference,
                      const DataflowProgramView &dataflow,
                      const DataflowIndex &index) {
   if (reference.artifact != dataflow.identity)
-    return mappingError(MappingErrorCode::ForeignEntityReference,
+    return mappingError(MappingErrorCode::ForeignReference,
                         "reference names a foreign artifact");
-  const auto kind = index.kinds.find(reference.entity.value());
-  if (kind == index.kinds.end())
-    return mappingError(MappingErrorCode::UnresolvedEntityId,
-                        "reference names an unresolved entity ID");
-  if (kind->second != EntityKind::Edge)
-    return mappingError(MappingErrorCode::WrongEntityKind,
-                        "reference names an entity of the wrong kind");
-  return &index.edges[index.edgesById.at(reference.entity.value())];
+  auto source = resolveDataflowPort(reference.edge.source, index);
+  if (!source)
+    return source.takeError();
+  auto target = resolveDataflowPort(reference.edge.target, index);
+  if (!target)
+    return target.takeError();
+  const auto edge = index.edgesByKey.find(EdgeKey{source->key, target->key});
+  if (edge == index.edgesByKey.end())
+    return mappingError(MappingErrorCode::UnresolvedEdgeReference,
+                        "reference names a non-canonical endpoint pair");
+  return &index.edges[edge->second];
 }
 
 struct RealizationActors {
@@ -1429,7 +1417,7 @@ llvm::Error validateMemoryRealization(
           "memory graph boundary correspondence is not exact");
   }
 
-  std::set<std::uint64_t> internalEdges;
+  std::set<EdgeKey> internalEdges;
   std::set<std::uint64_t> witnessedConnections;
   std::set<EndpointKey> usedGraphBoundaries;
   for (const MemoryInternalEdgeWitness &witness :
@@ -1448,7 +1436,8 @@ llvm::Error validateMemoryRealization(
          !realization.actors.count((*edge)->source.key.owner)) ||
         ((*edge)->target.key.actor &&
          !realization.actors.count((*edge)->target.key.owner)) ||
-        !internalEdges.insert((*edge)->id.value()).second ||
+        !internalEdges.insert(EdgeKey{(*edge)->source.key, (*edge)->target.key})
+             .second ||
         !witnessedConnections.insert((*connection)->id.value()).second ||
         !activeConnections.count((*connection)->id.value()) ||
         (*connection)->implementation != implementation.id)
@@ -1501,7 +1490,7 @@ llvm::Error validateMemoryRealization(
   std::set<EndpointKey> expectedBoundaryPorts;
   for (const ResolvedDataflowEdge &edge : dataflowIndex.edges) {
     if (edge.source.graph != realization.graph ||
-        internalEdges.count(edge.id.value()))
+        internalEdges.count(EdgeKey{edge.source.key, edge.target.key}))
       continue;
     if (edge.source.key.actor &&
         realization.actors.count(edge.source.key.owner))
@@ -1641,12 +1630,6 @@ validateCoveredSinkAccounting(const DataflowIndex &dataflowIndex,
 llvm::Expected<ValidatedTechMapping> loom::mapping::validateTechMapping(
     ArtifactIdentity identity, const TechMappingDraft &mapping,
     const DataflowProgramView &dataflow, const FabricHardwareView &fabric) {
-  if (mapping.header.schemaVersion != supportedSchemaVersion)
-    return mappingError(MappingErrorCode::UnsupportedSchemaVersion,
-                        "Mapping verifier supports schema 2.0");
-  if (mapping.header.profile != MappingProfile::TechMapping)
-    return mappingError(MappingErrorCode::WrongMappingProfile,
-                        "Mapping verifier requires the TechMapping profile");
   if (mapping.header.dataflowIdentity != dataflow.identity ||
       mapping.header.fabricIdentity != fabric.identity)
     return mappingError(MappingErrorCode::ArtifactIdentityMismatch,

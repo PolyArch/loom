@@ -142,7 +142,7 @@ builder-only state are not semantic sources of truth.
 
 The second-layer stable artifact contracts are:
 
-* mapping artifacts and mapping-set manifests;
+* complete Mapping artifacts;
 * normalized FPA JSON reports;
 * full-stack report bundles;
 * full-stack artifact manifests.
@@ -215,7 +215,7 @@ tools without reading private state. Required evidence classes include:
 * source, LLVM IR, raised MLIR, and dataflow artifacts for supported
   workloads;
 * Fabric ADG artifacts for SpatialCore modules and system SoCs;
-* mapping artifacts and mapping-set manifests for mapped candidates;
+* complete Mapping artifacts for mapped candidates;
 * DFG-sim, CGRA-sim, and comparison reports with functional output and
   memory-diff evidence for passing runs;
 * runtime packages and runtime reports when the runtime boundary is
@@ -288,34 +288,28 @@ belong in local ignored execution guides.
 
 The current repository already contains substantial dataflow, fabric,
 mapping, simulator, report, and audit scaffolding, but implementation
-coverage is uneven. `fabric.module` and several SpatialCore-level fabric
-ops are implemented. The system-level `fabric.system` target and
-`SystemBuilder` now have a baseline covering host, accelerator,
-fixed-function accelerator, memory nodes, string-described port
-channels, explicit links, endpoint checks, and hardware summary
-evidence. Current system and downstream evidence is baseline plumbing
-only; target completeness is defined by the Hardware Model section and
-the component specs referenced above.
+coverage is uneven. `fabric.module` and several SpatialCore-level Fabric
+operations are implemented. The current `fabric.system` and `SystemBuilder`
+path still uses generic node kinds, open parameters, and link records. That
+path is runnable baseline plumbing only and is not the typed system target.
 
 ## Hardware Model
 
 The target machine model is:
 
 ```text
-System = HostCore + heterogeneous cores + memory hierarchy + interconnect
+System = HostCore + heterogeneous AccCores + memory/services + transport
+AccCore = InstructionCore + SpatialCore
 SpatialCore = CGRA-like fabric described by fabric.module
-SoC = fabric.system referencing SpatialCore templates and system nodes
 ```
 
-The heterogeneous system universe includes `host_core` nodes,
-`acc_core` nodes, `fixed_accelerator` nodes, `dma_engine` nodes, and
-memory nodes. An `acc_core` node is the physical accelerator-core
-instance: it carries ScalarCore metadata and references a
-`fabric.module` symbol as its SpatialCore template. ScalarCore and
-SpatialCore are not separate baseline `fabric.system` node kinds. IO is
-represented by external ports, protocol endpoints, DMA engines, memory
-nodes, or explicit system node ports rather than by a default
-`io_engine` core kind.
+`fabric.system` owns typed AccCore, InstructionCore, SpatialCore attachment,
+memory/service, Transport Architecture, Interconnect Implementation, external
+boundary, and domain facts. Exact typed operation and attribute schemas that
+remain open are not replaced by generic node kinds or parameter dictionaries.
+The current generic `Fabric_NodeOp` path is non-normative and remains only
+until a complete typed replacement can migrate all producers and consumers in
+one change.
 
 Loom does not model virtual addresses in Fabric ADG. System memory
 semantics start from physical address spaces, memory regions,
@@ -328,39 +322,43 @@ Manhattan-distance routing are optional conveniences supplied by an
 architecture builder or by user metadata. They are never the baseline
 semantic assumption. `fabric.module` connectivity is represented by
 Graph-region SSA values plus tile connectivity tables or matrices where
-those tile specs define them. `fabric.system` connectivity is
-represented by directed channel endpoints and explicit `fabric.link`
-operations.
+those tile specs define them. `fabric.system` connectivity is represented by
+fully elaborated typed endpoints, resources, and explicit directed
+connections. Protocol-specific ports and links belong to Interconnect
+Implementation refinement rather than replacing architecture-level transport
+capability.
 
 ## Software Representation
 
-The software side lowers selected LLVM/SCF regions into dataflow IR. The
-compiler owns L1 and L2 placement; TechMapping owns the related L3 Compute
-Realization search:
+The software and Mapping flow has four explicit owners:
 
-| Name | Owner | Boundary | Meaning |
-|------|-------|----------|---------|
-| L1 accelerator placement | Compiler | HostCore vs AccCore | Select which program regions execute on the accelerator fabric. |
-| L2 graph placement | Compiler | ScalarCore vs SpatialCore | Select which code inside an accelerator kernel becomes a SpatialCore dataflow graph. |
-| L3 Compute Realization search | TechMapping | Canonical dataflow actors vs Fabric FU encoding | Select actor groups and exact valid encodings without creating another software graph. |
+* AccCore outlining selects structured regions that become
+  `dataflow.thread` definitions;
+* SpatialCore outlining selects compiler-internal `loom.spatial_region`
+  boundaries and lowers them to canonical `dataflow.graph` definitions and
+  launches;
+* TechMapping selects Compute and Memory Realizations and exact Fabric
+  semantic encodings; and
+* Spatial PnR consumes immutable TechMapping and selects concrete SpatialCore
+  realization in a complete SpatialMapping.
 
-All three are optimization problems with explicit ownership. A deterministic
-baseline policy is allowed and useful for tests, but fixed syntactic lowering
-or a persistent adapter partition is not the final design.
+These are not instances of one generic placement framework. The Structured
+Program Candidate owns software ownership decisions, Mapping verification owns
+legality, Evaluation owns observations, and central DSE owns candidate
+acceptance.
 
 `dataflow.thread` is a software execution-domain carrier. A dynamic
 thread instance is a logical execution cell until later binding maps it
 onto physical AccCore resources. The accepted direction is a two-level
-model: front-end IR preserves logical parallel structure, while PnR or a
-binding artifact assigns selected dynamic instances to AccCore execution
-slots. A thread body may contain ScalarCore residual code and
+model: front-end IR preserves logical parallel structure, while SystemMapping
+binds selected logical instance domains to AccCore resource-time relations. A
+thread body may contain InstructionCore code and
 `dataflow.graph.launch` ops, but `dataflow.thread.launch` appears only
 in caller-side host/runtime orchestration outside every thread or graph
-definition. A ScalarCore-only thread body is legal. This legality is not
-an implicit offload decision: a scalar-only thread is retained as AccCore
-work only when L1 placement, source intent, or an explicit DSE policy
-selected that region for accelerator execution. Failed L2 graph
-extraction must not create a new accelerator offload by itself.
+definition. An InstructionCore-only thread body is legal. This legality is not
+an implicit fallback: it must be selected by the Structured Program Candidate
+and covered by SystemMapping. Failed graph extraction must not create a new
+AccCore disposition or silently redirect a selected SpatialCore graph.
 
 Thread completion and dataflow control are separate token domains.
 `!dataflow.thread_token` represents inter-thread asynchronous
@@ -406,19 +404,19 @@ parallel to PE, switch, or memory. `fabric.fifo`, `fabric.boundary`, and
 `fabric.instantiate` are required SpatialCore support constructs for
 buffering, spatial/temporal boundary conversion, and template reuse.
 
-`fabric.system` is the system-level architecture description graph for
-`HostCore + AccCore x M` systems, memory hierarchy, external memory,
-and interconnect. It contains physical nodes, protocol ports, directed
-channels, explicit one-to-one links, optional domain metadata, and
-coherence or consistency declarations. An `acc_core` system node
-references a `fabric.module` symbol as its SpatialCore template while
-remaining an independent physical instance.
+`fabric.system` owns the typed system-level hardware description for
+HostCore and AccCore occurrences, their node-local InstructionCore facts,
+SpatialCore template occurrences and attachments, memory and service
+capabilities, Transport Architecture, Interconnect Implementation, external
+boundaries, and hardware domains.
 
-System topology is explicit graph connectivity. The system ADG does not
-introduce hardware primitives named `mux` or `demux`; system-level
-selection and routing use precise primitive node kinds such as
-`route_decoder`, `arbiter`, and `broadcast`. The detailed target
-contract is in `docs/spec-fabric-system-adg.md`.
+System topology is fully elaborated and explicit through typed resources,
+endpoints, and directed connectivity. Selection, replication, arbitration,
+transport, and implementation refinement are represented by their owning
+typed Fabric concepts rather than generic node kinds or a prescribed link
+operation. Exact system operations, attributes, endpoint records, and
+assembly syntax remain open until the typed `fabric.system` schema is closed.
+The detailed ownership contract is in `docs/spec-fabric-system-adg.md`.
 
 An ergonomic C++ ADG Builder is required. It should let users construct
 heterogeneous systems and arbitrary-topology fabrics quickly, then emit
@@ -435,21 +433,23 @@ Loom needs two simulation levels:
 * DFG-sim simulates pure dataflow software semantics without hardware
   resource limits. Its results are expected to be optimistic. Its
   target contract is specified in `docs/spec-sim-dfg.md`.
-* CGRA-sim simulates mapped software on a concrete hardware graph with
-  resource, routing, memory, buffering, and temporal-sharing limits.
-  Despite the name, CGRA-sim is hardware-aware simulation for mapped
-  Loom workloads, not only simulation of a `fabric.module` or
-  SpatialCore. Its target contract is specified in
-  `docs/spec-sim-cgra.md`.
+* CGRA-sim simulates one mapped SpatialCore execution on its concrete
+  `fabric.module` resources with routing, memory, buffering, and
+  resource-time limits. InstructionCore, cache, coherence, and system
+  interconnect execution belong to the external system simulator. The
+  SpatialCore simulation contract is specified in `docs/spec-sim-cgra.md`.
 
 TechMapping connects canonical software semantics to Fabric capability by
 recording complete Compute Realizations in the Mapping Artifact specified in
 `docs/spec-mapping-artifact.md`. PnR consumes that predecessor as `T` in the
-exact `D/T/F/C/K` authority boundary and emits a Physical Mapping delta; its
-tool contract is specified in `docs/spec-pnr.md`. The delta records concrete
-resource bindings, routed external obligations, memory bindings, resource
-sharing, buffers, schedule slots, temporal tags, diagnostics, and metrics
-without restating or changing the predecessor Compute Realizations. Detailed
+exact `D/T/F/C/K` authority boundary. Its tool contract is specified in
+`docs/spec-pnr.md`. A successful run produces a
+complete `SpatialMapping` that references the exact TechMapping predecessor
+without restating or changing its Compute or Memory Realizations. Exact
+persistent SpatialMapping bindings, Route Trees, resource use, Physical Tags,
+buffers, memory/service choices, and mapping-visible configuration remain
+open. Mapping diagnostics and metrics are ordinary reports or Evaluation
+Evidence, not Mapping records. Detailed
 mapping identity, placement, routing, schedule/buffer, memory, verification,
 visualization, and search contracts are specified by
 `docs/spec-mapping-identity.md`,
@@ -459,10 +459,12 @@ visualization, and search contracts are specified by
 `docs/spec-mapping-visualization.md`, and
 `docs/spec-mapping-search.md`.
 
-PnR chooses and records a physical realization. CGRA-sim consumes the Physical
-Mapping and its predecessor plus runtime inputs and reports hardware-aware
-behavior. CGRA-sim may reject an inconsistent Mapping Artifact, but it must not
-choose placements, routes, schedules, or bindings.
+For each accepted run, PnR emits one complete SpatialMapping bound to its exact
+immutable TechMapping predecessor. CGRA-sim consumes that complete
+SpatialMapping, the exact predecessor coupling, and runtime inputs to report
+hardware-aware behavior. CGRA-sim may reject inconsistent inputs, but it must
+not choose or repair placements, Route Trees, resource use, Physical Tags,
+buffers, memory/service choices, or configuration.
 
 Mapping artifacts and Fabric ADG may carry optional visualization
 metadata. Visualization metadata helps GUI tools draw regular

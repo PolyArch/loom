@@ -8,7 +8,7 @@ emit software or hardware cycle estimates.
 This document specifies Loom DFG-sim, the pure software dataflow
 semantic simulator. DFG-sim executes dataflow IR without hardware
 resource limits. Its output is the software-semantic baseline for
-debugging, testing, PnR cost feedback, CGRA-sim comparison, and DSE.
+debugging, testing, CGRA-sim comparison, unified Evaluation, and central DSE.
 
 ## Purpose
 
@@ -36,7 +36,7 @@ DFG-sim produces:
 * token and event traces;
 * deterministic diagnostics;
 * deterministic activity metrics and heuristic cost scores;
-* a DFG-sim report usable by comparison tools.
+* DFG-sim Evaluation Evidence usable by comparison and central DSE.
 
 DFG-sim does not consume Fabric ADG and does not consume a mapping
 artifact. It does not choose placement, routing, schedule slots,
@@ -169,8 +169,9 @@ The implemented report includes:
   computed-address scores;
 * diagnostics.
 
-These scores support deterministic regression and search heuristics. They do
-not estimate latency, throughput, critical path, or hardware cycles.
+These scores support deterministic regression and explicit central-DSE
+policy. They do not estimate latency, throughput, critical path, or hardware
+cycles and do not become `PnRSearchCost` inputs.
 
 ## Determinism
 
@@ -203,9 +204,12 @@ configuration ArtifactIdentity, and trace references remain target fields
 until their producers are connected to
 `loom-dfg-sim`.
 
-Reports may be consumed by PnR as cost feedback and by the simulation
-comparison protocol. Reports must not contain hardware placement,
-routing, schedule, or resource-sharing decisions.
+Reports are unified Evaluation Evidence consumed by the simulation comparison
+protocol and central DSE. If DSE requests a new spatial search, it supplies
+explicit `ResolvedPnrConfigView` and `MappingConstraintSet` inputs. PnR
+consumes only exact `D/T/F/C/K` and derives generic `PnRSearchCost` from those
+inputs; it never consumes DFG-sim reports directly. Reports must not contain
+hardware placement, routing, schedule, or resource-sharing decisions.
 
 ## Non-Goals
 

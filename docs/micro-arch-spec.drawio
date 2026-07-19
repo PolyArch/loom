@@ -34,13 +34,13 @@
                 <mxCell id="fb-boundary-frame" value="fabric.boundary  (Pure)" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="80" y="305" width="480" height="95" as="geometry"/>
                 </mxCell>
-                <mxCell id="fb-bnd-s2t" value="boundary [s2t]&lt;div style=&quot;font-size:9px&quot;&gt;bits + tag → bits_tag&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#fff2cc;" parent="1" vertex="1">
+                <mxCell id="fb-bnd-s2t" value="boundary [s2t]&lt;div style=&quot;font-size:9px&quot;&gt;bits + tag -&gt; bits_tag&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#fff2cc;" parent="1" vertex="1">
                     <mxGeometry x="95" y="345" width="145" height="40" as="geometry"/>
                 </mxCell>
-                <mxCell id="fb-bnd-t2t" value="boundary [t2t]&lt;div style=&quot;font-size:9px&quot;&gt;bits_tag → bits_tag (retag)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#fff2cc;" parent="1" vertex="1">
+                <mxCell id="fb-bnd-t2t" value="boundary [t2t]&lt;div style=&quot;font-size:9px&quot;&gt;bits_tag -&gt; bits_tag (retag)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#fff2cc;" parent="1" vertex="1">
                     <mxGeometry x="245" y="345" width="145" height="40" as="geometry"/>
                 </mxCell>
-                <mxCell id="fb-bnd-t2s" value="boundary [t2s]&lt;div style=&quot;font-size:9px&quot;&gt;bits_tag → bits + tag&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#fff2cc;" parent="1" vertex="1">
+                <mxCell id="fb-bnd-t2s" value="boundary [t2s]&lt;div style=&quot;font-size:9px&quot;&gt;bits_tag -&gt; bits + tag&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#fff2cc;" parent="1" vertex="1">
                     <mxGeometry x="395" y="345" width="145" height="40" as="geometry"/>
                 </mxCell>
                 <mxCell id="fb-fifo" value="fabric.fifo&lt;div style=&quot;font-size:9px&quot;&gt;inter-op buffer ; max_depth, bypassable&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
@@ -64,10 +64,10 @@
                 <mxCell id="fb-pe-opcode" value="opcode&lt;div style=&quot;font-size:9px&quot;&gt;active FU selector&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
                     <mxGeometry x="95" y="590" width="160" height="35" as="geometry"/>
                 </mxCell>
-                <mxCell id="fb-pe-imux" value="operand_sel&lt;div style=&quot;font-size:9px&quot;&gt;PE input → FU operand mux&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                <mxCell id="fb-pe-imux" value="operand_sel&lt;div style=&quot;font-size:9px&quot;&gt;PE input -&gt; FU operand mux&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
                     <mxGeometry x="265" y="590" width="160" height="35" as="geometry"/>
                 </mxCell>
-                <mxCell id="fb-pe-odmx" value="result_sel&lt;div style=&quot;font-size:9px&quot;&gt;FU result → PE output demux&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                <mxCell id="fb-pe-odmx" value="result_sel&lt;div style=&quot;font-size:9px&quot;&gt;FU result -&gt; PE output demux&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
                     <mxGeometry x="435" y="590" width="160" height="35" as="geometry"/>
                 </mxCell>
                 <mxCell id="fb-pe-imem" value="instruction_mem&lt;div style=&quot;font-size:9px&quot;&gt;[temporal] num_instruction slots&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
@@ -100,10 +100,10 @@
                 <mxCell id="fb-switch-temporal" value="[temporal]  bits_tag&lt;W,T&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
                     <mxGeometry x="255" y="830" width="155" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="fb-switch-hw" value="hw_params : connectivity_table&lt;div style=&quot;font-size:9px&quot;&gt;L×K bit-string, MSB-left ; route_table_size [temporal only]&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                <mxCell id="fb-switch-hw" value="hw_params : connectivity_table&lt;div style=&quot;font-size:9px&quot;&gt;LxK bit-string, MSB-left ; route_table_size [temporal only]&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
                     <mxGeometry x="95" y="865" width="315" height="35" as="geometry"/>
                 </mxCell>
-                <mxCell id="fb-switch-sw" value="sw_configs : route_table + switch_enable&lt;div style=&quot;font-size:9px&quot;&gt;all-or-nothing ; ≤ 1 source per output&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                <mxCell id="fb-switch-sw" value="sw_configs : route_table + switch_enable&lt;div style=&quot;font-size:9px&quot;&gt;all-or-nothing ; &lt;= 1 source per output&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
                     <mxGeometry x="95" y="905" width="315" height="35" as="geometry"/>
                 </mxCell>
                 <mxCell id="fb-mem-frame" value="fabric.mem  (memory leaf)" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
@@ -118,7 +118,7 @@
                 <mxCell id="fb-mem-mgr" value="memref_mgr (required) / memref_sub (optional bypass)&lt;div style=&quot;font-size:9px&quot;&gt;element type !fabric.bits&lt;W&gt; ; W_mgr / W_sub may differ&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
                     <mxGeometry x="460" y="865" width="300" height="35" as="geometry"/>
                 </mxCell>
-                <mxCell id="fb-mem-ports" value="load : (addr, ctrl) → (data, done)&lt;div style=&quot;font-size:9px&quot;&gt;store : (addr, data, ctrl) → done&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                <mxCell id="fb-mem-ports" value="load : (addr, ctrl) -&gt; (data, done)&lt;div style=&quot;font-size:9px&quot;&gt;store : (addr, data, ctrl) -&gt; done&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
                     <mxGeometry x="460" y="905" width="300" height="35" as="geometry"/>
                 </mxCell>
                 <mxCell id="fb-inst-edge" style="endArrow=classic;html=1;dashed=1;edgeStyle=orthogonalEdgeStyle;curved=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="fb-inst" target="fb-pe" edge="1">
@@ -167,13 +167,13 @@
                 <mxCell id="df-thread-grid-args" value="iv args : index&lt;div style=&quot;font-size:9px&quot;&gt;one per mapping entry, after thread_ctrl&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
                     <mxGeometry x="560" y="215" width="230" height="40" as="geometry"/>
                 </mxCell>
-                <mxCell id="df-scalarcore-region" value="ScalarCore region (thread body, outside graph)" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                <mxCell id="df-instructioncore-region" value="InstructionCore region (thread body, outside graph)" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="60" y="275" width="730" height="135" as="geometry"/>
                 </mxCell>
-                <mxCell id="df-scf-call" value="scf.* control flow&lt;div style=&quot;font-size:9px&quot;&gt;structured ScalarCore code&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                <mxCell id="df-scf-call" value="scf.* control flow&lt;div style=&quot;font-size:9px&quot;&gt;structured InstructionCore code&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="80" y="310" width="220" height="50" as="geometry"/>
                 </mxCell>
-                <mxCell id="df-thread-fence" value="dataflow.thread.fence&lt;div style=&quot;font-size:9px&quot;&gt;ScalarCore-side bridge&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#fff2cc;" parent="1" vertex="1">
+                <mxCell id="df-thread-fence" value="dataflow.thread.fence&lt;div style=&quot;font-size:9px&quot;&gt;InstructionCore-side bridge&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#fff2cc;" parent="1" vertex="1">
                     <mxGeometry x="315" y="310" width="220" height="50" as="geometry"/>
                 </mxCell>
                 <mxCell id="df-partitioned-data-queries" value="partitioned-data queries&lt;div style=&quot;font-size:9px&quot;&gt;local_range / thread_coord / thread_linear_id&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
@@ -275,7 +275,7 @@
                         </Array>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="df-legend" value="legend&lt;div style=&quot;font-size:9px&quot;&gt;outer rectangles = ops with regions (thread, graph)&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;light-grey cells = explicit none / token control ports&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;yellow cell = ScalarCore-side bridge (thread.fence)&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;dashed arrows = none / thread_token control flow&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                <mxCell id="df-legend" value="legend&lt;div style=&quot;font-size:9px&quot;&gt;outer rectangles = ops with regions (thread, graph)&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;light-grey cells = explicit none / token control ports&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;yellow cell = InstructionCore-side bridge (thread.fence)&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;dashed arrows = none / thread_token control flow&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="40" y="930" width="770" height="90" as="geometry"/>
                 </mxCell>
             </root>

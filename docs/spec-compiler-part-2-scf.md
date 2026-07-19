@@ -7,8 +7,10 @@ regions to Part 3.
 
 Part 2 is where HostCore-vs-AccCore selection lives. Part 3 must not
 infer this boundary from `func.func`.
-Region selection is the L1 accelerator-placement instance of the
-placement framework in `docs/spec-compiler-part-3-placement-framework.md`.
+Region selection is the AccCore outlining decision owned by the Structured
+Program Candidate. It is distinct from SpatialCore outlining, TechMapping,
+and Spatial PnR as specified in
+`docs/spec-compiler-part-3-placement-framework.md`.
 
 ## 1. Scope
 
@@ -42,7 +44,7 @@ accelerator regions, and final dataflow placement:
 
 * `func.func` is a callable symbol and ABI unit. It does not imply
   HostCore or AccCore placement by itself. A `func.func` may be used as
-  a HostCore function, a ScalarCore-callable function, or both if it
+  a HostCore function, an InstructionCore-callable function, or both if it
   satisfies both legality contracts.
 * `loom.acc_region` is the temporary Part 2 to Part 3 marker saying
   that a structured region has been selected for AccCore execution. It
@@ -62,11 +64,11 @@ accelerator regions, and final dataflow placement:
   body and supplies the per-launch ctrl_in / done_out plumbing;
   retirement remains explicit through done_out.
 
-Function calls are ScalarCore-level operations when they appear
+Function calls are InstructionCore-level operations when they appear
 inside an accelerator region. Part 2 must classify any `func.call`
-reachable from a `loom.acc_region`: the callee must be ScalarCore-
+reachable from a `loom.acc_region`: the callee must be InstructionCore-
 legal, inlined before Part 3, or rejected with a diagnostic. A
-ScalarCore-legal callee may itself contain `loom.acc_region`
+InstructionCore-legal callee may itself contain `loom.acc_region`
 markers if Part 2 selected nested work for AccCore execution; Part
 3 later lowers those markers to nested `dataflow.thread.launch`
 ops referencing the appropriate `dataflow.thread` definitions.
@@ -103,7 +105,7 @@ multiple `loom.acc_region` ops, and ordinary host code may appear before,
 between, and after them.
 
 The body may contain `func.call` operations. Those calls are
-interpreted as ScalarCore calls after Part 3 lowers the enclosing
+interpreted as InstructionCore calls after Part 3 lowers the enclosing
 accelerator region. They are not candidates for `dataflow.graph`
 definition extraction (i.e., for inclusion in a graph callable's
 body and a paired `dataflow.graph.launch`) unless the callee has
@@ -180,14 +182,14 @@ Part 2 assigns each reachable `func.func` one or more call-context
 classes:
 
 * **HostCore-callable.** May be called from ordinary host code.
-* **ScalarCore-callable.** May be called from code that Part 3
+* **InstructionCore-callable.** May be called from code that Part 3
   will place inside a `dataflow.thread` definition's body.
 * **Inline-only.** Must be inlined before it can appear in a selected
   accelerator region.
 * **Host-only.** Must not be reachable from a `loom.acc_region`.
 
 Conservative policies may require calls inside `loom.acc_region` to be
-inlined or explicitly marked ScalarCore-callable. Unsupported indirect
+inlined or explicitly marked InstructionCore-callable. Unsupported indirect
 calls, recursion, exceptions, unstructured stack behavior, or host-only
 runtime calls cause a diagnostic if they are reachable from an
 accelerator region.
@@ -217,7 +219,7 @@ The Part 2 output contract is:
 * Host code outside `loom.acc_region` remains host code.
 * No `func.func` is an implicit accelerator boundary.
 * `func.call` operations reachable from accelerator regions are either
-  ScalarCore-legal or scheduled for inlining before Part 3 graph
+  InstructionCore-legal or scheduled for inlining before Part 3 graph
   extraction.
 * Accelerator regions have explicit operands, no direct data results,
   and enough memory-effect metadata for Part 3 to insert
@@ -232,6 +234,6 @@ The Part 2 output contract is:
 * `docs/spec-compiler-part-1-source.md` -- source integration and
   metadata emission.
 * `docs/spec-compiler-part-3-dfg.md` -- SCF-to-DFG lowering.
-* `docs/spec-compiler-part-3-placement-framework.md` -- common
-  placement-partition model; Part 2 region selection is the L1
-  accelerator-placement instance.
+* `docs/spec-compiler-part-3-placement-framework.md` -- ownership boundaries
+  among AccCore outlining, SpatialCore outlining, TechMapping, and Spatial
+  PnR.

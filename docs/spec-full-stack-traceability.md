@@ -52,24 +52,31 @@ be filled with a placeholder value.
 
 ## Required Trace Path
 
-The target Loom stack must define trace edges for this path:
+The target Loom stack must define trace edges for this dependency graph:
 
 ```text
 C/C++ or CMSIS source
   -> LLVM IR
   -> raised MLIR / SCF-shaped representation
+  -> Structured Program Candidate
   -> dataflow.thread / dataflow.graph
-  -> DFG-sim report
-  -> ADG Builder C++ hardware description
+
+ADG Builder C++ hardware description
   -> fabric.system + fabric.module hardware IR
-  -> PnR and independent mapping artifact
-  -> CGRA-sim report
-  -> runtime package / launch descriptor
-  -> RTL manifest + SystemVerilog
-  -> EDA tooling reports
-  -> FPA report
-  -> combined cycle/frequency/power/area feedback report
-  -> DSE feedback into compiler and hardware choices
+
+dataflow + Fabric
+  -> TechMapping -> SpatialMapping -> SystemMapping
+
+Structured Program Candidate + Mapping + binaries + configuration
+  -> deployable runtime package
+  -> Thread Dispatch ABI
+  -> Spatial Launch ABI
+
+dataflow -> DFG-sim Evidence
+dataflow + Fabric + SpatialMapping -> CGRA-sim Evidence
+Fabric + backend -> RTL manifest + SystemVerilog -> EDA/FPA Evidence
+
+all immutable artifacts and Evidence -> central DSE requests and selection
 ```
 
 The path is a traceability requirement, not a requirement that every
@@ -110,23 +117,25 @@ malformed raised artifact.
 
 Producer: compiler placement and dataflow lowering.
 
-Consumer: DFG-sim, PnR, runtime artifact packaging, and comparison
-tools.
+Consumer: DFG-sim, TechMapping producers, Spatial PnR, runtime artifact
+packaging, and comparison tools.
 
 Spec owners: `docs/spec-compiler-part-3-dfg.md`,
 `docs/spec-compiler-part-3-placement-framework.md`,
 `docs/spec-dataflow-part-1-streaming.md`, and
 `docs/spec-dataflow-part-2-control.md`.
 
-Required diagnostics include unsupported L1, L2, or L3 placement,
-illegal thread/graph layering, unsupported dataflow primitive, invalid
-memory-order dependency, and malformed graph or subgraph boundary.
+Required diagnostics include unsupported AccCore or SpatialCore outlining,
+TechMapping or Spatial PnR failure, illegal thread/graph layering, unsupported
+dataflow primitive, invalid memory-order dependency, and malformed graph
+boundary.
 
-### Dataflow IR To DFG-sim Report
+### Dataflow IR To DFG-sim Evidence
 
 Producer: DFG-sim.
 
-Consumer: comparison, PnR cost model, DSE, full-stack reporting.
+Consumer: unified Evaluation, simulation comparison, central DSE, and
+full-stack reporting. PnR does not consume DFG-sim reports or evidence.
 
 Spec owners: `docs/spec-sim-dfg.md` and
 `docs/spec-full-stack-reporting.md`.
@@ -139,60 +148,80 @@ configuration, and report schema failure.
 
 Producer: ADG Builder C++ API.
 
-Consumer: Fabric verifier, PnR, CGRA-sim, RTL lowering, FPA
-estimation.
+Consumer: Fabric verifier, TechMapping producers, Spatial PnR, CGRA-sim, RTL
+lowering, and FPA estimation.
 
 Spec owners: `docs/spec-adg-builder.md`,
 `docs/spec-fabric-system-adg.md`, and Fabric module specs.
 
-Required diagnostics include duplicate symbol, invalid node kind,
-invalid protocol schema, illegal channel direction, missing required
-port, invalid one-to-one link, unsupported crossing, invalid coherence
-domain, invalid memory model, and malformed visualization metadata.
+Required diagnostics include duplicate semantic identity, unresolved typed
+reference, invalid endpoint direction or payload, incomplete directed
+connectivity, invalid SpatialCore attachment, unsupported transport or
+implementation refinement, invalid domain crossing, invalid memory or service
+capability, invalid coherence or consistency declaration, and malformed
+visualization metadata. Exact diagnostic spelling awaits the typed system
+schema.
 
-### Fabric IR To Mapping Artifact
+### Dataflow And Fabric To TechMapping
 
-Producer: PnR.
+Producer: TechMapping search or another validated TechMapping producer.
 
-Consumer: mapping verifier, CGRA-sim, runtime packaging, RTL
-workload-harness generation, FPA estimation, DSE, visualization tools.
+Consumer: TechMapping verifier, Spatial PnR, central DSE, and visualization
+tools.
+
+Spec owners: `docs/spec-mapping-artifact.md` and related
+`docs/spec-mapping-*.md` files.
+
+Required diagnostics include unresolved software reference, unresolved
+hardware reference, artifact identity mismatch, incompatible realization,
+incomplete configured-function or boundary correspondence, unsupported
+semantic encoding, and no legal TechMapping candidate.
+
+### TechMapping To SpatialMapping
+
+Producer: Spatial PnR consuming exact `D/T/F/C/K` inputs.
+
+Consumer: SpatialMapping verifier, CGRA-sim, runtime packaging, RTL
+workload-harness generation, FPA estimation, central DSE, and visualization
+tools.
 
 Spec owners: `docs/spec-pnr.md`,
 `docs/spec-mapping-artifact.md`, and related
 `docs/spec-mapping-*.md` files.
 
-Required diagnostics include unresolved software reference, unresolved
-hardware reference, artifact identity mismatch, incompatible placement,
-illegal route, missing buffer, illegal schedule, invalid temporal tag,
-illegal memory binding, and no legal candidate.
+Required diagnostics include stale TechMapping identity, exact-input mismatch,
+incompatible placement, incomplete Route Tree or resource-use closure,
+missing buffer, invalid Physical Tag interpretation, illegal memory binding,
+and no legal SpatialMapping candidate.
 
-### Mapping Artifact To CGRA-sim Report
+### SpatialMapping To CGRA-sim Evidence
 
 Producer: CGRA-sim.
 
-Consumer: comparison, FPA estimation, DSE, full-stack reporting.
+Consumer: unified Evaluation, simulation comparison, FPA estimation, central
+DSE, and full-stack reporting.
 
 Spec owners: `docs/spec-sim-cgra.md`,
 `docs/spec-sim-comparison.md`, and
 `docs/spec-full-stack-reporting.md`.
 
-Required diagnostics include stale mapping, missing route, missing
-schedule, missing buffer depth, invalid memory binding, unsupported
-hardware primitive, invalid runtime input, and report schema failure.
+Required diagnostics include stale Mapping, incomplete Route Tree or
+resource-use closure, missing buffer depth, invalid memory binding, unsupported
+typed SpatialCore resource, invalid runtime input, and report schema failure.
 
-### Runtime Package And Launch Descriptor
+### Runtime Package And Two-Level Dispatch
 
 Producer: compiler packaging or runtime package builder.
 
-Consumer: runtime, simulator dispatch, hardware execution dispatch, and
-full-stack reporting.
+Consumer: runtime Thread Dispatch, Spatial Launch, external system simulation,
+hardware execution dispatch, and full-stack reporting.
 
 Spec owner: `docs/spec-runtime-abi.md`.
 
 Required diagnostics include missing dataflow artifact, missing Fabric
 artifact, missing mapping artifact, unsupported target profile, invalid
-memory descriptor, missing fallback policy, stale package identity, and
-unsupported launch mode.
+memory descriptor, missing execution disposition, stale package identity,
+Thread Dispatch mismatch, and Spatial Launch mismatch.
 
 ### Fabric IR To RTL Manifest And SystemVerilog
 
@@ -204,10 +233,11 @@ estimation, and full-stack reporting.
 Spec owners: `docs/spec-rtl-lowering.md` and
 `docs/spec-eda-tooling.md`.
 
-Required diagnostics include unsupported primitive lowering,
-unsupported protocol feature, missing external-port implementation,
-illegal implicit fanout, missing clock crossing implementation, missing
-memory model, unsupported black box, and RTL manifest schema failure.
+Required diagnostics include unsupported typed resource lowering,
+unsupported Interconnect Implementation refinement, missing external-boundary
+lowering, connectivity that lacks required replication or arbitration,
+missing domain-crossing implementation, unresolved memory or service
+lowering, unsupported black box, and RTL manifest schema failure.
 
 ### RTL Manifest To EDA Reports
 
@@ -237,12 +267,15 @@ activity source, incompatible activity source, missing timing evidence,
 missing area evidence, missing power evidence, and stale input
 identity.
 
-### Reports To DSE Feedback
+### Evaluation Evidence To DSE Decisions
 
-Producer: full-stack reporter and DSE controller.
+Producer: simulation, comparison, FPA, EDA, and full-stack Evaluation
+producers.
 
-Consumer: compiler placement, PnR search, ADG Builder candidate
-generation, hardware profile selection.
+Consumer: central DSE. DSE may issue a new producer-specific request or
+constraint artifact, including explicit `ResolvedPnrConfigView` and
+`MappingConstraintSet` inputs for a new Spatial PnR run. PnR never consumes
+prior Evaluation Evidence directly.
 
 Spec owner: `docs/spec-dse-feedback.md`.
 

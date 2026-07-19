@@ -361,7 +361,9 @@ The `fabric.module` target universe includes:
 * optional module-level Loom address and memory-bus overrides.
 
 The target universe does not include module-internal `fabric.link`.
-System-level links belong to `fabric.system`.
+System-level topology belongs to the typed Transport Architecture resources,
+endpoints, and directed connectivity owned by `fabric.system`; exact record
+syntax remains open.
 
 ## Required Evidence
 
@@ -386,8 +388,9 @@ The `fabric.module` target is objectively verifiable when:
   route metadata;
 * invalid non-whitelisted ops, external SSA leakage, illegal port types,
   and illegal yield forms are rejected;
-* PnR, CGRA-sim, RTL lowering, FPA, and reporting can reference the
-  module by stable symbol identity.
+* PnR, CGRA-sim, RTL lowering, FPA, and reporting resolve the module through
+  the exact finalized Fabric artifact and typed module reference; optional
+  symbol spelling is not persistent identity.
 
 ## Unsupported Scope Policy
 
@@ -399,12 +402,13 @@ link model.
 
 ## Relationships To Other Contracts
 
-`fabric.module` is referenced by `fabric.system` `acc_core` nodes and by
-mapping artifacts. It is produced directly by the SpatialCore ADG
-Builder layer and consumed by PnR, CGRA-sim, RTL lowering, FPA, and
-reporting. System-level connectivity belongs to
-`docs/spec-fabric-system-adg.md`; software-to-hardware binding belongs
-to `docs/spec-mapping-artifact.md`.
+An exact `fabric.module` template is referenced by typed SpatialCore
+occurrences and attachments owned by `fabric.system` AccCores, and by Mapping
+artifacts where required. The exact system attachment schema remains open. A
+module is produced directly by the SpatialCore ADG Builder layer and consumed
+by PnR, CGRA-sim, RTL lowering, FPA, and reporting. System-level connectivity
+belongs to `docs/spec-fabric-system-adg.md`; software-to-hardware binding
+belongs to `docs/spec-mapping-artifact.md`.
 
 ## Current Implementation Notes
 

@@ -1,234 +1,105 @@
-# Mapping Search and PnR Policy
+# Mapping Search And PnR Policy
 
-This document specifies the PnR search policy that produces Loom
-mapping artifacts. The output data model is specified by
-`docs/spec-mapping-artifact.md` and the detailed
-`docs/spec-mapping-*.md` record-family specs.
+This document specifies confirmed search ownership and architecture. Search
+operates on immutable artifacts and ephemeral native state. It does not create
+a second persistent legality, Evaluation, or DSE authority.
 
-PnR is a mapper from software abstractions to hardware abstractions. It
-does not simulate execution, mutate dataflow IR, mutate Fabric ADG, or
-invent missing hardware resources.
+## Ownership
 
-PnR is an NP-hard placement and routing problem. The deterministic
-baseline described below is a correctness oracle and debugging policy,
-not the final performance policy. Production-quality policies must be
-designed for large candidate spaces, cache-local data structures,
-incremental legality updates, and bounded-time search.
+TechMapping search alone selects Compute and Memory Realizations, semantic
+encodings, and exact software-to-implementation correspondences. Spatial PnR
+consumes one immutable TechMapping predecessor and must not rematch actors,
+reenumerate FU compatibility from raw Dataflow and Fabric inputs, regroup a
+legacy `dataflow.subgraph`, or select another semantic encoding.
 
-The first hard target for this spec is artifact quality, not search
-cleverness: Loom must be able to validate, consume, and emit complete
-mapping artifacts, including manually produced fixtures. Scalable search
-engines are search-extension targets layered on top of the same artifact
-and verifier contracts.
+Mapping verification owns legality. `PnRSearchCost` owns only generic search
+facts such as distance, connectivity, capacity, occupancy, and congestion.
+Accelerator-aware latency, initiation interval, throughput, clock, memory,
+area, power, and energy come from the unified Evaluation system. The central
+DSE controller owns candidate sets, objective composition, ranking,
+acceptance, and promotion.
 
-The central compute mapping relation is a Compute Realization in the
-Mapping Artifact: one target-specific actor group, one selected
-`fabric.fu`, one valid semantic encoding, and complete actor/port
-correspondence. The actor group is selected during TechMapping and is not
-persisted as a Canonical Dataflow Program partition. PE, switch, memory, and
-boundary records make that realization
-executable on the selected hardware.
+## Exact Spatial PnR Inputs
 
-## Search Inputs
+Spatial PnR consumes one exact coupling of:
 
-Required inputs:
+* Canonical Dataflow Program `D`;
+* TechMapping `T` bound to exact `D` and `F`;
+* fully elaborated Fabric Hardware Description `F`;
+* immutable `ResolvedPnrConfigView` `C` derived from one ResolvedConfig
+  artifact; and
+* MappingConstraintSet `K` bound to exact `D`, `T`, and `F`.
 
-* software dataflow IR after compiler placement boundaries are chosen;
-* selected `fabric.system`;
-* every referenced `fabric.module` template;
-* resolved configuration ArtifactIdentity;
-* workload shape when the mapping is shape-dependent.
+Freeze rejects every identity mismatch before native capacity planning. `C`
+is a typed projection and has no independent artifact identity.
 
-Optional inputs:
+## Freeze And Native State
 
-* user constraints;
-* DFG-sim reports;
-* prior CGRA-sim reports;
-* FPA reports;
-* prior mapping-set manifests;
-* visualization preferences.
+Freeze validates, resolves, indexes, and precomputes. It does not choose a
+placement, route, tag, buffer, schedule, memory binding, or configuration.
+The production native model has exactly these ownership classes:
 
-Optional inputs may influence cost or pruning. They must not create
-legality facts that are absent from software IR, Fabric ADG, or the
-mapping artifact being built.
+* immutable `FrozenModel`;
+* mutable `CandidateState`;
+* mutable `SearchScratch`; and
+* transactional `MoveTransaction`.
 
-## Candidate State
+The aggregate production `FrozenModel` field inventory remains open. Existing
+realization and routing freezes are partial structural views, not a completed
+persistent schema.
 
-PnR-internal candidate state may contain mutable solver data, priority
-queues, backtracking frames, congestion estimates, and rejected partial
-candidates. None of that internal state is a valid persistent artifact.
+## Spatial Search Architecture
 
-A candidate becomes persistent only when serialized into a mapping
-artifact that contains all records required by the relevant consumer
-profile in `docs/spec-mapping-verification.md`.
+Production Spatial search uses deterministic transactional multi-start
+simulated annealing. Every move is expressed through the common Action and
+`MoveTransaction` machinery so legality caches and candidate state commit or
+roll back atomically.
 
-## Legality Pipeline
+Routing uses endpoint-only A* over the fully elaborated arbitrary directed
+topology. A* node identity is only a typed transport endpoint index. Time,
+tags, resource-time, deadlock state, and configuration are not appended to
+node identity. Per-net routing uses one rooted Route Tree with shared trunks
+and multi-sink branches. PathFinder occupancy and history are action-local
+search state.
 
-Every PnR policy uses the same legality pipeline:
+The exact simulated-annealing numeric defaults, move distribution, integer
+route-cost terms, equal-cost tie rules, and cache policies remain open. This
+document does not invent them.
 
-1. identity and reference legality;
-2. thread placement legality;
-3. graph placement legality;
-4. Compute Realization and operation placement legality;
-5. route legality;
-6. schedule, temporal-tag, reconfiguration, and resource-sharing
-   legality;
-7. buffer legality;
-8. memory, coherence, consistency, and memory-order legality;
-9. consumer-profile completeness.
+## Determinism And Identity
 
-The cost model may rank only candidates that pass the legality rules
-needed for the requested output profile. A cost model must never make an
-illegal candidate legal.
+Determinism is derived from canonical semantic identities, typed structural
+keys, the exact resolved configuration, and explicit algorithm rules. Stable
+symbol order, source text order, printer order, insertion order, paths, and
+compatibility aliases are forbidden tie-breaking authorities.
 
-## Arbitrary-Topology Rule
+Dense `PnrIndex` values are rebuildable native indices. They are never written
+back into Mapping artifacts or MappingConstraintSet.
 
-PnR must treat hardware as an arbitrary directed graph.
+## Candidate And Failure Boundary
 
-Placement candidates are generated from explicit hardware nodes and
-resources. Route candidates are generated from explicit directed channel
-endpoints, `fabric.link` connectivity, module resources, boundaries,
-adapters, FIFOs, buffers, and declared protocol channels.
+Search may retain mutable partial candidates, queues, journals, congestion
+state, and provisional cost deltas. None is a persistent Mapping artifact.
+Only one complete selected Mapping candidate is finalized for a Mapping
+profile.
 
-Coordinates, grid metadata, layout metadata, labels, and visualization
-positions are never topology. They may affect visualization only. Cost
-models use explicit hardware weights such as latency, bandwidth,
-capacity, or user-declared edge weights; they must not derive hardware
-cost from visualization coordinates.
-
-## Deterministic Baseline
-
-The required baseline policy is deterministic and debug-friendly.
-
-Candidate construction order:
-
-1. process thread instance domains in stable logical order;
-2. process graph launches in stable software order;
-3. process actor groups and operation units in dependency-topological order,
-   with stable symbolic tie breakers;
-4. enumerate compatible hardware resources in stable symbol order;
-5. enumerate route paths over the explicit hardware graph using a stable
-   shortest-legal-path metric;
-6. assign earliest legal schedule/resource-use records;
-7. assign required buffers and memory bindings;
-8. serialize records in deterministic artifact order.
-
-The baseline policy is not required to be performance-optimal. Its job
-is to be correct, reproducible, diagnosable, and useful as a reference
-for tests.
-
-## Search Extensions
-
-PnR policy selection and policy parameters are a typed view of the
-resolved configuration specified in `docs/spec-config-ssot.md`. Loom may
-implement additional PnR policies:
-
-* beam search;
-* simulated annealing;
-* integer or mixed-integer programming;
-* min-cost flow or multi-commodity flow routing;
-* improved A* routing over explicit directed channel endpoints;
-* profile-guided search;
-* feedback-driven DSE using CGRA-sim or FPA reports;
-* user-guided constrained search.
-
-Every policy must emit the same artifact schema and pass the same
-verifier profiles. Search-policy-specific state belongs in logs or
-mapping-set manifests, not in per-candidate mapping records.
-
-## Cost Model
-
-The PnR cost model ranks legal candidates. Required baseline terms:
-
-* unmapped required software objects;
-* route length and route resource pressure;
-* exclusive resource pressure;
-* PE-local FU activation pressure;
-* buffer depth and buffer pressure;
-* schedule length or estimated cycles;
-* memory bandwidth and coherence pressure;
-* temporal tag pressure and tag-capacity pressure;
-* reconfiguration count;
-* cache locality of PnR solver data structures and incremental search
-  updates when comparing otherwise equivalent policies;
-* diagnostics severity;
-* optional DFG-sim, CGRA-sim, and FPA feedback references.
-
-The baseline cost model must define a total deterministic order.
-Additional policies may use weighted objectives, lexicographic
-objectives, constraints plus objectives, or Pareto ranking. The chosen
-mapping artifact or mapping-set manifest must record the exact
-`ResolvedConfig` `ArtifactIdentity` used by the policy.
-
-## Diagnostics During Search
-
-PnR must emit structured diagnostics for:
-
-* no compatible AccCore;
-* no compatible SpatialCore module;
-* no compatible FU/PE/memory resource;
-* no legal route;
-* route resource contention;
-* schedule/resource conflict;
-* insufficient buffer resources;
-* unsupported memory/coherence/consistency requirement;
-* missing consumer-profile records.
-
-Diagnostics should be attached to the most specific software object and
-hardware object known at the time. Rejected internal candidates do not
-need full artifact records, but user-visible failures must be
-represented by diagnostic records or reports.
-
-## Mapping-Set Manifest
-
-A DSE run that produces multiple candidates emits a mapping-set
-manifest. Required fields:
-
-* shared software input references;
-* shared hardware input references;
-* resolved configuration ArtifactIdentity;
-* objective functions;
-* candidate artifact list;
-* rejected-candidate summaries;
-* selected candidate or Pareto set;
-* summary metrics and report references.
-
-The manifest must not duplicate detailed placement, route, schedule,
-buffer, or memory records. Those remain in per-candidate artifacts.
+Unsupported inputs, proven infeasibility, no legal route, and budget
+exhaustion are ordinary typed results and reports. Rejected candidates and
+search history are not serialized as partial, rejected, or degraded Mapping
+artifacts. Candidate collections, selected-candidate records, and Pareto sets
+belong to the central DSE model rather than a Mapping-owned manifest.
 
 ## Validation
 
-Search-policy tests must include:
+Search tests cover semantic anchors rather than a policy matrix:
 
-* deterministic baseline on arbitrary non-mesh topology;
-* deterministic baseline on mesh-like topology using explicit links;
-* Compute Realization actor-group-to-FU binding as the primary compute case;
-* PE with multiple candidate FUs where only one FU can be active for a
-  spatial or temporal resource-use slot;
-* negative no-route case;
-* negative incompatible-resource case;
-* resource-conflict case requiring schedule or tag records;
-* boundary tag assignment that fails because the required tag value
-  cannot be represented by the hardware tag width;
-* memory/coherence negative case;
-* at least one multi-candidate mapping-set manifest;
-* replay test proving the selected candidate is reproducible from the
-  recorded policy and inputs.
+* exact five-input coupling and foreign reference rejection;
+* deterministic freeze under harmless descriptor permutations;
+* factorized Compute and Memory candidate domains;
+* endpoint-only routing over explicit directed topology;
+* deterministic logical-net grouping and multi-sink Route Tree behavior; and
+* atomic move commit and rollback when those components are implemented.
 
-## Acceptance Criteria
-
-Mapping search is complete when:
-
-* PnR can produce a verifier-clean artifact for a non-mesh hardware
-  graph;
-* PnR can produce a verifier-clean artifact for a regular mesh-like
-  hardware graph without using coordinates as connectivity;
-* every legal candidate selected by any policy can be serialized into
-  detailed mapping records;
-* every failed required mapping emits structured diagnostics;
-* DSE can compare multiple candidate artifacts through a mapping-set
-  manifest;
-* scalable policies such as simulated-annealing-style placement or
-  improved-A*-style routing can be added without changing the artifact
-  schema or weakening the deterministic baseline as a reference oracle;
-* CGRA-sim can consume selected artifacts without PnR internal state.
+Tests must not preserve a greedy architecture baseline, stable symbol order,
+earliest-legal absolute scheduling, one-edge-one-route state, or Mapping-owned
+objective formulas.

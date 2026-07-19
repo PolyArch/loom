@@ -85,7 +85,7 @@ Loom-specific flags should be explicit. Baseline option classes are:
 * select mapping policy;
 * select simulator or estimation policy;
 * select artifact output directory;
-* require acceleration or allow fallback;
+* select the required execution disposition;
 * control diagnostic verbosity.
 
 The exact spelling of options may evolve, but the option classes above
@@ -145,16 +145,13 @@ selected candidate regions. It may use:
 * RTL/FPA flows from `docs/spec-rtl-lowering.md` and
   `docs/spec-fpa-estimation.md`.
 
-Acceleration mode must have an explicit fallback policy:
-
-* `allow_fallback`: keep unsupported regions on the host or ScalarCore
-  and still produce the ordinary compiler output when possible;
-* `require_acceleration`: fail if requested acceleration cannot be
-  represented, mapped, or validated;
-* `report_only`: run analysis and emit reports without changing the
-  ordinary compiler output.
-
-Fallback decisions must be visible in diagnostics and reports.
+Acceleration mode must make ownership disposition explicit. Unsupported
+SpatialCore work either remains under HostCore or InstructionCore ownership in
+a different Structured Program Candidate, or the requested acceleration
+fails. This is a compile-time candidate decision, not a runtime fallback from
+an invalid Mapping. Report-only analysis may emit diagnostics and Evaluation
+requests without changing ordinary compiler output. Exact CLI policy spelling
+remains open.
 
 ## CMSIS Source Policy
 
@@ -217,8 +214,10 @@ The target runtime ABI is specified in `docs/spec-runtime-abi.md`.
 
 Runtime requirements must be explicit. If an invocation requests an
 accelerated binary but the required runtime is unavailable, the driver
-must diagnose the missing runtime rather than silently producing a
-host-only binary unless fallback is allowed and reported.
+must diagnose the missing runtime rather than silently producing a host-only
+binary. A host or InstructionCore alternative is a separately selected
+Structured Program Candidate and deployment disposition, not an error-path
+substitution.
 
 ## Diagnostics
 
@@ -252,7 +251,7 @@ When artifact or acceleration mode is enabled, reports should identify:
 * emitted artifact paths or ids;
 * selected acceleration policy;
 * selected hardware or ADG profile;
-* fallback decisions;
+* selected execution disposition;
 * DFG-sim, CGRA-sim, comparison, and FPA report identities when
   present;
 * diagnostics.

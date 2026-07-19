@@ -465,24 +465,25 @@ using FrozenTerminal =
     std::variant<FrozenGraphBoundaryTerminal, FrozenTemplateTerminalRef>;
 
 struct FrozenLogicalNet {
+  mapping::DataflowEndpoint producer;
   FrozenTerminal source;
   PnrIndex sinkOffset;
   PnrIndex sinkCount;
 
   friend bool operator==(const FrozenLogicalNet &lhs,
                          const FrozenLogicalNet &rhs) {
-    return lhs.source == rhs.source && lhs.sinkOffset == rhs.sinkOffset &&
-           lhs.sinkCount == rhs.sinkCount;
+    return lhs.producer == rhs.producer && lhs.source == rhs.source &&
+           lhs.sinkOffset == rhs.sinkOffset && lhs.sinkCount == rhs.sinkCount;
   }
 };
 
 struct FrozenLogicalNetSink {
-  mapping::EdgeId edge;
+  mapping::DataflowEndpoint consumer;
   FrozenTerminal terminal;
 
   friend bool operator==(const FrozenLogicalNetSink &lhs,
                          const FrozenLogicalNetSink &rhs) {
-    return lhs.edge == rhs.edge && lhs.terminal == rhs.terminal;
+    return lhs.consumer == rhs.consumer && lhs.terminal == rhs.terminal;
   }
 };
 

@@ -73,8 +73,9 @@ Compared to a bare `fabric.fu`:
 
 The PE input-mux and output-demux terms refer to local configuration
 fields inside a SpatialCore template. They are not `fabric.system`
-interconnect primitives. System-level routing and arbitration use the
-primitive node kinds specified in `docs/spec-fabric-system-adg.md`.
+interconnect primitives. System-level routing, replication, and arbitration
+belong to the typed Transport Architecture and Interconnect Implementation
+owned by `fabric.system`; their exact schemas remain open.
 
 Compared to allowing arbitrary multi-FU placement:
 

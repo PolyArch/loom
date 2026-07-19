@@ -69,7 +69,7 @@ coexist in the module, but a function is an ABI and ownership container, not
 an implicit graph boundary.
 
 Output is the canonical Loom front-end IR: module-level `func.func`
-symbols holding ordinary HostCore or ScalarCore code; module-level
+symbols holding ordinary HostCore or InstructionCore code; module-level
 `dataflow.thread` definitions reached by zero or more
 `dataflow.thread.launch` ops; and module-level `dataflow.graph`
 definitions reached by zero or more `dataflow.graph.launch` ops
@@ -103,16 +103,16 @@ document and the implementation contract in
 ## 2. Hardware Model
 
 Loom's execution target is a heterogeneous system containing HostCore
-execution and one or more AccCore execution resources. A physical
-AccCore is a system-level resource described by `fabric.system`: the
-`acc_core` node carries ScalarCore parameters and references a
-`fabric.module` symbol as its SpatialCore template. `fabric.module`
-remains the SpatialCore or CGRA template only; it does not own the
-physical AccCore instance or ScalarCore parameters.
+execution and one or more AccCore execution resources. Fabric owns each typed
+AccCore occurrence, its node-local InstructionCore description, its
+SpatialCore occurrence, and the typed attachment to an exact `fabric.module`
+template. `fabric.module` remains the SpatialCore or CGRA template only; it
+does not own the physical AccCore occurrence or InstructionCore description.
+The exact typed system operations and attachment schema remain open.
 
 The front-end IR in this document remains a software and logical
 execution model. Binding logical execution cells to physical AccCore
-instances, and selecting the system-level ScalarCore/SpatialCore
+instances, and selecting the system-level InstructionCore/SpatialCore
 resources, belongs to mapping and binding artifacts.
 
 The front-end's IR mirrors this trio:
@@ -121,7 +121,7 @@ The front-end's IR mirrors this trio:
 |----------|----------------------|
 | HostCore | Host-call-context `func.func` body code outside any `dataflow.thread.launch` |
 | Logical execution domain | A `dataflow.thread` definition (Symbol-bearing, module-scope), launched at caller scope by `dataflow.thread.launch` with `mapping = [#loom.thread_axis<...>, ...]` logical execution-axis tags. Each dynamic thread instance is a logical execution cell before binding. The cell-to-AccCore binding is a separate concern. |
-| ScalarCore | The body of a `dataflow.thread` definition, minus its `dataflow.graph.launch` ops, plus ScalarCore-legal `func.call` callees after inlining or specialization. The body is "what one logical execution cell runs once binding maps it to a physical AccCore". |
+| InstructionCore | The body of a `dataflow.thread` definition, minus its `dataflow.graph.launch` ops, plus InstructionCore-legal `func.call` callees after inlining or specialization. The body is "what one logical execution cell runs once binding maps it to a physical AccCore". |
 | SpatialCore | Each `dataflow.graph` definition referenced by a `dataflow.graph.launch` inside a `dataflow.thread` definition's body, again per bound logical execution cell. |
 
 A single `dataflow.thread.launch` corresponds to one launch of a
@@ -135,14 +135,14 @@ partitioned -- and does not commit to a specific fabric topology.
 A fabric whose physical PE / memory graph is not a Cartesian mesh
 is supported by the same mapping mechanism. The binding from a
 logical execution point to a physical AccCore is a separate concern;
-see the placement framework and the later binding/PnR specs.
+see the SystemMapping execution-binding and PnR specs.
 
-Every `dataflow.thread` body may contain ScalarCore residual code and
+Every `dataflow.thread` body may contain InstructionCore code and
 `dataflow.graph.launch` ops, but it cannot launch another thread.
 Dynamic instances become physical AccCore execution slots only after
 binding/PnR.
 
-A ScalarCore-only thread body is legal. Failure to form a canonical graph
+An InstructionCore-only thread body is legal. Failure to form a canonical graph
 must not synthesize a new accelerator boundary or move unselected host code
 into a thread.
 
@@ -169,7 +169,7 @@ silently change hierarchy shape as a verifier or parsing side effect.
 
 * `func.func` is a callable symbol and ABI unit. It does not by itself
   choose HostCore or AccCore placement. A function may be HostCore-only,
-  ScalarCore-callable, or legal in both contexts depending on the
+  InstructionCore-callable, or legal in both contexts depending on the
   Part 2 call-context classification.
 * `loom.spatial_region` is temporary compiler IR inside a
   `dataflow.thread`. It owns one structured graph candidate with normalized
@@ -202,12 +202,12 @@ Function definitions remain module-level symbols in this design.
 `dataflow.thread` definitions are also module-level symbols (and
 not symbol tables themselves) and do not physically contain
 `func.func` definitions. A `func.call` inside a `dataflow.thread`
-definition's body is a ScalarCore call. If the callee contains
+definition's body is an InstructionCore call. If the callee contains
 code that must become a `dataflow.graph` definition, Part 3 must
 inline or specialize that callee into the active thread definition
 before graph extraction. A `dataflow.thread.launch` is invalid
 transitively inside every thread or graph definition. Non-inlined
-ScalarCore calls may remain only when their callee body is graph-free
+InstructionCore calls may remain only when their callee body is graph-free
 after this preparation.
 
 ## 3. Constitutional Rules
@@ -227,7 +227,7 @@ each rule lands in IR.
    The thread definition's body has a `thread_ctrl : none` block
    argument that fires once the logical thread instance starts executing
    (entry-block layout: `(args_*, thread_ctrl, iv_*)`, see Section 5.4.1).
-   The body may contain ScalarCore operations and ScalarCore-legal
+   The body may contain InstructionCore operations and InstructionCore-legal
    `func.call` operations, but not `func.func` definitions or
    `dataflow.thread.launch` ops.
 2. `dataflow.graph` is a leaf-level definition. It is also a Symbol-
@@ -238,7 +238,7 @@ each rule lands in IR.
    `dataflow.graph.launch`, or another `dataflow.graph` definition.
    The graph body is a single graph-kind region; it already permits
    feedback edges (accepted semantics). A thread body may contain
-   ScalarCore residual code and `dataflow.graph.launch` ops, but it
+   InstructionCore code and `dataflow.graph.launch` ops, but it
    never launches another thread. The verifier enforces this launch
    containment transitively (see Section 9).
 3. Every `dataflow.graph` definition has an explicit `%start : none`
@@ -327,16 +327,16 @@ each rule lands in IR.
 
 * **HostCore.** The general-purpose CPU that runs host-call-context
   `func.func` body code outside any `dataflow.thread.launch`.
-* **AccCore.** One physical accelerator execution resource represented
-  by a `fabric.system` `acc_core` node. The node carries ScalarCore
-  metadata and references a `fabric.module` symbol as its SpatialCore
-  template. Part 3 does not create physical AccCore instances; it
-  creates logical accelerator work that later binding/PnR maps to
-  AccCore resources.
-* **ScalarCore-callable function.** A module-level `func.func` that
+* **AccCore.** One typed physical accelerator execution resource owned by
+  `fabric.system`, containing a node-local InstructionCore description and a
+  SpatialCore occurrence attached to an exact `fabric.module` template. Part
+  3 does not create physical AccCore occurrences; it creates logical
+  accelerator work that later binding/PnR maps to AccCore resources. The exact
+  typed Fabric schema remains open.
+* **InstructionCore-callable function.** A module-level `func.func` that
   Part 2 classified as legal to call from code running inside a
   `dataflow.thread` definition's body. Such a function remains a
-  symbol; Part 3 either preserves calls to it as ScalarCore calls or
+  symbol; Part 3 either preserves calls to it as InstructionCore calls or
   inlines / specializes it before graph extraction.
 * **Parallel thread axis.** A grid dim of a `dataflow.thread`
   definition tagged as `#loom.thread_axis<parallel, axis>`. Distinct
@@ -376,7 +376,7 @@ each rule lands in IR.
     (whether or not it also contains Loom-recognized entries):
     the front-end rejects it with a diagnostic. Part 2 or an
     earlier Part 3 pass must remove or translate the foreign
-    entries before this point; the placement framework cannot
+    entries before this point; the SpatialCore outlining policy cannot
     decide which dim a foreign entry binds.
   Adding new Loom-recognized mapping attributes (for example
   `#loom.warp<...>`) is an extension point in
@@ -460,7 +460,7 @@ namespaces; nothing outside this list is added.
     ABI; Part 3 manipulates the type as an SSA value.
 
 This spec introduces no other types. The host-to-AccCore data
-plane uses `dataflow.map_info` (see Section 5.4.6), whose result preserves
+plane uses `dataflow.map_info` (see Section 5.4.5), whose result preserves
 the source type. The "this value crossed the boundary through
 `dataflow.map_info`" provenance is enforced by the verifier on
 `dataflow.thread.launch`, not by a wrapper type.
@@ -588,7 +588,7 @@ traits:
   - `thread_ctrl : none` is the per-launch AccCore start signal.
     It is produced by the launch op once async dependencies are
     satisfied and the AccCore instance begins execution. Root
-    `dataflow.graph.launch` ops with no ScalarCore predecessor use
+    `dataflow.graph.launch` ops with no InstructionCore predecessor use
     this value as their `ctrl_in` operand.
   - `iv_0, ..., iv_K : index` are the per-instance grid iteration
     indices, one per static-grid rank entry, in source-dim order.
@@ -762,7 +762,7 @@ Partitioned-data related ops (`dataflow.partition_layout`,
 `dataflow.thread_linear_id`) are specified in
 `docs/spec-compiler-part-4-partitioned-data.md`. `dataflow.partition_layout`
 appears at host scope or inside a `dataflow.thread` definition's
-body (the ScalarCore portion); the query ops appear only inside a
+body (the InstructionCore portion); the query ops appear only inside a
 thread definition's body. None of them appear inside a
 `dataflow.graph` definition's body, and none of them participate in
 the SCF flattening templates in this document.
@@ -1005,7 +1005,7 @@ stream-shaping ops; it shapes address, data, operation, and explicit
 templates below apply to scalar/data streams and `none` ordering
 streams. A memref-typed structured-control result inside graph
 extraction must be rewritten to explicit memory effects, kept in
-ScalarCore code, or rejected before graph lowering.
+InstructionCore code, or rejected before graph lowering.
 
 Graph memory normalization must also reject any residual LLVM store, memcpy,
 memset, volatile load, or atomic load. These operations do not expose an SSA
@@ -1628,11 +1628,11 @@ become explicit launch operands at the use site and matching def block-args
 def's body.
 
 Such a future promotion creates the AccCore boundary only. Code inside the
-thread definition's body is still ScalarCore code until graph extraction moves
+thread definition's body is still InstructionCore code until graph extraction moves
 an eligible region into a `dataflow.graph` definition (referenced by a
 `dataflow.graph.launch` at the cut site). Nested graph-owned parallel work must
 be fixed-domain and provenance-marked. Memory operations that remain outside
-any graph stay in the ScalarCore part of the thread definition's body.
+any graph stay in the InstructionCore part of the thread definition's body.
 
 The future promotion would make the implicit synchronization point of
 `scf.forall` explicit thread-token ordering. The produced
@@ -2377,11 +2377,11 @@ In addition to the dataflow / fabric verifier set:
     `dataflow.thread.launch`; thread definitions are module-scope
     siblings and launches are caller-side only. The launch verifier
     checks this restriction transitively through nested regions.
-  - ScalarCore code and `dataflow.graph.launch` ops are allowed in a
-    thread body. A ScalarCore-only body with no graph launch is also
+  - InstructionCore code and `dataflow.graph.launch` ops are allowed in a
+    thread body. An InstructionCore-only body with no graph launch is also
     legal; this verifier rule does not itself select AccCore execution.
   - Body may contain `func.call` only when the callee has been
-    proven ScalarCore-legal or is scheduled for inlining before
+    proven InstructionCore-legal or is scheduled for inlining before
     graph extraction. Body must not contain `func.func`
     definitions.
   - Reachability is a pass-pipeline invariant, not a verifier
@@ -2436,7 +2436,7 @@ In addition to the dataflow / fabric verifier set:
     means "the entire memref" and requires `dynamicBounds` to be
     empty.
   - The op may appear at host scope or inside another
-    `dataflow.thread` definition's ScalarCore region; it must not
+    `dataflow.thread` definition's InstructionCore region; it must not
     appear inside a `dataflow.graph` definition's body.
   - The op's result must be used only as a `dataflow.thread.launch`
     body operand. Any other use -- passing the result to

@@ -21,10 +21,19 @@ struct HasLegacyRealizationAccessor<
 
 static_assert(!HasLegacyRealizationAccessor<FrozenMappingInfeasibility>::value);
 
-bool containsExternalEdge(const FrozenRealizationGraph &graph, EdgeId edge) {
-  return std::any_of(
-      graph.logicalNetSinks().begin(), graph.logicalNetSinks().end(),
-      [&](const FrozenLogicalNetSink &sink) { return sink.edge == edge; });
+bool containsExternalEdge(const FrozenRealizationGraph &graph,
+                          const DataflowEdge &edge) {
+  for (const FrozenLogicalNet &net : graph.logicalNets()) {
+    if (net.producer != edge.source)
+      continue;
+    const auto sinks =
+        graph.logicalNetSinks().slice(net.sinkOffset, net.sinkCount);
+    if (std::any_of(sinks.begin(), sinks.end(), [&](const auto &sink) {
+          return sink.consumer == edge.target;
+        }))
+      return true;
+  }
+  return false;
 }
 bool isGraphMemoryCapabilityPort(const FrozenTerminal &terminal) {
   const auto *graph = std::get_if<FrozenGraphBoundaryTerminal>(&terminal);
@@ -69,9 +78,15 @@ void selectAddressInternalMemoryGraph(TestCase &testCase) {
        MemoryImplementationBoundaryPortRef{implementation, 0}}};
   realization.internalEdges.insert(
       realization.internalEdges.begin(),
-      {{EdgeRef{dataflow, EdgeId(100)},
+      {{DataflowEdgeRef{
+            dataflow,
+            DataflowEdge{GraphPort{GraphId(1), PortDirection::Input, 1},
+                         ActorPort{ActorId(2), PortDirection::Input, 0}}},
         MemoryInternalConnectionRef{fabric, MemoryInternalConnectionId(37)}},
-       {EdgeRef{dataflow, EdgeId(113)},
+       {DataflowEdgeRef{
+            dataflow,
+            DataflowEdge{GraphPort{GraphId(1), PortDirection::Input, 1},
+                         ActorPort{ActorId(8), PortDirection::Input, 0}}},
         MemoryInternalConnectionRef{fabric, MemoryInternalConnectionId(38)}}});
 }
 TestCase makeMemoryRouteDomainCase() {
@@ -278,13 +293,26 @@ void freezesInternalMemoryAnchor() {
     fail(__func__, "frozen graph has the wrong compute realization count");
   if (graph.memoryRealizations().size() != 1)
     fail(__func__, "frozen graph has the wrong memory realization count");
-  for (std::uint64_t edge : {104, 114}) {
-    if (containsExternalEdge(graph, EdgeId(edge)))
-      fail(__func__, "internal edge escaped into the external net cache");
-  }
-  if (!containsExternalEdge(graph, EdgeId(100)) ||
-      !containsExternalEdge(graph, EdgeId(113)) ||
-      !containsExternalEdge(graph, EdgeId(115)))
+  const DataflowEdge xoriToPreAdd{
+      ActorPort{ActorId(3), PortDirection::Output, 0},
+      ActorPort{ActorId(4), PortDirection::Input, 0}};
+  const DataflowEdge loadDoneToStore{
+      ActorPort{ActorId(2), PortDirection::Output, 1},
+      ActorPort{ActorId(8), PortDirection::Input, 2}};
+  if (containsExternalEdge(graph, xoriToPreAdd) ||
+      containsExternalEdge(graph, loadDoneToStore))
+    fail(__func__, "internal edge escaped into the external net cache");
+  const DataflowEdge loadAddress{
+      GraphPort{GraphId(1), PortDirection::Input, 1},
+      ActorPort{ActorId(2), PortDirection::Input, 0}};
+  const DataflowEdge storeAddress{
+      GraphPort{GraphId(1), PortDirection::Input, 1},
+      ActorPort{ActorId(8), PortDirection::Input, 0}};
+  const DataflowEdge storeDone{ActorPort{ActorId(8), PortDirection::Output, 0},
+                               GraphPort{GraphId(1), PortDirection::Output, 1}};
+  if (!containsExternalEdge(graph, loadAddress) ||
+      !containsExternalEdge(graph, storeAddress) ||
+      !containsExternalEdge(graph, storeDone))
     fail(__func__, "external memory edge was absorbed by the realization");
   const FrozenLogicalNet *addressFanout = nullptr;
   for (const FrozenLogicalNet &net : graph.logicalNets()) {
@@ -296,9 +324,11 @@ void freezesInternalMemoryAnchor() {
     }
   }
   if (!addressFanout || addressFanout->sinkCount != 2 ||
-      graph.logicalNetSinks()[addressFanout->sinkOffset].edge != EdgeId(100) ||
-      graph.logicalNetSinks()[addressFanout->sinkOffset + 1].edge !=
-          EdgeId(113))
+      addressFanout->producer != loadAddress.source ||
+      graph.logicalNetSinks()[addressFanout->sinkOffset].consumer !=
+          loadAddress.target ||
+      graph.logicalNetSinks()[addressFanout->sinkOffset + 1].consumer !=
+          storeAddress.target)
     fail(__func__, "address fanout did not remain one external logical net");
   const FrozenLogicalNet *fanout = nullptr;
   for (const FrozenLogicalNet &net : graph.logicalNets()) {
@@ -325,7 +355,15 @@ void freezesInternalMemoryAnchor() {
       graph.logicalNetSinks()[fanout->sinkOffset];
   const FrozenLogicalNetSink &second =
       graph.logicalNetSinks()[fanout->sinkOffset + 1];
-  if (first.edge != EdgeId(106) || second.edge != EdgeId(107))
+  const DataflowEdge multiplyInput{
+      ActorPort{ActorId(4), PortDirection::Output, 0},
+      ActorPort{ActorId(5), PortDirection::Input, 0}};
+  const DataflowEdge subtractInput{
+      ActorPort{ActorId(4), PortDirection::Output, 0},
+      ActorPort{ActorId(6), PortDirection::Input, 0}};
+  if (fanout->producer != multiplyInput.source ||
+      first.consumer != multiplyInput.target ||
+      second.consumer != subtractInput.target)
     fail(__func__, "preAdd fanout sinks are not deterministic");
   if (graph.memoryServiceObligations().size() != 1)
     fail(__func__, "logical root did not deduplicate to one service");
@@ -418,6 +456,22 @@ void rejectsInexactMemoryInternalGraph() {
     expectMapError(__func__, testCase,
                    MappingErrorCode::IncompleteMemoryBoundaryCorrespondence);
   }
+}
+void rejectsForeignMemoryInternalEdgeReference() {
+  TestCase testCase = makeMemoryAnchorCase();
+  selectInternalMemoryGraph(testCase);
+  testCase.mapping.memoryRealizations[0].internalEdges[0].edge.artifact =
+      artifact(99);
+  expectMapError(__func__, testCase, MappingErrorCode::ForeignReference);
+}
+void rejectsNoncanonicalMemoryInternalEdgeReference() {
+  TestCase testCase = makeMemoryAnchorCase();
+  selectInternalMemoryGraph(testCase);
+  DataflowEdge &edge =
+      testCase.mapping.memoryRealizations[0].internalEdges[0].edge.edge;
+  edge.target = ActorPort{ActorId(2), PortDirection::Input, 1};
+  expectMapError(__func__, testCase,
+                 MappingErrorCode::UnresolvedEdgeReference);
 }
 void freezesPhysicalMemoryOccurrenceDomains() {
   TestCase testCase = makeMemoryRouteDomainCase();
@@ -746,10 +800,10 @@ void rejectsSharedMemoryOperationTemplate() {
   extraLoad.id = ActorId(9);
   testCase.dataflow.actors.push_back(std::move(extraLoad));
   testCase.dataflow.edges.push_back(
-      DataflowEdge{EdgeId(116), GraphPort{GraphId(1), PortDirection::Input, 1},
+      DataflowEdge{GraphPort{GraphId(1), PortDirection::Input, 1},
                    ActorPort{ActorId(9), PortDirection::Input, 0}});
   testCase.dataflow.edges.push_back(
-      DataflowEdge{EdgeId(117), GraphPort{GraphId(1), PortDirection::Input, 2},
+      DataflowEdge{GraphPort{GraphId(1), PortDirection::Input, 2},
                    ActorPort{ActorId(9), PortDirection::Input, 1}});
   MemoryRealizationDraft &load = testCase.mapping.memoryRealizations[0];
   const ActorRef actor{testCase.dataflow.identity, ActorId(9)};
@@ -808,9 +862,9 @@ void validatesLogicalMemoryRootCapabilities() {
   }
   {
     TestCase testCase = makeMemoryAnchorCase();
-    testCase.dataflow.edges.push_back(DataflowEdge{
-        EdgeId(116), GraphPort{GraphId(1), PortDirection::Input, 0},
-        GraphPort{GraphId(1), PortDirection::Output, 0}});
+    testCase.dataflow.edges.push_back(
+        DataflowEdge{GraphPort{GraphId(1), PortDirection::Input, 0},
+                     GraphPort{GraphId(1), PortDirection::Output, 0}});
     expectMapError(__func__, testCase, MappingErrorCode::InvalidPortConnection);
   }
 }
@@ -901,6 +955,8 @@ void runMemoryMappingTests() {
   rejectsInconsistentFrozenMemoryService();
   acceptsExternalAndInternalMemoryAnchor();
   rejectsInexactMemoryInternalGraph();
+  rejectsForeignMemoryInternalEdgeReference();
+  rejectsNoncanonicalMemoryInternalEdgeReference();
   validatesCorrelatedMemoryAccessCapabilities();
   rejectsSharedMemoryOperationTemplate();
   validatesLogicalMemoryRootCapabilities();

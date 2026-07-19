@@ -1,93 +1,91 @@
-# Mapping Routing Constraints
+# Mapping Routing Boundary
 
-This document records only the confirmed representation constraints that
-apply when Physical Mapping eventually owns concrete communication
-realization. It intentionally does not define route records or routing
-schema.
+This document records confirmed routing ownership and implemented transport
+constraints. It does not define the still-open persistent SpatialMapping Route
+Tree schema.
 
-The Physical Mapping ownership boundary and exact-predecessor rule are
-specified by `docs/spec-mapping-artifact.md`. Fabric owns physical
-connection behavior.
+## Logical Nets
+
+A software edge is identified by its typed producer endpoint plus typed
+consumer endpoint. Freeze groups all external edges with the same producer
+endpoint into one deterministic multi-sink logical net.
+
+The physical realization of one logical net is a rooted Route Tree with shared
+trunks and one or more sink branches. The target model is not one-edge-one-
+route. It does not persist one symbolic path per software edge or infer route
+identity from edge numbers, symbols, paths, printer order, or insertion order.
+
+Compute internality is derived mechanically from the selected configured-
+function topology and its exact actor-to-operation and boundary
+correspondences. Only Memory Realization records carry explicit
+`DataflowEdgeRef` witnesses for selected memory-internal connectivity. Every
+other edge remains an external transport obligation.
+
+## Explicit Connectivity
+
+Routing uses only fully elaborated Fabric endpoints, explicit directed point-
+to-point arcs, and explicit resource traversals. Coordinates and visualization
+layout are not connectivity.
+
+PE-local, FU-local, switch-local, memory-local, boundary, and FIFO traversal is
+not free. A connection must appear in Fabric topology or be absorbed by a
+configured-function correspondence for Compute or an explicit Memory
+Realization internal-edge witness. Mapping must not reconstruct a second
+topology from symbols or owner hierarchy.
+
+The PnR import boundary uses the canonical Fabric elaboration API. Elaboration
+is atomic; failure rejects the input without publishing a partial hardware
+view or mutating the source artifact.
 
 ## Payload Capacity
 
-For a selected physical path, the usable software payload capacity is the
-minimum data-field width of every traversed transport endpoint:
+For a selected physical path, usable software payload capacity is the minimum
+data-field width of every traversed transport endpoint:
 
 ```text
 payload_capacity = min(data_field_width(endpoint))
 ```
 
-For `bits<W>`, the data-field width is `W`. For `bits_tag<W, T>`, the
-data-field width is also `W`. The `T` tag bits are never software payload
-capacity.
+For both `bits<W>` and `bits_tag<W, T>`, the data-field width is `W`. Tag bits
+are not software payload capacity. A route or route-cache lookup must include
+the required payload width so a path proven for a narrower payload is not
+reused for a wider one.
 
-A software representation is transportable only when its required payload
-width does not exceed this minimum. For example, a 16-bit payload may use a
-path whose data fields are 32, 64, and 32 bits, but not one containing an
-8-bit data field. A `bits_tag<8, 8>` endpoint still provides only eight
-payload bits.
+Canonical control and completion events have zero software payload width and
+use the same typed transport model. They do not require a separate synthetic
+control-route schema.
 
-The frozen routing topology may cache this minimum on each directed arc.
-Route search must consume the software edge's required payload width, and
-any route cache key must include that width so a path found for a narrower
-edge cannot be reused for a wider edge.
+Same-kind width normalization follows Fabric-owned connection semantics.
+Mapping must not persist a competing adapter or conversion description.
 
-The PnR import boundary parses the Fabric Hardware Description into a private
-module, selects either the requested top-level `fabric.module` or the spatial
-`fabric.module` referenced by the selected AccCore, and calls the canonical
-`fabric::elaborateInstances` API on that root before collecting or freezing
-physical resources and topology. Elaboration is atomic: failure rejects the
-mapping without publishing a partial hardware model or modifying the input
-file. PnR does not own a second instance-expansion mechanism.
+## Boundary Resources And Tags
 
-Named templates without an occurrence remain declarations and are not counted
-as physical resources. Concrete instances under the selected root become the
-fresh physical occurrences consumed by mapping.
+For `fabric.boundary`, only the data projection is a canonical software
+payload. Tag inputs, tag outputs, writer configuration, rewriting, and removal
+remain Fabric-owned behavior combined with the selected SpatialMapping tag
+assignment. A tag field does not create another route or software edge.
 
-For `fabric.boundary`, only the data projection carries a canonical
-software payload: `s2t` input 0 to result 0, `t2t` input 0 to result 0,
-and `t2s` input 0 to data result 0. Tag inputs and extracted tag results
-remain owned by deferred temporal-tag allocation and are not payload arcs.
+## Search State
 
-## Same-Kind Width Normalization
+Route search uses endpoint-only A* over the explicit directed graph. Per-net
+mutable hot state is one rooted arborescence with shared prefixes;
+`RouteTreeState` implements this rebuildable search representation.
 
-A width difference between connected endpoints of the same Fabric port
-kind does not require a Mapping adapter. It uses the connection semantics
-owned by the Fabric specification. Mapping must derive that behavior from
-the finalized Fabric endpoints and must not persist a competing conversion
-description.
+Hot state, PathFinder occupancy and history, A* queues, predecessor arrays,
+and dense endpoint indices are not persistent Mapping records. They may be
+discarded and reconstructed from the exact inputs and selected candidate.
 
-This document does not duplicate the Fabric-owned bit-alignment rule.
+## Unresolved Schema
 
-## Zero-Payload Events
+Persistent Route Tree parent relations, selected attachments, traversal and
+resource references, buffering, tag continuity, resource-time use, and final
+closure fields remain open. No compatibility parser or one-edge-one-route
+record may be added while those records are unresolved.
 
-Canonical control and completion events have zero software payload width.
-They may use ordinary Fabric transport whose data-field capacity satisfies
-that zero-width requirement. The transfer carries event occurrence; it
-does not require a separate control-specific route schema or a synthetic
-payload representation.
+## Validation
 
-## Mutable Route Hot State
-
-PnR uses a confirmed per-net mutable rooted arborescence with shared-prefix
-routes. `RouteTreeState` implements this hot search representation. It does
-not define the persistent Physical Mapping route-tree record or its canonical
-serialization.
-
-## Deferred Routing Schema
-
-The following remain deliberately unspecified here:
-
-* persistent Physical Mapping route-tree record spelling, identifiers, and
-  canonical serialization;
-* resource-time claims and contention proof;
-* temporal-tag allocation, remapping, and `t2t` behavior;
-* schedule, instruction-slot, and reconfiguration records;
-* buffer, memory, switch, boundary, and adapter record schemas;
-* fanout and multicast record shape; and
-* Physical Mapping completeness checks for those facts.
-
-In particular, this document does not adopt the old one-edge-one-route
-model. These persistent schema topics remain owned by their unresolved
-architecture work and must not be inferred from the mutable hot state.
+Current tests cover explicit directed reachability, payload-width filtering,
+shared resource identity, deterministic topology freeze, multi-sink logical-
+net grouping, configured-function Compute internality, and exact Memory
+internal-edge witness absorption. Persistent Route Tree tests wait for the
+closed SpatialMapping schema.

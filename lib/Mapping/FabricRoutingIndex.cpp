@@ -55,7 +55,7 @@ resolveEndpoint(const TransportEndpointRef &reference,
                 const FabricHardwareView &fabric, const EntityKinds &kinds,
                 const std::map<std::uint64_t, std::size_t> &endpoints) {
   if (reference.artifact != fabric.identity)
-    return mappingError(MappingErrorCode::ForeignEntityReference,
+    return mappingError(MappingErrorCode::ForeignReference,
                         "reference names a foreign artifact");
   const auto kind = kinds.find(reference.entity.value());
   if (kind == kinds.end())
@@ -78,7 +78,7 @@ resolveResource(const TransportResourceRef &reference,
                 const FabricHardwareView &fabric, const EntityKinds &kinds,
                 const std::map<std::uint64_t, std::size_t> &resources) {
   if (reference.artifact != fabric.identity)
-    return mappingError(MappingErrorCode::ForeignEntityReference,
+    return mappingError(MappingErrorCode::ForeignReference,
                         "reference names a foreign artifact");
   const auto kind = kinds.find(reference.entity.value());
   if (kind == kinds.end())

@@ -1,446 +1,176 @@
 # PnR
 
-This document specifies Loom place-and-route. Spatial PnR consumes one exact
-coupling of a Canonical Dataflow Program artifact, a TechMapping-profile
-Mapping artifact, a fully elaborated Fabric Hardware Description artifact, an
-immutable PnR configuration view derived from one exact ResolvedConfig
-artifact, and a MappingConstraintSet artifact. It adds concrete resource,
-communication, schedule, and storage realization for the selected Compute
-Realizations. Its persistent output is a Physical-Mapping-profile artifact
-specified in `docs/spec-mapping-artifact.md`.
+This document specifies Loom Spatial place-and-route ownership and the
+implemented native boundary. Spatial PnR consumes one exact immutable
+TechMapping and produces one complete SpatialMapping when the persistent
+SpatialMapping schema is available. There is no `PhysicalMapping` profile.
 
-Detailed mapper contracts are split across:
+System-level execution, service, and transport realization belongs to
+SystemMapping and its own PnR problem.
 
-* `docs/spec-mapping-identity.md`
-* `docs/spec-mapping-placement.md`
-* `docs/spec-mapping-routing.md`
-* `docs/spec-mapping-schedule-buffer.md`
-* `docs/spec-mapping-memory.md`
-* `docs/spec-mapping-verification.md`
-* `docs/spec-mapping-visualization.md`
-* `docs/spec-mapping-search.md`
+## Exact Inputs
 
-## Purpose
+Spatial PnR consumes:
 
-PnR physically realizes an existing TechMapping. It consumes:
+* Canonical Dataflow Program `D`;
+* verifier-clean TechMapping `T` bound to exact `D` and `F`;
+* fully elaborated Fabric Hardware Description `F`;
+* immutable `ResolvedPnrConfigView` `C` derived from one exact ResolvedConfig
+  artifact; and
+* MappingConstraintSet `K` bound to exact `D`, `T`, and `F`.
 
-* one Canonical Dataflow Program artifact `D`;
-* one verifier-clean TechMapping artifact `T` that references exact `D` and
-  `F`;
-* one fully elaborated Fabric Hardware Description artifact `F`, including the
-  selected `fabric.system` and referenced `fabric.module` templates;
-* one immutable `ResolvedPnrConfigView` `C` mechanically derived from an exact
-  ResolvedConfig artifact; and
-* one immutable MappingConstraintSet artifact `K` that references exact
-  `D`, `T`, and `F`.
+The persistent authorities are `D`, `T`, `F`, the complete ResolvedConfig, and
+`K`. `C` is a typed projection with no independent artifact identity.
+`PnrProblemInputs` is an ordinary borrowed grouping and is not a request
+artifact.
 
-The persistent authorities are `D`, `T`, `F`, the complete ResolvedConfig
-artifact, and `K`. `C` is a typed projection with no independent artifact
-identity. The TechMapping validation/import boundary requires the exact trusted
-`T` identity and retains it immutably with the validated witness.
-`PnrProblemInputs` borrows that combined value rather than carrying a
-separately mutable `T` label. It groups the five inputs with the complete
-ResolvedConfig identity from which `C` was derived and `K`'s identity and exact
-`D/T/F` bindings. The grouping has no identity and does not define a PnR
-request artifact.
+Before capacity planning or native allocation, PnR rejects `T.D != D.id`,
+`T.F != F.id`, and every `K.D/T/F != D.id/T.id/F.id` mismatch. An empty
+constraint set is still an exact artifact with those bindings.
 
-The validation/import boundary trusts the `T` identity supplied by the owning
-artifact boundary. It does not compute or rehash Mapping content; persistent
-Mapping canonicalization remains outside this C++ validation boundary.
+## TechMapping Authority
 
-Before capacity planning, native allocation, or search, PnR rejects
-`T.D != D.id`, `T.F != F.id`, or any
-`K.D/T/F != D.id/T.id/F.id` mismatch with a structured input error. The
-fixed-width identity contract has no absent or sentinel value; even a
-constraint set with no clauses is an exact `K` artifact bound to this
-`D/T/F`.
+TechMapping alone owns Compute and Memory Realizations, selected semantic
+encodings, configured-function witnesses, and software boundary
+correspondence. PnR must not regroup actors, recreate `dataflow.subgraph`,
+reenumerate semantic compatibility from raw Dataflow and Fabric inputs, or
+choose another encoding. Any such change requires a new TechMapping.
 
-PnR produces:
+## Result Boundary
 
-* one or more Physical Mapping artifacts referencing that TechMapping;
-* optional mapping-set manifests for DSE;
-* diagnostics for rejected, partial, or degraded mappings;
-* mapping-quality metrics used for search and reporting.
+A successful result is one immutable, profile-complete SpatialMapping that
+references its exact TechMapping predecessor and preserves TechMapping
+authority. The precise persistent SpatialMapping fields remain open; no empty
+record family or compatibility carrier may stand in for them.
 
-PnR is not a simulator. Upstream policy construction may use analytical
-estimates, profile data, DFG-sim results, previous CGRA-sim results, or FPA
-estimates when producing the exact PnR inputs, but freeze does not accept them
-as parallel semantic inputs. PnR does not execute workloads and it must not
-present its estimates as hardware-aware simulation results.
+Unsupported inputs, proven infeasibility, no legal route, invalid frozen
+capacity, and budget exhaustion are ordinary typed results and reports. They
+do not produce partial, rejected, or degraded Mapping artifacts. Search
+history, candidate collections, scores, and Pareto selection belong outside
+the Mapping artifact family.
 
-The first hard PnR target is verifier-grade Physical Mapping artifacts. Such
-artifacts may be emitted by PnR, hand-authored for tests, imported from another
-mapper, or requested by DSE. PnR automation is not a prerequisite for
-consumers to use a verifier-clean artifact.
+## Freeze And Native State
 
-The subsystem ownership boundary that separates dataflow facts, Fabric
-facts, mapping facts, runtime facts, and simulation facts is specified
-in `docs/spec-core-dialect-boundary.md`. PnR follows that boundary, references
-the exact TechMapping predecessor, and serializes only physical choices in its
-delta.
+Freeze validates, resolves, indexes, and precomputes exact semantic inputs. It
+does not choose placement, route, tag, buffer, schedule, memory binding, or
+configuration.
 
-## Boundary With CGRA-sim
+The native ownership model has four concepts:
 
-PnR and CGRA-sim have different responsibilities:
+* immutable `FrozenModel`;
+* mutable `CandidateState`;
+* mutable `SearchScratch`; and
+* `MoveTransaction` for atomic candidate changes.
 
-| Tool | Responsibility | Persistent output |
-|------|----------------|-------------------|
-| PnR | Physically realize an immutable TechMapping without changing its Compute Realizations. | Physical Mapping artifact and optional mapping-set manifest. |
-| CGRA-sim | Simulate mapped software under hardware constraints for concrete inputs. | Hardware-aware simulation report. |
+The existing realization and routing freezes are partial structural views.
+They preserve typed occurrence domains, exact endpoint and local-arc facts,
+logical nets, memory service obligations, and explicit directed routing
+topology. The complete production `FrozenModel` field inventory remains open.
 
-CGRA-sim is hardware-aware simulation, not only simulation of the
-`fabric.module` or SpatialCore portion. Despite the name, CGRA-sim
-simulates the mapped workload against the selected hardware graph,
-including AccCore execution, SpatialCore resources, ScalarCore residual
-execution where modeled, interconnect, memory hierarchy, buffers,
-routing, resource sharing, temporal schedules, and activity metrics.
+## Software Edge And Logical Net Identity
 
-PnR must not depend on CGRA-sim internal state. CGRA-sim must not choose
-placements, routes, schedules, or bindings. If simulation reveals that a
-mapping candidate is poor or invalid under a stronger model, the DSE
-loop may invoke PnR again with updated objectives, constraints, or
-feedback. The new PnR run produces a new Physical Mapping artifact.
+A canonical software edge is the typed producer endpoint plus typed consumer
+endpoint. When an artifact-qualified reference is required, it additionally
+contains the exact Dataflow artifact identity. There is no persistent edge ID,
+edge number, symbol, path, printer-order, or insertion-order alias.
 
-## Relation To Compiler Placement
+Freeze groups all external edges with one exact producer endpoint into one
+deterministic multi-sink logical net. The producer endpoint is stored once per
+net and each sink retains its exact consumer endpoint. Compute internality is
+derived from configured-function topology and exact actor-to-operation and
+boundary correspondences. Only Memory Realization records carry explicit
+`DataflowEdgeRef` witnesses for selected memory-internal connectivity. Freeze
+may assign dense `PnrIndex` values to rebuildable native arrays, but those
+values are not persistent identity.
 
-The compiler placement framework in
-`docs/spec-compiler-part-3-placement-framework.md` decides software-side
-partition boundaries:
+## Placement And Routing
 
-* L1 selects accelerator regions;
-* L2 selects SpatialCore graph regions inside selected accelerator
-  code.
+Spatial placement selects concrete FU occurrences, correlated instruction
+contexts, and concrete memory occurrences from domains derived from
+TechMapping and Fabric. Compute and Memory placements remain distinct typed
+relations.
 
-L3 is not another persistent software partition. A TechMapping artifact owns
-each Compute Realization: the canonical actor group, selected FU encoding,
-actor/op correspondence, and boundary-port correspondence. These facts exist
-only in Mapping records, not in Canonical Dataflow Program IR.
+Routing uses explicit directed Fabric endpoints, point-to-point arcs, and
+resource traversals. PE-local, switch-local, memory-local, boundary, and FIFO
+traversals are not implicit free connections. Coordinates and visualization
+layout are not topology.
 
-PnR consumes the exact five-input boundary around an immutable TechMapping
-artifact and adds physical resource, communication, schedule, and storage
-realization. It does not rewrite L1 or L2 IR boundaries, regroup actors, or
-select another semantic encoding. Such changes require a new compiler artifact
-or TechMapping artifact from the owning search.
+Each logical net is realized as one rooted Route Tree with shared trunks and
+multi-sink branches. The target model is not one-edge-one-route and does not
+persist symbolic paths. Route hot state is mutable and rebuildable.
 
-## Core Model
+Endpoint-only A* jointly selects attachment endpoints and a physical path over
+the fully elaborated directed topology. Its node identity is only
+`TransportEndpointIndex`. The confirmed heuristic is the static minimum
+non-negative integer lower-bound cost from an endpoint to the current target
+domain. Dynamic occupancy and PathFinder penalties may contribute to `g`, but
+Evaluation metrics do not become a second heuristic authority.
 
-PnR is a search problem with four separate concerns:
+## Resource Use, Tags, And Buffers
 
-* legality rules;
-* candidate construction;
-* cost model;
-* search policy.
+Mapping has no absolute cycle-slot Schedule IR. Resource-time behavior is
+derived from Fabric-owned use patterns and selected event-relative
+`ResourceUse`. The immutable Structured Program Candidate remains the owner of
+software scheduling decisions.
 
-Legality decides whether a candidate mapping is valid. The cost model
-chooses among legal candidates. A cost model must never make an illegal
-candidate legal. A legality rule must not encode a preference unless
-violating that rule would break software semantics, hardware semantics,
-or the mapping artifact contract.
+Physical Tag is local to Fabric-owned interpretation domains. It is not a
+global ID or per-token sequence. A selected value is stored once at an
+existing writer output or tagged ingress binding and derived through route
+continuity. There is no independent `TemporalTagAssignment` family.
 
-The baseline PnR policy must be deterministic. Given the same exact `D/T/F/C/K`
-inputs, it must produce the same Physical Mapping artifact and diagnostics.
+Selected physical buffers, services, and mapping-visible configuration must be
+stored only where they cannot be mechanically derived. Their exact persistent
+record fields remain open.
 
-PnR treats hardware as an arbitrary directed graph. Coordinates, grid
-metadata, and visualization layouts are display metadata. Placement and
-route legality are derived only from explicit Fabric nodes, resources,
-directed channel endpoints, links, boundaries, adapters, buffers,
-memories, and protocol channels. Cost models may use explicit hardware
-weights such as latency, bandwidth, capacity, or user-declared edge
-weights; they must not derive hardware cost from visualization
-coordinates.
+## Search And Cost Ownership
 
-## Candidate Structure
+Production Spatial search uses deterministic transactional multi-start
+simulated annealing, common Action and `MoveTransaction` machinery,
+endpoint-only A*, Route Tree, and action-local PathFinder state. Simulated-
+annealing numeric defaults and remaining integer route-cost details are not
+defined here.
 
-A complete PnR candidate contains these decisions when relevant:
-
-* thread binding;
-* graph binding;
-* binding of each predecessor Compute Realization to a compatible concrete
-  resource;
-* route assignment for external communication obligations mechanically
-  derived from canonical edges and predecessor boundary correspondence;
-* schedule binding;
-* temporal tag assignment;
-* buffer assignment;
-* memory binding;
-* resource-sharing assignment;
-* optional visualization overlay metadata;
-* metrics and diagnostics.
-
-The candidate is serialized as a Physical Mapping delta referencing its exact
-TechMapping predecessor. PnR-internal state is not a valid substitute for
-artifact records.
+`PnRSearchCost` owns only generic distance, connectivity, capacity, occupancy,
+and congestion. Accelerator-aware latency, initiation interval, throughput,
+clock, memory, area, power, and energy come from unified Evaluation. The
+central DSE controller owns objectives, thresholds, ranking, acceptance, and
+promotion. Stable symbol order, greedy architecture baselines, and earliest-
+legal absolute schedules are not target policies.
 
 ## Native Index Width
 
-Persistent Mapping `EntityId` values and native PnR indices have separate
-authorities. Persistent `EntityId` remains an unsigned 64-bit semantic
-identifier used by mapping artifacts and long-lived references. A
-freeze-local dense index exists only to address rebuildable native arrays and
-must use the build-selected `PnrIndex` type.
+Persistent Mapping entity identities and native PnR indices have separate
+authorities. A freeze-local dense index addresses rebuildable arrays and uses
+the build-selected `PnrIndex` type.
 
-`LOOM_PNR_INDEX_BITS` is the sole CMake cache setting for the native index
-width. It accepts only `32` or `64` and defaults to `32`. CMake emits the
-validated value through the generated `PnR/BuildConfig.h`; the canonical type,
-width/build identity accessors, typed capacity measure, capacity error,
-validation-only preflight, checked conversion, and checked preflight arithmetic
-are owned by `PnR/PnrIndex.h`. PnR code must not introduce runtime width
-dispatch, per-array width selection, independent typedefs, scattered
-conditional compilation, or unchecked narrowing.
+`LOOM_PNR_INDEX_BITS` is the sole CMake cache setting for native index width.
+It accepts `32` or `64` and defaults to `32`. CMake emits the validated value
+through `PnR/BuildConfig.h`; `PnR/PnrIndex.h` owns the canonical type,
+capacity measures, preflight, checked conversion, and checked arithmetic.
 
-Before allocating native arrays, emitting native caches, or beginning search,
-freeze must use sufficiently wide checked arithmetic for dense entity counts,
-CSR offsets, array lengths, products, and maximum indices. Every value encoded
-as `PnrIndex` must pass through the same checked API. A failure must be
-deterministic and must identify the artifact, table, entity domain, required
-maximum, and active `LOOM_PNR_INDEX_BITS` build. The required maximum is typed
-as a count, index, or offset and is reported respectively as
-`required_max_count`, `required_max_index`, or `required_max_offset`.
-`preflightPnrIndexCapacity` validates capacity without encoding a value; it and
-all checked encoding and arithmetic APIs use the same internal capacity check
-and error path.
+Before allocating arrays or beginning search, freeze checks entity counts,
+CSR offsets, array lengths, products, and maximum indices. Capacity failure is
+deterministic and distinguishes count, index, and offset requirements. A
+32-bit failure that is representable by the 64-bit contract may recommend a
+64-bit rebuild; a requirement beyond the 64-bit contract must not.
 
-A 32-bit capacity failure whose required maximum remains representable by the
-64-bit build must state that Loom can be reconfigured and rebuilt with
-`-DLOOM_PNR_INDEX_BITS=64`. A requirement that also exceeds the
-`LOOM_PNR_INDEX_BITS=64` contract must say so explicitly and must not present a
-64-bit rebuild as a remedy. Both cases are native capacity errors, not mapping
-infeasibility.
+Native caches and execution evidence record the actual PnR index width. Width
+is not Mapping semantics: when both builds can represent a problem, they must
+produce the same Mapping semantic identity. MLIR `index` transport width is a
+separate authority and must not be merged with `PnrIndex`.
 
-Native-cache headers, native build identities, and execution evidence must
-record the actual PnR index width. A width mismatch invalidates the complete
-native cache. The width is not part of Mapping semantics: when both builds can
-represent a problem, 32-bit and 64-bit builds must produce the same Physical
-Mapping semantic digest.
+## CGRA Simulation Boundary
 
-`Common/IndexWidth` and the `LOOM_INDEX_WIDTH` environment variable control
-MLIR `index` transport width. They are unrelated to `PnrIndex` and must not be
-renamed, merged, or used as its authority. This native index contract is
-foundational infrastructure and does not define or imply a completed
-FrozenModel.
+PnR selects and verifies a mapping. CGRA simulation consumes a complete
+mapping and concrete runtime inputs, observes execution, and produces
+Evaluation Evidence. It may reject an invalid input but must not repair or
+complete the mapping. Simulation observations may inform a later DSE request;
+they are not copied into Mapping records.
 
-## Legality Rules
+## Validation
 
-PnR legality includes at least the following rule families.
-
-### Reference Legality
-
-Every software and hardware reference used by a candidate must resolve.
-Artifact identities must match their exact references. PnR must diagnose
-stale or ambiguous references.
-
-### Thread Legality
-
-Logical `dataflow.thread` instance domains may bind to `acc_core` nodes
-and execution batches. Binding must preserve the logical instance set,
-logical thread coordinates, memory-order constraints, async
-launch/fence ordering, and thread hierarchy rules defined by the
-dataflow specs.
-
-Thread binding may be explicit or parametric. Parametric binding must
-describe a deterministic relation from logical coordinates to hardware
-resources and batches. It must not assume mesh topology unless that
-topology is explicitly represented by Fabric links; visualization
-coordinates alone are not hardware topology.
-
-### Graph Legality
-
-Each mapped `dataflow.graph` execution context must bind to an
-`acc_core` whose SpatialCore template is compatible with the graph
-resources required by the candidate. Non-innermost orchestration thread
-bodies do not directly bind graph executions unless the software IR
-contains legal graph launches at that level.
-
-### Operation Legality
-
-Each Compute Realization must bind to a concrete resource compatible with its
-selected FU and semantic encoding. PnR verifies that physical capacity and
-ports preserve the predecessor witness; it must not regroup actors, select a
-different encoding, or reinterpret operation semantics.
-
-Exclusive resources may be shared only through explicit schedule or
-temporal-tag records that make same-time conflicts impossible.
-
-#### Stream Resource Compatibility
-
-For `dataflow.stream`, PnR derives the computation width from the declared
-scalar signless integer types of the `init`, `limit`, and `step` operands and
-the IV result. ODS requires these types to match. Each corresponding
-`fabric.op` data operand and IV result must have exactly that width. A wider
-computation port is not compatible unless Fabric semantics explicitly define
-the required signed or unsigned subword behavior. The physical phase result
-must be exactly one bit, and the selected step and predicate must remain
-compatible with the typed Fabric stream capability.
-
-### Route Legality
-
-Routes must use explicit hardware connectivity. System-level routes use
-`fabric.link` channel connectivity. SpatialCore routes use explicit
-resources inside the referenced `fabric.module`, such as switches,
-boundaries, PEs, FUs, memories, or FIFOs.
-
-Every route must be contiguous from the placed producer to the placed
-consumer. Fanout, arbitration, broadcast, protocol conversion, width
-conversion, and clock conversion must use explicit hardware resources.
-Routes must not assume x/y coordinates, Manhattan distance, or mesh
-adjacency. Mesh-like hardware is legal only because its links are
-explicit Fabric connectivity.
-
-### Schedule Legality
-
-Schedules must respect resource capacity, temporal-tag capacity, buffer
-availability, operation dependencies, memory-order edges, control
-tokens, and reconfiguration limits. A scheduled resource use must not
-conflict with another use of the same exclusive resource in the same
-slot unless the hardware resource explicitly supports that concurrency.
-
-### Buffer Legality
-
-Buffer assignment must provide enough physical queue or storage
-resources for all software value streams, control tokens, done tokens,
-memory-order tokens, and routed edges that require buffering. Assigned
-depth and backpressure policy must be visible in the mapping artifact
-when CGRA-sim or RTL lowering needs those facts.
-
-### Memory Legality
-
-Memory binding must target memory-capable ports and legal address
-spaces. It must respect terminal memory target ranges, cache coherence
-domains, consistency model, partitioned-data regions, and any explicit
-memory-order constraints.
-
-### Visualization Legality
-
-Visualization metadata is optional. When present, it must reference
-existing software objects, hardware objects, mapping records, and Fabric
-visualization layouts. Visualization metadata never makes an otherwise
-illegal mapping legal and never makes a legal mapping illegal unless the
-metadata itself has invalid references or invalid layout coordinates.
-
-## Cost Model
-
-The PnR cost model ranks legal candidates. It may include:
-
-* estimated cycles;
-* route length and congestion;
-* resource utilization;
-* buffer pressure;
-* memory bandwidth pressure;
-* cache and coherence pressure;
-* temporal reuse quality;
-* reconfiguration count;
-* energy, area, or frequency estimates from
-  `docs/spec-fpa-estimation.md`;
-* diagnostic severity;
-* DFG-sim, CGRA-sim, or FPA feedback from previous candidates.
-
-The baseline cost model may be simple, but it must define a
-deterministic total order. Multi-objective search may use weighted
-scores, lexicographic scores, constraints plus objectives, or Pareto
-ranking. The selected policy must record enough configuration in the
-mapping artifact or mapping-set manifest to reproduce the decision.
-
-## Search Policy
-
-PnR search owns candidate generation and final selection. The target
-design supports multiple policies:
-
-* deterministic greedy baseline;
-* beam search;
-* simulated annealing;
-* integer or mixed-integer programming;
-* profile-guided search;
-* feedback-driven DSE using prior simulation or estimation metrics.
-
-Every policy must preserve the same legality contract and artifact
-schema. Policies may prune candidates, but they must diagnose the case
-where no legal candidate exists for required mapping.
-
-## Baseline Policy
-
-The required baseline policy is deterministic and debug-friendly. It
-does not need to be performance-optimal.
-
-Baseline ordering requirements:
-
-* process thread instances in stable logical order;
-* process graph launches in stable software order;
-* process Compute Realizations in stable predecessor artifact order;
-* choose hardware resources using stable symbol order after filtering
-  by compatibility;
-* route over the explicit hardware graph using a deterministic shortest
-  legal path metric;
-* assign schedules and buffers using stable earliest-legal placement;
-* emit records in deterministic artifact order.
-
-The baseline route metric must operate over the explicit graph. It may
-use latency, bandwidth, or user weights when present, but it must not
-derive adjacency from coordinates alone.
-
-## Outputs And Diagnostics
-
-For each candidate, PnR emits one Physical Mapping artifact referencing the
-exact TechMapping predecessor. For a DSE run, PnR may also emit a mapping-set
-manifest.
-
-Diagnostics must identify:
-
-* the software object involved;
-* the hardware object involved when known;
-* the legality rule or resource constraint that failed;
-* whether the failure is fatal, partial, or a quality degradation;
-* which search policy produced the diagnostic.
-
-Diagnostics must not be hidden inside logs only. They must be available
-to users, tests, DSE reports, and visualization tools.
-
-## Interface With CGRA-sim
-
-CGRA-sim is specified in `docs/spec-sim-cgra.md`. It consumes:
-
-* software dataflow IR;
-* Fabric ADG;
-* a Physical Mapping artifact and its TechMapping predecessor;
-* concrete runtime input data;
-* simulator configuration.
-
-PnR supplies the Physical Mapping artifact. CGRA-sim may verify artifact
-consistency before simulation, but it does not repair or select the
-mapping. If CGRA-sim needs a schedule, buffer depth, temporal tag,
-route, or memory binding, that information must be in the mapping
-artifact.
-
-CGRA-sim reports observed cycles, resource activity, queue occupancy,
-memory activity, route activity, temporal reuse, stalls, and other
-hardware-aware metrics. Its reports can be compared with DFG-sim reports
-through `docs/spec-sim-comparison.md`. These reports may feed a
-later PnR or DSE run as cost feedback, but they are not part of the
-original PnR decision unless explicitly referenced in a new mapping-set
-manifest.
-
-## Acceptance Criteria
-
-PnR is complete at the target-spec level when:
-
-* it emits Physical Mapping deltas that reference and preserve exact immutable
-  TechMapping predecessors rather than mutating Dataflow or Fabric artifacts;
-* it can validate and consume verifier-clean TechMapping artifacts regardless
-  of whether they were generated, imported, or hand-authored for tests;
-* it rejects every exact-coupling mismatch before native capacity planning or
-  allocation;
-* the deterministic baseline policy physically realizes a toy TechMapping on
-  a non-mesh arbitrary topology;
-* the deterministic baseline policy physically realizes a TechMapping on a
-  regular mesh-like topology using explicit Fabric links rather than
-  coordinate assumptions;
-* route records are contiguous and reference existing hardware
-  resources;
-* resource-sharing, schedule, buffer, and memory records are emitted
-  when required by the mapping;
-* illegal mappings produce structured diagnostics;
-* multiple search policies can share the same legality and artifact
-  contracts;
-* CGRA-sim can consume the emitted artifact without reading PnR
-  internal state;
-* DSE can compare multiple candidate artifacts through a mapping-set
-  manifest.
+Current anchor tests cover exact five-input coupling, typed occurrence and
+endpoint domains, endpoint-pair uniqueness, foreign references, deterministic
+logical-net grouping, memory internal-edge witnesses, explicit directed
+routing topology, and native index capacity. Persistent SpatialMapping final-
+verifier tests wait for the closed record schema.

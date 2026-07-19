@@ -513,6 +513,7 @@ static_assert(
     isPnrIndex<decltype(std::declval<FrozenTemplateTerminalRef>().terminal)> &&
     isPnrIndex<decltype(std::declval<FrozenLogicalNet>().sinkOffset)> &&
     isPnrIndex<decltype(std::declval<FrozenLogicalNet>().sinkCount)>);
+static_assert(sizeof(FrozenLogicalNetSink) <= sizeof(DataflowEdge));
 
 } // namespace
 

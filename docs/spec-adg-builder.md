@@ -29,14 +29,14 @@ The API must support three equally important use modes:
 * high-level architectural construction, where users describe common
   structures such as heterogeneous accelerator clusters, cache
   hierarchies, crossbar-like fabrics, mesh-like router graphs, NoCs,
-  memory maps, and system boundary ports;
-* exact low-level construction, where users write Fabric ADG nodes,
-  ports, channels, domains, coherence domains, external ports, and
-  links one-for-one through C++ calls.
+  memory maps, and external system boundaries;
+* exact typed construction, where users describe every system resource,
+  endpoint, attachment, service, directed connection, refinement, and domain
+  supported by the closed Fabric system schema.
 
-The second mode is the equivalent of inline assembly for architecture
-construction. It exists for cases where the user needs exact control of
-the emitted Fabric MLIR.
+The exact mode exists for cases where the user needs complete control of the
+emitted typed Fabric description. Its C++ signatures remain open with the
+corresponding Fabric schemas.
 
 ## Core Rule
 
@@ -57,13 +57,20 @@ SpatialCore helpers must lower to:
 
 System helpers must lower to:
 
-* physical `fabric.node` operations;
-* complete `#fabric.port` attributes;
-* complete `#fabric.channel` attributes;
-* complete `fabric.external_port` operations;
-* one-to-one `fabric.link` operations;
+* typed HostCore and AccCore occurrence facts;
+* typed InstructionCore descriptions and SpatialCore occurrence facts;
+* typed SpatialCore endpoint attachments;
+* typed memory and service capabilities;
+* explicit Transport Architecture endpoints, resources, and directed
+  connections;
+* Interconnect Implementation refinements and external boundaries; and
 * explicit clock, reset, power, address-space, memory-model, and
   coherence-domain declarations.
+
+The current builder may emit generic `fabric.node`, port, channel, and link
+records while that remains the only runnable implementation. Those records are
+not the target API or schema and must not be expanded as a substitute for the
+typed replacement.
 
 Builder-only concepts may exist while the C++ program is running, but
 they must not survive as required semantics in the emitted MLIR. If a
@@ -80,12 +87,12 @@ read like an architecture description, not like raw MLIR construction
 unless the user intentionally enters exact mode. The API must make the
 common path compact while preserving an escape hatch for exact control.
 
-The Builder must not require users to think in mesh coordinates, PE
-indices, Manhattan distance, or fixed topology templates. Coordinates
-are optional metadata. Inside a `fabric.module`, SSA value flow is the
-SpatialCore connectivity source of truth. Inside a `fabric.system`,
-explicit `fabric.link` operations are the system topology source of
-truth.
+The Builder must not require users to think in mesh coordinates, PE indices,
+Manhattan distance, or fixed topology templates. Coordinates are optional
+metadata. Inside a `fabric.module`, SSA value flow is the SpatialCore
+connectivity source of truth. Inside a `fabric.system`, typed Transport
+Architecture resources, endpoints, and directed connections own system
+topology. Their exact operation and attribute syntax remains open.
 
 ## API Layers
 
@@ -123,54 +130,28 @@ by the SSA values in the emitted graph region.
 
 ### System Layer
 
-The system layer owns a `fabric.system` being constructed. It provides
-entry points for system identity, memory model, clock/reset/power
-domains, address spaces, nodes, external ports, links, coherence
-domains, validation, and MLIR emission.
+The system layer owns one `fabric.system` under construction. Its semantic
+surface covers typed HostCore and AccCore occurrences, node-local
+InstructionCore descriptions, SpatialCore occurrences and attachments,
+memory and service capabilities, Transport Architecture, Interconnect
+Implementation, external boundaries, domains, validation, and emission.
 
-Required interface shape:
-
-```cpp
-class SystemBuilder;
-class NodeRef;
-class PortRef;
-class ChannelRef;
-class ExternalPortRef;
-class LinkRef;
-class DomainRef;
-class CoherenceDomainRef;
-```
-
-These are stable handles to graph objects, not owning C++ hardware
-semantics. Handles remain valid until the owning `SystemBuilder` is
-destroyed. Handles must expose enough identity to connect endpoints and
-attach metadata, but they must not bypass verifier rules.
+The exact `SystemBuilder` API, handle types, ownership rules, and function
+signatures await the closed typed Fabric system schema. This document does not
+define generic node, port, channel, or link references as a target API.
 
 ### Exact Fabric Layer
 
-The exact layer mirrors the system-level `fabric.system` construction
-surface one-for-one. Every call in this layer corresponds to one target
-system Fabric concept. This is the required escape hatch for precise
-system-level control.
+The target exact layer mirrors the typed `fabric.system` construction surface
+one-for-one. Every call corresponds to one confirmed Fabric concept and emits
+facts owned by that concept. A free-form `addNode(kind, params)` entry point is
+not the target exact layer.
 
-Required interface shape:
-
-```cpp
-NodeRef addNode(Symbol name, NodeKind kind, NodeSpec spec);
-ExternalPortRef addExternalPort(Symbol name, PortSpec port);
-LinkRef addLink(Endpoint src, Endpoint dst, LinkSpec spec = {});
-DomainRef addClockDomain(Symbol name, ClockDomainSpec spec = {});
-DomainRef addResetDomain(Symbol name, ResetDomainSpec spec = {});
-DomainRef addPowerDomain(Symbol name, PowerDomainSpec spec = {});
-CoherenceDomainRef addCoherenceDomain(Symbol name,
-                                       CoherenceDomainSpec spec);
-```
-
-`NodeSpec`, `PortSpec`, `ChannelSpec`, `LinkSpec`, and domain specs must
-map directly to the Fabric ADG fields in `docs/spec-fabric-system-adg.md`.
-The exact layer must let a user produce any verifier-legal
-`fabric.system` construct. It must also reject or diagnose invalid
-system ADG before or during emission.
+The complete typed C++ signatures remain open with the corresponding Fabric
+schemas. The builder must not invent generic wrappers or placeholder specs in
+advance. Once closed, the exact layer must let a user construct any
+verifier-legal typed system and diagnose invalid structure before or during
+emission.
 
 ### Convenience Layer
 
@@ -183,15 +164,13 @@ Required helper families:
 * spatial/temporal boundary and FIFO construction;
 * PE-local FU-template construction;
 * host and accelerator construction;
-* fixed-function accelerator construction;
-* cache and memory construction;
+* typed memory and service construction;
 * address-space and memory-map construction;
 * cache-coherence domain construction;
-* crossbar-like interconnect expansion;
-* router and NoC construction;
+* Transport Architecture and implementation-refinement construction;
 * mesh-like graph construction as optional convenience;
 * heterogeneous accelerator cluster construction;
-* system-boundary external port construction;
+* external-boundary construction;
 * domain assignment helpers for clock, reset, and power.
 
 Convenience helpers may attach optional metadata such as coordinates or
@@ -199,11 +178,11 @@ labels. They must not make that metadata semantically required unless
 the same fact is represented by explicit Fabric ADG fields.
 
 Convenience helpers for regular structures should attach optional
-visualization metadata when it improves human inspection. For example,
-a mesh-like helper may emit a `grid2d` visualization layout and per-node
+visualization metadata when it improves human inspection. For example, a
+mesh-like helper may emit a `grid2d` visualization layout and per-resource
 coordinates, and a stacked-grid helper may emit a `grid3d` visualization
-layout. These hints are for GUI tools only. Explicit links remain the
-topology source of truth.
+layout. These hints are for GUI tools only. Typed system connectivity remains
+the topology source of truth.
 
 ## Topology Breadth
 
@@ -223,9 +202,10 @@ adjacency assumptions.
 
 In both cases, the emitted ADG remains an explicit Fabric graph. For
 `fabric.module`, Graph-region SSA values define connectivity. For
-`fabric.system`, `fabric.link` defines connectivity. Coordinates,
-layout names, ranks, labels, rows, columns, and other display hints are
-visualization metadata only, as specified by
+`fabric.system`, typed Transport Architecture resources, endpoints, and
+directed connections define connectivity. Coordinates, layout names, ranks,
+labels, rows, columns, and other display hints are visualization metadata only,
+as specified by
 `docs/spec-mapping-visualization.md`. They must not affect Fabric
 verification, PnR placement legality, routing legality, routing costs,
 simulator behavior, RTL lowering, FPA, or DSE candidate scoring.
@@ -236,48 +216,41 @@ The common construction path must be concise:
 
 * Create a system and choose the required memory model.
 * Add a host core.
-* Add heterogeneous accelerator cores that reference SpatialCore
-  `fabric.module` templates and scalar-core profiles.
+* Add heterogeneous AccCores with typed InstructionCore descriptions and
+  SpatialCore `fabric.module` references.
 * Add physical memory targets and caches.
 * Connect components through high-level helper functions.
 * Emit verifier-legal Fabric MLIR.
 
 The exact construction path must be explicit:
 
-* Users can declare every node kind, port, channel, and link.
+* Users can declare every typed resource, endpoint, attachment, service, and
+  directed connection supported by the closed schemas.
 * Users can manually build arbitrary topology without topology-specific
   helpers.
-* Users can use built-in protocol schemas or fully explicit `custom`
-  protocol schemas.
-* Users can express every legal clock-domain crossing form, including
-  link-level crossing metadata and explicit `clock_converter` nodes.
+* Users can select an Interconnect Implementation refinement without using a
+  protocol name as architecture capability.
+* Users can express every legal typed clock-domain crossing and its selected
+  implementation refinement once those schemas are closed.
 * Users can express every legal coherence-domain and memory-model
   declaration.
 
-The API should prefer typed enums and small spec structs over stringly
-typed builders for baseline semantics. Strings are appropriate for
-symbols, user labels, and stable custom names.
+The API should prefer typed enums and small spec structs over stringly typed
+builders for baseline semantics. Strings are appropriate for non-authoritative
+user labels.
 
 ## Deterministic Lowering
 
-Every convenience helper must lower deterministically. Given the same
-inputs and builder version, emission must produce stable symbol names,
-stable operation ordering, stable link ordering, and stable diagnostics.
+Every convenience helper must produce the same canonical semantic graph for
+the same semantic inputs and builder version. Fabric finalization owns
+canonical labeling, artifact-local identities, and serialization order.
 
-Required deterministic ordering:
-
-* domain declarations before nodes that reference them;
-* `fabric.module` references before `acc_core` nodes that reference
-  them, when the builder emits both in one MLIR module;
-* node operations in construction order unless a helper documents a
-  stable generated order;
-* external ports in construction order;
-* links in construction order after helper expansion;
-* coherence domains after their member ports have been declared.
-
-Generated names must be deterministic and user-overridable. A helper
-must diagnose generated-name collisions instead of silently renaming
-objects in a way that changes endpoint identity.
+An emitter may choose a deterministic dependency-respecting textual order and
+derived human-readable labels. Symbol spelling, builder construction order,
+connection enumeration order, and diagnostic order are not hardware identity,
+connectivity, or Mapping tie breakers. Generated-name collisions must be
+diagnosed or resolved before finalization without changing semantic endpoint
+identity.
 
 ## Inline-Fabric Control
 
@@ -287,8 +260,9 @@ the following in one system:
 
 * create most of the SoC with convenience helpers;
 * open an exact construction region for one subsystem;
-* declare exact nodes, ports, channels, and links in that subsystem;
-* reconnect helper-created handles to exact handles;
+* declare exact typed resources, endpoints, attachments, services,
+  connections, refinements, and domains in that subsystem;
+* connect helper-created objects to exact typed objects;
 * emit one uniform Fabric ADG with no marker that downstream tools must
   treat specially.
 
@@ -301,8 +275,8 @@ how the region was written.
 The Builder must provide validation before MLIR emission and after MLIR
 emission:
 
-* pre-emission validation checks builder handle consistency, unresolved
-  symbols, duplicate names, and helper expansion completeness;
+* pre-emission validation checks builder object consistency, unresolved typed
+  references, label collisions, and helper expansion completeness;
 * emission produces Fabric ADG;
 * post-emission validation invokes the relevant Fabric verifier
   contracts, including `docs/spec-fabric-module.md` for `fabric.module`
@@ -332,15 +306,13 @@ The implementation must provide example programs for these cases:
   regions, without relying on a fixed grid topology;
 * minimal host plus one accelerator plus one memory target;
 * heterogeneous host plus two different accelerator cores;
-* heterogeneous system with one SpatialCore-backed accelerator and one
-  fixed-function accelerator;
 * cache-coherent host/cache/accelerator/memory system;
-* arbitrary non-mesh topology using exact links;
+* arbitrary non-mesh topology using exact typed system connectivity;
 * mesh-like router graph built through convenience helpers;
-* crossbar-like helper expansion into route decoders, arbiters, and
-  explicit one-to-one links;
-* NoC helper expansion into routers, network endpoints, adapters, and
-  explicit links;
+* crossbar-like helper expansion into explicit Transport Architecture
+  resources and an Interconnect Implementation refinement;
+* NoC helper expansion into explicit transport resources, endpoints,
+  connections, and implementation refinements;
 * mixed high-level and inline-fabric construction in one system.
 
 Each example must emit MLIR and run the Fabric ADG verifier. The
@@ -361,10 +333,13 @@ SpatialCore Builder coverage includes:
 * named and anonymous forms where the Fabric specs allow both;
 * deterministic emission, validation, and diagnostics.
 
-System Builder coverage includes every verifier-legal `fabric.system`
-construct from `docs/spec-fabric-system-adg.md`, including nodes, ports,
-channels, external ports, explicit links, domains, address spaces,
-memory regions, memory model, and coherence domains.
+System Builder coverage follows the typed ownership in
+`docs/spec-fabric-system-adg.md`: HostCore and AccCore occurrences,
+InstructionCore descriptions, SpatialCore occurrences and attachments,
+memory and service capabilities, Transport Architecture, Interconnect
+Implementation, external boundaries, address spaces, coherence, consistency,
+and hardware domains. Exact API coverage is defined only after those Fabric
+schemas close.
 
 ## Required Evidence
 
@@ -383,7 +358,7 @@ The Builder target is objectively verifiable when:
 
 * each required example emits deterministic MLIR;
 * each emitted MLIR artifact verifies;
-* every target Fabric construct has at least one builder-positive test
+* every closed target Fabric construct has at least one builder-positive test
   or example;
 * invalid builder inputs produce structured diagnostics before or during
   emission;
@@ -392,10 +367,11 @@ The Builder target is objectively verifiable when:
 
 ## Unsupported Scope Policy
 
-A Builder helper may be absent only when the corresponding exact Fabric
+A Builder helper may be absent only when the corresponding closed typed Fabric
 construction path can still emit the target IR and the missing helper is
-recorded as unsupported convenience scope. Missing exact-layer support
-for a verifier-legal target construct is a Builder target gap.
+recorded as unsupported convenience scope. Before the typed system schema is
+closed, absent exact SystemBuilder API is an explicit implementation gap rather
+than permission to standardize generic references.
 
 ## Relationships To Other Contracts
 
@@ -443,11 +419,13 @@ The ADG Builder target is complete when:
 
 * the SpatialCore layer can emit every verifier-legal target
   `fabric.module` construct;
-* the exact layer can emit every verifier-legal `fabric.system` construct;
+* the exact layer can emit every verifier-legal typed `fabric.system`
+  construct whose schema is closed;
 * high-level helpers lower only to explicit Fabric ADG constructs;
 * all required examples emit deterministic MLIR;
 * emitted MLIR verifies under the Fabric ADG verifier;
-* generated names and operation ordering are stable;
+* canonical semantic output is deterministic without making generated names
+  or operation order identity;
 * regular-topology helpers can emit optional visualization metadata;
 * regular SpatialCore CGRA examples render as regular layouts when
   visualization metadata is present, but removing that metadata does

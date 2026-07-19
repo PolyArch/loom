@@ -80,9 +80,9 @@ than retained as a second Mapping authority.
 The implemented PnR boundary is currently the native C++ Mapping verifier plus
 `FrozenRealizationGraph` and `FrozenRoutingGraph`. A developer or product CLI
 must wait for the dedicated Mapping MLIR persistence layer and the resolved
-PnR Config, search, and Physical Mapping model. JSON may be emitted later as a
-reporting or visualization projection, but it is not a canonical Mapping
-input.
+PnR Config, search, and persistent SpatialMapping schema. Exact SpatialMapping
+records remain open. JSON may be emitted later as a reporting or visualization
+projection, but it is not a canonical Mapping input.
 
 ## Scope
 

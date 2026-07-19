@@ -1,219 +1,135 @@
 # CGRA-sim
 
-Implementation status: this document is a target contract. Loom does not
-currently build a CGRA simulator or emit a `cgra_sim_report`.
+## Implementation Status
 
-This document specifies Loom CGRA-sim, the hardware-aware simulator for
-mapped Loom workloads. Despite the name, CGRA-sim is not limited to
-simulating a `fabric.module` or SpatialCore. It simulates mapped
-software against a concrete hardware graph and mapping artifact.
+This document is a target contract. Loom does not currently build a true CGRA
+simulator, the shared SpatialCore simulation library, or the gem5 Bridge
+described below. The implemented simulator is DFG-sim and does not satisfy
+this hardware-aware contract.
 
-## Purpose
+## Target Architecture
 
-CGRA-sim answers this question:
+CGRA-sim is the hardware-aware simulator for one mapped SpatialCore
+execution. It executes canonical graph semantics on concrete `fabric.module`
+resources under one complete SpatialMapping.
 
-```text
-How does this mapped dataflow workload behave under the selected
-hardware resources, routes, buffers, memory system, and schedules?
-```
+CGRA-sim is not a whole-system simulator. HostCore, InstructionCore, caches,
+coherence, system memory hierarchy, NoC, and system time belong to an external
+system simulator such as gem5. The target Loom Bridge will invoke the shared
+SpatialCore simulation library at the Spatial Launch ABI boundary.
 
-CGRA-sim consumes:
+## Exact Inputs
 
-* dataflow IR;
-* Fabric ADG;
-* a mapping artifact specified in `docs/spec-mapping-artifact.md`;
-* runtime input data;
-* initial memory image or memory configuration;
-* simulator configuration.
+A CGRA-sim request identifies at least:
 
-Simulator configuration is a typed view of the resolved configuration
-specified in `docs/spec-config-ssot.md`. CGRA-sim does not own
-independent defaults for route latency, memory latency, temporal
-penalties, fidelity profiles, operation semantics, or resource-policy
-fallbacks.
+* one finalized Canonical Dataflow Program and graph subject;
+* one finalized Fabric Hardware Description containing the selected
+  SpatialCore template and elaborated resources;
+* one complete SpatialMapping bound to the exact Dataflow, TechMapping, and
+  Fabric inputs;
+* concrete graph input values, stream messages, and memory capabilities;
+* initial visible memory state where required; and
+* resolved simulator configuration and model identity.
 
-CGRA-sim produces:
-
-* functional outputs;
-* final memory state or memory diffs;
-* hardware-aware cycle count;
-* resource activity;
-* queue and buffer occupancy;
-* route activity;
-* memory and coherence activity;
-* stalls and bottleneck attribution;
-* temporal reuse and reconfiguration activity;
-* diagnostics;
-* a CGRA-sim report usable by comparison, PnR feedback, DSE, and FPA
-  integration.
+The exact persistent request and Evidence schemas remain owned by Evaluation
+and are not defined here.
 
 ## Boundary With DFG-sim
 
-DFG-sim is the pure software semantic baseline specified in
-`docs/spec-sim-dfg.md`. CGRA-sim must preserve the same software
-semantics for legal mappings, then add hardware constraints.
+DFG-sim executes the same Canonical Dataflow graph without concrete Fabric
+capacity, routes, buffers, tags, or resource contention. CGRA-sim adds those
+SpatialCore constraints.
 
-CGRA-sim may reuse DFG-sim semantic components for dataflow operation
-behavior, token semantics, and memory-order semantics. It must not
-replace those semantics with a different interpretation of dataflow IR.
+Functional comparison requires the same graph identity, input identity,
+initial visible memory identity, and observable-output contract. Different
+performance is expected when concrete hardware constrains execution.
 
-For `dataflow.stream`, `dataflow.carry`, `dataflow.invariant`, and
-`dataflow.gate`, CGRA-sim must use the shared functional transitions owned by
-`OperationSemantics`. CGRA-sim owns mapped-resource timing, buffering,
-contention, backpressure, and firing schedules around those transitions. It
-does not own a second functional state machine for the same operations.
+## Boundary With Mapping
 
-The comparison protocol is specified in
-`docs/spec-sim-comparison.md`.
+CGRA-sim consumes and validates a complete SpatialMapping. It must not choose
+placements, reroute a logical net, assign a tag, allocate a buffer, select a
+memory occurrence, repair resource use, or complete a missing record.
 
-## Boundary With PnR
-
-PnR is specified in `docs/spec-pnr.md`. PnR chooses and records
-placements, routes, schedules, buffer bindings, memory bindings,
-resource sharing, and temporal tags in a mapping artifact.
-
-CGRA-sim consumes that artifact. It may reject an inconsistent or stale
-artifact, but it must not repair it and must not choose a new mapping.
-If simulation feedback should change the mapping, a later PnR or DSE
-run produces a new mapping artifact.
+Unsupported inputs and invalid Mapping are ordinary failures. A simulator
+report cannot make an invalid Mapping legal and is not copied into Mapping as
+diagnostics or metrics.
 
 ## Hardware Scope
 
-CGRA-sim models the selected hardware graph at the abstraction level of
-Fabric ADG and the mapping artifact. Target hardware scope includes:
+The simulator may model SpatialCore resources referenced by the exact
+Mapping, including:
 
-* `acc_core` execution contexts;
-* SpatialCore resources inside referenced `fabric.module` templates;
-* modeled ScalarCore residual execution when present in the mapping;
-* `fabric.pe`, `fabric.fu`, `fabric.mem`, `fabric.switch`,
-  `fabric.boundary`, and `fabric.fifo` resources when referenced;
-* system-level nodes, ports, channels, links, adapters, routers,
-  network endpoints, arbiters, route decoders, broadcasts, memories,
-  and caches;
-* clock-domain crossings and link latencies when modeled;
-* memory hierarchy, coherence-domain effects, and consistency-model
-  constraints at the target abstraction level;
-* temporal sharing, temporal tags, schedule slots, buffers, and
-  backpressure.
+* PE, FU, switch, memory, FIFO, boundary, and transport occurrences;
+* explicit directed endpoints, point-to-point arcs, and resource traversals;
+* configured functions and mapping-visible modes;
+* Route Trees, physical buffers, local Physical Tags, and selected memory
+  services when their persistent schemas are closed; and
+* Fabric-owned latency, initiation, capacity, arbitration, and use patterns.
 
-CGRA-sim is not required to be cycle-accurate RTL simulation. Its
-accuracy level is controlled by simulator configuration and reported in
-the output.
+It does not model InstructionCore execution or system interconnect as CGRA
+resources. Those components interact through typed Spatial Launch and service
+boundaries driven by the external system simulator.
 
 ## Execution Model
 
-CGRA-sim advances hardware-aware time. Each simulated event must be
-consistent with:
+Execution is event-driven and deterministic for exact semantic inputs,
+resolved configuration, and simulator model identity. Canonical Dataflow
+edges carry software values and causal events. Fabric resources constrain when
+those events can progress.
 
-* dataflow token availability and operation semantics;
-* mapping artifact placement records;
-* route and buffer records;
-* resource capacity;
-* schedule and temporal-tag records;
-* memory bindings and memory-order constraints;
-* Fabric ADG link, protocol, latency, bandwidth, domain, and resource
-  metadata;
-* simulator configuration.
+Mapping does not provide an absolute schedule-slot table. The simulator
+instantiates event-relative `ResourceUse` and Fabric-owned use patterns for a
+dynamic graph invocation. It may derive queues, calendars, occupancy, or
+conflict caches, but those are disposable simulator state rather than Mapping
+records.
 
-If a required mapping fact is missing, CGRA-sim must diagnose the
-mapping artifact instead of inventing a default placement, route, or
-schedule.
+Physical Tags are interpreted only in their Fabric-owned domains. They are
+not global token IDs, firing numbers, or dynamic invocation identities.
 
-If simulator configuration conflicts with the dataflow IR, mapping artifact,
-Fabric ADG profile, or runtime input profile,
-CGRA-sim must fail or block before producing pass evidence. A
-configuration mismatch must not be hidden behind a local default.
+The simulator may apply backpressure or wait for capacity. It cannot alter the
+selected SpatialMapping while doing so.
 
-## Hardware-Aware Metrics
+## Target Shared SpatialCore Library
 
-Baseline CGRA-sim metrics include:
+Standalone DFG/CGRA tools and the gem5 Bridge must reuse one Loom-owned
+event-driven SpatialCore simulation library. A CLI is a thin request and
+reporting surface, not a second semantic implementation.
 
-* total cycles;
-* per-node and per-resource active cycles;
-* per-resource utilization;
-* route use counts, consumed route segment counts, and contention;
-* queue occupancy over time;
-* stall cycles by cause;
-* memory request counts, bandwidth, latency, and coherence activity;
-* temporal tag use;
-* reconfiguration activity;
-* scalar residual execution activity when modeled;
-* output values and final memory diffs;
-* diagnostics.
+The gem5 event queue is the only whole-system time authority. A SpatialCore
+session advances under Bridge control to its next externally observable event
+and returns that event without running an independent system clock.
 
-CGRA-sim reports may be consumed by DSE and later PnR runs as feedback.
-They do not modify the original mapping artifact unless a separate tool
-explicitly creates a new artifact or mapping-set manifest.
+## Evidence And Metrics
 
-Runtime simulator routing is specified in `docs/spec-runtime-abi.md`.
-If the runtime dispatches a launch to CGRA-sim, it must provide the
-dataflow IR, Fabric ADG, mapping artifact, runtime input data, and
-simulator configuration required by this spec. CGRA-sim must not infer
-missing mapping facts from runtime state.
+CGRA-sim produces Evaluation Evidence with exact subject, model, configuration,
+runtime-input, and Mapping identities. Evidence may contain cycle count,
+latency, throughput, stalls, utilization observations, memory traffic, route
+activity, and other supported metrics with explicit provenance.
+
+Metrics are observations, not Mapping fields or verifier exceptions. Missing
+or unsupported observations remain explicit typed results.
 
 ## Determinism
 
-Given the same dataflow IR, Fabric ADG, mapping artifact, runtime input,
-initial memory state, and simulator configuration, CGRA-sim must produce
-the same report. Any stochastic simulation mode must be explicit and
-must record its seed.
+Deterministic ordering derives from canonical identities, typed structural
+keys, explicit event order, and resolved simulator rules. Host thread
+scheduling, container traversal, source order, stable symbols, and printer
+order are not tie breakers.
 
-The recorded seed and every model parameter used for deterministic or
-stochastic simulation must come from the resolved configuration or from
-an explicit recorded override.
+## Open Boundaries
 
-## Report Contract
+The following remain open and must not be invented by the simulator spec:
 
-A CGRA-sim report must identify:
+* exact persistent SpatialMapping physical records;
+* complete Evaluation request and Evidence schemas;
+* the full SpatialCore microarchitecture model inventory;
+* gem5 Simulation Binding fields; and
+* fidelity-specific metric availability.
 
-* software IR root;
-* selected `fabric.system`;
-* Fabric ADG artifact identity or path when the simulator is invoked
-  with an explicit hardware artifact;
-* mapping ArtifactIdentity when available;
-* simulator schema version;
-* runtime input ArtifactIdentity when available;
-* simulator configuration and fidelity level;
-* resolved configuration ArtifactIdentity;
-* functional outputs and memory diffs;
-* hardware-aware metrics;
-* trace location or inline trace summary;
-* diagnostics.
+## Validation
 
-When invoked with an explicit Fabric ADG artifact, CGRA-sim must reject
-a mapping whose placement records reference hardware resources that do
-not exist in that artifact. For `fabric.op` placements, the referenced
-hardware resource must support the mapped software operation through its
-declared `op_list`.
-
-## Non-Goals
-
-CGRA-sim is not PnR. It does not choose mappings.
-
-CGRA-sim is not DFG-sim. It does not ignore hardware resource limits.
-
-CGRA-sim is not RTL simulation. It may be checked against RTL
-simulation later, but it does not replace RTL validation.
-
-CGRA-sim is not FPA estimation. It may produce activity data consumed
-by the FPA flow specified in `docs/spec-fpa-estimation.md`, but it does
-not by itself produce final frequency, power, or area estimates.
-
-## Acceptance Criteria
-
-CGRA-sim is complete at the target-spec level when:
-
-* it consumes dataflow IR, Fabric ADG, a mapping artifact, and runtime
-  input data;
-* it rejects stale or inconsistent mapping artifacts;
-* it rejects incompatible ResolvedConfig ArtifactIdentities across consumed
-  artifacts;
-* it preserves DFG-sim functional behavior for legal mappings;
-* it reports hardware-aware cycles, activity, stalls, route activity,
-  queue occupancy, memory activity, and temporal reuse;
-* it does not choose placements, routes, schedules, buffers, memory
-  bindings, or resource sharing;
-* its reports can be compared against DFG-sim reports through
-  `docs/spec-sim-comparison.md`;
-* its reports can feed later PnR, DSE, or FPA flows as explicit input
-  evidence.
+Anchor tests should cover exact input coupling, rejection of invalid Mapping,
+deterministic graph execution, explicit route and capacity effects, memory
+visibility, and agreement with DFG-sim on shared functional observables. They
+must not pin schedule-slot records, InstructionCore simulation, or a textual
+report fixture matrix.

@@ -4,10 +4,11 @@ This document specifies finalized content identity and persistent
 references for Mapping Artifacts and their Canonical Dataflow Program and
 Fabric Hardware Description inputs.
 
-Persistent references use finalized artifact identity and typed
-artifact-local entity identity. Symbol spelling, paths, printer order,
-builder insertion order, filesystem location, and source location are not
-reference authority.
+Persistent entity references use finalized artifact identity and typed
+artifact-local entity identity. Objects mechanically identified by typed
+structural keys use the same artifact identity without receiving redundant
+entities. Symbol spelling, paths, printer order, builder insertion order,
+filesystem location, and source location are not reference authority.
 
 ## Identity Model
 
@@ -26,7 +27,7 @@ in artifact identity.
 The conceptual persistent reference form is:
 
 ```text
-PersistentRef<T> = finalized artifact identity + typed local EntityId<T>
+PersistentEntityRef<T> = finalized artifact identity + typed local EntityId<T>
 ```
 
 The reference field's schema constrains `T`. A generic subject reference
@@ -71,8 +72,9 @@ external spelling.
 Canonical semantic serialization includes every typed upstream artifact
 reference that is part of the artifact's semantics. A TechMapping artifact
 therefore includes its exact Canonical Dataflow Program and Fabric Hardware
-Description references. A Physical Mapping includes its exact immutable
-TechMapping predecessor reference.
+Description references. A SpatialMapping includes its exact immutable
+TechMapping predecessor reference. SystemMapping includes its exact immutable
+predecessor references once its cardinality schema is closed.
 
 Producer names, timestamps, host paths, search seeds, invocation order,
 debug names, source locations, viewer layout, and provenance do not change
@@ -125,13 +127,15 @@ disambiguators.
 
 ## Cross-Artifact References
 
-A Mapping software reference consists of the exact Canonical Dataflow
-Program identity and a typed `EntityId` from that artifact. A Mapping
-hardware reference consists of the exact Fabric Hardware Description
-identity and a typed `EntityId` from that artifact.
+A Mapping software-entity reference consists of the exact Canonical Dataflow
+Program identity and a typed `EntityId` from that artifact. An artifact-
+qualified software-edge reference instead contains that exact artifact
+identity and the typed producer/consumer endpoint pair. A Mapping hardware
+reference consists of the exact Fabric Hardware Description identity and a
+typed `EntityId` from that artifact.
 
 References to records owned by one TechMapping artifact use that artifact's
-local namespace. A Physical Mapping references its TechMapping predecessor
+local namespace. A SpatialMapping references its TechMapping predecessor
 by exact artifact identity and addresses predecessor entities through that
 identity. It does not copy predecessor IDs into its own namespace as newly
 owned facts.
@@ -213,7 +217,7 @@ Identity validation requires:
 * exact resolution of every referenced artifact and local entity;
 * exact TechMapping coupling to one Canonical Dataflow Program and one
   Fabric Hardware Description;
-* exact Physical Mapping coupling to one immutable TechMapping
+* exact SpatialMapping coupling to one immutable TechMapping
   predecessor;
 * no symbol, path, printer-order, source-location, or filesystem-path
   reference authority; and

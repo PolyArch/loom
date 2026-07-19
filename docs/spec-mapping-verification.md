@@ -1,169 +1,95 @@
-# Mapping Verification and Diagnostics
+# Mapping Verification
 
-This document specifies verifier behavior and diagnostic records for
-Loom mapping artifacts.
+This document specifies the ownership and observable behavior of Mapping
+verification. A verifier proves legality and closure for one immutable Mapping
+artifact profile. It does not run search, repair records, choose fallbacks,
+complete a consumer-specific view, or mutate Dataflow or Fabric artifacts.
 
-The verifier is a consumer-facing legality checker. It does not run PnR,
-repair mappings, choose fallback placements, infer routes, or mutate
-software or hardware IR.
+Evaluation owns observations and metrics. The central DSE controller owns
+thresholds, objective composition, ranking, acceptance, and promotion. Mapping
+verification must not duplicate either authority.
 
-## Verifier Inputs
+## Artifact Profiles
 
-Required inputs:
+The target Mapping artifact family has three immutable, profile-complete
+outputs:
 
-* mapping artifact;
-* referenced software dataflow IR;
-* referenced Fabric ADG;
-* referenced `fabric.module` templates.
+* TechMapping;
+* SpatialMapping; and
+* SystemMapping.
 
-Optional inputs:
+There is no `PhysicalMapping` profile and no consumer-defined completeness
+profile. The current neutral C++ draft and verifier implement TechMapping only.
+They must not publish empty SpatialMapping or SystemMapping records before
+those persistent schemas are closed.
 
-* workload shape or profile referenced by the artifact;
-* DFG-sim, CGRA-sim, FPA, or DSE report referenced by metrics;
-* policy profile controlling which optional record families are required
-  for a specific consumer.
+## Failure Model
 
-## Verification Order
+An invalid or incomplete candidate is not a Mapping artifact. Unsupported
+inputs, infeasibility, budget exhaustion, and verification failures are
+ordinary typed results. Human-readable details may appear in a report or in
+Evaluation Evidence when an evaluation was actually requested, but they are
+not artifact-owned diagnostic records.
 
-The verifier runs in deterministic order:
+The verifier may return more than one finding when reference resolution is
+safe, but no consumer may append records to make an artifact valid. A producer
+must construct a new complete artifact and run the same verifier.
 
-1. Schema and identity checks from `docs/spec-mapping-identity.md`.
-2. Software and hardware reference resolution.
-3. Placement checks from `docs/spec-mapping-placement.md`.
-4. Routing checks from `docs/spec-mapping-routing.md`.
-5. Schedule, sharing, tag, reconfiguration, and buffer checks from
-   `docs/spec-mapping-schedule-buffer.md`.
-6. Memory checks from `docs/spec-mapping-memory.md`.
-7. Visualization checks from `docs/spec-mapping-visualization.md` when
-   visualization metadata is present.
-8. Consumer-profile checks, such as CGRA-sim-required schedule records
-   or RTL-required buffer records.
+## TechMapping Verification
 
-The verifier may collect multiple diagnostics in one run. It must not
-stop at the first error unless a missing input prevents safe reference
-resolution.
+The implemented TechMapping verifier checks at least:
 
-## Diagnostic Record
+* the typed TechMapping draft boundary and exact input identities;
+* exact Dataflow and Fabric artifact identities;
+* resolution and kind correctness of every artifact-local entity reference;
+* exact graph and actor ownership of every typed Dataflow endpoint;
+* uniqueness of each software edge by producer endpoint plus consumer
+  endpoint;
+* closed graph coverage across disjoint Compute and Memory Realizations;
+* selected FU, semantic encoding, configured-function, actor, lane, and
+  boundary correspondence legality;
+* selected memory implementation semantics, operation correspondence,
+  logical-root coverage, boundary correspondence, and exact internal-edge
+  witnesses; and
+* coherent service and access-capability obligations.
 
-A diagnostic record is part of an artifact when PnR emits a partial,
-rejected, or degraded mapping. A verifier may also emit diagnostics as a
-separate report without modifying the artifact.
+An artifact-qualified software-edge reference consists only of the exact
+Dataflow artifact identity and the typed producer/consumer endpoint pair.
+Foreign artifact references are rejected before endpoint lookup. A pair that
+does not occur in the referenced Canonical Dataflow Program is unresolved.
+There is no edge entity namespace, edge number, symbol, path, printer-order,
+or insertion-order fallback.
 
-Required fields:
+## Spatial And System Verification
 
-* `record_id`.
-* `severity`: `error`, `warning`, `note`, or `metric`.
-* `code`: stable diagnostic code.
-* `message`: human-readable message.
-* `subjects`: non-empty list of software, hardware, or mapping
-  references.
-* `rule`: specification rule or verifier category.
+SpatialMapping verification will recompute physical closure from the exact
+five inputs and the selected persistent records. SystemMapping verification
+will recompute execution, service, and resource-use closure from its exact
+predecessors. Their precise record inventories and persistent diagnostics are
+not defined here because those schemas remain open.
 
-Optional fields:
+Neither verifier may reinterpret TechMapping, rematch raw Dataflow and Fabric
+inputs, reconstruct a hidden software schedule, or accept a record because a
+consumer supplied the missing fact.
 
-* `producer`: tool that emitted the diagnostic.
-* `policy`: policy profile under which the diagnostic applies.
-* `repair_hint`: human-readable hint. It must not be interpreted as an
-  automatic rewrite rule.
-* `related`: related diagnostic record IDs.
+## Determinism
 
-Diagnostic messages are for humans. Tests and tools key on `code`,
-`severity`, `subjects`, and `rule`.
-
-## Required Diagnostic Codes
-
-The base diagnostic-code set includes:
-
-* `schema_missing_required_field`
-* `schema_unknown_required_family`
-* `reference_unresolved`
-* `artifact_identity_mismatch`
-* `placement_incompatible_resource`
-* `placement_missing_scalar_fallback`
-* `route_non_contiguous`
-* `route_endpoint_direction_mismatch`
-* `route_missing_adapter`
-* `route_implicit_fanout`
-* `resource_double_booked`
-* `temporal_tag_conflict`
-* `buffer_missing`
-* `buffer_depth_invalid`
-* `memory_address_out_of_range`
-* `memory_missing_coherence_domain`
-* `memory_consistency_unsupported`
-* `visualization_bad_reference`
-* `consumer_profile_missing_record`
-
-Implementations may add codes, but they must not change the meaning of
-these base codes.
-
-## Consumer Profiles
-
-Different consumers require different record completeness.
-
-Base profile:
-
-* identity;
-* placement for every mapped software object;
-* routes for every mapped inter-placement edge;
-* memory records for mapped memory operations;
-* diagnostics for unmapped or degraded objects.
-
-CGRA-sim profile:
-
-* base profile;
-* schedule or event ordering records sufficient to simulate conflicts;
-* buffer bindings for every route or stream that can stall;
-* temporal tags and resource-sharing records for shared resources;
-* memory consistency and coherence records for shared memory.
-
-RTL lowering profile:
-
-* base profile;
-* exact resource bindings;
-* route, adapter, and boundary records;
-* buffer depths;
-* reconfiguration records;
-* clock/reset/power crossing records when domains differ.
-
-Visualization profile:
-
-* base profile;
-* visualization metadata is optional, but if present must verify.
-
-## Determinism Requirements
-
-For the same inputs and consumer profile, verifier diagnostics must be
-emitted in deterministic order:
-
-* severity order: error, warning, note, metric;
-* then diagnostic code;
-* then first subject reference;
-* then diagnostic record ID.
-
-Deterministic diagnostics are required for tests, DSE triage, and GUI
-diffing.
+Verification results depend only on canonical semantic inputs and the
+applicable profile contract. Ordering is derived from typed artifact-local
+identities and structural keys. Symbols, source-vector order, serialized
+record position, and builder insertion order are not authorities.
 
 ## Validation
 
-The verifier validates itself through conformance tests:
+Tests stay at semantic anchors:
 
-* one negative test per required diagnostic code;
-* one positive test per detailed mapping spec;
-* stale artifact identity rejection;
-* arbitrary-topology route validation;
-* compound-protocol channel endpoint validation;
-* CGRA-sim consumer-profile completeness;
-* RTL consumer-profile completeness;
-* visualization metadata optionality.
+* exact profile and predecessor identity coupling;
+* foreign and wrong-kind entity references;
+* duplicate software endpoint pairs and invalid graph or actor endpoints;
+* closed Compute and Memory Realization coverage;
+* exact configured-function correspondence and exact Memory internal-edge
+  witnesses; and
+* deterministic derived freeze results under harmless input permutations.
 
-## Acceptance Criteria
-
-Mapping verification is complete when:
-
-* invalid artifacts are rejected before CGRA-sim, runtime, RTL, or FPA
-  consumers rely on them;
-* diagnostics are structured and stable enough for tests and GUI tools;
-* consumer profiles can require additional records without changing
-  base artifact semantics;
-* the verifier never repairs or completes missing mapping decisions.
+Tests must not establish a diagnostic-code matrix, snapshot record spelling,
+or preserve retired partial-artifact and consumer-profile behavior.

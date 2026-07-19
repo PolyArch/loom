@@ -1,294 +1,161 @@
 # Runtime ABI
 
-This document specifies Loom's runtime and host/accelerator ABI
-contract. The runtime connects compiled host code, mapped accelerator
-workloads, simulator hooks, and hardware execution targets without
-redefining dataflow or fabric semantics.
-
 ## Purpose
 
-The runtime ABI answers this question:
+The Runtime ABI executes an already compiled, mapped, and packaged workload.
+It carries dynamic invocation values, memory capabilities, dependencies,
+admission requests, and completion handles. It does not define Dataflow
+semantics, Fabric topology, Mapping legality, or candidate selection.
+
+Complete system execution has two control boundaries that must remain
+distinct:
 
 ```text
-How does compiled host code launch, synchronize with, and exchange data
-with mapped Loom accelerator work while preserving the dataflow, fabric,
-and mapping contracts?
+HostCore/runtime -> Thread Dispatch ABI -> AccCore.InstructionCore
+AccCore.InstructionCore -> Spatial Launch ABI -> AccCore.SpatialCore
 ```
 
-The runtime consumes:
+The two ABIs may reuse typed descriptor atoms such as artifact identity,
+address, size, permission, and domain coordinates. They do not share one
+generic launch descriptor, completion domain, or fallback policy.
 
-* host program calls or generated host wrappers;
-* compiled accelerator package metadata;
-* optional Fabric ADG identity;
-* optional mapping artifact identity;
-* launch descriptors;
-* memory descriptors;
-* runtime configuration;
-* optional simulator or profiling hooks.
+## Thread Dispatch ABI
 
-It produces:
+Thread Dispatch materializes one logical `dataflow.thread.launch` operation
+and its parameterized instance domain. It carries the information needed to
+admit work to the selected AccCore and InstructionCore execution context,
+including:
 
-* launch handles;
-* completion and error statuses;
-* data movement effects;
-* optional runtime traces;
-* optional simulator or profiling records;
-* structured diagnostics.
+* exact deployable package and SystemMapping identity;
+* the static root thread-launch operation;
+* logical domain coordinates and parameters;
+* explicit dependencies;
+* authorized memory capabilities and invocation data; and
+* long-lived reservations selected by SystemMapping where required.
 
-## Boundary Rule
+Completion produces a host-visible runtime handle or event associated with
+the thread dispatch. That dynamic object is not a persistent Mapping identity
+and is not the `!dataflow.thread_token` value in canonical IR.
 
-The runtime is an execution carrier. It does not define software
-dataflow semantics, hardware topology, mapping legality, routing,
-temporal sharing, memory coherence, or FPA estimates.
+Thread Dispatch does not select graph placement or directly invoke a DFG or
+CGRA simulator. The dispatched InstructionCore program issues Spatial Launch
+requests for its local graph operations.
 
-Those contracts remain in:
+## Spatial Launch ABI
 
-* `docs/spec-core-dialect-boundary.md`;
-* `docs/spec-loom-stack.md`;
-* `docs/spec-fabric-system-adg.md`;
-* `docs/spec-mapping-artifact.md`;
-* `docs/spec-pnr.md`;
-* `docs/spec-sim-dfg.md`;
-* `docs/spec-sim-cgra.md`;
-* `docs/spec-fpa-estimation.md`.
+Spatial Launch materializes one static `dataflow.graph.launch` operation on
+the selected local SpatialCore. It carries the information needed to configure
+and admit one graph invocation, including:
 
-If the runtime needs a fact to launch or execute work, that fact must
-come from an explicit compiler artifact, mapping artifact, Fabric ADG,
-runtime configuration, or platform profile. The runtime must not invent
-implicit thread placement, graph placement, route selection, coherence
-behavior, or fallback behavior.
+* exact Canonical Dataflow graph and compatible SpatialMapping identity;
+* the static graph-launch operation and logical invocation parameters;
+* typed value, stream, control, and memory port bindings;
+* invocation-local state context requirements;
+* selected mapping-visible configuration; and
+* dependencies and result/completion destinations.
 
-## Execution Units
+The exact persistent or wire representation of these fields remains open.
+Spatial Launch is a binding over existing Fabric endpoints and Mapping
+services, not a new endpoint type or Mapping record family.
 
-The runtime launches compiled accelerator work units. A work unit may
-correspond to a selected accelerator region, a mapped logical
-`dataflow.thread` instance domain, or a generated wrapper around such a
-domain.
+Completion returns graph results and the graph-local done event to the issuing
+InstructionCore context. It does not complete the enclosing thread unless the
+canonical program makes that causal relation explicit.
 
-Host code does not directly launch `dataflow.graph` definitions. A
-graph is SpatialCore software and is launched inside an innermost
-executable thread according to the dataflow and mapping contracts.
+## Memory And Data Movement
 
-The runtime may batch many logical thread instances into one launch
-when the mapping artifact provides a legal batch relation. It may not
-derive batching from mesh coordinates, x/y positions, or implicit core
-numbering.
+Runtime memory descriptors identify invocation-specific buffers or memory
+capabilities, access permissions, extents, element layout, and platform
+handles required by the deployment. Exact descriptor fields remain subject to
+the deployment and platform contract.
 
-## Launch Descriptor
+Fabric owns physical memory structures, address spaces, coherence, service
+capability, and explicit transport. SpatialMapping and SystemMapping own the
+selected physical and service realization. Runtime may bind concrete host or
+device allocations to an already selected obligation; it must not choose a
+new bank, route, service, coherence policy, or address authority.
 
-A launch descriptor records:
+Data movement and stream traffic use Fabric ports and selected
+`ServiceRealization` paths. They do not introduce a third generic launch ABI.
 
-* work package identity;
-* selected accelerator region or logical thread domain;
-* argument descriptors;
-* memory descriptors;
-* scalar value descriptors;
-* selected mapping artifact identity;
-* selected hardware or simulator target profile;
-* fallback policy;
-* synchronization mode;
-* optional profiling and trace settings.
+## Admission
 
-The descriptor is a runtime input, not a mapping artifact. It binds a
-particular program invocation to an already selected work package and
-mapping.
+Runtime admission evaluates the dependencies and capacities required to
+activate one already selected event-relative use set. Admission is atomic for
+the mapping-visible resources required before that event fires. If the set is
+not currently admissible, the request waits or applies backpressure.
 
-## Launch Handle
+Admission cannot change the selected AccCore, SpatialMapping, route, Physical
+Tag, instruction context, service, or configuration. Offline verification
+remains responsible for closure and deadlock legality; runtime opportunity
+cannot repair an invalid mapping.
 
-A launch handle represents dynamic runtime progress. It is not a
-`!dataflow.thread_token` and is not a `none`-typed dataflow control
-token.
+## Execution Disposition
 
-The runtime may expose host-visible handle operations such as:
+InstructionCore-only execution is a normal compiler and SystemMapping
+ownership choice, not a runtime fallback from failed SpatialMapping. A graph
+selected for SpatialCore execution has no implicit InstructionCore substitute.
 
-* query status;
-* wait for completion;
-* cancel when supported;
-* collect diagnostics;
-* collect profiling data.
-
-Any bridge from dataflow thread completion into host-visible runtime
-completion must be generated by the compiler/runtime boundary. The
-runtime handle does not change the IR token semantics.
-
-## Memory Descriptor
-
-A memory descriptor records:
-
-* logical argument identity;
-* host-visible address or buffer handle;
-* size and element layout;
-* layout source kind and source identity;
-* access direction;
-* alignment;
-* address-space or memory binding when known;
-* coherence and synchronization requirements;
-* optional transfer policy.
-
-Loom hardware modeling does not assume an MMU or virtual memory. A
-runtime may receive ordinary host pointers, but a platform adapter must
-translate or bind them to memory that the selected accelerator target
-can legally access. This translation is a runtime/platform service, not
-a Fabric ADG virtual-memory feature.
-
-The layout source fields identify where the runtime obtained the
-element layout and extent. For test fixtures this may be a static
-workload fixture identity; for compiled host wrappers or platform
-profiles it must identify the explicit artifact or profile that
-provided the layout. The runtime must not silently infer layout from a
-workload name without recording that source.
-
-## Data Movement Policies
-
-Baseline data movement policies are:
-
-* `shared_coherent`: host and accelerator share coherent physical
-  memory according to Fabric coherence and consistency declarations;
-* `shared_noncoherent`: host and accelerator share memory but require
-  explicit flush, invalidate, fence, or synchronization operations;
-* `copy_in_copy_out`: runtime copies input and output buffers between
-  host memory and accelerator-accessible memory;
-* `device_local`: runtime allocates or binds accelerator-local memory;
-* `simulated`: runtime binds buffers to a simulator memory model;
-* `custom`: platform-defined policy with an explicit policy name.
-
-The selected policy must be explicit in runtime configuration or
-launch metadata. Silent data movement fallback is illegal unless the
-selected fallback policy permits it and reports it.
-
-## Synchronization
-
-Runtime synchronization operates at the host/accelerator boundary. It
-must preserve:
-
-* launch dependency order;
-* host waits and fences;
-* memory visibility requirements;
-* mapping-artifact schedule and batch constraints;
-* Fabric memory consistency declarations;
-* coherence-domain requirements.
-
-Runtime synchronization must not replace dataflow graph control tokens
-or memory-order tokens. Those remain software IR semantics consumed by
-DFG-sim, PnR, CGRA-sim, and generated hardware.
-
-## Fallback Policy
-
-Runtime fallback is explicit and follows the policy selected by the
-compiler or launch descriptor:
-
-* `require_acceleration`: fail if the selected accelerator work cannot
-  run as requested;
-* `allow_host_fallback`: execute an equivalent host path when
-  available and report the fallback;
-* `allow_scalar_fallback`: execute on a ScalarCore path when mapped and
-  report the fallback;
-* `report_only`: do not execute accelerator work; collect analysis or
-  reports only.
-
-Fallback must never silently change observable program behavior.
+Any deployment that offers an alternative host or InstructionCore path must
+name that disposition explicitly and prove its artifact, semantic, and ABI
+contract. Those exact Deployment Artifact fields remain open. Runtime must not
+invent a fallback flag or silently redirect work when a mapped launch fails.
 
 ## Runtime Package
 
-A runtime package may contain:
+A deployable package references the exact immutable software, Fabric,
+Mapping, configuration, binary, and backend artifacts needed by its selected
+execution dispositions. It may contain InstructionCore binaries,
+SpatialCore configuration, memory images, and platform bindings.
 
-* host wrapper metadata;
-* accelerator work package metadata;
-* mapping artifact references;
-* Fabric ADG references;
-* simulator profile references;
-* required runtime feature flags;
-* required data movement policies;
-* required synchronization policies;
-* optional generated configuration data;
-* optional report output configuration.
+The package is a dependency graph, not one linear launch record. Thread
+Dispatch consumes its system-level execution binding; Spatial Launch consumes
+the selected graph and SpatialMapping binding. Runtime-local handles and
+addresses do not become persistent artifact identity.
 
-The package may be embedded in a binary, emitted as a side artifact, or
-loaded at runtime. In all forms, it must identify the artifacts it
-depends on.
+Exact packaging and public driver output remain open under the Deployment
+Artifact contract.
 
 ## Simulator Integration
 
-The runtime may target simulators instead of physical hardware. A
-simulator target profile may route launches to:
+HostCore and InstructionCore execution belong to the external system
+simulator. The Loom Bridge is invoked only for Spatial Launch and calls the
+shared SpatialCore DFG/CGRA/RTL model selected by the simulation binding.
 
-* DFG-sim for pure software dataflow execution;
-* CGRA-sim for mapped hardware-aware execution;
-* RTL simulation for generated hardware artifacts;
-* custom runtime-backed simulators.
+The gem5 event queue is the whole-system time authority. A SpatialCore session
+returns boundary events to the Bridge rather than maintaining a competing
+system clock.
 
-Simulator execution must preserve report identity. DFG-sim does not
-consume mapping artifacts. CGRA-sim consumes mapping artifacts and
-Fabric ADG. Runtime simulator routing must honor those boundaries.
+Standalone DFG-sim and CGRA-sim tools use the same SpatialCore simulation
+library. Runtime must not route a HostCore dispatch directly to those tools as
+an alternative launch mode.
 
-## Diagnostics
+## Diagnostics And Evidence
 
-Runtime diagnostics must distinguish:
+Runtime failures, admission waits, platform errors, and execution diagnostics
+belong to runtime reports or Evaluation Evidence. They must cite exact package,
+Mapping, Fabric, configuration, and input identities where applicable.
 
-* missing runtime package;
-* stale artifact identity;
-* missing mapping artifact;
-* missing Fabric ADG;
-* unsupported target profile;
-* unsupported data movement policy;
-* missing platform memory binding;
-* unavailable accelerator target;
-* simulator target failure;
-* synchronization failure;
-* fallback execution;
-* user-requested acceleration failure.
+Runtime diagnostics do not become Mapping-owned records. Simulator and
+performance observations are Evaluation facts, not runtime legality authority.
 
-Diagnostics should include source or wrapper provenance when available
-and should identify whether the failure belongs to compiler artifacts,
-runtime configuration, platform services, simulator execution, or
-hardware execution.
+## Open Boundaries
 
-## Reports
+This document does not define:
 
-Runtime reports should identify:
+* exact Thread Dispatch or Spatial Launch wire structures;
+* deployment disposition fields for explicit alternative executions;
+* platform-specific memory descriptor encoding;
+* gem5 binding structures; or
+* public driver packaging syntax.
 
-* host program or wrapper identity;
-* work package identity;
-* launch descriptor identity;
-* mapping artifact identity when used;
-* Fabric ADG identity when used;
-* target profile;
-* memory policies;
-* synchronization mode;
-* fallback decision;
-* simulator report identities when used;
-* runtime trace or profiling identity;
-* diagnostics.
+No generic launch wrapper, implicit fallback flag, or compatibility record may
+stand in for those unclosed schemas.
 
-Reports must be consumable by CMSIS drop-in flows, DSE, and user-facing
-summaries without requiring private local paths.
+## Validation
 
-## Relationship To CMSIS Drop-In
-
-The CMSIS drop-in compiler contract is specified in
-`docs/spec-cmsis-dropin-compiler.md`. When CMSIS acceleration is
-requested, the driver may generate runtime wrappers, runtime packages,
-and launch descriptors. If the required runtime support is unavailable,
-the driver must diagnose that fact or follow the explicit fallback
-policy.
-
-Compatibility mode must not require the Loom runtime.
-
-## Acceptance Criteria
-
-The runtime ABI target is complete when:
-
-* compatibility-mode CMSIS builds can avoid the Loom runtime entirely;
-* acceleration-mode builds identify required runtime packages and
-  runtime features explicitly;
-* launch descriptors identify work packages, mappings, targets, memory
-  descriptors, and fallback policy;
-* runtime handles are clearly separated from dataflow thread tokens and
-  graph-control tokens;
-* memory descriptors support coherent shared, noncoherent shared,
-  copy, device-local, simulated, and custom policies;
-* host pointers are runtime inputs only and must be explicitly bound or
-  translated by a platform adapter before accelerator access;
-* simulator routing respects DFG-sim and CGRA-sim input boundaries;
-* fallback decisions and runtime failures produce structured
-  diagnostics.
+Anchor tests should cover separation of the two completion domains, exact
+artifact coupling, typed memory authorization, fixed Mapping admission,
+Spatial Launch bridge invocation, and deterministic runtime reports. Tests
+must not preserve a single generic launch descriptor or implicit
+InstructionCore fallback behavior.

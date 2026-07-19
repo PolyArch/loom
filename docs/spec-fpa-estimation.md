@@ -186,12 +186,14 @@ summary reports should not require them for interpretation.
 
 ## Relationship To DSE
 
-FPA reports are evidence for DSE. They may be referenced by mapping-set
-manifests, hardware candidate manifests, and later PnR runs. They do
-not modify Fabric ADG, dataflow IR, or mapping artifacts.
+FPA output is Evaluation Evidence for the central DSE controller. It does not
+modify Fabric ADG, dataflow IR, or Mapping artifacts and is not a direct PnR
+input.
 
-If FPA feedback motivates a new hardware candidate or mapping, a later
-tool must produce a new explicit artifact.
+If FPA evidence motivates a new hardware candidate or spatial search, DSE
+creates the new candidate or issues a new PnR request through an explicit
+`ResolvedPnrConfigView` and `MappingConstraintSet`. The requested PnR run
+still consumes only its exact `D/T/F/C/K` inputs.
 
 ## Error Handling
 

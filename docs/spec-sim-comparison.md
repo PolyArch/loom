@@ -76,15 +76,17 @@ Expected CGRA-sim overhead categories include:
 
 * finite PE, FU, memory, buffer, or route resources;
 * route latency or congestion;
-* memory bandwidth, cache, coherence, or consistency constraints;
+* SpatialCore-local memory and service bandwidth;
 * backpressure and queue occupancy limits;
-* temporal sharing and temporal tags;
-* schedule slots and reconfiguration;
-* clock-domain crossing costs;
-* protocol conversion, width conversion, arbitration, or broadcast
-  costs;
-* modeled ScalarCore residual execution;
+* event-relative resource use, local Physical Tags, and reconfiguration;
+* SpatialCore clock-domain crossing costs;
+* payload conversion, arbitration, or broadcast costs inside the selected
+  SpatialCore; and
 * simulator fidelity settings.
+
+InstructionCore execution, cache hierarchy, coherence, NoC, and whole-system
+timing are not CGRA-sim overhead categories. They belong to separate System
+Simulation Evaluation Evidence produced by the external system simulator.
 
 DFG-sim may provide functional and software-activity baselines. Performance
 ratios require explicit, compatible metric definitions from both producers.
@@ -140,15 +142,16 @@ must not be represented as numeric zero. Aggregation across graph slices is
 legal only when source reports share workload, input, metric definition, and
 unit identities.
 
-## Use By PnR And DSE
+## Use By DSE
 
-PnR may consume comparison reports from previous candidates as cost
-feedback. A comparison report is evidence for a later search decision;
-it is not part of the original PnR decision unless a mapping-set
-manifest explicitly references it.
+Simulation comparison output is Evaluation Evidence for the central DSE
+controller. DSE may use it to reject candidates, choose objectives, or identify
+hardware bottlenecks.
 
-DSE may use comparison reports to reject candidates, choose objective
-weights, or identify hardware bottlenecks.
+PnR does not consume current or previous comparison reports. If DSE requests a
+new spatial search, it expresses the new request through an explicit
+`ResolvedPnrConfigView` and `MappingConstraintSet`. PnR consumes only the exact
+`D/T/F/C/K` inputs and does not own cross-run evidence or candidate policy.
 
 ## Acceptance Criteria
 
@@ -161,6 +164,7 @@ The comparison protocol is complete at the target-spec level when:
   constraint differences;
 * it reports metric definitions before performance ratios;
 * it explains which hardware constraints affect CGRA-sim metrics;
-* it can feed PnR and DSE as explicit evidence;
+* it produces Evaluation Evidence consumable by central DSE without becoming
+  a PnR input;
 * any table export records metric definitions, units, and missing-evidence
   status explicitly.

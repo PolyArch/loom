@@ -1,8 +1,0 @@
-# RUN: not test -e %S/../../include/PnR/Mapping.h
-# RUN: not test -e %S/../../lib/PnR/MappingHardware.h
-# RUN: not test -e %S/../../tools/loom-pnr-map
-# RUN: not test -e %S/../../tools/loom-mapping-estimate
-# RUN: not grep -R "MemOccurrenceIdentity" %S/../../include %S/../../lib
-# RUN: not grep -R "collectConcreteMemOccurrences" %S/../../include %S/../../lib
-# RUN: not grep -R "memResourceId" %S/../../include %S/../../lib
-# RUN: not grep -F "dataflow.subgraph" %S/../../include/Fabric/IR/FabricOps.h

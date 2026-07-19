@@ -23,8 +23,8 @@ std::unique_ptr<::mlir::Pass> createLowerForallToThreadPass();
 // dataflow.graph definitions and launches only when the whole transaction
 // succeeds.
 //
-// Symbol naming: `g_<threadSym>_<seq>` where <seq> is the source-order
-// index of the scf.for cut inside the thread.
+// Published graph symbols use a construction-local ordinal for readability;
+// symbol spelling is not graph or artifact identity.
 std::unique_ptr<::mlir::Pass> createLowerForToGraphPass();
 
 // Module-scope pass that expands known library helper calls inside

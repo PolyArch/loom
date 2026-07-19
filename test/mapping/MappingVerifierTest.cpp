@@ -109,8 +109,6 @@ void acceptsValidTechMapping() {
                           testCase.dataflow, testCase.fabric);
   if (!result)
     fail(__func__, llvm::toString(result.takeError()).c_str());
-  if (result->profile() != MappingProfile::TechMapping)
-    fail(__func__, "validated draft has the wrong profile");
   if (result->realizations().size() != 1)
     fail(__func__, "validated draft lost its realization");
 }
@@ -142,7 +140,14 @@ void acceptsBoundaryInputFanout() {
       graph.logicalNetSinks()[fanout->sinkOffset];
   const FrozenLogicalNetSink &second =
       graph.logicalNetSinks()[fanout->sinkOffset + 1];
-  if (first.edge != EdgeId(100) || second.edge != EdgeId(103))
+  const DataflowEdge multiplyInput{
+      GraphPort{GraphId(1), PortDirection::Input, 0},
+      ActorPort{ActorId(2), PortDirection::Input, 0}};
+  const DataflowEdge addInput{GraphPort{GraphId(1), PortDirection::Input, 0},
+                              ActorPort{ActorId(3), PortDirection::Input, 1}};
+  if (fanout->producer != multiplyInput.source ||
+      first.consumer != multiplyInput.target ||
+      second.consumer != addInput.target)
     fail(__func__, "graph boundary fanout lost canonical edge provenance");
   const auto *firstTerminal =
       std::get_if<FrozenTemplateTerminalRef>(&first.terminal);
@@ -166,7 +171,7 @@ void acceptsBoundaryOutputFanoutWithOneCorrespondence() {
   const PortDescriptor value = port(PortKind::Value, type(1));
   testCase.dataflow.graphs[0].outputPorts.push_back(value);
   testCase.dataflow.edges.push_back(
-      DataflowEdge{EdgeId(200), ActorPort{addActor, PortDirection::Output, 0},
+      DataflowEdge{ActorPort{addActor, PortDirection::Output, 0},
                    GraphPort{graph, PortDirection::Output, 1}});
   auto result =
       validateTechMapping(testCase.techMappingIdentity, testCase.mapping,
@@ -183,9 +188,9 @@ void rejectsDistinctBoundaryOutputsSharingFuOutput() {
   const FuId fu(10);
   const PortDescriptor value = port(PortKind::Value, type(1));
   testCase.dataflow.graphs[0].outputPorts.push_back(value);
-  testCase.dataflow.edges.push_back(DataflowEdge{
-      EdgeId(200), ActorPort{multiplyActor, PortDirection::Output, 0},
-      GraphPort{graph, PortDirection::Output, 1}});
+  testCase.dataflow.edges.push_back(
+      DataflowEdge{ActorPort{multiplyActor, PortDirection::Output, 0},
+                   GraphPort{graph, PortDirection::Output, 1}});
   testCase.mapping.realizations[0].boundaryPorts.push_back(
       {ActorPortRef{ActorRef{dataflowId, multiplyActor}, PortDirection::Output,
                     0},
@@ -298,25 +303,7 @@ void acceptsCrossRealizationEdgeAccounting() {
   if (!result)
     fail(__func__, llvm::toString(result.takeError()).c_str());
 }
-void rejectsUnsupportedSchemaProfileAndIdentity() {
-  {
-    TestCase testCase = makeValidCase();
-    testCase.mapping.header.schemaVersion = SchemaVersion{1, 0};
-    expectError(__func__,
-                validateTechMapping(testCase.techMappingIdentity,
-                                    testCase.mapping, testCase.dataflow,
-                                    testCase.fabric),
-                MappingErrorCode::UnsupportedSchemaVersion);
-  }
-  {
-    TestCase testCase = makeValidCase();
-    testCase.mapping.header.profile = MappingProfile::PhysicalMapping;
-    expectError(__func__,
-                validateTechMapping(testCase.techMappingIdentity,
-                                    testCase.mapping, testCase.dataflow,
-                                    testCase.fabric),
-                MappingErrorCode::WrongMappingProfile);
-  }
+void rejectsMismatchedIdentity() {
   {
     TestCase testCase = makeValidCase();
     testCase.mapping.header.dataflowIdentity = artifact(99);
@@ -335,7 +322,7 @@ void rejectsForeignUnresolvedAndWrongKindReferences() {
                 validateTechMapping(testCase.techMappingIdentity,
                                     testCase.mapping, testCase.dataflow,
                                     testCase.fabric),
-                MappingErrorCode::ForeignEntityReference);
+                MappingErrorCode::ForeignReference);
   }
   {
     TestCase testCase = makeValidCase();
@@ -398,7 +385,6 @@ void rejectsInvalidDataflowEdges() {
   {
     TestCase testCase = makeValidCase();
     DataflowEdge duplicate = testCase.dataflow.edges.front();
-    duplicate.id = EdgeId(200);
     testCase.dataflow.edges.push_back(std::move(duplicate));
     expectError(__func__,
                 validateTechMapping(testCase.techMappingIdentity,
@@ -448,9 +434,9 @@ void rejectsInvalidCoveredSinkAccounting() {
   }
   {
     TestCase testCase = makeValidCase();
-    testCase.dataflow.edges.push_back(DataflowEdge{
-        EdgeId(200), ActorPort{ActorId(2), PortDirection::Output, 0},
-        GraphPort{GraphId(1), PortDirection::Output, 0}});
+    testCase.dataflow.edges.push_back(
+        DataflowEdge{ActorPort{ActorId(2), PortDirection::Output, 0},
+                     GraphPort{GraphId(1), PortDirection::Output, 0}});
     expectError(__func__,
                 validateTechMapping(testCase.techMappingIdentity,
                                     testCase.mapping, testCase.dataflow,
@@ -459,9 +445,9 @@ void rejectsInvalidCoveredSinkAccounting() {
   }
   {
     TestCase testCase = makeValidCase();
-    testCase.dataflow.edges.push_back(DataflowEdge{
-        EdgeId(200), ActorPort{ActorId(3), PortDirection::Output, 0},
-        ActorPort{ActorId(2), PortDirection::Input, 0}});
+    testCase.dataflow.edges.push_back(
+        DataflowEdge{ActorPort{ActorId(3), PortDirection::Output, 0},
+                     ActorPort{ActorId(2), PortDirection::Input, 0}});
     expectError(__func__,
                 validateTechMapping(testCase.techMappingIdentity,
                                     testCase.mapping, testCase.dataflow,
@@ -476,7 +462,7 @@ void acceptsUncoveredActorlessPassthrough() {
   testCase.dataflow.graphs.push_back(
       GraphDescriptor{GraphId(4), {value}, {value}});
   testCase.dataflow.edges.push_back(
-      DataflowEdge{EdgeId(200), GraphPort{GraphId(4), PortDirection::Input, 0},
+      DataflowEdge{GraphPort{GraphId(4), PortDirection::Input, 0},
                    GraphPort{GraphId(4), PortDirection::Output, 0}});
 
   auto result =
@@ -492,9 +478,9 @@ void rejectsCoveredActorlessPassthroughAndUnaccountedEdges() {
     const PortDescriptor value = port(PortKind::Value, type(1));
     testCase.dataflow.graphs.push_back(
         GraphDescriptor{GraphId(4), {value}, {value}});
-    testCase.dataflow.edges.push_back(DataflowEdge{
-        EdgeId(200), GraphPort{GraphId(4), PortDirection::Input, 0},
-        GraphPort{GraphId(4), PortDirection::Output, 0}});
+    testCase.dataflow.edges.push_back(
+        DataflowEdge{GraphPort{GraphId(4), PortDirection::Input, 0},
+                     GraphPort{GraphId(4), PortDirection::Output, 0}});
     testCase.mapping.coveredGraphs.push_back(
         GraphRef{testCase.dataflow.identity, GraphId(4)});
     expectError(__func__,
@@ -719,7 +705,7 @@ void rejectsInvalidComputeOccurrences() {
             .functionalUnits.front()
             .artifact = artifact(99);
       },
-      MappingErrorCode::ForeignEntityReference);
+      MappingErrorCode::ForeignReference);
   expectInvalid(
       [](TestCase &testCase) {
         ComputeOccurrenceDescriptor &occurrence =
@@ -814,7 +800,7 @@ void runMappingVerifierTests() {
   rejectsDistinctBoundaryOutputsSharingFuOutput();
   rejectsBoundaryInputCoalescing();
   acceptsCrossRealizationEdgeAccounting();
-  rejectsUnsupportedSchemaProfileAndIdentity();
+  rejectsMismatchedIdentity();
   rejectsForeignUnresolvedAndWrongKindReferences();
   rejectsDuplicateEntityIdsInArtifactNamespaces();
   rejectsInvalidDataflowEdges();

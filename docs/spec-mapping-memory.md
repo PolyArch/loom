@@ -1,171 +1,76 @@
-# Mapping Memory Records
+# Mapping Memory Boundary
 
-This document specifies mapping records for memory regions, dataflow
-load/store operations, partitioned-data regions, coherence, consistency,
-and physical address binding.
+This document specifies confirmed memory ownership across Dataflow,
+TechMapping, SpatialMapping, and SystemMapping. It does not define the still-
+open persistent physical memory record schema.
 
-Loom requires cache coherence and a defined memory consistency model.
-Fabric ADG and mapping memory records do not include MMU behavior or
-virtual memory.
+## Canonical Memory Order
 
-## Memory Region Binding
+The Canonical Dataflow Program owns logical memory ordering. Required
+happens-before relations are ordinary typed event edges in the canonical
+memory-order event network. Mapping must not duplicate them as `MemoryOrder`
+records, infer them from textual order, or replace them with a schedule-local
+ordering authority.
 
-A memory-region-binding record maps a software memory region to a
-hardware address space and memory-capable endpoint.
+Physical contention may add stalls, but it cannot weaken or recreate the
+software event network. The final verifier proves that selected physical
+mechanisms preserve every logical obligation.
 
-Required fields:
+## TechMapping Memory Realization
 
-* `record_id`.
-* `software_region`: software reference to a memref region,
-  partitioned-data region, or named memory object.
-* `address_space`: hardware reference to a physical address space or
-  terminal address range declared by Fabric ADG.
-* `home_endpoint`: hardware reference to a memory-capable channel
-  endpoint.
-* `range`: base and size as constants or symbolic expressions.
+TechMapping owns the selected Memory Realization:
 
-Optional fields:
+* exact load/store actor coverage and logical-root association;
+* selected Fabric Memory Semantic Encoding;
+* actor-to-operation-template correspondence;
+* exact actor and graph boundary correspondence;
+* one-beat access capability obligations; and
+* exact internal-edge witnesses pairing a canonical software endpoint pair
+  with a selected Fabric internal connection.
 
-* `partition`: symbolic partition descriptor for sharded or tiled data.
-* `alignment`.
-* `bank`.
-* `coherence_domain`.
-* `consistency_domain`.
-* `initialization`.
-* `metrics`.
+An internal-edge witness uses the exact Dataflow artifact identity plus typed
+producer and consumer endpoints. It does not use an edge number, symbol, path,
+or list position. Actors sharing one Memory Realization do not make every edge
+between them internal; only witnessed selected connections are absorbed.
 
-The range is physical or implementation-defined within the selected
-Fabric address space. The mapping artifact must not require virtual
-address translation.
+## Spatial Memory Realization
 
-## Memory Operation Binding
+SpatialMapping selects concrete `fabric.mem` occurrences, operation
+attachments, route-tree branches, physical buffers, address/service choices,
+configuration, tags, and event-relative resource use where those facts are not
+mechanically derivable.
 
-A memory-operation-binding record maps a dataflow memory op to a
-memory-capable hardware path.
+There is no independent request-route and response-route authority. Each
+transport obligation is a branch of the same logical-net and Route Tree model
+used for other software transfers, with endpoints derived from the selected
+Memory Realization and Fabric service structure. PE-local or memory-local
+traversal is not free; it must be represented by explicit Fabric connectivity
+or absorbed by the selected internal-connection witness.
 
-Required fields:
+SpatialMapping must not copy the canonical memory-order network, create a
+second memory binding that competes with Memory Realization or service
+selection, or store local QoR estimates.
 
-* `record_id`.
-* `operation_ref`: software reference to `dataflow.load`,
-  `dataflow.store`, or another memory-effecting dataflow operation.
-* `region_binding`: mapping reference to a memory-region-binding
-  record.
-* `request_route`: mapping reference to a route carrying the request.
-* `response_route`: mapping reference to a route carrying the response,
-  required for loads and optional for stores when the protocol has no
-  store response.
-* `ordering`: mapping reference to a memory-order record or explicit
-  `unordered` marker when legal.
+## System Memory Boundary
 
-Optional fields:
+SystemMapping uses the confirmed `ExecutionBinding`, `ServiceRealization`, and
+`ResourceUse` families. It connects SpatialCore-local service use to exact
+system-visible services and transport without allowing runtime remapping. The
+exact service ownership chain, address fields, coherence fields, and
+SystemMapping cardinality remain open.
 
-* `access_width`.
-* `burst`.
-* `atomic_semantics`.
-* `cache_policy`.
-* `coalescing_group`.
-* `metrics`.
+## Implemented Boundary
 
-Memory operation binding must respect the operation's dataflow control
-and memory-order token dependencies. Missing ordering evidence is a
-verifier error unless the software op is explicitly unordered.
-
-## Coherence Domain
-
-A coherence-domain record binds software memory regions and hardware
-cache or memory endpoints into one coherence domain.
-
-Required fields:
-
-* `record_id`.
-* `domain_ref`: hardware reference to a coherence domain declared by
-  Fabric ADG.
-* `members`: non-empty list of memory-region bindings or hardware
-  cache/memory endpoints.
-* `protocol`: coherence protocol name declared or accepted by the
-  hardware target.
-
-Optional fields:
-
-* `scope`: system, cluster, AccCore group, or custom named scope.
-* `home_policy`.
-* `invalidation_policy`.
-* `metrics`.
-
-If a memory region is shared by multiple AccCores and is not marked
-private by software semantics, it must belong to a coherence-domain
-record.
-
-## Consistency Domain
-
-A consistency-domain record names the memory consistency model used by
-the mapped workload.
-
-Required fields:
-
-* `record_id`.
-* `model`: consistency model name, such as `sequential`,
-  `release_acquire`, `relaxed_with_explicit_fences`, or `custom`.
-* `scope`: software or hardware scope where the model applies.
-
-Optional fields:
-
-* `fence_records`: mapping references to memory-order records that
-  implement explicit fences.
-* `custom_payload`: required when `model` is `custom`.
-
-Consistency is a mapping/runtime contract. Fabric ADG declares what the
-hardware can support; the mapping artifact selects the model for a
-workload and records the evidence needed by simulation and runtime.
-
-## Memory Order Record
-
-A memory-order record binds software memory-order edges to hardware
-ordering mechanisms.
-
-Required fields:
-
-* `record_id`.
-* `edge_refs`: non-empty list of software memory-order edge references.
-* `mechanism`: `same_endpoint_order`, `fence`, `barrier`,
-  `protocol_order`, `schedule_order`, or `custom`.
-
-Optional fields:
-
-* `hardware_ref`: endpoint, fence resource, barrier resource, or
-  protocol object used to enforce ordering.
-* `schedule_context`.
-* `metrics`.
-
-Ordering may be proven by schedule records only when all relevant
-memory operations are scheduled in the same schedule context and the
-hardware resource observes that order.
+The neutral C++ verifier implements TechMapping Memory Realization legality.
+`FrozenRealizationGraph` derives concrete memory occurrence domains, external
+operation-port demands, deterministic logical nets, selected internal-edge
+absorption, and logical-root service obligations. These are ephemeral native
+projections, not persistent SpatialMapping records.
 
 ## Validation
 
-The memory verifier checks:
-
-* every software memory region has a legal address-space binding when
-  it is accessed by mapped memory ops;
-* every memory operation binds to a memory-capable endpoint;
-* request and response routes are present and directionally legal;
-* address ranges are inside terminal memory target ranges;
-* shared memory belongs to a coherence domain unless software semantics
-  prove it private;
-* the selected consistency model is supported by the hardware and
-  runtime target;
-* memory-order edges are enforced by explicit mechanisms;
-* no record requires MMU or virtual-memory behavior.
-
-## Acceptance Criteria
-
-Memory records are complete when:
-
-* dataflow loads and stores can map to Fabric memory endpoints through
-  explicit request and response routes;
-* cache coherence and consistency are represented without introducing
-  virtual memory;
-* CGRA-sim can model memory traffic, ordering stalls, cache/coherence
-  effects, and bandwidth pressure from the artifact;
-* runtime lowering can allocate or bind physical address ranges using
-  the same records.
+Current anchor tests cover exact internal-edge witnesses, foreign Dataflow
+references, duplicate endpoint-pair rejection, multi-sink fanout, deterministic
+freeze, memory occurrence domains, access capability, and service consistency.
+Persistent address, service, route, buffer, tag, and resource-use tests wait
+for their closed schemas.

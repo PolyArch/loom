@@ -187,7 +187,7 @@ The op has the same admissibility requirement as `dataflow.thread_coord
 Part 3 owns thread creation and `#loom.thread_axis<...>`. Part 4 consumes
 those mapping entries only as logical execution-axis tags.
 
-Partitioned-data ops are ScalarCore-side helpers. They do not appear
+Partitioned-data ops are InstructionCore-side helpers. They do not appear
 inside a `dataflow.graph` definition. If graph code needs a local range,
 coordinate, or linear id, the value is computed in the enclosing
 `dataflow.thread` body and passed to `dataflow.graph.launch` as an

@@ -1,238 +1,141 @@
 # Core Dialect Boundary
 
-This document specifies the target ownership boundary between Loom's
-core dialects and tools. It is the classification rule used when a
-software, hardware, mapping, runtime, or simulation fact could
-otherwise be placed in more than one subsystem.
-
 ## Purpose
 
-Loom has two primary IR sides:
+This document assigns each full-stack semantic fact to one primary owner.
+Dataflow owns canonical software semantics, Fabric owns hardware structure and
+capability, Mapping owns selected realization, Runtime executes an already
+selected deployment, simulation produces observations, Evaluation owns typed
+evidence, and DSE owns candidate acceptance.
 
-* dataflow IR describes software execution and software dataflow;
-* fabric IR describes physical hardware architecture.
-
-The relation between the two is not embedded in either side. It is
-recorded by the independent mapping artifact produced by PnR. Runtime
-and simulators consume these artifacts according to their own
-contracts, but they do not invent missing software, hardware, or
-mapping facts.
-
-The boundary rule is:
-
-```text
-Dataflow owns software semantics.
-Fabric owns hardware structure.
-The mapping artifact owns the chosen relation between them.
-Runtime owns dynamic launch and platform execution.
-DFG-sim owns dataflow-only execution evidence.
-CGRA-sim owns mapped hardware-aware execution evidence.
-Full-stack reporting owns evidence packaging and metric provenance.
-DSE feedback owns explicit candidate selection and next-candidate
-requests.
-```
+No consumer may reconstruct a missing upstream fact from names, coordinates,
+record order, or implementation conventions.
 
 ## Ownership Table
 
 | Owner | Owns | Must not own |
 |-------|------|--------------|
-| `dataflow.thread` | Logical multidimensional launch domains, async thread-completion tokens, and graph-launch containment legality. | Physical AccCore identity, route selection, schedule slots, temporal tags, topology coordinates, hardware capacity. |
-| `dataflow.graph` | Symbol-bearing SpatialCore software DFG definitions launched from thread bodies. | Host launch ABI, physical SpatialCore instance identity, hardware routes, resource-sharing assignments. |
-| `fabric.system` | System-level ADG: HostCore nodes, AccCore nodes, memories, caches, interconnect, external ports, protocol ports, directed channels, explicit one-to-one links, domains, address spaces, coherence, consistency. | Software execution semantics, selected software placement, workload schedule, simulator trace state. |
-| `fabric.module` | SpatialCore or CGRA hardware templates, including PEs, FUs, switches, memories, FIFOs, boundaries, and local hardware capabilities. | A system-level SoC graph, selected workload placement, dataflow graph definition semantics. |
-| Mapping artifact | Thread binding, graph binding, operation or subgraph binding, edge routes, schedule records, temporal tags, buffers, memory bindings, resource sharing, mapping diagnostics, mapping metrics. | New software operations, new hardware nodes or links, runtime fallback policy, simulator-only observations. |
-| Runtime ABI | Host-visible work packages, launch descriptors, memory descriptors, launch handles, platform binding, data movement policy, synchronization policy, target selection, fallback policy, runtime diagnostics. | Dataflow token semantics, Fabric topology, PnR legality, route selection, coherence definition, FPA estimates. |
-| DFG-sim | Pure dataflow execution for concrete inputs without hardware resource limits. | Fabric ADG, mapping artifacts, hardware placement, hardware routing, hardware resource contention. |
-| CGRA-sim | Execution of mapped dataflow on selected hardware using the mapping artifact, with hardware resource, route, memory, buffering, timing, and activity constraints. | Choosing placements, routes, schedules, memory bindings, or resource-sharing assignments. |
-| Full-stack reporting | Report bundles, metric provenance, derived metrics, intermediate artifact gates, simulator comparison exports, content-audit summaries, diagnostic aggregation, artifact trace references. | New software operations, new hardware nodes, new mappings, simulator execution, backend execution, DSE candidate mutation. |
-| DSE feedback | Objective records, candidate records, Pareto or selected-candidate records, explicit requests for new compiler, hardware, mapping, simulator, RTL, or FPA candidates. | Mutating existing dataflow IR, Fabric ADG, mapping artifacts, simulator reports, RTL manifests, EDA reports, or FPA reports. |
+| Structured Program Candidate | Selected software scheduling, parallelization, vectorization, reduction, and AccCore/SpatialCore ownership decisions before canonical Dataflow lowering. | Hardware placement, physical routes, Mapping records, runtime remapping. |
+| `dataflow.thread` | Non-recursive logical thread domains, InstructionCore program structure, async thread completion, and graph-launch containment. | Physical AccCore identity, physical scheduling, routes, tags, or hardware capacity. |
+| `dataflow.graph` | Symbol-bearing canonical SpatialCore software DFG definitions, typed endpoints, causal edges, and graph completion. | FU selection, physical resources, routes, buffers, or system transport. |
+| `fabric.module` | SpatialCore hardware templates, typed resources, endpoints, connectivity, capability, and use patterns. | Software actor grouping, selected workload placement, or Evaluation results. |
+| `fabric.system` | Typed AccCore, InstructionCore, SpatialCore attachment, memory/service, Transport Architecture, implementation refinement, domains, and explicit system connectivity. | Software execution semantics, selected Mapping, runtime policy, or observations. |
+| TechMapping | Compute and Memory Realizations, selected semantic encodings, actor-to-operation and boundary correspondence that, with configured-function topology, determines Compute internality, and exact Memory internal-edge witnesses. | Concrete physical placement, routes, software rewrites, QoR, or candidate ranking. |
+| SpatialMapping | Exact TechMapping predecessor plus selected SpatialCore bindings and the minimal non-derived physical realization facts required for closure. | Regrouping actors, rematching capability, absolute software schedules, diagnostics, metrics, or DSE selection. |
+| SystemMapping | `ExecutionBinding`, `ServiceRealization`, and `ResourceUse` across exact thread-launch coverage and system resources. | Runtime remapping, copied SpatialMapping facts, or a parallel transport authority. |
+| Runtime ABI | Thread Dispatch, Spatial Launch, invocation memory descriptors, admission of already selected uses, dynamic handles, and runtime reports. | Choosing Mapping, repairing closure, or inventing implicit fallback. |
+| DFG-sim | Hardware-unconstrained execution of Canonical Dataflow semantics. | Fabric topology, Mapping, or hardware contention. |
+| CGRA-sim | Hardware-aware execution of one mapped SpatialCore using exact Fabric and SpatialMapping inputs. | InstructionCore or whole-system execution, Mapping search, or record repair. |
+| Evaluation | Typed observations, metrics, provenance, fidelity, and evidence. | Mapping legality, selected Mapping facts, or candidate promotion. |
+| Central DSE | Objectives, thresholds, candidate requests, ranking, acceptance, and promotion. | Mutating finalized Dataflow, Fabric, Mapping, or Evidence artifacts. |
 
 ## Dataflow Boundary
 
-`dataflow.thread` is a non-recursive software execution-domain carrier.
-Before binding, every dynamic thread instance is logical and may later bind
-to an AccCore execution slot through the mapping artifact. The dataflow
-verifier must not treat a logical thread as a physical AccCore by itself.
+`dataflow.thread` is architecture-neutral and non-recursive. Host or runtime
+orchestration launches a logical thread domain; a thread body may launch
+`dataflow.graph` definitions; a graph body never launches a thread.
 
-Thread launch ownership is strict:
+`!dataflow.thread_token` is the thread-completion domain. Graph control and
+completion use canonical Dataflow event edges. Runtime handles are dynamic ABI
+objects and are not either Dataflow token type.
 
-* `dataflow.thread.launch` appears only in host/runtime orchestration outside
-  every thread or graph definition;
-* a thread body never launches another thread;
-* a thread's InstructionCore code may launch `dataflow.graph` definitions;
-* graph bodies never launch threads;
-* multidimensional parallelism is expressed by one launch domain rather than
-  recursive thread nesting.
-
-`!dataflow.thread_token` is the inter-thread completion token domain.
-`none`-typed control values are graph, stream, memory-order, and
-dataflow-control tokens. `dataflow.thread.wait` consumes one or more
-thread-completion tokens for caller-side causal synchronization and
-produces no graph-control value. It is not a memory barrier, and there
-is no conversion between the two token domains.
-
-`dataflow.graph` is the single canonical SpatialCore software DFG
-definition surface. It is symbol-bearing, function-like, module-scope,
-and executes only through `dataflow.graph.launch` from a thread body. There is
-no regional graph form or separate graph callable surface.
-
-Actor grouping and selected FU realization belong to the
-Mapping artifact, not to a persistent subgraph operation.
-
-Logical partitioning constructs and thread-axis attributes may describe
-software instance domains. They are not hardware topology. A logical
-axis is not an x coordinate, y coordinate, PE coordinate, router
-coordinate, route hint, or mesh statement.
+`dataflow.graph` is the only canonical SpatialCore software DFG surface. Actor
+grouping and selected FU realization belong to TechMapping, not to a
+persistent subgraph operation. Logical axes and source layout do not imply
+hardware coordinates or topology.
 
 ## Fabric Boundary
 
-`fabric.system` is the system-level architecture description graph. It
-contains physical nodes and explicit directed connectivity. A directed
-connection is from producer to consumer, output to input, master to
-slave, or manager to subordinate, according to the selected protocol
-schema.
+Fabric owns fully elaborated hardware structure. `fabric.module` describes a
+reusable SpatialCore template. `fabric.system` describes typed system-level
+resources and explicit directed connectivity. Coordinates and visualization
+metadata never define reachability or legality.
 
-`fabric.link` connects one channel endpoint to one channel endpoint.
-Bundle-level helpers may exist only as syntax or builder convenience;
-the verifier-visible connectivity remains directed channel endpoints.
-Protocol bundle ports may contain channels with different directions,
-such as AXI-MM read, write, response, and address channels. Direction
-is therefore a channel property, not a single scalar property of the
-whole bundle.
+The target system model uses typed AccCore, InstructionCore, SpatialCore,
+memory/service, transport, implementation, and attachment concepts. Protocol
+names identify implementation refinements; they do not replace architecture-
+level capability and service contracts.
 
-All hardware topology is explicit graph connectivity. Meshes,
-multi-dimensional grids, x/y coordinates, and Manhattan-distance
-routing are not default semantics. They may be represented by explicit
-links plus optional visualization metadata. Visualization metadata may
-help a GUI draw regular structures, but it must not change legality,
-routing, simulation, RTL lowering, or FPA estimation.
-
-An AccCore system node is an independent physical instance. It may
-reference a `fabric.module` symbol as its SpatialCore template and may
-carry ScalarCore parameters. Multiple AccCore nodes may reference the
-same module symbol, but they remain distinct physical resources.
-
-`fabric.module` is the SpatialCore or CGRA hardware template. Its local
-hardware concepts, such as PE containers, FUs, switches, memories,
-FIFOs, and spatial or temporal hardware capabilities, remain hardware
-facts. They do not imply that software dataflow subgraphs carry
-hardware time-sharing or tag semantics before mapping.
-
-System-level selection and routing primitives must use precise names
-that describe the hardware role. Deterministic one-to-one-of-many
-routing uses a route decoder, contention resolution uses an arbiter,
-and explicit one-to-many replication uses broadcast hardware.
-System-level hardware primitives must not be named after dataflow
-control operations in a way that confuses hardware routing with
-`dataflow.mux` or `dataflow.demux`.
+Ordinary directed connections use typed source and destination endpoints.
+Resources with independent state, configuration, capacity, or parallel
+identity are explicit Fabric entities rather than numbered generic edges.
 
 ## Mapping Boundary
 
-PnR is the only subsystem that chooses the software-to-hardware
-relation. Its persistent output is the mapping artifact. PnR may use
-dataflow IR, Fabric ADG, user constraints, DFG-sim reports, CGRA-sim
-reports, FPA estimates, or profile data as inputs, but the chosen
-relation must be serialized in the mapping artifact.
+The Mapping artifact family has three immutable completeness profiles:
+TechMapping, SpatialMapping, and SystemMapping. There is no fourth physical
+profile and no partial, rejected, or degraded Mapping lifecycle.
 
-The mapping artifact records:
+TechMapping is the only owner of software actor grouping and selected Fabric
+semantic realization. Spatial PnR consumes the exact immutable predecessor and
+adds concrete SpatialCore realization. SystemMapping composes thread execution,
+services, transport, and resource use over exact system coverage.
 
-* which logical thread instance domains bind to which AccCore resources
-  and execution batches;
-* which graph launches bind to which SpatialCore execution contexts;
-* which operations or subgraphs bind to which fabric resources;
-* which software edges use which hardware routes;
-* which schedule slots, temporal tags, buffers, queues, memory
-  bindings, and resource-sharing decisions make the mapping legal.
+A software edge is identified by its typed producer and consumer endpoints.
+Spatial routing realizes one logical net as a rooted Route Tree with shared
+trunks and sink branches; it does not persist one symbolic route per edge.
 
-Neither dataflow IR nor Fabric ADG is a substitute for the mapping
-artifact. If a consumer needs a selected placement, route, schedule,
-buffer, memory binding, or sharing decision, that fact must be in the
-mapping artifact.
+Mapping has no independent absolute Schedule IR. Resource-time behavior is
+derived from Fabric-owned use patterns and selected event-relative
+`ResourceUse`. Physical Tags are local to Fabric interpretation domains and
+are not global token or firing identities.
 
-The detailed mapping record families are specified in
-`docs/spec-mapping-artifact.md` and the related
-`docs/spec-mapping-*.md` documents. PnR search policy is specified in
-`docs/spec-mapping-search.md`; verification and consumer profiles are
-specified in `docs/spec-mapping-verification.md`.
+Mapping verification owns legality and closure only. Failures and unsupported
+inputs are ordinary results or reports. Diagnostics, QoR metrics, predictions,
+fidelity, candidate ranking, and acceptance belong to Runtime, Evaluation, or
+DSE according to their semantics, never to Mapping records.
+
+Exact persistent SpatialMapping and SystemMapping record schemas remain open.
+Consumers must not fill the gap with generic binding, route, schedule,
+diagnostic, or metric records.
 
 ## Runtime Boundary
 
-The runtime launches already compiled and mapped work. It consumes work
-packages, launch descriptors, memory descriptors, mapping-artifact
-identity, Fabric ADG identity, target profiles, simulator hooks, and
-platform configuration.
+System execution has two distinct control boundaries:
 
-Runtime launch handles are host-visible dynamic execution handles. They
-are not `!dataflow.thread_token` values and are not `none` dataflow
-control tokens.
+```text
+HostCore/runtime -> Thread Dispatch ABI -> AccCore.InstructionCore
+AccCore.InstructionCore -> Spatial Launch ABI -> AccCore.SpatialCore
+```
 
-The runtime may bind host pointers or buffer handles to
-accelerator-accessible memory through platform services. This does not
-add MMU or virtual-memory semantics to Fabric ADG. Fabric owns physical
-memory structures, address spaces, cache coherence declarations, and
-memory-consistency declarations. Runtime owns invocation-specific
-memory descriptors and data movement policy.
+Thread Dispatch materializes a `dataflow.thread.launch` domain and its thread
+completion. Spatial Launch materializes a `dataflow.graph.launch`, selects the
+already bound compatible SpatialMapping, binds graph ports and memory
+capabilities, and returns graph results and completion.
 
-If runtime execution needs a fact that is absent from the runtime
-package, mapping artifact, Fabric ADG, dataflow artifact, target
-profile, or platform configuration, the runtime must diagnose the
-missing fact. It must not infer placement, routing, schedule, coherence,
-fallback, or memory-binding behavior from naming conventions or
-coordinates.
+The two ABIs may reuse typed descriptor atoms, but they do not share one
+generic launch record or completion domain. Runtime may wait or apply
+backpressure while admitting fixed Mapping uses; it cannot choose another
+AccCore, SpatialMapping, route, tag, context, or configuration.
 
 ## Simulation Boundary
 
-DFG-sim consumes dataflow artifacts, concrete inputs, initial memory
-state, and simulator configuration. It produces dataflow-only execution
-evidence and optimistic performance metrics. It does not consume Fabric
-ADG or mapping artifacts.
+DFG-sim consumes Canonical Dataflow and concrete runtime inputs without
+Fabric or Mapping. CGRA-sim additionally consumes the exact SpatialCore Fabric
+description and complete SpatialMapping. It validates but never repairs those
+inputs.
 
-CGRA-sim consumes dataflow artifacts, Fabric ADG, a mapping artifact,
-concrete inputs, initial memory state, runtime-relevant configuration,
-and simulator configuration. It produces hardware-aware execution
-evidence. It may validate the mapping artifact, but it must not repair
-or choose a mapping.
+InstructionCore, caches, coherence, NoC, and system time belong to the
+external system simulator. A Loom Bridge invokes the shared SpatialCore
+simulation library only at the Spatial Launch boundary.
 
-Comparison between DFG-sim and CGRA-sim is valid only when both reports
-refer to the same workload, input data, and observable outputs. Gaps
-between their metrics are acceptable only when explained by hardware
-constraints that DFG-sim intentionally ignores.
+Simulation outputs are Evaluation Evidence. They do not become Mapping facts
+or legality exceptions.
 
-## Reporting And DSE Boundary
+## Evaluation And DSE Boundary
 
-Full-stack reporting consumes artifacts and reports from compiler,
-mapping, runtime, simulator, RTL, EDA, FPA, and DSE tools. It packages
-evidence, records metric provenance, computes derived metrics, and
-emits intermediate artifact gates, content-audit summaries, and summary
-table exports. It must not create or modify software IR, hardware IR,
-mapping artifacts, simulator reports, or backend reports.
+Evaluation owns typed observations and metric provenance. The central DSE
+controller consumes immutable artifacts and Evidence to request or select new
+Structured Program, Fabric, TechMapping, SpatialMapping, SystemMapping,
+simulation, or backend candidates.
 
-DSE feedback consumes immutable artifacts and report bundles to choose
-or request new candidates. A DSE request may ask the compiler, ADG
-Builder, PnR, simulator, RTL, or FPA tooling to produce a new artifact.
-It must not rewrite an existing artifact in place. Candidate selection
-must cite objective records and metric records.
+DSE may request a new artifact but must not mutate an existing artifact or
+store selected-candidate state inside Mapping.
 
-## Acceptance Criteria
+## Validation
 
-The core boundary is satisfied when:
-
-* every semantic fact can be classified under exactly one primary owner;
-* no verifier requires hidden side state from another subsystem to
-  decide structural legality;
-* dataflow IR contains no physical topology, route, PE, schedule-slot,
-  temporal-tag, or hardware-capacity assumptions;
-* Fabric ADG contains no selected workload placement, workload route,
-  workload schedule, or software dataflow semantics;
-* the mapping artifact is the only persistent source for selected
-  software-to-hardware binding;
-* runtime descriptors do not smuggle PnR or Fabric facts that belong in
-  upstream artifacts;
-* DFG-sim and CGRA-sim consume different artifact sets according to
-  their contracts;
-* full-stack reports summarize and derive from evidence without
-  mutating the evidence;
-* DSE feedback records candidate choices and requests without mutating
-  existing artifacts;
-* optional visualization metadata never changes compiler, mapping,
-  simulation, RTL, or FPA legality.
+The boundary is satisfied when every semantic fact has one owner, every
+cross-artifact reference uses exact identity, and no consumer relies on hidden
+state or textual order. Tests should cover typed ownership, exact identity
+coupling, closed Mapping coverage, endpoint structural keys, deterministic
+derived state, and verifier closure rather than retired record shapes.

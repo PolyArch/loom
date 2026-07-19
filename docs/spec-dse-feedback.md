@@ -29,11 +29,15 @@ DSE feedback records use these fidelity classes:
   techmap cost, and calibrated structural estimates;
 * `dfg_sim_feedback`: input-driven DFG-sim results for software
   semantics and dynamic execution baseline evidence;
-* `pnr_feedback`: mapping artifact evidence from placement, routing,
-  resource use, schedule, buffer, and memory-binding records;
+* `pnr_feedback`: evidence from one complete SpatialMapping, including
+  supported placement, routing, event-relative `ResourceUse`, buffer, and
+  memory-binding facts;
 * `cgra_sim_feedback`: input-driven CGRA-sim evidence after mapping;
 * `eda_fpa_feedback`: RTL, EDA, backend report, or normalized FPA JSON
   evidence.
+
+`pnr_feedback` does not introduce or consume a persistent schedule record.
+Event-relative `ResourceUse` remains the sole owner of resource-time behavior.
 
 Low-fidelity feedback may be used for prefiltering. Formal ranking and
 selection must declare the fidelity used for every metric input, cite
@@ -53,7 +57,7 @@ DSE may consume:
 * DFG-sim reports;
 * ADG Builder recipes;
 * Fabric ADG artifacts;
-* mapping artifacts and mapping-set manifests;
+* complete Mapping artifacts;
 * CGRA-sim reports;
 * simulation comparison reports;
 * runtime reports;
@@ -154,11 +158,10 @@ A candidate record identifies:
 
 Candidate kinds include:
 
-* compiler L1 accelerator placement candidate;
-* compiler L2 graph placement candidate;
+* Structured Program Candidate ownership and outlining candidate;
 * TechMapping candidate containing Compute Realizations;
 * hardware ADG candidate;
-* Physical Mapping candidate;
+* SpatialMapping candidate;
 * simulator configuration candidate;
 * RTL/FPA profile candidate;
 * combined full-stack candidate.
@@ -167,17 +170,19 @@ Candidate kinds include:
 
 ### Compiler Placement Feedback
 
-DSE may request new L1 or L2 software placement candidates. The request must
-cite reports or metrics that motivate the change. The compiler must produce
-new dataflow artifacts rather than modifying an old artifact in place.
+DSE may request a new Structured Program Candidate with different AccCore or
+SpatialCore ownership and outlining decisions. The request must cite reports
+or metrics that motivate the change. The compiler must produce a new immutable
+candidate and derive new dataflow artifacts rather than modifying an old
+artifact in place.
 
 ### TechMapping Feedback
 
-DSE may request a new L3 Compute Realization search over exact immutable
-Canonical Dataflow and Fabric artifacts. The result is a new TechMapping
-artifact containing selected actor groups, FU encodings, and complete
-correspondence witnesses. It must not persist a competing software partition
-or mutate either input artifact.
+DSE may request a new TechMapping search over exact immutable Canonical
+Dataflow and Fabric artifacts. The result is a new TechMapping artifact
+containing selected actor groups, FU encodings, and complete correspondence
+witnesses. It must not persist a competing software partition or mutate either
+input artifact.
 
 ### Hardware Candidate Feedback
 
@@ -190,7 +195,9 @@ constraints.
 
 DSE may request new PnR runs with updated objectives, constraints, or
 cost-model weights over an exact TechMapping predecessor. The output is a new
-Physical Mapping artifact or mapping-set manifest.
+complete SpatialMapping when that persistent schema is closed. Candidate
+collections, ranking, and selection remain DSE records rather than Mapping
+records.
 
 ### Simulator And FPA Feedback
 
@@ -239,11 +246,12 @@ failure when applicable.
 
 ## Relationship To PnR
 
-PnR physically realizes one exact TechMapping candidate and emits a Physical
-Mapping artifact or mapping-set manifest. DSE may run PnR repeatedly, compare
-the resulting artifacts, and select one candidate. PnR does not own cross-run
-candidate policy unless it is acting as the selected DSE policy for physical
-mapping search and records that policy in a manifest.
+PnR consumes one exact immutable TechMapping predecessor and emits one complete
+SpatialMapping for each accepted result. It owns search within that run, not a
+cross-run candidate collection, comparison, ranking, or selection policy. The
+central DSE controller requests PnR runs, owns their candidate records and
+collections, compares complete SpatialMappings, and selects or promotes a
+candidate.
 
 ## Relationship To Reporting
 

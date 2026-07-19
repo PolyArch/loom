@@ -21,7 +21,6 @@ using namespace loom::evaluation;
 
 namespace {
 
-static_assert(std::is_same_v<loom::mapping::SchemaVersion, SchemaVersion>);
 static_assert(
     std::is_same_v<loom::mapping::ArtifactIdentity, ArtifactIdentity>);
 static_assert(
