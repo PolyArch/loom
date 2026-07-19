@@ -165,6 +165,10 @@ def Fabric_OpOp : Fabric_Op<"op", []> {
                        Legacy programmed Fabric may still use the historical
                        length-one allowed-set dictionary as an adapter form;
                        canonical FUs reject that shape.
+      * `paired_lanes`: the complete ordered physical lane inventory for a
+                       wide `@dataflow.sync` capability. Each record is
+                       `{input_port, output_port, mask_bit}`. Its order must
+                       match every full-width sync mode's software port maps.
       * `sw_configs` : `{ key = ... }` - a `DictionaryAttr` with
                        runtime configuration. Normalized `hw_params` modes are
                        selected only by `{mode = N}`. Legacy allowed-set input
@@ -174,6 +178,7 @@ def Fabric_OpOp : Fabric_Op<"op", []> {
 
   let arguments = (ins Variadic<Fabric_BitsType>:$inputs, ArrayAttr:$op_list,
       OptionalAttr<ArrayAttr>:$hw_params,
+      OptionalAttr<ArrayAttr>:$paired_lanes,
       OptionalAttr<DictionaryAttr>:$sw_configs);
   let results = (outs Variadic<Fabric_BitsType>:$outputs);
 

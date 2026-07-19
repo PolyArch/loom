@@ -5,6 +5,7 @@
 // Usage:
 //   loom-coverage-test <input.mlir> [--config <path>] [--check-isolation]
 //   loom-coverage-test <input.mlir> --project-first-encoding
+//   loom-coverage-test <input.mlir> --verify-normalized-modes
 //
 // Input contract:
 //   * The module must contain exactly one `fabric.fu`. The verifier projects
@@ -23,6 +24,8 @@
 //
 // Output (one line per configured function, in module order):
 //   coverage[i] funcname=<name> matched=<true|false> index=<n_or_none>
+//     [lanes=[node:{input->output,...}]
+//      bitmasks=[node:<derived-mask>]]
 //
 // Final line:
 //   all_covered=<true|false>
@@ -45,6 +48,7 @@
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/InitAllDialects.h"
 #include "mlir/Parser/Parser.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/CommandLine.h"
@@ -76,6 +80,12 @@ static ::llvm::cl::opt<bool> projectFirstEncoding(
     "project-first-encoding",
     ::llvm::cl::desc("Parse without verification and directly project the "
                      "first fabric.fu semantic encoding"),
+    ::llvm::cl::init(false));
+
+static ::llvm::cl::opt<bool> verifyNormalizedModes(
+    "verify-normalized-modes",
+    ::llvm::cl::desc("Parse without verification and directly verify the "
+                     "single fabric.op normalized hardware modes"),
     ::llvm::cl::init(false));
 
 namespace {
@@ -126,8 +136,9 @@ int main(int argc, char **argv) {
   }
   ::llvm::SourceMgr sm;
   sm.AddNewSourceBuffer(std::move(*bufOrErr), ::llvm::SMLoc());
-  ::mlir::ParserConfig parserConfig(
-      &ctx, /*verifyAfterParse=*/!projectFirstEncoding.getValue());
+  ::mlir::ParserConfig parserConfig(&ctx, /*verifyAfterParse=*/
+                                    !projectFirstEncoding.getValue() &&
+                                        !verifyNormalizedModes.getValue());
   ::mlir::OwningOpRef<::mlir::ModuleOp> mod =
       ::mlir::parseSourceFile<::mlir::ModuleOp>(sm, parserConfig);
   if (!mod) {
@@ -144,6 +155,23 @@ int main(int argc, char **argv) {
     return 1;
   }
   ::fabric::FuOp fu = fus.front();
+
+  if (verifyNormalizedModes.getValue()) {
+    ::llvm::SmallVector<::fabric::OpOp, 1> configurableOps;
+    fu.walk([&](::fabric::OpOp op) { configurableOps.push_back(op); });
+    if (configurableOps.size() != 1) {
+      ::llvm::errs() << "error: expected exactly one fabric.op, got "
+                     << configurableOps.size() << "\n";
+      return 1;
+    }
+    if (::mlir::failed(
+            ::fabric::verifyNormalizedHardwareModes(configurableOps.front()))) {
+      ::llvm::outs() << "normalized_modes=failed\n";
+      return 0;
+    }
+    ::llvm::outs() << "normalized_modes=success\n";
+    return 0;
+  }
 
   if (projectFirstEncoding.getValue()) {
     auto encodings = fu.getValidEncodingsAttr();
@@ -199,6 +227,29 @@ int main(int argc, char **argv) {
       ::llvm::outs() << witness->encodingIndex;
     else
       ::llvm::outs() << "none";
+    if (witness.has_value() && !witness->pairedLaneSelections.empty()) {
+      ::llvm::outs() << " lanes=[";
+      for (auto [selectionIndex, selection] :
+           ::llvm::enumerate(witness->pairedLaneSelections)) {
+        if (selectionIndex != 0)
+          ::llvm::outs() << ";";
+        ::llvm::outs() << selection.softwareNode << ":{";
+        for (auto [laneIndex, lane] : ::llvm::enumerate(selection.lanes)) {
+          if (laneIndex != 0)
+            ::llvm::outs() << ",";
+          ::llvm::outs() << lane.inputPort << "->" << lane.outputPort;
+        }
+        ::llvm::outs() << "}";
+      }
+      ::llvm::outs() << "] bitmasks=[";
+      for (auto [selectionIndex, selection] :
+           ::llvm::enumerate(witness->pairedLaneSelections)) {
+        if (selectionIndex != 0)
+          ::llvm::outs() << ";";
+        ::llvm::outs() << selection.softwareNode << ":" << selection.bitmask();
+      }
+      ::llvm::outs() << "]";
+    }
     ::llvm::outs() << "\n";
   }
   ::llvm::outs() << "all_covered=" << (report.allCovered() ? "true" : "false")

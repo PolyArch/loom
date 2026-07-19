@@ -90,6 +90,32 @@ FabricOpModeClassification classifyFabricOpModes(OpOp op) {
   return {*format, {}};
 }
 
+LogicalResult
+preflightPairedLaneModes(OpOp op,
+                         const FabricOpModeClassification &classification,
+                         std::string &error) {
+  if (!op.getPairedLanesAttr())
+    return success();
+  if (classification.kind == FabricOpModeKind::Malformed) {
+    error = classification.diagnostic;
+    return failure();
+  }
+  if (classification.kind != FabricOpModeKind::Normalized) {
+    error = "paired_lanes requires normalized hw_params modes";
+    return failure();
+  }
+  for (Attribute attr : op.getHwParamsAttr()) {
+    auto mode = dyn_cast<DictionaryAttr>(attr);
+    auto selected = mode ? mode.getAs<FlatSymbolRefAttr>("op") : nullptr;
+    if (!selected || selected.getValue() != "dataflow.sync") {
+      error =
+          "paired_lanes requires every hw_params mode to select @dataflow.sync";
+      return failure();
+    }
+  }
+  return success();
+}
+
 FailureOr<unsigned> getSemanticPayloadWidth(Type type, std::string &error) {
   if (auto integer = dyn_cast<IntegerType>(type))
     return integer.getWidth();

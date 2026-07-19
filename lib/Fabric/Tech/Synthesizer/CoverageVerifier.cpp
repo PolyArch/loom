@@ -4,6 +4,7 @@
 #include "Fabric/Tech/Synthesizer/Parallel.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstddef>
@@ -30,14 +31,25 @@ CoverageReport CoverageVerifier::verify(
                                                           projectionError)))
     return report;
 
-  ::llvm::SmallVector<::fabric::ConfiguredFunctionKey, 8> candidateKeys;
-  candidateKeys.reserve(candidates.size());
+  ::llvm::SmallVector<::fabric::ConfiguredFunctionKey, 8> candidateKeys(
+      candidates.size());
   ::llvm::DenseMap<std::uint64_t, ::llvm::SmallVector<size_t, 2>>
-      candidatesByHash;
-  for (auto [index, candidate] : ::llvm::enumerate(candidates)) {
-    candidateKeys.push_back(::fabric::getConfiguredFunctionKey(
-        candidate, /*preserveFuBoundaryIdentity=*/false));
-    candidatesByHash[candidateKeys.back().hash].push_back(index);
+      exactCandidatesByHash;
+  ::llvm::SmallVector<size_t, 4> pairedCandidates;
+  for (auto [encodingIndex, candidate] : ::llvm::enumerate(candidates)) {
+    bool hasPairedSync = ::llvm::any_of(
+        candidate.nodes, [](const ::fabric::ConfiguredFunctionNode &node) {
+          return node.operationName == "dataflow.sync" &&
+                 !node.pairedLanes.empty();
+        });
+    if (hasPairedSync) {
+      pairedCandidates.push_back(encodingIndex);
+      continue;
+    }
+    candidateKeys[encodingIndex] = ::fabric::getConfiguredFunctionKey(
+        candidate, /*preserveFuBoundaryIdentity=*/false);
+    exactCandidatesByHash[candidateKeys[encodingIndex].hash].push_back(
+        encodingIndex);
   }
   ::llvm::SmallVector<::fabric::ConfiguredFunctionKey, 8> inputKeys;
   inputKeys.reserve(inputs.size());
@@ -47,16 +59,33 @@ CoverageReport CoverageVerifier::verify(
 
   auto matchOne = [&](size_t inputIndex) {
     const ::fabric::ConfiguredFunctionKey &inputKey = inputKeys[inputIndex];
-    auto matches = candidatesByHash.find(inputKey.hash);
-    if (matches == candidatesByHash.end())
-      return;
-    for (size_t encodingIndex : matches->second) {
-      if (candidateKeys[encodingIndex].canonical != inputKey.canonical)
+    ::llvm::ArrayRef<size_t> exactCandidates;
+    auto exact = exactCandidatesByHash.find(inputKey.hash);
+    if (exact != exactCandidatesByHash.end())
+      exactCandidates = exact->second;
+
+    size_t exactPosition = 0;
+    size_t pairedPosition = 0;
+    while (exactPosition < exactCandidates.size() ||
+           pairedPosition < pairedCandidates.size()) {
+      bool pairedDomain =
+          exactPosition == exactCandidates.size() ||
+          (pairedPosition < pairedCandidates.size() &&
+           pairedCandidates[pairedPosition] < exactCandidates[exactPosition]);
+      size_t encodingIndex = pairedDomain ? pairedCandidates[pairedPosition++]
+                                          : exactCandidates[exactPosition++];
+      if (!pairedDomain &&
+          candidateKeys[encodingIndex].canonical != inputKey.canonical)
         continue;
       ::fabric::ConfiguredFunctionMatch match;
-      if (!::fabric::matchConfiguredFunctions(
-              inputs[inputIndex], candidates[encodingIndex],
-              /*preserveFuBoundaryIdentity=*/false, &match))
+      bool matched =
+          pairedDomain
+              ? ::fabric::matchConfiguredFunctionsForCoverage(
+                    inputs[inputIndex], candidates[encodingIndex], &match)
+              : ::fabric::matchConfiguredFunctions(
+                    inputs[inputIndex], candidates[encodingIndex],
+                    /*preserveFuBoundaryIdentity=*/false, &match);
+      if (!matched)
         continue;
       CoverageWitness witness;
       witness.encodingIndex = encodingIndex;
@@ -65,6 +94,7 @@ CoverageReport CoverageVerifier::verify(
             candidates[encodingIndex].nodes[node].fabricResource);
       witness.inputPorts = std::move(match.inputPorts);
       witness.outputPorts = std::move(match.outputPorts);
+      witness.pairedLaneSelections = std::move(match.pairedLaneSelections);
       report.witnesses[inputIndex] = std::move(witness);
       return;
     }

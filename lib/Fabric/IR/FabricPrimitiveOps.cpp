@@ -560,6 +560,10 @@ LogicalResult OpOp::verify() {
     return emitOpError(modeClassification.diagnostic);
   bool normalizedModes =
       modeClassification.kind == FabricOpModeKind::Normalized;
+  std::string pairedLaneError;
+  if (!normalizedModes && failed(preflightPairedLaneModes(
+                              *this, modeClassification, pairedLaneError)))
+    return emitOpError(pairedLaneError);
 
   DictionaryAttr swDict = getSwConfigsAttr();
 

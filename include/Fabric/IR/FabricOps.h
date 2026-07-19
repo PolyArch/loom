@@ -46,6 +46,10 @@ bool haveSameFabricModulePortKind(::mlir::Type source,
                                   ::mlir::Type destination);
 std::optional<unsigned> getFabricBitsWidth(::mlir::Type type);
 FabricOpModeClassification classifyFabricOpModes(OpOp op);
+::mlir::LogicalResult
+preflightPairedLaneModes(OpOp op,
+                         const FabricOpModeClassification &classification,
+                         std::string &error);
 ::mlir::FailureOr<unsigned> getSemanticPayloadWidth(::mlir::Type type,
                                                     std::string &error);
 ::mlir::LogicalResult

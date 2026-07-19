@@ -1,5 +1,7 @@
 #include "Fabric/IR/ConfiguredFunction.h"
 
+#include "ConfiguredFunctionInternal.h"
+
 #include "Fabric/IR/FabricTypes.h"
 #include "Fabric/IR/StreamConfiguration.h"
 
@@ -50,6 +52,7 @@ struct OpMode {
   DictionaryAttr attributes;
   ::llvm::SmallVector<unsigned, 4> inputPorts;
   ::llvm::SmallVector<unsigned, 2> outputPorts;
+  ::llvm::SmallVector<PairedLane, 4> pairedLanes;
 };
 
 struct RouteMode {
@@ -87,14 +90,25 @@ static bool hasRepresentablePayloadTypes(Type type) {
   return ::mlir::succeeded(getSemanticPayloadWidth(type, error));
 }
 
-static bool sameType(Type lhs, Type rhs) {
+} // namespace
+
+namespace detail {
+
+bool sameType(Type lhs, Type rhs) {
   return hasRepresentablePayloadTypes(lhs) &&
          hasRepresentablePayloadTypes(rhs) && printType(lhs) == printType(rhs);
 }
 
-static bool sameAttributes(DictionaryAttr lhs, DictionaryAttr rhs) {
+bool sameAttributes(DictionaryAttr lhs, DictionaryAttr rhs) {
   return printAttribute(lhs) == printAttribute(rhs);
 }
+
+} // namespace detail
+
+namespace {
+
+using ::fabric::detail::sameAttributes;
+using ::fabric::detail::sameType;
 
 static bool verifyPayloadCapacity(Type physicalType, Type softwareType,
                                   StringRef subject, std::string &error) {
@@ -170,6 +184,90 @@ static bool readIndexArray(ArrayAttr array,
       return false;
     }
     values.push_back(*value);
+  }
+  return true;
+}
+
+static bool parsePairedLaneInventory(::fabric::OpOp op, OpMode &mode,
+                                     std::string &error) {
+  ArrayAttr inventory = op.getPairedLanesAttr();
+  if (!inventory)
+    return true;
+  if (mode.operationName != "dataflow.sync")
+    return true;
+
+  const unsigned laneCount = inventory.size();
+  if (laneCount == 0 || laneCount != op.getInputs().size() ||
+      laneCount != op.getOutputs().size()) {
+    error = "paired_lanes must cover the complete physical signature";
+    return false;
+  }
+
+  ::llvm::SmallVector<bool, 8> inputPorts(laneCount, false);
+  ::llvm::SmallVector<bool, 8> outputPorts(laneCount, false);
+  ::llvm::SmallVector<bool, 8> maskBits(laneCount, false);
+  mode.pairedLanes.reserve(laneCount);
+  for (auto [laneIndex, attr] : ::llvm::enumerate(inventory)) {
+    auto lane = ::mlir::dyn_cast<DictionaryAttr>(attr);
+    if (!lane) {
+      error = "paired_lanes entries must be dictionaries";
+      return false;
+    }
+    std::string keyError;
+    if (!hasOnlyKeys(lane, {"input_port", "output_port", "mask_bit"},
+                     keyError)) {
+      error =
+          "paired_lanes entry #" + std::to_string(laneIndex) + " " + keyError;
+      return false;
+    }
+    auto inputPort = readUnsigned(lane.get("input_port"));
+    auto outputPort = readUnsigned(lane.get("output_port"));
+    auto maskBit = readUnsigned(lane.get("mask_bit"));
+    if (!inputPort || !outputPort || !maskBit) {
+      error = "paired_lanes entry #" + std::to_string(laneIndex) +
+              " requires input_port, output_port, and mask_bit";
+      return false;
+    }
+    if (*inputPort >= laneCount) {
+      error = "paired_lanes input_port is out of range";
+      return false;
+    }
+    if (*outputPort >= laneCount) {
+      error = "paired_lanes output_port is out of range";
+      return false;
+    }
+    if (*maskBit >= laneCount || maskBits[*maskBit]) {
+      error = "paired_lanes mask_bit values must form a dense unique range";
+      return false;
+    }
+    if (inputPorts[*inputPort]) {
+      error = "paired_lanes input_port values must cover each physical input "
+              "exactly once";
+      return false;
+    }
+    if (outputPorts[*outputPort]) {
+      error = "paired_lanes output_port values must cover each physical "
+              "output exactly once";
+      return false;
+    }
+    inputPorts[*inputPort] = true;
+    outputPorts[*outputPort] = true;
+    maskBits[*maskBit] = true;
+    mode.pairedLanes.push_back({*inputPort, *outputPort, *maskBit});
+  }
+
+  if (mode.inputPorts.size() != laneCount ||
+      mode.outputPorts.size() != laneCount) {
+    error = "hw_params mode port maps must follow paired_lanes inventory order";
+    return false;
+  }
+  for (auto [laneIndex, lane] : ::llvm::enumerate(mode.pairedLanes)) {
+    if (mode.inputPorts[laneIndex] != lane.inputPort ||
+        mode.outputPorts[laneIndex] != lane.outputPort) {
+      error =
+          "hw_params mode port maps must follow paired_lanes inventory order";
+      return false;
+    }
   }
   return true;
 }
@@ -262,7 +360,8 @@ static bool parseHardwareMode(::fabric::OpOp op, unsigned resource,
       !readIndexArray(definition.getAs<ArrayAttr>("output_ports"),
                       mode.outputPorts, error))
     return false;
-  return verifyModePorts(op, mode, error);
+  return verifyModePorts(op, mode, error) &&
+         parsePairedLaneInventory(op, mode, error);
 }
 
 static bool sameHardwareMode(const OpMode &lhs, const OpMode &rhs) {
@@ -665,6 +764,7 @@ struct Projector {
       node.operationName = mode.operationName;
       node.functionType = mode.functionType;
       node.attributes = mode.attributes;
+      node.pairedLanes = mode.pairedLanes;
       for (auto [semanticInput, physicalInput] :
            ::llvm::enumerate(mode.inputPorts)) {
         auto source =
@@ -955,10 +1055,13 @@ private:
       continue;
     FabricOpModeClassification classification =
         classifyFabricOpModes(configurable);
-    if (classification.kind != FabricOpModeKind::Malformed)
-      continue;
-    error = std::move(classification.diagnostic);
-    return ::mlir::failure();
+    if (classification.kind == FabricOpModeKind::Malformed) {
+      error = std::move(classification.diagnostic);
+      return ::mlir::failure();
+    }
+    if (::mlir::failed(
+            preflightPairedLaneModes(configurable, classification, error)))
+      return ::mlir::failure();
   }
 
   ParsedEncoding parsed;
@@ -1046,6 +1149,7 @@ bool matchConfiguredFunctions(const ConfiguredFunction &pattern,
     witness->nodeMap.clear();
     witness->inputPorts.clear();
     witness->outputPorts.clear();
+    witness->pairedLaneSelections.clear();
     for (int mapped : state.nodeMap)
       witness->nodeMap.push_back(static_cast<unsigned>(mapped));
     for (const ConfiguredBoundaryInput &input : pattern.inputs) {
@@ -1075,6 +1179,10 @@ getConfiguredFunctionKey(const ConfiguredFunction &function,
     return op.emitOpError(classification.diagnostic);
   if (classification.kind != FabricOpModeKind::Normalized)
     return op.emitOpError("expected normalized hw_params modes");
+  std::string pairedLaneError;
+  if (::mlir::failed(
+          preflightPairedLaneModes(op, classification, pairedLaneError)))
+    return op.emitOpError(pairedLaneError);
   auto modes = op.getHwParamsAttr();
 
   ::llvm::StringSet<> listedOperations;

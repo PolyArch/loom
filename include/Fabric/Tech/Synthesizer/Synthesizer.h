@@ -74,6 +74,8 @@ struct CoverageWitness {
   ::llvm::SmallVector<unsigned, 8> actorToFabricOp;
   ::llvm::SmallVector<::std::pair<unsigned, unsigned>, 4> inputPorts;
   ::llvm::SmallVector<::std::pair<unsigned, unsigned>, 4> outputPorts;
+  ::llvm::SmallVector<::fabric::ConfiguredFunctionMatch::PairedLaneSelection, 2>
+      pairedLaneSelections;
 };
 
 struct CoverageReport {

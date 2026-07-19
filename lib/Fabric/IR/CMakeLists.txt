@@ -18,6 +18,7 @@ add_mlir_library(MLIRFabricEnums
 
 add_mlir_dialect_library(MLIRFabric
   ConfiguredFunction.cpp
+  ConfiguredFunctionCoverage.cpp
   FabricBoundaryOps.cpp
   FabricDialect.cpp
   FabricElaboration.cpp

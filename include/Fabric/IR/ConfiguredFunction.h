@@ -39,12 +39,24 @@ struct ConfiguredBoundaryInput {
   ::mlir::Type type;
 };
 
+struct PairedLane {
+  unsigned inputPort = 0;
+  unsigned outputPort = 0;
+  unsigned maskBit = 0;
+
+  bool operator==(const PairedLane &other) const {
+    return inputPort == other.inputPort && outputPort == other.outputPort &&
+           maskBit == other.maskBit;
+  }
+};
+
 struct ConfiguredFunctionNode {
   unsigned fabricResource = 0;
   std::string operationName;
   ::mlir::FunctionType functionType;
   ::mlir::DictionaryAttr attributes;
   ::llvm::SmallVector<ConfiguredValue, 4> operands;
+  ::llvm::SmallVector<PairedLane, 4> pairedLanes;
 };
 
 struct ConfiguredBoundaryOutput {
@@ -60,9 +72,18 @@ struct ConfiguredFunction {
 };
 
 struct ConfiguredFunctionMatch {
+  struct PairedLaneSelection {
+    unsigned softwareNode = 0;
+    unsigned physicalLaneCount = 0;
+    ::llvm::SmallVector<PairedLane, 4> lanes;
+
+    std::string bitmask() const;
+  };
+
   ::llvm::SmallVector<unsigned, 8> nodeMap;
   ::llvm::SmallVector<std::pair<unsigned, unsigned>, 4> inputPorts;
   ::llvm::SmallVector<std::pair<unsigned, unsigned>, 4> outputPorts;
+  ::llvm::SmallVector<PairedLaneSelection, 2> pairedLaneSelections;
 };
 
 struct ConfiguredFunctionKey {
@@ -83,6 +104,10 @@ bool matchConfiguredFunctions(const ConfiguredFunction &pattern,
                               const ConfiguredFunction &candidate,
                               bool preserveFuBoundaryIdentity,
                               ConfiguredFunctionMatch *witness = nullptr);
+
+bool matchConfiguredFunctionsForCoverage(
+    const ConfiguredFunction &pattern, const ConfiguredFunction &candidate,
+    ConfiguredFunctionMatch *witness = nullptr);
 
 ConfiguredFunctionKey
 getConfiguredFunctionKey(const ConfiguredFunction &function,
