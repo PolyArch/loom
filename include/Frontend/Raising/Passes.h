@@ -45,8 +45,8 @@ std::unique_ptr<::mlir::Pass> createSCFWhileToForPass();
 // stores only, no nested calls; lane-local structured scf.while is
 // allowed) into scf.forall. Loops that do not match the conservative
 // parallel criterion are left as scf.for.
-// The produced scf.forall carries no shared_outs and no mapping
-// attribute -- downstream device-mapping passes can attach one later.
+// This development-only transformation is registered for explicit pass
+// runners. The standard raising pipeline does not invoke it.
 std::unique_ptr<::mlir::Pass> createSCFForToForallPass();
 
 // For each llvm.func whose signature is composed entirely of MLIR-native
@@ -86,8 +86,7 @@ void registerRaisingPasses();
 //   --canonicalize                  (upstream)
 //   loom-scf-while-to-for
 //   --canonicalize                  (upstream)
-//   loom-scf-for-to-forall
-//   --canonicalize                  (upstream)
+// Selected SCF optimization decisions are outside this pipeline.
 void buildRaisingPipeline(::mlir::PassManager &pm);
 
 } // namespace raising

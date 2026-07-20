@@ -7,8 +7,11 @@ semantically equivalent LLVM IR and enough metadata for the later Loom
 passes to recover acceleration intent.
 
 Part 1 does not lower code to `dataflow`. It emits LLVM IR plus
-metadata that Part 2 can use when raising LLVM/CFG-shaped code to
-SCF-shaped MLIR and selecting accelerator regions.
+metadata that the mechanical LLVM-to-SCF raising pipeline preserves in
+initial SCF-stage MLIR. Later structured optimization and DSE may use
+that information when constructing a selected Structured Program
+Candidate. The mechanical pipeline does not select accelerator regions
+or parallel decomposition.
 
 ## 1. Scope
 
@@ -26,6 +29,8 @@ Part 1 owns:
 Part 1 does not own:
 
 * Deciding the final HostCore-to-AccCore boundary.
+* Selecting loop schedules, parallel decomposition, vectorization,
+  reduction strategy, or ownership boundaries.
 * Recovering structured control flow.
 * Building `dataflow.thread` or `dataflow.graph`.
 
@@ -46,9 +51,9 @@ boundary:
   None of these source constructs is a committed AccCore boundary.
 
 The provider contract is deliberately weaker than the later IR
-contract. Part 1 preserves intent and provenance; Part 2 decides which
-candidate regions are legal and profitable enough to become
-`loom.acc_region`.
+contract. Part 1 preserves intent and provenance. The initial raising
+pipeline mechanically recovers structured form, while later structured
+optimization and DSE decide which legal candidates are selected.
 
 ## 3. Metadata Classes
 
@@ -59,11 +64,12 @@ or proven by analysis.
 * **Accelerator candidates.** Mark a function, loop, lexical compound
   statement, outlined helper, or compiler-generated code range as a
   candidate for AccCore execution. A candidate is not yet a committed
-  `loom.acc_region`.
+  ownership boundary.
 * **Parallel intent.** Mark loops or loop nests as parallel, temporal,
-  spatial, vector-like, or reduction-like. These hints guide
-  `scf.forall` recognition and mapping attribute construction in
-  Part 2.
+  spatial, vector-like, or reduction-like. These hints are inputs to
+  later structured optimization and DSE. They do not cause the
+  mechanical raising pipeline to convert `scf.for` to `scf.forall` or
+  construct mapping attributes.
 * **Memory intent.** Preserve source-level noalias, restrict,
   alignment, address-space, lifetime, and transfer-direction hints.
   These hints guide Part 2 memory-region analysis; Part 3 still builds
@@ -81,8 +87,9 @@ or proven by analysis.
 A source function is not an accelerator boundary by default. Source
 front-ends may emit candidate metadata for whole functions, but they may
 also mark sub-function lexical regions, loop nests, or compiler-created
-regions. The only committed accelerator boundary handed to Part 3 is
-the `loom.acc_region` op produced by Part 2.
+regions. Initial SCF-stage MLIR does not commit one of these candidates.
+Committed ownership appears only in a selected Structured Program
+Candidate produced after structured optimization and DSE.
 
 This rule keeps the source model flexible:
 
@@ -125,14 +132,17 @@ Part 1 emits LLVM IR plus Loom metadata. The hand-off contract is:
 * LLVM IR remains semantically equivalent to the source program.
 * Candidate accelerator regions are hints, not committed boundaries.
 * Metadata must be stable enough for Part 2 to associate it with loops,
-  memory objects, calls, and source ranges after canonical LLVM
-  simplification.
+  memory objects, calls, and source ranges after mechanical raising and
+  canonical LLVM simplification.
+* Mechanical raising may recover and normalize structured control, but
+  it does not select a performance-distinct loop, parallel, vector, or
+  ownership form.
 * If metadata is lost or contradicted by later LLVM transforms, Part 2
-  must conservatively keep the affected code on HostCore or emit a
+  must preserve that uncertainty for later selection or emit a
   diagnostic when acceleration was explicitly required.
 
 ## 7. References
 
-* `docs/spec-compiler-part-2-scf.md` -- LLVM-to-SCF raising and
-  accelerator-region selection.
+* `docs/spec-compiler-part-2-scf.md` -- mechanical LLVM-to-SCF raising
+  and the boundary to later structured selection.
 * `docs/spec-compiler-part-3-dfg.md` -- SCF-to-DFG lowering.

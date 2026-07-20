@@ -2,8 +2,8 @@
 // to MLIR using the upstream translateLLVMIRToModule, then run the
 // standard Loom raising pipeline (func-to-func -> cf-to-cf ->
 // --lift-cf-to-scf -> arith-to-arith -> --canonicalize -> while-to-for
-// -> --canonicalize -> for-to-forall -> --canonicalize) and emit MLIR
-// text on stdout or to -o <file>.
+// -> --canonicalize) and emit initial SCF MLIR on stdout or to -o <file>.
+// Selected SCF optimization decisions are outside this mechanical pipeline.
 //
 // CLI shape mirrors mlir-translate / mlir-opt:
 //
@@ -109,7 +109,9 @@ int main(int argc, char **argv) {
       "upstream LLVMIR-import path, and runs the standard Loom raising "
       "pipeline (loom-llvm-func-to-func, loom-llvm-cf-to-cf, "
       "--lift-cf-to-scf, loom-llvm-arith-to-arith, --canonicalize, "
-      "loom-scf-while-to-for, loom-scf-for-to-forall).\n");
+      "loom-scf-while-to-for, --canonicalize) to produce initial SCF MLIR. "
+      "Selected SCF optimization decisions are outside this mechanical "
+      "pipeline.\n");
 
   // Parse LLVM IR.
   ::llvm::LLVMContext llvmContext;

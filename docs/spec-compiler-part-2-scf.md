@@ -1,45 +1,46 @@
 # Loom Compiler Part 2: LLVM to SCF
 
 This document sketches the middle part of the Loom compiler front-end.
-Its job is to raise LLVM/CFG-shaped input into SCF-shaped MLIR, choose
-which structured regions run on AccCores, and hand explicit accelerator
-regions to Part 3.
+The standard raising pipeline mechanically converts LLVM/CFG-shaped
+input into initial SCF-stage MLIR, called S0. It recovers and normalizes
+existing semantics; it does not choose among performance-distinct loop,
+parallel, vector, reduction, or ownership forms.
 
-Part 2 is where HostCore-vs-AccCore selection lives. Part 3 must not
-infer this boundary from `func.func`.
-Region selection is the AccCore outlining decision owned by the Structured
-Program Candidate. It is distinct from SpatialCore outlining, TechMapping,
-and Spatial PnR as specified in
-`docs/spec-compiler-part-3-placement-framework.md`.
+After S0, separate SCF optimization and DSE constructs a selected
+Structured Program Candidate, called Sn. HostCore-vs-AccCore selection
+and other ownership decisions belong to that later work, not to
+`loom-raise`. Part 3 must consume already selected decisions rather than
+infer them from `func.func` or from an unannotated loop shape.
 
 ## 1. Scope
 
-Part 2 owns:
+The standard raising pipeline owns:
 
 * Translating LLVM IR and Loom metadata into MLIR using `func`, `llvm`,
   `scf`, `arith`, `math`, `memref`, `ub`, and related dialects.
-* Selecting accelerator regions from source metadata, loop analysis,
-  legality checks, and optional cost-model decisions.
 * Recovering structured control flow where possible.
-* Recognizing parallel loops and lowering them to `scf.forall` with
-  mapping attributes.
-* Recognizing memory regions, including host-visible buffers,
-  AccCore-local scratch candidates, and SpatialCore layout candidates.
-* Emitting `loom.acc_region` as the only committed accelerator
-  selection boundary consumed by Part 3.
+* Recovering counted loops as `scf.for` when the input semantics support
+  that mechanical reconstruction.
+* Applying deterministic canonicalization needed to produce initial
+  SCF-stage MLIR.
+* Preserving mixed standard dialects and source metadata needed by later
+  structured analysis.
 
-Part 2 does not own:
+The standard raising pipeline does not own:
 
+* Promoting `scf.for` to `scf.forall` based on inferred parallel safety.
+* Selecting accelerator regions, ownership boundaries, schedules,
+  vectorization, reduction strategy, or mapping attributes.
 * Lowering structured control flow into dataflow primitives.
 * Building `dataflow.thread` / `dataflow.graph` definitions or
   their `dataflow.thread.launch` / `dataflow.graph.launch`
   callers.
-* Treating a whole `func.func` as an accelerator region unless source
-  metadata, user options, or analysis explicitly select it.
 
 ## 2. Placement Model
 
-Part 2 defines the relationship between ordinary functions, temporary
+The placement model below applies to selected Structured Program
+Candidates after S0. It is not part of the standard raising pipeline.
+It defines the relationship between ordinary functions, temporary
 accelerator regions, and final dataflow placement:
 
 * `func.func` is a callable symbol and ABI unit. It does not imply
@@ -124,14 +125,15 @@ and layout handles crossing into the region are explicit. The `boundary`
 attribute records direction, alias, layout, and diagnostic metadata in a
 form Part 3 can lower to `dataflow.map_info` and thread operands.
 
-`defaultMapping` is used only when Part 3 must normalize a scalar-only
-accelerator region into a 1x1 mapped `scf.forall`. Parallel structure
-inside the region should still be represented directly by mapped
-`scf.forall` whenever it exists.
+`defaultMapping` belongs to selected-candidate metadata. The mechanical
+raising pipeline neither constructs it nor normalizes a scalar loop or
+region into mapped `scf.forall`. Any selected parallel structure and
+mapping attributes must already be materialized before Part 3.
 
 ## 4. Region Selection
 
-Part 2 commits a region to AccCore only after legality checks succeed.
+Region selection occurs after S0 and outside `loom-raise`. It commits a
+region to AccCore only after legality checks succeed.
 The selected region must be single-entry/single-exit at the MLIR level
 and structured enough that Part 3 can reason about its control flow.
 This decision is a placement-partition problem, not a fixed syntactic
@@ -167,7 +169,9 @@ Part 2 converts supported LLVM/CFG shapes into structured MLIR:
   loops.
 * Counted loops become `scf.for` when induction, bounds, and step can be
   represented.
-* Parallel loops become `scf.forall` with mapping attributes.
+* The standard pipeline does not infer that an `scf.for` is parallel or
+  promote it to `scf.forall`. Such a promotion is a selected structured
+  optimization decision after S0.
 * Irreducible or unsupported control remains outside `loom.acc_region`
   unless an explicit user request requires a diagnostic.
 
@@ -213,7 +217,18 @@ definition's body.
 
 ## 8. Hand-Off to Part 3
 
-The Part 2 output contract is:
+The initial S0 output contract is:
+
+* Output is mixed standard-dialect MLIR with recovered structured
+  control; the stage name does not imply that only `scf` operations are
+  present.
+* A recovered serial counted loop remains `scf.for`; the standard
+  pipeline does not introduce `scf.forall` or mapping attributes
+  automatically.
+* Candidate metadata and provenance remain available for later
+  structured optimization and DSE.
+
+The selected Sn contract, outside the mechanical raising pipeline, is:
 
 * AccCore-selected code is inside `loom.acc_region`.
 * Host code outside `loom.acc_region` remains host code.
@@ -226,8 +241,8 @@ The Part 2 output contract is:
   `dataflow.map_info`.
 * Mapped parallelism is represented with `scf.forall` mapping
   attributes.
-* Scalar-only accelerator regions are legal and may rely on
-  `defaultMapping` for Part 3 normalization.
+* Scalar-only selected regions remain legal; they do not require an
+  automatic promotion to `scf.forall`.
 
 ## 9. References
 

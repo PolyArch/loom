@@ -8,8 +8,6 @@
 //     --canonicalize                      (upstream)
 //     loom-scf-while-to-for
 //     --canonicalize
-//     loom-scf-for-to-forall
-//     --canonicalize
 //
 // Pipeline ordering rationale:
 //   * func-to-func runs FIRST so that llvm.func ops with builtin-only
@@ -69,11 +67,8 @@ void buildRaisingPipeline(::mlir::PassManager &pm) {
   // `arith.cmpi <pred>` condition without an interposed scf.if.
   pm.addPass(::mlir::createCanonicalizerPass());
   pm.addPass(createSCFWhileToForPass());
-  // Canonicalize once more so the for-to-forall pass sees a clean,
-  // single-iv counted shape (constants folded, dead block args
-  // removed) before deciding whether to lift.
-  pm.addPass(::mlir::createCanonicalizerPass());
-  pm.addPass(createSCFForToForallPass());
+  // Normalize the recovered structured form. Parallelization and other
+  // selected optimization decisions belong to the later SCF pipeline.
   pm.addPass(::mlir::createCanonicalizerPass());
 }
 
