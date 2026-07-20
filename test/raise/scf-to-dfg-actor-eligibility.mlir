@@ -1,39 +1,13 @@
 // RUN: rm -rf %t.dir
 // RUN: split-file %s %t.dir
-// RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/registered.mlir | FileCheck %s --check-prefix=REGISTERED
 // RUN: not loom-raise-opt --loom-lower-graph-memory %t.dir/unregistered-graph.mlir 2>&1 | FileCheck %s --check-prefix=GRAPH-REJECT
-// RUN: not loom-raise-opt --loom-lower-for-to-graph %t.dir/unregistered-thread.mlir 2>&1 | FileCheck %s --check-prefix=THREAD-REJECT
 // RUN: loom-dfg-sim %t.dir/registered-final.mlir --graph registered_final --output %t.registered.json
 // RUN: FileCheck %s --check-prefix=VALIDATOR-REGISTERED < %t.registered.json
 // RUN: loom-dfg-sim %t.dir/canonical-backend-gap.mlir --graph canonical_backend_gap --arg 0=1 --arg 1=2 --output %t.canonical-backend-gap.json
 // RUN: FileCheck %s --check-prefix=CANONICAL-BACKEND-GAP < %t.canonical-backend-gap.json
 // RUN: not loom-dfg-sim %t.dir/unregistered-graph.mlir --graph unregistered_graph_actor --arg 0=1 --output %t.unregistered.json 2>&1 | FileCheck %s --check-prefix=VALIDATOR-REJECT
 // RUN: not loom-raise-opt --loom-lower-graph-memory %t.dir/vector-to-integer-bitcast.mlir 2>&1 | FileCheck %s --check-prefix=GRAPH-BITCAST-REJECT
-// RUN: not loom-raise-opt --loom-lower-for-to-graph %t.dir/integer-to-vector-bitcast.mlir 2>&1 | FileCheck %s --check-prefix=THREAD-BITCAST-REJECT
 // RUN: not loom-dfg-sim %t.dir/vector-to-integer-bitcast.mlir --graph vector_to_integer_bitcast --arg 0=513 --output %t.vector-bitcast.json 2>&1 | FileCheck %s --check-prefix=VALIDATOR-BITCAST-REJECT
-// RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/vector-boundary-epilogues.mlir | FileCheck %s --check-prefix=VECTOR-BOUNDARY
-
-//--- registered.mlir
-module {
-  dataflow.thread private @registered_llvm_compute(
-      %dst: !llvm.ptr, %seed: f32) ctrl (%ctrl: none) {
-    %c0 = arith.constant 0 : i32
-    %c1 = arith.constant 1 : i32
-    %result = scf.for %i = %c0 to %c1 step %c1
-        iter_args(%value = %seed) -> (f32) : i32 {
-      scf.yield %value : f32
-    }
-    %bits = llvm.bitcast %result : f32 to i32
-    %swapped = llvm.intr.bswap(%bits) : (i32) -> i32
-    llvm.store %swapped, %dst : i32, !llvm.ptr
-    dataflow.thread.yield
-  }
-}
-
-// REGISTERED-LABEL: dataflow.graph private @g_registered_llvm_compute_0
-// REGISTERED: llvm.bitcast
-// REGISTERED: llvm.intr.bswap
-// REGISTERED: dataflow.graph.return
 
 //--- registered-final.mlir
 module {
@@ -82,18 +56,6 @@ module {
 // GRAPH-REJECT: error: loom-lower-graph-memory: operation 'llvm.mlir.undef' is not a registered canonical Dataflow actor or a supported graph-lowering operation
 // VALIDATOR-REJECT: finalized graph contains unregistered actor 'llvm.mlir.undef'
 
-//--- unregistered-thread.mlir
-module {
-  dataflow.thread private @unregistered_thread_actor(%input: i32)
-      ctrl (%ctrl: none) {
-    %undefined = llvm.mlir.undef : i32
-    %sum = llvm.add %input, %undefined : i32
-    dataflow.thread.yield
-  }
-}
-
-// THREAD-REJECT: error: loom-lower-for-to-graph: operation 'llvm.mlir.undef' is not a registered canonical Dataflow actor or a supported graph-lowering operation
-
 //--- vector-to-integer-bitcast.mlir
 module {
   dataflow.graph private @vector_to_integer_bitcast(
@@ -107,57 +69,3 @@ module {
 
 // GRAPH-BITCAST-REJECT: error: loom-lower-graph-memory: operation 'llvm.bitcast' is not a registered canonical Dataflow actor or a supported graph-lowering operation
 // VALIDATOR-BITCAST-REJECT: finalized graph contains unregistered actor 'llvm.bitcast'
-
-//--- integer-to-vector-bitcast.mlir
-module {
-  dataflow.thread private @integer_to_vector_bitcast(%input: i16)
-      ctrl (%ctrl: none) {
-    %vector = llvm.bitcast %input : i16 to vector<2xi8>
-    dataflow.thread.yield
-  }
-}
-
-// THREAD-BITCAST-REJECT: error: loom-lower-for-to-graph: operation 'llvm.bitcast' is not a registered canonical Dataflow actor or a supported graph-lowering operation
-
-//--- vector-boundary-epilogues.mlir
-module {
-  dataflow.thread private @pack_epilogue(
-      %limit: index, %seed: vector<2xi8>, %out: memref<?xi16>)
-      ctrl (%ctrl: none) {
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %vector = scf.for %i = %c0 to %limit step %c1
-        iter_args(%value = %seed) -> vector<2xi8> {
-      scf.yield %value : vector<2xi8>
-    }
-    %packed = dataflow.pack %vector : vector<2xi8> -> i16
-    memref.store %packed, %out[%c0] : memref<?xi16>
-    dataflow.thread.yield
-  }
-
-  dataflow.thread private @unpack_epilogue(
-      %limit: index, %seed: i16, %out: memref<?xi16>)
-      ctrl (%ctrl: none) {
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %packed = scf.for %i = %c0 to %limit step %c1
-        iter_args(%value = %seed) -> (i16) {
-      scf.yield %value : i16
-    }
-    %vector = dataflow.unpack %packed : i16 -> vector<2xi8>
-    %roundtrip = dataflow.pack %vector : vector<2xi8> -> i16
-    memref.store %roundtrip, %out[%c0] : memref<?xi16>
-    dataflow.thread.yield
-  }
-}
-
-// VECTOR-BOUNDARY-LABEL: dataflow.thread private @pack_epilogue
-// VECTOR-BOUNDARY: dataflow.pack
-// VECTOR-BOUNDARY-LABEL: dataflow.thread private @unpack_epilogue
-// VECTOR-BOUNDARY: dataflow.unpack
-// VECTOR-BOUNDARY-LABEL: dataflow.graph private @g_pack_epilogue_0
-// VECTOR-BOUNDARY-NOT: dataflow.pack
-// VECTOR-BOUNDARY: dataflow.graph.return
-// VECTOR-BOUNDARY-LABEL: dataflow.graph private @g_unpack_epilogue_0
-// VECTOR-BOUNDARY-NOT: dataflow.unpack
-// VECTOR-BOUNDARY: dataflow.graph.return

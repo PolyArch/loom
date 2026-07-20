@@ -1,0 +1,7 @@
+# Runs the CMSIS-NN source-to-SCF smoke subset.
+# Tool paths are explicit because lit may run with a clean PATH.
+#
+# RUN: env LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_RAISE_OPT=%loom-raise-opt bash %S/../cmsis-nn/run_cmsis_nn_raise_smoke.sh | FileCheck %s
+#
+# CHECK: PASS  ActivationFunctions/arm_relu6_s8.c
+# CHECK: [cmsis-nn-raise-smoke] PASS

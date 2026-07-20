@@ -1,30 +1,10 @@
 // RUN: rm -rf %t.dir
 // RUN: split-file %s %t.dir
-// RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/function.mlir | FileCheck %s --check-prefix=FUNCTION
 // RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/thread.mlir | FileCheck %s --check-prefix=THREAD
 // RUN: loom %t.dir/thread.mlir | loom | FileCheck %s --check-prefix=THREAD-ROUNDTRIP
 // RUN: loom %t.dir/thread.mlir --emit-bytecode | loom | FileCheck %s --check-prefix=THREAD-ROUNDTRIP
 // RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/same-root-cast.mlir | FileCheck %s --check-prefix=SAME-ROOT
 // RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/unknown-root.mlir | FileCheck %s --check-prefix=UNKNOWN-ROOT
-
-//--- function.mlir
-module {
-  func.func private @source_interface_metadata(
-      %memory: !llvm.ptr {llvm.noalias, test.arg = "memory"},
-      %bias: i32 {test.arg = "bias"})
-      -> (!llvm.ptr {test.result = "memory"},
-          i32 {test.result = "sum"}) {
-    %loaded = llvm.load %memory : !llvm.ptr -> i32
-    %sum = llvm.add %loaded, %bias : i32
-    return %memory, %sum : !llvm.ptr, i32
-  }
-}
-
-// FUNCTION-LABEL: dataflow.graph private @g_source_interface_metadata_0(
-// FUNCTION-SAME: %{{.*}}: none,
-// FUNCTION-SAME: %{{.*}}: i32 {test.arg = "bias"},
-// FUNCTION-SAME: %{{.*}}: !llvm.ptr {llvm.noalias, test.arg = "memory"})
-// FUNCTION-SAME: -> (i32 {test.result = "sum"}, !llvm.ptr {test.result = "memory"})
 
 //--- thread.mlir
 module {
@@ -33,9 +13,18 @@ module {
       %index: index {test.arg = "index"},
       %right: memref<?xi32> {llvm.noalias, test.arg = "right"},
       %value: i32 {test.arg = "value"}) ctrl (%ctrl: none) {
-    memref.store %value, %left[%index] : memref<?xi32>
-    %loaded = memref.load %right[%index] : memref<?xi32>
-    memref.store %loaded, %left[%index] : memref<?xi32>
+    "loom.spatial_region"(%index, %value, %left, %right)
+        <{operandSegmentSizes = array<i32: 2, 0, 2, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%position: index, %payload: i32,
+           %left_memory: memref<?xi32>, %right_memory: memref<?xi32>):
+        memref.store %payload, %left_memory[%position] : memref<?xi32>
+        %loaded = memref.load %right_memory[%position] : memref<?xi32>
+        memref.store %loaded, %left_memory[%position] : memref<?xi32>
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "g_source_noalias_0", source_maps = []} :
+        (index, i32, memref<?xi32>, memref<?xi32>) -> ()
     dataflow.thread.yield
   }
 }
@@ -67,14 +56,23 @@ module {
       %memory: memref<4xi32> {llvm.noalias},
       %limit: index, %seed: i32) ctrl (%ctrl: none) {
     %view = memref.cast %memory : memref<4xi32> to memref<?xi32>
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %result = scf.for %i = %c0 to %limit step %c1
-        iter_args(%value = %seed) -> (i32) {
-      memref.store %value, %memory[%i] : memref<4xi32>
-      %loaded = memref.load %view[%i] : memref<?xi32>
-      scf.yield %loaded : i32
-    }
+    "loom.spatial_region"(%limit, %seed, %memory, %view)
+        <{operandSegmentSizes = array<i32: 2, 0, 2, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%end: index, %initial: i32,
+           %target: memref<4xi32>, %alias: memref<?xi32>):
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %result = scf.for %i = %c0 to %end step %c1
+            iter_args(%value = %initial) -> (i32) {
+          memref.store %value, %target[%i] : memref<4xi32>
+          %loaded = memref.load %alias[%i] : memref<?xi32>
+          scf.yield %loaded : i32
+        }
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "g_same_root_cast_0", source_maps = []} :
+        (index, i32, memref<4xi32>, memref<?xi32>) -> ()
     dataflow.thread.yield
   }
 }
@@ -91,14 +89,23 @@ module {
       ctrl (%ctrl: none) {
     %unknown = builtin.unrealized_conversion_cast %direct, %other
         : memref<?xi32>, memref<?xi32> to memref<?xi32>
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %result = scf.for %i = %c0 to %limit step %c1
-        iter_args(%value = %seed) -> (i32) {
-      memref.store %value, %direct[%i] : memref<?xi32>
-      %loaded = memref.load %unknown[%i] : memref<?xi32>
-      scf.yield %loaded : i32
-    }
+    "loom.spatial_region"(%limit, %seed, %direct, %unknown)
+        <{operandSegmentSizes = array<i32: 2, 0, 2, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%end: index, %initial: i32,
+           %target: memref<?xi32>, %alias: memref<?xi32>):
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %result = scf.for %i = %c0 to %end step %c1
+            iter_args(%value = %initial) -> (i32) {
+          memref.store %value, %target[%i] : memref<?xi32>
+          %loaded = memref.load %alias[%i] : memref<?xi32>
+          scf.yield %loaded : i32
+        }
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "g_unknown_root_0", source_maps = []} :
+        (index, i32, memref<?xi32>, memref<?xi32>) -> ()
     dataflow.thread.yield
   }
 }

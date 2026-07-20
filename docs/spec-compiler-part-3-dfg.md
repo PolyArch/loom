@@ -16,10 +16,10 @@ ports are explicit in the current graph ABI: `ctrl_in` and launch-facing
 site, not application payload slots in the `dataflow.graph` function type.
 The graph body does not return `done_out`; its structural
 `dataflow.graph.return.complete` frontier is the unique authority from which
-the launch result is derived. Part 3 stages each structured graph candidate in
-a temporary `loom.spatial_region` inside its owning `dataflow.thread` and
-publishes the corresponding graph definition and launch only after complete
-conversion and native finalization succeed.
+the launch result is derived. Part 3 consumes each explicit
+`loom.spatial_region` inside its owning `dataflow.thread` and publishes the
+corresponding graph definition and launch only after complete conversion and
+native finalization succeed.
 The precise timing semantics of `dataflow.stream`, `dataflow.carry`,
 `dataflow.invariant`, and `dataflow.gate` are specified separately in
 `docs/spec-dataflow-part-1-streaming.md`. The precise firing semantics
@@ -36,8 +36,8 @@ sequential-SCF flattening templates, future upstream parallel-normalization
 templates, the memory-dependence model, and verifier invariants.
 
 Target placement and actor-to-FU grouping are Mapping Artifact concerns. Part
-3 performs only structural eligibility, temporary candidate staging, and
-canonical graph publication inside an already established
+3 performs only structural eligibility and canonical graph publication inside
+an already established
 `dataflow.thread`; it does not assign a target or retain target-specific
 grouping in program IR.
 
@@ -52,10 +52,10 @@ The compiler front-end is documented in four parts:
 * **Part 2, LLVM to SCF.** LLVM/CFG-shaped input is raised to
   SCF-shaped MLIR. This part recognizes structured execution boundaries,
   parallel loops, and memory-region metadata needed by thread construction.
-* **Part 3, SCF to DFG.** This document. It consumes SCF-shaped
-  code inside `dataflow.thread` definitions, stages eligible graph candidates
-  in `loom.spatial_region`, and publishes `dataflow.graph` definitions plus
-  `dataflow.graph.launch` ops at the candidate sites. The accompanying
+* **Part 3, SCF to DFG.** This document. It consumes explicit
+  `loom.spatial_region` candidates inside `dataflow.thread` definitions and
+  publishes `dataflow.graph` definitions plus `dataflow.graph.launch` ops at
+  those candidate sites. The accompanying
   `docs/spec-compiler-part-3-impl.md` documents the pass pipeline,
   testing, and acceptance for this part.
 * **Part 4, partitioned data.** Annotation and in-thread queries for
@@ -64,9 +64,13 @@ The compiler front-end is documented in four parts:
   `docs/spec-compiler-part-4-partitioned-data.md`).
 
 Input to graph extraction is an MLIR module containing module-scope
-`dataflow.thread` definitions with SCF-shaped code. Host `func.func` code may
-coexist in the module, but a function is an ABI and ownership container, not
-an implicit graph boundary.
+`dataflow.thread` definitions. Every selected SpatialCore candidate is already
+materialized as a `loom.spatial_region` inside exactly one thread. Other thread
+body code remains InstructionCore-resident, including SCF-shaped code outside
+an explicit spatial boundary. Host `func.func` code may coexist in the module,
+but a function is an ABI and ownership container, not an implicit graph
+boundary; its signature, body shape, memory effects, and return convention do
+not authorize graph creation.
 
 Output is the canonical Loom front-end IR: module-level `func.func`
 symbols holding ordinary HostCore or InstructionCore code; module-level
@@ -270,10 +274,10 @@ each rule lands in IR.
    stream input channels, memory inputs, and stream output channels; its
    results are value outputs followed by memory outputs. Each stream input
    has one affine `source_map` from the consumer thread domain to the producer
-   thread domain. The lowering stages all candidates before attempting
-   publication, performs conversion and native validation on a scratch
-   module, and replaces the live module only on success. A public pass failure
-   therefore leaves temporary candidates and never exposes a partial
+   thread domain. The lowering collects all explicit candidates before
+   attempting publication, performs conversion and native validation on a
+   scratch module, and replaces the live module only on success. A public pass
+   failure therefore leaves temporary candidates and never exposes a partial
    canonical graph. Current publication supports nested `scf.if` completion
    propagation. Stream channel segments become payload-typed graph stream
    ports plus launch-site channel bindings; receive/send sites rendezvous with
@@ -1628,11 +1632,12 @@ become explicit launch operands at the use site and matching def block-args
 def's body.
 
 Such a future promotion creates the AccCore boundary only. Code inside the
-thread definition's body is still InstructionCore code until graph extraction moves
-an eligible region into a `dataflow.graph` definition (referenced by a
-`dataflow.graph.launch` at the cut site). Nested graph-owned parallel work must
-be fixed-domain and provenance-marked. Memory operations that remain outside
-any graph stay in the InstructionCore part of the thread definition's body.
+thread definition's body remains InstructionCore code unless the structured
+owner explicitly wraps it in `loom.spatial_region`. Part 3 outlines only that
+boundary into a `dataflow.graph` definition and a `dataflow.graph.launch` at
+the cut site. Nested graph-owned parallel work must be fixed-domain and
+provenance-marked. Memory operations outside an explicit spatial boundary stay
+in the InstructionCore part of the thread definition's body.
 
 The future promotion would make the implicit synchronization point of
 `scf.forall` explicit thread-token ordering. The produced

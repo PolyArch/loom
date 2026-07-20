@@ -33,35 +33,31 @@ The executable `loom-lower-scf-to-dfg` pipeline is defined once in
 `lib/Frontend/Lowering/Pipeline.cpp`:
 
 ```text
-loom-lower-forall-to-thread
 loom-lower-for-to-graph
-canonicalize
-loom-lower-known-library-calls
-loom-lower-graph-memory
-loom-lower-graph-constants
-canonicalize
 ```
 
-Individual passes remain runnable for focused diagnostics, but this ordering is
-the production contract.
+`loom-lower-for-to-graph` owns the scratch-module publication transaction. Its
+internal finalization sequence runs canonicalization, known-library expansion,
+graph memory/control lowering, graph constant lowering, closing
+canonicalization, and native finalized-program validation. Those component
+passes remain independently runnable for focused diagnostics.
 
 ### 1.1 `loom-lower-forall-to-thread`
 
-* Runs before graph extraction so mapped parallel work is represented inside
-  module-scope `dataflow.thread` definitions.
-* Materializes explicit thread launch dependencies and preserves InstructionCore
-  code outside promoted regions.
-* Copies source function argument dictionaries onto captured thread payload
-  arguments in capture order. The separately introduced ctrl and IV arguments
-  have no payload metadata.
-* Leaves graph-local structured control for the recursive graph owner.
+* Is independently registered as a diagnostic pass, not part of the production
+  lowering pipeline.
+* Rejects raw host `scf.forall` operations whose AccCore ownership and complete
+  launch domain have not already been selected and materialized.
+* Does not create `dataflow.thread`, infer a mapping, or convert function shape
+  into ownership.
 
 ### 1.2 `loom-lower-for-to-graph`
 
-* Stages each selected structured candidate in `loom.spatial_region` before
-  creating any canonical graph. The candidate boundary records normalized
-  value, stream-channel, and memory segments plus one `source_map` per stream
-  input.
+* Consumes only explicit `loom.spatial_region` candidates already nested in
+  `dataflow.thread`. The candidate boundary records normalized value,
+  stream-channel, and memory segments plus one `source_map` per stream input.
+  A bare `func.func`, an unmarked SCF region, or an InstructionCore-only thread
+  cannot create a graph through this pass.
 * Publishes graphs on a cloned scratch module and replaces the live module
   only after every candidate converts and the native finalized-program
   validator succeeds. Failure leaves temporary candidates and cannot expose a
@@ -90,8 +86,8 @@ the production contract.
   kinds.
 * Creates the distinguished leading `start : none` entry argument and a
   structural `graph.return` seed separately from the payload function type.
-* Reorders application payloads into normalized segment order and rewires the
-  launch with the same order.
+* Preserves the candidate's normalized segment order in both the graph ABI and
+  launch binding.
 * Rejects loop-carried memory capabilities that cannot be projected into an
   explicit index domain. It does not route pointer or memref values through
   carry, mux, demux, gate, or invariant as ordinary data.
@@ -204,10 +200,11 @@ Tests are organized by stable semantic boundary:
 * `test/dataflow/unit/graph/` verifies the payload-only function type,
   normalized segment sizes, exact per-segment kinds and types, mandatory
   non-empty completion, and launch symbol/type matching.
-* `test/raise/` verifies graph extraction, recursive SCF lowering, canonical
-  per-partition memory frontiers, zero-trip and descending loops, nested
-  selection/repeat structure, index-domain carry narrowing, transactional
-  rollback, fixed-width graph parallel transfer, one-shot and looped stream
+* `test/raise/` verifies explicit spatial publication, recursive SCF lowering,
+  canonical per-partition memory frontiers, zero-trip and descending loops,
+  nested selection/repeat structure, index-domain carry narrowing,
+  transactional rollback, fixed-width graph parallel transfer, one-shot and
+  looped stream
   boundary publication, unequal and empty stream choices, stream choices
   driven by earlier receives, fail-closed diagnostics for unselected parallel
   residue, pointer capability transport, and effects without completion
@@ -261,7 +258,7 @@ The Part 3 slice is coherent only when all of the following hold:
   consumer binding, and a valid `source_map` relation. Channel use and topology
   are checked once at program scope.
 * `loom.spatial_region` never appears in a finalized program. Graph and launch
-  publication is atomic across all staged candidates, and unsupported stream
+  publication is atomic across all explicit candidates, and unsupported stream
   endpoint conversion fails without exposing partial canonical IR.
 * Pointer or memref capabilities that cannot be projected into the explicit
   memory plane fail closed rather than entering dataflow carry or selection.

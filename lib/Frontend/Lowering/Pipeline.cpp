@@ -4,8 +4,9 @@
 //     loom-lower-for-to-graph           (module-level)
 //
 // `loom-lower-for-to-graph` owns the atomic publication transaction. It
-// stages structured candidates, runs graph finalization on a scratch module,
-// validates the native result, and publishes only the completed module.
+// consumes explicit loom.spatial_region candidates, runs graph finalization
+// on a scratch module, validates the native result, and publishes only the
+// completed module.
 //
 // Thread ownership must already be present in the Structured Program
 // Candidate. The independently registered forall pass only diagnoses raw

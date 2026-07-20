@@ -1,26 +1,31 @@
 // RUN: loom-raise-opt --loom-lower-for-to-graph %s | FileCheck %s
 
-// CHECK-LABEL: dataflow.thread private @nested_reduction
+// CHECK-LABEL: dataflow.thread private @nested_spatial
 // CHECK: %[[BRANCH_DONE:.*]] = scf.if %{{.*}} -> (none)
-// CHECK: %{{.*}}, %[[GRAPH_DONE:.*]] = dataflow.graph.launch
+// CHECK: %[[GRAPH_DONE:.*]] = dataflow.graph.launch @nested_graph
 // CHECK: scf.yield %[[GRAPH_DONE]] : none
 // CHECK: else
 // CHECK: scf.yield %{{.*}} : none
 // CHECK: dataflow.thread.yield %[[BRANCH_DONE]] : none
-// CHECK-LABEL: dataflow.graph private @g_nested_reduction_0
+// CHECK-LABEL: dataflow.graph private @nested_graph
+// CHECK: dataflow.store
 // CHECK-NOT: scf.
+// CHECK: dataflow.graph.return
 
-dataflow.thread private @nested_reduction(
-    %enabled: i1, %limit: index) ctrl (%start: none) {
+dataflow.thread private @nested_spatial(
+    %enabled: i1, %target: memref<1xi32>, %value: i32)
+    ctrl (%start: none) {
   scf.if %enabled {
-    %zero = arith.constant 0 : index
-    %one = arith.constant 1 : index
-    %initial = arith.constant 0 : i32
-    %sum = scf.for %index = %zero to %limit step %one
-        iter_args(%state = %initial) -> (i32) {
-      %next = arith.addi %state, %state : i32
-      scf.yield %next : i32
-    }
+    "loom.spatial_region"(%value, %target)
+        <{operandSegmentSizes = array<i32: 1, 0, 1, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%payload: i32, %memory: memref<1xi32>):
+        %zero = arith.constant 0 : index
+        memref.store %payload, %memory[%zero] : memref<1xi32>
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "nested_graph", source_maps = []} :
+        (i32, memref<1xi32>) -> ()
   } else {
   }
   dataflow.thread.yield

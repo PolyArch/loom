@@ -2,22 +2,6 @@
 // RUN: mkdir -p %t.dir
 // RUN: loom-adg-builder-test --shared-vector-math --output %t.hardware.mlir
 // RUN: loom %t.hardware.mlir | FileCheck %s --check-prefix=HARDWARE
-// RUN: %loom-cc -emit-llvm -O1 -S %S/../app/quat_mult/main_func.cpp -o %t.dir/quat_mult.ll
-// RUN: %loom-raise %t.dir/quat_mult.ll -o %t.dir/quat_mult.scf.mlir
-// RUN: %loom-lower %t.dir/quat_mult.scf.mlir -o %t.dir/quat_mult.dfg.mlir
-// RUN: FileCheck %s --check-prefix=DFG < %t.dir/quat_mult.dfg.mlir
-
-// DFG-LABEL: dataflow.graph private @g_quat_mult_kernel_0
-// DFG-DAG: builtin.unrealized_conversion_cast %arg4 : !llvm.ptr to memref<?xf32>
-// DFG-DAG: builtin.unrealized_conversion_cast %arg3 : !llvm.ptr to memref<?xf32>
-// DFG-DAG: builtin.unrealized_conversion_cast %arg2 : !llvm.ptr to memref<?xf32>
-// DFG-NOT: dataflow.demux {{.*}} : (i1, !llvm.ptr)
-// DFG-NOT: dataflow.invariant {{.*}} : !llvm.ptr
-// DFG: dataflow.stream
-// DFG: arith.index_cast {{.*}} : i64 to index
-// DFG-NOT: dataflow.demux {{.*}} : (i1, !llvm.ptr)
-// DFG-NOT: dataflow.invariant {{.*}} : !llvm.ptr
-// DFG: dataflow.graph.return
 
 // HARDWARE-LABEL: fabric.module @shared_vector_math_adg
 // HARDWARE-DAG: load_group_size = 8 : i32

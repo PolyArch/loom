@@ -17,11 +17,11 @@ namespace lowering {
 // represented domain have been selected by the structured owner.
 std::unique_ptr<::mlir::Pass> createLowerForallToThreadPass();
 
-// Module-scope atomic publisher. It stages selected thread-owned structured
-// candidates in loom.spatial_region, finalizes a scratch module through the
-// graph lowering pipeline and native validator, then publishes matching
-// dataflow.graph definitions and launches only when the whole transaction
-// succeeds.
+// Module-scope atomic publisher. It consumes explicit loom.spatial_region
+// candidates inside dataflow.thread definitions, finalizes a scratch module
+// through the graph lowering pipeline and native validator, then publishes
+// matching dataflow.graph definitions and launches only when the whole
+// transaction succeeds.
 //
 // Published graph symbols use a construction-local ordinal for readability;
 // symbol spelling is not graph or artifact identity.

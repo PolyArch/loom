@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CMSIS-DSP source-to-DFG smoke runner.
+# CMSIS-NN source-to-SCF smoke runner.
 
 set -euo pipefail
 export LC_ALL=C
@@ -12,21 +12,18 @@ source "${HERE}/../cmsis-common.sh"
 
 LOOM_CC="${LOOM_CC:-${REPO_ROOT}/build/bin/loom-cc}"
 LOOM_RAISE="${LOOM_RAISE:-${REPO_ROOT}/build/bin/loom-raise}"
-LOOM_LOWER="${LOOM_LOWER:-${REPO_ROOT}/build/bin/loom-lower}"
 LOOM_RAISE_OPT="${LOOM_RAISE_OPT:-${REPO_ROOT}/build/bin/loom-raise-opt}"
 
-SMOKE_TARGETS_FILE="${SMOKE_TARGETS_OVERRIDE:-${HERE}/cmsis_dsp_dfg_smoke_targets.txt}"
+SMOKE_TARGETS_FILE="${SMOKE_TARGETS_OVERRIDE:-${HERE}/cmsis_nn_raise_smoke_targets.txt}"
 EXTERNALS_ROOT="$(
     python3 "${REPO_ROOT}/scripts/make-worktree.py" \
         --root "${REPO_ROOT}" externals-root
 )"
-DSP_ROOT="${EXTERNALS_ROOT}/cmsis-dsp"
-SRC_ROOT="${DSP_ROOT}/Source"
-DSP_INC="${DSP_ROOT}/Include"
-DSP_PRIV_INC="${DSP_ROOT}/PrivateInclude"
-CORE_INC="${EXTERNALS_ROOT}/cmsis-core/CMSIS/Core/Include"
-OUT_ROOT="${OUT_OVERRIDE:-$(cmsis_common_default_out_dir "${REPO_ROOT}" "cmsis-dsp" "dfg")}"
-LABEL="cmsis-dsp-dfg-smoke"
+NN_ROOT="${EXTERNALS_ROOT}/cmsis-nn"
+SRC_ROOT="${NN_ROOT}/Source"
+NN_INC="${NN_ROOT}/Include"
+OUT_ROOT="${OUT_OVERRIDE:-$(cmsis_common_default_out_dir "${REPO_ROOT}" "cmsis-nn" "raise")}"
+LABEL="cmsis-nn-raise-smoke"
 
 configuration_error() {
     echo "[${LABEL}] $*" >&2
@@ -48,6 +45,10 @@ valid_symbol() {
     [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
 }
 
+valid_source_path() {
+    [[ -n "$1" && "$1" != /* && "$1" != *'..'* && "$1" == *.c ]]
+}
+
 mlir_has_public_func_definition() {
     local mlir="$1"
     local symbol="$2"
@@ -56,15 +57,13 @@ mlir_has_public_func_definition() {
 
 require_executable "${LOOM_CC}" loom-cc
 require_executable "${LOOM_RAISE}" loom-raise
-require_executable "${LOOM_LOWER}" loom-lower
 require_executable "${LOOM_RAISE_OPT}" loom-raise-opt
 if ! python3 "${REPO_ROOT}/test/corpus_inventory.py" validate-smoke \
-        --suite cmsis-dsp --targets "${SMOKE_TARGETS_FILE}"; then
+        --suite cmsis-nn --targets "${SMOKE_TARGETS_FILE}"; then
     configuration_error "invalid smoke target table: ${SMOKE_TARGETS_FILE}"
 fi
-[[ -d "${SRC_ROOT}" && -d "${DSP_INC}" && -d "${DSP_PRIV_INC}" ]] || configuration_error \
-    "CMSIS-DSP sources or headers not found under ${DSP_ROOT}"
-[[ -d "${CORE_INC}" ]] || configuration_error "CMSIS-Core headers not found at: ${CORE_INC}"
+[[ -d "${SRC_ROOT}" && -d "${NN_INC}" ]] || configuration_error \
+    "CMSIS-NN sources or headers not found under ${NN_ROOT}"
 
 mkdir -p "${OUT_ROOT}"
 rm -f "${OUT_ROOT}"/*.ll \
@@ -84,9 +83,7 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     if [[ -z "${src}" || -z "${triple}" || -z "${cpu}" || -z "${source_symbol}" || -n "${unexpected}" ]]; then
         row_error "malformed target row: ${line}"
     fi
-    if [[ "${src}" = /* || "${src}" == *'..'* || "${src}" != *.c ]]; then
-        row_error "invalid source path in target row: ${src}"
-    fi
+    valid_source_path "${src}" || row_error "invalid source path in target row: ${src}"
     valid_symbol "${source_symbol}" || row_error "invalid source symbol in target row: ${source_symbol}"
 
     src_path="${SRC_ROOT}/${src}"
@@ -95,10 +92,8 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     base="$(basename "${src}" .c)"
     out_ll="${OUT_ROOT}/${base}.ll"
     out_scf="${OUT_ROOT}/${base}.scf.mlir"
-    out_dfg="${OUT_ROOT}/${base}.dfg.mlir"
     cc_log="${OUT_ROOT}/${base}.cc.log"
     raise_log="${OUT_ROOT}/${base}.raise.log"
-    lower_log="${OUT_ROOT}/${base}.lower.log"
     parse_log="${OUT_ROOT}/${base}.parse.log"
 
     extra_flags=()
@@ -109,9 +104,7 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     if ! "${LOOM_CC}" \
             "--target=${triple}" \
             "-mcpu=${cpu}" \
-            "-I${CORE_INC}" \
-            "-I${DSP_INC}" \
-            "-I${DSP_PRIV_INC}" \
+            "-I${NN_INC}" \
             "${LIBC_DEFINES[@]}" \
             "${extra_flags[@]}" \
             -emit-llvm -S -O1 \
@@ -127,16 +120,11 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     fi
     [[ -s "${out_scf}" ]] || row_error "loom-raise emitted empty MLIR for ${src}"
 
-    if ! "${LOOM_LOWER}" "${out_scf}" -o "${out_dfg}" >"${lower_log}" 2>&1; then
-        row_error "loom-lower failed for ${src}; see ${lower_log}"
+    if ! "${LOOM_RAISE_OPT}" "${out_scf}" -o /dev/null >"${parse_log}" 2>&1; then
+        row_error "loom-raise-opt could not parse ${out_scf}; see ${parse_log}"
     fi
-    [[ -s "${out_dfg}" ]] || row_error "loom-lower emitted empty dataflow MLIR for ${src}"
-
-    if ! "${LOOM_RAISE_OPT}" "${out_dfg}" -o /dev/null >"${parse_log}" 2>&1; then
-        row_error "loom-raise-opt could not parse ${out_dfg}; see ${parse_log}"
-    fi
-    mlir_has_public_func_definition "${out_dfg}" "${source_symbol}" || row_error \
-        "public func.func definition ${source_symbol} did not survive lowering for ${src}"
+    mlir_has_public_func_definition "${out_scf}" "${source_symbol}" || row_error \
+        "public func.func definition ${source_symbol} did not survive raising for ${src}"
     echo "  PASS  ${src}"
     row_count=$((row_count + 1))
 done < "${SMOKE_TARGETS_FILE}"

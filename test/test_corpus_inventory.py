@@ -26,8 +26,8 @@ CMSIS_SUITES = {
     "cmsis-nn": EXTERNALS_ROOT / "cmsis-nn",
 }
 SMOKE_TABLES = {
-    "cmsis-dsp": TEST_ROOT / "cmsis-dsp" / "cmsis_dsp_dfg_smoke_targets.txt",
-    "cmsis-nn": TEST_ROOT / "cmsis-nn" / "cmsis_nn_dfg_smoke_targets.txt",
+    "cmsis-dsp": TEST_ROOT / "cmsis-dsp" / "cmsis_dsp_raise_smoke_targets.txt",
+    "cmsis-nn": TEST_ROOT / "cmsis-nn" / "cmsis_nn_raise_smoke_targets.txt",
 }
 
 

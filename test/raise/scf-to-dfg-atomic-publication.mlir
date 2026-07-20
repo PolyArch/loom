@@ -1,83 +1,21 @@
 // RUN: rm -rf %t.dir
 // RUN: split-file %s %t.dir
-// RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/success.mlir | FileCheck %s --check-prefix=SUCCESS
-// RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/failure.mlir 2>&1 | FileCheck %s --check-prefix=FAILURE --implicit-check-not=loom.spatial_region --implicit-check-not="dataflow.graph private" --implicit-check-not=dataflow.graph.launch
-// RUN: not loom-raise-opt --loom-lower-scf-to-dfg --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/failure.mlir 2>&1 | FileCheck %s --check-prefix=FAILURE --implicit-check-not=loom.spatial_region --implicit-check-not="dataflow.graph private" --implicit-check-not=dataflow.graph.launch
-// RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/channel.mlir | FileCheck %s --check-prefix=CHANNEL
-// RUN: not loom-raise-opt --loom-lower-for-to-graph %t.dir/parallel-channel.mlir 2>&1 | FileCheck %s --check-prefix=PARALLEL-CHANNEL
+// RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/channel.mlir | FileCheck %s --check-prefix=SUCCESS
+// RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/parallel-channel.mlir 2>&1 | FileCheck %s --check-prefix=FAILURE --implicit-check-not="dataflow.graph private" --implicit-check-not=dataflow.graph.launch
 
-// SUCCESS-LABEL: dataflow.thread private @reduction
-// SUCCESS: dataflow.graph.launch @g_reduction_0
-// SUCCESS-LABEL: dataflow.graph private @g_reduction_0
-// SUCCESS-NOT: scf.
-// SUCCESS-NOT: cf.
+// SUCCESS-LABEL: dataflow.thread private @channel_sender
+// SUCCESS: dataflow.graph.launch @channel_graph
+// SUCCESS-LABEL: dataflow.graph private @channel_graph
+// SUCCESS-SAME: -> i32
+// SUCCESS: dataflow.sync
+// SUCCESS-NOT: dataflow.channel.send
 // SUCCESS-NOT: loom.spatial_region
-// SUCCESS: dataflow.stream
-// SUCCESS: dataflow.load
-// SUCCESS: dataflow.graph.return
+// SUCCESS: dataflow.graph.return values() streams(%{{.*}} : i32)
 
-// FAILURE: error: loom-lower-graph-memory: raw scf.forall requires a selected schedule and provenance before graph-region lowering
-// FAILURE-LABEL: func.func @unmapped_host
-// FAILURE: scf.forall
-// FAILURE-LABEL: dataflow.thread private @valid_candidate
-// FAILURE: %{{.*}} = arith.addi %{{.*}}, %{{.*}} : i32
-// FAILURE: dataflow.thread.yield
-// FAILURE-LABEL: dataflow.thread private @parallel_candidate
-// FAILURE: scf.forall
-// FAILURE: memref.load
-// FAILURE: memref.store
-// FAILURE: dataflow.thread.yield
-
-// CHANNEL-LABEL: dataflow.thread private @channel_sender
-// CHANNEL: dataflow.graph.launch @g_channel_sender_0
-// CHANNEL-LABEL: dataflow.graph private @g_channel_sender_0
-// CHANNEL-SAME: -> i32
-// CHANNEL: dataflow.sync
-// CHANNEL-NOT: dataflow.channel.send
-// CHANNEL-NOT: loom.spatial_region
-// CHANNEL: dataflow.graph.return values() streams(%{{.*}} : i32)
-
-// PARALLEL-CHANNEL: error: loom-lower-graph-memory: one stream binding cannot contain parallel endpoint sites without a deterministic merge
-
-//--- success.mlir
-dataflow.thread private @reduction(%buffer: memref<?xi32>, %count: index)
-    ctrl (%start: none) {
-  %zero = arith.constant 0 : index
-  %one = arith.constant 1 : index
-  %initial = arith.constant 0 : i32
-  %sum = scf.for %index = %zero to %count step %one
-      iter_args(%state = %initial) -> (i32) {
-    %value = memref.load %buffer[%index] : memref<?xi32>
-    %next = arith.addi %state, %value : i32
-    scf.yield %next : i32
-  }
-  dataflow.thread.yield
-}
-
-//--- failure.mlir
-func.func @unmapped_host(%target: memref<?xi32>) {
-  %value = arith.constant 1 : i32
-  scf.forall (%index) in (4) {
-    memref.store %value, %target[%index] : memref<?xi32>
-  }
-  return
-}
-
-dataflow.thread private @valid_candidate(%value: i32) ctrl (%start: none) {
-  %sum = arith.addi %value, %value : i32
-  dataflow.thread.yield
-}
-
-dataflow.thread private @parallel_candidate(%source: memref<?xi32>,
-                                            %target: memref<?xi32>)
-    ctrl (%start: none) iv (%base: index) {
-  scf.forall (%lane) in (4) {
-    %index = arith.addi %base, %lane : index
-    %value = memref.load %source[%index] : memref<?xi32>
-    memref.store %value, %target[%index] : memref<?xi32>
-  }
-  dataflow.thread.yield
-}
+// FAILURE: error: loom-lower-graph-memory: one stream binding cannot contain parallel endpoint sites without a deterministic merge
+// FAILURE-LABEL: dataflow.thread private @parallel_channel_sender
+// FAILURE: loom.spatial_region
+// FAILURE: dataflow.channel.send
 
 //--- channel.mlir
 dataflow.thread private @channel_sender(
@@ -89,7 +27,7 @@ dataflow.thread private @channel_sender(
       dataflow.channel.send %output, %payload : !dataflow.channel<i32>
       "loom.spatial_yield"()
           <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
-  }) {graph_name = "g_channel_sender_0", source_maps = []} :
+  }) {graph_name = "channel_graph", source_maps = []} :
       (i32, !dataflow.channel<i32>) -> ()
   dataflow.thread.yield
 }
@@ -106,7 +44,7 @@ dataflow.thread private @parallel_channel_sender(
       } {loom.parallel_group = 0 : i64}
       "loom.spatial_yield"()
           <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
-  }) {graph_name = "g_parallel_channel_sender", source_maps = []} :
+  }) {graph_name = "parallel_channel_graph", source_maps = []} :
       (i32, !dataflow.channel<i32>) -> ()
   dataflow.thread.yield
 }

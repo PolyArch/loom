@@ -1,7 +1,7 @@
-// loom-lower: read SCF-shaped MLIR (.mlir) via mlir::parseSourceFile,
-// run the standard Loom SCF-to-DFG lowering pipeline in-process via
-// PassManager, validate the finalized graphs, and emit the resulting
-// DFG-shaped MLIR text on stdout or to -o <file>.
+// loom-lower: read MLIR with explicit SpatialCore ownership via
+// mlir::parseSourceFile, publish loom.spatial_region operations in-process via
+// PassManager, validate the finalized graphs, and emit the resulting canonical
+// Dataflow MLIR text on stdout or to -o <file>.
 //
 // CLI shape mirrors loom-raise / mlir-translate:
 //
@@ -52,7 +52,8 @@ namespace {
 
 ::llvm::cl::opt<std::string>
     inputFilename(::llvm::cl::Positional,
-                  ::llvm::cl::desc("<input SCF MLIR (.mlir), or - for stdin>"),
+                  ::llvm::cl::desc(
+                      "<input MLIR with explicit ownership, or - for stdin>"),
                   ::llvm::cl::init("-"));
 
 ::llvm::cl::opt<std::string> outputFilename("o",
@@ -79,11 +80,10 @@ int main(int argc, char **argv) {
   ::mlir::registerPassManagerCLOptions();
   ::llvm::cl::ParseCommandLineOptions(
       argc, argv,
-      "Loom SCF MLIR -> DFG MLIR lowering driver\n"
-      "Reads an SCF-shaped MLIR file (typically the output of loom-raise) "
-      "and runs the standard Loom SCF-to-DFG lowering pipeline "
-      "(loom-lower-forall-to-thread, loom-lower-for-to-graph, "
-      "--canonicalize) in-process via PassManager.\n");
+      "Loom explicit SpatialCore publication driver\n"
+      "Reads MLIR whose ownership decisions are materialized as "
+      "loom.spatial_region operations inside dataflow.thread definitions "
+      "and runs loom-lower-for-to-graph in-process via PassManager.\n");
 
   // Set up MLIR.
   ::mlir::DialectRegistry registry;
