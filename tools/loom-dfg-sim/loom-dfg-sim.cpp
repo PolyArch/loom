@@ -2,6 +2,7 @@
 #include "Simulator/DFGSimulator.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -114,10 +115,10 @@ int main(int argc, char **argv) {
 
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
-                  mlir::DLTIDialect, mlir::func::FuncDialect,
-                  mlir::LLVM::LLVMDialect, mlir::math::MathDialect,
-                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect,
-                  mlir::ub::UBDialect>();
+                  mlir::cf::ControlFlowDialect, mlir::DLTIDialect,
+                  mlir::func::FuncDialect, mlir::LLVM::LLVMDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::ub::UBDialect>();
 
   mlir::MLIRContext context(registry);
   context.allowUnregisteredDialects();

@@ -8,11 +8,11 @@
 // RUN: FileCheck %s --check-prefix=COMPUTED-SELECT-TRUE < %t.computed_select_true.json
 // RUN: loom-dfg-sim %s --graph computed_i1_arith_select --arg 0=false --arg 1=11 --arg 2=22 --output %t.computed_select_false.json
 // RUN: FileCheck %s --check-prefix=COMPUTED-SELECT-FALSE < %t.computed_select_false.json
-// RUN: loom-dfg-sim %s --graph structured_mux_loop --arg 0=true --arg 1=11 --arg 2=22 --output %t.structured_mux.json
-// RUN: FileCheck %s --check-prefix=STRUCTURED-MUX < %t.structured_mux.json
-// RUN: loom-dfg-sim %s --graph structured_demux_store_noop --arg 0=false --arg 1=99 --memref 2=7 --output %t.demux_store_noop.json
+// RUN: loom-dfg-sim %s --graph mux_both_lanes_ready --arg 0=true --arg 1=11 --arg 2=22 --output %t.both_lanes.json
+// RUN: FileCheck %s --check-prefix=BOTH-LANES < %t.both_lanes.json
+// RUN: loom-dfg-sim %s --graph selective_demux_store --arg 0=false --arg 1=99 --memref 2=7 --output %t.demux_store_noop.json
 // RUN: FileCheck %s --check-prefix=DEMUX-STORE-NOOP < %t.demux_store_noop.json
-// RUN: loom-dfg-sim %s --graph structured_demux_store_noop --arg 0=true --arg 1=99 --memref 2=7 --output %t.demux_store_active.json
+// RUN: loom-dfg-sim %s --graph selective_demux_store --arg 0=true --arg 1=99 --memref 2=7 --output %t.demux_store_active.json
 // RUN: FileCheck %s --check-prefix=DEMUX-STORE-ACTIVE < %t.demux_store_active.json
 
 // FALSE-DAG: "status": "pass"
@@ -38,10 +38,10 @@
 // COMPUTED-SELECT-FALSE-DAG: "status": "pass"
 // COMPUTED-SELECT-FALSE-DAG: "i64:11"
 
-// STRUCTURED-MUX-DAG: "status": "pass"
-// STRUCTURED-MUX-DAG: "dataflow.mux": 1
-// STRUCTURED-MUX-DAG: "i64:22"
-// STRUCTURED-MUX-NOT: "unsupported op: dataflow.mux"
+// BOTH-LANES-DAG: "status": "pass"
+// BOTH-LANES-DAG: "dataflow.mux": 1
+// BOTH-LANES-DAG: "i64:22"
+// BOTH-LANES-NOT: "unsupported op: dataflow.mux"
 
 // DEMUX-STORE-NOOP-DAG: "status": "pass"
 // DEMUX-STORE-NOOP-DAG: "arg2": [
@@ -111,9 +111,9 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i64
   }
 
-  dataflow.graph private @structured_mux_loop(%ctrl: none, %sel: i1,
-                                                   %false_value: i64,
-                                                   %true_value: i64)
+  dataflow.graph private @mux_both_lanes_ready(%ctrl: none, %sel: i1,
+                                               %false_value: i64,
+                                               %true_value: i64)
       -> (i64)
       attributes {input_segments = array<i32: 3, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
@@ -124,7 +124,7 @@ module {
     dataflow.graph.return %published#0, %published#1 : none, i64
   }
 
-  dataflow.graph private @structured_demux_store_noop(
+  dataflow.graph private @selective_demux_store(
       %ctrl: none, %sel: i1, %value: i64, %mem: memref<?xi64>) -> ()
       attributes {input_segments = array<i32: 2, 0, 1>,
                   result_segments = array<i32: 0, 0, 0>} {

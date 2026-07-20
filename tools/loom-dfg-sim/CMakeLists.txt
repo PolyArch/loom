@@ -8,6 +8,7 @@ target_link_libraries(loom-dfg-sim
   PRIVATE
   LoomSimulator
   MLIRArithDialect
+  MLIRControlFlowDialect
   MLIRDataflow
   MLIRDLTIDialect
   MLIRFuncDialect
