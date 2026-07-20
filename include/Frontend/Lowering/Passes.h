@@ -23,8 +23,9 @@ std::unique_ptr<::mlir::Pass> createLowerForallToThreadPass();
 // matching dataflow.graph definitions and launches only when the whole
 // transaction succeeds.
 //
-// Published graph symbols use a construction-local ordinal for readability;
-// symbol spelling is not graph or artifact identity.
+// Published graph symbols are deterministic, collision-free, and
+// construction-local. graph_name may supply a readability/debug stem; symbol
+// spelling is not ownership, graph identity, or artifact identity.
 std::unique_ptr<::mlir::Pass> createLowerForToGraphPass();
 
 // Module-scope pass that expands known library helper calls inside

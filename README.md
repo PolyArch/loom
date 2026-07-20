@@ -25,5 +25,6 @@ python3 test/corpus_inventory.py list \
 
 Inventory rows identify inputs only. Compilation, lowering, simulation,
 mapping, and other pipeline attempts must report their own per-case outcomes.
-The CMSIS DFG target files under `test/cmsis-dsp` and `test/cmsis-nn` are
-explicit smoke subsets and never define complete-suite membership.
+The CMSIS raise target files under `test/cmsis-dsp` and `test/cmsis-nn` are
+explicit source-to-SCF smoke subsets and never define complete-suite
+membership.

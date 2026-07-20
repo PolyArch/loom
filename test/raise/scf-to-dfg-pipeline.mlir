@@ -1,7 +1,8 @@
 // RUN: loom-raise-opt --loom-lower-scf-to-dfg %s | FileCheck %s
 
 // The production pipeline does not infer thread ownership for an unmapped
-// host forall. It may still lower already-owned dataflow.thread candidates.
+// host forall. It publishes only explicit loom.spatial_region operations
+// already nested in dataflow.thread definitions.
 
 // CHECK-LABEL: func.func @vecadd_like
 // CHECK: scf.forall

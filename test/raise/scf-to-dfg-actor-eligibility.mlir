@@ -1,5 +1,7 @@
 // RUN: rm -rf %t.dir
 // RUN: split-file %s %t.dir
+// RUN: loom-raise-opt --loom-lower-for-to-graph %t.dir/registered-spatial.mlir | FileCheck %s --check-prefix=SPATIAL-REGISTERED
+// RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/unregistered-spatial.mlir 2>&1 | FileCheck %s --check-prefix=SPATIAL-UNREGISTERED --implicit-check-not="dataflow.graph private" --implicit-check-not=dataflow.graph.launch
 // RUN: not loom-raise-opt --loom-lower-graph-memory %t.dir/unregistered-graph.mlir 2>&1 | FileCheck %s --check-prefix=GRAPH-REJECT
 // RUN: loom-dfg-sim %t.dir/registered-final.mlir --graph registered_final --output %t.registered.json
 // RUN: FileCheck %s --check-prefix=VALIDATOR-REGISTERED < %t.registered.json
@@ -8,6 +10,48 @@
 // RUN: not loom-dfg-sim %t.dir/unregistered-graph.mlir --graph unregistered_graph_actor --arg 0=1 --output %t.unregistered.json 2>&1 | FileCheck %s --check-prefix=VALIDATOR-REJECT
 // RUN: not loom-raise-opt --loom-lower-graph-memory %t.dir/vector-to-integer-bitcast.mlir 2>&1 | FileCheck %s --check-prefix=GRAPH-BITCAST-REJECT
 // RUN: not loom-dfg-sim %t.dir/vector-to-integer-bitcast.mlir --graph vector_to_integer_bitcast --arg 0=513 --output %t.vector-bitcast.json 2>&1 | FileCheck %s --check-prefix=VALIDATOR-BITCAST-REJECT
+
+// SPATIAL-REGISTERED-LABEL: dataflow.thread private @registered_spatial
+// SPATIAL-REGISTERED: %{{.*}}, %[[DONE:.*]] = dataflow.graph.launch @registered_actor_graph
+// SPATIAL-REGISTERED: dataflow.thread.yield %[[DONE]] : none
+// SPATIAL-REGISTERED-LABEL: dataflow.graph private @registered_actor_graph
+// SPATIAL-REGISTERED: llvm.fptosi
+// SPATIAL-REGISTERED: dataflow.graph.return
+// SPATIAL-REGISTERED-NOT: loom.spatial_region
+
+// SPATIAL-UNREGISTERED: error: loom-lower-graph-memory: operation 'llvm.mlir.undef' is not a registered canonical Dataflow actor or a supported graph-lowering operation
+// SPATIAL-UNREGISTERED-LABEL: dataflow.thread private @unregistered_spatial
+// SPATIAL-UNREGISTERED: loom.spatial_region
+// SPATIAL-UNREGISTERED: llvm.mlir.undef
+
+//--- registered-spatial.mlir
+dataflow.thread private @registered_spatial(%input: f32) ctrl (%start: none) {
+  %result = "loom.spatial_region"(%input)
+      <{operandSegmentSizes = array<i32: 1, 0, 0, 0>,
+        resultSegmentSizes = array<i32: 1, 0>}> ({
+    ^bb0(%value: f32):
+      %converted = llvm.fptosi %value : f32 to i32
+      "loom.spatial_yield"(%converted)
+          <{operandSegmentSizes = array<i32: 1, 0>}> : (i32) -> ()
+  }) {graph_name = "registered_actor_graph", source_maps = []} :
+      (f32) -> i32
+  dataflow.thread.yield
+}
+
+//--- unregistered-spatial.mlir
+dataflow.thread private @unregistered_spatial(%input: i32) ctrl (%start: none) {
+  %result = "loom.spatial_region"(%input)
+      <{operandSegmentSizes = array<i32: 1, 0, 0, 0>,
+        resultSegmentSizes = array<i32: 1, 0>}> ({
+    ^bb0(%value: i32):
+      %undefined = llvm.mlir.undef : i32
+      %sum = llvm.add %value, %undefined : i32
+      "loom.spatial_yield"(%sum)
+          <{operandSegmentSizes = array<i32: 1, 0>}> : (i32) -> ()
+  }) {graph_name = "unregistered_actor_graph", source_maps = []} :
+      (i32) -> i32
+  dataflow.thread.yield
+}
 
 //--- registered-final.mlir
 module {

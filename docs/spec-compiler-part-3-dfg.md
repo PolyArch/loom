@@ -1033,38 +1033,28 @@ per-instance ctrl/done plumbing:
 
 ```mlir
 // At module scope (sibling of func.func):
-dataflow.graph @<deterministic_sym>
+dataflow.graph @<construction_local_sym>
     (%start : none, <user inputs>) -> (<user results>) {
   // <body contents per the template>
   dataflow.graph.return values(<user yield values>) streams() memories()
       complete(<retirement frontier>)
 }
 
-// At the cut site inside the enclosing dataflow.thread definition's
-// body:
+// At the explicit spatial-region site inside the enclosing
+// dataflow.thread definition's body:
 <user value results>, <memory results>, %done =
-    dataflow.graph.launch @<deterministic_sym>
+    dataflow.graph.launch @<construction_local_sym>
       deps(%dependency events) values(<value operands>)
       stream_inputs(<consumer channels>) memories(<memory imports>)
       stream_outputs(<producer channels>)
       : (<operand types>) -> (<value result types>, <memory result types>, none)
 ```
 
-The deterministic symbol naming convention is
-`g_<thread_sym>_<seq>`, where `<thread_sym>` is the enclosing
-`dataflow.thread` definition's symbol name and `<seq>` is the
-zero-based index of the graph cut inside that thread (in source
-order). Callers within `dataflow.thread.launch` cycle independently
-through their own `t_<func_sym>_<seq>` namespace. The pass that
-emits these symbols (see `docs/spec-compiler-part-3-impl.md`) must
-be deterministic for a fixed input + option set.
-
-The same convention applies to a successful narrow thread-promotion
-extraction: it produces a `dataflow.thread` definition at module scope plus a
-`dataflow.thread.launch` at the original `scf.forall` site. Graph-owned
-parallel work inside the resulting thread must already be in the selected,
-fixed-domain provenance form. Unselected or resource-mapped parallel residue
-fails before graph mutation.
+The publisher creates a deterministic, collision-free construction-local
+symbol for each outlined graph. An existing `loom.spatial_region.graph_name`
+may be used only as a readability or debug stem. The temporary region does not
+own graph identity, and symbol spelling does not encode cut selection, source
+order, graph identity, or artifact identity.
 
 The templates therefore omit the def + launch wrap to keep the
 body's structural diff readable. The wrap is mandatory output, not
