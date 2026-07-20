@@ -109,10 +109,6 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"dataflow.unpack", 1, 1},
     {"dataflow.serialize", 1, 1},
     {"dataflow.gate", 1, 1},
-    {"scf.if", 1, 1},
-    {"scf.index_switch", 1, 1},
-    {"scf.while", 1, 1},
-    {"scf.forall", 1, 1},
 };
 
 std::optional<OperationCost> lookupOperationCost(llvm::StringRef opName) {

@@ -99,7 +99,6 @@ struct SimulatorState {
   llvm::DenseSet<mlir::Operation *> gateContinueStates;
   llvm::DenseSet<mlir::Operation *> oneShotOps;
   llvm::DenseSet<mlir::Operation *> terminalPrimitiveOps;
-  llvm::DenseMap<mlir::Operation *, std::uint64_t> structuredEffectFireCounts;
   llvm::DenseMap<mlir::Value, std::uint64_t> seededTokenCounts;
   llvm::SmallVector<std::string> diagnostics;
   std::map<std::string, std::uint64_t> operationFireCounts;
@@ -108,8 +107,6 @@ struct SimulatorState {
   std::uint64_t modeledLibraryScore = 0;
   std::uint64_t eventCount = 0;
   std::uint64_t memoryAddressScore = 0;
-  std::uint64_t structuredLoopIterations = 0;
-  std::uint64_t maxStructuredLoopIterations = 0;
   std::uint64_t actorMutationEpoch = 0;
 };
 
@@ -210,13 +207,6 @@ std::optional<Token> evaluatePointerSelect(mlir::LLVM::SelectOp op,
 bool fireActorOperation(mlir::Operation *op, SimulatorState &state);
 std::optional<UnsupportedOperation>
 unsupportedActorOperation(mlir::Operation *op);
-
-bool isStructuredOperation(mlir::Operation *op);
-bool hasPendingOrderedStructuredFire(mlir::Operation *op,
-                                     const SimulatorState &state);
-bool fireStructuredOperation(mlir::Operation *op, SimulatorState &state);
-std::optional<UnsupportedOperation>
-unsupportedStructuredOperation(mlir::Operation *op);
 
 std::string unsupportedOperationLabel(mlir::Operation *op);
 

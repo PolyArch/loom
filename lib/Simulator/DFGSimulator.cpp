@@ -328,8 +328,7 @@ static std::uint64_t estimateWeightedOperationScore(
   return score;
 }
 
-static std::uint64_t
-nonStructuredDynamicWorkItems(const SimulatorState &state) {
+static std::uint64_t dynamicWorkItems(const SimulatorState &state) {
   std::uint64_t maxStreamItems = 0;
   for (const auto &entry : state.streamTrueEmissionCounts)
     maxStreamItems = std::max(maxStreamItems, entry.second);
@@ -339,12 +338,7 @@ nonStructuredDynamicWorkItems(const SimulatorState &state) {
       continue;
     maxSeededItems = std::max(maxSeededItems, entry.second);
   }
-  return std::max(maxStreamItems, maxSeededItems);
-}
-
-static std::uint64_t dynamicWorkItems(const SimulatorState &state) {
-  const std::uint64_t workItems = std::max(nonStructuredDynamicWorkItems(state),
-                                           state.structuredLoopIterations);
+  const std::uint64_t workItems = std::max(maxStreamItems, maxSeededItems);
   if (workItems == 0 && state.eventCount > 0)
     return 1;
   return workItems;
@@ -772,8 +766,7 @@ enum class FireOutcome {
 static FireOutcome fireOperation(mlir::Operation *op, SimulatorState &state) {
   const std::uint64_t mutationEpoch = state.actorMutationEpoch;
   const std::size_t diagnosticCount = state.diagnostics.size();
-  bool fired = isStructuredOperation(op) ? fireStructuredOperation(op, state)
-                                         : fireActorOperation(op, state);
+  bool fired = fireActorOperation(op, state);
   if (fired)
     return FireOutcome::Fired;
   if (state.actorMutationEpoch != mutationEpoch ||
@@ -796,8 +789,6 @@ static std::optional<UnsupportedOperation>
 unsupportedOperation(mlir::Operation *op) {
   if (isSupportedNonEvent(op))
     return std::nullopt;
-  if (isStructuredOperation(op))
-    return unsupportedStructuredOperation(op);
   return unsupportedActorOperation(op);
 }
 
@@ -1301,7 +1292,6 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   llvm::StringMap<MemoryFixture> memories = std::move(*memoriesOrErr);
 
   SimulatorState state;
-  state.maxStructuredLoopIterations = options.maxEventSteps;
   GraphReturnObservation returnObservation = observeReturnOperands(graph);
   seedBlockArgument(state, graph.getStart(), noneToken());
 
@@ -1496,11 +1486,8 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   while ((report.wavefrontSteps < options.maxEventSteps || retired) &&
          report.status != "invalid") {
     bool fired = false;
-    bool orderedStructuredBarrier = false;
     for (mlir::Operation &op : entry.getOperations()) {
       if (isSupportedNonEvent(&op))
-        continue;
-      if (orderedStructuredBarrier && isStructuredOperation(&op))
         continue;
       FireOutcome outcome = fireOperation(&op, state);
       if (retired && outcome != FireOutcome::NotReady) {
@@ -1513,8 +1500,6 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
         break;
       }
       fired |= outcome == FireOutcome::Fired;
-      if (hasPendingOrderedStructuredFire(&op, state))
-        orderedStructuredBarrier = true;
     }
     if (report.status == "invalid" || !fired)
       break;

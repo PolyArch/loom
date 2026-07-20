@@ -17,9 +17,7 @@ target_link_libraries(loom-simulator-vector-boundary-test PRIVATE
   MLIRMathDialect
   MLIRMemRefDialect
   MLIRParser
-  MLIRSCFDialect
   MLIRSupport
-  MLIRTransforms
   MLIRUBDialect
   LLVMSupport
 )

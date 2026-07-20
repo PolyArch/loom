@@ -1,9 +1,11 @@
 # DFG-sim
 
-Implementation status: `loom-dfg-sim` executes the currently supported
-dataflow semantics and emits functional evidence, deterministic activity
-counts, and heuristic scores. It does not implement a critical-path model or
-emit software or hardware cycle estimates.
+Implementation status: `loom-dfg-sim` accepts only finalized Canonical
+Dataflow Programs, executes the currently supported canonical actor semantics,
+and emits functional evidence, deterministic activity counts, and heuristic
+scores. It does not interpret residual SCF, CF, or imperative region
+operations. It does not implement a critical-path model or emit software or
+hardware cycle estimates.
 
 This document specifies Loom DFG-sim, the pure software dataflow
 semantic simulator. DFG-sim executes dataflow IR without hardware
@@ -15,12 +17,13 @@ debugging, testing, CGRA-sim comparison, unified Evaluation, and central DSE.
 DFG-sim answers this question:
 
 ```text
-What does this dataflow program do before hardware mapping is considered?
+What does this finalized Canonical Dataflow Program do before hardware mapping
+is considered?
 ```
 
 DFG-sim consumes:
 
-* dataflow IR;
+* a finalized Canonical Dataflow Program;
 * runtime input data;
 * an initial memory image or memory model configuration;
 * simulator configuration.
@@ -84,6 +87,19 @@ throughput, critical-path length, or cycle counts. This separation does not
 add timed simulation or change observable functional semantics.
 
 ## Semantic Scope
+
+The whole input module must pass finalized-program validation before runtime
+inputs are seeded or any actor is scheduled. The validator is the single
+structural admission gate for the canonical graph surface. Residual `scf.*`,
+`cf.*`, and other imperative region-bearing operations are invalid inputs;
+they must be removed by frontend lowering or produce a finalization diagnostic.
+DFG-sim has no structured interpreter, translation fallback, or compatibility
+execution path for them.
+
+Loading source dialects so invalid input can be parsed and diagnosed does not
+make those dialects part of the execution surface. After finalization succeeds,
+an otherwise valid canonical actor without implemented simulator semantics is
+reported as unsupported rather than approximated.
 
 The baseline semantic scope includes:
 
@@ -231,6 +247,8 @@ DFG-sim is complete at the target-spec level when:
 * it can execute hand-written dataflow primitive graphs;
 * it can execute at least one selected application dataflow graph with
   real input data or a controlled fixture;
+* finalized-program validation rejects residual structured and imperative
+  region operations before simulation;
 * functional outputs match the expected software behavior;
 * unsupported operations produce structured diagnostics;
 * invalid or conflicting simulator configuration fails early with
