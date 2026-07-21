@@ -77,11 +77,15 @@ analytical profile, not from `fabric.memory`, `is_private`, `numRegion`, or
 
 Direct memory is not a capacity-overflow fallback. A resident working set that
 does not fit makes the tile illegal. Resident buffers receive deterministic
-logical base offsets in kernel-metadata declaration order. Bases and replica
+logical base offsets. Held-once buffers occupy a stable region in metadata
+declaration order. Per-tile-refilled buffers are packed together in declaration
+order into one frame sized by the largest complete concrete-tile layout; serial
+allocates one frame and `ideal_dma` allocates two. This uses the maximum combined
+tile footprint, not the sum of each buffer's separate maximum. Bases and replica
 segments are aligned to four elements. Each tile's sorted unique source indices
-are compacted into its buffer segment, so sparse source-address holes consume no
-capacity while alignment padding and replicas do. With that base-adjusted compact
-`element_index`, the canonical mapping is
+are compacted into its held segment or refill frame, so sparse source-address
+holes consume no capacity while alignment, held data, replicas, and refill frames
+do. With that base-adjusted compact `element_index`, the canonical mapping is
 `bank(element_index) = element_index % 4`.
 
 Every dynamic resident-data access consumes scratchpad bandwidth, including

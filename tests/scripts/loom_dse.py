@@ -50,6 +50,7 @@ above it. It is an exploratory estimate, not a lower bound and not RTL.
 """
 
 import argparse
+import math
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
@@ -189,6 +190,303 @@ class Level:
 
 
 @dataclass(frozen=True)
+class OrderSpec:
+    """Explicit legal loop orders. The source order must be first."""
+    legal_orders: tuple[tuple[str, ...], ...]
+
+    def __post_init__(self) -> None:
+        if not self.legal_orders:
+            raise ValueError("order specification must declare at least one order")
+        if len(set(self.legal_orders)) != len(self.legal_orders):
+            raise ValueError("order specification contains duplicate orders")
+
+
+@dataclass(frozen=True)
+class JamRule:
+    """One declared legal outer-to-inner jam edge and its shared operands."""
+    outer: str
+    inner: str
+    shared_operands: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.outer == self.inner:
+            raise ValueError("jam rule outer and inner levels must differ")
+        if len(set(self.shared_operands)) != len(self.shared_operands):
+            raise ValueError(
+                f"jam rule {self.outer}->{self.inner} repeats a shared operand")
+
+
+@dataclass(frozen=True)
+class JamPlan:
+    """The deterministic legal jam edges selected for one candidate."""
+    order: tuple[str, ...]
+    edges: tuple[JamRule, ...]
+
+
+@dataclass(frozen=True)
+class AnalyticTargetSpec:
+    """Named branch-local target assumptions for an extended DSE study."""
+    name: str = "shared-spad-4k-v4"
+    capacity_bytes: int = 4096
+    banks: int = 4
+    bank_mapping: str = "cyclic"
+    shared_across_kernel: bool = True
+    access_cycles: int = 1
+    vector_width: int = 4
+    preload_mode: str = "serial"  # "serial" | "ideal_dma"
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("analytical target profile name must be non-empty")
+        if self.capacity_bytes <= 0:
+            raise ValueError("analytical target capacity must be positive")
+        if self.banks <= 0:
+            raise ValueError("analytical target bank count must be positive")
+        if self.bank_mapping != "cyclic":
+            raise ValueError(
+                f"unsupported scratchpad bank mapping {self.bank_mapping!r}")
+        if self.access_cycles != 1:
+            raise ValueError(
+                "the current DSE infrastructure supports one-cycle scratchpad "
+                "accesses only")
+        if self.vector_width <= 0:
+            raise ValueError("analytical target vector width must be positive")
+        if self.preload_mode not in ("serial", "ideal_dma"):
+            raise ValueError(
+                f"unsupported preload mode {self.preload_mode!r}")
+
+    @property
+    def alignment_elements(self) -> int:
+        return math.lcm(self.banks, self.vector_width)
+
+
+@dataclass(frozen=True)
+class BufferSpec:
+    """Unplaced per-kernel buffer metadata returned by a memory planner."""
+    name: str
+    element_bytes: int
+    elements_by_tile: tuple[tuple[int, ...], ...]
+    refill_each_tile: bool
+    reuse_bearing: bool
+    worker_invariant: bool
+    replication_factor: int = 1
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("buffer name must be non-empty")
+        if self.element_bytes <= 0:
+            raise ValueError(f"buffer {self.name} element size must be positive")
+        if self.replication_factor <= 0:
+            raise ValueError(
+                f"buffer {self.name} replication factor must be positive")
+        if not self.reuse_bearing and self.refill_each_tile:
+            raise ValueError(
+                f"reuse-free buffer {self.name} cannot have a preload refill")
+        if (not self.reuse_bearing or self.worker_invariant) \
+                and self.replication_factor != 1:
+            raise ValueError(
+                f"buffer {self.name} may replicate only when reusable state is "
+                "worker-specific")
+
+    @property
+    def placement(self) -> str:
+        if not self.reuse_bearing:
+            return "direct"
+        if self.worker_invariant:
+            return "resident_shared"
+        return "resident_replicated"
+
+
+@dataclass(frozen=True)
+class BufferPlan:
+    """A placed buffer with exact tile-local offsets and source-element maps."""
+    name: str
+    placement: str
+    base_element: int | None
+    base_elements_by_tile: tuple[int | None, ...]
+    replica_bases_by_tile: tuple[tuple[int, ...], ...]
+    allocation_bases_by_tile: tuple[tuple[int, ...], ...]
+    element_bytes: int
+    replication_factor: int
+    capacity_factor: int
+    elements_by_tile: tuple[tuple[int, ...], ...]
+    allocation_elements_by_tile: tuple[tuple[int, ...], ...]
+    source_to_slot_by_tile: tuple[tuple[tuple[int, int], ...], ...]
+    bytes_per_tile: tuple[int, ...]
+    allocation_bytes_per_tile: tuple[int, ...]
+    refill_each_tile: bool
+
+    def logical_elements(self, tile_index: int,
+                         replica: int = 0) -> tuple[int, ...]:
+        """Return compact logical indices in sorted source-element order."""
+        bases = self.replica_bases_by_tile[tile_index]
+        if not bases:
+            return ()
+        if replica < 0 or replica >= len(bases):
+            raise IndexError(
+                f"buffer {self.name} replica {replica} is out of range")
+        base = bases[replica]
+        slots = dict(self.source_to_slot_by_tile[tile_index])
+        return tuple(base + slots[source]
+                     for source in self.elements_by_tile[tile_index])
+
+    def logical_element(self, tile_index: int, source_element: int,
+                        replica: int = 0) -> int:
+        bases = self.replica_bases_by_tile[tile_index]
+        if replica < 0 or replica >= len(bases):
+            raise IndexError(
+                f"buffer {self.name} replica {replica} is out of range")
+        slots = dict(self.source_to_slot_by_tile[tile_index])
+        if source_element not in slots:
+            raise KeyError(source_element)
+        return bases[replica] + slots[source_element]
+
+
+@dataclass(frozen=True)
+class TileInstance:
+    origin: tuple[tuple[str, int], ...]
+    shape: tuple[tuple[str, int], ...]
+    is_tail: bool
+
+    def extent(self, name: str) -> int:
+        for level_name, extent in self.shape:
+            if level_name == name:
+                return extent
+        raise KeyError(name)
+
+
+@dataclass(frozen=True)
+class MemoryPlan:
+    target: AnalyticTargetSpec
+    buffers: tuple[BufferPlan, ...]
+    tile_sizes: tuple[tuple[str, int], ...]
+    tiles: tuple[TileInstance, ...]
+    capacity_bytes_used: int
+    capacity_bytes_by_tile: tuple[int, ...]
+    held_region_bytes: int = 0
+    refill_frame_bytes: int = 0
+    refill_frame_bases_bytes: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class BankMetrics:
+    demand: tuple[int, ...]
+    bank_lb: int
+    bank_sched: int
+
+
+class IllegalCandidateError(ValueError):
+    """A transformed candidate is well-formed but illegal for its target."""
+
+
+class NoLegalExtendedCandidateError(RuntimeError):
+    """No extended candidate fits the selected analytical target profile."""
+
+
+@dataclass(frozen=True)
+class ScratchpadAccess:
+    """One scalar resident-read request before fan-out and vector packing."""
+    buffer: str
+    logical_element: int
+    logical_step: tuple[tuple[str, int], ...]
+    replica: int = 0
+    stream: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.buffer:
+            raise ValueError("scratchpad access buffer must be non-empty")
+        if self.logical_element < 0:
+            raise ValueError("scratchpad logical element must be non-negative")
+        if self.replica < 0:
+            raise ValueError("scratchpad replica must be non-negative")
+        if self.stream == "":
+            raise ValueError("scratchpad stream must be non-empty or None")
+
+
+@dataclass(frozen=True)
+class PackedScratchpadAccess:
+    """One scalar or legally coalesced scratchpad operation."""
+    buffer: str
+    logical_elements: tuple[int, ...]
+    logical_step: tuple[tuple[str, int], ...]
+    replica: int
+    stream: str | None
+
+
+@dataclass(frozen=True)
+class PhaseSummary:
+    """Structured counts for one preload, full-compute, or wave phase."""
+    A: int
+    recurring_loads: int
+    invariant_loads: int
+    stores: int
+    CP: int
+    bank_accesses: tuple[PackedScratchpadAccess, ...] = ()
+    base_scheduled: int | None = None
+
+    def __post_init__(self) -> None:
+        counts = (self.A, self.recurring_loads, self.invariant_loads,
+                  self.stores, self.CP)
+        if any(count < 0 for count in counts):
+            raise ValueError("phase counts and CP must be non-negative")
+        if self.base_scheduled is not None and self.base_scheduled < 0:
+            raise ValueError("phase schedule must be non-negative")
+
+
+@dataclass(frozen=True)
+class ExtendedTileSummary:
+    tile: TileInstance
+    preload: PhaseSummary
+    full_compute: PhaseSummary
+    compute_waves: tuple[PhaseSummary, ...]
+
+    def __post_init__(self) -> None:
+        if not self.compute_waves:
+            raise ValueError("extended tile must contain at least one compute wave")
+
+
+@dataclass(frozen=True)
+class ExtendedPlanSummary:
+    memory_plan: MemoryPlan
+    jam_plan: JamPlan
+    tiles: tuple[ExtendedTileSummary, ...]
+    schedule_structure_key: tuple
+    preload_scalar_elements: int = 0
+    scratchpad_reads: int = 0
+    avoided_direct_loads: int = 0
+
+    def __post_init__(self) -> None:
+        if len(self.tiles) != len(self.memory_plan.tiles):
+            raise ValueError(
+                "extended tile summaries must align with the memory plan")
+        if tuple(tile.tile for tile in self.tiles) != self.memory_plan.tiles:
+            raise ValueError(
+                "extended tile summaries use different concrete tiles")
+        if min(self.preload_scalar_elements, self.scratchpad_reads,
+               self.avoided_direct_loads) < 0:
+            raise ValueError("extended traffic counts must be non-negative")
+        if not isinstance(self.schedule_structure_key, tuple) \
+                or not self.schedule_structure_key:
+            raise ValueError(
+                "extended schedule-structure key must be a non-empty tuple")
+        try:
+            hash(self.schedule_structure_key)
+        except TypeError as exc:
+            raise ValueError(
+                "extended schedule-structure key must be hashable") from exc
+
+
+@dataclass(frozen=True)
+class PhaseCost:
+    aggregate: int
+    scheduled: int | None
+    compute: int
+    load: int
+    store: int
+    bank: BankMetrics
+
+
+@dataclass(frozen=True)
 class KernelSpec:
     name: str
     levels: tuple[Level, ...]
@@ -197,6 +495,11 @@ class KernelSpec:
     default_config: str = "6x6"
     repeat_waves: bool = True
     selection_mode: str = "knee"  # "knee" | "latency_fallback"
+    order_spec: OrderSpec | None = None
+    tileable: frozenset[str] = frozenset()
+    jam_rules: tuple[JamRule, ...] = ()
+    memory_planner: object | None = None
+    extended_plan_builder: object | None = None
 
     def level(self, name: str) -> Level:
         for lv in self.levels:
@@ -1341,6 +1644,8 @@ _register()
 class Candidate:
     # tuple aligned with spec.levels: (level_name, parallel, unroll)
     split: tuple[tuple[str, int, int], ...]
+    order: tuple[str, ...] = ()
+    tile_sizes: tuple[tuple[str, int], ...] = ()
 
     def factors(self, name: str) -> tuple[int, int]:
         for n, p, u in self.split:
@@ -1349,7 +1654,13 @@ class Candidate:
         raise KeyError(name)
 
     def signature(self) -> str:
-        return " ".join(f"{n}:P{p}U{u}" for n, p, u in self.split)
+        signature = " ".join(f"{n}:P{p}U{u}" for n, p, u in self.split)
+        if self.order:
+            signature += " order=" + ">".join(self.order)
+        if self.tile_sizes:
+            signature += " tile=" + ",".join(
+                f"{name}:{size}" for name, size in self.tile_sizes)
+        return signature
 
 
 def _powers_of_two_through(limit: int) -> list[int]:
@@ -1359,6 +1670,213 @@ def _powers_of_two_through(limit: int) -> list[int]:
         values.append(factor)
         factor *= 2
     return values
+
+
+def _source_order(spec: KernelSpec) -> tuple[str, ...]:
+    return tuple(level.name for level in spec.levels)
+
+
+def _validated_orders(spec: KernelSpec) -> tuple[tuple[str, ...], ...]:
+    """Validate declared orders and return the source-order default."""
+    source = _source_order(spec)
+    if spec.order_spec is None:
+        return (source,)
+    orders = spec.order_spec.legal_orders
+    if orders[0] != source:
+        raise ValueError(
+            f"{spec.name}: first legal order {orders[0]} must be source order "
+            f"{source}")
+    expected = set(source)
+    for order in orders:
+        if len(order) != len(source) or set(order) != expected:
+            raise ValueError(
+                f"{spec.name}: legal order {order} must be a permutation of "
+                f"{source}")
+    return orders
+
+
+def candidate_order(spec: KernelSpec, cand: Candidate) -> tuple[str, ...]:
+    """Resolve and validate a candidate order; empty means source order."""
+    orders = _validated_orders(spec)
+    order = cand.order or orders[0]
+    if order not in orders:
+        raise ValueError(
+            f"{spec.name}: undeclared loop order {order}; legal orders are "
+            f"{orders}")
+    return order
+
+
+def _validated_tileable_levels(spec: KernelSpec) -> tuple[Level, ...]:
+    known = {level.name: level for level in spec.levels}
+    invalid = sorted(name for name in spec.tileable if name not in known)
+    if invalid:
+        raise ValueError(f"{spec.name}: unknown tileable levels {invalid}")
+    non_tiled = sorted(name for name in spec.tileable
+                       if not known[name].tiled())
+    if non_tiled:
+        raise ValueError(
+            f"{spec.name}: only parallel levels may be tileable, got {non_tiled}")
+    return tuple(level for level in spec.levels if level.name in spec.tileable)
+
+
+def legal_tile_sizes(level: Level) -> tuple[int, ...]:
+    """Powers of two through the trip plus the exact full trip."""
+    values = _powers_of_two_through(level.trip)
+    if level.trip not in values:
+        values.append(level.trip)
+    return tuple(values)
+
+
+def candidate_tile_sizes(spec: KernelSpec,
+                         cand: Candidate) -> tuple[tuple[str, int], ...]:
+    """Resolve nominal tile sizes; empty candidate state means untiled/full trip."""
+    tileable = _validated_tileable_levels(spec)
+    if not tileable:
+        if cand.tile_sizes:
+            raise ValueError(
+                f"{spec.name}: candidate declares tiles but no level is tileable")
+        return ()
+
+    expected_names = tuple(level.name for level in tileable)
+    if cand.tile_sizes:
+        names = tuple(name for name, _ in cand.tile_sizes)
+        if names != expected_names:
+            raise ValueError(
+                f"{spec.name}: tile sizes must follow source-level declaration "
+                f"order {expected_names}, got {names}")
+        resolved = cand.tile_sizes
+    else:
+        resolved = tuple((level.name, level.trip) for level in tileable)
+
+    for name, size in resolved:
+        level = spec.level(name)
+        if size not in legal_tile_sizes(level):
+            raise ValueError(
+                f"{spec.name}: illegal tile size {size} for {name}; legal sizes "
+                f"are {legal_tile_sizes(level)}")
+        p, u = cand.factors(name)
+        if p * u > size:
+            raise ValueError(
+                f"{spec.name}: {name}:P{p}U{u} exposure exceeds nominal tile "
+                f"size {size}")
+    return tuple(resolved)
+
+
+def materialize_tiles(spec: KernelSpec,
+                      cand: Candidate) -> tuple[TileInstance, ...]:
+    """Expand nominal tile sizes into exact concrete origins and tail shapes."""
+    tile_sizes = dict(candidate_tile_sizes(spec, cand))
+    if not tile_sizes:
+        return (TileInstance((), (), False),)
+
+    traversal = tuple(name for name in candidate_order(spec, cand)
+                      if name in tile_sizes)
+    tiles: list[TileInstance] = []
+
+    def rec(index: int, origins: list[tuple[str, int]],
+            shapes: list[tuple[str, int]], is_tail: bool) -> None:
+        if index == len(traversal):
+            tiles.append(TileInstance(tuple(origins), tuple(shapes), is_tail))
+            return
+        name = traversal[index]
+        level = spec.level(name)
+        nominal = tile_sizes[name]
+        for origin in range(0, level.trip, nominal):
+            extent = min(nominal, level.trip - origin)
+            origins.append((name, origin))
+            shapes.append((name, extent))
+            rec(index + 1, origins, shapes, is_tail or extent < nominal)
+            shapes.pop()
+            origins.pop()
+
+    rec(0, [], [], False)
+    return tuple(tiles)
+
+
+def _validated_jam_rules(spec: KernelSpec) -> dict[tuple[str, str], JamRule]:
+    names = {level.name for level in spec.levels}
+    rules: dict[tuple[str, str], JamRule] = {}
+    for rule in spec.jam_rules:
+        if rule.outer not in names or rule.inner not in names:
+            raise ValueError(
+                f"{spec.name}: jam rule {rule.outer}->{rule.inner} names an "
+                "unknown level")
+        if not spec.level(rule.outer).tiled():
+            raise ValueError(
+                f"{spec.name}: jam outer level {rule.outer} must be parallel")
+        key = (rule.outer, rule.inner)
+        if key in rules:
+            raise ValueError(
+                f"{spec.name}: duplicate jam rule {rule.outer}->{rule.inner}")
+        rules[key] = rule
+    return rules
+
+
+def derive_jam_plan(spec: KernelSpec, cand: Candidate) -> JamPlan:
+    """Derive maximal declared jam edges in selected nesting order."""
+    order = candidate_order(spec, cand)
+    rules = _validated_jam_rules(spec)
+    edges: list[JamRule] = []
+    for outer_index, outer in enumerate(order[:-1]):
+        level = spec.level(outer)
+        _p, unroll = cand.factors(outer)
+        if not level.tiled() or unroll <= 1:
+            continue
+        for inner in order[outer_index + 1:]:
+            rule = rules.get((outer, inner))
+            if rule is not None:
+                edges.append(rule)
+    return JamPlan(order, tuple(edges))
+
+
+def _uses_extended_candidate_space(spec: KernelSpec) -> bool:
+    return (spec.order_spec is not None or bool(spec.tileable)
+            or bool(spec.jam_rules) or spec.memory_planner is not None
+            or spec.extended_plan_builder is not None)
+
+
+def _legacy_spec_view(spec: KernelSpec) -> KernelSpec:
+    """Drop extended metadata while retaining the exact legacy search inputs."""
+    return KernelSpec(
+        name=spec.name, levels=spec.levels, build_chunk=spec.build_chunk,
+        coalesce_note=spec.coalesce_note, default_config=spec.default_config,
+        repeat_waves=spec.repeat_waves, selection_mode=spec.selection_mode)
+
+
+def _enumerate_extended_candidates(
+        spec: KernelSpec, max_parallel: int | None,
+        max_unroll: int | None, exposure_cap: int | None) -> list[Candidate]:
+    orders = _validated_orders(spec)
+    tileable = _validated_tileable_levels(spec)
+    base_candidates = enumerate_candidates(
+        _legacy_spec_view(spec), max_parallel, max_unroll, exposure_cap)
+    if orders == (_source_order(spec),) and not tileable:
+        return base_candidates
+
+    tile_choices: list[tuple[tuple[str, int], ...]] = [()]
+    for level in tileable:
+        expanded = []
+        for prefix in tile_choices:
+            for size in legal_tile_sizes(level):
+                expanded.append(prefix + ((level.name, size),))
+        tile_choices = expanded
+
+    out: list[Candidate] = []
+    source = _source_order(spec)
+    for order in orders:
+        stored_order = () if order == source else order
+        for base in base_candidates:
+            for tile_sizes in tile_choices:
+                stored_tile_sizes = (() if all(
+                    size == spec.level(name).trip
+                    for name, size in tile_sizes) else tile_sizes)
+                cand = Candidate(base.split, stored_order, stored_tile_sizes)
+                try:
+                    candidate_tile_sizes(spec, cand)
+                except ValueError:
+                    continue
+                out.append(cand)
+    return out
 
 
 def enumerate_candidates(spec: KernelSpec, max_parallel: int | None = None,
@@ -1373,6 +1891,10 @@ def enumerate_candidates(spec: KernelSpec, max_parallel: int | None = None,
     their factor labels cannot change exposure or the built DAG. Canonicalize
     those equivalent aliases to P1U1 instead of repeatedly evaluating them.
     """
+    if _uses_extended_candidate_space(spec):
+        return _enumerate_extended_candidates(
+            spec, max_parallel, max_unroll, exposure_cap)
+
     per_level_choices = []
     for lv in spec.levels:
         if not lv.tiled():
@@ -1408,6 +1930,431 @@ def enumerate_candidates(spec: KernelSpec, max_parallel: int | None = None,
 
     rec(0, [])
     return out
+
+
+def active_tile_exposure(cand: Candidate, tile: TileInstance,
+                         level_name: str) -> int:
+    """Clamp nominal pragma exposure to a concrete tail's actual extent."""
+    p, u = cand.factors(level_name)
+    return min(p * u, tile.extent(level_name))
+
+
+def _align_up(value: int, alignment: int) -> int:
+    if alignment <= 0:
+        raise ValueError("alignment must be positive")
+    return _ceil_div(value, alignment) * alignment
+
+
+def _normalized_buffer_specs(buffer_specs: tuple[BufferSpec, ...],
+                             tile_count: int) -> tuple[BufferSpec, ...]:
+    names = [buffer.name for buffer in buffer_specs]
+    if len(set(names)) != len(names):
+        raise ValueError("memory planner returned duplicate buffer names")
+    normalized = []
+    for buffer in buffer_specs:
+        if len(buffer.elements_by_tile) != tile_count:
+            raise ValueError(
+                f"buffer {buffer.name} has {len(buffer.elements_by_tile)} tile "
+                f"element sets, expected {tile_count}")
+        exact_sets = tuple(tuple(sorted(set(elements)))
+                           for elements in buffer.elements_by_tile)
+        if any(element < 0 for elements in exact_sets for element in elements):
+            raise ValueError(
+                f"buffer {buffer.name} contains a negative source element index")
+        normalized.append(BufferSpec(
+            name=buffer.name, element_bytes=buffer.element_bytes,
+            elements_by_tile=exact_sets,
+            refill_each_tile=buffer.refill_each_tile,
+            reuse_bearing=buffer.reuse_bearing,
+            worker_invariant=buffer.worker_invariant,
+            replication_factor=buffer.replication_factor))
+    return tuple(normalized)
+
+
+def _layout_memory_plan(
+        target: AnalyticTargetSpec,
+        tile_sizes: tuple[tuple[str, int], ...],
+        tiles: tuple[TileInstance, ...],
+        raw_buffers: tuple[BufferSpec, ...]) -> MemoryPlan:
+    """Lay out held data plus exact tile-local combined refill frames.
+
+    Held-once buffers occupy one stable declaration-order region. Refilled
+    buffers are packed together for each concrete tile in declaration order;
+    serial mode reserves one frame sized for the largest tile layout and ideal
+    DMA reserves two stable, nonoverlapping frames of that maximum span. Buffer
+    offsets may vary by tile within a frame, while frame bases remain stable.
+    """
+    buffers = _normalized_buffer_specs(raw_buffers, len(tiles))
+    tile_count = len(tiles)
+    allocation_elements_by_buffer = []
+    for buffer in buffers:
+        if buffer.placement == "direct":
+            allocation_elements_by_buffer.append(buffer.elements_by_tile)
+        elif buffer.refill_each_tile:
+            allocation_elements_by_buffer.append(buffer.elements_by_tile)
+        else:
+            held_elements = tuple(sorted({
+                element for elements in buffer.elements_by_tile
+                for element in elements
+            }))
+            allocation_elements_by_buffer.append(
+                tuple(held_elements for _ in tiles))
+
+    bases_by_buffer: list[list[int | None]] = [
+        [None] * tile_count for _ in buffers]
+    replica_bases_by_buffer: list[list[tuple[int, ...]]] = [
+        [()] * tile_count for _ in buffers]
+    allocation_bases_by_buffer: list[list[tuple[int, ...]]] = [
+        [()] * tile_count for _ in buffers]
+    allocation_bytes_by_buffer: list[list[int]] = [
+        [0] * tile_count for _ in buffers]
+
+    # Held buffers coexist for the entire kernel and therefore receive one
+    # stable region, ordered only among other held buffers.
+    cursor_bytes = 0
+    held_indices = [
+        index for index, buffer in enumerate(buffers)
+        if buffer.placement != "direct" and not buffer.refill_each_tile]
+    for buffer_index in held_indices:
+        buffer = buffers[buffer_index]
+        segment_elements = len(
+            allocation_elements_by_buffer[buffer_index][0])
+        if segment_elements:
+            alignment_bytes = target.alignment_elements * buffer.element_bytes
+            allocation_start = cursor_bytes
+            stable_bases = []
+            for _replica in range(buffer.replication_factor):
+                cursor_bytes = _align_up(cursor_bytes, alignment_bytes)
+                stable_bases.append(cursor_bytes // buffer.element_bytes)
+                cursor_bytes += segment_elements * buffer.element_bytes
+            allocation_bytes = cursor_bytes - allocation_start
+            stable_bases_tuple = tuple(stable_bases)
+            for tile_index in range(tile_count):
+                bases_by_buffer[buffer_index][tile_index] = stable_bases[0]
+                replica_bases_by_buffer[buffer_index][tile_index] = \
+                    stable_bases_tuple
+                allocation_bases_by_buffer[buffer_index][tile_index] = \
+                    stable_bases_tuple
+                allocation_bytes_by_buffer[buffer_index][tile_index] = \
+                    allocation_bytes
+    held_region_bytes = cursor_bytes
+
+    # Refilled buffers share one frame. Their relative offsets are recomputed
+    # for every concrete tile so complementary footprints do not reserve the
+    # sum of independent per-buffer maxima.
+    refill_indices = [
+        index for index, buffer in enumerate(buffers)
+        if buffer.placement != "direct" and buffer.refill_each_tile]
+    relative_bases_by_buffer: list[list[tuple[int, ...]]] = [
+        [()] * tile_count for _ in buffers]
+    tile_frame_spans = [0] * tile_count
+    for tile_index in range(tile_count):
+        frame_cursor = 0
+        for buffer_index in refill_indices:
+            buffer = buffers[buffer_index]
+            segment_elements = len(
+                allocation_elements_by_buffer[buffer_index][tile_index])
+            allocation_start = frame_cursor
+            relative_bases = []
+            if segment_elements:
+                alignment_bytes = (
+                    target.alignment_elements * buffer.element_bytes)
+                for _replica in range(buffer.replication_factor):
+                    frame_cursor = _align_up(frame_cursor, alignment_bytes)
+                    relative_bases.append(frame_cursor)
+                    frame_cursor += segment_elements * buffer.element_bytes
+            relative_bases_by_buffer[buffer_index][tile_index] = \
+                tuple(relative_bases)
+            allocation_bytes_by_buffer[buffer_index][tile_index] = \
+                frame_cursor - allocation_start
+        tile_frame_spans[tile_index] = frame_cursor
+
+    refill_frame_bytes = max(tile_frame_spans, default=0)
+    refill_frame_bases_bytes: tuple[int, ...] = ()
+    if refill_indices and refill_frame_bytes:
+        frame_alignment_bytes = math.lcm(*(
+            target.alignment_elements * buffers[index].element_bytes
+            for index in refill_indices))
+        frame_count = 2 if target.preload_mode == "ideal_dma" else 1
+        frame_bases = []
+        frame_base = _align_up(held_region_bytes, frame_alignment_bytes)
+        for frame_index in range(frame_count):
+            frame_bases.append(frame_base)
+            if frame_index + 1 < frame_count:
+                frame_base = _align_up(
+                    frame_base + refill_frame_bytes, frame_alignment_bytes)
+        refill_frame_bases_bytes = tuple(frame_bases)
+        cursor_bytes = frame_bases[-1] + refill_frame_bytes
+
+        for buffer_index in refill_indices:
+            buffer = buffers[buffer_index]
+            for tile_index in range(tile_count):
+                relative_bases = relative_bases_by_buffer[
+                    buffer_index][tile_index]
+                allocation_bases = tuple(
+                    (frame_base_bytes + relative_base) // buffer.element_bytes
+                    for frame_base_bytes in frame_bases
+                    for relative_base in relative_bases)
+                replica_bases = allocation_bases[:buffer.replication_factor]
+                allocation_bases_by_buffer[buffer_index][tile_index] = \
+                    allocation_bases
+                replica_bases_by_buffer[buffer_index][tile_index] = \
+                    replica_bases
+                if replica_bases:
+                    bases_by_buffer[buffer_index][tile_index] = replica_bases[0]
+                allocation_bytes_by_buffer[buffer_index][tile_index] *= \
+                    frame_count
+
+    if refill_frame_bases_bytes:
+        capacity_tuple = tuple(
+            refill_frame_bases_bytes[-1] + tile_span
+            for tile_span in tile_frame_spans)
+    else:
+        capacity_tuple = tuple(held_region_bytes for _ in tiles)
+
+    if cursor_bytes > target.capacity_bytes:
+        raise IllegalCandidateError(
+            f"scratchpad capacity exceeded: {cursor_bytes} > "
+            f"{target.capacity_bytes} bytes")
+
+    plans = []
+    for buffer_index, buffer in enumerate(buffers):
+        capacity_factor = (0 if buffer.placement == "direct" else
+                           (2 if buffer.refill_each_tile
+                            and target.preload_mode == "ideal_dma" else 1))
+        bases_by_tile = tuple(bases_by_buffer[buffer_index])
+        nonempty_bases = [base for base in bases_by_tile if base is not None]
+        base_element = (nonempty_bases[0]
+                        if len(nonempty_bases) == tile_count
+                        and len(set(nonempty_bases)) == 1 else None)
+        exact_allocations = allocation_elements_by_buffer[buffer_index]
+        data_bytes = tuple(
+            len(elements) * buffer.element_bytes * buffer.replication_factor
+            for elements in exact_allocations)
+        plans.append(BufferPlan(
+            name=buffer.name, placement=buffer.placement,
+            base_element=base_element, base_elements_by_tile=bases_by_tile,
+            replica_bases_by_tile=tuple(
+                replica_bases_by_buffer[buffer_index]),
+            allocation_bases_by_tile=tuple(
+                allocation_bases_by_buffer[buffer_index]),
+            element_bytes=buffer.element_bytes,
+            replication_factor=buffer.replication_factor,
+            capacity_factor=capacity_factor,
+            elements_by_tile=buffer.elements_by_tile,
+            allocation_elements_by_tile=exact_allocations,
+            source_to_slot_by_tile=tuple(
+                tuple((source, offset) for offset, source in enumerate(elements))
+                for elements in exact_allocations),
+            bytes_per_tile=data_bytes,
+            allocation_bytes_per_tile=tuple(
+                allocation_bytes_by_buffer[buffer_index]),
+            refill_each_tile=buffer.refill_each_tile))
+    return MemoryPlan(
+        target=target, buffers=tuple(plans), tile_sizes=tile_sizes,
+        tiles=tiles, capacity_bytes_used=cursor_bytes,
+        capacity_bytes_by_tile=capacity_tuple,
+        held_region_bytes=held_region_bytes,
+        refill_frame_bytes=refill_frame_bytes,
+        refill_frame_bases_bytes=refill_frame_bases_bytes)
+
+
+def derive_memory_plan(spec: KernelSpec, cand: Candidate,
+                       target: AnalyticTargetSpec) -> MemoryPlan:
+    """Invoke a kernel planner and apply the spec-defined deterministic layout.
+
+    A memory planner is a top-level callable taking ``(spec, candidate, target,
+    tiles)`` and returning buffer declarations in deterministic metadata order.
+    Placement is derived from the records' reuse, worker-invariance, and
+    replication metadata; it is never chosen from a tile's observed duplicates.
+    """
+    tiles = materialize_tiles(spec, cand)
+    tile_sizes = candidate_tile_sizes(spec, cand)
+    if spec.memory_planner is None:
+        raw_buffers: tuple[BufferSpec, ...] = ()
+    else:
+        if not callable(spec.memory_planner):
+            raise TypeError(f"{spec.name}: memory_planner must be callable")
+        raw_buffers = tuple(spec.memory_planner(spec, cand, target, tiles))
+    return _layout_memory_plan(target, tile_sizes, tiles, raw_buffers)
+
+
+def contiguous_element_runs(elements) -> tuple[tuple[int, ...], ...]:
+    """Return sorted unique source elements partitioned into contiguous runs."""
+    ordered = sorted(set(elements))
+    if not ordered:
+        return ()
+    runs = []
+    current = [ordered[0]]
+    for element in ordered[1:]:
+        if element == current[-1] + 1:
+            current.append(element)
+        else:
+            runs.append(tuple(current))
+            current = [element]
+    runs.append(tuple(current))
+    return tuple(runs)
+
+
+def coalesced_element_groups(elements, vector_width: int) \
+        -> tuple[tuple[int, ...], ...]:
+    """Split each contiguous source run into fixed-width vector operations."""
+    if vector_width <= 0:
+        raise ValueError("vector width must be positive")
+    groups = []
+    for run in contiguous_element_runs(elements):
+        for start in range(0, len(run), vector_width):
+            groups.append(run[start:start + vector_width])
+    return tuple(groups)
+
+
+def preload_logical_accesses(
+        buffer: BufferPlan, tile_index: int, target: AnalyticTargetSpec,
+        replica: int = 0, allocation_copy: int = 0) \
+        -> tuple[tuple[int, ...], ...]:
+    """Return coalesced destination elements for one resident-buffer fill."""
+    if buffer.placement == "direct":
+        return ()
+    allocation_bases = buffer.allocation_bases_by_tile[tile_index]
+    base_index = allocation_copy * buffer.replication_factor + replica
+    if base_index < 0 or base_index >= len(allocation_bases):
+        raise IndexError(
+            f"buffer {buffer.name} allocation copy/replica is out of range")
+    base = allocation_bases[base_index]
+    sources = buffer.allocation_elements_by_tile[tile_index]
+    source_to_offset = dict(buffer.source_to_slot_by_tile[tile_index])
+    accesses = []
+    for group in coalesced_element_groups(sources, target.vector_width):
+        accesses.append(tuple(base + source_to_offset[source]
+                              for source in group))
+    return tuple(accesses)
+
+
+def order_contiguous_stream(
+        spec: KernelSpec, cand: Candidate, stream: str,
+        contiguous_level: str | None) -> str | None:
+    """Declare a vector stream only when its contiguous level is innermost."""
+    if not stream:
+        raise ValueError("contiguous stream name must be non-empty")
+    if contiguous_level is None:
+        return None
+    if contiguous_level not in {level.name for level in spec.levels}:
+        raise ValueError(
+            f"{spec.name}: unknown contiguous level {contiguous_level!r}")
+    return (stream if candidate_order(spec, cand)[-1] == contiguous_level
+            else None)
+
+
+def bank_set(elements, target: AnalyticTargetSpec) -> tuple[int, ...]:
+    """Exact cyclic-bank set reserved by one scalar or vector operation."""
+    return tuple(sorted({element % target.banks for element in elements}))
+
+
+def pack_scratchpad_accesses(
+        accesses, target: AnalyticTargetSpec) -> tuple[PackedScratchpadAccess, ...]:
+    """Apply same-step fan-out, then pack only declared legal streams.
+
+    Fan-out deduplicates exactly matching buffer/address/logical-step/replica
+    requests. A non-empty, matching ``stream`` declaration is additionally
+    required before distinct contiguous addresses may coalesce.
+    """
+    unique: list[ScratchpadAccess] = []
+    seen: dict[tuple, int] = {}
+    for access in accesses:
+        key = (access.buffer, access.logical_element,
+               access.logical_step, access.replica)
+        prior_index = seen.get(key)
+        if prior_index is not None:
+            prior = unique[prior_index]
+            if prior.stream != access.stream:
+                unique[prior_index] = ScratchpadAccess(
+                    prior.buffer, prior.logical_element, prior.logical_step,
+                    prior.replica, None)
+            continue
+        seen[key] = len(unique)
+        unique.append(access)
+
+    packed_with_order: list[tuple[int, PackedScratchpadAccess]] = []
+    stream_buckets: dict[tuple, list[tuple[int, int]]] = {}
+    for order_index, access in enumerate(unique):
+        if access.stream is None:
+            packed_with_order.append((
+                order_index,
+                PackedScratchpadAccess(
+                    access.buffer, (access.logical_element,),
+                    access.logical_step, access.replica, None)))
+            continue
+        key = (access.buffer, access.logical_step,
+               access.replica, access.stream)
+        stream_buckets.setdefault(key, []).append(
+            (order_index, access.logical_element))
+
+    for (buffer, logical_step, replica, stream), requests in \
+            stream_buckets.items():
+        first_order = {element: order for order, element in requests}
+        for group in coalesced_element_groups(
+                (element for _order, element in requests), target.vector_width):
+            packed_with_order.append((
+                min(first_order[element] for element in group),
+                PackedScratchpadAccess(
+                    buffer, group, logical_step, replica, stream)))
+
+    packed_with_order.sort(key=lambda item: item[0])
+    return tuple(access for _order, access in packed_with_order)
+
+
+def scratchpad_bank_metrics(accesses, target: AnalyticTargetSpec) -> BankMetrics:
+    """Compute the analytical bank floor and stable earliest-fit packing."""
+    demand = [0] * target.banks
+    cycle_banks: list[set[int]] = []
+    for elements in accesses:
+        banks = set(bank_set(elements, target))
+        if not banks:
+            continue
+        for bank in banks:
+            demand[bank] += 1
+        for occupied in cycle_banks:
+            if banks.isdisjoint(occupied):
+                occupied.update(banks)
+                break
+        else:
+            cycle_banks.append(set(banks))
+    total_slots = sum(demand)
+    bank_lb = max(max(demand, default=0),
+                  _ceil_div(total_slots, target.banks))
+    return BankMetrics(tuple(demand), bank_lb, len(cycle_banks))
+
+
+def packed_access_bank_metrics(
+        accesses, target: AnalyticTargetSpec) -> BankMetrics:
+    return scratchpad_bank_metrics(
+        (access.logical_elements for access in accesses), target)
+
+
+def _validated_tile_costs(preload, compute) -> tuple[tuple[int, ...],
+                                                     tuple[int, ...]]:
+    preload_costs = tuple(preload)
+    compute_costs = tuple(compute)
+    if len(preload_costs) != len(compute_costs):
+        raise ValueError("preload and compute cost vectors must have equal length")
+    if any(cost < 0 for cost in preload_costs + compute_costs):
+        raise ValueError("tile costs must be non-negative")
+    return preload_costs, compute_costs
+
+
+def compose_serial_tiles(preload, compute) -> int:
+    preload_costs, compute_costs = _validated_tile_costs(preload, compute)
+    return sum(p + c for p, c in zip(preload_costs, compute_costs))
+
+
+def compose_ideal_dma_tiles(preload, compute) -> int:
+    preload_costs, compute_costs = _validated_tile_costs(preload, compute)
+    if not preload_costs:
+        return 0
+    return (preload_costs[0]
+            + sum(max(compute_costs[index], preload_costs[index + 1])
+                  for index in range(len(preload_costs) - 1))
+            + compute_costs[-1])
 
 
 # ---------------------------------------------------------------------------
@@ -1461,6 +2408,21 @@ class CandResult:
     saturation: str             # latency-bound | resource-bound
     util: tuple                 # (P, L, S)
     flags: set = field(default_factory=set)
+    target_profile: AnalyticTargetSpec | None = None
+    jam_plan: JamPlan | None = None
+    memory_plan: MemoryPlan | None = None
+    plan_cgra_lb: int | None = None
+    absolute_cgra_lb: int | None = None
+    preload_scalar_elements: int = 0
+    preload_load_ops: int = 0
+    preload_spad_store_ops: int = 0
+    scratchpad_reads: int = 0
+    avoided_direct_loads: int = 0
+    capacity_bytes_used: int = 0
+    bank_lb: int = 0
+    bank_sched: int = 0
+    num_tiles: int = 0
+    schedule_structure_key: tuple = ()
 
 
 @dataclass
@@ -1470,10 +2432,179 @@ class SearchOutcome:
     absolute_lb: int
     demand: dict
     search_scope: str
+    target_profile: AnalyticTargetSpec | None = None
+    legal_candidate_count: int = 0
+    deduped_group_count: int = 0
+
+
+def _cost_extended_phase(phase: PhaseSummary, cfg: Config,
+                         target: AnalyticTargetSpec,
+                         schedule: bool) -> PhaseCost:
+    compute = _ceil_div(phase.A, cfg.P)
+    load = _ceil_div(phase.recurring_loads, cfg.L)
+    store = _ceil_div(phase.stores, cfg.S)
+    base_aggregate = max(phase.CP, compute, load, store)
+    bank = packed_access_bank_metrics(phase.bank_accesses, target)
+    aggregate = max(base_aggregate, bank.bank_lb)
+    scheduled = None
+    if schedule:
+        if phase.base_scheduled is None:
+            raise ValueError("scheduled extended phase omitted base_scheduled")
+        if phase.base_scheduled < base_aggregate:
+            raise AssertionError(
+                f"phase schedule {phase.base_scheduled} < aggregate "
+                f"{base_aggregate}")
+        scheduled = max(phase.base_scheduled, bank.bank_sched)
+        if scheduled < aggregate:
+            raise AssertionError(
+                f"bank-corrected phase schedule {scheduled} < aggregate "
+                f"{aggregate}")
+    return PhaseCost(aggregate, scheduled, compute, load, store, bank)
+
+
+def _evaluate_extended_candidate(
+        spec: KernelSpec, cand: Candidate, cfg: Config, schedule: bool,
+        target: AnalyticTargetSpec | None) -> CandResult:
+    if not callable(spec.extended_plan_builder):
+        raise TypeError(f"{spec.name}: extended_plan_builder must be callable")
+    resolved_target = target or AnalyticTargetSpec()
+    plan = spec.extended_plan_builder(
+        spec, cand, cfg, resolved_target, schedule)
+    if not isinstance(plan, ExtendedPlanSummary):
+        raise TypeError(
+            f"{spec.name}: extended_plan_builder must return "
+            "ExtendedPlanSummary")
+    if plan.memory_plan.target != resolved_target:
+        raise ValueError(
+            f"{spec.name}: extended plan returned the wrong target profile")
+
+    preload_costs = []
+    full_compute_costs = []
+    wave_costs_by_tile = []
+    all_preload_costs = []
+    all_wave_costs = []
+    all_wave_phases = []
+    for tile in plan.tiles:
+        preload_cost = _cost_extended_phase(
+            tile.preload, cfg, resolved_target, schedule)
+        full_cost = _cost_extended_phase(
+            tile.full_compute, cfg, resolved_target, False)
+        wave_costs = tuple(_cost_extended_phase(
+            wave, cfg, resolved_target, schedule)
+            for wave in tile.compute_waves)
+        preload_costs.append(preload_cost.aggregate)
+        full_compute_costs.append(full_cost.aggregate)
+        wave_costs_by_tile.append(sum(cost.aggregate for cost in wave_costs))
+        all_preload_costs.append(preload_cost)
+        all_wave_costs.extend(wave_costs)
+        all_wave_phases.extend(tile.compute_waves)
+
+    if resolved_target.preload_mode == "serial":
+        plan_cgra_lb = compose_serial_tiles(
+            preload_costs, full_compute_costs)
+        pragma_aggregate = compose_serial_tiles(
+            preload_costs, wave_costs_by_tile)
+    else:
+        plan_cgra_lb = compose_ideal_dma_tiles(
+            preload_costs, full_compute_costs)
+        pragma_aggregate = compose_ideal_dma_tiles(
+            preload_costs, wave_costs_by_tile)
+
+    schedule_estimate = None
+    chunk_scheduled = None
+    if schedule:
+        preload_schedules = tuple(cost.scheduled for cost in all_preload_costs)
+        wave_schedules_by_tile = []
+        wave_index = 0
+        for tile in plan.tiles:
+            count = len(tile.compute_waves)
+            wave_schedules_by_tile.append(sum(
+                all_wave_costs[index].scheduled
+                for index in range(wave_index, wave_index + count)))
+            wave_index += count
+        if resolved_target.preload_mode == "serial":
+            schedule_estimate = compose_serial_tiles(
+                preload_schedules, wave_schedules_by_tile)
+        else:
+            schedule_estimate = compose_ideal_dma_tiles(
+                preload_schedules, wave_schedules_by_tile)
+        chunk_scheduled = sum(wave_schedules_by_tile)
+
+    if plan_cgra_lb > pragma_aggregate:
+        raise AssertionError(
+            f"{spec.name} {cand.signature()}: plan_cgra_lb {plan_cgra_lb} > "
+            f"p_agg {pragma_aggregate}")
+    if schedule and pragma_aggregate > schedule_estimate:
+        raise AssertionError(
+            f"{spec.name} {cand.signature()}: p_agg {pragma_aggregate} > "
+            f"sched {schedule_estimate}")
+
+    compute_total = sum(cost.compute for cost in all_wave_costs)
+    load_total = sum(cost.load for cost in all_wave_costs)
+    store_total = sum(cost.store for cost in all_wave_costs)
+    bank_total = sum(cost.bank.bank_lb for cost in all_wave_costs)
+    compute_aggregate = sum(cost.aggregate for cost in all_wave_costs)
+    all_latency_bound = all(
+        phase.CP > max(cost.compute, cost.load, cost.store, cost.bank.bank_lb)
+        for phase, cost in zip(all_wave_phases, all_wave_costs))
+    saturation = "latency-bound" if all_latency_bound else "resource-bound"
+    binding_terms = {
+        "P": compute_total, "L": load_total, "S": store_total,
+        "B": bank_total,
+    }
+    binding_class = max(
+        binding_terms, key=lambda key: (binding_terms[key], key == "L"))
+    denom = compute_aggregate if compute_aggregate > 0 else 1
+    util = (compute_total / denom, load_total / denom, store_total / denom)
+
+    recurring_loads = sum(phase.recurring_loads for phase in all_wave_phases)
+    invariant_loads = sum(phase.invariant_loads for phase in all_wave_phases)
+    preload_load_ops = sum(
+        tile.preload.recurring_loads + tile.preload.invariant_loads
+        for tile in plan.tiles)
+    preload_store_ops = sum(tile.preload.stores for tile in plan.tiles)
+    all_bank_costs = all_preload_costs + all_wave_costs
+    return CandResult(
+        cand=cand, p_tot=_p_tot(spec, cand),
+        active_L=max(1, min(max(
+            (phase.recurring_loads for phase in all_wave_phases), default=0),
+            cfg.L)),
+        active_S=max(1, min(max(
+            (phase.stores for phase in all_wave_phases), default=0), cfg.S)),
+        exposed_iters=_exposed_iters(spec, cand),
+        waves=len(all_wave_phases),
+        CP=sum(phase.CP for phase in all_wave_phases),
+        A=sum(phase.A for phase in all_wave_phases),
+        LD=recurring_loads,
+        ST=sum(phase.stores for phase in all_wave_phases),
+        ld_eff=recurring_loads + invariant_loads,
+        chunk_aggregate=compute_aggregate,
+        chunk_scheduled=chunk_scheduled,
+        pragma_exposure_aggregate=pragma_aggregate,
+        schedule_estimate=schedule_estimate,
+        binding_class=binding_class, saturation=saturation, util=util,
+        target_profile=resolved_target, jam_plan=plan.jam_plan,
+        memory_plan=plan.memory_plan, plan_cgra_lb=plan_cgra_lb,
+        preload_scalar_elements=plan.preload_scalar_elements,
+        preload_load_ops=preload_load_ops,
+        preload_spad_store_ops=preload_store_ops,
+        scratchpad_reads=plan.scratchpad_reads,
+        avoided_direct_loads=plan.avoided_direct_loads,
+        capacity_bytes_used=plan.memory_plan.capacity_bytes_used,
+        bank_lb=sum(cost.bank.bank_lb for cost in all_bank_costs),
+        bank_sched=(sum(cost.bank.bank_sched for cost in all_bank_costs)
+                    if schedule else 0),
+        num_tiles=len(plan.tiles),
+        schedule_structure_key=plan.schedule_structure_key)
 
 
 def evaluate_candidate(spec: KernelSpec, cand: Candidate, cfg: Config,
-                       schedule: bool = True) -> CandResult:
+                       schedule: bool = True,
+                       target: AnalyticTargetSpec | None = None) -> CandResult:
+    if spec.extended_plan_builder is not None:
+        return _evaluate_extended_candidate(
+            spec, cand, cfg, schedule, target)
+
     # Build the vectorized chunk DAG and schedule it on the FULL machine lanes.
     # With no banking, the only per-cycle cap is L/S. Two axes separate P from U:
     # vector coalescing (which lowered LD/ST in the DAG) and control amortization.
@@ -1540,8 +2671,32 @@ def evaluate_candidate(spec: KernelSpec, cand: Candidate, cfg: Config,
         binding_class=binding_class, saturation=saturation, util=util)
 
 
-def _ensure_scheduled(spec: KernelSpec, result: CandResult, cfg: Config) -> None:
+def _ensure_scheduled(spec: KernelSpec, result: CandResult, cfg: Config,
+                      target: AnalyticTargetSpec | None = None) -> None:
     if result.schedule_estimate is not None:
+        return
+    if spec.extended_plan_builder is not None:
+        resolved_target = target or result.target_profile
+        scheduled = evaluate_candidate(
+            spec, result.cand, cfg, schedule=True, target=resolved_target)
+        if (scheduled.plan_cgra_lb != result.plan_cgra_lb
+                or scheduled.pragma_exposure_aggregate
+                != result.pragma_exposure_aggregate
+                or scheduled.schedule_structure_key
+                != result.schedule_structure_key):
+            raise AssertionError(
+                f"{spec.name} {result.cand.signature()}: scheduled rerun changed "
+                "the aggregate or schedule structure")
+        result.chunk_scheduled = scheduled.chunk_scheduled
+        result.schedule_estimate = scheduled.schedule_estimate
+        result.bank_sched = scheduled.bank_sched
+        if result.absolute_cgra_lb is not None and not (
+                result.absolute_cgra_lb <= result.plan_cgra_lb
+                <= result.pragma_exposure_aggregate
+                <= result.schedule_estimate):
+            raise AssertionError(
+                f"{spec.name} {result.cand.signature()}: extended four-term "
+                "bracket violated after scheduling")
         return
     scheduled = evaluate_candidate(spec, result.cand, cfg, schedule=True)
     result.chunk_scheduled = scheduled.chunk_scheduled
@@ -1551,6 +2706,15 @@ def _ensure_scheduled(spec: KernelSpec, result: CandResult, cfg: Config) -> None
 def _evaluate_aggregate_task(args) -> CandResult:
     spec, cand, cfg = args
     return evaluate_candidate(spec, cand, cfg, schedule=False)
+
+
+def _evaluate_extended_aggregate_task(args) -> CandResult | None:
+    spec, cand, cfg, target = args
+    try:
+        return evaluate_candidate(
+            spec, cand, cfg, schedule=False, target=target)
+    except IllegalCandidateError:
+        return None
 
 
 def _full_candidate(spec: KernelSpec) -> Candidate:
@@ -1643,8 +2807,11 @@ def recommend(spec: KernelSpec, results: list[CandResult]) -> CandResult | None:
 def annotate_flags(spec: KernelSpec, results: list[CandResult],
                    rec: CandResult) -> None:
     latency_fallback = spec.selection_mode == "latency_fallback"
+    extended = _uses_extended_candidate_space(spec)
     for r in results:
-        if r.cand.split == rec.cand.split:
+        same_candidate = (r.cand == rec.cand if extended
+                          else r.cand.split == rec.cand.split)
+        if same_candidate:
             r.flags.add("recommended")
             continue  # the pick carries no starved/oversubscribed marker
         if not spec.repeat_waves:
@@ -1674,8 +2841,19 @@ def _dedup(results: list[CandResult]) -> list[list[CandResult]]:
     widths, waves, estimate) -- e.g. inert reduction/parallel pragmas."""
     groups: dict[tuple, list[CandResult]] = {}
     for r in results:
-        key = (r.active_L, r.active_S, r.LD, r.ST, r.A, r.CP, r.waves,
-               r.pragma_exposure_aggregate)
+        legacy_key = (r.active_L, r.active_S, r.LD, r.ST, r.A, r.CP, r.waves,
+                      r.pragma_exposure_aggregate)
+        if r.target_profile is None and not r.cand.order and not r.cand.tile_sizes:
+            key = legacy_key
+        else:
+            key = legacy_key + (
+                r.cand.order, r.cand.tile_sizes, r.target_profile,
+                r.jam_plan, r.memory_plan, r.plan_cgra_lb,
+                r.capacity_bytes_used, r.bank_lb,
+                r.preload_scalar_elements, r.preload_load_ops,
+                r.preload_spad_store_ops, r.scratchpad_reads,
+                r.avoided_direct_loads, r.num_tiles,
+                r.schedule_structure_key)
         groups.setdefault(key, []).append(r)
     grouped = []
     for group in groups.values():
@@ -1692,10 +2870,114 @@ def _fmt_util(u):
     return "/".join(str(round(x * 100)) for x in u)
 
 
+def _render_extended_report(
+        spec: KernelSpec, cfg: Config, results: list[CandResult], lb: int,
+        rec: CandResult, search_scope: str, top: int,
+        brief_recommendations: tuple[tuple[str, str], ...],
+        ideal_sensitivity: CandResult | None,
+        ideal_sensitivity_unavailable: bool) -> str:
+    target = rec.target_profile
+    out = [
+        f"# Loom pragma DSE (analytic_prefilter): {spec.name}  ({cfg.label})",
+        "",
+        (f"Target profile: `{target.name}`; preload mode "
+         f"`{target.preload_mode}`; capacity {target.capacity_bytes} bytes; "
+         f"banks {target.banks}; fixed V={target.vector_width}."),
+        f"Search: {search_scope}.",
+    ]
+    groups = _dedup(results)
+    out.append(
+        f"Candidates: {len(results)} legal, {len(groups)} deduplicated groups; "
+        f"`absolute_cgra_lb={lb}` is the profile-global floor.")
+    out.append("")
+    header = (f"{'flags':<8} {'split':<44} {'plan_lb':>7} {'p_agg':>7} "
+              f"{'sched':>7} {'tiles':>5} {'cap_B':>6} {'bank':>5} "
+              f"{'class':<14} {'util P/L/S':>11}")
+    out.append(header)
+    out.append("-" * len(header))
+    shown = groups
+    omitted = 0
+    if top and len(groups) > top:
+        shown = groups[:top]
+        if not any("recommended" in group[0].flags for group in shown):
+            rec_group = next((group for group in groups
+                              if "recommended" in group[0].flags), None)
+            if rec_group is not None:
+                shown = shown + [rec_group]
+        omitted = len(groups) - len(shown)
+    for group in shown:
+        result = group[0]
+        _ensure_scheduled(spec, result, cfg, target)
+        flags = ""
+        if "recommended" in result.flags:
+            flags += "K"
+        if "bandwidth-starved" in result.flags:
+            flags += "b"
+        if "oversubscribed" in result.flags:
+            flags += "o"
+        signature = result.cand.signature()
+        if len(group) > 1:
+            signature += f"  (+{len(group)-1} eq)"
+        out.append(
+            f"{flags:<8} {signature:<44} {result.plan_cgra_lb:>7} "
+            f"{result.pragma_exposure_aggregate:>7} "
+            f"{result.schedule_estimate:>7} {result.num_tiles:>5} "
+            f"{result.capacity_bytes_used:>6} {result.bank_lb:>5} "
+            f"{result.saturation:<14} {_fmt_util(result.util):>11}")
+    if omitted:
+        out.append(f"... ({omitted} more groups omitted; use --top 0 for the "
+                   "full sweep)")
+    out.extend((
+        "",
+        (f"RECOMMENDED: {rec.cand.signature()}  -> plan_lb={rec.plan_cgra_lb}, "
+         f"p_agg={rec.pragma_exposure_aggregate}, "
+         f"sched={rec.schedule_estimate}, {rec.saturation}"),
+        ("flags: K=recommended, b=bandwidth-starved/latency-bound, "
+         "o=oversubscribed."),
+    ))
+    if ideal_sensitivity is not None:
+        out.extend((
+            "",
+            ("Ideal-DMA sensitivity (same config): "
+             f"{ideal_sensitivity.cand.signature()} -> "
+             f"absolute_cgra_lb={ideal_sensitivity.absolute_cgra_lb}, "
+             f"plan_lb={ideal_sensitivity.plan_cgra_lb}, "
+             f"p_agg={ideal_sensitivity.pragma_exposure_aggregate}, "
+             f"sched={ideal_sensitivity.schedule_estimate}."),
+            ("Assumption: inactive ping-pong fill does not contend with "
+             "current-tile scratchpad reads."),
+        ))
+    elif ideal_sensitivity_unavailable:
+        out.extend((
+            "",
+            ("Ideal-DMA sensitivity: no legal candidate under double-buffer "
+             "capacity."),
+        ))
+    elif target.preload_mode == "ideal_dma":
+        out.extend((
+            "",
+            ("Ideal-DMA assumption: inactive ping-pong fill does not contend "
+             "with current-tile scratchpad reads."),
+        ))
+    if brief_recommendations:
+        out.append("")
+        for label, signature in brief_recommendations:
+            out.append(f"{label} recommendation: {signature}.")
+    return "\n".join(out)
+
+
 def render_report(spec: KernelSpec, cfg: Config, results: list[CandResult],
                   lb: int, demand: dict, rec: CandResult, search_scope: str,
                   top: int = 0,
-                  brief_recommendations: tuple[tuple[str, str], ...] = ()) -> str:
+                  brief_recommendations: tuple[tuple[str, str], ...] = (),
+                  ideal_sensitivity: CandResult | None = None,
+                  ideal_sensitivity_unavailable: bool = False) -> str:
+    if rec.target_profile is not None:
+        return _render_extended_report(
+            spec, cfg, results, lb, rec, search_scope, top,
+            brief_recommendations, ideal_sensitivity,
+            ideal_sensitivity_unavailable)
+
     out = []
     out.append(f"# Loom pragma DSE (lane-aware + vector coalescing): "
                f"{spec.name}  ({cfg.label})")
@@ -1869,9 +3151,87 @@ def _normalize_brief_configs(primary: Config,
     return normalized
 
 
+def _target_with_preload_mode(
+        target: AnalyticTargetSpec, preload_mode: str) -> AnalyticTargetSpec:
+    return AnalyticTargetSpec(
+        name=target.name, capacity_bytes=target.capacity_bytes,
+        banks=target.banks, bank_mapping=target.bank_mapping,
+        shared_across_kernel=target.shared_across_kernel,
+        access_cycles=target.access_cycles, vector_width=target.vector_width,
+        preload_mode=preload_mode)
+
+
+def _search_extended(
+        spec: KernelSpec, cfg: Config, max_parallel: int | None,
+        max_unroll: int | None, exposure_cap: int | None, jobs: int,
+        target: AnalyticTargetSpec | None) -> SearchOutcome:
+    resolved_target = target or AnalyticTargetSpec()
+    cands = enumerate_candidates(spec, max_parallel, max_unroll, exposure_cap)
+    if jobs == 1 or len(cands) < 2:
+        results = []
+        for cand in cands:
+            try:
+                result = evaluate_candidate(
+                    spec, cand, cfg, schedule=False, target=resolved_target)
+            except IllegalCandidateError:
+                continue
+            results.append(result)
+    else:
+        chunksize = max(1, len(cands) // (jobs * 4))
+        tasks = ((spec, cand, cfg, resolved_target) for cand in cands)
+        with ProcessPoolExecutor(max_workers=jobs) as executor:
+            evaluated = executor.map(
+                _evaluate_extended_aggregate_task, tasks, chunksize=chunksize)
+            results = [result for result in evaluated if result is not None]
+    if not results:
+        raise NoLegalExtendedCandidateError(
+            f"{spec.name}: no legal candidate for target "
+            f"{resolved_target.name}/{resolved_target.preload_mode}")
+
+    absolute_lb = min(result.plan_cgra_lb for result in results)
+    for result in results:
+        result.absolute_cgra_lb = absolute_lb
+        if not (absolute_lb <= result.plan_cgra_lb
+                <= result.pragma_exposure_aggregate):
+            raise AssertionError(
+                f"{spec.name} {result.cand.signature()}: extended aggregate "
+                "bracket violated")
+        if (result.schedule_estimate is not None
+                and result.pragma_exposure_aggregate
+                > result.schedule_estimate):
+            raise AssertionError(
+                f"{spec.name} {result.cand.signature()}: extended scheduled "
+                "bracket violated")
+
+    rec = recommend(spec, results)
+    if rec is None:
+        raise RuntimeError(f"{spec.name}: candidate search produced no result")
+    caps = []
+    if max_parallel is not None:
+        caps.append(f"P<={max_parallel}")
+    if max_unroll is not None:
+        caps.append(f"U<={max_unroll}")
+    if exposure_cap is not None:
+        caps.append(f"exposure<={exposure_cap}")
+    if caps:
+        search_scope = "bounded diagnostic (" + ", ".join(caps) + ")"
+    else:
+        search_scope = "complete legal power-of-two factors through each trip count"
+    return SearchOutcome(
+        results=results, recommendation=rec, absolute_lb=absolute_lb,
+        demand={"aggregate": absolute_lb}, search_scope=search_scope,
+        target_profile=resolved_target, legal_candidate_count=len(results),
+        deduped_group_count=len(_dedup(results)))
+
+
 def search(spec: KernelSpec, cfg: Config, max_parallel: int | None = None,
            max_unroll: int | None = None, exposure_cap: int | None = None,
-           jobs: int = 1) -> SearchOutcome:
+           jobs: int = 1,
+           target: AnalyticTargetSpec | None = None) -> SearchOutcome:
+    if spec.extended_plan_builder is not None:
+        return _search_extended(
+            spec, cfg, max_parallel, max_unroll, exposure_cap, jobs, target)
+
     lb, demand = absolute_cgra_lb(spec, cfg)
     cands = enumerate_candidates(spec, max_parallel, max_unroll, exposure_cap)
     if jobs == 1 or len(cands) < 2:
@@ -1903,19 +3263,40 @@ def search(spec: KernelSpec, cfg: Config, max_parallel: int | None = None,
 def run(spec: KernelSpec, cfg: Config, max_parallel: int | None = None,
         max_unroll: int | None = None, exposure_cap: int | None = None,
         top: int = 0, jobs: int = 1,
-        brief_configs: list[Config] | None = None) -> tuple[str, CandResult, int]:
-    outcome = search(spec, cfg, max_parallel, max_unroll, exposure_cap, jobs)
+        brief_configs: list[Config] | None = None,
+        target: AnalyticTargetSpec | None = None) -> tuple[str, CandResult, int]:
+    outcome = search(
+        spec, cfg, max_parallel, max_unroll, exposure_cap, jobs, target)
     annotate_flags(spec, outcome.results, outcome.recommendation)
+    ideal_sensitivity = None
+    ideal_sensitivity_unavailable = False
+    if (spec.extended_plan_builder is not None
+            and outcome.target_profile is not None
+            and outcome.target_profile.preload_mode == "serial"):
+        ideal_target = _target_with_preload_mode(
+            outcome.target_profile, "ideal_dma")
+        try:
+            ideal_outcome = search(
+                spec, cfg, max_parallel, max_unroll, exposure_cap, jobs,
+                ideal_target)
+        except NoLegalExtendedCandidateError:
+            ideal_sensitivity_unavailable = True
+        else:
+            _ensure_scheduled(
+                spec, ideal_outcome.recommendation, cfg, ideal_target)
+            ideal_sensitivity = ideal_outcome.recommendation
     brief_recommendations = []
     for brief_cfg in brief_configs or []:
         brief = search(spec, brief_cfg, max_parallel, max_unroll, exposure_cap,
-                       jobs)
+                       jobs, target)
         brief_recommendations.append(
             (brief_cfg.label, brief.recommendation.cand.signature()))
     report = render_report(
         spec, cfg, outcome.results, outcome.absolute_lb, outcome.demand,
         outcome.recommendation, outcome.search_scope, top=top,
-        brief_recommendations=tuple(brief_recommendations))
+        brief_recommendations=tuple(brief_recommendations),
+        ideal_sensitivity=ideal_sensitivity,
+        ideal_sensitivity_unavailable=ideal_sensitivity_unavailable)
     rec = outcome.recommendation
     lb = outcome.absolute_lb
     return report, rec, lb
@@ -1980,9 +3361,663 @@ def main(argv: list[str]) -> int:
 # Self-tests
 # ---------------------------------------------------------------------------
 
+def _synthetic_memory_planner(
+        _spec: KernelSpec, _cand: Candidate, _target: AnalyticTargetSpec,
+        tiles: tuple[TileInstance, ...]) -> tuple[BufferSpec, ...]:
+    """Small picklable memory planner for extended-infrastructure tests."""
+    element_sets = []
+    for tile in tiles:
+        origin = dict(tile.origin)["i"]
+        element_sets.append(tuple(range(origin, origin + tile.extent("i"))))
+    return (BufferSpec(
+        name="tile_data", element_bytes=4,
+        elements_by_tile=tuple(element_sets), refill_each_tile=True,
+        reuse_bearing=True, worker_invariant=True),)
+
+
+def _synthetic_compute_phase(
+        buffer: BufferPlan, tile_index: int, source_elements: tuple[int, ...],
+        logical_step: tuple[tuple[str, int], ...], cfg: Config,
+        target: AnalyticTargetSpec, schedule: bool) -> PhaseSummary:
+    accesses = tuple(ScratchpadAccess(
+        buffer=buffer.name,
+        logical_element=buffer.logical_element(tile_index, source),
+        logical_step=logical_step, stream=buffer.name)
+        for source in source_elements)
+    packed = pack_scratchpad_accesses(accesses, target)
+    extent = len(source_elements)
+    return PhaseSummary(
+        A=extent * cfg.P, recurring_loads=len(packed), invariant_loads=0,
+        stores=0, CP=extent, bank_accesses=packed,
+        base_scheduled=(extent + 1 if schedule else None))
+
+
+def _synthetic_extended_plan_builder(
+        spec: KernelSpec, cand: Candidate, cfg: Config,
+        target: AnalyticTargetSpec, schedule: bool) -> ExtendedPlanSummary:
+    """Build structured phases; the central evaluator owns all composition."""
+    memory = derive_memory_plan(spec, cand, target)
+    buffer = memory.buffers[0]
+    exposure = cand.factors("i")[0] * cand.factors("i")[1]
+    tile_summaries = []
+    structure = []
+    scalar_elements = 0
+    scratchpad_reads = 0
+    for tile_index, tile in enumerate(memory.tiles):
+        source_elements = buffer.elements_by_tile[tile_index]
+        preload_groups = preload_logical_accesses(
+            buffer, tile_index, target)
+        preload_accesses = tuple(PackedScratchpadAccess(
+            buffer=buffer.name, logical_elements=group,
+            logical_step=(("preload", tile_index),), replica=0,
+            stream=buffer.name)
+            for group in preload_groups)
+        preload_ops = len(preload_groups)
+        preload = PhaseSummary(
+            A=0, recurring_loads=preload_ops, invariant_loads=0,
+            stores=preload_ops, CP=0, bank_accesses=preload_accesses,
+            base_scheduled=(2 * preload_ops if schedule else None))
+        full_compute = _synthetic_compute_phase(
+            buffer, tile_index, source_elements,
+            (("full", tile_index),), cfg, target, False)
+
+        waves = []
+        wave_extents = []
+        for wave_index, start in enumerate(range(0, len(source_elements),
+                                                 exposure)):
+            wave_elements = source_elements[start:start + exposure]
+            wave_extents.append(len(wave_elements))
+            waves.append(_synthetic_compute_phase(
+                buffer, tile_index, wave_elements,
+                (("tile", tile_index), ("wave", wave_index)),
+                cfg, target, schedule))
+        tile_summaries.append(ExtendedTileSummary(
+            tile=tile, preload=preload, full_compute=full_compute,
+            compute_waves=tuple(waves)))
+        structure.append((tile.shape, preload_ops, tuple(wave_extents)))
+        scalar_elements += len(source_elements)
+        scratchpad_reads += len(source_elements)
+
+    return ExtendedPlanSummary(
+        memory_plan=memory, jam_plan=derive_jam_plan(spec, cand),
+        tiles=tuple(tile_summaries),
+        schedule_structure_key=tuple(structure),
+        preload_scalar_elements=scalar_elements,
+        scratchpad_reads=scratchpad_reads,
+        avoided_direct_loads=scratchpad_reads)
+
+
+def _run_extended_infrastructure_tests(errors: list[str]) -> None:
+    def expect_value_error(label, callback) -> None:
+        try:
+            callback()
+        except ValueError:
+            return
+        errors.append(f"{label}: expected ValueError")
+
+    # A declared source-only order must be a no-op for legacy candidate state.
+    legacy_spec = KernelSpec(
+        name="legacy_default_test", levels=(Level("i", 5, "parallel"),),
+        build_chunk=_axpy_chunk)
+    source_order_spec = KernelSpec(
+        name="source_order_test", levels=legacy_spec.levels,
+        build_chunk=_axpy_chunk,
+        order_spec=OrderSpec((("i",),)))
+    legacy_candidates = enumerate_candidates(legacy_spec)
+    source_order_candidates = enumerate_candidates(source_order_spec)
+    if source_order_candidates != legacy_candidates:
+        errors.append(
+            "source-only OrderSpec must preserve the exact legacy candidate set")
+    if any(cand.order or cand.tile_sizes for cand in source_order_candidates):
+        errors.append(
+            "source-only OrderSpec must keep default-empty candidate metadata")
+
+    order_spec = KernelSpec(
+        name="order_test",
+        levels=(Level("i", 4, "parallel"),
+                Level("j", 8, "reduction")),
+        build_chunk=_gemv_chunk,
+        order_spec=OrderSpec((("i", "j"), ("j", "i"))),
+        jam_rules=(JamRule("i", "j", ("x",)),))
+    expect_value_error(
+        "undeclared order rejection",
+        lambda: candidate_order(
+            order_spec,
+            Candidate((("i", 1, 2), ("j", 1, 1)), ("i", "missing"))))
+    expect_value_error(
+        "source order must be first",
+        lambda: _validated_orders(KernelSpec(
+            name="bad_order_test", levels=order_spec.levels,
+            build_chunk=_gemv_chunk,
+            order_spec=OrderSpec((("j", "i"), ("i", "j"))))))
+
+    jammed = derive_jam_plan(
+        order_spec, Candidate((("i", 1, 2), ("j", 1, 1))))
+    if jammed.edges != (JamRule("i", "j", ("x",)),):
+        errors.append(f"maximal jam plan mismatch: {jammed.edges}")
+    unjammed = derive_jam_plan(
+        order_spec, Candidate((("i", 1, 1), ("j", 1, 1))))
+    if unjammed.edges:
+        errors.append("U=1 must produce an empty jam plan")
+    interchanged = derive_jam_plan(
+        order_spec, Candidate(
+            (("i", 1, 2), ("j", 1, 1)), ("j", "i")))
+    if interchanged.edges:
+        errors.append("a jam edge must not apply when its inner level is outside")
+
+    interchange_spec = KernelSpec(
+        name="interchange_stream_test",
+        levels=(Level("i", 4, "parallel"),
+                Level("j", 4, "parallel")),
+        build_chunk=_gemv_chunk,
+        order_spec=OrderSpec((("i", "j"), ("j", "i"))))
+    source_cand = Candidate((("i", 1, 1), ("j", 1, 1)))
+    swapped_cand = Candidate(
+        (("i", 1, 1), ("j", 1, 1)), ("j", "i"))
+    stream_target = AnalyticTargetSpec()
+
+    def interchange_packed_count(cand, buffer, contiguous_level):
+        stream = order_contiguous_stream(
+            interchange_spec, cand, buffer, contiguous_level)
+        return len(pack_scratchpad_accesses(tuple(
+            ScratchpadAccess(
+                buffer, element, (("step", 0),), stream=stream)
+            for element in range(4)), stream_target))
+
+    source_counts = (
+        interchange_packed_count(source_cand, "a_ij", "j"),
+        interchange_packed_count(source_cand, "b_ji", "i"),
+    )
+    swapped_counts = (
+        interchange_packed_count(swapped_cand, "a_ij", "j"),
+        interchange_packed_count(swapped_cand, "b_ji", "i"),
+    )
+    if source_counts != (1, 4) or swapped_counts != (4, 1):
+        errors.append(
+            "declared interchange must flip which innermost stream receives "
+            f"fixed-V packing; got source={source_counts}, swapped={swapped_counts}")
+    if interchange_packed_count(source_cand, "undeclared", None) != 4:
+        errors.append("an undeclared contiguous stream must remain scalar")
+
+    unjammed_reference_spec = KernelSpec(
+        name="unjammed_count_test", levels=order_spec.levels,
+        build_chunk=_gemv_chunk, order_spec=order_spec.order_spec)
+    jam_count_cand = Candidate((("i", 1, 2), ("j", 1, 1)))
+
+    def jam_dag_summary(local_spec):
+        plan = derive_jam_plan(local_spec, jam_count_cand)
+        dag = Dag()
+        region = dag.region("jam-count")
+        region.induction(kind="i")
+        shares_x = any(
+            "x" in edge.shared_operands for edge in plan.edges)
+        shared_x = region.load(kind="x" + INV) if shares_x else None
+        for _lane in range(2):
+            x_value = (shared_x if shared_x is not None
+                       else region.load(kind="x" + INV))
+            region.arith(x_value, kind="work")
+        nodes = region.nodes
+        invariant_loads = sum(
+            node.cls == L and INV in node.kind for node in nodes)
+        control_nodes = sum(node.kind.startswith("i_") for node in nodes)
+        return {
+            "A": sum(node.cls == P for node in nodes),
+            "LD": sum(node.cls == L for node in nodes),
+            "ST": sum(node.cls == S for node in nodes),
+            "nodes": len(nodes),
+            "control": control_nodes,
+            "invariant": invariant_loads,
+            "recurring": sum(node.cls == L for node in nodes) - invariant_loads,
+        }
+
+    jammed_summary = jam_dag_summary(order_spec)
+    unjammed_summary = jam_dag_summary(unjammed_reference_spec)
+    if (jammed_summary["A"], jammed_summary["ST"],
+            jammed_summary["control"], jammed_summary["recurring"]) != \
+            (unjammed_summary["A"], unjammed_summary["ST"],
+             unjammed_summary["control"], unjammed_summary["recurring"]):
+        errors.append(
+            "jam must leave arithmetic, stores, control, and recurring loads "
+            "unchanged")
+    if (unjammed_summary["invariant"] - jammed_summary["invariant"],
+            unjammed_summary["LD"] - jammed_summary["LD"],
+            unjammed_summary["nodes"] - jammed_summary["nodes"]) != (1, 1, 1):
+        errors.append(
+            "U=2 jam must remove exactly one redundant invariant load and node; "
+            f"got jammed={jammed_summary}, unjammed={unjammed_summary}")
+
+    tile_spec = KernelSpec(
+        name="tile_test", levels=(Level("i", 6, "parallel"),),
+        build_chunk=_axpy_chunk, tileable=frozenset(("i",)))
+    tiled_candidates = enumerate_candidates(tile_spec)
+    one_by_one_tiles = {
+        dict(candidate_tile_sizes(tile_spec, cand))["i"]
+        for cand in tiled_candidates
+        if cand.split == (("i", 1, 1),)
+    }
+    if one_by_one_tiles != {1, 2, 4, 6}:
+        errors.append(
+            f"tile sizes for trip 6 were {sorted(one_by_one_tiles)}, "
+            "expected [1, 2, 4, 6]")
+    if any(cand.split == (("i", 4, 1),)
+           and cand.tile_sizes == (("i", 2),)
+           for cand in tiled_candidates):
+        errors.append("enumeration admitted p*u greater than nominal tile size")
+    if not any(cand.split == (("i", 1, 1),) and not cand.tile_sizes
+               for cand in tiled_candidates):
+        errors.append("full-trip candidates must store empty tile metadata")
+    expect_value_error(
+        "manual nominal exposure rejection",
+        lambda: candidate_tile_sizes(
+            tile_spec, Candidate((("i", 4, 1),), tile_sizes=(("i", 2),))))
+
+    tail_cand = Candidate((("i", 4, 1),), tile_sizes=(("i", 4),))
+    tail_tiles = materialize_tiles(tile_spec, tail_cand)
+    expected_tiles = (
+        TileInstance((("i", 0),), (("i", 4),), False),
+        TileInstance((("i", 4),), (("i", 2),), True),
+    )
+    if tail_tiles != expected_tiles:
+        errors.append(f"concrete tail tiles {tail_tiles} != {expected_tiles}")
+    if active_tile_exposure(tail_cand, tail_tiles[1], "i") != 2:
+        errors.append("tail tile did not clamp active P/U exposure to its shape")
+
+    target = AnalyticTargetSpec()
+    one_tile = (TileInstance((), (), False),)
+    layout = _layout_memory_plan(
+        target, (), one_tile,
+        (
+            BufferSpec("a", 4, ((3, 1, 1),), True, True, True),
+            BufferSpec("b", 4, ((10, 11),), True, True, True),
+            BufferSpec("stream", 4, ((7, 7, 8),), False, False, True),
+        ))
+    a_plan, b_plan, stream_plan = layout.buffers
+    if a_plan.elements_by_tile != ((1, 3),):
+        errors.append(f"buffer source elements were not sorted/unique: "
+                      f"{a_plan.elements_by_tile}")
+    if (a_plan.base_element, b_plan.base_element,
+            layout.capacity_bytes_used) != (0, 4, 24):
+        errors.append(
+            "declaration-order aligned compact layout expected bases 0/4 and "
+            f"24 bytes, got {a_plan.base_element}/{b_plan.base_element} and "
+            f"{layout.capacity_bytes_used}")
+    if stream_plan.placement != "direct" or stream_plan.base_element is not None:
+        errors.append("reuse-free placement must derive direct despite duplicates")
+
+    complementary_tiles = (
+        TileInstance((("i", 0),), (("i", 1),), False),
+        TileInstance((("i", 1),), (("i", 1),), False),
+    )
+    complementary = _layout_memory_plan(
+        target, (("i", 1),), complementary_tiles,
+        (
+            BufferSpec("wide_then_narrow", 4,
+                       (tuple(range(700)), tuple(range(100))),
+                       True, True, True),
+            BufferSpec("narrow_then_wide", 4,
+                       (tuple(range(100)), tuple(range(700))),
+                       True, True, True),
+        ))
+    wide_then_narrow, narrow_then_wide = complementary.buffers
+    if (complementary.capacity_bytes_used,
+            complementary.refill_frame_bytes,
+            complementary.capacity_bytes_by_tile) != (3200, 3200, (3200, 3200)):
+        errors.append(
+            "complementary 700/100 refill footprints must share one 3200-byte "
+            f"frame, got capacity={complementary.capacity_bytes_used}, "
+            f"frame={complementary.refill_frame_bytes}, "
+            f"tiles={complementary.capacity_bytes_by_tile}")
+    if (wide_then_narrow.base_elements_by_tile,
+            narrow_then_wide.base_elements_by_tile) != \
+            ((0, 0), (700, 100)):
+        errors.append(
+            "combined refill layout must preserve exact tile-local offsets; "
+            f"got {wide_then_narrow.base_elements_by_tile} and "
+            f"{narrow_then_wide.base_elements_by_tile}")
+
+    replicated = _layout_memory_plan(
+        target, (), one_tile,
+        (BufferSpec("private", 4, ((0, 1),), True, True, False, 2),))
+    private = replicated.buffers[0]
+    if (private.replica_bases_by_tile, replicated.capacity_bytes_used) != \
+            (((0, 4),), 24):
+        errors.append(
+            "replicated layout must give each replica an aligned segment; got "
+            f"{private.replica_bases_by_tile}, {replicated.capacity_bytes_used}")
+
+    exact_fit = _layout_memory_plan(
+        target, (), one_tile,
+        (BufferSpec("fit", 4, (tuple(range(1024)),),
+                    True, True, True),))
+    if exact_fit.capacity_bytes_used != 4096:
+        errors.append("4096-byte serial working set must be legal")
+    expect_value_error(
+        "4097-byte serial capacity",
+        lambda: _layout_memory_plan(
+            target, (), one_tile,
+            (BufferSpec("too_large", 1, (tuple(range(4097)),),
+                        True, True, True),)))
+
+    dma_target = AnalyticTargetSpec(preload_mode="ideal_dma")
+    dma_fit = _layout_memory_plan(
+        dma_target, (), one_tile,
+        (BufferSpec("pingpong", 4, (tuple(range(512)),),
+                    True, True, True),))
+    if (dma_fit.capacity_bytes_used,
+            dma_fit.buffers[0].capacity_factor) != (4096, 2):
+        errors.append("ideal-DMA refilled allocation must use exact 2x capacity")
+    expect_value_error(
+        "ideal-DMA doubled capacity",
+        lambda: _layout_memory_plan(
+            dma_target, (), one_tile,
+            (BufferSpec("pingpong_too_large", 4, (tuple(range(513)),),
+                        True, True, True),)))
+    held_once = _layout_memory_plan(
+        dma_target, (), one_tile,
+        (BufferSpec("held", 4, (tuple(range(1024)),),
+                    False, True, True),))
+    if (held_once.capacity_bytes_used,
+            held_once.buffers[0].capacity_factor) != (4096, 1):
+        errors.append("ideal-DMA held-once allocation must remain at 1x capacity")
+
+    nonuniform_tiles = (
+        TileInstance((("i", 0),), (("i", 5),), False),
+        TileInstance((("i", 5),), (("i", 1),), True),
+    )
+    nonuniform_dma = _layout_memory_plan(
+        dma_target, (("i", 5),), nonuniform_tiles,
+        (BufferSpec("variable", 4, (tuple(range(5)), (5,)),
+                    True, True, True),))
+    variable = nonuniform_dma.buffers[0]
+    if variable.allocation_bases_by_tile != ((0, 8), (0, 8)):
+        errors.append(
+            "ideal-DMA 5+1 tiles must retain two stable max-size segments; "
+            f"got {variable.allocation_bases_by_tile}")
+    if nonuniform_dma.capacity_bytes_used != 52:
+        errors.append(
+            "ideal-DMA 5+1 ping-pong allocation expected 52 bytes, got "
+            f"{nonuniform_dma.capacity_bytes_used}")
+    if nonuniform_dma.refill_frame_bases_bytes != (0, 32):
+        errors.append(
+            "ideal-DMA frame bases must be stable and nonoverlapping; got "
+            f"{nonuniform_dma.refill_frame_bases_bytes}")
+    if (variable.logical_elements(0), variable.logical_elements(1),
+            preload_logical_accesses(
+                variable, 1, dma_target, allocation_copy=1)) != \
+            ((0, 1, 2, 3, 4), (0,), ((8,),)):
+        errors.append(
+            "stable ping-pong segments must preserve exact per-tile compact maps")
+
+    held_after_variable = _layout_memory_plan(
+        target, (("i", 5),), nonuniform_tiles,
+        (
+            BufferSpec("variable", 4, (tuple(range(5)), (5,)),
+                       True, True, True),
+            BufferSpec("held_after", 4, ((20,), (21,)),
+                       False, True, True),
+        ))
+    held_after = held_after_variable.buffers[1]
+    variable_after_held = held_after_variable.buffers[0]
+    if held_after.base_elements_by_tile != (0, 0):
+        errors.append(
+            "held-once base must stay stable despite later declaration; "
+            f"got {held_after.base_elements_by_tile}")
+    if (held_after.logical_elements(0), held_after.logical_elements(1)) != \
+            ((0,), (1,)):
+        errors.append(
+            "held-once union mapping must remain exact at its stable base")
+    if (held_after_variable.held_region_bytes,
+            held_after_variable.refill_frame_bases_bytes,
+            variable_after_held.base_elements_by_tile,
+            held_after_variable.capacity_bytes_used) != (8, (16,), (4, 4), 36):
+        errors.append(
+            "refill frame must follow the stable held region with aligned bases; "
+            f"got held={held_after_variable.held_region_bytes}, "
+            f"frames={held_after_variable.refill_frame_bases_bytes}, "
+            f"variable={variable_after_held.base_elements_by_tile}, "
+            f"capacity={held_after_variable.capacity_bytes_used}")
+
+    held_tiles = (
+        TileInstance((("i", 0),), (("i", 2),), False),
+        TileInstance((("i", 2),), (("i", 2),), False),
+    )
+    held_union = _layout_memory_plan(
+        target, (("i", 2),), held_tiles,
+        (BufferSpec("held_union", 4, ((0, 1), (2, 3)),
+                    False, True, True),))
+    held_buffer = held_union.buffers[0]
+    if held_buffer.allocation_elements_by_tile != \
+            ((0, 1, 2, 3), (0, 1, 2, 3)):
+        errors.append(
+            "held-once allocation must contain the union of all tile address sets")
+    if (held_buffer.logical_elements(0), held_buffer.logical_elements(1)) != \
+            ((0, 1), (2, 3)):
+        errors.append(
+            "held-once source-to-slot mapping lost per-tile exact accesses")
+
+    planned_spec = KernelSpec(
+        name="memory_plan_test", levels=tile_spec.levels,
+        build_chunk=_axpy_chunk, tileable=tile_spec.tileable,
+        memory_planner=_synthetic_memory_planner)
+    planned = derive_memory_plan(
+        planned_spec, Candidate((("i", 1, 1),), tile_sizes=(("i", 4),)),
+        target)
+    if planned.buffers[0].elements_by_tile != ((0, 1, 2, 3), (4, 5)):
+        errors.append(
+            f"memory planner lost exact tail address sets: "
+            f"{planned.buffers[0].elements_by_tile}")
+
+    preload_layout = _layout_memory_plan(
+        target, (), one_tile,
+        (BufferSpec("preload", 4, ((0, 1, 2, 3, 8, 9),),
+                    True, True, True),))
+    preload_accesses = preload_logical_accesses(
+        preload_layout.buffers[0], 0, target)
+    if preload_accesses != ((0, 1, 2, 3), (4, 5)):
+        errors.append(
+            f"preload coalescing/group compaction mismatch: {preload_accesses}")
+
+    conflict_free = scratchpad_bank_metrics(((0,), (1,)), target)
+    conflicting = scratchpad_bank_metrics(((0,), (4,)), target)
+    vector_conflict = scratchpad_bank_metrics(((0, 1, 2, 3), (4,)), target)
+    if (conflict_free.bank_lb, conflict_free.bank_sched) != (1, 1):
+        errors.append(f"conflict-free banks did not pack together: {conflict_free}")
+    if (conflicting.bank_lb, conflicting.bank_sched) != (2, 2):
+        errors.append(f"same-bank accesses did not serialize: {conflicting}")
+    if (vector_conflict.bank_lb, vector_conflict.bank_sched) != (2, 2):
+        errors.append(
+            f"vector access did not reserve every touched bank: {vector_conflict}")
+
+    preload_costs = (3, 7)
+    compute_costs = (10, 2)
+    if compose_serial_tiles(preload_costs, compute_costs) != 22:
+        errors.append("serial tile composition must sum every preload and compute")
+    if compose_ideal_dma_tiles(preload_costs, compute_costs) != 15:
+        errors.append("ideal-DMA tile composition must use adjacent exact costs")
+    if compose_ideal_dma_tiles((5,), (9,)) != 14:
+        errors.append("one-tile ideal-DMA composition must be preload + compute")
+
+    same_step = (("j", 0),)
+    packed_fanout = pack_scratchpad_accesses((
+        ScratchpadAccess("x", 4, same_step, 0, "x_j"),
+        ScratchpadAccess("x", 4, same_step, 0, "x_j"),
+    ), target)
+    if len(packed_fanout) != 1 or packed_fanout[0].logical_elements != (4,):
+        errors.append("same-address/same-step scratchpad reads must fan out")
+    packed_steps = pack_scratchpad_accesses((
+        ScratchpadAccess("x", 4, (("j", 0),), 0, "x_j"),
+        ScratchpadAccess("x", 4, (("j", 1),), 0, "x_j"),
+    ), target)
+    if len(packed_steps) != 2:
+        errors.append("same address at different logical steps must stay separate")
+    packed_stream = pack_scratchpad_accesses(tuple(
+        ScratchpadAccess("x", element, same_step, 0, "x_j")
+        for element in range(4)), target)
+    if len(packed_stream) != 1 or \
+            packed_stream[0].logical_elements != (0, 1, 2, 3):
+        errors.append("one declared contiguous stream must coalesce at fixed V=4")
+    unpacked_stream = pack_scratchpad_accesses(tuple(
+        ScratchpadAccess("x", element, same_step, 0, None)
+        for element in range(4)), target)
+    if len(unpacked_stream) != 4:
+        errors.append("contiguous accesses without a declared stream must stay scalar")
+    split_streams = pack_scratchpad_accesses((
+        ScratchpadAccess("x", 0, same_step, 0, "left"),
+        ScratchpadAccess("x", 1, same_step, 0, "right"),
+    ), target)
+    if len(split_streams) != 2:
+        errors.append("different declared streams must not coalesce together")
+
+    extended_spec = KernelSpec(
+        name="extended_search_test", levels=(Level("i", 6, "parallel"),),
+        build_chunk=_axpy_chunk,
+        order_spec=OrderSpec((("i",),)),
+        tileable=frozenset(("i",)),
+        memory_planner=_synthetic_memory_planner,
+        extended_plan_builder=_synthetic_extended_plan_builder)
+    serial_outcome = search(
+        extended_spec, parse_config("6x6"), 2, 2, 4, jobs=2,
+        target=target)
+    if serial_outcome.target_profile != target:
+        errors.append("extended search lost its target-profile identity")
+    if (serial_outcome.legal_candidate_count,
+            serial_outcome.deduped_group_count) != (12, 9):
+        errors.append(
+            "extended search candidate/group counts expected 12/9, got "
+            f"{serial_outcome.legal_candidate_count}/"
+            f"{serial_outcome.deduped_group_count}")
+    if serial_outcome.absolute_lb != 8:
+        errors.append(
+            f"extended serial global floor {serial_outcome.absolute_lb} != 8")
+    if serial_outcome.recommendation.cand.factors("i") != (1, 1):
+        errors.append(
+            "extended synthetic search expected the P1U1 saturation knee")
+    for result in serial_outcome.results:
+        if not (serial_outcome.absolute_lb <= result.plan_cgra_lb
+                <= result.pragma_exposure_aggregate):
+            errors.append("extended aggregate bracket failed in synthetic search")
+            break
+    structure_before_schedule = serial_outcome.recommendation.schedule_structure_key
+    _ensure_scheduled(
+        extended_spec, serial_outcome.recommendation,
+        parse_config("6x6"), target)
+    scheduled_rec = serial_outcome.recommendation
+    if not (serial_outcome.absolute_lb <= scheduled_rec.plan_cgra_lb
+            <= scheduled_rec.pragma_exposure_aggregate
+            <= scheduled_rec.schedule_estimate):
+        errors.append("extended scheduled four-term bracket failed")
+    if scheduled_rec.schedule_structure_key != structure_before_schedule:
+        errors.append("lazy scheduling changed the extended structure key")
+
+    equivalent_pu = [
+        result for result in serial_outcome.results
+        if result.cand.tile_sizes == (("i", 2),)
+        and result.cand.factors("i") in ((1, 2), (2, 1))
+    ]
+    if len(equivalent_pu) != 2 or len(_dedup(equivalent_pu)) != 1:
+        errors.append(
+            "extended dedup must group equivalent P/U at fixed order and tile")
+
+    report, report_rec, report_lb = run(
+        extended_spec, parse_config("6x6"), 2, 2, 4,
+        top=2, jobs=1, target=target)
+    if ("analytic_prefilter" not in report
+            or "absolute_cgra_lb=8" not in report
+            or "plan_lb" not in report
+            or "preload mode `serial`" not in report
+            or "Ideal-DMA sensitivity (same config):" not in report
+            or "absolute_cgra_lb=7" not in report
+            or "inactive ping-pong fill does not contend" not in report
+            or report_lb != 8
+            or report_rec.schedule_estimate is None):
+        errors.append("extended run/render path omitted required synthetic evidence")
+
+    ideal_outcome = search(
+        extended_spec, parse_config("6x6"), 2, 2, 4, jobs=1,
+        target=dma_target)
+    if ideal_outcome.absolute_lb != 7:
+        errors.append(
+            f"extended ideal-DMA global floor {ideal_outcome.absolute_lb} != 7")
+    ideal_report, ideal_report_rec, ideal_report_lb = run(
+        extended_spec, parse_config("6x6"), 2, 2, 4,
+        top=1, jobs=1, target=dma_target)
+    if ("preload mode `ideal_dma`" not in ideal_report
+            or "Ideal-DMA assumption:" not in ideal_report
+            or "Ideal-DMA sensitivity (same config):" in ideal_report
+            or ideal_report_lb != 7
+            or ideal_report_rec.schedule_estimate is None):
+        errors.append("explicit ideal-DMA run/report behavior is inconsistent")
+
+    tiny_serial_target = AnalyticTargetSpec(
+        name="tiny-8b", capacity_bytes=8)
+    tiny_report, tiny_rec, tiny_lb = run(
+        extended_spec, parse_config("6x6"), 2, 2, 4,
+        top=1, jobs=1, target=tiny_serial_target)
+    if ("Ideal-DMA sensitivity: no legal candidate under double-buffer "
+            "capacity." not in tiny_report
+            or "inactive ping-pong fill does not contend" in tiny_report
+            or tiny_rec.target_profile != tiny_serial_target
+            or tiny_lb <= 0):
+        errors.append(
+            "serial report must survive an ideal-DMA double-buffer capacity miss")
+    try:
+        search(
+            extended_spec, parse_config("6x6"), 2, 2, 4, jobs=1,
+            target=_target_with_preload_mode(
+                tiny_serial_target, "ideal_dma"))
+    except NoLegalExtendedCandidateError:
+        pass
+    else:
+        errors.append(
+            "8-byte ideal-DMA search must raise the dedicated no-legal error")
+
+    equality_spec = KernelSpec(
+        name="extended_identity_test",
+        levels=(Level("i", 6, "parallel"),
+                Level("j", 1, "reduction")),
+        build_chunk=_gemv_chunk,
+        order_spec=OrderSpec((("i", "j"), ("j", "i"))),
+        tileable=frozenset(("i",)),
+        memory_planner=_synthetic_memory_planner,
+        extended_plan_builder=_synthetic_extended_plan_builder)
+    source_cand = Candidate((("i", 1, 2), ("j", 1, 1)))
+    alternate_cand = Candidate(
+        (("i", 1, 2), ("j", 1, 1)), ("j", "i"))
+    source_result = evaluate_candidate(
+        equality_spec, source_cand, parse_config("6x6"),
+        schedule=False, target=target)
+    alternate_result = evaluate_candidate(
+        equality_spec, alternate_cand, parse_config("6x6"),
+        schedule=False, target=target)
+    annotate_flags(equality_spec, [source_result, alternate_result], source_result)
+    if ("recommended" not in source_result.flags
+            or "recommended" in alternate_result.flags):
+        errors.append("extended flags must compare full candidate identity")
+    if len(_dedup([source_result, alternate_result])) != 2:
+        errors.append("extended dedup must retain distinct order/tile identities")
+
+    topology_variant = evaluate_candidate(
+        equality_spec, source_cand, parse_config("6x6"),
+        schedule=False, target=target)
+    topology_variant.schedule_structure_key = (("different-topology",),)
+    if len(_dedup([source_result, topology_variant])) != 2:
+        errors.append(
+            "extended dedup must retain aggregate-equal schedule topologies")
+
+    preload_store_variant = evaluate_candidate(
+        equality_spec, source_cand, parse_config("6x6"),
+        schedule=False, target=target)
+    preload_store_variant.preload_spad_store_ops += 1
+    if len(_dedup([source_result, preload_store_variant])) != 2:
+        errors.append(
+            "extended dedup must include scratchpad preload-store traffic")
+
+
 def _run_self_tests() -> int:
     errors: list[str] = []
     cfg = parse_config("6x6")
+
+    _run_extended_infrastructure_tests(errors)
 
     cfg4 = parse_config("4x4")
     cfg8 = parse_config("8x8")

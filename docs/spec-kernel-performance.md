@@ -1035,16 +1035,27 @@ mapping, access latency, and sharing scope. These properties **MUST NOT** be
 inferred from `fabric.memory`, `is_private`, `numRegion`, or a source
 `LOOM_MEMORY_BANK` annotation. Under `shared-spad-4k-v4`, all workers of one
 mapped kernel share one logical scratchpad address space. Resident buffers receive
-deterministic, non-overlapping logical base-element offsets. Buffers are allocated
-in their kernel-metadata declaration order. Each base is aligned to the least
-common multiple of the profile's bank count and vector width (four elements in
-`shared-spad-4k-v4`), and each replica receives its own aligned segment. Within a
-concrete tile, sort the buffer's unique source element indices and compact them in
-that order into offsets `0 .. count - 1` of the buffer segment. The exact source
-address set therefore defines a deterministic source-to-scratchpad map without
-charging sparse source-address holes against capacity. Alignment padding and
-replica segments do count against capacity. For bank accounting, `element_index`
-means this base-adjusted compact logical element index, and the fixed mapping is
+deterministic, non-overlapping logical base-element offsets. Resident allocations
+are separated by lifetime. Buffers loaded once and held occupy a stable held
+region, in kernel-metadata declaration order. Buffers refilled per tile are packed
+together, also in declaration order, into one refill frame whose span is the
+maximum complete packed layout of any concrete tile; canonical serial mode
+allocates one such frame and `ideal_dma` allocates two non-overlapping frames.
+This whole-tile maximum is intentionally not the sum of each buffer's independent
+maximum, because different buffers may peak on different tiles. Each segment is
+aligned to the least common multiple of the profile's bank count and vector width
+(four elements in `shared-spad-4k-v4`), and each replica receives its own aligned
+segment.
+
+Within a concrete tile, sort each buffer's unique source element indices and
+compact them in that order into offsets `0 .. count - 1` of its held segment or
+refill frame. Refilled buffer offsets may differ between tiles within the stable
+frame; held-once bases remain fixed. The exact source address set therefore
+defines a deterministic source-to-scratchpad map without charging sparse
+source-address holes against capacity. Alignment padding, held segments, replica
+segments, and one or two refill frames count against capacity. For bank
+accounting, `element_index` means this base-adjusted compact logical element
+index, and the fixed mapping is
 
 ```
 bank(element_index) = element_index % 4
