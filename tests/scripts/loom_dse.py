@@ -3978,6 +3978,65 @@ def _fmt_util(u):
     return "/".join(str(round(x * 100)) for x in u)
 
 
+def _extended_candidate_signature(spec: KernelSpec, cand: Candidate) -> str:
+    split = " ".join(f"{name}:P{parallel}U{unroll}"
+                     for name, parallel, unroll in cand.split)
+    order = ">".join(candidate_order(spec, cand))
+    tile_sizes = candidate_tile_sizes(spec, cand)
+    tile = (",".join(f"{name}:{size}" for name, size in tile_sizes)
+            if tile_sizes else "untiled")
+    return f"{split} order={order} tile={tile}"
+
+
+def _format_compact_ints(values) -> str:
+    unique = tuple(sorted(set(values)))
+    if not unique:
+        return "none"
+    if len(unique) <= 6:
+        return ",".join(str(value) for value in unique)
+    return f"{unique[0]}..{unique[-1]} ({len(unique)} values)"
+
+
+def _format_extended_jam(jam_plan: JamPlan | None) -> str:
+    if jam_plan is None or not jam_plan.edges:
+        return "none"
+    rendered = []
+    for edge in jam_plan.edges:
+        operands = (f"[{','.join(edge.shared_operands)}]"
+                    if edge.shared_operands else "")
+        rendered.append(f"{edge.outer}->{edge.inner}{operands}")
+    return ", ".join(rendered)
+
+
+def _format_extended_memory(memory: MemoryPlan) -> str:
+    rendered = []
+    for buffer in memory.buffers:
+        if buffer.placement == "direct":
+            rendered.append(f"{buffer.name}=direct")
+            continue
+        bases = _format_compact_ints(
+            base for base in buffer.base_elements_by_tile if base is not None)
+        lifetime = "refill/tile" if buffer.refill_each_tile else "held/kernel"
+        rendered.append(
+            f"{buffer.name}={buffer.placement}(base_elem={bases},"
+            f"replicas={buffer.replication_factor},lifetime={lifetime},"
+            f"capacity_x={buffer.capacity_factor})")
+    return "; ".join(rendered)
+
+
+def _format_extended_tails(memory: MemoryPlan) -> str:
+    shapes = []
+    for tile in memory.tiles:
+        if not tile.is_tail or tile.shape in shapes:
+            continue
+        shapes.append(tile.shape)
+    if not shapes:
+        return "none"
+    return ";".join(
+        ",".join(f"{name}:{extent}" for name, extent in shape)
+        for shape in shapes)
+
+
 def _render_extended_report(
         spec: KernelSpec, cfg: Config, results: list[CandResult], lb: int,
         rec: CandResult, search_scope: str, top: int,
@@ -3985,12 +4044,19 @@ def _render_extended_report(
         ideal_sensitivity: CandResult | None,
         ideal_sensitivity_unavailable: bool) -> str:
     target = rec.target_profile
+    memory = rec.memory_plan
+    _ensure_scheduled(spec, rec, cfg, target)
+    selected_tile = (",".join(
+        f"{name}:{size}" for name, size in memory.tile_sizes)
+        if memory.tile_sizes else "untiled")
     out = [
         f"# Loom pragma DSE (analytic_prefilter): {spec.name}  ({cfg.label})",
         "",
-        (f"Target profile: `{target.name}`; preload mode "
-         f"`{target.preload_mode}`; capacity {target.capacity_bytes} bytes; "
-         f"banks {target.banks}; fixed V={target.vector_width}."),
+        (f"Evidence: `analytic_prefilter`; target `{target.name}`; preload "
+         f"mode `{target.preload_mode}`; one {target.capacity_bytes}-byte "
+         f"scratchpad shared across this kernel; {target.banks} cyclic "
+         f"single-ported banks; {target.access_cycles}-cycle access; fixed "
+         f"V={target.vector_width}."),
         f"Search: {search_scope}.",
     ]
     groups = _dedup(results)
@@ -3998,8 +4064,8 @@ def _render_extended_report(
         f"Candidates: {len(results)} legal, {len(groups)} deduplicated groups; "
         f"`absolute_cgra_lb={lb}` is the profile-global floor.")
     out.append("")
-    header = (f"{'flags':<8} {'split':<44} {'plan_lb':>7} {'p_agg':>7} "
-              f"{'sched':>7} {'tiles':>5} {'cap_B':>6} {'bank':>5} "
+    header = (f"{'flags':<8} {'candidate':<104} {'plan_lb':>7} {'p_agg':>7} "
+              f"{'sched':>7} {'tiles':>5} {'cap_B':>6} {'bank lb/s':>11} "
               f"{'class':<14} {'util P/L/S':>11}")
     out.append(header)
     out.append("-" * len(header))
@@ -4023,29 +4089,50 @@ def _render_extended_report(
             flags += "b"
         if "oversubscribed" in result.flags:
             flags += "o"
-        signature = result.cand.signature()
+        signature = _extended_candidate_signature(spec, result.cand)
         if len(group) > 1:
             signature += f"  (+{len(group)-1} eq)"
+        bank = f"{result.bank_lb}/{result.bank_sched}"
         out.append(
-            f"{flags:<8} {signature:<44} {result.plan_cgra_lb:>7} "
+            f"{flags:<8} {signature:<104} {result.plan_cgra_lb:>7} "
             f"{result.pragma_exposure_aggregate:>7} "
             f"{result.schedule_estimate:>7} {result.num_tiles:>5} "
-            f"{result.capacity_bytes_used:>6} {result.bank_lb:>5} "
+            f"{result.capacity_bytes_used:>6} {bank:>11} "
             f"{result.saturation:<14} {_fmt_util(result.util):>11}")
     if omitted:
         out.append(f"... ({omitted} more groups omitted; use --top 0 for the "
                    "full sweep)")
     out.extend((
         "",
-        (f"RECOMMENDED: {rec.cand.signature()}  -> plan_lb={rec.plan_cgra_lb}, "
+        (f"RECOMMENDED: {_extended_candidate_signature(spec, rec.cand)}  -> "
+         f"plan_lb={rec.plan_cgra_lb}, "
          f"p_agg={rec.pragma_exposure_aggregate}, "
          f"sched={rec.schedule_estimate}, {rec.saturation}"),
         ("flags: K=recommended, b=below knee (latency-bound or recurring-"
          "traffic immature), o=oversubscribed."),
+        f"Order: `{'>'.join(candidate_order(spec, rec.cand))}`.",
+        f"Jam: {_format_extended_jam(rec.jam_plan)}.",
+        f"Memory: {_format_extended_memory(memory)}.",
+        (f"Tile: {selected_tile}; "
+         f"tails={_format_extended_tails(memory)}; "
+         f"num_tiles={rec.num_tiles}."),
+        (f"Capacity: {rec.capacity_bytes_used}/{target.capacity_bytes} B; "
+         f"held_region={memory.held_region_bytes} B; "
+         f"refill_frame={memory.refill_frame_bytes} B; "
+         f"frame_bases_B={_format_compact_ints(memory.refill_frame_bases_bytes)}."),
+        (f"Banks: bank_lb={rec.bank_lb} cycles; "
+         f"bank_sched={rec.bank_sched} cycles; "
+         f"gap={rec.bank_sched - rec.bank_lb} cycles."),
+        (f"Traffic: preload={rec.preload_scalar_elements} scalar elements, "
+         f"{rec.preload_load_ops} external-L ops, "
+         f"{rec.preload_spad_store_ops} scratchpad-S ops; "
+         f"spad_reads={rec.scratchpad_reads} scalar requests after jam fan-out; "
+         f"avoided_direct={rec.avoided_direct_loads} scalar external loads."),
     ))
     if rec.direct_plan_cgra_lb is not None:
         out.append(
-            "Direct-memory reference: "
+            "Direct-memory audit reference (excluded from resident-profile "
+            "legality, ranking, and floor): "
             f"plan_lb={rec.direct_plan_cgra_lb}, "
             f"p_agg={rec.direct_pragma_exposure_aggregate}, "
             f"sched={rec.direct_schedule_estimate}.")
@@ -4053,7 +4140,8 @@ def _render_extended_report(
         out.extend((
             "",
             ("Ideal-DMA sensitivity (same config): "
-             f"{ideal_sensitivity.cand.signature()} -> "
+             f"{_extended_candidate_signature(spec, ideal_sensitivity.cand)} "
+             "-> "
              f"absolute_cgra_lb={ideal_sensitivity.absolute_cgra_lb}, "
              f"plan_lb={ideal_sensitivity.plan_cgra_lb}, "
              f"p_agg={ideal_sensitivity.pragma_exposure_aggregate}, "
@@ -4403,8 +4491,12 @@ def run(spec: KernelSpec, cfg: Config, max_parallel: int | None = None,
     for brief_cfg in brief_configs or []:
         brief = search(spec, brief_cfg, max_parallel, max_unroll, exposure_cap,
                        jobs, target)
+        brief_signature = (
+            _extended_candidate_signature(spec, brief.recommendation.cand)
+            if spec.extended_plan_builder is not None
+            else brief.recommendation.cand.signature())
         brief_recommendations.append(
-            (brief_cfg.label, brief.recommendation.cand.signature()))
+            (brief_cfg.label, brief_signature))
     report = render_report(
         spec, cfg, outcome.results, outcome.absolute_lb, outcome.demand,
         outcome.recommendation, outcome.search_scope, top=top,

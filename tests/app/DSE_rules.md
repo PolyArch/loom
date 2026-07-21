@@ -398,6 +398,31 @@ Extended pilot reports additionally document:
 - `candidates` / `deduped`: total legal candidates and equivalent groups retained
   after deterministic deduplication.
 
+The extended table renders these exact aliases:
+
+- `candidate`: the complete pragma split plus an explicit `order=` and `tile=`.
+  Source order is printed rather than hidden by its empty internal default, and a
+  full analytical tile is printed with its concrete level sizes; kernels without
+  tileable levels print `tile=untiled`.
+- `plan_lb`, `p_agg`, and `sched`: `plan_cgra_lb`,
+  `pragma_exposure_aggregate`, and `schedule_estimate`, in modeled cycles.
+- `tiles` and `cap_B`: concrete tile count and resident capacity in bytes.
+- `bank lb/s`: total compute/preload `bank_lb` and deterministic `bank_sched`, in
+  modeled cycles. The selected-plan detail prints their cycle gap; a positive gap
+  means stable earliest-fit packing serialized operations beyond the bank floor.
+
+Selected-plan traffic units are explicit: preload reports scalar elements plus
+coalesced external-`L` and scratchpad-`S` lane-slot operations; `spad_reads`
+reports scalar requests after declared jam fan-out; `avoided_direct` reports
+scalar external loads eliminated after paying the preload traffic. Logical buffer
+bases are element offsets, while frame bases and capacity are bytes.
+
+When a pilot retains its old direct path for comparison, the report labels it a
+**direct-memory audit reference** and prints its `plan_lb`, `p_agg`, and `sched`.
+That reference is not a legal alternative inside the named resident target, does
+not participate in recommendation, and cannot lower that profile's
+`absolute_cgra_lb`.
+
 The detailed table and recommendation use canonical serial composition. A concise
 `ideal_dma` line is a separately ranked sensitivity result with its overlap and
 no-contention assumptions; it is not a lower bound.

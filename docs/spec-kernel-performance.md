@@ -1224,6 +1224,14 @@ selected order and jam edges; placement and logical offsets; tile sizes, tail
 shape, and tile count; capacity use; bank floor and bank schedule; and external
 preload, scratchpad-read, and avoided-direct traffic.
 
+A pilot **MAY** additionally retain its direct-memory phase summaries as an audit
+reference for the same transformation. The common evaluator **MUST** compose the
+reference's `plan_cgra_lb`, `pragma_exposure_aggregate`, and
+`schedule_estimate`, but the report **MUST** label those values as outside the
+named resident profile. A direct reference is not a placement candidate, does not
+participate in recommendation or capacity legality, and **MUST NOT** contribute
+to the resident profile's `absolute_cgra_lb`.
+
 This exploratory estimate is **not** the aggregate CGRA lower bound, **not** the
 fully-unrolled ASAP metric, and **not** cycle-accurate RTL. It models candidate
 memory-lane exposure and optional vector coalescing. The legacy path does not
