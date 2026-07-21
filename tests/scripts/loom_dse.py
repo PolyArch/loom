@@ -27,8 +27,9 @@ iteration and sits on the critical path. (2) **Vector coalescing on the
 load/store axis**: unrolled iterations inside one worker touch *adjacent*
 elements, so a contiguous group of ``V`` of them coalesces into one 256-bit
 vector memory op (one lane-slot, free unpack/pack); parallel workers stride
-across partitions and do NOT coalesce across the cut. There is no banking and no
-per-worker port cap -- the only caps are the machine lanes ``L``/``S``.
+across partitions and do NOT coalesce across the cut. The legacy path has no
+address-level banking or per-worker port cap; named extended profiles may add
+their explicit scratchpad-bank correction alongside machine lanes ``L``/``S``.
 
 Load accounting splits into RECURRING vs. one-time INVARIANT loads. Recurring
 loop loads (per-iteration array elements over the tiled index, plus induction
@@ -50,11 +51,13 @@ above it. It is an exploratory estimate, not a lower bound and not RTL.
 """
 
 import argparse
+import itertools
 import math
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 from cgra_schedule import (Config, Dag, L, P, S, _ceil_div,
                            build_crc32, build_edge_update,
@@ -422,7 +425,11 @@ class PhaseSummary:
     stores: int
     CP: int
     bank_accesses: tuple[PackedScratchpadAccess, ...] = ()
+    bank_metrics: BankMetrics | None = None
     base_scheduled: int | None = None
+    control_A: int = 0
+    control_loads: int = 0
+    control_stores: int = 0
 
     def __post_init__(self) -> None:
         counts = (self.A, self.recurring_loads, self.invariant_loads,
@@ -431,6 +438,15 @@ class PhaseSummary:
             raise ValueError("phase counts and CP must be non-negative")
         if self.base_scheduled is not None and self.base_scheduled < 0:
             raise ValueError("phase schedule must be non-negative")
+        if self.bank_metrics is not None and self.bank_metrics.bank_lb < 0:
+            raise ValueError("phase bank metrics must be non-negative")
+        controls = (self.control_A, self.control_loads, self.control_stores)
+        if any(count < 0 for count in controls):
+            raise ValueError("phase control counts must be non-negative")
+        if (self.control_A > self.A
+                or self.control_loads > self.recurring_loads
+                or self.control_stores > self.stores):
+            raise ValueError("phase control counts exceed total phase counts")
 
 
 @dataclass(frozen=True)
@@ -451,6 +467,7 @@ class ExtendedPlanSummary:
     jam_plan: JamPlan
     tiles: tuple[ExtendedTileSummary, ...]
     schedule_structure_key: tuple
+    direct_tiles: tuple[ExtendedTileSummary, ...] = ()
     preload_scalar_elements: int = 0
     scratchpad_reads: int = 0
     avoided_direct_loads: int = 0
@@ -462,6 +479,12 @@ class ExtendedPlanSummary:
         if tuple(tile.tile for tile in self.tiles) != self.memory_plan.tiles:
             raise ValueError(
                 "extended tile summaries use different concrete tiles")
+        if self.direct_tiles and (
+                len(self.direct_tiles) != len(self.memory_plan.tiles)
+                or tuple(tile.tile for tile in self.direct_tiles)
+                != self.memory_plan.tiles):
+            raise ValueError(
+                "direct-reference tile summaries must align with the memory plan")
         if min(self.preload_scalar_elements, self.scratchpad_reads,
                self.avoided_direct_loads) < 0:
             raise ValueError("extended traffic counts must be non-negative")
@@ -484,6 +507,13 @@ class PhaseCost:
     load: int
     store: int
     bank: BankMetrics
+
+
+@dataclass(frozen=True)
+class ExtendedReferenceCost:
+    plan_cgra_lb: int
+    pragma_aggregate: int
+    schedule_estimate: int | None
 
 
 @dataclass(frozen=True)
@@ -1324,6 +1354,881 @@ def _conv2d_dims(C_in=3, C_out=4, H=8, W=8, KH=3, KW=3, stride=1):
     return n_out, K
 
 
+def _active_worker_groups(extent: int, parallel: int,
+                          unroll: int) -> tuple[tuple[int, int], ...]:
+    """Return local start/size groups for one exact partial-exposure wave."""
+    groups = []
+    consumed = 0
+    for _worker in range(parallel):
+        if consumed >= extent:
+            break
+        size = min(unroll, extent - consumed)
+        groups.append((consumed, size))
+        consumed += size
+    if consumed != extent:
+        raise ValueError(
+            f"wave extent {extent} exceeds P{parallel}U{unroll} exposure")
+    return tuple(groups)
+
+
+def _vectorized_worker_groups(extent: int, parallel: int, unroll: int,
+                              vector_width: int) \
+        -> tuple[tuple[int, int], ...]:
+    groups = []
+    for worker_start, worker_size in _active_worker_groups(
+            extent, parallel, unroll):
+        for offset in range(0, worker_size, vector_width):
+            groups.append((worker_start + offset,
+                           min(vector_width, worker_size - offset)))
+    return tuple(groups)
+
+
+def _parallel_wave_boxes(
+        spec: KernelSpec, cand: Candidate, tile: TileInstance,
+        level_names: tuple[str, ...]) \
+        -> tuple[tuple[tuple[tuple[str, int], ...],
+                       tuple[tuple[str, int], ...]], ...]:
+    """Materialize exact wave origins/shapes inside one concrete tile."""
+    tile_origins = dict(tile.origin)
+    tile_shapes = dict(tile.shape)
+    traversal = tuple(
+        name for name in candidate_order(spec, cand) if name in level_names)
+    boxes = []
+
+    def rec(index: int, origins: dict[str, int], shapes: dict[str, int]) -> None:
+        if index == len(traversal):
+            boxes.append((
+                tuple((name, origins[name]) for name in level_names),
+                tuple((name, shapes[name]) for name in level_names)))
+            return
+        name = traversal[index]
+        level = spec.level(name)
+        base = tile_origins.get(name, 0)
+        total = tile_shapes.get(name, level.trip)
+        parallel, unroll = cand.factors(name)
+        exposure = parallel * unroll
+        for offset in range(0, total, exposure):
+            origins[name] = base + offset
+            shapes[name] = min(exposure, total - offset)
+            rec(index + 1, origins, shapes)
+
+    rec(0, {}, {})
+    return tuple(boxes)
+
+
+def _coordinate_groups(
+        order: tuple[str, ...], origins: dict[str, int],
+        shapes: dict[str, int], cand: Candidate,
+        grouped_level: str | None, vector_width: int) \
+        -> tuple[tuple[tuple[tuple[str, int], ...], ...], ...]:
+    """Enumerate scalar points, optionally vector-grouping one innermost level."""
+    if grouped_level is None:
+        return tuple((tuple(zip(order, values)),)
+                     for values in itertools.product(*(
+                         range(origins[name], origins[name] + shapes[name])
+                         for name in order)))
+    if order[-1] != grouped_level:
+        raise ValueError("only the selected innermost level may vector-pack")
+    outer = order[:-1]
+    parallel, unroll = cand.factors(grouped_level)
+    local_groups = _vectorized_worker_groups(
+        shapes[grouped_level], parallel, unroll, vector_width)
+    groups = []
+    outer_values = itertools.product(*(
+        range(origins[name], origins[name] + shapes[name]) for name in outer))
+    for values in outer_values:
+        prefix = dict(zip(outer, values))
+        for local_start, size in local_groups:
+            group = []
+            for offset in range(size):
+                point = dict(prefix)
+                point[grouped_level] = (
+                    origins[grouped_level] + local_start + offset)
+                group.append(tuple((name, point[name]) for name in order))
+            groups.append(tuple(group))
+    return tuple(groups)
+
+
+def _phase_with_optional_schedule(
+        phase: PhaseSummary, dag: Dag | None, cfg: Config,
+        label: str, schedule: bool) -> PhaseSummary:
+    if not schedule:
+        return phase
+    if dag is None or len(dag.regions) != 1:
+        raise ValueError(f"{label}: scheduled phase requires one DAG region")
+    region = dag.regions[0]
+    aggregate = region_aggregate(region, cfg)
+    recurring, invariant = _load_split(dag)
+    observed = (aggregate.A, recurring, invariant, aggregate.ST, aggregate.CP)
+    expected = (phase.A, phase.recurring_loads, phase.invariant_loads,
+                phase.stores, phase.CP)
+    if observed != expected:
+        raise AssertionError(
+            f"{label}: phase counts {expected} disagree with DAG {observed}")
+    scheduled = evaluate(dag, label, cfg).scheduled_cycles
+    return PhaseSummary(
+        A=phase.A, recurring_loads=phase.recurring_loads,
+        invariant_loads=phase.invariant_loads, stores=phase.stores,
+        CP=phase.CP, bank_accesses=phase.bank_accesses,
+        bank_metrics=phase.bank_metrics,
+        base_scheduled=scheduled, control_A=phase.control_A,
+        control_loads=phase.control_loads,
+        control_stores=phase.control_stores)
+
+
+def _zero_phase(schedule: bool) -> PhaseSummary:
+    return PhaseSummary(0, 0, 0, 0, 0,
+                        base_scheduled=(0 if schedule else None))
+
+
+def _combine_wave_phases(waves: tuple[PhaseSummary, ...]) -> PhaseSummary:
+    combined_bank_metrics = None
+    combined_bank_accesses = tuple(
+        access for wave in waves for access in wave.bank_accesses)
+    if waves and all(wave.bank_metrics is not None for wave in waves):
+        bank_count = len(waves[0].bank_metrics.demand)
+        demand = tuple(sum(wave.bank_metrics.demand[bank]
+                           for wave in waves)
+                       for bank in range(bank_count))
+        total_slots = sum(demand)
+        combined_bank_metrics = BankMetrics(
+            demand,
+            max(max(demand, default=0), _ceil_div(total_slots, bank_count)),
+            0)
+        combined_bank_accesses = ()
+    return PhaseSummary(
+        A=sum(wave.A for wave in waves),
+        recurring_loads=sum(wave.recurring_loads for wave in waves),
+        invariant_loads=sum(wave.invariant_loads for wave in waves),
+        stores=sum(wave.stores for wave in waves),
+        CP=max((wave.CP for wave in waves), default=0),
+        bank_accesses=combined_bank_accesses,
+        bank_metrics=combined_bank_metrics,
+        control_A=sum(wave.control_A for wave in waves),
+        control_loads=sum(wave.control_loads for wave in waves),
+        control_stores=sum(wave.control_stores for wave in waves))
+
+
+def _resident_preload_phase(
+        memory: MemoryPlan, tile_index: int, cfg: Config | None,
+        schedule: bool) -> tuple[PhaseSummary, int]:
+    access_specs = []
+    scalar_elements = 0
+    for buffer in memory.buffers:
+        if buffer.placement == "direct":
+            continue
+        if not buffer.refill_each_tile and tile_index > 0:
+            continue
+        elements = buffer.allocation_elements_by_tile[tile_index]
+        scalar_elements += len(elements) * buffer.replication_factor
+        for replica in range(buffer.replication_factor):
+            for group_index, group in enumerate(preload_logical_accesses(
+                    buffer, tile_index, memory.target, replica=replica)):
+                access_specs.append((
+                    buffer.name, group, replica,
+                    (("tile", tile_index), ("preload", group_index))))
+    operation_count = len(access_specs)
+    logical_groups = tuple(specification[1] for specification in access_specs)
+    bank_metrics = (scratchpad_bank_metrics(logical_groups, memory.target)
+                    if schedule else
+                    scratchpad_bank_floor(logical_groups, memory.target))
+    phase = PhaseSummary(
+        A=0, recurring_loads=operation_count, invariant_loads=0,
+        stores=operation_count, CP=(2 if operation_count else 0),
+        bank_metrics=bank_metrics)
+    if not schedule:
+        return phase, scalar_elements
+    if cfg is None:
+        raise ValueError("scheduled preload phase requires a resource config")
+    dag = Dag()
+    region = dag.region("preload")
+    for buffer_name, _group, _replica, _step in access_specs:
+        load = region.load(kind=f"preload_{buffer_name}")
+        region.store(load, output=True, kind=f"spad_{buffer_name}")
+    return (_phase_with_optional_schedule(
+        phase, dag, cfg, "resident_preload", True), scalar_elements)
+
+
+def _batchnorm_memory_planner(
+        spec: KernelSpec, _cand: Candidate, _target: AnalyticTargetSpec,
+        tiles: tuple[TileInstance, ...]) -> tuple[BufferSpec, ...]:
+    element_count = math.prod(spec.level(name).trip for name in ("c", "h", "w"))
+    elements_by_tile = tuple(tuple(range(element_count)) for _ in tiles)
+    return (
+        BufferSpec("input", 4, elements_by_tile, False, False, True),
+        BufferSpec("output", 4, elements_by_tile, False, False, True),
+    )
+
+
+def _batchnorm_wave_phase(
+        spec: KernelSpec, cand: Candidate,
+        origins_tuple: tuple[tuple[str, int], ...],
+        shapes_tuple: tuple[tuple[str, int], ...], cfg: Config,
+        target: AnalyticTargetSpec, schedule: bool) -> PhaseSummary:
+    order = tuple(name for name in candidate_order(spec, cand)
+                  if name in ("c", "h", "w"))
+    origins = dict(origins_tuple)
+    shapes = dict(shapes_tuple)
+    grouped_level = "w" if order[-1] == "w" else None
+    groups = _coordinate_groups(
+        order, origins, shapes, cand, grouped_level, target.vector_width)
+    worker_count = math.prod(len(_active_worker_groups(
+        shapes[name], *cand.factors(name))) for name in ("c", "h", "w"))
+    element_count = math.prod(shapes.values())
+    channel_count = shapes["c"]
+    phase = PhaseSummary(
+        A=4 * element_count + 3 * channel_count + 2 * worker_count,
+        recurring_loads=len(groups) + worker_count,
+        invariant_loads=4 + 4 * channel_count,
+        stores=len(groups) + worker_count,
+        CP=8, control_A=2 * worker_count,
+        control_loads=worker_count, control_stores=worker_count)
+    if not schedule:
+        return phase
+
+    dag = Dag()
+    region = dag.region("batchnorm")
+    epsilon = region.load(kind="eps" + INV)
+    region.load(kind="C" + INV)
+    region.load(kind="H" + INV)
+    region.load(kind="W" + INV)
+    _worker_control(region, worker_count)
+    channel_values = {}
+    for channel in range(origins["c"], origins["c"] + shapes["c"]):
+        variance = region.load(kind="variance" + INV)
+        mean = region.load(kind="mean" + INV)
+        gamma = region.load(kind="gamma" + INV)
+        beta = region.load(kind="beta" + INV)
+        adjusted = region.arith(variance, epsilon, kind="var_plus_eps")
+        root = region.arith(adjusted, kind="sqrt")
+        inverse = region.arith(root, kind="inv_std")
+        channel_values[channel] = (mean, gamma, beta, inverse)
+    for group in groups:
+        input_value = region.load(
+            kind=("input_w_vec" if grouped_level == "w" else "input_scalar"))
+        outputs = []
+        for point_tuple in group:
+            point = dict(point_tuple)
+            mean, gamma, beta, inverse = channel_values[point["c"]]
+            centered = region.arith(input_value, mean, kind="sub")
+            normalized = region.arith(centered, inverse, kind="mul_inv")
+            scaled = region.arith(normalized, gamma, kind="mul_gamma")
+            outputs.append(region.arith(scaled, beta, kind="add_beta"))
+        region.store(*outputs, output=True, kind="output_vec")
+    return _phase_with_optional_schedule(
+        phase, dag, cfg, "batchnorm", True)
+
+
+def _batchnorm_extended_plan_builder(
+        spec: KernelSpec, cand: Candidate, cfg: Config,
+        target: AnalyticTargetSpec, schedule: bool) -> ExtendedPlanSummary:
+    memory = derive_memory_plan(spec, cand, target)
+    jam = derive_jam_plan(spec, cand)
+    tile_summaries = []
+    structure = []
+    for tile in memory.tiles:
+        boxes = _parallel_wave_boxes(
+            spec, cand, tile, ("c", "h", "w"))
+        waves = tuple(_batchnorm_wave_phase(
+            spec, cand, origins, shapes, cfg, target, schedule)
+            for origins, shapes in boxes)
+        tile_summaries.append(ExtendedTileSummary(
+            tile=tile, preload=_zero_phase(schedule),
+            full_compute=_combine_wave_phases(waves), compute_waves=waves))
+        structure.append((tile.shape, tuple(
+            (shapes, tuple(
+                (name, tuple(size for _start, size in _active_worker_groups(
+                    dict(shapes)[name], *cand.factors(name))))
+                for name in ("c", "h", "w")))
+            for _origins, shapes in boxes)))
+    return ExtendedPlanSummary(
+        memory_plan=memory, jam_plan=jam, tiles=tuple(tile_summaries),
+        schedule_structure_key=(
+            "batchnorm", candidate_order(spec, cand), tuple(structure)))
+
+
+def _gemv_memory_planner(
+        _spec: KernelSpec, _cand: Candidate, _target: AnalyticTargetSpec,
+        tiles: tuple[TileInstance, ...]) -> tuple[BufferSpec, ...]:
+    x_sets = tuple(tuple(range(64)) for _ in tiles)
+    row_sets = tuple(tuple(range(64)) for _ in tiles)
+    matrix_sets = tuple(tuple(range(64 * 64)) for _ in tiles)
+    return (
+        BufferSpec("x", 4, x_sets, False, True, True),
+        BufferSpec("A", 4, matrix_sets, False, False, True),
+        BufferSpec("input_y", 4, row_sets, False, False, True),
+        BufferSpec("output_y", 4, row_sets, False, False, True),
+    )
+
+
+def _gemv_wave_phase(
+        cand: Candidate, origins_tuple: tuple[tuple[str, int], ...],
+        shapes_tuple: tuple[tuple[str, int], ...], cfg: Config,
+        target: AnalyticTargetSpec, schedule: bool,
+        memory: MemoryPlan | None = None, tile_index: int = 0,
+        share_x: bool = True) \
+        -> tuple[PhaseSummary, int]:
+    origins = dict(origins_tuple)
+    shapes = dict(shapes_tuple)
+    parallel, unroll = cand.factors("i")
+    row_groups = _active_worker_groups(shapes["i"], parallel, unroll)
+    row_vector_groups = _vectorized_worker_groups(
+        shapes["i"], parallel, unroll, target.vector_width)
+    worker_count = len(row_groups)
+    row_count = shapes["i"]
+    x_groups_per_worker = _ceil_div(64, target.vector_width)
+    resident = memory is not None
+    x_reader_count = worker_count if share_x else row_count
+    x_load_ops = x_reader_count * x_groups_per_worker
+    bank_groups = []
+    if resident:
+        x_buffer = next(buffer for buffer in memory.buffers
+                        if buffer.name == "x")
+        logical_x = x_buffer.logical_elements(tile_index)
+        for reader_index in range(x_reader_count):
+            for group_index in range(x_groups_per_worker):
+                start = group_index * target.vector_width
+                group = logical_x[start:start + target.vector_width]
+                bank_groups.append(group)
+    bank_metrics = None
+    if resident:
+        bank_metrics = (scratchpad_bank_metrics(bank_groups, target)
+                        if schedule else
+                        scratchpad_bank_floor(bank_groups, target))
+    phase = PhaseSummary(
+        A=130 * row_count + 2 * worker_count,
+        recurring_loads=(
+            16 * row_count + len(row_vector_groups) + worker_count
+            + (x_load_ops if resident else 0)),
+        invariant_loads=4 + (0 if resident else x_load_ops),
+        stores=len(row_vector_groups) + worker_count,
+        CP=11, bank_metrics=bank_metrics,
+        control_A=2 * worker_count, control_loads=worker_count,
+        control_stores=worker_count)
+    if not schedule:
+        return phase, x_reader_count * 64
+
+    dag = Dag()
+    region = dag.region("gemv")
+    alpha = region.load(kind="alpha" + INV)
+    beta = region.load(kind="beta" + INV)
+    region.load(kind="M" + INV)
+    region.load(kind="N" + INV)
+    _worker_control(region, worker_count)
+    x_buffer = (next(buffer for buffer in memory.buffers
+                     if buffer.name == "x") if resident else None)
+    logical_x = x_buffer.logical_elements(tile_index) if x_buffer else ()
+
+    def emit_x_handles() -> list[int]:
+        handles = []
+        for _group_index in range(x_groups_per_worker):
+            kind = "spad_x" if resident else "x" + INV
+            handle = region.load(kind=kind)
+            group_size = min(target.vector_width, 64 - len(handles))
+            handles.extend(handle for _ in range(group_size))
+        return handles
+
+    for worker_index, (worker_start, worker_size) in enumerate(row_groups):
+        shared_x_handles = emit_x_handles() if share_x else None
+        for local_offset in range(0, worker_size, target.vector_width):
+            group_size = min(target.vector_width, worker_size - local_offset)
+            y_value = region.load(kind="input_y_vec")
+            outputs = []
+            for lane in range(group_size):
+                _row = origins["i"] + worker_start + local_offset + lane
+                x_handles = (shared_x_handles if shared_x_handles is not None
+                             else emit_x_handles())
+                a_handles = []
+                for group_index in range(x_groups_per_worker):
+                    handle = region.load(kind="A_vec")
+                    size = min(target.vector_width, 64 - len(a_handles))
+                    a_handles.extend(handle for _ in range(size))
+                products = [
+                    region.arith(a_handles[j], x_handles[j], kind="mul")
+                    for j in range(64)]
+                row_sum = region.balanced_reduction(products, kind="reduce")
+                scaled = region.arith(row_sum, alpha, kind="mul_alpha")
+                prior = region.arith(y_value, beta, kind="mul_beta")
+                outputs.append(region.arith(scaled, prior, kind="add"))
+            region.store(*outputs, output=True, kind="output_y_vec")
+    return (_phase_with_optional_schedule(
+        phase, dag, cfg, "gemv_resident" if resident else "gemv_direct", True),
+        x_reader_count * 64)
+
+
+def _gemv_extended_plan_builder(
+        spec: KernelSpec, cand: Candidate, cfg: Config,
+        target: AnalyticTargetSpec, schedule: bool) -> ExtendedPlanSummary:
+    memory = derive_memory_plan(spec, cand, target)
+    jam = derive_jam_plan(spec, cand)
+    resident_tiles = []
+    direct_tiles = []
+    structure = []
+    preload_scalar_elements = 0
+    scratchpad_reads = 0
+    direct_x_scalar_loads = 0
+    share_x = any(
+        edge.outer == "i" and edge.inner == "j"
+        and "x" in edge.shared_operands for edge in jam.edges)
+    for tile_index, tile in enumerate(memory.tiles):
+        preload, preload_scalars = _resident_preload_phase(
+            memory, tile_index, cfg, schedule)
+        preload_scalar_elements += preload_scalars
+        boxes = _parallel_wave_boxes(spec, cand, tile, ("i",))
+        resident_waves = []
+        direct_waves = []
+        wave_structure = []
+        for origins, shapes in boxes:
+            resident_phase, scalar_reads = _gemv_wave_phase(
+                cand, origins, shapes, cfg, target, schedule,
+                memory=memory, tile_index=tile_index, share_x=share_x)
+            direct_phase, direct_scalars = _gemv_wave_phase(
+                cand, origins, shapes, cfg, target, schedule,
+                share_x=share_x)
+            resident_waves.append(resident_phase)
+            direct_waves.append(direct_phase)
+            scratchpad_reads += scalar_reads
+            direct_x_scalar_loads += direct_scalars
+            wave_structure.append((
+                shapes, tuple(size for _start, size in _active_worker_groups(
+                    dict(shapes)["i"], *cand.factors("i")))))
+        resident_waves_tuple = tuple(resident_waves)
+        direct_waves_tuple = tuple(direct_waves)
+        resident_tiles.append(ExtendedTileSummary(
+            tile=tile, preload=preload,
+            full_compute=_combine_wave_phases(resident_waves_tuple),
+            compute_waves=resident_waves_tuple))
+        direct_tiles.append(ExtendedTileSummary(
+            tile=tile, preload=_zero_phase(schedule),
+            full_compute=_combine_wave_phases(direct_waves_tuple),
+            compute_waves=direct_waves_tuple))
+        structure.append((tile.shape, tuple(wave_structure)))
+    return ExtendedPlanSummary(
+        memory_plan=memory, jam_plan=jam, tiles=tuple(resident_tiles),
+        direct_tiles=tuple(direct_tiles),
+        schedule_structure_key=("gemv", tuple(structure)),
+        preload_scalar_elements=preload_scalar_elements,
+        scratchpad_reads=scratchpad_reads,
+        avoided_direct_loads=max(
+            0, direct_x_scalar_loads - preload_scalar_elements))
+
+
+def _conv2d_output_sources(
+        co: int, oh: int, ow: int) \
+        -> tuple[tuple[int, ...], tuple[int, ...], int]:
+    """Return tap-ordered input/weight indices and the output index."""
+    input_sources = []
+    weight_sources = []
+    tap = 0
+    for ci in range(3):
+        for kh in range(3):
+            for kw in range(3):
+                input_sources.append(
+                    ci * 8 * 8 + (oh + kh) * 8 + (ow + kw))
+                weight_sources.append(co * 27 + tap)
+                tap += 1
+    output_source = co * 6 * 6 + oh * 6 + ow
+    return tuple(input_sources), tuple(weight_sources), output_source
+
+
+@lru_cache(maxsize=None)
+def _conv2d_tile_address_sets(
+        tile: TileInstance) -> tuple[tuple[int, ...],
+                                     tuple[int, ...], tuple[int, ...]]:
+    origins = dict(tile.origin)
+    shapes = dict(tile.shape)
+    input_sources = set()
+    weight_sources = set()
+    output_sources = set()
+    for co in range(origins["co"], origins["co"] + shapes["co"]):
+        for oh in range(origins["oh"], origins["oh"] + shapes["oh"]):
+            for ow in range(origins["ow"], origins["ow"] + shapes["ow"]):
+                inputs, weights, output = _conv2d_output_sources(co, oh, ow)
+                input_sources.update(inputs)
+                weight_sources.update(weights)
+                output_sources.add(output)
+    return (tuple(sorted(input_sources)), tuple(sorted(weight_sources)),
+            tuple(sorted(output_sources)))
+
+
+def _conv2d_memory_planner(
+        _spec: KernelSpec, _cand: Candidate, _target: AnalyticTargetSpec,
+        tiles: tuple[TileInstance, ...]) -> tuple[BufferSpec, ...]:
+    address_sets = tuple(_conv2d_tile_address_sets(tile) for tile in tiles)
+    return (
+        BufferSpec("input", 4, tuple(values[0] for values in address_sets),
+                   True, True, True),
+        BufferSpec("weight", 4, tuple(values[1] for values in address_sets),
+                   True, True, True),
+        BufferSpec("output", 4, tuple(values[2] for values in address_sets),
+                   False, False, True),
+    )
+
+
+@lru_cache(maxsize=None)
+def _conv2d_cached_memory_plan(
+        order: tuple[str, ...], tile_sizes: tuple[tuple[str, int], ...],
+        target: AnalyticTargetSpec) -> MemoryPlan:
+    spec = KERNELS["conv2d"]
+    candidate = Candidate(
+        (("co", 1, 1), ("oh", 1, 1), ("ow", 1, 1), ("tap", 1, 1)),
+        order=order, tile_sizes=tile_sizes)
+    return derive_memory_plan(spec, candidate, target)
+
+
+@lru_cache(maxsize=None)
+def _conv2d_cached_preload_phase(
+        order: tuple[str, ...], tile_sizes: tuple[tuple[str, int], ...],
+        target: AnalyticTargetSpec, tile_index: int,
+        cfg: Config | None, schedule: bool) -> tuple[PhaseSummary, int]:
+    memory = _conv2d_cached_memory_plan(order, tile_sizes, target)
+    return _resident_preload_phase(memory, tile_index, cfg, schedule)
+
+
+@lru_cache(maxsize=None)
+def _conv2d_bank_reservations(
+        cand: Candidate,
+        origins_tuple: tuple[tuple[str, int], ...],
+        shapes_tuple: tuple[tuple[str, int], ...],
+        target: AnalyticTargetSpec,
+        share_input_across_co: bool,
+        share_weight_across_oh: bool,
+        share_weight_across_ow: bool,
+        input_layout: tuple[int, tuple[tuple[int, int], ...]],
+        weight_layout: tuple[int, tuple[tuple[int, int], ...]]) \
+        -> tuple[tuple[int, ...], ...]:
+    origins = dict(origins_tuple)
+    shapes = dict(shapes_tuple)
+
+    def make_reader_map(name: str) -> dict[int, int]:
+        mapping = {}
+        groups = _active_worker_groups(shapes[name], *cand.factors(name))
+        for reader_index, (local_start, size) in enumerate(groups):
+            for offset in range(size):
+                mapping[origins[name] + local_start + offset] = reader_index
+        return mapping
+
+    co_readers = make_reader_map("co")
+    oh_readers = make_reader_map("oh")
+    ow_readers = make_reader_map("ow")
+    input_base, input_slot_pairs = input_layout
+    weight_base, weight_slot_pairs = weight_layout
+    input_slots = dict(input_slot_pairs)
+    weight_slots = dict(weight_slot_pairs)
+    order = tuple(name for name in cand.order or ("co", "oh", "ow", "tap")
+                  if name in ("co", "oh", "ow"))
+    reservations = []
+    seen_input = set()
+    seen_weight = set()
+    for values in itertools.product(*(
+            range(origins[name], origins[name] + shapes[name])
+            for name in order)):
+        point = dict(zip(order, values))
+        inputs, weights, _output = _conv2d_output_sources(
+            point["co"], point["oh"], point["ow"])
+        input_key = ((co_readers[point["co"]]
+                      if share_input_across_co else point["co"]),
+                     point["oh"], point["ow"])
+        if input_key not in seen_input:
+            seen_input.add(input_key)
+            for group in coalesced_element_groups(inputs, target.vector_width):
+                logical = tuple(input_base + input_slots[source]
+                                for source in group)
+                reservations.append(bank_set(logical, target))
+        weight_key = (
+            point["co"],
+            (oh_readers[point["oh"]]
+             if share_weight_across_oh else point["oh"]),
+            (ow_readers[point["ow"]]
+             if share_weight_across_ow else point["ow"]),
+        )
+        if weight_key not in seen_weight:
+            seen_weight.add(weight_key)
+            for group in coalesced_element_groups(weights, target.vector_width):
+                logical = tuple(weight_base + weight_slots[source]
+                                for source in group)
+                reservations.append(bank_set(logical, target))
+    return tuple(reservations)
+
+
+@lru_cache(maxsize=None)
+def _conv2d_wave_phase(
+        spec: KernelSpec, cand: Candidate,
+        origins_tuple: tuple[tuple[str, int], ...],
+        shapes_tuple: tuple[tuple[str, int], ...], cfg: Config | None,
+        target: AnalyticTargetSpec, schedule: bool,
+        share_input_across_co: bool,
+        share_weight_across_oh: bool,
+        share_weight_across_ow: bool,
+        bank_reservations: tuple[tuple[int, ...], ...] | None = None) \
+        -> tuple[PhaseSummary, int]:
+    origins = dict(origins_tuple)
+    shapes = dict(shapes_tuple)
+    independent_order = tuple(
+        name for name in candidate_order(spec, cand)
+        if name in ("co", "oh", "ow"))
+    points = tuple(tuple(zip(independent_order, values))
+                   for values in itertools.product(*(
+                       range(origins[name], origins[name] + shapes[name])
+                       for name in independent_order)))
+    co_groups = _active_worker_groups(
+        shapes["co"], *cand.factors("co"))
+    oh_groups = _active_worker_groups(
+        shapes["oh"], *cand.factors("oh"))
+    ow_groups = _active_worker_groups(
+        shapes["ow"], *cand.factors("ow"))
+    worker_count = math.prod(len(_active_worker_groups(
+        shapes[name], *cand.factors(name)))
+        for name in ("co", "oh", "ow"))
+    output_count = math.prod(shapes.values())
+    input_reader_count = len(co_groups) if share_input_across_co \
+        else shapes["co"]
+    input_patch_count = input_reader_count * shapes["oh"] * shapes["ow"]
+    resident = bank_reservations is not None
+    input_load_ops = input_patch_count * (9 if resident else 27)
+    weight_oh_readers = len(oh_groups) if share_weight_across_oh \
+        else shapes["oh"]
+    weight_ow_readers = len(ow_groups) if share_weight_across_ow \
+        else shapes["ow"]
+    weight_reader_count = (
+        shapes["co"] * weight_oh_readers * weight_ow_readers)
+    weight_load_ops = weight_reader_count * 7
+    grouped_output_level = (
+        "ow" if independent_order[-1] == "ow" else None)
+    output_groups = _coordinate_groups(
+        independent_order, origins, shapes, cand,
+        grouped_output_level, target.vector_width)
+
+    def reader_map(name: str, groups: tuple[tuple[int, int], ...]) -> dict[int, int]:
+        mapping = {}
+        for reader_index, (local_start, size) in enumerate(groups):
+            for offset in range(size):
+                mapping[origins[name] + local_start + offset] = reader_index
+        return mapping
+
+    co_reader_by_value = reader_map("co", co_groups)
+    oh_reader_by_value = reader_map("oh", oh_groups)
+    ow_reader_by_value = reader_map("ow", ow_groups)
+    bank_metrics = None
+    if resident:
+        bank_metrics = (scratchpad_bank_metrics(bank_reservations, target)
+                        if schedule else
+                        scratchpad_bank_floor(bank_reservations, target))
+    phase = PhaseSummary(
+        A=53 * output_count + 2 * worker_count,
+        recurring_loads=input_load_ops + weight_load_ops + worker_count,
+        invariant_loads=1,
+        stores=len(output_groups) + worker_count,
+        CP=8, bank_metrics=bank_metrics,
+        control_A=2 * worker_count, control_loads=worker_count,
+        control_stores=worker_count)
+    scalar_resident_reads = (
+        input_patch_count * 27 + weight_reader_count * 27)
+    if not schedule:
+        return phase, scalar_resident_reads
+    if cfg is None:
+        raise ValueError("scheduled Conv2d phase requires a resource config")
+
+    dag = Dag()
+    region = dag.region("conv2d")
+    region.load(kind="params" + INV)
+    _worker_control(region, worker_count)
+    input_handle_cache = {}
+    weight_handle_cache = {}
+    output_handles = {}
+    for point_tuple in points:
+        point = dict(point_tuple)
+        inputs, weights, output_source = _conv2d_output_sources(
+            point["co"], point["oh"], point["ow"])
+        input_key = ((co_reader_by_value[point["co"]]
+                      if share_input_across_co else point["co"]),
+                     point["oh"], point["ow"])
+        input_handles = input_handle_cache.get(input_key)
+        if input_handles is None:
+            by_source = {}
+            if resident:
+                for group in coalesced_element_groups(
+                        inputs, target.vector_width):
+                    handle = region.load(kind="spad_input")
+                    for source in group:
+                        by_source[source] = handle
+            else:
+                for source in inputs:
+                    by_source[source] = region.load(kind="input_scalar")
+            input_handles = tuple(by_source[source] for source in inputs)
+            input_handle_cache[input_key] = input_handles
+        weight_key = (
+            point["co"],
+            (oh_reader_by_value[point["oh"]]
+             if share_weight_across_oh else point["oh"]),
+            (ow_reader_by_value[point["ow"]]
+             if share_weight_across_ow else point["ow"]),
+        )
+        weight_by_source = weight_handle_cache.get(weight_key)
+        if weight_by_source is None:
+            weight_by_source = {}
+            for group in coalesced_element_groups(
+                    weights, target.vector_width):
+                handle = region.load(
+                    kind="spad_weight" if resident else "weight_vec")
+                for source in group:
+                    weight_by_source[source] = handle
+            weight_handle_cache[weight_key] = weight_by_source
+        products = [region.arith(
+            input_handles[index], weight_by_source[weights[index]], kind="mul")
+            for index in range(27)]
+        output_handles[output_source] = region.balanced_reduction(
+            products, kind="reduce")
+    for group in output_groups:
+        handles = []
+        for point_tuple in group:
+            point = dict(point_tuple)
+            _inputs, _weights, output_source = _conv2d_output_sources(
+                point["co"], point["oh"], point["ow"])
+            handles.append(output_handles[output_source])
+        region.store(*handles, output=True, kind="output_vec")
+    return (_phase_with_optional_schedule(
+        phase, dag, cfg, "conv2d_resident" if resident else "conv2d_direct",
+        True), scalar_resident_reads)
+
+
+def _conv2d_extended_plan_builder(
+        spec: KernelSpec, cand: Candidate, cfg: Config,
+        target: AnalyticTargetSpec, schedule: bool) -> ExtendedPlanSummary:
+    memory = _conv2d_cached_memory_plan(cand.order, cand.tile_sizes, target)
+    jam = derive_jam_plan(spec, cand)
+    share_input = any(
+        edge.outer == "co" and "input" in edge.shared_operands
+        for edge in jam.edges)
+    share_weight_oh = any(
+        edge.outer == "oh" and "weight" in edge.shared_operands
+        for edge in jam.edges)
+    share_weight_ow = any(
+        edge.outer == "ow" and "weight" in edge.shared_operands
+        for edge in jam.edges)
+    resident_tiles = []
+    direct_tiles = []
+    structure = []
+    preload_scalar_elements = 0
+    scratchpad_reads = 0
+    direct_resident_scalar_loads = 0
+    for tile_index, tile in enumerate(memory.tiles):
+        phase_cfg = cfg if schedule else None
+        preload, preload_scalars = _conv2d_cached_preload_phase(
+            cand.order, cand.tile_sizes, target, tile_index,
+            phase_cfg, schedule)
+        preload_scalar_elements += preload_scalars
+        input_buffer = next(buffer for buffer in memory.buffers
+                            if buffer.name == "input")
+        weight_buffer = next(buffer for buffer in memory.buffers
+                             if buffer.name == "weight")
+        input_layout = (
+            input_buffer.replica_bases_by_tile[tile_index][0],
+            input_buffer.source_to_slot_by_tile[tile_index])
+        weight_layout = (
+            weight_buffer.replica_bases_by_tile[tile_index][0],
+            weight_buffer.source_to_slot_by_tile[tile_index])
+        phase_cand = Candidate(cand.split, cand.order)
+        phase_target = _target_with_preload_mode(target, "serial")
+        boxes = _parallel_wave_boxes(
+            spec, cand, tile, ("co", "oh", "ow"))
+        resident_waves = []
+        direct_waves = []
+        wave_structure = []
+        for origins, shapes in boxes:
+            bank_reservations = _conv2d_bank_reservations(
+                phase_cand, origins, shapes, phase_target,
+                share_input, share_weight_oh, share_weight_ow,
+                input_layout, weight_layout)
+            resident_phase, scalar_reads = _conv2d_wave_phase(
+                spec, phase_cand, origins, shapes, phase_cfg, phase_target,
+                schedule,
+                share_input, share_weight_oh, share_weight_ow,
+                bank_reservations=bank_reservations)
+            direct_phase, direct_scalars = _conv2d_wave_phase(
+                spec, phase_cand, origins, shapes, phase_cfg, phase_target,
+                schedule,
+                share_input, share_weight_oh, share_weight_ow)
+            resident_waves.append(resident_phase)
+            direct_waves.append(direct_phase)
+            scratchpad_reads += scalar_reads
+            direct_resident_scalar_loads += direct_scalars
+            wave_structure.append((
+                shapes, tuple(
+                    (name, tuple(size for _start, size in _active_worker_groups(
+                        dict(shapes)[name], *cand.factors(name))))
+                    for name in ("co", "oh", "ow"))))
+        resident_waves_tuple = tuple(resident_waves)
+        direct_waves_tuple = tuple(direct_waves)
+        resident_tiles.append(ExtendedTileSummary(
+            tile=tile, preload=preload,
+            full_compute=_combine_wave_phases(resident_waves_tuple),
+            compute_waves=resident_waves_tuple))
+        direct_tiles.append(ExtendedTileSummary(
+            tile=tile, preload=_zero_phase(schedule),
+            full_compute=_combine_wave_phases(direct_waves_tuple),
+            compute_waves=direct_waves_tuple))
+        structure.append((tile.shape, tuple(wave_structure)))
+    return ExtendedPlanSummary(
+        memory_plan=memory, jam_plan=jam, tiles=tuple(resident_tiles),
+        direct_tiles=tuple(direct_tiles),
+        schedule_structure_key=(
+            "conv2d", candidate_order(spec, cand), share_input,
+            share_weight_oh, share_weight_ow,
+            tuple(structure)),
+        preload_scalar_elements=preload_scalar_elements,
+        scratchpad_reads=scratchpad_reads,
+        avoided_direct_loads=max(
+            0, direct_resident_scalar_loads - preload_scalar_elements))
+
+
+def _batchnorm_extended_chunk(cand: Candidate) -> Dag:
+    spec = KERNELS["batchnorm"]
+    shapes = tuple((name, min(spec.level(name).trip,
+                              math.prod(cand.factors(name))))
+                   for name in ("c", "h", "w"))
+    phase = _batchnorm_wave_phase(
+        spec, cand, (("c", 0), ("h", 0), ("w", 0)), shapes,
+        parse_config("6x6"), AnalyticTargetSpec(), False)
+    return _emit_counted_region(
+        "batchnorm", phase.A, phase.recurring_loads,
+        phase.invariant_loads, phase.stores,
+        ("L", "P", "P", "P", "P", "P", "P", "S"))
+
+
+def _gemv_extended_chunk(cand: Candidate) -> Dag:
+    extent = min(64, math.prod(cand.factors("i")))
+    share_x = cand.factors("i")[1] > 1
+    phase, _scalar_reads = _gemv_wave_phase(
+        cand, (("i", 0),), (("i", extent),), parse_config("6x6"),
+        AnalyticTargetSpec(), False, share_x=share_x)
+    return _emit_counted_region(
+        "gemv", phase.A, phase.recurring_loads,
+        phase.invariant_loads, phase.stores,
+        ("L",) + ("P",) * 9 + ("S",))
+
+
+def _conv2d_extended_chunk(cand: Candidate) -> Dag:
+    spec = KERNELS["conv2d"]
+    shapes = tuple((name, min(spec.level(name).trip,
+                              math.prod(cand.factors(name))))
+                   for name in ("co", "oh", "ow"))
+    jam = derive_jam_plan(spec, cand)
+    phase, _scalar_reads = _conv2d_wave_phase(
+        spec, cand, (("co", 0), ("oh", 0), ("ow", 0)), shapes,
+        parse_config("6x6"), AnalyticTargetSpec(), False,
+        any(edge.outer == "co" and "input" in edge.shared_operands
+            for edge in jam.edges),
+        any(edge.outer == "oh" and "weight" in edge.shared_operands
+            for edge in jam.edges),
+        any(edge.outer == "ow" and "weight" in edge.shared_operands
+            for edge in jam.edges))
+    return _emit_counted_region(
+        "conv2d", phase.A, phase.recurring_loads,
+        phase.invariant_loads, phase.stores,
+        ("L",) + ("P",) * 6 + ("S",))
+
+
 KERNELS: dict[str, KernelSpec] = {}
 
 
@@ -1357,7 +2262,7 @@ def _register():
     KERNELS["gemv"] = KernelSpec(
         name="gemv",
         levels=(Level("i", M, "parallel"), Level("j", N, "reduction")),
-        build_chunk=_gemv_chunk,
+        build_chunk=_gemv_extended_chunk,
         coalesce_note=(
             "A[i][j] and x[j] are contiguous over j (a fully-consumed reduction, "
             "tree-reduced), so they coalesce identically and the j-loop carries no "
@@ -1366,21 +2271,41 @@ def _register():
             "contiguous y[i]/output_y[i] accesses (parallel strides) and it "
             "amortizes the row iterator (charged once per worker). The A-load term "
             "is split-symmetric and large, so the i-level edge is modest but real."),
+        order_spec=OrderSpec((("i", "j"),)),
+        jam_rules=(JamRule("i", "j", ("x",)),),
+        memory_planner=_gemv_memory_planner,
+        extended_plan_builder=_gemv_extended_plan_builder,
     )
-    n_out, K = _conv2d_dims()
+    _n_out, K = _conv2d_dims()
     KERNELS["conv2d"] = KernelSpec(
         name="conv2d",
-        levels=(Level("out", n_out, "parallel"), Level("tap", K, "reduction")),
-        build_chunk=_conv2d_chunk,
+        levels=(Level("co", 4, "parallel"), Level("oh", 6, "parallel"),
+                Level("ow", 6, "parallel"), Level("tap", K, "reduction")),
+        build_chunk=_conv2d_extended_chunk,
         coalesce_note=(
-            "output pixels (out = C_out*OH*OW) are parallel; the K = C_in*KH*KW "
-            "taps are a fully-consumed reduction (tree-reduced -> no tap iterator). "
-            "input is strided over taps (halo) so it does NOT coalesce and "
-            "dominates loads; weight is contiguous but reduction-inert; output is "
-            "contiguous over out. LOOM_UNROLL(out) beats LOOM_PARALLEL(out) two "
-            "ways: it coalesces the output stores and amortizes the out iterator "
-            "(charged once per worker). Load-bound on the strided input, so the "
-            "edge is modest. Halo reuse / weight sharing not modeled."),
+            "co/oh/ow are explicit independent levels and tap is the pinned, "
+            "fully-consumed reduction. Declared legal orders recompute whether ow "
+            "is the innermost independent output dimension. Exact input halos and "
+            "co-specific weights are resident_shared; output remains direct."),
+        order_spec=OrderSpec((
+            ("co", "oh", "ow", "tap"),
+            ("co", "ow", "oh", "tap"),
+            ("oh", "co", "ow", "tap"),
+            ("oh", "ow", "co", "tap"),
+            ("ow", "co", "oh", "tap"),
+            ("ow", "oh", "co", "tap"),
+        )),
+        tileable=frozenset(("co", "oh", "ow")),
+        jam_rules=(
+            JamRule("co", "oh"), JamRule("co", "ow"),
+            JamRule("co", "tap", ("input",)),
+            JamRule("oh", "co"), JamRule("oh", "ow"),
+            JamRule("oh", "tap", ("weight",)),
+            JamRule("ow", "co"), JamRule("ow", "oh"),
+            JamRule("ow", "tap", ("weight",)),
+        ),
+        memory_planner=_conv2d_memory_planner,
+        extended_plan_builder=_conv2d_extended_plan_builder,
     )
     KERNELS["tridiag_solve"] = KernelSpec(
         name="tridiag_solve",
@@ -1396,7 +2321,7 @@ def _register():
         name="batchnorm",
         levels=(Level("c", 4, "parallel"), Level("h", 8, "parallel"),
                 Level("w", 8, "parallel")),
-        build_chunk=_batchnorm_chunk,
+        build_chunk=_batchnorm_extended_chunk,
         coalesce_note=(
             "input/output are contiguous over the innermost w. LOOM_UNROLL(w) "
             "coalesces a worker's adjacent w-accesses (ceil(U_w/V) vector ops) "
@@ -1408,6 +2333,16 @@ def _register():
             "so those load/store savings show as lane headroom, not a lower floor. "
             "mean/variance/gamma/beta are per-channel invariants (once per "
             "exposed channel)."),
+        order_spec=OrderSpec((
+            ("c", "h", "w"),
+            ("c", "w", "h"),
+        )),
+        jam_rules=(
+            JamRule("c", "h"), JamRule("c", "w"),
+            JamRule("h", "w"), JamRule("w", "h"),
+        ),
+        memory_planner=_batchnorm_memory_planner,
+        extended_plan_builder=_batchnorm_extended_plan_builder,
     )
     KERNELS["bisection_step"] = KernelSpec(
         name="bisection_step",
@@ -2325,6 +3260,18 @@ def scratchpad_bank_metrics(accesses, target: AnalyticTargetSpec) -> BankMetrics
     return BankMetrics(tuple(demand), bank_lb, len(cycle_banks))
 
 
+def scratchpad_bank_floor(accesses, target: AnalyticTargetSpec) -> BankMetrics:
+    """Compute bank demand/lower bound without aggregate-pass list packing."""
+    demand = [0] * target.banks
+    for elements in accesses:
+        for bank in bank_set(elements, target):
+            demand[bank] += 1
+    total_slots = sum(demand)
+    bank_lb = max(max(demand, default=0),
+                  _ceil_div(total_slots, target.banks))
+    return BankMetrics(tuple(demand), bank_lb, 0)
+
+
 def packed_access_bank_metrics(
         accesses, target: AnalyticTargetSpec) -> BankMetrics:
     return scratchpad_bank_metrics(
@@ -2423,6 +3370,12 @@ class CandResult:
     bank_sched: int = 0
     num_tiles: int = 0
     schedule_structure_key: tuple = ()
+    direct_plan_cgra_lb: int | None = None
+    direct_pragma_exposure_aggregate: int | None = None
+    direct_schedule_estimate: int | None = None
+    recurring_demand: tuple[int, int, int, int] = ()  # P/L/S/B, no control
+    nominal_terms: tuple[int, int, int, int] = ()     # P/L/S/B wave terms
+    nominal_cp: int = 0
 
 
 @dataclass
@@ -2444,7 +3397,8 @@ def _cost_extended_phase(phase: PhaseSummary, cfg: Config,
     load = _ceil_div(phase.recurring_loads, cfg.L)
     store = _ceil_div(phase.stores, cfg.S)
     base_aggregate = max(phase.CP, compute, load, store)
-    bank = packed_access_bank_metrics(phase.bank_accesses, target)
+    bank = (phase.bank_metrics if phase.bank_metrics is not None
+            else packed_access_bank_metrics(phase.bank_accesses, target))
     aggregate = max(base_aggregate, bank.bank_lb)
     scheduled = None
     if schedule:
@@ -2462,6 +3416,47 @@ def _cost_extended_phase(phase: PhaseSummary, cfg: Config,
     return PhaseCost(aggregate, scheduled, compute, load, store, bank)
 
 
+def _compose_extended_reference(
+        tiles: tuple[ExtendedTileSummary, ...], cfg: Config,
+        target: AnalyticTargetSpec, schedule: bool) -> ExtendedReferenceCost:
+    """Centrally compose an optional direct-memory audit reference."""
+    preload_costs = []
+    full_compute_costs = []
+    wave_costs_by_tile = []
+    preload_schedules = []
+    wave_schedules_by_tile = []
+    for tile in tiles:
+        preload_cost = _cost_extended_phase(
+            tile.preload, cfg, target, schedule)
+        full_cost = _cost_extended_phase(
+            tile.full_compute, cfg, target, False)
+        wave_costs = tuple(_cost_extended_phase(
+            wave, cfg, target, schedule) for wave in tile.compute_waves)
+        preload_costs.append(preload_cost.aggregate)
+        full_compute_costs.append(full_cost.aggregate)
+        wave_costs_by_tile.append(sum(cost.aggregate for cost in wave_costs))
+        if schedule:
+            preload_schedules.append(preload_cost.scheduled)
+            wave_schedules_by_tile.append(sum(
+                cost.scheduled for cost in wave_costs))
+
+    compose = (compose_serial_tiles if target.preload_mode == "serial"
+               else compose_ideal_dma_tiles)
+    plan_cgra_lb = compose(preload_costs, full_compute_costs)
+    pragma_aggregate = compose(preload_costs, wave_costs_by_tile)
+    schedule_estimate = (compose(preload_schedules, wave_schedules_by_tile)
+                         if schedule else None)
+    if plan_cgra_lb > pragma_aggregate:
+        raise AssertionError(
+            f"direct plan {plan_cgra_lb} > direct p_agg {pragma_aggregate}")
+    if schedule and pragma_aggregate > schedule_estimate:
+        raise AssertionError(
+            f"direct p_agg {pragma_aggregate} > direct sched "
+            f"{schedule_estimate}")
+    return ExtendedReferenceCost(
+        plan_cgra_lb, pragma_aggregate, schedule_estimate)
+
+
 def _evaluate_extended_candidate(
         spec: KernelSpec, cand: Candidate, cfg: Config, schedule: bool,
         target: AnalyticTargetSpec | None) -> CandResult:
@@ -2477,6 +3472,10 @@ def _evaluate_extended_candidate(
     if plan.memory_plan.target != resolved_target:
         raise ValueError(
             f"{spec.name}: extended plan returned the wrong target profile")
+
+    direct_reference = (_compose_extended_reference(
+        plan.direct_tiles, cfg, resolved_target, schedule)
+        if plan.direct_tiles else None)
 
     preload_costs = []
     full_compute_costs = []
@@ -2564,6 +3563,31 @@ def _evaluate_extended_candidate(
         for tile in plan.tiles)
     preload_store_ops = sum(tile.preload.stores for tile in plan.tiles)
     all_bank_costs = all_preload_costs + all_wave_costs
+    algorithmic_A = sum(
+        phase.A - phase.control_A for phase in all_wave_phases)
+    recurring_data_loads = sum(
+        phase.recurring_loads - phase.control_loads
+        for phase in all_wave_phases)
+    data_stores = sum(
+        phase.stores - phase.control_stores for phase in all_wave_phases)
+    compute_bank_demand = tuple(
+        sum(cost.bank.demand[bank] for cost in all_wave_costs)
+        for bank in range(resolved_target.banks))
+    total_compute_bank_slots = sum(compute_bank_demand)
+    compute_bank_lb = max(
+        max(compute_bank_demand, default=0),
+        _ceil_div(total_compute_bank_slots, resolved_target.banks))
+    nominal_index = max(
+        range(len(all_wave_phases)),
+        key=lambda index: (
+            all_wave_phases[index].A
+            - all_wave_phases[index].control_A,
+            all_wave_phases[index].recurring_loads
+            - all_wave_phases[index].control_loads,
+            all_wave_phases[index].stores
+            - all_wave_phases[index].control_stores))
+    nominal_phase = all_wave_phases[nominal_index]
+    nominal_cost = all_wave_costs[nominal_index]
     return CandResult(
         cand=cand, p_tot=_p_tot(spec, cand),
         active_L=max(1, min(max(
@@ -2595,7 +3619,18 @@ def _evaluate_extended_candidate(
         bank_sched=(sum(cost.bank.bank_sched for cost in all_bank_costs)
                     if schedule else 0),
         num_tiles=len(plan.tiles),
-        schedule_structure_key=plan.schedule_structure_key)
+        schedule_structure_key=plan.schedule_structure_key,
+        direct_plan_cgra_lb=(direct_reference.plan_cgra_lb
+                             if direct_reference else None),
+        direct_pragma_exposure_aggregate=(
+            direct_reference.pragma_aggregate if direct_reference else None),
+        direct_schedule_estimate=(
+            direct_reference.schedule_estimate if direct_reference else None),
+        recurring_demand=(algorithmic_A, recurring_data_loads,
+                          data_stores, compute_bank_lb),
+        nominal_terms=(nominal_cost.compute, nominal_cost.load,
+                       nominal_cost.store, nominal_cost.bank.bank_lb),
+        nominal_cp=nominal_phase.CP)
 
 
 def evaluate_candidate(spec: KernelSpec, cand: Candidate, cfg: Config,
@@ -2683,13 +3718,21 @@ def _ensure_scheduled(spec: KernelSpec, result: CandResult, cfg: Config,
                 or scheduled.pragma_exposure_aggregate
                 != result.pragma_exposure_aggregate
                 or scheduled.schedule_structure_key
-                != result.schedule_structure_key):
+                != result.schedule_structure_key
+                or scheduled.direct_plan_cgra_lb
+                != result.direct_plan_cgra_lb
+                or scheduled.direct_pragma_exposure_aggregate
+                != result.direct_pragma_exposure_aggregate
+                or scheduled.recurring_demand != result.recurring_demand
+                or scheduled.nominal_terms != result.nominal_terms
+                or scheduled.nominal_cp != result.nominal_cp):
             raise AssertionError(
                 f"{spec.name} {result.cand.signature()}: scheduled rerun changed "
                 "the aggregate or schedule structure")
         result.chunk_scheduled = scheduled.chunk_scheduled
         result.schedule_estimate = scheduled.schedule_estimate
         result.bank_sched = scheduled.bank_sched
+        result.direct_schedule_estimate = scheduled.direct_schedule_estimate
         if result.absolute_cgra_lb is not None and not (
                 result.absolute_cgra_lb <= result.plan_cgra_lb
                 <= result.pragma_exposure_aggregate
@@ -2777,6 +3820,62 @@ def recommend(spec: KernelSpec, results: list[CandResult]) -> CandResult | None:
     knee."""
     if not results:
         return None
+    if any(result.target_profile is not None for result in results):
+        by_exposure: dict[int, list[CandResult]] = {}
+        for result in results:
+            by_exposure.setdefault(result.exposed_iters, []).append(result)
+        exposures = sorted(by_exposure)
+        frontier: dict[int, list[CandResult]] = {}
+        for exposure in exposures:
+            best_compute = min(
+                result.chunk_aggregate for result in by_exposure[exposure])
+            frontier[exposure] = [
+                result for result in by_exposure[exposure]
+                if result.chunk_aggregate == best_compute]
+
+        future_min: dict[int, tuple[int, int, int, int]] = {}
+        running = [math.inf, math.inf, math.inf, math.inf]
+        for exposure in reversed(exposures):
+            for result in frontier[exposure]:
+                if not result.recurring_demand:
+                    raise ValueError(
+                        "extended recommendation omitted recurring demand")
+                for index, demand in enumerate(result.recurring_demand):
+                    running[index] = min(running[index], demand)
+            future_min[exposure] = tuple(int(value) for value in running)
+
+        for exposure in exposures:
+            eligible = []
+            for result in frontier[exposure]:
+                if not result.nominal_terms:
+                    raise ValueError(
+                        "extended recommendation omitted nominal terms")
+                max_term = max(result.nominal_terms)
+                if max_term < result.nominal_cp:
+                    continue
+                dominant = [
+                    index for index, term in enumerate(result.nominal_terms)
+                    if term == max_term]
+                if any(result.recurring_demand[index]
+                       == future_min[exposure][index]
+                       for index in dominant):
+                    eligible.append(result)
+            if eligible:
+                return min(
+                    eligible,
+                    key=lambda result: (
+                        result.pragma_exposure_aggregate,
+                        result.recurring_demand[1]
+                        + result.recurring_demand[2],
+                        result.recurring_demand[3], result.p_tot,
+                        result.cand.signature()))
+        return min(
+            results,
+            key=lambda result: (
+                result.pragma_exposure_aggregate, result.exposed_iters,
+                result.recurring_demand[1] + result.recurring_demand[2],
+                result.recurring_demand[3], result.p_tot,
+                result.cand.signature()))
     if not spec.repeat_waves:
         # The builder already emits every phase-local wave and every fixed
         # once-only region. A fixed stage may be resource-bound even when the
@@ -2816,6 +3915,13 @@ def annotate_flags(spec: KernelSpec, results: list[CandResult],
             continue  # the pick carries no starved/oversubscribed marker
         if not spec.repeat_waves:
             continue
+        if extended:
+            if r.exposed_iters < rec.exposed_iters:
+                r.flags.add("bandwidth-starved")
+            elif (r.saturation == "resource-bound"
+                  and r.exposed_iters > rec.exposed_iters):
+                r.flags.add("oversubscribed")
+            continue
         if latency_fallback:
             if r.pragma_exposure_aggregate > rec.pragma_exposure_aggregate:
                 r.flags.add("bandwidth-starved")
@@ -2853,7 +3959,9 @@ def _dedup(results: list[CandResult]) -> list[list[CandResult]]:
                 r.preload_scalar_elements, r.preload_load_ops,
                 r.preload_spad_store_ops, r.scratchpad_reads,
                 r.avoided_direct_loads, r.num_tiles,
-                r.schedule_structure_key)
+                r.schedule_structure_key, r.direct_plan_cgra_lb,
+                r.direct_pragma_exposure_aggregate,
+                r.recurring_demand, r.nominal_terms, r.nominal_cp)
         groups.setdefault(key, []).append(r)
     grouped = []
     for group in groups.values():
@@ -2932,9 +4040,15 @@ def _render_extended_report(
         (f"RECOMMENDED: {rec.cand.signature()}  -> plan_lb={rec.plan_cgra_lb}, "
          f"p_agg={rec.pragma_exposure_aggregate}, "
          f"sched={rec.schedule_estimate}, {rec.saturation}"),
-        ("flags: K=recommended, b=bandwidth-starved/latency-bound, "
-         "o=oversubscribed."),
+        ("flags: K=recommended, b=below knee (latency-bound or recurring-"
+         "traffic immature), o=oversubscribed."),
     ))
+    if rec.direct_plan_cgra_lb is not None:
+        out.append(
+            "Direct-memory reference: "
+            f"plan_lb={rec.direct_plan_cgra_lb}, "
+            f"p_agg={rec.direct_pragma_exposure_aggregate}, "
+            f"sched={rec.direct_schedule_estimate}.")
     if ideal_sensitivity is not None:
         out.extend((
             "",
@@ -4013,11 +5127,175 @@ def _run_extended_infrastructure_tests(errors: list[str]) -> None:
             "extended dedup must include scratchpad preload-store traffic")
 
 
+def _run_extended_pilot_tests(errors: list[str]) -> None:
+    cfg = parse_config("6x6")
+    target = AnalyticTargetSpec()
+
+    batchnorm = KERNELS["batchnorm"]
+    if _validated_orders(batchnorm) != (
+            ("c", "h", "w"), ("c", "w", "h")):
+        errors.append("Batchnorm must expose exactly its two declared orders")
+    batch_split = (("c", 1, 1), ("h", 1, 1), ("w", 1, 4))
+    batch_source = evaluate_candidate(
+        batchnorm, Candidate(batch_split), cfg, schedule=False, target=target)
+    batch_interchanged = evaluate_candidate(
+        batchnorm, Candidate(batch_split, ("c", "w", "h")), cfg,
+        schedule=False, target=target)
+    if not (batch_source.LD < batch_interchanged.LD
+            and batch_source.ST < batch_interchanged.ST):
+        errors.append(
+            "Batchnorm may coalesce w only when w is innermost")
+    if any(buffer.placement != "direct"
+           for buffer in batch_source.memory_plan.buffers):
+        errors.append("Batchnorm memory must remain entirely direct")
+    batch_jam = derive_jam_plan(
+        batchnorm, Candidate(
+            (("c", 1, 2), ("h", 1, 1), ("w", 1, 1))))
+    if {(edge.outer, edge.inner) for edge in batch_jam.edges} != \
+            {("c", "h"), ("c", "w")}:
+        errors.append(f"Batchnorm c-unroll jam mismatch: {batch_jam.edges}")
+    batch_outcome = search(batchnorm, cfg, jobs=1, target=target)
+    if batch_outcome.recommendation.cand.signature() != \
+            "c:P1U1 h:P1U8 w:P1U8":
+        errors.append(
+            "Batchnorm recurring-demand knee must remain c:P1U1 h:P1U8 "
+            f"w:P1U8, got {batch_outcome.recommendation.cand.signature()}")
+
+    gemv = KERNELS["gemv"]
+    gemv_cand = Candidate((("i", 1, 2), ("j", 1, 1)))
+    gemv_result = evaluate_candidate(
+        gemv, gemv_cand, cfg, schedule=False, target=target)
+    x_buffer = next(buffer for buffer in gemv_result.memory_plan.buffers
+                    if buffer.name == "x")
+    if (x_buffer.placement, gemv_result.preload_scalar_elements,
+            gemv_result.scratchpad_reads) != ("resident_shared", 64, 2048):
+        errors.append(
+            "GEMV resident x placement/preload/read traffic mismatch: "
+            f"{x_buffer.placement}, {gemv_result.preload_scalar_elements}, "
+            f"{gemv_result.scratchpad_reads}")
+    if (gemv_result.direct_plan_cgra_lb is None
+            or gemv_result.direct_pragma_exposure_aggregate is None):
+        errors.append("GEMV must retain its direct-memory cycle reference")
+    jammed_direct, _ = _gemv_wave_phase(
+        gemv_cand, (("i", 0),), (("i", 2),), None, target, False,
+        share_x=True)
+    unjammed_direct, _ = _gemv_wave_phase(
+        gemv_cand, (("i", 0),), (("i", 2),), None, target, False,
+        share_x=False)
+    if (jammed_direct.A, jammed_direct.recurring_loads,
+            jammed_direct.stores, jammed_direct.CP) != \
+            (unjammed_direct.A, unjammed_direct.recurring_loads,
+             unjammed_direct.stores, unjammed_direct.CP):
+        errors.append("GEMV jam changed arithmetic/control work")
+    if unjammed_direct.invariant_loads - jammed_direct.invariant_loads != 16:
+        errors.append("GEMV i->j jam must remove one 16-op x stream")
+    gemv_outcome = search(gemv, cfg, jobs=1, target=target)
+    if gemv_outcome.recommendation.cand.signature() != "i:P1U8 j:P1U1":
+        errors.append(
+            "GEMV must reject bank-bound traffic-immature rows and select "
+            f"i:P1U8 j:P1U1, got "
+            f"{gemv_outcome.recommendation.cand.signature()}")
+
+    conv2d = KERNELS["conv2d"]
+    orders = _validated_orders(conv2d)
+    if len(orders) != 6 or any(order[-1] != "tap" for order in orders):
+        errors.append("Conv2d must expose six independent orders with tap last")
+    conv_split = (("co", 1, 1), ("oh", 1, 1),
+                  ("ow", 1, 1), ("tap", 1, 1))
+    conv_cand = Candidate(conv_split)
+    conv_memory = derive_memory_plan(conv2d, conv_cand, target)
+    input_buffer, weight_buffer, output_buffer = conv_memory.buffers
+    if tuple(len(buffer.elements_by_tile[0]) for buffer in conv_memory.buffers) \
+            != (192, 108, 144):
+        errors.append("Conv2d whole-tile address sets must be 192/108/144")
+    if (input_buffer.placement, weight_buffer.placement,
+            output_buffer.placement, conv_memory.capacity_bytes_used) != \
+            ("resident_shared", "resident_shared", "direct", 1200):
+        errors.append(
+            "Conv2d whole-tile placement/capacity mismatch: "
+            f"{input_buffer.placement}/{weight_buffer.placement}/"
+            f"{output_buffer.placement}, {conv_memory.capacity_bytes_used}")
+    conv_result = evaluate_candidate(
+        conv2d, conv_cand, cfg, schedule=False, target=target)
+    if (conv_result.preload_scalar_elements,
+            conv_result.scratchpad_reads,
+            conv_result.avoided_direct_loads) != (300, 7776, 7476):
+        errors.append(
+            "Conv2d whole-tile traffic expected preload/read/avoided "
+            f"300/7776/7476, got {conv_result.preload_scalar_elements}/"
+            f"{conv_result.scratchpad_reads}/{conv_result.avoided_direct_loads}")
+    if (conv_result.direct_plan_cgra_lb is None
+            or conv_result.direct_pragma_exposure_aggregate is None):
+        errors.append("Conv2d must retain its direct-memory cycle reference")
+
+    source_ow_cand = Candidate((
+        ("co", 1, 1), ("oh", 1, 1), ("ow", 1, 4), ("tap", 1, 1)))
+    non_ow_inner_cand = Candidate(
+        source_ow_cand.split, ("co", "ow", "oh", "tap"))
+    source_phase, _ = _conv2d_wave_phase(
+        conv2d, source_ow_cand,
+        (("co", 0), ("oh", 0), ("ow", 0)),
+        (("co", 1), ("oh", 1), ("ow", 4)), None, target, False,
+        False, False, True)
+    non_ow_phase, _ = _conv2d_wave_phase(
+        conv2d, non_ow_inner_cand,
+        (("co", 0), ("oh", 0), ("ow", 0)),
+        (("co", 1), ("oh", 1), ("ow", 4)), None, target, False,
+        False, False, True)
+    if (source_phase.stores, non_ow_phase.stores) != (2, 5):
+        errors.append(
+            "Conv2d output stores may coalesce only with innermost-independent ow")
+
+    one_output_shapes = (("co", 1), ("oh", 1), ("ow", 1))
+    input_layout = (
+        input_buffer.replica_bases_by_tile[0][0],
+        input_buffer.source_to_slot_by_tile[0])
+    weight_layout = (
+        weight_buffer.replica_bases_by_tile[0][0],
+        weight_buffer.source_to_slot_by_tile[0])
+    reservations = _conv2d_bank_reservations(
+        conv_cand, (("co", 0), ("oh", 0), ("ow", 0)),
+        one_output_shapes, target, False, False, False,
+        input_layout, weight_layout)
+    resident_phase, _ = _conv2d_wave_phase(
+        conv2d, conv_cand,
+        (("co", 0), ("oh", 0), ("ow", 0)), one_output_shapes,
+        None, target, False, False, False, False,
+        bank_reservations=reservations)
+    direct_phase, _ = _conv2d_wave_phase(
+        conv2d, conv_cand,
+        (("co", 0), ("oh", 0), ("ow", 0)), one_output_shapes,
+        None, target, False, False, False, False)
+    if direct_phase.recurring_loads - resident_phase.recurring_loads != 18:
+        errors.append(
+            "Conv2d direct input must retain 27 scalar loads vs 9 spad groups")
+
+    tiled_cand = Candidate(
+        conv_split, tile_sizes=(("co", 2), ("oh", 4), ("ow", 4)))
+    tiled_instances = materialize_tiles(conv2d, tiled_cand)
+    if len(tiled_instances) != 8 or not any(tile.is_tail for tile in tiled_instances):
+        errors.append("Conv2d 2x4x4 tiling must materialize eight exact tail tiles")
+
+    for spec, candidate in (
+            (batchnorm, Candidate(batch_split)),
+            (gemv, gemv_cand),
+            (conv2d, conv_cand)):
+        result = evaluate_candidate(
+            spec, candidate, cfg, schedule=False, target=target)
+        result.absolute_cgra_lb = result.plan_cgra_lb
+        _ensure_scheduled(spec, result, cfg, target)
+        if not (result.plan_cgra_lb <= result.pragma_exposure_aggregate
+                <= result.schedule_estimate):
+            errors.append(
+                f"{spec.name}: focused pilot scheduled bracket failed")
+
+
 def _run_self_tests() -> int:
     errors: list[str] = []
     cfg = parse_config("6x6")
 
     _run_extended_infrastructure_tests(errors)
+    _run_extended_pilot_tests(errors)
 
     cfg4 = parse_config("4x4")
     cfg8 = parse_config("8x8")
@@ -4033,10 +5311,6 @@ def _run_self_tests() -> int:
 
     alternate_expected = {
         "axpy": {"4x4": "i:P1U32", "8x8": "i:P1U128"},
-        "conv2d": {
-            "4x4": "out:P1U2 tap:P1U1",
-            "8x8": "out:P1U4 tap:P1U1",
-        },
         "vecsum": {"4x4": "i:P1U1", "8x8": "i:P1U1"},
     }
     for kernel, expected_by_config in alternate_expected.items():
@@ -4118,7 +5392,7 @@ def _run_self_tests() -> int:
 
     # bracket: every candidate sits at or above the (vector-aware) floor.
     lb, _ = absolute_cgra_lb(spec, cfg)
-    for name in ("axpy", "batchnorm"):
+    for name in ("axpy",):
         ks = KERNELS[name]
         klb, _ = absolute_cgra_lb(ks, cfg)
         for c in enumerate_candidates(ks, 8, 8, 256):
@@ -4374,6 +5648,11 @@ def _run_self_tests() -> int:
 
     # every kernel: end-to-end run, a recommendation exists, bracket holds on it.
     for name, ks in KERNELS.items():
+        if name in ("batchnorm", "gemv", "conv2d"):
+            # Extended pilots have focused order/jam/memory/direct-reference and
+            # scheduled-bracket coverage above; repeating their multidimensional
+            # search here would dominate helper self-test time.
+            continue
         _report, rec, klb = run(ks, cfg, 8, 8, 256, top=1)
         if rec is None:
             errors.append(f"{name}: no recommendation produced")

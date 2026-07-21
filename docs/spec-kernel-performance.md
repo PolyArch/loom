@@ -701,6 +701,33 @@ aggregate creeps toward `absolute_cgra_lb` only through per-wave ceiling roundin
 and invariant-reload amortization, while the instantaneous (transient) ready
 backlog rises linearly. `E_sat` is therefore the diminishing-returns **knee**.
 
+Extended candidates need one additional guard because interchange, maximal jam,
+and resident-memory fan-out can change the recurring operation set as exposure
+grows. A small wave may already be resource-bound only because it still repeats
+loads that a later legal jam eliminates. Such a row is **recurring-demand
+immature**, not the saturation knee.
+
+For each exposure, the extended search **MUST** first retain the candidates with
+the minimum recurring-compute aggregate at that exposure, excluding every
+preload prologue. For each retained candidate it then records full-kernel
+recurring demand `D[P/L/S/B]`: arithmetic, effective data-load lane slots,
+effective data-store lane slots, and the combined compute-phase scratchpad-bank
+floor. These demands exclude preload, invariant loads, iterator/control work,
+and per-wave ceiling rounding. Looking from the current exposure through every
+larger legal exposure, define the future minimum of each demand class over those
+recurring-compute-frontier candidates.
+
+An extended candidate is knee-eligible only when its nominal full, non-tail
+compute wave is resource-bound and at least one class tied for that wave's
+dominant resource term has already reached its future-minimum full-kernel demand.
+The recommendation is the first exposure with an eligible candidate. Exact
+frontier ties at that exposure are ranked by the selected preload mode's total
+`pragma_exposure_aggregate`, then by recurring data traffic, bank demand, worker
+count, and deterministic signature. This rule keeps a compute-mature Batchnorm
+row at its ordinary knee while rejecting, for example, a bank-bound GEMV row
+whose `x` demand still falls under a larger `i->j` jam. The legacy direct-memory
+selection rule is unchanged.
+
 An implementation that selects an exposure **SHOULD** recommend the smallest legal
 exposure `E >= E_sat` — the smallest `P_tot · U` consistent with pragma legality
 and loop nesting — and **SHOULD** flag larger exposures as **oversubscribed**:

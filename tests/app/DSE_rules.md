@@ -311,6 +311,19 @@ Do not choose the maximum `P_tot * U_tot` merely because the wave-summed estimat
 keeps decreasing with exposure. The recommendation is the saturation knee:
 the smallest legal exposure whose binding resource becomes resource-bound.
 
+For extended pilots, resource-bound is necessary but not sufficient. Jam,
+interchange, and resident fan-out can remove recurring traffic at a larger legal
+exposure, so an early bank- or load-bound row may still be
+**recurring-traffic immature**. At each exposure the helper keeps the minimum
+recurring-compute frontier (preload excluded), then compares full-kernel
+control-free `P/L/S` demand and combined compute-bank demand against their best
+values at that or any larger exposure. A candidate becomes knee-eligible only
+when a resource dominates its nominal full compute wave and at least one tied
+dominant demand has reached that future minimum. The first eligible exposure is
+the knee; the selected serial or `ideal_dma` composition ranks exact frontier
+ties. This prevents repeated loads from manufacturing an artificially early
+saturation point while leaving the legacy rule unchanged.
+
 The helper search covers every power-of-two `P` and `U` allowed by the concrete
 trip counts and dependency legality. Source pragma values are hints, not search
 maxima. There is no implicit factor-of-eight or global exposure cap;
@@ -328,8 +341,9 @@ DAG.
 Rows are flagged as:
 
 - `K`: recommended knee.
-- `b`: bandwidth-starved / latency-bound; resources are still idle, so more
-  exposure improves throughput.
+- `b`: below the knee. A row may be latency-bound, or it may already be
+  resource-bound while its dominant recurring traffic is still immature; more
+  legal exposure improves the modeled throughput in either case.
 - `o`: oversubscribed; additional exposure is past the knee and mainly adds
   transient backlog, area pressure, or mapping pressure for little or no modeled
   throughput gain.
