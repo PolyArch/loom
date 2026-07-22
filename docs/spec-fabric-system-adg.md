@@ -50,6 +50,12 @@ Realization for execution structure, timing, and capacity. Simulator model
 names and compiler target spellings are bindings over that description, not
 Fabric hardware facts.
 
+For a selected AccCore, its exact InstructionCore Architectural Contract
+mechanically selects and validates the Compiler Target Binding owned by
+`docs/spec-runtime-abi.md` section `Compiler Target And Binary Compatibility`.
+Neither that binding nor its target-specific binary enters `fabric.system`
+identity or SystemMapping identity.
+
 Its SpatialCore references one exact `fabric.module` template. Multiple
 AccCores may reference the same template while remaining distinct physical
 resources.
@@ -273,12 +279,21 @@ the Interconnect Implementation definition.
 
 A workload-independent Gem5 Simulation Binding maps exact Fabric and
 Interconnect Implementation objects to gem5 models, SimObjects, parameters,
-and the Bridge ABI. The system-simulator descriptor owns role-labeled subject
-slots `deployment` and `gem5_binding`; an ordinary `EvaluationRequest` binds
-their exact artifacts. Exact workload and runtime data use
+and the Bridge ABI. It is a simulator binding, not hardware truth. Every modeled
+InstructionCore must validate all three authorities: the exact InstructionCore
+Architectural Contract; the exact InstructionCore Microarchitectural
+Realization, including execution structure, timing, capacity, and
+mapping-visible resources; and the compatible Compiler Target Binding used by
+its target-specific binary. The system-simulator descriptor owns role-labeled
+subject slots `deployment` and `system_model`; an ordinary `EvaluationRequest`
+binds their exact subjects. Exact workload and runtime data use
 `SimulationWorkload` and `SimulationRuntimeInput` references, and remaining
 simulator parameters use `ResolvedModelBinding`. There is no separate
 system-simulation request family.
+
+These are compatibility relations, not a persistent binding schema. The exact
+`Gem5SimulationBinding` root remains downstream open work as specified by
+`docs/spec-runtime-abi.md` section `Gem5 Simulation Binding`.
 
 The generated gem5 projection is derived configuration. Handwritten simulator
 configuration cannot become another topology, memory, route, timing, or
@@ -286,12 +301,18 @@ protocol authority.
 
 ## SystemMapping Boundary
 
-SystemMapping binds an exact Canonical Dataflow Program and fully elaborated
-Fabric system. Its only persistent coverage root is a canonical non-empty set
-of root thread launches. The exact imported SpatialMapping set is the finite,
-deduplicated value range of normalized graph execution bindings over all
-reachable static graph launches and their legal may-domains. There is no
-separate editable selected-set field and no fixed cardinality.
+SystemMapping binds an exact Canonical Dataflow Program, the architecture-only
+`fabric.system`, and its exact Transport Architecture. Its only persistent
+coverage root is a canonical non-empty set of root thread launches. The exact
+imported SpatialMapping set is the finite, deduplicated value range of
+normalized graph execution bindings over all reachable static graph launches
+and their legal may-domains. There is no separate editable selected-set field
+and no fixed cardinality.
+
+Compiler Target Binding, target-specific binary, Interconnect Implementation,
+HardwareImplementation, Gem5 Simulation Binding, and Deployment identities are
+outside SystemMapping semantic identity. Those consumers resolve and validate
+their own exact bindings from the Mapping-selected AccCores and architecture.
 
 SystemMapping has exactly three persistent record families:
 
@@ -344,23 +365,17 @@ Runtime evaluates one immutable, preverified SystemMapping. It may wait,
 backpressure, and atomically admit a compiled activation set. It cannot change
 an AccCore, SpatialMapping, route, tag, context, service, or configuration.
 
-The verified cross-layer closure defines `ThreadDispatchImage`,
-`SpatialLaunchImage`, and `AdmissionImage`. Deployment combines the applicable
-images with the exact software, Fabric, complete SystemMapping, every direct
-and transitive imported Mapping dependency, binaries, selected Hardware and
-Interconnect Implementations and refinements, exact `ConfigurationABI`
-artifacts, memory images, and platform bindings as a dependency graph. Its
-`HardwareConfigurationImage` set covers every selected ABI Programming Unit,
-including SpatialCore context banks and programmable transport or other
-configuration units. Imported SpatialMappings are one dependency source, not
-the definition of deployment closure. It does not write runtime tables or
+`docs/spec-configuration-deployment.md` is the sole owner of runtime-image
+child membership, identity status, schemas, canonical child keys and ordering,
+and presence conditions. This Fabric contract contributes the exact
+architecture, Mapping-selected hardware facts, and implementation refinements
+that Deployment validates; it does not write runtime-image, binary, or
 implementation facts back into SystemMapping.
 
-An InstructionCore-only Deployment omits `SpatialLaunchImage`, SpatialCore
-configuration images, and other absent Spatial payload while retaining
-complete SystemMapping, `ThreadDispatchImage`, and `AdmissionImage`. It still
-includes any transport or other Programming Unit actually selected by that
-SystemMapping.
+For an InstructionCore-only SystemMapping, runtime and Deployment consumers do
+not invent Spatial execution. Exact runtime-image and configuration-image
+presence follows the Deployment owner, and every transport or other
+Programming Unit selected by that SystemMapping remains a closure obligation.
 
 ## Domains And External Boundaries
 
@@ -419,7 +434,10 @@ Anchor-level validation should cover:
 * deterministic lowering from architecture and Mapping to implementation;
 * an InstructionCore-only SystemMapping with no imported SpatialMapping; and
 * Deployment closure including imported Mapping dependencies and a programmable
-  transport unit, plus workload-independent Gem5 Simulation Binding reuse.
+  transport unit, plus workload-independent Gem5 Simulation Binding reuse and
+  rejection of an InstructionCore model incompatible with the exact
+  Architectural Contract, exact Microarchitectural Realization, or Compiler
+  Target Binding.
 
 Tests should not freeze protocol packet layout, gem5 internal queue state,
 builder container shape, or unconfirmed Fabric assembly spelling.

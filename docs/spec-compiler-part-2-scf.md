@@ -278,6 +278,13 @@ backend advice.
 
 ## Ownership Materialization And Handoff
 
+The Structured Program Candidate lineage is the sole owner of schedule, loop,
+vector, parallel, reduction, fixed logical-domain width `P[]`, aggregation
+materialization, and execution ownership choices. Any choice that can alter
+candidate semantics or performance must be materialized in Sn before handoff.
+A residual unsupported or unmaterialized aggregation or reduction form makes
+Sn non-finalizable; Part 3 neither drops it nor selects a fallback.
+
 Sn uses two ownership carriers:
 
 * `dataflow.thread` is the selected AccCore carrier. Its body remains the

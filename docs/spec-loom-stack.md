@@ -25,10 +25,10 @@ Its three primary output families are:
 * a HardwareImplementation containing generated RTL and the inputs needed for
   an explicit RTL-to-GDSII tool flow.
 
-The public compiler executables are `loom-cc` and `loom-c++`. Development
-executables may expose individual passes or component pipelines, but they call
-the same in-process libraries used by the public drivers and do not define
-alternate semantics.
+The only public end-user compiler drivers are `loom-cc` and `loom-c++`.
+Independent development and test executables may expose individual passes or
+component pipelines, but their library functionality is also integrated
+in-process into the public drivers and does not define alternate semantics.
 
 `loom-opt` is the canonical developer-only MLIR pass runner. Other focused
 developer executables are justified only by a real input protocol,
@@ -66,12 +66,18 @@ program regions that do not execute spatially. It may be scalar, vector,
 in-order, or out-of-order. A SpatialCore executes canonical Dataflow graphs on
 the configured Fabric resources. AccCores may differ in both components.
 
-`fabric.system` owns the typed system hardware description: AccCore
-occurrences, InstructionCore facts, SpatialCore attachments, memories and
-services, Transport Architecture, Interconnect Implementation, external
-boundaries, and hardware domains. Topology is explicit and directed. Meshes,
+`fabric.system` is architecture-only and owns the typed system hardware
+description: AccCore occurrences, InstructionCore facts, SpatialCore
+attachments, memories and services, Transport Architecture, external
+boundaries, and hardware domains. Interconnect Implementation is a separate
+sibling Fabric-family refinement object, even when serialized near the
+architecture it refines. Topology is explicit and directed. Meshes,
 coordinates, and Manhattan distance are optional construction or presentation
 hints, never semantic assumptions.
+
+The first-version architecture is single-tenant. Multi-tenancy,
+virtualization, preemption, migration, complex QoS, and runtime remapping are
+deferred and have no placeholder fields or mechanisms in current schemas.
 
 The core software/hardware ownership boundary is specified by
 [Core Dialect Boundary](spec-core-dialect-boundary.md).
@@ -171,14 +177,19 @@ profiles:
 * SpatialMapping binds those realizations, residual logical nets, memory
   services, resources, tags, and refinements inside a SpatialCore; and
 * SystemMapping binds thread and graph execution, channels, services, and
-  transport across the complete heterogeneous system.
+  transport across the complete heterogeneous system without carrying
+  protocol implementation identity.
 
-Spatial PnR consumes exact `D/T/F/C/K`: Canonical Dataflow Program,
-TechMapping, Fabric, the mechanically derived Resolved PnR config view, and one
-MappingConstraintSet. System PnR consumes its corresponding exact six-input
-contract. Placement, routing, and resource allocation are coupled through one
-Action and MoveTransaction model. Persistent Mapping MLIR is the wire-schema
-SSOT; C++ hot structures are removable projections optimized for search.
+The closed Spatial PnR contract has exact `D/T/F/C/K` inputs: Canonical
+Dataflow Program, TechMapping, Fabric, the mechanically derived Resolved PnR
+config view, and one MappingConstraintSet. System PnR has the corresponding
+six-input `D/F/R/H/C/K` contract. Neither invocation can be instantiated or
+finalized, and no implementation may invent a placeholder `K` identity or
+root, until the common MappingConstraintSet persistent family and the System
+profile are closed in the PnR owner. Placement, routing, and resource
+allocation are coupled through one Action and MoveTransaction model.
+Persistent Mapping MLIR is the wire-schema SSOT; C++ hot structures are
+removable projections optimized for search.
 
 Mapping owns structural legality and domain-independent PnR costs. Evaluation
 owns accelerator- and workload-aware observations. Central resolved policy is

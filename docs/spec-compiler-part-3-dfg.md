@@ -627,9 +627,9 @@ traits:
   empty frontier. These checks derive from SSA and structured-control
   causality, never from textual operation order, and do not infer additional
   completion obligations from effects, DMA, or other operations.
-  Tensor-result aggregation remains materialized as explicit
-  destination-buffer writes, so the frontier carries no thread data
-  result.
+  Any supported tensor-result aggregation has already been materialized by
+  Part 2 as accepted explicit effects; an unmaterialized form is
+  non-finalizable. The frontier therefore carries no thread data result.
 
 #### 5.4.4 `dataflow.thread.wait`
 
@@ -875,8 +875,9 @@ applies the same transfer to `scf.if`, normalized `scf.index_switch`,
 source-sequential `scf.for`, `scf.while`, and fixed-domain
 effect-form `scf.parallel` / `scf.forall`. A zero-case `scf.index_switch` is
 replaced by its default region during structured normalization. Other
-unsupported source forms must be normalized before publication of the
-Structured Program Candidate and are rejected if they remain in a graph.
+unsupported source forms must be normalized by Part 2 before handoff of the
+selected Structured Program Candidate and are rejected if they remain in a
+graph.
 
 The dataflow primitive set is
 (`stream`, `carry`, `invariant`, `gate`, `mux`, `demux`, `sync`,
@@ -1391,36 +1392,34 @@ selector token, so init execution, values, and frontier components transfer
 unchanged. Read-only state does not create RAR order; write feedback preserves
 RAW, WAR, and WAW across source-sequential iterations.
 
-### 6.4 `scf.forall` Ownership and Upstream Normalization
+### 6.4 `scf.forall`
 
-**Current contract.** The recursive graph owner mechanically lowers an
-effect-form, fixed-domain `scf.forall` only when the current Structured Program
-Candidate's semantic IR and resolved lowering config are sufficient to
-re-prove ownership, P[] width, and cross-lane legality. Every lane starts from
-the same incoming execution and per-partition memory frontier, lowers
-recursively, and contributes its terminal frontiers to fixed-arity all-of
-joins. The forall and its empty `scf.forall.in_parallel` terminator are
-removed. A mapping attribute, dynamic domain, shared output, result, combining
-action, or failed re-proof causes atomic failure. Cached provenance never
-changes this result.
+#### Accepted Input Contract
 
-Before ordinary graph-region lowering, the structured optimizer may normalize
-a selected forall representation as follows:
+The `Ownership Materialization And Handoff` section of
+`docs/spec-compiler-part-2-scf.md` is the sole normative owner of forall
+normalization. Before Part 3 begins, the selected Structured Program Candidate
+must have:
 
-1. It may materialize aggregation-form forall into effect-form forall.
-2. It may turn mapped effect-form forall into a `dataflow.thread` definition
-   at module scope plus a `dataflow.thread.launch` at the original forall site.
-3. It may turn graph-owned effect-form forall into a fixed-domain
-   `scf.parallel` whose ownership and independence remain re-provable from the
-   current candidate.
+* materialized a forall selected as an AccCore thread domain as a canonical
+  `dataflow.thread` definition and `dataflow.thread.launch`;
+* retained a graph-owned forall only as a mapping-free, effect-form,
+  compile-time fixed-domain construct whose `P[]` width, ownership, and
+  cross-lane legality are materialized in semantic IR and can be re-proved;
+  and
+* materialized every supported aggregation or reduction into accepted
+  semantics, or failed finalizability truthfully.
 
-This separation keeps tensor aggregation, AccCore ownership, schedule
-selection, and SpatialCore DFG construction as separate concerns. Mechanical
-lowering accepts the selected fixed-domain representation but makes none of
-those choices.
+Part 3 does not convert aggregation form, decide thread ownership, rewrite
+forall to parallel as an optimization policy, infer `P[]`, serialize lanes, or
+select a reduction strategy. A dynamic domain, mapping attribute, shared
+output, result, combining action, or failed legality re-proof causes atomic
+failure before canonical graph publication. Cached provenance never changes
+this result.
 
-For this spec, an effect-form forall has no `shared_outs`, no op
-results, and an empty `scf.forall.in_parallel` terminator:
+For this boundary, an accepted effect-form forall has no `shared_outs`, no op
+results, and an empty `scf.forall.in_parallel` terminator. In the example,
+`%N` must resolve to the selected candidate's compile-time fixed extent:
 
 ```mlir
 scf.forall (%i) in (%N) {
@@ -1433,9 +1432,7 @@ scf.forall (%i) in (%N) {
 
 Its result is represented only by explicit side effects in the body.
 
-An aggregation-form forall has `shared_outs`, op results, or a
-non-empty `scf.forall.in_parallel` region. The canonical first required
-combining op is `tensor.parallel_insert_slice`:
+The following is an aggregation form and is not accepted by Part 3:
 
 ```mlir
 %out = scf.forall (%i) in (%N)
@@ -1450,64 +1447,16 @@ combining op is `tensor.parallel_insert_slice`:
 }
 ```
 
-`scf.forall.in_parallel` exists only to describe tensor-result aggregation for
-`scf.forall`. It must not reach final dataflow IR. An upstream materialization
-must remove every combining action before graph-owned fixed-lane lowering.
+Part 3 rejects this form before graph mutation. It never drops the combining
+region or publishes a `dataflow.graph` that omits the aggregation. Any legal
+materialization belongs to the Part 2 owner; this document intentionally does
+not define a bufferization or combining algorithm.
 
-A future upstream aggregation materialization rewrites each shared tensor
-result into an explicit destination buffer:
-
-```mlir
-%buf = buffer_for_tensor_value(%init)
-
-scf.forall (%i) in (%N) {
-  %v = compute(%i) : f32
-  memref.store %v, %buf[%i] : memref<?xf32>
-  scf.forall.in_parallel {}
-}
-
-%out = tensor_value_from_buffer(%buf)
-```
-
-The future upstream materialization contract is:
-
-* The destination buffer's initial contents are equivalent to the
-  corresponding `shared_out` tensor.
-* A `tensor.parallel_insert_slice` becomes explicit writes to the
-  destination subview selected by its offsets, sizes, and strides.
-* Uses of the `shared_out` block argument inside the forall body become
-  reads from the same destination buffer. For example,
-  `tensor.extract_slice` from the block argument is rewritten to the
-  corresponding `memref.subview` or load sequence on the materialized
-  buffer.
-* Tensor elements not updated by any invocation keep their initial
-  value.
-* If multiple invocations update the same element, the source
-  `tensor.parallel_insert_slice` semantics are already undefined or
-  unspecified; Loom does not introduce a deterministic order.
-  Read/write conflicts through the shared destination are treated the
-  same way: the source forall did not provide an inter-invocation
-  order, so materialization must not invent one.
-* The upstream transformation preserves forall bounds, steps, and induction
-  variables. Any foreign `mapping` attribute must be resolved or rejected
-  before the candidate enters Loom's ownership-lowering boundary.
-* The produced buffers are ordinary values for boundary analysis. If a
-  destination buffer crosses a selected thread boundary, it becomes an
-  ordinary thread launch operand and matching definition argument like any
-  other memref-like value.
-* If any non-empty `scf.forall.in_parallel` combining action cannot be
-  materialized, the upstream transformation emits a diagnostic. Dropping the
-  combining action is never legal.
-* Nested aggregation-form forall follows the same materialization
-  contract recursively. An inner shared destination that denotes a view
-  of an outer shared destination is rewritten to the corresponding
-  buffer view, and the inner combining actions become writes through
-  that view.
-
-When the Structured Program Candidate selects an effect-form forall as an
-AccCore thread domain, it materializes that choice directly as a thread
-definition and launch. No Loom mapping attribute survives as a competing
-ownership authority:
+If Part 2 selects an effect-form forall as an AccCore thread domain, the input
+accepted by Part 3 is already the definition-and-launch carrier shape below.
+The rank-one source sketch is retained only to relate the source induction
+variable to the canonical logical-coordinate ABI; it is not a Part 3
+transformation:
 
 ```mlir
 scf.forall (%tx) in (%N) {
@@ -1515,9 +1464,6 @@ scf.forall (%tx) in (%N) {
   scf.forall.in_parallel {}
 }
 ```
-
-It may be promoted to a `dataflow.thread` definition + a
-`dataflow.thread.launch` by that upstream thread-skeleton pipeline:
 
 ```mlir
 // At module scope (sibling of func.func):
@@ -1536,169 +1482,63 @@ dataflow.thread @t_<funcSym>_<seq>(%B_arg : memref<?xf32>, ...)
 dataflow.thread.wait %tok : !dataflow.thread_token
 ```
 
-The launch extents own the dense zero-based domain. The forall induction
-variables become the trailing logical-coordinate block arguments after the
-ordinary arguments and `thread_ctrl`. Nonzero or dynamic source lower bounds
-and steps become ordinary operands, and the body explicitly reconstructs
+The launch extents own an arbitrary-rank dense zero-based domain. The thread
+entry block has one trailing logical-coordinate argument per extent, in source
+dimension order. For each dimension, nonzero or dynamic source lower bounds
+and steps cross as ordinary operands and the body reconstructs
 `source_iv = lower + coordinate * step`. Values captured from outside the
-forall become ordinary launch operands and matching definition arguments. The empty
-`scf.forall.in_parallel` terminator becomes `dataflow.thread.yield` inside the
-def's body.
+source forall likewise become ordinary launch operands and matching definition
+arguments. Sections 5.4.1 and 5.4.2 and
+`docs/spec-compiler-part-4-partitioned-data.md` own the complete ABI.
 
-Such a promotion creates the AccCore boundary only. Code inside the
-thread definition's body remains InstructionCore code unless the structured
-owner explicitly wraps it in `loom.spatial_region`. Part 3 outlines only that
-boundary into a `dataflow.graph` definition and a `dataflow.graph.launch` at
-the cut site. Nested graph-owned parallel work must be fixed-domain and
-re-provable from current candidate semantics. Memory operations outside an
-explicit spatial boundary stay in the InstructionCore part of the thread
-definition's body.
-
-The promotion makes the implicit synchronization point of
-`scf.forall` explicit thread-token ordering. The produced
-`!dataflow.thread_token` is either consumed by a following thread-like op as a
-dependency or waited on with `dataflow.thread.wait` at the original
-continuation point.
-
-An effect-form forall not selected as a thread boundary is generic parallel
-work:
-
-```mlir
-scf.forall (%i) in (%N) {
-  memref.store %v, %B[%i] : memref<?xf32>
-  scf.forall.in_parallel {}
-}
-```
-
-It may normalize to `scf.parallel`:
-
-```mlir
-scf.parallel (%i) = (%c0) to (%N) step (%c1) {
-  memref.store %v, %B[%i] : memref<?xf32>
-  scf.reduce
-}
-```
-
-The upstream `scf-forall-to-parallel` conversion may be reused for this
-effect-form case, because the forall has no outputs and its empty
-`scf.forall.in_parallel` becomes an empty `scf.reduce`. The generated
-`scf.parallel` and its fixed lane domain must preserve enough semantic
-structure for the lowerer to re-prove that no cross-invocation memory order is
-invented.
-
-Every selected thread-owned forall has already been promoted to
-`dataflow.thread`. Therefore, a graph-owned forall must have an empty mapping
-attribute and complete fixed-domain semantics in the current candidate.
-
-If a forall has a non-empty `mapping` attribute that current Part 3 does not
-recognize as a Loom mapping, the pipeline must not silently ignore it inside an
-accelerator region. It fails before graph mutation. An upstream resolver
-must either remove or translate that mapping with an explicit downgrade
-decision before its normalization template runs.
+Code inside the thread definition remains InstructionCore code unless the
+selected Structured Program Candidate explicitly wraps it in
+`loom.spatial_region`. That compiler-internal region remains the temporary
+SpatialCore ownership carrier until Part 3 atomically replaces it with a
+finalized `dataflow.graph` definition and launch. Memory operations outside
+the region remain in the InstructionCore body. The thread token preserves the
+source continuation dependency through another launch dependency or an
+explicit `dataflow.thread.wait`.
 
 #### Forall Boundary Translation
 
-Thread-owned forall belongs to thread construction and must be removed before a
-graph definition is lowered. A selected fixed-domain graph-owned forall is
-recursively replicated into static lanes; each active lane transfers execution
-and `(W, R)` independently, and lane exits are reduced with fixed-arity
-all-of. Empty domains are identity transfers. No forall boundary, partition
-id, dependence summary, or traversal order survives into canonical graph IR.
+Within an explicit `loom.spatial_region`, an accepted graph-owned forall is
+recursively replicated into its already selected static lanes. Every lane
+starts from the same incoming execution and per-partition `(W, R)` frontier,
+and lane exits are reduced with fixed-arity all-of joins. Empty domains are
+identity transfers. The forall and its empty
+`scf.forall.in_parallel` terminator are removed. No forall boundary,
+partition id, dependence summary, or traversal order survives into canonical
+graph IR.
 
 ### 6.5 `scf.parallel` with `scf.reduce`
 
-**Implementation boundary.** The recursive graph owner does not choose a
-split factor, serialize iterations, select P[], or choose reduction order. It
-mechanically lowers a fixed-domain, effect-form `scf.parallel` whose ownership,
-lane width, and independence can be re-proved from the current semantic IR;
-all other forms fail before mutation. The detailed normalization below remains
-an upstream contract for dynamic domains, aggregation, and schedule selection.
+#### Accepted Input Contract
 
-**Structured Program Candidate normalization.** Every reference to parallel
-normalization, chunking, or flattening in this subsection describes only the
-upstream owner that selects a concrete P[] representation. It is not a choice
-made by graph-region lowering.
+Parallel normalization is owned exclusively by the Structured Program
+Candidate lineage specified by the "Ownership Materialization And Handoff"
+section of `docs/spec-compiler-part-2-scf.md`. Part 3 accepts a graph-owned
+`scf.parallel` only when it is:
 
-`scf.parallel` is not a second dataflow loop primitive. The upstream schedule
-owner makes the required ownership and legality decisions and materializes
-them in the candidate's semantic SCF. Graph-region lowering re-proves the
-contract, replicates the fixed lanes, and recursively lowers their existing
-structured bodies. No new `dataflow.parallel`,
-`dataflow.reduce`, or reduction enum is introduced.
+* effect-form, with no op results, init values, or reduction operands and with
+  an empty `scf.reduce` terminator;
+* mapping-free and nested under the selected `loom.spatial_region` carrier;
+  and
+* compile-time fixed over an arbitrary-rank logical domain whose selected
+  `P[]` widths and cross-lane legality are explicit in the candidate and can
+  be re-proved from current semantics.
 
-A graph-owned `scf.parallel` or `scf.forall` with a non-empty foreign
-`mapping` attribute is rejected by Part 3. Loom ownership is represented by
-the surrounding thread and spatial-region structure, not by such an attribute.
+Dynamic-width, resultful, reduction-bearing, mapped, or otherwise unproved
+forms fail before graph mutation. Part 3 does not choose any chunk count
+`K`, including `K = 1`; flatten, serialize, or partition the iteration space
+as policy; invent `P[]`; or select and inline a reduction order. Any such
+choice must already be materialized as accepted semantic IR by Part 2. This
+document intentionally defines no future upstream chunking or reduction
+algorithm.
 
-The important semantic difference from `scf.for` is the absence of a
-cross-iteration program order. The source `scf.parallel` iteration
-space may execute in any order and may execute concurrently. If two
-iterations race through memory, the source behavior is undefined.
-Therefore, schedule normalization must retain an explicit fixed-domain
-`scf.parallel` container until mechanical lowering. The recursive graph owner
-re-proves its independence from current semantics and never imposes source
-traversal order between lanes. A parallel region whose legality cannot be
-re-proved fails before graph mutation.
-
-The future upstream normalization design below uses a positive split factor `K`.
-No `--parallel-split-factor` option or default `K` policy is implemented by
-the current pipeline, and the recursive graph owner must not choose one.
-The N-Dim Parallel With M Reductions subsection below permits the
-per-dim chunk count `K_d` to differ across dims under a cost-model-
-driven policy; the carry-placement and merge contract specified there
-is independent of the K choice, so per-dim K does not change the IR
-contract.
-
-* `K = 1` is the proposed deferred baseline. The whole iteration domain
-  becomes one lexicographic `scf.for` loop nest.
-* `K > 1` is an exploration point. The iteration domain is partitioned
-  into `K` ordered, disjoint chunks whose union is the original domain.
-  Each chunk becomes an independent `scf.for` loop nest with the same
-  body. Lowering those loop nests later naturally duplicates the
-  stream/carry/gate DFG structure.
-* A future schedule owner may split one selected dimension into
-  contiguous subranges whose boundaries are aligned to that dimension's
-  step. The default selected dimension is the outermost dimension; a
-  later cost model may choose another dimension, but the choice must be
-  deterministic for a fixed input IR and pass option set. More advanced
-  linearized or tiled partitions are legal only if they cover the
-  original iteration space exactly once and assign every chunk a
-  deterministic ordinal.
-* For a one-dimensional contiguous split with positive `%step`, use the
-  following reference arithmetic:
-  ```
-  %trip_count = ceildiv(max(%ub - %lb, 0), %step)
-  %first_k    = floor(k * %trip_count / K)
-  %limit_k    = floor((k + 1) * %trip_count / K)
-  %chunk_lb_k = %lb + %first_k * %step
-  %chunk_ub_k = (k + 1 == K) ? %ub : %lb + %limit_k * %step
-  ```
-  The last chunk uses the original upper bound so the generated loop
-  preserves the source half-open range even when `%ub - %lb` is not a
-  multiple of `%step`.
-* `K` may exceed the dynamic iteration count. Empty chunks are legal;
-  they produce `valid = false` for reductions and a normal chunk tail
-  for control synchronization. The chunk tail of a zero-iteration
-  chunk is the structured `scf.for` loop-exit control produced by the
-  `scf.for` template: the chunk's incoming control is forwarded through
-  the loop-exit path.
-* Chunk loop nests start from the same parent control point. Their done
-  tokens are joined only where the surrounding program needs the
-  `scf.parallel` to have completed. They are not sequenced by source IR
-  order unless a true external dependence requires that ordering.
-  All chunk tails in one enclosing fixed-domain parallel region rendezvous
-  into a group tail token. Any later memory access that must observe the
-  parallel's memory effects depends on this group tail.
-* The normalized candidate must keep this parallel relationship in semantic
-  SCF until recursive graph-region lowering. A side-table marker, lineage
-  record, or cached proof is not an alternate legality authority.
-* Different `K` values may produce different reduction results when the
-  user's reduction region is not both associative and commutative. All
-  such results are allowed by `scf.parallel`'s unspecified reduction
-  order. Users who require a specific reduction order must not express
-  that computation with `scf.parallel`.
-
-For an effect-only one-dimensional parallel loop:
+For an accepted one-dimensional effect-form loop, `%N` denotes a
+compile-time-resolved extent and the candidate has already selected
+`P[] = [%N]`:
 
 ```mlir
 scf.parallel (%i) = (%c0) to (%N) step (%c1) {
@@ -1709,374 +1549,24 @@ scf.parallel (%i) = (%c0) to (%N) step (%c1) {
 }
 ```
 
-the `K = 1` baseline is equivalent to:
-
-```mlir
-scf.for %i = %c0 to %N step %c1 {
-  %x = memref.load %A[%i] : memref<?xf32>
-  %y = arith.mulf %x, %x : f32
-  memref.store %y, %B[%i] : memref<?xf32>
-}
-```
-
-With `K = 2`, a valid contiguous split is conceptually:
-
-```mlir
-%mid = split_point(%c0, %N, %c1)
-
-scf.for %i = %c0 to %mid step %c1 {
-  ...
-}
-
-scf.for %i = %mid to %N step %c1 {
-  ...
-}
-```
-
-The two loop nests are conceptual lane bodies of one enclosing fixed-domain
-`scf.parallel`, not adjacent source-ordered operations. The actual Structured
-Program Candidate must preserve that enclosing semantic parallel relation and
-join the lane tails before the continuation. It must not replace the relation
-with a provenance id or side-table certificate.
-
-If the `scf.parallel` has no results, the future upstream
-`scf-parallel-for-to-nested-fors` conversion may be reused for the
-`K = 1` case. That upstream conversion is not sufficient for resultful
-`scf.parallel`, because it rejects `scf.parallel` ops with results.
-The future upstream owner must lower resultful `scf.parallel` itself; current
-Part 3 rejects it before graph mutation.
-
-For a future upstream lowering of resultful `scf.parallel`, each result position is associated with
-one initial value, one `scf.reduce` operand, and one `scf.reduce`
-region. The reduction region is the reduction operator; Loom does not
-encode the reduction kind as an attribute. The future upstream owner inlines
-the region during normalization by substituting:
-
-* the first reduction block argument with the current accumulator;
-* the second reduction block argument with the current iteration's
-  reduction operand;
-* `scf.reduce.return` with the yielded next accumulator value.
-
-For `K = 1`, this becomes the same structure as `scf.for` with
-`iter_args`:
-
-```mlir
-%sum = scf.parallel (%i) = (%c0) to (%N) step (%c1)
-    init (%zero) -> f32 {
-  %x = memref.load %A[%i] : memref<?xf32>
-  scf.reduce(%x : f32) {
-  ^bb0(%lhs : f32, %rhs : f32):
-    %r = arith.addf %lhs, %rhs : f32
-    scf.reduce.return %r : f32
-  }
-}
-```
-
-may normalize to:
-
-```mlir
-%sum = scf.for %i = %c0 to %N step %c1
-    iter_args(%acc = %zero) -> f32 {
-  %x = memref.load %A[%i] : memref<?xf32>
-  %next = arith.addf %acc, %x : f32
-  scf.yield %next : f32
-}
-```
-
-For `K > 1`, every chunk computes a partial reduction without assuming
-that the reduction has an identity element. This is required because
-blindly initializing every chunk with the original `init` value would
-apply the init value once per chunk. Instead, each chunk returns:
-
-* a `valid` flag that is true iff the chunk executed at least one
-  iteration;
-* one `partial` value per reduction result, initialized from the first
-  executed iteration in that chunk and updated by the reduction region
-  for later iterations in the same chunk.
-
-The final merge starts from the original `init` tuple and folds only
-valid chunk partials in deterministic chunk-ordinal order by inlining
-the same reduction regions:
-
-```mlir
-%valid0, %partial0 = reduce_chunk_0(...)
-%valid1, %partial1 = reduce_chunk_1(...)
-
-%acc0 = %zero
-%acc1 = scf.if %valid0 -> f32 {
-  %next0 = inline_reduce(%acc0, %partial0)
-  scf.yield %next0 : f32
-} else {
-  scf.yield %acc0 : f32
-}
-%acc2 = scf.if %valid1 -> f32 {
-  %next1 = inline_reduce(%acc1, %partial1)
-  scf.yield %next1 : f32
-} else {
-  scf.yield %acc1 : f32
-}
-```
-
-For multi-result `scf.parallel`, the `valid` flag is shared by all
-reduction results of the same chunk. Each chunk carries one partial per
-result position, and the final merge conditionally folds the accumulator
-tuple. Each result position uses its own `scf.reduce` region. The
-conditional fold may be represented as one multi-result `scf.if` or as
-equivalent per-result control/data wiring, as long as all result
-positions observe the same chunk validity.
-
-This partial-and-merge scheme is correct for arbitrary `scf.reduce`
-regions. It chooses one legal reduction order allowed by
-`scf.parallel`; it does not require associativity, commutativity, or a
-known identity element. If a later analysis proves stronger algebraic
-properties, a tree merge or target-specific reduction network may be
-selected as an optimization, but that is not part of the required
-normalization contract.
-
-#### Future Upstream N-Dim Parallel With M Reductions
-
-The single-dimensional, multi-result discussion above does not by
-itself pin the IR shape for the multi-dimensional case. This
-subsection extends the partial-and-merge scheme to a `scf.parallel`
-over `N` parallel dimensions with `M` reduction results.
-
-**Generated loop-nest layout.** After upstream parallel-SCF normalization, an
-`N`-dim `scf.parallel` contains one or more `scf.for` loop nests as explicit
-fixed lanes, plus any required reduction-merge
-`scf.if` ops. Each parallel dim becomes one `scf.for`. The loop-nest
-order is outermost-first-in-source-order: the outermost generated
-`scf.for` corresponds to the leftmost parallel dim of the source
-`scf.parallel`, and the innermost generated `scf.for` corresponds to
-the rightmost parallel dim, which is therefore the most tightly
-bound. The implementation may choose, per dim, how many chunks `K`
-to split that dim into; that choice is implementation-defined and
-does not affect the carry placement contract specified below. When a
-dim is split into `K > 1` chunks, the chunked dim is materialized as
-two nested `scf.for` ops at that dim's position in the nest -- an
-outer K-chunk loop iterating over the chunk ordinal `0 .. K-1`, and
-an inner per-chunk loop iterating the dim's subrange. The K-chunk
-loop is the carrier of the cross-chunk reduction merge; the inner
-per-chunk loop participates in the same intra-chunk body as any
-unchunked dim.
-
-**Reduction iter_arg placement.** For `M` reductions over the same
-`N` parallel dims, each reduction has one (valid, partial) tuple per
-chunk-tuple. Each reduction's `%iter_arg` is hung on the **innermost**
-generated per-chunk `scf.for` -- the loop with the smallest stride
-and the tightest binding -- so that the partial accumulates across
-all iterations of all parallel dims within one chunk-tuple. The
-reduction's `%iter_init` is the chunk-empty seed described under
-"valid flag wiring" below; it flows in from the loop-nest scope that
-encloses the innermost per-chunk loop. The reduction's `%iter_yield`
-is the partial after one iteration completes inside the chunk-tuple,
-and the reduction's `%iter_final` is the partial after the
-innermost per-chunk loop completes -- this is the per-chunk-tuple
-partial value that the outer reduction-merge `scf.if` consumes.
-Other parallel dims' per-chunk `scf.for` loops do not carry the
-reduction iter_arg directly; the partial is hoisted out of the
-innermost per-chunk loop as a normal `scf.for` result. When the
-intra-chunk iteration space is represented as a nest of multiple
-per-chunk `scf.for` loops (one per parallel dim), each reduction's
-`(valid, partial)` tuple must be threaded as iter_args through every
-enclosing per-chunk loop in the nest, not only the innermost one.
-The seed at the outer per-chunk loop's iter_arg is the dummy seed
-`(false, init_r)`; intermediate per-chunk loops yield their inner
-loop's final tuple; the outermost per-chunk loop yields the
-chunk-tuple's `(valid, partial_r)` pair. Without this pass-through
-each outer-loop iteration would restart the inner reduction from
-the seed and lose the accumulated partial. An equivalent future upstream
-representation may flatten the intra-chunk N-D iteration space into a
-single linearized `scf.for`, in which case each reduction has a
-single `iter_arg` on that one loop. Implementations may choose
-either canonical form.
-
-**Valid flag wiring.** The per-chunk `valid` flag is shared by all
-`M` reductions of the same chunk-tuple. It is computed inside the
-innermost per-chunk loop the same way as in the one-dim case:
-`%valid` starts false at the chunk-tuple entry and is set true on
-the first executed iteration. The `M` reduction `%iter_init` values
-are dummy seeds; their concrete value is irrelevant because the
-outer merge `scf.if` only folds a chunk-tuple's partial when its
-`%valid` is true, which guarantees that at least one body iteration
-overwrote the dummy seed before the partial was produced.
-Implementations may pick any deterministic seed (for example, the
-original `init` value, or an undef poison value); the seed choice
-does not affect the merged result.
-
-For arbitrary `scf.reduce` bodies that lack a usable identity (for
-example, a non-commutative or otherwise no-identity reduction), the
-overwrite is not implicit: the innermost body must branch on the
-chunk-local `%valid` so that the first executed iteration yields
-the iteration value as the partial directly, and subsequent
-iterations inline the source `scf.reduce` body with the running
-partial and the iteration value. The worked example below uses
-sum and max where the natural identity (`0` and `-inf`) makes the
-branch unnecessary; the generic non-identity scheme is what
-arbitrary reductions lower to.
-
-**K > 1 multi-chunk tuple nesting.** When the implementation splits
-one or more parallel dims with `K_d > 1`, the chunk-tuples are
-enumerated by a K-chunk `scf.for` nest -- one `scf.for` per chunked
-dim -- placed outside the per-chunk loop nest. The chunk-tuples
-form a flat sequence indexed by a deterministic chunk-tuple ordinal
-that respects source dim order: the outermost K-chunk loop varies
-slowest. For each reduction `r` in `0 .. M-1`, the K-chunk nest
-carries a running accumulator `%acc_r` as an iter_arg on every
-K-chunk `scf.for` in the nest, threaded through with `scf.yield` so
-that the value reaching the merge `scf.if` is the accumulator after
-the prior chunk-tuple in canonical order. The accumulator is
-**seeded** by the source `init_r` on the outermost K-chunk
-`scf.for`'s `iter_args`; each inner K-chunk loop's iter_arg is
-seeded from the enclosing K-chunk loop's iter_arg block argument,
-not from `init_r` directly. Inside the innermost K-chunk loop, a
-reduction-merge `scf.if` consumes:
-
-* the per-chunk-tuple partial `%partial_r` produced by reduction
-  `r`'s innermost per-chunk `iter_arg`'s `%iter_final`;
-* the running accumulator `%acc_r` carried in from the prior
-  chunk-tuple via the K-chunk nest's iter_args;
-* the per-chunk-tuple `%valid` bit, which determines whether the
-  merge fires for this chunk-tuple.
-
-For `M` reductions, `M` independent (valid, partial, accumulator)
-triples nest in the same K-chunk loop nest as `M` parallel
-iter_args on every K-chunk `scf.for`. The reduction-merge `scf.if`
-ops may be expressed as one multi-result `scf.if` that yields the
-next `M`-tuple `(%acc_0', .., %acc_{M-1}')`, or as `M` single-result
-`scf.if` ops sharing the same `%valid` selector; both shapes are
-equivalent under the Section 6.1 template. Whichever shape is chosen, the
-merged tuple is yielded back into the K-chunk nest's iter_args,
-and the final values flowing out of the outermost K-chunk
-`scf.for` are the `M` `scf.parallel` results.
-
-When every parallel dim has `K_d = 1`, there is no K-chunk loop at
-all, and the merge `scf.if` collapses to a single fold equivalent
-to the one-dim `K = 1` case. The `M` reduction `(valid, partial)`
-tuples still pass through every enclosing per-chunk loop in the
-intra-chunk nest as iter_args, with the dummy seeds at the
-outermost per-chunk loop and the final tuple yielded out of the
-outermost per-chunk loop into the merge `scf.if`; this is the same
-pass-through-through-all-dims rule as the multi-chunk case, just
-without the outer K-chunk wrapper. The reduction iter_args still
-do their actual update at the innermost per-chunk loop's body, but
-they are not hung directly on that innermost loop alone. An upstream
-implementation that flattens the intra-chunk N-D iteration space
-into a single linearized `scf.for` is the equivalent canonical
-form and may carry each reduction as a single iter_arg on that one
-loop. When a chunked dim has `K_d = 1` it is omitted from the
-K-chunk nest entirely.
-
-**Worked example: 2D parallel, 2 reductions.** Consider:
-
-```mlir
-%sum, %max = scf.parallel (%i, %j) = (%c0, %c0) to (%I, %J)
-    step (%c1, %c1) init (%zero, %neginf) -> (f32, f32) {
-  %x = memref.load %A[%i, %j] : memref<?x?xf32>
-  scf.reduce(%x, %x : f32, f32) {
-  ^bb0(%lhs0 : f32, %rhs0 : f32):
-    %s = arith.addf %lhs0, %rhs0 : f32
-    scf.reduce.return %s : f32
-  }, {
-  ^bb0(%lhs1 : f32, %rhs1 : f32):
-    %m = arith.maximumf %lhs1, %rhs1 : f32
-    scf.reduce.return %m : f32
-  }
-}
-```
-
-For a future upstream implementation choice `K_i = K_j = 2` (two chunks per dim,
-four chunk-tuples total), the normalized loop nest has the shape:
-
-```mlir
-%sum_final, %max_final =
-  scf.for %ki = %c0 to %c2 step %c1
-      iter_args(%sum_acc = %zero, %max_acc = %neginf) -> (f32, f32) {
-    %sum_acc1, %max_acc1 =
-      scf.for %kj = %c0 to %c2 step %c1
-          iter_args(%sum_acc_j = %sum_acc, %max_acc_j = %max_acc)
-          -> (f32, f32) {
-        %i_lb, %i_ub = chunk_bounds(%ki, %c0, %I, %c1, %c2)
-        %j_lb, %j_ub = chunk_bounds(%kj, %c0, %J, %c1, %c2)
-
-        %valid_chunk, %sum_partial_chunk, %max_partial_chunk =
-          scf.for %i = %i_lb to %i_ub step %c1
-              iter_args(%v_outer = %false,
-                        %s_outer = %zero,
-                        %m_outer = %neginf) -> (i1, f32, f32) {
-            %v_inner, %s_inner, %m_inner =
-              scf.for %j = %j_lb to %j_ub step %c1
-                  iter_args(%v = %v_outer,
-                            %s = %s_outer,
-                            %m = %m_outer) -> (i1, f32, f32) {
-                %x = memref.load %A[%i, %j] : memref<?x?xf32>
-                %s_next = arith.addf %s, %x : f32
-                %m_next = arith.maximumf %m, %x : f32
-                scf.yield %true, %s_next, %m_next : i1, f32, f32
-              }
-            scf.yield %v_inner, %s_inner, %m_inner : i1, f32, f32
-          }
-
-        %sum_acc_j_next = scf.if %valid_chunk -> f32 {
-          %merged = arith.addf %sum_acc_j, %sum_partial_chunk : f32
-          scf.yield %merged : f32
-        } else {
-          scf.yield %sum_acc_j : f32
-        }
-        %max_acc_j_next = scf.if %valid_chunk -> f32 {
-          %merged = arith.maximumf %max_acc_j, %max_partial_chunk : f32
-          scf.yield %merged : f32
-        } else {
-          scf.yield %max_acc_j : f32
-        }
-
-        scf.yield %sum_acc_j_next, %max_acc_j_next : f32, f32
-      }
-    scf.yield %sum_acc1, %max_acc1 : f32, f32
-  }
-```
-
-The intra-chunk-tuple body sits inside the innermost per-chunk
-`scf.for` over `%j`, which carries the three iter_args `(%v, %s,
-%m)`. The first executed iteration of the chunk-tuple flips `%v`
-to `true` and overwrites the seed values of `%s` and `%m`, so the
-chunk-tuple's partial is well-defined whenever `%valid_chunk` is
-true. The two reduction-merge `scf.if` ops sit inside the inner
-K-chunk loop over `%kj` and fold each reduction independently
-under the shared `%valid_chunk` selector. Both running
-accumulators `%sum_acc` and `%max_acc` are threaded as iter_args
-through both K-chunk loops -- seeded by `%zero` and `%neginf` on
-the outer K-chunk loop over `%ki`, threaded through the inner
-K-chunk loop over `%kj` via its own iter_args, and yielded back
-through both K-chunk loops -- so that the value entering the merge
-`scf.if` on chunk-tuple `(ki, kj)` is the accumulator after the
-prior chunk-tuple in canonical order. The outermost K-chunk loop's
-results `%sum_final` and `%max_final` are the `scf.parallel`'s two
-results.
-
-Within this deferred design, the K choice is policy-defined; this section
-records the proposed carry placement and merge structure
-regardless of K, so an implementation policy may pick K based on
-cost-model decisions without changing the IR contract. In
-particular, switching any dim from `K_d = 1` to `K_d > 1` only
-adds one K-chunk `scf.for` for that dim into the K-chunk nest and
-extends the running accumulators' iter_arg threading through it;
-the per-chunk-tuple body and the per-reduction `%iter_arg`
-placement on the innermost per-chunk loop are unchanged.
-
-After future upstream normalization, all generated `scf.for` and `scf.if`
-operations use the supported sequential templates in this section. Their
-stream, carry, gate, demux, mux, and memory-order behavior is inherited from
-those templates.
+`scf.parallel` is not a second Dataflow loop primitive. No
+`dataflow.parallel`, `dataflow.reduce`, reduction enum, schedule record, or
+parallel control op is introduced.
 
 #### Parallel Boundary Translation
 
-An upstream Structured Program Candidate must select the P[] representation,
-resolve ownership and schedule, and prove legality. The graph owner then
-recursively lowers each point in the fixed domain from the same incoming
-execution and `(W, R)` state and joins incomparable exits with all-of. Nested
-repeat and select use the same recursive transfers as any other lane body.
-Unmarked, dynamic-width, mapped, and reduction-bearing forms fail atomically.
-Traversal order is never used to invent a cross-iteration memory order.
+For rank `r` and fixed widths `P[]`, the graph owner creates one static lane
+for each logical coordinate tuple in the selected Cartesian domain. Each lane
+starts from the same incoming execution and per-partition `(W, R)` frontier,
+substitutes its already selected source induction values, and recursively
+lowers the existing body. Incomparable exits are joined with fixed-arity
+all-of; an empty domain is an identity transfer. The Cartesian rank is not
+bounded by this lowering contract.
+
+Lane enumeration is an implementation detail and never creates
+cross-iteration program order. A failed independence or ownership re-proof
+causes atomic failure. No parallel boundary, coordinate tuple, `P[]` record,
+dependence summary, or traversal order survives into canonical graph IR.
 
 ### 6.6 `scf.index_switch`
 
@@ -2407,9 +1897,9 @@ contract:
   selected graph on that AccCore's SpatialCore. The thread is already isolated
   and has an explicit boundary operand list.
 * Native `dataflow.thread` data results, async value types, thread
-  groups, and thread-level aggregation regions. Tensor-result
-  aggregation is handled by materializing it into mapped-memory
-  effects before thread promotion.
+  groups, and thread-level aggregation regions. Part 2 must materialize any
+  supported tensor-result aggregation into accepted effect form before thread
+  promotion; a residual aggregation form fails finalizability.
 * LLVM IR provider integration, source-language integration, and clang
   embedding. Those concerns belong to Part 1 and Part 2.
 * Logical-domain-point to fabric-resource binding and neighborhood

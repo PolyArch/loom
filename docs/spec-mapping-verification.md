@@ -3,7 +3,9 @@
 This document is the authority for observable verification behavior of the
 three immutable Mapping profiles. `docs/spec-mapping-artifact.md` owns their
 persistent records and schema. `docs/spec-mapping-identity.md` owns identity
-and reference semantics.
+and reference semantics. `docs/spec-pnr.md` owns the Spatial constraint
+algebra and the single `MappingConstraintSet Persistent Family Frontier`
+statement.
 
 A profile verifier proves intrinsic legality and closure for one complete
 artifact. It does not search, repair records, select a fallback, complete a
@@ -145,7 +147,10 @@ claims, calendars, or proof witnesses in `S`.
 
 ## Spatial Constraint Admission
 
-The separate invocation gate is:
+Spatial constraint admission is conditional on the
+`MappingConstraintSet Persistent Family Frontier` owned by
+`docs/spec-pnr.md`. No concrete invocation or Spatial PnR publication exists
+before that frontier closes. Once available, the separate invocation gate is:
 
 ```text
 SpatialMappingConstraintAdmission(D, T, F, K, S)
@@ -153,15 +158,18 @@ SpatialMappingConstraintAdmission(D, T, F, K, S)
 
 It runs only after base verification and answers whether the base-valid `S`
 satisfies the exact MappingConstraintSet `K` used for that run. Admission
-recomputes every applicable constraint from stable upstream references and
-result structural keys; it does not trust search-state claims.
+independently evaluates the owner-defined projections from `S` for the stable
+pre-result subjects in `K` and recomputes every canonical clause. It does not
+trust search-state claims, FrozenModel indexes, or solver caches. The closed
+atoms, subject and carrier typing, canonicalization, and outcome distinctions
+are owned only by `docs/spec-pnr.md`.
 
-Failure is `RejectedByConstraintSet`, not intrinsic invalidity. `K` remains
-an independent canonical MappingConstraintSet Artifact. Its exact
-ArtifactIdentity and the admission result belong to invocation metadata or
-Evaluation Evidence and do not enter SpatialMapping identity. The same
-immutable `S` may therefore be base-valid, admitted by one exact `K`, and
-rejected by another.
+Failure is `RejectedByConstraintSet`, not intrinsic invalidity. Once the
+persistent family exists, `K` remains an independent canonical
+MappingConstraintSet Artifact. Its exact ArtifactIdentity and the admission
+result belong to invocation metadata or Evaluation Evidence and do not enter
+SpatialMapping identity. The same immutable `S` may therefore be base-valid,
+admitted by one exact `K`, and rejected by another.
 
 Only a base-valid and admitted draft may proceed through canonical ID and
 ordinal assignment. Structural root verification then checks the canonical
@@ -257,16 +265,19 @@ A malformed reference, broken path, hard-capacity counterexample, or replayable
 closed wait set is `Rejected`. Failure to establish a required progress proof
 is `Incomplete(proof_not_established)` and is distinct from a proven
 deadlock. A finite simulation that observes no deadlock cannot produce
-`Verified`. Only `Verified` may proceed to SystemMapping finalization.
+`Verified`. Once the persistent-family frontier permits System PnR
+finalization, only `Verified` is eligible to proceed to it.
 
 ## System Constraint Admission
 
-`SystemMappingConstraintAdmission` is separate from the base verifier. It
-checks the exact System MappingConstraintSet bound to the same `D`, `F`, and
-root launch closure after intrinsic verification succeeds. The constraint set
-remains an independent canonical Artifact. The exact search domain, resolved
-config, constraint-set ArtifactIdentity, and admission result remain invocation
-metadata or Evaluation Evidence and do not enter SystemMapping identity.
+System constraint admission is conditional on the
+`MappingConstraintSet Persistent Family Frontier` owned by
+`docs/spec-pnr.md`; this document defines no competing frontier contract. No
+concrete `SystemMappingConstraintAdmission` invocation or System PnR
+finalization exists before that frontier closes. Once available, the search
+domain, resolved config, constraint-set ArtifactIdentity, and admission result
+remain invocation metadata or Evaluation Evidence and do not enter
+SystemMapping identity.
 
 Constraint rejection does not relabel a base-verified SystemMapping as
 intrinsically invalid. Quality gates, objective availability, candidate
@@ -299,7 +310,8 @@ Tests should protect stable semantic anchors:
 * Spatial record totality, mixed identity rules, RouteTree arborescence,
   route-wide widening acceptance, narrowing and tag-borrow rejection,
   MemoryBinding and exposure closure, ResourceUse, Tags, and progress;
-* separation of Spatial base validity from exact `K` admission;
+* separation of Spatial base validity from conditional exact `K` admission,
+  including rejection before persistent-family closure;
 * exact equality of the System import table and normalized `B_graph` range,
   including a legal InstructionCore-only empty table;
 * System relation totality, parent-AccCore agreement, service continuity,

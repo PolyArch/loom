@@ -14,6 +14,14 @@ Each persistent fact has one owner:
   outcomes;
 * `EvaluationRequest` owns one immutable evaluation input;
 * `EvaluationEvidence` owns normalized evaluation output;
+* the architecture-only `fabric.system` owns each InstructionCore
+  Architectural Contract and Microarchitectural Realization, plus the exact
+  Transport Architecture;
+* Compiler Target Binding owns compiler-facing target choices and binary
+  compatibility proof as specified by `docs/spec-runtime-abi.md` section
+  `Compiler Target And Binary Compatibility`;
+* Gem5 Simulation Binding owns simulator-model correspondences and their
+  validation against exact architecture, compiler, and implementation inputs;
 * `SimulationExecution` owns workload terminal observables, activity, and trace
   manifest;
 * raw detailed bundles own large external payloads and tool products; and
@@ -35,21 +43,48 @@ source + driver configuration
   -> selected Canonical Dataflow Program D*
 
 ADG Builder recipe or built-in template
-  -> Fabric Hardware Description
-Fabric Hardware Description
+  -> architecture-only fabric.system
+  -> exact Transport Architecture
+architecture-only fabric.system + protocol-specific implementation definition
+  -> sibling Interconnect Implementation and exact refinement
+architecture-only fabric.system
   -> ConfigurationABI
-Fabric Hardware Description + ConfigurationABI
+architecture-only fabric.system + exact Interconnect Implementation/refinement
+  + ConfigurationABI
   -> HardwareImplementation(RTL)
   -> HardwareImplementation(synthesized/physical/FPGA)
 
-Dataflow + Fabric
+Canonical Dataflow Program + exact Fabric architecture
   -> TechMapping
   -> SpatialMapping
+logical thread definition + architecture-only fabric.system
+  + exact Transport Architecture + exact SpatialMapping imports
   -> SystemMapping
+SystemMapping-selected AccCore
+  -> exact InstructionCore Architectural Contract
+SystemMapping-selected AccCore
+  -> exact InstructionCore Microarchitectural Realization
+SystemMapping-selected AccCore
+  -> derived InstructionCoreContextRef
+exact InstructionCore Architectural Contract
+  -> mechanically selected and validated Compiler Target Binding
+InstructionCore program + Compiler Target Binding
+  -> target-specific binary
 complete Mapping + ConfigurationABI
   -> HardwareConfigurationImage
-complete closure of software + Mapping + implementation + images
+selected software + complete Mapping + Compiler Target Binding
+  + target-specific binary + exact implementation refinements + images
+  + memory and platform bindings
   -> Deployment
+
+exact Fabric InstructionCore Architectural Contract
+  + exact InstructionCore Microarchitectural Realization
+  + Compiler Target Binding
+  + exact Interconnect Implementation/refinement
+  + gem5 model, build, and Bridge identities
+  -> Gem5SimulationBinding
+Deployment + Gem5SimulationBinding
+  -> EvaluationRequest subjects {deployment, system_model}
 
 immutable subjects + exact model binding
   -> EvaluationRequest
@@ -60,6 +95,14 @@ EvaluationRequest + typed output bindings + retained raw material
 candidate sets + Evidence + resolved DSE policy
   -> CandidateDecision lineage and selected/Pareto artifact set
 ```
+
+These edges are required traceability relations, not exact field schemas or an
+exhaustive executable-closure catalog. Compiler Target Binding and
+Gem5SimulationBinding denote confirmed ownership and compatibility edges only.
+Their persistent carrier or root schemas, Compiler Target Binding multiplicity
+and tie-breaking, exact binary artifact binding, and exact
+`Gem5SimulationBinding` schema remain downstream open work rather than wire
+contracts defined here.
 
 Not every invocation traverses every edge. Compatibility compilation may stop
 at ordinary compiler output. Mapping, simulation, RTL, EDA, deployment, and DSE
@@ -72,19 +115,40 @@ semantic contract. Key boundaries are:
 
 * DFG-sim consumes `{Canonical Dataflow Program}`;
 * TechMapping consumes exact Dataflow and Fabric;
-* Spatial PnR consumes exact `D/T/F/C/K`;
-* a System PnR invocation consumes exact `D/F/R/H/C/K`; the finalized
-  SystemMapping persists only its exact `D/F`, root launches, derived spatial
-  imports, and selected Mapping records;
+* once the common MappingConstraintSet persistent family closes, Spatial PnR
+  consumes exact `D/T/F/C/K`;
+* once that family and the System constraint profile close, a System PnR
+  invocation consumes exact `D/F/R/H/C/K`; the finalized SystemMapping
+  persists only its exact `D/F`, root launches, derived spatial imports, and
+  selected Mapping records;
+* SystemMapping binds the architecture-only `fabric.system` and its exact
+  Transport Architecture, never an Interconnect Implementation, Compiler Target
+  Binding, binary, HardwareImplementation, gem5 model, or Deployment identity;
+* each concrete occurrence of a logical thread definition resolves through its
+  SystemMapping Thread Execution Binding to a selected AccCore and derived
+  `InstructionCoreContextRef`;
+* Compiler Target Binding is mechanically selected and validated from that
+  AccCore's exact InstructionCore Architectural Contract, and each
+  target-specific binary is validated under that binding;
 * CGRA-sim consumes `{D,F,SpatialMapping}`;
-* sys-sim consumes `{Deployment,Gem5SimulationBinding}`;
+* HardwareImplementation, Gem5 Simulation Binding, and Deployment each bind
+  the exact Interconnect Implementation and refinement required by their role;
+* sys-sim consumes `{Deployment,Gem5SimulationBinding}` through exact
+  Evaluation subject roles `deployment` and `system_model`, and the gem5 model
+  must be compatible with all three authorities: the exact Fabric
+  InstructionCore Architectural Contract; the exact InstructionCore
+  Microarchitectural Realization, including execution structure, timing,
+  capacity, and mapping-visible resources; and the compatible Compiler Target
+  Binding used by the binary. Gem5 Simulation Binding remains simulator
+  binding, never hardware truth;
 * RTL/EDA Evaluation consumes exact `HardwareImplementation` subjects;
 * mapped RTL execution consumes exact `{HardwareImplementation,Deployment}`;
 * `HardwareConfigurationImage` is finalized only from the exact Mapping and
   ConfigurationABI closure specified by
   `docs/spec-configuration-deployment.md`; and
 * Deployment references, rather than copies, its exact software, hardware,
-  mapping, configuration, and runtime ABI artifacts.
+  mapping, compiler target, target-specific binary, configuration, memory,
+  platform, and runtime ABI dependencies.
 
 An identity mismatch is an invalid input, not an Evaluation finding and not a
 reason to repair or reinterpret the consumer artifact.
@@ -166,5 +230,8 @@ semantic artifact, Evaluation result, DSE choice, or deployment.
 
 Stable tests cover the fixed identity preimage, canonicalization invariance,
 store corruption detection, exact consumer coupling, lineage without semantic
-duplication, and deterministic replay. Tests do not pin path layouts beyond the
-store contract or duplicate every producer/consumer pair in a fixture matrix.
+duplication, deterministic replay, and gem5 rejection when any of its three
+InstructionCore compatibility authorities disagree. Tests do not pin path
+layouts beyond the store contract, duplicate every producer/consumer pair in a
+fixture matrix, or freeze an open Compiler Target Binding or
+`Gem5SimulationBinding` carrier schema.

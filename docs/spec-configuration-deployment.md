@@ -1,10 +1,12 @@
 # Configuration And Deployment
 
 This document is the semantic owner for Loom hardware-configuration encoding,
-configuration images, Deployment artifacts, and the first public Deployment
-package projection. It expands the closed configuration and deployment
-decisions without creating a new MLIR dialect or a generic artifact-schema
-framework.
+configuration images, the Deployment configuration-image branch, the
+confirmed runtime-image child semantics and persistent-schema frontier, and
+the first public Deployment package projection. It is the sole normative owner
+for runtime-image child membership, non-Artifact identity, semantic fields,
+stable keys, canonical ordering, and presence conditions. It does not create a
+new MLIR dialect or a generic artifact-schema framework.
 
 ## Ownership
 
@@ -27,7 +29,7 @@ HardwareConfigurationImage
   -> immutable encoded state for one exact programming unit
 
 Deployment
-  -> exact executable dependency closure
+  -> configuration-image closure and immutable derived runtime-image children
 ```
 
 Fabric and Mapping may expose or select semantic `sw_configs`; they do not own
@@ -49,18 +51,24 @@ same semantic configuration encodes to the same
 
 ## Artifact Families
 
-The three Artifact families have these fixed schema descriptors:
+The two complete Artifact families have these fixed schema descriptors:
 
 ```text
 loom.configuration_abi             1.0
 loom.hardware_configuration_image  1.0
-loom.deployment                    1.0
 ```
 
-Each owner library defines one typed C++ model and one canonical serializer and
-parser. `ConfigurationABI` and `Deployment` use canonical JSON semantic bytes.
+The Deployment Artifact family is required, but its complete root, runtime
+child wire schemas, and executable leaves remain open below. It has no assigned
+schema descriptor, version, canonical bytes, or ArtifactIdentity until those
+facts close together. `loom.deployment 1.0` is therefore not a reserved
+placeholder and must not be emitted.
+
+Each closed owner library defines one typed C++ model and one canonical
+serializer and parser. `ConfigurationABI` uses canonical JSON semantic bytes.
 `HardwareConfigurationImage` uses a canonical typed header followed by its raw
-payload. Loom does not define MLIR mirrors, Protobuf alternatives, base64
+payload. Deployment will use canonical JSON only after its complete schema
+closes. Loom does not define MLIR mirrors, Protobuf alternatives, base64
 payloads, or a generic manifest registry for these families.
 
 Schema versions use `X.Y`: `X` is an incompatible change and `Y` is a
@@ -163,47 +171,177 @@ may share blob storage but do not permit implicit rebinding.
 
 ## Deployment
 
-`Deployment` is the selected executable dependency graph:
+This document defines the closed configuration-image branch and the confirmed
+semantic runtime-image children of `Deployment`:
 
 ```text
-Deployment {
-  version
-  dataflow_ref
-  fabric_ref
-  system_mapping_ref
-  hardware_implementation_refs[]
-  interconnect_implementation_and_refinement
-  instruction_binary_bindings[]
-  configuration_image_refs[]
-  thread_dispatch_image
-  spatial_launch_image?
-  admission_image
-  memory_image_refs[]
-  platform_binding_refs[]
+configuration_image_refs[]
+thread_dispatch_image
+spatial_launch_image?
+admission_image
+```
+
+This branch does not define the complete Deployment root.
+`CompilerTargetBinding`, target-specific binary binding, `PlatformBinding`,
+static memory images, and the exact executable closure remain active downstream
+work. Exact executable leaves are not defined here and must not be inferred
+from `instruction_binary_bindings[]` or any other placeholder.
+
+`configuration_image_refs[]` is sorted by typed semantic keys. Duplicate,
+foreign, missing, or incompatible references are rejected. The
+configuration-image set equals the transitive closure mechanically required by
+the complete Mapping and exact ABI programming units. Selected
+HardwareImplementations must implement that ABI; they cannot change image
+membership or content.
+
+A verified SystemMapping closure, joined only with the exact downstream leaves
+named by each schema, mechanically derives `ThreadDispatchImage`,
+`SpatialLaunchImage`, and `AdmissionImage`. `ThreadDispatchImage` and
+`AdmissionImage` are present in every valid Deployment. `SpatialLaunchImage`
+is present if and only if the exact imported SpatialMapping set is non-empty.
+
+These payloads are immutable, typed, versioned children of Deployment. They
+are not Mapping records, runtime-owned mutable state, or independent Artifacts
+with their own ArtifactIdentity. Their stable keys and canonical ordering
+derive from exact Mapping structural keys and relations.
+Runtime-image children must not duplicate Mapping legality or target choices.
+Every selected spatial programming unit still requires its exact
+`HardwareConfigurationImage`.
+
+### Runtime-Image Semantic Contract And Persistent Frontier
+
+The three children are versioned Deployment-local payloads, not independent
+Artifact families. Their exact persistent descriptor spelling, version, typed
+carrier for an InstructionCore executable entry, and child-digest framing have
+not yet been closed. Those wire facts must be defined here once the
+relocatable-payload, CompilerTargetBinding, and binary-binding frontier defines
+the executable-entry reference. Until then, an implementation may build and
+check a non-persistent projection of the semantic rows below, but must not
+serialize a placeholder child, assign a provisional descriptor or digest, or
+finalize a complete Deployment.
+
+Every eventual child binds one exact `source_system_mapping_ref`. That single
+source is sufficient because its transitive lineage already owns exact
+Dataflow, Fabric, and imported SpatialMapping identities. The persistent
+schema, once closed, must use Deployment canonical JSON, bind that source,
+define one unambiguous child-digest preimage, and preserve the semantic keys,
+relations, fields, and cardinalities below without introducing another target
+selection.
+
+`ThreadDispatchImage.payload` is:
+
+```text
+ThreadDispatchPayload {
+  rows[] keyed by RootThreadLaunchRef {
+    compiled_thread_execution_binding
+    logical_parameter_schema
+    explicit_dependencies[]
+    thread_completion_destination
+    target_cases[] keyed by AccCoreOccurrenceRef {
+      instruction_core_entry_binding
+      memory_capability_requirements[]
+      long_lived_activation_uses[]
+    }
+  }
 }
 ```
 
-Sets are sorted by typed semantic keys. Duplicate, foreign, missing, or
-incompatible references are rejected. The configuration-image set equals the
-transitive closure mechanically required by the complete Mapping and exact ABI
-programming units. Selected HardwareImplementations must implement that ABI;
-they cannot change image membership or content.
+There is exactly one row for every root thread launch in the complete
+SystemMapping closure and no other row. The compiled binding preserves the
+closed `BindingRelation<AccCoreOccurrenceRef>` semantics; it does not create a
+second target-selection authority. Its finite unique range is exactly the
+canonical `target_cases[]` key set, so a heterogeneous relation may select
+different AccCores and executable entries for different concrete points. A
+missing, extra, or duplicate case is invalid. `instruction_core_entry_binding`
+is a typed reference into the exact executable closure; it cannot be replaced
+by a symbol string while that referenced type remains open.
 
-`ThreadDispatchImage`, `SpatialLaunchImage`, and `AdmissionImage` are typed,
-versioned Deployment payloads rather than independent Artifact families. An
-InstructionCore-only Deployment may omit the spatial-launch payload and all
-SpatialCore configuration images. Every selected spatial programming unit
-requires its exact image.
+`SpatialLaunchImage.payload` is:
+
+```text
+SpatialLaunchPayload {
+  rows[] keyed by GraphExecutionBindingKey {
+    compiled_graph_execution_binding
+    target_cases[] keyed by GraphLaunchTargetKey {
+      required_configuration_image_refs[]
+      value_boundary_bindings[]
+      stream_boundary_bindings[]
+      control_boundary_bindings[]
+      memory_boundary_bindings[]
+      graph_start_activation_set_ref
+      result_destinations[]
+      done_destination
+    }
+  }
+}
+
+GraphLaunchTargetKey = (AccCoreOccurrenceRef, SpatialMappingImportRef)
+```
+
+There is exactly one row for each reachable static graph launch covered by a
+Graph Execution Binding and no other row.
+The finite unique range of the relational join between the parent Thread
+Execution Binding and this compiled
+`BindingRelation<SpatialMappingImportRef>` is
+exactly the canonical `target_cases[]` key set. The key is structural, not a
+new entity. It distinguishes the same SpatialMapping instantiated on different
+AccCore occurrences. Each case contains only material mechanically derived for
+that already selected pair. `required_configuration_image_refs[]` is the exact
+sorted subset joined from the Deployment configuration-image closure; it is an
+access index, not a second configuration selection. The whole child is absent
+exactly when the imported SpatialMapping set is empty.
+
+`AdmissionImage.payload` is:
+
+```text
+AdmissionPayload {
+  rows[] keyed by EventFamilyKey {
+    contexts[] keyed by ExecutionContextKey {
+      parameter_relation : BindingRelation<AdmissionCaseOrdinal>
+      cases[] keyed by AdmissionCaseOrdinal {
+        atomic_activation_set
+        release_rules[]
+        capacity_indices[]
+      }
+    }
+  }
+}
+```
+
+The keys denote static event families and reachable parameterized execution
+contexts, never dynamic event occurrences or absolute time. The relation uses
+the same closed partition/lookup algebra as Mapping and selects a canonical
+child-local case for the remaining Dataflow-owned logical inputs. Its finite
+unique range is exactly the case-key set. There is exactly one row and context
+for every admission relation required by the verified closure and no other
+one. Thread Dispatch and Spatial Launch may reference the same case.
+`AdmissionCaseOrdinal` is assigned only after unique case payloads are sorted
+by canonical semantic bytes; relations are then rewritten to that derived
+ordinal. It is not an EntityId or an independent selection authority.
+
+Rows, contexts, target cases, and admission cases are sorted by canonical key
+bytes. Every nested set is sorted and unique; every relation uses the canonical
+Mapping relation representation owned by the Mapping schema. Authoring order,
+runtime queue order, and derived dense-index assignment do not affect the
+eventual bytes. Validation rederives all row domains, relation ranges, and
+payload contents from the exact verified closure, then checks the eventual
+descriptor, source, digest, presence, and cardinality and rejects disagreement
+atomically. It never repairs a child or writes derived content back into
+Mapping.
 
 Runtime handles, allocations, paths, logs, and mutable admission state do not
-enter Deployment semantic bytes. Runtime verifies the actual platform's
-Fabric, implementation, and ABI identity, using hardware-reported identity
-when available or an exact trusted `PlatformBinding`. A mismatch is rejection,
-not remapping, compatible-hardware selection, or package repair.
+enter Deployment semantic bytes. For each invocation, runtime establishes
+authorization, lease, and isolation state for the exact preselected resources.
+It cannot remap execution, service, route, tag, context, configuration, or any
+other target choice. Runtime verifies the actual platform's Fabric,
+implementation, and ABI identity, using hardware-reported identity when
+available or an exact trusted `PlatformBinding`. A mismatch is rejection, not
+remapping, compatible-hardware selection, or package repair.
 
-## Mechanical Dependency And Finalization
+## Configuration-Image And Runtime-Image Dependency
 
-The only dependency and finalization graph is:
+The closed configuration-image branch and conditional runtime-image branch
+have this mechanical derivation graph:
 
 ```text
 exact Fabric
@@ -212,24 +350,40 @@ exact Fabric
 exact Fabric + ConfigurationABI
   -> independently derive and finalize HardwareImplementation
 
-complete Mapping + ConfigurationABI + selected HardwareImplementation
+verified SystemMapping closure
+  + ConfigurationABI + selected HardwareImplementation
   -> verify their exact common Fabric and ABI closure
--> derive temporary ConfiguredHardwareProjection
--> encode and verify every required HardwareConfigurationImage
--> derive runtime images
--> finalize Deployment dependency graph
--> emit the selected package projection
+  -> derive temporary ConfiguredHardwareProjection
+  -> encode and verify every required HardwareConfigurationImage
+
+verified SystemMapping closure
+  + required HardwareConfigurationImage set
+  + exact executable entry bindings
+  -> mechanically derive the required Deployment runtime-image children
+
+required HardwareConfigurationImage set + required runtime-image children
+  -> validate the Deployment configuration-image/runtime-image dependency
 ```
 
 ConfigurationABI and HardwareImplementation may be finalized without any
-software Mapping. Deployment finalization begins only after those independent
-branches and a complete Mapping meet. An implementation must not impose a
-hidden sequence in which Mapping is required before ABI or RTL generation.
+software Mapping. Validation of this branch begins only after those independent
+branches and a verified SystemMapping closure meet. An implementation must not
+impose a hidden sequence in which Mapping is required before ABI or RTL
+generation. This graph is complete only for this branch; it is not a complete
+Deployment finalization graph and does not define executable leaves or package
+emission.
+
+Once the runtime-image persistent frontier closes, Deployment finalization owns
+child closure and completeness and atomically rejects a missing, ambiguous,
+foreign, or incompatible child binding. Before that closure, the derived
+semantic projection may be checked but complete Deployment finalization is
+unavailable.
 
 Missing or duplicate fields, an unencodable semantic value, overlapping or
 out-of-range slices, ABI/implementation mismatch, a wrong programming unit,
 payload corruption, or an image set different from the required closure is a
-finalization failure. No later component reconciles these failures.
+branch-validation failure. Every such failure causes Deployment finalization to
+fail; no later component reconciles it.
 
 ## Public Driver Contract
 
@@ -297,8 +451,22 @@ Tests protect only stable boundaries:
   values are rejected;
 * one known vector is shared by the encoder and RTL/runtime decoder;
 * image ABI, programming-unit, Mapping, padding, and payload mismatches fail;
-* Deployment accepts exactly its required closure and rejects missing or extra
-  entries;
+* Deployment requires `ThreadDispatchImage` and `AdmissionImage`, and requires
+  `SpatialLaunchImage` if and only if the exact imported SpatialMapping set is
+  non-empty;
+* Deployment derives runtime-image child stable keys and canonical ordering
+  from exact Mapping structural keys and relations;
+* heterogeneous Thread and Graph binding ranges produce exact target-case
+  tables without a singular duplicate selection field;
+* Deployment accepts exactly its required configuration-image/runtime-image
+  branch and atomically rejects missing, ambiguous, foreign, incompatible, or
+  extra child bindings;
+* runtime-image serialization and complete Deployment finalization are rejected
+  while the executable-entry carrier and child framing remain open;
+* image-branch validation does not infer executable leaves from
+  `instruction_binary_bindings[]` or another placeholder;
+* runtime authorization, lease, and isolation state cannot change a
+  Mapping-selected resource or target choice;
 * package projection preserves Deployment identity across output paths and
   never exposes a partial tree; and
 * public drivers preserve ordinary `-o` behavior and reject Deployment output

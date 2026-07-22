@@ -280,24 +280,19 @@ SystemMapping does not copy it.
 
 ## Runtime And Deployment Boundary
 
-The verified SystemMapping closure mechanically defines
-`ThreadDispatchImage`, `SpatialLaunchImage`, and `AdmissionImage` payloads.
-`ThreadDispatchImage` and `AdmissionImage` are always present;
-`SpatialLaunchImage` is present when the exact imported SpatialMapping set is
-non-empty. These are read-only compiled Deployment payloads, not Mapping
-records. Runtime evaluates their immutable binding relations, supplies
-invocation-specific allocations and authorization, and atomically admits
-preselected activation sets. It may wait or apply backpressure, but it may not
-remap execution, service, route, tag, context, or configuration.
+`docs/spec-configuration-deployment.md` is the sole owner of runtime-image
+child membership, identity status, schemas, canonical child keys and ordering,
+and presence conditions. Runtime consumes those owner-finalized children to
+evaluate immutable memory and service bindings, supplies invocation-specific
+allocations and authorization, and atomically admits preselected activation
+sets. It may wait or apply backpressure, but it may not remap execution,
+service, route, tag, context, or configuration.
 
-Deployment combines the exact Dataflow and Fabric artifacts, complete
-SystemMapping, every direct and transitive Mapping dependency, binaries,
-selected Hardware and Interconnect Implementations and refinements, exact
-`ConfigurationABI` artifacts, one `HardwareConfigurationImage` for every
-selected Programming Unit including programmable transport/configuration
-units, memory images, and platform bindings as a dependency graph. The
-imported SpatialMapping set is only one part of that closure. Package lists are
-content indices and must not become a second service or mapping authority.
+This memory contract contributes the exact Mapping dependencies, memory and
+service bindings, and memory-image obligations that Deployment must close. It
+does not own the package list or executable closure. The imported
+SpatialMapping set remains only one source of those obligations, and package
+indices cannot become a second memory, service, or Mapping authority.
 
 ## Validation Anchors
 
@@ -313,8 +308,8 @@ Anchor-level tests should cover:
 * AccessEntry and ExposureEntry dispatch ownership plus rejection of
   `C_dispatch` outside Fabric-owned `H_dispatch`;
 * one system-memory request/response plan and one unsplit multicast; and
-* Deployment closure including imported Mapping dependencies and a
-  programmable transport unit, with runtime remapping rejected.
+* Deployment-owner closure of every selected memory and service dependency,
+  with package-index authority and runtime remapping rejected.
 
 Tests should not freeze configured table layout, protocol encoding, printer
 format, or runtime cache structure.

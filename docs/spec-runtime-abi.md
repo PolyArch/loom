@@ -43,38 +43,47 @@ SystemMapping. A Physical Tag is a Mapping-assigned local interpretation key
 for a may-overlap Fabric conflict domain, not a runtime firing, iteration,
 invocation, or logical-token identity.
 
+## Compiler Target And Binary Compatibility
+
+For each concrete thread occurrence, its Thread Execution Binding selects one
+AccCore. That selected AccCore resolves its exact InstructionCore Architectural
+Contract and the derived `InstructionCoreContextRef`. A Compiler Target Binding
+is mechanically selected and validated from that Architectural Contract;
+SystemMapping does not carry or choose a compiler-target identity.
+
+Compiler Target Binding is the sole owner of target triple, ABI, data layout,
+code model, backend CPU and feature spelling, runtime and library requirements,
+and the binary compatibility proof. These compiler-facing facts reference the
+exact InstructionCore Architectural Contract but do not become Fabric hardware
+truth. A binding cannot add an architectural capability or weaken an
+architectural requirement.
+
+A target-specific binary is compiled under a compatible Compiler Target
+Binding. Deployment must preserve and validate that relation against every
+SystemMapping-selected AccCore on which the binary may execute. Runtime
+consumes the validated relation; it does not renegotiate a target, ABI, feature
+set, runtime, or library.
+
+This section closes only semantic ownership and compatibility. The exact
+persistent carrier or root schema for Compiler Target Binding, its
+multiplicity and tie-breaking, and the exact binary artifact binding remain
+downstream open work. Nothing here defines canonical fields, bytes, or an
+implementable wire contract.
+
 ## Deployment Runtime Images
 
-The verified closure mechanically defines three versioned, read-only,
-rebuildable Deployment payload types:
-
-```text
-ThreadDispatchImage
-SpatialLaunchImage
-AdmissionImage
-```
-
-They are compiled forms of Mapping, not independent artifact families and not
-a runtime mapping authority. Each image is bound to the exact source artifact
-identities, schema, and digest. A mismatch is a package-validation failure;
-runtime must not reconcile or rewrite it.
-
-`ThreadDispatchImage` and `AdmissionImage` are present for every Deployment.
-`SpatialLaunchImage` is present only when the exact imported SpatialMapping set
-is non-empty.
+`docs/spec-configuration-deployment.md` is the sole owner of Deployment
+runtime-image child membership, identity status, schemas, canonical child keys
+and ordering, and presence conditions. Runtime consumes only the children in a
+finalized Deployment and rejects a closure mismatch; it does not derive,
+reconcile, or rewrite that child set.
 
 ### ThreadDispatchImage
 
-`ThreadDispatchImage` is keyed by `RootThreadLaunchRef`. It compiles:
-
-* the immutable Thread Execution Binding relation;
-* each finite target AccCore and its mechanically derived
-  `InstructionCoreContextRef = (AccCoreOccurrenceRef, 0)`;
-* logical parameter and coordinate schemas;
-* required memory capabilities and authorization envelope;
-* explicit dependencies;
-* long-lived activation uses and Admission Image references; and
-* the thread completion destination.
+Runtime consumes `ThreadDispatchImage` to evaluate the immutable Thread
+Execution Binding, resolve each concrete occurrence to its selected AccCore and
+derived `InstructionCoreContextRef`, validate coordinates, parameters, memory
+authorization, dependencies, and admission, and deliver thread completion.
 
 For one concrete thread occurrence, runtime supplies coordinates, parameters,
 authorized memory handles, and transient completion state. Completion is a
@@ -87,13 +96,10 @@ launches.
 
 ### SpatialLaunchImage
 
-`SpatialLaunchImage` is keyed by `GraphExecutionBindingKey`. It compiles:
-
-* the immutable Graph Execution Binding relation;
-* each finite target SpatialMapping and configuration identity;
-* typed value, stream, control, and memory boundary bindings;
-* the graph-start activation set and Admission Image reference; and
-* value, stream, memory, result, and done destinations.
+Runtime consumes `SpatialLaunchImage` to evaluate the immutable Graph Execution
+Binding, select the already bound SpatialMapping and configuration, bind typed
+value, stream, control, and memory boundaries, request graph-start admission,
+and deliver graph results and completion.
 
 Spatial Launch is a binding over existing Fabric endpoints and Mapping
 services, not a new endpoint type or record family. Completion returns graph
@@ -103,13 +109,13 @@ that relation explicit.
 
 ### AdmissionImage
 
-`AdmissionImage` is keyed by `EventFamilyKey` plus its parameterized context.
-It compiles atomic activation sets, release rules, and capacity indices. It
-does not contain absolute start times, dynamic occurrence identities, runtime
-queues, or arbitration microstate.
+Runtime consumes `AdmissionImage` to evaluate immutable atomic activation,
+release, and capacity relations for one concrete event occurrence. Absolute
+start times, dynamic occurrence identities, runtime queues, and arbitration
+microstate remain transient runtime state.
 
-Thread Dispatch and Spatial Launch may reference the same Admission Image.
-Their launch and completion contracts remain distinct.
+Runtime may apply one owner-defined admission relation to both Thread Dispatch
+and Spatial Launch. Their launch and completion contracts remain distinct.
 
 ## Admission
 
@@ -204,12 +210,11 @@ must preserve those retirement events rather than splitting or reordering them.
 ## Execution Disposition
 
 InstructionCore-only execution is a normal SystemMapping result, not a runtime
-fallback from failed Spatial launch or admission. An InstructionCore-only
-Deployment omits `SpatialLaunchImage` and SpatialCore
-`HardwareConfigurationImage` artifacts when no Spatial programming unit is
-selected, but retains the complete SystemMapping plus Thread Dispatch and
-Admission Images. Any selected programmable transport or other configuration
-unit still requires its exact `HardwareConfigurationImage`.
+fallback from failed Spatial launch or admission. Runtime consumes the exact
+runtime-image and configuration-image set finalized by the Deployment owner;
+it neither synthesizes a Spatial launch path nor interprets an absent one as a
+failed attempt. Runtime also cannot omit a selected programmable transport or
+other configuration unit from the owner-validated Deployment closure.
 
 A graph mapped to SpatialCore execution has no implicit InstructionCore
 substitute. Any explicit alternative execution must be a separately compiled,
@@ -221,7 +226,9 @@ mapped, and packaged disposition selected before runtime.
 root, exact dependency closure, ConfigurationABI and
 HardwareConfigurationImage relations, package projection, and finalization
 rules. Runtime consumes that exact Deployment and does not restate or repair
-its closure.
+its closure. The finalized Deployment must preserve the confirmed compatibility
+relation among each selected AccCore, compiler target, and target-specific
+binary, while the exact binary artifact binding remains open as stated above.
 
 Runtime-local addresses, handles, mutable leases, and admission state do not
 enter Deployment identity. An immutable platform binding referenced by the
@@ -231,28 +238,38 @@ SpatialMappings, but it is not a second Deployment selection authority.
 
 ## Gem5 Simulation Binding
 
-Gem5 Simulation Binding is workload-independent. It binds:
+Gem5 Simulation Binding is workload-independent. It relates the exact Fabric
+Hardware Description and selected Interconnect Implementation refinement to
+gem5 model and SimObject correspondences, model parameters, gem5 build
+identity, and Bridge ABI identity.
 
-* the exact Fabric Hardware Description;
-* the selected Interconnect Implementation and refinement;
-* Fabric InstructionCore and system component identities;
-* exact gem5 model and SimObject correspondences and parameters;
-* gem5 build identity; and
-* the Bridge ABI identity.
+Gem5 Simulation Binding is a simulator binding, not Fabric,
+HardwareImplementation, or SystemMapping truth. For each modeled
+InstructionCore it must validate all three authorities:
+
+* the exact InstructionCore Architectural Contract;
+* the exact InstructionCore Microarchitectural Realization, including
+  execution structure, timing, capacity, and mapping-visible resources; and
+* the compatible Compiler Target Binding used by the target-specific binary.
 
 It does not reference or copy SystemMapping. The system-simulator descriptor
-owns role-labeled subject slots `deployment` and `gem5_binding`; an ordinary
+owns role-labeled subject slots `deployment` and `system_model`; an ordinary
 `EvaluationRequest` binds their exact `Deployment` and Gem5SimulationBinding
-artifacts. Its workload and concrete runtime data are exact
+subjects. Its workload and concrete runtime data are exact
 `SimulationWorkload` and `SimulationRuntimeInput` references; only the
 remaining simulator model parameters belong to `ResolvedModelBinding`.
 The same Gem5SimulationBinding may therefore execute several workloads or
-Deployments on the same hardware implementation. No separate
+compatible Deployments on the same hardware implementation. No separate
 system-simulation request family exists.
 
-Unsupported ISA, component, protocol, or correspondence is a typed diagnostic.
-The binding must not silently substitute an approximate topology, CPU,
-interconnect, or memory system.
+The exact persistent `Gem5SimulationBinding` root schema remains downstream
+open work. The relations and Evaluation roles above do not define its fields,
+cardinalities, serialization, canonical bytes, or implementable wire contract.
+
+Unsupported or incompatible ISA, ABI, data layout, code model, backend feature,
+component, protocol, or correspondence is a typed diagnostic. The binding must
+not silently substitute an approximate topology, CPU, interconnect, memory
+system, or binary contract.
 
 ## Bridge And Time Authority
 
@@ -295,12 +312,12 @@ missing binding, route, `ResourceUse`, service leg, or progress proof.
 
 ## Runtime Encoding Boundary
 
-The three runtime images remain typed, versioned Deployment payloads.
-`docs/spec-configuration-deployment.md` owns their Deployment placement and the
-public package projection. Platform-specific dynamic handle representation and
-gem5 model adapters are runtime implementation details unless they change the
-typed ABI. Runtime payload encoding is not physical hardware-configuration
-encoding; `ConfigurationABI` remains the sole owner of the latter.
+`docs/spec-configuration-deployment.md` owns runtime-image child schemas,
+identity, canonicalization, Deployment placement, and package projection.
+Platform-specific dynamic handle representation and gem5 model adapters are
+runtime implementation details unless they change the typed Runtime ABI.
+Runtime encoding is not physical hardware-configuration encoding;
+`ConfigurationABI` remains the sole owner of the latter.
 
 No runtime encoding may introduce a generic launch wrapper, implicit fallback,
 runtime remapping flag, protocol-specific SystemMapping field, or second
@@ -315,11 +332,16 @@ Anchor-level tests should cover:
 * the same typed Spatial Service request/response at a local service and a
   manager endpoint, with dual timing ownership rejected;
 * atomic load `data + done` and single-event store retirement;
-* Deployment closure that includes an imported Mapping dependency and a
-  programmable transport unit, with identity or digest mismatch rejected;
-* InstructionCore-only Deployment omitting only absent Spatial payload; and
+* consumption of a Deployment-owner-validated runtime-image child set, with a
+  closure mismatch rejected and no missing Spatial launch path synthesized;
+* mechanical Compiler Target Binding selection from the chosen InstructionCore
+  Architectural Contract, with incompatible target-specific binaries rejected;
+* gem5 model rejection on mismatch with the exact InstructionCore
+  Architectural Contract, exact Microarchitectural Realization, or compatible
+  Compiler Target Binding; and
 * gem5 as the only whole-system time authority while following the exact
-  Fabric/refinement grant policy.
+  Fabric/refinement grant policy through Evaluation roles `deployment` and
+  `system_model`.
 
 Tests should not preserve runtime queue layout, platform handle encoding,
 gem5 internal statistics, or package printer format.
