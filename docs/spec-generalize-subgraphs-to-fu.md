@@ -1,186 +1,223 @@
 # Software Function To FU Synthesis
 
-This document specifies reverse synthesis from software function graphs to a
-Fabric FU with explicit valid semantic encodings.
+This document specifies reverse synthesis from exact software function graphs
+to Fabric FUs governed by the same parameterized capability relation used for
+forward materialization and TechMapping.
 
 ## Canonical Inputs And Outputs
 
-The semantic input is a non-empty set `S` of canonical typed and attributed
-software function graphs. The canonical output is Fabric topology, normalized
-physical operation modes in `fabric.op.hw_params`, and a normalized
-`valid_encodings` array.
+The semantic input is a non-empty set `S` of canonical, typed, attributed
+software function graphs. Every actor is interpreted by its registered
+operation schema.
 
-Fabric Tech pass and test inputs use single-block `func.func` fixtures only as
-a textual adapter into the shared in-memory `ConfiguredFunction` model.
-Synthesis, projection, coverage, and acceptance use `ConfiguredFunction` as
-their sole software-function authority.
+The output `F` is canonical Fabric capability consisting of:
 
-The central interfaces are:
+* explicit FU topology and fixed FU boundary ports;
+* concrete `fabric.op`, `fabric.mux`, and `fabric.demux` resources;
+* one HSG-legal implementation family for each `fabric.op`;
+* each operation resource's `op_list` projection, `hw_params`, physical ports,
+  and typed constraints; and
+* a finite normalized domain of structural/capability templates.
 
-```text
-synthesize(config, inputs: SynthInputs) -> SynthResult
-projectConfiguredFunctions(fu: FuOp) -> Array<ConfiguredFunction>
-verifyCoverage(inputs, projected) -> CoverageReport
-```
+The output does not enumerate exact software parameter values, complete
+software functions, or raw configuration words. Materialized members of the
+supported function set are derived views, not persisted variant entities.
 
-There is one configured-function model for both directions.
+## Synthesize And Materialize Contract
 
-## Round-Trip Contract
-
-Let `F = synthesize(S)` and `S' = projectConfiguredFunctions(F)`.
-
-Every successful synthesis must satisfy `S subset-of S'`. The acceptance gate
-checks every input function against an explicit Fabric encoding and records a
-complete witness. A hard-coded `covered=N/N` statistic is not evidence.
-
-Equality is valid: `S' = S`.
-
-A strict superset is also valid when every function in `S' - S` comes from a
-complete explicit legal encoding. Extra functions must not arise from
-field-wise Cartesian products, unspecified don't-care values, lost tuple
-correlation, or post-hoc isomorphism repair.
-
-The coverage witness contains:
-
-* the selected encoding index;
-* software actor to physical `fabric.op` resource correspondence;
-* software input port to FU input port correspondence; and
-* software output port to FU output port correspondence.
-
-Coverage failure rejects the synthesized FU.
-
-Every covered candidate records three capability metrics:
-
-* `encodingCount`: the number of explicit valid encodings;
-* `coveredEncodingCount`: the number of distinct encodings selected by input
-  coverage witnesses; and
-* `extraCapabilityCount = encodingCount - coveredEncodingCount`.
-
-Because valid encodings have pairwise distinct configured-function
-projections, `extraCapabilityCount` is exactly `|S' - S|` after duplicate
-inputs are collapsed by their selected encoding.
-
-## Anchor Synthesis
-
-Anchor synthesis aligns software actor positions across the input function
-set. For each physical operation position it creates the minimum required
-datapath resources and registers each observed complete typed software mode in
-the owning `fabric.op.hw_params` array.
-
-Modes that share one physical datapath must be admitted by the Hardware
-Sharing Group registry. Operations from different groups require separate
-physical `fabric.op` resources.
-
-When mutually exclusive resources consume a shared software input, synthesis
-inserts one explicit input demux for that input. When their results share an FU
-output, synthesis inserts a matching output mux. One encoding fragment selects
-all routes and the active operation mode together.
-
-Independent physical positions may form a strict superset by combining their
-complete mode fragments. Synthesis enumerates those complete resource-level
-fragments directly, then retains only complete tuples whose forward projection
-is type-coherent and live under the FU topology. It never unions individual
-attribute fields, and it never treats an invalid cross-position tuple as a
-don't-care configuration.
-
-For each aligned physical port position, Anchor chooses the maximum software
-payload width required by the input modes. A narrower software mode therefore
-uses the same wider physical path without changing its exact software type.
-
-Compilation and hardware DSE treat extra capability as an explicit metric.
-Lower hardware cost remains primary. Candidates with equivalent hardware cost
-prefer lower `extraCapabilityCount`, then fewer total encodings, then stable
-producer order. A future profile may prefer generality, but the default is the
-deterministic minimum-extra ordering.
-
-For each generated `fabric.op`:
+Forward materialization and reverse synthesis share one contract:
 
 ```text
-registerHwMode(op, functionType, semanticAttributes,
-               orderedInputPorts, orderedOutputPorts) -> modeIndex
+F  = Synthesize(S)
+S' = { Materialize(F, legal_binding) }
+require S subset-of S'
 ```
 
-For each generated FU configuration:
+`legal_binding` selects a structural/capability template and supplies exact
+actors plus ordered actor-to-operation port and software-to-FU-boundary
+correspondence. `Materialize` interprets that binding through the registered
+operation schemas and Fabric capability relation. A successful synthesis must
+prove that every member of `S` has at least one complete legal binding.
 
-```text
-encoding = { orderedOutputs, orderedResourceAssignments }
-```
+Both finite anchor cases are valid:
 
-The complete mode is stored once on the physical operation. Encodings refer to
-it by index, so `function_type` and semantic attributes do not become repeated
-or competing type declarations.
+* `S = S'`, when the synthesized hardware implements exactly the inputs; and
+* `S` is a strict subset of `S'`, when an HSG-legal parameterized template
+  admits additional functions.
+
+Every additional function must follow from the declared implementation
+family, capability domains, typed constraints, physical topology, and a legal
+binding. It must not arise from a Cartesian product of unrelated fields,
+unspecified values, hidden drains, or post-hoc graph-isomorphism repair.
+
+`S'` may be large or symbolic. Acceptance never requires complete domain
+enumeration. `encodingCount` and `extraCapabilityCount = |S' - S|` are
+applicable only when the relevant function set is finite and can be counted
+exactly. They are optional Hardware DSE or Evaluation metrics, not universal
+result fields, legality conditions, or implicit ranking criteria. Neither
+`S'` nor its individual materialized variants are persisted or enumerated as
+an artifact family.
+
+## Coverage Witness
+
+Synthesis acceptance needs a complete witness for each input function. The
+witness contains the selected structural/capability template and the exact,
+ordered actor/op/input/result/FU-boundary correspondence needed to
+materialize that input. A hard-coded covered-function statistic is not proof.
+
+The witness is an acceptance result for constructing `F`; it is not a
+persistent Mapping Artifact and does not place an FU occurrence. TechMapping
+later constructs its own exact realization for a concrete Canonical Dataflow
+Program and the finalized Fabric artifact.
+
+Coverage failure rejects the synthesized FU. Two independently produced
+witnesses with the same normalized binding are duplicates. Distinct templates
+or actor-to-resource correspondence remain distinct physical realizations
+even when their software graphs are isomorphic; they do not create duplicate
+semantic function variants.
+
+## Capability Construction
+
+Synthesis derives each operation resource from the registered operation
+schemas and typed HSG registry:
+
+* Operations may share one `fabric.op` only when one real implementation
+  family admits all required software operation families.
+* Each concrete resource binds that one family and enables only the needed
+  subset through `op_list` and `hw_params`.
+* `hw_params` records compact typed domains and correlations implemented by
+  the hardware. It does not copy one exact tuple for every input actor.
+* Fixed implementation parameters, variable semantic domains, arity limits,
+  physical ports, and constraints must form one closed relation.
+* Exact constants, predicates, types, and other actor attributes remain owned
+  by the input software graphs and are supplied by legal bindings.
+
+For each physical port position, synthesis may choose a payload capacity that
+covers the supported exact software values. A wider physical `bits` path does
+not change a function's exact software type. Port-kind compatibility and every
+selected path segment's capacity remain mandatory.
+
+Synthesis constructs only condition-relevant structural/capability templates.
+Invalid assignments are excluded; irrelevant fields and equivalent raw
+encodings are removed or canonicalized. Large constant, predicate, arity, and
+similar semantic domains remain parameterized.
+
+For one selected template and exact actor/op/port correspondence, normalized
+semantic assignments must map injectively to complete typed and attributed
+software graphs. If two valid assignments materialize isomorphic functions,
+the synthesized capability is invalid; synthesis must repair the relation
+rather than retain both variants for later deduplication.
+
+## Explicit Mutually Exclusive Datapaths
+
+Separate physical datapaths require separate `fabric.op` resources. If they
+are mutually exclusive and share a software input, synthesis inserts an
+explicit `fabric.demux` or equivalent selector for that input. If their
+results share an FU output, synthesis inserts a matching `fabric.mux`.
+
+All input selectors and result selectors for one realization must choose a
+coherent branch. Direct FU SSA multi-use is real broadcast to every consumer;
+it cannot mean that only one branch is active. Synthesis must not rely on an
+inactive operation or unselected mux input to drain a broadcast token.
+
+The finite template domain may correlate operation selection, routing, and
+boundary correspondence. It must not expand independent local fields into a
+configuration Cartesian product and then discard invalid projections.
+
+## Parameterized Operations
+
+Operation-specific behavior is expressed through registered schemas rather
+than synthesis-only cases:
+
+* sync uses ordered all-of input/result correspondence, from which the active
+  physical-lane set is derived;
+* software mux and demux actors preserve their runtime selector operands and
+  ordered choice correspondence;
+* FU-local `fabric.mux` and `fabric.demux` express static selected topology;
+* constants bind exact typed values without enumerating their encodable
+  domain; and
+* predicates, fixed or configurable arity, streams, and other attributes are
+  matched according to their exact operation schemas.
+
+An omitted physical port is legal only when the operation schema and
+capability relation guarantee that it neither consumes nor produces a token
+and creates no backpressure obligation.
 
 ## Fabric Acceptance
 
-Before a candidate is returned, Fabric verification checks at least:
+Before returning a candidate, synthesis verifies at least:
 
-* FU topology and SSA coherence;
-* Hardware Sharing Group legality;
-* complete normalized `hw_params` mode structure and physical port maps;
-* exact agreement between `op_list` identities and `hw_params` mode identities;
-* validity of each typed and attributed software operation instance;
-* semantic payload width not exceeding any selected physical path width;
-* exact port-kind compatibility, with no implicit `bits`/`bits_tag` exchange;
-* absence of legacy field-wise `hw_params`, selected `sw_configs`, and selected
-  routing;
-* normalized, live-only resource assignments;
-* complete use of declared `hw_params` modes; and
-* pairwise distinct configured-function projections when FU boundary identity
-  is preserved.
+* FU topology, SSA coherence, and explicit routing for mutually exclusive
+  branches;
+* unique implementation-family binding and typed HSG legality for every
+  `fabric.op`;
+* agreement among `op_list`, `hw_params`, physical ports, and constraints;
+* validity of every exact actor binding under its registered operation schema;
+* complete ordered input, result, and FU-boundary correspondence;
+* physical port-kind and payload-capacity compatibility;
+* normalization of structural/capability templates and configuration fields;
+* absence of selected `sw_configs` in canonical Fabric; and
+* a valid coverage witness for every member of `S`.
 
-Duplicate or non-normalized encodings are verifier errors. Synthesis must not
-deduplicate projected software graphs after construction.
+Acceptance checks the relation directly. It does not require every relation
+point to have an index, every declared parameter value to appear in `S`, or
+all of `S'` to be materialized.
 
-## Width Semantics
+## Edge Realization Boundary
 
-Software type is selected by the `hw_params` mode. Physical payload widths may
-be wider. Every selected path segment must have payload width at least the
-software requirement.
+Synthesis may make a Canonical Dataflow edge internal only by placing it in an
+explicit configured-FU relation supported by the synthesized topology and
+exact correspondence. Downstream Mapping may also use an explicit
+configured-memory relation or temporal-PE register-file realization. Without
+one of those typed relations, the edge remains an external transfer
+obligation; physical co-location never absorbs it.
 
-Physical width transitions are low-bit aligned. Widening zero-fills high bits;
-narrowing truncates high bits, but a narrowing below the software semantic
-width is illegal. Exact physical and software width equality is not a
-capability requirement.
+## Mapping And Finalization Boundary
 
-## Mapping Boundary
+Synthesis creates hardware capability, not a workload configuration.
+TechMapping for exact `D + F` selects the capability template and binds exact
+actors, attributes, ordered operation ports, and FU boundary ports.
+SpatialMapping selects only semantic-preserving physical or QoR refinements on
+the chosen realization. Mapping then derives a temporary semantic projection:
 
-Synthesis produces canonical Fabric capability. It does not write a workload
-selection into internal `sw_configs`.
+```text
+ConfiguredHardwareProjection =
+  DeriveFields(F,
+               TechRealization(D, T, F),
+               PhysicalRefinement(complete Mapping, F))
+```
 
-TechMapping later selects one Fabric encoding and records actor/op and
-boundary-port correspondence. Any transient programmed resource dictionaries
-are derived from that encoding and must not be persisted back into canonical
-Fabric.
+Neither synthesis nor TechMapping writes raw `sw_configs` back into canonical
+Fabric. Fabric owns typed configuration-field meanings and domains;
+`docs/spec-configuration-deployment.md` owns the only physical-image
+finalization path, and `ConfigurationABI` alone owns physical encoding.
+Hardware DSE that synthesizes a different FU must finalize a new Fabric
+artifact before TechMapping that new `F`.
 
-## Selectable Synthesis Path
+## Determinism And Diagnostics
 
-`anchor` is currently the only externally selectable strategy. Historical
-`synthesize` is the sole public path that may return an accepted result. The
-`anchor` producer and strategy dispatch are internal so no caller can bypass
-the shared verification, coverage, and capability gate. Historical `mcs`,
-`incremental`, and `incremental_random` producers were removed because they did
-not emit the canonical capability contract.
+Input ordering, resource ordering, template ordering, witness ordering, and
+final Fabric output are deterministic. Concurrent workers may construct local
+candidates, but final merge uses the complete normalized semantic key and does
+not mutate a caller-owned IR context concurrently.
 
-`SynthConfig` is schema-closed in both YAML and TOML. Unknown keys and
-sections, including removed strategy controls, fail with a source location;
-they never select `anchor` by falling through to defaults.
+Success reports exact input coverage. Finite capability counts are reported
+only when exact counting applies; otherwise they are explicitly inapplicable.
+Failure uses a closed reason and does not retain the rejected candidate as
+canonical Fabric. Cost and search diagnostics are Evaluation evidence and do
+not define capability or Mapping semantics.
 
-Any future strategy must emit complete normalized `hw_params` modes and valid
-encodings, then pass the same shared projection and coverage gate before it
-becomes selectable. A strategy-local success flag cannot bypass that gate.
+## Validation Anchors
 
-## Determinism And Parallelism
+Anchor tests should cover only:
 
-Input ordering, resource ordering, mode ordering, and encoding ordering are
-deterministic. Worker-local synthesis may run concurrently, but workers do not
-mutate the user's MLIR context or module. Final module insertion remains
-ordered.
+* one finite case with `S = S'`;
+* one finite case where `S` is a strict subset of `S'`;
+* one symbolic typed constant or value-domain case that proves neither mode
+  enumeration nor persisted function variants are required; and
+* rejection of one incomplete binding whose edge would otherwise disappear
+  through co-location.
 
-## Diagnostics And Statistics
-
-Success statistics report actual input coverage, encoding count, distinct
-covered encoding count, and extra capability count. Failure reports a closed
-failure reason and must not retain a candidate as canonical Fabric.
-
-Cost and search diagnostics are evaluation evidence. They rank candidates but
-do not define capability, coverage, or Mapping semantics.
+Tests must not pin printer whitespace, internal container layout, exhaustive
+parameter products, universal capability counters, or implementation-specific
+matcher traversal.

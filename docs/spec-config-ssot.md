@@ -1,243 +1,220 @@
-# Loom Configuration SSOT
+# Resolved Configuration
 
-This document specifies Loom's target configuration source-of-truth
-contract. It owns how Loom loads optimization constants, hardware model
-parameters, simulator model parameters, DSE weights, tool profiles, and
-run policies without allowing component-local constants to drift apart.
+This document owns Loom's profile resolution, flattened semantic configuration,
+and mechanically derived component views. It does not own component semantics,
+Mapping constraints, runtime invocation bindings, or artifact schemas outside
+the ResolvedConfig family.
 
-## Purpose
+## Public Selection
 
-Loom configuration answers this question:
+The only public semantic profile selector is:
 
 ```text
-For this run, which parameter values, profiles, policies, and model
-constants are authoritative, and can every downstream artifact prove it
-used the same resolved configuration?
+--loom-accel-profile=<builtin-preset-or-config-path>
 ```
 
-Configuration is a first-class input artifact. It is not a hidden side
-channel, a loose set of command-line defaults, or a collection of
-component-local structs that happen to share field names.
+The initial EDA-style builtin presets are:
 
-## Boundary
+```text
+report_only
+quick_explore
+balanced_explore
+performance_explore
+implementation
+strict_implementation
+```
 
-The configuration SSOT owns:
+Names describe flow intent and exploration effort, not a pass switch. Omitting
+the option selects one designated builtin default. A custom profile may inherit
+at most one builtin preset and apply schema-declared semantic overrides. Loom
+does not support arbitrary profile chains, sibling merge order, import graphs,
+or format-specific inheritance semantics.
 
-* optimization weights and objective profiles;
-* compiler pipeline profiles and search-policy names;
-* DSE objective records, ranking policies, and stochastic seeds;
-* tech-mapping and FU-synthesis parameters;
-* ADG Builder recipe defaults and architecture-template parameters;
-* PnR search policies, resource-compatibility policies, and mapping
-  cost-model parameters;
-* DFG-sim and CGRA-sim model parameters, cost tables, latency tables,
-  fidelity profiles, and simulator limits;
-* RTL, EDA, FPA, and reporting profile selection;
-* global machine constants when a run needs to vary them, including
-  address width, index width, and memory bus width.
+Human-authored JSON or YAML may represent the same typed profile schema. TOML
+compatibility and component-local parsers are not part of the contract. The
+central resolver is the only parser and validation authority.
 
-The configuration SSOT does not own language or dialect semantics.
-Verifier rules for dataflow token behavior, Fabric SSA connectivity,
-Fabric op legality, artifact schema shape, status vocabularies, and
-mapping-route contiguity remain in their owning specs and code
-verifiers. Test fixture data also remains fixture-owned.
+## Resolution
 
-## Formats
+Every semantic configuration follows one derivation:
 
-Human-authored configuration should prefer YAML. Machine interfaces
-should prefer JSON. YAML and JSON are semantically equivalent and must
-resolve to the same canonical configuration model. Parsing and emitted
-resolved configuration default to JSON when a stream, stdin input, or
-extension-less path does not declare a format.
+```text
+builtin preset or profile file
+  + allowed semantic overrides
+  -> validate one selected profile schema
+  -> resolve defaults, inheritance, and auto values
+  -> flattened canonical resolved-config.json
+  -> finalized ResolvedConfig Artifact
+  -> mechanically derived immutable component views
+```
 
-TOML may be accepted for backward compatibility, but it is not a
-separate semantic model. A TOML input must resolve through the same
-schema, provenance, validation, canonical JSON emission, and
-artifact finalization rules as YAML and JSON.
+The flattened result contains one explicit typed value for every active field.
+No component may reinterpret `auto`, apply a hidden default, merge another
+profile, or read an ambient environment variable after resolution.
 
-The canonical program-to-program output is resolved JSON. The
-ResolvedConfig ArtifactIdentity is finalized from its typed schema descriptor
-and canonical resolved JSON bytes. It does not depend on the original YAML,
-JSON, TOML, file order, comments, or whitespace.
+Unknown fields and enum values are rejected unless the selected schema version
+declares them. The first contract has no generic extension namespace. A future
+field is added by the owning schema under the `X.Y` versioning rule rather than
+by silently accepting opaque keys.
 
-## Resolution Model
+`resolved-config.json` is the canonical persistent serialization and can be
+used again as profile input. It stores flattened semantic values only. Source
+paths, selected preset name, include location, override spelling, comments,
+environment, and resolution diagnostics are InvocationManifest provenance and
+do not enter ResolvedConfig semantic bytes.
 
-A Loom run starts from one top-level configuration. The top-level
-configuration may import or include other files, but the resolved output
-is a single canonical tree with one path for every parameter.
+ResolvedConfig uses the common ArtifactIdentity SHA-256 v1 contract. Changing
+authoring syntax, whitespace, field order, or source location without changing
+the flattened typed values does not change identity.
 
-Configuration resolution applies sources in this order:
+## Schema Ownership
 
-* centralized built-in default configuration;
-* explicitly named profile imports;
-* the top-level run configuration body;
-* explicit command-line or local activation overrides.
+All schema versions use `X.Y`: `X` is an incompatible change and `Y` is a
+compatible extension. The ResolvedConfig schema owns the canonical composition
+of component domains. Each domain owner defines its fields, types, units,
+defaults, validation rules, and semantic effect exactly once.
 
-An override is legal only when its source, target key, and precedence
-are recorded in provenance. Two unordered sibling imports that set the
-same canonical key are ambiguous and must fail resolution.
+Closed enums use typed enum definitions and convert to strings only at parser,
+printer, canonical JSON, or diagnostic boundaries. Components do not repeat
+string tables or accept unknown names with an implicit fallback.
 
-Every resolved key has:
+Configuration owns values that can change a formal compiler, DSE, Mapping,
+simulation-model, backend, or artifact-generation result. It does not own:
 
-* canonical path;
-* value;
-* declared type and unit when applicable;
-* owner component or shared owner;
-* default/provided/override provenance;
-* validation rule identity;
-* optional profile identity.
+* Dataflow, Fabric, Mapping, Evaluation, or runtime semantics;
+* intrinsic hardware legality or capability, which Fabric owns;
+* invocation-specific Mapping restrictions, which MappingConstraintSet owns;
+* the native `PnrIndex` width, which is a build ABI;
+* paths, output locations, visualization destinations, or package paths;
+* wall time, host parallelism, license concurrency, storage quota, process
+  retries, or other physical execution limits; or
+* runtime handles, allocations, timestamps, logs, and diagnostics.
 
-Component tools receive typed configuration views derived from the
-canonical tree. A typed view may rename fields for local API
-convenience, but it must not own independent defaults or an independent
-`ArtifactIdentity`. Current artifacts record the exact `ResolvedConfig`
-`ArtifactIdentity`; they do not acquire generic component-view descriptor
-or canonical-byte fields.
+Address, bus, or similar architecture widths may appear as ADG Builder or
+builtin-template inputs, but finalized hardware semantics are owned by the
+resulting exact Fabric identity. They are not free runtime Mapping knobs.
 
-A future cache family may include a closed typed-view descriptor and its
-deterministic canonical bytes after that view and cache contract are
-defined. Such a cache key is neither an `ArtifactIdentity` nor
-configuration authority.
+Deterministic semantic work limits that bound the formal search are owner-local
+configuration. Physical execution limits may stop an attempt and produce an
+incomplete outcome, but they cannot select a best-so-far candidate or change
+the resolved semantic plan.
 
-## Early-Fail Rules
+There is no global fidelity profile or ladder. Evaluation policy authorizes
+exact models, obligations, budgets, and promotion behavior through its own
+ResolvedConfig domain.
 
-Configuration resolution must fail before compilation, mapping,
-simulation, DSE, RTL, or reporting when any of these conditions hold:
+## Component Views
 
-* unknown key outside an explicitly allowed extension namespace;
-* duplicate key in one mapping;
-* type mismatch;
-* unit mismatch;
-* enum value outside the owning schema;
-* numeric value outside the owning validation range;
-* unresolved import or cyclic import;
-* two sources set the same canonical key without explicit precedence;
-* a lower-level component config repeats a literal value instead of
-  referring to the canonical resolved key;
-* a command-line option changes a config-owned value without recording
-  an explicit override;
-* a component artifact names a ResolvedConfig ArtifactIdentity that differs
-  from one of its required input artifacts;
-* a DSE candidate combines evidence produced under incompatible
-  ResolvedConfig identities.
+A component consumes one immutable typed view derived by the central config
+library. Examples include `ResolvedPnrConfigView`, a DFG-simulation model view,
+and a backend view. A view is not an Artifact, semantic identity, registry
+entry, or independently authorable configuration.
 
-Repeating the same literal value in multiple layers is still a
-source-of-truth violation unless one occurrence is a declared default
-and the other is an explicit override with provenance. Equal duplicated
-literals are not allowed to pass silently.
+Each view has:
 
-Unknown objectives, unknown policies, and unknown fidelity profiles must
-fail with structured diagnostics. They must not fall back to runtime,
-analytic, default, or scaffold behavior.
+* one schema identity and `X.Y` version;
+* one deterministic projector from exact ResolvedConfig;
+* one canonical byte representation; and
+* one mechanically derived `component_view_digest`.
 
-## Defaults
+The digest contract is fixed:
 
-Code may hard-code default parameter values only in the centralized
-default configuration implementation. Component-local structs may expose
-typed accessors or compatibility adapters, but their defaults must be
-copied from the centralized default configuration.
+```text
+SHA-256(
+  bytes("loom.component.view.digest.v1\0")
+  || u32be(length(schema_descriptor_bytes))
+  || schema_descriptor_bytes
+  || u64be(length(canonical_view_bytes))
+  || canonical_view_bytes
+)
+```
 
-The default configuration is itself part of the public configuration
-schema. It must be printable as canonical resolved JSON and must pass
-the same validation path as user-supplied configuration.
+It is a compact integrity and dependency value, not ArtifactIdentity and not a
+replacement for `ResolvedConfig.id`. It cannot be separately authored or
+modified. The projector, descriptor, canonicalizer, and digest framing each
+have one owner.
 
-Semantic constants are not configuration defaults. Examples include
-Fabric verifier arity rules, Dataflow firing semantics, artifact
-required-key sets, and mapping-route endpoint-contiguity checks.
+A component API receives only its typed view. It must not also inspect hidden
+fields in the full ResolvedConfig, because doing so makes its declared
+dependency closure false. Changing an unconsumed config field leaves the view
+bytes and digest unchanged; changing a consumed field or view schema changes
+them.
 
-## Artifact Propagation
+## Cache Dependencies
 
-Every machine-consumed artifact produced under a resolved configuration
-must carry:
+Only a real expensive derived result may define a cache family. That family
+owns one versioned canonical dependency key containing every dependency it
+actually consumes, such as:
 
-* the ResolvedConfig ArtifactIdentity;
-* profile identities used by the producer;
-* override provenance when overrides affected the producer;
-* diagnostics for absent optional configuration evidence.
+* exact input Artifact identities;
+* component-view schema descriptor and digest;
+* consumer, importer, model, or build semantic identity; and
+* cache schema version.
 
-CSV summaries may project those fields. JSON artifacts and MLIR
-attributes or manifests are the preferred SSOT carriers.
+The entire typed closure is framed and hashed once. Common provides framing and
+SHA-256 utilities but does not define a generic cache object or understand
+family fields.
 
-When a tool consumes multiple configured artifacts, it must compare
-their ResolvedConfig ArtifactIdentities. A mismatch is a structured
-failure or blocked condition unless the tool has an explicit migration
-rule that records both configurations and proves the difference is
-irrelevant to the consumed evidence. A derived component view does not add
-a second configuration identity.
+For example, a PnR freeze key contains exact Dataflow, TechMapping, and Fabric
+identities, the PnR view descriptor and digest, and importer/cache schema
+identity. Two different full ResolvedConfig artifacts may reuse that cache only
+when their PnR views and every other cache dependency are identical.
 
-## Configuration Domains
+A cache key is removable execution metadata. It does not enter the Artifact
+DAG, result ArtifactIdentity, or semantic configuration. A cache hit and miss
+must produce the same formal result.
 
-The target configuration tree includes these domains:
+## Invocation Separation
 
-* `global`: machine-wide constants and deterministic run settings;
-* `compiler`: pipeline profiles, placement policies, operation and
-  type capability profiles;
-* `dse`: objective records, continuous weights, preset weight profiles,
-  ranking policies, Pareto policy, seeds, and fidelity requirements;
-* `adg_builder`: recipe defaults and architecture-template parameters;
-* `pnr`: placement, routing, resource-compatibility, and mapping search
-  policies;
-* `sim`: DFG-sim and CGRA-sim model parameters, limits, and fidelity
-  profiles;
-* `rtl`: RTL lowering profiles and structural options;
-* `eda`: tool and library profile selection without public private
-  paths;
-* `fpa`: estimation model, activity-source policy, and report fidelity
-  requirements;
-* `reporting`: export profiles and projection policy.
+The InvocationManifest records the exact ResolvedConfig identity and only the
+component-view descriptors and digests actually consumed by the invocation.
+It also owns profile-source provenance, input and output bindings, source and
+hardware paths, output directories, `--loom-viz-export`,
+`--loom-deploy-output`, tool/runtime provenance, and retained execution
+records.
 
-These domains are organizational views over one resolved configuration.
-They are not independent files with independent defaults.
+Changing an output or artifact-store location does not change ResolvedConfig,
+any semantic component view, Mapping, simulation semantics, or a cache key that
+does not consume that location. Configuration fields are not copied into every
+downstream Artifact; a family carries a ResolvedConfig reference only when its
+own schema explicitly makes that reference semantic.
 
-FU synthesis settings remain on the dedicated consumed `SynthConfig` surface.
-An unconsumed `fabric_techmap` domain must not appear in `ResolvedConfig`,
-canonical resolved JSON, or the ResolvedConfig ArtifactIdentity.
+## Determinism
 
-## DSE Weights
+The replay boundary is:
 
-DSE must expose continuous objective weights and named preset profiles.
-Both are configuration values. Presets are aliases or profiles that
-resolve into ordinary objective records and weights before selection.
+```text
+codebase semantic/build identity
++ exact ResolvedConfig ArtifactIdentity
++ input ArtifactIdentities
++ pinned toolchain/backend identities
++ exact model parameter bundle identities
++ exact immutable external Evidence when consumed
+-> deterministic semantic artifacts and projections
+```
 
-The compiler must not expose placement choices such as thread-parallel
-versus SpatialCore loop placement as direct force switches. Those
-choices are DSE candidates selected by configured objectives, weights,
-constraints, and feedback fidelity.
+Randomized components use versioned PRNG protocols, explicit seeds, canonical
+ordering, and deterministic semantic work budgets from their typed views.
+Worker completion order, host concurrency, wall time, cache state, paths, and
+licenses may determine whether an attempt completes but not its formal result.
 
-## Diagnostics
+## Validation Anchors
 
-Required diagnostic classes include:
+Stable tests cover:
 
-* `config_parse_failed`;
-* `config_unknown_key`;
-* `config_duplicate_key`;
-* `config_type_mismatch`;
-* `config_unit_mismatch`;
-* `config_range_violation`;
-* `config_conflicting_sources`;
-* `config_unrecorded_override`;
-* `config_identity_mismatch`;
-* `config_missing_required_profile`;
-* `config_unknown_policy`;
-* `config_unknown_objective`.
+* a builtin or one-parent profile resolves to one flattened canonical object;
+* equivalent JSON/YAML authoring yields identical ResolvedConfig identity;
+* unknown fields, unknown enums, inheritance chains, and unresolved `auto`
+  values fail before finalization;
+* the emitted resolved JSON can be consumed again without semantic change;
+* changing an unconsumed field leaves a component view and view-only cache key
+  unchanged;
+* changing a consumed field, input Artifact, view schema, or cache schema
+  changes the corresponding derived key;
+* path and execution-limit changes do not alter semantic identity or formal
+  selection; and
+* identical dependency closures produce identical view digests and cache keys.
 
-Diagnostics must identify the canonical key, source provenance, owning
-schema, and affected component when applicable.
-
-## Acceptance Criteria
-
-The configuration SSOT target is complete when:
-
-* YAML and JSON inputs can describe equivalent runs and emit identical
-  canonical resolved JSON;
-* the built-in default configuration can be emitted, validated, and
-  finalized through the same path as user configuration;
-* component tools consume typed views from one resolved configuration;
-* component-local defaults are removed or become compatibility adapters
-  over the centralized default configuration;
-* unknown keys, duplicate keys, conflicting sources, unknown objectives,
-  and unknown policies fail before downstream work starts;
-* configured artifacts carry the ResolvedConfig ArtifactIdentity;
-* cross-artifact consumers reject incompatible ResolvedConfig identities;
-* tests distinguish movable configuration defaults from semantic
-  verifier/schema constants and fixture data.
+Tests do not create one fixture per field, preserve YAML formatting, snapshot
+diagnostic text, define a generic component registry, or prebuild cache schemas
+for nonexistent consumers.

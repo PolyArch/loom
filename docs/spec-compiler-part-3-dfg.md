@@ -1,11 +1,15 @@
 # Loom Compiler Part 3: SCF to DFG
 
 This document specifies the third compiler part of the Loom front-end:
-lowering SCF-shaped accelerator regions into Loom's native dataflow
-representation, ready for fabric mapping and lowering.
-It starts after source integration and LLVM-to-SCF raising have already
-selected explicit accelerator regions. It does not decide which source
-program regions should run on AccCores.
+mechanically lowering selected SCF-stage accelerator regions into the initial
+Canonical Dataflow Program, Loom's final target-independent software IR.
+
+Translation and recovery through the initial SCF-stage IR are mechanical.
+SCF-to-SCF transformation is the primary compiler optimization and DSE domain;
+its selected immutable Structured Program Candidate must already materialize
+the schedule, parallel, vector, reduction, memory-overlap, AccCore ownership,
+and SpatialCore ownership decisions consumed here. Part 3 does not choose or
+repair those decisions.
 
 The target Part 3 dataflow surface uses module-scope, Symbol-bearing,
 function-like definitions for both `dataflow.thread` and
@@ -27,41 +31,51 @@ of `dataflow.constant`, `dataflow.sync`, `dataflow.mux`, and
 `dataflow.demux` are specified separately in
 `docs/spec-dataflow-part-2-control.md`.
 
-Implementation engineering -- the pass pipeline that produces this IR
-shape, the lit-test layout, the acceptance checklist, and the
-maintenance plan -- is documented in
-`docs/spec-compiler-part-3-impl.md`. The main body of this document
-keeps only the first-principles content: IR boundary contracts,
-sequential-SCF flattening templates, future upstream parallel-normalization
-templates, the memory-dependence model, and verifier invariants.
+The initial Canonical Dataflow Program may subsequently participate in its own
+typed, semantics-preserving Dataflow optimization lineage. Such a rewrite
+produces another immutable Canonical Dataflow Program and may use pure
+Dataflow or optional Fabric-aware Evaluation to rank candidates. It must not
+reselect a structured schedule or ownership boundary, and Fabric facts never
+become Canonical Dataflow semantics.
 
-Target placement and actor-to-FU grouping are Mapping Artifact concerns. Part
-3 performs only structural eligibility and canonical graph publication inside
-an already established
-`dataflow.thread`; it does not assign a target or retain target-specific
-grouping in program IR.
+This document owns only the target contract: IR boundaries, structured-control
+flattening, memory-dependence integration, and verifier invariants. Pass
+decomposition, test layout, and maintenance sequencing are implementation
+choices and are not a second tracked specification.
+
+Fabric realization and actor grouping are TechMapping concerns. Part 3
+performs only structural eligibility and canonical graph publication inside
+an already established `dataflow.thread`; it does not assign a target or
+retain target-specific grouping in program IR. Absence of a realization on a
+particular Fabric is a Mapping result, not a graph-validity failure.
 
 ## 1. Scope and Contract
 
 The compiler front-end is documented in four parts:
 
-* **Part 1, source integration.** LLVM IR plus Loom metadata is the
+* **Part 1, source integration.** LLVM IR plus optional typed Loom hints is the
   source-facing compiler contract. Any high-level language provider may
-  participate if it can emit that contract; embedded clang for C / C++
-  is the first limited provider.
-* **Part 2, LLVM to SCF.** LLVM/CFG-shaped input is raised to
-  SCF-shaped MLIR. This part recognizes structured execution boundaries,
-  parallel loops, and memory-region metadata needed by thread construction.
+  participate by emitting valid LLVM IR; embedded clang for C / C++ is the
+  first limited provider. Missing hints reduce available guidance but do not
+  make otherwise valid provider input illegal.
+* **Part 2, LLVM to initial SCF.** LLVM/CFG-shaped input is mechanically
+  raised and normalized into initial SCF-stage MLIR. It recovers structured
+  execution and preserves analysis inputs without selecting a QoR-distinct
+  schedule, vector form, reduction strategy, or ownership boundary.
 * **Part 3, SCF to DFG.** This document. It consumes explicit
-  `loom.spatial_region` candidates inside `dataflow.thread` definitions and
-  publishes `dataflow.graph` definitions plus `dataflow.graph.launch` ops at
-  those candidate sites. The accompanying
-  `docs/spec-compiler-part-3-impl.md` documents the pass pipeline,
-  testing, and acceptance for this part.
-* **Part 4, partitioned data.** Annotation and in-thread queries for
-  tile-and-domain memrefs, plus the extension point for neighborhood
-  communication / distributed-buffer protocols (see
+  `loom.spatial_region` candidates inside the selected Structured Program
+  Candidate's `dataflow.thread` definitions and mechanically publishes
+  `dataflow.graph` definitions plus `dataflow.graph.launch` ops at those
+  candidate sites.
+* **Part 4, logical domains and data views.** The canonical multidimensional
+  thread-coordinate ABI, source-IV reconstruction, and ordinary value or
+  memory views derived from those coordinates (see
   `docs/spec-compiler-part-4-partitioned-data.md`).
+
+Between Parts 2 and 3, SCF optimization and DSE produce the selected
+Structured Program Candidate. That domain owns all performance-distinct
+structured choices. Part 3 begins only after those choices and their typed
+ownership carriers are explicit.
 
 Input to graph extraction is an MLIR module containing module-scope
 `dataflow.thread` definitions. Every selected SpatialCore candidate is already
@@ -72,19 +86,21 @@ but a function is an ABI and ownership container, not an implicit graph
 boundary; its signature, body shape, memory effects, and return convention do
 not authorize graph creation.
 
-Output is the canonical Loom front-end IR: module-level `func.func`
+Output is an initial Canonical Dataflow Program: module-level `func.func`
 symbols holding ordinary HostCore or InstructionCore code; module-level
 `dataflow.thread` definitions reached by zero or more
 `dataflow.thread.launch` ops; and module-level `dataflow.graph`
 definitions reached by zero or more `dataflow.graph.launch` ops
 inside thread definitions. No `scf.*` op is left inside any
 `dataflow.graph` definition's body after successful graph-region lowering.
-The implemented recursive graph owner accepts arbitrary nesting of
+The recursive lowering contract accepts arbitrary nesting of
 `scf.if`, source-sequential `scf.for`, `scf.while`, and fixed-width
 graph-owned `scf.parallel` or effect-form `scf.forall`. A graph-owned parallel
-op must carry selected schedule provenance and a compile-time fixed domain.
-That provenance certifies that the Structured Program Candidate owner already
-resolved ownership, width, and cross-lane legality. Unmarked, dynamic-width,
+op must have a compile-time fixed domain, and all facts needed to establish
+ownership, width, and cross-lane legality must be present in the current
+Structured Program Candidate's semantic IR and resolved lowering config.
+The lowerer re-proves those facts; lineage, cached analyses, and external
+provenance cannot make an otherwise invalid candidate legal. Dynamic-width,
 resource-mapped, and result or reduction forms fail before any graph is
 mutated; the graph owner does not infer ownership, serialization, unrolling,
 or reduction order. The
@@ -96,15 +112,15 @@ roots and per-partition write/read frontiers (see
 `docs/spec-compiler-part-3-mem.md`).
 The Structured Transfer Algebra defines graph-owned parallel composition only
 after the Structured Program Candidate has materialized its P[] ownership and
-schedule form. The selected fixed-domain SCF plus provenance is the transient
-input representation for mechanical lowering. It is recursively replicated
-into static lanes and removed; no parallel control op or schedule record
-survives in canonical graph IR.
+schedule form in semantic SCF. That fixed-domain SCF is the transient input
+representation for mechanical lowering. It is recursively replicated into
+static lanes and removed; no parallel control op or schedule record survives
+in canonical graph IR.
 Graph candidate eligibility and atomic publication are governed by this
-document and the implementation contract in
-`docs/spec-compiler-part-3-impl.md`. Physical placement is outside this IR.
+document. TechMapping, SpatialMapping, and SystemMapping realization are
+outside this IR.
 
-## 2. Hardware Model
+## 2. Execution Ownership Model
 
 Loom's execution target is a heterogeneous system containing HostCore
 execution and one or more AccCore execution resources. Fabric owns each typed
@@ -112,39 +128,40 @@ AccCore occurrence, its node-local InstructionCore description, its
 SpatialCore occurrence, and the typed attachment to an exact `fabric.module`
 template. `fabric.module` remains the SpatialCore or CGRA template only; it
 does not own the physical AccCore occurrence or InstructionCore description.
-The exact typed system operations and attachment schema remain open.
+The typed system ownership contract is specified by
+`docs/spec-fabric-system-adg.md`.
 
 The front-end IR in this document remains a software and logical
-execution model. Binding logical execution cells to physical AccCore
-instances, and selecting the system-level InstructionCore/SpatialCore
-resources, belongs to mapping and binding artifacts.
+execution model. SystemMapping binds logical execution cells to physical
+AccCore instances. TechMapping and SpatialMapping realize canonical graph
+execution on the selected SpatialCore resources.
 
-The front-end's IR mirrors this trio:
+The front-end IR separates these execution roles:
 
-| Hardware | Front-end IR carrier |
-|----------|----------------------|
+| Execution role | Front-end IR carrier |
+|----------------|----------------------|
 | HostCore | Host-call-context `func.func` body code outside any `dataflow.thread.launch` |
-| Logical execution domain | A `dataflow.thread` definition (Symbol-bearing, module-scope), launched at caller scope by `dataflow.thread.launch` with `mapping = [#loom.thread_axis<...>, ...]` logical execution-axis tags. Each dynamic thread instance is a logical execution cell before binding. The cell-to-AccCore binding is a separate concern. |
+| Logical execution domain | A `dataflow.thread` definition (Symbol-bearing, module-scope) plus each caller-side `dataflow.thread.launch` extent vector. Each dynamic thread instance is identified by the launch and its logical coordinate tuple before SystemMapping binds it to an AccCore. |
 | InstructionCore | The body of a `dataflow.thread` definition, minus its `dataflow.graph.launch` ops, plus InstructionCore-legal `func.call` callees after inlining or specialization. The body is "what one logical execution cell runs once binding maps it to a physical AccCore". |
 | SpatialCore | Each `dataflow.graph` definition referenced by a `dataflow.graph.launch` inside a `dataflow.thread` definition's body, again per bound logical execution cell. |
 
 A single `dataflow.thread.launch` corresponds to one launch of a
-multi-dimensional iteration domain, distributed across a logical
-execution domain, of the kernel defined by the referenced
-`dataflow.thread` callable. The thread body is "what one
-logical execution point runs"; the logical thread coordinates pulled from
-the mapping attribute identify which point. The domain is a
+multi-dimensional, zero-based dense logical iteration domain of the kernel
+defined by the referenced `dataflow.thread` callable. The thread body is
+"what one logical execution point runs"; its trailing `index` block
+arguments identify that point. The domain is a
 software concept -- the programmer's view of how work and data are
 partitioned -- and does not commit to a specific fabric topology.
 A fabric whose physical PE / memory graph is not a Cartesian mesh
-is supported by the same mapping mechanism. The binding from a
-logical execution point to a physical AccCore is a separate concern;
-see the SystemMapping execution-binding and PnR specs.
+is supported by the same Mapping profiles. The binding from a
+logical execution point to a physical AccCore is a SystemMapping concern;
+see `docs/spec-mapping-artifact.md` and `docs/spec-pnr.md` for SystemMapping
+execution binding and PnR.
 
 Every `dataflow.thread` body may contain InstructionCore code and
 `dataflow.graph.launch` ops, but it cannot launch another thread.
-Dynamic instances become physical AccCore execution slots only after
-binding/PnR.
+Dynamic instances become physical AccCore execution slots only through
+SystemMapping.
 
 An InstructionCore-only thread body is legal. Failure to form a canonical graph
 must not synthesize a new accelerator boundary or move unselected host code
@@ -160,7 +177,7 @@ one or more `!dataflow.thread_token` values for caller-side causal
 synchronization and emits no SSA value or graph-control value. It is
 not a memory barrier.
 
-Thread hierarchy transforms before binding are legal only as explicit
+Thread hierarchy transforms before SystemMapping are legal only as explicit
 optimization policies. They may reorder independent thread levels,
 collapse adjacent independent levels, or tile and split a level when the
 transform preserves the logical instance set, each instance's scalar
@@ -172,7 +189,7 @@ silently change hierarchy shape as a verifier or parsing side effect.
 ### 2.1 IR Carrier Responsibilities
 
 * `func.func` is a callable symbol and ABI unit. It does not by itself
-  choose HostCore or AccCore placement. A function may be HostCore-only,
+  choose HostCore or AccCore ownership. A function may be HostCore-only,
   InstructionCore-callable, or legal in both contexts depending on the
   Part 2 call-context classification.
 * `loom.spatial_region` is temporary compiler IR inside a
@@ -180,22 +197,22 @@ silently change hierarchy shape as a verifier or parsing side effect.
   value, stream-channel, and memory boundary segments. It never appears in a
   finalized Canonical Dataflow Program.
 * `dataflow.thread` is the logical accelerator execution-domain
-  **definition** (Symbol-bearing, module-scope, function-like). It
-  owns the kernel body, the static grid shape, and the mapping
-  attribute. It does not itself execute; dynamic logical instances are
+  **definition** (Symbol-bearing, module-scope, function-like). It owns the
+  kernel body and coordinate rank through its canonical entry-block shape.
+  It does not itself execute; dynamic logical instances are
   materialized by one or more `dataflow.thread.launch` ops at use
-  sites, then later binding decides which instances occupy physical
-  AccCore slots.
+  sites, then SystemMapping decides which instances occupy physical AccCore
+  slots.
 * `dataflow.thread.launch` is the logical accelerator execution
-  boundary. It
-  references a `dataflow.thread` callable by symbol, supplies async
-  dependencies, dynamic-grid values, and body operands (memrefs
-  through `dataflow.map_info`, scalars by value), and produces the
-  completion token.
+  boundary. It references a `dataflow.thread` callable by symbol, supplies
+  async dependencies, one non-negative extent per coordinate dimension, and
+  ordinary body operands, and produces the collective completion token.
 * `dataflow.graph` is the SpatialCore leaf DFG **definition**
   (Symbol-bearing, module-scope, function-like). Its body cannot
   contain `func.func`, `func.call`, `dataflow.thread.launch`,
   `dataflow.graph.launch`, or another `dataflow.graph` definition.
+  It is final target-independent software IR: its validity does not assert
+  that any current Fabric can realize it. TechMapping owns that decision.
 * `dataflow.graph.launch` is the SpatialCore execution boundary
   inside a `dataflow.thread` definition's body. It references a
   `dataflow.graph` callable by symbol, supplies dependency events, value
@@ -227,10 +244,10 @@ each rule lands in IR.
    `dataflow.thread.launch` ops. Launches appear only in host/runtime
    orchestration outside every thread or graph definition; one launch
    domain expresses multidimensional parallelism. A dynamic instance
-   becomes a physical AccCore execution slot only after binding/PnR.
+   becomes a physical AccCore execution slot only through SystemMapping.
    The thread definition's body has a `thread_ctrl : none` block
    argument that fires once the logical thread instance starts executing
-   (entry-block layout: `(args_*, thread_ctrl, iv_*)`, see Section 5.4.1).
+   (entry-block layout: `(args_*, thread_ctrl, coord_*)`, see Section 5.4.1).
    The body may contain InstructionCore operations and InstructionCore-legal
    `func.call` operations, but not `func.func` definitions or
    `dataflow.thread.launch` ops.
@@ -255,12 +272,11 @@ each rule lands in IR.
    `done_out = all_of(graph.return.complete)`. It never appears among the
    return operands, and no effect scan or graph-quiescence rule can replace
    the explicit frontier.
-4. The HostCore-to-AccCore data plane is mediated by
-   `dataflow.map_info`. Every value that crosses a thread boundary
-   as data (memref, partitioned-data handle) at a
-   `dataflow.thread.launch` op must be the direct SSA result of one
-   `dataflow.map_info` op in the launch's enclosing context, before
-   being consumed inside the thread definition's body.
+4. The HostCore-to-AccCore data plane is the explicit ordinary-operand segment
+   of `dataflow.thread.launch`. Values, memrefs, dynamic source lower bounds,
+   source steps, and other launch parameters cross directly as typed SSA
+   operands and matching thread block arguments. Dedicated `map_info`,
+   partition-domain, or layout carrier ops are not part of this ABI.
 5. Graph-local memory ordering is constructed in the front-end by one
    recursive graph-region owner. It discovers basic root alias partitions,
    threads independent write and read frontiers through sequential and
@@ -300,9 +316,8 @@ each rule lands in IR.
    Every boundary value must appear as an explicit launch op
    operand and as a matching entry block argument of the
    referenced definition. For a `dataflow.thread.launch`, the
-   operand list is the HostCore-to-AccCore launch ABI: memrefs and
-   partitioned-data handles cross through `dataflow.map_info`, while
-   scalar values cross by value. For a `dataflow.graph.launch`,
+   operand list is the HostCore-to-AccCore launch ABI: every value crosses as
+   an ordinary typed operand. For a `dataflow.graph.launch`,
    operands and results are the explicit SpatialCore data/control
    ports. A `dataflow.thread.launch` completion token expresses
    launch-retirement causality only. The
@@ -335,56 +350,25 @@ each rule lands in IR.
   `fabric.system`, containing a node-local InstructionCore description and a
   SpatialCore occurrence attached to an exact `fabric.module` template. Part
   3 does not create physical AccCore occurrences; it creates logical
-  accelerator work that later binding/PnR maps to AccCore resources. The exact
-  typed Fabric schema remains open.
+  accelerator work that SystemMapping later binds to AccCore resources.
 * **InstructionCore-callable function.** A module-level `func.func` that
   Part 2 classified as legal to call from code running inside a
   `dataflow.thread` definition's body. Such a function remains a
   symbol; Part 3 either preserves calls to it as InstructionCore calls or
   inlines / specializes it before graph extraction.
-* **Parallel thread axis.** A grid dim of a `dataflow.thread`
-  definition tagged as `#loom.thread_axis<parallel, axis>`. Distinct
-  dynamic values along that logical axis may be bound to distinct
-  AccCore execution slots and run concurrently when resources and
-  policy allow it. This is an execution-axis intent, not a hardware
-  coordinate.
-* **Multiplexed thread axis.** A grid dim of a `dataflow.thread`
-  definition tagged as `#loom.thread_axis<multiplexed, axis>`.
-  Distinct dynamic values along that logical axis may reuse an AccCore
-  execution slot through time multiplexing. This is an execution-axis
-  intent, not a hardware coordinate.
-* **Partitioned data.** A `memref<...>` annotated with a tile-and-domain
-  layout descriptor; lets in-thread code query its local tile via
-  `dataflow.local_range`. The domain is the same logical
-  partition-domain referenced by thread-axis tags.
-* **Mapping attribute.** Any attribute that implements
-  `mlir::DeviceMappingAttrInterface`. The target front-end ships
-  `#loom.thread_axis<kind, axis, domain?>` instances and recognizes
-  them for thread promotion and verifier checks. A third-party
-  attribute that implements the same interface is not recognized for
-  thread promotion. Three treatment cases for an `scf.forall`'s
-  `mapping` array, in
-  agreement with Section 6.4 lowering rules:
-  - **Empty `mapping` attribute** (the array is literally empty,
-    or the attribute is absent): an effect-form forall is graph-owned only
-    when the Structured Program Candidate has attached selected schedule
-    provenance and fixed compile-time bounds. The recursive graph owner then
-    materializes its fixed P[] lanes. Otherwise it fails closed before graph
-    mutation.
-  - **Mapping array with at least one Loom-recognized entry and
-    no foreign entry**: the narrow thread-promotion extraction pass may
-    produce a `dataflow.thread` definition + a
-    `dataflow.thread.launch` at the original site. Resource mapping establishes
-    a thread boundary and must not remain on a graph-owned forall.
-  - **Mapping array with at least one foreign (non-Loom) entry**
-    (whether or not it also contains Loom-recognized entries):
-    the front-end rejects it with a diagnostic. Part 2 or an
-    earlier Part 3 pass must remove or translate the foreign
-    entries before this point; the SpatialCore outlining policy cannot
-    decide which dim a foreign entry binds.
-  Adding new Loom-recognized mapping attributes (for example
-  `#loom.warp<...>`) is an extension point in
-  `docs/spec-compiler-part-3-impl.md` Section 4.
+* **Logical thread coordinate.** One zero-based `index` value in the trailing
+  coordinate segment of a `dataflow.thread` entry block. A rank-`K` launch
+  provides a coordinate tuple in the Cartesian domain
+  `[0, extent_0) x ... x [0, extent_K)`. Coordinates carry no physical
+  topology or execution-order promise.
+* **Logical thread domain.** The dynamic instance set derived from one launch's
+  extent vector. Rank zero denotes one instance; any zero extent denotes an
+  empty instance set. SystemMapping, rather than a software mapping attribute,
+  decides how instances share or occupy AccCore resources.
+* **Derived data view.** An ordinary typed value or memref view computed from
+  launch operands and logical coordinates. Source-IV reconstruction, tiling,
+  local ranges, and explicit linearization remain ordinary candidate semantics
+  rather than a second partition-domain ABI.
 * **Thread token.** A value of type `!dataflow.thread_token`, a
   one-shot completion signal modelled on `!async.token`. It belongs to
   the inter-thread asynchronous-completion domain, not to the
@@ -394,12 +378,6 @@ each rule lands in IR.
   positioned after the function-signature args per Section 5.4.1). It is
   the per-instance AccCore start signal used to launch root
   `dataflow.graph.launch` ops.
-* **Map info result.** A value produced by `dataflow.map_info` that
-  carries the same type as its source memref. It is a pure, view-
-  like alias of the source; by IR convention it must only be
-  consumed as a `dataflow.thread.launch` body operand. Direction
-  and optional bound information live as attributes on the producing
-  op, not on the result type.
 * **Basic alias partition.** A graph-local compiler analysis bucket keyed by
   a recognized memory root. View-like values are peeled to their root;
   graph boundary arguments are conservatively grouped unless explicit
@@ -418,23 +396,24 @@ each rule lands in IR.
   counted loops: it fires `true` once per body iteration and one
   trailing `false` token that closes the activation. The combined
   `(true, ..., true, false)` stream phases structural state and may
-  select a future memory-state lowering, but is not itself a memory
-  frontier. The exact timing semantics live
+  select the body and exit projections of loop-carried memory state, but is
+  not itself a memory frontier. The exact timing semantics live
   in `docs/spec-dataflow-part-1-streaming.md`.
-* **Streaming token.** Any `none`-typed token consumed or produced
-  by the streaming primitives `dataflow.stream`, `dataflow.gate`,
-  `dataflow.invariant`, and `dataflow.carry`. Streaming tokens
-  carry phase / iteration information rather than memory-state
-  information; their precise timing semantics are owned by
-  `docs/spec-dataflow-part-1-streaming.md`. The phase bit above is
-  one specific streaming token.
+* **Streaming token.** Any typed token stream consumed or produced by the
+  streaming primitives `dataflow.stream`, `dataflow.gate`,
+  `dataflow.invariant`, and `dataflow.carry`. Payloads may be ordinary data,
+  `i1` phase, or `none` control according to the operation contract. Streaming
+  tokens carry phase, iteration, or payload information rather than
+  memory-frontier authority; their precise timing semantics are owned by
+  `docs/spec-dataflow-part-1-streaming.md`. The phase bit above is one specific
+  streaming token.
 * **Memory-order token.** A `none`-typed token used to encode one
   component or join of
   alias-aware ordering between memory accesses inside a
   `dataflow.graph` definition's body. Each per-partition state pair
-  (see Section 2.4 of
+  (see `Canonical Frontier State` in
   `docs/spec-compiler-part-3-mem.md`) flows through its own
-  memory-order tokens; the leaf transfer in that document combines a
+  memory-order tokens; the `One Recursive Owner` transfer in that document combines a
   structural permission token with a
   memory-order predecessor token at each load / store. Memory-order
   tokens do not encode dynamic execution path (that is the
@@ -463,41 +442,16 @@ namespaces; nothing outside this list is added.
   - Runtime ABI ownership and refcounting are specified by the runtime
     ABI; Part 3 manipulates the type as an SSA value.
 
-This spec introduces no other types. The host-to-AccCore data
-plane uses `dataflow.map_info` (see Section 5.4.5), whose result preserves
-the source type. The "this value crossed the boundary through
-`dataflow.map_info`" provenance is enforced by the verifier on
-`dataflow.thread.launch`, not by a wrapper type.
+This spec introduces no other types. Host-to-AccCore values cross the launch
+boundary as ordinary typed SSA operands; no wrapper or provenance-only type is
+introduced.
 
 ### 5.2 Attribute Interface Instances
 
-One new attribute class implements the upstream
-`mlir::DeviceMappingAttrInterface`:
-
-* `#loom.thread_axis<kind, axis : i64, domain = SymbolRefAttr?>`
-  - `kind` is a closed enum with two values: `parallel` and
-    `multiplexed`.
-  - `axis` is a non-negative logical execution-axis identifier.
-    There is no closed enum and no fixed cap on axis count.
-  - `domain` is an optional `SymbolRefAttr` qualifier that names a
-    logical partition domain when one is needed to disambiguate
-    layout queries. It is not a fabric module, PE coordinate, memory
-    tile, router, x/y coordinate, or topology statement.
-  - `parallel` means distinct dynamic values along this logical axis
-    may be bound to distinct AccCore execution slots and run
-    concurrently when resources and policy allow it.
-  - `multiplexed` means distinct dynamic values along this logical
-    axis may reuse an AccCore execution slot through time
-    multiplexing.
-  - **Print form.** Without a domain qualifier, the printer emits
-    `#loom.thread_axis<parallel, 2>` or
-    `#loom.thread_axis<multiplexed, 2>`. With a qualifier, the
-    printer emits `#loom.thread_axis<parallel, 2, @D>`.
-    The parser accepts only this positional form.
-  - `getMappingId()` returns the integer `axis` packed into the
-    interface's `int64_t` slot; `isLinearMapping()` is `false`; and
-    `getRelativeIndex()` returns the position of this entry within
-    the enclosing thread's `mapping` array.
+No Loom-specific thread mapping attribute is introduced. Coordinate rank and
+domain come from the definition body shape and launch extents. Parallel versus
+temporal AccCore use is a SystemMapping relation plus event-relative
+`ResourceUse`, not a property copied into the program ABI.
 
 ### 5.3 Thread Completion
 
@@ -524,16 +478,9 @@ def + at least one launch. This split mirrors `gpu.func` /
 ```
 arguments:
   TypeAttr:$function_type,
-  DenseI32ArrayAttr:$input_segments,
-  DenseI32ArrayAttr:$result_segments,
   SymbolNameAttr:$sym_name,
   StrAttr:$sym_visibility,
-  DenseI64ArrayAttr:$staticGridLowerBound,
-  DenseI64ArrayAttr:$staticGridUpperBound,
-  DenseI64ArrayAttr:$staticGridStep,
-  DeviceMappingArrayAttr:$mapping,
-  OptionalAttr<DictionaryAttr>:$arg_attrs,
-  OptionalAttr<DictionaryAttr>:$res_attrs;
+  OptionalAttr<DictArrayAttr>:$arg_attrs;
 results:
   none;
 regions:
@@ -563,26 +510,8 @@ traits:
   required and must equal `"private"` under the baseline visibility
   policy. The verifier rejects `"public"` and `"nested"` unless
   cross-module linkage is enabled by a separate spec.
-* `mapping` is a `DeviceMappingArrayAttr` (an `ArrayAttr` whose
-  every entry implements `DeviceMappingAttrInterface`), one per
-  grid dim. The target Loom mapping entries are
-  `#loom.thread_axis<parallel, ...>` and
-  `#loom.thread_axis<multiplexed, ...>`. The relative order in the
-  array equals the relative order of the grid dim. Each entry's
-  `axis` refers to a logical execution axis (per Section 5.2). If an axis
-  participates in a partitioned-data query, it must carry the
-  relevant logical partition-domain symbol explicitly. No entry is
-  interpreted as a hardware coordinate by Part 3 alone; any binding
-  from logical execution cell to physical AccCore is a separate
-  concern (see `docs/spec-compiler-part-4-partitioned-data.md`).
-* `staticGrid*` arrays describe kernel-shape, not per-call values.
-  They live as op attributes on the def. Entries equal to
-  `ShapedType::kDynamic` refer to the corresponding `dynamicGrid*`
-  operand at every launch site that references this definition.
-  Static / dynamic mixing is per-axis and is consistent across all
-  launches of the same def.
 * The entry block of `body` has the layout
-  `(args_*, thread_ctrl, iv_*)`:
+  `(args_*, thread_ctrl, coord_*)`:
   - The first `N` block arguments mirror `function_type.inputs`
     exactly (each user body operand). Putting the signature args
     first preserves the upstream `FunctionOpInterface` invariant
@@ -594,13 +523,17 @@ traits:
     satisfied and the AccCore instance begins execution. Root
     `dataflow.graph.launch` ops with no InstructionCore predecessor use
     this value as their `ctrl_in` operand.
-  - `iv_0, ..., iv_K : index` are the per-instance grid iteration
-    indices, one per static-grid rank entry, in source-dim order.
+  - `coord_0, ..., coord_{K-1} : index` are the per-instance logical
+    coordinates, one per launch-domain dimension, in source-dimension order.
+    Their count is the definition's coordinate rank. Rank is derived from
+    this canonical suffix after the `function_type` inputs and unique
+    `thread_ctrl`; there is no duplicate rank, grid, or mapping attribute.
 * `arg_attrs` is indexed only by the `args_*` payload prefix. Forall
   promotion copies each captured source function argument dictionary,
   including arbitrary attributes such as `llvm.noalias`, into capture order.
   Locally defined captures have an empty dictionary. `thread_ctrl` and
-  `iv_*` are not payload arguments and never inherit source argument metadata.
+  `coord_*` are not payload arguments and never inherit source argument
+  metadata.
 * The body is `IsolatedFromAbove`. No SSA value defined outside
   the def's body may be used inside it; the launch's body operands
   are the only inputs.
@@ -609,9 +542,7 @@ traits:
 ```
 arguments:
   Variadic<Dataflow_ThreadToken>:$asyncDependencies,
-  Variadic<Index>:$dynamicGridLowerBound,
-  Variadic<Index>:$dynamicGridUpperBound,
-  Variadic<Index>:$dynamicGridStep,
+  Variadic<Index>:$extents,
   Variadic<AnyType>:$bodyOperands,
   FlatSymbolRefAttr:$callee;
 results:
@@ -637,12 +568,18 @@ and resolves its callee through the explicit `callee` attribute.
   rejects launches whose `callee` cannot be resolved or whose
   resolved op is not a `dataflow.thread`.
 * `bodyOperands` types must equal `callee.function_type.inputs`
-  position-by-position.
-* `dynamicGrid*` operand counts must equal the count of
-  `ShapedType::kDynamic` sentinels in the corresponding
-  `callee.staticGrid*` array. The static / dynamic mix is
-  per-axis and per-array as on the def; mixing strategy across
-  the three arrays follows the source `scf.forall` pattern.
+  position-by-position. Memrefs, values, source lower bounds, source steps,
+  and other launch parameters all use this same ordinary operand segment.
+* `extents` contains exactly one `index` value per callee coordinate. Each
+  extent must be non-negative. A rank-zero launch has no extent operands and
+  creates one instance. If any extent is zero, the launch creates no instances
+  and its collective token retires after its dependencies. Static verification
+  rejects a provably negative extent; dynamic launch admission rejects a
+  negative runtime value before creating any instance.
+* Each dynamic instance receives a zero-based coordinate tuple. Source lower
+  bounds and steps, when needed, are ordinary operands and the thread body
+  reconstructs `source_iv = lower + coordinate * step`. The ABI specifies no
+  row-major linearization, issue order, physical grid, or topology.
 * `asyncDependencies` is the variadic prefix of incoming
   `!dataflow.thread_token` dependencies. They form an all-of start
   ordering. The op always produces exactly one
@@ -650,12 +587,6 @@ and resolves its callee through the explicit `callee` attribute.
   retirement of all dynamic launch instances.
 * The op has no data results. Its mandatory token is the only
   launch-level completion result.
-* Each memref-like operand in `bodyOperands` must be the direct
-  SSA result of a `dataflow.map_info` op in the launch's enclosing
-  context. The verifier enforces this provenance; the in-thread
-  block argument bound to the operand is the same memref type as
-  the source memref. With the def + launch split, provenance belongs
-  to the launch site, where `dataflow.map_info` is reachable.
 #### 5.4.3 `dataflow.thread.yield`
 
 ```
@@ -718,58 +649,21 @@ traits:
   is not a memory barrier and does not define memory visibility.
 * The op is not `Pure`; it remains a causal wait in the stored program.
 
-#### 5.4.5 `dataflow.map_info`
+#### 5.4.5 Boundary Operands And Derived Views
 
-```
-arguments:
-  AnyType:$source,
-  Loom_MapDirectionAttr:$direction,
-  OptionalAttr<DenseI64ArrayAttr>:$staticBounds,
-  Variadic<Index>:$dynamicBounds;
-results:
-  AnyType:$result;
-traits:
-  Pure,
-  AllTypesMatch<["source", "result"]>.
-```
+No dedicated boundary or partition-carrier operation is part of the canonical
+thread ABI. A launch operand and its matching ordinary thread block argument
+are the same typed software value. Alias, no-alias, bounds, and access-summary
+facts used by optimization remain ordinary MLIR analysis facts or semantic
+candidate operations; they are not encoded by a provenance-only passthrough
+op.
 
-* `source` is a `memref<...>` or a partitioned-data-annotated memref
-  accepted by the Part 4 partitioned-data contract.
-* `result` has the same type as `source`. The op is a pure,
-  view-like alias of its source: alias analysis must treat the
-  result as may-alias of the source, and bufferization must treat
-  the op as a metadata pass-through. The op exists to attach
-  boundary metadata (direction, bounds) and to give the verifier a
-  single canonical producer for `dataflow.thread.launch` body
-  operands.
-* `direction` is the closed enum `to | from | tofrom | alloc |
-  release`. The baseline policy defaults every front-end-injected
-  `map_info` to `tofrom`; an optimizer may refine to the narrowest
-  direction when it can prove the narrower contract.
-* `staticBounds` / `dynamicBounds` together describe the per-dim
-  half-open `[lo, hi)` ranges that the thread will touch. The
-  encoding pairs static and dynamic entries by dimension: for a
-  source memref of rank `R`, `staticBounds`, when present, has
-  length `2 * R` storing `(lo_0, hi_0, lo_1, hi_1, ..., lo_{R-1},
-  hi_{R-1})` in source-dim order; `dynamicBounds` is the variadic
-  list of `index` operands referenced when a `staticBounds` slot
-  holds the `ShapedType::kDynamic` sentinel, in left-to-right
-  iteration order over `staticBounds`. An entirely-omitted
-  `staticBounds` (the attribute is not present at all) means
-  "the entire memref" on every dim; in that case `dynamicBounds`
-  must be empty. Partial information is encoded by setting only
-  the affected slots to `kDynamic` and supplying a corresponding
-  `dynamicBounds` operand for each.
-
-Partitioned-data related ops (`dataflow.partition_layout`,
-`dataflow.local_range`, `dataflow.thread_coord`,
-`dataflow.thread_linear_id`) are specified in
-`docs/spec-compiler-part-4-partitioned-data.md`. `dataflow.partition_layout`
-appears at host scope or inside a `dataflow.thread` definition's
-body (the InstructionCore portion); the query ops appear only inside a
-thread definition's body. None of them appear inside a
-`dataflow.graph` definition's body, and none of them participate in
-the SCF flattening templates in this document.
+Code inside the thread may derive source induction variables, subviews, local
+ranges, or an explicit linear id from ordinary launch operands and trailing
+logical coordinates. Those computations are program semantics and therefore
+survive whenever their results remain observable. Part 4 defines this boundary
+without introducing `map_info`, partition-domain, layout, or coordinate-query
+ops.
 
 ### 5.5 Modifications to Existing Ops
 
@@ -911,6 +805,38 @@ traits:
   frontier covers all outputs, state closure, and observable effects; explicit
   dependencies and memory capability ports carry launch-site ordering.
 
+#### 5.5.3 `dataflow.graph.wait`
+
+```text
+arguments:
+  Variadic<NoneType>:$completionFrontier;
+results:
+  none;
+traits:
+  AtLeastNOperands<1>.
+```
+
+* This op is the only explicit InstructionCore stored-program wait for graph
+  retirement. It blocks until every event in its unordered all-of completion
+  frontier has occurred and produces no SSA result.
+* The op must be transitively contained by exactly one `dataflow.thread`
+  definition. It is invalid at host scope, inside `dataflow.graph`, or inside a
+  nested thread definition.
+* Each operand is either a `dataflow.graph.launch` `done` result or an event
+  whose path-aware causal closure contains at least one such result. The
+  finalized-program validator proves that every operand is a valid terminal
+  graph-completion frontier; textual order and generic `none` use do not
+  establish that fact.
+* The wait inherits only the retirement and visibility obligations already
+  owned by those graph completion events. It is not a system memory barrier,
+  channel or NoC drain, thread-collective wait, or conversion to
+  `!dataflow.thread_token`.
+* The op is not `Pure`. A lowering inserts it only before the first
+  stored-program continuation that actually requires retirement. Deferred SSA
+  value readiness, launch `dependencies`, channel transport, and
+  `dataflow.thread.yield` remain their existing finer- or coarser-grained
+  mechanisms and must not acquire redundant waits.
+
 * `dataflow.load` and `dataflow.store`.
   - These dataflow primitives carry explicit memory-effect traits:
     - `dataflow.load`  declares `MemoryEffects<[MemRead]>`.
@@ -929,8 +855,7 @@ traits:
 
 ## 6. Per-scf Lowering Templates
 
-The implemented graph-region owner is `loom-lower-graph-memory`. It lowers
-execution permission, captured values, and per-partition
+Graph-region lowering carries execution permission, captured values, and per-partition
 `(write_frontier, read_frontier)` state in one recursive traversal. The
 compiler-local transfer is:
 
@@ -945,13 +870,13 @@ only values, addresses, data, selectors, and event streams are projected.
 Leaf memory completion updates `W/R` but never silently replaces execution
 permission.
 
-This section records Dataflow templates for SCF boundaries. The current
-recursive owner implements `scf.if`, nonzero-case `scf.index_switch`,
-source-sequential `scf.for`, `scf.while`, and provenance-marked fixed-domain
-effect-form `scf.parallel` / `scf.forall`. Zero-case `scf.index_switch` remains
-fail-closed pending upstream normalization ownership. Other subsections are
-explicitly marked as upstream or deferred contracts and are rejected if they
-remain in a graph.
+This section records Dataflow templates for SCF boundaries. Recursive lowering
+applies the same transfer to `scf.if`, normalized `scf.index_switch`,
+source-sequential `scf.for`, `scf.while`, and fixed-domain
+effect-form `scf.parallel` / `scf.forall`. A zero-case `scf.index_switch` is
+replaced by its default region during structured normalization. Other
+unsupported source forms must be normalized before publication of the
+Structured Program Candidate and are rejected if they remain in a graph.
 
 The dataflow primitive set is
 (`stream`, `carry`, `invariant`, `gate`, `mux`, `demux`, `sync`,
@@ -982,10 +907,12 @@ This convention is required for the templates below to be mechanical.
 `dataflow.mux` is selective: it consumes only the selector and selected
 input lane. `dataflow.demux` is selective: it emits only the selected
 output lane. `dataflow.sync` is the all-input rendezvous op.
-Control-only syncs may map to a wider all-control hardware sync. A mixed
-boundary-publication sync has canonical shape `(none, T) -> (none, T)` and
-requires a hardware `dataflow.sync` resource with exact arity and
-positionally compatible semantic widths.
+Control-only and mixed boundary-publication syncs are canonical software
+actors. A mixed boundary-publication sync has canonical shape
+`(none, T) -> (none, T)`. TechMapping may realize a control-only sync with a
+wider all-control Fabric capability and must prove compatible arity and
+positional semantic widths for every selected realization. Lack of such a
+capability on one Fabric does not invalidate the canonical graph.
 
 Registered pure compute actors inside `dataflow.graph`, including the
 registered arithmetic, math, and LLVM computation operations, follow strict
@@ -1011,12 +938,12 @@ streams. A memref-typed structured-control result inside graph
 extraction must be rewritten to explicit memory effects, kept in
 InstructionCore code, or rejected before graph lowering.
 
-Graph memory normalization must also reject any residual LLVM store, memcpy,
-memset, volatile load, or atomic load. These operations do not expose an SSA
-completion event that can enter `graph.return.complete`; source order or an
-effect scan cannot substitute for that missing event. Ordinary residual LLVM
-loads remain value-producing reads and are covered when their observable value
-is in the declared causal closure.
+Graph memory normalization must reject every residual LLVM load, store,
+memcpy, memset, atomic, volatile, or fence operation. They do not implement the
+canonical Dataflow memory capability and explicit completion-event contract;
+source order, a value result, or an effect scan cannot substitute for it. A
+supported LLVM memory operation must first normalize to `dataflow.load`,
+`dataflow.store`, or another explicitly specified canonical memory actor.
 
 The templates below show user-visible SSA value lowering. The same recursive
 owner threads independent `none`-typed write and read frontiers through each
@@ -1165,7 +1092,7 @@ position.
 
 #### If Boundary Translation
 
-This translation is implemented by the recursive graph owner. The condition
+This translation uses the recursive graph owner. The condition
 demuxes execution, captured non-memref values, and both frontier components
 for every partition touched by either branch. Each branch is lowered
 recursively. The same condition then muxes execution, each result position,
@@ -1286,7 +1213,7 @@ the same selector contract in `docs/spec-compiler-part-3-mem.md`.
 
 #### While Boundary Translation
 
-This translation is implemented with condition-driven carry rings for
+This translation uses condition-driven carry rings for
 execution, source inits, and each touched `W_P/R_P` component. Carry outputs
 enter before directly. After before is lowered, the false lanes are the while
 execution, result, and frontier exits. `dataflow.gate` projects execution and
@@ -1453,7 +1380,7 @@ Memref operands are not iter_arg-like stream state; only explicit
 
 #### For Boundary Translation
 
-This translation is implemented with one loop selector from
+This translation uses one loop selector from
 `dataflow.stream` and independent `carry -> demux` rings for execution,
 iter_args, and each touched `W_P/R_P` component. True lanes enter the
 recursively lowered body; false lanes are loop exits. Captured non-memref
@@ -1467,26 +1394,27 @@ RAW, WAR, and WAW across source-sequential iterations.
 ### 6.4 `scf.forall` Ownership and Upstream Normalization
 
 **Current contract.** The recursive graph owner mechanically lowers an
-effect-form, fixed-domain `scf.forall` only when selected schedule provenance
-certifies that an upstream Structured Program Candidate has resolved
-ownership, P[] width, and cross-lane legality. Every lane starts from the same
-incoming execution and per-partition memory frontier, lowers recursively, and
-contributes its terminal frontiers to fixed-arity all-of joins. The forall and
-its empty `scf.forall.in_parallel` terminator are removed. A mapping attribute,
-dynamic domain, shared output, result, combining action, or missing provenance
-causes atomic failure.
+effect-form, fixed-domain `scf.forall` only when the current Structured Program
+Candidate's semantic IR and resolved lowering config are sufficient to
+re-prove ownership, P[] width, and cross-lane legality. Every lane starts from
+the same incoming execution and per-partition memory frontier, lowers
+recursively, and contributes its terminal frontiers to fixed-arity all-of
+joins. The forall and its empty `scf.forall.in_parallel` terminator are
+removed. A mapping attribute, dynamic domain, shared output, result, combining
+action, or failed re-proof causes atomic failure. Cached provenance never
+changes this result.
 
-**Future upstream normalization design.** The material below is not current
-Part 3 behavior. After selecting a concrete P[] representation, an upstream
-owner may normalize a forall before ordinary graph-region lowering:
+Before ordinary graph-region lowering, the structured optimizer may normalize
+a selected forall representation as follows:
 
 1. It may materialize aggregation-form forall into effect-form forall.
 2. It may turn mapped effect-form forall into a `dataflow.thread` definition
    at module scope plus a `dataflow.thread.launch` at the original forall site.
-3. It may turn unmapped effect-form forall into fixed-domain,
-   provenance-marked `scf.parallel` for graph-owned mechanical lowering.
+3. It may turn graph-owned effect-form forall into a fixed-domain
+   `scf.parallel` whose ownership and independence remain re-provable from the
+   current candidate.
 
-This separation keeps tensor aggregation, hardware thread mapping, schedule
+This separation keeps tensor aggregation, AccCore ownership, schedule
 selection, and SpatialCore DFG construction as separate concerns. Mechanical
 lowering accepts the selected fixed-domain representation but makes none of
 those choices.
@@ -1560,12 +1488,13 @@ The future upstream materialization contract is:
   Read/write conflicts through the shared destination are treated the
   same way: the source forall did not provide an inter-invocation
   order, so materialization must not invent one.
-* The upstream transformation preserves forall bounds, steps, induction variables, and
-  `mapping` attributes.
+* The upstream transformation preserves forall bounds, steps, and induction
+  variables. Any foreign `mapping` attribute must be resolved or rejected
+  before the candidate enters Loom's ownership-lowering boundary.
 * The produced buffers are ordinary values for boundary analysis. If a
-  destination buffer crosses a mapped forall boundary, the
-  boundary-promotion step that inserts `dataflow.map_info` treats it
-  like any other memref-like value.
+  destination buffer crosses a selected thread boundary, it becomes an
+  ordinary thread launch operand and matching definition argument like any
+  other memref-like value.
 * If any non-empty `scf.forall.in_parallel` combining action cannot be
   materialized, the upstream transformation emits a diagnostic. Dropping the
   combining action is never legal.
@@ -1575,15 +1504,16 @@ The future upstream materialization contract is:
   buffer view, and the inner combining actions become writes through
   that view.
 
-In the future upstream design, a mapped effect-form forall is a thread
-boundary. A mapped forall is one whose non-empty `mapping` attribute contains Loom-recognized
-`#loom.thread_axis<...>` entries:
+When the Structured Program Candidate selects an effect-form forall as an
+AccCore thread domain, it materializes that choice directly as a thread
+definition and launch. No Loom mapping attribute survives as a competing
+ownership authority:
 
 ```mlir
 scf.forall (%tx) in (%N) {
   memref.store %v, %B[%tx] : memref<?xf32>
   scf.forall.in_parallel {}
-} {mapping = [#loom.thread_axis<parallel, 0>]}
+}
 ```
 
 It may be promoted to a `dataflow.thread` definition + a
@@ -1592,51 +1522,46 @@ It may be promoted to a `dataflow.thread` definition + a
 ```mlir
 // At module scope (sibling of func.func):
 dataflow.thread @t_<funcSym>_<seq>(%B_arg : memref<?xf32>, ...)
-    attributes { mapping = [#loom.thread_axis<parallel, 0>],
-                 staticGridLowerBound = [0],
-                 staticGridUpperBound = [...],
-                 staticGridStep = [1],
-                 sym_visibility = "private" } {
-^bb0(%B_arg : memref<?xf32>, ..., %thread_ctrl : none, %tx : index):
-  memref.store %v, %B_arg[%tx] : memref<?xf32>
+    attributes { sym_visibility = "private" } {
+^bb0(%B_arg : memref<?xf32>, ..., %thread_ctrl : none, %coord : index):
+  // For normalized zero-based unit-step forall, source IV equals coordinate.
+  memref.store %v, %B_arg[%coord] : memref<?xf32>
   dataflow.thread.yield
 }
 
-// At the original scf.forall site (after map_info materialization):
-%mB = dataflow.map_info %B { direction = #to } : memref<?xf32>
-%tok = dataflow.thread.launch @t_<funcSym>_<seq>(%mB, ...)
+// At the original scf.forall site:
+%tok = dataflow.thread.launch @t_<funcSym>_<seq>
+       extents(%N) args(%B, ...)
        : (memref<?xf32>, ...) -> !dataflow.thread_token
 dataflow.thread.wait %tok : !dataflow.thread_token
 ```
 
-In that future design, the forall grid bounds and mapping become the def's
-grid attributes and `mapping`. The mapping array length must equal the forall
-rank; this is already an upstream `scf.forall` verifier invariant and is
-repeated here as an input requirement for thread promotion. The forall
-induction variables become the trailing `iv_*` block-args of the def's entry
-block (after the leading `args_*` and `thread_ctrl`, per Section 5.4.1's
-`(args_*, thread_ctrl, iv_*)` layout). Values captured from outside the forall
-become explicit launch operands at the use site and matching def block-args
-(the leading `args_*` of the entry block). The empty
+The launch extents own the dense zero-based domain. The forall induction
+variables become the trailing logical-coordinate block arguments after the
+ordinary arguments and `thread_ctrl`. Nonzero or dynamic source lower bounds
+and steps become ordinary operands, and the body explicitly reconstructs
+`source_iv = lower + coordinate * step`. Values captured from outside the
+forall become ordinary launch operands and matching definition arguments. The empty
 `scf.forall.in_parallel` terminator becomes `dataflow.thread.yield` inside the
 def's body.
 
-Such a future promotion creates the AccCore boundary only. Code inside the
+Such a promotion creates the AccCore boundary only. Code inside the
 thread definition's body remains InstructionCore code unless the structured
 owner explicitly wraps it in `loom.spatial_region`. Part 3 outlines only that
 boundary into a `dataflow.graph` definition and a `dataflow.graph.launch` at
 the cut site. Nested graph-owned parallel work must be fixed-domain and
-provenance-marked. Memory operations outside an explicit spatial boundary stay
-in the InstructionCore part of the thread definition's body.
+re-provable from current candidate semantics. Memory operations outside an
+explicit spatial boundary stay in the InstructionCore part of the thread
+definition's body.
 
-The future promotion would make the implicit synchronization point of
+The promotion makes the implicit synchronization point of
 `scf.forall` explicit thread-token ordering. The produced
 `!dataflow.thread_token` is either consumed by a following thread-like op as a
 dependency or waited on with `dataflow.thread.wait` at the original
 continuation point.
 
-In the future upstream design, unmapped effect-form forall is generic parallel
-work, not a hardware thread boundary:
+An effect-form forall not selected as a thread boundary is generic parallel
+work:
 
 ```mlir
 scf.forall (%i) in (%N) {
@@ -1657,24 +1582,23 @@ scf.parallel (%i) = (%c0) to (%N) step (%c1) {
 The upstream `scf-forall-to-parallel` conversion may be reused for this
 effect-form case, because the forall has no outputs and its empty
 `scf.forall.in_parallel` becomes an empty `scf.reduce`. The generated
-`scf.parallel` must carry parallel provenance so that later
-normalization to `scf.for` loop nests does not invent
-cross-invocation memory order.
+`scf.parallel` and its fixed lane domain must preserve enough semantic
+structure for the lowerer to re-prove that no cross-invocation memory order is
+invented.
 
-Within that future upstream normalization, every Loom-recognized mapped forall
-has already been promoted to `dataflow.thread`. Therefore, a graph-owned
-forall must have an empty mapping attribute and selected schedule provenance.
-A non-empty non-Loom mapping is rejected before normalization.
+Every selected thread-owned forall has already been promoted to
+`dataflow.thread`. Therefore, a graph-owned forall must have an empty mapping
+attribute and complete fixed-domain semantics in the current candidate.
 
 If a forall has a non-empty `mapping` attribute that current Part 3 does not
 recognize as a Loom mapping, the pipeline must not silently ignore it inside an
-accelerator region. It fails before graph mutation. A future upstream resolver
+accelerator region. It fails before graph mutation. An upstream resolver
 must either remove or translate that mapping with an explicit downgrade
 decision before its normalization template runs.
 
 #### Forall Boundary Translation
 
-Mapped forall belongs to thread construction and must be removed before a
+Thread-owned forall belongs to thread construction and must be removed before a
 graph definition is lowered. A selected fixed-domain graph-owned forall is
 recursively replicated into static lanes; each active lane transfers execution
 and `(W, R)` independently, and lane exits are reduced with fixed-arity
@@ -1685,35 +1609,36 @@ id, dependence summary, or traversal order survives into canonical graph IR.
 
 **Implementation boundary.** The recursive graph owner does not choose a
 split factor, serialize iterations, select P[], or choose reduction order. It
-mechanically lowers a fixed-domain, provenance-marked, effect-form
-`scf.parallel`; all other forms fail before mutation. The detailed
-normalization below remains an upstream contract for dynamic domains,
-aggregation, and schedule selection.
+mechanically lowers a fixed-domain, effect-form `scf.parallel` whose ownership,
+lane width, and independence can be re-proved from the current semantic IR;
+all other forms fail before mutation. The detailed normalization below remains
+an upstream contract for dynamic domains, aggregation, and schedule selection.
 
-**Future upstream normalization design.** Every reference to parallel
+**Structured Program Candidate normalization.** Every reference to parallel
 normalization, chunking, or flattening in this subsection describes only the
 upstream owner that selects a concrete P[] representation. It is not a choice
 made by graph-region lowering.
 
 `scf.parallel` is not a second dataflow loop primitive. The upstream schedule
-owner makes the required ownership and legality decisions and attaches
-provenance. Graph-region lowering replicates the fixed lanes and recursively
-lowers their existing structured bodies. No new `dataflow.parallel`,
+owner makes the required ownership and legality decisions and materializes
+them in the candidate's semantic SCF. Graph-region lowering re-proves the
+contract, replicates the fixed lanes, and recursively lowers their existing
+structured bodies. No new `dataflow.parallel`,
 `dataflow.reduce`, or reduction enum is introduced.
 
-A user-written graph-owned `scf.parallel` with a non-empty `mapping` attribute
-is rejected by Part 3. Mapping has Loom semantics only on
-`scf.forall`, because mapped forall is the construct that establishes a
-`dataflow.thread` boundary.
+A graph-owned `scf.parallel` or `scf.forall` with a non-empty foreign
+`mapping` attribute is rejected by Part 3. Loom ownership is represented by
+the surrounding thread and spatial-region structure, not by such an attribute.
 
 The important semantic difference from `scf.for` is the absence of a
 cross-iteration program order. The source `scf.parallel` iteration
 space may execute in any order and may execute concurrently. If two
 iterations race through memory, the source behavior is undefined.
-Therefore, schedule normalization must retain provenance that certifies the
-selected realization. The recursive graph owner treats that provenance as the
-upstream legality certificate and never imposes source traversal order between
-lanes. A parallel region without that certificate fails before graph mutation.
+Therefore, schedule normalization must retain an explicit fixed-domain
+`scf.parallel` container until mechanical lowering. The recursive graph owner
+re-proves its independence from current semantics and never imposes source
+traversal order between lanes. A parallel region whose legality cannot be
+re-proved fails before graph mutation.
 
 The future upstream normalization design below uses a positive split factor `K`.
 No `--parallel-split-factor` option or default `K` policy is implemented by
@@ -1761,12 +1686,12 @@ contract.
   tokens are joined only where the surrounding program needs the
   `scf.parallel` to have completed. They are not sequenced by source IR
   order unless a true external dependence requires that ordering.
-  All chunk tails in one parallel-provenance group rendezvous into a
-  group tail token. Any later memory access that must observe the
+  All chunk tails in one enclosing fixed-domain parallel region rendezvous
+  into a group tail token. Any later memory access that must observe the
   parallel's memory effects depends on this group tail.
-* Any provenance needed by that future transformation must be consumed before
-  recursive graph-region lowering. The current owner does not interpret a
-  marker, choose ownership, or weaken source-sequential `scf.for` recurrence.
+* The normalized candidate must keep this parallel relationship in semantic
+  SCF until recursive graph-region lowering. A side-table marker, lineage
+  record, or cached proof is not an alternate legality authority.
 * Different `K` values may produce different reduction results when the
   user's reduction region is not both associative and commutative. All
   such results are allowed by `scf.parallel`'s unspecified reduction
@@ -1808,13 +1733,11 @@ scf.for %i = %mid to %N step %c1 {
 }
 ```
 
-Both generated loop nests carry the same `parallel provenance` id and
-different chunk ordinals. They represent independent chunks of one
-parallel iteration space, not two source-ordered loops. If the future upstream
-normalizer materializes them as adjacent SCF operations, its selected P[]
-representation must preserve the shared provenance and join the chunk tails
-before the continuation. Only then may it emit supported sequential input for
-current Part 3.
+The two loop nests are conceptual lane bodies of one enclosing fixed-domain
+`scf.parallel`, not adjacent source-ordered operations. The actual Structured
+Program Candidate must preserve that enclosing semantic parallel relation and
+join the lane tails before the continuation. It must not replace the relation
+with a provenance id or side-table certificate.
 
 If the `scf.parallel` has no results, the future upstream
 `scf-parallel-for-to-nested-fors` conversion may be reused for the
@@ -1917,10 +1840,9 @@ itself pin the IR shape for the multi-dimensional case. This
 subsection extends the partial-and-merge scheme to a `scf.parallel`
 over `N` parallel dimensions with `M` reduction results.
 
-**Generated loop-nest layout.** After future upstream parallel-SCF normalization (per
-`docs/spec-compiler-part-3-impl.md` Section 1.8), an `N`-dim `scf.parallel`
-becomes one or more `scf.for` loop nests that share a single
-parallel-provenance group, plus any required reduction-merge
+**Generated loop-nest layout.** After upstream parallel-SCF normalization, an
+`N`-dim `scf.parallel` contains one or more `scf.for` loop nests as explicit
+fixed lanes, plus any required reduction-merge
 `scf.if` ops. Each parallel dim becomes one `scf.for`. The loop-nest
 order is outermost-first-in-source-order: the outermost generated
 `scf.for` corresponds to the leftmost parallel dim of the source
@@ -2158,13 +2080,12 @@ Traversal order is never used to invent a cross-iteration memory order.
 
 ### 6.6 `scf.index_switch`
 
-**Implementation boundary.** `loom-lower-graph-memory` lowers every nonzero-
-case `scf.index_switch` through the same recursive selection transfer used by
-`scf.if`. The canonical graph contains only ordinary selector arithmetic and
-the existing `dataflow.demux` / `dataflow.mux` actors; it does not retain SCF
-or introduce a second switch abstraction. A zero-case switch is rejected
-before graph mutation because ownership of that normalization is not yet
-implemented.
+Structured normalization replaces a zero-case `scf.index_switch` with its
+default region. Every remaining switch lowers through the same recursive
+selection transfer used by `scf.if`. The canonical graph contains only
+ordinary selector arithmetic and the existing `dataflow.demux` /
+`dataflow.mux` actors; it does not retain SCF or introduce a second switch
+abstraction.
 
 `scf.index_switch` has the same selected-region shape as `scf.if`, but
 its source selector is an arbitrary `index` value matched against a
@@ -2184,15 +2105,15 @@ lane i + 1 = case region i
 The one-case form has two dynamic lanes and uses an `i1` selector: `false`
 selects default and `true` selects the single case. With two or more cases,
 the normalized selector has `index` type. The zero-case form has only the
-default region, but this lowering fails closed instead of choosing or
-implementing an upstream inlining owner.
+default region and is eliminated before this template is applied.
 
 For two or more cases, the normalized selector is computed as ordinary
 data, not with `dataflow.mux`. A `dataflow.mux` is selective and would
 leave each unselected case-lane constant token in its queue. Across
 many switch invocations those leftover tokens would accumulate without
-bound under any bounded-buffer runtime and would eventually saturate
-hardware discard/disconnect paths. Ordinary `arith.select` follows
+bound under any bounded-buffer runtime and eventually apply backpressure.
+They cannot be discarded because every candidate lane remains semantically
+live for a later selector token. Ordinary `arith.select` follows
 all-operand firing, so it consumes every candidate lane value on each
 firing and leaves no residue.
 
@@ -2283,12 +2204,9 @@ while a selected branch contributes its recursively reduced causal frontier.
 
 ### 6.7 `scf.execute_region`
 
-**Implementation boundary.** Residual `scf.execute_region` is currently
-rejected before graph mutation. Producers should inline it before invoking
-the recursive graph owner.
-
-The current owner does not inline this op; it requires an earlier canonical
-inlining transformation.
+Structured normalization inlines a supported `scf.execute_region` before
+graph-region lowering. A residual region means the Structured Program
+Candidate is not finalizable and is rejected before graph mutation.
 
 #### Execute Region Boundary Translation
 
@@ -2309,18 +2227,16 @@ write/read recurrence state. Section 6 of this document specifies how the
 same selectors project execution, values, and both frontier components at
 each supported SCF boundary.
 
-## 8. Partitioned Data
+## 8. Logical Domains And Data Views
 
-Partitioned-data layout and in-thread queries are specified in
-`docs/spec-compiler-part-4-partitioned-data.md`, along with the extension
-point for neighborhood communication / distributed-buffer protocols. They are
-not required for SCF-to-DFG flattening; this
-document references them only at the boundary points (see Section 5.4 and
-Section 9).
+`docs/spec-compiler-part-4-partitioned-data.md` specifies the canonical launch
+domain, source-IV reconstruction, and derived-view boundary. These semantics
+are ordinary operands and computations; they add no partition carrier or
+mapping attribute to SCF-to-DFG flattening.
 
 ## 9. Verifier Rules (Front-End Specific)
 
-In addition to the dataflow / fabric verifier set:
+In addition to the Dataflow dialect and finalized-program verifier set:
 
 * `dataflow.thread` (definition, Section 5.4.1)
   - The op is a Symbol-bearing, function-like callable; it must
@@ -2332,33 +2248,14 @@ In addition to the dataflow / fabric verifier set:
     baseline visibility policy. `"public"` and `"nested"` are rejected
     unless cross-module linkage is enabled by a separate spec.
   - `function_type` inputs are the user body operand types
-    `(T0..TN)`; `function_type` results are empty regardless of the
-    callable's grid shape.
-  - `mapping` array length equals grid dim count.
-  - Every `mapping` entry implements
-    `DeviceMappingAttrInterface`.
-  - No two `mapping` entries share the same `(kind, domain, axis)`
-    triple. The verifier rejects, for example, two grid dims both
-    labeled `#loom.thread_axis<parallel, 0, @D>` or both labeled
-    `#loom.thread_axis<multiplexed, 2, @D>`. `kind` is `parallel`
-    or `multiplexed`; `domain` is the optional explicit logical
-    partition-domain symbol; and `axis` is the per-entry `i64`
-    logical execution-axis identifier.
-  - If a `#loom.thread_axis<...>` entry carries a domain qualifier,
-    that symbol must resolve to a visible `dataflow.partition_domain`.
-    Its `axis` must be in `[0, domain_rank)`. If the entry has no
-    domain qualifier, Part 3 checks only that `axis` is non-negative.
-  - Part 3 does not infer a domain qualifier from partitioned-data
-    layouts. Partitioned-data query ops that need a domain require
-    explicitly qualified `#loom.thread_axis<..., axis, @D>` entries;
-    those rules live in
-    `docs/spec-compiler-part-4-partitioned-data.md`.
+    `(T0..TN)`; `function_type` results are empty.
   - Entry block argument count equals
-    `numBodyOperands + 1 + gridDimCount`. The block-arg layout is
-    `(args_*, thread_ctrl, iv_*)`: the first `N == numBodyOperands`
+    `numBodyOperands + 1 + coordinateRank`. The block-arg layout is
+    `(args_*, thread_ctrl, coord_*)`: the first `N == numBodyOperands`
     block args mirror `function_type.inputs` exactly, then one
     `none`-typed `thread_ctrl` block arg, then one `index`-typed
-    block arg per grid dim (in source-dim order). This ordering
+    block arg per logical coordinate (in source-dimension order). The
+    coordinate suffix length is the sole definition of rank. This ordering
     keeps the first `N` block args aligned with
     `function_type.inputs`, satisfying the upstream
     `FunctionOpInterface` invariant.
@@ -2379,27 +2276,21 @@ In addition to the dataflow / fabric verifier set:
     proven InstructionCore-legal or is scheduled for inlining before
     graph extraction. Body must not contain `func.func`
     definitions.
-  - Reachability is a pass-pipeline invariant, not a verifier
-    rule. The verifier accepts a `dataflow.thread` definition
-    even when no `dataflow.thread.launch` references it (an
-    unreferenced private symbol is dead code, not invalid IR);
-    `loom-dead-symbol-prune` is the cleanup pass that removes
-    such symbols before pipeline exit.
+  - Reachability is a pipeline invariant, not a local verifier rule. The
+    verifier may accept an unreferenced private definition as dead IR, but
+    finalized program publication removes unreachable private symbols.
 
 * `dataflow.thread.launch` (Section 5.4.2)
   - `callee` resolves to a `dataflow.thread` definition in the
     same module (verifier rejects unresolved or wrong-kind callee).
   - `bodyOperands` types equal `callee.function_type.inputs`
     position-by-position.
-  - `dynamicGrid*` operand counts equal the count of
-    `ShapedType::kDynamic` sentinels in
-    `callee.staticGrid*`. Per-axis static / dynamic mixing
-    follows the def's static-bounds pattern.
+  - `extents` count equals the callee coordinate rank. Every extent has
+    `index` type. Statically known negative extents are rejected; dynamic
+    values are checked by launch admission before any instance is created.
+    Rank zero creates one instance; any zero extent creates none.
   - The op always produces exactly one `!dataflow.thread_token`
     result for collective retirement of all its dynamic instances.
-  - Each memref-like operand in `bodyOperands` is the direct SSA
-    result of a `dataflow.map_info` op in the launch's enclosing
-    context.
   - Must appear outside every `dataflow.thread` and `dataflow.graph`
     definition, including through nested regions.
 
@@ -2420,34 +2311,6 @@ In addition to the dataflow / fabric verifier set:
   - The op has no SSA result and therefore produces no graph-control
     `none` value. It is an ordered stored-program causal wait, not a
     memory barrier.
-
-* `dataflow.map_info`
-  - `direction` is one of the closed enum values.
-  - `staticBounds`, if present, has length `2 * R` where `R` is
-    the source memref rank, encoding `(lo_0, hi_0, ..., lo_{R-1},
-    hi_{R-1})` in source-dim order; `dynamicBounds` length matches
-    the count of `ShapedType::kDynamic` sentinels in `staticBounds`,
-    in left-to-right iteration order. An omitted `staticBounds`
-    means "the entire memref" and requires `dynamicBounds` to be
-    empty.
-  - The op may appear at host scope or inside another
-    `dataflow.thread` definition's InstructionCore region; it must not
-    appear inside a `dataflow.graph` definition's body.
-  - The op's result must be used only as a `dataflow.thread.launch`
-    body operand. Any other use -- passing the result to
-    `memref.load`, `memref.subview`, `func.call`, another
-    `dataflow.map_info`, or any op other than
-    `dataflow.thread.launch` -- is rejected. This complements the
-    `dataflow.thread.launch` rule that "each memref-like body
-    operand must be the direct SSA result of a `dataflow.map_info`
-    op": together the two rules close the loop on map_info
-    provenance and keep the same-type passthrough memref from being
-    treated as an ordinary memref by the rest of the IR.
-
-Verifier rules for `dataflow.partition_layout`,
-`dataflow.local_range`, `dataflow.thread_coord`, and
-`dataflow.thread_linear_id` are specified in
-`docs/spec-compiler-part-4-partitioned-data.md`.
 
 * `dataflow.graph` (definition, Section 5.5.1)
   - The op is a Symbol-bearing, function-like callable; it must
@@ -2477,10 +2340,22 @@ Verifier rules for `dataflow.partition_layout`,
     typed actor set, while the classifier remains the sole final eligibility
     and compute/control/memory authority for instance-sensitive exclusions.
     Lowering does not infer actor support from dialect or operation names.
+  - A registered LLVM-dialect compute operation is eligible only through that
+    same interface and only when it has explicit SSA operands and results, no
+    regions or successors, no hidden memory, control, ABI, or runtime state,
+    deterministic typed per-firing semantics, no unrecorded DataLayout
+    dependency, no ordinary LLVM pointer graph value, and explicit semantic
+    parameters. This is the sole LLVM exception; registered arithmetic, math,
+    scalar, and vector compute actors remain legal under the same contract.
+  - Residual imperative LLVM surface is forbidden. This includes calls and
+    unresolved intrinsics, inline assembly, loads, stores, atomics, fences,
+    allocation and pointer manipulation, branches, switches, PHI nodes,
+    memory-copy or memory-set operations, and ABI, exception, stack, or
+    runtime operations. Supported source forms must be normalized into
+    canonical actors and explicit event networks before finalization.
   - Body must not contain `scf.*`, `func.func`, `func.call`,
     `dataflow.thread.launch`, `dataflow.graph.launch`,
-    `dataflow.thread.wait`, `dataflow.map_info`, any partitioned-data
-    op specified in `docs/spec-compiler-part-4-partitioned-data.md`,
+    `dataflow.thread.wait`, `dataflow.graph.wait`,
     another `dataflow.graph` definition, or a `dataflow.thread`
     definition.
   - The op declares `RecursiveMemoryEffects` so module-scope
@@ -2502,6 +2377,17 @@ Verifier rules for `dataflow.partition_layout`,
     finalization validates that the explicit return frontier covers every
     observable effect before mapping or simulation.
 
+* `dataflow.graph.wait` (Section 5.5.3)
+  - Accepts a non-empty unordered all-of frontier of `none` completion events
+    and has no result.
+  - Must be transitively contained by exactly one `dataflow.thread` definition
+    and must not appear at host scope or inside a `dataflow.graph` definition.
+  - Finalized-program validation requires every operand to be a direct graph
+    `done` result or a path-aware terminal event whose causal closure contains
+    one. Generic `none` values and textual order are insufficient.
+  - It is a stored-program graph-retirement wait, not a memory barrier, channel
+    drain, thread-token conversion, or alternate completion authority.
+
 * `Dataflow_GraphReturnOp`
   - `complete` is non-empty, variadic, unordered all-of, and `none`-typed.
   - `values`, `streams`, and `memories`, in that order, match the parent
@@ -2510,30 +2396,27 @@ Verifier rules for `dataflow.partition_layout`,
     compact `%complete, %values...` syntax; all other shapes print named
     segments.
 
-## 10. Non-Goals (First Milestone)
+## 10. Non-Goals
 
 The following are explicitly out of scope for the scf-to-dfg
 contract:
 
-* Outlining `dataflow.thread` to a `fabric.module` symbol with
-  a symbol reference. The thread op remains front-end software IR;
-  fabric binding is a mapping and lowering concern. The thread op is
-  already isolated and has an explicit boundary operand list.
+* Binding `dataflow.thread` directly to a `fabric.module` symbol. The thread
+  remains target-independent software IR; SystemMapping binds logical thread
+  execution to an AccCore, while TechMapping and SpatialMapping realize each
+  selected graph on that AccCore's SpatialCore. The thread is already isolated
+  and has an explicit boundary operand list.
 * Native `dataflow.thread` data results, async value types, thread
   groups, and thread-level aggregation regions. Tensor-result
   aggregation is handled by materializing it into mapped-memory
   effects before thread promotion.
 * LLVM IR provider integration, source-language integration, and clang
   embedding. Those concerns belong to Part 1 and Part 2.
-* Optimization of `dataflow.map_info` direction. Default `tofrom`.
-* Strong-typed partitioned-data carriers, logical-domain-point to
-  fabric-resource binding, and neighborhood communication /
-  distributed-buffer protocol for tile-and-domain memrefs. These are
-  not part of this contract. In particular, this spec does not commit
-  to any stencil-specific op signature for neighbor exchange, nor to a
-  default mapping from a
-  `dataflow.partition_domain @D` point to any `fabric.pe` /
-  `fabric.mem` instance.
+* Logical-domain-point to fabric-resource binding and neighborhood
+  communication or distributed-buffer protocols. These are not part of this
+  contract. In particular, this spec does not commit to a stencil-specific
+  neighbor-exchange op or a default mapping from a logical coordinate to any
+  `fabric.pe` or `fabric.mem` instance.
 * Channel routing or thread-endpoint simulation. Graph publication preserves
   typed stream input/output bindings and `source_map` while mechanically
   converting region-local endpoints to the canonical graph stream network.
@@ -2546,24 +2429,23 @@ contract:
 ## 11. References
 
 * `docs/spec-fabric-module.md`, `docs/spec-fabric-pe.md`,
-  `docs/spec-fabric-fu.md` -- the fabric-side IR that the front-end
-  output eventually targets.
+  `docs/spec-fabric-fu.md` -- Fabric hardware semantics consumed by Mapping,
+  not embedded in the Canonical Dataflow Program.
 * `docs/spec-compiler-part-1-source.md` -- high-level source
   integration and metadata emission.
 * `docs/spec-compiler-part-2-scf.md` -- LLVM-to-SCF raising and structured
   thread-boundary preparation.
-* `docs/spec-compiler-part-3-impl.md` -- pass pipeline, lit-test
-  layout, acceptance checklist, and maintenance plan
-  for the SCF-to-DFG front-end.
 * `docs/spec-compiler-part-3-mem.md` -- recursive graph-region memory
   lowering, basic alias partitions, write/read frontier transfers, and
   structured recurrence used inside each `dataflow.graph`.
-* `docs/spec-compiler-part-3-placement-framework.md` -- software placement
-  policy outside the canonical graph ABI; target-specific grouping remains a
-  Mapping Artifact concern.
-* `docs/spec-compiler-part-4-partitioned-data.md` -- partitioned-data
-  annotation, in-thread queries, and the extension point for neighborhood
-  communication / distributed-buffer protocols.
+* `docs/spec-core-dialect-boundary.md` -- compiler, Dataflow, Fabric, Mapping,
+  and runtime ownership outside the canonical graph ABI.
+* `docs/spec-mapping-artifact.md`, `docs/spec-mapping-memory.md`, and
+  `docs/spec-pnr.md` -- TechMapping, canonical-memory realization, and
+  Spatial/System physical realization after canonical graph publication.
+* `docs/spec-compiler-part-4-partitioned-data.md` -- canonical logical launch
+  domains, source-IV reconstruction, ordinary data views, and the physical
+  Mapping boundary.
 * `docs/spec-dataflow-part-1-streaming.md` -- precise timing
   semantics for `dataflow.stream`, `dataflow.carry`,
   `dataflow.invariant`, and `dataflow.gate`.
@@ -2571,8 +2453,7 @@ contract:
   for `dataflow.constant`, `dataflow.sync`, `dataflow.mux`, and
   `dataflow.demux`.
 * Upstream MLIR references (LLVM `externals/llvm/mlir/...`):
-  - `Dialect/SCF/IR/SCFOps.td`,
-    `Dialect/SCF/IR/DeviceMappingInterface.td`.
+  - `Dialect/SCF/IR/SCFOps.td`.
   - `Dialect/Async/IR/AsyncOps.td`,
     `Dialect/Async/IR/AsyncTypes.td`.
   - `Dialect/GPU/IR/GPUOps.td`, `Dialect/GPU/IR/GPUBase.td`.

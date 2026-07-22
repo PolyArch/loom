@@ -3,7 +3,7 @@
 This document specifies Loom's target CMSIS drop-in compiler contract.
 The target product behavior is that CMSIS-DSP and CMSIS-NN projects can
 use Loom where they would otherwise use a C or C++ compiler, while Loom
-can also emit its internal compiler artifacts and acceleration reports
+can also emit its internal compiler artifacts and acceleration evidence
 when explicitly enabled.
 
 ## Purpose
@@ -16,8 +16,8 @@ with Loom and keep the build working, while gaining access to Loom's
 dataflow, mapping, simulation, and estimation flow?
 ```
 
-The repository-owned app drop-in corpus is specified separately in
-`docs/spec-app-dropin-test-corpus.md`. It validates the same drop-in
+The repository-owned LoomBench corpus is specified separately in
+`docs/spec-loombench.md`. It validates the same drop-in
 compiler principle on self-contained C/C++ programs, while this
 document owns the external CMSIS source-tree contract.
 
@@ -27,7 +27,9 @@ The compiler consumes:
 * ordinary compiler command-line options;
 * CMSIS include paths and preprocessor definitions;
 * optional Loom-specific options;
-* optional hardware, mapping, simulator, and estimation profiles.
+* an optional hardware selection, otherwise the designated builtin default;
+* optional resolved compiler, Mapping, and Evaluation policy inputs; and
+* optional Mapping constraints and Evaluation requests.
 
 It produces:
 
@@ -36,8 +38,8 @@ It produces:
 * optional raised MLIR;
 * optional dataflow IR;
 * optional mapping artifacts;
-* optional simulation reports;
-* optional RTL or FPA reports;
+* optional SimulationExecution and EvaluationEvidence artifacts;
+* optional RTL HardwareImplementation and EDA Evaluation artifacts;
 * structured diagnostics.
 
 ## Drop-In Rule
@@ -69,29 +71,32 @@ silently reinterpret ordinary compiler flags as acceleration requests.
 The public driver surface consists of:
 
 * `loom-cc`: C-mode compiler driver;
-* `loom-c++`: C++-mode compiler driver;
-* optional aliases whose behavior is selected by the executable name;
-* optional Loom-specific flags for artifact emission and acceleration.
+* `loom-c++`: C++-mode compiler driver.
+
+They orchestrate Loom through the same in-process libraries used by developer
+tools. A public driver must not shell out to stage binaries or reimplement a
+stage pipeline, schema, verifier, or default.
 
 The driver must preserve ordinary compiler behavior for commonly used
 queries such as version reporting, target reporting, resource paths,
 search paths, preprocessing, and dependency generation.
 
-Loom-specific flags should be explicit. Baseline option classes are:
+The stable Loom-specific options already owned by the full-stack contract are:
 
-* emit intermediate artifacts;
-* select acceleration policy;
-* select hardware or ADG profile;
-* select mapping policy;
-* select simulator or estimation policy;
-* select artifact output directory;
-* select the required execution disposition;
-* control diagnostic verbosity.
+```text
+--loom-accel-profile=<builtin-preset-or-config-path>
+--loom-hardware=<fabric.mlir>
+--loom-viz-export=<directory>
+--loom-deploy-output=<path>
+```
 
-The exact spelling of options may evolve, but the option classes above
-must remain separable. Artifact emission must be possible without
-requiring hardware mapping. Acceleration must be possible without
-exposing all intermediate artifacts to the user.
+The profile is the only public semantic policy selector. The external Fabric,
+visualization, and Deployment paths are invocation bindings. Hardware import
+finalizes the exact Fabric Artifact that becomes the semantic target. Mapping
+constraints, Evaluation requests, and focused artifact inputs remain typed
+shared-library or developer-tool interfaces until a public driver contract
+explicitly assigns their spelling. Components must not independently expose ad
+hoc public flags for them.
 
 ## Compatibility Mode
 
@@ -108,26 +113,13 @@ missing.
 Compatibility mode is allowed to use the embedded clang provider
 described in `docs/spec-compiler-part-1-source.md`.
 
-## Artifact Mode
+## Artifact Access
 
-Artifact mode emits Loom compiler artifacts while preserving the
-ordinary output requested by the build when possible.
-
-Artifact classes include:
-
-* LLVM IR plus Loom metadata;
-* raised SCF-shaped MLIR;
-* dataflow IR;
-* mapping artifacts;
-* DFG-sim reports;
-* CGRA-sim reports;
-* simulation comparison reports;
-* RTL manifests;
-* FPA reports.
-
-Artifact mode must write artifacts to an explicit output location or to
-a deterministic side-output location. It must not overwrite ordinary
-compiler outputs unexpectedly.
+Intermediate artifacts are available through shared library APIs, developer
+tools, and `--loom-viz-export` projections. This does not create a separate
+public Artifact Mode, implicit side-output directory, or parallel artifact
+schema. Ordinary compiler output is never replaced or overwritten by an
+intermediate projection.
 
 ## Acceleration Mode
 
@@ -150,8 +142,9 @@ SpatialCore work either remains under HostCore or InstructionCore ownership in
 a different Structured Program Candidate, or the requested acceleration
 fails. This is a compile-time candidate decision, not a runtime fallback from
 an invalid Mapping. Report-only analysis may emit diagnostics and Evaluation
-requests without changing ordinary compiler output. Exact CLI policy spelling
-remains open.
+requests without changing ordinary compiler output. The exact flow is selected
+by the resolved acceleration profile; no component adds a second public policy
+flag.
 
 ## CMSIS Source Policy
 
@@ -211,6 +204,23 @@ runtime support for:
 * simulator or profiling hooks.
 
 The target runtime ABI is specified in `docs/spec-runtime-abi.md`.
+Configuration images, Deployment closure, and package publication are owned by
+`docs/spec-configuration-deployment.md`.
+
+Drop-in acceleration requires ordinary separate compilation:
+
+```text
+source -> object with frontend-owned relocatable accelerator payload
+       -> final link -> unified LLVM boundary -> Loom flow -> Deployment
+```
+
+Compile-only output remains an ordinary object. Its accelerator payload must
+not contain Fabric, Mapping, ConfigurationABI, or HardwareConfigurationImage
+artifacts. Objects without such a payload remain legal InstructionCore or
+external-code inputs. The payload's wire schema, symbol resolution,
+config-view compatibility, and object embedding are a compiler-frontend
+contract that must be closed before complete separate-compilation support can
+be claimed; this document does not invent that encoding.
 
 Runtime requirements must be explicit. If an invocation requests an
 accelerated binary but the required runtime is unavailable, the driver
@@ -231,32 +241,25 @@ Diagnostics must distinguish:
 * unsupported LLVM-to-SCF raising;
 * unsupported dataflow lowering;
 * unmappable accelerator regions;
-* simulator or report generation failures;
+* simulator or Evaluation/projection generation failures;
 * runtime or linking failures.
 
 Diagnostics should preserve source locations when available and should
 identify the relevant pipeline component.
 
-Unsupported-scope diagnostics must satisfy the Unsupported Scope Policy
-in `docs/spec-loom-stack.md`. CMSIS-specific diagnostics may add
-source-tree, target-triple, intrinsic, or source-row details.
+Unsupported work must use the typed unsupported or incomplete boundaries in
+`docs/spec-loom-stack.md` and the Evaluation outcome contract in
+`docs/spec-dse-feedback.md` when Evaluation has been requested. Diagnostics
+are projections of those typed facts and compiler-owned failure facts.
+CMSIS-specific projections may add source-tree, target-triple, intrinsic, or
+source-row details without becoming a second outcome authority.
 
-## Reports
+## Artifacts And Projections
 
-When artifact or acceleration mode is enabled, reports should identify:
-
-* input source and target identity;
-* ordinary compiler command identity;
-* selected target triple and CPU;
-* emitted artifact paths or ids;
-* selected acceleration policy;
-* selected hardware or ADG profile;
-* selected execution disposition;
-* DFG-sim, CGRA-sim, comparison, and FPA report identities when
-  present;
-* diagnostics.
-
-Reports must not mutate source trees or vendored CMSIS inputs.
+`docs/spec-dse-feedback.md` section `Invocation and Recovery Records` is
+the sole owner of InvocationManifest and ExecutionJournal fields. CMSIS
+projections reference those records and exact artifacts; they do not repeat
+the schema, mutate source trees or vendored inputs, or become DSE inputs.
 
 ## Canonical Source Inventory
 
@@ -291,6 +294,12 @@ Core CMSIS regression coverage requires:
 * ordinary compiler compatibility and acceleration-specific behavior are
   tested at their owning driver and pipeline boundaries.
 
+A complete-suite invocation attempts every requested translation unit through
+the public driver and records an honest typed outcome for each one. Every unit
+must satisfy ordinary drop-in compilation when its underlying compiler target
+is supported. Only regions selected by the exact acceleration profile are
+required to publish an optimized Canonical Dataflow Program.
+
 Smoke targets are deliberately replaceable as compiler coverage changes.
 Expanding coverage toward the complete inventory does not require a parallel
 status ledger or one wrapper test per source file. Inventory enumeration alone
@@ -303,6 +312,6 @@ The CMSIS drop-in compiler spec is not a replacement for the dataflow,
 fabric, PnR, simulator, RTL, or FPA specs. It composes those contracts
 into a source-facing product flow.
 
-The CMSIS target does not limit Loom to CMSIS forever. It is the first
-product-quality C/C++ target because it stresses embedded compiler
-compatibility and practical accelerator mapping.
+The CMSIS target does not limit Loom to CMSIS. It exercises embedded compiler
+compatibility and practical accelerator mapping through ordinary C/C++ source
+interfaces.

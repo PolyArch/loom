@@ -103,7 +103,7 @@
                 <mxCell id="fb-switch-hw" value="hw_params : connectivity_table&lt;div style=&quot;font-size:9px&quot;&gt;LxK bit-string, MSB-left ; route_table_size [temporal only]&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
                     <mxGeometry x="95" y="865" width="315" height="35" as="geometry"/>
                 </mxCell>
-                <mxCell id="fb-switch-sw" value="sw_configs : route_table + switch_enable&lt;div style=&quot;font-size:9px&quot;&gt;all-or-nothing ; &lt;= 1 source per output&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                <mxCell id="fb-switch-sw" value="configuration : Disabled | Active { route_table }&lt;div style=&quot;font-size:9px&quot;&gt;all-or-nothing ; &lt;= 1 source per output&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
                     <mxGeometry x="95" y="905" width="315" height="35" as="geometry"/>
                 </mxCell>
                 <mxCell id="fb-mem-frame" value="fabric.mem  (memory leaf)" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
@@ -143,7 +143,7 @@
                 <mxCell id="df-host-strip" value="HostCore scope" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="40" y="60" width="770" height="80" as="geometry"/>
                 </mxCell>
-                <mxCell id="df-host-mapinfo" value="dataflow.map_info&lt;div style=&quot;font-size:9px&quot;&gt;host/thread data boundary&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                <mxCell id="df-host-mapinfo" value="ordinary launch operands&lt;div style=&quot;font-size:9px&quot;&gt;values, memories, dynamic lower/step&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="60" y="90" width="240" height="40" as="geometry"/>
                 </mxCell>
                 <mxCell id="df-host-launch" value="dataflow.thread.launch&lt;div style=&quot;font-size:9px&quot;&gt;async launch of @sym, callee resolves to a dataflow.thread def&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#dae8fc;" parent="1" vertex="1">
@@ -151,9 +151,6 @@
                 </mxCell>
                 <mxCell id="df-host-wait" value="dataflow.thread.wait&lt;div style=&quot;font-size:9px&quot;&gt;synchronize back to host&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="550" y="90" width="240" height="40" as="geometry"/>
-                </mxCell>
-                <mxCell id="df-host-partition-layout" value="dataflow.partition_layout&lt;div style=&quot;font-size:9px&quot;&gt;memref tile-and-domain attribute&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
-                    <mxGeometry x="60" y="90" width="240" height="40" as="geometry"/>
                 </mxCell>
                 <mxCell id="df-thread-outer" value="dataflow.thread @sym (definition)&lt;div&gt;dataflow.thread.yield&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;Symbol-bearing, function-like, module-scope; launched by dataflow.thread.launch&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;" parent="1" vertex="1">
                     <mxGeometry x="40" y="170" width="770" height="730" as="geometry"/>
@@ -164,7 +161,7 @@
                 <mxCell id="df-thread-ctrl" value="thread_ctrl : none&lt;div style=&quot;font-size:9px&quot;&gt;launch-supplied AccCore start signal&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
                     <mxGeometry x="305" y="215" width="240" height="40" as="geometry"/>
                 </mxCell>
-                <mxCell id="df-thread-grid-args" value="iv args : index&lt;div style=&quot;font-size:9px&quot;&gt;one per mapping entry, after thread_ctrl&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                <mxCell id="df-thread-grid-args" value="logical coordinates : index&lt;div style=&quot;font-size:9px&quot;&gt;one per rank, trailing after thread_ctrl&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
                     <mxGeometry x="560" y="215" width="230" height="40" as="geometry"/>
                 </mxCell>
                 <mxCell id="df-instructioncore-region" value="InstructionCore region (thread body, outside graph)" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
@@ -173,13 +170,13 @@
                 <mxCell id="df-scf-call" value="scf.* control flow&lt;div style=&quot;font-size:9px&quot;&gt;structured InstructionCore code&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="80" y="310" width="220" height="50" as="geometry"/>
                 </mxCell>
-                <mxCell id="df-thread-fence" value="dataflow.thread.fence&lt;div style=&quot;font-size:9px&quot;&gt;InstructionCore-side bridge&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#fff2cc;" parent="1" vertex="1">
+                <mxCell id="df-graph-wait" value="dataflow.graph.wait&lt;div style=&quot;font-size:9px&quot;&gt;explicit stored-program retirement wait&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#fff2cc;" parent="1" vertex="1">
                     <mxGeometry x="315" y="310" width="220" height="50" as="geometry"/>
                 </mxCell>
-                <mxCell id="df-partitioned-data-queries" value="partitioned-data queries&lt;div style=&quot;font-size:9px&quot;&gt;local_range / thread_coord / thread_linear_id&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                <mxCell id="df-partitioned-data-queries" value="source IV reconstruction&lt;div style=&quot;font-size:9px&quot;&gt;lower + coordinate * step&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="550" y="310" width="220" height="50" as="geometry"/>
                 </mxCell>
-                <mxCell id="df-graph-launch" value="dataflow.graph.launch @sym&lt;div style=&quot;font-size:9px&quot;&gt;sync launch of graph callable; supplies per-launch ctrl_in, receives done_out&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#dae8fc;" parent="1" vertex="1">
+                <mxCell id="df-graph-launch" value="dataflow.graph.launch @sym&lt;div style=&quot;font-size:9px&quot;&gt;async launch of graph callable; supplies per-launch ctrl_in, receives done_out&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#dae8fc;" parent="1" vertex="1">
                     <mxGeometry x="60" y="380" width="730" height="40" as="geometry"/>
                 </mxCell>
                 <mxCell id="df-graph-outer" value="dataflow.graph @sym (definition, module-scope sibling of thread def)&lt;div&gt;dataflow.graph.return&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;SpatialCore leaf DFG; Symbol-bearing, function-like, IsolatedFromAbove; start and launch done are protocol endpoints outside the payload-only function_type&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;" parent="1" vertex="1">
@@ -258,15 +255,7 @@
                         </Array>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="df-fence-edge" style="endArrow=classic;html=1;dashed=1;edgeStyle=orthogonalEdgeStyle;curved=0;exitX=0;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="df-thread-fence" target="df-graph-ctrl-in" edge="1">
-                    <mxGeometry relative="1" as="geometry">
-                        <Array as="points">
-                            <mxPoint x="315" y="420"/>
-                            <mxPoint x="190" y="420"/>
-                        </Array>
-                    </mxGeometry>
-                </mxCell>
-                <mxCell id="df-done-edge" style="endArrow=classic;html=1;dashed=1;edgeStyle=orthogonalEdgeStyle;curved=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" parent="1" source="df-graph-done-out" target="df-thread-fence" edge="1">
+                <mxCell id="df-done-edge" style="endArrow=classic;html=1;dashed=1;edgeStyle=orthogonalEdgeStyle;curved=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" parent="1" source="df-graph-done-out" target="df-graph-wait" edge="1">
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
                             <mxPoint x="800" y="510"/>
@@ -275,7 +264,7 @@
                         </Array>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="df-legend" value="legend&lt;div style=&quot;font-size:9px&quot;&gt;outer rectangles = ops with regions (thread, graph)&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;light-grey cells = explicit none / token control ports&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;yellow cell = InstructionCore-side bridge (thread.fence)&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;dashed arrows = none / thread_token control flow&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                <mxCell id="df-legend" value="legend&lt;div style=&quot;font-size:9px&quot;&gt;outer rectangles = ops with regions (thread, graph)&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;light-grey cells = explicit none / token control ports&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;yellow cell = explicit InstructionCore graph-retirement wait&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;dashed arrows = none / thread_token control flow&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="40" y="930" width="770" height="90" as="geometry"/>
                 </mxCell>
             </root>

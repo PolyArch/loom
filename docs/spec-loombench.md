@@ -1,102 +1,154 @@
 # LoomBench
 
-This document specifies `loombench`, Loom's repository-owned benchmark
-suite under `test/app`. `test/app/manifest.json` is the authoritative
-membership inventory. Counts are derived from that manifest rather than
-maintained as specification constants.
+This document owns Loom's repository-maintained high-level-language benchmark
+suite under `test/app`. `test/app/manifest.json` is the single membership
+authority. Directory enumeration, fixed counts in documentation, runner lists,
+and generated status files are not alternate inventories.
 
 ## Purpose
 
-`loombench` answers this question:
+LoomBench tests two related product contracts:
+
+* `loom-cc` and `loom-c++` can replace ordinary C and C++ compiler drivers for
+  self-contained programs; and
+* selected cases can enter Loom's compiler, Mapping, simulation, hardware, and
+  Evaluation flows without gaining benchmark-specific semantics.
+
+CMSIS-DSP and CMSIS-NN are the other two canonical source suites. Their
+external-source-tree contract is owned by `spec-cmsis-dropin-compiler.md`.
+LoomBench owns only repository cases; it does not duplicate CMSIS membership.
+
+## Membership And Identity
+
+The manifest schema is version `2.0`. Each case has one stable `case` name and
+records its source files, language mode, compiler and link flags, expected
+executables, deterministic oracle, selected compiler tiers, and nonempty
+feature tags.
+
+The accepted compiler tiers are:
 
 ```text
-Can Loom evaluate architecture-aware compiler, mapping, simulation,
-RTL/FPA, and DSE behavior on a stable benchmark family that is owned by
-the project and independent of external CMSIS source trees?
+run
+raise
+dfg
 ```
 
-`loombench` includes the self-contained drop-in corpus described in
-`docs/spec-app-dropin-test-corpus.md`. CMSIS-DSP and CMSIS-NN are the
-other two canonical suites. CMSIS tests
-validate compatibility with public external APIs and source-tree
-conventions. `loombench` can use Loom-owned harnesses, metadata, and
-taxonomy tags as long as the benchmark semantics remain stable.
+`run` requires native and Loom drop-in build and execution. `raise` requires a
+valid raised MLIR artifact. `dfg` requires a finalized canonical Dataflow
+artifact. Selecting a tier asserts success; an unsupported diagnostic is a
+failure for that selected tier, not a passing fixture.
 
-## Target Universe
+Every emitted source-suite identity is exactly one of `loombench`,
+`cmsis-dsp`, or `cmsis-nn`. A repository case emits `suite=loombench` and its
+manifest case name. The pair is unique. Counts are always derived from the
+manifest or pinned external source tree and never become specification
+constants.
 
-The `loombench` target universe includes:
+## Case Contract
 
-* Loom-owned kernels that cover graph, memory, control,
-  streaming, spatial, temporal, or heterogeneous-system behaviors;
-* benchmark metadata that maps every case into the unified workload
-  taxonomy used by LoomBench, CMSIS, reports, and DSE;
-* deterministic inputs and reference-oracle behavior;
-* validation tiers from native or drop-in compile/run through RTL/FPA
-  evidence;
-* feature tags for graph shape, memory behavior, data type, control
-  behavior, expected accelerator pressure, and required hardware
-  capabilities.
+Each LoomBench case is a standalone source package under `test/app/<case>/`.
+It provides:
 
-Manifest tiers select the cases exercised by a compiler or hardware path.
-A case that is not selected for a downstream tier remains part of the
-canonical inventory and must not be reported as having passed that tier.
+* all sources required to build the case;
+* a deterministic entry point and input;
+* a reference or expected-output oracle that fails on mismatch; and
+* the metadata referenced by its manifest row.
 
-## Required Evidence
+A case cannot depend on Loom libraries, private machine paths, network access,
+wall-clock time, random devices, host-specific files, or mutable state outside
+its case directory. Reference and candidate function naming is a harness
+convention only and does not define compiler, Dataflow, or Mapping semantics.
 
-Each `loombench` case must provide:
+Generated build products are not committed unless one small stable golden
+artifact is necessary to test a semantic contract. Formatting or harness
+changes cannot weaken the output oracle.
 
-* stable benchmark identity;
-* source identity;
-* deterministic input data;
-* reference-oracle identity;
-* workload taxonomy tags;
-* tier support declarations;
+## Drop-In Execution
 
-When a simulator, mapping, RTL, or DSE tier is run, its report must identify
-the selected workload, hardware candidate, runtime input, and metric
-provenance relevant to that tier.
+For every `run` case, ordinary `gcc` or `g++` first builds and executes the
+program with the manifest flags. The same source and flags then run through
+`loom-cc` or `loom-c++`. Both executions must satisfy the same observable
+oracle.
 
-## Objective Verification
+Compatibility mode cannot fail merely because acceleration is unavailable.
+Loom-specific artifact generation and acceleration remain explicit options.
+When requested acceleration is unsupported, the selected Structured Program
+Candidate keeps the work on an InstructionCore or compilation returns a typed
+failure; runtime cannot silently fall back from an invalid Mapping.
 
-The target is verifiable when:
+## Compiler Artifacts
 
-* a manifest or equivalent structured index can enumerate every
-  `loombench` case;
-* each case has deterministic inputs and reference-oracle behavior;
-* all cases compile and run with both the baseline compiler and Loom's
-  drop-in drivers;
-* representative source-to-IR and hardware-aware paths fail on missing or
-  invalid artifacts rather than passing an empty run;
-* every passing simulator row includes functional output and memory-diff
-  evidence when the selected tier requires it;
-* DSE report bundles aggregate `loombench` cases without changing their
-  suite identity.
+Selected `raise` and `dfg` cases exercise the real driver and in-process
+compiler libraries:
 
-`test/corpus_inventory.py` is the shared structured inventory view. It must
-reuse manifest validation, emit deterministic case and source identities, and
-support complete-suite or explicit-case selection without creating another
-membership authority.
+```text
+source
+  -> LLVM IR
+  -> initial Structured Program Candidate S0
+  -> selected Structured Program Candidate Sn
+  -> initial Canonical Dataflow Program D0
+  -> selected Canonical Dataflow Program D*
+```
 
-## Unsupported Scope Policy
+Artifacts must parse, verify, and retain the case and source identities needed
+for exact lineage. A `dfg` case cannot pass with residual imperative control,
+an empty graph, or an unsupported-scope placeholder.
 
-Diagnostics emitted for an attempted unsupported `loombench` tier must
-satisfy the Unsupported Scope Policy in `docs/spec-loom-stack.md`.
-Unselected tiers do not require parallel status records.
+The representative ten-kernel frontend anchor set is owned by
+`spec-end-to-end-demonstrators.md`. Each anchor must resolve to a LoomBench
+manifest member before the complete frontend gate can pass; the anchor list is
+not a second inventory.
 
-## Relationships To Other Contracts
+## Downstream Evaluation
 
-`loombench` follows the global workload/evidence policy and
-unsupported-scope policy in `docs/spec-loom-stack.md`. Current mapping
-and simulation artifact formats are described in
-`docs/spec-intermediate-artifacts.md`.
+PnR, DFG-sim, CGRA-sim, RTL execution, and EDA evaluation use ordinary exact
+Artifacts, Evaluation Requests, and resolved policies. They do not require a
+parallel LoomBench tier schema or one status record per case.
 
-Compiler behavior still follows the source, raise, and dataflow specs.
-Hardware behavior still follows the Fabric specs. `loombench` does not
-create benchmark-specific compiler or hardware semantics.
+When such work is requested:
 
-## Canonical Identity
+* Mapping follows `spec-mapping-artifact.md` and `spec-pnr.md`;
+* DFG and CGRA execution follow `spec-sim-dfg.md` and
+  `spec-sim-cgra.md`;
+* normalized results follow `spec-dse-feedback.md` and
+  `spec-evaluation-metrics.md`; and
+* human-readable output remains a removable projection under
+  `spec-intermediate-artifacts.md`.
 
-All status and report producers emit exactly one of these source-suite
-identities: `loombench`, `cmsis-dsp`, or `cmsis-nn`. A `test/app` case
-emits `suite=loombench` directly. Every emitted `(suite, case)` pair must
-be unique.
+An unselected downstream evaluation makes no pass claim. A selected evaluation
+must produce its real owner artifacts or a typed honest outcome; inventory
+membership, wrapper execution, or generated filenames cannot substitute for
+evidence.
+
+## Inventory Tooling
+
+`test/corpus_inventory.py` is the shared derived inventory view. It validates
+the LoomBench manifest and pinned CMSIS source inventories, preserves case and
+source identities, and supports complete-suite or explicit-case selection. It
+does not maintain its own membership list.
+
+Runners discover cases from that structured view. Empty selections, duplicate
+case/source identities, missing sources, malformed manifest records, stale
+oracles, and missing requested artifacts fail explicitly. Output directories
+are deterministic for a resolved invocation but are not semantic identities.
+
+## Breadth
+
+Feature tags cover the semantic breadth needed for compiler and architecture
+work, including dense and sparse numeric kernels, graph and irregular access,
+reductions and scans, stencils, signal processing, bit operations, control,
+streaming, vector behavior, and neural-network kernels.
+
+A smoke selection is an execution choice and never a smaller canonical suite.
+SPEC CPU 2026 is a separate external conformance corpus and does not alter
+LoomBench or CMSIS membership.
+
+## Anchor Tests
+
+Stable tests cover manifest validity and uniqueness, deterministic inventory
+derivation, native/drop-in oracle agreement, selected raise/DFG artifact
+validity, rejection of empty work, and honest downstream evidence coupling.
+
+The suite must not create one wrapper or golden IR file per transformation,
+snapshot diagnostic text, duplicate membership counts, or preserve runner
+implementation shape.

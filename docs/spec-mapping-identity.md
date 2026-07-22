@@ -1,231 +1,276 @@
-# Mapping Identity and References
+# Mapping Identity And References
 
-This document specifies finalized content identity and persistent
-references for Mapping Artifacts and their Canonical Dataflow Program and
-Fabric Hardware Description inputs.
+This document is the identity and reference authority for persistent Mapping
+artifacts. `docs/spec-mapping-artifact.md` owns profile records and root
+assembly. `docs/spec-full-stack-traceability.md` owns the repository-wide
+Common artifact identity contract.
 
-Persistent entity references use finalized artifact identity and typed
-artifact-local entity identity. Objects mechanically identified by typed
-structural keys use the same artifact identity without receiving redundant
-entities. Symbol spelling, paths, printer order, builder insertion order,
-filesystem location, and source location are not reference authority.
+Persistent references use exact finalized artifact identity plus typed local
+identity or a closed structural key. Symbols, paths, coordinates, printer
+order, builder insertion order, filesystem location, and source location are
+never reference authority.
 
-## Identity Model
+## Common Artifact Identity
 
-Each Canonical Dataflow Program, Fabric Hardware Description, and Mapping
-Artifact is finalized independently. A finalized artifact has:
+Every finalized Mapping artifact uses the fixed Common ArtifactIdentity
+SHA-256 v1 contract. Common owns the domain tag, unambiguous binary framing,
+SHA-256 algorithm, 32-byte output width, and 64-character lowercase
+hexadecimal external spelling. None is configurable or profile-dependent.
 
-* one schema identity and version in `X.Y` form;
-* one required content-derived artifact identity;
-* one artifact-global namespace of local `EntityId` values; and
-* immutable canonical semantic content.
+The Mapping schema family owns only its schema descriptor and canonical
+semantic bytes. Those inputs include every semantic upstream binding and are
+passed unchanged to the Common finalizer. Common does not parse Mapping MLIR,
+complete defaults, reorder records, or reinterpret profile content.
 
-`X` denotes a breaking or incompatible schema change. `Y` denotes a
-non-breaking schema improvement. Schema identity and version participate
-in artifact identity.
+`ArtifactIdentity` always contains one valid finalized SHA-256 v1 identity.
+It has no empty, unbound, invalid, or pending sentinel value. Optionality
+belongs to the surrounding typed schema or builder state. An all-zero digest,
+if produced by SHA-256, remains an ordinary valid identity and cannot be
+reserved for absence.
 
-The conceptual persistent reference form is:
+The artifact's own identity is not part of its semantic content. The
+`InvocationManifest` owns derivation lineage and invocation-level provenance;
+owner-specific attempt records own timestamp, host, tool location, retry, and
+execution-limit outcomes. Reports are removable projections, and
+`EvaluationEvidence` owns only normalized observations and exact references.
+None of these facts enters Mapping identity.
+
+Publication and validated reads follow the Common store contract. Identical
+full preimages deduplicate. A different preimage under the same digest is a
+hard identity collision, and malformed content or a key mismatch is store
+corruption. Neither case permits overwrite, reconciliation, or heuristic
+selection.
+
+## UpstreamArtifactBinding
+
+Each Mapping profile root declares every required exact upstream artifact
+identity once as a typed `UpstreamArtifactBinding`. A binding consists of a
+closed binding kind and one exact `ArtifactIdentity`. The root schemas in
+`docs/spec-mapping-artifact.md` own which bindings exist and their fixed
+order.
+
+An internal reference to an upstream entity has the compact scoped wire form:
 
 ```text
-PersistentEntityRef<T> = finalized artifact identity + typed local EntityId<T>
+(UpstreamArtifactBinding kind,
+ closed entity kind,
+ typed artifact-local EntityId<T>)
 ```
 
-The reference field's schema constrains `T`. A generic subject reference
-also requires a closed entity-kind tag. Arbitrary kind strings and owner
-paths are not ordinary persistent references.
-
-## Finalization
-
-Mutable compiler construction, Dataflow canonicalization, Fabric
-elaboration, and Mapping construction complete before persistent identity
-is assigned.
-
-Finalization follows one conceptual sequence:
+Its complete meaning is always:
 
 ```text
-typed semantic relations without local IDs
-  -> exact semantic-graph canonical labeling
-  -> canonical slots
-  -> artifact-global EntityId assignment
-  -> canonical semantic serialization
-  -> collision-checked artifact digest
-  -> immutable artifact
+ArtifactReference<T> =
+  (root-declared exact upstream ArtifactIdentity,
+   typed artifact-local EntityId<T>)
 ```
 
-This gives local IDs, serialization, and artifact identity one semantic
-source. Persistent IDs must not derive from mutable addresses, symbol
-order, printer order, traversal order, or insertion order.
+The binding kind selects exactly one root declaration. It is not a weak
+reference, compatibility class, lookup hint, or rebinding permission.
+Changing a root binding changes the full meaning of every scoped reference
+through that binding and therefore changes Mapping semantic content and
+identity.
 
-If the artifact-local namespace cannot be represented without loss,
-finalization fails. It must not truncate IDs or emit a partially finalized
-artifact.
+References to upstream structural objects carry the same binding scope plus
+the closed typed owner reference and semantic ordinals that form the
+structural key. They do not promote the subordinate object to an entity or
+repeat the upstream digest at each use.
 
-## Artifact Identity
+Binding kinds, entity kinds, directions, roles, and structural-key variants
+are closed schema enums. Free-form strings, symbols, paths, generic subject
+bags, and string-key escape hatches are invalid. `UpstreamArtifactBinding`
+must not be abbreviated as `slot`; a Fabric instruction slot is an unrelated
+hardware term.
 
-Mapping uses the repository-wide fixed `ArtifactIdentity` contract defined
-by the Artifact Identity section of
-`docs/spec-full-stack-traceability.md`. Mapping artifact families provide
-their typed schema descriptors and canonical semantic bytes to that Common
-finalizer; this specification does not define another preimage, digest, or
-external spelling.
+## Mapping-Local References
 
-Canonical semantic serialization includes every typed upstream artifact
-reference that is part of the artifact's semantics. A TechMapping artifact
-therefore includes its exact Canonical Dataflow Program and Fabric Hardware
-Description references. A SpatialMapping includes its exact immutable
-TechMapping predecessor reference. SystemMapping includes its exact immutable
-predecessor references once its cardinality schema is closed.
+An independently referenceable record owned by a Mapping artifact receives a
+typed local reference in that artifact's single global `EntityId` namespace.
+A persistent reference from another artifact has the exact Mapping
+`ArtifactIdentity` plus that typed local `EntityId`.
 
-Producer names, timestamps, host paths, search seeds, invocation order,
-debug names, source locations, viewer layout, and provenance do not change
-content identity unless their semantic projection is explicitly part of
-the artifact content. Derivation lineage and execution settings belong to
-manifests or Evaluation Evidence.
+A reference within the same Mapping root may encode only the typed local
+`EntityId` because the containing artifact identity and target kind are
+already fixed by context. It cannot copy the entity into another profile's
+namespace or use a local ID without the owning artifact context.
 
-Optional symbols or compatibility labels cannot substitute for required
-artifact identity. A mismatch is an identity failure, not permission to
-reinterpret or heuristically rebind a reference.
+SystemMapping Spatial imports are artifact references, not entity references.
+Each import table entry is a typed SpatialMapping `UpstreamArtifactBinding`
+with one exact immutable SpatialMapping identity. After canonical sorting by
+complete identity, a `SpatialMappingImportRef` uses the resulting table
+ordinal as a compact root-local alias. That ordinal is not an `EntityId`, has
+no meaning outside the root, and cannot participate in selection semantics or
+canonical relation ordering. Its complete semantic target is the imported
+ArtifactIdentity.
 
-## Artifact-Global EntityId Namespace
+ServicePlan ordinals and owner-child ordinals follow the same rule: they are
+assigned after canonical ordering within a known owner and do not create
+independent identity.
 
-Every independently referenceable semantic object owned by a finalized
-artifact receives one artifact-local `EntityId`. All entity kinds in that
-artifact share one global local-ID namespace. Graphs, modules, record
-families, and entity kinds do not create nested numeric namespaces.
+## EntityId Namespace
 
-Persistent `EntityId` has one unsigned 64-bit semantic range. Native
-consumers may derive narrower or differently arranged dense indices, but
-those indices are not persistent identities.
+Each finalized Canonical Dataflow Program, Fabric Hardware Description, and
+Mapping artifact has its own artifact-global local entity namespace. All
+entity kinds within one artifact share that namespace. Graphs, modules,
+record families, and entity kinds do not create nested numeric namespaces.
 
-The confirmed structural core applies this rule to the graph, actor, FU,
-`fabric.op`, Fabric encoding, and Compute Realization entities required by
-TechMapping structural validation. This list does not classify every
-possible Dataflow or Fabric object.
+Persistent `EntityId` has one unsigned 64-bit semantic range. Namespace
+exhaustion is a finalization failure before identity generation. It cannot be
+handled by truncation, wrapping, partial publication, or dependence on the
+native PnR index width.
 
-Human-readable labels may exist as metadata, but record identity is an
-`EntityId`, not a string such as `family/symbol/path`.
+The closed Mapping profile classifications are:
+
+| Profile | Mapping records with `EntityId` | Records located structurally |
+|---------|---------------------------------|------------------------------|
+| TechMapping | `ComputeRealization`, `MemoryRealization` | All role-specific child relations |
+| SpatialMapping | `MemoryBinding` | `ComputeBinding`, `MemoryEngineBinding`, `RouteTree`, `ResourceUse`, and owner children |
+| SystemMapping | None | `ExecutionBinding`, `ServiceRealization`, `ResourceUse`, and owner children |
+
+The SystemMapping namespace may therefore be empty. Diagnostics, viewers,
+printers, and native arrays must use the confirmed typed structural keys or
+local dense indices; convenience is not grounds for allocating another
+persistent entity.
 
 ## Typed Structural Keys
 
-An object uniquely and mechanically derived from one identified owner uses
-a typed structural key instead of receiving a redundant `EntityId`.
-
-Confirmed forms include:
+A subordinate object that is uniquely and mechanically recoverable from an
+identified owner uses a typed structural key instead of a redundant
+`EntityId`. Confirmed forms include:
 
 ```text
-actor result   = actor EntityId + result index
-actor operand  = actor EntityId + operand index
-graph boundary = graph EntityId + boundary kind + port index
-FU port        = FU EntityId + direction + port index
-software edge  = typed producer endpoint + typed consumer endpoint
+actor result       = actor EntityId + result ordinal
+actor operand      = actor EntityId + operand ordinal
+graph boundary     = graph EntityId + boundary kind + port ordinal
+FU port            = FU EntityId + direction + port ordinal
+software edge      = typed producer endpoint + typed consumer endpoint
+point connection   = source hardware endpoint + destination hardware endpoint
+switch traversal   = switch occurrence EntityId + input ordinal + output ordinal
+InstructionContextRef = Fabric PE occurrence ref + context ordinal
+InstructionCoreContextRef = AccCore occurrence ref + fixed ordinal zero
+ServicePlanElementRef = ServiceRealizationKey
+                      + canonical plan ordinal
+                      + typed element key
 ```
 
-If an owner plus typed structural key cannot distinguish semantic parallel
-objects, those objects require independent entities. Printer position,
-user spelling, and consumer-local array index are not valid
-disambiguators.
+A point-connection key is valid only when the fully elaborated Fabric has one
+unique directed connection between those endpoints. A switch-traversal key
+denotes the traversal mechanically derived from the switch connectivity table;
+it is not a point connection, route configuration, capacity resource, or
+dynamic token occurrence.
 
-## Cross-Artifact References
+If parallel objects have independent capacity, configuration, state, or
+physical role and owner plus typed ordinals cannot distinguish them, the
+upstream schema must model them as independent entities. A suffix, edge
+number, printer position, or freeze enumeration index cannot disambiguate
+them.
 
-A Mapping software-entity reference consists of the exact Canonical Dataflow
-Program identity and a typed `EntityId` from that artifact. An artifact-
-qualified software-edge reference instead contains that exact artifact
-identity and the typed producer/consumer endpoint pair. A Mapping hardware
-reference consists of the exact Fabric Hardware Description identity and a
-typed `EntityId` from that artifact.
+The Mapping profiles also use these confirmed structural owners:
 
-References to records owned by one TechMapping artifact use that artifact's
-local namespace. A SpatialMapping references its TechMapping predecessor
-by exact artifact identity and addresses predecessor entities through that
-identity. It does not copy predecessor IDs into its own namespace as newly
-owned facts.
+* a ComputeBinding is keyed by its exact ComputeRealization reference;
+* a MemoryEngineBinding is keyed by its exact MemoryRealization reference;
+* a RouteTree is keyed by its `SpatialLogicalNetKey`;
+* a ResourceUse is keyed by its complete typed owner, use site, activation,
+  parameter, and sharing-assignment tuple;
+* a ThreadExecutionBinding is keyed by `RootThreadLaunchRef`;
+* a GraphExecutionBinding is keyed by its parent thread-binding key and
+  `StaticGraphLaunchRef`; and
+* a ServiceRealization is keyed by `SystemServiceObligationKey`;
+* an InstructionCore context is derived from the selected AccCore and fixed
+  ordinal zero; and
+* a ServicePlan element is identified by the exact
+  `ServicePlanElementRef` above and does not receive an EntityId.
 
-An FU implementation reference resolves inside the exact Fabric Hardware
-Description named by the TechMapping artifact. An implementation content
-digest may be used for deduplication or a pure cache key, but it is not a
-persistent cross-Fabric reference and does not permit rebinding.
+An `EventFamilyKey` is also a typed structural key: it combines an existing
+static semantic event reference with a projection of Dataflow-owned logical
+coordinates and launch parameters. It is not an entity or dynamic occurrence
+identity. Runtime may add a transient occurrence handle, but that handle
+never enters Mapping identity or persistent references.
 
-## Canonical Labeling Boundary
+## Canonical Labeling
 
-Canonical labeling considers only semantic facts, including entity and
-operation kinds, typed ports and ordinals, semantic attributes, directed
-typed edges, containment and instance relations, state, capability, and
-artifact boundary interfaces.
+Finalization constructs an exact semantic graph before assigning Mapping
+`EntityId` values. Canonical labeling uses only semantic facts, including
+entity and operation kinds, typed ports and ordinals, semantic attributes,
+directed typed relations, containment, selected capability, state, and
+artifact boundaries.
 
 It excludes symbol spelling, source and filesystem locations, debug and
-provenance metadata, visual coordinates, printer order, and builder
-insertion order. If an order or label changes software or hardware
-behavior, that fact must first be represented as an explicit semantic
-relation.
+provenance metadata, visual coordinates, printer order, and builder insertion
+order. If an order or label changes behavior, that distinction must first be
+represented by an explicit semantic relation.
 
-The equivalence boundary is exact typed and attributed graph isomorphism.
-Canonical labeling does not prove algebraic equivalence, optimized-circuit
-equivalence, or functional equivalence between distinct
-microarchitectures. The particular canonical-labeling algorithm is not
-part of the persistent schema.
+The equivalence boundary is exact typed and attributed graph isomorphism. It
+does not prove algebraic equivalence, optimized-circuit equivalence, or
+functional equivalence between distinct microarchitectures. The particular
+canonical-labeling algorithm is not part of the persistent schema.
 
 Entities in one graph-automorphism orbit have no recoverable non-semantic
-identity such as an original builder handle or an implicit numeric name. A
-producer may retain a construction-object-to-`EntityId` provenance map for
-diagnostics, but that map does not participate in content identity and is
-not reference authority.
+builder identity. A finalizer may return a construction-object-to-`EntityId`
+provenance map for diagnostics and lineage, but that map is not semantic
+content or reference authority.
 
-## Deterministic Ordering
+Canonical labeling, local-ID assignment, canonical serialization, and
+ArtifactIdentity share this one semantic source. Persistent IDs must never be
+assigned from mutable addresses, traversal order, textual order, or names.
 
-Canonical serialization order derives from canonical semantic slots and
-explicit semantic order. Lexical symbols, record labels, and printer order
-are not tie breakers.
+## Ordering And Local Indices
 
-Arrays preserve semantic order where the model defines one. Unordered sets
-and maps use canonical serialization order. Consumers must not infer
-legality or execution order from serialized record position.
+Canonical serialization order derives from canonical semantic slots,
+complete typed semantic keys, and explicitly meaningful array ordinals.
+Lexical symbols and record labels are not tie breakers. Consumers must not
+infer legality, execution order, or identity from serialized record position.
 
-## Dense Indices, Provenance, And Caches
+Persistent `EntityId`, an owner-local canonical ordinal, a consumer-local
+dense index, and provenance are distinct:
 
-Persistent `EntityId`, consumer-local dense index, and provenance are
-separate concepts:
+* `EntityId` supports persistent references to independently meaningful
+  objects;
+* an owner-local ordinal compactly references a canonically ordered child;
+* a dense index supports one derived native model or cache; and
+* provenance records source relationships without becoming execution or
+  reference authority.
 
-* `EntityId` supports persistent cross-artifact references;
-* a dense index supports one derived native model or cache and is
-  disposable; and
-* provenance supports source traceability and DSE attribution but is not
-  execution or reference authority.
+Native PnR may use a build-selected `PnrIndex` and maintain checked
+`EntityId`-to-index maps. Native indices are disposable and never persistent.
+When both native widths can represent the same input, they must produce the
+same Mapping semantic content and identity.
 
 Caches bind exact artifact identities and all relevant producer semantics.
-They invalidate as a unit when those inputs change. They must not export
-artifact-local references, coverage, current-artifact legality conclusions,
-or physical decisions into another artifact context.
+They invalidate as a unit when those inputs change and cannot export local
+references, coverage, legality conclusions, or physical decisions into a
+different artifact context.
 
-## Deferred Classification
+## Classification Boundary
 
-This document does not yet decide whether channels or unqualified Fabric
-resources receive independent `EntityId` values. Fabric connections,
-capacity objects, memory objects, tag objects, external linkage objects,
-and other route or deployment entities must be classified from concrete
-reference requirements by the general entity-versus-structural-key rule.
+The table in this document closes identity classification for every Mapping
+record family in the complete `loom.mapping 1.0` schema. This document does
+not make additional classifications for upstream Dataflow channels,
+unqualified Fabric resources, deployment objects, or other objects whose
+independent reference requirements are owned elsewhere.
 
-No implementation may treat this deferral as permission to use symbols,
-paths, coordinates, or traversal order as persistent identity.
+A future Mapping object receives an `EntityId` only if it is independently
+meaningful, cannot be uniquely recovered from an identified owner and closed
+typed structural key, and must be referenced by another semantic record. Such
+an addition requires an explicit Mapping schema upgrade. It cannot be
+introduced as a generic ID-bearing placeholder.
 
 ## Validation
 
-Identity validation requires:
+Identity and reference validation requires:
 
-* a valid content-derived artifact identity;
-* one collision-free artifact-global unsigned 64-bit `EntityId` namespace;
-* a valid target kind for every typed reference;
-* exact resolution of every referenced artifact and local entity;
-* exact TechMapping coupling to one Canonical Dataflow Program and one
-  Fabric Hardware Description;
-* exact SpatialMapping coupling to one immutable TechMapping
-  predecessor;
-* no symbol, path, printer-order, source-location, or filesystem-path
-  reference authority; and
-* no persistent use of consumer-local dense indices or provenance handles.
+* a valid fixed-width Common ArtifactIdentity for every required binding;
+* the exact binding catalog and order required by the profile root;
+* one collision-free artifact-global unsigned 64-bit Mapping `EntityId`
+  namespace, which may be empty;
+* correct target kind and owner for every typed local or scoped reference;
+* exact resolution of every upstream artifact and entity;
+* exact resolution of every owner plus structural-key reference;
+* canonical import and owner-child ordinal assignment;
+* exact predecessor coupling required by the profile; and
+* no symbol, path, location, textual order, provenance handle, or native
+  dense-index reference authority.
 
-## Non-Goals
-
-This document does not define Mapping dialect syntax, the
-canonical-labeling algorithm, native PnR index layout, deferred entity
-classifications, representation-adapter records, SystemMapping references,
-or bitstream identifiers.
+Identity validation does not establish Mapping profile legality. The profile
+verifiers in `docs/spec-mapping-verification.md` consume these valid reference
+semantics and establish closure.

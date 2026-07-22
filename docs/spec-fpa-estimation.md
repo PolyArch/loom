@@ -1,243 +1,120 @@
-# FPA Estimation
+# Frequency, Power, And Area Evaluation
 
-This document specifies Loom frequency, power, and area estimation.
-FPA estimation combines hardware structure, backend evidence, and
-activity information to produce feedback for DSE and user reports.
+Frequency, power, and area are ordinary typed Evaluation metrics. Loom does not
+define an `FPAReport` artifact or a separate FPA evidence pipeline.
 
-## Purpose
+## Subjects
 
-FPA estimation answers this question:
+Physical metrics are evaluated against one exact `HardwareImplementation`.
+Fabric alone may be the subject of an explicitly analytical architecture model,
+but such a result must not be labeled as synthesis, layout, or signoff evidence.
+
+Workload-dependent power or energy also requires compatible activity. Activity
+is owned by an exact `SimulationExecution`; an evaluator may mechanically
+translate its logical activity through the exact implementation activity-name
+map. There is no independent `ActivityProfile` artifact.
+
+The physical-evaluation descriptor owns this role-labeled subject slot:
 
 ```text
-For this hardware candidate and workload evidence, what frequency,
-power, and area estimates are available, at what fidelity, and with
-what confidence?
+implementation: HardwareImplementation
 ```
 
-FPA estimation consumes:
+Activity changes the physical question and is therefore one explicit base
+condition:
 
-* Fabric ADG;
-* optional mapping artifact;
-* optional CGRA-sim report;
-* optional simulation comparison report;
-* optional RTL manifest from `docs/spec-rtl-lowering.md`;
-* optional RTL activity data;
-* selected EDA tool and library profiles from
-  `docs/spec-eda-tooling.md`;
-* estimation configuration.
+```text
+ActivityBinding =
+    ExecutionActivity {
+      simulation_execution_ref
+      activity_summary_ordinal
+    }
+  | ExplicitAssumption {
+      typed_activity_conditions
+    }
+```
 
-FPA estimation produces:
+Leakage-only queries may omit activity. A workload-dependent query with no
+required binding is `Unsupported`; there is no hidden default toggle rate.
 
-* normalized FPA report;
-* optional backend-specific report references;
-* diagnostics.
+## Implementation Derivation Versus Evaluation
 
-## Fidelity Levels
+An external flow that creates new persistent hardware state performs a
+`HardwareImplementation` derivation. Examples include synthesis that produces a
+gate netlist and physical implementation that produces placed, routed, or
+extracted design state. Invocation lineage records the input implementation,
+tool/library bindings, and output implementation.
 
-FPA estimation supports multiple fidelity levels. Fidelity describes
-evidence quality, not project maturity.
+Analysis of an immutable implementation is Evaluation. Timing, area, power,
+DRC findings, and similar observations are `EvaluationEvidence` plus raw
+detailed material. Evaluation never mutates the implementation.
 
-Baseline fidelity levels are:
+A backend invocation may do both in sequence, but the two semantic outputs stay
+separate:
 
-* `analytic`: estimate from Fabric ADG, parameters, and calibrated cost
-  tables;
-* `mapped_activity`: analytic or calibrated estimate using CGRA-sim
-  activity and mapping information;
-* `rtl_structural`: estimate from generated RTL synthesis or structural
-  analysis;
-* `rtl_activity`: estimate from generated RTL plus RTL switching
-  activity;
-* `physical_estimate`: estimate from physical or floorplan-aware
-  backend evidence;
-* `fpga_estimate`: estimate from FPGA-oriented backend evidence;
-* `custom_calibrated`: user-defined estimation adapter with an explicit
-  model name and calibration identity.
+```text
+derive HardwareImplementation -> evaluate that exact implementation
+```
 
-Reports must state the fidelity level for every frequency, power, and
-area number.
+## Metrics
 
-Backend reports may calibrate analytic models, tables, or interpolation
-layers. A calibrated analytic estimate remains `analytic` unless the
-reported metric is directly produced by a backend evidence class. The
-report must cite calibration source identities and must not relabel
-analytic outputs as backend evidence.
+Metric kinds, dimensions, canonical units, scopes, and observation forms are
+owned by the central registry. Representative metrics include:
 
-## Frequency
+* achievable or constrained clock frequency;
+* critical-path delay and timing slack;
+* cell, macro, routing, or total area;
+* dynamic and leakage power; and
+* energy derived from compatible power and runtime observations.
 
-Frequency estimation may use:
+Every observation records its exact request ordinal and provenance. Point,
+interval, censored, and not-applicable results retain their ordinary Evaluation
+meaning. Missing activity, unsupported corners, failed tools, and timeouts do
+not become numeric zero.
 
-* analytical critical-path models;
-* RTL synthesis timing;
-* static timing analysis;
-* physical estimate timing;
-* FPGA timing reports;
-* custom calibrated models.
+Runtime and energy are derived by named `DerivedMetricModel` evaluations. They
+must reference exact upstream Evidence and prove compatible implementation,
+workload, conditions, and units. A user-facing FPA table is only a projection of
+those Evidence records.
 
-Frequency results must record:
+## Model Families
 
-* target clock period or target frequency when provided;
-* achieved or estimated clock period;
-* limiting domain;
-* critical-path summary when available;
-* timing status;
-* tool and library profile identities;
-* fidelity level.
+Loom may provide analytical, calibrated, RTL/library-based, synthesis,
+post-layout, FPGA implementation, or measured models. These are descriptor
+capabilities, not rungs in a global fidelity ladder. Each model states exactly
+which phenomena and metrics it supports.
 
-## Area
+Fast model parameter bundles may be tracked when they are stable project inputs.
+Training and calibration are explicit Evaluation/DSE workflows that create new
+immutable parameter bundles and model bindings. Expensive raw tool products are
+stored in the configured artifact/bundle store, not committed as routine test
+fixtures.
 
-Area estimation may use:
+## Tool And Library Binding
 
-* Fabric resource cost models;
-* RTL synthesis area;
-* macro or memory model area;
-* physical estimate area;
-* FPGA resource counts;
-* custom calibrated models.
+EDA execution uses the common ToolRunner and an exact model binding containing
+the result-affecting tool version, technology/library data, parser, and
+semantic effort. PVT, required clock, and the activity binding are typed base
+conditions. Local executable paths, activation scripts, licenses, scratch
+roots, and host concurrency are invocation bindings.
 
-Area results must record total area and should record hierarchy or
-resource breakdowns when available. A report must distinguish standard
-cell area, macro area, memory area, interconnect estimate, and FPGA
-resource classes when the selected backend provides those categories.
+An authorized expensive model is genuinely executed when the resolved DSE plan
+selects it. Loom must not silently replace it with an estimate. Cancellation or
+timeout maps to `CancelledOrTimeout`; tool or adapter failure maps to
+`ExecutionFailed`. Resource unavailability leaves attempt and controller state
+incomplete but cannot create partial Evidence or change formal candidate
+selection.
 
-## Power
+## DSE Boundary
 
-Power estimation may use:
+Central DSE consumes normalized Evidence and owns objectives, gates, promotion,
+Pareto selection, and model-training orchestration. Mapping may query an exact
+resolved model through its shared Evaluation adapter, but Mapping does not own
+area, frequency, power, energy, or fallback formulas.
 
-* static analytical power models;
-* CGRA-sim activity;
-* RTL switching activity;
-* synthesis or power-analysis reports;
-* physical estimate activity;
-* custom calibrated models.
+## Anchor Verification
 
-Power results must distinguish dynamic power and leakage power when the
-evidence supports that split. Activity source must be explicit:
-
-* `none`;
-* `default_toggle`;
-* `cgra_sim`;
-* `rtl_waveform`;
-* `rtl_activity_file`;
-* `backend_internal`;
-* `custom`.
-
-If no activity is available, the report must mark power as static-only,
-default-toggle, or unsupported rather than presenting it as measured
-workload power.
-
-## Cycle-Frequency-Power-Area Feedback
-
-CGRA-sim reports hardware-aware cycle counts and activity. FPA reports
-frequency, power, and area estimates. Loom combines them in user-facing
-and DSE reports to derive:
-
-* runtime estimate from cycles and frequency;
-* energy estimate from power and runtime;
-* throughput or latency-per-area metrics;
-* performance-per-watt metrics;
-* Pareto comparisons across software mappings and hardware candidates.
-
-The combined report must keep the source of each number visible. A
-cycle count from CGRA-sim and a frequency estimate from RTL synthesis
-are compatible evidence, but they are not produced by the same tool.
-
-## Report Contract
-
-A normalized FPA report must identify:
-
-* `kind = "fpa_report"`;
-* schema version;
-* report identity;
-* hardware candidate identity;
-* optional mapping artifact identity;
-* optional CGRA-sim report identity;
-* optional RTL manifest identity;
-* resolved configuration ArtifactIdentity;
-* selected tool profile id;
-* selected library profile id;
-* estimation configuration;
-* calibration identity when a calibrated model is used;
-* frequency results;
-* area results;
-* power results;
-* combined cycle-frequency-power-area metrics when enough inputs exist;
-* backend report references;
-* diagnostics.
-
-Every metric record in the normalized FPA JSON report must identify:
-
-* metric id;
-* metric class;
-* value and unit;
-* fidelity level;
-* evidence source;
-* activity source when power or energy is workload-dependent;
-* derivation kind;
-* confidence when the evidence is analytic or custom-calibrated;
-* diagnostics.
-
-The normalized FPA JSON report is the stable program-to-program
-interface. CSV summaries are projections of this report and must not be
-used as the source of FPA truth.
-
-Reports should prefer portable artifact ids and profile ids over local
-paths. Private local run logs may contain local paths, but portable
-summary reports should not require them for interpretation.
-
-## Relationship To DSE
-
-FPA output is Evaluation Evidence for the central DSE controller. It does not
-modify Fabric ADG, dataflow IR, or Mapping artifacts and is not a direct PnR
-input.
-
-If FPA evidence motivates a new hardware candidate or spatial search, DSE
-creates the new candidate or issues a new PnR request through an explicit
-`ResolvedPnrConfigView` and `MappingConstraintSet`. The requested PnR run
-still consumes only its exact `D/T/F/C/K` inputs.
-
-## Error Handling
-
-FPA estimation must distinguish:
-
-* missing input artifact;
-* missing tool profile;
-* missing library profile;
-* unsupported fidelity request;
-* backend execution failure;
-* backend parser failure;
-* timing violation;
-* incomplete power evidence;
-* incompatible activity source;
-* stale artifact identities.
-
-Diagnostics must be structured and must not silently downgrade fidelity
-without recording that downgrade.
-
-## Non-Goals
-
-FPA estimation is not RTL lowering. It consumes RTL artifacts when they
-exist.
-
-FPA estimation is not CGRA-sim. It consumes simulator reports when they
-exist.
-
-FPA estimation is not PnR. It does not choose software-to-hardware
-mapping.
-
-FPA estimation is not final signoff. Its reports are fast feedback for
-compiler and architecture DSE unless a selected backend profile
-explicitly declares signoff-level evidence.
-
-## Acceptance Criteria
-
-FPA estimation is complete at the target-spec level when:
-
-* it can emit a normalized FPA report for an analytic Fabric ADG model;
-* it can consume CGRA-sim activity when available;
-* it can consume RTL manifest and backend reports when available;
-* every frequency, power, and area number records its fidelity and
-  evidence source;
-* missing tools, missing libraries, stale inputs, and unsupported
-  fidelity requests produce structured diagnostics;
-* combined cycle-frequency-power-area reports can feed DSE without
-  mutating source IR or mapping artifacts.
+Stable tests cover exact implementation coupling, separation of implementation
+derivation from Evaluation, activity compatibility, unit-safe derived metrics,
+and explicit missing/failed outcomes. Tests do not pin vendor log text or a
+tool-by-tool report matrix.

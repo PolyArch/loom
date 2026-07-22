@@ -1,13 +1,11 @@
 # Fabric Switch
 
 This document specifies `fabric.switch`, the leaf-level routing op of the
-fabric dialect. The canonical IR source is `Fabric_SwitchOp` in
-`include/Fabric/IR/FabricOps.td`; verifier and parser/printer live in
-`lib/Fabric/IR/FabricSwitchOp.cpp`.
+fabric dialect.
 
 ## Identity
 
-* Mnemonic: `switch`. C++ class: `::fabric::SwitchOp`.
+* Mnemonic: `switch`.
 * Variadic SSA inputs and variadic SSA outputs (anonymous form) or a
   zero-operand / zero-result template (named form) whose port signature
   is captured in a `function_type` attribute.
@@ -16,8 +14,17 @@ fabric dialect. The canonical IR source is `Fabric_SwitchOp` in
 * Optional `sym_name` so a switch can be referenced by
   `fabric.instantiate` (mirrors `fabric.pe` and `fabric.fu`).
 * The op has no body region; routing is fully described by attributes.
-* Allowed only inside a `fabric.module` body; the module body whitelist
-  was extended to admit `fabric.switch`.
+* Allowed only inside a `fabric.module` body.
+
+`fabric.switch` owns architecture capability: physical ports, allowed
+input-to-output traversals, bounded configured-entry capacity, and observable
+transfer, grant, and progress behavior. SpatialMapping owns selected
+traversals, Physical Tags at real writers or ingresses, event-relative use,
+and configured route semantics. A Mapping-selected exact hardware refinement
+may select among Fabric-declared cycle-observable alternatives. Finalization
+assigns semantic rows deterministically. `ConfigurationABI` alone owns their
+physical encoding; an implementation owns only the circuitry and microstate
+that implement the exact Fabric/Mapping contract.
 
 ## Schedule predicate and port types
 
@@ -30,8 +37,6 @@ output of the op. The two cases are mutually exclusive.
 | `temporal`  | `!fabric.bits_tag<W, T>`   | All ports must share the same `(W, T)` (`W` >= 0, `T` >= 1). |
 
 Spatial ports may not use `bits_tag`; temporal ports may not use `bits`.
-The verifier emits a "schedule mismatch with port kind" diagnostic on
-violation.
 
 In both forms, `K = numInputs() >= 1` and `L = numOutputs() >= 1`. For
 the named form `K`/`L` are taken from the `function_type` signature; for
@@ -92,25 +97,36 @@ fabric ops). `fabric.switch` requires `hw_params` to be present.
 ### route_table_size (temporal only)
 
 * `IntegerAttr` (`i32`), value `>= 1`.
-* Number of route-table entries the hardware allocates (one entry per
-  programmable tag value the switch can route in a given configuration).
-* Spatial switches MUST NOT carry `route_table_size` (rejected by the
-  verifier with an "all-or-nothing" / "spatial fabric.switch must not
-  carry temporal-only attribute" diagnostic).
+* Number of resident route-table entries the hardware allocates. It is an
+  explicit bounded capacity, independent of `2^T`, and does not allocate one
+  row for every representable tag value.
+* Spatial switches MUST NOT carry `route_table_size`.
 
-## Software configuration
+## Configured Mapping Projection
 
-Software parameters live in `sw_configs`, a DictionaryAttr printed in
-`{ ... }`. Two attributes:
+Configured parameters are a deterministic projection of SpatialMapping and
+are not part of the canonical hardware capability. The semantic projection is
+one closed sum:
 
-1. `route_table` -- shape depends on the schedule.
-2. `switch_enable` -- `BoolAttr`. Power/clock-gate equivalent. `true`
-   means the switch is active; `false` gates the entire switch off.
+```text
+SwitchConfiguration =
+    Disabled
+  | Active { route_table, physical_refinements }
+```
 
-**All-or-nothing rule.** When the switch is programmed, BOTH
-`route_table` and `switch_enable` must be present. When the op is a
-hardware-only declaration (not yet programmed), BOTH must be absent.
-Mixing the two is rejected as an "all-or-nothing violation".
+`Disabled` carries no route table, tag, selector, or refinement. The physical
+enable bit and inactive encoding belong only to ConfigurationABI. An active
+projection whose route table selects no traversal canonicalizes to
+`Disabled`.
+
+The bit strings in `connectivity_table` and `route_table` are canonical
+semantic representations of allowed and selected traversals. They are not a
+register layout or configuration-memory bit assignment. Only
+`ConfigurationABI` maps these semantic fields to physical encoding.
+
+Canonical hardware-only Fabric has no selected configured projection. A
+finalized configured view must contain exactly one closed variant; mixing a
+raw enable field with an independently optional route table is invalid.
 
 ### route_table -- spatial
 
@@ -141,29 +157,40 @@ Each result remains a point-to-point transport under
 ### route_table -- temporal
 
 * ArrayAttr of exactly `route_table_size` entries.
-* Each entry is a DictionaryAttr with three keys:
+* Each entry is one closed typed variant:
+  * `Unused`, with no fields; or
+  * `Active { route_sel, tag }`.
+* Each Active entry has two fields:
   * `route_sel` -- ArrayAttr of `L` `StringAttr`s with the same shape as
     a spatial `route_table`.
   * `tag` -- `IntegerAttr` of width `T` (matching the port tag width),
     value in `[0, 2^T)`.
-  * `valid` -- `BoolAttr`.
 * Per-entry `route_sel` follows the spatial-route-table per-row rules
   (each row at most one `'1'`).
-* **Tag uniqueness.** Among entries with `valid == true`, all `tag`
-  values must be distinct. Two valid entries sharing a tag value is a
+* **Tag uniqueness.** Among Active entries, all `tag`
+  values must be distinct. Two Active entries sharing a tag value is a
   configuration error (it would cause runtime ambiguity when a token
-  arrives carrying that tag). Total valid entries can be 0 (degenerate
-  switch: no routing entry is active).
+  arrives carrying that tag). An all-Unused table canonicalizes to
+  `Disabled`.
+
+The table performs exact content match across Active resident entries. The tag
+does not directly index a `2^T`-deep array, and route-table row identity is not
+a software stream identity. The configured tag is derived from Mapping-owned
+writer continuity and `ResourceUse` sharing assignments. It is a local
+interpretation key where co-resident incompatible routes require distinction,
+not a firing, iteration, invocation, or logical-token identity.
 
 ### Tag-driven trigger semantics
 
 When a token arrives at an input port carrying tag value `t`, the
-switch looks up the unique valid `route_table` entry whose `tag == t`
+switch looks up the unique Active `route_table` entry whose `tag == t`
 and uses that entry's `route_sel` as the spatial-style routing for the
 cycle's tokens carrying tag `t`. Different tags routed in the same cycle
 share the physical crossbar; same-cycle conflicts on a single output
-port (multi-input-to-same-output across different tags) are arbitrated
-in hardware via round-robin.
+port (multi-input-to-same-output across different tags) request a grant under
+the switch's exact Fabric-owned `GrantPolicy` or a Mapping-selected exact
+hardware refinement declared by Fabric. The implementation executes that
+policy; it does not choose one.
 
 ### Hardware payload opacity
 
@@ -171,29 +198,54 @@ A switch routes physical valid/ready transfers and treats the payload
 bits as opaque. It does not assign or interpret software-level value,
 control, or completion semantics.
 
-## Limits and arbitration
+## Transfer Guarantees And Arbitration
 
-These rules are documented here but NOT enforced by the IR verifier
-(they are runtime/hardware properties):
+The architecture-level routing rules are:
 
 * Spatial: broadcast (single input -> multiple outputs) is allowed;
   fan-in (multiple inputs -> single output) is FORBIDDEN. The verifier
   enforces fan-in rejection via the per-row `'1'` <= 1 rule on
   `route_table`.
-* Temporal: broadcast and fan-in are both allowed; multi-input-to-same-
-  output across different tags is permitted and resolved at runtime.
-  Same-cycle same-output conflicts get round-robin arbitration.
+* Temporal: broadcast and time-multiplexed fan-in are allowed;
+  multi-input-to-same-output requests across different tags compete for the
+  declared output capacity.
 
-### Broadcast valid/ready protocol
+Temporal fan-in never means combinational merging. Each Active row still
+selects at most one input per output. Competing rows share a physical resource
+over time. Fabric owns request eligibility, output capacity, exact grant and
+state-update behavior, latency, and backpressure visibility. The first closed
+grant-policy domain is:
 
-To preserve broadcast semantics without creating combinational loops:
+```text
+fixed_priority(exact requester order)
+round_robin(exact requester order, reset cursor, advance on successful grant)
+```
 
-* Upstream `ready = AND(downstream_readys)`.
-* Each downstream's `valid = upstream_valid AND AND(other_downstreams_readys)`.
+The switch schema is the unique owner of its typed `ResourceState` values,
+canonical initial state, capacity dimensions, atomic transfer UsePatterns,
+and stable typed requester order. One broadcast pattern atomically claims the
+ingress and every selected egress or crosspoint state; it cannot be split into
+independent per-egress grants. Mapping selects only a declared exact policy
+refinement and supplies typed route and workload values. Cursor, occupancy,
+queue, and reservation state is nonpersistent execution state.
 
-This guarantees that a broadcast token is presented to all downstreams
-exactly when every downstream is ready, without any downstream's `valid`
-combinationally depending on its own `ready`.
+No policy is required when complete Mapping proves that at most one requester
+can be eligible at once. If reachable contention exists, an exact policy must
+be part of Fabric capability or a Mapping-selected exact refinement and must
+participate in exact Fabric/Mapping identity. A deterministic exact simulator
+rejects a contended switch whose contract gives only loose guarantees. Runtime,
+Mapping, simulation, and RTL lowering may not supply a default policy. The
+implementation owns the arbiter circuit and transient cursor, but not the
+cycle-visible policy semantics.
+
+### Broadcast backpressure contract
+
+A selected single-input/multi-output transfer is one atomic message
+replication. The source retires only when every selected sink accepts, or when
+the implementation first commits the complete replication into explicit
+holding state. Partial delivery, duplicate delivery, hidden draining, and
+reordering are invalid. The exact ready/valid circuit is an implementation
+choice and must not become an additional architecture or Mapping authority.
 
 ## Assembly format
 
@@ -202,7 +254,6 @@ Anonymous spatial:
 ```mlir
 %o:3 = fabric.switch [spatial] %i0, %i1, %i2, %i3
        [{connectivity_table = ["0110", "1011", "1111"]}]
-       {route_table = ["01", "100", "0100"], switch_enable = true}
        : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
       -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
 ```
@@ -212,40 +263,52 @@ Anonymous temporal:
 ```mlir
 %o:3 = fabric.switch [temporal] %i0, %i1, %i2, %i3
        [{connectivity_table = ["0110", "1011", "1111"], route_table_size = 8 : i32}]
-       {
-         route_table = [
-           {route_sel = ["01", "100", "0100"], tag = 10 : i4, valid = true},
-           {route_sel = ["10", "001", "0001"], tag = 11 : i4, valid = true}
-         ],
-         switch_enable = true
-       }
        : (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
       -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
 ```
 
-Named template (spatial):
+The corresponding configured projections are represented semantically as:
+
+```text
+Active {
+  route_table = ["01", "100", "0100"]
+}
+
+Active {
+  route_table = [
+    Active { route_sel = ["01", "100", "0100"], tag = 10 },
+    Active { route_sel = ["10", "001", "0001"], tag = 11 },
+    Unused, ...
+  ]
+}
+```
+
+Named hardware template (spatial):
 
 ```mlir
 fabric.switch @MySw [spatial]
        (!fabric.bits<32>, !fabric.bits<32>) -> (!fabric.bits<32>, !fabric.bits<32>)
        [{connectivity_table = ["11", "11"]}]
-       {route_table = ["01", "10"], switch_enable = true}
 ```
 
-Named template (temporal):
+Named hardware template (temporal):
 
 ```mlir
 fabric.switch @MySwT [temporal]
        (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
         -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
        [{connectivity_table = ["11", "11"], route_table_size = 1 : i32}]
-       {
-         route_table = [{route_sel = ["10", "01"], tag = 0 : i4, valid = true}],
-         switch_enable = true
-       }
 ```
 
-Hardware-only forms omit the `{ ... }` `sw_configs` block entirely.
+Hardware-only forms have no selected configured projection.
+Configured examples illustrate the derived Mapping projection; they do not
+make `sw_configs` part of Fabric hardware identity.
+
+Reusable named templates are hardware-only. A configured projection belongs
+to a concrete elaborated occurrence's derived configured view and may not be
+stored on the template as shared workload state. Its
+`HardwareConfigurationImage` encoding is produced only through the exact
+`ConfigurationABI`.
 
 ## Verifier rules
 
@@ -257,29 +320,18 @@ Hardware-only forms omit the `{ ... }` `sw_configs` block entirely.
   per-row `>= 1` `'1'`, per-column `>= 1` `'1'`.
 * Spatial: `route_table_size` MUST NOT be present.
 * Temporal: `route_table_size` MUST be present and `>= 1`.
-* All-or-nothing: `route_table` and `switch_enable` are both present
-  (programmed) or both absent (hardware-only).
-* Programmed: `route_table` shape and per-row constraints.
+* A configured occurrence is exactly `Disabled` or `Active`; the inactive
+  variant carries no route fields.
+* Active: `route_table` shape and per-row constraints, with an all-`Unused`
+  table canonicalized to `Disabled`.
 * Spatial: `route_table` per-row `'1'` count <= 1.
 * Temporal: `route_table` length equals `route_table_size`; per-entry
   `route_sel` follows the spatial-row rules; `tag` integer width equals
-  `T`; among valid entries `tag` values are distinct.
+  `T`; among Active entries `tag` values are distinct.
 * Named form has zero SSA operands and zero SSA results; signature lives
-  in `function_type`. Anonymous form has variadic SSA operands and
-  variadic SSA results and must NOT carry `function_type`.
-
-## Diagnostic substrings
-
-The following substrings appear in `expected-error` directives in
-`test/fabric/unit/switch/invalid.mlir` (used by other tooling that
-greps for stable diagnostic anchors):
-
-* `schedule mismatch with port kind`
-* `connectivity_table' row #0 must have at least one '1'`
-* `connectivity_table' column #1 must have at least one '1'`
-* `spatial route_table row has '1' count > 1`
-* `temporal duplicate valid tag`
-* `all-or-nothing violation`
+  in `function_type`, and reusable templates do not carry `sw_configs`.
+  Anonymous form has variadic SSA operands and variadic SSA results and must
+  NOT carry `function_type`.
 
 ## Cross-references
 
@@ -288,16 +340,5 @@ greps for stable diagnostic anchors):
   `fabric.boundary`, etc.).
 * `spec-fabric-pe.md` -- schedule predicate (`spatial` / `temporal`)
   shared with `fabric.switch`.
-
-## Maintenance
-
-Implementation locations that must mirror this spec are:
-
-* `Fabric_SwitchOp` in `include/Fabric/IR/FabricOps.td` for the IR shape;
-* `SwitchOp::parse`, `SwitchOp::print`, and `SwitchOp::verify` in
-  `lib/Fabric/IR/FabricSwitchOp.cpp` for parser, printer, and verifier
-  logic.
-
-When adding new connectivity-table or route-table semantics, update both
-this spec, the verifier, and at least one positive and one negative lit
-test under `test/fabric/unit/switch/`.
+* `spec-fabric-system-adg.md` -- Transport Architecture capacity and
+  guarantee ownership versus concrete Interconnect Implementation state.

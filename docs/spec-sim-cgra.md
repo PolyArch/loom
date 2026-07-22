@@ -1,135 +1,182 @@
 # CGRA-sim
 
-## Implementation Status
+This document owns the execution contract for Loom's hardware-aware
+SpatialCore simulator. Persistent Evaluation schemas are owned by
+[DSE and Evaluation](spec-dse-feedback.md). Shared workload, runtime input,
+execution, trace-manifest, and terminal schemas are owned by
+[Simulation Artifacts](spec-simulation-artifacts.md).
 
-This document is a target contract. Loom does not currently build a true CGRA
-simulator, the shared SpatialCore simulation library, or the gem5 Bridge
-described below. The implemented simulator is DFG-sim and does not satisfy
-this hardware-aware contract.
+## Purpose And Subject
 
-## Target Architecture
+CGRA-sim answers:
 
-CGRA-sim is the hardware-aware simulator for one mapped SpatialCore
-execution. It executes canonical graph semantics on concrete `fabric.module`
-resources under one complete SpatialMapping.
+```text
+How does a Canonical Dataflow Program execute on this exact SpatialCore and
+complete SpatialMapping under its concrete timing and contention rules?
+```
 
-CGRA-sim is not a whole-system simulator. HostCore, InstructionCore, caches,
-coherence, system memory hierarchy, NoC, and system time belong to an external
-system simulator such as gem5. The target Loom Bridge will invoke the shared
-SpatialCore simulation library at the Spatial Launch ABI boundary.
+The descriptor has three required role-labeled subject slots:
 
-## Exact Inputs
+```text
+program: CanonicalDataflowProgram
+hardware: FabricHardwareDescription
+spatial_mapping: SpatialMapping
+```
 
-A CGRA-sim request identifies at least:
+The Mapping is already bound to its exact TechMapping and Fabric inputs.
+`workload_ref` and `runtime_input_ref` bind the exact spatial workload and its
+concrete values, streams, dynamic parameters, external arrivals, and logical
+memory. The resolved simulator model belongs to `ResolvedModelBinding`. Trace
+capture and physical execution limits belong to invocation and attempt state.
 
-* one finalized Canonical Dataflow Program and graph subject;
-* one finalized Fabric Hardware Description containing the selected
-  SpatialCore template and elaborated resources;
-* one complete SpatialMapping bound to the exact Dataflow, TechMapping, and
-  Fabric inputs;
-* concrete graph input values, stream messages, and memory capabilities;
-* initial visible memory state where required; and
-* resolved simulator configuration and model identity.
+CGRA-sim declares one typed `SimulationExecution` output slot and the complete
+mandatory terminal FindingQuery set. It produces one execution, one
+`EvaluationEvidence`, and an optional raw detailed bundle. Their ownership is identical to DFG-sim:
+execution owns terminal observables, activity, and trace; Evidence owns
+normalized outcome, metrics, findings, and the typed execution output binding.
+`Retired` returns every mandatory terminal finding as `Absent`; `Halted`
+returns the corresponding finding as `Present` and all others as `Absent`.
 
-The exact persistent request and Evidence schemas remain owned by Evaluation
-and are not defined here.
+## Scope
 
-## Boundary With DFG-sim
-
-DFG-sim executes the same Canonical Dataflow graph without concrete Fabric
-capacity, routes, buffers, tags, or resource contention. CGRA-sim adds those
-SpatialCore constraints.
-
-Functional comparison requires the same graph identity, input identity,
-initial visible memory identity, and observable-output contract. Different
-performance is expected when concrete hardware constrains execution.
-
-## Boundary With Mapping
-
-CGRA-sim consumes and validates a complete SpatialMapping. It must not choose
-placements, reroute a logical net, assign a tag, allocate a buffer, select a
-memory occurrence, repair resource use, or complete a missing record.
-
-Unsupported inputs and invalid Mapping are ordinary failures. A simulator
-report cannot make an invalid Mapping legal and is not copied into Mapping as
-diagnostics or metrics.
-
-## Hardware Scope
-
-The simulator may model SpatialCore resources referenced by the exact
-Mapping, including:
+CGRA-sim models only a SpatialCore invocation. It may model selected:
 
 * PE, FU, switch, memory, FIFO, boundary, and transport occurrences;
-* explicit directed endpoints, point-to-point arcs, and resource traversals;
-* configured functions and mapping-visible modes;
-* Route Trees, physical buffers, local Physical Tags, and selected memory
-  services when their persistent schemas are closed; and
-* Fabric-owned latency, initiation, capacity, arbitration, and use patterns.
+* exact physical endpoints, traversals, Route Trees, and shared trunks;
+* Fabric-owned latency, initiation interval, capacity, use patterns, and grant
+  policies;
+* configured functions and `sw_configs` derived from Mapping;
+* spatial and temporal PE execution, operand buffers, register-file forwarding,
+  local Physical Tags, and context state;
+* memory-service bindings, ports, banks, queues, and Mapping-visible local
+  protocol behavior; and
+* backpressure, arbitration, buffering, contention, and deadlock progress.
 
-It does not model InstructionCore execution or system interconnect as CGRA
-resources. Those components interact through typed Spatial Launch and service
-boundaries driven by the external system simulator.
+It does not simulate HostCore or InstructionCore execution, system caches,
+coherence, system memory hierarchy, or AccCore-to-AccCore NoC behavior. Those
+belong to sys-sim through gem5.
 
-## Execution Model
+## Admission And Mapping Boundary
 
-Execution is event-driven and deterministic for exact semantic inputs,
-resolved configuration, and simulator model identity. Canonical Dataflow
-edges carry software values and causal events. Fabric resources constrain when
-those events can progress.
+Before simulation starts, CGRA-sim validates exact Artifact coupling and the
+complete final SpatialMapping. It must reject stale identities, unresolved
+references, incomplete realization coverage, illegal routes, conflicting
+resource use, invalid tags, unsupported configurations, and incomplete memory
+service bindings.
 
-Mapping does not provide an absolute schedule-slot table. The simulator
-instantiates event-relative `ResourceUse` and Fabric-owned use patterns for a
-dynamic graph invocation. It may derive queues, calendars, occupancy, or
-conflict caches, but those are disposable simulator state rather than Mapping
-records.
+The simulator never places, reroutes, recolors, allocates a missing buffer,
+selects a different memory service, repairs a Mapping, or invents a Fabric
+configuration. Dynamic execution may arbitrate among legal requests according
+to Fabric policy, but it cannot change the Mapping decision.
 
-Physical Tags are interpreted only in their Fabric-owned domains. They are
-not global token IDs, firing numbers, or dynamic invocation identities.
+## Event Model
 
-The simulator may apply backpressure or wait for capacity. It cannot alter the
-selected SpatialMapping while doing so.
+CGRA-sim and DFG-sim share the dependency-driven progress protocol defined by
+DFG-sim. Canonical actor transitions remain the dynamic software firing unit.
+A transition can progress only when both its Dataflow inputs and all selected
+physical mechanisms permit it. Commit atomically reserves its current input,
+output-holding, and execution obligations; it does not pre-lock an entire
+future route.
 
-## Target Shared SpatialCore Library
+The simulator derives disposable runtime queues, occupancy tables, calendars,
+and conflict caches from Fabric and Mapping. These are not persistent Mapping
+records. Mapping does not provide an absolute cycle-slot schedule.
 
-Standalone DFG/CGRA tools and the gem5 Bridge must reuse one Loom-owned
-event-driven SpatialCore simulation library. A CLI is a thin request and
-reporting surface, not a second semantic implementation.
+Single-clock SpatialCore sessions advance in nonnegative integer cycles. A
+multi-clock session chooses an explicit reference clock and represents every
+event in exact rational reference cycles. All timed events use
+`EventCoordinate = (reference_cycle, delta)`; host floating point and rounded
+nanoseconds cannot determine event order. `delta` expresses only causal
+combinational propagation inside one cycle. Equal coordinates use canonical
+structural serialization that never substitutes for Fabric arbitration.
+Registered resources retire at their declared future cycles, and a mapped
+logical edge cannot bypass selected physical latency or capacity.
+Buffered and bypassed `fabric.fifo` occurrences use the exact cycle and
+backpressure contract in `docs/spec-fabric-fifo.md`; the simulator does not
+invent fall-through or hidden storage.
 
-The gem5 event queue is the only whole-system time authority. A SpatialCore
-session advances under Bridge control to its next externally observable event
-and returns that event without running an independent system clock.
+## Tags, Contexts, And Ordered Dataflow
 
-## Evidence And Metrics
+Physical Tags are local encodings used only inside their declared Fabric tag
+domains. They are neither global token identities nor firing numbers.
+`InstructionContextRef` identifies a resident configured-graph state namespace;
+the canonical actor transition remains the execution atom.
 
-CGRA-sim produces Evaluation Evidence with exact subject, model, configuration,
-runtime-input, and Mapping identities. Evidence may contain cycle count,
-latency, throughput, stalls, utilization observations, memory traffic, route
-activity, and other supported metrics with explicit provenance.
+Temporal resources may interleave transitions only when operand association,
+result ordering, tag continuity, and Fabric-defined progress remain valid. An
+implementation that can produce a later ordered token before an earlier token
+must buffer or arbitrate to preserve ordered Dataflow semantics.
 
-Metrics are observations, not Mapping fields or verifier exceptions. Missing
-or unsupported observations remain explicit typed results.
+## Memory
 
-## Determinism
+Software memrefs remain logical address spaces. SpatialMapping binds their
+accesses and exported capabilities to Fabric memory services and service
+routes. CGRA-sim models the selected physical width, capacity, ports, queues,
+banks, internal dependency forwarding, and protocol-visible timing.
 
-Deterministic ordering derives from canonical identities, typed structural
-keys, explicit event order, and resolved simulator rules. Host thread
-scheduling, container traversal, source order, stable symbols, and printer
-order are not tie breakers.
+Hardware resource delay may postpone issue or retirement, but it cannot change
+the logical memory-order contract. Visibility and terminal memory diffs must
+match DFG-sim for a legal execution. System cache and coherence behavior is
+outside this simulator.
 
-## Open Boundaries
+## Deadlock And Termination
 
-The following remain open and must not be invented by the simulator spec:
+Successful completion requires the Dataflow completion frontier and every
+selected physical obligation to retire. No required route transfer, buffered
+token, memory response, configuration transition, or delayed event may remain.
 
-* exact persistent SpatialMapping physical records;
-* complete Evaluation request and Evidence schemas;
-* the full SpatialCore microarchitecture model inventory;
-* gem5 Simulation Binding fields; and
-* fidelity-specific metric availability.
+Quiescence before legal completion is deadlock only when a dynamic closed
+wait-set witness proves that no future external arrival, guaranteed release,
+or escape can restore progress. Diagnostics identify blocked canonical
+transitions and the Fabric-owned resource/policy state that prevents progress.
+An invalid Mapping is never classified as dynamic deadlock.
 
-## Validation
+The execution terminal is exactly `Retired`, `Halted {finding,witness}`, or
+`StoppedByLimit`, with the Evidence mapping defined by Simulation Artifacts.
+Cycle count spans accepted Spatial Launch through visible graph retirement in
+the workload's declared completion clock domain.
 
-Anchor tests should cover exact input coupling, rejection of invalid Mapping,
-deterministic graph execution, explicit route and capacity effects, memory
-visibility, and agreement with DFG-sim on shared functional observables. They
-must not pin schedule-slot records, InstructionCore simulation, or a textual
-report fixture matrix.
+## Trace And Observations
+
+The trace uses increasing `EventCoordinate` frames and canonical within-frame
+order. Firing is actor-transition commit; result publication and retirement
+may be later events. It can identify actor firings, selected physical
+occurrences and traversals, resource grants, stalls, queue changes, memory
+transactions, and retirements. `SimulationExecution` owns the typed manifest
+and ordering; the raw detailed bundle owns referenced opaque chunk payloads.
+Neither creates a separate `SimulationTrace` artifact.
+
+Trace capture is observational. Enabling or changing it cannot affect grants,
+event scheduling, outputs, terminal form, cycle count, metrics, or findings.
+
+Normalized Evidence may expose cycle count, latency, throughput, initiation
+behavior, stalls, occupancy, utilization, traffic, contention, and deadlock
+findings when the model supports them. Metric names, units, and provenance come
+from the central registry. Evidence never becomes Mapping state.
+
+## Standalone And System Integration
+
+The standalone CGRA tool and the gem5 Bridge reuse one Loom-owned SpatialCore
+simulation library. A CLI is a thin request/projection surface, not another
+semantic implementation.
+
+In sys-sim, gem5 is the only whole-system time authority. The Bridge advances a
+SpatialCore session to its next externally observable event and translates that
+cycle-relative event at the exact launch/service boundary. The SpatialCore
+library does not run an independent whole-system clock.
+
+## Anchor Verification
+
+Stable anchor tests cover:
+
+* exact `{D,F,SpatialMapping}` admission and rejection of stale or incomplete
+  Mapping;
+* finite-route, buffer, memory, and temporal-resource contention;
+* exact single- and multi-clock event order and delta nonconvergence;
+* trace observer noninterference;
+* ordered-token preservation under temporal interleaving;
+* deadlock versus invalid-Mapping classification; and
+* agreement with DFG-sim on terminal software observables.
+
+Tests must not pin text reports, disposable simulator caches, or a broad
+microarchitecture fixture matrix.

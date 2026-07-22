@@ -1,15 +1,15 @@
 # Evaluation ToolRunner
 
-This specification defines Loom Evaluation's synchronous local-process
-execution primitive. The typed C++ API in `include/Evaluation/ToolRunner.h` is
-the single source of truth for the implemented value model.
+This specification owns Loom Evaluation's synchronous local-process execution
+contract. Concrete APIs and supervision mechanisms implement this contract;
+they do not define a competing value model.
 
 ## Ownership
 
-`runTool(const ToolInvocation &) -> llvm::Expected<ToolRunOutcome>` executes
-one already-resolved local tool invocation. It is shared by external
-Evaluation model adapters, but it is not an EDA semantic layer, workflow
-engine, scheduler, lease manager, artifact store, or remote execution backend.
+ToolRunner executes one already-resolved local tool invocation. It is shared
+by external Evaluation model adapters, but it is not an EDA semantic layer,
+workflow engine, scheduler, lease manager, artifact store, or remote execution
+backend.
 
 The synchronous caller owns these prerequisites before calling `runTool`:
 
@@ -56,7 +56,8 @@ Preflight completes before any process is spawned. It rejects:
 
 - an empty tool binding identity;
 - a missing, non-regular, non-executable, or non-absolute executable path;
-- an empty `argv` or strings that cannot be represented by POSIX `execve`;
+- an empty `argv` or strings that cannot be represented by the POSIX process
+  argument interface;
 - a missing, non-directory, non-writable, or non-absolute scratch path;
 - missing input paths or non-absolute input paths;
 - invalid or duplicate environment overlay names;
@@ -72,66 +73,27 @@ attempt facts are available.
 
 ## Local Execution
 
-The implementation invokes the executable directly with `execve`. It never
-constructs or invokes a shell command, so shell metacharacters in `argv` remain
-literal bytes.
+ToolRunner launches the exact executable and literal `argv` without a shell,
+so shell metacharacters remain ordinary argument bytes. It gives the launched
+tool a private process-group containment boundary, sanitizes inherited signal
+and descriptor state, and reaps contained processes. A timeout or cancellation
+commits one terminal interruption decision and terminates that complete
+containment boundary; a tool that completed before the decision is not
+reclassified.
 
-Before fork, the calling thread blocks signals. The private supervisor resets
-inherited signal dispositions and clears its mask before creating the tool, so
-ignored `SIGCHLD`, ignored termination signals, blocked signals, and inherited
-handlers cannot alter tool execution or supervisor waiting. The tool closes
-all descriptors above the standard descriptor set except the close-on-exec
-launch-status descriptor. Internal pipe descriptors are first moved above
-stdin, stdout, and stderr so initially closed standard descriptors are safely
-reused.
-
-The tool leads a dedicated Linux session and process group. Because the
-invoked executable is both session leader and process-group leader, it cannot
-move itself with `setsid` or `setpgid`. A private reservation process is
-created in that group before `execve`, and the tool is not released until the
-reservation has published the PGID directly to both the supervisor and the
-caller.
-
-A private Linux subreaper supervisor remains outside the tool session. It
-commits timeout or cancellation, sends the stop, continue, and graceful
-termination signals, and reaps group members. The supervisor checks for
-completed leader state, briefly stops the group, and commits an interrupt only
-after observing the leader stopped rather than exited. It then sends `SIGTERM`
-and `SIGCONT`. This prevents a leader that completed before the commit from
-being reclassified.
-
-Final-signal ownership is published with the reserved process group. The
-supervisor is the sole normal owner. It transitions ownership before sending
-the final negative-PGID `SIGKILL`, publishes completion, and only then reaps
-the reservation. Every negative-PGID signal first verifies the published
-reservation is still live. If the supervisor dies before publishing
-completion, the caller transfers ownership only after observing that death
-and performs the emergency final signal. A completed or released ownership
-record prevents any later caller signal. This preserves the PGID even when
-inherited `SIGCHLD` handling or another reaper would otherwise release it
-early.
-
-Background members of the launched group are cleaned up after a normal leader
-exit.
-
-Separate nonblocking pipes capture stdout and stderr concurrently. Capture is
-unbounded in total and preserves stream separation, but each descriptor has a
-fixed per-loop drain quota so one continuous stream cannot starve the other
-stream, cancellation, timeout, or process observation. The runner does not
-parse either stream.
-
-The containment boundary is the launched process group. A descendant that
-creates another session or process group is outside that boundary. After the
-supervisor completes bounded cleanup and closes its result channel, the parent
-performs one final bounded drain and closes capture descriptors instead of
-waiting for escaped descendants that retained them. ToolRunner does not build
-an independent process-tree tracker or claim ownership of arbitrary daemons.
+Stdout and stderr are captured concurrently as separate byte streams without
+allowing either stream to starve process observation, timeout, or cancellation.
+The runner does not parse either stream. Cleanup and final capture are bounded
+even if a descendant explicitly escapes the declared containment boundary;
+ToolRunner does not claim ownership of arbitrary daemons. The concrete spawn,
+signal-supervision, descriptor, pipe, and reaping algorithms are implementation
+details as long as they preserve this contract.
 
 ## Outcome Contract
 
 `ToolRunStatus` distinguishes:
 
-- `LaunchFailure`: process setup or `execve` failed after preflight;
+- `LaunchFailure`: process setup or executable launch failed after preflight;
 - `Exited`: the tool exited normally, including a nonzero exit code;
 - `Signaled`: the tool terminated from a signal without timeout or
   cancellation;

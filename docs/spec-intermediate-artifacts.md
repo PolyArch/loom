@@ -1,91 +1,99 @@
-# Intermediate Artifact Formats
+# Intermediate Reports And Projections
 
-This document describes the intermediate report formats emitted by the
-implemented Loom mapping and simulation tools. It does not define future RTL,
-EDA, design-space exploration, or report-bundle formats.
+This document defines the boundary for nonsemantic reports emitted while a
+Loom invocation is running. Reports are human-facing or tool-convenience
+projections of canonical artifacts and owner-specific execution records. They
+are not compilation, Mapping, simulation, Evaluation, deployment, or hardware
+authorities.
 
-## Common Conventions
+## Ownership
 
-JSON reports identify their format with `kind` and record a `status`. A passing
-report contains the evidence required by its producer. A non-passing report
-contains diagnostics instead of fabricated numeric values. Producers use a
-subset of this accepted interoperability vocabulary:
+Every report field that describes a semantic fact resolves to one exact owner:
 
-Schema versions are strings in `X.Y` form. `X` changes are
-breaking/incompatible and `Y` changes are non-breaking.
+- a Canonical Dataflow Program owns software structure and behavior;
+- a Fabric Hardware Description owns hardware structure and capability;
+- a complete Mapping Artifact owns selected realization, placement, routes,
+  resource use, tags, buffers, and other profile-specific decisions;
+- a `SimulationExecution` owns typed terminal workload observations, activity
+  summaries, and the trace manifest;
+- an `EvaluationRequest` owns the exact evaluation question;
+- an `EvaluationEvidence` owns normalized outcome, metric results, and finding
+  results;
+- a detailed bundle owns retained scripts, logs, raw tool reports, opaque trace
+  chunks, and other payloads; and
+- `InvocationManifest`, `ExecutionJournal`, and owner-specific attempt records
+  own invocation provenance, recovery state, and retry history.
 
-The currently used status values are:
+A report may reference and render those facts. It cannot copy a selected
+Mapping relation, reinterpret a trace, normalize a metric, infer a missing
+finding, or publish an invocation status as another semantic result.
 
-* `pass`: the requested operation completed with usable evidence;
-* `fail`: the operation ran but did not produce a valid result;
-* `unsupported`: the input is outside the implemented scope;
-* `skipped`: policy intentionally omitted the operation;
-* `blocked`: a required input or prerequisite is unavailable;
-* `not_run`: the operation was not attempted.
+## Projection Contract
 
-Artifact paths are explicit command inputs and outputs. Consumers must not
-discover reports by scanning nearby scratch directories.
+Each report declares its projection schema and exact source references. A
+schema version uses `X.Y`, where `X` denotes an incompatible schema change and
+`Y` denotes a compatible extension. Report schema versioning does not create
+another version space for any source artifact.
 
-## DFG Simulation Report
+Projection generation verifies every source identity and cross-artifact join.
+A missing, malformed, or incompatible source produces a report-generation
+diagnostic; the producer must not substitute a nearby file, an implicit latest
+artifact, or a report with a matching display label.
 
-`loom-dfg-sim` emits a JSON object with `schema_version = "2.2"` and
-`kind = dfg_sim_report`.
+Reports may contain summaries, formatting choices, display labels, and
+navigation indexes. Cached source fragments are disposable and must retain
+their exact owner references. Removing every report leaves compilation,
+Mapping, simulation, Evaluation, deployment, runtime, and hardware behavior
+unchanged.
 
-Representative fields:
+Filesystem paths, output directories, compression, and presentation format
+are invocation bindings. They do not enter source artifact identity. Consumers
+must receive report paths explicitly and must not discover semantic inputs by
+scanning a scratch directory.
 
-* `schema_version`;
-* `kind`;
-* `workload`;
-* `graph`;
-* `status`;
-* `metric_definition`;
-* `operation_semantics_source`;
-* `operation_cost_model_source`;
-* `operation_cost_score`;
-* `weighted_operation_score`;
-* `modeled_library_score`;
-* `operation_diversity_score`;
-* `memory_address_score`;
-* `score_breakdown`;
-* `dynamic_work_items`;
-* `operation_fire_counts`;
-* `modeled_library_calls`;
-* `final_outputs`;
-* `final_memory_state`;
-* `final_memory_roots`;
-* `diagnostics`.
+## Simulation Reports
 
-Scores, dynamic work counts, and operation fire counts are non-negative.
-`operation_cost_score` is the sum of weighted operation fires, modeled library
-work, operation diversity, and computed-memory-address scores. The metric
-definition is
-`weighted_operations_plus_library_work_diversity_and_address.v1`. This is a
-deterministic heuristic, not a timing model. `wavefront_steps` and
-`event_count` describe simulator progress and activity; neither field is a
-cycle estimate. Final outputs and visible memory state use deterministic
-encodings for functional regression checks. `final_memory_roots` maps each
-imported or exported memory port to a derived invocation-local alias-class
-label, so aliases within the reported invocation are observable without
-treating a memory capability as scalar payload. These labels are not stable
-memory-object identities and may be reused across invocations. Stable
-cross-invocation identity is unimplemented and remains a blocker for consumers
-that need to correlate memory objects over time.
+A DFG-sim, CGRA-sim, or system-simulation report obtains terminal values,
+stream sequences, visible logical-memory state or diffs, completion, activity,
+and trace order and coverage only from the exact `SimulationExecution`. It
+resolves opaque trace payloads only through the manifest's exact detailed-
+bundle references. It obtains normalized outcome, metrics, and findings only from exact
+`EvaluationEvidence`, with query meaning recovered through the corresponding
+`EvaluationRequest` and registries.
 
-## PnR Publication Boundary
+A simulator progress counter, event count, raw tool exit status, or
+human-oriented score is not a cycle metric unless an Evaluation model has
+produced the corresponding typed metric result. Invocation-local memory
+handles and diagnostic labels are not promoted to persistent logical-memory
+identity.
 
-The legacy graph-to-Fabric rematcher and its JSON mapping/estimate tools are
-not canonical artifact producers or consumers. They have been removed rather
-than retained as a second Mapping authority.
+Architecture-only RTL or EDA evaluation has no workload execution and
+therefore produces no empty `SimulationExecution`. Its report projects exact
+Request, Evidence, detailed-bundle, and owner-attempt records instead.
 
-The implemented PnR boundary is currently the native C++ Mapping verifier plus
-`FrozenRealizationGraph` and `FrozenRoutingGraph`. A developer or product CLI
-must wait for the dedicated Mapping MLIR persistence layer and the resolved
-PnR Config, search, and persistent SpatialMapping schema. Exact SpatialMapping
-records remain open. JSON may be emitted later as a reporting or visualization
-projection, but it is not a canonical Mapping input.
+## Mapping Reports
 
-## Scope
+The only canonical persistent Mapping outputs are the complete roots defined
+by `docs/spec-mapping-artifact.md`. Mutable candidates, `FrozenModel`, closure
+projections, dense indices, caches, configured views, and runtime images are
+nonpersistent implementation state and cannot be published as Mapping
+substitutes.
 
-These formats cover only currently connected simulation boundaries. RTL
-manifests, EDA reports, whole-stack audit summaries, and DSE report bundles
-need separate formats when their real producers and consumers exist.
+A successful Mapping report references the exact finalized Mapping identity
+and may summarize its invocation. It cannot duplicate selected records or
+become an alternative input. Invalid input, infeasibility, unsupported proof,
+constraint rejection, or budget exhaustion remains a typed invocation result;
+it is never encoded as a partial Mapping Artifact.
+
+## Visualization
+
+JSON, HTML, JavaScript, CSS, indexes, and renderer state used by
+`--loom-viz-export` follow `docs/spec-mapping-visualization.md`. They are
+removable projections and never become a Mapping profile or schema authority.
+
+## Conformance Anchor
+
+Given exact source references, regenerating a report may change presentation
+but must preserve every referenced semantic fact. No report is accepted where
+the corresponding canonical artifact, execution, Evidence, or owner record is
+required.

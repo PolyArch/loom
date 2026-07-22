@@ -1,101 +1,102 @@
-# Fabric Hardware Share Groups
+# Fabric Hardware Sharing Groups
 
-This document specifies the semantics of the global authority for which typed
-software modes may share one physical datapath. The sole normative member
-registry is `include/Common/HwShareGroups.def`; `hwShareGroups()` consumes that
-file directly. This document does not maintain a second member table.
+This document specifies the typed global authority for deciding which software
+operation families may share one real physical implementation family. The
+typed HSG registry is normative; this document does not duplicate its member
+table.
 
-## Why share groups exist
+## Ownership
 
-A `fabric.op` represents one physical datapath. `op_list` selects an
-operation-family envelope admitted by this registry. `hw_params` declares the
-complete typed and attributed modes implemented within that envelope. The
-distinct operation identities in those modes must equal `op_list`; neither
-representation may extend sharing beyond this registry.
+A Hardware Sharing Group (HSG) owns one fact: its typed software operation
+families can be implemented by one actual shared datapath family. HSG legality
+must be enforced by a typed verifier and realized by the Fabric-to-RTL backend.
+It is not a naming convenience or a promise that unrelated operations happen
+to fit in one FU container.
 
-Two software operation kinds belong to one group only when synthesizable RTL
-truly shares the datapath. The registry owns that global fact; individual
-Fabric descriptions may select a subset but may not invent another group.
+Registered software operation schemas remain the authority for exact actor
+semantics. An HSG does not define function types, predicates, constants,
+arity, or other semantic attributes. A software operation family may be legal
+in more than one HSG when multiple genuine hardware implementations exist.
 
-Counter-examples that the verifier rejects:
+Each concrete `fabric.op` binds exactly one HSG implementation family. Its
+`op_list` is the projection of the family members enabled by that resource;
+its `hw_params`, physical ports, and typed constraints narrow those members to
+the resource's actual parameterized capability. HSG membership alone neither
+enables every family member nor proves that multiple activations are mutually
+exclusive in resource time.
 
-* `fabric.op [@arith.addi, @arith.muli]` -- a multiplier and an adder are
-  separate datapaths in any standard synthesis flow; they cannot share a
-  physical block. Model this as two `fabric.op`s plus a `fabric.mux` to
-  select between their outputs.
-* `fabric.op [@arith.addi, @arith.subf]` -- integer addition and floating-
-  point subtraction share no RTL beyond an XOR.
+Hardware parameters and an exact selected software configuration jointly
+determine a supported configured function. Neither HSG membership nor an
+operation name appearing in `op_list` permits a matcher to infer types,
+attributes, arity, or any other capability not accepted by the complete typed
+relation.
 
-Multi-member groups encode genuine RTL sharing: a single ALU that performs
-`a + b` or `a - b` by inverting one operand; a single Booth multiplier whose
-control flag selects unsigned vs. signed product; a CORDIC iterator whose two
-output taps yield `sin(x)` and `cos(x)` simultaneously.
+## Genuine Physical Sharing
 
-## Verifier Rules
+Multi-member families are legal only when one backend-supported circuit truly
+shares the implementation. Examples include an ALU whose control selects add
+or subtract, or a multiplier whose control selects signed or unsigned
+interpretation. The exact supported types and attributes still come from the
+operation schemas and the concrete resource capability.
+
+An adder and a multiplier normally require separate datapaths. They must be
+modeled as separate `fabric.op` resources even when one FU can select between
+them. If those mutually exclusive resources share inputs, each shared input
+requires an explicit `fabric.demux` or equivalent selector and their shared
+result requires a matching `fabric.mux`:
+
+```text
+input a -> demux -> add.a / mul.a
+input b -> demux -> add.b / mul.b
+                    add / mul -> mux -> FU result
+```
+
+An output mux alone is insufficient. Directly using each input from both
+operations is real Fabric SSA broadcast and makes both consumers participate
+in token delivery and backpressure. An inactive branch cannot be treated as a
+hidden drain.
+
+## Concrete Capability Rules
 
 Fabric verification enforces the following:
 
-1. Every multi-member `op_list` entry belongs to one registered group.
-2. All entries in that `op_list` belong to the same registered group.
-3. The distinct `op_list` entries exactly equal the operation identities in
-   `hw_params`.
-4. Every `hw_params` mode forms a valid instance of its selected registered
-   software operation.
-5. `hw_params` modes are complete typed and attributed tuples, not independent
-   per-field allowed sets.
+1. Every concrete `fabric.op` resolves exactly one registered implementation
+   family.
+2. Every `op_list` member belongs to that family and resolves to a registered
+   software operation schema.
+3. `op_list` is a subset projection of the concrete capability; it cannot
+   extend capability merely because another member exists in the HSG.
+4. `hw_params`, physical ports, and typed constraints form one complete,
+   schema-interpretable relation for the enabled members, with no orphan or
+   duplicate declaration.
+5. Exact actor semantics are accepted only when the complete concrete
+   capability relation supports them under ordered port correspondence.
+6. The implementation family has a backend realization consistent with the
+   sharing claim.
 
-Singleton `op_list`s remain legal. A symbol absent from every multi-member
-group is an implicit singleton and must occupy a `fabric.op` alone.
+A singleton capability remains legal. A family with one enabled member does
+not need synthetic multi-operation machinery. A concrete resource does not
+need to enumerate every exact semantic point in its relation.
 
-Canonical FU encodings select `hw_params` modes by index. They do not persist
-an `op_sel` or mode `sw_config` into the Fabric topology. Mapping or a backend
-may derive `sw_configs = {mode = N}` transiently from the selected encoding.
+Canonical Fabric stores capability only. TechMapping selects a capability
+template and exact actor/op/port/boundary correspondence. SpatialMapping may
+select only semantic-preserving physical refinements. The finalizer derives
+`sw_configs`; no HSG entry, `op_list`, or canonical `fabric.op` stores a
+workload's selected operation or raw configuration bits. `ConfigurationABI`
+alone owns the physical encoding of the derived configuration fields.
 
-## Resolved Registry Entries
+## Extending The Registry
 
-`arith.cmpi` and `llvm.icmp` intentionally share the `integer_compare`
-family. Integer comparisons use the same predicate-controlled bit comparator.
-Pointer `llvm.icmp` modes are limited by exact mode type and predicate
-verification; family membership does not erase those typed restrictions.
+Adding an HSG is a code and backend change, not a configuration escape hatch:
 
-The `arm_packed_signed_lane_alu` family intentionally includes
-`llvm.arm.sadd16` with `llvm.arm.qadd16`, `llvm.arm.qsub16`, and
-`llvm.arm.qsub8`. The wrapping add uses the same lane adder with saturation
-disabled; subtraction, saturation, and lane width are implementation controls.
-These names are currently intrinsic semantic keys used by legacy Fabric
-descriptions. They are not registered MLIR operation names, so normalized
-`hw_params` modes reject them until an explicit adapter can materialize the
-corresponding registered `llvm.call_intrinsic` representation.
+1. Establish that one real circuit implements the proposed typed operation
+   families.
+2. Add the family to the normative typed registry without creating a second
+   member list.
+3. Provide or extend the Fabric-to-RTL realization for that family.
+4. Anchor verification with one accepted shared member and one member that is
+   absent from, or rejected by, the concrete capability.
 
-## How to extend
-
-Adding a new share group is intentionally a code change, not a configuration
-knob, because each group must correspond to a real RTL implementation that
-the fabric backend can synthesize.
-
-1. Confirm that your hardware really does share its datapath between the
-   member ops. If you are not building or buying a custom block that does
-   this, do not add the group.
-2. Add the new entry to `include/Common/HwShareGroups.def`.
-3. Document any non-obvious implementation rationale without duplicating the
-   complete member table.
-4. Add a unit test showing that complete typed `hw_params` modes are accepted
-   only within the registered group and are selected by explicit valid
-   encodings.
-
-## What to do when sharing does not exist
-
-If an FU can perform two software operations that are not in one share group,
-do not combine them in one `op_list`. Use separate physical `fabric.op`
-resources and explicit routing.
-
-For every FU input consumed by both mutually exclusive datapaths, insert an
-input demux or equivalent explicit route selector. Join shared FU outputs with
-an output mux. Each valid encoding must correlate all input route selections,
-the active operation mode, and the matching output selection.
-
-An output mux with implicit input broadcast is not a valid substitute. It
-leaves inactive datapaths consuming values and therefore does not materialize
-the selected software function. Distinct boundary correspondence remains part
-of configured-function identity and must not be collapsed by isomorphism
-deduplication.
+No broader test matrix is normative. The anchor must not preserve a
+member-name string bag, duplicate the registry, require exact-domain
+enumeration, or make HSG identity a TechMapping candidate equivalence key.

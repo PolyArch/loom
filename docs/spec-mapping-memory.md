@@ -1,76 +1,320 @@
 # Mapping Memory Boundary
 
-This document specifies confirmed memory ownership across Dataflow,
-TechMapping, SpatialMapping, and SystemMapping. It does not define the still-
-open persistent physical memory record schema.
+## Purpose
+
+This document assigns memory truth across the Canonical Dataflow Program,
+Fabric, TechMapping, SpatialMapping, SystemMapping, Deployment, and runtime.
+The central invariant is that a software memory space, a physical memory
+service, and an interface used to reach that service are separate objects.
+
+## Canonical Objects And Relations
+
+The Canonical Dataflow Program owns `LogicalMemoryRoot` and view identity,
+logical intervals, layout, aliasing, lifetime, and the load/store ordering
+network. Fabric owns `PhysicalMemoryService` and region identity plus typed
+manager/requester and subordinate/provider endpoints.
+
+The required semantic relations are:
+
+```text
+MemoryBinding
+  LogicalMemoryView -> PhysicalMemoryServiceRegion
+
+MemoryEngineBinding + AccessEntry + MemoryBinding
+  software memory actor
+    -> operation placement + LocalMemoryService or manager dispatch target
+    -> physical memory service region
+
+ExposureEntry + MemoryBinding
+  software memory output -> subordinate/provider terminal + dispatch target
+                         -> physical memory service region
+```
+
+These relations do not require three parallel top-level record families.
+Their persistent owners are the existing Mapping records described below.
+
+The relation is sparse and many-to-many. Several logical roots may bind to
+one physical service. One endpoint may carry several bindings. One binding
+may be reachable through several manager or subordinate endpoints. These
+cases do not create duplicate storage identities.
+
+A logical root spans several independent physical services only through
+explicit disjoint partitioning or through a Fabric-declared replication,
+coherence, sharding, striping, or service-transform capability. Overlapping
+rows must not imply replication or coherence by convention.
 
 ## Canonical Memory Order
 
-The Canonical Dataflow Program owns logical memory ordering. Required
-happens-before relations are ordinary typed event edges in the canonical
-memory-order event network. Mapping must not duplicate them as `MemoryOrder`
-records, infer them from textual order, or replace them with a schedule-local
-ordering authority.
+The Canonical Dataflow Program is the only owner of logical memory ordering.
+Required happens-before relations are typed event edges in its memory-order
+network. Mapping must not duplicate them as `MemoryOrder` records, infer them
+from textual order, or replace them with a physical schedule.
 
-Physical contention may add stalls, but it cannot weaken or recreate the
-software event network. The final verifier proves that selected physical
-mechanisms preserve every logical obligation.
+Physical contention may add stalls but may not weaken RAW, WAR, WAW, or other
+explicit causal relations. Final verification proves that the selected ports,
+services, routes, exact Fabric or Mapping-selected hardware-refinement grant
+behavior, and `ResourceUse` preserve every logical obligation. Mapping,
+runtime, and simulation do not supply missing cycle-visible arbitration.
 
 ## TechMapping Memory Realization
 
-TechMapping owns the selected Memory Realization:
+TechMapping owns each selected Memory Realization:
 
 * exact load/store actor coverage and logical-root association;
-* selected Fabric Memory Semantic Encoding;
-* actor-to-operation-template correspondence;
-* exact actor and graph boundary correspondence;
-* one-beat access capability obligations; and
-* exact internal-edge witnesses pairing a canonical software endpoint pair
-  with a selected Fabric internal connection.
+* selected Fabric memory semantic capability;
+* actor-to-operation correspondence;
+* exact graph and implementation-boundary correspondence;
+* one-beat access-size, alignment, and subword-write obligations; and
+* exact selected internal-edge witnesses.
 
-An internal-edge witness uses the exact Dataflow artifact identity plus typed
-producer and consumer endpoints. It does not use an edge number, symbol, path,
-or list position. Actors sharing one Memory Realization do not make every edge
-between them internal; only witnessed selected connections are absorbed.
+An internal-edge witness identifies one canonical software source and sink and
+one Fabric-allowed internal connection. Actors sharing a Memory Realization do
+not make all edges between them internal. Only witnessed edges are absorbed;
+all remaining edges become ordinary external routing obligations.
 
-## Spatial Memory Realization
+A selected load still has one retirement event that publishes `data + done`
+atomically across its internal and external obligations. Mapping may select
+destinations but cannot split that packet or weaken its backpressure. Store
+retirement remains one `done` event.
 
-SpatialMapping selects concrete `fabric.mem` occurrences, operation
-attachments, route-tree branches, physical buffers, address/service choices,
-configuration, tags, and event-relative resource use where those facts are not
-mechanically derivable.
+## SpatialMapping Records
 
-There is no independent request-route and response-route authority. Each
-transport obligation is a branch of the same logical-net and Route Tree model
-used for other software transfers, with endpoints derived from the selected
-Memory Realization and Fabric service structure. PE-local or memory-local
-traversal is not free; it must be represented by explicit Fabric connectivity
-or absorbed by the selected internal-connection witness.
+SpatialMapping has exactly five persistent record families:
 
-SpatialMapping must not copy the canonical memory-order network, create a
-second memory binding that competes with Memory Realization or service
-selection, or store local QoR estimates.
+```text
+ComputeBinding
+MemoryEngineBinding
+MemoryBinding
+RouteTree
+ResourceUse
+```
 
-## System Memory Boundary
+Memory does not add a generic binding bag, a string-key extension record, or a
+parallel configured-table authority.
 
-SystemMapping uses the confirmed `ExecutionBinding`, `ServiceRealization`, and
-`ResourceUse` families. It connects SpatialCore-local service use to exact
-system-visible services and transport without allowing runtime remapping. The
-exact service ownership chain, address fields, coherence fields, and
-SystemMapping cardinality remain open.
+### MemoryBinding
 
-## Implemented Boundary
+One `MemoryBinding` is the atomic relation:
 
-The neutral C++ verifier implements TechMapping Memory Realization legality.
-`FrozenRealizationGraph` derives concrete memory occurrence domains, external
-operation-port demands, deterministic logical nets, selected internal-edge
-absorption, and logical-root service obligations. These are ephemeral native
-projections, not persistent SpatialMapping records.
+```text
+one LogicalMemoryInterval -> one PhysicalMemoryServiceRegion
+```
 
-## Validation
+It stores a typed logical memory or view reference, logical interval, typed
+physical service reference, physical region, and only a selected Fabric-owned
+address transform that cannot be derived from the endpoints. It receives a
+Mapping-local identity because several rows may bind the same logical root and
+Access or Exposure children must reference an exact row.
 
-Current anchor tests cover exact internal-edge witnesses, foreign Dataflow
-references, duplicate endpoint-pair rejection, multi-sink fanout, deterministic
-freeze, memory occurrence domains, access capability, and service consistency.
-Persistent address, service, route, buffer, tag, and resource-use tests wait
-for their closed schemas.
+Whole-root placement is the degenerate case. Disjoint rows express
+partitioning. Multiple roots may independently bind to one service. Multiple
+manager or subordinate endpoints that reach the same service do not require
+multiple `MemoryBinding` rows unless the logical interval or physical region
+actually differs.
+
+Each `MemoryBinding` owns its `ExposureEntry` children. An Exposure Entry binds
+one software memory-output obligation to one selected subordinate/provider
+terminal, its existing Memory Binding, and one closed typed
+`LocalMemoryServiceRef | ManagerEndpointRef` dispatch target. The service path
+belongs to route or service realization; provider-decode rows are derived
+configuration.
+
+### MemoryEngineBinding And AccessEntry
+
+Each `MemoryEngineBinding` is keyed by one TechMapping Memory Realization and
+selects one concrete `fabric.mem` Operation Engine. It owns exactly one
+`AccessEntry` for every covered canonical load or store actor.
+
+Operation placement uses a closed typed reference:
+
+```text
+MemoryOperationPlacementRef =
+    Spatial  { PhysicalMemoryOperationPortRef }
+  | Temporal { PhysicalMemoryOperationPortRef, OperationContextOrdinal }
+```
+
+An Access Entry stores the actor reference, operation placement, one
+`MemoryBinding` reference, one closed typed
+`LocalMemoryServiceRef | ManagerEndpointRef` dispatch target, and only
+selected non-derived typed `sink <- source` choices. This is where a selected
+`load.data -> store.data`, `done -> ctrl`, or other Fabric-allowed
+memory-internal dependency is recorded.
+
+The AccessEntry and ExposureEntry target fields collectively are the only
+persistent owner of selected `C_dispatch`; there is no parallel dispatch
+relation record. Fabric alone owns eligible `H_dispatch`, and the Mapping
+verifier proves `C_dispatch` is its subset. The selected target may be the
+occurrence's Local Memory Service or a declared manager endpoint/path. Those
+are alternatives in one typed service model, not different request protocols.
+Runtime ABI owns the single
+`SpatialServiceRequest`/`SpatialServiceResponse` boundary used by either
+target.
+
+An Access Entry does not own a Physical Tag. The actual tag value is a typed
+sharing assignment on the real tagged writer or ingress `ResourceUse`, and is
+present only where may-overlap incompatible interpretations in a local Fabric
+match domain require distinction. It is not global firing, iteration,
+invocation, logical-token, or memory identity. Memory continuity and selected
+context derive the operation-row match value.
+
+### RouteTree And ResourceUse
+
+Token edges not absorbed by the Memory Realization use the ordinary flat
+`RouteTree` model. A memory-local traversal is not free unless it is an exact
+selected internal-edge witness. The same route-tree rules apply to address,
+data, control, and completion transport.
+
+`ResourceUse` owns event-relative activation, typed use-pattern parameters,
+capacity occupancy, and sharing assignments over the already selected engine,
+service, route, port, queue, bank, or context. It does not copy Fabric capacity,
+duration, latency, or use vectors.
+
+Configured `memory_operation_table` rows, dispatch selectors, provider decode,
+and response tracking are deterministic semantic projections of the five
+record families plus the exact Dataflow, TechMapping, and Fabric inputs.
+`ConfigurationABI` alone maps those fields to physical bits, addresses, and
+programming operations; `HardwareConfigurationImage` artifacts carry the
+encoded result.
+
+## SystemMapping Memory And Service
+
+SystemMapping has one non-empty root-thread-launch coverage set. Its exact
+imported SpatialMapping set is the finite, deduplicated range of normalized
+`B_graph` over all reachable static graph launches and their legal may-domains.
+There is no separately editable selected-set field and no fixed cardinality.
+An InstructionCore-only closure has an empty imported SpatialMapping set
+without a placeholder artifact.
+
+The only persistent SystemMapping families are:
+
+```text
+ExecutionBinding
+ServiceRealization
+ResourceUse
+```
+
+### ExecutionBinding
+
+`ExecutionBinding` contains two typed variants:
+
+```text
+ThreadExecutionBinding
+  RootThreadLaunchRef -> BindingRelation<AccCoreOccurrenceRef>
+
+GraphExecutionBinding
+  (ThreadExecutionBindingKey, StaticGraphLaunchRef)
+    -> BindingRelation<SpatialMappingImportRef>
+```
+
+Relations are total on the Canonical Dataflow Program's may-domain and use
+the closed `PresburgerPartition` or `StableKeyLookup` algebra. Runtime only
+evaluates these immutable relations for concrete coordinates and parameters.
+It never chooses another AccCore or SpatialMapping.
+
+### ServiceRealization
+
+SystemMapping has one `ServiceRealization` family keyed by one of two typed
+software obligations:
+
+```text
+SystemServiceObligationKey =
+    TransferObligationFamilyKey
+  | OperationServiceObligationFamilyKey
+```
+
+A Transfer obligation represents one exact producer-terminal family and its
+canonical non-empty sink set. Multicast remains one obligation; Mapping may
+not split it into unrelated per-sink routes. An Operation Service obligation
+represents one logical service root or view and the typed operation set
+required by the Canonical Service Schema. Memory access and exposure share
+this owner so they cannot select contradictory services.
+
+Each `ServiceRealization` contains canonical owner-local `ServicePlan` values
+and a total plan-selection relation. A plan contains:
+
+* atomic logical-service-interval to Fabric-service-region bindings;
+* one `TransferLegRealization` per leg mechanically required by the Canonical
+  Service Schema; and
+* mapping-visible physical refinement assignments.
+
+The Canonical Service Schema, not Mapping or a protocol name, defines memory
+request, write data, read data, response, completion, and any other operation
+legs. A leg is realized by the ordinary flat system Route Tree over typed
+Fabric endpoints and traversals. AXI, TileLink, CXL, packet, flit, header,
+virtual-channel encoding, and protocol state belong to Interconnect
+Implementation.
+
+### Cross-Layer Service Chain
+
+The only memory-service ownership chain is:
+
+```text
+Canonical logical service
+  -> SpatialMapping local service or explicit boundary proxy
+  -> Fabric module-to-AccCore attachment
+  -> SystemMapping ServiceRealization
+  -> system provider service or explicit external provider
+```
+
+A Spatial-local service that completes the operation produces no system
+obligation. A boundary proxy creates an operation-service obligation, and
+SystemMapping uniquely selects the system route, provider region, and address
+transform. Partial closure may end only at an explicit external provider; it
+must not pretend that a proxy is final storage.
+
+Whether service is local or crosses a manager endpoint does not change the
+runtime request schema. Both use the Runtime ABI's typed
+`SpatialServiceRequest` and `SpatialServiceResponse`; adapters translate that
+one boundary to a local model, standalone external-service model, RTL harness,
+or manager Bridge without reinterpreting the Mapping binding.
+
+System `ResourceUse` for a selected plan element uses
+`ServicePlanElementRef = (ServiceRealizationKey, canonical plan ordinal,
+typed element key)`. Applicability is derived from `plan_selection`; the use
+does not copy its predicate, target, or selected plan. System `ResourceUse`
+owns occupancy, event-relative activation, typed capacity demand, Physical
+Tags, and sharing assignments for selected system services and transport.
+Spatial `ResourceUse` remains inside the imported immutable
+SpatialMapping and is occurrence-qualified by the derived cross-layer closure;
+SystemMapping does not copy it.
+
+## Runtime And Deployment Boundary
+
+The verified SystemMapping closure mechanically defines
+`ThreadDispatchImage`, `SpatialLaunchImage`, and `AdmissionImage` payloads.
+`ThreadDispatchImage` and `AdmissionImage` are always present;
+`SpatialLaunchImage` is present when the exact imported SpatialMapping set is
+non-empty. These are read-only compiled Deployment payloads, not Mapping
+records. Runtime evaluates their immutable binding relations, supplies
+invocation-specific allocations and authorization, and atomically admits
+preselected activation sets. It may wait or apply backpressure, but it may not
+remap execution, service, route, tag, context, or configuration.
+
+Deployment combines the exact Dataflow and Fabric artifacts, complete
+SystemMapping, every direct and transitive Mapping dependency, binaries,
+selected Hardware and Interconnect Implementations and refinements, exact
+`ConfigurationABI` artifacts, one `HardwareConfigurationImage` for every
+selected Programming Unit including programmable transport/configuration
+units, memory images, and platform bindings as a dependency graph. The
+imported SpatialMapping set is only one part of that closure. Package lists are
+content indices and must not become a second service or mapping authority.
+
+## Validation Anchors
+
+Anchor-level tests should cover:
+
+* sparse many-to-many binding with several logical roots sharing one service,
+  plus rejection of unsupported overlap;
+* one Access Entry per covered actor, an exact internal edge, and atomic load
+  `data + done` retirement;
+* local Physical Tag ownership by the real writer/ingress `ResourceUse`;
+* local-service and manager-endpoint AccessEntry targets using the same typed
+  Spatial Service request/response boundary;
+* AccessEntry and ExposureEntry dispatch ownership plus rejection of
+  `C_dispatch` outside Fabric-owned `H_dispatch`;
+* one system-memory request/response plan and one unsplit multicast; and
+* Deployment closure including imported Mapping dependencies and a
+  programmable transport unit, with runtime remapping rejected.
+
+Tests should not freeze configured table layout, protocol encoding, printer
+format, or runtime cache structure.

@@ -3,15 +3,67 @@
 This document specifies `fabric.fu`, the CGRA-style functional-unit
 container that wraps `fabric.op`, `fabric.mux`, and `fabric.demux` ops
 into one PE-internal resource and presents a fixed external port
-interface to the enclosing `fabric.pe`. Implementation locations that
-must mirror this spec include `Fabric_FuOp` in
-`include/Fabric/IR/FabricOps.td` and the parser, printer, and verifier
-logic in `lib/Fabric/IR/FabricOps.cpp`.
+interface to the enclosing `fabric.pe`.
 
 `fabric.mux` and `fabric.demux` are FU-local configurable connectivity
 ops. They are part of a SpatialCore template inside `fabric.module`;
 they are not `fabric.system` interconnect primitives and must not be
 used to model system-level fan-in, fanout, arbitration, or routing.
+
+## Capability And Realization Ownership
+
+An FU owns physical resources, fixed boundary ports, SSA wiring, and a finite
+normalized domain of structural/capability templates. Each inner `fabric.op`
+owns one concrete parameterized capability through its implementation family,
+`op_list` projection, `hw_params`, physical ports, and typed constraints.
+Registered operation schemas own exact software semantics, while typed
+Hardware Sharing Groups own only genuine physical implementation-family
+sharing legality.
+
+[Software Function To FU Synthesis](spec-generalize-subgraphs-to-fu.md) owns
+the reverse construction contract from canonical software-function sets to
+this same FU capability model. It does not create a second FU schema.
+
+Hardware parameters and selected software configuration jointly determine the
+supported configured software function. HSG membership and `op_list` syntax
+alone never grant a concrete operation arbitrary capability; the complete
+typed capability relation and exact software binding must accept it.
+
+TechMapping selects an FU structural/capability template and binds exact
+Canonical Dataflow actors to inner operations with ordered operand, result,
+and FU-boundary correspondence. A FU-local mux, demux, or operation choice that
+changes the configured software graph, selected physical operation, topology,
+or boundary relation is part of that TechMapping realization. SpatialMapping
+may choose only Fabric-declared physical or QoR refinements that preserve the
+selected software function.
+
+Canonical Fabric does not persist a workload's `sw_configs`. The finalizer
+derives them from Fabric capability, the exact TechMapping realization, and
+SpatialMapping's semantic-preserving refinements. Fabric owns configuration
+field semantics and legal domains; only `ConfigurationABI` owns their physical
+bit encoding and programming representation.
+
+The configured projection is a closed sum:
+
+```text
+FuConfiguration =
+    Disabled
+  | Active { configured_graph, physical_refinements }
+```
+
+`Disabled` carries no mux, demux, operation, or refinement selections. The
+physical inactive encoding belongs only to ConfigurationABI. `Active` denotes
+one uniquely meaningful configured software graph; two configuration values
+that materialize the same typed graph and physical behavior are invalid
+duplicates, not alternative functions.
+
+An FU is the physical configured-graph and capability boundary. It is not a
+macro actor, an all-input rendezvous, or a dynamic atomicity boundary. Active
+inner `fabric.op` resources execute the Canonical Dataflow actors' ordinary
+transitions independently. An FU or `fabric.op` must not create an
+operation-local context identifier. `InstructionContextRef` identifies only
+the PE-owned resident configuration/runtime-state namespace selected by
+SpatialMapping; it does not own the configured graph or its dynamic execution.
 
 ## Op shape
 
@@ -77,13 +129,12 @@ fabric.fu @F (!fabric.bits<W>, !fabric.bits<W>) -> !fabric.bits<W> {
 * The body must contain at least one `fabric.op`.
 * The body terminator is `fabric.yield` (always, in both forms).
 
-The mux / demux ops inside an FU let different software
-configurations realize different internal compute graphs over the
-same hardware: they reshape the in-FU op connectivity rather than
-attaching to the FU's external inputs / outputs. Allowing back-edges
-in the body lets configurable compute ops (e.g.
-`fabric.op[@dataflow.carry]`) and cyclic `ConfiguredFunction` records be
-matched or bound to an FU through mapping.
+The mux / demux ops inside an FU let different structural/capability
+templates realize different internal compute graphs over the same hardware:
+they reshape in-FU operation connectivity rather than attaching to the FU's
+external inputs or outputs. Allowing back-edges in the body lets configurable
+compute operations such as `fabric.op[@dataflow.carry]` and cyclic exact
+software-function projections be matched to an FU through TechMapping.
 The FU body region is a graph region
 (`RegionKindInterface::Graph`).
 
@@ -100,6 +151,26 @@ For example, an FU that selects between separate add and multiply datapaths
 needs one demux per shared input and one result mux. Directly connecting each
 input to both operations describes broadcast to both datapaths, not selection.
 Any configuration that would require an implicit drain is invalid.
+
+`fabric.mux` and `fabric.demux` selections that determine the active internal
+graph are correlated in the selected capability template and exact
+TechMapping correspondence. They are not independent allowed-value sets.
+Inactive ports may be omitted from token and routing obligations only when the
+registered operation schema and concrete capability relation explicitly
+guarantee no consumption, no production, and no backpressure.
+
+## Edge Realization Boundary
+
+A Canonical Dataflow edge is internal to an FU only when the exact configured
+FU relation selected by TechMapping explicitly realizes that actor-to-actor
+connection through the configured FU topology. Placing both actors in the same
+FU, PE, or instruction context is not such a witness.
+
+The only other relations that may make a software edge internal are an
+explicit configured-memory relation and an explicit temporal-PE register-file
+realization. Without one of these three typed relations, the edge remains an
+external transfer obligation. Mere physical co-location, a selector, an
+available local buffer, or an inactive branch never absorbs it.
 
 ## FU-boundary truncation (input side)
 
@@ -171,5 +242,5 @@ Named template form:
 * `spec-fabric-instantiate.md` -- symbol resolution, allowed
   parent/target table, width-relaxation rules at the
   `fabric.instantiate` site.
-* `spec-fabric-reconfigurable-op.md` -- per-op runtime axis catalogue
-  for `fabric.op` (the inner compute op).
+* `spec-fabric-reconfigurable-op.md` -- parameterized capability,
+  TechMapping realization, and derived configuration for inner resources.

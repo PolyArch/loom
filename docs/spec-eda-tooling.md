@@ -1,235 +1,125 @@
 # EDA Tooling
 
-This document specifies the portable EDA tooling model for Loom. It
-defines how Loom discovers, selects, and records backend tool profiles
-without embedding machine-specific installation details in public
-project specifications.
+This document defines the portable boundary between Loom and external RTL,
+FPGA, ASIC, formal, and physical-design tools. Process execution is owned by
+[Evaluation ToolRunner](spec-evaluation-tool-runner.md); Evaluation schemas are
+owned by [DSE and Evaluation](spec-dse-feedback.md).
 
-## Purpose
+## Tool Descriptors And Bindings
 
-Loom needs multiple hardware backend flows:
+An EDA `EvaluationModelDescriptor` declares an immutable observation
+capability:
 
-* fast RTL sanity checks;
-* RTL simulation;
-* logic synthesis and area estimation;
-* timing estimation;
-* power estimation;
-* optional physical or FPGA-oriented evaluation.
+* required Artifact schemas;
+* modeled phenomena and supported metrics/findings;
+* required technology or platform input slots;
+* full-execution method and determinism contract;
+* parser/adapter semantic identity.
 
-The public project contract must describe these flows without assuming
-one workstation, one install root, one license setup, or one vendor
-environment.
+One resolved model binding supplies exact result-affecting inputs such as tool
+version, standard-cell or FPGA platform data, corner, constraints, parser
+version, and semantic effort. Executable paths, module activation, license
+servers, host selection, scratch roots, and parallel-job limits are invocation
+bindings. They do not enter candidate semantics unless the model descriptor
+explicitly declares a result-affecting value.
 
-## Public Specification Boundary
+Loom selects by descriptor capability and exact model binding, not by a global
+fidelity level or hard-coded workstation tool name.
 
-Public documents under `docs/` may describe:
+A flow that creates a new `HardwareImplementation` is instead selected through
+the central `CandidateGeneratorDescriptor` and
+`ResolvedCandidateGeneratorBinding`. One physical tool invocation may derive
+an implementation and retain raw reports for a following Evaluation, but it
+does not make EvaluationModelDescriptor an implementation generator.
 
-* backend tool classes;
-* tool profile schemas;
-* required tool capabilities;
-* generic command roles;
-* expected inputs and outputs;
-* report schemas;
-* failure and diagnostic behavior;
-* privacy and reproducibility requirements.
+## HardwareImplementation Derivation
 
-Public documents under `docs/` must not record:
+The initial RTL implementation is a `MechanicalDerivation` from exact Fabric,
+exact `ConfigurationABI`, and the resolved generator binding. It has no parent
+implementation. A later flow that consumes existing hardware state and
+preserves new state creates another immutable `HardwareImplementation`.
+Representative later derivations are:
 
-* local absolute installation paths;
-* user names or host names;
-* license server names or license files;
-* credentials, tokens, or private environment variables;
-* private PDK paths or proprietary library locations;
-* workstation-specific module names as normative requirements.
+* RTL elaboration or synthesis to a gate-level implementation;
+* FPGA synthesis and implementation;
+* physical placement, routing, extraction, or stream-out; and
+* explicit insertion or transformation of implementation buffers/state.
 
-Local activation commands, local install paths, and private library
-roots belong in ignored local configuration, private CI configuration,
-or temporary execution guides. They are not part of the public Loom
-specification.
+Each later output records the exact parent implementation and
+implementation-defining generator binding. A purely mechanical transformation
+uses `MechanicalDerivation`; a search choice uses `CandidateDecision`. Logs and
+QoR observations do not become fields of `HardwareImplementation`.
 
-## Tool Profiles
+## Evaluation
 
-A tool profile is a declarative description of a backend capability.
-Profiles are selected by capability and fidelity, not by hard-coded
-tool name.
+Lint, formal checks, RTL workload execution, timing, area, power, DRC, and other
+observations are ordinary Evaluations over exact immutable subjects. They
+produce `EvaluationEvidence` and raw detailed bundles. Workload-running RTL
+simulation also produces `SimulationExecution`.
 
-A profile identifies:
+An invocation that derives and evaluates hardware first finalizes the new
+implementation, then issues Evaluation against that exact identity. It must not
+attach observations to the parent design or mutate an existing implementation.
 
-* profile id;
-* tool class;
-* supported capabilities;
-* expected input artifact kinds;
-* produced output artifact kinds;
-* required library profile kinds;
-* optional activation recipe reference;
-* optional environment variable allowlist;
-* report parser or adapter kind;
-* portability and confidentiality level.
+## External Artifacts
 
-The activation recipe may refer to a local script or environment setup
-entry, but public example profiles must use placeholders or portable
-open-source commands. Private profiles may contain site-specific
-activation commands outside the public repository.
+Backend-native products such as reports, logs, waveforms, netlists, extracted
+parasitics, databases, and bitfiles are stored in content-addressed raw bundles
+or in the owning `HardwareImplementation`, according to whether they represent
+semantic hardware state. A bundle manifest contains payload digests, tool
+products, and the exact `EvaluationRequest` reference. It never refers to an
+Invocation or `EvaluationEvidence`; owner-specific attempt records retain
+invocation provenance and may reference the bundle. Evidence may refer to the
+bundle, giving an acyclic direction from raw execution material to normalized
+observations. Normalized metrics and findings remain owned only by Evidence.
 
-## Target Universe And Layering
+High-cost products use a caller-selected artifact root, with a resolved default
+under Loom's user data area when no path is supplied. Public specs and portable
+manifests never require private installation paths, credentials, license data,
+user names, or host names.
 
-The EDA target universe includes every backend profile class that Loom
-can discover, describe, activate, execute, parse, normalize, calibrate,
-and report without embedding private machine details in public specs.
-This includes open-source RTL tools, FPGA flows, ASIC logic synthesis
-flows, timing and power analysis tools, physical-estimate flows, formal
-or structural checkers, and custom adapters.
+## Library And Platform Inputs
 
-Implementation may be layered by capability, but the profile contract is
-not limited to the profiles that are currently executable on one
-machine. Each profile class has the same objective completion ladder:
+Technology data is referenced through typed model-input slots. It may represent
+standard cells, SRAMs, IO, RC data, FPGA devices, timing/power models, or other
+platform facts. The exact immutable content or release identity is part of the
+semantic model binding when it can affect results. The requested PVT corner,
+required clock, and other ground-truth evaluation scenario facts are typed
+`EvaluationCondition` values rather than model inputs.
 
-* discovery: Loom can identify that the profile exists and which
-  capabilities it claims;
-* activation: Loom can apply the selected local activation recipe
-  without exposing private details in public reports;
-* execution: Loom can invoke the backend role on declared inputs;
-* parsing: Loom can parse backend-specific logs or reports;
-* normalization: Loom can emit stable Loom report records;
-* calibration: Loom can use backend reports as calibration inputs when
-  the selected FPA model supports calibration;
-* reporting: Loom can reference the normalized evidence from report
-  bundles and DSE records.
+Local resolution from a logical reference to files is an execution concern and
+must not create a second library-profile authority.
 
-An example or descriptor may declare a target profile class before the
-corresponding execution adapter is complete, but it must not count as
-passing backend evidence until the required activation, execution,
-parsing, normalization, and reporting records exist.
+## Failure And Completion
 
-## Tool Classes
+Execution distinguishes at least:
 
-Baseline tool classes are:
+* descriptor or capability mismatch;
+* missing semantic model input;
+* unavailable executable or activation failure;
+* license or permission unavailability;
+* timeout or cancellation;
+* tool execution failure;
+* missing declared output;
+* parser/normalizer failure; and
+* completed Evaluation with adverse typed findings.
 
-* `rtl_lint`: static and structural RTL checks;
-* `rtl_sim`: RTL simulation;
-* `rtl_synth`: logic synthesis and structural area estimation;
-* `timing`: timing analysis or critical-path estimation;
-* `power`: power estimation from structural data and activity;
-* `physical`: placement, routing, extraction, or physical estimates;
-* `fpga`: FPGA synthesis, implementation, or prototyping;
-* `formal`: equivalence, property, or connectivity checking;
-* `format`: RTL formatting or syntax normalization;
-* `custom`: user-provided backend adapter.
+Infrastructure failures and execution limits do not select a different formal
+candidate. Timeout or cancellation maps to `CancelledOrTimeout`; tool or
+adapter failure maps to `ExecutionFailed`. Resource unavailability may leave
+attempt and controller state incomplete, but cannot create partial Evidence.
+No tool adapter silently falls back to another model.
 
-Tool classes define required capabilities. A concrete profile may
-implement multiple classes when a backend supports multiple roles.
+## Calibration And Online Learning
 
-Normalized EDA reports record the fidelity class implied by the
-executed backend role. Baseline mappings are:
+High-fidelity Evidence may be admitted as training or calibration input for a
+faster model through the central DSE plan. Training creates a new immutable
+parameter bundle and resolved model binding. Online updates never mutate a
+model used by an in-flight deterministic invocation.
 
-* `rtl_lint` produces `rtl_structural` evidence;
-* `rtl_sim` produces `rtl_functional` evidence.
+## Anchor Verification
 
-These mappings classify the backend evidence itself. They do not
-relabel analytic FPA metrics that merely cite a backend report as a
-calibration or structural input.
-
-## Library Profiles
-
-A library profile describes technology or platform data used by an EDA
-flow. It may represent standard-cell libraries, SRAM compilers, IO
-libraries, FPGA parts, timing corners, power corners, process corners,
-or abstract analytical cost tables.
-
-A library profile identifies:
-
-* library profile id;
-* technology or platform family;
-* library kind;
-* supported corners;
-* supported voltage and temperature metadata when available;
-* logical file roles required by tools;
-* optional source release identifiers;
-* confidentiality level.
-
-Public library profiles must avoid private paths. Local profiles may
-resolve logical file roles to local paths outside the public docs.
-
-## Artifact Boundary
-
-Tool profiles consume and produce explicit artifacts. Baseline artifact
-kinds are:
-
-* RTL manifest;
-* SystemVerilog source set;
-* testbench source set;
-* constraint manifest;
-* activity data;
-* synthesis report;
-* timing report;
-* power report;
-* area report;
-* physical estimate report;
-* FPGA report;
-* normalized FPA report specified in `docs/spec-fpa-estimation.md`.
-
-Structured local process execution is owned by
-`docs/spec-evaluation-tool-runner.md`; EDA adapters retain ownership of
-tool-specific report parsing and normalization.
-
-Adapters normalize backend-specific output into Loom reports. Backend
-log text is evidence, but normalized reports are the stable interface
-used by DSE and user-facing summaries.
-
-The global evidence policy in `docs/spec-loom-stack.md` applies to EDA
-outputs. In particular, schema fixtures or scaffold descriptors must not
-be consumed as backend pass records by FPA, reporting, or DSE.
-
-## Reproducibility
-
-Every backend run must record:
-
-* selected tool profile id;
-* selected library profile id;
-* input artifact identities when available;
-* backend command role;
-* backend version when available;
-* report parser version;
-* success or failure status;
-* diagnostics.
-
-Local paths may appear in private run logs, but portable report
-summaries should prefer profile ids and artifact identities.
-
-## Error Handling
-
-Tool discovery must distinguish:
-
-* no profile matches the requested capability;
-* profile exists but activation failed;
-* required library profile is missing;
-* backend tool executable is unavailable;
-* backend license or permission check failed;
-* backend executed but produced unsupported output;
-* backend report parser failed;
-* backend result failed Loom acceptance checks.
-
-Diagnostics must identify the missing capability or failed profile
-without exposing secrets in public reports.
-
-## Relationship To RTL And FPA
-
-RTL lowering is specified in `docs/spec-rtl-lowering.md`. FPA
-estimation is specified in `docs/spec-fpa-estimation.md`.
-
-RTL lowering emits portable RTL artifacts. EDA tooling profiles define
-how those artifacts are checked or evaluated in a selected environment.
-FPA estimation consumes normalized backend reports and activity data.
-
-## Acceptance Criteria
-
-The EDA tooling contract is complete when:
-
-* Loom can select backend flows by capability rather than hard-coded
-  workstation details;
-* public docs and tracked example profiles do not contain private
-  installation paths or license details;
-* local users can provide private profiles to activate installed tools;
-* backend-specific logs can be normalized into stable Loom reports;
-* missing tools, missing libraries, activation failures, and parser
-  failures produce structured diagnostics.
+Stable tests cover semantic versus invocation binding, exact implementation
+parentage, derivation-before-evaluation, output collection, and typed failure
+classification. Vendor command lines, local module names, licenses, and report
+text are adapter tests rather than global fixture matrices.

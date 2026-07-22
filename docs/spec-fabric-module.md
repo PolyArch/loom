@@ -2,18 +2,20 @@
 
 This document specifies `fabric.module`, the SpatialCore or CGRA
 template container of the fabric dialect. `fabric.system` is the
-SoC/system container. Implementation locations that must mirror this
-spec include `Fabric_ModuleOp` in `include/Fabric/IR/FabricOps.td` and
-the parser and printer in `lib/Fabric/IR/FabricOps.cpp` plus the verifier
-in `lib/Fabric/IR/FabricModuleOp.cpp`.
+SoC/system container.
 
 `fabric.module` is the SpatialCore or CGRA-level ADG container. It is
 not a system-level SoC container and it does not use `fabric.link` for
 internal connectivity.
 
+The module boundary has two orthogonal planes. `bits` and `bits_tag` are
+handshake-bearing token transports used to realize graph value, stream,
+control, and completion obligations. `memref` is a memory-service capability,
+not a token stream or a physical storage identity.
+
 ## Identity
 
-* Mnemonic: `module`. C++ class: `::fabric::ModuleOp`.
+* Mnemonic: `module`.
 * The op is a `Symbol` with a required `sym_name`.
 * The body is a single block (a `SizedRegion<1>` with one block).
 * The body region is `Graph`-kind, so SSA dominance is not enforced and
@@ -80,13 +82,11 @@ A module may have zero outputs (`-> ()`) or zero inputs
 * `fabric.pe` (both `[spatial]` and `[temporal]`)
 * `fabric.switch` (both `[spatial]` and `[temporal]`; see
   `docs/spec-fabric-switch.md`)
-* `fabric.mem` (both `[spatial]` and `[temporal]`; see
-  `docs/spec-fabric-mem.md`)
-* `fabric.fifo`
-* `fabric.module` (nested or sibling top-level brought in by symbol
-  reference -- the body whitelist accepts top-level `fabric.module`
-  ops directly so cross-module references via `fabric.instantiate`
-  resolve correctly)
+* `fabric.mem` (an optional `[spatial]` or `[temporal]` Operation Engine,
+  an optional Local Memory Service, or both; see `docs/spec-fabric-mem.md`)
+* `fabric.fifo` (see `docs/spec-fabric-fifo.md`)
+* nested named `fabric.module` template declarations; sibling top-level
+  declarations remain in their enclosing symbol table rather than the body
 * `fabric.instantiate` (binds a previously-defined fabric symbol
   into this scope; see `docs/spec-fabric-instantiate.md`)
 * `fabric.boundary` (single op covering all three boundary directions
@@ -105,7 +105,7 @@ The core SpatialCore tile matrix is:
 |-----------|------------------|-------------------|
 | `fabric.pe` | `fabric.pe [spatial]` | `fabric.pe [temporal]` |
 | `fabric.switch` | `fabric.switch [spatial]` | `fabric.switch [temporal]` |
-| `fabric.mem` | `fabric.mem [spatial]` | `fabric.mem [temporal]` |
+| `fabric.mem` Operation Engine | `fabric.mem [spatial]` | `fabric.mem [temporal]` |
 
 `fabric.fu` is not a module-level tile kind. A FU is a functional-unit
 container owned by a PE. Named FU templates may be visible through symbol
@@ -116,6 +116,10 @@ level.
 `fabric.fifo`, `fabric.boundary`, and `fabric.instantiate` are required
 support constructs for buffering, spatial/temporal domain conversion,
 and template reuse. They do not replace the core tile matrix.
+
+The schedule predicate belongs to a `fabric.mem` Operation Engine. A
+storage-only memory occurrence has no schedule and is not a third schedule
+variant. Loom does not add a parallel `fabric.storage` op.
 
 ## Memory Capability Roles
 
@@ -150,6 +154,49 @@ provenance is not restricted to the first subordinate result. Directly
 yielding a module manager input is invalid because no subordinate provider was
 introduced. The verifier does not impose token linearity or infer service
 capacity from SSA use count.
+
+A memory endpoint is a path to a physical service, not the service or a
+software address space itself. One endpoint may carry several logical-memory
+bindings when declared range or context capability distinguishes them. One
+logical memory may be accessed or exposed through several endpoints. Explicit
+SpatialMapping or SystemMapping records own those sparse many-to-many
+relations; module SSA use count does not create or constrain them.
+
+Operation Engine ports, an optional Local Memory Service, manager endpoints,
+and subordinate endpoints are orthogonal `fabric.mem` capabilities. Their
+active request-source-to-service-target relation is Mapping-selected runtime
+configuration constrained by Fabric eligibility. Port presence must not imply
+that every operation uses one fixed manager service. Runtime may install only
+the configuration derived from the selected immutable Mapping; it does not
+choose another relation.
+
+## Dataflow And Fabric Boundary Symmetry
+
+Canonical `dataflow.graph` inputs and outputs use the same three boundary
+classes: `value`, `stream`, and `memory`. Value and stream are token-plane
+contracts with different cardinality and publication rules. Memory is a stable
+object or service capability whose transactions are carried by separate token
+flows.
+
+The corresponding memory directions are symmetric across the software and
+hardware boundaries:
+
+| Boundary | Memory input/import | Memory output/export |
+|----------|---------------------|----------------------|
+| `dataflow.graph` | the graph uses an externally supplied memory object or service | the graph provides a memory object or service capability |
+| `fabric.module` | the module requests an external service through a manager endpoint | the module provides a service through a subordinate endpoint |
+
+Input and output describe capability crossing the boundary. They do not
+describe load versus store, ownership transfer, allocation, mutability,
+coherence, or object lifetime. System transport channel direction is a
+different coordinate system; memory protocol role must be stated as
+manager/requester or subordinate/provider rather than inferred from a bare
+`input-side` or `output-side` label.
+
+SpatialMapping composes graph memory imports and exports with one or more
+reachable module manager or subordinate endpoints through explicit Memory
+Bindings, Access or Exposure entries, and service paths. This is not a
+positional one-to-one graph-port-to-module-port rule.
 
 ## Physical Connection Type Compatibility
 
@@ -217,6 +264,11 @@ buffer, configurable resource, or additional route hop. PnR and other
 consumers must derive it from the connected endpoint types and must not
 invent an adapter record for a pure same-kind width change.
 
+The endpoint types are the canonical width owner. `fabric.module` has no
+module-local address-width, memory-bus-width, or similar override. A resource
+whose width is not mechanically determined by its typed interface must declare
+that hardware fact in the resource's canonical typed capability.
+
 For `memref<...>` no width relaxation is allowed. Source and destination
 must have the same element type, shape, layout, and memory space. Exact type
 equality remains independent from module export provenance: it does not make
@@ -254,36 +306,39 @@ resource spec. For example, a switch may require all of its declared
 ports to be uniform even though neighboring resources connected to
 those ports may use different widths under this module-level rule.
 
-## Optional Loom-constant overrides
+## Stateful Resource Lifecycle
 
-`docs/spec-config-ssot.md` owns the resolved global values for Loom
-address width and memory bus width. `fabric.module` carries two optional
-`i32` attributes that override those resolved configuration values for
-ops nested inside the module body:
+Every stateful Fabric resource declares a canonical initial state as part of
+its hardware behavior. A legal activation closes through the resource's normal
+protocol transitions and returns its invocation-local state to that initial
+state before the same state context is handed off or reconfigured. A normal
+graph invocation therefore does not carry a second reset operand, token, or
+operation.
 
-* `loom_addr_bits` -- module-local address width.
-* `loom_mem_bus_width` -- module-local memory bus width.
+Successful handoff additionally requires all accepted work to have retired and
+all resource-owned queues and in-flight transactions for that state context to
+be empty. Nontermination, deadlock, cancellation, and abnormal termination do
+not satisfy this contract and must not manufacture completion. Resource specs
+may refine the close and quiescence conditions, but they cannot replace this
+lifecycle with a competing invocation-reset protocol. Mapping may overlap uses
+of independently provisioned state contexts, but it cannot weaken a resource's
+declared state-isolation or handoff requirements.
 
-Both attributes are absent by default. When absent, operations inside
-the module body use the resolved configuration values. When present,
-they are recorded as explicit module-local overrides and are read by the
-`fabric::resolveLoomAddrBits` / `fabric::resolveLoomMemBusWidth`
-helpers (see `docs/spec-fabric-mem.md` for the consumer side). A tool
-that emits or consumes these attributes must preserve them in the
-artifact configuration provenance. The attributes round-trip through the
-standard `attributes { ... }` keyword block.
+## Authoring-Only Visualization Metadata
 
-## Optional visualization metadata
+An authoring-stage `fabric.module` may carry optional visualization hints in
+its attribute dictionary. Regular topology helpers may emit attributes such
+as `visual_layout` and `coordinates_semantic = false` so GUI and report tools
+can draw arrays, meshes, rings, or pipelines in an expected shape. These hints
+must not define connectivity, placement legality, routing cost, simulation
+behavior, RTL lowering, or hardware cost.
 
-`fabric.module` may carry optional visualization metadata in the same
-attribute dictionary. Regular topology helpers may emit attributes such
-as `visual_layout` and `coordinates_semantic = false` so GUI and report
-tools can draw arrays, meshes, rings, or pipelines in an expected
-shape. These attributes are metadata only. They must not define
-connectivity, placement legality, routing cost, simulation behavior, RTL
-lowering, or hardware cost. A tool that does not render visualization
-must be able to ignore them without changing any hardware or mapping
-result. See `docs/spec-mapping-visualization.md`.
+Fabric finalization removes these attributes before canonical semantic
+serialization and identity generation. A retained hint belongs to a removable
+visualization projection that references the exact finalized Fabric identity;
+it is not stored in the canonical Fabric artifact. Therefore adding, deleting,
+or changing a hint cannot create a second canonical payload for the same
+Fabric identity. See `docs/spec-mapping-visualization.md`.
 
 The minimal module-local `visual_layout` form is an array of records:
 
@@ -293,17 +348,19 @@ The minimal module-local `visual_layout` form is an array of records:
 | `x` | yes | Display x coordinate, integer. |
 | `y` | yes | Display y coordinate, integer. |
 
-The `node` labels are visualization subjects only; they do not create
-SSA values, ports, edges, or route endpoints. Duplicate labels or
-coordinates may be rejected by visualization consumers, but must not
-change base Fabric verification when the consumer ignores visualization.
-If `coordinates_semantic` is present, it must be `false` for any
-artifact that claims visualization evidence.
+The `node` labels are visualization subjects only; they do not create SSA
+values, ports, edges, or route endpoints. Duplicate labels or coordinates may
+be rejected when the hint is converted into a visualization projection, but
+must not change authoring-stage Fabric verification. If
+`coordinates_semantic` is present, it must be `false`. A finalizer rejects a
+claim that any such coordinate is semantic instead of silently changing the
+Fabric identity contract.
 
 ## Verifier rules
 
 * The body whitelist accepts only `fabric.pe` (both schedules),
-  `fabric.switch` (both schedules), `fabric.mem` (both schedules),
+  `fabric.switch` (both schedules), `fabric.mem` (scheduled when an Operation
+  Engine is present and unscheduled when storage-only),
   `fabric.fifo`, `fabric.module`, `fabric.instantiate`,
   `fabric.boundary` (covering all three directions `[s2t]` /
   `[t2t]` / `[t2s]`), and the `fabric.yield` terminator. Any other
@@ -348,7 +405,8 @@ artifact that claims visualization evidence.
 The `fabric.module` target universe includes:
 
 * all legal module input and output type combinations;
-* the full `fabric.{pe,switch,mem} [spatial|temporal]` tile matrix;
+* the full `fabric.{pe,switch} [spatial|temporal]` tile matrix and scheduled or
+  storage-only `fabric.mem` capability;
 * FIFO resources;
 * spatial-to-temporal, temporal-to-temporal, and temporal-to-spatial
   boundary ops;
@@ -357,40 +415,23 @@ The `fabric.module` target universe includes:
 * point-to-point Graph-region SSA connectivity and same-kind
   width-normalization points;
 * endpoint-relative manager/subordinate memory roles, complementary
-  provider-to-requester connections, and module export provenance;
-* optional module-level Loom address and memory-bus overrides.
+  provider-to-requester connections, sparse Mapping-owned endpoint bindings,
+  and module export provenance.
 
 The target universe does not include module-internal `fabric.link`.
 System-level topology belongs to the typed Transport Architecture resources,
-endpoints, and directed connectivity owned by `fabric.system`; exact record
-syntax remains open.
+endpoints, and directed connectivity owned by `fabric.system`.
 
-## Required Evidence
+## Validation Anchors
 
-Evidence for this spec includes verifier-positive and
-verifier-negative MLIR tests, builder-emitted examples, and downstream
-artifact rows that identify the selected `fabric.module` symbol.
+Anchor-level validation covers one legal mixed token/memory module, rejection
+of an unlisted body op, point-to-point fanout rejection, same-kind LSB width
+normalization, a required explicit tagged-domain boundary, and rejection of a
+manager import exported as a subordinate capability. Downstream consumers
+resolve the exact finalized Fabric artifact and typed module reference.
 
-Every supported module-body construct must have at least one positive
-test and at least one diagnostic or unsupported-scope test for invalid
-shape, invalid type, invalid schedule, invalid symbol use, or invalid
-connection-typing form.
-
-## Objective Verification
-
-The `fabric.module` target is objectively verifiable when:
-
-* every construct in the target universe round-trips through parser and
-  printer;
-* every legal tile kind and schedule combination can appear in a
-  verifying module;
-* module connectivity is recoverable from SSA values, not from external
-  route metadata;
-* invalid non-whitelisted ops, external SSA leakage, illegal port types,
-  and illegal yield forms are rejected;
-* PnR, CGRA-sim, RTL lowering, FPA, and reporting resolve the module through
-  the exact finalized Fabric artifact and typed module reference; optional
-  symbol spelling is not persistent identity.
+Tests do not freeze diagnostic wording, parser formatting, every port-width
+combination, every whitelist member, or downstream cache layout.
 
 ## Unsupported Scope Policy
 
@@ -404,42 +445,18 @@ link model.
 
 An exact `fabric.module` template is referenced by typed SpatialCore
 occurrences and attachments owned by `fabric.system` AccCores, and by Mapping
-artifacts where required. The exact system attachment schema remains open. A
-module is produced directly by the SpatialCore ADG Builder layer and consumed
-by PnR, CGRA-sim, RTL lowering, FPA, and reporting. System-level connectivity
-belongs to `docs/spec-fabric-system-adg.md`; software-to-hardware binding
-belongs to `docs/spec-mapping-artifact.md`.
-
-## Current Implementation Notes
-
-This section is non-normative. It records current repository facts for
-orientation only and is not part of target acceptance.
-
-The current implementation already supports a substantial subset of the
-SpatialCore-level Fabric dialect, including `fabric.module`,
-`fabric.pe`, `fabric.fu`, `fabric.switch`, `fabric.mem`, FIFO,
-boundary, instantiate, and related verifier tests. This note does not
-claim complete target-universe coverage; completion is judged by the
-target universe, objective verification, and downstream consumer
-requirements above.
-
-## Negative tests
-
-The verifier exercises the following rejections (see
-`test/fabric/unit/module/invalid.mlir`):
-
-* Module with a non-allowed input type (e.g. `i32`).
-* Module with a non-allowed output type.
-* Module body containing `builtin.unrealized_conversion_cast`.
-* Module body containing any non-whitelisted op.
-* Yield value count not matching the declared result count.
-* Yield type-kind mismatch (e.g. yielding a `bits_tag` for a `bits`
-  result).
-* `memref` width or shape mismatch on yield.
-* Direct module manager input yielded as a subordinate module result.
-* `to T_inner` clause used on a `memref` operand.
-* Direct module-body transport fanout without an explicit routing
-  resource.
+artifacts where required. The system architecture owns one exact, structural,
+one-to-one module-endpoint-to-AccCore-endpoint attachment for each fully
+elaborated occurrence; the attachment is identity correspondence, not a route
+or adapter. Value, stream, control, and completion endpoints retain their
+typed transport contracts across it. Memory endpoints retain typed service
+capability and are never recast as an untyped data plane. A module may be
+produced by the ADG Builder, a builtin template, or an exact Fabric importer;
+after finalization those source paths are semantically identical. Mapping,
+CGRA models, hardware generation, Evaluation, and removable projections
+consume the exact Fabric Artifact. System-level connectivity belongs to
+`docs/spec-fabric-system-adg.md`; software-to-hardware binding belongs to
+`docs/spec-mapping-artifact.md`.
 
 ## Cross-references
 
@@ -448,21 +465,9 @@ The verifier exercises the following rejections (see
 * `spec-fabric-instantiate.md` -- the `fabric.instantiate` op that
   binds a previously-defined module, PE, switch, memory, or FU symbol
   into the current scope as a fresh hardware instance.
-* `spec-fabric-reconfigurable-op.md` -- per-op runtime axes that
-  populate spatial PE configurations.
+* `spec-fabric-reconfigurable-op.md` -- parameterized operation capability and
+  the configured projections derived from that capability.
 * `spec-fabric-hw-share-group.md` -- legal hardware-share groups for
   `fabric.op` `op_list` members.
-
-## Maintenance
-
-Implementation locations that must mirror this spec are:
-
-* `Fabric_ModuleOp` in `include/Fabric/IR/FabricOps.td` for the IR
-  shape;
-* `ModuleOp::parse` and `ModuleOp::print` in
-  `lib/Fabric/IR/FabricOps.cpp`;
-* `ModuleOp::verify` in `lib/Fabric/IR/FabricModuleOp.cpp`.
-
-When adding a new whitelisted body op (e.g., `fabric.mem`), update both
-the verifier's whitelist and the diagnostic message that lists the
-allowed names.
+* `spec-fabric-fifo.md` -- finite buffering capability, Mapping-selected
+  buffered or bypass traversal, and exact cycle behavior.

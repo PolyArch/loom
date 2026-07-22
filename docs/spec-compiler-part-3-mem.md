@@ -9,12 +9,22 @@ The Dataflow operation contracts remain owned by the Dataflow specifications.
 This document defines only the compiler analysis state and the ordinary SSA
 event network produced from it.
 
+The resulting `dataflow.load` and `dataflow.store` actors and their explicit
+`ctrl` and `done` network are canonical software semantics. TechMapping,
+SpatialMapping, and SystemMapping may realize that network on Fabric resources,
+but they must not reconstruct missing memory order from source order, graph
+text order, traversal, or physical placement. The downstream realization
+boundary is specified by `docs/spec-mapping-memory.md`.
+
 ## 1. Scope
 
-The implemented slice covers:
+The lowering contract covers:
 
-* `dataflow.load`, `dataflow.store`, rank-one `memref.load`, and rank-one
-  `memref.store` leaves;
+* scalar and fixed-ranked vector forms of canonical `dataflow.load` and
+  `dataflow.store`, including the masked contiguous and gather/scatter forms
+  defined by `docs/spec-dataflow-vectorization.md`;
+* normalized scalar `memref.load` and `memref.store` leaves over a canonical
+  linear memory space;
 * sequential composition;
 * arbitrary nesting of `scf.if`, source-sequential `scf.for`, and
   `scf.while`;
@@ -62,9 +72,9 @@ root. The finalized surface recognizes:
 
 * a graph memory input, whose root identity comes from its launch binding;
 * a fresh `memref.alloc` result, whose root is unique for each invocation;
-* a verified side-effect-free view that preserves the source root. The current
-  implementation accepts `memref.cast`; other view forms require a matching
-  root, region, and simulator model before admission;
+* a verified side-effect-free view that preserves the source root. The initial
+  accepted set contains `memref.cast`; adding another view form requires one
+  matching root, region, and simulator contract before admission;
 * a one-input `builtin.unrealized_conversion_cast` only as a bridge from an
   established root, never as a root of its own.
 
@@ -138,6 +148,20 @@ These equations are the complete hazard authority:
 * WAR: a write waits for all outstanding reads;
 * WAW: a write waits for the read frontier, which covers the prior write;
 * RAR: a read does not wait for prior reads.
+
+One vector load or store is one canonical memory-actor firing. Its active
+lanes do not create independent frontier records or an implicit lane order.
+`P(access)` is the conservative union of alias partitions that any active lane
+may access. A dynamic mask or address vector cannot weaken that set merely
+because one observed execution disables a lane. A statically proven all-zero
+mask may be simplified by an ordinary semantics-preserving Dataflow rewrite;
+otherwise the firing retains its explicit `ctrl` and `done` obligations.
+
+The vector operation's owning semantic contract determines lane activity,
+inactive-load fill, duplicate-gather behavior, and rejection or explicit
+ordering of duplicate scatter addresses. This lowering only projects the
+whole firing through the same `(W,R)` equations as a scalar access. It does
+not define a second vector-memory ordering model.
 
 For `R0; R1; W2; R3` on one partition, `R0` and `R1` both receive the incoming
 write frontier. `W2` receives an all-of of both read completions. `R3` receives
@@ -250,15 +274,20 @@ Nesting uses only function composition of `lower_region`:
 The parent consumes only the child's execution, yielded values, and frontier
 pair. It does not reach into child leaves to reconstruct a tail.
 
-## 10. Parallel Failure Boundary
+## 10. Parallel Transfer Boundary
 
 Residual `scf.parallel` or `scf.forall` is checked across every graph before
-the pass mutates any graph. Unscheduled input fails with a diagnostic that a
-selected schedule and provenance are required. Scheduled but still residual
-parallel SCF also fails and must be normalized by its owning transformation.
-This is a mechanical boundary, not a parallel-lowering contract: graph-owned
-parallel transfer requires a Structured Program Candidate that selects a
-concrete P[] representation before this pass runs.
+the pass mutates any graph. Raw or unowned parallel input fails. A fixed finite
+parallel region is accepted only when its Structured Program Candidate owns a
+typed, verifier-proven `P[]` schedule and the recursive transfer can derive one
+complete frontier relation for that exact domain. The lowering must not trust
+the mere presence of string-named attributes as proof.
+
+Until the typed producer and verifier establish this provenance, the boundary
+fails closed. Forged, malformed, foreign-owner, or domain-mismatched
+provenance is invalid even when the residual SCF shape is otherwise supported.
+Part 3 consumes the selected schedule; it does not choose parallel width,
+serialization, ownership, or reduction order.
 
 The graph-region owner does not:
 
@@ -286,6 +315,12 @@ launch.done = all_of(graph.return.complete)
 
 There is no hidden effect scan, graph-quiescence test, or removed sync pass
 that can define completion independently.
+
+After canonical publication, TechMapping may classify an explicit edge as
+realization-internal or external. SpatialMapping and SystemMapping may select
+the physical mechanisms that preserve it. No Mapping profile deletes, infers,
+or replaces the canonical load/store `ctrl` and `done` obligations. The
+Canonical Dataflow Program remains the memory-order source of truth.
 
 After recursive lowering, this pass constructs the memory-owned retirement
 frontier from:
@@ -325,11 +360,12 @@ visibility and retirement obligation.
 
 The owner rejects before mutation when:
 
-* raw parallel SCF reaches a graph;
+* raw or unverifiably owned parallel SCF reaches a graph;
 * an effectful or unmodeled nested operation reaches a graph;
 * a residual LLVM load, store, memcpy, or memset remains after normalization
   and therefore has no explicit completion event;
-* a memref leaf is not rank one;
+* a source memory access has not been normalized to the canonical linear
+  memory-space form required by its scalar or vector Dataflow actor;
 * structured control carries a memref result or memref loop state;
 * the graph entry lacks the leading `none` execution value.
 
@@ -345,7 +381,8 @@ inside a structured region must likewise fail closed instead of being hoisted.
 
 This lowering does not define:
 
-* vector, masked, gather, or scatter memory ports;
+* vector lane behavior, masks, gather/scatter address semantics, or duplicate
+  scatter policy, which are owned by `docs/spec-dataflow-vectorization.md`;
 * range-sensitive or polyhedral alias partitioning;
 * cross-graph partition identity;
 * Fabric memory banks, ports, services, or contention;
@@ -353,6 +390,12 @@ This lowering does not define:
 * whole-graph causal-closure proof for arbitrary hand-authored frontiers;
 * parallel schedule selection.
 
-Those concerns must consume the explicit canonical event network or be owned
-by an earlier transformation. They must not rebuild memory order from source
-text order, simulator traversal, or physical placement.
+Physical vector ports, byte enables, coalescing, banking, and memory-service
+selection belong to Fabric and Mapping. Those concerns must consume the
+explicit canonical event network or be owned by an earlier transformation.
+They must not rebuild memory order from source text order, simulator traversal,
+or physical placement.
+
+TechMapping and physical memory realization are specified by
+`docs/spec-mapping-artifact.md` and `docs/spec-mapping-memory.md`; this compiler
+spec does not duplicate their records or search rules.

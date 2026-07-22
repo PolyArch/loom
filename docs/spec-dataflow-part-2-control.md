@@ -5,10 +5,12 @@ control-routing ops in the `dataflow` dialect:
 `dataflow.constant`, `dataflow.sync`, `dataflow.mux`, and
 `dataflow.demux`.
 
-The canonical IR source is `include/Dataflow/IR/DataflowOps.td`; the
-verifier implementation lives in `lib/Dataflow/IR/DataflowOps.cpp`.
-This document is the design-level companion for compiler specs that use
-these ops, especially `docs/spec-compiler-part-3-dfg.md`.
+This document owns the semantic contract for these operations.
+`include/Dataflow/IR/DataflowOps.td` and
+`lib/Dataflow/IR/DataflowOps.cpp` are implementation projections and must
+conform to it. Compiler specs that use these operations, especially
+`docs/spec-compiler-part-3-dfg.md`, reference this contract rather than
+redefining it.
 
 ## 1. Control Token Model
 
@@ -23,13 +25,14 @@ the all-input rendezvous op.
 
 An op result with no SSA uses is a dead output. It does not create a
 required runtime channel, queue, or backpressure source. Implementations
-may omit it, connect it to a hardware discard/disconnect path, or drop
-the produced token at the producing boundary. This rule is deliberately
-not represented by a separate `dataflow.drop` or `dataflow.sink` op.
-It is needed for selected-control lowering, where a demux may project a
-live-in stream to lanes that no selected region actually consumes.
-Fabric lowerings can realize this with the PE-level `discard` /
-`disconnect` controls rather than with a software-visible dataflow op.
+may omit a physical production only when the selected capability proves that
+the inactive result produces no token. Otherwise the Mapping must select an
+explicit hardware discard that accepts every produced token. A disconnected
+physical output does not consume and therefore cannot discharge a live
+producer. This rule is deliberately not represented by a separate
+`dataflow.drop` or `dataflow.sink` op. It is needed for selected-control
+lowering, where a demux may project a live-in stream to lanes that no selected
+region actually consumes.
 
 For selectors:
 
@@ -161,10 +164,10 @@ Lowering passes that use these ops must preserve the following rules:
   that use these control-routing semantics.
 * `docs/spec-dataflow-part-1-streaming.md` -- timing semantics for
   streaming state ops that are often combined with these control ops.
-* `include/Dataflow/IR/DataflowOps.td` -- canonical operation
-  definitions.
-* `docs/spec-fabric-pe.md` -- PE-level `discard` / `disconnect`
-  controls used by hardware lowering for dead ports.
+* `include/Dataflow/IR/DataflowOps.td` -- operation declarations that
+  implement this contract.
+* `docs/spec-fabric-pe.md` -- PE-level discard and disconnect semantics used
+  by hardware lowering for inactive and dead ports.
 * `lib/Dataflow/IR/DataflowOps.cpp` -- verifier implementation.
 * `test/dataflow/unit/constant/`, `test/dataflow/unit/sync/`,
   `test/dataflow/unit/mux/`, `test/dataflow/unit/demux/` --

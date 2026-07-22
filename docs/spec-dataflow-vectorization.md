@@ -1,73 +1,70 @@
 # Loom Dataflow Vector Semantics
 
-This document specifies Loom's canonical one-dimensional dataflow vector
-semantics. It covers the four stream and representation boundary operations
-`dataflow.parallelize`, `dataflow.serialize`, `dataflow.pack`, and
-`dataflow.unpack`, plus contiguous vector access through `dataflow.load` and
-`dataflow.store` and rank-1 gather access through `dataflow.load`.
+This document owns the semantic vector contract of a Canonical Dataflow
+Program. It defines fixed ranked vector values and masks, vector stream and
+bit-representation boundaries, vector compute, and vector forms of the
+canonical memory actors.
 
-The semantic data and mask types are standard MLIR `vector<NxT>` and
-`vector<Nxi1>`. Those types are the only source of vector length, shape,
-element type, and mask shape. The operations have no independent vector-size
-attribute.
-
-## Scope
-
-The boundary supports fixed-size rank-1 vectors with `N > 0`. `T` is a
-nonzero-width MLIR integer or floating-point type. Scalable vectors,
-rank-zero vectors, and vectors with rank greater than one are illegal.
-
-Materialization of arbitrary-rank vectors remains unspecified. No consumer
-may infer a flattening order for such vectors.
-
-Arithmetic, comparison, and math over semantic vectors use standard MLIR
-`vector`, `arith`, and `math` operations. The dataflow boundary does not
-define duplicate vector compute operations.
-
-The following concerns are outside this contract:
-
-* ranked vectors beyond rank one;
-* vector-address scatter operations;
-* duplicate scatter-address policy;
-* software-to-Fabric port adaptation;
-* Fabric memory masks;
-* PnR routing for vector ports;
-* alignment, burst, and coalescing policy;
-* atomic, read-modify-write, fence, and volatile semantics;
-* source or structured-control vectorization and lowering;
-* vectorization search or DSE policy.
+Structured vectorization, schedule selection, and `P[]`/`N[]` exploration are
+owned by the compiler front-end specifications. Physical lane realization,
+port-width adaptation, and transport encoding are owned by TechMapping,
+SpatialMapping, and the interconnect implementation. Those layers consume this
+contract; they do not redefine it.
 
 ## Semantic Ownership
 
-`include/Dataflow/IR/DataflowOps.td` defines the canonical operation
-signatures. `DataflowActorSemantics` owns fixed-rank-1 data-vector legality,
-mask compatibility, and the scalar-versus-vector memory-access type relation.
-Operation verification and DFG simulation consume that shared contract.
+This specification is the semantic authority. Dataflow ODS declarations,
+operation verifiers, `DataflowActorSemantics`, simulators, and Mapping importers
+are implementation projections of it. They must share one implementation of
+the rules where practical and must not become independent authorities.
 
-Scalar/group firing and reset rules are owned by
-`DataflowActorSemantics`. Graph cardinality validation and DFG simulation
-consume that shared contract. They must not define independent rules for
-which phase consumes data, when a group is published, or when actor state
-resets.
+Vector shape, element type, and mask shape come only from standard MLIR types.
+There is no independent vector-size or lane-count attribute.
 
-`dataflow.pack` and `dataflow.unpack` are stateless exact-one actors.
-`dataflow.parallelize` and `dataflow.serialize` are phase adapters with
-variable true-token cardinality and exactly one terminal false token per
-activation.
+The canonical forms are:
 
-`dataflow.pack` and `dataflow.unpack` are the only canonical
-vector-to-integer representation boundary. An `llvm.bitcast` between a
-vector and an integer is not a canonical Dataflow actor. Other legal LLVM
-bitcasts are outside this representation rule.
+```text
+vector<N0 x ... x Nk x T>
+vector<N0 x ... x Nk x i1>
+```
 
-Standard elementwise `arith` and `math` vector actors use the same scalar
-primitive semantics independently for each lane. The simulator accepts only
-fixed-size rank-1 vectors whose shapes and scalar element types are compatible
-with that primitive. Unsupported vector forms fail before consuming tokens.
+Every dimension is fixed and greater than zero. The first form is a semantic
+data value and the second is its same-shape active-lane mask. Scalable and
+rank-zero vectors are outside this contract. Data elements are nonzero-width
+MLIR integer or floating-point values; gather and scatter addresses use
+`index` elements.
 
-## `dataflow.parallelize`
+Axes follow the selected scheduled-dimension order. Row-major flattening is
+canonical: the last axis varies fastest. Flattened lane zero is the first
+logical element and occupies the lowest bit slice when a semantic vector is
+packed.
 
-The canonical signature is:
+## Vector Compute
+
+Arithmetic, comparison, selection, shape, and math over semantic vectors use
+standard MLIR `arith`, `vector`, and `math` operations. Dataflow does not add
+duplicate vector-compute mnemonics.
+
+An elementwise operation applies the corresponding scalar primitive to every
+lane with identical operand and result shapes. A total, side-effect-free,
+non-trapping operation may evaluate inactive lanes and forward the mask as an
+explicit value. An operation that may trap or has effects requires explicit
+predication. A mask is never hidden state attached to a vector value.
+
+The canonical functional result is independent of a physical realization.
+TechMapping may realize one vector actor with a vector FU, several scalar
+actors, or a hybrid implementation, but it must preserve shape, lane order,
+mask behavior, and token publication.
+
+## Stream Cardinality Boundary
+
+`dataflow.parallelize` and `dataflow.serialize` are the only canonical actors
+that convert between an ordered scalar stream and fixed-width vector groups.
+They use one-dimensional vectors because they group one linear stream. This
+does not restrict the rank of vectors produced directly by structured
+vectorization.
+
+### `dataflow.parallelize`
 
 ```mlir
 %vector, %mask, %group_phase =
@@ -78,27 +75,22 @@ The canonical signature is:
 A true scalar phase consumes one scalar data token and appends it at the next
 lane in ascending lane order. A false scalar phase consumes no data token.
 
-A full group is published immediately. Publication emits one data vector,
-one active-lane mask, and one true group phase token. For an activation with
-`K` true scalar items, the number of true groups is:
+A full group is published immediately. Publication emits one data vector, one
+active-lane mask, and one true group phase token. For an activation with `K`
+true scalar items:
 
 ```text
 G = ceil(K / N)
+group_phase = T^G F
 ```
 
 When false arrives with a pending partial group, the actor first publishes a
-zero-filled data vector, its active-lane mask, and a true group phase token.
-It then publishes one false group phase token. When `K = 0`, it publishes
-only the false group phase token. In both cases it clears all pending lanes
-and returns to its initial state.
+zero-filled vector, its active-lane mask, and a true group phase. It then
+publishes one false group phase and resets. When `K = 0`, it publishes only the
+false group phase. Inactive lanes use the element type's all-zero bit
+representation.
 
-For every published vector, mask lane `i` is true exactly when lane `i`
-contains an active scalar item. Inactive data lanes are zero-filled using the
-element type's all-zero bit representation.
-
-## `dataflow.serialize`
-
-The canonical signature is:
+### `dataflow.serialize`
 
 ```mlir
 %data, %scalar_phase =
@@ -106,168 +98,213 @@ The canonical signature is:
     : (vector<NxT>, vector<Nxi1>, i1) -> (T, i1)
 ```
 
-A true group phase consumes exactly one data vector and one mask vector. It
-visits lanes in ascending order and publishes one scalar data token followed
-by one true scalar phase token for each active lane. It does not publish a
-false token after an individual true group.
+A true group phase consumes exactly one data vector and one mask. It publishes
+one scalar data token followed by one true scalar phase for each active lane,
+in ascending lane order. It does not publish a false phase after an individual
+true group. An all-zero mask is legal and publishes no scalar item.
 
-An all-zero mask on a true group is legal. The actor consumes both vectors
-and publishes no scalar tokens for that group.
+A false group phase consumes neither vector nor mask. It publishes one false
+scalar phase and resets. Together, `parallelize` and `serialize` preserve the
+order of active scalar items and activation boundaries.
 
-A false group phase consumes neither vector. It publishes one false scalar
-phase token and resets the activation.
+These actors are semantic cardinality adapters. Physical serialization,
+packetization, or a narrow Fabric port is not a reason to insert either actor.
 
-Together, `parallelize` and `serialize` preserve active scalar item order and
-activation boundaries.
+## Bit-Representation Boundary
 
-## `dataflow.pack`
-
-The canonical signature is:
-
-```mlir
-%packed = dataflow.pack %vector : vector<NxT> -> iM
-```
-
-`M` must equal `N * bitwidth(T)`. The operation consumes one vector token and
-publishes one integer token. Lane zero occupies bits
-`[bitwidth(T) - 1 : 0]`; lane `i` occupies the next higher bit slice.
-
-Integer elements preserve their exact bits. Floating-point elements use
-their exact MLIR floating-point bit representation, including signed zero,
-infinities, and NaN payloads. Packing does not perform numeric conversion.
-
-A mask is not an implicit operand. When a packed mask is required, the
-`vector<Nxi1>` value is passed through a separate `dataflow.pack`.
-
-## `dataflow.unpack`
-
-The canonical signature is:
+`dataflow.pack` and `dataflow.unpack` are stateless, exact-one semantic
+bit-representation conversions. They are orthogonal to stream cardinality and
+vector computation.
 
 ```mlir
-%vector = dataflow.unpack %packed : iM -> vector<NxT>
+%packed = dataflow.pack %vector
+    : vector<N0x...xNkxT> -> iM
+%vector = dataflow.unpack %packed
+    : iM -> vector<N0x...xNkxT>
 ```
 
-The width and lane-order rules are identical to `dataflow.pack`.
-`dataflow.unpack` consumes one integer token and publishes one vector token.
-For every legal type pair:
+The width is exact:
+
+```text
+M = product(N0, ..., Nk) * bitwidth(T)
+```
+
+The vector is flattened in canonical row-major order. Flattened lane zero
+occupies the least-significant bit slice and each following lane occupies the
+next higher slice. Integer and floating-point elements preserve their exact bit
+representations, including floating-point NaN payloads. Packing is not a
+numeric conversion.
+
+A mask is not implicit. A source-visible packed mask uses a separate
+`dataflow.pack` on its `vector<...xi1>` value. For every legal type pair:
 
 ```text
 unpack(pack(vector)) = vector
 pack(unpack(bits)) = bits
 ```
 
-The bit representation uses arbitrary-width integers. Host 64-bit integer
-width is not a semantic limit.
+The implementation uses arbitrary-width integers; a host integer width is not
+a semantic limit. A source or Structured Program Candidate introduces these
+actors only when the program observes the bit representation. Mapping-side
+port adaptation and transport packing never introduce them into the Canonical
+Dataflow Program.
 
-## Rank-1 Vector Memory
+## Vector Memory
 
-The existing `dataflow.load` and `dataflow.store` operations support scalar
-and fixed-rank-1 contiguous access. `dataflow.load` additionally supports
-fixed-rank-1 gather access. They remain the only canonical plain
-memory-access mnemonics.
+`dataflow.load` and `dataflow.store` remain the only canonical plain memory
+actors. Their address and data shapes distinguish scalar, contiguous vector,
+and gather or scatter access:
 
-A scalar access uses one `%addr : index` and returns or stores one `T`. A
-contiguous vector access uses one `%addr : index` and a `vector<NxT>` value;
-lane `i` addresses memory element `%addr + i`. A gather load instead uses
-`%addresses : vector<Nxindex>` and returns `vector<NxT>` with the same `N`;
-result lane `i` reads the memory element named by address lane `i`.
-
-The vector forms are:
-
-```mlir
-%data, %done = dataflow.load %mem[%addr] %ctrl
-    : memref<?xT>, vector<NxT>
-%data, %done = dataflow.load %mem[%addr] %ctrl mask %mask
-    : memref<?xT>, vector<NxT>
-%data, %done = dataflow.load %mem[%addresses] %ctrl
-    : memref<?xT>, vector<Nxindex>, vector<NxT>
-%data, %done = dataflow.load %mem[%addresses] %ctrl mask %mask
-    : memref<?xT>, vector<Nxindex>, vector<NxT>
-
-%done = dataflow.store %mem[%addr] %data %ctrl
-    : memref<?xT>, vector<NxT>
-%done = dataflow.store %mem[%addr] %data %ctrl mask %mask
-    : memref<?xT>, vector<NxT>
+```text
+index                         + T                       -> scalar access
+index                         + vector<S x T>           -> contiguous access
+vector<S x index>             + vector<S x T>           -> gather/scatter
 ```
 
-The optional mask type is `vector<Nxi1>` with exactly the data vector's
-shape. A gather address must be a fixed-size rank-1 `vector<Nxindex>` with
-the same `N`. Scalar accesses reject masks. Omitting the mask makes every
-lane active. A data type exactly equal to the memref element type remains a
-scalar element access even when that element type is itself a vector; that
-scalar access also rejects masks.
+`S` denotes the complete fixed ranked shape. A scalar linear address names a
+memory element. For contiguous access, lane `i` in canonical row-major order
+accesses `base + i`. A gather or scatter address vector has the same shape as
+the data vector, and each active lane accesses the element named by its address
+lane.
 
-Only active lanes evaluate an element address or access memory. An inactive
-lane may therefore correspond to an out-of-range element address. A masked
-load fills every inactive result lane with the element type's all-zero bit
-representation. A masked store leaves every inactive memory element
-unchanged.
+Representative forms are:
 
-An all-zero mask still consumes the firing's address, mask, and control
-operands, plus store data when present. It performs no memory access. A load
-publishes one zero-filled vector and one done token; a store publishes one
-done token.
+```mlir
+%data, %done = dataflow.load %mem[%base] %ctrl
+    : memref<?xT>, vector<N0xN1xT>
+%data, %done = dataflow.load %mem[%base] %ctrl mask %mask
+    : memref<?xT>, vector<N0xN1xT>
+%data, %done = dataflow.load %mem[%addresses] %ctrl mask %mask
+    : memref<?xT>, vector<N0xN1xindex>, vector<N0xN1xT>
 
-Load data and done become visible together after all active lanes have read
-their elements. Store done becomes visible only after all active lanes have
-written their elements. Each firing publishes exactly one load data token
-and one done token, or exactly one store done token. The existing explicit
-`ctrl` to `done` event network remains the sole memory-ordering authority.
+%done = dataflow.store %mem[%base] %data %ctrl mask %mask
+    : memref<?xT>, vector<N0xN1xT>
+%done = dataflow.store %mem[%addresses] %data %ctrl mask %mask
+    : memref<?xT>, vector<N0xN1xindex>, vector<N0xN1xT>
+```
 
-DFG simulation visits active lanes in ascending lane-index order against its
-element-indexed abstract memory. Contiguous access evaluates `%addr + i`;
-gather access evaluates address lane `i`. Repeated gather addresses are
-legal and preserve result lane order. Vector index tokens place lane zero in
-the least-significant bit slice and derive each lane's width from the
-enclosing MLIR DataLayout or the existing configured index-width fallback.
-This ordering is deterministic functional semantics, not a burst,
-coalescing, port-width, or hardware-lane policy.
+The optional mask has the complete data-vector shape and `i1` elements.
+Omitting it makes every lane active. Scalar accesses reject masks. A memory
+whose element type is itself a vector still performs a scalar element access
+when the actor data type exactly equals that element type.
 
-These accesses are plain, non-atomic, and non-volatile. Ranked vectors beyond
-rank one, alignment policy, and physical memory-mask projection are not part
-of this boundary. Vector-address store and scatter semantics remain
-unimplemented and are explicitly rejected.
+Only active lanes evaluate addresses or access memory. Therefore an inactive
+lane may contain an out-of-range address. A masked load fills inactive result
+lanes with the element type's all-zero bit representation. A masked store
+leaves inactive elements unchanged.
 
-## Graph Cardinality
+An all-zero mask still consumes the firing's address, control, and mask, plus
+store data when present. It performs no memory access. A load publishes one
+zero-filled vector and one done token; a store publishes one done token.
 
-Graph validation treats `pack` and `unpack` as one-token-in,
-one-token-out actors. Their result is statically exact-one when their input is
-statically exact-one.
+Load data and done become visible together after every active lane has read.
+Store done becomes visible after every active lane has written. The explicit
+`ctrl` to `done` event network remains the sole memory-ordering authority; a
+mask does not create a second ordering mechanism.
 
-Scalar and vector `load` and `store` use the existing canonical-actor
-cardinality rule. Load data and done, or store done, are statically exact-one
-when every dynamic operand is statically exact-one. A mask changes lane
-activity inside one firing; it does not change actor token cardinality or
-create a separate ordering network.
+Repeated gather addresses are legal and preserve result-lane order. For a
+plain non-atomic scatter, duplicate active addresses are not assigned a hidden
+lane order. The compiler must prove them distinct, scalarize the access under
+an explicit program order, or reject it until an explicit ordered or atomic
+semantic is available.
+
+Alignment, burst formation, coalescing, physical port width, byte enables, and
+bank selection do not change this software contract. They belong to lowering,
+Mapping, and Fabric realization. A software lane mask to physical byte-enable
+projection is mechanically derived and cannot become a second semantic owner.
+
+## Cardinality And Ordered Execution
+
+`pack` and `unpack` consume and publish exactly one token. A scalar or vector
+`load` or `store` has the existing canonical memory-actor cardinality: its data
+and done results are exact-one when all dynamic operands are exact-one. Lane
+activity changes effects within one firing, not actor token cardinality.
 
 The group phase from `parallelize` closes when its scalar phase closes. The
 scalar phase from `serialize` closes when its group phase closes. Retirement
-coverage may project a downstream false close through either adapter to the
-corresponding upstream close only when graph analysis proves all payloads
-required by every true input phase are aligned to that phase. This requires
-scalar data for `parallelize`, and both a data vector and mask vector for
-`serialize`. Without those proofs, finalized graph validation fails closed.
+analysis may project a terminal false phase through an adapter only after
+proving that every payload required by each true phase is aligned with it.
 
-Data vectors and masks from `parallelize` have one token for each true group
-phase and no token for the false group phase. `serialize` requires both
-vectors only for a true group phase. These rules are also the simulator's
-firing requirements.
+Physical vector lanes may execute internally out of order only if the complete
+vector token, memory completion, or serialized scalar boundary restores the
+canonical ordered result.
+
+## Front-End And DSE Boundary
+
+Structured vectorization is the primary compilation path. Regular loop nests
+are vectorized while their iteration domains, dependences, reductions, tails,
+and memory relations are explicit. They lower directly to vector-valued
+actors; they are not first converted to scalar streams and regrouped with
+`dataflow.parallelize`.
+
+For a scheduled dimension `d`:
+
+```text
+P_d = graph-static actor replication
+N_d = elements carried by one actor activation
+logical width = P_d * N_d
+d = chunk_base + p * N_d + n
+chunk step = P_d * N_d
+```
+
+`P[]` and `N[]` are orthogonal. `P_i = 4, N_j = 8` means four actors each
+process `vector<8xT>`. `N_i = 2, N_j = 8` means each actor processes
+`vector<2x8xT>`. The Structured Program Candidate owns the selected schedule,
+unroll and jam structure, vector factors, tail policy, reduction strategy, and
+ownership boundaries. Mechanical SCF-to-Dataflow lowering does not select or
+revise them.
+
+Compiler Evaluation may use the resolved Fabric Hardware Description through
+the central Evaluation interface to screen vector candidates. It may not run
+hidden TechMapping or PnR, copy Fabric facts into software IR, or treat an
+unsupported hardware realization as a change to vector semantics.
+
+The detailed transform order, legality views, immutable candidate lineage, and
+Dataflow-to-Dataflow optimization boundary are specified by the compiler
+front-end documents. This specification owns only the resulting Dataflow
+vector behavior.
+
+## Mapping Boundary
+
+The Canonical Dataflow Program preserves semantic vector shape and lane order.
+TechMapping may flatten, split, or combine physical lanes and may bind them to
+one or more physical endpoints. SpatialMapping routes only the residual edges
+after a realization has absorbed its internal dependencies. The Mapping
+Artifact records every physical representation and endpoint binding needed to
+reconstruct the selected realization.
+
+Physical adaptation is never represented by silently changing a semantic
+vector type, inserting semantic `pack` or `serialize` actors, or deriving
+meaning from an equal total bit width. A `vector<4xf32>` and a `vector<2xf64>`
+remain different requirements even though both occupy 128 bits.
 
 ## Verification
 
 Verification rejects:
 
-* non-vector semantic data or masks;
-* scalable or non-rank-1 vectors;
-* non-integer and non-floating-point element types;
-* zero-width integer elements;
-* scalar and vector element-type mismatches;
-* mask shapes that differ from the data vector shape;
+* scalable or rank-zero vectors;
+* zero vector dimensions;
+* unsupported or zero-width element types;
+* mask shapes that differ from their data-vector shapes;
 * mask element types other than `i1`;
-* packed integer widths other than `N * bitwidth(T)`;
+* packed integer widths that differ from the complete flattened bit width;
+* scalar/vector operand or result shape mismatches;
 * vector memory element types that differ from the memory element type;
 * masks on scalar memory accesses;
-* gather address vectors that are scalable, not rank one, or do not contain
-  `index` elements;
-* gather address or mask lane counts that differ from the load result;
-* vector addresses on `dataflow.store`.
+* gather or scatter address shapes that differ from the data shape;
+* gather or scatter address elements other than `index`;
+* plain scatter operations whose active duplicate addresses are neither proven
+  absent nor lowered to an explicit ordered form.
+
+Stable anchor tests cover:
+
+* rank-one partial-group `parallelize` and `serialize` behavior;
+* exact and partial-tail activation closure;
+* rank-one and multi-rank `pack`/`unpack` round trips, including floating-point
+  payload bits;
+* multi-rank contiguous and gather/scatter addressing in row-major lane order;
+* inactive-lane address suppression and all-zero-mask completion;
+* repeated gather addresses and rejected unresolved duplicate scatter
+  addresses;
+* rejection of attempts to encode physical port adaptation as semantic
+  `pack`, `serialize`, or a changed vector type.

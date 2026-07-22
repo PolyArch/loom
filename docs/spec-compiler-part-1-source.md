@@ -1,28 +1,26 @@
 # Loom Compiler Part 1: Source Integration
 
-This document sketches the source-facing part of the Loom compiler
-front-end. Loom's common input contract is LLVM IR plus Loom metadata.
-Any high-level language can participate if its front-end can emit
-semantically equivalent LLVM IR and enough metadata for the later Loom
-passes to recover acceleration intent.
+This document specifies the source-facing part of the Loom compiler frontend.
+Loom's only required language-neutral handoff is semantically valid LLVM IR.
+Optional typed Loom hints and provenance can improve analysis, but no other
+LLVM-producing frontend must implement a Loom-private metadata protocol.
 
-Part 1 does not lower code to `dataflow`. It emits LLVM IR plus
-metadata that the mechanical LLVM-to-SCF raising pipeline preserves in
-initial SCF-stage MLIR. Later structured optimization and DSE may use
-that information when constructing a selected Structured Program
-Candidate. The mechanical pipeline does not select accelerator regions
-or parallel decomposition.
+Part 1 does not lower code to `dataflow`. It emits LLVM IR and any available
+typed hints that the mechanical LLVM-to-SCF raising pipeline can preserve in
+initial SCF-stage MLIR. Later analysis, structured optimization, and DSE may
+use those hints when constructing a selected Structured Program Candidate.
+Missing hints are proved by analysis where possible or remain unknown; the
+mechanical pipeline does not select accelerator regions or decomposition.
 
 ## 1. Scope
 
 Part 1 owns:
 
 * Accepting LLVM IR as the stable cross-language hand-off format.
-* Embedding, linking, or importing source front-ends that can produce
-  LLVM IR plus Loom metadata.
+* Embedding, linking, or importing source frontends that can produce LLVM IR.
 * Providing embedded clang as the first limited provider for C / C++.
-* Preserving source intent as metadata on functions, loops, lexical
-  regions, memory objects, and calls.
+* Preserving optional source intent and provenance on functions, loops,
+  lexical regions, memory objects, and calls when available.
 * Providing a stable hand-off format to Part 2, even when the source
   language does not outline accelerator code into separate functions.
 
@@ -39,11 +37,10 @@ Part 1 does not own:
 The Loom source integration model is language-neutral at the compiler
 boundary:
 
-* The required compiler input is LLVM IR plus Loom metadata.
+* The required compiler input is LLVM IR.
 * Source language support is provided by front-end providers. A
   provider may be embedded as a library, linked into the Loom binary,
-  or replaced by an external producer that emits the same LLVM IR
-  contract.
+  or replaced by an external producer that emits the same LLVM IR contract.
 * C / C++ through embedded clang is the first engineering target, not
   the semantic limit of Loom.
 * A provider may mark whole functions, sub-function source ranges,
@@ -55,11 +52,11 @@ contract. Part 1 preserves intent and provenance. The initial raising
 pipeline mechanically recovers structured form, while later structured
 optimization and DSE decide which legal candidates are selected.
 
-## 3. Metadata Classes
+## 3. Optional Typed Hints
 
-Part 1 may emit the following metadata classes. Part 2 is allowed to
-ignore a hint, but it must not invent source intent that was not present
-or proven by analysis.
+Part 1 may emit the following typed hints. Part 2 may ignore a hint, but it
+must not turn an absent hint into a proven fact. A property can become known
+only through preserved source information or an owning analysis.
 
 * **Accelerator candidates.** Mark a function, loop, lexical compound
   statement, outlined helper, or compiler-generated code range as a
@@ -101,10 +98,11 @@ This rule keeps the source model flexible:
 
 ## 5. Initial Clang Provider
 
-The first source provider is an embedded clang pipeline. Loom should
-prefer library integration over invoking an external compiler binary so
-that it can insert metadata, preserve diagnostics, and control the LLVM
-pipeline.
+The first source provider is an embedded clang pipeline. `loom-cc` and
+`loom-c++` must call the clang and Loom libraries in process so they can
+preserve diagnostics and control the LLVM pipeline. Shelling out to a stage
+binary is not the product architecture. Developer tools may expose the same
+library boundaries without becoming public compiler drivers.
 
 For the CMSIS drop-in compiler target, this provider must also satisfy
 the source-facing compatibility contract in
@@ -121,25 +119,25 @@ Language-specific pragmas, attributes, builtins, and library calls lower
 to the metadata classes above. The exact spelling is outside this spec;
 the IR contract is the metadata observable by Part 2.
 
-Other LLVM-producing language front-ends can be added later by
-implementing the provider contract. They do not need to mimic C / C++
-syntax; they only need to emit equivalent metadata classes.
+Other LLVM-producing language frontends can participate without mimicking C or
+C++ syntax or emitting Loom hints. A language integration may add equivalent
+typed hints, but valid LLVM IR remains the only mandatory handoff.
 
 ## 6. Hand-Off to Part 2
 
-Part 1 emits LLVM IR plus Loom metadata. The hand-off contract is:
+Part 1 emits LLVM IR plus any optional typed hints. The handoff contract is:
 
 * LLVM IR remains semantically equivalent to the source program.
 * Candidate accelerator regions are hints, not committed boundaries.
-* Metadata must be stable enough for Part 2 to associate it with loops,
-  memory objects, calls, and source ranges after mechanical raising and
-  canonical LLVM simplification.
+* Preserved hints must remain associated with their loops, memory objects,
+  calls, and source ranges after mechanical raising and canonical LLVM
+  simplification.
 * Mechanical raising may recover and normalize structured control, but
   it does not select a performance-distinct loop, parallel, vector, or
   ownership form.
-* If metadata is lost or contradicted by later LLVM transforms, Part 2
-  must preserve that uncertainty for later selection or emit a
-  diagnostic when acceleration was explicitly required.
+* If a hint is absent, lost, or contradicted by later LLVM transforms, Part 2
+  preserves uncertainty unless analysis proves the fact, or emits a diagnostic
+  when the selected profile requires that fact.
 
 ## 7. References
 

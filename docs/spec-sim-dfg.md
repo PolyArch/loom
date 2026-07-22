@@ -1,260 +1,185 @@
 # DFG-sim
 
-Implementation status: `loom-dfg-sim` accepts only finalized Canonical
-Dataflow Programs, executes the currently supported canonical actor semantics,
-and emits functional evidence, deterministic activity counts, and heuristic
-scores. It does not interpret residual SCF, CF, or imperative region
-operations. It does not implement a critical-path model or emit software or
-hardware cycle estimates.
+This document owns the execution contract for Loom's hardware-unaware
+Canonical Dataflow Program simulator. Persistent Evaluation schemas are owned
+by [DSE and Evaluation](spec-dse-feedback.md); this document defines only the
+model-specific subject, behavior, and observations. Shared workload, runtime
+input, execution, trace-manifest, and terminal schemas are owned by
+[Simulation Artifacts](spec-simulation-artifacts.md).
 
-This document specifies Loom DFG-sim, the pure software dataflow
-semantic simulator. DFG-sim executes dataflow IR without hardware
-resource limits. Its output is the software-semantic baseline for
-debugging, testing, CGRA-sim comparison, unified Evaluation, and central DSE.
+## Purpose And Boundary
 
-## Purpose
-
-DFG-sim answers this question:
+DFG-sim answers:
 
 ```text
-What does this finalized Canonical Dataflow Program do before hardware mapping
-is considered?
+How does this Canonical Dataflow Program execute when operation timing is
+modeled but spatial hardware resources are unlimited?
 ```
 
-DFG-sim consumes:
+The descriptor has one required role-labeled subject slot,
+`program: CanonicalDataflowProgram`, bound to finalized `D`.
+`workload_ref` and `runtime_input_ref` bind the
+exact spatial workload and concrete values, streams, dynamic parameters, and
+logical-memory state. The resolved simulator model belongs to
+`ResolvedModelBinding`. Trace capture and physical execution limits belong to
+the invocation and execution attempt rather than Request semantics.
 
-* a finalized Canonical Dataflow Program;
-* runtime input data;
-* an initial memory image or memory model configuration;
-* simulator configuration.
+DFG-sim does not consume Fabric or Mapping. It does not choose placements,
+routes, tags, buffers, memory services, or hardware configurations. Supplying
+Fabric metadata must not change DFG-sim semantics.
 
-Simulator configuration is a typed view of the resolved configuration
-specified in `docs/spec-config-ssot.md`. DFG-sim does not own independent
-defaults for operation semantics, event limits, or reporting policy.
+A workload-running invocation declares one typed `SimulationExecution` output
+slot and the complete mandatory terminal FindingQuery set. It produces:
 
-DFG-sim produces:
+```text
+SimulationExecution + EvaluationEvidence + optional raw detailed bundle
+```
 
-* functional outputs;
-* final memory state or memory diffs;
-* token and event traces;
-* deterministic diagnostics;
-* deterministic activity metrics and heuristic cost scores;
-* DFG-sim Evaluation Evidence usable by comparison and central DSE.
+`SimulationExecution` owns terminal values, streams, visible logical-memory
+state or diffs, activity, and the trace manifest. `EvaluationEvidence` owns
+normalized outcome, metrics, findings, and binds the execution through that
+output slot. `Retired` returns every mandatory terminal finding as `Absent`;
+`Halted` returns the corresponding finding as `Present` and all others as
+`Absent`. A CLI report is a
+removable projection of those artifacts, never another result authority.
 
-DFG-sim does not consume Fabric ADG and does not consume a mapping
-artifact. It does not choose placement, routing, schedule slots,
-temporal tags, buffers, memory bindings, or hardware resources.
+## Admission
 
-## Boundary With CGRA-sim
+The entire subject must pass Canonical Dataflow Program finalization before
+runtime state is created. Residual `scf.*`, `cf.*`, imperative regions, or
+other operations outside the canonical surface are invalid. Parse-time dialect
+registration does not grant execution semantics.
 
-DFG-sim is the software semantic baseline. CGRA-sim is the
-hardware-aware simulator specified in `docs/spec-sim-cgra.md`.
+An admitted actor without implemented semantics is `unsupported`. It must not
+be approximated, skipped, or interpreted through a compatibility path.
 
-DFG-sim and CGRA-sim must agree on functional behavior for the same
-software input, runtime data, and legal mapping. Performance differences
-are expected because DFG-sim intentionally ignores hardware limits.
+## Execution Semantics
 
-The comparison protocol is specified in
-`docs/spec-sim-comparison.md`.
+DFG-sim and CGRA-sim share one dependency-driven progress protocol:
 
-## Functional Semantics And Heuristic Cost
+```text
+arrival or resource change
+-> reevaluate affected actors
+-> derive canonical semantic transition
+-> admit and reserve
+-> atomic commit
+-> schedule publication, retirement, and release
+```
 
-Primitive operation support and evaluation are owned by
-`OperationSemantics`. The independent `OperationCostModel` owns the
-dimensionless operation weights and model identity used by the implemented
-report score. A cost entry does not establish functional support, and a
-functional operation does not derive its behavior from a cost entry.
+DFG-sim supplies ideal per-actor resources to that protocol. It is
+deterministic and event driven:
 
-`OperationSemantics` also owns the canonical functional transitions for
-`dataflow.stream`, `dataflow.carry`, `dataflow.invariant`, and
-`dataflow.gate`. Its shared decisions expose semantic state, readiness,
-required and consumed input selectors and counts, next state, and output
-obligations. Carry, invariant, and gate decisions identify the input whose
-value is forwarded while leaving the payload representation to the simulator
-backend.
+* every logical edge carries an ordered sequence of typed tokens;
+* an actor transition fires only when its semantic inputs and guards permit;
+* one firing consumes and publishes exactly the cardinalities defined by the
+  Dataflow operation specs;
+* operation latency and initiation interval determine cycle-stamped retirement
+  and next-fire eligibility;
+* hardware resources are unlimited, so unrelated ready transitions do not
+  contend for PE, route, port, bank, buffer, or tag capacity;
+* equal-cycle events use a canonical structural tie break rather than pointer,
+  container, host-thread, symbol, or printer order.
 
-The DFG actor adapter retains token queues, MLIR value identity, payload
-storage, event scheduling, counts, diagnostics, and reporting. Stream actor
-execution and static trip-count analysis use the same typed predicate and
-recurrence helpers, which delegate exact-width integer behavior to the
-primitive evaluator. A false close emits no sentinel IV or dummy carry
-feedback and returns the corresponding semantic state to its canonical
-initial value, so a later activation enters normally.
+`AbstractCycle`, defined by the exact DFG timing model, is the simulator time
+unit. It is not a physical time in nanoseconds and does not imply a target
+clock frequency. Timed events use `EventCoordinate = (abstract_cycle, delta)`.
+`delta` orders causally related zero-registered-delay propagation inside one
+cycle and never increments a cycle metric. DFG-sim may therefore estimate
+logical latency and throughput in abstract cycles without claiming
+hardware-aware timing.
 
-The operation cost model is not an abstract timing profile or a hardware
-timing model. Its base and repeat scores are not latency, initiation interval,
-throughput, critical-path length, or cycle counts. This separation does not
-add timed simulation or change observable functional semantics.
+The semantic operation registry owns functional transitions. A separately
+identified model binding may provide latency and initiation interval. Neither
+registry is copied into the request or result as a second authority.
 
-## Semantic Scope
+## Control And Stateful Actors
 
-The whole input module must pass finalized-program validation before runtime
-inputs are seeded or any actor is scheduled. The validator is the single
-structural admission gate for the canonical graph surface. Residual `scf.*`,
-`cf.*`, and other imperative region-bearing operations are invalid inputs;
-they must be removed by frontend lowering or produce a finalization diagnostic.
-DFG-sim has no structured interpreter, translation fallback, or compatibility
-execution path for them.
+`dataflow.stream`, `carry`, `invariant`, and `gate` follow the canonical phase
+algebra and reset after a complete legal activation. A false close emits no
+sentinel induction value. Ordered token flow, explicit close events, and graph
+completion determine quiescence.
 
-Loading source dialects so invalid input can be parsed and diagnosed does not
-make those dialects part of the execution surface. After finalization succeeds,
-an otherwise valid canonical actor without implemented simulator semantics is
-reported as unsupported rather than approximated.
+`dataflow.sync`, `mux`, `demux`, constants, arithmetic, math, vector adapters,
+and other admitted actors follow their owning Dataflow or upstream-dialect
+semantic specs. Packed and vector payloads use arbitrary-width bit-accurate
+storage; host integer width is not a semantic limit.
 
-The baseline semantic scope includes:
+## Memory
 
-* `dataflow.stream`;
-* `dataflow.carry`;
-* `dataflow.invariant`;
-* `dataflow.gate`;
-* `dataflow.constant`;
-* `dataflow.load`;
-* `dataflow.store`;
-* `dataflow.sync`;
-* `dataflow.mux`;
-* `dataflow.demux`;
-* `dataflow.parallelize`;
-* `dataflow.pack`;
-* `dataflow.unpack`;
-* `dataflow.serialize`;
-* arithmetic and math operations required by target workloads;
-* control, done, and memory-order token behavior required by dataflow
-  graph execution.
+Logical memories are addressed software memory spaces. `dataflow.load` and
+`dataflow.store` fire and retire through their explicit `ctrl`/`done` network.
+For each alias partition, the canonical memory-order state is the pair
+`(write_frontier, read_frontier)` defined by the graph-memory lowering spec.
 
-The simulator must follow the target dataflow specs for phase close
-tokens, body-domain projection, real loop feedback cardinality, control
-tokens, memory tokens, and graph completion.
-Vector token-cardinality changes follow
-`docs/spec-dataflow-vectorization.md`. The graph verifier and simulator use
-the same `DataflowActorSemantics` transitions for scalar/group phase
-consumption, publication, close propagation, and reset. Packed and vector
-token bit patterns use arbitrary-width representation; host 64-bit integers
-are not a semantic limit.
+Retirement performs the logical read or write. DFG-sim models neither cache
+hierarchy, coherence traffic, NoC transport, bank conflicts, physical memory
+ports, nor Fabric memory-service capacity. Plain conflicting accesses without
+an explicit causal order must not become deterministic merely because of
+simulator traversal order.
 
-Unsupported operations must produce structured diagnostics. Unsupported
-operations must not be silently approximated.
+Atomic, RMW, fence, volatile, and coherence behavior is unsupported until its
+explicit Dataflow contract is closed.
 
-## Execution Model
+## Trace And Termination
 
-DFG-sim uses a deterministic event model:
+When requested, the `SimulationExecution` trace manifest orders
+content-addressed chunk references whose opaque payloads are retained by the
+raw detailed bundle. Records are strictly ordered by `EventCoordinate` and
+canonical within-frame event order. Firing is the atomic actor-transition
+commit, not readiness; publication and retirement may occur later. A firing record
+identifies the stable actor, execution-local occurrence, per-actor firing
+ordinal, consumed and produced logical endpoints, and relevant state
+transition. Raw payload inclusion is controlled by the invocation's capture
+request.
 
-* every simulated SSA value has a logical token queue;
-* every operation fires when its required input tokens are available and
-  its semantic guards permit firing;
-* memory operations observe explicit memory dependencies, effects, and
-  memory-order tokens;
-* graph completion is represented by dataflow completion semantics, not
-  by hardware completion signals;
-* tie-breaking is deterministic for simultaneously fireable events.
+Successful termination requires all of the following:
 
-The event model is unconstrained by hardware resources. The scheduler uses a
-deterministic order for fireable operations. `wavefront_steps` records event
-loop progress; it is not a timing unit. DFG-sim does not model PE count, FU
-count, route capacity, memory port count, buffer depth, clock domains, or
-protocol latency.
+* the graph completion frontier has retired;
+* no actor has a required pending transition;
+* no delayed retirement event remains;
+* no required output, stream close, or memory effect remains unpublished.
 
-## Memory Model
+Quiescence without legal completion is deadlock only when a closed wait-set
+witness proves that no future arrival, guaranteed release, or escape can
+restore progress. A long run or an empty event queue alone is insufficient.
+The execution terminal is exactly `Retired`, `Halted {finding,witness}`, or
+`StoppedByLimit`, with the Evidence mapping defined by Simulation Artifacts.
+Cycle count spans accepted Spatial Launch through visible graph retirement.
+Wall time, host parallelism, and license availability may interrupt execution
+but must not select a different formal result.
 
-DFG-sim owns a software memory model for simulated memrefs and memory
-regions. It must support:
+## Observations
 
-* initial input buffers;
-* reads and writes through `dataflow.load` and `dataflow.store`;
-* explicit memory-order tokens and sync operations;
-* deterministic conflict handling based on the dataflow memory
-  dependence model;
-* final memory diffs for checking and reporting.
+Supported normalized observations may include logical cycle count, actor fire
+and retirement counts, operation-class activity, terminal observables, and
+deadlock or other proven execution-halting findings declared by the model.
+Capability rejection is `Unsupported` and does not become a finding. Every
+metric is identified through the central metric registry and carries its unit
+and provenance.
 
-DFG-sim does not model cache hierarchy, memory bandwidth, coherence
-traffic, NoC latency, or terminal memory target range conflicts. Those
-are hardware concerns for Fabric ADG, PnR, and CGRA-sim.
+## DFG/CGRA Relation
 
-## Metrics
+DFG-sim and CGRA-sim use the same canonical actor and logical-memory
+semantics. Given equivalent runtime inputs and a legal complete mapping, their
+terminal software observables must agree. Different cycle behavior is expected
+because CGRA-sim adds finite resources and hardware timing.
 
-The implemented report includes:
+Comparison is an ordinary Evaluation model specified by
+[Simulation Comparison](spec-sim-comparison.md). It consumes role-labeled
+executions rather than simulator-specific report files.
 
-* functional output values;
-* final visible memory state;
-* invocation-local final memory-root labels;
-* operation fire count;
-* modeled library call count;
-* event count;
-* wavefront progress count;
-* dynamic work item count;
-* weighted operation, modeled library work, operation diversity, and
-  computed-address scores;
-* diagnostics.
+## Anchor Verification
 
-These scores support deterministic regression and explicit central-DSE
-policy. They do not estimate latency, throughput, critical path, or hardware
-cycles and do not become `PnRSearchCost` inputs.
+Stable anchor tests cover:
 
-## Determinism
+* rejection of non-finalized subjects before execution;
+* exact token cardinality and state reset for canonical control actors;
+* `ctrl`/`done` memory order and terminal memory diffs;
+* deterministic `EventCoordinate` and within-frame trace order;
+* trace observer noninterference;
+* exact terminal and Evidence outcome mapping, including deadlock witnesses;
+* explicit unsupported and deadlock outcomes; and
+* terminal-observable agreement with one legal CGRA-sim execution.
 
-Given the same input IR, runtime data, memory image, and simulator
-configuration, DFG-sim must produce the same outputs, diagnostics, and
-report. Stable deterministic ordering is required for tests and
-comparison.
-
-If the requested simulator configuration contains an unknown key, an
-unknown model profile, a conflicting source, or an unrecorded override,
-DFG-sim must fail before simulation starts.
-
-## Report Contract
-
-The target DFG-sim report contract must identify:
-
-* software IR root;
-* simulator schema version;
-* runtime input ArtifactIdentity when available;
-* simulator configuration;
-* resolved configuration ArtifactIdentity;
-* functional outputs and memory diffs;
-* activity metrics and heuristic score definitions;
-* trace location or inline trace summary;
-* diagnostics.
-
-The implemented `2.2` intermediate report is described in
-`docs/spec-intermediate-artifacts.md`. Runtime input identity, resolved
-configuration ArtifactIdentity, and trace references remain target fields
-until their producers are connected to
-`loom-dfg-sim`.
-
-Reports are unified Evaluation Evidence consumed by the simulation comparison
-protocol and central DSE. If DSE requests a new spatial search, it supplies
-explicit `ResolvedPnrConfigView` and `MappingConstraintSet` inputs. PnR
-consumes only exact `D/T/F/C/K` and derives generic `PnRSearchCost` from those
-inputs; it never consumes DFG-sim reports directly. Reports must not contain
-hardware placement, routing, schedule, or resource-sharing decisions.
-
-## Non-Goals
-
-DFG-sim is not PnR. It does not map software to hardware.
-
-DFG-sim is not CGRA-sim. It does not model hardware resource limits.
-
-DFG-sim is not RTL simulation. It does not execute generated hardware.
-
-DFG-sim may be selected through the runtime ABI specified in
-`docs/spec-runtime-abi.md`, but runtime dispatch does not change the
-DFG-sim input boundary: DFG-sim consumes dataflow IR and software
-runtime data, not Fabric ADG or mapping artifacts.
-
-## Acceptance Criteria
-
-DFG-sim is complete at the target-spec level when:
-
-* it can execute hand-written dataflow primitive graphs;
-* it can execute at least one selected application dataflow graph with
-  real input data or a controlled fixture;
-* finalized-program validation rejects residual structured and imperative
-  region operations before simulation;
-* functional outputs match the expected software behavior;
-* unsupported operations produce structured diagnostics;
-* invalid or conflicting simulator configuration fails early with
-  structured diagnostics;
-* reports expose functional outputs, visible memory state, operation counts,
-  event counts, and heuristic scores;
-* reports carry the exact resolved configuration ArtifactIdentity;
-* the same workload and input can be compared against CGRA-sim through
-  `docs/spec-sim-comparison.md`.
+Tests must not preserve text report layouts, container order, a fixture matrix,
+or implementation-specific scheduler classes.

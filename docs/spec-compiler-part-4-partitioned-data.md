@@ -1,224 +1,127 @@
-# Loom Compiler Part 4: Partitioned Data
+# Loom Compiler Part 4: Logical Domains And Data Views
 
-This document specifies the software-side partitioned-data contract used
-by Loom front-end IR. It describes how a memref is associated with a
-logical partition domain, and how code inside a `dataflow.thread`
-definition queries the portion of that memref owned by the current
-logical thread instance.
+This document specifies the software-side logical-domain and derived-data-view
+contract used at Loom thread boundaries. The canonical ABI is intentionally
+small: a thread definition owns behavior and coordinate rank, while each
+launch owns one zero-based dense extent per rank dimension and passes all data
+as ordinary typed operands.
 
-The partition domain is a software index space. It is not a hardware
-mesh, x/y coordinate system, PE coordinate space, routing graph, or
-fabric topology. Binding logical thread instances and partition-domain
-points to physical AccCore resources is owned by binding/PnR, not by the
-ops in this document.
+The earlier `thread_axis`, `staticGrid*`, `dataflow.map_info`,
+`dataflow.partition_domain`, and `dataflow.partition_layout` design was
+removed because it duplicated domain, schedule, and boundary facts already
+owned by the Structured Program Candidate, launch ABI, and SystemMapping.
 
-## 1. Scope
+## 1. Authority And Scope
 
 Part 4 owns:
 
-* Logical partition-domain declarations.
-* View-like annotations that associate memrefs with partition domains.
-* Thread-body queries for local data ranges and logical thread
-  coordinates.
-* Verifier rules that connect partitioned data to
-  `#loom.thread_axis<...>` mapping entries.
+* the logical-coordinate interpretation of a thread definition's trailing
+  `index` block arguments;
+* launch-domain cardinality rules;
+* source induction-variable reconstruction; and
+* the boundary between ordinary software data views and physical Mapping.
 
 Part 4 does not own:
 
-* HostCore-to-AccCore boundary selection.
-* `dataflow.thread` definition and launch shape.
-* Structured-control-to-dataflow lowering.
-* Physical AccCore selection, core id assignment, routing, placement, or
-  time-slot scheduling.
-* Distributed-buffer neighbor exchange protocols.
+* thread or SpatialCore outlining decisions;
+* parallel, temporal, tiling, interchange, vector, or unroll choices;
+* physical AccCore selection, route, Tag, reservation, or topology;
+* a second memory-transfer or partitioned-data ABI; or
+* sparse/worklist domains and neighborhood protocols, which require their own
+  explicit semantics before use.
 
-## 2. Concepts
+## 2. Canonical Logical Domain
 
-### Logical Partition Domain
-
-A logical partition domain is a named, ranked software index space. Its
-shape records the number of logical positions along each domain axis.
-
-The target op is:
+A `dataflow.thread` entry block has this canonical shape:
 
 ```text
-dataflow.partition_domain @D { shape = [d0, d1, ...] }
+(ordinary_args..., thread_ctrl : none, coord_0 : index, ..., coord_{K-1} : index)
 ```
 
-Each `di` is a positive integer attribute. The rank is the number of
-shape entries. A domain symbol carries no physical topology. It only
-names a logical index space that thread-axis attributes and partition
-layouts can reference.
+The suffix length `K` is the coordinate rank and is derived from this block
+shape. No rank, axis-kind, grid, layout, or topology attribute duplicates it.
 
-### Thread-Axis Mapping
-
-Part 3 defines the target mapping attribute:
+Each `dataflow.thread.launch` supplies exactly `K` `index` extents. The dynamic
+instance set is:
 
 ```text
-#loom.thread_axis<parallel, axis>
-#loom.thread_axis<multiplexed, axis>
-#loom.thread_axis<parallel, axis, @D>
-#loom.thread_axis<multiplexed, axis, @D>
+[0, extent_0) x ... x [0, extent_{K-1})
 ```
 
-The optional symbol names a logical partition domain. A `parallel` axis
-may bind different dynamic values to different AccCore execution slots
-when binding/PnR chooses to do so. A `multiplexed` axis may reuse the
-same AccCore execution slot over time. Neither kind is a physical
-coordinate or topology statement.
+Every extent is non-negative. Rank zero creates exactly one instance. If any
+extent is zero, the domain is empty and the collective completion token retires
+after launch dependencies without executing a thread body. Static verification
+rejects a provably negative extent; runtime admission rejects a dynamic negative
+value before creating any instance.
 
-### Partition Layout
+The coordinate tuple identifies an instance but defines no row-major linear
+order, issue order, physical grid, or hardware topology. If program semantics
+require a linear id, the Structured Program Candidate computes it explicitly
+from coordinates and extents.
 
-A partition layout is a view-like memref annotation. It preserves the
-source memref type while recording how memref dimensions are partitioned
-over a logical domain.
+## 3. Source Induction Variables
 
-The target op is:
+Source lower bounds and steps are ordinary launch operands. The thread body
+reconstructs each source induction variable mechanically:
 
 ```text
-%view = dataflow.partition_layout %source
-    { domain = @D,
-      split_dims = [[axis0, ...], [axis1, ...], ...] }
-    : memref<...>
+source_iv_d = lower_d + coord_d * step_d
+coord_d in [0, extent_d)
 ```
 
-`split_dims` has one entry per source memref dimension. Each entry lists
-the domain axes that partition that memref dimension. An empty entry
-means the dimension is replicated with respect to the domain.
+This equation is program semantics. It supports dynamic lower bounds and
+steps without making source-loop bounds part of the thread ABI. The SCF
+optimizer must compute an extent that covers exactly the selected source
+iteration domain and must preserve overflow and signedness semantics required
+by the source program.
 
-The result aliases the source. Memory effects through the layout result
-are effects on the underlying source storage.
+## 4. Derived Values And Memory Views
 
-### Local Range
+Values and memrefs cross a thread launch as ordinary typed operands and become
+matching ordinary definition arguments. Tiling, local ranges, subviews,
+address calculations, and explicit linearization use upstream MLIR operations
+such as `affine`, `arith`, and `memref` while the program remains in the SCF
+stage. Loom does not add a metadata-only passthrough operation.
 
-`dataflow.local_range` returns the half-open range of a source memref
-dimension owned by the current logical thread instance.
+The ownership optimizer decides whether a derived computation remains on the
+InstructionCore or enters a `loom.spatial_region`. A computation selected for
+the SpatialCore must mechanically lower to the canonical Dataflow actor
+surface; otherwise it stays outside the graph or makes that candidate
+non-finalizable. Analysis facts such as alias classes, access ranges, and
+memory footprints remain derived analyses unless they change program
+semantics.
 
-The target op is:
+## 5. Mapping Boundary
 
-```text
-%lo, %hi = dataflow.local_range %view { dim = d } : memref<...>
-```
+Logical coordinates and launch parameters are software facts. SystemMapping's
+`B_thread` relation consumes them to select an AccCore for each legal logical
+instance. Event-relative `ResourceUse` separately owns occupancy and release.
+Neither relation may reinterpret coordinates as Cartesian hardware positions.
 
-The operand must be the result of `dataflow.partition_layout` or a
-same-storage view chain rooted in such a result. The `dim` attribute is a
-source memref dimension. The result is expressed in the source memref's
-index space.
+Data partitioning visible to the program is expressed by its ordinary index
+and view computations. Physical placement of storage, memory services, and
+routes is owned by SpatialMapping and SystemMapping. No software view silently
+selects a `fabric.pe`, `fabric.mem`, transport endpoint, or protocol.
 
-The enclosing thread must provide matching `parallel` thread-axis entries
-for every domain axis that partitions `dim`. `multiplexed` axes do not
-establish data ownership and therefore do not satisfy local-range reach.
+## 6. Verification And Tests
 
-### Thread Coordinate
+Anchor-level verification covers:
 
-`dataflow.thread_coord` returns the current logical coordinate for a
-domain in the enclosing `dataflow.thread` definition.
+* exact agreement between launch extent count and callee coordinate rank;
+* rank-zero, empty-domain, and negative-extent behavior;
+* exact ordinary-operand type agreement;
+* source-IV reconstruction for nonzero and dynamic lower or step values; and
+* rejection of physical topology or Mapping authority in the software ABI.
 
-The target op is:
+Tests should assert these stable boundaries rather than preserve a particular
+analysis cache, view-chain implementation, textual op order, or optimization
+heuristic.
 
-```text
-%c0, %c1, ... = dataflow.thread_coord @D : index, index, ...
-```
+## 7. Deferred Semantics
 
-The op returns one coordinate per domain axis in axis order. For every
-domain axis, the enclosing thread must have exactly one matching
-`#loom.thread_axis<parallel, axis, @D>` entry. The coordinate value is
-the corresponding thread-body grid IV. `multiplexed` entries do not
-contribute to `thread_coord`.
-
-### Thread Linear Id
-
-`dataflow.thread_linear_id` returns a row-major flattening of
-`dataflow.thread_coord @D` against the domain shape.
-
-The target op is:
-
-```text
-%id = dataflow.thread_linear_id @D : index
-```
-
-The op has the same admissibility requirement as `dataflow.thread_coord
-@D`: every domain axis must be covered exactly once by a matching
-`parallel` thread-axis entry.
-
-## 3. Verifier Contract
-
-`dataflow.partition_domain`:
-
-* Is a top-level symbol.
-* Has non-empty shape.
-* Every shape entry is a positive integer.
-* Carries no fabric-binding or routing attributes.
-
-`dataflow.partition_layout`:
-
-* Takes a memref-like source.
-* Returns the same type as the source.
-* References a visible `dataflow.partition_domain`.
-* Has one `split_dims` entry per source memref dimension.
-* Every listed axis is in the referenced domain's axis range.
-* A domain axis may appear in at most one source-dimension entry unless
-  an explicit future design introduces replicated ownership.
-* Is treated as a view-like alias for effect projection and
-  boundary-materialization analysis.
-
-`dataflow.local_range`:
-
-* Appears inside a `dataflow.thread` definition body.
-* Has a valid `dim` for the rooted source memref.
-* Its operand's same-storage view chain resolves to exactly one
-  `dataflow.partition_layout`.
-* Every domain axis referenced by the layout entry for `dim` is covered
-  by exactly one `#loom.thread_axis<parallel, axis, @D>` entry on the
-  enclosing thread mapping.
-* `multiplexed` thread-axis entries do not satisfy the reach rule.
-
-`dataflow.thread_coord` and `dataflow.thread_linear_id`:
-
-* Appear inside a `dataflow.thread` definition body.
-* Reference a visible `dataflow.partition_domain`.
-* Require every domain axis to be covered by exactly one matching
-  `#loom.thread_axis<parallel, axis, @D>` entry.
-* Reject mappings that leave a domain axis uncovered or cover the same
-  domain axis more than once.
-
-## 4. Interaction With Part 3
-
-Part 3 owns thread creation and `#loom.thread_axis<...>`. Part 4 consumes
-those mapping entries only as logical execution-axis tags.
-
-Partitioned-data ops are InstructionCore-side helpers. They do not appear
-inside a `dataflow.graph` definition. If graph code needs a local range,
-coordinate, or linear id, the value is computed in the enclosing
-`dataflow.thread` body and passed to `dataflow.graph.launch` as an
-ordinary operand.
-
-Partition-layout values cross a `dataflow.thread.launch` boundary through
-the same `dataflow.map_info` protocol used for other memref-like values.
-Because `dataflow.partition_layout` preserves the source memref type,
-the verifier recovers the partition metadata by walking the same-storage
-view chain.
-
-## 5. Testing Expectations
-
-Tests for this part should cover:
-
-* Valid and invalid `dataflow.partition_domain` declarations.
-* Valid and invalid `dataflow.partition_layout` annotations.
-* Same-storage view-chain recovery for `dataflow.local_range`.
-* `local_range` acceptance when all needed domain axes are covered by
-  matching `parallel` thread-axis entries.
-* `local_range` rejection when coverage is missing, duplicated, or only
-  provided by `multiplexed` entries.
-* `thread_coord` and `thread_linear_id` acceptance for full-domain
-  `parallel` coverage.
-* Rejection of `thread_coord` and `thread_linear_id` outside a
-  `dataflow.thread` body.
-* Confirmation that none of these ops carry physical topology,
-  adjacency, routing, or fabric-resource binding semantics.
-
-## 6. Future Work
-
-Future work may define distributed-buffer protocols and neighbor
-exchange, but those protocols must be explicit. They must not be hidden
-inside the partition-domain or partition-layout ops.
+Dynamic nonrectangular, sparse, and worklist-generated item domains are not
+encoded by the dense extent ABI. Their item identity, termination, channel
+interaction, and Mapping domain must be specified together before they become
+canonical. Distributed-buffer and neighborhood-exchange behavior likewise
+requires explicit dataflow and service semantics rather than hidden layout
+metadata.

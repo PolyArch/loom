@@ -1,19 +1,27 @@
-# Loom Dataflow Part 1: Streaming Ops
+# Loom Dataflow Part 1: Streaming And Channel Ops
 
 This document specifies the precise token timing semantics of the
 stream-shaping ops in the `dataflow` dialect:
 `dataflow.stream`, `dataflow.carry`, `dataflow.invariant`, and
 `dataflow.gate`.
 
+It also owns the thread-level ordered-channel type and endpoint semantics for
+`dataflow.channel.create`, `dataflow.channel.send`, and
+`dataflow.channel.receive`. Graph-local SSA streams and thread-level channels
+are related at `dataflow.graph.launch`, but they are not the same IR object.
+
 Vector stream grouping and scalar/packed stream adaptation are specified
 separately in `docs/spec-dataflow-vectorization.md`. This document owns
 the scalar stream-shaping primitives that those vectorization ops build
 on.
 
-The canonical IR source is `include/Dataflow/IR/DataflowOps.td`; the
-verifier implementation lives in `lib/Dataflow/IR/DataflowOps.cpp`.
-This document is the design-level companion for compiler specs that use
-these ops, especially `docs/spec-compiler-part-3-dfg.md`.
+This document owns the semantic contract for these operations.
+`include/Dataflow/IR/DataflowOps.td` and
+`lib/Dataflow/IR/DataflowOps.cpp` plus
+`lib/Dataflow/IR/DataflowChannelOps.cpp` are implementation projections and
+must conform to it. Compiler specs that use these operations, especially
+`docs/spec-compiler-part-3-dfg.md`, reference this contract rather than
+redefining it.
 
 ## 1. Token Stream Model
 
@@ -72,11 +80,12 @@ triple and establishes a current value initialized to `%init`.
 The step kind is a `dataflow::StreamStepKind` value: `add`, `sub`, `mul`,
 `sdiv`, `udiv`, `shl`, `ashr`, or `lshr`. The continuation predicate is the
 upstream `mlir::arith::CmpIPredicate` enum. These generated enums are the
-semantic source of truth for parser, verifier, simulator, and hardware
-configuration behavior.
+shared implementation representation of the closed choices specified here.
+The parser, verifier, simulator, and hardware-configuration projection must
+consume that representation rather than maintain string-based copies.
 
-The current dialect definition requires `%init`, `%limit`, `%step`, and
-`%iv` to share a scalar signless integer type. `%phase` is always `i1`.
+The canonical operation requires `%init`, `%limit`, `%step`, and `%iv` to
+share a scalar signless integer type. `%phase` is always `i1`.
 
 For `init = 0`, `limit = 5`, `step = 1`, step kind `add`, and predicate
 `slt`:
@@ -235,16 +244,74 @@ Lowering passes that use these ops must preserve the following rules:
   by these ops. Dynamic control shapes the address, data, operation,
   and `none` order streams instead.
 
-## 8. References
+## 8. Thread-Level Ordered Channels
+
+The sole logical channel type is:
+
+```text
+!dataflow.channel<T>
+```
+
+`T` is an ordinary typed message payload and may be scalar, vector, tile,
+descriptor, coordinate/value pair, or another finite value type. It must not
+contain a channel, `!dataflow.thread_token`, or a memory capability. A channel
+handle is connectivity identity, not a FIFO pointer or payload; it cannot be
+loaded, stored, nested in another channel, or sent as a message.
+
+Each dynamic execution of `dataflow.channel.create` creates a fresh logical
+channel instance. Creation occurs outside `loom.spatial_region` and
+`dataflow.graph`; it cannot be CSE'd as a pure value. The initial profile has no
+channel-level session, epoch, open, close, reset, or built-in EOS operation.
+Known logical domains or an explicit payload protocol own termination. Dynamic
+sparse/worklist termination that cannot satisfy that contract is unsupported
+by this profile; an extension requires its own closed termination semantics.
+
+`dataflow.channel.send` and `dataflow.channel.receive` are InstructionCore
+stored-program operations inside a `dataflow.thread` body and are forbidden in
+a canonical `dataflow.graph`. Send blocks as required to submit one message in
+program order. Receive blocks until it can consume and return the oldest
+message. Logical capacity, occupancy, physical latency, and physical buffering
+are unobservable; physical stalls may change performance but never content or
+order. The initial profile has no try-send, try-receive, size, empty/full, or
+select-any-ready operation.
+
+A logical channel has at most one producer/output binding and may have several
+consumer/input bindings. Each consumer binding owns a total deterministic
+`source_map` from its logical consumer domain to the producer domain. Several
+consumers may select one producer, yielding multicast in which every branch
+observes the same ordered sequence. Many-to-one competitive receive requires
+an explicit merge, router, reduction actor, or memory-backed work queue; it is
+not implicit channel arbitration.
+
+At a graph launch, channel input bindings derive graph-local stream inputs and
+channel output bindings consume graph-local stream outputs. Channel handles do
+not enter the graph body. A graph-local stream close is not a channel message,
+consumer EOS, channel close, or thread completion. Channel message delivery is
+an ordinary causal edge; conflicting shared-memory visibility must respect
+that causality without adding a channel-specific memory-order mode.
+
+Mapping selects a physical path or network that preserves FIFO behavior. It
+may use NoC links, switches, buffers, virtual channels, `fabric.fifo`, or a
+memory-backed ordered queue when Fabric declares the capability. The logical
+channel does not prescribe one physical FIFO, route, capacity, or protocol.
+
+Stable verification anchors cover payload-type rejection, fresh creation,
+send/receive placement and type agreement, one-producer/multi-consumer source
+mapping, ordered blocking behavior, and the absence of hidden EOS or
+capacity-visible behavior. Tests do not enumerate physical transports,
+message types, or report formatting.
+
+## 9. References
 
 * `docs/spec-compiler-part-3-dfg.md` -- SCF-to-DFG lowering templates
   that use these streaming semantics.
 * `docs/spec-dataflow-part-2-control.md` -- firing semantics for
   `dataflow.mux`, `dataflow.demux`, `dataflow.sync`, and
   `dataflow.constant`.
-* `include/Dataflow/IR/DataflowOps.td` -- canonical operation
-  definitions.
-* `lib/Dataflow/IR/DataflowOps.cpp` -- verifier implementation.
+* `include/Dataflow/IR/DataflowOps.td` -- operation declarations that
+  implement this contract.
+* `lib/Dataflow/IR/DataflowOps.cpp` and
+  `lib/Dataflow/IR/DataflowChannelOps.cpp` -- verifier implementations.
 * `test/dataflow/unit/stream/`, `test/dataflow/unit/carry/`,
-  `test/dataflow/unit/invariant/`, `test/dataflow/unit/gate/` --
-  unit-level syntax and verifier tests.
+  `test/dataflow/unit/invariant/`, `test/dataflow/unit/gate/`, and
+  `test/dataflow/unit/channel/` -- unit-level syntax and verifier tests.

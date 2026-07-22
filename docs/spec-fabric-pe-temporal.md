@@ -1,18 +1,20 @@
 # Fabric PE (temporal schedule)
 
 This document specifies the temporal-schedule branch of `fabric.pe`. The
-spatial branch is documented in `spec-fabric-pe.md`. Both branches share
-the same op (`Fabric_PeOp` in `include/Fabric/IR/FabricOps.td`); the
-verifier dispatches on the mandatory `schedule` predicate. The temporal
-verifier lives in `lib/Fabric/IR/FabricPeTemporalOps.cpp`.
+spatial branch is documented in `spec-fabric-pe.md`. Both branches share the
+same op and dispatch on the mandatory typed `schedule` enum.
 
 ## Schedule predicate dispatch
 
 `fabric.pe [temporal]` selects the time-multiplexed branch. A single PE
 holds one or more inner `fabric.fu` instances and a per-PE instruction
-memory of length `num_instruction`. Each instruction slot may fire one
-inner FU per cycle with operand routing across PE input ports and a
-local register-FIFO bank.
+memory of length `num_instruction`. Each active instruction-memory entry makes
+one resident configured graph eligible, with operand routing across PE input
+ports and a local register-FIFO bank. Actor transitions in that graph execute
+independently through their bound `fabric.op` resources, subject to each
+resource's declared capacity and grant policy. The entry is a physical
+configuration record, not a Mapping identity, a whole-FU firing, or a
+one-actor-per-cycle quota.
 
 Both anonymous and named-template forms are accepted:
 
@@ -23,7 +25,7 @@ Both anonymous and named-template forms are accepted:
        attributes {
          tag_width = 4 : i32,
          num_instruction = 4 : i32,
-         fu_config_mode = "per_fu_config",
+         fu_config_mode = #fabric.fu_config_mode<per_fu_config>,
          operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
        } { ... }
 
@@ -32,7 +34,7 @@ fabric.pe @TempPe [temporal] (!fabric.bits_tag<32, 4>)
      attributes { ... } {
 ^bb0(%pa: !fabric.bits<32>):
   fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) { ... }
-  fabric.yield %pa : !fabric.bits<32>
+  fabric.yield
 }
 ```
 
@@ -53,14 +55,12 @@ implicitly:
 * **Input direction.** Each PE input port is auto-tag-stripped at the
   boundary. The entry block argument visible inside the body has type
   `!fabric.bits<W>` (the bits-data part). The PE-level
-  `operand_sel.tag` field of `instruction_mem` decides which incoming
-  token is selected at runtime; the body simply sees the raw data
-  bits.
-* **Output direction.** Each PE result type is `!fabric.bits_tag<W, T>`
-  but `fabric.yield` carries values of type `!fabric.bits<W>`. The tag
-  is reattached by hardware at the PE boundary; the PE-level
-  `result_sel.tag` field of `instruction_mem` supplies the runtime tag
-  value.
+  active `OperandSelection` route decides which incoming tag is selected at
+  runtime; the body simply sees the raw data bits.
+* **Output direction.** Each PE result type is `!fabric.bits_tag<W, T>`.
+  The active `ResultSelection` supplies both the selected inner-FU value and
+  the runtime tag. A named PE's zero-operand `fabric.yield` is only its
+  signature terminator and carries neither value nor tag.
 
 This makes inner `fabric.fu` ops uniformly bits-typed regardless of PE
 schedule: FU input and output ports are strict `!fabric.bits<W'>` (with
@@ -92,10 +92,9 @@ corresponding port type). `bits_tag` is forbidden as an entry block arg
 type. The named form has no inline `to` syntax; the user writes the
 desired narrower width directly in the `^bb0(...)` line.
 
-For the terminator `fabric.yield`, the value types are `!fabric.bits<G_i>`
-with `G_i = W_i` (the bits-data part of the declared result port type).
-`bits_tag` is forbidden as a yield value type; the tag is reattached at
-the boundary by hardware.
+The named-form terminator is exactly zero-operand `fabric.yield`. Result port
+types come only from `function_type`, and the configured `ResultSelection`
+records choose their sources. A value-bearing PE terminator is invalid.
 
 ## Hardware parameters
 
@@ -111,133 +110,160 @@ attributes).
 | `num_reg_fifo`        | `I32Attr`        | optional (default 0), `>= 0`                                    |
 | `reg_fifo_depth`      | `I32Attr`        | required iff `num_reg_fifo > 0`; absent or `0` otherwise        |
 | `reg_fifo_ports`      | `I32Attr`        | optional (default 1); must be `1` or `2`                        |
-| `fu_config_mode`      | `StrAttr`        | required, `"per_instruction_fu_config"` or `"per_fu_config"`    |
+| `fu_config_mode`      | `FuConfigModeAttr` | required, `#fabric.fu_config_mode<per_instruction_fu_config>` or `#fabric.fu_config_mode<per_fu_config>` |
 | `operand_buffer_mode` | `OperandBufferModeAttr` | required, `#fabric.operand_buffer_mode<per_instruction>` / `#fabric.operand_buffer_mode<per_input_port>` / `#fabric.operand_buffer_mode<all_fu_share>` |
 | `operand_buffer_size` | `I32Attr`        | absent for `per_instruction`; otherwise required and positive          |
+
+These attributes describe hardware capacity and physical organization. They
+do not select a workload configuration. Inner `fabric.op.hw_params` likewise
+describes parameterized hardware capability; selected semantic values and
+raw `sw_configs` are derived only after Mapping.
 
 The `K = numInputs()` and `L = numOutputs()` shape parameters are
 read from the op signature (anonymous form) or the `function_type`
 attribute (named form). Both must be `>= 1`.
 
-The implicit shape parameters `num_fu`, `max_fu_inputs`,
-`max_fu_outputs` are derived from the body: counting `fabric.fu` ops
-plus `fabric.instantiate` ops, and taking the per-FU max of input and
-output counts.
+The implicit shape parameters `num_fu`, `max_fu_inputs`, and
+`max_fu_outputs` are derived from the `ConcreteFuOccurrenceSet` defined by the
+PE and instantiate specifications. Before finalization this counts anonymous
+FU occurrences plus resolved FU instantiations, while excluding named FU
+declarations. After canonical elaboration it is exactly the set of anonymous
+FU occurrences. The maxima use only that set.
+
+`num_instruction` also bounds the PE-owned resident context namespace:
+
+```text
+InstructionContextRef =
+  (FabricPeOccurrenceRef, ContextOrdinal)
+
+0 <= ContextOrdinal < num_instruction
+```
+
+`InstructionContextRef` identifies only a configuration/runtime-state
+namespace for one resident configured graph. It does not own or copy the
+configured graph, its capability, its semantic realization, or its dynamic
+actor state transitions. `instruction_mem` is physical dispatch/configuration storage
+indexed by the same Fabric-owned ordinal domain. An entry is not the context
+reference or state namespace and does not own context identity.
+`fu_config_mode` selects a hardware configuration-storage organization, not a
+different context model or encoding authority. Inner FUs and `fabric.op`
+resources must not create local context IDs.
 
 ## Software configuration
 
-When the PE is "programmed" (carries software configuration), three
-attributes must be present. They obey an all-or-nothing rule: either all
-present or all absent. When `fu_config_mode == "per_instruction_fu_config"`,
-`per_fu_sw_configs` is replaced by per-instruction `fu_sw_configs`
-embedded inside each `instruction_mem` entry, and the trio reduces to
-`{ pe_enable, instruction_mem }` (no top-level `per_fu_sw_configs`).
+The configured temporal-PE view is one closed sum:
 
-* `pe_enable : BoolAttr`. PE-level enable. `false` gates the PE off; per-
-  instruction enable bits then determine which slots fire.
-* `instruction_mem : ArrayAttr`. Length must equal `num_instruction`.
-  Each entry is a `DictionaryAttr` (see "Per-instruction format" below).
-* `per_fu_sw_configs : ArrayAttr`. Required only when
-  `fu_config_mode == "per_fu_config"`. Length equals the body's
-  `num_fu`; entries are FU-specific `DictionaryAttr` blobs (loose
-  validation in this iteration).
+```text
+TemporalPeConfiguration =
+    Disabled
+  | Active {
+      instruction_mem
+      per_fu_sw_configs?
+      physical_refinements
+    }
+```
 
-When the PE is "hw-only" (no software configuration), the trio is
-absent.
+`Disabled` carries no instruction rows, FU configuration, selector, or tag.
+The physical enable bit and inactive encoding belong only to
+ConfigurationABI. `Active` must contain at least one active instruction row;
+an all-unused table canonicalizes to `Disabled`.
+
+Fabric owns
+their meanings and legal domains; the finalizer derives their values from the exact
+TechMapping realization, SpatialMapping's concrete FU occurrence and
+`InstructionContextRef`, and any Fabric-declared semantic-preserving physical
+refinement. These fields are not an independent capability or Mapping
+authority. `ConfigurationABI` alone owns their bit encoding, packing, padding,
+and programming representation.
+
+The configured view is present only after finalization; canonical hardware-only
+Fabric contains none of these selected values. When `fu_config_mode` is
+`#fabric.fu_config_mode<per_instruction_fu_config>`, each active instruction
+entry carries its FU configuration and there is no top-level
+`per_fu_sw_configs` collection.
+
+* `instruction_mem`. A fixed-length sequence of typed `InstructionEntry`
+  values with length `num_instruction`.
+* `per_fu_sw_configs`. Present only when `fu_config_mode` is
+  `#fabric.fu_config_mode<per_fu_config>`. It maps each inner FU occurrence to
+  one closed configuration record accepted by that FU's typed capability.
+
+Absence of the configured view means no workload has been finalized; it does
+not add a default software realization.
 
 ## Per-instruction format
 
-Each `instruction_mem` entry is a `DictionaryAttr` with the following
-keys.
+Each `instruction_mem` entry is one member of a closed typed sum:
 
-```
-{
-  enable      : BoolAttr,            // 1 bit, LSB of the instruction word
-  opcode      : IntegerAttr,         // log2Ceil(num_fu) bits
-  operand_sel : ArrayAttr (length max_fu_inputs)
-                of DictionaryAttr {
-                  src_sel    : IntegerAttr,
-                  tag        : IntegerAttr,
-                  is_port    : BoolAttr,
-                  discard    : BoolAttr,
-                  disconnect : BoolAttr
-                },
-  result_sel  : ArrayAttr (length max_fu_outputs)
-                of DictionaryAttr {
-                  dst_sel    : IntegerAttr,
-                  tag        : IntegerAttr,
-                  is_port    : BoolAttr,
-                  discard    : BoolAttr,
-                  disconnect : BoolAttr
-                },
-  fu_sw_configs : DictionaryAttr     // present iff fu_config_mode is
-                                     // "per_instruction_fu_config"
-}
+```text
+InstructionEntry =
+    Unused
+  | Active {
+      selected_fu,
+      operand_sel[selected FU input count],
+      result_sel[selected FU output count],
+      fu_sw_configs?  // present only in per-instruction configuration mode
+    }
 ```
 
-Validation rules (per entry `i in [0, num_instruction)`):
+`operand_sel` and `result_sel` use closed typed variants so an irrelevant
+selector value cannot create another configuration:
 
-* `opcode` must be in `[0, num_fu)`.
-* For each `operand_sel[j]` (`j in [0, max_fu_inputs)`):
-  * If `is_port == true`, `src_sel in [0, K)`.
-  * If `is_port == false`, then `num_reg_fifo > 0` and `src_sel in [0,
-    num_reg_fifo)`. Setting `is_port == false` while
-    `num_reg_fifo == 0` is rejected.
-  * `discard && disconnect` is rejected.
-* For each `result_sel[j]` (`j in [0, max_fu_outputs)`):
-  * Same rules as `operand_sel[j]`, with `dst_sel` replacing `src_sel`
-    and `L` replacing `K`.
+```text
+OperandSelection = Route(InputPortRef | RegFifoRef, tag)
+                 | Discard(InputPortRef | RegFifoRef, tag)
+                 | Disconnected
 
-The bit layout for each operand-sel and result-sel field, low-to-high,
-is:
-
-```
-[ src_sel|dst_sel | tag | is_port | discard | disconnect ]
+ResultSelection = Route(OutputPortRef | RegFifoRef, tag)
+                | Discard
+                | Disconnected
 ```
 
-The verifier does not pack the IR into bits; this layout is fixed for
-the configuration generator.
+`fu_sw_configs` is interpreted by the selected FU's typed configuration
+schema, not as arbitrary key/value data. Its
+semantic and topology fields are derived from exact Dataflow actors and
+TechMapping correspondence; semantic-preserving physical fields come from
+SpatialMapping. A sync active set is derived from ordered correspondence and
+the capability relation. Runtime selectors of software mux/demux actors remain
+data operands and are not configuration keys.
 
-## Width formulas
+Validation rules for each active entry are:
 
-```
-opcode_width        = log2Ceil(num_fu)
-src_sel_width       = max(log2Ceil(K), log2Ceil(num_reg_fifo))
-dst_sel_width       = max(log2Ceil(L), log2Ceil(num_reg_fifo))
-operand_field_width = src_sel_width + T + 1 (is_port) + 1 (discard) + 1 (disconnect)
-result_field_width  = dst_sel_width + T + 1 (is_port) + 1 (discard) + 1 (disconnect)
-fu_cfg_width_max    = max(fu_config_bitwidth(fu_i)) over inner FUs (per_instruction_fu_config mode)
-                    = sum(fu_config_bitwidth(fu_i)) (per_fu_config mode, stored separately)
+* `selected_fu` must identify one FU occurrence owned by this PE.
+* Every `InputPortRef` is in `[0, K)` and every `OutputPortRef` is in
+  `[0, L)`.
+* A `RegFifoRef` requires `num_reg_fifo > 0` and is in
+  `[0, num_reg_fifo)`.
+* Every carried `tag` is in the PE's declared tag domain.
+* Every FU input and output has exactly one selector variant.
 
-instruction_word_width =
-    1                                        // enable
-  + opcode_width
-  + max_fu_inputs  * operand_field_width
-  + max_fu_outputs * result_field_width
-  + (per_instruction_fu_config ? fu_cfg_width_max : 0)
-```
-
-The verifier does not numerically enforce these widths; the IR carries
-structured `DictionaryAttr`s and the configuration generator emits the
-bit-packed layout.
+The normalized configured view omits fields that are irrelevant under the
+selected record. Fixed-capacity table layout, field widths, padding, and raw
+instruction words are exclusively `ConfigurationABI` concerns.
 
 ## Reg FIFO semantics
 
 When `num_reg_fifo > 0`, the PE owns a bank of `num_reg_fifo` register
 FIFOs, each of depth `reg_fifo_depth` and with `reg_fifo_ports` ports
 (`1` for single-ported, `2` for separate read/write). Each register
-slot stores a `(data, tag)` pair, identical in shape to a single
+entry stores a `(data, tag)` pair, identical in shape to a single
 `!fabric.bits_tag<W, T>` token. Writing to a register pushes one such
-pair (`result_sel.tag` is the tag value); reading pops the head.
+pair (the selected result-route tag is the tag value); reading pops the head.
 
-The `is_port == false` form on `operand_sel`/`result_sel` selects a reg
-FIFO instead of a PE port; `src_sel`/`dst_sel` is the FIFO index in
-`[0, num_reg_fifo)`.
+A selector whose typed endpoint is `RegFifoRef` selects a register FIFO
+instead of a PE port.
+
+A register FIFO realizes a software edge internally only when SpatialMapping
+selects an explicit temporal-PE register-file relation from the producer's
+`result_sel`, through the identified FIFO and its declared ports, to the
+consumer's `operand_sel`. The relation must preserve the edge's type, tag,
+order, capacity, and backpressure obligations. Sharing a PE or having a free
+register FIFO does not absorb an edge.
 
 ## Operand buffer modes
 
 All three modes expose the same logical FIFO semantics. A logical operand
-queue is determined by the configured instruction context and FU ingress
+queue is determined by the selected `InstructionContextRef` and FU ingress
 selected by ingress routing and tag dispatch. The mode changes only the
 physical storage organization:
 
@@ -255,38 +281,96 @@ mode must not merge different contexts, tags, or logical streams into one
 global arrival-order FIFO head; that organization can introduce
 implementation-induced head-of-line deadlock.
 
-## Trigger condition
+For example, global arrival-order queues `P:[tag0,tag1]` and
+`Q:[tag1,tag0]` can block both contexts even after both complete operand tuples
+have arrived. Independent logical heads must allow each configured actor to
+consume its own matching tuple. Such a global-head stall is an invalid
+implementation-induced deadlock, not an ordering requirement of Canonical
+Dataflow.
 
-An instruction at slot `i` fires when:
+Operand queues preserve order independently for each logical stream. They do
+not impose arrival order across unrelated streams, and they do not replace
+FU-internal pipeline, holding, or edge storage. An actor transition may commit
+only after all of its required logical heads and finite output-delivery
+capacity are available. Shared-pool exhaustion and route backpressure remain
+real dependencies in the final progress and deadlock closure.
 
-1. Slot `i` is enabled (`pe_enable && instruction_mem[i].enable`).
-2. For every `operand_sel[j]` with `is_port == true` and
-   `discard|disconnect == false`, the head token of the selected logical
-   operand queue is available. PE-ingress tag dispatch places tokens into
+The temporal-PE schema uniquely owns the typed `ResourceState` values for
+resident contexts, logical operand/result queues, register FIFOs, and shared
+dispatch capacity; their canonical initial states; capacity dimensions;
+atomic UsePatterns; stable typed requester order; and exact GrantPolicy or
+exact refinement domains. One actor transition may atomically claim multiple
+queue heads, one operation pipeline, result holding capacity, and register-FIFO
+ports. Mapping binds typed workload values and selected exact refinements but
+cannot split that claim or define another scheduler. Queue contents, grant
+cursors, and in-flight transitions are nonpersistent execution state.
+
+## Mapping Ownership
+
+TechMapping selects the FU structural/capability template and exact ordered
+actor/op/port/FU-boundary correspondence. SpatialMapping selects a concrete FU
+occurrence and `InstructionContextRef` with the same parent temporal PE, plus
+PE ingress/egress routing and semantic-preserving physical refinements.
+
+The context reference is only the resident configuration/runtime-state
+namespace. `instruction_mem[i]` is a Fabric-defined configuration and dispatch
+entry at ordinal `i`, not the context itself. Mapping does not persist a second
+instruction-entry reference or use the entry contents as identity.
+`ResourceUse` may refer to the selected context for event-relative occupancy,
+but cannot select another context or copy the configuration. The finalizer
+alone derives `instruction_mem` and `per_fu_sw_configs`; `ConfigurationABI`
+alone encodes them as raw bits.
+
+Neither the context nor the configured FU is a dynamic execution atom. The
+Canonical Dataflow actors bound to active inner operations retain their own
+readiness, state transition, commit, publication, and retirement semantics.
+No whole-FU or whole-context macro firing is introduced.
+
+A context may be handed off or reconfigured only after its actor transitions
+have retired, its logical operand and result queues are empty, and its
+stateful actors have satisfied their declared self-reset contracts. The active
+result route supplies the configured Physical Tag; a dynamic firing does not
+invent a separate tag identity.
+
+## Dispatch Condition
+
+An active instruction-memory entry at ordinal `i` makes each Canonical
+Dataflow actor bound into its resident configured graph eligible. One such
+actor transition may commit when:
+
+1. The PE configuration is `Active` and entry `i` is the `Active` variant.
+2. Every actor input routed from an `InputPortRef` has a head token in its
+   selected logical operand queue. PE-ingress tag dispatch places tokens into
    that queue.
-3. For every `operand_sel[j]` with `is_port == false` and
-   `discard|disconnect == false`, the selected register FIFO has a head token
-   available under the register-FIFO semantics above.
-4. The selected FU (`opcode`) is ready to consume.
+3. Every actor input routed from a `RegFifoRef` has a head token in the
+   selected register FIFO under the semantics above.
+4. The selected physical operation within the configured FU is ready to
+   consume, and finite capacity is reserved for all output obligations.
 
-`discard` drains the input slot regardless of consumption; `disconnect`
-treats the source as unconnected for that slot. `discard && disconnect`
-is forbidden.
+The active entry's `selected_fu` selects the configured physical FU; it does
+not turn every actor inside that FU into one rendezvous or impose a
+one-transition-per-cycle limit on the configured graph. Other actors in the
+same configured graph dispatch independently when their own transitions
+become enabled. When actor transitions contend for one physical operation or
+pipeline, that resource's Fabric-owned capacity and exact grant policy decide
+which transitions commit.
+
+`Discard` is an explicit temporal-PE boundary drain; `Disconnected` is inert
+for that instruction-memory entry. Neither variant can repair an invalid
+FU-internal broadcast, replace required FU demux/mux topology, or discharge a
+logical edge required by the exact Mapping realization.
 
 ## Body whitelist
 
 Identical to spatial: only `fabric.fu` and `fabric.instantiate`. The
-named-template form additionally requires a closing `fabric.yield`. No
+named-template form additionally requires a closing zero-operand
+`fabric.yield`. No
 other op kind is permitted.
 
 ## Cross-reference
 
-* Spatial branch and the spatial instruction word format:
-  `spec-fabric-pe.md`.
-* PE op IR shape (operand types, attribute schema): `Fabric_PeOp` in
-  `include/Fabric/IR/FabricOps.td`.
-* Verifier rules: `lib/Fabric/IR/FabricPeTemporalOps.cpp`.
-* Per-FU runtime config catalogue:
+* Spatial branch and its configured-view semantics: `spec-fabric-pe.md`.
+* Parameterized FU capability and derived configuration:
   `spec-fabric-reconfigurable-op.md`.
 * Boundary ops bridging spatial and temporal domains:
   `spec-fabric-boundary.md`.

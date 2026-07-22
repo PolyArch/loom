@@ -1,673 +1,722 @@
 # Mapping Artifact
 
-This document specifies the canonical persistent Dataflow-to-Fabric
-Mapping Artifact. A Mapping Artifact records one selected realization of
-one finalized Canonical Dataflow Program on one finalized Fabric Hardware
-Description. It does not mutate either input.
+This document is the schema authority for the persistent Dataflow-to-Fabric
+Mapping artifact family. A Mapping artifact records one immutable selected
+realization over exact finalized upstream artifacts. It never mutates or
+reinterprets those artifacts.
 
-The persistent model has one Mapping artifact family. Its target immutable,
-profile-complete outputs are TechMapping, SpatialMapping, and SystemMapping.
-They are not competing formats or mutable states of one artifact. The current
-neutral C++ draft implements TechMapping only; it does not define placeholder
-SpatialMapping or SystemMapping records.
+Persistent identity and reference semantics are owned by
+`docs/spec-mapping-identity.md`. Observable verifier contracts are owned by
+`docs/spec-mapping-verification.md`.
 
-Persistent identity and reference rules are specified by
-`docs/spec-mapping-identity.md`.
+## Schema Family
 
-## Persistent Schema Boundary
+All persistent Mapping objects belong to the single schema family
+`loom.mapping`. The family has three profile-complete semantic roots:
 
-The persistent Mapping MLIR schema is not closed. This document does not
-assign a Mapping schema version, profile discriminator spelling, header field
-order, assembly syntax, serializer, or compatibility policy.
+| Semantic root | Schema version | Required root bindings | Top-level record families |
+|---------------|----------------|------------------------|---------------------------|
+| `mapping.tech` | `1.0` | Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeRealization`, `MemoryRealization` |
+| `mapping.spatial` | `1.0` | TechMapping `T`, Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeBinding`, `MemoryEngineBinding`, `MemoryBinding`, `RouteTree`, `ResourceUse` |
+| `mapping.system` | `1.0` | Canonical Dataflow Program `D`, architecture-only Fabric Hardware Description `F`, canonical SpatialMapping import table | `ExecutionBinding`, `ServiceRealization`, `ResourceUse` |
 
-Any future persistent Mapping Artifact must use the Common artifact identity
-and schema-version contract and carry the exact upstream references required
-by its completeness profile. Those generic requirements do not make the
-current C++ structures a persistent schema authority.
+The root operation is the profile discriminator. A Mapping object does not
+also carry a profile enum, a generic artifact root, or inactive optional
+fields for other profiles. Each persistent MLIR object contains exactly one
+semantic profile root. A fixed `builtin.module` may be used as a parser and
+transport container, but it is not semantic content, an identity owner, or a
+second profile discriminator.
 
-`TechMappingDraft` and `ValidatedTechMapping` are nonpersistent construction
-and validation types. Their header carries only the exact Canonical Dataflow
-Program and Fabric Hardware Description identities needed by the implemented
-verifier. It does not encode a Mapping schema version or a future persistent
-profile representation.
+The Mapping schema declaration is the single owner of the schema identity,
+current version, fields, defaults, and canonical assembly rules. The root
+version framing and Common `ArtifactSchemaDescriptor` are mechanically
+derived from that declaration. Callers must not construct schema strings or
+maintain parallel version facts.
 
-## Semantic Owners
+The first official schema is the complete `loom.mapping 1.0` contract with all
+three roots. An earlier draft assigned `1.0`, `1.1`, and `1.2` according to the
+order in which profiles were discussed; that unpublished history is retired.
+Future minor-version upgrades must first parse and verify the source version
+under its own schema, then use an explicit typed adapter to construct and
+finalize a new artifact with a new identity. Text patching, implicit upgrades,
+and retaining the old identity are invalid.
 
-The Canonical Dataflow Program owns software execution semantics,
-including graph definitions, actors, typed edges, graph boundaries, and
-explicit control, state, stream, and memory semantics.
+Mapping MLIR is finalized-only. Mutable builders and native search state are
+not persistent Mapping objects. There are no `partial`, `rejected`,
+`degraded`, draft-root, placeholder-record, or consumer-defined completeness
+forms.
 
-The Fabric Hardware Description owns hardware facts, including elaborated
-topology, FU topology, capabilities, configuration domains, ports, and
-physical implementation structure. Its finalized facts include typed compute
-occurrences with exact FU membership and schedule kind, typed memory
-occurrences with exact Memory Implementation membership, physical endpoints,
-and explicit directed local arcs. The same transport
-endpoint identity namespace covers endpoints owned by compute occurrences,
-memory occurrences, switches, FIFOs, and boundary resources. Fabric owns each
-endpoint's exact owner, direction, port kind, and explicit native transport
-kind (`bits` or `bits_tag`), together with independent payload and tag
-capacities. Fabric also owns every explicit directed point-to-point arc and
-resource traversal. Boundary resources retain the canonical Fabric boundary
-direction (`s2t`, `t2t`, or `t2s`) rather than a Mapping-local spelling.
-Fabric's definition-level facts also include memory service domains,
-implementation families, load/store operation-port templates, explicit typed
-implementation boundary ports, normalized semantic encodings, typed internal
-connectivity, source-endpoint fanout capacities, and one-beat access contracts.
+## Root Bindings
 
-The TechMapping profile owns the selected logical
-realization relation between those exact artifacts. It owns
-target-specific compute actor grouping, selected FU realization,
-software-to-FU correspondence, the selected Fabric-defined valid semantic
-encoding, and Memory Realizations against exact Fabric memory semantics.
+Every root declares each required exact upstream artifact identity exactly
+once as a typed `UpstreamArtifactBinding`. Internal upstream references use
+that root scope. They do not repeat complete digests and cannot use symbols,
+paths, free-form kinds, or compatibility labels. The exact wire and reference
+rules are specified by `docs/spec-mapping-identity.md`.
 
-The SpatialMapping profile consumes one exact immutable TechMapping
-predecessor and owns selected spatial binding, communication realization,
-event-relative resource use, tags, buffers, memory/service realization, and
-mapping-visible physical configuration. Its exact persistent records remain
-open.
+The binding order is semantic and fixed:
 
-The SystemMapping profile owns cross-AccCore execution binding, service
-realization, and resource use. Its exact persistent records and SpatialMapping
-cardinality remain open.
+* `mapping.tech`: `D`, then `F`;
+* `mapping.spatial`: `T`, then `D`, then `F`; and
+* `mapping.system`: `D`, then `F`, followed by its canonical SpatialMapping
+  import table.
 
-Evaluation Evidence owns measured or estimated observations and metrics. The
-central DSE controller owns objectives, ranking, acceptance, and promotion.
-Failures and diagnostics are ordinary typed results or reports. None may copy
-Mapping decisions into a second authority.
+For `mapping.spatial`, `D` and `F` are scoped-reference aliases, not competing
+lineage. `T` remains the owner of its exact Dataflow and Fabric coupling, and
+the verifier requires `T.D == D` and `T.F == F`.
 
-## Immutability
+For `mapping.system`, every imported SpatialMapping must bind the same exact
+`D` and `F`. Its exact TechMapping predecessor remains transitive lineage;
+SystemMapping does not repeat a TechMapping set.
 
-A persistent Mapping Artifact is finalized, immutable, serializable, and
-profile-verifiable. Producers may use mutable builders, solver state, or
-failed candidates internally, but those objects are not Mapping Artifacts.
+## TechMapping Root
 
-There is no persistent `partial`, `rejected`, or `degraded` lifecycle. A
-Mapping artifact either satisfies its complete profile contract or is
-invalid.
+The `mapping.tech` root has the fixed semantic field order
+`version`, `dataflow`, `fabric`, and `covers`, followed by one single-block
+declarative record region. `covers` is a canonical non-empty set of graph
+definitions from `D`. The region contains only
+`mapping.compute_realization` and `mapping.memory_realization` records.
 
-Rejected candidates, incomplete construction state, search queues,
-unsupported results, budget exhaustion, and failed-attempt diagnostics belong
-to producer state, ordinary reports, or Evaluation Evidence when an
-evaluation was requested.
+Each realization owns one single-block declarative child-record region.
+Neither root nor child regions have block arguments, SSA results, CFG
+successors, symbol tables, or runtime terminators.
 
-## Exact Input Coupling
-
-A TechMapping artifact is coupled to exactly:
-
-* one Canonical Dataflow Program identity; and
-* one complete Fabric Hardware Description identity.
-
-Both references are required semantic content. Every software and
-hardware reference resolves through those exact immutable artifacts.
-
-A TechMapping artifact cannot be rebound to another Fabric Hardware
-Description, including one described as compatible by another tool. An FU
-implementation content digest may support deduplication or a pure cache,
-but it cannot replace the exact Fabric artifact identity in a persistent
-reference. A different Fabric identity requires a different TechMapping
-artifact.
-
-A SpatialMapping references exactly one immutable TechMapping predecessor. It
-inherits the predecessor's Canonical Dataflow Program, Fabric Hardware
-Description, coverage, Compute Realizations, and Memory Realizations. It must
-not restate or copy those facts as independent authority.
-
-SystemMapping lineage must reference exact immutable predecessors. Its exact
-SpatialMapping set cardinality remains open and must not be approximated with
-dummy records.
-
-Conceptually:
-
-```text
-TechMapping = realization witness for exact D + F
-SpatialMapping = exact TechMapping predecessor + spatial realization
-```
-
-SystemMapping predecessor cardinality remains open. These relations do not
-define final Mapping assembly syntax.
-
-## TechMapping Profile
-
-The TechMapping profile declares a canonical, non-empty set of covered
-`dataflow.graph` definitions from the referenced Canonical Dataflow
-Program. Coverage is part of the Mapping artifact; it does not create a
-separate Mapping Scope entity.
-
-Coverage is closed for every declared graph:
+Coverage is closed over every graph in `covers`:
 
 * every actor belongs to exactly one Compute Realization or Memory
   Realization;
-* `dataflow.load` and `dataflow.store` actors belong only to Memory
-  Realizations, while all other actors belong only to Compute Realizations;
+* canonical loads and stores belong only to Memory Realizations, and all
+  other actors belong only to Compute Realizations;
 * no realization crosses a graph-definition boundary;
-* every canonical edge is classified exactly once as realization-internal
-  or realization-external;
-* every external software endpoint has one exact typed FU or memory
-  operation-template port correspondence;
-* graph boundary and typed value, stream, control, state, and memory
-  obligations are accounted for; and
-* there are no unmapped actors, duplicate coverage, dangling records, or
-  implicit default realizations.
-
-Only an immutable artifact satisfying this closed coverage gate may enter
-PnR.
-
-The profile contains Compute Realizations, Memory Realizations, and any typed
-representation obligations required by those realizations. Adapter record
-syntax remains deferred.
-
-## Compute Realization
-
-A Compute Realization is the single record that owns a target-specific
-actor group and its selected FU realization. There is no separate Software
-Actor Group record because the group has no independent meaning inside a
-selected mapping candidate.
-
-Its confirmed conceptual content is:
-
-* a persistent record identity;
-* one or more actor references within one graph definition;
-* one exact FU implementation reference in the referenced Fabric artifact;
-* complete actor-to-`fabric.op` correspondence, including ordered software
-  input/result port correspondence to physical `fabric.op` ports;
-* complete typed software-boundary-to-FU-template-port correspondence;
-* a reference to the selected Fabric-defined valid semantic encoding; and
-* the typed legality and representation obligations for the match.
-
-This list defines semantic ownership, not Mapping dialect field syntax.
-The encoding representation and configured-function projection are specified
-by `docs/spec-fabric-reconfigurable-op.md`.
-
-The configured function is a derived typed and attributed projection of
-the selected FU topology under the selected encoding.
-It is used to verify the actor group, but it is not persisted as a second
-software graph, does not receive independent program identity, and does
-not replace either input artifact.
-
-For a mapped `dataflow.sync`, each software lane must correspond to one unique
-Fabric-declared paired lane. `ActorToFabricOp` is the sole persistent owner of
-the ordered software input/result-to-physical-endpoint correspondence. It
-stores one ordered selection record `{input_port, output_port}` per software
-lane. The vector must be complete, select one unique lane per software
-position, stay within the physical signature, and resolve each record to one
-declared lane. Non-prefix selections are legal.
-
-The active lane set is the image of that correspondence. Mapping validation
-derives the ordered lane-record indices, active configured FU boundary ports,
-and `sw_configs.bitmask` once from the Fabric-owned `{input_port, output_port,
-mask_bit}` inventory plus `ActorToFabricOp`. These values belong to the
-transient validated Mapping projection. Frozen PnR domains consume that
-projection directly and do not reinterpret raw Fabric encodings. Mapping does
-not persist `active_lanes`, `selected_mask`, a bitmask, or an equivalent second
-authority. Canonical Fabric configured-operation descriptors likewise do not
-copy selected lane records.
-
-Lane selection deactivates only configured FU boundary ports used exclusively
-by inactive paired lanes. Boundaries shared with active or ordinary operations,
-unused unrelated boundaries, and direct `FuInputValue` passthrough inputs and
-outputs remain active.
-
-The neutral C++ verifier treats a missing lane inventory as an ordinary exact
-configured function. Because `SemanticKey` is opaque, it cannot identify an
-exact-full-width `dataflow.sync` solely from semantic identity. Any subset-
-arity mapping therefore requires the explicit paired-lane capability and is
-rejected when that capability is missing or malformed. Canonical Fabric
-producers remain responsible for attaching the inventory to every wide-sync
-capability, including exact-full-width uses.
-
-Mapping does not copy selected `sw_configs` into canonical Fabric. A backend
-may derive transient `sw_configs = {mode = N}` values for `fabric.op`
-resources and route selections from the selected encoding, but those values
-are caches or lowering products, not another capability or type authority.
-
-## Memory Realization
-
-A Memory Realization covers a non-empty set of canonical `dataflow.load` and
-`dataflow.store` actors within one graph definition. Singleton records model
-independent accesses. Multi-actor records model a software memory subgraph
-implemented by one selected normalized `fabric.mem` semantic encoding. Memory
-Realization is orthogonal to Compute Realization and does not introduce a
-persistent common actor-realization wrapper.
-
-The neutral Dataflow importer produces one validated derived view for each
-memory actor. That view jointly owns the canonical operation kind, logical
-memory root, semantic port roles, access width, access size, and alignment.
-These facts are not Mapping-selected metadata or a second operation authority.
-Each logical root owns one graph definition and zero or more memory imports and
-exports in that graph. This covers imported-only, fresh, exported-only,
-re-exported, aliased/viewed, and non-exported scratch roots without changing
-the root model. Every graph memory port belongs to exactly one root. Import and
-export types may differ when a re-export exposes another view or layout.
-Memory capability identity is never represented as a Dataflow edge.
-
-The implemented neutral record contains:
-
-* stable actor references and bijective actor-to-operation-template
-  correspondence;
-* the logical memory root associated with each actor and the record's exact
-  root set;
-* one selected Fabric-defined normalized memory semantic encoding;
-* exact typed address/data/mask/control/result/done boundary-port
-  correspondences;
-* the minimal graph-port-to-memory-implementation-boundary correspondence
-  required by selected internal graph-boundary connections; and
-* internal-edge witnesses pairing an exact Dataflow artifact identity and
-  typed producer/consumer endpoint pair with a selected Fabric-defined typed
-  internal connection.
-
-Fabric internal connections use one endpoint variant: an explicit memory
-implementation boundary port or a memory operation-template port. Typed and
-directed connections may run from a boundary input to an operation input,
-from an operation output to an operation input, or from an operation output
-to a boundary output. Actor endpoints are derived from actor-to-operation
-correspondence; graph endpoints require the explicit Mapping correspondence.
-Every connection selected by the normalized encoding has exactly one canonical
-edge witness, and every witness names a selected connection. Actors in the
-same Memory Realization do not make their edges internal automatically.
-Unselected edges remain external. Fanout is legal only within the capacity
-declared once by the Fabric source endpoint.
-
-Each selected operation template supplies normalized per-access-size tuples.
-Each tuple owns one access size and its required alignment. Listing a store
-tuple means the hardware implements canonical store semantics for that exact
-shape, including preservation of bytes outside a narrow write. Hardware that
-would clobber those bytes does not list the tuple. Software width must not
-exceed physical data width, and the software alignment guarantee must be a
-multiple of the tuple's required alignment. A narrow load may use low-bit
-extraction from the physical result. The neutral core does not split accesses
-into multiple beats or hide read-modify-write behavior.
-
-Every logical memory root resolves to one coherent service-domain obligation
-across all Memory Realizations. Different roots may map many-to-one to the same
-service. A root cannot silently move between unrelated service domains.
-
-The record contains no concrete memory occurrence, physical operation port or
-context, bank, tag, base or range, route, buffer, schedule, arbitration, or
-resource-time choice. The current implementation is limited to the neutral C++
-Artifact and Verifier model plus the ephemeral PnR structural projection
-described below. It does not add Mapping MLIR persistence or physical memory
-binding records.
-
-## Edge Ownership
-
-An edge whose producer and consumer actors belong to the same Compute
-Realization is implemented by the configured FU topology. Its legality is
-part of the Compute Realization witness and it creates no external physical
-communication obligation.
-
-An edge crossing an actor-realization boundary remains owned by the Canonical
-Dataflow Program. Its source and sink realizations provide exact typed FU or
-memory operation-template port correspondences for the exposed endpoints. A
-PnR importer mechanically derives the external communication obligation from
-those facts. A Memory Realization internal-edge witness is the only mechanism
-that removes one of its canonical edges from this external set.
-
-Graph memory imports and exports belong to the capability plane. They are
-accounted for by logical roots and service obligations, never by ordinary
-Dataflow edges or token sink accounting.
-
-Importers must not infer correspondence from textual order, symbol spelling,
-paths, port names, edge numbers, printer order, or builder insertion order. A
-software edge is uniquely identified by its typed producer endpoint plus typed
-consumer endpoint. Canonical fanout groups edges with the same exact producer
-endpoint into one multi-sink logical obligation; a duplicate persistent
-TechMapping netlist is not another authority.
-
-## Target Spatial And System Profiles
-
-A SpatialMapping is exactly one immutable TechMapping predecessor plus
-selected spatial realization facts. It must preserve every predecessor
-Compute Realization and Memory Realization.
-
-SpatialMapping must not regroup actors, select another FU implementation,
-change the selected semantic encoding, reinterpret FU configuration, replace a
-selected memory implementation or operation template, semantic encoding,
-logical-root association, or internal-edge witness, or guess software-to-
-hardware correspondence. Any such change requires a new TechMapping artifact.
-
-The confirmed SystemMapping persistent families are `ExecutionBinding`,
-`ServiceRealization`, and `ResourceUse`. Their fields and cardinality are not
-defined here. Exact SpatialMapping Route Tree, resource-use, Physical Tag,
-buffer, memory/service, and mapping-visible configuration records also remain
-open. No placeholder records may be introduced for either profile.
-
-## Derived Projections And Caches
-
-Importers, viewers, simulators, and PnR kernels may build immutable derived
-projections such as configured-FU graphs, dense indices, logical adjacency,
-or pure match results.
-
-Every projection is non-authoritative, deletable, and deterministically
-rebuildable from exact finalized inputs. Cache keys bind all semantic
-inputs and the producing algorithm semantics.
-
-The public PnR freeze entry points consume one `PnrProblemInputs` value. This
-ordinary non-artifact grouping borrows the exact Dataflow, validated
-TechMapping, Fabric, and `ResolvedPnrConfigView` values. The validated
-TechMapping immutably retains the exact trusted artifact identity supplied at
-its validation/import boundary. The grouping cannot detach or relabel that
-identity. It also carries the exact complete ResolvedConfig identity from which
-the config view was derived and the MappingConstraintSet artifact identity
-with its required Dataflow, TechMapping, and Fabric binding identities. The
-grouping has no identity and is not a PnR request artifact. The config view has
-no independent artifact identity.
-
-TechMapping validation does not compute or rehash Mapping content. It trusts
-the identity supplied by the owning artifact boundary; persistent Mapping
-canonicalization remains separate work.
-
-The current C++ MappingConstraintSet input is only the already-confirmed
-artifact identity and exact `D/T/F` binding boundary. It does not define
-constraint clauses, target universes, canonical serialization, hot indices, or
-the complete frozen constraint projection.
-
-Shared preflight rejects `T.D != D.id`, `T.F != F.id`, and
-`K.D/T/F != D.id/T.id/F.id` with typed errors before either freeze performs
-capacity planning or allocates native arrays. Because every
-`ArtifactIdentity` is a fixed-width value, preflight does not apply empty,
-null, or sentinel identity checks.
-
-After that preflight, the implemented `freezeRealizationGraph` projection
-preserves the bounded Dataflow/TechMapping/Fabric structural behavior. It
-consumes the immutable canonical compute- and memory-occurrence projections
-produced by Fabric validation, assigns dense native indices where needed,
-records actor ownership, derives external multi-sink logical nets from
-canonical edges and exact boundary correspondence, and derives
-logical-memory-root service obligations from selected Memory Realizations. Its
-dense terminal table contains only selected FU or memory operation-template
-terminals needed by those logical nets. Graph boundary endpoints remain
-embedded typed terminal variants in logical-net sources and sinks. Graph
-memory import and export capability ports are not token terminals.
-
-A Fabric FU occurrence is not its containing PE occurrence. The frozen
-structural key is the exact pair
-`FabricFuOccurrenceRef = (FabricPeOccurrenceRef, FuId)`, where `FuId` names the
-Fabric-owned implementation and the PE component is its mechanical parent.
-FU occurrence descriptors are ordered first by parent PE identity and then by
-implementation identity. PE descriptors and their endpoint ranges remain
-separate. Exact lookup therefore cannot return a PE descriptor as FU identity,
-including when one PE contains several FU occurrences.
-
-Fabric validation also owns instruction-context capacity. A Spatial PE has
-exactly one context. A Temporal PE has the positive context count supplied by
-its `num_instruction` capability. The only context reference is
-`InstructionContextRef = (FabricPeOccurrenceRef, ContextOrdinal)`, with
-ordinals beginning at zero. It has no optional slot, sentinel value, separate
-Spatial or Temporal reference type, or independent entity identity.
-
-For each Compute Realization, the projection derives `ImplDomain` solely from
-concrete FU occurrences of its selected implementation. Each candidate stores
-the complete `FabricFuOccurrenceRef`; its context domain is mechanically the
-ordinal range of that FU occurrence's parent PE. Context lookup accepts an FU
-occurrence and ordinal and derives the PE component, so the native
-representation preserves the `(FU occurrence, instruction context)`
-correlation without materializing or accepting a cross-PE Cartesian product.
-Each candidate also retains factorized `PortDemand` records and flat
-compatible-endpoint ranges derived from explicit local arcs and the
-direction, port kind, payload and tag capacity, intrinsic role, and compatible
-type facts owned by Fabric.
-
-A concrete Fabric memory occurrence is a separate physical category with
-structural key `FabricMemoryOccurrenceRef = MemoryOccurrenceId`. It names one
-instantiation of a Fabric-owned Memory Implementation and owns its memory
-operation attachment endpoints and local arcs. Two occurrences of the same
-implementation remain distinct candidates. For each Memory Realization, the
-freeze derives `ImplDomain` from exactly those concrete occurrences whose
-implementation matches the selected Memory Semantic Encoding. Separate memory
-port-demand and compatible-endpoint arrays retain only realization-external
-operation ports; operation ports consumed by selected internal-edge witnesses
-do not become route terminals. Memory candidate ordering is derived from typed
-occurrence identity and is independent of descriptor order.
-
-Spatial unary feasibility uses bipartite matching to prove that all exposed FU
-ports can bind distinct endpoints. It does not enumerate endpoint
-permutations or persist Cartesian local configurations. Temporal endpoint
-ranges are only structural capability; tag sharing, configuration
-compatibility, and resource-time legality remain deferred.
-Spatial memory occurrences use the same factorized feasibility rule over
-their exposed operation ports and explicit local arcs.
-
-Fabric validation is the single semantic owner of PE identity, concrete FU
-parentage, instruction-context capacity, concrete memory occurrence identity,
-cross-kind uniqueness, exact implementation membership, schedule kind,
-endpoint/type facts, and local arcs. It copies those facts into deterministic
-vectors, builds sorted implementation-to-occurrence and
-occurrence/port-to-arc range tables for both categories, and retains that
-immutable projection with the validated Mapping value. Freeze does not inspect
-or revalidate the source occurrence vectors. Mutating those source vectors
-after validation cannot change frozen output, while an input identity mismatch
-still invalidates the freeze request.
-
-Fabric validation also owns one canonical routing projection. Persistent typed
-endpoint IDs are globally unique across compute, memory, and resource-owned
-endpoints, and persistent typed transport-resource IDs are globally unique
-across the Fabric artifact namespace. Resource endpoint ownership is
-structural: every resource endpoint is nested under exactly one switch, FIFO,
-or boundary resource, every compute endpoint is nested under exactly one
-compute occurrence, and every memory operation endpoint is nested under
-exactly one memory occurrence. Validation resolves all references against the
-exact Fabric identity before retaining the projection.
-
-A routing endpoint declares both its software port kind and its native Fabric
-transport kind. `bits` has zero tag capacity. `bits_tag` has positive tag
-capacity. The native kind is never inferred from tag capacity.
-`PortKind::Memory` compute endpoints are omitted from the routable compute
-endpoint subsequence because memory capabilities are not token routes.
-Concrete memory occurrence endpoints for exposed load/store operation ports
-are ordinary typed token-routing vertices. Storage-service identity remains a
-separate obligation and does not become a routing endpoint or arc.
-
-A point-to-point arc is legal only from one output endpoint to one input
-endpoint with the same software port kind and native Fabric transport kind.
-Each output has at most one direct point-arc consumer and each input has at
-most one direct point-arc producer; fanout and fan-in therefore require
-explicit Fabric resources. A switch or FIFO traversal is legal only from an
-input endpoint to an output endpoint owned by the referenced resource, with
-the same software port kind and native Fabric transport kind. Switch
-connectivity consists solely of its explicitly listed traversals. A FIFO has
-exactly one input, one output, and one explicit forward traversal.
-
-A boundary has exactly one input, one output, one explicit forward traversal,
-and one canonical `fabric::BoundaryDirection`. Its payload path must match the
-Fabric boundary verifier exactly: `s2t` is `bits<W> -> bits_tag<W,T>`, `t2t`
-is `bits_tag<W,T1> -> bits_tag<W,T2>`, and `t2s` is
-`bits_tag<W,T> -> bits<W>`. Payload widths must be equal, and every tagged
-endpoint must have positive tag capacity. No other native-kind conversion is
-legal. The lightweight Fabric-owned `checkBoundaryDataPath` helper is the
-single authority for this data-path relation and is consumed by both Fabric IR
-verification and Mapping routing validation. Duplicate arcs, duplicate
-traversals, foreign or wrong-kind references, wrong-direction references, and
-cross-resource traversals are malformed input. Missing arcs or traversals that
-are not structurally required may leave otherwise valid endpoints or topology
-components disconnected; disconnected and unreachable topology is not a
-validation failure.
-
-After the same five-input preflight, the implemented `freezeRoutingGraph`
-projection consumes only that retained validated routing projection. It orders
-resources and endpoints by persistent typed identity, converts all indices and
-range boundaries through checked `PnrIndex` operations, and emits a directed
-CSR adjacency table. Each frozen arc records whether it is a bare point arc or
-a resource traversal, the traversal's resource index when present, and
-independent effective payload and tag capacities. Each capacity is the minimum
-of the source and target endpoint capacities in that field; tag capacity is
-never added to payload capacity.
-
-The same freeze mechanically derives an incoming CSR from those forward arcs.
-Each incoming entry stores only its source vertex and dense forward-arc index;
-the forward arc table remains the sole arc record and connectivity authority.
-Within each target range, incoming entries are ordered by forward-arc index and
-do not create reverse transport arcs, reachability facts, route choices, or
-search state.
-
-The frozen routing resource table records the canonical boundary direction
-when the resource is a boundary. The frozen routing endpoint table records
-only typed identity, owner kind and dense owner index, direction, software port
-kind, native Fabric transport kind, and the two capacities. Resource endpoint
-ranges are flat index vectors rather than nested graph objects. A separate
-`computeEndpointVertices` vector follows the non-memory subsequence of the
-exact compute-endpoint ordering already used by
-`FrozenRealizationGraph::physicalEndpoints`. The parallel
-`memoryEndpointVertices` vector follows the exact memory-endpoint ordering used
-by `FrozenRealizationGraph::memoryPhysicalEndpoints`. Later multi-source and
-multi-target token routing can therefore consume either factorized endpoint
-domain without selecting an occurrence, endpoint, path, configuration,
-capacity claim, or route tree. A caller-owned
-`FrozenRoutingReachabilityScratch` derives one source and required
-port-kind/payload/tag signature at a time from the same CSR. Its generation
-marks and worklist are reused across queries, and all targets for that source
-and signature are then constant-time membership checks. It persists neither an
-all-pairs matrix nor a route choice. The routing graph contains no strings,
-MLIR containers, coordinates, names, implicit reverse arcs, geometric
-adjacency, symbol-order adjacency, topology-specific shortcuts, memory service
-connectivity, or routing-search state.
-
-Descriptor-vector permutation cannot change structural equality, canonical
-table ordering, or CSR adjacency ordering. Arc order is derived from source
-endpoint identity, target endpoint identity, arc kind, and resource identity.
-The CSR graph preserves only explicit structural capability, so an irregular
-topology may make individually valid compute or memory occurrences unreachable
-from one another without turning either unary candidate or the Fabric artifact
-into malformed input.
-
-Let `P_e`, `F_o`, `E`, and `A` be the PE occurrence, FU occurrence, endpoint,
-and local arc counts. Validation canonicalization costs sorting time over those
-vectors, bounded by
-`O((P_e + F_o + E + A) log(P_e + F_o + E + A))`. For a realization with `P`
-exposed FU or memory operation-template ports and `K` concrete occurrences in
-its exact implementation
-range, `ImplDomain` lookup costs `O(log F + K)` for `F` indexed
-implementations. A port domain lookup costs
-`O(log Q_o + sum(log(1 + T_e)))` for `Q_o` keyed port ranges in that occurrence
-and the compatible-type counts `T_e` of the relevant arcs' endpoints. If `R_o`
-is the number of relevant arcs examined, this is bounded by
-`O(log Q_o + R_o log(1 + T_max))`. Spatial matching uses occurrence-local
-endpoint indices and the same reused augmenting-path workspace for compute and
-memory occurrences; for `D_o` compatible domain edges it costs
-`O(P * D_o)` time. The workspace retains buffers sized to the largest observed
-`P`, `E_o`, and `D_o`, so scratch is `O(P_max + E_max + D_max)` and allocation
-occurs only through amortized vector growth. Matching and visit marks use
-64-bit generations: a candidate does not clear matching state across the
-endpoint range, and each augmenting-path probe touches only endpoints it
-visits. A full mark reset occurs only on generation rollover after
-`2^64 - 1` generations. Thus constant-port construction is bounded by
-`O(log F + K log Q_max + sum(R_o log(1 + T_max) + D_o))` after
-canonicalization, including matching, rather than cubic or quartic in
-artifact-wide occurrence or endpoint counts.
-
-For a routing source and required port-kind/payload/tag signature, compatible
-reachability costs `O(V + A_r)` over routing vertices and arcs and reuses
-`O(V)` generation-mark and worklist scratch. Every target membership query
-against that derived source/signature result is `O(1)`.
-
-Malformed Fabric structure or references are rejected during validation and
-cannot be represented as an empty domain. Missing FU implementations,
-malformed FU-to-PE parent linkage, and invalid instruction-context capacity
-have distinct typed diagnostic codes. `InvalidComputeOccurrence` remains the
-category for invalid schedule, empty FU membership, invalid endpoint
-signatures, repeated compatible types, and invalid local-arc shape. Foreign
-and wrong-kind references retain their precise reference categories, and
-malformed graph or memory port connections retain `InvalidPortConnection`. A
-well-formed realization with no concrete occurrence of its selected
-implementation produces `EmptyConcreteFuDomain`; one with no unary-eligible
-candidate produces `EmptyUnaryEligibleDomain`. `InvalidMemoryOccurrence`
-separately covers malformed memory occurrence endpoints and local arcs. A
-well-formed Memory Realization with no matching concrete occurrence produces
-`EmptyConcreteMemoryDomain`; one with no unary-eligible occurrence produces
-`EmptyMemoryUnaryEligibleDomain`. PE, FU occurrence, memory occurrence, and
-endpoint ordering is derived from typed structural identities, so harmless
-source-vector permutations do not alter the frozen result.
-
-Both frozen projections are ephemeral and have no independent artifact
-identity, serialization, canonical byte encoding, or persistence form. Their
-equality is structural only. The realization projection contains base
-concrete-FU and correlated context candidates plus concrete memory-occurrence
-and external operation-endpoint candidates. It contains no selected FU,
-selected context, selected memory occurrence, selected endpoint,
-configuration, route, tag, buffer, resource-time, sharing, or physical-memory
-decision. It is not a SpatialMapping record. Both projections are reached
-only through the exact five-input authority boundary. They are not the
-complete `FrozenModel`; config, constraint, search-state, and complete physical
-legality projections remain outside the implemented structural views.
-
-The structural subview intentionally retains canonical endpoint-pair edge
-identity, dense terminal references, and deletable occurrence and endpoint-
-domain caches. It must not reinterpret Fabric facts or create a second FU
-parentage, instruction-context-capacity, local-connectivity, or legacy routing
-authority.
-
-A cache must not transfer mapping coverage, artifact-local references,
-current-Fabric legality conclusions, or physical decisions into another
-artifact context. After a cache hit, the producer still resolves current
-references, constructs new artifact-local results where required, and runs
-the applicable profile verifier. Cache behavior must not change semantic
-output or deterministic ordering.
-
-## Evaluation Evidence Boundary
-
-Evaluation Evidence is a separate immutable artifact. It may reference the
-Canonical Dataflow Program, Fabric Hardware Description, Mapping Artifact,
-evaluator model, runtime inputs, and other evaluated subjects.
-
-Evidence must not duplicate Compute Realizations, coverage, selected FU
-configuration, or physical realization facts. Referencing the exact
-Mapping Artifact identity identifies those facts. Evidence cannot make an
-incomplete or invalid mapping acceptable.
-
-Synthesis and DSE evidence may record explicit encoding count, distinct
-input-covered encoding count, and extra capability count. These are candidate
-metrics derived from Fabric encodings and coverage witnesses; they do not add
-another Mapping or capability authority.
-
-## Profile Validation
-
-The shared Mapping verifier supports closed completeness profiles.
-
-The TechMapping profile verifies at least:
-
-* exact Canonical Dataflow Program and Fabric Hardware Description
-  identities;
-* resolution and type correctness of every persistent reference;
-* unique finalized compute occurrence and endpoint identities, exact local FU
-  membership, valid endpoint ownership, and explicit local FU-port arcs;
-* closed coverage for the declared graph-definition set;
-* disjoint and complete actor coverage across Compute Realizations and Memory
-  Realizations;
-* complete actor-to-`fabric.op` and boundary-port correspondence;
-* exact graph-owned memory root and import/export port partition, selected
-  normalized encoding, bijective operation-template ownership, graph and actor
-  boundary correspondence, and selected-connection/internal-edge witness
-  equality;
-* coherent service-domain consistency for each logical memory root;
-* correlated one-beat access width, size, required alignment, and narrow-store
-  legality;
-* selected FU and encoding ownership;
-* configured-function equality for the actor group, including exact semantic
-  types, attributes, endpoint-pair topology, fanout, and boundary
+* every canonical edge is classified exactly once as realization-internal or
+  realization-external;
+* every exposed software endpoint has complete typed physical
   correspondence; and
-* all required typed realization and representation obligations.
+* graph boundaries and value, stream, control, state, and memory obligations
+  are complete, with no implicit default realization.
 
-Port legality uses exact port kind and intrinsic role plus compatible payload
-capacity. In particular, `bits` and `bits_tag` do not correspond implicitly,
-while an untagged physical payload may be wider than the software requirement
-under the low-bit-aligned widening and narrowing rules owned by Fabric.
+Coverage is part of the TechMapping root. It is not a separate Mapping Scope
+entity.
 
-SpatialMapping and SystemMapping verification must reject copied or
-conflicting predecessor authority and recompute closure from their exact inputs
-and selected records. Their detailed completeness checks remain deferred with
-their persistent schemas.
+### Compute Realization
+
+A Compute Realization owns one selected actor grouping and its selected
+Fabric FU structural/capability template. Its persistent basis is:
+
+* one artifact-global Mapping `EntityId`;
+* one exact selected `fu_capability_template` reference; and
+* complete `mapping.compute_actor` and `mapping.compute_boundary` child
+  relations.
+
+`mapping.compute_actor` records the exact Dataflow actor, selected Fabric op,
+and complete ordered `operand_ports` and `result_ports` maps. Software port
+ordinal is the array index and the selected physical operation-port ordinal
+is the value. This representation covers ordinary operations, multiple
+results, and legal narrower variadic mappings without a generic
+correspondence record.
+
+`mapping.compute_boundary` records each required exact actor-port to
+owner-FU-boundary-port correspondence. Owner-relative ports are expanded from
+the selected template and do not repeat the FU implementation identity in
+each child.
+
+The exact FU implementation is derived from the selected template owner. The
+actor set is derived from the actor-relation domain. Exact software types,
+constants, predicates, arity, and other semantic parameters remain owned by
+`D`. The configured function, active ports, masks, and `sw_configs` are
+derived from `D`, `F`, the selected template, and the ordered TechMapping
+relations. They are not persistent fields.
+
+All Fabric operations use the same parameterized capability and match model.
+For `dataflow.sync`, ordered all-of lane correspondence is expressed by the
+ordinary actor operand/result maps and the mask is derived. Mux and demux
+choice lanes use ordered maps while their runtime selector remains a Dataflow
+operand. Constants and other parameterized operations use their registered
+operation schemas and exact Dataflow semantics.
+
+An earlier exact-mode enumeration and sync-specific Mapping-record model is
+retired. Sync now uses the ordinary parameterized capability relation and
+exact ordered TechMapping relations; masks and configured fields are derived.
+
+### Memory Realization
+
+A Memory Realization owns a selected implementation of a canonical software
+memory subgraph. Its persistent basis is:
+
+* one artifact-global Mapping `EntityId`;
+* one selected Fabric memory semantic encoding; and
+* complete `mapping.memory_actor`, `mapping.memory_graph_boundary`, and
+  `mapping.memory_internal_edge` child relations.
+
+`mapping.memory_actor` records the exact load or store actor, selected memory
+operation template, and complete ordered operand/result port maps.
+`mapping.memory_graph_boundary` records the required graph memory capability
+to owner-memory-implementation boundary correspondence.
+`mapping.memory_internal_edge` records the exact canonical software edge and
+the selected Fabric internal connection that implements it.
+
+The memory implementation is derived from the encoding owner. Actor and
+logical-root sets are derived from the relation domain and the referenced
+Dataflow actors. The root does not repeat implementation, actor, or root
+lists. Actors sharing a Memory Realization do not make their edges internal;
+only an exact selected internal-edge witness does so.
+
+Selected operation templates and internal connections must satisfy the
+Fabric-owned access-size, alignment, narrow-access, fanout, port-role, and
+service-domain contracts. TechMapping stores the non-derived correspondence,
+not a duplicate operation-semantics or memory-service model.
+
+### TechMapping Record Rules
+
+The five role-specific child kinds are the complete child catalog:
+
+```text
+mapping.compute_actor
+mapping.compute_boundary
+mapping.memory_actor
+mapping.memory_graph_boundary
+mapping.memory_internal_edge
+```
+
+Child records have meaning only inside their owning realization and do not
+receive `EntityId` values. Duplicate actor, actor-port, graph-port, or edge
+keys are invalid; there is no last-wins rule. The schema has no generic
+correspondence union, arbitrary property bag, or placeholder representation
+adapter.
+
+An edge internal to a Compute Realization is implemented by its configured FU
+topology. A Memory Realization absorbs only edges named by exact internal-edge
+witnesses. Every remaining canonical edge is an external logical obligation
+derived from `D` and the exact TechMapping correspondences; TechMapping does
+not persist a duplicate netlist.
+
+## SpatialMapping Root
+
+The `mapping.spatial` root begins with the fixed `T`, `D`, and `F`
+`UpstreamArtifactBinding` fields and then one single-block declarative record
+region. The region permits exactly five top-level record families, in
+schema-owned family order:
+
+```text
+ComputeBinding
+MemoryEngineBinding
+MemoryBinding
+RouteTree
+ResourceUse
+```
+
+The profile preserves all TechMapping realization decisions. It cannot
+regroup actors, rematch a capability, select another semantic realization,
+replace a memory encoding or internal-edge witness, or modify software-to-
+hardware correspondence.
+
+The resolved PnR config view `C` affects search. `K` is an independent
+canonical MappingConstraintSet Artifact used for invocation admission.
+Neither changes the semantic content or identity of a selected SpatialMapping.
+The `InvocationManifest` binds the exact `K` ArtifactIdentity and admission
+result. `EvaluationEvidence` references only its exact `EvaluationRequest` and
+does not become a second derivation-provenance owner.
+
+### ComputeBinding
+
+Each TechMapping Compute Realization has exactly one `ComputeBinding`, keyed
+by its exact `ComputeRealizationRef`. The record stores the selected
+`FabricFuOccurrenceRef`, selected `InstructionContextRef`, and any
+non-derived owner-local physical refinement assignments. The realization key
+already identifies the record, so `ComputeBinding` has no Mapping-local ID.
+
+An `InstructionContextRef` is exactly a Fabric PE occurrence plus a context
+ordinal. It is not a schedule slot, optional sentinel, or independent entity.
+
+### MemoryEngineBinding
+
+Each TechMapping Memory Realization has exactly one `MemoryEngineBinding`,
+keyed by its exact `MemoryRealizationRef`. It stores the selected
+`FabricMemoryOccurrenceRef` and one `AccessEntry` child for every canonical
+load or store actor covered by the realization. It has no Mapping-local ID.
+
+An `AccessEntry` stores the actor reference, one closed placement reference,
+one `MemoryBindingRef`, one closed typed `dispatch_target`, and only the
+non-derived typed `sink <- source` choices needed by Fabric memory-internal
+connectivity:
+
+```text
+MemoryOperationPlacementRef =
+    Spatial  { PhysicalMemoryOperationPortRef }
+  | Temporal {
+      PhysicalMemoryOperationPortRef,
+      OperationContextOrdinal
+    }
+```
+
+The Spatial variant derives its static context from the physical port. The
+Temporal variant selects a valid Fabric-declared resident context. Access
+entries carry a dispatch target that is exactly
+`LocalMemoryServiceRef | ManagerEndpointRef`.
+The collection of these fields and the corresponding ExposureEntry fields is
+the persistent owner of Mapping's selected `C_dispatch`. The verifier checks
+each selection against Fabric-owned `H_dispatch`. Access entries do not store
+Physical Tags, operation-table rows, dispatch selectors,
+provider decode, response tracking configuration, or raw `sw_configs`.
+
+### MemoryBinding
+
+A `MemoryBinding` is one atomic relation:
+
+```text
+one LogicalMemoryInterval -> one PhysicalMemoryServiceRegion
+```
+
+It stores one artifact-global Mapping `EntityId`, the typed logical
+memory/view reference, logical interval, typed physical-service reference,
+physical region, and any selected Fabric-owned address transform that cannot
+be derived from the endpoints.
+
+Multiple disjoint records represent partitioning. Replication, mirroring,
+coherence, or overlapping placement requires an explicit Fabric composite
+service or transform; overlapping rows cannot imply those semantics.
+
+Each MemoryBinding owns `ExposureEntry` children ordered by software boundary
+key. An exposure stores the software memory-output obligation, selected
+subordinate or provider terminal, and one
+`LocalMemoryServiceRef | ManagerEndpointRef` dispatch target. It has no
+independent ID and does not form a top-level ExposureBinding family.
+
+### RouteTree
+
+Each `RouteTree` is keyed by the `SpatialLogicalNetKey` mechanically derived
+from a canonical software net and the selected TechMapping boundary
+correspondences. It has no Mapping-local ID. Its only wire form is a flat tree:
+
+```text
+RouteTree {
+  SpatialLogicalNetKey
+  root_endpoint
+  nodes [
+    node 0 = root
+    node N = {
+      parent_node_ordinal
+      incoming_physical_traversal
+      physical_refinement_assignments
+    }
+  ]
+  sink_attachments [
+    sink_obligation_key -> node_ordinal
+  ]
+}
+```
+
+The root is ordinal zero and has no parent or incoming traversal. Every
+non-root endpoint is derived from its incoming traversal destination, and the
+traversal source must equal the parent endpoint. Sink endpoints are derived
+from their attached node; a zero-length route attaches directly to the root.
+One physical endpoint cannot appear as two nodes, structurally excluding
+reconvergence. Shared trunks appear once, and fanout is legal only where
+Fabric explicitly supports it.
+
+Canonical node ordinals use depth-first preorder from the root, with children
+ordered by the full physical-traversal semantic key. Sink attachments are
+ordered by sink-obligation key. Search insertion order, reached-endpoint
+copies, selected-edge bitsets, switch rows, resource claims, and allocator
+state are not persistent.
+
+### ResourceUse
+
+SpatialMapping has one root-level flat `ResourceUse` family:
+
+```text
+ResourceUse {
+  owner_ref
+  use_site_ref
+  relative_activation
+  typed_pattern_parameters
+  typed_sharing_assignments
+}
+```
+
+Its closed owner union is a `ComputeBindingKey`, `MemoryEngineBindingKey`,
+`MemoryBindingRef`, or `(RouteTreeKey, RouteNodeOrdinal)`. The use site must
+resolve a Fabric-owned use pattern within the occurrence, service, or
+traversal already selected by that owner. Fabric owns the resource vector,
+capacity, duration, latency, initiation interval, and parameter schema;
+Mapping supplies only workload-specific typed values and sharing assignments.
+
+Physical Tags are stored only as typed sharing assignments at real temporal
+writers or ingress points. Instruction contexts remain owned by bindings.
+Static claims mechanically implied by a selected traversal are not duplicated
+as ResourceUse records.
+
+### Physical Refinement
+
+Any semantic-preserving physical or QoR choice not derived from the selected
+occurrence, traversal, or service is an owner child:
+
+```text
+PhysicalRefinementAssignment {
+  FabricPhysicalRefinementDomainRef
+  normalized_typed_value
+}
+```
+
+This child is not a sixth record family or a generic property bag. Fabric owns
+the domain, value type, allowed values, encoding relation, and proof that the
+choice preserves software semantics. Active singleton domains are derived and
+omitted. Active non-singleton domains require one explicit assignment,
+including when the selected value equals a Fabric default.
+
+### Spatial Derived State
+
+Active masks, configured-function copies, programmed-configuration keys,
+resource claims, continuity segments, Tag interference graphs, switch rows,
+memory operation tables, raw `sw_configs`, bitstreams, cost vectors, search
+history, statistics, and transaction journals are deterministic projections
+or external records. They are not SpatialMapping semantic content.
+
+## SystemMapping Root
+
+The `mapping.system` root has this fixed semantic order:
+
+```text
+mapping.system {
+  exact Canonical Dataflow Program UpstreamArtifactBinding D
+  exact Fabric Hardware Description UpstreamArtifactBinding F
+  canonical SpatialMappingImportTable imports
+  canonical non-empty root_thread_launches
+  single-block declarative record region {
+    ExecutionBinding
+    ServiceRealization
+    ResourceUse
+  }
+}
+```
+
+The record region has no block arguments, SSA results, CFG successors, symbol
+table, or runtime terminator. The root launch set is the only persistent
+coverage root and is a canonical non-empty set of root-thread-launch
+`EntityId` values from `D`. Thread definitions, reachable static graph
+launches, graph definitions, channels, memory obligations, and
+external-boundary obligations are derived from its closure in `D`; competing
+scope lists are invalid.
+
+The derived root-thread-launch closure `R`, System search domain `H`, and
+resolved config `C` affect construction and search. `K` is an independent
+canonical MappingConstraintSet Artifact used for admission. None enters
+SystemMapping semantic content or identity. The `InvocationManifest` binds the
+exact invocation inputs, including the `K` ArtifactIdentity and admission
+result. `EvaluationEvidence` references only its exact `EvaluationRequest` and
+does not become a second derivation-provenance owner.
+
+The System root binds Fabric architecture and the exact Transport
+Architecture, not an AXI, TileLink, CXL, or other Interconnect Implementation.
+Implementation selection belongs to HardwareImplementation, simulation
+binding, and Deployment. Replacing an implementation while preserving the
+same architecture contract and ConfigurationABI neither changes this Mapping
+nor the derived configuration-image identity.
+
+### Exact SpatialMapping Imports
+
+The exact selected SpatialMapping set is the finite unique range of normalized
+`B_graph` over all reachable static graph launches and their legal logical
+may-domain points:
+
+```text
+ExactSpatialMappingSet(M) =
+  unique { B_graph(launch, point)
+           | launch is reachable from root_thread_launches
+           | point belongs to launch's legal logical domain }
+```
+
+The finite `B_graph` clause catalog may target only a finite set of immutable
+SpatialMapping identities, so the range remains statically computable even
+when dynamic invocation count is unbounded. There is no fixed minimum,
+maximum, or equality-to-AccCore cardinality rule; the import count is exactly
+the size of this finite unique range.
+
+The canonical writer derives the SpatialMapping `UpstreamArtifactBinding`
+import table from exactly that set, removes duplicates, and orders entries by
+complete `ArtifactIdentity`. `B_graph` uses compact
+`SpatialMappingImportRef` ordinals assigned only after this ordering. The
+table is a reference-resolution and serialization structure, not a separately
+editable selected-set authority.
+
+The parser and verifier reject a missing, extra, duplicate, unreachable, or
+foreign-`D/F` import. An InstructionCore-only mapping still has a non-empty
+root launch set, but may have no reachable graph launch; in that case
+`B_graph`, the exact set, and the import table are all empty. No dummy
+SpatialMapping is required.
+
+### ExecutionBinding
+
+`ExecutionBinding` has exactly two typed variants with natural structural
+keys:
+
+```text
+ThreadExecutionBindingKey = RootThreadLaunchRef
+ThreadExecutionBinding    = key + BindingRelation<AccCoreOccurrenceRef>
+
+GraphExecutionBindingKey  =
+  (ThreadExecutionBindingKey, StaticGraphLaunchRef)
+GraphExecutionBinding     =
+  key + BindingRelation<SpatialMappingImportRef>
+```
+
+Every root thread launch has exactly one ThreadExecutionBinding. Every
+reachable static graph launch in each root context has exactly one
+GraphExecutionBinding. These records do not receive Mapping-local IDs.
+
+Each relation is exactly one closed variant:
+
+```text
+BindingRelation<T> =
+    PresburgerPartition<T>
+  | StableKeyLookup<T>
+```
+
+The relation input signature and legal may-domain are owned by `D`.
+Presburger cells use canonical integer sets over Dataflow-owned coordinates,
+launch parameters, and stable logical-item components. Stable-key lookup uses
+a Dataflow-owned stable-key tuple projection and finite exact key rows. A
+relation is total and single-valued over its legal may-domain.
+
+Presburger cells must be disjoint and lookup keys unique. A default denotes
+the legal-domain complement: it is required exactly when that complement is
+non-empty and forbidden when the complement is empty. Canonicalization
+intersects entries with the may-domain, removes empty and default-equivalent
+entries, rejects overlap or conflicting keys, merges canonical sets with the
+same target, and sorts by canonical set or key bytes plus the complete target
+semantic key.
+
+`B_thread` and `B_graph` remain separate typed functions. For every graph
+event point, the selected SpatialMapping must cover the callee graph and its
+target SpatialCore parent must belong to the AccCore selected by `B_thread`.
+ExecutionBinding owns only where computation executes; it owns no service
+route, capacity, or relative-time facts.
+
+Version 1.0 has exactly one InstructionCore per AccCore. Its context reference
+is mechanically derived as:
+
+```text
+InstructionCoreContextRef = (AccCoreOccurrenceRef, 0)
+```
+
+`B_thread` selects only the AccCore. InstructionCore-resident ResourceUse
+records reference the derived context and own event-relative occupancy; they
+cannot select another execution target. `InstructionCoreContextRef` is a
+different typed domain from the temporal-PE `InstructionContextRef`.
+Their `use_site_ref` resolves exactly one Fabric-owned InstructionCore
+`UsePattern` under that derived context; it is not a second target, scheduler,
+or generic resource record.
+
+### ServiceRealization
+
+There is one ServiceRealization for every system service obligation in the
+derived closure. Its key is exactly one closed variant:
+
+```text
+SystemServiceObligationKey =
+    TransferObligationFamilyKey
+  | OperationServiceObligationFamilyKey
+```
+
+A transfer obligation identifies one exact producer-terminal family and one
+canonical non-empty sink-terminal set. Channels, graph-launch transfers,
+external messages, and multicast use this key; multicast sinks with one
+producer remain one family. Merge, zip, reorder, and reduction require an
+explicit Dataflow actor.
+
+An operation-service obligation identifies one canonical logical service
+root or view and the typed operation set required by its Canonical Service
+Schema. Memory access and exposure, cache or proxy service, and external
+providers use this key rather than parallel service-owner families.
+
+Each ServiceRealization has one or more owner-local plans and a complete plan
+selection relation:
+
+```text
+ServiceRealization {
+  SystemServiceObligationKey
+  plans: [ServicePlan]
+  plan_selection
+}
+
+ServicePlan {
+  service_target_bindings
+  transfer_leg_realizations
+  physical_refinement_assignments
+}
+```
+
+A plan element referenced by ResourceUse has the structural reference:
+
+```text
+ServicePlanElementRef =
+  (ServiceRealizationKey, canonical plan ordinal, typed element key)
+```
+
+The typed element key is the natural key of the closed child kind, such as a
+Canonical Service Schema leg ordinal or a Fabric physical-refinement domain.
+It receives no EntityId.
+
+A `ServiceTargetBinding` maps one logical service interval to one selected
+Fabric service region and stores only a non-derived address transform. A
+`TransferLegRealization` binds one transfer leg derived from the Canonical
+Service Schema to a flat `RouteTree` over system physical traversals. The
+route tree itself owns terminal endpoint choices. Protocol packets, flits,
+headers, concrete virtual-channel encoding, and implementation-specific bus
+encoding remain owned by the selected interconnect implementation.
+
+Plan selection first derives an `ExecutionContextKey` from the evaluated
+`B_thread` and `B_graph` targets. Only reachable contexts are stored. Within a
+context, the same closed binding-relation algebra may select a plan from
+remaining Dataflow-owned logical inputs. Plans have no `EntityId`; the
+finalizer sorts and deduplicates complete plan semantic keys before assigning
+owner-local ordinals.
+
+ServiceRealization is the only SystemMapping family for selected system
+routes, physical buffers, target service regions, address transforms, and
+mapping-visible service refinements. There are no parallel ChannelRoute,
+MulticastRoute, System MemoryBinding, ExternalBinding, TerminalBinding, or
+generic service-graph families.
+
+### System ResourceUse
+
+SystemMapping uses the same closed ResourceUse shape as SpatialMapping.
+InstructionCore-resident uses reference their ExecutionBinding and derived
+`InstructionCoreContextRef`; service-plan uses reference the exact
+`ServicePlanElementRef`. Applicability is mechanically derived from the
+existing `plan_selection`. A ResourceUse cannot copy that predicate or plan
+choice, nor select a different target, context, configuration, route, or
+service. Its use site must resolve a Fabric-owned use pattern exposed by the
+selected owner.
+
+Its relative activation has one trigger and one typed release policy:
+
+```text
+relative_activation:
+  trigger = EventFamilyKey + optional guaranteed offset
+  release = intrinsic
+          | causal_event(EventFamilyKey + optional guaranteed offset)
+```
+
+Offsets are legal only when guaranteed by the Fabric service contract.
+`intrinsic` uses the Fabric pattern's finite or periodic completion contract.
+A causal release holds the resource until the referenced existing Dataflow
+event occurs. Dynamic event occurrences, absolute start times, queue state,
+and runtime arbitration state are not persisted.
+
+System ResourceUse owns event-relative activation, reservation and release,
+typed workload parameters, demand selections, and Physical Tag or other typed
+sharing assignments. Fabric owns the physical resources, capacity dimensions,
+use vectors, latency, initiation interval, service guarantees, and parameter
+domains. Imported SpatialMapping uses are occurrence-qualified in a derived
+closure projection; SystemMapping does not copy them into System ResourceUse.
+
+SystemMapping has no independent ScheduleBinding, BufferBinding,
+ResourceSharing, TemporalTagAssignment, or UseTemplate family. Physical
+buffer selection belongs to ServiceRealization and occupancy belongs to
+ResourceUse. Flattened calendars and guaranteed resource-time envelopes are
+derived views, not persistent records.
+
+### System Record Identity
+
+ExecutionBinding and ServiceRealization are uniquely located by their closed
+structural keys. ResourceUse is uniquely located by its complete typed
+structural key. The initial SystemMapping schema needs no independently
+referenceable Mapping-local entity, so its artifact-global `EntityId`
+namespace may be empty. SpatialMapping import ordinals and ServicePlan
+ordinals are scoped serialization aids, not EntityId values.
+
+## Canonical Assembly
+
+Mapping owns one versioned canonical textual assembly writer. The writer
+produces UTF-8 with LF line endings, no trailing spaces, and exactly one final
+newline. It excludes the transport `builtin.module`, locations, comments,
+aliases, debug names, provenance, and other non-semantic metadata. Generic
+MLIR printer flags and raw MLIR bytecode are not identity authorities, and
+there is no parallel persistent binary schema.
+
+Textual authoring order is not semantic. The finalizer emits record families
+in schema-owned order and keyed records in canonical semantic-key order after
+canonical labeling and ID assignment. Explicitly ordered port maps, route
+ordinals, service legs, and other semantically ordered arrays preserve their
+defined order. Schema defaults are completed and printed or omitted only by
+the schema declaration.
+
+A standalone importer may accept legal noncanonical whitespace and record
+order, then parse to the typed model and emit canonical bytes. Unknown
+operations, fields, enum values, versions, duplicate semantic keys,
+noncanonical persistent ID assignment, and incomplete profiles are rejected.
+An Artifact Store reader additionally requires the stored bytes, descriptor,
+digest, canonical assignment, and profile verifier result to agree; it does
+not repair an object while reading it.
+
+## Finalization
+
+A TechMapping writer resolves exact upstream bindings and scoped references,
+validates closed coverage and complete selected relations, performs exact
+semantic-graph canonical labeling and artifact-global ID assignment, emits
+the root, runs the finalized profile verifier, and invokes the canonical
+writer. The Common SHA-256 v1 finalizer then computes identity and performs
+collision-checked atomic publication.
+
+A SpatialMapping writer first rebuilds and verifies intrinsic base closure
+from `D`, `T`, `F`, and the selected records. It then runs separate admission
+against the exact invocation `K`. Only after both succeed may it canonicalize
+record order, assign the MemoryBinding IDs and RouteTree owner-local ordinals,
+run structural verification on the finalized root, emit canonical bytes, and
+invoke the Common finalizer.
+
+A SystemMapping writer resolves `D`, `F`, and the imported SpatialMappings;
+normalizes binding relations, plans, route trees, and resource uses; derives
+and checks the exact import table; and verifies complete cross-layer base
+closure. It then runs separate admission against the exact invocation `K`.
+Only a verified and admitted draft may receive import and owner-local
+ordinals, pass finalized structural root verification, produce canonical
+bytes and Common identity, and be published atomically.
+
+An artifact's own identity never enters its semantic preimage. Failure,
+partial construction, unsupported proof, or budget exhaustion cannot publish
+a Mapping artifact. The corresponding reader parses the exact supported
+version, resolves every exact upstream reference, runs the same independent
+base verifier, and only then derives immutable C++ views or native hot
+projections.
+
+## Derived And External State
+
+The following are not Mapping artifacts or additional schema authorities:
+
+* mutable candidates, search queues, action histories, solver caches, and
+  transaction state;
+* `FrozenModel`, dense indices, CSR or SoA projections, configured-function
+  views, and closure projections;
+* resolved config views, ObjectiveProjection, search domains, exact
+  MappingConstraintSet ArtifactIdentity bindings, and admission results;
+* configured Fabric, raw `sw_configs`, bitstreams, runtime images, Deployment
+  payloads, and simulator-specific bindings;
+* legality booleans, proof witnesses, costs, metrics, rankings, and
+  acceptance decisions; and
+* failures, diagnostics, reports, manifests, provenance, and Evaluation
+  Evidence.
+
+Each MappingConstraintSet remains an independent canonical Artifact. Only its
+exact reference and the result of applying it to a base-valid Mapping belong
+to invocation metadata or Evaluation Evidence.
+
+Derived views are immutable and deterministically rebuildable from their
+exact semantic inputs. Cache keys bind the complete dependency closure and
+producer semantics. A cache cannot transfer Mapping coverage, local
+references, legality conclusions, or physical decisions into another
+artifact context.
+
+Evaluation owns observations, metrics, findings, and model identity. The
+central DSE controller owns objective policy, quality gates, ranking,
+promotion, fallback resolution, and required Evidence. Mapping search may use
+resolved typed projections of those authorities, but none become Mapping
+semantic content.
 
 ## Non-Goals
 
-This document does not define:
-
-* Mapping dialect assembly syntax;
-* SpatialMapping and SystemMapping record schemas;
-* route-tree, resource-time, schedule, tag, buffer, memory, or boundary
-  schemas;
-* the complete five-input `FrozenModel` and later physical PnR data layout;
-* `ConfigDomain`, the complete `CandidateDomain`, placement choice, endpoint
-  selection, or route search;
-* Hardware Sharing Group registry syntax;
-* SystemMapping composition; or
-* bitstream format.
+The Mapping schema does not define a separate absolute Schedule IR, a generic
+property or correspondence bag, runtime occurrence identity, a fourth
+physical Mapping profile, Evaluation Request or Evidence schemas, Deployment
+payload schemas, protocol encodings, or bitstream formats.

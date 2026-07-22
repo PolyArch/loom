@@ -1,137 +1,113 @@
-# Fabric Memory Operation Engine
+# Fabric Memory
 
-## Scope
+## Purpose
 
-`fabric.mem` describes a Fabric-owned memory operation-engine hardware
-capability. The accepted ABI contains:
+`fabric.mem` is the Fabric realization for canonical `dataflow.load` and
+`dataflow.store` operations. It describes physical memory-operation capability
+and memory-service capability. It does not describe a software address space,
+choose a workload binding, or own configured Mapping state.
 
-* one operation engine;
-* one or more manager/requester memory endpoints;
-* zero or more subordinate/provider memory endpoints;
-* `L` physical load operation ports;
-* `S` physical store operation ports;
-* an independent physical operation data width `W`;
-* a Spatial or Temporal operation schedule;
-* fixed request-source-to-manager dispatch eligibility.
-
-The complete architecture permits an optional Local Memory Service, but that
-subresource is not accepted by this ABI. Its canonical typed service contract
-is not yet represented. Engine-plus-local and storage-only forms therefore
-remain unsupported. An engine-only occurrence requires at least one manager
-endpoint as its backing path.
-
-This operation owns hardware capability only. It does not own workload memory
-bindings, active dispatch, configured accesses, service target selection, or
-bitstream state.
-
-## Assembly
-
-Anonymous form:
+A fully elaborated occurrence is one physical memory-capability occurrence.
+Its orthogonal parts are:
 
 ```text
-fabric.mem [spatial|temporal]
-  mgr(manager-operands)
-  load(load-operands)
-  store(store-operands)
-  [{hardware-parameters}]
-  : (input-types) -> (result-types)
+fabric.mem occurrence
+  optional Operation Engine Capability
+  optional Local Memory Service
+  zero or more manager/requester endpoints
+  zero or more subordinate/provider endpoints
+  configurable service dispatch capability
 ```
 
-The `load` and `store` clauses are omitted when their respective physical port
-counts are zero. `mgr()` is syntactically variadic, although the implemented
-engine-only form rejects an empty manager list.
+The Operation Engine and Local Memory Service are independently present. Loom
+does not introduce `fabric.storage`: local storage remains a typed subresource
+of `fabric.mem`, while a pure forwarding or routing resource belongs to the
+explicit Fabric transport or service-transform model.
 
-Named templates place `@name` before the schedule and replace SSA operands and
-results with a function type:
+The Local Memory Service, when present, is one physical service and contention
+domain. Manager endpoints may reach other services; their capacity and
+contention remain owned by those selected service contracts.
+
+## Memory Spaces And Interfaces
+
+A software memory space and a hardware memory interface are different
+objects:
+
+* a logical memory root or view owns software identity, interval, layout,
+  aliasing, and lifetime;
+* a physical memory service or region owns storage or proxy identity,
+  physical range, ordering, visibility, and coherence guarantees;
+* a manager/requester endpoint can initiate typed memory operations;
+* a subordinate/provider endpoint can accept and serve typed memory
+  operations.
+
+An endpoint is a path to a service, not the service or address space itself.
+One endpoint may carry several mapped logical memories when its declared
+range, context, or translation capability distinguishes them. One logical
+memory may use several endpoints. The explicit Mapping records in
+`spec-mapping-memory.md` own those sparse many-to-many relations.
+
+Manager and subordinate roles are endpoint-relative. A subordinate result may
+feed a manager input to compose services. Neither role implies ownership,
+allocation, mutability, or a distinct memory identity.
+
+## Legal Occurrence Forms
+
+The capability model admits these useful forms:
+
+* operation engine without local storage, backed by at least one reachable
+  manager service;
+* operation engine with a Local Memory Service, with manager and subordinate
+  endpoints independently optional;
+* storage-only occurrence, with a Local Memory Service and at least one
+  subordinate endpoint through which the service is reachable.
+
+An occurrence with neither an Operation Engine nor a Local Memory Service is
+not `fabric.mem`. A subordinate endpoint alone is not storage backing. A
+manager endpoint alone is useful only when an Operation Engine or explicit
+service transform can issue requests through it.
+
+Independently bindable banks are separate `fabric.mem` occurrences. Banking
+that is selected only inside the implementation may remain within one Local
+Memory Service, but its observable conflicts and guarantees must satisfy that
+service's architecture contract.
+
+## Operation Engine
+
+Let `L` be the number of physical load ports, `S` the number of physical store
+ports, and `W` the operation payload width. Each load port has:
 
 ```text
-fabric.mem @name [spatial|temporal]
-  (input-types) -> (result-types)
-  [{hardware-parameters}]
+(addr, ctrl) -> (data, done)
 ```
 
-The schedule is surface shorthand for the operation engine's
-`operation_schedule`. Because this ABI accepts only occurrences with an
-operation engine, every accepted `fabric.mem` carries the shorthand.
-
-## Signature
-
-For `L = load_group_size` and `S = store_group_size`, inputs are ordered as:
-
-1. every manager endpoint memref;
-2. `L` load groups `(addr, ctrl)`;
-3. `S` store groups `(addr, data, ctrl)`.
-
-Results are ordered as:
-
-1. every subordinate endpoint memref;
-2. `L` load groups `(data, done)`;
-3. `S` store `done` results.
-
-Manager and subordinate counts are the leading signature lengths left after
-subtracting the operation groups. They are not duplicated as attributes.
-
-Every capability endpoint is a memref whose element type is
-`!fabric.bits<width>`. Endpoint widths are independent of each other and of
-`W`. Capability endpoints never carry a Dataflow tag.
-
-Incoming operation operands may use
-`source-type to destination-operation-port-type` when both types have the same
-`bits` or `bits_tag` kind. Memref capability types must match exactly and
-cannot use this normalization syntax.
-
-## Hardware Parameters
-
-`hw_params` is a length-one array containing a closed dictionary. Every
-integer parameter is a signless `i32`.
-
-A Spatial engine requires exactly:
+Each store port has:
 
 ```text
-load_group_size     = L, where L >= 0
-store_group_size    = S, where S >= 0
-data_width          = W, where W > 0
-dispatch_eligibility = H_dispatch
+(addr, data, ctrl) -> done
 ```
 
-A Temporal engine additionally requires exactly:
+Store does not produce a data result. `W` is an explicit hardware fact and is
+not inferred from a manager endpoint type. Supported access sizes, alignment,
+and subword-write behavior are independent service capabilities. In
+particular, a narrow store requires byte-enable, write-strobe, or equivalent
+declared semantics; zero-extension into a wider port is not sufficient.
+
+`operation_schedule` belongs only to the Operation Engine:
 
 ```text
-tag_width             = T, where T > 0
-operation_table_size  = K, where K > 0
+Operation Engine present: operation_schedule = spatial | temporal
+Operation Engine absent:  operation_schedule absent
 ```
 
-`L + S` must be greater than zero. Define:
+The surface forms `fabric.mem [spatial]` and `fabric.mem [temporal]` may remain
+shorthand when an engine is present. A storage-only occurrence has no schedule.
+Keeping an ignored schedule would create duplicate hardware descriptions and
+is invalid.
 
-```text
-P = L + S
-```
+### Spatial Ports
 
-`P` is the number of concrete physical operation ports. `K` is the number of
-resident Temporal configured rows. `K` is independent of `P` and is not
-derived from `2^T`. In particular, `K != P` is legal.
-
-A valid Temporal row is uniquely matched by
-`(operation_kind, physical_port_sel, tag_match)`. A homogeneous engine has
-`P * 2^T` representable physical match tuples, so it requires:
-
-```text
-K <= P * 2^T
-```
-
-The verifier checks this inequality without overflowing. It is a capacity
-constraint, not an equality or a derivation of `K`. A tag may be reused on a
-different physical port because those ports are distinct match domains.
-
-`W` is an explicit hardware fact. It is never inferred from a manager endpoint
-element width.
-
-Unknown hardware keys are rejected. Spatial engines reject all Temporal-only
-keys.
-
-## Operation Ports
-
-Spatial operation ports use:
+Spatial operation ports are fixed, untagged ports:
 
 ```text
 addr      : !fabric.bits<index_width>
@@ -139,7 +115,14 @@ data      : !fabric.bits<W>
 ctrl/done : !fabric.bits<0>
 ```
 
-Temporal operation ports replace each type with:
+Define `P = L + S`. A Spatial configured operation table has exactly `P`
+rows, ordered as `load0` through `load(L-1)` followed by `store0` through
+`store(S-1)`. Row position fixes operation kind and physical port. Each active
+physical port hosts at most one Spatial software operation in a configuration.
+
+### Temporal Ports And Resident Capacity
+
+Temporal operation ports are the tagged counterparts:
 
 ```text
 addr      : !fabric.bits_tag<index_width, T>
@@ -147,102 +130,263 @@ data      : !fabric.bits_tag<W, T>
 ctrl/done : !fabric.bits_tag<0, T>
 ```
 
-Each load port consumes `(addr, ctrl)` and produces `(data, done)`. Each store
-port consumes `(addr, data, ctrl)` and produces only `done`.
-
-## Dispatch Eligibility
-
-`dispatch_eligibility` is the manager-only projection of the Fabric-owned fixed
-`H_dispatch` relation:
+Temporal hardware declares both a tag width `T` and a bounded resident
+operation capacity `K`:
 
 ```text
-dispatch_eligibility = {
-  operation_port_requests = [
-    [manager-endpoint-id, ...],  // physical operation port 0
-    ...
-  ],
-  subordinate_requests = [
-    [manager-endpoint-id, ...],  // subordinate endpoint 0
-    ...
-  ]
-}
+P = L + S
+K = operation_table_size
 ```
 
-The complete architecture also permits a Local Memory Service target, but that
-target is absent because this engine-only ABI does not represent the required
-typed service contract. Every accepted request source therefore has a
-nonempty domain of manager endpoint targets.
+`K` is independent of `P` and of `2^T`. It is not a tag-indexed address space,
+and `K = P` is only one possible hardware choice. The hardware description
+must bound `K` to a physically realizable value compatible with its declared
+ingress match domains.
 
-Request-source identities are closed and mechanical. Physical operation-port
-sources are ordered:
+An Active Temporal row is selected by exact content match on:
 
 ```text
-0 .. L-1       load ports
-L .. L+S-1     store ports
+(operation_kind, physical_port_sel, tag_match)
 ```
 
-Subordinate request sources use subordinate result order. The
-`operation_port_requests` outer array has exactly `P` entries, and the
-`subordinate_requests` outer array has exactly the signature-derived
-subordinate endpoint count. Manager target identity is manager operand order
-in `[0, M)`.
+Matching is local to the selected operation kind and physical ingress. At
+most the resident rows assigned to that domain participate, with depth bounded
+by `K` and compare width `T`. The design must not imply a `2^T`-deep table or a
+global wide CAM. A tag value may be reused in different physical match domains;
+Active rows within one domain must have unique tag matches.
 
-Every source domain is a nonempty array of signless `i32` manager identities in
-strictly increasing order. Strict ordering gives one canonical encoding and
-rejects duplicates. The dictionary is closed and accepts only the two source
-domain arrays above.
+All external operands for one dynamic load or store firing match the same row.
+External results use that row's configured tag. Mapping assigns Physical Tags
+at real tagged writers or ingresses only where may-overlap incompatible local
+interpretations require distinction. The memory table consumes that local
+assignment and does not create another tag authority, firing identity,
+iteration identity, or logical-memory identity.
 
-This relation states which manager services each physical request source can
-reach. It does not select a service for a workload. Active `C_dispatch`,
-selected service targets, addresses, memory bindings, and configured rows
-remain outside canonical Fabric hardware capability.
+## Operation Rows And Internal Dependencies
 
-Spatial and Temporal engines carry the same fixed relation. Spatial operation
-requests are already identified by physical port. A configured Temporal row
-separately selects `operation_kind`, a compatible load/store
-`physical_port_sel`, and `tag_match`; these are configured row fields, not
-Fabric `H_dispatch`. The hardware ABI therefore has no per-slot
-physical-port-eligibility array.
+The canonical Fabric description owns operation-table shape, field capability
+and semantic domains, queue capacity, and match circuitry. SpatialMapping owns
+the selected operation placements, memory bindings, source choices, service
+targets, tags, and active rows. Finalization projects those choices into a
+configured `memory_operation_table`; `ConfigurationABI` alone defines its
+physical bit/address layout and programming contract.
 
-## Module Provenance
+The configured occurrence is one closed sum:
 
-A `fabric.module` memref input is an imported manager/requester capability and
-may feed one or more manager endpoints.
+```text
+MemoryConfiguration =
+    Disabled
+  | Active {
+      operation_rows
+      provider_decode
+      physical_refinements
+    }
+```
 
-A module memref result must originate from a subordinate/provider result of an
-anonymous `fabric.mem`, or from a memref result of `fabric.instantiate`.
-Every signature-derived subordinate result of `fabric.mem` has provider
-provenance. Export is not restricted to the first subordinate result.
+`Disabled` carries no row, selector, tag, provider-decode, or refinement
+values. The physical inactive encoding belongs only to ConfigurationABI. An
+Active projection with no active request source canonicalizes to `Disabled`.
 
-A subordinate result may also feed a manager endpoint. Capability values are
-not subject to the point-to-point transport-use restriction applied to
-`bits` and `bits_tag` values.
+Each physical row is `Unused` or an `Active` variant. `Unused` carries no
+fields. The minimum Active Spatial load fields are:
 
-## Rejected State
+```text
+base_addr, access_mode,
+addr_source_sel, ctrl_source_sel, service_target_sel,
+expose_data, expose_done
+```
 
-Canonical `fabric.mem` has a closed attribute set defined by its registered op
-schema and this hardware ABI. It accepts no discardable attributes. Generic
-operation syntax therefore cannot attach workload, local-service, dispatch
-selection, or other unowned state. The custom printer preserves such invalid
-attributes for diagnostics rather than silently dropping them.
+The minimum Active Spatial store fields are:
 
-The parser and verifier reject legacy workload configuration including:
+```text
+base_addr, access_mode,
+addr_source_sel, data_source_sel, ctrl_source_sel, service_target_sel,
+expose_done
+```
 
-* `addr_table`;
-* `mem_enable`;
-* `memory_operation_table`.
+A Temporal Active row adds `operation_kind`, `physical_port_sel`, and
+`tag_match` to the corresponding load or store fields. The Temporal table has
+exactly `K` physical rows. Unused rows have one canonical semantic state whose
+physical value is defined by `ConfigurationABI`. Equivalent rows do not create
+a Mapping choice; finalization assigns them deterministically.
 
-The ABI also has no local storage/service/refinement dictionary, configured
-rows, service target selector, Memory Binding, Access Entry, persistent Memory
-Realization, provider decode, response-route configuration, or bitstream
-finalizer.
+Each row has independent ordered operand state. A load has at least address
+and control queues; a store has at least address, data, and control queues.
+Result and completion holding state must implement the declared backpressure
+and fanout contract. Queue depths and multicast holding capacity are Fabric
+facts, never simulator or Mapping defaults.
 
-These exclusions preserve a single authority: Fabric describes fixed hardware
-capability, while workload mapping choices remain outside the Fabric IR.
+The Operation Engine and optional Local Memory Service each own their closed
+typed `ResourceState` values, canonical initial state, capacity dimensions,
+atomic UsePatterns, stable typed requester order, and exact GrantPolicy or
+exact refinement domain. One memory-operation pattern may atomically claim an
+operation context, operand/result holding state, service port, bank, and
+outstanding-response capacity. Mapping cannot split that pattern into
+independent reservations or construct a generic arbiter graph. Queue contents,
+occupancy, outstanding transactions, and grant cursors are nonpersistent
+execution state.
 
-## Implementation
+Fabric declares a typed internal source-to-sink eligibility relation. Mapping
+may select only declared connections, including examples such as:
 
-The operation definition is `Fabric_MemOp` in
-`include/Fabric/IR/FabricOps.td`. Its custom parser, printer, and verifier are
-implemented in `lib/Fabric/IR/FabricMemOp.cpp`. Module memory-export
-provenance is verified in `lib/Fabric/IR/FabricModuleOp.cpp`.
+```text
+store.data       <- load.data
+load/store.ctrl  <- load/store.done
+load/store.addr  <- load.data
+```
+
+The address form is legal only when explicitly supported. A selected internal
+edge uses source and destination row identity, so it does not repeat Temporal
+tag lookup. A transfer may enter a destination row with a different external
+tag; that is a local configured context transition, not a general transport
+retag operation.
+
+A load retires its `data` and `done` as one ordered completion packet. Internal
+forwarding and external exposure of either component form one atomic multicast
+obligation: no observer or destination may receive `data` without the matching
+`done`, receive `done` without the matching `data`, or observe a different
+order. The source waits until every selected destination can accept both, or
+first enters explicit holding state that preserves the complete packet and
+multicast. A store retirement remains one ordered `done` event. An unselected
+canonical edge remains an external point-to-point obligation and must be routed
+through explicit Fabric resources.
+
+## Local Memory Service
+
+Local Memory Service reuses the Canonical typed memory-service contract. It
+adds only the local physical storage capacity and an optional implementation
+refinement:
+
+```text
+Local Memory Service
+  capacity_bytes
+  memory_service_contract
+  optional implementation_refinement
+```
+
+The architecture contract owns supported read and write operations; access
+size and alignment; subword-write semantics; payload and beat width; latency
+and initiation interval or service rate; maximum outstanding requests;
+ordering, completion, visibility, and coherence guarantees; and typed resource
+capacities and use patterns. Atomic, RMW, and fence capability is unsupported
+until its canonical operation and service contracts are explicitly added; it
+is not inferred from ordinary load/store support.
+
+Port structures are composed from resource capacities and operation use
+vectors. The contract does not need a parallel enumeration such as
+`single_port`, `1r1w`, or `true_dual_port`. Bank function, queue structure,
+SRAM organization, ECC, and clock or power details are implementation
+refinements unless they change observable behavior. Request eligibility,
+capacity, cycle-visible grant and state-update policy, latency, completion
+order, and backpressure visibility must be exact Fabric facts or
+Mapping-selected exact refinements declared by Fabric. An implementation,
+runtime, or simulator may not invent them.
+
+Initial contents, logical allocation, object lifetime, and invocation-specific
+addresses are not hardware capability. They belong to Deployment and runtime
+inputs. Reset, reconfiguration, or power behavior enters the service contract
+only when it changes observable content retention.
+
+## Configurable Service Dispatch
+
+Operation contexts and subordinate requests are request sources. Local storage
+and manager endpoints are service targets:
+
+```text
+RequestSource = load context | store context |
+                subordinate endpoint plus decoded binding/context
+ServiceTarget = local service | manager endpoint
+```
+
+Fabric owns the fixed eligibility relation `H_dispatch`. It states which
+physical selectors and cross-connect paths exist. Every Mapping AccessEntry
+and ExposureEntry owns exactly one closed typed
+`LocalMemoryServiceRef | ManagerEndpointRef` target. Those fields collectively
+are normalized `C_dispatch`; there is no parallel persistent relation record.
+The verifier checks `C_dispatch` is a subset of `H_dispatch`. It is a partial
+function that selects one target for each enabled concrete request domain. A request that accesses
+several targets requires an explicit sharding, replication, mirroring, or
+coherence service; it is not a special dispatch mode.
+
+An operation row carries its derived `service_target_sel`. A subordinate
+endpoint that exposes several logical memories uses bounded provider decode
+derived from Exposure Entries and Memory Bindings. The endpoint capability
+must bound entry count and allowed range, prefix, address-space, or context
+match fields. Arbitrary predicates, an address-width-sized direct table, and
+an unbounded CAM are invalid architecture models. Complex hashing,
+translation, cache, or coherence behavior requires an explicit typed service
+transform.
+
+Responses return to the recorded transaction origin and context. There is no
+independent response-route configuration. Fabric must provide sufficient
+response tracking and backpressure state for every declared outstanding
+request guarantee.
+
+Selecting a Local Memory Service or manager endpoint does not select a
+different software/runtime request schema. Both use the Runtime ABI-owned
+`SpatialServiceRequest` and `SpatialServiceResponse`; adapters may translate
+that one typed boundary to the selected service mechanism but may not
+reinterpret the Mapping binding or create a parallel protocol.
+
+The active operation and service connectivity is runtime-reconfigurable, but
+the runtime only installs configuration derived from an immutable Mapping.
+It never chooses a new target or repairs a mapping. A Spatial configuration
+changes only at a quiescent boundary with no in-flight transaction and empty
+affected queues. A Temporal context may be changed when that context is
+quiescent, unless the Fabric contract explicitly supplies versioned context
+state.
+
+## Ownership And Derived Configuration
+
+The ownership boundary is:
+
+* Fabric owns operation ports and contexts, Local Memory Service, endpoint
+  capability, service and queue contracts, internal-connectivity eligibility,
+  `H_dispatch`, matching capacity, and semantic configuration fields and
+  domains.
+* TechMapping selects a Memory Realization and exact internal-edge witnesses.
+* SpatialMapping owns Memory Engine Bindings, Memory Bindings, Access Entries,
+  Exposure Entries, their exact dispatch-target fields, selected internal connections, and
+  event-relative `ResourceUse` including Physical Tags.
+* SystemMapping extends a Spatial boundary proxy to the selected system
+  provider through `ServiceRealization` and system `ResourceUse`.
+* `ConfigurationABI` alone owns physical bit/address encoding and the
+  programming contract. `HardwareConfigurationImage` artifacts carry its
+  immutable encoding of the selected Mapping for exact Programming Units.
+* Deployment carries those images and memory images; runtime applies them and
+  supplies invocation-specific allocations and authorization.
+
+`addr_table` and `mem_enable` are retired names. Configured rows and
+provider-decode entries are deterministic semantic projections of the owners
+above. Raw physical fields exist only in the exact `ConfigurationABI` and its
+`HardwareConfigurationImage`; they are not another Fabric or Mapping record.
+
+## Representation And Implementation Ownership
+
+The semantic model above is closed. This document does not define Fabric
+assembly spelling or typed attribute layout for a Local Memory Service,
+service refinement, or provider-decode capability; only a dedicated operation
+specification may do so. Local memory implementation refinement may choose
+concrete SRAM, controller, or cache mechanisms. Interconnect Implementation may
+choose AXI, TileLink, CXL, or custom protocol mechanisms. Both must refine this
+capability contract and must not add Mapping semantics.
+
+## Validation Anchors
+
+Anchor-level tests should cover:
+
+* independent `P`, `K`, and `T` capacities with content matching local to a
+  physical ingress;
+* tag reuse across disjoint match domains and rejection within one domain;
+* selected `load.data -> store.data` and `done -> ctrl` internal dependencies,
+  including atomic load `data + done` retirement and store `done` retirement;
+* operation-engine-only, engine-plus-local-service, and storage-only forms;
+* many logical memories sharing one physical service through distinct
+  bindings;
+* fixed `H_dispatch` versus Mapping-selected `C_dispatch`;
+* bounded subordinate provider decode and mechanical response return; and
+* deterministic semantic operation-table projection followed by encoding
+  through the exact `ConfigurationABI`.
+
+Tests should not freeze printer layout, internal comparator topology, queue
+container shape, or a particular protocol implementation.

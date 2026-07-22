@@ -1,284 +1,851 @@
-# DSE Feedback
+# Evaluation and DSE
 
-This document specifies Loom's target design-space exploration feedback
-contract. DSE uses immutable artifacts and reports to choose new
-software placement, hardware, mapping, simulator, RTL, or estimation
-candidates.
+This document specifies Loom's shared Evaluation infrastructure and central
+design-space exploration boundary. Compilation, Mapping, hardware, and model
+parameter search use the same Evaluation semantics. They do not own separate
+metric systems, finding systems, fidelity ladders, candidate wrappers, or
+evidence formats.
 
-## Purpose
+## Scope and Ownership
 
-DSE feedback answers this question:
+The central DSE controller owns:
+
+- canonical candidate sets and typed candidate lineage;
+- resolved objective, quality-gate, selection, and Evidence-acquisition policy;
+- deterministic orchestration of the Evaluation dependency graph;
+- cross-owner semantic-work admission and accounting;
+- candidate comparison, promotion, Pareto selection, and formal controller
+  outcomes; and
+- the invocation summary and crash-recovery coordination records.
+
+Domain generators and local solvers own their typed candidate spaces,
+transformations, search mechanics, and owner-local work limits. Verifiers own
+static legality and artifact closure. Evaluation models own only the metric
+observations and findings they can honestly produce. Execution owners retain
+their own attempts, checkpoints, and raw materials.
+
+An evaluator never emits a policy score, accepts or rejects a candidate,
+chooses a fallback model, invokes another evaluator, or mutates controller
+state. The controller does not copy domain transformations into a universal
+action algebra.
+
+## Persistent Evaluation Boundary
+
+The Evaluation black box has exactly two persistent semantic artifact
+families:
 
 ```text
-Given a set of compiler, hardware, mapping, simulation, RTL, and FPA
-evidence, which new candidate should Loom generate or select next, and
-which objective explains that choice?
+EvaluationRequest Artifact
+  -> EvaluationModel black box
+  -> EvaluationEvidence Artifact
 ```
 
-DSE feedback is not a hidden side channel. A feedback decision must be
-represented by explicit records that reference the artifacts and
-metrics that motivated it.
+Request and Evidence are the sole semantic Evaluation input and output. There
+is no persistent `EvaluationResultArtifact`, partial-result artifact, model
+artifact, or evaluator-specific request/result family. Queue entries, running
+jobs, retries, attempts, and checkpoints are execution records rather than
+semantic Evaluation artifacts.
 
-## Feedback Fidelity Taxonomy
+An EvaluationRequest fixes one immutable problem and one exact resolved model
+binding. EvaluationEvidence references that exact Request and is the only
+persistent owner of normalized outcome, metric results, and finding results.
+Both artifacts are immutable and have independent version spaces. Their shared
+typed data model is the schema authority; canonical serialization is a
+cold-path representation of that model, not another schema authority.
 
-DSE feedback records use these fidelity classes:
+Raw execution material is deliberately outside normalized Evidence:
 
-* `analytic_prefilter`: software static features and a default hardware
-  resource model, used for quick cost or performance screening;
-* `techmap_estimate`: Compute Realization grouping, selected FU encodings,
-  techmap cost, and calibrated structural estimates;
-* `dfg_sim_feedback`: input-driven DFG-sim results for software
-  semantics and dynamic execution baseline evidence;
-* `pnr_feedback`: evidence from one complete SpatialMapping, including
-  supported placement, routing, event-relative `ResourceUse`, buffer, and
-  memory-binding facts;
-* `cgra_sim_feedback`: input-driven CGRA-sim evidence after mapping;
-* `eda_fpa_feedback`: RTL, EDA, backend report, or normalized FPA JSON
-  evidence.
+- a workload-running simulator owns its exact `SimulationExecution` artifact;
+- a tool flow owns immutable detailed bundles containing scripts, logs, raw
+  reports, and process material; and
+- owner-specific attempt records own runtime provenance and retry history.
 
-`pnr_feedback` does not introduce or consume a persistent schedule record.
-Event-relative `ResourceUse` remains the sole owner of resource-time behavior.
+Evidence binds evaluator-produced semantic Artifacts through descriptor-owned
+typed output slots. A workload-running simulator uses one
+`SimulationExecution` output slot. `detailed_bundle_refs` are reserved for
+opaque scripts, logs, reports, waveforms, and process material. Neither kind
+of reference becomes another normalized result authority.
 
-Low-fidelity feedback may be used for prefiltering. Formal ranking and
-selection must declare the fidelity used for every metric input, cite
-the evidence source, and record diagnostics when a required fidelity is
-missing or incompatible. An estimate must not be relabeled as simulator
-or backend evidence. Candidate summaries must expose a
-`hardware_evidence_kind` so analytic model-only candidates remain
-distinguishable from backend-backed hardware evidence.
+## Models, Metrics, and Findings
 
-## Feedback Boundary
+Fidelity is a typed description of model capability, not a global ordinal
+ladder. A model can be detailed in workload behavior and abstract in hardware,
+or detailed in physical implementation and unaware of application runtime.
+The model descriptor states those capabilities without relabeling a fast
+estimate as simulation, EDA, or physical measurement.
 
-DSE may consume:
+The metric registry defined by `docs/spec-evaluation-metrics.md` is the sole
+owner of each `MetricKind`, including its definition, value domain, physical
+dimension, canonical unit, permitted scope, and observation forms. The finding
+registry is the sole owner of each `FindingKind`, including its semantic
+definition, permitted scope, and typed occurrence payload. Metric and finding
+queries use the same closed `EvaluationScope` algebra; there is no separate
+finding scope or retained `MetricScope` authority.
 
-* source workload identities;
-* compiler placement candidates;
-* dataflow IR artifacts;
-* DFG-sim reports;
-* ADG Builder recipes;
-* Fabric ADG artifacts;
-* complete Mapping artifacts;
-* CGRA-sim reports;
-* simulation comparison reports;
-* runtime reports;
-* RTL manifests;
-* EDA reports;
-* FPA reports;
-* full-stack report bundles;
-* user constraints and objectives.
+Descriptors declare supported metric and finding query/result subsets. They do
+not copy registry definitions or own severity, thresholds, weights, scores,
+optimization direction, or candidate acceptance. Those are central resolved
+DSE policy.
 
-DSE may produce:
+A stable derived metric is produced by an explicit typed derived-metric model
+and ordinary EvaluationEvidence. Its inputs are exact upstream Evidence
+references in descriptor-owned model slots. Benchmark weighting,
+normalization, ranking, and reward remain DSE policy rather than MetricKinds or
+evaluator outputs.
 
-* new compiler placement requests;
-* new TechMapping search requests;
-* new ADG Builder recipe requests;
-* new PnR search requests;
-* new simulator or FPA evaluation requests;
-* selected candidate records;
-* Pareto set records;
-* rejected candidate records;
-* DSE report bundles.
+## Evaluation Case Foundation
 
-DSE must not mutate source IR, dataflow IR, Fabric ADG, mapping
-artifacts, simulator reports, RTL manifests, EDA reports, or FPA
-reports. It creates new explicit artifacts when it explores new
-candidates.
+Evaluation uses Common's typed `ArtifactReference` through descriptor-owned
+role-labeled slots:
 
-DSE candidates are immutable data points. A change to a candidate
-creates a new candidate with a new identity; it does not update the old
-candidate in place.
+```text
+EvaluationSubjectBindings =
+  total table<SubjectSlotRef, canonical ArtifactReference collection>
+```
 
-The global evidence policy in `docs/spec-loom-stack.md` applies to DSE
-inputs. DSE-specific selection criteria must not treat unsupported,
-blocked, scaffold, fixture, or missing-metric records as passing
-candidate evidence.
+Each descriptor slot owns a stable ordinal, semantic role, accepted Artifact
+schema, cardinality, and cross-slot compatibility. Collections contain no
+duplicates and are ordered by complete typed-reference canonical key;
+authoring order has no meaning. Request verification enforces totality for all
+required slots. Distinct slots may accept the same schema, so a comparison can
+bind `reference_execution` and `candidate_execution` without losing role.
+There is no unordered subject bag or one-subject-per-schema rule.
 
-The configuration SSOT in `docs/spec-config-ssot.md` owns DSE weights,
-objective profiles, policy selection, seeds, and fidelity requirements.
-DSE may consume typed views of the resolved configuration, but it must
-not own an independent objective-default table or silently fall back from
-an unknown objective to another objective.
+The model-independent case has two orthogonal exact references:
 
-## Objective Records
+```text
+workload_ref: optional<ArtifactReference>
+runtime_input_ref: optional<ArtifactReference>
+```
 
-An objective record has these required fields:
+The workload owns the work definition, shape, or problem size. The runtime
+input owns concrete values, memory images, streams, and launch arguments.
+Request never inlines tensors, file lists, or an arbitrary parameter map.
 
-* objective id;
-* objective kind;
-* metric inputs;
-* feedback fidelity for each metric input;
-* priority or weight;
-* constraint or optimization mode;
-* comparison direction;
-* units;
-* validity conditions.
+Base and request-specific conditions use one closed tagged union,
+`EvaluationCondition`. Base conditions change the ground-truth problem shared
+by every requested metric and finding. Request-specific conditions change only
+the associated query. Conditions are not string-key maps, override layers,
+arbitrary predicate languages, or consumer-private payloads. Model effort is
+part of the model binding; tool paths, timeout, host parallelism, and licenses
+are nonsemantic execution bindings.
 
-Baseline objective kinds include:
+Case keys are removable derived indexes:
 
-* minimize runtime;
-* maximize throughput;
-* minimize area;
-* minimize dynamic power;
-* minimize leakage power;
-* minimize energy;
-* maximize performance per watt;
-* maximize performance per area;
-* satisfy timing target;
-* satisfy memory capacity;
-* satisfy resource utilization bound;
-* minimize unsupported-scope diagnostics;
-* custom objective with explicit model identity.
+```text
+base_case_key = DomainSeparatedDigest(
+  canonical subject bindings,
+  workload_ref,
+  runtime_input_ref,
+  canonical base_conditions)
 
-When objectives conflict, the selected policy must state how conflicts
-are resolved: weighted score, lexicographic ordering, Pareto ranking,
-constraint filtering, or custom policy.
+metric_case_key = DomainSeparatedDigest(
+  base_case_key,
+  MetricQuery,
+  canonical metric-request conditions)
+```
 
-Continuous weights and named preset profiles are both first-class DSE
-configuration. Presets resolve to ordinary objective records and weights
-before candidate generation or selection. Compiler placement choices,
-including whether a loop remains a logical `dataflow.thread` frontier or
-is placed inside a SpatialCore graph, are candidates selected by these
-configured objectives and feedback records rather than direct force
-switches.
+Neither key is serialized into Request or Evidence. Full Request identity also
+depends on the exact model binding, both canonical request sets, and
+`replicate_index`. Evidence references Request rather than copying case facts
+or derived keys.
 
-## Candidate Records
+## EvaluationRequest and Model Descriptor
 
-A candidate record identifies:
+`evaluation.request.1.0` has one strict typed root:
 
-* candidate id;
-* candidate kind;
-* parent candidate ids when derived from earlier candidates;
-* referenced input artifacts;
-* generated output artifacts;
-* objective records used;
-* metric records used;
-* feedback fidelity records used;
-* status;
-* diagnostics.
+```text
+EvaluationRequest {
+  subject_bindings: EvaluationSubjectBindings
+  workload_ref: optional<ArtifactReference>
+  runtime_input_ref: optional<ArtifactReference>
+  base_conditions: canonical set<EvaluationCondition>
+  metric_requests: canonical set<MetricRequest>
+  finding_requests: canonical set<FindingRequest>
+  model_binding: ResolvedModelBinding
+  replicate_index: uint64
+}
 
-Candidate kinds include:
+MetricRequest {
+  query: MetricQuery
+  conditions: canonical set<EvaluationCondition>
+}
 
-* Structured Program Candidate ownership and outlining candidate;
-* TechMapping candidate containing Compute Realizations;
-* hardware ADG candidate;
-* SpatialMapping candidate;
-* simulator configuration candidate;
-* RTL/FPA profile candidate;
-* combined full-stack candidate.
+FindingRequest {
+  query: FindingQuery {
+    kind: FindingKind
+    scope: EvaluationScope
+  }
+  conditions: canonical set<EvaluationCondition>
+}
+```
 
-## Feedback Targets
+`MetricQuery` also uses `EvaluationScope`. The two request sets are independent,
+but their total cardinality must be nonzero. A finding-only Request is legal.
+The same query may appear with different request-specific conditions; only an
+exact duplicate request is invalid.
 
-### Compiler Placement Feedback
+Finalization sorts each set by complete canonical content. The resulting
+positions are the only request-local `MetricRequestOrdinal` and
+`FindingRequestOrdinal` identities. Evidence refers to a request item by exact
+Request identity and ordinal. It never copies the query or its conditions.
 
-DSE may request a new Structured Program Candidate with different AccCore or
-SpatialCore ownership and outlining decisions. The request must cite reports
-or metrics that motivate the change. The compiler must produce a new immutable
-candidate and derive new dataflow artifacts rather than modifying an old
-artifact in place.
+Request stores neither its own ArtifactIdentity nor any case, model, or cache
+digest. Common artifact finalization derives identity from the one canonical
+root.
 
-### TechMapping Feedback
+### Descriptor Capability Authority
 
-DSE may request a new TechMapping search over exact immutable Canonical
-Dataflow and Fabric artifacts. The result is a new TechMapping artifact
-containing selected actor groups, FU encodings, and complete correspondence
-witnesses. It must not persist a competing software partition or mutate either
-input artifact.
+`EvaluationModelDescriptor` is an immutable, versioned capability entry in the
+Evaluation library's static typed registry, not an Artifact. It owns:
 
-### Hardware Candidate Feedback
+- model kind, descriptor schema and version, and implementation semantic
+  identity;
+- role-labeled typed subject slots and compatibility rules;
+- workload, runtime-input, and condition requirements;
+- supported metric and finding queries and result forms;
+- descriptor-owned model input slots, role-labeled typed output slots, and
+  resolved model-config schema;
+- modeled phenomena, execution method, and determinism contract; and
+- supported full, domain-specific incremental, and guidance domains.
 
-DSE may request a new ADG Builder recipe or new Fabric ADG candidate.
-The request must cite hardware metrics, mapping failures, simulator
-stalls, route congestion, memory pressure, FPA reports, or user
-constraints.
+An external tool's exact version, technology inputs, semantic switches, and
+result-affecting effort or threading enter the model binding. Executable paths,
+modulefiles, license servers, hosts, and scratch paths remain execution
+bindings.
 
-### PnR Feedback
+Each Request fixes one exact binding:
 
-DSE may request new PnR runs with updated objectives, constraints, or
-cost-model weights over an exact TechMapping predecessor. The output is a new
-complete SpatialMapping when that persistent schema is closed. Candidate
-collections, ranking, and selection remain DSE records rather than Mapping
-records.
+```text
+ResolvedModelBinding {
+  descriptor_ref
+  input_bindings:
+    canonical table<ModelInputSlotRef,
+                    canonical ArtifactReference collection>
+  resolved_model_config: typed canonical component view
+}
+```
 
-### Simulator And FPA Feedback
+`ModelInputSlotRef` is a stable ordinal local to one descriptor version. Its
+slot descriptor alone owns accepted Artifact schemas, cardinality, and
+compatibility. The same mechanism binds parameter bundles, calibration
+bundles, and role-labeled upstream EvaluationEvidence without an unordered
+Evidence bag.
 
-DSE may request additional simulator or FPA runs to resolve missing or
-low-confidence metrics. The output is a new report, not a mutation of
-an old report.
+`ModelOutputSlotRef` is likewise a stable descriptor-local typed ordinal. Its
+descriptor owns role, Artifact schema, and closed cardinality per Evidence
+outcome. Evidence binds exact produced Artifact references but does not copy
+the slot definition. A workload-running simulator declares one
+`SimulationExecution` output slot: a `Retired` or `Halted` execution produces
+exactly one such output with Completed Evidence. Any output allowed for an
+incomplete outcome is governed by the same closed outcome-cardinality table,
+not evaluator discretion.
 
-## Reproducibility
+A workload-running simulator descriptor also owns the complete set of
+mandatory terminal `FindingQuery` values for every `Halted` kind it can emit.
+A legal Request explicitly requests all of them. The Request verifier rejects
+omission before execution; the evaluator cannot append an unsolicited
+terminal finding afterward.
 
-DSE feedback must record:
+The canonical binding bytes derive a removable `resolved_model_key`; the key
+is absent from Request. Only the typed ResolvedConfig component consumed by
+the model enters the binding. Unrelated visualization or output-path settings
+cannot change Request or cache identity, while every consumed semantic model
+setting and input must.
 
-* selected policy id;
-* policy configuration;
-* resolved configuration ArtifactIdentity;
-* random seed when stochastic search is used;
-* input artifact identities when available;
-* objective records;
-* candidate ordering rule;
-* selected candidate or Pareto set;
-* rejected candidate summaries.
+### Replicates, Attempts, and Admission
 
-Given the same inputs, policy, and seed, deterministic and seeded
-policies must reproduce the same selected candidate records.
+`replicate_index` is a nonnegative `uint64` in Request. It changes Request
+identity without changing base-case, metric-case, or resolved-model keys.
+Deterministic models accept only zero. Independent stochastic or physical
+samples use distinct replicate Requests.
 
-## Diagnostics
+Retrying an exact Request creates no new case, binding, replicate, or semantic
+work. Evaluation's owner-specific attempt record stores request-local attempt
+ordinals, runtime provenance, Execution Limits outcomes, and retained Evidence
+or bundle references. Attempt metadata never enters Request or Evidence
+canonical bytes, and an earlier attempt is never overwritten.
 
-DSE diagnostics must distinguish:
+Admission has three nonoverlapping owners:
 
-* missing objective;
-* unknown objective;
-* unknown policy;
-* conflicting configuration sources;
-* mismatched ResolvedConfig ArtifactIdentity;
-* missing required metric;
-* unsupported feedback target;
-* conflicting hard constraints;
-* no candidate satisfies constraints;
-* stale artifact identity;
-* incompatible report fidelity;
-* non-reproducible stochastic run without seed;
-* custom model unavailable;
-* candidate generation failed.
+1. `RequestVerifier` checks canonical form, descriptor resolution, subject-slot and
+   workload signatures, conditions, metric and finding capabilities, model
+   slots and config, and replicate validity.
+2. `EvaluationPlanAdmission` checks model authorization, Evidence obligations,
+   dependency readiness, and deterministic semantic work.
+3. `ExecutionAdmission` checks tool availability, licenses, storage, host
+   resources, and Execution Limits.
 
-Diagnostics must identify the artifact or metric that caused the
-failure when applicable.
+None of these layers rewrites the immutable Request or performs another
+layer's work.
 
-## Relationship To PnR
+## EvaluationEvidence
 
-PnR consumes one exact immutable TechMapping predecessor and emits one complete
-SpatialMapping for each accepted result. It owns search within that run, not a
-cross-run candidate collection, comparison, ranking, or selection policy. The
-central DSE controller requests PnR runs, owns their candidate records and
-collections, compares complete SpatialMappings, and selects or promotes a
-candidate.
+`evaluation.evidence.1.0` has one tagged root:
 
-## Relationship To Reporting
+```text
+EvaluationEvidence {
+  request_ref: exact EvaluationRequest reference
+  output_bindings:
+    table<ModelOutputSlotRef, canonical ArtifactReference collection>
+  outcome:
+    Completed {
+      metric_results:
+        total table<MetricRequestOrdinal, MetricResult>
+      finding_results:
+        total table<FindingRequestOrdinal, FindingResult>
+    }
+    | Unsupported { reason: OutcomeReason }
+    | ExecutionFailed { reason: OutcomeReason }
+    | CancelledOrTimeout { reason: OutcomeReason }
+  detailed_bundle_refs: canonical set<ArtifactReference>
+}
+```
 
-Full-stack report bundles are immutable DSE inputs. DSE report bundles
-summarize candidate sets and selections. They must cite the workload
-and hardware report bundles they compare.
+Output bindings must satisfy the exact descriptor's cardinality for the
+selected outcome. Slot role, schema, and cardinality are recovered through the
+Request; Evidence stores only exact output references. An analytical model may
+declare an empty output signature.
 
-## Acceptance Criteria
+`Completed` means the model fulfilled the Request, not that the candidate has
+good quality. Negative slack, a deadlock, a functional mismatch, or another
+adverse observation remains a Completed evaluation. Each result table is
+exactly total over its corresponding request ordinals: no omissions,
+duplicates, or unsolicited results are permitted. For a finding-only Request,
+the metric table is empty and total, while every finding request has one
+result.
 
-The DSE feedback target is complete when:
+Non-completed outcomes structurally have no metric or finding result tables.
+Partial tool output from before a failure or cancellation stays in retained raw
+material. Controller-level unsatisfied obligations are represented by the
+controller's `Incomplete` outcome, not a fifth Evidence outcome.
 
-* objectives are explicit records rather than hidden command-line
-  assumptions;
-* objective defaults, weights, presets, policy ids, and seeds are read
-  from the resolved configuration SSOT rather than from component-local
-  constants;
-* candidate records identify input and output artifacts;
-* DSE can request new compiler placement, hardware, mapping, simulator,
-  RTL, or FPA candidates without mutating old artifacts;
-* candidate selection is reproducible for deterministic or seeded
-  policies;
-* selected candidates and Pareto sets cite the metrics that justify
-  them;
-* selected candidates and Pareto sets declare the feedback fidelity and
-  provenance used for ranking;
-* DSE selection rejects records that violate the global evidence policy;
-* DSE selection rejects records whose required ResolvedConfig identities are
-  incompatible;
-* unsupported feedback targets and missing metrics produce structured
-  diagnostics.
+`OutcomeReason` is a closed typed union and is the only normalized failure
+classification in Evidence. Evidence has no generic diagnostic string, list,
+or key-value bag. Human-readable messages, vendor warnings, stdout, stderr,
+and partial reports remain raw bundle material. Timestamps, host details, retry
+history, and execution-limit details remain owner-attempt material.
+
+Metric results contain the requested ordinal, observation form, value or
+bounds, uncertainty, and any referenced calibration input-slot ordinals.
+Observation forms are `Point`, `Interval`, `Censored`, and `NotApplicable`;
+execution failure, timeout, and unsupported capability are not observation
+forms. Metric kind, scope, conditions, unit, dimension, permitted forms, and
+evidence method are recovered from Request and the registries rather than
+copied into Evidence.
+
+Finding results contain the requested ordinal and one of:
+
+- `Absent`, with no occurrences;
+- `Present`, with a nonempty canonical typed occurrence set; or
+- `NotApplicable`, with a typed reason and no occurrences.
+
+Absence is therefore an explicit result for a requested finding, never an
+inference from a missing record. Occurrence payloads come from the
+FindingKind registry. Finding results never contain severity, a score, or a
+candidate decision.
+
+For a simulator, `Retired` returns `Absent` for every mandatory terminal
+finding. `Halted { kind, witness }` returns `Present` with the typed witness for
+the corresponding query and `Absent` for every other mandatory terminal
+query. Both are Completed Evidence with total result tables.
+
+Every detailed bundle reference resolves to immutable raw material for the
+same exact Request. A bundle owns generated scripts, logs, raw reports, opaque
+process payloads, and their content inventory and digests. It references the
+exact Request, but never an Invocation or Evidence, and does not copy canonical
+semantic tool inputs recoverable from the Request and model binding. Attempt
+status and execution provenance belong to the owner-specific attempt record.
+A bundle cannot copy normalized Evidence outcome, MetricResult, or
+FindingResult. Dependency direction remains acyclic:
+
+```text
+Raw detailed bundle -> EvaluationRequest
+SimulationExecution -> EvaluationRequest + optional raw detailed bundle
+EvaluationEvidence -> EvaluationRequest + typed output Artifacts
+                      + optional raw detailed bundle
+```
+
+A simulator that executes a workload retains the exact `SimulationExecution`
+as a typed Artifact distinct from raw detailed material. It owns terminal
+execution observations, output values and streams, visible logical-memory final
+state or diffs, completion and retirement observations, typed activity
+summaries, and the trace manifest. The raw detailed bundle owns the manifest's
+opaque chunks and any waveform payload. Neither owns normalized metrics,
+findings, Evaluation outcome, DSE decisions, or a second simulator result
+schema.
+
+## Candidate Lineage and Evaluation DAG
+
+A central DSE candidate is an existing typed `ArtifactReference`. There is no
+`DseCandidateArtifact`, generic CandidateKind, or wrapper identity. A mutable
+domain-local search state enters a central candidate set only after it is
+finalized as its domain Artifact.
+
+Invocation lineage has exactly two edge kinds:
+
+```text
+MechanicalDerivation:
+  exact input ArtifactReferences + producer/config
+  -> output ArtifactReference
+
+CandidateDecision:
+  parent candidate ArtifactReferences + typed decision
+  -> child ArtifactReference
+```
+
+Mechanical lowering cannot be represented as an optimization decision, and a
+decision edge cannot replace an Artifact's own dependency closure. If several
+paths produce the same ArtifactIdentity, the central set contains one candidate
+node while the invocation manifest may retain every valid lineage edge.
+Ranking, selection, and Evaluation deduplicate by Artifact identity rather than
+generation path.
+
+The Evaluation DAG is derived from exact references; there is no
+`EvaluationDagArtifact`. Requests reference finalized subject Artifacts through
+descriptor-owned role slots and any
+upstream Evidence in descriptor-owned model slots. Evidence references its
+exact Request and detailed material. These references mechanically recover the
+persistent data dependencies. A model dependency cycle discovered while
+resolving the plan is rejected before any Request is created.
+
+Promotion and gate order are resolved policy, not data-dependency edges.
+Pending, ready, running, retry, and blocked states belong to the mutable
+ExecutionJournal. An evaluator cannot create a hidden downstream Request or
+select a runtime fallback.
+
+The controller resolves each obligation before execution:
+
+```text
+ResolvedDseConfigView
++ exact candidate ArtifactReference
++ objective or promotion gate
+-> EvidenceObligationTemplate instantiation
+-> ResolvedEvidenceObligation
+-> exact EvaluationRequest
+```
+
+Model authorizations permit descriptor and binding domains but do not select a
+provider. Capability alternatives are deterministically resolved to an exact
+binding before Request construction. A runtime unsupported or failed outcome
+cannot switch provider. Resolved obligations are rebuildable controller state;
+Request and Evidence are the persistent facts.
+
+Formal controller outcomes are:
+
+```text
+CompletedSelection {
+  selected ArtifactReferences
+  satisfied Evidence obligations
+}
+
+CompletedNoFeasibleCandidate {
+  completed deterministic plan
+  empty selection
+}
+
+Incomplete {
+  unsatisfied obligations
+  retained finalized Artifacts and Evidence
+  typed interruption reason
+}
+```
+
+Invalid inputs or resolved configuration fail verification before a run.
+External failure, cancellation, or exhausted Execution Limits can produce only
+`Incomplete`; best-so-far state is not a formal selection.
+
+## Deterministic Work, Candidate Sets, and Cache
+
+Semantic work limits remain with the policy that defines the algorithm. PnR
+search policy owns move, restart, and expansion limits. Candidate-generator
+policy owns expansion counts. Acquisition policy owns Request and replicate
+counts. A `TopK` selection owns `k`. ResolvedConfig stores each number once and
+the controller derives a read-only audit view:
+
+```text
+DeterministicWorkBudgetView =
+  canonical set<(owner-local WorkUnitDescriptorRef, uint64 limit)>
+```
+
+`WorkUnitDescriptorRef` combines the owner policy schema/version with an
+owner-local stable ordinal. It is not a string-key registry. The derived view
+supports cross-owner admission, accounting, and replay without redefining any
+work unit.
+
+Each logical work unit receives a stable ordinal in owner-defined canonical
+order before parallel scheduling. A cache hit consumes the same logical slot
+as a cache miss. A generator attempt that reproduces an existing Artifact
+consumes its attempt slot before candidate deduplication. A retry of the same
+Request consumes no new semantic work; a new replicate is a new Request and
+work unit. Worker count, wall time, license concurrency, process retry limits,
+and host resources are Execution Limits and cannot change the formal plan.
+
+The controller owns finite candidate sets as canonical sets of complete typed
+ArtifactReferences. They are controller-local values, not Artifacts. Every
+promotion has one shape:
+
+```text
+input candidate set
+  -> instantiate required Evidence obligations
+  -> require comparable Completed results
+  -> apply resolved quality gates
+  -> apply one selection policy
+  -> output candidate set
+```
+
+The selection policy is exactly one of:
+
+```text
+AllPassing
+TopK { total_ordering, k }
+Pareto { objective_dimensions }
+```
+
+`TopK` and `Pareto` consume the same central objective facts. Pareto retains
+all nondominated candidates in the deterministic finite input set; there is no
+implicit cap based on container size, arrival order, or Execution Limits.
+
+Every candidate entering one comparison receives same-shaped Evidence
+obligations. A missing result is never interpreted as zero, infinity, or worst
+score. A candidate removed by an earlier resolved gate need not acquire later
+expensive Evidence, but runtime timing and cache state cannot alter gate order.
+
+The Artifact store may maintain a removable index:
+
+```text
+exact EvaluationRequest identity
+  -> canonical set<EvaluationEvidence ArtifactReference>
+```
+
+Completed Evidence satisfies an obligation only when its total results and
+forms match that obligation. Unsupported is a stable negative cache for the
+same exact Request but never satisfies Required Evidence. ExecutionFailed and
+CancelledOrTimeout are execution history and may be retried. Conflicting
+terminal semantic outcomes for one exact Request, or differing Completed
+normalized results from a deterministic model, are determinism violations;
+neither latest timestamp nor attempt order resolves them.
+
+The semantic closure of a run is its root Artifact identities, exact
+ResolvedConfig, and explicitly selected preexisting Evidence identities. The
+work-budget view and resolved plan are derived from that configuration. Resume
+reuses finalized outputs for their original stable ordinals and does not
+renumber or recount completed work. The resumed formal result must equal an
+uninterrupted run with the same closure. Changing a root input, semantic
+configuration, owner-local budget, model epoch, obligation, or acquisition
+replicate creates a different semantic run; changing an Execution Limit does
+not.
+
+## Resolved DSE Policy
+
+The central plan is one ordered SSA-like block with two node kinds:
+
+```text
+ResolvedDsePlanNode =
+    Generate {
+      input_candidate_set_refs
+      generator_binding
+      output_candidate_set_ref
+    }
+  | Promote {
+      input_candidate_set_ref
+      acquisition_policy
+      quality_gate_policy_ref
+      selection_policy
+      output_candidate_set_ref
+    }
+```
+
+Each input set references a root set or an earlier node output. Resolution
+checks typed use-def and acyclicity. Independent nodes may execute in parallel,
+but canonical inputs and node policy alone determine each output.
+`CandidateSetRef` is a plan-local stable ordinal, not an Artifact or program IR.
+
+`Generate` expands or transforms a design space through a typed domain
+generator. `Promote` acquires Evidence, applies gates, and narrows a set.
+Acquisition policy owns obligation templates, replicate generation, and its
+owner-local work limits. Selection policy remains `AllPassing`, `TopK`, or
+`Pareto`. There is no `PromotionPolicy`, runtime loop, generic workflow DSL, or
+mutable workflow authority. Repeated finite Generate and Promote nodes express
+cross-domain iteration.
+
+Candidate-generator capabilities live in a static typed descriptor registry.
+A resolved binding fixes typed candidate-set inputs, exact static Artifact
+inputs, typed generator configuration, and objective/Evaluation projections.
+The generator produces domain Artifacts and `CandidateDecision` lineage. Its
+domain owns transformations and local search semantics; the central plan sees
+only canonical input and output Artifact sets.
+
+### Objectives and Quality Gates
+
+One central dimension type owns the fact being optimized and its direction:
+
+```text
+ObjectiveDimension {
+  source: ObjectiveScalarSourceRef
+  direction: Minimize | Maximize
+}
+```
+
+`TopK` references a `TotalOrdering` composed from ordered weighted levels;
+`Pareto` references a canonical nonempty set of the same dimensions. Domain
+objective projections derive from the same dimensions and ordering. Source,
+direction, normalization, rank, energy, and reward therefore have one semantic
+owner and are not Evaluation outputs.
+
+A quality gate is finite canonical conjunctive normal form:
+
+```text
+QualityGatePolicy =
+  canonical AND<canonical nonempty OR<QualityGateAtom>>
+```
+
+The only atoms are typed `MetricGate` and `FindingGate`. An empty policy means
+no quality constraint; an empty clause is invalid. Finalization canonicalizes
+clauses and removes duplicates. It does not add a predicate language,
+callbacks, SAT representation, or Boolean-equivalence engine. Every referenced
+atom creates an Evidence obligation, so Boolean short-circuiting does not hide
+required evaluation. Clause deviation may guide search, but final acceptance
+uses CNF truth rather than a weighted penalty.
+
+### Resolved Configuration View
+
+The fully elaborated component view is:
+
+```text
+ResolvedDseConfigView {
+  model_authorizations
+  evidence_obligation_templates
+  objective_dimensions_and_orderings
+  quality_gate_policies
+  resolved_plan_nodes
+}
+```
+
+Authoring-level allowed models resolve only to `model_authorizations`.
+Authoring-level required Evidence resolves only to
+`EvidenceObligationTemplate`. A template fixes the exact model binding, case,
+conditions, and metric/finding requests while retaining one descriptor-typed
+candidate subject slot. Promote fills that slot to construct exact Requests;
+gate and objective references use template-local request ordinals rather than
+copying metric or finding definitions.
+
+The complete ResolvedConfig is policy SSOT. `ResolvedDseConfigView` is its
+versioned canonical component view. Candidate sets, Evaluation DAG, stable work
+ordinals, work-budget view, objective projections, cache indexes, scheduler
+state, and mutable domain search state are derived or rebuildable and are not
+Artifacts. Profiles and inheritance must elaborate before execution; the
+controller cannot add defaults or hidden promotion while running.
+
+## Invocation and Recovery Records
+
+Formal semantic results remain the selected domain Artifacts and the exact
+EvaluationEvidence satisfying their obligations. Central execution recording
+has three layers:
+
+```text
+InvocationManifest
+  immutable execution-occurrence summary and provenance
+
+ExecutionJournal
+  mutable crash-recovery state
+
+Owner attempt/checkpoint records
+  evaluator, tool, or domain-specific raw execution state
+```
+
+`InvocationManifest` is a versioned persistent record, not an Artifact. It has
+no ArtifactIdentity and cannot be consumed as compilation, Mapping,
+Evaluation, or deployment input. `ExecutionJournal` and owner records are also
+nonsemantic. They cannot affect candidate identity, ranking, or selection.
+
+The cache family owns one versioned derived run key:
+
+```text
+DseRunKey = DomainSeparatedDigest(
+  producer semantic/build identity,
+  canonical root ArtifactReferences,
+  exact ResolvedConfig ArtifactIdentity,
+  canonical explicitly selected preexisting Evidence references)
+
+InvocationOccurrenceRef = (DseRunKey, uint64 occurrence_ordinal)
+```
+
+The key's family owns domain framing, dependency order, and version. Derived
+views are reconstructed from ResolvedConfig and are not serialized again into
+the key preimage. Different occurrence ordinals distinguish retry, resume, or
+another execution of the same semantic closure without changing the formal
+result.
+
+The manifest records:
+
+- occurrence and semantic-closure references;
+- descriptors and verification digests for component views actually consumed;
+- optional resume provenance and one controller outcome;
+- canonical `MechanicalDerivation` and `CandidateDecision` records;
+- selected or retained Artifact and Evidence references;
+- owner-local planned/consumed work summaries;
+- retained owner attempt/checkpoint references; and
+- nonsemantic execution provenance.
+
+Component digests are verification copies, not configuration owners. Work
+summaries do not copy budget limits. `CompletedSelection` records selected
+Artifact references and satisfied Evidence. `CompletedNoFeasibleCandidate`
+records an empty selection and completed plan. `Incomplete` records unsatisfied
+obligations and retained finalized material but no formal selected output.
+
+Each recoverable logical unit uses a stable derived key:
+
+```text
+WorkUnitKey =
+  PlanNodeRef
+  + owner-local WorkUnitDescriptorRef
+  + stable ordinal
+```
+
+The mutable ExecutionJournal may record starts, finalized output references,
+attempt references, and checkpoint references by WorkUnitKey. Physical journal
+event order has no semantic meaning. The Journal cannot own a current-best
+answer, override an Artifact or Evidence, replace the resolved plan, or publish
+a checkpoint as formal selection.
+
+Resume recomputes the run key and resolved plan, verifies closure and each
+owner schema, revalidates Artifact preimages and Request/Evidence references,
+and reuses only fully finalized outputs bound to the expected WorkUnitKey.
+In-flight work is safely retried with its original ordinal. Resume cannot
+renumber work, consume the same logical slot twice, substitute another
+candidate, or complete from best-so-far state.
+
+Attempts and checkpoints remain owner-specific. Evaluation uses its
+request-local attempt record; ToolRunner retains scripts, stdout, stderr, raw
+reports, and process outcome in detailed material; PnR, training, and other
+domains define typed checkpoints only when real recovery requires them. A
+checkpoint binds the exact run key, occurrence, plan node, WorkUnitKey, owner
+schema, and version. There is no generic Attempt Artifact or all-domain
+checkpoint payload.
+
+## Candidate Generators
+
+Candidate generation preserves domain semantics while using one central plan.
+Generator capability is registered through a static typed descriptor rather
+than a persistent Artifact:
+
+```text
+CandidateGeneratorDescriptor {
+  generator_kind
+  descriptor_schema_and_version
+  implementation_semantic_identity
+  typed_candidate_set_input_slots
+  typed_exact_artifact_input_slots
+  output_artifact_schema
+  resolved_generator_config_schema
+  determinism_contract
+  owner_local_work_unit_descriptors
+  objective_and_evaluation_projection_slots
+}
+
+ResolvedCandidateGeneratorBinding {
+  descriptor_ref
+  exact_static_input_bindings
+  resolved_generator_config
+  objective_and_evaluation_projection_refs
+}
+```
+
+Central `Generate` plan nodes connect candidate sets to descriptor-owned
+slots. Exact static inputs appear only in the resolved binding. A generator
+publishes normal domain Artifacts and candidate lineage, then deduplicates by
+ArtifactIdentity. Compiler transformations, Mapping Actions, hardware
+transformations, and model training remain owned by their respective domains;
+the controller does not define a universal Action or mutable candidate IR.
+
+An external flow that preserves a new `HardwareImplementation` is a hardware
+Candidate Generator even when the same process also emits reports. The new
+implementation is finalized before an Evaluation observes it. An
+`EvaluationModelDescriptor` never mutates or replaces its subject.
+
+## Integration Boundaries
+
+### Mapping
+
+Mapping and Evaluation meet through `CostVector = (V, G, Q)`:
+
+- Mapping owns `V`, the closed typed set of temporary closure violations
+  recomputed from Fabric contracts and Mapping selections.
+- Mapping owns `G`, domain-independent PnR costs derived from topology,
+  connectivity, routes, occupancy, distance, and generic congestion.
+- Evaluation owns `Q`, accelerator-aware metrics and findings such as latency,
+  throughput, timing, memory performance, area, power, and energy.
+
+Structural invalidity is rejected directly. Mapping does not copy `Q`, and
+Evaluation does not copy Mapping legality. Central resolved policy projects
+`V`, `G`, and `Q` into ranking, search energy, reward, and quality gates. A
+finalizable Mapping has no remaining `V`; failure of a quality gate over `Q`
+does not become Mapping illegality.
+
+PnR may use an ephemeral domain-specific incremental adapter for hot probes.
+Its full model remains the oracle, its cache is removable, and probes create no
+Request or Evidence. Any finalized candidate that starts an authorized external
+evaluation uses the ordinary Request/Evidence boundary and retains its raw
+material. Evaluation-derived route guidance may order proposals, but cannot
+change legal arcs, prove legality, replace complete `Q`, or enter a Mapping
+Artifact.
+
+### Model Parameters and Training
+
+Training is separate candidate generation:
+
+```text
+ModelTrainingRequest Artifact
+  -> ModelTrainer
+  -> ModelParameterBundle Artifact
+```
+
+The `ModelTrainingRequest` is the sole training input root. It binds exact
+immutable Evidence plus deterministic trainer identity, configuration, and
+seed. Training normally reaches executions and raw payloads through each
+Evidence record's detailed-material closure. A trainer that genuinely requires
+a direct execution or payload reference must receive it through a
+descriptor-owned typed Request slot included in canonical Request bytes; it
+must not accept a hidden side input. Training produces a new immutable
+parameter bundle with provenance; parameters never mutate in place. Candidate
+bundles are evaluated
+through ordinary Request/Evidence on fixed validation cases and selected by the
+same central DSE policy, budget, cache, and lineage rules. A new online epoch is
+a new bundle and binding. Updating a released baseline is a separate explicit
+action, not a side effect of Evaluation or training.
+
+## E-EXIT Evaluation and DSE Closure
+
+The closed core has one owner for every semantic fact:
+
+- Request and Evidence own Evaluation input and normalized output;
+- descriptors and bindings own capability and one exact model selection;
+- metric and finding registries own query semantics;
+- `ObjectiveDimension`, ordering, and CNF gates own optimization policy;
+- Generate and Promote own central candidate expansion and narrowing;
+- owner policies own semantic work limits;
+- domain Artifacts and Evidence own formal semantic results;
+- InvocationManifest owns one immutable occurrence summary;
+- ExecutionJournal owns only mutable recovery state; and
+- owner-specific records own attempts, checkpoints, and raw material.
+
+The design therefore has no `EvaluationResultArtifact`, partial Evidence,
+`DseCandidateArtifact`, `EvaluationDagArtifact`, `DseResultArtifact`,
+`PromotionPolicy`, workflow DSL, generic diagnostic/result bag, generic Attempt
+Artifact, or Journal-owned current-best truth. New simulator, tool, finding,
+metric, trainer, cache backend, or journal implementation work extends its real
+owner without expanding the central semantic model.
+
+## Conformance Anchors
+
+Only these stable semantic anchors belong at this boundary:
+
+- A finding-only Request is valid when its descriptor declares the capability,
+  and Completed Evidence returns one explicit result for every finding ordinal.
+- Completed Evidence is exactly total over both request sets, while
+  Unsupported, ExecutionFailed, and CancelledOrTimeout carry only a typed
+  OutcomeReason and no result tables.
+- Multiple lineage paths to one Artifact deduplicate candidate Evaluation, and
+  replay or resume with the same run closure and stable work ordinals produces
+  the same formal selection as uninterrupted execution.
