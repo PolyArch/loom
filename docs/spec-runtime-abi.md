@@ -241,7 +241,7 @@ Fabric. An all-zero mask reaches no service and completes locally with the
 canonical masked-load or masked-store result.
 
 When a `fabric.mem` load response retires, read data and completion become one
-atomic `data + done` publication across all selected internal and external
+indivisible `data + done` publication across all selected internal and external
 obligations. A store response retires as one `done` event. Runtime and adapters
 must preserve those retirement events rather than splitting or reordering them.
 

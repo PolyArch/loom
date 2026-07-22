@@ -77,9 +77,9 @@ that contract; they cannot copy or weaken it.
 
 These plain memory operations carry no implicit atomicity, RMW, fence,
 volatile/MMIO, coherence, or stronger ordering semantics. Each such behavior
-requires a later explicit Canonical Service kind and corresponding Fabric
-capability. There is no generic service name, property bag, callback, or
-operation DSL.
+requires an explicit Canonical Service kind and corresponding Fabric
+capability; version 1.0 defines neither. There is no generic service name,
+property bag, callback, or operation DSL.
 
 ## AccCore And SpatialCore Attachment
 
@@ -588,9 +588,9 @@ Address { address_width: positive uint32,
           canonical disjoint half-open unsigned ranges }
 ```
 
-The op does not use an open dictionary. Consistency, coherence, and hardware
-protection domains are added only with the later atomic/coherence service
-contract and a schema extension;
+The op does not use an open dictionary. The Dataflow software memory contract
+does not add implicit Fabric domains. Consistency, coherence, and hardware
+protection domains require an explicit Fabric service schema extension;
 version 1.0 contains no placeholder variants. Runtime `ProtectionDomain`
 remains an invocation fact. Membership alone never implies a crossing. Every
 crossing remains an explicit endpoint/resource/pattern.

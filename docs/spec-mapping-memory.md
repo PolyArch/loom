@@ -64,6 +64,14 @@ services, routes, exact Fabric or Mapping-selected hardware-refinement grant
 behavior, and `ResourceUse` preserve every logical obligation. Mapping,
 runtime, and simulation do not supply missing cycle-visible arbitration.
 
+Plain, atomic, volatile, RMW, compare-exchange, and fence software semantics
+are owned by `docs/spec-dataflow-memory-consistency.md`. This Mapping
+specification currently defines only the plain and vector-memory realization
+surface. Atomic, volatile, fence, consistency-domain, and coherence
+realization remains inadmissible until the corresponding Fabric and Mapping
+contracts are added; Mapping must not reinterpret these actors as plain
+load/store.
+
 ## TechMapping Memory Realization
 
 TechMapping owns each selected Memory Realization:

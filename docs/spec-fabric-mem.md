@@ -373,9 +373,11 @@ The architecture contract owns supported read and write operations; access
 size and alignment; subword-write semantics; payload and beat width; latency
 and initiation interval or service rate; maximum outstanding requests;
 ordering, completion, visibility, and coherence guarantees; and typed resource
-capacities and use patterns. Atomic, RMW, and fence capability is unsupported
-until its canonical operation and service contracts are explicitly added; it
-is not inferred from ordinary load/store support.
+capacities and use patterns. The canonical Dataflow atomic, RMW,
+compare-exchange, fence, and volatile operation contracts are defined by
+`docs/spec-dataflow-memory-consistency.md`. Their Fabric service capability
+and consistency-domain realization are not yet defined and must not be
+inferred from ordinary load/store support.
 
 Port structures are composed from resource capacities and operation use
 vectors. The contract does not need a parallel enumeration such as
@@ -529,7 +531,7 @@ Anchor-level tests should cover:
   row-major assembly and exactly one logical retirement event;
 * one Physical Tag for a Temporal vector token, never one Tag per lane;
 * selected `load.data -> store.data` and `done -> ctrl` internal dependencies,
-  including atomic load `data + done` retirement and store `done` retirement;
+  including joint load `data + done` retirement and store `done` retirement;
 * operation-engine-only, engine-plus-local-service, and storage-only forms;
 * many logical memories sharing one physical service through distinct
   bindings;

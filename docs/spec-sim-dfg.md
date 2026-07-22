@@ -124,8 +124,14 @@ result order, completes an all-zero mask without a memory effect, and retires
 one vector actor firing as one load `data + done` or store `done` event. It does
 not expose Fabric lane or beat transactions.
 
-Atomic, RMW, fence, volatile, and coherence behavior is unsupported until its
-explicit Dataflow contract is closed.
+The software contract for atomic, RMW, compare-exchange, fence, and volatile
+actors is defined by `docs/spec-dataflow-memory-consistency.md`. DFG-sim
+continues to reject atomic actors and fences until its dynamic
+modification-order, reads-from, synchronizes-with, and
+sequentially-consistent-order contract is added. Volatile MMIO additionally
+requires an explicit external environment contract. It must not execute any
+of these actors as plain load/store. Hardware coherence remains outside
+DFG-sim.
 
 ## Trace And Termination
 

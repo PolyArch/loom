@@ -132,6 +132,14 @@ the logical memory-order contract. Visibility and terminal memory diffs must
 match DFG-sim for a legal execution. System cache and coherence behavior is
 outside this simulator.
 
+The Dataflow software contract for atomic, RMW, compare-exchange, fence, and
+volatile actors is defined by `docs/spec-dataflow-memory-consistency.md`.
+CGRA-sim rejects those actors until Fabric service capability, Mapping
+realization, and CGRA-sim consistency-domain execution contracts are defined.
+It must not execute them as plain load/store. System coherence remains a
+sys-sim responsibility even after local SpatialCore atomic realization is
+defined.
+
 ## Deadlock And Termination
 
 Successful completion requires the Dataflow completion frontier and every

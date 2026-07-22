@@ -151,9 +151,11 @@ Dataflow Program.
 
 ## Vector Memory
 
-`dataflow.load` and `dataflow.store` remain the only canonical plain memory
-actors. Their address and data shapes distinguish scalar, contiguous vector,
-and gather or scatter access:
+`dataflow.load` and `dataflow.store` are the canonical read and write actors.
+This section owns their scalar, contiguous-vector, and gather/scatter geometry.
+`docs/spec-dataflow-memory-consistency.md` separately owns their one typed
+plain, atomic, and volatile access contract and the additional atomic actors.
+The two specifications compose; neither copies the other's fields.
 
 ```text
 index                         + T                       -> scalar access
@@ -204,9 +206,10 @@ mask does not create a second ordering mechanism.
 
 Repeated gather addresses are legal and preserve result-lane order. For a
 plain non-atomic scatter, duplicate active addresses are not assigned a hidden
-lane order. The compiler must prove them distinct, scalarize the access under
-an explicit program order, or reject it until an explicit ordered or atomic
-semantic is available.
+lane order. The compiler must prove them distinct or scalarize the access
+under an explicit program order. A `PerLane` atomic access permits duplicate
+active addresses under the addressed objects' modification orders and still
+does not create a lane order.
 
 Alignment, burst formation, coalescing, physical port width, byte enables, and
 bank selection do not change this software contract. They belong to lowering,
@@ -218,7 +221,8 @@ actor and its types. The view has no independent identity or serialized
 fields. It projects:
 
 ```text
-operation       = load | store
+operation       = load | store | atomic_rmw | cmpxchg
+access_contract = exact actor-owned typed access contract
 access_form     = element | contiguous | indexed
 memory_element_type = exact memref element type
 element_bits    = bit width of one complete memory element
@@ -230,13 +234,16 @@ index_bits      = bit width of one address element under canonical data layout
 address_bits    = address_count * index_bits
 mask_form       = absent | dynamic
 mask_bits       = mask_form == dynamic ? lane_count : 0
+atomic_granularity = absent | whole_payload | per_lane
 ```
 
 `element` means one complete memref element, even when that element is itself
 a vector. Its `lane_shape` is absent and its lane count is one. It is therefore
 distinct from a contiguous access with the same data type and total bit width.
-The exact type and shape remain owned by this Dataflow actor; flattened counts
-and widths are derived compatibility facts, not a replacement type system.
+The exact type, shape, operation kind, and access contract remain owned by
+this Dataflow actor; flattened counts, widths, and normalized enum projections
+are derived compatibility facts, not a replacement type system or serialized
+record. `dataflow.fence` has no memory-addressed access view.
 
 ## Cardinality And Ordered Execution
 
@@ -338,7 +345,11 @@ Verification rejects:
 * gather or scatter address shapes that differ from the data shape;
 * gather or scatter address elements other than `index`;
 * plain scatter operations whose active duplicate addresses are neither proven
-  absent nor lowered to an explicit ordered form.
+  absent nor lowered to an explicit ordered form;
+* whole-payload atomic accesses that are not one unmasked `element` access;
+* atomic granularity on a plain access; and
+* vector atomic shapes that violate the contracts in
+  `docs/spec-dataflow-memory-consistency.md`.
 
 Stable anchor tests cover:
 

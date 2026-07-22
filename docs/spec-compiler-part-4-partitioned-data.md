@@ -128,8 +128,8 @@ semantic authority. Publication-before-retirement prevents a transient zero
 from terminating a domain while a child is becoming visible. The initial
 contract has one logical coordinator responsible for this atomic transfer.
 Parallel workers may implement the same contract, but a shared multi-producer
-queue requires the later atomic, memory-order, and coherence contract; it is
-not inferred here.
+queue requires explicit atomic and memory-order actors plus a compatible
+Fabric consistency and coherence realization; DynamicWork does not infer one.
 
 Dynamic-domain completion does not close a `!dataflow.channel`, emit EOS, or
 terminate an unrelated graph or thread. A caller may use the ordinary
@@ -144,7 +144,9 @@ tree's canonical child order, then yields. A leaf only yields. The collective
 token retires after the last descendant yields even if the implementation queue
 was temporarily empty between parent execution and child visibility. General
 graph BFS duplicate suppression and concurrent visited-set updates additionally
-require the deferred atomic/coherence contract; DynamicWork does not hide it.
+require explicit atomic software operations and a compatible Fabric
+consistency and coherence realization; DynamicWork does not hide either
+requirement.
 
 ## 3. Source Induction Variables
 

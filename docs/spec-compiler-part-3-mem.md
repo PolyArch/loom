@@ -9,12 +9,14 @@ The Dataflow operation contracts remain owned by the Dataflow specifications.
 This document defines only the compiler analysis state and the ordinary SSA
 event network produced from it.
 
-The resulting `dataflow.load` and `dataflow.store` actors and their explicit
-`ctrl` and `done` network are canonical software semantics. TechMapping,
-SpatialMapping, and SystemMapping may realize that network on Fabric resources,
-but they must not reconstruct missing memory order from source order, graph
-text order, traversal, or physical placement. The downstream realization
-boundary is specified by `docs/spec-mapping-memory.md`.
+The resulting canonical memory actors and their explicit `ctrl` and `done`
+network are canonical software semantics. Their operation contracts are owned
+by `docs/spec-dataflow-memory-consistency.md` and
+`docs/spec-dataflow-vectorization.md`. TechMapping, SpatialMapping, and
+SystemMapping may realize that network on Fabric resources, but they must not
+reconstruct missing memory order from source order, graph text order,
+traversal, or physical placement. The downstream realization boundary is
+specified by `docs/spec-mapping-memory.md`.
 
 ## 1. Scope
 
@@ -23,6 +25,9 @@ The lowering contract covers:
 * scalar and fixed-ranked vector forms of canonical `dataflow.load` and
   `dataflow.store`, including the masked contiguous and gather/scatter forms
   defined by `docs/spec-dataflow-vectorization.md`;
+* canonical atomic load/store, `dataflow.atomic_rmw`,
+  `dataflow.cmpxchg`, `dataflow.fence`, and volatile access contracts defined
+  by `docs/spec-dataflow-memory-consistency.md`;
 * normalized scalar `memref.load` and `memref.store` leaves over a canonical
   linear memory space;
 * sequential composition;
@@ -45,18 +50,23 @@ structured input.
 The compiler-local contract is:
 
 ```text
-lower_region(E_in, values_in, {W_in[p], R_in[p]})
-  -> (E_out, values_out, {W_out[p], R_out[p]})
+lower_region(E_in, values_in, {W_in[p], R_in[p]}, SB_in)
+  -> (E_out, values_out, {W_out[p], R_out[p]}, SB_out)
 ```
 
 `E` is execution permission and structural completion. `W` and `R` are
 memory-order frontiers for alias partition `p`. They share the ordinary
 `none` SSA type but remain semantically distinct throughout lowering.
+`SB` is the path-sensitive analysis relation containing only
+sequenced-before obligations that remain observable after the selected
+Structured Program Candidate's legal transformations. It covers atomic/fence,
+volatile, release, and acquire requirements across alias partitions. It is not
+one serialized token or an IR object.
 
 The contract is an implementation function, not an IR object. Canonical IR
 does not contain partition ids, dependence snapshots, compound-region
-objects, chain-scope attributes, memory tokens, or memory-specific join
-operations.
+objects, chain-scope attributes, memory tokens, sequenced-before records, or
+memory-specific join operations.
 
 The recursive owner replaces the former split among reduction, invariant,
 control, and sync passes. No later pass reconstructs structured memory order
@@ -99,7 +109,7 @@ The map is discarded after explicit event edges are emitted.
 
 ## 4. Canonical Frontier State
 
-Each partition has exactly two analysis values:
+Each partition has exactly two alias-hazard analysis values:
 
 ```text
 (write_frontier[p], read_frontier[p])
@@ -121,6 +131,13 @@ Compiler `join` means an all-of causal frontier. It is materialized with
 ordinary `dataflow.sync` after deduplication and conservative transitive
 reduction. Mutually exclusive alternatives use `dataflow.mux`, never
 `dataflow.sync`.
+
+Cross-partition sequenced-before requirements do not add another component to
+each alias partition. The implementation may use disposable all-effect,
+atomic/fence, volatile, and acquire frontier caches to compress `SB`, but the
+required relation is the authority. Cache shape, traversal order, and
+intermediate joins are not observable and are discarded after event edges are
+published.
 
 ## 5. Leaf Transfers
 
@@ -149,8 +166,31 @@ These equations are the complete hazard authority:
 * WAW: a write waits for the read frontier, which covers the prior write;
 * RAR: a read does not wait for prior reads.
 
-One vector load or store is one canonical memory-actor firing. Its active
-lanes do not create independent frontier records or an implicit lane order.
+Atomic load uses the read equation and atomic store uses the write equation.
+Atomic RMW and compare-exchange conservatively use the write equation because
+each firing may both read and write; a failed compare-exchange may retain the
+resulting causal edge without inventing a write. Fence has no alias-partition
+read or write effect.
+
+In addition to alias hazards, lowering materializes the sequenced-before rules
+from the actor contracts:
+
+* atomic actors and fences in one logical source strand preserve their
+  selected order;
+* volatile actors in one logical source strand preserve their relative order;
+* release actors and fences wait for prior memory-effect tails whose
+  visibility they publish;
+* acquire actors and fences precede later constrained memory effects;
+* `acq_rel` and `seq_cst` apply both directions; and
+* atomic-volatile actors participate in both strand relations.
+
+These ordinary event edges preserve local ordering only. Reads-from,
+modification order, synchronizes-with, and the global sequentially-consistent
+order remain dynamic consistency-domain state. Different dynamic thread
+instances are not joined by a compiler-created global frontier.
+
+One vector addressed memory actor is one canonical firing. Its active lanes do
+not create independent frontier records or an implicit lane order.
 `P(access)` is the conservative union of alias partitions that any active lane
 may access. A dynamic mask or address vector cannot weaken that set merely
 because one observed execution disables a lane. A statically proven all-zero
@@ -181,8 +221,10 @@ For `scf.if`, the condition drives all projections:
 * demux `E_in` into false and true execution lanes;
 * demux every captured non-memory value into matching lanes;
 * demux `W_in[p]` and `R_in[p]` for each partition touched by either branch;
+* project the required `SB_in` tails through the same branch selector;
 * recursively lower each branch;
-* mux results, execution, `W`, and `R` componentwise with the same condition.
+* mux results, execution, `W`, `R`, and path-sensitive `SB` tails with the same
+  condition.
 
 Memref bindings are static capabilities and are not demuxed. Address, data,
 selector, and event values are projected as ordinary streams.
@@ -209,6 +251,10 @@ The loop owns independent recurrence rings for:
 * `W[p]` for each touched partition;
 * `R[p]` for each touched partition.
 
+Required sequenced-before tails use the same condition-driven recurrence
+mechanics when they cross an iteration. This does not serialize unrelated
+plain accesses or create a persistent loop-order object.
+
 Each ring uses `dataflow.carry` under the loop selector. A matching
 `dataflow.demux` sends true-lane values into the body and the false-lane value
 to loop exit. Captured non-memory values are replayed with
@@ -217,12 +263,13 @@ Memref capabilities are not replayed.
 
 The recursively lowered body supplies all recurrence feedback values. The
 execution feedback is the body's structural exit; memory feedback is the
-body's resulting frontier pair. The rings are independent even when a write
-assigns the same `done` to both memory components.
+body's resulting frontier pair and any path-live sequenced-before tails. The
+rings are independent even when a write assigns the same `done` to both memory
+components.
 
 For zero trip count, the stream emits only `F`. No body address or access
 fires. Every carry exposes its init value on the false lane, so source values,
-execution, `W`, and `R` transfer through the loop unchanged.
+execution, `W`, `R`, and `SB` transfer through the loop unchanged.
 
 No dependence is removed because a loop appears parallelizable. Source
 iteration order remains authoritative until an earlier transformation has
@@ -236,9 +283,9 @@ For a while loop whose after region executes `K` times:
 * after executes `K` times;
 * the before condition stream is `T^K F`.
 
-Execution, source inits, and touched `W/R` components use condition-driven
-carry rings. Their outputs enter before directly, because before includes the
-final false condition check.
+Execution, source inits, touched `W/R` components, and path-live `SB` tails use
+condition-driven carry rings. Their outputs enter before directly, because
+before includes the final false condition check.
 
 After recursively lowering before:
 
@@ -247,7 +294,9 @@ After recursively lowering before:
 * false-lane condition arguments become while results;
 * true-lane condition arguments become after block values;
 * false-lane `W/R` is the loop exit state;
-* true-lane `W/R` enters after.
+* true-lane `W/R` enters after;
+* false-lane `SB` tails leave the loop; and
+* true-lane `SB` tails enter after.
 
 After results feed the next before activation. A false condition consumes no
 dummy feedback.
@@ -271,8 +320,9 @@ Nesting uses only function composition of `lower_region`:
 * deeper combinations repeat the same rules without dedicated pairwise
   lowering paths.
 
-The parent consumes only the child's execution, yielded values, and frontier
-pair. It does not reach into child leaves to reconstruct a tail.
+The parent consumes only the child's execution, yielded values, frontier pair,
+and path-live sequenced-before tails. It does not reach into child leaves to
+reconstruct a tail.
 
 ## 10. Parallel Transfer Boundary
 
@@ -328,6 +378,7 @@ frontier from:
 ```text
 execution_out
 read_frontier_out[p] for every live alias partition p
+terminal observable sequenced-before tails
 existing explicit non-start completion obligations
 ```
 
