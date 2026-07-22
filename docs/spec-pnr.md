@@ -2,8 +2,10 @@
 
 This document is the normative owner of Loom Spatial and System PnR
 algorithms, native state, deterministic search protocols, final closure, and
-the Spatial MappingConstraintSet semantic and wire algebra. The Mapping
-profile documents own persistent MLIR spelling and canonical serialization.
+the common Spatial and System MappingConstraintSet semantic and wire algebra.
+The Mapping profile documents own persistent Mapping Artifact spelling and
+canonical serialization; this document separately owns the constraint-family
+roots and clause wire schema.
 Evaluation and central DSE documents own objective, gate, Evidence, and
 resolved-model schemas. This document consumes those interfaces without
 restating them.
@@ -14,31 +16,62 @@ SpatialCore, and SystemMapping binds complete execution and service behavior
 across an architecture-only Fabric system. There is no `PhysicalMapping`
 profile and no fourth profile for flat System search.
 
-## MappingConstraintSet Persistent Family Frontier
+## MappingConstraintSet Artifact Family
 
-The Spatial MappingConstraintSet Contract in this document is the normative
-owner of the already-closed Spatial payload bindings, atom records,
-`ProjectionKind` catalog, carrier encodings, canonicalization, and admission
-semantics. It does not assign a common persistent MappingConstraintSet family
-identity or root operation spelling. Those shared persistent facts must be
-closed once, together with the exact System MappingConstraintSet profile, at
-the active architecture frontier.
+This document is the sole semantic and wire owner of:
 
-Until that frontier closes, an implementation must not invent a placeholder
-persistent family identity or root operation for either profile. Both the
-five-input Spatial and six-input System PnR algorithms below are conditional
-contracts: neither can be instantiated, frozen, admitted, cached, or finalized
-with a persistent `K` until the common family and root are defined. The closed
-Spatial payload and admission algebra below remains normative and is the input
-to that later persistent-schema decision; it is not permission to fabricate an
-ArtifactIdentity for `K`.
+```text
+loom.mapping_constraints 1.0
+```
+
+The family has exactly two complete root operations:
+
+```text
+mapping.constraints.spatial
+mapping.constraints.system
+```
+
+The root operation is the profile discriminator; there is no parallel profile
+attribute or generic root with inactive optional fields. Both roots use the
+same three clause atoms, four carrier encodings, canonicalization, and outcome
+algebra defined here. They differ only in exact upstream bindings and their
+closed typed projection catalogs.
+
+An empty canonical clause sequence is a real exact Artifact. It means no
+additional restriction beyond base legality; it is not a missing input, null
+constraint, config default, or wildcard object. The Artifact uses the Common
+SHA-256 v1 finalization contract and the family-owned canonical textual writer.
+Native indexes are removable projections and never persistent alternatives.
+
+Each root owns one single-block declarative clause region with no block
+arguments, SSA values, CFG successors, symbols, or runtime terminator. Its
+children are exactly:
+
+```text
+mapping.constraint.domain_restriction
+mapping.constraint.equal
+mapping.constraint.disjoint
+```
+
+These operations carry the typed `projection`, subject references, and unique
+carrier encoding described below. Unknown children, fields, projection values,
+or carrier variants are rejected. Schema identity and version are supplied by
+the Artifact family framing and are not duplicated as editable root fields.
+
+The family owns one canonical textual MLIR writer: UTF-8, LF line endings, no
+trailing spaces, and exactly one final newline. It emits root bindings in the
+schema order shown below, the System SpatialMapping reference table in complete
+ArtifactIdentity order, and clauses in canonical record order. Locations,
+comments, aliases, authoring symbols, and generic printer flags are excluded.
+An importer may accept legal noncanonical whitespace and authoring order, but
+must parse to the typed model and re-emit these canonical bytes before Common
+finalization. There is no parallel JSON, binary, or host-struct wire authority.
 
 ## Invocation Contracts
 
 ### Spatial PnR
 
-Once the MappingConstraintSet Persistent Family Frontier closes, a Spatial PnR
-invocation consumes exactly these five authorities:
+A Spatial PnR invocation consumes exactly these five authorities:
 
 ```text
 D = Canonical Dataflow Program
@@ -72,8 +105,7 @@ identity.
 
 ### System PnR
 
-Once the MappingConstraintSet Persistent Family Frontier closes, a System PnR
-invocation consumes exactly:
+A System PnR invocation consumes exactly:
 
 ```text
 SystemPnrProblemInputs {
@@ -91,8 +123,8 @@ owns the exact Transport Architecture and excludes every protocol-specific
 Interconnect Implementation. `R` is the closure rooted at the requested
 non-empty set of root thread launches.
 The separate immutable System MappingConstraintSet `K` is governed solely by
-the frontier statement above. System PnR does not invent a system-wide
-TechMapping input. `C` has the same resolved-view contract as Spatial PnR and
+the System contract below. System PnR does not invent a system-wide TechMapping
+input. `C` has the same resolved-view contract as Spatial PnR and
 includes the exact Evaluation binding table used by its
 `ObjectiveProjection`.
 
@@ -111,25 +143,33 @@ persistent root owns `D`, `F`, the non-empty root thread launch set, the exact
 derived SpatialMapping imports, and its selected records.
 
 An InstructionCore-only closure may have no SpatialMapping catalog or reopened
-Spatial subproblem. Once the conditional contract becomes instantiable, that
-case still uses the ordinary SystemMapping profile; it never creates a dummy
-graph or SpatialMapping.
+Spatial subproblem. That case still uses the ordinary SystemMapping and System
+MappingConstraintSet profiles; it never creates a dummy graph or
+SpatialMapping.
 
 ## Spatial MappingConstraintSet Contract
 
-This section is the sole normative owner of the closed Spatial
-`MappingConstraintSet` semantic and wire algebra. Mapping artifact and
+This section owns the Spatial root and projection catalog. Mapping artifact and
 verifier documents may define where `K` is referenced or applied, but do not
-redefine this algebra or the persistent-family frontier above.
+redefine this algebra or the common family above.
 
 `K` is an independent immutable Artifact. It is not a `ResolvedConfig` field
 or component view, Fabric content, Mapping result state, mutable solver state,
-or a cache. Its closed Spatial semantic payload binds exact `D`, `T`, and `F`
-and contains one canonical sequence of clauses. The sequence is conjunctive.
+or a cache. Its closed Spatial root is:
+
+```text
+mapping.constraints.spatial {
+  exact Canonical Dataflow Program binding D
+  exact TechMapping binding T
+  exact Fabric Hardware Description binding F
+  canonical clause sequence
+}
+```
+
+The sequence is conjunctive.
 An empty sequence is a real exact Artifact bound to that same `D/T/F`; it
 means unrestricted beyond base legality and is not absence, a null input, or
-a hidden default. This payload contract does not supply the deferred common
-persistent family identity or root operation spelling.
+a hidden default.
 
 Each clause is exactly one of three closed record variants:
 
@@ -246,7 +286,7 @@ path, raw control value, arbitrary property bag, or
 `fabric_control_value(resource, field)` escape exists. The initial generic
 configuration projection inventory is closed and empty.
 
-### Persistent Carrier Encodings
+### Common Persistent Carrier Encodings
 
 Each `ProjectionKind` selects exactly one of four persistent admissible-domain
 encodings:
@@ -267,9 +307,10 @@ are forbidden. `SparseIds`, `DenseWords`, and other bitset forms are derived
 There is no predicate DSL, `Exists` or `NonEmpty` atom, runtime extension
 registry, or last-wins interpretation.
 
-### Canonicalization And Hot Compilation
+### Common Canonicalization And Hot Compilation
 
-Constraint elaboration performs one deterministic finite normalization:
+Both roots perform one deterministic finite normalization over their own closed
+projection catalog:
 
 1. Resolve exact `D/T/F`, every typed subject, `ProjectionKind`, operand, and
    carrier value, then normalize each admissible domain in its unique
@@ -317,16 +358,115 @@ The constraint pipeline keeps four non-success categories distinct:
 These outcomes are not fields or status values in `K` or a Mapping Artifact.
 Lack of a proof never becomes `ProvenInfeasible`.
 
-Freeze mechanically compiles exact `D/T/F/K` into an immutable,
+Freeze mechanically compiles the exact root inputs and `K` into an immutable,
 projection-sharded `FrozenConstraintIndex`. It has no ArtifactIdentity or
 semantic authority. Equality classes and variadic disjoint groups remain
 distinct; `Disjoint` is not expanded into binary pairs or a dense matrix.
 Every hot table, finite-domain representation, and reverse index is a derived,
-rebuildable cache. Final admission runs only on a base-valid SpatialMapping
-and independently recomputes the canonical projections and clauses without
-trusting that cache. The projection reads the final Mapping, but its subject
-remains the pre-result anchor stored in `K`. Neither `K` nor the admission
-result enters SpatialMapping semantic content or identity.
+rebuildable cache. Final admission runs only on a base-valid Mapping and
+independently recomputes the profile's canonical projections and clauses
+without trusting that cache. The projection reads the final Mapping, but its
+subject remains the pre-result anchor stored in `K`. Neither `K` nor the
+admission result enters Mapping semantic content or identity.
+
+## System MappingConstraintSet Contract
+
+The System root is:
+
+```text
+mapping.constraints.system {
+  exact Canonical Dataflow Program binding D
+  exact architecture-only Fabric system binding F
+  canonical non-empty root_thread_launches
+  derived canonical spatial_mapping_reference_table
+  canonical clause sequence
+}
+```
+
+The root launch set is identical to the SystemMapping coverage root. The
+reachable closure `R` is derived from exact `D` and that set and is never stored
+as another authority. The spatial mapping reference table contains exactly the
+sorted unique complete `ArtifactReference<SpatialMapping>` values mentioned by
+`graph_selected_spatial_mapping` admissible domains. Clause payloads use table
+ordinals, but the table is only a canonical reference encoding: it cannot add
+an acceptable mapping, select a mapping, or replace exact references.
+
+System subjects are limited to stable pre-result keys derived from exact
+`D/F/root_thread_launches` and the Canonical Service Schema:
+
+```text
+SystemTransferLegKey =
+  (SystemServiceObligationKey, canonical_service_leg_ordinal)
+
+SystemTransferTerminalKey =
+    Source(SystemTransferLegKey)
+  | Sink(SystemTransferLegKey, canonical_sink_ordinal)
+```
+
+The closed System `ProjectionKind` catalog is exactly:
+
+```text
+thread_target_acc_core:
+  ThreadExecutionBindingKey
+    -> Set<AccCoreOccurrenceRef> [zero-or-more]
+
+graph_selected_spatial_mapping:
+  GraphExecutionBindingKey
+    -> Set<ArtifactReference<SpatialMapping>> [zero-or-more]
+
+graph_target_spatial_core:
+  GraphExecutionBindingKey
+    -> Set<SpatialCoreOccurrenceRef> [zero-or-more]
+
+service_target_region:
+  OperationServiceObligationFamilyKey
+    -> Set<FabricServiceRegionRef> [zero-or-more]
+
+transfer_terminal_attachment:
+  SystemTransferTerminalKey
+    -> Set<FabricTransportEndpointRef> [zero-or-more]
+
+transfer_selected_traversals:
+  SystemTransferLegKey
+    -> Set<FabricPhysicalTraversalRef> [zero-or-more]
+
+transfer_resource_states:
+  SystemTransferLegKey
+    -> Set<FabricResourceStateRef> [zero-or-more]
+
+transfer_assigned_tag_values:
+  SystemTransferLegKey
+    -> Set<PhysicalTagValue> [zero-or-more]
+```
+
+Each projection returns the canonical union over the complete normalized
+binding relation or all selectable service plans for its subject. An empty
+range is a real empty set, for example when a statically empty logical domain
+has no selected execution point or a zero-hop transfer uses no traversal.
+`graph_target_spatial_core` is derived from each exact selected
+SpatialMapping's target occurrence; it does not copy that fact into `K`.
+
+The System root uses the same `DomainRestriction`, `Equal`, and `Disjoint`
+records, carrier encodings, canonicalization, and four outcome categories as
+the Spatial root. A clause subject cannot be a candidate ID, native index,
+route-tree node, Mapping record, selected plan ordinal, or any other result-time
+entity. There is no generic field path, predicate DSL, or System-only atom.
+
+Freeze validates the exact `D/F/root_thread_launches` bindings, resolves every
+subject and admissible-domain reference, and builds the System projection
+shards in the ordinary `FrozenConstraintIndex`. Final
+`SystemMappingConstraintAdmission` independently recomputes all projections
+from the base-verified SystemMapping and its exact imported SpatialMappings.
+The System `K` and admission result remain invocation facts and never enter
+SystemMapping identity.
+
+For example, a constraint set may restrict one thread binding to
+`{acc_core_0, acc_core_1}`, require two graph bindings to select the same set of
+SpatialMapping Artifacts with `Equal(graph_selected_spatial_mapping, ...)`, and
+require two service legs to share no Fabric ResourceState with
+`Disjoint(transfer_resource_states, ...)`. These are ordinary compositions of
+the three atoms. Co-location, separation, and route disjointness therefore need
+no dedicated atom or predicate language.
 
 ## Semantic Ownership
 
@@ -343,8 +483,8 @@ and the domain-independent PnR measures `V` and `G`. Evaluation owns all
 accelerator- and workload-aware observations `Q`. The central resolved
 `ObjectiveProjection` is the only composition of `V`, `G`, and `Q`.
 
-MappingConstraintSet adds hard restrictions to the base legality derived from
-`D`, `T`, and `F`. `C` exposes resolved search policy, derived deterministic
+MappingConstraintSet adds hard restrictions to the profile's base legality.
+`C` exposes resolved search policy, derived deterministic
 work accounting, temporary-violation admission, and candidate comparison
 through mechanical component views. Numeric work limits remain owned by the
 typed policies that define the corresponding work units. Neither objective
@@ -420,8 +560,7 @@ The aggregate Spatial model contains at least these complete groups:
 It never contains selected decisions, occupancy, claims, costs, Evaluation
 results, statistics, history, or a transaction journal.
 
-Once the persistent frontier makes Spatial PnR instantiable, its cache key
-hashes exact `D.id`, `T.id`, `F.id`, and `K.id`; the resolved component-view
+The Spatial PnR cache key hashes exact `D.id`, `T.id`, `F.id`, and `K.id`; the resolved component-view
 descriptor and mechanically derived `component_view_digest(C)`; freeze and
 importer semantics; the native-layout ABI; and the actual `PnrIndex` width. The
 digest uses the framing owned by `docs/spec-config-ssot.md`. The complete
@@ -430,8 +569,7 @@ configs may reuse a freeze only when they produce identical `C`. A cache hit
 revalidates the descriptor, canonical view bytes, digest framing, and exact
 artifact inputs before reuse.
 
-Once the conditional System contract becomes instantiable, System freeze
-applies the same atomic publication rule to all six inputs. Its model contains
+System freeze applies the same atomic publication rule to all six inputs. Its model contains
 canonical dense indices, compatible target domains, arbitrary directed
 Transport Architecture CSR, endpoint-domain lower bounds, resource/capacity
 schemas, binding-channel-service reverse dependencies, and either immutable
@@ -1174,8 +1312,7 @@ details when recovery requires them.
 
 ### Canonical Search Sequence
 
-Spatial PnR and the conditional System PnR contract use the same sequence and
-state:
+Spatial PnR and System PnR use the same sequence and state:
 
 ```text
 freeze and sound fail-fast checks
@@ -1247,7 +1384,7 @@ required hot Evaluation binding fails. It then runs full Mapping and
 Evaluation checkpoints. Remaining Mapping `V` must enter bounded exact repair
 or prevent finalization. Remaining `Q` may enter repair when SearchPolicy asks
 for it, but cannot prevent publication of a base-valid Mapping that passes the
-conditional exact `K` admission; only post-publication `Promote` applies formal
+exact `K` admission; only post-publication `Promote` applies formal
 quality gates. Finalization cannot silently repair either class.
 
 ### Bounded Exact Repair
@@ -1341,8 +1478,7 @@ updates, objective decision, and atomic commit or rollback. Full owner
 recomputation then checks the committed decisions. The independent verifier
 only proves closure and admission; it never repairs or changes a candidate.
 
-Once the persistent-family frontier makes publication available, a selected
-Spatial candidate must complete that global routing Action, Mapping full
+A selected Spatial candidate must complete that global routing Action, Mapping full
 recomputation, zero all final `V`, and pass independent base verification and
 exact `K` admission. A search policy may require a full `Q` oracle checkpoint
 before selecting the candidate, but this is an ephemeral search protocol
@@ -1364,7 +1500,6 @@ If a supported verifier cannot establish the required progress proof, the
 invocation ends as `Incomplete(proof_not_established)` before an artifact
 outcome or publication. That is neither `Valid` nor an `Invalid` counterexample.
 
-After the persistent-family frontier closes,
 `SpatialMappingConstraintAdmission(D,T,F,K,S)` separately checks the exact
 run's `K`. Rejection by `K` does not make an intrinsically valid artifact
 base-invalid. Only after both checks pass does finalization assign canonical
@@ -1383,10 +1518,9 @@ path continuity, capacity and acquire/release closure,
 tag/context/configuration continuity, and progress/deadlock closure. It does
 not read `C`, `K`, an `InvocationManifest`, owner invocation records, or runtime
 traces.
-`SystemMappingConstraintAdmission` and System publication are unavailable
-until the MappingConstraintSet Persistent Family Frontier closes. Once it
-closes, the separate gate applies the required exact System `K` only after
-base verification.
+`SystemMappingConstraintAdmission(D,F,root_thread_launches,K,M)` applies the
+required exact System `K` only after base verification. It also requires the
+root launch set in `K` to equal the Mapping coverage root exactly.
 
 System base verification returns only:
 
@@ -1401,8 +1535,7 @@ A proven closed wait set without a Fabric progress mechanism is the
 `HardProgressViolation` closure finding and is `Rejected`; an observed
 deadlock remains an Evaluation finding; failure to establish a proof is
 `Incomplete(proof_not_established)`. Finite simulation without an observed
-deadlock is not proof. Once the conditional profile exists, only `Verified`
-plus exact `K` admission can publish.
+deadlock is not proof. Only `Verified` plus exact `K` admission can publish.
 
 Formal Evaluation starts after publication because an `EvaluationRequest`
 binds an exact finalized Mapping Artifact. The central `Promote` node acquires
@@ -1421,14 +1554,13 @@ invocation and never invalidates an already finalized Mapping.
 
 Tests protect semantic anchors rather than implementation shape:
 
-* conditional exact Spatial five-input and System six-input coupling,
+* exact Spatial five-input and System six-input coupling,
   including foreign and wrong-kind reference rejection, mechanical `C`
-  derivation, and rejection of either invocation before persistent-family
-  closure;
-* exact Spatial `K` root bindings, the three closed record variants, variadic
-  relation arity, the complete first projection catalog with exact subject,
-  carrier, and cardinality, the four persistent carrier encodings, and no
-  persistent bitset form;
+  derivation, and exact `K` profile/root matching;
+* exact Spatial and System `K` root bindings, the three shared closed record
+  variants, variadic relation arity, both complete projection catalogs with
+  exact subjects, carriers, and cardinalities, the four persistent carrier
+  encodings, and no persistent bitset form;
 * empty-unrestricted behavior, projection-local equality closure, merged
   domain intersection, variadic Disjoint rewrite, cardinality-sensitive empty
   domains, outcome separation, pre-result subjects, derived hot indexes, and

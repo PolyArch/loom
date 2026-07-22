@@ -37,6 +37,9 @@ The complete stack can contain these derivations:
 ```text
 source + driver configuration
   -> LLVM IR
+  -> relocatable accelerator payload in each selected object/archive member
+selected relocatable payloads
+  -> LLVM Linker/LTO merged LLVM IR
   -> initial Structured Program Candidate S0
   -> selected Structured Program Candidate Sn
   -> initial Canonical Dataflow Program D0
@@ -114,11 +117,12 @@ Every cross-component consumer validates the exact identities required by its
 semantic contract. Key boundaries are:
 
 * DFG-sim consumes `{Canonical Dataflow Program}`;
+* the final-link frontend consumes exact compatible relocatable payloads and
+  derives one merged LLVM module without selecting Fabric or Mapping;
 * TechMapping consumes exact Dataflow and Fabric;
-* once the common MappingConstraintSet persistent family closes, Spatial PnR
-  consumes exact `D/T/F/C/K`;
-* once that family and the System constraint profile close, a System PnR
-  invocation consumes exact `D/F/R/H/C/K`; the finalized SystemMapping
+* Spatial PnR consumes exact `D/T/F/C/K` under the Spatial
+  `loom.mapping_constraints 1.0` root;
+* System PnR consumes exact `D/F/R/H/C/K` under the System root; the finalized SystemMapping
   persists only its exact `D/F`, root launches, derived spatial imports, and
   selected Mapping records;
 * SystemMapping binds the architecture-only `fabric.system` and its exact

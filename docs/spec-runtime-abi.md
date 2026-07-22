@@ -51,12 +51,15 @@ Contract and the derived `InstructionCoreContextRef`. A Compiler Target Binding
 is mechanically selected and validated from that Architectural Contract;
 SystemMapping does not carry or choose a compiler-target identity.
 
-Compiler Target Binding is the sole owner of target triple, ABI, data layout,
-code model, backend CPU and feature spelling, runtime and library requirements,
-and the binary compatibility proof. These compiler-facing facts reference the
-exact InstructionCore Architectural Contract but do not become Fabric hardware
-truth. A binding cannot add an architectural capability or weaken an
-architectural requirement.
+Compiler Target Binding is the sole owner of the final InstructionCore codegen
+target triple, ABI, data layout, code model, backend CPU and feature spelling,
+runtime and library requirements, and the binary compatibility proof. A
+relocatable accelerator payload retains the LLVM module's own source triple and
+data layout as validated projections under
+`docs/spec-compiler-part-1-source.md`; those projections do not select the
+InstructionCore target. The binding validates their compatibility while
+referencing the exact InstructionCore Architectural Contract. It cannot add an
+architectural capability or weaken an architectural requirement.
 
 A target-specific binary is compiled under a compatible Compiler Target
 Binding. Deployment must preserve and validate that relation against every

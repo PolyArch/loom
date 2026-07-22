@@ -106,9 +106,12 @@ ResolvedConfig domain.
 ## Component Views
 
 A component consumes one immutable typed view derived by the central config
-library. Examples include `ResolvedPnrConfigView`, a DFG-simulation model view,
-and a backend view. A view is not an Artifact, semantic identity, registry
-entry, or independently authorable configuration.
+library. Examples include `ResolvedFrontendConfigView`,
+`ResolvedPnrConfigView`, a DFG-simulation model view, and a backend view. The
+consuming component's specification owns its field schema;
+`ResolvedFrontendConfigView` is owned by
+`docs/spec-compiler-part-1-source.md`. A view is not an Artifact, semantic
+identity, registry entry, or independently authorable configuration.
 
 Each view has:
 

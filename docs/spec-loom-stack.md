@@ -143,6 +143,13 @@ The frontend consumes that target directly for mechanical target facts or
 through derived capability views and central Evaluation; it does not own
 target selection or invoke Mapping during candidate pruning.
 
+Ordinary separate compilation embeds the carrier-independent
+`loom.relocatable_accelerator_payload 1.0` owned by Compiler Part 1. Final link
+collects payloads only from linker-selected object and archive members and uses
+LLVM Linker/LTO semantics before the pipeline above. Object section and
+compression choices are non-semantic; no relocatable payload contains Fabric,
+Mapping, configuration, or Deployment choices.
+
 Frontend contracts are specified by the compiler, Dataflow, and vectorization
 specifications, including [Structured Compiler IR](spec-compiler-part-2-scf.md),
 [Canonical Dataflow Lowering](spec-compiler-part-3-dfg.md), and
@@ -183,10 +190,9 @@ profiles:
 The closed Spatial PnR contract has exact `D/T/F/C/K` inputs: Canonical
 Dataflow Program, TechMapping, Fabric, the mechanically derived Resolved PnR
 config view, and one MappingConstraintSet. System PnR has the corresponding
-six-input `D/F/R/H/C/K` contract. Neither invocation can be instantiated or
-finalized, and no implementation may invent a placeholder `K` identity or
-root, until the common MappingConstraintSet persistent family and the System
-profile are closed in the PnR owner. Placement, routing, and resource
+six-input `D/F/R/H/C/K` contract. `docs/spec-pnr.md` owns the fixed
+`loom.mapping_constraints 1.0` family and its Spatial and System roots.
+Placement, routing, and resource
 allocation are coupled through one Action and MoveTransaction model.
 Persistent Mapping MLIR is the wire-schema SSOT; C++ hot structures are
 removable projections optimized for search.

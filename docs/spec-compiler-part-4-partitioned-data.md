@@ -2,9 +2,10 @@
 
 This document specifies the software-side logical-domain and derived-data-view
 contract used at Loom thread boundaries. The canonical ABI is intentionally
-small: a thread definition owns behavior and coordinate rank, while each
-launch owns one zero-based dense extent per rank dimension and passes all data
-as ordinary typed operands.
+small: a thread definition owns behavior and exactly one logical-domain kind,
+while each launch supplies that domain's root parameters and passes all data as
+ordinary typed operands. The two domain kinds are a zero-based dense Cartesian
+domain and a responsibility-tracked dynamic work domain.
 
 The earlier `thread_axis`, `staticGrid*`, `dataflow.map_info`,
 `dataflow.partition_domain`, and `dataflow.partition_layout` design was
@@ -15,9 +16,11 @@ owned by the Structured Program Candidate, launch ABI, and SystemMapping.
 
 Part 4 owns:
 
+* the closed logical-domain kind of a thread definition;
 * the logical-coordinate interpretation of a thread definition's trailing
   `index` block arguments;
 * launch-domain cardinality rules;
+* dynamic work-item identity, publication, retirement, and termination;
 * source induction-variable reconstruction; and
 * the boundary between ordinary software data views and physical Mapping.
 
@@ -27,10 +30,32 @@ Part 4 does not own:
 * parallel, temporal, tiling, interchange, vector, or unroll choices;
 * physical AccCore selection, route, Tag, reservation, or topology;
 * a second memory-transfer or partitioned-data ABI; or
-* sparse/worklist domains and neighborhood protocols, which require their own
-  explicit semantics before use.
+* a queue implementation, channel-lifecycle protocol, work-stealing policy, or
+  multi-producer atomic-memory protocol.
 
-## 2. Canonical Logical Domain
+## 2. Logical Domain Kinds
+
+Every `dataflow.thread` definition carries exactly one closed domain value:
+
+```text
+ThreadDomain =
+    DenseRectangular
+  | DynamicWork { work_item_arg_ordinal }
+```
+
+The canonical attribute spellings are:
+
+```text
+#dataflow.thread_domain<dense>
+#dataflow.thread_domain<dynamic_work, work_item_arg = N>
+```
+
+This value is program semantics. It is neither Mapping policy nor a scheduler
+configuration. `work_item_arg_ordinal` identifies exactly one ordinary
+`function_type` input; it is absent for `DenseRectangular`. No string kind,
+extension registry, or second work-domain object exists.
+
+### 2.1 Dense Rectangular Domain
 
 A `dataflow.thread` entry block has this canonical shape:
 
@@ -58,6 +83,68 @@ The coordinate tuple identifies an instance but defines no row-major linear
 order, issue order, physical grid, or hardware topology. If program semantics
 require a linear id, the Structured Program Candidate computes it explicitly
 from coordinates and extents.
+
+### 2.2 Dynamic Work Domain
+
+A `DynamicWork` thread has no coordinate suffix. Its designated ordinary
+argument is the typed work-item payload; all other ordinary arguments are
+launch captures reused by every item in that domain instance. A caller-side
+`dataflow.thread.launch` supplies exactly one root payload and no extents.
+
+Each dynamic item has the stable runtime identity:
+
+```text
+WorkItemId =
+  (domain_instance, root_or_parent_item_id, child_launch_ordinal)
+```
+
+The root uses the distinguished parent `Root` and ordinal zero. A child's
+ordinal is the zero-based program-order occurrence of `dataflow.work.spawn`
+within its parent item execution. Payload equality does not merge items, and
+queue position, worker identity, AccCore choice, address, and wall-clock time
+never enter identity.
+
+`dataflow.work.spawn %payload` is legal only while executing a
+`DynamicWork` thread. Its operand type must equal the designated work-item
+argument type. It publishes one child to the current domain; it is not an
+arbitrary nested `dataflow.thread.launch`, creates no new domain, returns no
+handle, and cannot target another thread definition.
+
+The semantic termination authority is the domain's active responsibility set:
+
+* launch admission acquires the root responsibility before the root is visible;
+* the root source closes immediately after that one root publication, so later
+  items can arise only through registered child spawn;
+* spawn atomically acquires a child responsibility before making that child
+  visible to any worker;
+* a queued, in-flight, or executing item retains exactly one responsibility;
+* completion of `dataflow.thread.yield` retires the current item exactly once;
+  and
+* the launch's collective `!dataflow.thread_token` retires exactly when the
+  root source is closed and the active responsibility set is empty.
+
+An active-count implementation is a derived cache of that set, not a second
+semantic authority. Publication-before-retirement prevents a transient zero
+from terminating a domain while a child is becoming visible. The initial
+contract has one logical coordinator responsible for this atomic transfer.
+Parallel workers may implement the same contract, but a shared multi-producer
+queue requires the later atomic, memory-order, and coherence contract; it is
+not inferred here.
+
+Dynamic-domain completion does not close a `!dataflow.channel`, emit EOS, or
+terminate an unrelated graph or thread. A caller may use the ordinary
+`!dataflow.thread_token` to order downstream work after quiescence. Concurrent
+consumers that must discover end-of-stream still require an explicit payload
+protocol or a future independently specified operation; no channel
+open/close/reset state is added.
+
+For a breadth-first traversal of a rooted tree, the root node is the launch
+payload. Processing a node emits one `dataflow.work.spawn` per child in the
+tree's canonical child order, then yields. A leaf only yields. The collective
+token retires after the last descendant yields even if the implementation queue
+was temporarily empty between parent execution and child visibility. General
+graph BFS duplicate suppression and concurrent visited-set updates additionally
+require the deferred atomic/coherence contract; DynamicWork does not hide it.
 
 ## 3. Source Induction Variables
 
@@ -93,10 +180,14 @@ semantics.
 
 ## 5. Mapping Boundary
 
-Logical coordinates and launch parameters are software facts. SystemMapping's
-`B_thread` relation consumes them to select an AccCore for each legal logical
-instance. Event-relative `ResourceUse` separately owns occupancy and release.
-Neither relation may reinterpret coordinates as Cartesian hardware positions.
+Logical coordinates, `WorkItemId`, designated work payload, and launch
+parameters are software facts. SystemMapping's `B_thread` relation consumes the
+legal logical domain to select an AccCore for each instance. A dynamic domain
+may expose a typed stable-key tuple mechanically derived from its item identity
+and payload for the existing `StableKeyLookup` relation; Mapping cannot use
+queue order or invent another item identity. Event-relative `ResourceUse`
+separately owns occupancy and release. Neither relation may reinterpret logical
+identity as Cartesian hardware position.
 
 Data partitioning visible to the program is expressed by its ordinary index
 and view computations. Physical placement of storage, memory services, and
@@ -111,7 +202,10 @@ Anchor-level verification covers:
 * rank-zero, empty-domain, and negative-extent behavior;
 * exact ordinary-operand type agreement;
 * source-IV reconstruction for nonzero and dynamic lower or step values; and
-* rejection of physical topology or Mapping authority in the software ABI.
+* rejection of physical topology or Mapping authority in the software ABI;
+* root identity, deterministic child ordinals, acquire-before-publish, and
+  exactly-once retirement for a dynamic work tree; and
+* collective completion only after the dynamic responsibility set is empty.
 
 Tests should assert these stable boundaries rather than preserve a particular
 analysis cache, view-chain implementation, textual op order, or optimization
@@ -119,9 +213,9 @@ heuristic.
 
 ## 7. Deferred Semantics
 
-Dynamic nonrectangular, sparse, and worklist-generated item domains are not
-encoded by the dense extent ABI. Their item identity, termination, channel
-interaction, and Mapping domain must be specified together before they become
-canonical. Distributed-buffer and neighborhood-exchange behavior likewise
-requires explicit dataflow and service semantics rather than hidden layout
-metadata.
+Multi-producer shared work queues, work stealing, priority queues, duplicate
+suppression, cancellation, distributed termination, and work-item migration
+are not implied by `DynamicWork`. They require explicit atomic, ordering,
+coherence, or service contracts. Distributed-buffer and neighborhood-exchange
+behavior likewise requires explicit dataflow and service semantics rather than
+hidden layout metadata.

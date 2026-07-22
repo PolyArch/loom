@@ -262,9 +262,12 @@ Each dynamic execution of `dataflow.channel.create` creates a fresh logical
 channel instance. Creation occurs outside `loom.spatial_region` and
 `dataflow.graph`; it cannot be CSE'd as a pure value. The initial profile has no
 channel-level session, epoch, open, close, reset, or built-in EOS operation.
-Known logical domains or an explicit payload protocol own termination. Dynamic
-sparse/worklist termination that cannot satisfy that contract is unsupported
-by this profile; an extension requires its own closed termination semantics.
+Known logical domains or an explicit payload protocol own termination.
+`DynamicWorkDomain` quiescence is owned by
+`docs/spec-compiler-part-4-partitioned-data.md` and may retire its launch token;
+it does not close a channel or manufacture an EOS message. A concurrently
+receiving consumer that cannot otherwise know when to stop remains unsupported
+unless its payload protocol expresses termination explicitly.
 
 `dataflow.channel.send` and `dataflow.channel.receive` are InstructionCore
 stored-program operations inside a `dataflow.thread` body and are forbidden in

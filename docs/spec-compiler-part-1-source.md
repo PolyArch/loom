@@ -23,6 +23,8 @@ Part 1 owns:
   lexical regions, memory objects, and calls when available.
 * Providing a stable hand-off format to Part 2, even when the source
   language does not outline accelerator code into separate functions.
+* Defining the carrier-independent relocatable accelerator payload embedded in
+  ordinary compile-only objects and its deterministic final-link merge.
 
 Part 1 does not own:
 
@@ -31,6 +33,7 @@ Part 1 does not own:
   reduction strategy, or ownership boundaries.
 * Recovering structured control flow.
 * Building `dataflow.thread` or `dataflow.graph`.
+* Selecting Fabric, Mapping, configuration images, or Deployment content.
 
 ## 2. Provider Model
 
@@ -139,7 +142,112 @@ Part 1 emits LLVM IR plus any optional typed hints. The handoff contract is:
   preserves uncertainty unless analysis proves the fact, or emits a diagnostic
   when the selected profile requires that fact.
 
-## 7. References
+## 7. Relocatable Accelerator Payload
+
+Compile-only acceleration uses one complete Artifact family:
+
+```text
+loom.relocatable_accelerator_payload 1.0
+```
+
+Its canonical root is:
+
+```text
+RelocatableAcceleratorPayload {
+  llvm_provider {
+    repository_identity
+    full_commit_identity
+  }
+  target_triple
+  data_layout
+  abi_compatibility_key
+  frontend_config_view {
+    component_view_schema_descriptor
+    canonical_view_bytes
+    component_view_digest
+  }
+  normalized_llvm_bitcode {
+    sha256_digest
+    bytes
+  }
+}
+```
+
+`repository_identity` is the closed LLVM provider identity selected by the
+build; the initial value denotes `llvm-project`. `full_commit_identity` is the
+complete pinned commit, not a release nickname or abbreviated hash. The target
+triple and data layout are canonical LLVM strings validated by LLVM parsers.
+They are mechanically projected from the normalized module and checked against
+it; the module remains their semantic owner. They are not independent target
+choices. The later Compiler Target Binding owns final InstructionCore codegen
+target selection and must prove compatibility with these module facts.
+
+`ResolvedFrontendConfigView` is the Part 1 component view of ResolvedConfig. It
+contains exactly frontend semantic options that can affect emitted LLVM IR or
+cross-translation-unit compatibility. Part 1 owns that typed view schema;
+`docs/spec-config-ssot.md` owns common component-view framing and digest rules.
+The payload stores the descriptor, canonical bytes, and digest together so it
+is self-contained; readers recompute the digest and reject disagreement.
+
+The ABI compatibility key is mechanically derived by Part 1 from the exact
+LLVM provider and commit, target triple, data layout, and complete frontend
+config-view descriptor and digest under the fixed domain separator
+`loom.frontend-abi-compatibility-v1`. It is a validated compact comparison key,
+not an independently authorable compatibility claim.
+
+Part 1 owns one deterministic LLVM-module normalization and bitcode writer for
+this schema version. The stored SHA-256 digest is recomputed over exactly the
+normalized bitcode bytes; the bytes, not the digest, remain the module content
+authority. Symbol definitions, declarations, linkage, visibility, COMDAT,
+module flags, and ODR semantics remain solely in that LLVM module. The payload
+contains no copied symbol table or Loom-specific substitute.
+
+The payload must not contain a Fabric, Mapping, MappingConstraintSet,
+ConfigurationABI, HardwareConfigurationImage, HardwareImplementation, or
+Deployment reference. Those choices occur after final link. Optional source
+locations or hints are present only when encoded in the normalized LLVM module
+under this version's normalization contract.
+
+### Object Carrier And Final Link
+
+An ordinary object remains self-contained: its carrier adapter embeds the
+complete canonical payload bytes. Object section name, alignment, compression,
+container metadata, and archive layout are non-semantic projections and do not
+enter ArtifactIdentity. A platform adapter may change those details without
+changing the payload.
+
+At final link, the ordinary linker is the sole authority for which object and
+archive members participate. Loom collects payloads from exactly those selected
+members. Every collected payload must have identical LLVM provider/commit,
+target triple, data layout, ABI compatibility key, and complete frontend config
+view. Version 1.0 has no implicit config merge, precedence rule, or
+compatibility lattice; disagreement is a typed link error.
+
+Loom parses and verifies every normalized module, then uses the pinned LLVM
+Linker and LTO libraries to perform symbol resolution, COMDAT/ODR handling,
+module-flag validation, internalization, and whole-program optimization. The
+resulting linked LLVM module is the ordinary Part 1 hand-off to Part 2. Loom
+does not reimplement these LLVM semantics or infer them from a copied manifest.
+
+Objects without a payload remain valid external or InstructionCore-only link
+inputs. If no selected member contains a payload, no accelerator compilation is
+implied. If acceleration is explicitly required but a selected payload is
+malformed or incompatible, the driver diagnoses the exact member and mismatch
+instead of silently discarding accelerator semantics.
+
+Anchor-level tests cover deterministic normalization and identity, self-
+contained carrier round trip, exact compatibility rejection, linker-selected
+archive membership, LLVM-owned COMDAT/ODR resolution, and absence of downstream
+hardware artifacts. Tests do not freeze section names, compression, archive
+layout, or LLVM internal pass structure.
+
+Canonical semantic bytes use the field order above. Fixed digests use raw
+32-byte values; strings and variable byte sequences use unsigned 64-bit
+big-endian length framing followed by exact bytes. Integers use unsigned
+big-endian encoding. There is no parallel JSON, MLIR, or host-struct identity
+encoding.
+
+## 8. References
 
 * `docs/spec-compiler-part-2-scf.md` -- mechanical LLVM-to-SCF raising
   and the boundary to later structured selection.

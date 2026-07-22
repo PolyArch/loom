@@ -7,9 +7,10 @@ reinterprets those artifacts.
 
 Persistent identity and reference semantics are owned by
 `docs/spec-mapping-identity.md`. Observable verifier contracts are owned by
-`docs/spec-mapping-verification.md`. The Spatial constraint algebra and the
-single `MappingConstraintSet Persistent Family Frontier` statement are owned
-by `docs/spec-pnr.md`; they are not part of the `loom.mapping` schema.
+`docs/spec-mapping-verification.md`. The complete Spatial and System
+MappingConstraintSet family, roots, projection catalogs, and admission algebra
+are owned by `docs/spec-pnr.md`; they are not part of the `loom.mapping`
+schema.
 
 ## Schema Family
 
@@ -212,12 +213,10 @@ regroup actors, rematch a capability, select another semantic realization,
 replace a memory encoding or internal-edge witness, or modify software-to-
 hardware correspondence.
 
-The resolved PnR config view `C` affects search. Once the persistent-family
-frontier owned by `docs/spec-pnr.md` closes, `K` is an independent canonical
-MappingConstraintSet Artifact used for invocation admission. Neither changes
-the semantic content or identity of a selected SpatialMapping. Before that
-frontier closes, no Spatial PnR invocation or writer may fabricate a `K`
-ArtifactIdentity. Once available, the `InvocationManifest` binds the exact
+The resolved PnR config view `C` affects search. `K` is an independent
+canonical MappingConstraintSet Artifact used for invocation admission. Neither
+changes the semantic content or identity of a selected SpatialMapping. The
+`InvocationManifest` binds the exact
 `K` ArtifactIdentity and admission result. `EvaluationEvidence` references
 only its exact `EvaluationRequest` and does not become a second
 derivation-provenance owner.
@@ -405,9 +404,9 @@ scope lists are invalid.
 
 The derived root-thread-launch closure `R`, System search domain `H`, and
 resolved config `C` affect construction and search. A separate immutable
-System MappingConstraintSet `K` is required for admission under the frontier
-statement owned by `docs/spec-pnr.md`; this document defines no competing
-constraint contract. Once that frontier closes, `K` does not enter
+System MappingConstraintSet `K` is required for admission under the contract
+owned by `docs/spec-pnr.md`; this document defines no competing constraint
+contract. `K` does not enter
 SystemMapping semantic content or identity, and the `InvocationManifest`
 binds its exact ArtifactIdentity and admission result. `EvaluationEvidence`
 references only its exact `EvaluationRequest` and does not become a second
@@ -667,20 +666,14 @@ writer. The Common SHA-256 v1 finalizer then computes identity and performs
 collision-checked atomic publication.
 
 A SpatialMapping writer first rebuilds and verifies intrinsic base closure
-from `D`, `T`, `F`, and the selected records. Its PnR publication sequence is
-conditional on the MappingConstraintSet persistent-family frontier: before
-that frontier closes, no PnR writer may instantiate or finalize this path.
-Once available, the writer runs separate admission against the exact
-invocation `K`. Only after base verification and admission succeed may it
-canonicalize record order, assign the MemoryBinding IDs and RouteTree
+from `D`, `T`, `F`, and the selected records, then runs separate admission
+against the exact invocation `K`. Only after base verification and admission
+succeed may it canonicalize record order, assign the MemoryBinding IDs and RouteTree
 owner-local ordinals, run structural verification on the finalized root, emit
 canonical bytes, and invoke the Common finalizer.
 
-The SystemMapping writer sequence is conditional on the
-`MappingConstraintSet Persistent Family Frontier` owned by
-`docs/spec-pnr.md`. No System PnR writer may instantiate or finalize this path
-before that frontier closes. Once available, the writer resolves `D`, `F`, and
-the imported SpatialMappings; normalizes binding relations, plans, route
+The SystemMapping writer resolves `D`, `F`, and the imported SpatialMappings;
+normalizes binding relations, plans, route
 trees, and resource uses; derives and checks the exact import table; verifies
 complete cross-layer base closure; and runs separate admission against the
 exact invocation `K`. Only a verified and admitted draft may receive import

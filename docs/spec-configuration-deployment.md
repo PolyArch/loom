@@ -64,6 +64,13 @@ schema descriptor, version, canonical bytes, or ArtifactIdentity until those
 facts close together. `loom.deployment 1.0` is therefore not a reserved
 placeholder and must not be emitted.
 
+The frontend relocatable accelerator payload is already closed independently
+by `docs/spec-compiler-part-1-source.md`. It is an input to final linking, not a
+Deployment child or an open Deployment schema field. Deployment remains open
+because Compiler Target Binding, target binary, runtime registration, static
+memory image, PlatformBinding, and the final executable root are not yet
+jointly closed.
+
 Each closed owner library defines one typed C++ model and one canonical
 serializer and parser. `ConfigurationABI` uses canonical JSON semantic bytes.
 `HardwareConfigurationImage` uses a canonical typed header followed by its raw

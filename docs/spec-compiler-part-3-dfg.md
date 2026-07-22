@@ -67,9 +67,10 @@ The compiler front-end is documented in four parts:
   Candidate's `dataflow.thread` definitions and mechanically publishes
   `dataflow.graph` definitions plus `dataflow.graph.launch` ops at those
   candidate sites.
-* **Part 4, logical domains and data views.** The canonical multidimensional
-  thread-coordinate ABI, source-IV reconstruction, and ordinary value or
-  memory views derived from those coordinates (see
+* **Part 4, logical domains and data views.** The canonical dense-coordinate
+  and dynamic-work domain ABI, work-item termination, source-IV
+  reconstruction, and ordinary value or memory views derived from those
+  domains (see
   `docs/spec-compiler-part-4-partitioned-data.md`).
 
 Between Parts 2 and 3, SCF optimization and DSE produce the selected
@@ -141,17 +142,16 @@ The front-end IR separates these execution roles:
 | Execution role | Front-end IR carrier |
 |----------------|----------------------|
 | HostCore | Host-call-context `func.func` body code outside any `dataflow.thread.launch` |
-| Logical execution domain | A `dataflow.thread` definition (Symbol-bearing, module-scope) plus each caller-side `dataflow.thread.launch` extent vector. Each dynamic thread instance is identified by the launch and its logical coordinate tuple before SystemMapping binds it to an AccCore. |
+| Logical execution domain | A `dataflow.thread` definition (Symbol-bearing, module-scope) plus each caller-side `dataflow.thread.launch`. A dense instance is identified by its coordinate tuple; a dynamic-work instance is identified by its `WorkItemId`. SystemMapping binds either logical identity to an AccCore. |
 | InstructionCore | The body of a `dataflow.thread` definition, minus its `dataflow.graph.launch` ops, plus InstructionCore-legal `func.call` callees after inlining or specialization. The body is "what one logical execution cell runs once binding maps it to a physical AccCore". |
 | SpatialCore | Each `dataflow.graph` definition referenced by a `dataflow.graph.launch` inside a `dataflow.thread` definition's body, again per bound logical execution cell. |
 
-A single `dataflow.thread.launch` corresponds to one launch of a
-multi-dimensional, zero-based dense logical iteration domain of the kernel
-defined by the referenced `dataflow.thread` callable. The thread body is
-"what one logical execution point runs"; its trailing `index` block
-arguments identify that point. The domain is a
-software concept -- the programmer's view of how work and data are
-partitioned -- and does not commit to a specific fabric topology.
+A single `dataflow.thread.launch` starts exactly one domain instance of the
+kind declared by the referenced `dataflow.thread`: either a multidimensional,
+zero-based dense domain or a responsibility-tracked dynamic work domain. The
+thread body is "what one logical execution point runs"; dense coordinates or
+the current work-item identity distinguish executions. The domain is a
+software concept and does not commit to a specific fabric topology.
 A fabric whose physical PE / memory graph is not a Cartesian mesh
 is supported by the same Mapping profiles. The binding from a
 logical execution point to a physical AccCore is a SystemMapping concern;
@@ -159,7 +159,9 @@ see `docs/spec-mapping-artifact.md` and `docs/spec-pnr.md` for SystemMapping
 execution binding and PnR.
 
 Every `dataflow.thread` body may contain InstructionCore code and
-`dataflow.graph.launch` ops, but it cannot launch another thread.
+`dataflow.graph.launch` ops, but it cannot launch another thread. A dynamic
+worker may use `dataflow.work.spawn` to publish a child in its current domain;
+that operation does not create or target another thread launch.
 Dynamic instances become physical AccCore execution slots only through
 SystemMapping.
 
@@ -198,15 +200,21 @@ silently change hierarchy shape as a verifier or parsing side effect.
   finalized Canonical Dataflow Program.
 * `dataflow.thread` is the logical accelerator execution-domain
   **definition** (Symbol-bearing, module-scope, function-like). It owns the
-  kernel body and coordinate rank through its canonical entry-block shape.
+  kernel body and one domain kind. A dense definition owns coordinate rank
+  through its canonical entry-block shape; a dynamic definition designates
+  one ordinary argument as its work-item payload.
   It does not itself execute; dynamic logical instances are
   materialized by one or more `dataflow.thread.launch` ops at use
   sites, then SystemMapping decides which instances occupy physical AccCore
   slots.
 * `dataflow.thread.launch` is the logical accelerator execution
   boundary. It references a `dataflow.thread` callable by symbol, supplies
-  async dependencies, one non-negative extent per coordinate dimension, and
-  ordinary body operands, and produces the collective completion token.
+  async dependencies and ordinary body operands, plus one non-negative extent
+  per dense coordinate dimension. A dynamic launch instead supplies one root
+  work item and no extents. Both produce one collective completion token.
+* `dataflow.work.spawn` publishes one child of the currently executing dynamic
+  work item after atomically acquiring its termination responsibility. It is
+  illegal in a dense thread or any graph and is not nested thread launch.
 * `dataflow.graph` is the SpatialCore leaf DFG **definition**
   (Symbol-bearing, module-scope, function-like). Its body cannot
   contain `func.func`, `func.call`, `dataflow.thread.launch`,
@@ -237,17 +245,18 @@ The eight rules below are invariants that downstream passes and
 verifiers must enforce; the rest of this spec is a refinement of how
 each rule lands in IR.
 
-1. `dataflow.thread` is the logical parallel execution-domain
+1. `dataflow.thread` is the logical execution-domain
    primitive used for selected accelerator work. It is a
    Symbol-bearing, module-scope, function-like definition (Part 3
-   Section 5.4.1); dynamic logical instances are materialized by
-   `dataflow.thread.launch` ops. Launches appear only in host/runtime
-   orchestration outside every thread or graph definition; one launch
-   domain expresses multidimensional parallelism. A dynamic instance
-   becomes a physical AccCore execution slot only through SystemMapping.
+   Section 5.4.1); logical instances are materialized by
+   `dataflow.thread.launch` and, for one dynamic domain only, its controlled
+   `dataflow.work.spawn` operations. Launches appear only in host/runtime
+   orchestration outside every thread or graph definition. An instance becomes
+   a physical AccCore execution slot only through SystemMapping.
    The thread definition's body has a `thread_ctrl : none` block
    argument that fires once the logical thread instance starts executing
-   (entry-block layout: `(args_*, thread_ctrl, coord_*)`, see Section 5.4.1).
+   (dense entry-block layout: `(args_*, thread_ctrl, coord_*)`; dynamic work has
+   no coordinate suffix, see Section 5.4.1).
    The body may contain InstructionCore operations and InstructionCore-legal
    `func.call` operations, but not `func.func` definitions or
    `dataflow.thread.launch` ops.
@@ -361,10 +370,11 @@ each rule lands in IR.
   provides a coordinate tuple in the Cartesian domain
   `[0, extent_0) x ... x [0, extent_K)`. Coordinates carry no physical
   topology or execution-order promise.
-* **Logical thread domain.** The dynamic instance set derived from one launch's
-  extent vector. Rank zero denotes one instance; any zero extent denotes an
-  empty instance set. SystemMapping, rather than a software mapping attribute,
-  decides how instances share or occupy AccCore resources.
+* **Logical thread domain.** The instance set derived from one launch and its
+  callee's closed domain kind. A dense domain uses the extent vector; a
+  `DynamicWork` domain starts with one root and grows through registered child
+  work. SystemMapping, rather than a software mapping attribute, decides how
+  either kind shares or occupies AccCore resources.
 * **Derived data view.** An ordinary typed value or memref view computed from
   launch operands and logical coordinates. Source-IV reconstruction, tiling,
   local ranges, and explicit linearization remain ordinary candidate semantics
@@ -480,6 +490,7 @@ arguments:
   TypeAttr:$function_type,
   SymbolNameAttr:$sym_name,
   StrAttr:$sym_visibility,
+  Dataflow_ThreadDomainAttr:$domain,
   OptionalAttr<DictArrayAttr>:$arg_attrs;
 results:
   none;
@@ -510,8 +521,12 @@ traits:
   required and must equal `"private"` under the baseline visibility
   policy. The verifier rejects `"public"` and `"nested"` unless
   cross-module linkage is enabled by a separate spec.
-* The entry block of `body` has the layout
-  `(args_*, thread_ctrl, coord_*)`:
+* `domain` is the closed `DenseRectangular` or
+  `DynamicWork { work_item_arg_ordinal }` value owned by Part 4. A dynamic
+  definition has coordinate rank zero and its ordinal must select exactly one
+  `function_type` input. A dense definition has no work-item ordinal.
+* A dense entry block has the layout `(args_*, thread_ctrl, coord_*)`; a
+  dynamic entry block has `(args_*, thread_ctrl)`:
   - The first `N` block arguments mirror `function_type.inputs`
     exactly (each user body operand). Putting the signature args
     first preserves the upstream `FunctionOpInterface` invariant
@@ -523,11 +538,15 @@ traits:
     satisfied and the AccCore instance begins execution. Root
     `dataflow.graph.launch` ops with no InstructionCore predecessor use
     this value as their `ctrl_in` operand.
-  - `coord_0, ..., coord_{K-1} : index` are the per-instance logical
+  - For a dense definition, `coord_0, ..., coord_{K-1} : index` are the
+    per-instance logical
     coordinates, one per launch-domain dimension, in source-dimension order.
     Their count is the definition's coordinate rank. Rank is derived from
     this canonical suffix after the `function_type` inputs and unique
     `thread_ctrl`; there is no duplicate rank, grid, or mapping attribute.
+  - For a dynamic definition, the designated ordinary argument carries the
+    current work-item payload. The runtime `WorkItemId` is execution identity,
+    not an additional SSA argument or payload wrapper.
 * `arg_attrs` is indexed only by the `args_*` payload prefix. Forall
   promotion copies each captured source function argument dictionary,
   including arbitrary attributes such as `llvm.noalias`, into capture order.
@@ -570,13 +589,15 @@ and resolves its callee through the explicit `callee` attribute.
 * `bodyOperands` types must equal `callee.function_type.inputs`
   position-by-position. Memrefs, values, source lower bounds, source steps,
   and other launch parameters all use this same ordinary operand segment.
-* `extents` contains exactly one `index` value per callee coordinate. Each
-  extent must be non-negative. A rank-zero launch has no extent operands and
-  creates one instance. If any extent is zero, the launch creates no instances
-  and its collective token retires after its dependencies. Static verification
-  rejects a provably negative extent; dynamic launch admission rejects a
-  negative runtime value before creating any instance.
-* Each dynamic instance receives a zero-based coordinate tuple. Source lower
+* `extents` contains exactly one `index` value per dense callee coordinate.
+  Each extent must be non-negative. A dense rank-zero launch has no extent
+  operands and creates one instance. If any dense extent is zero, the launch
+  creates no instances and its collective token retires after its dependencies.
+  Static verification rejects a provably negative extent; runtime admission
+  rejects a negative value before creating any instance. A dynamic-work callee
+  also has no extents, but creates one root item from its designated ordinary
+  body operand; the callee's domain kind distinguishes it from dense rank zero.
+* Each dense instance receives a zero-based coordinate tuple. Source lower
   bounds and steps, when needed, are ordinary operands and the thread body
   reconstructs `source_iv = lower + coordinate * step`. The ABI specifies no
   row-major linearization, issue order, physical grid, or topology.
@@ -584,7 +605,9 @@ and resolves its callee through the explicit `callee` attribute.
   `!dataflow.thread_token` dependencies. They form an all-of start
   ordering. The op always produces exactly one
   `!dataflow.thread_token` `asyncToken` result for collective
-  retirement of all dynamic launch instances.
+  retirement of all logical instances. For a dynamic-work launch this means
+  the root source is closed and the active responsibility set owned by Part 4
+  is empty; queue emptiness alone is insufficient.
 * The op has no data results. Its mandatory token is the only
   launch-level completion result.
 #### 5.4.3 `dataflow.thread.yield`
@@ -598,8 +621,7 @@ regions:
   none;
 traits:
   Terminator,
-  ParentOneOf<["::dataflow::ThreadOp"]>,
-  Pure.
+  ParentOneOf<["::dataflow::ThreadOp"]>.
 ```
 
 * `completionFrontier` is a variadic unordered all-of frontier of
@@ -631,7 +653,35 @@ traits:
   Part 2 as accepted explicit effects; an unmaterialized form is
   non-finalizable. The frontier therefore carries no thread data result.
 
-#### 5.4.4 `dataflow.thread.wait`
+  In a `DynamicWork` thread, completion of the frontier retires the current
+  work item exactly once. It does not directly retire the launch token; the
+  token retires only after the domain responsibility set becomes empty.
+
+#### 5.4.4 `dataflow.work.spawn`
+
+```text
+arguments:
+  AnyType:$childItem;
+results:
+  none;
+regions:
+  none;
+traits:
+  DeclareOpInterfaceMethods<MemoryEffectOpInterface>.
+```
+
+* The op is legal transitively inside a `dataflow.thread` with a
+  `DynamicWork` domain and outside every `dataflow.graph`. Its operand type must
+  equal the definition's designated work-item argument type.
+* It atomically acquires one child responsibility before publishing that child
+  to the current domain. The child receives the current item as parent and the
+  next program-order child ordinal. The op has no target symbol, result handle,
+  queue choice, priority, or Mapping field.
+* It is effectful and cannot be removed, duplicated, reordered across the
+  current item's retirement, or treated as a nested `dataflow.thread.launch`.
+  Exact identity and termination are owned by Part 4.
+
+#### 5.4.5 `dataflow.thread.wait`
 
 ```
 arguments:
@@ -649,7 +699,7 @@ traits:
   is not a memory barrier and does not define memory visibility.
 * The op is not `Pure`; it remains a causal wait in the stored program.
 
-#### 5.4.5 Boundary Operands And Derived Views
+#### 5.4.6 Boundary Operands And Derived Views
 
 No dedicated boundary or partition-carrier operation is part of the canonical
 thread ABI. A launch operand and its matching ordinary thread block argument
@@ -1719,10 +1769,10 @@ each supported SCF boundary.
 
 ## 8. Logical Domains And Data Views
 
-`docs/spec-compiler-part-4-partitioned-data.md` specifies the canonical launch
-domain, source-IV reconstruction, and derived-view boundary. These semantics
-are ordinary operands and computations; they add no partition carrier or
-mapping attribute to SCF-to-DFG flattening.
+`docs/spec-compiler-part-4-partitioned-data.md` specifies the two canonical
+launch domains, dynamic responsibility transfer and termination, source-IV
+reconstruction, and derived-view boundary. These semantics add no partition
+carrier or mapping attribute to SCF-to-DFG flattening.
 
 ## 9. Verifier Rules (Front-End Specific)
 
@@ -1739,9 +1789,12 @@ In addition to the Dataflow dialect and finalized-program verifier set:
     unless cross-module linkage is enabled by a separate spec.
   - `function_type` inputs are the user body operand types
     `(T0..TN)`; `function_type` results are empty.
-  - Entry block argument count equals
-    `numBodyOperands + 1 + coordinateRank`. The block-arg layout is
-    `(args_*, thread_ctrl, coord_*)`: the first `N == numBodyOperands`
+  - `domain` is one closed Part 4 domain. For `DenseRectangular`, entry block
+    argument count equals `numBodyOperands + 1 + coordinateRank`. For
+    `DynamicWork`, the rank is zero, the count is `numBodyOperands + 1`, and
+    `work_item_arg_ordinal` selects one ordinary input. The dense block-arg
+    layout is `(args_*, thread_ctrl, coord_*)`: the first
+    `N == numBodyOperands`
     block args mirror `function_type.inputs` exactly, then one
     `none`-typed `thread_ctrl` block arg, then one `index`-typed
     block arg per logical coordinate (in source-dimension order). The
@@ -1759,6 +1812,9 @@ In addition to the Dataflow dialect and finalized-program verifier set:
     `dataflow.thread.launch`; thread definitions are module-scope
     siblings and launches are caller-side only. The launch verifier
     checks this restriction transitively through nested regions.
+  - `dataflow.work.spawn` is legal only in a `DynamicWork` definition and
+    outside every nested `dataflow.graph`; its operand type equals the
+    designated work-item input.
   - InstructionCore code and `dataflow.graph.launch` ops are allowed in a
     thread body. An InstructionCore-only body with no graph launch is also
     legal; this verifier rule does not itself select AccCore execution.
@@ -1775,12 +1831,14 @@ In addition to the Dataflow dialect and finalized-program verifier set:
     same module (verifier rejects unresolved or wrong-kind callee).
   - `bodyOperands` types equal `callee.function_type.inputs`
     position-by-position.
-  - `extents` count equals the callee coordinate rank. Every extent has
-    `index` type. Statically known negative extents are rejected; dynamic
-    values are checked by launch admission before any instance is created.
-    Rank zero creates one instance; any zero extent creates none.
+  - For a dense callee, `extents` count equals coordinate rank. Every extent
+    has `index` type. Statically known negative extents are rejected; runtime
+    values are checked before instance creation. Dense rank zero creates one
+    instance and any zero extent creates none. A dynamic callee has no extents
+    and the designated body operand supplies exactly one root work item.
   - The op always produces exactly one `!dataflow.thread_token`
-    result for collective retirement of all its dynamic instances.
+    result for collective retirement of all logical instances. Dynamic work
+    retires only after its active responsibility set is empty.
   - Must appear outside every `dataflow.thread` and `dataflow.graph`
     definition, including through nested regions.
 
@@ -1792,6 +1850,16 @@ In addition to the Dataflow dialect and finalized-program verifier set:
     only frontier operand types and terminator placement.
   - Parent op must be a `dataflow.thread` definition (enforced by
     `ParentOneOf<["::dataflow::ThreadOp"]>`).
+  - In a dynamic definition, the terminator retires the current item exactly
+    once after its completion frontier; it does not close a channel or retire
+    the collective token while another responsibility remains active.
+
+* `dataflow.work.spawn`
+  - Must appear transitively inside one `DynamicWork` thread and outside every
+    graph. Dense threads, host code, and graph bodies reject it.
+  - Its one operand type equals the definition's designated work-item input.
+  - It is effectful, has no result or target, and acquires responsibility
+    before making the child visible.
 
 * `dataflow.thread.wait`
   - At least one operand. Each is `!dataflow.thread_token` produced

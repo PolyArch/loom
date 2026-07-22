@@ -28,12 +28,58 @@ The Fabric Hardware Description family distinguishes:
 * zero or more independent Interconnect Implementation objects refining that
   architecture;
 * external boundaries;
-* address, coherence, consistency, clock, reset, power, and protection
-  domains; and
+* address, clock, reset, and power domains; and
 * optional non-semantic visualization metadata.
 
 These are typed Fabric concepts. A generic node kind, open dictionary, protocol
 string, or placeholder record is not an alternative system schema.
+
+## Canonical Service Schema
+
+The Canonical Service Schema is the sole owner of logical operation semantics
+shared by software obligations, Fabric capabilities, Mapping, simulation, and
+implementation refinement. Version 1.0 has exactly three parameterized kinds:
+
+```text
+message_transfer<Payload>
+  arguments: payload : Payload
+  results: completion : none
+  effects: none
+  legs:
+    0 message(source -> sink, payload)
+  completion: sink accepts leg 0
+
+memory_read<Address, Data>
+  arguments: address : Address, control : none
+  results: data : Data, completion : none
+  effects: read(logical memory service)
+  legs:
+    0 request(manager -> provider, address, control)
+    1 response(provider -> manager, data, completion)
+  completion: response leg 1 is accepted
+
+memory_write<Address, Data>
+  arguments: address : Address, data : Data, control : none
+  results: completion : none
+  effects: write(logical memory service)
+  legs:
+    0 request(manager -> provider, address, data, control)
+    1 response(provider -> manager, completion)
+  completion: response leg 1 is accepted
+```
+
+`Payload`, `Address`, and `Data` are exact supported types, not byte-count
+hints. An endpoint capability binds those parameters and declares its ordering
+domain, visibility, alignment, width, rate, outstanding capacity, and progress
+guarantees. The kind owns argument/result order, effects, leg direction and
+ordinal, and completion event once. Endpoint and Mapping records reference
+that contract; they cannot copy or weaken it.
+
+These plain memory operations carry no implicit atomicity, RMW, fence,
+volatile/MMIO, coherence, or stronger ordering semantics. Each such behavior
+requires a later explicit Canonical Service kind and corresponding Fabric
+capability. There is no generic service name, property bag, callback, or
+operation DSL.
 
 ## AccCore And SpatialCore Attachment
 
@@ -107,10 +153,9 @@ or inferred from a token edge.
 ## Endpoint And Service Model
 
 Fabric endpoints expose operation-relative capability. The Canonical Service
-Schema defines typed operations such as message transfer and memory read,
-write, or atomic access. Each operation owns typed arguments and results,
-logical effects, ordering and completion semantics, abstract transfer legs,
-and visibility or coherence requirements.
+Schema above defines the exact initial message-transfer and plain memory
+operations. Each operation owns typed arguments and results, logical effects,
+ordering and completion semantics, and abstract transfer legs.
 
 An endpoint declares whether it can initiate or serve each operation, together
 with typed constraints such as address range, width, alignment, burst,
@@ -406,17 +451,208 @@ resources, attachments, directed connections, contracts, and refinement
 objects. It must not preserve a generic builder dictionary as a parallel
 schema.
 
-## Representation And Implementation Ownership
+## Persistent Declarative Schema
 
-The ownership, connectivity, Mapping, runtime, and deployment semantics above
-are closed. Exact Fabric operation names, assembly spelling, and typed
-attribute layouts exist only where a dedicated Fabric operation specification
-defines them. Protocol implementations, concrete routers, arbiters, cache
-controllers, and simulator model coverage are implementation choices subject
-to the declared refinement contract.
+`fabric.system` is the single architecture root. Its body is one declarative
+block with no block arguments, SSA values, CFG successors, symbol table, or
+runtime terminator. The exact child operation catalog is:
 
-Unspecified spelling must not be filled with free-form kinds, protocol-as-capability,
-open parameter dictionaries, placeholder records, or compatibility wrappers.
+```text
+fabric.system.host_core
+fabric.system.acc_core
+fabric.system.memory_service
+fabric.system.service_endpoint
+fabric.system.service_transform
+fabric.system.transport_resource
+fabric.system.transfer_pattern
+fabric.system.connection
+fabric.system.spatial_attachment
+fabric.system.hardware_domain
+fabric.system.external_boundary
+```
+
+No generic `node`, `edge`, `kind`, or property operation is accepted. A child
+that represents an independently meaningful physical resource receives one
+Artifact-global `EntityId`. Structural relationships do not receive IDs.
+Ports, Canonical Service legs, service regions, transfer-pattern ingress and
+egress, and other owner-local structures use `(owner EntityId, typed ordinal)`.
+They never receive a second global identity.
+
+The operations have these semantic fields:
+
+```text
+fabric.system.host_core
+  EntityId
+  InstructionCoreArchitecturalContract
+  InstructionCoreMicroarchitecturalRealization
+
+fabric.system.acc_core
+  EntityId
+  InstructionCoreArchitecturalContract
+  InstructionCoreMicroarchitecturalRealization
+  exact FabricModuleTemplateRef spatial_core
+
+fabric.system.memory_service
+  EntityId
+  canonical ServiceRegion records
+  CanonicalServiceCapability records
+  Fabric-owned ResourceState, UsePattern, capacity, timing, and grant contracts
+
+fabric.system.service_endpoint
+  EntityId
+  exact owner reference
+  CanonicalServiceCapability records
+
+fabric.system.service_transform
+  EntityId
+  exact input and output endpoint references
+  closed ServiceTransformContract
+
+fabric.system.transport_resource
+  EntityId
+  typed ports
+  ResourceState, capacity, timing, progress, and grant contracts
+
+fabric.system.transfer_pattern
+  FabricTransportResourceRef owner
+  owner-local pattern ordinal
+  one ingress port
+  canonical non-empty egress-port sequence
+  atomic typed resource-use vector
+  timing, ordering, progress, eligibility, and semantic controls
+
+fabric.system.connection
+  exact source endpoint or output-port reference
+  exact destination endpoint or input-port reference
+
+fabric.system.spatial_attachment
+  exact FabricModuleBoundaryEndpointRef
+  exact AccCore-local SpatialCore endpoint reference
+
+fabric.system.hardware_domain
+  EntityId
+  closed domain kind
+  canonical member references
+  kind-owned typed contract
+
+fabric.system.external_boundary
+  EntityId
+  canonical owned endpoint references
+  external service and transfer contract
+```
+
+`CanonicalServiceCapability` binds one exact Canonical Service kind, one
+operation-relative `Initiate | Serve` role, and exact type parameters plus
+address/range, alignment, issue/accept rate, outstanding
+capacity, ordering domain, visibility, and progress. Fields not owned by that service kind are absent rather
+than populated with defaults.
+
+`ServiceTransformContract` is a closed sum. Version 1.0 admits only
+`AddressOffset`, `AddressMaskXor`, and `StaticInterleave`; each
+variant owns its exact typed parameters and total input-to-output relation:
+
+```text
+AddressOffset { address_width, signed_offset }
+  one input and one output; out = in + signed_offset
+  the declared input range must make the result representable
+
+AddressMaskXor { address_width, and_mask, xor_mask }
+  one input and one output; out = (in & and_mask) ^ xor_mask
+
+StaticInterleave { granule_bytes, output_count }
+  one input and exactly output_count outputs
+  granule_bytes and output_count are positive
+  q = address / granule_bytes; r = address % granule_bytes
+  output_ordinal = q % output_count
+  output_address = (q / output_count) * granule_bytes + r
+```
+
+All non-address arguments and results pass unchanged, and the output endpoint
+capabilities must accept the transformed range and exact service signature.
+An identity transform is represented by a direct connection and has no
+operation.
+Cache, coherence, arbitrary hashing, programmable callbacks, and opaque custom
+transforms are unsupported until a later schema version adds a closed variant.
+
+`hardware_domain` version 1.0 uses the closed kinds `Clock`, `Reset`, `Power`,
+and `Address`. Their contracts are exactly:
+
+```text
+Clock { period_fs: positive uint64, phase_fs: uint64 where phase_fs < period_fs }
+Reset { polarity: ActiveHigh | ActiveLow,
+        assertion: Synchronous | Asynchronous,
+        deassertion: Synchronous | Asynchronous,
+        initial_state: Asserted | Deasserted }
+Power { nominal_voltage_uv: positive uint64 }
+Address { address_width: positive uint32,
+          canonical disjoint half-open unsigned ranges }
+```
+
+The op does not use an open dictionary. Consistency, coherence, and hardware
+protection domains are added only with the later atomic/coherence service
+contract and a schema extension;
+version 1.0 contains no placeholder variants. Runtime `ProtectionDomain`
+remains an invocation fact. Membership alone never implies a crossing. Every
+crossing remains an explicit endpoint/resource/pattern.
+
+Connections are directed and one-to-one from one output to one input. Fanout,
+fan-in, multicast, arbitration, buffering, conversion, and protocol crossing
+must be represented by explicit resources and transfer patterns. A
+`spatial_attachment` is likewise one-to-one and has no hidden behavior.
+
+### Interconnect Implementation Sibling
+
+`fabric.interconnect_implementation` is a separate Fabric-family root with one
+exact `fabric.system` Artifact reference, one exact versioned protocol-schema
+identity, one canonical protocol-specific implementation body, and one
+declarative refinement region. The protocol schema, not an open dictionary,
+owns every concrete endpoint, bundle, channel, field, packet, flit, queue, and
+state type in the implementation body. Adding a new protocol requires a typed
+schema version; a protocol name string cannot admit arbitrary payload.
+
+The refinement region contains only `fabric.interconnect.refinement` records.
+Each record is one closed typed variant:
+
+```text
+EndpointRefinement(
+  FabricTransportEndpointRef,
+  ProtocolEndpointRef)
+
+ResourceStateRefinement(
+  FabricResourceStateRef,
+  canonical non-empty set<ProtocolResourceRef>)
+
+TransferPatternRefinement(
+  FabricTransferPatternRef,
+  canonical non-empty ordered sequence<ProtocolTransferRef>)
+
+ConfigurationRefinement(
+  FabricSemanticConfigFieldRef,
+  ProtocolConfigurationFieldRef)
+```
+
+The complete relation must cover every architecture endpoint, state, selected
+pattern behavior, and semantic configuration field required by the
+implementation. Refinement proves the architecture contract; it neither edits
+`fabric.system` nor adds Mapping choices. Protocol-specific implementation
+schemas may be developed independently, but they cannot change these four
+relation variants or the architecture root without a Fabric schema revision.
+
+### Canonicalization And Ownership
+
+Authoring names, operation order, builder insertion order, source locations,
+comments, and visualization metadata are non-semantic. Finalization resolves
+all references, validates complete attachment and endpoint ownership,
+canonically labels independently meaningful entities, assigns consecutive
+`EntityId` values, sorts structural records by complete semantic key, emits
+canonical Fabric bytes, and applies the Common SHA-256 v1 contract. Equal
+hardware descriptions therefore have equal canonical bytes and identity.
+
+The C++ ADG Builder creates this typed model and invokes the same finalizer; it
+does not own a parallel schema. Protocol implementations, concrete routers,
+arbiters, cache controllers, and simulator models consume the declared roots
+and refinements. Free-form kinds, protocol-as-capability, parameter bags,
+placeholder records, and compatibility wrappers are invalid.
 
 ## Validation Anchors
 
@@ -428,10 +664,16 @@ Anchor-level validation should cover:
   reject a Mapping-defined scheduler or split claim;
 * arbitrary directed Transport Architecture routing with a shared bottleneck;
 * one-ingress multicast and competing single-ingress arbitration patterns;
-* Canonical Service Schema memory request and response legs;
+* all three Canonical Service kinds, exact leg order, and rejection of implicit
+  atomic or coherence strengthening;
+* closed `fabric.system` child operations, Artifact-global `EntityId`
+  assignment, owner-local port/leg/pattern ordinals, and rejection of generic
+  node or property records;
 * refinement rejection when an implementation hides sharing or weakens a
   guarantee;
-* deterministic lowering from architecture and Mapping to implementation;
+* complete typed Endpoint, ResourceState, TransferPattern, and Configuration
+  refinement plus deterministic lowering from architecture and Mapping to
+  implementation;
 * an InstructionCore-only SystemMapping with no imported SpatialMapping; and
 * Deployment closure including imported Mapping dependencies and a programmable
   transport unit, plus workload-independent Gem5 Simulation Binding reuse and
@@ -440,4 +682,4 @@ Anchor-level validation should cover:
   Target Binding.
 
 Tests should not freeze protocol packet layout, gem5 internal queue state,
-builder container shape, or unconfirmed Fabric assembly spelling.
+builder container shape, authoring order, or visualization metadata.

@@ -538,31 +538,77 @@ not.
 
 ## Resolved DSE Policy
 
-The central plan is one ordered SSA-like block with two node kinds:
+The central plan is one ordered SSA-like block. Every produced value uses one
+reference form:
+
+```text
+PlanOutputRef = (producer_node_ordinal, output_slot_ordinal)
+
+PlanValueRole =
+    CandidateSet
+  | EvidenceSet
+  | SimulationExecutionSet
+  | ModelParameterBundleSet
+
+PlanValueCardinality = ExactlyOne | ZeroOrOne | NonEmptySet | FiniteSet
+
+PlanOutputSlotDescriptor {
+  role: PlanValueRole
+  accepted_artifact_schema: ArtifactSchemaDescriptor
+  cardinality: PlanValueCardinality
+}
+
+PlanInputBinding =
+    ExactArtifacts(canonical set<ArtifactReference>)
+  | ProducedValue(PlanOutputRef)
+```
+
+An output slot's immutable runtime value is always a canonical set of exact
+`ArtifactReference` values satisfying its schema and cardinality. A candidate
+set is therefore the `CandidateSet` role, not a distinct reference mechanism.
+The descriptor and resolved node own slot meaning; neither a container type nor
+the Artifact Store may reinterpret it.
+
+The plan has two node kinds:
 
 ```text
 ResolvedDsePlanNode =
     Generate {
-      input_candidate_set_refs
+      typed_input_bindings
       generator_binding
-      output_candidate_set_ref
     }
   | Promote {
-      input_candidate_set_ref
+      typed_input_bindings
       acquisition_policy
       quality_gate_policy_ref
       selection_policy
-      output_candidate_set_ref
     }
 ```
 
-Each input set references a root set or an earlier node output. Resolution
-checks typed use-def and acyclicity. Independent nodes may execute in parallel,
-but canonical inputs and node policy alone determine each output.
-`CandidateSetRef` is a plan-local stable ordinal, not an Artifact or program IR.
+An input binds either an explicit canonical set of exact static Artifacts or an
+earlier `PlanOutputRef`. Resolution checks role, exact Artifact schema,
+cardinality, producer-before-consumer ordering, and acyclicity. Independent
+nodes may execute in parallel, but canonical inputs and node policy alone
+determine each output. Artifact Store scans, `latest` selection, implicit model
+recursion, and mutation of a resolved plan are invalid dependency mechanisms.
+
+Slot descriptors are not copied into resolved nodes. A Generate node derives
+them from its exact `CandidateGeneratorDescriptor`. The built-in Promote
+contract owns the selected-set slot, while its exact acquisition policy derives
+the Evidence and descriptor-output slots. `PlanOutputRef` addresses those
+owner-defined ordinals. Import, resolution, and replay reject any descriptor or
+policy whose derived slots differ; there is no node-local override.
 
 `Generate` expands or transforms a design space through a typed domain
-generator. `Promote` acquires Evidence, applies gates, and narrows a set.
+generator. `Promote` acquires Evidence, applies gates, and narrows a set. Its
+typed outputs include the selected candidate set and, when declared, the exact
+Evidence or descriptor-produced Artifacts acquired by that node. For example,
+a simulator promotion may expose both `EvidenceSet` and
+`SimulationExecutionSet`; a later training generator consumes the Evidence and
+produces a `ModelParameterBundleSet`. Evidence-to-candidate association remains
+derived from `EvaluationEvidence -> EvaluationRequest -> subject`; the plan
+does not persist a parallel association map.
+
 Acquisition policy owns obligation templates, replicate generation, and its
 owner-local work limits. Selection policy remains `AllPassing`, `TopK`, or
 `Pareto`. There is no `PromotionPolicy`, runtime loop, generic workflow DSL, or
@@ -570,8 +616,8 @@ mutable workflow authority. Repeated finite Generate and Promote nodes express
 cross-domain iteration.
 
 Candidate-generator capabilities live in a static typed descriptor registry.
-A resolved binding fixes typed candidate-set inputs, exact static Artifact
-inputs, typed generator configuration, and objective/Evaluation projections.
+A resolved binding fixes typed inputs through the common plan bindings, typed
+generator configuration, and objective/Evaluation projections.
 The generator produces domain Artifacts and `CandidateDecision` lineage. Its
 domain owns transformations and local search semantics; the central plan sees
 only canonical input and output Artifact sets.
@@ -735,9 +781,8 @@ CandidateGeneratorDescriptor {
   generator_kind
   descriptor_schema_and_version
   implementation_semantic_identity
-  typed_candidate_set_input_slots
-  typed_exact_artifact_input_slots
-  output_artifact_schema
+  typed_input_slot_descriptors
+  typed_output_slot_descriptors
   resolved_generator_config_schema
   determinism_contract
   owner_local_work_unit_descriptors
@@ -752,12 +797,15 @@ ResolvedCandidateGeneratorBinding {
 }
 ```
 
-Central `Generate` plan nodes connect candidate sets to descriptor-owned
-slots. Exact static inputs appear only in the resolved binding. A generator
-publishes normal domain Artifacts and candidate lineage, then deduplicates by
-ArtifactIdentity. Compiler transformations, Mapping Actions, hardware
-transformations, and model training remain owned by their respective domains;
-the controller does not define a universal Action or mutable candidate IR.
+Central `Generate` plan nodes connect exact static values or earlier
+`PlanOutputRef` values to descriptor-owned input slots. The resolved node's
+output slots are mechanically obtained from the descriptor's role, schema, and
+cardinality contract.
+A generator publishes normal domain Artifacts and candidate lineage, then
+deduplicates by ArtifactIdentity. Compiler transformations, Mapping Actions,
+hardware transformations, and model training remain owned by their respective
+domains; the controller does not define a universal Action or mutable candidate
+IR.
 
 An external flow that preserves a new `HardwareImplementation` is a hardware
 Candidate Generator even when the same process also emits reports. The new
@@ -823,7 +871,8 @@ The closed core has one owner for every semantic fact:
 - descriptors and bindings own capability and one exact model selection;
 - metric and finding registries own query semantics;
 - `ObjectiveDimension`, ordering, and CNF gates own optimization policy;
-- Generate and Promote own central candidate expansion and narrowing;
+- `PlanOutputRef` owns all typed plan use-def, while Generate and Promote own
+  central candidate expansion, Evidence acquisition, and narrowing;
 - owner policies own semantic work limits;
 - domain Artifacts and Evidence own formal semantic results;
 - InvocationManifest owns one immutable occurrence summary;

@@ -217,10 +217,10 @@ source -> object with frontend-owned relocatable accelerator payload
 Compile-only output remains an ordinary object. Its accelerator payload must
 not contain Fabric, Mapping, ConfigurationABI, or HardwareConfigurationImage
 artifacts. Objects without such a payload remain legal InstructionCore or
-external-code inputs. The payload's wire schema, symbol resolution,
-config-view compatibility, and object embedding are a compiler-frontend
-contract that must be closed before complete separate-compilation support can
-be claimed; this document does not invent that encoding.
+external-code inputs. `docs/spec-compiler-part-1-source.md` owns the exact
+`loom.relocatable_accelerator_payload 1.0` root, LLVM-owned symbol semantics,
+config-view compatibility, carrier-independent identity, and final-link merge.
+This CMSIS contract does not redefine that encoding.
 
 Runtime requirements must be explicit. If an invocation requests an
 accelerated binary but the required runtime is unavailable, the driver

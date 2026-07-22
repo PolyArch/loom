@@ -3,9 +3,8 @@
 This document is the authority for observable verification behavior of the
 three immutable Mapping profiles. `docs/spec-mapping-artifact.md` owns their
 persistent records and schema. `docs/spec-mapping-identity.md` owns identity
-and reference semantics. `docs/spec-pnr.md` owns the Spatial constraint
-algebra and the single `MappingConstraintSet Persistent Family Frontier`
-statement.
+and reference semantics. `docs/spec-pnr.md` owns the complete Spatial and
+System MappingConstraintSet family and admission algebra.
 
 A profile verifier proves intrinsic legality and closure for one complete
 artifact. It does not search, repair records, select a fallback, complete a
@@ -147,10 +146,7 @@ claims, calendars, or proof witnesses in `S`.
 
 ## Spatial Constraint Admission
 
-Spatial constraint admission is conditional on the
-`MappingConstraintSet Persistent Family Frontier` owned by
-`docs/spec-pnr.md`. No concrete invocation or Spatial PnR publication exists
-before that frontier closes. Once available, the separate invocation gate is:
+Spatial constraint admission is the separate invocation gate:
 
 ```text
 SpatialMappingConstraintAdmission(D, T, F, K, S)
@@ -164,9 +160,8 @@ trust search-state claims, FrozenModel indexes, or solver caches. The closed
 atoms, subject and carrier typing, canonicalization, and outcome distinctions
 are owned only by `docs/spec-pnr.md`.
 
-Failure is `RejectedByConstraintSet`, not intrinsic invalidity. Once the
-persistent family exists, `K` remains an independent canonical
-MappingConstraintSet Artifact. Its exact ArtifactIdentity and the admission
+Failure is `RejectedByConstraintSet`, not intrinsic invalidity. `K` remains an
+independent canonical MappingConstraintSet Artifact. Its exact ArtifactIdentity and the admission
 result belong to invocation metadata or Evaluation Evidence and do not enter
 SpatialMapping identity. The same immutable `S` may therefore be base-valid,
 admitted by one exact `K`, and rejected by another.
@@ -265,17 +260,22 @@ A malformed reference, broken path, hard-capacity counterexample, or replayable
 closed wait set is `Rejected`. Failure to establish a required progress proof
 is `Incomplete(proof_not_established)` and is distinct from a proven
 deadlock. A finite simulation that observes no deadlock cannot produce
-`Verified`. Once the persistent-family frontier permits System PnR
-finalization, only `Verified` is eligible to proceed to it.
+`Verified`. Only `Verified` is eligible to proceed to final admission.
 
 ## System Constraint Admission
 
-System constraint admission is conditional on the
-`MappingConstraintSet Persistent Family Frontier` owned by
-`docs/spec-pnr.md`; this document defines no competing frontier contract. No
-concrete `SystemMappingConstraintAdmission` invocation or System PnR
-finalization exists before that frontier closes. Once available, the search
-domain, resolved config, constraint-set ArtifactIdentity, and admission result
+System constraint admission uses the exact System root and algebra owned by
+`docs/spec-pnr.md`; this document defines no competing contract:
+
+```text
+SystemMappingConstraintAdmission(
+  D, F, root_thread_launches, K, M)
+```
+
+It requires `K` to bind the same exact `D`, `F`, and canonical non-empty root
+launch set as `M`, then independently recomputes every System projection and
+clause from the base-verified Mapping and its exact SpatialMapping imports. The
+search domain, resolved config, constraint-set ArtifactIdentity, and admission result
 remain invocation metadata or Evaluation Evidence and do not enter
 SystemMapping identity.
 
@@ -310,8 +310,7 @@ Tests should protect stable semantic anchors:
 * Spatial record totality, mixed identity rules, RouteTree arborescence,
   route-wide widening acceptance, narrowing and tag-borrow rejection,
   MemoryBinding and exposure closure, ResourceUse, Tags, and progress;
-* separation of Spatial base validity from conditional exact `K` admission,
-  including rejection before persistent-family closure;
+* separation of Spatial base validity from exact `K` admission;
 * exact equality of the System import table and normalized `B_graph` range,
   including a legal InstructionCore-only empty table;
 * System relation totality, parent-AccCore agreement, service continuity,
