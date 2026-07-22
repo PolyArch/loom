@@ -3,6 +3,7 @@
 
 #include "Dataflow/IR/DataflowOps.h"
 
+#include "llvm/ADT/APInt.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -58,15 +59,16 @@ enum class StreamMode : std::uint8_t { Idle, Running };
 
 struct StreamSemanticState {
   StreamMode mode = StreamMode::Idle;
-  std::int64_t current = 0;
-  std::int64_t limit = 0;
-  std::int64_t step = 0;
+  // While Idle the operands are irrelevant; 1-bit zeros are placeholders.
+  llvm::APInt current{1, 0};
+  llvm::APInt limit{1, 0};
+  llvm::APInt step{1, 0};
 };
 
 struct StreamActivation {
-  std::int64_t init = 0;
-  std::int64_t limit = 0;
-  std::int64_t step = 0;
+  llvm::APInt init;
+  llvm::APInt limit;
+  llvm::APInt step;
 };
 
 struct StreamSemanticConfig {
@@ -79,7 +81,7 @@ struct StreamTransition {
   SemanticFiringDecision firing;
   StreamSemanticState nextState;
   bool emitIv = false;
-  std::int64_t iv = 0;
+  llvm::APInt iv;
   bool emitPhase = false;
   bool phase = false;
 };

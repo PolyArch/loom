@@ -28,6 +28,31 @@ static std::optional<bool> peekBoolToken(ChannelMap &channels,
   return boolToken(peekToken(channels, operand));
 }
 
+static std::optional<llvm::APInt> streamOperandBits(SimulatorState &state,
+                                                    mlir::OpOperand &operand) {
+  auto bits = tokenBitPattern(peekToken(state.channels, operand),
+                              operand.get().getType());
+  if (!bits) {
+    state.diagnostics.push_back(llvm::toString(bits.takeError()));
+    return std::nullopt;
+  }
+  return *bits;
+}
+
+static llvm::Expected<Token> streamIvToken(const llvm::APInt &bits,
+                                           mlir::Type type) {
+  auto token = tokenFromBitPattern(bits, type);
+  if (!token)
+    return token;
+  // Widths 2 through 64 still project their text through the narrow signed
+  // value. An i1 keeps the canonical boolean text and wider widths print
+  // from the exact bit pattern.
+  auto integer = mlir::dyn_cast<mlir::IntegerType>(type);
+  if (integer && integer.getWidth() >= 2 && integer.getWidth() <= 64)
+    token->intValue = bits.getSExtValue();
+  return token;
+}
+
 static bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
   if (state.failedStreamOps.contains(op.getOperation()))
     return false;
@@ -38,10 +63,15 @@ static bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
       hasToken(state.channels, op->getOpOperand(0)) &&
       hasToken(state.channels, op->getOpOperand(1)) &&
       hasToken(state.channels, op->getOpOperand(2))) {
-    activation = StreamActivation{
-        integerToken(peekToken(state.channels, op->getOpOperand(0))),
-        integerToken(peekToken(state.channels, op->getOpOperand(1))),
-        integerToken(peekToken(state.channels, op->getOpOperand(2)))};
+    auto init = streamOperandBits(state, op->getOpOperand(0));
+    auto limit = streamOperandBits(state, op->getOpOperand(1));
+    auto step = streamOperandBits(state, op->getOpOperand(2));
+    if (!init || !limit || !step) {
+      state.failedStreamOps.insert(op.getOperation());
+      return false;
+    }
+    activation =
+        StreamActivation{std::move(*init), std::move(*limit), std::move(*step)};
   }
 
   auto transition = evaluateStreamTransition(
@@ -57,6 +87,17 @@ static bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
   if (!transition->firing.ready)
     return false;
 
+  std::optional<Token> iv;
+  if (transition->emitIv) {
+    auto token = streamIvToken(transition->iv, op.getIv().getType());
+    if (!token) {
+      state.diagnostics.push_back(llvm::toString(token.takeError()));
+      state.failedStreamOps.insert(op.getOperation());
+      return false;
+    }
+    iv = std::move(*token);
+  }
+
   if (selectsSemanticInput(transition->firing.consumedInputs,
                            StreamInput::Init))
     (void)popToken(state, op->getOpOperand(0));
@@ -67,8 +108,8 @@ static bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
                            StreamInput::Step))
     (void)popToken(state, op->getOpOperand(2));
 
-  if (transition->emitIv) {
-    emitToken(state, op.getIv(), integerValueToken(transition->iv));
+  if (iv) {
+    emitToken(state, op.getIv(), std::move(*iv));
     ++state.streamTrueEmissionCounts[op.getOperation()];
   }
   if (transition->emitPhase)

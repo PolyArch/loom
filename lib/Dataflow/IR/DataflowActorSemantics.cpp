@@ -9,6 +9,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -46,11 +47,11 @@ std::string typeToString(mlir::Type type) {
 }
 
 llvm::Error requireStreamBitWidth(unsigned bitWidth) {
-  if (bitWidth >= 1 && bitWidth <= 64)
+  if (bitWidth >= 1)
     return llvm::Error::success();
   return llvm::createStringError(
       std::errc::invalid_argument,
-      "dataflow.stream integer bit width must be in [1, 64], got %u", bitWidth);
+      "dataflow.stream integer bit width must be nonzero, got %u", bitWidth);
 }
 
 bool evaluateStreamPredicate(const llvm::APInt &current,
@@ -59,11 +60,6 @@ bool evaluateStreamPredicate(const llvm::APInt &current,
   static_assert(mlir::arith::getMaxEnumValForCmpIPredicate() + 1 == 10,
                 "audit dataflow.stream predicate semantics");
   return mlir::arith::applyCmpPredicate(predicate, current, limit);
-}
-
-llvm::APInt streamBits(unsigned bitWidth, std::int64_t value) {
-  return llvm::APInt(bitWidth, static_cast<std::uint64_t>(value),
-                     /*isSigned=*/false, /*implicitTrunc=*/true);
 }
 
 llvm::Expected<llvm::APInt>
@@ -94,12 +90,18 @@ evaluateStreamStep(const llvm::APInt &current, const llvm::APInt &step,
   case dataflow::StreamStepKind::ShL:
   case dataflow::StreamStepKind::AShr:
   case dataflow::StreamStepKind::LShr: {
-    std::int64_t amount = step.getSExtValue();
-    if (amount < 0 || static_cast<std::uint64_t>(amount) >= step.getBitWidth())
+    // The shift amount is unsigned. getLimitedValue saturates at the bit
+    // width without narrowing, so wide step values are rejected
+    // deterministically instead of tripping APInt narrow getters.
+    const std::uint64_t amount = step.getLimitedValue(step.getBitWidth());
+    if (amount >= step.getBitWidth()) {
+      llvm::SmallString<40> decimal;
+      step.toString(decimal, 10, /*Signed=*/false);
       return llvm::createStringError(
           std::errc::invalid_argument,
-          "dataflow.stream shift amount must be in [0, %u), got %lld",
-          step.getBitWidth(), static_cast<long long>(amount));
+          "dataflow.stream shift amount must be in [0, %u), got %s",
+          step.getBitWidth(), decimal.c_str());
+    }
     if (stepKind == dataflow::StreamStepKind::ShL)
       return current.shl(static_cast<unsigned>(amount));
     if (stepKind == dataflow::StreamStepKind::AShr)
@@ -906,9 +908,16 @@ dataflow::semantics::evaluateStreamTransition(
 
   if (llvm::Error width = requireStreamBitWidth(config.bitWidth))
     return std::move(width);
-  llvm::APInt current = streamBits(config.bitWidth, active.current);
-  llvm::APInt limit = streamBits(config.bitWidth, active.limit);
-  bool cont = evaluateStreamPredicate(current, limit, config.predicate);
+  if (active.current.getBitWidth() != config.bitWidth ||
+      active.limit.getBitWidth() != config.bitWidth ||
+      active.step.getBitWidth() != config.bitWidth)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "dataflow.stream operand bit width does not match declared width %u",
+        config.bitWidth);
+
+  bool cont =
+      evaluateStreamPredicate(active.current, active.limit, config.predicate);
   transition.emitPhase = true;
   transition.phase = cont;
   if (!cont) {
@@ -916,14 +925,13 @@ dataflow::semantics::evaluateStreamTransition(
     return transition;
   }
 
-  llvm::APInt step = streamBits(config.bitWidth, active.step);
-  auto next = evaluateStreamStep(current, step, config.stepKind);
+  auto next = evaluateStreamStep(active.current, active.step, config.stepKind);
   if (!next)
     return next.takeError();
   transition.emitIv = true;
   transition.iv = active.current;
-  transition.nextState = StreamSemanticState{
-      StreamMode::Running, next->getSExtValue(), active.limit, active.step};
+  transition.nextState = StreamSemanticState{StreamMode::Running, *next,
+                                             active.limit, active.step};
   return transition;
 }
 
