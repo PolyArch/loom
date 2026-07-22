@@ -12,6 +12,7 @@
 // RUN: not loom-lower %t.dir/superfluous-terminal.mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=SUPERFLUOUS
 // RUN: not loom-lower %t.dir/incomparable-duplicate-coverage.mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=INCOMPARABLE
 // RUN: not loom-lower %t.dir/repetitive-latest-only.mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=REPETITIVE
+// RUN: not loom-lower %t.dir/nested-module.mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=NESTED-MODULE
 // RUN: not loom-dfg-sim %t.dir/for-latest-only.mlir --graph work --output %t.for-invalid.json 2>&1 | FileCheck %s --check-prefix=FOR-REPETITIVE
 // RUN: not loom-dfg-sim %t.dir/while-reordered-latest-only.mlir --graph work --output %t.while-invalid.json 2>&1 | FileCheck %s --check-prefix=WHILE-REORDERED
 
@@ -24,6 +25,7 @@
 // SUPERFLUOUS: thread @superfluous_terminal has a completion frontier event unnecessary for graph launch coverage
 // INCOMPARABLE: thread @incomparable_duplicate_coverage has a completion frontier event unnecessary for graph launch coverage
 // REPETITIVE: thread @repetitive_latest_only has graph launch completion not covered by its completion frontier
+// NESTED-MODULE: thread @nested_module has graph launch completion not covered by its completion frontier
 // FOR-REPETITIVE: thread @for_latest_only has graph launch completion not covered by its completion frontier
 // WHILE-REORDERED: thread @while_reordered_latest_only has graph launch completion not covered by its completion frontier
 
@@ -483,5 +485,23 @@ module {
     %first = dataflow.sync %done : (none) -> none
     %second = dataflow.sync %done : (none) -> none
     dataflow.thread.yield %first, %second : none, none
+  }
+}
+
+//--- nested-module.mlir
+module {
+  // Retirement is a property of the owning thread definition, not of the
+  // module nesting depth at which that thread is defined.
+  module {
+    dataflow.graph private @work(%start: none) -> ()
+        attributes {input_segments = array<i32: 0, 0, 0>,
+                    result_segments = array<i32: 0, 0, 0>} {
+      dataflow.graph.return %start : none
+    }
+    dataflow.thread private @nested_module() ctrl (%ctrl: none) {
+      %done = dataflow.graph.launch @work deps(%ctrl) values()
+          stream_inputs() memories() stream_outputs() : (none) -> none
+      dataflow.thread.yield
+    }
   }
 }

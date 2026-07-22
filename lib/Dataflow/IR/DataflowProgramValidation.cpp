@@ -3,6 +3,7 @@
 
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/SymbolTable.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -349,10 +350,40 @@ llvm::Error verifyChannelTopology(mlir::ModuleOp module) {
   return llvm::Error::success();
 }
 
-llvm::Error verifyThreadCompletionFrontiers(mlir::ModuleOp module) {
-  for (dataflow::ThreadOp thread : module.getOps<dataflow::ThreadOp>()) {
-    if (thread.isExternal())
-      continue;
+// The one per-thread ownership index for stored-program graph completion
+// events. Op verifiers guarantee that every launch is transitively inside
+// exactly one thread definition, so the innermost enclosing thread is a
+// total, unambiguous owner. Thread retirement frontiers and graph.wait
+// coverage both read this index instead of walking for launches themselves.
+struct ThreadOwnershipIndex {
+  llvm::SmallVector<dataflow::ThreadOp, 4> threads;
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<mlir::Value, 4>>
+      launchCompletions;
+
+  llvm::ArrayRef<mlir::Value> completionsOf(dataflow::ThreadOp thread) const {
+    auto found = launchCompletions.find(thread);
+    if (found == launchCompletions.end())
+      return {};
+    return found->second;
+  }
+};
+
+ThreadOwnershipIndex indexThreadOwnership(mlir::ModuleOp module) {
+  ThreadOwnershipIndex ownership;
+  module.walk([&](dataflow::ThreadOp thread) {
+    if (!thread.isExternal())
+      ownership.threads.push_back(thread);
+  });
+  module.walk([&](dataflow::GraphLaunchOp launch) {
+    ownership.launchCompletions[launch->getParentOfType<dataflow::ThreadOp>()]
+        .push_back(launch.getDone());
+  });
+  return ownership;
+}
+
+llvm::Error
+verifyThreadCompletionFrontiers(const ThreadOwnershipIndex &ownership) {
+  for (dataflow::ThreadOp thread : ownership.threads) {
     auto yield = llvm::cast<dataflow::ThreadYieldOp>(
         thread.getBody().front().getTerminator());
     mlir::ValueRange frontier = yield.getCompletionFrontier();
@@ -374,10 +405,8 @@ llvm::Error verifyThreadCompletionFrontiers(mlir::ModuleOp module) {
       }
     }
 
-    llvm::SmallVector<mlir::Value, 4> graphLaunchCompletions;
-    thread.walk([&](dataflow::GraphLaunchOp launch) {
-      graphLaunchCompletions.push_back(launch.getDone());
-    });
+    llvm::ArrayRef<mlir::Value> graphLaunchCompletions =
+        ownership.completionsOf(thread);
 
     for (mlir::Value completion : graphLaunchCompletions)
       if (!llvm::any_of(frontier, [&](mlir::Value terminal) {
@@ -399,6 +428,30 @@ llvm::Error verifyThreadCompletionFrontiers(mlir::ModuleOp module) {
   return llvm::Error::success();
 }
 
+llvm::Error verifyGraphWaitFrontiers(mlir::ModuleOp module,
+                                     const ThreadOwnershipIndex &ownership) {
+  llvm::SmallVector<dataflow::GraphWaitOp, 2> waits;
+  module.walk([&](dataflow::GraphWaitOp wait) { waits.push_back(wait); });
+
+  dataflow::ThreadCompletionCoverageAnalysis coverage;
+  for (dataflow::GraphWaitOp wait : waits) {
+    llvm::ArrayRef<mlir::Value> completions =
+        ownership.completionsOf(wait->getParentOfType<dataflow::ThreadOp>());
+    mlir::ValueRange frontier = wait.getCompletionFrontier();
+    for (unsigned index = 0; index < frontier.size(); ++index) {
+      mlir::Value event = frontier[index];
+      if (!llvm::any_of(completions, [&](mlir::Value completion) {
+            return coverage.covers(event, completion);
+          }))
+        return programError(llvm::Twine("dataflow.graph.wait operand #") +
+                            llvm::Twine(index) +
+                            " does not cover any graph launch completion "
+                            "event");
+    }
+  }
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::Error dataflow::validateFinalizedProgram(mlir::ModuleOp module) {
@@ -414,7 +467,10 @@ llvm::Error dataflow::validateFinalizedProgram(mlir::ModuleOp module) {
   if (hasSpatialCandidate)
     return programError(
         "finalized program contains temporary loom.spatial_region");
-  if (llvm::Error error = verifyThreadCompletionFrontiers(module))
+  ThreadOwnershipIndex ownership = indexThreadOwnership(module);
+  if (llvm::Error error = verifyThreadCompletionFrontiers(ownership))
+    return error;
+  if (llvm::Error error = verifyGraphWaitFrontiers(module, ownership))
     return error;
   if (llvm::Error error = verifyChannelTopology(module))
     return error;

@@ -2,7 +2,8 @@
 // SCF-to-DFG lowering: dataflow.thread (def),
 // dataflow.thread.launch (async launcher), dataflow.thread.yield
 // (terminator), dataflow.graph (def), dataflow.graph.launch (async
-// launcher), and dataflow.graph.return (terminator).
+// launcher), dataflow.graph.return (terminator), and
+// dataflow.graph.wait (stored-program retirement wait).
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
@@ -1035,10 +1036,38 @@ LogicalResult GraphLaunchOp::verifySymbolUses(SymbolTableCollection &symbols) {
   return success();
 }
 
+namespace {
+
+// The single structural ownership rule for stored-program ops that name a
+// graph invocation: exactly one enclosing dataflow.thread definition and no
+// enclosing dataflow.graph body. Making ownership total and unambiguous here
+// is what lets the finalized-program validator key one deterministic
+// per-thread completion index off the innermost enclosing thread.
+FailureOr<ThreadOp> getOwningThread(Operation *op) {
+  ThreadOp owner;
+  unsigned enclosingThreads = 0;
+  for (Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (isa<GraphOp>(parent))
+      return op->emitOpError(
+          "must not appear inside a dataflow.graph definition");
+    if (auto thread = dyn_cast<ThreadOp>(parent)) {
+      if (enclosingThreads++ == 0)
+        owner = thread;
+    }
+  }
+  if (enclosingThreads != 1)
+    return op->emitOpError("must be transitively contained by exactly one "
+                           "dataflow.thread definition");
+  return owner;
+}
+
+} // namespace
+
 LogicalResult GraphLaunchOp::verify() {
-  auto thread = (*this)->getParentOfType<ThreadOp>();
-  if (!thread)
-    return emitOpError("must appear inside a dataflow.thread body");
+  FailureOr<ThreadOp> thread = getOwningThread(getOperation());
+  if (failed(thread))
+    return failure();
 
   ArrayAttr sourceMaps = getSourceMaps();
   if (sourceMaps.size() != getStreamInputs().size())
@@ -1046,9 +1075,9 @@ LogicalResult GraphLaunchOp::verify() {
            << sourceMaps.size() << ") must match stream input binding count ("
            << getStreamInputs().size() << ')';
 
-  Block &entry = thread.getBody().front();
+  Block &entry = thread->getBody().front();
   unsigned consumerRank =
-      entry.getNumArguments() - thread.getFunctionType().getNumInputs() - 1;
+      entry.getNumArguments() - thread->getFunctionType().getNumInputs() - 1;
   for (auto [index, attr] : llvm::enumerate(sourceMaps)) {
     AffineMap map = cast<AffineMapAttr>(attr).getValue();
     if (map.getNumDims() != consumerRank)
@@ -1061,4 +1090,15 @@ LogicalResult GraphLaunchOp::verify() {
              << index << " must not contain symbols";
   }
   return success();
+}
+
+//===----------------------------------------------------------------------===//
+// dataflow.graph.wait
+//===----------------------------------------------------------------------===//
+
+LogicalResult GraphWaitOp::verify() {
+  // Placement is the only locally decidable ownership fact the wait owns;
+  // completion-frontier coverage is whole-program causal analysis owned by
+  // the finalized-program validator.
+  return success(succeeded(getOwningThread(getOperation())));
 }

@@ -73,3 +73,20 @@ dataflow.thread private @t_stream(
       : (none, !dataflow.channel<i32>, !dataflow.channel<i32>) -> none
   dataflow.thread.yield %done : none
 }
+
+// Stored-program graph wait consumes launch done events directly or
+// through a causal chain as one unordered all-of retirement frontier.
+// CHECK-LABEL: dataflow.thread private @t_wait
+dataflow.thread private @t_wait(%x: i32) ctrl (%ctrl: none) {
+  // CHECK: %{{.*}}, %{{.*}} = dataflow.graph.launch @g_demo deps(%{{.*}}) values(%{{.*}}) stream_inputs() memories() stream_outputs() : (none, i32) -> (i32, none)
+  %r0, %first = dataflow.graph.launch @g_demo deps(%ctrl) values(%x)
+      stream_inputs() memories() stream_outputs()
+      : (none, i32) -> (i32, none)
+  %r1, %second = dataflow.graph.launch @g_demo deps(%ctrl) values(%x)
+      stream_inputs() memories() stream_outputs()
+      : (none, i32) -> (i32, none)
+  %chained = dataflow.sync %second : (none) -> none
+  // CHECK: dataflow.graph.wait %{{.*}}, %{{.*}} : none, none
+  dataflow.graph.wait %first, %chained : none, none
+  dataflow.thread.yield %first, %second : none, none
+}

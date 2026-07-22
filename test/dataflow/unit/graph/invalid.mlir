@@ -97,19 +97,40 @@ dataflow.graph private @g_empty_complete(%ctrl: none, %x: i32)
 }
 
 // -----
-// graph.launch must appear inside a dataflow.thread body. (Outside
-// any thread there is no thread_ctrl slot, so we materialise an
+// graph.launch is owned by exactly one dataflow.thread definition.
+// (Outside any thread there is no thread_ctrl slot, so we materialise an
 // `ub.poison : none` as a placeholder dependency just to exercise the
-// "must be inside a thread" check.)
+// ownership check.)
 dataflow.graph private @g_target(%ctrl: none) -> () {
   dataflow.graph.return %ctrl : none
 }
 func.func @launch_outside_thread() {
   %ctrl = ub.poison : none
-  // expected-error @+1 {{must appear inside a dataflow.thread body}}
+  // expected-error @+1 {{must be transitively contained by exactly one dataflow.thread definition}}
   %d = dataflow.graph.launch @g_target deps(%ctrl) values()
       stream_inputs() memories() stream_outputs() : (none) -> none
   return
+}
+
+// -----
+// Two enclosing thread definitions leave graph launch ownership
+// ambiguous, so the launch is rejected rather than silently attributed
+// to the outer thread.
+dataflow.thread private @t_launch_nested_outer() ctrl (%ctrl: none) {
+  builtin.module {
+    dataflow.graph private @g_nested(%start: none) -> ()
+        attributes {input_segments = array<i32: 0, 0, 0>,
+                    result_segments = array<i32: 0, 0, 0>} {
+      dataflow.graph.return %start : none
+    }
+    dataflow.thread private @t_launch_nested_inner() ctrl (%inner_ctrl: none) {
+      // expected-error @+1 {{must be transitively contained by exactly one dataflow.thread definition}}
+      %done = dataflow.graph.launch @g_nested deps(%inner_ctrl) values()
+          stream_inputs() memories() stream_outputs() : (none) -> none
+      dataflow.thread.yield %done : none
+    }
+  }
+  dataflow.thread.yield
 }
 
 // -----
@@ -137,4 +158,55 @@ dataflow.graph private @g_rejects_thread_wait(%ctrl: none) -> () {
     scf.yield
   }
   dataflow.graph.return %ctrl : none
+}
+
+// -----
+// A graph wait consumes at least one completion event.
+dataflow.thread private @t_wait_empty() ctrl (%ctrl: none) {
+  // expected-error @+1 {{expected 1 or more operands, but found 0}}
+  "dataflow.graph.wait"() : () -> ()
+  dataflow.thread.yield
+}
+
+// -----
+// A graph wait at host scope is not contained by any thread definition.
+func.func @wait_at_host_scope() {
+  %done = ub.poison : none
+  // expected-error @+1 {{must be transitively contained by exactly one dataflow.thread definition}}
+  dataflow.graph.wait %done : none
+  return
+}
+
+// -----
+// A graph wait cannot appear inside a graph body.
+dataflow.graph private @g_rejects_graph_wait(%ctrl: none) -> () {
+  scf.execute_region {
+    // expected-error @+1 {{must not appear inside a dataflow.graph definition}}
+    dataflow.graph.wait %ctrl : none
+    scf.yield
+  }
+  dataflow.graph.return %ctrl : none
+}
+
+// -----
+// Each thread definition here has the module parent its own trait
+// requires, so the wait is reached by the placement check and rejected
+// for being transitively contained by two thread definitions.
+dataflow.thread private @t_wait_nested_outer() ctrl (%ctrl: none) {
+  builtin.module {
+    dataflow.thread private @t_wait_nested_inner() ctrl (%inner_ctrl: none) {
+      // expected-error @+1 {{must be transitively contained by exactly one dataflow.thread definition}}
+      dataflow.graph.wait %inner_ctrl : none
+      dataflow.thread.yield
+    }
+  }
+  dataflow.thread.yield
+}
+
+// -----
+// A graph wait frontier event is a none-typed completion event.
+dataflow.thread private @t_wait_wrong_operand_type(%x: i32) ctrl (%ctrl: none) {
+  // expected-error @+1 {{operand #0 must be variadic of none type, but got 'i32'}}
+  dataflow.graph.wait %x : i32
+  dataflow.thread.yield
 }

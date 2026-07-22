@@ -846,4 +846,37 @@ def Dataflow_GraphLaunchOp : Dataflow_Op<"graph.launch", [
   let hasVerifier = 1;
 }
 
+def Dataflow_GraphWaitOp : Dataflow_Op<"graph.wait", [
+    NativeOpTrait<"AtLeastNOperands<1>::Impl">
+]> {
+  let summary = "Stored-program wait for graph retirement events";
+  let description = [{
+    The only explicit InstructionCore stored-program wait for graph
+    retirement. It blocks until every event in its unordered all-of
+    completion frontier has occurred and produces no SSA result.
+
+    The op must be transitively contained by exactly one
+    `dataflow.thread` definition; it is invalid at host scope, inside a
+    `dataflow.graph` body, or inside a nested thread definition. Each
+    operand is either a `dataflow.graph.launch` `done` result or a
+    `none` event whose path-aware causal closure covers at least one
+    such result. The finalized-program validator proves that coverage;
+    the op verifier owns only the locally decidable placement, type,
+    and arity facts.
+
+    The wait inherits only the retirement and visibility obligations
+    already owned by those graph completion events. It is not a system
+    memory barrier, channel or NoC drain, thread-collective wait, or a
+    conversion to `!dataflow.thread_token`, and it stays distinct from
+    `dataflow.thread.wait`.
+  }];
+
+  let arguments = (ins Variadic<NoneType>:$completionFrontier);
+
+  let assemblyFormat =
+      "$completionFrontier `:` type($completionFrontier) attr-dict";
+
+  let hasVerifier = 1;
+}
+
 #endif // DATAFLOW_OPS_TD
