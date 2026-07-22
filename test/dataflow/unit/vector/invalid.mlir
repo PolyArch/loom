@@ -33,6 +33,15 @@ func.func @parallelize_rejects_mask_shape(%data: f32, %phase: i1) {
 }
 
 // -----
+func.func @serialize_rejects_rank_two(
+    %vector: vector<2x2xf32>, %mask: vector<2x2xi1>, %phase: i1) {
+  // expected-error @+1 {{data vector must be a fixed-size rank-1 vector}}
+  %data, %scalar_phase = dataflow.serialize %vector, %mask, %phase
+    : (vector<2x2xf32>, vector<2x2xi1>, i1) -> (f32, i1)
+  return
+}
+
+// -----
 func.func @serialize_rejects_mask_element(
     %vector: vector<3xf32>, %mask: vector<3xi8>, %phase: i1) {
   // expected-error @+1 {{mask vector element type must be 'i1'}}
@@ -51,9 +60,24 @@ func.func @serialize_rejects_scalar_mismatch(
 }
 
 // -----
-func.func @pack_rejects_rank_two(%vector: vector<2x2xi8>) {
-  // expected-error @+1 {{data vector must be a fixed-size rank-1 vector}}
-  %packed = dataflow.pack %vector : vector<2x2xi8> -> i32
+func.func @pack_rejects_rank_zero(%vector: vector<i8>) {
+  // expected-error @+1 {{rank-zero vector has no fixed bit width}}
+  %packed = dataflow.pack %vector : vector<i8> -> i8
+  return
+}
+
+// -----
+func.func @pack_rejects_scalable(%vector: vector<2x[3]xi8>) {
+  // expected-error @+1 {{scalable vector has no fixed bit width}}
+  %packed = dataflow.pack %vector : vector<2x[3]xi8> -> i48
+  return
+}
+
+// -----
+func.func @pack_rejects_multidimensional_overflow(
+    %vector: vector<65536x65536xi8>) {
+  // expected-error @+1 {{vector bit width exceeds unsigned range}}
+  %packed = dataflow.pack %vector : vector<65536x65536xi8> -> i32
   return
 }
 
@@ -79,8 +103,22 @@ func.func @pack_rejects_packed_width(%vector: vector<3xf32>) {
 }
 
 // -----
+func.func @pack_rejects_rank_two_packed_width(%vector: vector<2x3xi8>) {
+  // expected-error @+1 {{packed integer width 32 must equal vector bit width 48}}
+  %packed = dataflow.pack %vector : vector<2x3xi8> -> i32
+  return
+}
+
+// -----
 func.func @unpack_rejects_packed_width(%packed: i65) {
   // expected-error @+1 {{packed integer width 65 must equal vector bit width 96}}
   %vector = dataflow.unpack %packed : i65 -> vector<3xi32>
+  return
+}
+
+// -----
+func.func @unpack_rejects_rank_two_packed_width(%packed: i24) {
+  // expected-error @+1 {{packed integer width 24 must equal vector bit width 48}}
+  %vector = dataflow.unpack %packed : i24 -> vector<2x3xi8>
   return
 }

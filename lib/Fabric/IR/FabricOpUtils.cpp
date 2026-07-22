@@ -1,6 +1,7 @@
 #include "Fabric/IR/FabricOps.h"
 
 #include "Common/IndexWidth.h"
+#include "Common/VectorWidth.h"
 #include "Fabric/IR/FabricTypes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -8,9 +9,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <cstdint>
 #include <iterator>
-#include <limits>
 #include <string>
 
 using namespace mlir;
@@ -126,24 +125,15 @@ FailureOr<unsigned> getSemanticPayloadWidth(Type type, std::string &error) {
   if (isa<NoneType>(type))
     return 0u;
   if (auto vector = dyn_cast<VectorType>(type)) {
-    if (vector.isScalable()) {
-      error = "scalable vector has no fixed semantic payload width";
-      return failure();
-    }
     auto elementWidth = getSemanticPayloadWidth(vector.getElementType(), error);
     if (failed(elementWidth))
       return failure();
-    std::uint64_t width = *elementWidth;
-    constexpr std::uint64_t maxWidth = std::numeric_limits<unsigned>::max();
-    for (std::int64_t dimension : vector.getShape()) {
-      std::uint64_t extent = static_cast<std::uint64_t>(dimension);
-      if (width != 0 && extent > maxWidth / width) {
-        error = "semantic payload width exceeds unsigned range";
-        return failure();
-      }
-      width *= extent;
+    auto width = ::loom::getFixedVectorBitWidth(vector, *elementWidth);
+    if (!width) {
+      error = llvm::toString(width.takeError());
+      return failure();
     }
-    return static_cast<unsigned>(width);
+    return *width;
   }
 
   std::string text;

@@ -29,6 +29,24 @@ func.func @float_i96_roundtrip(%packed: i96) -> i96 {
   return %roundtrip : i96
 }
 
+// CHECK-LABEL: @rank_two_i48_roundtrip
+func.func @rank_two_i48_roundtrip(%packed: i48) -> i48 {
+  // CHECK: dataflow.unpack %{{.*}} : i48 -> vector<2x3xi8>
+  %vector = dataflow.unpack %packed : i48 -> vector<2x3xi8>
+  // CHECK: dataflow.pack %{{.*}} : vector<2x3xi8> -> i48
+  %roundtrip = dataflow.pack %vector : vector<2x3xi8> -> i48
+  return %roundtrip : i48
+}
+
+// CHECK-LABEL: @rank_three_f32_roundtrip
+func.func @rank_three_f32_roundtrip(%packed: i256) -> i256 {
+  // CHECK: dataflow.unpack %{{.*}} : i256 -> vector<2x2x2xf32>
+  %vector = dataflow.unpack %packed : i256 -> vector<2x2x2xf32>
+  // CHECK: dataflow.pack %{{.*}} : vector<2x2x2xf32> -> i256
+  %roundtrip = dataflow.pack %vector : vector<2x2x2xf32> -> i256
+  return %roundtrip : i256
+}
+
 // CHECK-LABEL: @mask_i65_roundtrip
 func.func @mask_i65_roundtrip(%packed: i65) -> i65 {
   // CHECK: dataflow.unpack

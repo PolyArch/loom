@@ -36,6 +36,7 @@ add_mlir_dialect_library(MLIRDataflow
   MLIRDataflowOpsIncGen
 
   LINK_LIBS PUBLIC
+  LoomCommon
   MLIRCallInterfaces
   MLIRArithDialect
   MLIRControlFlowInterfaces

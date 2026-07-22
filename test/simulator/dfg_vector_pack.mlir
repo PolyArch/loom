@@ -4,6 +4,8 @@
 // RUN: FileCheck %s --check-prefix=WIDE < %t.wide.json
 // RUN: loom-dfg-sim %s --graph f80_bits --arg 0=1 --output %t.f80.json
 // RUN: FileCheck %s --check-prefix=F80 < %t.f80.json
+// RUN: loom-dfg-sim %s --graph rank_two_bits --arg 0=6618611909121 --output %t.rank2.json
+// RUN: FileCheck %s --check-prefix=RANK2 < %t.rank2.json
 // RUN: loom-dfg-sim %s --graph vector_add --arg 0=513 --arg 1=1027 --output %t.add.json
 // RUN: FileCheck %s --check-prefix=ADD < %t.add.json
 // RUN: loom-dfg-sim %s --graph unsupported_vector_add \
@@ -30,6 +32,12 @@
 // F80-DAG: "dataflow.unpack": 1
 // F80-DAG: "dataflow.pack": 1
 // F80-DAG: "i80:1"
+
+// RANK2-DAG: "graph": "rank_two_bits"
+// RANK2-DAG: "status": "pass"
+// RANK2-DAG: "dataflow.unpack": 1
+// RANK2-DAG: "dataflow.pack": 1
+// RANK2-DAG: "i48:6618611909121"
 
 // ADD-DAG: "graph": "vector_add"
 // ADD-DAG: "status": "pass"
@@ -76,6 +84,17 @@ module {
     %published:2 = dataflow.sync %start, %roundtrip
         : (none, i80) -> (none, i80)
     dataflow.graph.return %published#0, %published#1 : none, i80
+  }
+
+  dataflow.graph private @rank_two_bits(
+      %start: none, %packed: i48) -> i48
+      attributes {input_segments = array<i32: 1, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %vector = dataflow.unpack %packed : i48 -> vector<2x3xi8>
+    %roundtrip = dataflow.pack %vector : vector<2x3xi8> -> i48
+    %published:2 = dataflow.sync %start, %roundtrip
+        : (none, i48) -> (none, i48)
+    dataflow.graph.return %published#0, %published#1 : none, i48
   }
 
   dataflow.graph private @vector_add(

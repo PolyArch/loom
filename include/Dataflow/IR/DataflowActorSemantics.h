@@ -181,6 +181,11 @@ struct MemoryAccessType {
 
 llvm::Expected<mlir::VectorType> analyzeFixedRankOneDataVector(mlir::Type type);
 
+/// Complete flattened bit width of a fixed-rank semantic data vector. Restricts
+/// `loom::getFixedVectorBitWidth` to the semantic element domain: nonzero-width
+/// integer or floating-point elements.
+llvm::Expected<unsigned> getFlattenedVectorBitWidth(mlir::VectorType vector);
+
 llvm::Error validateVectorMaskType(mlir::VectorType dataVector,
                                    mlir::Type maskType);
 

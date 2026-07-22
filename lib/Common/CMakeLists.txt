@@ -7,11 +7,13 @@ add_mlir_library(LoomCommon
   LoomConstants.cpp
   ResolvedConfig.cpp
   SynthConfig.cpp
+  VectorWidth.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Common
 
   LINK_LIBS PUBLIC
   LLVMSupport
+  MLIRIR
   MLIRSupport
 )

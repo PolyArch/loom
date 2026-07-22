@@ -41,8 +41,29 @@ module {
         : (vector<4xi8>, vector<4xi1>, i1) -> (i8, i1)
     return
   }
+
+  func.func @rank_two(%packed: i48, %vector: vector<2x3xi8>) {
+    %lanes = dataflow.unpack %packed : i48 -> vector<2x3xi8>
+    %bits = dataflow.pack %vector : vector<2x3xi8> -> i48
+    return
+  }
 }
 )mlir";
+
+// Row-major flattened lane order for the fixture's vector<2x3xi8>: element
+// [row][column] owns flattened lane row * 3 + column, lane zero owns the least
+// significant byte, and the whole value packs to 0x060504030201.
+constexpr unsigned kRows = 2;
+constexpr unsigned kColumns = 3;
+constexpr unsigned kElementWidth = 8;
+constexpr unsigned kRankTwoWidth = kRows * kColumns * kElementWidth;
+constexpr uint64_t kRankTwoPacked = 0x060504030201ULL;
+constexpr uint8_t kLanes[kRows][kColumns] = {{0x01, 0x02, 0x03},
+                                             {0x04, 0x05, 0x06}};
+
+unsigned rowMajorLane(unsigned row, unsigned column) {
+  return row * kColumns + column;
+}
 
 [[noreturn]] void fail(llvm::StringRef message) {
   llvm::errs() << "DFGVectorBoundaryTest: " << message << "\n";
@@ -234,6 +255,57 @@ void parallelizeFailureIsAtomic(dataflow::ParallelizeOp op) {
   }
 }
 
+// Independent oracle for the rank-two bit representation: the expected packed
+// value is assembled here from the two-dimensional lane table, so a permuted or
+// padded lane placement cannot cancel out against its own inverse.
+llvm::APInt rowMajorLaneBits() {
+  llvm::APInt bits(kRankTwoWidth, 0);
+  for (unsigned row = 0; row < kRows; ++row)
+    for (unsigned column = 0; column < kColumns; ++column)
+      bits.insertBits(llvm::APInt(kElementWidth, kLanes[row][column]),
+                      rowMajorLane(row, column) * kElementWidth);
+  return bits;
+}
+
+void unpackPlacesRowMajorLanes(dataflow::UnpackOp op) {
+  SimulatorState state;
+  state.channels[&op.getPackedMutable()].push_back(
+      tokenWithBits(op.getPacked().getType(), kRankTwoPacked));
+
+  require(fireActorOperation(op, state), "rank-two unpack did not fire");
+  auto &published = state.pendingObservedOutputs[op.getVector()];
+  require(published.size() == 1,
+          "rank-two unpack did not publish exactly one vector token");
+  llvm::APInt bits = takeExpected(
+      tokenBitPattern(published.front(), op.getVector().getType()));
+  require(bits.getBitWidth() == kRankTwoWidth,
+          "rank-two unpack published the wrong token bit width");
+  for (unsigned row = 0; row < kRows; ++row)
+    for (unsigned column = 0; column < kColumns; ++column) {
+      llvm::APInt lane = bits.extractBits(
+          kElementWidth, rowMajorLane(row, column) * kElementWidth);
+      require(lane.getZExtValue() == kLanes[row][column],
+              "rank-two unpack placed a lane outside its row-major bit slice");
+    }
+}
+
+void packFlattensRowMajorLanes(dataflow::PackOp op) {
+  SimulatorState state;
+  state.channels[&op.getVectorMutable()].push_back(takeExpected(
+      tokenFromBitPattern(rowMajorLaneBits(), op.getVector().getType())));
+
+  require(fireActorOperation(op, state), "rank-two pack did not fire");
+  auto &published = state.pendingObservedOutputs[op.getPacked()];
+  require(published.size() == 1,
+          "rank-two pack did not publish exactly one packed token");
+  llvm::APInt bits = takeExpected(
+      tokenBitPattern(published.front(), op.getPacked().getType()));
+  require(bits.getBitWidth() == kRankTwoWidth,
+          "rank-two pack published the wrong packed bit width");
+  require(bits.getZExtValue() == kRankTwoPacked,
+          "rank-two pack did not flatten lanes row-major with lane zero low");
+}
+
 void packFailureIsAtomic(dataflow::PackOp op) {
   SimulatorState state;
   state.channels[&op.getVectorMutable()].push_back(
@@ -294,15 +366,27 @@ int main() {
       mlir::parseSourceString<mlir::ModuleOp>(fixture, &context);
   require(static_cast<bool>(module), "unable to parse fixture");
 
+  auto parallelizeFunc =
+      module->lookupSymbol<mlir::func::FuncOp>("parallelize");
+  auto serializeFunc = module->lookupSymbol<mlir::func::FuncOp>("serialize");
+  auto rankTwoFunc = module->lookupSymbol<mlir::func::FuncOp>("rank_two");
+  require(parallelizeFunc && serializeFunc && rankTwoFunc,
+          "fixture functions are missing");
+
   dataflow::ParallelizeOp parallelize;
   dataflow::PackOp pack;
   dataflow::SerializeOp serialize;
+  dataflow::PackOp rankTwoPack;
+  dataflow::UnpackOp rankTwoUnpack;
   llvm::SmallVector<dataflow::UnpackOp, 2> unpacks;
-  module->walk([&](dataflow::ParallelizeOp op) { parallelize = op; });
-  module->walk([&](dataflow::PackOp op) { pack = op; });
-  module->walk([&](dataflow::SerializeOp op) { serialize = op; });
-  module->walk([&](dataflow::UnpackOp op) { unpacks.push_back(op); });
-  require(parallelize && pack && serialize && unpacks.size() == 2,
+  parallelizeFunc.walk([&](dataflow::ParallelizeOp op) { parallelize = op; });
+  parallelizeFunc.walk([&](dataflow::PackOp op) { pack = op; });
+  serializeFunc.walk([&](dataflow::SerializeOp op) { serialize = op; });
+  serializeFunc.walk([&](dataflow::UnpackOp op) { unpacks.push_back(op); });
+  rankTwoFunc.walk([&](dataflow::PackOp op) { rankTwoPack = op; });
+  rankTwoFunc.walk([&](dataflow::UnpackOp op) { rankTwoUnpack = op; });
+  require(parallelize && pack && serialize && unpacks.size() == 2 &&
+              rankTwoPack && rankTwoUnpack,
           "fixture actors are missing");
 
   dataflow::UnpackOp vectorUnpack = unpacks[0];
@@ -314,6 +398,8 @@ int main() {
 
   parallelizePreservesQueuedActivation(parallelize);
   serializePreservesQueuedActivation(serialize, vectorUnpack, maskUnpack);
+  unpackPlacesRowMajorLanes(rankTwoUnpack);
+  packFlattensRowMajorLanes(rankTwoPack);
   parallelizeFailureIsAtomic(parallelize);
   packFailureIsAtomic(pack);
   unpackFailureIsAtomic(vectorUnpack);

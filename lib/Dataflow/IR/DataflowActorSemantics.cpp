@@ -1,5 +1,6 @@
 #include "Dataflow/IR/DataflowActorSemantics.h"
 
+#include "Common/VectorWidth.h"
 #include "Dataflow/IR/DataflowInterfaces.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -21,10 +22,20 @@ namespace {
 
 using dataflow::semantics::getStreamActivation;
 
-bool isSupportedVectorElementType(mlir::Type type) {
+llvm::Error validateVectorElementRepresentation(mlir::Type type) {
+  auto integer = llvm::dyn_cast<mlir::IntegerType>(type);
+  if (llvm::isa<mlir::FloatType>(type) || (integer && integer.getWidth() != 0))
+    return llvm::Error::success();
+  return llvm::createStringError(
+      std::errc::invalid_argument,
+      "data vector element type must be a nonzero-width integer or "
+      "floating-point type");
+}
+
+unsigned vectorElementBitWidth(mlir::Type type) {
   if (auto integer = llvm::dyn_cast<mlir::IntegerType>(type))
-    return integer.getWidth() != 0;
-  return llvm::isa<mlir::FloatType>(type);
+    return integer.getWidth();
+  return llvm::cast<mlir::FloatType>(type).getWidth();
 }
 
 std::string typeToString(mlir::Type type) {
@@ -774,12 +785,19 @@ dataflow::semantics::analyzeFixedRankOneDataVector(mlir::Type type) {
     return llvm::createStringError(
         std::errc::invalid_argument,
         "data vector must be a fixed-size rank-1 vector");
-  if (!isSupportedVectorElementType(vector.getElementType()))
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "data vector element type must be a nonzero-width integer or "
-        "floating-point type");
+  if (llvm::Error error =
+          validateVectorElementRepresentation(vector.getElementType()))
+    return std::move(error);
   return vector;
+}
+
+llvm::Expected<unsigned>
+dataflow::semantics::getFlattenedVectorBitWidth(mlir::VectorType vector) {
+  if (llvm::Error error =
+          validateVectorElementRepresentation(vector.getElementType()))
+    return std::move(error);
+  return loom::getFixedVectorBitWidth(
+      vector, vectorElementBitWidth(vector.getElementType()));
 }
 
 llvm::Error

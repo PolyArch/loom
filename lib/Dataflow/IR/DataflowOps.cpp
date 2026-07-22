@@ -6,8 +6,6 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
 
-#include <limits>
-
 using namespace mlir;
 using namespace dataflow;
 
@@ -91,27 +89,15 @@ static LogicalResult verifyMaskVector(Operation *op, VectorType dataVector,
   return success();
 }
 
-static uint64_t getElementBitWidth(Type type) {
-  if (auto integer = dyn_cast<IntegerType>(type))
-    return integer.getWidth();
-  return cast<FloatType>(type).getWidth();
-}
-
-static LogicalResult verifyPackedWidth(Operation *op, VectorType vector,
+static LogicalResult verifyPackedWidth(Operation *op, VectorType vectorType,
                                        Type packedType) {
-  auto packed = dyn_cast<IntegerType>(packedType);
-  if (!packed || !packed.isSignless())
-    return op->emitOpError("packed type must be a signless integer");
-  const uint64_t lanes = vector.getShape().front();
-  const uint64_t elementWidth = getElementBitWidth(vector.getElementType());
-  if (lanes > std::numeric_limits<unsigned>::max() / elementWidth)
-    return op->emitOpError(
-        "vector bit width exceeds the signless integer width limit");
-  const unsigned vectorWidth = static_cast<unsigned>(lanes * elementWidth);
-  if (packed.getWidth() != vectorWidth)
+  auto vectorWidth = semantics::getFlattenedVectorBitWidth(vectorType);
+  if (!vectorWidth)
+    return op->emitOpError(llvm::toString(vectorWidth.takeError()));
+  const unsigned packedWidth = cast<IntegerType>(packedType).getWidth();
+  if (packedWidth != *vectorWidth)
     return op->emitOpError("packed integer width ")
-           << packed.getWidth() << " must equal vector bit width "
-           << vectorWidth;
+           << packedWidth << " must equal vector bit width " << *vectorWidth;
   return success();
 }
 
@@ -128,19 +114,13 @@ LogicalResult ParallelizeOp::verify() {
 }
 
 LogicalResult PackOp::verify() {
-  FailureOr<VectorType> vector =
-      verifyDataVector(getOperation(), getVector().getType());
-  if (failed(vector))
-    return failure();
-  return verifyPackedWidth(getOperation(), *vector, getPacked().getType());
+  return verifyPackedWidth(getOperation(), getVector().getType(),
+                           getPacked().getType());
 }
 
 LogicalResult UnpackOp::verify() {
-  FailureOr<VectorType> vector =
-      verifyDataVector(getOperation(), getVector().getType());
-  if (failed(vector))
-    return failure();
-  return verifyPackedWidth(getOperation(), *vector, getPacked().getType());
+  return verifyPackedWidth(getOperation(), getVector().getType(),
+                           getPacked().getType());
 }
 
 LogicalResult SerializeOp::verify() {

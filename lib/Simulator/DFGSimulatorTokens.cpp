@@ -1,5 +1,7 @@
 #include "DFGSimulatorInternal.h"
 
+#include "Common/VectorWidth.h"
+#include "Dataflow/IR/DataflowActorSemantics.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
@@ -8,7 +10,6 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cmath>
-#include <limits>
 #include <string>
 #include <system_error>
 
@@ -141,20 +142,8 @@ llvm::Expected<unsigned> tokenTypeBitWidth(mlir::Type type) {
   }
   if (auto floating = mlir::dyn_cast<mlir::FloatType>(type))
     return floating.getWidth();
-  if (auto vector = mlir::dyn_cast<mlir::VectorType>(type)) {
-    if (vector.getRank() != 1 || vector.isScalable())
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "vector token type must be fixed-size and rank-1");
-    auto elementWidth = tokenTypeBitWidth(vector.getElementType());
-    if (!elementWidth)
-      return elementWidth.takeError();
-    const uint64_t lanes = vector.getShape().front();
-    if (lanes > std::numeric_limits<unsigned>::max() / *elementWidth)
-      return llvm::createStringError(std::errc::value_too_large,
-                                     "vector token bit width is unsupported");
-    return static_cast<unsigned>(lanes * *elementWidth);
-  }
+  if (auto vector = mlir::dyn_cast<mlir::VectorType>(type))
+    return dataflow::semantics::getFlattenedVectorBitWidth(vector);
   return llvm::createStringError(std::errc::invalid_argument,
                                  "token type has no exact bit representation");
 }
@@ -406,24 +395,27 @@ llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type) {
                                  "unsupported runtime argument type");
 }
 
-llvm::Expected<llvm::APInt> vectorIndexTokenBitPattern(const Token &token,
-                                                       mlir::VectorType type,
-                                                       mlir::Operation *scope) {
-  if (type.getRank() != 1 || type.isScalable() ||
-      !mlir::isa<mlir::IndexType>(type.getElementType()))
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "vector index token type must be fixed-size and rank-1");
+// An `index` element carries no width in its MLIR type, so the token width uses
+// the resolved index width instead of the semantic element width.
+static llvm::Expected<unsigned>
+indexVectorTokenBitWidth(mlir::VectorType type, mlir::Operation *scope) {
   auto elementWidth = indexBitWidth(scope);
   if (!elementWidth)
     return elementWidth.takeError();
-  const std::uint64_t lanes = type.getShape().front();
-  if (lanes > std::numeric_limits<unsigned>::max() / *elementWidth)
-    return llvm::createStringError(std::errc::value_too_large,
-                                   "vector index token bit width is "
-                                   "unsupported");
-  const unsigned width = static_cast<unsigned>(lanes * *elementWidth);
-  if (!token.bitPattern || token.bitPattern->getBitWidth() != width)
+  return loom::getFixedVectorBitWidth(type, *elementWidth);
+}
+
+llvm::Expected<llvm::APInt> vectorIndexTokenBitPattern(const Token &token,
+                                                       mlir::VectorType type,
+                                                       mlir::Operation *scope) {
+  if (!mlir::isa<mlir::IndexType>(type.getElementType()))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "vector index token type must have 'index' elements");
+  auto width = indexVectorTokenBitWidth(type, scope);
+  if (!width)
+    return width.takeError();
+  if (!token.bitPattern || token.bitPattern->getBitWidth() != *width)
     return llvm::createStringError(
         std::errc::invalid_argument,
         "vector index token bit pattern width does not match its MLIR type");
@@ -436,20 +428,10 @@ llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type,
   if (!vector || !mlir::isa<mlir::IndexType>(vector.getElementType()))
     return parseRuntimeToken(raw, type);
 
-  auto elementWidth = indexBitWidth(scope);
-  if (!elementWidth)
-    return elementWidth.takeError();
-  if (vector.getRank() != 1 || vector.isScalable())
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "vector index token type must be fixed-size and rank-1");
-  const std::uint64_t lanes = vector.getShape().front();
-  if (lanes > std::numeric_limits<unsigned>::max() / *elementWidth)
-    return llvm::createStringError(std::errc::value_too_large,
-                                   "vector index token bit width is "
-                                   "unsupported");
-  const unsigned width = static_cast<unsigned>(lanes * *elementWidth);
-  auto bits = parsePackedBitPattern(raw.trim(), width, "vector");
+  auto width = indexVectorTokenBitWidth(vector, scope);
+  if (!width)
+    return width.takeError();
+  auto bits = parsePackedBitPattern(raw.trim(), *width, "vector");
   if (!bits)
     return bits.takeError();
   Token token;
