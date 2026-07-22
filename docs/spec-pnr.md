@@ -553,6 +553,8 @@ The aggregate Spatial model contains at least these complete groups:
   residual logical nets, and service-leg projections;
 * Fabric occurrences, contexts, endpoints, traversals, `ResourceState`s, and
   tag, buffer, memory-service, and refinement capabilities;
+* derived canonical memory-access views, parameterized operation-port
+  compatibility, and declared memory use-pattern domains;
 * factorized occurrence, context, attachment, and refinement domains;
 * derived compiled `K` indexes, fully resolved `C`, and reachability,
   lower-bound, dependency, and reverse-incidence indices.
@@ -621,7 +623,18 @@ are not pre-enumerated into unary candidate products. An empty well-formed
 intersection is `ProvenInfeasible`, not `Invalid`.
 
 Compute occurrence and context domains remain correlated. Memory domains use
-concrete `fabric.mem` occurrences and operation placement capabilities.
+concrete `fabric.mem` occurrences and exact operation placement capabilities.
+For each memory actor, `UnaryEligible` derives its
+`CanonicalMemoryAccessView` and proves one selected physical operation port can
+carry the complete address, data, and optional mask tokens and supports the
+exact access form, memory-element width, lane geometry, alignment, mask
+mode, and at least one declared use pattern. Equal total width is insufficient.
+Any Memory Realization with no compatible occurrence, port/context, dispatch
+target, or use pattern is `ProvenInfeasible` before search; PnR does not keep it
+as a repairable routing or congestion state.
+An unresolved dynamic mask cannot shrink a domain or static resource-claim
+envelope. PnR verifies the complete Fabric-declared mask domain; actual masks
+may reduce only execution-time transactions and Evaluation observations.
 Context co-residency compares the complete derived
 `ProgrammedConfigurationKey`, not a template or encoding identifier. That key
 is rebuildable native state, not persistent identity.
@@ -758,6 +771,14 @@ required by each typed operation. Only residual legs become transfer
 obligations. Spatial and System routing realize those legs without adding,
 deleting, combining, or reinterpreting them.
 
+For vector memory actors, each residual address, data, or mask operand remains
+one complete logical token. Indexed addresses are one vector token, not a set
+of lane routes. A Fabric-declared memory use pattern may turn one accepted
+actor firing into several internal service transactions, but those
+transactions remain internal execution events. Their potential resource claims
+come from the selected Fabric use pattern and `ResourceUse`; they are not new
+residual logical nets.
+
 ### Route Trees
 
 Each residual logical net is realized by one rooted arborescence with shared
@@ -801,6 +822,11 @@ Thus an `i16` transfer may use `bits<32> -> bits<64> -> bits<32>`, but it may
 not use `bits<8>` or borrow the tag field of `bits_tag<8,8>`. These checks are
 structural legality and cannot be relaxed into congestion cost or repaired by
 an implicit adapter.
+
+The same rule applies independently to vector-memory address, data, and mask
+tokens. A route cannot split one token over several endpoints, serialize it by
+convention, or assign one Physical Tag per lane. Any lane or beat
+decomposition occurs only inside the selected Fabric memory use pattern.
 
 For canonical target domain `T`, the production heuristic is exactly the
 static minimum Mapping lower-bound route cost from endpoint `v` to any target:
@@ -1573,6 +1599,11 @@ Tests protect semantic anchors rather than implementation shape:
   cost, PathFinder net order and termination, and all negotiation kernels;
 * route-wide widening acceptance plus rejection of a narrowing bottleneck or
   attempted payload borrowing from tag bits;
+* exact memory access-form, element, lane, mask, and use-pattern domain freeze,
+  including fail-fast empty domains and rejection of equal-width semantic
+  mismatches;
+* complete vector address, data, and mask routing plus one declared internal
+  multi-transaction memory pattern with no Mapping-invented lane routes;
 * atomic Action commit and rollback across placement, routes, resources, and
   exact preflighted Evaluation adapters without candidate copying;
 * stable logical slots across cache, retry, replicate, and resume; fixed seed

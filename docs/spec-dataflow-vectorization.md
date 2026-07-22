@@ -213,6 +213,31 @@ bank selection do not change this software contract. They belong to lowering,
 Mapping, and Fabric realization. A software lane mask to physical byte-enable
 projection is mechanically derived and cannot become a second semantic owner.
 
+Consumers derive one nonpersistent `CanonicalMemoryAccessView` from the exact
+actor and its types. The view has no independent identity or serialized
+fields. It projects:
+
+```text
+operation       = load | store
+access_form     = element | contiguous | indexed
+memory_element_type = exact memref element type
+element_bits    = bit width of one complete memory element
+lane_shape      = exact ranked access shape for contiguous or indexed
+lane_count      = access_form == element ? 1 : product(lane_shape)
+data_bits       = lane_count * element_bits
+address_count   = indexed ? lane_count : 1
+index_bits      = bit width of one address element under canonical data layout
+address_bits    = address_count * index_bits
+mask_form       = absent | dynamic
+mask_bits       = mask_form == dynamic ? lane_count : 0
+```
+
+`element` means one complete memref element, even when that element is itself
+a vector. Its `lane_shape` is absent and its lane count is one. It is therefore
+distinct from a contiguous access with the same data type and total bit width.
+The exact type and shape remain owned by this Dataflow actor; flattened counts
+and widths are derived compatibility facts, not a replacement type system.
+
 ## Cardinality And Ordered Execution
 
 `pack` and `unpack` consume and publish exactly one token. A scalar or vector
@@ -267,11 +292,30 @@ vector behavior.
 ## Mapping Boundary
 
 The Canonical Dataflow Program preserves semantic vector shape and lane order.
-TechMapping may flatten, split, or combine physical lanes and may bind them to
-one or more physical endpoints. SpatialMapping routes only the residual edges
-after a realization has absorbed its internal dependencies. The Mapping
-Artifact records every physical representation and endpoint binding needed to
+TechMapping may flatten lanes into a declared physical representation and may
+select a Fabric realization that internally decomposes lane or beat work. Each
+external actor port still corresponds to one endpoint capable of carrying the
+complete token unless the Canonical Dataflow Program contains an explicit
+semantic adapter. SpatialMapping routes only the residual edges after a
+realization has absorbed its internal dependencies. The Mapping Artifact
+records every physical representation and endpoint binding needed to
 reconstruct the selected realization.
+
+A vector memory actor remains one firing, one address token, at most one mask
+token, one data token for load or store, and one retirement event. The address
+token is scalar for `element` and `contiguous`, and is the complete flattened
+address vector for `indexed`. Mapping may not split one of these semantic
+tokens across unrelated physical endpoints or reinterpret vector lanes as
+Physical Tags.
+
+The physical operation endpoint width and the backing memory-service beat
+width are different facts. Every selected endpoint and transport segment must
+carry its complete software token. A Fabric memory engine may nevertheless
+implement one actor firing with several internal service transactions when its
+declared use pattern preserves inactive-lane suppression, row-major lane
+order, result assembly, and the actor's single retirement event. Mapping may
+select such a declared realization but may not invent transaction
+decomposition.
 
 Physical adaptation is never represented by silently changing a semantic
 vector type, inserting semantic `pack` or `serialize` actors, or deriving
@@ -306,5 +350,7 @@ Stable anchor tests cover:
 * inactive-lane address suppression and all-zero-mask completion;
 * repeated gather addresses and rejected unresolved duplicate scatter
   addresses;
+* distinct `element`, `contiguous`, and `indexed` access views for otherwise
+  equal payload widths;
 * rejection of attempts to encode physical port adaptation as semantic
   `pack`, `serialize`, or a changed vector type.

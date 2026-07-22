@@ -14,6 +14,14 @@ logical intervals, layout, aliasing, lifetime, and the load/store ordering
 network. Fabric owns `PhysicalMemoryService` and region identity plus typed
 manager/requester and subordinate/provider endpoints.
 
+For each canonical load or store, consumers mechanically derive the
+nonpersistent `CanonicalMemoryAccessView` defined by
+`docs/spec-dataflow-vectorization.md`. Exact access form, memory-element type,
+access lane shape, and mask semantics remain owned by Dataflow. Fabric owns the
+parameterized access domains and operation use patterns of its physical memory
+ports. Mapping selects and records only the non-derived correspondence between
+those authorities.
+
 The required semantic relations are:
 
 ```text
@@ -64,8 +72,18 @@ TechMapping owns each selected Memory Realization:
 * selected Fabric memory semantic capability;
 * actor-to-operation correspondence;
 * exact graph and implementation-boundary correspondence;
-* one-beat access-size, alignment, and subword-write obligations; and
+* exact parameterized access, alignment, mask, narrow-access, and declared
+  use-pattern compatibility; and
 * exact selected internal-edge witnesses.
+
+Compatibility is not total payload-width equality. It proves the exact
+`element | contiguous | indexed` access form, memory-element width, access
+lane-shape projection, flattened lane count, complete address/data/mask
+capacities, dynamic-mask support, alignment, and subword-write contract.
+Equal-width accesses with
+different element or lane geometry remain distinct. A declared Fabric use
+pattern may realize one actor firing with several internal service
+transactions, but TechMapping cannot invent that decomposition.
 
 An internal-edge witness identifies one canonical software source and sink and
 one Fabric-allowed internal connection. Actors sharing a Memory Realization do
@@ -140,6 +158,13 @@ selected non-derived typed `sink <- source` choices. This is where a selected
 `load.data -> store.data`, `done -> ctrl`, or other Fabric-allowed
 memory-internal dependency is recorded.
 
+The Access Entry does not copy access form, memory-element type, lane shape,
+lane count, mask mode, endpoint widths, or transaction decomposition. Those
+values are derived from the exact Dataflow actor, selected Fabric operation
+port, and selected Fabric use pattern. A dynamic mask is an ordinary actor
+operand whose external endpoint correspondence or selected internal source is
+verified like any other required operand.
+
 The AccessEntry and ExposureEntry target fields collectively are the only
 persistent owner of selected `C_dispatch`; there is no parallel dispatch
 relation record. Fabric alone owns eligible `H_dispatch`, and the Mapping
@@ -162,12 +187,21 @@ context derive the operation-row match value.
 Token edges not absorbed by the Memory Realization use the ordinary flat
 `RouteTree` model. A memory-local traversal is not free unless it is an exact
 selected internal-edge witness. The same route-tree rules apply to address,
-data, control, and completion transport.
+data, mask, control, and completion transport. Each residual vector address,
+data, or mask value is one complete logical token and must fit every selected
+endpoint and traversal. Mapping cannot split it across unrelated endpoints or
+use Physical Tags as lane identifiers.
 
 `ResourceUse` owns event-relative activation, typed use-pattern parameters,
 capacity occupancy, and sharing assignments over the already selected engine,
 service, route, port, queue, bank, or context. It does not copy Fabric capacity,
 duration, latency, or use vectors.
+
+For a memory actor, the selected Fabric use pattern owns any internal lane or
+beat transactions and their resource claims. Mapping supplies only its typed
+parameters and reservations. The operation endpoint payload width and backing
+service beat width therefore remain separate Fabric facts rather than route or
+AccessEntry fields.
 
 Configured `memory_operation_table` rows, dispatch selectors, provider decode,
 and response tracking are deterministic semantic projections of the five
@@ -302,6 +336,12 @@ Anchor-level tests should cover:
   plus rejection of unsupported overlap;
 * one Access Entry per covered actor, an exact internal edge, and atomic load
   `data + done` retirement;
+* element, contiguous, indexed, masked, and unmasked access compatibility,
+  including rejection of an equal-width but semantically incompatible port;
+* routing of complete vector address, data, and mask tokens without lane Tags
+  or implicit endpoint splitting;
+* one declared multi-transaction Fabric use pattern with one logical actor
+  retirement and rejection of Mapping-invented decomposition;
 * local Physical Tag ownership by the real writer/ingress `ResourceUse`;
 * local-service and manager-endpoint AccessEntry targets using the same typed
   Spatial Service request/response boundary;

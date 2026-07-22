@@ -114,6 +114,19 @@ accesses and exported capabilities to Fabric memory services and service
 routes. CGRA-sim models the selected physical width, capacity, ports, queues,
 banks, internal dependency forwarding, and protocol-visible timing.
 
+For every load or store, the simulator derives the same
+`CanonicalMemoryAccessView` used by TechMapping and executes the exact selected
+Fabric operation port and use pattern. It distinguishes element, contiguous,
+and indexed accesses even at equal payload width; consumes a dynamic mask as
+one ordinary token; suppresses inactive-lane requests; zero-fills inactive
+load lanes; and completes an all-zero mask without a service transaction.
+
+A declared use pattern may issue several internal lane or beat transactions.
+CGRA-sim models their resource conflicts and timing, assembles active load
+lanes in canonical row-major order, and exposes only one canonical actor firing
+and one load `data + done` or store `done` retirement. A vector token has one
+Physical Tag wherever a Tag is required; lane indices are never Tags.
+
 Hardware resource delay may postpone issue or retirement, but it cannot change
 the logical memory-order contract. Visibility and terminal memory diffs must
 match DFG-sim for a legal execution. System cache and coherence behavior is
@@ -141,9 +154,12 @@ the workload's declared completion clock domain.
 The trace uses increasing `EventCoordinate` frames and canonical within-frame
 order. Firing is actor-transition commit; result publication and retirement
 may be later events. It can identify actor firings, selected physical
-occurrences and traversals, resource grants, stalls, queue changes, memory
-transactions, and retirements. `SimulationExecution` owns the typed manifest
-and ordering; the raw detailed bundle owns referenced opaque chunk payloads.
+occurrences and traversals, resource grants, stalls, queue changes, logical
+memory requests, implementation lane or beat transactions, and retirements.
+Child memory transactions remain correlated with their one parent firing and
+do not appear as additional actor firings. `SimulationExecution` owns the typed
+manifest and ordering; the raw detailed bundle owns referenced opaque chunk
+payloads.
 Neither creates a separate `SimulationTrace` artifact.
 
 Trace capture is observational. Enabling or changing it cannot affect grants,
@@ -172,6 +188,8 @@ Stable anchor tests cover:
 * exact `{D,F,SpatialMapping}` admission and rejection of stale or incomplete
   Mapping;
 * finite-route, buffer, memory, and temporal-resource contention;
+* contiguous, indexed, masked, and multi-transaction memory execution with one
+  logical retirement and one Tag per vector token;
 * exact single- and multi-clock event order and delta nonconvergence;
 * trace observer noninterference;
 * ordered-token preservation under temporal interleaving;

@@ -182,9 +182,21 @@ SpatialServiceRequest {
   transient_transaction_handle
   typed_operation
   logical_object_association
-  address
-  size
-  mask
+  access_geometry =
+      Element {
+        address
+        element_bits
+      }
+    | Contiguous {
+        base_address
+        element_bits
+        lane_count
+      }
+    | Indexed {
+        addresses[lane_count]
+        element_bits
+      }
+  active_lanes = All | Bits[lane_count]
   optional_write_data
   ordering_and_visibility_context
 }
@@ -196,6 +208,21 @@ SpatialServiceResponse {
 }
 ```
 
+This geometry is a runtime projection of the exact canonical memory actor; it
+does not own software type, ranked vector shape, or access semantics. `Element`
+is one complete memory element even when that element's type is a vector.
+`Contiguous` and `Indexed` use canonical row-major lane order. `Element`
+requires `All`; an omitted software vector mask also projects to `All`, while a
+dynamic mask projects to `Bits` with exactly `lane_count` entries. Inactive
+lanes do not evaluate addresses or reach a memory service.
+
+`typed_operation` owns the load/store service-operation kind and its ordering
+contract; it does not repeat access size, lane count, or mask geometry. The
+geometry alone derives the complete read or write payload bit count. A store's
+`optional_write_data` is present with exactly that width; a successful load's
+`optional_read_data` has the same width, including canonical zero-filled
+inactive lanes.
+
 The transient handle exists only for one execution. Logical-object association
 is simulation/runtime metadata and need not be carried on physical wires.
 The selected `MemoryEngineBinding + AccessEntry + MemoryBinding` records may
@@ -204,6 +231,14 @@ request type. A local model,
 external-service model, RTL adapter, or Bridge translates this boundary but
 does not reinterpret the Memory Binding, address space, ordering, or visibility
 contract. One request has exactly one timing authority.
+
+The Operation Engine submits at most one logical `SpatialServiceRequest` for
+one accepted actor firing. The selected Fabric use pattern and service adapter
+may lower it to several implementation transactions or beats, but those child
+transactions do not become new Runtime ABI requests or independent retirement
+events. Their ordering, resource claims, and result assembly are derived from
+Fabric. An all-zero mask reaches no service and completes locally with the
+canonical masked-load or masked-store result.
 
 When a `fabric.mem` load response retires, read data and completion become one
 atomic `data + done` publication across all selected internal and external
@@ -334,6 +369,10 @@ Anchor-level tests should cover:
 * atomic admission success and backpressure without remapping;
 * the same typed Spatial Service request/response at a local service and a
   manager endpoint, with dual timing ownership rejected;
+* element, contiguous, and indexed request geometry, dynamic masks, inactive-
+  lane suppression, and all-zero-mask local completion;
+* one logical Spatial Service request lowered by a declared Fabric use pattern
+  to several implementation transactions without additional actor retirement;
 * atomic load `data + done` and single-event store retirement;
 * consumption of a Deployment-owner-validated runtime-image child set, with a
   closure mismatch rejected and no missing Spatial launch path synthesized;

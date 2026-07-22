@@ -86,6 +86,16 @@ interfaces without adding storage semantics absent from Fabric. System
 interconnect lowers the selected exact implementation protocol while preserving
 the architecture service, multicast, ordering, capacity, and progress contract.
 
+The backend implements the Fabric-owned memory operation-port inventory,
+parameterized access domains, mask endpoints, and declared use patterns. A
+complete element, contiguous, or indexed address/data/mask token enters one
+operation endpoint. A selected use pattern may decompose that firing across
+several service transactions or beats and must implement inactive-lane
+suppression, masked-load zero fill, row-major result assembly, and one logical
+retirement event. Endpoint payload width and service beat width are independent
+facts; the backend cannot infer decomposition from their ratio or reinterpret
+Physical Tags as vector lanes.
+
 Behavioral memory models and black boxes are legal only when Fabric or its
 implementation binding explicitly declares that realization. The
 `HardwareImplementation` records their contracts and unresolved external
@@ -133,6 +143,8 @@ Stable anchors cover:
 * one regular and one arbitrary-topology Fabric lowering;
 * exact replication/arbitration and width/tag behavior;
 * temporal context and memory-operation behavior;
+* vector element, contiguous, indexed, and masked memory operation lowering,
+  including one declared narrower-beat realization and one logical retirement;
 * clock/reset domain and self-reset closure;
 * ConfigurationABI programming through one mapped workload; and
 * rejection of an unsupported or behavior-changing hidden refinement.

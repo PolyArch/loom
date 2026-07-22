@@ -71,8 +71,12 @@ at least:
   correspondence, logical-root coherence, and graph-boundary correspondence;
 * exact equality between selected Fabric internal connections and canonical
   software-edge witnesses;
-* Fabric-owned access-size, alignment, narrow-access, fanout, service-domain,
-  port-kind, representation, and capacity rules; and
+* exact derived `CanonicalMemoryAccessView` compatibility with the selected
+  Fabric operation port and declared use-pattern domain, including access form,
+  memory-element width, access-lane-shape projection, lane count, address,
+  data, and mask capacity, alignment, and narrow-access semantics;
+* Fabric-owned fanout, service-domain, port-kind, representation, and capacity
+  rules, with equal total width insufficient for a memory match; and
 * exact classification of every canonical edge as realization-internal or an
   externally derived obligation.
 
@@ -114,6 +118,9 @@ The verifier checks in dependency order:
 * one AccessEntry per covered memory actor and exact memory placement,
   internal source selection, MemoryBinding, typed dispatch target, and
   exposure closure;
+* complete vector address, data, and optional mask endpoint correspondence,
+  selected use-pattern compatibility, and absence of any Mapping-invented
+  lane/beat decomposition;
 * one typed dispatch target on every AccessEntry and ExposureEntry, with the
   reconstructed `C_dispatch` contained in Fabric-owned `H_dispatch`;
 * each MemoryBinding's logical interval, physical service region, transform,
@@ -123,6 +130,8 @@ The verifier checks in dependency order:
 * every selected route segment's data field can carry the complete software
   payload, tag bits are not counted as payload capacity, and every assigned
   tag is independently losslessly representable wherever it remains live;
+* each vector-memory address, data, and mask token remains complete on its
+  route, and Physical Tags identify sharing interpretations rather than lanes;
 * complete ResourceUse ownership, Fabric use-pattern resolution, atomic
   multi-ResourceState claims, relative activation, typed parameters,
   capacity, sharing assignment, exact grant-policy refinement, and Physical
@@ -306,10 +315,13 @@ Tests should protect stable semantic anchors:
 * foreign, wrong-kind, wrong-owner, unknown-field, duplicate-key, and
   noncanonical-ID rejection;
 * TechMapping closed coverage, ordered parameterized capability relations,
-  multiple results, variadic ports, and exact memory internal-edge witnesses;
+  multiple results, variadic ports, exact vector-memory access compatibility,
+  and exact memory internal-edge witnesses;
 * Spatial record totality, mixed identity rules, RouteTree arborescence,
   route-wide widening acceptance, narrowing and tag-borrow rejection,
-  MemoryBinding and exposure closure, ResourceUse, Tags, and progress;
+  complete vector-memory token routing, declared multi-transaction memory use
+  patterns, MemoryBinding and exposure closure, ResourceUse, Tags, and
+  progress;
 * separation of Spatial base validity from exact `K` admission;
 * exact equality of the System import table and normalized `B_graph` range,
   including a legal InstructionCore-only empty table;

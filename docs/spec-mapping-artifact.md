@@ -158,6 +158,14 @@ to owner-memory-implementation boundary correspondence.
 `mapping.memory_internal_edge` records the exact canonical software edge and
 the selected Fabric internal connection that implements it.
 
+The actor reference mechanically supplies the nonpersistent
+`CanonicalMemoryAccessView`. The selected operation template and ordered port
+maps must satisfy the Fabric-owned parameterized access relation, including
+access form, memory-element width, access-lane-shape projection, lane count,
+address and data capacities, dynamic-mask capability, alignment, and the
+declared operation use-pattern domain. Total payload width alone is not a
+semantic match.
+
 The memory implementation is derived from the encoding owner. Actor and
 logical-root sets are derived from the relation domain and the referenced
 Dataflow actors. The root does not repeat implementation, actor, or root
@@ -165,9 +173,11 @@ lists. Actors sharing a Memory Realization do not make their edges internal;
 only an exact selected internal-edge witness does so.
 
 Selected operation templates and internal connections must satisfy the
-Fabric-owned access-size, alignment, narrow-access, fanout, port-role, and
-service-domain contracts. TechMapping stores the non-derived correspondence,
-not a duplicate operation-semantics or memory-service model.
+Fabric-owned parameterized access, alignment, narrow-access, mask, fanout,
+port-role, use-pattern, and service-domain contracts. TechMapping stores the
+non-derived correspondence, not a duplicate operation-semantics,
+`CanonicalMemoryAccessView`, transaction decomposition, or memory-service
+model.
 
 ### TechMapping Record Rules
 
@@ -260,8 +270,9 @@ entries carry a dispatch target that is exactly
 The collection of these fields and the corresponding ExposureEntry fields is
 the persistent owner of Mapping's selected `C_dispatch`. The verifier checks
 each selection against Fabric-owned `H_dispatch`. Access entries do not store
-Physical Tags, operation-table rows, dispatch selectors,
-provider decode, response tracking configuration, or raw `sw_configs`.
+Physical Tags, access form, element or vector geometry, mask mode, operation-
+table rows, service-transaction decomposition, dispatch selectors, provider
+decode, response tracking configuration, or raw `sw_configs`.
 
 ### MemoryBinding
 
@@ -372,9 +383,10 @@ including when the selected value equals a Fabric default.
 
 Active masks, configured-function copies, programmed-configuration keys,
 resource claims, continuity segments, Tag interference graphs, switch rows,
-memory operation tables, raw `sw_configs`, bitstreams, cost vectors, search
-history, statistics, and transaction journals are deterministic projections
-or external records. They are not SpatialMapping semantic content.
+memory operation tables including derived access projections and mask-source
+selectors, raw `sw_configs`, bitstreams, cost vectors, search history,
+statistics, and transaction journals are deterministic projections or
+external records. They are not SpatialMapping semantic content.
 
 ## SystemMapping Root
 

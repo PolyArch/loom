@@ -74,24 +74,79 @@ service's architecture contract.
 
 ## Operation Engine
 
-Let `L` be the number of physical load ports, `S` the number of physical store
-ports, and `W` the operation payload width. Each load port has:
+An Operation Engine owns one canonical ordered inventory of physical memory
+operation ports. Each inventory entry contains exactly:
 
 ```text
-(addr, ctrl) -> (data, done)
+MemoryOperationPortCapability {
+  operation_kind
+  physical_role_to_endpoint_relation
+  parameterized_access_domain
+  use_pattern_domain
+}
 ```
 
-Each store port has:
+The occurrence `function_type` is the sole owner of physical endpoint kinds
+and widths. The inventory assigns semantic roles to those endpoint ordinals
+and owns the hardware access domain; it does not repeat endpoint types. Load
+and store counts, physical data capacity, and optional mask capacity are
+derived from the inventory and function type. Different operation ports in one
+engine may have different fixed physical capacities.
+
+The maximal load bundle is:
 
 ```text
-(addr, data, ctrl) -> done
+(address_payload, optional lane_mask, ctrl) -> (data_payload, done)
 ```
 
-Store does not produce a data result. `W` is an explicit hardware fact and is
-not inferred from a manager endpoint type. Supported access sizes, alignment,
-and subword-write behavior are independent service capabilities. In
-particular, a narrow store requires byte-enable, write-strobe, or equivalent
-declared semantics; zero-extension into a wider port is not sufficient.
+The maximal store bundle is:
+
+```text
+(address_payload, data_payload, optional lane_mask, ctrl) -> done
+```
+
+Store does not produce a data result. The mask endpoint is physically present
+only when the port can consume a dynamic lane mask. An unmasked actor may use a
+mask-capable port with that endpoint inactive; inactive means no consume and no
+backpressure and must be proven by the capability relation. A masked actor
+cannot use a port without a mask endpoint or an exact declared internal mask
+source.
+
+The exact software requirement is the nonpersistent
+`CanonicalMemoryAccessView` derived from `dataflow.load` or `dataflow.store`.
+Fabric supports it through one relation:
+
+```text
+SupportsMemoryAccess(port, access, correspondence) =
+  operation kind is accepted
+  and access form is accepted
+  and element-size and flattened-lane domains are accepted
+  and mask form is accepted
+  and ordered actor roles correspond to physical roles
+  and address, data, and mask payloads fit their endpoints
+  and alignment and subword-write requirements are accepted
+  and at least one declared use pattern realizes the access semantics
+```
+
+The access forms are `element`, `contiguous`, and `indexed`. The exact ranked
+software type remains in Dataflow. Fabric uses its derived element width,
+row-major flattened lane count, address geometry, mask form, and payload
+capacities. Equal total data width is not sufficient compatibility:
+`vector<4xf32>` and `vector<2xf64>` require different element, lane, address,
+and mask geometry even though both carry 128 data bits.
+
+Supported access sizes, alignment, inactive-lane suppression, masked-load zero
+fill, all-zero-mask completion, and subword-write behavior are explicit
+capabilities. In particular, a narrow store requires byte-enable,
+write-strobe, or equivalent declared semantics; zero-extension into a wider
+port is not sufficient. A capability cannot claim masked load support by
+reading inactive addresses and masking only the returned value.
+
+Legacy homogeneous `load_group_size`, `store_group_size`, and `data_width`
+fields may exist only as authoring shorthand mechanically expanded into this
+inventory before Fabric finalization. They are not canonical hardware
+authorities and cannot coexist with an independently editable expanded
+inventory.
 
 `operation_schedule` belongs only to the Operation Engine:
 
@@ -107,34 +162,45 @@ is invalid.
 
 ### Spatial Ports
 
-Spatial operation ports are fixed, untagged ports:
+Spatial operation endpoints are fixed, untagged ports:
 
 ```text
-addr      : !fabric.bits<index_width>
-data      : !fabric.bits<W>
-ctrl/done : !fabric.bits<0>
+address payload : !fabric.bits<A>
+data payload    : !fabric.bits<D>
+lane mask       : !fabric.bits<M>, when present
+ctrl/done       : !fabric.bits<0>
 ```
 
-Define `P = L + S`. A Spatial configured operation table has exactly `P`
-rows, ordered as `load0` through `load(L-1)` followed by `store0` through
-`store(S-1)`. Row position fixes operation kind and physical port. Each active
-physical port hosts at most one Spatial software operation in a configuration.
+`A`, `D`, and `M` are per-endpoint physical capacities. A contiguous or
+element access uses one scalar address payload. An indexed access uses one
+complete flattened address-vector payload. In every case the selected endpoint
+requires `A >= address_bits`, `D >= data_bits`, and, for a dynamic mask,
+`M >= mask_bits` from the canonical access view. Width adaptation is
+low-bit aligned, but no selected endpoint may narrow below the complete
+software payload.
+
+Define `P` as the operation-port inventory size. A Spatial configured
+operation table has exactly `P` rows in inventory order. Row position fixes
+the physical port; the selected actor and its access view derive the active
+access configuration. Each active physical port hosts at most one Spatial
+software operation in a configuration.
 
 ### Temporal Ports And Resident Capacity
 
-Temporal operation ports are the tagged counterparts:
+Temporal operation endpoints are the tagged counterparts:
 
 ```text
-addr      : !fabric.bits_tag<index_width, T>
-data      : !fabric.bits_tag<W, T>
-ctrl/done : !fabric.bits_tag<0, T>
+address payload : !fabric.bits_tag<A, T>
+data payload    : !fabric.bits_tag<D, T>
+lane mask       : !fabric.bits_tag<M, T>, when present
+ctrl/done       : !fabric.bits_tag<0, T>
 ```
 
 Temporal hardware declares both a tag width `T` and a bounded resident
 operation capacity `K`:
 
 ```text
-P = L + S
+P = operation-port inventory size
 K = operation_table_size
 ```
 
@@ -160,7 +226,9 @@ External results use that row's configured tag. Mapping assigns Physical Tags
 at real tagged writers or ingresses only where may-overlap incompatible local
 interpretations require distinction. The memory table consumes that local
 assignment and does not create another tag authority, firing identity,
-iteration identity, or logical-memory identity.
+iteration identity, logical-memory identity, or vector-lane identity. A vector
+payload is one tagged token; lane-level service transactions remain internal
+to the selected use pattern.
 
 ## Operation Rows And Internal Dependencies
 
@@ -191,18 +259,27 @@ Each physical row is `Unused` or an `Active` variant. `Unused` carries no
 fields. The minimum Active Spatial load fields are:
 
 ```text
-base_addr, access_mode,
-addr_source_sel, ctrl_source_sel, service_target_sel,
+base_addr, derived_access_projection,
+addr_source_sel, optional_mask_source_sel, ctrl_source_sel,
+service_target_sel,
 expose_data, expose_done
 ```
 
 The minimum Active Spatial store fields are:
 
 ```text
-base_addr, access_mode,
-addr_source_sel, data_source_sel, ctrl_source_sel, service_target_sel,
+base_addr, derived_access_projection,
+addr_source_sel, data_source_sel, optional_mask_source_sel, ctrl_source_sel,
+service_target_sel,
 expose_done
 ```
+
+`derived_access_projection` is the configured projection of the exact
+Dataflow actor into the selected port's parameterized access domain. It
+contains no independent software type or shape authority. An absent software
+mask selects the one canonical all-active state and carries no source
+selector. A dynamic mask selects exactly one compatible external operand or
+declared internal source.
 
 A Temporal Active row adds `operation_kind`, `physical_port_sel`, and
 `tag_match` to the corresponding load or store fields. The Temporal table has
@@ -210,11 +287,13 @@ exactly `K` physical rows. Unused rows have one canonical semantic state whose
 physical value is defined by `ConfigurationABI`. Equivalent rows do not create
 a Mapping choice; finalization assigns them deterministically.
 
-Each row has independent ordered operand state. A load has at least address
-and control queues; a store has at least address, data, and control queues.
-Result and completion holding state must implement the declared backpressure
-and fanout contract. Queue depths and multicast holding capacity are Fabric
-facts, never simulator or Mapping defaults.
+Each row has independent ordered operand state. A load has address, optional
+mask, and control queues; a store has address, data, optional mask, and control
+queues. An indexed address vector and a vector data or mask operand each occupy
+one ordered token position, not one queue entry per lane. Result and completion
+holding state must implement the declared backpressure and fanout contract.
+Queue depths and multicast holding capacity are Fabric facts, never simulator
+or Mapping defaults.
 
 The Operation Engine and optional Local Memory Service each own their closed
 typed `ResourceState` values, canonical initial state, capacity dimensions,
@@ -226,6 +305,21 @@ independent reservations or construct a generic arbiter graph. Queue contents,
 occupancy, outstanding transactions, and grant cursors are nonpersistent
 execution state.
 
+One accepted actor firing selects exactly one declared memory-operation use
+pattern. That pattern may issue one or several internal service transactions
+or physical beats. Fabric owns their lane and beat decomposition, resource
+claims, issue order, result assembly, and completion join. Inactive lanes issue
+no transaction, active load lanes are assembled in canonical row-major order,
+and the actor exposes exactly one load `data + done` packet or one store `done`
+event. Mapping may select and parameterize a declared pattern but cannot invent
+or edit this decomposition.
+
+The use-pattern domain also owns the static claim envelope for every possible
+dynamic mask accepted by the port. Mapping proves that envelope without
+assuming runtime lane values. Concrete execution may omit inactive-lane
+transactions and consume fewer dynamic service grants, but it cannot require a
+resource outside the declared envelope.
+
 Fabric declares a typed internal source-to-sink eligibility relation. Mapping
 may select only declared connections, including examples such as:
 
@@ -233,6 +327,7 @@ may select only declared connections, including examples such as:
 store.data       <- load.data
 load/store.ctrl  <- load/store.done
 load/store.addr  <- load.data
+load/store.mask  <- compatible internal value
 ```
 
 The address form is legal only when explicitly supported. A selected internal
@@ -263,6 +358,16 @@ Local Memory Service
   memory_service_contract
   optional implementation_refinement
 ```
+
+The Operation Engine endpoint payload width and the selected memory service's
+transaction or beat width are independent Fabric facts. Operation endpoints
+accept complete logical address, data, and mask tokens. For a local target the
+Local Memory Service contract owns the beat; for a manager target its endpoint
+and reachable service contracts own the service payload. The selected
+operation use pattern may lower one typed request to several service beats when
+those contracts permit it. The reverse path assembles one logical result before
+actor retirement. Neither Mapping nor Runtime may infer decomposition from a
+width ratio.
 
 The architecture contract owns supported read and write operations; access
 size and alignment; subword-write semantics; payload and beat width; latency
@@ -371,6 +476,43 @@ concrete SRAM, controller, or cache mechanisms. Interconnect Implementation may
 choose AXI, TileLink, CXL, or custom protocol mechanisms. Both must refine this
 capability contract and must not add Mapping semantics.
 
+## Vector Access Example
+
+Consider separate load and store operation ports with these physical roles:
+
+```text
+address : bits<32>
+data    : bits<128>
+mask    : bits<4>
+ctrl/done : bits<0>
+
+parameterized access domain:
+  access_form = contiguous
+  element_bits = 32
+  lane_count = 4
+  mask_form = absent | dynamic
+
+selected use pattern:
+  one logical firing -> up to four ordered 32-bit service transactions
+```
+
+The backing service beat is 32 bits. A masked `vector<4xf32>` load with active
+mask `1011` consumes one base-address token, one four-bit mask token, and one
+control token; lane zero is the least-significant mask bit. It issues service
+transactions only for active lanes 0, 1, and 3, assembles
+lane results into one 128-bit token with lane zero in the least-significant
+slice, fills the inactive lane with zero, and publishes one `data + done`
+packet. The analogous store issues no write for the inactive lane and publishes
+one `done` event.
+
+The external address, data, and mask are never split into lane routes. The same
+port rejects a contiguous `vector<2xf64>` access despite its equal total width,
+because its element-width and lane-count projections are outside the domain.
+It also does not imply support for an `element` access to one
+`vector<4xf32>`-typed memory element; that access has `element_bits = 128`, no
+lane shape, and `lane_count = 1` and requires a separately admitted capability
+domain.
+
 ## Validation Anchors
 
 Anchor-level tests should cover:
@@ -378,6 +520,14 @@ Anchor-level tests should cover:
 * independent `P`, `K`, and `T` capacities with content matching local to a
   physical ingress;
 * tag reuse across disjoint match domains and rejection within one domain;
+* distinct element, contiguous, and indexed access compatibility, including
+  rejection of equal-width but incompatible element or lane geometry;
+* dynamic-mask routing, inactive-lane suppression, zero-fill for masked loads,
+  all-zero-mask completion without a service request, and absence of a mask
+  selector for an unmasked actor;
+* a wide operation endpoint backed by narrower declared service beats, with
+  row-major assembly and exactly one logical retirement event;
+* one Physical Tag for a Temporal vector token, never one Tag per lane;
 * selected `load.data -> store.data` and `done -> ctrl` internal dependencies,
   including atomic load `data + done` retirement and store `done` retirement;
 * operation-engine-only, engine-plus-local-service, and storage-only forms;

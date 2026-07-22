@@ -117,6 +117,13 @@ ports, nor Fabric memory-service capacity. Plain conflicting accesses without
 an explicit causal order must not become deterministic merely because of
 simulator traversal order.
 
+Element, contiguous, indexed, and masked accesses execute the exact Dataflow
+semantics in `docs/spec-dataflow-vectorization.md`. DFG-sim suppresses inactive
+lane addresses, zero-fills inactive load lanes, preserves canonical row-major
+result order, completes an all-zero mask without a memory effect, and retires
+one vector actor firing as one load `data + done` or store `done` event. It does
+not expose Fabric lane or beat transactions.
+
 Atomic, RMW, fence, volatile, and coherence behavior is unsupported until its
 explicit Dataflow contract is closed.
 
@@ -175,6 +182,8 @@ Stable anchor tests cover:
 * rejection of non-finalized subjects before execution;
 * exact token cardinality and state reset for canonical control actors;
 * `ctrl`/`done` memory order and terminal memory diffs;
+* contiguous, indexed, and masked vector-memory semantics with one actor
+  retirement;
 * deterministic `EventCoordinate` and within-frame trace order;
 * trace observer noninterference;
 * exact terminal and Evidence outcome mapping, including deadlock witnesses;
