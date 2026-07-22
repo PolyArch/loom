@@ -7,6 +7,7 @@ add_mlir_library(LoomPnR
   PnrIndex.cpp
   PnrProblemInputs.cpp
   RouteTreeState.cpp
+  RoutingNegotiation.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/PnR
