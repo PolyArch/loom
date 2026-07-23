@@ -33,6 +33,7 @@
 #include "GraphRegionLowering.h"
 #include "StreamOrdinal.h"
 
+#include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
 
@@ -497,7 +498,8 @@ resolveLinearTopLevelGep(::mlir::LLVM::GEPOp gep, ::dataflow::GraphOp graph,
 
 ::dataflow::StreamOp getUnitStridePointerCarryStream(::dataflow::CarryOp carry,
                                                      ::dataflow::GraphOp graph,
-                                                     ::mlir::Type elemTy) {
+                                                     ::mlir::Type elemTy,
+                                                     unsigned indexBits) {
   if (!::llvm::isa<::mlir::LLVM::LLVMPointerType>(carry.getOutput().getType()))
     return {};
   if (!isGraphPtrBlockArg(carry.getInit(), graph))
@@ -521,7 +523,7 @@ resolveLinearTopLevelGep(::mlir::LLVM::GEPOp gep, ::dataflow::GraphOp graph,
     return {};
   auto stream = carry.getCond().getDefiningOp<::dataflow::StreamOp>();
   if (!stream || stream.getPhase() != carry.getCond() ||
-      !::loom::lowering::isZeroBasedUnitOrdinalStream(stream, gep))
+      !::loom::lowering::isZeroBasedUnitOrdinalStream(stream, indexBits))
     return {};
   return stream;
 }
@@ -613,8 +615,8 @@ resolveDirectMemcpyPointer(::mlir::Value ptr, ::dataflow::GraphOp graph) {
 
 std::optional<AddrResolution> resolvePointer(::mlir::Value loadStorePtr,
                                              ::dataflow::GraphOp graph,
-                                             bool topLevel,
-                                             ::mlir::Type elemTy) {
+                                             bool topLevel, ::mlir::Type elemTy,
+                                             unsigned indexBits) {
   if (auto gep = loadStorePtr.getDefiningOp<::mlir::LLVM::GEPOp>()) {
     if (std::optional<AddrResolution> linear =
             resolveLinearTopLevelGep(gep, graph, elemTy))
@@ -624,8 +626,8 @@ std::optional<AddrResolution> resolvePointer(::mlir::Value loadStorePtr,
     if (auto gep = loadStorePtr.getDefiningOp<::mlir::LLVM::GEPOp>()) {
       ::mlir::Value base = gep.getBase();
       if (auto carry = getPointerCarry(base)) {
-        if (::dataflow::StreamOp stream =
-                getUnitStridePointerCarryStream(*carry, graph, elemTy)) {
+        if (::dataflow::StreamOp stream = getUnitStridePointerCarryStream(
+                *carry, graph, elemTy, indexBits)) {
           std::optional<std::int64_t> bias =
               getSingleIndexElementStride(gep, elemTy);
           if (!bias)
@@ -638,13 +640,13 @@ std::optional<AddrResolution> resolvePointer(::mlir::Value loadStorePtr,
     }
     if (auto carry = loadStorePtr.getDefiningOp<::dataflow::CarryOp>()) {
       if (::dataflow::StreamOp stream =
-              getUnitStridePointerCarryStream(carry, graph, elemTy))
+              getUnitStridePointerCarryStream(carry, graph, elemTy, indexBits))
         return AddrResolution{carry.getInit(), {}, stream, 0, 0, nullptr};
       return std::nullopt;
     }
     if (auto carry = getGatedPointerCarry(loadStorePtr)) {
       if (::dataflow::StreamOp stream =
-              getUnitStridePointerCarryStream(*carry, graph, elemTy))
+              getUnitStridePointerCarryStream(*carry, graph, elemTy, indexBits))
         return AddrResolution{carry->getInit(), {}, stream, 0, 0, nullptr};
       return std::nullopt;
     }
@@ -713,27 +715,25 @@ bool isSupportedBridgePointer(::mlir::Value ptr, ::dataflow::GraphOp graph) {
   return bridge;
 }
 
-bool canMaterializeIndex(::mlir::Type type, ::mlir::Operation *scope) {
+// `indexBits` is the canonical index width the pass boundary already
+// resolved; this predicate never resolves it again.
+bool canMaterializeIndex(::mlir::Type type, unsigned indexBits) {
   if (::llvm::isa<::mlir::IndexType>(type))
     return true;
   auto intTy = ::llvm::dyn_cast<::mlir::IntegerType>(type);
   if (!intTy || !intTy.isSignless())
     return false;
-  ::mlir::DataLayout dataLayout = ::mlir::DataLayout::closest(scope);
-  ::llvm::TypeSize indexBits =
-      dataLayout.getTypeSizeInBits(::mlir::IndexType::get(type.getContext()));
-  return !indexBits.isScalable() &&
-         intTy.getWidth() <= indexBits.getFixedValue();
+  return intTy.getWidth() <= indexBits;
 }
 
 ::mlir::Value getIndexCast(::mlir::OpBuilder &builder,
                            ::dataflow::GraphOp graph, ScopedValueCache &cache,
-                           ::mlir::Value iv, ::mlir::Location loc,
-                           bool topLevel,
+                           unsigned indexBits, ::mlir::Value iv,
+                           ::mlir::Location loc, bool topLevel,
                            ::mlir::Operation *insertBeforeIfNested) {
   if (::llvm::isa<::mlir::IndexType>(iv.getType()))
     return iv;
-  if (!canMaterializeIndex(iv.getType(), insertBeforeIfNested))
+  if (!canMaterializeIndex(iv.getType(), indexBits))
     return {};
   auto &blockCache =
       cache.try_emplace(insertBeforeIfNested->getBlock()).first->second;
@@ -865,14 +865,15 @@ bool canMaterializeIndex(::mlir::Type type, ::mlir::Operation *scope) {
 
 ::mlir::Value getElementIndex(::mlir::OpBuilder &builder,
                               ::dataflow::GraphOp graph,
-                              ScopedValueCache &cache, ::mlir::Value intIndex,
+                              ScopedValueCache &cache, unsigned indexBits,
+                              ::mlir::Value intIndex,
                               unsigned byteToElementShift, ::mlir::Value ctrl,
                               ::mlir::Location loc, bool topLevel,
                               ::mlir::Operation *insertBeforeIfNested) {
   if (byteToElementShift == 0)
-    return getIndexCast(builder, graph, cache, intIndex, loc, topLevel,
-                        insertBeforeIfNested);
-  if (!canMaterializeIndex(intIndex.getType(), insertBeforeIfNested))
+    return getIndexCast(builder, graph, cache, indexBits, intIndex, loc,
+                        topLevel, insertBeforeIfNested);
+  if (!canMaterializeIndex(intIndex.getType(), indexBits))
     return {};
   auto intTy = ::llvm::dyn_cast<::mlir::IntegerType>(intIndex.getType());
   if (!intTy)
@@ -891,8 +892,8 @@ bool canMaterializeIndex(::mlir::Type type, ::mlir::Operation *scope) {
   ::mlir::Value elemIndex =
       ::mlir::arith::ShRSIOp::create(builder, loc, intIndex, shiftAmount)
           .getResult();
-  return getIndexCast(builder, graph, cache, elemIndex, loc, topLevel,
-                      insertBeforeIfNested);
+  return getIndexCast(builder, graph, cache, indexBits, elemIndex, loc,
+                      topLevel, insertBeforeIfNested);
 }
 
 ::mlir::Value getZeroIndex(::mlir::OpBuilder &builder,
@@ -916,13 +917,13 @@ bool canMaterializeIndex(::mlir::Type type, ::mlir::Operation *scope) {
 }
 
 ::mlir::Value getIndexFromInt(::mlir::OpBuilder &builder,
-                              ScopedValueCache &cache, ::mlir::Value value,
-                              ::mlir::Location loc,
+                              ScopedValueCache &cache, unsigned indexBits,
+                              ::mlir::Value value, ::mlir::Location loc,
                               ::mlir::Operation *insertBefore,
                               bool cacheResult = true) {
   if (::llvm::isa<::mlir::IndexType>(value.getType()))
     return value;
-  if (!canMaterializeIndex(value.getType(), insertBefore))
+  if (!canMaterializeIndex(value.getType(), indexBits))
     return {};
   auto &blockCache = cache.try_emplace(insertBefore->getBlock()).first->second;
   if (cacheResult) {
@@ -952,6 +953,8 @@ bool canMaterializeIndex(::mlir::Type type, ::mlir::Operation *scope) {
 struct RewriteCtx {
   ::dataflow::GraphOp graph;
   ::mlir::Value ctrl;
+  // Resolved once at the pass boundary and read-only from here on.
+  unsigned indexBits = 0;
   ::llvm::DenseMap<BridgeKey, ::mlir::Value, BridgeKeyInfo> bridgeCache;
   ScopedValueCache indexCastCache;
   ScopedBridgeCache addressCache;
@@ -967,7 +970,7 @@ bool tryRewriteNestedMemcpy(::mlir::LLVM::MemcpyOp memcpy,
   ::mlir::Type lenType = memcpy.getLen().getType();
   if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(lenType))
     return false;
-  if (!canMaterializeIndex(memcpy.getLen().getType(), memcpy))
+  if (!canMaterializeIndex(memcpy.getLen().getType(), ctx.indexBits))
     return false;
 
   ::mlir::Type byteTy = builder.getI8Type();
@@ -1014,7 +1017,8 @@ bool tryRewriteNestedMemcpy(::mlir::LLVM::MemcpyOp memcpy,
         resolution.intIndexByteBias, loc, memcpy);
     if (!byteOffset)
       return {};
-    return getIndexFromInt(builder, ctx.indexCastCache, byteOffset, loc, memcpy,
+    return getIndexFromInt(builder, ctx.indexCastCache, ctx.indexBits,
+                           byteOffset, loc, memcpy,
                            /*cacheResult=*/false);
   };
   ::mlir::Value srcOffset =
@@ -1116,8 +1120,10 @@ bool tryRewriteDirectMemcpy(::mlir::LLVM::MemcpyOp memcpy,
   if (!isSupportedBridgePointer(src->basePtr, ctx.graph) ||
       !isSupportedBridgePointer(dst->basePtr, ctx.graph))
     return false;
-  if ((src->offset && !canMaterializeIndex(src->offset.getType(), memcpy)) ||
-      (dst->offset && !canMaterializeIndex(dst->offset.getType(), memcpy)))
+  if ((src->offset &&
+       !canMaterializeIndex(src->offset.getType(), ctx.indexBits)) ||
+      (dst->offset &&
+       !canMaterializeIndex(dst->offset.getType(), ctx.indexBits)))
     return false;
 
   ::mlir::Location loc = memcpy.getLoc();
@@ -1136,7 +1142,8 @@ bool tryRewriteDirectMemcpy(::mlir::LLVM::MemcpyOp memcpy,
   auto materializeOffset = [&](::mlir::Value offset) -> ::mlir::Value {
     if (!offset)
       return {};
-    return getIndexFromInt(builder, ctx.indexCastCache, offset, loc, memcpy,
+    return getIndexFromInt(builder, ctx.indexCastCache, ctx.indexBits, offset,
+                           loc, memcpy,
                            /*cacheResult=*/false);
   };
   ::mlir::Value srcOffset = materializeOffset(src->offset);
@@ -1228,7 +1235,8 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
   // Pointer-element loads/stores trip the streaming verifier; skip.
   if (::llvm::isa<::mlir::LLVM::LLVMPointerType>(elemTy))
     return false;
-  auto resolved = resolvePointer(ptrArg, ctx.graph, topLevel, elemTy);
+  auto resolved =
+      resolvePointer(ptrArg, ctx.graph, topLevel, elemTy, ctx.indexBits);
   if (!resolved)
     return false;
   if (!isSupportedBridgePointer(resolved->ptr, ctx.graph))
@@ -1236,7 +1244,8 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
   ::mlir::Value addressSource = resolved->intIndex;
   if (resolved->ordinalStream)
     addressSource = resolved->ordinalStream.getIv();
-  if (addressSource && !canMaterializeIndex(addressSource.getType(), op))
+  if (addressSource &&
+      !canMaterializeIndex(addressSource.getType(), ctx.indexBits))
     return false;
   ::mlir::Location loc = op->getLoc();
   ::mlir::OpBuilder::InsertionGuard g(builder);
@@ -1255,18 +1264,18 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
                                        ctx.ctrl, loc, op);
       if (!ordinal)
         return false;
-      addr = getElementIndex(builder, ctx.graph, ctx.indexCastCache, ordinal,
-                             resolved->byteToElementShift, ctx.ctrl, loc,
-                             topLevel, op);
+      addr = getElementIndex(
+          builder, ctx.graph, ctx.indexCastCache, ctx.indexBits, ordinal,
+          resolved->byteToElementShift, ctx.ctrl, loc, topLevel, op);
     } else if (resolved->intIndex) {
       ::mlir::Value intIndex = getLinearByteIndex(
           builder, resolved->intIndex, resolved->intIndexByteStride,
           resolved->intIndexByteBias, loc, op);
       if (!intIndex)
         return false;
-      addr = getElementIndex(builder, ctx.graph, ctx.indexCastCache, intIndex,
-                             resolved->byteToElementShift, ctx.ctrl, loc,
-                             topLevel, op);
+      addr = getElementIndex(
+          builder, ctx.graph, ctx.indexCastCache, ctx.indexBits, intIndex,
+          resolved->byteToElementShift, ctx.ctrl, loc, topLevel, op);
     } else {
       addr = getZeroIndex(builder, ctx.graph, ctx.zeroIdx, loc, topLevel, op);
     }
@@ -1315,7 +1324,7 @@ bool tryRewriteMemcpy(::mlir::Operation *op, bool topLevel,
   ::mlir::Type lenType = memcpy.getLen().getType();
   if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(lenType))
     return false;
-  if (!canMaterializeIndex(memcpy.getLen().getType(), memcpy))
+  if (!canMaterializeIndex(memcpy.getLen().getType(), ctx.indexBits))
     return false;
 
   if (tryRewriteDirectMemcpy(memcpy, builder, ctx))
@@ -1400,10 +1409,10 @@ bool tryRewriteMemcpy(::mlir::Operation *op, bool topLevel,
   ::mlir::Value dstMem =
       getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, dst->basePtr, byteTy,
                       loc, topLevel, op);
-  ::mlir::Value srcIndex =
-      getIndexFromInt(builder, ctx.indexCastCache, srcAddr, loc, op);
-  ::mlir::Value dstIndex =
-      getIndexFromInt(builder, ctx.indexCastCache, dstAddr, loc, op);
+  ::mlir::Value srcIndex = getIndexFromInt(builder, ctx.indexCastCache,
+                                           ctx.indexBits, srcAddr, loc, op);
+  ::mlir::Value dstIndex = getIndexFromInt(builder, ctx.indexCastCache,
+                                           ctx.indexBits, dstAddr, loc, op);
 
   auto load = ::dataflow::LoadOp::create(
       builder, loc, /*data=*/byteTy, /*done=*/builder.getNoneType(),
@@ -1432,7 +1441,7 @@ bool tryRewriteMemset(::mlir::Operation *op, bool topLevel,
     return false;
   if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(byteCount.getType()))
     return false;
-  if (!canMaterializeIndex(byteCount.getType(), op))
+  if (!canMaterializeIndex(byteCount.getType(), ctx.indexBits))
     return false;
 
   std::optional<::mlir::Type> elemTy =
@@ -1473,9 +1482,9 @@ bool tryRewriteMemset(::mlir::Operation *op, bool topLevel,
         getDataflowConstant(builder, builder.getIndexType(), ctx.ctrl, 0, loc);
     ::mlir::Value step =
         getDataflowConstant(builder, builder.getIndexType(), ctx.ctrl, 1, loc);
-    ::mlir::Value upper =
-        getIndexFromInt(builder, ctx.indexCastCache, elementCount, loc, op,
-                        /*cacheResult=*/false);
+    ::mlir::Value upper = getIndexFromInt(builder, ctx.indexCastCache,
+                                          ctx.indexBits, elementCount, loc, op,
+                                          /*cacheResult=*/false);
     if (!lower || !step || !upper)
       return false;
     auto buildBody = [&](::mlir::OpBuilder &bodyBuilder,
@@ -1506,8 +1515,8 @@ bool tryRewriteMemset(::mlir::Operation *op, bool topLevel,
       builder, loc, byteCount.getType(), builder.getI1Type(), /*init=*/zero,
       /*limit=*/elementCount, /*step=*/one, ::dataflow::StreamStepKind::Add,
       ::mlir::arith::CmpIPredicate::slt);
-  ::mlir::Value index =
-      getIndexFromInt(builder, ctx.indexCastCache, fillStream.getIv(), loc, op);
+  ::mlir::Value index = getIndexFromInt(
+      builder, ctx.indexCastCache, ctx.indexBits, fillStream.getIv(), loc, op);
   ::mlir::Value fill = makeFillValue(builder, loc);
   if (!index || !fill)
     return false;
@@ -1518,15 +1527,30 @@ bool tryRewriteMemset(::mlir::Operation *op, bool topLevel,
   return true;
 }
 
+// The canonical index width of one graph, read at the exact scope that owns
+// it. The pass boundary validates every graph before anything mutates, so a
+// graph that cannot resolve one is simply left alone here.
+std::optional<unsigned> getGraphIndexBits(::dataflow::GraphOp graph) {
+  ::llvm::Expected<unsigned> bits = ::loom::getIndexBitWidth(graph);
+  if (bits)
+    return *bits;
+  ::llvm::consumeError(bits.takeError());
+  return std::nullopt;
+}
+
 unsigned rewriteOneGraph(::dataflow::GraphOp graph,
                          ::mlir::OpBuilder &builder) {
   ::mlir::Value ctrl = getThreadCtrl(graph);
   if (!ctrl)
     return 0;
+  std::optional<unsigned> indexBits = getGraphIndexBits(graph);
+  if (!indexBits)
+    return 0;
 
   RewriteCtx ctx;
   ctx.graph = graph;
   ctx.ctrl = ctrl;
+  ctx.indexBits = *indexBits;
 
   // Collect rewrite targets up front so the walk is independent of
   // mutations performed by tryRewriteOne.
@@ -1595,6 +1619,22 @@ unsigned rewriteOneGraph(::dataflow::GraphOp graph,
   return result.wasInterrupted() ? ::mlir::failure() : ::mlir::success();
 }
 
+// One unusable index-width declaration fails the pass with its owner's reason,
+// before any graph is rewritten.
+::mlir::LogicalResult checkGraphIndexWidths(::mlir::ModuleOp module) {
+  ::mlir::WalkResult result = module.walk([&](::dataflow::GraphOp graph) {
+    if (graph.isExternal())
+      return ::mlir::WalkResult::advance();
+    ::llvm::Expected<unsigned> bits = ::loom::getIndexBitWidth(graph);
+    if (bits)
+      return ::mlir::WalkResult::advance();
+    module.emitError("loom-lower-graph-memory: ")
+        << ::llvm::toString(bits.takeError());
+    return ::mlir::WalkResult::interrupt();
+  });
+  return result.wasInterrupted() ? ::mlir::failure() : ::mlir::success();
+}
+
 ::mlir::LogicalResult checkNormalizedMemoryEffects(::mlir::ModuleOp module) {
   ::mlir::OwningOpRef<::mlir::ModuleOp> scratch(
       ::mlir::cast<::mlir::ModuleOp>(module->clone()));
@@ -1637,6 +1677,15 @@ struct LowerGraphMemoryPass
     ::mlir::ModuleOp module = getOperation();
     ::mlir::OpBuilder builder(&getContext());
 
+    // Every graph's canonical index width is resolved at its own scope,
+    // before anything is normalized or mutated, so an unusable declaration is
+    // reported with its owner's reason instead of degrading into a later
+    // residual memory error.
+    if (::mlir::failed(checkGraphIndexWidths(module))) {
+      signalPassFailure();
+      return;
+    }
+
     if (::mlir::failed(
             ::loom::lowering::checkGraphRegionLoweringPreconditions(module))) {
       signalPassFailure();
@@ -1659,7 +1708,11 @@ struct LowerGraphMemoryPass
     for (::dataflow::GraphOp graph : graphs) {
       if (graph.isExternal())
         continue;
-      if (::mlir::failed(::loom::lowering::lowerGraphRegions(graph))) {
+      std::optional<unsigned> indexBits = getGraphIndexBits(graph);
+      if (!indexBits)
+        continue;
+      if (::mlir::failed(
+              ::loom::lowering::lowerGraphRegions(graph, *indexBits))) {
         signalPassFailure();
         return;
       }

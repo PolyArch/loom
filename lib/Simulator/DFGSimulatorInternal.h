@@ -57,6 +57,13 @@ struct DataflowMemoryRead {
   bool accessedMemory = false;
 };
 
+// The complete element update one store commits, prepared before any element
+// changes so a rejected access leaves memory untouched.
+struct DataflowMemoryWrite {
+  llvm::SmallVector<std::pair<std::size_t, Token>> elements;
+  bool accessedMemory = false;
+};
+
 using ChannelMap = llvm::DenseMap<const mlir::OpOperand *, std::deque<Token>>;
 using OutputMap = llvm::DenseMap<mlir::Value, llvm::SmallVector<Token>>;
 
@@ -108,6 +115,14 @@ struct SimulatorState {
   std::uint64_t eventCount = 0;
   std::uint64_t memoryAddressScore = 0;
   std::uint64_t actorMutationEpoch = 0;
+  // The one graph this run simulates. Every `index` token in it resolves its
+  // width against this scope, including the elements of a memory fixture.
+  mlir::Operation *graphScope = nullptr;
+  // A capability whose absence only the runtime values expose, such as a plain
+  // conflicting access that carries no explicit causal order. The run reports
+  // an unsupported capability instead of an arbitrary result or a deadlock
+  // witness. Ordinary execution diagnostics never set this.
+  bool runtimeUnsupportedCapability = false;
 };
 
 struct UnsupportedOperation {
@@ -124,7 +139,6 @@ llvm::Expected<llvm::APInt> tokenBitPattern(const Token &token,
                                             mlir::Type type);
 llvm::Expected<Token> tokenFromBitPattern(const llvm::APInt &bits,
                                           mlir::Type type);
-llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type);
 llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type,
                                         mlir::Operation *scope);
 llvm::Expected<std::string> tokenToString(const Token &token, mlir::Type type,
@@ -146,32 +160,50 @@ bool recordEvent(SimulatorState &state, llvm::StringRef opName);
 bool hasComputedAddress(mlir::Value value);
 std::int64_t integerToken(const Token &token);
 bool boolToken(const Token &token);
-llvm::Expected<unsigned> indexBitWidth(mlir::Operation *scope);
 llvm::Expected<llvm::APInt> vectorIndexTokenBitPattern(const Token &token,
                                                        mlir::VectorType type,
                                                        mlir::Operation *scope);
+// The exact value one scalar `index` token carries at the resolved width. An
+// index has no width in its MLIR type, so it is normalized here instead of
+// through `tokenBitPattern`.
+llvm::Expected<llvm::APInt> indexTokenBitPattern(const Token &token,
+                                                 unsigned width);
+Token indexToken(const llvm::APInt &value);
 llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type,
                                             mlir::Operation *scope);
 
-std::optional<std::size_t>
-resolveElementIndex(const MemoryView &view, const Token &addr,
-                    SimulatorState &state, mlir::Operation *scope,
-                    llvm::StringRef opName, std::uint64_t laneOffset = 0);
+// The host element slot one semantic address names. `address` is exact at its
+// own width and becomes a host index only after the sign and range checks.
+std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
+                                               const llvm::APInt &address,
+                                               SimulatorState &state,
+                                               mlir::Operation *scope,
+                                               llvm::StringRef opName);
+std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
+                                               const Token &addr,
+                                               SimulatorState &state,
+                                               mlir::Operation *scope,
+                                               llvm::StringRef opName);
 std::optional<Token> readMemoryElement(const MemoryView &view,
                                        std::size_t index, SimulatorState &state,
                                        llvm::StringRef opName);
 void writeMemoryElement(const MemoryView &view, std::size_t index, Token value);
-std::optional<DataflowMemoryRead>
-readDataflowMemory(const MemoryView &view, const Token &addr,
-                   mlir::MemRefType memoryType, mlir::Type addressType,
-                   mlir::Type dataType, const Token *mask, mlir::Type maskType,
-                   SimulatorState &state, mlir::Operation *scope);
-std::optional<bool>
-writeDataflowMemory(const MemoryView &view, const Token &addr,
-                    const Token &data, mlir::MemRefType memoryType,
-                    mlir::Type addressType, mlir::Type dataType,
-                    const Token *mask, mlir::Type maskType,
-                    SimulatorState &state, mlir::Operation *scope);
+// Preflight: every check that can reject an access runs here, on peeked
+// inputs and a non-consuming memory view. A rejection may record its reason
+// and the unsupported-capability outcome, but consumes no input, publishes no
+// output, and leaves actor mutation state, events, and memory unchanged.
+std::optional<DataflowMemoryRead> prepareDataflowMemoryRead(
+    const MemoryView &view, const Token &addr, mlir::MemRefType memoryType,
+    mlir::Type addressType, mlir::Type dataType, const Token *mask,
+    mlir::Type maskType, SimulatorState &state, mlir::Operation *scope);
+std::optional<DataflowMemoryWrite>
+prepareDataflowMemoryWrite(const MemoryView &view, const Token &addr,
+                           const Token &data, mlir::MemRefType memoryType,
+                           mlir::Type addressType, mlir::Type dataType,
+                           const Token *mask, mlir::Type maskType,
+                           SimulatorState &state, mlir::Operation *scope);
+void commitDataflowMemoryWrite(const MemoryView &view,
+                               const DataflowMemoryWrite &write);
 bool isSupportedLLVMCall(mlir::LLVM::CallOp op);
 bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
                                  llvm::ArrayRef<Token> operands, Token &result);

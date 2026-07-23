@@ -1,5 +1,6 @@
 #include "DFGSimulatorInternal.h"
 
+#include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -8,8 +9,8 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/FormatVariadic.h"
-#include "llvm/Support/MathExtras.h"
 
+#include <algorithm>
 #include <limits>
 #include <system_error>
 
@@ -554,11 +555,14 @@ static bool fireGEP(mlir::LLVM::GEPOp op, SimulatorState &state) {
   return recordEvent(state, op->getName().getStringRef());
 }
 
-static std::optional<MemoryView>
-resolveMemoryView(SimulatorState &state, mlir::Value mem,
-                  mlir::OpOperand &memOperand) {
+// The memory an access addresses, read without consuming a channel-backed
+// view token, so a rejected access leaves that operand queued like every
+// other input.
+static std::optional<MemoryView> peekMemoryView(SimulatorState &state,
+                                                mlir::Value mem,
+                                                mlir::OpOperand &memOperand) {
   if (hasToken(state.channels, memOperand)) {
-    Token token = popToken(state, memOperand);
+    Token token = peekToken(state.channels, memOperand);
     if (token.kind != TokenKind::Pointer || !token.pointer.memory) {
       state.diagnostics.push_back(
           "dataflow memory operand is not a memory view");
@@ -572,10 +576,17 @@ resolveMemoryView(SimulatorState &state, mlir::Value mem,
   return std::nullopt;
 }
 
-std::optional<std::size_t>
-resolveElementIndex(const MemoryView &view, const Token &addr,
-                    SimulatorState &state, mlir::Operation *scope,
-                    llvm::StringRef opName, std::uint64_t laneOffset) {
+static void consumeMemoryView(SimulatorState &state,
+                              mlir::OpOperand &memOperand) {
+  if (hasToken(state.channels, memOperand))
+    (void)popToken(state, memOperand);
+}
+
+std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
+                                               const llvm::APInt &address,
+                                               SimulatorState &state,
+                                               mlir::Operation *scope,
+                                               llvm::StringRef opName) {
   auto elementSizeOrErr = byteSizeOfType(view.memory->elementType, scope);
   if (!elementSizeOrErr) {
     state.diagnostics.push_back(llvm::toString(elementSizeOrErr.takeError()));
@@ -587,25 +598,30 @@ resolveElementIndex(const MemoryView &view, const Token &addr,
     return std::nullopt;
   }
   const std::int64_t baseIndex = view.byteOffset / *elementSizeOrErr;
-  if (laneOffset >
-      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+  // The semantic address is signed at its own width. Widening both terms past
+  // that width keeps the sum exact, so a host slot is named only after the
+  // sign and bound checks below prove it exists.
+  const unsigned width = std::max(address.getBitWidth(), 64u) + 1;
+  const llvm::APInt slot =
+      address.sext(width) + llvm::APInt(width, baseIndex, /*isSigned=*/true);
+  const llvm::APInt limit(width, view.memory->elements.size());
+  if (slot.isNegative() || slot.uge(limit)) {
     state.diagnostics.push_back((opName + " address is out of range").str());
     return std::nullopt;
   }
-  std::int64_t laneAddress;
-  std::int64_t index;
-  if (llvm::AddOverflow(integerToken(addr),
-                        static_cast<std::int64_t>(laneOffset), laneAddress) ||
-      llvm::AddOverflow(baseIndex, laneAddress, index)) {
-    state.diagnostics.push_back((opName + " address is out of range").str());
-    return std::nullopt;
-  }
-  if (index < 0 ||
-      static_cast<std::size_t>(index) >= view.memory->elements.size()) {
-    state.diagnostics.push_back((opName + " address is out of range").str());
-    return std::nullopt;
-  }
-  return static_cast<std::size_t>(index);
+  return static_cast<std::size_t>(slot.getZExtValue());
+}
+
+std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
+                                               const Token &addr,
+                                               SimulatorState &state,
+                                               mlir::Operation *scope,
+                                               llvm::StringRef opName) {
+  return resolveElementIndex(
+      view,
+      llvm::APInt(64, static_cast<std::uint64_t>(integerToken(addr)),
+                  /*isSigned=*/true),
+      state, scope, opName);
 }
 
 std::optional<Token> readMemoryElement(const MemoryView &view,
@@ -657,20 +673,83 @@ getMemoryAccessType(mlir::MemRefType memoryType, mlir::Type dataType,
   return *access;
 }
 
-std::optional<DataflowMemoryRead>
-readDataflowMemory(const MemoryView &view, const Token &addr,
-                   mlir::MemRefType memoryType, mlir::Type addressType,
-                   mlir::Type dataType, const Token *mask, mlir::Type maskType,
-                   SimulatorState &state, mlir::Operation *scope) {
+// Resolves the address of every active lane before any element is read or
+// written, so a firing that cannot complete leaves memory untouched. A
+// contiguous access adds the lane ordinal at the declared index width, exactly
+// as an explicit index-typed `arith.addi` would; an indexed access takes each
+// lane address from its own address-vector slice. Inactive lanes are skipped
+// entirely, so their addresses are never evaluated.
+static std::optional<llvm::SmallVector<std::size_t>>
+resolveActiveLaneSlots(const MemoryView &view, const Token &addr,
+                       const dataflow::semantics::MemoryAccessType &access,
+                       const llvm::APInt &activeLanes, SimulatorState &state,
+                       mlir::Operation *scope, llvm::StringRef opName) {
+  // The index width is structural: every access has one whether or not a lane
+  // is active, so it is resolved before the inactive shortcut. No address is
+  // parsed or evaluated for an inactive lane.
+  auto width = loom::getIndexBitWidth(scope);
+  if (!width) {
+    state.diagnostics.push_back(llvm::toString(width.takeError()));
+    return std::nullopt;
+  }
+  llvm::SmallVector<std::size_t> slots;
+  if (activeLanes.isZero())
+    return slots;
+
+  llvm::APInt base;
+  std::optional<llvm::APInt> addressBits;
+  if (access.isGather()) {
+    auto bits =
+        vectorIndexTokenBitPattern(addr, access.addressVectorType, scope);
+    if (!bits) {
+      state.diagnostics.push_back(llvm::toString(bits.takeError()));
+      return std::nullopt;
+    }
+    addressBits = *bits;
+  } else {
+    auto bits = indexTokenBitPattern(addr, *width);
+    if (!bits) {
+      state.diagnostics.push_back(llvm::toString(bits.takeError()));
+      return std::nullopt;
+    }
+    base = *bits;
+  }
+
+  slots.reserve(activeLanes.popcount());
+  for (unsigned lane = 0; lane < access.laneCount(); ++lane) {
+    if (!activeLanes[lane])
+      continue;
+    llvm::APInt laneAddress =
+        access.isGather() ? addressBits->extractBits(*width, *width * lane)
+                          : base + llvm::APInt(*width, lane, /*isSigned=*/false,
+                                               /*implicitTrunc=*/true);
+    auto slot = resolveElementIndex(view, laneAddress, state, scope, opName);
+    if (!slot)
+      return std::nullopt;
+    slots.push_back(*slot);
+  }
+  return slots;
+}
+
+std::optional<DataflowMemoryRead> prepareDataflowMemoryRead(
+    const MemoryView &view, const Token &addr, mlir::MemRefType memoryType,
+    mlir::Type addressType, mlir::Type dataType, const Token *mask,
+    mlir::Type maskType, SimulatorState &state, mlir::Operation *scope) {
   auto access =
       getMemoryAccessType(memoryType, dataType, addressType, maskType, state);
   if (!access)
     return std::nullopt;
+  // An element access is one complete memref element, even when that element
+  // is itself a vector: one lane, one address, and no mask.
   if (!access->isVector()) {
-    auto index = resolveElementIndex(view, addr, state, scope, "dataflow.load");
-    if (!index)
+    auto lane = getActiveMemoryLanes(*access, nullptr, {}, state);
+    auto slots = lane ? resolveActiveLaneSlots(view, addr, *access, *lane,
+                                               state, scope, "dataflow.load")
+                      : std::nullopt;
+    if (!slots)
       return std::nullopt;
-    auto value = readMemoryElement(view, *index, state, "dataflow.load");
+    auto value =
+        readMemoryElement(view, slots->front(), state, "dataflow.load");
     if (!value)
       return std::nullopt;
     return DataflowMemoryRead{*value, true};
@@ -686,40 +765,19 @@ readDataflowMemory(const MemoryView &view, const Token &addr,
       state.diagnostics.push_back(llvm::toString(vectorWidth.takeError()));
     return std::nullopt;
   }
+  auto slots = resolveActiveLaneSlots(view, addr, *access, *activeLanes, state,
+                                      scope, "dataflow.load");
+  if (!slots)
+    return std::nullopt;
 
+  // Inactive lanes keep the element type's all-zero bit representation.
   llvm::APInt resultBits(*vectorWidth, 0);
-  std::optional<llvm::APInt> addressBits;
-  unsigned addressElementWidth = 0;
-  if (access->isGather() && !activeLanes->isZero()) {
-    auto bits =
-        vectorIndexTokenBitPattern(addr, access->addressVectorType, scope);
-    auto width = indexBitWidth(scope);
-    if (!bits || !width) {
-      if (!bits)
-        state.diagnostics.push_back(llvm::toString(bits.takeError()));
-      if (!width)
-        state.diagnostics.push_back(llvm::toString(width.takeError()));
-      return std::nullopt;
-    }
-    addressBits = *bits;
-    addressElementWidth = *width;
-  }
+  unsigned active = 0;
   for (unsigned lane = 0; lane < access->laneCount(); ++lane) {
     if (!(*activeLanes)[lane])
       continue;
-    Token laneAddress = addr;
-    std::uint64_t laneOffset = lane;
-    if (access->isGather()) {
-      llvm::APInt laneBits = addressBits->extractBits(
-          addressElementWidth, addressElementWidth * lane);
-      laneAddress = integerValueToken(laneBits.getSExtValue());
-      laneOffset = 0;
-    }
-    auto index = resolveElementIndex(view, laneAddress, state, scope,
-                                     "dataflow.load", laneOffset);
-    if (!index)
-      return std::nullopt;
-    auto element = readMemoryElement(view, *index, state, "dataflow.load");
+    auto element =
+        readMemoryElement(view, (*slots)[active++], state, "dataflow.load");
     if (!element)
       return std::nullopt;
     auto elementBits = tokenBitPattern(*element, access->elementType);
@@ -738,38 +796,38 @@ readDataflowMemory(const MemoryView &view, const Token &addr,
   return DataflowMemoryRead{*result, !activeLanes->isZero()};
 }
 
-std::optional<bool>
-writeDataflowMemory(const MemoryView &view, const Token &addr,
-                    const Token &data, mlir::MemRefType memoryType,
-                    mlir::Type addressType, mlir::Type dataType,
-                    const Token *mask, mlir::Type maskType,
-                    SimulatorState &state, mlir::Operation *scope) {
+std::optional<DataflowMemoryWrite>
+prepareDataflowMemoryWrite(const MemoryView &view, const Token &addr,
+                           const Token &data, mlir::MemRefType memoryType,
+                           mlir::Type addressType, mlir::Type dataType,
+                           const Token *mask, mlir::Type maskType,
+                           SimulatorState &state, mlir::Operation *scope) {
   auto access =
       getMemoryAccessType(memoryType, dataType, addressType, maskType, state);
   if (!access)
     return std::nullopt;
-  // Indexed geometry is canonical, but executing a scatter needs the duplicate
-  // active address rules that this simulator does not implement yet, so it
-  // fails closed instead of inventing a lane order.
-  if (access->isGather()) {
-    state.diagnostics.push_back(
-        "dataflow.store does not execute an indexed scatter");
-    return std::nullopt;
-  }
   if (!access->isVector()) {
-    auto index =
-        resolveElementIndex(view, addr, state, scope, "dataflow.store");
-    if (!index)
+    auto lane = getActiveMemoryLanes(*access, nullptr, {}, state);
+    auto slots = lane ? resolveActiveLaneSlots(view, addr, *access, *lane,
+                                               state, scope, "dataflow.store")
+                      : std::nullopt;
+    if (!slots)
       return std::nullopt;
-    writeMemoryElement(view, *index, data);
-    return true;
+    return DataflowMemoryWrite{{{slots->front(), data}}, true};
   }
 
   auto activeLanes = getActiveMemoryLanes(*access, mask, maskType, state);
   if (!activeLanes)
     return std::nullopt;
+  // The structural index width is resolved for every firing, including one
+  // whose mask leaves no lane to address. An all-zero mask then decodes no
+  // data and writes nothing.
+  auto slots = resolveActiveLaneSlots(view, addr, *access, *activeLanes, state,
+                                      scope, "dataflow.store");
+  if (!slots)
+    return std::nullopt;
   if (activeLanes->isZero())
-    return false;
+    return DataflowMemoryWrite{};
 
   auto elementWidth = tokenTypeBitWidth(access->elementType);
   auto dataBits = tokenBitPattern(data, access->vectorType);
@@ -781,14 +839,30 @@ writeDataflowMemory(const MemoryView &view, const Token &addr,
     return std::nullopt;
   }
 
-  llvm::SmallVector<std::pair<std::size_t, Token>> writes;
+  // A plain scatter has no lane order for duplicate active destinations, and
+  // the finalized program carries no distinctness proof, so a collision is
+  // refused here rather than resolved by an invented order. Only the resolved
+  // addresses expose it, so it is an unsupported capability rather than an
+  // ordinary execution failure.
+  if (access->isGather()) {
+    llvm::DenseSet<std::size_t> destinations;
+    for (std::size_t slot : *slots) {
+      if (destinations.insert(slot).second)
+        continue;
+      state.diagnostics.push_back(
+          "dataflow.store does not resolve duplicate active addresses");
+      state.runtimeUnsupportedCapability = true;
+      return std::nullopt;
+    }
+  }
+
+  DataflowMemoryWrite write;
+  write.accessedMemory = true;
+  write.elements.reserve(slots->size());
+  unsigned active = 0;
   for (unsigned lane = 0; lane < access->laneCount(); ++lane) {
     if (!(*activeLanes)[lane])
       continue;
-    auto index =
-        resolveElementIndex(view, addr, state, scope, "dataflow.store", lane);
-    if (!index)
-      return std::nullopt;
     llvm::APInt elementBits =
         dataBits->extractBits(*elementWidth, *elementWidth * lane);
     auto element = tokenFromBitPattern(elementBits, access->elementType);
@@ -796,11 +870,15 @@ writeDataflowMemory(const MemoryView &view, const Token &addr,
       state.diagnostics.push_back(llvm::toString(element.takeError()));
       return std::nullopt;
     }
-    writes.emplace_back(*index, *element);
+    write.elements.emplace_back((*slots)[active++], *element);
   }
-  for (const auto &[index, value] : writes)
+  return write;
+}
+
+void commitDataflowMemoryWrite(const MemoryView &view,
+                               const DataflowMemoryWrite &write) {
+  for (const auto &[index, value] : write.elements)
     writeMemoryElement(view, index, value);
-  return true;
 }
 
 static mlir::OpOperand *getOptionalMaskOperand(mlir::Operation *op,
@@ -818,21 +896,29 @@ static bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
       (maskOperand && !hasToken(state.channels, *maskOperand)))
     return false;
   std::optional<MemoryView> view =
-      resolveMemoryView(state, op.getMem(), op.getMemMutable());
+      peekMemoryView(state, op.getMem(), op.getMemMutable());
   if (!view)
     return false;
-  Token addr = popToken(state, op.getAddrMutable());
-  popToken(state, op.getCtrlMutable());
+
+  Token addr = peekToken(state.channels, op.getAddrMutable());
   std::optional<Token> mask;
   if (maskOperand)
-    mask = popToken(state, *maskOperand);
-  auto value = readDataflowMemory(
+    mask = peekToken(state.channels, *maskOperand);
+  auto value = prepareDataflowMemoryRead(
       *view, addr, mlir::cast<mlir::MemRefType>(op.getMem().getType()),
       op.getAddr().getType(), op.getData().getType(), mask ? &*mask : nullptr,
       op.getMask() ? op.getMask().getType() : mlir::Type{}, state,
       op.getOperation());
   if (!value)
     return false;
+
+  // Issue: the accepted access consumes every dynamic operand and the control
+  // event, then publishes data and done together.
+  consumeMemoryView(state, op.getMemMutable());
+  popToken(state, op.getAddrMutable());
+  popToken(state, op.getCtrlMutable());
+  if (maskOperand)
+    popToken(state, *maskOperand);
   emitToken(state, op.getData(), value->data);
   emitToken(state, op.getDone(), noneToken());
   if (value->accessedMemory && hasComputedAddress(op.getAddr()))
@@ -1018,24 +1104,34 @@ static bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
       (maskOperand && !hasToken(state.channels, *maskOperand)))
     return false;
   std::optional<MemoryView> view =
-      resolveMemoryView(state, op.getMem(), op.getMemMutable());
+      peekMemoryView(state, op.getMem(), op.getMemMutable());
   if (!view)
     return false;
-  Token addr = popToken(state, op.getAddrMutable());
-  Token data = popToken(state, op.getDataMutable());
-  popToken(state, op.getCtrlMutable());
+
+  Token addr = peekToken(state.channels, op.getAddrMutable());
+  Token data = peekToken(state.channels, op.getDataMutable());
   std::optional<Token> mask;
   if (maskOperand)
-    mask = popToken(state, *maskOperand);
-  auto accessed = writeDataflowMemory(
+    mask = peekToken(state.channels, *maskOperand);
+  auto write = prepareDataflowMemoryWrite(
       *view, addr, data, mlir::cast<mlir::MemRefType>(op.getMem().getType()),
       op.getAddr().getType(), op.getData().getType(), mask ? &*mask : nullptr,
       op.getMask() ? op.getMask().getType() : mlir::Type{}, state,
       op.getOperation());
-  if (!accessed)
+  if (!write)
     return false;
+
+  // Issue: the accepted access consumes every dynamic operand and the control
+  // event, then commits the complete element update before publishing done.
+  consumeMemoryView(state, op.getMemMutable());
+  popToken(state, op.getAddrMutable());
+  popToken(state, op.getDataMutable());
+  popToken(state, op.getCtrlMutable());
+  if (maskOperand)
+    popToken(state, *maskOperand);
+  commitDataflowMemoryWrite(*view, *write);
   emitToken(state, op.getDone(), noneToken());
-  if (*accessed && hasComputedAddress(op.getAddr()))
+  if (write->accessedMemory && hasComputedAddress(op.getAddr()))
     state.memoryAddressScore += kStoreAddressScore;
   return recordEvent(state, op->getName().getStringRef());
 }

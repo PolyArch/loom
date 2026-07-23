@@ -7,6 +7,7 @@ target_include_directories(loom-simulator-vector-boundary-test PRIVATE
 )
 
 target_link_libraries(loom-simulator-vector-boundary-test PRIVATE
+  LoomCommon
   LoomSimulator
   MLIRArithDialect
   MLIRDataflow

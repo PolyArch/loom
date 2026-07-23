@@ -2,7 +2,6 @@
 #include "GraphIndexLowering.h"
 #include "GraphStreamBoundaryLowering.h"
 
-#include "Common/IndexWidth.h"
 #include "Frontend/Lowering/StreamLoopAttrs.h"
 
 #include "Dataflow/IR/DataflowDialect.h"
@@ -400,10 +399,10 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
 class GraphRegionLowerer {
 public:
   GraphRegionLowerer(::dataflow::GraphOp graph,
-                     const StreamBoundaryInfo &boundary)
+                     const StreamBoundaryInfo &boundary, unsigned indexBits)
       : graph(graph), builder(graph.getContext()),
         entry(graph.getBody().front()), anchor(entry.getTerminator()),
-        transientStreamBoundary(boundary.isTransient()) {
+        transientStreamBoundary(boundary.isTransient()), indexBits(indexBits) {
     for (auto [channel, payload] :
          ::llvm::zip_equal(boundary.inputChannels, boundary.inputPayloads))
       streamInputByChannel.try_emplace(channel, payload);
@@ -431,7 +430,7 @@ public:
            "stream choice selectors must be bound before SCF erasure");
     assert(streamRepeatUsers.empty() &&
            "stream repeat selectors must be bound before SCF erasure");
-    ::loom::lowering::lowerGraphIndexDomains(graph);
+    ::loom::lowering::lowerGraphIndexDomains(graph, indexBits);
     auto returnOp = ::llvm::cast<::dataflow::GraphReturnOp>(anchor);
     if (transientStreamBoundary) {
       if (::llvm::any_of(streamOutputs,
@@ -452,6 +451,8 @@ private:
   ::mlir::Block &entry;
   ::mlir::Operation *anchor;
   bool transientStreamBoundary;
+  // Resolved once at the pass boundary and read-only from here on.
+  unsigned indexBits;
   ::llvm::DenseMap<::mlir::Value, ::mlir::Value> streamInputByChannel;
   ::llvm::DenseMap<::mlir::Value, unsigned> streamOutputByChannel;
   ::llvm::SmallVector<::mlir::Value, 4> streamOutputs;
@@ -1488,8 +1489,7 @@ private:
     ::mlir::Type streamType = lower.getType();
     bool indexLoop = ::llvm::isa<::mlir::IndexType>(streamType);
     if (indexLoop) {
-      streamType =
-          ::mlir::IntegerType::get(graph.getContext(), ::loom::getIndexWidth());
+      streamType = ::mlir::IntegerType::get(graph.getContext(), indexBits);
       lower =
           ::mlir::arith::IndexCastOp::create(builder, loc, streamType, lower)
               .getResult();
@@ -1760,11 +1760,12 @@ checkGraphRegionLoweringPreconditions(::mlir::ModuleOp module) {
   return result.wasInterrupted() ? ::mlir::failure() : ::mlir::success();
 }
 
-::mlir::LogicalResult lowerGraphRegions(::dataflow::GraphOp graph) {
+::mlir::LogicalResult lowerGraphRegions(::dataflow::GraphOp graph,
+                                        unsigned indexBits) {
   auto boundary = analyzeStreamBoundary(graph);
   if (::mlir::failed(boundary))
     return ::mlir::failure();
-  return GraphRegionLowerer(graph, *boundary).run();
+  return GraphRegionLowerer(graph, *boundary, indexBits).run();
 }
 
 } // namespace lowering

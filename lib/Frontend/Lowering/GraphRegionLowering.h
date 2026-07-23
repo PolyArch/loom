@@ -15,7 +15,10 @@ bool hasGraphOwnedParallelProvenance(::mlir::Operation *op);
 ::mlir::LogicalResult
 checkGraphRegionLoweringPreconditions(::mlir::ModuleOp module);
 
-::mlir::LogicalResult lowerGraphRegions(::dataflow::GraphOp graph);
+// `indexBits` is the canonical index width the caller's pass boundary already
+// resolved; region lowering never resolves it again.
+::mlir::LogicalResult lowerGraphRegions(::dataflow::GraphOp graph,
+                                        unsigned indexBits);
 
 } // namespace lowering
 } // namespace loom

@@ -1,5 +1,8 @@
-// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
-// RUN: loom-dfg-sim %t.lowered.mlir --graph llvm_store_fneg --memref 0=-3.500000e+00 --memref 1=0.000000e+00,0.000000e+00 --output %t.json
+// The i64 pointer offsets need a 64-bit canonical index, so lowering and
+// simulation share that configured width rather than the default.
+// RUN: env LOOM_INDEX_WIDTH=64 loom-raise-opt --loom-lower-graph-memory %s \
+// RUN:   -o %t.lowered.mlir
+// RUN: env LOOM_INDEX_WIDTH=64 loom-dfg-sim %t.lowered.mlir --graph llvm_store_fneg --memref 0=-3.500000e+00 --memref 1=0.000000e+00,0.000000e+00 --output %t.json
 // RUN: FileCheck %s < %t.json
 
 // CHECK-DAG: "workload": "llvm_store_fneg"

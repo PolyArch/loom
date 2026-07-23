@@ -1,4 +1,7 @@
-// RUN: loom-raise-opt --loom-lower-graph-memory %s | FileCheck %s
+// These graphs index memory with i64 ordinals, so they need a 64-bit
+// canonical index rather than the configured default.
+// RUN: env LOOM_INDEX_WIDTH=64 loom-raise-opt --loom-lower-graph-memory %s \
+// RUN:   | FileCheck %s
 
 // Explicit graph memory inputs are normalized into canonical dataflow memory
 // operations. Their pointer bridge preserves the graph-owned import root.

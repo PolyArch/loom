@@ -6,7 +6,9 @@
 namespace loom {
 namespace lowering {
 
-void lowerGraphIndexDomains(::dataflow::GraphOp graph);
+// `indexBits` is the canonical index width the caller's pass boundary already
+// resolved; index-domain rewriting never resolves it again.
+void lowerGraphIndexDomains(::dataflow::GraphOp graph, unsigned indexBits);
 
 } // namespace lowering
 } // namespace loom

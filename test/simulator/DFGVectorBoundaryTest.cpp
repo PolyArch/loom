@@ -1,5 +1,6 @@
 #include "DFGSimulatorInternal.h"
 
+#include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowDialect.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -10,6 +11,7 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -17,6 +19,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <initializer_list>
+#include <memory>
 #include <utility>
 
 using namespace loom::sim::detail;
@@ -45,6 +48,15 @@ module {
   func.func @rank_two(%packed: i48, %vector: vector<2x3xi8>) {
     %lanes = dataflow.unpack %packed : i48 -> vector<2x3xi8>
     %bits = dataflow.pack %vector : vector<2x3xi8> -> i48
+    return
+  }
+
+  func.func @memory(%mem: memref<?xi8>, %addr: index,
+                    %addresses: vector<2xindex>, %data: vector<2xi8>,
+                    %ctrl: none) {
+    %loaded, %read = dataflow.load %mem[%addr] %ctrl : memref<?xi8>
+    %written = dataflow.store %mem[%addresses] %data %ctrl
+        : memref<?xi8>, vector<2xindex>, vector<2xi8>
     return
   }
 }
@@ -355,6 +367,104 @@ void serializeFailureIsAtomic(dataflow::SerializeOp op) {
           "serialize published output on conversion failure");
 }
 
+// A memory actor rejects an access entirely on peeked inputs. Only its reason
+// and the unsupported-capability outcome may change; inputs, outputs, actor
+// mutation state, events, fire counts, and memory may not.
+std::shared_ptr<MemoryValue>
+makeMemory(mlir::Type elementType, std::initializer_list<uint64_t> values) {
+  auto memory = std::make_shared<MemoryValue>();
+  for (uint64_t value : values)
+    memory->elements.push_back(tokenWithBits(elementType, value));
+  memory->elementType = elementType;
+  memory->initialized = llvm::SmallBitVector(memory->elements.size(), true);
+  return memory;
+}
+
+unsigned resolvedIndexBits(mlir::Operation *scope) {
+  return takeExpected(loom::getIndexBitWidth(scope));
+}
+
+Token indexVectorToken(unsigned indexBits,
+                       std::initializer_list<uint64_t> lanes) {
+  llvm::APInt bits(indexBits * lanes.size(), 0);
+  unsigned lane = 0;
+  for (uint64_t value : lanes)
+    bits.insertBits(llvm::APInt(indexBits, value), indexBits * lane++);
+  Token token;
+  token.kind = TokenKind::Vector;
+  token.bitPattern = bits;
+  return token;
+}
+
+void expectUntouchedRun(SimulatorState &state, const MemoryValue &memory,
+                        llvm::ArrayRef<uint64_t> elements,
+                        llvm::StringRef message) {
+  require(state.pendingChannels.empty() && state.pendingObservedOutputs.empty(),
+          message);
+  require(state.actorMutationEpoch == 0 && state.eventCount == 0 &&
+              state.operationFireCounts.empty(),
+          message);
+  require(state.terminalPrimitiveOps.empty(), message);
+  require(memory.elements.size() == elements.size(), message);
+  for (auto [token, value] : llvm::zip_equal(memory.elements, elements))
+    require(bitsOf(token, memory.elementType) == value, message);
+}
+
+void loadRejectionIsAtomic(dataflow::LoadOp op) {
+  SimulatorState state;
+  auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
+  auto memory = makeMemory(memoryType.getElementType(), {0x11, 0x22});
+  state.channels[&op.getMemMutable()].push_back(
+      pointerToken(op.getMem(), memory, 0));
+  state.channels[&op.getAddrMutable()].push_back(
+      indexToken(llvm::APInt(resolvedIndexBits(op.getOperation()), 99)));
+  state.channels[&op.getCtrlMutable()].push_back(noneToken());
+
+  require(!fireActorOperation(op, state),
+          "load accepted an out-of-range address");
+  require(state.diagnostics.size() == 1, "load recorded no rejection reason");
+  require(!fireActorOperation(op, state),
+          "load accepted an out-of-range address when re-polled");
+  require(state.diagnostics.size() == 2,
+          "a re-polled load rejection is not detectable as a failed attempt");
+  require(state.channels[&op.getMemMutable()].size() == 1 &&
+              state.channels[&op.getAddrMutable()].size() == 1 &&
+              state.channels[&op.getCtrlMutable()].size() == 1,
+          "load consumed input on a rejected access");
+  expectUntouchedRun(state, *memory, {0x11, 0x22},
+                     "load changed run or memory state on a rejected access");
+}
+
+void storeDuplicateScatterIsAtomic(dataflow::StoreOp op) {
+  SimulatorState state;
+  auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
+  auto memory = makeMemory(memoryType.getElementType(), {0x11, 0x22});
+  state.channels[&op.getMemMutable()].push_back(
+      pointerToken(op.getMem(), memory, 0));
+  state.channels[&op.getAddrMutable()].push_back(
+      indexVectorToken(resolvedIndexBits(op.getOperation()), {1, 1}));
+  state.channels[&op.getDataMutable()].push_back(
+      tokenWithBits(op.getData().getType(), 0xAB43));
+  state.channels[&op.getCtrlMutable()].push_back(noneToken());
+
+  require(!fireActorOperation(op, state),
+          "store accepted duplicate active destinations");
+  require(state.diagnostics.size() == 1, "store recorded no rejection reason");
+  require(!fireActorOperation(op, state),
+          "store accepted duplicate active destinations when re-polled");
+  require(state.diagnostics.size() == 2,
+          "a re-polled store rejection is not detectable as a failed attempt");
+  require(state.channels[&op.getMemMutable()].size() == 1 &&
+              state.channels[&op.getAddrMutable()].size() == 1 &&
+              state.channels[&op.getDataMutable()].size() == 1 &&
+              state.channels[&op.getCtrlMutable()].size() == 1,
+          "store consumed input on a rejected access");
+  require(state.runtimeUnsupportedCapability,
+          "duplicate active scatter did not report an unsupported capability");
+  expectUntouchedRun(state, *memory, {0x11, 0x22},
+                     "store changed run or memory state on a rejected access");
+}
+
 } // namespace
 
 int main() {
@@ -370,7 +480,8 @@ int main() {
       module->lookupSymbol<mlir::func::FuncOp>("parallelize");
   auto serializeFunc = module->lookupSymbol<mlir::func::FuncOp>("serialize");
   auto rankTwoFunc = module->lookupSymbol<mlir::func::FuncOp>("rank_two");
-  require(parallelizeFunc && serializeFunc && rankTwoFunc,
+  auto memoryFunc = module->lookupSymbol<mlir::func::FuncOp>("memory");
+  require(parallelizeFunc && serializeFunc && rankTwoFunc && memoryFunc,
           "fixture functions are missing");
 
   dataflow::ParallelizeOp parallelize;
@@ -385,8 +496,12 @@ int main() {
   serializeFunc.walk([&](dataflow::UnpackOp op) { unpacks.push_back(op); });
   rankTwoFunc.walk([&](dataflow::PackOp op) { rankTwoPack = op; });
   rankTwoFunc.walk([&](dataflow::UnpackOp op) { rankTwoUnpack = op; });
+  dataflow::LoadOp load;
+  dataflow::StoreOp store;
+  memoryFunc.walk([&](dataflow::LoadOp op) { load = op; });
+  memoryFunc.walk([&](dataflow::StoreOp op) { store = op; });
   require(parallelize && pack && serialize && unpacks.size() == 2 &&
-              rankTwoPack && rankTwoUnpack,
+              rankTwoPack && rankTwoUnpack && load && store,
           "fixture actors are missing");
 
   dataflow::UnpackOp vectorUnpack = unpacks[0];
@@ -404,5 +519,7 @@ int main() {
   packFailureIsAtomic(pack);
   unpackFailureIsAtomic(vectorUnpack);
   serializeFailureIsAtomic(serialize);
+  loadRejectionIsAtomic(load);
+  storeDuplicateScatterIsAtomic(store);
   return 0;
 }

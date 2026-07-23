@@ -11,6 +11,36 @@
 // RUN: loom-dfg-sim %s --graph invalid_index_width_with_stream --arg 0=1 --arg 1=0 --arg 2=64 --arg 3=1 --output %t.invalid.json
 // RUN: FileCheck %s --check-prefix=INVALID < %t.invalid.json
 // RUN: grep -c 'index bit width must be in \[1, 64\], got 128' %t.invalid.json | FileCheck %s --check-prefix=INVALID-COUNT
+// RUN: env LOOM_INDEX_WIDTH=128 loom-dfg-sim %s --graph wide_index_load \
+// RUN:   --arg 0=2 --memref 1=10,20,30 --output %t.wide-load.json
+// RUN: FileCheck %s --check-prefix=WIDE-LOAD < %t.wide-load.json
+// RUN: env LOOM_INDEX_WIDTH=128 loom-dfg-sim %s --graph wide_index_load \
+// RUN:   --arg 0=18446744073709551616 --memref 1=10,20,30 \
+// RUN:   --output %t.wide-range.json
+// RUN: FileCheck %s --check-prefix=WIDE-RANGE < %t.wide-range.json
+// RUN: env LOOM_INDEX_WIDTH=128 not loom-dfg-sim %s --graph wide_index_load \
+// RUN:   --arg 0=340282366920938463463374607431768211456 \
+// RUN:   --memref 1=10,20,30 --output %t.wide-overflow.json 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=WIDE-OVERFLOW
+// RUN: env LOOM_INDEX_WIDTH=128 loom-dfg-sim %s --graph wide_index_gather \
+// RUN:   --arg 0=0x0000000000000000000000000000000200000000000000000000000000000001 \
+// RUN:   --memref 1=10,20,30 --output %t.wide-gather.json
+// RUN: FileCheck %s --check-prefix=WIDE-GATHER < %t.wide-gather.json
+// RUN: env LOOM_INDEX_WIDTH=128 loom-dfg-sim %s --graph wide_index_gather \
+// RUN:   --arg 0=0x0000000000000000000000000000000100000000000000010000000000000000 \
+// RUN:   --memref 1=10,20,30 --output %t.wide-gather-range.json
+// RUN: FileCheck %s --check-prefix=WIDE-GATHER-RANGE < %t.wide-gather-range.json
+// A memory fixture is an operand of its own graph, so an explicit declaration
+// overrides the configured fallback for its element tokens too.
+// RUN: env LOOM_INDEX_WIDTH=64 loom-dfg-sim %s --graph index_memory_load \
+// RUN:   --arg 0=0 --memref 1=7 --output %t.index-memory-load.json
+// RUN: FileCheck %s --check-prefix=INDEX-MEMORY-LOAD \
+// RUN:   < %t.index-memory-load.json
+// RUN: env LOOM_INDEX_WIDTH=64 loom-dfg-sim %s --graph index_memory_store \
+// RUN:   --arg 0=0 --arg 1=9 --memref 2=7,8 \
+// RUN:   --output %t.index-memory-store.json
+// RUN: FileCheck %s --check-prefix=INDEX-MEMORY-STORE \
+// RUN:   < %t.index-memory-store.json
 
 // FALLBACK32-DAG: "index:0"
 // FALLBACK32-DAG: "i32:20"
@@ -30,6 +60,43 @@
 // INVALID-DAG: "dataflow.stream": 65
 // INVALID-COUNT: 1
 
+// The memory path carries an index at its resolved width, so an arbitrary
+// configured 128-bit index addresses memory exactly rather than through a
+// host integer, without needing an explicit declaration.
+// WIDE-LOAD-DAG: "status": "pass"
+// WIDE-LOAD-DAG: "dataflow.load": 1
+// WIDE-LOAD-DAG: "i32:30"
+
+// 2^64 is a representable 128-bit index and no element of this memory, so it
+// is refused instead of truncating into an in-range host address.
+// WIDE-RANGE-DAG: "status": "blocked"
+// WIDE-RANGE-DAG: "dataflow.load address is out of range"
+
+// 2^128 has no 128-bit index representation at all, so the runtime boundary
+// rejects it exactly instead of wrapping it into one.
+// WIDE-OVERFLOW: index argument does not fit its declared bit width
+
+// WIDE-GATHER-DAG: "status": "pass"
+// WIDE-GATHER-DAG: "dataflow.load": 1
+// WIDE-GATHER-DAG: "vector<2xi32>:0x1E00000014"
+
+// WIDE-GATHER-RANGE-DAG: "status": "blocked"
+// WIDE-GATHER-RANGE-DAG: "dataflow.load address is out of range"
+
+// The fixture element is read back at the declared 32-bit width, not the
+// 64-bit configured fallback.
+// INDEX-MEMORY-LOAD-DAG: "status": "pass"
+// INDEX-MEMORY-LOAD-DAG: "dataflow.load": 1
+// INDEX-MEMORY-LOAD-DAG: "index:7"
+
+// The written element and the untouched fixture element are both encoded at
+// that same declared width.
+// INDEX-MEMORY-STORE: "arg2": [
+// INDEX-MEMORY-STORE-NEXT: "index:9",
+// INDEX-MEMORY-STORE-NEXT: "index:8"
+// INDEX-MEMORY-STORE: "dataflow.store": 1
+// INDEX-MEMORY-STORE: "status": "pass"
+
 module {
   dataflow.graph private @index_width_fallback(
       %ctrl: none, %value: i64, %base: memref<?xi32>)
@@ -43,6 +110,24 @@ module {
         : (none, index, i32) -> (none, index, i32)
     dataflow.graph.return %published#0, %published#1, %published#2
         : none, index, i32
+  }
+
+  dataflow.graph private @wide_index_load(
+      %ctrl: none, %addr: index, %mem: memref<?xi32>) -> i32
+      attributes {input_segments = array<i32: 1, 0, 1>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %data, %done = dataflow.load %mem[%addr] %ctrl : memref<?xi32>
+    dataflow.graph.return %done, %data : none, i32
+  }
+
+  dataflow.graph private @wide_index_gather(
+      %ctrl: none, %addresses: vector<2xindex>, %mem: memref<?xi32>)
+      -> vector<2xi32>
+      attributes {input_segments = array<i32: 1, 0, 1>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %data, %done = dataflow.load %mem[%addresses] %ctrl
+        : memref<?xi32>, vector<2xindex>, vector<2xi32>
+    dataflow.graph.return %done, %data : none, vector<2xi32>
   }
 
   dataflow.graph private @index_vector_forward(
@@ -70,6 +155,22 @@ module {
           : (none, index, i32) -> (none, index, i32)
       dataflow.graph.return %published#0, %published#1, %published#2
           : none, index, i32
+    }
+
+    dataflow.graph private @index_memory_load(
+        %ctrl: none, %addr: index, %mem: memref<?xindex>) -> index
+        attributes {input_segments = array<i32: 1, 0, 1>,
+                    result_segments = array<i32: 1, 0, 0>} {
+      %data, %done = dataflow.load %mem[%addr] %ctrl : memref<?xindex>
+      dataflow.graph.return %done, %data : none, index
+    }
+
+    dataflow.graph private @index_memory_store(
+        %ctrl: none, %addr: index, %value: index, %mem: memref<?xindex>)
+        attributes {input_segments = array<i32: 2, 0, 1>,
+                    result_segments = array<i32: 0, 0, 0>} {
+      %done = dataflow.store %mem[%addr] %value %ctrl : memref<?xindex>
+      dataflow.graph.return %done : none
     }
   }
 

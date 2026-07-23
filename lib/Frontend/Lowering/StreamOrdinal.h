@@ -6,7 +6,6 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/Interfaces/DataLayoutInterfaces.h"
 
 namespace loom {
 namespace lowering {
@@ -20,18 +19,17 @@ inline ::mlir::IntegerAttr getIntegerConstantAttr(::mlir::Value value) {
   return ::llvm::dyn_cast_or_null<::mlir::IntegerAttr>(attr);
 }
 
+// `indexBits` is the canonical index width the caller's pass boundary already
+// resolved; this recognition never resolves it again.
 inline bool isZeroBasedUnitOrdinalStream(::dataflow::StreamOp stream,
-                                         ::mlir::Operation *scope) {
+                                         unsigned indexBits) {
   if (!stream || stream.getStepKind() != ::dataflow::StreamStepKind::Add)
     return false;
   auto integer =
       ::llvm::dyn_cast<::mlir::IntegerType>(stream.getIv().getType());
   if (!integer || !integer.isSignless())
     return false;
-  ::mlir::DataLayout dataLayout = ::mlir::DataLayout::closest(scope);
-  ::llvm::TypeSize indexBits = dataLayout.getTypeSizeInBits(
-      ::mlir::IndexType::get(integer.getContext()));
-  if (indexBits.isScalable() || integer.getWidth() != indexBits.getFixedValue())
+  if (integer.getWidth() != indexBits)
     return false;
   ::mlir::IntegerAttr init = getIntegerConstantAttr(stream.getInit());
   ::mlir::IntegerAttr step = getIntegerConstantAttr(stream.getStep());

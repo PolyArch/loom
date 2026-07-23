@@ -1,5 +1,6 @@
 #include "DFGSimulatorInternal.h"
 
+#include "Common/IndexWidth.h"
 #include "Common/VectorWidth.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -10,6 +11,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cmath>
+#include <cstdint>
 #include <string>
 #include <system_error>
 
@@ -87,8 +89,17 @@ llvm::Expected<std::string> tokenToString(const Token &token, mlir::Type type,
   if (token.kind == TokenKind::Bool)
     return typePrefix(type) + ":" + (token.boolValue ? "true" : "false");
   if (token.kind == TokenKind::Integer) {
-    if (mlir::isa<mlir::IndexType>(type))
-      return typePrefix(type) + ":" + std::to_string(token.intValue);
+    if (mlir::isa<mlir::IndexType>(type)) {
+      auto width = loom::getIndexBitWidth(scope);
+      if (!width)
+        return width.takeError();
+      auto bits = indexTokenBitPattern(token, *width);
+      if (!bits)
+        return bits.takeError();
+      llvm::SmallString<48> value;
+      bits->toString(value, 10, /*Signed=*/true);
+      return typePrefix(type) + ":" + value.str().str();
+    }
     auto integer = mlir::cast<mlir::IntegerType>(type);
     if (integer.getWidth() <= 64)
       return typePrefix(type) + ":" + std::to_string(token.intValue);
@@ -244,12 +255,14 @@ llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr) {
                                  "unsupported dataflow.constant attribute");
 }
 
-static llvm::Expected<llvm::APInt> parseIntegerBitPattern(llvm::StringRef raw,
-                                                          unsigned bitWidth) {
+static llvm::Expected<llvm::APInt>
+parseIntegerBitPattern(llvm::StringRef raw, unsigned bitWidth,
+                       llvm::StringRef argumentKind = "integer") {
   raw = raw.trim();
   if (bitWidth == 0)
     return llvm::createStringError(std::errc::invalid_argument,
-                                   "integer token bit width must be nonzero");
+                                   "%s token bit width must be nonzero",
+                                   argumentKind.str().c_str());
 
   bool negative = false;
   if (!raw.empty() && (raw.front() == '-' || raw.front() == '+')) {
@@ -259,12 +272,14 @@ static llvm::Expected<llvm::APInt> parseIntegerBitPattern(llvm::StringRef raw,
   if (raw.empty() ||
       !llvm::all_of(raw, [](char c) { return c >= '0' && c <= '9'; }))
     return llvm::createStringError(std::errc::invalid_argument,
-                                   "integer argument is not canonical base-10");
+                                   "%s argument is not canonical base-10",
+                                   argumentKind.str().c_str());
 
   llvm::APInt magnitude;
   if (raw.getAsInteger(10, magnitude))
     return llvm::createStringError(std::errc::invalid_argument,
-                                   "integer argument is not canonical base-10");
+                                   "%s argument is not canonical base-10",
+                                   argumentKind.str().c_str());
 
   bool fits = magnitude.getActiveBits() <= bitWidth;
   if (negative && magnitude.getActiveBits() == bitWidth)
@@ -272,7 +287,8 @@ static llvm::Expected<llvm::APInt> parseIntegerBitPattern(llvm::StringRef raw,
   if (!fits)
     return llvm::createStringError(
         std::errc::result_out_of_range,
-        "integer argument does not fit its declared bit width");
+        "%s argument does not fit its declared bit width",
+        argumentKind.str().c_str());
 
   llvm::APInt bits = magnitude.zextOrTrunc(bitWidth);
   if (negative)
@@ -335,7 +351,8 @@ parseExactFloatBitPattern(llvm::StringRef raw, mlir::FloatType type) {
   return parsePackedBitPattern(raw, *width, "float");
 }
 
-llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type) {
+static llvm::Expected<Token> parseNonIndexRuntimeToken(llvm::StringRef raw,
+                                                       mlir::Type type) {
   raw = raw.trim();
   if (mlir::isa<mlir::NoneType>(type)) {
     if (raw == "none")
@@ -361,13 +378,6 @@ llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type) {
     if (intType.getWidth() <= 64 && raw.starts_with("-"))
       token->intValue = bits->getSExtValue();
     return *token;
-  }
-  if (mlir::isa<mlir::IndexType>(type)) {
-    std::int64_t value = 0;
-    if (raw.getAsInteger(10, value))
-      return llvm::createStringError(std::errc::invalid_argument,
-                                     "index argument is not base-10");
-    return integerValueToken(value);
   }
   if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
     if (!usesDoubleFloatText(floatType)) {
@@ -399,7 +409,7 @@ llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type) {
 // the resolved index width instead of the semantic element width.
 static llvm::Expected<unsigned>
 indexVectorTokenBitWidth(mlir::VectorType type, mlir::Operation *scope) {
-  auto elementWidth = indexBitWidth(scope);
+  auto elementWidth = loom::getIndexBitWidth(scope);
   if (!elementWidth)
     return elementWidth.takeError();
   return loom::getFixedVectorBitWidth(type, *elementWidth);
@@ -422,11 +432,51 @@ llvm::Expected<llvm::APInt> vectorIndexTokenBitPattern(const Token &token,
   return *token.bitPattern;
 }
 
+llvm::Expected<llvm::APInt> indexTokenBitPattern(const Token &token,
+                                                 unsigned width) {
+  if (token.bitPattern) {
+    if (token.bitPattern->getBitWidth() != width)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "index token bit pattern width does not match the resolved index "
+          "width");
+    return *token.bitPattern;
+  }
+  if (token.kind != TokenKind::Integer)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "index token kind is not integer");
+  // A token that carries only a host integer holds the complete semantic
+  // value, so widening it is exact and narrowing it wraps like the declared
+  // index type does.
+  return llvm::APInt(64, static_cast<std::uint64_t>(token.intValue),
+                     /*isSigned=*/true)
+      .sextOrTrunc(width);
+}
+
+Token indexToken(const llvm::APInt &value) {
+  Token token;
+  token.kind = TokenKind::Integer;
+  token.bitPattern = value;
+  if (value.getBitWidth() <= 64)
+    token.intValue = value.getSExtValue();
+  return token;
+}
+
 llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type,
                                         mlir::Operation *scope) {
+  if (mlir::isa<mlir::IndexType>(type)) {
+    auto width = loom::getIndexBitWidth(scope);
+    if (!width)
+      return width.takeError();
+    auto bits = parseIntegerBitPattern(raw.trim(), *width, "index");
+    if (!bits)
+      return bits.takeError();
+    return indexToken(*bits);
+  }
+
   auto vector = mlir::dyn_cast<mlir::VectorType>(type);
   if (!vector || !mlir::isa<mlir::IndexType>(vector.getElementType()))
-    return parseRuntimeToken(raw, type);
+    return parseNonIndexRuntimeToken(raw, type);
 
   auto width = indexVectorTokenBitWidth(vector, scope);
   if (!width)

@@ -15,6 +15,7 @@ add_mlir_library(LoomCommon
 
   LINK_LIBS PUBLIC
   LLVMSupport
+  MLIRDataLayoutInterfaces
   MLIRIR
   MLIRSupport
 )

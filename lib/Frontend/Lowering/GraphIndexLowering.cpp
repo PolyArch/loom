@@ -1,26 +1,29 @@
 #include "GraphIndexLowering.h"
 
-#include "Common/IndexWidth.h"
-
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
-#include <cstdint>
+#include <optional>
 
 namespace {
 
-::mlir::TypedAttr getIntegerLikeAttr(::mlir::OpBuilder &builder,
-                                     ::mlir::Type type, std::int64_t value) {
-  if (auto integer = ::llvm::dyn_cast<::mlir::IntegerType>(type))
-    return builder.getIntegerAttr(integer, value);
-  if (::llvm::isa<::mlir::IndexType>(type))
-    return builder.getIndexAttr(value);
-  return {};
+// An index attribute holds its value in one fixed-width APInt, so a constant
+// the canonical index admits but that storage cannot hold exactly has no index
+// attribute. The value is carried exactly or not at all; it is never narrowed
+// through a host integer.
+std::optional<::mlir::IntegerAttr>
+getExactIndexAttr(::mlir::OpBuilder &builder, const ::llvm::APInt &value) {
+  constexpr unsigned storage = ::mlir::IndexType::kInternalStorageBitWidth;
+  if (value.getSignificantBits() > storage)
+    return std::nullopt;
+  return builder.getIntegerAttr(builder.getIndexType(),
+                                value.sextOrTrunc(storage));
 }
 
 class IndexMaterializationTransaction {
@@ -48,7 +51,7 @@ private:
 
 ::mlir::Value materializeIndexDomainValue(
     ::mlir::Value value, ::mlir::OpBuilder &builder,
-    ::llvm::DenseMap<::mlir::Value, ::mlir::Value> &cache) {
+    ::llvm::DenseMap<::mlir::Value, ::mlir::Value> &cache, unsigned indexBits) {
   if (::llvm::isa<::mlir::IndexType>(value.getType()))
     return value;
   if (!::llvm::isa<::mlir::IntegerType>(value.getType()))
@@ -66,11 +69,11 @@ private:
 
   auto materializeBinary = [&](auto op, auto create) -> ::mlir::Value {
     ::mlir::Value lhs =
-        materializeIndexDomainValue(op.getLhs(), builder, cache);
+        materializeIndexDomainValue(op.getLhs(), builder, cache, indexBits);
     if (!lhs)
       return {};
     ::mlir::Value rhs =
-        materializeIndexDomainValue(op.getRhs(), builder, cache);
+        materializeIndexDomainValue(op.getRhs(), builder, cache, indexBits);
     if (!rhs)
       return {};
     ::mlir::Value result = create(lhs, rhs);
@@ -114,11 +117,13 @@ private:
         ::llvm::dyn_cast<::mlir::IntegerType>(zext.getArg().getType());
     auto resultType =
         ::llvm::dyn_cast<::mlir::IntegerType>(zext.getResult().getType());
-    if (sourceType && resultType &&
-        sourceType.getWidth() == ::loom::getIndexWidth() &&
+    // The extension is redundant in the index domain only when its source
+    // already spans the canonical index. A narrower source still carries the
+    // zero extension, because converting it directly would sign-extend it.
+    if (sourceType && resultType && sourceType.getWidth() == indexBits &&
         resultType.getWidth() >= sourceType.getWidth()) {
       ::mlir::Value input =
-          materializeIndexDomainValue(zext.getArg(), builder, cache);
+          materializeIndexDomainValue(zext.getArg(), builder, cache, indexBits);
       if (!input)
         return {};
       cache[value] = input;
@@ -131,11 +136,13 @@ private:
     auto integer = typed ? ::llvm::dyn_cast<::mlir::IntegerAttr>(typed)
                          : ::mlir::IntegerAttr{};
     if (integer) {
-      ::mlir::TypedAttr indexAttr =
-          getIntegerLikeAttr(builder, builder.getIndexType(), integer.getInt());
+      std::optional<::mlir::IntegerAttr> indexAttr =
+          getExactIndexAttr(builder, integer.getValue());
+      if (!indexAttr)
+        return {};
       auto indexConstant = ::dataflow::ConstantOp::create(
           builder, constant.getLoc(), builder.getIndexType(),
-          constant.getCtrl(), ::mlir::cast<::mlir::Attribute>(indexAttr));
+          constant.getCtrl(), ::mlir::cast<::mlir::Attribute>(*indexAttr));
       cache[value] = indexConstant.getValue();
       return indexConstant.getValue();
     }
@@ -153,8 +160,8 @@ private:
     }
     if (!projected)
       return {};
-    ::mlir::Value init =
-        materializeIndexDomainValue(invariant.getInit(), builder, cache);
+    ::mlir::Value init = materializeIndexDomainValue(invariant.getInit(),
+                                                     builder, cache, indexBits);
     if (!init)
       return {};
     auto indexInvariant = ::dataflow::InvariantOp::create(
@@ -167,8 +174,8 @@ private:
   if (auto gate = value.getDefiningOp<::dataflow::GateOp>()) {
     if (gate.getAfterValue() != value)
       return {};
-    ::mlir::Value before =
-        materializeIndexDomainValue(gate.getBeforeValue(), builder, cache);
+    ::mlir::Value before = materializeIndexDomainValue(
+        gate.getBeforeValue(), builder, cache, indexBits);
     if (!before)
       return {};
     auto indexGate = ::dataflow::GateOp::create(
@@ -253,7 +260,7 @@ bool valueFeedsOnlyPredicateControls(::mlir::Value value) {
 }
 
 bool rewriteOneIndexDomainCmp(::mlir::arith::CmpIOp cmp,
-                              ::mlir::OpBuilder &builder) {
+                              ::mlir::OpBuilder &builder, unsigned indexBits) {
   if (!::llvm::isa<::mlir::IntegerType>(cmp.getLhs().getType()) ||
       !::llvm::isa<::mlir::IntegerType>(cmp.getRhs().getType()) ||
       !valueFeedsOnlyPredicateControls(cmp.getResult()))
@@ -270,8 +277,10 @@ bool rewriteOneIndexDomainCmp(::mlir::arith::CmpIOp cmp,
   builder.setInsertionPoint(cmp);
   IndexMaterializationTransaction transaction(cmp);
   ::llvm::DenseMap<::mlir::Value, ::mlir::Value> cache;
-  ::mlir::Value lhs = materializeIndexDomainValue(cmp.getLhs(), builder, cache);
-  ::mlir::Value rhs = materializeIndexDomainValue(cmp.getRhs(), builder, cache);
+  ::mlir::Value lhs =
+      materializeIndexDomainValue(cmp.getLhs(), builder, cache, indexBits);
+  ::mlir::Value rhs =
+      materializeIndexDomainValue(cmp.getRhs(), builder, cache, indexBits);
   if (!lhs || !rhs)
     return false;
   transaction.commit();
@@ -301,7 +310,7 @@ bool rewriteOneIndexDomainCmp(::mlir::arith::CmpIOp cmp,
 }
 
 bool rewriteIndexDomainCmps(::dataflow::GraphOp graph,
-                            ::mlir::OpBuilder &builder) {
+                            ::mlir::OpBuilder &builder, unsigned indexBits) {
   ::llvm::SmallVector<::mlir::arith::CmpIOp, 8> comparisons;
   graph.getBody().walk([&](::mlir::arith::CmpIOp cmp) {
     if (::llvm::isa<::mlir::IntegerType>(cmp.getLhs().getType()) &&
@@ -311,12 +320,12 @@ bool rewriteIndexDomainCmps(::dataflow::GraphOp graph,
   bool changed = false;
   for (::mlir::arith::CmpIOp cmp : comparisons)
     if (cmp.getOperation()->getBlock())
-      changed |= rewriteOneIndexDomainCmp(cmp, builder);
+      changed |= rewriteOneIndexDomainCmp(cmp, builder, indexBits);
   return changed;
 }
 
 bool rewriteAddressIndexCasts(::dataflow::GraphOp graph,
-                              ::mlir::OpBuilder &builder) {
+                              ::mlir::OpBuilder &builder, unsigned indexBits) {
   ::llvm::SmallVector<::mlir::arith::IndexCastOp, 8> casts;
   graph.getBody().walk([&](::mlir::arith::IndexCastOp cast) {
     if (::llvm::isa<::mlir::IndexType>(cast.getType()) &&
@@ -332,7 +341,7 @@ bool rewriteAddressIndexCasts(::dataflow::GraphOp graph,
     IndexMaterializationTransaction transaction(cast);
     ::llvm::DenseMap<::mlir::Value, ::mlir::Value> cache;
     ::mlir::Value indexValue =
-        materializeIndexDomainValue(cast.getIn(), builder, cache);
+        materializeIndexDomainValue(cast.getIn(), builder, cache, indexBits);
     if (!indexValue || indexValue == cast.getResult())
       continue;
     transaction.commit();
@@ -371,10 +380,10 @@ void eraseDeadIndexArithmetic(::dataflow::GraphOp graph) {
 namespace loom {
 namespace lowering {
 
-void lowerGraphIndexDomains(::dataflow::GraphOp graph) {
+void lowerGraphIndexDomains(::dataflow::GraphOp graph, unsigned indexBits) {
   ::mlir::OpBuilder builder(graph.getContext());
-  bool changed = rewriteIndexDomainCmps(graph, builder);
-  changed |= rewriteAddressIndexCasts(graph, builder);
+  bool changed = rewriteIndexDomainCmps(graph, builder, indexBits);
+  changed |= rewriteAddressIndexCasts(graph, builder, indexBits);
   if (changed)
     eraseDeadIndexArithmetic(graph);
 }

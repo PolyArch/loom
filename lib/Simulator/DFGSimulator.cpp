@@ -12,7 +12,6 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
-#include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
@@ -40,8 +39,11 @@ using namespace loom::sim::detail;
 namespace loom::sim {
 namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
 
+// A memory fixture is an operand of the graph that owns it, so its element
+// tokens are encoded against that same scope as every other runtime token.
 static llvm::Expected<llvm::SmallVector<Token>>
-parseMemoryTokens(llvm::StringRef raw, mlir::Type type) {
+parseMemoryTokens(llvm::StringRef raw, mlir::Type type,
+                  mlir::Operation *scope) {
   llvm::SmallVector<Token> tokens;
   llvm::SmallVector<llvm::StringRef> parts;
   raw.split(parts, ',', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
@@ -49,7 +51,7 @@ parseMemoryTokens(llvm::StringRef raw, mlir::Type type) {
     return llvm::createStringError(std::errc::invalid_argument,
                                    "memref fixture must contain values");
   for (llvm::StringRef part : parts) {
-    auto tokenOrErr = parseRuntimeToken(part, type);
+    auto tokenOrErr = parseRuntimeToken(part, type, scope);
     if (!tokenOrErr)
       return tokenOrErr.takeError();
     tokens.push_back(*tokenOrErr);
@@ -76,31 +78,6 @@ static llvm::Expected<unsigned> supportedBitWidth(std::uint64_t width,
   return static_cast<unsigned>(width);
 }
 
-static bool hasExplicitIndexLayout(mlir::Operation *scope) {
-  for (mlir::Operation *op = scope; op; op = op->getParentOp()) {
-    mlir::DataLayoutSpecInterface spec;
-    if (auto module = mlir::dyn_cast<mlir::ModuleOp>(op))
-      spec = module.getDataLayoutSpec();
-    else if (auto layoutOp = mlir::dyn_cast<mlir::DataLayoutOpInterface>(op))
-      spec = layoutOp.getDataLayoutSpec();
-    if (spec && !spec.getSpecForType<mlir::IndexType>().empty())
-      return true;
-  }
-  return false;
-}
-
-llvm::Expected<unsigned> indexBitWidth(mlir::Operation *scope) {
-  if (!hasExplicitIndexLayout(scope))
-    return supportedBitWidth(loom::getIndexWidth(), "configured index");
-
-  llvm::TypeSize width = mlir::DataLayout::closest(scope).getTypeSizeInBits(
-      mlir::IndexType::get(scope->getContext()));
-  if (width.isScalable())
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "scalable index widths are unsupported");
-  return supportedBitWidth(width.getFixedValue(), "index");
-}
-
 static llvm::Expected<std::int64_t> byteSizeForBitWidth(std::uint64_t width) {
   if (width == 0)
     return llvm::createStringError(std::errc::invalid_argument,
@@ -122,7 +99,7 @@ llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type,
     return byteSizeForBitWidth(*width);
   }
   if (mlir::isa<mlir::IndexType>(type)) {
-    auto width = indexBitWidth(scope);
+    auto width = loom::getIndexBitWidth(scope);
     if (!width)
       return width.takeError();
     return byteSizeForBitWidth(*width);
@@ -160,7 +137,7 @@ materializeMemory(SimulatorState &state, mlir::Value root, llvm::StringRef raw,
                                      "memory root identity mismatch");
     return existing->second;
   }
-  auto tokensOrErr = parseMemoryTokens(raw, elementType);
+  auto tokensOrErr = parseMemoryTokens(raw, elementType, state.graphScope);
   if (!tokensOrErr)
     return tokensOrErr.takeError();
   llvm::SmallVector<Token> tokens = std::move(*tokensOrErr);
@@ -698,8 +675,14 @@ static llvm::Expected<unsigned> integerBitWidth(mlir::Type type,
                                                 mlir::Operation *scope) {
   if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
     return supportedBitWidth(intType.getWidth(), "integer");
-  if (mlir::isa<mlir::IndexType>(type))
-    return indexBitWidth(scope);
+  if (mlir::isa<mlir::IndexType>(type)) {
+    // The scalar primitive evaluator models one value as a host integer, so it
+    // narrows the resolved index width here. The memory path does not.
+    auto width = loom::getIndexBitWidth(scope);
+    if (!width)
+      return width.takeError();
+    return supportedBitWidth(*width, "index");
+  }
   return 0u;
 }
 
@@ -1292,6 +1275,7 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   llvm::StringMap<MemoryFixture> memories = std::move(*memoriesOrErr);
 
   SimulatorState state;
+  state.graphScope = graph.getOperation();
   GraphReturnObservation returnObservation = observeReturnOperands(graph);
   seedBlockArgument(state, graph.getStart(), noneToken());
 
@@ -1315,8 +1299,8 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
               "memref argument %u cannot use a nonzero memory fixture byte "
               "offset",
               unsigned(index));
-        auto tokensOrErr = parseMemoryTokens(memories.lookup(key).values,
-                                             memrefType.getElementType());
+        auto tokensOrErr = parseMemoryTokens(
+            memories.lookup(key).values, memrefType.getElementType(), graph);
         if (!tokensOrErr)
           return llvm::joinErrors(
               llvm::createStringError(std::errc::invalid_argument,
@@ -1553,6 +1537,11 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   if (llvm::Error error = captureFinalMemoryState(graph, state, report))
     return std::move(error);
   const bool pendingVectorGroups = hasPendingVectorGroups(state);
+  // A capability the runtime values exposed ends the run as unsupported. It is
+  // not a deadlock witness, so the retirement-frontier and stopped-before-
+  // outputs reports below do not also describe it.
+  if (report.status == "pass" && state.runtimeUnsupportedCapability)
+    report.status = "unsupported";
   if (report.status == "pass" && !retired) {
     report.status = "blocked";
     report.diagnostics.push_back("graph did not fire its retirement frontier");
@@ -1579,7 +1568,12 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   report.operationCostScore += report.operationDiversityScore;
   report.memoryAddressScore = state.memoryAddressScore;
   report.operationCostScore += report.memoryAddressScore;
-  report.diagnostics.append(state.diagnostics.begin(), state.diagnostics.end());
+  // Execution records every rejected attempt, which is what classifies an
+  // actor transition as failed. The report projects each distinct reason once;
+  // re-polling an actor whose inputs did not change repeats no new reason.
+  for (const std::string &reason : state.diagnostics)
+    if (!llvm::is_contained(report.diagnostics, reason))
+      report.diagnostics.push_back(reason);
   return report;
 }
 
