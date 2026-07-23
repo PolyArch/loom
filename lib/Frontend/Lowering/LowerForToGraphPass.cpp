@@ -7,6 +7,7 @@
 #include "Frontend/Lowering/Passes.h"
 #include "GraphRegionLowering.h"
 
+#include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowGraphValidation.h"
 #include "Dataflow/IR/DataflowOps.h"
@@ -23,9 +24,11 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
@@ -40,6 +43,268 @@
 #include <array>
 
 namespace {
+
+bool followsOnSameStructuredPath(::mlir::Operation *first,
+                                 ::mlir::Operation *second,
+                                 ::mlir::Operation *scope) {
+  if (::mlir::insideMutuallyExclusiveRegions(first, second))
+    return false;
+
+  for (::mlir::Operation *firstAncestor = first;
+       firstAncestor && firstAncestor != scope;
+       firstAncestor = firstAncestor->getParentOp()) {
+    ::mlir::Block *block = firstAncestor->getBlock();
+    for (::mlir::Operation *secondAncestor = second;
+         secondAncestor && secondAncestor != scope;
+         secondAncestor = secondAncestor->getParentOp()) {
+      if (secondAncestor->getBlock() != block)
+        continue;
+      return firstAncestor != secondAncestor &&
+             firstAncestor->isBeforeInBlock(secondAncestor);
+    }
+  }
+  return false;
+}
+
+bool valueDependsOnSpatialResult(::mlir::Value value,
+                                 ::loom::SpatialRegionOp spatial,
+                                 ::llvm::DenseSet<::mlir::Value> &visited);
+
+bool isNestedIn(::mlir::Operation *op, ::mlir::Operation *ancestor) {
+  for (::mlir::Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp())
+    if (parent == ancestor)
+      return true;
+  return false;
+}
+
+bool spatialMayExistOnRegionPredecessor(::loom::SpatialRegionOp spatial,
+                                        ::mlir::RegionBranchOpInterface branch,
+                                        ::mlir::RegionBranchPoint predecessor) {
+  if (predecessor.isParent())
+    return !isNestedIn(spatial, branch.getOperation());
+  auto terminator = predecessor.getTerminatorPredecessorOrNull();
+  return !::mlir::insideMutuallyExclusiveRegions(spatial,
+                                                 terminator.getOperation());
+}
+
+bool predecessorValuesDependOnSpatialResult(
+    ::mlir::RegionBranchOpInterface branch, ::mlir::RegionSuccessor successor,
+    ::mlir::Value value, ::loom::SpatialRegionOp spatial,
+    ::llvm::DenseSet<::mlir::Value> &visited) {
+  ::mlir::ValueRange inputs = branch.getSuccessorInputs(successor);
+  auto position = ::llvm::find(inputs, value);
+  if (position == inputs.end())
+    return false;
+
+  ::llvm::SmallVector<::mlir::Value, 4> predecessors;
+  ::llvm::SmallVector<::mlir::RegionBranchPoint, 4> predecessorPoints;
+  branch.getPredecessors(successor, predecessorPoints);
+  branch.getPredecessorValues(
+      successor, static_cast<unsigned>(std::distance(inputs.begin(), position)),
+      predecessors);
+  if (predecessorPoints.size() != predecessors.size())
+    return false;
+
+  bool sawSpatialPath = false;
+  for (auto [predecessorPoint, predecessor] :
+       ::llvm::zip_equal(predecessorPoints, predecessors)) {
+    if (!spatialMayExistOnRegionPredecessor(spatial, branch, predecessorPoint))
+      continue;
+    sawSpatialPath = true;
+    ::llvm::DenseSet<::mlir::Value> pathVisited = visited;
+    if (!valueDependsOnSpatialResult(predecessor, spatial, pathVisited))
+      return false;
+  }
+  return sawSpatialPath;
+}
+
+bool valueDependsOnSpatialResult(::mlir::Value value,
+                                 ::loom::SpatialRegionOp spatial,
+                                 ::llvm::DenseSet<::mlir::Value> &visited) {
+  if (!value || !visited.insert(value).second)
+    return false;
+
+  if (auto result = ::llvm::dyn_cast<::mlir::OpResult>(value)) {
+    ::mlir::Operation *definition = result.getOwner();
+    if (definition == spatial.getOperation())
+      return ::llvm::is_contained(spatial.getValueResults(), value);
+    if (auto branch =
+            ::llvm::dyn_cast<::mlir::RegionBranchOpInterface>(definition))
+      return predecessorValuesDependOnSpatialResult(
+          branch, ::mlir::RegionSuccessor(definition), value, spatial, visited);
+    if (auto mux = ::llvm::dyn_cast<::dataflow::MuxOp>(definition)) {
+      ::llvm::DenseSet<::mlir::Value> selectorVisited = visited;
+      if (valueDependsOnSpatialResult(mux.getSel(), spatial, selectorVisited))
+        return true;
+      return !mux.getInputs().empty() &&
+             ::llvm::all_of(mux.getInputs(), [&](::mlir::Value input) {
+               ::llvm::DenseSet<::mlir::Value> pathVisited = visited;
+               return valueDependsOnSpatialResult(input, spatial, pathVisited);
+             });
+    }
+    if (auto carry = ::llvm::dyn_cast<::dataflow::CarryOp>(definition)) {
+      ::llvm::DenseSet<::mlir::Value> pathVisited = visited;
+      return valueDependsOnSpatialResult(carry.getInit(), spatial, pathVisited);
+    }
+    if (auto invariant =
+            ::llvm::dyn_cast<::dataflow::InvariantOp>(definition)) {
+      ::llvm::DenseSet<::mlir::Value> pathVisited = visited;
+      return valueDependsOnSpatialResult(invariant.getInit(), spatial,
+                                         pathVisited);
+    }
+    auto inputPhase =
+        ::dataflow::semantics::getVectorBoundaryInputPhase(definition);
+    auto outputPhase =
+        ::dataflow::semantics::getVectorBoundaryOutputPhase(definition);
+    if (inputPhase && outputPhase && value == *outputPhase) {
+      ::llvm::DenseSet<::mlir::Value> pathVisited = visited;
+      return valueDependsOnSpatialResult(*inputPhase, spatial, pathVisited);
+    }
+    return ::llvm::any_of(definition->getOperands(), [&](::mlir::Value input) {
+      ::llvm::DenseSet<::mlir::Value> pathVisited = visited;
+      return valueDependsOnSpatialResult(input, spatial, pathVisited);
+    });
+  }
+
+  auto argument = ::llvm::dyn_cast<::mlir::BlockArgument>(value);
+  auto branch = ::llvm::dyn_cast_or_null<::mlir::RegionBranchOpInterface>(
+      argument.getOwner()->getParentOp());
+  return branch &&
+         predecessorValuesDependOnSpatialResult(
+             branch, ::mlir::RegionSuccessor(argument.getOwner()->getParent()),
+             value, spatial, visited);
+}
+
+bool isOrderedBySpatialResult(::mlir::Operation *continuation,
+                              ::loom::SpatialRegionOp spatial) {
+  auto thread = spatial->getParentOfType<::dataflow::ThreadOp>();
+  for (::mlir::Operation *op = continuation; op && op != thread.getOperation();
+       op = op->getParentOp())
+    if (::llvm::any_of(op->getOperands(), [&](::mlir::Value operand) {
+          ::llvm::DenseSet<::mlir::Value> visited;
+          return valueDependsOnSpatialResult(operand, spatial, visited);
+        }))
+      return true;
+  return false;
+}
+
+bool regionAlwaysPublishes(
+    ::mlir::Region &region,
+    ::llvm::ArrayRef<::mlir::Operation *> continuations) {
+  if (region.empty())
+    return false;
+  for (::mlir::Operation &op : region.front()) {
+    if (::llvm::is_contained(continuations, &op))
+      return true;
+    auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(op);
+    if (ifOp && ::llvm::all_of(ifOp->getRegions(), [&](::mlir::Region &branch) {
+          return regionAlwaysPublishes(branch, continuations);
+        }))
+      return true;
+  }
+  return false;
+}
+
+::llvm::SmallVector<::mlir::Operation *, 4>
+findChannelRetirementAnchors(::loom::SpatialRegionOp spatial) {
+  if (spatial.getStreamInputs().empty())
+    return {};
+
+  auto thread = spatial->getParentOfType<::dataflow::ThreadOp>();
+  ::llvm::SmallVector<::mlir::Operation *, 4> continuations;
+  thread.walk([&](::mlir::Operation *op) {
+    bool publishesChannel = false;
+    if (auto send = ::llvm::dyn_cast<::dataflow::ChannelSendOp>(op)) {
+      publishesChannel =
+          send->getParentOfType<::dataflow::ThreadOp>() == thread &&
+          !send->getParentOfType<::loom::SpatialRegionOp>() &&
+          !send->getParentOfType<::dataflow::GraphOp>();
+    } else if (auto target = ::llvm::dyn_cast<::loom::SpatialRegionOp>(op)) {
+      publishesChannel =
+          target != spatial && !target.getStreamOutputs().empty();
+    } else if (auto launch = ::llvm::dyn_cast<::dataflow::GraphLaunchOp>(op)) {
+      publishesChannel =
+          launch->getParentOfType<::dataflow::ThreadOp>() == thread &&
+          !launch->getParentOfType<::loom::SpatialRegionOp>() &&
+          !launch->getParentOfType<::dataflow::GraphOp>() &&
+          !launch.getStreamOutputs().empty();
+    }
+    if (publishesChannel && followsOnSameStructuredPath(spatial, op, thread))
+      continuations.push_back(op);
+  });
+
+  // A preceding publication with deferred SSA readiness, a wait, or a launch
+  // dependency orders later publications on the same path.
+  ::mlir::DominanceInfo dominance(thread);
+  ::mlir::PostDominanceInfo postDominance(thread);
+  ::llvm::SmallVector<::mlir::scf::IfOp, 4> branches;
+  thread.walk([&](::mlir::scf::IfOp ifOp) { branches.push_back(ifOp); });
+  ::llvm::SmallVector<::mlir::Operation *, 4> anchors;
+  for (::mlir::Operation *continuation : continuations) {
+    if (isOrderedBySpatialResult(continuation, spatial))
+      continue;
+    if (::llvm::any_of(continuations, [&](::mlir::Operation *predecessor) {
+          if (predecessor == continuation ||
+              !followsOnSameStructuredPath(predecessor, continuation, thread))
+            return false;
+          return dominance.properlyDominates(predecessor, continuation) ||
+                 postDominance.properlyPostDominates(predecessor, spatial);
+        }))
+      continue;
+    if (::llvm::any_of(branches, [&](::mlir::scf::IfOp branch) {
+          ::mlir::Operation *branchOp = branch.getOperation();
+          if (!followsOnSameStructuredPath(spatial, branchOp, thread) ||
+              !followsOnSameStructuredPath(branchOp, continuation, thread))
+            return false;
+          if (!dominance.properlyDominates(branchOp, continuation) &&
+              !postDominance.properlyPostDominates(branchOp, spatial))
+            return false;
+          return ::llvm::all_of(
+              branchOp->getRegions(), [&](::mlir::Region &region) {
+                return regionAlwaysPublishes(region, continuations);
+              });
+        }))
+      continue;
+    anchors.push_back(continuation);
+  }
+  return anchors;
+}
+
+using PendingLaunchDependencies =
+    ::llvm::DenseMap<::mlir::Operation *,
+                     ::llvm::SmallVector<::mlir::Value, 2>>;
+
+void addCompletionDependency(
+    ::llvm::SmallVectorImpl<::mlir::Value> &dependencies,
+    ::mlir::Value completion) {
+  ::dataflow::ThreadCompletionCoverageAnalysis coverage;
+  if (::llvm::any_of(dependencies, [&](::mlir::Value dependency) {
+        return coverage.covers(dependency, completion);
+      }))
+    return;
+  ::llvm::erase_if(dependencies, [&](::mlir::Value dependency) {
+    return coverage.covers(completion, dependency);
+  });
+  dependencies.push_back(completion);
+}
+
+void replacePendingLaunchDependency(PendingLaunchDependencies &pending,
+                                    ::mlir::Value oldValue,
+                                    ::mlir::Value newValue) {
+  for (auto &entry : pending)
+    for (::mlir::Value &dependency : entry.second)
+      if (dependency == oldValue)
+        dependency = newValue;
+}
+
+void addGraphLaunchDependency(::dataflow::GraphLaunchOp launch,
+                              ::mlir::Value completion) {
+  ::llvm::SmallVector<::mlir::Value, 4> dependencies(
+      launch.getDependencies().begin(), launch.getDependencies().end());
+  addCompletionDependency(dependencies, completion);
+  launch.getDependenciesMutable().assign(dependencies);
+}
 
 std::string uniqueSymbol(::mlir::ModuleOp module, ::llvm::StringRef stem) {
   ::mlir::SymbolTable st(module);
@@ -76,7 +341,9 @@ void addThreadCompletionFrontier(::dataflow::ThreadOp thread,
 
 ::mlir::FailureOr<::mlir::Value>
 propagateIfCompletion(::mlir::scf::IfOp ifOp, ::mlir::Value completion,
-                      ::mlir::Value fallback, ::mlir::OpBuilder &builder) {
+                      ::mlir::Value fallback,
+                      PendingLaunchDependencies &pendingLaunchDependencies,
+                      ::mlir::OpBuilder &builder) {
   ::mlir::Region *completionRegion =
       completion.getDefiningOp()->getParentRegion();
   bool inThen = ifOp.getThenRegion().isAncestor(completionRegion);
@@ -127,21 +394,44 @@ propagateIfCompletion(::mlir::scf::IfOp ifOp, ::mlir::Value completion,
   moveBranch(ifOp.getElseRegion(), replacement.getElseRegion(),
              inElse ? completion : fallback);
 
-  for (auto [oldResult, newResult] :
-       ::llvm::zip_equal(ifOp.getResults(),
-                         replacement.getResults().take_front(
-                             ifOp.getNumResults())))
+  for (auto [oldResult, newResult] : ::llvm::zip_equal(
+           ifOp.getResults(),
+           replacement.getResults().take_front(ifOp.getNumResults()))) {
+    replacePendingLaunchDependency(pendingLaunchDependencies, oldResult,
+                                   newResult);
     oldResult.replaceAllUsesWith(newResult);
+  }
   ::mlir::Value propagated = replacement.getResult(ifOp.getNumResults());
   ifOp.erase();
   return propagated;
 }
 
-::mlir::FailureOr<::mlir::Value>
-propagateCompletionToThread(::dataflow::ThreadOp thread,
-                            ::mlir::Value completion,
-                            ::mlir::Value fallback,
-                            ::mlir::OpBuilder &builder) {
+::mlir::FailureOr<::mlir::Value> propagateCompletionToThread(
+    ::dataflow::ThreadOp thread, ::mlir::Value completion,
+    ::mlir::Value fallback,
+    ::llvm::MutableArrayRef<::mlir::Operation *> channelRetirementAnchors,
+    PendingLaunchDependencies &pendingLaunchDependencies,
+    ::mlir::Location waitLoc, ::mlir::OpBuilder &builder) {
+  auto placeDominatedRetirementAnchors = [&]() {
+    ::mlir::DominanceInfo dominance(thread);
+    for (::mlir::Operation *&anchor : channelRetirementAnchors) {
+      if (!anchor || !dominance.dominates(completion, anchor))
+        continue;
+      if (auto target = ::llvm::dyn_cast<::loom::SpatialRegionOp>(anchor)) {
+        addCompletionDependency(pendingLaunchDependencies[target], completion);
+      } else if (auto launch =
+                     ::llvm::dyn_cast<::dataflow::GraphLaunchOp>(anchor)) {
+        addGraphLaunchDependency(launch, completion);
+      } else {
+        builder.setInsertionPoint(anchor);
+        ::dataflow::GraphWaitOp::create(builder, waitLoc,
+                                        ::mlir::ValueRange{completion});
+      }
+      anchor = nullptr;
+    }
+  };
+
+  placeDominatedRetirementAnchors();
   while (completion.getDefiningOp()->getParentOfType<::dataflow::ThreadOp>() ==
              thread &&
          completion.getDefiningOp()->getBlock() != &thread.getBody().front()) {
@@ -152,12 +442,16 @@ propagateCompletionToThread(::dataflow::ThreadOp thread,
     auto ifOp = ::llvm::dyn_cast_or_null<::mlir::scf::IfOp>(parent);
     if (!ifOp)
       return ::mlir::failure();
-    auto propagated =
-        propagateIfCompletion(ifOp, completion, fallback, builder);
+    auto propagated = propagateIfCompletion(ifOp, completion, fallback,
+                                            pendingLaunchDependencies, builder);
     if (::mlir::failed(propagated))
       return ::mlir::failure();
     completion = *propagated;
+    placeDominatedRetirementAnchors();
   }
+  if (::llvm::any_of(channelRetirementAnchors,
+                     [](auto *anchor) { return anchor != nullptr; }))
+    return ::mlir::failure();
   return completion;
 }
 
@@ -385,13 +679,23 @@ struct LowerForToGraphPass
       }
     }
 
+    PendingLaunchDependencies pendingLaunchDependencies;
     for (::loom::SpatialRegionOp spatial : regions) {
       auto thread = spatial->getParentOfType<::dataflow::ThreadOp>();
       ::mlir::Block &threadEntry = thread.getBody().front();
+      ::llvm::SmallVector<::mlir::Operation *, 4> channelRetirementAnchors =
+          findChannelRetirementAnchors(spatial);
       size_t ctrlIndex = thread.getFunctionType().getInputs().size();
       if (threadEntry.getNumArguments() <= ctrlIndex)
         return thread.emitOpError("is missing thread control block argument");
       ::mlir::Value threadCtrl = threadEntry.getArgument(ctrlIndex);
+      ::llvm::SmallVector<::mlir::Value, 4> launchDependencies{threadCtrl};
+      auto pending = pendingLaunchDependencies.find(spatial);
+      if (pending != pendingLaunchDependencies.end()) {
+        for (::mlir::Value dependency : pending->second)
+          addCompletionDependency(launchDependencies, dependency);
+        pendingLaunchDependencies.erase(pending);
+      }
 
       ClassifiedGraphValues graphInputs;
       graphInputs.values.append(spatial.getValueInputs().begin(),
@@ -541,11 +845,12 @@ struct LowerForToGraphPass
       auto launch = ::dataflow::GraphLaunchOp::create(
           builder, loc, valueResultTypes, memoryResultTypes,
           builder.getNoneType(), callee, spatial.getSourceMaps(),
-          ::mlir::ValueRange{threadCtrl}, spatial.getValueInputs(),
+          launchDependencies, spatial.getValueInputs(),
           spatial.getStreamInputs(), spatial.getMemoryInputs(),
           spatial.getStreamOutputs());
       auto propagated = propagateCompletionToThread(
-          thread, launch.getDone(), threadCtrl, builder);
+          thread, launch.getDone(), threadCtrl, channelRetirementAnchors,
+          pendingLaunchDependencies, loc, builder);
       if (::mlir::failed(propagated))
         return launch.emitOpError(
             "failed to propagate completion through enclosing structured "
@@ -559,6 +864,9 @@ struct LowerForToGraphPass
         result.replaceAllUsesWith(launch.getMemoryResults()[index]);
       spatial.erase();
     }
+    if (!pendingLaunchDependencies.empty())
+      return module.emitError(
+          "channel retirement dependency target was not published");
     return ::mlir::success();
   }
 };
