@@ -22,6 +22,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dominance.h"
@@ -40,7 +41,10 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <array>
+#include <limits>
+#include <optional>
 
 namespace {
 
@@ -339,117 +343,534 @@ void addThreadCompletionFrontier(::dataflow::ThreadOp thread,
   yield.getCompletionFrontierMutable().assign(frontier);
 }
 
-::mlir::FailureOr<::mlir::Value>
-propagateIfCompletion(::mlir::scf::IfOp ifOp, ::mlir::Value completion,
-                      ::mlir::Value fallback,
-                      PendingLaunchDependencies &pendingLaunchDependencies,
-                      ::mlir::OpBuilder &builder) {
-  ::mlir::Region *completionRegion =
-      completion.getDefiningOp()->getParentRegion();
-  bool inThen = ifOp.getThenRegion().isAncestor(completionRegion);
-  bool inElse = ifOp.getElseRegion().isAncestor(completionRegion);
-  if (inThen == inElse)
-    return ::mlir::failure();
+struct FixedParallelDomain {
+  ::llvm::SmallVector<int64_t, 4> lower;
+  ::llvm::SmallVector<int64_t, 4> upper;
+  ::llvm::SmallVector<int64_t, 4> step;
+};
 
-  ::llvm::SmallVector<::mlir::Type, 4> resultTypes(
-      ifOp.getResultTypes().begin(), ifOp.getResultTypes().end());
-  resultTypes.push_back(builder.getNoneType());
-  builder.setInsertionPoint(ifOp);
-  auto replacement = ::mlir::scf::IfOp::create(
-      builder, ifOp.getLoc(), resultTypes, ifOp.getCondition(),
-      /*withElseRegion=*/true);
+struct PendingGraphCompletion {
+  ::dataflow::GraphLaunchOp launch;
+  ::llvm::SmallVector<::mlir::Operation *, 4> channelRetirementAnchors;
+  unsigned parallelGroup = 0;
+};
 
-  auto moveBranch = [&](::mlir::Region &source, ::mlir::Region &target,
-                        ::mlir::Value branchCompletion) {
-    ::mlir::Block &targetBlock = target.front();
-    ::mlir::scf::YieldOp defaultYield;
-    if (!targetBlock.empty())
-      defaultYield = ::llvm::dyn_cast<::mlir::scf::YieldOp>(
-          targetBlock.back());
-    ::llvm::SmallVector<::mlir::Value, 4> yielded;
-    if (!source.empty()) {
-      ::mlir::Block &sourceBlock = source.front();
-      auto sourceYield = ::mlir::cast<::mlir::scf::YieldOp>(
-          sourceBlock.getTerminator());
-      yielded.append(sourceYield.getResults().begin(),
-                     sourceYield.getResults().end());
-      targetBlock.getOperations().splice(
-          defaultYield ? defaultYield->getIterator() : targetBlock.end(),
-          sourceBlock.getOperations(),
-          sourceBlock.begin(), sourceYield->getIterator());
-      sourceYield.erase();
+struct ParallelCompletionCandidate {
+  ::dataflow::ThreadOp thread;
+  ::mlir::Value completion;
+  unsigned parallelGroup;
+};
+
+void publishParallelCompletionCandidates(
+    ::llvm::ArrayRef<ParallelCompletionCandidate> candidates,
+    ::mlir::OpBuilder &builder) {
+  ::llvm::DenseSet<unsigned> publishedGroups;
+  for (const ParallelCompletionCandidate &candidate : candidates) {
+    if (!publishedGroups.insert(candidate.parallelGroup).second)
+      continue;
+
+    ::llvm::SmallVector<::mlir::Value, 4> completions;
+    for (const ParallelCompletionCandidate &member : candidates)
+      if (member.parallelGroup == candidate.parallelGroup)
+        addCompletionDependency(completions, member.completion);
+    ::mlir::Value completion = completions.front();
+    if (completions.size() > 1) {
+      ::dataflow::ThreadOp thread = candidate.thread;
+      auto yield = ::mlir::cast<::dataflow::ThreadYieldOp>(
+          thread.getBody().front().getTerminator());
+      builder.setInsertionPoint(yield);
+      ::llvm::SmallVector<::mlir::Type, 4> types(completions.size(),
+                                                 builder.getNoneType());
+      completion = ::dataflow::SyncOp::create(builder, yield.getLoc(), types,
+                                              completions)
+                       .getOutputs()
+                       .front();
     }
-    yielded.push_back(branchCompletion);
-    if (defaultYield)
-      builder.setInsertionPoint(defaultYield);
-    else
-      builder.setInsertionPointToEnd(&targetBlock);
-    ::mlir::scf::YieldOp::create(builder, ifOp.getLoc(), yielded);
-    if (defaultYield)
-      defaultYield.erase();
+    addThreadCompletionFrontier(candidate.thread, completion);
+  }
+}
+
+std::optional<FixedParallelDomain>
+getFixedParallelDomain(::mlir::Operation *op) {
+  auto loop = ::llvm::dyn_cast<::mlir::LoopLikeOpInterface>(op);
+  if (!loop)
+    return std::nullopt;
+  auto lower = loop.getLoopLowerBounds();
+  auto upper = loop.getLoopUpperBounds();
+  auto step = loop.getLoopSteps();
+  if (!lower || !upper || !step)
+    return std::nullopt;
+
+  FixedParallelDomain domain;
+  auto appendConstants = [](::llvm::ArrayRef<::mlir::OpFoldResult> values,
+                            ::llvm::SmallVectorImpl<int64_t> &constants) {
+    for (::mlir::OpFoldResult value : values) {
+      auto constant = ::mlir::getConstantIntValue(value);
+      if (!constant)
+        return false;
+      constants.push_back(*constant);
+    }
+    return true;
   };
+  if (!appendConstants(*lower, domain.lower) ||
+      !appendConstants(*upper, domain.upper) ||
+      !appendConstants(*step, domain.step))
+    return std::nullopt;
+  return domain;
+}
 
-  moveBranch(ifOp.getThenRegion(), replacement.getThenRegion(),
-             inThen ? completion : fallback);
-  moveBranch(ifOp.getElseRegion(), replacement.getElseRegion(),
-             inElse ? completion : fallback);
+::mlir::LogicalResult checkFixedParallelCompletion(::mlir::Operation *op) {
+  if (!::loom::lowering::hasGraphOwnedParallelProvenance(op))
+    return op->emitError(
+        "completion propagation through parallel SCF requires selected "
+        "parallel provenance");
+  if (auto mapping = op->getAttrOfType<::mlir::ArrayAttr>("mapping");
+      mapping && !mapping.empty())
+    return op->emitError(
+        "completion propagation through mapped parallel SCF is unsupported");
 
+  if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(op)) {
+    auto terminator = forall.getTerminator();
+    if (!forall.getOutputs().empty() || forall.getNumResults() != 0 ||
+        terminator.getRegion().empty() ||
+        !terminator.getRegion().front().empty())
+      return forall.emitError(
+          "completion propagation requires effect-form scf.forall");
+  } else {
+    auto parallel = ::mlir::cast<::mlir::scf::ParallelOp>(op);
+    auto reduce = ::mlir::cast<::mlir::scf::ReduceOp>(
+        parallel.getBody()->getTerminator());
+    if (!parallel.getInitVals().empty() || parallel.getNumResults() != 0 ||
+        !reduce.getOperands().empty() || !reduce.getReductions().empty())
+      return parallel.emitError(
+          "completion propagation requires effect-form scf.parallel");
+  }
+
+  auto domain = getFixedParallelDomain(op);
+  if (!domain)
+    return op->emitError(
+        "completion propagation requires a fixed parallel domain");
+  if (::llvm::any_of(domain->step, [](int64_t step) { return step <= 0; }))
+    return op->emitError(
+        "completion propagation requires positive fixed parallel steps");
+  return ::mlir::success();
+}
+
+void forEachParallelPoint(
+    const FixedParallelDomain &domain, unsigned dimension,
+    ::llvm::SmallVectorImpl<int64_t> &point,
+    ::llvm::function_ref<void(::llvm::ArrayRef<int64_t>)> callback) {
+  if (dimension == domain.lower.size()) {
+    callback(point);
+    return;
+  }
+  int64_t value = domain.lower[dimension];
+  while (value < domain.upper[dimension]) {
+    point.push_back(value);
+    forEachParallelPoint(domain, dimension + 1, point, callback);
+    point.pop_back();
+    if (value > std::numeric_limits<int64_t>::max() - domain.step[dimension])
+      break;
+    value += domain.step[dimension];
+  }
+}
+
+void placeDominatedRetirementAnchors(
+    ::dataflow::ThreadOp thread, ::mlir::Value completion,
+    ::llvm::MutableArrayRef<::mlir::Operation *> channelRetirementAnchors,
+    PendingLaunchDependencies &pendingLaunchDependencies,
+    ::mlir::OpBuilder &builder) {
+  ::mlir::DominanceInfo dominance(thread);
+  for (::mlir::Operation *&anchor : channelRetirementAnchors) {
+    if (!anchor || !dominance.dominates(completion, anchor))
+      continue;
+    if (auto target = ::llvm::dyn_cast<::loom::SpatialRegionOp>(anchor)) {
+      addCompletionDependency(pendingLaunchDependencies[target], completion);
+    } else if (auto launch =
+                   ::llvm::dyn_cast<::dataflow::GraphLaunchOp>(anchor)) {
+      addGraphLaunchDependency(launch, completion);
+    } else {
+      builder.setInsertionPoint(anchor);
+      ::dataflow::GraphWaitOp::create(builder, anchor->getLoc(),
+                                      ::mlir::ValueRange{completion});
+    }
+    anchor = nullptr;
+  }
+}
+
+void replaceStructuredResults(
+    ::mlir::Operation *oldOp, ::mlir::Operation *replacement,
+    unsigned oldResultCount,
+    PendingLaunchDependencies &pendingLaunchDependencies) {
   for (auto [oldResult, newResult] : ::llvm::zip_equal(
-           ifOp.getResults(),
-           replacement.getResults().take_front(ifOp.getNumResults()))) {
+           oldOp->getResults(),
+           replacement->getResults().take_front(oldResultCount))) {
     replacePendingLaunchDependency(pendingLaunchDependencies, oldResult,
                                    newResult);
     oldResult.replaceAllUsesWith(newResult);
   }
-  ::mlir::Value propagated = replacement.getResult(ifOp.getNumResults());
-  ifOp.erase();
-  return propagated;
+}
+
+void moveRegionBody(::mlir::Region &source, ::mlir::Region &target) {
+  if (source.empty())
+    return;
+  target.getBlocks().clear();
+  target.takeBody(source);
+}
+
+std::optional<unsigned> findContainingRegion(::mlir::Operation *parent,
+                                             ::mlir::Operation *nested) {
+  ::mlir::Region *nestedRegion = nested->getParentRegion();
+  for (auto [index, region] : ::llvm::enumerate(parent->getRegions()))
+    if (&region == nestedRegion || region.isAncestor(nestedRegion))
+      return index;
+  return std::nullopt;
+}
+
+void replaceLaunchEntryDependency(::dataflow::GraphLaunchOp launch,
+                                  ::mlir::Value fallback,
+                                  ::mlir::Value incoming) {
+  ::llvm::SmallVector<::mlir::Value, 4> dependencies;
+  for (::mlir::Value dependency : launch.getDependencies()) {
+    if (dependency == fallback)
+      dependency = incoming;
+    if (!::llvm::is_contained(dependencies, dependency))
+      dependencies.push_back(dependency);
+  }
+  if (!::llvm::is_contained(dependencies, incoming))
+    dependencies.push_back(incoming);
+  if (incoming == fallback) {
+    ::dataflow::ThreadCompletionCoverageAnalysis coverage;
+    bool fallbackCovered =
+        ::llvm::any_of(dependencies, [&](::mlir::Value dependency) {
+          return dependency != fallback &&
+                 coverage.covers(dependency, fallback);
+        });
+    if (fallbackCovered)
+      ::llvm::erase(dependencies, fallback);
+  }
+  launch.getDependenciesMutable().assign(dependencies);
+}
+
+::mlir::FailureOr<::mlir::Value> propagateCompletionPath(
+    ::llvm::ArrayRef<::mlir::Operation *> path,
+    ::dataflow::GraphLaunchOp launch, ::mlir::Value incoming,
+    ::mlir::Value threadFallback,
+    ::llvm::MutableArrayRef<::mlir::Operation *> channelRetirementAnchors,
+    PendingLaunchDependencies &pendingLaunchDependencies,
+    ::llvm::SmallVectorImpl<PendingGraphCompletion> &pendingCompletions,
+    unsigned &parallelGroup, unsigned &nextParallelGroup,
+    ::dataflow::ThreadOp thread, ::mlir::OpBuilder &builder) {
+  if (path.empty()) {
+    replaceLaunchEntryDependency(launch, threadFallback, incoming);
+    placeDominatedRetirementAnchors(thread, launch.getDone(),
+                                    channelRetirementAnchors,
+                                    pendingLaunchDependencies, builder);
+    return launch.getDone();
+  }
+
+  ::mlir::Operation *op = path.front();
+  ::mlir::Operation *nested =
+      path.size() == 1 ? launch.getOperation() : path[1];
+  auto containingRegion = findContainingRegion(op, nested);
+  if (!containingRegion)
+    return ::mlir::failure();
+
+  auto propagateSelection =
+      [&](::mlir::Operation *replacement) -> ::mlir::FailureOr<::mlir::Value> {
+    unsigned oldResultCount = op->getNumResults();
+    replacement->setDiscardableAttrs(op->getDiscardableAttrDictionary());
+    for (auto [source, target] :
+         ::llvm::zip_equal(op->getRegions(), replacement->getRegions()))
+      moveRegionBody(source, target);
+    replaceStructuredResults(op, replacement, oldResultCount,
+                             pendingLaunchDependencies);
+    op->erase();
+
+    auto selected = propagateCompletionPath(
+        path.drop_front(), launch, incoming, threadFallback,
+        channelRetirementAnchors, pendingLaunchDependencies, pendingCompletions,
+        parallelGroup, nextParallelGroup, thread, builder);
+    if (::mlir::failed(selected))
+      return ::mlir::failure();
+    for (auto [index, region] : ::llvm::enumerate(replacement->getRegions())) {
+      ::mlir::Value regionCompletion =
+          index == *containingRegion ? *selected : incoming;
+      if (region.empty())
+        builder.createBlock(&region);
+      ::mlir::Block &block = region.front();
+      if (block.empty()) {
+        builder.setInsertionPointToEnd(&block);
+        ::mlir::scf::YieldOp::create(builder, replacement->getLoc(),
+                                     regionCompletion);
+        continue;
+      }
+      auto yield =
+          ::llvm::dyn_cast<::mlir::scf::YieldOp>(block.getTerminator());
+      if (!yield)
+        return ::mlir::failure();
+      yield.getResultsMutable().append(regionCompletion);
+    }
+    ::mlir::Value output = replacement->getResult(oldResultCount);
+    placeDominatedRetirementAnchors(thread, output, channelRetirementAnchors,
+                                    pendingLaunchDependencies, builder);
+    return output;
+  };
+
+  if (auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(op)) {
+    ::llvm::SmallVector<::mlir::Type, 4> resultTypes(ifOp.getResultTypes());
+    resultTypes.push_back(builder.getNoneType());
+    builder.setInsertionPoint(ifOp);
+    auto replacement = ::mlir::scf::IfOp::create(
+        builder, ifOp.getLoc(), resultTypes, ifOp.getCondition(),
+        /*withElseRegion=*/true);
+    return propagateSelection(replacement);
+  }
+
+  if (auto switchOp = ::llvm::dyn_cast<::mlir::scf::IndexSwitchOp>(op)) {
+    ::llvm::SmallVector<::mlir::Type, 4> resultTypes(switchOp.getResultTypes());
+    resultTypes.push_back(builder.getNoneType());
+    builder.setInsertionPoint(switchOp);
+    auto replacement = ::mlir::scf::IndexSwitchOp::create(
+        builder, switchOp.getLoc(), resultTypes, switchOp.getArg(),
+        switchOp.getCasesAttr(), switchOp.getNumCases());
+    return propagateSelection(replacement);
+  }
+
+  if (auto forOp = ::llvm::dyn_cast<::mlir::scf::ForOp>(op)) {
+    ::mlir::Location loc = forOp.getLoc();
+    unsigned oldResultCount = forOp.getNumResults();
+    ::llvm::SmallVector<::mlir::Value, 4> initArgs(forOp.getInitArgs());
+    initArgs.push_back(incoming);
+    builder.setInsertionPoint(forOp);
+    auto replacement = ::mlir::scf::ForOp::create(
+        builder, loc, forOp.getLowerBound(), forOp.getUpperBound(),
+        forOp.getStep(), initArgs, nullptr, forOp.getUnsignedCmp());
+    replacement->setDiscardableAttrs(forOp->getDiscardableAttrDictionary());
+    moveRegionBody(forOp.getRegion(), replacement.getRegion());
+    ::mlir::Block &body = replacement.getRegion().front();
+    ::mlir::Value bodyIncoming = body.addArgument(builder.getNoneType(), loc);
+    replaceStructuredResults(forOp, replacement, oldResultCount,
+                             pendingLaunchDependencies);
+    forOp.erase();
+
+    auto bodyCompletion = propagateCompletionPath(
+        path.drop_front(), launch, bodyIncoming, threadFallback,
+        channelRetirementAnchors, pendingLaunchDependencies, pendingCompletions,
+        parallelGroup, nextParallelGroup, thread, builder);
+    if (::mlir::failed(bodyCompletion))
+      return ::mlir::failure();
+    auto yield = ::mlir::cast<::mlir::scf::YieldOp>(body.getTerminator());
+    yield.getResultsMutable().append(*bodyCompletion);
+    ::mlir::Value output = replacement.getResult(oldResultCount);
+    placeDominatedRetirementAnchors(thread, output, channelRetirementAnchors,
+                                    pendingLaunchDependencies, builder);
+    return output;
+  }
+
+  if (auto whileOp = ::llvm::dyn_cast<::mlir::scf::WhileOp>(op)) {
+    ::mlir::Location loc = whileOp.getLoc();
+    unsigned oldResultCount = whileOp.getNumResults();
+    ::llvm::SmallVector<::mlir::Type, 4> resultTypes(whileOp.getResultTypes());
+    resultTypes.push_back(builder.getNoneType());
+    ::llvm::SmallVector<::mlir::Value, 4> inits(whileOp.getInits());
+    inits.push_back(incoming);
+    builder.setInsertionPoint(whileOp);
+    auto replacement = ::mlir::scf::WhileOp::create(builder, loc, resultTypes,
+                                                    inits, nullptr, nullptr);
+    replacement->setDiscardableAttrs(whileOp->getDiscardableAttrDictionary());
+    moveRegionBody(whileOp.getBefore(), replacement.getBefore());
+    moveRegionBody(whileOp.getAfter(), replacement.getAfter());
+    ::mlir::Value beforeIncoming =
+        replacement.getBefore().front().addArgument(builder.getNoneType(), loc);
+    ::mlir::Value afterIncoming =
+        replacement.getAfter().front().addArgument(builder.getNoneType(), loc);
+    replaceStructuredResults(whileOp, replacement, oldResultCount,
+                             pendingLaunchDependencies);
+    whileOp.erase();
+
+    auto condition = replacement.getConditionOp();
+    auto yield = replacement.getYieldOp();
+    if (*containingRegion == 0) {
+      auto beforeCompletion = propagateCompletionPath(
+          path.drop_front(), launch, beforeIncoming, threadFallback,
+          channelRetirementAnchors, pendingLaunchDependencies,
+          pendingCompletions, parallelGroup, nextParallelGroup, thread,
+          builder);
+      if (::mlir::failed(beforeCompletion))
+        return ::mlir::failure();
+      condition.getArgsMutable().append(*beforeCompletion);
+      yield.getResultsMutable().append(afterIncoming);
+    } else {
+      condition.getArgsMutable().append(beforeIncoming);
+      auto afterCompletion = propagateCompletionPath(
+          path.drop_front(), launch, afterIncoming, threadFallback,
+          channelRetirementAnchors, pendingLaunchDependencies,
+          pendingCompletions, parallelGroup, nextParallelGroup, thread,
+          builder);
+      if (::mlir::failed(afterCompletion))
+        return ::mlir::failure();
+      yield.getResultsMutable().append(*afterCompletion);
+    }
+    ::mlir::Value output = replacement.getResult(oldResultCount);
+    placeDominatedRetirementAnchors(thread, output, channelRetirementAnchors,
+                                    pendingLaunchDependencies, builder);
+    return output;
+  }
+
+  if (::llvm::isa<::mlir::scf::ParallelOp, ::mlir::scf::ForallOp>(op)) {
+    auto domain = getFixedParallelDomain(op);
+    if (!domain)
+      return ::mlir::failure();
+    if (parallelGroup == 0)
+      parallelGroup = nextParallelGroup++;
+    ::mlir::Block *body;
+    ::llvm::SmallVector<::mlir::Value, 4> inductionVars;
+    if (auto parallel = ::llvm::dyn_cast<::mlir::scf::ParallelOp>(op)) {
+      body = parallel.getBody();
+      inductionVars = parallel.getInductionVars();
+    } else {
+      auto forall = ::mlir::cast<::mlir::scf::ForallOp>(op);
+      body = forall.getBody();
+      inductionVars = forall.getInductionVars();
+    }
+
+    ::llvm::SmallVector<PendingGraphCompletion, 4> nestedPending;
+    ::llvm::SmallVector<PendingGraphCompletion, 4> remainingPending;
+    for (PendingGraphCompletion &pending : pendingCompletions) {
+      if (isNestedIn(pending.launch, op))
+        nestedPending.push_back(std::move(pending));
+      else
+        remainingPending.push_back(std::move(pending));
+    }
+    pendingCompletions.assign(std::make_move_iterator(remainingPending.begin()),
+                              std::make_move_iterator(remainingPending.end()));
+
+    ::llvm::SmallVector<::mlir::Operation *, 4> internalAnchors;
+    for (::mlir::Operation *&anchor : channelRetirementAnchors) {
+      if (!anchor || !isNestedIn(anchor, op))
+        continue;
+      internalAnchors.push_back(anchor);
+      anchor = nullptr;
+    }
+
+    ::mlir::LogicalResult status = ::mlir::success();
+    ::llvm::SmallVector<::mlir::Value, 4> laneCompletions;
+    ::llvm::SmallVector<int64_t, 4> point;
+    forEachParallelPoint(
+        *domain, 0, point, [&](::llvm::ArrayRef<int64_t> coordinates) {
+          if (::mlir::failed(status))
+            return;
+          ::mlir::IRMapping mapping;
+          builder.setInsertionPoint(op);
+          for (auto [iv, coordinate] :
+               ::llvm::zip_equal(inductionVars, coordinates)) {
+            auto constant = ::mlir::arith::ConstantOp::create(
+                builder, op->getLoc(), builder.getIndexAttr(coordinate));
+            mapping.map(iv, constant.getResult());
+          }
+          for (::mlir::Operation &bodyOp : body->without_terminator())
+            builder.clone(bodyOp, mapping);
+
+          for (PendingGraphCompletion &pending : nestedPending) {
+            auto mappedLaunch =
+                ::llvm::dyn_cast_or_null<::dataflow::GraphLaunchOp>(
+                    mapping.lookupOrNull(pending.launch.getOperation()));
+            if (!mappedLaunch) {
+              status = ::mlir::failure();
+              return;
+            }
+            PendingGraphCompletion mapped{mappedLaunch, {}, parallelGroup};
+            for (::mlir::Operation *anchor : pending.channelRetirementAnchors) {
+              if (anchor && isNestedIn(anchor, op))
+                anchor = mapping.lookupOrNull(anchor);
+              mapped.channelRetirementAnchors.push_back(anchor);
+            }
+            pendingCompletions.push_back(std::move(mapped));
+          }
+
+          auto mappedLaunch =
+              ::llvm::dyn_cast_or_null<::dataflow::GraphLaunchOp>(
+                  mapping.lookupOrNull(launch.getOperation()));
+          if (!mappedLaunch) {
+            status = ::mlir::failure();
+            return;
+          }
+          ::llvm::SmallVector<::mlir::Operation *, 4> mappedPath;
+          for (::mlir::Operation *pathOp : path.drop_front()) {
+            ::mlir::Operation *mapped = mapping.lookupOrNull(pathOp);
+            if (!mapped) {
+              status = ::mlir::failure();
+              return;
+            }
+            mappedPath.push_back(mapped);
+          }
+          ::llvm::SmallVector<::mlir::Operation *, 4> mappedAnchors;
+          for (::mlir::Operation *anchor : internalAnchors) {
+            anchor = mapping.lookupOrNull(anchor);
+            if (!anchor) {
+              status = ::mlir::failure();
+              return;
+            }
+            mappedAnchors.push_back(anchor);
+          }
+          auto laneCompletion = propagateCompletionPath(
+              mappedPath, mappedLaunch, incoming, threadFallback, mappedAnchors,
+              pendingLaunchDependencies, pendingCompletions, parallelGroup,
+              nextParallelGroup, thread, builder);
+          if (::mlir::failed(laneCompletion) ||
+              ::llvm::any_of(mappedAnchors,
+                             [](auto *anchor) { return anchor != nullptr; })) {
+            status = ::mlir::failure();
+            return;
+          }
+          laneCompletions.push_back(*laneCompletion);
+        });
+    if (::mlir::failed(status))
+      return ::mlir::failure();
+
+    builder.setInsertionPoint(op);
+    ::mlir::Value output = incoming;
+    if (laneCompletions.size() == 1) {
+      output = laneCompletions.front();
+    } else if (!laneCompletions.empty()) {
+      ::llvm::SmallVector<::mlir::Type, 4> types(laneCompletions.size(),
+                                                 builder.getNoneType());
+      output = ::dataflow::SyncOp::create(builder, op->getLoc(), types,
+                                          laneCompletions)
+                   .getOutputs()
+                   .front();
+    }
+    op->erase();
+    placeDominatedRetirementAnchors(thread, output, channelRetirementAnchors,
+                                    pendingLaunchDependencies, builder);
+    return output;
+  }
+
+  return ::mlir::failure();
 }
 
 ::mlir::FailureOr<::mlir::Value> propagateCompletionToThread(
-    ::dataflow::ThreadOp thread, ::mlir::Value completion,
+    ::dataflow::ThreadOp thread, ::dataflow::GraphLaunchOp launch,
     ::mlir::Value fallback,
     ::llvm::MutableArrayRef<::mlir::Operation *> channelRetirementAnchors,
     PendingLaunchDependencies &pendingLaunchDependencies,
-    ::mlir::Location waitLoc, ::mlir::OpBuilder &builder) {
-  auto placeDominatedRetirementAnchors = [&]() {
-    ::mlir::DominanceInfo dominance(thread);
-    for (::mlir::Operation *&anchor : channelRetirementAnchors) {
-      if (!anchor || !dominance.dominates(completion, anchor))
-        continue;
-      if (auto target = ::llvm::dyn_cast<::loom::SpatialRegionOp>(anchor)) {
-        addCompletionDependency(pendingLaunchDependencies[target], completion);
-      } else if (auto launch =
-                     ::llvm::dyn_cast<::dataflow::GraphLaunchOp>(anchor)) {
-        addGraphLaunchDependency(launch, completion);
-      } else {
-        builder.setInsertionPoint(anchor);
-        ::dataflow::GraphWaitOp::create(builder, waitLoc,
-                                        ::mlir::ValueRange{completion});
-      }
-      anchor = nullptr;
-    }
-  };
+    ::llvm::SmallVectorImpl<PendingGraphCompletion> &pendingCompletions,
+    unsigned &parallelGroup, unsigned &nextParallelGroup,
+    ::mlir::OpBuilder &builder) {
+  ::llvm::SmallVector<::mlir::Operation *, 4> path;
+  for (::mlir::Operation *parent = launch->getParentOp();
+       parent && parent != thread.getOperation();
+       parent = parent->getParentOp())
+    path.push_back(parent);
+  std::reverse(path.begin(), path.end());
 
-  placeDominatedRetirementAnchors();
-  while (completion.getDefiningOp()->getParentOfType<::dataflow::ThreadOp>() ==
-             thread &&
-         completion.getDefiningOp()->getBlock() != &thread.getBody().front()) {
-    ::mlir::Operation *parent = completion.getDefiningOp()->getParentOp();
-    while (parent && parent != thread.getOperation() &&
-           !::llvm::isa<::mlir::scf::IfOp>(parent))
-      parent = parent->getParentOp();
-    auto ifOp = ::llvm::dyn_cast_or_null<::mlir::scf::IfOp>(parent);
-    if (!ifOp)
-      return ::mlir::failure();
-    auto propagated = propagateIfCompletion(ifOp, completion, fallback,
-                                            pendingLaunchDependencies, builder);
-    if (::mlir::failed(propagated))
-      return ::mlir::failure();
-    completion = *propagated;
-    placeDominatedRetirementAnchors();
-  }
-  if (::llvm::any_of(channelRetirementAnchors,
+  auto completion = propagateCompletionPath(
+      path, launch, fallback, fallback, channelRetirementAnchors,
+      pendingLaunchDependencies, pendingCompletions, parallelGroup,
+      nextParallelGroup, thread, builder);
+  if (::mlir::failed(completion) ||
+      ::llvm::any_of(channelRetirementAnchors,
                      [](auto *anchor) { return anchor != nullptr; }))
     return ::mlir::failure();
   return completion;
@@ -658,9 +1079,8 @@ struct LowerForToGraphPass
   ::mlir::LogicalResult publishSpatialRegions(::mlir::ModuleOp module,
                                               ::mlir::OpBuilder &builder) {
     ::llvm::SmallVector<::loom::SpatialRegionOp, 8> regions;
-    module.walk([&](::loom::SpatialRegionOp spatial) {
-      regions.push_back(spatial);
-    });
+    module.walk(
+        [&](::loom::SpatialRegionOp spatial) { regions.push_back(spatial); });
 
     for (::loom::SpatialRegionOp spatial : regions) {
       auto thread = spatial->getParentOfType<::dataflow::ThreadOp>();
@@ -670,16 +1090,27 @@ struct LowerForToGraphPass
       for (::mlir::Operation *parent = spatial->getParentOp();
            parent && parent != thread.getOperation();
            parent = parent->getParentOp()) {
-        if (!::llvm::isa<::mlir::scf::IfOp>(parent))
-          return spatial.emitOpError(
-              "completion propagation through enclosing '")
-                 << parent->getName()
-                 << "' is not implemented; spatial candidate cannot be "
-                    "published";
+        if (::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp,
+                        ::mlir::scf::WhileOp, ::mlir::scf::IndexSwitchOp>(
+                parent))
+          continue;
+        if (::llvm::isa<::mlir::scf::ParallelOp, ::mlir::scf::ForallOp>(
+                parent)) {
+          if (::mlir::failed(checkFixedParallelCompletion(parent)))
+            return ::mlir::failure();
+          continue;
+        }
+        return spatial.emitOpError("completion propagation through enclosing '")
+               << parent->getName()
+               << "' is not supported; spatial candidate cannot be "
+                  "published";
       }
     }
 
     PendingLaunchDependencies pendingLaunchDependencies;
+    ::llvm::SmallVector<PendingGraphCompletion, 8> pendingCompletions;
+    ::llvm::SmallVector<ParallelCompletionCandidate, 8> parallelCompletions;
+    unsigned nextParallelGroup = 1;
     for (::loom::SpatialRegionOp spatial : regions) {
       auto thread = spatial->getParentOfType<::dataflow::ThreadOp>();
       ::mlir::Block &threadEntry = thread.getBody().front();
@@ -736,8 +1167,8 @@ struct LowerForToGraphPass
           module, spatial.getGraphName().value_or("g_spatial_candidate"));
       ::mlir::Location loc = spatial.getLoc();
       builder.setInsertionPointToEnd(module.getBody());
-      auto graph = ::dataflow::GraphOp::create(
-          builder, loc, graphName, functionType, segmentAttrs);
+      auto graph = ::dataflow::GraphOp::create(builder, loc, graphName,
+                                               functionType, segmentAttrs);
       graph.setSymVisibilityAttr(builder.getStringAttr("private"));
 
       ::llvm::SmallVector<::mlir::Value, 8> memoryRoots(
@@ -848,25 +1279,45 @@ struct LowerForToGraphPass
           launchDependencies, spatial.getValueInputs(),
           spatial.getStreamInputs(), spatial.getMemoryInputs(),
           spatial.getStreamOutputs());
-      auto propagated = propagateCompletionToThread(
-          thread, launch.getDone(), threadCtrl, channelRetirementAnchors,
-          pendingLaunchDependencies, loc, builder);
-      if (::mlir::failed(propagated))
-        return launch.emitOpError(
-            "failed to propagate completion through enclosing structured "
-            "control");
-      addThreadCompletionFrontier(thread, *propagated);
-      for (auto [index, result] :
-           ::llvm::enumerate(spatial.getValueResults()))
+      for (auto [index, result] : ::llvm::enumerate(spatial.getValueResults()))
         result.replaceAllUsesWith(launch.getValueResults()[index]);
-      for (auto [index, result] :
-           ::llvm::enumerate(spatial.getMemoryResults()))
+      for (auto [index, result] : ::llvm::enumerate(spatial.getMemoryResults()))
         result.replaceAllUsesWith(launch.getMemoryResults()[index]);
+      for (PendingGraphCompletion &pending : pendingCompletions)
+        for (::mlir::Operation *&anchor : pending.channelRetirementAnchors)
+          if (anchor == spatial.getOperation())
+            anchor = launch.getOperation();
       spatial.erase();
+      pendingCompletions.push_back(PendingGraphCompletion{
+          launch, std::move(channelRetirementAnchors), 0});
     }
     if (!pendingLaunchDependencies.empty())
       return module.emitError(
           "channel retirement dependency target was not published");
+
+    while (!pendingCompletions.empty()) {
+      PendingGraphCompletion pending = std::move(pendingCompletions.front());
+      pendingCompletions.erase(pendingCompletions.begin());
+      auto thread = pending.launch->getParentOfType<::dataflow::ThreadOp>();
+      ::mlir::Block &threadEntry = thread.getBody().front();
+      size_t ctrlIndex = thread.getFunctionType().getInputs().size();
+      ::mlir::Value threadCtrl = threadEntry.getArgument(ctrlIndex);
+      auto propagated = propagateCompletionToThread(
+          thread, pending.launch, threadCtrl, pending.channelRetirementAnchors,
+          pendingLaunchDependencies, pendingCompletions, pending.parallelGroup,
+          nextParallelGroup, builder);
+      if (::mlir::failed(propagated))
+        return pending.launch.emitOpError(
+            "failed to propagate completion through enclosing structured "
+            "control");
+      if (pending.parallelGroup == 0) {
+        addThreadCompletionFrontier(thread, *propagated);
+      } else {
+        parallelCompletions.push_back(ParallelCompletionCandidate{
+            thread, *propagated, pending.parallelGroup});
+      }
+    }
+    publishParallelCompletionCandidates(parallelCompletions, builder);
     return ::mlir::success();
   }
 };
