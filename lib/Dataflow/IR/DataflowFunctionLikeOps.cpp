@@ -12,11 +12,11 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
-#include "mlir/IR/Matchers.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -85,6 +85,47 @@ static LogicalResult verifyGraphPortType(Operation *op, Type type,
            << graphPortKindName(kind) << " " << direction << " #" << kindIndex
            << " must not use protocol type none";
   return success();
+}
+
+static Attribute foldToConstant(Value value, DenseMap<Value, Attribute> &cache,
+                                DenseSet<Value> &active) {
+  if (auto cached = cache.find(value); cached != cache.end())
+    return cached->second;
+
+  auto result = dyn_cast<OpResult>(value);
+  if (!result || !active.insert(value).second)
+    return {};
+
+  Operation *definingOp = result.getOwner();
+  SmallVector<Attribute> operandConstants;
+  operandConstants.reserve(definingOp->getNumOperands());
+  for (Value operand : definingOp->getOperands())
+    operandConstants.push_back(foldToConstant(operand, cache, active));
+
+  // Fold hooks may update their operation in place, so evaluate a clone.
+  Operation *probe = definingOp->clone();
+  SmallVector<OpFoldResult, 1> folded;
+  Attribute constant;
+  if (succeeded(probe->fold(operandConstants, folded)) &&
+      folded.size() == probe->getNumResults()) {
+    OpFoldResult foldedResult = folded[result.getResultNumber()];
+    constant = dyn_cast_if_present<Attribute>(foldedResult);
+    if (!constant) {
+      if (auto foldedValue = dyn_cast_if_present<Value>(foldedResult)) {
+        for (auto [index, operand] : llvm::enumerate(probe->getOperands())) {
+          if (foldedValue == operand) {
+            constant = operandConstants[index];
+            break;
+          }
+        }
+      }
+    }
+  }
+  probe->erase();
+
+  active.erase(value);
+  cache.try_emplace(value, constant);
+  return constant;
 }
 
 // Build a generic `func.func`-shaped op state for our function-like
@@ -347,9 +388,12 @@ LogicalResult ThreadLaunchOp::verifySymbolUses(SymbolTableCollection &symbols) {
            << getGridUpperBounds().size() << ") must match callee rank ("
            << calleeRank << ")";
 
+  DenseMap<Value, Attribute> constantCache;
+  DenseSet<Value> active;
   for (auto [index, extent] : llvm::enumerate(getGridUpperBounds())) {
-    APInt constant;
-    if (matchPattern(extent, m_ConstantInt(&constant)) && constant.isNegative())
+    auto constant = dyn_cast_or_null<IntegerAttr>(
+        foldToConstant(extent, constantCache, active));
+    if (constant && constant.getValue().isNegative())
       return emitOpError("grid upper bound #")
              << index << " must be nonnegative";
   }

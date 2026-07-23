@@ -41,6 +41,22 @@ func.func @launch_negative_extent() {
 }
 
 // -----
+// Foldable launch extents must satisfy the same nonnegative contract.
+dataflow.thread private @t_foldable_extent() ctrl (%ctrl: none)
+    iv (%i: index) {
+  dataflow.thread.yield
+}
+func.func @launch_foldable_negative_extent() {
+  %minus_two = arith.constant -2 : index
+  %one = arith.constant 1 : index
+  %extent = arith.addi %minus_two, %one : index
+  // expected-error @+1 {{grid upper bound #0 must be nonnegative}}
+  %token = dataflow.thread.launch @t_foldable_extent() grid(%extent)
+      : () -> !dataflow.thread_token
+  return
+}
+
+// -----
 // Dynamic launch extents remain statically admissible.
 dataflow.thread private @t_dynamic_extent() ctrl (%ctrl: none) iv (%i: index) {
   dataflow.thread.yield
