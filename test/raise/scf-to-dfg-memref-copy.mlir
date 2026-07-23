@@ -10,6 +10,7 @@
 // RUN: env LOOM_INDEX_WIDTH=4 loom-dfg-sim %t.override.mlir --graph override_graph --memref 0=1,2,3,4,5,6,7,8 --memref 1=0,0,0,0,0,0,0,0 --output %t.eight.json
 // RUN: FileCheck %s --check-prefix=EIGHT < %t.eight.json
 // RUN: not loom-raise-opt --loom-lower-scf-to-dfg -split-input-file --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/unusable.mlir 2>&1 | FileCheck %s --check-prefix=REJECT --implicit-check-not="dataflow.graph private" --implicit-check-not=dataflow.graph.launch
+// RUN: not loom-raise-opt --loom-expand-graph-memref-copy --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/preflight.mlir 2>&1 | FileCheck %s --check-prefix=PREFLIGHT --implicit-check-not=memref.load --implicit-check-not=memref.store --implicit-check-not=scf.for
 
 // A SpatialCore-owned memref.copy carries no independent Dataflow semantics.
 // It is expanded into a structured element loop inside the publication
@@ -53,6 +54,14 @@
 // EXPAND: dataflow.store %arg2[%{{.*}}] %[[UNIT_DATA]] %[[UNIT_DONE]] : memref<1xi32>
 // EXPAND-LABEL: dataflow.graph private @empty_graph
 // EXPAND-NEXT: dataflow.graph.return %arg0 : none
+
+// A rank-zero copy moves the scalar at address zero without a stream.
+
+// EXPAND-LABEL: dataflow.graph private @scalar_graph
+// EXPAND: %[[SCALAR_LOAD_ADDR:.*]] = dataflow.constant %arg0 {const_value = 0 : index} : index
+// EXPAND: %[[SCALAR_DATA:.*]], %[[SCALAR_DONE:.*]] = dataflow.load %arg1[%[[SCALAR_LOAD_ADDR]]] %arg0 : memref<f32>
+// EXPAND: %[[SCALAR_STORE_ADDR:.*]] = dataflow.constant %arg0 {const_value = 0 : index} : index
+// EXPAND: dataflow.store %arg2[%[[SCALAR_STORE_ADDR]]] %[[SCALAR_DATA]] %[[SCALAR_DONE]] : memref<f32>
 
 // The closest enclosing data layout owns the index width, so the declared four
 // bit index governs admissibility even though the process default is wider.
@@ -117,6 +126,14 @@
 // REJECT: dataflow.thread private @rank2_address_overflow
 // REJECT: loom.spatial_region
 // REJECT: memref.copy %{{.*}}, %{{.*}} : memref<3x3xi32> to memref<3x3xi32>
+
+// Direct pass failure leaves every copy untouched.
+
+// PREFLIGHT: error: 'memref.copy' op loom-expand-graph-memref-copy: cannot expand memref.copy into a structured load/store loop; bound 8 is not representable in the graph's resolved signed index domain 'i4'
+// PREFLIGHT: dataflow.graph private @preflight_earlier_valid
+// PREFLIGHT: memref.copy {{.*}} : memref<2xi32> to memref<2xi32>
+// PREFLIGHT: dataflow.graph private @preflight_later_invalid
+// PREFLIGHT: memref.copy {{.*}} : memref<8xi32> to memref<8xi32>
 
 //--- layout.mlir
 module attributes {
@@ -200,6 +217,20 @@ module attributes {
         (memref<0xi32>, memref<0xi32>) -> ()
     dataflow.thread.yield
   }
+
+  dataflow.thread private @scalar_copy(
+      %src: memref<f32>, %dst: memref<f32>) ctrl (%ctrl: none) {
+    "loom.spatial_region"(%src, %dst)
+        <{operandSegmentSizes = array<i32: 0, 0, 2, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%source: memref<f32>, %target: memref<f32>):
+        memref.copy %source, %target : memref<f32> to memref<f32>
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "scalar_graph", source_maps = []} :
+        (memref<f32>, memref<f32>) -> ()
+    dataflow.thread.yield
+  }
 }
 
 //--- override.mlir
@@ -277,5 +308,25 @@ module attributes {
     }) {graph_name = "rank2_address_overflow_graph", source_maps = []} :
         (memref<3x3xi32>, memref<3x3xi32>) -> ()
     dataflow.thread.yield
+  }
+}
+
+//--- preflight.mlir
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 4>>
+} {
+  dataflow.graph private @preflight_earlier_valid(
+      %ctrl: none, %src: memref<2xi32>, %dst: memref<2xi32>) -> ()
+      attributes {input_segments = array<i32: 0, 0, 2>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    memref.copy %src, %dst : memref<2xi32> to memref<2xi32>
+    dataflow.graph.return %ctrl : none
+  }
+  dataflow.graph private @preflight_later_invalid(
+      %ctrl: none, %src: memref<8xi32>, %dst: memref<8xi32>) -> ()
+      attributes {input_segments = array<i32: 0, 0, 2>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    memref.copy %src, %dst : memref<8xi32> to memref<8xi32>
+    dataflow.graph.return %ctrl : none
   }
 }

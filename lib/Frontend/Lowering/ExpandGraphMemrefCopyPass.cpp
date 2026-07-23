@@ -17,9 +17,9 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
-#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <cstdint>
 
@@ -28,41 +28,30 @@ namespace {
 constexpr std::int64_t kLoopLowerBound = 0;
 constexpr std::int64_t kLoopStep = 1;
 
-void buildCopyNest(::mlir::OpBuilder &builder, ::mlir::Location loc,
-                   ::mlir::memref::CopyOp copy,
-                   ::llvm::ArrayRef<std::int64_t> shape, unsigned dimension,
-                   ::llvm::SmallVectorImpl<::mlir::Value> &indices) {
-  if (dimension == shape.size()) {
-    ::mlir::Value element =
-        ::mlir::memref::LoadOp::create(builder, loc, copy.getSource(), indices);
-    ::mlir::memref::StoreOp::create(builder, loc, element, copy.getTarget(),
-                                    indices);
-    return;
-  }
-
-  ::mlir::Value lower =
-      ::mlir::arith::ConstantIndexOp::create(builder, loc, kLoopLowerBound);
-  ::mlir::Value upper =
-      ::mlir::arith::ConstantIndexOp::create(builder, loc, shape[dimension]);
-  ::mlir::Value step =
-      ::mlir::arith::ConstantIndexOp::create(builder, loc, kLoopStep);
-  ::mlir::scf::ForOp::create(
-      builder, loc, lower, upper, step, ::mlir::ValueRange{},
-      [&](::mlir::OpBuilder &body, ::mlir::Location bodyLoc,
-          ::mlir::Value index, ::mlir::ValueRange) {
-        indices.push_back(index);
-        buildCopyNest(body, bodyLoc, copy, shape, dimension + 1, indices);
-        indices.pop_back();
-        ::mlir::scf::YieldOp::create(body, bodyLoc);
-      });
-}
-
 void expandCopy(::mlir::memref::CopyOp copy) {
   auto type = ::llvm::cast<::mlir::MemRefType>(copy.getSource().getType());
   ::mlir::OpBuilder builder(copy);
   ::mlir::Location loc = copy.getLoc();
-  ::llvm::SmallVector<::mlir::Value, 4> indices;
-  buildCopyNest(builder, loc, copy, type.getShape(), 0, indices);
+  ::llvm::SmallVector<::mlir::Value, 4> lowerBounds;
+  ::llvm::SmallVector<::mlir::Value, 4> upperBounds;
+  ::llvm::SmallVector<::mlir::Value, 4> steps;
+  for (std::int64_t extent : type.getShape()) {
+    lowerBounds.push_back(
+        ::mlir::arith::ConstantIndexOp::create(builder, loc, kLoopLowerBound));
+    upperBounds.push_back(
+        ::mlir::arith::ConstantIndexOp::create(builder, loc, extent));
+    steps.push_back(
+        ::mlir::arith::ConstantIndexOp::create(builder, loc, kLoopStep));
+  }
+  ::mlir::scf::buildLoopNest(
+      builder, loc, lowerBounds, upperBounds, steps,
+      [&](::mlir::OpBuilder &body, ::mlir::Location bodyLoc,
+          ::mlir::ValueRange indices) {
+        ::mlir::Value element = ::mlir::memref::LoadOp::create(
+            body, bodyLoc, copy.getSource(), indices);
+        ::mlir::memref::StoreOp::create(body, bodyLoc, element,
+                                        copy.getTarget(), indices);
+      });
   copy.erase();
 }
 
@@ -103,12 +92,26 @@ struct ExpandGraphMemrefCopyPass
         return;
       }
 
-      for (::mlir::memref::CopyOp copy : copies)
+      for (::mlir::memref::CopyOp copy : copies) {
         if (::mlir::failed(::loom::lowering::detail::checkRankedMemRefCopy(
                 copy, *indexBits))) {
           signalPassFailure();
           return;
         }
+        auto type =
+            ::llvm::cast<::mlir::MemRefType>(copy.getSource().getType());
+        if (type.getRank() > 0 && !::llvm::isIntN(*indexBits, kLoopStep)) {
+          copy.emitOpError(
+              "loom-expand-graph-memref-copy: cannot expand memref.copy "
+              "into a structured load/store loop; bound ")
+              << kLoopStep
+              << " is not representable in the graph's resolved signed index "
+                 "domain 'i"
+              << *indexBits << "'";
+          signalPassFailure();
+          return;
+        }
+      }
       for (::mlir::memref::CopyOp copy : copies)
         copiesToExpand.push_back(copy);
     }

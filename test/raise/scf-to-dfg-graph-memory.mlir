@@ -1,7 +1,8 @@
 // These graphs index memory with i64 ordinals, so they need a 64-bit
 // canonical index rather than the configured default.
-// RUN: env LOOM_INDEX_WIDTH=64 loom-raise-opt --loom-lower-graph-memory %s \
-// RUN:   | FileCheck %s
+// RUN: env LOOM_INDEX_WIDTH=64 loom-raise-opt --loom-lower-graph-memory \
+// RUN:   -split-input-file -verify-diagnostics %s -o %t.lowered.mlir
+// RUN: FileCheck %s < %t.lowered.mlir
 
 // Explicit graph memory inputs are normalized into canonical dataflow memory
 // operations. Their pointer bridge preserves the graph-owned import root.
@@ -212,4 +213,78 @@ dataflow.graph private @g_chained_gep_negative_bias(
       : (!llvm.ptr) -> !llvm.ptr, i8
   %value = llvm.load %ptr : !llvm.ptr -> i16
   dataflow.graph.return %arg0, %value : none, i16
+}
+
+// -----
+
+// Rank-zero access uses linear address zero.
+
+// CHECK-LABEL: dataflow.graph private @g_rank0_scalar
+// CHECK: %[[R0_LD_ADDR:.*]] = dataflow.constant %arg0 {const_value = 0 : index} : index
+// CHECK: %[[R0_DATA:.*]], %[[R0_DONE:.*]] = dataflow.load %arg1[%[[R0_LD_ADDR]]] %arg0 : memref<f32>
+// CHECK: %[[R0_ST_ADDR:.*]] = dataflow.constant %arg0 {const_value = 0 : index} : index
+// CHECK: dataflow.store %arg1[%[[R0_ST_ADDR]]] %[[R0_DATA]] %[[R0_DONE]] : memref<f32>
+dataflow.graph private @g_rank0_scalar(
+    %arg0: none, %arg4: memref<f32>) -> ()
+    attributes {input_segments = array<i32: 0, 0, 1>,
+                result_segments = array<i32: 0, 0, 0>} {
+  %value = memref.load %arg4[] : memref<f32>
+  memref.store %value, %arg4[] : memref<f32>
+  dataflow.graph.return %arg0 : none
+}
+
+// -----
+
+// Dynamic rank-one access keeps its sole index unchanged.
+
+// CHECK-LABEL: dataflow.graph private @g_dynamic_rank1
+// CHECK: %[[D1_DATA:.*]], %[[D1_DONE:.*]] = dataflow.load %arg2[%arg1] %arg0 : memref<?xf32>
+// CHECK: dataflow.store %arg2[%arg1] %[[D1_DATA]] %[[D1_DONE]] : memref<?xf32>
+dataflow.graph private @g_dynamic_rank1(
+    %arg0: none, %arg1: index, %arg4: memref<?xf32>) -> ()
+    attributes {input_segments = array<i32: 1, 0, 1>,
+                result_segments = array<i32: 0, 0, 0>} {
+  %value = memref.load %arg4[%arg1] : memref<?xf32>
+  memref.store %value, %arg4[%arg1] : memref<?xf32>
+  dataflow.graph.return %arg0 : none
+}
+
+// -----
+
+// Rank greater than one requires a static identity layout.
+dataflow.graph private @g_static_nonidentity(
+    %arg0: none, %arg1: index, %arg2: index,
+    %arg4: memref<4x8xf32, affine_map<(d0, d1) -> (d1, d0)>>) -> ()
+    attributes {input_segments = array<i32: 2, 0, 1>,
+                result_segments = array<i32: 0, 0, 0>} {
+  // expected-error @+1 {{loom-lower-graph-memory: memref.load requires an identity-layout memref whose shape is static when rank exceeds one}}
+  %value = memref.load %arg4[%arg1, %arg2] : memref<4x8xf32, affine_map<(d0, d1) -> (d1, d0)>>
+  memref.store %value, %arg4[%arg1, %arg2] : memref<4x8xf32, affine_map<(d0, d1) -> (d1, d0)>>
+  dataflow.graph.return %arg0 : none
+}
+
+// -----
+
+dataflow.graph private @g_dynamic_rank2(
+    %arg0: none, %arg1: index, %arg2: index, %arg4: memref<?x?xf32>) -> ()
+    attributes {input_segments = array<i32: 2, 0, 1>,
+                result_segments = array<i32: 0, 0, 0>} {
+  // expected-error @+1 {{loom-lower-graph-memory: memref.load requires an identity-layout memref whose shape is static when rank exceeds one}}
+  %value = memref.load %arg4[%arg1, %arg2] : memref<?x?xf32>
+  memref.store %value, %arg4[%arg1, %arg2] : memref<?x?xf32>
+  dataflow.graph.return %arg0 : none
+}
+
+// -----
+
+// The maximum address is computed without truncating the 65-bit product.
+dataflow.graph private @g_address_beyond_64_bits(
+    %arg0: none, %arg1: index, %arg2: index,
+    %arg4: memref<8589934592x4294967296xi8>) -> ()
+    attributes {input_segments = array<i32: 2, 0, 1>,
+                result_segments = array<i32: 0, 0, 0>} {
+  // expected-error @+1 {{loom-lower-graph-memory: maximum linear address 36893488147419103231 is not representable in the graph's resolved signed index domain 'i64'}}
+  %value = memref.load %arg4[%arg1, %arg2] : memref<8589934592x4294967296xi8>
+  memref.store %value, %arg4[%arg1, %arg2] : memref<8589934592x4294967296xi8>
+  dataflow.graph.return %arg0 : none
 }
