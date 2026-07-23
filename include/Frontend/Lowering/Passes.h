@@ -34,6 +34,14 @@ std::unique_ptr<::mlir::Pass> createLowerForToGraphPass();
 // diagnostics.
 std::unique_ptr<::mlir::Pass> createLowerKnownLibraryCallsPass();
 
+// Module-scope pass that expands SpatialCore-owned `memref.copy` inside
+// dataflow.graph bodies into a structured memref.load/memref.store element
+// loop. The graph-memory owner then derives the ordinary dataflow.load/store
+// pair and its ctrl/done network, so the canonical program keeps no bulk
+// transfer op. A copy outside the supported profile fails here, inside the
+// publication transaction.
+std::unique_ptr<::mlir::Pass> createExpandGraphMemrefCopyPass();
+
 // Module-scope owner for graph-local memory and structured regions. It
 // normalizes supported LLVM and memref accesses to dataflow.load/store,
 // computes basic graph-local alias-root partitions, and recursively lowers
@@ -50,16 +58,16 @@ std::unique_ptr<::mlir::Pass> createLowerGraphConstantsPass();
 
 // Register the lowering passes with the global pass registry so
 // loom-raise-opt can drive them via --loom-lower-forall-to-thread /
-// --loom-lower-for-to-graph / --loom-lower-graph-memory /
-// --loom-lower-graph-constants plus the combined
+// --loom-lower-for-to-graph / --loom-expand-graph-memref-copy /
+// --loom-lower-graph-memory / --loom-lower-graph-constants plus the combined
 // --loom-lower-scf-to-dfg pipeline.
 void registerLoweringPasses();
 
 // Append the SCF-to-DFG lowering pipeline to the given pass manager:
 //   loom-lower-for-to-graph            (module-level)
 // The for-to-graph publisher internally owns canonicalization, known-library
-// expansion, graph memory/control lowering, constant promotion, and native
-// validation.
+// expansion, graph memref-copy expansion, graph memory/control lowering,
+// constant promotion, and native validation.
 void buildLoweringPipeline(::mlir::PassManager &pm);
 
 } // namespace lowering

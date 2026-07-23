@@ -6,7 +6,9 @@
 // `loom-lower-for-to-graph` owns the atomic publication transaction. It
 // consumes explicit loom.spatial_region candidates, runs graph finalization
 // on a scratch module, validates the native result, and publishes only the
-// completed module.
+// completed module. Graph memref-copy expansion is part of that finalization,
+// so a copy the current profile cannot expand fails the transaction instead of
+// reaching the published program.
 //
 // Thread ownership must already be present in the Structured Program
 // Candidate. The independently registered forall pass only diagnoses raw
@@ -21,6 +23,7 @@
 namespace loom {
 namespace lowering {
 
+void registerExpandGraphMemrefCopyPass();
 void registerLowerForallToThreadPass();
 void registerLowerForToGraphPass();
 void registerLowerGraphConstantsPass();
@@ -32,6 +35,7 @@ static void buildPipelineOnOpPassManager(::mlir::OpPassManager &pm) {
 }
 
 void registerLoweringPasses() {
+  registerExpandGraphMemrefCopyPass();
   registerLowerForallToThreadPass();
   registerLowerForToGraphPass();
   registerLowerGraphConstantsPass();

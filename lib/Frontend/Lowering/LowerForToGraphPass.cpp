@@ -263,13 +263,93 @@ struct LowerForToGraphPass
     module.getBodyRegion().takeBody(scratch->getBodyRegion());
   }
 
+  // Finalization applies to graphs that are not canonical Dataflow yet: the
+  // ones just published and any pre-final graph the module was given.
+  // `dataflow::validateFinalizedGraph` is that structural authority, so
+  // finality is not decided a second time here and needs no marker. A graph it
+  // accepts already owns its ctrl/done memory-event network; lowering it again
+  // would drive canonical dataflow.load/store back through the graph-memory
+  // owner and rebuild that network.
+  //
+  // Those graphs are therefore staged: a temporary module carries the original
+  // module attributes, so the data layout that resolves each graph's index
+  // width is the same one, and clones of just the graphs still to finalize. A
+  // staged graph body can name a module-scope symbol, so the symbol providers
+  // come too, as declarations: only their signature is needed to resolve a use,
+  // and a retained host body could launch a thread this module deliberately
+  // does not hold. Nothing else is cloned, so no top-level value is separated
+  // from its uses. Only when the existing pipeline succeeds does each staged
+  // graph replace its original, which keeps the signature changes finalization
+  // makes. The complete outer module is validated afterwards.
   ::mlir::LogicalResult finalizePublishedModule(::mlir::ModuleOp module) {
+    ::llvm::SmallVector<::dataflow::GraphOp, 4> pending;
+    for (auto graph : module.getOps<::dataflow::GraphOp>()) {
+      if (graph.isExternal())
+        continue;
+      ::llvm::Error error = ::dataflow::validateFinalizedGraph(graph);
+      if (!error)
+        continue;
+      ::llvm::consumeError(std::move(error));
+      pending.push_back(graph);
+    }
+
+    if (!pending.empty()) {
+      ::mlir::OpBuilder builder(module.getContext());
+      ::mlir::OwningOpRef<::mlir::ModuleOp> staging =
+          ::mlir::ModuleOp::create(builder, module.getLoc());
+      (*staging)->setAttrs(module->getAttrs());
+      builder.setInsertionPointToEnd(staging->getBody());
+      for (::mlir::Operation &op : *module.getBody()) {
+        if (!::llvm::isa<::mlir::SymbolOpInterface>(op) ||
+            ::llvm::isa<::dataflow::GraphOp, ::dataflow::ThreadOp>(op))
+          continue;
+        ::mlir::Operation *declaration = builder.clone(op);
+        if (auto callable =
+                ::llvm::dyn_cast<::mlir::FunctionOpInterface>(declaration)) {
+          callable.getFunctionBody().getBlocks().clear();
+          // A body-less callable is a declaration, which cannot be public.
+          ::mlir::SymbolTable::setSymbolVisibility(
+              declaration, ::mlir::SymbolTable::Visibility::Private);
+        }
+      }
+      ::llvm::SmallVector<::dataflow::GraphOp, 4> staged;
+      staged.reserve(pending.size());
+      for (::dataflow::GraphOp graph : pending)
+        staged.push_back(::mlir::cast<::dataflow::GraphOp>(
+            builder.clone(*graph.getOperation())));
+
+      if (::mlir::failed(lowerPendingGraphs(*staging)))
+        return ::mlir::failure();
+
+      for (auto [graph, finalized] : ::llvm::zip_equal(pending, staged)) {
+        finalized->moveBefore(graph);
+        graph.erase();
+      }
+    }
+
+    if (auto error = ::dataflow::validateFinalizedProgram(module)) {
+      module.emitError("canonical Dataflow publication failed: ")
+          << ::llvm::toString(std::move(error));
+      return ::mlir::failure();
+    }
+    return ::mlir::success();
+  }
+
+  ::mlir::LogicalResult lowerPendingGraphs(::mlir::ModuleOp module) {
     // Stream endpoints temporarily retain channel block arguments in the
     // scratch module until graph-region lowering replaces them with ports.
+    // The first canonicalizer owns the upstream memref.copy folds, so the
+    // expansion that follows only sees copies with a live extent. The second
+    // one canonicalizes the expanded loops together with the structured loops
+    // already in the body, which keeps one canonical set of index constants
+    // instead of a second set per expanded copy. Both precede the graph-memory
+    // owner, which consumes graph accesses.
     ::mlir::PassManager lowerer(module.getContext());
     lowerer.enableVerifier(false);
     lowerer.addPass(::mlir::createCanonicalizerPass());
     lowerer.addPass(::loom::lowering::createLowerKnownLibraryCallsPass());
+    lowerer.addPass(::loom::lowering::createExpandGraphMemrefCopyPass());
+    lowerer.addPass(::mlir::createCanonicalizerPass());
     lowerer.addPass(::loom::lowering::createLowerGraphMemoryPass());
     if (::mlir::failed(lowerer.run(module)) || ::mlir::failed(verify(module)))
       return ::mlir::failure();
@@ -278,15 +358,7 @@ struct LowerForToGraphPass
     finalizer.enableVerifier(true);
     finalizer.addPass(::loom::lowering::createLowerGraphConstantsPass());
     finalizer.addPass(::mlir::createCanonicalizerPass());
-    if (::mlir::failed(finalizer.run(module)))
-      return ::mlir::failure();
-
-    if (auto error = ::dataflow::validateFinalizedProgram(module)) {
-      module.emitError("canonical Dataflow publication failed: ")
-          << ::llvm::toString(std::move(error));
-      return ::mlir::failure();
-    }
-    return ::mlir::success();
+    return finalizer.run(module);
   }
 
   ::mlir::LogicalResult publishSpatialRegions(::mlir::ModuleOp module,
