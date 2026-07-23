@@ -49,7 +49,7 @@ finding, proof witness, or Evidence record enters Mapping semantic bytes.
 
 ## TechMapping Verifier
 
-The TechMapping verifier consumes one `mapping.tech` `1.0` root and its exact
+The TechMapping verifier consumes one `mapping.tech` `2.0` root and its exact
 Canonical Dataflow Program `D` and Fabric Hardware Description `F`. It checks
 at least:
 
@@ -60,21 +60,25 @@ at least:
   Realizations;
 * unique realization and child semantic keys;
 * disjoint and complete actor coverage for every covered graph;
-* correct load/store ownership by Memory Realizations and all other actor
-  ownership by Compute Realizations;
+* correct addressed-memory and fence ownership by Memory Realizations and all
+  other actor ownership by Compute Realizations;
 * selected FU capability-template ownership and exact parameterized
   capability matching against Dataflow actor semantics;
 * complete ordered actor operand/result and FU-boundary correspondences;
 * derived FU implementation, actor set, configured-function topology,
   active-port behavior, and semantic configuration;
-* selected memory semantic-encoding ownership, operation-template and port
-  correspondence, logical-root coherence, and graph-boundary correspondence;
+* selected memory semantic-encoding ownership, exact operation-port and
+  capability-alternative correspondence, logical-root coherence, and
+  graph-boundary correspondence;
 * exact equality between selected Fabric internal connections and canonical
   software-edge witnesses;
 * exact derived `CanonicalMemoryAccessView` compatibility with the selected
-  Fabric operation port and declared use-pattern domain, including access form,
-  memory-element width, access-lane-shape projection, lane count, address,
-  data, and mask capacity, alignment, and narrow-access semantics;
+  Fabric operation port, capability alternative, and declared use-pattern
+  domain, including actor contract, access form, memory-element width,
+  access-lane-shape projection, lane count, address, data, and mask capacity,
+  alignment, and narrow-access semantics;
+* exact distinction between a shared hybrid operation port and separate
+  element and vector ports, with no persisted derived geometry class;
 * Fabric-owned fanout, service-domain, port-kind, representation, and capacity
   rules, with equal total width insufficient for a memory match; and
 * exact classification of every canonical edge as realization-internal or an
@@ -107,7 +111,7 @@ or FrozenModel caches, search history, Evaluation Evidence, or runtime state.
 
 The verifier checks in dependency order:
 
-* the `mapping.spatial` `1.0` root shape and exact `T`, `D`, and `F` bindings;
+* the `mapping.spatial` `2.0` root shape and exact `T`, `D`, and `F` bindings;
 * `T.D == D`, `T.F == F`, and complete inherited TechMapping coverage;
 * exactly one ComputeBinding per Compute Realization and one
   MemoryEngineBinding per Memory Realization;
@@ -115,14 +119,24 @@ The verifier checks in dependency order:
   logical-net, and ResourceUse structural keys;
 * FU and memory occurrence membership, instruction and operation context
   range, physical port compatibility, and active physical-refinement domains;
-* one AccessEntry per covered memory actor and exact memory placement,
-  internal source selection, MemoryBinding, typed dispatch target, and
-  exposure closure;
+* one MemoryOperationEntry per covered memory actor, its exact addressed or
+  fence variant, exact memory placement, internal source selection, required
+  MemoryBinding, typed dispatch or consistency target, and exposure closure;
 * complete vector address, data, and optional mask endpoint correspondence,
   selected use-pattern compatibility, and absence of any Mapping-invented
   lane/beat decomposition;
-* one typed dispatch target on every AccessEntry and ExposureEntry, with the
+* for every Temporal memory row, one derived input match per externally
+  supplied role and one output write per externally exposed result role,
+  uniqueness of incompatible interpretations within each local physical
+  ingress match domain, and legal tag reuse across disjoint domains;
+* one typed target on every MemoryOperationEntry and ExposureEntry, with the
   reconstructed `C_dispatch` contained in Fabric-owned `H_dispatch`;
+* exact actor-contract compatibility and derivation of one compatible
+  MemoryConsistencyDomain for every addressed atomic actor and fence, with
+  complete fence-effect coverage and no Mapping-created multi-domain join;
+* compatible volatile and MMIO service-region behavior, including exact
+  accepted access, non-trapping SpatialCore execution, and at-most-once
+  provider-observable operation semantics;
 * each MemoryBinding's logical interval, physical service region, transform,
   partition, replication, and coherence legality;
 * every RouteTree's root, parent traversal continuity, arborescence, explicit
@@ -188,7 +202,7 @@ The intrinsic verifier is:
 SystemMappingBaseVerifier(D, F, M, ExactSpatialMappingSet(M))
 ```
 
-`M` is a `mapping.system` `1.0` root. `F` supplies the architecture-only
+`M` is a `mapping.system` `2.0` root. `F` supplies the architecture-only
 Fabric system and exact Transport Architecture; protocol-specific
 Interconnect Implementation is not a Mapping input.
 
@@ -239,6 +253,8 @@ Using that projection, the base verifier checks:
 * reachable execution contexts, complete plan selection, valid service
   targets, canonical service legs, flat route-tree continuity, multicast
   ownership, and physical refinements;
+* one exact MemoryConsistencyDomain target for each fence plan, compatible
+  with its synchronization scope and all constrained memory effects;
 * complete System ResourceUse ownership, exact `ServicePlanElementRef`
   resolution where applicable, use-pattern resolution, atomic
   multi-ResourceState claims, relative activation and release, typed demand,

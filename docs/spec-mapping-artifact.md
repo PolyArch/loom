@@ -19,9 +19,9 @@ All persistent Mapping objects belong to the single schema family
 
 | Semantic root | Schema version | Required root bindings | Top-level record families |
 |---------------|----------------|------------------------|---------------------------|
-| `mapping.tech` | `1.0` | Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeRealization`, `MemoryRealization` |
-| `mapping.spatial` | `1.0` | TechMapping `T`, Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeBinding`, `MemoryEngineBinding`, `MemoryBinding`, `RouteTree`, `ResourceUse` |
-| `mapping.system` | `1.0` | Canonical Dataflow Program `D`, architecture-only Fabric Hardware Description `F`, canonical SpatialMapping import table | `ExecutionBinding`, `ServiceRealization`, `ResourceUse` |
+| `mapping.tech` | `2.0` | Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeRealization`, `MemoryRealization` |
+| `mapping.spatial` | `2.0` | TechMapping `T`, Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeBinding`, `MemoryEngineBinding`, `MemoryBinding`, `RouteTree`, `ResourceUse` |
+| `mapping.system` | `2.0` | Canonical Dataflow Program `D`, architecture-only Fabric Hardware Description `F`, canonical SpatialMapping import table | `ExecutionBinding`, `ServiceRealization`, `ResourceUse` |
 
 The root operation is the profile discriminator. A Mapping object does not
 also carry a profile enum, a generic artifact root, or inactive optional
@@ -36,9 +36,12 @@ version framing and Common `ArtifactSchemaDescriptor` are mechanically
 derived from that declaration. Callers must not construct schema strings or
 maintain parallel version facts.
 
-The first official schema is the complete `loom.mapping 1.0` contract with all
-three roots. An earlier draft assigned `1.0`, `1.1`, and `1.2` according to the
-order in which profiles were discussed; that unpublished history is retired.
+The current schema is the complete `loom.mapping 2.0` contract with all three
+roots. Version 1.0's load/store-only `AccessEntry` and logical-memory-only
+operation-service owner are superseded by the closed `MemoryOperationEntry`
+and fence-aware ServiceRealization contract. An earlier draft assigned `1.0`,
+`1.1`, and `1.2` according to the order in which profiles were discussed; that
+unpublished history is retired.
 Future minor-version upgrades must first parse and verify the source version
 under its own schema, then use an explicit typed adapter to construct and
 finalize a new artifact with a new identity. Text patching, implicit upgrades,
@@ -88,8 +91,8 @@ Coverage is closed over every graph in `covers`:
 
 * every actor belongs to exactly one Compute Realization or Memory
   Realization;
-* canonical loads and stores belong only to Memory Realizations, and all
-  other actors belong only to Compute Realizations;
+* canonical addressed memory actors and fences belong only to Memory
+  Realizations, and all other actors belong only to Compute Realizations;
 * no realization crosses a graph-definition boundary;
 * every canonical edge is classified exactly once as realization-internal or
   realization-external;
@@ -151,33 +154,36 @@ memory subgraph. Its persistent basis is:
 * complete `mapping.memory_actor`, `mapping.memory_graph_boundary`, and
   `mapping.memory_internal_edge` child relations.
 
-`mapping.memory_actor` records the exact load or store actor, selected memory
-operation template, and complete ordered operand/result port maps.
+`mapping.memory_actor` records the exact read, write, RMW, compare-exchange, or
+fence actor, selected memory-operation port and capability alternative, and
+complete ordered operand/result port maps.
 `mapping.memory_graph_boundary` records the required graph memory capability
 to owner-memory-implementation boundary correspondence.
 `mapping.memory_internal_edge` records the exact canonical software edge and
 the selected Fabric internal connection that implements it.
 
-The actor reference mechanically supplies the nonpersistent
-`CanonicalMemoryAccessView`. The selected operation template and ordered port
-maps must satisfy the Fabric-owned parameterized access relation, including
-access form, memory-element width, access-lane-shape projection, lane count,
-address and data capacities, dynamic-mask capability, alignment, and the
-declared operation use-pattern domain. Total payload width alone is not a
-semantic match.
+An addressed actor reference mechanically supplies the nonpersistent
+`CanonicalMemoryAccessView`; fence has no addressed-access view. The selected
+port, capability alternative, and ordered port maps must satisfy the
+Fabric-owned parameterized actor-contract and operation relation, including access form,
+memory-element width, access-lane-shape projection, lane count, address and
+data capacities, dynamic-mask capability, alignment, synchronization scope,
+and the declared operation use-pattern domain. Total payload width alone is
+not a semantic match.
 
 The memory implementation is derived from the encoding owner. Actor and
 logical-root sets are derived from the relation domain and the referenced
-Dataflow actors. The root does not repeat implementation, actor, or root
-lists. Actors sharing a Memory Realization do not make their edges internal;
-only an exact selected internal-edge witness does so.
+Dataflow actors; a fence-only realization has no logical root. The root does
+not repeat implementation, actor, or root lists. Actors sharing a Memory
+Realization do not make their edges internal; only an exact selected
+internal-edge witness does so.
 
-Selected operation templates and internal connections must satisfy the
-Fabric-owned parameterized access, alignment, narrow-access, mask, fanout,
-port-role, use-pattern, and service-domain contracts. TechMapping stores the
-non-derived correspondence, not a duplicate operation-semantics,
-`CanonicalMemoryAccessView`, transaction decomposition, or memory-service
-model.
+Selected capability alternatives and internal connections must satisfy the
+Fabric-owned parameterized actor-contract, access, alignment, narrow-access,
+mask, fanout, port-role, use-pattern, service-domain, and
+MemoryConsistencyDomain contracts. TechMapping stores the non-derived
+correspondence, not duplicate operation semantics, access views, concrete
+contract values, transaction decomposition, or a memory-service model.
 
 ### TechMapping Record Rules
 
@@ -246,13 +252,31 @@ ordinal. It is not a schedule slot, optional sentinel, or independent entity.
 
 Each TechMapping Memory Realization has exactly one `MemoryEngineBinding`,
 keyed by its exact `MemoryRealizationRef`. It stores the selected
-`FabricMemoryOccurrenceRef` and one `AccessEntry` child for every canonical
-load or store actor covered by the realization. It has no Mapping-local ID.
+`FabricMemoryOccurrenceRef` and one `MemoryOperationEntry` child for every
+canonical memory actor covered by the realization. It has no Mapping-local ID.
 
-An `AccessEntry` stores the actor reference, one closed placement reference,
-one `MemoryBindingRef`, one closed typed `dispatch_target`, and only the
-non-derived typed `sink <- source` choices needed by Fabric memory-internal
-connectivity:
+`MemoryOperationEntry` is one closed child union:
+
+```text
+MemoryOperationEntry =
+    AddressedOperation {
+      actor_ref
+      operation_placement
+      MemoryBindingRef
+      dispatch_target : LocalMemoryServiceRef | ManagerEndpointRef
+      selected internal sink <- source choices
+    }
+  | FenceOperation {
+      actor_ref
+      operation_placement
+      consistency_target : MemoryConsistencyDomainRef | ManagerEndpointRef
+      selected internal sink <- source choices
+    }
+```
+
+The addressed variant covers read, write, RMW, and compare-exchange. Fence has
+no fabricated logical-memory binding. Both variants use the same closed
+placement reference:
 
 ```text
 MemoryOperationPlacementRef =
@@ -264,15 +288,29 @@ MemoryOperationPlacementRef =
 ```
 
 The Spatial variant derives its static context from the physical port. The
-Temporal variant selects a valid Fabric-declared resident context. Access
-entries carry a dispatch target that is exactly
-`LocalMemoryServiceRef | ManagerEndpointRef`.
-The collection of these fields and the corresponding ExposureEntry fields is
-the persistent owner of Mapping's selected `C_dispatch`. The verifier checks
-each selection against Fabric-owned `H_dispatch`. Access entries do not store
-Physical Tags, access form, element or vector geometry, mask mode, operation-
-table rows, service-transaction decomposition, dispatch selectors, provider
-decode, response tracking configuration, or raw `sw_configs`.
+Temporal variant selects a valid Fabric-declared resident context. The
+collection of operation-entry targets and corresponding ExposureEntry targets
+is the persistent owner of Mapping's selected `C_dispatch`. The verifier
+checks each selection against Fabric-owned `H_dispatch`.
+
+The exact MemoryConsistencyDomain is derived from the selected target and
+Fabric use pattern. No operation entry stores a duplicate domain reference.
+Every addressed atomic operation and every fence must resolve to exactly one
+compatible domain. A fence domain must cover every memory effect constrained
+by the actor's incoming and outgoing causal edges; Mapping cannot synthesize a
+hidden multi-domain fence. Entries do not store Physical Tags, access form,
+element or vector geometry, mask mode, concrete actor-contract fields, derived
+`ElementAccessOnly | VectorAccessOnly | ElementAndVectorAccess` class,
+operation-table rows, dynamic consistency state, service-transaction
+decomposition, dispatch selectors, provider decode, response tracking
+configuration, or raw `sw_configs`.
+
+For a Temporal placement, configured row input matches and output writes are
+derived per actor role from the selected TechMapping port correspondence,
+selected internal sources, and Physical Tag assignments on the real tagged
+writers or ingresses. One operation row does not own a common tag. The
+operation kind and capability alternative are configured row state rather
+than runtime content-match fields.
 
 ### MemoryBinding
 
@@ -510,7 +548,7 @@ target SpatialCore parent must belong to the AccCore selected by `B_thread`.
 ExecutionBinding owns only where computation executes; it owns no service
 route, capacity, or relative-time facts.
 
-Version 1.0 has exactly one InstructionCore per AccCore. Its context reference
+Version 2.0 has exactly one InstructionCore per AccCore. Its context reference
 is mechanically derived as:
 
 ```text
@@ -542,10 +580,19 @@ external messages, and multicast use this key; multicast sinks with one
 producer remain one family. Merge, zip, reorder, and reduction require an
 explicit Dataflow actor.
 
-An operation-service obligation identifies one canonical logical service
-root or view and the typed operation set required by its Canonical Service
-Schema. Memory access and exposure, cache or proxy service, and external
-providers use this key rather than parallel service-owner families.
+An operation-service obligation has one closed owner key:
+
+```text
+OperationServiceOwnerKey =
+    LogicalMemoryServiceRootOrViewRef
+  | FenceActorFamilyKey
+```
+
+The logical-memory variant owns the typed addressed-operation set required by
+the Canonical Service Schema. Memory access and exposure, cache or proxy
+service, and external providers use this key rather than parallel
+service-owner families. The fence variant owns one static fence actor family
+and its exact `FenceContract`; it does not invent a logical address interval.
 
 Each ServiceRealization has one or more owner-local plans and a complete plan
 selection relation:
@@ -575,8 +622,23 @@ The typed element key is the natural key of the closed child kind, such as a
 Canonical Service Schema leg ordinal or a Fabric physical-refinement domain.
 It receives no EntityId.
 
-A `ServiceTargetBinding` maps one logical service interval to one selected
-Fabric service region and stores only a non-derived address transform. A
+`ServiceTargetBinding` is one closed child union:
+
+```text
+ServiceTargetBinding =
+    MemoryRegionTarget {
+      logical service interval
+      selected Fabric service region
+      optional non-derived address transform
+    }
+  | ConsistencyTarget {
+      FenceActorFamilyKey
+      selected MemoryConsistencyDomainRef
+    }
+```
+
+A fence plan contains exactly one `ConsistencyTarget`; its selected domain
+must cover all constrained effects in that execution context. A
 `TransferLegRealization` binds one transfer leg derived from the Canonical
 Service Schema to a flat `RouteTree` over system physical traversals. The
 route tree itself owns terminal endpoint choices. Protocol packets, flits,
@@ -594,7 +656,9 @@ ServiceRealization is the only SystemMapping family for selected system
 routes, physical buffers, target service regions, address transforms, and
 mapping-visible service refinements. There are no parallel ChannelRoute,
 MulticastRoute, System MemoryBinding, ExternalBinding, TerminalBinding, or
-generic service-graph families.
+generic service-graph families. It does not persist modification order,
+reads-from, synchronizes-with, sequentially-consistent order, queue contents,
+or any other dynamic MemoryConsistencyDomain state.
 
 ### System ResourceUse
 

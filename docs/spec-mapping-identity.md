@@ -244,7 +244,7 @@ different artifact context.
 ## Classification Boundary
 
 The table in this document closes identity classification for every Mapping
-record family in the complete `loom.mapping 1.0` schema. This document does
+record family in the complete `loom.mapping 2.0` schema. This document does
 not make additional classifications for upstream Dataflow channels,
 unqualified Fabric resources, deployment objects, or other objects whose
 independent reference requirements are owned elsewhere.

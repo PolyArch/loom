@@ -180,9 +180,11 @@ gem5 Bridge:
 SpatialServiceRequest {
   exact_memory_or_service_binding
   transient_transaction_handle
-  typed_operation
+  canonical_service_requirement
   logical_object_association
-  access_geometry =
+  exact request-leg payload projected from the Canonical Service Schema
+  derived_addressed_view = absent | {
+    access_geometry =
       Element {
         address
         element_bits
@@ -196,39 +198,47 @@ SpatialServiceRequest {
         addresses[lane_count]
         element_bits
       }
-  active_lanes = All | Bits[lane_count]
-  optional_write_data
+    active_lanes = All | Bits[lane_count]
+  }
   ordering_and_visibility_context
 }
 
 SpatialServiceResponse {
   transient_transaction_handle
-  optional_read_data
+  exact response-leg payload projected from the Canonical Service Schema
   completion_and_visibility_event
 }
 ```
 
-This geometry is a runtime projection of the exact canonical memory actor; it
-does not own software type, ranked vector shape, or access semantics. `Element`
+The canonical service requirement fixes read, write, RMW, compare-exchange, or
+fence shape and its exact actor contract. Addressed operations carry the
+runtime projection of their `CanonicalMemoryAccessView`; fence has no access
+geometry, active lanes, address, or logical memory binding. The Canonical
+Service Schema mechanically determines request values such as write data,
+update, expected, desired, or mask and response values such as read data, old
+value, or compare-exchange success. Runtime ABI does not duplicate that closed
+operation union.
+
+`derived_addressed_view` is a non-owning runtime projection of the exact actor
+and request-leg values; it does not own software type, ranked vector shape, or
+access semantics. `Element`
 is one complete memory element even when that element's type is a vector.
 `Contiguous` and `Indexed` use canonical row-major lane order. `Element`
 requires `All`; an omitted software vector mask also projects to `All`, while a
 dynamic mask projects to `Bits` with exactly `lane_count` entries. Inactive
 lanes do not evaluate addresses or reach a memory service.
 
-`typed_operation` owns the load/store service-operation kind and its ordering
-contract; it does not repeat access size, lane count, or mask geometry. The
-geometry alone derives the complete read or write payload bit count. A store's
-`optional_write_data` is present with exactly that width; a successful load's
-`optional_read_data` has the same width, including canonical zero-filled
-inactive lanes.
+The geometry derives the complete addressed payload bit count. Exact request
+and response fields retain that width, including canonical zero-filled inactive
+load lanes. Neither geometry nor runtime payloads become another operation,
+contract, or type authority.
 
 The transient handle exists only for one execution. Logical-object association
 is simulation/runtime metadata and need not be carried on physical wires.
-The selected `MemoryEngineBinding + AccessEntry + MemoryBinding` records may
-target a Local Memory Service or a manager endpoint without defining another
-request type. A local model,
-external-service model, RTL adapter, or Bridge translates this boundary but
+The selected `MemoryEngineBinding + MemoryOperationEntry + optional
+MemoryBinding` records may target a Local Memory Service, local consistency
+domain, or manager endpoint without defining another request type. A local
+model, external-service model, RTL adapter, or Bridge translates this boundary but
 does not reinterpret the Memory Binding, address space, ordering, or visibility
 contract. One request has exactly one timing authority.
 

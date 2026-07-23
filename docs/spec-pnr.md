@@ -1124,6 +1124,13 @@ every segment's allowed match domains and builds local interference from
 co-residency and incompatible interpretation. Switch rows, operand matches,
 memory rows, and encoded tag fields are derived from the one origin value.
 
+Each external Temporal memory operand or result role is an independent
+continuity endpoint. PnR derives that role's input match or output write from
+the corresponding real writer or ingress assignment. It does not introduce a
+row-wide tag variable, require all roles in one memory operation to share a
+value, or use the operation kind as a match key. Selected memory-internal
+sources remove the corresponding external continuity obligation.
+
 An empty allowed-set intersection, an unrepresentable fixed value, or an
 uncolorable local interference graph is a typed tag closure violation. Search
 may retag, reroute, change endpoints or placement, or change resource-time
@@ -1138,12 +1145,13 @@ physical-buffer or physical-refinement choice belongs to its `ServicePlan`.
 selection. Mapping cannot insert an abstract register, FIFO, flop, or delay
 not declared by Fabric.
 
-Memory operation placement, access entries, and memory bindings use only the
+Memory operation placement, MemoryOperationEntries, and memory bindings use only the
 closed persistent forms owned by `docs/spec-mapping-artifact.md` and
 `docs/spec-mapping-memory.md`. PnR selects those typed choices in native state;
-each AccessEntry and ExposureEntry selects exactly one
-`LocalMemoryServiceRef | ManagerEndpointRef` dispatch target. Those fields are
-the persistent `C_dispatch`; PnR checks them against Fabric-owned
+each addressed MemoryOperationEntry and ExposureEntry selects exactly one
+`LocalMemoryServiceRef | ManagerEndpointRef` target, while each FenceOperation
+selects one `MemoryConsistencyDomainRef | ManagerEndpointRef` target. Those
+fields are the persistent `C_dispatch`; PnR checks them against Fabric-owned
 `H_dispatch` and does not define another dispatch relation. The Canonical Service Schema
 owns operation legs and their ordering, while route trees and service plans
 realize residual legs. Provider decode, dispatch rows, response tracking, and

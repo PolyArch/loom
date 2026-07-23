@@ -28,7 +28,7 @@ The Fabric Hardware Description family distinguishes:
 * zero or more independent Interconnect Implementation objects refining that
   architecture;
 * external boundaries;
-* address, clock, reset, and power domains; and
+* address, clock, reset, power, and memory-consistency domains; and
 * optional non-semantic visualization metadata.
 
 These are typed Fabric concepts. A generic node kind, open dictionary, protocol
@@ -38,7 +38,7 @@ string, or placeholder record is not an alternative system schema.
 
 The Canonical Service Schema is the sole owner of logical operation semantics
 shared by software obligations, Fabric capabilities, Mapping, simulation, and
-implementation refinement. Version 1.0 has exactly three parameterized kinds:
+implementation refinement. Version 2.0 has exactly six parameterized kinds:
 
 ```text
 message_transfer<Payload>
@@ -49,37 +49,82 @@ message_transfer<Payload>
     0 message(source -> sink, payload)
   completion: sink accepts leg 0
 
-memory_read<Address, Data>
-  arguments: address : Address, control : none
-  results: data : Data, completion : none
+memory_read<Access>
+  arguments: address : AddressOf(Access), mask? : MaskOf(Access),
+             control : none
+  results: data : DataOf(Access), completion : none
   effects: read(logical memory service)
   legs:
-    0 request(manager -> provider, address, control)
+    0 request(manager -> provider, address, mask?, control)
     1 response(provider -> manager, data, completion)
   completion: response leg 1 is accepted
 
-memory_write<Address, Data>
-  arguments: address : Address, data : Data, control : none
+memory_write<Access>
+  arguments: address : AddressOf(Access), data : DataOf(Access),
+             mask? : MaskOf(Access), control : none
   results: completion : none
   effects: write(logical memory service)
   legs:
-    0 request(manager -> provider, address, data, control)
+    0 request(manager -> provider, address, data, mask?, control)
     1 response(provider -> manager, completion)
+  completion: response leg 1 is accepted
+
+memory_atomic_rmw<Access>
+  arguments: address : AddressOf(Access), update : DataOf(Access),
+             mask? : MaskOf(Access), control : none
+  results: old : DataOf(Access), completion : none
+  effects: read_modify_write(logical memory service)
+  legs:
+    0 request(manager -> provider, address, update, mask?, control)
+    1 response(provider -> manager, old, completion)
+  completion: response leg 1 is accepted
+
+memory_compare_exchange<Access>
+  arguments: address : AddressOf(Access), expected : DataOf(Access),
+             desired : DataOf(Access), mask? : MaskOf(Access), control : none
+  results: old : DataOf(Access), success : SuccessOf(Access),
+           completion : none
+  effects: compare_exchange(logical memory service)
+  legs:
+    0 request(manager -> provider, address, expected, desired, mask?, control)
+    1 response(provider -> manager, old, success, completion)
+  completion: response leg 1 is accepted
+
+memory_fence<FenceContract>
+  arguments: control : none
+  results: completion : none
+  effects: order(memory consistency domain)
+  legs:
+    0 request(manager -> consistency provider, control)
+    1 response(consistency provider -> manager, completion)
   completion: response leg 1 is accepted
 ```
 
-`Payload`, `Address`, and `Data` are exact supported types, not byte-count
-hints. An endpoint capability binds those parameters and declares its ordering
-domain, visibility, alignment, width, rate, outstanding capacity, and progress
-guarantees. The kind owns argument/result order, effects, leg direction and
-ordinal, and completion event once. Endpoint and Mapping records reference
-that contract; they cannot copy or weaken it.
+`Payload` is an exact supported type, not a byte-count hint. For every
+addressed memory kind, `Access` is the nonpersistent
+`CanonicalMemoryAccessView` mechanically derived from the exact Dataflow
+actor. `AddressOf`, `DataOf`, optional `MaskOf`, and `SuccessOf` are projections
+of that view. `MaskOf` is present exactly for a dynamic-mask actor;
+`SuccessOf` is `i1` for scalar or whole-payload compare-exchange and the exact
+row-major `i1` access shape for per-lane compare-exchange. The actor remains
+the only persistent owner of its type, shape, mask, and access contract. A
+service obligation references that actor, and every consumer derives the same
+view rather than serializing a copy.
 
-These plain memory operations carry no implicit atomicity, RMW, fence,
-volatile/MMIO, coherence, or stronger ordering semantics. Each such behavior
-requires an explicit Canonical Service kind and corresponding Fabric
-capability; version 1.0 defines neither. There is no generic service name,
-property bag, callback, or operation DSL.
+An endpoint capability binds the kind, declares a closed accepted access or
+contract domain, and owns its visibility, alignment, width, rate, outstanding
+capacity, and progress guarantees. The kind owns argument/result order,
+effects, leg direction and ordinal, and completion event once. Endpoint and
+Mapping records reference that capability; they cannot copy or weaken it.
+
+Plain and atomic read or write share one natural operation shape. A capability
+must explicitly admit the selected `Plain` or `Atomic` contract; atomic support
+does not implicitly admit plain mode, and plain support does not imply
+atomicity. Volatile is an actor contract value, not another service kind.
+Coherence and MMIO are physical service or region properties, not operation
+names. There is no generic service name, property bag, callback, or operation
+DSL. Version 1.0's three-kind plain-only memory model is superseded because it
+cannot express these actor contracts without duplicated operation kinds.
 
 ## AccCore And SpatialCore Attachment
 
@@ -178,6 +223,28 @@ operation capability, ordering, visibility, coherence, latency, bandwidth,
 capacity, and typed use patterns. `fabric.mem` may combine an optional
 Operation Engine, an optional Local Memory Service, and manager or subordinate
 endpoints as described by `spec-fabric-mem.md`.
+
+Every physical service region has one closed behavior kind:
+
+```text
+MemoryRegionBehavior =
+    Storage
+  | Mmio {
+      accepted access domain
+      NonTrapping | ExplicitFaultProtocol
+      AtMostOnceLogicalOperation provider observation
+    }
+```
+
+The region kind is a physical service fact, not a Dataflow operation name or
+ordering mode. A SpatialCore mapping may use an `Mmio` region only when its
+declared range is non-trapping for the selected accesses; an explicit fault
+protocol requires a matching graph fault contract, which the current
+Canonical Dataflow Program does not provide. A capability that admits a
+volatile actor must preserve one at-most-once provider-observable logical
+operation. Internal beats and retries may occur only below that observation
+boundary and may not expose duplicate, merged, speculative, or replayed
+operations.
 
 Cache, proxy, address translation, hashing, sharding, replication, and
 coherence are typed service transforms. They are not inferred from hierarchy,
@@ -424,10 +491,13 @@ Programming Unit selected by that SystemMapping remains a closure obligation.
 
 ## Domains And External Boundaries
 
-Clock, reset, power, address, coherence, consistency, and protection domains
-are explicit typed system facts. Domain crossings require explicit resources
-and verified semantics. Hierarchy or visualization grouping does not imply
-membership.
+Clock, reset, power, address, and memory-consistency domains are explicit typed
+system facts. Domain crossings require explicit resources and verified
+semantics. Hierarchy or visualization grouping does not imply membership.
+
+Coherence is an explicit typed service transform, not a parallel domain kind.
+Runtime protection remains an invocation fact rather than permanent Fabric
+topology.
 
 External endpoints expose complete typed transfer or operation-service
 capability. Partial system closure may terminate only at such an explicit
@@ -542,13 +612,18 @@ fabric.system.external_boundary
 ```
 
 `CanonicalServiceCapability` binds one exact Canonical Service kind, one
-operation-relative `Initiate | Serve` role, and exact type parameters plus
-address/range, alignment, issue/accept rate, outstanding
-capacity, ordering domain, visibility, and progress. Fields not owned by that service kind are absent rather
-than populated with defaults.
+operation-relative `Initiate | Serve` role, and a closed accepted access or
+actor-contract domain, plus address/range, alignment, issue/accept rate,
+outstanding capacity, consistency-domain reference, visibility, and progress.
+For an addressed memory kind, the domain is tested against the exact derived
+`CanonicalMemoryAccessView`; it does not copy actor-owned fields. The
+consistency-domain reference is present exactly when required by the selected
+service kind or accepted actor contract. Fields not owned by that service kind
+are absent rather than populated with defaults.
 
-`ServiceTransformContract` is a closed sum. Version 1.0 admits only
-`AddressOffset`, `AddressMaskXor`, and `StaticInterleave`; each
+`ServiceTransformContract` is a closed sum. Version 2.0 admits
+`AddressOffset`, `AddressMaskXor`, `StaticInterleave`, and `CoherentMemory`;
+each
 variant owns its exact typed parameters and total input-to-output relation:
 
 ```text
@@ -565,17 +640,27 @@ StaticInterleave { granule_bytes, output_count }
   q = address / granule_bytes; r = address % granule_bytes
   output_ordinal = q % output_count
   output_address = (q / output_count) * granule_bytes + r
+
+CoherentMemory {
+  MemoryConsistencyDomainRef consistency_domain
+  canonical non-empty region correspondence
+}
+  every input-region occurrence named by the correspondence is a physical
+  copy or proxy of its output service region under the exact domain contract
 ```
 
 All non-address arguments and results pass unchanged, and the output endpoint
 capabilities must accept the transformed range and exact service signature.
 An identity transform is represented by a direct connection and has no
-operation.
-Cache, coherence, arbitrary hashing, programmable callbacks, and opaque custom
-transforms are unsupported until a later schema version adds a closed variant.
+operation. `CoherentMemory` is the only authority that permits overlapping
+physical service regions to represent one coherent service identity. Domain
+membership alone never implies storage identity, replication, or coherence.
+Cache behavior beyond this architecture-level coherence relation, arbitrary
+hashing, programmable callbacks, and opaque custom transforms require a future
+closed variant rather than an open extension bag.
 
-`hardware_domain` version 1.0 uses the closed kinds `Clock`, `Reset`, `Power`,
-and `Address`. Their contracts are exactly:
+`hardware_domain` version 2.0 uses the closed kinds `Clock`, `Reset`, `Power`,
+`Address`, and `MemoryConsistency`. Their contracts are exactly:
 
 ```text
 Clock { period_fs: positive uint64, phase_fs: uint64 where phase_fs < period_fs }
@@ -586,14 +671,30 @@ Reset { polarity: ActiveHigh | ActiveLow,
 Power { nominal_voltage_uv: positive uint64 }
 Address { address_width: positive uint32,
           canonical disjoint half-open unsigned ranges }
+MemoryConsistency {
+  canonical non-empty participant service or provider references
+  exact visibility, linearization, completion, and progress guarantees
+  closed ResourceState and atomic UsePattern domains
+}
 ```
 
-The op does not use an open dictionary. The Dataflow software memory contract
-does not add implicit Fabric domains. Consistency, coherence, and hardware
-protection domains require an explicit Fabric service schema extension;
-version 1.0 contains no placeholder variants. Runtime `ProtectionDomain`
-remains an invocation fact. Membership alone never implies a crossing. Every
-crossing remains an explicit endpoint/resource/pattern.
+Every atomic or fence capability references exactly one
+`MemoryConsistencyDomain`. Scope compatibility is derived from the exact
+Dataflow `SyncScopeRef`, compiler-target scope semantics, explicit domain
+participants, and Fabric topology; Fabric does not copy target scope keys into
+a second vocabulary. The domain guarantees the dynamic modification-order,
+release/acquire, fence, and global sequentially-consistent relations required
+by every contract it admits. Concrete modification order, reads-from,
+synchronizes-with, sequentially-consistent order, queue occupancy, and grant
+state are execution state and never persistent Fabric fields.
+
+One domain may cover several services, caches, and AccCores. A composite fence
+provider may use several internal barriers and an all-of join only when that
+behavior is an explicit domain-owned use pattern. Mapping cannot synthesize a
+hidden multi-domain fence. The op does not use an open dictionary. Runtime
+`ProtectionDomain` remains an invocation fact. Membership alone never implies
+a transport crossing; every crossing remains an explicit endpoint, resource,
+or pattern.
 
 Connections are directed and one-to-one from one output to one input. Fanout,
 fan-in, multicast, arbitration, buffering, conversion, and protocol crossing
@@ -664,8 +765,15 @@ Anchor-level validation should cover:
   reject a Mapping-defined scheduler or split claim;
 * arbitrary directed Transport Architecture routing with a shared bottleneck;
 * one-ingress multicast and competing single-ingress arbitration patterns;
-* all three Canonical Service kinds, exact leg order, and rejection of implicit
-  atomic or coherence strengthening;
+* all six Canonical Service kinds, exact leg order, actor-contract ownership,
+  exact dynamic-mask leg derivation, and rejection of implicit plain, atomic,
+  volatile, or coherence semantics;
+* one multi-participant MemoryConsistency domain, exact atomic and fence
+  domain closure, and rejection when no one compatible domain covers a fence;
+* one `CoherentMemory` transform whose explicit region correspondence permits
+  coherent overlap, plus rejection of overlap inferred from domain membership;
+* one non-trapping at-most-once MMIO region plus rejection of a trapping or
+  provider-replayed SpatialCore binding;
 * closed `fabric.system` child operations, Artifact-global `EntityId`
   assignment, owner-local port/leg/pattern ordinals, and rejection of generic
   node or property records;

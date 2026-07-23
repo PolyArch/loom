@@ -87,14 +87,33 @@ interconnect lowers the selected exact implementation protocol while preserving
 the architecture service, multicast, ordering, capacity, and progress contract.
 
 The backend implements the Fabric-owned memory operation-port inventory,
-parameterized access domains, mask endpoints, and declared use patterns. A
-complete element, contiguous, or indexed address/data/mask token enters one
-operation endpoint. A selected use pattern may decompose that firing across
-several service transactions or beats and must implement inactive-lane
-suppression, masked-load zero fill, row-major result assembly, and one logical
-retirement event. Endpoint payload width and service beat width are independent
-facts; the backend cannot infer decomposition from their ratio or reinterpret
-Physical Tags as vector lanes.
+capability alternatives, parameterized access domains, mask endpoints, and
+declared use patterns. A complete element, contiguous, or indexed
+address/data/mask token enters one operation endpoint. A selected use pattern
+may decompose that firing across several service transactions or beats and
+must implement inactive-lane suppression, masked-load zero fill, row-major
+result assembly, and one logical retirement event. Endpoint payload width and
+service beat width are independent facts; the backend cannot infer
+decomposition from their ratio or reinterpret Physical Tags as vector lanes.
+
+The leaf-channel shape is mechanical:
+
+```text
+!fabric.bits<W>       -> data[W] when W > 0, valid, ready
+!fabric.bits_tag<W,T> -> data[W] when W > 0, tag[T], valid, ready
+```
+
+`!fabric.bits<0>` therefore emits only valid/ready, while
+`!fabric.bits_tag<0,T>` emits tag plus valid/ready. RTL must not create a
+zero-width data vector. Spatial memory uses the untagged form. Temporal memory
+implements the configured per-role input `(endpoint, tag)` matches and output
+`(endpoint, tag)` writes; it must not replace them with one common row tag or
+use the operation kind as a runtime match key.
+
+Manager and subordinate `memref` capabilities remain typed internal service
+interfaces. Their AXI, TileLink, CXL, or custom physical pinout is selected by
+the exact HardwareImplementation and is not inferred from the `fabric.mem`
+operation-channel schedule.
 
 Behavioral memory models and black boxes are legal only when Fabric or its
 implementation binding explicitly declares that realization. The
@@ -106,6 +125,11 @@ dependencies.
 Fabric-to-RTL implements an exact `ConfigurationABI` for every exposed
 Programming Unit. The ABI, not RTL source order or backend-local structs, owns
 bit positions, codebooks, padding, programming visibility, and image loading.
+
+Backend-local configuration signal names are implementation details. Every
+configuration input and decoder relation must be mechanically derived from the
+exact `ConfigurationABI`; an independently designed `cfg_*` interface is not a
+public or semantic authority.
 
 Mapped RTL execution must program the implementation through decoded
 `HardwareConfigurationImage` artifacts from the exact `Deployment`. Reading a
@@ -145,6 +169,9 @@ Stable anchors cover:
 * temporal context and memory-operation behavior;
 * vector element, contiguous, indexed, and masked memory operation lowering,
   including one declared narrower-beat realization and one logical retirement;
+* Spatial and Temporal element-only, vector-only, and shared-hybrid memory
+  ports, including distinct per-role Temporal tags and zero-payload control
+  channels;
 * clock/reset domain and self-reset closure;
 * ConfigurationABI programming through one mapped workload; and
 * rejection of an unsupported or behavior-changing hidden refinement.

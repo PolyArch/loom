@@ -10,17 +10,19 @@ service, and an interface used to reach that service are separate objects.
 ## Canonical Objects And Relations
 
 The Canonical Dataflow Program owns `LogicalMemoryRoot` and view identity,
-logical intervals, layout, aliasing, lifetime, and the load/store ordering
-network. Fabric owns `PhysicalMemoryService` and region identity plus typed
-manager/requester and subordinate/provider endpoints.
+logical intervals, layout, aliasing, lifetime, canonical memory actors, and
+their ordering network. Fabric owns `PhysicalMemoryService` and region
+identity, `MemoryConsistencyDomain`, and typed manager/requester and
+subordinate/provider endpoints.
 
-For each canonical load or store, consumers mechanically derive the
+For each canonical addressed memory actor, consumers mechanically derive the
 nonpersistent `CanonicalMemoryAccessView` defined by
 `docs/spec-dataflow-vectorization.md`. Exact access form, memory-element type,
-access lane shape, and mask semantics remain owned by Dataflow. Fabric owns the
-parameterized access domains and operation use patterns of its physical memory
-ports. Mapping selects and records only the non-derived correspondence between
-those authorities.
+access lane shape, mask semantics, and actor contract remain owned by Dataflow.
+Fence has no addressed-access view. Fabric owns the parameterized actor and
+access domains, MemoryConsistency domains, and operation use patterns of its
+physical memory ports. Mapping selects and records only the non-derived
+correspondence between those authorities.
 
 The required semantic relations are:
 
@@ -28,8 +30,8 @@ The required semantic relations are:
 MemoryBinding
   LogicalMemoryView -> PhysicalMemoryServiceRegion
 
-MemoryEngineBinding + AccessEntry + MemoryBinding
-  software memory actor
+MemoryEngineBinding + MemoryOperationEntry + optional MemoryBinding
+  software memory actor or fence
     -> operation placement + LocalMemoryService or manager dispatch target
     -> physical memory service region
 
@@ -65,43 +67,51 @@ behavior, and `ResourceUse` preserve every logical obligation. Mapping,
 runtime, and simulation do not supply missing cycle-visible arbitration.
 
 Plain, atomic, volatile, RMW, compare-exchange, and fence software semantics
-are owned by `docs/spec-dataflow-memory-consistency.md`. This Mapping
-specification currently defines only the plain and vector-memory realization
-surface. Atomic, volatile, fence, consistency-domain, and coherence
-realization remains inadmissible until the corresponding Fabric and Mapping
-contracts are added; Mapping must not reinterpret these actors as plain
-load/store.
+are owned by `docs/spec-dataflow-memory-consistency.md`. Canonical Service
+Schema 2.0 owns their shared operation-service shapes. Mapping must not
+reinterpret one actor contract as another or infer atomic, volatile, MMIO, or
+coherence behavior from an unrelated physical capability.
 
 ## TechMapping Memory Realization
 
 TechMapping owns each selected Memory Realization:
 
-* exact load/store actor coverage and logical-root association;
-* selected Fabric memory semantic capability;
+* exact read, write, RMW, compare-exchange, or fence actor coverage and
+  logical-root association when the actor is addressed;
+* selected Fabric memory operation port and exact capability alternative;
 * actor-to-operation correspondence;
 * exact graph and implementation-boundary correspondence;
-* exact parameterized access, alignment, mask, narrow-access, and declared
-  use-pattern compatibility; and
+* exact parameterized actor-contract, access, alignment, mask, narrow-access,
+  synchronization-scope, and declared use-pattern compatibility; and
 * exact selected internal-edge witnesses.
 
-Compatibility is not total payload-width equality. It proves the exact
-`element | contiguous | indexed` access form, memory-element width, access
-lane-shape projection, flattened lane count, complete address/data/mask
-capacities, dynamic-mask support, alignment, and subword-write contract.
-Equal-width accesses with
-different element or lane geometry remain distinct. A declared Fabric use
-pattern may realize one actor firing with several internal service
-transactions, but TechMapping cannot invent that decomposition.
+Addressed compatibility is not total payload-width equality. It proves that
+the selected alternative belongs to the selected physical port, then proves
+the exact operation kind and actor contract, `element | contiguous | indexed`
+access form, memory-element width, access-lane-shape projection, flattened
+lane count, complete address/data/mask capacities, dynamic-mask support,
+alignment, subword-write contract, and MemoryConsistency-domain requirement.
+Equal-width accesses with different element or lane geometry remain distinct.
+A derived `ElementAccessOnly | VectorAccessOnly | ElementAndVectorAccess`
+label is never selected or persisted. A shared hybrid physical port and
+separate element and vector ports have different inventories, ResourceState,
+and capacity even when both derive aggregate element-plus-vector support.
+A declared Fabric use pattern may realize one actor firing with several
+internal service transactions, but TechMapping cannot invent that
+decomposition. Fence compatibility proves its exact contract and a compatible
+single-domain operation capability without fabricating an address or memory
+root.
 
 An internal-edge witness identifies one canonical software source and sink and
 one Fabric-allowed internal connection. Actors sharing a Memory Realization do
 not make all edges between them internal. Only witnessed edges are absorbed;
 all remaining edges become ordinary external routing obligations.
 
-A selected load still has one retirement event that publishes `data + done`
-atomically across its internal and external obligations. Mapping may select
-destinations but cannot split that packet or weaken its backpressure. Store
-retirement remains one `done` event.
+A selected memory actor still has one retirement publication across all
+internal and external obligations. Mapping may select destinations but cannot
+split result and completion publication or weaken its backpressure. Fence
+retirement remains one `done` event after its selected domain operation
+completes.
 
 ## SpatialMapping Records
 
@@ -145,11 +155,11 @@ terminal, its existing Memory Binding, and one closed typed
 belongs to route or service realization; provider-decode rows are derived
 configuration.
 
-### MemoryEngineBinding And AccessEntry
+### MemoryEngineBinding And MemoryOperationEntry
 
 Each `MemoryEngineBinding` is keyed by one TechMapping Memory Realization and
 selects one concrete `fabric.mem` Operation Engine. It owns exactly one
-`AccessEntry` for every covered canonical load or store actor.
+`MemoryOperationEntry` for every covered canonical memory actor.
 
 Operation placement uses a closed typed reference:
 
@@ -159,36 +169,65 @@ MemoryOperationPlacementRef =
   | Temporal { PhysicalMemoryOperationPortRef, OperationContextOrdinal }
 ```
 
-An Access Entry stores the actor reference, operation placement, one
-`MemoryBinding` reference, one closed typed
-`LocalMemoryServiceRef | ManagerEndpointRef` dispatch target, and only
-selected non-derived typed `sink <- source` choices. This is where a selected
-`load.data -> store.data`, `done -> ctrl`, or other Fabric-allowed
-memory-internal dependency is recorded.
+`MemoryOperationEntry` is the closed union defined by
+`docs/spec-mapping-artifact.md`:
 
-The Access Entry does not copy access form, memory-element type, lane shape,
-lane count, mask mode, endpoint widths, or transaction decomposition. Those
-values are derived from the exact Dataflow actor, selected Fabric operation
-port, and selected Fabric use pattern. A dynamic mask is an ordinary actor
-operand whose external endpoint correspondence or selected internal source is
-verified like any other required operand.
+* `AddressedOperation` covers read, write, RMW, and compare-exchange and stores
+  the actor, placement, one `MemoryBinding`, one typed
+  `LocalMemoryServiceRef | ManagerEndpointRef` dispatch target, and only
+  selected non-derived typed `sink <- source` choices;
+* `FenceOperation` stores the actor, placement, one typed
+  `MemoryConsistencyDomainRef | ManagerEndpointRef` consistency-service
+  target, and selected internal choices, but no `MemoryBinding`.
 
-The AccessEntry and ExposureEntry target fields collectively are the only
-persistent owner of selected `C_dispatch`; there is no parallel dispatch
+This is where a selected `load.data -> store.data`, `done -> ctrl`, or other
+Fabric-allowed memory-internal dependency is recorded.
+
+The operation entry does not copy access form, memory-element type, lane shape,
+lane count, mask mode, actor-contract fields, endpoint widths, consistency
+domain, selected capability alternative, derived access-geometry class,
+configured row, or transaction decomposition. Those values are derived from
+the exact Dataflow actor, TechMapping realization, selected Fabric target,
+operation port, and use pattern. A dynamic mask is an ordinary actor operand
+whose external endpoint correspondence or selected internal source is verified
+like any other required operand.
+
+The MemoryOperationEntry and ExposureEntry target fields collectively are the
+only persistent owner of selected `C_dispatch`; there is no parallel dispatch
 relation record. Fabric alone owns eligible `H_dispatch`, and the Mapping
-verifier proves `C_dispatch` is its subset. The selected target may be the
-occurrence's Local Memory Service or a declared manager endpoint/path. Those
-are alternatives in one typed service model, not different request protocols.
-Runtime ABI owns the single
+verifier proves `C_dispatch` is its subset. An addressed target may be the
+occurrence's Local Memory Service or a declared manager endpoint/path. A fence
+target is one local MemoryConsistency domain or a declared manager endpoint to
+one provider. These are alternatives in one typed service model, not different
+request protocols. Runtime ABI owns the single
 `SpatialServiceRequest`/`SpatialServiceResponse` boundary used by either
 target.
 
-An Access Entry does not own a Physical Tag. The actual tag value is a typed
-sharing assignment on the real tagged writer or ingress `ResourceUse`, and is
-present only where may-overlap incompatible interpretations in a local Fabric
-match domain require distinction. It is not global firing, iteration,
-invocation, logical-token, or memory identity. Memory continuity and selected
-context derive the operation-row match value.
+A MemoryOperationEntry does not own a Physical Tag. Each externally supplied
+operand role derives its own input `(physical ingress endpoint, tag)` from the
+real tagged writer or ingress `ResourceUse`; each externally exposed result
+role derives its own output `(physical egress endpoint, tag)` from the real
+tagged writer assignment and route. A selected memory-internal source removes
+the external match for that role. Tag values must be unique only for
+may-overlap incompatible interpretations at the same local physical ingress
+and may be reused across disjoint match domains. They are not forced equal
+within one operation row and are never global firing, iteration, invocation,
+logical-token, atomic-object, memory, or vector-lane identity.
+
+Every addressed atomic operation and fence resolves through its selected
+target and use pattern to exactly one compatible MemoryConsistency domain. A
+fence domain must cover every memory effect constrained by its incoming and
+outgoing causal edges in that execution context. A Fabric-declared composite
+domain may implement internal barriers and an all-of join; Mapping may not
+construct a hidden multi-domain fence.
+
+An addressed operation whose logical service requirement is MMIO must bind to
+a physical `Mmio` service region with a compatible accepted-access domain,
+non-trapping behavior for that range, and the required at-most-once logical
+provider observation. A volatile actor additionally requires a capability that
+admits its exact volatile contract. Mapping cannot infer MMIO from an address,
+upgrade ordinary storage to MMIO, or use protocol retries to excuse duplicate
+provider-visible effects.
 
 ### RouteTree And ResourceUse
 
@@ -209,7 +248,7 @@ For a memory actor, the selected Fabric use pattern owns any internal lane or
 beat transactions and their resource claims. Mapping supplies only its typed
 parameters and reservations. The operation endpoint payload width and backing
 service beat width therefore remain separate Fabric facts rather than route or
-AccessEntry fields.
+MemoryOperationEntry fields.
 
 Configured `memory_operation_table` rows, dispatch selectors, provider decode,
 and response tracking are deterministic semantic projections of the five
@@ -267,17 +306,32 @@ SystemServiceObligationKey =
 A Transfer obligation represents one exact producer-terminal family and its
 canonical non-empty sink set. Multicast remains one obligation; Mapping may
 not split it into unrelated per-sink routes. An Operation Service obligation
-represents one logical service root or view and the typed operation set
-required by the Canonical Service Schema. Memory access and exposure share
-this owner so they cannot select contradictory services.
+uses one closed owner key:
+
+```text
+OperationServiceOwnerKey =
+    LogicalMemoryServiceRootOrViewRef
+  | FenceActorFamilyKey
+```
+
+The logical-memory variant owns the typed addressed-operation set required by
+the Canonical Service Schema. Memory access and exposure share this owner so
+they cannot select contradictory services. The fence variant owns one static
+fence family and its exact contract without inventing a memory interval.
 
 Each `ServiceRealization` contains canonical owner-local `ServicePlan` values
 and a total plan-selection relation. A plan contains:
 
-* atomic logical-service-interval to Fabric-service-region bindings;
+* one closed target-binding variant: logical-service interval to Fabric
+  service region for addressed memory, or fence family to one
+  MemoryConsistency domain;
 * one `TransferLegRealization` per leg mechanically required by the Canonical
   Service Schema; and
 * mapping-visible physical refinement assignments.
+
+A fence plan has exactly one consistency target. The selected domain may be a
+Fabric-declared composite domain, but Mapping cannot replace it with several
+unrelated targets and a hidden join.
 
 The Canonical Service Schema, not Mapping or a protocol name, defines memory
 request, write data, read data, response, completion, and any other operation
@@ -342,8 +396,8 @@ Anchor-level tests should cover:
 
 * sparse many-to-many binding with several logical roots sharing one service,
   plus rejection of unsupported overlap;
-* one Access Entry per covered actor, an exact internal edge, and atomic load
-  `data + done` retirement;
+* one MemoryOperationEntry per covered actor, including addressed and fence
+  variants, an exact internal edge, and joint load `data + done` retirement;
 * element, contiguous, indexed, masked, and unmasked access compatibility,
   including rejection of an equal-width but semantically incompatible port;
 * routing of complete vector address, data, and mask tokens without lane Tags
@@ -351,9 +405,17 @@ Anchor-level tests should cover:
 * one declared multi-transaction Fabric use pattern with one logical actor
   retirement and rejection of Mapping-invented decomposition;
 * local Physical Tag ownership by the real writer/ingress `ResourceUse`;
-* local-service and manager-endpoint AccessEntry targets using the same typed
-  Spatial Service request/response boundary;
-* AccessEntry and ExposureEntry dispatch ownership plus rejection of
+* distinct per-role Temporal tags within one operation row and legal tag reuse
+  across disjoint ingress match domains;
+* shared hybrid operation-port capacity versus separate element and vector
+  ports, with rejection of a persisted derived geometry class;
+* local-service and manager-endpoint MemoryOperationEntry targets using the
+  same typed Spatial Service request/response boundary;
+* one atomic operation and one fence resolving to exactly one compatible
+  MemoryConsistency domain, plus rejection of a hidden multi-domain fence;
+* one volatile MMIO binding with non-trapping at-most-once provider behavior,
+  plus rejection of ordinary storage or provider-visible replay;
+* MemoryOperationEntry and ExposureEntry dispatch ownership plus rejection of
   `C_dispatch` outside Fabric-owned `H_dispatch`;
 * one system-memory request/response plan and one unsplit multicast; and
 * Deployment-owner closure of every selected memory and service dependency,
