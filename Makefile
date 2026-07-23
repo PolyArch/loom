@@ -9,13 +9,20 @@
 # Targets:
 #   make doctor    - print resolved paths and run pre-flight checks
 #   make llvm      - build externals/llvm under the shared lock
+#   make circt     - build the shared CIRCT against the shared LLVM under
+#                    the same lock (only the libraries the loom build
+#                    links against). The shared CIRCT build is owned by
+#                    the main worktree's externals; main and linked
+#                    invocations alike route to those shared outputs.
 #   make loom      - build this worktree's loom build (auto-builds LLVM
-#                    when missing or when its build identity drifted)
+#                    when missing or when its build identity drifted;
+#                    never builds CIRCT, but offers an already-built
+#                    shared CIRCT via -DCIRCT_DIR when one matches)
 #   make test      - run lit FileCheck tests (target: check-fabric)
 #   make clean     - remove this worktree's loom build only
-#   make distclean - main worktree: remove both loom and shared LLVM
-#                    builds. Linked worktree: remove only this loom
-#                    build (the shared LLVM is left alone).
+#   make distclean - main worktree: remove the loom build and both shared
+#                    LLVM and CIRCT builds. Linked worktree: remove only
+#                    this loom build (shared builds are left alone).
 
 ROOT          := $(abspath $(CURDIR))
 PYTHON        ?= python3
@@ -33,7 +40,7 @@ WT            := $(PYTHON) $(WT_SCRIPT) \
 export LIT_OPTS
 export JOBS
 
-.PHONY: all doctor llvm loom test clean distclean
+.PHONY: all doctor llvm circt loom test clean distclean
 
 all: loom
 
@@ -42,6 +49,9 @@ doctor:
 
 llvm:
 	@$(WT) build-llvm
+
+circt:
+	@$(WT) build-circt
 
 loom:
 	@$(WT) build-loom

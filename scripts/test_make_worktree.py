@@ -153,6 +153,8 @@ class GitTopology:
 def build_paths(root: Path):
     llvm_root = root / "llvm"
     llvm_build = llvm_root / "build"
+    circt_root = root / "externals" / "circt"
+    circt_build = circt_root / "build"
     return SimpleNamespace(
         root=root,
         main=root,
@@ -167,6 +169,11 @@ def build_paths(root: Path):
         cmake_llvm_dir=llvm_build / "lib" / "cmake" / "llvm",
         cmake_clang_dir=llvm_build / "lib" / "cmake" / "clang",
         llvm_lit=llvm_build / "bin" / "llvm-lit",
+        circt_root=circt_root,
+        circt_build=circt_build,
+        circt_stamp=root / "externals" / ".loom-build.circt.stamp",
+        circt_cmake_dir=circt_build / "lib" / "cmake" / "circt",
+        circt_required_lib=circt_build / "lib" / "libCIRCTExportVerilog.a",
         loom_build=root / "loom-build",
     )
 
@@ -499,6 +506,9 @@ class MakeWorktreeTest(unittest.TestCase):
         self.assertIn("circt_commit    circt", report)
         self.assertIn("circt_llvm_pin  llvm", report)
         self.assertIn("nested_llvm     uninitialized", report)
+        self.assertNotIn("circt_ready", report)
+        self.assertIn("circt_config    False", report)
+        self.assertIn("circt_lib       False", report)
 
         self.args.jobs = 7
         calls = []
@@ -518,6 +528,296 @@ class MakeWorktreeTest(unittest.TestCase):
         self.assertIn("-j7", command)
         self.assertIn("--show-all", command)
         self.assertEqual(kwargs["env"]["LOOM_TEST_JOBS"], "7")
+
+    def test_circt_identity_availability_and_stamp_invariant(self):
+        module = self.module
+        state = module.DependencyState("circt-pin", "llvm-pin")
+        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
+        llvm_identity = module.llvm_build_identity(state, compilers)
+        circt_identity = module.circt_build_identity(llvm_identity)
+
+        # Identity is deterministic and embeds the full LLVM build identity,
+        # so a semantic LLVM change invalidates CIRCT even when CIRCT's own
+        # args and target are unchanged.
+        self.assertEqual(
+            circt_identity, module.circt_build_identity(llvm_identity)
+        )
+        payload = json.loads(circt_identity)
+        self.assertEqual(
+            payload["llvm_build_identity"], json.loads(llvm_identity)
+        )
+        self.assertEqual(
+            payload["circt_build_targets"], list(module.CIRCT_BUILD_TARGETS)
+        )
+        self.assertEqual(
+            payload["circt_semantic_cmake_args"],
+            list(module.CIRCT_SEMANTIC_CMAKE_ARGS),
+        )
+        drifted = json.loads(llvm_identity)
+        drifted["semantic_cmake_args"] = ["-DCHANGED_LLVM=ON"]
+        self.assertNotEqual(
+            circt_identity,
+            module.circt_build_identity(json.dumps(drifted, sort_keys=True)),
+        )
+
+        # Availability requires the package config, the concrete
+        # CIRCTExportVerilog library, and a stamp matching the current
+        # LLVM identity. Any one missing leaves CIRCT unavailable.
+        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            paths = build_paths(Path(td))
+            paths.circt_cmake_dir.mkdir(parents=True)
+            config = paths.circt_cmake_dir / "CIRCTConfig.cmake"
+
+            self.assertIsNone(
+                module.available_circt_dir(paths, llvm_identity)
+            )
+            config.write_text("x\n")
+            # Config plus a matching stamp, but the library artifact is
+            # still missing: must remain unavailable.
+            paths.circt_stamp.write_text(circt_identity + "\n")
+            self.assertIsNone(
+                module.available_circt_dir(paths, llvm_identity)
+            )
+            paths.circt_required_lib.parent.mkdir(parents=True, exist_ok=True)
+            paths.circt_required_lib.write_text("ar\n")
+            self.assertEqual(
+                module.available_circt_dir(paths, llvm_identity),
+                str(paths.circt_cmake_dir),
+            )
+            stale = module.llvm_build_identity(
+                module.DependencyState("circt-pin", "llvm-other"), compilers
+            )
+            self.assertIsNone(module.available_circt_dir(paths, stale))
+
+            # A CIRCT build that does not produce both artifacts is never
+            # stamped and fails with an explicit diagnostic.
+            incomplete = build_paths(Path(td) / "incomplete")
+            incomplete.circt_build.mkdir(parents=True)
+            (incomplete.circt_build / "build.ninja").write_text("ninja\n")
+            with (
+                patch.object(module, "configure_circt"),
+                patch.object(module, "run"),
+            ):
+                stderr = io.StringIO()
+                with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                    module._sync_circt_locked(
+                        incomplete, self.args, compilers, llvm_identity, True
+                    )
+            self.assertIn("did not produce", stderr.getvalue())
+            self.assertEqual(module.read_stamp(incomplete.circt_stamp), "")
+
+    def test_configure_circt_shared_llvm_single_lock_no_nested(self):
+        module = self.module
+        paths = build_paths(Path("/repo"))
+        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
+
+        # configure_circt points at the shared sibling LLVM and emits the
+        # CIRCT semantic args; the nested externals/circt/llvm never appears.
+        calls = []
+        with patch.object(module, "run", side_effect=calls.append):
+            module.configure_circt(paths, compilers)
+        self.assertEqual(len(calls), 1)
+        cmd = calls[0]
+        joined = " ".join(str(part) for part in cmd)
+        self.assertIn(f"-DMLIR_DIR={paths.mlir_dir}", cmd)
+        self.assertIn(f"-DLLVM_DIR={paths.cmake_llvm_dir}", cmd)
+        self.assertIn(str(paths.circt_root), cmd)
+        self.assertIn(str(paths.circt_build), cmd)
+        for arg in module.CIRCT_SEMANTIC_CMAKE_ARGS:
+            self.assertIn(arg, cmd)
+        self.assertNotIn("circt/llvm", joined)
+
+        # sync_shared_circt holds the single LLVM lock across the LLVM
+        # ensure phase and the CIRCT phase (in that order) and never opens
+        # a CIRCT-only lock.
+        state = module.DependencyState("circt-pin", "llvm-pin")
+        llvm_identity = module.llvm_build_identity(state, compilers)
+        events: list = []
+
+        class TrackingLock:
+            def __init__(self, path, timeout):
+                events.append(("lock-open", str(path)))
+                self.path = path
+
+            def __enter__(self):
+                events.append(("lock-enter", str(self.path)))
+                return self
+
+            def __exit__(self, *exc):
+                events.append(("lock-exit", str(self.path)))
+
+        def llvm_phase(*args, **kwargs):
+            events.append("llvm-sync")
+            return llvm_identity
+
+        def circt_phase(*args, **kwargs):
+            events.append("circt-sync")
+
+        with (
+            patch.object(module, "FileLock", TrackingLock),
+            patch.object(
+                module, "check_dependency_pins", return_value=state
+            ),
+            patch.object(
+                module, "check_llvm_compilers", return_value=compilers
+            ),
+            patch.object(module, "_sync_llvm_locked", side_effect=llvm_phase),
+            patch.object(module, "_sync_circt_locked", side_effect=circt_phase),
+            patch.object(module, "is_nfs", return_value=False),
+        ):
+            module.sync_shared_circt(paths, self.args, True)
+
+        self.assertEqual(
+            [e[1] for e in events if e[0] == "lock-open"],
+            [str(paths.llvm_lock)],
+        )
+        enter = events.index(("lock-enter", str(paths.llvm_lock)))
+        exit_idx = events.index(("lock-exit", str(paths.llvm_lock)))
+        self.assertLess(enter, events.index("llvm-sync"))
+        self.assertLess(events.index("llvm-sync"), events.index("circt-sync"))
+        self.assertLess(events.index("circt-sync"), exit_idx)
+
+    def test_linked_routing_and_no_implicit_circt_build(self):
+        module = self.module
+        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            topology = GitTopology(Path(td))
+            linked = module.Paths(topology.linked)
+            main_externals = topology.main / "externals"
+
+            # All CIRCT build state is owned by the main worktree's
+            # externals; a linked worktree holds none of its own.
+            self.assertEqual(
+                linked.circt_build, main_externals / "circt" / "build"
+            )
+            self.assertEqual(
+                linked.circt_stamp,
+                main_externals / ".loom-build.circt.stamp",
+            )
+            self.assertEqual(
+                linked.circt_required_lib,
+                main_externals / "circt" / "build" / "lib"
+                / "libCIRCTExportVerilog.a",
+            )
+            for owned in (
+                linked.circt_build,
+                linked.circt_stamp,
+                linked.circt_required_lib,
+            ):
+                owned_str = str(owned)
+                self.assertTrue(owned_str.startswith(str(main_externals)))
+                self.assertFalse(owned_str.startswith(str(topology.linked)))
+
+            # `make loom` never builds CIRCT; it only offers an
+            # already-built, stamped CIRCT matching the ensured LLVM.
+            state = module.DependencyState(
+                topology.circt_pin, topology.llvm_pin
+            )
+            compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
+            llvm_identity = module.llvm_build_identity(state, compilers)
+            circt_identity = module.circt_build_identity(llvm_identity)
+
+            linked.circt_cmake_dir.mkdir(parents=True)
+            (linked.circt_cmake_dir / "CIRCTConfig.cmake").write_text("x\n")
+            linked.circt_required_lib.parent.mkdir(parents=True, exist_ok=True)
+            linked.circt_required_lib.write_text("ar\n")
+            linked.circt_stamp.write_text(circt_identity + "\n")
+
+            circt_build_calls: list = []
+            offered = {}
+
+            def capture_configure(configure_paths, circt_dir):
+                offered["circt_dir"] = circt_dir
+
+            with (
+                patch.object(
+                    module, "ensure_shared_llvm", return_value=llvm_identity
+                ),
+                patch.object(
+                    module, "configure_loom", side_effect=capture_configure
+                ),
+                patch.object(module, "run"),
+                patch.object(
+                    module,
+                    "sync_shared_circt",
+                    side_effect=lambda *a, **k: circt_build_calls.append(1),
+                ),
+                patch.object(
+                    module, "build_circt",
+                    side_effect=lambda *a, **k: circt_build_calls.append(1),
+                ),
+                patch.object(
+                    module, "configure_circt",
+                    side_effect=lambda *a, **k: circt_build_calls.append(1),
+                ),
+            ):
+                module.build_loom(linked, self.args)
+
+            self.assertEqual(circt_build_calls, [])
+            self.assertEqual(offered["circt_dir"], str(linked.circt_cmake_dir))
+
+    def test_main_and_linked_distclean_ownership(self):
+        module = self.module
+        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            # Main: both shared builds are removed under the single LLVM lock.
+            main_paths = build_paths(Path(td) / "main")
+            main_paths.circt_cmake_dir.mkdir(parents=True)
+            (main_paths.circt_cmake_dir / "CIRCTConfig.cmake").write_text("x\n")
+            main_paths.circt_required_lib.parent.mkdir(parents=True, exist_ok=True)
+            main_paths.circt_required_lib.write_text("ar\n")
+            main_paths.circt_stamp.write_text("id\n")
+            main_paths.llvm_build.mkdir(parents=True)
+            main_paths.llvm_stamp.write_text("id\n")
+
+            main_locks: list = []
+
+            class TrackingLock:
+                def __init__(self, path, timeout):
+                    main_locks.append(str(path))
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    return False
+
+            with patch.object(module, "FileLock", TrackingLock):
+                module.cmd_distclean(main_paths, self.args)
+            self.assertEqual(main_locks, [str(main_paths.llvm_lock)])
+            self.assertFalse(main_paths.circt_build.exists())
+            self.assertFalse(main_paths.circt_stamp.exists())
+            self.assertFalse(main_paths.llvm_build.exists())
+            self.assertFalse(main_paths.llvm_stamp.exists())
+
+            # Linked: shared builds are preserved and no lock is taken.
+            linked_paths = build_paths(Path(td) / "linked")
+            linked_paths.main = Path(td) / "main"
+            linked_paths.is_main = False
+            linked_paths.circt_cmake_dir.mkdir(parents=True)
+            (linked_paths.circt_cmake_dir / "CIRCTConfig.cmake").write_text("x\n")
+            linked_paths.circt_required_lib.parent.mkdir(parents=True, exist_ok=True)
+            linked_paths.circt_required_lib.write_text("ar\n")
+            linked_paths.circt_stamp.write_text("id\n")
+
+            opened = {"value": False}
+
+            class NoLock:
+                def __init__(self, *args):
+                    opened["value"] = True
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    return False
+
+            with patch.object(module, "FileLock", NoLock):
+                module.cmd_distclean(linked_paths, self.args)
+            self.assertFalse(opened["value"])
+            self.assertTrue(linked_paths.circt_build.exists())
+            self.assertTrue(linked_paths.circt_stamp.exists())
 
 
 if __name__ == "__main__":

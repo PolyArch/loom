@@ -27,6 +27,23 @@ message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 find_package(Clang REQUIRED CONFIG)
 message(STATUS "Using ClangConfig.cmake in: ${Clang_DIR}")
 
+# Optional CIRCT integration. CIRCT is supplied by the shared build under
+# externals/circt (see scripts/make-worktree.py, `make circt`). It is
+# strictly optional: omit -DCIRCT_DIR to build Loom without CIRCT. A
+# provided -DCIRCT_DIR that does not resolve to a valid CIRCT package is a
+# hard error, never a silent skip; an absent -DCIRCT_DIR is reported as an
+# explicit status so CIRCT availability is never a mystery.
+set(LOOM_HAVE_CIRCT OFF)
+if(DEFINED CIRCT_DIR)
+  find_package(CIRCT REQUIRED CONFIG)
+  set(LOOM_HAVE_CIRCT ON)
+  message(STATUS "Using CIRCTConfig.cmake in: ${CIRCT_DIR}")
+else()
+  message(STATUS
+    "CIRCT unavailable: build it with `make circt`, then reconfigure with "
+    "-DCIRCT_DIR=<shared circt cmake dir> to enable CIRCT support")
+endif()
+
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 
@@ -42,6 +59,12 @@ include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_BINARY_DIR}/include)
 link_directories(${LLVM_BUILD_LIBRARY_DIR})
 add_definitions(${LLVM_DEFINITIONS})
+
+if(LOOM_HAVE_CIRCT)
+  list(APPEND CMAKE_MODULE_PATH "${CIRCT_CMAKE_DIR}")
+  include_directories(${CIRCT_INCLUDE_DIRS})
+  link_directories(${CIRCT_LIBRARY_DIRS})
+endif()
 
 set(LOOM_SOURCE_DIR ${PROJECT_SOURCE_DIR})
 set(LOOM_BINARY_DIR ${PROJECT_BINARY_DIR})
