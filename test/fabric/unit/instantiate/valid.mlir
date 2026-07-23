@@ -30,10 +30,16 @@ fabric.module @host_calls_leaf(%a : !fabric.bits<32>) {
 
 // Named fabric.pe defined inside a fabric.module body as a TEMPLATE
 // (no SSA results in the host scope), then instantiated later in the
-// same body.
+// same body. `function_type` alone owns the port signature, so the body
+// closes with a zero-operand fabric.yield even though the PE declares a
+// result port, and the instantiate result type still comes from
+// `function_type`.
 // CHECK-LABEL: fabric.module @named_pe_host
 // CHECK: fabric.pe @ALU [spatial] (!fabric.bits<32>) -> !fabric.bits<32>
-// CHECK: fabric.instantiate @ALU
+// CHECK: fabric.yield %{{.*}} : !fabric.bits<32>
+// CHECK-NEXT: }
+// CHECK-NEXT: fabric.yield{{[[:space:]]*$}}
+// CHECK: fabric.instantiate @ALU({{.*}}) -> !fabric.bits<32>
 fabric.module @named_pe_host(%a : !fabric.bits<32>) {
   fabric.pe @ALU [spatial] (!fabric.bits<32>) -> (!fabric.bits<32>) {
   ^bb0(%pa: !fabric.bits<32>):
@@ -42,7 +48,7 @@ fabric.module @named_pe_host(%a : !fabric.bits<32>) {
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
-    fabric.yield %pa : !fabric.bits<32>
+    fabric.yield
   }
   %s = fabric.instantiate @ALU(%a : !fabric.bits<32>) -> (!fabric.bits<32>)
   fabric.yield

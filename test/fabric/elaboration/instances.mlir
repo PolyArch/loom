@@ -14,7 +14,7 @@ fabric.module @leaf(%arg : !fabric.bits<8>) -> (!fabric.bits<8>) {
     }
     %fu_result = fabric.instantiate @FU(
         %pe_arg : !fabric.bits<8>) -> (!fabric.bits<8>)
-    fabric.yield %fu_result : !fabric.bits<8>
+    fabric.yield
   }
   %pe_result = fabric.instantiate @PE(
       %arg : !fabric.bits<8>) -> (!fabric.bits<8>)

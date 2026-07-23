@@ -549,39 +549,22 @@ verifyTemporalBoundaryAndBody(PeOp op, unsigned &W, unsigned &T,
     return op.emitOpError(
         "body requires at least one fabric.fu or fabric.instantiate");
 
-  // Named form: body must end with fabric.yield. Tag is reattached at the
-  // PE boundary by hardware; the yield value types are bits<W> matching
-  // the bits-data part of the declared result types (not bits_tag).
+  // Named form: body closes with a zero-operand signature terminator. The
+  // result ports (including their tags, reattached at the PE boundary by
+  // the active ResultSelection) are owned by `function_type` alone; the
+  // terminator restates them neither as values nor as declared types.
   if (isNamed) {
-    if (entry.empty() || !isa<YieldOp>(entry.back()))
+    YieldOp yield;
+    if (!entry.empty())
+      yield = dyn_cast<YieldOp>(entry.back());
+    if (!yield || !yield.getValues().empty())
       return op.emitOpError(
-          "named fabric.pe body must terminate with fabric.yield");
-    auto yield = cast<YieldOp>(entry.back());
-    if (yield.getValues().size() != declaredOuts.size())
-      return op.emitOpError("yield value count (")
-             << yield.getValues().size()
-             << ") must match declared result count (" << declaredOuts.size()
-             << ")";
-    for (auto [i, pair] :
-         llvm::enumerate(llvm::zip(yield.getValues(), declaredOuts))) {
-      Value v;
-      Type t;
-      std::tie(v, t) = pair;
-      auto vBits = dyn_cast<BitsType>(v.getType());
-      if (!vBits)
-        return op.emitOpError("yield value #")
-               << i << " type " << v.getType()
-               << " is bits_tag (forbidden); yield values must be "
-                  "!fabric.bits<W> matching the bits-data part of the "
-                  "declared result type (tag is reattached at the "
-                  "temporal-PE boundary)";
-      auto tTag = cast<BitsTagType>(t);
-      if (vBits.getWidth() != tTag.getWidth())
-        return op.emitOpError("yield value #")
-               << i << " bits-width " << vBits.getWidth()
-               << " must equal port bits-data-width " << tTag.getWidth()
-               << " (declared result type " << t << ")";
-    }
+          "named fabric.pe body must terminate with a zero-operand "
+          "fabric.yield; 'function_type' alone owns the PE result ports");
+    if (yield->hasAttr("declared_types"))
+      return op.emitOpError(
+          "named fabric.pe terminator must not carry a 'declared_types' "
+          "attribute; 'function_type' alone owns the PE result ports");
   }
   return success();
 }

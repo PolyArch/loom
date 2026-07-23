@@ -590,7 +590,7 @@ fabric.module @temp_named_arg_is_tag() {
            : () -> !fabric.bits<32>
       fabric.yield %k : !fabric.bits<32>
     }
-    fabric.yield %pa : !fabric.bits_tag<32, 4>
+    fabric.yield
   }
   fabric.yield
 }
@@ -615,17 +615,17 @@ fabric.module @temp_named_arg_too_wide() {
            : () -> !fabric.bits<16>
       fabric.yield %k : !fabric.bits<16>
     }
-    fabric.yield %pa : !fabric.bits<32>
+    fabric.yield
   }
   fabric.yield
 }
 
 // -----
-// Named temporal PE: yield value bits-width must equal the port
-// bits-data-width (tag is reattached at the boundary, but the data
-// part width must match exactly).
-fabric.module @temp_named_yield_width_mismatch() {
-  // expected-error @+1 {{yield value #0 bits-width 16 must equal port bits-data-width 32}}
+// Named temporal PE: the body terminator is a pure zero-operand signature
+// terminator. `function_type` alone owns the result ports, so a
+// value-bearing yield is rejected.
+fabric.module @temp_named_value_bearing_yield() {
+  // expected-error @+1 {{named fabric.pe body must terminate with a zero-operand fabric.yield}}
   fabric.pe @TempBadYield [temporal] (!fabric.bits_tag<32, 4>)
                                       -> (!fabric.bits_tag<32, 4>)
        attributes {
@@ -642,6 +642,31 @@ fabric.module @temp_named_yield_width_mismatch() {
       fabric.yield %k : !fabric.bits<32>
     }
     fabric.yield %pa : !fabric.bits<16>
+  }
+  fabric.yield
+}
+
+// -----
+// Named temporal PE: a zero-operand terminator carrying a 'declared_types'
+// attribute would restate the result port types and compete with
+// `function_type` for ownership of them.
+fabric.module @temp_named_yield_declared_types() {
+  // expected-error @+1 {{must not carry a 'declared_types' attribute}}
+  fabric.pe @TempDeclaredTypes [temporal] (!fabric.bits_tag<32, 4>)
+                                           -> (!fabric.bits_tag<32, 4>)
+       attributes {
+         tag_width = 4 : i32,
+         num_instruction = 1 : i32,
+         fu_config_mode = "per_fu_config",
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
+       } {
+  ^bb0(%pa: !fabric.bits<32>):
+    fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
+      %v = fabric.op [@arith.addi] (%fa, %fa)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %v : !fabric.bits<32>
+    }
+    fabric.yield {declared_types = [!fabric.bits<32>]}
   }
   fabric.yield
 }

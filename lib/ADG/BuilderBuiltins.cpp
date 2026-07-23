@@ -87,8 +87,7 @@ ModuleBuilder loom::adg::buildFullSpatialCoreAdg() {
                "    %v = fabric.op [@arith.addi] (%fa, %fa) : "
                "(!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>"),
            nestedBodyLine("    fabric.yield %v : !fabric.bits<32>"),
-           nestedBodyLine("  }"),
-           nestedBodyLine("  fabric.yield %pa : !fabric.bits<32>"),
+           nestedBodyLine("  }"), nestedBodyLine("  fabric.yield"),
            nestedBodyLine("}")}});
   std::vector<BodyResultSpec> instantiateResults = {
       BodyResultSpec{"inst", "!fabric.bits<32>"}};

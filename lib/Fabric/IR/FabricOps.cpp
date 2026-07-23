@@ -543,7 +543,9 @@ bool FuOp::isOptionalSymbol() { return true; }
 //===----------------------------------------------------------------------===//
 //
 // Assembly form mirrors fabric.fu but with a mandatory schedule predicate
-// in `[...]` immediately after the op keyword and no inner terminator:
+// in `[...]` immediately after the op keyword. The anonymous form has no
+// inner terminator; the named form closes its body with a zero-operand
+// `fabric.yield`:
 //
 //   fabric.pe [spatial] (%fa = %a : !fabric.bits<W>)
 //                       -> !fabric.bits<W> { ... }
@@ -557,12 +559,13 @@ bool FuOp::isOptionalSymbol() { return true; }
 //              (%pa = %a : <T_outer> [to <T_inner>], ...)
 //              -> (<T_res>, ...) { ... }
 //
-// Named template form (template-only):
+// Named template form (template-only). `function_type` alone owns the port
+// signature, so the body closes with a zero-operand signature terminator:
 //
 //   fabric.pe @S [schedule] (<T_in0>, <T_in1>, ...) -> (<T_res0>, ...) {
 //   ^bb0(%a0: <T_in0>, %a1: <T_in1>, ...):
 //     ...
-//     fabric.yield %v0 : <T_res0>
+//     fabric.yield
 //   }
 ParseResult PeOp::parse(OpAsmParser &parser, OperationState &result) {
   // Optional `@sym_name` immediately after the op keyword. When present
@@ -975,27 +978,21 @@ LogicalResult PeOp::verify() {
     return emitOpError(
         "body requires at least one fabric.fu or fabric.instantiate");
 
-  // Named-form yield must close the body and match function_type results.
+  // Named-form body closes with a zero-operand signature terminator. The
+  // result ports are owned by `function_type` alone; the terminator never
+  // restates them, neither as yielded values nor as declared types.
   if (isNamed) {
-    if (entry.empty() || !isa<YieldOp>(entry.back()))
+    YieldOp yield;
+    if (!entry.empty())
+      yield = dyn_cast<YieldOp>(entry.back());
+    if (!yield || !yield.getValues().empty())
       return emitOpError(
-          "named fabric.pe body must terminate with fabric.yield");
-    auto yield = cast<YieldOp>(entry.back());
-    if (yield.getValues().size() != declaredOuts.size())
-      return emitOpError("yield value count (")
-             << yield.getValues().size()
-             << ") must match declared result count (" << declaredOuts.size()
-             << ")";
-    for (auto [i, pair] :
-         llvm::enumerate(llvm::zip(yield.getValues(), declaredOuts))) {
-      Value v;
-      Type t;
-      std::tie(v, t) = pair;
-      if (v.getType() != t)
-        return emitOpError("yield value #")
-               << i << " type " << v.getType()
-               << " must equal declared result type " << t;
-    }
+          "named fabric.pe body must terminate with a zero-operand "
+          "fabric.yield; 'function_type' alone owns the PE result ports");
+    if (yield->hasAttr("declared_types"))
+      return emitOpError(
+          "named fabric.pe terminator must not carry a 'declared_types' "
+          "attribute; 'function_type' alone owns the PE result ports");
   }
 
   return success();
@@ -1601,41 +1598,22 @@ LogicalResult YieldOp::verify() {
   if (auto pe = dyn_cast_or_null<PeOp>(parent)) {
     // fabric.yield inside a fabric.pe body is only legal when the PE is in
     // named template form (signature carried in `function_type`).
-    auto fta = pe.getFunctionTypeAttr();
-    if (!pe.getSymNameAttr() || !fta)
+    if (!pe.getSymNameAttr() || !pe.getFunctionTypeAttr())
       return emitOpError(
           "fabric.yield is only legal inside a named fabric.pe template "
           "(anonymous fabric.pe has no terminator)");
-    auto ft = dyn_cast<FunctionType>(fta.getValue());
-    SmallVector<Type, 4> expectedResults;
-    if (ft)
-      for (Type t : ft.getResults())
-        expectedResults.push_back(t);
-    if (getValues().size() != expectedResults.size())
-      return emitOpError("yield value count (")
-             << getValues().size()
-             << ") must match parent fabric.pe result count ("
-             << expectedResults.size() << ")";
-    bool isTemporal = (pe.getSchedule() == Schedule::Temporal);
-    for (auto [i, v] : llvm::enumerate(getValues())) {
-      Type expected = expectedResults[i];
-      if (declared[i] && declared[i] != v.getType())
-        return emitOpError("yield value #")
-               << i << ": 'to <type>' clause is not allowed inside fabric.pe";
-      // Temporal PE: yield carries !fabric.bits<W> matching the bits-data
-      // part of the declared bits_tag<W, T> port; tag is reattached at
-      // the PE boundary by hardware. The detailed bits<W'>/bits_tag<W,T>
-      // shape check lives in verifyPeTemporal; here we only need to
-      // accept the bits-vs-bits_tag mismatch without rejecting it.
-      if (isTemporal) {
-        if (isa<BitsType>(v.getType()) && isa<BitsTagType>(expected))
-          continue;
-      }
-      if (v.getType() != expected)
-        return emitOpError("yield value #")
-               << i << " type " << v.getType()
-               << " must match parent fabric.pe result type " << expected;
-    }
+    // `function_type` alone owns the PE's logical port signature, so the
+    // terminator is a pure signature terminator: it carries neither a value
+    // nor a declared destination type, and is never matched against the
+    // declared result types. Configured output selectors choose each
+    // result's internal source.
+    if (!getValues().empty())
+      return emitOpError("inside a named fabric.pe must not carry values; "
+                         "'function_type' alone owns the PE result ports");
+    if ((*this)->hasAttr("declared_types"))
+      return emitOpError(
+          "inside a named fabric.pe must not carry a 'declared_types' "
+          "attribute; 'function_type' alone owns the PE result ports");
     return success();
   }
   if (auto mod = dyn_cast_or_null<fabric::ModuleOp>(parent)) {

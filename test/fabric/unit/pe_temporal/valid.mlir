@@ -211,11 +211,15 @@ fabric.module @temp_per_fu(%a : !fabric.bits_tag<16, 2>,
 }
 
 // -----------------------------------------------------------------------------
-// Named template form for a temporal PE. The body uses a 0-input FU.
+// Named template form for a temporal PE. `function_type` alone owns the
+// result ports, so the body closes with a zero-operand fabric.yield.
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @temp_named_host
 // CHECK: fabric.pe @TempPe [temporal]
+// CHECK: fabric.yield %{{.*}} : !fabric.bits<32>
+// CHECK-NEXT: }
+// CHECK-NEXT: fabric.yield{{[[:space:]]*$}}
 fabric.module @temp_named_host() {
   fabric.pe @TempPe [temporal] (!fabric.bits_tag<32, 4>)
                                 -> (!fabric.bits_tag<32, 4>)
@@ -231,7 +235,7 @@ fabric.module @temp_named_host() {
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
-    fabric.yield %pa : !fabric.bits<32>
+    fabric.yield
   }
   fabric.yield
 }
@@ -322,7 +326,7 @@ fabric.module @temp_named_full_width() {
            : (!fabric.bits<16>, !fabric.bits<16>) -> !fabric.bits<16>
       fabric.yield %v : !fabric.bits<16>
     }
-    fabric.yield %pa : !fabric.bits<16>
+    fabric.yield
   }
   fabric.yield
 }

@@ -26,7 +26,7 @@ fabric.module @pe_host(%arg : !fabric.bits_tag<16, 4>) -> () {
           : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
       fabric.yield %sum : !fabric.bits<8>
     }
-    fabric.yield %pe_arg : !fabric.bits<8>
+    fabric.yield
   }
   // CHECK: error: 'fabric.pe' op requires uniform 'bits_tag<W, T>' on all PE ports
   %unused = fabric.instantiate @TEMP(

@@ -269,17 +269,20 @@ def Fabric_PeOp : Fabric_Op<"pe", [
       }
 
     Named template form (declaration only). Has zero SSA operands and zero
-    SSA results in the host scope; the port signature is captured in the
-    `function_type` attribute. The body's entry block carries the input
-    port types as block arguments, and the body terminator
-    `fabric.yield` supplies the values that match the function-type
-    results. Actual usage of a named PE goes through `fabric.instantiate`.
+    SSA results in the host scope; `function_type` alone owns the logical
+    port signature. The body's entry block carries the input port types as
+    block arguments, and the body closes with a zero-operand
+    `fabric.yield` signature terminator: it never restates the result
+    ports, whose internal sources are chosen by the configured output
+    selectors. Actual usage of a named PE goes through
+    `fabric.instantiate`, which derives its result arity and types from
+    `function_type`.
 
       fabric.pe @ALU [spatial]
                 (!fabric.bits<W>, !fabric.bits<W>) -> (!fabric.bits<W>) {
       ^bb0(%pa: !fabric.bits<W>, %pb: !fabric.bits<W>):
         fabric.fu(%fa = %pa : !fabric.bits<W>) -> !fabric.bits<W> { ... }
-        fabric.yield %pa : !fabric.bits<W>
+        fabric.yield
       }
 
     A temporal PE uses tagged boundary ports and carries the hardware and
@@ -298,7 +301,7 @@ def Fabric_PeOp : Fabric_Op<"pe", [
         least one such compute member. No `fabric.op`, `fabric.mux`,
         `fabric.demux`, `fabric.fifo`, or `fabric.pe` may appear
         directly in the body. `fabric.yield` may appear only in the
-        named form.
+        named form, where it must carry zero operands.
       * For every inner FU `f`, `f.numInputs() <= K` and
         `f.numOutputs() <= L`. Every FU outer input port and every FU
         outer output port has type `!fabric.bits<W>` matching the PE's
@@ -685,14 +688,21 @@ def Fabric_YieldOp : Fabric_Op<"yield", [
     Terminator,
     Pure
 ]> {
-  let summary = "terminator of a fabric.fu, fabric.module, or fabric.system region";
+  let summary = "terminator of a fabric.fu, named fabric.pe, fabric.module, or "
+                "fabric.system region";
   let description = [{
-    Closes the enclosing `fabric.fu`, `fabric.module`, or `fabric.system`
-    body.
+    Closes the enclosing `fabric.fu`, named `fabric.pe`, `fabric.module`,
+    or `fabric.system` body.
 
     Inside `fabric.fu`, `$values` supplies the values that leave the FU
     on its results; the number and types must match the parent op's
     result count and types exactly.
+
+    Inside a named `fabric.pe`, the terminator carries no values. The PE's
+    logical port signature is owned by `function_type` alone and the
+    configured output selectors choose each result's internal source, so
+    the terminator never restates the result ports. An anonymous
+    `fabric.pe` has no terminator at all.
 
     Inside `fabric.module`, `$values` supplies the module's declared
     output values. The number and per-value types must match the

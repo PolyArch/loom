@@ -2,6 +2,7 @@
 // RUN: loom %t.hardware.mlir > %t.canonical.mlir
 // RUN: FileCheck %s --check-prefix=HARDWARE < %t.canonical.mlir
 // RUN: FileCheck %s --check-prefix=DISPATCH < %t.canonical.mlir
+// RUN: FileCheck %s --check-prefix=NAMEDPE < %t.canonical.mlir
 
 // HARDWARE-LABEL: fabric.module @full_spatialcore_adg(
 // HARDWARE-DAG: fabric.pe [spatial]
@@ -16,6 +17,13 @@
 // HARDWARE-DAG: fabric.pe @ALU
 // HARDWARE-DAG: fabric.instantiate @ALU
 // HARDWARE: fabric.yield %[[MEM]]#1 : memref<?x!fabric.bits<16>>
+
+// The named PE template's port signature is owned by `function_type`; its
+// body therefore closes with a zero-operand signature terminator.
+// NAMEDPE: fabric.pe @ALU [spatial] (!fabric.bits<32>) -> !fabric.bits<32>
+// NAMEDPE: fabric.yield %{{.*}} : !fabric.bits<32>
+// NAMEDPE-NEXT: }
+// NAMEDPE-NEXT: fabric.yield{{[[:space:]]*$}}
 
 // DISPATCH: fabric.mem [spatial]
 // DISPATCH-DAG: operation_port_requests = {{\[\[0 : i32\], \[0 : i32\]\]}}

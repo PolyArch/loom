@@ -50,7 +50,7 @@ fabric.module @host_forward(%a : !fabric.bits<32>) {
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
-    fabric.yield %pa : !fabric.bits<32>
+    fabric.yield
   }
   fabric.yield
 }
@@ -66,7 +66,7 @@ fabric.module @scope_leak_host(%a : !fabric.bits<32>) {
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
-    fabric.yield %pa : !fabric.bits<32>
+    fabric.yield
   }
   fabric.yield
 }
@@ -127,6 +127,42 @@ fabric.module @host_named_with_results(%a : !fabric.bits<32>) {
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
+  }
+  fabric.yield
+}
+
+// -----
+// Named fabric.pe template whose terminator carries a value: `function_type`
+// is the sole owner of the PE result ports, so the body terminator is a
+// pure zero-operand signature terminator.
+fabric.module @host_named_value_bearing_yield(%a : !fabric.bits<32>) {
+  // expected-error @+1 {{named fabric.pe body must terminate with a zero-operand fabric.yield}}
+  fabric.pe @ALU [spatial] (!fabric.bits<32>) -> (!fabric.bits<32>) {
+  ^bb0(%pa: !fabric.bits<32>):
+    fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
+      %v = fabric.op [@arith.addi] (%fa, %fa)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %v : !fabric.bits<32>
+    }
+    fabric.yield %pa : !fabric.bits<32>
+  }
+  fabric.yield
+}
+
+// -----
+// Named fabric.pe template whose zero-operand terminator still carries a
+// 'declared_types' attribute: that would restate the result port types and
+// compete with `function_type` for ownership of them.
+fabric.module @host_named_yield_declared_types(%a : !fabric.bits<32>) {
+  // expected-error @+1 {{must not carry a 'declared_types' attribute}}
+  fabric.pe @ALU [spatial] (!fabric.bits<32>) -> (!fabric.bits<32>) {
+  ^bb0(%pa: !fabric.bits<32>):
+    fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
+      %v = fabric.op [@arith.addi] (%fa, %fa)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %v : !fabric.bits<32>
+    }
+    fabric.yield {declared_types = [!fabric.bits<32>]}
   }
   fabric.yield
 }
