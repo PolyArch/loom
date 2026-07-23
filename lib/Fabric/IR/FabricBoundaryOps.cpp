@@ -28,11 +28,11 @@ using namespace fabric;
 //                : (!fabric.bits<BW>, !fabric.bits<TW>)
 //                  -> !fabric.bits_tag<BW, TW>
 //
-//   [s2t] constant-tag form (1 SSA operand + sw_configs.tag):
+//   [s2t] configurable-tag form (1 SSA operand, optional sw_configs.tag):
 //     fabric.boundary [s2t] %data {sw_configs = {tag = K : i<TW>}}
 //                : !fabric.bits<BW> -> !fabric.bits_tag<BW, TW>
 //
-//   [t2t] tag-remap form (1 SSA operand + hw_params + sw_configs):
+//   [t2t] tag-remap form (1 SSA operand + hw_params, optional sw_configs):
 //     fabric.boundary [t2t] %in
 //                {hw_params = [{lut_size = N : i32}],
 //                 sw_configs = {lookup_table = [{src_tag = ..., dst_tag = ...},
@@ -319,23 +319,21 @@ static LogicalResult verifyS2t(BoundaryOp op, ArrayRef<Type> inputPortTypes) {
       return op.emitOpError("[s2t] operand #1 bits-width ")
              << in1.getWidth() << " must equal result tag-width " << resTW;
 
-    if (auto sw = op.getSwConfigsAttr())
-      if (sw.get("tag"))
-        return op.emitOpError(
-            "[s2t] two-operand form must not carry 'sw_configs.tag'; the tag "
-            "is supplied as the second SSA operand");
+    if (op.getSwConfigsAttr())
+      return op.emitOpError(
+          "[s2t] two-operand form must not carry 'sw_configs'");
     return success();
   }
 
-  // Constant-tag form (1 operand): require sw_configs.tag.
+  // The one-operand form is an unconfigured capability when sw_configs is
+  // absent. A present configured projection contains only `tag`.
   auto sw = op.getSwConfigsAttr();
   if (!sw)
-    return op.emitOpError(
-        "[s2t] constant-tag form requires 'sw_configs.tag' integer attribute");
+    return success();
   auto tagAttr = sw.get("tag");
-  if (!tagAttr)
+  if (sw.size() != 1 || !tagAttr)
     return op.emitOpError(
-        "[s2t] constant-tag form requires 'sw_configs.tag' integer attribute");
+        "[s2t] present 'sw_configs' must contain exactly the 'tag' field");
   auto tagInt = dyn_cast<IntegerAttr>(tagAttr);
   if (!tagInt)
     return op.emitOpError("[s2t] 'sw_configs.tag' must be an IntegerAttr");
@@ -391,23 +389,26 @@ static LogicalResult verifyT2t(BoundaryOp op, ArrayRef<Type> inputPortTypes) {
   auto lutSizeInt = dyn_cast<IntegerAttr>(lutSizeAttr);
   if (!lutSizeInt)
     return op.emitOpError("[t2t] 'lut_size' must be an IntegerAttr");
-  if (isNegativeIntLiteral(lutSizeInt) ||
-      lutSizeInt.getValue().getZExtValue() < 1)
+  if (isNegativeIntLiteral(lutSizeInt) || lutSizeInt.getValue().isZero())
     return op.emitOpError("[t2t] 'lut_size' must be a positive integer (>= 1)");
-  uint64_t lutSize = lutSizeInt.getValue().getZExtValue();
+  uint64_t lutSize = lutSizeInt.getValue().getLimitedValue();
 
-  // sw_configs: required, must contain `lookup_table`.
+  // Absence denotes the canonical unconfigured capability. A present
+  // configured projection contains only a nonempty `lookup_table`.
   auto sw = op.getSwConfigsAttr();
   if (!sw)
-    return op.emitOpError(
-        "[t2t] requires 'sw_configs' attribute carrying 'lookup_table'");
+    return success();
   auto lutAttr = sw.get("lookup_table");
-  if (!lutAttr)
-    return op.emitOpError("[t2t] 'sw_configs' must contain key 'lookup_table'");
+  if (sw.size() != 1 || !lutAttr)
+    return op.emitOpError(
+        "[t2t] present 'sw_configs' must contain exactly the 'lookup_table' "
+        "field");
   auto lut = dyn_cast<ArrayAttr>(lutAttr);
   if (!lut)
     return op.emitOpError(
         "[t2t] 'lookup_table' must be an array of dictionaries");
+  if (lut.empty())
+    return op.emitOpError("[t2t] a present 'lookup_table' must be nonempty");
 
   if (lut.size() > lutSize)
     return op.emitOpError(
@@ -415,7 +416,7 @@ static LogicalResult verifyT2t(BoundaryOp op, ArrayRef<Type> inputPortTypes) {
                "lut_size: ")
            << lut.size() << " > " << lutSize;
 
-  llvm::DenseSet<uint64_t> seenSrcTags;
+  llvm::DenseSet<llvm::APInt> seenSrcTags;
   for (size_t i = 0; i < lut.size(); ++i) {
     Attribute entryAttr = lut[i];
     auto entry = dyn_cast<DictionaryAttr>(entryAttr);
@@ -424,9 +425,9 @@ static LogicalResult verifyT2t(BoundaryOp op, ArrayRef<Type> inputPortTypes) {
              << i << " must be a dictionary attribute";
     auto srcTagAttr = entry.get("src_tag");
     auto dstTagAttr = entry.get("dst_tag");
-    if (!srcTagAttr || !dstTagAttr)
+    if (entry.size() != 2 || !srcTagAttr || !dstTagAttr)
       return op.emitOpError("[t2t] 'lookup_table' entry #")
-             << i << " must have keys 'src_tag' and 'dst_tag'";
+             << i << " must contain exactly 'src_tag' and 'dst_tag'";
     auto srcTagInt = dyn_cast<IntegerAttr>(srcTagAttr);
     auto dstTagInt = dyn_cast<IntegerAttr>(dstTagAttr);
     if (!srcTagInt || !dstTagInt)
@@ -452,9 +453,9 @@ static LogicalResult verifyT2t(BoundaryOp op, ArrayRef<Type> inputPortTypes) {
       return op.emitOpError("'lookup_table' entry #")
              << i << " has negative dst_tag literal";
 
-    uint64_t key = srcTagInt.getValue().getZExtValue();
+    llvm::APInt key = srcTagInt.getValue();
     if (!seenSrcTags.insert(key).second)
-      return op.emitOpError("[t2t] duplicate src_tag value ") << key;
+      return op.emitOpError("[t2t] duplicate src_tag value");
   }
   return success();
 }

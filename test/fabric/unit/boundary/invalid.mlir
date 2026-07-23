@@ -25,6 +25,16 @@ fabric.module @s2t_data_width_mismatch(%d : !fabric.bits<16>, %t : !fabric.bits<
 }
 
 // -----
+// fabric.boundary [s2t]: the two-operand form has no configured projection.
+fabric.module @s2t_general_with_sw_configs(%d : !fabric.bits<32>,
+                                           %t : !fabric.bits<4>) {
+  // expected-error @+1 {{[s2t] two-operand form must not carry 'sw_configs'}}
+  %0 = fabric.boundary [s2t] %d, %t {sw_configs = {unexpected = 0 : i1}}
+       : (!fabric.bits<32>, !fabric.bits<4>) -> !fabric.bits_tag<32, 4>
+  fabric.yield
+}
+
+// -----
 // Memory capabilities cannot be declared as boundary destination ports.
 fabric.module @boundary_memref_input_normalization(%a : !fabric.bits<32>) {
   // expected-error @+1 {{memref capabilities cannot use the 'to <destination-type>' clause}}
@@ -48,10 +58,31 @@ fabric.module @boundary_inner_input_types_collision(
 }
 
 // -----
-// fabric.boundary [s2t]: 1-operand form missing sw_configs.tag.
-fabric.module @s2t_const_missing_tag(%d : !fabric.bits<32>) {
-  // expected-error @+1 {{[s2t] constant-tag form requires 'sw_configs.tag' integer attribute}}
-  %0 = fabric.boundary [s2t] %d : !fabric.bits<32> -> !fabric.bits_tag<32, 4>
+// fabric.boundary [s2t]: a present empty projection is not the canonical
+// unconfigured form.
+fabric.module @s2t_empty_sw_configs(%d : !fabric.bits<32>) {
+  // expected-error @+1 {{[s2t] present 'sw_configs' must contain exactly the 'tag' field}}
+  %0 = fabric.boundary [s2t] %d {sw_configs = {}}
+       : !fabric.bits<32> -> !fabric.bits_tag<32, 4>
+  fabric.yield
+}
+
+// -----
+// fabric.boundary [s2t]: the configured projection has exactly one field.
+fabric.module @s2t_extra_sw_config_field(%d : !fabric.bits<32>) {
+  // expected-error @+1 {{[s2t] present 'sw_configs' must contain exactly the 'tag' field}}
+  %0 = fabric.boundary [s2t] %d
+       {sw_configs = {tag = 3 : i4, unexpected = 0 : i1}}
+       : !fabric.bits<32> -> !fabric.bits_tag<32, 4>
+  fabric.yield
+}
+
+// -----
+// fabric.boundary [s2t]: sw_configs.tag must be an IntegerAttr.
+fabric.module @s2t_tag_wrong_type(%d : !fabric.bits<32>) {
+  // expected-error @+1 {{[s2t] 'sw_configs.tag' must be an IntegerAttr}}
+  %0 = fabric.boundary [s2t] %d {sw_configs = {tag = "three"}}
+       : !fabric.bits<32> -> !fabric.bits_tag<32, 4>
   fabric.yield
 }
 
@@ -105,11 +136,58 @@ fabric.module @t2t_missing_hw_params(%a : !fabric.bits_tag<32, 4>) {
 }
 
 // -----
-// fabric.boundary [t2t]: missing sw_configs.lookup_table.
-fabric.module @t2t_missing_sw_configs(%a : !fabric.bits_tag<32, 4>) {
-  // expected-error @+1 {{[t2t] requires 'sw_configs' attribute carrying 'lookup_table'}}
+// fabric.boundary [t2t]: a present empty projection is not the canonical
+// unconfigured form.
+fabric.module @t2t_empty_sw_configs(%a : !fabric.bits_tag<32, 4>) {
+  // expected-error @+1 {{[t2t] present 'sw_configs' must contain exactly the 'lookup_table' field}}
   %0 = fabric.boundary [t2t] %a
-       {hw_params = [{lut_size = 4 : i32}]}
+       {hw_params = [{lut_size = 4 : i32}], sw_configs = {}}
+       : !fabric.bits_tag<32, 4> -> !fabric.bits_tag<32, 4>
+  fabric.yield
+}
+
+// -----
+// fabric.boundary [t2t]: a present lookup table must be nonempty.
+fabric.module @t2t_empty_lookup_table(%a : !fabric.bits_tag<32, 4>) {
+  // expected-error @+1 {{[t2t] a present 'lookup_table' must be nonempty}}
+  %0 = fabric.boundary [t2t] %a
+       {hw_params = [{lut_size = 4 : i32}],
+        sw_configs = {lookup_table = []}}
+       : !fabric.bits_tag<32, 4> -> !fabric.bits_tag<32, 4>
+  fabric.yield
+}
+
+// -----
+// fabric.boundary [t2t]: the configured projection has exactly one field.
+fabric.module @t2t_extra_sw_config_field(%a : !fabric.bits_tag<32, 4>) {
+  // expected-error @+1 {{[t2t] present 'sw_configs' must contain exactly the 'lookup_table' field}}
+  %0 = fabric.boundary [t2t] %a
+       {hw_params = [{lut_size = 4 : i32}],
+        sw_configs = {lookup_table = [{src_tag = 0 : i4, dst_tag = 0 : i4}],
+                      unexpected = 0 : i1}}
+       : !fabric.bits_tag<32, 4> -> !fabric.bits_tag<32, 4>
+  fabric.yield
+}
+
+// -----
+// fabric.boundary [t2t]: each configured entry has exactly two fields.
+fabric.module @t2t_extra_lookup_entry_field(%a : !fabric.bits_tag<32, 4>) {
+  // expected-error @+1 {{[t2t] 'lookup_table' entry #0 must contain exactly 'src_tag' and 'dst_tag'}}
+  %0 = fabric.boundary [t2t] %a
+       {hw_params = [{lut_size = 4 : i32}],
+        sw_configs = {lookup_table = [{src_tag = 0 : i4, dst_tag = 0 : i4,
+                                       unexpected = 0 : i1}]}}
+       : !fabric.bits_tag<32, 4> -> !fabric.bits_tag<32, 4>
+  fabric.yield
+}
+
+// -----
+// fabric.boundary [t2t]: entry tags must be IntegerAttrs.
+fabric.module @t2t_src_tag_wrong_type(%a : !fabric.bits_tag<32, 4>) {
+  // expected-error @+1 {{[t2t] 'lookup_table' entry #0 'src_tag'/'dst_tag' must be IntegerAttr}}
+  %0 = fabric.boundary [t2t] %a
+       {hw_params = [{lut_size = 4 : i32}],
+        sw_configs = {lookup_table = [{src_tag = "zero", dst_tag = 0 : i4}]}}
        : !fabric.bits_tag<32, 4> -> !fabric.bits_tag<32, 4>
   fabric.yield
 }
@@ -139,7 +217,7 @@ fabric.module @t2t_dst_tag_width_bad(%a : !fabric.bits_tag<32, 4>) {
 // -----
 // fabric.boundary [t2t]: duplicate src_tag values.
 fabric.module @t2t_duplicate_keys(%a : !fabric.bits_tag<32, 4>) {
-  // expected-error @+1 {{[t2t] duplicate src_tag value 1}}
+  // expected-error @+1 {{[t2t] duplicate src_tag value}}
   %0 = fabric.boundary [t2t] %a
        {hw_params = [{lut_size = 4 : i32}],
         sw_configs = {lookup_table = [{src_tag = 1 : i4, dst_tag = 0 : i4},

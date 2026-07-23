@@ -27,8 +27,17 @@ fabric.module @s2t_input_width_normalization(%d : !fabric.bits<32>,
 }
 
 // -----------------------------------------------------------------------------
-// fabric.boundary [s2t] constant-tag form: 1 operand + sw_configs.tag.
+// fabric.boundary [s2t] configurable-tag form: canonical unconfigured
+// capability and a representative configured projection.
 // -----------------------------------------------------------------------------
+
+// CHECK-LABEL: fabric.module @s2t_configurable_unconfigured
+fabric.module @s2t_configurable_unconfigured(%d : !fabric.bits<32>) {
+  // CHECK: fabric.boundary [s2t] %{{.*}} : !fabric.bits<32> -> !fabric.bits_tag<32, 4>
+  %0 = fabric.boundary [s2t] %d
+       : !fabric.bits<32> -> !fabric.bits_tag<32, 4>
+  fabric.yield
+}
 
 // CHECK-LABEL: fabric.module @s2t_const_tag
 fabric.module @s2t_const_tag(%d : !fabric.bits<32>) {
@@ -52,7 +61,20 @@ fabric.module @s2t_bits_zero(%d : !fabric.bits<0>, %t : !fabric.bits<3>) {
 }
 
 // -----------------------------------------------------------------------------
-// fabric.boundary [t2t]: tag remap, identity LUT (TW1 == TW2).
+// fabric.boundary [t2t]: canonical unconfigured capability.
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: fabric.module @t2t_unconfigured
+fabric.module @t2t_unconfigured(%a : !fabric.bits_tag<32, 2>) {
+  // CHECK: fabric.boundary [t2t] %{{.*}} {hw_params = [{lut_size = 4 : i32}]} : !fabric.bits_tag<32, 2> -> !fabric.bits_tag<32, 2>
+  %0 = fabric.boundary [t2t] %a
+       {hw_params = [{lut_size = 4 : i32}]}
+       : !fabric.bits_tag<32, 2> -> !fabric.bits_tag<32, 2>
+  fabric.yield
+}
+
+// -----------------------------------------------------------------------------
+// fabric.boundary [t2t]: configured identity LUT (TW1 == TW2).
 // -----------------------------------------------------------------------------
 
 // CHECK-LABEL: fabric.module @t2t_identity
