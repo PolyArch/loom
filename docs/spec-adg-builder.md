@@ -246,10 +246,10 @@ Fabric in addition to the resources they generate. Exact per-helper resource
 inventory, hardware parameters, switch construction, memory-port capacity, and
 buffer capacities are part of the same versioned family contract and must be
 fixed before that catalog version is implementation-complete. The
-`CoreAluFu` and `MacFu` scalar portions and the `LoopControlFu` resource
-inventory are fixed below; the remaining `LoopControlFu` topology, other
-helpers, switch construction, and remaining capacities are not implied by
-those definitions. Helper resource tables reference normative
+`CoreAluFu` and `MacFu` scalar portions and the complete initial
+`LoopControlFu` contract are fixed below; the other helpers, switch
+construction, and remaining capacities are not implied by those definitions.
+Helper resource tables reference normative
 `ImplementationFamilyId` values; operation-family membership remains owned by
 the HSG registry. They do not duplicate member lists, spell operation names as
 dispatch keys, or define backend modes.
@@ -378,11 +378,71 @@ The exact family members and physical resource contracts are owned by
 step kinds are distinct `LoopStream` occurrences rather than configured modes
 of one occurrence.
 
-This inventory fixes the semantic resources that the helper may compose. Its
-outer port roles, explicit internal `fabric.mux` and `fabric.demux` topology,
-finite valid configured graphs, and initial builtin distribution remain a
-separate catalog contract; they must not be inferred from the helper name or
-implemented as hidden wiring.
+#### LoopControlFu Concrete Contract
+
+Each initial `LoopControlFu` contains exactly two `LoopStream` resources and
+one resource from each of `LoopCarry`, `LoopInvariant`, and `LoopGate`. The two
+stream resources have distinct fixed step kinds selected by the builtin
+distribution below. Every stream resource supports integer widths
+`{8, 16, 32, 64}` and every registered schema-valid integer continuation
+predicate.
+
+The fixed helper boundary is:
+
+```text
+outer:
+  bits<128>, bits<128>, bits<128>, bits<128>
+    -> bits<128>, bits<128>, bits<128>
+
+inner roles:
+  d0: bits<128>
+  d1: bits<128>
+  d2: bits<128>
+  c0: bits<1>
+    -> r0: bits<128>
+       r1: bits<128>
+       p0: bits<1>
+```
+
+Builtin expansion uses the ordinary anonymous-FU boundary rule to truncate
+the low bit of the fourth outer input into `c0` and zero-extend `p0` into the
+third outer result. The data roles retain the full 128-bit payload floor.
+`LoopStream` actors use only their selected exact low 8, 16, 32, or 64 bits;
+the transparent payload resources may carry an exact supported scalar or
+fixed-ranked vector up to 128 bits. The role names above are stable catalog
+ordinals, not software operand names or additional Fabric attributes.
+
+The active structural template is exactly one member of this closed set:
+
+| Template | FU inputs | FU outputs | Internal relation |
+| -------- | --------- | ---------- | ----------------- |
+| `stream(S)` | `d0`, `d1`, `d2` | `r0`, `p0` | One concrete `LoopStream` with fixed step `S` |
+| `carry` | `c0`, `d0`, `d1` | `r0` | One `LoopCarry` |
+| `invariant` | `c0`, `d0` | `r0` | One `LoopInvariant` |
+| `gate` | `c0`, `d0` | `r0`, `p0` | One `LoopGate` |
+| `carry -> gate` | `c0`, `d0`, `d1` | `r0`, `r1`, `p0` | Raw carry output on `r0`; the same value is gated onto `r1` |
+| `invariant -> gate` | `c0`, `d0` | `r0`, `r1`, `p0` | Raw invariant output on `r0`; the same value is gated onto `r1` |
+
+For the two fused templates, the selected `c0` token is a real software-graph
+broadcast to both stateful actors. The carry or invariant output is likewise
+broadcast to the raw FU result and the gate value input. Preserving the raw
+parent-domain value is necessary for an external exit or frontier projection;
+the projected value and phase belong to the child domain.
+
+All mutually exclusive input routes, operation inputs, result roles, and
+output routes use explicit coherent `fabric.demux` and `fabric.mux` topology.
+Direct SSA multi-use occurs only for the two broadcasts above. An operation
+result that changes between a raw output and an internal gate input uses an
+explicit demux before those mutually exclusive routes.
+
+`FuConfiguration` remains `Disabled` or one active template. The valid
+configuration domain is the normalized sum of the table rows and the exact
+semantic parameter point admitted by the selected operation resources. It is
+not the Cartesian product of local mux, demux, operation, width, and predicate
+fields. Selector values that do not form one coherent row are invalid, and
+irrelevant fields are absent or canonicalized. No initial template activates
+`stream` together with another loop-control actor or activates disconnected
+actors merely because the resources share one FU.
 
 #### CoreAluFu And MacFu Concrete Scalar Contract
 
@@ -463,6 +523,14 @@ registered add followed by canonical carry retains a one-cycle recurrence
 path and initiation interval one under downstream progress. The carry
 operation schema remains the sole owner of its logical transition semantics.
 
+The Mac resource is physically local to `MacFu`; it is not a reference to a
+`LoopControlFu` occurrence. In a recurrence template, the carry output is a
+real broadcast to the FU result and the selected arithmetic recurrence input,
+the registered arithmetic result supplies `carry.next`, the stable Mac phase
+role supplies `carry.cond`, and the exact template supplies the initial value.
+The template reuses the normative family, resource, transition, and timing
+contracts without copying their configuration or state machine.
+
 ### Payload And Type Floor
 
 Every preset in the initial family uses a 128-bit ordinary PE and
@@ -529,8 +597,31 @@ randomness, or authoring insertion order. Several FU families may occur in
 one PE. A Spatial PE still activates at most one FU configuration, while a
 Temporal PE uses its Fabric-declared resident instruction contexts.
 
-Applying the rule separately guarantees that every preset exposes the common
-capability floor in both schedule kinds. For example, the Small preset has
+After placement in both schedule kinds, all `LoopControlFu` occurrences in
+one SpatialCore are ordered first by the closed schedule-kind order
+`Spatial, Temporal`, then by canonical site ordinal, then by same-site helper
+ordinal. Occurrence `q` receives the step-kind pair at
+`q mod 4` from:
+
+```text
+0: add, sub
+1: mul, sdiv
+2: udiv, shl
+3: ashr, lshr
+```
+
+This assignment adds no profile enum or second capability table; it supplies
+the two fixed `LoopStream` parameters of each explicit helper expansion. Every
+preset therefore exposes all eight stream step kinds in each SpatialCore.
+The Small preset has exactly four total `LoopControlFu` occurrences and covers
+the list once. Default and Large repeat the same four-pair catalog and increase
+multiplicity without changing the software capability set.
+
+Applying the occurrence-density rule separately guarantees that every helper
+kind is represented in both schedule kinds. Exact operation-resource
+multiplicity may intentionally differ between those kinds; the common
+software capability floor belongs to the complete SpatialCore rather than
+being duplicated in each schedule kind. For example, the Small preset has
 `12/6/3/3/3/2/1` occurrences across its 12 Spatial PEs and
 `4/2/1/1/1/1/1` occurrences across its four Temporal PEs in the table's FU
 order.
@@ -628,6 +719,11 @@ The stable Builder anchors are deliberately small:
 11. A stateless scalar resource exhibits the declared one-cycle elastic
     timing, while an imported `LoopCarry` preserves that one-cycle recurrence
     path through elastic-transparent forwarding.
+12. A fused carry-or-invariant plus gate template exposes the raw
+    parent-domain value, projected child-domain value, and child phase without
+    admitting incoherent selector products.
+13. Every preset SpatialCore derives the same eight-step stream capability
+    from the canonical `LoopControlFu` occurrence order.
 
 These anchors test the public boundary and determinism. They do not require a
 fixture for every helper, topology, operation ordering, generated name, or
