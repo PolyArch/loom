@@ -8,7 +8,8 @@ selected, and deployed. It does not duplicate their semantic content.
 Each persistent fact has one owner:
 
 * an artifact family owns its canonical semantic schema and bytes;
-* Common artifact finalization owns identity framing and hashing;
+* Common artifact finalization owns identity framing, hashing, and exact
+  cross-artifact reference framing;
 * the Canonical Dataflow family owns its graph, actor, root-thread-launch,
   static-graph-launch, and logical-memory-root entity catalog, canonical
   labeling, and read-only importer projection;
@@ -198,6 +199,27 @@ the framing, digest, and validated store behavior.
 Canonical semantic bytes exclude timestamps, producer metadata, invocation
 bindings, host paths, diagnostics, visualization layout, and lineage unless the
 artifact schema explicitly makes a typed upstream reference semantic.
+
+## Artifact Reference Framing
+
+Every semantic cross-artifact reference has one complete meaning:
+
+```text
+ArtifactReference<T> =
+  (exact finalized ArtifactIdentity,
+   typed artifact-local target T)
+```
+
+Common owns only this pair framing and the requirement that the identity
+resolve and validate exactly. The referenced artifact family owns the closed
+entity and structural-target variants admitted by `T`, their canonical
+encoding, and target validation.
+
+An artifact root that already binds the exact referenced identity may encode
+only `T` at each internal use. This compact wire is a mechanical projection of
+the complete pair, not a weak reference, compatibility class, lookup hint, or
+rebinding permission. A symbol, path, printer position, construction handle,
+or consumer-local dense index cannot replace either component.
 
 ## Artifact Store
 

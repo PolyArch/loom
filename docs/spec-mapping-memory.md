@@ -315,29 +315,15 @@ It never chooses another AccCore or SpatialMapping.
 ### ServiceRealization
 
 SystemMapping has one `ServiceRealization` family keyed by one of two typed
-software obligations:
+software obligations. `docs/spec-mapping-identity.md` is the sole owner of the
+exact `SystemServiceObligationKey` variants and wire.
 
-```text
-SystemServiceObligationKey =
-    TransferObligationFamilyKey
-  | OperationServiceObligationFamilyKey
-```
-
-A Transfer obligation represents one exact producer-terminal family and its
-canonical non-empty sink set. Multicast remains one obligation; Mapping may
-not split it into unrelated per-sink routes. An Operation Service obligation
-uses one closed owner key:
-
-```text
-OperationServiceOwnerKey =
-    LogicalMemoryServiceRootOrViewRef
-  | FenceActorFamilyKey
-```
-
-The logical-memory variant owns the typed addressed-operation set required by
-the Canonical Service Schema. Memory access and exposure share this owner so
-they cannot select contradictory services. The fence variant owns one static
-fence family and its exact contract without inventing a memory interval.
+For memory, the `OperationServiceObligationFamilyKey` contains only one
+`LogicalMemoryRootOrViewRef` or `FenceActorFamilyRef`. The exact Dataflow
+program derives the complete addressed-operation and exposure member set for
+a logical-memory owner, or the exact contract for a fence owner. Neither set
+nor contract is copied into the key. Memory access and exposure therefore
+share one owner and cannot select contradictory services.
 
 Each `ServiceRealization` contains canonical owner-local `ServicePlan` values
 and a total plan-selection relation. A plan contains:
@@ -345,8 +331,9 @@ and a total plan-selection relation. A plan contains:
 * one closed target-binding variant: logical-service interval to Fabric
   service region for addressed memory, or fence family to one
   MemoryConsistency domain;
-* one `TransferLegRealization` per leg mechanically required by the Canonical
-  Service Schema; and
+* one `TransferLegRealization` per member-relative
+  `CanonicalServiceLegKey` mechanically required by the Canonical Service
+  Schema; and
 * mapping-visible physical refinement assignments.
 
 A fence plan has exactly one consistency target. The selected domain may be a

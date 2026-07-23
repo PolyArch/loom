@@ -1,9 +1,11 @@
 # Mapping Identity And References
 
 This document is the identity and reference authority for persistent Mapping
-artifacts. `docs/spec-mapping-artifact.md` owns profile records and root
-assembly. `docs/spec-full-stack-traceability.md` owns the repository-wide
-Common artifact identity contract.
+artifacts and System service obligation keys. `docs/spec-mapping-artifact.md`
+owns profile records and root assembly. `docs/spec-fabric-system-adg.md` owns
+Canonical Service Schema member and leg semantics.
+`docs/spec-full-stack-traceability.md` owns the repository-wide Common
+artifact identity contract.
 
 Persistent references use exact finalized artifact identity plus typed local
 identity or a closed structural key. Symbols, paths, coordinates, printer
@@ -103,6 +105,41 @@ definition is recovered from a `RootThreadLaunchRef` through the canonical
 launch-callee relation and has no Dataflow EntityId in schema 1.0. A
 `CanonicalMemoryActorRef` is an `ActorRef` whose imported actor kind is a
 canonical memory actor; it is not another ID type.
+
+## Fabric-Owned Upstream References
+
+Each finalized Fabric root owns its closed entity catalog, owner-relative
+structural-key catalog, canonical labeling, and artifact-local validation.
+Common Artifact and Mapping do not define a generic Fabric node, path, or
+property reference.
+
+An independently meaningful physical object receives an artifact-local
+`EntityId` when it has its own capacity, state, configuration, physical role,
+or independent reference requirement. A subordinate object that is uniquely
+recoverable from such an owner uses a closed typed owner-relative structural
+key. Ports, switch traversals, memory operation ports, resource states, and
+service regions therefore do not receive IDs merely for consumer
+convenience.
+
+Every complete Fabric reference has the same exact form:
+
+```text
+ArtifactReference<T> =
+  (exact Fabric ArtifactIdentity,
+   typed Fabric-owned entity or structural target T)
+```
+
+A Mapping root that already declares the exact Fabric
+`UpstreamArtifactBinding` may encode only `T`. This compact form neither
+permits rebinding nor weakens exact target identity. Wrong root kind, foreign
+artifact, wrong entity kind, wrong owner, or an out-of-range structural
+ordinal is invalid.
+
+The exact target variants must be closed by the owning Fabric root schemas
+before an affected Mapping or MappingConstraintSet can be published. A
+consumer cannot add an unqualified `FabricResourceRef`, string kind, symbol,
+path, printer position, builder handle, or native PnR index as an escape
+hatch.
 
 ## Mapping-Local References
 
@@ -213,6 +250,68 @@ coordinates and launch parameters. It is not an entity or dynamic occurrence
 identity. Runtime may add a transient occurrence handle, but that handle
 never enters Mapping identity or persistent references.
 
+## System Service Obligation Keys
+
+A SystemMapping root and a System MappingConstraintSet root each bind one
+exact Canonical Dataflow Program and one canonical non-empty root-thread-launch
+set. Together they define the workload scope from which all reachable
+software service obligations are derived:
+
+```text
+SystemWorkloadScope =
+  (exact Canonical Dataflow ArtifactIdentity,
+   canonical root-thread-launch set)
+```
+
+The scope is owned once by the root and is not repeated in each obligation
+key. The only System service obligation variants are:
+
+```text
+SystemServiceObligationKey =
+    TransferObligationFamilyKey
+  | OperationServiceObligationFamilyKey
+
+TransferObligationFamilyKey =
+  CanonicalProducerTerminalRef
+
+OperationServiceObligationFamilyKey =
+    LogicalMemoryRootOrViewRef
+  | FenceActorFamilyRef
+```
+
+Each key stores only its minimal derivation anchor. For a transfer key, the
+exact Dataflow program, workload scope, and producer derive one canonical
+sorted unique non-empty sink set. The sink set is not serialized in the key.
+For a logical-memory owner, the exact Dataflow program derives the complete
+canonical service-member set, including applicable load, store, atomic RMW,
+compare-exchange, and exposure members. For a fence owner, the exact actor
+derives its fence contract. Neither member sets nor contracts are copied into
+the key.
+
+Every service leg uses the member-relative structural key:
+
+```text
+CanonicalServiceLegKey =
+  (SystemServiceObligationKey,
+   ServiceMemberRef,
+   schema-local leg ordinal)
+```
+
+The exact Dataflow family must own the closed producer-terminal,
+sink-terminal, memory-root-or-view, fence-actor-family, and service-member
+reference variants. The Canonical Service Schema owns each member's local leg
+count, direction, payload, completion rule, and ordinal meaning. Mapping owns
+neither catalog and cannot flatten all legs into an independently interpreted
+global ordinal. An affected Mapping or MappingConstraintSet cannot be
+published until those closed variants resolve every derived obligation.
+
+Finalization derives the complete obligation and leg universes from the root
+scope. Missing any derived `ServiceRealization` is a Mapping completeness
+failure. A malformed, foreign, wrong-kind, wrong-owner, or out-of-range
+reference is invalid. A well-formed obligation for which no compatible
+Fabric target exists is proven infeasible for that Mapping invocation rather
+than an identity error.
+
 ## Canonical Labeling
 
 Finalization constructs an exact semantic graph before assigning Mapping
@@ -262,6 +361,11 @@ Native PnR may use a build-selected `PnrIndex` and maintain checked
 When both native widths can represent the same input, they must produce the
 same Mapping semantic content and identity.
 
+Import and freeze resolve every persistent entity and structural reference
+once before publishing the native model. Hot search tables use typed dense
+indices and owner-local offsets; they do not carry ArtifactIdentity digests,
+recursive persistent references, symbols, or paths.
+
 Caches bind exact artifact identities and all relevant producer semantics.
 They invalidate as a unit when those inputs change and cannot export local
 references, coverage, legality conclusions, or physical decisions into a
@@ -292,6 +396,8 @@ Identity and reference validation requires:
 * correct target kind and owner for every typed local or scoped reference;
 * exact resolution of every upstream artifact and entity;
 * exact resolution of every owner plus structural-key reference;
+* exact derivation of every System service obligation, member, sink, and leg
+  from the bound workload scope;
 * canonical import and owner-child ordinal assignment;
 * exact predecessor coupling required by the profile; and
 * no symbol, path, location, textual order, provenance handle, or native

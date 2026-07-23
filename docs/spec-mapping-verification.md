@@ -48,6 +48,14 @@ results or reports. When an evaluation was requested, the corresponding
 observations and findings belong to Evaluation Evidence. No failure, report,
 finding, proof witness, or Evidence record enters Mapping semantic bytes.
 
+A malformed, foreign, wrong-kind, wrong-owner, or out-of-range persistent
+reference is invalid input and cannot enter search. A purported Mapping root
+that omits any service obligation, member, or leg mechanically derived from
+its exact workload scope fails profile completeness. In contrast, a
+well-formed obligation whose compatible Fabric target domain is empty is a
+`ProvenInfeasible` Mapping invocation outcome, not a reference or identity
+error.
+
 ## TechMapping Verifier
 
 The TechMapping verifier consumes one `mapping.tech` `2.0` root and its exact
@@ -251,6 +259,9 @@ Using that projection, the base verifier checks:
   contract, typed demand, activation, and release;
 * exactly one ServiceRealization per derived transfer or operation-service
   obligation;
+* exact derivation of each obligation's complete canonical member, sink, and
+  `CanonicalServiceLegKey` universes from the workload scope and Canonical
+  Service Schema;
 * reachable execution contexts, complete plan selection, valid service
   targets, canonical service legs, flat route-tree continuity, multicast
   ownership, and physical refinements;

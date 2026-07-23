@@ -567,19 +567,17 @@ or generic resource record.
 ### ServiceRealization
 
 There is one ServiceRealization for every system service obligation in the
-derived closure. Its key is exactly one closed variant:
+derived closure. Its key is the exact `SystemServiceObligationKey` owned by
+`docs/spec-mapping-identity.md`.
 
-```text
-SystemServiceObligationKey =
-    TransferObligationFamilyKey
-  | OperationServiceObligationFamilyKey
-```
-
-A transfer obligation identifies one exact producer-terminal family and one
-canonical non-empty sink-terminal set. Channels, graph-launch transfers,
-external messages, and multicast use this key; multicast sinks with one
-producer remain one family. Merge, zip, reorder, and reduction require an
-explicit Dataflow actor.
+A transfer obligation key contains only one exact
+`CanonicalProducerTerminalRef`. The exact Dataflow program, the root's
+canonical non-empty root-thread-launch set, and that producer mechanically
+derive one canonical sorted unique non-empty sink-terminal set. The sink set
+is not copied into the key. Channels, graph-launch transfers, external
+messages, and multicast use this rule; multicast sinks with one producer
+remain one family. Merge, zip, reorder, and reduction require an explicit
+Dataflow actor.
 
 For a channel obligation, the Canonical Dataflow Program remains the sole
 owner of `source_map` and flat dynamic message correspondence. Mapping does not
@@ -590,19 +588,14 @@ serialization, independent contexts or queues, or a Fabric-supported
 deterministic reorder mechanism as required. Physical Tags are local
 resource-sharing assignments and cannot serve as launch or message identity.
 
-An operation-service obligation has one closed owner key:
-
-```text
-OperationServiceOwnerKey =
-    LogicalMemoryServiceRootOrViewRef
-  | FenceActorFamilyKey
-```
-
-The logical-memory variant owns the typed addressed-operation set required by
-the Canonical Service Schema. Memory access and exposure, cache or proxy
-service, and external providers use this key rather than parallel
-service-owner families. The fence variant owns one static fence actor family
-and its exact `FenceContract`; it does not invent a logical address interval.
+The operation-service variant is the closed minimal owner anchor defined by
+`docs/spec-mapping-identity.md`. The exact Dataflow program derives the
+logical-memory variant's complete typed addressed-operation and exposure
+member set. Memory access and exposure, cache or proxy service, and external
+providers use this key rather than parallel service-owner families. The fence
+variant anchors one static fence actor family; the actor and Canonical Service
+Schema derive its exact `FenceContract`. Neither member sets nor contracts
+are copied into the key.
 
 Each ServiceRealization has one or more owner-local plans and a complete plan
 selection relation:
@@ -629,8 +622,13 @@ ServicePlanElementRef =
 ```
 
 The typed element key is the natural key of the closed child kind, such as a
-Canonical Service Schema leg ordinal or a Fabric physical-refinement domain.
-It receives no EntityId.
+`CanonicalServiceLegKey` or a Fabric physical-refinement domain. A service
+leg always uses the member-relative structural key owned by
+`docs/spec-mapping-identity.md`. Its member reference selects the exact
+Dataflow-derived operation or transfer member. The Canonical Service Schema
+owns the local leg ordinal's direction, payload, completion, and ordering
+meaning. No flattened artifact-global leg ordinal or copied operation list is
+another authority. These structural objects receive no EntityId.
 
 `ServiceTargetBinding` is one closed child union:
 
@@ -642,7 +640,7 @@ ServiceTargetBinding =
       optional non-derived address transform
     }
   | ConsistencyTarget {
-      FenceActorFamilyKey
+      FenceActorFamilyRef
       selected MemoryConsistencyDomainRef
     }
 ```

@@ -444,20 +444,20 @@ a Fabric match domain require distinction; it is not global firing, iteration,
 invocation, or logical-token identity. Fabric remains the sole owner of raw
 capacity and use-pattern shape.
 
-System service obligations use a closed typed key:
+`docs/spec-mapping-identity.md` owns the closed typed
+`SystemServiceObligationKey` wire. A transfer key stores only its exact
+producer-terminal anchor; exact Dataflow scope derives the complete non-empty
+sink set, including multicast. An operation-service key stores only its
+logical-memory root-or-view or fence-family anchor; exact Dataflow derives the
+complete service-member set.
 
-```text
-SystemServiceObligationKey =
-    TransferObligationFamilyKey
-  | OperationServiceObligationFamilyKey
-```
-
-Transfer obligations cover an exact producer-terminal family and its complete
-sink set, including multicast. Operation Service obligations cover a logical
-service root or view and the operations required by the Canonical Service
-Schema. Each Schema-derived request, data, response, or completion leg is
-realized explicitly over the Transport Architecture. Protocol channels are
-derived only by Interconnect refinement.
+This document's Canonical Service Schema remains the sole owner of each
+member's local request, data, response, completion, direction, payload, and
+ordinal semantics. Mapping combines the obligation key, exact
+`ServiceMemberRef`, and schema-local leg ordinal as one
+`CanonicalServiceLegKey`, then realizes each required leg explicitly over the
+Transport Architecture. Protocol channels are derived only by Interconnect
+refinement.
 
 End-to-end continuity composes, in order:
 

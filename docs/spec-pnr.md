@@ -392,16 +392,21 @@ ordinals, but the table is only a canonical reference encoding: it cannot add
 an acceptable mapping, select a mapping, or replace exact references.
 
 System subjects are limited to stable pre-result keys derived from exact
-`D/F/root_thread_launches` and the Canonical Service Schema:
+`D/F/root_thread_launches` and the Canonical Service Schema.
+`docs/spec-mapping-identity.md` owns `CanonicalServiceLegKey`; this document
+adds only the terminal role needed by the projection catalog:
 
 ```text
-SystemTransferLegKey =
-  (SystemServiceObligationKey, canonical_service_leg_ordinal)
-
 SystemTransferTerminalKey =
-    Source(SystemTransferLegKey)
-  | Sink(SystemTransferLegKey, canonical_sink_ordinal)
+    Source(CanonicalServiceLegKey)
+  | Sink(CanonicalServiceLegKey, canonical sink ordinal)
 ```
+
+`ServiceMemberRef` is derived from the exact obligation anchor and bound
+Dataflow program. The Canonical Service Schema owns the local leg ordinal.
+For a multi-sink leg, the sink ordinal indexes the canonical sorted sink set
+derived from the exact workload scope; neither the sink set nor a flattened
+global leg number is stored in the obligation key.
 
 The closed System `ProjectionKind` catalog is exactly:
 
@@ -427,15 +432,15 @@ transfer_terminal_attachment:
     -> Set<FabricTransportEndpointRef> [zero-or-more]
 
 transfer_selected_traversals:
-  SystemTransferLegKey
+  CanonicalServiceLegKey
     -> Set<FabricPhysicalTraversalRef> [zero-or-more]
 
 transfer_resource_states:
-  SystemTransferLegKey
+  CanonicalServiceLegKey
     -> Set<FabricResourceStateRef> [zero-or-more]
 
 transfer_assigned_tag_values:
-  SystemTransferLegKey
+  CanonicalServiceLegKey
     -> Set<PhysicalTagValue> [zero-or-more]
 ```
 
@@ -537,6 +542,12 @@ validate exact D/T/F/C/K coupling and profile completeness
 Failure exposes no partial model. Freeze validates, resolves, indexes, and
 precomputes; it never selects placement, context, attachment, route, tag,
 buffer, `ResourceUse`, memory binding, or physical refinement.
+
+Freeze resolves every exact persistent entity and structural reference once.
+The published hot model retains only typed dense indices, owner-local offsets,
+and reverse-incidence tables. ArtifactIdentity digests, recursive persistent
+references, symbols, paths, and authoring handles never enter inner search
+state.
 
 If a count, offset, product, or maximum index cannot be represented by the
 build-selected `PnrIndex`, freeze fails before allocation, cache publication,
