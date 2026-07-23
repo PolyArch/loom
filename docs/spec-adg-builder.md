@@ -242,10 +242,123 @@ The initial scale anchors are:
 | cross-schedule gateway anchor    |       2 |         4 |       8 |
 
 These values are resolved inputs to one template, not fields persisted in
-Fabric in addition to the resources they generate. Exact FU capability
-inventory, switch construction, memory-port capacity, widths, and buffer
-capacities are part of the same versioned family contract and must be fixed
-before that catalog version is implementation-complete.
+Fabric in addition to the resources they generate. Exact per-helper
+operation/HSG/hardware-parameter tables, switch construction, memory-port
+capacity, and buffer capacities are part of the same versioned family contract
+and must be fixed before that catalog version is implementation-complete.
+
+### General-Purpose FU Library
+
+The initial family uses a small typed FU-construction library. The names below
+identify public Builder helpers and reviewable recipe fragments; they do not
+become Fabric resource kinds, persisted classifications, or a second
+capability registry. Expansion produces only ordinary `fabric.fu`,
+`fabric.op`, `fabric.mux`, and `fabric.demux` resources.
+
+| Builder helper       | Constructed capability |
+| -------------------- | ---------------------- |
+| `CoreAluFu`          | Scalar integer and floating-point arithmetic, logic, shifts, comparisons, min/max, selection, and casts. |
+| `MacFu`              | Integer and floating-point multiply, floating-point fused multiply-add, and explicit multiply-add or accumulate configured graphs. |
+| `VectorComputeFu`    | Fixed-ranked elementwise arithmetic, comparison, selection, and multiply-add capabilities. |
+| `VectorAdapterFu`    | `dataflow.pack`, `dataflow.unpack`, `dataflow.parallelize`, and `dataflow.serialize` capabilities. |
+| `LoopControlFu`      | `dataflow.stream`, `dataflow.carry`, `dataflow.invariant`, and `dataflow.gate` capabilities. |
+| `TokenControlFu`     | `dataflow.constant`, `dataflow.sync`, `dataflow.mux`, and `dataflow.demux` capabilities. |
+| `SpecialMathFu`      | Low-density divide/remainder, square-root, exponential, logarithmic, trigonometric, and rounding capabilities. |
+
+This table is a construction decomposition, not an HSG table. Every concrete
+`fabric.op` still binds exactly one typed Hardware Sharing Group implementation
+family. Distinct integer, floating-point, multiply, and special-function
+datapaths remain distinct physical operations unless the normative HSG
+registry and Fabric-to-RTL backend prove genuine circuit sharing. A configured
+FU that selects among separate datapaths uses explicit coherent input
+`fabric.demux` and output `fabric.mux` topology.
+
+`MacFu` is an FU graph, not a synthetic MAC HSG. `VectorAdapterFu` similarly
+does not imply that its four software operation families share one circuit.
+`dataflow.pack` and `dataflow.unpack` may share an implementation family only
+when the typed HSG registry and backend realize one genuine reinterpretation
+datapath. The stateful `dataflow.parallelize` and `dataflow.serialize`
+capabilities remain distinct unless one backend-supported stateful
+implementation family proves otherwise.
+
+Memory actors, including load, store, atomic, compare-exchange, and fence, are
+implemented by `fabric.mem` and never enter this FU library.
+
+### Payload And Type Floor
+
+Every preset in the initial family uses a 128-bit ordinary PE and
+intra-SpatialCore data-transport payload capacity. Narrower scalar values
+occupy the low payload bits under the Fabric width rules. Physical Tags remain
+a separate field and never contribute payload capacity.
+
+The common scalar type floor covers integer and resolved index widths through
+64 bits and floating-point element types `f16`, `bf16`, `f32`, and `f64`,
+subject to each registered operation schema. The fixed-vector floor covers
+row-major-flattened payloads no wider than 128 bits, including the maximal
+lane modes:
+
+```text
+16xi8
+8xi16
+4xi32
+2xi64
+8xf16
+8xbf16
+4xf32
+2xf64
+```
+
+Smaller lane counts and any fixed rank fitting the same typed lane capacities
+are represented by their exact standard MLIR vector types. The actor type
+mechanically determines the active lane count; no independent vector-size
+attribute or operation-name suffix exists. Shape-sensitive operations such as
+reductions or shuffles require an explicit typed capability and cannot be
+inferred from flattened width. Scalable vectors are outside this initial
+family.
+
+Equal physical width never proves semantic compatibility. For example,
+`vector<4xf32>` and `vector<2xf64>` are separate capability points even though
+both occupy 128 payload bits.
+
+### Deterministic FU Distribution
+
+FU occurrence density is applied independently to the Spatial and Temporal PE
+sets of every SpatialCore. For one schedule kind with `n` PEs, the recipe
+constructs:
+
+| FU helper          | occurrence count            | ordinal offset |
+| ------------------ | ---------------------------: | -------------: |
+| `CoreAluFu`        |                         `n`   | all sites      |
+| `MacFu`            |               `ceil(n / 2)`  |              0 |
+| `VectorComputeFu`  |               `ceil(n / 4)`  |              1 |
+| `LoopControlFu`    |               `ceil(n / 4)`  |              2 |
+| `TokenControlFu`   |               `ceil(n / 4)`  |              3 |
+| `VectorAdapterFu`  |       `max(1, ceil(n / 8))`  |              4 |
+| `SpecialMathFu`    |      `max(1, ceil(n / 16))`  |              7 |
+
+For a non-core family with count `k`, occurrence `j` selects the schedule-local
+canonical site ordinal:
+
+```text
+(floor(j * n / k) + family_offset) mod n
+```
+
+for `0 <= j < k`. Selected ordinals are then sorted before construction. The
+rule spreads each family without using XY coordinates, topology distance,
+randomness, or authoring insertion order. Several FU families may occur in
+one PE. A Spatial PE still activates at most one FU configuration, while a
+Temporal PE uses its Fabric-declared resident instruction contexts.
+
+Applying the rule separately guarantees that every preset exposes the common
+capability floor in both schedule kinds. For example, the Small preset has
+`12/6/3/3/3/2/1` occurrences across its 12 Spatial PEs and
+`4/2/1/1/1/1/1` occurrences across its four Temporal PEs in the table's FU
+order.
+
+A builtin descriptor may claim this catalog version only when every listed
+software operation has a registered typed operation schema, a legal concrete
+Fabric capability, and a compatible Fabric-to-RTL implementation. Operation
+names or equal port widths cannot substitute for any of these requirements.
 
 ## Builtins As Public Examples
 
@@ -322,6 +435,12 @@ The stable Builder anchors are deliberately small:
    object.
 6. The compiler builtin path and public example path for each preset invoke
    the same expansion function and finalize to the same Fabric identity.
+7. Every preset expands the FU occurrence counts and schedule-local ordinal
+   distribution defined by the catalog.
+8. A typed FU capability accepts one supported exact scalar or vector point
+   and rejects an equal-width semantic type outside that capability.
+9. FU materialization and reverse synthesis satisfy the configured-function
+   round-trip contract for both equality and strict-superset outcomes.
 
 These anchors test the public boundary and determinism. They do not require a
 fixture for every helper, topology, operation ordering, generated name, or

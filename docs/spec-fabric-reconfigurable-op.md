@@ -152,6 +152,16 @@ interpretation; Mapping does not add parallel schemas for special cases.
   parameter and a typed domain of supported predicates. The exact predicate
   remains actor semantics and is finalized through the generic relation.
   Different `step_kind` values require distinct physical operation resources.
+* `dataflow.pack` and `dataflow.unpack` own exact fixed-vector and packed
+  integer types with equal total bit width. Equal width does not authorize a
+  different element type or shape. They may bind one shared implementation
+  family only when the typed HSG registry and backend realize one genuine
+  reinterpretation datapath.
+* `dataflow.parallelize` and `dataflow.serialize` own their exact element type,
+  lane count, mask, phase, ordered cardinality, and state transition
+  semantics. Co-location in one FU does not imply physical sharing. A common
+  HSG is legal only when one backend-supported stateful lane-buffer
+  implementation realizes both operation families.
 * Comparisons, fixed or configurable arity, and other semantic attributes are
   interpreted by their registered operation schemas and matched as exact
   actor semantics.
