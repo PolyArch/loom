@@ -46,6 +46,14 @@ describes one exact deployed program entry. Workloads own shapes, launch
 parameters, and observable value, stream, memory, and completion contracts;
 they do not own concrete input values or simulator policy.
 
+`canonical_dataflow_ref` is an exact Common Artifact reference to one finalized
+`loom.canonical_dataflow 1.0` Artifact. `graph_ref` is the Dataflow-owned typed
+`GraphRef` whose artifact component must equal that exact reference. It is not
+a symbol, local array index, simulator ID, or Mapping-owned graph number.
+DFG-sim can therefore resolve a workload directly from the Dataflow importer;
+CGRA-sim additionally validates its exact Mapping and Fabric inputs against the
+same Dataflow identity.
+
 ## SimulationRuntimeInput
 
 `SimulationRuntimeInput` also has spatial and system roots. Every root refers
@@ -142,6 +150,13 @@ retirement observations. These observations are a projection of the exact
 execution; they are not a `ConsistencyExecution`, witness, relation, or
 simulator-specific Artifact family and are never required for semantic
 correctness.
+
+Actor-bearing trace and activity records use the Dataflow-owned `ActorRef`.
+Execution-local invocation occurrences and per-actor firing ordinals qualify a
+dynamic event but never create persistent Dataflow entities. The complete
+persistent record unions and canonical chunk wire remain owned by the
+`SimulationWorkload/SimulationExecution persistent wire` design frontier; this
+rule fixes only the upstream identity owner.
 
 Trace capture is a nonsemantic invocation binding. Enabling it may change
 execution cost and retained raw material, but must not change scheduling,

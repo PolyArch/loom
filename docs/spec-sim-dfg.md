@@ -50,6 +50,13 @@ runtime state is created. Residual `scf.*`, `cf.*`, imperative regions, or
 other operations outside the canonical surface are invalid. Parse-time dialect
 registration does not grant execution semantics.
 
+DFG-sim imports the Dataflow-owned read-only
+`CanonicalDataflowProgramView`, resolves the workload's exact `GraphRef`, and
+uses the imported `ActorRef` and typed endpoint relations directly. It neither
+requires a Mapping Artifact nor creates a simulator-local persistent actor
+catalog. Missing, stale, foreign-artifact, or wrong-kind graph or actor
+references fail admission before execution state exists.
+
 An admitted actor without implemented semantics is `unsupported`. It must not
 be approximated, skipped, or interpreted through a compatibility path.
 
@@ -77,8 +84,10 @@ deterministic and event driven:
   and next-fire eligibility;
 * hardware resources are unlimited, so unrelated ready transitions do not
   contend for PE, route, port, bank, buffer, or tag capacity;
-* equal-cycle events use a canonical structural tie break rather than pointer,
-  container, host-thread, symbol, or printer order.
+* equal-cycle events use a canonical structural action key rooted in the
+  imported typed `ActorRef`, execution-local occurrence, firing ordinal, and
+  typed endpoint ordinals rather than pointer, container, host-thread, symbol,
+  or printer order.
 
 `AbstractCycle`, defined by the exact DFG timing model, is the simulator time
 unit. It is not a physical time in nanoseconds and does not imply a target
@@ -165,6 +174,10 @@ ordinal, consumed and produced logical endpoints, and relevant state
 transition. Raw payload inclusion is controlled by the invocation's capture
 request.
 
+The stable actor field is the exact Dataflow-owned `ActorRef`. The occurrence
+and firing ordinal are execution-local coordinates and never become Dataflow
+entities, Mapping IDs, or physical Tags.
+
 Successful termination requires all of the following:
 
 * the graph completion frontier has retired;
@@ -210,6 +223,8 @@ executions rather than simulator-specific report files.
 Stable anchor tests cover:
 
 * rejection of non-finalized subjects before execution;
+* graph and actor import from the exact Dataflow Artifact without Mapping;
+* rejection of foreign-artifact and wrong-kind Dataflow references;
 * exact token cardinality and state reset for canonical control actors;
 * `ctrl`/`done` memory order and terminal memory diffs;
 * contiguous, indexed, and masked vector-memory semantics with one actor

@@ -461,12 +461,27 @@ This spec introduces no other types. Host-to-AccCore values cross the launch
 boundary as ordinary typed SSA operands; no wrapper or provenance-only type is
 introduced.
 
-### 5.2 Attribute Interface Instances
+### 5.2 Attributes And Interface Instances
 
 No Loom-specific thread mapping attribute is introduced. Coordinate rank and
 domain come from the definition body shape and launch extents. Parallel versus
 temporal AccCore use is a SystemMapping relation plus event-relative
 `ResourceUse`, not a property copied into the program ABI.
+
+Finalized Canonical Dataflow Programs use one derived identity attribute:
+
+```text
+#dataflow.entity_id<42>
+```
+
+The payload is an unsigned 64-bit value; `42` above is illustrative. The
+Dataflow finalizer is the sole producer of this attribute. It appears as
+the namespaced `dataflow.entity_id` attribute on entity-bearing operations and
+inside the existing function-like argument dictionary for an imported logical
+memory root. It is never an authoring input, Mapping annotation, provenance
+handle, execution occurrence, or target binding. The canonical-labeling
+contract in `Canonical Artifact Finalization And Entity Identity` defines its
+closed carrier set and validation.
 
 ### 5.3 Thread Completion
 
@@ -1795,6 +1810,186 @@ each supported SCF boundary.
 launch domains, dynamic responsibility transfer and termination, source-IV
 reconstruction, and derived-view boundary. These semantics add no partition
 carrier or mapping attribute to SCF-to-DFG flattening.
+
+## 8.1 Canonical Artifact Finalization And Entity Identity
+
+### Artifact Owner And Schema
+
+The Canonical Dataflow Program is the single semantic root of the fixed
+Artifact family:
+
+```text
+loom.canonical_dataflow 1.0
+```
+
+The family owns its admitted module surface, canonical semantic relation
+graph, canonical writer, artifact-local entity catalog, and importer. Common
+owns only the shared Artifact envelope, schema/version framing, SHA-256 v1
+identity calculation, and collision-checked publication. Mapping, simulation,
+Evaluation, visualization, and native caches consume Dataflow-owned
+references; none may assign or reinterpret a Dataflow entity ID.
+
+Finalization is failure-atomic. It operates on a private clone of the complete
+program, validates every canonical graph and the whole-program thread, launch,
+channel, memory-root, symbol, and completion relations, constructs canonical
+bytes, invokes the Common finalizer, and publishes only the complete valid
+Artifact. There is no `is_finalized` operation attribute or partially
+finalized program state. A valid Common envelope, exact schema descriptor,
+canonical bytes, and successful independent family verification together
+define a finalized Artifact.
+
+### Closed Entity Catalog
+
+The first schema has exactly five independently referenceable entity kinds:
+
+```text
+CanonicalDataflowEntityKind =
+    Graph
+  | Actor
+  | RootThreadLaunch
+  | StaticGraphLaunch
+  | LogicalMemoryRoot
+```
+
+Their carriers are:
+
+* **Graph.** Each reachable finalized `dataflow.graph` definition.
+* **Actor.** Each operation in a graph body accepted as a real actor by the
+  shared canonical Dataflow actor classifier. Structural terminators and
+  boundary block arguments are not actors.
+* **RootThreadLaunch.** Each retained static `dataflow.thread.launch` site.
+  Thread launches cannot occur inside another thread or graph, so every such
+  site is a root launch.
+* **StaticGraphLaunch.** Each retained static `dataflow.graph.launch` site in
+  a thread definition.
+* **LogicalMemoryRoot.** Each static imported-memory formal role and each
+  canonical fresh-allocation definition. A view preserves an existing root
+  and does not create another root entity.
+
+`dataflow.thread` definitions do not receive IDs in this schema. Every
+persistent use begins at a root launch and recovers the definition through its
+typed callee relation. Private functions, thread definitions, actor
+operands/results, graph boundaries, software edges, memory views, channel
+branches, and dynamic invocation, work-item, memory-object, or firing
+occurrences are likewise not independent entities. They are recovered through
+identified owners plus typed semantic ordinals, canonical relations, or
+execution-local identity. A future independently referenceable semantic
+object requires an explicit schema catalog change; a consumer cannot mint an
+ID for convenience.
+
+All five kinds share one Artifact-global unsigned 64-bit `EntityId` namespace.
+Zero is a valid ID and there is no sentinel value. The finalizer assigns the
+dense range `[0, entity_count)` in canonical-slot order, but serialized record
+position is not identity and consumers must resolve the explicit ID.
+
+The complete typed persistent references are:
+
+```text
+GraphRef             = (CanonicalDataflow ArtifactIdentity, Graph EntityId)
+ActorRef             = (CanonicalDataflow ArtifactIdentity, Actor EntityId)
+RootThreadLaunchRef   = (CanonicalDataflow ArtifactIdentity,
+                         RootThreadLaunch EntityId)
+StaticGraphLaunchRef  = (CanonicalDataflow ArtifactIdentity,
+                         StaticGraphLaunch EntityId)
+LogicalMemoryRootRef  = (CanonicalDataflow ArtifactIdentity,
+                         LogicalMemoryRoot EntityId)
+```
+
+An artifact that already binds the exact Dataflow identity may use a compact
+typed local ID on the wire. The full meaning still includes that binding.
+Wrong-kind, foreign-artifact, missing, duplicate, out-of-range, or
+noncanonical IDs are invalid.
+
+### Canonical Semantic Relation Graph
+
+Before labeling, the finalizer removes every pre-existing
+`dataflow.entity_id` from its private clone. The relation graph contains the
+complete semantic program, not only the five entity nodes. It includes:
+
+* registered operation, type, property, and semantic attribute encodings;
+* explicit operand/result ordinals, SSA def-use, block-successor, containment,
+  region, boundary-segment, symbol-use, and launch-callee relations;
+* logical-memory root and root-preserving view relations; and
+* explicit execution order in HostCore and InstructionCore stored-program
+  regions.
+
+A `dataflow.graph` body is a graph region, so actor textual order contributes
+no relation. Module and symbol-table order are also nonsemantic. Stored-program
+block/control/operation order is semantic and remains in the relation graph.
+This distinction prevents a generic "ignore operation order" rule from
+silently changing InstructionCore behavior.
+
+SSA and block labels, private symbol spelling, source and filesystem
+locations, debug/provenance metadata, visual coordinates, printer order, and
+builder insertion order are excluded. Private symbols are resolved to typed
+relations and receive canonical printed labels. An externally visible linkage
+name is ABI semantics rather than a private printer label and is included
+together with its linkage and visibility contract. Every other registered
+field is semantic by default; excluding another field requires an explicit
+owner-spec rule rather than an open ignore list.
+
+The equivalence boundary is exact typed and attributed structural isomorphism.
+It does not prove algebraic or whole-program functional equivalence. A
+semantics-preserving Dataflow rewrite whose graph is non-isomorphic therefore
+produces a different Canonical Dataflow Artifact, as required by the Dataflow
+optimization lineage.
+
+Canonical labeling determines semantic slots independently of source handles.
+Entities in one automorphism orbit have no recoverable nonsemantic source
+identity. The finalizer may return a source-object-to-final-ID provenance map
+for the current derivation, but it does not enter canonical bytes and is not a
+reference authority.
+
+### Materialization, Import, And Memory Instances
+
+After canonical slots are fixed, the finalizer assigns IDs and materializes
+the single `dataflow.entity_id` attribute on each entity carrier. A logical
+memory root carried by an ordinary function-like argument uses that argument's
+existing attribute dictionary. The canonical writer emits normalized private
+symbol, SSA, and block labels, canonical unordered collections, the derived
+IDs, and all semantic relations. It omits locations and the explicitly
+nonsemantic metadata above. The Common finalizer hashes exactly those
+family-owned canonical bytes.
+
+The derived IDs are excluded while recomputing canonical labels, avoiding a
+circular identity definition. A finalized importer independently reconstructs
+the relation graph and requires every materialized ID to match the canonical
+assignment. A mutable authoring program may omit IDs; any supplied values are
+discarded on the private finalization clone rather than trusted.
+
+One Dataflow-owned read-only `CanonicalDataflowProgramView` projects the five
+typed ID maps, canonical actor and endpoint relations, launch-callee closure,
+and logical-memory root/view relations. Its native indices and lookup tables
+are disposable caches. Mapping's draft/search structures and simulator event
+tables may cache this view, but cannot define another persistent graph,
+actor, launch, or memory-root catalog.
+
+`LogicalMemoryRootRef` identifies a static software root role, not one runtime
+object. An imported runtime object is bound by the exact launch and runtime
+memory registry. A fresh graph allocation instance is derived from its static
+root reference and graph invocation occurrence. If two imported roles alias at
+runtime, the runtime registry relates them to the same object without merging
+their static entity IDs. A memory view remains a typed structural reference
+whose root relation resolves to exactly one `LogicalMemoryRootRef`.
+
+### Anchor Verification
+
+Anchor-level tests cover:
+
+* invariance under private-symbol and SSA renaming, location changes, module
+  definition reordering, and graph actor textual reordering;
+* identity changes for actor kind, type, semantic attribute, operand ordinal,
+  edge, stored-program order, or externally visible linkage changes;
+* equal canonical bytes and valid unique IDs for isomorphic symmetric inputs,
+  without asserting a source-handle-to-slot correspondence;
+* rejection of stale, missing, duplicate, noncanonical, foreign, or wrong-kind
+  references and unresolved symbol or root relations; and
+* DFG-sim actor import from an exact Canonical Dataflow Artifact without any
+  Mapping Artifact.
+
+Tests do not pin printer whitespace, a particular graph-labeling algorithm,
+native container layout, source-handle provenance, or a broad operation
+fixture matrix.
 
 ## 9. Verifier Rules (Front-End Specific)
 

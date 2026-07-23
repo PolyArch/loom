@@ -88,6 +88,22 @@ root. The finalized surface recognizes:
 * a one-input `builtin.unrealized_conversion_cast` only as a bridge from an
   established root, never as a root of its own.
 
+The Canonical Dataflow finalizer assigns one `LogicalMemoryRootRef` to each
+static imported-memory formal role and canonical fresh-allocation definition.
+An imported graph memory argument does not create a competing root: its exact
+`dataflow.graph.launch` binding resolves through root-preserving views to the
+upstream static role. A fresh allocation result is the root-defining value.
+View operations remain typed structural relations and receive no root ID of
+their own.
+
+This persistent reference identifies a static software role. Runtime object
+identity is derived separately: an import is bound through the exact launch
+and runtime memory registry, while a fresh allocation combines its static root
+reference with the graph invocation occurrence. Two imported roles may resolve
+to one runtime object through explicit alias topology without merging their
+static IDs. Partition identity below remains local analysis state and is not
+the persistent root catalog.
+
 A memory input binds an established external capability. A null raw pointer is
 not a memory capability and cannot satisfy a graph memory port.
 

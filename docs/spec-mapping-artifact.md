@@ -79,8 +79,8 @@ SystemMapping does not repeat a TechMapping set.
 
 The `mapping.tech` root has the fixed semantic field order
 `version`, `dataflow`, `fabric`, and `covers`, followed by one single-block
-declarative record region. `covers` is a canonical non-empty set of graph
-definitions from `D`. The region contains only
+declarative record region. `covers` is a canonical non-empty set of
+Dataflow-owned `GraphRef` values from `D`. The region contains only
 `mapping.compute_realization` and `mapping.memory_realization` records.
 
 Each realization owns one single-block declarative child-record region.
@@ -114,8 +114,8 @@ Fabric FU structural/capability template. Its persistent basis is:
 * complete `mapping.compute_actor` and `mapping.compute_boundary` child
   relations.
 
-`mapping.compute_actor` records the exact Dataflow actor, selected Fabric op,
-and complete ordered `operand_ports` and `result_ports` maps. Software port
+`mapping.compute_actor` records the exact Dataflow-owned `ActorRef`, selected
+Fabric op, and complete ordered `operand_ports` and `result_ports` maps. Software port
 ordinal is the array index and the selected physical operation-port ordinal
 is the value. This representation covers ordinary operations, multiple
 results, and legal narrower variadic mappings without a generic
@@ -154,9 +154,10 @@ memory subgraph. Its persistent basis is:
 * complete `mapping.memory_actor`, `mapping.memory_graph_boundary`, and
   `mapping.memory_internal_edge` child relations.
 
-`mapping.memory_actor` records the exact read, write, RMW, compare-exchange, or
-fence actor, selected memory-operation port and capability alternative, and
-complete ordered operand/result port maps.
+`mapping.memory_actor` records the exact Dataflow-owned `ActorRef` for a read,
+write, RMW, compare-exchange, or fence actor, the selected memory-operation
+port and capability alternative, and complete ordered operand/result port
+maps.
 `mapping.memory_graph_boundary` records the required graph memory capability
 to owner-memory-implementation boundary correspondence.
 `mapping.memory_internal_edge` records the exact canonical software edge and
@@ -446,8 +447,8 @@ mapping.system {
 
 The record region has no block arguments, SSA results, CFG successors, symbol
 table, or runtime terminator. The root launch set is the only persistent
-coverage root and is a canonical non-empty set of root-thread-launch
-`EntityId` values from `D`. Thread definitions, reachable static graph
+coverage root and is a canonical non-empty set of Dataflow-owned
+`RootThreadLaunchRef` values from `D`. Thread definitions, reachable static graph
 launches, graph definitions, channels, memory obligations, and
 external-boundary obligations are derived from its closure in `D`; competing
 scope lists are invalid.
@@ -743,12 +744,17 @@ not repair an object while reading it.
 
 ## Finalization
 
-A TechMapping writer resolves exact upstream bindings and scoped references,
+A TechMapping writer resolves exact upstream bindings and scoped references
+through each upstream family's independently verified read-only projection,
 validates closed coverage and complete selected relations, performs exact
 semantic-graph canonical labeling and artifact-global ID assignment, emits
 the root, runs the finalized profile verifier, and invokes the canonical
 writer. The Common SHA-256 v1 finalizer then computes identity and performs
 collision-checked atomic publication.
+
+For a Dataflow binding, resolution uses the exact
+`CanonicalDataflowProgramView`. Mapping cannot assign, repair, or persist a
+shadow graph, actor, launch, or logical-memory-root catalog.
 
 A SpatialMapping writer first rebuilds and verifies intrinsic base closure
 from `D`, `T`, `F`, and the selected records, then runs separate admission

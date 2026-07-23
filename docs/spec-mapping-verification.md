@@ -18,7 +18,8 @@ A persistent Mapping read follows one ordered contract:
 verify Common envelope, schema descriptor, and digest
   -> dispatch the exact supported loom.mapping version parser
   -> parse exactly one typed profile root
-  -> resolve exact UpstreamArtifactBindings and scoped references
+  -> resolve exact UpstreamArtifactBindings through owner-family importers
+  -> resolve scoped references in those independently verified projections
   -> verify canonical IDs, ordinals, and structural keys
   -> run the independent profile base verifier
   -> derive immutable consumer views
@@ -53,8 +54,8 @@ The TechMapping verifier consumes one `mapping.tech` `2.0` root and its exact
 Canonical Dataflow Program `D` and Fabric Hardware Description `F`. It checks
 at least:
 
-* the exact `D` and `F` UpstreamArtifactBindings and all scoped reference
-  kinds and owners;
+* the exact `D` and `F` UpstreamArtifactBindings, the Dataflow-owned
+  `CanonicalDataflowProgramView`, and all scoped reference kinds and owners;
 * the canonical non-empty covered-graph set;
 * one artifact-global `EntityId` namespace shared by Compute and Memory
   Realizations;

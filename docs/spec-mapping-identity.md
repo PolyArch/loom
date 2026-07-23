@@ -82,6 +82,28 @@ bags, and string-key escape hatches are invalid. `UpstreamArtifactBinding`
 must not be abbreviated as `slot`; a Fabric instruction slot is an unrelated
 hardware term.
 
+## Dataflow-Owned Upstream References
+
+The Canonical Dataflow family, not Mapping, owns the closed upstream entity
+catalog and its IDs. `docs/spec-compiler-part-3-dfg.md` defines the exact
+`GraphRef`, `ActorRef`, `RootThreadLaunchRef`, `StaticGraphLaunchRef`, and
+`LogicalMemoryRootRef` forms. Mapping imports one independently verified
+`CanonicalDataflowProgramView` and uses those references unchanged.
+
+A Mapping implementation must not reconstruct Dataflow IDs from symbols,
+operation positions, C++ container order, or Mapping record order. It also
+must not maintain Mapping-local `GraphId`, `ActorId`, or
+`LogicalMemoryRootId` authorities. A compact scoped reference in Mapping is
+only the wire projection of the exact Dataflow `UpstreamArtifactBinding` plus
+the typed Dataflow entity ID.
+
+Actor results and operands, graph boundaries, software edges, memory views,
+and channel branches remain Dataflow structural references. A thread
+definition is recovered from a `RootThreadLaunchRef` through the canonical
+launch-callee relation and has no Dataflow EntityId in schema 1.0. A
+`CanonicalMemoryActorRef` is an `ActorRef` whose imported actor kind is a
+canonical memory actor; it is not another ID type.
+
 ## Mapping-Local References
 
 An independently referenceable record owned by a Mapping artifact receives a
@@ -113,6 +135,10 @@ Each finalized Canonical Dataflow Program, Fabric Hardware Description, and
 Mapping artifact has its own artifact-global local entity namespace. All
 entity kinds within one artifact share that namespace. Graphs, modules,
 record families, and entity kinds do not create nested numeric namespaces.
+
+The Dataflow namespace and its assignment are owned entirely by the Dataflow
+finalizer. This document defines only how Mapping scopes and validates imported
+Dataflow references and how Mapping assigns its own local records.
 
 Persistent `EntityId` has one unsigned 64-bit semantic range. Namespace
 exhaustion is a finalization failure before identity generation. It cannot be

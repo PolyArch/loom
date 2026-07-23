@@ -9,6 +9,9 @@ Each persistent fact has one owner:
 
 * an artifact family owns its canonical semantic schema and bytes;
 * Common artifact finalization owns identity framing and hashing;
+* the Canonical Dataflow family owns its graph, actor, root-thread-launch,
+  static-graph-launch, and logical-memory-root entity catalog, canonical
+  labeling, and read-only importer projection;
 * `InvocationManifest` owns derivation lineage and exact semantic inputs;
 * `ExecutionJournal` owns mutable execution progress and infrastructure
   outcomes;
@@ -27,8 +30,10 @@ Each persistent fact has one owner:
 * raw detailed bundles own large external payloads and tool products; and
 * report/visualization exports are removable projections.
 
-File names, symbol names, local paths, timestamps, and printer order are never
-substitutes for typed identities.
+File names, private symbol names, local paths, timestamps, and printer order
+are never substitutes for typed identities. Externally visible linkage names
+remain software ABI semantics and are included by the Canonical Dataflow
+family rather than used as entity references.
 
 ## Required Artifact Graph
 

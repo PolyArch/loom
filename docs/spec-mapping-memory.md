@@ -15,6 +15,18 @@ their ordering network. Fabric owns `PhysicalMemoryService` and region
 identity, `MemoryConsistencyDomain`, and typed manager/requester and
 subordinate/provider endpoints.
 
+The persistent `LogicalMemoryRootRef` is imported from the exact
+Dataflow-owned entity catalog. It identifies one static root role, not one
+runtime allocation. A `CanonicalMemoryActorRef` is the exact Dataflow
+`ActorRef` after memory-kind validation. A logical memory view is a
+root-preserving typed structural reference resolved by the Dataflow importer;
+Mapping does not assign another root, actor, or view ID.
+
+Runtime may bind two imported root roles to one object through explicit alias
+topology, and each fresh allocation occurrence combines its static root
+reference with an invocation occurrence. These execution facts do not mutate
+the static Mapping references or create Mapping-local memory identities.
+
 For each canonical addressed memory actor, consumers mechanically derive the
 nonpersistent `CanonicalMemoryAccessView` defined by
 `docs/spec-dataflow-vectorization.md`. Exact access form, memory-element type,
