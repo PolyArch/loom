@@ -905,20 +905,22 @@ dataflow::semantics::evaluateStreamTransition(
   StreamTransition transition;
   transition.nextState = state;
 
-  StreamSemanticState active = state;
-  if (state.mode == StreamMode::Idle) {
-    const SemanticInputMask required = semanticInput(StreamInput::Init) |
-                                       semanticInput(StreamInput::Limit) |
-                                       semanticInput(StreamInput::Step);
+  // A stream in Idle fires only once its full activation is present; a running
+  // stream advances from its recorded state and consumes no operand. Both cases
+  // of a state share these consumed heads, so gate operand readiness on the
+  // state's close case before the continuation predicate selects the case.
+  if (state.mode == StreamMode::Idle && !activation) {
     transition.firing = makeSemanticFiringDecision(
-        required, activation ? required : SemanticInputMask{0});
-    if (!transition.firing.ready)
-      return transition;
-    active = StreamSemanticState{StreamMode::Running, activation->init,
-                                 activation->limit, activation->step};
-  } else {
-    transition.firing = makeSemanticFiringDecision(0, 0);
+        streamCaseDescriptor(StreamCase::StartClose).consumedInputs,
+        SemanticInputMask{0});
+    return transition;
   }
+
+  const StreamSemanticState active =
+      state.mode == StreamMode::Idle
+          ? StreamSemanticState{StreamMode::Running, activation->init,
+                                activation->limit, activation->step}
+          : state;
 
   if (llvm::Error width = requireStreamBitWidth(config.bitWidth))
     return std::move(width);
@@ -930,22 +932,34 @@ dataflow::semantics::evaluateStreamTransition(
         "dataflow.stream operand bit width does not match declared width %u",
         config.bitWidth);
 
-  bool cont =
+  const bool cont =
       evaluateStreamPredicate(active.current, active.limit, config.predicate);
-  transition.emitPhase = true;
-  transition.phase = cont;
-  if (!cont) {
-    transition.nextState = StreamSemanticState{};
-    return transition;
-  }
+  const StreamCaseDescriptor descriptor = streamCaseDescriptor(
+      state.mode == StreamMode::Idle
+          ? (cont ? StreamCase::StartTrue : StreamCase::StartClose)
+          : (cont ? StreamCase::ContinueTrue : StreamCase::ContinueClose));
 
-  auto next = evaluateStreamStep(active.current, active.step, config.stepKind);
-  if (!next)
-    return next.takeError();
-  transition.emitIv = true;
-  transition.iv = active.current;
-  transition.nextState = StreamSemanticState{StreamMode::Running, *next,
-                                             active.limit, active.step};
+  transition.firing = makeSemanticFiringDecision(descriptor.consumedInputs,
+                                                 descriptor.consumedInputs);
+  transition.emitPhase = descriptor.emitPhase;
+  transition.phase = descriptor.phase;
+  // The descriptor names the IV output source; the evaluator only resolves the
+  // named source to its dynamic recurrence payload, as the invariant evaluator
+  // resolves its own latched and init sources.
+  if (descriptor.ivSource == StreamOutputSource::Current) {
+    transition.emitIv = true;
+    transition.iv = active.current;
+  }
+  if (descriptor.nextMode == StreamMode::Running) {
+    auto next =
+        evaluateStreamStep(active.current, active.step, config.stepKind);
+    if (!next)
+      return next.takeError();
+    transition.nextState = StreamSemanticState{StreamMode::Running, *next,
+                                               active.limit, active.step};
+  } else {
+    transition.nextState = StreamSemanticState{};
+  }
   return transition;
 }
 
@@ -957,30 +971,36 @@ dataflow::semantics::evaluateCarryTransition(CarrySemanticState state,
   CarryTransition transition;
   transition.nextState = state;
   if (state == CarrySemanticState::Initial) {
-    const SemanticInputMask required = semanticInput(CarryInput::Init);
+    const CarryCaseDescriptor descriptor = carryCaseDescriptor(CarryCase::Init);
     transition.firing = makeSemanticFiringDecision(
-        required, initAvailable ? required : SemanticInputMask{0});
+        descriptor.consumedInputs,
+        initAvailable ? descriptor.consumedInputs : SemanticInputMask{0});
     if (transition.firing.ready) {
-      transition.nextState = CarrySemanticState::Running;
-      transition.forwardedInput = CarryInput::Init;
+      transition.forwardedInput = descriptor.forwardedInput;
+      transition.nextState = descriptor.nextState;
     }
     return transition;
   }
 
-  SemanticInputMask required = semanticInput(CarryInput::Phase);
-  SemanticInputMask available = phase ? required : SemanticInputMask{0};
-  if (phase && *phase) {
-    required |= semanticInput(CarryInput::Next);
-    if (nextAvailable)
-      available |= semanticInput(CarryInput::Next);
+  // The running phase head selects the next or close case; both consume it, so
+  // block on that shared head until it arrives.
+  if (!phase) {
+    transition.firing = makeSemanticFiringDecision(
+        carryCaseDescriptor(CarryCase::Close).consumedInputs,
+        SemanticInputMask{0});
+    return transition;
   }
-  transition.firing = makeSemanticFiringDecision(required, available);
+  const CarryCaseDescriptor descriptor =
+      carryCaseDescriptor(*phase ? CarryCase::Next : CarryCase::Close);
+  const SemanticInputMask available =
+      semanticInput(CarryInput::Phase) |
+      (nextAvailable ? semanticInput(CarryInput::Next) : SemanticInputMask{0});
+  transition.firing =
+      makeSemanticFiringDecision(descriptor.consumedInputs, available);
   if (!transition.firing.ready)
     return transition;
-  if (*phase)
-    transition.forwardedInput = CarryInput::Next;
-  else
-    transition.nextState = CarrySemanticState::Initial;
+  transition.forwardedInput = descriptor.forwardedInput;
+  transition.nextState = descriptor.nextState;
   return transition;
 }
 
@@ -991,28 +1011,36 @@ dataflow::semantics::evaluateInvariantTransition(InvariantSemanticState state,
   InvariantTransition transition;
   transition.nextState = state;
   if (state == InvariantSemanticState::Initial) {
-    const SemanticInputMask required = semanticInput(InvariantInput::Init);
+    const InvariantCaseDescriptor descriptor =
+        invariantCaseDescriptor(InvariantCase::Init);
     transition.firing = makeSemanticFiringDecision(
-        required, initAvailable ? required : SemanticInputMask{0});
+        descriptor.consumedInputs,
+        initAvailable ? descriptor.consumedInputs : SemanticInputMask{0});
     if (transition.firing.ready) {
-      transition.nextState = InvariantSemanticState::Running;
-      transition.output = InvariantOutputSource::InitInput;
-      transition.latchInput = InvariantInput::Init;
+      transition.output = descriptor.output;
+      transition.latchInput = descriptor.latchInput;
+      transition.clearLatch = descriptor.clearLatch;
+      transition.nextState = descriptor.nextState;
     }
     return transition;
   }
 
-  const SemanticInputMask required = semanticInput(InvariantInput::Phase);
-  transition.firing = makeSemanticFiringDecision(
-      required, phase ? required : SemanticInputMask{0});
-  if (!transition.firing.ready)
+  // The running phase head selects replay or close; both consume only it, so
+  // block on that shared head until it arrives.
+  if (!phase) {
+    transition.firing = makeSemanticFiringDecision(
+        invariantCaseDescriptor(InvariantCase::Close).consumedInputs,
+        SemanticInputMask{0});
     return transition;
-  if (*phase) {
-    transition.output = InvariantOutputSource::Latched;
-  } else {
-    transition.nextState = InvariantSemanticState::Initial;
-    transition.clearLatch = true;
   }
+  const InvariantCaseDescriptor descriptor = invariantCaseDescriptor(
+      *phase ? InvariantCase::Replay : InvariantCase::Close);
+  transition.firing = makeSemanticFiringDecision(descriptor.consumedInputs,
+                                                 descriptor.consumedInputs);
+  transition.output = descriptor.output;
+  transition.latchInput = descriptor.latchInput;
+  transition.clearLatch = descriptor.clearLatch;
+  transition.nextState = descriptor.nextState;
   return transition;
 }
 
@@ -1020,8 +1048,15 @@ dataflow::semantics::GateTransition dataflow::semantics::evaluateGateTransition(
     GateSemanticState state, std::optional<bool> phase, bool valueAvailable) {
   GateTransition transition;
   transition.nextState = state;
+
+  // Every gate case consumes the condition and value heads together; require
+  // both, as the state's control-only case states, before the condition selects
+  // the case.
   const SemanticInputMask required =
-      semanticInput(GateInput::Phase) | semanticInput(GateInput::Value);
+      gateCaseDescriptor(state == GateSemanticState::Closed
+                             ? GateCase::ClosedDrop
+                             : GateCase::Close)
+          .consumedInputs;
   SemanticInputMask available =
       valueAvailable ? semanticInput(GateInput::Value) : SemanticInputMask{0};
   if (phase)
@@ -1030,21 +1065,14 @@ dataflow::semantics::GateTransition dataflow::semantics::evaluateGateTransition(
   if (!transition.firing.ready)
     return transition;
 
-  if (state == GateSemanticState::Closed) {
-    if (*phase) {
-      transition.nextState = GateSemanticState::Open;
-      transition.forwardedInput = GateInput::Value;
-    }
-    return transition;
-  }
-
-  transition.emitPhase = true;
-  transition.phase = *phase;
-  if (*phase) {
-    transition.forwardedInput = GateInput::Value;
-  } else {
-    transition.nextState = GateSemanticState::Closed;
-  }
+  const GateCaseDescriptor descriptor = gateCaseDescriptor(
+      state == GateSemanticState::Closed
+          ? (*phase ? GateCase::FirstTrue : GateCase::ClosedDrop)
+          : (*phase ? GateCase::ContinueTrue : GateCase::Close));
+  transition.emitPhase = descriptor.emitPhase;
+  transition.phase = descriptor.phase;
+  transition.forwardedInput = descriptor.forwardedInput;
+  transition.nextState = descriptor.nextState;
   return transition;
 }
 

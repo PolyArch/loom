@@ -1,6 +1,7 @@
 #include "DFGSimulatorInternal.h"
 
 #include "Common/IndexWidth.h"
+#include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowDialect.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -20,11 +21,14 @@
 #include <cstdlib>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <utility>
 
 using namespace loom::sim::detail;
 
 namespace {
+
+namespace sem = dataflow::semantics;
 
 constexpr llvm::StringLiteral fixture = R"mlir(
 module {
@@ -85,6 +89,199 @@ unsigned rowMajorLane(unsigned row, unsigned column) {
 void require(bool condition, llvm::StringRef message) {
   if (!condition)
     fail(message);
+}
+
+template <typename Input>
+sem::SemanticInputMask consumedMask(std::initializer_list<Input> inputs) {
+  sem::SemanticInputMask mask = 0;
+  for (Input input : inputs)
+    mask |= sem::semanticInput(input);
+  return mask;
+}
+
+// The registered operation schema for each stateful actor owns a closed set of
+// named transition-case descriptors. Each descriptor is the sole statement of
+// its case's required logical state, consumed operand heads, active results and
+// their value sources, and next logical state. These assertions pin all
+// fourteen descriptors in the closed contract; one representative blocked
+// readiness per actor confirms that an unsatisfied case consumes nothing and
+// holds its state, which is not itself a transition case.
+void actorTransitionDescriptorContract() {
+  using sem::StreamCase;
+  using sem::StreamInput;
+  using sem::StreamMode;
+  using sem::StreamOutputSource;
+  const sem::SemanticInputMask streamActivation = consumedMask<StreamInput>(
+      {StreamInput::Init, StreamInput::Limit, StreamInput::Step});
+  {
+    auto d = sem::streamCaseDescriptor(StreamCase::StartTrue);
+    require(d.requiredMode == StreamMode::Idle &&
+                d.consumedInputs == streamActivation &&
+                d.ivSource == StreamOutputSource::Current && d.emitPhase &&
+                d.phase && d.nextMode == StreamMode::Running,
+            "stream StartTrue descriptor");
+  }
+  {
+    auto d = sem::streamCaseDescriptor(StreamCase::StartClose);
+    require(d.requiredMode == StreamMode::Idle &&
+                d.consumedInputs == streamActivation &&
+                d.ivSource == StreamOutputSource::None && d.emitPhase &&
+                !d.phase && d.nextMode == StreamMode::Idle,
+            "stream StartClose descriptor");
+  }
+  {
+    auto d = sem::streamCaseDescriptor(StreamCase::ContinueTrue);
+    require(d.requiredMode == StreamMode::Running && d.consumedInputs == 0 &&
+                d.ivSource == StreamOutputSource::Current && d.emitPhase &&
+                d.phase && d.nextMode == StreamMode::Running,
+            "stream ContinueTrue descriptor");
+  }
+  {
+    auto d = sem::streamCaseDescriptor(StreamCase::ContinueClose);
+    require(d.requiredMode == StreamMode::Running && d.consumedInputs == 0 &&
+                d.ivSource == StreamOutputSource::None && d.emitPhase &&
+                !d.phase && d.nextMode == StreamMode::Idle,
+            "stream ContinueClose descriptor");
+  }
+
+  using sem::CarryCase;
+  using sem::CarryInput;
+  using sem::CarrySemanticState;
+  {
+    auto d = sem::carryCaseDescriptor(CarryCase::Init);
+    require(d.requiredState == CarrySemanticState::Initial &&
+                d.consumedInputs ==
+                    consumedMask<CarryInput>({CarryInput::Init}) &&
+                d.forwardedInput == CarryInput::Init &&
+                d.nextState == CarrySemanticState::Running,
+            "carry Init descriptor");
+  }
+  {
+    auto d = sem::carryCaseDescriptor(CarryCase::Next);
+    require(d.requiredState == CarrySemanticState::Running &&
+                d.consumedInputs ==
+                    consumedMask<CarryInput>(
+                        {CarryInput::Phase, CarryInput::Next}) &&
+                d.forwardedInput == CarryInput::Next &&
+                d.nextState == CarrySemanticState::Running,
+            "carry Next descriptor");
+  }
+  {
+    auto d = sem::carryCaseDescriptor(CarryCase::Close);
+    require(d.requiredState == CarrySemanticState::Running &&
+                d.consumedInputs ==
+                    consumedMask<CarryInput>({CarryInput::Phase}) &&
+                !d.forwardedInput && d.nextState == CarrySemanticState::Initial,
+            "carry Close descriptor");
+  }
+
+  using sem::InvariantCase;
+  using sem::InvariantInput;
+  using sem::InvariantOutputSource;
+  using sem::InvariantSemanticState;
+  {
+    auto d = sem::invariantCaseDescriptor(InvariantCase::Init);
+    require(d.requiredState == InvariantSemanticState::Initial &&
+                d.consumedInputs ==
+                    consumedMask<InvariantInput>({InvariantInput::Init}) &&
+                d.output == InvariantOutputSource::InitInput &&
+                d.latchInput == InvariantInput::Init && !d.clearLatch &&
+                d.nextState == InvariantSemanticState::Running,
+            "invariant Init descriptor");
+  }
+  {
+    auto d = sem::invariantCaseDescriptor(InvariantCase::Replay);
+    require(d.requiredState == InvariantSemanticState::Running &&
+                d.consumedInputs ==
+                    consumedMask<InvariantInput>({InvariantInput::Phase}) &&
+                d.output == InvariantOutputSource::Latched && !d.latchInput &&
+                !d.clearLatch && d.nextState == InvariantSemanticState::Running,
+            "invariant Replay descriptor");
+  }
+  {
+    auto d = sem::invariantCaseDescriptor(InvariantCase::Close);
+    require(d.requiredState == InvariantSemanticState::Running &&
+                d.consumedInputs ==
+                    consumedMask<InvariantInput>({InvariantInput::Phase}) &&
+                d.output == InvariantOutputSource::None && !d.latchInput &&
+                d.clearLatch && d.nextState == InvariantSemanticState::Initial,
+            "invariant Close descriptor");
+  }
+
+  using sem::GateCase;
+  using sem::GateInput;
+  using sem::GateSemanticState;
+  const sem::SemanticInputMask gateHeads =
+      consumedMask<GateInput>({GateInput::Phase, GateInput::Value});
+  {
+    auto d = sem::gateCaseDescriptor(GateCase::ClosedDrop);
+    require(d.requiredState == GateSemanticState::Closed &&
+                d.consumedInputs == gateHeads && !d.emitPhase &&
+                !d.forwardedInput && d.nextState == GateSemanticState::Closed,
+            "gate ClosedDrop descriptor");
+  }
+  {
+    auto d = sem::gateCaseDescriptor(GateCase::FirstTrue);
+    require(d.requiredState == GateSemanticState::Closed &&
+                d.consumedInputs == gateHeads && !d.emitPhase &&
+                d.forwardedInput == GateInput::Value &&
+                d.nextState == GateSemanticState::Open,
+            "gate FirstTrue descriptor");
+  }
+  {
+    auto d = sem::gateCaseDescriptor(GateCase::ContinueTrue);
+    require(d.requiredState == GateSemanticState::Open &&
+                d.consumedInputs == gateHeads && d.emitPhase && d.phase &&
+                d.forwardedInput == GateInput::Value &&
+                d.nextState == GateSemanticState::Open,
+            "gate ContinueTrue descriptor");
+  }
+  {
+    auto d = sem::gateCaseDescriptor(GateCase::Close);
+    require(d.requiredState == GateSemanticState::Open &&
+                d.consumedInputs == gateHeads && d.emitPhase && !d.phase &&
+                !d.forwardedInput && d.nextState == GateSemanticState::Closed,
+            "gate Close descriptor");
+  }
+
+  // Blocked readiness: an unsatisfied case is not another transition case. Each
+  // evaluator consumes nothing and holds its logical state.
+  {
+    sem::StreamSemanticState idle;
+    auto blocked = sem::evaluateStreamTransition(
+        idle, sem::StreamSemanticConfig{}, std::nullopt);
+    require(static_cast<bool>(blocked), "stream blocked readiness evaluated");
+    require(!blocked->firing.ready &&
+                blocked->firing.consumedInputCount() == 0 && !blocked->emitIv &&
+                !blocked->emitPhase &&
+                blocked->nextState.mode == StreamMode::Idle,
+            "stream blocked readiness consumed nothing and held state");
+  }
+  {
+    auto blocked = sem::evaluateCarryTransition(CarrySemanticState::Initial,
+                                                std::nullopt, false, false);
+    require(!blocked.firing.ready && blocked.firing.consumedInputCount() == 0 &&
+                !blocked.forwardedInput &&
+                blocked.nextState == CarrySemanticState::Initial,
+            "carry blocked readiness consumed nothing and held state");
+  }
+  {
+    auto blocked = sem::evaluateInvariantTransition(
+        InvariantSemanticState::Initial, std::nullopt, false);
+    require(!blocked.firing.ready && blocked.firing.consumedInputCount() == 0 &&
+                blocked.output == InvariantOutputSource::None &&
+                !blocked.latchInput && !blocked.clearLatch &&
+                blocked.nextState == InvariantSemanticState::Initial,
+            "invariant blocked readiness consumed nothing and held state");
+  }
+  {
+    auto blocked = sem::evaluateGateTransition(GateSemanticState::Closed,
+                                               std::nullopt, false);
+    require(!blocked.firing.ready && blocked.firing.consumedInputCount() == 0 &&
+                !blocked.emitPhase && !blocked.forwardedInput &&
+                blocked.nextState == GateSemanticState::Closed,
+            "gate blocked readiness consumed nothing and held state");
+  }
 }
 
 // A token keeps its bit pattern in one APInt, whose width is an unsigned. An
@@ -484,6 +681,7 @@ void storeDuplicateScatterIsAtomic(dataflow::StoreOp op) {
 
 int main() {
   tokenWidthNarrowsAtTokenBoundary();
+  actorTransitionDescriptorContract();
 
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();

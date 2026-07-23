@@ -6,6 +6,7 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include <cstdint>
 #include <optional>
@@ -23,6 +24,15 @@ constexpr SemanticInputMask semanticInput(Input input) {
 template <typename Input>
 constexpr bool selectsSemanticInput(SemanticInputMask inputs, Input input) {
   return (inputs & semanticInput(input)) != 0;
+}
+
+/// The mask selecting exactly the listed input heads. A transition-case
+/// descriptor states its consumed heads as this typed set rather than an
+/// open-coded bit pattern; an empty set consumes nothing.
+template <typename... Inputs>
+constexpr SemanticInputMask semanticInputs(Inputs... inputs) {
+  return static_cast<SemanticInputMask>(
+      (SemanticInputMask{0} | ... | semanticInput(inputs)));
 }
 
 constexpr unsigned countSemanticInputs(SemanticInputMask inputs) {
@@ -57,6 +67,10 @@ makeSemanticFiringDecision(SemanticInputMask requiredInputs,
 
 enum class StreamInput : std::uint8_t { Init, Limit, Step };
 enum class StreamMode : std::uint8_t { Idle, Running };
+/// Where one `dataflow.stream` firing sources its induction-variable output:
+/// `None` publishes no IV token; `Current` publishes the current recurrence
+/// value of the active state.
+enum class StreamOutputSource : std::uint8_t { None, Current };
 
 struct StreamSemanticState {
   StreamMode mode = StreamMode::Idle;
@@ -92,6 +106,54 @@ evaluateStreamTransition(const StreamSemanticState &state,
                          const StreamSemanticConfig &config,
                          std::optional<StreamActivation> activation);
 
+/// The closed set of `dataflow.stream` transition cases named by the operation
+/// schema.
+enum class StreamCase : std::uint8_t {
+  StartTrue,
+  StartClose,
+  ContinueTrue,
+  ContinueClose
+};
+
+/// The schema-owned facts of one `dataflow.stream` transition case: the mode it
+/// fires from, the operand heads it consumes, the source of its
+/// induction-variable output, whether it publishes the phase and the phase
+/// value it publishes, and the mode it leaves behind. The recurrence payload
+/// and phase predicate stay dynamic; this descriptor owns which results are
+/// active, their sources, and the state change.
+struct StreamCaseDescriptor {
+  StreamMode requiredMode;
+  SemanticInputMask consumedInputs;
+  StreamOutputSource ivSource;
+  bool emitPhase;
+  bool phase;
+  StreamMode nextMode;
+};
+
+/// The sole owner of the `dataflow.stream` transition-case facts. Each dynamic
+/// firing selects exactly one case and derives its consumed heads, active
+/// results and their sources, and next mode from this descriptor.
+inline StreamCaseDescriptor streamCaseDescriptor(StreamCase transition) {
+  const SemanticInputMask activation =
+      semanticInputs(StreamInput::Init, StreamInput::Limit, StreamInput::Step);
+  switch (transition) {
+  case StreamCase::StartTrue:
+    return {StreamMode::Idle,   activation,     StreamOutputSource::Current,
+            /*emitPhase=*/true, /*phase=*/true, StreamMode::Running};
+  case StreamCase::StartClose:
+    return {StreamMode::Idle,   activation,      StreamOutputSource::None,
+            /*emitPhase=*/true, /*phase=*/false, StreamMode::Idle};
+  case StreamCase::ContinueTrue:
+    return {
+        StreamMode::Running, SemanticInputMask{0}, StreamOutputSource::Current,
+        /*emitPhase=*/true,  /*phase=*/true,       StreamMode::Running};
+  case StreamCase::ContinueClose:
+    return {StreamMode::Running, SemanticInputMask{0}, StreamOutputSource::None,
+            /*emitPhase=*/true,  /*phase=*/false,      StreamMode::Idle};
+  }
+  llvm_unreachable("unknown dataflow.stream transition case");
+}
+
 enum class CarryInput : std::uint8_t { Phase, Init, Next };
 enum class PhaseSemanticState : std::uint8_t { Initial, Running };
 using CarrySemanticState = PhaseSemanticState;
@@ -105,6 +167,37 @@ struct CarryTransition {
 CarryTransition evaluateCarryTransition(CarrySemanticState state,
                                         std::optional<bool> phase,
                                         bool initAvailable, bool nextAvailable);
+
+/// The closed set of `dataflow.carry` transition cases named by the operation
+/// schema.
+enum class CarryCase : std::uint8_t { Init, Next, Close };
+
+/// The schema-owned facts of one `dataflow.carry` transition case: the state it
+/// fires from, the operand heads it consumes, the input head forwarded to the
+/// output (absent on close), and the next state.
+struct CarryCaseDescriptor {
+  CarrySemanticState requiredState;
+  SemanticInputMask consumedInputs;
+  std::optional<CarryInput> forwardedInput;
+  CarrySemanticState nextState;
+};
+
+/// The sole owner of the `dataflow.carry` transition-case facts.
+inline CarryCaseDescriptor carryCaseDescriptor(CarryCase transition) {
+  switch (transition) {
+  case CarryCase::Init:
+    return {CarrySemanticState::Initial, semanticInputs(CarryInput::Init),
+            CarryInput::Init, CarrySemanticState::Running};
+  case CarryCase::Next:
+    return {CarrySemanticState::Running,
+            semanticInputs(CarryInput::Phase, CarryInput::Next),
+            CarryInput::Next, CarrySemanticState::Running};
+  case CarryCase::Close:
+    return {CarrySemanticState::Running, semanticInputs(CarryInput::Phase),
+            std::nullopt, CarrySemanticState::Initial};
+  }
+  llvm_unreachable("unknown dataflow.carry transition case");
+}
 
 enum class InvariantInput : std::uint8_t { Phase, Init };
 using InvariantSemanticState = PhaseSemanticState;
@@ -122,6 +215,52 @@ InvariantTransition evaluateInvariantTransition(InvariantSemanticState state,
                                                 std::optional<bool> phase,
                                                 bool initAvailable);
 
+/// The closed set of `dataflow.invariant` transition cases named by the
+/// operation schema.
+enum class InvariantCase : std::uint8_t { Init, Replay, Close };
+
+/// The schema-owned facts of one `dataflow.invariant` transition case: the
+/// state it fires from, the operand heads it consumes, the source of its output
+/// value, the input head it latches (absent unless it records one), whether it
+/// clears the latch, and the next state.
+struct InvariantCaseDescriptor {
+  InvariantSemanticState requiredState;
+  SemanticInputMask consumedInputs;
+  InvariantOutputSource output;
+  std::optional<InvariantInput> latchInput;
+  bool clearLatch;
+  InvariantSemanticState nextState;
+};
+
+/// The sole owner of the `dataflow.invariant` transition-case facts.
+inline InvariantCaseDescriptor
+invariantCaseDescriptor(InvariantCase transition) {
+  switch (transition) {
+  case InvariantCase::Init:
+    return {InvariantSemanticState::Initial,
+            semanticInputs(InvariantInput::Init),
+            InvariantOutputSource::InitInput,
+            InvariantInput::Init,
+            /*clearLatch=*/false,
+            InvariantSemanticState::Running};
+  case InvariantCase::Replay:
+    return {InvariantSemanticState::Running,
+            semanticInputs(InvariantInput::Phase),
+            InvariantOutputSource::Latched,
+            std::nullopt,
+            /*clearLatch=*/false,
+            InvariantSemanticState::Running};
+  case InvariantCase::Close:
+    return {InvariantSemanticState::Running,
+            semanticInputs(InvariantInput::Phase),
+            InvariantOutputSource::None,
+            std::nullopt,
+            /*clearLatch=*/true,
+            InvariantSemanticState::Initial};
+  }
+  llvm_unreachable("unknown dataflow.invariant transition case");
+}
+
 enum class GateInput : std::uint8_t { Phase, Value };
 enum class GateSemanticState : std::uint8_t { Closed, Open };
 
@@ -136,6 +275,53 @@ struct GateTransition {
 GateTransition evaluateGateTransition(GateSemanticState state,
                                       std::optional<bool> phase,
                                       bool valueAvailable);
+
+/// The closed set of `dataflow.gate` transition cases named by the operation
+/// schema.
+enum class GateCase : std::uint8_t {
+  ClosedDrop,
+  FirstTrue,
+  ContinueTrue,
+  Close
+};
+
+/// The schema-owned facts of one `dataflow.gate` transition case: the state it
+/// fires from, the operand heads it consumes (a gate always consumes both its
+/// condition and its value together), whether it publishes the region close
+/// phase and that phase value, the input head forwarded to the value output
+/// (absent when it drops or closes), and the next state.
+struct GateCaseDescriptor {
+  GateSemanticState requiredState;
+  SemanticInputMask consumedInputs;
+  bool emitPhase;
+  bool phase;
+  std::optional<GateInput> forwardedInput;
+  GateSemanticState nextState;
+};
+
+/// The sole owner of the `dataflow.gate` transition-case facts.
+inline GateCaseDescriptor gateCaseDescriptor(GateCase transition) {
+  const SemanticInputMask heads =
+      semanticInputs(GateInput::Phase, GateInput::Value);
+  switch (transition) {
+  case GateCase::ClosedDrop:
+    return {GateSemanticState::Closed, heads,        /*emitPhase=*/false,
+            /*phase=*/false,           std::nullopt, GateSemanticState::Closed};
+  case GateCase::FirstTrue:
+    return {GateSemanticState::Closed, heads,
+            /*emitPhase=*/false,
+            /*phase=*/false,           GateInput::Value,
+            GateSemanticState::Open};
+  case GateCase::ContinueTrue:
+    return {GateSemanticState::Open, heads,
+            /*emitPhase=*/true,      /*phase=*/true,
+            GateInput::Value,        GateSemanticState::Open};
+  case GateCase::Close:
+    return {GateSemanticState::Open, heads,        /*emitPhase=*/true,
+            /*phase=*/false,         std::nullopt, GateSemanticState::Closed};
+  }
+  llvm_unreachable("unknown dataflow.gate transition case");
+}
 
 enum class ParallelizeInput : std::uint8_t { Phase, Data };
 
