@@ -12,8 +12,10 @@ all live here:
   * The main worktree owns every initialized top-level submodule checkout.
     Linked worktrees consume those shared sources and must keep their own
     submodule paths and administrative state uninitialized.
-  * The shared LLVM build is gated by an fcntl.flock with a configurable
-    timeout, so a wedged build cannot hang every other worktree forever.
+  * Shared LLVM and CIRCT products are gated by one reader/writer
+    fcntl.flock with a configurable timeout. Builds and distclean are
+    exclusive writers; ordinary Loom builds hold a shared lock while
+    validating and consuming the products.
   * The shared CIRCT build reuses that same LLVM lock and is held across
     the LLVM ensure phase and the CIRCT configure/build, so the LLVM a
     CIRCT build links against cannot be rebuilt or wiped concurrently.
@@ -521,16 +523,17 @@ def check_dependency_pins(paths: Paths) -> DependencyState:
 
 
 class FileLock:
-    """Exclusive fcntl.flock with a polled timeout.
+    """Shared or exclusive fcntl.flock with a polled timeout.
 
     Polling rather than blocking lets us bail out cleanly when another
     worktree's build is wedged, and emit a one-shot waiting message
     when contention occurs.
     """
 
-    def __init__(self, path: Path, timeout: float):
+    def __init__(self, path: Path, timeout: float, shared: bool):
         self.path = path
         self.timeout = timeout
+        self.operation = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
         self.fd: int | None = None
 
     def __enter__(self) -> "FileLock":
@@ -540,7 +543,7 @@ class FileLock:
         announced = False
         while True:
             try:
-                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(self.fd, self.operation | fcntl.LOCK_NB)
                 return self
             except OSError as e:
                 if e.errno not in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
@@ -699,28 +702,36 @@ def configure_loom(paths: Paths, circt_dir: str | None) -> None:
     run(cmd)
 
 
+def llvm_artifacts_present(paths: Paths) -> bool:
+    """Artifacts required to configure and build Loom against LLVM."""
+    return (
+        (paths.llvm_build / "build.ninja").exists()
+        and (paths.mlir_dir / "MLIRConfig.cmake").exists()
+        and (paths.cmake_llvm_dir / "LLVMConfig.cmake").exists()
+        and (paths.cmake_clang_dir / "ClangConfig.cmake").exists()
+    )
+
+
 def _sync_llvm_locked(
     paths: Paths,
     args: argparse.Namespace,
     state: DependencyState,
     compilers: tuple[tuple[str, str], tuple[str, str]],
     always_build: bool,
+    prev_stamp: str,
 ) -> str:
-    """LLVM ensure/build phase. Caller already holds the shared LLVM lock.
+    """LLVM ensure/build phase. Caller already holds the exclusive build lock.
 
     Returns the validated LLVM build identity so a dependent phase (CIRCT)
     can derive an identity that drifts with the exact LLVM build rather
     than only with the dependency pins.
+
+    prev_stamp is an in-memory snapshot taken while the lock is held. An
+    explicit build removes the on-disk readiness stamp before entering this
+    phase, but may still use the snapshot to retain an incremental build.
     """
     current = llvm_build_identity(state, compilers)
-    prev = read_stamp(paths.llvm_stamp)
-    build_ninja = paths.llvm_build / "build.ninja"
-    build_ready = (
-        build_ninja.exists() and
-        (paths.mlir_dir / "MLIRConfig.cmake").exists() and
-        (paths.cmake_clang_dir / "ClangConfig.cmake").exists()
-    )
-    rebuild = prev != current or not build_ready
+    rebuild = prev_stamp != current or not llvm_artifacts_present(paths)
     if rebuild:
         if paths.llvm_build.exists():
             info(
@@ -731,6 +742,12 @@ def _sync_llvm_locked(
         configure_llvm(paths, compilers)
     if always_build or rebuild:
         run(["cmake", "--build", str(paths.llvm_build), f"-j{args.jobs}"])
+        if not llvm_artifacts_present(paths):
+            die(
+                f"LLVM build at {paths.llvm_build} did not produce the "
+                "required CMake package artifacts; refusing to stamp an "
+                "incomplete build"
+            )
         write_stamp(paths.llvm_stamp, current)
     return current
 
@@ -747,10 +764,16 @@ def sync_shared_llvm(
             f"shared LLVM tree {paths.llvm_root} appears to live on NFS; "
             "flock semantics across hosts are unreliable"
         )
-    with FileLock(paths.llvm_lock, args.lock_timeout):
+    with FileLock(paths.llvm_lock, args.lock_timeout, shared=False):
+        prev_stamp = read_stamp(paths.llvm_stamp)
+        if always_build:
+            paths.llvm_stamp.unlink(missing_ok=True)
+            paths.circt_stamp.unlink(missing_ok=True)
         state = check_dependency_pins(paths)
         compilers = check_llvm_compilers()
-        return _sync_llvm_locked(paths, args, state, compilers, always_build)
+        return _sync_llvm_locked(
+            paths, args, state, compilers, always_build, prev_stamp
+        )
 
 
 def build_llvm(paths: Paths, args: argparse.Namespace) -> None:
@@ -775,7 +798,7 @@ def _sync_circt_locked(
     always_build: bool,
     prev_stamp: str,
 ) -> None:
-    """CIRCT ensure/build phase. Caller already holds the shared LLVM lock.
+    """CIRCT ensure/build phase. Caller already holds the exclusive build lock.
 
     Reusing the LLVM lock (rather than a CIRCT-only lock) is what makes
     the LLVM+CIRCT operation race-safe: the LLVM build cannot be rebuilt
@@ -846,13 +869,16 @@ def sync_shared_circt(
             f"shared CIRCT tree {paths.circt_root} appears to live on NFS; "
             "flock semantics across hosts are unreliable"
         )
-    with FileLock(paths.llvm_lock, args.lock_timeout):
+    with FileLock(paths.llvm_lock, args.lock_timeout, shared=False):
         prev_stamp = read_stamp(paths.circt_stamp)
         if always_build:
             paths.circt_stamp.unlink(missing_ok=True)
+        llvm_prev_stamp = read_stamp(paths.llvm_stamp)
         state = check_dependency_pins(paths)
         compilers = check_llvm_compilers()
-        llvm_identity = _sync_llvm_locked(paths, args, state, compilers, False)
+        llvm_identity = _sync_llvm_locked(
+            paths, args, state, compilers, False, llvm_prev_stamp
+        )
         _sync_circt_locked(
             paths, args, compilers, llvm_identity, always_build, prev_stamp
         )
@@ -884,15 +910,15 @@ def loom_build_is_stale(paths: Paths) -> bool:
     Detected by checking whether the cmake packages the loom build was
     pointed at are still on disk. If not, the cached build.ninja will
     fail at link time, so we wipe and reconfigure proactively. Both
-    MLIR and Clang configs must be present because configure_loom()
-    passes -DMLIR_DIR and -DClang_DIR; an older shared LLVM built
-    without LLVM_ENABLE_PROJECTS=...;clang would otherwise silently
-    pass the missing Clang config straight to cmake.
+    MLIR, LLVM, and Clang configs must be present because configure_loom()
+    passes all three package directories.
     """
     bn = paths.loom_build / "build.ninja"
     if not bn.exists():
         return False
     if not (paths.mlir_dir / "MLIRConfig.cmake").exists():
+        return True
+    if not (paths.cmake_llvm_dir / "LLVMConfig.cmake").exists():
         return True
     return not (paths.cmake_clang_dir / "ClangConfig.cmake").exists()
 
@@ -902,37 +928,61 @@ def ensure_shared_llvm(paths: Paths, args: argparse.Namespace) -> str:
 
 
 def build_loom(paths: Paths, args: argparse.Namespace) -> None:
-    if loom_build_is_stale(paths):
-        info(
-            f"loom build at {paths.loom_build} references a missing shared "
-            f"LLVM ({paths.mlir_dir}); wiping and reconfiguring"
-        )
-        shutil.rmtree(paths.loom_build, ignore_errors=True)
-    bn = paths.loom_build / "build.ninja"
-    if bn.exists() and not cmake_cache_uses_compilers(
-        paths.loom_build, LOOM_C_COMPILER, LOOM_CXX_COMPILER
-    ):
-        info(
-            f"loom build compiler changed to {LOOM_C_COMPILER}/"
-            f"{LOOM_CXX_COMPILER}; removing {paths.loom_build}"
-        )
-        shutil.rmtree(paths.loom_build, ignore_errors=True)
-    # `make loom` never builds CIRCT. It only offers an already-built,
-    # stamped CIRCT to the loom configure when one matches the ensured
-    # LLVM identity; an old or unstamped CIRCT build is treated as absent.
-    llvm_identity = ensure_shared_llvm(paths, args)
-    circt_dir = available_circt_dir(paths, llvm_identity)
-    if bn.exists() and read_cmake_cache_entry(
-        paths.loom_build, "CIRCT_DIR"
-    ) != (circt_dir or ""):
-        info(
-            "loom build CIRCT_DIR changed; "
-            f"removing {paths.loom_build} and reconfiguring"
-        )
-        shutil.rmtree(paths.loom_build, ignore_errors=True)
-    if not bn.exists():
-        configure_loom(paths, circt_dir)
-    run(["cmake", "--build", str(paths.loom_build), f"-j{args.jobs}"])
+    for attempt in range(2):
+        ensured_identity = ensure_shared_llvm(paths, args)
+        with FileLock(paths.llvm_lock, args.lock_timeout, shared=True):
+            state = check_dependency_pins(paths)
+            compilers = check_llvm_compilers()
+            llvm_identity = llvm_build_identity(state, compilers)
+            ready = (
+                llvm_identity == ensured_identity
+                and read_stamp(paths.llvm_stamp) == llvm_identity
+                and llvm_artifacts_present(paths)
+            )
+            if not ready:
+                if attempt == 0:
+                    info(
+                        "shared LLVM readiness changed while acquiring a "
+                        "reader lock; ensuring it again"
+                    )
+                    continue
+                die(
+                    "shared LLVM readiness changed repeatedly while starting "
+                    "the Loom build; refusing to consume stale products"
+                )
+
+            if loom_build_is_stale(paths):
+                info(
+                    f"loom build at {paths.loom_build} references a missing "
+                    f"shared LLVM ({paths.mlir_dir}); wiping and reconfiguring"
+                )
+                shutil.rmtree(paths.loom_build, ignore_errors=True)
+            bn = paths.loom_build / "build.ninja"
+            if bn.exists() and not cmake_cache_uses_compilers(
+                paths.loom_build, LOOM_C_COMPILER, LOOM_CXX_COMPILER
+            ):
+                info(
+                    f"loom build compiler changed to {LOOM_C_COMPILER}/"
+                    f"{LOOM_CXX_COMPILER}; removing {paths.loom_build}"
+                )
+                shutil.rmtree(paths.loom_build, ignore_errors=True)
+
+            # `make loom` never builds CIRCT. It only offers an already-built,
+            # stamped CIRCT matching the LLVM identity revalidated under this
+            # reader lock.
+            circt_dir = available_circt_dir(paths, llvm_identity)
+            if bn.exists() and read_cmake_cache_entry(
+                paths.loom_build, "CIRCT_DIR"
+            ) != (circt_dir or ""):
+                info(
+                    "loom build CIRCT_DIR changed; "
+                    f"removing {paths.loom_build} and reconfiguring"
+                )
+                shutil.rmtree(paths.loom_build, ignore_errors=True)
+            if not bn.exists():
+                configure_loom(paths, circt_dir)
+            run(["cmake", "--build", str(paths.loom_build), f"-j{args.jobs}"])
+            return
 
 
 def cmd_doctor(paths: Paths, args: argparse.Namespace) -> None:
@@ -1024,7 +1074,7 @@ def cmd_distclean(paths: Paths, args: argparse.Namespace) -> None:
         # Both shared builds are removed under the single LLVM lock that the
         # build path also holds, so distclean cannot tear a build out from
         # under a concurrent LLVM or CIRCT build in another worktree.
-        with FileLock(paths.llvm_lock, args.lock_timeout):
+        with FileLock(paths.llvm_lock, args.lock_timeout, shared=False):
             if paths.llvm_build.exists():
                 info(f"removing shared {paths.llvm_build}")
                 shutil.rmtree(paths.llvm_build, ignore_errors=True)

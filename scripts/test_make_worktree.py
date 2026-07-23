@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from argparse import Namespace
 from contextlib import redirect_stderr, redirect_stdout
@@ -377,6 +378,10 @@ class MakeWorktreeTest(unittest.TestCase):
                 old_object.write_text("reusable\n")
                 (paths.llvm_build / "build.ninja").write_text("ready\n")
                 (paths.mlir_dir / "MLIRConfig.cmake").write_text("ready\n")
+                paths.cmake_llvm_dir.mkdir(parents=True)
+                (paths.cmake_llvm_dir / "LLVMConfig.cmake").write_text(
+                    "ready\n"
+                )
                 (paths.cmake_clang_dir / "ClangConfig.cmake").write_text(
                     "ready\n"
                 )
@@ -386,7 +391,7 @@ class MakeWorktreeTest(unittest.TestCase):
                 locked = {"value": False}
 
                 class TrackingLock:
-                    def __init__(self, *args):
+                    def __init__(self, *args, **kwargs):
                         pass
 
                     def __enter__(self):
@@ -407,8 +412,18 @@ class MakeWorktreeTest(unittest.TestCase):
                     self.assertFalse(old_object.exists())
                     self.assertEqual(compilers, current)
                     configure_paths.mlir_dir.mkdir(parents=True)
+                    configure_paths.cmake_llvm_dir.mkdir(parents=True)
                     configure_paths.cmake_clang_dir.mkdir(parents=True)
                     (configure_paths.llvm_build / "build.ninja").write_text("new\n")
+                    (
+                        configure_paths.mlir_dir / "MLIRConfig.cmake"
+                    ).write_text("ready\n")
+                    (
+                        configure_paths.cmake_llvm_dir / "LLVMConfig.cmake"
+                    ).write_text("ready\n")
+                    (
+                        configure_paths.cmake_clang_dir / "ClangConfig.cmake"
+                    ).write_text("ready\n")
 
                 with (
                     patch.object(self.module, "FileLock", TrackingLock),
@@ -637,8 +652,8 @@ class MakeWorktreeTest(unittest.TestCase):
         events: list = []
 
         class TrackingLock:
-            def __init__(self, path, timeout):
-                events.append(("lock-open", str(path)))
+            def __init__(self, path, timeout, shared):
+                events.append(("lock-open", str(path), shared))
                 self.path = path
 
             def __enter__(self):
@@ -672,6 +687,10 @@ class MakeWorktreeTest(unittest.TestCase):
         self.assertEqual(
             [e[1] for e in events if e[0] == "lock-open"],
             [str(paths.llvm_lock)],
+        )
+        self.assertEqual(
+            [e[2] for e in events if e[0] == "lock-open"],
+            [False],
         )
         enter = events.index(("lock-enter", str(paths.llvm_lock)))
         exit_idx = events.index(("lock-exit", str(paths.llvm_lock)))
@@ -724,6 +743,7 @@ class MakeWorktreeTest(unittest.TestCase):
             linked.circt_required_lib.parent.mkdir(parents=True, exist_ok=True)
             linked.circt_required_lib.write_text("ar\n")
             linked.circt_stamp.write_text(circt_identity + "\n")
+            self._stamped_llvm_build(linked, llvm_identity)
 
             circt_build_calls: list = []
             offered = {}
@@ -734,6 +754,12 @@ class MakeWorktreeTest(unittest.TestCase):
             with (
                 patch.object(
                     module, "ensure_shared_llvm", return_value=llvm_identity
+                ),
+                patch.object(
+                    module, "check_dependency_pins", return_value=state
+                ),
+                patch.object(
+                    module, "check_llvm_compilers", return_value=compilers
                 ),
                 patch.object(
                     module, "configure_loom", side_effect=capture_configure
@@ -775,8 +801,8 @@ class MakeWorktreeTest(unittest.TestCase):
             main_locks: list = []
 
             class TrackingLock:
-                def __init__(self, path, timeout):
-                    main_locks.append(str(path))
+                def __init__(self, path, timeout, shared):
+                    main_locks.append((str(path), shared))
 
                 def __enter__(self):
                     return self
@@ -786,7 +812,7 @@ class MakeWorktreeTest(unittest.TestCase):
 
             with patch.object(module, "FileLock", TrackingLock):
                 module.cmd_distclean(main_paths, self.args)
-            self.assertEqual(main_locks, [str(main_paths.llvm_lock)])
+            self.assertEqual(main_locks, [(str(main_paths.llvm_lock), False)])
             self.assertFalse(main_paths.circt_build.exists())
             self.assertFalse(main_paths.circt_stamp.exists())
             self.assertFalse(main_paths.llvm_build.exists())
@@ -805,7 +831,7 @@ class MakeWorktreeTest(unittest.TestCase):
             opened = {"value": False}
 
             class NoLock:
-                def __init__(self, *args):
+                def __init__(self, *args, **kwargs):
                     opened["value"] = True
 
                 def __enter__(self):
@@ -858,6 +884,256 @@ class MakeWorktreeTest(unittest.TestCase):
         paths.circt_required_lib.write_text("ar\n")
         (paths.circt_build / "build.ninja").write_text("ninja\n")
         paths.circt_stamp.write_text(circt_identity + "\n")
+
+    def _stamped_llvm_build(self, paths, llvm_identity):
+        """Set up a complete, stamped, identity-matching prior LLVM build."""
+        for config_dir, config_name in (
+            (paths.mlir_dir, "MLIRConfig.cmake"),
+            (paths.cmake_llvm_dir, "LLVMConfig.cmake"),
+            (paths.cmake_clang_dir, "ClangConfig.cmake"),
+        ):
+            config_dir.mkdir(parents=True, exist_ok=True)
+            (config_dir / config_name).write_text("ready\n")
+        (paths.llvm_build / "build.ninja").write_text("ninja\n")
+        paths.llvm_stamp.write_text(llvm_identity + "\n")
+
+    def test_explicit_build_llvm_invalidates_stamps_before_prerequisites(self):
+        """Public `make llvm` revokes LLVM and dependent CIRCT readiness
+        immediately after taking the writer lock. A prerequisite failure
+        therefore cannot leave either old build advertised."""
+        module = self.module
+        state = module.DependencyState("circt-pin", "llvm-pin")
+        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
+        llvm_identity = module.llvm_build_identity(state, compilers)
+        circt_identity = module.circt_build_identity(llvm_identity)
+
+        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            paths = build_paths(Path(td))
+            self._stamped_llvm_build(paths, llvm_identity)
+            self._stamped_circt_build(paths, circt_identity)
+
+            def fail_prerequisite(_paths):
+                self.assertFalse(paths.llvm_stamp.exists())
+                self.assertFalse(paths.circt_stamp.exists())
+                raise RuntimeError("injected dependency failure")
+
+            with (
+                patch.object(module, "is_nfs", return_value=False),
+                patch.object(
+                    module,
+                    "check_dependency_pins",
+                    side_effect=fail_prerequisite,
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError, "injected dependency failure"
+                ),
+            ):
+                module.build_llvm(paths, self.args)
+
+            self.assertTrue((paths.llvm_build / "build.ninja").exists())
+            self.assertTrue(
+                (paths.circt_cmake_dir / "CIRCTConfig.cmake").exists()
+            )
+            self.assertFalse(paths.llvm_stamp.exists())
+            self.assertFalse(paths.circt_stamp.exists())
+            self.assertIsNone(module.available_circt_dir(paths, llvm_identity))
+
+    def test_failed_explicit_llvm_build_revokes_both_readiness_stamps(self):
+        """A matching incremental LLVM build that fails through the public
+        entry point leaves neither LLVM nor dependent CIRCT advertised."""
+        module = self.module
+        state = module.DependencyState("circt-pin", "llvm-pin")
+        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
+        llvm_identity = module.llvm_build_identity(state, compilers)
+        circt_identity = module.circt_build_identity(llvm_identity)
+
+        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            paths = build_paths(Path(td))
+            self._stamped_llvm_build(paths, llvm_identity)
+            self._stamped_circt_build(paths, circt_identity)
+
+            def fail_build(cmd, **kwargs):
+                raise subprocess.CalledProcessError(1, cmd)
+
+            with (
+                patch.object(module, "is_nfs", return_value=False),
+                patch.object(module, "check_dependency_pins", return_value=state),
+                patch.object(
+                    module, "check_llvm_compilers", return_value=compilers
+                ),
+                patch.object(module, "configure_llvm") as configure_llvm,
+                patch.object(module, "run", side_effect=fail_build),
+                self.assertRaises(subprocess.CalledProcessError),
+            ):
+                module.build_llvm(paths, self.args)
+
+            configure_llvm.assert_not_called()
+            self.assertTrue((paths.llvm_build / "build.ninja").exists())
+            self.assertFalse(paths.llvm_stamp.exists())
+            self.assertFalse(paths.circt_stamp.exists())
+            self.assertIsNone(module.available_circt_dir(paths, llvm_identity))
+
+    def test_successful_explicit_llvm_build_restores_only_llvm_readiness(self):
+        """Validated LLVM success restores its own readiness but keeps CIRCT
+        revoked until a later explicit CIRCT build validates that dependency."""
+        module = self.module
+        state = module.DependencyState("circt-pin", "llvm-pin")
+        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
+        llvm_identity = module.llvm_build_identity(state, compilers)
+        circt_identity = module.circt_build_identity(llvm_identity)
+
+        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            paths = build_paths(Path(td))
+            self._stamped_llvm_build(paths, llvm_identity)
+            self._stamped_circt_build(paths, circt_identity)
+
+            with (
+                patch.object(module, "is_nfs", return_value=False),
+                patch.object(module, "check_dependency_pins", return_value=state),
+                patch.object(
+                    module, "check_llvm_compilers", return_value=compilers
+                ),
+                patch.object(module, "configure_llvm") as configure_llvm,
+                patch.object(module, "run"),
+            ):
+                module.build_llvm(paths, self.args)
+
+            configure_llvm.assert_not_called()
+            self.assertEqual(module.read_stamp(paths.llvm_stamp), llvm_identity)
+            self.assertFalse(paths.circt_stamp.exists())
+            self.assertIsNone(module.available_circt_dir(paths, llvm_identity))
+
+    def test_loom_readers_hold_readiness_against_public_llvm_writer(self):
+        """Two public Loom readers may consume shared products concurrently,
+        while a public LLVM writer cannot revoke readiness until both release
+        their shared locks."""
+        module = self.module
+        state = module.DependencyState("circt-pin", "llvm-pin")
+        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
+        llvm_identity = module.llvm_build_identity(state, compilers)
+        circt_identity = module.circt_build_identity(llvm_identity)
+
+        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            shared = build_paths(Path(td) / "shared")
+            self._stamped_llvm_build(shared, llvm_identity)
+            self._stamped_circt_build(shared, circt_identity)
+
+            readers = []
+            for name in ("reader-a", "reader-b"):
+                paths = SimpleNamespace(**vars(shared))
+                paths.root = Path(td) / name
+                paths.loom_build = paths.root / "build"
+                paths.loom_build.mkdir(parents=True)
+                (paths.loom_build / "build.ninja").write_text("ninja\n")
+                (paths.loom_build / "CMakeCache.txt").write_text(
+                    "CMAKE_C_COMPILER:FILEPATH=/usr/bin/clang\n"
+                    "CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/clang++\n"
+                    f"CIRCT_DIR:PATH={paths.circt_cmake_dir}\n"
+                )
+                readers.append(paths)
+
+            both_readers_inside = threading.Event()
+            release_readers = threading.Event()
+            writer_waiting = threading.Event()
+            writer_build_called = threading.Event()
+            count_lock = threading.Lock()
+            inside_count = 0
+            reader_errors = []
+            writer_errors = []
+
+            def controlled_run(cmd, **kwargs):
+                nonlocal inside_count
+                if cmd[:2] == ["cmake", "--build"]:
+                    if cmd[2] == str(shared.llvm_build):
+                        writer_build_called.set()
+                        raise subprocess.CalledProcessError(1, cmd)
+                    with count_lock:
+                        inside_count += 1
+                        if inside_count == len(readers):
+                            both_readers_inside.set()
+                    if not release_readers.wait(5.0):
+                        raise RuntimeError("reader release timed out")
+
+            def capture_info(message):
+                if "waiting for shared LLVM lock" in message:
+                    writer_waiting.set()
+
+            def run_reader(paths):
+                try:
+                    module.build_loom(paths, self.args)
+                except BaseException as error:
+                    reader_errors.append(error)
+
+            def run_writer():
+                try:
+                    module.build_llvm(shared, self.args)
+                except BaseException as error:
+                    writer_errors.append(error)
+
+            reader_threads = [
+                threading.Thread(target=run_reader, args=(paths,))
+                for paths in readers
+            ]
+            writer_thread = threading.Thread(target=run_writer)
+            try:
+                with (
+                    patch.object(
+                        module,
+                        "ensure_shared_llvm",
+                        return_value=llvm_identity,
+                    ),
+                    patch.object(
+                        module, "check_dependency_pins", return_value=state
+                    ),
+                    patch.object(
+                        module, "check_llvm_compilers", return_value=compilers
+                    ),
+                    patch.object(module, "is_nfs", return_value=False),
+                    patch.object(module, "run", side_effect=controlled_run),
+                    patch.object(module, "info", side_effect=capture_info),
+                ):
+                    for thread in reader_threads:
+                        thread.start()
+                    self.assertTrue(
+                        both_readers_inside.wait(2.0),
+                        "public Loom readers did not coexist",
+                    )
+                    writer_thread.start()
+                    self.assertTrue(
+                        writer_waiting.wait(2.0),
+                        "public LLVM writer did not wait for Loom readers",
+                    )
+                    self.assertEqual(
+                        module.read_stamp(shared.llvm_stamp), llvm_identity
+                    )
+                    self.assertEqual(
+                        module.read_stamp(shared.circt_stamp), circt_identity
+                    )
+                    release_readers.set()
+                    for thread in reader_threads:
+                        thread.join(5.0)
+                    writer_thread.join(5.0)
+            finally:
+                release_readers.set()
+                for thread in reader_threads:
+                    thread.join(5.0)
+                if writer_thread.is_alive():
+                    writer_thread.join(5.0)
+
+            self.assertFalse(any(t.is_alive() for t in reader_threads))
+            self.assertFalse(writer_thread.is_alive())
+            self.assertEqual(reader_errors, [])
+            self.assertEqual(
+                [type(error) for error in writer_errors],
+                [subprocess.CalledProcessError],
+            )
+            self.assertTrue(writer_build_called.is_set())
+            self.assertFalse(shared.llvm_stamp.exists())
+            self.assertFalse(shared.circt_stamp.exists())
 
     def test_explicit_build_circt_invalidates_stamp_before_prerequisites(self):
         """Public `make circt` invalidates the sole readiness stamp right after
