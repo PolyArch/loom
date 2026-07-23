@@ -410,11 +410,13 @@ the analytical target and **MAY** be overridden explicitly. Profile identity
 includes all of those values. The default does not assert a bank count, bank
 mapping, DMA engine, arbitration behavior, or particular hardware topology.
 
-**Objective.** Choose the pragma that minimizes cycles subject to the hard
-`≤ L` load-lane / `≤ S` store-lane per-cycle limit (`L = S = 12` for `6x6`); the
-recommendation is the lane-saturation knee — the smallest exposure whose traffic
-saturates the binding resource. Extended target-profile candidates additionally
-obey the profile's whole-working-set capacity and scratchpad-port constraints.
+**Objective.** Choose the pragma that minimizes modeled cycles subject to the hard
+`≤ L` load-lane / `≤ S` store-lane per-cycle limit (`L = S = 12` for `6x6`).
+Within one transformation family, the candidate is the lane-saturation knee —
+the smallest mature exposure whose traffic saturates the binding resource.
+Extended search compares those family knees by modeled cycles. Extended
+target-profile candidates additionally obey the profile's whole-working-set
+capacity and scratchpad-port constraints.
 Cycle count credits vector coalescing, control-overhead amortization, and any
 explicitly declared transformation or resident-memory effect. There is **no area
 term** and no control/body area tradeoff. The legacy direct-memory path has only
@@ -479,10 +481,10 @@ enclosed inner loops `U` times, and fusing ("jamming") those copies so the `U`
 outer iterations advance in lockstep at each inner step. Outer-loop unrolling
 does **not** imply jam. An extended candidate selects one explicitly declared
 complete jam plan, and `none` is always a legal plan. A nonempty jam plan is legal
-only when every named outer level has `U > 1` and every named inner level occurs
-beneath its outer level in the selected loop order. Jam is not an additional
-exposure factor; total exposure remains the product of `p * U` over parallel
-levels.
+only when every named outer level is a dependency-parallel DSE level with
+`U > 1` and every named inner level occurs beneath its outer level in the
+selected loop order. Jam is not an additional exposure factor; total exposure
+remains the product of `p * U` over parallel levels.
 
 Jam legality and load sharing **MUST** be declared as explicit per-kernel
 metadata. Each declaration names a complete plan and its permitted
@@ -705,32 +707,39 @@ set as exposure grows. A small wave may already be resource-bound while the same
 transformation still eliminates repeated loads at a larger exposure. Such a row
 is **recurring-demand immature**, not the saturation knee.
 
-For each exposure, the extended search **MUST** first retain the candidates with
-the minimum recurring-compute aggregate at that exposure, excluding every
-preload prologue. For each retained candidate it then records full-kernel
-recurring demand `D[P/L/S/R/W]`: arithmetic, effective data-load lane slots,
-effective data-store lane slots, scratchpad-read port cycles, and scratchpad-write
-port cycles. These demands exclude preload, invariant loads, iterator/control
-work, and per-wave ceiling rounding. Looking from the current exposure through
-every larger legal exposure of the same loop order, jam plan, and placement mode,
-define the future minimum of each demand class over those
+For each transformation family and exposure, the extended search **MUST** first
+retain the candidates with the minimum recurring-compute aggregate at that
+exposure, excluding every preload prologue. A family is the resolved loop order,
+explicit jam plan, and actual placement identity. For each retained candidate
+the search records full-kernel recurring demand `D[P/L/S/R/W]`: arithmetic,
+effective data-load lane slots, effective data-store lane slots,
+scratchpad-read port cycles, and scratchpad-write port cycles. These demands
+exclude preload, invariant loads, iterator/control work, and per-wave ceiling
+rounding. Looking from the current exposure through every larger legal exposure
+of the same family, define the future minimum of each demand class over those
 recurring-compute-frontier candidates.
 
 An extended candidate is knee-eligible only when its nominal full, non-tail
 compute wave is resource-bound and at least one class tied for that wave's
 dominant resource term has already reached its future-minimum full-kernel demand.
-The recommendation is the first exposure with an eligible candidate. Exact
-frontier ties at that exposure are ranked by total
+Within each family, the first exposure with an eligible candidate is that
+family's knee; exact frontier ties at that exposure are ranked by total
 `pragma_exposure_aggregate`, then by recurring data traffic, scratchpad-port
-demand, worker count, and deterministic signature. Jammed and unjammed candidates
-are distinct transformations rather than future states of one another. The
-legacy direct-memory selection rule is unchanged.
+demand, worker count, and deterministic signature. The global recommendation is
+the family knee with the smallest `pragma_exposure_aggregate`, then the smallest
+recurring data traffic, scratchpad-port demand, exposure, worker count, and
+deterministic signature. Jammed and unjammed candidates are distinct
+transformations rather than future states of one another. If no family has an
+eligible knee, select the global best-estimate fallback. The legacy direct-memory
+selection rule is unchanged.
 
-An implementation that selects an exposure **SHOULD** recommend the smallest legal
-exposure `E >= E_sat` — the smallest `P_tot · U` consistent with pragma legality
-and loop nesting — and **SHOULD** flag larger exposures as **oversubscribed**:
-diminishing aggregate gains traded against linearly growing transient backlog and
-hardware area.
+Within a transformation family, an implementation that selects an exposure
+**SHOULD** recommend the smallest legal exposure `E >= E_sat` — the smallest
+`P_tot · U` consistent with pragma legality and loop nesting. Rows below or
+above the knee are classified relative to their own family knee; the globally
+selected family knee alone receives the recommendation marker. Larger exposures
+are **oversubscribed**: diminishing aggregate gains traded against linearly
+growing transient backlog and hardware area.
 
 ### Backlog is a diagnostic, not a constraint
 
@@ -1002,7 +1011,9 @@ Reduction and sequential levels that are fully consumed in every candidate may
 likewise use one canonical factor label when all labels build the same DAG. An
 implementation **MAY** accept user-requested factor or exposure caps for
 diagnostic runs, but a capped report **MUST** label itself as a bounded search and
-**MUST NOT** present its result as the global recommendation.
+**MUST NOT** present its result as the global recommendation. When an extended
+profile-global floor is derived by minimizing over candidates, a capped report
+must instead label that minimum as a bounded-search floor.
 
 For an extended pilot, candidate enumeration takes the cross-product of the legal
 `p` factors, legal `U` factors, explicitly declared legal loop orders, and
@@ -1109,8 +1120,8 @@ For one scratchpad-bearing ordered region, let `spad_R` and `spad_W` be its
 logical scratchpad read and write operation counts. The port floor is
 
 ```
-spad_read_lb  = ceil(spad_R * access_cycles / load_ports)
-spad_write_lb = ceil(spad_W * access_cycles / store_ports)
+spad_read_lb  = ceil(spad_R / load_ports) * access_cycles
+spad_write_lb = ceil(spad_W / store_ports) * access_cycles
 spad_port_lb  = max(spad_read_lb, spad_write_lb)
 ```
 

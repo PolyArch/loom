@@ -52,12 +52,13 @@ or pack/unpack overhead or alignment restrictions.
 
 Outer-loop unrolling does not imply jam. Each candidate selects one complete
 per-kernel jam plan, and `none` is always legal. A nonempty plan is legal only
-when each named outer loop has `U > 1` and the selected order places each inner
-loop beneath its outer loop. Jam does not multiply exposure. Until a separate
-DFG-size or routing model is specified, it adds no arithmetic, control, routing,
-or area cost; it may only remove declared invariant operand loads. GEMV therefore
-searches both `jam=none` and `jam=i-j-share-x` rather than granting `i->j[x]`
-sharing to every row-unrolled candidate.
+when each named outer loop is a dependency-parallel DSE level with `U > 1` and
+the selected order places each inner loop beneath its outer loop. Jam does not
+multiply exposure. Until a separate DFG-size or routing model is specified, it
+adds no arithmetic, control, routing, or area cost; it may only remove declared
+invariant operand loads. GEMV therefore searches both `jam=none` and
+`jam=i-j-share-x` rather than granting `i->j[x]` sharing to every row-unrolled
+candidate.
 
 Complete jam plans and shared operands are explicit per-kernel metadata. The
 helper never infers an edge from address equality and does not enumerate an
@@ -87,8 +88,8 @@ step. A scalar or coalesced vector operation occupies one port for the target's
 access latency. For one ordered region:
 
 ```text
-spad_read_lb  = ceil(spad_R * access_cycles / load_ports)
-spad_write_lb = ceil(spad_W * access_cycles / store_ports)
+spad_read_lb  = ceil(spad_R / load_ports) * access_cycles
+spad_write_lb = ceil(spad_W / store_ports) * access_cycles
 spad_port_lb  = max(spad_read_lb, spad_write_lb)
 ```
 
@@ -271,17 +272,20 @@ keeps decreasing with exposure. The recommendation is the saturation knee:
 the smallest legal exposure whose binding resource becomes resource-bound.
 
 For extended pilots, resource-bound is necessary but not sufficient. Within one
-explicit loop-order, jam-plan, and placement family, resident fan-out can remove
-recurring traffic at a larger legal exposure, so an early port- or load-bound row
-may still be
-**recurring-traffic immature**. At each exposure the helper keeps the minimum
-recurring-compute frontier (preload excluded), then compares full-kernel
-control-free `P/L/S/R/W` demand against the best values in the same transformation
-family at that or any larger exposure. A candidate becomes knee-eligible only
-when a resource dominates its nominal full compute wave and at least one tied
-dominant demand has reached that future minimum. The first eligible exposure is
-the knee; total `p_agg` and recurring traffic rank exact frontier ties. Jammed and
-unjammed candidates are distinct families. This prevents repeated loads from
+explicit loop-order, jam-plan, and actual-placement family, resident fan-out can
+remove recurring traffic at a larger legal exposure, so an early port- or
+load-bound row may still be **recurring-traffic immature**. At each family
+exposure the helper keeps the minimum recurring-compute frontier (preload
+excluded), then compares full-kernel control-free `P/L/S/R/W` demand against the
+best values in the same family at that or any larger exposure. A candidate
+becomes knee-eligible only when a resource dominates its nominal full compute
+wave and at least one tied dominant demand has reached that future minimum. The
+first eligible exposure is that family's knee; total `p_agg` and recurring
+traffic rank exact frontier ties. The global recommendation is the family knee
+with minimum `p_agg`, recurring data traffic, scratchpad-port demand, exposure,
+worker count, and deterministic signature, in that order. Jammed and unjammed
+candidates are distinct families. If no family has an eligible knee, the helper
+uses the global best-estimate fallback. This prevents repeated loads from
 manufacturing an artificially early saturation point while leaving the legacy
 rule unchanged.
 
@@ -295,17 +299,22 @@ derived decisions, not additional search axes.
 Explicit
 `--max-parallel`, `--max-unroll`, and
 `--exposure-cap` options are bounded diagnostic overrides; reports produced with
-them are not global recommendations. Fully consumed reduction or sequential
-levels may use one canonical `P1U1` label when all factor labels build the same
-DAG.
+them use `BEST BOUNDED`, a `B` marker, and `bounded_search_floor` rather than
+claiming a global recommendation or profile-global floor. Fully consumed
+reduction or sequential levels may use one canonical `P1U1` label when all
+factor labels build the same DAG.
 
 Rows are flagged as:
 
-- `K`: recommended knee.
-- `b`: below the knee. A row may be latency-bound, or it may already be
+- `K`: globally recommended family knee, or the global best-estimate fallback
+  when no family has an eligible knee.
+- `B`: best row in an explicitly bounded diagnostic; not a global
+  recommendation.
+- `b`: below that row's family knee. A row may be latency-bound, or it may already be
   resource-bound while its dominant recurring traffic is still immature; more
   legal exposure improves the modeled throughput in either case.
-- `o`: oversubscribed; additional exposure is past the knee and mainly adds
+- `o`: oversubscribed relative to that row's family knee; additional exposure
+  mainly adds
   transient backlog, area pressure, or mapping pressure for little or no modeled
   throughput gain.
 

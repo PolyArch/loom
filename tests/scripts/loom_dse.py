@@ -29,10 +29,11 @@ elements, so a contiguous group of ``V`` of them coalesces into one 256-bit
 vector memory op (one lane-slot, free unpack/pack); parallel workers stride
 across partitions and do NOT coalesce across the cut. The legacy path has no
 address-level banking or per-worker port cap; named extended profiles may add
-their explicit scratchpad-bank correction alongside machine lanes ``L``/``S``.
+their explicit shared-scratchpad port correction alongside machine lanes
+``L``/``S``.
 
 Load accounting splits into RECURRING vs. one-time INVARIANT loads. Recurring
-loop loads (per-iteration array elements over the tiled index, plus induction
+loop loads (per-iteration array elements over the wave index, plus induction
 reads) scale with exposure and set the steady-state lane exposure and the binding
 load term (``load = ceil(recurring / L)``, ``active_L = min(recurring, L)``).
 Invariant loads (hoisted once per chunk -- e.g. axpy ``alpha``, gemv's whole
@@ -69,7 +70,7 @@ from cgra_schedule import (Config, Dag, L, P, S, _ceil_div,
 V = 4  # 64-bit scalar elements per 256-bit vector memory op (spec convention)
 
 # Marker appended to the ``kind`` of a load that is loop-INVARIANT: hoisted once
-# per chunk, its count independent of the tiled exposure (e.g. axpy ``alpha``,
+# per chunk, its count independent of the wave exposure (e.g. axpy ``alpha``,
 # gemv's whole ``x`` vector). Recurring loop loads (per-iteration array elements
 # and induction reads) carry no marker. The DSE splits the two: recurring loads
 # set the steady-state lane exposure and the binding load term, while invariant
@@ -142,9 +143,9 @@ def _worker_control(r, n_workers, kind="iv"):
 def _load_split(dag) -> tuple[int, int]:
     """Split a chunk's load lane-slots into (recurring, invariant).
 
-    ``invariant`` = loads hoisted once per chunk (count independent of the tiled
+    ``invariant`` = loads hoisted once per chunk (count independent of the wave
     exposure), tagged with ``INV`` by the builders. ``recurring`` = everything
-    else: per-iteration array element loads (over the tiled index) and induction
+    else: per-iteration array element loads (over the wave index) and induction
     reads, which scale with exposure. Recurring loads set the steady-state lane
     exposure and the binding load term; invariant loads are amortized (loaded
     once and held) and appear only in ``LD_eff = recurring + invariant``."""
@@ -187,7 +188,7 @@ class Level:
         return self.kind in ("parallel", "reduction")
 
     def tiled(self) -> bool:
-        # parallel levels are tiled across waves (exposure = p*u); reduction and
+        # parallel levels are partitioned across waves (exposure = p*u); reduction
         # sequential levels are fully consumed within a chunk (exposure = trip).
         return self.kind == "parallel"
 
@@ -221,46 +222,58 @@ class JamRule:
 
 @dataclass(frozen=True)
 class JamPlan:
-    """The deterministic legal jam edges selected for one candidate."""
+    """The explicit complete jam plan selected for one candidate."""
+    name: str
     order: tuple[str, ...]
     edges: tuple[JamRule, ...]
 
 
 @dataclass(frozen=True)
+class JamPlanSpec:
+    """One named, complete per-kernel jam choice."""
+    name: str
+    edges: tuple[JamRule, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("jam plan name must be non-empty")
+        if self.name == "none" and self.edges:
+            raise ValueError("the reserved jam plan 'none' must have no edges")
+        if len(set((edge.outer, edge.inner) for edge in self.edges)) \
+                != len(self.edges):
+            raise ValueError(f"jam plan {self.name} repeats an edge")
+
+
+@dataclass(frozen=True)
 class AnalyticTargetSpec:
     """Named branch-local target assumptions for an extended DSE study."""
-    name: str = "shared-spad-4k-v4"
+    name: str = "shared-spad-4k-r1w1-v4"
     capacity_bytes: int = 4096
-    banks: int = 4
-    bank_mapping: str = "cyclic"
+    load_ports: int = 1
+    store_ports: int = 1
     shared_across_kernel: bool = True
     access_cycles: int = 1
     vector_width: int = 4
-    preload_mode: str = "serial"  # "serial" | "ideal_dma"
 
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("analytical target profile name must be non-empty")
+        if not self.shared_across_kernel:
+            raise ValueError(
+                "the extended DSE currently supports only a kernel-shared "
+                "scratchpad")
         if self.capacity_bytes <= 0:
             raise ValueError("analytical target capacity must be positive")
-        if self.banks <= 0:
-            raise ValueError("analytical target bank count must be positive")
-        if self.bank_mapping != "cyclic":
-            raise ValueError(
-                f"unsupported scratchpad bank mapping {self.bank_mapping!r}")
-        if self.access_cycles != 1:
-            raise ValueError(
-                "the current DSE infrastructure supports one-cycle scratchpad "
-                "accesses only")
+        if self.load_ports <= 0 or self.store_ports <= 0:
+            raise ValueError("analytical target port counts must be positive")
+        if self.access_cycles <= 0:
+            raise ValueError("scratchpad access latency must be positive")
         if self.vector_width <= 0:
             raise ValueError("analytical target vector width must be positive")
-        if self.preload_mode not in ("serial", "ideal_dma"):
-            raise ValueError(
-                f"unsupported preload mode {self.preload_mode!r}")
 
     @property
     def alignment_elements(self) -> int:
-        return math.lcm(self.banks, self.vector_width)
+        return self.vector_width
 
 
 @dataclass(frozen=True)
@@ -268,8 +281,7 @@ class BufferSpec:
     """Unplaced per-kernel buffer metadata returned by a memory planner."""
     name: str
     element_bytes: int
-    elements_by_tile: tuple[tuple[int, ...], ...]
-    refill_each_tile: bool
+    elements: tuple[int, ...]
     reuse_bearing: bool
     worker_invariant: bool
     replication_factor: int = 1
@@ -282,9 +294,6 @@ class BufferSpec:
         if self.replication_factor <= 0:
             raise ValueError(
                 f"buffer {self.name} replication factor must be positive")
-        if not self.reuse_bearing and self.refill_each_tile:
-            raise ValueError(
-                f"reuse-free buffer {self.name} cannot have a preload refill")
         if (not self.reuse_bearing or self.worker_invariant) \
                 and self.replication_factor != 1:
             raise ValueError(
@@ -302,80 +311,54 @@ class BufferSpec:
 
 @dataclass(frozen=True)
 class BufferPlan:
-    """A placed buffer with exact tile-local offsets and source-element maps."""
+    """A whole-kernel buffer placement and compact source-element map."""
     name: str
     placement: str
     base_element: int | None
-    base_elements_by_tile: tuple[int | None, ...]
-    replica_bases_by_tile: tuple[tuple[int, ...], ...]
-    allocation_bases_by_tile: tuple[tuple[int, ...], ...]
+    replica_bases: tuple[int, ...]
     element_bytes: int
     replication_factor: int
-    capacity_factor: int
-    elements_by_tile: tuple[tuple[int, ...], ...]
-    allocation_elements_by_tile: tuple[tuple[int, ...], ...]
-    source_to_slot_by_tile: tuple[tuple[tuple[int, int], ...], ...]
-    bytes_per_tile: tuple[int, ...]
-    allocation_bytes_per_tile: tuple[int, ...]
-    refill_each_tile: bool
+    elements: tuple[int, ...]
+    source_to_slot: tuple[tuple[int, int], ...]
+    bytes_used: int
 
-    def logical_elements(self, tile_index: int,
-                         replica: int = 0) -> tuple[int, ...]:
+    def logical_elements(self, replica: int = 0) -> tuple[int, ...]:
         """Return compact logical indices in sorted source-element order."""
-        bases = self.replica_bases_by_tile[tile_index]
-        if not bases:
+        if not self.replica_bases:
             return ()
-        if replica < 0 or replica >= len(bases):
+        if replica < 0 or replica >= len(self.replica_bases):
             raise IndexError(
                 f"buffer {self.name} replica {replica} is out of range")
-        base = bases[replica]
-        slots = dict(self.source_to_slot_by_tile[tile_index])
+        base = self.replica_bases[replica]
+        slots = dict(self.source_to_slot)
         return tuple(base + slots[source]
-                     for source in self.elements_by_tile[tile_index])
+                     for source in self.elements)
 
-    def logical_element(self, tile_index: int, source_element: int,
-                        replica: int = 0) -> int:
-        bases = self.replica_bases_by_tile[tile_index]
-        if replica < 0 or replica >= len(bases):
+    def logical_element(self, source_element: int, replica: int = 0) -> int:
+        if replica < 0 or replica >= len(self.replica_bases):
             raise IndexError(
                 f"buffer {self.name} replica {replica} is out of range")
-        slots = dict(self.source_to_slot_by_tile[tile_index])
+        slots = dict(self.source_to_slot)
         if source_element not in slots:
             raise KeyError(source_element)
-        return bases[replica] + slots[source_element]
-
-
-@dataclass(frozen=True)
-class TileInstance:
-    origin: tuple[tuple[str, int], ...]
-    shape: tuple[tuple[str, int], ...]
-    is_tail: bool
-
-    def extent(self, name: str) -> int:
-        for level_name, extent in self.shape:
-            if level_name == name:
-                return extent
-        raise KeyError(name)
+        return self.replica_bases[replica] + slots[source_element]
 
 
 @dataclass(frozen=True)
 class MemoryPlan:
     target: AnalyticTargetSpec
     buffers: tuple[BufferPlan, ...]
-    tile_sizes: tuple[tuple[str, int], ...]
-    tiles: tuple[TileInstance, ...]
     capacity_bytes_used: int
-    capacity_bytes_by_tile: tuple[int, ...]
-    held_region_bytes: int = 0
-    refill_frame_bytes: int = 0
-    refill_frame_bases_bytes: tuple[int, ...] = ()
+    proposed_capacity_bytes: int
+    fallback: bool
 
 
 @dataclass(frozen=True)
-class BankMetrics:
-    demand: tuple[int, ...]
-    bank_lb: int
-    bank_sched: int
+class PortMetrics:
+    read_ops: int
+    write_ops: int
+    port_lb: int
+    port_sched: int
 
 
 class IllegalCandidateError(ValueError):
@@ -383,7 +366,7 @@ class IllegalCandidateError(ValueError):
 
 
 class NoLegalExtendedCandidateError(RuntimeError):
-    """No extended candidate fits the selected analytical target profile."""
+    """No extended candidate is legal for the selected analytical target."""
 
 
 @dataclass(frozen=True)
@@ -408,7 +391,7 @@ class ScratchpadAccess:
 
 @dataclass(frozen=True)
 class PackedScratchpadAccess:
-    """One scalar or legally coalesced scratchpad operation."""
+    """One scalar or legally coalesced scratchpad read operation."""
     buffer: str
     logical_elements: tuple[int, ...]
     logical_step: tuple[tuple[str, int], ...]
@@ -424,8 +407,9 @@ class PhaseSummary:
     invariant_loads: int
     stores: int
     CP: int
-    bank_accesses: tuple[PackedScratchpadAccess, ...] = ()
-    bank_metrics: BankMetrics | None = None
+    spad_read_accesses: tuple[PackedScratchpadAccess, ...] = ()
+    spad_write_ops: int = 0
+    port_metrics: PortMetrics | None = None
     base_scheduled: int | None = None
     control_A: int = 0
     control_loads: int = 0
@@ -438,8 +422,10 @@ class PhaseSummary:
             raise ValueError("phase counts and CP must be non-negative")
         if self.base_scheduled is not None and self.base_scheduled < 0:
             raise ValueError("phase schedule must be non-negative")
-        if self.bank_metrics is not None and self.bank_metrics.bank_lb < 0:
-            raise ValueError("phase bank metrics must be non-negative")
+        if self.spad_write_ops < 0:
+            raise ValueError("phase scratchpad writes must be non-negative")
+        if self.port_metrics is not None and self.port_metrics.port_lb < 0:
+            raise ValueError("phase port metrics must be non-negative")
         controls = (self.control_A, self.control_loads, self.control_stores)
         if any(count < 0 for count in controls):
             raise ValueError("phase control counts must be non-negative")
@@ -450,41 +436,27 @@ class PhaseSummary:
 
 
 @dataclass(frozen=True)
-class ExtendedTileSummary:
-    tile: TileInstance
+class ExtendedExecutionSummary:
     preload: PhaseSummary
     full_compute: PhaseSummary
     compute_waves: tuple[PhaseSummary, ...]
 
     def __post_init__(self) -> None:
         if not self.compute_waves:
-            raise ValueError("extended tile must contain at least one compute wave")
+            raise ValueError("extended execution must contain a compute wave")
 
 
 @dataclass(frozen=True)
 class ExtendedPlanSummary:
     memory_plan: MemoryPlan
     jam_plan: JamPlan
-    tiles: tuple[ExtendedTileSummary, ...]
+    execution: ExtendedExecutionSummary
     schedule_structure_key: tuple
-    direct_tiles: tuple[ExtendedTileSummary, ...] = ()
     preload_scalar_elements: int = 0
     scratchpad_reads: int = 0
     avoided_direct_loads: int = 0
 
     def __post_init__(self) -> None:
-        if len(self.tiles) != len(self.memory_plan.tiles):
-            raise ValueError(
-                "extended tile summaries must align with the memory plan")
-        if tuple(tile.tile for tile in self.tiles) != self.memory_plan.tiles:
-            raise ValueError(
-                "extended tile summaries use different concrete tiles")
-        if self.direct_tiles and (
-                len(self.direct_tiles) != len(self.memory_plan.tiles)
-                or tuple(tile.tile for tile in self.direct_tiles)
-                != self.memory_plan.tiles):
-            raise ValueError(
-                "direct-reference tile summaries must align with the memory plan")
         if min(self.preload_scalar_elements, self.scratchpad_reads,
                self.avoided_direct_loads) < 0:
             raise ValueError("extended traffic counts must be non-negative")
@@ -506,14 +478,7 @@ class PhaseCost:
     compute: int
     load: int
     store: int
-    bank: BankMetrics
-
-
-@dataclass(frozen=True)
-class ExtendedReferenceCost:
-    plan_cgra_lb: int
-    pragma_aggregate: int
-    schedule_estimate: int | None
+    port: PortMetrics
 
 
 @dataclass(frozen=True)
@@ -526,8 +491,7 @@ class KernelSpec:
     repeat_waves: bool = True
     selection_mode: str = "knee"  # "knee" | "latency_fallback"
     order_spec: OrderSpec | None = None
-    tileable: frozenset[str] = frozenset()
-    jam_rules: tuple[JamRule, ...] = ()
+    jam_plans: tuple[JamPlanSpec, ...] = ()
     memory_planner: object | None = None
     extended_plan_builder: object | None = None
 
@@ -542,7 +506,7 @@ class KernelSpec:
 # Per-kernel chunk builders (split-aware; coalesce contiguous unrolled groups)
 # ---------------------------------------------------------------------------
 # Each builder receives the Candidate and reads (p, u) per level. It builds ONE
-# wave: p workers, each with u contiguous (unrolled) iterations at each tiled
+# wave: p workers, each with u contiguous (unrolled) iterations at each tunable
 # level; reduction/sequential levels are fully consumed. Contiguous array
 # accesses over an unrolled level coalesce (per worker); parallel/strided and
 # induction accesses stay scalar. A/CP depend only on exposure.
@@ -1384,13 +1348,10 @@ def _vectorized_worker_groups(extent: int, parallel: int, unroll: int,
 
 
 def _parallel_wave_boxes(
-        spec: KernelSpec, cand: Candidate, tile: TileInstance,
-        level_names: tuple[str, ...]) \
+        spec: KernelSpec, cand: Candidate, level_names: tuple[str, ...]) \
         -> tuple[tuple[tuple[tuple[str, int], ...],
                        tuple[tuple[str, int], ...]], ...]:
-    """Materialize exact wave origins/shapes inside one concrete tile."""
-    tile_origins = dict(tile.origin)
-    tile_shapes = dict(tile.shape)
+    """Materialize exact wave origins and tail shapes over the whole kernel."""
     traversal = tuple(
         name for name in candidate_order(spec, cand) if name in level_names)
     boxes = []
@@ -1403,8 +1364,8 @@ def _parallel_wave_boxes(
             return
         name = traversal[index]
         level = spec.level(name)
-        base = tile_origins.get(name, 0)
-        total = tile_shapes.get(name, level.trip)
+        base = 0
+        total = level.trip
         parallel, unroll = cand.factors(name)
         exposure = parallel * unroll
         for offset in range(0, total, exposure):
@@ -1469,8 +1430,9 @@ def _phase_with_optional_schedule(
     return PhaseSummary(
         A=phase.A, recurring_loads=phase.recurring_loads,
         invariant_loads=phase.invariant_loads, stores=phase.stores,
-        CP=phase.CP, bank_accesses=phase.bank_accesses,
-        bank_metrics=phase.bank_metrics,
+        CP=phase.CP, spad_read_accesses=phase.spad_read_accesses,
+        spad_write_ops=phase.spad_write_ops,
+        port_metrics=phase.port_metrics,
         base_scheduled=scheduled, control_A=phase.control_A,
         control_loads=phase.control_loads,
         control_stores=phase.control_stores)
@@ -1482,60 +1444,41 @@ def _zero_phase(schedule: bool) -> PhaseSummary:
 
 
 def _combine_wave_phases(waves: tuple[PhaseSummary, ...]) -> PhaseSummary:
-    combined_bank_metrics = None
-    combined_bank_accesses = tuple(
-        access for wave in waves for access in wave.bank_accesses)
-    if waves and all(wave.bank_metrics is not None for wave in waves):
-        bank_count = len(waves[0].bank_metrics.demand)
-        demand = tuple(sum(wave.bank_metrics.demand[bank]
-                           for wave in waves)
-                       for bank in range(bank_count))
-        total_slots = sum(demand)
-        combined_bank_metrics = BankMetrics(
-            demand,
-            max(max(demand, default=0), _ceil_div(total_slots, bank_count)),
-            0)
-        combined_bank_accesses = ()
     return PhaseSummary(
         A=sum(wave.A for wave in waves),
         recurring_loads=sum(wave.recurring_loads for wave in waves),
         invariant_loads=sum(wave.invariant_loads for wave in waves),
         stores=sum(wave.stores for wave in waves),
         CP=max((wave.CP for wave in waves), default=0),
-        bank_accesses=combined_bank_accesses,
-        bank_metrics=combined_bank_metrics,
+        spad_read_accesses=tuple(
+            access for wave in waves for access in wave.spad_read_accesses),
+        spad_write_ops=sum(wave.spad_write_ops for wave in waves),
         control_A=sum(wave.control_A for wave in waves),
         control_loads=sum(wave.control_loads for wave in waves),
         control_stores=sum(wave.control_stores for wave in waves))
 
 
 def _resident_preload_phase(
-        memory: MemoryPlan, tile_index: int, cfg: Config | None,
+        memory: MemoryPlan, cfg: Config | None,
         schedule: bool) -> tuple[PhaseSummary, int]:
     access_specs = []
     scalar_elements = 0
     for buffer in memory.buffers:
-        if buffer.placement == "direct":
+        if buffer.placement in ("direct", "direct-fallback"):
             continue
-        if not buffer.refill_each_tile and tile_index > 0:
-            continue
-        elements = buffer.allocation_elements_by_tile[tile_index]
+        elements = buffer.elements
         scalar_elements += len(elements) * buffer.replication_factor
         for replica in range(buffer.replication_factor):
             for group_index, group in enumerate(preload_logical_accesses(
-                    buffer, tile_index, memory.target, replica=replica)):
+                    buffer, memory.target, replica=replica)):
                 access_specs.append((
                     buffer.name, group, replica,
-                    (("tile", tile_index), ("preload", group_index))))
+                    (("preload", group_index),)))
     operation_count = len(access_specs)
-    logical_groups = tuple(specification[1] for specification in access_specs)
-    bank_metrics = (scratchpad_bank_metrics(logical_groups, memory.target)
-                    if schedule else
-                    scratchpad_bank_floor(logical_groups, memory.target))
     phase = PhaseSummary(
         A=0, recurring_loads=operation_count, invariant_loads=0,
         stores=operation_count, CP=(2 if operation_count else 0),
-        bank_metrics=bank_metrics)
+        spad_write_ops=operation_count)
     if not schedule:
         return phase, scalar_elements
     if cfg is None:
@@ -1550,13 +1493,13 @@ def _resident_preload_phase(
 
 
 def _batchnorm_memory_planner(
-        spec: KernelSpec, _cand: Candidate, _target: AnalyticTargetSpec,
-        tiles: tuple[TileInstance, ...]) -> tuple[BufferSpec, ...]:
+        spec: KernelSpec, _cand: Candidate,
+        _target: AnalyticTargetSpec) -> tuple[BufferSpec, ...]:
     element_count = math.prod(spec.level(name).trip for name in ("c", "h", "w"))
-    elements_by_tile = tuple(tuple(range(element_count)) for _ in tiles)
+    elements = tuple(range(element_count))
     return (
-        BufferSpec("input", 4, elements_by_tile, False, False, True),
-        BufferSpec("output", 4, elements_by_tile, False, False, True),
+        BufferSpec("input", 4, elements, False, True),
+        BufferSpec("output", 4, elements, False, True),
     )
 
 
@@ -1624,40 +1567,36 @@ def _batchnorm_extended_plan_builder(
         target: AnalyticTargetSpec, schedule: bool) -> ExtendedPlanSummary:
     memory = derive_memory_plan(spec, cand, target)
     jam = derive_jam_plan(spec, cand)
-    tile_summaries = []
-    structure = []
-    for tile in memory.tiles:
-        boxes = _parallel_wave_boxes(
-            spec, cand, tile, ("c", "h", "w"))
-        waves = tuple(_batchnorm_wave_phase(
-            spec, cand, origins, shapes, cfg, target, schedule)
-            for origins, shapes in boxes)
-        tile_summaries.append(ExtendedTileSummary(
-            tile=tile, preload=_zero_phase(schedule),
-            full_compute=_combine_wave_phases(waves), compute_waves=waves))
-        structure.append((tile.shape, tuple(
-            (shapes, tuple(
-                (name, tuple(size for _start, size in _active_worker_groups(
-                    dict(shapes)[name], *cand.factors(name))))
-                for name in ("c", "h", "w")))
-            for _origins, shapes in boxes)))
+    boxes = _parallel_wave_boxes(spec, cand, ("c", "h", "w"))
+    waves = tuple(_batchnorm_wave_phase(
+        spec, cand, origins, shapes, cfg, target, schedule)
+        for origins, shapes in boxes)
+    structure = tuple(
+        (shapes, tuple(
+            (name, tuple(size for _start, size in _active_worker_groups(
+                dict(shapes)[name], *cand.factors(name))))
+            for name in ("c", "h", "w")))
+        for _origins, shapes in boxes)
     return ExtendedPlanSummary(
-        memory_plan=memory, jam_plan=jam, tiles=tuple(tile_summaries),
+        memory_plan=memory, jam_plan=jam,
+        execution=ExtendedExecutionSummary(
+            preload=_zero_phase(schedule),
+            full_compute=_combine_wave_phases(waves), compute_waves=waves),
         schedule_structure_key=(
-            "batchnorm", candidate_order(spec, cand), tuple(structure)))
+            "batchnorm", candidate_order(spec, cand), jam.name, structure))
 
 
 def _gemv_memory_planner(
-        _spec: KernelSpec, _cand: Candidate, _target: AnalyticTargetSpec,
-        tiles: tuple[TileInstance, ...]) -> tuple[BufferSpec, ...]:
-    x_sets = tuple(tuple(range(64)) for _ in tiles)
-    row_sets = tuple(tuple(range(64)) for _ in tiles)
-    matrix_sets = tuple(tuple(range(64 * 64)) for _ in tiles)
+        _spec: KernelSpec, _cand: Candidate,
+        _target: AnalyticTargetSpec) -> tuple[BufferSpec, ...]:
+    x_set = tuple(range(64))
+    row_set = tuple(range(64))
+    matrix_set = tuple(range(64 * 64))
     return (
-        BufferSpec("x", 4, x_sets, False, True, True),
-        BufferSpec("A", 4, matrix_sets, False, False, True),
-        BufferSpec("input_y", 4, row_sets, False, False, True),
-        BufferSpec("output_y", 4, row_sets, False, False, True),
+        BufferSpec("x", 4, x_set, True, True),
+        BufferSpec("A", 4, matrix_set, False, True),
+        BufferSpec("input_y", 4, row_set, False, True),
+        BufferSpec("output_y", 4, row_set, False, True),
     )
 
 
@@ -1665,7 +1604,7 @@ def _gemv_wave_phase(
         cand: Candidate, origins_tuple: tuple[tuple[str, int], ...],
         shapes_tuple: tuple[tuple[str, int], ...], cfg: Config,
         target: AnalyticTargetSpec, schedule: bool,
-        memory: MemoryPlan | None = None, tile_index: int = 0,
+        memory: MemoryPlan | None = None,
         share_x: bool = True) \
         -> tuple[PhaseSummary, int]:
     origins = dict(origins_tuple)
@@ -1680,21 +1619,19 @@ def _gemv_wave_phase(
     resident = memory is not None
     x_reader_count = worker_count if share_x else row_count
     x_load_ops = x_reader_count * x_groups_per_worker
-    bank_groups = []
+    spad_accesses = []
     if resident:
         x_buffer = next(buffer for buffer in memory.buffers
                         if buffer.name == "x")
-        logical_x = x_buffer.logical_elements(tile_index)
+        logical_x = x_buffer.logical_elements()
         for reader_index in range(x_reader_count):
             for group_index in range(x_groups_per_worker):
                 start = group_index * target.vector_width
                 group = logical_x[start:start + target.vector_width]
-                bank_groups.append(group)
-    bank_metrics = None
-    if resident:
-        bank_metrics = (scratchpad_bank_metrics(bank_groups, target)
-                        if schedule else
-                        scratchpad_bank_floor(bank_groups, target))
+                spad_accesses.append(PackedScratchpadAccess(
+                    "x", group,
+                    (("reader", reader_index), ("group", group_index)),
+                    0, "x"))
     phase = PhaseSummary(
         A=130 * row_count + 2 * worker_count,
         recurring_loads=(
@@ -1702,7 +1639,7 @@ def _gemv_wave_phase(
             + (x_load_ops if resident else 0)),
         invariant_loads=4 + (0 if resident else x_load_ops),
         stores=len(row_vector_groups) + worker_count,
-        CP=11, bank_metrics=bank_metrics,
+        CP=11, spad_read_accesses=tuple(spad_accesses),
         control_A=2 * worker_count, control_loads=worker_count,
         control_stores=worker_count)
     if not schedule:
@@ -1717,7 +1654,7 @@ def _gemv_wave_phase(
     _worker_control(region, worker_count)
     x_buffer = (next(buffer for buffer in memory.buffers
                      if buffer.name == "x") if resident else None)
-    logical_x = x_buffer.logical_elements(tile_index) if x_buffer else ()
+    logical_x = x_buffer.logical_elements() if x_buffer else ()
 
     def emit_x_handles() -> list[int]:
         handles = []
@@ -1761,56 +1698,42 @@ def _gemv_extended_plan_builder(
         target: AnalyticTargetSpec, schedule: bool) -> ExtendedPlanSummary:
     memory = derive_memory_plan(spec, cand, target)
     jam = derive_jam_plan(spec, cand)
-    resident_tiles = []
-    direct_tiles = []
-    structure = []
-    preload_scalar_elements = 0
-    scratchpad_reads = 0
-    direct_x_scalar_loads = 0
+    resident = not memory.fallback
     share_x = any(
         edge.outer == "i" and edge.inner == "j"
         and "x" in edge.shared_operands for edge in jam.edges)
-    for tile_index, tile in enumerate(memory.tiles):
-        preload, preload_scalars = _resident_preload_phase(
-            memory, tile_index, cfg, schedule)
-        preload_scalar_elements += preload_scalars
-        boxes = _parallel_wave_boxes(spec, cand, tile, ("i",))
-        resident_waves = []
-        direct_waves = []
-        wave_structure = []
-        for origins, shapes in boxes:
-            resident_phase, scalar_reads = _gemv_wave_phase(
-                cand, origins, shapes, cfg, target, schedule,
-                memory=memory, tile_index=tile_index, share_x=share_x)
-            direct_phase, direct_scalars = _gemv_wave_phase(
-                cand, origins, shapes, cfg, target, schedule,
-                share_x=share_x)
-            resident_waves.append(resident_phase)
-            direct_waves.append(direct_phase)
+    preload, preload_scalar_elements = (
+        _resident_preload_phase(memory, cfg, schedule)
+        if resident else (_zero_phase(schedule), 0))
+    boxes = _parallel_wave_boxes(spec, cand, ("i",))
+    waves = []
+    scratchpad_reads = 0
+    direct_x_scalar_loads = 0
+    structure = []
+    for origins, shapes in boxes:
+        phase, scalar_reads = _gemv_wave_phase(
+            cand, origins, shapes, cfg, target, schedule,
+            memory=(memory if resident else None), share_x=share_x)
+        waves.append(phase)
+        if resident:
             scratchpad_reads += scalar_reads
-            direct_x_scalar_loads += direct_scalars
-            wave_structure.append((
-                shapes, tuple(size for _start, size in _active_worker_groups(
-                    dict(shapes)["i"], *cand.factors("i")))))
-        resident_waves_tuple = tuple(resident_waves)
-        direct_waves_tuple = tuple(direct_waves)
-        resident_tiles.append(ExtendedTileSummary(
-            tile=tile, preload=preload,
-            full_compute=_combine_wave_phases(resident_waves_tuple),
-            compute_waves=resident_waves_tuple))
-        direct_tiles.append(ExtendedTileSummary(
-            tile=tile, preload=_zero_phase(schedule),
-            full_compute=_combine_wave_phases(direct_waves_tuple),
-            compute_waves=direct_waves_tuple))
-        structure.append((tile.shape, tuple(wave_structure)))
+        direct_x_scalar_loads += scalar_reads
+        structure.append((
+            shapes, tuple(size for _start, size in _active_worker_groups(
+                dict(shapes)["i"], *cand.factors("i")))))
+    waves_tuple = tuple(waves)
     return ExtendedPlanSummary(
-        memory_plan=memory, jam_plan=jam, tiles=tuple(resident_tiles),
-        direct_tiles=tuple(direct_tiles),
-        schedule_structure_key=("gemv", tuple(structure)),
+        memory_plan=memory, jam_plan=jam,
+        execution=ExtendedExecutionSummary(
+            preload=preload, full_compute=_combine_wave_phases(waves_tuple),
+            compute_waves=waves_tuple),
+        schedule_structure_key=(
+            "gemv", jam.name, memory.fallback, tuple(structure)),
         preload_scalar_elements=preload_scalar_elements,
         scratchpad_reads=scratchpad_reads,
-        avoided_direct_loads=max(
-            0, direct_x_scalar_loads - preload_scalar_elements))
+        avoided_direct_loads=(
+            max(0, direct_x_scalar_loads - preload_scalar_elements)
+            if resident else 0))
 
 
 def _conv2d_output_sources(
@@ -1832,17 +1755,14 @@ def _conv2d_output_sources(
 
 
 @lru_cache(maxsize=None)
-def _conv2d_tile_address_sets(
-        tile: TileInstance) -> tuple[tuple[int, ...],
-                                     tuple[int, ...], tuple[int, ...]]:
-    origins = dict(tile.origin)
-    shapes = dict(tile.shape)
+def _conv2d_whole_address_sets() -> tuple[tuple[int, ...],
+                                          tuple[int, ...], tuple[int, ...]]:
     input_sources = set()
     weight_sources = set()
     output_sources = set()
-    for co in range(origins["co"], origins["co"] + shapes["co"]):
-        for oh in range(origins["oh"], origins["oh"] + shapes["oh"]):
-            for ow in range(origins["ow"], origins["ow"] + shapes["ow"]):
+    for co in range(4):
+        for oh in range(6):
+            for ow in range(6):
                 inputs, weights, output = _conv2d_output_sources(co, oh, ow)
                 input_sources.update(inputs)
                 weight_sources.update(weights)
@@ -1852,41 +1772,18 @@ def _conv2d_tile_address_sets(
 
 
 def _conv2d_memory_planner(
-        _spec: KernelSpec, _cand: Candidate, _target: AnalyticTargetSpec,
-        tiles: tuple[TileInstance, ...]) -> tuple[BufferSpec, ...]:
-    address_sets = tuple(_conv2d_tile_address_sets(tile) for tile in tiles)
+        _spec: KernelSpec, _cand: Candidate,
+        _target: AnalyticTargetSpec) -> tuple[BufferSpec, ...]:
+    input_set, weight_set, output_set = _conv2d_whole_address_sets()
     return (
-        BufferSpec("input", 4, tuple(values[0] for values in address_sets),
-                   True, True, True),
-        BufferSpec("weight", 4, tuple(values[1] for values in address_sets),
-                   True, True, True),
-        BufferSpec("output", 4, tuple(values[2] for values in address_sets),
-                   False, False, True),
+        BufferSpec("input", 4, input_set, True, True),
+        BufferSpec("weight", 4, weight_set, True, True),
+        BufferSpec("output", 4, output_set, False, True),
     )
 
 
 @lru_cache(maxsize=None)
-def _conv2d_cached_memory_plan(
-        order: tuple[str, ...], tile_sizes: tuple[tuple[str, int], ...],
-        target: AnalyticTargetSpec) -> MemoryPlan:
-    spec = KERNELS["conv2d"]
-    candidate = Candidate(
-        (("co", 1, 1), ("oh", 1, 1), ("ow", 1, 1), ("tap", 1, 1)),
-        order=order, tile_sizes=tile_sizes)
-    return derive_memory_plan(spec, candidate, target)
-
-
-@lru_cache(maxsize=None)
-def _conv2d_cached_preload_phase(
-        order: tuple[str, ...], tile_sizes: tuple[tuple[str, int], ...],
-        target: AnalyticTargetSpec, tile_index: int,
-        cfg: Config | None, schedule: bool) -> tuple[PhaseSummary, int]:
-    memory = _conv2d_cached_memory_plan(order, tile_sizes, target)
-    return _resident_preload_phase(memory, tile_index, cfg, schedule)
-
-
-@lru_cache(maxsize=None)
-def _conv2d_bank_reservations(
+def _conv2d_spad_accesses(
         cand: Candidate,
         origins_tuple: tuple[tuple[str, int], ...],
         shapes_tuple: tuple[tuple[str, int], ...],
@@ -1896,7 +1793,7 @@ def _conv2d_bank_reservations(
         share_weight_across_ow: bool,
         input_layout: tuple[int, tuple[tuple[int, int], ...]],
         weight_layout: tuple[int, tuple[tuple[int, int], ...]]) \
-        -> tuple[tuple[int, ...], ...]:
+        -> tuple[PackedScratchpadAccess, ...]:
     origins = dict(origins_tuple)
     shapes = dict(shapes_tuple)
 
@@ -1934,7 +1831,9 @@ def _conv2d_bank_reservations(
             for group in coalesced_element_groups(inputs, target.vector_width):
                 logical = tuple(input_base + input_slots[source]
                                 for source in group)
-                reservations.append(bank_set(logical, target))
+                reservations.append(PackedScratchpadAccess(
+                    "input", logical,
+                    (("operation", len(reservations)),), 0, "input"))
         weight_key = (
             point["co"],
             (oh_readers[point["oh"]]
@@ -1947,7 +1846,9 @@ def _conv2d_bank_reservations(
             for group in coalesced_element_groups(weights, target.vector_width):
                 logical = tuple(weight_base + weight_slots[source]
                                 for source in group)
-                reservations.append(bank_set(logical, target))
+                reservations.append(PackedScratchpadAccess(
+                    "weight", logical,
+                    (("operation", len(reservations)),), 0, "weight"))
     return tuple(reservations)
 
 
@@ -1960,7 +1861,7 @@ def _conv2d_wave_phase(
         share_input_across_co: bool,
         share_weight_across_oh: bool,
         share_weight_across_ow: bool,
-        bank_reservations: tuple[tuple[int, ...], ...] | None = None) \
+        spad_accesses: tuple[PackedScratchpadAccess, ...] | None = None) \
         -> tuple[PhaseSummary, int]:
     origins = dict(origins_tuple)
     shapes = dict(shapes_tuple)
@@ -1984,7 +1885,7 @@ def _conv2d_wave_phase(
     input_reader_count = len(co_groups) if share_input_across_co \
         else shapes["co"]
     input_patch_count = input_reader_count * shapes["oh"] * shapes["ow"]
-    resident = bank_reservations is not None
+    resident = spad_accesses is not None
     input_load_ops = input_patch_count * (9 if resident else 27)
     weight_oh_readers = len(oh_groups) if share_weight_across_oh \
         else shapes["oh"]
@@ -2009,17 +1910,12 @@ def _conv2d_wave_phase(
     co_reader_by_value = reader_map("co", co_groups)
     oh_reader_by_value = reader_map("oh", oh_groups)
     ow_reader_by_value = reader_map("ow", ow_groups)
-    bank_metrics = None
-    if resident:
-        bank_metrics = (scratchpad_bank_metrics(bank_reservations, target)
-                        if schedule else
-                        scratchpad_bank_floor(bank_reservations, target))
     phase = PhaseSummary(
         A=53 * output_count + 2 * worker_count,
         recurring_loads=input_load_ops + weight_load_ops + worker_count,
         invariant_loads=1,
         stores=len(output_groups) + worker_count,
-        CP=8, bank_metrics=bank_metrics,
+        CP=8, spad_read_accesses=(spad_accesses or ()),
         control_A=2 * worker_count, control_loads=worker_count,
         control_stores=worker_count)
     scalar_resident_reads = (
@@ -2095,7 +1991,7 @@ def _conv2d_wave_phase(
 def _conv2d_extended_plan_builder(
         spec: KernelSpec, cand: Candidate, cfg: Config,
         target: AnalyticTargetSpec, schedule: bool) -> ExtendedPlanSummary:
-    memory = _conv2d_cached_memory_plan(cand.order, cand.tile_sizes, target)
+    memory = derive_memory_plan(spec, cand, target)
     jam = derive_jam_plan(spec, cand)
     share_input = any(
         edge.outer == "co" and "input" in edge.shared_operands
@@ -2106,80 +2002,56 @@ def _conv2d_extended_plan_builder(
     share_weight_ow = any(
         edge.outer == "ow" and "weight" in edge.shared_operands
         for edge in jam.edges)
-    resident_tiles = []
-    direct_tiles = []
+    resident = not memory.fallback
+    phase_cfg = cfg if schedule else None
+    preload, preload_scalar_elements = (
+        _resident_preload_phase(memory, phase_cfg, schedule)
+        if resident else (_zero_phase(schedule), 0))
+    input_buffer = next(buffer for buffer in memory.buffers
+                        if buffer.name == "input")
+    weight_buffer = next(buffer for buffer in memory.buffers
+                         if buffer.name == "weight")
+    input_layout = (input_buffer.base_element, input_buffer.source_to_slot)
+    weight_layout = (weight_buffer.base_element, weight_buffer.source_to_slot)
+    boxes = _parallel_wave_boxes(spec, cand, ("co", "oh", "ow"))
+    waves = []
     structure = []
-    preload_scalar_elements = 0
     scratchpad_reads = 0
     direct_resident_scalar_loads = 0
-    for tile_index, tile in enumerate(memory.tiles):
-        phase_cfg = cfg if schedule else None
-        preload, preload_scalars = _conv2d_cached_preload_phase(
-            cand.order, cand.tile_sizes, target, tile_index,
-            phase_cfg, schedule)
-        preload_scalar_elements += preload_scalars
-        input_buffer = next(buffer for buffer in memory.buffers
-                            if buffer.name == "input")
-        weight_buffer = next(buffer for buffer in memory.buffers
-                             if buffer.name == "weight")
-        input_layout = (
-            input_buffer.replica_bases_by_tile[tile_index][0],
-            input_buffer.source_to_slot_by_tile[tile_index])
-        weight_layout = (
-            weight_buffer.replica_bases_by_tile[tile_index][0],
-            weight_buffer.source_to_slot_by_tile[tile_index])
-        phase_cand = Candidate(cand.split, cand.order)
-        phase_target = _target_with_preload_mode(target, "serial")
-        boxes = _parallel_wave_boxes(
-            spec, cand, tile, ("co", "oh", "ow"))
-        resident_waves = []
-        direct_waves = []
-        wave_structure = []
-        for origins, shapes in boxes:
-            bank_reservations = _conv2d_bank_reservations(
-                phase_cand, origins, shapes, phase_target,
-                share_input, share_weight_oh, share_weight_ow,
-                input_layout, weight_layout)
-            resident_phase, scalar_reads = _conv2d_wave_phase(
-                spec, phase_cand, origins, shapes, phase_cfg, phase_target,
-                schedule,
-                share_input, share_weight_oh, share_weight_ow,
-                bank_reservations=bank_reservations)
-            direct_phase, direct_scalars = _conv2d_wave_phase(
-                spec, phase_cand, origins, shapes, phase_cfg, phase_target,
-                schedule,
-                share_input, share_weight_oh, share_weight_ow)
-            resident_waves.append(resident_phase)
-            direct_waves.append(direct_phase)
+    for origins, shapes in boxes:
+        accesses = (_conv2d_spad_accesses(
+            cand, origins, shapes, target,
+            share_input, share_weight_oh, share_weight_ow,
+            input_layout, weight_layout) if resident else None)
+        phase, scalar_reads = _conv2d_wave_phase(
+            spec, cand, origins, shapes, phase_cfg, target, schedule,
+            share_input, share_weight_oh, share_weight_ow,
+            spad_accesses=accesses)
+        waves.append(phase)
+        if resident:
             scratchpad_reads += scalar_reads
-            direct_resident_scalar_loads += direct_scalars
-            wave_structure.append((
-                shapes, tuple(
-                    (name, tuple(size for _start, size in _active_worker_groups(
-                        dict(shapes)[name], *cand.factors(name))))
-                    for name in ("co", "oh", "ow"))))
-        resident_waves_tuple = tuple(resident_waves)
-        direct_waves_tuple = tuple(direct_waves)
-        resident_tiles.append(ExtendedTileSummary(
-            tile=tile, preload=preload,
-            full_compute=_combine_wave_phases(resident_waves_tuple),
-            compute_waves=resident_waves_tuple))
-        direct_tiles.append(ExtendedTileSummary(
-            tile=tile, preload=_zero_phase(schedule),
-            full_compute=_combine_wave_phases(direct_waves_tuple),
-            compute_waves=direct_waves_tuple))
-        structure.append((tile.shape, tuple(wave_structure)))
+        direct_resident_scalar_loads += scalar_reads
+        structure.append((
+            shapes, tuple(
+                (name, tuple(size for _start, size in _active_worker_groups(
+                    dict(shapes)[name], *cand.factors(name))))
+                for name in ("co", "oh", "ow"))))
+    waves_tuple = tuple(waves)
     return ExtendedPlanSummary(
-        memory_plan=memory, jam_plan=jam, tiles=tuple(resident_tiles),
-        direct_tiles=tuple(direct_tiles),
+        memory_plan=memory, jam_plan=jam,
+        execution=ExtendedExecutionSummary(
+            preload=preload, full_compute=_combine_wave_phases(waves_tuple),
+            compute_waves=waves_tuple),
         schedule_structure_key=(
-            "conv2d", candidate_order(spec, cand), share_input,
+            "conv2d", candidate_order(spec, cand), jam.name, memory.fallback,
+            share_input,
             share_weight_oh, share_weight_ow,
             tuple(structure)),
         preload_scalar_elements=preload_scalar_elements,
         scratchpad_reads=scratchpad_reads,
-        avoided_direct_loads=max(
-            0, direct_resident_scalar_loads - preload_scalar_elements))
+        avoided_direct_loads=(
+            max(0, direct_resident_scalar_loads - preload_scalar_elements)
+            if resident else 0))
 
 
 def _batchnorm_extended_chunk(cand: Candidate) -> Dag:
@@ -2198,7 +2070,8 @@ def _batchnorm_extended_chunk(cand: Candidate) -> Dag:
 
 def _gemv_extended_chunk(cand: Candidate) -> Dag:
     extent = min(64, math.prod(cand.factors("i")))
-    share_x = cand.factors("i")[1] > 1
+    jam = derive_jam_plan(KERNELS["gemv"], cand)
+    share_x = any("x" in edge.shared_operands for edge in jam.edges)
     phase, _scalar_reads = _gemv_wave_phase(
         cand, (("i", 0),), (("i", extent),), parse_config("6x6"),
         AnalyticTargetSpec(), False, share_x=share_x)
@@ -2272,7 +2145,8 @@ def _register():
             "amortizes the row iterator (charged once per worker). The A-load term "
             "is split-symmetric and large, so the i-level edge is modest but real."),
         order_spec=OrderSpec((("i", "j"),)),
-        jam_rules=(JamRule("i", "j", ("x",)),),
+        jam_plans=(JamPlanSpec(
+            "i-j-share-x", (JamRule("i", "j", ("x",)),)),),
         memory_planner=_gemv_memory_planner,
         extended_plan_builder=_gemv_extended_plan_builder,
     )
@@ -2295,14 +2169,33 @@ def _register():
             ("ow", "co", "oh", "tap"),
             ("ow", "oh", "co", "tap"),
         )),
-        tileable=frozenset(("co", "oh", "ow")),
-        jam_rules=(
-            JamRule("co", "oh"), JamRule("co", "ow"),
-            JamRule("co", "tap", ("input",)),
-            JamRule("oh", "co"), JamRule("oh", "ow"),
-            JamRule("oh", "tap", ("weight",)),
-            JamRule("ow", "co"), JamRule("ow", "oh"),
-            JamRule("ow", "tap", ("weight",)),
+        jam_plans=(
+            JamPlanSpec(
+                "share-input",
+                (JamRule("co", "tap", ("input",)),)),
+            JamPlanSpec(
+                "share-weight-oh",
+                (JamRule("oh", "tap", ("weight",)),)),
+            JamPlanSpec(
+                "share-weight-ow",
+                (JamRule("ow", "tap", ("weight",)),)),
+            JamPlanSpec(
+                "share-input-weight-oh",
+                (JamRule("co", "tap", ("input",)),
+                 JamRule("oh", "tap", ("weight",)))),
+            JamPlanSpec(
+                "share-input-weight-ow",
+                (JamRule("co", "tap", ("input",)),
+                 JamRule("ow", "tap", ("weight",)))),
+            JamPlanSpec(
+                "share-weight-oh-ow",
+                (JamRule("oh", "tap", ("weight",)),
+                 JamRule("ow", "tap", ("weight",)))),
+            JamPlanSpec(
+                "share-all",
+                (JamRule("co", "tap", ("input",)),
+                 JamRule("oh", "tap", ("weight",)),
+                 JamRule("ow", "tap", ("weight",)))),
         ),
         memory_planner=_conv2d_memory_planner,
         extended_plan_builder=_conv2d_extended_plan_builder,
@@ -2337,10 +2230,6 @@ def _register():
             ("c", "h", "w"),
             ("c", "w", "h"),
         )),
-        jam_rules=(
-            JamRule("c", "h"), JamRule("c", "w"),
-            JamRule("h", "w"), JamRule("w", "h"),
-        ),
         memory_planner=_batchnorm_memory_planner,
         extended_plan_builder=_batchnorm_extended_plan_builder,
     )
@@ -2580,7 +2469,7 @@ class Candidate:
     # tuple aligned with spec.levels: (level_name, parallel, unroll)
     split: tuple[tuple[str, int, int], ...]
     order: tuple[str, ...] = ()
-    tile_sizes: tuple[tuple[str, int], ...] = ()
+    jam_plan: str = "none"
 
     def factors(self, name: str) -> tuple[int, int]:
         for n, p, u in self.split:
@@ -2592,9 +2481,8 @@ class Candidate:
         signature = " ".join(f"{n}:P{p}U{u}" for n, p, u in self.split)
         if self.order:
             signature += " order=" + ">".join(self.order)
-        if self.tile_sizes:
-            signature += " tile=" + ",".join(
-                f"{name}:{size}" for name, size in self.tile_sizes)
+        if self.jam_plan != "none":
+            signature += f" jam={self.jam_plan}"
         return signature
 
 
@@ -2641,132 +2529,53 @@ def candidate_order(spec: KernelSpec, cand: Candidate) -> tuple[str, ...]:
     return order
 
 
-def _validated_tileable_levels(spec: KernelSpec) -> tuple[Level, ...]:
-    known = {level.name: level for level in spec.levels}
-    invalid = sorted(name for name in spec.tileable if name not in known)
-    if invalid:
-        raise ValueError(f"{spec.name}: unknown tileable levels {invalid}")
-    non_tiled = sorted(name for name in spec.tileable
-                       if not known[name].tiled())
-    if non_tiled:
-        raise ValueError(
-            f"{spec.name}: only parallel levels may be tileable, got {non_tiled}")
-    return tuple(level for level in spec.levels if level.name in spec.tileable)
-
-
-def legal_tile_sizes(level: Level) -> tuple[int, ...]:
-    """Powers of two through the trip plus the exact full trip."""
-    values = _powers_of_two_through(level.trip)
-    if level.trip not in values:
-        values.append(level.trip)
-    return tuple(values)
-
-
-def candidate_tile_sizes(spec: KernelSpec,
-                         cand: Candidate) -> tuple[tuple[str, int], ...]:
-    """Resolve nominal tile sizes; empty candidate state means untiled/full trip."""
-    tileable = _validated_tileable_levels(spec)
-    if not tileable:
-        if cand.tile_sizes:
-            raise ValueError(
-                f"{spec.name}: candidate declares tiles but no level is tileable")
-        return ()
-
-    expected_names = tuple(level.name for level in tileable)
-    if cand.tile_sizes:
-        names = tuple(name for name, _ in cand.tile_sizes)
-        if names != expected_names:
-            raise ValueError(
-                f"{spec.name}: tile sizes must follow source-level declaration "
-                f"order {expected_names}, got {names}")
-        resolved = cand.tile_sizes
-    else:
-        resolved = tuple((level.name, level.trip) for level in tileable)
-
-    for name, size in resolved:
-        level = spec.level(name)
-        if size not in legal_tile_sizes(level):
-            raise ValueError(
-                f"{spec.name}: illegal tile size {size} for {name}; legal sizes "
-                f"are {legal_tile_sizes(level)}")
-        p, u = cand.factors(name)
-        if p * u > size:
-            raise ValueError(
-                f"{spec.name}: {name}:P{p}U{u} exposure exceeds nominal tile "
-                f"size {size}")
-    return tuple(resolved)
-
-
-def materialize_tiles(spec: KernelSpec,
-                      cand: Candidate) -> tuple[TileInstance, ...]:
-    """Expand nominal tile sizes into exact concrete origins and tail shapes."""
-    tile_sizes = dict(candidate_tile_sizes(spec, cand))
-    if not tile_sizes:
-        return (TileInstance((), (), False),)
-
-    traversal = tuple(name for name in candidate_order(spec, cand)
-                      if name in tile_sizes)
-    tiles: list[TileInstance] = []
-
-    def rec(index: int, origins: list[tuple[str, int]],
-            shapes: list[tuple[str, int]], is_tail: bool) -> None:
-        if index == len(traversal):
-            tiles.append(TileInstance(tuple(origins), tuple(shapes), is_tail))
-            return
-        name = traversal[index]
-        level = spec.level(name)
-        nominal = tile_sizes[name]
-        for origin in range(0, level.trip, nominal):
-            extent = min(nominal, level.trip - origin)
-            origins.append((name, origin))
-            shapes.append((name, extent))
-            rec(index + 1, origins, shapes, is_tail or extent < nominal)
-            shapes.pop()
-            origins.pop()
-
-    rec(0, [], [], False)
-    return tuple(tiles)
-
-
-def _validated_jam_rules(spec: KernelSpec) -> dict[tuple[str, str], JamRule]:
+def _validated_jam_plans(spec: KernelSpec) -> tuple[JamPlanSpec, ...]:
     names = {level.name for level in spec.levels}
-    rules: dict[tuple[str, str], JamRule] = {}
-    for rule in spec.jam_rules:
-        if rule.outer not in names or rule.inner not in names:
+    plans = (JamPlanSpec("none"),) + spec.jam_plans
+    plan_names = [plan.name for plan in plans]
+    if len(set(plan_names)) != len(plan_names):
+        raise ValueError(f"{spec.name}: duplicate jam plan names {plan_names}")
+    for plan in plans:
+        for rule in plan.edges:
+            if rule.outer not in names or rule.inner not in names:
+                raise ValueError(
+                    f"{spec.name}: jam rule {rule.outer}->{rule.inner} names an "
+                    "unknown level")
+            if not spec.level(rule.outer).tiled():
+                raise ValueError(
+                    f"{spec.name}: jam outer level {rule.outer} must be parallel")
+        if plan.name == "none" and plan.edges:
             raise ValueError(
-                f"{spec.name}: jam rule {rule.outer}->{rule.inner} names an "
-                "unknown level")
-        if not spec.level(rule.outer).tiled():
-            raise ValueError(
-                f"{spec.name}: jam outer level {rule.outer} must be parallel")
-        key = (rule.outer, rule.inner)
-        if key in rules:
-            raise ValueError(
-                f"{spec.name}: duplicate jam rule {rule.outer}->{rule.inner}")
-        rules[key] = rule
-    return rules
+                f"{spec.name}: reserved jam plan none must be empty")
+    return plans
 
 
 def derive_jam_plan(spec: KernelSpec, cand: Candidate) -> JamPlan:
-    """Derive maximal declared jam edges in selected nesting order."""
+    """Resolve and validate one explicit complete jam plan."""
     order = candidate_order(spec, cand)
-    rules = _validated_jam_rules(spec)
-    edges: list[JamRule] = []
-    for outer_index, outer in enumerate(order[:-1]):
-        level = spec.level(outer)
-        _p, unroll = cand.factors(outer)
-        if not level.tiled() or unroll <= 1:
-            continue
-        for inner in order[outer_index + 1:]:
-            rule = rules.get((outer, inner))
-            if rule is not None:
-                edges.append(rule)
-    return JamPlan(order, tuple(edges))
+    plans = {plan.name: plan for plan in _validated_jam_plans(spec)}
+    if cand.jam_plan not in plans:
+        raise ValueError(
+            f"{spec.name}: undeclared jam plan {cand.jam_plan!r}; legal plans "
+            f"are {tuple(plans)}")
+    plan = plans[cand.jam_plan]
+    positions = {name: index for index, name in enumerate(order)}
+    for edge in plan.edges:
+        _parallel, unroll = cand.factors(edge.outer)
+        if unroll <= 1:
+            raise ValueError(
+                f"{spec.name}: jam plan {plan.name} requires "
+                f"{edge.outer} unroll > 1")
+        if positions[edge.outer] >= positions[edge.inner]:
+            raise ValueError(
+                f"{spec.name}: jam plan {plan.name} requires {edge.inner} "
+                f"beneath {edge.outer} in order {order}")
+    return JamPlan(plan.name, order, plan.edges)
 
 
 def _uses_extended_candidate_space(spec: KernelSpec) -> bool:
-    return (spec.order_spec is not None or bool(spec.tileable)
-            or bool(spec.jam_rules) or spec.memory_planner is not None
+    return (spec.order_spec is not None or bool(spec.jam_plans)
+            or spec.memory_planner is not None
             or spec.extended_plan_builder is not None)
 
 
@@ -2782,32 +2591,21 @@ def _enumerate_extended_candidates(
         spec: KernelSpec, max_parallel: int | None,
         max_unroll: int | None, exposure_cap: int | None) -> list[Candidate]:
     orders = _validated_orders(spec)
-    tileable = _validated_tileable_levels(spec)
+    jam_plans = _validated_jam_plans(spec)
     base_candidates = enumerate_candidates(
         _legacy_spec_view(spec), max_parallel, max_unroll, exposure_cap)
-    if orders == (_source_order(spec),) and not tileable:
+    if orders == (_source_order(spec),) and jam_plans == (JamPlanSpec("none"),):
         return base_candidates
-
-    tile_choices: list[tuple[tuple[str, int], ...]] = [()]
-    for level in tileable:
-        expanded = []
-        for prefix in tile_choices:
-            for size in legal_tile_sizes(level):
-                expanded.append(prefix + ((level.name, size),))
-        tile_choices = expanded
 
     out: list[Candidate] = []
     source = _source_order(spec)
     for order in orders:
         stored_order = () if order == source else order
         for base in base_candidates:
-            for tile_sizes in tile_choices:
-                stored_tile_sizes = (() if all(
-                    size == spec.level(name).trip
-                    for name, size in tile_sizes) else tile_sizes)
-                cand = Candidate(base.split, stored_order, stored_tile_sizes)
+            for plan in jam_plans:
+                cand = Candidate(base.split, stored_order, plan.name)
                 try:
-                    candidate_tile_sizes(spec, cand)
+                    derive_jam_plan(spec, cand)
                 except ValueError:
                     continue
                 out.append(cand)
@@ -2867,251 +2665,85 @@ def enumerate_candidates(spec: KernelSpec, max_parallel: int | None = None,
     return out
 
 
-def active_tile_exposure(cand: Candidate, tile: TileInstance,
-                         level_name: str) -> int:
-    """Clamp nominal pragma exposure to a concrete tail's actual extent."""
-    p, u = cand.factors(level_name)
-    return min(p * u, tile.extent(level_name))
-
-
 def _align_up(value: int, alignment: int) -> int:
     if alignment <= 0:
         raise ValueError("alignment must be positive")
     return _ceil_div(value, alignment) * alignment
 
 
-def _normalized_buffer_specs(buffer_specs: tuple[BufferSpec, ...],
-                             tile_count: int) -> tuple[BufferSpec, ...]:
+def _normalized_whole_buffer_specs(
+        buffer_specs: tuple[BufferSpec, ...]) -> tuple[BufferSpec, ...]:
     names = [buffer.name for buffer in buffer_specs]
     if len(set(names)) != len(names):
-        raise ValueError("memory planner returned duplicate buffer names")
+        raise ValueError(f"duplicate buffer names in memory plan: {names}")
     normalized = []
     for buffer in buffer_specs:
-        if len(buffer.elements_by_tile) != tile_count:
-            raise ValueError(
-                f"buffer {buffer.name} has {len(buffer.elements_by_tile)} tile "
-                f"element sets, expected {tile_count}")
-        exact_sets = tuple(tuple(sorted(set(elements)))
-                           for elements in buffer.elements_by_tile)
-        if any(element < 0 for elements in exact_sets for element in elements):
+        elements = tuple(sorted(set(buffer.elements)))
+        if any(element < 0 for element in elements):
             raise ValueError(
                 f"buffer {buffer.name} contains a negative source element index")
         normalized.append(BufferSpec(
             name=buffer.name, element_bytes=buffer.element_bytes,
-            elements_by_tile=exact_sets,
-            refill_each_tile=buffer.refill_each_tile,
-            reuse_bearing=buffer.reuse_bearing,
+            elements=elements, reuse_bearing=buffer.reuse_bearing,
             worker_invariant=buffer.worker_invariant,
             replication_factor=buffer.replication_factor))
     return tuple(normalized)
 
 
-def _layout_memory_plan(
+def _layout_whole_memory_plan(
         target: AnalyticTargetSpec,
-        tile_sizes: tuple[tuple[str, int], ...],
-        tiles: tuple[TileInstance, ...],
         raw_buffers: tuple[BufferSpec, ...]) -> MemoryPlan:
-    """Lay out held data plus exact tile-local combined refill frames.
-
-    Held-once buffers occupy one stable declaration-order region. Refilled
-    buffers are packed together for each concrete tile in declaration order;
-    serial mode reserves one frame sized for the largest tile layout and ideal
-    DMA reserves two stable, nonoverlapping frames of that maximum span. Buffer
-    offsets may vary by tile within a frame, while frame bases remain stable.
-    """
-    buffers = _normalized_buffer_specs(raw_buffers, len(tiles))
-    tile_count = len(tiles)
-    allocation_elements_by_buffer = []
-    for buffer in buffers:
-        if buffer.placement == "direct":
-            allocation_elements_by_buffer.append(buffer.elements_by_tile)
-        elif buffer.refill_each_tile:
-            allocation_elements_by_buffer.append(buffer.elements_by_tile)
-        else:
-            held_elements = tuple(sorted({
-                element for elements in buffer.elements_by_tile
-                for element in elements
-            }))
-            allocation_elements_by_buffer.append(
-                tuple(held_elements for _ in tiles))
-
-    bases_by_buffer: list[list[int | None]] = [
-        [None] * tile_count for _ in buffers]
-    replica_bases_by_buffer: list[list[tuple[int, ...]]] = [
-        [()] * tile_count for _ in buffers]
-    allocation_bases_by_buffer: list[list[tuple[int, ...]]] = [
-        [()] * tile_count for _ in buffers]
-    allocation_bytes_by_buffer: list[list[int]] = [
-        [0] * tile_count for _ in buffers]
-
-    # Held buffers coexist for the entire kernel and therefore receive one
-    # stable region, ordered only among other held buffers.
+    """Lay out one whole-kernel resident set or select direct fallback."""
+    buffers = _normalized_whole_buffer_specs(raw_buffers)
     cursor_bytes = 0
-    held_indices = [
-        index for index, buffer in enumerate(buffers)
-        if buffer.placement != "direct" and not buffer.refill_each_tile]
-    for buffer_index in held_indices:
-        buffer = buffers[buffer_index]
-        segment_elements = len(
-            allocation_elements_by_buffer[buffer_index][0])
-        if segment_elements:
+    proposed = []
+    for buffer in buffers:
+        placement = buffer.placement
+        bases = []
+        allocation_start = cursor_bytes
+        if placement != "direct" and buffer.elements:
             alignment_bytes = target.alignment_elements * buffer.element_bytes
-            allocation_start = cursor_bytes
-            stable_bases = []
             for _replica in range(buffer.replication_factor):
                 cursor_bytes = _align_up(cursor_bytes, alignment_bytes)
-                stable_bases.append(cursor_bytes // buffer.element_bytes)
-                cursor_bytes += segment_elements * buffer.element_bytes
-            allocation_bytes = cursor_bytes - allocation_start
-            stable_bases_tuple = tuple(stable_bases)
-            for tile_index in range(tile_count):
-                bases_by_buffer[buffer_index][tile_index] = stable_bases[0]
-                replica_bases_by_buffer[buffer_index][tile_index] = \
-                    stable_bases_tuple
-                allocation_bases_by_buffer[buffer_index][tile_index] = \
-                    stable_bases_tuple
-                allocation_bytes_by_buffer[buffer_index][tile_index] = \
-                    allocation_bytes
-    held_region_bytes = cursor_bytes
+                bases.append(cursor_bytes // buffer.element_bytes)
+                cursor_bytes += len(buffer.elements) * buffer.element_bytes
+        proposed.append((buffer, placement, tuple(bases),
+                         cursor_bytes - allocation_start))
 
-    # Refilled buffers share one frame. Their relative offsets are recomputed
-    # for every concrete tile so complementary footprints do not reserve the
-    # sum of independent per-buffer maxima.
-    refill_indices = [
-        index for index, buffer in enumerate(buffers)
-        if buffer.placement != "direct" and buffer.refill_each_tile]
-    relative_bases_by_buffer: list[list[tuple[int, ...]]] = [
-        [()] * tile_count for _ in buffers]
-    tile_frame_spans = [0] * tile_count
-    for tile_index in range(tile_count):
-        frame_cursor = 0
-        for buffer_index in refill_indices:
-            buffer = buffers[buffer_index]
-            segment_elements = len(
-                allocation_elements_by_buffer[buffer_index][tile_index])
-            allocation_start = frame_cursor
-            relative_bases = []
-            if segment_elements:
-                alignment_bytes = (
-                    target.alignment_elements * buffer.element_bytes)
-                for _replica in range(buffer.replication_factor):
-                    frame_cursor = _align_up(frame_cursor, alignment_bytes)
-                    relative_bases.append(frame_cursor)
-                    frame_cursor += segment_elements * buffer.element_bytes
-            relative_bases_by_buffer[buffer_index][tile_index] = \
-                tuple(relative_bases)
-            allocation_bytes_by_buffer[buffer_index][tile_index] = \
-                frame_cursor - allocation_start
-        tile_frame_spans[tile_index] = frame_cursor
-
-    refill_frame_bytes = max(tile_frame_spans, default=0)
-    refill_frame_bases_bytes: tuple[int, ...] = ()
-    if refill_indices and refill_frame_bytes:
-        frame_alignment_bytes = math.lcm(*(
-            target.alignment_elements * buffers[index].element_bytes
-            for index in refill_indices))
-        frame_count = 2 if target.preload_mode == "ideal_dma" else 1
-        frame_bases = []
-        frame_base = _align_up(held_region_bytes, frame_alignment_bytes)
-        for frame_index in range(frame_count):
-            frame_bases.append(frame_base)
-            if frame_index + 1 < frame_count:
-                frame_base = _align_up(
-                    frame_base + refill_frame_bytes, frame_alignment_bytes)
-        refill_frame_bases_bytes = tuple(frame_bases)
-        cursor_bytes = frame_bases[-1] + refill_frame_bytes
-
-        for buffer_index in refill_indices:
-            buffer = buffers[buffer_index]
-            for tile_index in range(tile_count):
-                relative_bases = relative_bases_by_buffer[
-                    buffer_index][tile_index]
-                allocation_bases = tuple(
-                    (frame_base_bytes + relative_base) // buffer.element_bytes
-                    for frame_base_bytes in frame_bases
-                    for relative_base in relative_bases)
-                replica_bases = allocation_bases[:buffer.replication_factor]
-                allocation_bases_by_buffer[buffer_index][tile_index] = \
-                    allocation_bases
-                replica_bases_by_buffer[buffer_index][tile_index] = \
-                    replica_bases
-                if replica_bases:
-                    bases_by_buffer[buffer_index][tile_index] = replica_bases[0]
-                allocation_bytes_by_buffer[buffer_index][tile_index] *= \
-                    frame_count
-
-    if refill_frame_bases_bytes:
-        capacity_tuple = tuple(
-            refill_frame_bases_bytes[-1] + tile_span
-            for tile_span in tile_frame_spans)
-    else:
-        capacity_tuple = tuple(held_region_bytes for _ in tiles)
-
-    if cursor_bytes > target.capacity_bytes:
-        raise IllegalCandidateError(
-            f"scratchpad capacity exceeded: {cursor_bytes} > "
-            f"{target.capacity_bytes} bytes")
-
+    fallback = cursor_bytes > target.capacity_bytes
     plans = []
-    for buffer_index, buffer in enumerate(buffers):
-        capacity_factor = (0 if buffer.placement == "direct" else
-                           (2 if buffer.refill_each_tile
-                            and target.preload_mode == "ideal_dma" else 1))
-        bases_by_tile = tuple(bases_by_buffer[buffer_index])
-        nonempty_bases = [base for base in bases_by_tile if base is not None]
-        base_element = (nonempty_bases[0]
-                        if len(nonempty_bases) == tile_count
-                        and len(set(nonempty_bases)) == 1 else None)
-        exact_allocations = allocation_elements_by_buffer[buffer_index]
-        data_bytes = tuple(
-            len(elements) * buffer.element_bytes * buffer.replication_factor
-            for elements in exact_allocations)
+    for buffer, placement, bases, bytes_used in proposed:
+        resolved_placement = (
+            "direct-fallback" if fallback and placement != "direct"
+            else placement)
+        resolved_bases = () if resolved_placement in (
+            "direct", "direct-fallback") else bases
         plans.append(BufferPlan(
-            name=buffer.name, placement=buffer.placement,
-            base_element=base_element, base_elements_by_tile=bases_by_tile,
-            replica_bases_by_tile=tuple(
-                replica_bases_by_buffer[buffer_index]),
-            allocation_bases_by_tile=tuple(
-                allocation_bases_by_buffer[buffer_index]),
+            name=buffer.name, placement=resolved_placement,
+            base_element=(resolved_bases[0] if resolved_bases else None),
+            replica_bases=resolved_bases,
             element_bytes=buffer.element_bytes,
             replication_factor=buffer.replication_factor,
-            capacity_factor=capacity_factor,
-            elements_by_tile=buffer.elements_by_tile,
-            allocation_elements_by_tile=exact_allocations,
-            source_to_slot_by_tile=tuple(
-                tuple((source, offset) for offset, source in enumerate(elements))
-                for elements in exact_allocations),
-            bytes_per_tile=data_bytes,
-            allocation_bytes_per_tile=tuple(
-                allocation_bytes_by_buffer[buffer_index]),
-            refill_each_tile=buffer.refill_each_tile))
+            elements=buffer.elements,
+            source_to_slot=tuple(
+                (source, offset) for offset, source in enumerate(buffer.elements)),
+            bytes_used=(0 if not resolved_bases else bytes_used)))
     return MemoryPlan(
-        target=target, buffers=tuple(plans), tile_sizes=tile_sizes,
-        tiles=tiles, capacity_bytes_used=cursor_bytes,
-        capacity_bytes_by_tile=capacity_tuple,
-        held_region_bytes=held_region_bytes,
-        refill_frame_bytes=refill_frame_bytes,
-        refill_frame_bases_bytes=refill_frame_bases_bytes)
+        target=target, buffers=tuple(plans),
+        capacity_bytes_used=(0 if fallback else cursor_bytes),
+        proposed_capacity_bytes=cursor_bytes, fallback=fallback)
 
 
 def derive_memory_plan(spec: KernelSpec, cand: Candidate,
                        target: AnalyticTargetSpec) -> MemoryPlan:
-    """Invoke a kernel planner and apply the spec-defined deterministic layout.
-
-    A memory planner is a top-level callable taking ``(spec, candidate, target,
-    tiles)`` and returning buffer declarations in deterministic metadata order.
-    Placement is derived from the records' reuse, worker-invariance, and
-    replication metadata; it is never chosen from a tile's observed duplicates.
-    """
-    tiles = materialize_tiles(spec, cand)
-    tile_sizes = candidate_tile_sizes(spec, cand)
+    """Invoke a whole-kernel planner and derive resident or direct fallback."""
     if spec.memory_planner is None:
         raw_buffers: tuple[BufferSpec, ...] = ()
     else:
         if not callable(spec.memory_planner):
             raise TypeError(f"{spec.name}: memory_planner must be callable")
-        raw_buffers = tuple(spec.memory_planner(spec, cand, target, tiles))
-    return _layout_memory_plan(target, tile_sizes, tiles, raw_buffers)
+        raw_buffers = tuple(spec.memory_planner(spec, cand, target))
+    return _layout_whole_memory_plan(target, raw_buffers)
 
 
 def contiguous_element_runs(elements) -> tuple[tuple[int, ...], ...]:
@@ -3144,22 +2776,19 @@ def coalesced_element_groups(elements, vector_width: int) \
 
 
 def preload_logical_accesses(
-        buffer: BufferPlan, tile_index: int, target: AnalyticTargetSpec,
-        replica: int = 0, allocation_copy: int = 0) \
+        buffer: BufferPlan, target: AnalyticTargetSpec,
+        replica: int = 0) \
         -> tuple[tuple[int, ...], ...]:
     """Return coalesced destination elements for one resident-buffer fill."""
-    if buffer.placement == "direct":
+    if buffer.placement in ("direct", "direct-fallback"):
         return ()
-    allocation_bases = buffer.allocation_bases_by_tile[tile_index]
-    base_index = allocation_copy * buffer.replication_factor + replica
-    if base_index < 0 or base_index >= len(allocation_bases):
+    if replica < 0 or replica >= len(buffer.replica_bases):
         raise IndexError(
-            f"buffer {buffer.name} allocation copy/replica is out of range")
-    base = allocation_bases[base_index]
-    sources = buffer.allocation_elements_by_tile[tile_index]
-    source_to_offset = dict(buffer.source_to_slot_by_tile[tile_index])
+            f"buffer {buffer.name} replica is out of range")
+    base = buffer.replica_bases[replica]
+    source_to_offset = dict(buffer.source_to_slot)
     accesses = []
-    for group in coalesced_element_groups(sources, target.vector_width):
+    for group in coalesced_element_groups(buffer.elements, target.vector_width):
         accesses.append(tuple(base + source_to_offset[source]
                               for source in group))
     return tuple(accesses)
@@ -3178,12 +2807,6 @@ def order_contiguous_stream(
             f"{spec.name}: unknown contiguous level {contiguous_level!r}")
     return (stream if candidate_order(spec, cand)[-1] == contiguous_level
             else None)
-
-
-def bank_set(elements, target: AnalyticTargetSpec) -> tuple[int, ...]:
-    """Exact cyclic-bank set reserved by one scalar or vector operation."""
-    return tuple(sorted({element % target.banks for element in elements}))
-
 
 def pack_scratchpad_accesses(
         accesses, target: AnalyticTargetSpec) -> tuple[PackedScratchpadAccess, ...]:
@@ -3238,71 +2861,22 @@ def pack_scratchpad_accesses(
     return tuple(access for _order, access in packed_with_order)
 
 
-def scratchpad_bank_metrics(accesses, target: AnalyticTargetSpec) -> BankMetrics:
-    """Compute the analytical bank floor and stable earliest-fit packing."""
-    demand = [0] * target.banks
-    cycle_banks: list[set[int]] = []
-    for elements in accesses:
-        banks = set(bank_set(elements, target))
-        if not banks:
-            continue
-        for bank in banks:
-            demand[bank] += 1
-        for occupied in cycle_banks:
-            if banks.isdisjoint(occupied):
-                occupied.update(banks)
-                break
-        else:
-            cycle_banks.append(set(banks))
-    total_slots = sum(demand)
-    bank_lb = max(max(demand, default=0),
-                  _ceil_div(total_slots, target.banks))
-    return BankMetrics(tuple(demand), bank_lb, len(cycle_banks))
+def scratchpad_port_metrics(
+        read_ops: int, write_ops: int,
+        target: AnalyticTargetSpec) -> PortMetrics:
+    """Return deterministic non-pipelined scratchpad port pressure."""
+    if read_ops < 0 or write_ops < 0:
+        raise ValueError("scratchpad operation counts must be non-negative")
+    read_cycles = _ceil_div(read_ops, target.load_ports) * target.access_cycles
+    write_cycles = _ceil_div(write_ops, target.store_ports) * target.access_cycles
+    port_cycles = max(read_cycles, write_cycles)
+    return PortMetrics(read_ops, write_ops, port_cycles, port_cycles)
 
 
-def scratchpad_bank_floor(accesses, target: AnalyticTargetSpec) -> BankMetrics:
-    """Compute bank demand/lower bound without aggregate-pass list packing."""
-    demand = [0] * target.banks
-    for elements in accesses:
-        for bank in bank_set(elements, target):
-            demand[bank] += 1
-    total_slots = sum(demand)
-    bank_lb = max(max(demand, default=0),
-                  _ceil_div(total_slots, target.banks))
-    return BankMetrics(tuple(demand), bank_lb, 0)
-
-
-def packed_access_bank_metrics(
-        accesses, target: AnalyticTargetSpec) -> BankMetrics:
-    return scratchpad_bank_metrics(
-        (access.logical_elements for access in accesses), target)
-
-
-def _validated_tile_costs(preload, compute) -> tuple[tuple[int, ...],
-                                                     tuple[int, ...]]:
-    preload_costs = tuple(preload)
-    compute_costs = tuple(compute)
-    if len(preload_costs) != len(compute_costs):
-        raise ValueError("preload and compute cost vectors must have equal length")
-    if any(cost < 0 for cost in preload_costs + compute_costs):
-        raise ValueError("tile costs must be non-negative")
-    return preload_costs, compute_costs
-
-
-def compose_serial_tiles(preload, compute) -> int:
-    preload_costs, compute_costs = _validated_tile_costs(preload, compute)
-    return sum(p + c for p, c in zip(preload_costs, compute_costs))
-
-
-def compose_ideal_dma_tiles(preload, compute) -> int:
-    preload_costs, compute_costs = _validated_tile_costs(preload, compute)
-    if not preload_costs:
-        return 0
-    return (preload_costs[0]
-            + sum(max(compute_costs[index], preload_costs[index + 1])
-                  for index in range(len(preload_costs) - 1))
-            + compute_costs[-1])
-
+def packed_access_port_metrics(
+        accesses, write_ops: int,
+        target: AnalyticTargetSpec) -> PortMetrics:
+    return scratchpad_port_metrics(len(tuple(accesses)), write_ops, target)
 
 # ---------------------------------------------------------------------------
 # Evaluation
@@ -3362,19 +2936,15 @@ class CandResult:
     absolute_cgra_lb: int | None = None
     preload_scalar_elements: int = 0
     preload_load_ops: int = 0
-    preload_spad_store_ops: int = 0
+    preload_spad_write_ops: int = 0
     scratchpad_reads: int = 0
     avoided_direct_loads: int = 0
     capacity_bytes_used: int = 0
-    bank_lb: int = 0
-    bank_sched: int = 0
-    num_tiles: int = 0
+    spad_port_lb: int = 0
+    spad_port_sched: int = 0
     schedule_structure_key: tuple = ()
-    direct_plan_cgra_lb: int | None = None
-    direct_pragma_exposure_aggregate: int | None = None
-    direct_schedule_estimate: int | None = None
-    recurring_demand: tuple[int, int, int, int] = ()  # P/L/S/B, no control
-    nominal_terms: tuple[int, int, int, int] = ()     # P/L/S/B wave terms
+    recurring_demand: tuple[int, int, int, int, int] = ()  # P/L/S/R/W
+    nominal_terms: tuple[int, int, int, int, int] = ()     # P/L/S/R/W
     nominal_cp: int = 0
 
 
@@ -3397,9 +2967,10 @@ def _cost_extended_phase(phase: PhaseSummary, cfg: Config,
     load = _ceil_div(phase.recurring_loads, cfg.L)
     store = _ceil_div(phase.stores, cfg.S)
     base_aggregate = max(phase.CP, compute, load, store)
-    bank = (phase.bank_metrics if phase.bank_metrics is not None
-            else packed_access_bank_metrics(phase.bank_accesses, target))
-    aggregate = max(base_aggregate, bank.bank_lb)
+    port = (phase.port_metrics if phase.port_metrics is not None
+            else packed_access_port_metrics(
+                phase.spad_read_accesses, phase.spad_write_ops, target))
+    aggregate = max(base_aggregate, port.port_lb)
     scheduled = None
     if schedule:
         if phase.base_scheduled is None:
@@ -3408,53 +2979,12 @@ def _cost_extended_phase(phase: PhaseSummary, cfg: Config,
             raise AssertionError(
                 f"phase schedule {phase.base_scheduled} < aggregate "
                 f"{base_aggregate}")
-        scheduled = max(phase.base_scheduled, bank.bank_sched)
+        scheduled = max(phase.base_scheduled, port.port_sched)
         if scheduled < aggregate:
             raise AssertionError(
-                f"bank-corrected phase schedule {scheduled} < aggregate "
+                f"port-corrected phase schedule {scheduled} < aggregate "
                 f"{aggregate}")
-    return PhaseCost(aggregate, scheduled, compute, load, store, bank)
-
-
-def _compose_extended_reference(
-        tiles: tuple[ExtendedTileSummary, ...], cfg: Config,
-        target: AnalyticTargetSpec, schedule: bool) -> ExtendedReferenceCost:
-    """Centrally compose an optional direct-memory audit reference."""
-    preload_costs = []
-    full_compute_costs = []
-    wave_costs_by_tile = []
-    preload_schedules = []
-    wave_schedules_by_tile = []
-    for tile in tiles:
-        preload_cost = _cost_extended_phase(
-            tile.preload, cfg, target, schedule)
-        full_cost = _cost_extended_phase(
-            tile.full_compute, cfg, target, False)
-        wave_costs = tuple(_cost_extended_phase(
-            wave, cfg, target, schedule) for wave in tile.compute_waves)
-        preload_costs.append(preload_cost.aggregate)
-        full_compute_costs.append(full_cost.aggregate)
-        wave_costs_by_tile.append(sum(cost.aggregate for cost in wave_costs))
-        if schedule:
-            preload_schedules.append(preload_cost.scheduled)
-            wave_schedules_by_tile.append(sum(
-                cost.scheduled for cost in wave_costs))
-
-    compose = (compose_serial_tiles if target.preload_mode == "serial"
-               else compose_ideal_dma_tiles)
-    plan_cgra_lb = compose(preload_costs, full_compute_costs)
-    pragma_aggregate = compose(preload_costs, wave_costs_by_tile)
-    schedule_estimate = (compose(preload_schedules, wave_schedules_by_tile)
-                         if schedule else None)
-    if plan_cgra_lb > pragma_aggregate:
-        raise AssertionError(
-            f"direct plan {plan_cgra_lb} > direct p_agg {pragma_aggregate}")
-    if schedule and pragma_aggregate > schedule_estimate:
-        raise AssertionError(
-            f"direct p_agg {pragma_aggregate} > direct sched "
-            f"{schedule_estimate}")
-    return ExtendedReferenceCost(
-        plan_cgra_lb, pragma_aggregate, schedule_estimate)
+    return PhaseCost(aggregate, scheduled, compute, load, store, port)
 
 
 def _evaluate_extended_candidate(
@@ -3473,61 +3003,24 @@ def _evaluate_extended_candidate(
         raise ValueError(
             f"{spec.name}: extended plan returned the wrong target profile")
 
-    direct_reference = (_compose_extended_reference(
-        plan.direct_tiles, cfg, resolved_target, schedule)
-        if plan.direct_tiles else None)
+    execution = plan.execution
+    preload_cost = _cost_extended_phase(
+        execution.preload, cfg, resolved_target, schedule)
+    full_compute_cost = _cost_extended_phase(
+        execution.full_compute, cfg, resolved_target, False)
+    all_wave_phases = execution.compute_waves
+    all_wave_costs = tuple(_cost_extended_phase(
+        wave, cfg, resolved_target, schedule) for wave in all_wave_phases)
 
-    preload_costs = []
-    full_compute_costs = []
-    wave_costs_by_tile = []
-    all_preload_costs = []
-    all_wave_costs = []
-    all_wave_phases = []
-    for tile in plan.tiles:
-        preload_cost = _cost_extended_phase(
-            tile.preload, cfg, resolved_target, schedule)
-        full_cost = _cost_extended_phase(
-            tile.full_compute, cfg, resolved_target, False)
-        wave_costs = tuple(_cost_extended_phase(
-            wave, cfg, resolved_target, schedule)
-            for wave in tile.compute_waves)
-        preload_costs.append(preload_cost.aggregate)
-        full_compute_costs.append(full_cost.aggregate)
-        wave_costs_by_tile.append(sum(cost.aggregate for cost in wave_costs))
-        all_preload_costs.append(preload_cost)
-        all_wave_costs.extend(wave_costs)
-        all_wave_phases.extend(tile.compute_waves)
-
-    if resolved_target.preload_mode == "serial":
-        plan_cgra_lb = compose_serial_tiles(
-            preload_costs, full_compute_costs)
-        pragma_aggregate = compose_serial_tiles(
-            preload_costs, wave_costs_by_tile)
-    else:
-        plan_cgra_lb = compose_ideal_dma_tiles(
-            preload_costs, full_compute_costs)
-        pragma_aggregate = compose_ideal_dma_tiles(
-            preload_costs, wave_costs_by_tile)
-
+    plan_cgra_lb = preload_cost.aggregate + full_compute_cost.aggregate
+    pragma_aggregate = preload_cost.aggregate + sum(
+        cost.aggregate for cost in all_wave_costs)
     schedule_estimate = None
     chunk_scheduled = None
     if schedule:
-        preload_schedules = tuple(cost.scheduled for cost in all_preload_costs)
-        wave_schedules_by_tile = []
-        wave_index = 0
-        for tile in plan.tiles:
-            count = len(tile.compute_waves)
-            wave_schedules_by_tile.append(sum(
-                all_wave_costs[index].scheduled
-                for index in range(wave_index, wave_index + count)))
-            wave_index += count
-        if resolved_target.preload_mode == "serial":
-            schedule_estimate = compose_serial_tiles(
-                preload_schedules, wave_schedules_by_tile)
-        else:
-            schedule_estimate = compose_ideal_dma_tiles(
-                preload_schedules, wave_schedules_by_tile)
-        chunk_scheduled = sum(wave_schedules_by_tile)
+        schedule_estimate = preload_cost.scheduled + sum(
+            cost.scheduled for cost in all_wave_costs)
+        chunk_scheduled = sum(cost.scheduled for cost in all_wave_costs)
 
     if plan_cgra_lb > pragma_aggregate:
         raise AssertionError(
@@ -3541,15 +3034,30 @@ def _evaluate_extended_candidate(
     compute_total = sum(cost.compute for cost in all_wave_costs)
     load_total = sum(cost.load for cost in all_wave_costs)
     store_total = sum(cost.store for cost in all_wave_costs)
-    bank_total = sum(cost.bank.bank_lb for cost in all_wave_costs)
+    read_port_wave_total = sum(
+        _ceil_div(cost.port.read_ops, resolved_target.load_ports)
+        * resolved_target.access_cycles for cost in all_wave_costs)
+    write_port_wave_total = sum(
+        _ceil_div(cost.port.write_ops, resolved_target.store_ports)
+        * resolved_target.access_cycles for cost in all_wave_costs)
+    recurring_read_port_cycles = (
+        _ceil_div(
+            sum(cost.port.read_ops for cost in all_wave_costs),
+            resolved_target.load_ports)
+        * resolved_target.access_cycles)
+    recurring_write_port_cycles = (
+        _ceil_div(
+            sum(cost.port.write_ops for cost in all_wave_costs),
+            resolved_target.store_ports)
+        * resolved_target.access_cycles)
     compute_aggregate = sum(cost.aggregate for cost in all_wave_costs)
     all_latency_bound = all(
-        phase.CP > max(cost.compute, cost.load, cost.store, cost.bank.bank_lb)
+        phase.CP > max(cost.compute, cost.load, cost.store, cost.port.port_lb)
         for phase, cost in zip(all_wave_phases, all_wave_costs))
     saturation = "latency-bound" if all_latency_bound else "resource-bound"
     binding_terms = {
         "P": compute_total, "L": load_total, "S": store_total,
-        "B": bank_total,
+        "R": read_port_wave_total, "W": write_port_wave_total,
     }
     binding_class = max(
         binding_terms, key=lambda key: (binding_terms[key], key == "L"))
@@ -3558,11 +3066,9 @@ def _evaluate_extended_candidate(
 
     recurring_loads = sum(phase.recurring_loads for phase in all_wave_phases)
     invariant_loads = sum(phase.invariant_loads for phase in all_wave_phases)
-    preload_load_ops = sum(
-        tile.preload.recurring_loads + tile.preload.invariant_loads
-        for tile in plan.tiles)
-    preload_store_ops = sum(tile.preload.stores for tile in plan.tiles)
-    all_bank_costs = all_preload_costs + all_wave_costs
+    preload_load_ops = (
+        execution.preload.recurring_loads + execution.preload.invariant_loads)
+    preload_store_ops = execution.preload.spad_write_ops
     algorithmic_A = sum(
         phase.A - phase.control_A for phase in all_wave_phases)
     recurring_data_loads = sum(
@@ -3570,13 +3076,6 @@ def _evaluate_extended_candidate(
         for phase in all_wave_phases)
     data_stores = sum(
         phase.stores - phase.control_stores for phase in all_wave_phases)
-    compute_bank_demand = tuple(
-        sum(cost.bank.demand[bank] for cost in all_wave_costs)
-        for bank in range(resolved_target.banks))
-    total_compute_bank_slots = sum(compute_bank_demand)
-    compute_bank_lb = max(
-        max(compute_bank_demand, default=0),
-        _ceil_div(total_compute_bank_slots, resolved_target.banks))
     nominal_index = max(
         range(len(all_wave_phases)),
         key=lambda index: (
@@ -3611,25 +3110,28 @@ def _evaluate_extended_candidate(
         memory_plan=plan.memory_plan, plan_cgra_lb=plan_cgra_lb,
         preload_scalar_elements=plan.preload_scalar_elements,
         preload_load_ops=preload_load_ops,
-        preload_spad_store_ops=preload_store_ops,
+        preload_spad_write_ops=preload_store_ops,
         scratchpad_reads=plan.scratchpad_reads,
         avoided_direct_loads=plan.avoided_direct_loads,
         capacity_bytes_used=plan.memory_plan.capacity_bytes_used,
-        bank_lb=sum(cost.bank.bank_lb for cost in all_bank_costs),
-        bank_sched=(sum(cost.bank.bank_sched for cost in all_bank_costs)
-                    if schedule else 0),
-        num_tiles=len(plan.tiles),
+        spad_port_lb=(preload_cost.port.port_lb
+                      + sum(cost.port.port_lb for cost in all_wave_costs)),
+        spad_port_sched=(
+            preload_cost.port.port_sched
+            + sum(cost.port.port_sched for cost in all_wave_costs)
+            if schedule else 0),
         schedule_structure_key=plan.schedule_structure_key,
-        direct_plan_cgra_lb=(direct_reference.plan_cgra_lb
-                             if direct_reference else None),
-        direct_pragma_exposure_aggregate=(
-            direct_reference.pragma_aggregate if direct_reference else None),
-        direct_schedule_estimate=(
-            direct_reference.schedule_estimate if direct_reference else None),
         recurring_demand=(algorithmic_A, recurring_data_loads,
-                          data_stores, compute_bank_lb),
+                          data_stores, recurring_read_port_cycles,
+                          recurring_write_port_cycles),
         nominal_terms=(nominal_cost.compute, nominal_cost.load,
-                       nominal_cost.store, nominal_cost.bank.bank_lb),
+                       nominal_cost.store,
+                       _ceil_div(nominal_cost.port.read_ops,
+                                 resolved_target.load_ports)
+                       * resolved_target.access_cycles,
+                       _ceil_div(nominal_cost.port.write_ops,
+                                 resolved_target.store_ports)
+                       * resolved_target.access_cycles),
         nominal_cp=nominal_phase.CP)
 
 
@@ -3719,10 +3221,6 @@ def _ensure_scheduled(spec: KernelSpec, result: CandResult, cfg: Config,
                 != result.pragma_exposure_aggregate
                 or scheduled.schedule_structure_key
                 != result.schedule_structure_key
-                or scheduled.direct_plan_cgra_lb
-                != result.direct_plan_cgra_lb
-                or scheduled.direct_pragma_exposure_aggregate
-                != result.direct_pragma_exposure_aggregate
                 or scheduled.recurring_demand != result.recurring_demand
                 or scheduled.nominal_terms != result.nominal_terms
                 or scheduled.nominal_cp != result.nominal_cp):
@@ -3731,8 +3229,7 @@ def _ensure_scheduled(spec: KernelSpec, result: CandResult, cfg: Config,
                 "the aggregate or schedule structure")
         result.chunk_scheduled = scheduled.chunk_scheduled
         result.schedule_estimate = scheduled.schedule_estimate
-        result.bank_sched = scheduled.bank_sched
-        result.direct_schedule_estimate = scheduled.direct_schedule_estimate
+        result.spad_port_sched = scheduled.spad_port_sched
         if result.absolute_cgra_lb is not None and not (
                 result.absolute_cgra_lb <= result.plan_cgra_lb
                 <= result.pragma_exposure_aggregate
@@ -3806,26 +3303,33 @@ def absolute_cgra_lb(spec: KernelSpec, cfg: Config) -> tuple[int, dict]:
 # Recommendation and flags
 # ---------------------------------------------------------------------------
 
-def recommend(spec: KernelSpec, results: list[CandResult]) -> CandResult | None:
-    """Spec "Exposure selection": recommend the saturation knee E_sat -- the
-    smallest exposure at which the BEST-COALESCED candidate becomes
-    resource-bound. Beyond E_sat the wave-summed estimate only creeps toward the
-    floor through wave-serialization rounding (not real steady-state gain), and
-    larger exposure is oversubscribed.
+def _extended_family_identity(
+        spec: KernelSpec, result: CandResult) -> tuple:
+    if result.memory_plan is None:
+        raise ValueError("extended candidate omitted its memory plan")
+    placement = tuple(
+        (buffer.name, buffer.placement, buffer.replication_factor)
+        for buffer in result.memory_plan.buffers)
+    return (
+        candidate_order(spec, result.cand),
+        result.cand.jam_plan,
+        placement,
+    )
 
-    A candidate that saturates at *lower* exposure than E_sat does so only because
-    it wastes lane-slots (uncoalesced strided loads); we must not reward that.
-    So we walk exposures upward and, at each, take the most-coalesced candidate
-    (min LD+ST); the first exposure whose best candidate is resource-bound is the
-    knee."""
-    if not results:
-        return None
-    if any(result.target_profile is not None for result in results):
-        by_exposure: dict[int, list[CandResult]] = {}
-        for result in results:
-            by_exposure.setdefault(result.exposed_iters, []).append(result)
+
+def _extended_family_knees(
+        spec: KernelSpec,
+        results: list[CandResult]) -> dict[tuple, CandResult]:
+    by_family_exposure: dict[tuple, dict[int, list[CandResult]]] = {}
+    for result in results:
+        by_family_exposure.setdefault(
+            _extended_family_identity(spec, result), {}).setdefault(
+                result.exposed_iters, []).append(result)
+
+    knees = {}
+    for identity, by_exposure in by_family_exposure.items():
         exposures = sorted(by_exposure)
-        frontier: dict[int, list[CandResult]] = {}
+        frontier = {}
         for exposure in exposures:
             best_compute = min(
                 result.chunk_aggregate for result in by_exposure[exposure])
@@ -3833,13 +3337,13 @@ def recommend(spec: KernelSpec, results: list[CandResult]) -> CandResult | None:
                 result for result in by_exposure[exposure]
                 if result.chunk_aggregate == best_compute]
 
-        future_min: dict[int, tuple[int, int, int, int]] = {}
-        running = [math.inf, math.inf, math.inf, math.inf]
+        future_min = {}
+        running = [math.inf] * 5
         for exposure in reversed(exposures):
             for result in frontier[exposure]:
-                if not result.recurring_demand:
+                if len(result.recurring_demand) != 5:
                     raise ValueError(
-                        "extended recommendation omitted recurring demand")
+                        "extended recommendation omitted P/L/S/R/W demand")
                 for index, demand in enumerate(result.recurring_demand):
                     running[index] = min(running[index], demand)
             future_min[exposure] = tuple(int(value) for value in running)
@@ -3847,35 +3351,61 @@ def recommend(spec: KernelSpec, results: list[CandResult]) -> CandResult | None:
         for exposure in exposures:
             eligible = []
             for result in frontier[exposure]:
-                if not result.nominal_terms:
+                if len(result.nominal_terms) != 5:
                     raise ValueError(
-                        "extended recommendation omitted nominal terms")
+                        "extended recommendation omitted nominal P/L/S/R/W "
+                        "terms")
                 max_term = max(result.nominal_terms)
                 if max_term < result.nominal_cp:
                     continue
                 dominant = [
                     index for index, term in enumerate(result.nominal_terms)
                     if term == max_term]
-                if any(result.recurring_demand[index]
-                       == future_min[exposure][index]
-                       for index in dominant):
+                if any(
+                        result.recurring_demand[index]
+                        == future_min[exposure][index]
+                        for index in dominant):
                     eligible.append(result)
             if eligible:
-                return min(
+                knees[identity] = min(
                     eligible,
                     key=lambda result: (
                         result.pragma_exposure_aggregate,
                         result.recurring_demand[1]
                         + result.recurring_demand[2],
-                        result.recurring_demand[3], result.p_tot,
+                        result.recurring_demand[3]
+                        + result.recurring_demand[4],
+                        result.p_tot,
                         result.cand.signature()))
-        return min(
-            results,
-            key=lambda result: (
-                result.pragma_exposure_aggregate, result.exposed_iters,
-                result.recurring_demand[1] + result.recurring_demand[2],
-                result.recurring_demand[3], result.p_tot,
-                result.cand.signature()))
+                break
+    return knees
+
+
+def _extended_global_rank(result: CandResult) -> tuple:
+    return (
+        result.pragma_exposure_aggregate,
+        result.recurring_demand[1] + result.recurring_demand[2],
+        result.recurring_demand[3] + result.recurring_demand[4],
+        result.exposed_iters,
+        result.p_tot,
+        result.cand.signature(),
+    )
+
+
+def recommend(spec: KernelSpec, results: list[CandResult]) -> CandResult | None:
+    """Apply the spec's exposure-selection policy.
+
+    Legacy candidates use the first best-coalesced resource-bound exposure.
+    Extended candidates derive a recurring-demand-mature knee independently for
+    each order/jam/placement family, then choose the lowest-cost family knee.
+    """
+    if not results:
+        return None
+    if any(result.target_profile is not None for result in results):
+        family_knees = _extended_family_knees(spec, results)
+        if family_knees:
+            return min(family_knees.values(), key=_extended_global_rank)
+        return min(results, key=_extended_global_rank)
     if not spec.repeat_waves:
         # The builder already emits every phase-local wave and every fixed
         # once-only region. A fixed stage may be resource-bound even when the
@@ -3907,6 +3437,7 @@ def annotate_flags(spec: KernelSpec, results: list[CandResult],
                    rec: CandResult) -> None:
     latency_fallback = spec.selection_mode == "latency_fallback"
     extended = _uses_extended_candidate_space(spec)
+    family_knees = _extended_family_knees(spec, results) if extended else {}
     for r in results:
         same_candidate = (r.cand == rec.cand if extended
                           else r.cand.split == rec.cand.split)
@@ -3916,10 +3447,14 @@ def annotate_flags(spec: KernelSpec, results: list[CandResult],
         if not spec.repeat_waves:
             continue
         if extended:
-            if r.exposed_iters < rec.exposed_iters:
+            family_knee = family_knees.get(
+                _extended_family_identity(spec, r))
+            if family_knee is None:
+                continue
+            if r.exposed_iters < family_knee.exposed_iters:
                 r.flags.add("bandwidth-starved")
             elif (r.saturation == "resource-bound"
-                  and r.exposed_iters > rec.exposed_iters):
+                  and r.exposed_iters > family_knee.exposed_iters):
                 r.flags.add("oversubscribed")
             continue
         if latency_fallback:
@@ -3949,18 +3484,17 @@ def _dedup(results: list[CandResult]) -> list[list[CandResult]]:
     for r in results:
         legacy_key = (r.active_L, r.active_S, r.LD, r.ST, r.A, r.CP, r.waves,
                       r.pragma_exposure_aggregate)
-        if r.target_profile is None and not r.cand.order and not r.cand.tile_sizes:
+        if r.target_profile is None:
             key = legacy_key
         else:
             key = legacy_key + (
-                r.cand.order, r.cand.tile_sizes, r.target_profile,
+                r.cand.order, r.cand.jam_plan, r.target_profile,
                 r.jam_plan, r.memory_plan, r.plan_cgra_lb,
-                r.capacity_bytes_used, r.bank_lb,
+                r.capacity_bytes_used, r.spad_port_lb,
                 r.preload_scalar_elements, r.preload_load_ops,
-                r.preload_spad_store_ops, r.scratchpad_reads,
-                r.avoided_direct_loads, r.num_tiles,
-                r.schedule_structure_key, r.direct_plan_cgra_lb,
-                r.direct_pragma_exposure_aggregate,
+                r.preload_spad_write_ops, r.scratchpad_reads,
+                r.avoided_direct_loads,
+                r.schedule_structure_key,
                 r.recurring_demand, r.nominal_terms, r.nominal_cp)
         groups.setdefault(key, []).append(r)
     grouped = []
@@ -3982,10 +3516,7 @@ def _extended_candidate_signature(spec: KernelSpec, cand: Candidate) -> str:
     split = " ".join(f"{name}:P{parallel}U{unroll}"
                      for name, parallel, unroll in cand.split)
     order = ">".join(candidate_order(spec, cand))
-    tile_sizes = candidate_tile_sizes(spec, cand)
-    tile = (",".join(f"{name}:{size}" for name, size in tile_sizes)
-            if tile_sizes else "untiled")
-    return f"{split} order={order} tile={tile}"
+    return f"{split} order={order} jam={cand.jam_plan}"
 
 
 def _format_compact_ints(values) -> str:
@@ -4005,67 +3536,54 @@ def _format_extended_jam(jam_plan: JamPlan | None) -> str:
         operands = (f"[{','.join(edge.shared_operands)}]"
                     if edge.shared_operands else "")
         rendered.append(f"{edge.outer}->{edge.inner}{operands}")
-    return ", ".join(rendered)
+    return f"{jam_plan.name}: " + ", ".join(rendered)
 
 
 def _format_extended_memory(memory: MemoryPlan) -> str:
     rendered = []
     for buffer in memory.buffers:
-        if buffer.placement == "direct":
-            rendered.append(f"{buffer.name}=direct")
+        if buffer.placement in ("direct", "direct-fallback"):
+            rendered.append(f"{buffer.name}={buffer.placement}")
             continue
-        bases = _format_compact_ints(
-            base for base in buffer.base_elements_by_tile if base is not None)
-        lifetime = "refill/tile" if buffer.refill_each_tile else "held/kernel"
+        bases = _format_compact_ints(buffer.replica_bases)
         rendered.append(
             f"{buffer.name}={buffer.placement}(base_elem={bases},"
-            f"replicas={buffer.replication_factor},lifetime={lifetime},"
-            f"capacity_x={buffer.capacity_factor})")
+            f"replicas={buffer.replication_factor},bytes={buffer.bytes_used})")
     return "; ".join(rendered)
-
-
-def _format_extended_tails(memory: MemoryPlan) -> str:
-    shapes = []
-    for tile in memory.tiles:
-        if not tile.is_tail or tile.shape in shapes:
-            continue
-        shapes.append(tile.shape)
-    if not shapes:
-        return "none"
-    return ";".join(
-        ",".join(f"{name}:{extent}" for name, extent in shape)
-        for shape in shapes)
 
 
 def _render_extended_report(
         spec: KernelSpec, cfg: Config, results: list[CandResult], lb: int,
         rec: CandResult, search_scope: str, top: int,
-        brief_recommendations: tuple[tuple[str, str], ...],
-        ideal_sensitivity: CandResult | None,
-        ideal_sensitivity_unavailable: bool) -> str:
+        brief_recommendations: tuple[tuple[str, str], ...]) -> str:
     target = rec.target_profile
     memory = rec.memory_plan
+    bounded = search_scope.startswith("bounded diagnostic")
+    best_estimate_fallback = not _extended_family_knees(spec, results)
     _ensure_scheduled(spec, rec, cfg, target)
-    selected_tile = (",".join(
-        f"{name}:{size}" for name, size in memory.tile_sizes)
-        if memory.tile_sizes else "untiled")
     out = [
         f"# Loom pragma DSE (analytic_prefilter): {spec.name}  ({cfg.label})",
         "",
-        (f"Evidence: `analytic_prefilter`; target `{target.name}`; preload "
-         f"mode `{target.preload_mode}`; one {target.capacity_bytes}-byte "
-         f"scratchpad shared across this kernel; {target.banks} cyclic "
-         f"single-ported banks; {target.access_cycles}-cycle access; fixed "
+        (f"Evidence: `analytic_prefilter`; target `{target.name}`; one "
+         f"{target.capacity_bytes}-byte scratchpad shared across this kernel; "
+         f"R={target.load_ports}, W={target.store_ports}; "
+         f"{target.access_cycles}-cycle non-pipelined access; fixed "
          f"V={target.vector_width}."),
         f"Search: {search_scope}.",
     ]
     groups = _dedup(results)
-    out.append(
-        f"Candidates: {len(results)} legal, {len(groups)} deduplicated groups; "
-        f"`absolute_cgra_lb={lb}` is the profile-global floor.")
+    if bounded:
+        out.append(
+            f"Candidates: {len(results)} legal, {len(groups)} deduplicated "
+            f"groups; `bounded_search_floor={lb}` is the minimum plan floor "
+            "inside this diagnostic subset, not the profile-global floor.")
+    else:
+        out.append(
+            f"Candidates: {len(results)} legal, {len(groups)} deduplicated "
+            f"groups; `absolute_cgra_lb={lb}` is the profile-global floor.")
     out.append("")
-    header = (f"{'flags':<8} {'candidate':<104} {'plan_lb':>7} {'p_agg':>7} "
-              f"{'sched':>7} {'tiles':>5} {'cap_B':>6} {'bank lb/s':>11} "
+    header = (f"{'flags':<8} {'candidate':<112} {'plan_lb':>7} {'p_agg':>7} "
+              f"{'sched':>7} {'cap_B':>6} {'spad lb/s':>11} "
               f"{'class':<14} {'util P/L/S':>11}")
     out.append(header)
     out.append("-" * len(header))
@@ -4084,7 +3602,7 @@ def _render_extended_report(
         _ensure_scheduled(spec, result, cfg, target)
         flags = ""
         if "recommended" in result.flags:
-            flags += "K"
+            flags += "B" if bounded else "K"
         if "bandwidth-starved" in result.flags:
             flags += "b"
         if "oversubscribed" in result.flags:
@@ -4092,94 +3610,72 @@ def _render_extended_report(
         signature = _extended_candidate_signature(spec, result.cand)
         if len(group) > 1:
             signature += f"  (+{len(group)-1} eq)"
-        bank = f"{result.bank_lb}/{result.bank_sched}"
+        port = f"{result.spad_port_lb}/{result.spad_port_sched}"
         out.append(
-            f"{flags:<8} {signature:<104} {result.plan_cgra_lb:>7} "
+            f"{flags:<8} {signature:<112} {result.plan_cgra_lb:>7} "
             f"{result.pragma_exposure_aggregate:>7} "
-            f"{result.schedule_estimate:>7} {result.num_tiles:>5} "
-            f"{result.capacity_bytes_used:>6} {bank:>11} "
+            f"{result.schedule_estimate:>7} "
+            f"{result.capacity_bytes_used:>6} {port:>11} "
             f"{result.saturation:<14} {_fmt_util(result.util):>11}")
     if omitted:
         out.append(f"... ({omitted} more groups omitted; use --top 0 for the "
                    "full sweep)")
     out.extend((
         "",
-        (f"RECOMMENDED: {_extended_candidate_signature(spec, rec.cand)}  -> "
+        (f"{'BEST BOUNDED' if bounded else 'RECOMMENDED'}: "
+         f"{_extended_candidate_signature(spec, rec.cand)}  -> "
          f"plan_lb={rec.plan_cgra_lb}, "
          f"p_agg={rec.pragma_exposure_aggregate}, "
-         f"sched={rec.schedule_estimate}, {rec.saturation}"),
-        ("flags: K=recommended, b=below knee (latency-bound or recurring-"
-         "traffic immature), o=oversubscribed."),
+         f"sched={rec.schedule_estimate}, "
+         f"{'best-estimate fallback' if best_estimate_fallback else rec.saturation}"),
+        (
+            ("flags: B=best bounded estimate; no eligible family knee and no "
+             "global recommendation are claimed.")
+            if best_estimate_fallback else
+            ("flags: B=best row in this bounded diagnostic; no global "
+             "recommendation is claimed, b/o are relative to each "
+             "transformation family's bounded knee.")
+        ) if bounded else (
+            ("flags: K=recommended best-estimate fallback; no transformation "
+             "family has an eligible resource-bound knee.")
+            if best_estimate_fallback else
+            ("flags: K=recommended family knee, b=below that row's family knee "
+             "(latency-bound or recurring-traffic immature), o=oversubscribed "
+             "relative to that row's family knee.")
+        ),
         f"Order: `{'>'.join(candidate_order(spec, rec.cand))}`.",
         f"Jam: {_format_extended_jam(rec.jam_plan)}.",
         f"Memory: {_format_extended_memory(memory)}.",
-        (f"Tile: {selected_tile}; "
-         f"tails={_format_extended_tails(memory)}; "
-         f"num_tiles={rec.num_tiles}."),
         (f"Capacity: {rec.capacity_bytes_used}/{target.capacity_bytes} B; "
-         f"held_region={memory.held_region_bytes} B; "
-         f"refill_frame={memory.refill_frame_bytes} B; "
-         f"frame_bases_B={_format_compact_ints(memory.refill_frame_bases_bytes)}."),
-        (f"Banks: bank_lb={rec.bank_lb} cycles; "
-         f"bank_sched={rec.bank_sched} cycles; "
-         f"gap={rec.bank_sched - rec.bank_lb} cycles."),
+         f"proposed={memory.proposed_capacity_bytes} B; "
+         f"fallback={'yes' if memory.fallback else 'no'}."),
+        (f"Scratchpad ports: lb={rec.spad_port_lb} cycles; "
+         f"sched={rec.spad_port_sched} cycles; "
+         f"gap={rec.spad_port_sched - rec.spad_port_lb} cycles."),
         (f"Traffic: preload={rec.preload_scalar_elements} scalar elements, "
          f"{rec.preload_load_ops} external-L ops, "
-         f"{rec.preload_spad_store_ops} scratchpad-S ops; "
+         f"{rec.preload_spad_write_ops} scratchpad-W ops; "
          f"spad_reads={rec.scratchpad_reads} scalar requests after jam fan-out; "
          f"avoided_direct={rec.avoided_direct_loads} scalar external loads."),
     ))
-    if rec.direct_plan_cgra_lb is not None:
-        out.append(
-            "Direct-memory audit reference (excluded from resident-profile "
-            "legality, ranking, and floor): "
-            f"plan_lb={rec.direct_plan_cgra_lb}, "
-            f"p_agg={rec.direct_pragma_exposure_aggregate}, "
-            f"sched={rec.direct_schedule_estimate}.")
-    if ideal_sensitivity is not None:
-        out.extend((
-            "",
-            ("Ideal-DMA sensitivity (same config): "
-             f"{_extended_candidate_signature(spec, ideal_sensitivity.cand)} "
-             "-> "
-             f"absolute_cgra_lb={ideal_sensitivity.absolute_cgra_lb}, "
-             f"plan_lb={ideal_sensitivity.plan_cgra_lb}, "
-             f"p_agg={ideal_sensitivity.pragma_exposure_aggregate}, "
-             f"sched={ideal_sensitivity.schedule_estimate}."),
-            ("Assumption: inactive ping-pong fill does not contend with "
-             "current-tile scratchpad reads."),
-        ))
-    elif ideal_sensitivity_unavailable:
-        out.extend((
-            "",
-            ("Ideal-DMA sensitivity: no legal candidate under double-buffer "
-             "capacity."),
-        ))
-    elif target.preload_mode == "ideal_dma":
-        out.extend((
-            "",
-            ("Ideal-DMA assumption: inactive ping-pong fill does not contend "
-             "with current-tile scratchpad reads."),
-        ))
     if brief_recommendations:
         out.append("")
         for label, signature in brief_recommendations:
-            out.append(f"{label} recommendation: {signature}.")
+            suffix = "bounded best" if bounded else "recommendation"
+            out.append(f"{label} {suffix}: {signature}.")
     return "\n".join(out)
 
 
 def render_report(spec: KernelSpec, cfg: Config, results: list[CandResult],
                   lb: int, demand: dict, rec: CandResult, search_scope: str,
                   top: int = 0,
-                  brief_recommendations: tuple[tuple[str, str], ...] = (),
-                  ideal_sensitivity: CandResult | None = None,
-                  ideal_sensitivity_unavailable: bool = False) -> str:
+                  brief_recommendations: tuple[tuple[str, str], ...] = ()) -> str:
     if rec.target_profile is not None:
         return _render_extended_report(
             spec, cfg, results, lb, rec, search_scope, top,
-            brief_recommendations, ideal_sensitivity,
-            ideal_sensitivity_unavailable)
+            brief_recommendations)
 
+    bounded = search_scope.startswith("bounded diagnostic")
     out = []
     out.append(f"# Loom pragma DSE (lane-aware + vector coalescing): "
                f"{spec.name}  ({cfg.label})")
@@ -4231,7 +3727,7 @@ def render_report(spec: KernelSpec, cfg: Config, results: list[CandResult],
         _ensure_scheduled(spec, r, cfg)
         fl = ""
         if "recommended" in r.flags:
-            fl += "K"
+            fl += "B" if bounded else "K"
         if "bandwidth-starved" in r.flags:
             fl += "b"
         if "oversubscribed" in r.flags:
@@ -4256,11 +3752,15 @@ def render_report(spec: KernelSpec, cfg: Config, results: list[CandResult],
         selection = "latency-bound best-estimate fallback"
     else:
         selection = rec.saturation
-    out.append(f"RECOMMENDED: {rec.cand.signature()}  -> "
+    out.append(f"{'BEST BOUNDED' if bounded else 'RECOMMENDED'}: "
+               f"{rec.cand.signature()}  -> "
                f"exposure={rec.exposed_iters}, "
                f"pragma_agg={rec.pragma_exposure_aggregate} "
                f"({ratio:.2f}x the floor), {selection}")
-    if not spec.repeat_waves:
+    if bounded:
+        out.append("flags: B=best row in this bounded diagnostic; no global "
+                   "recommendation is claimed.")
+    elif not spec.repeat_waves:
         out.append("flags: K=recommended (smallest tunable-phase exposure "
                    "that reaches the best phase-composed estimate).")
     elif latency_fallback:
@@ -4276,7 +3776,8 @@ def render_report(spec: KernelSpec, cfg: Config, results: list[CandResult],
     if brief_recommendations:
         out.append("")
         for label, signature in brief_recommendations:
-            out.append(f"{label} recommendation: {signature}.")
+            suffix = "bounded best" if bounded else "recommendation"
+            out.append(f"{label} {suffix}: {signature}.")
     return "\n".join(out)
 
 
@@ -4353,14 +3854,22 @@ def _normalize_brief_configs(primary: Config,
     return normalized
 
 
-def _target_with_preload_mode(
-        target: AnalyticTargetSpec, preload_mode: str) -> AnalyticTargetSpec:
+def _target_name(capacity_bytes: int, load_ports: int, store_ports: int,
+                 access_cycles: int, vector_width: int = V) -> str:
+    capacity = "4k" if capacity_bytes == 4096 else f"{capacity_bytes}b"
+    latency = "" if access_cycles == 1 else f"-a{access_cycles}"
+    return (f"shared-spad-{capacity}-r{load_ports}w{store_ports}"
+            f"{latency}-v{vector_width}")
+
+
+def make_target(capacity_bytes: int = 4096, load_ports: int = 1,
+                store_ports: int = 1,
+                access_cycles: int = 1) -> AnalyticTargetSpec:
     return AnalyticTargetSpec(
-        name=target.name, capacity_bytes=target.capacity_bytes,
-        banks=target.banks, bank_mapping=target.bank_mapping,
-        shared_across_kernel=target.shared_across_kernel,
-        access_cycles=target.access_cycles, vector_width=target.vector_width,
-        preload_mode=preload_mode)
+        name=_target_name(
+            capacity_bytes, load_ports, store_ports, access_cycles),
+        capacity_bytes=capacity_bytes, load_ports=load_ports,
+        store_ports=store_ports, access_cycles=access_cycles)
 
 
 def _search_extended(
@@ -4388,7 +3897,7 @@ def _search_extended(
     if not results:
         raise NoLegalExtendedCandidateError(
             f"{spec.name}: no legal candidate for target "
-            f"{resolved_target.name}/{resolved_target.preload_mode}")
+            f"{resolved_target.name}")
 
     absolute_lb = min(result.plan_cgra_lb for result in results)
     for result in results:
@@ -4470,23 +3979,6 @@ def run(spec: KernelSpec, cfg: Config, max_parallel: int | None = None,
     outcome = search(
         spec, cfg, max_parallel, max_unroll, exposure_cap, jobs, target)
     annotate_flags(spec, outcome.results, outcome.recommendation)
-    ideal_sensitivity = None
-    ideal_sensitivity_unavailable = False
-    if (spec.extended_plan_builder is not None
-            and outcome.target_profile is not None
-            and outcome.target_profile.preload_mode == "serial"):
-        ideal_target = _target_with_preload_mode(
-            outcome.target_profile, "ideal_dma")
-        try:
-            ideal_outcome = search(
-                spec, cfg, max_parallel, max_unroll, exposure_cap, jobs,
-                ideal_target)
-        except NoLegalExtendedCandidateError:
-            ideal_sensitivity_unavailable = True
-        else:
-            _ensure_scheduled(
-                spec, ideal_outcome.recommendation, cfg, ideal_target)
-            ideal_sensitivity = ideal_outcome.recommendation
     brief_recommendations = []
     for brief_cfg in brief_configs or []:
         brief = search(spec, brief_cfg, max_parallel, max_unroll, exposure_cap,
@@ -4500,9 +3992,7 @@ def run(spec: KernelSpec, cfg: Config, max_parallel: int | None = None,
     report = render_report(
         spec, cfg, outcome.results, outcome.absolute_lb, outcome.demand,
         outcome.recommendation, outcome.search_scope, top=top,
-        brief_recommendations=tuple(brief_recommendations),
-        ideal_sensitivity=ideal_sensitivity,
-        ideal_sensitivity_unavailable=ideal_sensitivity_unavailable)
+        brief_recommendations=tuple(brief_recommendations))
     rec = outcome.recommendation
     lb = outcome.absolute_lb
     return report, rec, lb
@@ -4529,14 +4019,28 @@ def main(argv: list[str]) -> int:
               "each trip count"))
     parser.add_argument(
         "--exposure-cap", type=int,
-        help="optional diagnostic cap on total tiled exposure; default is uncapped")
+        help="optional diagnostic cap on total parallel exposure; default is uncapped")
+    parser.add_argument(
+        "--spad-capacity-bytes", type=int, default=4096,
+        help="shared scratchpad capacity for extended pilots (default: 4096)")
+    parser.add_argument(
+        "--spad-load-ports", type=int, default=1,
+        help="logical scratchpad load ports for extended pilots (default: 1)")
+    parser.add_argument(
+        "--spad-store-ports", type=int, default=1,
+        help="logical scratchpad store ports for extended pilots (default: 1)")
+    parser.add_argument(
+        "--spad-access-cycles", type=int, default=1,
+        help="non-pipelined scratchpad access latency (default: 1)")
     parser.add_argument("--top", type=int, default=24,
                         help="show the best N candidate groups (0 schedules all)")
     parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1),
                         help="parallel workers for exhaustive candidate evaluation")
     args = parser.parse_args(argv)
 
-    for name in ("max_parallel", "max_unroll", "exposure_cap"):
+    for name in ("max_parallel", "max_unroll", "exposure_cap",
+                 "spad_capacity_bytes", "spad_load_ports",
+                 "spad_store_ports", "spad_access_cycles"):
         value = getattr(args, name)
         if value is not None and value < 1:
             parser.error(f"--{name.replace('_', '-')} must be positive")
@@ -4556,9 +4060,12 @@ def main(argv: list[str]) -> int:
     except (KeyError, ValueError) as exc:
         parser.error(str(exc))
     brief_configs = _normalize_brief_configs(cfg, brief_configs)
+    target = make_target(
+        args.spad_capacity_bytes, args.spad_load_ports,
+        args.spad_store_ports, args.spad_access_cycles)
     report, _, _ = run(spec, cfg, args.max_parallel, args.max_unroll,
                        args.exposure_cap, top=args.top, jobs=args.jobs,
-                       brief_configs=brief_configs)
+                       brief_configs=brief_configs, target=target)
     print(report)
     return 0
 
@@ -4568,89 +4075,108 @@ def main(argv: list[str]) -> int:
 # ---------------------------------------------------------------------------
 
 def _synthetic_memory_planner(
-        _spec: KernelSpec, _cand: Candidate, _target: AnalyticTargetSpec,
-        tiles: tuple[TileInstance, ...]) -> tuple[BufferSpec, ...]:
-    """Small picklable memory planner for extended-infrastructure tests."""
-    element_sets = []
-    for tile in tiles:
-        origin = dict(tile.origin)["i"]
-        element_sets.append(tuple(range(origin, origin + tile.extent("i"))))
-    return (BufferSpec(
-        name="tile_data", element_bytes=4,
-        elements_by_tile=tuple(element_sets), refill_each_tile=True,
-        reuse_bearing=True, worker_invariant=True),)
+        _spec: KernelSpec, _cand: Candidate,
+        _target: AnalyticTargetSpec) -> tuple[BufferSpec, ...]:
+    """Small picklable whole-working-set planner for infrastructure tests."""
+    return (
+        BufferSpec(
+            "resident", 4, tuple(range(6)),
+            reuse_bearing=True, worker_invariant=True),
+        BufferSpec(
+            "stream", 4, tuple(range(6)),
+            reuse_bearing=False, worker_invariant=True),
+    )
 
 
 def _synthetic_compute_phase(
-        buffer: BufferPlan, tile_index: int, source_elements: tuple[int, ...],
-        logical_step: tuple[tuple[str, int], ...], cfg: Config,
-        target: AnalyticTargetSpec, schedule: bool) -> PhaseSummary:
-    accesses = tuple(ScratchpadAccess(
-        buffer=buffer.name,
-        logical_element=buffer.logical_element(tile_index, source),
-        logical_step=logical_step, stream=buffer.name)
-        for source in source_elements)
-    packed = pack_scratchpad_accesses(accesses, target)
+        source_elements: tuple[int, ...], wave_index: int,
+        memory: MemoryPlan, cfg: Config, target: AnalyticTargetSpec,
+        schedule: bool) -> PhaseSummary:
+    resident = not memory.fallback
+    packed = ()
+    if resident:
+        buffer = next(plan for plan in memory.buffers
+                      if plan.name == "resident")
+        accesses = tuple(
+            ScratchpadAccess(
+                buffer.name, buffer.logical_element(source),
+                (("wave", wave_index),), stream=buffer.name)
+            for source in source_elements)
+        packed = pack_scratchpad_accesses(accesses, target)
     extent = len(source_elements)
+    phase = PhaseSummary(
+        A=extent * cfg.P,
+        recurring_loads=(len(packed) if resident else extent),
+        invariant_loads=0,
+        stores=0,
+        CP=max(1, extent),
+        spad_read_accesses=packed)
+    if not schedule:
+        return phase
+    base_aggregate = max(
+        phase.CP, _ceil_div(phase.A, cfg.P),
+        _ceil_div(phase.recurring_loads, cfg.L))
     return PhaseSummary(
-        A=extent * cfg.P, recurring_loads=len(packed), invariant_loads=0,
-        stores=0, CP=extent, bank_accesses=packed,
-        base_scheduled=(extent + 1 if schedule else None))
+        A=phase.A, recurring_loads=phase.recurring_loads,
+        invariant_loads=0, stores=0, CP=phase.CP,
+        spad_read_accesses=phase.spad_read_accesses,
+        base_scheduled=base_aggregate + 1)
 
 
 def _synthetic_extended_plan_builder(
         spec: KernelSpec, cand: Candidate, cfg: Config,
         target: AnalyticTargetSpec, schedule: bool) -> ExtendedPlanSummary:
-    """Build structured phases; the central evaluator owns all composition."""
+    """Build one whole-kernel preload and exact compute waves."""
     memory = derive_memory_plan(spec, cand, target)
-    buffer = memory.buffers[0]
-    exposure = cand.factors("i")[0] * cand.factors("i")[1]
-    tile_summaries = []
-    structure = []
-    scalar_elements = 0
-    scratchpad_reads = 0
-    for tile_index, tile in enumerate(memory.tiles):
-        source_elements = buffer.elements_by_tile[tile_index]
-        preload_groups = preload_logical_accesses(
-            buffer, tile_index, target)
-        preload_accesses = tuple(PackedScratchpadAccess(
-            buffer=buffer.name, logical_elements=group,
-            logical_step=(("preload", tile_index),), replica=0,
-            stream=buffer.name)
-            for group in preload_groups)
-        preload_ops = len(preload_groups)
-        preload = PhaseSummary(
-            A=0, recurring_loads=preload_ops, invariant_loads=0,
-            stores=preload_ops, CP=0, bank_accesses=preload_accesses,
-            base_scheduled=(2 * preload_ops if schedule else None))
-        full_compute = _synthetic_compute_phase(
-            buffer, tile_index, source_elements,
-            (("full", tile_index),), cfg, target, False)
-
-        waves = []
-        wave_extents = []
-        for wave_index, start in enumerate(range(0, len(source_elements),
-                                                 exposure)):
-            wave_elements = source_elements[start:start + exposure]
-            wave_extents.append(len(wave_elements))
-            waves.append(_synthetic_compute_phase(
-                buffer, tile_index, wave_elements,
-                (("tile", tile_index), ("wave", wave_index)),
-                cfg, target, schedule))
-        tile_summaries.append(ExtendedTileSummary(
-            tile=tile, preload=preload, full_compute=full_compute,
-            compute_waves=tuple(waves)))
-        structure.append((tile.shape, preload_ops, tuple(wave_extents)))
-        scalar_elements += len(source_elements)
-        scratchpad_reads += len(source_elements)
-
+    jam = derive_jam_plan(spec, cand)
+    preload, scalar_elements = (
+        _resident_preload_phase(memory, cfg, schedule)
+        if not memory.fallback else (_zero_phase(schedule), 0))
+    resident = next(plan for plan in memory.buffers
+                    if plan.name == "resident")
+    waves = []
+    wave_extents = []
+    for wave_index, (origins, shapes) in enumerate(
+            _parallel_wave_boxes(spec, cand, ("i",))):
+        origin = dict(origins)["i"]
+        extent = dict(shapes)["i"]
+        source_elements = tuple(range(origin, origin + extent))
+        wave_extents.append(extent)
+        waves.append(_synthetic_compute_phase(
+            source_elements, wave_index, memory, cfg, target, schedule))
+    wave_tuple = tuple(waves)
+    scratchpad_reads = (
+        sum(wave_extents) if resident.placement == "resident_shared" else 0)
     return ExtendedPlanSummary(
-        memory_plan=memory, jam_plan=derive_jam_plan(spec, cand),
-        tiles=tuple(tile_summaries),
-        schedule_structure_key=tuple(structure),
+        memory_plan=memory,
+        jam_plan=jam,
+        execution=ExtendedExecutionSummary(
+            preload=preload,
+            full_compute=_combine_wave_phases(wave_tuple),
+            compute_waves=wave_tuple),
+        schedule_structure_key=(
+            "synthetic", candidate_order(spec, cand), jam.name,
+            memory.fallback, tuple(wave_extents)),
         preload_scalar_elements=scalar_elements,
         scratchpad_reads=scratchpad_reads,
-        avoided_direct_loads=scratchpad_reads)
+        avoided_direct_loads=(
+            max(0, scratchpad_reads - scalar_elements)
+            if not memory.fallback else 0))
+
+
+def _synthetic_extended_spec() -> KernelSpec:
+    return KernelSpec(
+        name="extended_search_test",
+        levels=(Level("i", 6, "parallel"),
+                Level("j", 8, "reduction")),
+        build_chunk=_gemv_chunk,
+        order_spec=OrderSpec((("i", "j"), ("j", "i"))),
+        jam_plans=(
+            JamPlanSpec(
+                "i-j-share-data",
+                (JamRule("i", "j", ("resident",)),)),),
+        memory_planner=_synthetic_memory_planner,
+        extended_plan_builder=_synthetic_extended_plan_builder)
 
 
 def _run_extended_infrastructure_tests(errors: list[str]) -> None:
@@ -4661,7 +4187,7 @@ def _run_extended_infrastructure_tests(errors: list[str]) -> None:
             return
         errors.append(f"{label}: expected ValueError")
 
-    # A declared source-only order must be a no-op for legacy candidate state.
+    # A source-only order declaration must preserve the legacy candidate set.
     legacy_spec = KernelSpec(
         name="legacy_default_test", levels=(Level("i", 5, "parallel"),),
         build_chunk=_axpy_chunk)
@@ -4670,379 +4196,134 @@ def _run_extended_infrastructure_tests(errors: list[str]) -> None:
         build_chunk=_axpy_chunk,
         order_spec=OrderSpec((("i",),)))
     legacy_candidates = enumerate_candidates(legacy_spec)
-    source_order_candidates = enumerate_candidates(source_order_spec)
-    if source_order_candidates != legacy_candidates:
+    source_candidates = enumerate_candidates(source_order_spec)
+    if source_candidates != legacy_candidates:
         errors.append(
-            "source-only OrderSpec must preserve the exact legacy candidate set")
-    if any(cand.order or cand.tile_sizes for cand in source_order_candidates):
+            "source-only OrderSpec must preserve the legacy candidate set")
+    if any(cand.order or cand.jam_plan != "none"
+           for cand in source_candidates):
         errors.append(
-            "source-only OrderSpec must keep default-empty candidate metadata")
+            "source-only OrderSpec must keep default candidate metadata")
 
-    order_spec = KernelSpec(
-        name="order_test",
-        levels=(Level("i", 4, "parallel"),
-                Level("j", 8, "reduction")),
-        build_chunk=_gemv_chunk,
-        order_spec=OrderSpec((("i", "j"), ("j", "i"))),
-        jam_rules=(JamRule("i", "j", ("x",)),))
-    expect_value_error(
-        "undeclared order rejection",
-        lambda: candidate_order(
-            order_spec,
-            Candidate((("i", 1, 2), ("j", 1, 1)), ("i", "missing"))))
-    expect_value_error(
-        "source order must be first",
-        lambda: _validated_orders(KernelSpec(
-            name="bad_order_test", levels=order_spec.levels,
-            build_chunk=_gemv_chunk,
-            order_spec=OrderSpec((("j", "i"), ("i", "j"))))))
+    spec = _synthetic_extended_spec()
+    split_u2 = (("i", 1, 2), ("j", 1, 1))
+    split_u1 = (("i", 1, 1), ("j", 1, 1))
+    unjammed = derive_jam_plan(spec, Candidate(split_u2))
+    if unjammed.name != "none" or unjammed.edges:
+        errors.append("outer-loop unroll must not imply jam")
 
     jammed = derive_jam_plan(
-        order_spec, Candidate((("i", 1, 2), ("j", 1, 1))))
-    if jammed.edges != (JamRule("i", "j", ("x",)),):
-        errors.append(f"maximal jam plan mismatch: {jammed.edges}")
-    unjammed = derive_jam_plan(
-        order_spec, Candidate((("i", 1, 1), ("j", 1, 1))))
-    if unjammed.edges:
-        errors.append("U=1 must produce an empty jam plan")
-    interchanged = derive_jam_plan(
-        order_spec, Candidate(
-            (("i", 1, 2), ("j", 1, 1)), ("j", "i")))
-    if interchanged.edges:
-        errors.append("a jam edge must not apply when its inner level is outside")
-
-    interchange_spec = KernelSpec(
-        name="interchange_stream_test",
-        levels=(Level("i", 4, "parallel"),
-                Level("j", 4, "parallel")),
-        build_chunk=_gemv_chunk,
-        order_spec=OrderSpec((("i", "j"), ("j", "i"))))
-    source_cand = Candidate((("i", 1, 1), ("j", 1, 1)))
-    swapped_cand = Candidate(
-        (("i", 1, 1), ("j", 1, 1)), ("j", "i"))
-    stream_target = AnalyticTargetSpec()
-
-    def interchange_packed_count(cand, buffer, contiguous_level):
-        stream = order_contiguous_stream(
-            interchange_spec, cand, buffer, contiguous_level)
-        return len(pack_scratchpad_accesses(tuple(
-            ScratchpadAccess(
-                buffer, element, (("step", 0),), stream=stream)
-            for element in range(4)), stream_target))
-
-    source_counts = (
-        interchange_packed_count(source_cand, "a_ij", "j"),
-        interchange_packed_count(source_cand, "b_ji", "i"),
-    )
-    swapped_counts = (
-        interchange_packed_count(swapped_cand, "a_ij", "j"),
-        interchange_packed_count(swapped_cand, "b_ji", "i"),
-    )
-    if source_counts != (1, 4) or swapped_counts != (4, 1):
-        errors.append(
-            "declared interchange must flip which innermost stream receives "
-            f"fixed-V packing; got source={source_counts}, swapped={swapped_counts}")
-    if interchange_packed_count(source_cand, "undeclared", None) != 4:
-        errors.append("an undeclared contiguous stream must remain scalar")
-
-    unjammed_reference_spec = KernelSpec(
-        name="unjammed_count_test", levels=order_spec.levels,
-        build_chunk=_gemv_chunk, order_spec=order_spec.order_spec)
-    jam_count_cand = Candidate((("i", 1, 2), ("j", 1, 1)))
-
-    def jam_dag_summary(local_spec):
-        plan = derive_jam_plan(local_spec, jam_count_cand)
-        dag = Dag()
-        region = dag.region("jam-count")
-        region.induction(kind="i")
-        shares_x = any(
-            "x" in edge.shared_operands for edge in plan.edges)
-        shared_x = region.load(kind="x" + INV) if shares_x else None
-        for _lane in range(2):
-            x_value = (shared_x if shared_x is not None
-                       else region.load(kind="x" + INV))
-            region.arith(x_value, kind="work")
-        nodes = region.nodes
-        invariant_loads = sum(
-            node.cls == L and INV in node.kind for node in nodes)
-        control_nodes = sum(node.kind.startswith("i_") for node in nodes)
-        return {
-            "A": sum(node.cls == P for node in nodes),
-            "LD": sum(node.cls == L for node in nodes),
-            "ST": sum(node.cls == S for node in nodes),
-            "nodes": len(nodes),
-            "control": control_nodes,
-            "invariant": invariant_loads,
-            "recurring": sum(node.cls == L for node in nodes) - invariant_loads,
-        }
-
-    jammed_summary = jam_dag_summary(order_spec)
-    unjammed_summary = jam_dag_summary(unjammed_reference_spec)
-    if (jammed_summary["A"], jammed_summary["ST"],
-            jammed_summary["control"], jammed_summary["recurring"]) != \
-            (unjammed_summary["A"], unjammed_summary["ST"],
-             unjammed_summary["control"], unjammed_summary["recurring"]):
-        errors.append(
-            "jam must leave arithmetic, stores, control, and recurring loads "
-            "unchanged")
-    if (unjammed_summary["invariant"] - jammed_summary["invariant"],
-            unjammed_summary["LD"] - jammed_summary["LD"],
-            unjammed_summary["nodes"] - jammed_summary["nodes"]) != (1, 1, 1):
-        errors.append(
-            "U=2 jam must remove exactly one redundant invariant load and node; "
-            f"got jammed={jammed_summary}, unjammed={unjammed_summary}")
-
-    tile_spec = KernelSpec(
-        name="tile_test", levels=(Level("i", 6, "parallel"),),
-        build_chunk=_axpy_chunk, tileable=frozenset(("i",)))
-    tiled_candidates = enumerate_candidates(tile_spec)
-    one_by_one_tiles = {
-        dict(candidate_tile_sizes(tile_spec, cand))["i"]
-        for cand in tiled_candidates
-        if cand.split == (("i", 1, 1),)
-    }
-    if one_by_one_tiles != {1, 2, 4, 6}:
-        errors.append(
-            f"tile sizes for trip 6 were {sorted(one_by_one_tiles)}, "
-            "expected [1, 2, 4, 6]")
-    if any(cand.split == (("i", 4, 1),)
-           and cand.tile_sizes == (("i", 2),)
-           for cand in tiled_candidates):
-        errors.append("enumeration admitted p*u greater than nominal tile size")
-    if not any(cand.split == (("i", 1, 1),) and not cand.tile_sizes
-               for cand in tiled_candidates):
-        errors.append("full-trip candidates must store empty tile metadata")
+        spec, Candidate(split_u2, jam_plan="i-j-share-data"))
+    if jammed.edges != (JamRule("i", "j", ("resident",)),):
+        errors.append(f"explicit jam plan mismatch: {jammed.edges}")
     expect_value_error(
-        "manual nominal exposure rejection",
-        lambda: candidate_tile_sizes(
-            tile_spec, Candidate((("i", 4, 1),), tile_sizes=(("i", 2),))))
+        "jam requires outer U greater than one",
+        lambda: derive_jam_plan(
+            spec, Candidate(split_u1, jam_plan="i-j-share-data")))
+    expect_value_error(
+        "jam requires inner beneath outer",
+        lambda: derive_jam_plan(
+            spec, Candidate(
+                split_u2, ("j", "i"), "i-j-share-data")))
+    expect_value_error(
+        "undeclared jam plan rejection",
+        lambda: derive_jam_plan(
+            spec, Candidate(split_u2, jam_plan="missing")))
 
-    tail_cand = Candidate((("i", 4, 1),), tile_sizes=(("i", 4),))
-    tail_tiles = materialize_tiles(tile_spec, tail_cand)
-    expected_tiles = (
-        TileInstance((("i", 0),), (("i", 4),), False),
-        TileInstance((("i", 4),), (("i", 2),), True),
-    )
-    if tail_tiles != expected_tiles:
-        errors.append(f"concrete tail tiles {tail_tiles} != {expected_tiles}")
-    if active_tile_exposure(tail_cand, tail_tiles[1], "i") != 2:
-        errors.append("tail tile did not clamp active P/U exposure to its shape")
+    candidates = enumerate_candidates(
+        spec, max_parallel=2, max_unroll=2, exposure_cap=4)
+    none_candidates = [
+        candidate for candidate in candidates
+        if candidate.jam_plan == "none"]
+    jam_candidates = [
+        candidate for candidate in candidates
+        if candidate.jam_plan == "i-j-share-data"]
+    if (len(candidates), len(none_candidates), len(jam_candidates)) != \
+            (10, 8, 2):
+        errors.append(
+            "explicit-jam enumeration expected total/none/jam 10/8/2, got "
+            f"{len(candidates)}/{len(none_candidates)}/{len(jam_candidates)}")
+    if set(Candidate.__dataclass_fields__) != {"split", "order", "jam_plan"}:
+        errors.append("candidate representation still exposes a tile axis")
+    if any(candidate.jam_plan != "none"
+           and candidate.factors("i")[1] <= 1 for candidate in candidates):
+        errors.append("enumeration admitted jam without outer unroll")
+    if any(candidate.jam_plan != "none"
+           and candidate_order(spec, candidate) != ("i", "j")
+           for candidate in candidates):
+        errors.append("enumeration admitted jam with the inner loop outside")
+
+    exact_target = make_target(capacity_bytes=24)
+    under_target = make_target(capacity_bytes=23)
+    exact = _layout_whole_memory_plan(
+        exact_target, _synthetic_memory_planner(
+            spec, Candidate(split_u1), exact_target))
+    under = _layout_whole_memory_plan(
+        under_target, _synthetic_memory_planner(
+            spec, Candidate(split_u1), under_target))
+    exact_resident, exact_stream = exact.buffers
+    under_resident, under_stream = under.buffers
+    if (exact.fallback, exact.capacity_bytes_used,
+            exact.proposed_capacity_bytes,
+            exact_resident.placement, exact_stream.placement) != \
+            (False, 24, 24, "resident_shared", "direct"):
+        errors.append(f"exact-fit whole working set mismatch: {exact}")
+    if (under.fallback, under.capacity_bytes_used,
+            under.proposed_capacity_bytes,
+            under_resident.placement, under_stream.placement) != \
+            (True, 0, 24, "direct-fallback", "direct"):
+        errors.append(f"one-byte-under fallback mismatch: {under}")
+
+    fallback_result = evaluate_candidate(
+        spec, Candidate(split_u1), parse_config("6x6"),
+        schedule=False, target=under_target)
+    if (not fallback_result.memory_plan.fallback
+            or fallback_result.preload_scalar_elements != 0
+            or fallback_result.preload_load_ops != 0
+            or fallback_result.preload_spad_write_ops != 0
+            or fallback_result.scratchpad_reads != 0
+            or fallback_result.spad_port_lb != 0):
+        errors.append(
+            "direct fallback must be legal with zero preload/scratchpad traffic")
+
+    one_port = scratchpad_port_metrics(
+        5, 3, make_target(load_ports=1, store_ports=1))
+    wider = scratchpad_port_metrics(
+        5, 3, make_target(load_ports=2, store_ports=3))
+    slower = scratchpad_port_metrics(
+        5, 3, make_target(load_ports=2, store_ports=3, access_cycles=2))
+    store_narrow = scratchpad_port_metrics(
+        1, 5, make_target(load_ports=4, store_ports=1))
+    store_wide = scratchpad_port_metrics(
+        1, 5, make_target(load_ports=4, store_ports=5))
+    if (one_port.port_lb, wider.port_lb, slower.port_lb) != (5, 3, 6):
+        errors.append(
+            "load-port count or access latency did not affect port pressure")
+    if (store_narrow.port_lb, store_wide.port_lb) != (5, 1):
+        errors.append("store-port count did not affect port pressure")
+    gemv_probe = Candidate((("i", 1, 1), ("j", 1, 1)))
+    gemv_one_port = evaluate_candidate(
+        KERNELS["gemv"], gemv_probe, parse_config("6x6"),
+        schedule=False, target=make_target(load_ports=1))
+    gemv_two_ports = evaluate_candidate(
+        KERNELS["gemv"], gemv_probe, parse_config("6x6"),
+        schedule=False, target=make_target(load_ports=2))
+    gemv_slow_port = evaluate_candidate(
+        KERNELS["gemv"], gemv_probe, parse_config("6x6"),
+        schedule=False, target=make_target(load_ports=1, access_cycles=2))
+    if not (gemv_two_ports.pragma_exposure_aggregate
+            < gemv_one_port.pragma_exposure_aggregate
+            < gemv_slow_port.pragma_exposure_aggregate):
+        errors.append(
+            "scratchpad load-port count/latency did not affect the candidate "
+            "estimate")
+    if len({
+            gemv_one_port.scratchpad_reads,
+            gemv_two_ports.scratchpad_reads,
+            gemv_slow_port.scratchpad_reads}) != 1:
+        errors.append("target ports changed logical GEMV scratchpad traffic")
 
     target = AnalyticTargetSpec()
-    one_tile = (TileInstance((), (), False),)
-    layout = _layout_memory_plan(
-        target, (), one_tile,
-        (
-            BufferSpec("a", 4, ((3, 1, 1),), True, True, True),
-            BufferSpec("b", 4, ((10, 11),), True, True, True),
-            BufferSpec("stream", 4, ((7, 7, 8),), False, False, True),
-        ))
-    a_plan, b_plan, stream_plan = layout.buffers
-    if a_plan.elements_by_tile != ((1, 3),):
-        errors.append(f"buffer source elements were not sorted/unique: "
-                      f"{a_plan.elements_by_tile}")
-    if (a_plan.base_element, b_plan.base_element,
-            layout.capacity_bytes_used) != (0, 4, 24):
-        errors.append(
-            "declaration-order aligned compact layout expected bases 0/4 and "
-            f"24 bytes, got {a_plan.base_element}/{b_plan.base_element} and "
-            f"{layout.capacity_bytes_used}")
-    if stream_plan.placement != "direct" or stream_plan.base_element is not None:
-        errors.append("reuse-free placement must derive direct despite duplicates")
-
-    complementary_tiles = (
-        TileInstance((("i", 0),), (("i", 1),), False),
-        TileInstance((("i", 1),), (("i", 1),), False),
-    )
-    complementary = _layout_memory_plan(
-        target, (("i", 1),), complementary_tiles,
-        (
-            BufferSpec("wide_then_narrow", 4,
-                       (tuple(range(700)), tuple(range(100))),
-                       True, True, True),
-            BufferSpec("narrow_then_wide", 4,
-                       (tuple(range(100)), tuple(range(700))),
-                       True, True, True),
-        ))
-    wide_then_narrow, narrow_then_wide = complementary.buffers
-    if (complementary.capacity_bytes_used,
-            complementary.refill_frame_bytes,
-            complementary.capacity_bytes_by_tile) != (3200, 3200, (3200, 3200)):
-        errors.append(
-            "complementary 700/100 refill footprints must share one 3200-byte "
-            f"frame, got capacity={complementary.capacity_bytes_used}, "
-            f"frame={complementary.refill_frame_bytes}, "
-            f"tiles={complementary.capacity_bytes_by_tile}")
-    if (wide_then_narrow.base_elements_by_tile,
-            narrow_then_wide.base_elements_by_tile) != \
-            ((0, 0), (700, 100)):
-        errors.append(
-            "combined refill layout must preserve exact tile-local offsets; "
-            f"got {wide_then_narrow.base_elements_by_tile} and "
-            f"{narrow_then_wide.base_elements_by_tile}")
-
-    replicated = _layout_memory_plan(
-        target, (), one_tile,
-        (BufferSpec("private", 4, ((0, 1),), True, True, False, 2),))
-    private = replicated.buffers[0]
-    if (private.replica_bases_by_tile, replicated.capacity_bytes_used) != \
-            (((0, 4),), 24):
-        errors.append(
-            "replicated layout must give each replica an aligned segment; got "
-            f"{private.replica_bases_by_tile}, {replicated.capacity_bytes_used}")
-
-    exact_fit = _layout_memory_plan(
-        target, (), one_tile,
-        (BufferSpec("fit", 4, (tuple(range(1024)),),
-                    True, True, True),))
-    if exact_fit.capacity_bytes_used != 4096:
-        errors.append("4096-byte serial working set must be legal")
-    expect_value_error(
-        "4097-byte serial capacity",
-        lambda: _layout_memory_plan(
-            target, (), one_tile,
-            (BufferSpec("too_large", 1, (tuple(range(4097)),),
-                        True, True, True),)))
-
-    dma_target = AnalyticTargetSpec(preload_mode="ideal_dma")
-    dma_fit = _layout_memory_plan(
-        dma_target, (), one_tile,
-        (BufferSpec("pingpong", 4, (tuple(range(512)),),
-                    True, True, True),))
-    if (dma_fit.capacity_bytes_used,
-            dma_fit.buffers[0].capacity_factor) != (4096, 2):
-        errors.append("ideal-DMA refilled allocation must use exact 2x capacity")
-    expect_value_error(
-        "ideal-DMA doubled capacity",
-        lambda: _layout_memory_plan(
-            dma_target, (), one_tile,
-            (BufferSpec("pingpong_too_large", 4, (tuple(range(513)),),
-                        True, True, True),)))
-    held_once = _layout_memory_plan(
-        dma_target, (), one_tile,
-        (BufferSpec("held", 4, (tuple(range(1024)),),
-                    False, True, True),))
-    if (held_once.capacity_bytes_used,
-            held_once.buffers[0].capacity_factor) != (4096, 1):
-        errors.append("ideal-DMA held-once allocation must remain at 1x capacity")
-
-    nonuniform_tiles = (
-        TileInstance((("i", 0),), (("i", 5),), False),
-        TileInstance((("i", 5),), (("i", 1),), True),
-    )
-    nonuniform_dma = _layout_memory_plan(
-        dma_target, (("i", 5),), nonuniform_tiles,
-        (BufferSpec("variable", 4, (tuple(range(5)), (5,)),
-                    True, True, True),))
-    variable = nonuniform_dma.buffers[0]
-    if variable.allocation_bases_by_tile != ((0, 8), (0, 8)):
-        errors.append(
-            "ideal-DMA 5+1 tiles must retain two stable max-size segments; "
-            f"got {variable.allocation_bases_by_tile}")
-    if nonuniform_dma.capacity_bytes_used != 52:
-        errors.append(
-            "ideal-DMA 5+1 ping-pong allocation expected 52 bytes, got "
-            f"{nonuniform_dma.capacity_bytes_used}")
-    if nonuniform_dma.refill_frame_bases_bytes != (0, 32):
-        errors.append(
-            "ideal-DMA frame bases must be stable and nonoverlapping; got "
-            f"{nonuniform_dma.refill_frame_bases_bytes}")
-    if (variable.logical_elements(0), variable.logical_elements(1),
-            preload_logical_accesses(
-                variable, 1, dma_target, allocation_copy=1)) != \
-            ((0, 1, 2, 3, 4), (0,), ((8,),)):
-        errors.append(
-            "stable ping-pong segments must preserve exact per-tile compact maps")
-
-    held_after_variable = _layout_memory_plan(
-        target, (("i", 5),), nonuniform_tiles,
-        (
-            BufferSpec("variable", 4, (tuple(range(5)), (5,)),
-                       True, True, True),
-            BufferSpec("held_after", 4, ((20,), (21,)),
-                       False, True, True),
-        ))
-    held_after = held_after_variable.buffers[1]
-    variable_after_held = held_after_variable.buffers[0]
-    if held_after.base_elements_by_tile != (0, 0):
-        errors.append(
-            "held-once base must stay stable despite later declaration; "
-            f"got {held_after.base_elements_by_tile}")
-    if (held_after.logical_elements(0), held_after.logical_elements(1)) != \
-            ((0,), (1,)):
-        errors.append(
-            "held-once union mapping must remain exact at its stable base")
-    if (held_after_variable.held_region_bytes,
-            held_after_variable.refill_frame_bases_bytes,
-            variable_after_held.base_elements_by_tile,
-            held_after_variable.capacity_bytes_used) != (8, (16,), (4, 4), 36):
-        errors.append(
-            "refill frame must follow the stable held region with aligned bases; "
-            f"got held={held_after_variable.held_region_bytes}, "
-            f"frames={held_after_variable.refill_frame_bases_bytes}, "
-            f"variable={variable_after_held.base_elements_by_tile}, "
-            f"capacity={held_after_variable.capacity_bytes_used}")
-
-    held_tiles = (
-        TileInstance((("i", 0),), (("i", 2),), False),
-        TileInstance((("i", 2),), (("i", 2),), False),
-    )
-    held_union = _layout_memory_plan(
-        target, (("i", 2),), held_tiles,
-        (BufferSpec("held_union", 4, ((0, 1), (2, 3)),
-                    False, True, True),))
-    held_buffer = held_union.buffers[0]
-    if held_buffer.allocation_elements_by_tile != \
-            ((0, 1, 2, 3), (0, 1, 2, 3)):
-        errors.append(
-            "held-once allocation must contain the union of all tile address sets")
-    if (held_buffer.logical_elements(0), held_buffer.logical_elements(1)) != \
-            ((0, 1), (2, 3)):
-        errors.append(
-            "held-once source-to-slot mapping lost per-tile exact accesses")
-
-    planned_spec = KernelSpec(
-        name="memory_plan_test", levels=tile_spec.levels,
-        build_chunk=_axpy_chunk, tileable=tile_spec.tileable,
-        memory_planner=_synthetic_memory_planner)
-    planned = derive_memory_plan(
-        planned_spec, Candidate((("i", 1, 1),), tile_sizes=(("i", 4),)),
-        target)
-    if planned.buffers[0].elements_by_tile != ((0, 1, 2, 3), (4, 5)):
-        errors.append(
-            f"memory planner lost exact tail address sets: "
-            f"{planned.buffers[0].elements_by_tile}")
-
-    preload_layout = _layout_memory_plan(
-        target, (), one_tile,
-        (BufferSpec("preload", 4, ((0, 1, 2, 3, 8, 9),),
-                    True, True, True),))
-    preload_accesses = preload_logical_accesses(
-        preload_layout.buffers[0], 0, target)
-    if preload_accesses != ((0, 1, 2, 3), (4, 5)):
-        errors.append(
-            f"preload coalescing/group compaction mismatch: {preload_accesses}")
-
-    conflict_free = scratchpad_bank_metrics(((0,), (1,)), target)
-    conflicting = scratchpad_bank_metrics(((0,), (4,)), target)
-    vector_conflict = scratchpad_bank_metrics(((0, 1, 2, 3), (4,)), target)
-    if (conflict_free.bank_lb, conflict_free.bank_sched) != (1, 1):
-        errors.append(f"conflict-free banks did not pack together: {conflict_free}")
-    if (conflicting.bank_lb, conflicting.bank_sched) != (2, 2):
-        errors.append(f"same-bank accesses did not serialize: {conflicting}")
-    if (vector_conflict.bank_lb, vector_conflict.bank_sched) != (2, 2):
-        errors.append(
-            f"vector access did not reserve every touched bank: {vector_conflict}")
-
-    preload_costs = (3, 7)
-    compute_costs = (10, 2)
-    if compose_serial_tiles(preload_costs, compute_costs) != 22:
-        errors.append("serial tile composition must sum every preload and compute")
-    if compose_ideal_dma_tiles(preload_costs, compute_costs) != 15:
-        errors.append("ideal-DMA tile composition must use adjacent exact costs")
-    if compose_ideal_dma_tiles((5,), (9,)) != 14:
-        errors.append("one-tile ideal-DMA composition must be preload + compute")
-
     same_step = (("j", 0),)
     packed_fanout = pack_scratchpad_accesses((
         ScratchpadAccess("x", 4, same_step, 0, "x_j"),
@@ -5061,167 +4342,97 @@ def _run_extended_infrastructure_tests(errors: list[str]) -> None:
         for element in range(4)), target)
     if len(packed_stream) != 1 or \
             packed_stream[0].logical_elements != (0, 1, 2, 3):
-        errors.append("one declared contiguous stream must coalesce at fixed V=4")
+        errors.append("one declared contiguous stream must pack at fixed V=4")
     unpacked_stream = pack_scratchpad_accesses(tuple(
-        ScratchpadAccess("x", element, same_step, 0, None)
+        ScratchpadAccess("x", element, same_step)
         for element in range(4)), target)
     if len(unpacked_stream) != 4:
-        errors.append("contiguous accesses without a declared stream must stay scalar")
+        errors.append("contiguous accesses without a stream must stay scalar")
     split_streams = pack_scratchpad_accesses((
         ScratchpadAccess("x", 0, same_step, 0, "left"),
         ScratchpadAccess("x", 1, same_step, 0, "right"),
     ), target)
     if len(split_streams) != 2:
-        errors.append("different declared streams must not coalesce together")
+        errors.append("different streams must not coalesce")
 
-    extended_spec = KernelSpec(
-        name="extended_search_test", levels=(Level("i", 6, "parallel"),),
-        build_chunk=_axpy_chunk,
-        order_spec=OrderSpec((("i",),)),
-        tileable=frozenset(("i",)),
-        memory_planner=_synthetic_memory_planner,
-        extended_plan_builder=_synthetic_extended_plan_builder)
-    serial_outcome = search(
-        extended_spec, parse_config("6x6"), 2, 2, 4, jobs=2,
-        target=target)
-    if serial_outcome.target_profile != target:
-        errors.append("extended search lost its target-profile identity")
-    if (serial_outcome.legal_candidate_count,
-            serial_outcome.deduped_group_count) != (12, 9):
-        errors.append(
-            "extended search candidate/group counts expected 12/9, got "
-            f"{serial_outcome.legal_candidate_count}/"
-            f"{serial_outcome.deduped_group_count}")
-    if serial_outcome.absolute_lb != 8:
-        errors.append(
-            f"extended serial global floor {serial_outcome.absolute_lb} != 8")
-    if serial_outcome.recommendation.cand.factors("i") != (1, 1):
-        errors.append(
-            "extended synthetic search expected the P1U1 saturation knee")
-    for result in serial_outcome.results:
-        if not (serial_outcome.absolute_lb <= result.plan_cgra_lb
+    report_target = make_target(
+        capacity_bytes=24, load_ports=2, store_ports=3, access_cycles=2)
+    if report_target.name != "shared-spad-24b-r2w3-a2-v4":
+        errors.append(f"target identity mismatch: {report_target.name}")
+    outcome = search(
+        spec, parse_config("6x6"), 2, 2, 4, jobs=1,
+        target=report_target)
+    if outcome.target_profile != report_target:
+        errors.append("extended search lost target identity")
+    for result in outcome.results:
+        if not (outcome.absolute_lb <= result.plan_cgra_lb
                 <= result.pragma_exposure_aggregate):
-            errors.append("extended aggregate bracket failed in synthetic search")
+            errors.append("extended aggregate bracket failed")
             break
-    structure_before_schedule = serial_outcome.recommendation.schedule_structure_key
-    _ensure_scheduled(
-        extended_spec, serial_outcome.recommendation,
-        parse_config("6x6"), target)
-    scheduled_rec = serial_outcome.recommendation
-    if not (serial_outcome.absolute_lb <= scheduled_rec.plan_cgra_lb
-            <= scheduled_rec.pragma_exposure_aggregate
-            <= scheduled_rec.schedule_estimate):
+    rec = outcome.recommendation
+    structure_before = rec.schedule_structure_key
+    _ensure_scheduled(spec, rec, parse_config("6x6"), report_target)
+    if not (outcome.absolute_lb <= rec.plan_cgra_lb
+            <= rec.pragma_exposure_aggregate <= rec.schedule_estimate):
         errors.append("extended scheduled four-term bracket failed")
-    if scheduled_rec.schedule_structure_key != structure_before_schedule:
-        errors.append("lazy scheduling changed the extended structure key")
-
-    equivalent_pu = [
-        result for result in serial_outcome.results
-        if result.cand.tile_sizes == (("i", 2),)
-        and result.cand.factors("i") in ((1, 2), (2, 1))
-    ]
-    if len(equivalent_pu) != 2 or len(_dedup(equivalent_pu)) != 1:
-        errors.append(
-            "extended dedup must group equivalent P/U at fixed order and tile")
+    if rec.schedule_structure_key != structure_before:
+        errors.append("lazy scheduling changed extended structure identity")
 
     report, report_rec, report_lb = run(
-        extended_spec, parse_config("6x6"), 2, 2, 4,
-        top=2, jobs=1, target=target)
-    if ("analytic_prefilter" not in report
-            or "absolute_cgra_lb=8" not in report
-            or "plan_lb" not in report
-            or "preload mode `serial`" not in report
-            or "Ideal-DMA sensitivity (same config):" not in report
-            or "absolute_cgra_lb=7" not in report
-            or "inactive ping-pong fill does not contend" not in report
-            or report_lb != 8
+        spec, parse_config("6x6"), 2, 2, 4, top=2, jobs=1,
+        target=report_target)
+    required_report_text = (
+        report_target.name,
+        "R=2, W=3",
+        "2-cycle non-pipelined access",
+        "plan_lb",
+        "spad lb/s",
+        "Jam:",
+        "Capacity:",
+        "Scratchpad ports:",
+        "fallback=no",
+        "bounded_search_floor=",
+        "BEST BOUNDED:",
+        "flags: B=best row in this bounded diagnostic",
+    )
+    if (any(text not in report for text in required_report_text)
+            or "absolute_cgra_lb=" in report
+            or "RECOMMENDED:" in report
+            or report_lb != outcome.absolute_lb
+            or report_rec.target_profile != report_target
             or report_rec.schedule_estimate is None):
-        errors.append("extended run/render path omitted required synthetic evidence")
-
-    ideal_outcome = search(
-        extended_spec, parse_config("6x6"), 2, 2, 4, jobs=1,
-        target=dma_target)
-    if ideal_outcome.absolute_lb != 7:
+        errors.append("extended report omitted target, jam, capacity, or port data")
+    forbidden = ("ideal-dma", "bank_", "tile")
+    if any(text in report.lower() for text in forbidden):
+        errors.append("extended report retained a removed tile/bank/DMA concept")
+    fallback_report, fallback_rec, _ = run(
+        KERNELS["batchnorm"],
+        parse_config("P=100000,L=100000,S=100000"),
+        max_parallel=1, max_unroll=1, exposure_cap=1,
+        top=1, jobs=1, target=target)
+    if (fallback_rec.saturation != "latency-bound"
+            or "BEST BOUNDED:" not in fallback_report
+            or "best-estimate fallback" not in fallback_report
+            or "no eligible family knee" not in fallback_report):
         errors.append(
-            f"extended ideal-DMA global floor {ideal_outcome.absolute_lb} != 7")
-    ideal_report, ideal_report_rec, ideal_report_lb = run(
-        extended_spec, parse_config("6x6"), 2, 2, 4,
-        top=1, jobs=1, target=dma_target)
-    if ("preload mode `ideal_dma`" not in ideal_report
-            or "Ideal-DMA assumption:" not in ideal_report
-            or "Ideal-DMA sensitivity (same config):" in ideal_report
-            or ideal_report_lb != 7
-            or ideal_report_rec.schedule_estimate is None):
-        errors.append("explicit ideal-DMA run/report behavior is inconsistent")
-
-    tiny_serial_target = AnalyticTargetSpec(
-        name="tiny-8b", capacity_bytes=8)
-    tiny_report, tiny_rec, tiny_lb = run(
-        extended_spec, parse_config("6x6"), 2, 2, 4,
-        top=1, jobs=1, target=tiny_serial_target)
-    if ("Ideal-DMA sensitivity: no legal candidate under double-buffer "
-            "capacity." not in tiny_report
-            or "inactive ping-pong fill does not contend" in tiny_report
-            or tiny_rec.target_profile != tiny_serial_target
-            or tiny_lb <= 0):
-        errors.append(
-            "serial report must survive an ideal-DMA double-buffer capacity miss")
-    try:
-        search(
-            extended_spec, parse_config("6x6"), 2, 2, 4, jobs=1,
-            target=_target_with_preload_mode(
-                tiny_serial_target, "ideal_dma"))
-    except NoLegalExtendedCandidateError:
-        pass
-    else:
-        errors.append(
-            "8-byte ideal-DMA search must raise the dedicated no-legal error")
-
-    equality_spec = KernelSpec(
-        name="extended_identity_test",
-        levels=(Level("i", 6, "parallel"),
-                Level("j", 1, "reduction")),
-        build_chunk=_gemv_chunk,
-        order_spec=OrderSpec((("i", "j"), ("j", "i"))),
-        tileable=frozenset(("i",)),
-        memory_planner=_synthetic_memory_planner,
-        extended_plan_builder=_synthetic_extended_plan_builder)
-    source_cand = Candidate((("i", 1, 2), ("j", 1, 1)))
-    alternate_cand = Candidate(
-        (("i", 1, 2), ("j", 1, 1)), ("j", "i"))
-    source_result = evaluate_candidate(
-        equality_spec, source_cand, parse_config("6x6"),
-        schedule=False, target=target)
-    alternate_result = evaluate_candidate(
-        equality_spec, alternate_cand, parse_config("6x6"),
-        schedule=False, target=target)
-    annotate_flags(equality_spec, [source_result, alternate_result], source_result)
-    if ("recommended" not in source_result.flags
-            or "recommended" in alternate_result.flags):
-        errors.append("extended flags must compare full candidate identity")
-    if len(_dedup([source_result, alternate_result])) != 2:
-        errors.append("extended dedup must retain distinct order/tile identities")
-
-    topology_variant = evaluate_candidate(
-        equality_spec, source_cand, parse_config("6x6"),
-        schedule=False, target=target)
-    topology_variant.schedule_structure_key = (("different-topology",),)
-    if len(_dedup([source_result, topology_variant])) != 2:
-        errors.append(
-            "extended dedup must retain aggregate-equal schedule topologies")
-
-    preload_store_variant = evaluate_candidate(
-        equality_spec, source_cand, parse_config("6x6"),
-        schedule=False, target=target)
-    preload_store_variant.preload_spad_store_ops += 1
-    if len(_dedup([source_result, preload_store_variant])) != 2:
-        errors.append(
-            "extended dedup must include scratchpad preload-store traffic")
+            "all-latency extended report must identify its best-estimate "
+            "fallback")
 
 
 def _run_extended_pilot_tests(errors: list[str]) -> None:
     cfg = parse_config("6x6")
     target = AnalyticTargetSpec()
+
+    def check_scheduled_bracket(
+            label: str, spec: KernelSpec, candidate: Candidate,
+            local_target: AnalyticTargetSpec) -> None:
+        result = evaluate_candidate(
+            spec, candidate, cfg, schedule=False, target=local_target)
+        result.absolute_cgra_lb = result.plan_cgra_lb
+        _ensure_scheduled(spec, result, cfg, local_target)
+        if not (result.plan_cgra_lb <= result.pragma_exposure_aggregate
+                <= result.schedule_estimate):
+            errors.append(f"{label}: focused scheduled bracket failed")
 
     batchnorm = KERNELS["batchnorm"]
     if _validated_orders(batchnorm) != (
@@ -5235,151 +4446,171 @@ def _run_extended_pilot_tests(errors: list[str]) -> None:
         schedule=False, target=target)
     if not (batch_source.LD < batch_interchanged.LD
             and batch_source.ST < batch_interchanged.ST):
-        errors.append(
-            "Batchnorm may coalesce w only when w is innermost")
-    if any(buffer.placement != "direct"
-           for buffer in batch_source.memory_plan.buffers):
-        errors.append("Batchnorm memory must remain entirely direct")
-    batch_jam = derive_jam_plan(
+        errors.append("Batchnorm may coalesce w only when w is innermost")
+    if (batch_source.jam_plan.name != "none"
+            or any(buffer.placement != "direct"
+                   for buffer in batch_source.memory_plan.buffers)
+            or batch_source.preload_scalar_elements != 0
+            or batch_source.scratchpad_reads != 0):
+        errors.append("Batchnorm must remain unjammed and direct-memory")
+    batch_unrolled = derive_jam_plan(
         batchnorm, Candidate(
             (("c", 1, 2), ("h", 1, 1), ("w", 1, 1))))
-    if {(edge.outer, edge.inner) for edge in batch_jam.edges} != \
-            {("c", "h"), ("c", "w")}:
-        errors.append(f"Batchnorm c-unroll jam mismatch: {batch_jam.edges}")
-    batch_outcome = search(batchnorm, cfg, jobs=1, target=target)
-    if batch_outcome.recommendation.cand.signature() != \
-            "c:P1U1 h:P1U8 w:P1U8":
-        errors.append(
-            "Batchnorm recurring-demand knee must remain c:P1U1 h:P1U8 "
-            f"w:P1U8, got {batch_outcome.recommendation.cand.signature()}")
+    if batch_unrolled.edges:
+        errors.append("Batchnorm outer unroll must not imply jam")
+    check_scheduled_bracket(
+        "Batchnorm", batchnorm, Candidate(batch_split), target)
 
     gemv = KERNELS["gemv"]
-    gemv_cand = Candidate((("i", 1, 2), ("j", 1, 1)))
-    gemv_result = evaluate_candidate(
-        gemv, gemv_cand, cfg, schedule=False, target=target)
-    x_buffer = next(buffer for buffer in gemv_result.memory_plan.buffers
+    gemv_split = (("i", 1, 2), ("j", 1, 1))
+    gemv_none = Candidate(gemv_split)
+    gemv_jam = Candidate(gemv_split, jam_plan="i-j-share-x")
+    gemv_none_result = evaluate_candidate(
+        gemv, gemv_none, cfg, schedule=False, target=target)
+    gemv_jam_result = evaluate_candidate(
+        gemv, gemv_jam, cfg, schedule=False, target=target)
+    x_buffer = next(buffer for buffer in gemv_jam_result.memory_plan.buffers
                     if buffer.name == "x")
-    if (x_buffer.placement, gemv_result.preload_scalar_elements,
-            gemv_result.scratchpad_reads) != ("resident_shared", 64, 2048):
+    if (x_buffer.placement, gemv_jam_result.preload_scalar_elements,
+            gemv_none_result.scratchpad_reads,
+            gemv_jam_result.scratchpad_reads) != \
+            ("resident_shared", 64, 4096, 2048):
         errors.append(
-            "GEMV resident x placement/preload/read traffic mismatch: "
-            f"{x_buffer.placement}, {gemv_result.preload_scalar_elements}, "
-            f"{gemv_result.scratchpad_reads}")
-    if (gemv_result.direct_plan_cgra_lb is None
-            or gemv_result.direct_pragma_exposure_aggregate is None):
-        errors.append("GEMV must retain its direct-memory cycle reference")
-    jammed_direct, _ = _gemv_wave_phase(
-        gemv_cand, (("i", 0),), (("i", 2),), None, target, False,
-        share_x=True)
-    unjammed_direct, _ = _gemv_wave_phase(
-        gemv_cand, (("i", 0),), (("i", 2),), None, target, False,
-        share_x=False)
-    if (jammed_direct.A, jammed_direct.recurring_loads,
-            jammed_direct.stores, jammed_direct.CP) != \
-            (unjammed_direct.A, unjammed_direct.recurring_loads,
-             unjammed_direct.stores, unjammed_direct.CP):
-        errors.append("GEMV jam changed arithmetic/control work")
-    if unjammed_direct.invariant_loads - jammed_direct.invariant_loads != 16:
-        errors.append("GEMV i->j jam must remove one 16-op x stream")
+            "GEMV explicit jam resident traffic mismatch: "
+            f"{x_buffer.placement}, {gemv_jam_result.preload_scalar_elements}, "
+            f"{gemv_none_result.scratchpad_reads}, "
+            f"{gemv_jam_result.scratchpad_reads}")
+    if (gemv_none_result.A, gemv_none_result.ST, gemv_none_result.CP) != \
+            (gemv_jam_result.A, gemv_jam_result.ST, gemv_jam_result.CP):
+        errors.append("GEMV jam changed arithmetic, stores, or critical path")
+    if gemv_none_result.scratchpad_reads - \
+            gemv_jam_result.scratchpad_reads != 2048:
+        errors.append("GEMV i->j jam did not remove the expected x readers")
     gemv_outcome = search(gemv, cfg, jobs=1, target=target)
-    if gemv_outcome.recommendation.cand.signature() != "i:P1U8 j:P1U1":
+    if (gemv_outcome.recommendation.cand.jam_plan != "i-j-share-x"
+            or gemv_outcome.recommendation.cand.factors("i") != (1, 8)
+            or gemv_outcome.recommendation.pragma_exposure_aggregate != 248):
         errors.append(
-            "GEMV must reject bank-bound traffic-immature rows and select "
-            f"i:P1U8 j:P1U1, got "
-            f"{gemv_outcome.recommendation.cand.signature()}")
+            "GEMV family-knee selection must prefer i:P1U8 explicit jam at "
+            "p_agg=248")
+
+    gemv_exact = derive_memory_plan(
+        gemv, gemv_none, make_target(capacity_bytes=256))
+    gemv_under_target = make_target(capacity_bytes=255)
+    gemv_under = evaluate_candidate(
+        gemv, gemv_jam, cfg, schedule=False, target=gemv_under_target)
+    if (gemv_exact.fallback, gemv_exact.capacity_bytes_used,
+            gemv_exact.proposed_capacity_bytes) != (False, 256, 256):
+        errors.append(f"GEMV exact-capacity placement mismatch: {gemv_exact}")
+    if (not gemv_under.memory_plan.fallback
+            or gemv_under.memory_plan.proposed_capacity_bytes != 256
+            or gemv_under.preload_scalar_elements != 0
+            or gemv_under.scratchpad_reads != 0
+            or gemv_under.spad_port_lb != 0):
+        errors.append("GEMV capacity overflow must use direct fallback")
+    check_scheduled_bracket("GEMV", gemv, gemv_jam, target)
 
     conv2d = KERNELS["conv2d"]
     orders = _validated_orders(conv2d)
     if len(orders) != 6 or any(order[-1] != "tap" for order in orders):
-        errors.append("Conv2d must expose six independent orders with tap last")
+        errors.append("Conv2d must expose six legal orders with tap last")
     conv_split = (("co", 1, 1), ("oh", 1, 1),
                   ("ow", 1, 1), ("tap", 1, 1))
-    conv_cand = Candidate(conv_split)
-    conv_memory = derive_memory_plan(conv2d, conv_cand, target)
-    input_buffer, weight_buffer, output_buffer = conv_memory.buffers
-    if tuple(len(buffer.elements_by_tile[0]) for buffer in conv_memory.buffers) \
-            != (192, 108, 144):
-        errors.append("Conv2d whole-tile address sets must be 192/108/144")
-    if (input_buffer.placement, weight_buffer.placement,
-            output_buffer.placement, conv_memory.capacity_bytes_used) != \
-            ("resident_shared", "resident_shared", "direct", 1200):
-        errors.append(
-            "Conv2d whole-tile placement/capacity mismatch: "
-            f"{input_buffer.placement}/{weight_buffer.placement}/"
-            f"{output_buffer.placement}, {conv_memory.capacity_bytes_used}")
+    conv_none = Candidate(conv_split)
+    input_set, weight_set, output_set = _conv2d_whole_address_sets()
+    if (len(input_set), len(weight_set), len(output_set)) != (192, 108, 144):
+        errors.append("Conv2d whole-kernel address sets must be 192/108/144")
+
+    conv_exact_target = make_target(capacity_bytes=1200)
+    conv_exact = derive_memory_plan(conv2d, conv_none, conv_exact_target)
+    input_buffer, weight_buffer, output_buffer = conv_exact.buffers
+    if (conv_exact.fallback, conv_exact.capacity_bytes_used,
+            conv_exact.proposed_capacity_bytes,
+            input_buffer.placement, weight_buffer.placement,
+            output_buffer.placement) != \
+            (False, 1200, 1200, "resident_shared",
+             "resident_shared", "direct"):
+        errors.append(f"Conv2d exact-capacity placement mismatch: {conv_exact}")
+
     conv_result = evaluate_candidate(
-        conv2d, conv_cand, cfg, schedule=False, target=target)
+        conv2d, conv_none, cfg, schedule=False, target=target)
     if (conv_result.preload_scalar_elements,
             conv_result.scratchpad_reads,
             conv_result.avoided_direct_loads) != (300, 7776, 7476):
         errors.append(
-            "Conv2d whole-tile traffic expected preload/read/avoided "
-            f"300/7776/7476, got {conv_result.preload_scalar_elements}/"
-            f"{conv_result.scratchpad_reads}/{conv_result.avoided_direct_loads}")
-    if (conv_result.direct_plan_cgra_lb is None
-            or conv_result.direct_pragma_exposure_aggregate is None):
-        errors.append("Conv2d must retain its direct-memory cycle reference")
-
-    source_ow_cand = Candidate((
-        ("co", 1, 1), ("oh", 1, 1), ("ow", 1, 4), ("tap", 1, 1)))
-    non_ow_inner_cand = Candidate(
-        source_ow_cand.split, ("co", "ow", "oh", "tap"))
-    source_phase, _ = _conv2d_wave_phase(
-        conv2d, source_ow_cand,
-        (("co", 0), ("oh", 0), ("ow", 0)),
-        (("co", 1), ("oh", 1), ("ow", 4)), None, target, False,
-        False, False, True)
-    non_ow_phase, _ = _conv2d_wave_phase(
-        conv2d, non_ow_inner_cand,
-        (("co", 0), ("oh", 0), ("ow", 0)),
-        (("co", 1), ("oh", 1), ("ow", 4)), None, target, False,
-        False, False, True)
-    if (source_phase.stores, non_ow_phase.stores) != (2, 5):
+            "Conv2d resident traffic expected 300/7776/7476, got "
+            f"{conv_result.preload_scalar_elements}/"
+            f"{conv_result.scratchpad_reads}/"
+            f"{conv_result.avoided_direct_loads}")
+    port3_target = make_target(load_ports=3)
+    port3_plan = conv2d.extended_plan_builder(
+        conv2d, conv_none, cfg, port3_target, False)
+    port3_read_ops = sum(
+        len(wave.spad_read_accesses)
+        for wave in port3_plan.execution.compute_waves)
+    port3_wave_ceilings = sum(
+        _ceil_div(len(wave.spad_read_accesses), port3_target.load_ports)
+        for wave in port3_plan.execution.compute_waves)
+    port3_result = evaluate_candidate(
+        conv2d, conv_none, cfg, schedule=False, target=port3_target)
+    expected_port3_demand = _ceil_div(
+        port3_read_ops, port3_target.load_ports)
+    if (port3_result.recurring_demand[3] != expected_port3_demand
+            or not port3_wave_ceilings > expected_port3_demand):
         errors.append(
-            "Conv2d output stores may coalesce only with innermost-independent ow")
+            "recurring scratchpad demand must exclude per-wave ceiling rounding")
 
-    one_output_shapes = (("co", 1), ("oh", 1), ("ow", 1))
-    input_layout = (
-        input_buffer.replica_bases_by_tile[0][0],
-        input_buffer.source_to_slot_by_tile[0])
-    weight_layout = (
-        weight_buffer.replica_bases_by_tile[0][0],
-        weight_buffer.source_to_slot_by_tile[0])
-    reservations = _conv2d_bank_reservations(
-        conv_cand, (("co", 0), ("oh", 0), ("ow", 0)),
-        one_output_shapes, target, False, False, False,
-        input_layout, weight_layout)
-    resident_phase, _ = _conv2d_wave_phase(
-        conv2d, conv_cand,
-        (("co", 0), ("oh", 0), ("ow", 0)), one_output_shapes,
-        None, target, False, False, False, False,
-        bank_reservations=reservations)
-    direct_phase, _ = _conv2d_wave_phase(
-        conv2d, conv_cand,
-        (("co", 0), ("oh", 0), ("ow", 0)), one_output_shapes,
-        None, target, False, False, False, False)
-    if direct_phase.recurring_loads - resident_phase.recurring_loads != 18:
+    conv_under_target = make_target(capacity_bytes=1199)
+    conv_under = evaluate_candidate(
+        conv2d, conv_none, cfg, schedule=False, target=conv_under_target)
+    if (not conv_under.memory_plan.fallback
+            or conv_under.memory_plan.proposed_capacity_bytes != 1200
+            or conv_under.capacity_bytes_used != 0
+            or conv_under.preload_scalar_elements != 0
+            or conv_under.scratchpad_reads != 0
+            or conv_under.spad_port_lb != 0):
+        errors.append("Conv2d capacity overflow must use direct fallback")
+
+    conv_jam_split = (("co", 1, 2), ("oh", 1, 1),
+                      ("ow", 1, 1), ("tap", 1, 1))
+    conv_unjammed = evaluate_candidate(
+        conv2d, Candidate(conv_jam_split), cfg,
+        schedule=False, target=target)
+    conv_jammed = evaluate_candidate(
+        conv2d, Candidate(
+            conv_jam_split, jam_plan="share-input"),
+        cfg, schedule=False, target=target)
+    if (conv_unjammed.A, conv_unjammed.ST, conv_unjammed.CP) != \
+            (conv_jammed.A, conv_jammed.ST, conv_jammed.CP):
+        errors.append("Conv2d jam changed arithmetic, stores, or critical path")
+    if not conv_jammed.scratchpad_reads < conv_unjammed.scratchpad_reads:
+        errors.append("Conv2d share-input jam did not reduce input readers")
+
+    source_ow = Candidate((
+        ("co", 1, 1), ("oh", 1, 1),
+        ("ow", 1, 4), ("tap", 1, 1)))
+    non_ow_inner = Candidate(
+        source_ow.split, ("co", "ow", "oh", "tap"))
+    source_result = evaluate_candidate(
+        conv2d, source_ow, cfg, schedule=False, target=target)
+    non_ow_result = evaluate_candidate(
+        conv2d, non_ow_inner, cfg, schedule=False, target=target)
+    if not source_result.ST < non_ow_result.ST:
         errors.append(
-            "Conv2d direct input must retain 27 scalar loads vs 9 spad groups")
+            "Conv2d output stores may coalesce only with innermost ow")
 
-    tiled_cand = Candidate(
-        conv_split, tile_sizes=(("co", 2), ("oh", 4), ("ow", 4)))
-    tiled_instances = materialize_tiles(conv2d, tiled_cand)
-    if len(tiled_instances) != 8 or not any(tile.is_tail for tile in tiled_instances):
-        errors.append("Conv2d 2x4x4 tiling must materialize eight exact tail tiles")
-
-    for spec, candidate in (
-            (batchnorm, Candidate(batch_split)),
-            (gemv, gemv_cand),
-            (conv2d, conv_cand)):
-        result = evaluate_candidate(
-            spec, candidate, cfg, schedule=False, target=target)
-        result.absolute_cgra_lb = result.plan_cgra_lb
-        _ensure_scheduled(spec, result, cfg, target)
-        if not (result.plan_cgra_lb <= result.pragma_exposure_aggregate
-                <= result.schedule_estimate):
-            errors.append(
-                f"{spec.name}: focused pilot scheduled bracket failed")
+    conv_candidates = enumerate_candidates(conv2d)
+    conv_none_count = sum(
+        candidate.jam_plan == "none" for candidate in conv_candidates)
+    if (conv_none_count, len(conv_candidates)) != (1296, 4374):
+        errors.append(
+            "Conv2d no-tile candidate count expected 1296 before jam variants "
+            f"and 4374 total, got {conv_none_count}/{len(conv_candidates)}")
+    scheduled_conv = Candidate((
+        ("co", 1, 4), ("oh", 1, 4),
+        ("ow", 1, 4), ("tap", 1, 1)))
+    check_scheduled_bracket(
+        "Conv2d", conv2d, scheduled_conv, target)
 
 
 def _run_self_tests() -> int:
