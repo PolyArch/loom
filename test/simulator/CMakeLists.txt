@@ -16,6 +16,15 @@ target_link_libraries(loom-simulator-synchronization-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-simulator-dynamic-work-test
+  DynamicWorkDomainTest.cpp
+)
+
+target_link_libraries(loom-simulator-dynamic-work-test PRIVATE
+  LoomSimulator
+  LLVMSupport
+)
+
 add_executable(loom-simulator-vector-boundary-test
   DFGVectorBoundaryTest.cpp
 )

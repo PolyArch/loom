@@ -44,6 +44,7 @@ set(LOOM_TEST_DEPENDS
   loom-pnr-route-tree-state-test
   loom-pnr-routing-negotiation-test
   loom-simulator-atomic-order-test
+  loom-simulator-dynamic-work-test
   loom-simulator-synchronization-test
   loom-simulator-vector-boundary-test
   loom-synth-base-test
