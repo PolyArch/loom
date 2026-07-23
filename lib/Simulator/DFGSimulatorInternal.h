@@ -2,6 +2,7 @@
 #define LOOM_LIB_SIMULATOR_DFGSIMULATORINTERNAL_H
 
 #include "Simulator/DFGSimulator.h"
+#include "Simulator/MemorySynchronization.h"
 
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -50,11 +51,18 @@ struct Token {
   bool boolValue = false;
   std::optional<llvm::APInt> bitPattern;
   MemoryView pointer;
+  // The memory effects that happen-before this token. A firing merges the
+  // frontiers it consumes and every token it publishes inherits the result, so
+  // an explicit `done`/`ctrl` chain carries software order without a second
+  // causal relation. It is execution-local and never serialized.
+  llvm::SmallVector<SyncEffectId, 1> frontier;
 };
 
 struct DataflowMemoryRead {
   Token data;
   bool accessedMemory = false;
+  // The active element slots the access resolved, in lane order.
+  llvm::SmallVector<std::size_t> slots;
 };
 
 // The complete element update one store commits, prepared before any element
@@ -75,6 +83,10 @@ struct LoopState {
 struct ParallelizeState {
   ParallelizeSemanticState semanticState;
   llvm::SmallVector<std::optional<Token>, 8> slots;
+  // Causal frontiers of the scalar-phase tokens consumed while assembling the
+  // current group. The group publishes on its final firing, so phases consumed
+  // by earlier firings are retained here and merged into the group outputs.
+  llvm::SmallVector<SyncEffectId, 2> phaseFrontier;
 };
 
 struct MemoryValue {
@@ -87,6 +99,18 @@ struct MemoryValue {
 struct MemoryFixture {
   std::string values;
   std::int64_t byteOffset = 0;
+};
+
+// The execution-local footprint of one issued ordinary access: the logical
+// object it touches and the byte ranges its active lanes cover. It holds only
+// what conflict projection needs. The effect identity that carries the access's
+// software order is paired with this record in `memoryActions`, and
+// MemorySynchronization remains the authority for the causal relations.
+struct MemoryActionRecord {
+  std::uint64_t rootId = 0;
+  // Half-open byte ranges of the active lanes, relative to the logical root.
+  llvm::SmallVector<std::pair<std::int64_t, std::int64_t>, 1> byteRanges;
+  bool isWrite = false;
 };
 
 struct SimulatorState {
@@ -123,6 +147,17 @@ struct SimulatorState {
   // an unsupported capability instead of an arbitrary result or a deadlock
   // witness. Ordinary execution diagnostics never set this.
   bool runtimeUnsupportedCapability = false;
+  // The causality engines this run projects its plain accesses onto. They are
+  // owned indirectly so the bound reference inside MemorySynchronization stays
+  // valid however this state itself is stored, and they are created only once
+  // an access needs them.
+  std::unique_ptr<MemoryAtomicOrder> memoryOrder;
+  std::unique_ptr<MemorySynchronization> memorySync;
+  llvm::SmallVector<std::pair<MemoryActionRecord, SyncEffectId>> memoryActions;
+  // The frontier of the firing in progress, merged from every consumed token.
+  // It is cleared before each actor attempt, so a rejected attempt leaves
+  // nothing behind for the next one.
+  llvm::SmallVector<SyncEffectId, 2> firingFrontier;
 };
 
 struct UnsupportedOperation {
@@ -151,6 +186,11 @@ llvm::Expected<Token> ensurePointerMemory(SimulatorState &state, Token token,
                                           mlir::Type elementType);
 llvm::Expected<std::int64_t> gepByteOffset(mlir::LLVM::GEPOp op,
                                            llvm::ArrayRef<Token> dynamicTokens);
+
+void mergeCausalFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
+                         SyncEffectId effect);
+void mergeCausalFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
+                         llvm::ArrayRef<SyncEffectId> effects);
 
 bool hasToken(ChannelMap &channels, mlir::OpOperand &operand);
 Token popToken(SimulatorState &state, mlir::OpOperand &operand);

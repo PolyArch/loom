@@ -249,10 +249,23 @@ bool hasToken(ChannelMap &channels, mlir::OpOperand &operand) {
   return it != channels.end() && !it->second.empty();
 }
 
+void mergeCausalFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
+                         SyncEffectId effect) {
+  if (!llvm::is_contained(into, effect))
+    into.push_back(effect);
+}
+
+void mergeCausalFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
+                         llvm::ArrayRef<SyncEffectId> effects) {
+  for (SyncEffectId effect : effects)
+    mergeCausalFrontier(into, effect);
+}
+
 Token popToken(SimulatorState &state, mlir::OpOperand &operand) {
   auto &queue = state.channels[&operand];
   Token token = queue.front();
   queue.pop_front();
+  mergeCausalFrontier(state.firingFrontier, token.frontier);
   ++state.actorMutationEpoch;
   return token;
 }
@@ -262,6 +275,10 @@ Token peekToken(ChannelMap &channels, mlir::OpOperand &operand) {
 }
 
 void emitToken(SimulatorState &state, mlir::Value value, Token token) {
+  // A token retained across firings, such as an invariant latched value, keeps
+  // the provenance it already carries. The firing that publishes it only adds
+  // the order it consumed, so the two frontiers merge rather than overwrite.
+  mergeCausalFrontier(token.frontier, state.firingFrontier);
   for (mlir::OpOperand &use : value.getUses())
     state.pendingChannels[&use].push_back(token);
   state.pendingObservedOutputs[value].push_back(token);
@@ -749,6 +766,9 @@ enum class FireOutcome {
 static FireOutcome fireOperation(mlir::Operation *op, SimulatorState &state) {
   const std::uint64_t mutationEpoch = state.actorMutationEpoch;
   const std::size_t diagnosticCount = state.diagnostics.size();
+  // One attempt owns one frontier. Clearing it here keeps a NotReady or Failed
+  // attempt from lending its consumed order to the next actor.
+  state.firingFrontier.clear();
   bool fired = fireActorOperation(op, state);
   if (fired)
     return FireOutcome::Fired;
@@ -1491,7 +1511,12 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
     ++report.wavefrontSteps;
     observeRetirement();
   }
-  if (!retired && report.wavefrontSteps == options.maxEventSteps) {
+  // A runtime-exposed unsupported capability is definitive: once a plain
+  // conflicting access is rejected it does not become a deadlock, so an
+  // exhausted event budget must not mask it as blocked. The unsupported
+  // resolution below then reports it whether or not the budget was reached.
+  if (!retired && report.wavefrontSteps == options.maxEventSteps &&
+      !state.runtimeUnsupportedCapability) {
     report.status = "blocked";
     report.diagnostics.push_back("maximum event steps reached");
   }

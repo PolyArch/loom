@@ -293,6 +293,10 @@ static bool fireDemux(dataflow::DemuxOp op, SimulatorState &state) {
 struct ParallelizeGroup {
   Token vector;
   Token mask;
+  // The union of the causal frontiers of every active scalar lane the group
+  // assembled. The group is published across several firings, so this order is
+  // not otherwise reachable from the final firing's consumed inputs alone.
+  llvm::SmallVector<SyncEffectId, 2> frontier;
 };
 
 static llvm::Expected<ParallelizeGroup>
@@ -316,6 +320,7 @@ buildParallelizeGroup(dataflow::ParallelizeOp op,
 
   llvm::APInt vectorBits(*totalWidth, 0);
   llvm::APInt maskBits(*maskWidth, 0);
+  llvm::SmallVector<SyncEffectId, 2> frontier;
   for (std::uint64_t lane = 0; lane < activeItems; ++lane) {
     if (!parallel.slots[lane]) {
       return llvm::createStringError(
@@ -328,6 +333,7 @@ buildParallelizeGroup(dataflow::ParallelizeOp op,
       return laneBits.takeError();
     vectorBits.insertBits(*laneBits, *laneWidth * static_cast<unsigned>(lane));
     maskBits.setBit(static_cast<unsigned>(lane));
+    mergeCausalFrontier(frontier, parallel.slots[lane]->frontier);
   }
 
   auto vectorToken = tokenFromBitPattern(vectorBits, vectorType);
@@ -336,7 +342,7 @@ buildParallelizeGroup(dataflow::ParallelizeOp op,
   auto maskToken = tokenFromBitPattern(maskBits, op.getMask().getType());
   if (!maskToken)
     return maskToken.takeError();
-  return ParallelizeGroup{*vectorToken, *maskToken};
+  return ParallelizeGroup{*vectorToken, *maskToken, std::move(frontier)};
 }
 
 static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
@@ -362,6 +368,15 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
   if (!transition.firing.ready)
     return false;
 
+  // The scalar phase drives each accumulation step, so its causal frontier is
+  // part of the group's order. It is retained across firings because the group
+  // is not published until its final firing.
+  if (selectsSemanticInput(transition.firing.consumedInputs,
+                           ParallelizeInput::Phase))
+    mergeCausalFrontier(
+        next.phaseFrontier,
+        peekToken(state.channels, op.getScalarPhaseMutable()).frontier);
+
   std::optional<ParallelizeGroup> group;
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            ParallelizeInput::Data)) {
@@ -386,8 +401,12 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
       return false;
     }
     group = *groupOrErr;
+    mergeCausalFrontier(group->frontier, next.phaseFrontier);
     next.slots.assign(vectorLength, std::nullopt);
+    next.phaseFrontier.clear();
   }
+  if (transition.emitFalsePhase)
+    next.phaseFrontier.clear();
   next.semanticState = transition.nextState;
 
   if (selectsSemanticInput(transition.firing.consumedInputs,
@@ -398,6 +417,9 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
     (void)popToken(state, op.getDataMutable());
   state.parallelizeStates[op.getOperation()] = std::move(next);
   if (group) {
+    // The vector, mask, and group-phase publication all carry the order of
+    // every lane the group assembled, not just the firing that closed it.
+    mergeCausalFrontier(state.firingFrontier, group->frontier);
     emitToken(state, op.getVector(), group->vector);
     emitToken(state, op.getMask(), group->mask);
   }
@@ -752,7 +774,7 @@ std::optional<DataflowMemoryRead> prepareDataflowMemoryRead(
         readMemoryElement(view, slots->front(), state, "dataflow.load");
     if (!value)
       return std::nullopt;
-    return DataflowMemoryRead{*value, true};
+    return DataflowMemoryRead{*value, true, std::move(*slots)};
   }
 
   auto activeLanes = getActiveMemoryLanes(*access, mask, maskType, state);
@@ -793,7 +815,7 @@ std::optional<DataflowMemoryRead> prepareDataflowMemoryRead(
     state.diagnostics.push_back(llvm::toString(result.takeError()));
     return std::nullopt;
   }
-  return DataflowMemoryRead{*result, !activeLanes->isZero()};
+  return DataflowMemoryRead{*result, !activeLanes->isZero(), std::move(*slots)};
 }
 
 std::optional<DataflowMemoryWrite>
@@ -881,6 +903,125 @@ void commitDataflowMemoryWrite(const MemoryView &view,
     writeMemoryElement(view, index, value);
 }
 
+// The byte ranges one issued access covers, derived from the active element
+// slots it already resolved. An inactive lane resolves no slot, so it
+// contributes no range and derives no access.
+static std::optional<MemoryActionRecord>
+projectMemoryAction(const MemoryView &view, llvm::ArrayRef<std::size_t> slots,
+                    bool isWrite, SimulatorState &state,
+                    mlir::Operation *scope) {
+  MemoryActionRecord action;
+  action.rootId = view.memory->logicalRootId;
+  action.isWrite = isWrite;
+  if (slots.empty())
+    return action;
+  auto elementSize = byteSizeOfType(view.memory->elementType, scope);
+  if (!elementSize) {
+    state.diagnostics.push_back(llvm::toString(elementSize.takeError()));
+    return std::nullopt;
+  }
+  action.byteRanges.reserve(slots.size());
+  for (std::size_t slot : slots) {
+    const std::int64_t begin = static_cast<std::int64_t>(slot) * *elementSize;
+    action.byteRanges.emplace_back(begin, begin + *elementSize);
+  }
+  return action;
+}
+
+static bool actionsOverlap(const MemoryActionRecord &lhs,
+                           const MemoryActionRecord &rhs) {
+  for (const auto &[leftBegin, leftEnd] : lhs.byteRanges)
+    for (const auto &[rightBegin, rightEnd] : rhs.byteRanges)
+      if (leftBegin < rightEnd && rightBegin < leftEnd)
+        return true;
+  return false;
+}
+
+static MemorySynchronization &memorySynchronization(SimulatorState &state) {
+  if (!state.memorySync) {
+    state.memoryOrder = std::make_unique<MemoryAtomicOrder>();
+    state.memorySync =
+        std::make_unique<MemorySynchronization>(*state.memoryOrder);
+  }
+  return *state.memorySync;
+}
+
+// The frontier this issue inherits, read without consuming anything: the
+// effects that happen-before the tokens the firing will take. Sequenced-before
+// is carried only by explicit token dependencies, so two firings of one static
+// actor are ordered only when a token frontier links them, never by sharing the
+// same operation.
+static llvm::SmallVector<SyncEffectId, 2>
+peekIssueFrontier(SimulatorState &state,
+                  llvm::ArrayRef<mlir::OpOperand *> operands) {
+  llvm::SmallVector<SyncEffectId, 2> frontier;
+  for (mlir::OpOperand *operand : operands) {
+    if (!operand || !hasToken(state.channels, *operand))
+      continue;
+    mergeCausalFrontier(frontier, peekToken(state.channels, *operand).frontier);
+  }
+  return frontier;
+}
+
+// A plain access conflicts when it overlaps an earlier access on the same
+// logical root, at least one of the two writes, and no recorded causal fact
+// orders that earlier access before this issue. Only the recorded facts decide
+// it, so the formal result is the same whichever actor the wavefront reached
+// first, and the pair never becomes deterministic through traversal order.
+// Nothing is consumed here, so a rejected access neither commits nor
+// publishes; it ends the run through the runtime unsupported capability rather
+// than through an invented order or a deadlock witness.
+static bool admitMemoryAction(mlir::Operation *op,
+                              const MemoryActionRecord &action,
+                              llvm::ArrayRef<SyncEffectId> frontier,
+                              SimulatorState &state) {
+  // No engine yet means no issued access yet, so there is nothing to conflict
+  // with and nothing to ask about order.
+  if (action.byteRanges.empty() || !state.memorySync)
+    return true;
+  const MemorySynchronization &sync = *state.memorySync;
+  for (const auto &issued : state.memoryActions) {
+    const MemoryActionRecord &prior = issued.first;
+    const SyncEffectId earlier = issued.second;
+    if (prior.rootId != action.rootId)
+      continue;
+    if (!prior.isWrite && !action.isWrite)
+      continue;
+    if (!actionsOverlap(prior, action))
+      continue;
+    if (llvm::any_of(frontier, [&](SyncEffectId later) {
+          return earlier == later || sync.happensBefore(earlier, later);
+        }))
+      continue;
+    state.diagnostics.push_back(
+        (op->getName().getStringRef() +
+         " conflicts with an unordered plain access to the same memory")
+            .str());
+    state.runtimeUnsupportedCapability = true;
+    return false;
+  }
+  return true;
+}
+
+// Issue: the accepted access takes its effect identity, records the
+// sequenced-before facts its consumed tokens carry, and becomes the frontier
+// every token this firing publishes inherits, so a `done`/`ctrl` chain through
+// it orders whatever follows. An access with no active range, such as an
+// all-zero masked firing, performs no memory effect: it declares no effect and
+// records no action, and its outputs keep only the causality they consumed.
+static void issueMemoryAction(MemoryActionRecord action,
+                              SimulatorState &state) {
+  if (action.byteRanges.empty())
+    return;
+  MemorySynchronization &sync = memorySynchronization(state);
+  const SyncEffectId effect = sync.declareEffect();
+  for (SyncEffectId earlier : state.firingFrontier)
+    if (llvm::Error error = sync.sequencedBefore(earlier, effect))
+      state.diagnostics.push_back(llvm::toString(std::move(error)));
+  state.memoryActions.emplace_back(std::move(action), effect);
+  state.firingFrontier.assign(1, effect);
+}
+
 static mlir::OpOperand *getOptionalMaskOperand(mlir::Operation *op,
                                                mlir::Value mask) {
   if (!mask)
@@ -911,6 +1052,16 @@ static bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
       op.getOperation());
   if (!value)
     return false;
+  std::optional<MemoryActionRecord> action = projectMemoryAction(
+      *view, value->slots, /*isWrite=*/false, state, op.getOperation());
+  if (!action)
+    return false;
+  if (!admitMemoryAction(
+          op.getOperation(), *action,
+          peekIssueFrontier(state, {&op.getMemMutable(), &op.getAddrMutable(),
+                                    &op.getCtrlMutable(), maskOperand}),
+          state))
+    return false;
 
   // Issue: the accepted access consumes every dynamic operand and the control
   // event, then publishes data and done together.
@@ -919,6 +1070,7 @@ static bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   popToken(state, op.getCtrlMutable());
   if (maskOperand)
     popToken(state, *maskOperand);
+  issueMemoryAction(std::move(*action), state);
   emitToken(state, op.getData(), value->data);
   emitToken(state, op.getDone(), noneToken());
   if (value->accessedMemory && hasComputedAddress(op.getAddr()))
@@ -1120,6 +1272,21 @@ static bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
       op.getOperation());
   if (!write)
     return false;
+  llvm::SmallVector<std::size_t> slots;
+  slots.reserve(write->elements.size());
+  for (const auto &element : write->elements)
+    slots.push_back(element.first);
+  std::optional<MemoryActionRecord> action = projectMemoryAction(
+      *view, slots, /*isWrite=*/true, state, op.getOperation());
+  if (!action)
+    return false;
+  if (!admitMemoryAction(
+          op.getOperation(), *action,
+          peekIssueFrontier(state, {&op.getMemMutable(), &op.getAddrMutable(),
+                                    &op.getDataMutable(), &op.getCtrlMutable(),
+                                    maskOperand}),
+          state))
+    return false;
 
   // Issue: the accepted access consumes every dynamic operand and the control
   // event, then commits the complete element update before publishing done.
@@ -1129,6 +1296,7 @@ static bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   popToken(state, op.getCtrlMutable());
   if (maskOperand)
     popToken(state, *maskOperand);
+  issueMemoryAction(std::move(*action), state);
   commitDataflowMemoryWrite(*view, *write);
   emitToken(state, op.getDone(), noneToken());
   if (write->accessedMemory && hasComputedAddress(op.getAddr()))
