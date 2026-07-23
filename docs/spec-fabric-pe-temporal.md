@@ -130,7 +130,9 @@ FU occurrences plus resolved FU instantiations, while excluding named FU
 declarations. After canonical elaboration it is exactly the set of anonymous
 FU occurrences. The maxima use only that set.
 
-`num_instruction` also bounds the PE-owned resident context namespace:
+`num_instruction` also bounds the PE-owned resident context namespace.
+`docs/spec-fabric-identity.md` owns the persistent reference framing; this
+specification owns the valid context range:
 
 ```text
 InstructionContextRef =

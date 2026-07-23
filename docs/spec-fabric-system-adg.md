@@ -14,6 +14,12 @@ identity.
 It does not own software execution semantics, selected workload Mapping,
 runtime remapping, simulator observations, or DSE choices.
 
+`docs/spec-fabric-identity.md` is the sole owner of the Mapping-visible
+Fabric entity and structural-reference catalog. This document owns the
+system entities, endpoint inventories, service regions, transport patterns,
+resource states, use patterns, and other hardware semantics addressed by
+those references.
+
 ## Hardware Objects
 
 The Fabric Hardware Description family distinguishes:
@@ -152,7 +158,9 @@ AccCores may reference the same template while remaining distinct physical
 resources.
 
 Because the InstructionCore cardinality is one, its Mapping reference is
-derived rather than allocated:
+derived rather than allocated. `docs/spec-fabric-identity.md` owns the
+persistent reference framing; this specification owns the one-per-AccCore
+cardinality:
 
 ```text
 InstructionCoreContextRef = (AccCoreOccurrenceRef, 0)
@@ -584,7 +592,7 @@ fabric.system.transport_resource
   ResourceState, capacity, timing, progress, and grant contracts
 
 fabric.system.transfer_pattern
-  FabricTransportResourceRef owner
+  SystemTransportResourceRef owner
   owner-local pattern ordinal
   one ingress port
   canonical non-empty egress-port sequence
@@ -764,6 +772,9 @@ canonically labels independently meaningful entities, assigns consecutive
 `EntityId` values, sorts structural records by complete semantic key, emits
 canonical Fabric bytes, and applies the Common SHA-256 v1 contract. Equal
 hardware descriptions therefore have equal canonical bytes and identity.
+The Mapping-visible entity and structural-reference variants used by this
+process are closed by `docs/spec-fabric-identity.md`; this document cannot add
+an unregistered reference kind through a generic child or property record.
 
 The C++ ADG Builder creates this typed model and invokes the same finalizer; it
 does not own a parallel schema. Protocol implementations, concrete routers,

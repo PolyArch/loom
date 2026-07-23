@@ -83,11 +83,13 @@ identity are explicit Fabric entities rather than numbered generic edges.
 
 ## Mapping Boundary
 
-The single `loom.mapping` family has three closed immutable roots in its first
-complete schema version, `1.0`: `mapping.tech`, `mapping.spatial`, and
+The single `loom.mapping` family has three closed immutable roots in its
+current complete schema version, `2.0`: `mapping.tech`, `mapping.spatial`, and
 `mapping.system`.
 `docs/spec-mapping-artifact.md` is the sole record and assembly authority;
-`docs/spec-mapping-identity.md` owns exact references; and
+`docs/spec-mapping-identity.md` owns Mapping-local identity, scoped imports,
+and service-obligation keys; `docs/spec-fabric-identity.md` owns imported
+Fabric-local target references; and
 `docs/spec-mapping-verification.md` owns verifier behavior.
 
 TechMapping binds one exact Canonical Dataflow Program and one exact Fabric

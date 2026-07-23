@@ -6,6 +6,9 @@ This document assigns memory truth across the Canonical Dataflow Program,
 Fabric, TechMapping, SpatialMapping, SystemMapping, Deployment, and runtime.
 The central invariant is that a software memory space, a physical memory
 service, and an interface used to reach that service are separate objects.
+`docs/spec-fabric-identity.md` owns the persistent Fabric-local references to
+those services, interfaces, operation ports, and contexts; this document owns
+only their selected Mapping relations.
 
 ## Canonical Objects And Relations
 
@@ -185,8 +188,8 @@ Operation placement uses a closed typed reference:
 
 ```text
 MemoryOperationPlacementRef =
-    Spatial  { PhysicalMemoryOperationPortRef }
-  | Temporal { PhysicalMemoryOperationPortRef, OperationContextOrdinal }
+    Spatial  { FabricMemoryOperationPortRef }
+  | Temporal { FabricMemoryOperationContextRef }
 ```
 
 `MemoryOperationEntry` is the closed union defined by

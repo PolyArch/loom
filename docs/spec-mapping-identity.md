@@ -2,8 +2,10 @@
 
 This document is the identity and reference authority for persistent Mapping
 artifacts and System service obligation keys. `docs/spec-mapping-artifact.md`
-owns profile records and root assembly. `docs/spec-fabric-system-adg.md` owns
-Canonical Service Schema member and leg semantics.
+owns profile records and root assembly. `docs/spec-fabric-identity.md` owns
+the closed Fabric-local entity and structural-reference catalog.
+`docs/spec-fabric-system-adg.md` owns Canonical Service Schema member and leg
+semantics.
 `docs/spec-full-stack-traceability.md` owns the repository-wide Common
 artifact identity contract.
 
@@ -108,38 +110,31 @@ canonical memory actor; it is not another ID type.
 
 ## Fabric-Owned Upstream References
 
-Each finalized Fabric root owns its closed entity catalog, owner-relative
-structural-key catalog, canonical labeling, and artifact-local validation.
-Common Artifact and Mapping do not define a generic Fabric node, path, or
-property reference.
+`docs/spec-fabric-identity.md` is the sole catalog and framing authority for
+Fabric-local persistent targets. It defines the Mapping-visible entity kinds,
+template-versus-occurrence references, FU structural nodes and ports, token
+and memory endpoints, memory-operation structures, instruction contexts,
+resource states, use patterns, semantic configuration fields, physical
+refinement domains, and directed physical traversal variants.
 
-An independently meaningful physical object receives an artifact-local
-`EntityId` when it has its own capacity, state, configuration, physical role,
-or independent reference requirement. A subordinate object that is uniquely
-recoverable from such an owner uses a closed typed owner-relative structural
-key. Ports, switch traversals, memory operation ports, resource states, and
-service regions therefore do not receive IDs merely for consumer
-convenience.
+Mapping imports those types unchanged. It cannot add an unqualified
+`FabricResourceRef`, generic owner path, string kind, symbol, printer
+position, builder handle, or native PnR index as an escape hatch. It also
+cannot promote a Fabric structural object to a Mapping-owned entity.
 
-Every complete Fabric reference has the same exact form:
+Every complete reference still has the Common exact form:
 
 ```text
 ArtifactReference<T> =
   (exact Fabric ArtifactIdentity,
-   typed Fabric-owned entity or structural target T)
+   typed Fabric-local target T)
 ```
 
 A Mapping root that already declares the exact Fabric
-`UpstreamArtifactBinding` may encode only `T`. This compact form neither
-permits rebinding nor weakens exact target identity. Wrong root kind, foreign
+`UpstreamArtifactBinding` may encode only `T`. Wrong root kind, foreign
 artifact, wrong entity kind, wrong owner, or an out-of-range structural
-ordinal is invalid.
-
-The exact target variants must be closed by the owning Fabric root schemas
-before an affected Mapping or MappingConstraintSet can be published. A
-consumer cannot add an unqualified `FabricResourceRef`, string kind, symbol,
-path, printer position, builder handle, or native PnR index as an escape
-hatch.
+ordinal is invalid. A well-formed target that lacks a compatible capability is
+a Mapping feasibility failure rather than an identity error.
 
 ## Mapping-Local References
 
@@ -205,7 +200,8 @@ identified owner uses a typed structural key instead of a redundant
 actor result       = actor EntityId + result ordinal
 actor operand      = actor EntityId + operand ordinal
 graph boundary     = graph EntityId + boundary kind + port ordinal
-FU port            = FU EntityId + direction + port ordinal
+FU template port   = FabricFuTemplateRef + direction + port ordinal
+FU occurrence port = FabricFuOccurrenceRef + direction + port ordinal
 software edge      = typed producer endpoint + typed consumer endpoint
 point connection   = source hardware endpoint + destination hardware endpoint
 switch traversal   = switch occurrence EntityId + input ordinal + output ordinal

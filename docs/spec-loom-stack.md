@@ -202,9 +202,11 @@ owns accelerator- and workload-aware observations. Central resolved policy is
 the only owner that combines them for candidate ranking or acceptance.
 
 Mapping persistence is specified by [Mapping Artifact](spec-mapping-artifact.md)
-and [Mapping Identity](spec-mapping-identity.md). The PnR algorithm and native
-state are owned by [Place And Route](spec-pnr.md). Focused Mapping specs are
-derived views of those owners, not parallel schemas.
+and [Mapping Identity](spec-mapping-identity.md). Fabric-local persistent
+targets are owned by
+[Fabric Persistent Identity And References](spec-fabric-identity.md). The PnR
+algorithm and native state are owned by [Place And Route](spec-pnr.md).
+Focused Mapping specs are derived views of those owners, not parallel schemas.
 
 ## Simulation And Backend Evidence
 

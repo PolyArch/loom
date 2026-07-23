@@ -6,8 +6,9 @@ realization over exact finalized upstream artifacts. It never mutates or
 reinterprets those artifacts.
 
 Persistent identity and reference semantics are owned by
-`docs/spec-mapping-identity.md`. Observable verifier contracts are owned by
-`docs/spec-mapping-verification.md`. The complete Spatial and System
+`docs/spec-mapping-identity.md`; imported Fabric-local target variants are
+owned by `docs/spec-fabric-identity.md`. Observable verifier contracts are
+owned by `docs/spec-mapping-verification.md`. The complete Spatial and System
 MappingConstraintSet family, roots, projection catalogs, and admission algebra
 are owned by `docs/spec-pnr.md`; they are not part of the `loom.mapping`
 schema.
@@ -281,15 +282,13 @@ placement reference:
 
 ```text
 MemoryOperationPlacementRef =
-    Spatial  { PhysicalMemoryOperationPortRef }
-  | Temporal {
-      PhysicalMemoryOperationPortRef,
-      OperationContextOrdinal
-    }
+    Spatial  { FabricMemoryOperationPortRef }
+  | Temporal { FabricMemoryOperationContextRef }
 ```
 
 The Spatial variant derives its static context from the physical port. The
-Temporal variant selects a valid Fabric-declared resident context. The
+Temporal context reference contains that exact port plus a valid
+Fabric-declared resident-context ordinal. The
 collection of operation-entry targets and corresponding ExposureEntry targets
 is the persistent owner of Mapping's selected `C_dispatch`. The verifier
 checks each selection against Fabric-owned `H_dispatch`.

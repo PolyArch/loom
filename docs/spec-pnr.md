@@ -9,6 +9,8 @@ roots and clause wire schema.
 Evaluation and central DSE documents own objective, gate, Evidence, and
 resolved-model schemas. This document consumes those interfaces without
 restating them.
+`docs/spec-fabric-identity.md` owns every Fabric-local entity, endpoint,
+traversal, state, and service reference consumed by the projection catalogs.
 
 There is one Dataflow-to-Fabric Mapping artifact family. TechMapping selects
 semantic realizations, SpatialMapping adds physical realization inside a
@@ -222,7 +224,7 @@ SpatialTransferTerminalKey =
   | Sink(SpatialLogicalNetKey,
          ExposedCanonicalConsumerEndpointRef)
 
-PhysicalAddressPoint = (PhysicalMemoryServiceRef, Address)
+PhysicalAddressPoint = (FabricMemoryServiceRef, Address)
 ```
 
 `SpatialLogicalNetKey` identifies the residual transfer obligation derived
@@ -245,7 +247,7 @@ compute_fu_context:
     -> Set<(FabricFuOccurrenceRef, InstructionContextRef)> [singleton]
 
 memory_placement:
-  MemoryRealizationRef -> Set<FabricMemOccurrenceRef> [singleton]
+  MemoryRealizationRef -> Set<FabricMemoryOccurrenceRef> [singleton]
 
 net_assigned_tag_values:
   SpatialLogicalNetKey -> Set<PhysicalTagValue> [zero-or-more]
@@ -265,7 +267,7 @@ memory_operation_port:
     -> Set<FabricMemoryOperationPortRef> [singleton]
 
 memory_bound_services:
-  LogicalMemoryRootRef -> Set<PhysicalMemoryServiceRef> [non-empty]
+  LogicalMemoryRootRef -> Set<FabricMemoryServiceRef> [non-empty]
 
 memory_address_region:
   LogicalMemoryRootRef -> Set<PhysicalAddressPoint> [zero-or-more]
@@ -296,7 +298,7 @@ encodings:
 2. Unsigned scalar values such as Physical Tags use sorted, merged,
    non-overlapping half-open intervals.
 3. Physical addresses are grouped in canonical
-   `PhysicalMemoryServiceRef` order; each service contains sorted, merged,
+   `FabricMemoryServiceRef` order; each service contains sorted, merged,
    non-empty half-open address intervals.
 4. Closed tuple carriers use a lexicographically sorted unique full-tuple set.
    They are never split into component domains or a Cartesian product.
@@ -425,7 +427,7 @@ graph_target_spatial_core:
 
 service_target_region:
   OperationServiceObligationFamilyKey
-    -> Set<FabricServiceRegionRef> [zero-or-more]
+    -> Set<FabricMemoryServiceRegionRef> [zero-or-more]
 
 transfer_terminal_attachment:
   SystemTransferTerminalKey

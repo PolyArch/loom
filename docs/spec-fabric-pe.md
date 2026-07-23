@@ -401,7 +401,8 @@ boundary ports. It does not select a concrete PE or FU occurrence and does not
 persist raw configuration fields.
 
 SpatialMapping selects the concrete FU occurrence and resident instruction
-context:
+context. `docs/spec-fabric-identity.md` owns the persistent
+`InstructionContextRef` framing; the PE owns the context inventory and range:
 
 ```text
 InstructionContextRef =
