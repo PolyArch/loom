@@ -3,11 +3,13 @@
 // (loom-llvm-cf-to-cf, loom-llvm-func-to-func,
 // loom-llvm-arith-to-arith, loom-scf-while-to-for,
 // loom-scf-for-to-forall, loom-lower-forall-to-thread,
-// loom-lower-for-to-graph, loom-lower-scf-to-dfg). The Loom dataflow
+// loom-lower-for-to-graph, loom-lower-scf-to-dfg) and the optional
+// typed Dataflow rewrite pass (dataflow-rewrite). The Loom dataflow
 // and fabric dialects are also registered so hand-written .mlir lit
 // tests can exercise dataflow.thread / dataflow.graph op shapes.
 
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/Transforms/DataflowRewrite.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Frontend/IR/LoomDialect.h"
 #include "Frontend/Lowering/Passes.h"
@@ -28,6 +30,7 @@ int main(int argc, char **argv) {
                   ::loom::LoomDialect>();
   loom::raising::registerRaisingPasses();
   loom::lowering::registerLoweringPasses();
+  dataflow::registerDataflowTransformsPasses();
   return ::mlir::asMainReturnCode(::mlir::MlirOptMain(
       argc, argv, "Loom raising-pass MLIR optimizer driver\n", registry));
 }

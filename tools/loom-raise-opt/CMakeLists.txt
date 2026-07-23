@@ -11,6 +11,7 @@ target_link_libraries(loom-raise-opt PRIVATE
   LoomFrontendLowering
   LoomFrontendRaising
   MLIRDataflow
+  MLIRDataflowTransforms
   MLIRFabric
   MLIRIR
   MLIROptLib
