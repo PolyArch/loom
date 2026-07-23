@@ -13,6 +13,10 @@
 // RUN:   --arg 0=0x0000000100000003 --memref 1=10,11,12,13,14,15,16,17 \
 // RUN:   --output %t.rw.json
 // RUN: FileCheck %s --check-prefix=RW < %t.rw.json
+// RUN: loom-dfg-sim %s --graph uninitialized_unordered_rw_precedence \
+// RUN:   --output %t.uninitialized-rw.json
+// RUN: FileCheck %s --check-prefix=UNINITIALIZED-RW \
+// RUN:   < %t.uninitialized-rw.json
 // RUN: loom-dfg-sim %s --graph ordered_rw_chain \
 // RUN:   --memref 0=10,11,12,13,14,15,16,17 --output %t.chain.json
 // RUN: FileCheck %s --check-prefix=CHAIN < %t.chain.json
@@ -68,6 +72,20 @@
 // unordered indexed load of elements 3 and 1. Which access meets the conflict
 // is again not an observable, so only the terminal status is asserted.
 // RW: "status": "unsupported"
+
+// A load from fresh storage would be uninitialized in isolation, but its
+// unordered overlap with a ready store is the scheduler decision that takes
+// precedence. The complete access set must be projected before either access
+// executes, so the symmetric conflict reports unsupported without an
+// uninitialized-read diagnostic or terminal state.
+// UNINITIALIZED-RW: "diagnostics": [
+// UNINITIALIZED-RW-NOT: uninitialized
+// UNINITIALIZED-RW: "final_memory_roots": {}
+// UNINITIALIZED-RW-NEXT: "final_memory_state": {}
+// UNINITIALIZED-RW-NEXT: "final_outputs": []
+// UNINITIALIZED-RW-NOT: "dataflow.load":
+// UNINITIALIZED-RW-NOT: "dataflow.store":
+// UNINITIALIZED-RW: "status": "unsupported"
 
 // The same element under an explicit done/ctrl chain is ordered, so both
 // accesses fire and the load observes the stored value.
@@ -179,6 +197,20 @@ module {
         : memref<8xi32>, vector<2xi32>
     dataflow.graph.return values() streams() memories()
         complete(%vector_done, %scalar_done : none, none)
+  }
+
+  dataflow.graph private @uninitialized_unordered_rw_precedence(
+      %start: none) -> (memref<1xi32>)
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 0, 0, 1>} {
+    %slot = memref.alloc() : memref<1xi32>
+    %cell = dataflow.constant %start {const_value = 0 : index} : index
+    %value = dataflow.constant %start {const_value = 42 : i32} : i32
+    %store_done = dataflow.store %slot[%cell] %value %start : memref<1xi32>
+    %loaded, %load_done = dataflow.load %slot[%cell] %start : memref<1xi32>
+    dataflow.graph.return values() streams()
+        memories(%slot : memref<1xi32>)
+        complete(%store_done, %load_done : none, none)
   }
 
   dataflow.graph private @ordered_rw_chain(

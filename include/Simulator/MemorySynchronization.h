@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <system_error>
+#include <utility>
 
 namespace loom {
 namespace sim {
@@ -135,6 +136,12 @@ public:
 
   /// Records one sequenced-before fact of the finalized program.
   llvm::Error sequencedBefore(SyncEffectId earlier, SyncEffectId later);
+
+  /// Records a collection of sequenced-before facts as one transaction.
+  /// Validation copies, cycle-checks, and commits the authority state once;
+  /// rejection leaves every fact in the collection uncommitted.
+  llvm::Error sequencedBefore(
+      llvm::ArrayRef<std::pair<SyncEffectId, SyncEffectId>> relations);
 
   /// Binds one effect to the version it appended, in exactly one resolved
   /// domain. `readsFrom` is present exactly for a read-modify-write or a

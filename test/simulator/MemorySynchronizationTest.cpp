@@ -682,33 +682,49 @@ void acceptedFactsAreInsertionOrderInvariant() {
                 "insertion order changed a publication");
 }
 
-// A caller that admits many prior effects against one incoming frontier asks
-// the authority once for the complete set. Equality covers the frontier
-// effect itself, happens-before covers its predecessors, and an unrelated
-// effect remains uncovered until it joins the frontier explicitly.
-void longChainUsesOneBatchedFrontierQuery() {
+// One issue can inherit a wide token frontier. The authority accepts all of
+// those sequenced-before facts as one transaction, and a rejected collection
+// commits none of its otherwise-valid prefix.
+void wideFrontierUsesOneTransactionalInsertion() {
   MemoryAtomicOrder order;
   MemorySynchronization sync(order);
-  llvm::SmallVector<SyncEffectId> chain;
-  chain.reserve(1024);
-  for (unsigned index = 0; index < 1024; ++index) {
-    chain.push_back(sync.declareEffect());
-    if (index != 0)
-      accept(sync.sequencedBefore(chain[index - 1], chain[index]),
-             "long sequenced chain");
-  }
+  constexpr unsigned kFanIn = 1024;
+  llvm::SmallVector<SyncEffectId> sources;
+  sources.reserve(kFanIn);
+  for (unsigned index = 0; index < kFanIn; ++index)
+    sources.push_back(sync.declareEffect());
+  SyncEffectId target = sync.declareEffect();
 
-  llvm::SmallVector<SyncEffectId, 2> frontier{chain.back()};
-  require(sync.areCoveredByHappensBefore(chain, frontier),
-          "the tail frontier did not cover its sequenced predecessors");
+  llvm::SmallVector<std::pair<SyncEffectId, SyncEffectId>> facts;
+  facts.reserve(2 * kFanIn - 1);
+  for (unsigned index = 0; index < kFanIn; ++index) {
+    if (index + 1 < kFanIn)
+      facts.emplace_back(sources[index], sources[index + 1]);
+    facts.emplace_back(sources[index], target);
+  }
+  accept(sync.sequencedBefore(facts), "wide incoming frontier");
+  require(sync.areCoveredByHappensBefore(sources, {sources.back()}),
+          "the chain tail did not cover its sequenced predecessors");
+  require(sync.areCoveredByHappensBefore(sources, {target}),
+          "the target did not cover its wide incoming frontier");
 
   SyncEffectId unrelated = sync.declareEffect();
-  chain.push_back(unrelated);
-  require(!sync.areCoveredByHappensBefore(chain, frontier),
-          "an unrelated effect was covered by the chain tail");
-  frontier.push_back(unrelated);
-  require(sync.areCoveredByHappensBefore(chain, frontier),
+  sources.push_back(unrelated);
+  require(!sync.areCoveredByHappensBefore(sources, {target}),
+          "an unrelated effect was covered by the target");
+  llvm::SmallVector<SyncEffectId, 2> frontier{target, unrelated};
+  require(sync.areCoveredByHappensBefore(sources, frontier),
           "a multi-effect frontier did not cover all requested effects");
+
+  SyncEffectId refusedSource = sync.declareEffect();
+  SyncEffectId refusedTarget = sync.declareEffect();
+  const SyncEffectId unknown(std::numeric_limits<std::uint64_t>::max());
+  llvm::SmallVector<std::pair<SyncEffectId, SyncEffectId>, 2> refused{
+      {refusedSource, refusedTarget}, {refusedTarget, unknown}};
+  expectRejected(sync.sequencedBefore(refused), Kind::UnknownEffect,
+                 "a batch with an unknown effect was accepted");
+  require(!sync.happensBefore(refusedSource, refusedTarget),
+          "a rejected batch committed its valid prefix");
 }
 
 } // namespace
@@ -725,6 +741,6 @@ int main() {
   rejectionsArePreciseAndAtomic();
   fenceShapeHoldsInEitherDeclarationOrder();
   acceptedFactsAreInsertionOrderInvariant();
-  longChainUsesOneBatchedFrontierQuery();
+  wideFrontierUsesOneTransactionalInsertion();
   return 0;
 }

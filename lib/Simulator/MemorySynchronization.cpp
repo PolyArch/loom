@@ -281,23 +281,34 @@ SyncEffectId MemorySynchronization::declareEffect() {
 
 llvm::Error MemorySynchronization::sequencedBefore(SyncEffectId earlier,
                                                    SyncEffectId later) {
-  if (llvm::Error error = requireKnown(earlier))
-    return error;
-  if (llvm::Error error = requireKnown(later))
-    return error;
-  if (earlier == later)
-    return reject(Kind::DuplicateEdge, "effect " +
-                                           llvm::Twine(earlier.value()) +
-                                           " cannot precede itself");
-  auto existing = facts_.sequenced.find(earlier.value());
-  if (existing != facts_.sequenced.end() &&
-      llvm::is_contained(existing->second, later))
-    return reject(Kind::DuplicateEdge,
-                  "effect " + llvm::Twine(earlier.value()) +
-                      " already precedes " + llvm::Twine(later.value()));
+  const std::pair<SyncEffectId, SyncEffectId> relation{earlier, later};
+  return sequencedBefore({relation});
+}
+
+llvm::Error MemorySynchronization::sequencedBefore(
+    llvm::ArrayRef<std::pair<SyncEffectId, SyncEffectId>> relations) {
+  if (relations.empty())
+    return llvm::Error::success();
+  for (const auto &[earlier, later] : relations) {
+    if (llvm::Error error = requireKnown(earlier))
+      return error;
+    if (llvm::Error error = requireKnown(later))
+      return error;
+    if (earlier == later)
+      return reject(Kind::DuplicateEdge, "effect " +
+                                             llvm::Twine(earlier.value()) +
+                                             " cannot precede itself");
+  }
 
   Facts candidate = facts_;
-  candidate.sequenced[earlier.value()].push_back(later);
+  for (const auto &[earlier, later] : relations) {
+    auto &successors = candidate.sequenced[earlier.value()];
+    if (llvm::is_contained(successors, later))
+      return reject(Kind::DuplicateEdge,
+                    "effect " + llvm::Twine(earlier.value()) +
+                        " already precedes " + llvm::Twine(later.value()));
+    successors.push_back(later);
+  }
   return commit(std::move(candidate));
 }
 

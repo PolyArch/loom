@@ -61,8 +61,6 @@ struct Token {
 struct DataflowMemoryRead {
   Token data;
   bool accessedMemory = false;
-  // The active element slots the access resolved, in lane order.
-  llvm::SmallVector<std::size_t> slots;
 };
 
 // The complete element update one store commits, prepared before any element
@@ -237,24 +235,11 @@ std::optional<Token> readMemoryElement(const MemoryView &view,
                                        std::size_t index, SimulatorState &state,
                                        llvm::StringRef opName);
 void writeMemoryElement(const MemoryView &view, std::size_t index, Token value);
-// Preflight: every check that can reject an access runs here, on peeked
-// inputs and a non-consuming memory view. A rejection may record its reason
-// and the unsupported-capability outcome, but consumes no input, publishes no
-// output, and leaves actor mutation state, events, and memory unchanged.
-std::optional<DataflowMemoryRead> prepareDataflowMemoryRead(
-    const MemoryView &view, const Token &addr, mlir::MemRefType memoryType,
-    mlir::Type addressType, mlir::Type dataType, const Token *mask,
-    mlir::Type maskType, SimulatorState &state, mlir::Operation *scope);
-std::optional<DataflowMemoryWrite>
-prepareDataflowMemoryWrite(const MemoryView &view, const Token &addr,
-                           const Token &data, mlir::MemRefType memoryType,
-                           mlir::Type addressType, mlir::Type dataType,
-                           const Token *mask, mlir::Type maskType,
-                           SimulatorState &state, mlir::Operation *scope);
 void commitDataflowMemoryWrite(const MemoryView &view,
                                const DataflowMemoryWrite &write);
 std::optional<ReadyPlainMemoryAction>
 projectReadyPlainMemoryAction(mlir::Operation *op, SimulatorState &state);
+bool validateReadyPlainMemoryAction(mlir::Operation *op, SimulatorState &state);
 bool plainMemoryActionsConflict(const MemoryActionRecord &lhs,
                                 const MemoryActionRecord &rhs);
 bool isSupportedLLVMCall(mlir::LLVM::CallOp op);

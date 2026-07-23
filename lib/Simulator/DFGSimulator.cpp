@@ -787,9 +787,9 @@ static bool rejectPlainMemoryConflict(SimulatorState &state) {
 }
 
 // A wave is a closed scheduler decision because its publications remain
-// pending until every actor has been visited. Project and admit every ready
-// plain action before that visit so a rejected decision mutates no actor,
-// channel, memory, publication, or event state.
+// pending until every actor has been visited. Purely project and admit every
+// ready plain action before that visit so conflicts take precedence over
+// executing any access.
 static bool admitReadyPlainMemoryActions(mlir::Block &block,
                                          SimulatorState &state) {
   state.admittedPlainMemoryActions.clear();
@@ -826,6 +826,22 @@ static bool admitReadyPlainMemoryActions(mlir::Block &block,
   for (auto &candidate : ready)
     state.admittedPlainMemoryActions.try_emplace(
         candidate.first, std::move(candidate.second.action));
+  return true;
+}
+
+// Once the complete footprint set is admitted, validate every access before
+// the actor sweep. Reads may inspect memory here, but no actor input, memory
+// value, publication, event, or mutation epoch changes before all pass.
+static bool validateAdmittedPlainMemoryActions(mlir::Block &block,
+                                               SimulatorState &state) {
+  for (mlir::Operation &op : block.getOperations()) {
+    if (!state.admittedPlainMemoryActions.contains(&op))
+      continue;
+    if (validateReadyPlainMemoryAction(&op, state))
+      continue;
+    state.admittedPlainMemoryActions.clear();
+    return false;
+  }
   return true;
 }
 
@@ -1541,6 +1557,8 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   while ((report.wavefrontSteps < options.maxEventSteps || retired) &&
          report.status != "invalid") {
     if (!admitReadyPlainMemoryActions(entry, state))
+      break;
+    if (!validateAdmittedPlainMemoryActions(entry, state))
       break;
     bool fired = false;
     for (mlir::Operation &op : entry.getOperations()) {
