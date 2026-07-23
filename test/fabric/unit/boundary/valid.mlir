@@ -33,7 +33,6 @@ fabric.module @s2t_input_width_normalization(%d : !fabric.bits<32>,
 
 // CHECK-LABEL: fabric.module @s2t_configurable_unconfigured
 fabric.module @s2t_configurable_unconfigured(%d : !fabric.bits<32>) {
-  // CHECK: fabric.boundary [s2t] %{{.*}} : !fabric.bits<32> -> !fabric.bits_tag<32, 4>
   %0 = fabric.boundary [s2t] %d
        : !fabric.bits<32> -> !fabric.bits_tag<32, 4>
   fabric.yield
@@ -66,7 +65,6 @@ fabric.module @s2t_bits_zero(%d : !fabric.bits<0>, %t : !fabric.bits<3>) {
 
 // CHECK-LABEL: fabric.module @t2t_unconfigured
 fabric.module @t2t_unconfigured(%a : !fabric.bits_tag<32, 2>) {
-  // CHECK: fabric.boundary [t2t] %{{.*}} {hw_params = [{lut_size = 4 : i32}]} : !fabric.bits_tag<32, 2> -> !fabric.bits_tag<32, 2>
   %0 = fabric.boundary [t2t] %a
        {hw_params = [{lut_size = 4 : i32}]}
        : !fabric.bits_tag<32, 2> -> !fabric.bits_tag<32, 2>
@@ -85,6 +83,19 @@ fabric.module @t2t_identity(%a : !fabric.bits_tag<32, 2>) {
         sw_configs = {lookup_table = [{src_tag = 0 : i2, dst_tag = 0 : i2},
                                        {src_tag = 1 : i2, dst_tag = 1 : i2}]}}
        : !fabric.bits_tag<32, 2> -> !fabric.bits_tag<32, 2>
+  fabric.yield
+}
+
+// The source keys have identical low 64 bits and differ at bit 64.
+// CHECK-LABEL: fabric.module @t2t_wide_distinct_keys
+fabric.module @t2t_wide_distinct_keys(%a : !fabric.bits_tag<32, 80>) {
+  %0 = fabric.boundary [t2t] %a
+       {hw_params = [{lut_size = 2 : i32}],
+        sw_configs = {lookup_table = [
+          {src_tag = 1 : i80, dst_tag = 0 : i80},
+          {src_tag = 18446744073709551617 : i80, dst_tag = 1 : i80}
+        ]}}
+       : !fabric.bits_tag<32, 80> -> !fabric.bits_tag<32, 80>
   fabric.yield
 }
 

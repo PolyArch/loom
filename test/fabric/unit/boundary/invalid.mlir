@@ -58,6 +58,15 @@ fabric.module @boundary_inner_input_types_collision(
 }
 
 // -----
+// A present wrong-typed sw_configs must not be normalized to absence.
+fabric.module @boundary_sw_configs_wrong_outer_type(%d : !fabric.bits<32>) {
+  // expected-error @+1 {{'sw_configs' must be a dictionary attribute}}
+  %0 = fabric.boundary [s2t] %d {sw_configs = []}
+       : !fabric.bits<32> -> !fabric.bits_tag<32, 4>
+  fabric.yield
+}
+
+// -----
 // fabric.boundary [s2t]: a present empty projection is not the canonical
 // unconfigured form.
 fabric.module @s2t_empty_sw_configs(%d : !fabric.bits<32>) {
@@ -215,14 +224,16 @@ fabric.module @t2t_dst_tag_width_bad(%a : !fabric.bits_tag<32, 4>) {
 }
 
 // -----
-// fabric.boundary [t2t]: duplicate src_tag values.
-fabric.module @t2t_duplicate_keys(%a : !fabric.bits_tag<32, 4>) {
+// fabric.boundary [t2t]: duplicate src_tag values wider than 64 bits.
+fabric.module @t2t_wide_duplicate_keys(%a : !fabric.bits_tag<32, 80>) {
   // expected-error @+1 {{[t2t] duplicate src_tag value}}
   %0 = fabric.boundary [t2t] %a
        {hw_params = [{lut_size = 4 : i32}],
-        sw_configs = {lookup_table = [{src_tag = 1 : i4, dst_tag = 0 : i4},
-                                       {src_tag = 1 : i4, dst_tag = 2 : i4}]}}
-       : !fabric.bits_tag<32, 4> -> !fabric.bits_tag<32, 4>
+        sw_configs = {lookup_table = [
+          {src_tag = 18446744073709551617 : i80, dst_tag = 0 : i80},
+          {src_tag = 18446744073709551617 : i80, dst_tag = 2 : i80}
+        ]}}
+       : !fabric.bits_tag<32, 80> -> !fabric.bits_tag<32, 80>
   fabric.yield
 }
 

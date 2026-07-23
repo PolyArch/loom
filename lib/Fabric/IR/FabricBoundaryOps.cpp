@@ -79,6 +79,10 @@ ParseResult BoundaryOp::parse(OpAsmParser &parser, OperationState &result) {
 
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
+  if (Attribute swConfigs = result.attributes.get("sw_configs");
+      swConfigs && !isa<DictionaryAttr>(swConfigs))
+    return parser.emitError(directionLoc,
+                            "'sw_configs' must be a dictionary attribute");
 
   if (parser.parseColon())
     return failure();
