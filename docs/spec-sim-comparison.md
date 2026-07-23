@@ -44,22 +44,36 @@ comparison-status algebra.
 ## Functional Comparison
 
 For a finalized Canonical Dataflow Program, equivalent runtime input, and a
-legal complete Mapping, DFG-sim and CGRA-sim must agree on:
+legal complete Mapping, functional comparison may relate:
 
 * returned values;
 * ordered stream payloads and termination;
 * externally visible logical-memory state or diffs; and
 * graph completion outcome.
 
-A mismatch between complete compatible observations is a correctness finding.
+Exact value equality is a valid relation only when the observable contract or
+the exact comparison model proves that observation deterministic. This is the
+normal relation for deterministic programs and for observations constrained
+to one value by their software contract.
+
+Atomic and other explicitly nondeterministic software contracts may admit
+several legal executions. Each exact simulator model still deterministically
+produces one legal execution, but two models need not select the same legal
+modification order or reads-from relation. Different legal per-actor values are
+therefore not automatically a correctness finding. A requested exact-value
+comparison without a proven deterministic relation receives `NotApplicable`.
+A descriptor-owned invariant or oracle may instead compare a deterministic
+property, such as the final sum of an atomic histogram, using the ordinary
+finding and metric result algebra.
+
+A mismatch between complete observations under a proven deterministic
+relation, or a failure of the selected invariant, is a correctness finding.
 Different terminal forms under the same requested semantic execution contract
-are therefore a functional or completion mismatch, not an escape from
-comparison. Missing or invalid producer references and statically unsupported
-capabilities cannot form a valid comparison Request. Runtime-dependent lack of
-support is `Unsupported` rather than a comparison finding. A concrete
-requested observation that is outside an otherwise supported relation is
-`NotApplicable`. Hardware timing differences never excuse a functional
-mismatch.
+are likewise a functional or completion mismatch. Missing or invalid producer
+references and statically unsupported capabilities cannot form a valid
+comparison Request. Runtime-dependent lack of support is `Unsupported` rather
+than a comparison finding. Hardware timing differences never excuse a
+functional mismatch.
 
 ## Performance Comparison
 
@@ -80,9 +94,11 @@ Evidence rather than being attributed to CGRA-sim.
 
 ## Determinism And Results
 
-Given the same request and exact input artifacts, comparison produces the same
-Evidence. Canonical role order and metric identities provide tie breaks; file
-order and presentation order do not.
+Given the same request, exact input artifacts, and exact comparison-model
+identity, comparison produces the same Evidence. The model identity owns the
+selected equality relation or invariant oracle. Canonical role order and
+metric identities provide tie breaks; file order and presentation order do
+not.
 
 Comparison uses only the ordinary Evaluation result algebra. A requested
 functional-mismatch finding is `Absent` for a match, `Present` with typed
@@ -99,6 +115,8 @@ outcomes have no finding or metric results.
 
 ## Anchor Verification
 
-Stable tests cover exact-role validation, visible-memory alignment, functional
-mismatch detection, rejection of incompatible metrics, and deterministic
+Stable tests cover exact-role validation, visible-memory alignment,
+deterministic functional mismatch detection, `NotApplicable` for an
+unconstrained nondeterministic value relation, invariant comparison of legal
+atomic executions, rejection of incompatible metrics, and deterministic
 Evidence. Tests do not pin table formatting or duplicate simulator semantics.

@@ -111,11 +111,18 @@ Logical memories are addressed software memory spaces. `dataflow.load` and
 For each alias partition, the canonical memory-order state is the pair
 `(write_frontier, read_frontier)` defined by the graph-memory lowering spec.
 
-Retirement performs the logical read or write. DFG-sim models neither cache
+Actor-transition commit issues one logical memory operation. The DFG memory
+provider then linearizes and retires it under the shared lifecycle and
+`MemoryAction` projection in
+`docs/spec-dataflow-memory-consistency.md`. DFG-sim models neither cache
 hierarchy, coherence traffic, NoC transport, bank conflicts, physical memory
-ports, nor Fabric memory-service capacity. Plain conflicting accesses without
-an explicit causal order must not become deterministic merely because of
-simulator traversal order.
+ports, nor Fabric memory-service capacity.
+
+Plain conflicting accesses without an explicit causal order must not become
+deterministic merely because of simulator traversal order. When such a
+conflict depends on runtime addresses, the exact initial DFG model returns
+`Unsupported` rather than choosing an arbitrary result or reporting a
+deadlock.
 
 Element, contiguous, indexed, and masked accesses execute the exact Dataflow
 semantics in `docs/spec-dataflow-vectorization.md`. DFG-sim suppresses inactive
@@ -125,13 +132,26 @@ one vector actor firing as one load `data + done` or store `done` event. It does
 not expose Fabric lane or beat transactions.
 
 The software contract for atomic, RMW, compare-exchange, fence, and volatile
-actors is defined by `docs/spec-dataflow-memory-consistency.md`. DFG-sim
-continues to reject atomic actors and fences until its dynamic
-modification-order, reads-from, synchronizes-with, and
-sequentially-consistent-order contract is added. Volatile MMIO additionally
-requires an explicit external environment contract. It must not execute any
-of these actors as plain load/store. Hardware coherence remains outside
-DFG-sim.
+actors is defined by `docs/spec-dataflow-memory-consistency.md`. The DFG
+provider executes that contract with logical memory and unlimited physical
+resources. It owns deterministic legal choices for modification order,
+reads-from, synchronizes-with, and sequentially-consistent order. Simultaneous
+eligible actions use the stable action-key derivation defined by the exact DFG
+model descriptor; MLIR traversal, container order, and host scheduling are
+forbidden tie breaks.
+
+The first exact DFG model gives weak compare-exchange no spurious failures.
+Any future model that explores permitted spurious failure or other legal
+nondeterminism requires a different exact model identity and explicit
+configuration or seed. For each resolved software synchronization scope, the
+provider derives an execution-local abstract participant domain from the exact
+workload; this is not a Fabric or persistent Artifact domain. An unresolved
+target synchronization scope is `Unsupported`. A scope whose participants
+extend beyond the spatial workload requires an explicit external service model
+or sys-sim. Volatile ordinary storage follows the shared at-most-once
+observation contract; volatile MMIO requires an exact external device model.
+Hardware coherence remains outside DFG-sim, and none of these actors may be
+reinterpreted as plain load/store.
 
 ## Trace And Termination
 
@@ -173,9 +193,13 @@ and provenance.
 ## DFG/CGRA Relation
 
 DFG-sim and CGRA-sim use the same canonical actor and logical-memory
-semantics. Given equivalent runtime inputs and a legal complete mapping, their
-terminal software observables must agree. Different cycle behavior is expected
-because CGRA-sim adds finite resources and hardware timing.
+semantics. Given equivalent runtime inputs and a legal complete mapping, exact
+terminal-value equality is required only when the requested observable
+contract or comparison oracle proves that observation deterministic. Each
+exact model still produces one deterministic legal execution. Different legal
+atomic orders may therefore produce different per-actor values without
+violating the shared semantics. Different cycle behavior is expected because
+CGRA-sim adds finite resources and hardware timing.
 
 Comparison is an ordinary Evaluation model specified by
 [Simulation Comparison](spec-sim-comparison.md). It consumes role-labeled
@@ -190,11 +214,16 @@ Stable anchor tests cover:
 * `ctrl`/`done` memory order and terminal memory diffs;
 * contiguous, indexed, and masked vector-memory semantics with one actor
   retirement;
+* relaxed atomic histogram execution;
+* release/acquire synchronization, including its fence form;
+* repeated-address `PerLane` atomic execution with one actor retirement;
+* at-most-once volatile MMIO observation through an exact external model;
 * deterministic `EventCoordinate` and within-frame trace order;
 * trace observer noninterference;
 * exact terminal and Evidence outcome mapping, including deadlock witnesses;
 * explicit unsupported and deadlock outcomes; and
-* terminal-observable agreement with one legal CGRA-sim execution.
+* deterministic or oracle-governed comparison with one legal CGRA-sim
+  execution.
 
 Tests must not preserve text report layouts, container order, a fixture matrix,
 or implementation-specific scheduler classes.

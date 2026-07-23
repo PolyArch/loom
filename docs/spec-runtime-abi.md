@@ -210,6 +210,18 @@ SpatialServiceResponse {
 }
 ```
 
+`ordering_and_visibility_context` is a non-owning transient projection of the
+issued actor's source execution context and incoming causal obligations. It
+references the exact Dataflow contract and, when physical service has been
+selected, its exact `MemoryConsistencyDomain`; it does not copy ordering,
+scope, modification order, reads-from, coherence state, or a provider policy.
+
+`completion_and_visibility_event` is the provider acknowledgement required to
+advance that exact issued operation toward retirement. It reports fulfillment
+of the selected contract; it does not become another visibility authority or a
+persistent event record. Local providers and the gem5 Bridge use the same
+boundary while retaining their distinct timing and dynamic-state ownership.
+
 The canonical service requirement fixes read, write, RMW, compare-exchange, or
 fence shape and its exact actor contract. Addressed operations carry the
 runtime projection of their `CanonicalMemoryAccessView`; fence has no access
@@ -245,10 +257,12 @@ contract. One request has exactly one timing authority.
 The Operation Engine submits at most one logical `SpatialServiceRequest` for
 one accepted actor firing. The selected Fabric use pattern and service adapter
 may lower it to several implementation transactions or beats, but those child
-transactions do not become new Runtime ABI requests or independent retirement
-events. Their ordering, resource claims, and result assembly are derived from
-Fabric. An all-zero mask reaches no service and completes locally with the
-canonical masked-load or masked-store result.
+transactions and per-lane atomic actions do not become new Runtime ABI
+requests, transaction handles, actor firings, or independent retirement
+events. They also cannot create additional provider-visible volatile
+operations. Their ordering, resource claims, and result assembly are derived
+from Fabric. An all-zero mask reaches no service and completes locally with
+the canonical masked-load or masked-store result.
 
 When a `fabric.mem` load response retires, read data and completion become one
 indivisible `data + done` publication across all selected internal and external
@@ -337,7 +351,11 @@ Gem5 executes concrete arbiter, queue, credit, protocol, cache, and memory
 microstate from the selected implementation. Every cycle-visible grant follows
 the exact Fabric contract or Mapping-selected exact hardware refinement. Gem5,
 the Bridge, and runtime do not choose a fallback arbitration policy or
-reinterpret SystemMapping routes and reservations.
+reinterpret SystemMapping routes and reservations. For a consistency domain
+that crosses the system boundary, gem5 alone owns modification order,
+reads-from, cache/coherence state, and system ordering. The Bridge carries the
+typed request, response, and completion/visibility acknowledgement; it must not
+maintain a shadow global consistency state.
 
 Standalone DFG-sim and CGRA-sim tools use the same SpatialCore simulation
 library. Runtime must not route a HostCore Thread Dispatch directly to those
@@ -384,6 +402,8 @@ Anchor-level tests should cover:
 * one logical Spatial Service request lowered by a declared Fabric use pattern
   to several implementation transactions without additional actor retirement;
 * atomic load `data + done` and single-event store retirement;
+* one local consistency-domain request and one gem5-owned external request with
+  no duplicate modification-order or reads-from authority;
 * consumption of a Deployment-owner-validated runtime-image child set, with a
   closure mismatch rejected and no missing Spatial launch path synthesized;
 * mechanical Compiler Target Binding selection from the chosen InstructionCore

@@ -486,6 +486,28 @@ addresses are not hardware capability. They belong to Deployment and runtime
 inputs. Reset, reconfiguration, or power behavior enters the service contract
 only when it changes observable content retention.
 
+## Dynamic Consistency Execution
+
+An issued read, write, RMW, compare-exchange, or fence derives the
+nonpersistent `MemoryAction` defined by
+`docs/spec-dataflow-memory-consistency.md`. The selected operation capability,
+use pattern, dispatch target, and `MemoryConsistencyDomain` determine which
+exact execution provider admits and linearizes it. `fabric.mem` does not own a
+parallel memory-model state or copy the Dataflow access contract.
+
+One actor issue remains one logical memory-service request and one retirement
+publication. A declared use pattern may perform several lane operations,
+physical beats, local forwarding actions, or protocol retries, but those are
+children of the same request. They do not create extra actor firings,
+retirements, atomic objects, or provider-visible volatile operations.
+
+A Local Memory Service whose complete domain closure is inside the
+SpatialCore may execute through the exact Fabric-local provider. A manager
+target delegates its external obligations through the Runtime ABI-owned
+Spatial Service boundary. The external provider owns its modification order,
+reads-from, cache, coherence, and system ordering. The Operation Engine,
+Bridge, and local simulator must not shadow that state.
+
 ## Configurable Service Dispatch
 
 Operation contexts and subordinate requests are request sources. Addressed and

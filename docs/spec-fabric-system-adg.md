@@ -688,6 +688,22 @@ by every contract it admits. Concrete modification order, reads-from,
 synchronizes-with, sequentially-consistent order, queue occupancy, and grant
 state are execution state and never persistent Fabric fields.
 
+The domain is a capability contract, not a second dynamic consistency engine.
+An exact execution provider interprets that contract. A provider may execute
+the domain locally only when its complete participant and service closure is
+inside that provider's simulation boundary. A domain that crosses the system
+boundary delegates its external dynamic state to the selected whole-system
+provider through the typed Spatial Service boundary. Fabric does not prescribe
+an execution trace or duplicate provider-owned modification order,
+reads-from, cache, or coherence state.
+
+Where a software contract permits several legal behaviors, such as weak
+compare-exchange spurious failure, the Fabric domain declares only the
+supported behavior envelope. The exact Evaluation model identifies the
+deterministic provider policy used for one execution. A model that cannot
+complete a reachable choice is unsupported; Fabric and Mapping must not fill
+the gap with an implicit policy.
+
 One domain may cover several services, caches, and AccCores. A composite fence
 provider may use several internal barriers and an all-of join only when that
 behavior is an explicit domain-owned use pattern. Mapping cannot synthesize a

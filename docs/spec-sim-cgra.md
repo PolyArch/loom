@@ -52,9 +52,10 @@ CGRA-sim models only a SpatialCore invocation. It may model selected:
   protocol behavior; and
 * backpressure, arbitration, buffering, contention, and deadlock progress.
 
-It does not simulate HostCore or InstructionCore execution, system caches,
-coherence, system memory hierarchy, or AccCore-to-AccCore NoC behavior. Those
-belong to sys-sim through gem5.
+It does not simulate HostCore or InstructionCore execution, system cache and
+coherence state, system memory hierarchy, or AccCore-to-AccCore NoC behavior.
+Those belong to sys-sim through gem5. A Fabric-declared consistency domain
+whose complete closure is local to the SpatialCore remains inside CGRA-sim.
 
 ## Admission And Mapping Boundary
 
@@ -127,18 +128,35 @@ lanes in canonical row-major order, and exposes only one canonical actor firing
 and one load `data + done` or store `done` retirement. A vector token has one
 Physical Tag wherever a Tag is required; lane indices are never Tags.
 
-Hardware resource delay may postpone issue or retirement, but it cannot change
-the logical memory-order contract. Visibility and terminal memory diffs must
-match DFG-sim for a legal execution. System cache and coherence behavior is
-outside this simulator.
+Actor-transition commit issues one logical memory operation through the shared
+`MemoryAction` projection. The exact CGRA provider derives admission,
+linearization timing, visibility acknowledgement, and retirement from the
+selected Fabric operation port, `MemoryConsistencyDomain`, use pattern,
+resource state, grant policy, and Mapping. Hardware delay may postpone any
+provider event, but it cannot change the logical memory-order contract.
 
 The Dataflow software contract for atomic, RMW, compare-exchange, fence, and
 volatile actors is defined by `docs/spec-dataflow-memory-consistency.md`.
-CGRA-sim rejects those actors until Fabric service capability, Mapping
-realization, and CGRA-sim consistency-domain execution contracts are defined.
-It must not execute them as plain load/store. System coherence remains a
-sys-sim responsibility even after local SpatialCore atomic realization is
-defined.
+A `MemoryConsistencyDomain` whose complete participant and service closure is
+inside the simulated SpatialCore executes through the shared consistency
+semantics and exact Fabric-local provider. The provider models physical
+contention while preserving one actor issue and one retirement even when the
+selected use pattern contains several lane or beat transactions.
+
+A manager or other external endpoint requires a descriptor-owned exact
+external-service model. CGRA-sim must not assume zero latency, implicit
+coherence, or an arbitrary response policy. If a reachable execution requires
+provider behavior that the exact model does not define, including permitted
+weak compare-exchange spurious failure under contention, the result is
+`Unsupported`. System cache, coherence, memory hierarchy, and cross-AccCore
+ordering remain sys-sim responsibilities. None of these actors may execute as
+plain load/store.
+
+Terminal logical-memory state and actor values obey the same software
+semantics as DFG-sim. Exact value equality is required only for observations
+that the requested observable contract or comparison oracle proves
+deterministic; different deterministic legal executions may select different
+atomic orders.
 
 ## Deadlock And Termination
 
@@ -187,7 +205,11 @@ semantic implementation.
 In sys-sim, gem5 is the only whole-system time authority. The Bridge advances a
 SpatialCore session to its next externally observable event and translates that
 cycle-relative event at the exact launch/service boundary. The SpatialCore
-library does not run an independent whole-system clock.
+library does not run an independent whole-system clock. A consistency domain
+fully local to the SpatialCore may continue in the Loom provider. A request
+whose domain crosses the system boundary is delegated through the typed
+Spatial Service boundary; gem5 alone owns the external modification order,
+reads-from, cache, coherence, and system-order state.
 
 ## Anchor Verification
 
@@ -198,11 +220,15 @@ Stable anchor tests cover:
 * finite-route, buffer, memory, and temporal-resource contention;
 * contiguous, indexed, masked, and multi-transaction memory execution with one
   logical retirement and one Tag per vector token;
+* local atomic and fence execution through one exact Fabric consistency
+  domain;
+* repeated-address `PerLane` atomics and at-most-once volatile MMIO service;
+* rejection of incomplete external or weak-compare-exchange provider behavior;
 * exact single- and multi-clock event order and delta nonconvergence;
 * trace observer noninterference;
 * ordered-token preservation under temporal interleaving;
 * deadlock versus invalid-Mapping classification; and
-* agreement with DFG-sim on terminal software observables.
+* deterministic or oracle-governed agreement with DFG-sim.
 
 Tests must not pin text reports, disposable simulator caches, or a broad
 microarchitecture fixture matrix.

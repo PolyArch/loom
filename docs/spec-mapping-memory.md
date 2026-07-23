@@ -72,6 +72,14 @@ Schema 2.0 owns their shared operation-service shapes. Mapping must not
 reinterpret one actor contract as another or infer atomic, volatile, MMIO, or
 coherence behavior from an unrelated physical capability.
 
+Mapping owns no dynamic consistency state. Its selected operation target,
+`MemoryBinding`, use pattern, and exact `MemoryConsistencyDomain` mechanically
+determine whether execution remains in a Fabric-local provider or crosses the
+typed Spatial Service boundary to an external provider. Modification order,
+reads-from, synchronizes-with, sequentially-consistent order, visibility
+frontiers, queue state, and provider timing are execution facts and must not be
+cached or serialized as Mapping truth.
+
 ## TechMapping Memory Realization
 
 TechMapping owns each selected Memory Realization:

@@ -116,6 +116,17 @@ adapter failure is `ExecutionFailed`. `SimulationExecution` never owns
 normalized metrics, normalized findings, DSE decisions, or human diagnostics.
 Those belong only to `EvaluationEvidence` and its registries.
 
+Capability whose absence is discoverable only from runtime values, such as an
+unordered conflicting plain-memory access or a required external consistency
+behavior not implemented by the exact model, also ends with Evaluation outcome
+`Unsupported`. It is not `Halted` and must not fabricate a
+`SimulationExecution` result. A genuine dynamic closed wait-set is `Halted`.
+A simulator, Bridge, or provider invariant violation is `ExecutionFailed`.
+Execution limits and external cancellation remain `StoppedByLimit` or
+`CancelledOrTimeout` according to the owning attempt and Evaluation contract.
+Static invalid IR, Fabric, or Mapping is rejected before execution and never
+becomes dynamic deadlock.
+
 ## Trace And Activity
 
 An optional typed trace manifest owns the ordered list of content-addressed
@@ -124,6 +135,13 @@ referenced opaque chunk payloads and their inventory belong to an immutable
 raw detailed bundle, not to `SimulationExecution` and not to a separate trace
 Artifact family. They may be compressed or indexed without changing manifest
 order or semantic observations.
+
+When the capture request includes memory-consistency detail, opaque chunks may
+record issue, linearization, reads-from, visibility or synchronization, and
+retirement observations. These observations are a projection of the exact
+execution; they are not a `ConsistencyExecution`, witness, relation, or
+simulator-specific Artifact family and are never required for semantic
+correctness.
 
 Trace capture is a nonsemantic invocation binding. Enabling it may change
 execution cost and retained raw material, but must not change scheduling,
@@ -155,7 +173,7 @@ must not create an empty `SimulationExecution`.
 Stable anchors cover exact workload/runtime coupling, spatial and system root
 validation, the typed output slot, mandatory terminal-finding totality, the
 closed terminal algebra and Evaluation mapping, logical-memory identity
-preservation, trace observer noninterference, and rejection of normalized
-results inside `SimulationExecution`. Tests do not pin trace chunk
-sizes, report layouts, simulator class hierarchies, or broad workload
-matrices.
+preservation, runtime-dependent `Unsupported` versus `Halted` and
+`ExecutionFailed`, trace observer noninterference, and rejection of normalized
+results inside `SimulationExecution`. Tests do not pin trace chunk sizes,
+report layouts, simulator class hierarchies, or broad workload matrices.

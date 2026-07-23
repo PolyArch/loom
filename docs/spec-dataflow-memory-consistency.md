@@ -118,16 +118,27 @@ retirement publication.
 
 ## Issue, Linearization, And Retirement
 
-An atomic memory actor has the same three semantic moments as a plain access:
+Every plain, atomic, RMW, compare-exchange, and fence actor has the same three
+semantic moments:
 
 ```text
 issue -> linearize -> retire
 ```
 
-Issue consumes all dynamic operands and the unique control event. At
-linearization, the selected consistency domain performs one whole-payload
-atomic action or the declared set of per-lane atomic actions. Retirement
-publishes all actor results and done together.
+Actor-transition commit is memory issue: it consumes all dynamic operands and
+the unique control event and submits one logical operation to the selected
+provider. At linearization, that provider determines the operation's logical
+memory effect under the selected consistency domain. Retirement publishes all
+actor results and done together. A simple abstract provider may linearize and
+retire a plain operation at the same event, but the semantic moments remain
+distinct.
+
+Visibility is not a fourth universal actor lifecycle state. It is a relation
+owned by the selected consistency domain. The required visibility may be
+established at linearization or acknowledged by a later provider event before
+retirement, according to the exact actor contract. Actor `done` is therefore
+not a global barrier; it denotes completion under that actor's exact access
+contract.
 
 An atomic store or successful compare-exchange modifies its atomic object's
 modification order. An atomic RMW reads the immediately preceding value in
@@ -136,9 +147,57 @@ compare-exchange performs no write. Weak compare-exchange may fail
 spuriously. Atomic load, failed compare-exchange, and RMW read-from choices
 obey the exact ordering and scope contract.
 
-Actor `done` is not a global barrier. It denotes completion under this
-actor's access contract. A static causal edge does not make a plain access
-atomic, and an Atomic contract does not introduce an unstated causal edge.
+A static causal edge does not make a plain access atomic, and an Atomic
+contract does not introduce an unstated causal edge.
+
+## Dynamic Memory Action Projection
+
+Execution derives one nonpersistent `MemoryAction` from each issued actor:
+
+```text
+MemoryAction {
+  actor occurrence
+  exact Dataflow contract reference
+  source execution context
+  zero or more canonical logical-object intervals
+  dynamic operands and active lanes
+  incoming causal obligations
+}
+```
+
+This projection is neither IR nor an Artifact. It does not copy the actor
+contract, create another operation schema, or persist Mapping or simulator
+state. `SimulationRuntimeInput` remains the owner of logical-memory objects,
+alias topology, allocations, and initial contents.
+
+The dynamic atomic-object identity is:
+
+```text
+AtomicObjectKey =
+  (logical memory root, canonical byte offset, exact access byte size)
+```
+
+`WholePayload` derives one key. `PerLane` derives one key for each active lane.
+Repeated active addresses therefore share one modification order. Lane ordinal
+may be used only as an exact-model tie break; it is never software ordering.
+Inactive lanes derive no action. Per-lane actions, implementation beats, and
+provider retries remain children of one actor issue and one atomic retirement
+publication.
+
+The shared dynamic consistency semantics own modification-order versions,
+reads-from choices, release visibility summaries, acquire-imported visibility
+frontiers, and the sequentially-consistent tail for each exact scope and
+domain. Implementations may use compact version and frontier caches. The
+normative relations remain modification order, reads-from,
+synchronizes-with, happens-before, and sequentially-consistent order; cache
+layout and traversal order are not semantic.
+
+DFG-sim, CGRA-sim, and sys-sim supply different execution providers to these
+same semantics. A provider owns admission, timing, physical contention, and
+the concrete legal choice where the software contract permits several
+executions. It may not reinterpret the Dataflow contract. Whole-system cache,
+coherence, and system-order state belong to the external system simulator and
+must not be mirrored by a Loom-local consistency engine.
 
 ## Static And Dynamic Order
 
@@ -160,6 +219,15 @@ happens-before      transitive closure of sequenced-before and
 Atomic modification order, reads-from, synchronizes-with, and the global
 sequentially-consistent order are dynamic consistency-domain state. They are
 not new Dataflow edges, Mapping records, or simulator traversal order.
+
+A release operation publishes the visibility summary of effects sequenced
+before it. An acquire operation that reads from a compatible release imports
+that summary for effects sequenced after it. A release fence followed by an
+atomic write and an atomic read followed by an acquire fence synchronize only
+through the compatible reads-from relation; a fence is not a free-standing
+global barrier. Successful compare-exchange participates in release sequences
+according to LLVM semantics. Failed compare-exchange is an atomic load with
+its declared failure ordering.
 
 Mechanical lowering must preserve these local requirements:
 
@@ -187,6 +255,34 @@ independent semantic relation. Compiler implementations may compress that
 relation with disposable all-effect, atomic/fence, volatile, and acquire
 frontier caches. Cache shape is not IR or Artifact schema. Only the resulting
 deduplicated and transitively reduced ordinary event edges are published.
+
+## Execution Examples
+
+Two relaxed atomic additions to the same histogram element share one
+`AtomicObjectKey`. One legal execution may return old values `0` and `1`; a
+different legal execution may return `1` and `0`. Both finish with value `2`.
+No traversal order is part of this result.
+
+Release/acquire publication is:
+
+```text
+worker 0: plain store data = 42
+          release store flag = 1
+
+worker 1: acquire load flag
+          plain load data
+```
+
+When the acquire reads from the release store, it imports the release
+visibility summary and the later plain load observes `42`. The fence form
+places a release fence before a monotonic flag store and an acquire fence after
+a monotonic flag load. It synchronizes only when that load reads from the
+corresponding release sequence.
+
+A `PerLane` atomic access with addresses `[5, 5, 7]` derives two actions in the
+same atomic-object modification order and one action in another. It still has
+one actor issue and one retirement publication. The two address-5 actions
+receive no hidden lane order.
 
 ## Vector Atomic Granularity
 
