@@ -30,15 +30,16 @@ message(STATUS "Using ClangConfig.cmake in: ${Clang_DIR}")
 # Optional CIRCT integration. CIRCT is supplied by the shared build under
 # externals/circt (see scripts/make-worktree.py, `make circt`). It is
 # strictly optional: omit -DCIRCT_DIR to build Loom without CIRCT. A
-# provided -DCIRCT_DIR is an exact contract: CIRCT is loaded from precisely
-# that directory and nothing else. A directory without a valid CIRCT package
-# is a hard error, never a silent skip and never a silent fall back to some
-# other CIRCT reachable through CMAKE_PREFIX_PATH or the system search paths.
-# An absent -DCIRCT_DIR is reported as an explicit status so CIRCT
-# availability is never a mystery.
+# provided -DCIRCT_DIR is an exact contract: it must name the directory that
+# directly contains CIRCTConfig.cmake, and CIRCT is loaded from precisely that
+# directory. A build-root prefix whose CIRCT package is merely nested (e.g.
+# <root>/lib/cmake/circt), a directory without a valid CIRCT package, or any
+# other CIRCT reachable through CMAKE_PREFIX_PATH or the system search paths is
+# a hard error, never a silent skip. An absent -DCIRCT_DIR is reported as an
+# explicit status so CIRCT availability is never a mystery.
 set(LOOM_HAVE_CIRCT OFF)
 if(DEFINED CIRCT_DIR)
-  find_package(CIRCT REQUIRED CONFIG NO_DEFAULT_PATH PATHS "${CIRCT_DIR}")
+  find_package(CIRCT REQUIRED CONFIG NO_DEFAULT_PATH)
   set(LOOM_HAVE_CIRCT ON)
   message(STATUS "Using CIRCTConfig.cmake in: ${CIRCT_DIR}")
 else()

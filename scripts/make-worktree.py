@@ -773,6 +773,7 @@ def _sync_circt_locked(
     compilers: tuple[tuple[str, str], tuple[str, str]],
     llvm_identity: str,
     always_build: bool,
+    prev_stamp: str,
 ) -> None:
     """CIRCT ensure/build phase. Caller already holds the shared LLVM lock.
 
@@ -781,12 +782,16 @@ def _sync_circt_locked(
     or wiped by another worktree while CIRCT configures and links against
     it. A separate lock released as soon as the LLVM phase ended would
     reopen exactly that window.
+
+    prev_stamp is the caller's in-memory snapshot of the CIRCT stamp taken
+    before the caller invalidated it on disk. It drives rebuild selection
+    only, so a still-matching complete build is reused with an incremental
+    cmake --build instead of being wiped and reconfigured.
     """
     current = circt_build_identity(llvm_identity)
-    prev = read_stamp(paths.circt_stamp)
     build_ninja = paths.circt_build / "build.ninja"
     build_ready = build_ninja.exists() and circt_artifacts_present(paths)
-    rebuild = prev != current or not build_ready
+    rebuild = prev_stamp != current or not build_ready
     if rebuild:
         if paths.circt_build.exists():
             info(
@@ -796,12 +801,6 @@ def _sync_circt_locked(
             shutil.rmtree(paths.circt_build)
         configure_circt(paths, compilers)
     if always_build or rebuild:
-        # A build attempt supersedes any prior readiness. Invalidate the
-        # stamp (the single readiness authority) before building so a failed
-        # or interrupted build cannot keep advertising the old or a partially
-        # rebuilt CIRCT; it is rewritten only after the build produces both
-        # required artifacts.
-        paths.circt_stamp.unlink(missing_ok=True)
         run([
             "cmake", "--build", str(paths.circt_build),
             f"-j{args.jobs}",
@@ -831,6 +830,14 @@ def sync_shared_circt(
     The LLVM lock is held continuously across the LLVM ensure phase and
     the CIRCT configure/build. CIRCT therefore always links against the
     exact LLVM whose identity its own stamp is derived from.
+
+    For an explicit build the sole readiness stamp is snapshotted in memory
+    and then invalidated on disk as soon as the lock is held, before the
+    failure-capable dependency, compiler, and LLVM prerequisites, so any
+    failure in the pipeline leaves no stale CIRCT advertised. The snapshot is
+    handed to the CIRCT phase only to reuse a still-matching complete build
+    incrementally; the stamp is rewritten only after a build passes artifact
+    validation.
     """
     if not paths.is_main:
         info(f"checking shared CIRCT under main worktree {paths.main}")
@@ -840,10 +847,15 @@ def sync_shared_circt(
             "flock semantics across hosts are unreliable"
         )
     with FileLock(paths.llvm_lock, args.lock_timeout):
+        prev_stamp = read_stamp(paths.circt_stamp)
+        if always_build:
+            paths.circt_stamp.unlink(missing_ok=True)
         state = check_dependency_pins(paths)
         compilers = check_llvm_compilers()
         llvm_identity = _sync_llvm_locked(paths, args, state, compilers, False)
-        _sync_circt_locked(paths, args, compilers, llvm_identity, always_build)
+        _sync_circt_locked(
+            paths, args, compilers, llvm_identity, always_build, prev_stamp
+        )
 
 
 def build_circt(paths: Paths, args: argparse.Namespace) -> None:
