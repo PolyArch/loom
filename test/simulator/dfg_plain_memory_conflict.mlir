@@ -20,6 +20,10 @@
 // RUN: loom-dfg-sim %s --graph ordered_rw_chain \
 // RUN:   --memref 0=10,11,12,13,14,15,16,17 --output %t.chain.json
 // RUN: FileCheck %s --check-prefix=CHAIN < %t.chain.json
+// RUN: loom-dfg-sim %s --graph data_dependency_does_not_order_memory \
+// RUN:   --memref 0=17 --output %t.data-dependency.json
+// RUN: FileCheck %s --check-prefix=DATA-DEPENDENCY \
+// RUN:   < %t.data-dependency.json
 // RUN: loom-dfg-sim %s --graph unordered_rr_overlap \
 // RUN:   --memref 0=10,11,12,13,14,15,16,17 --output %t.rr.json
 // RUN: FileCheck %s --check-prefix=RR < %t.rr.json
@@ -95,6 +99,18 @@
 // CHAIN: "dataflow.load": 1
 // CHAIN: "dataflow.store": 1
 // CHAIN: "status": "pass"
+
+// A load result used as store data is an ordinary SSA dependency, not
+// canonical memory order. With both controls still rooted at the same start
+// token, the overlapping store remains unordered even though it cannot become
+// ready until the load publishes data. Only load done feeding store ctrl would
+// establish the required order.
+// DATA-DEPENDENCY: "final_memory_roots": {}
+// DATA-DEPENDENCY-NEXT: "final_memory_state": {}
+// DATA-DEPENDENCY-NEXT: "final_outputs": []
+// DATA-DEPENDENCY: "dataflow.load": 1
+// DATA-DEPENDENCY-NOT: "dataflow.store":
+// DATA-DEPENDENCY: "status": "unsupported"
 
 // Two unordered plain loads of one element do not conflict.
 // RR: "final_outputs": [
@@ -223,6 +239,17 @@ module {
     %data, %load_done = dataflow.load %mem[%cell] %store_done : memref<8xi32>
     dataflow.graph.return values(%data : i32) streams() memories()
         complete(%load_done : none)
+  }
+
+  dataflow.graph private @data_dependency_does_not_order_memory(
+      %start: none, %mem: memref<1xi32>) -> ()
+      attributes {input_segments = array<i32: 0, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %cell = dataflow.constant %start {const_value = 0 : index} : index
+    %loaded, %load_done = dataflow.load %mem[%cell] %start : memref<1xi32>
+    %store_done = dataflow.store %mem[%cell] %loaded %start : memref<1xi32>
+    dataflow.graph.return values() streams() memories()
+        complete(%load_done, %store_done : none, none)
   }
 
   dataflow.graph private @unordered_rr_overlap(

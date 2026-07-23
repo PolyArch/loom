@@ -631,6 +631,8 @@ void loadRejectionIsAtomic(dataflow::LoadOp op) {
   state.channels[&op.getAddrMutable()].push_back(
       indexToken(llvm::APInt(resolvedIndexBits(op.getOperation()), 99)));
   state.channels[&op.getCtrlMutable()].push_back(noneToken());
+  state.admittedPlainMemoryActions.try_emplace(op.getOperation(),
+                                               ReadyPlainMemoryAction{});
 
   require(!fireActorOperation(op, state),
           "load accepted an out-of-range address");
@@ -658,6 +660,8 @@ void storeDuplicateScatterIsAtomic(dataflow::StoreOp op) {
   state.channels[&op.getDataMutable()].push_back(
       tokenWithBits(op.getData().getType(), 0xAB43));
   state.channels[&op.getCtrlMutable()].push_back(noneToken());
+  state.admittedPlainMemoryActions.try_emplace(op.getOperation(),
+                                               ReadyPlainMemoryAction{});
 
   require(!fireActorOperation(op, state),
           "store accepted duplicate active destinations");

@@ -157,13 +157,14 @@ struct SimulatorState {
   std::unique_ptr<MemoryAtomicOrder> memoryOrder;
   std::unique_ptr<MemorySynchronization> memorySync;
   llvm::SmallVector<std::pair<MemoryActionRecord, SyncEffectId>> memoryActions;
-  // Noncausal cache of the plain actions admitted for the current scheduler
-  // decision. The scheduler clears and derives it again before every wave.
-  llvm::DenseMap<mlir::Operation *, MemoryActionRecord>
+  // Execution-local cache of the plain actions and ctrl-derived order
+  // frontiers admitted for the current scheduler decision. The scheduler
+  // clears and derives it again before every wave.
+  llvm::DenseMap<mlir::Operation *, ReadyPlainMemoryAction>
       admittedPlainMemoryActions;
-  // The frontier of the firing in progress, merged from every consumed token.
-  // It is cleared before each actor attempt, so a rejected attempt leaves
-  // nothing behind for the next one.
+  // The publication frontier of the firing in progress, merged from every
+  // consumed token. Plain-memory sequenced-before instead uses the admitted
+  // ctrl snapshot above. This is cleared before each actor attempt.
   llvm::SmallVector<SyncEffectId, 2> firingFrontier;
 };
 
@@ -239,7 +240,6 @@ void commitDataflowMemoryWrite(const MemoryView &view,
                                const DataflowMemoryWrite &write);
 std::optional<ReadyPlainMemoryAction>
 projectReadyPlainMemoryAction(mlir::Operation *op, SimulatorState &state);
-bool validateReadyPlainMemoryAction(mlir::Operation *op, SimulatorState &state);
 bool plainMemoryActionsConflict(const MemoryActionRecord &lhs,
                                 const MemoryActionRecord &rhs);
 bool isSupportedLLVMCall(mlir::LLVM::CallOp op);

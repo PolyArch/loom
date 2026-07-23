@@ -921,38 +921,33 @@ static MemorySynchronization &memorySynchronization(SimulatorState &state) {
   return *state.memorySync;
 }
 
-// The frontier this issue inherits, read without consuming anything: the
-// effects that happen-before the tokens the firing will take. Sequenced-before
-// is carried only by explicit token dependencies, so two firings of one static
-// actor are ordered only when a token frontier links them, never by sharing the
-// same operation.
+// Memory order enters an access only through its explicit ctrl token. Ordinary
+// memory, address, data, and mask dependencies remain actor operands but do not
+// create sequenced-before facts.
 static llvm::SmallVector<SyncEffectId, 2>
-peekIssueFrontier(SimulatorState &state,
-                  llvm::ArrayRef<mlir::OpOperand *> operands) {
+peekMemoryOrderFrontier(SimulatorState &state, mlir::OpOperand &ctrl) {
   llvm::SmallVector<SyncEffectId, 2> frontier;
-  for (mlir::OpOperand *operand : operands) {
-    if (!operand || !hasToken(state.channels, *operand))
-      continue;
-    mergeCausalFrontier(frontier, peekToken(state.channels, *operand).frontier);
-  }
+  if (hasToken(state.channels, ctrl))
+    mergeCausalFrontier(frontier, peekToken(state.channels, ctrl).frontier);
   return frontier;
 }
 
 // Issue: the accepted access takes its effect identity, records the
-// sequenced-before facts its consumed tokens carry, and becomes the frontier
-// every token this firing publishes inherits, so a `done`/`ctrl` chain through
-// it orders whatever follows. An access with no active range, such as an
-// all-zero masked firing, performs no memory effect: it declares no effect and
-// records no action, and its outputs keep only the causality they consumed.
+// sequenced-before facts admitted from ctrl, and becomes the frontier every
+// token this firing publishes inherits, so a `done`/`ctrl` chain through it
+// orders whatever follows. An access with no active range, such as an all-zero
+// masked firing, performs no memory effect: it declares no effect and records
+// no action, and its outputs keep only the causality they consumed.
 static void issueMemoryAction(MemoryActionRecord action,
+                              llvm::ArrayRef<SyncEffectId> orderFrontier,
                               SimulatorState &state) {
   if (action.byteRanges.empty())
     return;
   MemorySynchronization &sync = memorySynchronization(state);
   const SyncEffectId effect = sync.declareEffect();
   llvm::SmallVector<std::pair<SyncEffectId, SyncEffectId>, 2> relations;
-  relations.reserve(state.firingFrontier.size());
-  for (SyncEffectId earlier : state.firingFrontier)
+  relations.reserve(orderFrontier.size());
+  for (SyncEffectId earlier : orderFrontier)
     relations.emplace_back(earlier, effect);
   if (llvm::Error error = sync.sequencedBefore(relations))
     state.diagnostics.push_back(llvm::toString(std::move(error)));
@@ -1094,9 +1089,7 @@ projectReadyPlainMemoryAction(mlir::Operation *operation,
       return std::nullopt;
     return ReadyPlainMemoryAction{
         std::move(*action),
-        peekIssueFrontier(state,
-                          {&op.getMemMutable(), &op.getAddrMutable(),
-                           &op.getCtrlMutable(), projected->maskOperand})};
+        peekMemoryOrderFrontier(state, op.getCtrlMutable())};
   }
 
   auto op = mlir::dyn_cast<dataflow::StoreOp>(operation);
@@ -1110,29 +1103,17 @@ projectReadyPlainMemoryAction(mlir::Operation *operation,
   if (!action)
     return std::nullopt;
   return ReadyPlainMemoryAction{
-      std::move(*action),
-      peekIssueFrontier(state, {&op.getMemMutable(), &op.getAddrMutable(),
-                                &op.getDataMutable(), &op.getCtrlMutable(),
-                                projected->maskOperand})};
-}
-
-bool validateReadyPlainMemoryAction(mlir::Operation *operation,
-                                    SimulatorState &state) {
-  if (auto op = mlir::dyn_cast<dataflow::LoadOp>(operation))
-    return prepareLoadFiring(op, state).has_value();
-  if (auto op = mlir::dyn_cast<dataflow::StoreOp>(operation))
-    return prepareStoreFiring(op, state).has_value();
-  return false;
+      std::move(*action), peekMemoryOrderFrontier(state, op.getCtrlMutable())};
 }
 
 static bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
-  auto prepared = prepareLoadFiring(op, state);
-  if (!prepared)
-    return false;
   auto admitted = state.admittedPlainMemoryActions.find(op.getOperation());
   if (admitted == state.admittedPlainMemoryActions.end())
     return false;
-  MemoryActionRecord action = std::move(admitted->second);
+  auto prepared = prepareLoadFiring(op, state);
+  if (!prepared)
+    return false;
+  ReadyPlainMemoryAction admittedAction = std::move(admitted->second);
   state.admittedPlainMemoryActions.erase(op.getOperation());
 
   // Issue: the accepted access consumes every dynamic operand and the control
@@ -1142,7 +1123,8 @@ static bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   popToken(state, op.getCtrlMutable());
   if (prepared->maskOperand)
     popToken(state, *prepared->maskOperand);
-  issueMemoryAction(std::move(action), state);
+  issueMemoryAction(std::move(admittedAction.action), admittedAction.frontier,
+                    state);
   emitToken(state, op.getData(), prepared->read.data);
   emitToken(state, op.getDone(), noneToken());
   if (prepared->read.accessedMemory && hasComputedAddress(op.getAddr()))
@@ -1320,13 +1302,13 @@ static bool fireLLVMCall(mlir::LLVM::CallOp op, SimulatorState &state) {
 }
 
 static bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
-  auto prepared = prepareStoreFiring(op, state);
-  if (!prepared)
-    return false;
   auto admitted = state.admittedPlainMemoryActions.find(op.getOperation());
   if (admitted == state.admittedPlainMemoryActions.end())
     return false;
-  MemoryActionRecord action = std::move(admitted->second);
+  auto prepared = prepareStoreFiring(op, state);
+  if (!prepared)
+    return false;
+  ReadyPlainMemoryAction admittedAction = std::move(admitted->second);
   state.admittedPlainMemoryActions.erase(op.getOperation());
 
   // Issue: the accepted access consumes every dynamic operand and the control
@@ -1337,7 +1319,8 @@ static bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   popToken(state, op.getCtrlMutable());
   if (prepared->maskOperand)
     popToken(state, *prepared->maskOperand);
-  issueMemoryAction(std::move(action), state);
+  issueMemoryAction(std::move(admittedAction.action), admittedAction.frontier,
+                    state);
   commitDataflowMemoryWrite(prepared->view, prepared->write);
   emitToken(state, op.getDone(), noneToken());
   if (prepared->write.accessedMemory && hasComputedAddress(op.getAddr()))
