@@ -28,6 +28,9 @@
 // RUN:   --memref 0=17 --output %t.data-dependency.json
 // RUN: FileCheck %s --check-prefix=DATA-DEPENDENCY \
 // RUN:   < %t.data-dependency.json
+// RUN: loom-dfg-sim %s --graph load_data_sync_does_not_order_memory \
+// RUN:   --memref 0=17 --output %t.data-sync.json
+// RUN: FileCheck %s --check-prefix=DATA-SYNC < %t.data-sync.json
 // RUN: loom-dfg-sim %s --graph empty_store_does_not_launder_order \
 // RUN:   --memref 0=17 --output %t.empty-store.json
 // RUN: FileCheck %s --check-prefix=EMPTY-STORE < %t.empty-store.json
@@ -131,6 +134,17 @@
 // DATA-DEPENDENCY: "dataflow.load": 1
 // DATA-DEPENDENCY-NOT: "dataflow.store":
 // DATA-DEPENDENCY: "status": "unsupported"
+
+// A load data result cannot carry the load's memory-order witness. Synchronizing
+// that ordinary data with start therefore cannot manufacture a ctrl token that
+// orders a later overlapping store; only a path from load done could do so.
+// DATA-SYNC: "final_memory_roots": {}
+// DATA-SYNC-NEXT: "final_memory_state": {}
+// DATA-SYNC-NEXT: "final_outputs": []
+// DATA-SYNC: "dataflow.load": 1
+// DATA-SYNC: "dataflow.sync": 1
+// DATA-SYNC-NOT: "dataflow.store":
+// DATA-SYNC: "status": "unsupported"
 
 // An all-zero masked store performs no memory action. Its done token may carry
 // only its ctrl frontier, so using load data as its inactive payload cannot
@@ -294,6 +308,21 @@ module {
     %cell = dataflow.constant %start {const_value = 0 : index} : index
     %loaded, %load_done = dataflow.load %mem[%cell] %start : memref<1xi32>
     %store_done = dataflow.store %mem[%cell] %loaded %start : memref<1xi32>
+    dataflow.graph.return values() streams() memories()
+        complete(%load_done, %store_done : none, none)
+  }
+
+  dataflow.graph private @load_data_sync_does_not_order_memory(
+      %start: none, %mem: memref<1xi32>) -> ()
+      attributes {input_segments = array<i32: 0, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %cell = dataflow.constant %start {const_value = 0 : index} : index
+    %later = dataflow.constant %start {const_value = 99 : i32} : i32
+    %loaded, %load_done = dataflow.load %mem[%cell] %start : memref<1xi32>
+    %synced:2 = dataflow.sync %loaded, %start
+        : (i32, none) -> (i32, none)
+    %store_done = dataflow.store %mem[%cell] %later %synced#1
+        : memref<1xi32>
     dataflow.graph.return values() streams() memories()
         complete(%load_done, %store_done : none, none)
   }

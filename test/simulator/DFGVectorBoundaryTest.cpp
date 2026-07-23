@@ -692,7 +692,7 @@ void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
   state.channels[&op.getDataMutable()].push_back(
       tokenWithBits(op.getData().getType(), 0xAB43));
   Token ctrl = noneToken();
-  ctrl.frontier.push_back(loom::sim::SyncEffectId(99));
+  ctrl.memoryOrderFrontier.push_back(loom::sim::SyncEffectId(99));
   state.channels[&op.getCtrlMutable()].push_back(std::move(ctrl));
   PlainMemoryActionProjection projected =
       projectReadyPlainMemoryAction(op.getOperation(), state);
@@ -710,7 +710,8 @@ void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
               state.channels[&op.getDataMutable()].size() == 1 &&
               state.channels[&op.getCtrlMutable()].size() == 1,
           "store consumed input on synchronization insertion failure");
-  require(state.memoryActions.empty() && state.firingFrontier.empty() &&
+  require(state.memoryActions.empty() &&
+              state.firingMemoryOrderFrontier.empty() &&
               state.admittedPlainMemoryActions.contains(op.getOperation()),
           "store partially issued on synchronization insertion failure");
   expectUntouchedRun(

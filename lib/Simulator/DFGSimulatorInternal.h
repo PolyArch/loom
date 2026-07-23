@@ -51,11 +51,11 @@ struct Token {
   bool boolValue = false;
   std::optional<llvm::APInt> bitPattern;
   MemoryView pointer;
-  // The memory effects that happen-before this token. A firing merges the
-  // frontiers it consumes and every token it publishes inherits the result, so
-  // an explicit `done`/`ctrl` chain carries software order without a second
-  // causal relation. It is execution-local and never serialized.
-  llvm::SmallVector<SyncEffectId, 1> frontier;
+  // Memory-order witnesses enter token flow only through canonical done
+  // publication. Generic actor firing may propagate them from that explicit
+  // path, but plain memory data publication never injects its action effect.
+  // This state is execution-local and never serialized.
+  llvm::SmallVector<SyncEffectId, 1> memoryOrderFrontier;
 };
 
 struct DataflowMemoryRead {
@@ -81,9 +81,8 @@ struct LoopState {
 struct ParallelizeState {
   ParallelizeSemanticState semanticState;
   llvm::SmallVector<std::optional<Token>, 8> slots;
-  // Causal frontiers of the scalar-phase tokens consumed while assembling the
-  // current group. The group publishes on its final firing, so phases consumed
-  // by earlier firings are retained here and merged into the group outputs.
+  // Memory-order frontiers of scalar phases consumed while assembling the
+  // current group. The final firing publishes their union.
   llvm::SmallVector<SyncEffectId, 2> phaseFrontier;
 };
 
@@ -113,7 +112,7 @@ struct MemoryActionRecord {
 
 struct ReadyPlainMemoryAction {
   MemoryActionRecord action;
-  llvm::SmallVector<SyncEffectId, 2> frontier;
+  llvm::SmallVector<SyncEffectId, 2> ctrlFrontier;
 };
 
 struct PlainMemoryActionProjection {
@@ -168,10 +167,10 @@ struct SimulatorState {
   // clears and derives it again before every wave.
   llvm::DenseMap<mlir::Operation *, ReadyPlainMemoryAction>
       admittedPlainMemoryActions;
-  // The publication frontier of the firing in progress, merged from every
-  // consumed token. Plain-memory sequenced-before instead uses the admitted
-  // ctrl snapshot above. This is cleared before each actor attempt.
-  llvm::SmallVector<SyncEffectId, 2> firingFrontier;
+  // The memory-order frontier of the firing in progress. Generic actors
+  // propagate it, while memory actors publish only their admitted ctrl/action
+  // frontier. This is cleared before each actor attempt.
+  llvm::SmallVector<SyncEffectId, 2> firingMemoryOrderFrontier;
 };
 
 struct UnsupportedOperation {
@@ -201,15 +200,18 @@ llvm::Expected<Token> ensurePointerMemory(SimulatorState &state, Token token,
 llvm::Expected<std::int64_t> gepByteOffset(mlir::LLVM::GEPOp op,
                                            llvm::ArrayRef<Token> dynamicTokens);
 
-void mergeCausalFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
-                         SyncEffectId effect);
-void mergeCausalFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
-                         llvm::ArrayRef<SyncEffectId> effects);
+void mergeMemoryOrderFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
+                              SyncEffectId effect);
+void mergeMemoryOrderFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
+                              llvm::ArrayRef<SyncEffectId> effects);
 
 bool hasToken(ChannelMap &channels, mlir::OpOperand &operand);
 Token popToken(SimulatorState &state, mlir::OpOperand &operand);
 Token peekToken(ChannelMap &channels, mlir::OpOperand &operand);
 void emitToken(SimulatorState &state, mlir::Value value, Token token);
+void emitTokenWithMemoryOrder(SimulatorState &state, mlir::Value value,
+                              Token token,
+                              llvm::ArrayRef<SyncEffectId> memoryOrder);
 bool recordEvent(SimulatorState &state, llvm::StringRef opName);
 bool hasComputedAddress(mlir::Value value);
 std::int64_t integerToken(const Token &token);

@@ -293,9 +293,7 @@ static bool fireDemux(dataflow::DemuxOp op, SimulatorState &state) {
 struct ParallelizeGroup {
   Token vector;
   Token mask;
-  // The union of the causal frontiers of every active scalar lane the group
-  // assembled. The group is published across several firings, so this order is
-  // not otherwise reachable from the final firing's consumed inputs alone.
+  // Memory order from every active lane assembled across prior firings.
   llvm::SmallVector<SyncEffectId, 2> frontier;
 };
 
@@ -333,7 +331,8 @@ buildParallelizeGroup(dataflow::ParallelizeOp op,
       return laneBits.takeError();
     vectorBits.insertBits(*laneBits, *laneWidth * static_cast<unsigned>(lane));
     maskBits.setBit(static_cast<unsigned>(lane));
-    mergeCausalFrontier(frontier, parallel.slots[lane]->frontier);
+    mergeMemoryOrderFrontier(frontier,
+                             parallel.slots[lane]->memoryOrderFrontier);
   }
 
   auto vectorToken = tokenFromBitPattern(vectorBits, vectorType);
@@ -368,14 +367,13 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
   if (!transition.firing.ready)
     return false;
 
-  // The scalar phase drives each accumulation step, so its causal frontier is
-  // part of the group's order. It is retained across firings because the group
-  // is not published until its final firing.
+  // Retain each scalar phase's memory order across the multi-firing group.
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            ParallelizeInput::Phase))
-    mergeCausalFrontier(
+    mergeMemoryOrderFrontier(
         next.phaseFrontier,
-        peekToken(state.channels, op.getScalarPhaseMutable()).frontier);
+        peekToken(state.channels, op.getScalarPhaseMutable())
+            .memoryOrderFrontier);
 
   std::optional<ParallelizeGroup> group;
   if (selectsSemanticInput(transition.firing.consumedInputs,
@@ -401,7 +399,7 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
       return false;
     }
     group = *groupOrErr;
-    mergeCausalFrontier(group->frontier, next.phaseFrontier);
+    mergeMemoryOrderFrontier(group->frontier, next.phaseFrontier);
     next.slots.assign(vectorLength, std::nullopt);
     next.phaseFrontier.clear();
   }
@@ -417,9 +415,7 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
     (void)popToken(state, op.getDataMutable());
   state.parallelizeStates[op.getOperation()] = std::move(next);
   if (group) {
-    // The vector, mask, and group-phase publication all carry the order of
-    // every lane the group assembled, not just the firing that closed it.
-    mergeCausalFrontier(state.firingFrontier, group->frontier);
+    mergeMemoryOrderFrontier(state.firingMemoryOrderFrontier, group->frontier);
     emitToken(state, op.getVector(), group->vector);
     emitToken(state, op.getMask(), group->mask);
   }
@@ -934,7 +930,8 @@ static llvm::SmallVector<SyncEffectId, 2>
 peekMemoryOrderFrontier(SimulatorState &state, mlir::OpOperand &ctrl) {
   llvm::SmallVector<SyncEffectId, 2> frontier;
   if (hasToken(state.channels, ctrl))
-    mergeCausalFrontier(frontier, peekToken(state.channels, ctrl).frontier);
+    mergeMemoryOrderFrontier(
+        frontier, peekToken(state.channels, ctrl).memoryOrderFrontier);
   return frontier;
 }
 
@@ -1132,7 +1129,7 @@ static bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   if (!prepared)
     return false;
   auto publication = issueMemoryAction(admitted->second.action,
-                                       admitted->second.frontier, state);
+                                       admitted->second.ctrlFrontier, state);
   if (!publication)
     return false;
   state.admittedPlainMemoryActions.erase(op.getOperation());
@@ -1142,9 +1139,8 @@ static bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   popToken(state, op.getCtrlMutable());
   if (prepared->maskOperand)
     popToken(state, *prepared->maskOperand);
-  state.firingFrontier = std::move(*publication);
-  emitToken(state, op.getData(), prepared->read.data);
-  emitToken(state, op.getDone(), noneToken());
+  emitTokenWithMemoryOrder(state, op.getData(), prepared->read.data, {});
+  emitTokenWithMemoryOrder(state, op.getDone(), noneToken(), *publication);
   if (prepared->read.accessedMemory && hasComputedAddress(op.getAddr()))
     state.memoryAddressScore += kLoadAddressScore;
   return recordEvent(state, op->getName().getStringRef());
@@ -1327,7 +1323,7 @@ static bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   if (!prepared)
     return false;
   auto publication = issueMemoryAction(admitted->second.action,
-                                       admitted->second.frontier, state);
+                                       admitted->second.ctrlFrontier, state);
   if (!publication)
     return false;
   state.admittedPlainMemoryActions.erase(op.getOperation());
@@ -1338,9 +1334,8 @@ static bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   popToken(state, op.getCtrlMutable());
   if (prepared->maskOperand)
     popToken(state, *prepared->maskOperand);
-  state.firingFrontier = std::move(*publication);
   commitDataflowMemoryWrite(prepared->view, prepared->write);
-  emitToken(state, op.getDone(), noneToken());
+  emitTokenWithMemoryOrder(state, op.getDone(), noneToken(), *publication);
   if (prepared->write.accessedMemory && hasComputedAddress(op.getAddr()))
     state.memoryAddressScore += kStoreAddressScore;
   return recordEvent(state, op->getName().getStringRef());

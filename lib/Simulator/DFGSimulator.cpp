@@ -249,23 +249,24 @@ bool hasToken(ChannelMap &channels, mlir::OpOperand &operand) {
   return it != channels.end() && !it->second.empty();
 }
 
-void mergeCausalFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
-                         SyncEffectId effect) {
+void mergeMemoryOrderFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
+                              SyncEffectId effect) {
   if (!llvm::is_contained(into, effect))
     into.push_back(effect);
 }
 
-void mergeCausalFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
-                         llvm::ArrayRef<SyncEffectId> effects) {
+void mergeMemoryOrderFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
+                              llvm::ArrayRef<SyncEffectId> effects) {
   for (SyncEffectId effect : effects)
-    mergeCausalFrontier(into, effect);
+    mergeMemoryOrderFrontier(into, effect);
 }
 
 Token popToken(SimulatorState &state, mlir::OpOperand &operand) {
   auto &queue = state.channels[&operand];
   Token token = queue.front();
   queue.pop_front();
-  mergeCausalFrontier(state.firingFrontier, token.frontier);
+  mergeMemoryOrderFrontier(state.firingMemoryOrderFrontier,
+                           token.memoryOrderFrontier);
   ++state.actorMutationEpoch;
   return token;
 }
@@ -274,15 +275,26 @@ Token peekToken(ChannelMap &channels, mlir::OpOperand &operand) {
   return channels[&operand].front();
 }
 
-void emitToken(SimulatorState &state, mlir::Value value, Token token) {
-  // A token retained across firings, such as an invariant latched value, keeps
-  // the provenance it already carries. The firing that publishes it only adds
-  // the order it consumed, so the two frontiers merge rather than overwrite.
-  mergeCausalFrontier(token.frontier, state.firingFrontier);
+static void publishToken(SimulatorState &state, mlir::Value value,
+                         const Token &token) {
   for (mlir::OpOperand &use : value.getUses())
     state.pendingChannels[&use].push_back(token);
   state.pendingObservedOutputs[value].push_back(token);
   ++state.actorMutationEpoch;
+}
+
+void emitToken(SimulatorState &state, mlir::Value value, Token token) {
+  mergeMemoryOrderFrontier(token.memoryOrderFrontier,
+                           state.firingMemoryOrderFrontier);
+  publishToken(state, value, token);
+}
+
+void emitTokenWithMemoryOrder(SimulatorState &state, mlir::Value value,
+                              Token token,
+                              llvm::ArrayRef<SyncEffectId> memoryOrder) {
+  token.memoryOrderFrontier.clear();
+  mergeMemoryOrderFrontier(token.memoryOrderFrontier, memoryOrder);
+  publishToken(state, value, token);
 }
 
 bool recordEvent(SimulatorState &state, llvm::StringRef opName) {
@@ -768,7 +780,7 @@ static FireOutcome fireOperation(mlir::Operation *op, SimulatorState &state) {
   const std::size_t diagnosticCount = state.diagnostics.size();
   // One attempt owns one frontier. Clearing it here keeps a NotReady or Failed
   // attempt from lending its consumed order to the next actor.
-  state.firingFrontier.clear();
+  state.firingMemoryOrderFrontier.clear();
   bool fired = fireActorOperation(op, state);
   if (fired)
     return FireOutcome::Fired;
@@ -820,8 +832,8 @@ static bool admitReadyPlainMemoryActions(mlir::Block &block,
       if (plainMemoryActionsConflict(candidate.second.action, issued.first))
         conflictingEffects.push_back(issued.second);
     if (!conflictingEffects.empty() &&
-        !state.memorySync->areCoveredByHappensBefore(conflictingEffects,
-                                                     candidate.second.frontier))
+        !state.memorySync->areCoveredByHappensBefore(
+            conflictingEffects, candidate.second.ctrlFrontier))
       return rejectPlainMemoryConflict(state);
   }
 
