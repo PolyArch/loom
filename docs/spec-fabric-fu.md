@@ -14,8 +14,9 @@ used to model system-level fan-in, fanout, arbitration, or routing.
 
 An FU owns physical resources, fixed boundary ports, SSA wiring, and a finite
 normalized domain of structural/capability templates. Each inner `fabric.op`
-owns one concrete parameterized capability through its implementation family,
-`op_list` projection, `hw_params`, physical ports, and typed constraints.
+owns one concrete parameterized capability through its explicit
+`ImplementationFamilyId`, `op_list` projection, `hw_params`, physical ports,
+and typed constraints.
 Registered operation schemas own exact software semantics, while typed
 Hardware Sharing Groups own only genuine physical implementation-family
 sharing legality.
@@ -70,6 +71,9 @@ SpatialMapping; it does not own the configured graph or its dynamic execution.
 `fabric.fu` carries an optional `sym_name`. The op exists in two
 disjoint syntactic forms by `sym_name` presence; the parser branches
 on whether `@sym` appears right after the op keyword.
+The schematic `example_multiply` family spelling below illustrates the
+required typed attribute; exact builtin family IDs belong to the normative
+HSG registry.
 
 ### Anonymous form (definition + use combined)
 
@@ -78,6 +82,8 @@ on whether `@sym` appears right after the op keyword.
                 %fb = %b : !fabric.bits<W>)
               -> !fabric.bits<W> {
   %v = fabric.op [@arith.muli] (%fa, %fb)
+       {implementation_family =
+          #fabric.implementation_family<example_multiply>}
        : (!fabric.bits<F>, !fabric.bits<W>) -> !fabric.bits<W>
   fabric.yield %v : !fabric.bits<W>
 }
@@ -102,6 +108,8 @@ complete Fabric module must nest it inside a `fabric.pe` body.
 fabric.fu @F (!fabric.bits<W>, !fabric.bits<W>) -> !fabric.bits<W> {
 ^bb0(%fa: !fabric.bits<W>, %fb: !fabric.bits<W>):
   %v = fabric.op [@arith.muli] (%fa, %fb)
+       {implementation_family =
+          #fabric.implementation_family<example_multiply>}
        : (!fabric.bits<W>, !fabric.bits<W>) -> !fabric.bits<W>
   fabric.yield %v : !fabric.bits<W>
 }

@@ -246,6 +246,9 @@ Fabric in addition to the resources they generate. Exact per-helper
 operation/HSG/hardware-parameter tables, switch construction, memory-port
 capacity, and buffer capacities are part of the same versioned family contract
 and must be fixed before that catalog version is implementation-complete.
+Those helper tables reference normative `ImplementationFamilyId` and
+`OperationSchemaId` values. They do not duplicate family membership, spell
+operation names as dispatch keys, or define backend modes.
 
 ### General-Purpose FU Library
 
@@ -267,11 +270,12 @@ capability registry. Expansion produces only ordinary `fabric.fu`,
 
 This table is a construction decomposition, not an HSG table. Every concrete
 `fabric.op` still binds exactly one typed Hardware Sharing Group implementation
-family. Distinct integer, floating-point, multiply, and special-function
-datapaths remain distinct physical operations unless the normative HSG
-registry and Fabric-to-RTL backend prove genuine circuit sharing. A configured
-FU that selects among separate datapaths uses explicit coherent input
-`fabric.demux` and output `fabric.mux` topology.
+family through its explicit `ImplementationFamilyId` attribute. Distinct
+integer, floating-point, multiply, and special-function datapaths remain
+distinct physical operations unless the normative HSG registry and
+Fabric-to-RTL provider keyed by that same family ID prove genuine circuit
+sharing. A configured FU that selects among separate datapaths uses explicit
+coherent input `fabric.demux` and output `fabric.mux` topology.
 
 `MacFu` is an FU graph, not a synthetic MAC HSG. `VectorAdapterFu` similarly
 does not imply that its four software operation families share one circuit.
@@ -357,8 +361,9 @@ order.
 
 A builtin descriptor may claim this catalog version only when every listed
 software operation has a registered typed operation schema, a legal concrete
-Fabric capability, and a compatible Fabric-to-RTL implementation. Operation
-names or equal port widths cannot substitute for any of these requirements.
+Fabric capability, and provider closure for every referenced implementation
+family. Operation names, backend-local classifications, or equal port widths
+cannot substitute for any of these requirements.
 
 ## Builtins As Public Examples
 

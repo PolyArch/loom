@@ -31,6 +31,29 @@ operation name appearing in `op_list` permits a matcher to infer types,
 attributes, arity, or any other capability not accepted by the complete typed
 relation.
 
+## Normative Family Registry
+
+`ImplementationFamilyId` is the closed typed identity of an HSG implementation
+family. One normative family descriptor owns:
+
+* the stable family ID;
+* the admitted registered `OperationSchemaId` members; and
+* the family-specific typed admission rule.
+
+The descriptor does not enumerate every exact type, value, predicate, arity,
+or configuration point. Those semantics remain owned by the registered
+operation schemas and are intersected with a concrete resource's parameterized
+capability. One operation schema may be admitted by several implementation
+families when several genuine hardware organizations implement it. Every
+concrete `fabric.op` carries one explicit `ImplementationFamilyId` attribute.
+
+One TableGen source mechanically generates the C++ enum, the MLIR enum
+attribute parser and printer, and the family/member descriptors. A family may
+use focused C++ verification for a complex typed admission relation; there is
+no generic predicate DSL and no parallel handwritten member table. Backend
+provider availability is queried by the same family ID but is not part of the
+registry's semantic ownership.
+
 ## Genuine Physical Sharing
 
 Multi-member families are legal only when one backend-supported circuit truly
@@ -60,8 +83,8 @@ hidden drain.
 
 Fabric verification enforces the following:
 
-1. Every concrete `fabric.op` resolves exactly one registered implementation
-   family.
+1. Every concrete `fabric.op` explicitly names exactly one registered
+   `ImplementationFamilyId`.
 2. Every `op_list` member belongs to that family and resolves to a registered
    software operation schema.
 3. `op_list` is a subset projection of the concrete capability; it cannot
@@ -71,8 +94,6 @@ Fabric verification enforces the following:
    duplicate declaration.
 5. Exact actor semantics are accepted only when the complete concrete
    capability relation supports them under ordered port correspondence.
-6. The implementation family has a backend realization consistent with the
-   sharing claim.
 
 A singleton capability remains legal. A family with one enabled member does
 not need synthetic multi-operation machinery. A concrete resource does not
@@ -91,11 +112,16 @@ Adding an HSG is a code and backend change, not a configuration escape hatch:
 
 1. Establish that one real circuit implements the proposed typed operation
    families.
-2. Add the family to the normative typed registry without creating a second
-   member list.
-3. Provide or extend the Fabric-to-RTL realization for that family.
+2. Add one `ImplementationFamilyId` and descriptor to the normative TableGen
+   registry without creating a second member list.
+3. Provide or extend a Fabric-to-RTL provider keyed by that family ID.
 4. Anchor verification with one accepted shared member and one member that is
    absent from, or rejected by, the concrete capability.
+
+Semantic Fabric verification and backend availability remain distinct. A
+well-formed custom Fabric may be valid while the selected backend reports typed
+`Unsupported` for a missing provider. A published builtin target must have
+provider closure for every implementation family it advertises.
 
 No broader test matrix is normative. The anchor must not preserve a
 member-name string bag, duplicate the registry, require exact-domain

@@ -67,6 +67,12 @@ family, but each concrete `fabric.op` binds exactly one implementation family.
 The HSG authorizes physical sharing; it does not grant every family member to
 every concrete resource and does not prove resource-time exclusivity.
 
+The binding is an explicit typed `ImplementationFamilyId` attribute on the
+operation. It is not inferred from `op_list`, port widths, an FU helper name,
+or backend classification. Consequently, two resources may expose the same
+operation schema through different implementation families, while one
+resource can never become an implicit union of several families.
+
 `op_list` is the readable projection of the software operation-family subset
 enabled by the concrete resource. `hw_params` restricts that subset to the
 typed parameter domains and correlations implemented by the resource. They
@@ -124,6 +130,35 @@ refinement domain. One actor transition may atomically claim multiple operand,
 pipeline, and result-holding states. Mapping may select a declared refinement
 and bind typed workload values but cannot split the pattern or define another
 scheduler.
+
+## Resolved Capability View
+
+Consumers may mechanically elaborate each concrete resource into an immutable
+non-persistent C++ value:
+
+```text
+ResolvedFabricOpCapabilityView {
+  occurrence
+  implementation_family
+  enabled_operation_schemas
+  parameterized_capability
+  physical_ports
+  configuration_field_schema
+  resource_state_and_timing_contract
+  physical_refinement_domains
+}
+```
+
+This view is derived solely from registered operation schemas, the normative
+implementation-family registry, and the exact canonical `fabric.op`. It is a
+cold elaboration result and may be cached as a compact hot-path structure for
+verification, TechMapping, and RTL emission.
+
+The view is not an IR operation, Artifact, persistent schema, configured
+function, or semantic owner. It must not enumerate the Cartesian product of
+exact modes or preserve a backend-local support table. Cache identity and
+invalidation derive from the exact Fabric and registry implementation
+identity; serialized Fabric remains the authority.
 
 ## Generic Operation-Schema Mechanism
 
@@ -284,7 +319,8 @@ mechanically derived from those facts. Fabric defines the typed field meaning
 and legal domain. The temporary projection is handed to the unique finalization
 chain in `docs/spec-configuration-deployment.md`, where the exact
 `ConfigurationABI` defines one canonical physical encoding. Fabric, Mapping,
-and a backend do not emit an alternate image or invent an encoding.
+and a backend do not emit an alternate image, exact-mode index, or independent
+decoder encoding.
 
 ## Validation Anchors
 
@@ -292,6 +328,8 @@ Anchor tests should pin only the stable semantic boundaries:
 
 * an HSG member remains unavailable until the concrete capability and exact
   software configuration accept it;
+* one registered operation schema may belong to two implementation families,
+  while each concrete resource accepts only members of its explicit family;
 * mutually exclusive branches require explicit FU demux/mux topology, and
   co-location does not absorb an external edge; and
 * duplicate normalized semantic assignments are rejected while a declared

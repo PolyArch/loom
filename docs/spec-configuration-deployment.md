@@ -41,6 +41,13 @@ The Artifact DAG is acyclic. A `ConfigurationABI` references its exact Fabric.
 A `HardwareImplementation` references the exact Fabric and ConfigurationABI it
 implements. The ABI does not refer back to a final implementation.
 
+An implementation-only backend recipe is selected by the exact hardware
+candidate-generator binding per `FabricEntityRef`. That selection contributes
+to `HardwareImplementation` lineage and identity, but only when every
+Fabric-observable semantic, timing, capacity, progress, and ABI fact is
+unchanged. It does not create another configuration field, alter a
+`HardwareConfigurationImage`, or change Fabric identity.
+
 SystemMapping binds the architecture-only Fabric and exact Transport
 Architecture. Replacing one Interconnect or hardware implementation with
 another verified implementation of the same architecture and
@@ -134,7 +141,9 @@ finalization. A leaf uses one of two atoms:
 bit has exactly one source, slices are in range and non-overlapping, and all
 reserved or padding bits are zero. An unselected hardware field uses the
 ABI-declared `inactive_value`; Fabric must prove that value functionally inert.
-The encoder may not invent a default.
+The encoder may not invent a default. RTL providers consume these fields and
+their codebooks; they cannot create an independent exact-mode index or decoder
+authority.
 
 ## HardwareConfigurationImage
 

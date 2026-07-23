@@ -50,6 +50,27 @@ implementation-defining generator binding. A purely mechanical transformation
 uses `MechanicalDerivation`; a search choice uses `CandidateDecision`. Logs and
 QoR observations do not become fields of `HardwareImplementation`.
 
+For a Fabric-to-RTL generator, an implementation-only recipe selection is a
+typed occurrence-scoped entry in the resolved generator configuration:
+
+```text
+FabricEntityRef -> BackendRecipeKey
+```
+
+`BackendRecipeKey` is a closed typed value owned by that candidate-generator
+descriptor's resolved configuration schema, not a global string registry or a
+Fabric attribute. The referenced RTL provider declares recipe availability and
+external dependencies without redefining the Fabric capability.
+
+The recipe may change gate structure or another implementation detail only
+when it preserves the exact Fabric-observable semantics, timing, capacity,
+progress, and `ConfigurationABI`. The selected map therefore contributes to
+`HardwareImplementation` lineage and identity but not to Fabric identity.
+Numeric policy, supported actor domains, latency, initiation interval,
+buffering, or other Fabric-visible choices must already be represented by
+Fabric or by a Fabric-declared Mapping refinement; the generator cannot
+reclassify them as recipes.
+
 ## Evaluation
 
 Lint, formal checks, RTL workload execution, timing, area, power, DRC, and other
@@ -120,6 +141,7 @@ model used by an in-flight deterministic invocation.
 ## Anchor Verification
 
 Stable tests cover semantic versus invocation binding, exact implementation
-parentage, derivation-before-evaluation, output collection, and typed failure
-classification. Vendor command lines, local module names, licenses, and report
-text are adapter tests rather than global fixture matrices.
+parentage, occurrence-scoped recipe identity, derivation-before-evaluation,
+output collection, and typed failure classification. Vendor command lines,
+local module names, licenses, and report text are adapter tests rather than
+global fixture matrices.

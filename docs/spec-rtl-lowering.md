@@ -45,6 +45,58 @@ a choice in RTL.
 Visualization metadata is stripped before Fabric identity and has no effect on
 hardware generation.
 
+## Operation Provider Registry
+
+Operation lowering is dispatched by the same closed
+`ImplementationFamilyId` used by the normative Hardware Sharing Group
+registry:
+
+```text
+ImplementationFamilyId -> RTL provider callback
+```
+
+Before emission, the backend mechanically constructs one
+`ResolvedFabricOpCapabilityView` for each concrete `fabric.op`. A provider
+consumes that exact view and the exact `ConfigurationABI`. It may own emitter
+code, behavioral or external-IP implementation availability, and typed
+external dependencies. It does not own family membership, operation types,
+HSG legality, timing semantics, or configuration encoding.
+
+Operation-name string classification, backend-local exact-mode enumeration,
+and global `(operation name, variant)` selection are forbidden as semantic or
+dispatch authorities. A behavioral or golden provider uses the same family ID
+and exact Fabric contract rather than a second operation-name support table.
+Missing provider support is typed `Unsupported`; a partially lowered or
+semantically substituted implementation is never produced.
+
+## Implementation Recipes
+
+Implementation choices are classified by their first observable difference:
+
+* A choice that changes exact operation semantics, numeric accuracy, or the
+  accepted actor domain is a different Fabric capability or `hw_params`
+  contract.
+* A choice that changes latency, initiation interval, state, buffering,
+  capacity, or progress is a different Fabric contract. It is a Mapping
+  physical refinement only when Fabric declares that exact runtime-selectable,
+  semantic-preserving domain.
+* A choice that preserves all Fabric-observable semantics, timing, capacity,
+  progress, and `ConfigurationABI` may be a backend implementation recipe,
+  such as two gate decompositions with different PPA.
+
+The exact hardware `ResolvedCandidateGeneratorBinding` selects backend recipes
+per occurrence:
+
+```text
+FabricEntityRef -> typed BackendRecipeKey
+```
+
+Recipe selection is not global by operation name. It is recorded in
+`HardwareImplementation` derivation and identity while leaving Fabric identity
+unchanged. Accuracy, timing, or other Fabric-visible differences cannot be
+hidden behind a recipe key. A provider may report an unavailable recipe or
+external dependency, but it may not silently choose another contract.
+
 ## Structural Lowering
 
 Every Fabric connection lowers to explicit RTL connectivity. Replication,
@@ -66,6 +118,12 @@ a similar primitive or silently emitted as behaviorally different logic.
 `fabric.fifo` lowering preserves the capability and selected-mode contract in
 `docs/spec-fabric-fifo.md`; implementation structure cannot change buffered
 visibility, bypass backpressure, or inactive-state semantics.
+
+An unbound or inactive operation input is not an implicit sink. A provider
+must not assert readiness merely to drain and discard tokens unless the exact
+Fabric capability explicitly defines that consumption and backpressure
+behavior. FU-local selection remains the explicit `fabric.mux` and
+`fabric.demux` topology owned by Fabric.
 
 ## Clocks, Reset, And Quiescence
 
@@ -166,6 +224,8 @@ Stable anchors cover:
 
 * one regular and one arbitrary-topology Fabric lowering;
 * exact replication/arbitration and width/tag behavior;
+* dispatch of one operation schema through two implementation families and
+  typed rejection of a missing provider;
 * temporal context and memory-operation behavior;
 * vector element, contiguous, indexed, and masked memory operation lowering,
   including one declared narrower-beat realization and one logical retirement;
@@ -174,8 +234,9 @@ Stable anchors cover:
   channels;
 * clock/reset domain and self-reset closure;
 * ConfigurationABI programming through one mapped workload; and
-* rejection of an unsupported or behavior-changing hidden refinement.
+* rejection of an unsupported or behavior-changing hidden refinement,
+  including implicit input draining.
 
 Tests do not preserve whole RTL text, vendor command lines, hierarchy names, or
-per-primitive fixture matrices. Syntax, elaboration, formal, simulation, and
+per-family exhaustive matrices. Syntax, elaboration, formal, simulation, and
 physical observations are ordinary Evaluations of the finalized implementation.

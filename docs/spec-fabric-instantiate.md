@@ -88,6 +88,8 @@ fabric.module @Core() -> () {
     fabric.fu @F (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32> {
     ^bb0(%fa: !fabric.bits<32>, %fb: !fabric.bits<32>):
       %v = fabric.op [@arith.muli] (%fa, %fb)
+           {implementation_family =
+              #fabric.implementation_family<example_multiply>}
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
@@ -100,6 +102,10 @@ fabric.module @Core() -> () {
   fabric.yield
 }
 ```
+
+`example_multiply` is schematic; the exact enum value is supplied by the
+normative HSG registry. The example includes it to preserve the invariant that
+every concrete `fabric.op` explicitly binds one implementation family.
 
 When `sym_name` is present, `fabric.pe` and `fabric.fu` participate in the
 enclosing symbol table and have no SSA results at the declaration site. When
