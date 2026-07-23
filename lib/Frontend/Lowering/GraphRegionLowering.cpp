@@ -1,9 +1,11 @@
 #include "GraphRegionLowering.h"
 #include "GraphIndexLowering.h"
 #include "GraphStreamBoundaryLowering.h"
+#include "RankedMemRefLowering.h"
 
 #include "Frontend/Lowering/StreamLoopAttrs.h"
 
+#include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
 
@@ -29,6 +31,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Error.h"
 
 #include <cassert>
 #include <cstdint>
@@ -254,7 +257,8 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
 }
 
 ::mlir::LogicalResult checkOneGraph(::dataflow::GraphOp graph,
-                                    const StreamBoundaryInfo &boundary) {
+                                    const StreamBoundaryInfo &boundary,
+                                    unsigned indexBits) {
   ::mlir::Block &entry = graph.getBody().front();
   if (entry.getNumArguments() == 0 ||
       !::llvm::isa<::mlir::NoneType>(entry.getArgument(0).getType()))
@@ -277,20 +281,13 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
   ::mlir::WalkResult result = graph.getBody().walk([&](::mlir::Operation *op)
                                                        -> ::mlir::WalkResult {
     if (auto load = ::llvm::dyn_cast<::mlir::memref::LoadOp>(op)) {
-      if (load.getMemRefType().getRank() != 1 ||
-          load.getIndices().size() != 1) {
-        load.emitError("loom-lower-graph-memory: only rank-one memref.load "
-                       "is supported by dataflow.load");
+      if (::mlir::failed(::loom::lowering::detail::checkRankedMemRefAccess(
+              load, load.getMemRefType(), load.getIndices(), indexBits)))
         return ::mlir::WalkResult::interrupt();
-      }
     } else if (auto store = ::llvm::dyn_cast<::mlir::memref::StoreOp>(op)) {
-      if (store.getMemRefType().getRank() != 1 ||
-          store.getIndices().size() != 1) {
-        store.emitError(
-            "loom-lower-graph-memory: only rank-one memref.store is "
-            "supported by dataflow.store");
+      if (::mlir::failed(::loom::lowering::detail::checkRankedMemRefAccess(
+              store, store.getMemRefType(), store.getIndices(), indexBits)))
         return ::mlir::WalkResult::interrupt();
-      }
     }
 
     auto findMemoryCapability = [&](::mlir::TypeRange types) {
@@ -1293,9 +1290,12 @@ private:
     ::llvm::SmallVector<unsigned, 4> membership = partitionsFor(load);
     ::mlir::Value ctrl = readControl(load, execution, memory);
     setInsertionPoint(load.getLoc());
+    ::mlir::Value address = ::loom::lowering::detail::buildRowMajorLinearIndex(
+        builder, load.getLoc(), load.getMemRefType(), load.getIndices(),
+        execution);
     auto lowered = ::dataflow::LoadOp::create(
         builder, load.getLoc(), load.getType(), builder.getNoneType(),
-        load.getMemref(), load.getIndices().front(), ctrl);
+        load.getMemref(), address, ctrl);
     partitionsByAccess.try_emplace(lowered, std::move(membership));
     load.getResult().replaceAllUsesWith(lowered.getData());
     updateReadFrontiers(lowered, lowered.getDone(), memory);
@@ -1307,9 +1307,12 @@ private:
     ::llvm::SmallVector<unsigned, 4> membership = partitionsFor(store);
     ::mlir::Value ctrl = writeControl(store, execution, memory);
     setInsertionPoint(store.getLoc());
+    ::mlir::Value address = ::loom::lowering::detail::buildRowMajorLinearIndex(
+        builder, store.getLoc(), store.getMemRefType(), store.getIndices(),
+        execution);
     auto lowered = ::dataflow::StoreOp::create(
         builder, store.getLoc(), builder.getNoneType(), store.getMemref(),
-        store.getIndices().front(), store.getValue(), ctrl);
+        address, store.getValue(), ctrl);
     partitionsByAccess.try_emplace(lowered, std::move(membership));
     updateWriteFrontiers(lowered, lowered.getDone(), memory);
     store.erase();
@@ -1751,9 +1754,15 @@ checkGraphRegionLoweringPreconditions(::mlir::ModuleOp module) {
       module.walk([&](::dataflow::GraphOp graph) -> ::mlir::WalkResult {
         if (graph.isExternal())
           return ::mlir::WalkResult::advance();
+        ::llvm::Expected<unsigned> indexBits = ::loom::getIndexBitWidth(graph);
+        if (!indexBits) {
+          graph.emitError("loom-lower-graph-memory: ")
+              << ::llvm::toString(indexBits.takeError());
+          return ::mlir::WalkResult::interrupt();
+        }
         auto boundary = analyzeStreamBoundary(graph);
         if (::mlir::failed(boundary) ||
-            ::mlir::failed(checkOneGraph(graph, *boundary)))
+            ::mlir::failed(checkOneGraph(graph, *boundary, *indexBits)))
           return ::mlir::WalkResult::interrupt();
         return ::mlir::WalkResult::advance();
       });

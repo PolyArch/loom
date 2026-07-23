@@ -4,6 +4,8 @@
 // RUN: FileCheck %s --check-prefix=EXPAND --implicit-check-not=memref.copy --implicit-check-not=linalg. --implicit-check-not=memref.dma --implicit-check-not=dataflow.transfer < %t.layout.mlir
 // RUN: loom-dfg-sim %t.layout.mlir --graph copy_graph --memref 0=1,2,3,4,5,6,7 --memref 1=0,0,0,0,0,0,0 --output %t.seven.json 2>&1
 // RUN: FileCheck %s --check-prefix=SEVEN < %t.seven.json
+// RUN: loom-dfg-sim %t.layout.mlir --graph copy_rank2_graph --memref 0=1,2,3,4,5,6 --memref 1=0,0,0,0,0,0 --output %t.rank2.json 2>&1
+// RUN: FileCheck %s --check-prefix=RANK2 < %t.rank2.json
 // RUN: env LOOM_INDEX_WIDTH=4 loom-raise-opt --loom-lower-scf-to-dfg %t.dir/override.mlir -o %t.override.mlir
 // RUN: env LOOM_INDEX_WIDTH=4 loom-dfg-sim %t.override.mlir --graph override_graph --memref 0=1,2,3,4,5,6,7,8 --memref 1=0,0,0,0,0,0,0,0 --output %t.eight.json
 // RUN: FileCheck %s --check-prefix=EIGHT < %t.eight.json
@@ -27,6 +29,13 @@
 // EXPAND: %[[WRITE_CTRL:.*]]:2 = dataflow.sync %{{.*}}, %[[READ_DONE]] : (none, none) -> (none, none)
 // EXPAND: dataflow.store %arg2[%[[ADDR]]] %[[DATA]] %[[WRITE_CTRL]]#0 : memref<7xi32>
 // EXPAND: dataflow.graph.return
+
+// EXPAND-LABEL: dataflow.graph private @copy_rank2_graph
+// EXPAND-COUNT-2: dataflow.stream
+// EXPAND-NOT: dataflow.stream
+// EXPAND: %[[R2_DATA:.*]], %[[R2_DONE:.*]] = dataflow.load %arg1[%{{.*}}] %{{.*}} : memref<2x3xi32>
+// EXPAND: %[[R2_WRITE_CTRL:.*]]:2 = dataflow.sync %{{.*}}, %[[R2_DONE]] : (none, none) -> (none, none)
+// EXPAND: dataflow.store %arg2[%{{.*}}] %[[R2_DATA]] %[[R2_WRITE_CTRL]]#0 : memref<2x3xi32>
 
 // An expanded loop is an ordinary structured loop beside the hand-written one,
 // so the two share one canonical set of index constants.
@@ -59,6 +68,16 @@
 // SEVEN-NEXT: "i32:7"
 // SEVEN: "dataflow.load": 7
 // SEVEN: "dataflow.store": 7
+
+// RANK2: "arg1": [
+// RANK2-NEXT: "i32:1",
+// RANK2-NEXT: "i32:2",
+// RANK2-NEXT: "i32:3",
+// RANK2-NEXT: "i32:4",
+// RANK2-NEXT: "i32:5",
+// RANK2-NEXT: "i32:6"
+// RANK2: "dataflow.load": 6
+// RANK2: "dataflow.store": 6
 
 // A declared width also overrides the configured one, so eight elements are
 // admissible under a declared sixty-four bit index even with a four bit
@@ -94,6 +113,11 @@
 // REJECT: loom.spatial_region
 // REJECT: memref.copy %{{.*}}, %{{.*}} : memref<4xi32> to memref<4xi32>
 
+// REJECT: error: 'memref.copy' op loom-expand-graph-memref-copy: cannot expand memref.copy into a structured load/store loop; maximum linear address 8 is not representable in the graph's resolved signed index domain 'i4'
+// REJECT: dataflow.thread private @rank2_address_overflow
+// REJECT: loom.spatial_region
+// REJECT: memref.copy %{{.*}}, %{{.*}} : memref<3x3xi32> to memref<3x3xi32>
+
 //--- layout.mlir
 module attributes {
   dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 4>>
@@ -109,6 +133,20 @@ module attributes {
             <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
     }) {graph_name = "copy_graph", source_maps = []} :
         (memref<7xi32>, memref<7xi32>) -> ()
+    dataflow.thread.yield
+  }
+
+  dataflow.thread private @spatial_copy_rank2(
+      %src: memref<2x3xi32>, %dst: memref<2x3xi32>) ctrl (%ctrl: none) {
+    "loom.spatial_region"(%src, %dst)
+        <{operandSegmentSizes = array<i32: 0, 0, 2, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%source: memref<2x3xi32>, %target: memref<2x3xi32>):
+        memref.copy %source, %target : memref<2x3xi32> to memref<2x3xi32>
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "copy_rank2_graph", source_maps = []} :
+        (memref<2x3xi32>, memref<2x3xi32>) -> ()
     dataflow.thread.yield
   }
 
@@ -218,6 +256,26 @@ module attributes {
             <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
     }) {graph_name = "unusable_graph", source_maps = []} :
         (memref<4xi32>, memref<4xi32>) -> ()
+    dataflow.thread.yield
+  }
+}
+
+// -----
+
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 4>>
+} {
+  dataflow.thread private @rank2_address_overflow(
+      %src: memref<3x3xi32>, %dst: memref<3x3xi32>) ctrl (%ctrl: none) {
+    "loom.spatial_region"(%src, %dst)
+        <{operandSegmentSizes = array<i32: 0, 0, 2, 0>,
+          resultSegmentSizes = array<i32: 0, 0>}> ({
+      ^bb0(%source: memref<3x3xi32>, %target: memref<3x3xi32>):
+        memref.copy %source, %target : memref<3x3xi32> to memref<3x3xi32>
+        "loom.spatial_yield"()
+            <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
+    }) {graph_name = "rank2_address_overflow_graph", source_maps = []} :
+        (memref<3x3xi32>, memref<3x3xi32>) -> ()
     dataflow.thread.yield
   }
 }

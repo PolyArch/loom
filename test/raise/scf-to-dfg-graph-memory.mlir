@@ -164,6 +164,29 @@ dataflow.graph private @g_chained_gep_i8_i16(
   dataflow.graph.return %arg0, %0 : none, i16
 }
 
+// CHECK-LABEL: dataflow.graph private @g_rank3_row_major(
+// CHECK: %[[LD_DIM1:.*]] = dataflow.constant %arg0 {const_value = 5 : index} : index
+// CHECK: %[[LD_MUL1:.*]] = arith.muli %arg1, %[[LD_DIM1]] : index
+// CHECK: %[[LD_ADD1:.*]] = arith.addi %[[LD_MUL1]], %arg2 : index
+// CHECK: %[[LD_DIM2:.*]] = dataflow.constant %arg0 {const_value = 7 : index} : index
+// CHECK: %[[LD_MUL2:.*]] = arith.muli %[[LD_ADD1]], %[[LD_DIM2]] : index
+// CHECK: %[[LD_ADDR:.*]] = arith.addi %[[LD_MUL2]], %arg3 : index
+// CHECK: %[[LD_DATA:.*]], %[[LD_DONE:.*]] = dataflow.load %arg4[%[[LD_ADDR]]] %arg0 : memref<3x5x7xf32>
+// CHECK: %[[ST_MUL1:.*]] = arith.muli %arg1, %{{.*}} : index
+// CHECK: %[[ST_ADD1:.*]] = arith.addi %[[ST_MUL1]], %arg2 : index
+// CHECK: %[[ST_MUL2:.*]] = arith.muli %[[ST_ADD1]], %{{.*}} : index
+// CHECK: %[[ST_ADDR:.*]] = arith.addi %[[ST_MUL2]], %arg3 : index
+// CHECK: dataflow.store %arg4[%[[ST_ADDR]]] %[[LD_DATA]] %[[LD_DONE]] : memref<3x5x7xf32>
+dataflow.graph private @g_rank3_row_major(
+    %arg0: none, %arg1: index, %arg2: index, %arg3: index,
+    %arg4: memref<3x5x7xf32>) -> ()
+    attributes {input_segments = array<i32: 3, 0, 1>,
+                result_segments = array<i32: 0, 0, 0>} {
+  %value = memref.load %arg4[%arg1, %arg2, %arg3] : memref<3x5x7xf32>
+  memref.store %value, %arg4[%arg1, %arg2, %arg3] : memref<3x5x7xf32>
+  dataflow.graph.return %arg0 : none
+}
+
 // CHECK-LABEL: dataflow.graph private @g_chained_gep_negative_bias
 // CHECK-DAG: %[[NEG_MEM:.*]] = builtin.unrealized_conversion_cast %arg4 : !llvm.ptr to memref<?xi16>
 // CHECK: %[[NEG_INDEX:.*]], %[[NEG_RWC:.*]] = dataflow.stream
