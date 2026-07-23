@@ -275,8 +275,30 @@ llvm::Error MemorySynchronization::commit(Facts candidate) {
   return llvm::Error::success();
 }
 
+llvm::Expected<SyncEffectId> MemorySynchronization::declareEffectSequencedAfter(
+    llvm::ArrayRef<SyncEffectId> predecessors) {
+  llvm::SmallVector<SyncEffectId, 2> accepted;
+  accepted.reserve(predecessors.size());
+  for (SyncEffectId predecessor : predecessors) {
+    if (llvm::Error error = requireKnown(predecessor))
+      return std::move(error);
+    if (llvm::is_contained(accepted, predecessor))
+      return reject(Kind::DuplicateEdge,
+                    "effect " + llvm::Twine(predecessor.value()) +
+                        " occurs more than once in an incoming frontier");
+    accepted.push_back(predecessor);
+  }
+
+  Facts candidate = facts_;
+  const SyncEffectId effect(candidate.effects++);
+  for (SyncEffectId predecessor : accepted)
+    candidate.sequenced[predecessor.value()].push_back(effect);
+  facts_ = std::move(candidate);
+  return effect;
+}
+
 SyncEffectId MemorySynchronization::declareEffect() {
-  return SyncEffectId(facts_.effects++);
+  return llvm::cantFail(declareEffectSequencedAfter({}));
 }
 
 llvm::Error MemorySynchronization::sequencedBefore(SyncEffectId earlier,

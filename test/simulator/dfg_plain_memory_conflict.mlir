@@ -47,6 +47,9 @@
 // RUN: loom-dfg-sim %s --graph parallelize_group_inherits_lane_order \
 // RUN:   --memref 0=10,11,12,13,14,15,16,17 --output %t.group.json
 // RUN: FileCheck %s --check-prefix=GROUP < %t.group.json
+// RUN: loom-dfg-sim %s --graph stateful_continuation_retains_memory_order \
+// RUN:   --memref 0=10,11,12 --output %t.stateful-order.json
+// RUN: FileCheck %s --check-prefix=STATEFUL-ORDER < %t.stateful-order.json
 // RUN: loom-dfg-sim %s --graph unordered_repeated_store \
 // RUN:   --arg 0=2 --arg 1=0 --arg 2=-1 --arg 3=7 \
 // RUN:   --memref 4=10,11,12,13,14,15,16,17 --output %t.repeat.json
@@ -216,6 +219,18 @@
 // GROUP: "dataflow.load": 1
 // GROUP: "dataflow.store": 1
 // GROUP: "status": "pass"
+
+// One load covers all three cells. Its done witness enters a three-iteration
+// stream through the limit operand, then reaches each distinct scalar store
+// through the phase and invariant continuation. Every store is ordered after
+// the load even when a continuation consumes no new stream operand.
+// STATEFUL-ORDER: "arg0": [
+// STATEFUL-ORDER-NEXT: "i32:99",
+// STATEFUL-ORDER-NEXT: "i32:99",
+// STATEFUL-ORDER-NEXT: "i32:99"
+// STATEFUL-ORDER: "dataflow.load": 1
+// STATEFUL-ORDER: "dataflow.store": 3
+// STATEFUL-ORDER: "status": "pass"
 
 // One store actor writes a fixed cell on every loop iteration. Successive
 // firings of one static actor are unordered unless an explicit token frontier
@@ -447,6 +462,34 @@ module {
         : (i1, none) -> (none, none)
     dataflow.graph.return values() streams() memories()
         complete(%memory_lane#0 : none)
+  }
+
+  dataflow.graph private @stateful_continuation_retains_memory_order(
+      %start: none, %mem: memref<3xi32>) -> ()
+      attributes {input_segments = array<i32: 0, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %cell = dataflow.constant %start {const_value = 0 : index} : index
+    %loaded, %load_done = dataflow.load %mem[%cell] %start
+        : memref<3xi32>, vector<3xi32>
+    %zero = dataflow.constant %start {const_value = 0 : i8} : i8
+    %one = dataflow.constant %start {const_value = 1 : i8} : i8
+    %three = dataflow.constant %start {const_value = 3 : i8} : i8
+    %bound:2 = dataflow.sync %load_done, %three : (none, i8) -> (none, i8)
+    %iv, %phase = dataflow.stream %zero, %bound#1, %one
+        step add while ult : i8
+    %units = dataflow.invariant %phase, %start : none
+    %events:2 = dataflow.demux %phase, %units
+        : (i1, none) -> (none, none)
+    %idx = arith.index_cast %iv : i8 to index
+    %value = dataflow.constant %start {const_value = 99 : i32} : i32
+    %stable_value = dataflow.invariant %phase, %value : i32
+    %store_done = dataflow.store %mem[%idx] %stable_value %events#1
+        : memref<3xi32>
+    %retirement = dataflow.carry %phase, %start, %store_done : none
+    %retirement_lane:2 = dataflow.demux %phase, %retirement
+        : (i1, none) -> (none, none)
+    dataflow.graph.return values() streams() memories()
+        complete(%retirement_lane#0 : none)
   }
 
   module attributes {

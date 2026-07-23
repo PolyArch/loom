@@ -19,8 +19,8 @@ namespace loom {
 namespace sim {
 
 /// Execution-local identity of one memory effect that participates in software
-/// ordering. Only MemorySynchronization::declareEffect allocates one. It is a
-/// handle, not the MemoryAction projection: actor occurrence, contract
+/// ordering. Only MemorySynchronization effect declarations allocate one. It
+/// is a handle, not the MemoryAction projection: actor occurrence, contract
 /// reference, operands, and lanes stay with the caller.
 class SyncEffectId {
 public:
@@ -131,8 +131,13 @@ public:
   explicit MemorySynchronization(const MemoryAtomicOrder &order)
       : order_(&order) {}
 
-  /// The sole source of effect identities.
+  /// Declares an effect with no incoming sequenced-before facts.
   SyncEffectId declareEffect();
+
+  /// Declares one effect and its complete incoming sequenced-before frontier
+  /// as one transaction. Rejection allocates no identity and records no edge.
+  llvm::Expected<SyncEffectId>
+  declareEffectSequencedAfter(llvm::ArrayRef<SyncEffectId> predecessors);
 
   /// Records one sequenced-before fact of the finalized program.
   llvm::Error sequencedBefore(SyncEffectId earlier, SyncEffectId later);

@@ -727,6 +727,18 @@ void wideFrontierUsesOneTransactionalInsertion() {
           "a rejected batch committed its valid prefix");
 }
 
+void rejectedIncomingFrontierDoesNotAllocateEffect() {
+  MemoryAtomicOrder order;
+  MemorySynchronization sync(order);
+  llvm::SmallVector<SyncEffectId, 1> unknown{SyncEffectId(0)};
+
+  expectRejected(sync.declareEffectSequencedAfter(unknown), Kind::UnknownEffect,
+                 "an unknown predecessor was accepted");
+  SyncEffectId first = takeExpected(sync.declareEffectSequencedAfter({}));
+  require(first == SyncEffectId(0),
+          "a rejected incoming frontier consumed an effect id");
+}
+
 } // namespace
 
 int main() {
@@ -742,5 +754,6 @@ int main() {
   fenceShapeHoldsInEitherDeclarationOrder();
   acceptedFactsAreInsertionOrderInvariant();
   wideFrontierUsesOneTransactionalInsertion();
+  rejectedIncomingFrontierDoesNotAllocateEffect();
   return 0;
 }

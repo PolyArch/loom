@@ -136,6 +136,10 @@ struct SimulatorState {
   llvm::DenseMap<mlir::Operation *, LoopState> invariantStates;
   llvm::DenseMap<mlir::Operation *, ParallelizeState> parallelizeStates;
   llvm::DenseSet<mlir::Operation *> gateContinueStates;
+  // Canonical memory order retained by a stateful actor for one activation.
+  // This simulator-only state is separate from the actor's semantic state.
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<SyncEffectId, 2>>
+      activationMemoryOrderFrontiers;
   llvm::DenseSet<mlir::Operation *> oneShotOps;
   llvm::DenseSet<mlir::Operation *> terminalPrimitiveOps;
   llvm::DenseMap<mlir::Value, std::uint64_t> seededTokenCounts;
@@ -204,6 +208,19 @@ void mergeMemoryOrderFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
                               SyncEffectId effect);
 void mergeMemoryOrderFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
                               llvm::ArrayRef<SyncEffectId> effects);
+
+inline void retainAndPublishActivationMemoryOrder(SimulatorState &state,
+                                                  mlir::Operation *actor) {
+  auto &activation = state.activationMemoryOrderFrontiers[actor];
+  mergeMemoryOrderFrontier(activation, state.firingMemoryOrderFrontier);
+  mergeMemoryOrderFrontier(state.firingMemoryOrderFrontier, activation);
+}
+
+inline void retireActivationMemoryOrder(SimulatorState &state,
+                                        mlir::Operation *actor, bool retire) {
+  if (retire)
+    state.activationMemoryOrderFrontiers.erase(actor);
+}
 
 bool hasToken(ChannelMap &channels, mlir::OpOperand &operand);
 Token popToken(SimulatorState &state, mlir::OpOperand &operand);

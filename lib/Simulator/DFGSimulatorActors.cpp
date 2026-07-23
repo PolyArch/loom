@@ -16,7 +16,6 @@
 
 namespace loom::sim {
 namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
-
 static unsigned streamIntegerBitWidth(mlir::Type type) {
   if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
     return intType.getWidth();
@@ -110,6 +109,7 @@ static bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
                            StreamInput::Step))
     (void)popToken(state, op->getOpOperand(2));
 
+  retainAndPublishActivationMemoryOrder(state, op.getOperation());
   if (iv) {
     emitToken(state, op.getIv(), std::move(*iv));
     ++state.streamTrueEmissionCounts[op.getOperation()];
@@ -117,6 +117,8 @@ static bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
   if (transition->emitPhase)
     emitToken(state, op.getPhase(), boolValueToken(transition->phase));
   stream = transition->nextState;
+  retireActivationMemoryOrder(state, op.getOperation(),
+                              stream.mode == StreamMode::Idle);
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -162,9 +164,13 @@ static bool fireCarry(dataflow::CarryOp op, SimulatorState &state) {
     if (transition.forwardedInput == CarryInput::Next)
       forwarded = value;
   }
+  retainAndPublishActivationMemoryOrder(state, op.getOperation());
   if (forwarded)
     emitToken(state, op.getOutput(), *forwarded);
   carry.semanticState = transition.nextState;
+  retireActivationMemoryOrder(state, op.getOperation(),
+                              carry.semanticState ==
+                                  PhaseSemanticState::Initial);
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -187,6 +193,7 @@ static bool fireInvariant(dataflow::InvariantOp op, SimulatorState &state) {
   if (transition.latchInput == InvariantInput::Init)
     invariant.latched = *init;
 
+  retainAndPublishActivationMemoryOrder(state, op.getOperation());
   if (transition.output == InvariantOutputSource::InitInput)
     emitToken(state, op.getOutput(), *init);
   else if (transition.output == InvariantOutputSource::Latched)
@@ -194,6 +201,9 @@ static bool fireInvariant(dataflow::InvariantOp op, SimulatorState &state) {
   if (transition.clearLatch)
     invariant.latched.reset();
   invariant.semanticState = transition.nextState;
+  retireActivationMemoryOrder(state, op.getOperation(),
+                              invariant.semanticState ==
+                                  PhaseSemanticState::Initial);
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -213,6 +223,7 @@ static bool fireGate(dataflow::GateOp op, SimulatorState &state) {
   std::optional<Token> value;
   if (selectsSemanticInput(transition.firing.consumedInputs, GateInput::Value))
     value = popToken(state, op.getBeforeValueMutable());
+  retainAndPublishActivationMemoryOrder(state, op.getOperation());
   if (transition.emitPhase)
     emitToken(state, op.getAfterCond(), boolValueToken(transition.phase));
   if (transition.forwardedInput == GateInput::Value)
@@ -221,6 +232,9 @@ static bool fireGate(dataflow::GateOp op, SimulatorState &state) {
     state.gateContinueStates.insert(op.getOperation());
   else
     state.gateContinueStates.erase(op.getOperation());
+  retireActivationMemoryOrder(state, op.getOperation(),
+                              transition.nextState ==
+                                  GateSemanticState::Closed);
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -946,18 +960,14 @@ issueMemoryAction(MemoryActionRecord action,
     return publication;
   }
   MemorySynchronization &sync = memorySynchronization(state);
-  const SyncEffectId effect = sync.declareEffect();
-  llvm::SmallVector<std::pair<SyncEffectId, SyncEffectId>, 2> relations;
-  relations.reserve(orderFrontier.size());
-  for (SyncEffectId earlier : orderFrontier)
-    relations.emplace_back(earlier, effect);
-  if (llvm::Error error = sync.sequencedBefore(relations)) {
-    state.diagnostics.push_back(llvm::toString(std::move(error)));
+  auto effect = sync.declareEffectSequencedAfter(orderFrontier);
+  if (!effect) {
+    state.diagnostics.push_back(llvm::toString(effect.takeError()));
     state.runtimeUnsupportedCapability = true;
     return std::nullopt;
   }
-  state.memoryActions.emplace_back(std::move(action), effect);
-  return llvm::SmallVector<SyncEffectId, 2>{effect};
+  state.memoryActions.emplace_back(std::move(action), *effect);
+  return llvm::SmallVector<SyncEffectId, 2>{*effect};
 }
 
 static mlir::OpOperand *getOptionalMaskOperand(mlir::Operation *op,
