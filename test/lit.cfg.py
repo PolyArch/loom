@@ -63,6 +63,7 @@ tools = [
     "loom-raise",
     "loom-raise-opt",
     "loom-simulator-atomic-order-test",
+    "loom-simulator-synchronization-test",
     "loom-simulator-vector-boundary-test",
     "loom-synth-base-test",
     "loom-synth-config-test",

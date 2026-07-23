@@ -7,6 +7,15 @@ target_link_libraries(loom-simulator-atomic-order-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-simulator-synchronization-test
+  MemorySynchronizationTest.cpp
+)
+
+target_link_libraries(loom-simulator-synchronization-test PRIVATE
+  LoomSimulator
+  LLVMSupport
+)
+
 add_executable(loom-simulator-vector-boundary-test
   DFGVectorBoundaryTest.cpp
 )
