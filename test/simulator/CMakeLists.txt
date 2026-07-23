@@ -1,3 +1,12 @@
+add_executable(loom-simulator-atomic-order-test
+  MemoryAtomicOrderTest.cpp
+)
+
+target_link_libraries(loom-simulator-atomic-order-test PRIVATE
+  LoomSimulator
+  LLVMSupport
+)
+
 add_executable(loom-simulator-vector-boundary-test
   DFGVectorBoundaryTest.cpp
 )

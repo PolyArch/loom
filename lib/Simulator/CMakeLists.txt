@@ -2,6 +2,7 @@ add_mlir_library(LoomSimulator
   DFGSimulator.cpp
   DFGSimulatorActors.cpp
   DFGSimulatorTokens.cpp
+  MemoryAtomicOrder.cpp
   OperationCostModel.cpp
   OperationSemantics.cpp
 

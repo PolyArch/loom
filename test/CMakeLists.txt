@@ -42,6 +42,7 @@ set(LOOM_TEST_DEPENDS
   loom-pnr-index-test
   loom-pnr-route-tree-state-test
   loom-pnr-routing-negotiation-test
+  loom-simulator-atomic-order-test
   loom-simulator-vector-boundary-test
   loom-synth-base-test
   loom-synth-config-test
