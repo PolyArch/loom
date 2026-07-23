@@ -796,6 +796,12 @@ def _sync_circt_locked(
             shutil.rmtree(paths.circt_build)
         configure_circt(paths, compilers)
     if always_build or rebuild:
+        # A build attempt supersedes any prior readiness. Invalidate the
+        # stamp (the single readiness authority) before building so a failed
+        # or interrupted build cannot keep advertising the old or a partially
+        # rebuilt CIRCT; it is rewritten only after the build produces both
+        # required artifacts.
+        paths.circt_stamp.unlink(missing_ok=True)
         run([
             "cmake", "--build", str(paths.circt_build),
             f"-j{args.jobs}",

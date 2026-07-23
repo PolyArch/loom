@@ -590,8 +590,8 @@ class MakeWorktreeTest(unittest.TestCase):
             )
             self.assertIsNone(module.available_circt_dir(paths, stale))
 
-            # A CIRCT build that does not produce both artifacts is never
-            # stamped and fails with an explicit diagnostic.
+            # A CIRCT build that does not produce both artifacts fails and is
+            # left neither advertised nor stamped.
             incomplete = build_paths(Path(td) / "incomplete")
             incomplete.circt_build.mkdir(parents=True)
             (incomplete.circt_build / "build.ninja").write_text("ninja\n")
@@ -599,12 +599,13 @@ class MakeWorktreeTest(unittest.TestCase):
                 patch.object(module, "configure_circt"),
                 patch.object(module, "run"),
             ):
-                stderr = io.StringIO()
-                with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                     module._sync_circt_locked(
                         incomplete, self.args, compilers, llvm_identity, True
                     )
-            self.assertIn("did not produce", stderr.getvalue())
+            self.assertIsNone(
+                module.available_circt_dir(incomplete, llvm_identity)
+            )
             self.assertEqual(module.read_stamp(incomplete.circt_stamp), "")
 
     def test_configure_circt_shared_llvm_single_lock_no_nested(self):
@@ -818,6 +819,134 @@ class MakeWorktreeTest(unittest.TestCase):
             self.assertFalse(opened["value"])
             self.assertTrue(linked_paths.circt_build.exists())
             self.assertTrue(linked_paths.circt_stamp.exists())
+
+    def test_shared_build_state_is_git_ignored(self):
+        """The shared LLVM and CIRCT build state under externals/ is local
+        and must be ignored. Verified through git's actual ignore behavior
+        against the repository's own .gitignore, not a source-text match, so
+        the policy may be expressed by any equivalent pattern."""
+        gitignore = (SCRIPT.parents[1] / ".gitignore").read_text()
+        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            sandbox = Path(td) / "repo"
+            init_repo(sandbox)
+            (sandbox / ".gitignore").write_text(gitignore)
+            shared_state = (
+                "externals/.loom-build.llvm.lock",
+                "externals/.loom-build.llvm.stamp",
+                "externals/.loom-build.circt.stamp",
+            )
+            result = subprocess.run(
+                [
+                    "git", "-C", str(sandbox),
+                    "-c", "core.excludesFile=/dev/null",
+                    "check-ignore", "--", *shared_state,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            ignored = set(result.stdout.split())
+            for path in shared_state:
+                self.assertIn(path, ignored, f"{path} is not git-ignored")
+
+    def test_failed_explicit_circt_rebuild_revokes_availability(self):
+        """An explicit CIRCT rebuild that fails must revoke availability even
+        when a valid, matching stamp and complete artifacts already exist.
+        The stamp is the single readiness authority: a build attempt
+        invalidates it up front, so a failed build cannot keep advertising
+        the old or a partially rebuilt CIRCT."""
+        module = self.module
+        state = module.DependencyState("circt-pin", "llvm-pin")
+        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
+        llvm_identity = module.llvm_build_identity(state, compilers)
+        circt_identity = module.circt_build_identity(llvm_identity)
+
+        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            paths = build_paths(Path(td))
+            # A complete, stamped, identity-matching prior build.
+            paths.circt_cmake_dir.mkdir(parents=True)
+            (paths.circt_cmake_dir / "CIRCTConfig.cmake").write_text("x\n")
+            paths.circt_required_lib.parent.mkdir(parents=True, exist_ok=True)
+            paths.circt_required_lib.write_text("ar\n")
+            (paths.circt_build / "build.ninja").write_text("ninja\n")
+            paths.circt_stamp.write_text(circt_identity + "\n")
+
+            # Precondition: the prior build is advertised as available.
+            self.assertEqual(
+                module.available_circt_dir(paths, llvm_identity),
+                str(paths.circt_cmake_dir),
+            )
+
+            # An explicit rebuild whose cmake --build fails. The prior
+            # artifacts stay on disk (the build failed before overwriting
+            # them), so only stamp invalidation can revoke availability.
+            def failing_build(cmd, **kwargs):
+                raise subprocess.CalledProcessError(1, cmd)
+
+            with (
+                patch.object(module, "configure_circt"),
+                patch.object(module, "run", side_effect=failing_build),
+                self.assertRaises(subprocess.CalledProcessError),
+            ):
+                module._sync_circt_locked(
+                    paths, self.args, compilers, llvm_identity, True
+                )
+
+            # After the failed rebuild the stale build must not be advertised.
+            self.assertIsNone(
+                module.available_circt_dir(paths, llvm_identity)
+            )
+
+    def test_explicit_circt_dir_is_exact_without_search_path_fallback(self):
+        """An explicit CIRCT_DIR is loaded exactly. An invalid directory must
+        fail the CIRCT package lookup rather than fall back to a valid CIRCT
+        reachable through CMAKE_PREFIX_PATH, verified by really configuring the
+        repository's top-level CMakeLists.txt."""
+        cmake = shutil.which("cmake")
+        if cmake is None:
+            self.skipTest("cmake not available")
+
+        repo_root = SCRIPT.parents[1]
+        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            root = Path(td)
+            # One prefix reachable via CMAKE_PREFIX_PATH: minimal MLIR and
+            # Clang configs to satisfy the two find_package calls before
+            # CIRCT, plus a valid decoy CIRCT the exact lookup must ignore.
+            prefix = root / "prefix"
+            for name, subdir in (
+                ("MLIR", "mlir"), ("Clang", "clang"), ("CIRCT", "circt"),
+            ):
+                cfg_dir = prefix / "lib" / "cmake" / subdir
+                cfg_dir.mkdir(parents=True)
+                (cfg_dir / f"{name}Config.cmake").write_text(
+                    f"set({name}_FOUND TRUE)\n"
+                )
+            decoy_circt_dir = prefix / "lib" / "cmake" / "circt"
+            # An existing directory that holds no CIRCT package.
+            bad_circt_dir = root / "bad-circt"
+            bad_circt_dir.mkdir()
+
+            result = subprocess.run(
+                [
+                    cmake,
+                    "-S", str(repo_root),
+                    "-B", str(root / "build"),
+                    f"-DCIRCT_DIR={bad_circt_dir}",
+                    f"-DCMAKE_PREFIX_PATH={prefix}",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+
+            # Configuration fails at the explicit CIRCT lookup and never
+            # reports using the decoy reachable through CMAKE_PREFIX_PATH.
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn('provided by "CIRCT"', result.stdout)
+            self.assertNotIn(str(decoy_circt_dir), result.stdout)
 
 
 if __name__ == "__main__":
