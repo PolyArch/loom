@@ -2,6 +2,7 @@ add_mlir_library(LoomCommon
   ArtifactFinalizer.cpp
   ArtifactStore.cpp
   ArtifactText.cpp
+  ComponentViewDigest.cpp
   HwShareGroup.cpp
   IndexWidth.cpp
   LoomConstants.cpp

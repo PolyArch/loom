@@ -2,6 +2,7 @@
 #include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
+#include "Common/ComponentViewDigest.h"
 #include "Common/ResolvedConfig.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -14,6 +15,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <cstdint>
@@ -594,6 +596,114 @@ void resolvedConfigUsesArtifactFinalization() {
           "ResolvedConfig semantic change did not affect identity");
 }
 
+// Opaque component-view fixture bytes. The descriptor is never parsed, so it
+// deliberately carries an interior NUL and a high byte, and the two inputs have
+// different lengths to pin both framed length fields. The digest bytes are the
+// independently computed SHA-256 of the framed preimage for those two inputs.
+constexpr std::array<std::uint8_t, 6> viewDescriptorBytes = {0x6c, 0x6f, 0x6f,
+                                                             0x6d, 0x00, 0xff};
+constexpr std::array<std::uint8_t, 5> viewCanonicalBytes = {0x00, 0x7f, 0x80,
+                                                            0xff, 0x01};
+constexpr std::array<std::uint8_t, ComponentViewDigest::byteSize>
+    knownViewDigestBytes = {0x91, 0xc1, 0x26, 0xfb, 0x00, 0x4e, 0xd9, 0x22,
+                            0xe7, 0x68, 0x3c, 0x85, 0x73, 0xad, 0x7d, 0x2d,
+                            0xe9, 0x10, 0x17, 0x8d, 0xfd, 0x26, 0x81, 0x1e,
+                            0xdc, 0x8f, 0xbb, 0x2a, 0x72, 0x0d, 0xc1, 0xc2};
+
+void componentViewDigestMatchesKnownVector() {
+  const ComponentViewDigest digest =
+      takeExpected(__func__, computeComponentViewDigest(viewDescriptorBytes,
+                                                        viewCanonicalBytes));
+  require(__func__, digest.bytes() == knownViewDigestBytes,
+          "known component view digest changed: " +
+              llvm::toHex(digest.bytes(), true));
+  require(__func__,
+          digest == takeExpected(__func__,
+                                 computeComponentViewDigest(
+                                     viewDescriptorBytes, viewCanonicalBytes)),
+          "identical component view digest input was not deterministic");
+  static_assert(!std::is_default_constructible_v<ComponentViewDigest>);
+  static_assert(!std::is_same_v<ComponentViewDigest, ArtifactIdentity>);
+}
+
+void componentViewDigestFollowsSourceBytes() {
+  const ComponentViewDigest digest =
+      takeExpected(__func__, computeComponentViewDigest(viewDescriptorBytes,
+                                                        viewCanonicalBytes));
+
+  std::array<std::uint8_t, 6> changedDescriptor = viewDescriptorBytes;
+  changedDescriptor.back() ^= 0x01;
+  require(__func__,
+          takeExpected(__func__, computeComponentViewDigest(
+                                     changedDescriptor, viewCanonicalBytes)) !=
+              digest,
+          "schema descriptor bytes did not affect the component view digest");
+
+  std::array<std::uint8_t, 5> changedView = viewCanonicalBytes;
+  changedView.back() ^= 0x01;
+  require(__func__,
+          takeExpected(__func__, computeComponentViewDigest(viewDescriptorBytes,
+                                                            changedView)) !=
+              digest,
+          "canonical view bytes did not affect the component view digest");
+}
+
+void componentViewDigestValidatesSuppliedRawDigest() {
+  const ComponentViewDigest supplied = takeExpected(
+      __func__, ComponentViewDigest::fromBytes(knownViewDigestBytes));
+  require(__func__,
+          llvm::toString(validateComponentViewDigest(
+                             viewDescriptorBytes, viewCanonicalBytes, supplied))
+              .empty(),
+          "exact supplied component view digest was rejected");
+
+  std::array<std::uint8_t, ComponentViewDigest::byteSize> staleDigestBytes =
+      knownViewDigestBytes;
+  staleDigestBytes.back() ^= 0x01;
+  const std::string message = llvm::toString(validateComponentViewDigest(
+      viewDescriptorBytes, viewCanonicalBytes,
+      takeExpected(__func__,
+                   ComponentViewDigest::fromBytes(staleDigestBytes))));
+  require(__func__,
+          llvm::StringRef(message).contains("component_view_digest_mismatch"),
+          "unexpected component view digest validation result: " + message);
+
+  expectErrorContains(
+      __func__,
+      ComponentViewDigest::fromBytes(std::vector<std::uint8_t>(31, 0)),
+      "component view digest requires exactly 32 bytes");
+  expectErrorContains(
+      __func__,
+      ComponentViewDigest::fromBytes(std::vector<std::uint8_t>(33, 0)),
+      "component view digest requires exactly 32 bytes");
+}
+
+void componentViewDigestRejectsUnrepresentableDescriptorLength() {
+  if constexpr (sizeof(std::size_t) > sizeof(std::uint32_t)) {
+    // The framed u32 descriptor length is rejected before any descriptor byte
+    // is read, so this reference is never dereferenced and nothing is
+    // allocated for it.
+    std::uint8_t unreadByte = 0;
+    const llvm::ArrayRef<std::uint8_t> unrepresentableDescriptor(
+        &unreadByte,
+        static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()) +
+            1);
+    expectErrorContains(__func__,
+                        computeComponentViewDigest(unrepresentableDescriptor,
+                                                   viewCanonicalBytes),
+                        "component_view_digest_descriptor_too_large");
+
+    const std::string message = llvm::toString(validateComponentViewDigest(
+        unrepresentableDescriptor, viewCanonicalBytes,
+        takeExpected(__func__,
+                     ComponentViewDigest::fromBytes(knownViewDigestBytes))));
+    require(__func__,
+            llvm::StringRef(message).contains(
+                "component_view_digest_descriptor_too_large"),
+            "unrepresentable descriptor length was not propagated: " + message);
+  }
+}
+
 } // namespace
 
 int main() {
@@ -612,5 +722,9 @@ int main() {
   wrongKeyValidPreimageIsRejected();
   tamperedSemanticBytesAreRejected();
   resolvedConfigUsesArtifactFinalization();
+  componentViewDigestMatchesKnownVector();
+  componentViewDigestFollowsSourceBytes();
+  componentViewDigestValidatesSuppliedRawDigest();
+  componentViewDigestRejectsUnrepresentableDescriptorLength();
   return 0;
 }
