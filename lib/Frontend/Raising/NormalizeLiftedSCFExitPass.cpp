@@ -161,7 +161,7 @@ bool normalizeLiftedExit(::mlir::scf::ConditionOp condition,
   ::mlir::Value selector = branch.getCondition();
   if (!shouldRepeatThen)
     selector = ::mlir::arith::CmpIOp::create(
-        rewriter, condition.getLoc(),
+        rewriter, comparison.getLoc(),
         ::mlir::arith::invertPredicate(comparison.getPredicate()),
         comparison.getLhs(), comparison.getRhs());
 
