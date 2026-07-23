@@ -1,5 +1,6 @@
 #include "Simulator/DynamicWorkDomain.h"
 
+#include "DynamicWorkOrdinal.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
@@ -7,7 +8,6 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
-#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -123,7 +123,9 @@ llvm::Expected<WorkItemId> DynamicWorkDomain::admitRoot() {
   WorkItemId root = WorkItemId::root(instance_);
   // Acquire the root responsibility, then close the root source: one
   // transaction, so a later item can arise only through a registered spawn.
-  active_.insert(root);
+  if (!active_.insert(root).second)
+    llvm::report_fatal_error(
+        "DynamicWorkDomain invariant failure: duplicate active root");
   rootSourceClosed_ = true;
   return root;
 }
@@ -133,14 +135,13 @@ DynamicWorkDomain::spawnChild(const WorkItemId &parent) {
   if (llvm::Error error = requireActive(parent))
     return std::move(error);
 
-  std::uint64_t ordinal = nextChildOrdinal(parent);
-  // A saturated parent can never mint another ordinal; reject before mutating
-  // any state so the cursor, active set, and completion are unchanged.
-  if (ordinal == std::numeric_limits<std::uint64_t>::max())
+  std::uint64_t nextOrdinal = nextChildOrdinal(parent);
+  std::optional<std::uint64_t> ordinal = detail::takeChildOrdinal(nextOrdinal);
+  if (!ordinal)
     return reject(DynamicWorkDomainError::Kind::ChildOrdinalExhausted,
                   describe(parent) + " has exhausted its child ordinals");
 
-  WorkItemId child = WorkItemId::child(parent, ordinal);
+  WorkItemId child = WorkItemId::child(parent, *ordinal);
   // Acquire the child responsibility before publishing the identity. A
   // monotonic, non-wrapping per-parent ordinal makes a duplicate structurally
   // impossible, so a failed insertion is a non-returning invariant failure
@@ -150,7 +151,7 @@ DynamicWorkDomain::spawnChild(const WorkItemId &parent) {
         "DynamicWorkDomain invariant failure: duplicate active child");
   // Consume the ordinal only after the responsibility is acquired, before the
   // child identity is published to the caller.
-  childCursor_[parent] = ordinal + 1;
+  childCursor_[parent] = nextOrdinal;
   return child;
 }
 

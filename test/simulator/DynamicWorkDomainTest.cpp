@@ -1,5 +1,6 @@
 #include "Simulator/DynamicWorkDomain.h"
 
+#include "DynamicWorkOrdinal.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -22,25 +23,6 @@ static_assert(!std::is_move_constructible<DynamicWorkDomain>::value,
               "DynamicWorkDomain must not be move constructible");
 static_assert(!std::is_move_assignable<DynamicWorkDomain>::value,
               "DynamicWorkDomain must not be move assignable");
-
-// The test surface for child ordinal exhaustion: no public path can reach the
-// maximum ordinal, so the helper is the smallest friend reaching the private
-// per-parent next-child cursor. It is defined only in this anchor test.
-namespace loom {
-namespace sim {
-class DynamicWorkDomainTestAccess {
-public:
-  static std::uint64_t childCursor(const DynamicWorkDomain &domain,
-                                   const WorkItemId &parent) {
-    return domain.nextChildOrdinal(parent);
-  }
-  static void setChildCursor(DynamicWorkDomain &domain,
-                             const WorkItemId &parent, std::uint64_t value) {
-    domain.childCursor_[parent] = value;
-  }
-};
-} // namespace sim
-} // namespace loom
 
 namespace {
 
@@ -240,39 +222,44 @@ void independentOrdinalSequencesForInterleavedParents() {
           "nested child identities are not recursively derived");
 }
 
-// No public path can mint the maximum child ordinal: once a parent's next
-// cursor is saturated, a spawn is rejected atomically and nothing shifts.
-void childOrdinalExhaustionIsAtomic() {
+// A retired parent cannot spawn, and rejection neither acquires a child
+// responsibility nor consumes the child's first ordinal.
+void retiredParentRejectsSpawnAtomically() {
   DynamicWorkDomain domain(kInstance);
   WorkItemId root = takeExpected(domain.admitRoot());
-  // Keep child ordinal zero active so the parent is a valid, live parent.
-  WorkItemId first = takeExpected(domain.spawnChild(root));
-  require(first == WorkItemId::child(root, 0),
-          "the active child is not ordinal zero");
+  WorkItemId parent = takeExpected(domain.spawnChild(root));
 
-  // Force the same parent's next cursor to the saturating maximum.
-  DynamicWorkDomainTestAccess::setChildCursor(
-      domain, root, std::numeric_limits<std::uint64_t>::max());
+  expectEffect(domain.retire(parent), RetirementEffect::DomainStillActive,
+               "retiring the child parent completed an active domain");
+  expectRejected(domain.spawnChild(parent), Kind::AlreadyRetired,
+                 "spawn accepted an already-retired parent");
+  require(domain.activeCount() == 1 && !domain.completed(),
+          "a rejected spawn from a retired parent changed domain state");
 
-  // A saturated parent can never mint a new ordinal and is rejected.
-  expectRejected(domain.spawnChild(root), Kind::ChildOrdinalExhausted,
-                 "spawn accepted a parent with an exhausted child ordinal");
-  require(DynamicWorkDomainTestAccess::childCursor(domain, root) ==
-              std::numeric_limits<std::uint64_t>::max(),
-          "a rejected spawn advanced the saturated cursor");
-  require(domain.activeCount() == 2 && !domain.completed(),
-          "a rejected spawn changed the active set or completion state");
+  expectRejected(domain.retire(WorkItemId::child(parent, 0)), Kind::UnknownItem,
+                 "a rejected spawn consumed an ordinal or acquired a child");
+  expectEffect(domain.retire(root), RetirementEffect::DomainCompleted,
+               "the remaining root did not complete the domain");
+}
 
-  // A repeated rejection leaves every observable fact unchanged.
-  expectRejected(domain.spawnChild(root), Kind::ChildOrdinalExhausted,
-                 "spawn accepted a saturated parent after one rejection");
-  require(DynamicWorkDomainTestAccess::childCursor(domain, root) ==
-              std::numeric_limits<std::uint64_t>::max(),
-          "a repeated rejection advanced the saturated cursor");
-  require(domain.activeCount() == 2 && !domain.completed(),
-          "a repeated rejection changed the active set or completion state");
-  require(first == WorkItemId::child(root, 0),
-          "a saturated parent disturbed the existing child identity");
+// The checked cursor hands out each representable identity at most once, then
+// rejects exhaustion without wrapping or mutating its saturated state.
+void childOrdinalExhaustionIsAtomic() {
+  std::uint64_t next = std::numeric_limits<std::uint64_t>::max() - 1;
+  std::optional<std::uint64_t> ordinal = detail::takeChildOrdinal(next);
+  require(ordinal && *ordinal == std::numeric_limits<std::uint64_t>::max() - 1,
+          "the cursor did not return its final unique child ordinal");
+  require(next == std::numeric_limits<std::uint64_t>::max(),
+          "the cursor did not advance to its exhausted state");
+
+  ordinal = detail::takeChildOrdinal(next);
+  require(!ordinal, "an exhausted cursor wrapped to a duplicate ordinal");
+  require(next == std::numeric_limits<std::uint64_t>::max(),
+          "an exhausted transition mutated the cursor");
+
+  ordinal = detail::takeChildOrdinal(next);
+  require(!ordinal && next == std::numeric_limits<std::uint64_t>::max(),
+          "repeated exhaustion changed the saturated cursor");
 }
 
 } // namespace
@@ -284,6 +271,7 @@ int main() {
   completionTransitionIsExactlyOnce();
   rejectsForeignUnknownAndDoubleRetire();
   independentOrdinalSequencesForInterleavedParents();
+  retiredParentRejectsSpawnAtomically();
   childOrdinalExhaustionIsAtomic();
   return 0;
 }

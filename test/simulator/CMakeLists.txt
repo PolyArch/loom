@@ -20,6 +20,10 @@ add_executable(loom-simulator-dynamic-work-test
   DynamicWorkDomainTest.cpp
 )
 
+target_include_directories(loom-simulator-dynamic-work-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Simulator
+)
+
 target_link_libraries(loom-simulator-dynamic-work-test PRIVATE
   LoomSimulator
   LLVMSupport

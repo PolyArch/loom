@@ -142,8 +142,6 @@ private:
 ///
 /// Every rejected action is atomic: it acquires no responsibility, consumes no
 /// ordinal, changes no active membership, and produces no completion.
-class DynamicWorkDomainTestAccess;
-
 class DynamicWorkDomain {
 public:
   explicit DynamicWorkDomain(DomainInstanceId instance) : instance_(instance) {}
@@ -179,10 +177,6 @@ public:
   bool completed() const { return rootSourceClosed_ && active_.empty(); }
 
 private:
-  // The exclusive test surface for the unreachable child ordinal exhaustion
-  // path; defined only in the anchor test, never a public mutator.
-  friend class DynamicWorkDomainTestAccess;
-
   /// Rejects a foreign, unknown, or already-retired identity, and otherwise
   /// confirms it is currently active.
   llvm::Error requireActive(const WorkItemId &item) const;
