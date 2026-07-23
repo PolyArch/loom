@@ -242,13 +242,13 @@ The initial scale anchors are:
 | cross-schedule gateway anchor    |       2 |         4 |       8 |
 
 These values are resolved inputs to one template, not fields persisted in
-Fabric in addition to the resources they generate. Exact per-helper
-operation/HSG/hardware-parameter tables, switch construction, memory-port
-capacity, and buffer capacities are part of the same versioned family contract
-and must be fixed before that catalog version is implementation-complete.
-Those helper tables reference normative `ImplementationFamilyId` and
-`OperationSchemaId` values. They do not duplicate family membership, spell
-operation names as dispatch keys, or define backend modes.
+Fabric in addition to the resources they generate. Exact per-helper resource
+inventory, hardware parameters, switch construction, memory-port capacity, and
+buffer capacities are part of the same versioned family contract and must be
+fixed before that catalog version is implementation-complete. Helper resource
+tables reference normative `ImplementationFamilyId` values; operation-family
+membership remains owned by the HSG registry. They do not duplicate member
+lists, spell operation names as dispatch keys, or define backend modes.
 
 ### General-Purpose FU Library
 
@@ -287,6 +287,73 @@ implementation family proves otherwise.
 
 Memory actors, including load, store, atomic, compare-exchange, and fence, are
 implemented by `fabric.mem` and never enter this FU library.
+
+#### CoreAluFu Resource Inventory
+
+`CoreAluFu` constructs one concrete `fabric.op` resource for each of the
+following implementation families:
+
+```text
+ScalarIntegerAddSub
+ScalarIntegerLogic
+ScalarIntegerShift
+ScalarIntegerCompareMinMax
+ScalarValueSelect
+ScalarIntegerCast
+ScalarBitReinterpret
+ScalarFloatSign
+ScalarFloatAddSub
+ScalarFloatCompareMinMax
+ScalarFloatWidthCast
+ScalarIntegerToFloat
+ScalarFloatToInteger
+```
+
+The exact operation members are owned by
+`docs/spec-fabric-hw-share-group.md`. The FU uses explicit coherent
+`fabric.demux` and `fabric.mux` topology to select among physically separate
+resources. It does not create a `CoreAlu` implementation family.
+
+Multiply and FMA resources belong to `MacFu`. Integer or floating divide and
+remainder, roots, rounding, and transcendental functions belong to
+`SpecialMathFu`. The initial catalog lowers integer absolute value to ordinary
+compare, select, and subtract actors rather than advertising an unproven
+family. Target-specific packed intrinsics must first become target-neutral
+scalar or vector actors.
+
+#### MacFu Resource Inventory
+
+`MacFu` constructs one concrete resource for each of:
+
+```text
+ScalarIntegerMultiply
+ScalarFloatMultiply
+ScalarFloatFma
+ScalarIntegerAddSub
+ScalarFloatAddSub
+```
+
+It also contains one canonical `dataflow.carry` operation resource so an
+explicit accumulator graph can remain FU-local. The exact carry implementation
+family is owned by the `LoopControlFu` catalog and is referenced here rather
+than duplicated.
+
+The finite normalized FU template domain includes:
+
+```text
+integer multiply
+floating-point multiply
+true fused floating-point FMA
+integer multiply -> add/sub
+non-fused floating-point multiply -> add/sub
+multiply or FMA -> add/carry recurrence
+```
+
+These templates select explicit resources, internal edges, and coherent FU
+boundary correspondence. They do not define a synthetic MAC operation or HSG.
+An LLVM `fmuladd` spelling is never sufficient to select the fused template;
+canonical actor semantics determine whether the input is `math.fma` or an
+explicit multiply-add graph.
 
 ### Payload And Type Floor
 

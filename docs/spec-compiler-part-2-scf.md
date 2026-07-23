@@ -40,6 +40,26 @@ Mechanical raising may require analysis and may reject an input that cannot be
 represented exactly. Mechanical means that no performance choice is hidden in
 the derivation, not that the implementation is trivial.
 
+### Canonical Compute Spelling
+
+Mechanical raising uses the standard `arith` or `math` operation schema when
+it exactly represents an LLVM computation. Ordinary LLVM add, subtract,
+multiply, integer or floating comparison, select, casts, and other semantic
+aliases do not survive merely because they originated in LLVM IR. This gives
+Canonical Dataflow one operation-schema identity for one basic computation and
+prevents Fabric capability registries from listing dialect aliases.
+
+An LLVM-dialect compute intrinsic may remain only when no exact standard MLIR
+operation represents it and it later satisfies the canonical actor contract.
+Target-specific intrinsics should be normalized to target-neutral scalar or
+vector operations when such a representation exists.
+
+FMA normalization is semantic rather than name based. An exact fused LLVM FMA
+may become `math.fma`. An operation whose contract permits or requires a
+non-fused multiply followed by add becomes the explicit `arith.mulf` then
+`arith.addf` graph. In particular, an `fmuladd` spelling alone never proves
+fused semantics.
+
 ## StructuredProgramCandidate
 
 S0 and every transformed S1 through Sn belong to one immutable

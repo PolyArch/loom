@@ -1905,6 +1905,10 @@ In addition to the Dataflow dialect and finalized-program verifier set:
     dependency, no ordinary LLVM pointer graph value, and explicit semantic
     parameters. This is the sole LLVM exception; registered arithmetic, math,
     scalar, and vector compute actors remain legal under the same contract.
+    An LLVM operation that is an exact semantic alias of an available standard
+    `arith` or `math` actor is non-canonical and must have been normalized
+    before graph finalization. Exact fused FMA uses `math.fma`; a non-fused
+    multiply-add remains two explicit actors.
   - Residual imperative LLVM surface is forbidden. This includes calls and
     unresolved intrinsics, inline assembly, loads, stores, atomics, fences,
     allocation and pointer manipulation, branches, switches, PHI nodes,

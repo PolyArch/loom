@@ -97,6 +97,20 @@ constraints, and legal correlations among configuration fields. It describes
 a compact relation. It does not enumerate every exact actor, constant,
 predicate, arity, or configuration bit pattern.
 
+For the initial scalar compute families, the family-level rule admits scalar
+shapes while the concrete relation owns supported integer widths, floating
+formats, compare and min/max policies, cast source/destination domains, and
+their correlations. Family IDs do not encode widths or selected predicates.
+The exact actor type and attributes select one point in the relation.
+
+Integer overflow and exact flags that constrain legal software inputs do not
+create hardware configuration fields when ordinary modular hardware behavior
+already satisfies every defined result. Floating-point rounding, NaN,
+subnormal, and fast-math admission are observable capability facts and must be
+explicit in the concrete relation. A strict implementation may satisfy a
+relaxed actor only when the registered operation schema proves that refinement;
+the backend cannot infer it.
+
 Physical ports own transport kind and payload capacity. `!fabric.bits<N>`
 does not identify a software type: the same width may carry multiple vector,
 scalar, integer, or floating-point representations. Exact software type comes

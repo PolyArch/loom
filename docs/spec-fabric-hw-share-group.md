@@ -2,8 +2,9 @@
 
 This document specifies the typed global authority for deciding which software
 operation families may share one real physical implementation family. The
-typed HSG registry is normative; this document does not duplicate its member
-table.
+typed HSG registry is normative. This document specifies its semantic member
+relations; one generated TableGen registry implements them, and other specs
+reference family IDs instead of copying the table.
 
 ## Ownership
 
@@ -53,6 +54,43 @@ use focused C++ verification for a complex typed admission relation; there is
 no generic predicate DSL and no parallel handwritten member table. Backend
 provider availability is queried by the same family ID but is not part of the
 registry's semantic ownership.
+
+### Initial Scalar Compute Families
+
+The initial general-purpose scalar registry contains these exact family/member
+relations:
+
+| `ImplementationFamilyId` | Admitted canonical operation schemas |
+| ------------------------ | ------------------------------------ |
+| `ScalarIntegerAddSub` | `arith.addi`, `arith.subi` |
+| `ScalarIntegerLogic` | `arith.andi`, `arith.ori`, `arith.xori` |
+| `ScalarIntegerShift` | `arith.shli`, `arith.shrsi`, `arith.shrui` |
+| `ScalarIntegerCompareMinMax` | `arith.cmpi`, `arith.minsi`, `arith.maxsi`, `arith.minui`, `arith.maxui` |
+| `ScalarValueSelect` | `arith.select` |
+| `ScalarIntegerCast` | `arith.extsi`, `arith.extui`, `arith.trunci`, `arith.index_cast`, `arith.index_castui` |
+| `ScalarBitReinterpret` | `arith.bitcast` |
+| `ScalarFloatSign` | `arith.negf`, `math.absf` |
+| `ScalarFloatAddSub` | `arith.addf`, `arith.subf` |
+| `ScalarFloatCompareMinMax` | `arith.cmpf`, `arith.minimumf`, `arith.maximumf`, `arith.minnumf`, `arith.maxnumf` |
+| `ScalarFloatWidthCast` | `arith.extf`, `arith.truncf` |
+| `ScalarIntegerToFloat` | `arith.sitofp`, `arith.uitofp` |
+| `ScalarFloatToInteger` | `arith.fptosi`, `arith.fptoui` |
+| `ScalarIntegerMultiply` | `arith.muli` |
+| `ScalarFloatMultiply` | `arith.mulf` |
+| `ScalarFloatFma` | `math.fma` |
+
+These are implementation-family identities, not FU helper names. Every family
+in this table admits only scalar actor shapes; a standard operation schema may
+also belong to a separately registered fixed-vector family. Basic LLVM-dialect
+aliases are normalized before Canonical Dataflow and are not duplicate
+members. An irreducible LLVM compute intrinsic requires its own registered
+operation schema and a physically justified family admission.
+
+`ScalarValueSelect` is a runtime scalar value selector and is not the
+stream-token semantics of `dataflow.mux`. `ScalarBitReinterpret` requires equal
+total semantic width. Predicate, signedness, source/destination width,
+floating-point policy, and other exact actor attributes remain interpreted by
+the operation schema and concrete capability relation.
 
 ## Genuine Physical Sharing
 
