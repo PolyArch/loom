@@ -1183,10 +1183,10 @@ validateElementwiseVectorPrimitive(mlir::Operation *op, mlir::Value result) {
     return llvm::createStringError(
         std::errc::not_supported,
         "vector primitive must produce a vector result");
-  if (resultType.getRank() != 1 || resultType.isScalable())
+  if (resultType.getRank() < 1 || resultType.isScalable())
     return llvm::createStringError(
         std::errc::not_supported,
-        "vector primitive result must be fixed-size and rank-1");
+        "vector primitive result must be fixed-size and positive-rank");
   if (llvm::Error error =
           validatePrimitiveElementType(resultType.getElementType(), "result"))
     return std::move(error);
@@ -1196,10 +1196,10 @@ validateElementwiseVectorPrimitive(mlir::Operation *op, mlir::Value result) {
 
   for (mlir::Type type : op->getOperandTypes()) {
     auto vectorType = mlir::dyn_cast<mlir::VectorType>(type);
-    if (!vectorType || vectorType.getRank() != 1 || vectorType.isScalable())
+    if (!vectorType || vectorType.getRank() < 1 || vectorType.isScalable())
       return llvm::createStringError(
           std::errc::not_supported,
-          "vector primitive operands must be fixed-size and rank-1");
+          "vector primitive operands must be fixed-size and positive-rank");
     if (vectorType.getShape() != resultType.getShape())
       return llvm::createStringError(
           std::errc::not_supported,
@@ -1261,7 +1261,10 @@ evaluateElementwiseVectorPrimitive(mlir::Operation *op, mlir::Value result,
   if (!resultElementWidth)
     return resultElementWidth.takeError();
   llvm::APInt resultBits(*resultWidth, 0);
-  for (unsigned lane = 0; lane < resultType.getShape().front(); ++lane) {
+  // Operands and result share one shape, so the flattened lane ordinal names
+  // the same logical element in each of them. The canonical row-major order
+  // comes from that shared bit layout rather than from per-axis strides.
+  for (unsigned lane = 0; lane < resultType.getNumElements(); ++lane) {
     llvm::SmallVector<PrimitiveValue> laneOperands;
     laneOperands.reserve(inputTokens.size());
     for (auto [operand, bits, width] :
