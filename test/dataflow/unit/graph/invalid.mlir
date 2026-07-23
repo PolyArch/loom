@@ -1,6 +1,13 @@
 // RUN: loom %s -split-input-file -verify-diagnostics
 
 // -----
+// Graph definitions require explicit private visibility.
+// expected-error @+1 {{requires explicit 'private' visibility}}
+dataflow.graph @g_missing_visibility(%ctrl: none) -> () {
+  dataflow.graph.return %ctrl : none
+}
+
+// -----
 // Normalized segment sizes must cover every application input.
 // expected-error @+1 {{input_segments must contain exactly three nonnegative sizes whose sum (0) matches the function input count (1)}}
 dataflow.graph private @g_bad_input_segments(%ctrl: none, %x: i32)

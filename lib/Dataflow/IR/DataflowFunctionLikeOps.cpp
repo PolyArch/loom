@@ -12,6 +12,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
@@ -286,13 +287,10 @@ void ThreadOp::print(OpAsmPrinter &p) {
 }
 
 LogicalResult ThreadOp::verify() {
-  // Symbol visibility, when set, must be private. The entry-block and
-  // function-type consistency check lives in verifyBody.
-  if (auto vis = getSymVisibility()) {
-    if (*vis != "private" && *vis != "")
-      return emitOpError("sym_visibility must be 'private'; got \"")
-             << *vis << "\"";
-  }
+  if (!getSymVisibility() || *getSymVisibility() != "private")
+    return emitOpError("requires explicit 'private' visibility");
+  if (getFunctionType().getNumResults() != 0)
+    return emitOpError("must not declare function results");
   return success();
 }
 
@@ -336,6 +334,25 @@ LogicalResult ThreadLaunchOp::verifySymbolUses(SymbolTableCollection &symbols) {
              << i << " type " << actual << " does not match callee input type "
              << expected;
   }
+
+  size_t calleeRank = 0;
+  if (!callee.isExternal()) {
+    size_t entryArgumentCount = callee.getBody().front().getNumArguments();
+    size_t requiredArgumentCount = calleeInputs.size() + 1;
+    if (entryArgumentCount >= requiredArgumentCount)
+      calleeRank = entryArgumentCount - requiredArgumentCount;
+  }
+  if (getGridUpperBounds().size() != calleeRank)
+    return emitOpError("grid upper bound count (")
+           << getGridUpperBounds().size() << ") must match callee rank ("
+           << calleeRank << ")";
+
+  for (auto [index, extent] : llvm::enumerate(getGridUpperBounds())) {
+    APInt constant;
+    if (matchPattern(extent, m_ConstantInt(&constant)) && constant.isNegative())
+      return emitOpError("grid upper bound #")
+             << index << " must be nonnegative";
+  }
   return success();
 }
 
@@ -360,6 +377,12 @@ LogicalResult ThreadWaitOp::verify() {
     return emitOpError(
         "must appear outside any dataflow.thread or dataflow.graph "
         "definition");
+
+  for (auto [index, token] : llvm::enumerate(getAsyncDependencies()))
+    if (!token.getDefiningOp<ThreadLaunchOp>())
+      return emitOpError("operand #") << index
+                                      << " must be produced directly by "
+                                         "dataflow.thread.launch";
   return success();
 }
 
@@ -523,11 +546,8 @@ RegionKind GraphOp::getRegionKind(unsigned /*index*/) {
 }
 
 LogicalResult GraphOp::verify() {
-  if (auto vis = getSymVisibility()) {
-    if (*vis != "private" && *vis != "")
-      return emitOpError("sym_visibility must be 'private'; got \"")
-             << *vis << "\"";
-  }
+  if (!getSymVisibility() || *getSymVisibility() != "private")
+    return emitOpError("requires explicit 'private' visibility");
 
   ArrayRef<Type> inputs = getFunctionType().getInputs();
   ArrayRef<Type> results = getFunctionType().getResults();

@@ -1,6 +1,65 @@
 // RUN: loom %s -split-input-file -verify-diagnostics
 
 // -----
+// Thread definitions require explicit private visibility.
+// expected-error @+1 {{requires explicit 'private' visibility}}
+dataflow.thread @t_missing_visibility() ctrl (%ctrl: none) {
+  dataflow.thread.yield
+}
+
+// -----
+// Generic syntax cannot bypass the result-free thread ABI.
+// expected-error @+1 {{must not declare function results}}
+"dataflow.thread"() <{function_type = () -> i32,
+                     sym_name = "t_with_result",
+                     sym_visibility = "private"}> ({
+^bb0(%ctrl: none):
+  dataflow.thread.yield
+}) : () -> ()
+
+// -----
+// Launch rank must match the callee's logical domain rank.
+dataflow.thread private @t_rank_one() ctrl (%ctrl: none) iv (%i: index) {
+  dataflow.thread.yield
+}
+func.func @launch_rank_mismatch() {
+  // expected-error @+1 {{grid upper bound count (0) must match callee rank (1)}}
+  %token = dataflow.thread.launch @t_rank_one() : () -> !dataflow.thread_token
+  return
+}
+
+// -----
+// Statically known launch extents must be nonnegative.
+dataflow.thread private @t_nonnegative_extent() ctrl (%ctrl: none) iv (%i: index) {
+  dataflow.thread.yield
+}
+func.func @launch_negative_extent() {
+  %extent = arith.constant -1 : index
+  // expected-error @+1 {{grid upper bound #0 must be nonnegative}}
+  %token = dataflow.thread.launch @t_nonnegative_extent() grid(%extent) : () -> !dataflow.thread_token
+  return
+}
+
+// -----
+// Dynamic launch extents remain statically admissible.
+dataflow.thread private @t_dynamic_extent() ctrl (%ctrl: none) iv (%i: index) {
+  dataflow.thread.yield
+}
+func.func @launch_dynamic_extent(%extent: index) {
+  %token = dataflow.thread.launch @t_dynamic_extent() grid(%extent) : () -> !dataflow.thread_token
+  return
+}
+
+// -----
+// Wait tokens must come directly from a thread launch.
+func.func @wait_rejects_forged_token() {
+  %token = ub.poison : !dataflow.thread_token
+  // expected-error @+1 {{operand #0 must be produced directly by dataflow.thread.launch}}
+  dataflow.thread.wait %token : !dataflow.thread_token
+  return
+}
+
+// -----
 // Launch's body operand types must match callee's function inputs.
 dataflow.thread private @t_int(%x: i32) ctrl (%c: none) {
   dataflow.thread.yield
