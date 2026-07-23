@@ -4,15 +4,19 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
+
 namespace loom {
 
 // Bit width of one fixed vector value: the checked product of every dimension
 // and `elementBitWidth`. The flattened lane order is row-major, so the last
 // axis varies fastest and flattened lane zero owns the least significant bit
-// slice. Scalable vectors, rank-zero vectors, zero-width elements, and products
-// beyond the unsigned range have no such representation.
-llvm::Expected<unsigned> getFixedVectorBitWidth(mlir::VectorType vector,
-                                                unsigned elementBitWidth);
+// slice. This is the exact width, so a consumer whose own representation is
+// narrower checks and narrows it at its own boundary. Scalable vectors,
+// rank-zero vectors, zero-width elements, and products beyond an exact 64-bit
+// count have no such representation.
+llvm::Expected<std::uint64_t>
+getFixedVectorBitWidth(mlir::VectorType vector, std::uint64_t elementBitWidth);
 
 } // namespace loom
 

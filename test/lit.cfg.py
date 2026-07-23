@@ -50,6 +50,7 @@ tools = [
     "loom-config-test",
     "loom-cost-test",
     "loom-dataflow-memory-effect-test",
+    "loom-dataflow-service-schema-test",
     "loom-dfg-sim",
     "loom-fabric-boundary-data-path-test",
     "loom-fabric-elaboration-alias-chain-test",

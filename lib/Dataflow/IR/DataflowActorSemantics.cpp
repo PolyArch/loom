@@ -33,7 +33,7 @@ llvm::Error validateVectorElementRepresentation(mlir::Type type) {
       "floating-point type");
 }
 
-unsigned vectorElementBitWidth(mlir::Type type) {
+std::uint64_t vectorElementBitWidth(mlir::Type type) {
   if (auto integer = llvm::dyn_cast<mlir::IntegerType>(type))
     return integer.getWidth();
   return llvm::cast<mlir::FloatType>(type).getWidth();
@@ -797,7 +797,7 @@ dataflow::semantics::analyzeFixedRankDataVector(mlir::Type type,
   return vector;
 }
 
-llvm::Expected<unsigned>
+llvm::Expected<std::uint64_t>
 dataflow::semantics::getFlattenedVectorBitWidth(mlir::VectorType vector) {
   if (llvm::Error error =
           validateVectorElementRepresentation(vector.getElementType()))

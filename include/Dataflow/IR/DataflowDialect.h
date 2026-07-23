@@ -2,6 +2,8 @@
 #define DATAFLOW_IR_DATAFLOWDIALECT_H
 
 #include "mlir/IR/Dialect.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
 
 #include "Dataflow/IR/DataflowTypes.h"
 

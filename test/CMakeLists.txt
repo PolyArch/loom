@@ -29,6 +29,7 @@ set(LOOM_TEST_DEPENDS
   loom-cost-test
   loom-coverage-test
   loom-dataflow-memory-effect-test
+  loom-dataflow-service-schema-test
   loom-dfg-sim
   loom-evaluation-metric-test
   loom-evaluation-tool-runner-test

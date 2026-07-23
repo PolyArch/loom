@@ -87,6 +87,21 @@ void require(bool condition, llvm::StringRef message) {
     fail(message);
 }
 
+// A token keeps its bit pattern in one APInt, whose width is an unsigned. An
+// exact vector width past that is reported at this boundary instead of being
+// narrowed into a legal one. The exact width is named in the diagnostic and no
+// value of that width is ever built, so the check stays arithmetic.
+void tokenWidthNarrowsAtTokenBoundary() {
+  mlir::MLIRContext context;
+  mlir::Type wide =
+      mlir::VectorType::get({257}, mlir::IntegerType::get(&context, 16777215));
+  llvm::Expected<unsigned> width = tokenTypeBitWidth(wide);
+  require(!width, "a width past the token representation was accepted");
+  const std::string message = llvm::toString(width.takeError());
+  require(message == "bit width 4311744255 exceeds the token representation",
+          "the token boundary did not report its own narrowing: " + message);
+}
+
 template <typename T> T takeExpected(llvm::Expected<T> value) {
   if (!value)
     fail(llvm::toString(value.takeError()));
@@ -468,6 +483,8 @@ void storeDuplicateScatterIsAtomic(dataflow::StoreOp op) {
 } // namespace
 
 int main() {
+  tokenWidthNarrowsAtTokenBoundary();
+
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();
   mlir::MLIRContext context(registry);

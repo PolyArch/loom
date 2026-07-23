@@ -157,9 +157,9 @@ llvm::Error validateAtomicElementCategory(Operation *op, Type element,
 /// of the actor's own types. A width that needs a data layout, such as
 /// `index`, fails closed instead of assuming a host width.
 llvm::Error validateAtomicObject(Type object) {
-  unsigned width = 0;
+  std::uint64_t width = 0;
   if (auto vector = llvm::dyn_cast<VectorType>(object)) {
-    llvm::Expected<unsigned> flattened =
+    llvm::Expected<std::uint64_t> flattened =
         semantics::getFlattenedVectorBitWidth(vector);
     if (!flattened)
       return flattened.takeError();
@@ -170,7 +170,7 @@ llvm::Error validateAtomicObject(Type object) {
     return contractError("atomic object type ", object,
                          " has no exact bit width without a data layout");
   }
-  if (width < 8 || !llvm::isPowerOf2_32(width))
+  if (width < 8 || !llvm::isPowerOf2_64(width))
     return contractError("atomic object ", object,
                          llvm::Twine(" size ") + llvm::Twine(width) +
                              " must be a power of two of at least 8 bits");
@@ -228,17 +228,12 @@ llvm::Error validateGranularity(const semantics::MemoryAccessType &access,
                        "independent memory elements");
 }
 
-/// The success result shape published by one compare-exchange firing, derived
-/// from the canonical access geometry alone. An access with lanes is `per_lane`
-/// and publishes one bit per lane; an `element` access has one atomic object
-/// and publishes one bit, whatever that element's payload type is.
+/// The success result of one compare-exchange firing against the shape its
+/// canonical access geometry publishes.
 llvm::Error
 validateCompareExchangeSuccess(CmpXchgOp op,
                                const semantics::MemoryAccessType &access) {
-  Builder builder(op.getContext());
-  Type expected = builder.getI1Type();
-  if (access.isVector())
-    expected = VectorType::get(access.vectorType.getShape(), expected);
+  Type expected = semantics::getCompareExchangeSuccessType(access);
   if (op.getSuccess().getType() == expected)
     return llvm::Error::success();
   return contractError(access.isVector()
@@ -361,6 +356,17 @@ FenceContractAttr::verify(llvm::function_ref<InFlightDiagnostic()> emitError,
 //===----------------------------------------------------------------------===//
 // Actor projection and legality
 //===----------------------------------------------------------------------===//
+
+/// An access with lanes is `per_lane` and publishes one bit per lane; an
+/// `element` access has one atomic object and publishes one bit, whatever that
+/// element's payload type is.
+Type dataflow::semantics::getCompareExchangeSuccessType(
+    const MemoryAccessType &access) {
+  Type success = Builder(access.elementType.getContext()).getI1Type();
+  if (access.isVector())
+    return VectorType::get(access.vectorType.getShape(), success);
+  return success;
+}
 
 std::optional<semantics::MemoryActorContract>
 dataflow::semantics::getMemoryActorContract(Operation *op) {

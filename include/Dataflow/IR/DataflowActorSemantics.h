@@ -200,8 +200,10 @@ llvm::Expected<mlir::VectorType> analyzeFixedRankDataVector(mlir::Type type,
 
 /// Complete flattened bit width of a fixed-rank semantic data vector. Restricts
 /// `loom::getFixedVectorBitWidth` to the semantic element domain: nonzero-width
-/// integer or floating-point elements.
-llvm::Expected<unsigned> getFlattenedVectorBitWidth(mlir::VectorType vector);
+/// integer or floating-point elements. The width is exact, so a consumer whose
+/// own representation is narrower checks and narrows it at its own boundary.
+llvm::Expected<std::uint64_t>
+getFlattenedVectorBitWidth(mlir::VectorType vector);
 
 llvm::Error validateVectorMaskType(mlir::VectorType dataVector,
                                    mlir::Type maskType);
@@ -254,6 +256,13 @@ void getMemoryActorEffects(
 llvm::Error
 validateMemoryActorContract(mlir::Operation *op,
                             const std::optional<MemoryAccessType> &access);
+
+/// The exact success result type one compare-exchange firing publishes over
+/// `access`. This is the sole owner of that shape rule: an access with lanes
+/// publishes one `i1` per lane in the exact access shape, and an access to one
+/// complete memory element publishes one `i1` whatever that element's payload
+/// type is.
+mlir::Type getCompareExchangeSuccessType(const MemoryAccessType &access);
 
 bool isStatelessOneTokenVectorBoundary(mlir::Operation *op);
 

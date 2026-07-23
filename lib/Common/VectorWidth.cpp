@@ -1,12 +1,14 @@
 #include "Common/VectorWidth.h"
 
+#include "llvm/Support/CheckedArithmetic.h"
+
 #include <cstdint>
-#include <limits>
+#include <optional>
 #include <system_error>
 
-llvm::Expected<unsigned>
+llvm::Expected<std::uint64_t>
 loom::getFixedVectorBitWidth(mlir::VectorType vector,
-                             unsigned elementBitWidth) {
+                             std::uint64_t elementBitWidth) {
   if (vector.isScalable())
     return llvm::createStringError(std::errc::invalid_argument,
                                    "scalable vector has no fixed bit width");
@@ -18,13 +20,18 @@ loom::getFixedVectorBitWidth(mlir::VectorType vector,
         std::errc::invalid_argument,
         "zero-width vector element has no fixed bit width");
 
+  // Each dimension is folded under its own check, so a product that leaves the
+  // exact range is reported at the axis that leaves it rather than wrapping
+  // into a smaller legal width.
   std::uint64_t width = elementBitWidth;
   for (std::int64_t extent : vector.getShape()) {
-    const auto lanes = static_cast<std::uint64_t>(extent);
-    if (lanes > std::numeric_limits<unsigned>::max() / width)
+    std::optional<std::uint64_t> product =
+        llvm::checkedMulUnsigned<std::uint64_t>(
+            width, static_cast<std::uint64_t>(extent));
+    if (!product)
       return llvm::createStringError(std::errc::value_too_large,
-                                     "vector bit width exceeds unsigned range");
-    width *= lanes;
+                                     "vector bit width exceeds 64-bit range");
+    width = *product;
   }
-  return static_cast<unsigned>(width);
+  return width;
 }

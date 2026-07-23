@@ -75,9 +75,10 @@ func.func @pack_rejects_scalable(%vector: vector<2x[3]xi8>) {
 
 // -----
 func.func @pack_rejects_multidimensional_overflow(
-    %vector: vector<65536x65536xi8>) {
-  // expected-error @+1 {{vector bit width exceeds unsigned range}}
-  %packed = dataflow.pack %vector : vector<65536x65536xi8> -> i32
+    %vector: vector<4294967296x4294967296xi8>) {
+  // expected-error @+1 {{vector bit width exceeds 64-bit range}}
+  %packed = dataflow.pack %vector
+      : vector<4294967296x4294967296xi8> -> i32
   return
 }
 

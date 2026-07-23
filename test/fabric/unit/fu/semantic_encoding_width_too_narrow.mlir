@@ -30,7 +30,7 @@ fabric.module @vector_width_overflow(%a : !fabric.bits<0>) {
         attributes {valid_encodings = [{outputs = [0 : i32], resources = [
           {resource = 0 : i32, mode = 0 : i32}
         ]}]} {
-      // expected-error @+1 {{vector bit width exceeds unsigned range}}
+      // expected-error @+1 {{semantic payload width 34359738368 exceeds the physical payload width}}
       %v = fabric.op [@arith.addi] (%x, %x)
            {hw_params = [{op = @arith.addi,
              function_type = (vector<65536x65536xi8>,

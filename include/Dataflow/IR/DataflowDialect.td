@@ -21,6 +21,13 @@ def Dataflow_Dialect : Dialect {
     static bool isMemoryCapabilityType(::mlir::Type type);
     static bool containsMemoryCapability(::mlir::Type type);
     static bool containsChannelOrThreadToken(::mlir::Type type);
+
+    /// The one type domain a transferred Dataflow payload admits. A channel
+    /// element type and a Canonical Service Schema message payload are the
+    /// same domain, so this is its only owner. `subject` names the caller's
+    /// slot in the diagnostic.
+    static ::llvm::Error validateTransferPayloadType(
+        ::mlir::Type type, ::llvm::StringRef subject);
   }];
 }
 

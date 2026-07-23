@@ -144,6 +144,19 @@ llvm::Expected<std::string> tokenToString(const Token &token, mlir::Type type,
   return os.str();
 }
 
+// A token stores its bit pattern in one APInt, whose width is an unsigned, so
+// an exact type wider than that has no token representation here rather than a
+// truncated one. The check is arithmetic: no value of that width is formed.
+static llvm::Expected<unsigned> narrowTokenBitWidth(std::uint64_t width) {
+  const auto narrowed = static_cast<unsigned>(width);
+  if (narrowed != width)
+    return llvm::createStringError(
+        std::errc::value_too_large,
+        "bit width %llu exceeds the token representation",
+        static_cast<unsigned long long>(width));
+  return narrowed;
+}
+
 llvm::Expected<unsigned> tokenTypeBitWidth(mlir::Type type) {
   if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type)) {
     if (integer.getWidth() == 0)
@@ -153,8 +166,12 @@ llvm::Expected<unsigned> tokenTypeBitWidth(mlir::Type type) {
   }
   if (auto floating = mlir::dyn_cast<mlir::FloatType>(type))
     return floating.getWidth();
-  if (auto vector = mlir::dyn_cast<mlir::VectorType>(type))
-    return dataflow::semantics::getFlattenedVectorBitWidth(vector);
+  if (auto vector = mlir::dyn_cast<mlir::VectorType>(type)) {
+    auto width = dataflow::semantics::getFlattenedVectorBitWidth(vector);
+    if (!width)
+      return width.takeError();
+    return narrowTokenBitWidth(*width);
+  }
   return llvm::createStringError(std::errc::invalid_argument,
                                  "token type has no exact bit representation");
 }
@@ -412,7 +429,10 @@ indexVectorTokenBitWidth(mlir::VectorType type, mlir::Operation *scope) {
   auto elementWidth = loom::getIndexBitWidth(scope);
   if (!elementWidth)
     return elementWidth.takeError();
-  return loom::getFixedVectorBitWidth(type, *elementWidth);
+  auto width = loom::getFixedVectorBitWidth(type, *elementWidth);
+  if (!width)
+    return width.takeError();
+  return narrowTokenBitWidth(*width);
 }
 
 llvm::Expected<llvm::APInt> vectorIndexTokenBitPattern(const Token &token,

@@ -133,7 +133,14 @@ FailureOr<unsigned> getSemanticPayloadWidth(Type type, std::string &error) {
       error = llvm::toString(width.takeError());
       return failure();
     }
-    return *width;
+    // A physical payload width is an unsigned port fact, so an exact semantic
+    // width wider than that is reported here rather than narrowed into one.
+    if (static_cast<unsigned>(*width) != *width) {
+      error = "semantic payload width " + std::to_string(*width) +
+              " exceeds the physical payload width";
+      return failure();
+    }
+    return static_cast<unsigned>(*width);
   }
 
   std::string text;

@@ -17,6 +17,11 @@ LogicalResult verifyChannelEndpoint(Operation *op) {
   return success();
 }
 
+llvm::Error payloadError(const llvm::Twine &message) {
+  return llvm::createStringError(std::errc::invalid_argument, "%s",
+                                 message.str().c_str());
+}
+
 } // namespace
 
 bool DataflowDialect::isMemoryCapabilityType(Type type) {
@@ -43,21 +48,26 @@ bool DataflowDialect::containsChannelOrThreadToken(Type type) {
       .wasInterrupted();
 }
 
+llvm::Error DataflowDialect::validateTransferPayloadType(Type type,
+                                                         StringRef subject) {
+  if (isa<ChannelType>(type))
+    return payloadError(subject + " must not be another dataflow channel");
+  if (isa<ThreadTokenType>(type))
+    return payloadError(subject + " must not be !dataflow.thread_token");
+  if (containsChannelOrThreadToken(type))
+    return payloadError(subject + " must not contain !dataflow.channel or "
+                                  "!dataflow.thread_token");
+  if (containsMemoryCapability(type))
+    return payloadError(subject + " must not contain a memory capability");
+  return llvm::Error::success();
+}
+
 LogicalResult
 ChannelType::verify(llvm::function_ref<InFlightDiagnostic()> emitError,
                     Type elementType) {
-  if (isa<ChannelType>(elementType))
-    return emitError()
-           << "channel element type must not be another dataflow channel";
-  if (isa<ThreadTokenType>(elementType))
-    return emitError()
-           << "channel element type must not be !dataflow.thread_token";
-  if (DataflowDialect::containsChannelOrThreadToken(elementType))
-    return emitError() << "channel element type must not contain "
-                          "!dataflow.channel or !dataflow.thread_token";
-  if (DataflowDialect::containsMemoryCapability(elementType))
-    return emitError()
-           << "channel element type must not contain a memory capability";
+  if (llvm::Error error = DataflowDialect::validateTransferPayloadType(
+          elementType, "channel element type"))
+    return emitError() << llvm::toString(std::move(error));
   return success();
 }
 

@@ -11,3 +11,18 @@ target_link_libraries(loom-dataflow-memory-effect-test PRIVATE
   MLIRSupport
   LLVMSupport
 )
+
+add_executable(loom-dataflow-service-schema-test
+  DataflowServiceSchemaTest.cpp
+)
+
+target_link_libraries(loom-dataflow-service-schema-test PRIVATE
+  LoomCommon
+  MLIRDLTIDialect
+  MLIRDataflow
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)
