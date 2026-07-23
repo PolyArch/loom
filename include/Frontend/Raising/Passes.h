@@ -35,6 +35,11 @@ std::unique_ptr<::mlir::Pass> createLLVMCfToCfPass();
 // llvm.getelementptr stays as llvm by design.
 std::unique_ptr<::mlir::Pass> createLLVMArithToArithPass();
 
+// Normalize the exact poison-safe loop-exit scaffold emitted by
+// --lift-cf-to-scf so counted-loop uplift can read its comparison directly.
+// Scaffolds with live loop results or any unexpected structure are unchanged.
+std::unique_ptr<::mlir::Pass> createNormalizeLiftedSCFExitPass();
+
 // Uplift counted scf.while loops produced by --lift-cf-to-scf into
 // scf.for. This combines upstream counted-loop patterns with Loom's
 // conservative do-while counted-loop fallback. Loops that do not match
@@ -83,9 +88,8 @@ void registerRaisingPasses();
 //   loom-llvm-cf-to-cf              (nested under func.func)
 //   --lift-cf-to-scf                (nested under func.func)
 //   loom-llvm-arith-to-arith        (nested under func.func)
-//   --canonicalize                  (upstream)
+//   loom-normalize-lifted-scf-exit
 //   loom-scf-while-to-for
-//   --canonicalize                  (upstream)
 // Selected SCF optimization decisions are outside this pipeline.
 void buildRaisingPipeline(::mlir::PassManager &pm);
 

@@ -2,6 +2,7 @@ add_mlir_library(LoomFrontendRaising
   LLVMArithToArithPass.cpp
   LLVMCfToCfPass.cpp
   LLVMFuncToFuncPass.cpp
+  NormalizeLiftedSCFExitPass.cpp
   Pipeline.cpp
   SCFForToForallPass.cpp
   SCFWhileToForPass.cpp

@@ -5,9 +5,8 @@
 //     loom-llvm-cf-to-cf                  (nested under func.func)
 //     --lift-cf-to-scf                    (upstream, nested under func.func)
 //     loom-llvm-arith-to-arith            (nested under func.func)
-//     --canonicalize                      (upstream)
+//     loom-normalize-lifted-scf-exit
 //     loom-scf-while-to-for
-//     --canonicalize
 //
 // Pipeline ordering rationale:
 //   * func-to-func runs FIRST so that llvm.func ops with builtin-only
@@ -31,7 +30,6 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
-#include "mlir/Transforms/Passes.h"
 
 namespace loom {
 namespace raising {
@@ -39,6 +37,7 @@ namespace raising {
 void registerLLVMCfToCfPass();
 void registerLLVMArithToArithPass();
 void registerLLVMFuncToFuncPass();
+void registerNormalizeLiftedSCFExitPass();
 void registerSCFWhileToForPass();
 void registerSCFForToForallPass();
 
@@ -46,6 +45,7 @@ void registerRaisingPasses() {
   registerLLVMCfToCfPass();
   registerLLVMFuncToFuncPass();
   registerLLVMArithToArithPass();
+  registerNormalizeLiftedSCFExitPass();
   registerSCFWhileToForPass();
   registerSCFForToForallPass();
 }
@@ -62,14 +62,10 @@ void buildRaisingPipeline(::mlir::PassManager &pm) {
   pm.nest<::mlir::func::FuncOp>().addPass(
       ::mlir::createLiftControlFlowToSCFPass());
   pm.nest<::mlir::func::FuncOp>().addPass(createLLVMArithToArithPass());
-  // Fold the scf.if exit-flag pattern lift-cf-to-scf inserts so the
-  // counted-loop while-to-for uplift below can see a clean
-  // `arith.cmpi <pred>` condition without an interposed scf.if.
-  pm.addPass(::mlir::createCanonicalizerPass());
+  // Expose only the exact poison-safe exit comparison needed by the
+  // counted-loop uplift below.
+  pm.addPass(createNormalizeLiftedSCFExitPass());
   pm.addPass(createSCFWhileToForPass());
-  // Normalize the recovered structured form. Parallelization and other
-  // selected optimization decisions belong to the later SCF pipeline.
-  pm.addPass(::mlir::createCanonicalizerPass());
 }
 
 } // namespace raising
