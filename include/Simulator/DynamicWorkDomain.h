@@ -108,7 +108,7 @@ public:
   // is therefore construction-only.
   WorkResponsibility &operator=(WorkResponsibility &&) = delete;
 
-  const WorkItemId &id() const { return id_; }
+  WorkItemId id() const { return id_; }
 
 private:
   struct ControlState;
@@ -210,9 +210,6 @@ private:
   /// identity, and otherwise confirms this coordinator issued it.
   llvm::Error
   validateCapability(const WorkResponsibility &responsibility) const;
-
-  /// The next zero-based child ordinal for `parent`, defaulting to zero.
-  std::uint64_t nextChildOrdinal(const WorkItemId &parent) const;
 
   using ControlState = WorkResponsibility::ControlState;
   std::shared_ptr<ControlState> control_;

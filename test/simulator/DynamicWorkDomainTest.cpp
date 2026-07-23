@@ -1,10 +1,12 @@
 #include "Simulator/DynamicWorkDomain.h"
 
+#include "DynamicWorkOrdinal.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
+#include <limits>
 #include <optional>
 #include <type_traits>
 #include <utility>
@@ -28,6 +30,10 @@ static_assert(std::is_move_constructible<WorkResponsibility>::value,
               "WorkResponsibility must be move constructible");
 static_assert(!std::is_move_assignable<WorkResponsibility>::value,
               "WorkResponsibility assignment must not discard responsibility");
+static_assert(
+    std::is_same<decltype(std::declval<const WorkResponsibility &>().id()),
+                 WorkItemId>::value,
+    "WorkResponsibility must return its observation by value");
 
 static_assert(!std::is_copy_constructible<DynamicWorkDomain>::value,
               "DynamicWorkDomain must not be copy constructible");
@@ -202,6 +208,30 @@ void movedFromCapabilityRejectsAtomically() {
                "the moved-to capability did not retire the root");
 }
 
+void observationMutationCannotRewriteCapability() {
+  DynamicWorkDomain domain(kInstance);
+  WorkResponsibility root = takeExpected(domain.admitRoot());
+  WorkItemId rootId = root.id();
+
+  const WorkItemId &observation = root.id();
+  WorkItemId replacement = WorkItemId::child(rootId, 99);
+  const_cast<WorkItemId &>(observation) = replacement;
+  require(observation == replacement,
+          "the adversarial observation mutation did not execute");
+  require(root.id() == rootId,
+          "mutating an observation rewrote the responsibility identity");
+
+  WorkResponsibility child = takeExpected(domain.spawnChild(root));
+  require(child.id() == WorkItemId::child(rootId, 0),
+          "an observation mutation redirected child spawn");
+  expectEffect(domain.retire(std::move(child)),
+               RetirementEffect::DomainStillActive,
+               "observation mutation changed child responsibility");
+  expectEffect(domain.retire(std::move(root)),
+               RetirementEffect::DomainCompleted,
+               "observation mutation changed root responsibility");
+}
+
 void observationsAndSameIdDomainsCannotAuthorize() {
   DynamicWorkDomain left(kInstance);
   DynamicWorkDomain right(kInstance);
@@ -285,42 +315,22 @@ void retiredParentRejectsSpawnAtomically() {
                "the remaining root did not complete the domain");
 }
 
-void childOrdinalExhaustionIsAtomic() {
-  DynamicWorkDomain domain(kInstance);
-  WorkResponsibility root = takeExpected(domain.admitRoot());
-  WorkItemId rootId = root.id();
-  WorkResponsibility first = takeExpected(domain.spawnChild(root));
-  WorkResponsibility second = takeExpected(domain.spawnChild(root));
-  WorkResponsibility third = takeExpected(domain.spawnChild(root));
+void maximumChildOrdinalPrecedesExhaustion() {
+  detail::ChildOrdinalCursor cursor(std::numeric_limits<std::uint64_t>::max() -
+                                    1);
 
-  require(first.id() == WorkItemId::child(rootId, 0) &&
-              second.id() == WorkItemId::child(rootId, 1) &&
-              third.id() == WorkItemId::child(rootId, 2),
-          "the public domain did not issue each unique test ordinal");
-  require(domain.activeCount() == 4 && !domain.completed(),
-          "the exhaustion setup has the wrong responsibility state");
+  std::optional<std::uint64_t> ordinal = cursor.take();
+  require(ordinal && *ordinal == std::numeric_limits<std::uint64_t>::max() - 1,
+          "the cursor did not issue the penultimate ordinal");
 
-  expectRejected(domain.spawnChild(root), Kind::ChildOrdinalExhausted,
-                 "an exhausted parent published another child");
-  require(domain.activeCount() == 4 && !domain.completed(),
-          "ordinal exhaustion changed active state or completion");
-  expectRejected(domain.spawnChild(root), Kind::ChildOrdinalExhausted,
-                 "repeated exhaustion published another child");
-  require(domain.activeCount() == 4 && !domain.completed(),
-          "repeated exhaustion changed active state or completion");
+  ordinal = cursor.take();
+  require(ordinal && *ordinal == std::numeric_limits<std::uint64_t>::max(),
+          "the cursor did not issue UINT64_MAX");
 
-  expectEffect(domain.retire(std::move(first)),
-               RetirementEffect::DomainStillActive,
-               "first child retirement completed the domain");
-  expectEffect(domain.retire(std::move(second)),
-               RetirementEffect::DomainStillActive,
-               "second child retirement completed the domain");
-  expectEffect(domain.retire(std::move(third)),
-               RetirementEffect::DomainStillActive,
-               "third child retirement completed the domain");
-  expectEffect(domain.retire(std::move(root)),
-               RetirementEffect::DomainCompleted,
-               "exhaustion created an untracked responsibility");
+  ordinal = cursor.take();
+  require(!ordinal, "the cursor did not enter explicit exhaustion");
+  ordinal = cursor.take();
+  require(!ordinal, "an exhausted cursor resumed issuing ordinals");
 }
 
 } // namespace
@@ -331,9 +341,10 @@ int main() {
   descendantsPreventEarlyCompletion();
   completionTransitionIsExactlyOnce();
   movedFromCapabilityRejectsAtomically();
+  observationMutationCannotRewriteCapability();
   observationsAndSameIdDomainsCannotAuthorize();
   independentOrdinalSequencesForInterleavedParents();
   retiredParentRejectsSpawnAtomically();
-  childOrdinalExhaustionIsAtomic();
+  maximumChildOrdinalPrecedesExhaustion();
   return 0;
 }

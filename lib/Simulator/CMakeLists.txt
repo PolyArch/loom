@@ -3,7 +3,6 @@ add_mlir_library(LoomSimulator
   DFGSimulatorActors.cpp
   DFGSimulatorTokens.cpp
   DynamicWorkDomain.cpp
-  DynamicWorkOrdinal.cpp
   MemoryAtomicOrder.cpp
   MemorySynchronization.cpp
   OperationCostModel.cpp

@@ -28,7 +28,7 @@ struct WorkResponsibility::ControlState {
 
   DomainInstanceId instance;
   bool rootSourceClosed = false;
-  std::map<WorkItemId, std::uint64_t> childCursor;
+  std::map<WorkItemId, detail::ChildOrdinalCursor> childCursor;
   std::set<WorkItemId> active;
 };
 
@@ -105,12 +105,6 @@ bool DynamicWorkDomain::completed() const {
   return control_->rootSourceClosed && control_->active.empty();
 }
 
-std::uint64_t
-DynamicWorkDomain::nextChildOrdinal(const WorkItemId &parent) const {
-  auto cursor = control_->childCursor.find(parent);
-  return cursor == control_->childCursor.end() ? 0 : cursor->second;
-}
-
 llvm::Error DynamicWorkDomain::validateCapability(
     const WorkResponsibility &responsibility) const {
   std::shared_ptr<const ControlState> owner = responsibility.control_.lock();
@@ -146,8 +140,12 @@ DynamicWorkDomain::spawnChild(const WorkResponsibility &parent) {
     llvm::report_fatal_error(
         "DynamicWorkDomain invariant failure: inactive parent capability");
 
-  std::uint64_t nextOrdinal = nextChildOrdinal(parent.id_);
-  std::optional<std::uint64_t> ordinal = detail::takeChildOrdinal(nextOrdinal);
+  auto currentCursor = control_->childCursor.find(parent.id_);
+  detail::ChildOrdinalCursor nextCursor =
+      currentCursor == control_->childCursor.end()
+          ? detail::ChildOrdinalCursor()
+          : currentCursor->second;
+  std::optional<std::uint64_t> ordinal = nextCursor.take();
   if (!ordinal)
     return reject(DynamicWorkDomainError::Kind::ChildOrdinalExhausted,
                   describe(parent.id_) + " has exhausted its child ordinals");
@@ -156,7 +154,7 @@ DynamicWorkDomain::spawnChild(const WorkResponsibility &parent) {
   if (!control_->active.insert(child).second)
     llvm::report_fatal_error(
         "DynamicWorkDomain invariant failure: duplicate active child");
-  control_->childCursor[parent.id_] = nextOrdinal;
+  control_->childCursor[parent.id_] = nextCursor;
   return WorkResponsibility(std::move(child), control_);
 }
 
