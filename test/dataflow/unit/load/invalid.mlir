@@ -33,14 +33,35 @@ func.func @load_bad_done(%mem: memref<10xi32>, %addr: index, %ctrl: none) -> (i3
 }
 
 // -----
-// Vector data must have fixed rank one.
-func.func @load_bad_vector_rank(
+// Vector data must have a positive fixed rank.
+func.func @load_rank_zero_vector(
     %mem: memref<10xi32>, %addr: index, %ctrl: none)
-    -> (vector<2x2xi32>, none) {
-  // expected-error @+1 {{data vector must be a fixed-size rank-1 vector}}
+    -> (vector<i32>, none) {
+  // expected-error @+1 {{data vector must be a fixed-size vector}}
   %data, %done = "dataflow.load"(%mem, %addr, %ctrl)
-      : (memref<10xi32>, index, none) -> (vector<2x2xi32>, none)
-  return %data, %done : vector<2x2xi32>, none
+      : (memref<10xi32>, index, none) -> (vector<i32>, none)
+  return %data, %done : vector<i32>, none
+}
+
+// -----
+// A vector-valued memory element stays one element access, but it is still a
+// semantic vector, so a rank-zero element type is rejected.
+func.func @load_rank_zero_element(
+    %mem: memref<10xvector<i32>>, %addr: index, %ctrl: none)
+    -> (vector<i32>, none) {
+  // expected-error @+1 {{data vector must be a fixed-size vector}}
+  %data, %done = dataflow.load %mem[%addr] %ctrl : memref<10xvector<i32>>
+  return %data, %done : vector<i32>, none
+}
+
+// -----
+// A scalable element type is likewise outside the semantic vector contract.
+func.func @load_scalable_element(
+    %mem: memref<10xvector<[4]xi32>>, %addr: index, %ctrl: none)
+    -> (vector<[4]xi32>, none) {
+  // expected-error @+1 {{data vector must be a fixed-size vector}}
+  %data, %done = dataflow.load %mem[%addr] %ctrl : memref<10xvector<[4]xi32>>
+  return %data, %done : vector<[4]xi32>, none
 }
 
 // -----
@@ -94,17 +115,6 @@ func.func @load_bad_gather_address_element(
   // expected-error @+1 {{address vector element type must be 'index'}}
   %data, %done = "dataflow.load"(%mem, %addr, %ctrl)
       : (memref<10xi32>, vector<4xi32>, none) -> (vector<4xi32>, none)
-  return %data, %done : vector<4xi32>, none
-}
-
-// -----
-// Gather addresses must have fixed rank one.
-func.func @load_bad_gather_address_rank(
-    %mem: memref<10xi32>, %addr: vector<2x2xindex>, %ctrl: none)
-    -> (vector<4xi32>, none) {
-  // expected-error @+1 {{address vector must be a fixed-size rank-1 vector}}
-  %data, %done = "dataflow.load"(%mem, %addr, %ctrl)
-      : (memref<10xi32>, vector<2x2xindex>, none) -> (vector<4xi32>, none)
   return %data, %done : vector<4xi32>, none
 }
 

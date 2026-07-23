@@ -1,5 +1,6 @@
 #include "Dataflow/IR/DataflowDialect.h"
 
+#include "Dataflow/IR/DataflowAttrs.h"
 #include "Dataflow/IR/DataflowOps.h"
 
 #include "mlir/IR/Builders.h"
@@ -14,6 +15,9 @@ using namespace dataflow;
 #define GET_TYPEDEF_CLASSES
 #include "Dataflow/IR/DataflowTypes.cpp.inc"
 
+#define GET_ATTRDEF_CLASSES
+#include "Dataflow/IR/DataflowAttrs.cpp.inc"
+
 void DataflowDialect::initialize() {
   addOperations<
 #define GET_OP_LIST
@@ -22,6 +26,10 @@ void DataflowDialect::initialize() {
   addTypes<
 #define GET_TYPEDEF_LIST
 #include "Dataflow/IR/DataflowTypes.cpp.inc"
+      >();
+  addAttributes<
+#define GET_ATTRDEF_LIST
+#include "Dataflow/IR/DataflowAttrs.cpp.inc"
       >();
 
   attachCanonicalDataflowActorInterfaces(*getContext());

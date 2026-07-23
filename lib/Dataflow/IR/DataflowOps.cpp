@@ -76,7 +76,8 @@ void StreamOp::print(OpAsmPrinter &printer) {
 // dataflow.parallelize / pack / unpack / serialize
 
 static FailureOr<VectorType> verifyDataVector(Operation *op, Type type) {
-  auto vector = semantics::analyzeFixedRankOneDataVector(type);
+  auto vector =
+      semantics::analyzeFixedRankDataVector(type, semantics::VectorRank::One);
   if (!vector)
     return op->emitOpError(llvm::toString(vector.takeError()));
   return *vector;
@@ -192,47 +193,41 @@ Type getMaskType(OpAsmParser &parser, VectorType dataVector) {
                          dataVector.getScalableDims());
 }
 
-LogicalResult verifyMemoryAccess(Operation *op, Value memory, Value address,
-                                 Type dataType, Value mask,
-                                 bool allowVectorAddress) {
-  auto access = semantics::analyzeMemoryAccessType(
-      cast<MemRefType>(memory.getType()), dataType, address.getType(),
-      mask ? mask.getType() : Type{});
-  if (!access)
-    return op->emitOpError(llvm::toString(access.takeError()));
-  if (access->isGather() && !allowVectorAddress)
-    return op->emitOpError("vector address is unsupported for dataflow.store");
-  return success();
-}
-
 bool hasExplicitMemoryDataType(Value memory, Type dataType) {
   return dataType != cast<MemRefType>(memory.getType()).getElementType();
 }
 
-} // namespace
-
-ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
+/// Parses the grammar shared by every addressed memory actor:
+///   `%mem[%addr] <values...> %ctrl [mask %m] attr-dict : <access types>`
+/// The values are the operands between the address and the control token; they
+/// all carry the access data type. Results are added by the caller.
+ParseResult parseAddressedAccess(OpAsmParser &parser, OperationState &result,
+                                 unsigned valueCount,
+                                 ParsedMemoryAccessTypes &types) {
   OpAsmParser::UnresolvedOperand memory;
   OpAsmParser::UnresolvedOperand address;
+  SmallVector<OpAsmParser::UnresolvedOperand, 2> values(valueCount);
   OpAsmParser::UnresolvedOperand control;
   OpAsmParser::UnresolvedOperand mask;
   if (parser.parseOperand(memory) || parser.parseLSquare() ||
-      parser.parseOperand(address) || parser.parseRSquare() ||
-      parser.parseOperand(control))
+      parser.parseOperand(address) || parser.parseRSquare())
+    return failure();
+  for (OpAsmParser::UnresolvedOperand &value : values)
+    if (parser.parseOperand(value))
+      return failure();
+  if (parser.parseOperand(control))
     return failure();
 
   bool hasMask = succeeded(parser.parseOptionalKeyword("mask"));
   if (hasMask && parser.parseOperand(mask))
     return failure();
-  if (parser.parseOptionalAttrDict(result.attributes))
-    return failure();
-
-  ParsedMemoryAccessTypes types;
-  if (failed(parseMemoryAccessTypes(parser, types)))
+  if (parser.parseOptionalAttrDict(result.attributes) ||
+      failed(parseMemoryAccessTypes(parser, types)))
     return failure();
 
   if (parser.resolveOperand(memory, types.memoryType, result.operands) ||
       parser.resolveOperand(address, types.addressType, result.operands) ||
+      parser.resolveOperands(values, types.dataType, result.operands) ||
       parser.resolveOperand(control, parser.getBuilder().getNoneType(),
                             result.operands))
     return failure();
@@ -243,20 +238,55 @@ ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
                               result.operands))
       return failure();
   }
+  return success();
+}
+
+void printAddressedAccess(OpAsmPrinter &printer, Operation *op, Value memory,
+                          Value address, ValueRange values, Value control,
+                          Value mask, Type dataType) {
+  printer << ' ' << memory << '[' << address << ']';
+  for (Value value : values)
+    printer << ' ' << value;
+  printer << ' ' << control;
+  if (mask)
+    printer << " mask " << mask;
+  printer.printOptionalAttrDict(op->getAttrs());
+  printer << " : " << memory.getType();
+  if (isa<VectorType>(address.getType()))
+    printer << ", " << address.getType();
+  if (hasExplicitMemoryDataType(memory, dataType))
+    printer << ", " << dataType;
+}
+
+/// Verifies the access geometry of one addressed memory actor and, on success,
+/// its single aggregate contract against that geometry. Every addressed actor
+/// shares this one analysis, so none of them admits a shape the others reject.
+LogicalResult verifyAddressedAccess(Operation *op, Value memory, Value address,
+                                    Type dataType, Value mask) {
+  auto access = semantics::analyzeMemoryAccessType(
+      cast<MemRefType>(memory.getType()), dataType, address.getType(),
+      mask ? mask.getType() : Type{});
+  if (!access)
+    return op->emitOpError(llvm::toString(access.takeError()));
+  if (llvm::Error error = semantics::validateMemoryActorContract(op, *access))
+    return op->emitOpError(llvm::toString(std::move(error)));
+  return success();
+}
+
+} // namespace
+
+ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
+  ParsedMemoryAccessTypes types;
+  if (failed(parseAddressedAccess(parser, result, /*valueCount=*/0, types)))
+    return failure();
   result.addTypes({types.dataType, parser.getBuilder().getNoneType()});
   return success();
 }
 
 void LoadOp::print(OpAsmPrinter &printer) {
-  printer << ' ' << getMem() << '[' << getAddr() << "] " << getCtrl();
-  if (getMask())
-    printer << " mask " << getMask();
-  printer.printOptionalAttrDict((*this)->getAttrs());
-  printer << " : " << getMem().getType();
-  if (isa<VectorType>(getAddr().getType()))
-    printer << ", " << getAddr().getType();
-  if (hasExplicitMemoryDataType(getMem(), getData().getType()))
-    printer << ", " << getData().getType();
+  printAddressedAccess(printer, getOperation(), getMem(), getAddr(),
+                       ValueRange{}, getCtrl(), getMask(),
+                       getData().getType());
 }
 
 void LoadOp::build(OpBuilder &builder, OperationState &state, Type data,
@@ -272,58 +302,21 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Value memory,
 }
 
 LogicalResult LoadOp::verify() {
-  return verifyMemoryAccess(getOperation(), getMem(), getAddr(),
-                            getData().getType(), getMask(),
-                            /*allowVectorAddress=*/true);
+  return verifyAddressedAccess(getOperation(), getMem(), getAddr(),
+                               getData().getType(), getMask());
 }
 
 ParseResult StoreOp::parse(OpAsmParser &parser, OperationState &result) {
-  OpAsmParser::UnresolvedOperand memory;
-  OpAsmParser::UnresolvedOperand address;
-  OpAsmParser::UnresolvedOperand data;
-  OpAsmParser::UnresolvedOperand control;
-  OpAsmParser::UnresolvedOperand mask;
-  if (parser.parseOperand(memory) || parser.parseLSquare() ||
-      parser.parseOperand(address) || parser.parseRSquare() ||
-      parser.parseOperand(data) || parser.parseOperand(control))
-    return failure();
-
-  bool hasMask = succeeded(parser.parseOptionalKeyword("mask"));
-  if (hasMask && parser.parseOperand(mask))
-    return failure();
-  if (parser.parseOptionalAttrDict(result.attributes))
-    return failure();
-
   ParsedMemoryAccessTypes types;
-  if (failed(parseMemoryAccessTypes(parser, types)))
+  if (failed(parseAddressedAccess(parser, result, /*valueCount=*/1, types)))
     return failure();
-
-  if (parser.resolveOperand(memory, types.memoryType, result.operands) ||
-      parser.resolveOperand(address, types.addressType, result.operands) ||
-      parser.resolveOperand(data, types.dataType, result.operands) ||
-      parser.resolveOperand(control, parser.getBuilder().getNoneType(),
-                            result.operands))
-    return failure();
-  if (hasMask) {
-    FailureOr<VectorType> vector = getParsedDataVector(parser, types.dataType);
-    if (failed(vector) ||
-        parser.resolveOperand(mask, getMaskType(parser, *vector),
-                              result.operands))
-      return failure();
-  }
   result.addTypes(parser.getBuilder().getNoneType());
   return success();
 }
 
 void StoreOp::print(OpAsmPrinter &printer) {
-  printer << ' ' << getMem() << '[' << getAddr() << "] " << getData() << ' '
-          << getCtrl();
-  if (getMask())
-    printer << " mask " << getMask();
-  printer.printOptionalAttrDict((*this)->getAttrs());
-  printer << " : " << getMem().getType();
-  if (hasExplicitMemoryDataType(getMem(), getData().getType()))
-    printer << ", " << getData().getType();
+  printAddressedAccess(printer, getOperation(), getMem(), getAddr(),
+                       getData(), getCtrl(), getMask(), getData().getType());
 }
 
 void StoreOp::build(OpBuilder &builder, OperationState &state, Type done,
@@ -338,9 +331,73 @@ void StoreOp::build(OpBuilder &builder, OperationState &state, Value memory,
 }
 
 LogicalResult StoreOp::verify() {
-  return verifyMemoryAccess(getOperation(), getMem(), getAddr(),
-                            getData().getType(), getMask(),
-                            /*allowVectorAddress=*/false);
+  return verifyAddressedAccess(getOperation(), getMem(), getAddr(),
+                               getData().getType(), getMask());
+}
+
+ParseResult AtomicRmwOp::parse(OpAsmParser &parser, OperationState &result) {
+  ParsedMemoryAccessTypes types;
+  if (failed(parseAddressedAccess(parser, result, /*valueCount=*/1, types)))
+    return failure();
+  result.addTypes({types.dataType, parser.getBuilder().getNoneType()});
+  return success();
+}
+
+void AtomicRmwOp::print(OpAsmPrinter &printer) {
+  printAddressedAccess(printer, getOperation(), getMem(), getAddr(),
+                       getValue(), getCtrl(), getMask(), getOld().getType());
+}
+
+LogicalResult AtomicRmwOp::verify() {
+  return verifyAddressedAccess(getOperation(), getMem(), getAddr(),
+                               getOld().getType(), getMask());
+}
+
+ParseResult CmpXchgOp::parse(OpAsmParser &parser, OperationState &result) {
+  ParsedMemoryAccessTypes types;
+  if (failed(parseAddressedAccess(parser, result, /*valueCount=*/2, types)))
+    return failure();
+  Type successType;
+  if (parser.parseArrow() || parser.parseType(successType))
+    return failure();
+  result.addTypes(
+      {types.dataType, successType, parser.getBuilder().getNoneType()});
+  return success();
+}
+
+void CmpXchgOp::print(OpAsmPrinter &printer) {
+  printAddressedAccess(printer, getOperation(), getMem(), getAddr(),
+                       {getExpected(), getDesired()}, getCtrl(), getMask(),
+                       getOld().getType());
+  printer << " -> " << getSuccess().getType();
+}
+
+LogicalResult CmpXchgOp::verify() {
+  return verifyAddressedAccess(getOperation(), getMem(), getAddr(),
+                               getOld().getType(), getMask());
+}
+
+ParseResult FenceOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand control;
+  Type none = parser.getBuilder().getNoneType();
+  if (parser.parseOperand(control) ||
+      parser.parseOptionalAttrDict(result.attributes) ||
+      parser.resolveOperand(control, none, result.operands))
+    return failure();
+  result.addTypes(none);
+  return success();
+}
+
+void FenceOp::print(OpAsmPrinter &printer) {
+  printer << ' ' << getCtrl();
+  printer.printOptionalAttrDict((*this)->getAttrs());
+}
+
+LogicalResult FenceOp::verify() {
+  if (llvm::Error error =
+          semantics::validateMemoryActorContract(getOperation(), std::nullopt))
+    return emitOpError(llvm::toString(std::move(error)));
+  return success();
 }
 
 //===----------------------------------------------------------------------===//

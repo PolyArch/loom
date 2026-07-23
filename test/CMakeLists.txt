@@ -1,6 +1,7 @@
 llvm_canonicalize_cmake_booleans(MLIR_ENABLE_BINDINGS_PYTHON)
 
 add_subdirectory(common)
+add_subdirectory(dataflow)
 add_subdirectory(evaluation)
 add_subdirectory(mapping)
 add_subdirectory(pnr)
@@ -27,6 +28,7 @@ set(LOOM_TEST_DEPENDS
   loom-common-artifact-test
   loom-cost-test
   loom-coverage-test
+  loom-dataflow-memory-effect-test
   loom-dfg-sim
   loom-evaluation-metric-test
   loom-evaluation-tool-runner-test

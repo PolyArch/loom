@@ -31,13 +31,15 @@ func.func @store_vector_i32(
   return %done : none
 }
 
-// CHECK-LABEL: @store_explicit_vector_index_data
-func.func @store_explicit_vector_index_data(
-    %mem: memref<?xvector<4xindex>>, %addr: index,
-    %data: vector<4xindex>, %ctrl: none) -> none {
-  // CHECK: dataflow.store %{{.*}}[%{{.*}}] %{{.*}} %{{.*}} : memref<?xvector<4xindex>>
+// An explicit data type that repeats a vector-valued memory element still
+// names one element access, and the printer drops the redundant type.
+// CHECK-LABEL: @store_explicit_vector_element_data
+func.func @store_explicit_vector_element_data(
+    %mem: memref<?xvector<4xi16>>, %addr: index,
+    %data: vector<4xi16>, %ctrl: none) -> none {
+  // CHECK: dataflow.store %{{.*}}[%{{.*}}] %{{.*}} %{{.*}} : memref<?xvector<4xi16>>
   %done = dataflow.store %mem[%addr] %data %ctrl
-      : memref<?xvector<4xindex>>, vector<4xindex>
+      : memref<?xvector<4xi16>>, vector<4xi16>
   return %done : none
 }
 
@@ -48,6 +50,16 @@ func.func @store_masked_vector_i32(
   // CHECK: dataflow.store %{{.*}}[%{{.*}}] %{{.*}} %{{.*}} mask %{{.*}} : memref<10xi32>, vector<4xi32>
   %done = dataflow.store %mem[%addr] %data %ctrl mask %mask
       : memref<10xi32>, vector<4xi32>
+  return %done : none
+}
+
+// CHECK-LABEL: @store_multi_rank_scatter
+func.func @store_multi_rank_scatter(
+    %mem: memref<10xi32>, %addr: vector<2x3xindex>, %data: vector<2x3xi32>,
+    %mask: vector<2x3xi1>, %ctrl: none) -> none {
+  // CHECK: dataflow.store %{{.*}}[%{{.*}}] %{{.*}} %{{.*}} mask %{{.*}} : memref<10xi32>, vector<2x3xindex>, vector<2x3xi32>
+  %done = dataflow.store %mem[%addr] %data %ctrl mask %mask
+      : memref<10xi32>, vector<2x3xindex>, vector<2x3xi32>
   return %done : none
 }
 

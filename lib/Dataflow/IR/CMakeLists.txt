@@ -22,6 +22,7 @@ add_mlir_dialect_library(MLIRDataflow
   DataflowProgramValidation.cpp
   DataflowInterfaces.cpp
   DataflowFunctionLikeOps.cpp
+  DataflowMemoryContracts.cpp
   DataflowOps.cpp
   DataflowThreadCompletion.cpp
 
@@ -31,6 +32,7 @@ add_mlir_dialect_library(MLIRDataflow
   ${LOOM_SOURCE_DIR}/include/Dataflow
 
   DEPENDS
+  MLIRDataflowAttrsIncGen
   MLIRDataflowDialectIncGen
   MLIRDataflowInterfacesIncGen
   MLIRDataflowOpsIncGen

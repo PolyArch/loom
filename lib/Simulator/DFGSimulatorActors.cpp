@@ -1,5 +1,6 @@
 #include "DFGSimulatorInternal.h"
 
+#include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
@@ -747,9 +748,12 @@ writeDataflowMemory(const MemoryView &view, const Token &addr,
       getMemoryAccessType(memoryType, dataType, addressType, maskType, state);
   if (!access)
     return std::nullopt;
+  // Indexed geometry is canonical, but executing a scatter needs the duplicate
+  // active address rules that this simulator does not implement yet, so it
+  // fails closed instead of inventing a lane order.
   if (access->isGather()) {
     state.diagnostics.push_back(
-        "vector address is unsupported for dataflow.store");
+        "dataflow.store does not execute an indexed scatter");
     return std::nullopt;
   }
   if (!access->isVector()) {
@@ -1435,6 +1439,18 @@ bool fireActorOperation(mlir::Operation *op, SimulatorState &state) {
 
 std::optional<UnsupportedOperation>
 unsupportedActorOperation(mlir::Operation *op) {
+  // Dynamic consistency-domain state - modification order, reads-from,
+  // synchronizes-with, and the global sequentially-consistent order - is not
+  // modeled. An atomic, volatile, or fence actor is therefore rejected before
+  // execution rather than approximated as a plain access. Residual LLVM memory
+  // operations never reach admission; finalized graph validation rejects them.
+  if (auto contract = dataflow::semantics::getMemoryActorContract(op)) {
+    if (contract->atomic || contract->isVolatile)
+      return UnsupportedOperation{
+          unsupportedOperationLabel(op),
+          "atomic, volatile, and fence memory contracts have no dynamic "
+          "consistency-domain semantics"};
+  }
   if (op->getNumResults() == 1 &&
       isSupportedPrimitiveOperation(primitiveOperationName(op))) {
     if (llvm::Error error = validatePrimitiveTokenTypes(op, op->getResult(0))) {

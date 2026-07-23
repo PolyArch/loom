@@ -1,6 +1,7 @@
 #ifndef DATAFLOW_OPS_TD
 #define DATAFLOW_OPS_TD
 
+include "Dataflow/IR/DataflowAttrs.td"
 include "Dataflow/IR/DataflowDialect.td"
 include "Dataflow/IR/DataflowEnums.td"
 include "Dataflow/IR/DataflowInterfaces.td"
@@ -374,32 +375,55 @@ def Dataflow_DemuxOp : Dataflow_Op<"demux", [Pure, CanonicalDataflowActor]> {
 //===----------------------------------------------------------------------===//
 // Memory Ops
 //
-// Streaming load / store against a memref, orchestrated by none-typed ctrl /
-// done tokens. The memref's element type constrains the scalar data type or
-// vector element type.
+// Streaming accesses against a memref, orchestrated by none-typed ctrl / done
+// tokens. The memref's element type constrains the element data type or the
+// access vector's element type.
 //===----------------------------------------------------------------------===//
 
-def Dataflow_LoadOp : Dataflow_Op<"load", [CanonicalDataflowActor]> {
-  let summary = "streaming scalar-element, contiguous vector, or gather load";
+// The canonical memory actors. Each projects the standard MLIR memory effects
+// through the one shared implementation in `DataflowMemoryContracts.cpp`; no
+// actor classifies its own effects. That projection names the memory operand
+// for the addressed access and reads the atomic and volatile facts back from
+// the actor's one aggregate contract to add conservative unbound effects.
+class Dataflow_MemoryActorOp<string mnemonic, list<Trait> traits = []>
+    : Dataflow_Op<mnemonic, !listconcat(traits, [
+        CanonicalDataflowActor,
+        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>])> {
+  let extraClassDefinition = [{
+    void $cppClass::getEffects(
+        ::llvm::SmallVectorImpl<::mlir::MemoryEffects::EffectInstance>
+            &effects) {
+      ::dataflow::semantics::getMemoryActorEffects(getOperation(), effects);
+    }
+  }];
+}
+
+def Dataflow_LoadOp : Dataflow_MemoryActorOp<"load"> {
+  let summary = "streaming element, contiguous vector, or gather load";
   let description = [{
     On the simultaneous arrival of an address token and a `%ctrl : none`
     token, consumes both and fires one memory actor.
     A result type exactly equal to the memref element type loads one
     memory element, including when that element type is itself a vector.
-    Otherwise, a fixed-size rank-1 `vector<NxT>` result loads contiguous
-    elements starting at a scalar `%addr : index` only when `T` is the
-    memref element type. A fixed-size rank-1 `%addr : vector<Nxindex>`
-    instead gathers one element for each result lane from the corresponding
-    element-index address.
+    Otherwise, a fixed-size vector result of any positive rank loads that many
+    elements in canonical row-major lane order, contiguously from a scalar
+    `%addr : index` or, with a same-shape `%addr : vector<...xindex>`, one
+    element per lane from the corresponding element-index address. A vector
+    access requires the memref element type as its vector element type.
 
-    An optional same-shape `vector<Nxi1>` mask restricts a vector load
-    to active lanes. Inactive lanes do not access memory and are
-    deterministically zero-filled. After all active lanes retire, the
-    op emits one data token and one `none` token on `%done`.
+    An optional same-shape `i1` mask restricts a vector load to active lanes.
+    Inactive lanes do not access memory and are deterministically zero-filled.
+    After all active lanes retire, the op emits one data token and one `none`
+    token on `%done`.
+
+    The optional `contract` attribute is this actor's single
+    `MemoryAccessContract`; its absence is the canonical plain non-volatile
+    contract.
   }];
 
   let arguments = (ins AnyMemRef:$mem, AnyType:$addr, NoneType:$ctrl,
-                       Optional<AnyVectorOfAnyRank>:$mask);
+                       Optional<AnyVectorOfAnyRank>:$mask,
+                       OptionalAttr<Dataflow_MemoryAccessContract>:$contract);
   let results = (outs AnyType:$data, NoneType:$done);
 
   let hasCustomAssemblyFormat = 1;
@@ -418,24 +442,32 @@ def Dataflow_LoadOp : Dataflow_Op<"load", [CanonicalDataflowActor]> {
   ];
 }
 
-def Dataflow_StoreOp : Dataflow_Op<"store", [CanonicalDataflowActor]> {
-  let summary = "streaming scalar-element or contiguous vector store";
+def Dataflow_StoreOp : Dataflow_MemoryActorOp<"store"> {
+  let summary = "streaming element, contiguous vector, or scatter store";
   let description = [{
-    On the simultaneous arrival of an `%addr : index`, a `%data` value
+    On the simultaneous arrival of an address token, a `%data` value
     and a `%ctrl : none`, consumes all three and fires one memory actor.
     Data whose type exactly equals the memref element type writes one
     memory element, including when that element type is itself a vector.
-    Otherwise, fixed-size rank-1 `vector<NxT>` data writes contiguous
-    elements starting at `%addr` only when `T` is the memref element type.
+    Otherwise, fixed-size vector data of any positive rank writes that many
+    elements in canonical row-major lane order, contiguously from a scalar
+    `%addr : index` or, with a same-shape `%addr : vector<...xindex>`, one
+    element per lane. A vector access requires the memref element type as its
+    vector element type.
 
-    An optional same-shape `vector<Nxi1>` mask restricts a vector store
-    to active lanes. Inactive lanes do not access memory. After all
-    active lanes retire, the op emits one `none` token on `%done`.
+    An optional same-shape `i1` mask restricts a vector store to active lanes.
+    Inactive lanes do not access memory. After all active lanes retire, the op
+    emits one `none` token on `%done`.
+
+    The optional `contract` attribute is this actor's single
+    `MemoryAccessContract`; its absence is the canonical plain non-volatile
+    contract.
   }];
 
   let arguments = (ins AnyMemRef:$mem, AnyType:$addr, AnyType:$data,
                        NoneType:$ctrl,
-                       Optional<AnyVectorOfAnyRank>:$mask);
+                       Optional<AnyVectorOfAnyRank>:$mask,
+                       OptionalAttr<Dataflow_MemoryAccessContract>:$contract);
   let results = (outs NoneType:$done);
 
   let hasCustomAssemblyFormat = 1;
@@ -453,6 +485,86 @@ def Dataflow_StoreOp : Dataflow_Op<"store", [CanonicalDataflowActor]> {
         "::mlir::Value":$data,
         "::mlir::Value":$ctrl)>
   ];
+}
+
+def Dataflow_AtomicRmwOp : Dataflow_MemoryActorOp<"atomic_rmw", [
+    AllTypesMatch<["value", "old"]>
+]> {
+  let summary = "streaming atomic read-modify-write";
+  let description = [{
+    On the simultaneous arrival of an address, an update value and a
+    `%ctrl : none` token, consumes all of them and fires one memory actor.
+    At linearization the actor reads the immediately preceding value in the
+    addressed object's modification order and appends its write as one
+    indivisible action.
+
+    A value type exactly equal to the memref element type updates one memory
+    element. Otherwise a fixed-size vector value of any positive rank updates
+    that many elements in canonical row-major lane order, contiguously from a
+    scalar `%addr : index` or, with a same-shape `%addr : vector<...xindex>`,
+    one element per lane. An optional same-shape `i1` mask restricts a vector
+    access to active lanes; inactive lanes perform no access.
+
+    The old value and `%done` are one retirement publication.
+  }];
+
+  let arguments = (ins AnyMemRef:$mem, AnyType:$addr, AnyType:$value,
+                       NoneType:$ctrl,
+                       Optional<AnyVectorOfAnyRank>:$mask,
+                       Dataflow_AtomicRmwContractAttr:$contract);
+  let results = (outs AnyType:$old, NoneType:$done);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def Dataflow_CmpXchgOp : Dataflow_MemoryActorOp<"cmpxchg", [
+    AllTypesMatch<["expected", "desired", "old"]>
+]> {
+  let summary = "streaming atomic compare-exchange";
+  let description = [{
+    On the simultaneous arrival of an address, an expected value, a desired
+    value and a `%ctrl : none` token, consumes all of them and fires one
+    memory actor. A successful exchange appends its write to the addressed
+    object's modification order; a failed exchange performs no write. A weak
+    compare-exchange may fail spuriously.
+
+    The access shape follows `dataflow.atomic_rmw`. A scalar or
+    `whole_payload` access publishes one `i1` success result; a `per_lane`
+    access publishes a success vector with the exact access shape and `i1`
+    elements. The old value, the success result and `%done` are one
+    retirement publication.
+
+    A compare-exchange compares an exact bit pattern, so its element type is
+    an integer.
+  }];
+
+  let arguments = (ins AnyMemRef:$mem, AnyType:$addr, AnyType:$expected,
+                       AnyType:$desired, NoneType:$ctrl,
+                       Optional<AnyVectorOfAnyRank>:$mask,
+                       Dataflow_CompareExchangeContractAttr:$contract);
+  let results = (outs AnyType:$old, AnyType:$success, NoneType:$done);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def Dataflow_FenceOp : Dataflow_MemoryActorOp<"fence"> {
+  let summary = "streaming memory fence";
+  let description = [{
+    On the arrival of a `%ctrl : none` token, consumes it and fires one fence
+    actor under its ordering and scope contract. A fence addresses no memory
+    and publishes one `none` token on `%done` at retirement. `%done` denotes
+    completion under this actor's contract; it is not a global barrier. Its
+    memory effect is conservative and names no addressed value, so a fence has
+    no `CanonicalMemoryAccessView`.
+  }];
+
+  let arguments = (ins NoneType:$ctrl, Dataflow_FenceContractAttr:$contract);
+  let results = (outs NoneType:$done);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//

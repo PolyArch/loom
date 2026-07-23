@@ -15,6 +15,7 @@
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
+#include "Dataflow/IR/DataflowAttrs.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowEnums.h"
 #include "Dataflow/IR/DataflowInterfaces.h"

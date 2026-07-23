@@ -1,6 +1,7 @@
 #ifndef LOOM_DATAFLOW_IR_DATAFLOW_ACTOR_SEMANTICS_H
 #define LOOM_DATAFLOW_IR_DATAFLOW_ACTOR_SEMANTICS_H
 
+#include "Dataflow/IR/DataflowAttrs.h"
 #include "Dataflow/IR/DataflowOps.h"
 
 #include "llvm/ADT/APInt.h"
@@ -167,6 +168,16 @@ SerializeTransition evaluateSerializeTransition(std::optional<bool> groupPhase,
                                                 bool vectorAvailable,
                                                 bool maskAvailable);
 
+/// Which fixed vector ranks one actor's data and address vectors admit. Actors
+/// that shape a scalar stream into lanes are rank-one; canonical vector memory
+/// admits any positive fixed rank in canonical row-major lane order.
+enum class VectorRank : std::uint8_t { One, AnyFixed };
+
+/// Canonical geometry of one addressed memory access. An access whose data
+/// type exactly equals the memory element type is an `element` access with one
+/// logical address and one lane, even when that element is itself a vector.
+/// Otherwise `vectorType` carries the complete access lane shape, contiguous
+/// from a scalar address or indexed by a same-shape address vector.
 struct MemoryAccessType {
   mlir::Type elementType;
   mlir::VectorType vectorType;
@@ -175,13 +186,17 @@ struct MemoryAccessType {
   bool isVector() const { return static_cast<bool>(vectorType); }
   bool isGather() const { return static_cast<bool>(addressVectorType); }
   std::uint64_t laneCount() const {
-    return isVector()
-               ? static_cast<std::uint64_t>(vectorType.getShape().front())
-               : 1;
+    if (!isVector())
+      return 1;
+    std::uint64_t lanes = 1;
+    for (std::int64_t extent : vectorType.getShape())
+      lanes *= static_cast<std::uint64_t>(extent);
+    return lanes;
   }
 };
 
-llvm::Expected<mlir::VectorType> analyzeFixedRankOneDataVector(mlir::Type type);
+llvm::Expected<mlir::VectorType> analyzeFixedRankDataVector(mlir::Type type,
+                                                            VectorRank rank);
 
 /// Complete flattened bit width of a fixed-rank semantic data vector. Restricts
 /// `loom::getFixedVectorBitWidth` to the semantic element domain: nonzero-width
@@ -191,9 +206,54 @@ llvm::Expected<unsigned> getFlattenedVectorBitWidth(mlir::VectorType vector);
 llvm::Error validateVectorMaskType(mlir::VectorType dataVector,
                                    mlir::Type maskType);
 
+/// The sole geometry analysis of an addressed memory access. Operation
+/// verification and every consumer share it, so no caller can admit a shape
+/// the others reject.
 llvm::Expected<MemoryAccessType>
 analyzeMemoryAccessType(mlir::MemRefType memoryType, mlir::Type dataType,
                         mlir::Type addressType, mlir::Type maskType = {});
+
+/// Nonpersistent projection of the one aggregate contract owned by a canonical
+/// memory actor. `aggregate` remains the sole owner of every contract field;
+/// the projected facts are read back from that aggregate and its nested
+/// `AtomicAccessContract`, never stored beside them. `dataflow.fence` is
+/// ordered by construction and therefore always projects `atomic`.
+struct MemoryActorContract {
+  mlir::Attribute aggregate;
+  bool atomic = false;
+  bool isVolatile = false;
+  std::optional<dataflow::VectorAtomicGranularity> vectorGranularity;
+  dataflow::SyncScopeRefAttr syncScope;
+};
+
+/// The aggregate contract owned by `op`, or absent when `op` is not a
+/// canonical Dataflow memory actor. `dataflow.load` and `dataflow.store`
+/// without a contract attribute own the canonical plain non-volatile contract.
+std::optional<MemoryActorContract> getMemoryActorContract(mlir::Operation *op);
+
+/// The retirement event published by a canonical Dataflow memory actor, or a
+/// null value when `op` is not one.
+mlir::Value getMemoryActorDone(mlir::Operation *op);
+
+/// The unique control event consumed by a canonical Dataflow memory actor, or
+/// a null value when `op` is not one.
+mlir::Value getMemoryActorControl(mlir::Operation *op);
+
+/// The standard MLIR memory-effect projection of a canonical Dataflow memory
+/// actor. This is the sole implementation of that projection; the actors
+/// declare it and add no classification of their own. The addressed effects
+/// name the memory operand; the atomic and volatile facts come from the same
+/// aggregate contract `getMemoryActorContract` projects, never from a second
+/// attribute.
+void getMemoryActorEffects(
+    mlir::Operation *op,
+    llvm::SmallVectorImpl<mlir::MemoryEffects::EffectInstance> &effects);
+
+/// Static legality of the aggregate contract owned by `op` against its access
+/// shape. `access` is absent only for `dataflow.fence`.
+llvm::Error
+validateMemoryActorContract(mlir::Operation *op,
+                            const std::optional<MemoryAccessType> &access);
 
 bool isStatelessOneTokenVectorBoundary(mlir::Operation *op);
 

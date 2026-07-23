@@ -65,12 +65,12 @@ func.func @store_scalar_first_explicit_type(
 }
 
 // -----
-// Vector-address stores remain unsupported.
-func.func @store_vector_address(
-    %mem: memref<10xi32>, %addr: vector<4xindex>,
+// A scatter address vector has the complete data-vector shape.
+func.func @store_bad_scatter_address_shape(
+    %mem: memref<10xi32>, %addr: vector<2xindex>,
     %data: vector<4xi32>, %ctrl: none) -> none {
-  // expected-error @+1 {{vector address is unsupported for dataflow.store}}
+  // expected-error @+1 {{address vector shape 'vector<2xindex>' must match data vector shape 'vector<4xi32>'}}
   %done = dataflow.store %mem[%addr] %data %ctrl
-      : memref<10xi32>, vector<4xindex>, vector<4xi32>
+      : memref<10xi32>, vector<2xindex>, vector<4xi32>
   return %done : none
 }

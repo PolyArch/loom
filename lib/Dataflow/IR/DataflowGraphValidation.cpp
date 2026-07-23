@@ -152,6 +152,15 @@ bool constrainDemuxLane(mlir::Value value, SelectorLanes &selectorLanes) {
                        demux.getSel(), result.getResultNumber(), selectorLanes);
 }
 
+/// A canonical memory actor publishes its remaining results together with
+/// `done` as one retirement event.
+bool isRetirementPublication(mlir::Value witness, mlir::Value prerequisite) {
+  mlir::Operation *def = witness.getDefiningOp();
+  return def && witness != prerequisite &&
+         witness == dataflow::semantics::getMemoryActorDone(def) &&
+         prerequisite.getDefiningOp() == def;
+}
+
 bool causallyDependsOn(mlir::Value event, mlir::Value prerequisite,
                        llvm::DenseSet<mlir::Value> &visited,
                        SelectorLanes &selectorLanes) {
@@ -180,8 +189,8 @@ bool causallyDependsOn(mlir::Value event, mlir::Value prerequisite,
       return true;
     return dependsOnAnyOperand();
   }
-  if (auto load = llvm::dyn_cast<dataflow::LoadOp>(def)) {
-    if (event == load.getDone() && prerequisite == load.getData())
+  if (dataflow::semantics::getMemoryActorDone(def)) {
+    if (isRetirementPublication(event, prerequisite))
       return true;
     return dependsOnAnyOperand();
   }
@@ -232,15 +241,10 @@ bool causallyDependsOn(mlir::Value event, mlir::Value prerequisite) {
   return causallyDependsOn(event, prerequisite, visited, selectorLanes);
 }
 
-bool isExplicitLoadCoverage(mlir::Value witness, mlir::Value prerequisite) {
-  auto load = llvm::dyn_cast_or_null<dataflow::LoadOp>(witness.getDefiningOp());
-  return load && witness == load.getDone() && prerequisite == load.getData();
-}
-
 bool isCovered(mlir::Value prerequisite, mlir::ValueRange completion) {
   return llvm::any_of(completion, [&](mlir::Value witness) {
     return causallyDependsOn(witness, prerequisite) ||
-           isExplicitLoadCoverage(witness, prerequisite);
+           isRetirementPublication(witness, prerequisite);
   });
 }
 
@@ -314,11 +318,10 @@ bool coversFalseClose(mlir::Value witness, mlir::Value closeSignal,
     return covers(carry.getInit(), selectorLanes) ||
            covers(carry.getCarry(), selectorLanes);
   }
-  if (auto load = llvm::dyn_cast<dataflow::LoadOp>(def)) {
-    return witness == load.getDone() && covers(load.getCtrl(), selectorLanes);
-  }
-  if (auto store = llvm::dyn_cast<dataflow::StoreOp>(def)) {
-    return witness == store.getDone() && covers(store.getCtrl(), selectorLanes);
+  if (mlir::Value done = dataflow::semantics::getMemoryActorDone(def)) {
+    return witness == done &&
+           covers(dataflow::semantics::getMemoryActorControl(def),
+                  selectorLanes);
   }
   return false;
 }
@@ -1337,17 +1340,11 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
   graph.getBody().walk([&](mlir::Operation *op) {
     if (effectError)
       return mlir::WalkResult::interrupt();
-    if (auto load = llvm::dyn_cast<LoadOp>(op)) {
-      if (!isCovered(load.getDone(), ret.getComplete()))
+    if (mlir::Value done = semantics::getMemoryActorDone(op)) {
+      if (!isCovered(done, ret.getComplete()))
         effectError = graphError(
-            "retirement frontier does not causally cover dataflow.load done");
-      return effectError ? mlir::WalkResult::interrupt()
-                         : mlir::WalkResult::advance();
-    }
-    if (auto store = llvm::dyn_cast<StoreOp>(op)) {
-      if (!isCovered(store.getDone(), ret.getComplete()))
-        effectError = graphError(
-            "retirement frontier does not causally cover dataflow.store done");
+            llvm::Twine("retirement frontier does not causally cover ") +
+            op->getName().getStringRef() + " done");
       return effectError ? mlir::WalkResult::interrupt()
                          : mlir::WalkResult::advance();
     }

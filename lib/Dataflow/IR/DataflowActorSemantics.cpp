@@ -781,12 +781,16 @@ findSynchronization(mlir::Value value, mlir::Value branchSelector,
 } // namespace
 
 llvm::Expected<mlir::VectorType>
-dataflow::semantics::analyzeFixedRankOneDataVector(mlir::Type type) {
+dataflow::semantics::analyzeFixedRankDataVector(mlir::Type type,
+                                                VectorRank rank) {
   auto vector = llvm::dyn_cast<mlir::VectorType>(type);
-  if (!vector || vector.getRank() != 1 || vector.isScalable())
+  const bool admitted = vector && !vector.isScalable() &&
+                        (rank == VectorRank::AnyFixed ? vector.getRank() > 0
+                                                      : vector.getRank() == 1);
+  if (!admitted)
     return llvm::createStringError(
-        std::errc::invalid_argument,
-        "data vector must be a fixed-size rank-1 vector");
+        std::errc::invalid_argument, "data vector must be a fixed-size %s",
+        rank == VectorRank::AnyFixed ? "vector" : "rank-1 vector");
   if (llvm::Error error =
           validateVectorElementRepresentation(vector.getElementType()))
     return std::move(error);
@@ -805,11 +809,11 @@ dataflow::semantics::getFlattenedVectorBitWidth(mlir::VectorType vector) {
 llvm::Error
 dataflow::semantics::validateVectorMaskType(mlir::VectorType dataVector,
                                             mlir::Type maskType) {
+  // The shape comparison below subsumes any rank requirement on the mask.
   auto mask = llvm::dyn_cast<mlir::VectorType>(maskType);
-  if (!mask || mask.getRank() != 1 || mask.isScalable())
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "mask vector must be a fixed-size rank-1 vector");
+  if (!mask || mask.isScalable())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "mask vector must be a fixed-size vector");
   if (!mask.getElementType().isInteger(1))
     return llvm::createStringError(std::errc::invalid_argument,
                                    "mask vector element type must be 'i1'");
@@ -829,13 +833,23 @@ dataflow::semantics::analyzeMemoryAccessType(mlir::MemRefType memoryType,
   mlir::Type elementType = memoryType.getElementType();
   MemoryAccessType access;
   access.elementType = elementType;
+  // Data that exactly equals the memory element type is one element access,
+  // including when that element is itself a vector. A vector-valued element is
+  // still a semantic vector, so it passes the same positive fixed-rank
+  // validator, but it contributes no access lane shape: the access keeps its
+  // element geometry and one logical address.
   if (dataType == elementType) {
+    if (llvm::isa<mlir::VectorType>(elementType))
+      if (llvm::Expected<mlir::VectorType> element =
+              analyzeFixedRankDataVector(elementType, VectorRank::AnyFixed);
+          !element)
+        return element.takeError();
     if (maskType)
       return llvm::createStringError(
           std::errc::invalid_argument,
           "mask is only valid for a vector memory access");
   } else if (llvm::isa<mlir::VectorType>(dataType)) {
-    auto vector = analyzeFixedRankOneDataVector(dataType);
+    auto vector = analyzeFixedRankDataVector(dataType, VectorRank::AnyFixed);
     if (!vector)
       return vector.takeError();
     if (vector->getElementType() != elementType)
@@ -861,11 +875,11 @@ dataflow::semantics::analyzeMemoryAccessType(mlir::MemRefType memoryType,
   if (!addressVector)
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "operand #1 must be index or a fixed-size rank-1 vector of index");
-  if (addressVector.getRank() != 1 || addressVector.isScalable())
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "address vector must be a fixed-size rank-1 vector");
+        "operand #1 must be index or a fixed-size vector of index");
+  if (addressVector.isScalable())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "address vector must be a fixed-size "
+                                   "vector");
   if (!llvm::isa<mlir::IndexType>(addressVector.getElementType()))
     return llvm::createStringError(std::errc::invalid_argument,
                                    "address vector element type must be "
@@ -873,7 +887,7 @@ dataflow::semantics::analyzeMemoryAccessType(mlir::MemRefType memoryType,
   if (!access.isVector())
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "vector address requires a fixed-size rank-1 vector data type");
+        "vector address requires a fixed-size vector data type");
   if (addressVector.getShape() != access.vectorType.getShape())
     return llvm::createStringError(
         std::errc::invalid_argument,

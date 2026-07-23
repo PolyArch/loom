@@ -15,6 +15,7 @@ def Dataflow_Dialect : Dialect {
     feedback / backward references are allowed.
   }];
   let cppNamespace = "::dataflow";
+  let useDefaultAttributePrinterParser = 1;
   let useDefaultTypePrinterParser = 1;
   let extraClassDeclaration = [{
     static bool isMemoryCapabilityType(::mlir::Type type);

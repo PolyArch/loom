@@ -10,6 +10,11 @@ mlir_tablegen(DataflowEnums.h.inc -gen-enum-decls)
 mlir_tablegen(DataflowEnums.cpp.inc -gen-enum-defs)
 add_public_tablegen_target(MLIRDataflowEnumsIncGen)
 
+set(LLVM_TARGET_DEFINITIONS DataflowAttrs.td)
+mlir_tablegen(DataflowAttrs.h.inc -gen-attrdef-decls -attrdefs-dialect=dataflow)
+mlir_tablegen(DataflowAttrs.cpp.inc -gen-attrdef-defs -attrdefs-dialect=dataflow)
+add_public_tablegen_target(MLIRDataflowAttrsIncGen)
+
 set(LLVM_TARGET_DEFINITIONS DataflowInterfaces.td)
 mlir_tablegen(DataflowInterfaces.h.inc -gen-op-interface-decls)
 mlir_tablegen(DataflowInterfaces.cpp.inc -gen-op-interface-defs)
