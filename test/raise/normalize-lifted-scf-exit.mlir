@@ -112,3 +112,48 @@ func.func @preserve_reordered_suffix(%bound: i64, %output: !llvm.ptr) {
   }
   return
 }
+
+// The lift scaffold's after region is the identity continuation emitted by
+// createStructuredDoWhileLoopOp(): one block whose only op is an scf.yield
+// forwarding every after-block argument in positional order. A nontrivial
+// after region with a side effect (here an llvm.store) is not that shape, so
+// the normalizer must leave the whole scaffold intact on both the pass-only
+// and the chained uplift pipelines.
+// CHECK-LABEL: func.func @preserve_nontrivial_after_region
+// CHECK: scf.while
+// CHECK: %[[LIFTED:.*]]:3 = scf.if
+// CHECK: %[[SELECTOR:.*]] = arith.trunci %[[LIFTED]]#2
+// CHECK-NEXT: scf.condition(%[[SELECTOR]]) %[[LIFTED]]#0
+// CHECK: llvm.store
+// CHECK: scf.yield %{{.*}} : i64
+// UPLIFT-LABEL: func.func @preserve_nontrivial_after_region
+// UPLIFT: scf.while
+// UPLIFT: %[[LIFTED:.*]]:3 = scf.if
+// UPLIFT: %[[SELECTOR:.*]] = arith.trunci %[[LIFTED]]#2
+// UPLIFT-NEXT: scf.condition(%[[SELECTOR]]) %[[LIFTED]]#0
+// UPLIFT: llvm.store
+// UPLIFT: scf.yield %{{.*}} : i64
+func.func @preserve_nontrivial_after_region(%bound: i64, %output: !llvm.ptr) {
+  %iv0 = arith.constant 0 : i64
+  %step = arith.constant 1 : i64
+  %flag0 = arith.constant 0 : i32
+  %flag1 = arith.constant 1 : i32
+  %stored = arith.constant 0 : i32
+  %iv_poison = ub.poison : i64
+  %result = scf.while (%iv = %iv0) : (i64) -> i64 {
+    %next = arith.addi %iv, %step : i64
+    %exit = arith.cmpi eq, %next, %bound : i64
+    %lifted:3 = scf.if %exit -> (i64, i32, i32) {
+      scf.yield %iv_poison, %flag1, %flag0 : i64, i32, i32
+    } else {
+      scf.yield %next, %flag0, %flag1 : i64, i32, i32
+    }
+    %selector = arith.trunci %lifted#2 : i32 to i1
+    scf.condition(%selector) %lifted#0 : i64
+  } do {
+  ^bb0(%iv: i64):
+    llvm.store %stored, %output : i32, !llvm.ptr
+    scf.yield %iv : i64
+  }
+  return
+}

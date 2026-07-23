@@ -57,6 +57,17 @@ bool normalizeLiftedExit(::mlir::scf::ConditionOp condition,
       condition.getArgs().size() != loop->getNumResults())
     return false;
 
+  // The lift scaffold's after region is the identity continuation emitted by
+  // createStructuredDoWhileLoopOp(): its only op is an scf.yield forwarding
+  // every after-block argument in positional order. Any other shape means the
+  // scaffold is not lift-owned, so leave it untouched.
+  ::mlir::scf::YieldOp afterYield = getOnlyYield(loop.getAfter());
+  if (!afterYield)
+    return false;
+  if (!::llvm::equal(afterYield.getResults(),
+                     loop.getAfter().front().getArguments()))
+    return false;
+
   // Replacing an exit-edge poison is exact only when the corresponding loop
   // result is unobservable. Keep the whole scaffold if any result is live.
   if (::llvm::any_of(loop.getResults(),
