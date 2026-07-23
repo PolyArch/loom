@@ -145,6 +145,8 @@ Runtime owns transient state only:
 * concrete logical coordinates and parameters;
 * event-occurrence and completion handles;
 * pending launch, channel, and memory requests;
+* per-channel-branch endpoint order, message counters, and ordered-commit or
+  reorder state;
 * committed activation sets and active causal releases;
 * dynamic capacity and admission-calendar state;
 * buffer occupancy and credits exposed at the runtime boundary;
@@ -154,6 +156,26 @@ Runtime owns transient state only:
 These values disappear after execution and never enter artifact identity.
 They may affect when an immutable choice executes, but not which mapping choice
 is selected.
+
+### Channel Event Execution
+
+Logical channel message correspondence is owned exclusively by
+`docs/spec-dataflow-part-1-streaming.md`. Runtime does not pair producer and
+consumer thread activations. For each dynamic channel instance and logical
+branch, it executes the specified flat producer and consumer event sequences
+and delivers event `n` to receive event `n`.
+
+Repeated endpoint instances are ordered by their deterministic launch issue
+order, then by their normalized binding-local event order. Runtime may execute
+later instances speculatively, but it cannot commit their channel events ahead
+of earlier sequence contributions. Serialization, independent contexts and
+queues, or deterministic reorder state may implement this rule. A runtime
+arrival race cannot select message ownership.
+
+Endpoint occurrence ordinals, event counters, and reorder entries are
+transient execution state. They are not Mapping records, Artifact identities,
+message fields, channel sessions, or Physical Tags. Runtime cannot use them to
+choose a different route, context, service, or configuration.
 
 ## Memory And Data Movement
 

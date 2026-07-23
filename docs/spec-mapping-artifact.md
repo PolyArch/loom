@@ -580,6 +580,15 @@ external messages, and multicast use this key; multicast sinks with one
 producer remain one family. Merge, zip, reorder, and reduction require an
 explicit Dataflow actor.
 
+For a channel obligation, the Canonical Dataflow Program remains the sole
+owner of `source_map` and flat dynamic message correspondence. Mapping does not
+store an activation pairing, message ordinal, epoch, or segment record. It must
+prove that every selected route and sharing choice preserves the branch-local
+producer and consumer sequences under overlapping endpoint instances, using
+serialization, independent contexts or queues, or a Fabric-supported
+deterministic reorder mechanism as required. Physical Tags are local
+resource-sharing assignments and cannot serve as launch or message identity.
+
 An operation-service obligation has one closed owner key:
 
 ```text

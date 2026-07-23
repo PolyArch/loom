@@ -286,6 +286,51 @@ observes the same ordered sequence. Many-to-one competitive receive requires
 an explicit merge, router, reduction actor, or memory-backed work queue; it is
 not implicit channel arbitration.
 
+### 8.1 Dynamic Message Correspondence
+
+A channel pairs dynamic message events, not thread activations. For one
+dynamic channel instance, producer point `p`, consumer binding `b`, and
+consumer point `q`, the sole correspondence is:
+
+```text
+p = source_map_b(q)
+
+SendSeq(channel_instance, p)
+RecvSeq(channel_instance, b, q)
+
+RecvSeq[n] consumes SendSeq[n]
+```
+
+For one endpoint binding and logical point, the complete dynamic event
+sequence concatenates each thread-instance contribution in the deterministic
+dynamic issue order of the enclosing thread launches. Within one thread
+instance, the normalized binding-local order is the order already derived from
+structured control. An instance may contribute zero, one, or several events.
+There is no one-to-one producer-activation to consumer-activation pairing and
+no activation-owned message segment.
+
+Conceptually, an event position is the total cardinality of all preceding
+endpoint-instance contributions plus the event's local ordinal. This position
+is derived semantics, not an IR value, Artifact record, payload sideband,
+Physical Tag, session, or epoch. A static proof may represent the position
+symbolically. Runtime may maintain transient counters and ordered-commit state,
+but those values do not become program identity.
+
+Overlapping endpoint instances may execute physically out of order, but their
+messages must commit in the defined sequence. A physical implementation may
+serialize them or use independent contexts, queues, and deterministic reorder
+state. If the program provides no deterministic total order for occurrences
+sharing one endpoint sequence, it must use separate channels or an explicit
+merge or reorder actor; otherwise publication fails closed. Runtime arrival
+order never defines logical message order.
+
+This rule permits rate conversion. For example, one producer instance may send
+four messages while four ordered consumer instances each receive one; the four
+receive events consume producer events zero through three. Introducing
+activation segments would incorrectly reject this program. Multicast applies
+the same rule independently to every consumer branch, so branch event `n`
+observes producer event `n`.
+
 At a graph launch, channel input bindings derive graph-local stream inputs and
 channel output bindings consume graph-local stream outputs. Channel handles do
 not enter the graph body. A graph-local stream close is not a channel message,
@@ -297,12 +342,16 @@ Mapping selects a physical path or network that preserves FIFO behavior. It
 may use NoC links, switches, buffers, virtual channels, `fabric.fifo`, or a
 memory-backed ordered queue when Fabric declares the capability. The logical
 channel does not prescribe one physical FIFO, route, capacity, or protocol.
+Mapping must preserve the dynamic event correspondence above when endpoint
+instances overlap. Physical Tags remain local resource-sharing interpretation
+keys and cannot encode launch or message identity.
 
 Stable verification anchors cover payload-type rejection, fresh creation,
 send/receive placement and type agreement, one-producer/multi-consumer source
-mapping, ordered blocking behavior, and the absence of hidden EOS or
-capacity-visible behavior. Tests do not enumerate physical transports,
-message types, or report formatting.
+mapping, repeated-launch event ordering, rate conversion, ordered blocking
+behavior, and the absence of hidden EOS or capacity-visible behavior. Tests do
+not enumerate physical transports, message types, activation-count matrices,
+or report formatting.
 
 ## 9. References
 

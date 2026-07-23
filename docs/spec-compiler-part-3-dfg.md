@@ -316,9 +316,14 @@ each rule lands in IR.
    Branches may have unequal or empty site sets, and a later branch selector
    may depend on an earlier input event. Enclosing loops repeatedly activate
    the same schedule, so one or several static body sites may each fire
-   dynamically. Endpoint sites nested under `scf.parallel` or `scf.forall`
-   have no inferred traversal order and fail before publication. Unselected
-   or non-fixed graph-owned parallel forms also fail closed.
+   dynamically. Across repeated thread launches, each endpoint binding and
+   logical point concatenates these per-instance sequences in deterministic
+   launch issue order. Channel delivery pairs the resulting producer and
+   consumer sequences by message ordinal after applying `source_map`; it does
+   not pair thread activations or create activation-owned segments. Endpoint
+   sites nested under `scf.parallel` or `scf.forall` have no inferred
+   traversal order and fail before publication. Unselected or non-fixed
+   graph-owned parallel forms also fail closed.
 7. `dataflow.thread` and `dataflow.graph` definitions are both
    `IsolatedFromAbove`. No operation inside either definition's body
    may directly use an SSA value defined in the surrounding scope.
@@ -886,6 +891,23 @@ traits:
   value readiness, launch `dependencies`, channel transport, and
   `dataflow.thread.yield` remain their existing finer- or coarser-grained
   mechanisms and must not acquire redundant waits.
+* A channel message may cover a retirement-related causal dependency only when
+  analysis proves one exact dynamic message relation under
+  `docs/spec-dataflow-part-1-streaming.md`: the exact channel instance and
+  endpoint bindings, the consumer-to-producer `source_map`, applicable path
+  predicates, producer publication and consumer observation positions, and
+  equality of the symbolic producer and consumer event positions. Coordinate
+  equality, static-site equality, or identity `source_map` alone never proves
+  that two repeated launch occurrences use the same message. Unknown
+  cardinality or ordering fails closed and retains the required retirement
+  dependency.
+* `loom.spatial_region` is a transparent structured boundary. A blocking
+  receive inside that region cannot be justified by a send that follows the
+  region in the same stored-program strand merely because the published graph
+  launch becomes asynchronous. Such a transformation would turn an
+  inline-semantics deadlock into progress. A resulting retirement/send cycle
+  therefore identifies a deadlocking or incorrectly cut candidate; lowering
+  must not remove a wait by inventing a same-activation channel witness.
 
 * `dataflow.load` and `dataflow.store`.
   - These dataflow primitives carry explicit memory-effect traits:
@@ -1984,9 +2006,12 @@ contract:
   converting region-local endpoints to the canonical graph stream network.
   One binding owns one ordered dynamic event sequence: sequential and
   structured mutually exclusive static sites share a fixed ordinal schedule,
-  with inactive choice sites filtered from that sequence. It does not invent
-  routing, endpoint creation, a parallel channel mode, or a traversal order
-  for ambiguous parallel endpoint sites.
+  with inactive choice sites filtered from that sequence. Repeated launch
+  instances concatenate their contributions in deterministic issue order;
+  producer and consumer events correspond by flat sequence ordinal, not by a
+  one-to-one activation relation. Publication does not invent routing,
+  endpoint creation, a parallel channel mode, or a traversal order for
+  ambiguous parallel endpoint sites.
 
 ## 11. References
 
