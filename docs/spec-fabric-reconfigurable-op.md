@@ -77,7 +77,17 @@ resource can never become an implicit union of several families.
 enabled by the concrete resource. `hw_params` restricts that subset to the
 typed parameter domains and correlations implemented by the resource. They
 are two structured projections of one capability relation, not independent
-authorities. Verification must reject:
+authorities.
+
+In particular, `op_list` is not the operation currently programmed for one
+workload. TechMapping selects one exact admitted actor operation and parameter
+point. Finalization derives that selection as typed `sw_configs`, and
+`ConfigurationABI` alone encodes it as physical bits. Canonical unconfigured
+Fabric therefore contains the complete enabled subset but no workload-selected
+member. A singleton `op_list` requires no operation selector; its configured
+field set may contain only another necessary parameter or may be empty.
+
+Verification must reject:
 
 * an `op_list` member outside the selected implementation family;
 * an HSG member used by matching but not enabled by this concrete resource;
@@ -96,6 +106,47 @@ typed semantic parameter domains, configurable arity and port-selection
 constraints, and legal correlations among configuration fields. It describes
 a compact relation. It does not enumerate every exact actor, constant,
 predicate, arity, or configuration bit pattern.
+
+For specification purposes, `FamilyCapabilityParams(F)` denotes the one closed
+typed `hw_params` record schema selected by implementation family `F`. This is
+notation, not another IR object, Artifact, registry, or generic container. The
+family descriptor binds `F` to that schema exactly once. Family-specific
+records may compose reusable typed atoms such as:
+
+```text
+IntegerWidthSet
+FloatFormatSet
+FloatBehaviorProfile
+CastRelation
+PredicateSet
+```
+
+The records contain only fields interpreted by their family and enabled
+operation schemas. There are no unknown keys, optional field bags, generic
+predicates, or independently editable configuration-field tables. For
+example:
+
+```text
+ScalarIntegerAddSubParams {
+  integer_widths
+}
+
+ScalarIntegerCompareMinMaxParams {
+  operand_widths
+  comparison_predicates
+}
+
+ScalarIntegerCastParams {
+  source_widths
+  destination_widths
+  registered_schema_valid_pair_relation
+}
+```
+
+The cast relation is a typed rule over the two finite domains rather than a
+Cartesian enumeration. `op_list` remains the only concrete enabled-member
+projection: these parameter records do not repeat add/sub, compare/min/max, or
+cast operation membership.
 
 For the initial scalar compute families, the family-level rule admits scalar
 shapes while the concrete relation owns supported integer widths, floating
@@ -123,7 +174,11 @@ must satisfy `W >= N`. Low-bit-aligned widening zero-fills high bits and legal
 narrowing truncates high bits without crossing below the exact semantic width.
 
 `sw_configs` is not hardware capability. It is one typed configured-field set
-derived after TechMapping and SpatialMapping have selected all authoritative facts.
+derived after TechMapping and SpatialMapping have selected all authoritative
+facts. A semantic field exists only when at least two admitted points require
+different configured behavior in this physical resource. A width that merely
+limits admission, for example, need not become a configuration field when the
+same modular datapath realizes every admitted width without selecting it.
 Neither `hw_params` nor canonical Fabric stores a workload's selected value,
 mask, predicate, topology route, or raw configuration bits.
 
@@ -144,6 +199,46 @@ refinement domain. One actor transition may atomically claim multiple operand,
 pipeline, and result-holding states. Mapping may select a declared refinement
 and bind typed workload values but cannot split the pattern or define another
 scheduler.
+
+## Stateless And Stateful Execution Contracts
+
+There is no universal `fabric.op` pipeline or a parallel state-machine
+framework. Every concrete operation resource uses the existing Fabric-owned
+`ResourceState`, capacity, `UsePattern`, timing, progress, and grant
+abstractions. The registered software operation schema remains the sole owner
+of mathematical or logical actor transitions.
+
+For the initial `CoreAluFu` and arithmetic portions of `MacFu`, each stateless
+scalar compute resource uses one registered elastic result stage, which is
+also its sole result holding slot. Acceptance consumes all required operands
+atomically only when that stage has capacity. A firing accepted in local cycle
+`t` publishes its result in cycle `t + 1`. The latency is one cycle and the
+initiation interval is one under downstream progress. A stalled result remains
+stable. Consumption of one held result and acceptance of its replacement may
+occur in the same cycle. There is no hidden input queue or drain.
+
+This baseline does not apply to stateful operation schemas such as
+`dataflow.stream`, `dataflow.carry`, `dataflow.invariant`, or
+`dataflow.gate`. Their operation schemas uniquely own condition-dependent
+operand consumption, result production, and logical state transitions. A
+concrete Fabric resource owns only the physical state capacity, holding
+resources, atomic transition use patterns, exact transition timing, and
+backpressure behavior needed to implement that schema.
+
+For a stateful transition, blocked result capacity cannot cause early operand
+consumption or a state update. Only results produced by the selected
+transition create output obligations; an inactive result never backpressures
+that transition. Physical state and already published results remain stable
+while blocked. Whether a transition with no result, a result-producing
+transition, or a following transition can advance in a given cycle is stated
+by that operation's exact use patterns rather than inferred from the
+stateless scalar baseline.
+
+An FU containing stateful and stateless resources does not become one macro
+firing. Each configured Canonical Dataflow actor transition executes
+independently through its selected operation resource. `MacFu` imports the
+canonical carry capability for recurrence templates, but the carry family and
+its stateful resource contract remain owned by the `LoopControlFu` catalog.
 
 ## Resolved Capability View
 
@@ -344,8 +439,14 @@ Anchor tests should pin only the stable semantic boundaries:
   software configuration accept it;
 * one registered operation schema may belong to two implementation families,
   while each concrete resource accepts only members of its explicit family;
+* a multi-member `op_list` describes hardware capability while one exact
+  selected member is derived in `sw_configs`, and a singleton capability has
+  no redundant operation-selector field;
 * mutually exclusive branches require explicit FU demux/mux topology, and
   co-location does not absorb an external edge; and
+* one stateless scalar firing obeys its exact one-cycle elastic contract while
+  one stateful transition is governed by its operation-specific state and use
+  patterns; and
 * duplicate normalized semantic assignments are rejected while a declared
   semantic-preserving physical refinement leaves the software function
   unchanged.

@@ -26,6 +26,13 @@ the resource's actual parameterized capability. HSG membership alone neither
 enables every family member nor proves that multiple activations are mutually
 exclusive in resource time.
 
+`op_list` is hardware capability, not the operation selected for one
+workload. TechMapping selects one exact admitted operation and actor point;
+finalization derives the corresponding typed `sw_configs`. Canonical
+unconfigured Fabric stores no workload-selected member. A singleton
+`op_list` therefore needs no operation-selector field, although another
+semantic parameter may still require configuration.
+
 Hardware parameters and an exact selected software configuration jointly
 determine a supported configured function. Neither HSG membership nor an
 operation name appearing in `op_list` permits a matcher to infer types,
@@ -136,6 +143,13 @@ Fabric verification enforces the following:
 A singleton capability remains legal. A family with one enabled member does
 not need synthetic multi-operation machinery. A concrete resource does not
 need to enumerate every exact semantic point in its relation.
+
+Each family descriptor also selects one closed typed `hw_params` record
+schema. Those schemas may compose reusable atoms such as an integer-width set,
+floating-format set, floating-behavior profile, or cast relation, but they are
+not an open property bag or predicate language. The descriptor-to-schema
+binding is generated with the family registry and is not repeated by a
+backend.
 
 Canonical Fabric stores capability only. TechMapping selects a capability
 template and exact actor/op/port/boundary correspondence. SpatialMapping may

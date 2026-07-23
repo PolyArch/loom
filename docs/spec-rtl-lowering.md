@@ -69,6 +69,18 @@ and exact Fabric contract rather than a second operation-name support table.
 Missing provider support is typed `Unsupported`; a partially lowered or
 semantically substituted implementation is never produced.
 
+The provider must distinguish the exact resource contract from the selected
+operation semantics. The initial scalar `CoreAluFu` and arithmetic `MacFu`
+resources lower as the Fabric-declared one-stage registered elastic resources.
+That implementation rule is not a default wrapper for every `fabric.op`.
+Stateful operations such as `dataflow.stream`, `dataflow.carry`,
+`dataflow.invariant`, and `dataflow.gate` require providers that implement
+their registered actor transitions together with their exact Fabric-owned
+state capacity, atomic use patterns, transition timing, result holding, and
+backpressure contract. A generic shell may not consume an inactive operand,
+publish an inactive result, advance logical state while blocked, or convert
+an operation-specific state machine into a stateless pipeline.
+
 ## Implementation Recipes
 
 Implementation choices are classified by their first observable difference:

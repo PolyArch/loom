@@ -245,10 +245,13 @@ These values are resolved inputs to one template, not fields persisted in
 Fabric in addition to the resources they generate. Exact per-helper resource
 inventory, hardware parameters, switch construction, memory-port capacity, and
 buffer capacities are part of the same versioned family contract and must be
-fixed before that catalog version is implementation-complete. Helper resource
-tables reference normative `ImplementationFamilyId` values; operation-family
-membership remains owned by the HSG registry. They do not duplicate member
-lists, spell operation names as dispatch keys, or define backend modes.
+fixed before that catalog version is implementation-complete. The
+`CoreAluFu` and `MacFu` scalar portions are fixed below; the other helpers,
+switch construction, and remaining capacities are not implied by those
+definitions. Helper resource tables reference normative
+`ImplementationFamilyId` values; operation-family membership remains owned by
+the HSG registry. They do not duplicate member lists, spell operation names as
+dispatch keys, or define backend modes.
 
 ### General-Purpose FU Library
 
@@ -355,6 +358,83 @@ An LLVM `fmuladd` spelling is never sufficient to select the fused template;
 canonical actor semantics determine whether the input is `math.fma` or an
 explicit multiply-add graph.
 
+#### CoreAluFu And MacFu Concrete Scalar Contract
+
+The initial scalar helpers use exact family-specific typed capability records.
+They do not use arbitrary-width integers, a generic semantic parameter bag, or
+one independently editable backend mode table.
+
+| Implementation family | Concrete builtin parameter domain |
+| --------------------- | --------------------------------- |
+| `ScalarIntegerAddSub` | integer widths `{8, 16, 32, 64}` |
+| `ScalarIntegerLogic` | integer widths `{1, 8, 16, 32, 64}` |
+| `ScalarIntegerShift` | integer widths `{8, 16, 32, 64}` |
+| `ScalarIntegerCompareMinMax` | operand widths `{8, 16, 32, 64}` and all registered schema-valid integer comparison predicates |
+| `ScalarValueSelect` | `i1` condition and value types `i1/i8/i16/i32/i64/f16/bf16/f32/f64` |
+| `ScalarIntegerCast` | source and destination widths `{1, 8, 16, 32, 64}` under the registered schema-valid pair relation |
+| `ScalarBitReinterpret` | equal-total-width pairs among the enabled scalar types |
+| `ScalarFloatSign` | formats `{f16, bf16, f32, f64}` and the strict floating behavior profile |
+| `ScalarFloatAddSub` | formats `{f16, bf16, f32, f64}` and the strict floating behavior profile |
+| `ScalarFloatCompareMinMax` | formats `{f16, bf16, f32, f64}`, all registered schema-valid floating comparison predicates, and the strict floating behavior profile |
+| `ScalarFloatWidthCast` | source and destination formats `{f16, bf16, f32, f64}` under the registered schema-valid widening or narrowing relation |
+| `ScalarIntegerToFloat` | integer widths `{8, 16, 32, 64}`, formats `{f16, bf16, f32, f64}`, and the strict floating behavior profile |
+| `ScalarFloatToInteger` | formats `{f16, bf16, f32, f64}`, integer widths `{8, 16, 32, 64}`, and the strict floating behavior profile |
+| `ScalarIntegerMultiply` | integer widths `{8, 16, 32, 64}` |
+| `ScalarFloatMultiply` | formats `{f16, bf16, f32, f64}` and the strict floating behavior profile |
+| `ScalarFloatFma` | formats `{f16, bf16, f32, f64}` and exact single-rounding strict fused semantics |
+
+Resolved index casts use the compiler target's exact 32-bit or 64-bit index
+width before capability matching. Boolean `i1` is admitted only by families
+whose ordinary semantics require boolean data or conversion; it does not
+broaden arithmetic, shift, multiply, or integer/floating conversion into an
+arbitrary `iN` capability.
+
+The strict floating behavior profile follows the registered operation
+semantics. Ordinary arithmetic uses round-to-nearest-ties-to-even, preserves
+subnormals and signed zero, and performs no implicit flush-to-zero or
+fast-math transformation. Conversions follow their exact registered rounding
+and exceptional-value semantics rather than inheriting an arithmetic rounding
+rule. A strict implementation may realize a relaxed actor only through a proof
+supplied by the registered operation schema. Operation identity continues to
+distinguish the different floating min/max NaN contracts.
+
+Each concrete operation uses 64-bit untagged scalar data ports. Conditions are
+one-bit ports. A comparison result occupies the low bit of a 64-bit physical
+result and zero-fills the remaining bits. The helper boundary shapes are:
+
+```text
+CoreAluFu outer:  bits<128>, bits<128>, bits<128> -> bits<128>
+CoreAluFu inner:  bits<64>,  bits<64>,  bits<1>   -> bits<64>
+
+MacFu outer:      bits<128>, bits<128>, bits<128>, bits<128> -> bits<128>
+MacFu inner:      bits<64>,  bits<64>,  bits<64>,  bits<1>   -> bits<64>
+```
+
+The third Core input is the condition source for value selection. The fourth
+Mac input is the phase source for recurrence templates. Exact TechMapping
+correspondence may map software operand ordinals to these physical roles; the
+listed order is the stable helper role order, not a change to software
+operation syntax. Unused helper ports have no token, production, or
+backpressure obligation in a configured template.
+
+Builtin expansion constructs anonymous concrete FUs so the existing FU input
+truncation and output widening rules explicitly connect the 128-bit PE
+transport boundary to the 64-bit data and one-bit condition network. Internal
+data `fabric.mux` and `fabric.demux` resources use 64-bit ports. No implicit
+adapter, hidden drain, or 128-bit arithmetic datapath is inferred.
+
+Every stateless scalar compute resource in these two helpers has one
+registered elastic result stage; that stage is its sole result holding slot.
+It has latency one and initiation interval one under downstream progress,
+retains a stalled result, and supports same-cycle result consumption and
+replacement acceptance. The multi-operation template timing is derived from
+its selected resources and explicit topology.
+
+This stateless contract does not define the imported `dataflow.carry`
+resource. Accumulator templates become timing-complete only with the exact
+stateful carry capability owned by the `LoopControlFu` catalog. The carry
+operation schema remains the sole owner of its logical transition semantics.
+
 ### Payload And Type Floor
 
 Every preset in the initial family uses a 128-bit ordinary PE and
@@ -362,9 +442,10 @@ intra-SpatialCore data-transport payload capacity. Narrower scalar values
 occupy the low payload bits under the Fabric width rules. Physical Tags remain
 a separate field and never contribute payload capacity.
 
-The common scalar type floor covers integer and resolved index widths through
-64 bits and floating-point element types `f16`, `bf16`, `f32`, and `f64`,
-subject to each registered operation schema. The fixed-vector floor covers
+The common scalar type floor covers the exact integer and resolved-index
+domains above through 64 bits, plus floating-point element types `f16`,
+`bf16`, `f32`, and `f64`, subject to each registered operation schema. The
+fixed-vector floor covers
 row-major-flattened payloads no wider than 128 bits, including the maximal
 lane modes:
 
@@ -513,6 +594,12 @@ The stable Builder anchors are deliberately small:
    and rejects an equal-width semantic type outside that capability.
 9. FU materialization and reverse synthesis satisfy the configured-function
    round-trip contract for both equality and strict-superset outcomes.
+10. The scalar helper boundary preserves the 128-bit PE interface while its
+    internal 64-bit data and one-bit condition roles obey low-bit
+    normalization.
+11. A stateless scalar resource exhibits the declared one-cycle elastic
+    timing, while an imported stateful carry is rejected as complete until its
+    separate LoopControl resource contract is available.
 
 These anchors test the public boundary and determinism. They do not require a
 fixture for every helper, topology, operation ordering, generated name, or
