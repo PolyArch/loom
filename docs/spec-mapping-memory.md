@@ -22,8 +22,12 @@ The persistent `LogicalMemoryRootRef` is imported from the exact
 Dataflow-owned entity catalog. It identifies one static root role, not one
 runtime allocation. A `CanonicalMemoryActorRef` is the exact Dataflow
 `ActorRef` after memory-kind validation. A logical memory view is a
-root-preserving typed structural reference resolved by the Dataflow importer;
-Mapping does not assign another root, actor, or view ID.
+root-preserving typed structural reference
+`(LogicalMemoryRootRef, canonical root-local view ordinal)` resolved by the
+Dataflow importer. `LogicalMemoryRootOrViewRef`, `ContextualActorRef`, and
+`MemoryExposureRef` are the closed forms owned by
+`docs/spec-compiler-part-3-dfg.md`; Mapping does not assign another root,
+actor, view, contextual-actor, or exposure ID.
 
 Runtime may bind two imported root roles to one object through explicit alias
 topology, and each fresh allocation occurrence combines its static root
@@ -51,8 +55,8 @@ MemoryEngineBinding + MemoryOperationEntry + optional MemoryBinding
     -> physical memory service region
 
 ExposureEntry + MemoryBinding
-  software memory output -> subordinate/provider terminal + dispatch target
-                         -> physical memory service region
+  MemoryExposureRef -> subordinate/provider terminal + dispatch target
+                    -> physical memory service region
 ```
 
 These relations do not require three parallel top-level record families.
@@ -172,11 +176,13 @@ multiple `MemoryBinding` rows unless the logical interval or physical region
 actually differs.
 
 Each `MemoryBinding` owns its `ExposureEntry` children. An Exposure Entry binds
-one software memory-output obligation to one selected subordinate/provider
-terminal, its existing Memory Binding, and one closed typed
+one exact `MemoryExposureRef` to one selected subordinate/provider terminal,
+its existing Memory Binding, and one closed typed
 `LocalMemoryServiceRef | ManagerEndpointRef` dispatch target. The service path
 belongs to route or service realization; provider-decode rows are derived
-configuration.
+configuration. An exposure provides a capability boundary. It is not a
+`ServiceMemberRef`, creates no Canonical Service leg, and receives no
+independent ID.
 
 ### MemoryEngineBinding And MemoryOperationEntry
 
@@ -306,8 +312,7 @@ ThreadExecutionBinding
   RootThreadLaunchRef -> BindingRelation<AccCoreOccurrenceRef>
 
 GraphExecutionBinding
-  (ThreadExecutionBindingKey, StaticGraphLaunchRef)
-    -> BindingRelation<SpatialMappingImportRef>
+  RootedGraphLaunchRef -> BindingRelation<SpatialMappingImportRef>
 ```
 
 Relations are total on the Canonical Dataflow Program's may-domain and use
@@ -323,9 +328,10 @@ exact `SystemServiceObligationKey` variants and wire.
 
 For memory, the `OperationServiceObligationFamilyKey` contains only one
 `LogicalMemoryRootOrViewRef` or `FenceActorFamilyRef`. The exact Dataflow
-program derives the complete addressed-operation and exposure member set for
-a logical-memory owner, or the exact contract for a fence owner. Neither set
-nor contract is copied into the key. Memory access and exposure therefore
+program derives the complete contextual addressed-operation member set and
+the separate complete `MemoryExposureRef` set for a logical-memory owner, or
+the exact contract and contextual-member set for a fence owner. None of these
+sets or contracts is copied into the key. Memory access and exposure therefore
 share one owner and cannot select contradictory services.
 
 Each `ServiceRealization` contains canonical owner-local `ServicePlan` values
@@ -333,7 +339,8 @@ and a total plan-selection relation. A plan contains:
 
 * one closed target-binding variant: logical-service interval to Fabric
   service region for addressed memory, or fence family to one
-  MemoryConsistency domain;
+  MemoryConsistency domain; each memory-region target owns its complete
+  provider-terminal bindings keyed by `MemoryExposureRef`;
 * one `TransferLegRealization` per member-relative
   `CanonicalServiceLegKey` mechanically required by the Canonical Service
   Schema; and
@@ -341,7 +348,9 @@ and a total plan-selection relation. A plan contains:
 
 A fence plan has exactly one consistency target. The selected domain may be a
 Fabric-declared composite domain, but Mapping cannot replace it with several
-unrelated targets and a hidden join.
+unrelated targets and a hidden join. An exposure binding has no
+`TransferLegRealization`; the addressed actors that use the exposed capability
+own any request and response legs.
 
 The Canonical Service Schema, not Mapping or a protocol name, defines memory
 request, write data, read data, response, completion, and any other operation

@@ -246,7 +246,7 @@ Using that projection, the base verifier checks:
   channel, memory, and external obligations;
 * exactly one ThreadExecutionBinding per root launch and one
   GraphExecutionBinding per reachable static graph launch in each root
-  context;
+  context, keyed by the Dataflow-owned `RootedGraphLaunchRef`;
 * total, single-valued, well-typed `B_thread` and `B_graph` relations over
   Dataflow-owned may-domains, including exact default-complement rules;
 * agreement between every selected SpatialMapping target and the AccCore
@@ -262,6 +262,9 @@ Using that projection, the base verifier checks:
 * exact derivation of each obligation's complete canonical member, sink, and
   `CanonicalServiceLegKey` universes from the workload scope and Canonical
   Service Schema;
+* exact derivation and binding of every `MemoryExposureRef` through its
+  logical-memory owner, with no exposure admitted as a `ServiceMemberRef` or
+  assigned a service leg;
 * reachable execution contexts, complete plan selection, valid service
   targets, canonical service legs, flat route-tree continuity, multicast
   ownership, and physical refinements;

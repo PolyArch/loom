@@ -1900,6 +1900,194 @@ typed local ID on the wire. The full meaning still includes that binding.
 Wrong-kind, foreign-artifact, missing, duplicate, out-of-range, or
 noncanonical IDs are invalid.
 
+### Closed Structural Reference Catalog
+
+Objects below the five entity kinds use closed owner-relative structural
+references. They do not receive another `EntityId`, and consumers must not
+replace them with symbol paths, operation positions, generic field paths, or
+native dense indices.
+
+A graph launch is interpreted in the context of one root thread launch:
+
+```text
+RootedGraphLaunchRef =
+  (RootThreadLaunchRef, StaticGraphLaunchRef)
+```
+
+The referenced static graph-launch site must belong to the thread definition
+resolved from the root launch. This context is required because one thread
+definition may be used by several root launches with different channel
+bindings, memory roots, execution bindings, or physical targets. It remains a
+static structural reference, not a dynamic invocation identity.
+
+Graph-local token endpoints use the following closed forms:
+
+```text
+GraphIngressTokenRef =
+    Start(GraphRef)
+  | ValueInput(GraphRef, value-input ordinal)
+  | StreamInput(GraphRef, stream-input ordinal)
+
+GraphEgressTokenRef =
+    ValueOutput(GraphRef, value-output ordinal)
+  | StreamOutput(GraphRef, stream-output ordinal)
+  | CompletionFrontier(GraphRef, completion-frontier ordinal)
+
+ActorTokenResultRef  = (ActorRef, result ordinal)
+ActorTokenOperandRef = (ActorRef, operand ordinal)
+
+CanonicalGraphProducerEndpointRef =
+    GraphIngressTokenRef
+  | ActorTokenResultRef
+
+CanonicalGraphConsumerEndpointRef =
+    ActorTokenOperandRef
+  | GraphEgressTokenRef
+```
+
+The Dataflow actor-port classifier must validate every actor ordinal as a
+token-plane port. A memory capability operand or result is never admitted by
+these unions. The exact producer endpoint and Dataflow def-use relation derive
+one complete canonical sink set. TechMapping may remove sinks proven internal
+to a selected realization, but it cannot change endpoint identity or create a
+second software-edge catalog.
+
+The thread/graph ABI exposes one-message boundary transfers separately from
+thread-level channels:
+
+```text
+RootThreadBoundaryTransferRef =
+    Start(RootThreadLaunchRef)
+  | ValueInput(RootThreadLaunchRef, value body-operand ordinal)
+  | Completion(RootThreadLaunchRef)
+
+GraphLaunchBoundaryTransferRef =
+    Start(RootedGraphLaunchRef)
+  | ValueInput(RootedGraphLaunchRef, value-input ordinal)
+  | ValueResult(RootedGraphLaunchRef, value-result ordinal)
+  | Done(RootedGraphLaunchRef)
+```
+
+Root-thread value inputs exclude channel handles and memory capabilities.
+Extents and derived coordinates belong to the Thread Dispatch parameter
+contract rather than this message catalog. Each boundary-transfer reference
+owns exactly one source terminal and one sink terminal. Root start and value
+inputs flow from the runtime boundary to the selected InstructionCore; root
+completion flows back to runtime retirement. Graph start and value inputs flow
+from the selected InstructionCore to its SpatialCore; graph value results and
+done flow in the reverse direction. Explicit thread-token dependencies remain
+part of Thread Dispatch and do not create a second completion-message graph.
+
+Channel endpoints are:
+
+```text
+ThreadChannelSendSiteRef =
+  (RootThreadLaunchRef, canonical send-site ordinal)
+
+ThreadChannelReceiveSiteRef =
+  (RootThreadLaunchRef, canonical receive-site ordinal)
+
+ChannelProducerRef =
+    GraphStreamOutput(RootedGraphLaunchRef, stream-output ordinal)
+  | ThreadSend(ThreadChannelSendSiteRef)
+
+ChannelConsumerRef =
+    GraphStreamInput(RootedGraphLaunchRef, stream-input ordinal)
+  | ThreadReceive(ThreadChannelReceiveSiteRef)
+```
+
+Send and receive ordinals index Dataflow-owned canonical endpoint inventories
+for the rooted thread. They are not textual positions. The exact channel
+relation and each consumer-owned `source_map` derive the complete canonical
+consumer set for one producer. Dynamic message correspondence remains the
+ordered event relation specified by
+`docs/spec-dataflow-part-1-streaming.md`; no message ordinal, activation
+pairing, epoch, or Physical Tag enters these static references.
+
+The complete transfer-terminal unions are:
+
+```text
+CanonicalProducerTerminalRef =
+    RootThreadBoundarySource(RootThreadBoundaryTransferRef)
+  | GraphLaunchBoundarySource(GraphLaunchBoundaryTransferRef)
+  | ChannelProducer(ChannelProducerRef)
+
+CanonicalSinkTerminalRef =
+    RootThreadBoundarySink(RootThreadBoundaryTransferRef)
+  | GraphLaunchBoundarySink(GraphLaunchBoundaryTransferRef)
+  | ChannelConsumer(ChannelConsumerRef)
+```
+
+A boundary source derives its one paired sink. A channel producer derives its
+complete non-empty sorted consumer set. Graph value results and later graph
+value inputs remain two distinct InstructionCore-facing ABI transfers. A
+compiler that wants direct graph-to-graph streaming must represent it with a
+channel/stream or fuse the graphs; Mapping cannot invent that rewrite.
+
+Memory references remain on the capability plane:
+
+```text
+LogicalMemoryViewRef =
+  (LogicalMemoryRootRef, canonical root-local view ordinal)
+
+LogicalMemoryRootOrViewRef =
+    Root(LogicalMemoryRootRef)
+  | View(LogicalMemoryViewRef)
+
+ContextualActorRef =
+  (RootedGraphLaunchRef, ActorRef)
+
+MemoryExposureRef =
+  (RootedGraphLaunchRef, graph memory-result ordinal)
+
+FenceActorFamilyRef =
+  ActorRef validated as dataflow.fence
+```
+
+The root-local view inventory owns each root-preserving static view relation.
+Instantiating one reusable graph view under different logical roots therefore
+produces distinct structural references in the corresponding root
+inventories, without allocating view entities. A contextual actor must belong
+to the graph called by its rooted launch. A memory exposure identifies a
+launch-contextual graph memory result and resolves through the Dataflow memory
+relation to exactly one logical root or view.
+
+System service members use one closed obligation-relative union:
+
+```text
+ServiceMemberRef =
+    MessageTransfer
+  | AddressedMemoryActor(ContextualActorRef)
+  | FenceActor(ContextualActorRef)
+```
+
+`MessageTransfer` is the singleton member of a transfer obligation, including
+multicast. Addressed-memory and fence members derive their exact Canonical
+Service kind and local legs from the actor semantics. A memory exposure is not
+a service member and has no request or response leg; it is a capability
+boundary selected by a service target binding or Mapping exposure entry.
+
+System resource-time anchors reuse transfer terminals:
+
+```text
+StaticTransferEventRef =
+    Produced(CanonicalProducerTerminalRef)
+  | Consumed(CanonicalSinkTerminalRef)
+
+EventFamilyKey =
+  (StaticTransferEventRef,
+   canonical projection of Dataflow-owned logical coordinates
+   and launch parameters)
+```
+
+There is no static-event `EntityId`. The projection is selected from the
+Dataflow-owned logical signature and denotes a static event family. Runtime
+may append a transient occurrence handle, but that handle never enters
+Artifact identity, Mapping, channel ordering, or Physical Tag assignment.
+SpatialMapping-local actor activity remains owned by the SpatialMapping and is
+rebased to these System-visible boundary events only by the derived
+SystemMapping closure.
+
 ### Canonical Semantic Relation Graph
 
 Before labeling, the finalizer removes every pre-existing
@@ -1958,11 +2146,14 @@ assignment. A mutable authoring program may omit IDs; any supplied values are
 discarded on the private finalization clone rather than trusted.
 
 One Dataflow-owned read-only `CanonicalDataflowProgramView` projects the five
-typed ID maps, canonical actor and endpoint relations, launch-callee closure,
-and logical-memory root/view relations. Its native indices and lookup tables
-are disposable caches. Mapping's draft/search structures and simulator event
-tables may cache this view, but cannot define another persistent graph,
-actor, launch, or memory-root catalog.
+typed ID maps, every closed structural-reference inventory above, canonical
+actor and endpoint relations, rooted launch contexts, channel producer and
+consumer relations, launch-callee closure, logical-memory root/view and
+exposure relations, service-member derivation, and static transfer events.
+Its native indices and lookup tables are disposable caches. Mapping's
+draft/search structures and simulator event tables may cache this view, but
+cannot define another persistent graph, actor, launch, terminal, member,
+event, or memory catalog.
 
 `LogicalMemoryRootRef` identifies a static software root role, not one runtime
 object. An imported runtime object is bound by the exact launch and runtime
@@ -1983,7 +2174,15 @@ Anchor-level tests cover:
 * equal canonical bytes and valid unique IDs for isomorphic symmetric inputs,
   without asserting a source-handle-to-slot correspondence;
 * rejection of stale, missing, duplicate, noncanonical, foreign, or wrong-kind
-  references and unresolved symbol or root relations; and
+  references and unresolved symbol or root relations;
+* distinct rooted graph-launch references when one thread definition is
+  reached from two root launches;
+* token-plane endpoint rejection for a memory-capability ordinal and
+  out-of-range actor or boundary ordinals;
+* complete canonical sink derivation for one multicast channel producer;
+* rejection when a memory exposure is interpreted as a service member or
+  assigned a service leg;
+* static transfer-event round trip without a static event entity ID; and
 * DFG-sim actor import from an exact Canonical Dataflow Artifact without any
   Mapping Artifact.
 

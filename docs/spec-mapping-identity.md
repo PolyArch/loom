@@ -4,6 +4,8 @@ This document is the identity and reference authority for persistent Mapping
 artifacts and System service obligation keys. `docs/spec-mapping-artifact.md`
 owns profile records and root assembly. `docs/spec-fabric-identity.md` owns
 the closed Fabric-local entity and structural-reference catalog.
+`docs/spec-compiler-part-3-dfg.md` owns the closed Dataflow-local entity and
+structural-reference catalog.
 `docs/spec-fabric-system-adg.md` owns Canonical Service Schema member and leg
 semantics.
 `docs/spec-full-stack-traceability.md` owns the repository-wide Common
@@ -194,15 +196,16 @@ persistent entity.
 
 A subordinate object that is uniquely and mechanically recoverable from an
 identified owner uses a typed structural key instead of a redundant
-`EntityId`. Confirmed forms include:
+`EntityId`. Dataflow imports use the exact `RootedGraphLaunchRef`,
+`ActorTokenResultRef`, `ActorTokenOperandRef`, `GraphIngressTokenRef`,
+`GraphEgressTokenRef`, producer/sink terminal, memory view/exposure, service
+member, and static transfer-event forms owned by
+`docs/spec-compiler-part-3-dfg.md`. Mapping does not restate their variants.
+Fabric and Mapping-owned examples include:
 
 ```text
-actor result       = actor EntityId + result ordinal
-actor operand      = actor EntityId + operand ordinal
-graph boundary     = graph EntityId + boundary kind + port ordinal
 FU template port   = FabricFuTemplateRef + direction + port ordinal
 FU occurrence port = FabricFuOccurrenceRef + direction + port ordinal
-software edge      = typed producer endpoint + typed consumer endpoint
 point connection   = source hardware endpoint + destination hardware endpoint
 switch traversal   = switch occurrence EntityId + input ordinal + output ordinal
 InstructionContextRef = Fabric PE occurrence ref + context ordinal
@@ -232,19 +235,21 @@ The Mapping profiles also use these confirmed structural owners:
 * a ResourceUse is keyed by its complete typed owner, use site, activation,
   parameter, and sharing-assignment tuple;
 * a ThreadExecutionBinding is keyed by `RootThreadLaunchRef`;
-* a GraphExecutionBinding is keyed by its parent thread-binding key and
-  `StaticGraphLaunchRef`; and
+* a GraphExecutionBinding is keyed by the Dataflow-owned
+  `RootedGraphLaunchRef`;
 * a ServiceRealization is keyed by `SystemServiceObligationKey`;
 * an InstructionCore context is derived from the selected AccCore and fixed
   ordinal zero; and
 * a ServicePlan element is identified by the exact
   `ServicePlanElementRef` above and does not receive an EntityId.
 
-An `EventFamilyKey` is also a typed structural key: it combines an existing
-static semantic event reference with a projection of Dataflow-owned logical
-coordinates and launch parameters. It is not an entity or dynamic occurrence
-identity. Runtime may add a transient occurrence handle, but that handle
-never enters Mapping identity or persistent references.
+An `EventFamilyKey` is also a Dataflow-owned typed structural key. It combines
+the exact `StaticTransferEventRef` with the canonical projection
+of Dataflow-owned logical coordinates and launch parameters. It is not an
+entity or dynamic occurrence identity, and there is no static event
+`EntityId`. Runtime may add a transient occurrence handle, but that handle
+never enters Mapping identity, persistent references, channel message order,
+or Physical Tag assignment.
 
 ## System Service Obligation Keys
 
@@ -279,10 +284,18 @@ Each key stores only its minimal derivation anchor. For a transfer key, the
 exact Dataflow program, workload scope, and producer derive one canonical
 sorted unique non-empty sink set. The sink set is not serialized in the key.
 For a logical-memory owner, the exact Dataflow program derives the complete
-canonical service-member set, including applicable load, store, atomic RMW,
-compare-exchange, and exposure members. For a fence owner, the exact actor
-derives its fence contract. Neither member sets nor contracts are copied into
-the key.
+canonical addressed-memory member set, including applicable load, store,
+atomic RMW, and compare-exchange actors, plus the separate complete memory
+exposure set. An exposure is a capability boundary rather than a service
+member and has no service leg. For a fence owner, the exact actor derives its
+fence contract and all reachable rooted launch contexts. Neither member sets,
+exposure sets, nor contracts are copied into the key.
+
+`ServiceMemberRef` is imported from the Dataflow-owned closed union.
+`MessageTransfer` is the singleton member of a transfer obligation. An
+addressed-memory or fence member carries the exact contextual actor rooted at
+one graph launch. The obligation kind statically determines which member
+variant is legal.
 
 Every service leg uses the member-relative structural key:
 
@@ -298,15 +311,17 @@ sink-terminal, memory-root-or-view, fence-actor-family, and service-member
 reference variants. The Canonical Service Schema owns each member's local leg
 count, direction, payload, completion rule, and ordinal meaning. Mapping owns
 neither catalog and cannot flatten all legs into an independently interpreted
-global ordinal. An affected Mapping or MappingConstraintSet cannot be
-published until those closed variants resolve every derived obligation.
+global ordinal. Memory exposures instead use the Dataflow-owned
+`MemoryExposureRef` and are consumed only by service target bindings or
+Mapping exposure entries.
 
 Finalization derives the complete obligation and leg universes from the root
-scope. Missing any derived `ServiceRealization` is a Mapping completeness
+scope. Missing any derived `ServiceRealization`, addressed-operation member,
+member leg, or required memory-exposure binding is a Mapping completeness
 failure. A malformed, foreign, wrong-kind, wrong-owner, or out-of-range
-reference is invalid. A well-formed obligation for which no compatible
-Fabric target exists is proven infeasible for that Mapping invocation rather
-than an identity error.
+reference is invalid. A well-formed obligation for which no compatible Fabric
+target exists is proven infeasible for that Mapping invocation rather than an
+identity error.
 
 ## Canonical Labeling
 

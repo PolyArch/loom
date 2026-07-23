@@ -312,6 +312,14 @@ observes the same ordered sequence. Many-to-one competitive receive requires
 an explicit merge, router, reduction actor, or memory-backed work queue; it is
 not implicit channel arbitration.
 
+The persistent endpoint references are owned by the closed structural catalog
+in `docs/spec-compiler-part-3-dfg.md`. A graph stream binding uses its
+`RootedGraphLaunchRef` and stream ordinal. A direct send or receive uses the
+Dataflow finalizer's role-specific canonical site ordinal under the
+`RootThreadLaunchRef`. This document owns the channel and `source_map`
+semantics behind those references; it does not assign endpoint entities,
+reinterpret the ordinals, or add a channel identity to Mapping.
+
 ### 8.1 Dynamic Message Correspondence
 
 A channel pairs dynamic message events, not thread activations. For one

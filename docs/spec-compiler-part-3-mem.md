@@ -96,6 +96,18 @@ upstream static role. A fresh allocation result is the root-defining value.
 View operations remain typed structural relations and receive no root ID of
 their own.
 
+Persistent consumers use the closed forms owned by
+`docs/spec-compiler-part-3-dfg.md`: `LogicalMemoryViewRef`,
+`LogicalMemoryRootOrViewRef`, and `MemoryExposureRef`. This document does not
+redeclare their wire variants.
+
+The root-local inventory resolves every admitted static view to its unique
+root-preserving relation. Reusing one graph under different roots creates
+separate structural view references in those root inventories rather than a
+view entity. A memory exposure identifies one launch-contextual graph memory
+result. It describes a provided capability boundary, not a token producer or
+an addressed memory operation.
+
 This persistent reference identifies a static software role. Runtime object
 identity is derived separately: an import is bound through the exact launch
 and runtime memory registry, while a fresh allocation combines its static root
@@ -381,6 +393,12 @@ launch.done = all_of(graph.return.complete)
 
 There is no hidden effect scan, graph-quiescence test, or removed sync pass
 that can define completion independently.
+
+A memory result in the `memories` segment is a `MemoryExposureRef`. Returning
+the capability does not issue a memory service operation and therefore creates
+no request, response, or completion leg. Mapping may bind the exposure to a
+provider boundary, but the actual service legs remain owned by the addressed
+memory actors that later use the capability.
 
 After canonical publication, TechMapping may classify an explicit edge as
 realization-internal or external. SpatialMapping and SystemMapping may select

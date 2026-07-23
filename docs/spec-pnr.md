@@ -217,20 +217,22 @@ The graph-local net and transfer-terminal subjects are the closed pre-result
 keys:
 
 ```text
-SpatialLogicalNetKey = ExposedCanonicalProducerEndpointRef
+SpatialLogicalNetKey = CanonicalGraphProducerEndpointRef
 
 SpatialTransferTerminalKey =
     Source(SpatialLogicalNetKey)
   | Sink(SpatialLogicalNetKey,
-         ExposedCanonicalConsumerEndpointRef)
+         CanonicalGraphConsumerEndpointRef)
 
 PhysicalAddressPoint = (FabricMemoryServiceRef, Address)
 ```
 
-`SpatialLogicalNetKey` identifies the residual transfer obligation derived
-from exact `D/T` after realization-internal sinks are removed. It never refers
-to a result-time RouteTree, Tag assignment, or native net index. The first
-Spatial `ProjectionKind` catalog is exactly:
+`SpatialLogicalNetKey` identifies one graph-local producer from exact `D`.
+Exact `D/T` derives its residual transfer obligation after
+realization-internal sinks are removed. "Exposed" is therefore a derived
+property of the sink relation rather than endpoint identity. The key never
+refers to a result-time RouteTree, Tag assignment, or native net index. The
+first Spatial `ProjectionKind` catalog is exactly:
 
 ```text
 compute_placement:
@@ -771,10 +773,12 @@ For every residual producer endpoint, freeze groups all residual sink
 obligations into one deterministic multi-sink logical net:
 
 ```text
-SpatialLogicalNetKey = ExposedCanonicalProducerEndpointRef
+SpatialLogicalNetKey = CanonicalGraphProducerEndpointRef
 ```
 
-Already internal sinks are omitted. If none remain, no logical net exists.
+The producer and every sink use the Dataflow-owned graph-local token endpoint
+catalog. Already internal sinks are omitted. If none remain, no logical net
+exists. Exposure is this derived relation, not a competing endpoint kind.
 Dense net indices are rebuildable native indices, never persistent identity.
 
 Memory and other operation-relative services do not have a hard-coded request

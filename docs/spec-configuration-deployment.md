@@ -296,6 +296,11 @@ GraphLaunchTargetKey = (AccCoreOccurrenceRef, SpatialMappingImportRef)
 
 There is exactly one row for each reachable static graph launch covered by a
 Graph Execution Binding and no other row.
+The row key is the Dataflow-owned `RootedGraphLaunchRef`; Deployment does not
+reconstruct the root-plus-site tuple. Value, stream, control, memory, result,
+and done entries are keyed by the closed Dataflow boundary, channel, and
+logical-memory root/view or memory-exposure references rather than symbols or
+local operation positions.
 The finite unique range of the relational join between the parent Thread
 Execution Binding and this compiled
 `BindingRelation<SpatialMappingImportRef>` is
@@ -324,8 +329,12 @@ AdmissionPayload {
 }
 ```
 
-The keys denote static event families and reachable parameterized execution
-contexts, never dynamic event occurrences or absolute time. The relation uses
+Each `EventFamilyKey` is a Dataflow-owned
+`Produced(CanonicalProducerTerminalRef)` or
+`Consumed(CanonicalSinkTerminalRef)` structural event plus its canonical
+logical projection. The keys denote static event families and reachable
+parameterized execution contexts, never dynamic event occurrences, static
+event IDs, or absolute time. The relation uses
 the same closed partition/lookup algebra as Mapping and selects a canonical
 child-local case for the remaining Dataflow-owned logical inputs. Its finite
 unique range is exactly the case-key set. There is exactly one row and context

@@ -510,15 +510,16 @@ keys:
 ThreadExecutionBindingKey = RootThreadLaunchRef
 ThreadExecutionBinding    = key + BindingRelation<AccCoreOccurrenceRef>
 
-GraphExecutionBindingKey  =
-  (ThreadExecutionBindingKey, StaticGraphLaunchRef)
+GraphExecutionBindingKey  = RootedGraphLaunchRef
 GraphExecutionBinding     =
   key + BindingRelation<SpatialMappingImportRef>
 ```
 
 Every root thread launch has exactly one ThreadExecutionBinding. Every
 reachable static graph launch in each root context has exactly one
-GraphExecutionBinding. These records do not receive Mapping-local IDs.
+GraphExecutionBinding. `RootedGraphLaunchRef` is the Dataflow-owned structural
+pair of that root launch and static graph-launch site; Mapping does not define
+another tuple. These records do not receive Mapping-local IDs.
 
 Each relation is exactly one closed variant:
 
@@ -589,12 +590,15 @@ resource-sharing assignments and cannot serve as launch or message identity.
 
 The operation-service variant is the closed minimal owner anchor defined by
 `docs/spec-mapping-identity.md`. The exact Dataflow program derives the
-logical-memory variant's complete typed addressed-operation and exposure
-member set. Memory access and exposure, cache or proxy service, and external
-providers use this key rather than parallel service-owner families. The fence
+logical-memory variant's complete typed addressed-operation member set and
+separate complete `MemoryExposureRef` set. An exposure is a capability
+boundary, not a service member, and therefore has no request or response leg.
+Memory access and exposure, cache or proxy service, and external providers use
+the same logical owner rather than parallel service-owner families. The fence
 variant anchors one static fence actor family; the actor and Canonical Service
-Schema derive its exact `FenceContract`. Neither member sets nor contracts
-are copied into the key.
+Schema derive its exact `FenceContract` and the Dataflow program derives its
+reachable contextual members. Member sets, exposure sets, and contracts are
+not copied into the key.
 
 Each ServiceRealization has one or more owner-local plans and a complete plan
 selection relation:
@@ -637,12 +641,21 @@ ServiceTargetBinding =
       logical service interval
       selected Fabric service region
       optional non-derived address transform
+      exposures[] {
+        MemoryExposureRef
+        selected subordinate/provider terminal
+      }
     }
   | ConsistencyTarget {
       FenceActorFamilyRef
       selected MemoryConsistencyDomainRef
     }
 ```
+
+A memory-region target owns every exposure child that selects that region.
+The child is keyed by its `MemoryExposureRef` and provider terminal and has no
+`ServiceMemberRef`, service leg, or independent ID. Missing, extra, duplicate,
+or wrong-owner exposure children are completeness failures.
 
 A fence plan contains exactly one `ConsistencyTarget`; its selected domain
 must cover all constrained effects in that execution context. A
@@ -751,7 +764,8 @@ collision-checked atomic publication.
 
 For a Dataflow binding, resolution uses the exact
 `CanonicalDataflowProgramView`. Mapping cannot assign, repair, or persist a
-shadow graph, actor, launch, or logical-memory-root catalog.
+shadow graph, actor, launch, terminal, service-member, event, memory-view, or
+memory-exposure catalog.
 
 A SpatialMapping writer first rebuilds and verifies intrinsic base closure
 from `D`, `T`, `F`, and the selected records, then runs separate admission

@@ -457,7 +457,8 @@ capacity and use-pattern shape.
 producer-terminal anchor; exact Dataflow scope derives the complete non-empty
 sink set, including multicast. An operation-service key stores only its
 logical-memory root-or-view or fence-family anchor; exact Dataflow derives the
-complete service-member set.
+complete contextual addressed-operation or fence-member set. For a logical
+memory owner, Dataflow separately derives the complete memory-exposure set.
 
 This document's Canonical Service Schema remains the sole owner of each
 member's local request, data, response, completion, direction, payload, and
@@ -466,6 +467,13 @@ ordinal semantics. Mapping combines the obligation key, exact
 `CanonicalServiceLegKey`, then realizes each required leg explicitly over the
 Transport Architecture. Protocol channels are derived only by Interconnect
 refinement.
+
+A memory exposure is a provided capability boundary, not an operation member.
+It has no Canonical Service leg. A Mapping service-target binding selects its
+provider endpoint and region using the Dataflow-owned `MemoryExposureRef`;
+request and response legs arise only from addressed actors that use that
+capability. Fabric does not add an exposure service kind or a zero-leg
+operation to compensate.
 
 End-to-end continuity composes, in order:
 
