@@ -3,6 +3,7 @@
 
 #include "Simulator/MemoryAtomicOrder.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
@@ -173,6 +174,13 @@ public:
 
   /// The transitive closure of sequenced-before and synchronizes-with.
   bool happensBefore(SyncEffectId earlier, SyncEffectId later) const;
+
+  /// True when every requested effect is either a member of `frontier` or
+  /// happens-before at least one frontier member. The authority resolves the
+  /// complete request with one reverse reachability traversal instead of
+  /// rebuilding and walking its relation graph for each effect.
+  bool areCoveredByHappensBefore(llvm::ArrayRef<SyncEffectId> effects,
+                                 llvm::ArrayRef<SyncEffectId> frontier) const;
 
   /// The release origins published through one version, which is origin and
   /// domain metadata rather than a visibility summary.

@@ -1,6 +1,10 @@
 // RUN: loom-dfg-sim %s --graph unordered_ww_overlap --arg 0=8589934593 \
 // RUN:   --memref 1=10,11,12,13,14,15,16,17 --output %t.ww.json
 // RUN: FileCheck %s --check-prefix=WW < %t.ww.json
+// RUN: loom-dfg-sim %s --graph unordered_ww_overlap_reversed \
+// RUN:   --arg 0=8589934593 --memref 1=10,11,12,13,14,15,16,17 \
+// RUN:   --output %t.ww-reversed.json
+// RUN: FileCheck %s --check-prefix=WW < %t.ww-reversed.json
 // RUN: loom-dfg-sim %s --graph unordered_ww_overlap --arg 0=8589934593 \
 // RUN:   --memref 1=10,11,12,13,14,15,16,17 --max-event-steps 2 \
 // RUN:   --output %t.limit.json
@@ -45,10 +49,13 @@
 
 // Two unordered plain stores overlap on one element: the contiguous vector
 // store covers elements 1 and 2 and the scalar store covers element 2. The
-// access that meets the conflict never fires, so exactly one store commits.
-// Which of the two commits is not an observable, so neither the surviving
-// store nor the resulting memory is named here.
-// WW: "dataflow.store": 1
+// scheduler must reject the complete ready set before either store fires,
+// independently of their textual order. Unsupported execution exports no
+// output, memory state, or memory-root result.
+// WW: "final_memory_roots": {}
+// WW-NEXT: "final_memory_state": {}
+// WW-NEXT: "final_outputs": []
+// WW-NOT: "dataflow.store":
 // WW: "status": "unsupported"
 
 // Reaching the event limit after discovering the same conflict must preserve
@@ -155,6 +162,21 @@ module {
     %vector_done = dataflow.store %mem[%base] %data %start
         : memref<8xi32>, vector<2xi32>
     %scalar_done = dataflow.store %mem[%cell] %value %start : memref<8xi32>
+    dataflow.graph.return values() streams() memories()
+        complete(%vector_done, %scalar_done : none, none)
+  }
+
+  dataflow.graph private @unordered_ww_overlap_reversed(
+      %start: none, %packed: i64, %mem: memref<8xi32>) -> ()
+      attributes {input_segments = array<i32: 1, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %data = dataflow.unpack %packed : i64 -> vector<2xi32>
+    %base = dataflow.constant %start {const_value = 1 : index} : index
+    %cell = dataflow.constant %start {const_value = 2 : index} : index
+    %value = dataflow.constant %start {const_value = 200 : i32} : i32
+    %scalar_done = dataflow.store %mem[%cell] %value %start : memref<8xi32>
+    %vector_done = dataflow.store %mem[%base] %data %start
+        : memref<8xi32>, vector<2xi32>
     dataflow.graph.return values() streams() memories()
         complete(%vector_done, %scalar_done : none, none)
   }

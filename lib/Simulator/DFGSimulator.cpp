@@ -778,6 +778,57 @@ static FireOutcome fireOperation(mlir::Operation *op, SimulatorState &state) {
   return FireOutcome::NotReady;
 }
 
+static bool rejectPlainMemoryConflict(SimulatorState &state) {
+  state.admittedPlainMemoryActions.clear();
+  state.diagnostics.push_back(
+      "unordered plain accesses conflict on the same memory");
+  state.runtimeUnsupportedCapability = true;
+  return false;
+}
+
+// A wave is a closed scheduler decision because its publications remain
+// pending until every actor has been visited. Project and admit every ready
+// plain action before that visit so a rejected decision mutates no actor,
+// channel, memory, publication, or event state.
+static bool admitReadyPlainMemoryActions(mlir::Block &block,
+                                         SimulatorState &state) {
+  state.admittedPlainMemoryActions.clear();
+  llvm::SmallVector<std::pair<mlir::Operation *, ReadyPlainMemoryAction>> ready;
+  for (mlir::Operation &op : block.getOperations()) {
+    if (!mlir::isa<dataflow::LoadOp, dataflow::StoreOp>(op))
+      continue;
+    const std::size_t diagnosticCount = state.diagnostics.size();
+    auto action = projectReadyPlainMemoryAction(&op, state);
+    if (state.runtimeUnsupportedCapability ||
+        state.diagnostics.size() != diagnosticCount)
+      return false;
+    if (action)
+      ready.emplace_back(&op, std::move(*action));
+  }
+
+  for (std::size_t left = 0; left < ready.size(); ++left)
+    for (std::size_t right = left + 1; right < ready.size(); ++right)
+      if (plainMemoryActionsConflict(ready[left].second.action,
+                                     ready[right].second.action))
+        return rejectPlainMemoryConflict(state);
+
+  for (const auto &candidate : ready) {
+    llvm::SmallVector<SyncEffectId> conflictingEffects;
+    for (const auto &issued : state.memoryActions)
+      if (plainMemoryActionsConflict(candidate.second.action, issued.first))
+        conflictingEffects.push_back(issued.second);
+    if (!conflictingEffects.empty() &&
+        !state.memorySync->areCoveredByHappensBefore(conflictingEffects,
+                                                     candidate.second.frontier))
+      return rejectPlainMemoryConflict(state);
+  }
+
+  for (auto &candidate : ready)
+    state.admittedPlainMemoryActions.try_emplace(
+        candidate.first, std::move(candidate.second.action));
+  return true;
+}
+
 std::string unsupportedOperationLabel(mlir::Operation *op) {
   if (auto call = mlir::dyn_cast<mlir::LLVM::CallOp>(op)) {
     auto callee = call.getCallee();
@@ -1489,6 +1540,8 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
 
   while ((report.wavefrontSteps < options.maxEventSteps || retired) &&
          report.status != "invalid") {
+    if (!admitReadyPlainMemoryActions(entry, state))
+      break;
     bool fired = false;
     for (mlir::Operation &op : entry.getOperations()) {
       if (isSupportedNonEvent(&op))
@@ -1522,51 +1575,55 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   }
 
   bool missingReturn = false;
+  bool pendingVectorGroups = false;
   report.dynamicWorkItems = dynamicWorkItems(state);
-  if (!retired) {
-    report.finalOutputs.push_back("missing");
-    missingReturn = true;
-  } else {
-    mlir::Value witness = returnObservation.complete.front();
-    auto serialized = tokenToString(
-        state.observedOutputs.find(witness)->second.front(), witness.getType(),
-        graph);
-    if (!serialized)
-      return serialized.takeError();
-    report.finalOutputs.push_back(std::move(*serialized));
-  }
-  for (mlir::Value value : returnObservation.values) {
-    auto it = state.observedOutputs.find(value);
-    if (it == state.observedOutputs.end() || it->second.empty()) {
-      report.finalOutputs.push_back("missing");
-      missingReturn = true;
-      continue;
-    }
-    auto serialized = tokenToString(it->second.front(), value.getType(), graph);
-    if (!serialized)
-      return serialized.takeError();
-    report.finalOutputs.push_back(std::move(*serialized));
-  }
-  for (mlir::Value stream : returnObservation.streams) {
-    llvm::SmallVector<std::string> tokens;
-    auto it = state.observedOutputs.find(stream);
-    if (it != state.observedOutputs.end())
-      for (const Token &token : it->second) {
-        auto serialized = tokenToString(token, stream.getType(), graph);
-        if (!serialized)
-          return serialized.takeError();
-        tokens.push_back(std::move(*serialized));
-      }
-    report.finalStreamOutputs.push_back(std::move(tokens));
-  }
-  if (llvm::Error error = captureFinalMemoryState(graph, state, report))
-    return std::move(error);
-  const bool pendingVectorGroups = hasPendingVectorGroups(state);
-  // A capability the runtime values exposed ends the run as unsupported. It is
-  // not a deadlock witness, so the retirement-frontier and stopped-before-
-  // outputs reports below do not also describe it.
+  // Unsupported execution has no result: diagnostics and execution evidence
+  // remain reportable, but outputs and terminal memory are not fabricated from
+  // a prefix that the rejected scheduler decision never committed.
   if (report.status == "pass" && state.runtimeUnsupportedCapability)
     report.status = "unsupported";
+  if (report.status != "unsupported") {
+    if (!retired) {
+      report.finalOutputs.push_back("missing");
+      missingReturn = true;
+    } else {
+      mlir::Value witness = returnObservation.complete.front();
+      auto serialized =
+          tokenToString(state.observedOutputs.find(witness)->second.front(),
+                        witness.getType(), graph);
+      if (!serialized)
+        return serialized.takeError();
+      report.finalOutputs.push_back(std::move(*serialized));
+    }
+    for (mlir::Value value : returnObservation.values) {
+      auto it = state.observedOutputs.find(value);
+      if (it == state.observedOutputs.end() || it->second.empty()) {
+        report.finalOutputs.push_back("missing");
+        missingReturn = true;
+        continue;
+      }
+      auto serialized =
+          tokenToString(it->second.front(), value.getType(), graph);
+      if (!serialized)
+        return serialized.takeError();
+      report.finalOutputs.push_back(std::move(*serialized));
+    }
+    for (mlir::Value stream : returnObservation.streams) {
+      llvm::SmallVector<std::string> tokens;
+      auto it = state.observedOutputs.find(stream);
+      if (it != state.observedOutputs.end())
+        for (const Token &token : it->second) {
+          auto serialized = tokenToString(token, stream.getType(), graph);
+          if (!serialized)
+            return serialized.takeError();
+          tokens.push_back(std::move(*serialized));
+        }
+      report.finalStreamOutputs.push_back(std::move(tokens));
+    }
+    if (llvm::Error error = captureFinalMemoryState(graph, state, report))
+      return std::move(error);
+    pendingVectorGroups = hasPendingVectorGroups(state);
+  }
   if (report.status == "pass" && !retired) {
     report.status = "blocked";
     report.diagnostics.push_back("graph did not fire its retirement frontier");

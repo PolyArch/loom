@@ -937,6 +937,12 @@ static bool actionsOverlap(const MemoryActionRecord &lhs,
   return false;
 }
 
+bool plainMemoryActionsConflict(const MemoryActionRecord &lhs,
+                                const MemoryActionRecord &rhs) {
+  return lhs.rootId == rhs.rootId && (lhs.isWrite || rhs.isWrite) &&
+         actionsOverlap(lhs, rhs);
+}
+
 static MemorySynchronization &memorySynchronization(SimulatorState &state) {
   if (!state.memorySync) {
     state.memoryOrder = std::make_unique<MemoryAtomicOrder>();
@@ -961,46 +967,6 @@ peekIssueFrontier(SimulatorState &state,
     mergeCausalFrontier(frontier, peekToken(state.channels, *operand).frontier);
   }
   return frontier;
-}
-
-// A plain access conflicts when it overlaps an earlier access on the same
-// logical root, at least one of the two writes, and no recorded causal fact
-// orders that earlier access before this issue. Only the recorded facts decide
-// it, so the formal result is the same whichever actor the wavefront reached
-// first, and the pair never becomes deterministic through traversal order.
-// Nothing is consumed here, so a rejected access neither commits nor
-// publishes; it ends the run through the runtime unsupported capability rather
-// than through an invented order or a deadlock witness.
-static bool admitMemoryAction(mlir::Operation *op,
-                              const MemoryActionRecord &action,
-                              llvm::ArrayRef<SyncEffectId> frontier,
-                              SimulatorState &state) {
-  // No engine yet means no issued access yet, so there is nothing to conflict
-  // with and nothing to ask about order.
-  if (action.byteRanges.empty() || !state.memorySync)
-    return true;
-  const MemorySynchronization &sync = *state.memorySync;
-  for (const auto &issued : state.memoryActions) {
-    const MemoryActionRecord &prior = issued.first;
-    const SyncEffectId earlier = issued.second;
-    if (prior.rootId != action.rootId)
-      continue;
-    if (!prior.isWrite && !action.isWrite)
-      continue;
-    if (!actionsOverlap(prior, action))
-      continue;
-    if (llvm::any_of(frontier, [&](SyncEffectId later) {
-          return earlier == later || sync.happensBefore(earlier, later);
-        }))
-      continue;
-    state.diagnostics.push_back(
-        (op->getName().getStringRef() +
-         " conflicts with an unordered plain access to the same memory")
-            .str());
-    state.runtimeUnsupportedCapability = true;
-    return false;
-  }
-  return true;
 }
 
 // Issue: the accepted access takes its effect identity, records the
@@ -1029,51 +995,132 @@ static mlir::OpOperand *getOptionalMaskOperand(mlir::Operation *op,
   return &op->getOpOperand(op->getNumOperands() - 1);
 }
 
-static bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
+struct PreparedLoadFiring {
+  MemoryView view;
+  DataflowMemoryRead read;
+  mlir::OpOperand *maskOperand = nullptr;
+};
+
+static std::optional<PreparedLoadFiring>
+prepareLoadFiring(dataflow::LoadOp op, SimulatorState &state) {
   mlir::OpOperand *maskOperand =
       getOptionalMaskOperand(op.getOperation(), op.getMask());
   if (!hasToken(state.channels, op.getAddrMutable()) ||
       !hasToken(state.channels, op.getCtrlMutable()) ||
       (maskOperand && !hasToken(state.channels, *maskOperand)))
-    return false;
+    return std::nullopt;
   std::optional<MemoryView> view =
       peekMemoryView(state, op.getMem(), op.getMemMutable());
   if (!view)
-    return false;
-
+    return std::nullopt;
   Token addr = peekToken(state.channels, op.getAddrMutable());
   std::optional<Token> mask;
   if (maskOperand)
     mask = peekToken(state.channels, *maskOperand);
-  auto value = prepareDataflowMemoryRead(
+  auto read = prepareDataflowMemoryRead(
       *view, addr, mlir::cast<mlir::MemRefType>(op.getMem().getType()),
       op.getAddr().getType(), op.getData().getType(), mask ? &*mask : nullptr,
       op.getMask() ? op.getMask().getType() : mlir::Type{}, state,
       op.getOperation());
-  if (!value)
-    return false;
-  std::optional<MemoryActionRecord> action = projectMemoryAction(
-      *view, value->slots, /*isWrite=*/false, state, op.getOperation());
+  if (!read)
+    return std::nullopt;
+  return PreparedLoadFiring{std::move(*view), std::move(*read), maskOperand};
+}
+
+struct PreparedStoreFiring {
+  MemoryView view;
+  DataflowMemoryWrite write;
+  mlir::OpOperand *maskOperand = nullptr;
+};
+
+static std::optional<PreparedStoreFiring>
+prepareStoreFiring(dataflow::StoreOp op, SimulatorState &state) {
+  mlir::OpOperand *maskOperand =
+      getOptionalMaskOperand(op.getOperation(), op.getMask());
+  if (!hasToken(state.channels, op.getAddrMutable()) ||
+      !hasToken(state.channels, op.getDataMutable()) ||
+      !hasToken(state.channels, op.getCtrlMutable()) ||
+      (maskOperand && !hasToken(state.channels, *maskOperand)))
+    return std::nullopt;
+  std::optional<MemoryView> view =
+      peekMemoryView(state, op.getMem(), op.getMemMutable());
+  if (!view)
+    return std::nullopt;
+  Token addr = peekToken(state.channels, op.getAddrMutable());
+  Token data = peekToken(state.channels, op.getDataMutable());
+  std::optional<Token> mask;
+  if (maskOperand)
+    mask = peekToken(state.channels, *maskOperand);
+  auto write = prepareDataflowMemoryWrite(
+      *view, addr, data, mlir::cast<mlir::MemRefType>(op.getMem().getType()),
+      op.getAddr().getType(), op.getData().getType(), mask ? &*mask : nullptr,
+      op.getMask() ? op.getMask().getType() : mlir::Type{}, state,
+      op.getOperation());
+  if (!write)
+    return std::nullopt;
+  return PreparedStoreFiring{std::move(*view), std::move(*write), maskOperand};
+}
+
+std::optional<ReadyPlainMemoryAction>
+projectReadyPlainMemoryAction(mlir::Operation *operation,
+                              SimulatorState &state) {
+  if (auto op = mlir::dyn_cast<dataflow::LoadOp>(operation)) {
+    auto prepared = prepareLoadFiring(op, state);
+    if (!prepared)
+      return std::nullopt;
+    auto action = projectMemoryAction(prepared->view, prepared->read.slots,
+                                      /*isWrite=*/false, state, operation);
+    if (!action)
+      return std::nullopt;
+    return ReadyPlainMemoryAction{
+        std::move(*action),
+        peekIssueFrontier(state,
+                          {&op.getMemMutable(), &op.getAddrMutable(),
+                           &op.getCtrlMutable(), prepared->maskOperand})};
+  }
+
+  auto op = mlir::dyn_cast<dataflow::StoreOp>(operation);
+  if (!op)
+    return std::nullopt;
+  auto prepared = prepareStoreFiring(op, state);
+  if (!prepared)
+    return std::nullopt;
+  llvm::SmallVector<std::size_t> slots;
+  slots.reserve(prepared->write.elements.size());
+  for (const auto &element : prepared->write.elements)
+    slots.push_back(element.first);
+  auto action = projectMemoryAction(prepared->view, slots, /*isWrite=*/true,
+                                    state, operation);
   if (!action)
+    return std::nullopt;
+  return ReadyPlainMemoryAction{
+      std::move(*action),
+      peekIssueFrontier(state, {&op.getMemMutable(), &op.getAddrMutable(),
+                                &op.getDataMutable(), &op.getCtrlMutable(),
+                                prepared->maskOperand})};
+}
+
+static bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
+  auto prepared = prepareLoadFiring(op, state);
+  if (!prepared)
     return false;
-  if (!admitMemoryAction(
-          op.getOperation(), *action,
-          peekIssueFrontier(state, {&op.getMemMutable(), &op.getAddrMutable(),
-                                    &op.getCtrlMutable(), maskOperand}),
-          state))
+  auto admitted = state.admittedPlainMemoryActions.find(op.getOperation());
+  if (admitted == state.admittedPlainMemoryActions.end())
     return false;
+  MemoryActionRecord action = std::move(admitted->second);
+  state.admittedPlainMemoryActions.erase(op.getOperation());
 
   // Issue: the accepted access consumes every dynamic operand and the control
   // event, then publishes data and done together.
   consumeMemoryView(state, op.getMemMutable());
   popToken(state, op.getAddrMutable());
   popToken(state, op.getCtrlMutable());
-  if (maskOperand)
-    popToken(state, *maskOperand);
-  issueMemoryAction(std::move(*action), state);
-  emitToken(state, op.getData(), value->data);
+  if (prepared->maskOperand)
+    popToken(state, *prepared->maskOperand);
+  issueMemoryAction(std::move(action), state);
+  emitToken(state, op.getData(), prepared->read.data);
   emitToken(state, op.getDone(), noneToken());
-  if (value->accessedMemory && hasComputedAddress(op.getAddr()))
+  if (prepared->read.accessedMemory && hasComputedAddress(op.getAddr()))
     state.memoryAddressScore += kLoadAddressScore;
   return recordEvent(state, op->getName().getStringRef());
 }
@@ -1248,45 +1295,14 @@ static bool fireLLVMCall(mlir::LLVM::CallOp op, SimulatorState &state) {
 }
 
 static bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
-  mlir::OpOperand *maskOperand =
-      getOptionalMaskOperand(op.getOperation(), op.getMask());
-  if (!hasToken(state.channels, op.getAddrMutable()) ||
-      !hasToken(state.channels, op.getDataMutable()) ||
-      !hasToken(state.channels, op.getCtrlMutable()) ||
-      (maskOperand && !hasToken(state.channels, *maskOperand)))
+  auto prepared = prepareStoreFiring(op, state);
+  if (!prepared)
     return false;
-  std::optional<MemoryView> view =
-      peekMemoryView(state, op.getMem(), op.getMemMutable());
-  if (!view)
+  auto admitted = state.admittedPlainMemoryActions.find(op.getOperation());
+  if (admitted == state.admittedPlainMemoryActions.end())
     return false;
-
-  Token addr = peekToken(state.channels, op.getAddrMutable());
-  Token data = peekToken(state.channels, op.getDataMutable());
-  std::optional<Token> mask;
-  if (maskOperand)
-    mask = peekToken(state.channels, *maskOperand);
-  auto write = prepareDataflowMemoryWrite(
-      *view, addr, data, mlir::cast<mlir::MemRefType>(op.getMem().getType()),
-      op.getAddr().getType(), op.getData().getType(), mask ? &*mask : nullptr,
-      op.getMask() ? op.getMask().getType() : mlir::Type{}, state,
-      op.getOperation());
-  if (!write)
-    return false;
-  llvm::SmallVector<std::size_t> slots;
-  slots.reserve(write->elements.size());
-  for (const auto &element : write->elements)
-    slots.push_back(element.first);
-  std::optional<MemoryActionRecord> action = projectMemoryAction(
-      *view, slots, /*isWrite=*/true, state, op.getOperation());
-  if (!action)
-    return false;
-  if (!admitMemoryAction(
-          op.getOperation(), *action,
-          peekIssueFrontier(state, {&op.getMemMutable(), &op.getAddrMutable(),
-                                    &op.getDataMutable(), &op.getCtrlMutable(),
-                                    maskOperand}),
-          state))
-    return false;
+  MemoryActionRecord action = std::move(admitted->second);
+  state.admittedPlainMemoryActions.erase(op.getOperation());
 
   // Issue: the accepted access consumes every dynamic operand and the control
   // event, then commits the complete element update before publishing done.
@@ -1294,12 +1310,12 @@ static bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   popToken(state, op.getAddrMutable());
   popToken(state, op.getDataMutable());
   popToken(state, op.getCtrlMutable());
-  if (maskOperand)
-    popToken(state, *maskOperand);
-  issueMemoryAction(std::move(*action), state);
-  commitDataflowMemoryWrite(*view, *write);
+  if (prepared->maskOperand)
+    popToken(state, *prepared->maskOperand);
+  issueMemoryAction(std::move(action), state);
+  commitDataflowMemoryWrite(prepared->view, prepared->write);
   emitToken(state, op.getDone(), noneToken());
-  if (write->accessedMemory && hasComputedAddress(op.getAddr()))
+  if (prepared->write.accessedMemory && hasComputedAddress(op.getAddr()))
     state.memoryAddressScore += kStoreAddressScore;
   return recordEvent(state, op->getName().getStringRef());
 }

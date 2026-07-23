@@ -113,6 +113,11 @@ struct MemoryActionRecord {
   bool isWrite = false;
 };
 
+struct ReadyPlainMemoryAction {
+  MemoryActionRecord action;
+  llvm::SmallVector<SyncEffectId, 2> frontier;
+};
+
 struct SimulatorState {
   ChannelMap channels;
   ChannelMap pendingChannels;
@@ -154,6 +159,10 @@ struct SimulatorState {
   std::unique_ptr<MemoryAtomicOrder> memoryOrder;
   std::unique_ptr<MemorySynchronization> memorySync;
   llvm::SmallVector<std::pair<MemoryActionRecord, SyncEffectId>> memoryActions;
+  // Noncausal cache of the plain actions admitted for the current scheduler
+  // decision. The scheduler clears and derives it again before every wave.
+  llvm::DenseMap<mlir::Operation *, MemoryActionRecord>
+      admittedPlainMemoryActions;
   // The frontier of the firing in progress, merged from every consumed token.
   // It is cleared before each actor attempt, so a rejected attempt leaves
   // nothing behind for the next one.
@@ -244,6 +253,10 @@ prepareDataflowMemoryWrite(const MemoryView &view, const Token &addr,
                            SimulatorState &state, mlir::Operation *scope);
 void commitDataflowMemoryWrite(const MemoryView &view,
                                const DataflowMemoryWrite &write);
+std::optional<ReadyPlainMemoryAction>
+projectReadyPlainMemoryAction(mlir::Operation *op, SimulatorState &state);
+bool plainMemoryActionsConflict(const MemoryActionRecord &lhs,
+                                const MemoryActionRecord &rhs);
 bool isSupportedLLVMCall(mlir::LLVM::CallOp op);
 bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
                                  llvm::ArrayRef<Token> operands, Token &result);

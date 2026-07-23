@@ -102,14 +102,11 @@
 // A plain scatter has no lane order for duplicate active destinations. Only
 // the runtime addresses expose that conflict, so the run reports an
 // unsupported capability instead of choosing a lane order or witnessing a
-// deadlock. The store never fires and no element changes.
+// deadlock. The store never fires and Unsupported exports no terminal state.
 // DUP-SCATTER: "dataflow.store does not resolve duplicate active addresses"
-// DUP-SCATTER: "arg2": [
-// DUP-SCATTER-NEXT: "i8:1",
-// DUP-SCATTER-NEXT: "i8:2",
-// DUP-SCATTER-NEXT: "i8:3",
-// DUP-SCATTER-NEXT: "i8:4",
-// DUP-SCATTER-NEXT: "i8:5"
+// DUP-SCATTER: "final_memory_roots": {}
+// DUP-SCATTER-NEXT: "final_memory_state": {}
+// DUP-SCATTER-NEXT: "final_outputs": []
 // DUP-SCATTER-NOT: "dataflow.store"
 // DUP-SCATTER: "status": "unsupported"
 

@@ -442,6 +442,47 @@ bool MemorySynchronization::happensBefore(SyncEffectId earlier,
                             later);
 }
 
+bool MemorySynchronization::areCoveredByHappensBefore(
+    llvm::ArrayRef<SyncEffectId> effects,
+    llvm::ArrayRef<SyncEffectId> frontier) const {
+  if (effects.empty())
+    return true;
+  if (frontier.empty())
+    return false;
+  if (llvm::any_of(effects,
+                   [&](SyncEffectId effect) {
+                     return effect.value() >= facts_.effects;
+                   }) ||
+      llvm::any_of(frontier, [&](SyncEffectId effect) {
+        return effect.value() >= facts_.effects;
+      }))
+    return false;
+
+  const Graph predecessors = buildGraph(facts_, /*reversed=*/true);
+  std::vector<bool> covered(facts_.effects, false);
+  llvm::SmallVector<SyncEffectId> worklist;
+  for (SyncEffectId effect : frontier) {
+    if (covered[effect.value()])
+      continue;
+    covered[effect.value()] = true;
+    worklist.push_back(effect);
+  }
+  while (!worklist.empty()) {
+    SyncEffectId effect = worklist.pop_back_val();
+    auto incoming = predecessors.find(effect.value());
+    if (incoming == predecessors.end())
+      continue;
+    for (SyncEffectId predecessor : incoming->second) {
+      if (covered[predecessor.value()])
+        continue;
+      covered[predecessor.value()] = true;
+      worklist.push_back(predecessor);
+    }
+  }
+  return llvm::all_of(
+      effects, [&](SyncEffectId effect) { return covered[effect.value()]; });
+}
+
 llvm::Expected<llvm::SmallVector<SyncEffectId>>
 MemorySynchronization::publishedOrigins(AtomicVersionId version) const {
   if (!order_->versionRecord(version))

@@ -682,6 +682,35 @@ void acceptedFactsAreInsertionOrderInvariant() {
                 "insertion order changed a publication");
 }
 
+// A caller that admits many prior effects against one incoming frontier asks
+// the authority once for the complete set. Equality covers the frontier
+// effect itself, happens-before covers its predecessors, and an unrelated
+// effect remains uncovered until it joins the frontier explicitly.
+void longChainUsesOneBatchedFrontierQuery() {
+  MemoryAtomicOrder order;
+  MemorySynchronization sync(order);
+  llvm::SmallVector<SyncEffectId> chain;
+  chain.reserve(1024);
+  for (unsigned index = 0; index < 1024; ++index) {
+    chain.push_back(sync.declareEffect());
+    if (index != 0)
+      accept(sync.sequencedBefore(chain[index - 1], chain[index]),
+             "long sequenced chain");
+  }
+
+  llvm::SmallVector<SyncEffectId, 2> frontier{chain.back()};
+  require(sync.areCoveredByHappensBefore(chain, frontier),
+          "the tail frontier did not cover its sequenced predecessors");
+
+  SyncEffectId unrelated = sync.declareEffect();
+  chain.push_back(unrelated);
+  require(!sync.areCoveredByHappensBefore(chain, frontier),
+          "an unrelated effect was covered by the chain tail");
+  frontier.push_back(unrelated);
+  require(sync.areCoveredByHappensBefore(chain, frontier),
+          "a multi-effect frontier did not cover all requested effects");
+}
+
 } // namespace
 
 int main() {
@@ -696,5 +725,6 @@ int main() {
   rejectionsArePreciseAndAtomic();
   fenceShapeHoldsInEitherDeclarationOrder();
   acceptedFactsAreInsertionOrderInvariant();
+  longChainUsesOneBatchedFrontierQuery();
   return 0;
 }
