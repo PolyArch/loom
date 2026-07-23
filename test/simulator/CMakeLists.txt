@@ -18,6 +18,7 @@ target_link_libraries(loom-simulator-synchronization-test PRIVATE
 
 add_executable(loom-simulator-dynamic-work-test
   DynamicWorkDomainTest.cpp
+  DynamicWorkOrdinalTestSupport.cpp
 )
 
 target_include_directories(loom-simulator-dynamic-work-test PRIVATE

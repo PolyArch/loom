@@ -8,17 +8,33 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
+#include <map>
+#include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 
 namespace loom {
 namespace sim {
+
+struct WorkResponsibility::ControlState {
+  explicit ControlState(DomainInstanceId instance) : instance(instance) {}
+
+  ControlState(const ControlState &) = delete;
+  ControlState &operator=(const ControlState &) = delete;
+  ControlState(ControlState &&) = delete;
+  ControlState &operator=(ControlState &&) = delete;
+
+  DomainInstanceId instance;
+  bool rootSourceClosed = false;
+  std::map<WorkItemId, std::uint64_t> childCursor;
+  std::set<WorkItemId> active;
+};
+
 namespace {
 
 std::string describe(const WorkItemId &item) {
-  // Reconstruct the ordinal path from the public ancestry, root first, so an
-  // error names the exact identity without exposing internal storage.
   llvm::SmallVector<std::uint64_t, 4> path;
   for (std::optional<WorkItemId> node = item; node; node = node->parent())
     path.push_back(node->ordinal());
@@ -43,8 +59,6 @@ llvm::Error reject(DynamicWorkDomainError::Kind kind,
 } // namespace
 
 WorkItemId WorkItemId::root(DomainInstanceId instance) {
-  // The root's own ordinal is zero and its parent is the distinguished Root,
-  // which the empty prefix of this one-element path represents.
   const std::uint64_t rootOrdinal = 0;
   return WorkItemId(instance, rootOrdinal);
 }
@@ -63,6 +77,10 @@ std::optional<WorkItemId> WorkItemId::parent() const {
                     llvm::ArrayRef<std::uint64_t>(ordinals_).drop_back());
 }
 
+WorkResponsibility::WorkResponsibility(
+    WorkItemId id, const std::shared_ptr<ControlState> &control)
+    : id_(std::move(id)), control_(control) {}
+
 char DynamicWorkDomainError::ID = 0;
 
 DynamicWorkDomainError::DynamicWorkDomainError(Kind kind, std::string message)
@@ -76,93 +94,84 @@ std::error_code DynamicWorkDomainError::convertToErrorCode() const {
   return llvm::inconvertibleErrorCode();
 }
 
+DynamicWorkDomain::DynamicWorkDomain(DomainInstanceId instance)
+    : control_(std::make_shared<ControlState>(instance)) {}
+
+std::size_t DynamicWorkDomain::activeCount() const {
+  return control_->active.size();
+}
+
+bool DynamicWorkDomain::completed() const {
+  return control_->rootSourceClosed && control_->active.empty();
+}
+
 std::uint64_t
 DynamicWorkDomain::nextChildOrdinal(const WorkItemId &parent) const {
-  auto cursor = childCursor_.find(parent);
-  return cursor == childCursor_.end() ? 0 : cursor->second;
+  auto cursor = control_->childCursor.find(parent);
+  return cursor == control_->childCursor.end() ? 0 : cursor->second;
 }
 
-bool DynamicWorkDomain::everAcquired(const WorkItemId &item) const {
-  if (item.instance() != instance_)
-    return false;
-  // Walk from the item to the root. Each step confirms the child ordinal was
-  // one this parent actually handed out; a cursor only advances inside an
-  // accepted spawn, so passing every step proves the whole ancestry was
-  // acquired.
-  WorkItemId node = item;
-  while (!node.isRoot()) {
-    WorkItemId parent = *node.parent();
-    if (node.ordinal() >= nextChildOrdinal(parent))
-      return false;
-    node = parent;
-  }
-  // The remaining root-shaped identity was acquired exactly when the domain
-  // admitted its root.
-  return rootSourceClosed_;
-}
-
-llvm::Error DynamicWorkDomain::requireActive(const WorkItemId &item) const {
-  if (item.instance() != instance_)
+llvm::Error DynamicWorkDomain::validateCapability(
+    const WorkResponsibility &responsibility) const {
+  std::shared_ptr<const ControlState> owner = responsibility.control_.lock();
+  if (!owner)
+    return reject(DynamicWorkDomainError::Kind::InvalidResponsibility,
+                  "responsibility capability is empty or no longer live");
+  if (owner.get() != control_.get())
     return reject(DynamicWorkDomainError::Kind::ForeignDomain,
-                  describe(item) + " belongs to another domain instance than " +
-                      llvm::Twine(instance_.value()));
-  if (active_.count(item) != 0)
-    return llvm::Error::success();
-  if (everAcquired(item))
-    return reject(DynamicWorkDomainError::Kind::AlreadyRetired,
-                  describe(item) + " was already retired");
-  return reject(DynamicWorkDomainError::Kind::UnknownItem,
-                describe(item) + " was never published by this domain");
+                  describe(responsibility.id_) +
+                      " belongs to another domain coordinator");
+  return llvm::Error::success();
 }
 
-llvm::Expected<WorkItemId> DynamicWorkDomain::admitRoot() {
-  if (rootSourceClosed_)
+llvm::Expected<WorkResponsibility> DynamicWorkDomain::admitRoot() {
+  if (control_->rootSourceClosed)
     return reject(DynamicWorkDomainError::Kind::RootAlreadyAdmitted,
-                  "domain instance " + llvm::Twine(instance_.value()) +
+                  "domain instance " + llvm::Twine(control_->instance.value()) +
                       " already admitted its root");
-  WorkItemId root = WorkItemId::root(instance_);
-  // Acquire the root responsibility, then close the root source: one
-  // transaction, so a later item can arise only through a registered spawn.
-  if (!active_.insert(root).second)
+
+  WorkItemId root = WorkItemId::root(control_->instance);
+  if (!control_->active.insert(root).second)
     llvm::report_fatal_error(
         "DynamicWorkDomain invariant failure: duplicate active root");
-  rootSourceClosed_ = true;
-  return root;
+  control_->rootSourceClosed = true;
+  return WorkResponsibility(std::move(root), control_);
 }
 
-llvm::Expected<WorkItemId>
-DynamicWorkDomain::spawnChild(const WorkItemId &parent) {
-  if (llvm::Error error = requireActive(parent))
+llvm::Expected<WorkResponsibility>
+DynamicWorkDomain::spawnChild(const WorkResponsibility &parent) {
+  if (llvm::Error error = validateCapability(parent))
     return std::move(error);
+  if (control_->active.count(parent.id_) == 0)
+    llvm::report_fatal_error(
+        "DynamicWorkDomain invariant failure: inactive parent capability");
 
-  std::uint64_t nextOrdinal = nextChildOrdinal(parent);
+  std::uint64_t nextOrdinal = nextChildOrdinal(parent.id_);
   std::optional<std::uint64_t> ordinal = detail::takeChildOrdinal(nextOrdinal);
   if (!ordinal)
     return reject(DynamicWorkDomainError::Kind::ChildOrdinalExhausted,
-                  describe(parent) + " has exhausted its child ordinals");
+                  describe(parent.id_) + " has exhausted its child ordinals");
 
-  WorkItemId child = WorkItemId::child(parent, *ordinal);
-  // Acquire the child responsibility before publishing the identity. A
-  // monotonic, non-wrapping per-parent ordinal makes a duplicate structurally
-  // impossible, so a failed insertion is a non-returning invariant failure
-  // raised before the ordinal is consumed.
-  if (!active_.insert(child).second)
+  WorkItemId child = WorkItemId::child(parent.id_, *ordinal);
+  if (!control_->active.insert(child).second)
     llvm::report_fatal_error(
         "DynamicWorkDomain invariant failure: duplicate active child");
-  // Consume the ordinal only after the responsibility is acquired, before the
-  // child identity is published to the caller.
-  childCursor_[parent] = nextOrdinal;
-  return child;
+  control_->childCursor[parent.id_] = nextOrdinal;
+  return WorkResponsibility(std::move(child), control_);
 }
 
 llvm::Expected<RetirementEffect>
-DynamicWorkDomain::retire(const WorkItemId &item) {
-  if (llvm::Error error = requireActive(item))
+DynamicWorkDomain::retire(WorkResponsibility &&responsibility) {
+  if (llvm::Error error = validateCapability(responsibility))
     return std::move(error);
 
-  active_.erase(item);
-  // completed() is false before this erase because the item kept the set
-  // non-empty, so a true reading here is the one completion transition.
+  auto active = control_->active.find(responsibility.id_);
+  if (active == control_->active.end())
+    llvm::report_fatal_error(
+        "DynamicWorkDomain invariant failure: inactive live capability");
+  control_->active.erase(active);
+  responsibility.control_.reset();
+
   return completed() ? RetirementEffect::DomainCompleted
                      : RetirementEffect::DomainStillActive;
 }

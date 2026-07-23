@@ -6,20 +6,20 @@
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
-#include <map>
+#include <memory>
 #include <optional>
-#include <set>
 #include <string>
 #include <system_error>
 
 namespace loom {
 namespace sim {
 
-/// Caller-supplied execution-local identity of one dynamic work domain
-/// instance. It is a closed numeric identity, never a persistent artifact id:
-/// two instances are either the same or unrelated, and one DynamicWorkDomain
-/// owns exactly one of them.
+/// Caller-supplied execution-local observation identity of one dynamic work
+/// domain instance. It is never a persistent artifact id or an authorization
+/// credential. Distinct DynamicWorkDomain coordinators may use the same value
+/// while remaining isolated by their private control state.
 class DomainInstanceId {
 public:
   explicit constexpr DomainInstanceId(std::uint64_t value) : value_(value) {}
@@ -92,6 +92,35 @@ private:
   llvm::SmallVector<std::uint64_t, 4> ordinals_;
 };
 
+class DynamicWorkDomain;
+
+/// Move-only proof that one DynamicWorkDomain currently owns responsibility for
+/// `id()`. Only root admission and child spawn can create a live capability.
+/// Its WorkItemId remains a copyable observation and carries no authority by
+/// itself.
+class WorkResponsibility {
+public:
+  WorkResponsibility(const WorkResponsibility &) = delete;
+  WorkResponsibility &operator=(const WorkResponsibility &) = delete;
+  WorkResponsibility(WorkResponsibility &&) noexcept = default;
+
+  // Assignment could silently discard an unretired responsibility. Transfer
+  // is therefore construction-only.
+  WorkResponsibility &operator=(WorkResponsibility &&) = delete;
+
+  const WorkItemId &id() const { return id_; }
+
+private:
+  struct ControlState;
+  friend class DynamicWorkDomain;
+
+  WorkResponsibility(WorkItemId id,
+                     const std::shared_ptr<ControlState> &control);
+
+  WorkItemId id_;
+  std::weak_ptr<const ControlState> control_;
+};
+
 /// The effect of a retirement on domain termination. `DomainCompleted` is the
 /// single completion transition: exactly one retirement empties the active set
 /// after the root source is closed.
@@ -106,8 +135,7 @@ public:
   enum class Kind {
     ForeignDomain,
     RootAlreadyAdmitted,
-    UnknownItem,
-    AlreadyRetired,
+    InvalidResponsibility,
     ChildOrdinalExhausted,
   };
 
@@ -144,55 +172,50 @@ private:
 /// ordinal, changes no active membership, and produces no completion.
 class DynamicWorkDomain {
 public:
-  explicit DynamicWorkDomain(DomainInstanceId instance) : instance_(instance) {}
+  explicit DynamicWorkDomain(DomainInstanceId instance);
 
-  // One coordinator owns exactly one domain instance, so the kernel is an
-  // exclusive owner that cannot be copied or moved.
+  // Copying would duplicate termination authority. Moving would introduce
+  // coordinator-transfer semantics that this standalone kernel does not own.
   DynamicWorkDomain(const DynamicWorkDomain &) = delete;
   DynamicWorkDomain &operator=(const DynamicWorkDomain &) = delete;
   DynamicWorkDomain(DynamicWorkDomain &&) = delete;
   DynamicWorkDomain &operator=(DynamicWorkDomain &&) = delete;
 
-  /// Admits the root in one transaction: it acquires the root responsibility
-  /// and closes the root source, then returns the root identity. Rejected once
-  /// the root is already admitted.
-  llvm::Expected<WorkItemId> admitRoot();
+  /// Admits the root in one transaction: it acquires the root responsibility,
+  /// closes the root source, then publishes its capability. Rejected once the
+  /// root is already admitted.
+  llvm::Expected<WorkResponsibility> admitRoot();
 
   /// Publishes one child of `parent` to this domain. It acquires the child
   /// responsibility and consumes `parent`'s next program-order ordinal before
-  /// returning the child identity. Rejected when `parent` is foreign, unknown,
-  /// or already retired.
-  llvm::Expected<WorkItemId> spawnChild(const WorkItemId &parent);
+  /// returning the child capability, while borrowing and preserving the parent
+  /// responsibility. Rejected when `parent` is foreign or invalid.
+  llvm::Expected<WorkResponsibility>
+  spawnChild(const WorkResponsibility &parent);
 
-  /// Retires one active item exactly once and reports whether this retirement
-  /// is the completion transition. Rejected for a foreign, unknown, or
-  /// already-retired identity.
-  llvm::Expected<RetirementEffect> retire(const WorkItemId &item);
+  /// Consumes one live capability, retires its active item exactly once, and
+  /// reports whether this retirement is the completion transition. A foreign
+  /// or invalid capability is rejected without consuming it or changing state.
+  llvm::Expected<RetirementEffect> retire(WorkResponsibility &&responsibility);
 
   /// The number of active responsibilities, derived from the active set.
-  std::size_t activeCount() const { return active_.size(); }
+  std::size_t activeCount() const;
 
   /// True once the root source is closed and the active set is empty. Stable
   /// after completion; it reads the same facts the completion transition does.
-  bool completed() const { return rootSourceClosed_ && active_.empty(); }
+  bool completed() const;
 
 private:
-  /// Rejects a foreign, unknown, or already-retired identity, and otherwise
-  /// confirms it is currently active.
-  llvm::Error requireActive(const WorkItemId &item) const;
-
-  /// True when the domain ever acquired this identity. Derived from the ordinal
-  /// cursors and the root-source state, so it distinguishes an already-retired
-  /// item from one this domain never published without a second history record.
-  bool everAcquired(const WorkItemId &item) const;
+  /// Rejects an empty or foreign capability without consulting observation
+  /// identity, and otherwise confirms this coordinator issued it.
+  llvm::Error
+  validateCapability(const WorkResponsibility &responsibility) const;
 
   /// The next zero-based child ordinal for `parent`, defaulting to zero.
   std::uint64_t nextChildOrdinal(const WorkItemId &parent) const;
 
-  DomainInstanceId instance_;
-  bool rootSourceClosed_ = false;
-  std::map<WorkItemId, std::uint64_t> childCursor_;
-  std::set<WorkItemId> active_;
+  using ControlState = WorkResponsibility::ControlState;
+  std::shared_ptr<ControlState> control_;
 };
 
 } // namespace sim

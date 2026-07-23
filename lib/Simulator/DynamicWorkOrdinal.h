@@ -2,19 +2,21 @@
 #define LOOM_LIB_SIMULATOR_DYNAMICWORKORDINAL_H
 
 #include <cstdint>
-#include <limits>
 #include <optional>
 
 namespace loom {
 namespace sim {
 namespace detail {
 
+template <std::uint64_t ExhaustedOrdinal>
 inline std::optional<std::uint64_t>
-takeChildOrdinal(std::uint64_t &nextOrdinal) {
-  if (nextOrdinal == std::numeric_limits<std::uint64_t>::max())
+takeChildOrdinalBefore(std::uint64_t &nextOrdinal) {
+  if (nextOrdinal >= ExhaustedOrdinal)
     return std::nullopt;
   return nextOrdinal++;
 }
+
+std::optional<std::uint64_t> takeChildOrdinal(std::uint64_t &nextOrdinal);
 
 } // namespace detail
 } // namespace sim
