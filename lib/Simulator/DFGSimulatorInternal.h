@@ -116,6 +116,12 @@ struct ReadyPlainMemoryAction {
   llvm::SmallVector<SyncEffectId, 2> frontier;
 };
 
+struct PlainMemoryActionProjection {
+  std::optional<ReadyPlainMemoryAction> ready;
+  llvm::SmallVector<std::string, 1> diagnostics;
+  bool unsupported = false;
+};
+
 struct SimulatorState {
   ChannelMap channels;
   ChannelMap pendingChannels;
@@ -238,7 +244,7 @@ std::optional<Token> readMemoryElement(const MemoryView &view,
 void writeMemoryElement(const MemoryView &view, std::size_t index, Token value);
 void commitDataflowMemoryWrite(const MemoryView &view,
                                const DataflowMemoryWrite &write);
-std::optional<ReadyPlainMemoryAction>
+PlainMemoryActionProjection
 projectReadyPlainMemoryAction(mlir::Operation *op, SimulatorState &state);
 bool plainMemoryActionsConflict(const MemoryActionRecord &lhs,
                                 const MemoryActionRecord &rhs);

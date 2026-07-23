@@ -17,6 +17,10 @@
 // RUN:   --output %t.uninitialized-rw.json
 // RUN: FileCheck %s --check-prefix=UNINITIALIZED-RW \
 // RUN:   < %t.uninitialized-rw.json
+// RUN: loom-dfg-sim %s --graph conflict_precedes_projection_error \
+// RUN:   --memref 0=10 --output %t.projection-error.json
+// RUN: FileCheck %s --check-prefix=PROJECTION-ERROR \
+// RUN:   < %t.projection-error.json
 // RUN: loom-dfg-sim %s --graph ordered_rw_chain \
 // RUN:   --memref 0=10,11,12,13,14,15,16,17 --output %t.chain.json
 // RUN: FileCheck %s --check-prefix=CHAIN < %t.chain.json
@@ -24,6 +28,9 @@
 // RUN:   --memref 0=17 --output %t.data-dependency.json
 // RUN: FileCheck %s --check-prefix=DATA-DEPENDENCY \
 // RUN:   < %t.data-dependency.json
+// RUN: loom-dfg-sim %s --graph empty_store_does_not_launder_order \
+// RUN:   --memref 0=17 --output %t.empty-store.json
+// RUN: FileCheck %s --check-prefix=EMPTY-STORE < %t.empty-store.json
 // RUN: loom-dfg-sim %s --graph unordered_rr_overlap \
 // RUN:   --memref 0=10,11,12,13,14,15,16,17 --output %t.rr.json
 // RUN: FileCheck %s --check-prefix=RR < %t.rr.json
@@ -91,6 +98,19 @@
 // UNINITIALIZED-RW-NOT: "dataflow.store":
 // UNINITIALIZED-RW: "status": "unsupported"
 
+// A ready out-of-range access has a projection diagnostic, but it cannot mask
+// the knowable conflict between two other ready stores. Admission projects the
+// complete ready set locally and gives the symmetric conflict precedence,
+// without exporting terminal state.
+// PROJECTION-ERROR: "diagnostics": [
+// PROJECTION-ERROR-NOT: out of range
+// PROJECTION-ERROR: "final_memory_roots": {}
+// PROJECTION-ERROR-NEXT: "final_memory_state": {}
+// PROJECTION-ERROR-NEXT: "final_outputs": []
+// PROJECTION-ERROR-NOT: "dataflow.load":
+// PROJECTION-ERROR-NOT: "dataflow.store":
+// PROJECTION-ERROR: "status": "unsupported"
+
 // The same element under an explicit done/ctrl chain is ordered, so both
 // accesses fire and the load observes the stored value.
 // CHAIN: "final_outputs": [
@@ -111,6 +131,17 @@
 // DATA-DEPENDENCY: "dataflow.load": 1
 // DATA-DEPENDENCY-NOT: "dataflow.store":
 // DATA-DEPENDENCY: "status": "unsupported"
+
+// An all-zero masked store performs no memory action. Its done token may carry
+// only its ctrl frontier, so using load data as its inactive payload cannot
+// launder the load effect into a later store's ctrl. The later overlapping
+// store remains unordered from the load.
+// EMPTY-STORE: "final_memory_roots": {}
+// EMPTY-STORE-NEXT: "final_memory_state": {}
+// EMPTY-STORE-NEXT: "final_outputs": []
+// EMPTY-STORE: "dataflow.load": 1
+// EMPTY-STORE: "dataflow.store": 1
+// EMPTY-STORE: "status": "unsupported"
 
 // Two unordered plain loads of one element do not conflict.
 // RR: "final_outputs": [
@@ -229,6 +260,21 @@ module {
         complete(%store_done, %load_done : none, none)
   }
 
+  dataflow.graph private @conflict_precedes_projection_error(
+      %start: none, %mem: memref<1xi32>) -> ()
+      attributes {input_segments = array<i32: 0, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %bad = dataflow.constant %start {const_value = 7 : index} : index
+    %cell = dataflow.constant %start {const_value = 0 : index} : index
+    %first = dataflow.constant %start {const_value = 41 : i32} : i32
+    %second = dataflow.constant %start {const_value = 42 : i32} : i32
+    %unused, %bad_done = dataflow.load %mem[%bad] %start : memref<1xi32>
+    %first_done = dataflow.store %mem[%cell] %first %start : memref<1xi32>
+    %second_done = dataflow.store %mem[%cell] %second %start : memref<1xi32>
+    dataflow.graph.return values() streams() memories()
+        complete(%bad_done, %first_done, %second_done : none, none, none)
+  }
+
   dataflow.graph private @ordered_rw_chain(
       %start: none, %mem: memref<8xi32>) -> (i32)
       attributes {input_segments = array<i32: 0, 0, 1>,
@@ -250,6 +296,24 @@ module {
     %store_done = dataflow.store %mem[%cell] %loaded %start : memref<1xi32>
     dataflow.graph.return values() streams() memories()
         complete(%load_done, %store_done : none, none)
+  }
+
+  dataflow.graph private @empty_store_does_not_launder_order(
+      %start: none, %mem: memref<1xi32>) -> ()
+      attributes {input_segments = array<i32: 0, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %cell = dataflow.constant %start {const_value = 0 : index} : index
+    %zero = dataflow.constant %start {const_value = 0 : i1} : i1
+    %later = dataflow.constant %start {const_value = 99 : i32} : i32
+    %loaded, %load_done = dataflow.load %mem[%cell] %start : memref<1xi32>
+    %inactive_data = dataflow.unpack %loaded : i32 -> vector<1xi32>
+    %mask = dataflow.unpack %zero : i1 -> vector<1xi1>
+    %empty_done = dataflow.store %mem[%cell] %inactive_data %start mask %mask
+        : memref<1xi32>, vector<1xi32>
+    %later_done = dataflow.store %mem[%cell] %later %empty_done
+        : memref<1xi32>
+    dataflow.graph.return values() streams() memories()
+        complete(%load_done, %later_done : none, none)
   }
 
   dataflow.graph private @unordered_rr_overlap(

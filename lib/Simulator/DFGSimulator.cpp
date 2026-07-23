@@ -794,16 +794,18 @@ static bool admitReadyPlainMemoryActions(mlir::Block &block,
                                          SimulatorState &state) {
   state.admittedPlainMemoryActions.clear();
   llvm::SmallVector<std::pair<mlir::Operation *, ReadyPlainMemoryAction>> ready;
+  llvm::SmallVector<std::string> projectionDiagnostics;
+  bool projectionUnsupported = false;
   for (mlir::Operation &op : block.getOperations()) {
     if (!mlir::isa<dataflow::LoadOp, dataflow::StoreOp>(op))
       continue;
-    const std::size_t diagnosticCount = state.diagnostics.size();
-    auto action = projectReadyPlainMemoryAction(&op, state);
-    if (state.runtimeUnsupportedCapability ||
-        state.diagnostics.size() != diagnosticCount)
-      return false;
-    if (action)
-      ready.emplace_back(&op, std::move(*action));
+    PlainMemoryActionProjection projection =
+        projectReadyPlainMemoryAction(&op, state);
+    projectionUnsupported |= projection.unsupported;
+    for (std::string &diagnostic : projection.diagnostics)
+      projectionDiagnostics.push_back(std::move(diagnostic));
+    if (projection.ready)
+      ready.emplace_back(&op, std::move(*projection.ready));
   }
 
   for (std::size_t left = 0; left < ready.size(); ++left)
@@ -821,6 +823,13 @@ static bool admitReadyPlainMemoryActions(mlir::Block &block,
         !state.memorySync->areCoveredByHappensBefore(conflictingEffects,
                                                      candidate.second.frontier))
       return rejectPlainMemoryConflict(state);
+  }
+
+  if (!projectionDiagnostics.empty() || projectionUnsupported) {
+    for (std::string &diagnostic : projectionDiagnostics)
+      state.diagnostics.push_back(std::move(diagnostic));
+    state.runtimeUnsupportedCapability |= projectionUnsupported;
+    return false;
   }
 
   for (auto &candidate : ready)

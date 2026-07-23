@@ -681,6 +681,43 @@ void storeDuplicateScatterIsAtomic(dataflow::StoreOp op) {
                      "store changed run or memory state on a rejected access");
 }
 
+void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
+  SimulatorState state;
+  auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
+  auto memory = makeMemory(memoryType.getElementType(), {0x11, 0x22});
+  state.channels[&op.getMemMutable()].push_back(
+      pointerToken(op.getMem(), memory, 0));
+  state.channels[&op.getAddrMutable()].push_back(
+      indexVectorToken(resolvedIndexBits(op.getOperation()), {0, 1}));
+  state.channels[&op.getDataMutable()].push_back(
+      tokenWithBits(op.getData().getType(), 0xAB43));
+  Token ctrl = noneToken();
+  ctrl.frontier.push_back(loom::sim::SyncEffectId(99));
+  state.channels[&op.getCtrlMutable()].push_back(std::move(ctrl));
+  PlainMemoryActionProjection projected =
+      projectReadyPlainMemoryAction(op.getOperation(), state);
+  require(projected.ready && projected.diagnostics.empty(),
+          "unable to project synchronization-failure store");
+  state.admittedPlainMemoryActions.try_emplace(op.getOperation(),
+                                               std::move(*projected.ready));
+
+  require(!fireActorOperation(op, state),
+          "store fired after synchronization insertion failed");
+  require(state.runtimeUnsupportedCapability && state.diagnostics.size() == 1,
+          "synchronization insertion failure did not report unsupported");
+  require(state.channels[&op.getMemMutable()].size() == 1 &&
+              state.channels[&op.getAddrMutable()].size() == 1 &&
+              state.channels[&op.getDataMutable()].size() == 1 &&
+              state.channels[&op.getCtrlMutable()].size() == 1,
+          "store consumed input on synchronization insertion failure");
+  require(state.memoryActions.empty() && state.firingFrontier.empty() &&
+              state.admittedPlainMemoryActions.contains(op.getOperation()),
+          "store partially issued on synchronization insertion failure");
+  expectUntouchedRun(
+      state, *memory, {0x11, 0x22},
+      "store changed run or memory state on synchronization insertion failure");
+}
+
 } // namespace
 
 int main() {
@@ -740,5 +777,6 @@ int main() {
   serializeFailureIsAtomic(serialize);
   loadRejectionIsAtomic(load);
   storeDuplicateScatterIsAtomic(store);
+  storeSynchronizationFailureIsAtomic(store);
   return 0;
 }
