@@ -16,6 +16,46 @@
 using namespace mlir;
 using namespace fabric;
 
+namespace mlir {
+
+template <>
+void RegisteredOperationName::Model<::fabric::BoundaryOp>::setInherentAttr(
+    Operation *op, StringAttr name, Attribute value) {
+  auto boundary = cast<::fabric::BoundaryOp>(op);
+  if (!value ||
+      name != ::fabric::BoundaryOp::getSwConfigsAttrName(op->getName())) {
+    ::fabric::BoundaryOp::setInherentAttr(boundary.getProperties(), name,
+                                          value);
+    return;
+  }
+
+  ::fabric::BoundaryOp::Properties converted;
+  NamedAttrList attributes;
+  attributes.set(name, value);
+  if (failed(::fabric::BoundaryOp::setPropertiesFromAttr(
+          converted, attributes.getDictionary(op->getContext()),
+          [&]() { return mlir::emitError(op->getLoc()); }))) {
+    // Keep malformed software configuration present for op verification.
+    ::fabric::BoundaryOp::setInherentAttr(
+        boundary.getProperties(), name, DictionaryAttr::get(op->getContext()));
+    return;
+  }
+  ::fabric::BoundaryOp::setInherentAttr(boundary.getProperties(), name, value);
+}
+
+template <>
+LogicalResult
+RegisteredOperationName::Model<::fabric::BoundaryOp>::setPropertiesFromAttr(
+    OperationName, PropertyRef properties, Attribute attr,
+    function_ref<InFlightDiagnostic()> emitError) {
+  auto *boundaryProperties =
+      properties.as<::fabric::BoundaryOp::Properties *>();
+  return ::fabric::BoundaryOp::setPropertiesFromParsedAttr(*boundaryProperties,
+                                                           attr, emitError);
+}
+
+} // namespace mlir
+
 //===----------------------------------------------------------------------===//
 // fabric.boundary
 //===----------------------------------------------------------------------===//
@@ -79,10 +119,6 @@ ParseResult BoundaryOp::parse(OpAsmParser &parser, OperationState &result) {
 
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
-  if (Attribute swConfigs = result.attributes.get("sw_configs");
-      swConfigs && !isa<DictionaryAttr>(swConfigs))
-    return parser.emitError(directionLoc,
-                            "'sw_configs' must be a dictionary attribute");
 
   if (parser.parseColon())
     return failure();

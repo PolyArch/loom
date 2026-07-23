@@ -24,6 +24,16 @@
 
 namespace mlir {
 template <>
+void RegisteredOperationName::Model<::fabric::BoundaryOp>::setInherentAttr(
+    Operation *op, StringAttr name, Attribute value);
+
+template <>
+LogicalResult
+RegisteredOperationName::Model<::fabric::BoundaryOp>::setPropertiesFromAttr(
+    OperationName opName, PropertyRef properties, Attribute attr,
+    function_ref<InFlightDiagnostic()> emitError);
+
+template <>
 LogicalResult
 RegisteredOperationName::Model<::fabric::MemOp>::setPropertiesFromAttr(
     OperationName opName, PropertyRef properties, Attribute attr,

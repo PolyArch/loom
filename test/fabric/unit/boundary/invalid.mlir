@@ -60,9 +60,24 @@ fabric.module @boundary_inner_input_types_collision(
 // -----
 // A present wrong-typed sw_configs must not be normalized to absence.
 fabric.module @boundary_sw_configs_wrong_outer_type(%d : !fabric.bits<32>) {
-  // expected-error @+1 {{'sw_configs' must be a dictionary attribute}}
+  // expected-error @+2 {{Invalid attribute `sw_configs` in property conversion}}
+  // expected-error @+1 {{[s2t] present 'sw_configs' must contain exactly the 'tag' field}}
   %0 = fabric.boundary [s2t] %d {sw_configs = []}
        : !fabric.bits<32> -> !fabric.bits_tag<32, 4>
+  fabric.yield
+}
+
+// -----
+// Generic syntax must reject a malformed present inherent attribute instead
+// of erasing it into the unconfigured form.
+fabric.module @boundary_generic_sw_configs_wrong_type(%a : !fabric.bits<32>) {
+  // expected-error @+2 {{Invalid attribute `sw_configs` in property conversion}}
+  // expected-error @+1 {{[s2t] present 'sw_configs' must contain exactly the 'tag' field}}
+  %0 = "fabric.boundary"(%a) <{
+    direction = 0 : i32,
+    inner_input_types = []
+  }> {sw_configs = []}
+      : (!fabric.bits<32>) -> !fabric.bits_tag<32, 4>
   fabric.yield
 }
 
