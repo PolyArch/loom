@@ -3,9 +3,11 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -132,11 +134,23 @@ DynamicWorkDomain::spawnChild(const WorkItemId &parent) {
     return std::move(error);
 
   std::uint64_t ordinal = nextChildOrdinal(parent);
+  // A saturated parent can never mint another ordinal; reject before mutating
+  // any state so the cursor, active set, and completion are unchanged.
+  if (ordinal == std::numeric_limits<std::uint64_t>::max())
+    return reject(DynamicWorkDomainError::Kind::ChildOrdinalExhausted,
+                  describe(parent) + " has exhausted its child ordinals");
+
   WorkItemId child = WorkItemId::child(parent, ordinal);
-  // Consume the ordinal and acquire the child responsibility before the child
-  // identity is published to the caller.
+  // Acquire the child responsibility before publishing the identity. A
+  // monotonic, non-wrapping per-parent ordinal makes a duplicate structurally
+  // impossible, so a failed insertion is a non-returning invariant failure
+  // raised before the ordinal is consumed.
+  if (!active_.insert(child).second)
+    llvm::report_fatal_error(
+        "DynamicWorkDomain invariant failure: duplicate active child");
+  // Consume the ordinal only after the responsibility is acquired, before the
+  // child identity is published to the caller.
   childCursor_[parent] = ordinal + 1;
-  active_.insert(child);
   return child;
 }
 

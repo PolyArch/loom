@@ -108,6 +108,7 @@ public:
     RootAlreadyAdmitted,
     UnknownItem,
     AlreadyRetired,
+    ChildOrdinalExhausted,
   };
 
   static char ID;
@@ -141,9 +142,18 @@ private:
 ///
 /// Every rejected action is atomic: it acquires no responsibility, consumes no
 /// ordinal, changes no active membership, and produces no completion.
+class DynamicWorkDomainTestAccess;
+
 class DynamicWorkDomain {
 public:
   explicit DynamicWorkDomain(DomainInstanceId instance) : instance_(instance) {}
+
+  // One coordinator owns exactly one domain instance, so the kernel is an
+  // exclusive owner that cannot be copied or moved.
+  DynamicWorkDomain(const DynamicWorkDomain &) = delete;
+  DynamicWorkDomain &operator=(const DynamicWorkDomain &) = delete;
+  DynamicWorkDomain(DynamicWorkDomain &&) = delete;
+  DynamicWorkDomain &operator=(DynamicWorkDomain &&) = delete;
 
   /// Admits the root in one transaction: it acquires the root responsibility
   /// and closes the root source, then returns the root identity. Rejected once
@@ -169,6 +179,10 @@ public:
   bool completed() const { return rootSourceClosed_ && active_.empty(); }
 
 private:
+  // The exclusive test surface for the unreachable child ordinal exhaustion
+  // path; defined only in the anchor test, never a public mutator.
+  friend class DynamicWorkDomainTestAccess;
+
   /// Rejects a foreign, unknown, or already-retired identity, and otherwise
   /// confirms it is currently active.
   llvm::Error requireActive(const WorkItemId &item) const;
