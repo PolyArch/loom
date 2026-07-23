@@ -12,10 +12,10 @@ all live here:
   * The main worktree owns every initialized top-level submodule checkout.
     Linked worktrees consume those shared sources and must keep their own
     submodule paths and administrative state uninitialized.
-  * Shared LLVM and CIRCT products are gated by one reader/writer
-    fcntl.flock with a configurable timeout. Builds and distclean are
-    exclusive writers; ordinary Loom builds hold a shared lock while
-    validating and consuming the products.
+  * Shared LLVM and CIRCT products are gated by one SharedProductLock
+    transaction. An internal flock turnstile gives queued writers priority
+    on the product flock; builds and distclean are exclusive writers, while
+    ordinary Loom builds hold a shared product lock during consumption.
   * The shared CIRCT build reuses that same LLVM lock and is held across
     the LLVM ensure phase and the CIRCT configure/build, so the LLVM a
     CIRCT build links against cannot be rebuilt or wiped concurrently.
@@ -273,6 +273,9 @@ class Paths:
         self.llvm_src = llvm_external / "llvm"
         self.llvm_build = llvm_external / "build"
         self.llvm_lock = self.externals_root / ".loom-build.llvm.lock"
+        self.llvm_lock_turnstile = (
+            self.externals_root / ".loom-build.llvm.turnstile.lock"
+        )
         self.llvm_stamp = self.externals_root / ".loom-build.llvm.stamp"
         self.loom_build = self.root / "build"
         self.mlir_dir = self.llvm_build / "lib" / "cmake" / "mlir"
@@ -522,51 +525,126 @@ def check_dependency_pins(paths: Paths) -> DependencyState:
     )
 
 
-class FileLock:
-    """Shared or exclusive fcntl.flock with a polled timeout.
+class SharedProductLock:
+    """Writer-preferring shared/exclusive lock over two flock files."""
 
-    Polling rather than blocking lets us bail out cleanly when another
-    worktree's build is wedged, and emit a one-shot waiting message
-    when contention occurs.
-    """
+    POLL_INTERVAL = 0.01
 
-    def __init__(self, path: Path, timeout: float, shared: bool):
-        self.path = path
+    def __init__(
+        self,
+        product_path: Path,
+        turnstile_path: Path,
+        timeout: float,
+        shared: bool,
+    ):
+        self.product_path = product_path
+        self.turnstile_path = turnstile_path
         self.timeout = timeout
-        self.operation = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
-        self.fd: int | None = None
+        self.product_operation = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+        self.product_fd: int | None = None
+        self.turnstile_fd: int | None = None
+        self.product_locked = False
+        self.turnstile_locked = False
 
-    def __enter__(self) -> "FileLock":
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o644)
-        deadline = time.monotonic() + self.timeout
+    def _timeout(self, label: str, path: Path) -> None:
+        die(
+            f"timed out after {self.timeout:g}s waiting for "
+            f"shared product {label} at {path}; another build may be stuck"
+        )
+
+    def _acquire(
+        self,
+        fd: int,
+        operation: int,
+        deadline: float,
+        label: str,
+        path: Path,
+    ) -> None:
         announced = False
+        first_attempt = True
         while True:
+            if (
+                time.monotonic() >= deadline
+                and not (first_attempt and self.timeout <= 0)
+            ):
+                self._timeout(label, path)
+            first_attempt = False
             try:
-                fcntl.flock(self.fd, self.operation | fcntl.LOCK_NB)
-                return self
-            except OSError as e:
-                if e.errno not in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
+                fcntl.flock(fd, operation | fcntl.LOCK_NB)
+                return
+            except OSError as error:
+                if error.errno not in (
+                    errno.EAGAIN,
+                    errno.EACCES,
+                    errno.EWOULDBLOCK,
+                ):
                     raise
                 if not announced:
-                    info(f"waiting for shared LLVM lock at {self.path}")
+                    info(f"waiting for shared product {label} at {path}")
                     announced = True
-                if time.monotonic() >= deadline:
-                    os.close(self.fd)
-                    self.fd = None
-                    die(
-                        f"timed out after {self.timeout:.0f}s waiting for "
-                        f"{self.path}; another build may be stuck"
-                    )
-                time.sleep(1.0)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._timeout(label, path)
+                time.sleep(min(self.POLL_INTERVAL, remaining))
+
+    def _release_turnstile(self) -> None:
+        if self.turnstile_fd is None:
+            return
+        try:
+            if self.turnstile_locked:
+                fcntl.flock(self.turnstile_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(self.turnstile_fd)
+            self.turnstile_fd = None
+            self.turnstile_locked = False
+
+    def _release_product(self) -> None:
+        if self.product_fd is None:
+            return
+        try:
+            if self.product_locked:
+                fcntl.flock(self.product_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(self.product_fd)
+            self.product_fd = None
+            self.product_locked = False
+
+    def __enter__(self) -> "SharedProductLock":
+        deadline = time.monotonic() + self.timeout
+        self.product_path.parent.mkdir(parents=True, exist_ok=True)
+        self.turnstile_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.turnstile_fd = os.open(
+                str(self.turnstile_path), os.O_RDWR | os.O_CREAT, 0o644
+            )
+            self.product_fd = os.open(
+                str(self.product_path), os.O_RDWR | os.O_CREAT, 0o644
+            )
+            self._acquire(
+                self.turnstile_fd,
+                fcntl.LOCK_EX,
+                deadline,
+                "turnstile",
+                self.turnstile_path,
+            )
+            self.turnstile_locked = True
+            self._acquire(
+                self.product_fd,
+                self.product_operation,
+                deadline,
+                "lock",
+                self.product_path,
+            )
+            self.product_locked = True
+            self._release_turnstile()
+            return self
+        except BaseException:
+            self._release_product()
+            self._release_turnstile()
+            raise
 
     def __exit__(self, *exc) -> None:
-        if self.fd is not None:
-            try:
-                fcntl.flock(self.fd, fcntl.LOCK_UN)
-            finally:
-                os.close(self.fd)
-                self.fd = None
+        self._release_product()
 
 
 def llvm_build_identity(
@@ -764,11 +842,17 @@ def sync_shared_llvm(
             f"shared LLVM tree {paths.llvm_root} appears to live on NFS; "
             "flock semantics across hosts are unreliable"
         )
-    with FileLock(paths.llvm_lock, args.lock_timeout, shared=False):
+    with SharedProductLock(
+        paths.llvm_lock,
+        paths.llvm_lock_turnstile,
+        args.lock_timeout,
+        shared=False,
+    ):
         prev_stamp = read_stamp(paths.llvm_stamp)
         if always_build:
             paths.llvm_stamp.unlink(missing_ok=True)
             paths.circt_stamp.unlink(missing_ok=True)
+            check_git_version()
         state = check_dependency_pins(paths)
         compilers = check_llvm_compilers()
         return _sync_llvm_locked(
@@ -869,10 +953,16 @@ def sync_shared_circt(
             f"shared CIRCT tree {paths.circt_root} appears to live on NFS; "
             "flock semantics across hosts are unreliable"
         )
-    with FileLock(paths.llvm_lock, args.lock_timeout, shared=False):
+    with SharedProductLock(
+        paths.llvm_lock,
+        paths.llvm_lock_turnstile,
+        args.lock_timeout,
+        shared=False,
+    ):
         prev_stamp = read_stamp(paths.circt_stamp)
         if always_build:
             paths.circt_stamp.unlink(missing_ok=True)
+            check_git_version()
         llvm_prev_stamp = read_stamp(paths.llvm_stamp)
         state = check_dependency_pins(paths)
         compilers = check_llvm_compilers()
@@ -930,7 +1020,12 @@ def ensure_shared_llvm(paths: Paths, args: argparse.Namespace) -> str:
 def build_loom(paths: Paths, args: argparse.Namespace) -> None:
     for attempt in range(2):
         ensured_identity = ensure_shared_llvm(paths, args)
-        with FileLock(paths.llvm_lock, args.lock_timeout, shared=True):
+        with SharedProductLock(
+            paths.llvm_lock,
+            paths.llvm_lock_turnstile,
+            args.lock_timeout,
+            shared=True,
+        ):
             state = check_dependency_pins(paths)
             compilers = check_llvm_compilers()
             llvm_identity = llvm_build_identity(state, compilers)
@@ -1045,7 +1140,6 @@ def cmd_externals_root(paths: Paths, args: argparse.Namespace) -> None:
 
 
 def cmd_build_llvm(paths: Paths, args: argparse.Namespace) -> None:
-    check_git_version()
     build_llvm(paths, args)
 
 
@@ -1062,7 +1156,6 @@ def cmd_clean(paths: Paths, args: argparse.Namespace) -> None:
 
 
 def cmd_build_circt(paths: Paths, args: argparse.Namespace) -> None:
-    check_git_version()
     build_circt(paths, args)
 
 
@@ -1071,10 +1164,14 @@ def cmd_distclean(paths: Paths, args: argparse.Namespace) -> None:
         info(f"removing {paths.loom_build}")
         shutil.rmtree(paths.loom_build, ignore_errors=True)
     if paths.is_main:
-        # Both shared builds are removed under the single LLVM lock that the
-        # build path also holds, so distclean cannot tear a build out from
-        # under a concurrent LLVM or CIRCT build in another worktree.
-        with FileLock(paths.llvm_lock, args.lock_timeout, shared=False):
+        # Both shared builds are removed under the same exclusive product
+        # transaction used by build writers.
+        with SharedProductLock(
+            paths.llvm_lock,
+            paths.llvm_lock_turnstile,
+            args.lock_timeout,
+            shared=False,
+        ):
             if paths.llvm_build.exists():
                 info(f"removing shared {paths.llvm_build}")
                 shutil.rmtree(paths.llvm_build, ignore_errors=True)
