@@ -1,8 +1,7 @@
-# ADG Builder Boundary
+# ADG Builder
 
-This document defines the architectural boundary of Loom's public C++ ADG
-Builder library. It deliberately does not freeze concrete class names or
-convenience-helper signatures; those belong to the dedicated public API design.
+This document defines the public C++ authoring model, finalization boundary,
+and builtin-target construction contract of Loom's ADG Builder library.
 
 ## Role
 
@@ -105,10 +104,74 @@ Fabric contains no marker that distinguishes how an object was authored.
 
 The exact public API uses typed enums, references, and compact owner-specific
 specification values rather than strings or arbitrary parameter maps. Strings
-remain suitable for nonsemantic labels. A dedicated public API specification
-uniquely owns concrete signatures and handle types; this boundary owns only
-their required elaboration into closed Fabric schemas and defines no
-placeholder handle hierarchy.
+remain suitable for nonsemantic labels.
+
+## Typed Construction Surface
+
+The public construction surface is a thin typed facade over actual Fabric IR.
+It does not build a parallel C++ hardware graph and does not render Fabric as
+text for reparsing. A successful exact construction call immediately creates
+the corresponding typed Fabric operation, type, attribute, value, or
+reference in the Builder-owned draft IR.
+
+The public surface has one design owner and three scoped construction views:
+
+```text
+DesignBuilder
+  SpatialCoreBuilder
+  SystemBuilder
+  InterconnectImplementationBuilder
+```
+
+`DesignBuilder` owns the draft IR, construction diagnostics, and root closure.
+The scoped views create `fabric.module`, `fabric.system`, and optional
+Interconnect Implementation roots. They are authoring views over that one
+draft, not independent schemas or persistent objects.
+
+Handles reflect essential Fabric distinctions. Spatial graph values and
+ports, AccCores, memory services, transport resources, endpoints, hardware
+domains, and implementation refinements use typed references that cannot be
+silently exchanged across owners or roles. There is no generic `NodeRef`,
+string `kind`, property bag, textual type, textual operation name, or
+user-managed SSA name as a semantic input.
+
+Construction calls return `llvm::Expected<Handle>` or `llvm::Error`.
+Fluent calls that accumulate a hidden invalid state are not part of the public
+contract. Builder-local checks cover stale or foreign handles, incomplete
+helper expansion, duplicate nonsemantic labels where diagnostics would become
+ambiguous, and other authoring failures. Fabric verification remains the only
+semantic hardware authority.
+
+Convenience topology and resource helpers use only this exact public surface.
+They may return typed groups of created handles, but cannot create hidden
+hardware facts or use a private emitter.
+
+## Failure-Atomic Finalization
+
+Finalization consumes the draft design. Its conceptual public boundary is:
+
+```text
+llvm::Expected<FinalizedFabricDesign> DesignBuilder::finalize() &&
+```
+
+`FinalizedFabricDesign` is a transient immutable C++ closure over finalized
+Fabric roots and exact dependency references. It is not a new Artifact family,
+hardware schema, or source of semantic identity.
+
+Finalization performs one all-or-none derivation:
+
+1. close construction scopes and expand all helpers;
+2. resolve every typed reference;
+3. run authoring-boundary checks;
+4. invoke the canonical Fabric verifier and finalizer for every root;
+5. derive canonical bytes, identities, and the complete dependency closure;
+6. expose the finalized closure only after every member succeeds.
+
+Artifact-store publication may write immutable content blobs before the root,
+but it publishes the root reference only after the complete closure is
+available. A failed attempt may leave only unreachable cache content, never a
+partially valid hardware target. Stream formatting and filesystem paths are
+output bindings and cannot weaken this finalization contract.
 
 ## Builtin Targets
 
@@ -123,6 +186,88 @@ all downstream stages see the same finalized Fabric contract. If hardware
 selection is omitted, configuration resolution selects the designated builtin
 default before compilation begins; downstream stages never observe a missing
 hardware target.
+
+Every builtin descriptor contains one stable template identity, one `X.Y`
+schema version, one closed typed parameter schema, and one expansion function.
+The expansion function uses only the public typed ADG Builder API. Compiler
+selection has no private emitter, prebuilt opaque Fabric body, textual shortcut,
+or privileged validation path.
+
+The initial general-purpose family has three closed authoring presets:
+
+```text
+BuiltinTargetPreset = Small | Default | Large
+```
+
+The enum is accepted only at authoring boundaries. Resolution replaces it
+with the exact template identity, version, and fully expanded typed parameters.
+The preset spelling is provenance; it is not a hardware fact or a substitute
+for the finalized Fabric identity.
+
+All three presets share one general-purpose capability set. They differ in
+resource multiplicity, resident capacity, buffering, and topology scale, not
+in workload-specific operations. In particular, the catalog does not define
+an attention target, sparse target, DSP target, or other application-specific
+hardware profile.
+
+Each fully resolved preset owns a complete construction recipe for:
+
+* the AccCore inventory and explicit system Transport Architecture;
+* every Spatial and Temporal PE occurrence, PE port shape, resident capacity,
+  operand-buffer organization, register FIFO, and inner FU occurrence;
+* every FU's exact Fabric operation capabilities, hardware-sharing groups,
+  hardware parameters, and software-configuration domains;
+* every Spatial and Temporal switch occurrence, physical connectivity table,
+  temporal route-table capacity, and explicit directed connection;
+* every Spatial and Temporal memory occurrence, operation-port inventory,
+  element and vector alternatives, service endpoints, local service, resident
+  capacity, and dispatch capability; and
+* every required Spatial-to-Temporal or Temporal-to-Spatial boundary.
+
+The common construction pattern contains both an untagged Spatial network and
+a tagged Temporal network connected only through explicit Fabric boundaries.
+This is an authoring recipe, not a second topology schema: expansion produces
+ordinary explicit Fabric resources and connections.
+
+The initial scale anchors are:
+
+| property                         | `Small` | `Default` | `Large` |
+| -------------------------------- | ------: | --------: | ------: |
+| AccCore occurrences              |       4 |         8 |      16 |
+| PE occurrences per SpatialCore   |      16 |        36 |      64 |
+| Spatial : Temporal PE ratio      |    12:4 |      27:9 |   48:16 |
+| memory occurrences per core      |       2 |         4 |       8 |
+| Spatial : Temporal memory ratio  |     1:1 |       2:2 |     4:4 |
+| Temporal resident-context anchor |       2 |         4 |       8 |
+| cross-schedule gateway anchor    |       2 |         4 |       8 |
+
+These values are resolved inputs to one template, not fields persisted in
+Fabric in addition to the resources they generate. Exact FU capability
+inventory, switch construction, memory-port capacity, widths, and buffer
+capacities are part of the same versioned family contract and must be fixed
+before that catalog version is implementation-complete.
+
+## Builtins As Public Examples
+
+The canonical preset expansion functions are reference-quality C++ examples
+of the public ADG Builder API. They are compiled as production builtin
+generators and remain readable as examples for hardware architects.
+
+A focused example executable may select a preset, populate a `DesignBuilder`,
+finalize it, and print or publish the resulting Fabric. It must call the same
+descriptor and expansion function as `loom-cc` and `loom-c++`; it must not
+copy the recipe. Users may instead invoke the parameterized expansion on an
+unfinalized Builder and extend the result through the same typed API, in which
+case the modified output is a custom Fabric target rather than the named
+preset.
+
+Therefore one implementation serves three uses without duplication:
+
+```text
+compiler builtin target
+public ADG Builder reference example
+starting point for a user-authored custom target
+```
 
 ## Determinism
 
@@ -175,6 +320,8 @@ The stable Builder anchors are deliberately small:
    Fabric identity.
 5. Invalid authoring cannot produce a finalized Fabric Hardware Description
    object.
+6. The compiler builtin path and public example path for each preset invoke
+   the same expansion function and finalize to the same Fabric identity.
 
 These anchors test the public boundary and determinism. They do not require a
 fixture for every helper, topology, operation ordering, generated name, or
@@ -187,6 +334,6 @@ semantic owner, second hardware IR, or packaging specification. It does not
 embed one workload's placement, route, bitstream, simulation result, or DSE
 decision into Fabric.
 
-The concrete public API, builtin preset catalog, and Fabric-to-RTL-to-GDSII
-implementation closure remain separate design subjects. This boundary only
-constrains them to preserve Fabric as the single hardware semantic source.
+Fabric-to-RTL-to-GDSII implementation closure remains a separate design
+subject. Preset source layout, example executable names, installation layout,
+and packaging are nonsemantic implementation choices.

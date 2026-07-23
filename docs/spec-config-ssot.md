@@ -30,6 +30,28 @@ at most one builtin preset and apply schema-declared semantic overrides. Loom
 does not support arbitrary profile chains, sibling merge order, import graphs,
 or format-specific inheritance semantics.
 
+The EDA-style acceleration profile is orthogonal to hardware-target selection.
+It may contain one typed `hardware.target` domain, but `quick_explore`,
+`implementation`, and the other flow-intent names are not Fabric target names.
+The builtin hardware authoring enum is:
+
+```text
+BuiltinTargetPreset = Small | Default | Large
+```
+
+Resolution replaces that enum with the selected ADG template identity,
+template schema version, and complete typed parameter values. The enum spelling
+is recorded only as invocation provenance and is excluded from canonical
+ResolvedConfig bytes. Omitting hardware selection resolves `Default`; it does
+not produce a target-less configuration.
+
+An external `--loom-hardware=<fabric.mlir>` binding is mutually exclusive with
+an explicitly selected builtin target. Import and Fabric finalization produce
+the exact Fabric Artifact input. The source path remains an invocation binding.
+After either source path, compiler components consume the exact Fabric
+reference and cannot branch on whether the hardware originated from a builtin
+or user C++ Builder.
+
 Human-authored JSON or YAML may represent the same typed profile schema. TOML
 compatibility and component-local parsers are not part of the contract. The
 central resolver is the only parser and validation authority.
