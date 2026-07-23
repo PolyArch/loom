@@ -99,6 +99,35 @@ total semantic width. Predicate, signedness, source/destination width,
 floating-point policy, and other exact actor attributes remain interpreted by
 the operation schema and concrete capability relation.
 
+### Initial Loop Control Families
+
+The initial loop-control registry contains four singleton implementation
+families:
+
+| `ImplementationFamilyId` | Admitted canonical operation schema |
+| ------------------------ | ----------------------------------- |
+| `LoopStream` | `dataflow.stream` |
+| `LoopCarry` | `dataflow.carry` |
+| `LoopInvariant` | `dataflow.invariant` |
+| `LoopGate` | `dataflow.gate` |
+
+These are physical implementation-family identities. `LoopControlFu` is an
+ADG Builder helper that composes concrete resources from these families; it
+is not a fifth family and does not imply circuit sharing among them.
+
+`LoopStream` does not encode the stream step kind in its family identity.
+Each concrete `LoopStream` resource fixes exactly one step kind in typed
+`hw_params`; resources implementing different step kinds are distinct
+`fabric.op` occurrences in the same family. Supported integer widths,
+continuation predicates, ports, state, use patterns, and timing further
+narrow each occurrence's capability.
+
+The four singleton families may be replaced or supplemented by a
+multi-member family only when one backend-supported circuit genuinely shares
+their physical implementation while preserving every registered transition,
+state, timing, and backpressure contract. FU co-location alone is not such
+evidence.
+
 ## Genuine Physical Sharing
 
 Multi-member families are legal only when one backend-supported circuit truly

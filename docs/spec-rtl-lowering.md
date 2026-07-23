@@ -81,6 +81,22 @@ backpressure contract. A generic shell may not consume an inactive operand,
 publish an inactive result, advance logical state while blocked, or convert
 an operation-specific state machine into a stateless pipeline.
 
+The `LoopStream`, `LoopCarry`, `LoopInvariant`, and `LoopGate` providers are
+dispatched by those exact family IDs. They consume the operation schema's
+closed typed transition-case descriptors; they must not reconstruct a second
+condition decoder or operation-name state table. The enclosing PE supplies
+the `InstructionContextRef` selection and state-bank namespace. A provider
+implements the state shape for that context but never creates another context
+identity.
+
+The initial `LoopCarry`, `LoopInvariant`, and `LoopGate` providers implement
+the Fabric-declared elastic-transparent contract with no hidden result queue
+or registered forwarding stage. `LoopStream` implements the exact
+result-publication, next-state, in-flight-capacity, and initiation-interval
+contract of its concrete resource, including multi-cycle recurrence updates
+when declared. Provider-local mode tables and a universal stateful-machine
+wrapper are not semantic authorities.
+
 ## Implementation Recipes
 
 Implementation choices are classified by their first observable difference:

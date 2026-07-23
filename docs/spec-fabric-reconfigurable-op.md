@@ -237,8 +237,100 @@ stateless scalar baseline.
 An FU containing stateful and stateless resources does not become one macro
 firing. Each configured Canonical Dataflow actor transition executes
 independently through its selected operation resource. `MacFu` imports the
-canonical carry capability for recurrence templates, but the carry family and
-its stateful resource contract remain owned by the `LoopControlFu` catalog.
+canonical `LoopCarry` capability for recurrence templates. The HSG registry
+owns that family identity, and this document owns its Fabric resource
+contract; the helper duplicates neither.
+
+### Loop Control Resource Contracts
+
+The loop-control implementation families are `LoopStream`, `LoopCarry`,
+`LoopInvariant`, and `LoopGate`. `LoopControlFu` is only a Builder composition
+helper. It neither creates a common implementation family nor owns a second
+state-machine definition.
+
+A concrete `LoopStream` resource has a closed typed capability containing:
+
+* a non-empty set of scalar signless integer widths;
+* exactly one fixed `dataflow::StreamStepKind`;
+* a non-empty set of supported `mlir::arith::CmpIPredicate` values;
+* exact physical operand and result roles; and
+* its resource-state, use-pattern, holding, timing, and progress contract.
+
+The selected predicate is a semantic `sw_configs` field. A resource that
+supports several integer widths also selects the exact actor width so its
+comparison, recurrence update, and modular-width behavior remain unambiguous.
+The step kind is fixed hardware capability and is never repeated as a
+software configuration field.
+
+`LoopCarry`, `LoopInvariant`, and `LoopGate` are bit-preserving token-plane
+resources. Their concrete port capacities may admit exact scalar integer,
+floating-point, and fixed-ranked vector actor types whose semantic payload
+fits the selected same-kind physical path, plus `none` under Fabric's
+zero-payload control-token convention. Equal payload width does not identify
+the semantic type; TechMapping still proves exact operation type and ordered
+port correspondence. These resources do not interpret payload bits and
+therefore do not enumerate the Cartesian product of such types. Frontend
+`memref` bindings are not token-plane payloads and are never admitted by these
+families.
+
+The operation schema owns the logical transition cases specified in
+`docs/spec-dataflow-part-1-streaming.md`. The concrete Fabric resource maps
+each case to one exact atomic `UsePattern` over:
+
+* the applicable context-state entry;
+* required operand heads;
+* execution resources;
+* active result capacity; and
+* any declared result-holding or in-flight state.
+
+Only outputs active in the selected transition case claim capacity or create
+backpressure. A blocked use pattern cannot consume an operand, update logical
+or physical state, or publish a partial result. Fabric does not independently
+decode the condition into another transition table.
+
+The minimum logical-state storage implemented by the four families is:
+
+| Family | Per-context state |
+| ------ | ----------------- |
+| `LoopStream` | `Idle` or `Running(current, limit, step)` |
+| `LoopCarry` | initial/running mode bit; no carried payload storage |
+| `LoopInvariant` | initial/running mode bit and one payload latch |
+| `LoopGate` | initial/continuing mode bit |
+
+Physical busy, in-flight, pipeline, and holding states required by the exact
+timing contract are additional Fabric-owned `ResourceState`s, not additional
+logical actor states. A temporal PE instantiates the declared state for each
+resident `InstructionContextRef`; a spatial PE uses its sole context. The
+`fabric.op` defines state shape and capacity but never creates a parallel
+context identity or context-selection mechanism.
+
+Timing is exact per concrete resource rather than inherited from a universal
+stateful shell. The closed family-specific contract identifies result
+publication offsets for active results, next-state availability, resource
+initiation interval, and any holding or in-flight capacity needed to realize
+them.
+
+The initial `LoopCarry`, `LoopInvariant`, and `LoopGate` resources are
+elastic-transparent:
+
+* forwarding adds no registered cycle;
+* initiation interval is one under downstream progress;
+* there is no hidden output queue; and
+* a result-producing transition commits only when all of its active outputs
+  can accept the result.
+
+Their inputs and state remain stable while stalled. A registered add followed
+by this canonical carry therefore retains a one-cycle recurrence path and can
+accept one recurrence transition per cycle under progress; the carry does not
+insert another register stage.
+
+`LoopStream` separately declares result-publication and next-state timing.
+An add, subtract, or shift update may make the next state available each
+cycle, while a multiply or divide update may be multi-cycle. Acceptance
+atomically reserves all resources required by the selected transition. The
+same context cannot perform its next transition until its next state is
+available. Other contexts may interleave only when the concrete Fabric
+capacity, initiation interval, and grant policy permit it.
 
 ## Resolved Capability View
 

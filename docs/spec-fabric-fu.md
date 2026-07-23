@@ -141,7 +141,7 @@ The mux / demux ops inside an FU let different structural/capability
 templates realize different internal compute graphs over the same hardware:
 they reshape in-FU operation connectivity rather than attaching to the FU's
 external inputs or outputs. Allowing back-edges in the body lets configurable
-compute operations such as `fabric.op[@dataflow.carry]` and cyclic exact
+compute resources such as a `LoopCarry` `fabric.op` and cyclic exact
 software-function projections be matched to an FU through TechMapping.
 The FU body region is a graph region
 (`RegionKindInterface::Graph`).

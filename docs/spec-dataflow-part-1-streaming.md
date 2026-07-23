@@ -221,6 +221,32 @@ lowering needs that value, as with the false `scf.condition` operands
 that become `scf.while` loop results, it must preserve the value with a
 separate projection such as `dataflow.demux`.
 
+### Canonical Transition Cases
+
+The registered operation schema for each stateful actor exposes a closed set
+of schema-local transition cases:
+
+| Operation | Transition cases |
+| --------- | ---------------- |
+| `dataflow.stream` | `StartTrue`, `StartClose`, `ContinueTrue`, `ContinueClose` |
+| `dataflow.carry` | `Init`, `Next`, `Close` |
+| `dataflow.invariant` | `Init`, `Replay`, `Close` |
+| `dataflow.gate` | `ClosedDrop`, `FirstTrue`, `ContinueTrue`, `Close` |
+
+Each transition case is a typed descriptor owned by the operation schema. It
+determines the required logical state, consumed operand heads, produced
+results and their value sources, and next logical state. The descriptors are
+the sole bridge from the logical state machines above to Fabric
+`UsePattern`s, simulators, and RTL providers. Those consumers must not decode
+the condition operands again through operation-name switches or parallel
+state-machine tables.
+
+Transition cases are schema vocabulary, not Dataflow operations, attributes,
+Artifact identities, Mapping records, or runtime event identities. A blocked
+transition is not another case: if the physical resource cannot atomically
+accept the case's active obligations, no logical operand is consumed and no
+logical state transition occurs.
+
 ## 7. Compiler Usage Rules
 
 Lowering passes that use these ops must preserve the following rules:

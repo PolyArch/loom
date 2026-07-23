@@ -246,9 +246,10 @@ Fabric in addition to the resources they generate. Exact per-helper resource
 inventory, hardware parameters, switch construction, memory-port capacity, and
 buffer capacities are part of the same versioned family contract and must be
 fixed before that catalog version is implementation-complete. The
-`CoreAluFu` and `MacFu` scalar portions are fixed below; the other helpers,
-switch construction, and remaining capacities are not implied by those
-definitions. Helper resource tables reference normative
+`CoreAluFu` and `MacFu` scalar portions and the `LoopControlFu` resource
+inventory are fixed below; the remaining `LoopControlFu` topology, other
+helpers, switch construction, and remaining capacities are not implied by
+those definitions. Helper resource tables reference normative
 `ImplementationFamilyId` values; operation-family membership remains owned by
 the HSG registry. They do not duplicate member lists, spell operation names as
 dispatch keys, or define backend modes.
@@ -337,9 +338,9 @@ ScalarFloatAddSub
 ```
 
 It also contains one canonical `dataflow.carry` operation resource so an
-explicit accumulator graph can remain FU-local. The exact carry implementation
-family is owned by the `LoopControlFu` catalog and is referenced here rather
-than duplicated.
+explicit accumulator graph can remain FU-local. That resource binds the
+normative `LoopCarry` implementation family and references its exact Fabric
+resource contract rather than duplicating either authority.
 
 The finite normalized FU template domain includes:
 
@@ -357,6 +358,31 @@ boundary correspondence. They do not define a synthetic MAC operation or HSG.
 An LLVM `fmuladd` spelling is never sufficient to select the fused template;
 canonical actor semantics determine whether the input is `math.fma` or an
 explicit multiply-add graph.
+
+#### LoopControlFu Resource Inventory
+
+`LoopControlFu` constructs concrete resources from these implementation
+families:
+
+```text
+LoopStream
+LoopCarry
+LoopInvariant
+LoopGate
+```
+
+The exact family members and physical resource contracts are owned by
+`docs/spec-fabric-hw-share-group.md` and
+`docs/spec-fabric-reconfigurable-op.md`. The helper does not create a
+`LoopControl` implementation family. Stream resources with different fixed
+step kinds are distinct `LoopStream` occurrences rather than configured modes
+of one occurrence.
+
+This inventory fixes the semantic resources that the helper may compose. Its
+outer port roles, explicit internal `fabric.mux` and `fabric.demux` topology,
+finite valid configured graphs, and initial builtin distribution remain a
+separate catalog contract; they must not be inferred from the helper name or
+implemented as hidden wiring.
 
 #### CoreAluFu And MacFu Concrete Scalar Contract
 
@@ -430,9 +456,11 @@ retains a stalled result, and supports same-cycle result consumption and
 replacement acceptance. The multi-operation template timing is derived from
 its selected resources and explicit topology.
 
-This stateless contract does not define the imported `dataflow.carry`
-resource. Accumulator templates become timing-complete only with the exact
-stateful carry capability owned by the `LoopControlFu` catalog. The carry
+The imported recurrence resource uses the exact `LoopCarry` family contract.
+It has initial/running mode state but stores no carried payload, and its
+elastic-transparent forwarding adds no registered cycle. Consequently, a
+registered add followed by canonical carry retains a one-cycle recurrence
+path and initiation interval one under downstream progress. The carry
 operation schema remains the sole owner of its logical transition semantics.
 
 ### Payload And Type Floor
@@ -598,8 +626,8 @@ The stable Builder anchors are deliberately small:
     internal 64-bit data and one-bit condition roles obey low-bit
     normalization.
 11. A stateless scalar resource exhibits the declared one-cycle elastic
-    timing, while an imported stateful carry is rejected as complete until its
-    separate LoopControl resource contract is available.
+    timing, while an imported `LoopCarry` preserves that one-cycle recurrence
+    path through elastic-transparent forwarding.
 
 These anchors test the public boundary and determinism. They do not require a
 fixture for every helper, topology, operation ordering, generated name, or
