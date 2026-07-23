@@ -401,27 +401,25 @@ assumption **MUST** belong to a named analytical target profile and **MUST** be
 printed in the report; an analytical profile is not evidence that the named
 hardware exists.
 
-The canonical extended-study profile is `shared-spad-4k-v4`. It fixes one
-4096-byte scratchpad shared by all workers executing one mapped kernel, four
-cyclic single-ported banks, one-cycle modeled scratchpad access, and vector width
-`V = 4` source elements. Its canonical preload mode is `serial`, in which preload
-and compute do not overlap. The separate `ideal_dma` sensitivity mode assumes an
-independent fill path and double-buffered capacity as specified below. Neither
-mode confirms a compiler-generated DMA, a DMA queue or descriptor mechanism,
-arbitration behavior, or a particular hardware topology. Profile identity
-includes the preload mode, so `serial` and `ideal_dma` results are separate
-analytical studies even when every other profile field matches.
+The canonical extended-study profile is `shared-spad-4k-r1w1-v4`. It fixes one
+4096-byte scratchpad shared by all workers executing one mapped kernel, one
+logical scratchpad load port, one logical scratchpad store port, one-cycle
+modeled scratchpad access, and vector width `V = 4` source elements. Capacity,
+load-port count, store-port count, and access latency are hardware parameters of
+the analytical target and **MAY** be overridden explicitly. Profile identity
+includes all of those values. The default does not assert a bank count, bank
+mapping, DMA engine, arbitration behavior, or particular hardware topology.
 
 **Objective.** Choose the pragma that minimizes cycles subject to the hard
 `≤ L` load-lane / `≤ S` store-lane per-cycle limit (`L = S = 12` for `6x6`); the
 recommendation is the lane-saturation knee — the smallest exposure whose traffic
 saturates the binding resource. Extended target-profile candidates additionally
-obey the profile's tile-capacity legality and scratchpad-bank contention rules.
+obey the profile's whole-working-set capacity and scratchpad-port constraints.
 Cycle count credits vector coalescing, control-overhead amortization, and any
 explicitly declared transformation or resident-memory effect. There is **no area
 term** and no control/body area tradeoff. The legacy direct-memory path has only
 the machine lane caps; a named extended profile may add analytical capacity and
-bank constraints without claiming implemented hardware.
+scratchpad-port constraints without claiming implemented hardware.
 
 **Notation (this section).** To keep the pragma factors distinct from the machine
 resource configuration, this section writes the machine arithmetic-PE, load-lane,
@@ -474,33 +472,33 @@ width. A separately named target profile may fix a different width for a
 sensitivity study, but one DSE run **MUST NOT** enumerate widths as candidates
 under the present cost model.
 
-### Automatic maximal unroll-and-jam
+### Explicit unroll-and-jam choices
 
 Unroll-and-jam means unrolling an outer loop by `U`, conceptually replicating its
 enclosed inner loops `U` times, and fusing ("jamming") those copies so the `U`
-outer iterations advance in lockstep at each inner step. In the extended model,
-`LOOM_UNROLL(U)` with `U > 1` on a non-innermost tiled level automatically
-implies the **maximal legal** jam of every enclosed loop that dependence legality
-allows it to fuse. The jam plan is derived deterministically; it is neither a
-searched choice nor an additional exposure factor. Total exposure remains the
-product of `p * U` over tiled levels.
+outer iterations advance in lockstep at each inner step. Outer-loop unrolling
+does **not** imply jam. An extended candidate selects one explicitly declared
+complete jam plan, and `none` is always a legal plan. A nonempty jam plan is legal
+only when every named outer level has `U > 1` and every named inner level occurs
+beneath its outer level in the selected loop order. Jam is not an additional
+exposure factor; total exposure remains the product of `p * U` over parallel
+levels.
 
 Jam legality and load sharing **MUST** be declared as explicit per-kernel
-`JamRule`-style metadata: for each permitted outer-to-inner jam edge, the
-declaration names the inner level and operands that may be shared. A
-`derive_jam_plan`-style operation
-uses only the candidate's selected order and `p`/`U` split plus that declaration.
-It **MUST NOT** infer a legal jam edge or shared operand from address equality or
-access patterns. An undeclared edge is not legal, even if an address inspection
-would make it appear profitable.
+metadata. Each declaration names a complete plan and its permitted
+outer-to-inner edges; an edge names any operands that may be shared. Candidate
+enumeration uses only those complete plans. It **MUST NOT** infer a legal edge or
+shared operand from address equality or access patterns, and it **MUST NOT**
+enumerate an arbitrary power set of independently declared edges.
 
-Jam adds no modeled arithmetic, control, or area penalty. Its only credited
-effect is eliminating redundant loads of operands invariant in the jammed outer
-dimension; load-node and total-node counts may therefore decrease. In GEMV,
-unrolling rows `i` jams those rows into the inner `j` reduction: simultaneous
-rows share one `x[j]` load at each `j` step, while each row retains its own private
-reduction accumulator. Reports **MUST** identify such derived jam edges and shared
-operands.
+Until a separate DFG-size or routing cost is specified, jam adds no modeled
+arithmetic, control, routing, or area penalty. Its only credited effect is
+eliminating redundant loads of operands invariant in the jammed outer dimension;
+load-node and total-node counts may therefore decrease. In GEMV, a candidate may
+select `i-j-share-x`: simultaneous unrolled rows share one `x[j]` load at each
+`j` step, while each row retains its own private reduction accumulator. The same
+unroll split with `jam=none` does not receive that sharing credit. Reports
+**MUST** identify the selected jam plan and its shared operands.
 
 For a single dependency-parallel loop, an implementation of this optional model
 SHOULD build one candidate chunk with:
@@ -555,20 +553,20 @@ absolute_cgra_lb  <=  pragma_exposure_aggregate  <=  schedule_estimate
 
 An extended transformed candidate **MUST** additionally report its
 `plan_cgra_lb`, the candidate-specific full-exposure aggregate defined in the
-tile/preload subsection below. For every legal extended candidate, and for every
-candidate whose finite-resource schedule is materialized, the four-term bracket
-is
+scratchpad-composition subsection below. For every legal extended candidate, and
+for every candidate whose finite-resource schedule is materialized, the
+four-term bracket is
 
 ```
 absolute_cgra_lb <= plan_cgra_lb <= pragma_exposure_aggregate <= schedule_estimate
 ```
 
 There is one report-global `absolute_cgra_lb` for each exact
-kernel/configuration/target-profile identity, including preload mode. For an
-extended profile it is `min(plan_cgra_lb)` over all legal transformed candidates
-in that profile. A candidate-specific `plan_cgra_lb` **MUST NOT** replace that
-global value under the name `absolute_cgra_lb`. Unmodified kernels retain the
-legacy computation below exactly.
+kernel/configuration/target-profile identity, including capacity and port counts.
+For an extended profile it is `min(plan_cgra_lb)` over all legal transformed
+candidates in that profile. A candidate-specific `plan_cgra_lb` **MUST NOT**
+replace that global value under the name `absolute_cgra_lb`. Unmodified kernels
+retain the legacy computation below exactly.
 
 On the legacy path, `absolute_cgra_lb` is the aggregate CGRA lower bound (Metric
 1) evaluated
@@ -617,8 +615,8 @@ candidate, `plan_cgra_lb` is a candidate-specific transformed-plan floor and is
 not the global floor. `pragma_exposure_aggregate` and `schedule_estimate` embed
 the wave-serialization assumption and therefore sit above the corresponding
 floor; real pipelined execution can fall below them. The phrase "lower bound"
-**MUST NOT** be applied to `pragma_exposure_aggregate`, `schedule_estimate`, or
-the `ideal_dma` sensitivity recommendation. In particular, the ratio
+**MUST NOT** be applied to `pragma_exposure_aggregate` or `schedule_estimate`.
+In particular, the ratio
 `pragma_exposure_aggregate / absolute_cgra_lb` measures the
 **wave-serialization penalty of the chosen exposure** and **MUST NOT** be
 described as a pure "finite-exposure penalty," since it is dominated by the
@@ -701,32 +699,32 @@ aggregate creeps toward `absolute_cgra_lb` only through per-wave ceiling roundin
 and invariant-reload amortization, while the instantaneous (transient) ready
 backlog rises linearly. `E_sat` is therefore the diminishing-returns **knee**.
 
-Extended candidates need one additional guard because interchange, maximal jam,
-and resident-memory fan-out can change the recurring operation set as exposure
-grows. A small wave may already be resource-bound only because it still repeats
-loads that a later legal jam eliminates. Such a row is **recurring-demand
-immature**, not the saturation knee.
+Extended candidates need one additional guard because interchange, an explicitly
+selected jam plan, and resident-memory fan-out can change the recurring operation
+set as exposure grows. A small wave may already be resource-bound while the same
+transformation still eliminates repeated loads at a larger exposure. Such a row
+is **recurring-demand immature**, not the saturation knee.
 
 For each exposure, the extended search **MUST** first retain the candidates with
 the minimum recurring-compute aggregate at that exposure, excluding every
 preload prologue. For each retained candidate it then records full-kernel
-recurring demand `D[P/L/S/B]`: arithmetic, effective data-load lane slots,
-effective data-store lane slots, and the combined compute-phase scratchpad-bank
-floor. These demands exclude preload, invariant loads, iterator/control work,
-and per-wave ceiling rounding. Looking from the current exposure through every
-larger legal exposure, define the future minimum of each demand class over those
+recurring demand `D[P/L/S/R/W]`: arithmetic, effective data-load lane slots,
+effective data-store lane slots, scratchpad-read port cycles, and scratchpad-write
+port cycles. These demands exclude preload, invariant loads, iterator/control
+work, and per-wave ceiling rounding. Looking from the current exposure through
+every larger legal exposure of the same loop order, jam plan, and placement mode,
+define the future minimum of each demand class over those
 recurring-compute-frontier candidates.
 
 An extended candidate is knee-eligible only when its nominal full, non-tail
 compute wave is resource-bound and at least one class tied for that wave's
 dominant resource term has already reached its future-minimum full-kernel demand.
 The recommendation is the first exposure with an eligible candidate. Exact
-frontier ties at that exposure are ranked by the selected preload mode's total
-`pragma_exposure_aggregate`, then by recurring data traffic, bank demand, worker
-count, and deterministic signature. This rule keeps a compute-mature Batchnorm
-row at its ordinary knee while rejecting, for example, a bank-bound GEMV row
-whose `x` demand still falls under a larger `i->j` jam. The legacy direct-memory
-selection rule is unchanged.
+frontier ties at that exposure are ranked by total
+`pragma_exposure_aggregate`, then by recurring data traffic, scratchpad-port
+demand, worker count, and deterministic signature. Jammed and unjammed candidates
+are distinct transformations rather than future states of one another. The
+legacy direct-memory selection rule is unchanged.
 
 An implementation that selects an exposure **SHOULD** recommend the smallest legal
 exposure `E >= E_sat` — the smallest `P_tot · U` consistent with pragma legality
@@ -798,9 +796,8 @@ DAG nodes and may issue to different load/store lanes in the same cycle, subject
 to memory independence, vector-interface legality, and the machine-wide `L`/`S`
 lane counts. The legacy direct-memory path ignores explicit `LOOM_MEMORY_BANK`
 interactions and address-level external-memory bank conflicts. A named analytical
-target profile may instead declare its own scratchpad banking contract, as
-`shared-spad-4k-v4` does below; that contract is not inferred from a source
-pragma.
+target profile may instead declare scratchpad capacity and logical port counts;
+those parameters are not inferred from a source pragma.
 
 This DSE models the two axes on which `LOOM_PARALLEL` and `LOOM_UNROLL` physically
 diverge; it still **MUST NOT** claim to model place-and-route or cycle-accurate
@@ -826,9 +823,9 @@ exposure came from `p` or `U`. The two pragmas separate on exactly these axes:
 
 Both effects only *reduce op counts* inside the existing `P`/`L`/`S` pools —
 there is **no separate control resource, no capacity knob, and no area term**.
-Both bias the estimate **toward `LOOM_UNROLL`** for contiguous / tiled loops,
+Both bias the estimate **toward `LOOM_UNROLL`** for contiguous parallel loops,
 which is the mentor-confirmed direction. A named scratchpad profile may add the
-DSE-local bank correction defined below, but it does not add a resource class or
+DSE-local port correction defined below, but it does not add a resource class or
 an area term to the finite-resource scheduler.
 
 This choice is DSE-local and deliberately more optimistic than the ASAP baseline
@@ -876,9 +873,8 @@ Either form can create concurrent memory demand for dependency-independent
 accesses. For the legacy path, explicit `LOOM_MEMORY_BANK(B, ...)` parameters and
 address-level external-memory bank conflicts are ignored: the only caps on
 eligible scalar lane exposure are the target `L` and `S` lane counts. Legacy
-reports **MUST** state this assumption. This rule does not disable the explicit
-internal scratchpad-bank model of a named analytical profile; that profile
-**MUST** state its mapping and how scalar and vector accesses reserve banks.
+reports **MUST** state this assumption. A named analytical scratchpad profile
+**MUST** state its logical load/store-port counts and access latency separately.
 
 **Vector load coalescing.** A target may support a vector memory operation plus a
 vector `unpack` operation. Under the current target convention, one vector
@@ -930,7 +926,7 @@ lanes than its scalar element count `U_mem`.
 kinds, and only one of them sets the steady-state lane pressure:
 
 - **Recurring loads** (`LD_rec`) — per-iteration array element loads over the
-  tiled index plus induction reads. Their count **scales with exposure**. These
+  exposed index plus induction reads. Their count **scales with exposure**. These
   set the steady-state load lane exposure and the binding load term.
 - **Invariant loads** (`LD_inv`) — values hoisted once per chunk, their count
   **independent of exposure** (e.g. axpy's `alpha`, gemv's whole `x` vector, a
@@ -1009,13 +1005,13 @@ diagnostic runs, but a capped report **MUST** label itself as a bounded search a
 **MUST NOT** present its result as the global recommendation.
 
 For an extended pilot, candidate enumeration takes the cross-product of the legal
-`p` factors, legal `U` factors, explicitly declared legal loop orders, and legal
-tile sizes. Fixed vector width is not an axis. Maximal jam, buffer placement,
-logical base offsets, and bank mapping are deterministic derived decisions, not
-additional search dimensions.
+`p` factors, legal `U` factors, explicitly declared legal loop orders, and
+explicitly declared complete jam plans. Fixed vector width and scratchpad
+placement are not search axes. Logical base offsets and resident-versus-fallback
+placement are deterministic derived decisions.
 
 **When a kernel shows no `LOOM_PARALLEL`-vs-`LOOM_UNROLL` distinction.** Because
-control amortization now separates `p` from `U` on the op counts of *any* tiled
+control amortization now separates `p` from `U` on the op counts of any parallel
 level, genuine symmetry in the **cycle aggregate** arises only when both modeled
 effects (coalescing and control) fall off the binding path. Report symmetry, with
 the reason, in these cases:
@@ -1034,7 +1030,7 @@ the reason, in these cases:
   store / control op counts differ (`batchnorm`'s `c`/`h` at fixed product). Report
   the tie in the aggregate while noting the underlying control/coalescing gap.
 
-Otherwise a tiled level is **asymmetric and favors `LOOM_UNROLL`**: control
+Otherwise a parallel level is **asymmetric and favors `LOOM_UNROLL`**: control
 amortization shrinks its per-worker iterator count, and (for contiguous accesses)
 coalescing shrinks its lane-slot term. A **sequential** level cannot be
 parallelized at all (`P_tot = 1` there), so only legal unroll exposure applies,
@@ -1055,159 +1051,99 @@ same level-asymmetry arises when an inner level is a reduction.) This level effe
 composes with the lane-aware memory model above, which still applies *within* any
 single level.
 
-### Shared scratchpad and derived buffer placement
+### Shared scratchpad, ports, and direct fallback
 
-A named analytical target profile supplies scratchpad capacity, bank count and
-mapping, access latency, and sharing scope. These properties **MUST NOT** be
-inferred from `fabric.memory`, `is_private`, `numRegion`, or a source
-`LOOM_MEMORY_BANK` annotation. Under `shared-spad-4k-v4`, all workers of one
-mapped kernel share one logical scratchpad address space. Resident buffers receive
-deterministic, non-overlapping logical base-element offsets. Resident allocations
-are separated by lifetime. Buffers loaded once and held occupy a stable held
-region, in kernel-metadata declaration order. Buffers refilled per tile are packed
-together, also in declaration order, into one refill frame whose span is the
-maximum complete packed layout of any concrete tile; canonical serial mode
-allocates one such frame and `ideal_dma` allocates two non-overlapping frames.
-This whole-tile maximum is intentionally not the sum of each buffer's independent
-maximum, because different buffers may peak on different tiles. Each segment is
-aligned to the least common multiple of the profile's bank count and vector width
-(four elements in `shared-spad-4k-v4`), and each replica receives its own aligned
-segment.
+A named analytical target profile supplies scratchpad capacity, logical load-port
+count, logical store-port count, access latency, and sharing scope. These values
+are hardware parameters, matching the role of `ldCount` and `stCount` on
+`fabric.memory`, but a DSE run receives them explicitly and does not infer them
+from a particular ADG, `is_private`, `numRegion`, or source
+`LOOM_MEMORY_BANK` annotation. Under `shared-spad-4k-r1w1-v4`, all workers of one
+mapped kernel share one logical scratchpad address space.
 
-Within a concrete tile, sort each buffer's unique source element indices and
-compact them in that order into offsets `0 .. count - 1` of its held segment or
-refill frame. Refilled buffer offsets may differ between tiles within the stable
-frame; held-once bases remain fixed. The exact source address set therefore
-defines a deterministic source-to-scratchpad map without charging sparse
-source-address holes against capacity. Alignment padding, held segments, replica
-segments, and one or two refill frames count against capacity. For bank
-accounting, `element_index` means this base-adjusted compact logical element
-index, and the fixed mapping is
-
-```
-bank(element_index) = element_index % 4
-```
-
-Buffer placement is derived, not searched:
+Buffer intent is declared per kernel:
 
 - `resident_shared`: read-only reuse that is invariant across the workers that
-  consume it is allocated once and shared.
-- `resident_replicated`: genuinely worker-specific reusable state is allocated
-  once per required private copy; its replication factor contributes to capacity
-  and preload traffic.
+  consume it is proposed once for shared residency.
+- `resident_replicated`: genuinely worker-specific reusable state is proposed
+  once per required private copy.
 - `direct`: reuse-free streaming traffic remains in direct external memory.
 
-Direct placement is a semantic classification, **not** a capacity-overflow
-fallback. A reuse-bearing allocation whose footprint does not fit makes that tile
-illegal; it does not silently become direct traffic.
+For each proposed resident buffer, collect the exact unique source elements used
+by the whole modeled kernel. Sort those elements, compact them into offsets
+`0 .. count - 1`, align each declaration-order buffer or replica segment to the
+fixed vector width in elements, and assign deterministic non-overlapping logical
+base offsets. Source-address holes do not consume capacity; compacted data,
+alignment padding, and replicas do.
 
-Every dynamic resident-data access consumes scratchpad bandwidth, including
-preload writes. Free read fan-out is allowed only when multiple consumers request
-the same logical address at the same logical inner step. Equal addresses used at
-different output positions or steps remain distinct scratchpad reads. Each scalar
-or vector scratchpad read or write reserves the exact set of cyclic banks touched
-by its element addresses for one modeled access cycle. Because each bank is
-single-ported, two operations may share a cycle only when their reserved bank sets
-are disjoint.
+Placement is deterministic and whole-plan. If the complete proposed resident set
+fits the target capacity, every proposed buffer receives its declared resident
+placement. If it does not fit, every proposed resident buffer becomes
+`direct-fallback`; the candidate remains legal and uses direct external-memory
+traffic. The helper **MUST NOT** search subsets of resident buffers or smaller
+scratchpad tiles. Reuse-free buffers remain ordinary `direct` traffic in either
+case.
 
-For one scratchpad-bearing region, let `demand[b]` be the number of operation-bank
-reservations for bank `b`, and let
-`total_bank_slots = sum(demand[b] for b in banks)`. The analytical bank floor is
-
-```
-bank_lb = max(max(demand[b] for b in banks),
-              ceil(total_bank_slots / bank_count))
-```
-
-The deterministic bank-packing estimate, `bank_sched`, processes scratchpad
-operations in stable node order and places each operation in the earliest cycle
-where every bank it touches is free. A multi-bank vector operation reserves all
-of those banks in that cycle. The region corrections are
-
-```
-scratchpad_aggregate = max(existing_aggregate, bank_lb)
-scratchpad_schedule  = max(existing_schedule, bank_sched)
-```
-
-This correction is local to the Loom-pragma DSE. It does not add a new resource
-class to the generic finite-resource scheduler and does not model external-memory
-banking, replacement, coherence, arbitration, or place-and-route.
-
-### Virtual tile-size search and preload modes
-
-The extended DSE may explore a hypothetical Structured Program Candidate: an
-analytical loop order, jam plan, tile shape, and memory placement that leaves the
-checked-in source and compiler behavior unchanged. For each declared tileable
-level of trip count `T`, legal tile sizes are every power of two `<= T` plus the
-exact full-trip size `T`, with duplicates removed. A size that does not divide
-`T` creates an exact smaller tail tile. Enumeration and accounting **MUST** use
-each concrete tile's actual origin, shape, address set, and cost rather than one
-repeated average tile.
-
-The pragma exposure chosen for a tileable level is local to that level's nominal
-tile: a candidate is legal only when `p * U <= tile_size` for that level. A
-smaller concrete tail clamps the active lanes to its actual shape; it does not
-make the candidate illegal or create a different pragma choice. This rule avoids
-overprovisioned nominal tiles while preserving exact tail accounting.
-
-A buffer touched by more than one iteration within a tile is reuse-bearing and is
-kept resident with a per-tile allocation derived from its unique address set. A
-buffer touched once with no intra-tile reuse is streaming and remains `direct`.
-For each concrete tile, the resident footprint is the unique resident element
-count times the source element size times the derived replication factor. Every
-tile's mode-specific footprint **MUST** fit the target capacity. Capacity decides
-tile legality, not whether a reuse-bearing buffer falls back to direct memory.
-
-External preload occurs once per concrete tile that refills a resident buffer,
-including a distinct tail tile. For concrete tiles `0 .. N - 1`, let
-`preload[t]` be that tile's external fill cost and let `compute[t]` include its
-recurring compute, direct-memory traffic, scratchpad traffic, and bank correction.
-For every resident fill, the unique scalar elements are grouped by contiguous
-address and coalesced at the same fixed `V = 4` used by compute. Each coalesced
-group emits one external `L` operation and one corresponding scratchpad `S`
-operation (with a partial final group still occupying one lane-slot):
+When residency succeeds, external preload occurs once per modeled kernel
+execution, never once per partial-exposure wave. Unique scalar elements are
+grouped by contiguous source address and coalesced at the fixed `V = 4`. Each
+coalesced group emits one external `L` operation and one scratchpad-write
+operation, with a partial final group still occupying one lane slot:
 
 ```
 preload_scalar_elems = sum(group_elems for group in contiguous_groups)
 preload_L_ops        = sum(ceil(group_elems / V) for group in contiguous_groups)
-preload_spad_S_ops   = preload_L_ops
+preload_spad_W_ops   = preload_L_ops
 ```
 
-The scratchpad preload writes reserve the exact bank sets of their destination
-elements and participate in `bank_lb` and `bank_sched`. Thus `preload[t]` includes
-the `L`/`S` lane-slot cost and bank correction for the fill, not only a byte or
-element count. Reports **MUST** distinguish scalar preload elements from
-coalesced lane-slot operations when both are shown.
+Fallback plans have zero preload and zero scratchpad traffic. Their formerly
+resident accesses are accounted as direct external loads.
 
-Canonical serial composition is
+Every dynamic resident-data use consumes scratchpad bandwidth. Free read fan-out
+is allowed only when multiple consumers request the same logical address at the
+same logical inner step. Equal addresses used at different output positions or
+steps remain distinct scratchpad reads. One scalar or coalesced vector operation
+occupies one logical scratchpad port for `access_cycles` modeled cycles.
 
-```
-serial_total = sum(preload[t] + compute[t] for t in 0 .. N - 1)
-```
-
-Every resident allocation counts `1x` against serial capacity. The separate
-`ideal_dma` sensitivity assumes double buffering for allocations refilled per
-tile, an independent fill path, and overlap with the current tile:
+For one scratchpad-bearing ordered region, let `spad_R` and `spad_W` be its
+logical scratchpad read and write operation counts. The port floor is
 
 ```
-ideal_dma_total = preload[0]
-                + sum(max(compute[t], preload[t + 1]) for t in 0 .. N - 2)
-                + compute[N - 1]
+spad_read_lb  = ceil(spad_R * access_cycles / load_ports)
+spad_write_lb = ceil(spad_W * access_cycles / store_ports)
+spad_port_lb  = max(spad_read_lb, spad_write_lb)
 ```
 
-The middle sum is empty for one tile. In `ideal_dma` capacity accounting, a
-per-tile-refilled allocation counts `2x`, while an allocation loaded once and
-held counts `1x`. The sensitivity additionally assumes that filling the inactive
-ping-pong allocation does not contend with current-tile scratchpad reads. Reports
-**MUST** print that assumption and keep the sensitivity recommendation separate
-from the canonical serial ranking. Neither total is a finite-resource lower
-bound.
+The deterministic port schedule, `spad_port_sched`, processes operations in
+stable node order and assigns each to the earliest cycle with a free port of the
+correct kind for the full access latency. Read and write ports are independent.
+The ordered-region corrections are
 
-Preload is a once-per-tile prologue, never once per partial-exposure wave. The
-saturation knee is selected from recurring compute pressure rather than preload.
-For an extended candidate, `plan_cgra_lb` is the full-exposure aggregate over that
-candidate's same transformed operation set, concrete tiles, fixed-width
-coalescing, derived placement, `bank_lb`, and preload mode, but without
+```
+scratchpad_aggregate = max(existing_aggregate, spad_port_lb)
+scratchpad_schedule  = max(existing_schedule, spad_port_sched)
+```
+
+This correction is local to the Loom-pragma DSE. It does not add a resource class
+to the generic scheduler and does not model banks, replacement, coherence,
+arbitration, DMA overlap, or place-and-route.
+
+### Whole-working-set composition
+
+The extended DSE may explore analytical loop order and jam choices while leaving
+the checked-in source and compiler behavior unchanged. It does not search virtual
+tile sizes. The modeled kernel has one whole-working-set memory plan and one
+possible preload prologue.
+
+For a resident candidate, total composition is the once-per-kernel preload plus
+the wave-serialized recurring computation. For a fallback candidate the preload
+term is zero and the recurring computation uses direct memory. The saturation
+knee is selected from recurring compute pressure rather than the preload
+prologue.
+
+For an extended candidate, `plan_cgra_lb` is the full-exposure aggregate over the
+same transformed operation set, fixed-width coalescing, deterministic placement,
+scratchpad-port correction, and once-per-kernel preload, but without
 partial-exposure wave serialization. For exact profile identity `profile`, the
 single global floor is
 
@@ -1220,27 +1156,20 @@ Thus every legal extended candidate preserves
 `absolute_cgra_lb <= plan_cgra_lb <= pragma_exposure_aggregate`, and every
 materialized finite-resource schedule additionally preserves
 `pragma_exposure_aggregate <= schedule_estimate`. Reports **MUST** expose the
-selected order and jam edges; placement and logical offsets; tile sizes, tail
-shape, and tile count; capacity use; bank floor and bank schedule; and external
-preload, scratchpad-read, and avoided-direct traffic.
-
-A pilot **MAY** additionally retain its direct-memory phase summaries as an audit
-reference for the same transformation. The common evaluator **MUST** compose the
-reference's `plan_cgra_lb`, `pragma_exposure_aggregate`, and
-`schedule_estimate`, but the report **MUST** label those values as outside the
-named resident profile. A direct reference is not a placement candidate, does not
-participate in recommendation or capacity legality, and **MUST NOT** contribute
-to the resident profile's `absolute_cgra_lb`.
+selected order and explicit jam plan; placement and logical offsets; target
+capacity and load/store-port counts; resident bytes and fallback status;
+scratchpad port floor and schedule; and external preload, scratchpad-read, and
+avoided-direct traffic. Direct fallback is the candidate's actual placement and
+participates normally in ranking and the profile-global floor.
 
 This exploratory estimate is **not** the aggregate CGRA lower bound, **not** the
 fully-unrolled ASAP metric, and **not** cycle-accurate RTL. It models candidate
-memory-lane exposure and optional vector coalescing. The legacy path does not
-model address-level bank conflicts; a named scratchpad profile models only its
-explicitly declared internal banks. Neither path is a place-and-route model. The
+memory-lane exposure and optional vector coalescing. Neither the legacy path nor
+the default scratchpad profile models address-level bank conflicts. Neither path
+is a place-and-route model. The
 DSE **MUST NOT** replace or rename the aggregate lower bound in a kernel's main
 `*_eval.md` file. The phrase "lower bound" **MUST NOT** be applied to
-`pragma_exposure_aggregate`, `schedule_estimate`, or an `ideal_dma` sensitivity
-recommendation.
+`pragma_exposure_aggregate` or `schedule_estimate`.
 
 **Reference implementation.** The Loom-pragma design-space estimate is
 implemented by `tests/scripts/loom_dse.py`, which reuses the DAG primitives,
@@ -1249,8 +1178,9 @@ list scheduler, and aggregate computer of `tests/scripts/cgra_schedule.py`
 contiguous unrolled groups per the rule above), schedules it, sums over waves,
 and emits the per-candidate table, the report-global `absolute_cgra_lb`, and the
 recommended saturation-knee exposure. Extended reports additionally emit
-`plan_cgra_lb` and the named transformation, tile, placement, traffic, capacity,
-and bank diagnostics defined above. It exposes a `--self-test` entry point
+`plan_cgra_lb` and the named transformation, explicit jam, placement, traffic,
+capacity, and scratchpad-port diagnostics defined above. It exposes a
+`--self-test` entry point
 covering the unroll-favoring, symmetric, sequential, and extended-profile cases
 and their bracket invariants.
 Per-kernel design-space
