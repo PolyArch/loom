@@ -10,10 +10,12 @@
 #   make doctor    - print resolved paths and run pre-flight checks
 #   make llvm      - build externals/llvm under the shared lock
 #   make circt     - build the shared CIRCT against the shared LLVM under
-#                    the same lock (only the libraries the loom build
-#                    links against). The shared CIRCT build is owned by
-#                    the main worktree's externals; main and linked
-#                    invocations alike route to those shared outputs.
+#                    the same lock. This builds the configured CIRCT
+#                    package's default target; it is not narrowed to the
+#                    libraries loom links against, and CIRCT's tools are
+#                    left enabled. The shared CIRCT build is owned by the
+#                    main worktree's externals; main and linked invocations
+#                    alike route to those shared outputs.
 #   make loom      - build this worktree's loom build (auto-builds LLVM
 #                    when missing or when its build identity drifted;
 #                    never builds CIRCT, but offers an already-built

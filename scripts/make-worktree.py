@@ -14,8 +14,9 @@ all live here:
     submodule paths and administrative state uninitialized.
   * Shared LLVM and CIRCT products are gated by one SharedProductLock
     transaction. An internal ticket turnstile admits readers and writers in
-    arrival order; builds and distclean are exclusive writers, while ordinary
-    Loom builds hold a shared product lock during consumption.
+    arrival order and holds one record per participant still acquiring;
+    builds and distclean are exclusive writers, while ordinary Loom builds
+    hold a shared product lock during consumption.
   * The shared CIRCT build reuses that same LLVM lock and is held across
     the LLVM ensure phase and the CIRCT configure/build, so the LLVM a
     CIRCT build links against cannot be rebuilt or wiped concurrently.
@@ -67,8 +68,8 @@ _LIBC = (
 )
 _PR_SET_PDEATHSIG = 1
 _SUPERVISE_COMMAND = "--internal-supervise-command"
-_TURNSTILE_RECORD_SIZE = 18
-_turnstile_node_serial = 0
+_TURNSTILE_RECORD_SIZE = 17
+_TURNSTILE_MUTEX_OFFSET = 0
 LLVM_SEMANTIC_CMAKE_ARGS = (
     "-DCMAKE_BUILD_TYPE=Release",
     "-DLLVM_ENABLE_PROJECTS=mlir;clang",
@@ -664,14 +665,26 @@ _held_product_fds: set[int] = set()
 
 
 class SharedProductLock:
-    """Fair shared/exclusive lock over two lock files.
+    """Fair shared/exclusive lock over a product file and a turnstile file.
 
-    Each acquirer locks a history-unique byte, atomically appends that node to
-    the turnstile, and blocks on the preceding live node. A node is marked
-    admitted before it is unlocked; successors skip unmarked nodes released
-    by dead or timed-out waiters. This gives both classes bounded admission
-    while retaining writer preference over readers that arrive later, and
-    multiple admitted readers still coexist.
+    The turnstile file is a header record carrying the next ticket followed
+    by the tickets still acquiring, in ticket order. Ticket order is arrival
+    order; a record's position carries no meaning and is rewritten freely.
+
+    Turnstile lock offsets are a namespace of their own, unrelated to the
+    record bytes stored at the same offsets: offset 0 serializes residency
+    changes, and offset T is held by the owner of ticket T for as long as
+    that owner is still acquiring. A participant blocks on the highest live
+    ticket below its own until none is left, then takes the product lock and
+    drops its residency. Only one participant contends for the product lock
+    at a time, so a queued writer blocks every later reader while readers
+    that already hold the product lock still coexist.
+
+    Losing a participant releases its ticket offset, so a crashed or
+    timed-out one is skipped rather than waited on. Registering rewrites the
+    table as the live tickets alone, so residency stays proportional to the
+    participants still acquiring, never to the peak concurrency reached or
+    the acquisitions performed.
     """
 
     def __init__(
@@ -687,11 +700,7 @@ class SharedProductLock:
         self.product_operation = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
         self.product_fd: int | None = None
         self.turnstile_fd: int | None = None
-        self.turnstile_node: int | None = None
-        self.turnstile_record: int | None = None
-        self.product_locked = False
-        self.turnstile_locked = False
-        self.turnstile_node_locked = False
+        self.ticket: int | None = None
 
     def _timeout(self, label: str, path: Path) -> None:
         die(
@@ -753,28 +762,12 @@ class SharedProductLock:
         if self.turnstile_fd is None:
             return
         try:
-            if (
-                self.turnstile_node_locked
-                and self.turnstile_node is not None
-            ):
-                fcntl.lockf(
-                    self.turnstile_fd,
-                    fcntl.LOCK_UN,
-                    1,
-                    self.turnstile_node,
-                    os.SEEK_SET,
-                )
+            # Closing the descriptor drops this process's residency: a close
+            # releases every record lock the process holds on the file.
+            os.close(self.turnstile_fd)
         finally:
-            try:
-                if self.turnstile_locked:
-                    fcntl.flock(self.turnstile_fd, fcntl.LOCK_UN)
-            finally:
-                os.close(self.turnstile_fd)
-                self.turnstile_fd = None
-                self.turnstile_node = None
-                self.turnstile_record = None
-                self.turnstile_locked = False
-                self.turnstile_node_locked = False
+            self.turnstile_fd = None
+            self.ticket = None
 
     def _release_product(self) -> None:
         if self.product_fd is None:
@@ -783,11 +776,11 @@ class SharedProductLock:
             os.close(self.product_fd)
         finally:
             self.product_fd = None
-            self.product_locked = False
 
-    def _turnstile_nodes(self) -> set[int]:
-        if self.turnstile_fd is None:
-            return set()
+    def _turnstile_lock(self, operation: int, offset: int) -> None:
+        fcntl.lockf(self.turnstile_fd, operation, 1, offset, os.SEEK_SET)
+
+    def _read_records(self) -> list[int]:
         size = os.fstat(self.turnstile_fd).st_size
         if size % _TURNSTILE_RECORD_SIZE:
             die(
@@ -800,148 +793,131 @@ class SharedProductLock:
                 f"could not read shared product turnstile state at "
                 f"{self.turnstile_path}"
             )
-        nodes = set()
+        records = []
         for offset in range(0, size, _TURNSTILE_RECORD_SIZE):
             record = contents[offset:offset + _TURNSTILE_RECORD_SIZE]
-            if record[16:18] not in (b"0\n", b"1\n"):
-                die(
-                    f"invalid shared product turnstile record at "
-                    f"{self.turnstile_path}"
-                )
             try:
-                nodes.add(int(record[:16], 16))
+                ticket = int(record[:-1], 16) if record.endswith(b"\n") else 0
             except ValueError:
+                ticket = 0
+            # Tickets start at 1 because offset 0 is the residency mutex.
+            if ticket < 1:
                 die(
                     f"invalid shared product turnstile record at "
                     f"{self.turnstile_path}"
                 )
-        return nodes
+            records.append(ticket)
+        return records
 
-    def __enter__(self) -> "SharedProductLock":
-        global _turnstile_node_serial
+    def _write_record(self, index: int, ticket: int) -> None:
+        record = f"{ticket:016x}\n".encode()
+        offset = index * _TURNSTILE_RECORD_SIZE
+        if os.pwrite(self.turnstile_fd, record, offset) != len(record):
+            die(
+                f"could not update shared product turnstile at "
+                f"{self.turnstile_path}"
+            )
 
-        deadline = time.monotonic() + self.timeout
-        self.product_path.parent.mkdir(parents=True, exist_ok=True)
-        self.turnstile_path.parent.mkdir(parents=True, exist_ok=True)
+    def _live_tickets(self, records: list[int]) -> list[int]:
+        """Tickets whose owner is still acquiring. Holds the mutex."""
+        live = []
+        for ticket in records[1:]:
+            # A process never conflicts with its own record locks, so this
+            # participant's own ticket is live without being probed.
+            if ticket == self.ticket:
+                live.append(ticket)
+                continue
+            try:
+                self._turnstile_lock(fcntl.LOCK_EX | fcntl.LOCK_NB, ticket)
+            except BlockingIOError:
+                live.append(ticket)
+                continue
+            self._turnstile_lock(fcntl.LOCK_UN, ticket)
+        return live
+
+    @contextmanager
+    def _residency(self, deadline: float):
+        """Yield the records and live tickets under the residency mutex."""
+        self._acquire(
+            self.turnstile_fd,
+            fcntl.LOCK_EX,
+            deadline,
+            "turnstile",
+            self.turnstile_path,
+            _TURNSTILE_MUTEX_OFFSET,
+        )
         try:
-            self.turnstile_fd = os.open(
-                str(self.turnstile_path),
-                os.O_RDWR | os.O_CREAT | os.O_APPEND,
-                0o644,
+            records = self._read_records()
+            yield records, self._live_tickets(records)
+        finally:
+            self._turnstile_lock(fcntl.LOCK_UN, _TURNSTILE_MUTEX_OFFSET)
+
+    def _register(self, deadline: float) -> None:
+        """Take the next ticket and rewrite the table as the live tickets.
+
+        A record's position carries no meaning, so the table is rewritten in
+        ticket order and truncated to exactly the participants still
+        acquiring. Whatever the peak concurrency was, nothing a later
+        acquisition must scan outlives the participants themselves.
+        """
+        with self._residency(deadline) as (records, live):
+            # Above every live ticket, and never below the recorded
+            # watermark, so arrival order survives a quiet turnstile.
+            ticket = max(
+                records[0] if records else 1,
+                max(live, default=0) + 1,
             )
-            self.product_fd = os.open(
-                str(self.product_path), os.O_RDWR | os.O_CREAT, 0o644
-            )
-            historical_nodes = self._turnstile_nodes()
-            node_prefix = os.getpid() << 32
-            if node_prefix >= (1 << 63):
-                die("shared product turnstile node space exhausted")
-            while True:
-                _turnstile_node_serial += 1
-                if _turnstile_node_serial >= (1 << 32):
-                    die("shared product turnstile node space exhausted")
-                self.turnstile_node = (
-                    node_prefix | _turnstile_node_serial
-                )
-                if self.turnstile_node in historical_nodes:
-                    continue
-                try:
-                    fcntl.lockf(
-                        self.turnstile_fd,
-                        fcntl.LOCK_EX | fcntl.LOCK_NB,
-                        1,
-                        self.turnstile_node,
-                        os.SEEK_SET,
-                    )
-                    break
-                except BlockingIOError:
-                    continue
-            self.turnstile_node_locked = True
-            record = f"{self.turnstile_node:016x}0\n".encode()
-            if os.write(self.turnstile_fd, record) != len(record):
-                die(
-                    f"could not append shared product turnstile record at "
-                    f"{self.turnstile_path}"
-                )
-            record_end = os.lseek(self.turnstile_fd, 0, os.SEEK_CUR)
-            if record_end % _TURNSTILE_RECORD_SIZE:
-                die(
-                    f"invalid shared product turnstile append at "
-                    f"{self.turnstile_path}"
-                )
-            self.turnstile_record = (
-                record_end // _TURNSTILE_RECORD_SIZE - 1
-            )
-            open_flags = fcntl.fcntl(self.turnstile_fd, fcntl.F_GETFL)
-            fcntl.fcntl(
+            self._turnstile_lock(fcntl.LOCK_EX | fcntl.LOCK_NB, ticket)
+            self.ticket = ticket
+            tickets = sorted(live) + [ticket]
+            self._write_record(0, ticket + 1)
+            for slot, entry in enumerate(tickets, start=1):
+                self._write_record(slot, entry)
+            os.ftruncate(
                 self.turnstile_fd,
-                fcntl.F_SETFL,
-                open_flags & ~os.O_APPEND,
+                (len(tickets) + 1) * _TURNSTILE_RECORD_SIZE,
             )
 
-            predecessor = self.turnstile_record - 1
-            while predecessor >= 0:
-                predecessor_offset = (
-                    predecessor * _TURNSTILE_RECORD_SIZE
+    def _await_predecessors(self, deadline: float) -> None:
+        """Block until no participant holds an earlier ticket.
+
+        Tickets are never reused, so each wait retires one candidate for
+        good and the loop runs at most once per participant that was
+        already acquiring when this one registered.
+        """
+        while True:
+            with self._residency(deadline) as (_, live):
+                predecessor = max(
+                    (ticket for ticket in live if ticket < self.ticket),
+                    default=None,
                 )
-                previous = os.pread(
-                    self.turnstile_fd,
-                    _TURNSTILE_RECORD_SIZE,
-                    predecessor_offset,
-                )
-                if (
-                    len(previous) != _TURNSTILE_RECORD_SIZE
-                    or previous[16:18] not in (b"0\n", b"1\n")
-                ):
-                    die(
-                        f"invalid shared product turnstile record at "
-                        f"{self.turnstile_path}"
-                    )
-                try:
-                    previous_node = int(previous[:16], 16)
-                except ValueError:
-                    die(
-                        f"invalid shared product turnstile record at "
-                        f"{self.turnstile_path}"
-                    )
-                self._acquire(
-                    self.turnstile_fd,
-                    fcntl.LOCK_EX,
-                    deadline,
-                    "turnstile",
-                    self.turnstile_path,
-                    previous_node,
-                )
-                try:
-                    admitted = os.pread(
-                        self.turnstile_fd,
-                        1,
-                        predecessor_offset + 16,
-                    )
-                finally:
-                    fcntl.lockf(
-                        self.turnstile_fd,
-                        fcntl.LOCK_UN,
-                        1,
-                        previous_node,
-                        os.SEEK_SET,
-                    )
-                if admitted not in (b"0", b"1"):
-                    die(
-                        f"invalid shared product turnstile admission at "
-                        f"{self.turnstile_path}"
-                    )
-                if admitted == b"1":
-                    break
-                predecessor -= 1
+            if predecessor is None:
+                return
             self._acquire(
                 self.turnstile_fd,
                 fcntl.LOCK_EX,
                 deadline,
                 "turnstile",
                 self.turnstile_path,
+                predecessor,
             )
-            self.turnstile_locked = True
+            self._turnstile_lock(fcntl.LOCK_UN, predecessor)
+
+    def __enter__(self) -> "SharedProductLock":
+        deadline = time.monotonic() + self.timeout
+        self.product_path.parent.mkdir(parents=True, exist_ok=True)
+        self.turnstile_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.turnstile_fd = os.open(
+                str(self.turnstile_path),
+                os.O_RDWR | os.O_CREAT,
+                0o644,
+            )
+            self.product_fd = os.open(
+                str(self.product_path), os.O_RDWR | os.O_CREAT, 0o644
+            )
+            self._register(deadline)
+            self._await_predecessors(deadline)
             self._acquire(
                 self.product_fd,
                 self.product_operation,
@@ -949,17 +925,6 @@ class SharedProductLock:
                 "lock",
                 self.product_path,
             )
-            self.product_locked = True
-            admitted_offset = (
-                self.turnstile_record * _TURNSTILE_RECORD_SIZE + 16
-            )
-            if os.pwrite(
-                self.turnstile_fd, b"1", admitted_offset
-            ) != 1:
-                die(
-                    f"could not mark shared product turnstile admission at "
-                    f"{self.turnstile_path}"
-                )
             self._release_turnstile()
             _held_product_fds.add(self.product_fd)
             return self

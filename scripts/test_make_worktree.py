@@ -242,6 +242,22 @@ class MakeWorktreeTest(unittest.TestCase):
                 process.terminate()
                 process.join(2.0)
 
+    def wait_for_turnstile_records(
+        self,
+        path: Path,
+        expected: int,
+        timeout: float = 2.0,
+    ) -> None:
+        expected_size = expected * self.module._TURNSTILE_RECORD_SIZE
+        deadline = time.monotonic() + timeout
+        while path.stat().st_size != expected_size:
+            if time.monotonic() >= deadline:
+                self.fail(
+                    f"turnstile holds {path.stat().st_size} bytes, expected "
+                    f"{expected_size}"
+                )
+            select.select((), (), (), 0.005)
+
     def wait_for_lock_holders(
         self,
         path: Path,
@@ -1191,32 +1207,133 @@ class MakeWorktreeTest(unittest.TestCase):
         self.assertEqual(cli.returncode, 2)
         self.assertIn("--lock-timeout", cli.stderr)
 
-    def test_turnstile_does_not_reuse_stale_node(self):
+    def test_completed_acquisitions_leave_bounded_turnstile_state(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
             paths = build_paths(Path(td))
-            paths.llvm_lock_turnstile.parent.mkdir(parents=True)
-            stale_node = (os.getpid() << 32) | 1
-            paths.llvm_lock_turnstile.write_text(
-                f"{stale_node:016x}1\n"
-            )
-            previous_serial = self.module._turnstile_node_serial
-            self.module._turnstile_node_serial = 0
-            try:
+            record_size = self.module._TURNSTILE_RECORD_SIZE
+            acquisitions = 64
+            sizes = set()
+            for _ in range(acquisitions):
                 with self.module.SharedProductLock(
                     paths.llvm_lock,
                     paths.llvm_lock_turnstile,
-                    0.1,
-                    shared=True,
+                    1.0,
+                    shared=False,
                 ):
                     pass
-            finally:
-                self.module._turnstile_node_serial = previous_serial
+                sizes.add(paths.llvm_lock_turnstile.stat().st_size)
 
-            records = paths.llvm_lock_turnstile.read_text().splitlines()
-            self.assertEqual(len(records), 2)
-            self.assertTrue(all(len(record) == 17 for record in records))
-            self.assertTrue(all(record[16] == "1" for record in records))
-            self.assertNotEqual(records[0][:16], records[1][:16])
+            # A completed acquisition leaves no participant behind, so the
+            # turnstile keeps only its header and one reusable residency
+            # slot however many acquisitions have run through it. Nothing
+            # accumulates for a later acquisition to scan.
+            self.assertEqual(sizes, {2 * record_size})
+
+            self.module.cmd_distclean(
+                paths, Namespace(jobs=1, lock_timeout=1.0)
+            )
+            self.assertEqual(
+                paths.llvm_lock_turnstile.stat().st_size, 2 * record_size
+            )
+
+            # The slot is genuinely reused rather than the protocol having
+            # stopped tracking arrival order.
+            issued = int(paths.llvm_lock_turnstile.read_bytes()[:16], 16)
+            self.assertGreater(issued, acquisitions)
+
+    def test_crashed_participants_are_reclaimed_without_replay(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            paths = build_paths(Path(td))
+            record_size = self.module._TURNSTILE_RECORD_SIZE
+            context = multiprocessing.get_context("fork")
+            held = context.Event()
+            release = context.Event()
+            order = context.Queue()
+
+            def hold_writer():
+                with self.module.SharedProductLock(
+                    paths.llvm_lock,
+                    paths.llvm_lock_turnstile,
+                    10.0,
+                    shared=False,
+                ):
+                    held.set()
+                    release.wait(10.0)
+
+            def queue_writer(name):
+                with self.module.SharedProductLock(
+                    paths.llvm_lock,
+                    paths.llvm_lock_turnstile,
+                    20.0,
+                    shared=False,
+                ):
+                    order.put(name)
+
+            holder = context.Process(target=hold_writer, name="holder")
+            queued = [
+                context.Process(
+                    target=queue_writer,
+                    args=(f"queued-{index}",),
+                    name=f"queued-{index}",
+                )
+                for index in range(64)
+            ]
+            newcomer = context.Process(
+                target=queue_writer, args=("newcomer",), name="newcomer"
+            )
+            retained = queued[-1]
+            try:
+                holder.start()
+                self.assertTrue(held.wait(1.0))
+                for index, process in enumerate(queued):
+                    process.start()
+                    # Queued participants are the only residency the
+                    # turnstile carries: one record each, plus the header.
+                    self.wait_for_turnstile_records(
+                        paths.llvm_lock_turnstile, index + 2
+                    )
+
+                # Leave only the participant holding the last record, so
+                # every reclaimable record sits below a live one.
+                for process in queued[:-1]:
+                    process.kill()
+                self.join_processes(queued[:-1])
+
+                newcomer.start()
+                # Registering rewrites the table as the live tickets alone,
+                # so a sparse live set cannot preserve peak-concurrency
+                # state for a later acquisition to scan.
+                self.wait_for_turnstile_records(paths.llvm_lock_turnstile, 3)
+                self.assertTrue(
+                    retained.is_alive(), "compaction dropped a live ticket"
+                )
+
+                release.set()
+                # Compaction moves records but never reorders tickets.
+                self.assertEqual(order.get(timeout=5.0), retained.name)
+                self.assertEqual(order.get(timeout=5.0), "newcomer")
+            finally:
+                release.set()
+                self.join_processes((holder, newcomer, *queued))
+                order.close()
+                order.join_thread()
+
+            self.assertEqual(
+                (holder.exitcode, retained.exitcode, newcomer.exitcode),
+                (0, 0, 0),
+            )
+            # A participant that died while queued is skipped rather than
+            # waited on, and its record is reclaimed by the next arrival.
+            with self.module.SharedProductLock(
+                paths.llvm_lock,
+                paths.llvm_lock_turnstile,
+                0.5,
+                shared=False,
+            ):
+                pass
+            self.assertEqual(
+                paths.llvm_lock_turnstile.stat().st_size, 2 * record_size
+            )
 
     def test_dirty_or_drifted_dependency_pins_are_rejected(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
