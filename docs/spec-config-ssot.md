@@ -165,6 +165,14 @@ dependency closure false. Changing an unconsumed config field leaves the view
 bytes and digest unchanged; changing a consumed field or view schema changes
 them.
 
+A component view may have a deliberately empty field set. Such a view has
+empty canonical view bytes and states that the component consumes no semantic
+ResolvedConfig field under that view version. This is a closed dependency set,
+not permission for the component to inspect the full ResolvedConfig. Adding
+the first consumed field changes the owning view schema and its deterministic
+projector; the component specification decides whether that requires a major
+or minor schema-version change.
+
 ## Cache Dependencies
 
 Only a real expensive derived result may define a cache family. That family

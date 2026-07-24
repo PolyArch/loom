@@ -197,25 +197,112 @@ it; the module remains their semantic owner. They are not independent target
 choices. The later Compiler Target Binding owns final InstructionCore codegen
 target selection and must prove compatibility with these module facts.
 
-`ResolvedFrontendConfigView` is the Part 1 component view of ResolvedConfig. It
-contains exactly frontend semantic options that can affect emitted LLVM IR or
-cross-translation-unit compatibility. Part 1 owns that typed view schema;
-`docs/spec-config-ssot.md` owns common component-view framing and digest rules.
-The payload stores the descriptor, canonical bytes, and digest together so it
-is self-contained; readers recompute the digest and reject disagreement.
+`ResolvedFrontendConfigView` version 1.0 has the schema identity
+`loom.config.view.frontend` and an explicitly empty field set. Its
+exact schema descriptor bytes are the ASCII bytes
+`loom.config.view.frontend.1.0`, without a trailing zero byte. Its
+`canonical_view_bytes` is the empty byte sequence. Its
+`component_view_digest` is the Common component-view digest over the exact
+schema descriptor and those empty bytes. The empty view proves that Part 1
+reads no semantic field from ResolvedConfig under this schema version; it does
+not permit hidden access to the complete config.
 
-The ABI compatibility key is mechanically derived by Part 1 from the exact
-LLVM provider and commit, target triple, data layout, and complete frontend
-config-view descriptor and digest under the fixed domain separator
-`loom.frontend-abi-compatibility-v1`. It is a validated compact comparison key,
-not an independently authorable compatibility claim.
+Language, ABI, optimization, target, and command-line decisions that affect
+the emitted module are already owned by that LLVM module. Fabric, DSE,
+Mapping, and backend choices occur after final link and are forbidden from the
+frontend view. Paths, output locations, host concurrency, and execution limits
+belong to invocation bindings. A hint that changes the module is already
+present in the bitcode. Adding the first real frontend config field therefore
+changes the view schema version and its sole deterministic projector. Part 1
+owns that view schema; `docs/spec-config-ssot.md` owns the common
+component-view digest framing.
 
-Part 1 owns one deterministic LLVM-module normalization and bitcode writer for
-this schema version. The stored SHA-256 digest is recomputed over exactly the
-normalized bitcode bytes; the bytes, not the digest, remain the module content
-authority. Symbol definitions, declarations, linkage, visibility, COMDAT,
-module flags, and ODR semantics remain solely in that LLVM module. The payload
-contains no copied symbol table or Loom-specific substitute.
+The payload stores the frontend-view descriptor, canonical bytes, and digest
+together so it is self-contained. A reader recomputes the digest and rejects
+disagreement. The ABI compatibility key has this sole preimage:
+
+```text
+SHA-256(
+  bytes("loom.frontend.abi.compatibility.v1\0")
+  || bytes64(repository_identity)
+  || bytes64(full_commit_identity)
+  || bytes64(canonical_target_triple)
+  || bytes64(canonical_data_layout)
+  || bytes64(frontend_view_schema_descriptor)
+  || bytes64(frontend_view_canonical_bytes)
+)
+
+bytes64(x) = u64be(length(x)) || x
+```
+
+The domain separator includes its trailing zero byte. The key does not include
+`component_view_digest`: that digest is already derived from the authoritative
+descriptor and view bytes and is validated independently. The key also does
+not include the bitcode digest or module contents, because distinct
+translation units must be able to occupy the same compatibility cohort.
+Changing any preimage field changes the key. The initial exact
+`repository_identity` denotes the pinned `llvm-project` repository;
+`full_commit_identity` is its complete normalized commit identity.
+
+The ABI key is a necessary cohort and preflight check, not the complete LLVM
+ABI authority. Readers validate the raw provider, target, and view fields as
+well as the key. The pinned LLVM Linker and LTO libraries remain the authority
+for module flags, symbol and COMDAT resolution, ODR, and all other
+module-level compatibility rules.
+
+### LLVM Module Normalization
+
+Part 1 owns one deterministic LLVM parser and bitcode writer contract for
+payload version 1.0:
+
+1. Parse with the pinned LLVM provider, fully materialize the module, and run
+   the LLVM verifier.
+2. Require valid target-triple and DataLayout fields. Parse and print both
+   through the pinned LLVM canonical parsers and printers, accepting equivalent
+   input spellings but storing only their canonical spellings.
+3. Preserve module identifier, source filename, debug provenance, module
+   flags, attributes, symbols, linkage, visibility, COMDAT, inline assembly,
+   named metadata, and module order. Do not sort, rename, strip debug
+   information, optimize, or run LTO.
+4. Write the complete module through pinned `WriteBitcodeToFile` with
+   `ShouldPreserveUseListOrder=false`, `Index=nullptr`, and
+   `GenerateHash=false`. Do not add a wrapper, summary index, or
+   LLVM-generated module hash.
+
+LLVM defines use-list order directives as non-semantic, so dropping use-list
+order is the one normalization approved by this contract. The resulting
+determinism guarantee is deliberately narrow:
+
+```text
+same complete in-memory LLVM module
++ same pinned LLVM commit
++ same writer contract
+=> same normalized bitcode bytes
+```
+
+This is serialization determinism, not semantic canonicalization across
+arbitrary equivalent LLVM modules. Debug and source provenance remain in the
+module, so provenance or source-path differences may change compile-only
+payload identity. This byte-exact identity is distinct from the later
+Canonical Dataflow identity, which excludes provenance under its own
+finalization contract. Loom does not create a sidecar provenance IR.
+
+The stored SHA-256 digest is computed over exactly the normalized bitcode
+bytes. The bytes, not that digest, remain the module content authority. Symbol
+definitions, declarations, linkage, visibility, COMDAT, module flags, and ODR
+semantics remain solely in that LLVM module. The payload contains no copied
+symbol table or Loom-specific substitute.
+
+Normalization and publication are failure-atomic. Part 1 rejects the payload
+before publication when parsing, full materialization, or verification fails;
+when the target triple or DataLayout is absent or invalid; when their stored
+projections disagree with the module; when the frontend-view digest, ABI key,
+or bitcode digest is stale or malformed; when bitcode or schema is newer than
+the reader supports; or when the input encoding or writer settings violate
+this normalization contract. Canonical-byte validation rewrites the fully
+materialized module through the same production writer and requires exact byte
+equality with the stored bitcode. The reader must not repair, guess, or
+silently fall back.
 
 The payload must not contain a Fabric, Mapping, MappingConstraintSet,
 ConfigurationABI, HardwareConfigurationImage, HardwareImplementation, or
@@ -236,7 +323,9 @@ archive members participate. Loom collects payloads from exactly those selected
 members. Every collected payload must have identical LLVM provider/commit,
 target triple, data layout, ABI compatibility key, and complete frontend config
 view. Version 1.0 has no implicit config merge, precedence rule, or
-compatibility lattice; disagreement is a typed link error.
+compatibility lattice; disagreement is a typed link error. This raw-field and
+derived-key equality is a necessary preflight, not sufficient proof that LLVM
+modules are link-compatible.
 
 Loom parses and verifies every normalized module, then uses the pinned LLVM
 Linker and LTO libraries to perform symbol resolution, COMDAT/ODR handling,
@@ -250,12 +339,30 @@ implied. If acceleration is explicitly required but a selected payload is
 malformed or incompatible, the driver diagnoses the exact member and mismatch
 instead of silently discarding accelerator semantics.
 
-Anchor-level tests cover deterministic normalization and identity, self-
-contained carrier round trip, exact compatibility rejection, linker-selected
-archive membership, LLVM-owned COMDAT/ODR resolution, preservation of the
-complete imported LLVM function and ABI envelope through the MLIR handoff, and
-absence of downstream hardware artifacts. Tests do not freeze section names,
-compression, archive layout, or LLVM internal pass structure.
+Anchor-level tests cover:
+
+* changing an unrelated ResolvedConfig field leaves the zero-field frontend
+  view unchanged;
+* one fixed known vector checks the frontend-view digest and ABI-key framing,
+  and changing each ABI-key source field changes that key;
+* view-digest and ABI-key tests call the production encoders rather than
+  maintaining copied formulas;
+* modules that differ only in use-list order produce identical normalized
+  bytes, and repeated writes of one complete module produce identical bytes;
+* module flags, ABI attributes, debug information, and provenance survive
+  normalization;
+* semantic or module-content changes alter the bitcode digest and payload
+  identity;
+* stale projections, malformed payloads, unsupported versions, and
+  noncanonical input fail closed;
+* self-contained carrier round trip, linker-selected archive membership,
+  LLVM-owned COMDAT/ODR resolution, preservation of the complete imported LLVM
+  function and ABI envelope through the MLIR handoff, and absence of
+  downstream hardware artifacts.
+
+Tests do not create a matrix per compiler flag, metadata kind, or LLVM
+operation. They do not freeze section names, compression, archive layout, or
+LLVM internal pass structure.
 
 Canonical semantic bytes use the field order above. Fixed digests use raw
 32-byte values; strings and variable byte sequences use unsigned 64-bit
