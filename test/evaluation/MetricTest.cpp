@@ -226,18 +226,21 @@ void exactRatioNormalizesReducesAndChecksOverflow() {
 
   // reducedModulo normalizes into the half-open range [0, modulus).
   require(__func__,
-          takeExpected(__func__, ratio(__func__, 5, 6).reducedModulo(
-                                     ratio(__func__, 1, 2))) ==
+          takeExpected(
+              __func__,
+              ratio(__func__, 5, 6).reducedModulo(ratio(__func__, 1, 2))) ==
               ratio(__func__, 1, 3),
           "5/6 mod 1/2 must normalize to 1/3");
   require(__func__,
-          takeExpected(__func__, ratio(__func__, 7, 2).reducedModulo(
-                                     ratio(__func__, 1, 1))) ==
+          takeExpected(
+              __func__,
+              ratio(__func__, 7, 2).reducedModulo(ratio(__func__, 1, 1))) ==
               ratio(__func__, 1, 2),
           "7/2 mod 1/1 must normalize to 1/2");
   require(__func__,
-          takeExpected(__func__, ratio(__func__, 1, 1).reducedModulo(
-                                     ratio(__func__, 1, 2))) ==
+          takeExpected(
+              __func__,
+              ratio(__func__, 1, 1).reducedModulo(ratio(__func__, 1, 2))) ==
               ratio(__func__, 0, 1),
           "an exact multiple must normalize to 0/1");
   expectErrorContains(
