@@ -69,6 +69,14 @@ another execution with a similar case. The execution's exact Request,
 observable contract, and subjects recovered through the Request determine which
 Dataflow, Fabric, and Mapping objects those facts may annotate.
 
+Activity summaries are aggregate views, not replay logs. The viewer resolves
+`ActorTransitions`, `FabricResources`, and `ImplementationSignals` through
+their typed owner references and exact Request lineage. It respects the
+summary's progress-defined window and target-inventory coverage. For a partial
+summary, a missing actor, Fabric resource, or implementation activity point is
+unknown and must not be rendered as zero. Per-cycle or per-occurrence display
+requires the trace manifest rather than reconstructing events from aggregates.
+
 Architecture-only RTL or EDA checks that do not execute a workload do not
 produce `SimulationExecution`. Their raw scripts, logs, and reports may be
 projected from exact detailed-bundle and owner-attempt references, but the
@@ -199,5 +207,6 @@ Only this stable semantic anchor belongs at this boundary:
 - Given exact `D`, `F`, Mapping, and `SimulationExecution` references, activity
   replay follows strictly cycle-ordered trace frames and stable same-frame
   event order, resolves actor and physical-resource activity to those exact
-  artifacts, and obtains no execution or Evaluation fact from report or UI
-  state.
+  artifacts, while aggregate activity views preserve exact summary window and
+  coverage semantics and obtain no execution or Evaluation fact from report
+  or UI state.

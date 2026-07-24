@@ -11,8 +11,9 @@ but such a result must not be labeled as synthesis, layout, or signoff evidence.
 
 Workload-dependent power or energy also requires compatible activity. Activity
 is owned by an exact `SimulationExecution`; an evaluator may mechanically
-translate its logical activity through the exact implementation activity-name
-map. There is no independent `ActivityProfile` artifact.
+translate an actor or Fabric basis through exact Mapping and implementation
+lineage, or consume the exact implementation-signal basis directly. There is
+no independent `ActivityProfile` artifact.
 
 The physical-evaluation descriptor references the shared case signature whose
 required role is:
@@ -30,7 +31,7 @@ ActivityBinding {
   source:
       ExecutionActivity {
         simulation_execution_ref
-        activity_summary_ordinal
+        activity_summary_ordinal: uint64
       }
     | ExplicitAssumption {
         clock_domain: SubjectTargetRef
@@ -45,6 +46,21 @@ required binding is `Unsupported`; there is no hidden default toggle rate.
 The exact target, probability, density, assignment-key, and duplicate rules
 are owned by `docs/spec-evaluation-metrics.md`; this document does not define a
 second activity-condition schema.
+
+An evaluator declares which `ActivitySummary` payload kinds, windows, and
+coverage forms it accepts. A partial summary never makes unlisted targets
+zero. A model may return an interval, a censored observation, or a typed
+finding when its declared method can soundly use partial coverage; otherwise
+the request is `Unsupported`. Statistical or sampled raw activity cannot be
+silently promoted to an exact summary.
+
+Direct SAIF or toggle-table projection uses an exact
+`ImplementationSignals` summary. Projection from `FabricResources` is legal
+only when the exact HardwareImplementation owns a complete activity-point
+catalog and a mechanical Fabric-to-activity-point relation for the selected
+resources. Projection from `ActorTransitions` additionally requires exact
+Mapping lineage. These projections are disposable evaluator inputs and do not
+become another persistent activity authority.
 
 ## Implementation Derivation Versus Evaluation
 
@@ -124,6 +140,7 @@ area, frequency, power, energy, or fallback formulas.
 ## Anchor Verification
 
 Stable tests cover exact implementation coupling, separation of implementation
-derivation from Evaluation, activity compatibility, unit-safe derived metrics,
-and explicit missing/failed outcomes. Tests do not pin vendor log text or a
-tool-by-tool report matrix.
+derivation from Evaluation, activity basis/window/coverage compatibility,
+missing-is-unknown behavior, exact projection lineage, unit-safe derived
+metrics, and explicit missing/failed outcomes. Tests do not pin vendor log
+text or a tool-by-tool report matrix.

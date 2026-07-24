@@ -239,12 +239,22 @@ values, open stream prefixes, and visible logical-memory state at their exact
 terminal coordinate. Lack of model capability is `Unsupported`, not an
 unavailable output entry.
 
+When requested and exactly observed, DFG-sim may retain an
+`ActorTransitions` activity summary over either progress-defined window. A
+complete summary is total over the rooted launch's canonical actor inventory;
+a partial summary names only continuously observed actors, and omitted actors
+are unknown. DFG-sim does not fabricate Fabric-resource or
+implementation-signal activity. Actor activity can be projected to a physical
+Evaluation target only when the exact Request closure also supplies the
+required Mapping and implementation lineage.
+
 Supported normalized observations may include logical cycle count, actor fire
 and retirement counts, operation-class activity, terminal observables, and
 deadlock or other proven execution-halting findings declared by the model.
-Capability rejection is `Unsupported` and does not become a finding. Every
-metric is identified through the central metric registry and carries its unit
-and provenance.
+They are derived into Evaluation Evidence rather than copied into the
+execution. Capability rejection is `Unsupported` and does not become a
+finding. Every metric is identified through the central metric registry and
+carries its unit and provenance.
 
 ## DFG/CGRA Relation
 
@@ -283,6 +293,7 @@ Stable anchor tests cover:
 * at-most-once volatile MMIO observation through an exact external model;
 * deterministic `EventCoordinate` and within-frame trace order;
 * ordered progress anchors and required retirement presence;
+* complete and partial actor-activity inventory semantics;
 * trace observer noninterference;
 * exact terminal and Evidence outcome mapping, including deadlock witnesses;
 * explicit unsupported and deadlock outcomes; and

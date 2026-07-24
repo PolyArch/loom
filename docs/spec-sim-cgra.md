@@ -210,10 +210,23 @@ Neither creates a separate `SimulationTrace` artifact.
 Trace capture is observational. Enabling or changing it cannot affect grants,
 event scheduling, outputs, terminal form, cycle count, metrics, or findings.
 
+When requested and exactly observed, CGRA-sim may retain
+`ActorTransitions` and `FabricResources` activity summaries over either
+progress-defined window. Actor tables resolve through the exact Dataflow
+program. Fabric use and occupancy tables resolve through the exact Fabric and
+complete SpatialMapping and use only Fabric-owned use-pattern and
+resource-state references. A descriptor that cannot continuously observe an
+entire requested target inventory emits a partial summary with missing-is-
+unknown semantics or rejects the request; it cannot infer zero activity.
+CGRA-sim does not fabricate implementation-signal activity from Fabric
+activity.
+
 Normalized Evidence may expose cycle count, latency, throughput, initiation
 behavior, stalls, occupancy, utilization, traffic, contention, and deadlock
-findings when the model supports them. Metric names, units, and provenance come
-from the central registry. Evidence never becomes Mapping state.
+findings when the model supports them. These values are derived from exact
+execution facts and model semantics rather than copied into activity
+summaries. Metric names, units, and provenance come from the central registry.
+Evidence never becomes Mapping state.
 
 ## Standalone And System Integration
 
@@ -245,6 +258,8 @@ Stable anchor tests cover:
 * rejection of incomplete external or weak-compare-exchange provider behavior;
 * exact single- and multi-clock event order and delta nonconvergence;
 * mechanically derived progress reference domain and ordered progress anchors;
+* complete and partial actor/Fabric activity inventory semantics and Fabric
+  capacity bounds;
 * trace observer noninterference;
 * ordered-token preservation under temporal interleaving;
 * deadlock versus invalid-Mapping classification; and

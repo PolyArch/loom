@@ -257,7 +257,7 @@ ActivityBinding {
   source:
       ExecutionActivity {
         simulation_execution_ref: exact SimulationExecution reference
-        activity_summary_ordinal
+        activity_summary_ordinal: uint64
       }
     | ExplicitAssumption {
         clock_domain: SubjectTargetRef
@@ -283,12 +283,20 @@ at `phase + k * period_ratio` in reference cycles. Absolute clock targets use
 `RequiredClockPeriod` and `DecimalValue` seconds.
 
 `ExecutionActivity` refers to one exact summary owned by
-`SimulationExecution`; that family owns ordinal range and attachment
-validation. `ExplicitAssumption` is a small uniform vectorless assumption, not
-an Activity Artifact or arbitrary per-signal map. Static probability is in
-`[0,1]`; transition density is nonnegative and is measured per selected clock.
-An assumption requiring richer activity must use an exact execution summary or
-be introduced later as a new typed condition, never as an opaque property bag.
+`SimulationExecution`; that family owns canonical summary order, ordinal range,
+source-basis coverage, and Request-lineage validation.
+`ActivityBinding.target` is the destination Evaluation target to which the
+evaluator projects that summary. It does not identify or override the
+summary's actor, Fabric, or HardwareImplementation source basis. The evaluator
+must prove that its model accepts the selected payload kind, window, coverage,
+and exact source-to-target lineage. Missing targets in a partial summary are
+unknown and cannot be interpreted as zero or filled by a hidden default.
+
+`ExplicitAssumption` is a small uniform vectorless assumption, not an Activity
+Artifact or arbitrary per-signal map. Static probability is in `[0,1]`;
+transition density is nonnegative and is measured per selected clock. An
+assumption requiring richer activity must use an exact execution summary or be
+introduced later as a new typed condition, never as an opaque property bag.
 
 `Quantile` is request-specific and Metric-only in schema 1.0. Its probability
 is in `[0,1]`. Sample aggregation uses nearest-rank semantics: after canonical
@@ -419,8 +427,9 @@ bytes.
 
 Raw tool reports, distributions, samples, logs, and trace chunks belong to
 immutable detailed bundles. A workload execution's typed trace manifest and
-ordering belong to `SimulationExecution`. Normalized observations and findings
-belong only to exact Evaluation Evidence.
+ordering and its exact typed activity summaries belong to
+`SimulationExecution`. Normalized observations and findings belong only to
+exact Evaluation Evidence.
 
 ## Anchor Tests
 
@@ -436,6 +445,9 @@ Stable tests cover:
   and distinct-target behavior;
 * value-domain, interval, censored, and not-applicable validation;
 * deterministic query ordering and duplicate rejection;
+* activity-summary ordinal resolution, destination-target compatibility,
+  missing-is-unknown behavior, and rejection of incompatible payload,
+  coverage, or lineage;
 * completed-result totality, explicit finding absence, and terminal-witness
   reference resolution; and
 * derived-formula type, unit, scope, and bound propagation.

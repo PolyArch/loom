@@ -15,7 +15,8 @@ Fabric-to-RTL consumes:
 
 It produces one `HardwareImplementation` containing or content-addressing the
 SystemVerilog sources, packages, interfaces, constraints, black-box contracts,
-activity-name map, and implementation manifest needed by downstream tools.
+activity-point catalog, and implementation manifest needed by downstream
+tools.
 
 The lowering does not consume Dataflow or Mapping and does not create a
 workload-specific RTL design. Workload execution combines the reusable
@@ -224,9 +225,20 @@ invalid.
 
 ## Activity And Observability
 
-The implementation provides a deterministic activity-name map from emitted
-hierarchy/signals to canonical Fabric entity references. Mapping can then
-derive actor correlation without making emitted names semantic identities.
+The implementation owns a deterministic activity-point catalog. Each
+`HardwareImplementationActivityPointRef` identifies one observable scalar
+signal bit in that exact implementation and mechanically relates it to the
+emitted hierarchy/signal locator required by backend tools. Where applicable,
+the catalog also records its exact Fabric correlation; Mapping can then derive
+actor correlation without making emitted names semantic identities.
+
+The activity-point reference is semantic and implementation-owned. HDL paths,
+escaped identifiers, waveform handles, and vendor-native names are locators,
+not identities. The complete catalog schema, canonical order, and persistent
+HardwareImplementation closure are finalized with the HardwareImplementation
+Artifact contract. Until that owner closes, an RTL or mapped-RTL producer must
+fail closed for canonical `ImplementationSignals` summaries rather than emit
+provisional paths or private ordinals.
 
 Waveforms, toggle files, testbench logs, and vendor-native products are raw
 detailed bundle material. An architecture-evaluation descriptor references a
@@ -262,7 +274,9 @@ Stable anchors cover:
   ports, including distinct per-role Temporal tags and zero-payload control
   channels;
 * clock/reset domain and self-reset closure;
-* ConfigurationABI programming through one mapped workload; and
+* ConfigurationABI programming through one mapped workload;
+* deterministic scalar activity-point identity and rejection of provisional
+  hierarchy-name identity; and
 * rejection of an unsupported or behavior-changing hidden refinement,
   including implicit input draining.
 

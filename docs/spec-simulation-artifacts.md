@@ -309,12 +309,11 @@ request_ref
   -> SimulationWorkload observable contract
 ```
 
-The root field order, terminal record, Spatial functional observations, and
-Spatial progress observations are closed below. Activity summaries and the
-trace manifest remain the persistent-wire frontier. Until those records close,
-a producer must not serialize these conceptual collection names as generic
-maps or claim that the complete `loom.simulation_execution 1.0` wire is
-implemented.
+The root field order, terminal record, Spatial functional observations,
+Spatial progress observations, and activity summaries are closed below. The
+trace manifest remains the persistent-wire frontier. Until that record closes,
+a producer must not serialize the conceptual trace field as a generic map or
+claim that the complete `loom.simulation_execution 1.0` wire is implemented.
 
 The closed terminal algebra is:
 
@@ -551,7 +550,151 @@ The System progress record remains fail-closed until the Deployment-owned
 program-entry and external-interface catalogs define its launch and terminal
 boundaries. It must not reuse Spatial anchors by convention.
 
-## Trace And Activity
+## Activity Summaries
+
+Activity summaries retain exact aggregate execution facts. They do not retain
+per-occurrence events, normalized metrics, probabilities, or backend-native
+toggle files. The closed record is:
+
+```text
+ActivitySummary {
+  window: ActivityWindow
+  coverage: ActivityCoverage
+  payload:
+      ActorTransitions {
+        transitions:
+          canonical table<ActorRef, ActorTransitionCounts>
+      }
+    | FabricResources {
+        use_counts:
+          canonical table<FabricUsePatternRef, uint64>
+        resource_occupancy:
+          canonical table<FabricResourceStateRef,
+                          FabricResourceOccupancy>
+      }
+    | ImplementationSignals {
+        signals:
+          canonical table<HardwareImplementationActivityPointRef,
+                          SignalActivity>
+      }
+}
+
+ActivityWindow =
+    LaunchToGraphRetirement
+  | LaunchToTerminal
+
+ActivityCoverage =
+    Complete
+  | Partial
+
+ActorTransitionCounts {
+  committed_firings: uint64
+  retired_firings: uint64
+}
+
+FabricResourceOccupancy {
+  occupied_capacity_reference_cycles: ExactRatio
+  peak_occupied_capacity: uint64
+}
+
+SignalActivity {
+  state_residency_reference_cycles: array<ExactRatio, 4>
+  transition_counts: array<uint64, 16>
+}
+```
+
+`LaunchToGraphRetirement` begins immediately after `launch_accepted` and ends
+after `graph_retirement_visible`; it is legal only when that optional progress
+anchor is present. `LaunchToTerminal` begins immediately after
+`launch_accepted` and ends after `terminal_observed`. Point events at the
+closing anchor are included. Integrated residency uses the exact
+reference-cycle difference between the two anchors; `delta` orders causal
+events but contributes no duration. No activity record copies coordinates,
+clock domains, timebase descriptors, or elapsed-cycle metrics.
+
+`Complete` and `Partial` describe target-inventory coverage, not temporal
+sampling. Every retained value in a summary must have been observed
+continuously and exactly across its complete selected window. Sampling,
+gapped capture, extrapolation, and statistical estimates remain raw material
+or Evaluation observations and cannot be serialized as an exact
+`ActivitySummary`.
+
+For `ActorTransitions`, the complete inventory is every canonical actor in the
+rooted launch closure. A complete table contains one entry for every actor,
+including explicit zero counts. A partial table contains exactly the actors
+continuously observed; a missing actor is unknown, never zero. Counts aggregate
+all dynamic invocation occurrences of one static actor. Per-occurrence and
+per-cycle distinctions belong to trace. For every entry:
+
+```text
+committed_firings >= retired_firings
+```
+
+For a `Retired` execution over `LaunchToTerminal`, every committed firing must
+also have retired. A model may retain distinct counts for a stopped or halted
+execution.
+
+For `FabricResources`, the complete inventories are all applicable,
+activity-capable `FabricUsePatternRef` and `FabricResourceStateRef` values in
+the exact mapped SpatialCore closure. Complete tables include explicit zero
+entries. Partial tables contain exactly the continuously observed targets.
+`use_counts` records selected use-pattern activations.
+`occupied_capacity_reference_cycles` is the nonnegative exact integral of
+occupied capacity over the selected window. `peak_occupied_capacity` cannot
+exceed the capacity owned by the referenced Fabric resource state, and the
+integral cannot exceed window duration multiplied by that capacity. The
+execution does not store utilization, stall cost, energy, or any other derived
+quantity.
+
+For `ImplementationSignals`, the complete inventory is the exact activity-point
+catalog owned by the selected `HardwareImplementation` and applicable to this
+execution. `HardwareImplementationActivityPointRef` is an exact
+implementation-owned reference to one observable scalar signal bit. The full
+catalog, its deterministic order, and its correlation to Fabric are owned by
+`HardwareImplementation`, not by simulation. Until that catalog is finalized,
+an implementation-level producer must fail closed rather than invent names,
+paths, or provisional IDs.
+
+Signal state order is fixed as `T0, T1, TX, TZ`. The sixteen transition counts
+use row-major source-state/destination-state order. Diagonal counts are zero
+because a transition is a state change, and the four exact residency values
+sum to the selected window duration. This basis permits mechanical SAIF or
+toggle-table projection without making HDL hierarchy names semantic.
+Waveforms, VCD, FSDB, raw SAIF, and simulator-native activity files remain raw
+detailed-bundle material.
+
+An activity summary must contain at least one target entry across its payload;
+otherwise it is omitted. `activity_summaries` may therefore be empty. It
+contains at most one summary for each `(ActivityWindow, payload kind)` pair and
+sorts by those zero-based enum discriminants. This order mechanically defines
+the `activity_summary_ordinal` used by Evaluation. Within each table, keys sort
+by their owner-defined canonical reference bytes.
+
+The summary wire encodes, in declaration order, the zero-based window,
+coverage, and payload discriminants as unsigned 32-bit big-endian values,
+followed by the selected payload. Tables encode an unsigned 64-bit big-endian
+count followed by sorted key/value entries. Counts and capacities are unsigned
+64-bit big-endian values. Exact ratios and nested references use their sole
+owner-defined canonical encodings. Fixed-size state and transition arrays
+carry no redundant length. Unknown fields, duplicate keys, alternate table
+orders, native layout, and noncanonical ratios are invalid identity bytes.
+
+The exact Request and typed payload determine source attachment:
+
+* actor references must belong to the exact rooted Dataflow launch;
+* Fabric references require an exact complete SpatialMapping for that
+  Dataflow program and Fabric; and
+* implementation references require an exact HardwareImplementation and
+  Mapping/Deployment lineage that reaches the same execution.
+
+A summary whose source basis cannot be proven from the Request closure is
+invalid. An `ActivityBinding.target` is instead the destination Evaluation
+target to which an evaluator projects the selected summary; it is not a second
+source attachment. A capture request is a nonsemantic invocation binding.
+Enabling activity capture cannot change scheduling, outputs, terminal form,
+progress anchors, normalized metrics, or findings.
+
+## Trace Manifest Frontier
 
 An optional typed trace manifest owns the ordered list of content-addressed
 trace-chunk references, time coverage, capture level, and completeness. The
@@ -567,10 +710,10 @@ execution; they are not a `ConsistencyExecution`, witness, relation, or
 simulator-specific Artifact family and are never required for semantic
 correctness.
 
-Actor-bearing trace and activity records use the Dataflow-owned `ActorRef`.
+Actor-bearing trace records use the Dataflow-owned `ActorRef`.
 Execution-local invocation occurrences and per-actor firing ordinals qualify a
 dynamic event but never create persistent Dataflow entities. The remaining
-activity, trace-manifest, and canonical chunk records remain owned by the
+trace-manifest and canonical chunk records remain owned by the
 `SimulationExecution persistent wire` design frontier; this rule fixes only
 their upstream identity owner.
 
@@ -581,11 +724,6 @@ request belongs only to `InvocationManifest`. The execution owner's attempt
 record references that request and owns attempt provenance and retained-
 material references. The `SimulationExecution` trace manifest alone owns the
 actual order, coverage, and completeness of captured trace data.
-
-Activity summaries identify their observation window, coverage, scope,
-attachment, and timebase. Waveforms and simulator-native activity files are
-raw blobs referenced by the execution. They do not form an `ActivityProfile`
-Artifact or duplicate final values and memory state.
 
 ## Ownership And Coupling
 
@@ -621,7 +759,19 @@ eligibility, alias-overlap agreement, and rejection of normalized results
 inside `SimulationExecution`; canonical integral and fractional progress
 coordinates; progress ordering; terminal-specific graph-retirement presence;
 terminal observation only after an atomic transition; and metric derivation
-that excludes `delta`. Activity and trace add their own anchors only as their
-persistent records close. Tests do not pin report layouts, simulator class
-hierarchies, broad workload matrices, every finding kind, every witness
-payload, every partial-output combination, or arbitrary clock ratios.
+that excludes `delta`.
+
+Activity anchors cover the two progress-defined windows, rejection of a
+missing retirement anchor, complete versus partial target inventories,
+missing-is-unknown semantics, one summary per window and payload kind,
+canonical collection order, actor commit/retirement monotonicity, Fabric
+capacity bounds, four-state signal residency/transition invariants, exact
+Request-lineage attachment, and capture noninterference. One actor case, one
+Fabric resource case, and one four-state signal case are sufficient; tests do
+not build a cross-product over windows, coverage, actors, resource kinds, or
+signals.
+
+Trace adds its own anchors only when its persistent record closes. Tests do
+not pin report layouts, simulator class hierarchies, broad workload matrices,
+every finding kind, every witness payload, every partial-output combination,
+or arbitrary clock ratios.
