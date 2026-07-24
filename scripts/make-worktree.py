@@ -13,9 +13,9 @@ all live here:
     Linked worktrees consume those shared sources and must keep their own
     submodule paths and administrative state uninitialized.
   * Shared LLVM and CIRCT products are gated by one SharedProductLock
-    transaction. An internal flock turnstile gives queued writers priority
-    on the product flock; builds and distclean are exclusive writers, while
-    ordinary Loom builds hold a shared product lock during consumption.
+    transaction. An internal ticket turnstile admits readers and writers in
+    arrival order; builds and distclean are exclusive writers, while ordinary
+    Loom builds hold a shared product lock during consumption.
   * The shared CIRCT build reuses that same LLVM lock and is held across
     the LLVM ensure phase and the CIRCT configure/build, so the LLVM a
     CIRCT build links against cannot be rebuilt or wiped concurrently.
@@ -67,6 +67,8 @@ _LIBC = (
 )
 _PR_SET_PDEATHSIG = 1
 _SUPERVISE_COMMAND = "--internal-supervise-command"
+_TURNSTILE_RECORD_SIZE = 18
+_turnstile_node_serial = 0
 LLVM_SEMANTIC_CMAKE_ARGS = (
     "-DCMAKE_BUILD_TYPE=Release",
     "-DLLVM_ENABLE_PROJECTS=mlir;clang",
@@ -132,11 +134,18 @@ def _set_parent_death_signal(death_signal: int) -> None:
 
 def _supervise_command(argv: list[str]) -> None:
     """Run one command and kill its process group if the dispatcher dies."""
-    if len(argv) < 2:
+    if len(argv) < 3:
         os._exit(127)
     try:
         expected_parent = int(argv[0])
-    except ValueError:
+        lease_fds = tuple(
+            int(fd) for fd in argv[1].split(",") if fd
+        )
+        if any(fd < 0 for fd in lease_fds):
+            raise ValueError
+        for fd in lease_fds:
+            os.fstat(fd)
+    except (OSError, ValueError):
         os._exit(127)
 
     def parent_died(signum, frame):
@@ -148,7 +157,11 @@ def _supervise_command(argv: list[str]) -> None:
     if os.getppid() != expected_parent:
         parent_died(signal.SIGTERM, None)
 
-    process = subprocess.Popen(argv[1:], close_fds=True)
+    process = subprocess.Popen(
+        argv[2:],
+        close_fds=True,
+        pass_fds=lease_fds,
+    )
     returncode = process.wait()
     if returncode < 0:
         returncode = 128 - returncode
@@ -174,16 +187,19 @@ def _terminate_process_group(process: subprocess.Popen) -> None:
 
 def run(cmd, **kwargs) -> subprocess.CompletedProcess:
     info("$ " + " ".join(str(c) for c in cmd))
+    lease_fds = tuple(sorted(_held_product_fds))
     kwargs["close_fds"] = True
+    kwargs["pass_fds"] = lease_fds
     command = [str(part) for part in cmd]
-    # Re-exec closes product-lock descriptors before the supervisor creates
-    # any build child, while preserving one process group for teardown.
+    # The supervisor and command share each product lease. If this dispatcher
+    # dies, no command can outlive the lease it owns.
     process = subprocess.Popen(
         [
             sys.executable,
             str(Path(__file__).resolve()),
             _SUPERVISE_COMMAND,
             str(os.getpid()),
+            ",".join(str(fd) for fd in lease_fds),
             *command,
         ],
         start_new_session=True,
@@ -640,13 +656,22 @@ def check_dependency_pins(paths: Paths) -> DependencyState:
     )
 
 
-class SharedProductLock:
-    """Writer-preferring shared/exclusive lock over two flock files.
+# Product-lock file descriptors currently held in this dispatcher process.
+# run() passes them through the supervisor to the command. All holders share
+# each open file description, so closing or killing the dispatcher cannot
+# release a lease while a mutating command still owns it.
+_held_product_fds: set[int] = set()
 
-    Writers hold shared intent on the turnstile while waiting for the
-    exclusive product lock. Readers require exclusive turnstile admission
-    before acquiring the shared product lock, so any queued writer blocks all
-    later readers while multiple readers still coexist on the product lock.
+
+class SharedProductLock:
+    """Fair shared/exclusive lock over two lock files.
+
+    Each acquirer locks a history-unique byte, atomically appends that node to
+    the turnstile, and blocks on the preceding live node. A node is marked
+    admitted before it is unlocked; successors skip unmarked nodes released
+    by dead or timed-out waiters. This gives both classes bounded admission
+    while retaining writer preference over readers that arrive later, and
+    multiple admitted readers still coexist.
     """
 
     def __init__(
@@ -660,11 +685,13 @@ class SharedProductLock:
         self.turnstile_path = turnstile_path
         self.timeout = validate_lock_timeout(timeout)
         self.product_operation = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
-        self.turnstile_operation = fcntl.LOCK_EX if shared else fcntl.LOCK_SH
         self.product_fd: int | None = None
         self.turnstile_fd: int | None = None
+        self.turnstile_node: int | None = None
+        self.turnstile_record: int | None = None
         self.product_locked = False
         self.turnstile_locked = False
+        self.turnstile_node_locked = False
 
     def _timeout(self, label: str, path: Path) -> None:
         die(
@@ -679,10 +706,18 @@ class SharedProductLock:
         deadline: float,
         label: str,
         path: Path,
+        offset: int | None = None,
     ) -> None:
+        def lock(nonblocking: bool) -> None:
+            flags = operation | (fcntl.LOCK_NB if nonblocking else 0)
+            if offset is None:
+                fcntl.flock(fd, flags)
+            else:
+                fcntl.lockf(fd, flags, 1, offset, os.SEEK_SET)
+
         if self.timeout == 0:
             try:
-                fcntl.flock(fd, operation | fcntl.LOCK_NB)
+                lock(True)
                 return
             except BlockingIOError:
                 self._timeout(label, path)
@@ -701,7 +736,7 @@ class SharedProductLock:
         started = time.monotonic()
         previous_timer = signal.setitimer(signal.ITIMER_REAL, remaining)
         try:
-            fcntl.flock(fd, operation)
+            lock(False)
         except LockWaitExpired:
             self._timeout(label, path)
         finally:
@@ -718,38 +753,190 @@ class SharedProductLock:
         if self.turnstile_fd is None:
             return
         try:
-            if self.turnstile_locked:
-                fcntl.flock(self.turnstile_fd, fcntl.LOCK_UN)
+            if (
+                self.turnstile_node_locked
+                and self.turnstile_node is not None
+            ):
+                fcntl.lockf(
+                    self.turnstile_fd,
+                    fcntl.LOCK_UN,
+                    1,
+                    self.turnstile_node,
+                    os.SEEK_SET,
+                )
         finally:
-            os.close(self.turnstile_fd)
-            self.turnstile_fd = None
-            self.turnstile_locked = False
+            try:
+                if self.turnstile_locked:
+                    fcntl.flock(self.turnstile_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(self.turnstile_fd)
+                self.turnstile_fd = None
+                self.turnstile_node = None
+                self.turnstile_record = None
+                self.turnstile_locked = False
+                self.turnstile_node_locked = False
 
     def _release_product(self) -> None:
         if self.product_fd is None:
             return
         try:
-            if self.product_locked:
-                fcntl.flock(self.product_fd, fcntl.LOCK_UN)
-        finally:
             os.close(self.product_fd)
+        finally:
             self.product_fd = None
             self.product_locked = False
 
+    def _turnstile_nodes(self) -> set[int]:
+        if self.turnstile_fd is None:
+            return set()
+        size = os.fstat(self.turnstile_fd).st_size
+        if size % _TURNSTILE_RECORD_SIZE:
+            die(
+                f"invalid shared product turnstile state at "
+                f"{self.turnstile_path}"
+            )
+        contents = os.pread(self.turnstile_fd, size, 0)
+        if len(contents) != size:
+            die(
+                f"could not read shared product turnstile state at "
+                f"{self.turnstile_path}"
+            )
+        nodes = set()
+        for offset in range(0, size, _TURNSTILE_RECORD_SIZE):
+            record = contents[offset:offset + _TURNSTILE_RECORD_SIZE]
+            if record[16:18] not in (b"0\n", b"1\n"):
+                die(
+                    f"invalid shared product turnstile record at "
+                    f"{self.turnstile_path}"
+                )
+            try:
+                nodes.add(int(record[:16], 16))
+            except ValueError:
+                die(
+                    f"invalid shared product turnstile record at "
+                    f"{self.turnstile_path}"
+                )
+        return nodes
+
     def __enter__(self) -> "SharedProductLock":
+        global _turnstile_node_serial
+
         deadline = time.monotonic() + self.timeout
         self.product_path.parent.mkdir(parents=True, exist_ok=True)
         self.turnstile_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             self.turnstile_fd = os.open(
-                str(self.turnstile_path), os.O_RDWR | os.O_CREAT, 0o644
+                str(self.turnstile_path),
+                os.O_RDWR | os.O_CREAT | os.O_APPEND,
+                0o644,
             )
             self.product_fd = os.open(
                 str(self.product_path), os.O_RDWR | os.O_CREAT, 0o644
             )
+            historical_nodes = self._turnstile_nodes()
+            node_prefix = os.getpid() << 32
+            if node_prefix >= (1 << 63):
+                die("shared product turnstile node space exhausted")
+            while True:
+                _turnstile_node_serial += 1
+                if _turnstile_node_serial >= (1 << 32):
+                    die("shared product turnstile node space exhausted")
+                self.turnstile_node = (
+                    node_prefix | _turnstile_node_serial
+                )
+                if self.turnstile_node in historical_nodes:
+                    continue
+                try:
+                    fcntl.lockf(
+                        self.turnstile_fd,
+                        fcntl.LOCK_EX | fcntl.LOCK_NB,
+                        1,
+                        self.turnstile_node,
+                        os.SEEK_SET,
+                    )
+                    break
+                except BlockingIOError:
+                    continue
+            self.turnstile_node_locked = True
+            record = f"{self.turnstile_node:016x}0\n".encode()
+            if os.write(self.turnstile_fd, record) != len(record):
+                die(
+                    f"could not append shared product turnstile record at "
+                    f"{self.turnstile_path}"
+                )
+            record_end = os.lseek(self.turnstile_fd, 0, os.SEEK_CUR)
+            if record_end % _TURNSTILE_RECORD_SIZE:
+                die(
+                    f"invalid shared product turnstile append at "
+                    f"{self.turnstile_path}"
+                )
+            self.turnstile_record = (
+                record_end // _TURNSTILE_RECORD_SIZE - 1
+            )
+            open_flags = fcntl.fcntl(self.turnstile_fd, fcntl.F_GETFL)
+            fcntl.fcntl(
+                self.turnstile_fd,
+                fcntl.F_SETFL,
+                open_flags & ~os.O_APPEND,
+            )
+
+            predecessor = self.turnstile_record - 1
+            while predecessor >= 0:
+                predecessor_offset = (
+                    predecessor * _TURNSTILE_RECORD_SIZE
+                )
+                previous = os.pread(
+                    self.turnstile_fd,
+                    _TURNSTILE_RECORD_SIZE,
+                    predecessor_offset,
+                )
+                if (
+                    len(previous) != _TURNSTILE_RECORD_SIZE
+                    or previous[16:18] not in (b"0\n", b"1\n")
+                ):
+                    die(
+                        f"invalid shared product turnstile record at "
+                        f"{self.turnstile_path}"
+                    )
+                try:
+                    previous_node = int(previous[:16], 16)
+                except ValueError:
+                    die(
+                        f"invalid shared product turnstile record at "
+                        f"{self.turnstile_path}"
+                    )
+                self._acquire(
+                    self.turnstile_fd,
+                    fcntl.LOCK_EX,
+                    deadline,
+                    "turnstile",
+                    self.turnstile_path,
+                    previous_node,
+                )
+                try:
+                    admitted = os.pread(
+                        self.turnstile_fd,
+                        1,
+                        predecessor_offset + 16,
+                    )
+                finally:
+                    fcntl.lockf(
+                        self.turnstile_fd,
+                        fcntl.LOCK_UN,
+                        1,
+                        previous_node,
+                        os.SEEK_SET,
+                    )
+                if admitted not in (b"0", b"1"):
+                    die(
+                        f"invalid shared product turnstile admission at "
+                        f"{self.turnstile_path}"
+                    )
+                if admitted == b"1":
+                    break
+                predecessor -= 1
             self._acquire(
                 self.turnstile_fd,
-                self.turnstile_operation,
+                fcntl.LOCK_EX,
                 deadline,
                 "turnstile",
                 self.turnstile_path,
@@ -763,7 +950,18 @@ class SharedProductLock:
                 self.product_path,
             )
             self.product_locked = True
+            admitted_offset = (
+                self.turnstile_record * _TURNSTILE_RECORD_SIZE + 16
+            )
+            if os.pwrite(
+                self.turnstile_fd, b"1", admitted_offset
+            ) != 1:
+                die(
+                    f"could not mark shared product turnstile admission at "
+                    f"{self.turnstile_path}"
+                )
             self._release_turnstile()
+            _held_product_fds.add(self.product_fd)
             return self
         except BaseException:
             self._release_product()
@@ -771,6 +969,7 @@ class SharedProductLock:
             raise
 
     def __exit__(self, *exc) -> None:
+        _held_product_fds.discard(self.product_fd)
         self._release_product()
 
 

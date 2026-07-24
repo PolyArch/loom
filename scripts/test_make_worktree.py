@@ -242,10 +242,24 @@ class MakeWorktreeTest(unittest.TestCase):
                 process.terminate()
                 process.join(2.0)
 
-    def wait_for_flock_holders(
+    def wait_for_lock_holders(
         self,
         path: Path,
         expected_pids: set[int],
+        timeout: float = 1.0,
+    ) -> None:
+        self.wait_for_lock_processes(
+            path,
+            expected_holders=expected_pids,
+            timeout=timeout,
+        )
+
+    def wait_for_lock_processes(
+        self,
+        path: Path,
+        expected_holders: set[int] | None = None,
+        expected_waiters: set[int] | None = None,
+        expected_processes: set[int] | None = None,
         timeout: float = 1.0,
     ) -> None:
         stat = path.stat()
@@ -253,27 +267,48 @@ class MakeWorktreeTest(unittest.TestCase):
             f"{os.major(stat.st_dev):02x}:{os.minor(stat.st_dev):02x}:"
             f"{stat.st_ino}"
         )
+        expected_holders = expected_holders or set()
+        expected_waiters = expected_waiters or set()
+        expected_processes = expected_processes or set()
         deadline = time.monotonic() + timeout
         while True:
             holders = set()
+            waiters = set()
             for line in Path("/proc/locks").read_text().splitlines():
                 fields = line.split()
                 if (
                     len(fields) >= 6
-                    and fields[1] == "FLOCK"
-                    and fields[3] == "READ"
+                    and fields[1] in ("FLOCK", "POSIX")
                     and fields[5] == key
                 ):
                     holders.add(int(fields[4]))
-            if expected_pids <= holders:
+                elif (
+                    len(fields) >= 7
+                    and fields[1] == "->"
+                    and fields[2] in ("FLOCK", "POSIX")
+                    and fields[6] == key
+                ):
+                    waiters.add(int(fields[5]))
+            if (
+                expected_holders <= holders
+                and expected_waiters <= waiters
+                and expected_processes <= holders | waiters
+            ):
                 return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 self.fail(
-                    f"flock holders {holders} did not include "
-                    f"{expected_pids}"
+                    f"flock holders {holders} and waiters {waiters} did not "
+                    f"include holders {expected_holders}, waiters "
+                    f"{expected_waiters}, and processes {expected_processes}"
                 )
             select.select((), (), (), min(0.005, remaining))
+
+    def capture_die(self, fn, *args, **kwargs) -> str:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(SystemExit):
+            fn(*args, **kwargs)
+        return stderr.getvalue()
 
     def test_linked_worktree_routes_to_primary_artifact_owner(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
@@ -450,31 +485,36 @@ class MakeWorktreeTest(unittest.TestCase):
                 {name: 0 for name in processes},
             )
 
-    def test_queued_public_writers_precede_late_reader(self):
+    def test_queued_reader_precedes_later_writers(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
             shared = build_paths(Path(td) / "shared")
             self.ready_llvm(shared)
             readers = {
                 name: self.loom_consumer(shared, Path(td) / name)
-                for name in ("holding-reader", "late-reader")
+                for name in ("holding-reader", "queued-reader")
             }
             context = multiprocessing.get_context("fork")
+            later_writers = tuple(
+                f"later-writer-{index}" for index in range(8)
+            )
             names = (
                 "holding-reader",
-                "writer-a",
-                "writer-b",
-                "late-reader",
+                "first-writer",
+                "queued-reader",
+                *later_writers,
             )
             active = {name: context.Event() for name in names}
             release = {name: context.Event() for name in names}
             started = {
                 name: context.Event()
-                for name in ("writer-a", "writer-b", "late-reader")
+                for name in names
+                if name != "holding-reader"
             }
             order = context.Queue()
             by_build = {
                 str(paths.loom_build): name for name, paths in readers.items()
             }
+            args = Namespace(jobs=1, lock_timeout=3.0)
 
             def controlled_run(cmd, **kwargs):
                 if cmd[:2] != ["cmake", "--build"]:
@@ -490,13 +530,13 @@ class MakeWorktreeTest(unittest.TestCase):
                     raise RuntimeError(f"{name} release timed out")
 
             def consume(name):
-                if name == "late-reader":
+                if name == "queued-reader":
                     started[name].set()
-                self.module.cmd_build_loom(readers[name], self.args)
+                self.module.cmd_build_loom(readers[name], args)
 
             def write(name):
                 started[name].set()
-                self.module.cmd_build_llvm(shared, self.args)
+                self.module.cmd_build_llvm(shared, args)
 
             processes = {
                 "holding-reader": context.Process(
@@ -504,52 +544,58 @@ class MakeWorktreeTest(unittest.TestCase):
                     args=("holding-reader",),
                     name="holding-reader",
                 ),
-                "late-reader": context.Process(
+                "queued-reader": context.Process(
                     target=consume,
-                    args=("late-reader",),
-                    name="late-reader",
+                    args=("queued-reader",),
+                    name="queued-reader",
                 ),
-                "writer-a": context.Process(
+                "first-writer": context.Process(
                     target=write,
-                    args=("writer-a",),
-                    name="writer-a",
-                ),
-                "writer-b": context.Process(
-                    target=write,
-                    args=("writer-b",),
-                    name="writer-b",
+                    args=("first-writer",),
+                    name="first-writer",
                 ),
             }
+            processes.update({
+                name: context.Process(target=write, args=(name,), name=name)
+                for name in later_writers
+            })
             try:
                 with self.build_environment(self.module, run=controlled_run):
                     processes["holding-reader"].start()
                     self.assertTrue(active["holding-reader"].wait(1.0))
                     self.assertEqual(order.get(timeout=1.0), "holding-reader")
-                    for name in ("writer-a", "writer-b", "late-reader"):
-                        if name == "late-reader":
-                            self.wait_for_flock_holders(
-                                shared.llvm_lock_turnstile,
-                                {
-                                    processes["writer-a"].pid,
-                                    processes["writer-b"].pid,
-                                },
-                            )
+
+                    processes["first-writer"].start()
+                    self.assertTrue(started["first-writer"].wait(0.5))
+                    self.wait_for_lock_holders(
+                        shared.llvm_lock_turnstile,
+                        {processes["first-writer"].pid},
+                    )
+
+                    processes["queued-reader"].start()
+                    self.assertTrue(started["queued-reader"].wait(0.5))
+                    self.wait_for_lock_processes(
+                        shared.llvm_lock_turnstile,
+                        expected_waiters={processes["queued-reader"].pid},
+                    )
+
+                    for name in later_writers:
                         processes[name].start()
                         self.assertTrue(started[name].wait(0.5))
+                        self.wait_for_lock_processes(
+                            shared.llvm_lock_turnstile,
+                            expected_processes={processes[name].pid},
+                        )
 
                     release["holding-reader"].set()
-                    first = order.get(timeout=1.0)
-                    self.assertIn(first, {"writer-a", "writer-b"})
-                    release[first].set()
-                    second = order.get(timeout=1.0)
                     self.assertEqual(
-                        {first, second}, {"writer-a", "writer-b"}
+                        order.get(timeout=1.0), "first-writer"
                     )
-                    release[second].set()
+                    release["first-writer"].set()
                     self.assertEqual(
-                        order.get(timeout=1.0), "late-reader"
+                        order.get(timeout=1.0), "queued-reader"
                     )
-                    release["late-reader"].set()
+                    release["queued-reader"].set()
             finally:
                 for event in release.values():
                     event.set()
@@ -604,7 +650,7 @@ class MakeWorktreeTest(unittest.TestCase):
                     test_process.start()
                     self.assertTrue(lit_active.wait(1.0))
                     writer_process.start()
-                    self.wait_for_flock_holders(
+                    self.wait_for_lock_holders(
                         shared.llvm_lock_turnstile,
                         {writer_process.pid},
                     )
@@ -620,7 +666,7 @@ class MakeWorktreeTest(unittest.TestCase):
             self.assertEqual(test_process.exitcode, 0)
             self.assertEqual(writer_process.exitcode, 0)
 
-    def test_dispatcher_death_contains_build_process_group(self):
+    def test_dispatcher_death_keeps_lease_until_mutator_stops(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
             root = Path(td)
             shared = build_paths(root / "shared")
@@ -629,20 +675,22 @@ class MakeWorktreeTest(unittest.TestCase):
             fake_bin = root / "bin"
             fake_bin.mkdir()
             fake_cmake = fake_bin / "cmake"
+            heartbeat = root / "heartbeat"
             fake_cmake.write_text(
                 "#!/usr/bin/env python3\n"
                 "import os\n"
-                "import signal\n"
                 "import socket\n"
-                "child = os.fork()\n"
-                "if child == 0:\n"
-                "    signal.pause()\n"
-                "    os._exit(0)\n"
-                "with socket.socket() as channel:\n"
-                "    channel.connect(('127.0.0.1', "
+                "import time\n"
+                "with open(os.environ['LOOM_TEST_HEARTBEAT'], 'ab', "
+                "buffering=0) as output:\n"
+                "    with socket.socket() as channel:\n"
+                "        channel.connect(('127.0.0.1', "
                 "int(os.environ['LOOM_TEST_PORT'])))\n"
-                "    channel.sendall(f'{os.getpid()} {child}\\n'.encode())\n"
-                "signal.pause()\n"
+                "        channel.sendall("
+                "f'{os.getpid()} {os.getppid()}\\n'.encode())\n"
+                "    while True:\n"
+                "        output.write(b'x')\n"
+                "        time.sleep(0.001)\n"
             )
             fake_cmake.chmod(0o755)
             server = socket.socket()
@@ -651,19 +699,34 @@ class MakeWorktreeTest(unittest.TestCase):
             server.settimeout(1.0)
             server_port = server.getsockname()[1]
             context = multiprocessing.get_context("fork")
+            writer_active = context.Event()
+            release_writer = context.Event()
 
             def run_dispatcher():
                 os.environ["PATH"] = (
                     f"{fake_bin}{os.pathsep}{os.environ['PATH']}"
                 )
                 os.environ["LOOM_TEST_PORT"] = str(server_port)
+                os.environ["LOOM_TEST_HEARTBEAT"] = str(heartbeat)
                 self.module.cmd_build_loom(consumer, self.args)
+
+            def compete():
+                with self.module.SharedProductLock(
+                    shared.llvm_lock,
+                    shared.llvm_lock_turnstile,
+                    2.0,
+                    shared=False,
+                ):
+                    writer_active.set()
+                    release_writer.wait(2.0)
 
             dispatcher = context.Process(
                 target=run_dispatcher, name="loom-dispatcher"
             )
-            child_pids = ()
-            child_pidfds = ()
+            writer = context.Process(target=compete, name="llvm-writer")
+            command_pid = None
+            supervisor_pid = None
+            child_pidfds = []
 
             def process_exists(pid):
                 try:
@@ -677,58 +740,100 @@ class MakeWorktreeTest(unittest.TestCase):
                     dispatcher.start()
                     connection, _ = server.accept()
                     with connection:
-                        child_pids = tuple(
+                        command_pid, supervisor_pid = tuple(
                             int(pid)
                             for pid in connection.recv(128).decode().split()
                         )
-                    self.assertEqual(len(child_pids), 2)
-                    child_pidfds = tuple(
-                        os.pidfd_open(pid) for pid in child_pids
-                    )
+                    child_pidfds = [
+                        os.pidfd_open(pid)
+                        for pid in (command_pid, supervisor_pid)
+                    ]
                     self.assertEqual(
-                        len({os.getpgid(pid) for pid in child_pids}), 1
+                        os.getpgid(command_pid), os.getpgid(supervisor_pid)
                     )
-                    lock_files = {
-                        (path.stat().st_dev, path.stat().st_ino)
-                        for path in (
-                            shared.llvm_lock,
-                            shared.llvm_lock_turnstile,
-                        )
+                    lock_stat = shared.llvm_lock.stat()
+                    command_files = {
+                        (fd.stat().st_dev, fd.stat().st_ino)
+                        for fd in Path(f"/proc/{command_pid}/fd").iterdir()
                     }
-                    for pid in child_pids:
-                        inherited = set()
-                        for fd in Path(f"/proc/{pid}/fd").iterdir():
-                            try:
-                                stat = fd.stat()
-                            except FileNotFoundError:
-                                continue
-                            inherited.add((stat.st_dev, stat.st_ino))
-                        self.assertTrue(lock_files.isdisjoint(inherited))
+                    self.assertIn(
+                        (lock_stat.st_dev, lock_stat.st_ino),
+                        command_files,
+                        "the mutating command must own the product lease",
+                    )
+                    turnstile_stat = shared.llvm_lock_turnstile.stat()
+                    self.assertNotIn(
+                        (turnstile_stat.st_dev, turnstile_stat.st_ino),
+                        command_files,
+                    )
+                    writer.start()
+                    self.wait_for_lock_holders(
+                        shared.llvm_lock_turnstile,
+                        {writer.pid},
+                    )
+
+                    os.kill(supervisor_pid, signal.SIGSTOP)
+                    deadline = time.monotonic() + 1.0
+                    while True:
+                        status = Path(
+                            f"/proc/{supervisor_pid}/status"
+                        ).read_text()
+                        if "\nState:\tT" in status:
+                            break
+                        if time.monotonic() >= deadline:
+                            self.fail("supervisor did not stop")
+                        select.select((), (), (), 0.005)
+
+                    before = heartbeat.stat().st_size
                     dispatcher.kill()
                     dispatcher.join(1.0)
                     self.assertFalse(dispatcher.is_alive())
-
-                    pending = set(child_pidfds)
-                    deadline = time.monotonic() + 1.0
-                    while pending:
-                        ready, _, _ = select.select(
-                            tuple(pending),
-                            (),
-                            (),
-                            max(0, deadline - time.monotonic()),
-                        )
-                        if not ready:
-                            break
-                        pending.difference_update(ready)
                     self.assertFalse(
-                        pending,
+                        writer_active.wait(0.1),
+                        "competing writer acquired while a mutating child "
+                        f"remained active ({heartbeat.stat().st_size - before} "
+                        "post-lease writes)",
+                    )
+                    os.kill(supervisor_pid, signal.SIGCONT)
+                    self.assertTrue(writer_active.wait(1.0))
+                    command_ready, _, _ = select.select(
+                        [child_pidfds[0]], (), (), 0
+                    )
+                    self.assertEqual(
+                        command_ready,
+                        [child_pidfds[0]],
+                        "competing writer acquired before the mutator died",
+                    )
+                    final_size = heartbeat.stat().st_size
+                    select.select((), (), (), 0.02)
+                    self.assertEqual(
+                        heartbeat.stat().st_size,
+                        final_size,
+                        "mutator wrote after its product lease ended",
+                    )
+                    release_writer.set()
+
+                    ready, _, _ = select.select(
+                        child_pidfds, (), (), 1.0
+                    )
+                    self.assertEqual(
+                        set(ready),
+                        set(child_pidfds),
                         "build process group survived dispatcher death",
                     )
             finally:
+                release_writer.set()
+                if supervisor_pid is not None and process_exists(
+                    supervisor_pid
+                ):
+                    os.kill(supervisor_pid, signal.SIGCONT)
                 if dispatcher.is_alive():
                     dispatcher.kill()
                     dispatcher.join(1.0)
-                for pid in child_pids:
+                self.join_processes((writer,))
+                for pid in (command_pid, supervisor_pid):
+                    if pid is None:
+                        continue
                     if process_exists(pid):
                         os.kill(pid, signal.SIGTERM)
                 for pidfd in child_pidfds:
@@ -1004,7 +1109,9 @@ class MakeWorktreeTest(unittest.TestCase):
         context = multiprocessing.get_context("fork")
         held = context.Event()
         release = context.Event()
-        paths = build_paths(REPO_TEMP_ROOT / "lock-timeout")
+        temp_dir = tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT)
+        self.addCleanup(temp_dir.cleanup)
+        paths = build_paths(Path(temp_dir.name))
 
         def hold_writer():
             with self.module.SharedProductLock(
@@ -1045,6 +1152,13 @@ class MakeWorktreeTest(unittest.TestCase):
         self.assertLess(elapsed, 0.20)
         self.assertLess(cpu_elapsed, 0.02)
         self.assertIn("timed out after 0.05s", stderr.getvalue())
+        with self.module.SharedProductLock(
+            paths.llvm_lock,
+            paths.llvm_lock_turnstile,
+            0.1,
+            shared=True,
+        ):
+            pass
 
         self.assertEqual(self.module.validate_lock_timeout(0), 0)
         self.assertEqual(
@@ -1077,59 +1191,261 @@ class MakeWorktreeTest(unittest.TestCase):
         self.assertEqual(cli.returncode, 2)
         self.assertIn("--lock-timeout", cli.stderr)
 
+    def test_turnstile_does_not_reuse_stale_node(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            paths = build_paths(Path(td))
+            paths.llvm_lock_turnstile.parent.mkdir(parents=True)
+            stale_node = (os.getpid() << 32) | 1
+            paths.llvm_lock_turnstile.write_text(
+                f"{stale_node:016x}1\n"
+            )
+            previous_serial = self.module._turnstile_node_serial
+            self.module._turnstile_node_serial = 0
+            try:
+                with self.module.SharedProductLock(
+                    paths.llvm_lock,
+                    paths.llvm_lock_turnstile,
+                    0.1,
+                    shared=True,
+                ):
+                    pass
+            finally:
+                self.module._turnstile_node_serial = previous_serial
+
+            records = paths.llvm_lock_turnstile.read_text().splitlines()
+            self.assertEqual(len(records), 2)
+            self.assertTrue(all(len(record) == 17 for record in records))
+            self.assertTrue(all(record[16] == "1" for record in records))
+            self.assertNotEqual(records[0][:16], records[1][:16])
+
+    def test_dirty_or_drifted_dependency_pins_are_rejected(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            topology = GitTopology(Path(td))
+            paths = self.module.Paths(topology.main)
+
+            # A tracked modification in a shared dependency checkout is a
+            # divergence from the pinned upstream commit, not a build input.
+            (paths.circt_root / "circt.txt").write_text("dirty\n")
+            dirty = self.capture_die(self.module.check_dependency_pins, paths)
+            self.assertIn("tracked modifications", dirty)
+            git(paths.circt_root, "checkout", "--", "circt.txt")
+
+            # A clean shared checkout moved off the parent gitlink is drift.
+            llvm_other = git(topology.llvm_repo, "rev-parse", "HEAD")
+            git(paths.llvm_root, "checkout", "-q", llvm_other)
+            drift = self.capture_die(self.module.check_dependency_pins, paths)
+            self.assertIn("checkout drift", drift)
+            self.assertIn(llvm_other, drift)
+
+    def test_uninitialized_submodule_contracts_are_enforced(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            topology = GitTopology(Path(td))
+            main_paths = self.module.Paths(topology.main)
+
+            # A linked worktree must not initialize any submodule; it
+            # consumes the primary-owned shared checkouts instead.
+            linked_paths = self.module.Paths(topology.linked)
+            git(
+                topology.linked,
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "update",
+                "--init",
+                "--",
+                "externals/llvm",
+            )
+            hygiene = self.capture_die(
+                self.module.check_linked_submodule_hygiene, linked_paths
+            )
+            self.assertIn("externals/llvm", hygiene)
+            self.assertIn("must not initialize submodules", hygiene)
+
+            # The CIRCT nested LLVM submodule must stay uninitialized so the
+            # shared sibling externals/llvm is the only LLVM in play.
+            git(
+                main_paths.circt_root,
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "update",
+                "--init",
+                "--",
+                "llvm",
+            )
+            nested = self.capture_die(
+                self.module.check_dependency_pins, main_paths
+            )
+            self.assertIn("must remain uninitialized", nested)
+
+    def test_incompatible_parent_gitlinks_are_rejected(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            topology = GitTopology(Path(td))
+            paths = self.module.Paths(topology.linked)
+            # externals/llvm is repinned in the invoking worktree to a commit
+            # the pinned CIRCT's nested LLVM does not agree with. The shared
+            # LLVM checkout is moved to match, so this is a genuine
+            # parent-gitlink inconsistency rather than checkout drift.
+            llvm_other = git(topology.llvm_repo, "rev-parse", "HEAD")
+            git(
+                topology.linked,
+                "update-index",
+                "--cacheinfo",
+                "160000",
+                llvm_other,
+                "externals/llvm",
+            )
+            git(topology.linked, "commit", "-qm", "Repoint externals/llvm")
+            git(paths.llvm_root, "checkout", "-q", llvm_other)
+
+            error = self.capture_die(self.module.check_dependency_pins, paths)
+            self.assertIn("parent gitlinks", error)
+            self.assertIn("atomically", error)
+
+    def test_compiler_floor_and_ccache_resolution(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            root = Path(td)
+
+            # Both public compiler gates reject the second compiler when it
+            # falls just below the configured family floor.
+            old = root / "old"
+            old.mkdir()
+            for tool, version in (
+                ("gcc", "7.4.0"),
+                ("g++", "7.3.0"),
+                ("clang", "21.1.8"),
+                ("clang++", "21.1.7"),
+            ):
+                compiler = old / tool
+                compiler.write_text(
+                    f"#!/bin/sh\necho '{tool} (fake) {version}'\n"
+                )
+                compiler.chmod(0o755)
+            old_path = f"{old}{os.pathsep}{os.environ['PATH']}"
+            llvm_floor = io.StringIO()
+            with (
+                patch.dict(os.environ, {"PATH": old_path}),
+                redirect_stderr(llvm_floor),
+                self.assertRaises(SystemExit),
+            ):
+                self.module.check_llvm_compilers()
+            self.assertIn("must be at least 7.4", llvm_floor.getvalue())
+            loom_floor = io.StringIO()
+            with (
+                patch.dict(os.environ, {"PATH": old_path}),
+                redirect_stderr(loom_floor),
+                self.assertRaises(SystemExit),
+            ):
+                self.module.check_loom_compilers()
+            self.assertIn("must be at least 21.1.8", loom_floor.getvalue())
+
+            # A ccache launcher symlink is skipped in favour of the real
+            # compiler behind it on PATH.
+            ccache_bin = root / "ccache-bin"
+            real_bin = root / "real-bin"
+            ccache_bin.mkdir()
+            real_bin.mkdir()
+            ccache = ccache_bin / "ccache"
+            ccache.write_text("#!/bin/sh\nexit 0\n")
+            ccache.chmod(0o755)
+            (ccache_bin / "gcc").symlink_to(ccache)
+            real_gcc = real_bin / "gcc"
+            real_gcc.write_text("#!/bin/sh\nexit 0\n")
+            real_gcc.chmod(0o755)
+            with patch.dict(
+                os.environ, {"PATH": f"{ccache_bin}{os.pathsep}{real_bin}"}
+            ):
+                resolved = self.module.resolve_compiler_executable("gcc")
+            self.assertEqual(Path(resolved).resolve(), real_gcc.resolve())
+
     def test_explicit_circt_dir_is_exact_package_directory(self):
         cmake = shutil.which("cmake")
         self.assertIsNotNone(cmake)
+        ninja = shutil.which("ninja")
+        self.assertIsNotNone(ninja)
+        paths = self.module.Paths(REPO_ROOT)
+        packages = (
+            ("MLIR", paths.mlir_dir),
+            ("LLVM", paths.cmake_llvm_dir),
+            ("CIRCT", paths.circt_cmake_dir),
+        )
+        missing = [
+            f"{name}_DIR={directory}"
+            for name, directory in packages
+            if not (directory / f"{name}Config.cmake").is_file()
+        ]
+        if missing:
+            self.skipTest("shared build products absent: " + ", ".join(missing))
+
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
             root = Path(td)
-            repo_root = root / "repo"
-            repo_root.mkdir()
-            shutil.copy(REPO_ROOT / "CMakeLists.txt", repo_root / "CMakeLists.txt")
-            for subdir in ("include", "lib", "tools", "test"):
-                directory = repo_root / subdir
-                directory.mkdir()
-                (directory / "CMakeLists.txt").write_text("")
+            source = root / "source"
+            source.mkdir()
+            (source / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.20)\n"
+                "project(circt_consumer LANGUAGES C CXX)\n"
+                "find_package(CIRCT REQUIRED CONFIG NO_DEFAULT_PATH)\n"
+                "if(NOT TARGET CIRCTSupport)\n"
+                "  message(FATAL_ERROR \"CIRCTSupport target missing\")\n"
+                "endif()\n"
+                "message(STATUS \"Using CIRCTConfig.cmake in: "
+                "${CIRCT_DIR}\")\n"
+                "add_executable(circt-consumer main.cpp)\n"
+                "target_link_libraries(circt-consumer PRIVATE CIRCTSupport)\n"
+            )
+            (source / "main.cpp").write_text(
+                "int main() { return 0; }\n"
+            )
 
-            build_root = root / "packages"
-            for name, subdir in (
-                ("LLVM", "llvm"),
-                ("MLIR", "mlir"),
-                ("Clang", "clang"),
-                ("CIRCT", "circt"),
-            ):
-                config_dir = build_root / "lib" / "cmake" / subdir
-                config_dir.mkdir(parents=True)
-                (config_dir / f"{name}Config.cmake").write_text(
-                    f"set({name}_FOUND TRUE)\n"
-                )
-            circt_package = build_root / "lib" / "cmake" / "circt"
-
-            def configure(circt_dir):
+            def configure(circt_dir, label):
                 return subprocess.run(
                     [
                         cmake,
                         "-S",
-                        str(repo_root),
+                        str(source),
                         "-B",
-                        str(root / f"build-{circt_dir.name}"),
+                        str(root / label),
+                        "-G",
+                        "Ninja",
+                        "-DCMAKE_BUILD_TYPE=Release",
+                        f"-DMLIR_DIR={paths.mlir_dir}",
+                        f"-DLLVM_DIR={paths.cmake_llvm_dir}",
                         f"-DCIRCT_DIR={circt_dir}",
-                        f"-DCMAKE_PREFIX_PATH={build_root}",
                     ],
                     text=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                 )
 
-            nested = configure(build_root)
-            self.assertNotEqual(nested.returncode, 0, nested.stdout)
-            self.assertIn('provided by "CIRCT"', nested.stdout)
+            # A parent of the package directory must not satisfy CIRCT_DIR:
+            # find_package refuses it instead of descending into lib/cmake.
+            parent = configure(paths.circt_build, "parent")
+            self.assertNotEqual(parent.returncode, 0, parent.stdout)
+            self.assertIn('provided by "CIRCT"', parent.stdout)
 
-            exact = configure(circt_package)
+            # The exact package directory must configure and expose a linkable
+            # imported target to an external consumer.
+            exact = configure(paths.circt_cmake_dir, "exact")
+            self.assertEqual(exact.returncode, 0, exact.stdout)
             self.assertIn(
-                f"Using CIRCTConfig.cmake in: {circt_package}",
+                f"Using CIRCTConfig.cmake in: {paths.circt_cmake_dir}",
                 exact.stdout,
             )
             self.assertNotIn('provided by "CIRCT"', exact.stdout)
+            build = subprocess.run(
+                [
+                    cmake,
+                    "--build",
+                    str(root / "exact"),
+                    "--parallel",
+                    "1",
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            self.assertEqual(build.returncode, 0, build.stdout)
+            self.assertTrue((root / "exact" / "circt-consumer").is_file())
 
 
 if __name__ == "__main__":
