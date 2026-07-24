@@ -407,9 +407,13 @@ FindingKind registry. Finding results never contain severity, a score, or a
 candidate decision.
 
 For a simulator, `Retired` returns `Absent` for every mandatory terminal
-finding. `Halted { kind, witness }` returns `Present` with the typed witness for
-the corresponding query and `Absent` for every other mandatory terminal
-query. Both are Completed Evidence with total result tables.
+finding. `Halted { kind, witness }` returns `Present` for the corresponding
+query and `Absent` for every other mandatory terminal query. That `Present`
+occurrence is a `TerminalWitnessRef` containing the descriptor-local
+`SimulationExecution` output slot and the execution ordinal within that
+slot's canonical output binding. The referenced execution owns the typed
+witness instance; Evidence does not copy it. Both terminals produce Completed
+Evidence with total result tables.
 
 Every detailed bundle reference resolves to immutable raw material for the
 same exact Request. A bundle owns generated scripts, logs, raw reports, opaque

@@ -275,39 +275,53 @@ root-binding keys rather than the source names `A`, `B`, and `C`. Binding `A`
 and `B` to one object ordinal would instead state that those two imported
 roles alias; no other record changes.
 
-## SimulationExecution Semantic Boundary
+## SimulationExecution Root, Coupling, And Terminal
 
 Every model that actually runs a software workload produces one
-`SimulationExecution` with a spatial or system root:
+`SimulationExecution` with one untagged root:
 
 ```text
 SimulationExecution {
-  evaluation_request_ref
-  observable_contract_ref
-  terminal
-  terminal_observations
-  output_values
-  output_streams
-  visible_logical_memory_state_or_diff
-  completion_and_retirement_observations
+  request_ref: exact EvaluationRequest reference
+  terminal: ExecutionTerminal
+  functional_observations
+  progress_observations
   activity_summaries
   trace_manifest?
 }
 ```
 
-This record states the confirmed semantic ownership boundary. Its closed
-output, terminal-observation, completion, activity, trace-manifest, and
-`Halted` witness records are the next persistent-wire frontier. A producer
-must not serialize the conceptual field names above as a generic map or claim
-the `loom.simulation_execution 1.0` wire is complete until that frontier
-closes.
+The root does not carry a `spatial` or `system` discriminator. The exact
+Request already binds the model descriptor and workload, and the workload
+root owns that distinction. Repeating it in the execution would create a
+second case-kind authority.
 
-Its closed terminal algebra is:
+The execution also has no direct observable-contract reference. It recovers
+the applicable contract through:
 
 ```text
-Retired
-Halted { finding_kind, witness }
-StoppedByLimit
+request_ref
+  -> EvaluationRequest.workload_ref
+  -> SimulationWorkload observable contract
+```
+
+The root field order and the terminal record are closed below. The exact
+functional-observation, progress-observation, activity-summary, and
+trace-manifest records remain the next persistent-wire frontier. Until those
+records close, a producer must not serialize these conceptual collection
+names as generic maps or claim that the complete
+`loom.simulation_execution 1.0` wire is implemented.
+
+The closed terminal algebra is:
+
+```text
+ExecutionTerminal =
+    Retired
+  | Halted {
+      finding_kind: FindingKind
+      witness: registry-defined terminal-witness payload
+    }
+  | StoppedByLimit
 ```
 
 `Retired` means the workload's completion frontier, observable obligations,
@@ -315,6 +329,11 @@ and invocation-local quiescence contract have completed. `Halted` records a
 sound execution-level witness for deadlock, trap, combinational
 nonconvergence, or proven nontermination. `StoppedByLimit` records that an
 execution limit ended observation without such a proof.
+
+The `FindingKind` registry is the sole owner of the witness payload schema.
+The `SimulationExecution` terminal is the sole owner of the concrete witness
+instance. There is no separate `terminal_observations` collection and
+Evaluation Evidence must not copy the witness.
 
 Evaluation maps these forms exactly:
 
@@ -328,9 +347,28 @@ StoppedByLimit -> CancelledOrTimeout
 Every workload-running simulator descriptor declares one typed
 `SimulationExecution` output slot and the complete mandatory terminal
 `FindingQuery` set. A legal EvaluationRequest must request all of those
-findings. The descriptor's closed outcome-cardinality contract requires one
-execution output for `Retired` and `Halted`; it governs whether an incomplete
-outcome may retain zero or one stopped execution.
+findings. The descriptor's closed outcome-cardinality contract requires
+exactly one execution output for `Retired` and `Halted`. For
+`StoppedByLimit`, it alone declares whether `CancelledOrTimeout` may retain
+zero or one stopped execution. `Unsupported` and `ExecutionFailed` bind no
+`SimulationExecution`.
+
+For the finding corresponding to a `Halted` terminal,
+`EvaluationEvidence.Present` carries one occurrence of:
+
+```text
+TerminalWitnessRef {
+  execution_output_slot_ref: ModelOutputSlotRef
+  execution_output_ordinal: uint64
+}
+```
+
+The reference resolves through the containing Evidence's `output_bindings`.
+Validation requires that the slot schema is `SimulationExecution`, the
+ordinal exists, the referenced execution names the same exact Request, and
+its terminal is `Halted` with the same `FindingKind`. The singleton terminal
+witness needs no additional witness ordinal. Every other mandatory terminal
+finding is `Absent`.
 
 Capability rejection before execution is `Unsupported`; simulator, tool, or
 adapter failure is `ExecutionFailed`. `SimulationExecution` never owns
@@ -388,10 +426,12 @@ Artifact or duplicate final values and memory state.
 
 `EvaluationRequest.workload_ref` and `runtime_input_ref` contain exact Artifact
 references. A `SimulationExecution` refers only to that exact Request and
-recovers both inputs through it rather than copying their references.
-`EvaluationEvidence` refers to the Request and binds the execution through the
-descriptor-owned output slot without copying its observations. The execution
-never refers to Evidence, so the content-identity graph is acyclic.
+recovers both inputs and the workload observable contract through it rather
+than copying their references. `EvaluationEvidence` refers to the Request and
+binds the execution through the descriptor-owned output slot without copying
+its observations or terminal witness. A terminal finding occurrence uses the
+output-binding-relative `TerminalWitnessRef`. The execution never refers to
+Evidence, so the content-identity graph is acyclic.
 
 Architecture-only RTL or EDA checks do not execute a workload and therefore
 must not create an empty `SimulationExecution`.
@@ -406,10 +446,12 @@ two imported roots aliasing one object, and rejection of physical layout or
 arbitrary object identity. One vecadd case covers fixed `N`, runtime `A/B/C`,
 and a visible diff of `C`.
 
-Execution anchors separately cover the typed output slot, mandatory terminal-
-finding totality, the closed terminal algebra and Evaluation mapping,
-logical-memory identity preservation, runtime-dependent `Unsupported` versus
-`Halted` and `ExecutionFailed`, trace observer noninterference, and rejection
-of normalized results inside `SimulationExecution`. Tests do not pin trace
-chunk sizes, report layouts, simulator class hierarchies, broad workload
-matrices, every lane state, or every alias arrangement.
+Execution anchors separately cover the single untagged root, Request-only
+coupling, typed output slot and ordinal resolution, mandatory terminal-finding
+totality, the closed terminal algebra and outcome cardinality, witness
+ownership and reference validation, runtime-dependent `Unsupported` versus
+`Halted` and `ExecutionFailed`, and rejection of normalized results inside
+`SimulationExecution`. Functional observations, progress observations,
+activity, and trace add their own anchors only as their persistent records
+close. Tests do not pin report layouts, simulator class hierarchies, broad
+workload matrices, every finding kind, or every witness payload.

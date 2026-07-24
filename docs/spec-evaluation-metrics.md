@@ -144,6 +144,13 @@ owned EvaluationScope form descriptors
 typed occurrence payload schema
 ```
 
+For an execution-terminal finding, the descriptor additionally owns the
+terminal-witness payload schema, while its Evidence occurrence carrier is the
+`TerminalWitnessRef` defined by Simulation Artifacts. The concrete witness
+instance is owned by the referenced `SimulationExecution`; Evidence never
+copies it. Nonterminal findings continue to store their registry-defined
+typed occurrence payloads inline.
+
 The registry does not own severity, candidate acceptance, or a numeric score.
 For example, deadlock, functional mismatch, negative slack, or a physical-rule
 violation can be present in a successfully completed Evaluation. The resolved
@@ -362,6 +369,23 @@ Absence is explicit; a missing result cannot prove that a finding is absent.
 Completed Evidence contains exactly one result for every requested metric and
 finding and no unsolicited results.
 
+For an execution-terminal `FindingKind`, each `Present` set contains the
+registry-permitted reference carrier:
+
+```text
+TerminalWitnessRef {
+  execution_output_slot_ref: ModelOutputSlotRef
+  execution_output_ordinal: uint64
+}
+```
+
+The containing Evidence and its exact Request resolve this pair to one
+`SimulationExecution` in `output_bindings`. The referenced execution must
+belong to the same Request and contain a `Halted` terminal of the requested
+kind. The witness payload remains in that terminal. No direct execution
+Artifact reference, copied witness payload, or witness ordinal is stored in
+the finding result.
+
 ## Derived Metrics
 
 A reusable derived quantity is produced by an ordinary typed
@@ -409,7 +433,8 @@ Stable tests cover:
   and distinct-target behavior;
 * value-domain, interval, censored, and not-applicable validation;
 * deterministic query ordering and duplicate rejection;
-* completed-result totality and explicit finding absence; and
+* completed-result totality, explicit finding absence, and terminal-witness
+  reference resolution; and
 * derived-formula type, unit, scope, and bound propagation.
 
 Tests must not enumerate every registry entry, PVT permutation, clock ratio,

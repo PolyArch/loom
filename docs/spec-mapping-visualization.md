@@ -109,7 +109,8 @@ name convention. Before presenting an overlay, the exporter verifies:
 
 - every referenced Artifact schema and identity;
 - the dependency closure among `D`, `F`, and the exact Mapping Artifact;
-- the `SimulationExecution` Request and observable-contract references;
+- the `SimulationExecution` exact Request reference and the workload
+  observable contract recovered through it;
 - any trace event's actor, resource, and Mapping context references; and
 - the EvaluationEvidence reference to its exact Request and retained detailed
   material.
