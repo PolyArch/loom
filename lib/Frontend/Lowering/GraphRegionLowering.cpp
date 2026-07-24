@@ -55,6 +55,15 @@ bool isGraphMemoryAddressLeaf(::mlir::Operation *op) {
                      ::mlir::LLVM::GEPOp>(op);
 }
 
+// The graph frontier: the entry block of the enclosing `dataflow.graph` body.
+// It is where the fallback hoists leaves to, so a leaf already there stands at
+// its final position and no structured control governs how often it runs.
+bool isGraphFrontier(::mlir::Block *block) {
+  auto graph =
+      ::llvm::dyn_cast_or_null<::dataflow::GraphOp>(block->getParentOp());
+  return graph && block == &graph.getBody().front();
+}
+
 } // namespace
 
 GraphLeafLowering classifyGraphLoweringLeaf(::mlir::Operation *op) {
@@ -80,14 +89,20 @@ GraphLeafLowering classifyGraphLoweringLeaf(::mlir::Operation *op) {
   if (::llvm::isa<::mlir::LLVM::LoadOp, ::mlir::LLVM::StoreOp,
                   ::mlir::LLVM::MemcpyOp, ::mlir::LLVM::MemsetOp>(op))
     return GraphLeafLowering::Implemented;
+  // A fresh allocation is the invocation-local memory root
+  // `docs/spec-compiler-part-3-mem.md` defines, and the finalized graph keeps
+  // it. It allocates, so it is not movable; in the graph frontier it already
+  // stands where the finalized graph wants it, and preserving it there is the
+  // implemented action. Under structured control the root is created once per
+  // execution of the container, and no lowering reproduces that identity at
+  // the frontier, so there is no action to implement for it.
+  if (::llvm::isa<::mlir::memref::AllocOp>(op))
+    return isGraphFrontier(op->getBlock()) ? GraphLeafLowering::Implemented
+                                           : GraphLeafLowering::Unsupported;
   // Nothing implements this leaf. An effectful actor such as dataflow.fence,
   // atomic_rmw or cmpxchg lands here: it has no rewrite above and cannot be
   // moved without dropping the ordering semantics lowering does not reproduce.
   return GraphLeafLowering::Unsupported;
-}
-
-bool isSupportedGraphLoweringLeaf(::mlir::Operation *op) {
-  return classifyGraphLoweringLeaf(op) != GraphLeafLowering::Unsupported;
 }
 
 } // namespace lowering
@@ -276,7 +291,8 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
                     ::mlir::scf::ForallOp, ::mlir::scf::YieldOp,
                     ::mlir::scf::ConditionOp, ::mlir::scf::ReduceOp,
                     ::mlir::scf::InParallelOp, ::dataflow::GraphReturnOp>(op) ||
-        ::loom::lowering::isSupportedGraphLoweringLeaf(op);
+        ::loom::lowering::classifyGraphLoweringLeaf(op) !=
+            ::loom::lowering::GraphLeafLowering::Unsupported;
     if (::llvm::isa<::dataflow::ChannelSendOp, ::dataflow::ChannelReceiveOp>(
             op))
       modeled = boundary.isTransient();

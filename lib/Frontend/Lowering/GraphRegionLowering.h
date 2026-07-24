@@ -21,12 +21,14 @@ enum class GraphLeafLowering {
   // action, so this also covers a leaf whose in-place rewrite still leaves the
   // move to the frontier fallback.
   Movable,
-  // An effectful leaf a dedicated action rewrites or consumes in place, so it
-  // never reaches the frontier fallback: the memref and dataflow accesses and
-  // the stream endpoints `lowerOperations` handles, plus the LLVM memory
-  // operations graph normalization turns into dataflow memory actors before
-  // region lowering runs, with `checkResidualMemoryEffects` failing closed on
-  // any it could not convert.
+  // An effectful leaf whose action is dedicated to the position it already
+  // occupies, so it never reaches the frontier fallback: the memref and
+  // dataflow accesses and the stream endpoints `lowerOperations` rewrites or
+  // consumes in place, the LLVM memory operations graph normalization turns
+  // into dataflow memory actors before region lowering runs, with
+  // `checkResidualMemoryEffects` failing closed on any it could not convert,
+  // and the fresh allocation root standing in the graph frontier, whose action
+  // is to preserve it there.
   Implemented,
   // No implemented action. An effectful canonical actor with neither a rewrite
   // nor a proof of movability lands here, so lowering never has to relocate an
@@ -34,9 +36,9 @@ enum class GraphLeafLowering {
   Unsupported,
 };
 
+// Whether lowering covers `op` and how, judged where `op` stands: a leaf whose
+// only implemented action is to stay put is classified by its position.
 GraphLeafLowering classifyGraphLoweringLeaf(::mlir::Operation *op);
-
-bool isSupportedGraphLoweringLeaf(::mlir::Operation *op);
 
 ::mlir::LogicalResult
 checkGraphRegionLoweringPreconditions(::mlir::ModuleOp module);
