@@ -610,7 +610,6 @@ private:
 struct PlainMemoryActionProjection {
   std::optional<ReadyPlainMemoryAction> ready;
   llvm::SmallVector<std::string, 1> diagnostics;
-  bool unsupported = false;
 };
 
 struct SimulatorState {

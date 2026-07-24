@@ -797,11 +797,9 @@ static bool admitReadyPlainMemoryActions(SimulatorState &state) {
   llvm::SmallVector<ReadyPlainMemoryAction> ready;
   llvm::SmallVector<std::uint64_t> inactiveCandidates;
   llvm::SmallVector<std::string> projectionDiagnostics;
-  bool projectionUnsupported = false;
   for (const auto &[ordinal, operation] : state.plainMemoryCandidates) {
     PlainMemoryActionProjection projection =
         projectReadyPlainMemoryAction(operation, state);
-    projectionUnsupported |= projection.unsupported;
     for (std::string &diagnostic : projection.diagnostics)
       projectionDiagnostics.push_back(std::move(diagnostic));
     if (!projection.ready) {
@@ -826,10 +824,9 @@ static bool admitReadyPlainMemoryActions(SimulatorState &state) {
       return rejectPlainMemoryConflict(state);
   }
 
-  if (!projectionDiagnostics.empty() || projectionUnsupported) {
+  if (!projectionDiagnostics.empty()) {
     for (std::string &diagnostic : projectionDiagnostics)
       state.diagnostics.push_back(std::move(diagnostic));
-    state.runtimeUnsupportedCapability |= projectionUnsupported;
     return false;
   }
 

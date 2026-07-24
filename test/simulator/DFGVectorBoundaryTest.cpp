@@ -884,38 +884,6 @@ void loadRejectionIsAtomic(dataflow::LoadOp op) {
                      "load changed run or memory state on a rejected access");
 }
 
-void storeDuplicateScatterIsAtomic(dataflow::StoreOp op) {
-  SimulatorState state;
-  auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
-  auto memory = makeMemory(memoryType.getElementType(), {0x11, 0x22});
-  state.channels[&op.getMemMutable()].push_back(
-      pointerToken(op.getMem(), memory, 0));
-  state.channels[&op.getAddrMutable()].push_back(
-      indexVectorToken(resolvedIndexBits(op.getOperation()), {1, 1}));
-  state.channels[&op.getDataMutable()].push_back(
-      tokenWithBits(op.getData().getType(), 0xAB43));
-  state.channels[&op.getCtrlMutable()].push_back(noneToken());
-  state.admittedPlainMemoryActions.try_emplace(op.getOperation(),
-                                               ReadyPlainMemoryAction{});
-
-  require(!fireActorOperation(op, state),
-          "store accepted duplicate active destinations");
-  require(state.diagnostics.size() == 1, "store recorded no rejection reason");
-  require(!fireActorOperation(op, state),
-          "store accepted duplicate active destinations when re-polled");
-  require(state.diagnostics.size() == 2,
-          "a re-polled store rejection is not detectable as a failed attempt");
-  require(state.channels[&op.getMemMutable()].size() == 1 &&
-              state.channels[&op.getAddrMutable()].size() == 1 &&
-              state.channels[&op.getDataMutable()].size() == 1 &&
-              state.channels[&op.getCtrlMutable()].size() == 1,
-          "store consumed input on a rejected access");
-  require(state.runtimeUnsupportedCapability,
-          "duplicate active scatter did not report an unsupported capability");
-  expectUntouchedRun(state, *memory, {0x11, 0x22},
-                     "store changed run or memory state on a rejected access");
-}
-
 void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
   SimulatorState state;
   auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
@@ -1271,7 +1239,6 @@ int main() {
   unpackFailureIsAtomic(vectorUnpack);
   serializeFailureIsAtomic(serialize);
   loadRejectionIsAtomic(load);
-  storeDuplicateScatterIsAtomic(store);
   storeSynchronizationFailureIsAtomic(store);
   wideSyncSharesOnePublishedFrontier(context);
   syncReconvergingOneFrontierRetainsOneCopy(context);

@@ -866,6 +866,23 @@ prepareDataflowMemoryWrite(const Token &data,
     return std::nullopt;
   }
 
+  // A plain scatter has no lane order for duplicate active destinations, and
+  // the finalized program carries no distinctness proof, so a collision is
+  // refused here rather than resolved by an invented order. Only the resolved
+  // addresses expose it, so it is an unsupported capability rather than an
+  // ordinary execution failure.
+  if (access.isGather()) {
+    llvm::DenseSet<std::size_t> destinations;
+    for (std::size_t slot : projection.slots) {
+      if (destinations.insert(slot).second)
+        continue;
+      state.diagnostics.push_back(
+          "dataflow.store does not resolve duplicate active addresses");
+      state.runtimeUnsupportedCapability = true;
+      return std::nullopt;
+    }
+  }
+
   DataflowMemoryWrite write;
   write.accessedMemory = true;
   write.elements.reserve(projection.slots.size());
@@ -1029,8 +1046,7 @@ struct PreparedStoreFiring {
 
 static std::optional<ProjectedMemoryFiring>
 projectStoreFiring(dataflow::StoreOp op, SimulatorState &state,
-                   llvm::SmallVectorImpl<std::string> &diagnostics,
-                   bool &unsupported) {
+                   llvm::SmallVectorImpl<std::string> &diagnostics) {
   mlir::OpOperand *maskOperand =
       getOptionalMaskOperand(op.getOperation(), op.getMask());
   if (!hasToken(state.channels, op.getAddrMutable()) ||
@@ -1053,29 +1069,13 @@ projectStoreFiring(dataflow::StoreOp op, SimulatorState &state,
       op.getOperation(), "dataflow.store");
   if (!access)
     return std::nullopt;
-
-  // A plain scatter has no lane order for duplicate active destinations, and
-  // the finalized program carries no distinctness proof. This is a footprint
-  // property, so reject it during projection before any access executes.
-  if (access->type.isGather()) {
-    llvm::DenseSet<std::size_t> destinations;
-    for (std::size_t slot : access->slots) {
-      if (destinations.insert(slot).second)
-        continue;
-      diagnostics.push_back(
-          "dataflow.store does not resolve duplicate active addresses");
-      unsupported = true;
-      return std::nullopt;
-    }
-  }
   return ProjectedMemoryFiring{std::move(*view), std::move(*access),
                                maskOperand};
 }
 
 static std::optional<PreparedStoreFiring>
 prepareStoreFiring(dataflow::StoreOp op, SimulatorState &state) {
-  auto projected = projectStoreFiring(op, state, state.diagnostics,
-                                      state.runtimeUnsupportedCapability);
+  auto projected = projectStoreFiring(op, state, state.diagnostics);
   if (!projected)
     return std::nullopt;
   Token data = peekToken(state.channels, op.getDataMutable());
@@ -1108,8 +1108,7 @@ projectReadyPlainMemoryAction(mlir::Operation *operation,
   auto op = mlir::dyn_cast<dataflow::StoreOp>(operation);
   if (!op)
     return result;
-  auto projected =
-      projectStoreFiring(op, state, result.diagnostics, result.unsupported);
+  auto projected = projectStoreFiring(op, state, result.diagnostics);
   if (!projected)
     return result;
   auto action =

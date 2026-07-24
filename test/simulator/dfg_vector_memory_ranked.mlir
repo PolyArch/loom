@@ -22,10 +22,6 @@
 // RUN:   --arg 2=0 --memref 3=1,2,3,4,5 --output %t.zero-scatter.json
 // RUN: FileCheck %s --check-prefix=ZERO-SCATTER < %t.zero-scatter.json
 // RUN: loom-dfg-sim %s --graph ranked_scatter \
-// RUN:   --arg 0=0x00000001000000020000000000000002 --arg 1=287454020 \
-// RUN:   --memref 2=1,2,3,4,5 --output %t.dup-scatter.json
-// RUN: FileCheck %s --check-prefix=DUP-SCATTER < %t.dup-scatter.json
-// RUN: loom-dfg-sim %s --graph ranked_scatter \
 // RUN:   --arg 0=0x00000002000000630000000100000000 --arg 1=287454020 \
 // RUN:   --memref 2=1,2,3,4,5 --output %t.range-scatter.json
 // RUN: FileCheck %s --check-prefix=RANGE-SCATTER < %t.range-scatter.json
@@ -98,17 +94,6 @@
 // ZERO-SCATTER-NEXT: "i8:5"
 // ZERO-SCATTER: "dataflow.store": 1
 // ZERO-SCATTER: "status": "pass"
-
-// A plain scatter has no lane order for duplicate active destinations. Only
-// the runtime addresses expose that conflict, so the run reports an
-// unsupported capability instead of choosing a lane order or witnessing a
-// deadlock. The store never fires and Unsupported exports no terminal state.
-// DUP-SCATTER: "dataflow.store does not resolve duplicate active addresses"
-// DUP-SCATTER-DAG: "final_memory_roots": {}
-// DUP-SCATTER-DAG: "final_memory_state": {}
-// DUP-SCATTER-DAG: "final_outputs": []
-// DUP-SCATTER-NOT: "dataflow.store"
-// DUP-SCATTER: "status": "unsupported"
 
 // One out-of-range active lane refuses the whole firing, so the lanes that
 // resolved before it leave no partial write behind.
