@@ -939,8 +939,13 @@ void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
 
   require(!fireActorOperation(op, state),
           "store fired after synchronization insertion failed");
-  require(state.runtimeUnsupportedCapability && state.diagnostics.size() == 1,
-          "synchronization insertion failure did not report unsupported");
+  require(state.diagnostics.size() == 1,
+          "store recorded no synchronization failure reason");
+  require(!state.runtimeUnsupportedCapability,
+          "a synchronization provider failure became an unsupported "
+          "capability");
+  require(state.providerInvariantViolation,
+          "a synchronization provider failure did not mark the run failed");
   require(state.channels[&op.getMemMutable()].size() == 1 &&
               state.channels[&op.getAddrMutable()].size() == 1 &&
               state.channels[&op.getDataMutable()].size() == 1 &&
@@ -1087,6 +1092,97 @@ void wideSyncSharesOnePublishedFrontier(mlir::MLIRContext &context) {
   require(elapsed < kBudgetSeconds, "the wide sync exceeded its scale budget");
 }
 
+// Scale gate for same-frontier reconvergence.
+//
+// A broadcast hands every consumer a token carrying the same memory-order
+// frontier, and one sync may reconverge all of those tokens. Consuming a
+// frontier the firing already holds adds no member, so the transient union
+// holds a width-k frontier once however many inputs reconverge it, rather
+// than the k*k members the run would otherwise materialize before reducing.
+//
+// The gate is the union's exact size between consumption and publication.
+// That is the only point where the duplication exists: reduction and
+// interning deduplicate either way, so the published frontier, the arena
+// shape, and the clock cannot reject retaining one copy per input. The size
+// is exact and machine independent; the lit runner's process timeout bounds
+// the run that the old cost would instead have made unbounded.
+void syncReconvergingOneFrontierRetainsOneCopy(mlir::MLIRContext &context) {
+  constexpr unsigned kWidth = 8192;
+
+  std::string source;
+  llvm::raw_string_ostream stream(source);
+  stream << "func.func @reconverge_sync(";
+  for (unsigned index = 0; index < kWidth; ++index)
+    stream << (index ? ", " : "") << "%in" << index << ": none";
+  stream << ") {\n  %joined:" << kWidth << " = dataflow.sync ";
+  for (unsigned index = 0; index < kWidth; ++index)
+    stream << (index ? ", " : "") << "%in" << index;
+  stream << " : (";
+  for (unsigned index = 0; index < kWidth; ++index)
+    stream << (index ? ", " : "") << "none";
+  stream << ") -> (";
+  for (unsigned index = 0; index < kWidth; ++index)
+    stream << (index ? ", " : "") << "none";
+  stream << ")\n  return\n}\n";
+
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(stream.str(), &context);
+  require(static_cast<bool>(module),
+          "unable to parse the reconverging sync fixture");
+  dataflow::SyncOp sync;
+  module->walk([&](dataflow::SyncOp op) { sync = op; });
+  require(sync && sync->getNumOperands() == kWidth,
+          "the reconverging sync fixture is missing its actor");
+
+  // One broadcast frontier of mutually unrelated effects: no reduction can
+  // shrink it, and every input carries the same handle.
+  SimulatorState state;
+  state.memoryOrder = std::make_unique<loom::sim::MemoryAtomicOrder>();
+  state.memorySync =
+      std::make_unique<loom::sim::MemorySynchronization>(*state.memoryOrder);
+  llvm::SmallVector<loom::sim::SyncEffectId> wide;
+  wide.reserve(kWidth);
+  for (unsigned index = 0; index < kWidth; ++index)
+    wide.push_back(state.memorySync->declareEffect());
+  const MemoryOrderFrontierId broadcast =
+      state.memoryOrderFrontiers.internCanonical(wide);
+  auto queueInputs = [&] {
+    for (mlir::OpOperand &operand : sync->getOpOperands()) {
+      Token token = noneToken();
+      token.memoryOrder = broadcast;
+      state.channels[&operand].push_back(std::move(token));
+    }
+  };
+  queueInputs();
+  const std::size_t seededFrontiers =
+      state.memoryOrderFrontiers.frontierCount();
+
+  // Consume the inputs exactly as the firing does, and observe the union
+  // before any emission publishes it: publication reduces the union in place,
+  // so a duplicated union is indistinguishable from this one afterwards.
+  for (mlir::OpOperand &operand : sync->getOpOperands())
+    (void)popToken(state, operand);
+  require(state.firingMemoryOrderFrontier.elements().size() == kWidth,
+          "reconverging one frontier retained one copy per input");
+  require(state.firingMemoryOrderFrontier.hasAbsorbed(broadcast),
+          "the firing lost the frontier it reconverged");
+
+  // fireOnce resets the accumulator, so the firing below repeats the same
+  // consumption and then publishes it.
+  queueInputs();
+  require(fireOnce(sync, state), "the reconverging sync did not fire");
+  for (mlir::Value result : sync->getResults()) {
+    const auto tokens = state.pendingObservedOutputs.find(result);
+    require(tokens != state.pendingObservedOutputs.end() &&
+                tokens->second.size() == 1,
+            "a reconverging sync result published the wrong token count");
+    require(tokens->second.front().memoryOrder == broadcast,
+            "reconverging one frontier published a second frontier");
+  }
+  require(state.memoryOrderFrontiers.frontierCount() == seededFrontiers,
+          "reconverging one frontier retained more than the broadcast");
+}
+
 } // namespace
 
 int main() {
@@ -1178,5 +1274,6 @@ int main() {
   storeDuplicateScatterIsAtomic(store);
   storeSynchronizationFailureIsAtomic(store);
   wideSyncSharesOnePublishedFrontier(context);
+  syncReconvergingOneFrontierRetainsOneCopy(context);
   return 0;
 }

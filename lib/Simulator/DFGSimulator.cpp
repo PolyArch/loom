@@ -1572,6 +1572,16 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
                                          .str());
         break;
       }
+      // A provider broke an invariant it guarantees, so this run has already
+      // failed internally. It leaves the wave here, before any later actor
+      // observes or mutates state, and resolves through the same invalid
+      // terminal as the checks above, carrying the provider's own rejection
+      // as its diagnostic. The run therefore never continues into a deadlock
+      // witness or an exhausted event budget that would relabel it.
+      if (state.providerInvariantViolation) {
+        report.status = "invalid";
+        break;
+      }
       fired |= outcome == FireOutcome::Fired;
     }
     if (report.status == "invalid" || !fired)

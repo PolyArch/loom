@@ -949,8 +949,12 @@ issueMemoryAction(MemoryActionRecord action,
   MemorySynchronization &sync = memorySynchronization(state);
   auto effect = sync.declareEffectSequencedAfter(orderFrontier);
   if (!effect) {
+    // The admitted frontier is canonical output of this run's own
+    // bookkeeping, so the authority rejecting it is a provider invariant
+    // violation, not a missing capability. The rejection is atomic: no input
+    // is consumed, no action is retained, and no frontier is published.
     state.diagnostics.push_back(llvm::toString(effect.takeError()));
-    state.runtimeUnsupportedCapability = true;
+    state.providerInvariantViolation = true;
     return std::nullopt;
   }
   state.memoryActions.retain(std::move(action), *effect, sync);

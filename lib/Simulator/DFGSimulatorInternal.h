@@ -196,10 +196,15 @@ private:
 /// union out of the arena, so a group that absorbs k effects one firing at a
 /// time costs one growing buffer instead of k retained frontiers.
 ///
+/// A frontier is a set of effects, so the elements hold each one once and
+/// `members_` indexes exactly them. Merging content the accumulator already
+/// holds therefore costs a lookup instead of a copy, and reconverging one
+/// frontier through k inputs retains it once rather than k times.
+///
 /// The reduced flag and the optional published handle are memos of exactly
-/// this content, both dropped by every mutation, so they can never disagree
-/// with the elements. Neither relates two effects and neither is an authority:
-/// MemorySynchronization alone reduces a frontier.
+/// this content, both dropped whenever the elements grow, so they can never
+/// disagree with the elements. None of the memos here relates two effects and
+/// none is an authority: MemorySynchronization alone reduces a frontier.
 class MemoryOrderAccumulator {
 public:
   llvm::ArrayRef<SyncEffectId> elements() const { return elements_; }
@@ -207,25 +212,36 @@ public:
 
   void clear() {
     elements_.clear();
+    members_.clear();
     absorbed_.clear();
     reduced_ = false;
     published_.reset();
   }
 
+  /// Merges effects, keeping the elements a set. Content this accumulator
+  /// already holds changes nothing, so its memos survive an append that adds
+  /// no member.
   void append(llvm::ArrayRef<SyncEffectId> effects) {
-    if (effects.empty())
+    bool grew = false;
+    for (SyncEffectId effect : effects)
+      if (members_.insert(effect.value()).second) {
+        elements_.push_back(effect);
+        grew = true;
+      }
+    if (!grew)
       return;
-    elements_.append(effects.begin(), effects.end());
     reduced_ = false;
     published_.reset();
   }
 
   /// Appends one stored frontier and records that this accumulator already
-  /// contains it, so a token carrying exactly that frontier needs no merge.
+  /// represents it, so a token carrying exactly that frontier needs no merge.
+  /// Absorbing the same handle again is the same content, so it resolves
+  /// against the memo without reading the frontier at all.
   void absorb(llvm::ArrayRef<SyncEffectId> effects,
               MemoryOrderFrontierId frontier) {
-    absorbed_.insert(frontier.value());
-    append(effects);
+    if (absorbed_.insert(frontier.value()).second)
+      append(effects);
   }
 
   /// True when this accumulator already absorbed `frontier`, so re-merging it
@@ -236,8 +252,9 @@ public:
   }
 
   /// Folds another accumulator's elements and absorbed handles into this one.
-  /// An empty contribution changes nothing, so this accumulator's memos stay
-  /// valid exactly when its elements did not grow.
+  /// Only the members this accumulator does not already hold are retained, so
+  /// a fully or partially overlapping other costs no duplicate storage, and
+  /// one that adds no member leaves this accumulator's memos untouched.
   void absorbAll(const MemoryOrderAccumulator &other) {
     absorbed_.insert(other.absorbed_.begin(), other.absorbed_.end());
     append(other.elements_);
@@ -250,6 +267,9 @@ public:
   /// Replaces the elements with the reduced shape the authority returned.
   void adoptReduced(llvm::ArrayRef<SyncEffectId> effects) {
     elements_.assign(effects.begin(), effects.end());
+    members_.clear();
+    for (SyncEffectId effect : elements_)
+      members_.insert(effect.value());
     reduced_ = true;
   }
 
@@ -265,8 +285,15 @@ public:
 
 private:
   llvm::SmallVector<SyncEffectId, 4> elements_;
-  // Handles whose effects are already inside `elements_`. This is a memo of
-  // the same content, cleared with it, and never a relation.
+  // Membership index of exactly `elements_`, derived from them and rebuilt
+  // with them. It keeps the elements a set and relates nothing.
+  llvm::SmallDenseSet<std::uint64_t, 4> members_;
+  // Handles this accumulator already merged. A later reduction may drop a
+  // dominated effect from `elements_`, so the invariant is coverage rather
+  // than literal presence: what the handle contributed is still a member or
+  // is happens-before one, which is why re-merging it cannot change the
+  // reduced result. A memo of merged content, cleared with the elements, and
+  // never a relation of its own.
   llvm::SmallDenseSet<std::uint32_t, 4> absorbed_;
   bool reduced_ = false;
   std::optional<MemoryOrderFrontierId> published_;
@@ -627,6 +654,13 @@ struct SimulatorState {
   // an unsupported capability instead of an arbitrary result or a deadlock
   // witness. Ordinary execution diagnostics never set this.
   bool runtimeUnsupportedCapability = false;
+  // An invariant this run's own providers guarantee, broken during execution:
+  // the causality authority rejecting a frontier this run itself derived, for
+  // example. It is an internal failure of the simulator, not a capability the
+  // exact model lacks, so it resolves to the same invalid terminal as the
+  // run's other invariant checks rather than to an unsupported capability or
+  // a deadlock. Ordinary execution diagnostics never set this.
+  bool providerInvariantViolation = false;
   // The causality engines this run projects its plain accesses onto. They are
   // owned indirectly so the bound reference inside MemorySynchronization stays
   // valid however this state itself is stored, and they are created only once

@@ -93,10 +93,11 @@ void retainAndPublishActivationMemoryOrder(SimulatorState &state,
   // would have absorbed nothing, so the first emission would reduce and
   // intern the union again and a forwarded token would merge back into the
   // frontier it already contributed to. Folding the firing's consumed order
-  // in before the trade keeps an empty contribution from touching the
-  // union's memos, so a firing that consumed nothing republishes the
-  // unchanged union as one handle lookup, and a transition that emits
-  // nothing never reduces or interns the order it is about to drop.
+  // in before the trade keeps a contribution the union already represents
+  // from touching the union's memos, so a firing that consumed nothing new
+  // republishes the unchanged union as one handle lookup, and a transition
+  // that emits nothing never reduces or interns the order it is about to
+  // drop.
   activation.absorbAll(state.firingMemoryOrderFrontier);
   std::swap(state.firingMemoryOrderFrontier, activation);
 }
