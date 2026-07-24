@@ -5,10 +5,11 @@ pipeline, a special artifact family, or a simulator mode.
 
 ## Inputs And Output
 
-The model descriptor owns two role-labeled subject slots,
-`reference_execution` and `candidate_execution`, both accepting exact
-`SimulationExecution` artifacts. The ordinary `EvaluationRequest` binds those
-slots and canonical sets of typed `MetricRequest` and `FindingRequest`
+The model descriptor references the shared execution-comparison case
+signature. Its ordered roles are `reference_execution` and
+`candidate_execution`, both accepting exact `SimulationExecution` artifacts.
+The ordinary `EvaluationRequest` binds those roles and canonical sets of typed
+`MetricRequest` and `FindingRequest`
 records. The model is not restricted to DFG versus CGRA and may compare
 repeated runs or RTL/system executions when their observables are compatible.
 

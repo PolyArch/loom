@@ -14,7 +14,8 @@ is owned by an exact `SimulationExecution`; an evaluator may mechanically
 translate its logical activity through the exact implementation activity-name
 map. There is no independent `ActivityProfile` artifact.
 
-The physical-evaluation descriptor owns this role-labeled subject slot:
+The physical-evaluation descriptor references the shared case signature whose
+required role is:
 
 ```text
 implementation: HardwareImplementation
@@ -24,18 +25,26 @@ Activity changes the physical question and is therefore one explicit base
 condition:
 
 ```text
-ActivityBinding =
-    ExecutionActivity {
-      simulation_execution_ref
-      activity_summary_ordinal
-    }
-  | ExplicitAssumption {
-      typed_activity_conditions
-    }
+ActivityBinding {
+  target: SubjectTargetRef
+  source:
+      ExecutionActivity {
+        simulation_execution_ref
+        activity_summary_ordinal
+      }
+    | ExplicitAssumption {
+        clock_domain: SubjectTargetRef
+        static_probability: ExactRatio
+        transitions_per_clock: ExactRatio
+      }
+}
 ```
 
 Leakage-only queries may omit activity. A workload-dependent query with no
 required binding is `Unsupported`; there is no hidden default toggle rate.
+The exact target, probability, density, assignment-key, and duplicate rules
+are owned by `docs/spec-evaluation-metrics.md`; this document does not define a
+second activity-condition schema.
 
 ## Implementation Derivation Versus Evaluation
 

@@ -95,21 +95,57 @@ evaluator outputs.
 
 ## Evaluation Case Foundation
 
-Evaluation uses Common's typed `ArtifactReference` through descriptor-owned
-role-labeled slots:
+The model-independent case uses one static typed
+`EvaluationCaseSignature` registry. It is not an Artifact and it does not
+contain model implementation facts:
+
+```text
+EvaluationCaseSignatureDescriptor {
+  case_kind: EvaluationCaseKind
+  subject_roles: ordered CaseSubjectRoleDescriptor tuple
+  workload: forbidden | optional | required, with accepted Artifact schemas
+  runtime_input: forbidden | optional | required, with accepted Artifact schemas
+  workload/runtime-input compatibility
+  permitted base-condition patterns
+}
+
+CaseSubjectRoleDescriptor {
+  role_ref: CaseSubjectRoleRef
+  semantic_role
+  accepted Artifact schemas
+  cardinality
+  cross-role compatibility
+}
+```
+
+The persistent registry reference is exactly
+`(Evaluation schema version, EvaluationCaseKind)`. It is not an Artifact
+reference, digest, string name, or model-descriptor-local ordinal.
+`CaseSubjectRoleRef` is a stable ordinal local to one exact case-signature
+version. The signature, not an Evaluation model, is the sole owner of subject
+role, schema, cardinality, and compatibility. An
+`EvaluationModelDescriptor` references exactly one case signature and declares
+only its capability to evaluate that case. If one implementation supports
+incompatible case signatures, the registry exposes separate model
+descriptors.
+
+This replaces descriptor-local subject-slot definitions. Such slots made the
+supposedly model-independent case key depend on model-specific ordinals, so two
+different models could fail to align an otherwise identical case. There is no
+global `SubjectKind`, unordered subject bag, or one-subject-per-schema rule.
+
+Evaluation uses Common's exact typed references through case-signature roles:
 
 ```text
 EvaluationSubjectBindings =
-  total table<SubjectSlotRef, canonical ArtifactReference collection>
+  total table<CaseSubjectRoleRef, canonical ArtifactReference collection>
 ```
 
-Each descriptor slot owns a stable ordinal, semantic role, accepted Artifact
-schema, cardinality, and cross-slot compatibility. Collections contain no
-duplicates and are ordered by complete typed-reference canonical key;
-authoring order has no meaning. Request verification enforces totality for all
-required slots. Distinct slots may accept the same schema, so a comparison can
-bind `reference_execution` and `candidate_execution` without losing role.
-There is no unordered subject bag or one-subject-per-schema rule.
+Collections contain no duplicates and are ordered by complete typed-reference
+canonical key; authoring order has no meaning. Request verification enforces
+totality relative to the exact case signature. Distinct roles may accept the
+same schema, so a comparison signature can bind `reference_execution` and
+`candidate_execution` without losing role.
 
 The model-independent case has two orthogonal exact references:
 
@@ -130,10 +166,19 @@ arbitrary predicate languages, or consumer-private payloads. Model effort is
 part of the model binding; tool paths, timeout, host parallelism, and licenses
 are nonsemantic execution bindings.
 
+The exact condition kinds, payloads, allowed locations, assignment keys,
+canonical order, and duplicate/conflict rules are owned by
+`docs/spec-evaluation-metrics.md`. The case-signature descriptor owns semantic
+applicability of Base conditions. Metric and Finding descriptors own semantic
+applicability of request-specific conditions. A model descriptor declares
+which otherwise legal conditions it consumes, requires, or proves invariant;
+it cannot redefine their meaning or silently ignore an unsupported condition.
+
 Case keys are removable derived indexes:
 
 ```text
 base_case_key = DomainSeparatedDigest(
+  exact EvaluationCaseSignatureRef,
   canonical subject bindings,
   workload_ref,
   runtime_input_ref,
@@ -149,6 +194,14 @@ Neither key is serialized into Request or Evidence. Full Request identity also
 depends on the exact model binding, both canonical request sets, and
 `replicate_index`. Evidence references Request rather than copying case facts
 or derived keys.
+
+Two model descriptors produce the same base or metric case key only when they
+reference the same exact case signature and bind identical role-labeled
+subjects, workload, runtime input, and conditions. Their distinct model
+bindings still produce distinct Request identities. For example, a timing
+predictor and a physical timing tool can share one Hardware Implementation
+case while retaining different parameter, technology-tool, and execution
+bindings.
 
 ## EvaluationRequest and Model Descriptor
 
@@ -185,6 +238,12 @@ but their total cardinality must be nonzero. A finding-only Request is legal.
 The same query may appear with different request-specific conditions; only an
 exact duplicate request is invalid.
 
+Request does not serialize its case signature separately. Its exact model
+descriptor resolves one `EvaluationCaseSignatureRef`, and subject bindings are
+verified against that signature. Case keys include the resolved signature
+reference so the signature participates once without becoming a second
+Request-owned authority.
+
 Finalization sorts each set by complete canonical content. The resulting
 positions are the only request-local `MetricRequestOrdinal` and
 `FindingRequestOrdinal` identities. Evidence refers to a request item by exact
@@ -201,8 +260,8 @@ Evaluation library's static typed registry, not an Artifact. It owns:
 
 - model kind, descriptor schema and version, and implementation semantic
   identity;
-- role-labeled typed subject slots and compatibility rules;
-- workload, runtime-input, and condition requirements;
+- one exact `EvaluationCaseSignatureRef`;
+- permitted-condition consume, require, and invariant capabilities;
 - supported metric and finding queries and result forms;
 - descriptor-owned model input slots, role-labeled typed output slots, and
   resolved model-config schema;
@@ -268,9 +327,11 @@ canonical bytes, and an earlier attempt is never overwritten.
 
 Admission has three nonoverlapping owners:
 
-1. `RequestVerifier` checks canonical form, descriptor resolution, subject-slot and
-   workload signatures, conditions, metric and finding capabilities, model
-   slots and config, and replicate validity.
+1. `RequestVerifier` checks canonical form, descriptor and case-signature
+   resolution, case-role totality and compatibility, workload/runtime
+   requirements, condition location and applicability, scope anchors and
+   targets, metric and finding capabilities, model slots and config, and
+   replicate validity.
 2. `EvaluationPlanAdmission` checks model authorization, Evidence obligations,
    dependency readiness, and deterministic semantic work.
 3. `ExecutionAdmission` checks tool availability, licenses, storage, host
@@ -672,7 +733,8 @@ Authoring-level allowed models resolve only to `model_authorizations`.
 Authoring-level required Evidence resolves only to
 `EvidenceObligationTemplate`. A template fixes the exact model binding, case,
 conditions, and metric/finding requests while retaining one descriptor-typed
-candidate subject slot. Promote fills that slot to construct exact Requests;
+candidate `CaseSubjectRoleRef` binding. Promote fills that role to construct
+exact Requests;
 gate and objective references use template-local request ordinals rather than
 copying metric or finding definitions.
 
@@ -868,8 +930,13 @@ action, not a side effect of Evaluation or training.
 The closed core has one owner for every semantic fact:
 
 - Request and Evidence own Evaluation input and normalized output;
+- the case-signature registry owns model-independent subject, workload,
+  runtime-input, and base-condition shape;
 - descriptors and bindings own capability and one exact model selection;
-- metric and finding registries own query semantics;
+- metric and finding registries own query semantics and scope forms, while
+  each Artifact family owns its imported local target references;
+- the condition registry owns condition payload, location, assignment-key, and
+  canonicalization semantics;
 - `ObjectiveDimension`, ordering, and CNF gates own optimization policy;
 - `PlanOutputRef` owns all typed plan use-def, while Generate and Promote own
   central candidate expansion, Evidence acquisition, and narrowing;
@@ -890,6 +957,9 @@ owner without expanding the central semantic model.
 
 Only these stable semantic anchors belong at this boundary:
 
+- Different model descriptors referencing one exact case signature derive the
+  same case key for identical role bindings, workload, runtime input, and
+  conditions, while retaining distinct Request identities.
 - A finding-only Request is valid when its descriptor declares the capability,
   and Completed Evidence returns one explicit result for every finding ordinal.
 - Completed Evidence is exactly total over both request sets, while

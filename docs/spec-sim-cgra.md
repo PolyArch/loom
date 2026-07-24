@@ -15,7 +15,8 @@ How does a Canonical Dataflow Program execute on this exact SpatialCore and
 complete SpatialMapping under its concrete timing and contention rules?
 ```
 
-The descriptor has three required role-labeled subject slots:
+The descriptor references the shared CGRA-simulation case signature, whose
+three required roles are:
 
 ```text
 program: CanonicalDataflowProgram
@@ -85,7 +86,9 @@ records. Mapping does not provide an absolute cycle-slot schedule.
 
 Single-clock SpatialCore sessions advance in nonnegative integer cycles. A
 multi-clock session chooses an explicit reference clock and represents every
-event in exact rational reference cycles. All timed events use
+event in canonical `ExactRatio` reference cycles. The Evaluation base
+condition owns the exact relative period and phase selected for clocks that
+Fabric does not hard-fix. All timed events use
 `EventCoordinate = (reference_cycle, delta)`; host floating point and rounded
 nanoseconds cannot determine event order. `delta` expresses only causal
 combinational propagation inside one cycle. Equal coordinates use canonical

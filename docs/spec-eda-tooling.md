@@ -108,6 +108,12 @@ semantic model binding when it can affect results. The requested PVT corner,
 required clock, and other ground-truth evaluation scenario facts are typed
 `EvaluationCondition` values rather than model inputs.
 
+A process corner condition uses an exact technology-family-owned
+`TechnologyCornerRef`; it is not a free corner string. Voltage, temperature,
+required clock period, and relative-clock schedule use the canonical typed
+payloads in `docs/spec-evaluation-metrics.md`. An EDA adapter maps those facts
+to tool syntax through its exact model binding without redefining them.
+
 Local resolution from a logical reference to files is an execution concern and
 must not create a second library-profile authority.
 

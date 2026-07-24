@@ -16,8 +16,8 @@ How does this Canonical Dataflow Program execute when operation timing is
 modeled but spatial hardware resources are unlimited?
 ```
 
-The descriptor has one required role-labeled subject slot,
-`program: CanonicalDataflowProgram`, bound to finalized `D`.
+The descriptor references the shared DFG-simulation case signature, whose one
+required role is `program: CanonicalDataflowProgram`, bound to finalized `D`.
 `workload_ref` and `runtime_input_ref` bind the
 exact spatial workload and concrete values, streams, dynamic parameters, and
 logical-memory state. The resolved simulator model belongs to

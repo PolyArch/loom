@@ -404,9 +404,10 @@ InstructionCore must validate all three authorities: the exact InstructionCore
 Architectural Contract; the exact InstructionCore Microarchitectural
 Realization, including execution structure, timing, capacity, and
 mapping-visible resources; and the compatible Compiler Target Binding used by
-its target-specific binary. The system-simulator descriptor owns role-labeled
-subject slots `deployment` and `system_model`; an ordinary `EvaluationRequest`
-binds their exact subjects. Exact workload and runtime data use
+its target-specific binary. The system-simulator descriptor references the
+shared system-simulation case signature with ordered `deployment` and
+`system_model` roles; an ordinary `EvaluationRequest` binds their exact
+subjects. Exact workload and runtime data use
 `SimulationWorkload` and `SimulationRuntimeInput` references, and remaining
 simulator parameters use `ResolvedModelBinding`. There is no separate
 system-simulation request family.

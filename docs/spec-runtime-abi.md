@@ -337,8 +337,9 @@ InstructionCore it must validate all three authorities:
 * the compatible Compiler Target Binding used by the target-specific binary.
 
 It does not reference or copy SystemMapping. The system-simulator descriptor
-owns role-labeled subject slots `deployment` and `system_model`; an ordinary
-`EvaluationRequest` binds their exact `Deployment` and Gem5SimulationBinding
+references the shared system-simulation case signature with ordered
+`deployment` and `system_model` roles; an ordinary `EvaluationRequest` binds
+their exact `Deployment` and Gem5SimulationBinding
 subjects. Its workload and concrete runtime data are exact
 `SimulationWorkload` and `SimulationRuntimeInput` references; only the
 remaining simulator model parameters belong to `ResolvedModelBinding`.

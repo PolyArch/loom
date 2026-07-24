@@ -134,7 +134,7 @@ Timed SpatialCore traces use:
 EventCoordinate = (reference_cycle, delta)
 ```
 
-`reference_cycle` is a nonnegative integer or canonical exact rational cycle.
+`reference_cycle` is a nonnegative integer or canonical `ExactRatio` cycle.
 `delta` expresses same-cycle causal propagation and is not another cycle or a
 latency metric. Trace frames are strictly increasing by EventCoordinate. Events
 within one frame use a stable typed canonical serialization key; that ordering

@@ -229,9 +229,10 @@ hierarchy/signals to canonical Fabric entity references. Mapping can then
 derive actor correlation without making emitted names semantic identities.
 
 Waveforms, toggle files, testbench logs, and vendor-native products are raw
-detailed bundle material. An architecture-evaluation descriptor owns an
-`implementation` subject slot. A mapped-RTL simulator descriptor owns
-`implementation` and `deployment` subject slots. Requests bind exact
+detailed bundle material. An architecture-evaluation descriptor references a
+case signature with the `implementation` role. A mapped-RTL simulator
+descriptor references a case signature with ordered `implementation` and
+`deployment` roles. Requests bind exact
 `HardwareImplementation` and, where applicable, exact `Deployment` artifacts;
 the models produce Evidence and optional raw material, while mapped execution
 also produces `SimulationExecution`. The RTL
