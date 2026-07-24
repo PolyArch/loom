@@ -195,14 +195,18 @@ reinterpreted as plain load/store.
 ## Trace And Termination
 
 When requested, the `SimulationExecution` trace manifest orders
-content-addressed chunk references whose opaque payloads are retained by the
-raw detailed bundle. Records are strictly ordered by `EventCoordinate` and
-canonical within-frame event order. Firing is the atomic actor-transition
-commit, not readiness; publication and retirement may occur later. A firing record
-identifies the stable actor, execution-local occurrence, per-actor firing
-ordinal, consumed and produced logical endpoints, and relevant state
-transition. Raw payload inclusion is controlled by the invocation's capture
-request.
+Common `BlobDigest` references whose canonical chunk bytes are retained by its
+one exact same-Request raw detailed bundle. DFG-sim may emit a complete
+launch-to-terminal trace or a gap-free launch-rooted prefix; it cannot
+serialize an interior loss as partial coverage. Frames are strictly ordered by
+`EventCoordinate`, cannot cross chunk boundaries, and use canonical
+within-frame event order.
+
+Firing is the atomic actor-transition commit, not readiness; publication and
+retirement may occur later. A firing record identifies the stable actor,
+execution-local occurrence, per-actor firing ordinal, consumed and produced
+logical endpoints, and relevant state transition. Raw payload inclusion is
+controlled by the invocation's capture request.
 
 The stable actor field is the exact Dataflow-owned `ActorRef`. The occurrence
 and firing ordinal are execution-local coordinates and never become Dataflow
@@ -294,6 +298,7 @@ Stable anchor tests cover:
 * deterministic `EventCoordinate` and within-frame trace order;
 * ordered progress anchors and required retirement presence;
 * complete and partial actor-activity inventory semantics;
+* complete and launch-rooted prefix trace envelopes with no interior gaps;
 * trace observer noninterference;
 * exact terminal and Evidence outcome mapping, including deadlock witnesses;
 * explicit unsupported and deadlock outcomes; and

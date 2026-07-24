@@ -19,8 +19,8 @@ Every report field that describes a semantic fact resolves to one exact owner:
 - an `EvaluationRequest` owns the exact evaluation question;
 - an `EvaluationEvidence` owns normalized outcome, metric results, and finding
   results;
-- a detailed bundle owns retained scripts, logs, raw tool reports, opaque trace
-  chunks, and other payloads; and
+- a detailed bundle owns retained scripts, logs, raw tool reports, canonical
+  trace chunks, and other payloads; and
 - `InvocationManifest`, `ExecutionJournal`, and owner-specific attempt records
   own invocation provenance, recovery state, and retry history.
 
@@ -56,10 +56,16 @@ scanning a scratch directory.
 A DFG-sim, CGRA-sim, or system-simulation report obtains terminal values,
 stream sequences, visible logical-memory state or diffs, completion, activity,
 and trace order and coverage only from the exact `SimulationExecution`. It
-resolves opaque trace payloads only through the manifest's exact detailed-
-bundle references. It obtains normalized outcome, metrics, and findings only from exact
-`EvaluationEvidence`, with query meaning recovered through the corresponding
-`EvaluationRequest` and registries.
+resolves canonical trace chunks only through the manifest's exact detailed-
+bundle reference. It obtains normalized outcome, metrics, and findings only
+from exact `EvaluationEvidence`, with query meaning recovered through the
+corresponding `EvaluationRequest` and registries.
+
+For a present trace, the report resolves the manifest's one exact same-Request
+detailed bundle, verifies every ordered `BlobDigest`, and decodes canonical
+chunk bytes. It preserves `Complete` versus launch-rooted `Prefix` coverage and
+must not invent a late-start range, fill an interior gap, reorder chunks, or
+treat an absent manifest as an empty complete trace.
 
 A simulator progress counter, event count, raw tool exit status, or
 human-oriented score is not a cycle metric unless an Evaluation model has

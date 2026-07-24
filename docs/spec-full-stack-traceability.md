@@ -200,6 +200,36 @@ Canonical semantic bytes exclude timestamps, producer metadata, invocation
 bindings, host paths, diagnostics, visualization layout, and lineage unless the
 artifact schema explicitly makes a typed upstream reference semantic.
 
+## Blob Digest Contract
+
+Large non-Artifact payloads use one distinct `BlobDigest` value type:
+
+```text
+BlobDigest := SHA-256(logical_blob_bytes)
+```
+
+The algorithm and 32-byte width are fixed. External text is exactly 64
+lowercase hexadecimal characters. `BlobDigest` and `ArtifactIdentity` are
+different static types even though both contain a SHA-256 result. A blob has no
+Artifact schema descriptor, semantic framing, lineage, or artifact-local
+entity catalog.
+
+The digest covers the exact logical bytes presented to consumers. Transparent
+storage compression, filesystem paths, chunk placement, indexes, and transport
+encoding do not change those bytes or the digest. A compressed store object
+must be decoded before its logical bytes are rehashed. A zero-length logical
+blob has its ordinary SHA-256 digest. Values are always exactly 32 bytes and
+absence uses outer optionality. An all-zero 32-byte value, if produced, remains
+an ordinary digest and cannot be reserved as an absence sentinel.
+
+The blob store publishes complete bytes atomically, verifies the full byte
+sequence on deduplication, and rehashes on read. Equal bytes deduplicate. A
+digest occupied by different bytes is a hard collision, while malformed
+storage or a digest/bytes mismatch is corruption. Neither case may be repaired
+by selecting one payload. Blob ownership, media type, and relation to a typed
+Artifact remain in the referencing owner's manifest; the digest itself owns
+only content identity.
+
 ## Artifact Reference Framing
 
 Every semantic cross-artifact reference has one complete meaning:
@@ -266,3 +296,9 @@ InstructionCore compatibility authorities disagree. Tests do not pin path
 layouts beyond the store contract, duplicate every producer/consumer pair in a
 fixture matrix, or freeze an open Compiler Target Binding or
 `Gem5SimulationBinding` carrier schema.
+
+Blob-digest anchors cover one fixed logical-byte vector, the zero-length blob,
+strict binary and lowercase-text widths, transparent compression round-trip,
+atomic publication, equal-byte deduplication, and collision or corruption
+rejection. They do not establish a digest-algorithm registry, duplicate blob
+tests for every owner, or pin storage layout and compression choices.

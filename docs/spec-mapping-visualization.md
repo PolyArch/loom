@@ -62,7 +62,7 @@ observations:
   references, coverage, and completeness.
 
 The viewer obtains output, logical-memory, activity, and trace ordering from
-that exact `SimulationExecution`; it resolves opaque chunk payloads from the
+that exact `SimulationExecution`; it resolves canonical chunk bytes from the
 manifest's exact raw detailed bundle. It cannot obtain normalized facts from
 EvaluationEvidence, a human-readable simulator projection, a comparison projection, or
 another execution with a similar case. The execution's exact Request,
@@ -105,7 +105,7 @@ but they are never semantic inputs to another projection and never become
 schema authorities.
 
 A raw detailed bundle may provide scripts, stdout, stderr, vendor warnings,
-tool-native reports, opaque trace chunks, and other execution material. Those
+tool-native reports, canonical trace chunks, and other execution material. Those
 records remain raw material associated with the exact Request. They cannot
 replace `SimulationExecution` for workload observables or
 EvaluationEvidence for normalized outcome, metrics, and findings.
@@ -136,7 +136,9 @@ without changing any artifact or semantic identity.
 ## Activity Replay
 
 Activity replay uses the exact trace manifest owned by `SimulationExecution`
-and the opaque chunks it orders from the referenced detailed bundle.
+and the canonical chunks it orders by Common `BlobDigest` from the one exact
+same-Request detailed bundle. The viewer verifies each digest before decoding
+the chunk.
 Timed SpatialCore traces use:
 
 ```text
@@ -171,7 +173,9 @@ Evaluation outcome remain fields of exact EvaluationEvidence.
 
 Trace capture level and chunking affect retained raw material and execution
 cost, not simulation behavior. The viewer respects the trace manifest's order
-and completeness and never fills missing cycles or events from a report.
+and `Complete` or launch-rooted `Prefix` coverage. It never fills missing
+cycles or events from a report, interprets an absent manifest as an empty
+complete trace, or reorders chunks using a bundle inventory.
 
 ## Mapping and Layout Exclusion
 

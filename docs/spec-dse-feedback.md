@@ -436,9 +436,11 @@ as a typed Artifact distinct from raw detailed material. It owns terminal
 execution observations, output values and streams, visible logical-memory final
 state or diffs, completion and retirement observations, typed activity
 summaries, and the trace manifest. The raw detailed bundle owns the manifest's
-opaque chunks and any waveform payload. Neither owns normalized metrics,
-findings, Evaluation outcome, DSE decisions, or a second simulator result
-schema.
+canonical chunk bytes, their Common `BlobDigest` inventory, and any waveform
+payload. One manifest references one exact same-Request bundle and orders only
+digests present in that bundle. The bundle cannot copy trace order, coverage,
+or completeness. Neither owner contains normalized metrics, findings,
+Evaluation outcome, DSE decisions, or a second simulator result schema.
 
 ## Candidate Lineage and Evaluation DAG
 

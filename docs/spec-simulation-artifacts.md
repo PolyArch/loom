@@ -310,10 +310,11 @@ request_ref
 ```
 
 The root field order, terminal record, Spatial functional observations,
-Spatial progress observations, and activity summaries are closed below. The
-trace manifest remains the persistent-wire frontier. Until that record closes,
-a producer must not serialize the conceptual trace field as a generic map or
-claim that the complete `loom.simulation_execution 1.0` wire is implemented.
+Spatial progress observations, activity summaries, and trace manifest/chunk
+envelope are closed below. The typed trace-event algebra remains the
+persistent-wire frontier. Until that algebra closes, a producer must not
+serialize private event records behind the canonical trace field or claim that
+the complete `loom.simulation_execution 1.0` wire is implemented.
 
 The closed terminal algebra is:
 
@@ -694,28 +695,120 @@ source attachment. A capture request is a nonsemantic invocation binding.
 Enabling activity capture cannot change scheduling, outputs, terminal form,
 progress anchors, normalized metrics, or findings.
 
-## Trace Manifest Frontier
+## Trace Manifest And Chunk Envelope
 
-An optional typed trace manifest owns the ordered list of content-addressed
-trace-chunk references, time coverage, capture level, and completeness. The
-referenced opaque chunk payloads and their inventory belong to an immutable
-raw detailed bundle, not to `SimulationExecution` and not to a separate trace
-Artifact family. They may be compressed or indexed without changing manifest
-order or semantic observations.
+The optional trace field has one closed envelope:
 
-When the capture request includes memory-consistency detail, opaque chunks may
-record issue, linearization, reads-from, visibility or synchronization, and
-retirement observations. These observations are a projection of the exact
-execution; they are not a `ConsistencyExecution`, witness, relation, or
+```text
+TraceManifest {
+  level:
+      Firing
+    | Semantic
+    | Microarchitecture
+  completeness:
+      Complete
+    | Prefix {
+        captured_through: EventCoordinate
+      }
+  detailed_bundle_ref: exact raw detailed-bundle ArtifactReference
+  chunks: ordered array<BlobDigest>
+}
+
+TraceChunk {
+  level:
+      Firing
+    | Semantic
+    | Microarchitecture
+  frames: nonempty array<TraceFrame>
+}
+
+TraceFrame {
+  coordinate: EventCoordinate
+  events: nonempty canonical array<TraceEvent>
+}
+```
+
+An absent `trace_manifest` means that no canonical trace was retained. There is
+no `None` level inside a present manifest. A trace requested as an invocation
+output must produce a present manifest at the required level; otherwise the
+attempt has not satisfied that output requirement. This rule does not make
+capture policy part of the EvaluationRequest.
+
+`Complete` contains every event required by its level from
+`launch_accepted` through `terminal_observed`, including an event at either
+boundary. This definition is relative to the retained execution, so a
+`StoppedByLimit` execution may still own a complete trace through its terminal
+horizon. `Prefix` also begins at `launch_accepted`, is complete through
+`captured_through`, and stops there. Its coordinate must be no earlier than
+launch and strictly earlier than terminal. It may equal launch when no event
+has yet been retained.
+
+Schema 1.0 admits neither late-start capture, arbitrary intervals, interior
+gaps, nor a set of coverage ranges. Losing an interior event or chunk
+invalidates the canonical trace; it cannot be relabeled as a prefix. An empty
+chunk array is legal only when the selected complete or prefix coverage
+contains no event required by that level.
+
+The chunks array is semantic order, not a set, and duplicate digests are
+invalid. Every digest must resolve in the one exact detailed bundle named by
+the manifest, and that bundle must reference the same exact EvaluationRequest
+as the execution. The bundle may own other raw material, but it cannot reorder
+chunks, redefine coverage, or claim completeness.
+
+Every chunk contains at least one frame. Frame coordinates strictly increase
+inside a chunk and across adjacent chunks. One frame cannot be split across
+chunks. A chunk's self-describing level must equal its manifest's level.
+Events within a frame sort by the canonical typed event key owned by the
+trace-event algebra; a duplicate event key in one frame is invalid. Chunk
+boundaries, target chunk size, and generation buffering are nonsemantic
+invocation choices.
+
+Canonical chunk bytes are:
+
+```text
+bytes("loom.simulation.trace.chunk\0")
+|| u32be(schema_version.major = 1)
+|| u32be(schema_version.minor = 0)
+|| u32be(level)
+|| u64be(frame_count)
+|| frames_in_order
+```
+
+Each frame encodes its canonical `EventCoordinate`, an unsigned 64-bit
+big-endian event count, and its canonically ordered event records. The
+`BlobDigest` is computed over these complete uncompressed bytes using the
+Common contract in `docs/spec-full-stack-traceability.md`. Storage may
+compress or index a chunk transparently, but no compression algorithm, path,
+byte offset, or index enters the manifest or chunk wire.
+
+The manifest encodes the level and completeness discriminants as unsigned
+32-bit big-endian values. `Prefix` then encodes its coordinate. The exact
+detailed-bundle reference follows, then an unsigned 64-bit big-endian chunk
+count and the ordered 32-byte digests. A complete manifest carries no redundant
+terminal coordinate. The optional root field uses the ordinary zero-based
+unsigned 32-bit `Absent | Present` discriminant.
+
+The referenced canonical chunk payloads and their inventory belong to the raw
+detailed bundle, not to `SimulationExecution` and not to a separate trace
+Artifact family. The manifest alone owns level, order, coverage, and
+completeness. The chunk envelope owns frame structure; the still-open typed
+event algebra will own event discriminants, payloads, level membership,
+canonical event keys, and cross-reference validation.
+
+Memory-consistency event payloads remain part of the typed event-algebra
+frontier. They must use closed canonical event variants, not simulator-private
+opaque records or extension maps. That closure decides which issue,
+linearization, reads-from, visibility or synchronization, and retirement
+observations belong to `Semantic`. Such observations remain projections of the
+exact execution; they are not a `ConsistencyExecution`, witness, relation, or
 simulator-specific Artifact family and are never required for semantic
 correctness.
 
 Actor-bearing trace records use the Dataflow-owned `ActorRef`.
 Execution-local invocation occurrences and per-actor firing ordinals qualify a
 dynamic event but never create persistent Dataflow entities. The remaining
-trace-manifest and canonical chunk records remain owned by the
-`SimulationExecution persistent wire` design frontier; this rule fixes only
-their upstream identity owner.
+typed event records remain owned by the `SimulationExecution persistent wire`
+design frontier; this rule fixes only their upstream identity owner.
 
 Trace capture is a nonsemantic invocation binding. Enabling it may change
 execution cost and retained raw material, but must not change scheduling,
@@ -771,7 +864,13 @@ Fabric resource case, and one four-state signal case are sufficient; tests do
 not build a cross-product over windows, coverage, actors, resource kinds, or
 signals.
 
-Trace adds its own anchors only when its persistent record closes. Tests do
-not pin report layouts, simulator class hierarchies, broad workload matrices,
-every finding kind, every witness payload, every partial-output combination,
-or arbitrary clock ratios.
+Trace-envelope anchors cover absent versus present capture, complete and
+prefix coverage, empty-event traces, strict frame/chunk order, no split frame,
+same-Request bundle coupling, blob-digest verification, rejection of
+interior gaps and duplicate chunk refs, and capture noninterference. One
+complete multi-chunk trace and one prefix are sufficient. Typed events add
+their own anchors only when that final persistent record closes.
+
+Tests do not pin report layouts, simulator class hierarchies, broad workload
+matrices, every finding kind, every witness payload, every partial-output
+combination, arbitrary clock ratios, compression formats, or chunk sizes.

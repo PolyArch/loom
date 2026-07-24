@@ -203,8 +203,10 @@ occurrences and traversals, resource grants, stalls, queue changes, logical
 memory requests, implementation lane or beat transactions, and retirements.
 Child memory transactions remain correlated with their one parent firing and
 do not appear as additional actor firings. `SimulationExecution` owns the typed
-manifest and ordering; the raw detailed bundle owns referenced opaque chunk
-payloads.
+manifest, level, ordering, and complete or launch-rooted prefix coverage. Its
+one exact same-Request raw detailed bundle owns the canonical chunk bytes and
+their Common `BlobDigest` inventory. Frames cannot split across chunks, and an
+interior event or chunk loss invalidates the canonical trace.
 Neither creates a separate `SimulationTrace` artifact.
 
 Trace capture is observational. Enabling or changing it cannot affect grants,
@@ -260,6 +262,7 @@ Stable anchor tests cover:
 * mechanically derived progress reference domain and ordered progress anchors;
 * complete and partial actor/Fabric activity inventory semantics and Fabric
   capacity bounds;
+* complete and launch-rooted prefix trace envelopes with no interior gaps;
 * trace observer noninterference;
 * ordered-token preservation under temporal interleaving;
 * deadlock versus invalid-Mapping classification; and
