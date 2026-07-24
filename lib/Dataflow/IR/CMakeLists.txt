@@ -17,6 +17,8 @@ add_mlir_library(MLIRDataflowEnums
 add_mlir_dialect_library(MLIRDataflow
   DataflowActorSemantics.cpp
   DataflowArtifactLocalReference.cpp
+  DataflowCanonicalArtifact.cpp
+  DataflowCanonicalLabeling.cpp
   DataflowChannelOps.cpp
   DataflowDialect.cpp
   DataflowGraphValidation.cpp
@@ -27,6 +29,7 @@ add_mlir_dialect_library(MLIRDataflow
   DataflowOps.cpp
   DataflowReferenceCodec.cpp
   DataflowServiceSchema.cpp
+  DataflowStructuralView.cpp
   OperationSchema.cpp
   OperationSchemaAtomCodec.cpp
   OperationSchemaCodec.cpp

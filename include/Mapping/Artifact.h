@@ -2,6 +2,7 @@
 #define LOOM_MAPPING_ARTIFACT_H
 
 #include "Common/Artifact.h"
+#include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/Artifact/FabricFuCapabilityTemplate.h"
 #include "Fabric/IR/BoundaryDataPath.h"
@@ -99,9 +100,6 @@ private:
   std::uint64_t value_;
 };
 
-struct GraphIdTag;
-struct ActorIdTag;
-struct LogicalMemoryRootIdTag;
 struct ComputeOccurrenceIdTag;
 struct MemoryOccurrenceIdTag;
 struct TransportEndpointIdTag;
@@ -114,9 +112,9 @@ struct MemoryInternalConnectionIdTag;
 struct MemorySemanticEncodingIdTag;
 struct MemoryRealizationIdTag;
 
-using GraphId = TypedEntityId<GraphIdTag>;
-using ActorId = TypedEntityId<ActorIdTag>;
-using LogicalMemoryRootId = TypedEntityId<LogicalMemoryRootIdTag>;
+using GraphId = ::dataflow::GraphId;
+using ActorId = ::dataflow::ActorId;
+using LogicalMemoryRootId = ::dataflow::LogicalMemoryRootId;
 using ComputeOccurrenceId = TypedEntityId<ComputeOccurrenceIdTag>;
 using MemoryOccurrenceId = TypedEntityId<MemoryOccurrenceIdTag>;
 using TransportEndpointId = TypedEntityId<TransportEndpointIdTag>;
@@ -135,9 +133,9 @@ using MemoryRealizationId = TypedEntityId<MemoryRealizationIdTag>;
 template <typename EntityId>
 using EntityReference = ::loom::ArtifactReference<EntityId>;
 
-using GraphRef = EntityReference<GraphId>;
-using ActorRef = EntityReference<ActorId>;
-using LogicalMemoryRootRef = EntityReference<LogicalMemoryRootId>;
+using GraphRef = ::dataflow::GraphRef;
+using ActorRef = ::dataflow::ActorRef;
+using LogicalMemoryRootRef = ::dataflow::LogicalMemoryRootRef;
 using TransportEndpointRef = EntityReference<TransportEndpointId>;
 using ComputeEndpointRef = TransportEndpointRef;
 using MemoryEndpointRef = TransportEndpointRef;

@@ -12,6 +12,29 @@ class Dataflow_Attr<string name, string attrMnemonic,
 }
 
 //===----------------------------------------------------------------------===//
+// Canonical Entity Identity
+//
+// The derived carrier the canonical finalizer materializes on each entity
+// carrier once canonical slots are determined. It is the finalizer's output
+// projection, not a second authority: canonical labeling excludes it and every
+// reader recomputes and verifies it from canonical semantics.
+//===----------------------------------------------------------------------===//
+
+def Dataflow_EntityIdAttr : Dataflow_Attr<"EntityId", "entity_id"> {
+  let summary = "materialized canonical Dataflow entity identifier";
+  let description = [{
+    The artifact-global unsigned 64-bit `EntityId` the finalizer assigns to a
+    canonical entity carrier by canonical slot. Zero is a valid value and there
+    is no sentinel. This attribute is a derived projection, never trusted on
+    input: the finalizer strips any author-supplied value before labeling and a
+    reader independently reconstructs and verifies it.
+  }];
+
+  let parameters = (ins "uint64_t":$id);
+  let assemblyFormat = "`<` $id `>`";
+}
+
+//===----------------------------------------------------------------------===//
 // Memory Access Contracts
 //
 // Every canonical memory actor owns exactly one applicable aggregate contract.

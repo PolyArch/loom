@@ -30,6 +30,7 @@ set(LOOM_TEST_DEPENDS
   loom-common-artifact-local-reference-test
   loom-common-artifact-test
   loom-common-blob-test
+  loom-dataflow-canonical-artifact-test
   loom-dataflow-canonical-reference-test
   loom-dataflow-memory-effect-test
   loom-dataflow-operation-schema-codec-test

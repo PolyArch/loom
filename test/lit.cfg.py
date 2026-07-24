@@ -47,6 +47,7 @@ tools = [
     "loom-tblgen",
     "loom-adg-builder-test",
     "loom-config-test",
+    "loom-dataflow-canonical-artifact-test",
     "loom-dataflow-canonical-reference-test",
     "loom-dataflow-memory-effect-test",
     "loom-dataflow-operation-schema-codec-test",
