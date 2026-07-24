@@ -74,6 +74,11 @@ DecimalValue decimal(const char *test, std::int64_t coefficient,
   return takeExpected(test, DecimalValue::get(coefficient, exponent));
 }
 
+ExactRatio ratio(const char *test, std::uint64_t numerator,
+                 std::uint64_t denominator) {
+  return takeExpected(test, ExactRatio::get(numerator, denominator));
+}
+
 MetricObservation cyclePoint(std::int64_t cycles) {
   return MetricObservation{MetricKind::CycleCount, WholeSubjectScope{},
                            UncertaintyKind::ExactWithinModel,
@@ -192,6 +197,60 @@ void decimalValuesNormalizeCanonically() {
   expectErrorContains(
       __func__, DecimalValue::get(10, std::numeric_limits<std::int64_t>::max()),
       "exponent overflow");
+}
+
+void exactRatioNormalizesReducesAndChecksOverflow() {
+  // Normalization reduces by greatest common divisor and gives zero the sole
+  // encoding 0/1.
+  ExactRatio reduced = ratio(__func__, 6, 4);
+  require(__func__, reduced.numerator() == 3 && reduced.denominator() == 2,
+          "ratio was not reduced by greatest common divisor");
+  ExactRatio whole = ratio(__func__, 10, 5);
+  require(__func__, whole.numerator() == 2 && whole.denominator() == 1,
+          "integral ratio was not reduced to /1");
+  ExactRatio zero = ratio(__func__, 0, 7);
+  require(__func__, zero.numerator() == 0 && zero.denominator() == 1,
+          "zero must have the sole encoding 0/1");
+
+  // Equality is value equality on the canonical form.
+  require(__func__, ratio(__func__, 6, 4) == ratio(__func__, 3, 2),
+          "equal ratios compared unequal after reduction");
+  require(__func__, ratio(__func__, 0, 7) == ratio(__func__, 0, 99),
+          "zero encodings compared unequal");
+  require(__func__, ratio(__func__, 3, 2) != ratio(__func__, 2, 3),
+          "distinct ratios compared equal");
+
+  // A zero denominator is rejected.
+  expectErrorContains(__func__, ExactRatio::get(5, 0),
+                      "denominator must be positive");
+
+  // reducedModulo normalizes into the half-open range [0, modulus).
+  require(__func__,
+          takeExpected(__func__, ratio(__func__, 5, 6).reducedModulo(
+                                     ratio(__func__, 1, 2))) ==
+              ratio(__func__, 1, 3),
+          "5/6 mod 1/2 must normalize to 1/3");
+  require(__func__,
+          takeExpected(__func__, ratio(__func__, 7, 2).reducedModulo(
+                                     ratio(__func__, 1, 1))) ==
+              ratio(__func__, 1, 2),
+          "7/2 mod 1/1 must normalize to 1/2");
+  require(__func__,
+          takeExpected(__func__, ratio(__func__, 1, 1).reducedModulo(
+                                     ratio(__func__, 1, 2))) ==
+              ratio(__func__, 0, 1),
+          "an exact multiple must normalize to 0/1");
+  expectErrorContains(
+      __func__, ratio(__func__, 3, 4).reducedModulo(ratio(__func__, 0, 1)),
+      "modulus must be positive");
+
+  // Overflow in the checked modulo is reported rather than wrapping. Two
+  // coprime denominators near 2^32 force the exact remainder denominator past
+  // uint64: (2/4295967341) mod (1/4294967311).
+  expectErrorContains(__func__,
+                      ratio(__func__, 2, 4295967341ULL)
+                          .reducedModulo(ratio(__func__, 1, 4294967311ULL)),
+                      "overflow");
 }
 
 void observationValidationRejectsIllegalCombinations() {
@@ -472,6 +531,7 @@ int main() {
   sharedArtifactAtomsAreSingleSource();
   metricRegistryIsClosedAndTyped();
   decimalValuesNormalizeCanonically();
+  exactRatioNormalizesReducesAndChecksOverflow();
   observationValidationRejectsIllegalCombinations();
   metricQueryCanonicalizationIsInputOrderIndependent();
   metricQueryDuplicatesAreRejectedWithoutCollapsingScopes();

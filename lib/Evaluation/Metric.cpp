@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <utility>
@@ -74,6 +75,15 @@ std::uint64_t magnitude(std::int64_t value) {
   if (value >= 0)
     return static_cast<std::uint64_t>(value);
   return static_cast<std::uint64_t>(-(value + 1)) + 1;
+}
+
+unsigned __int128 gcdU128(unsigned __int128 lhs, unsigned __int128 rhs) {
+  while (rhs != 0) {
+    const unsigned __int128 remainder = lhs % rhs;
+    lhs = rhs;
+    rhs = remainder;
+  }
+  return lhs;
 }
 
 int compareDecimal(DecimalValue lhs, DecimalValue rhs) {
@@ -582,6 +592,42 @@ llvm::Expected<DecimalValue> DecimalValue::get(std::int64_t coefficient,
     ++base10Exponent;
   }
   return DecimalValue(coefficient, base10Exponent);
+}
+
+llvm::Expected<ExactRatio> ExactRatio::get(std::uint64_t numerator,
+                                           std::uint64_t denominator) {
+  if (denominator == 0)
+    return metricError("exact ratio denominator must be positive");
+  if (numerator == 0)
+    return ExactRatio(0, 1);
+  const std::uint64_t divisor = std::gcd(numerator, denominator);
+  return ExactRatio(numerator / divisor, denominator / divisor);
+}
+
+llvm::Expected<ExactRatio> ExactRatio::reducedModulo(ExactRatio modulus) const {
+  if (modulus.numerator_ == 0)
+    return metricError("exact ratio modulus must be positive");
+
+  // Bring both ratios onto the common denominator b*d and take the remainder of
+  // the scaled numerators; the exact result is (a*d mod c*b) / (b*d) reduced.
+  // All intermediates fit unsigned __int128, so no step overflows or invokes
+  // undefined behavior; only the reduced result may exceed uint64.
+  using u128 = unsigned __int128;
+  const u128 scaledValue = static_cast<u128>(numerator_) * modulus.denominator_;
+  const u128 scaledModulus =
+      static_cast<u128>(modulus.numerator_) * denominator_;
+  const u128 commonDenominator =
+      static_cast<u128>(denominator_) * modulus.denominator_;
+  const u128 remainder = scaledValue % scaledModulus;
+  const u128 divisor = gcdU128(remainder, commonDenominator);
+  const u128 reducedNumerator = remainder / divisor;
+  const u128 reducedDenominator = commonDenominator / divisor;
+
+  constexpr u128 uint64Max = std::numeric_limits<std::uint64_t>::max();
+  if (reducedNumerator > uint64Max || reducedDenominator > uint64Max)
+    return metricError("exact ratio overflow during normalization");
+  return ExactRatio(static_cast<std::uint64_t>(reducedNumerator),
+                    static_cast<std::uint64_t>(reducedDenominator));
 }
 
 llvm::Error validateMetricQuery(const MetricQuery &query) {

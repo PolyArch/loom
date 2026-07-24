@@ -103,6 +103,42 @@ private:
   std::int64_t base10Exponent_;
 };
 
+// Canonical exact rational used by typed Evaluation condition fields whose
+// semantics are a dimensionless ratio, a probability, or a phase in reference
+// cycles. It is deliberately not a MetricValue form: absolute physical
+// quantities stay DecimalValue, so Decimal and Ratio never compete to encode
+// the same fact. The numerator and denominator are uint64, the denominator is
+// positive, the pair is reduced by greatest common divisor, and zero has the
+// sole encoding 0/1. All normalization arithmetic is checked.
+class ExactRatio {
+public:
+  static llvm::Expected<ExactRatio> get(std::uint64_t numerator,
+                                        std::uint64_t denominator);
+
+  std::uint64_t numerator() const { return numerator_; }
+  std::uint64_t denominator() const { return denominator_; }
+
+  // Normalize this ratio modulo a positive modulus into the half-open range
+  // [0, modulus). Fails when the modulus is zero or when the exact reduced
+  // result does not fit uint64.
+  llvm::Expected<ExactRatio> reducedModulo(ExactRatio modulus) const;
+
+  friend bool operator==(ExactRatio lhs, ExactRatio rhs) {
+    return lhs.numerator_ == rhs.numerator_ &&
+           lhs.denominator_ == rhs.denominator_;
+  }
+  friend bool operator!=(ExactRatio lhs, ExactRatio rhs) {
+    return !(lhs == rhs);
+  }
+
+private:
+  ExactRatio(std::uint64_t numerator, std::uint64_t denominator)
+      : numerator_(numerator), denominator_(denominator) {}
+
+  std::uint64_t numerator_;
+  std::uint64_t denominator_;
+};
+
 using MetricValue = std::variant<IntegerValue, DecimalValue>;
 
 class MetricEntityId {
