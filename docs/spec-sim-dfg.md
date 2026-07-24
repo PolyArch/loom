@@ -97,9 +97,36 @@ cycle and never increments a cycle metric. DFG-sim may therefore estimate
 logical latency and throughput in abstract cycles without claiming
 hardware-aware timing.
 
-The semantic operation registry owns functional transitions. A separately
-identified model binding may provide latency and initiation interval. Neither
-registry is copied into the request or result as a second authority.
+The Dataflow-owned registered `OperationSchemaId` projection owns actor
+identity, closed semantic attributes, instance validity, and transition
+descriptor identity. The DFG provider dispatches its executable transition
+implementation by that same ID. It does not maintain an operation-name
+whitelist or copy arbitrary attributes. A separately identified model binding
+may provide latency and initiation interval. Neither projection is copied into
+the request or result as a second authority.
+
+### Exact Semantic Values
+
+The simulator value domain distinguishes defined, poison, and undef. A defined
+integer or floating value uses semantics equivalent to arbitrary-precision
+`APInt` or `APFloat`; host `int64_t` and `double` are not authorities. Fixed
+vectors carry this state independently per lane. Logical memory and any other
+admitted non-bit value use an exact typed identity rather than a host pointer.
+
+Operation schemas determine propagation and observation. `select` does not
+observe its unselected operand. An inactive masked-memory lane observes neither
+address nor data. An active store may store poison, and a subsequent load
+restores that state. Undef remains an unconstrained semantic value until an
+owning operation observes or freezes it; it is never rewritten to zero.
+
+`freeze` chooses a legal defined value and keeps it stable for the resulting
+SSA value. The exact model derives that deterministic choice from the resolved
+semantic seed, `ActorRef`, firing ordinal, and lane. This key makes replay
+stable without writing the chosen bits into the Canonical Dataflow Program.
+
+Graph outputs may carry poison or undef. A consuming operation schema decides
+whether it propagates, masks, freezes, or triggers undefined behavior. DFG-sim
+has no global "terminal poison" failure rule.
 
 ## Control And Stateful Actors
 
@@ -138,7 +165,8 @@ semantics in `docs/spec-dataflow-vectorization.md`. DFG-sim suppresses inactive
 lane addresses, zero-fills inactive load lanes, preserves canonical row-major
 result order, completes an all-zero mask without a memory effect, and retires
 one vector actor firing as one load `data + done` or store `done` event. It does
-not expose Fabric lane or beat transactions.
+not expose Fabric lane or beat transactions. Active accesses preserve the
+exact defined, poison, or undef state stored in logical memory.
 
 The software contract for atomic, RMW, compare-exchange, fence, and volatile
 actors is defined by `docs/spec-dataflow-memory-consistency.md`. The DFG
@@ -225,6 +253,11 @@ Stable anchor tests cover:
 * rejection of non-finalized subjects before execution;
 * graph and actor import from the exact Dataflow Artifact without Mapping;
 * rejection of foreign-artifact and wrong-kind Dataflow references;
+* dispatch through the registered `OperationSchemaId` without an independent
+  operation-name table;
+* lazy poison through selection, deterministic `freeze`, active memory
+  poison round trip, per-lane exceptional vector state, and legal terminal
+  poison or undef;
 * exact token cardinality and state reset for canonical control actors;
 * `ctrl`/`done` memory order and terminal memory diffs;
 * contiguous, indexed, and masked vector-memory semantics with one actor

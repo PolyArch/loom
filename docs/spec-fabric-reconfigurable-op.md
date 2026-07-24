@@ -8,9 +8,11 @@ and derived hardware configuration.
 
 Each fact has one semantic owner:
 
-* A registered software operation schema owns exact actor semantics,
-  including operation identity, types, arity, semantic attributes, and the
-  interpretation of configurable parameters.
+* A registered software operation schema owns exact actor semantics. Its
+  `OperationSchemaId` and closed `CanonicalDataflowActorOpInterface`
+  projection own operation identity, types, arity, semantic attributes,
+  instance validity, transition descriptor identity, and the interpretation
+  of configurable parameters.
 * A typed Hardware Sharing Group (HSG) owns the global legality of
   implementing specified software operation families with one real physical
   implementation family.
@@ -20,10 +22,10 @@ Each fact has one semantic owner:
   capability.
 * `fabric.fu` topology owns the physical `fabric.op`, `fabric.mux`, and
   `fabric.demux` resources and their SSA wiring.
-* Canonical Dataflow owns exact actor instances, types, and semantic
-  attributes. TechMapping owns one exact realization by selecting a capability
-  template and binding those exact actors, and therefore their exact types and
-  attributes, through ordered actor-to-operation port and
+* Canonical Dataflow owns exact actor instances and their schema projections.
+  TechMapping owns one exact realization by selecting a capability template
+  and binding those exact actors, and therefore their exact types and closed
+  semantic projections, through ordered actor-to-operation port and
   software-to-FU-boundary correspondence.
 * SpatialMapping owns only Fabric-declared physical or QoR refinements that
   preserve the TechMapping realization's software semantics.
@@ -48,8 +50,11 @@ Supports(R, A, P) =
 ```
 
 This notation describes ownership and interpretation; it does not introduce a
-new IR field. `A` includes the exact registered operation, function type, and
-all semantic attributes. `P` preserves operand and result ordinals.
+new IR field. `A` includes the exact registered `OperationSchemaId`, function
+type, and closed semantic projection. `P` preserves operand and result
+ordinals. A Configured Function or adapter may cache that projection but may
+not copy an arbitrary operation attribute dictionary or infer an alias from an
+operation name.
 
 The hardware parameters in `Capability(R)` and an exact selected software
 configuration jointly determine the configured software function. HSG
@@ -366,6 +371,8 @@ identity; serialized Fabric remains the authority.
 All configurable operations use the same capability, matching, and
 finalization mechanism. Operation schemas provide the operation-specific
 interpretation; Mapping does not add parallel schemas for special cases.
+Every rule below consumes the same registered `OperationSchemaId` and closed
+semantic projection used by graph admission and simulation.
 
 * A configurable `dataflow.sync` capability describes its legal input/output
   lane capacity and active-set constraints. TechMapping's ordered operand and
@@ -527,6 +534,9 @@ decoder encoding.
 
 Anchor tests should pin only the stable semantic boundaries:
 
+* one registered operation schema projection is consumed unchanged by
+  Canonical Dataflow admission, Configured Function matching, and Fabric
+  capability interpretation;
 * an HSG member remains unavailable until the concrete capability and exact
   software configuration accept it;
 * one registered operation schema may belong to two implementation families,

@@ -59,9 +59,11 @@ The compiler front-end is documented in four parts:
   first limited provider. Missing hints reduce available guidance but do not
   make otherwise valid provider input illegal.
 * **Part 2, LLVM to initial SCF.** LLVM/CFG-shaped input is mechanically
-  raised and normalized into initial SCF-stage MLIR. It recovers structured
-  execution and preserves analysis inputs without selecting a QoR-distinct
-  schedule, vector form, reduction strategy, or ownership boundary.
+  raised and normalized into mixed-dialect initial SCF-stage MLIR. Imported
+  LLVM callable envelopes and any operation without an exact standard
+  equivalent remain LLVM dialect. The part recovers structured execution and
+  preserves analysis inputs without selecting a QoR-distinct schedule, vector
+  form, reduction strategy, or ownership boundary.
 * **Part 3, SCF to DFG.** This document. It consumes explicit
   `loom.spatial_region` candidates inside the selected Structured Program
   Candidate's `dataflow.thread` definitions and mechanically publishes
@@ -82,13 +84,15 @@ Input to graph extraction is an MLIR module containing module-scope
 `dataflow.thread` definitions. Every selected SpatialCore candidate is already
 materialized as a `loom.spatial_region` inside exactly one thread. Other thread
 body code remains InstructionCore-resident, including SCF-shaped code outside
-an explicit spatial boundary. Host `func.func` code may coexist in the module,
-but a function is an ABI and ownership container, not an implicit graph
-boundary; its signature, body shape, memory effects, and return convention do
-not authorize graph creation.
+an explicit spatial boundary. Imported Host or InstructionCore code remains in
+its `llvm.func` envelope; genuinely standard-MLIR-native `func.func` callables
+may coexist in the module. Either callable is ownership-neutral and does not
+authorize graph creation through its signature, body shape, memory effects, or
+return convention.
 
-Output is an initial Canonical Dataflow Program: module-level `func.func`
-symbols holding ordinary HostCore or InstructionCore code; module-level
+Output is an initial Canonical Dataflow Program: module-level `llvm.func`
+symbols for imported LLVM callables, any genuinely native `func.func` helpers,
+module-level
 `dataflow.thread` definitions reached by zero or more
 `dataflow.thread.launch` ops; and module-level `dataflow.graph`
 definitions reached by zero or more `dataflow.graph.launch` ops
@@ -141,9 +145,9 @@ The front-end IR separates these execution roles:
 
 | Execution role | Front-end IR carrier |
 |----------------|----------------------|
-| HostCore | Host-call-context `func.func` body code outside any `dataflow.thread.launch` |
+| HostCore | Host-call-context callable body code outside any `dataflow.thread.launch`; imported LLVM callables remain `llvm.func` |
 | Logical execution domain | A `dataflow.thread` definition (Symbol-bearing, module-scope) plus each caller-side `dataflow.thread.launch`. A dense instance is identified by its coordinate tuple; a dynamic-work instance is identified by its `WorkItemId`. SystemMapping binds either logical identity to an AccCore. |
-| InstructionCore | The body of a `dataflow.thread` definition, minus its `dataflow.graph.launch` ops, plus InstructionCore-legal `func.call` callees after inlining or specialization. The body is "what one logical execution cell runs once binding maps it to a physical AccCore". |
+| InstructionCore | The body of a `dataflow.thread` definition, minus its `dataflow.graph.launch` ops, plus InstructionCore-legal `llvm.call` or `func.call` callees after inlining or specialization. The body is "what one logical execution cell runs once binding maps it to a physical AccCore". |
 | SpatialCore | Each `dataflow.graph` definition referenced by a `dataflow.graph.launch` inside a `dataflow.thread` definition's body, again per bound logical execution cell. |
 
 A single `dataflow.thread.launch` starts exactly one domain instance of the
@@ -190,10 +194,11 @@ silently change hierarchy shape as a verifier or parsing side effect.
 
 ### 2.1 IR Carrier Responsibilities
 
-* `func.func` is a callable symbol and ABI unit. It does not by itself
-  choose HostCore or AccCore ownership. A function may be HostCore-only,
-  InstructionCore-callable, or legal in both contexts depending on the
-  Part 2 call-context classification.
+* `llvm.func` remains the sole function and ABI owner for a callable imported
+  from the final linked LLVM module. `func.func` is used only for a genuinely
+  standard-MLIR-native callable or helper; it cannot mirror the LLVM ABI.
+  Neither callable kind chooses HostCore or AccCore ownership. Call-context
+  classification decides where calls are legal.
 * `loom.spatial_region` is temporary compiler IR inside a
   `dataflow.thread`. It owns one structured graph candidate with normalized
   value, stream-channel, and memory boundary segments. It never appears in a
@@ -217,8 +222,9 @@ silently change hierarchy shape as a verifier or parsing side effect.
   illegal in a dense thread or any graph and is not nested thread launch.
 * `dataflow.graph` is the SpatialCore leaf DFG **definition**
   (Symbol-bearing, module-scope, function-like). Its body cannot
-  contain `func.func`, `func.call`, `dataflow.thread.launch`,
-  `dataflow.graph.launch`, or another `dataflow.graph` definition.
+  contain callable definitions, `llvm.call`, `func.call`,
+  `dataflow.thread.launch`, `dataflow.graph.launch`, or another
+  `dataflow.graph` definition.
   It is final target-independent software IR: its validity does not assert
   that any current Fabric can realize it. TechMapping owns that decision.
 * `dataflow.graph.launch` is the SpatialCore execution boundary
@@ -230,9 +236,9 @@ silently change hierarchy shape as a verifier or parsing side effect.
 Function definitions remain module-level symbols in this design.
 `dataflow.thread` definitions are also module-level symbols (and
 not symbol tables themselves) and do not physically contain
-`func.func` definitions. A `func.call` inside a `dataflow.thread`
-definition's body is an InstructionCore call. If the callee contains
-code that must become a `dataflow.graph` definition, Part 3 must
+`llvm.func` or `func.func` definitions. An `llvm.call` or `func.call` inside a
+`dataflow.thread` definition's body is an InstructionCore call. If the callee
+contains code that must become a `dataflow.graph` definition, Part 3 must
 inline or specialize that callee into the active thread definition
 before graph extraction. A `dataflow.thread.launch` is invalid
 transitively inside every thread or graph definition. Non-inlined
@@ -258,13 +264,14 @@ each rule lands in IR.
    (dense entry-block layout: `(args_*, thread_ctrl, coord_*)`; dynamic work has
    no coordinate suffix, see Section 5.4.1).
    The body may contain InstructionCore operations and InstructionCore-legal
-   `func.call` operations, but not `func.func` definitions or
+   `llvm.call` or `func.call` operations, but not callable definitions or
    `dataflow.thread.launch` ops.
 2. `dataflow.graph` is a leaf-level definition. It is also a Symbol-
    bearing, module-scope, function-like definition (Part 3 Section 5.5);
    execution is materialized by `dataflow.graph.launch` ops inside a
    thread definition's body. Its body must not contain any
-   `func.func`, `func.call`, `dataflow.thread.launch`,
+   `llvm.func`, `func.func`, `llvm.call`, `func.call`,
+   `dataflow.thread.launch`,
    `dataflow.graph.launch`, or another `dataflow.graph` definition.
    The graph body is a single graph-kind region; it already permits
    feedback edges (accepted semantics). A thread body may contain
@@ -358,18 +365,19 @@ each rule lands in IR.
 
 ## 4. Glossary
 
-* **HostCore.** The general-purpose CPU that runs host-call-context
-  `func.func` body code outside any `dataflow.thread.launch`.
+* **HostCore.** The general-purpose CPU that runs host-call-context callable
+  code outside any `dataflow.thread.launch`. Imported LLVM code remains in its
+  `llvm.func` envelope.
 * **AccCore.** One typed physical accelerator execution resource owned by
   `fabric.system`, containing a node-local InstructionCore description and a
   SpatialCore occurrence attached to an exact `fabric.module` template. Part
   3 does not create physical AccCore occurrences; it creates logical
   accelerator work that SystemMapping later binds to AccCore resources.
-* **InstructionCore-callable function.** A module-level `func.func` that
-  Part 2 classified as legal to call from code running inside a
-  `dataflow.thread` definition's body. Such a function remains a
-  symbol; Part 3 either preserves calls to it as InstructionCore calls or
-  inlines / specializes it before graph extraction.
+* **InstructionCore-callable function.** A module-level `llvm.func` or native
+  `func.func` that Part 2 classified as legal to call from code running inside
+  a `dataflow.thread` definition's body. Such a function remains a symbol;
+  Part 3 either preserves calls to it as InstructionCore calls or inlines or
+  specializes it before graph extraction.
 * **Logical thread coordinate.** One zero-based `index` value in the trailing
   coordinate segment of a `dataflow.thread` entry block. A rank-`K` launch
   provides a coordinate tuple in the Cartesian domain
@@ -467,6 +475,50 @@ No Loom-specific thread mapping attribute is introduced. Coordinate rank and
 domain come from the definition body shape and launch extents. Parallel versus
 temporal AccCore use is a SystemMapping relation plus event-relative
 `ResourceUse`, not a property copied into the program ABI.
+
+#### Canonical Actor Schema Projection
+
+Every operation admitted as a Canonical Dataflow actor resolves to exactly one
+registered `OperationSchemaId`. The operation's native definition remains the
+owner of its source semantics. A typed
+`CanonicalDataflowActorOpInterface`, implemented directly or through an
+external model, projects only the Loom contract needed downstream:
+
+```text
+CanonicalActorSchemaProjection {
+  operation_schema_id
+  actor_kind
+  closed_semantic_attribute_projection
+  instance_verifier
+  transition_descriptor_identity
+}
+```
+
+This notation describes one registered typed projection, not an IR operation,
+attribute, Artifact, or second semantic language. The projection must classify
+every property and attribute that can affect one firing. Unknown or
+unclassified actor state is rejected; consumers never copy an arbitrary
+attribute dictionary. A field may be excluded only when its owning spec proves
+it nonsemantic, as for source provenance.
+
+Graph admission, canonical relation construction, Configured Function
+materialization, simulator dispatch, and Fabric capability matching all consume
+the same `OperationSchemaId` and projection. The canonical actor classifier is
+a derived query over this registry, not another whitelist. Simulator providers
+own executable transition implementations, while Hardware Sharing Groups own
+only genuine physical sharing relations. Neither may redefine software
+semantics or maintain a competing operation-name table.
+
+Canonical actor values distinguish defined, poison, and undef state. A defined
+state carries the exact type-appropriate bits or logical identity; fixed
+vectors may carry state independently per lane. The owning operation schema
+defines propagation, masking, non-observation, freezing, and undefined
+behavior. In particular, selection does not observe its unselected value,
+inactive masked-memory lanes do not observe address or data, active stores may
+store poison and loads restore it, and graph outputs may carry poison or undef.
+There is no global rule that a terminal exceptional value is an execution
+error. Ordinary LLVM pointers remain outside the canonical graph surface
+unless a future registered actor contract explicitly admits them.
 
 Finalized Canonical Dataflow Programs use one derived identity attribute:
 
@@ -1047,7 +1099,7 @@ the body shown lifted to module scope and the launch carrying the
 per-instance ctrl/done plumbing:
 
 ```mlir
-// At module scope (sibling of func.func):
+// At module scope (sibling of callable definitions):
 dataflow.graph @<construction_local_sym>
     (%start : none, <user inputs>) -> (<user results>) {
   // <body contents per the template>
@@ -1553,7 +1605,7 @@ scf.forall (%tx) in (%N) {
 ```
 
 ```mlir
-// At module scope (sibling of func.func):
+// At module scope (sibling of callable definitions):
 dataflow.thread @t_<funcSym>_<seq>(%B_arg : memref<?xf32>, ...)
     attributes { sym_visibility = "private" } {
 ^bb0(%B_arg : memref<?xf32>, ..., %thread_ctrl : none, %coord : index):
@@ -2094,7 +2146,8 @@ Before labeling, the finalizer removes every pre-existing
 `dataflow.entity_id` from its private clone. The relation graph contains the
 complete semantic program, not only the five entity nodes. It includes:
 
-* registered operation, type, property, and semantic attribute encodings;
+* each actor's registered `OperationSchemaId`, exact types, and closed
+  schema-owned semantic property and attribute projection;
 * explicit operand/result ordinals, SSA def-use, block-successor, containment,
   region, boundary-segment, symbol-use, and launch-callee relations;
 * logical-memory root and root-preserving view relations; and
@@ -2113,8 +2166,9 @@ builder insertion order are excluded. Private symbols are resolved to typed
 relations and receive canonical printed labels. An externally visible linkage
 name is ABI semantics rather than a private printer label and is included
 together with its linkage and visibility contract. Every other registered
-field is semantic by default; excluding another field requires an explicit
-owner-spec rule rather than an open ignore list.
+non-actor field is semantic by default. Every actor field must be classified
+by its closed operation-schema projection. Excluding any field requires an
+explicit owner-spec rule rather than an open ignore list.
 
 The equivalence boundary is exact typed and attributed structural isomorphism.
 It does not prove algebraic or whole-program functional equivalence. A
@@ -2171,6 +2225,9 @@ Anchor-level tests cover:
   definition reordering, and graph actor textual reordering;
 * identity changes for actor kind, type, semantic attribute, operand ordinal,
   edge, stored-program order, or externally visible linkage changes;
+* one registered operation schema drives graph admission, canonical actor
+  projection, simulator lookup, and Fabric matching, while an unclassified
+  actor property is rejected;
 * equal canonical bytes and valid unique IDs for isomorphic symmetric inputs,
   without asserting a source-handle-to-slot correspondence;
 * rejection of stale, missing, duplicate, noncanonical, foreign, or wrong-kind
@@ -2234,9 +2291,9 @@ In addition to the Dataflow dialect and finalized-program verifier set:
   - InstructionCore code and `dataflow.graph.launch` ops are allowed in a
     thread body. An InstructionCore-only body with no graph launch is also
     legal; this verifier rule does not itself select AccCore execution.
-  - Body may contain `func.call` only when the callee has been
-    proven InstructionCore-legal or is scheduled for inlining before
-    graph extraction. Body must not contain `func.func`
+  - Body may contain `llvm.call` or `func.call` only when the callee has
+    been proven InstructionCore-legal or is scheduled for inlining before
+    graph extraction. Body must not contain `llvm.func` or `func.func`
     definitions.
   - Reachability is a pipeline invariant, not a local verifier rule. The
     verifier may accept an unreferenced private definition as dead IR, but
@@ -2308,12 +2365,12 @@ In addition to the Dataflow dialect and finalized-program verifier set:
     `memories`, and mandatory non-empty `complete` segments. Concatenated
     payload segments match all `function_type.results`. Done is not a return
     payload or function-type slot.
-  - Finalized bodies contain operations accepted by the shared canonical
-    Dataflow actor classifier plus the confirmed memory-capability primitives.
-    Registered `CanonicalDataflowActorOpInterface` models provide the normal
-    typed actor set, while the classifier remains the sole final eligibility
-    and compute/control/memory authority for instance-sensitive exclusions.
-    Lowering does not infer actor support from dialect or operation names.
+  - Every finalized actor resolves to exactly one registered
+    `OperationSchemaId` and passes its
+    `CanonicalDataflowActorOpInterface` instance verifier. The derived
+    canonical actor classifier consumes this registry for compute, control,
+    and memory actors; it is not a separate whitelist. Lowering does not infer
+    actor support from dialect or operation names.
   - A registered LLVM-dialect compute operation is eligible only through that
     same interface and only when it has explicit SSA operands and results, no
     regions or successors, no hidden memory, control, ABI, or runtime state,
@@ -2331,7 +2388,8 @@ In addition to the Dataflow dialect and finalized-program verifier set:
     memory-copy or memory-set operations, and ABI, exception, stack, or
     runtime operations. Supported source forms must be normalized into
     canonical actors and explicit event networks before finalization.
-  - Body must not contain `scf.*`, `func.func`, `func.call`,
+  - Body must not contain `scf.*`, `llvm.func`, `func.func`, `llvm.call`,
+    `func.call`,
     `dataflow.thread.launch`, `dataflow.graph.launch`,
     `dataflow.thread.wait`, `dataflow.graph.wait`,
     another `dataflow.graph` definition, or a `dataflow.thread`

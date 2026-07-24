@@ -131,6 +131,15 @@ typed hints, but valid LLVM IR remains the only mandatory handoff.
 Part 1 emits LLVM IR plus any optional typed hints. The handoff contract is:
 
 * LLVM IR remains semantically equivalent to the source program.
+* The final linked LLVM module is the sole owner of imported function and ABI
+  facts. Its linkage, calling convention, COMDAT, personality,
+  argument/result attributes, memory effects, target features, floating-point
+  environment, and other LLVM semantics are not copied into a Loom-private
+  function contract.
+* Import into MLIR preserves the corresponding `llvm.func` envelope and its
+  typed attributes. A later `func.func` may represent a genuinely
+  standard-MLIR-native callable or helper, but it must not mirror an imported
+  LLVM function merely to satisfy a pass wrapper.
 * Candidate accelerator regions are hints, not committed boundaries.
 * Preserved hints must remain associated with their loops, memory objects,
   calls, and source ranges after mechanical raising and canonical LLVM
@@ -141,6 +150,12 @@ Part 1 emits LLVM IR plus any optional typed hints. The handoff contract is:
 * If a hint is absent, lost, or contradicted by later LLVM transforms, Part 2
   preserves uncertainty unless analysis proves the fact, or emits a diagnostic
   when the selected profile requires that fact.
+
+MLIR locations and imported LLVM debug information remain the source
+provenance authority through raising and lowering. They do not change the
+semantic identity of a finalized Canonical Dataflow Program. Its finalizer may
+derive a source-object-to-entity relation for diagnostics and
+`--loom-viz-export`; Loom does not introduce a second provenance IR.
 
 ## 7. Relocatable Accelerator Payload
 
@@ -237,9 +252,10 @@ instead of silently discarding accelerator semantics.
 
 Anchor-level tests cover deterministic normalization and identity, self-
 contained carrier round trip, exact compatibility rejection, linker-selected
-archive membership, LLVM-owned COMDAT/ODR resolution, and absence of downstream
-hardware artifacts. Tests do not freeze section names, compression, archive
-layout, or LLVM internal pass structure.
+archive membership, LLVM-owned COMDAT/ODR resolution, preservation of the
+complete imported LLVM function and ABI envelope through the MLIR handoff, and
+absence of downstream hardware artifacts. Tests do not freeze section names,
+compression, archive layout, or LLVM internal pass structure.
 
 Canonical semantic bytes use the field order above. Fixed digests use raw
 32-byte values; strings and variable byte sequences use unsigned 64-bit

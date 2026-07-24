@@ -30,7 +30,10 @@ or InstructionCore/SpatialCore ownership boundary.
 
 S0 has no implicit ownership meaning:
 
-* `func.func` is a callable and ABI unit, not a core assignment;
+* an imported `llvm.func` remains the sole callable and ABI envelope for its
+  LLVM function and is not a core assignment;
+* `func.func` is reserved for genuinely standard-MLIR-native callables and
+  helpers, and never mirrors an imported LLVM ABI;
 * a recovered serial loop remains serial until a typed decision transforms it;
 * source hints and provenance are analysis inputs, not committed choices; and
 * function, loop, local-memory, or source-region shape never commits
@@ -40,25 +43,87 @@ Mechanical raising may require analysis and may reject an input that cannot be
 represented exactly. Mechanical means that no performance choice is hidden in
 the derivation, not that the implementation is trivial.
 
+### Callable Envelope And CFG Structuring
+
+The final linked LLVM module enters S0 without replacing its LLVM callable
+envelopes. The LLVM dialect operation remains the sole owner of linkage,
+calling convention, COMDAT, personality, argument and result attributes,
+memory effects, target features, floating-point environment, and every other
+LLVM ABI fact.
+
+Mechanical CFG recovery operates on callable regions rather than requiring
+conversion to `func.func`. For an imported LLVM function, Loom converts LLVM
+branch structure to exact `cf` structure where required, invokes the upstream
+region-level CFG-to-SCF transformation, and uses an LLVM-compatible adapter
+for return and unreachable behavior. Pass wrappers that participate in this
+pipeline operate on `FunctionOpInterface`, a callable region, or the upstream
+region utility. They must not copy a function into another dialect to obtain a
+particular pass wrapper.
+
+### Mechanical Disposition
+
+Every input construct has exactly one mechanical disposition:
+
+* **Preserve.** Retain the original operation and its complete semantics.
+* **Normalize exactly.** Replace it only when types, attributes, enclosing
+  semantic context, and target facts prove exact equivalence.
+* **Project provenance, then erase.** Preserve standard locations and imported
+  debug provenance before erasing a carrier proven to have no program
+  semantics.
+* **Fail closed.** Reject the selected candidate at the first boundary that
+  requires a narrower surface and cannot represent the construct exactly.
+
+InstructionCore ownership is not a fifth disposition and is never an implicit
+raising fallback. Ownership belongs to a Structured Program Candidate. If a
+selected `loom.spatial_region` contains an unsupported construct, that whole
+candidate is non-finalizable and no partial D0 is published. DSE may construct
+a different candidate with a different ownership boundary, but the mechanical
+lowerer does not silently move code.
+
 ### Canonical Compute Spelling
 
 Mechanical raising uses the standard `arith` or `math` operation schema when
-it exactly represents an LLVM computation. Ordinary LLVM add, subtract,
-multiply, integer or floating comparison, select, casts, and other semantic
-aliases do not survive merely because they originated in LLVM IR. This gives
-Canonical Dataflow one operation-schema identity for one basic computation and
-prevents Fabric capability registries from listing dialect aliases.
+it exactly represents an LLVM computation under the complete operation type,
+operation attributes, overflow and exact flags, fast-math policy, rounding
+mode, enclosing function floating-point environment, and DataLayout. An
+apparent LLVM alias does not normalize merely because it has a familiar
+opcode. Exact normalization gives Canonical Dataflow one operation-schema
+identity for one basic computation and prevents Fabric capability registries
+from listing dialect aliases.
 
 An LLVM-dialect compute intrinsic may remain only when no exact standard MLIR
 operation represents it and it later satisfies the canonical actor contract.
 Target-specific intrinsics should be normalized to target-neutral scalar or
-vector operations when such a representation exists.
+vector operations when such a representation exists. Otherwise, preserving
+the registered LLVM operation is preferable to weakening its semantics.
 
 FMA normalization is semantic rather than name based. An exact fused LLVM FMA
 may become `math.fma`. An operation whose contract permits or requires a
 non-fused multiply followed by add becomes the explicit `arith.mulf` then
 `arith.addf` graph. In particular, an `fmuladd` spelling alone never proves
 fused semantics.
+
+Ordinary calls are never expanded from a symbol-name or arity match. A call
+remains a call, becomes visible through LLVM linking or LTO, or is handled by a
+future explicit typed and versioned library model. Recognizing a source
+library spelling is not a semantic proof.
+
+### Exceptional Values And Floating Semantics
+
+Mechanical raising preserves defined values, poison, undef, and `freeze`
+without replacing them with ordinary constants or diagnostics. Exact integers
+and supported floating values use arbitrary-precision semantic
+representations; host `int64_t` and `double` are not semantic authorities.
+Fixed vectors may carry exceptional state per lane. A normalization is legal
+only when it preserves the operation-specific rules for propagation,
+non-observation, and undefined behavior.
+
+Scalable vectors are legal S0 values. Before a region containing one can
+finalize as a SpatialRegion, a typed structured transform must materialize its
+semantics as fixed-width chunks, loops, and masks or tails. If it cannot, the
+selected candidate is non-finalizable. A scalable vector is never presented
+to the fixed-ranked Canonical Dataflow contract as though its runtime
+`vscale` were a constant.
 
 ## StructuredProgramCandidate
 
@@ -107,10 +172,12 @@ complete value/stream/memory boundaries, absence of unresolved plans or
 target-specific software annotations, and constructible memory/event
 networks.
 
-Unknown aliasing can induce conservative order. An operation that cannot be
-expressed conservatively remains on the InstructionCore or makes that
-candidate non-finalizable. The result is never stored as a boolean because a
-lowering-semantic or relevant-config change can change it.
+Unknown aliasing can induce conservative order. Once a candidate has selected
+a SpatialRegion, any contained operation that cannot be expressed
+conservatively makes that candidate non-finalizable. A separate candidate may
+choose InstructionCore ownership, but finalization never changes ownership.
+The result is never stored as a boolean because a lowering-semantic or
+relevant-config change can change it.
 
 ## Derived Analysis Views
 
@@ -326,6 +393,13 @@ legal. D* remains target-independent software and contains no Mapping facts.
 
 Tests protect only stable contracts:
 
+* imported LLVM function ABI facts remain owned by the original `llvm.func`;
+* exact aliases normalize while non-equivalent LLVM operations remain
+  preserved;
+* ordinary calls are not expanded from symbol names or arity;
+* poison, undef, and floating-point policy survive mechanical raising;
+* scalable vectors either materialize to fixed structured semantics before a
+  selected SpatialRegion finalizes or make that candidate non-finalizable;
 * a cross-candidate entity reference is rejected;
 * candidate, analyzer, config, or auxiliary-subject changes invalidate a
   derived analysis cache;

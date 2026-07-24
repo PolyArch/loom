@@ -30,9 +30,14 @@ vector<N0 x ... x Nk x i1>
 
 Every dimension is fixed and greater than zero. The first form is a semantic
 data value and the second is its same-shape active-lane mask. Scalable and
-rank-zero vectors are outside this contract. Data elements are nonzero-width
-MLIR integer or floating-point values; gather and scatter addresses use
-`index` elements.
+rank-zero vectors are outside this Canonical Dataflow contract. Scalable
+vectors remain legal in the S0 Structured Program Candidate. Before a selected
+SpatialRegion finalizes, a typed structured transform must materialize their
+exact semantics as fixed-width chunks, loops, and masks or tails. Failure to
+do so makes that candidate non-finalizable; it does not make scalable vectors
+globally illegal or silently choose InstructionCore ownership. Data elements
+are nonzero-width MLIR integer or floating-point values; gather and scatter
+addresses use `index` elements.
 
 Axes follow the selected scheduled-dimension order. Row-major flattening is
 canonical: the last axis varies fastest. Flattened lane zero is the first
@@ -55,6 +60,25 @@ The canonical functional result is independent of a physical realization.
 TechMapping may realize one vector actor with a vector FU, several scalar
 actors, or a hybrid implementation, but it must preserve shape, lane order,
 mask behavior, and token publication.
+
+### Exceptional Lane State
+
+A fixed vector semantic value is a tuple of lane states. Each lane is exactly
+one of defined, poison, or undef; defined integer and floating lanes carry
+their exact arbitrary-precision semantic value. Elementwise operations apply
+their registered scalar operation schema per lane. Vector selection observes
+only the selected lane value. An inactive masked-memory lane observes neither
+its address nor its data and produces the specified defined zero fill for an
+inactive load lane.
+
+Exceptional state is not a physical bit pattern. The registered schemas for
+`dataflow.pack`, `dataflow.unpack`, `dataflow.parallelize`, and
+`dataflow.serialize` own their exact exceptional-state projection across
+shape or cardinality boundaries. Every such relation must be closed and
+verified before the actor is admitted. A simulator or semantic provider that
+cannot represent the required mixed-lane state reports unsupported rather than
+coercing poison or undef to zero. The bit-level round-trip equations below
+apply to fully defined values.
 
 ## Stream Cardinality Boundary
 
@@ -333,7 +357,7 @@ remain different requirements even though both occupy 128 bits.
 
 Verification rejects:
 
-* scalable or rank-zero vectors;
+* scalable or rank-zero vectors at Canonical Dataflow finalization;
 * zero vector dimensions;
 * unsupported or zero-width element types;
 * mask shapes that differ from their data-vector shapes;
@@ -353,6 +377,10 @@ Verification rejects:
 
 Stable anchor tests cover:
 
+* per-lane poison and undef propagation, lazy vector selection, and inactive
+  masked-lane non-observation;
+* rejection of a selected SpatialRegion whose scalable vector has not been
+  materialized to fixed structured semantics;
 * rank-one partial-group `parallelize` and `serialize` behavior;
 * exact and partial-tail activation closure;
 * rank-one and multi-rank `pack`/`unpack` round trips, including floating-point

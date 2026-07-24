@@ -18,6 +18,10 @@ Registered software operation schemas remain the authority for exact actor
 semantics. An HSG does not define function types, predicates, constants,
 arity, or other semantic attributes. A software operation family may be legal
 in more than one HSG when multiple genuine hardware implementations exist.
+The compiler's Canonical Dataflow specification owns `OperationSchemaId` and
+its closed semantic projection. This registry references those IDs; it does
+not assign aliases, copy operation attributes, or maintain a second software
+operation catalog.
 
 Each concrete `fabric.op` binds exactly one HSG implementation family. Its
 `op_list` is the projection of the family members enabled by that resource;
@@ -61,6 +65,11 @@ use focused C++ verification for a complex typed admission relation; there is
 no generic predicate DSL and no parallel handwritten member table. Backend
 provider availability is queried by the same family ID but is not part of the
 registry's semantic ownership.
+
+Graph admission, simulator dispatch, and Fabric matching must all resolve the
+same registered `OperationSchemaId`. An HSG descriptor may narrow where a
+schema can be physically shared, but it cannot make an unregistered actor
+canonical or reinterpret the schema's semantic projection.
 
 ### Initial Scalar Compute Families
 
