@@ -5,6 +5,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
@@ -17,11 +18,13 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <initializer_list>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 
 using namespace loom::sim::detail;
@@ -40,6 +43,13 @@ module {
     return
   }
 
+  func.func @wide_parallelize(%data: i8, %phase: i1) {
+    %vector, %mask, %group_phase =
+      dataflow.parallelize %data, %phase
+        : (i8, i1) -> (vector<8xi8>, vector<8xi1>, i1)
+    return
+  }
+
   func.func @serialize(%packed: i32, %packed_mask: i4, %group_phase: i1) {
     %vector = dataflow.unpack %packed : i32 -> vector<4xi8>
     %mask = dataflow.unpack %packed_mask : i4 -> vector<4xi1>
@@ -55,12 +65,27 @@ module {
     return
   }
 
+  func.func @gate(%cond: i1, %value: i8) {
+    %after_cond, %after_value = dataflow.gate %cond, %value : i8
+    return
+  }
+
+  func.func @stream(%init: i16, %limit: i16, %step: i16) {
+    %iv, %phase = dataflow.stream %init, %limit, %step step add while slt : i16
+    return
+  }
+
   func.func @memory(%mem: memref<?xi8>, %addr: index,
                     %addresses: vector<2xindex>, %data: vector<2xi8>,
                     %ctrl: none) {
     %loaded, %read = dataflow.load %mem[%addr] %ctrl : memref<?xi8>
     %written = dataflow.store %mem[%addresses] %data %ctrl
         : memref<?xi8>, vector<2xindex>, vector<2xi8>
+    return
+  }
+
+  func.func @llvm_load(%ptr: !llvm.ptr) {
+    %data = llvm.load %ptr {alignment = 4 : i64} : !llvm.ptr -> i32
     return
   }
 }
@@ -382,6 +407,179 @@ void parallelizePreservesQueuedActivation(dataflow::ParallelizeOp op) {
                "parallelize emitted the wrong activation phases");
 }
 
+// One firing attempt owns one frontier: the scheduler clears the accumulator
+// before every attempt, so an actor never inherits the order of the previous
+// one. Tests that drive an actor directly must reproduce that reset or the
+// accumulator silently carries stale effects between firings.
+bool fireOnce(mlir::Operation *op, SimulatorState &state) {
+  state.firingMemoryOrderFrontier.clear();
+  return fireActorOperation(op, state);
+}
+
+// A group assembles its memory order across several firings and publishes it
+// once, on the firing that emits. The order it is still assembling belongs to
+// the retained actor state, not to the firing, so it must survive the
+// per-attempt reset and must not be interned before a token carries it.
+void parallelizeGroupPublishesItsAssembledOrderOnce(
+    dataflow::ParallelizeOp op) {
+  SimulatorState state;
+  state.memoryOrder = std::make_unique<loom::sim::MemoryAtomicOrder>();
+  state.memorySync =
+      std::make_unique<loom::sim::MemorySynchronization>(*state.memoryOrder);
+
+  const unsigned lanes = static_cast<unsigned>(
+      mlir::cast<mlir::VectorType>(op.getVector().getType())
+          .getShape()
+          .front());
+  auto &data = state.channels[&op.getDataMutable()];
+  auto &phase = state.channels[&op.getScalarPhaseMutable()];
+  // One true scalar phase per lane fills the group and emits it on the last
+  // firing. Each phase carries its own unrelated effect, so the assembled
+  // union grows by one every firing and no reduction can shrink it.
+  llvm::SmallVector<loom::sim::SyncEffectId> seeded;
+  for (unsigned lane = 0; lane < lanes; ++lane) {
+    data.push_back(tokenWithBits(op.getData().getType(), 20 + lane));
+    Token carrier = boolValueToken(true);
+    const loom::sim::SyncEffectId effect = state.memorySync->declareEffect();
+    seeded.push_back(effect);
+    carrier.memoryOrder = state.memoryOrderFrontiers.internCanonical(effect);
+    phase.push_back(std::move(carrier));
+  }
+
+  const std::size_t seededFrontiers =
+      state.memoryOrderFrontiers.frontierCount();
+  for (unsigned firing = 0; firing < lanes; ++firing)
+    require(fireOnce(op, state), "a group firing did not fire");
+
+  const auto vector = state.pendingObservedOutputs.find(op.getVector());
+  require(vector != state.pendingObservedOutputs.end() &&
+              vector->second.size() == 1,
+          "the group did not publish exactly one vector token");
+  // Every scalar phase consumed while assembling the group is present in the
+  // one frontier the group publishes. Without retained phase order the earlier
+  // firings' effects would be lost to the per-attempt reset.
+  llvm::ArrayRef<loom::sim::SyncEffectId> published =
+      state.memoryOrderFrontiers.elements(vector->second.front().memoryOrder);
+  require(published.size() == lanes,
+          "the published group frontier lost a scalar phase effect");
+  for (loom::sim::SyncEffectId effect : seeded)
+    require(llvm::is_contained(published, effect),
+            "the published group frontier dropped a consumed phase effect");
+  // Only the firing that emits may intern, and only the assembled union: a
+  // partial cumulative prefix in the arena would raise the retained count
+  // above the one seeded singleton per phase plus this one publication.
+  require(state.memoryOrderFrontiers.frontierCount() == seededFrontiers + 1,
+          "the group interned a partial prefix or more than one publication");
+}
+
+// A transition that consumes order but emits nothing must retain no frontier:
+// a closed gate drops its inputs, so the order it absorbed is never carried by
+// any token and must not reach the arena. Repeating the drop with a fresh
+// effect each time would otherwise retain one composite frontier per drop.
+void droppedOrderIsNeverRetained(dataflow::GateOp op) {
+  SimulatorState state;
+  state.memoryOrder = std::make_unique<loom::sim::MemoryAtomicOrder>();
+  state.memorySync =
+      std::make_unique<loom::sim::MemorySynchronization>(*state.memoryOrder);
+
+  // Each drop consumes two inputs carrying distinct unrelated effects, so the
+  // order it absorbs is a composite that no seeded frontier already names.
+  constexpr unsigned kDrops = 8;
+  auto &cond = state.channels[&op.getBeforeCondMutable()];
+  auto &value = state.channels[&op.getBeforeValueMutable()];
+  for (unsigned drop = 0; drop < kDrops; ++drop) {
+    Token phase = boolValueToken(false);
+    phase.memoryOrder = state.memoryOrderFrontiers.internCanonical(
+        state.memorySync->declareEffect());
+    cond.push_back(std::move(phase));
+    Token payload = tokenWithBits(op.getBeforeValue().getType(), drop);
+    payload.memoryOrder = state.memoryOrderFrontiers.internCanonical(
+        state.memorySync->declareEffect());
+    value.push_back(std::move(payload));
+  }
+  const std::size_t seededFrontiers =
+      state.memoryOrderFrontiers.frontierCount();
+
+  for (unsigned drop = 0; drop < kDrops; ++drop)
+    require(fireOnce(op, state), "a closed gate drop did not fire");
+  require(state.pendingObservedOutputs.empty(),
+          "a closed gate drop published a token");
+  require(state.memoryOrderFrontiers.frontierCount() == seededFrontiers,
+          "a transition that emitted nothing retained a frontier");
+}
+
+// Scale gate for the retained activation frontier.
+//
+// A stateful actor retains its activation's memory-order union and publishes
+// it on every firing the activation makes. A stream consumes nothing after
+// its start firing, so the retained union does not change across iterations
+// and each publication must be a memo lookup: a handoff that drops the
+// union's memos reduces and rehashes the whole width on every iteration.
+//
+// The gate is the elapsed time, not the arena shape: interning deduplicates
+// to the same handle either way, so the content assertions below cannot
+// reject repeated work. At this width and length the memo-dropping handoff
+// measures well beyond the budget, while a memoized handoff costs
+// milliseconds. The lit runner additionally bounds the whole process.
+void streamRepublishesRetainedOrderWithoutRework(dataflow::StreamOp op) {
+  constexpr unsigned kWidth = 32768;
+  constexpr unsigned kIterations = 32767;
+  constexpr double kBudgetSeconds = 15.0;
+  const auto start = std::chrono::steady_clock::now();
+
+  SimulatorState state;
+  state.memoryOrder = std::make_unique<loom::sim::MemoryAtomicOrder>();
+  state.memorySync =
+      std::make_unique<loom::sim::MemorySynchronization>(*state.memoryOrder);
+
+  // The activation's init carries a wide frontier of mutually unrelated
+  // effects and its step carries one more, so the retained union is the whole
+  // width plus one, no reduction can shrink it, and it names a frontier no
+  // seeded token already carries. Declared effect identities ascend, so the
+  // seeded frontier is already canonical.
+  llvm::SmallVector<loom::sim::SyncEffectId> wide;
+  wide.reserve(kWidth);
+  for (unsigned index = 0; index < kWidth; ++index)
+    wide.push_back(state.memorySync->declareEffect());
+  Token init = tokenWithBits(op.getInit().getType(), 0);
+  init.memoryOrder = state.memoryOrderFrontiers.internCanonical(wide);
+  state.channels[&op.getInitMutable()].push_back(std::move(init));
+  state.channels[&op.getLimitMutable()].push_back(
+      tokenWithBits(op.getLimit().getType(), kIterations));
+  Token step = tokenWithBits(op.getStep().getType(), 1);
+  step.memoryOrder = state.memoryOrderFrontiers.internCanonical(
+      state.memorySync->declareEffect());
+  state.channels[&op.getStepMutable()].push_back(std::move(step));
+  const std::size_t seededFrontiers =
+      state.memoryOrderFrontiers.frontierCount();
+
+  // One firing starts the activation, one fires per iteration, and one closes
+  // it; the close emits only a phase token and retires the frontier.
+  for (unsigned firing = 0; firing <= kIterations; ++firing)
+    require(fireOnce(op, state), "a stream firing did not fire");
+
+  const auto ivs = state.pendingObservedOutputs.find(op.getIv());
+  require(ivs != state.pendingObservedOutputs.end() &&
+              ivs->second.size() == kIterations,
+          "the stream did not publish one iv per iteration");
+  const MemoryOrderFrontierId published = ivs->second.front().memoryOrder;
+  require(!published.empty(), "the stream published no memory order");
+  for (const Token &iv : ivs->second)
+    require(iv.memoryOrder == published,
+            "stream iterations published separately resolved frontiers");
+  require(state.memoryOrderFrontiers.elements(published).size() == kWidth + 1,
+          "the published stream frontier lost members of its activation");
+  // The activation interns its union exactly once, on the firing that first
+  // publishes it; the retiring close may add nothing to the arena.
+  require(state.memoryOrderFrontiers.frontierCount() == seededFrontiers + 1,
+          "the stream retained more than its one published frontier");
+
+  const double elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+          .count();
+  require(elapsed < kBudgetSeconds, "the stream exceeded its scale budget");
+}
+
 void serializePreservesQueuedActivation(dataflow::SerializeOp op,
                                         dataflow::UnpackOp vectorUnpack,
                                         dataflow::UnpackOp maskUnpack) {
@@ -622,6 +820,43 @@ void expectUntouchedRun(SimulatorState &state, const MemoryValue &memory,
     require(bitsOf(token, memory.elementType) == value, message);
 }
 
+// A value read out of memory carries a witness the loading firing never
+// consumed: the firing consumed only its address token, yet the loaded token
+// must keep its resident order. The firing's own order still applies, so the
+// loaded token publishes their union, resolved once as one arena entry.
+void llvmLoadKeepsItsMemoryResidentWitness(mlir::LLVM::LoadOp op) {
+  SimulatorState state;
+  state.memoryOrder = std::make_unique<loom::sim::MemoryAtomicOrder>();
+  state.memorySync =
+      std::make_unique<loom::sim::MemorySynchronization>(*state.memoryOrder);
+
+  auto memory = makeMemory(op.getType(), {0x2A});
+  const loom::sim::SyncEffectId witness = state.memorySync->declareEffect();
+  memory->elements[0].memoryOrder =
+      state.memoryOrderFrontiers.internCanonical(witness);
+  Token address = pointerToken(op.getAddr(), memory, 0);
+  const loom::sim::SyncEffectId consumed = state.memorySync->declareEffect();
+  address.memoryOrder = state.memoryOrderFrontiers.internCanonical(consumed);
+  state.channels[&op->getOpOperand(0)].push_back(std::move(address));
+  const std::size_t seededFrontiers =
+      state.memoryOrderFrontiers.frontierCount();
+
+  require(fireOnce(op, state), "llvm.load of a resident witness did not fire");
+  const auto loaded = state.pendingObservedOutputs.find(op.getResult());
+  require(loaded != state.pendingObservedOutputs.end() &&
+              loaded->second.size() == 1,
+          "llvm.load did not publish exactly one data token");
+  llvm::ArrayRef<loom::sim::SyncEffectId> published =
+      state.memoryOrderFrontiers.elements(loaded->second.front().memoryOrder);
+  require(published.size() == 2 && llvm::is_contained(published, witness) &&
+              llvm::is_contained(published, consumed),
+          "llvm.load dropped its resident witness or its firing's order");
+  // The firing's own frontier deduplicates against the seeded singleton, so
+  // the merged union is the only new entry.
+  require(state.memoryOrderFrontiers.frontierCount() == seededFrontiers + 1,
+          "llvm.load interned more than its one merged publication");
+}
+
 void loadRejectionIsAtomic(dataflow::LoadOp op) {
   SimulatorState state;
   auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
@@ -692,7 +927,8 @@ void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
   state.channels[&op.getDataMutable()].push_back(
       tokenWithBits(op.getData().getType(), 0xAB43));
   Token ctrl = noneToken();
-  ctrl.memoryOrderFrontier.push_back(loom::sim::SyncEffectId(99));
+  ctrl.memoryOrder =
+      state.memoryOrderFrontiers.internCanonical(loom::sim::SyncEffectId(99));
   state.channels[&op.getCtrlMutable()].push_back(std::move(ctrl));
   PlainMemoryActionProjection projected =
       projectReadyPlainMemoryAction(op.getOperation(), state);
@@ -760,6 +996,97 @@ void disjointPlainMemoryHistoryHasBoundedQueryWork() {
           "ready overlapping writes were not rejected");
 }
 
+// Scale gate for the memory-order frontier representation.
+//
+// A wide dataflow.sync publishes one memory-order frontier to every result, so
+// the run must compute that frontier once and hand each result a handle to it.
+//
+// The gate is the elapsed time, not the arena shape: an implementation that
+// recomputes and reinterns the same frontier per output still deduplicates to
+// one arena entry, so counting entries would not reject it. Merging a
+// width-k frontier into each of k results is cubic, and at this width the old
+// per-output merge measured 37.3 seconds against the budget below, while the
+// shared-handle path costs milliseconds. The frontier assertions that follow
+// only pin the published content; the budget is what rejects the old
+// behaviour.
+//
+// The measured region covers fixture construction, seeding and firing, so the
+// gate is externally observable rather than a post-hoc timer around one call.
+// The lit runner additionally bounds the whole process.
+void wideSyncSharesOnePublishedFrontier(mlir::MLIRContext &context) {
+  constexpr unsigned kWidth = 8192;
+  constexpr double kBudgetSeconds = 15.0;
+  const auto start = std::chrono::steady_clock::now();
+
+  std::string source;
+  llvm::raw_string_ostream stream(source);
+  stream << "func.func @wide_sync(";
+  for (unsigned index = 0; index < kWidth; ++index)
+    stream << (index ? ", " : "") << "%in" << index << ": none";
+  stream << ") {\n  %joined:" << kWidth << " = dataflow.sync ";
+  for (unsigned index = 0; index < kWidth; ++index)
+    stream << (index ? ", " : "") << "%in" << index;
+  stream << " : (";
+  for (unsigned index = 0; index < kWidth; ++index)
+    stream << (index ? ", " : "") << "none";
+  stream << ") -> (";
+  for (unsigned index = 0; index < kWidth; ++index)
+    stream << (index ? ", " : "") << "none";
+  stream << ")\n  return\n}\n";
+
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(stream.str(), &context);
+  require(static_cast<bool>(module), "unable to parse the wide sync fixture");
+  dataflow::SyncOp sync;
+  module->walk([&](dataflow::SyncOp op) { sync = op; });
+  require(sync && sync->getNumOperands() == kWidth,
+          "the wide sync fixture is missing its actor");
+
+  // Each input carries a distinct effect, so the published frontier is the
+  // whole width and no reduction can shrink it. The state owns both causality
+  // engines, as a run does, so the bound reference outlives every use.
+  SimulatorState state;
+  state.memoryOrder = std::make_unique<loom::sim::MemoryAtomicOrder>();
+  state.memorySync =
+      std::make_unique<loom::sim::MemorySynchronization>(*state.memoryOrder);
+  for (mlir::OpOperand &operand : sync->getOpOperands()) {
+    Token token = noneToken();
+    token.memoryOrder = state.memoryOrderFrontiers.internCanonical(
+        state.memorySync->declareEffect());
+    state.channels[&operand].push_back(std::move(token));
+  }
+  const std::size_t seededFrontiers =
+      state.memoryOrderFrontiers.frontierCount();
+
+  require(fireOnce(sync, state), "the wide sync did not fire");
+
+  require(state.pendingObservedOutputs.size() == kWidth,
+          "the wide sync did not publish one token per result");
+  MemoryOrderFrontierId published;
+  for (mlir::Value result : sync->getResults()) {
+    const auto tokens = state.pendingObservedOutputs.find(result);
+    require(tokens != state.pendingObservedOutputs.end() &&
+                tokens->second.size() == 1,
+            "a wide sync result published the wrong token count");
+    const MemoryOrderFrontierId frontier = tokens->second.front().memoryOrder;
+    require(!frontier.empty(), "a wide sync result published no memory order");
+    if (published.empty())
+      published = frontier;
+    require(frontier == published,
+            "wide sync results published separately owned frontiers");
+  }
+  require(state.memoryOrderFrontiers.elements(published).size() == kWidth,
+          "the published frontier lost members of its firing");
+  // One frontier per seeded input plus exactly one for the whole publication.
+  require(state.memoryOrderFrontiers.frontierCount() == seededFrontiers + 1,
+          "the wide sync retained more than one published frontier");
+
+  const double elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+          .count();
+  require(elapsed < kBudgetSeconds, "the wide sync exceeded its scale budget");
+}
+
 } // namespace
 
 int main() {
@@ -768,7 +1095,8 @@ int main() {
   disjointPlainMemoryHistoryHasBoundedQueryWork();
 
   mlir::DialectRegistry registry;
-  registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();
+  registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect,
+                  mlir::LLVM::LLVMDialect>();
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
   mlir::OwningOpRef<mlir::ModuleOp> module =
@@ -777,11 +1105,35 @@ int main() {
 
   auto parallelizeFunc =
       module->lookupSymbol<mlir::func::FuncOp>("parallelize");
+  auto wideParallelizeFunc =
+      module->lookupSymbol<mlir::func::FuncOp>("wide_parallelize");
   auto serializeFunc = module->lookupSymbol<mlir::func::FuncOp>("serialize");
   auto rankTwoFunc = module->lookupSymbol<mlir::func::FuncOp>("rank_two");
+  auto gateFunc = module->lookupSymbol<mlir::func::FuncOp>("gate");
+  auto streamFunc = module->lookupSymbol<mlir::func::FuncOp>("stream");
   auto memoryFunc = module->lookupSymbol<mlir::func::FuncOp>("memory");
-  require(parallelizeFunc && serializeFunc && rankTwoFunc && memoryFunc,
+  auto llvmLoadFunc = module->lookupSymbol<mlir::func::FuncOp>("llvm_load");
+  require(parallelizeFunc && wideParallelizeFunc && serializeFunc &&
+              rankTwoFunc && gateFunc && streamFunc && memoryFunc &&
+              llvmLoadFunc,
           "fixture functions are missing");
+
+  dataflow::GateOp gate;
+  gateFunc.walk([&](dataflow::GateOp op) { gate = op; });
+  require(gate, "the gate fixture actor is missing");
+
+  dataflow::StreamOp stream;
+  streamFunc.walk([&](dataflow::StreamOp op) { stream = op; });
+  require(stream, "the stream fixture actor is missing");
+
+  mlir::LLVM::LoadOp llvmLoad;
+  llvmLoadFunc.walk([&](mlir::LLVM::LoadOp op) { llvmLoad = op; });
+  require(llvmLoad, "the llvm.load fixture actor is missing");
+
+  dataflow::ParallelizeOp wideParallelize;
+  wideParallelizeFunc.walk(
+      [&](dataflow::ParallelizeOp op) { wideParallelize = op; });
+  require(wideParallelize, "the wide parallelize fixture actor is missing");
 
   dataflow::ParallelizeOp parallelize;
   dataflow::PackOp pack;
@@ -811,6 +1163,10 @@ int main() {
     std::swap(vectorUnpack, maskUnpack);
 
   parallelizePreservesQueuedActivation(parallelize);
+  parallelizeGroupPublishesItsAssembledOrderOnce(wideParallelize);
+  droppedOrderIsNeverRetained(gate);
+  llvmLoadKeepsItsMemoryResidentWitness(llvmLoad);
+  streamRepublishesRetainedOrderWithoutRework(stream);
   serializePreservesQueuedActivation(serialize, vectorUnpack, maskUnpack);
   unpackPlacesRowMajorLanes(rankTwoUnpack);
   packFlattensRowMajorLanes(rankTwoPack);
@@ -821,5 +1177,6 @@ int main() {
   loadRejectionIsAtomic(load);
   storeDuplicateScatterIsAtomic(store);
   storeSynchronizationFailureIsAtomic(store);
+  wideSyncSharesOnePublishedFrontier(context);
   return 0;
 }

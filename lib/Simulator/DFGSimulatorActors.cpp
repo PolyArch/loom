@@ -117,8 +117,8 @@ static bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
   if (transition->emitPhase)
     emitToken(state, op.getPhase(), boolValueToken(transition->phase));
   stream = transition->nextState;
-  retireActivationMemoryOrder(state, op.getOperation(),
-                              stream.mode == StreamMode::Idle);
+  releaseActivationMemoryOrder(state, op.getOperation(),
+                               stream.mode == StreamMode::Idle);
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -168,9 +168,9 @@ static bool fireCarry(dataflow::CarryOp op, SimulatorState &state) {
   if (forwarded)
     emitToken(state, op.getOutput(), *forwarded);
   carry.semanticState = transition.nextState;
-  retireActivationMemoryOrder(state, op.getOperation(),
-                              carry.semanticState ==
-                                  PhaseSemanticState::Initial);
+  releaseActivationMemoryOrder(state, op.getOperation(),
+                               carry.semanticState ==
+                                   PhaseSemanticState::Initial);
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -201,9 +201,9 @@ static bool fireInvariant(dataflow::InvariantOp op, SimulatorState &state) {
   if (transition.clearLatch)
     invariant.latched.reset();
   invariant.semanticState = transition.nextState;
-  retireActivationMemoryOrder(state, op.getOperation(),
-                              invariant.semanticState ==
-                                  PhaseSemanticState::Initial);
+  releaseActivationMemoryOrder(state, op.getOperation(),
+                               invariant.semanticState ==
+                                   PhaseSemanticState::Initial);
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -232,9 +232,9 @@ static bool fireGate(dataflow::GateOp op, SimulatorState &state) {
     state.gateContinueStates.insert(op.getOperation());
   else
     state.gateContinueStates.erase(op.getOperation());
-  retireActivationMemoryOrder(state, op.getOperation(),
-                              transition.nextState ==
-                                  GateSemanticState::Closed);
+  releaseActivationMemoryOrder(state, op.getOperation(),
+                               transition.nextState ==
+                                   GateSemanticState::Closed);
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -312,7 +312,7 @@ struct ParallelizeGroup {
 };
 
 static llvm::Expected<ParallelizeGroup>
-buildParallelizeGroup(dataflow::ParallelizeOp op,
+buildParallelizeGroup(dataflow::ParallelizeOp op, SimulatorState &state,
                       const ParallelizeState &parallel,
                       std::uint64_t activeItems) {
   mlir::VectorType vectorType = op.getVector().getType();
@@ -345,8 +345,9 @@ buildParallelizeGroup(dataflow::ParallelizeOp op,
       return laneBits.takeError();
     vectorBits.insertBits(*laneBits, *laneWidth * static_cast<unsigned>(lane));
     maskBits.setBit(static_cast<unsigned>(lane));
-    mergeMemoryOrderFrontier(frontier,
-                             parallel.slots[lane]->memoryOrderFrontier);
+    llvm::ArrayRef<SyncEffectId> laneOrder =
+        state.memoryOrderFrontiers.elements(parallel.slots[lane]->memoryOrder);
+    frontier.append(laneOrder.begin(), laneOrder.end());
   }
 
   auto vectorToken = tokenFromBitPattern(vectorBits, vectorType);
@@ -381,13 +382,12 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
   if (!transition.firing.ready)
     return false;
 
-  // Retain each scalar phase's memory order across the multi-firing group.
+  // Retain each scalar phase's memory order across the multi-firing group. The
+  // group publishes nothing until it emits, so this only accumulates.
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            ParallelizeInput::Phase))
-    mergeAndReduceMemoryOrderFrontier(
-        state, next.phaseFrontier,
-        peekToken(state.channels, op.getScalarPhaseMutable())
-            .memoryOrderFrontier);
+    next.phaseFrontier.append(state.memoryOrderFrontiers.elements(
+        peekToken(state.channels, op.getScalarPhaseMutable()).memoryOrder));
 
   std::optional<ParallelizeGroup> group;
   if (selectsSemanticInput(transition.firing.consumedInputs,
@@ -407,13 +407,15 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
     next.slots[lane] = data;
   }
   if (transition.emitGroup) {
-    auto groupOrErr = buildParallelizeGroup(op, next, transition.activeItems);
+    auto groupOrErr =
+        buildParallelizeGroup(op, state, next, transition.activeItems);
     if (!groupOrErr) {
       state.diagnostics.push_back(llvm::toString(groupOrErr.takeError()));
       return false;
     }
     group = *groupOrErr;
-    mergeMemoryOrderFrontier(group->frontier, next.phaseFrontier);
+    llvm::ArrayRef<SyncEffectId> phaseOrder = next.phaseFrontier.elements();
+    group->frontier.append(phaseOrder.begin(), phaseOrder.end());
     next.slots.assign(vectorLength, std::nullopt);
     next.phaseFrontier.clear();
   }
@@ -429,7 +431,7 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
     (void)popToken(state, op.getDataMutable());
   state.parallelizeStates[op.getOperation()] = std::move(next);
   if (group) {
-    mergeMemoryOrderFrontier(state.firingMemoryOrderFrontier, group->frontier);
+    state.firingMemoryOrderFrontier.append(group->frontier);
     emitToken(state, op.getVector(), group->vector);
     emitToken(state, op.getMask(), group->mask);
   }
@@ -930,20 +932,19 @@ static llvm::SmallVector<SyncEffectId, 2>
 peekMemoryOrderFrontier(SimulatorState &state, mlir::OpOperand &ctrl) {
   llvm::SmallVector<SyncEffectId, 2> frontier;
   if (hasToken(state.channels, ctrl))
-    mergeMemoryOrderFrontier(
-        frontier, peekToken(state.channels, ctrl).memoryOrderFrontier);
+    frontier.assign(state.memoryOrderFrontiers.elements(
+        peekToken(state.channels, ctrl).memoryOrder));
   return frontier;
 }
 
 // Empty accesses pass through only ctrl order; others publish a new effect.
-static std::optional<llvm::SmallVector<SyncEffectId, 2>>
+static std::optional<MemoryOrderFrontierId>
 issueMemoryAction(MemoryActionRecord action,
                   llvm::ArrayRef<SyncEffectId> orderFrontier,
                   SimulatorState &state) {
   if (action.byteRanges.empty()) {
-    llvm::SmallVector<SyncEffectId, 2> publication;
-    publication.append(orderFrontier.begin(), orderFrontier.end());
-    return publication;
+    // The admitted ctrl frontier is already canonical and reduced.
+    return state.memoryOrderFrontiers.internCanonical(orderFrontier);
   }
   MemorySynchronization &sync = memorySynchronization(state);
   auto effect = sync.declareEffectSequencedAfter(orderFrontier);
@@ -953,7 +954,7 @@ issueMemoryAction(MemoryActionRecord action,
     return std::nullopt;
   }
   state.memoryActions.retain(std::move(action), *effect, sync);
-  return llvm::SmallVector<SyncEffectId, 2>{*effect};
+  return state.memoryOrderFrontiers.internCanonical(*effect);
 }
 
 static mlir::OpOperand *getOptionalMaskOperand(mlir::Operation *op,
@@ -1135,7 +1136,8 @@ static bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   popToken(state, op.getCtrlMutable());
   if (prepared->maskOperand)
     popToken(state, *prepared->maskOperand);
-  emitTokenWithMemoryOrder(state, op.getData(), prepared->read.data, {});
+  emitTokenWithMemoryOrder(state, op.getData(), prepared->read.data,
+                           MemoryOrderFrontierId());
   emitTokenWithMemoryOrder(state, op.getDone(), noneToken(), *publication);
   if (prepared->read.accessedMemory && hasComputedAddress(op.getAddr()))
     state.memoryAddressScore += kLoadAddressScore;

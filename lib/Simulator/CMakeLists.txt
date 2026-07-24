@@ -1,6 +1,7 @@
 add_mlir_library(LoomSimulator
   DFGSimulator.cpp
   DFGSimulatorActors.cpp
+  DFGSimulatorMemoryOrder.cpp
   DFGSimulatorTokens.cpp
   DynamicWorkDomain.cpp
   MemoryAtomicOrder.cpp

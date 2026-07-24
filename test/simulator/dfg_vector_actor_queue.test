@@ -1,1 +1,3 @@
-# RUN: loom-simulator-vector-boundary-test
+# The wide-sync memory-order frontier scale gate must fail rather than hang, so
+# the binary runs under a process timeout above its own internal budget.
+# RUN: timeout --kill-after=5s 20s loom-simulator-vector-boundary-test

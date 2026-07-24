@@ -25,10 +25,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace loom::sim {
 namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail {
@@ -46,6 +48,230 @@ struct MemoryView {
 
 enum class TokenKind { None, Integer, Float, Bool, Vector, Pointer };
 
+/// Dense execution-local handle to one immutable memory-order frontier owned
+/// by the run's arena. A default handle is the empty frontier, so a token that
+/// never observed memory order costs one word and no allocation. The handle
+/// names a set of effects and no order between them; MemorySynchronization
+/// remains the only authority that relates two effects.
+class MemoryOrderFrontierId {
+public:
+  constexpr MemoryOrderFrontierId() = default;
+  explicit constexpr MemoryOrderFrontierId(std::uint32_t value)
+      : value_(value) {}
+
+  constexpr std::uint32_t value() const { return value_; }
+  constexpr bool empty() const { return value_ == 0; }
+
+  friend constexpr bool operator==(MemoryOrderFrontierId lhs,
+                                   MemoryOrderFrontierId rhs) {
+    return lhs.value_ == rhs.value_;
+  }
+  friend constexpr bool operator!=(MemoryOrderFrontierId lhs,
+                                   MemoryOrderFrontierId rhs) {
+    return !(lhs == rhs);
+  }
+
+private:
+  std::uint32_t value_ = 0;
+};
+
+/// Execution-local owner of every memory-order frontier a run publishes.
+///
+/// One frontier is stored once, in canonical shape (ascending identity, no
+/// repeats), and every token that observes it holds only its handle. Equal
+/// content always interns to one handle, so a firing that publishes several
+/// results shares a single stored frontier instead of one copy per result.
+///
+/// Elements live in bump-allocated chunks that are never reallocated, so an
+/// ArrayRef handed to MemorySynchronization stays valid while the arena keeps
+/// growing. The arena stores sets of effect handles and no relation between
+/// them: it is a representation, never a second happens-before authority.
+class MemoryOrderFrontierArena {
+public:
+  MemoryOrderFrontierArena() { entries_.push_back(Entry{nullptr, 0}); }
+
+  // Entries point into this arena's own chunks, so a copied arena would keep
+  // referencing the original's storage. The run owns its arena in place for
+  // its whole lifetime, so no move is defined either.
+  MemoryOrderFrontierArena(const MemoryOrderFrontierArena &) = delete;
+  MemoryOrderFrontierArena &
+  operator=(const MemoryOrderFrontierArena &) = delete;
+
+  llvm::ArrayRef<SyncEffectId> elements(MemoryOrderFrontierId id) const {
+    const Entry &entry = entries_[id.value()];
+    return llvm::ArrayRef<SyncEffectId>(entry.data, entry.size);
+  }
+
+  /// Interns the frontier of one effect.
+  MemoryOrderFrontierId internCanonical(SyncEffectId effect) {
+    return internCanonical(llvm::ArrayRef<SyncEffectId>(effect));
+  }
+
+  /// Interns one frontier that is already ascending and free of repeats.
+  MemoryOrderFrontierId internCanonical(llvm::ArrayRef<SyncEffectId> elements) {
+    assert(std::adjacent_find(elements.begin(), elements.end(),
+                              [](SyncEffectId lhs, SyncEffectId rhs) {
+                                return !(lhs < rhs);
+                              }) == elements.end() &&
+           "a canonical frontier is ascending and free of repeats");
+    if (elements.empty())
+      return MemoryOrderFrontierId();
+    const std::uint64_t key = hashOf(elements);
+    llvm::SmallVector<MemoryOrderFrontierId, 1> &bucket = interned_[key];
+    for (MemoryOrderFrontierId candidate : bucket)
+      if (this->elements(candidate) == elements)
+        return candidate;
+
+    if (entries_.size() >= std::numeric_limits<std::uint32_t>::max())
+      llvm::report_fatal_error(
+          "the simulator retained more than 2^32 distinct memory-order "
+          "frontiers in one run; the frontier handle space is exhausted");
+    const MemoryOrderFrontierId id(static_cast<std::uint32_t>(entries_.size()));
+    entries_.push_back(Entry{store(elements), elements.size()});
+    bucket.push_back(id);
+    return id;
+  }
+
+  /// Number of distinct frontiers this run retained, which is the arena's
+  /// share of the run's memory-order state.
+  std::size_t frontierCount() const { return entries_.size() - 1; }
+
+private:
+  struct Entry {
+    const SyncEffectId *data;
+    std::size_t size;
+  };
+
+  // Bump-allocated storage keeps one frontier contiguous and never moves it:
+  // a chunk is allocated once at a fixed capacity and only ever filled, so a
+  // stored frontier keeps its address for the lifetime of the arena.
+  static constexpr std::size_t kChunkElements = 1024;
+
+  // A chunk reserves its capacity once and is only ever appended to, so it
+  // never reallocates and the addresses it hands out stay valid.
+  using Chunk = std::vector<SyncEffectId>;
+
+  // Deterministic incremental hash over the effect identities themselves, so a
+  // frontier of any width is keyed without a temporary copy. The constants are
+  // the 64-bit FNV-1a basis and prime, mixed per effect.
+  static std::uint64_t hashOf(llvm::ArrayRef<SyncEffectId> elements) {
+    std::uint64_t hash = 0xcbf29ce484222325ULL;
+    for (SyncEffectId effect : elements) {
+      std::uint64_t value = effect.value();
+      for (unsigned byte = 0; byte < sizeof(value); ++byte) {
+        hash ^= value & 0xffULL;
+        hash *= 0x100000001b3ULL;
+        value >>= 8;
+      }
+    }
+    // Clearing the top bits keeps the key away from the DenseMap empty and
+    // tombstone identities without weakening the hash in any realistic range.
+    return hash >> 2;
+  }
+
+  const SyncEffectId *store(llvm::ArrayRef<SyncEffectId> elements) {
+    if (chunks_.empty() ||
+        chunks_.back().size() + elements.size() > chunks_.back().capacity()) {
+      chunks_.emplace_back();
+      chunks_.back().reserve(std::max(kChunkElements, elements.size()));
+    }
+    Chunk &chunk = chunks_.back();
+    const SyncEffectId *begin = chunk.data() + chunk.size();
+    chunk.insert(chunk.end(), elements.begin(), elements.end());
+    assert(chunk.size() <= chunk.capacity() &&
+           "a frontier chunk reallocated and invalidated stored frontiers");
+    return begin;
+  }
+
+  std::vector<Entry> entries_;
+  std::vector<Chunk> chunks_;
+  llvm::DenseMap<std::uint64_t, llvm::SmallVector<MemoryOrderFrontierId, 1>>
+      interned_;
+};
+
+/// Memory order that is still being accumulated and has not been published.
+///
+/// This is transient mutable state, never an arena entry: only a frontier that
+/// a token actually carries is interned. Accumulating in place keeps a partial
+/// union out of the arena, so a group that absorbs k effects one firing at a
+/// time costs one growing buffer instead of k retained frontiers.
+///
+/// The reduced flag and the optional published handle are memos of exactly
+/// this content, both dropped by every mutation, so they can never disagree
+/// with the elements. Neither relates two effects and neither is an authority:
+/// MemorySynchronization alone reduces a frontier.
+class MemoryOrderAccumulator {
+public:
+  llvm::ArrayRef<SyncEffectId> elements() const { return elements_; }
+  bool empty() const { return elements_.empty(); }
+
+  void clear() {
+    elements_.clear();
+    absorbed_.clear();
+    reduced_ = false;
+    published_.reset();
+  }
+
+  void append(llvm::ArrayRef<SyncEffectId> effects) {
+    if (effects.empty())
+      return;
+    elements_.append(effects.begin(), effects.end());
+    reduced_ = false;
+    published_.reset();
+  }
+
+  /// Appends one stored frontier and records that this accumulator already
+  /// contains it, so a token carrying exactly that frontier needs no merge.
+  void absorb(llvm::ArrayRef<SyncEffectId> effects,
+              MemoryOrderFrontierId frontier) {
+    absorbed_.insert(frontier.value());
+    append(effects);
+  }
+
+  /// True when this accumulator already absorbed `frontier`, so re-merging it
+  /// would add nothing. Reduction only drops effects that a retained maximal
+  /// member happens-after, so an absorbed frontier stays covered.
+  bool hasAbsorbed(MemoryOrderFrontierId frontier) const {
+    return frontier.empty() || absorbed_.contains(frontier.value());
+  }
+
+  /// Folds another accumulator's elements and absorbed handles into this one.
+  /// An empty contribution changes nothing, so this accumulator's memos stay
+  /// valid exactly when its elements did not grow.
+  void absorbAll(const MemoryOrderAccumulator &other) {
+    absorbed_.insert(other.absorbed_.begin(), other.absorbed_.end());
+    append(other.elements_);
+  }
+
+  /// True once the elements are the canonical maximal members the authority
+  /// returned, so a further reduction of the same content is redundant.
+  bool isReduced() const { return reduced_; }
+
+  /// Replaces the elements with the reduced shape the authority returned.
+  void adoptReduced(llvm::ArrayRef<SyncEffectId> effects) {
+    elements_.assign(effects.begin(), effects.end());
+    reduced_ = true;
+  }
+
+  /// Records the handle interned for exactly the current reduced elements.
+  void markPublished(MemoryOrderFrontierId frontier) {
+    assert(reduced_ && "only a reduced frontier is interned");
+    absorbed_.insert(frontier.value());
+    published_ = frontier;
+  }
+
+  /// The frontier this accumulator already resolved, if it published one.
+  std::optional<MemoryOrderFrontierId> published() const { return published_; }
+
+private:
+  llvm::SmallVector<SyncEffectId, 4> elements_;
+  // Handles whose effects are already inside `elements_`. This is a memo of
+  // the same content, cleared with it, and never a relation.
+  llvm::SmallDenseSet<std::uint32_t, 4> absorbed_;
+  bool reduced_ = false;
+  std::optional<MemoryOrderFrontierId> published_;
+};
+
 struct Token {
   TokenKind kind = TokenKind::None;
   // Index storage and the schema 2.2 projection for integers up to 64 bits.
@@ -58,7 +284,7 @@ struct Token {
   // publication. Generic actor firing may propagate them from that explicit
   // path, but plain memory data publication never injects its action effect.
   // This state is execution-local and never serialized.
-  llvm::SmallVector<SyncEffectId, 1> memoryOrderFrontier;
+  MemoryOrderFrontierId memoryOrder;
 };
 
 struct DataflowMemoryRead {
@@ -85,8 +311,9 @@ struct ParallelizeState {
   ParallelizeSemanticState semanticState;
   llvm::SmallVector<std::optional<Token>, 8> slots;
   // Memory-order frontiers of scalar phases consumed while assembling the
-  // current group. The final firing publishes their union.
-  llvm::SmallVector<SyncEffectId, 2> phaseFrontier;
+  // current group. Only the final firing publishes their union, so this stays
+  // an unpublished accumulator and never interns a partial group.
+  MemoryOrderAccumulator phaseFrontier;
 };
 
 struct MemoryValue {
@@ -374,9 +601,12 @@ struct SimulatorState {
   llvm::DenseMap<mlir::Operation *, LoopState> invariantStates;
   llvm::DenseMap<mlir::Operation *, ParallelizeState> parallelizeStates;
   llvm::DenseSet<mlir::Operation *> gateContinueStates;
-  // Canonical memory order retained by a stateful actor for one activation.
-  // This simulator-only state is separate from the actor's semantic state.
-  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<SyncEffectId, 2>>
+  // Memory-order union retained by a stateful actor for one activation. The
+  // union rests here between the activation's firings, keeping its reduction
+  // and publication memos, and moves into the firing slot for the firing that
+  // publishes it. This simulator-only state is separate from the actor's
+  // semantic state.
+  llvm::DenseMap<mlir::Operation *, MemoryOrderAccumulator>
       activationMemoryOrderFrontiers;
   llvm::DenseSet<mlir::Operation *> oneShotOps;
   llvm::DenseSet<mlir::Operation *> terminalPrimitiveOps;
@@ -404,6 +634,9 @@ struct SimulatorState {
   std::unique_ptr<MemoryAtomicOrder> memoryOrder;
   std::unique_ptr<MemorySynchronization> memorySync;
   PlainMemoryConflictIndex memoryActions;
+  // The one owner of every frontier this run publishes. Tokens and retained
+  // actor state reference it by handle.
+  MemoryOrderFrontierArena memoryOrderFrontiers;
   // Static operation ordinals and the subset whose token queues changed or
   // may still contain another firing. This limits pure admission projection to
   // memory actors whose readiness can have changed.
@@ -417,7 +650,7 @@ struct SimulatorState {
   // The memory-order frontier of the firing in progress. Generic actors
   // propagate it, while memory actors publish only their admitted ctrl/action
   // frontier. This is cleared before each actor attempt.
-  llvm::SmallVector<SyncEffectId, 2> firingMemoryOrderFrontier;
+  MemoryOrderAccumulator firingMemoryOrderFrontier;
 };
 
 struct UnsupportedOperation {
@@ -447,51 +680,48 @@ llvm::Expected<Token> ensurePointerMemory(SimulatorState &state, Token token,
 llvm::Expected<std::int64_t> gepByteOffset(mlir::LLVM::GEPOp op,
                                            llvm::ArrayRef<Token> dynamicTokens);
 
-void mergeMemoryOrderFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
-                              SyncEffectId effect);
-void mergeMemoryOrderFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
-                              llvm::ArrayRef<SyncEffectId> effects);
+/// Canonicalizes `frontier` and reduces it to its maximal members. The
+/// authority owns the reduction; this only shapes the request.
+void reduceMemoryOrderFrontier(SimulatorState &state,
+                               llvm::SmallVectorImpl<SyncEffectId> &frontier);
 
-inline void
-reduceMemoryOrderFrontier(SimulatorState &state,
-                          llvm::SmallVectorImpl<SyncEffectId> &frontier) {
-  if (frontier.size() < 2)
-    return;
-  assert(state.memorySync && "a memory-order witness requires its authority");
-  llvm::SmallVector<SyncEffectId> reduced =
-      llvm::cantFail(state.memorySync->maximalHappensBeforeFrontier(frontier));
-  frontier.assign(reduced.begin(), reduced.end());
-}
+/// Reduces an accumulator in place, without interning it. Order that no token
+/// carries stays out of the arena but still stops growing.
+void reduceMemoryOrder(SimulatorState &state,
+                       MemoryOrderAccumulator &accumulator);
 
-inline void
-mergeAndReduceMemoryOrderFrontier(SimulatorState &state,
-                                  llvm::SmallVectorImpl<SyncEffectId> &into,
-                                  llvm::ArrayRef<SyncEffectId> effects) {
-  mergeMemoryOrderFrontier(into, effects);
-  reduceMemoryOrderFrontier(state, into);
-}
+/// Resolves the frontier an accumulator publishes, reducing and interning it
+/// at most once however many tokens go on to carry it.
+MemoryOrderFrontierId publishMemoryOrder(SimulatorState &state,
+                                         MemoryOrderAccumulator &accumulator);
 
-inline void retainAndPublishActivationMemoryOrder(SimulatorState &state,
-                                                  mlir::Operation *actor) {
-  auto &activation = state.activationMemoryOrderFrontiers[actor];
-  mergeAndReduceMemoryOrderFrontier(state, activation,
-                                    state.firingMemoryOrderFrontier);
-  state.firingMemoryOrderFrontier.assign(activation.begin(), activation.end());
-}
+/// The frontier one emitted token carries: the firing's own published
+/// frontier, merged with order the token brought and the firing never
+/// consumed.
+MemoryOrderFrontierId publishFiredMemoryOrder(SimulatorState &state,
+                                              MemoryOrderFrontierId carried);
 
-inline void retireActivationMemoryOrder(SimulatorState &state,
-                                        mlir::Operation *actor, bool retire) {
-  if (retire)
-    state.activationMemoryOrderFrontiers.erase(actor);
-}
+/// Folds the firing's consumed order into the actor's retained activation
+/// union and hands the union to the firing slot, memos included, so the
+/// firing's emissions publish it. A firing that consumed nothing leaves the
+/// union's memos untouched, and an activation that emits nothing is never
+/// reduced or interned.
+void retainAndPublishActivationMemoryOrder(SimulatorState &state,
+                                           mlir::Operation *actor);
+
+/// Returns the published union to its activation slot for the next firing of
+/// the same activation, or erases it when the activation retired. A retired
+/// union keeps nothing; its frontier lives on in the arena only if a token
+/// carries it.
+void releaseActivationMemoryOrder(SimulatorState &state, mlir::Operation *actor,
+                                  bool retire);
 
 bool hasToken(ChannelMap &channels, mlir::OpOperand &operand);
 Token popToken(SimulatorState &state, mlir::OpOperand &operand);
 Token peekToken(ChannelMap &channels, mlir::OpOperand &operand);
 void emitToken(SimulatorState &state, mlir::Value value, Token token);
 void emitTokenWithMemoryOrder(SimulatorState &state, mlir::Value value,
-                              Token token,
-                              llvm::ArrayRef<SyncEffectId> memoryOrder);
+                              Token token, MemoryOrderFrontierId memoryOrder);
 bool recordEvent(SimulatorState &state, llvm::StringRef opName);
 bool hasComputedAddress(mlir::Value value);
 std::int64_t integerToken(const Token &token);

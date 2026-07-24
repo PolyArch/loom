@@ -249,24 +249,13 @@ bool hasToken(ChannelMap &channels, mlir::OpOperand &operand) {
   return it != channels.end() && !it->second.empty();
 }
 
-void mergeMemoryOrderFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
-                              SyncEffectId effect) {
-  if (!llvm::is_contained(into, effect))
-    into.push_back(effect);
-}
-
-void mergeMemoryOrderFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
-                              llvm::ArrayRef<SyncEffectId> effects) {
-  for (SyncEffectId effect : effects)
-    mergeMemoryOrderFrontier(into, effect);
-}
-
 Token popToken(SimulatorState &state, mlir::OpOperand &operand) {
   auto &queue = state.channels[&operand];
   Token token = queue.front();
   queue.pop_front();
-  mergeMemoryOrderFrontier(state.firingMemoryOrderFrontier,
-                           token.memoryOrderFrontier);
+  state.firingMemoryOrderFrontier.absorb(
+      state.memoryOrderFrontiers.elements(token.memoryOrder),
+      token.memoryOrder);
   ++state.actorMutationEpoch;
   return token;
 }
@@ -284,17 +273,13 @@ static void publishToken(SimulatorState &state, mlir::Value value,
 }
 
 void emitToken(SimulatorState &state, mlir::Value value, Token token) {
-  mergeAndReduceMemoryOrderFrontier(state, token.memoryOrderFrontier,
-                                    state.firingMemoryOrderFrontier);
+  token.memoryOrder = publishFiredMemoryOrder(state, token.memoryOrder);
   publishToken(state, value, token);
 }
 
 void emitTokenWithMemoryOrder(SimulatorState &state, mlir::Value value,
-                              Token token,
-                              llvm::ArrayRef<SyncEffectId> memoryOrder) {
-  token.memoryOrderFrontier.clear();
-  mergeAndReduceMemoryOrderFrontier(state, token.memoryOrderFrontier,
-                                    memoryOrder);
+                              Token token, MemoryOrderFrontierId memoryOrder) {
+  token.memoryOrder = memoryOrder;
   publishToken(state, value, token);
 }
 
