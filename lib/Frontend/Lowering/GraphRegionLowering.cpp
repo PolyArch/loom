@@ -1,5 +1,6 @@
 #include "GraphRegionLowering.h"
 #include "GraphIndexLowering.h"
+#include "GraphParallelLowering.h"
 #include "GraphStreamBoundaryLowering.h"
 #include "RankedMemRefLowering.h"
 
@@ -35,7 +36,6 @@
 
 #include <cassert>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -54,16 +54,14 @@ bool isSupportedGraphLoweringLeaf(::mlir::Operation *op) {
                      ::mlir::LLVM::MemsetOp>(op);
 }
 
-bool hasGraphOwnedParallelProvenance(::mlir::Operation *op) {
-  return op->hasAttr("loom.parallel_group") ||
-         op->hasAttr("loom.parallel_schedule");
-}
-
 } // namespace lowering
 } // namespace loom
 
 namespace {
 
+using ::loom::lowering::FixedParallelDomain;
+using ::loom::lowering::forEachParallelPoint;
+using ::loom::lowering::getFixedParallelDomain;
 using ::loom::lowering::detail::analyzeStreamBinding;
 using ::loom::lowering::detail::analyzeStreamBoundary;
 using ::loom::lowering::detail::checkStreamBoundaryUses;
@@ -84,14 +82,9 @@ struct RegionResult {
 };
 
 struct GatedValue {
+  ::mlir::Value phase;
   ::mlir::Value value;
   ::mlir::Value close;
-};
-
-struct FixedParallelDomain {
-  ::llvm::SmallVector<int64_t, 4> lower;
-  ::llvm::SmallVector<int64_t, 4> upper;
-  ::llvm::SmallVector<int64_t, 4> step;
 };
 
 struct StreamLoweringPlan {
@@ -124,117 +117,6 @@ struct StreamRepeatUse {
   ::mlir::Operation *placeholder;
 };
 
-std::optional<int64_t> getConstantIndex(::mlir::Value value) {
-  ::mlir::APInt constant;
-  if (!::mlir::matchPattern(value, ::mlir::m_ConstantInt(&constant)) ||
-      !constant.isSignedIntN(64))
-    return std::nullopt;
-  return constant.getSExtValue();
-}
-
-std::optional<FixedParallelDomain>
-getFixedParallelDomain(::mlir::scf::ForallOp forall) {
-  auto lower = ::mlir::getConstantIntValues(forall.getMixedLowerBound());
-  auto upper = ::mlir::getConstantIntValues(forall.getMixedUpperBound());
-  auto step = ::mlir::getConstantIntValues(forall.getMixedStep());
-  if (!lower || !upper || !step)
-    return std::nullopt;
-  return FixedParallelDomain{std::move(*lower), std::move(*upper),
-                             std::move(*step)};
-}
-
-std::optional<FixedParallelDomain>
-getFixedParallelDomain(::mlir::scf::ParallelOp parallel) {
-  FixedParallelDomain domain;
-  for (::mlir::Value value : parallel.getLowerBound()) {
-    auto constant = getConstantIndex(value);
-    if (!constant)
-      return std::nullopt;
-    domain.lower.push_back(*constant);
-  }
-  for (::mlir::Value value : parallel.getUpperBound()) {
-    auto constant = getConstantIndex(value);
-    if (!constant)
-      return std::nullopt;
-    domain.upper.push_back(*constant);
-  }
-  for (::mlir::Value value : parallel.getStep()) {
-    auto constant = getConstantIndex(value);
-    if (!constant)
-      return std::nullopt;
-    domain.step.push_back(*constant);
-  }
-  return domain;
-}
-
-std::optional<FixedParallelDomain>
-getFixedParallelDomain(::mlir::Operation *op) {
-  if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(op))
-    return getFixedParallelDomain(forall);
-  if (auto parallel = ::llvm::dyn_cast<::mlir::scf::ParallelOp>(op))
-    return getFixedParallelDomain(parallel);
-  return std::nullopt;
-}
-
-::mlir::LogicalResult checkSelectedParallel(::mlir::Operation *op) {
-  if (!::loom::lowering::hasGraphOwnedParallelProvenance(op)) {
-    op->emitError() << "loom-lower-graph-memory: raw "
-                    << op->getName().getStringRef()
-                    << " requires a selected schedule and provenance before "
-                       "graph-region lowering";
-    return ::mlir::failure();
-  }
-  if (auto mapping = op->getAttrOfType<::mlir::ArrayAttr>("mapping");
-      mapping && !mapping.empty())
-    return op->emitError(
-        "loom-lower-graph-memory: graph-owned parallel SCF must not retain "
-        "an execution-resource mapping");
-  if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(op)) {
-    auto inParallel = forall.getTerminator();
-    if (!forall.getOutputs().empty() || forall.getNumResults() != 0 ||
-        inParallel.getRegion().empty() ||
-        !inParallel.getRegion().front().empty())
-      return forall.emitError(
-          "loom-lower-graph-memory: graph-owned scf.forall must be in "
-          "effect form before fixed-lane lowering");
-  }
-  if (auto parallel = ::llvm::dyn_cast<::mlir::scf::ParallelOp>(op)) {
-    if (!parallel.getInitVals().empty() || parallel.getNumResults() != 0)
-      return parallel.emitError(
-          "loom-lower-graph-memory: graph-owned scf.parallel reductions "
-          "must be normalized before fixed-lane lowering");
-  }
-  auto domain = getFixedParallelDomain(op);
-  if (!domain)
-    return op->emitError(
-        "loom-lower-graph-memory: selected graph-owned parallel SCF requires "
-        "a fixed compile-time lane domain");
-  if (::llvm::any_of(domain->step, [](int64_t step) { return step <= 0; }))
-    return op->emitError(
-        "loom-lower-graph-memory: selected graph-owned parallel SCF requires "
-        "positive fixed lane steps");
-  return ::mlir::success();
-}
-
-void forEachParallelPoint(
-    const FixedParallelDomain &domain, unsigned dimension,
-    ::llvm::SmallVectorImpl<int64_t> &point,
-    ::llvm::function_ref<void(::llvm::ArrayRef<int64_t>)> callback) {
-  if (dimension == domain.lower.size()) {
-    callback(point);
-    return;
-  }
-  int64_t value = domain.lower[dimension];
-  while (value < domain.upper[dimension]) {
-    point.push_back(value);
-    forEachParallelPoint(domain, dimension + 1, point, callback);
-    point.pop_back();
-    if (value > std::numeric_limits<int64_t>::max() - domain.step[dimension])
-      break;
-    value += domain.step[dimension];
-  }
-}
-
 bool isCompilerOwnedControlUse(::mlir::OpOperand &use) {
   ::mlir::Operation *owner = use.getOwner();
   if (auto load = ::llvm::dyn_cast<::dataflow::LoadOp>(owner))
@@ -265,17 +147,6 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
     return graph.emitError(
         "loom-lower-graph-memory: graph entry must start with none");
   if (::mlir::failed(checkStreamBoundaryUses(graph, boundary)))
-    return ::mlir::failure();
-
-  ::mlir::WalkResult parallelResult =
-      graph.getBody().walk([&](::mlir::Operation *op) {
-        if (!::llvm::isa<::mlir::scf::ParallelOp, ::mlir::scf::ForallOp>(op))
-          return ::mlir::WalkResult::advance();
-        if (::mlir::failed(checkSelectedParallel(op)))
-          return ::mlir::WalkResult::interrupt();
-        return ::mlir::WalkResult::advance();
-      });
-  if (parallelResult.wasInterrupted())
     return ::mlir::failure();
 
   ::mlir::WalkResult result = graph.getBody().walk([&](::mlir::Operation *op)
@@ -999,7 +870,7 @@ private:
     auto close = ::dataflow::DemuxOp::create(
         builder, loc, ::mlir::TypeRange{value.getType(), value.getType()},
         gate.getAfterCond(), gate.getAfterValue());
-    return {gate.getAfterValue(), close.getOutputs()[0]};
+    return {gate.getAfterCond(), gate.getAfterValue(), close.getOutputs()[0]};
   }
 
   ::llvm::SmallVector<::mlir::Value, 4>
@@ -1206,9 +1077,8 @@ private:
            "parallel preflight must establish a fixed lane domain");
     ::mlir::Location loc = parallel->getLoc();
     ::llvm::SmallVector<RegionResult, 4> lanes;
-    ::llvm::SmallVector<int64_t, 4> point;
     forEachParallelPoint(
-        domain->second, 0, point, [&](::llvm::ArrayRef<int64_t> coordinates) {
+        domain->second, [&](::llvm::ArrayRef<int64_t> coordinates) {
           ::mlir::IRMapping mapping;
           ::llvm::SmallVector<::mlir::Operation *, 16> laneOperations;
           builder.setInsertionPoint(parallel);
@@ -1735,11 +1605,27 @@ private:
       readCarries[partition]->getCarryMutable().assign(
           afterResult.memory[partition].read);
     }
+
+    auto [finalAfterExecution, continuingAfterExecution] =
+        demux(gatedExecution.phase, afterResult.execution, loc);
+    closeEvents.insert(closeEvents.begin(), finalAfterExecution);
+    ::mlir::Value finalAfterCompletion = joinEvents(closeEvents, loc);
+    ::mlir::Value afterCompletion =
+        mux(gatedExecution.phase, finalAfterCompletion,
+            continuingAfterExecution, loc);
+    setInsertionPoint(loc);
+    auto retirementCarry =
+        ::dataflow::CarryOp::create(builder, loc, builder.getNoneType(),
+                                    selector, execution, afterCompletion);
+    auto [retirementExit, unusedRetirement] =
+        demux(selector, retirementCarry.getOutput(), loc);
+    (void)unusedRetirement;
+
     for (unsigned i = 0; i < whileOp.getNumResults(); ++i)
       whileOp.getResult(i).replaceAllUsesWith(resultValues[i]);
     whileOp.erase();
-    closeEvents.insert(closeEvents.begin(), executionExit);
-    return {joinEvents(closeEvents, loc), std::move(output)};
+    return {joinEvents(::mlir::ValueRange{executionExit, retirementExit}, loc),
+            std::move(output)};
   }
 };
 
@@ -1750,6 +1636,15 @@ namespace lowering {
 
 ::mlir::LogicalResult
 checkGraphRegionLoweringPreconditions(::mlir::ModuleOp module) {
+  ::llvm::SmallVector<::mlir::Operation *, 8> parallelOps;
+  module.walk([&](::mlir::Operation *op) {
+    if (::llvm::isa<::mlir::scf::ParallelOp, ::mlir::scf::ForallOp>(op) &&
+        op->getParentOfType<::dataflow::GraphOp>())
+      parallelOps.push_back(op);
+  });
+  if (::mlir::failed(checkGraphOwnedParallelPreconditions(parallelOps)))
+    return ::mlir::failure();
+
   ::mlir::WalkResult result =
       module.walk([&](::dataflow::GraphOp graph) -> ::mlir::WalkResult {
         if (graph.isExternal())

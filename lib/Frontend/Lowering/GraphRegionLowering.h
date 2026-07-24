@@ -10,7 +10,6 @@ namespace loom {
 namespace lowering {
 
 bool isSupportedGraphLoweringLeaf(::mlir::Operation *op);
-bool hasGraphOwnedParallelProvenance(::mlir::Operation *op);
 
 ::mlir::LogicalResult
 checkGraphRegionLoweringPreconditions(::mlir::ModuleOp module);

@@ -21,7 +21,7 @@ dataflow.graph private @repeat_parallel(
       %index = arith.addi %outer, %lane : index
       %value = memref.load %memory[%index] : memref<?xi32>
       scf.reduce
-    } {loom.parallel_group = 0 : i64}
+    }
   }
   dataflow.graph.return %start : none
 }
@@ -46,7 +46,7 @@ dataflow.graph private @select_parallel(
     scf.parallel (%lane) = (%c0) to (%c2) step (%c1) {
       memref.store %value, %memory[%lane] : memref<?xi32>
       scf.reduce
-    } {loom.parallel_group = 1 : i64}
+    }
   }
   dataflow.graph.return %start : none
 }
@@ -70,6 +70,6 @@ dataflow.graph private @parallel_select(
       %value = memref.load %memory[%lane] : memref<?xi32>
     }
     scf.reduce
-  } {loom.parallel_group = 2 : i64}
+  }
   dataflow.graph.return %start : none
 }

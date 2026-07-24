@@ -1,0 +1,790 @@
+#include "GraphParallelLowering.h"
+
+#include "Common/IndexWidth.h"
+#include "Dataflow/IR/DataflowActorSemantics.h"
+#include "Dataflow/IR/DataflowOps.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/IR/Matchers.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
+#include "llvm/ADT/APInt.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Error.h"
+
+#include <cstdint>
+#include <limits>
+#include <optional>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+namespace loom {
+namespace lowering {
+
+namespace {
+
+std::optional<int64_t> getConstantIndex(::mlir::Value value) {
+  ::mlir::APInt constant;
+  if (!::mlir::matchPattern(value, ::mlir::m_ConstantInt(&constant)) ||
+      !constant.isSignedIntN(64))
+    return std::nullopt;
+  return constant.getSExtValue();
+}
+
+std::optional<FixedParallelDomain>
+getFixedParallelDomain(::mlir::scf::ForallOp forall) {
+  auto lower = ::mlir::getConstantIntValues(forall.getMixedLowerBound());
+  auto upper = ::mlir::getConstantIntValues(forall.getMixedUpperBound());
+  auto step = ::mlir::getConstantIntValues(forall.getMixedStep());
+  if (!lower || !upper || !step)
+    return std::nullopt;
+  return FixedParallelDomain{std::move(*lower), std::move(*upper),
+                             std::move(*step)};
+}
+
+std::optional<FixedParallelDomain>
+getFixedParallelDomain(::mlir::scf::ParallelOp parallel) {
+  FixedParallelDomain domain;
+  for (::mlir::Value value : parallel.getLowerBound()) {
+    auto constant = getConstantIndex(value);
+    if (!constant)
+      return std::nullopt;
+    domain.lower.push_back(*constant);
+  }
+  for (::mlir::Value value : parallel.getUpperBound()) {
+    auto constant = getConstantIndex(value);
+    if (!constant)
+      return std::nullopt;
+    domain.upper.push_back(*constant);
+  }
+  for (::mlir::Value value : parallel.getStep()) {
+    auto constant = getConstantIndex(value);
+    if (!constant)
+      return std::nullopt;
+    domain.step.push_back(*constant);
+  }
+  return domain;
+}
+
+bool forEachParallelPointUntil(
+    const FixedParallelDomain &domain, unsigned dimension,
+    ::llvm::SmallVectorImpl<int64_t> &point,
+    ::llvm::function_ref<bool(::llvm::ArrayRef<int64_t>)> callback) {
+  if (dimension == domain.lower.size())
+    return callback(point);
+
+  int64_t value = domain.lower[dimension];
+  while (value < domain.upper[dimension]) {
+    point.push_back(value);
+    bool keepGoing =
+        forEachParallelPointUntil(domain, dimension + 1, point, callback);
+    point.pop_back();
+    if (!keepGoing)
+      return false;
+    if (value > std::numeric_limits<int64_t>::max() - domain.step[dimension])
+      break;
+    value += domain.step[dimension];
+  }
+  return true;
+}
+
+unsigned pointCountCappedAtTwo(const FixedParallelDomain &domain) {
+  unsigned count = 1;
+  for (auto [lower, upper, step] :
+       ::llvm::zip_equal(domain.lower, domain.upper, domain.step)) {
+    if (lower >= upper)
+      return 0;
+    __int128 distance = static_cast<__int128>(upper) - lower;
+    __int128 extent = (distance + step - 1) / step;
+    if (extent > 1 || count > 1)
+      count = 2;
+  }
+  return count;
+}
+
+bool hasSpatialCarrierAncestor(::mlir::Operation *op) {
+  for (::mlir::Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp())
+    if (parent->getName().getStringRef() == "loom.spatial_region")
+      return true;
+  return false;
+}
+
+struct ParallelMemoryAccess {
+  ::mlir::Operation *op;
+  ::mlir::Value memory;
+  ::llvm::SmallVector<::mlir::Value, 4> address;
+  bool writes;
+  bool atomic;
+};
+
+std::optional<ParallelMemoryAccess>
+getParallelMemoryAccess(::mlir::Operation *op) {
+  auto atomic = [&]() {
+    auto contract = ::dataflow::semantics::getMemoryActorContract(op);
+    return contract && contract->atomic;
+  };
+
+  if (auto load = ::llvm::dyn_cast<::mlir::memref::LoadOp>(op))
+    return ParallelMemoryAccess{
+        op,
+        load.getMemRef(),
+        {load.getIndices().begin(), load.getIndices().end()},
+        /*writes=*/false,
+        /*atomic=*/false};
+  if (auto store = ::llvm::dyn_cast<::mlir::memref::StoreOp>(op))
+    return ParallelMemoryAccess{
+        op,
+        store.getMemRef(),
+        {store.getIndices().begin(), store.getIndices().end()},
+        /*writes=*/true,
+        /*atomic=*/false};
+  if (auto load = ::llvm::dyn_cast<::dataflow::LoadOp>(op))
+    return ParallelMemoryAccess{op,
+                                load.getMem(),
+                                {load.getAddr()},
+                                /*writes=*/false,
+                                atomic()};
+  if (auto store = ::llvm::dyn_cast<::dataflow::StoreOp>(op))
+    return ParallelMemoryAccess{op,
+                                store.getMem(),
+                                {store.getAddr()},
+                                /*writes=*/true,
+                                atomic()};
+  return std::nullopt;
+}
+
+bool hasUnmodeledWriteEffect(::mlir::Operation *op) {
+  if (op->getNumRegions() != 0 ||
+      ::llvm::isa<::mlir::memref::AllocOp, ::mlir::memref::AllocaOp>(op))
+    return false;
+  if (auto contract = ::dataflow::semantics::getMemoryActorContract(op);
+      contract && contract->atomic)
+    return false;
+  auto effects = ::llvm::dyn_cast<::mlir::MemoryEffectOpInterface>(op);
+  if (!effects)
+    return false;
+  ::llvm::SmallVector<::mlir::MemoryEffects::EffectInstance, 4> instances;
+  effects.getEffects(instances);
+  return ::llvm::any_of(instances, [](const auto &effect) {
+    return ::llvm::isa<::mlir::MemoryEffects::Write,
+                       ::mlir::MemoryEffects::Free>(effect.getEffect());
+  });
+}
+
+std::optional<::mlir::Value> mapSpatialArgument(::mlir::Value value) {
+  auto argument = ::llvm::dyn_cast<::mlir::BlockArgument>(value);
+  if (!argument)
+    return std::nullopt;
+  ::mlir::Operation *parent = argument.getOwner()->getParentOp();
+  if (!parent || parent->getName().getStringRef() != "loom.spatial_region" ||
+      argument.getArgNumber() >= parent->getNumOperands())
+    return std::nullopt;
+  return parent->getOperand(argument.getArgNumber());
+}
+
+::mlir::Value mapSpatialArguments(::mlir::Value value) {
+  ::llvm::DenseSet<::mlir::Value> visited;
+  while (value && visited.insert(value).second) {
+    auto mapped = mapSpatialArgument(value);
+    if (!mapped)
+      break;
+    value = *mapped;
+  }
+  return value;
+}
+
+class MemoryRootResolver {
+public:
+  std::optional<::mlir::Value> resolve(::mlir::Value value) {
+    ::llvm::DenseSet<::mlir::Value> visited;
+    while (value && visited.insert(value).second) {
+      if (auto mapped = mapSpatialArgument(value)) {
+        value = *mapped;
+        continue;
+      }
+      if (auto argument = ::llvm::dyn_cast<::mlir::BlockArgument>(value))
+        return resolveBoundaryArgument(argument);
+
+      ::mlir::Operation *def = value.getDefiningOp();
+      if (!def)
+        return std::nullopt;
+      if (::llvm::isa<::mlir::memref::AllocOp, ::mlir::memref::AllocaOp>(def))
+        return value;
+      if (auto global = ::llvm::dyn_cast<::mlir::memref::GetGlobalOp>(def))
+        return globalRoots.try_emplace(global.getNameAttr(), value)
+            .first->second;
+      if (auto view = ::llvm::dyn_cast<::mlir::ViewLikeOpInterface>(def)) {
+        value = view.getViewSource();
+        continue;
+      }
+      if (auto cast =
+              ::llvm::dyn_cast<::mlir::UnrealizedConversionCastOp>(def)) {
+        if (cast.getInputs().size() != 1)
+          return std::nullopt;
+        value = cast.getInputs().front();
+        continue;
+      }
+      return std::nullopt;
+    }
+    return std::nullopt;
+  }
+
+private:
+  ::llvm::DenseMap<::mlir::Operation *, ::mlir::Value> sharedBoundaryRoots;
+  ::llvm::DenseMap<::mlir::FlatSymbolRefAttr, ::mlir::Value> globalRoots;
+
+  std::optional<::mlir::Value>
+  resolveBoundaryArgument(::mlir::BlockArgument argument) {
+    ::mlir::Operation *owner = argument.getOwner()->getParentOp();
+    unsigned inputIndex = argument.getArgNumber();
+    ::mlir::DictionaryAttr attrs;
+
+    if (auto graph = ::llvm::dyn_cast_or_null<::dataflow::GraphOp>(owner)) {
+      if (inputIndex == 0 ||
+          inputIndex > graph.getFunctionType().getNumInputs())
+        return std::nullopt;
+      --inputIndex;
+      attrs =
+          ::mlir::function_interface_impl::getArgAttrDict(graph, inputIndex);
+    } else if (auto thread =
+                   ::llvm::dyn_cast_or_null<::dataflow::ThreadOp>(owner)) {
+      if (inputIndex >= thread.getFunctionType().getNumInputs())
+        return std::nullopt;
+      attrs =
+          ::mlir::function_interface_impl::getArgAttrDict(thread, inputIndex);
+    } else {
+      return std::nullopt;
+    }
+
+    if (attrs && attrs.contains("llvm.noalias"))
+      return argument;
+    return sharedBoundaryRoots.try_emplace(owner, argument).first->second;
+  }
+};
+
+struct LinearExpression {
+  LinearExpression(unsigned width, unsigned laneCount)
+      : constant(width, 0), lanes(laneCount, ::llvm::APInt(width, 0)) {}
+
+  ::llvm::APInt constant;
+  ::llvm::SmallVector<::llvm::APInt, 4> lanes;
+  ::llvm::DenseMap<::mlir::Value, ::llvm::APInt> symbols;
+};
+
+class LinearAddressBuilder {
+public:
+  LinearAddressBuilder(::mlir::Operation *parallel,
+                       ::mlir::ValueRange inductionVars, unsigned width)
+      : parallel(parallel),
+        inductionVars(inductionVars.begin(), inductionVars.end()),
+        width(width) {}
+
+  std::optional<LinearExpression> build(::mlir::Value value) {
+    if (auto found = cache.find(value); found != cache.end())
+      return found->second;
+    if (failed.contains(value) || !active.insert(value).second)
+      return std::nullopt;
+
+    auto finish = [&](std::optional<LinearExpression> expression) {
+      active.erase(value);
+      if (expression)
+        cache.try_emplace(value, *expression);
+      else
+        failed.insert(value);
+      return expression;
+    };
+
+    LinearExpression expression(width, inductionVars.size());
+    for (auto [index, iv] : ::llvm::enumerate(inductionVars)) {
+      if (value != iv)
+        continue;
+      expression.lanes[index] = ::llvm::APInt(width, 1);
+      return finish(std::move(expression));
+    }
+
+    ::mlir::APInt constant;
+    if (::mlir::matchPattern(value, ::mlir::m_ConstantInt(&constant))) {
+      expression.constant = constant.sextOrTrunc(width);
+      return finish(std::move(expression));
+    }
+
+    if (auto mapped = mapSpatialArgument(value))
+      return finish(build(*mapped));
+
+    if (auto argument = ::llvm::dyn_cast<::mlir::BlockArgument>(value)) {
+      ::mlir::Operation *owner = argument.getOwner()->getParentOp();
+      if (owner && parallel->isAncestor(owner))
+        return finish(std::nullopt);
+      addSymbol(expression, value, ::llvm::APInt(width, 1));
+      return finish(std::move(expression));
+    }
+
+    ::mlir::Operation *def = value.getDefiningOp();
+    if (!def || !parallel->isAncestor(def)) {
+      addSymbol(expression, value, ::llvm::APInt(width, 1));
+      return finish(std::move(expression));
+    }
+
+    if (auto add = ::llvm::dyn_cast<::mlir::arith::AddIOp>(def))
+      return finish(combine(add.getLhs(), add.getRhs(), /*subtract=*/false));
+    if (auto sub = ::llvm::dyn_cast<::mlir::arith::SubIOp>(def))
+      return finish(combine(sub.getLhs(), sub.getRhs(), /*subtract=*/true));
+    if (auto mul = ::llvm::dyn_cast<::mlir::arith::MulIOp>(def))
+      return finish(multiply(mul.getLhs(), mul.getRhs()));
+
+    if (!::mlir::isPure(def) || dependsOnLane(value))
+      return finish(std::nullopt);
+    addSymbol(expression, value, ::llvm::APInt(width, 1));
+    return finish(std::move(expression));
+  }
+
+private:
+  ::mlir::Operation *parallel;
+  ::llvm::SmallVector<::mlir::Value, 4> inductionVars;
+  unsigned width;
+  ::llvm::DenseMap<::mlir::Value, LinearExpression> cache;
+  ::llvm::DenseSet<::mlir::Value> failed;
+  ::llvm::DenseSet<::mlir::Value> active;
+  ::llvm::DenseMap<::mlir::Value, bool> dependencyCache;
+  ::llvm::DenseSet<::mlir::Value> dependencyActive;
+
+  void addSymbol(LinearExpression &expression, ::mlir::Value symbol,
+                 ::llvm::APInt coefficient) {
+    if (coefficient.isZero())
+      return;
+    auto found = expression.symbols.find(symbol);
+    if (found == expression.symbols.end()) {
+      expression.symbols.try_emplace(symbol, std::move(coefficient));
+      return;
+    }
+    found->second += coefficient;
+    if (found->second.isZero())
+      expression.symbols.erase(found);
+  }
+
+  void add(LinearExpression &target, const LinearExpression &source,
+           bool subtract) {
+    target.constant = subtract ? target.constant - source.constant
+                               : target.constant + source.constant;
+    for (unsigned index = 0; index < target.lanes.size(); ++index)
+      target.lanes[index] = subtract
+                                ? target.lanes[index] - source.lanes[index]
+                                : target.lanes[index] + source.lanes[index];
+    for (const auto &[symbol, coefficient] : source.symbols)
+      addSymbol(target, symbol, subtract ? -coefficient : coefficient);
+  }
+
+  std::optional<LinearExpression> combine(::mlir::Value lhs, ::mlir::Value rhs,
+                                          bool subtract) {
+    auto left = build(lhs);
+    auto right = build(rhs);
+    if (!left || !right)
+      return std::nullopt;
+    add(*left, *right, subtract);
+    return left;
+  }
+
+  std::optional<LinearExpression> multiply(::mlir::Value lhs,
+                                           ::mlir::Value rhs) {
+    auto left = build(lhs);
+    auto right = build(rhs);
+    if (!left || !right)
+      return std::nullopt;
+
+    auto isConstant = [](const LinearExpression &expression) {
+      return expression.symbols.empty() &&
+             ::llvm::all_of(expression.lanes, [](const ::llvm::APInt &value) {
+               return value.isZero();
+             });
+    };
+    if (!isConstant(*left) && !isConstant(*right))
+      return std::nullopt;
+    if (!isConstant(*left))
+      std::swap(left, right);
+
+    ::llvm::APInt scale = left->constant;
+    right->constant *= scale;
+    for (::llvm::APInt &coefficient : right->lanes)
+      coefficient *= scale;
+    for (auto &[symbol, coefficient] : right->symbols) {
+      (void)symbol;
+      coefficient *= scale;
+    }
+    return right;
+  }
+
+  bool dependsOnLane(::mlir::Value value) {
+    if (auto found = dependencyCache.find(value);
+        found != dependencyCache.end())
+      return found->second;
+    if (!dependencyActive.insert(value).second)
+      return true;
+
+    bool depends = ::llvm::is_contained(inductionVars, value);
+    if (!depends) {
+      if (auto mapped = mapSpatialArgument(value)) {
+        depends = dependsOnLane(*mapped);
+      } else if (auto argument =
+                     ::llvm::dyn_cast<::mlir::BlockArgument>(value)) {
+        ::mlir::Operation *owner = argument.getOwner()->getParentOp();
+        depends = owner && parallel->isAncestor(owner);
+      } else if (::mlir::Operation *def = value.getDefiningOp();
+                 def && parallel->isAncestor(def)) {
+        depends =
+            def->getNumRegions() != 0 ||
+            ::llvm::any_of(def->getOperands(), [&](::mlir::Value operand) {
+              return dependsOnLane(operand);
+            });
+      }
+    }
+
+    dependencyActive.erase(value);
+    dependencyCache.try_emplace(value, depends);
+    return depends;
+  }
+};
+
+bool sameSymbols(const LinearExpression &lhs, const LinearExpression &rhs) {
+  if (lhs.symbols.size() != rhs.symbols.size())
+    return false;
+  for (const auto &[symbol, coefficient] : lhs.symbols) {
+    auto found = rhs.symbols.find(symbol);
+    if (found == rhs.symbols.end() || found->second != coefficient)
+      return false;
+  }
+  return true;
+}
+
+::llvm::APInt evaluateLaneConstant(const LinearExpression &expression,
+                                   ::llvm::ArrayRef<int64_t> point) {
+  ::llvm::APInt result = expression.constant;
+  for (auto [coefficient, coordinate] :
+       ::llvm::zip_equal(expression.lanes, point))
+    result += coefficient * ::llvm::APInt(result.getBitWidth(),
+                                          static_cast<uint64_t>(coordinate),
+                                          /*isSigned=*/true);
+  return result;
+}
+
+struct AddressKeyHash {
+  std::size_t operator()(const std::vector<::llvm::APInt> &address) const {
+    ::llvm::hash_code hash = ::llvm::hash_value(address.size());
+    for (const ::llvm::APInt &coordinate : address)
+      hash = ::llvm::hash_combine(hash, coordinate);
+    return hash;
+  }
+};
+
+struct SeenAddress {
+  uint64_t firstLane;
+  bool multipleLanes = false;
+  bool writes = false;
+  bool allAtomic = true;
+};
+
+struct ParallelCheckInfo {
+  ::mlir::Operation *op;
+  FixedParallelDomain domain;
+  bool owned;
+  ::llvm::SmallVector<ParallelMemoryAccess, 8> accesses;
+  ::mlir::Operation *unmodeledWrite = nullptr;
+};
+
+::mlir::LogicalResult checkLaneMemoryLegality(ParallelCheckInfo &info) {
+  if (pointCountCappedAtTwo(info.domain) <= 1)
+    return ::mlir::success();
+  if (info.unmodeledWrite)
+    return info.unmodeledWrite->emitError(
+        "loom-lower-graph-memory: parallel lane effect has no disjoint, "
+        "atomic, reduction, or ordered proof");
+
+  bool anyWrite =
+      ::llvm::any_of(info.accesses, [](const ParallelMemoryAccess &access) {
+        return access.writes;
+      });
+  if (!anyWrite)
+    return ::mlir::success();
+
+  bool allAtomic =
+      ::llvm::all_of(info.accesses, [](const ParallelMemoryAccess &access) {
+        return access.atomic;
+      });
+  MemoryRootResolver roots;
+  ::llvm::DenseMap<::mlir::Value,
+                   ::llvm::SmallVector<const ParallelMemoryAccess *, 4>>
+      accessesByRoot;
+  bool unresolved = false;
+  for (const ParallelMemoryAccess &access : info.accesses) {
+    auto root = roots.resolve(access.memory);
+    if (!root) {
+      unresolved = true;
+      continue;
+    }
+    accessesByRoot[*root].push_back(&access);
+  }
+  if (unresolved && !allAtomic)
+    return info.op->emitError(
+        "loom-lower-graph-memory: parallel lane memory effects are not "
+        "provably disjoint");
+
+  ::llvm::Expected<unsigned> indexBits = ::loom::getIndexBitWidth(info.op);
+  if (!indexBits)
+    return info.op->emitError("loom-lower-graph-memory: ")
+           << ::llvm::toString(indexBits.takeError());
+
+  ::llvm::SmallVector<::mlir::Value, 4> inductionVars;
+  if (auto parallel = ::llvm::dyn_cast<::mlir::scf::ParallelOp>(info.op)) {
+    auto vars = parallel.getInductionVars();
+    inductionVars.append(vars.begin(), vars.end());
+  } else {
+    auto forall = ::mlir::cast<::mlir::scf::ForallOp>(info.op);
+    auto vars = forall.getInductionVars();
+    inductionVars.append(vars.begin(), vars.end());
+  }
+  LinearAddressBuilder expressions(info.op, inductionVars, *indexBits);
+
+  for (auto &[root, rootAccesses] : accessesByRoot) {
+    (void)root;
+    bool rootWrites =
+        ::llvm::any_of(rootAccesses, [](const ParallelMemoryAccess *access) {
+          return access->writes;
+        });
+    bool rootAtomic =
+        ::llvm::all_of(rootAccesses, [](const ParallelMemoryAccess *access) {
+          return access->atomic;
+        });
+    if (!rootWrites || rootAtomic)
+      continue;
+
+    ::mlir::Value memory = mapSpatialArguments(rootAccesses.front()->memory);
+    if (::llvm::any_of(rootAccesses, [&](const ParallelMemoryAccess *access) {
+          return mapSpatialArguments(access->memory) != memory;
+        }))
+      return info.op->emitError(
+          "loom-lower-graph-memory: parallel lane memory effects are not "
+          "provably disjoint");
+
+    struct AccessExpressions {
+      const ParallelMemoryAccess *access;
+      ::llvm::SmallVector<LinearExpression, 4> address;
+    };
+    ::llvm::SmallVector<AccessExpressions, 8> analyzed;
+    for (const ParallelMemoryAccess *access : rootAccesses) {
+      if (::llvm::any_of(access->address, [](const ::mlir::Value value) {
+            return !::llvm::isa<::mlir::IndexType>(value.getType());
+          }))
+        return info.op->emitError(
+            "loom-lower-graph-memory: parallel lane memory effects are not "
+            "provably disjoint");
+
+      AccessExpressions one{access, {}};
+      for (::mlir::Value address : access->address) {
+        auto expression = expressions.build(address);
+        if (!expression)
+          return info.op->emitError(
+              "loom-lower-graph-memory: parallel lane memory effects are not "
+              "provably disjoint");
+        one.address.push_back(std::move(*expression));
+      }
+      analyzed.push_back(std::move(one));
+    }
+
+    unsigned rank = analyzed.front().address.size();
+    if (::llvm::any_of(analyzed, [&](const AccessExpressions &access) {
+          return access.address.size() != rank;
+        }))
+      return info.op->emitError(
+          "loom-lower-graph-memory: parallel lane memory effects are not "
+          "provably disjoint");
+
+    ::llvm::SmallVector<unsigned, 4> comparableDimensions;
+    for (unsigned dimension = 0; dimension < rank; ++dimension) {
+      const LinearExpression &reference = analyzed.front().address[dimension];
+      if (::llvm::all_of(analyzed, [&](const AccessExpressions &access) {
+            return sameSymbols(reference, access.address[dimension]);
+          }))
+        comparableDimensions.push_back(dimension);
+    }
+    if (comparableDimensions.empty())
+      return info.op->emitError(
+          "loom-lower-graph-memory: parallel lane memory effects are not "
+          "provably disjoint");
+
+    std::unordered_map<std::vector<::llvm::APInt>, SeenAddress, AddressKeyHash>
+        seen;
+    uint64_t lane = 0;
+    bool overlap = false;
+    ::llvm::SmallVector<int64_t, 4> point;
+    (void)forEachParallelPointUntil(
+        info.domain, 0, point, [&](::llvm::ArrayRef<int64_t> coordinates) {
+          uint64_t currentLane = lane++;
+          for (const AccessExpressions &access : analyzed) {
+            std::vector<::llvm::APInt> key;
+            key.reserve(comparableDimensions.size());
+            for (unsigned dimension : comparableDimensions)
+              key.push_back(
+                  evaluateLaneConstant(access.address[dimension], coordinates));
+
+            auto [found, inserted] = seen.try_emplace(
+                std::move(key),
+                SeenAddress{currentLane, /*multipleLanes=*/false,
+                            access.access->writes, access.access->atomic});
+            if (inserted)
+              continue;
+
+            SeenAddress &previous = found->second;
+            bool differentLane =
+                previous.firstLane != currentLane || previous.multipleLanes;
+            if (differentLane && (previous.writes || access.access->writes) &&
+                (!previous.allAtomic || !access.access->atomic)) {
+              overlap = true;
+              return false;
+            }
+            if (previous.firstLane != currentLane)
+              previous.multipleLanes = true;
+            previous.writes |= access.access->writes;
+            previous.allAtomic &= access.access->atomic;
+          }
+          return true;
+        });
+    if (overlap)
+      return info.op->emitError(
+          "loom-lower-graph-memory: parallel lanes have overlapping plain "
+          "memory effects");
+  }
+  return ::mlir::success();
+}
+
+} // namespace
+
+std::optional<FixedParallelDomain>
+getFixedParallelDomain(::mlir::Operation *op) {
+  if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(op))
+    return getFixedParallelDomain(forall);
+  if (auto parallel = ::llvm::dyn_cast<::mlir::scf::ParallelOp>(op))
+    return getFixedParallelDomain(parallel);
+  return std::nullopt;
+}
+
+void forEachParallelPoint(
+    const FixedParallelDomain &domain,
+    ::llvm::function_ref<void(::llvm::ArrayRef<int64_t>)> callback) {
+  ::llvm::SmallVector<int64_t, 4> point;
+  (void)forEachParallelPointUntil(domain, 0, point,
+                                  [&](::llvm::ArrayRef<int64_t> coordinates) {
+                                    callback(coordinates);
+                                    return true;
+                                  });
+}
+
+::mlir::LogicalResult checkGraphOwnedParallelPreconditions(
+    ::llvm::ArrayRef<::mlir::Operation *> parallelOps) {
+  if (parallelOps.empty())
+    return ::mlir::success();
+
+  ::llvm::DenseMap<::mlir::Operation *, ParallelCheckInfo> checks;
+  for (::mlir::Operation *op : parallelOps) {
+    if (op->hasAttr("loom.parallel_group") ||
+        op->hasAttr("loom.parallel_schedule"))
+      return op->emitError(
+          "loom-lower-graph-memory: parallel SCF carries unsupported author "
+          "metadata");
+
+    if (auto mapping = op->getAttrOfType<::mlir::ArrayAttr>("mapping");
+        mapping && !mapping.empty())
+      return op->emitError(
+          "loom-lower-graph-memory: graph-owned parallel SCF must not retain "
+          "an execution-resource mapping");
+
+    if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(op)) {
+      auto inParallel = forall.getTerminator();
+      if (!forall.getOutputs().empty() || forall.getNumResults() != 0 ||
+          inParallel.getRegion().empty() ||
+          !inParallel.getRegion().front().empty())
+        return forall.emitError(
+            "loom-lower-graph-memory: graph-owned scf.forall must be in "
+            "effect form before fixed-lane lowering");
+    } else {
+      auto parallel = ::mlir::cast<::mlir::scf::ParallelOp>(op);
+      auto reduce = ::mlir::cast<::mlir::scf::ReduceOp>(
+          parallel.getBody()->getTerminator());
+      if (!parallel.getInitVals().empty() || parallel.getNumResults() != 0 ||
+          !reduce.getOperands().empty() || !reduce.getReductions().empty())
+        return parallel.emitError(
+            "loom-lower-graph-memory: graph-owned scf.parallel reductions "
+            "must be normalized before fixed-lane lowering");
+    }
+
+    auto domain = getFixedParallelDomain(op);
+    if (!domain)
+      return op->emitError(
+          "loom-lower-graph-memory: selected graph-owned parallel SCF "
+          "requires a fixed compile-time lane domain");
+    if (::llvm::any_of(domain->step, [](int64_t step) { return step <= 0; }))
+      return op->emitError(
+          "loom-lower-graph-memory: selected graph-owned parallel SCF "
+          "requires positive fixed lane steps");
+
+    bool graphOwned =
+        static_cast<bool>(op->getParentOfType<::dataflow::GraphOp>());
+    checks.try_emplace(
+        op, ParallelCheckInfo{op,
+                              std::move(*domain),
+                              graphOwned || hasSpatialCarrierAncestor(op),
+                              {},
+                              nullptr});
+  }
+
+  ::mlir::Operation *root = parallelOps.front();
+  while (root->getParentOp())
+    root = root->getParentOp();
+  root->walk([&](::mlir::Operation *nested) {
+    if (nested->getName().getStringRef() == "loom.spatial_region") {
+      for (::mlir::Operation *parent = nested->getParentOp(); parent;
+           parent = parent->getParentOp()) {
+        auto found = checks.find(parent);
+        if (found != checks.end())
+          found->second.owned = true;
+      }
+    }
+
+    auto access = getParallelMemoryAccess(nested);
+    bool unmodeledWrite = !access && hasUnmodeledWriteEffect(nested);
+    if (!access && !unmodeledWrite)
+      return ::mlir::WalkResult::advance();
+    for (::mlir::Operation *parent = nested->getParentOp(); parent;
+         parent = parent->getParentOp()) {
+      auto found = checks.find(parent);
+      if (found == checks.end())
+        continue;
+      if (access)
+        found->second.accesses.push_back(*access);
+      else if (!found->second.unmodeledWrite)
+        found->second.unmodeledWrite = nested;
+    }
+    return ::mlir::WalkResult::advance();
+  });
+
+  for (auto &entry : checks) {
+    ParallelCheckInfo &info = entry.second;
+    if (!info.owned)
+      return info.op->emitError(
+          "loom-lower-graph-memory: raw parallel SCF has no compiler-owned "
+          "graph or spatial structure");
+    if (::mlir::failed(checkLaneMemoryLegality(info)))
+      return ::mlir::failure();
+  }
+  return ::mlir::success();
+}
+
+} // namespace lowering
+} // namespace loom

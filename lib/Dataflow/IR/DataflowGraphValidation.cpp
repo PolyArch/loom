@@ -886,8 +886,8 @@ private:
       return aligned;
     }
     if (auto gate = llvm::dyn_cast<dataflow::GateOp>(def)) {
-      if (!truePhaseOnly || value != gate.getAfterValue() ||
-          gate.getBeforeCond() != phase)
+      if (!truePhaseOnly || gate.getBeforeCond() != phase ||
+          (value != gate.getAfterCond() && value != gate.getAfterValue()))
         return false;
       llvm::DenseSet<mlir::Value> branchVisited = visited;
       return isAligned(gate.getBeforeValue(), phase, assumption,
@@ -1057,6 +1057,10 @@ private:
         }
       }
       result &= closeInputs == 1;
+    } else {
+      llvm::SmallVector<dataflow::CarryOp, 4> carries;
+      collectAlignedCarries(value, carries);
+      result = !carries.empty() && isCarrySystemAligned(value);
     }
     oneCloseActive.erase(value);
     oneClosePhase.try_emplace(value, result);

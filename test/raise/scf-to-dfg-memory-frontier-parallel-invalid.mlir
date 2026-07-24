@@ -1,11 +1,42 @@
-// RUN: not loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %s 2>&1 | FileCheck %s
+// RUN: rm -rf %t.dir
+// RUN: split-file %s %t.dir
+// RUN: not loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/forged.mlir 2>&1 | FileCheck %s --check-prefix=FORGED
+// RUN: not loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/overlap.mlir 2>&1 | FileCheck %s --check-prefix=OVERLAP
 
-// CHECK: error: loom-lower-graph-memory: raw scf.parallel requires a selected schedule and provenance before graph-region lowering
-// CHECK-LABEL: dataflow.graph private @would_be_rewritten
-// CHECK: memref.load
-// CHECK-NOT: dataflow.load
-// CHECK-LABEL: dataflow.graph private @raw_parallel
-// CHECK: scf.parallel
+// FORGED: error: loom-lower-graph-memory: parallel SCF carries unsupported author metadata
+// FORGED-LABEL: dataflow.graph private @forged_parallel
+// FORGED: scf.parallel
+// FORGED: memref.store
+// FORGED: loom.parallel_group
+// FORGED: loom.parallel_schedule
+// FORGED-NOT: dataflow.store
+
+//--- forged.mlir
+dataflow.graph private @forged_parallel(
+    %start: none, %a: memref<?xi32>) -> ()
+    attributes {input_segments = array<i32: 0, 0, 1>,
+                result_segments = array<i32: 0, 0, 0>} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %value = arith.constant 7 : i32
+  scf.parallel (%i) = (%c0) to (%c2) step (%c1) {
+    memref.store %value, %a[%i] : memref<?xi32>
+    scf.reduce
+  } {loom.parallel_group = 7 : i64, loom.parallel_schedule}
+  dataflow.graph.return %start : none
+}
+
+//--- overlap.mlir
+
+// OVERLAP: error: loom-lower-graph-memory: parallel lanes have overlapping plain memory effects
+// OVERLAP-LABEL: dataflow.graph private @would_be_rewritten
+// OVERLAP: memref.load
+// OVERLAP-NOT: dataflow.load
+// OVERLAP-LABEL: dataflow.graph private @overlapping_parallel
+// OVERLAP: scf.parallel
+// OVERLAP: memref.store
+// OVERLAP-NOT: dataflow.store
 dataflow.graph private @would_be_rewritten(
     %start: none, %index: index, %a: memref<?xi32>) -> ()
     attributes {input_segments = array<i32: 1, 0, 1>,
@@ -14,13 +45,16 @@ dataflow.graph private @would_be_rewritten(
   dataflow.graph.return %start : none
 }
 
-dataflow.graph private @raw_parallel(
-    %start: none, %lb: index, %ub: index, %step: index,
-    %a: memref<?xi32>) -> ()
-    attributes {input_segments = array<i32: 3, 0, 1>,
+dataflow.graph private @overlapping_parallel(
+    %start: none, %a: memref<?xi32>) -> ()
+    attributes {input_segments = array<i32: 0, 0, 1>,
                 result_segments = array<i32: 0, 0, 0>} {
-  scf.parallel (%i) = (%lb) to (%ub) step (%step) {
-    %value = memref.load %a[%i] : memref<?xi32>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %value = arith.constant 7 : i32
+  scf.parallel (%i) = (%c0) to (%c2) step (%c1) {
+    memref.store %value, %a[%c0] : memref<?xi32>
     scf.reduce
   }
   dataflow.graph.return %start : none

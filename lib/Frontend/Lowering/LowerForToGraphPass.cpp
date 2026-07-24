@@ -5,6 +5,7 @@
 // the segmented payload boundary plus retirement frontier.
 
 #include "Frontend/Lowering/Passes.h"
+#include "GraphParallelLowering.h"
 #include "GraphRegionLowering.h"
 
 #include "Dataflow/IR/DataflowActorSemantics.h"
@@ -43,10 +44,13 @@
 
 #include <algorithm>
 #include <array>
-#include <limits>
 #include <optional>
 
 namespace {
+
+using ::loom::lowering::FixedParallelDomain;
+using ::loom::lowering::forEachParallelPoint;
+using ::loom::lowering::getFixedParallelDomain;
 
 bool followsOnSameStructuredPath(::mlir::Operation *first,
                                  ::mlir::Operation *second,
@@ -343,12 +347,6 @@ void addThreadCompletionFrontier(::dataflow::ThreadOp thread,
   yield.getCompletionFrontierMutable().assign(frontier);
 }
 
-struct FixedParallelDomain {
-  ::llvm::SmallVector<int64_t, 4> lower;
-  ::llvm::SmallVector<int64_t, 4> upper;
-  ::llvm::SmallVector<int64_t, 4> step;
-};
-
 struct PendingGraphCompletion {
   ::dataflow::GraphLaunchOp launch;
   ::llvm::SmallVector<::mlir::Operation *, 4> channelRetirementAnchors;
@@ -387,91 +385,6 @@ void publishParallelCompletionCandidates(
                        .front();
     }
     addThreadCompletionFrontier(candidate.thread, completion);
-  }
-}
-
-std::optional<FixedParallelDomain>
-getFixedParallelDomain(::mlir::Operation *op) {
-  auto loop = ::llvm::dyn_cast<::mlir::LoopLikeOpInterface>(op);
-  if (!loop)
-    return std::nullopt;
-  auto lower = loop.getLoopLowerBounds();
-  auto upper = loop.getLoopUpperBounds();
-  auto step = loop.getLoopSteps();
-  if (!lower || !upper || !step)
-    return std::nullopt;
-
-  FixedParallelDomain domain;
-  auto appendConstants = [](::llvm::ArrayRef<::mlir::OpFoldResult> values,
-                            ::llvm::SmallVectorImpl<int64_t> &constants) {
-    for (::mlir::OpFoldResult value : values) {
-      auto constant = ::mlir::getConstantIntValue(value);
-      if (!constant)
-        return false;
-      constants.push_back(*constant);
-    }
-    return true;
-  };
-  if (!appendConstants(*lower, domain.lower) ||
-      !appendConstants(*upper, domain.upper) ||
-      !appendConstants(*step, domain.step))
-    return std::nullopt;
-  return domain;
-}
-
-::mlir::LogicalResult checkFixedParallelCompletion(::mlir::Operation *op) {
-  if (!::loom::lowering::hasGraphOwnedParallelProvenance(op))
-    return op->emitError(
-        "completion propagation through parallel SCF requires selected "
-        "parallel provenance");
-  if (auto mapping = op->getAttrOfType<::mlir::ArrayAttr>("mapping");
-      mapping && !mapping.empty())
-    return op->emitError(
-        "completion propagation through mapped parallel SCF is unsupported");
-
-  if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(op)) {
-    auto terminator = forall.getTerminator();
-    if (!forall.getOutputs().empty() || forall.getNumResults() != 0 ||
-        terminator.getRegion().empty() ||
-        !terminator.getRegion().front().empty())
-      return forall.emitError(
-          "completion propagation requires effect-form scf.forall");
-  } else {
-    auto parallel = ::mlir::cast<::mlir::scf::ParallelOp>(op);
-    auto reduce = ::mlir::cast<::mlir::scf::ReduceOp>(
-        parallel.getBody()->getTerminator());
-    if (!parallel.getInitVals().empty() || parallel.getNumResults() != 0 ||
-        !reduce.getOperands().empty() || !reduce.getReductions().empty())
-      return parallel.emitError(
-          "completion propagation requires effect-form scf.parallel");
-  }
-
-  auto domain = getFixedParallelDomain(op);
-  if (!domain)
-    return op->emitError(
-        "completion propagation requires a fixed parallel domain");
-  if (::llvm::any_of(domain->step, [](int64_t step) { return step <= 0; }))
-    return op->emitError(
-        "completion propagation requires positive fixed parallel steps");
-  return ::mlir::success();
-}
-
-void forEachParallelPoint(
-    const FixedParallelDomain &domain, unsigned dimension,
-    ::llvm::SmallVectorImpl<int64_t> &point,
-    ::llvm::function_ref<void(::llvm::ArrayRef<int64_t>)> callback) {
-  if (dimension == domain.lower.size()) {
-    callback(point);
-    return;
-  }
-  int64_t value = domain.lower[dimension];
-  while (value < domain.upper[dimension]) {
-    point.push_back(value);
-    forEachParallelPoint(domain, dimension + 1, point, callback);
-    point.pop_back();
-    if (value > std::numeric_limits<int64_t>::max() - domain.step[dimension])
-      break;
-    value += domain.step[dimension];
   }
 }
 
@@ -756,9 +669,8 @@ void replaceLaunchEntryDependency(::dataflow::GraphLaunchOp launch,
 
     ::mlir::LogicalResult status = ::mlir::success();
     ::llvm::SmallVector<::mlir::Value, 4> laneCompletions;
-    ::llvm::SmallVector<int64_t, 4> point;
     forEachParallelPoint(
-        *domain, 0, point, [&](::llvm::ArrayRef<int64_t> coordinates) {
+        *domain, [&](::llvm::ArrayRef<int64_t> coordinates) {
           if (::mlir::failed(status))
             return;
           ::mlir::IRMapping mapping;
@@ -1082,6 +994,8 @@ struct LowerForToGraphPass
     module.walk(
         [&](::loom::SpatialRegionOp spatial) { regions.push_back(spatial); });
 
+    ::llvm::DenseSet<::mlir::Operation *> parallelSet;
+    ::llvm::SmallVector<::mlir::Operation *, 8> parallelOps;
     for (::loom::SpatialRegionOp spatial : regions) {
       auto thread = spatial->getParentOfType<::dataflow::ThreadOp>();
       if (!thread)
@@ -1096,8 +1010,8 @@ struct LowerForToGraphPass
           continue;
         if (::llvm::isa<::mlir::scf::ParallelOp, ::mlir::scf::ForallOp>(
                 parent)) {
-          if (::mlir::failed(checkFixedParallelCompletion(parent)))
-            return ::mlir::failure();
+          if (parallelSet.insert(parent).second)
+            parallelOps.push_back(parent);
           continue;
         }
         return spatial.emitOpError("completion propagation through enclosing '")
@@ -1106,6 +1020,9 @@ struct LowerForToGraphPass
                   "published";
       }
     }
+    if (::mlir::failed(::loom::lowering::checkGraphOwnedParallelPreconditions(
+            parallelOps)))
+      return ::mlir::failure();
 
     PendingLaunchDependencies pendingLaunchDependencies;
     ::llvm::SmallVector<PendingGraphCompletion, 8> pendingCompletions;

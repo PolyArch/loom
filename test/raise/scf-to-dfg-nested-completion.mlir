@@ -133,7 +133,7 @@ module {
               <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
       }) {graph_name = "parallel_graph", source_maps = []} : () -> ()
       scf.reduce
-    } {loom.parallel_group = 0 : i64}
+    }
     dataflow.thread.yield
   }
 
@@ -146,7 +146,7 @@ module {
           "loom.spatial_yield"()
               <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
       }) {graph_name = "forall_graph", source_maps = []} : () -> ()
-    } {loom.parallel_group = 1 : i64}
+    }
     dataflow.thread.yield
   }
 }

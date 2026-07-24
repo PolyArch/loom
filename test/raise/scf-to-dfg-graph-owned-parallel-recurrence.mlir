@@ -33,7 +33,7 @@ dataflow.thread private @parallel_recurrence(
           scf.yield %next : index
         }
         memref.store %sum, %target[%lane] : memref<?xindex>
-      } {loom.parallel_group = 3 : i64}
+      }
       "loom.spatial_yield"()
           <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
   }) {graph_name = "g_parallel_recurrence_0", source_maps = []} :
@@ -72,7 +72,7 @@ dataflow.thread private @selected_nested_recurrence(
           }
           memref.store %sum, %target[%lane] : memref<?xindex>
           scf.reduce
-        } {loom.parallel_schedule, loom.parallel_group = 4 : i64}
+        }
       }
       "loom.spatial_yield"()
           <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()

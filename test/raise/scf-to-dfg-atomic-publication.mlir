@@ -58,7 +58,7 @@ dataflow.thread private @parallel_channel_sender(
     ^bb0(%payload: i32, %output: !dataflow.channel<i32>):
       scf.forall (%lane) in (2) {
         dataflow.channel.send %output, %payload : !dataflow.channel<i32>
-      } {loom.parallel_group = 0 : i64}
+      }
       "loom.spatial_yield"()
           <{operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
   }) {graph_name = "parallel_channel_graph", source_maps = []} :
