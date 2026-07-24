@@ -21,10 +21,10 @@ all live here:
     CIRCT build links against cannot be rebuilt or wiped concurrently.
     `make loom` never builds CIRCT; it only offers an already-built,
     stamped CIRCT whose identity matches the ensured LLVM build.
-  * A deterministic stamp records the validated CIRCT/LLVM pins, exact
-    LLVM compiler identities, and semantic CMake arguments. Identity
-    drift discards the shared build before reconfiguration. The CIRCT
-    stamp layers on the full LLVM identity plus CIRCT args and target.
+  * Separate deterministic stamps record the validated LLVM and CIRCT
+    identities. LLVM owns its source pin, compiler identities, and semantic
+    CMake arguments; CIRCT layers its source pin and semantic arguments on
+    the exact LLVM identity.
   * If a per-worktree loom build was configured against a shared LLVM
     that has since been wiped (e.g. main ran `distclean`), the stale
     loom build directory is removed before reconfiguring.
@@ -35,7 +35,7 @@ all live here:
 from __future__ import annotations
 
 import argparse
-import errno
+import ctypes
 import fcntl
 import json
 import math
@@ -43,9 +43,11 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -56,6 +58,15 @@ LLVM_GCC_MIN = (7, 4)
 LOOM_C_COMPILER = "clang"
 LOOM_CXX_COMPILER = "clang++"
 LOOM_CLANG_MIN = (21, 1, 8)
+MAX_LOCK_TIMEOUT = 3600.0
+CHILD_TERMINATION_GRACE = 1.0
+_LIBC = (
+    ctypes.CDLL(None, use_errno=True)
+    if sys.platform.startswith("linux")
+    else None
+)
+_PR_SET_PDEATHSIG = 1
+_SUPERVISE_COMMAND = "--internal-supervise-command"
 LLVM_SEMANTIC_CMAKE_ARGS = (
     "-DCMAKE_BUILD_TYPE=Release",
     "-DLLVM_ENABLE_PROJECTS=mlir;clang",
@@ -79,10 +90,6 @@ CIRCT_SEMANTIC_CMAKE_ARGS = (
     "-DCIRCT_INCLUDE_TESTS=OFF",
     "-DCIRCT_INCLUDE_DOCS=OFF",
 )
-# The single CIRCT target the loom build links against. Building it pulls
-# CIRCTHW, CIRCTSV, CIRCTComb, CIRCTSupport and the ExportVerilog pass plus
-# their transitive dependencies, without building the full CIRCT tool suite.
-CIRCT_BUILD_TARGETS = ("CIRCTExportVerilog",)
 
 
 def info(msg: str) -> None:
@@ -100,14 +107,115 @@ def die(msg: str, code: int = 1) -> None:
 
 def validate_lock_timeout(value: str | float) -> float:
     timeout = float(value)
-    if not math.isfinite(timeout) or timeout < 0:
-        raise ValueError("lock timeout must be finite and nonnegative")
+    if (
+        not math.isfinite(timeout)
+        or timeout < 0
+        or timeout > MAX_LOCK_TIMEOUT
+    ):
+        raise ValueError(
+            f"lock timeout must be between 0 and {MAX_LOCK_TIMEOUT:g} seconds"
+        )
     return timeout
+
+
+class _CommandInterrupted(Exception):
+    def __init__(self, signum: int):
+        self.signum = signum
+
+
+def _set_parent_death_signal(death_signal: int) -> None:
+    if _LIBC is None:
+        return
+    if _LIBC.prctl(_PR_SET_PDEATHSIG, death_signal, 0, 0, 0) != 0:
+        os._exit(127)
+
+
+def _supervise_command(argv: list[str]) -> None:
+    """Run one command and kill its process group if the dispatcher dies."""
+    if len(argv) < 2:
+        os._exit(127)
+    try:
+        expected_parent = int(argv[0])
+    except ValueError:
+        os._exit(127)
+
+    def parent_died(signum, frame):
+        os.killpg(os.getpgrp(), signal.SIGKILL)
+
+    for watched in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(watched, parent_died)
+    _set_parent_death_signal(signal.SIGTERM)
+    if os.getppid() != expected_parent:
+        parent_died(signal.SIGTERM, None)
+
+    process = subprocess.Popen(argv[1:], close_fds=True)
+    returncode = process.wait()
+    if returncode < 0:
+        returncode = 128 - returncode
+    os._exit(returncode)
+
+
+def _terminate_process_group(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=CHILD_TERMINATION_GRACE)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
 
 
 def run(cmd, **kwargs) -> subprocess.CompletedProcess:
     info("$ " + " ".join(str(c) for c in cmd))
-    return subprocess.run(cmd, check=True, **kwargs)
+    kwargs["close_fds"] = True
+    command = [str(part) for part in cmd]
+    # Re-exec closes product-lock descriptors before the supervisor creates
+    # any build child, while preserving one process group for teardown.
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            _SUPERVISE_COMMAND,
+            str(os.getpid()),
+            *command,
+        ],
+        start_new_session=True,
+        **kwargs,
+    )
+    watched_signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    previous_handlers = {}
+
+    def interrupt(signum, frame):
+        raise _CommandInterrupted(signum)
+
+    for watched in watched_signals:
+        previous_handlers[watched] = signal.signal(watched, interrupt)
+    try:
+        returncode = process.wait()
+    except _CommandInterrupted as interruption:
+        for watched in watched_signals:
+            signal.signal(watched, signal.SIG_IGN)
+        _terminate_process_group(process)
+        if interruption.signum == signal.SIGINT:
+            raise KeyboardInterrupt from None
+        raise SystemExit(128 + interruption.signum) from None
+    except BaseException:
+        _terminate_process_group(process)
+        raise
+    finally:
+        for watched, previous in previous_handlers.items():
+            signal.signal(watched, previous)
+
+    if returncode != 0:
+        raise subprocess.CalledProcessError(returncode, cmd)
+    return subprocess.CompletedProcess(cmd, returncode)
 
 
 def format_version(version: tuple[int, ...]) -> str:
@@ -275,7 +383,6 @@ class Paths:
         self.circt_build = self.circt_root / "build"
         self.circt_stamp = self.externals_root / ".loom-build.circt.stamp"
         self.circt_cmake_dir = self.circt_build / "lib" / "cmake" / "circt"
-        self.circt_required_lib = self.circt_build / "lib" / "libCIRCTExportVerilog.a"
         llvm_external = self.externals_root / "llvm"
         self.llvm_root = llvm_external
         self.llvm_src = llvm_external / "llvm"
@@ -542,8 +649,6 @@ class SharedProductLock:
     later readers while multiple readers still coexist on the product lock.
     """
 
-    POLL_INTERVAL = 0.01
-
     def __init__(
         self,
         product_path: Path,
@@ -575,32 +680,39 @@ class SharedProductLock:
         label: str,
         path: Path,
     ) -> None:
-        announced = False
-        first_attempt = True
-        while True:
-            if (
-                time.monotonic() >= deadline
-                and not (first_attempt and self.timeout == 0)
-            ):
-                self._timeout(label, path)
-            first_attempt = False
+        if self.timeout == 0:
             try:
                 fcntl.flock(fd, operation | fcntl.LOCK_NB)
                 return
-            except OSError as error:
-                if error.errno not in (
-                    errno.EAGAIN,
-                    errno.EACCES,
-                    errno.EWOULDBLOCK,
-                ):
-                    raise
-                if not announced:
-                    info(f"waiting for shared product {label} at {path}")
-                    announced = True
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    self._timeout(label, path)
-                time.sleep(min(self.POLL_INTERVAL, remaining))
+            except BlockingIOError:
+                self._timeout(label, path)
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            self._timeout(label, path)
+
+        class LockWaitExpired(Exception):
+            pass
+
+        def expire_wait(signum, frame):
+            raise LockWaitExpired
+
+        previous_handler = signal.signal(signal.SIGALRM, expire_wait)
+        started = time.monotonic()
+        previous_timer = signal.setitimer(signal.ITIMER_REAL, remaining)
+        try:
+            fcntl.flock(fd, operation)
+        except LockWaitExpired:
+            self._timeout(label, path)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+            if previous_timer[0] > 0:
+                elapsed = time.monotonic() - started
+                restored = max(1e-6, previous_timer[0] - elapsed)
+                signal.setitimer(
+                    signal.ITIMER_REAL, restored, previous_timer[1]
+                )
 
     def _release_turnstile(self) -> None:
         if self.turnstile_fd is None:
@@ -663,7 +775,7 @@ class SharedProductLock:
 
 
 def llvm_build_identity(
-    state: DependencyState,
+    llvm_commit: str,
     compilers: tuple[tuple[str, str], tuple[str, str]],
 ) -> str:
     return json.dumps(
@@ -672,30 +784,26 @@ def llvm_build_identity(
                 "c": {"path": compilers[0][0], "version": compilers[0][1]},
                 "cxx": {"path": compilers[1][0], "version": compilers[1][1]},
             },
-            "dependencies": {
-                "circt": state.circt_commit,
-                "llvm": state.llvm_commit,
-            },
+            "dependencies": {"llvm": llvm_commit},
             "semantic_cmake_args": list(LLVM_SEMANTIC_CMAKE_ARGS),
         },
         sort_keys=True,
     )
 
 
-def circt_build_identity(llvm_identity: str) -> str:
+def circt_build_identity(llvm_identity: str, circt_commit: str) -> str:
     """Identity of the shared CIRCT build.
 
     Embeds the full LLVM build identity verbatim, so any semantic LLVM
     change (compiler, pins, or LLVM cmake args) invalidates CIRCT even
-    though CIRCT's own args and target are unchanged. Layers CIRCT's own
-    semantic cmake args and build target on top, plus both dependency
-    pins are already captured inside the embedded LLVM identity.
+    though CIRCT's own args are unchanged. Layers CIRCT's own semantic
+    cmake args and CIRCT source pin on top.
     """
     return json.dumps(
         {
             "llvm_build_identity": json.loads(llvm_identity),
+            "circt_commit": circt_commit,
             "circt_semantic_cmake_args": list(CIRCT_SEMANTIC_CMAKE_ARGS),
-            "circt_build_targets": list(CIRCT_BUILD_TARGETS),
         },
         sort_keys=True,
     )
@@ -711,6 +819,20 @@ def read_stamp(path: Path) -> str:
 def write_stamp(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(value + "\n")
+
+
+def llvm_stamp_matches(stamp: str, identity: str) -> bool:
+    if stamp == identity:
+        return True
+    try:
+        stamped = json.loads(stamp)
+        expected = json.loads(identity)
+        dependencies = stamped["dependencies"].copy()
+        dependencies.pop("circt", None)
+        stamped["dependencies"] = dependencies
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return False
+    return stamped == expected
 
 
 def invalidate_llvm_readiness(paths: Paths) -> None:
@@ -807,6 +929,8 @@ def llvm_artifacts_present(paths: Paths) -> bool:
         and (paths.mlir_dir / "MLIRConfig.cmake").exists()
         and (paths.cmake_llvm_dir / "LLVMConfig.cmake").exists()
         and (paths.cmake_clang_dir / "ClangConfig.cmake").exists()
+        and paths.llvm_lit.is_file()
+        and os.access(paths.llvm_lit, os.X_OK)
     )
 
 
@@ -828,8 +952,11 @@ def _sync_llvm_locked(
     explicit build removes the on-disk readiness stamp before entering this
     phase, but may still use the snapshot to retain an incremental build.
     """
-    current = llvm_build_identity(state, compilers)
-    rebuild = prev_stamp != current or not llvm_artifacts_present(paths)
+    current = llvm_build_identity(state.llvm_commit, compilers)
+    rebuild = (
+        not llvm_stamp_matches(prev_stamp, current)
+        or not llvm_artifacts_present(paths)
+    )
     if rebuild:
         if not always_build:
             invalidate_llvm_readiness(paths)
@@ -886,12 +1013,10 @@ def build_llvm(paths: Paths, args: argparse.Namespace) -> None:
 
 
 def circt_artifacts_present(paths: Paths) -> bool:
-    """Both artifacts a usable shared CIRCT build must expose: the exported
-    package config and the concrete CIRCTExportVerilog library that
-    CIRCT_BUILD_TARGETS produces."""
+    """Artifacts required to offer the configured CIRCT package to Loom."""
     return (
-        (paths.circt_cmake_dir / "CIRCTConfig.cmake").exists()
-        and paths.circt_required_lib.exists()
+        (paths.circt_build / "build.ninja").exists()
+        and (paths.circt_cmake_dir / "CIRCTConfig.cmake").exists()
     )
 
 
@@ -900,6 +1025,7 @@ def _sync_circt_locked(
     args: argparse.Namespace,
     compilers: tuple[tuple[str, str], tuple[str, str]],
     llvm_identity: str,
+    circt_commit: str,
     always_build: bool,
     prev_stamp: str,
 ) -> None:
@@ -916,10 +1042,8 @@ def _sync_circt_locked(
     only, so a still-matching complete build is reused with an incremental
     cmake --build instead of being wiped and reconfigured.
     """
-    current = circt_build_identity(llvm_identity)
-    build_ninja = paths.circt_build / "build.ninja"
-    build_ready = build_ninja.exists() and circt_artifacts_present(paths)
-    rebuild = prev_stamp != current or not build_ready
+    current = circt_build_identity(llvm_identity, circt_commit)
+    rebuild = prev_stamp != current or not circt_artifacts_present(paths)
     if rebuild:
         if paths.circt_build.exists():
             info(
@@ -932,18 +1056,12 @@ def _sync_circt_locked(
         run([
             "cmake", "--build", str(paths.circt_build),
             f"-j{args.jobs}",
-            "--target", *CIRCT_BUILD_TARGETS,
         ])
-        # Stamp only a build that actually produced both the exported
-        # package config and the required CIRCTExportVerilog library, so
-        # an incomplete build is never offered to the loom configure.
         if not circt_artifacts_present(paths):
             die(
-                f"CIRCT build of {', '.join(CIRCT_BUILD_TARGETS)} at "
-                f"{paths.circt_build} did not produce the expected "
-                f"artifacts ({paths.circt_cmake_dir / 'CIRCTConfig.cmake'} "
-                f"and {paths.circt_required_lib}); refusing to stamp an "
-                f"incomplete build"
+                f"CIRCT build at {paths.circt_build} did not produce "
+                f"{paths.circt_cmake_dir / 'CIRCTConfig.cmake'}; refusing "
+                "to stamp an incomplete package"
             )
         write_stamp(paths.circt_stamp, current)
 
@@ -991,7 +1109,13 @@ def sync_shared_circt(
             paths, args, state, compilers, False, llvm_prev_stamp
         )
         _sync_circt_locked(
-            paths, args, compilers, llvm_identity, always_build, prev_stamp
+            paths,
+            args,
+            compilers,
+            llvm_identity,
+            state.circt_commit,
+            always_build,
+            prev_stamp,
         )
 
 
@@ -999,18 +1123,23 @@ def build_circt(paths: Paths, args: argparse.Namespace) -> None:
     sync_shared_circt(paths, args, always_build=True)
 
 
-def available_circt_dir(paths: Paths, llvm_identity: str) -> str | None:
+def available_circt_dir(
+    paths: Paths,
+    llvm_identity: str,
+    circt_commit: str,
+) -> str | None:
     """CIRCT package dir offered to the loom configure, or None.
 
     Never builds CIRCT. A CIRCT build is offered only when both the
-    exported CIRCTConfig.cmake and the required CIRCTExportVerilog library
-    are present and the CIRCT stamp matches the identity derived from the
-    current LLVM build, so an old, incomplete, or unstamped CIRCT build is
-    never silently linked against.
+    exported CIRCTConfig.cmake and matching CIRCT stamp are present. The
+    stamp is derived from the current LLVM and CIRCT identities, so an old,
+    incomplete, or unstamped CIRCT build is never silently offered.
     """
     if not circt_artifacts_present(paths):
         return None
-    if read_stamp(paths.circt_stamp) != circt_build_identity(llvm_identity):
+    if read_stamp(paths.circt_stamp) != circt_build_identity(
+        llvm_identity, circt_commit
+    ):
         return None
     return str(paths.circt_cmake_dir)
 
@@ -1034,71 +1163,121 @@ def loom_build_is_stale(paths: Paths) -> bool:
     return not (paths.cmake_clang_dir / "ClangConfig.cmake").exists()
 
 
-def ensure_shared_llvm(paths: Paths, args: argparse.Namespace) -> str:
-    return sync_shared_llvm(paths, args, always_build=False)
+def inspect_llvm_readiness(
+    paths: Paths,
+) -> tuple[
+    DependencyState,
+    tuple[tuple[str, str], tuple[str, str]],
+    str,
+    bool,
+]:
+    state = check_dependency_pins(paths)
+    compilers = check_llvm_compilers()
+    identity = llvm_build_identity(state.llvm_commit, compilers)
+    ready = (
+        llvm_stamp_matches(read_stamp(paths.llvm_stamp), identity)
+        and llvm_artifacts_present(paths)
+    )
+    return state, compilers, identity, ready
+
+
+@contextmanager
+def shared_llvm_lease(paths: Paths, args: argparse.Namespace):
+    """Yield validated shared LLVM state while holding a reader lease.
+
+    The common ready path takes only the shared product lock. Repair releases
+    that reader lock before taking the exclusive writer lock, revalidates, and
+    reacquires a fresh reader lock after successful repair.
+    """
+    if not paths.is_main:
+        info(f"checking shared LLVM under main worktree {paths.main}")
+    if is_nfs(paths.llvm_root):
+        warn(
+            f"shared LLVM tree {paths.llvm_root} appears to live on NFS; "
+            "flock semantics across hosts are unreliable"
+        )
+    with SharedProductLock(
+        paths.llvm_lock,
+        paths.llvm_lock_turnstile,
+        args.lock_timeout,
+        shared=True,
+    ):
+        state, _, identity, ready = inspect_llvm_readiness(paths)
+        if ready:
+            yield state, identity
+            return
+
+    with SharedProductLock(
+        paths.llvm_lock,
+        paths.llvm_lock_turnstile,
+        args.lock_timeout,
+        shared=False,
+    ):
+        prev_stamp = read_stamp(paths.llvm_stamp)
+        state, compilers, identity, ready = inspect_llvm_readiness(paths)
+        if not ready:
+            identity = _sync_llvm_locked(
+                paths, args, state, compilers, False, prev_stamp
+            )
+
+    with SharedProductLock(
+        paths.llvm_lock,
+        paths.llvm_lock_turnstile,
+        args.lock_timeout,
+        shared=True,
+    ):
+        state, _, current_identity, ready = inspect_llvm_readiness(paths)
+        if not ready or current_identity != identity:
+            die(
+                "shared LLVM readiness changed after repair; refusing to "
+                "consume stale products"
+            )
+        yield state, current_identity
+
+
+def _build_loom_with_lease(
+    paths: Paths,
+    args: argparse.Namespace,
+    state: DependencyState,
+    llvm_identity: str,
+) -> None:
+    if loom_build_is_stale(paths):
+        info(
+            f"loom build at {paths.loom_build} references a missing "
+            f"shared LLVM ({paths.mlir_dir}); wiping and reconfiguring"
+        )
+        shutil.rmtree(paths.loom_build, ignore_errors=True)
+    bn = paths.loom_build / "build.ninja"
+    if bn.exists() and not cmake_cache_uses_compilers(
+        paths.loom_build, LOOM_C_COMPILER, LOOM_CXX_COMPILER
+    ):
+        info(
+            f"loom build compiler changed to {LOOM_C_COMPILER}/"
+            f"{LOOM_CXX_COMPILER}; removing {paths.loom_build}"
+        )
+        shutil.rmtree(paths.loom_build, ignore_errors=True)
+
+    # `make loom` never builds CIRCT. It only offers an already-built,
+    # stamped CIRCT matching the identities held by this reader lease.
+    circt_dir = available_circt_dir(
+        paths, llvm_identity, state.circt_commit
+    )
+    if bn.exists() and read_cmake_cache_entry(
+        paths.loom_build, "CIRCT_DIR"
+    ) != (circt_dir or ""):
+        info(
+            "loom build CIRCT_DIR changed; "
+            f"removing {paths.loom_build} and reconfiguring"
+        )
+        shutil.rmtree(paths.loom_build, ignore_errors=True)
+    if not bn.exists():
+        configure_loom(paths, circt_dir)
+    run(["cmake", "--build", str(paths.loom_build), f"-j{args.jobs}"])
 
 
 def build_loom(paths: Paths, args: argparse.Namespace) -> None:
-    for attempt in range(2):
-        ensured_identity = ensure_shared_llvm(paths, args)
-        with SharedProductLock(
-            paths.llvm_lock,
-            paths.llvm_lock_turnstile,
-            args.lock_timeout,
-            shared=True,
-        ):
-            state = check_dependency_pins(paths)
-            compilers = check_llvm_compilers()
-            llvm_identity = llvm_build_identity(state, compilers)
-            ready = (
-                llvm_identity == ensured_identity
-                and read_stamp(paths.llvm_stamp) == llvm_identity
-                and llvm_artifacts_present(paths)
-            )
-            if not ready:
-                if attempt == 0:
-                    info(
-                        "shared LLVM readiness changed while acquiring a "
-                        "reader lock; ensuring it again"
-                    )
-                    continue
-                die(
-                    "shared LLVM readiness changed repeatedly while starting "
-                    "the Loom build; refusing to consume stale products"
-                )
-
-            if loom_build_is_stale(paths):
-                info(
-                    f"loom build at {paths.loom_build} references a missing "
-                    f"shared LLVM ({paths.mlir_dir}); wiping and reconfiguring"
-                )
-                shutil.rmtree(paths.loom_build, ignore_errors=True)
-            bn = paths.loom_build / "build.ninja"
-            if bn.exists() and not cmake_cache_uses_compilers(
-                paths.loom_build, LOOM_C_COMPILER, LOOM_CXX_COMPILER
-            ):
-                info(
-                    f"loom build compiler changed to {LOOM_C_COMPILER}/"
-                    f"{LOOM_CXX_COMPILER}; removing {paths.loom_build}"
-                )
-                shutil.rmtree(paths.loom_build, ignore_errors=True)
-
-            # `make loom` never builds CIRCT. It only offers an already-built,
-            # stamped CIRCT matching the LLVM identity revalidated under this
-            # reader lock.
-            circt_dir = available_circt_dir(paths, llvm_identity)
-            if bn.exists() and read_cmake_cache_entry(
-                paths.loom_build, "CIRCT_DIR"
-            ) != (circt_dir or ""):
-                info(
-                    "loom build CIRCT_DIR changed; "
-                    f"removing {paths.loom_build} and reconfiguring"
-                )
-                shutil.rmtree(paths.loom_build, ignore_errors=True)
-            if not bn.exists():
-                configure_loom(paths, circt_dir)
-            run(["cmake", "--build", str(paths.loom_build), f"-j{args.jobs}"])
-            return
+    with shared_llvm_lease(paths, args) as (state, llvm_identity):
+        _build_loom_with_lease(paths, args, state, llvm_identity)
 
 
 def cmd_doctor(paths: Paths, args: argparse.Namespace) -> None:
@@ -1152,7 +1331,6 @@ def cmd_doctor(paths: Paths, args: argparse.Namespace) -> None:
         "circt_config    "
         + str((paths.circt_cmake_dir / "CIRCTConfig.cmake").exists())
     )
-    print(f"circt_lib       {paths.circt_required_lib.exists()}")
 
 
 def cmd_externals_root(paths: Paths, args: argparse.Namespace) -> None:
@@ -1211,24 +1389,28 @@ def cmd_distclean(paths: Paths, args: argparse.Namespace) -> None:
 def cmd_test(paths: Paths, args: argparse.Namespace) -> None:
     check_git_version()
     check_loom_compilers()
-    build_loom(paths, args)
-    child_env = os.environ.copy()
-    extra_args = shlex.split(child_env.pop("LIT_OPTS", ""))
-    child_env.setdefault("LOOM_TEST_JOBS", str(args.jobs))
-    run(
-        [
-            str(paths.llvm_lit),
-            "-sv",
-            "--time-tests",
-            f"-j{args.jobs}",
-            *extra_args,
-            str(paths.loom_build / "test"),
-        ],
-        env=child_env,
-    )
+    with shared_llvm_lease(paths, args) as (state, llvm_identity):
+        _build_loom_with_lease(paths, args, state, llvm_identity)
+        child_env = os.environ.copy()
+        extra_args = shlex.split(child_env.pop("LIT_OPTS", ""))
+        child_env.setdefault("LOOM_TEST_JOBS", str(args.jobs))
+        run(
+            [
+                str(paths.llvm_lit),
+                "-sv",
+                "--time-tests",
+                f"-j{args.jobs}",
+                *extra_args,
+                str(paths.loom_build / "test"),
+            ],
+            env=child_env,
+        )
 
 
 def main() -> None:
+    if len(sys.argv) >= 2 and sys.argv[1] == _SUPERVISE_COMMAND:
+        _supervise_command(sys.argv[2:])
+
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--root", default=os.getcwd(),
                    help="worktree root (defaults to CWD)")

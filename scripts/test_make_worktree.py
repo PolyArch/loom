@@ -7,21 +7,26 @@ import io
 import json
 import multiprocessing
 import os
+import select
+import signal
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from argparse import Namespace
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).with_name("make-worktree.py")
-REPO_TEMP_ROOT = SCRIPT.parents[1] / "build" / "test-runs"
+REPO_ROOT = SCRIPT.parents[1]
+REPO_TEMP_ROOT = REPO_ROOT / "build" / "test-runs"
+UNSET = object()
 
 
 def load_dispatcher():
@@ -63,7 +68,7 @@ class GitTopology:
         self.llvm_repo = root / "llvm-repo"
         init_repo(self.llvm_repo)
         self.llvm_pin = commit_file(self.llvm_repo, "llvm.txt", "llvm-a\n")
-        self.llvm_other = commit_file(self.llvm_repo, "llvm.txt", "llvm-b\n")
+        commit_file(self.llvm_repo, "llvm.txt", "llvm-b\n")
 
         self.circt_repo = root / "circt-repo"
         init_repo(self.circt_repo)
@@ -86,45 +91,22 @@ class GitTopology:
         git(self.circt_repo, "commit", "-qm", "Pin LLVM")
         self.circt_pin = git(self.circt_repo, "rev-parse", "HEAD")
 
-        self.cmsis_repo = root / "cmsis-repo"
-        init_repo(self.cmsis_repo)
-        (self.cmsis_repo / "Source").mkdir()
-        commit_file(
-            self.cmsis_repo, "Source/kernel.c", "int kernel(void) { return 0; }\n"
-        )
-
-        self.main = root / "super"
+        self.main = root / "main"
         init_repo(self.main)
-        git(
-            self.main,
-            "-c",
-            "protocol.file.allow=always",
-            "submodule",
-            "add",
-            "-q",
-            str(self.circt_repo),
-            "externals/circt",
-        )
-        git(
-            self.main,
-            "-c",
-            "protocol.file.allow=always",
-            "submodule",
-            "add",
-            "-q",
-            str(self.llvm_repo),
-            "externals/llvm",
-        )
-        git(
-            self.main,
-            "-c",
-            "protocol.file.allow=always",
-            "submodule",
-            "add",
-            "-q",
-            str(self.cmsis_repo),
-            "externals/cmsis",
-        )
+        for source, path in (
+            (self.circt_repo, "externals/circt"),
+            (self.llvm_repo, "externals/llvm"),
+        ):
+            git(
+                self.main,
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                str(source),
+                path,
+            )
         git(self.main / "externals/llvm", "checkout", "-q", self.llvm_pin)
         git(
             self.main,
@@ -132,789 +114,201 @@ class GitTopology:
             ".gitmodules",
             "externals/circt",
             "externals/llvm",
-            "externals/cmsis",
         )
         git(self.main, "commit", "-qm", "Pin dependencies")
 
         self.linked = root / "linked"
-        git(self.main, "worktree", "add", "-q", "-b", "linked", str(self.linked))
-
-    def conflict(self, worktree: Path, path: str) -> None:
-        git(worktree, "update-index", "--force-remove", path)
-        entries = (
-            f"160000 {self.circt_pin} 1\t{path}\n"
-            f"160000 {self.llvm_pin} 2\t{path}\n"
-            f"160000 {self.llvm_other} 3\t{path}\n"
+        git(
+            self.main,
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "linked",
+            str(self.linked),
         )
-        git(worktree, "update-index", "--index-info", input_text=entries)
-
-    def reset_index(self, worktree: Path, path: str) -> None:
-        git(worktree, "reset", "-q", "HEAD", "--", path)
 
 
 def build_paths(root: Path):
-    llvm_root = root / "llvm"
+    externals = root / "externals"
+    llvm_root = externals / "llvm"
     llvm_build = llvm_root / "build"
-    circt_root = root / "externals" / "circt"
+    circt_root = externals / "circt"
     circt_build = circt_root / "build"
     return SimpleNamespace(
         root=root,
         main=root,
         is_main=True,
-        externals_root=root / "externals",
+        externals_root=externals,
         llvm_root=llvm_root,
         llvm_src=llvm_root / "llvm",
         llvm_build=llvm_build,
-        llvm_lock=root / ".llvm.lock",
-        llvm_lock_turnstile=root / ".llvm.turnstile.lock",
-        llvm_stamp=root / ".llvm.stamp",
+        llvm_lock=externals / ".loom-build.llvm.lock",
+        llvm_lock_turnstile=externals / ".loom-build.llvm.turnstile.lock",
+        llvm_stamp=externals / ".loom-build.llvm.stamp",
         mlir_dir=llvm_build / "lib" / "cmake" / "mlir",
         cmake_llvm_dir=llvm_build / "lib" / "cmake" / "llvm",
         cmake_clang_dir=llvm_build / "lib" / "cmake" / "clang",
         llvm_lit=llvm_build / "bin" / "llvm-lit",
         circt_root=circt_root,
         circt_build=circt_build,
-        circt_stamp=root / "externals" / ".loom-build.circt.stamp",
+        circt_stamp=externals / ".loom-build.circt.stamp",
         circt_cmake_dir=circt_build / "lib" / "cmake" / "circt",
-        circt_required_lib=circt_build / "lib" / "libCIRCTExportVerilog.a",
-        loom_build=root / "loom-build",
+        loom_build=root / "build",
     )
 
 
 class MakeWorktreeTest(unittest.TestCase):
     def setUp(self):
         self.module = load_dispatcher()
+        self.state = self.module.DependencyState("circt-pin", "llvm-pin")
+        self.compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
         self.args = Namespace(jobs=1, lock_timeout=1.0)
-
-    def gate_error(self, paths) -> str:
-        stderr = io.StringIO()
-        with redirect_stderr(stderr), self.assertRaises(SystemExit):
-            self.module.check_dependency_pins(paths)
-        return stderr.getvalue()
-
-    def hygiene_error(self, paths) -> str:
-        stderr = io.StringIO()
-        with redirect_stderr(stderr), self.assertRaises(SystemExit):
-            self.module.check_linked_submodule_hygiene(paths)
-        return stderr.getvalue()
-
-    def test_primary_worktree_resolution_fails_outside_git_topology(self):
-        with tempfile.TemporaryDirectory() as td:
-            stderr = io.StringIO()
-            with redirect_stderr(stderr), self.assertRaises(SystemExit):
-                self.module.resolve_main_worktree(Path(td))
-            self.assertIn("could not resolve primary worktree", stderr.getvalue())
-
-    def test_linked_worktree_uses_primary_externals_without_submodules(self):
+        self.llvm_identity = self.module.llvm_build_identity(
+            self.state.llvm_commit, self.compilers
+        )
+        self.circt_identity = self.module.circt_build_identity(
+            self.llvm_identity, self.state.circt_commit
+        )
         REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+
+    def build_environment(self, module, run=UNSET):
+        stack = ExitStack()
+        stack.enter_context(patch.object(module, "check_git_version"))
+        stack.enter_context(patch.object(module, "check_loom_compilers"))
+        stack.enter_context(patch.object(module, "is_nfs", return_value=False))
+        stack.enter_context(
+            patch.object(
+                module,
+                "check_dependency_pins",
+                return_value=self.state,
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                module,
+                "check_llvm_compilers",
+                return_value=self.compilers,
+            )
+        )
+        if run is not UNSET:
+            stack.enter_context(patch.object(module, "run", side_effect=run))
+        return stack
+
+    def write_llvm_artifacts(self, paths) -> None:
+        for directory, name in (
+            (paths.mlir_dir, "MLIRConfig.cmake"),
+            (paths.cmake_llvm_dir, "LLVMConfig.cmake"),
+            (paths.cmake_clang_dir, "ClangConfig.cmake"),
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / name).write_text("ready\n")
+        (paths.llvm_build / "build.ninja").write_text("ninja\n")
+        paths.llvm_lit.parent.mkdir(parents=True, exist_ok=True)
+        paths.llvm_lit.write_text("#!/bin/sh\nexit 0\n")
+        paths.llvm_lit.chmod(0o755)
+
+    def ready_llvm(self, paths, stamp: str | None = None) -> None:
+        self.write_llvm_artifacts(paths)
+        paths.llvm_stamp.parent.mkdir(parents=True, exist_ok=True)
+        paths.llvm_stamp.write_text((stamp or self.llvm_identity) + "\n")
+
+    def ready_circt(self, paths, stamp: str | None = None) -> None:
+        paths.circt_cmake_dir.mkdir(parents=True, exist_ok=True)
+        (paths.circt_cmake_dir / "CIRCTConfig.cmake").write_text("ready\n")
+        (paths.circt_build / "build.ninja").write_text("ninja\n")
+        paths.circt_stamp.write_text((stamp or self.circt_identity) + "\n")
+
+    def loom_consumer(self, shared, root: Path, configured: bool = True):
+        paths = SimpleNamespace(**vars(shared))
+        paths.root = root
+        paths.is_main = False
+        paths.loom_build = root / "build"
+        if configured:
+            paths.loom_build.mkdir(parents=True)
+            (paths.loom_build / "build.ninja").write_text("ninja\n")
+            (paths.loom_build / "CMakeCache.txt").write_text(
+                "CMAKE_C_COMPILER:FILEPATH=/usr/bin/clang\n"
+                "CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/clang++\n"
+            )
+        return paths
+
+    def join_processes(self, processes) -> None:
+        for process in processes:
+            if process.pid is None:
+                continue
+            process.join(2.0)
+            if process.is_alive():
+                process.terminate()
+                process.join(2.0)
+
+    def wait_for_flock_holders(
+        self,
+        path: Path,
+        expected_pids: set[int],
+        timeout: float = 1.0,
+    ) -> None:
+        stat = path.stat()
+        key = (
+            f"{os.major(stat.st_dev):02x}:{os.minor(stat.st_dev):02x}:"
+            f"{stat.st_ino}"
+        )
+        deadline = time.monotonic() + timeout
+        while True:
+            holders = set()
+            for line in Path("/proc/locks").read_text().splitlines():
+                fields = line.split()
+                if (
+                    len(fields) >= 6
+                    and fields[1] == "FLOCK"
+                    and fields[3] == "READ"
+                    and fields[5] == key
+                ):
+                    holders.add(int(fields[4]))
+            if expected_pids <= holders:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.fail(
+                    f"flock holders {holders} did not include "
+                    f"{expected_pids}"
+                )
+            select.select((), (), (), min(0.005, remaining))
+
+    def test_linked_worktree_routes_to_primary_artifact_owner(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
             topology = GitTopology(Path(td))
             paths = self.module.Paths(topology.linked)
 
+            self.assertEqual(paths.main, topology.main)
             self.assertEqual(paths.externals_root, topology.main / "externals")
-            self.module.check_linked_submodule_hygiene(paths)
-            stdout = io.StringIO()
-            with redirect_stdout(stdout):
-                self.module.cmd_externals_root(paths, self.args)
             self.assertEqual(
-                stdout.getvalue().strip(), str(topology.main / "externals")
+                self.module.gitlinks_at_head(topology.linked),
+                ("externals/circt", "externals/llvm"),
             )
-
-            git(
-                topology.linked,
-                "-c",
-                "protocol.file.allow=always",
+            linked_status = git(topology.linked, "submodule", "status")
+            self.assertTrue(
+                all(line.startswith("-") for line in linked_status.splitlines())
+            )
+            nested_status = git(
+                topology.main / "externals/circt",
                 "submodule",
-                "update",
-                "--init",
-                "--",
-                "externals/cmsis",
-            )
-            error = self.hygiene_error(paths)
-            self.assertIn("externals/cmsis", error)
-            self.assertIn("must not initialize submodules", error)
-            self.assertIn(str(topology.main / "externals"), error)
-            self.assertNotIn("submodule deinit", error)
-            self.assertIn("externals/cmsis", self.gate_error(paths))
-
-            shutil.rmtree(topology.linked / "externals" / "cmsis")
-            residual_error = self.hygiene_error(paths)
-            self.assertIn("administrative state", residual_error)
-
-    def test_dependency_gate_with_real_linked_worktree(self):
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
-            topology = GitTopology(Path(td))
-            paths = self.module.Paths(topology.linked)
-            expected = self.module.DependencyState(
-                topology.circt_pin, topology.llvm_pin
-            )
-
-            for repo in (paths.circt_root, paths.llvm_root):
-                output = repo / "build" / "artifact.o"
-                output.parent.mkdir()
-                output.write_text("untracked\n")
-            self.assertEqual(self.module.check_dependency_pins(paths), expected)
-
-            topology.conflict(topology.main, "externals/circt")
-            self.assertEqual(self.module.check_dependency_pins(paths), expected)
-            topology.reset_index(topology.main, "externals/circt")
-
-            topology.conflict(topology.linked, "externals/circt")
-            self.assertIn("unmerged gitlink", self.gate_error(paths))
-            topology.reset_index(topology.linked, "externals/circt")
-
-            git(paths.llvm_root, "checkout", "-q", topology.llvm_other)
-            self.assertIn("checkout drift", self.gate_error(paths))
-            git(paths.llvm_root, "checkout", "-q", topology.llvm_pin)
-
-            (paths.circt_root / "circt.txt").write_text("dirty\n")
-            dirty_error = self.gate_error(paths)
-            self.assertIn("tracked modifications", dirty_error)
-            self.assertNotIn("restore or commit", dirty_error)
-            self.assertIn("upstream commit", dirty_error)
-            git(paths.circt_root, "checkout", "--", "circt.txt")
-
-            (paths.llvm_root / "llvm.txt").write_text("dirty\n")
-            git(paths.llvm_root, "add", "llvm.txt")
-            self.assertIn("tracked modifications", self.gate_error(paths))
-            git(paths.llvm_root, "reset", "-q", "HEAD", "--", "llvm.txt")
-            git(paths.llvm_root, "checkout", "--", "llvm.txt")
-
-            git(
-                paths.circt_root,
-                "-c",
-                "protocol.file.allow=always",
-                "submodule",
-                "update",
-                "--init",
-                "--",
+                "status",
                 "llvm",
             )
-            self.assertIn("must remain uninitialized", self.gate_error(paths))
+            self.assertTrue(nested_status.startswith("-"))
 
-            git(paths.llvm_root, "checkout", "-q", topology.llvm_other)
-            git(
-                topology.linked,
-                "update-index",
-                "--cacheinfo",
-                "160000",
-                topology.llvm_other,
-                "externals/llvm",
-            )
-            git(topology.linked, "commit", "-qm", "Pin incompatible LLVM")
-            pair_error = self.gate_error(paths)
-            self.assertIn("parent gitlinks", pair_error)
-            self.assertIn("updated atomically", pair_error)
+            state = self.module.check_dependency_pins(paths)
+            self.assertEqual(state.circt_commit, topology.circt_pin)
+            self.assertEqual(state.llvm_commit, topology.llvm_pin)
 
-            missing_pin = commit_file(
-                topology.circt_repo, "circt.txt", "circt-new\n"
-            )
-            git(
-                topology.linked,
-                "update-index",
-                "--cacheinfo",
-                "160000",
-                missing_pin,
-                "externals/circt",
-            )
-            git(topology.linked, "commit", "-qm", "Advance CIRCT pin")
-            missing_error = self.gate_error(paths)
-            self.assertIn("checkout drift", missing_error)
-            self.assertIn(missing_pin, missing_error)
-            self.assertIn("fetch origin", missing_error)
-            self.assertNotIn("could not inspect", missing_error)
-
-    def test_build_identity_is_deterministic_and_configures_exact_compilers(self):
-        state = self.module.DependencyState("circt", "llvm")
-        compilers = (
-            ("/toolchain/gcc", "gcc 14.3.1"),
-            ("/toolchain/g++", "g++ 14.3.1"),
-        )
-        paths = build_paths(Path("/tmp/loom-build-test"))
-        calls = []
-        with patch.object(self.module, "run", side_effect=calls.append):
-            self.module.configure_llvm(paths, compilers)
-
-        identity = self.module.llvm_build_identity(state, compilers)
-        self.assertEqual(identity, self.module.llvm_build_identity(state, compilers))
-        payload = json.loads(identity)
-        self.assertEqual(payload["dependencies"], {"circt": "circt", "llvm": "llvm"})
-        self.assertEqual(payload["compilers"]["c"]["path"], "/toolchain/gcc")
-        self.assertEqual(
-            payload["semantic_cmake_args"],
-            list(self.module.LLVM_SEMANTIC_CMAKE_ARGS),
-        )
-        self.assertIn("-DCMAKE_C_COMPILER=/toolchain/gcc", calls[0])
-        self.assertIn("-DCMAKE_CXX_COMPILER=/toolchain/g++", calls[0])
-
-    def test_unknown_or_changed_identity_replaces_build_under_lock(self):
-        state = self.module.DependencyState("circt", "llvm")
-        current = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
-        old = (("/gcc", "gcc 13"), ("/g++", "g++ 13"))
-        current_identity = self.module.llvm_build_identity(state, current)
-        semantic_payload = json.loads(current_identity)
-        semantic_payload["semantic_cmake_args"] = ["-DOLD_OPTION=ON"]
-        prior_values = (
-            (current_identity, False),
-            (None, True),
-            ("git:legacy", True),
-            ("{malformed", True),
-            (self.module.llvm_build_identity(state, old), True),
-            (
-                self.module.llvm_build_identity(
-                    self.module.DependencyState("other-circt", "llvm"), current
-                ),
-                True,
-            ),
-            (json.dumps(semantic_payload, sort_keys=True), True),
-        )
-
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
-            for index, (prior, should_replace) in enumerate(prior_values):
-                paths = build_paths(Path(td) / str(index))
-                paths.mlir_dir.mkdir(parents=True)
-                paths.cmake_clang_dir.mkdir(parents=True)
-                old_object = paths.llvm_build / "old.o"
-                old_object.write_text("reusable\n")
-                (paths.llvm_build / "build.ninja").write_text("ready\n")
-                (paths.mlir_dir / "MLIRConfig.cmake").write_text("ready\n")
-                paths.cmake_llvm_dir.mkdir(parents=True)
-                (paths.cmake_llvm_dir / "LLVMConfig.cmake").write_text(
-                    "ready\n"
-                )
-                (paths.cmake_clang_dir / "ClangConfig.cmake").write_text(
-                    "ready\n"
-                )
-                if prior is not None:
-                    paths.llvm_stamp.write_text(prior + "\n")
-
-                locked = {"value": False}
-
-                class TrackingLock:
-                    def __init__(self, *args, **kwargs):
-                        pass
-
-                    def __enter__(self):
-                        locked["value"] = True
-
-                    def __exit__(self, *args):
-                        locked["value"] = False
-
-                def dependency_state(_paths):
-                    self.assertTrue(locked["value"])
-                    return state
-
-                def compiler_identities():
-                    self.assertTrue(locked["value"])
-                    return current
-
-                def configure(configure_paths, compilers):
-                    self.assertFalse(old_object.exists())
-                    self.assertEqual(compilers, current)
-                    configure_paths.mlir_dir.mkdir(parents=True)
-                    configure_paths.cmake_llvm_dir.mkdir(parents=True)
-                    configure_paths.cmake_clang_dir.mkdir(parents=True)
-                    (configure_paths.llvm_build / "build.ninja").write_text("new\n")
-                    (
-                        configure_paths.mlir_dir / "MLIRConfig.cmake"
-                    ).write_text("ready\n")
-                    (
-                        configure_paths.cmake_llvm_dir / "LLVMConfig.cmake"
-                    ).write_text("ready\n")
-                    (
-                        configure_paths.cmake_clang_dir / "ClangConfig.cmake"
-                    ).write_text("ready\n")
-
-                with (
-                    patch.object(
-                        self.module, "SharedProductLock", TrackingLock
-                    ),
-                    patch.object(
-                        self.module,
-                        "check_dependency_pins",
-                        side_effect=dependency_state,
-                    ),
-                    patch.object(
-                        self.module,
-                        "check_llvm_compilers",
-                        side_effect=compiler_identities,
-                    ),
-                    patch.object(self.module, "configure_llvm", side_effect=configure),
-                    patch.object(self.module, "is_nfs", return_value=False),
-                    patch.object(self.module, "run"),
-                ):
-                    self.module.ensure_shared_llvm(paths, self.args)
-
-                self.assertFalse(locked["value"])
-                self.assertEqual(old_object.exists(), not should_replace)
-                self.assertEqual(
-                    paths.llvm_stamp.read_text().strip(), current_identity
-                )
-
-    def test_compiler_minimums_are_preserved(self):
-        with (
-            patch.object(
-                self.module,
-                "compiler_version",
-                side_effect=(
-                    ((14, 3, 1), "gcc 14.3.1"),
-                    ((7, 3, 0), "g++ 7.3.0"),
-                ),
-            ),
-            patch.object(self.module.shutil, "which", return_value="/usr/bin/compiler"),
-            self.assertRaises(SystemExit),
-        ):
-            self.module.check_llvm_compilers()
-
-        with (
-            patch.object(
-                self.module,
-                "compiler_version",
-                side_effect=(
-                    ((21, 1, 8), "clang 21.1.8"),
-                    ((21, 1, 7), "clang++ 21.1.7"),
-                ),
-            ),
-            patch.object(self.module.shutil, "which", return_value="/usr/bin/compiler"),
-            self.assertRaises(SystemExit),
-        ):
-            self.module.check_loom_compilers()
-
-    def test_compiler_resolution_skips_ccache_frontend_symlinks(self):
-        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as temp_dir:
-            root = Path(temp_dir)
-            launcher_dir = root / "launcher"
-            compiler_dir = root / "compiler"
-            launcher_dir.mkdir()
-            compiler_dir.mkdir()
-
-            ccache = launcher_dir / "ccache"
-            ccache.write_text("#!/bin/sh\nexit 0\n")
-            ccache.chmod(0o755)
-            (launcher_dir / "gcc").symlink_to(ccache)
-
-            compiler = compiler_dir / "gcc"
-            compiler.write_text("#!/bin/sh\nexit 0\n")
-            compiler.chmod(0o755)
-
-            path = os.pathsep.join((str(launcher_dir), str(compiler_dir)))
-            with patch.dict(os.environ, {"PATH": path}, clear=False):
-                self.assertEqual(
-                    self.module.resolve_compiler_executable("gcc"),
-                    str(compiler.resolve()),
-                )
-
-    def test_doctor_and_test_commands_preserve_reports_and_lit_invocation(self):
-        state = self.module.DependencyState("circt", "llvm")
-        paths = build_paths(Path("/repo"))
-        stdout = io.StringIO()
-        with (
-            patch.object(self.module, "check_git_version"),
-            patch.object(self.module, "check_dependency_pins", return_value=state),
-            patch.object(self.module.shutil, "which", return_value="/bin/tool"),
-            patch.object(self.module, "is_nfs", return_value=False),
-            patch.object(self.module, "read_stamp", return_value="identity"),
-            patch.object(self.module, "compiler_status", return_value="ok"),
-            patch.object(self.module, "loom_build_is_stale", return_value=False),
-            redirect_stdout(stdout),
-        ):
-            self.module.cmd_doctor(paths, self.args)
-        report = stdout.getvalue()
-        self.assertIn("circt_commit    circt", report)
-        self.assertIn("circt_llvm_pin  llvm", report)
-        self.assertIn("nested_llvm     uninitialized", report)
-        self.assertNotIn("circt_ready", report)
-        self.assertIn("circt_config    False", report)
-        self.assertIn("circt_lib       False", report)
-
-        self.args.jobs = 7
-        calls = []
-        with (
-            patch.dict("os.environ", {"LIT_OPTS": "--show-all"}, clear=True),
-            patch.object(self.module, "check_git_version"),
-            patch.object(self.module, "check_loom_compilers"),
-            patch.object(self.module, "build_loom"),
-            patch.object(
-                self.module,
-                "run",
-                side_effect=lambda cmd, **kwargs: calls.append((cmd, kwargs)),
-            ),
-        ):
-            self.module.cmd_test(paths, self.args)
-        command, kwargs = calls[0]
-        self.assertIn("-j7", command)
-        self.assertIn("--show-all", command)
-        self.assertEqual(kwargs["env"]["LOOM_TEST_JOBS"], "7")
-
-    def test_circt_identity_availability_and_stamp_invariant(self):
-        module = self.module
-        state = module.DependencyState("circt-pin", "llvm-pin")
-        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
-        llvm_identity = module.llvm_build_identity(state, compilers)
-        circt_identity = module.circt_build_identity(llvm_identity)
-
-        # Identity is deterministic and embeds the full LLVM build identity,
-        # so a semantic LLVM change invalidates CIRCT even when CIRCT's own
-        # args and target are unchanged.
-        self.assertEqual(
-            circt_identity, module.circt_build_identity(llvm_identity)
-        )
-        payload = json.loads(circt_identity)
-        self.assertEqual(
-            payload["llvm_build_identity"], json.loads(llvm_identity)
-        )
-        self.assertEqual(
-            payload["circt_build_targets"], list(module.CIRCT_BUILD_TARGETS)
-        )
-        self.assertEqual(
-            payload["circt_semantic_cmake_args"],
-            list(module.CIRCT_SEMANTIC_CMAKE_ARGS),
-        )
-        drifted = json.loads(llvm_identity)
-        drifted["semantic_cmake_args"] = ["-DCHANGED_LLVM=ON"]
-        self.assertNotEqual(
-            circt_identity,
-            module.circt_build_identity(json.dumps(drifted, sort_keys=True)),
-        )
-
-        # Availability requires the package config, the concrete
-        # CIRCTExportVerilog library, and a stamp matching the current
-        # LLVM identity. Any one missing leaves CIRCT unavailable.
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
-            paths = build_paths(Path(td))
-            paths.circt_cmake_dir.mkdir(parents=True)
-            config = paths.circt_cmake_dir / "CIRCTConfig.cmake"
-
-            self.assertIsNone(
-                module.available_circt_dir(paths, llvm_identity)
-            )
-            config.write_text("x\n")
-            # Config plus a matching stamp, but the library artifact is
-            # still missing: must remain unavailable.
-            paths.circt_stamp.write_text(circt_identity + "\n")
-            self.assertIsNone(
-                module.available_circt_dir(paths, llvm_identity)
-            )
-            paths.circt_required_lib.parent.mkdir(parents=True, exist_ok=True)
-            paths.circt_required_lib.write_text("ar\n")
-            self.assertEqual(
-                module.available_circt_dir(paths, llvm_identity),
-                str(paths.circt_cmake_dir),
-            )
-            stale = module.llvm_build_identity(
-                module.DependencyState("circt-pin", "llvm-other"), compilers
-            )
-            self.assertIsNone(module.available_circt_dir(paths, stale))
-
-            # A CIRCT build that does not produce both artifacts fails and is
-            # left neither advertised nor stamped.
-            incomplete = build_paths(Path(td) / "incomplete")
-            incomplete.circt_build.mkdir(parents=True)
-            (incomplete.circt_build / "build.ninja").write_text("ninja\n")
-            with (
-                patch.object(module, "configure_circt"),
-                patch.object(module, "run"),
-            ):
-                with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                    module._sync_circt_locked(
-                        incomplete, self.args, compilers, llvm_identity, True, ""
-                    )
-            self.assertIsNone(
-                module.available_circt_dir(incomplete, llvm_identity)
-            )
-            self.assertEqual(module.read_stamp(incomplete.circt_stamp), "")
-
-    def test_configure_circt_shared_llvm_single_lock_no_nested(self):
-        module = self.module
-        paths = build_paths(Path("/repo"))
-        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
-
-        # configure_circt points at the shared sibling LLVM and emits the
-        # CIRCT semantic args; the nested externals/circt/llvm never appears.
-        calls = []
-        with patch.object(module, "run", side_effect=calls.append):
-            module.configure_circt(paths, compilers)
-        self.assertEqual(len(calls), 1)
-        cmd = calls[0]
-        joined = " ".join(str(part) for part in cmd)
-        self.assertIn(f"-DMLIR_DIR={paths.mlir_dir}", cmd)
-        self.assertIn(f"-DLLVM_DIR={paths.cmake_llvm_dir}", cmd)
-        self.assertIn(str(paths.circt_root), cmd)
-        self.assertIn(str(paths.circt_build), cmd)
-        for arg in module.CIRCT_SEMANTIC_CMAKE_ARGS:
-            self.assertIn(arg, cmd)
-        self.assertNotIn("circt/llvm", joined)
-
-        # sync_shared_circt holds one exclusive shared-product transaction
-        # across the LLVM ensure and CIRCT phases.
-        state = module.DependencyState("circt-pin", "llvm-pin")
-        llvm_identity = module.llvm_build_identity(state, compilers)
-        events: list = []
-
-        class TrackingLock:
-            def __init__(self, product_path, turnstile_path, timeout, shared):
-                events.append(
-                    (
-                        "lock-open",
-                        str(product_path),
-                        str(turnstile_path),
-                        shared,
-                    )
-                )
-                self.path = product_path
-
-            def __enter__(self):
-                events.append(("lock-enter", str(self.path)))
-                return self
-
-            def __exit__(self, *exc):
-                events.append(("lock-exit", str(self.path)))
-
-        def llvm_phase(*args, **kwargs):
-            events.append("llvm-sync")
-            return llvm_identity
-
-        def circt_phase(*args, **kwargs):
-            events.append("circt-sync")
-
-        with (
-            patch.object(module, "SharedProductLock", TrackingLock),
-            patch.object(
-                module, "check_dependency_pins", return_value=state
-            ),
-            patch.object(
-                module, "check_llvm_compilers", return_value=compilers
-            ),
-            patch.object(module, "_sync_llvm_locked", side_effect=llvm_phase),
-            patch.object(module, "_sync_circt_locked", side_effect=circt_phase),
-            patch.object(module, "is_nfs", return_value=False),
-        ):
-            module.sync_shared_circt(paths, self.args, True)
-
-        self.assertEqual(
-            [e[1] for e in events if e[0] == "lock-open"],
-            [str(paths.llvm_lock)],
-        )
-        self.assertEqual(
-            [e[2] for e in events if e[0] == "lock-open"],
-            [str(paths.llvm_lock_turnstile)],
-        )
-        self.assertEqual(
-            [e[3] for e in events if e[0] == "lock-open"],
-            [False],
-        )
-        enter = events.index(("lock-enter", str(paths.llvm_lock)))
-        exit_idx = events.index(("lock-exit", str(paths.llvm_lock)))
-        self.assertLess(enter, events.index("llvm-sync"))
-        self.assertLess(events.index("llvm-sync"), events.index("circt-sync"))
-        self.assertLess(events.index("circt-sync"), exit_idx)
-
-    def test_linked_routing_and_no_implicit_circt_build(self):
-        module = self.module
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    def test_primary_owner_runtime_state_uses_canonical_ignore_policy(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
             topology = GitTopology(Path(td))
-            linked = module.Paths(topology.linked)
-            main_externals = topology.main / "externals"
-
-            # All CIRCT build state is owned by the main worktree's
-            # externals; a linked worktree holds none of its own.
-            self.assertEqual(
-                linked.circt_build, main_externals / "circt" / "build"
+            (topology.main / ".gitignore").write_text(
+                (REPO_ROOT / ".gitignore").read_text()
             )
-            self.assertEqual(
-                linked.circt_stamp,
-                main_externals / ".loom-build.circt.stamp",
-            )
-            self.assertEqual(
-                linked.circt_required_lib,
-                main_externals / "circt" / "build" / "lib"
-                / "libCIRCTExportVerilog.a",
-            )
-            for owned in (
-                linked.circt_build,
-                linked.circt_stamp,
-                linked.circt_required_lib,
-            ):
-                owned_str = str(owned)
-                self.assertTrue(owned_str.startswith(str(main_externals)))
-                self.assertFalse(owned_str.startswith(str(topology.linked)))
-
-            # `make loom` never builds CIRCT; it only offers an
-            # already-built, stamped CIRCT matching the ensured LLVM.
-            state = module.DependencyState(
-                topology.circt_pin, topology.llvm_pin
-            )
-            compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
-            llvm_identity = module.llvm_build_identity(state, compilers)
-            circt_identity = module.circt_build_identity(llvm_identity)
-
-            linked.circt_cmake_dir.mkdir(parents=True)
-            (linked.circt_cmake_dir / "CIRCTConfig.cmake").write_text("x\n")
-            linked.circt_required_lib.parent.mkdir(parents=True, exist_ok=True)
-            linked.circt_required_lib.write_text("ar\n")
-            linked.circt_stamp.write_text(circt_identity + "\n")
-            self._stamped_llvm_build(linked, llvm_identity)
-
-            circt_build_calls: list = []
-            offered = {}
-
-            def capture_configure(configure_paths, circt_dir):
-                offered["circt_dir"] = circt_dir
-
-            with (
-                patch.object(
-                    module, "ensure_shared_llvm", return_value=llvm_identity
-                ),
-                patch.object(
-                    module, "check_dependency_pins", return_value=state
-                ),
-                patch.object(
-                    module, "check_llvm_compilers", return_value=compilers
-                ),
-                patch.object(
-                    module, "configure_loom", side_effect=capture_configure
-                ),
-                patch.object(module, "run"),
-                patch.object(
-                    module,
-                    "sync_shared_circt",
-                    side_effect=lambda *a, **k: circt_build_calls.append(1),
-                ),
-                patch.object(
-                    module, "build_circt",
-                    side_effect=lambda *a, **k: circt_build_calls.append(1),
-                ),
-                patch.object(
-                    module, "configure_circt",
-                    side_effect=lambda *a, **k: circt_build_calls.append(1),
-                ),
-            ):
-                module.build_loom(linked, self.args)
-
-            self.assertEqual(circt_build_calls, [])
-            self.assertEqual(offered["circt_dir"], str(linked.circt_cmake_dir))
-
-    def test_main_and_linked_distclean_ownership(self):
-        module = self.module
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
-            # Main: both shared builds are removed in one writer transaction.
-            main_paths = build_paths(Path(td) / "main")
-            main_paths.circt_cmake_dir.mkdir(parents=True)
-            (main_paths.circt_cmake_dir / "CIRCTConfig.cmake").write_text("x\n")
-            main_paths.circt_required_lib.parent.mkdir(parents=True, exist_ok=True)
-            main_paths.circt_required_lib.write_text("ar\n")
-            main_paths.circt_stamp.write_text("id\n")
-            main_paths.llvm_build.mkdir(parents=True)
-            main_paths.llvm_stamp.write_text("id\n")
-
-            main_locks: list = []
-
-            class TrackingLock:
-                def __init__(
-                    self, product_path, turnstile_path, timeout, shared
-                ):
-                    main_locks.append(
-                        (str(product_path), str(turnstile_path), shared)
-                    )
-
-                def __enter__(self):
-                    return self
-
-                def __exit__(self, *exc):
-                    return False
-
-            with patch.object(module, "SharedProductLock", TrackingLock):
-                module.cmd_distclean(main_paths, self.args)
-            self.assertEqual(
-                main_locks,
-                [(
-                    str(main_paths.llvm_lock),
-                    str(main_paths.llvm_lock_turnstile),
-                    False,
-                )],
-            )
-            self.assertFalse(main_paths.circt_build.exists())
-            self.assertFalse(main_paths.circt_stamp.exists())
-            self.assertFalse(main_paths.llvm_build.exists())
-            self.assertFalse(main_paths.llvm_stamp.exists())
-
-            # Linked: shared builds are preserved and no lock is taken.
-            linked_paths = build_paths(Path(td) / "linked")
-            linked_paths.main = Path(td) / "main"
-            linked_paths.is_main = False
-            linked_paths.circt_cmake_dir.mkdir(parents=True)
-            (linked_paths.circt_cmake_dir / "CIRCTConfig.cmake").write_text("x\n")
-            linked_paths.circt_required_lib.parent.mkdir(parents=True, exist_ok=True)
-            linked_paths.circt_required_lib.write_text("ar\n")
-            linked_paths.circt_stamp.write_text("id\n")
-
-            opened = {"value": False}
-
-            class NoLock:
-                def __init__(self, *args, **kwargs):
-                    opened["value"] = True
-
-                def __enter__(self):
-                    return self
-
-                def __exit__(self, *exc):
-                    return False
-
-            with patch.object(module, "SharedProductLock", NoLock):
-                module.cmd_distclean(linked_paths, self.args)
-            self.assertFalse(opened["value"])
-            self.assertTrue(linked_paths.circt_build.exists())
-            self.assertTrue(linked_paths.circt_stamp.exists())
-
-    def test_main_distclean_revokes_readiness_before_product_removal(self):
-        """An interrupted main distclean cannot leave either shared build
-        advertised while product deletion is incomplete."""
-        module = self.module
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
-            paths = build_paths(Path(td))
-            paths.llvm_build.mkdir(parents=True)
-            paths.circt_build.mkdir(parents=True)
-            paths.llvm_stamp.write_text("llvm-ready\n")
-            paths.circt_stamp.write_text("circt-ready\n")
-
-            def fail_removal(*args, **kwargs):
-                self.assertFalse(paths.llvm_stamp.exists())
-                self.assertFalse(paths.circt_stamp.exists())
-                raise RuntimeError("injected product removal failure")
-
-            with (
-                patch.object(
-                    module.shutil, "rmtree", side_effect=fail_removal
-                ),
-                self.assertRaisesRegex(
-                    RuntimeError, "injected product removal failure"
-                ),
-            ):
-                module.cmd_distclean(paths, self.args)
-
-            self.assertFalse(paths.llvm_stamp.exists())
-            self.assertFalse(paths.circt_stamp.exists())
-            self.assertTrue(paths.llvm_build.exists())
-            self.assertTrue(paths.circt_build.exists())
-
-    def test_shared_build_state_is_git_ignored(self):
-        """The shared LLVM and CIRCT build state under externals/ is local
-        and must be ignored. Verified through git's actual ignore behavior
-        against the repository's own .gitignore, not a source-text match, so
-        the policy may be expressed by any equivalent pattern."""
-        gitignore = (SCRIPT.parents[1] / ".gitignore").read_text()
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
-            sandbox = Path(td) / "repo"
-            init_repo(sandbox)
-            (sandbox / ".gitignore").write_text(gitignore)
-            shared_state = (
+            runtime_state = (
                 "externals/.loom-build.llvm.lock",
                 "externals/.loom-build.llvm.turnstile.lock",
                 "externals/.loom-build.llvm.stamp",
@@ -922,56 +316,432 @@ class MakeWorktreeTest(unittest.TestCase):
             )
             result = subprocess.run(
                 [
-                    "git", "-C", str(sandbox),
-                    "-c", "core.excludesFile=/dev/null",
-                    "check-ignore", "--", *shared_state,
+                    "git",
+                    "-C",
+                    str(topology.main),
+                    "-c",
+                    "core.excludesFile=/dev/null",
+                    "check-ignore",
+                    "--",
+                    *runtime_state,
                 ],
+                text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
             )
-            ignored = set(result.stdout.split())
-            for path in shared_state:
-                self.assertIn(path, ignored, f"{path} is not git-ignored")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(set(result.stdout.split()), set(runtime_state))
 
-    def _stamped_circt_build(self, paths, circt_identity):
-        """Set up a complete, stamped, identity-matching prior CIRCT build."""
-        paths.circt_cmake_dir.mkdir(parents=True)
-        (paths.circt_cmake_dir / "CIRCTConfig.cmake").write_text("x\n")
-        paths.circt_required_lib.parent.mkdir(parents=True, exist_ok=True)
-        paths.circt_required_lib.write_text("ar\n")
-        (paths.circt_build / "build.ninja").write_text("ninja\n")
-        paths.circt_stamp.write_text(circt_identity + "\n")
+    def test_dependency_identities_have_one_owner_each(self):
+        same_llvm = self.module.llvm_build_identity(
+            self.state.llvm_commit, self.compilers
+        )
+        changed_circt = self.module.DependencyState(
+            "other-circt", self.state.llvm_commit
+        )
+        self.assertEqual(
+            same_llvm,
+            self.module.llvm_build_identity(
+                changed_circt.llvm_commit, self.compilers
+            ),
+        )
+        self.assertNotEqual(
+            self.module.circt_build_identity(
+                same_llvm, self.state.circt_commit
+            ),
+            self.module.circt_build_identity(
+                same_llvm, changed_circt.circt_commit
+            ),
+        )
 
-    def _stamped_llvm_build(self, paths, llvm_identity):
-        """Set up a complete, stamped, identity-matching prior LLVM build."""
-        for config_dir, config_name in (
-            (paths.mlir_dir, "MLIRConfig.cmake"),
-            (paths.cmake_llvm_dir, "LLVMConfig.cmake"),
-            (paths.cmake_clang_dir, "ClangConfig.cmake"),
-        ):
-            config_dir.mkdir(parents=True, exist_ok=True)
-            (config_dir / config_name).write_text("ready\n")
-        (paths.llvm_build / "build.ninja").write_text("ninja\n")
-        paths.llvm_stamp.write_text(llvm_identity + "\n")
+        payload = json.loads(same_llvm)
+        self.assertEqual(payload["dependencies"], {"llvm": "llvm-pin"})
+        circt_payload = json.loads(self.circt_identity)
+        self.assertNotIn("circt_build_targets", circt_payload)
 
-    def test_failed_automatic_llvm_repair_revokes_dependent_readiness(self):
-        """An ordinary LLVM ensure that must repair existing output revokes
-        both readiness stamps before configure and cannot accept failed output
-        on the next ensure."""
-        module = self.module
-        state = module.DependencyState("circt-pin", "llvm-pin")
-        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
-        llvm_identity = module.llvm_build_identity(state, compilers)
-        circt_identity = module.circt_build_identity(llvm_identity)
+        legacy_payload = json.loads(same_llvm)
+        legacy_payload["dependencies"]["circt"] = "old-circt"
+        legacy_stamp = json.dumps(legacy_payload, sort_keys=True)
+        self.assertTrue(
+            self.module.llvm_stamp_matches(legacy_stamp, same_llvm)
+        )
+        self.assertFalse(
+            self.module.llvm_stamp_matches(
+                legacy_stamp,
+                self.module.llvm_build_identity("other-llvm", self.compilers),
+            )
+        )
 
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    def test_circt_pin_change_keeps_public_llvm_fast_path(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            shared = build_paths(Path(td) / "shared")
+            legacy_payload = json.loads(self.llvm_identity)
+            legacy_payload["dependencies"]["circt"] = "old-circt"
+            legacy_stamp = json.dumps(legacy_payload, sort_keys=True)
+            self.ready_llvm(shared, legacy_stamp)
+            consumer = self.loom_consumer(shared, Path(td) / "consumer")
+            calls = []
+
+            def capture_run(cmd, **kwargs):
+                calls.append(cmd)
+
+            with self.build_environment(self.module, run=capture_run):
+                self.module.cmd_build_loom(consumer, self.args)
+
+            self.assertEqual(
+                calls,
+                [[
+                    "cmake",
+                    "--build",
+                    str(consumer.loom_build),
+                    "-j1",
+                ]],
+            )
+            self.assertEqual(
+                self.module.read_stamp(shared.llvm_stamp), legacy_stamp
+            )
+
+    def test_ready_public_loom_readers_overlap(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            shared = build_paths(Path(td) / "shared")
+            self.ready_llvm(shared)
+            readers = {
+                name: self.loom_consumer(shared, Path(td) / name)
+                for name in ("reader-a", "reader-b")
+            }
+            context = multiprocessing.get_context("fork")
+            active = {name: context.Event() for name in readers}
+            release = {name: context.Event() for name in readers}
+            by_build = {
+                str(paths.loom_build): name for name, paths in readers.items()
+            }
+
+            def controlled_run(cmd, **kwargs):
+                name = by_build.get(cmd[2]) if cmd[:2] == ["cmake", "--build"] else None
+                if name is None:
+                    raise AssertionError(f"unexpected command: {cmd}")
+                active[name].set()
+                if not release[name].wait(2.0):
+                    raise RuntimeError(f"{name} release timed out")
+
+            def consume(name):
+                self.module.cmd_build_loom(readers[name], self.args)
+
+            processes = {
+                name: context.Process(target=consume, args=(name,), name=name)
+                for name in readers
+            }
+            try:
+                with self.build_environment(self.module, run=controlled_run):
+                    processes["reader-a"].start()
+                    self.assertTrue(active["reader-a"].wait(1.0))
+                    processes["reader-b"].start()
+                    self.assertTrue(
+                        active["reader-b"].wait(0.5),
+                        "ready Loom readers did not overlap",
+                    )
+            finally:
+                for event in release.values():
+                    event.set()
+                self.join_processes(processes.values())
+
+            self.assertEqual(
+                {name: process.exitcode for name, process in processes.items()},
+                {name: 0 for name in processes},
+            )
+
+    def test_queued_public_writers_precede_late_reader(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            shared = build_paths(Path(td) / "shared")
+            self.ready_llvm(shared)
+            readers = {
+                name: self.loom_consumer(shared, Path(td) / name)
+                for name in ("holding-reader", "late-reader")
+            }
+            context = multiprocessing.get_context("fork")
+            names = (
+                "holding-reader",
+                "writer-a",
+                "writer-b",
+                "late-reader",
+            )
+            active = {name: context.Event() for name in names}
+            release = {name: context.Event() for name in names}
+            started = {
+                name: context.Event()
+                for name in ("writer-a", "writer-b", "late-reader")
+            }
+            order = context.Queue()
+            by_build = {
+                str(paths.loom_build): name for name, paths in readers.items()
+            }
+
+            def controlled_run(cmd, **kwargs):
+                if cmd[:2] != ["cmake", "--build"]:
+                    raise AssertionError(f"unexpected command: {cmd}")
+                name = by_build.get(cmd[2])
+                if cmd[2] == str(shared.llvm_build):
+                    name = multiprocessing.current_process().name
+                if name is None:
+                    raise AssertionError(f"unexpected command: {cmd}")
+                order.put(name)
+                active[name].set()
+                if not release[name].wait(2.0):
+                    raise RuntimeError(f"{name} release timed out")
+
+            def consume(name):
+                if name == "late-reader":
+                    started[name].set()
+                self.module.cmd_build_loom(readers[name], self.args)
+
+            def write(name):
+                started[name].set()
+                self.module.cmd_build_llvm(shared, self.args)
+
+            processes = {
+                "holding-reader": context.Process(
+                    target=consume,
+                    args=("holding-reader",),
+                    name="holding-reader",
+                ),
+                "late-reader": context.Process(
+                    target=consume,
+                    args=("late-reader",),
+                    name="late-reader",
+                ),
+                "writer-a": context.Process(
+                    target=write,
+                    args=("writer-a",),
+                    name="writer-a",
+                ),
+                "writer-b": context.Process(
+                    target=write,
+                    args=("writer-b",),
+                    name="writer-b",
+                ),
+            }
+            try:
+                with self.build_environment(self.module, run=controlled_run):
+                    processes["holding-reader"].start()
+                    self.assertTrue(active["holding-reader"].wait(1.0))
+                    self.assertEqual(order.get(timeout=1.0), "holding-reader")
+                    for name in ("writer-a", "writer-b", "late-reader"):
+                        if name == "late-reader":
+                            self.wait_for_flock_holders(
+                                shared.llvm_lock_turnstile,
+                                {
+                                    processes["writer-a"].pid,
+                                    processes["writer-b"].pid,
+                                },
+                            )
+                        processes[name].start()
+                        self.assertTrue(started[name].wait(0.5))
+
+                    release["holding-reader"].set()
+                    first = order.get(timeout=1.0)
+                    self.assertIn(first, {"writer-a", "writer-b"})
+                    release[first].set()
+                    second = order.get(timeout=1.0)
+                    self.assertEqual(
+                        {first, second}, {"writer-a", "writer-b"}
+                    )
+                    release[second].set()
+                    self.assertEqual(
+                        order.get(timeout=1.0), "late-reader"
+                    )
+                    release["late-reader"].set()
+            finally:
+                for event in release.values():
+                    event.set()
+                self.join_processes(processes.values())
+                order.close()
+                order.join_thread()
+
+            self.assertEqual(
+                {name: process.exitcode for name, process in processes.items()},
+                {name: 0 for name in processes},
+            )
+
+    def test_public_test_holds_llvm_lease_through_lit(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            shared = build_paths(Path(td) / "shared")
+            self.ready_llvm(shared)
+            consumer = self.loom_consumer(shared, Path(td) / "consumer")
+            context = multiprocessing.get_context("fork")
+            lit_active = context.Event()
+            release_lit = context.Event()
+            writer_active = context.Event()
+            release_writer = context.Event()
+
+            def controlled_run(cmd, **kwargs):
+                if cmd and cmd[0] == str(shared.llvm_lit):
+                    lit_active.set()
+                    if not release_lit.wait(2.0):
+                        raise RuntimeError("lit release timed out")
+                    return
+                if cmd[:2] == ["cmake", "--build"]:
+                    if cmd[2] == str(consumer.loom_build):
+                        return
+                    if cmd[2] == str(shared.llvm_build):
+                        writer_active.set()
+                        if not release_writer.wait(2.0):
+                            raise RuntimeError("writer release timed out")
+                        return
+                raise AssertionError(f"unexpected command: {cmd}")
+
+            test_process = context.Process(
+                target=self.module.cmd_test,
+                args=(consumer, self.args),
+                name="loom-test",
+            )
+            writer_process = context.Process(
+                target=self.module.cmd_build_llvm,
+                args=(shared, self.args),
+                name="llvm-writer",
+            )
+            try:
+                with self.build_environment(self.module, run=controlled_run):
+                    test_process.start()
+                    self.assertTrue(lit_active.wait(1.0))
+                    writer_process.start()
+                    self.wait_for_flock_holders(
+                        shared.llvm_lock_turnstile,
+                        {writer_process.pid},
+                    )
+                    self.assertFalse(writer_active.is_set())
+                    release_lit.set()
+                    self.assertTrue(writer_active.wait(1.0))
+                    release_writer.set()
+            finally:
+                release_lit.set()
+                release_writer.set()
+                self.join_processes((test_process, writer_process))
+
+            self.assertEqual(test_process.exitcode, 0)
+            self.assertEqual(writer_process.exitcode, 0)
+
+    def test_dispatcher_death_contains_build_process_group(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            root = Path(td)
+            shared = build_paths(root / "shared")
+            self.ready_llvm(shared)
+            consumer = self.loom_consumer(shared, root / "consumer")
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_cmake = fake_bin / "cmake"
+            fake_cmake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os\n"
+                "import signal\n"
+                "import socket\n"
+                "child = os.fork()\n"
+                "if child == 0:\n"
+                "    signal.pause()\n"
+                "    os._exit(0)\n"
+                "with socket.socket() as channel:\n"
+                "    channel.connect(('127.0.0.1', "
+                "int(os.environ['LOOM_TEST_PORT'])))\n"
+                "    channel.sendall(f'{os.getpid()} {child}\\n'.encode())\n"
+                "signal.pause()\n"
+            )
+            fake_cmake.chmod(0o755)
+            server = socket.socket()
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            server.settimeout(1.0)
+            server_port = server.getsockname()[1]
+            context = multiprocessing.get_context("fork")
+
+            def run_dispatcher():
+                os.environ["PATH"] = (
+                    f"{fake_bin}{os.pathsep}{os.environ['PATH']}"
+                )
+                os.environ["LOOM_TEST_PORT"] = str(server_port)
+                self.module.cmd_build_loom(consumer, self.args)
+
+            dispatcher = context.Process(
+                target=run_dispatcher, name="loom-dispatcher"
+            )
+            child_pids = ()
+            child_pidfds = ()
+
+            def process_exists(pid):
+                try:
+                    os.kill(pid, 0)
+                    return True
+                except ProcessLookupError:
+                    return False
+
+            try:
+                with self.build_environment(self.module):
+                    dispatcher.start()
+                    connection, _ = server.accept()
+                    with connection:
+                        child_pids = tuple(
+                            int(pid)
+                            for pid in connection.recv(128).decode().split()
+                        )
+                    self.assertEqual(len(child_pids), 2)
+                    child_pidfds = tuple(
+                        os.pidfd_open(pid) for pid in child_pids
+                    )
+                    self.assertEqual(
+                        len({os.getpgid(pid) for pid in child_pids}), 1
+                    )
+                    lock_files = {
+                        (path.stat().st_dev, path.stat().st_ino)
+                        for path in (
+                            shared.llvm_lock,
+                            shared.llvm_lock_turnstile,
+                        )
+                    }
+                    for pid in child_pids:
+                        inherited = set()
+                        for fd in Path(f"/proc/{pid}/fd").iterdir():
+                            try:
+                                stat = fd.stat()
+                            except FileNotFoundError:
+                                continue
+                            inherited.add((stat.st_dev, stat.st_ino))
+                        self.assertTrue(lock_files.isdisjoint(inherited))
+                    dispatcher.kill()
+                    dispatcher.join(1.0)
+                    self.assertFalse(dispatcher.is_alive())
+
+                    pending = set(child_pidfds)
+                    deadline = time.monotonic() + 1.0
+                    while pending:
+                        ready, _, _ = select.select(
+                            tuple(pending),
+                            (),
+                            (),
+                            max(0, deadline - time.monotonic()),
+                        )
+                        if not ready:
+                            break
+                        pending.difference_update(ready)
+                    self.assertFalse(
+                        pending,
+                        "build process group survived dispatcher death",
+                    )
+            finally:
+                if dispatcher.is_alive():
+                    dispatcher.kill()
+                    dispatcher.join(1.0)
+                for pid in child_pids:
+                    if process_exists(pid):
+                        os.kill(pid, signal.SIGTERM)
+                for pidfd in child_pidfds:
+                    os.close(pidfd)
+                server.close()
+
+    def test_failed_automatic_repair_revokes_all_dependent_readiness(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
             paths = build_paths(Path(td))
-            self._stamped_llvm_build(paths, llvm_identity)
-            self._stamped_circt_build(paths, circt_identity)
-            (paths.cmake_llvm_dir / "LLVMConfig.cmake").unlink()
-
+            self.ready_llvm(paths)
+            self.ready_circt(paths)
+            consumer = self.loom_consumer(paths, Path(td) / "consumer")
+            paths.llvm_lit.unlink()
             real_rmtree = shutil.rmtree
 
             def checked_removal(*args, **kwargs):
@@ -982,621 +752,382 @@ class MakeWorktreeTest(unittest.TestCase):
             def fail_configure(*args, **kwargs):
                 self.assertFalse(paths.llvm_stamp.exists())
                 self.assertFalse(paths.circt_stamp.exists())
-                for config_dir, config_name in (
-                    (paths.mlir_dir, "MLIRConfig.cmake"),
-                    (paths.cmake_llvm_dir, "LLVMConfig.cmake"),
-                    (paths.cmake_clang_dir, "ClangConfig.cmake"),
-                ):
-                    config_dir.mkdir(parents=True, exist_ok=True)
-                    (config_dir / config_name).write_text("failed output\n")
-                (paths.llvm_build / "build.ninja").write_text("failed\n")
+                self.write_llvm_artifacts(paths)
                 raise RuntimeError("injected configure failure")
 
             with (
-                patch.object(module, "is_nfs", return_value=False),
-                patch.object(module, "check_dependency_pins", return_value=state),
-                patch.object(
-                    module, "check_llvm_compilers", return_value=compilers
+                self.build_environment(
+                    self.module,
+                    run=lambda *args, **kwargs: None,
                 ),
                 patch.object(
-                    module.shutil, "rmtree", side_effect=checked_removal
+                    self.module.shutil,
+                    "rmtree",
+                    side_effect=checked_removal,
                 ),
                 patch.object(
-                    module, "configure_llvm", side_effect=fail_configure
+                    self.module,
+                    "configure_llvm",
+                    side_effect=fail_configure,
                 ),
                 self.assertRaisesRegex(
                     RuntimeError, "injected configure failure"
                 ),
             ):
-                module.ensure_shared_llvm(paths, self.args)
+                self.module.cmd_build_loom(consumer, self.args)
 
             self.assertFalse(paths.llvm_stamp.exists())
             self.assertFalse(paths.circt_stamp.exists())
 
             with (
-                patch.object(module, "is_nfs", return_value=False),
-                patch.object(module, "check_dependency_pins", return_value=state),
-                patch.object(
-                    module, "check_llvm_compilers", return_value=compilers
+                self.build_environment(
+                    self.module,
+                    run=lambda *args, **kwargs: None,
                 ),
                 patch.object(
-                    module,
+                    self.module,
                     "configure_llvm",
-                    side_effect=RuntimeError("second repair attempted"),
+                    side_effect=RuntimeError("repair retried"),
                 ),
-                self.assertRaisesRegex(
-                    RuntimeError, "second repair attempted"
-                ),
+                self.assertRaisesRegex(RuntimeError, "repair retried"),
             ):
-                module.ensure_shared_llvm(paths, self.args)
+                self.module.cmd_build_loom(consumer, self.args)
 
-    def test_cmd_build_llvm_invalidates_stamps_before_git_preflight(self):
-        """The public LLVM command revokes LLVM and dependent CIRCT readiness
-        before its failure-capable compatibility preflight."""
-        module = self.module
-        state = module.DependencyState("circt-pin", "llvm-pin")
-        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
-        llvm_identity = module.llvm_build_identity(state, compilers)
-        circt_identity = module.circt_build_identity(llvm_identity)
-
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    def test_public_writer_preflights_revoke_owned_readiness(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
-            paths = build_paths(Path(td))
-            self._stamped_llvm_build(paths, llvm_identity)
-            self._stamped_circt_build(paths, circt_identity)
+            llvm_paths = build_paths(Path(td) / "llvm")
+            self.ready_llvm(llvm_paths)
+            self.ready_circt(llvm_paths)
 
-            def fail_preflight():
-                self.assertFalse(paths.llvm_stamp.exists())
-                self.assertFalse(paths.circt_stamp.exists())
-                raise RuntimeError("injected git preflight failure")
+            def fail_llvm_preflight():
+                self.assertFalse(llvm_paths.llvm_stamp.exists())
+                self.assertFalse(llvm_paths.circt_stamp.exists())
+                raise RuntimeError("LLVM preflight failed")
 
             with (
-                patch.object(module, "is_nfs", return_value=False),
+                patch.object(self.module, "is_nfs", return_value=False),
                 patch.object(
-                    module,
+                    self.module,
                     "check_git_version",
-                    side_effect=fail_preflight,
+                    side_effect=fail_llvm_preflight,
                 ),
                 self.assertRaisesRegex(
-                    RuntimeError, "injected git preflight failure"
+                    RuntimeError, "LLVM preflight failed"
                 ),
             ):
-                module.cmd_build_llvm(paths, self.args)
+                self.module.cmd_build_llvm(llvm_paths, self.args)
 
-            self.assertTrue((paths.llvm_build / "build.ninja").exists())
-            self.assertTrue(
-                (paths.circt_cmake_dir / "CIRCTConfig.cmake").exists()
-            )
-            self.assertFalse(paths.llvm_stamp.exists())
-            self.assertFalse(paths.circt_stamp.exists())
-            self.assertIsNone(module.available_circt_dir(paths, llvm_identity))
+            circt_paths = build_paths(Path(td) / "circt")
+            self.ready_llvm(circt_paths)
+            self.ready_circt(circt_paths)
 
-    def test_failed_explicit_llvm_build_revokes_both_readiness_stamps(self):
-        """A matching incremental LLVM build that fails through the public
-        entry point leaves neither LLVM nor dependent CIRCT advertised."""
-        module = self.module
-        state = module.DependencyState("circt-pin", "llvm-pin")
-        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
-        llvm_identity = module.llvm_build_identity(state, compilers)
-        circt_identity = module.circt_build_identity(llvm_identity)
+            def fail_circt_preflight():
+                self.assertEqual(
+                    self.module.read_stamp(circt_paths.llvm_stamp),
+                    self.llvm_identity,
+                )
+                self.assertFalse(circt_paths.circt_stamp.exists())
+                raise RuntimeError("CIRCT preflight failed")
 
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+            with (
+                patch.object(self.module, "is_nfs", return_value=False),
+                patch.object(
+                    self.module,
+                    "check_git_version",
+                    side_effect=fail_circt_preflight,
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError, "CIRCT preflight failed"
+                ),
+            ):
+                self.module.cmd_build_circt(circt_paths, self.args)
+
+    def test_explicit_llvm_build_restores_only_validated_llvm_readiness(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
             paths = build_paths(Path(td))
-            self._stamped_llvm_build(paths, llvm_identity)
-            self._stamped_circt_build(paths, circt_identity)
+            self.ready_llvm(paths)
+            self.ready_circt(paths)
 
             def fail_build(cmd, **kwargs):
                 raise subprocess.CalledProcessError(1, cmd)
 
             with (
-                patch.object(module, "is_nfs", return_value=False),
-                patch.object(module, "check_dependency_pins", return_value=state),
-                patch.object(
-                    module, "check_llvm_compilers", return_value=compilers
-                ),
-                patch.object(module, "check_git_version"),
-                patch.object(module, "configure_llvm") as configure_llvm,
-                patch.object(module, "run", side_effect=fail_build),
+                self.build_environment(self.module, run=fail_build),
                 self.assertRaises(subprocess.CalledProcessError),
             ):
-                module.cmd_build_llvm(paths, self.args)
-
-            configure_llvm.assert_not_called()
-            self.assertTrue((paths.llvm_build / "build.ninja").exists())
+                self.module.cmd_build_llvm(paths, self.args)
             self.assertFalse(paths.llvm_stamp.exists())
             self.assertFalse(paths.circt_stamp.exists())
-            self.assertIsNone(module.available_circt_dir(paths, llvm_identity))
-
-    def test_successful_explicit_llvm_build_restores_only_llvm_readiness(self):
-        """Validated LLVM success restores its own readiness but keeps CIRCT
-        revoked until a later explicit CIRCT build validates that dependency."""
-        module = self.module
-        state = module.DependencyState("circt-pin", "llvm-pin")
-        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
-        llvm_identity = module.llvm_build_identity(state, compilers)
-        circt_identity = module.circt_build_identity(llvm_identity)
-
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
-            paths = build_paths(Path(td))
-            self._stamped_llvm_build(paths, llvm_identity)
-            self._stamped_circt_build(paths, circt_identity)
 
             with (
-                patch.object(module, "is_nfs", return_value=False),
-                patch.object(module, "check_dependency_pins", return_value=state),
-                patch.object(
-                    module, "check_llvm_compilers", return_value=compilers
+                self.build_environment(
+                    self.module, run=lambda *args, **kwargs: None
                 ),
-                patch.object(module, "check_git_version"),
-                patch.object(module, "configure_llvm") as configure_llvm,
-                patch.object(module, "run"),
+                patch.object(
+                    self.module,
+                    "configure_llvm",
+                    side_effect=lambda *args: self.write_llvm_artifacts(paths),
+                ),
             ):
-                module.cmd_build_llvm(paths, self.args)
-
-            configure_llvm.assert_not_called()
-            self.assertEqual(module.read_stamp(paths.llvm_stamp), llvm_identity)
+                self.module.cmd_build_llvm(paths, self.args)
+            self.assertEqual(
+                self.module.read_stamp(paths.llvm_stamp),
+                self.llvm_identity,
+            )
             self.assertFalse(paths.circt_stamp.exists())
-            self.assertIsNone(module.available_circt_dir(paths, llvm_identity))
 
-    def test_public_writer_precedes_late_reader_across_processes(self):
-        """Concurrent Loom readers yield to every queued public LLVM writer
-        before admitting a later Loom reader in separate processes."""
-        module = self.module
-        state = module.DependencyState("circt-pin", "llvm-pin")
-        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
-        llvm_identity = module.llvm_build_identity(state, compilers)
-        lock_args = Namespace(jobs=1, lock_timeout=5.0)
-
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    def test_distclean_revokes_before_delete_and_linked_preserves(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
-            shared = build_paths(Path(td) / "shared")
-            self._stamped_llvm_build(shared, llvm_identity)
+            main = build_paths(Path(td) / "main")
+            self.ready_llvm(main)
+            self.ready_circt(main)
 
-            readers = {}
-            for name in ("reader-a", "reader-b", "late-reader"):
-                paths = SimpleNamespace(**vars(shared))
-                paths.root = Path(td) / name
-                paths.loom_build = paths.root / "build"
-                paths.loom_build.mkdir(parents=True)
-                (paths.loom_build / "build.ninja").write_text("ninja\n")
-                (paths.loom_build / "CMakeCache.txt").write_text(
-                    "CMAKE_C_COMPILER:FILEPATH=/usr/bin/clang\n"
-                    "CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/clang++\n"
-                )
-                readers[name] = paths
+            def fail_removal(*args, **kwargs):
+                self.assertFalse(main.llvm_stamp.exists())
+                self.assertFalse(main.circt_stamp.exists())
+                raise RuntimeError("deletion interrupted")
 
-            context = multiprocessing.get_context("fork")
-            process_names = (
-                "reader-a",
-                "reader-b",
-                "writer-a",
-                "writer-b",
-                "late-reader",
-            )
-            active = {
-                name: context.Event() for name in process_names
-            }
-            release = {
-                name: context.Event() for name in process_names
-            }
-            writer_a_waiting = context.Event()
-            writer_b_parked = context.Event()
-            allow_writer_b_retry = context.Event()
-            late_reader_waiting = context.Event()
-            late_reader_at_product = context.Event()
-            entry_order = context.Queue()
-            reader_by_build = {
-                str(paths.loom_build): name for name, paths in readers.items()
-            }
-
-            def controlled_run(cmd, **kwargs):
-                if cmd[:2] == ["cmake", "--build"]:
-                    if cmd[2] == str(shared.llvm_build):
-                        name = multiprocessing.current_process().name
-                        entry_order.put(name)
-                        active[name].set()
-                        if not release[name].wait(5.0):
-                            raise RuntimeError(f"{name} release timed out")
-                        return
-                    name = reader_by_build.get(cmd[2])
-                    if name is not None:
-                        entry_order.put(name)
-                        active[name].set()
-                        if not release[name].wait(5.0):
-                            raise RuntimeError(f"{name} release timed out")
-                        return
-                raise AssertionError(f"unexpected command: {cmd}")
-
-            def capture_info(message):
-                process = multiprocessing.current_process().name
-                if process == "writer-a" and "product lock" in message:
-                    writer_a_waiting.set()
-                if process == "late-reader" and "turnstile" in message:
-                    late_reader_waiting.set()
-                if process == "late-reader" and "product lock" in message:
-                    late_reader_at_product.set()
-
-            def run_reader(name):
-                module.cmd_build_loom(readers[name], lock_args)
-
-            def run_writer(name):
-                if name == "writer-b":
-                    def hold_retry(_delay):
-                        writer_b_parked.set()
-                        if not allow_writer_b_retry.wait(5.0):
-                            raise RuntimeError("writer-b retry timed out")
-
-                    module.time.sleep = hold_retry
-                module.cmd_build_llvm(shared, lock_args)
-
-            processes = {
-                name: context.Process(
-                    target=run_reader,
-                    args=(name,),
-                    name=name,
-                )
-                for name in readers
-            }
-            processes["writer-a"] = context.Process(
-                target=run_writer,
-                args=("writer-a",),
-                name="writer-a",
-            )
-            processes["writer-b"] = context.Process(
-                target=run_writer,
-                args=("writer-b",),
-                name="writer-b",
-            )
-            try:
-                with (
-                    patch.object(
-                        module,
-                        "ensure_shared_llvm",
-                        return_value=llvm_identity,
-                    ),
-                    patch.object(
-                        module, "check_dependency_pins", return_value=state
-                    ),
-                    patch.object(
-                        module, "check_llvm_compilers", return_value=compilers
-                    ),
-                    patch.object(module, "check_git_version"),
-                    patch.object(module, "check_loom_compilers"),
-                    patch.object(module, "is_nfs", return_value=False),
-                    patch.object(module, "run", side_effect=controlled_run),
-                    patch.object(module, "info", side_effect=capture_info),
-                ):
-                    processes["reader-a"].start()
-                    self.assertTrue(active["reader-a"].wait(2.0))
-                    processes["reader-b"].start()
-                    self.assertTrue(
-                        active["reader-b"].wait(2.0),
-                        "public Loom readers did not coexist",
-                    )
-                    processes["writer-a"].start()
-                    self.assertTrue(
-                        writer_a_waiting.wait(2.0),
-                        "first public LLVM writer did not queue",
-                    )
-                    processes["writer-b"].start()
-                    self.assertTrue(
-                        writer_b_parked.wait(2.0),
-                        "second public LLVM writer was not held while queued",
-                    )
-                    processes["late-reader"].start()
-                    self.assertTrue(
-                        late_reader_waiting.wait(2.0),
-                        "late Loom reader did not wait behind queued writers",
-                    )
-                    self.assertFalse(active["late-reader"].is_set())
-
-                    release["reader-a"].set()
-                    release["reader-b"].set()
-                    initial_readers = {
-                        entry_order.get(timeout=2.0),
-                        entry_order.get(timeout=2.0),
-                    }
-                    self.assertEqual(
-                        initial_readers,
-                        {"reader-a", "reader-b"},
-                    )
-                    first_writer = entry_order.get(timeout=2.0)
-                    self.assertEqual(
-                        first_writer,
-                        "writer-a",
-                    )
-                    self.assertFalse(
-                        late_reader_at_product.wait(1.0),
-                        "late reader passed a queued writer's entry intent",
-                    )
-
-                    release[first_writer].set()
-                    allow_writer_b_retry.set()
-                    self.assertEqual(
-                        entry_order.get(timeout=2.0),
-                        "writer-b",
-                    )
-                    self.assertFalse(active["late-reader"].is_set())
-
-                    release["writer-b"].set()
-                    self.assertEqual(
-                        entry_order.get(timeout=2.0),
-                        "late-reader",
-                    )
-                    release["late-reader"].set()
-            finally:
-                allow_writer_b_retry.set()
-                for event in release.values():
-                    event.set()
-                for process in processes.values():
-                    if process.pid is None:
-                        continue
-                    process.join(5.0)
-                    if process.is_alive():
-                        process.terminate()
-                        process.join(5.0)
-                entry_order.close()
-                entry_order.join_thread()
-
-            self.assertEqual(
-                {name: process.exitcode for name, process in processes.items()},
-                {name: 0 for name in processes},
-            )
-            self.assertEqual(module.read_stamp(shared.llvm_stamp), llvm_identity)
-            self.assertFalse(shared.circt_stamp.exists())
-
-    def test_public_loom_reader_honors_short_lock_timeout(self):
-        """A public Loom reader contending with a real writer observes one
-        monotonic 0.05 second deadline instead of a fixed one-second sleep."""
-        module = self.module
-        context = multiprocessing.get_context("fork")
-        held = context.Event()
-        release = context.Event()
-
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
-            paths = build_paths(Path(td))
-
-            def hold_writer():
-                with module.SharedProductLock(
-                    paths.llvm_lock,
-                    paths.llvm_lock_turnstile,
-                    2.0,
-                    shared=False,
-                ):
-                    held.set()
-                    if not release.wait(5.0):
-                        raise RuntimeError("holder release timed out")
-
-            holder = context.Process(target=hold_writer, name="lock-holder")
-            try:
-                holder.start()
-                self.assertTrue(held.wait(2.0), "writer did not acquire lock")
-                args = Namespace(jobs=1, lock_timeout=0.05)
-                stderr = io.StringIO()
-                started = time.monotonic()
-                with (
-                    patch.object(
-                        module, "ensure_shared_llvm", return_value="identity"
-                    ),
-                    redirect_stderr(stderr),
-                    self.assertRaises(SystemExit),
-                ):
-                    module.build_loom(paths, args)
-                elapsed = time.monotonic() - started
-            finally:
-                release.set()
-                holder.join(5.0)
-                if holder.is_alive():
-                    holder.terminate()
-                    holder.join(5.0)
-
-            self.assertEqual(holder.exitcode, 0)
-            self.assertGreaterEqual(elapsed, 0.04)
-            self.assertLess(elapsed, 0.30)
-            self.assertIn("timed out after 0.05s", stderr.getvalue())
-
-    def test_lock_timeout_rejects_unbounded_and_negative_values(self):
-        """The public CLI rejects values that cannot form a finite,
-        nonnegative deadline before resolving paths or opening lock files."""
-        module = self.module
-
-        def rejected_by_cli(value):
-            stderr = io.StringIO()
             with (
                 patch.object(
-                    sys,
-                    "argv",
-                    ["make-worktree.py", "--lock-timeout", value, "doctor"],
-                ),
-                patch.object(
-                    module,
-                    "Paths",
-                    side_effect=AssertionError("path resolution was reached"),
-                ),
-                redirect_stderr(stderr),
-                self.assertRaises(SystemExit) as raised,
-            ):
-                module.main()
-            self.assertEqual(raised.exception.code, 2)
-            return stderr.getvalue()
-
-        nan_error = rejected_by_cli("nan")
-        infinity_error = rejected_by_cli("inf")
-        negative_error = rejected_by_cli("-0.1")
-        self.assertIn("--lock-timeout", nan_error)
-        self.assertIn("--lock-timeout", infinity_error)
-        self.assertIn("--lock-timeout", negative_error)
-
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
-            root = Path(td)
-            with self.assertRaisesRegex(ValueError, "lock timeout"):
-                module.SharedProductLock(
-                    root / "product.lock",
-                    root / "turnstile.lock",
-                    float("nan"),
-                    shared=True,
-                )
-            self.assertFalse((root / "product.lock").exists())
-            self.assertFalse((root / "turnstile.lock").exists())
-
-    def test_cmd_build_circt_invalidates_stamp_before_git_preflight(self):
-        """The public CIRCT command revokes its readiness before its
-        failure-capable compatibility preflight while preserving valid LLVM."""
-        module = self.module
-        state = module.DependencyState("circt-pin", "llvm-pin")
-        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
-        llvm_identity = module.llvm_build_identity(state, compilers)
-        circt_identity = module.circt_build_identity(llvm_identity)
-
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
-            paths = build_paths(Path(td))
-            self._stamped_llvm_build(paths, llvm_identity)
-            self._stamped_circt_build(paths, circt_identity)
-            self.assertEqual(
-                module.available_circt_dir(paths, llvm_identity),
-                str(paths.circt_cmake_dir),
-            )
-
-            def fail_preflight():
-                self.assertEqual(
-                    module.read_stamp(paths.llvm_stamp), llvm_identity
-                )
-                self.assertFalse(paths.circt_stamp.exists())
-                raise RuntimeError("injected git preflight failure")
-
-            with (
-                patch.object(module, "is_nfs", return_value=False),
-                patch.object(
-                    module,
-                    "check_git_version",
-                    side_effect=fail_preflight,
+                    self.module.shutil,
+                    "rmtree",
+                    side_effect=fail_removal,
                 ),
                 self.assertRaisesRegex(
-                    RuntimeError, "injected git preflight failure"
+                    RuntimeError, "deletion interrupted"
                 ),
             ):
-                module.cmd_build_circt(paths, self.args)
+                self.module.cmd_distclean(main, self.args)
+            self.assertFalse(main.llvm_stamp.exists())
+            self.assertFalse(main.circt_stamp.exists())
 
-            self.assertEqual(module.read_stamp(paths.llvm_stamp), llvm_identity)
-            self.assertTrue(
-                (paths.circt_cmake_dir / "CIRCTConfig.cmake").exists()
-            )
-            self.assertTrue(paths.circt_required_lib.exists())
-            self.assertFalse(paths.circt_stamp.exists())
-            self.assertIsNone(module.available_circt_dir(paths, llvm_identity))
+            linked = build_paths(Path(td) / "linked")
+            linked.is_main = False
+            self.ready_llvm(linked)
+            self.ready_circt(linked)
+            linked.loom_build.mkdir(parents=True, exist_ok=True)
+            self.module.cmd_distclean(linked, self.args)
+            self.assertTrue(linked.llvm_build.exists())
+            self.assertTrue(linked.circt_build.exists())
+            self.assertTrue(linked.llvm_stamp.exists())
+            self.assertTrue(linked.circt_stamp.exists())
 
-    def test_failed_explicit_circt_build_revokes_availability(self):
-        """A failed explicit CIRCT build through the public `make circt`
-        pipeline leaves no CIRCT advertised. A still-matching complete build is
-        reused incrementally: configure_circt is not called and the prior
-        artifacts and build.ninja survive the failed cmake build, yet the
-        up-front stamp invalidation still leaves the stamp absent and
-        availability None."""
-        module = self.module
-        state = module.DependencyState("circt-pin", "llvm-pin")
-        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
-        llvm_identity = module.llvm_build_identity(state, compilers)
-        circt_identity = module.circt_build_identity(llvm_identity)
-
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    def test_explicit_circt_build_uses_package_readiness_only(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
             paths = build_paths(Path(td))
-            self._stamped_circt_build(paths, circt_identity)
+            self.ready_llvm(paths)
+            self.ready_circt(paths)
+            calls = []
+
+            def capture_run(cmd, **kwargs):
+                calls.append(cmd)
+
+            with self.build_environment(self.module, run=capture_run):
+                self.module.cmd_build_circt(paths, self.args)
+
             self.assertEqual(
-                module.available_circt_dir(paths, llvm_identity),
+                calls,
+                [[
+                    "cmake",
+                    "--build",
+                    str(paths.circt_build),
+                    "-j1",
+                ]],
+            )
+            self.assertEqual(
+                self.module.available_circt_dir(
+                    paths,
+                    self.llvm_identity,
+                    self.state.circt_commit,
+                ),
                 str(paths.circt_cmake_dir),
             )
 
-            def failing_build(cmd, **kwargs):
+            def fail_build(cmd, **kwargs):
                 raise subprocess.CalledProcessError(1, cmd)
 
             with (
-                patch.object(module, "is_nfs", return_value=False),
-                patch.object(module, "check_dependency_pins", return_value=state),
-                patch.object(
-                    module, "check_llvm_compilers", return_value=compilers
-                ),
-                patch.object(
-                    module, "_sync_llvm_locked", return_value=llvm_identity
-                ),
-                patch.object(module, "check_git_version"),
-                patch.object(module, "configure_circt") as configure_circt,
-                patch.object(module, "run", side_effect=failing_build),
+                self.build_environment(self.module, run=fail_build),
                 self.assertRaises(subprocess.CalledProcessError),
             ):
-                module.cmd_build_circt(paths, self.args)
-
-            # The matching complete build is reused, not wiped: no reconfigure,
-            # and the prior build tree survives the failed cmake build.
-            configure_circt.assert_not_called()
-            self.assertTrue(
-                (paths.circt_cmake_dir / "CIRCTConfig.cmake").exists()
-            )
-            self.assertTrue(paths.circt_required_lib.exists())
-            self.assertTrue((paths.circt_build / "build.ninja").exists())
-            # The up-front invalidation still revokes readiness.
+                self.module.cmd_build_circt(paths, self.args)
             self.assertFalse(paths.circt_stamp.exists())
-            self.assertIsNone(module.available_circt_dir(paths, llvm_identity))
+            self.assertIsNone(
+                self.module.available_circt_dir(
+                    paths,
+                    self.llvm_identity,
+                    self.state.circt_commit,
+                )
+            )
+
+    def test_ordinary_build_routes_ready_circt_without_building_it(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            shared = build_paths(Path(td) / "shared")
+            self.ready_llvm(shared)
+            self.ready_circt(shared)
+            consumer = self.loom_consumer(
+                shared, Path(td) / "consumer", configured=False
+            )
+            offered = []
+            commands = []
+
+            def capture_configure(paths, circt_dir):
+                offered.append(circt_dir)
+                paths.loom_build.mkdir(parents=True)
+                (paths.loom_build / "build.ninja").write_text("ninja\n")
+
+            with (
+                self.build_environment(
+                    self.module,
+                    run=lambda cmd, **kwargs: commands.append(cmd),
+                ),
+                patch.object(
+                    self.module,
+                    "configure_loom",
+                    side_effect=capture_configure,
+                ),
+            ):
+                self.module.cmd_build_loom(consumer, self.args)
+
+            self.assertEqual(offered, [str(shared.circt_cmake_dir)])
+            self.assertEqual(
+                commands,
+                [[
+                    "cmake",
+                    "--build",
+                    str(consumer.loom_build),
+                    "-j1",
+                ]],
+            )
+
+    def test_blocking_lock_timeout_is_bounded_and_cold(self):
+        context = multiprocessing.get_context("fork")
+        held = context.Event()
+        release = context.Event()
+        paths = build_paths(REPO_TEMP_ROOT / "lock-timeout")
+
+        def hold_writer():
+            with self.module.SharedProductLock(
+                paths.llvm_lock,
+                paths.llvm_lock_turnstile,
+                1.0,
+                shared=False,
+            ):
+                held.set()
+                release.wait(2.0)
+
+        holder = context.Process(target=hold_writer, name="lock-holder")
+        try:
+            holder.start()
+            self.assertTrue(held.wait(1.0))
+            started = time.monotonic()
+            cpu_started = time.process_time()
+            stderr = io.StringIO()
+            with (
+                redirect_stderr(stderr),
+                self.assertRaises(SystemExit),
+                self.module.SharedProductLock(
+                    paths.llvm_lock,
+                    paths.llvm_lock_turnstile,
+                    0.05,
+                    shared=True,
+                ),
+            ):
+                pass
+            elapsed = time.monotonic() - started
+            cpu_elapsed = time.process_time() - cpu_started
+        finally:
+            release.set()
+            self.join_processes((holder,))
+
+        self.assertEqual(holder.exitcode, 0)
+        self.assertGreaterEqual(elapsed, 0.04)
+        self.assertLess(elapsed, 0.20)
+        self.assertLess(cpu_elapsed, 0.02)
+        self.assertIn("timed out after 0.05s", stderr.getvalue())
+
+        self.assertEqual(self.module.validate_lock_timeout(0), 0)
+        self.assertEqual(
+            self.module.validate_lock_timeout(
+                self.module.MAX_LOCK_TIMEOUT
+            ),
+            self.module.MAX_LOCK_TIMEOUT,
+        )
+        with self.assertRaises(ValueError):
+            self.module.validate_lock_timeout(float("nan"))
+        with self.assertRaises(ValueError):
+            self.module.validate_lock_timeout(float("inf"))
+        with self.assertRaises(ValueError):
+            self.module.validate_lock_timeout(
+                self.module.MAX_LOCK_TIMEOUT + 0.1
+            )
+
+        cli = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--lock-timeout",
+                "nan",
+                "doctor",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(cli.returncode, 2)
+        self.assertIn("--lock-timeout", cli.stderr)
 
     def test_explicit_circt_dir_is_exact_package_directory(self):
-        """CIRCT_DIR names the exact directory holding CIRCTConfig.cmake, with
-        no prefix expansion and no search fallback. Supplying a build root
-        whose CIRCT package is nested at lib/cmake/circt must fail the CIRCT
-        lookup; supplying that exact package directory must pass it. Verified
-        by really configuring the repository's top-level CMakeLists.txt."""
         cmake = shutil.which("cmake")
-        if cmake is None:
-            self.skipTest("cmake not available")
-
-        repo_root = SCRIPT.parents[1]
-        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        self.assertIsNotNone(cmake)
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
             root = Path(td)
-            # One fixture: a build-root prefix on CMAKE_PREFIX_PATH holding
-            # minimal MLIR and Clang configs for the two find_package calls
-            # before CIRCT, plus a valid CIRCT package nested at the standard
-            # lib/cmake/circt location.
-            build_root = root / "fixture"
+            repo_root = root / "repo"
+            repo_root.mkdir()
+            shutil.copy(REPO_ROOT / "CMakeLists.txt", repo_root / "CMakeLists.txt")
+            for subdir in ("include", "lib", "tools", "test"):
+                directory = repo_root / subdir
+                directory.mkdir()
+                (directory / "CMakeLists.txt").write_text("")
+
+            build_root = root / "packages"
             for name, subdir in (
-                ("MLIR", "mlir"), ("Clang", "clang"), ("CIRCT", "circt"),
+                ("LLVM", "llvm"),
+                ("MLIR", "mlir"),
+                ("Clang", "clang"),
+                ("CIRCT", "circt"),
             ):
-                cfg_dir = build_root / "lib" / "cmake" / subdir
-                cfg_dir.mkdir(parents=True)
-                (cfg_dir / f"{name}Config.cmake").write_text(
+                config_dir = build_root / "lib" / "cmake" / subdir
+                config_dir.mkdir(parents=True)
+                (config_dir / f"{name}Config.cmake").write_text(
                     f"set({name}_FOUND TRUE)\n"
                 )
-            circt_pkg_dir = build_root / "lib" / "cmake" / "circt"
+            circt_package = build_root / "lib" / "cmake" / "circt"
 
             def configure(circt_dir):
                 return subprocess.run(
                     [
                         cmake,
-                        "-S", str(repo_root),
-                        "-B", str(root / f"build-{circt_dir.name}"),
+                        "-S",
+                        str(repo_root),
+                        "-B",
+                        str(root / f"build-{circt_dir.name}"),
                         f"-DCIRCT_DIR={circt_dir}",
                         f"-DCMAKE_PREFIX_PATH={build_root}",
                     ],
+                    text=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
-                    text=True,
                 )
 
-            # Build root: the CIRCT package is only nested, so the exact
-            # lookup fails (no prefix expansion, no CMAKE_PREFIX_PATH fallback).
             nested = configure(build_root)
             self.assertNotEqual(nested.returncode, 0, nested.stdout)
             self.assertIn('provided by "CIRCT"', nested.stdout)
 
-            # Exact package directory: the CIRCT lookup succeeds. Any later
-            # configure failure is unrelated to CIRCT resolution.
-            exact = configure(circt_pkg_dir)
+            exact = configure(circt_package)
             self.assertIn(
-                f"Using CIRCTConfig.cmake in: {circt_pkg_dir}", exact.stdout
+                f"Using CIRCTConfig.cmake in: {circt_package}",
+                exact.stdout,
             )
             self.assertNotIn('provided by "CIRCT"', exact.stdout)
 
