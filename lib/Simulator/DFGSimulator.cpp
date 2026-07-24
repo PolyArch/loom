@@ -284,8 +284,8 @@ static void publishToken(SimulatorState &state, mlir::Value value,
 }
 
 void emitToken(SimulatorState &state, mlir::Value value, Token token) {
-  mergeMemoryOrderFrontier(token.memoryOrderFrontier,
-                           state.firingMemoryOrderFrontier);
+  mergeAndReduceMemoryOrderFrontier(state, token.memoryOrderFrontier,
+                                    state.firingMemoryOrderFrontier);
   publishToken(state, value, token);
 }
 
@@ -293,7 +293,8 @@ void emitTokenWithMemoryOrder(SimulatorState &state, mlir::Value value,
                               Token token,
                               llvm::ArrayRef<SyncEffectId> memoryOrder) {
   token.memoryOrderFrontier.clear();
-  mergeMemoryOrderFrontier(token.memoryOrderFrontier, memoryOrder);
+  mergeAndReduceMemoryOrderFrontier(state, token.memoryOrderFrontier,
+                                    memoryOrder);
   publishToken(state, value, token);
 }
 

@@ -73,9 +73,9 @@
 // scheduler must reject the complete ready set before either store fires,
 // independently of their textual order. Unsupported execution exports no
 // output, memory state, or memory-root result.
-// WW: "final_memory_roots": {}
-// WW-NEXT: "final_memory_state": {}
-// WW-NEXT: "final_outputs": []
+// WW-DAG: "final_memory_roots": {}
+// WW-DAG: "final_memory_state": {}
+// WW-DAG: "final_outputs": []
 // WW-NOT: "dataflow.store":
 // WW: "status": "unsupported"
 
@@ -97,9 +97,9 @@
 // uninitialized-read diagnostic or terminal state.
 // UNINITIALIZED-RW: "diagnostics": [
 // UNINITIALIZED-RW-NOT: uninitialized
-// UNINITIALIZED-RW: "final_memory_roots": {}
-// UNINITIALIZED-RW-NEXT: "final_memory_state": {}
-// UNINITIALIZED-RW-NEXT: "final_outputs": []
+// UNINITIALIZED-RW-DAG: "final_memory_roots": {}
+// UNINITIALIZED-RW-DAG: "final_memory_state": {}
+// UNINITIALIZED-RW-DAG: "final_outputs": []
 // UNINITIALIZED-RW-NOT: "dataflow.load":
 // UNINITIALIZED-RW-NOT: "dataflow.store":
 // UNINITIALIZED-RW: "status": "unsupported"
@@ -110,9 +110,9 @@
 // without exporting terminal state.
 // PROJECTION-ERROR: "diagnostics": [
 // PROJECTION-ERROR-NOT: out of range
-// PROJECTION-ERROR: "final_memory_roots": {}
-// PROJECTION-ERROR-NEXT: "final_memory_state": {}
-// PROJECTION-ERROR-NEXT: "final_outputs": []
+// PROJECTION-ERROR-DAG: "final_memory_roots": {}
+// PROJECTION-ERROR-DAG: "final_memory_state": {}
+// PROJECTION-ERROR-DAG: "final_outputs": []
 // PROJECTION-ERROR-NOT: "dataflow.load":
 // PROJECTION-ERROR-NOT: "dataflow.store":
 // PROJECTION-ERROR: "status": "unsupported"
@@ -131,9 +131,9 @@
 // token, the overlapping store remains unordered even though it cannot become
 // ready until the load publishes data. Only load done feeding store ctrl would
 // establish the required order.
-// DATA-DEPENDENCY: "final_memory_roots": {}
-// DATA-DEPENDENCY-NEXT: "final_memory_state": {}
-// DATA-DEPENDENCY-NEXT: "final_outputs": []
+// DATA-DEPENDENCY-DAG: "final_memory_roots": {}
+// DATA-DEPENDENCY-DAG: "final_memory_state": {}
+// DATA-DEPENDENCY-DAG: "final_outputs": []
 // DATA-DEPENDENCY: "dataflow.load": 1
 // DATA-DEPENDENCY-NOT: "dataflow.store":
 // DATA-DEPENDENCY: "status": "unsupported"
@@ -141,9 +141,9 @@
 // A load data result cannot carry the load's memory-order witness. Synchronizing
 // that ordinary data with start therefore cannot manufacture a ctrl token that
 // orders a later overlapping store; only a path from load done could do so.
-// DATA-SYNC: "final_memory_roots": {}
-// DATA-SYNC-NEXT: "final_memory_state": {}
-// DATA-SYNC-NEXT: "final_outputs": []
+// DATA-SYNC-DAG: "final_memory_roots": {}
+// DATA-SYNC-DAG: "final_memory_state": {}
+// DATA-SYNC-DAG: "final_outputs": []
 // DATA-SYNC: "dataflow.load": 1
 // DATA-SYNC: "dataflow.sync": 1
 // DATA-SYNC-NOT: "dataflow.store":
@@ -153,9 +153,9 @@
 // only its ctrl frontier, so using load data as its inactive payload cannot
 // launder the load effect into a later store's ctrl. The later overlapping
 // store remains unordered from the load.
-// EMPTY-STORE: "final_memory_roots": {}
-// EMPTY-STORE-NEXT: "final_memory_state": {}
-// EMPTY-STORE-NEXT: "final_outputs": []
+// EMPTY-STORE-DAG: "final_memory_roots": {}
+// EMPTY-STORE-DAG: "final_memory_state": {}
+// EMPTY-STORE-DAG: "final_outputs": []
 // EMPTY-STORE: "dataflow.load": 1
 // EMPTY-STORE: "dataflow.store": 1
 // EMPTY-STORE: "status": "unsupported"

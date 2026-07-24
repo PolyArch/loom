@@ -693,16 +693,17 @@ void wideFrontierUsesOneTransactionalInsertion() {
   sources.reserve(kFanIn);
   for (unsigned index = 0; index < kFanIn; ++index)
     sources.push_back(sync.declareEffect());
-  SyncEffectId target = sync.declareEffect();
+  SyncEffectId target = takeExpected(sync.declareEffectSequencedAfter(sources));
+  require(sync.sequencedEdgeCount() == kFanIn,
+          "wide incoming declaration dropped an independent predecessor");
 
   llvm::SmallVector<std::pair<SyncEffectId, SyncEffectId>> facts;
-  facts.reserve(2 * kFanIn - 1);
-  for (unsigned index = 0; index < kFanIn; ++index) {
-    if (index + 1 < kFanIn)
-      facts.emplace_back(sources[index], sources[index + 1]);
-    facts.emplace_back(sources[index], target);
-  }
-  accept(sync.sequencedBefore(facts), "wide incoming frontier");
+  facts.reserve(kFanIn - 1);
+  for (unsigned index = 0; index + 1 < kFanIn; ++index)
+    facts.emplace_back(sources[index], sources[index + 1]);
+  accept(sync.sequencedBefore(facts), "wide source chain");
+  require(sync.sequencedEdgeCount() == kFanIn,
+          "wide incoming frontier was not transitively reduced");
   require(sync.areCoveredByHappensBefore(sources, {sources.back()}),
           "the chain tail did not cover its sequenced predecessors");
   require(sync.areCoveredByHappensBefore(sources, {target}),
@@ -739,6 +740,33 @@ void rejectedIncomingFrontierDoesNotAllocateEffect() {
           "a rejected incoming frontier consumed an effect id");
 }
 
+void loopCarriedFrontierAndRelationStayReduced() {
+  MemoryAtomicOrder order;
+  MemorySynchronization sync(order);
+  constexpr unsigned kEffects = 2048;
+  llvm::SmallVector<SyncEffectId> history;
+  llvm::SmallVector<SyncEffectId, 2> frontier;
+  history.reserve(kEffects);
+
+  for (unsigned index = 0; index < kEffects; ++index) {
+    SyncEffectId effect =
+        takeExpected(sync.declareEffectSequencedAfter(frontier));
+    history.push_back(effect);
+    frontier.push_back(effect);
+    frontier = takeExpected(sync.maximalHappensBeforeFrontier(frontier));
+    require(frontier.size() == 1 && frontier.front() == effect,
+            "a loop-carried frontier retained a transitive predecessor");
+  }
+  require(sync.sequencedEdgeCount() == kEffects - 1,
+          "a linear effect chain stored a transitive edge");
+
+  SyncEffectId joined = takeExpected(sync.declareEffectSequencedAfter(history));
+  require(sync.sequencedEdgeCount() == kEffects,
+          "a historical incoming frontier stored redundant direct edges");
+  require(sync.happensBefore(history.front(), joined),
+          "frontier reduction changed happens-before");
+}
+
 } // namespace
 
 int main() {
@@ -755,5 +783,6 @@ int main() {
   acceptedFactsAreInsertionOrderInvariant();
   wideFrontierUsesOneTransactionalInsertion();
   rejectedIncomingFrontierDoesNotAllocateEffect();
+  loopCarriedFrontierAndRelationStayReduced();
   return 0;
 }

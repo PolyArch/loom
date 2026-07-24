@@ -384,8 +384,8 @@ static bool fireParallelize(dataflow::ParallelizeOp op, SimulatorState &state) {
   // Retain each scalar phase's memory order across the multi-firing group.
   if (selectsSemanticInput(transition.firing.consumedInputs,
                            ParallelizeInput::Phase))
-    mergeMemoryOrderFrontier(
-        next.phaseFrontier,
+    mergeAndReduceMemoryOrderFrontier(
+        state, next.phaseFrontier,
         peekToken(state.channels, op.getScalarPhaseMutable())
             .memoryOrderFrontier);
 
@@ -966,7 +966,7 @@ issueMemoryAction(MemoryActionRecord action,
     state.runtimeUnsupportedCapability = true;
     return std::nullopt;
   }
-  state.memoryActions.emplace_back(std::move(action), *effect);
+  retainIssuedMemoryAction(state, std::move(action), *effect);
   return llvm::SmallVector<SyncEffectId, 2>{*effect};
 }
 

@@ -18,7 +18,7 @@ namespace sim {
 namespace {
 
 using Kind = MemorySynchronizationError::Kind;
-using Graph = std::map<std::uint64_t, llvm::SmallVector<SyncEffectId, 2>>;
+using Graph = std::vector<llvm::SmallVector<SyncEffectId, 2>>;
 
 llvm::Error reject(Kind kind, const llvm::Twine &message) {
   return llvm::make_error<MemorySynchronizationError>(kind, message.str());
@@ -31,25 +31,59 @@ void canonicalize(llvm::SmallVectorImpl<SyncEffectId> &effects) {
   effects.erase(std::unique(effects.begin(), effects.end()), effects.end());
 }
 
+void canonicalize(Graph &graph) {
+  for (auto &edges : graph)
+    canonicalize(edges);
+}
+
 bool publishes(SyncRoleKind kind) { return kind != SyncRoleKind::Acquire; }
 
 bool imports(SyncRoleKind kind) { return kind != SyncRoleKind::Release; }
 
-/// The only traversal primitive: everything reachable from one effect, in
-/// canonical order. Sequenced-before reachability, happens-before, and every
-/// visibility summary are the same walk over a different graph.
-llvm::SmallVector<SyncEffectId>
-reachable(const Graph &graph, SyncEffectId start, std::uint64_t effects) {
-  llvm::SmallVector<SyncEffectId> found;
-  std::vector<bool> seen(effects, false);
+Graph reverseGraph(const Graph &graph) {
+  Graph reversed(graph.size());
+  for (std::uint64_t from = 0; from < graph.size(); ++from)
+    for (SyncEffectId to : graph[from])
+      reversed[to.value()].push_back(SyncEffectId(from));
+  canonicalize(reversed);
+  return reversed;
+}
+
+bool reaches(const Graph &graph, SyncEffectId start, SyncEffectId target) {
+  if (start == target)
+    return false;
+  if (llvm::is_contained(graph[start.value()], target))
+    return true;
+
+  std::vector<bool> seen(graph.size(), false);
   llvm::SmallVector<SyncEffectId> worklist{start};
   seen[start.value()] = true;
   while (!worklist.empty()) {
     const SyncEffectId node = worklist.pop_back_val();
-    auto edges = graph.find(node.value());
-    if (edges == graph.end())
-      continue;
-    for (const SyncEffectId next : edges->second) {
+    for (const SyncEffectId next : graph[node.value()]) {
+      if (next == target)
+        return true;
+      if (seen[next.value()])
+        continue;
+      seen[next.value()] = true;
+      worklist.push_back(next);
+    }
+  }
+  return false;
+}
+
+/// The only traversal primitive: everything reachable from one effect, in
+/// canonical order. Sequenced-before reachability, happens-before, and every
+/// visibility summary are the same walk over a different graph.
+llvm::SmallVector<SyncEffectId> reachable(const Graph &graph,
+                                          SyncEffectId start) {
+  llvm::SmallVector<SyncEffectId> found;
+  std::vector<bool> seen(graph.size(), false);
+  llvm::SmallVector<SyncEffectId> worklist{start};
+  seen[start.value()] = true;
+  while (!worklist.empty()) {
+    const SyncEffectId node = worklist.pop_back_val();
+    for (const SyncEffectId next : graph[node.value()]) {
       if (seen[next.value()])
         continue;
       seen[next.value()] = true;
@@ -63,12 +97,12 @@ reachable(const Graph &graph, SyncEffectId start, std::uint64_t effects) {
 
 /// Iterative depth-first search over the proposed relation graph. A back edge
 /// to an effect still on the stack is a cycle.
-bool hasCycle(const Graph &graph, std::uint64_t effects) {
+bool hasCycle(const Graph &graph) {
   enum class Mark : std::uint8_t { Unseen, Active, Done };
-  std::vector<Mark> marks(effects, Mark::Unseen);
+  std::vector<Mark> marks(graph.size(), Mark::Unseen);
   llvm::SmallVector<std::pair<std::uint64_t, std::size_t>> stack;
 
-  for (std::uint64_t root = 0; root < effects; ++root) {
+  for (std::uint64_t root = 0; root < graph.size(); ++root) {
     if (marks[root] != Mark::Unseen)
       continue;
     marks[root] = Mark::Active;
@@ -76,14 +110,13 @@ bool hasCycle(const Graph &graph, std::uint64_t effects) {
     while (!stack.empty()) {
       const std::uint64_t node = stack.back().first;
       const std::size_t index = stack.back().second;
-      auto edges = graph.find(node);
-      if (edges == graph.end() || index >= edges->second.size()) {
+      if (index >= graph[node].size()) {
         marks[node] = Mark::Done;
         stack.pop_back();
         continue;
       }
       stack.back().second = index + 1;
-      const SyncEffectId next = edges->second[index];
+      const SyncEffectId next = graph[node][index];
       if (marks[next.value()] == Mark::Active)
         return true;
       if (marks[next.value()] == Mark::Unseen) {
@@ -93,6 +126,40 @@ bool hasCycle(const Graph &graph, std::uint64_t effects) {
     }
   }
   return false;
+}
+
+llvm::SmallVector<SyncEffectId>
+maximalCandidates(llvm::ArrayRef<SyncEffectId> candidates,
+                  const Graph &predecessors) {
+  llvm::SmallVector<SyncEffectId> accepted(candidates);
+  canonicalize(accepted);
+  if (accepted.size() < 2)
+    return accepted;
+
+  std::vector<bool> isCandidate(predecessors.size(), false);
+  std::vector<bool> dominated(predecessors.size(), false);
+  std::vector<bool> seen(predecessors.size(), false);
+  llvm::SmallVector<SyncEffectId> worklist;
+  for (SyncEffectId effect : accepted) {
+    isCandidate[effect.value()] = true;
+    seen[effect.value()] = true;
+    worklist.push_back(effect);
+  }
+  while (!worklist.empty()) {
+    const SyncEffectId effect = worklist.pop_back_val();
+    for (SyncEffectId predecessor : predecessors[effect.value()]) {
+      if (isCandidate[predecessor.value()])
+        dominated[predecessor.value()] = true;
+      if (seen[predecessor.value()])
+        continue;
+      seen[predecessor.value()] = true;
+      worklist.push_back(predecessor);
+    }
+  }
+
+  llvm::erase_if(
+      accepted, [&](SyncEffectId effect) { return dominated[effect.value()]; });
+  return accepted;
 }
 
 } // namespace
@@ -137,8 +204,7 @@ MemorySynchronization::domainOf(const Facts &facts, SyncEffectId effect) const {
 bool MemorySynchronization::sequencedReaches(const Facts &facts,
                                              SyncEffectId from,
                                              SyncEffectId to) const {
-  return llvm::is_contained(reachable(facts.sequenced, from, facts.effects),
-                            to);
+  return reaches(facts.sequenced, from, to);
 }
 
 llvm::SmallVector<SyncEffectId>
@@ -236,17 +302,16 @@ void MemorySynchronization::forEachSynchronization(
 }
 
 MemorySynchronization::Graph
-MemorySynchronization::buildGraph(const Facts &facts, bool reversed) const {
-  Graph graph;
+MemorySynchronization::buildGraph(const Facts &facts) const {
+  Graph graph(facts.effects);
   auto link = [&](SyncEffectId from, SyncEffectId to) {
-    if (reversed)
-      std::swap(from, to);
     graph[from.value()].push_back(to);
   };
-  for (const auto &[value, laters] : facts.sequenced)
-    for (const SyncEffectId later : laters)
+  for (std::uint64_t value = 0; value < facts.sequenced.size(); ++value)
+    for (const SyncEffectId later : facts.sequenced[value])
       link(SyncEffectId(value), later);
   forEachSynchronization(facts, link);
+  canonicalize(graph);
   return graph;
 }
 
@@ -267,11 +332,30 @@ MemorySynchronization::requireNoFenceRole(SyncEffectId effect) const {
   return llvm::Error::success();
 }
 
-llvm::Error MemorySynchronization::commit(Facts candidate) {
-  if (hasCycle(buildGraph(candidate, /*reversed=*/false), candidate.effects))
+void MemorySynchronization::reduceSequencedRelation(Facts &facts) const {
+  const Graph predecessors = reverseGraph(facts.sequenced);
+  Graph reduced(facts.effects);
+  for (std::uint64_t target = 0; target < predecessors.size(); ++target)
+    for (SyncEffectId predecessor :
+         maximalCandidates(predecessors[target], predecessors))
+      reduced[predecessor.value()].push_back(SyncEffectId(target));
+  facts.sequenced = std::move(reduced);
+}
+
+llvm::Error MemorySynchronization::commit(Facts candidate,
+                                          bool reduceSequenced) {
+  Graph relation = buildGraph(candidate);
+  if (hasCycle(relation))
     return reject(Kind::CyclicOrder,
                   "the update closes a happens-before cycle");
+  if (reduceSequenced) {
+    reduceSequencedRelation(candidate);
+    relation = buildGraph(candidate);
+  }
+  Graph predecessors = reverseGraph(relation);
   facts_ = std::move(candidate);
+  relation_ = std::move(relation);
+  predecessors_ = std::move(predecessors);
   return llvm::Error::success();
 }
 
@@ -289,11 +373,21 @@ llvm::Expected<SyncEffectId> MemorySynchronization::declareEffectSequencedAfter(
     accepted.push_back(predecessor);
   }
 
-  Facts candidate = facts_;
-  const SyncEffectId effect(candidate.effects++);
-  for (SyncEffectId predecessor : accepted)
-    candidate.sequenced[predecessor.value()].push_back(effect);
-  facts_ = std::move(candidate);
+  if (accepted.size() > 1)
+    accepted = llvm::cantFail(maximalHappensBeforeFrontier(accepted));
+  else
+    canonicalize(accepted);
+
+  const SyncEffectId effect(facts_.effects);
+  ++facts_.effects;
+  facts_.sequenced.emplace_back();
+  relation_.emplace_back();
+  predecessors_.emplace_back();
+  for (SyncEffectId predecessor : accepted) {
+    facts_.sequenced[predecessor.value()].push_back(effect);
+    relation_[predecessor.value()].push_back(effect);
+    predecessors_[effect.value()].push_back(predecessor);
+  }
   return effect;
 }
 
@@ -331,7 +425,7 @@ llvm::Error MemorySynchronization::sequencedBefore(
                         " already precedes " + llvm::Twine(later.value()));
     successors.push_back(later);
   }
-  return commit(std::move(candidate));
+  return commit(std::move(candidate), /*reduceSequenced=*/true);
 }
 
 llvm::Error
@@ -470,9 +564,7 @@ bool MemorySynchronization::happensBefore(SyncEffectId earlier,
                                           SyncEffectId later) const {
   if (earlier.value() >= facts_.effects || later.value() >= facts_.effects)
     return false;
-  return llvm::is_contained(reachable(buildGraph(facts_, /*reversed=*/false),
-                                      earlier, facts_.effects),
-                            later);
+  return reaches(relation_, earlier, later);
 }
 
 bool MemorySynchronization::areCoveredByHappensBefore(
@@ -490,8 +582,10 @@ bool MemorySynchronization::areCoveredByHappensBefore(
         return effect.value() >= facts_.effects;
       }))
     return false;
+  if (effects.size() == 1 && frontier.size() == 1)
+    return effects.front() == frontier.front() ||
+           happensBefore(effects.front(), frontier.front());
 
-  const Graph predecessors = buildGraph(facts_, /*reversed=*/true);
   std::vector<bool> covered(facts_.effects, false);
   llvm::SmallVector<SyncEffectId> worklist;
   for (SyncEffectId effect : frontier) {
@@ -502,10 +596,7 @@ bool MemorySynchronization::areCoveredByHappensBefore(
   }
   while (!worklist.empty()) {
     SyncEffectId effect = worklist.pop_back_val();
-    auto incoming = predecessors.find(effect.value());
-    if (incoming == predecessors.end())
-      continue;
-    for (SyncEffectId predecessor : incoming->second) {
+    for (SyncEffectId predecessor : predecessors_[effect.value()]) {
       if (covered[predecessor.value()])
         continue;
       covered[predecessor.value()] = true;
@@ -514,6 +605,33 @@ bool MemorySynchronization::areCoveredByHappensBefore(
   }
   return llvm::all_of(
       effects, [&](SyncEffectId effect) { return covered[effect.value()]; });
+}
+
+llvm::Expected<llvm::SmallVector<SyncEffectId>>
+MemorySynchronization::maximalHappensBeforeFrontier(
+    llvm::ArrayRef<SyncEffectId> effects) const {
+  llvm::SmallVector<SyncEffectId> accepted(effects);
+  canonicalize(accepted);
+  for (SyncEffectId effect : accepted)
+    if (llvm::Error error = requireKnown(effect))
+      return std::move(error);
+  if (accepted.size() == 2) {
+    if (happensBefore(accepted[0], accepted[1]))
+      accepted.erase(accepted.begin());
+    else if (happensBefore(accepted[1], accepted[0]))
+      accepted.pop_back();
+    return accepted;
+  }
+  if (accepted.size() > 2)
+    return maximalCandidates(accepted, predecessors_);
+  return accepted;
+}
+
+std::uint64_t MemorySynchronization::sequencedEdgeCount() const {
+  std::uint64_t count = 0;
+  for (const auto &edges : facts_.sequenced)
+    count += edges.size();
+  return count;
 }
 
 llvm::Expected<llvm::SmallVector<SyncEffectId>>
@@ -534,8 +652,7 @@ MemorySynchronization::visibilitySummary(SyncEffectId origin) const {
     return reject(Kind::UnknownRole, "effect " + llvm::Twine(origin.value()) +
                                          " has no release role and publishes "
                                          "no summary");
-  return reachable(buildGraph(facts_, /*reversed=*/true), origin,
-                   facts_.effects);
+  return reachable(predecessors_, origin);
 }
 
 llvm::Expected<llvm::SmallVector<SyncEffectId>>
@@ -548,14 +665,12 @@ MemorySynchronization::importedVisibility(SyncEffectId target) const {
                                          " has no acquire role and imports no "
                                          "summary");
 
-  const Graph predecessors = buildGraph(facts_, /*reversed=*/true);
   llvm::SmallVector<SyncEffectId> imported;
   forEachSynchronization(facts_, [&](SyncEffectId origin, SyncEffectId into) {
     if (into != target)
       return;
     imported.push_back(origin);
-    llvm::append_range(imported,
-                       reachable(predecessors, origin, facts_.effects));
+    llvm::append_range(imported, reachable(predecessors_, origin));
   });
   canonicalize(imported);
   return imported;

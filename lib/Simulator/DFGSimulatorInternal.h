@@ -19,6 +19,8 @@
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -98,11 +100,10 @@ struct MemoryFixture {
   std::int64_t byteOffset = 0;
 };
 
-// The execution-local footprint of one issued ordinary access: the logical
-// object it touches and the byte ranges its active lanes cover. It holds only
-// what conflict projection needs. The effect identity that carries the access's
-// software order is paired with this record in `memoryActions`, and
-// MemorySynchronization remains the authority for the causal relations.
+// The execution-local footprint of one ordinary access: the logical object it
+// touches and the byte ranges its active lanes cover. In the conflict cache,
+// ranges already superseded by a later effect are removed from this record.
+// MemorySynchronization remains the authority for every causal comparison.
 struct MemoryActionRecord {
   std::uint64_t rootId = 0;
   // Half-open byte ranges of the active lanes, relative to the logical root.
@@ -165,6 +166,9 @@ struct SimulatorState {
   // an access needs them.
   std::unique_ptr<MemoryAtomicOrder> memoryOrder;
   std::unique_ptr<MemorySynchronization> memorySync;
+  // Compact conflict cache. A record retains only byte ranges where its effect
+  // remains a maximal prior read or write; MemorySynchronization still owns
+  // every causal comparison.
   llvm::SmallVector<std::pair<MemoryActionRecord, SyncEffectId>> memoryActions;
   // Execution-local cache of the plain actions and ctrl-derived order
   // frontiers admitted for the current scheduler decision. The scheduler
@@ -209,11 +213,31 @@ void mergeMemoryOrderFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
 void mergeMemoryOrderFrontier(llvm::SmallVectorImpl<SyncEffectId> &into,
                               llvm::ArrayRef<SyncEffectId> effects);
 
+inline void
+reduceMemoryOrderFrontier(SimulatorState &state,
+                          llvm::SmallVectorImpl<SyncEffectId> &frontier) {
+  if (frontier.size() < 2)
+    return;
+  assert(state.memorySync && "a memory-order witness requires its authority");
+  llvm::SmallVector<SyncEffectId> reduced =
+      llvm::cantFail(state.memorySync->maximalHappensBeforeFrontier(frontier));
+  frontier.assign(reduced.begin(), reduced.end());
+}
+
+inline void
+mergeAndReduceMemoryOrderFrontier(SimulatorState &state,
+                                  llvm::SmallVectorImpl<SyncEffectId> &into,
+                                  llvm::ArrayRef<SyncEffectId> effects) {
+  mergeMemoryOrderFrontier(into, effects);
+  reduceMemoryOrderFrontier(state, into);
+}
+
 inline void retainAndPublishActivationMemoryOrder(SimulatorState &state,
                                                   mlir::Operation *actor) {
   auto &activation = state.activationMemoryOrderFrontiers[actor];
-  mergeMemoryOrderFrontier(activation, state.firingMemoryOrderFrontier);
-  mergeMemoryOrderFrontier(state.firingMemoryOrderFrontier, activation);
+  mergeAndReduceMemoryOrderFrontier(state, activation,
+                                    state.firingMemoryOrderFrontier);
+  state.firingMemoryOrderFrontier.assign(activation.begin(), activation.end());
 }
 
 inline void retireActivationMemoryOrder(SimulatorState &state,
@@ -263,6 +287,66 @@ std::optional<Token> readMemoryElement(const MemoryView &view,
 void writeMemoryElement(const MemoryView &view, std::size_t index, Token value);
 void commitDataflowMemoryWrite(const MemoryView &view,
                                const DataflowMemoryWrite &write);
+
+inline void canonicalizeMemoryActionRanges(
+    llvm::SmallVectorImpl<std::pair<std::int64_t, std::int64_t>> &ranges) {
+  llvm::sort(ranges);
+  llvm::SmallVector<std::pair<std::int64_t, std::int64_t>> merged;
+  for (const auto &range : ranges) {
+    if (merged.empty() || merged.back().second < range.first) {
+      merged.push_back(range);
+      continue;
+    }
+    merged.back().second = std::max(merged.back().second, range.second);
+  }
+  ranges.assign(merged.begin(), merged.end());
+}
+
+inline void subtractMemoryActionRanges(
+    llvm::SmallVectorImpl<std::pair<std::int64_t, std::int64_t>> &ranges,
+    llvm::ArrayRef<std::pair<std::int64_t, std::int64_t>> removed) {
+  llvm::SmallVector<std::pair<std::int64_t, std::int64_t>> remainder;
+  for (const auto &[begin, end] : ranges) {
+    std::int64_t cursor = begin;
+    for (const auto &[removedBegin, removedEnd] : removed) {
+      if (removedEnd <= cursor)
+        continue;
+      if (removedBegin >= end)
+        break;
+      if (cursor < removedBegin)
+        remainder.emplace_back(cursor, std::min(end, removedBegin));
+      cursor = std::max(cursor, removedEnd);
+      if (cursor >= end)
+        break;
+    }
+    if (cursor < end)
+      remainder.emplace_back(cursor, end);
+  }
+  ranges.assign(remainder.begin(), remainder.end());
+}
+
+inline void retainIssuedMemoryAction(SimulatorState &state,
+                                     MemoryActionRecord action,
+                                     SyncEffectId effect) {
+  canonicalizeMemoryActionRanges(action.byteRanges);
+  for (auto &issued : state.memoryActions) {
+    if (issued.first.rootId != action.rootId)
+      continue;
+    const bool superseded =
+        action.isWrite ||
+        (!issued.first.isWrite &&
+         state.memorySync->happensBefore(issued.second, effect));
+    if (superseded)
+      subtractMemoryActionRanges(issued.first.byteRanges, action.byteRanges);
+  }
+  state.memoryActions.erase(
+      std::remove_if(
+          state.memoryActions.begin(), state.memoryActions.end(),
+          [](const auto &issued) { return issued.first.byteRanges.empty(); }),
+      state.memoryActions.end());
+  state.memoryActions.emplace_back(std::move(action), effect);
+}
+
 PlainMemoryActionProjection
 projectReadyPlainMemoryAction(mlir::Operation *op, SimulatorState &state);
 bool plainMemoryActionsConflict(const MemoryActionRecord &lhs,

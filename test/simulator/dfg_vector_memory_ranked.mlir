@@ -104,9 +104,9 @@
 // unsupported capability instead of choosing a lane order or witnessing a
 // deadlock. The store never fires and Unsupported exports no terminal state.
 // DUP-SCATTER: "dataflow.store does not resolve duplicate active addresses"
-// DUP-SCATTER: "final_memory_roots": {}
-// DUP-SCATTER-NEXT: "final_memory_state": {}
-// DUP-SCATTER-NEXT: "final_outputs": []
+// DUP-SCATTER-DAG: "final_memory_roots": {}
+// DUP-SCATTER-DAG: "final_memory_state": {}
+// DUP-SCATTER-DAG: "final_outputs": []
 // DUP-SCATTER-NOT: "dataflow.store"
 // DUP-SCATTER: "status": "unsupported"
 

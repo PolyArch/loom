@@ -14,6 +14,7 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace loom {
 namespace sim {
@@ -121,8 +122,8 @@ private:
 ///
 /// Every relation view is a pure function of the accepted facts, so a caller
 /// that records the same facts in a different valid order observes the same
-/// relations. Views are returned as immutable snapshots, never as references
-/// into engine state. There is no cache to invalidate.
+/// relations. Authority-owned indexes are updated atomically with those facts;
+/// views never expose or turn them into a second relation authority.
 ///
 /// Every rejected update is atomic: it consumes no effect id and leaves every
 /// fact, association, and derived relation untouched.
@@ -194,6 +195,14 @@ public:
   bool areCoveredByHappensBefore(llvm::ArrayRef<SyncEffectId> effects,
                                  llvm::ArrayRef<SyncEffectId> frontier) const;
 
+  /// Returns the maximal members of an execution-local happens-before
+  /// frontier. Unknown effects reject the complete query.
+  llvm::Expected<llvm::SmallVector<SyncEffectId>>
+  maximalHappensBeforeFrontier(llvm::ArrayRef<SyncEffectId> effects) const;
+
+  /// Number of direct edges in the transitively reduced sequenced relation.
+  std::uint64_t sequencedEdgeCount() const;
+
   /// The release origins published through one version, which is origin and
   /// domain metadata rather than a visibility summary.
   llvm::Expected<llvm::SmallVector<SyncEffectId>>
@@ -213,6 +222,8 @@ public:
   importedVisibility(SyncEffectId target) const;
 
 private:
+  using Graph = std::vector<llvm::SmallVector<SyncEffectId, 2>>;
+
   /// One addressed access: exactly one resolved domain plus the atomic
   /// relations it owns. A carried write holds both.
   struct Carrier {
@@ -228,26 +239,25 @@ private:
     std::optional<SyncDomainId> fenceDomain;
   };
 
-  /// The whole mutable state. Every update validates a candidate copy and
-  /// installs it only after the complete proposed relation graph is accepted,
-  /// which is what makes rejection atomic by construction.
+  /// The accepted facts. General updates validate a candidate copy before
+  /// installation. Fresh effect declaration validates its complete incoming
+  /// frontier before extending these facts and the derived indexes together.
   struct Facts {
     std::uint64_t effects = 0;
-    std::map<std::uint64_t, llvm::SmallVector<SyncEffectId, 2>> sequenced;
+    Graph sequenced;
     std::map<std::uint64_t, Carrier> carriers;
     std::map<std::uint64_t, Role> roles;
     std::map<std::uint64_t, SyncEffectId> versionOwner;
     std::map<std::uint64_t, SyncEffectId> readOwner;
   };
 
-  using Graph = std::map<std::uint64_t, llvm::SmallVector<SyncEffectId, 2>>;
-
   llvm::Error requireKnown(SyncEffectId effect) const;
   /// A fence has no addressed access, so it can never become a carrier. This is
   /// the mirror of the carrier check in declareFenceRole and keeps the shape
   /// rule independent of which fact the caller records first.
   llvm::Error requireNoFenceRole(SyncEffectId effect) const;
-  llvm::Error commit(Facts candidate);
+  llvm::Error commit(Facts candidate, bool reduceSequenced = false);
+  void reduceSequencedRelation(Facts &facts) const;
 
   const Carrier *carrierOf(const Facts &facts, SyncEffectId effect) const;
   const Role *roleOf(const Facts &facts, SyncEffectId effect) const;
@@ -261,10 +271,15 @@ private:
   void forEachSynchronization(
       const Facts &facts,
       llvm::function_ref<void(SyncEffectId, SyncEffectId)> action) const;
-  Graph buildGraph(const Facts &facts, bool reversed) const;
+  Graph buildGraph(const Facts &facts) const;
 
   const MemoryAtomicOrder *order_;
   Facts facts_;
+  // Derived execution-local indexes. The accepted facts above remain the
+  // authority; these two directions are rebuilt together after general
+  // updates and extended directly for a fresh effect.
+  Graph relation_;
+  Graph predecessors_;
 };
 
 } // namespace sim
