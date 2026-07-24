@@ -26,9 +26,10 @@ spatial_mapping: SpatialMapping
 
 The Mapping is already bound to its exact TechMapping and Fabric inputs.
 `workload_ref` and `runtime_input_ref` bind the exact spatial workload and its
-concrete values, streams, dynamic parameters, external arrivals, and logical
-memory. The resolved simulator model belongs to `ResolvedModelBinding`. Trace
-capture and physical execution limits belong to invocation and attempt state.
+concrete values, complete input-stream definitions, dynamic parameters, and
+logical memory. The resolved simulator model belongs to
+`ResolvedModelBinding`. Trace capture and physical execution limits belong to
+invocation and attempt state.
 
 CGRA-sim declares one typed `SimulationExecution` output slot and the complete
 mandatory terminal FindingQuery set. It produces one execution, one

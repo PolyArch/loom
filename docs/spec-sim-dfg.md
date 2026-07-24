@@ -51,10 +51,11 @@ other operations outside the canonical surface are invalid. Parse-time dialect
 registration does not grant execution semantics.
 
 DFG-sim imports the Dataflow-owned read-only
-`CanonicalDataflowProgramView`, resolves the workload's exact `GraphRef`, and
-uses the imported `ActorRef` and typed endpoint relations directly. It neither
-requires a Mapping Artifact nor creates a simulator-local persistent actor
-catalog. Missing, stale, foreign-artifact, or wrong-kind graph or actor
+`CanonicalDataflowProgramView`, resolves the workload's exact
+`RootedGraphLaunchRef`, derives its called `GraphRef`, and uses the imported
+`ActorRef` and typed endpoint relations directly. It neither requires a
+Mapping Artifact nor creates a simulator-local persistent actor catalog.
+Missing, stale, foreign-artifact, or wrong-kind launch, graph, or actor
 references fail admission before execution state exists.
 
 An admitted actor without implemented semantics is `unsupported`. It must not

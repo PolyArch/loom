@@ -22,54 +22,260 @@ or report Artifact families are forbidden.
 
 ## SimulationWorkload
 
-`SimulationWorkload` has two typed roots:
+`SimulationWorkload` has one closed root union:
+
+```text
+SimulationWorkload =
+    Spatial(SpatialSimulationWorkload)
+  | System(SystemSimulationWorkload)
+```
+
+The root discriminants are zero and one in declaration order. The spatial
+root is:
 
 ```text
 SpatialSimulationWorkload {
-  canonical_dataflow_ref
-  graph_ref
-  logical_invocation
-  coordinate_and_parameter_schema
-  observable_contract
+  launch_ref: RootedGraphLaunchRef
+  dense_coordinates: array<uint64>
+  value_input_plan:
+    total table<graph value-input ordinal, SpatialValueInputSource>
+  observable_contract: SpatialObservableContract
 }
 
+SpatialValueInputSource =
+    Fixed(CanonicalValueSequence)
+  | Runtime
+```
+
+`launch_ref` is the one Dataflow-owned structural reference that recovers the
+exact Canonical Dataflow Artifact, root thread launch, static graph launch,
+called graph, graph ABI, memory roots, and channel context. The workload must
+not copy a `canonical_dataflow_ref`, `GraphRef`, graph symbol, or logical
+invocation record.
+
+The dense coordinate count must equal the root thread domain rank. Every
+coordinate must be inside any statically known bound. A dynamic-work point is
+not admitted by schema 1.0; its persistent identity depends on the separately
+owned DynamicWork correspondence contract.
+
+The value-input table is exactly total over graph value-input ordinals. A
+`Fixed` entry contains exactly one semantic token and makes that launch
+parameter part of workload identity. A `Runtime` entry delegates only that
+token to the exact `SimulationRuntimeInput`. Stream inputs are always concrete
+runtime sequences, and imported memory roots are always runtime bindings.
+Consequently there is no generic four-way `InputSource` union that repeats the
+value, stream, and memory planes already owned by the graph ABI.
+
+The spatial observable contract is:
+
+```text
+SpatialObservableContract {
+  value_results: canonical set<graph value-result ordinal>
+  stream_outputs: canonical set<graph stream-output ordinal>
+  memories:
+    canonical table<SpatialMemoryObservableTarget, MemoryObservationForm>
+}
+
+SpatialMemoryObservableTarget =
+    LogicalMemory(LogicalMemoryRootOrViewRef)
+  | Exposure(graph memory-result ordinal)
+
+MemoryObservationForm =
+    FullState
+  | DiffFromRuntimeInput
+```
+
+Value and stream ordinals are owner-relative to `launch_ref`; their complete
+meanings are the corresponding `GraphLaunchBoundaryTransferRef` and
+`ChannelProducerRef` forms. An exposure ordinal has the complete meaning of
+the corresponding `MemoryExposureRef`. Types and shapes are recovered from
+the exact Dataflow owner and are never copied into the contract. Each
+collection is sorted by the canonical typed target key and contains no
+duplicates.
+
+Graph completion is mandatory for every workload and derives from
+`GraphLaunchBoundaryTransferRef::Done(launch_ref)`. It is not an optional
+observable selector. Intermediate completion and retirement activity belongs
+to execution trace or activity records rather than this contract.
+
+The system root has the structural shape:
+
+```text
 SystemSimulationWorkload {
-  deployment_ref
-  program_entry
-  declared_external_interactions
-  observable_contract
+  program_entry_ref: Deployment-owned typed program-entry reference
+  external_interface_refs:
+    canonical set<Deployment-owned typed external-interface reference>
+  observable_contract: SystemObservableContract
 }
 ```
 
-The spatial root describes one logical SpatialCore invocation. The system root
-describes one exact deployed program entry. Workloads own shapes, launch
-parameters, and observable value, stream, memory, and completion contracts;
-they do not own concrete input values or simulator policy.
+The program-entry reference already carries the exact Deployment identity, so
+there is no second `deployment_ref`. The Deployment family must own both
+target catalogs, ordinals, and validation. Until the executable-closure and
+Deployment frontiers close those references, a schema-1.0 producer must reject
+the `System` root rather than serialize a string, symbol, generic path,
+provisional ordinal, or private substitute. Closing those referenced catalogs
+does not permit this schema to copy Deployment entry or interface fields.
 
-`canonical_dataflow_ref` is an exact Common Artifact reference to one finalized
-`loom.canonical_dataflow 1.0` Artifact. `graph_ref` is the Dataflow-owned typed
-`GraphRef` whose artifact component must equal that exact reference. It is not
-a symbol, local array index, simulator ID, or Mapping-owned graph number.
-DFG-sim can therefore resolve a workload directly from the Dataflow importer;
-CGRA-sim additionally validates its exact Mapping and Fabric inputs against the
-same Dataflow identity.
+Workloads own fixed problem shape, fixed launch values, and requested
+observables. They do not own concrete runtime values, stream contents, memory
+images, simulator policy, expected results, trace capture, or execution
+limits.
+
+## Canonical Semantic Values
+
+One value representation is shared by fixed workload inputs, runtime value
+inputs, and runtime stream tokens:
+
+```text
+CanonicalValueSequence {
+  token_count: uint64
+  lanes: array<SemanticLane>
+}
+
+SemanticLane =
+    Defined(fixed-width semantic bits)
+  | Poison
+  | Undef
+```
+
+The target type is recovered from the workload and is not serialized again.
+For a scalar, each token has one lane. For a fixed-ranked vector, each token
+has the product of its dimensions in canonical row-major lane order. The lane
+array length must therefore equal `token_count * lanes_per_token`.
+
+A defined integer, index, or floating lane stores the exact fixed-width
+software-semantic bit representation. Variant tags and bits use canonical
+big-endian wire order. This is serialization framing, not target memory
+endianness, Fabric port layout, vector packing, or a hardware representation.
+Host integer and floating types are never semantic authorities. Unknown lane
+states, wrong widths, extra lanes, and unresolved target widths are invalid.
 
 ## SimulationRuntimeInput
 
-`SimulationRuntimeInput` also has spatial and system roots. Every root refers
-to exactly one compatible `SimulationWorkload`.
+`SimulationRuntimeInput` uses the same root discriminant as its exact workload.
+The spatial root is:
 
-The spatial root owns concrete values, ordered input streams, dynamic launch
-parameters, external arrivals, and the logical-memory registry: object
-identities, alias topology, runtime allocations, initial contents, and input
-images. The system root owns concrete argv, stdin, external events, and memory
-or device input images.
+```text
+SpatialSimulationRuntimeInput {
+  workload_ref: exact Spatial SimulationWorkload reference
+  runtime_values:
+    total table<runtime graph value-input ordinal, CanonicalValueSequence>
+  runtime_streams:
+    total table<graph stream-input ordinal, RuntimeStreamInput>
+  memory_objects: canonical array<RuntimeMemoryObject>
+  memory_root_bindings:
+    total table<LogicalMemoryRootRef, RuntimeMemoryRootBinding>
+}
+
+RuntimeStreamInput {
+  values: CanonicalValueSequence
+  termination: ClosedAfterLast | OpenAfterLast
+}
+
+RuntimeMemoryObject {
+  byte_count: uint64
+  initial_bytes: array<SemanticMemoryByte>
+}
+
+SemanticMemoryByte =
+    Defined(uint8)
+  | Poison
+  | Undef
+
+RuntimeMemoryRootBinding {
+  object_ordinal: uint64
+  byte_offset: uint64
+}
+```
+
+`runtime_values` is exactly total over value-input ordinals whose workload
+source is `Runtime`; every sequence has exactly one token. `runtime_streams`
+is exactly total over graph stream-input ordinals. `ClosedAfterLast` publishes
+the stream close after its final token. `OpenAfterLast` publishes no later
+token and never closes; future timed arrivals require an independently
+justified typed environment schedule and are not hidden simulator input.
+
+Every imported logical-memory root reachable from the selected launch has
+exactly one root binding, and no unrelated root may appear. A runtime memory
+object is neutral byte-addressed software storage. Its initial-byte count must
+equal `byte_count`; the exact Canonical Dataflow type, DataLayout, and
+root/view relations alone interpret typed accesses. This avoids choosing one
+aliased memref role as a privileged storage type or importing physical memory
+layout into the software input.
+
+Objects have no author-selected persistent IDs. Before serialization, roots
+that share one runtime object form an equivalence class. The canonical key for
+that object is the sorted non-empty list of `(LogicalMemoryRootRef,
+byte_offset)` bindings. Objects are sorted by this key and receive their
+zero-based `object_ordinal` from that order. Binding two or more roots to one
+ordinal expresses aliasing; no separate alias graph is serialized. Missing,
+empty, duplicate, out-of-range, or unreferenced objects are invalid. Overlap
+between two root ranges bound to the same object is legal aliasing and must
+not be rejected merely because their ranges intersect.
+
+A fresh graph allocation is not an imported runtime object. Its execution
+identity derives from its static `LogicalMemoryRootRef` and graph-invocation
+occurrence, and its storage is created under the owning software semantics.
+It therefore does not receive a workload-local object ID or root binding.
+
+The system runtime root must bind concrete inputs through the exact
+Deployment-owned program-entry and external-interface references in its
+workload. Its exact table variants remain gated by the same executable-closure
+and Deployment frontier. A producer must not substitute argv arrays, device
+names, string-key maps, or simulator-private event records for those typed
+interfaces.
 
 Runtime input does not contain model timing, trace-capture policy, execution
 limits, Mapping repairs, physical addresses used only by a simulator, or
 presentation options.
 
-## SimulationExecution
+## Canonical Workload And Input Wire
+
+Every displayed union assigns zero-based unsigned 32-bit discriminants in
+declaration order. Unsigned counts and ordinals use 64-bit big-endian values.
+Exact Artifact identities use their fixed 32-byte representation. Arrays and
+tables use a 64-bit element count followed by elements in canonical order.
+Nested Dataflow and Deployment references use their owning canonical
+encodings; this schema does not renumber them.
+
+Records encode fields in declaration order without names, optional property
+maps, padding, or native C++ layout. Tables are sorted by their typed semantic
+keys. Parsers reject duplicate or unsorted keys, unknown variants, missing or
+extra fields, noncanonical bytes, unresolved references, and any cardinality
+or owner mismatch. JSON, MLIR text, CLI syntax, and visualization files are
+derived projections and cannot be accepted as identity bytes.
+
+## Spatial Vecadd Example
+
+For a rooted graph launch whose value-input ordinal zero is `N`, whose imported
+logical-memory roots are `A`, `B`, and `C`, and whose computation is
+`C[i] = A[i] + B[i]`, the workload contains:
+
+```text
+launch_ref = exact rooted vecadd graph launch
+dense_coordinates = the selected logical thread point
+value_input_plan = {
+  0 -> Fixed(one defined index token with value 1024)
+}
+observable_contract = {
+  value_results = {}
+  stream_outputs = {}
+  memories = {
+    LogicalMemory(Root(C)) -> DiffFromRuntimeInput
+  }
+}
+```
+
+The runtime input contains no runtime value or stream entries. It provides
+three 4096-byte objects for `A`, `B`, and `C`, binds each root to its object at
+byte offset zero, and initializes the bytes using the software DataLayout for
+1024 `f32` elements. The serialized object ordinals derive from the sorted
+root-binding keys rather than the source names `A`, `B`, and `C`. Binding `A`
+and `B` to one object ordinal would instead state that those two imported
+roles alias; no other record changes.
+
+## SimulationExecution Semantic Boundary
 
 Every model that actually runs a software workload produces one
 `SimulationExecution` with a spatial or system root:
@@ -88,6 +294,13 @@ SimulationExecution {
   trace_manifest?
 }
 ```
+
+This record states the confirmed semantic ownership boundary. Its closed
+output, terminal-observation, completion, activity, trace-manifest, and
+`Halted` witness records are the next persistent-wire frontier. A producer
+must not serialize the conceptual field names above as a generic map or claim
+the `loom.simulation_execution 1.0` wire is complete until that frontier
+closes.
 
 Its closed terminal algebra is:
 
@@ -154,9 +367,9 @@ correctness.
 Actor-bearing trace and activity records use the Dataflow-owned `ActorRef`.
 Execution-local invocation occurrences and per-actor firing ordinals qualify a
 dynamic event but never create persistent Dataflow entities. The complete
-persistent record unions and canonical chunk wire remain owned by the
-`SimulationWorkload/SimulationExecution persistent wire` design frontier; this
-rule fixes only the upstream identity owner.
+persistent execution-record unions and canonical chunk wire remain owned by
+the `SimulationExecution persistent wire` design frontier; this rule fixes
+only the upstream identity owner.
 
 Trace capture is a nonsemantic invocation binding. Enabling it may change
 execution cost and retained raw material, but must not change scheduling,
@@ -185,10 +398,18 @@ must not create an empty `SimulationExecution`.
 
 ## Anchor Verification
 
-Stable anchors cover exact workload/runtime coupling, spatial and system root
-validation, the typed output slot, mandatory terminal-finding totality, the
-closed terminal algebra and Evaluation mapping, logical-memory identity
-preservation, runtime-dependent `Unsupported` versus `Halted` and
-`ExecutionFailed`, trace observer noninterference, and rejection of normalized
-results inside `SimulationExecution`. Tests do not pin trace chunk sizes,
-report layouts, simulator class hierarchies, or broad workload matrices.
+Stable workload/input anchors cover `RootedGraphLaunchRef` ownership, dense
+coordinate rank, total value-source classification, exact runtime-table
+complements, value and stream cardinality, semantic lane states, mandatory
+completion derivation, observable target validity, canonical object ordering,
+two imported roots aliasing one object, and rejection of physical layout or
+arbitrary object identity. One vecadd case covers fixed `N`, runtime `A/B/C`,
+and a visible diff of `C`.
+
+Execution anchors separately cover the typed output slot, mandatory terminal-
+finding totality, the closed terminal algebra and Evaluation mapping,
+logical-memory identity preservation, runtime-dependent `Unsupported` versus
+`Halted` and `ExecutionFailed`, trace observer noninterference, and rejection
+of normalized results inside `SimulationExecution`. Tests do not pin trace
+chunk sizes, report layouts, simulator class hierarchies, broad workload
+matrices, every lane state, or every alias arrangement.

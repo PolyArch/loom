@@ -168,7 +168,10 @@ MemoryAction {
 This projection is neither IR nor an Artifact. It does not copy the actor
 contract, create another operation schema, or persist Mapping or simulator
 state. `SimulationRuntimeInput` remains the owner of logical-memory objects,
-alias topology, allocations, and initial contents.
+alias topology, allocations, and initial contents. Its spatial root expresses
+alias topology only by binding several `LogicalMemoryRootRef` values to the
+same canonical runtime-object ordinal; there is no independent alias graph or
+simulator-local object identity.
 
 The dynamic atomic-object identity is:
 
