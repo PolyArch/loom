@@ -1,4 +1,5 @@
 #include "GraphParallelLowering.h"
+#include "GraphRegionLowering.h"
 
 #include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
@@ -127,8 +128,7 @@ struct ParallelMemoryAccess {
 };
 
 bool hasUnsupportedParallelCompletion(::mlir::Operation *op) {
-  return ::llvm::isa<::dataflow::FenceOp, ::dataflow::AtomicRmwOp,
-                     ::dataflow::CmpXchgOp>(op);
+  return ::loom::lowering::isUnloweredGraphMemoryActor(op);
 }
 
 std::optional<ParallelMemoryAccess>

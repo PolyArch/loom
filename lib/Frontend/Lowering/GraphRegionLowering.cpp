@@ -43,15 +43,26 @@
 namespace loom {
 namespace lowering {
 
+bool isUnloweredGraphMemoryActor(::mlir::Operation *op) {
+  return ::llvm::isa<::dataflow::FenceOp, ::dataflow::AtomicRmwOp,
+                     ::dataflow::CmpXchgOp>(op);
+}
+
 bool isSupportedGraphLoweringLeaf(::mlir::Operation *op) {
-  return ::dataflow::isCanonicalDataflowActor(op) ||
-         ::llvm::isa<::mlir::UnrealizedConversionCastOp,
-                     ::mlir::memref::AllocOp, ::mlir::memref::CastOp,
-                     ::mlir::memref::GetGlobalOp, ::mlir::memref::LoadOp,
-                     ::mlir::memref::StoreOp, ::mlir::LLVM::AddressOfOp,
-                     ::mlir::LLVM::GEPOp, ::mlir::LLVM::LoadOp,
-                     ::mlir::LLVM::StoreOp, ::mlir::LLVM::MemcpyOp,
-                     ::mlir::LLVM::MemsetOp>(op);
+  // A canonical Dataflow actor is a supported leaf only when lowering
+  // implements its transformation (dataflow.load / dataflow.store) or it is a
+  // pure actor movable under the graph contract. The effectful memory actors
+  // that have no graph lowering are rejected here so preflight fails cleanly
+  // rather than admitting an operation lowering cannot move.
+  if (::dataflow::isCanonicalDataflowActor(op))
+    return !isUnloweredGraphMemoryActor(op);
+  return ::llvm::isa<
+      ::mlir::UnrealizedConversionCastOp, ::mlir::memref::AllocOp,
+      ::mlir::memref::CastOp, ::mlir::memref::GetGlobalOp,
+      ::mlir::memref::LoadOp, ::mlir::memref::StoreOp,
+      ::mlir::LLVM::AddressOfOp, ::mlir::LLVM::GEPOp, ::mlir::LLVM::LoadOp,
+      ::mlir::LLVM::StoreOp, ::mlir::LLVM::MemcpyOp, ::mlir::LLVM::MemsetOp>(
+      op);
 }
 
 } // namespace lowering
@@ -234,6 +245,12 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
                     "must be normalized before graph-region lowering");
       return ::mlir::WalkResult::interrupt();
     }
+    if (::loom::lowering::isUnloweredGraphMemoryActor(op)) {
+      op->emitError() << "loom-lower-graph-memory: canonical memory actor '"
+                      << op->getName().getStringRef()
+                      << "' has no graph-region lowering";
+      return ::mlir::WalkResult::interrupt();
+    }
     bool modeled =
         ::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp, ::mlir::scf::WhileOp,
                     ::mlir::scf::IndexSwitchOp, ::mlir::scf::ParallelOp,
@@ -292,6 +309,8 @@ public:
 
     RegionResult result =
         lowerBlock(entry, graph.getStart(), std::move(initial));
+    if (loweringFailed)
+      return ::mlir::failure();
     assert(routedStreamInputs.empty() && streamOutputSlots.empty() &&
            "stream endpoint maps must be retired before publication");
     assert(streamChoiceUsers.empty() &&
@@ -319,6 +338,9 @@ private:
   ::mlir::Block &entry;
   ::mlir::Operation *anchor;
   bool transientStreamBoundary;
+  // Set when a leaf operation reaches the frontier that lowering cannot move;
+  // `run` converts it into an ordinary pass failure.
+  bool loweringFailed = false;
   // Resolved once at the pass boundary and read-only from here on.
   unsigned indexBits;
   ::llvm::DenseMap<::mlir::Value, ::mlir::Value> streamInputByChannel;
@@ -1031,8 +1053,18 @@ private:
         constant.getCtrlMutable().assign(execution);
 
       if (op->getBlock() != &entry) {
-        assert(op->getNumRegions() == 0 && ::mlir::isPure(op) &&
-               "graph preflight admitted an unmovable operation");
+        // Preflight admits only movable leaves for the frontier, but a
+        // malformed or unsupported operation that slips through must fail
+        // cleanly here rather than abort lowering.
+        if (op->getNumRegions() != 0 || !::mlir::isPure(op)) {
+          op->emitError()
+              << "loom-lower-graph-memory: operation '"
+              << op->getName().getStringRef()
+              << "' has no graph-region lowering and cannot be moved into "
+                 "the graph frontier";
+          loweringFailed = true;
+          continue;
+        }
         op->moveBefore(anchor);
       }
     }

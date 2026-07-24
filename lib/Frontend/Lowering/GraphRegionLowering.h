@@ -9,6 +9,14 @@
 namespace loom {
 namespace lowering {
 
+// The canonical Dataflow memory actors that graph-region lowering has no
+// transformation for: `dataflow.fence`, `dataflow.atomic_rmw`, and
+// `dataflow.cmpxchg`. This is the single authority both the serial classifier
+// (`isSupportedGraphLoweringLeaf`) and the parallel completion check consult,
+// so every serial and parallel nesting shape rejects these effectful actors
+// during preflight instead of aborting inside lowering.
+bool isUnloweredGraphMemoryActor(::mlir::Operation *op);
+
 bool isSupportedGraphLoweringLeaf(::mlir::Operation *op);
 
 ::mlir::LogicalResult
