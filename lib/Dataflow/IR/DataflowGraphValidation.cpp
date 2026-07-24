@@ -380,6 +380,7 @@ bool hasObservableEffect(mlir::Operation *op) {
 enum class NestedAlignmentKind : uint8_t {
   Close,
   GateClose,
+  SiblingGateClose,
 };
 
 struct NestedAlignmentQuery {
@@ -683,7 +684,8 @@ private:
     if (!def)
       return false;
     if (truePhaseOnly &&
-        isNestedGateCloseAligned(value, selector, lane, phase, assumption))
+        (isSiblingGateCloseAligned(value, selector, lane, phase, assumption) ||
+         isNestedGateCloseAligned(value, selector, lane, phase, assumption)))
       return true;
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
       if (demux.getSel() == selector && result.getResultNumber() == lane) {
@@ -814,6 +816,37 @@ private:
              activation.isOneClosePhase(stream.getPhase()) &&
              activation.isPhaseAligned(gate->getBeforeValue(),
                                        stream.getPhase());
+    });
+  }
+
+  bool isSiblingGateCloseAligned(mlir::Value value, mlir::Value selector,
+                                 unsigned lane, mlir::Value parentPhase,
+                                 mlir::Value parentAssumption) {
+    // Phase-aligned sibling gates open and close on the same parent firings.
+    auto gate = dataflow::semantics::getGateCloseProjection(value);
+    auto selectorGate = selector.getDefiningOp<dataflow::GateOp>();
+    if (!gate || lane != 0 || !selectorGate ||
+        selector != selectorGate.getAfterCond() ||
+        gate->getBeforeCond() != parentPhase ||
+        selectorGate.getBeforeCond() != parentPhase)
+      return false;
+
+    NestedAlignmentQuery query{alignmentRevision,
+                               value,
+                               parentPhase,
+                               parentAssumption,
+                               selector,
+                               lane,
+                               NestedAlignmentKind::SiblingGateClose};
+    return evaluateNestedAlignment(query, [&] {
+      llvm::DenseSet<mlir::Value> gateVisited;
+      if (!isAligned(gate->getBeforeValue(), parentPhase, parentAssumption,
+                     /*truePhaseOnly=*/false, gateVisited))
+        return false;
+      llvm::DenseSet<mlir::Value> selectorVisited;
+      return isAligned(selectorGate.getBeforeValue(), parentPhase,
+                       parentAssumption, /*truePhaseOnly=*/false,
+                       selectorVisited);
     });
   }
 

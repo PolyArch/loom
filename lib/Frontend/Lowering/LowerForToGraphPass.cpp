@@ -44,6 +44,7 @@
 
 #include <algorithm>
 #include <array>
+#include <deque>
 #include <optional>
 
 namespace {
@@ -328,15 +329,16 @@ std::string uniqueSymbol(::mlir::ModuleOp module, ::llvm::StringRef stem) {
   }
 }
 
-void addThreadCompletionFrontier(::dataflow::ThreadOp thread,
-                                 ::mlir::Value completion) {
+void addThreadCompletionFrontiers(::dataflow::ThreadOp thread,
+                                  ::mlir::ValueRange completions) {
   auto yield = ::mlir::cast<::dataflow::ThreadYieldOp>(
       thread.getBody().front().getTerminator());
   ::llvm::SmallVector<::mlir::Value, 4> candidates(
       yield.getCompletionFrontier().begin(),
       yield.getCompletionFrontier().end());
-  if (!::llvm::is_contained(candidates, completion))
-    candidates.push_back(completion);
+  for (::mlir::Value completion : completions)
+    if (!::llvm::is_contained(candidates, completion))
+      candidates.push_back(completion);
   ::llvm::SmallVector<::mlir::Value, 4> graphLaunchCompletions;
   thread.walk([&](::dataflow::GraphLaunchOp launch) {
     graphLaunchCompletions.push_back(launch.getDone());
@@ -359,33 +361,58 @@ struct ParallelCompletionCandidate {
   unsigned parallelGroup;
 };
 
-void publishParallelCompletionCandidates(
+unsigned publishParallelCompletionCandidates(
     ::llvm::ArrayRef<ParallelCompletionCandidate> candidates,
     ::mlir::OpBuilder &builder) {
-  ::llvm::DenseSet<unsigned> publishedGroups;
-  for (const ParallelCompletionCandidate &candidate : candidates) {
-    if (!publishedGroups.insert(candidate.parallelGroup).second)
-      continue;
-
+  struct CompletionGroup {
+    ::dataflow::ThreadOp thread;
     ::llvm::SmallVector<::mlir::Value, 4> completions;
-    for (const ParallelCompletionCandidate &member : candidates)
-      if (member.parallelGroup == candidate.parallelGroup)
-        addCompletionDependency(completions, member.completion);
-    ::mlir::Value completion = completions.front();
-    if (completions.size() > 1) {
-      ::dataflow::ThreadOp thread = candidate.thread;
+  };
+  ::llvm::DenseMap<unsigned, unsigned> groupIndices;
+  ::llvm::SmallVector<CompletionGroup, 4> groups;
+  unsigned inspections = 0;
+  for (const ParallelCompletionCandidate &candidate : candidates) {
+    ++inspections;
+    auto [entry, inserted] =
+        groupIndices.try_emplace(candidate.parallelGroup, groups.size());
+    if (inserted)
+      groups.push_back(CompletionGroup{candidate.thread, {}});
+    CompletionGroup &group = groups[entry->second];
+    assert(group.thread == candidate.thread &&
+           "one parallel completion group cannot cross threads");
+    addCompletionDependency(group.completions, candidate.completion);
+  }
+
+  struct ThreadCompletions {
+    ::dataflow::ThreadOp thread;
+    ::llvm::SmallVector<::mlir::Value, 4> completions;
+  };
+  ::llvm::DenseMap<::mlir::Operation *, unsigned> threadIndices;
+  ::llvm::SmallVector<ThreadCompletions, 4> publications;
+  for (CompletionGroup &group : groups) {
+    ::mlir::Value completion = group.completions.front();
+    if (group.completions.size() > 1) {
+      ::dataflow::ThreadOp thread = group.thread;
       auto yield = ::mlir::cast<::dataflow::ThreadYieldOp>(
           thread.getBody().front().getTerminator());
       builder.setInsertionPoint(yield);
-      ::llvm::SmallVector<::mlir::Type, 4> types(completions.size(),
+      ::llvm::SmallVector<::mlir::Type, 4> types(group.completions.size(),
                                                  builder.getNoneType());
       completion = ::dataflow::SyncOp::create(builder, yield.getLoc(), types,
-                                              completions)
+                                              group.completions)
                        .getOutputs()
                        .front();
     }
-    addThreadCompletionFrontier(candidate.thread, completion);
+    auto [entry, inserted] = threadIndices.try_emplace(
+        group.thread.getOperation(), publications.size());
+    if (inserted)
+      publications.push_back(ThreadCompletions{group.thread, {}});
+    addCompletionDependency(publications[entry->second].completions,
+                            completion);
   }
+  for (const ThreadCompletions &publication : publications)
+    addThreadCompletionFrontiers(publication.thread, publication.completions);
+  return inspections;
 }
 
 void placeDominatedRetirementAnchors(
@@ -471,7 +498,7 @@ void replaceLaunchEntryDependency(::dataflow::GraphLaunchOp launch,
     ::mlir::Value threadFallback,
     ::llvm::MutableArrayRef<::mlir::Operation *> channelRetirementAnchors,
     PendingLaunchDependencies &pendingLaunchDependencies,
-    ::llvm::SmallVectorImpl<PendingGraphCompletion> &pendingCompletions,
+    std::deque<PendingGraphCompletion> &pendingCompletions,
     unsigned &parallelGroup, unsigned &nextParallelGroup,
     ::dataflow::ThreadOp thread, ::mlir::OpBuilder &builder) {
   if (path.empty()) {
@@ -669,75 +696,72 @@ void replaceLaunchEntryDependency(::dataflow::GraphLaunchOp launch,
 
     ::mlir::LogicalResult status = ::mlir::success();
     ::llvm::SmallVector<::mlir::Value, 4> laneCompletions;
-    forEachParallelPoint(
-        *domain, [&](::llvm::ArrayRef<int64_t> coordinates) {
-          if (::mlir::failed(status))
-            return;
-          ::mlir::IRMapping mapping;
-          builder.setInsertionPoint(op);
-          for (auto [iv, coordinate] :
-               ::llvm::zip_equal(inductionVars, coordinates)) {
-            auto constant = ::mlir::arith::ConstantOp::create(
-                builder, op->getLoc(), builder.getIndexAttr(coordinate));
-            mapping.map(iv, constant.getResult());
-          }
-          for (::mlir::Operation &bodyOp : body->without_terminator())
-            builder.clone(bodyOp, mapping);
+    forEachParallelPoint(*domain, [&](::llvm::ArrayRef<int64_t> coordinates) {
+      if (::mlir::failed(status))
+        return;
+      ::mlir::IRMapping mapping;
+      builder.setInsertionPoint(op);
+      for (auto [iv, coordinate] :
+           ::llvm::zip_equal(inductionVars, coordinates)) {
+        auto constant = ::mlir::arith::ConstantOp::create(
+            builder, op->getLoc(), builder.getIndexAttr(coordinate));
+        mapping.map(iv, constant.getResult());
+      }
+      for (::mlir::Operation &bodyOp : body->without_terminator())
+        builder.clone(bodyOp, mapping);
 
-          for (PendingGraphCompletion &pending : nestedPending) {
-            auto mappedLaunch =
-                ::llvm::dyn_cast_or_null<::dataflow::GraphLaunchOp>(
-                    mapping.lookupOrNull(pending.launch.getOperation()));
-            if (!mappedLaunch) {
-              status = ::mlir::failure();
-              return;
-            }
-            PendingGraphCompletion mapped{mappedLaunch, {}, parallelGroup};
-            for (::mlir::Operation *anchor : pending.channelRetirementAnchors) {
-              if (anchor && isNestedIn(anchor, op))
-                anchor = mapping.lookupOrNull(anchor);
-              mapped.channelRetirementAnchors.push_back(anchor);
-            }
-            pendingCompletions.push_back(std::move(mapped));
-          }
-
-          auto mappedLaunch =
-              ::llvm::dyn_cast_or_null<::dataflow::GraphLaunchOp>(
-                  mapping.lookupOrNull(launch.getOperation()));
-          if (!mappedLaunch) {
-            status = ::mlir::failure();
-            return;
-          }
-          ::llvm::SmallVector<::mlir::Operation *, 4> mappedPath;
-          for (::mlir::Operation *pathOp : path.drop_front()) {
-            ::mlir::Operation *mapped = mapping.lookupOrNull(pathOp);
-            if (!mapped) {
-              status = ::mlir::failure();
-              return;
-            }
-            mappedPath.push_back(mapped);
-          }
-          ::llvm::SmallVector<::mlir::Operation *, 4> mappedAnchors;
-          for (::mlir::Operation *anchor : internalAnchors) {
+      for (PendingGraphCompletion &pending : nestedPending) {
+        auto mappedLaunch = ::llvm::dyn_cast_or_null<::dataflow::GraphLaunchOp>(
+            mapping.lookupOrNull(pending.launch.getOperation()));
+        if (!mappedLaunch) {
+          status = ::mlir::failure();
+          return;
+        }
+        PendingGraphCompletion mapped{mappedLaunch, {}, parallelGroup};
+        for (::mlir::Operation *anchor : pending.channelRetirementAnchors) {
+          if (anchor && isNestedIn(anchor, op))
             anchor = mapping.lookupOrNull(anchor);
-            if (!anchor) {
-              status = ::mlir::failure();
-              return;
-            }
-            mappedAnchors.push_back(anchor);
-          }
-          auto laneCompletion = propagateCompletionPath(
-              mappedPath, mappedLaunch, incoming, threadFallback, mappedAnchors,
-              pendingLaunchDependencies, pendingCompletions, parallelGroup,
-              nextParallelGroup, thread, builder);
-          if (::mlir::failed(laneCompletion) ||
-              ::llvm::any_of(mappedAnchors,
-                             [](auto *anchor) { return anchor != nullptr; })) {
-            status = ::mlir::failure();
-            return;
-          }
-          laneCompletions.push_back(*laneCompletion);
-        });
+          mapped.channelRetirementAnchors.push_back(anchor);
+        }
+        pendingCompletions.push_back(std::move(mapped));
+      }
+
+      auto mappedLaunch = ::llvm::dyn_cast_or_null<::dataflow::GraphLaunchOp>(
+          mapping.lookupOrNull(launch.getOperation()));
+      if (!mappedLaunch) {
+        status = ::mlir::failure();
+        return;
+      }
+      ::llvm::SmallVector<::mlir::Operation *, 4> mappedPath;
+      for (::mlir::Operation *pathOp : path.drop_front()) {
+        ::mlir::Operation *mapped = mapping.lookupOrNull(pathOp);
+        if (!mapped) {
+          status = ::mlir::failure();
+          return;
+        }
+        mappedPath.push_back(mapped);
+      }
+      ::llvm::SmallVector<::mlir::Operation *, 4> mappedAnchors;
+      for (::mlir::Operation *anchor : internalAnchors) {
+        anchor = mapping.lookupOrNull(anchor);
+        if (!anchor) {
+          status = ::mlir::failure();
+          return;
+        }
+        mappedAnchors.push_back(anchor);
+      }
+      auto laneCompletion = propagateCompletionPath(
+          mappedPath, mappedLaunch, incoming, threadFallback, mappedAnchors,
+          pendingLaunchDependencies, pendingCompletions, parallelGroup,
+          nextParallelGroup, thread, builder);
+      if (::mlir::failed(laneCompletion) ||
+          ::llvm::any_of(mappedAnchors,
+                         [](auto *anchor) { return anchor != nullptr; })) {
+        status = ::mlir::failure();
+        return;
+      }
+      laneCompletions.push_back(*laneCompletion);
+    });
     if (::mlir::failed(status))
       return ::mlir::failure();
 
@@ -767,7 +791,7 @@ void replaceLaunchEntryDependency(::dataflow::GraphLaunchOp launch,
     ::mlir::Value fallback,
     ::llvm::MutableArrayRef<::mlir::Operation *> channelRetirementAnchors,
     PendingLaunchDependencies &pendingLaunchDependencies,
-    ::llvm::SmallVectorImpl<PendingGraphCompletion> &pendingCompletions,
+    std::deque<PendingGraphCompletion> &pendingCompletions,
     unsigned &parallelGroup, unsigned &nextParallelGroup,
     ::mlir::OpBuilder &builder) {
   ::llvm::SmallVector<::mlir::Operation *, 4> path;
@@ -857,6 +881,13 @@ struct LowerForToGraphPass
     : public ::mlir::PassWrapper<LowerForToGraphPass,
                                  ::mlir::OperationPass<::mlir::ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LowerForToGraphPass)
+
+  LowerForToGraphPass() = default;
+  LowerForToGraphPass(const LowerForToGraphPass &) : PassWrapper() {}
+
+  Statistic parallelCompletionCandidateInspections{
+      this, "parallel-completion-candidate-inspections",
+      "Number of parallel completion candidates inspected for publication"};
 
   ::llvm::StringRef getArgument() const final {
     return "loom-lower-for-to-graph";
@@ -1025,7 +1056,7 @@ struct LowerForToGraphPass
       return ::mlir::failure();
 
     PendingLaunchDependencies pendingLaunchDependencies;
-    ::llvm::SmallVector<PendingGraphCompletion, 8> pendingCompletions;
+    std::deque<PendingGraphCompletion> pendingCompletions;
     ::llvm::SmallVector<ParallelCompletionCandidate, 8> parallelCompletions;
     unsigned nextParallelGroup = 1;
     for (::loom::SpatialRegionOp spatial : regions) {
@@ -1214,7 +1245,7 @@ struct LowerForToGraphPass
 
     while (!pendingCompletions.empty()) {
       PendingGraphCompletion pending = std::move(pendingCompletions.front());
-      pendingCompletions.erase(pendingCompletions.begin());
+      pendingCompletions.pop_front();
       auto thread = pending.launch->getParentOfType<::dataflow::ThreadOp>();
       ::mlir::Block &threadEntry = thread.getBody().front();
       size_t ctrlIndex = thread.getFunctionType().getInputs().size();
@@ -1228,13 +1259,14 @@ struct LowerForToGraphPass
             "failed to propagate completion through enclosing structured "
             "control");
       if (pending.parallelGroup == 0) {
-        addThreadCompletionFrontier(thread, *propagated);
+        addThreadCompletionFrontiers(thread, ::mlir::ValueRange{*propagated});
       } else {
         parallelCompletions.push_back(ParallelCompletionCandidate{
             thread, *propagated, pending.parallelGroup});
       }
     }
-    publishParallelCompletionCandidates(parallelCompletions, builder);
+    parallelCompletionCandidateInspections +=
+        publishParallelCompletionCandidates(parallelCompletions, builder);
     return ::mlir::success();
   }
 };

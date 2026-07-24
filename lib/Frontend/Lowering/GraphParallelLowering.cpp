@@ -126,6 +126,11 @@ struct ParallelMemoryAccess {
   bool atomic;
 };
 
+bool hasUnsupportedParallelCompletion(::mlir::Operation *op) {
+  return ::llvm::isa<::dataflow::FenceOp, ::dataflow::AtomicRmwOp,
+                     ::dataflow::CmpXchgOp>(op);
+}
+
 std::optional<ParallelMemoryAccess>
 getParallelMemoryAccess(::mlir::Operation *op) {
   auto atomic = [&]() {
@@ -278,15 +283,26 @@ struct LinearExpression {
   ::llvm::APInt constant;
   ::llvm::SmallVector<::llvm::APInt, 4> lanes;
   ::llvm::DenseMap<::mlir::Value, ::llvm::APInt> symbols;
+  ::llvm::DenseMap<::mlir::Value, ::llvm::APInt> descendantLanes;
 };
+
+bool isParallelInductionVariable(::mlir::Operation *op, ::mlir::Value value) {
+  if (auto parallel = ::llvm::dyn_cast<::mlir::scf::ParallelOp>(op))
+    return ::llvm::is_contained(parallel.getInductionVars(), value);
+  if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(op))
+    return ::llvm::is_contained(forall.getInductionVars(), value);
+  return false;
+}
 
 class LinearAddressBuilder {
 public:
-  LinearAddressBuilder(::mlir::Operation *parallel,
-                       ::mlir::ValueRange inductionVars, unsigned width)
+  LinearAddressBuilder(
+      ::mlir::Operation *parallel, ::mlir::ValueRange inductionVars,
+      unsigned width,
+      const ::llvm::DenseSet<::mlir::Operation *> &provenParallelOps)
       : parallel(parallel),
-        inductionVars(inductionVars.begin(), inductionVars.end()),
-        width(width) {}
+        inductionVars(inductionVars.begin(), inductionVars.end()), width(width),
+        provenParallelOps(provenParallelOps) {}
 
   std::optional<LinearExpression> build(::mlir::Value value) {
     if (auto found = cache.find(value); found != cache.end())
@@ -322,8 +338,15 @@ public:
 
     if (auto argument = ::llvm::dyn_cast<::mlir::BlockArgument>(value)) {
       ::mlir::Operation *owner = argument.getOwner()->getParentOp();
-      if (owner && parallel->isAncestor(owner))
+      if (owner && parallel->isAncestor(owner)) {
+        if (provenParallelOps.contains(owner) &&
+            isParallelInductionVariable(owner, value)) {
+          addCoefficient(expression.descendantLanes, value,
+                         ::llvm::APInt(width, 1));
+          return finish(std::move(expression));
+        }
         return finish(std::nullopt);
+      }
       addSymbol(expression, value, ::llvm::APInt(width, 1));
       return finish(std::move(expression));
     }
@@ -351,24 +374,31 @@ private:
   ::mlir::Operation *parallel;
   ::llvm::SmallVector<::mlir::Value, 4> inductionVars;
   unsigned width;
+  const ::llvm::DenseSet<::mlir::Operation *> &provenParallelOps;
   ::llvm::DenseMap<::mlir::Value, LinearExpression> cache;
   ::llvm::DenseSet<::mlir::Value> failed;
   ::llvm::DenseSet<::mlir::Value> active;
   ::llvm::DenseMap<::mlir::Value, bool> dependencyCache;
   ::llvm::DenseSet<::mlir::Value> dependencyActive;
 
-  void addSymbol(LinearExpression &expression, ::mlir::Value symbol,
-                 ::llvm::APInt coefficient) {
+  void
+  addCoefficient(::llvm::DenseMap<::mlir::Value, ::llvm::APInt> &coefficients,
+                 ::mlir::Value symbol, ::llvm::APInt coefficient) {
     if (coefficient.isZero())
       return;
-    auto found = expression.symbols.find(symbol);
-    if (found == expression.symbols.end()) {
-      expression.symbols.try_emplace(symbol, std::move(coefficient));
+    auto found = coefficients.find(symbol);
+    if (found == coefficients.end()) {
+      coefficients.try_emplace(symbol, std::move(coefficient));
       return;
     }
     found->second += coefficient;
     if (found->second.isZero())
-      expression.symbols.erase(found);
+      coefficients.erase(found);
+  }
+
+  void addSymbol(LinearExpression &expression, ::mlir::Value symbol,
+                 ::llvm::APInt coefficient) {
+    addCoefficient(expression.symbols, symbol, std::move(coefficient));
   }
 
   void add(LinearExpression &target, const LinearExpression &source,
@@ -381,6 +411,9 @@ private:
                                 : target.lanes[index] + source.lanes[index];
     for (const auto &[symbol, coefficient] : source.symbols)
       addSymbol(target, symbol, subtract ? -coefficient : coefficient);
+    for (const auto &[lane, coefficient] : source.descendantLanes)
+      addCoefficient(target.descendantLanes, lane,
+                     subtract ? -coefficient : coefficient);
   }
 
   std::optional<LinearExpression> combine(::mlir::Value lhs, ::mlir::Value rhs,
@@ -401,7 +434,7 @@ private:
       return std::nullopt;
 
     auto isConstant = [](const LinearExpression &expression) {
-      return expression.symbols.empty() &&
+      return expression.symbols.empty() && expression.descendantLanes.empty() &&
              ::llvm::all_of(expression.lanes, [](const ::llvm::APInt &value) {
                return value.isZero();
              });
@@ -417,6 +450,10 @@ private:
       coefficient *= scale;
     for (auto &[symbol, coefficient] : right->symbols) {
       (void)symbol;
+      coefficient *= scale;
+    }
+    for (auto &[lane, coefficient] : right->descendantLanes) {
+      (void)lane;
       coefficient *= scale;
     }
     return right;
@@ -499,7 +536,9 @@ struct ParallelCheckInfo {
   ::mlir::Operation *unmodeledWrite = nullptr;
 };
 
-::mlir::LogicalResult checkLaneMemoryLegality(ParallelCheckInfo &info) {
+::mlir::LogicalResult checkLaneMemoryLegality(
+    ParallelCheckInfo &info,
+    const ::llvm::DenseSet<::mlir::Operation *> &provenParallelOps) {
   if (pointCountCappedAtTwo(info.domain) <= 1)
     return ::mlir::success();
   if (info.unmodeledWrite)
@@ -550,7 +589,8 @@ struct ParallelCheckInfo {
     auto vars = forall.getInductionVars();
     inductionVars.append(vars.begin(), vars.end());
   }
-  LinearAddressBuilder expressions(info.op, inductionVars, *indexBits);
+  LinearAddressBuilder expressions(info.op, inductionVars, *indexBits,
+                                   provenParallelOps);
 
   for (auto &[root, rootAccesses] : accessesByRoot) {
     (void)root;
@@ -609,8 +649,10 @@ struct ParallelCheckInfo {
     ::llvm::SmallVector<unsigned, 4> comparableDimensions;
     for (unsigned dimension = 0; dimension < rank; ++dimension) {
       const LinearExpression &reference = analyzed.front().address[dimension];
-      if (::llvm::all_of(analyzed, [&](const AccessExpressions &access) {
-            return sameSymbols(reference, access.address[dimension]);
+      if (reference.descendantLanes.empty() &&
+          ::llvm::all_of(analyzed, [&](const AccessExpressions &access) {
+            return access.address[dimension].descendantLanes.empty() &&
+                   sameSymbols(reference, access.address[dimension]);
           }))
         comparableDimensions.push_back(dimension);
     }
@@ -692,6 +734,7 @@ void forEachParallelPoint(
     return ::mlir::success();
 
   ::llvm::DenseMap<::mlir::Operation *, ParallelCheckInfo> checks;
+  ::llvm::DenseSet<::mlir::Operation *> provenParallelOps;
   for (::mlir::Operation *op : parallelOps) {
     if (op->hasAttr("loom.parallel_group") ||
         op->hasAttr("loom.parallel_schedule"))
@@ -742,18 +785,31 @@ void forEachParallelPoint(
                               graphOwned || hasSpatialCarrierAncestor(op),
                               {},
                               nullptr});
+    provenParallelOps.insert(op);
   }
 
   ::mlir::Operation *root = parallelOps.front();
   while (root->getParentOp())
     root = root->getParentOp();
-  root->walk([&](::mlir::Operation *nested) {
+  ::mlir::WalkResult effects = root->walk([&](::mlir::Operation *nested) {
     if (nested->getName().getStringRef() == "loom.spatial_region") {
       for (::mlir::Operation *parent = nested->getParentOp(); parent;
            parent = parent->getParentOp()) {
         auto found = checks.find(parent);
         if (found != checks.end())
           found->second.owned = true;
+      }
+    }
+
+    if (hasUnsupportedParallelCompletion(nested)) {
+      for (::mlir::Operation *parent = nested->getParentOp(); parent;
+           parent = parent->getParentOp()) {
+        if (!checks.contains(parent))
+          continue;
+        nested->emitError() << "loom-lower-graph-memory: parallel actor '"
+                            << nested->getName().getStringRef()
+                            << "' has no completion lowering";
+        return ::mlir::WalkResult::interrupt();
       }
     }
 
@@ -773,6 +829,8 @@ void forEachParallelPoint(
     }
     return ::mlir::WalkResult::advance();
   });
+  if (effects.wasInterrupted())
+    return ::mlir::failure();
 
   for (auto &entry : checks) {
     ParallelCheckInfo &info = entry.second;
@@ -780,7 +838,7 @@ void forEachParallelPoint(
       return info.op->emitError(
           "loom-lower-graph-memory: raw parallel SCF has no compiler-owned "
           "graph or spatial structure");
-    if (::mlir::failed(checkLaneMemoryLegality(info)))
+    if (::mlir::failed(checkLaneMemoryLegality(info, provenParallelOps)))
       return ::mlir::failure();
   }
   return ::mlir::success();

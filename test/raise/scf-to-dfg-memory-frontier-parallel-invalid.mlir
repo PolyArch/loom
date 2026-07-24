@@ -2,6 +2,7 @@
 // RUN: split-file %s %t.dir
 // RUN: not loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/forged.mlir 2>&1 | FileCheck %s --check-prefix=FORGED
 // RUN: not loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/overlap.mlir 2>&1 | FileCheck %s --check-prefix=OVERLAP
+// RUN: not loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/unsupported-actor.mlir 2>&1 | FileCheck %s --check-prefix=ACTOR
 
 // FORGED: error: loom-lower-graph-memory: parallel SCF carries unsupported author metadata
 // FORGED-LABEL: dataflow.graph private @forged_parallel
@@ -55,6 +56,38 @@ dataflow.graph private @overlapping_parallel(
   %value = arith.constant 7 : i32
   scf.parallel (%i) = (%c0) to (%c2) step (%c1) {
     memref.store %value, %a[%c0] : memref<?xi32>
+    scf.reduce
+  }
+  dataflow.graph.return %start : none
+}
+
+//--- unsupported-actor.mlir
+
+// ACTOR: error: loom-lower-graph-memory: parallel actor 'dataflow.fence' has no completion lowering
+// ACTOR-LABEL: dataflow.graph private @would_be_rewritten
+// ACTOR: memref.load
+// ACTOR-NOT: dataflow.load
+// ACTOR-LABEL: dataflow.graph private @parallel_fence
+// ACTOR: scf.parallel
+// ACTOR: dataflow.fence
+dataflow.graph private @would_be_rewritten(
+    %start: none, %index: index, %a: memref<?xi32>) -> ()
+    attributes {input_segments = array<i32: 1, 0, 1>,
+                result_segments = array<i32: 0, 0, 0>} {
+  %value = memref.load %a[%index] : memref<?xi32>
+  dataflow.graph.return %start : none
+}
+
+dataflow.graph private @parallel_fence(%start: none) -> ()
+    attributes {input_segments = array<i32: 0, 0, 0>,
+                result_segments = array<i32: 0, 0, 0>} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  scf.parallel (%i) = (%c0) to (%c2) step (%c1) {
+    %done = dataflow.fence %start
+        {contract = #dataflow.fence_contract<ordering = seq_cst,
+                                             sync_scope = <system>>}
     scf.reduce
   }
   dataflow.graph.return %start : none
