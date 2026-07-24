@@ -16,6 +16,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -87,45 +88,147 @@ static LogicalResult verifyGraphPortType(Operation *op, Type type,
   return success();
 }
 
-static Attribute foldToConstant(Value value, DenseMap<Value, Attribute> &cache,
-                                DenseSet<Value> &active) {
-  if (auto cached = cache.find(value); cached != cache.end())
-    return cached->second;
+class ExtentConstantEvaluator {
+public:
+  Attribute evaluate(Value value) {
+    if (auto cached = constants.find(value); cached != constants.end())
+      return cached->second;
 
-  auto result = dyn_cast<OpResult>(value);
-  if (!result || !active.insert(value).second)
-    return {};
+    SmallVector<Frame> stack;
+    schedule(value, stack);
+    while (!stack.empty()) {
+      Frame &frame = stack.back();
+      if (constants.contains(frame.value)) {
+        active.erase(frame.value);
+        stack.pop_back();
+        continue;
+      }
 
-  Operation *definingOp = result.getOwner();
-  SmallVector<Attribute> operandConstants;
-  operandConstants.reserve(definingOp->getNumOperands());
-  for (Value operand : definingOp->getOperands())
-    operandConstants.push_back(foldToConstant(operand, cache, active));
+      Operation *definingOp = cast<OpResult>(frame.value).getOwner();
+      bool descended = false;
+      while (frame.nextOperand < definingOp->getNumOperands()) {
+        Value operand = definingOp->getOperand(frame.nextOperand++);
+        if (constants.contains(operand))
+          continue;
+        if (schedule(operand, stack)) {
+          descended = true;
+          break;
+        }
+      }
+      if (descended)
+        continue;
 
-  // Fold hooks may update their operation in place, so evaluate a clone.
-  Operation *probe = definingOp->clone();
-  SmallVector<OpFoldResult, 1> folded;
-  Attribute constant;
-  if (succeeded(probe->fold(operandConstants, folded)) &&
-      folded.size() == probe->getNumResults()) {
-    OpFoldResult foldedResult = folded[result.getResultNumber()];
-    constant = dyn_cast_if_present<Attribute>(foldedResult);
-    if (!constant) {
-      if (auto foldedValue = dyn_cast_if_present<Value>(foldedResult)) {
-        for (auto [index, operand] : llvm::enumerate(probe->getOperands())) {
-          if (foldedValue == operand) {
-            constant = operandConstants[index];
-            break;
+      fold(definingOp);
+      active.erase(frame.value);
+      stack.pop_back();
+    }
+
+    return constants.lookup(value);
+  }
+
+private:
+  struct Frame {
+    Value value;
+    unsigned nextOperand;
+  };
+
+  void cacheUnknown(Operation *op) {
+    for (Value result : op->getResults())
+      constants.try_emplace(result, Attribute{});
+  }
+
+  bool schedule(Value value, SmallVectorImpl<Frame> &stack) {
+    if (constants.contains(value))
+      return false;
+
+    auto result = dyn_cast<OpResult>(value);
+    if (!result) {
+      constants.try_emplace(value, Attribute{});
+      return false;
+    }
+
+    Operation *definingOp = result.getOwner();
+    if (definingOp->getNumRegions() != 0 || !isPure(definingOp)) {
+      cacheUnknown(definingOp);
+      return false;
+    }
+    if (!active.insert(value).second) {
+      cacheUnknown(definingOp);
+      return false;
+    }
+
+    stack.push_back({value, 0});
+    return true;
+  }
+
+  void fold(Operation *op) {
+    SmallVector<Attribute> operandConstants;
+    operandConstants.reserve(op->getNumOperands());
+    for (Value operand : op->getOperands())
+      operandConstants.push_back(constants.lookup(operand));
+
+    // Detached clones contain no regions and isolate in-place fold hooks.
+    Operation *probe = op->clone();
+    SmallVector<OpFoldResult> folded;
+    if (failed(probe->fold(operandConstants, folded)) ||
+        folded.size() != probe->getNumResults()) {
+      probe->erase();
+      cacheUnknown(op);
+      return;
+    }
+
+    for (auto [result, foldedResult] : llvm::zip(op->getResults(), folded)) {
+      Attribute constant = dyn_cast_if_present<Attribute>(foldedResult);
+      if (!constant) {
+        if (auto foldedValue = dyn_cast_if_present<Value>(foldedResult)) {
+          for (auto [index, operand] : llvm::enumerate(probe->getOperands())) {
+            if (foldedValue == operand) {
+              constant = operandConstants[index];
+              break;
+            }
           }
         }
       }
+      constants.try_emplace(result, constant);
     }
+    probe->erase();
   }
-  probe->erase();
 
-  active.erase(value);
-  cache.try_emplace(value, constant);
-  return constant;
+  DenseMap<Value, Attribute> constants;
+  DenseSet<Value> active;
+};
+
+static LogicalResult verifyThreadLaunchExtents(ModuleOp module) {
+  ExtentConstantEvaluator evaluator;
+  WalkResult result =
+      module.walk<WalkOrder::PreOrder>([&](Operation *op) -> WalkResult {
+        if (op != module.getOperation() && op->hasTrait<OpTrait::SymbolTable>())
+          return WalkResult::skip();
+
+        auto launch = dyn_cast<ThreadLaunchOp>(op);
+        if (!launch)
+          return WalkResult::advance();
+        for (auto [index, extent] :
+             llvm::enumerate(launch.getGridUpperBounds())) {
+          auto constant =
+              dyn_cast_or_null<IntegerAttr>(evaluator.evaluate(extent));
+          if (constant && constant.getValue().isNegative()) {
+            launch.emitOpError("grid upper bound #")
+                << index << " must be nonnegative";
+            return WalkResult::interrupt();
+          }
+        }
+        return WalkResult::advance();
+      });
+  return success(!result.wasInterrupted());
+}
+
+static bool ownsThreadLaunchExtentAnalysis(ThreadOp thread) {
+  for (Operation *previous = thread->getPrevNode(); previous;
+       previous = previous->getPrevNode())
+    if (isa<ThreadOp>(previous))
+      return false;
+  return true;
 }
 
 // Build a generic `func.func`-shaped op state for our function-like
@@ -332,7 +435,9 @@ LogicalResult ThreadOp::verify() {
     return emitOpError("requires explicit 'private' visibility");
   if (getFunctionType().getNumResults() != 0)
     return emitOpError("must not declare function results");
-  return success();
+  if (!ownsThreadLaunchExtentAnalysis(*this))
+    return success();
+  return verifyThreadLaunchExtents(cast<ModuleOp>((*this)->getParentOp()));
 }
 
 // CallableOpInterface methods come from extraClassDeclaration in
@@ -387,16 +492,6 @@ LogicalResult ThreadLaunchOp::verifySymbolUses(SymbolTableCollection &symbols) {
     return emitOpError("grid upper bound count (")
            << getGridUpperBounds().size() << ") must match callee rank ("
            << calleeRank << ")";
-
-  DenseMap<Value, Attribute> constantCache;
-  DenseSet<Value> active;
-  for (auto [index, extent] : llvm::enumerate(getGridUpperBounds())) {
-    auto constant = dyn_cast_or_null<IntegerAttr>(
-        foldToConstant(extent, constantCache, active));
-    if (constant && constant.getValue().isNegative())
-      return emitOpError("grid upper bound #")
-             << index << " must be nonnegative";
-  }
   return success();
 }
 
