@@ -34,4 +34,6 @@ core.*
 /.claude/
 /temp/
 /externals/.loom-build.llvm.lock
+/externals/.loom-build.llvm.turnstile.lock
 /externals/.loom-build.llvm.stamp
+/externals/.loom-build.circt.stamp
