@@ -871,6 +871,38 @@ class MakeWorktreeTest(unittest.TestCase):
             self.assertTrue(linked_paths.circt_build.exists())
             self.assertTrue(linked_paths.circt_stamp.exists())
 
+    def test_main_distclean_revokes_readiness_before_product_removal(self):
+        """An interrupted main distclean cannot leave either shared build
+        advertised while product deletion is incomplete."""
+        module = self.module
+        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            paths = build_paths(Path(td))
+            paths.llvm_build.mkdir(parents=True)
+            paths.circt_build.mkdir(parents=True)
+            paths.llvm_stamp.write_text("llvm-ready\n")
+            paths.circt_stamp.write_text("circt-ready\n")
+
+            def fail_removal(*args, **kwargs):
+                self.assertFalse(paths.llvm_stamp.exists())
+                self.assertFalse(paths.circt_stamp.exists())
+                raise RuntimeError("injected product removal failure")
+
+            with (
+                patch.object(
+                    module.shutil, "rmtree", side_effect=fail_removal
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError, "injected product removal failure"
+                ),
+            ):
+                module.cmd_distclean(paths, self.args)
+
+            self.assertFalse(paths.llvm_stamp.exists())
+            self.assertFalse(paths.circt_stamp.exists())
+            self.assertTrue(paths.llvm_build.exists())
+            self.assertTrue(paths.circt_build.exists())
+
     def test_shared_build_state_is_git_ignored(self):
         """The shared LLVM and CIRCT build state under externals/ is local
         and must be ignored. Verified through git's actual ignore behavior
@@ -922,6 +954,81 @@ class MakeWorktreeTest(unittest.TestCase):
             (config_dir / config_name).write_text("ready\n")
         (paths.llvm_build / "build.ninja").write_text("ninja\n")
         paths.llvm_stamp.write_text(llvm_identity + "\n")
+
+    def test_failed_automatic_llvm_repair_revokes_dependent_readiness(self):
+        """An ordinary LLVM ensure that must repair existing output revokes
+        both readiness stamps before configure and cannot accept failed output
+        on the next ensure."""
+        module = self.module
+        state = module.DependencyState("circt-pin", "llvm-pin")
+        compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
+        llvm_identity = module.llvm_build_identity(state, compilers)
+        circt_identity = module.circt_build_identity(llvm_identity)
+
+        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            paths = build_paths(Path(td))
+            self._stamped_llvm_build(paths, llvm_identity)
+            self._stamped_circt_build(paths, circt_identity)
+            (paths.cmake_llvm_dir / "LLVMConfig.cmake").unlink()
+
+            real_rmtree = shutil.rmtree
+
+            def checked_removal(*args, **kwargs):
+                self.assertFalse(paths.llvm_stamp.exists())
+                self.assertFalse(paths.circt_stamp.exists())
+                return real_rmtree(*args, **kwargs)
+
+            def fail_configure(*args, **kwargs):
+                self.assertFalse(paths.llvm_stamp.exists())
+                self.assertFalse(paths.circt_stamp.exists())
+                for config_dir, config_name in (
+                    (paths.mlir_dir, "MLIRConfig.cmake"),
+                    (paths.cmake_llvm_dir, "LLVMConfig.cmake"),
+                    (paths.cmake_clang_dir, "ClangConfig.cmake"),
+                ):
+                    config_dir.mkdir(parents=True, exist_ok=True)
+                    (config_dir / config_name).write_text("failed output\n")
+                (paths.llvm_build / "build.ninja").write_text("failed\n")
+                raise RuntimeError("injected configure failure")
+
+            with (
+                patch.object(module, "is_nfs", return_value=False),
+                patch.object(module, "check_dependency_pins", return_value=state),
+                patch.object(
+                    module, "check_llvm_compilers", return_value=compilers
+                ),
+                patch.object(
+                    module.shutil, "rmtree", side_effect=checked_removal
+                ),
+                patch.object(
+                    module, "configure_llvm", side_effect=fail_configure
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError, "injected configure failure"
+                ),
+            ):
+                module.ensure_shared_llvm(paths, self.args)
+
+            self.assertFalse(paths.llvm_stamp.exists())
+            self.assertFalse(paths.circt_stamp.exists())
+
+            with (
+                patch.object(module, "is_nfs", return_value=False),
+                patch.object(module, "check_dependency_pins", return_value=state),
+                patch.object(
+                    module, "check_llvm_compilers", return_value=compilers
+                ),
+                patch.object(
+                    module,
+                    "configure_llvm",
+                    side_effect=RuntimeError("second repair attempted"),
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError, "second repair attempted"
+                ),
+            ):
+                module.ensure_shared_llvm(paths, self.args)
 
     def test_cmd_build_llvm_invalidates_stamps_before_git_preflight(self):
         """The public LLVM command revokes LLVM and dependent CIRCT readiness
@@ -1034,12 +1141,13 @@ class MakeWorktreeTest(unittest.TestCase):
             self.assertIsNone(module.available_circt_dir(paths, llvm_identity))
 
     def test_public_writer_precedes_late_reader_across_processes(self):
-        """Two Loom readers coexist, then a queued public LLVM writer enters
-        before a later Loom reader in separate processes."""
+        """Concurrent Loom readers yield to every queued public LLVM writer
+        before admitting a later Loom reader in separate processes."""
         module = self.module
         state = module.DependencyState("circt-pin", "llvm-pin")
         compilers = (("/gcc", "gcc 14"), ("/g++", "g++ 14"))
         llvm_identity = module.llvm_build_identity(state, compilers)
+        lock_args = Namespace(jobs=1, lock_timeout=5.0)
 
         REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
@@ -1060,16 +1168,25 @@ class MakeWorktreeTest(unittest.TestCase):
                 readers[name] = paths
 
             context = multiprocessing.get_context("fork")
+            process_names = (
+                "reader-a",
+                "reader-b",
+                "writer-a",
+                "writer-b",
+                "late-reader",
+            )
             active = {
-                name: context.Event()
-                for name in ("reader-a", "reader-b", "late-reader", "writer")
+                name: context.Event() for name in process_names
             }
             release = {
-                name: context.Event()
-                for name in ("reader-a", "reader-b", "late-reader", "writer")
+                name: context.Event() for name in process_names
             }
-            writer_waiting = context.Event()
+            writer_a_waiting = context.Event()
+            writer_b_parked = context.Event()
+            allow_writer_b_retry = context.Event()
             late_reader_waiting = context.Event()
+            late_reader_at_product = context.Event()
+            entry_order = context.Queue()
             reader_by_build = {
                 str(paths.loom_build): name for name, paths in readers.items()
             }
@@ -1077,12 +1194,15 @@ class MakeWorktreeTest(unittest.TestCase):
             def controlled_run(cmd, **kwargs):
                 if cmd[:2] == ["cmake", "--build"]:
                     if cmd[2] == str(shared.llvm_build):
-                        active["writer"].set()
-                        if not release["writer"].wait(5.0):
-                            raise RuntimeError("writer release timed out")
+                        name = multiprocessing.current_process().name
+                        entry_order.put(name)
+                        active[name].set()
+                        if not release[name].wait(5.0):
+                            raise RuntimeError(f"{name} release timed out")
                         return
                     name = reader_by_build.get(cmd[2])
                     if name is not None:
+                        entry_order.put(name)
                         active[name].set()
                         if not release[name].wait(5.0):
                             raise RuntimeError(f"{name} release timed out")
@@ -1091,16 +1211,25 @@ class MakeWorktreeTest(unittest.TestCase):
 
             def capture_info(message):
                 process = multiprocessing.current_process().name
-                if process == "queued-writer" and "product lock" in message:
-                    writer_waiting.set()
+                if process == "writer-a" and "product lock" in message:
+                    writer_a_waiting.set()
                 if process == "late-reader" and "turnstile" in message:
                     late_reader_waiting.set()
+                if process == "late-reader" and "product lock" in message:
+                    late_reader_at_product.set()
 
             def run_reader(name):
-                module.cmd_build_loom(readers[name], self.args)
+                module.cmd_build_loom(readers[name], lock_args)
 
-            def run_writer():
-                module.cmd_build_llvm(shared, self.args)
+            def run_writer(name):
+                if name == "writer-b":
+                    def hold_retry(_delay):
+                        writer_b_parked.set()
+                        if not allow_writer_b_retry.wait(5.0):
+                            raise RuntimeError("writer-b retry timed out")
+
+                    module.time.sleep = hold_retry
+                module.cmd_build_llvm(shared, lock_args)
 
             processes = {
                 name: context.Process(
@@ -1110,9 +1239,15 @@ class MakeWorktreeTest(unittest.TestCase):
                 )
                 for name in readers
             }
-            processes["writer"] = context.Process(
+            processes["writer-a"] = context.Process(
                 target=run_writer,
-                name="queued-writer",
+                args=("writer-a",),
+                name="writer-a",
+            )
+            processes["writer-b"] = context.Process(
+                target=run_writer,
+                args=("writer-b",),
+                name="writer-b",
             )
             try:
                 with (
@@ -1140,33 +1275,59 @@ class MakeWorktreeTest(unittest.TestCase):
                         active["reader-b"].wait(2.0),
                         "public Loom readers did not coexist",
                     )
-                    processes["writer"].start()
+                    processes["writer-a"].start()
                     self.assertTrue(
-                        writer_waiting.wait(2.0),
-                        "public LLVM writer did not wait for Loom readers",
+                        writer_a_waiting.wait(2.0),
+                        "first public LLVM writer did not queue",
+                    )
+                    processes["writer-b"].start()
+                    self.assertTrue(
+                        writer_b_parked.wait(2.0),
+                        "second public LLVM writer was not held while queued",
                     )
                     processes["late-reader"].start()
                     self.assertTrue(
                         late_reader_waiting.wait(2.0),
-                        "late Loom reader did not wait at the turnstile",
+                        "late Loom reader did not wait behind queued writers",
                     )
                     self.assertFalse(active["late-reader"].is_set())
 
                     release["reader-a"].set()
                     release["reader-b"].set()
-                    self.assertTrue(
-                        active["writer"].wait(2.0),
-                        "queued writer did not acquire the product lock",
+                    initial_readers = {
+                        entry_order.get(timeout=2.0),
+                        entry_order.get(timeout=2.0),
+                    }
+                    self.assertEqual(
+                        initial_readers,
+                        {"reader-a", "reader-b"},
+                    )
+                    first_writer = entry_order.get(timeout=2.0)
+                    self.assertEqual(
+                        first_writer,
+                        "writer-a",
+                    )
+                    self.assertFalse(
+                        late_reader_at_product.wait(1.0),
+                        "late reader passed a queued writer's entry intent",
+                    )
+
+                    release[first_writer].set()
+                    allow_writer_b_retry.set()
+                    self.assertEqual(
+                        entry_order.get(timeout=2.0),
+                        "writer-b",
                     )
                     self.assertFalse(active["late-reader"].is_set())
 
-                    release["writer"].set()
-                    self.assertTrue(
-                        active["late-reader"].wait(2.0),
-                        "late reader did not enter after the writer",
+                    release["writer-b"].set()
+                    self.assertEqual(
+                        entry_order.get(timeout=2.0),
+                        "late-reader",
                     )
                     release["late-reader"].set()
             finally:
+                allow_writer_b_retry.set()
                 for event in release.values():
                     event.set()
                 for process in processes.values():
@@ -1176,6 +1337,8 @@ class MakeWorktreeTest(unittest.TestCase):
                     if process.is_alive():
                         process.terminate()
                         process.join(5.0)
+                entry_order.close()
+                entry_order.join_thread()
 
             self.assertEqual(
                 {name: process.exitcode for name, process in processes.items()},
@@ -1234,6 +1397,51 @@ class MakeWorktreeTest(unittest.TestCase):
             self.assertGreaterEqual(elapsed, 0.04)
             self.assertLess(elapsed, 0.30)
             self.assertIn("timed out after 0.05s", stderr.getvalue())
+
+    def test_lock_timeout_rejects_unbounded_and_negative_values(self):
+        """The public CLI rejects values that cannot form a finite,
+        nonnegative deadline before resolving paths or opening lock files."""
+        module = self.module
+
+        def rejected_by_cli(value):
+            stderr = io.StringIO()
+            with (
+                patch.object(
+                    sys,
+                    "argv",
+                    ["make-worktree.py", "--lock-timeout", value, "doctor"],
+                ),
+                patch.object(
+                    module,
+                    "Paths",
+                    side_effect=AssertionError("path resolution was reached"),
+                ),
+                redirect_stderr(stderr),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                module.main()
+            self.assertEqual(raised.exception.code, 2)
+            return stderr.getvalue()
+
+        nan_error = rejected_by_cli("nan")
+        infinity_error = rejected_by_cli("inf")
+        negative_error = rejected_by_cli("-0.1")
+        self.assertIn("--lock-timeout", nan_error)
+        self.assertIn("--lock-timeout", infinity_error)
+        self.assertIn("--lock-timeout", negative_error)
+
+        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            root = Path(td)
+            with self.assertRaisesRegex(ValueError, "lock timeout"):
+                module.SharedProductLock(
+                    root / "product.lock",
+                    root / "turnstile.lock",
+                    float("nan"),
+                    shared=True,
+                )
+            self.assertFalse((root / "product.lock").exists())
+            self.assertFalse((root / "turnstile.lock").exists())
 
     def test_cmd_build_circt_invalidates_stamp_before_git_preflight(self):
         """The public CIRCT command revokes its readiness before its

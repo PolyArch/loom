@@ -38,6 +38,7 @@ import argparse
 import errno
 import fcntl
 import json
+import math
 import os
 import re
 import shlex
@@ -95,6 +96,13 @@ def warn(msg: str) -> None:
 def die(msg: str, code: int = 1) -> None:
     print(f"error: {msg}", file=sys.stderr)
     sys.exit(code)
+
+
+def validate_lock_timeout(value: str | float) -> float:
+    timeout = float(value)
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError("lock timeout must be finite and nonnegative")
+    return timeout
 
 
 def run(cmd, **kwargs) -> subprocess.CompletedProcess:
@@ -526,7 +534,13 @@ def check_dependency_pins(paths: Paths) -> DependencyState:
 
 
 class SharedProductLock:
-    """Writer-preferring shared/exclusive lock over two flock files."""
+    """Writer-preferring shared/exclusive lock over two flock files.
+
+    Writers hold shared intent on the turnstile while waiting for the
+    exclusive product lock. Readers require exclusive turnstile admission
+    before acquiring the shared product lock, so any queued writer blocks all
+    later readers while multiple readers still coexist on the product lock.
+    """
 
     POLL_INTERVAL = 0.01
 
@@ -539,8 +553,9 @@ class SharedProductLock:
     ):
         self.product_path = product_path
         self.turnstile_path = turnstile_path
-        self.timeout = timeout
+        self.timeout = validate_lock_timeout(timeout)
         self.product_operation = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+        self.turnstile_operation = fcntl.LOCK_EX if shared else fcntl.LOCK_SH
         self.product_fd: int | None = None
         self.turnstile_fd: int | None = None
         self.product_locked = False
@@ -565,7 +580,7 @@ class SharedProductLock:
         while True:
             if (
                 time.monotonic() >= deadline
-                and not (first_attempt and self.timeout <= 0)
+                and not (first_attempt and self.timeout == 0)
             ):
                 self._timeout(label, path)
             first_attempt = False
@@ -622,7 +637,7 @@ class SharedProductLock:
             )
             self._acquire(
                 self.turnstile_fd,
-                fcntl.LOCK_EX,
+                self.turnstile_operation,
                 deadline,
                 "turnstile",
                 self.turnstile_path,
@@ -696,6 +711,11 @@ def read_stamp(path: Path) -> str:
 def write_stamp(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(value + "\n")
+
+
+def invalidate_llvm_readiness(paths: Paths) -> None:
+    paths.llvm_stamp.unlink(missing_ok=True)
+    paths.circt_stamp.unlink(missing_ok=True)
 
 
 def read_cmake_cache_entry(build_dir: Path, key: str) -> str:
@@ -811,6 +831,8 @@ def _sync_llvm_locked(
     current = llvm_build_identity(state, compilers)
     rebuild = prev_stamp != current or not llvm_artifacts_present(paths)
     if rebuild:
+        if not always_build:
+            invalidate_llvm_readiness(paths)
         if paths.llvm_build.exists():
             info(
                 f"LLVM build is incomplete or its identity changed; removing "
@@ -850,8 +872,7 @@ def sync_shared_llvm(
     ):
         prev_stamp = read_stamp(paths.llvm_stamp)
         if always_build:
-            paths.llvm_stamp.unlink(missing_ok=True)
-            paths.circt_stamp.unlink(missing_ok=True)
+            invalidate_llvm_readiness(paths)
             check_git_version()
         state = check_dependency_pins(paths)
         compilers = check_llvm_compilers()
@@ -1172,16 +1193,13 @@ def cmd_distclean(paths: Paths, args: argparse.Namespace) -> None:
             args.lock_timeout,
             shared=False,
         ):
+            invalidate_llvm_readiness(paths)
             if paths.llvm_build.exists():
                 info(f"removing shared {paths.llvm_build}")
                 shutil.rmtree(paths.llvm_build, ignore_errors=True)
-            if paths.llvm_stamp.exists():
-                paths.llvm_stamp.unlink()
             if paths.circt_build.exists():
                 info(f"removing shared {paths.circt_build}")
                 shutil.rmtree(paths.circt_build, ignore_errors=True)
-            if paths.circt_stamp.exists():
-                paths.circt_stamp.unlink()
     else:
         info(
             f"distclean from linked worktree only removes {paths.loom_build}; "
@@ -1215,7 +1233,7 @@ def main() -> None:
     p.add_argument("--root", default=os.getcwd(),
                    help="worktree root (defaults to CWD)")
     p.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
-    p.add_argument("--lock-timeout", type=float, default=1800.0,
+    p.add_argument("--lock-timeout", type=validate_lock_timeout, default=1800.0,
                    help="seconds to wait for the shared LLVM lock")
     sub = p.add_subparsers(dest="command", required=True)
     for name in ("doctor", "externals-root", "build-llvm", "build-circt",
