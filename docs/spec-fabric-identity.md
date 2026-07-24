@@ -14,7 +14,7 @@ only gives those owned objects one unambiguous persistent reference.
 
 The catalog below is the complete Mapping-visible catalog. Fabric producer
 closure, all authoring-only template kinds, root finalization, and dependency
-publication are specified separately. A Fabric producer cannot make a new
+publication are owned by `docs/spec-fabric-artifact.md`. A Fabric producer cannot make a new
 target visible to Mapping without extending this catalog.
 
 ## Exact Artifact Scope
@@ -466,6 +466,8 @@ whitespace, or native PnR index width.
 
 ## Related Specifications
 
+* `docs/spec-fabric-artifact.md` owns root variants, direct dependencies,
+  canonicalization, finalization, and publication.
 * `docs/spec-fabric-module.md` owns module connection and boundary semantics.
 * `docs/spec-fabric-pe.md` and `docs/spec-fabric-pe-temporal.md` own PE
   endpoint, selector, context, and register-FIFO inventories.

@@ -880,6 +880,43 @@ Candidate Generator even when the same process also emits reports. The new
 implementation is finalized before an Evaluation observes it. An
 `EvaluationModelDescriptor` never mutates or replaces its subject.
 
+Hardware generation uses three descriptor-owned typed configuration roots:
+
+```text
+FabricTemplateConfig {
+  template_identity
+  template_version
+  typed_parameters
+}
+
+FabricRewriteConfig {
+  base_fabric_ref
+  typed_structural_decisions
+}
+
+ImplementationFlowConfig {
+  input_fabric_or_implementation_ref
+  implementation_platform_ref?
+  provider_bindings[]
+  occurrence_recipe_bindings[]
+  typed_flow_decisions
+}
+```
+
+`FabricTemplateConfig` invokes the public ADG Builder expansion path and
+produces a Fabric Artifact. `FabricRewriteConfig` produces another exact Fabric
+Artifact because it changes architecture semantics or structure.
+`ImplementationFlowConfig` preserves Fabric semantics while producing an
+immutable HardwareImplementation child or initial RTL implementation. Each
+descriptor owns a closed schema for its typed parameter and decision records;
+there is no generic property bag, hardware action language, mutable candidate
+IR, or evaluator-owned rewrite.
+
+The central plan may compose and rank these generators, but it does not copy
+their semantics. Builtin search ranges and heuristics are resolved generator
+configuration, not new persistent schema families. Candidate outputs are
+deduplicated by their normal Fabric or HardwareImplementation identity.
+
 ## Integration Boundaries
 
 ### Mapping
@@ -974,3 +1011,6 @@ Only these stable semantic anchors belong at this boundary:
 - Multiple lineage paths to one Artifact deduplicate candidate Evaluation, and
   replay or resume with the same run closure and stable work ordinals produces
   the same formal selection as uninterrupted execution.
+- Template, Fabric rewrite, and implementation-flow generators preserve their
+  distinct typed owners while the central plan composes and deduplicates their
+  ordinary Artifact outputs.

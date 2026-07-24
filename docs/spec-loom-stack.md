@@ -172,7 +172,11 @@ configuration encoding belongs to ConfigurationABI rather than Fabric.
 The ADG Builder contract is specified by
 [ADG Builder](spec-adg-builder.md). Fabric-to-RTL ownership is specified by
 [RTL Lowering](spec-rtl-lowering.md), and external tool execution by
-[EDA Tooling](spec-eda-tooling.md).
+[EDA Tooling](spec-eda-tooling.md). Persistent hardware roots and shared
+resource atoms are specified by [Fabric Artifact](spec-fabric-artifact.md),
+[Fabric Resource Contract](spec-fabric-resource-contract.md),
+[Hardware Implementation](spec-hardware-implementation.md), and
+[Implementation Platform](spec-implementation-platform.md).
 
 ## Mapping
 
@@ -218,7 +222,8 @@ traces through SimulationExecution.
 HostCore, InstructionCore, cache, coherence, and system-interconnect execution
 belong to an external system simulator integrated through Loom's bridge. Loom
 does not rebuild a CPU or full-system simulator. A system simulation is an
-ordinary Evaluation model over an exact Deployment and runtime input.
+ordinary Evaluation model over an exact Deployment, Gem5SimulationBinding,
+workload, and runtime input.
 
 Architecture-only RTL or EDA evaluation may produce EvaluationEvidence and raw
 detailed bundles without claiming workload execution. Mapped RTL execution
@@ -248,8 +253,34 @@ versioned deterministic protocols and stable logical work ordinals.
 
 The global contracts are [Configuration SSOT](spec-config-ssot.md),
 [Configuration And Deployment](spec-configuration-deployment.md),
+[Executable Closure](spec-executable-closure.md),
 [Intermediate Reports And Projections](spec-intermediate-artifacts.md), and
 [Runtime ABI](spec-runtime-abi.md).
+
+## Deliberate First-Version Boundaries
+
+The first version closes one complete single-tenant compilation, Mapping,
+simulation, configuration, runtime, and hardware-generation path. The
+following subjects are deliberately absent rather than represented by empty
+schemas, dormant variants, compatibility flags, or placeholder Artifacts:
+
+* DynamicWork channel endpoints, generic EOS or channel sessions,
+  spawn-then-feed, and device-side runtime spawn;
+* graph-visible fault propagation and recovery;
+* DFT, ATPG, multi-power-state intent, retention, partial reconfiguration,
+  fault injection, and silicon bringup;
+* a stable hand-written host launch API, accelerated shared-object loading,
+  remote deployment service, and distribution or installation packaging;
+* direct ONNX, TOSA, Linalg, or framework-graph product boundaries;
+* a generic profiler, benchmark-report Artifact, diagnostic Artifact, typed
+  environment schedule, or hardware action language; and
+* multi-tenancy, virtualization, migration, and runtime remapping.
+
+Ordinary LLVM PGO, optimization remarks, debug locations, content-addressed
+packages, Evaluation projections, developer tools, and provider adapters cover
+their existing domains without creating new semantic owners. A deferred item
+is reopened only by a concrete required behavior that cannot be composed from
+the current contracts.
 
 ## Corpus
 

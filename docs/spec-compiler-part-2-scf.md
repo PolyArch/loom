@@ -73,6 +73,14 @@ Every input construct has exactly one mechanical disposition:
 * **Fail closed.** Reject the selected candidate at the first boundary that
   requires a narrower surface and cannot represent the construct exactly.
 
+LLVM profile and branch-weight metadata is preserved while its owning control
+operation remains in S0. An unselected or InstructionCore-owned weighted
+branch cannot make ordinary module compilation fail. A whole Structured
+Program Candidate is published atomically; the candidate whose selected
+Spatial region requires structured lowering and cannot preserve or consume the
+weight is non-finalizable, while independently derived ownership candidates
+remain eligible. Loom does not copy weights into a second metadata schema.
+
 InstructionCore ownership is not a fifth disposition and is never an implicit
 raising fallback. Ownership belongs to a Structured Program Candidate. If a
 selected `loom.spatial_region` contains an unsupported construct, that whole
@@ -98,15 +106,20 @@ vector operations when such a representation exists. Otherwise, preserving
 the registered LLVM operation is preferable to weakening its semantics.
 
 FMA normalization is semantic rather than name based. An exact fused LLVM FMA
-may become `math.fma`. An operation whose contract permits or requires a
-non-fused multiply followed by add becomes the explicit `arith.mulf` then
-`arith.addf` graph. In particular, an `fmuladd` spelling alone never proves
-fused semantics.
+becomes `math.fma`. `llvm.intr.fmuladd` remains unchanged in S0 until one typed
+`ExecutionShape` decision materializes either `Fused` or
+`Split(arith.mulf, arith.addf)` under the exact floating environment and
+fast-math contract. That decision is candidate lineage and may be evaluated as
+a performance choice; target code generation cannot choose it implicitly.
+After materialization, no `fmuladd` operation may remain in a finalizable Sn or
+be registered as a Canonical Dataflow actor.
 
 Ordinary calls are never expanded from a symbol-name or arity match. A call
 remains a call, becomes visible through LLVM linking or LTO, or is handled by a
 future explicit typed and versioned library model. Recognizing a source
-library spelling is not a semantic proof.
+library spelling is not a semantic proof. The first version deliberately has
+no such opaque-library model; it is reopened only when a required library body
+cannot be exposed through the ordinary final LLVM link.
 
 ### Exceptional Values And Floating Semantics
 

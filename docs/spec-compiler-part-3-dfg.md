@@ -517,8 +517,9 @@ behavior. In particular, selection does not observe its unselected value,
 inactive masked-memory lanes do not observe address or data, active stores may
 store poison and loads restore it, and graph outputs may carry poison or undef.
 There is no global rule that a terminal exceptional value is an execution
-error. Ordinary LLVM pointers remain outside the canonical graph surface
-unless a future registered actor contract explicitly admits them.
+error. Ordinary LLVM pointers remain outside the first-version canonical graph
+surface. Pointer-bearing work remains InstructionCore-owned unless it has been
+mechanically converted to the existing logical-memory and address contracts.
 
 Finalized Canonical Dataflow Programs use one derived identity attribute:
 
@@ -752,6 +753,9 @@ traits:
 * It is effectful and cannot be removed, duplicated, reordered across the
   current item's retirement, or treated as a nested `dataflow.thread.launch`.
   Exact identity and termination are owned by Part 4.
+* The enclosing DynamicWork definition cannot create, capture, send, receive,
+  or bind a channel. Work-item publication does not synthesize channel message
+  correspondence.
 
 #### 5.4.5 `dataflow.thread.wait`
 
@@ -911,6 +915,8 @@ traits:
   finalized-program validator owns the cross-launch relation: one producer,
   at least one consumer, producer/result-rank agreement, bounds over the full
   consumer domain, and complete permitted channel use topology.
+  Both endpoint domains must be `DenseRectangular`; a DynamicWork domain is not
+  interpreted as dense rank zero.
 * The op materializes a per-launch firing of the callee at this exact program
   point. `done_out` is the all-of of the callee's
   `graph.return.complete` operands. Their causal closure covers final values,
@@ -2288,6 +2294,8 @@ In addition to the Dataflow dialect and finalized-program verifier set:
   - `dataflow.work.spawn` is legal only in a `DynamicWork` definition and
     outside every nested `dataflow.graph`; its operand type equals the
     designated work-item input.
+  - A `DynamicWork` definition rejects channel-typed captures, channel create,
+    send, receive, and graph stream bindings.
   - InstructionCore code and `dataflow.graph.launch` ops are allowed in a
     thread body. An InstructionCore-only body with no graph launch is also
     legal; this verifier rule does not itself select AccCore execution.

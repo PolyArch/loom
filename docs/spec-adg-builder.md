@@ -158,6 +158,11 @@ llvm::Expected<FinalizedFabricDesign> DesignBuilder::finalize() &&
 Fabric roots and exact dependency references. It is not a new Artifact family,
 hardware schema, or source of semantic identity.
 
+The root variants, direct dependency framing, canonicalization, publication,
+and failure classification are owned by `docs/spec-fabric-artifact.md`.
+Builder finalization calls that owner; it does not serialize or hash a parallel
+hardware model.
+
 Finalization performs one all-or-none derivation:
 
 1. close construction scopes and expand all helpers;
@@ -192,6 +197,12 @@ schema version, one closed typed parameter schema, and one expansion function.
 The expansion function uses only the public typed ADG Builder API. Compiler
 selection has no private emitter, prebuilt opaque Fabric body, textual shortcut,
 or privileged validation path.
+
+A published builtin also requires complete provider closure for every
+ImplementationFamilyId, memory form, transport resource, and external binding
+it advertises. Missing closure fails builtin publication. A valid user-authored
+custom Fabric may still finalize without a selected backend provider; a later
+backend request reports typed `Unsupported` without changing that Fabric.
 
 The initial general-purpose family has three closed authoring presets:
 
@@ -691,6 +702,12 @@ Evaluation model. Those entry points are orchestration only:
 The Builder does not gain ownership of those outputs merely because a C++
 helper invokes their producer.
 
+Hardware DSE invokes the same Builder through typed `FabricTemplateConfig` or
+applies typed `FabricRewriteConfig` to an exact Fabric artifact. The central
+DSE plan owns orchestration and lineage; the Builder owns deterministic
+elaboration only. There is no generic hardware action language, mutable
+candidate graph, or DSE-only construction path.
+
 ## Conformance Anchors
 
 The stable Builder anchors are deliberately small:
@@ -736,6 +753,8 @@ semantic owner, second hardware IR, or packaging specification. It does not
 embed one workload's placement, route, bitstream, simulation result, or DSE
 decision into Fabric.
 
-Fabric-to-RTL-to-GDSII implementation closure remains a separate design
-subject. Preset source layout, example executable names, installation layout,
-and packaging are nonsemantic implementation choices.
+Fabric-to-RTL-to-GDSII implementation closure remains owned by
+`docs/spec-hardware-implementation.md`, `docs/spec-implementation-platform.md`,
+`docs/spec-rtl-lowering.md`, and `docs/spec-eda-tooling.md`. Preset source
+layout, example executable names, installation layout, and packaging are
+nonsemantic implementation choices.

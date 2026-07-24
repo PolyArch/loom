@@ -82,6 +82,27 @@ only through preserved source information or an owning analysis.
   Part 2 and Part 3 can report why a candidate region cannot be
   accelerated.
 
+The initial C and C++ provider exposes one optional public candidate spelling:
+
+```text
+#pragma loom candidate
+```
+
+It has no arguments and applies only to the immediately following function
+definition or `for`, `while`, or `do` loop. It is a nonbinding candidate hint:
+it does not select AccCore ownership, require acceleration, change ordinary
+compiler behavior, or enable an acceleration profile. Malformed, dangling, or
+misapplied pragmas are source diagnostics. Begin/end regions, required
+variants, a companion macro header, and parallel attribute spellings are not
+part of the first source contract.
+
+The clang provider lowers the hint through one provider-owned metadata
+encoding. Function candidates use a typed function annotation; loop candidates
+use a loop metadata operand. Import into S0 projects both to one internal unit
+attribute on the owning callable or loop. Part 2 must consume or explicitly
+discard that hint before candidate finalization; it cannot remain as unresolved
+target-specific metadata in Sn.
+
 ## 4. Boundary Principle
 
 A source function is not an accelerator boundary by default. Source
@@ -118,13 +139,19 @@ The clang provider is expected to preserve:
 * Address spaces and memory attributes.
 * Debug locations for diagnostics.
 
-Language-specific pragmas, attributes, builtins, and library calls lower
-to the metadata classes above. The exact spelling is outside this spec;
-the IR contract is the metadata observable by Part 2.
+Other language-specific attributes and builtins may lower to the metadata
+classes above, but they are provider extensions rather than additional public
+Loom spellings. Library calls do not acquire Loom semantics from a symbol name
+or arity.
 
 Other LLVM-producing language frontends can participate without mimicking C or
 C++ syntax or emitting Loom hints. A language integration may add equivalent
 typed hints, but valid LLVM IR remains the only mandatory handoff.
+
+Direct TOSA, ONNX, Linalg, or framework-graph ingestion is not a first-version
+public contract. Such dialects may appear as internal transient MLIR after an
+external frontend has produced LLVM IR, but they do not create another
+language-neutral product boundary.
 
 ## 6. Hand-Off to Part 2
 
@@ -150,6 +177,14 @@ Part 1 emits LLVM IR plus any optional typed hints. The handoff contract is:
 * If a hint is absent, lost, or contradicted by later LLVM transforms, Part 2
   preserves uncertainty unless analysis proves the fact, or emits a diagnostic
   when the selected profile requires that fact.
+
+Ordinary Clang/LLVM profile-guided optimization continues to use LLVM-owned
+profile formats, `!prof`, function-entry counts, and profile diagnostics. Raw
+profile inputs may be recorded by BlobDigest in invocation provenance, but the
+final linked LLVM module remains the semantic owner of imported weights. Loom
+hardware and simulation feedback enters compilation only through exact
+`EvaluationEvidence`; there is no `ProfileArtifact`, latest-profile scan, or
+second branch-weight schema.
 
 MLIR locations and imported LLVM debug information remain the source
 provenance authority through raising and lowering. They do not change the
@@ -195,7 +230,9 @@ triple and data layout are canonical LLVM strings validated by LLVM parsers.
 They are mechanically projected from the normalized module and checked against
 it; the module remains their semantic owner. They are not independent target
 choices. The later Compiler Target Binding owns final InstructionCore codegen
-target selection and must prove compatibility with these module facts.
+target selection and must prove compatibility with these module facts. Its
+persistent schema and the exact InstructionCore binary relation are owned by
+`docs/spec-executable-closure.md`.
 
 `ResolvedFrontendConfigView` version 1.0 has the schema identity
 `loom.config.view.frontend` and an explicitly empty field set. Its
@@ -339,6 +376,12 @@ implied. If acceleration is explicitly required but a selected payload is
 malformed or incompatible, the driver diagnoses the exact member and mismatch
 instead of silently discarding accelerator semantics.
 
+The final LLVM link is the only cross-translation-unit program merge before
+Dataflow. Loom does not define a Dataflow linker, public cross-object graph
+symbols, or a second library expansion mechanism. An opaque precompiled
+library whose semantics cannot be exposed through LLVM Linker/LTO is deferred
+until a real use requires a typed and versioned library contract.
+
 Anchor-level tests cover:
 
 * changing an unrelated ResolvedConfig field leaves the zero-field frontend
@@ -375,3 +418,5 @@ encoding.
 * `docs/spec-compiler-part-2-scf.md` -- mechanical LLVM-to-SCF raising
   and the boundary to later structured selection.
 * `docs/spec-compiler-part-3-dfg.md` -- SCF-to-DFG lowering.
+* `docs/spec-executable-closure.md` -- compiler target and InstructionCore
+  binary closure after final link.

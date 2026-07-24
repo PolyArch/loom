@@ -235,10 +235,25 @@ under an explicit program order. A `PerLane` atomic access permits duplicate
 active addresses under the addressed objects' modification orders and still
 does not create a lane order.
 
+Distinctness is re-proved from the finalized canonical actor, address
+expressions, active-lane relation, and exact structured decision lineage. Loom
+does not persist a proof object, `distinct=true` escape hatch, or Mapping-owned
+legality bit. A nonvolatile plain scatter may be scalarized before Dataflow
+finalization when the structured compiler can materialize one exact program
+order. A volatile plain scatter cannot use that rewrite because several
+provider-visible scalar operations are not the same observable operation as
+one vector firing; it remains InstructionCore code or makes the selected
+candidate non-finalizable. Repeated addresses remain legal for `PerLane`
+atomics.
+
 Alignment, burst formation, coalescing, physical port width, byte enables, and
 bank selection do not change this software contract. They belong to lowering,
 Mapping, and Fabric realization. A software lane mask to physical byte-enable
 projection is mechanically derived and cannot become a second semantic owner.
+
+Atomic source alignment is the actor-owned contract defined by
+`docs/spec-dataflow-memory-consistency.md`. It is not one of the physical
+formation choices listed above.
 
 Consumers derive one nonpersistent `CanonicalMemoryAccessView` from the exact
 actor and its types. The view has no independent identity or serialized

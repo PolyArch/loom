@@ -304,6 +304,12 @@ are unobservable; physical stalls may change performance but never content or
 order. The initial profile has no try-send, try-receive, size, empty/full, or
 select-any-ready operation.
 
+The initial channel profile is restricted to `DenseRectangular` thread
+domains. A `DynamicWork` definition cannot own a channel endpoint or graph
+stream binding. Its `WorkItemId` and responsibility-set termination do not
+define FIFO message identity, source-map coordinates, a channel session, or an
+EOS event.
+
 A logical channel has at most one producer/output binding and may have several
 consumer/input bindings. Each consumer binding owns a total deterministic
 `source_map` from its logical consumer domain to the producer domain. Several
@@ -321,6 +327,10 @@ semantics behind those references; it does not assign endpoint entities,
 reinterpret the ordinals, or add a channel identity to Mapping.
 
 ### 8.1 Dynamic Message Correspondence
+
+This section describes dynamic events produced by repeated execution of
+statically related dense endpoints. "Dynamic" here refers to runtime message
+occurrences; it does not admit the `DynamicWork` thread-domain kind.
 
 A channel pairs dynamic message events, not thread activations. For one
 dynamic channel instance, producer point `p`, consumer binding `b`, and

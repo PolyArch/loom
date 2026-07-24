@@ -4,6 +4,10 @@ This document defines the portable boundary between Loom and external RTL,
 FPGA, ASIC, formal, and physical-design tools. Process execution is owned by
 [Evaluation ToolRunner](spec-evaluation-tool-runner.md); Evaluation schemas are
 owned by [DSE and Evaluation](spec-dse-feedback.md).
+Persistent implementation state is owned by
+[Hardware Implementation](spec-hardware-implementation.md), and immutable ASIC
+or FPGA technology inputs are owned by
+[Implementation Platform](spec-implementation-platform.md).
 
 ## Tool Descriptors And Bindings
 
@@ -26,6 +30,12 @@ explicitly declares a result-affecting value.
 Loom selects by descriptor capability and exact model binding, not by a global
 fidelity level or hard-coded workstation tool name.
 
+An adapter consumes the exact `GenerationConstraint` payload of its
+HardwareImplementation. It may translate that payload into vendor syntax, but
+it cannot infer a hidden clock, reset exception, CDC waiver, false path,
+multicycle path, floorplan rule, or timing target from report text or local
+defaults.
+
 A flow that creates a new `HardwareImplementation` is instead selected through
 the central `CandidateGeneratorDescriptor` and
 `ResolvedCandidateGeneratorBinding`. One physical tool invocation may derive
@@ -44,6 +54,12 @@ Representative later derivations are:
 * FPGA synthesis and implementation;
 * physical placement, routing, extraction, or stream-out; and
 * explicit insertion or transformation of implementation buffers/state.
+
+ASIC and FPGA use the same immutable lineage. The first FPGA contract produces
+a static full-device implementation and image. Partial reconfiguration, DFT,
+ATPG, multi-power-state intent, retention, fault injection, and silicon bringup
+are explicitly deferred rather than represented by empty fields or generic
+tool options.
 
 Each later output records the exact parent implementation and
 implementation-defining generator binding. A purely mechanical transformation
@@ -77,6 +93,12 @@ Lint, formal checks, RTL workload execution, timing, area, power, DRC, and other
 observations are ordinary Evaluations over exact immutable subjects. They
 produce `EvaluationEvidence` and raw detailed bundles. Workload-running RTL
 simulation also produces `SimulationExecution`.
+
+FPGA prototype or measured-hardware execution uses the same
+EvaluationRequest, SimulationWorkload, SimulationRuntimeInput, and Evidence
+owners when a concrete evaluator is available. Loom does not add a measured
+result family, signoff boolean, benchmark report authority, or implicit
+promotion based on a tool's exit status.
 
 An invocation that derives and evaluates hardware first finalizes the new
 implementation, then issues Evaluation against that exact identity. It must not

@@ -1,5 +1,10 @@
 # Fabric Memory
 
+Shared `ResourceState`, atomic `UsePattern`, requester ordering, and
+`GrantPolicy` meanings are owned by `docs/spec-fabric-resource-contract.md`.
+This document owns their memory-specific state keys, claims, requesters, and
+timing.
+
 ## Purpose
 
 `fabric.mem` is the Fabric realization for canonical addressed memory actors

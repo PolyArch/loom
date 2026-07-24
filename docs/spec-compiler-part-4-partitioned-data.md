@@ -110,6 +110,16 @@ argument type. It publishes one child to the current domain; it is not an
 arbitrary nested `dataflow.thread.launch`, creates no new domain, returns no
 handle, and cannot target another thread definition.
 
+The first DynamicWork profile has no channel endpoints. A DynamicWork thread
+cannot create, send, receive, capture, or bind `!dataflow.channel<T>`, and a
+graph launch owned by such a thread cannot bind graph stream ports to a
+channel. Work-list payload, child publication, active responsibility, memory,
+and collective thread completion already form one complete model; adding a
+`WorkItemId` message correspondence or non-affine channel relation would be a
+second dynamic identity mechanism. A later profile may reopen the boundary
+only with a concrete program that cannot use a dense channel domain, explicit
+payload termination, or memory-backed work sharing.
+
 The semantic termination authority is the domain's active responsibility set:
 
 * launch admission acquires the root responsibility before the root is visible;
@@ -221,3 +231,24 @@ are not implied by `DynamicWork`. They require explicit atomic, ordering,
 coherence, or service contracts. Distributed-buffer and neighborhood-exchange
 behavior likewise requires explicit dataflow and service semantics rather than
 hidden layout metadata.
+
+Static halo and neighborhood exchange are compilation patterns, not new
+Dataflow entities. A structured candidate expresses them through existing
+logical-memory roots and views, explicit load/store dependencies, dense channel
+source maps, and ordinary thread/graph completion. Lowering may coalesce those
+operations only when it preserves the same visible memory, stream, and
+completion contract. No `DistributedView`, `HaloArtifact`, or implicit address
+ownership map is introduced.
+
+The first version has no generic asynchronous bulk-movement operation. A
+provider-specific DMA or collective is admitted only after it has an
+independently observable software firing, completion, ordering, and failure
+contract that cannot be represented by the current operations. Until then,
+bulk copies lower to existing memory and channel semantics and use their exact
+completion tokens.
+
+General device-side runtime spawn, spawn-then-feed of an independently blocked
+consumer, channel sessions or EOS, and arbitrary DynamicWork channel
+correspondence are also deferred. They require independent observable
+semantics; they are not inferred from `dataflow.work.spawn` or responsibility
+termination.

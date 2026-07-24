@@ -140,6 +140,34 @@ The architecture uses:
 AccCore = InstructionCore + SpatialCore
 ```
 
+Both HostCore and AccCore InstructionCore use one closed Architectural
+Contract:
+
+```text
+InstructionCoreArchitecturalContract {
+  isa_family
+  isa_extensions[]
+  endianness
+  register_width_bits
+  address_width_bits
+  pointer_model
+  privilege_contract
+  abi_capabilities[]
+  memory_ordering_contract
+  sync_scope_contracts[]
+  supported_code_models[]
+  supported_relocation_models[]
+  runtime_service_requirements[]
+}
+```
+
+These are hardware architecture facts. Compiler triple, CPU spelling,
+DataLayout, runtime library selection, gem5 model names, cache sizes,
+speculation policy, and pipeline organization are not fields of this contract.
+The exact contract has one domain-separated architecture fingerprint used by
+`CompilerTargetBinding`, but the digest is an index and never replaces the
+typed contract.
+
 An AccCore is one physical occurrence and contains exactly one InstructionCore
 plus exactly one SpatialCore attachment. The InstructionCore description has an
 Architectural Contract for binary compatibility and a Microarchitectural
@@ -149,7 +177,7 @@ Fabric hardware facts.
 
 For a selected AccCore, its exact InstructionCore Architectural Contract
 mechanically selects and validates the Compiler Target Binding owned by
-`docs/spec-runtime-abi.md` section `Compiler Target And Binary Compatibility`.
+`docs/spec-executable-closure.md`.
 Neither that binding nor its target-specific binary enters `fabric.system`
 identity or SystemMapping identity.
 
@@ -187,6 +215,11 @@ caches, speculation, and gem5 state remain implementation or simulation
 details unless the Fabric contract deliberately exposes one as a
 Mapping-visible shared capacity. Dynamic occupancy, instruction progress, and
 grant state are transient and never persist in Fabric or Mapping.
+
+`docs/spec-fabric-resource-contract.md` owns the shared meanings of
+`ResourceState`, atomic `UsePattern`, requester ordering, and `GrantPolicy`.
+The Microarchitectural Realization owns the concrete closed values that use
+those atoms.
 
 Every fully elaborated occurrence has a typed one-to-one attachment between
 each module boundary endpoint and the corresponding AccCore-local SpatialCore
@@ -239,16 +272,14 @@ MemoryRegionBehavior =
     Storage
   | Mmio {
       accepted access domain
-      NonTrapping | ExplicitFaultProtocol
+      NonTrapping
       AtMostOnceLogicalOperation provider observation
     }
 ```
 
 The region kind is a physical service fact, not a Dataflow operation name or
 ordering mode. A SpatialCore mapping may use an `Mmio` region only when its
-declared range is non-trapping for the selected accesses; an explicit fault
-protocol requires a matching graph fault contract, which the current
-Canonical Dataflow Program does not provide. A capability that admits a
+declared range is non-trapping for the selected accesses. A capability that admits a
 volatile actor must preserve one at-most-once provider-observable logical
 operation. Internal beats and retries may occur only below that observation
 boundary and may not expose duplicate, merged, speculative, or replayed
@@ -412,9 +443,9 @@ subjects. Exact workload and runtime data use
 simulator parameters use `ResolvedModelBinding`. There is no separate
 system-simulation request family.
 
-These are compatibility relations, not a persistent binding schema. The exact
-`Gem5SimulationBinding` root remains downstream open work as specified by
-`docs/spec-runtime-abi.md` section `Gem5 Simulation Binding`.
+The exact persistent `Gem5SimulationBinding` root and total correspondence
+table are owned by `docs/spec-runtime-abi.md` section `Gem5 Simulation
+Binding`. This architecture view does not copy that schema.
 
 The generated gem5 projection is derived configuration. Handwritten simulator
 configuration cannot become another topology, memory, route, timing, or
@@ -512,6 +543,34 @@ Clock, reset, power, address, and memory-consistency domains are explicit typed
 system facts. Domain crossings require explicit resources and verified
 semantics. Hierarchy or visualization grouping does not imply membership.
 
+A transfer between different clock domains is legal only through a transport
+resource carrying one exact crossing contract:
+
+```text
+ClockCrossingContract = AsyncFifo {
+  source_clock_domain_ref
+  destination_clock_domain_ref
+  depth
+  synchronizer_stages
+  preserves_order = true
+  lossless = true
+  backpressure = true
+  reset_behavior = FlushToEmptyAfterBothDomainsReleased
+}
+```
+
+The contract is a typed variant on an existing transport resource and use
+pattern, not a hidden connection behavior or a new generic crossing graph.
+Version 1 admits only the `AsyncFifo` variant. A direct cross-domain
+connection, an attachment that hides crossing state, or a backend-invented
+synchronizer is invalid.
+
+The fixed reset behavior discards no accepted token during ordinary operation.
+If either domain is reset, the crossing cannot accept or publish traffic until
+both domains have completed their declared release latency, after which its
+observable state is empty. A design that must preserve in-flight traffic across
+reset requires a future explicit contract rather than another policy field.
+
 Coherence is an explicit typed service transform, not a parallel domain kind.
 Runtime protection remains an invocation fact rather than permanent Fabric
 topology.
@@ -599,6 +658,7 @@ fabric.system.transport_resource
   EntityId
   typed ports
   ResourceState, capacity, timing, progress, and grant contracts
+  optional ClockCrossingContract
 
 fabric.system.transfer_pattern
   SystemTransportResourceRef owner
@@ -684,7 +744,9 @@ Clock { period_fs: positive uint64, phase_fs: uint64 where phase_fs < period_fs 
 Reset { polarity: ActiveHigh | ActiveLow,
         assertion: Synchronous | Asynchronous,
         deassertion: Synchronous | Asynchronous,
-        initial_state: Asserted | Deasserted }
+        initial_state: Asserted | Deasserted,
+        synchronous_to: absent | ClockDomainRef,
+        release_latency_cycles: uint32 }
 Power { nominal_voltage_uv: positive uint64 }
 Address { address_width: positive uint32,
           canonical disjoint half-open unsigned ranges }
@@ -713,6 +775,12 @@ boundary delegates its external dynamic state to the selected whole-system
 provider through the typed Spatial Service boundary. Fabric does not prescribe
 an execution trace or duplicate provider-owned modification order,
 reads-from, cache, or coherence state.
+
+A reset with synchronous assertion or deassertion names exactly one clock
+domain in `synchronous_to`; a fully asynchronous reset omits it. Release
+latency is measured in that clock domain and is zero only when release has no
+synchronous delay. Reset-domain membership and every clock crossing are
+complete typed facts used by RTL and constraint derivation.
 
 Where a software contract permits several legal behaviors, such as weak
 compare-exchange spurious failure, the Fabric domain declares only the
@@ -775,15 +843,12 @@ relation variants or the architecture root without a Fabric schema revision.
 ### Canonicalization And Ownership
 
 Authoring names, operation order, builder insertion order, source locations,
-comments, and visualization metadata are non-semantic. Finalization resolves
-all references, validates complete attachment and endpoint ownership,
-canonically labels independently meaningful entities, assigns consecutive
-`EntityId` values, sorts structural records by complete semantic key, emits
-canonical Fabric bytes, and applies the Common SHA-256 v1 contract. Equal
-hardware descriptions therefore have equal canonical bytes and identity.
-The Mapping-visible entity and structural-reference variants used by this
-process are closed by `docs/spec-fabric-identity.md`; this document cannot add
-an unregistered reference kind through a generic child or property record.
+comments, and visualization metadata are non-semantic. The complete
+failure-atomic root finalization, direct dependency framing, canonical bytes,
+and identity contract is owned by `docs/spec-fabric-artifact.md`. The
+Mapping-visible entity and structural-reference variants used by that process
+are closed by `docs/spec-fabric-identity.md`; this document cannot add an
+unregistered reference kind through a generic child or property record.
 
 The C++ ADG Builder creates this typed model and invokes the same finalizer; it
 does not own a parallel schema. Protocol implementations, concrete routers,
@@ -799,6 +864,8 @@ Anchor-level validation should cover:
 * one derived InstructionCore context whose atomic Fabric-owned execution use
   pattern, initial state, capacity, requester order, and exact grant contract
   reject a Mapping-defined scheduler or split claim;
+* exact InstructionCore architecture fingerprinting, including compatibility
+  across microarchitectural changes and incompatibility after an ISA change;
 * arbitrary directed Transport Architecture routing with a shared bottleneck;
 * one-ingress multicast and competing single-ingress arbitration patterns;
 * all six Canonical Service kinds, exact leg order, actor-contract ownership,
@@ -818,6 +885,8 @@ Anchor-level validation should cover:
 * complete typed Endpoint, ResourceState, TransferPattern, and Configuration
   refinement plus deterministic lowering from architecture and Mapping to
   implementation;
+* one explicit asynchronous clock crossing and rejection of a hidden direct
+  crossing or invalid reset-to-clock relation;
 * an InstructionCore-only SystemMapping with no imported SpatialMapping; and
 * Deployment closure including imported Mapping dependencies and a programmable
   transport unit, plus workload-independent Gem5 Simulation Binding reuse and
@@ -827,3 +896,8 @@ Anchor-level validation should cover:
 
 Tests should not freeze protocol packet layout, gem5 internal queue state,
 builder container shape, authoring order, or visualization metadata.
+
+A graph-visible fault protocol is explicitly deferred. It may be introduced
+only after Canonical Dataflow owns a typed fault value, propagation, recovery,
+and completion contract. Fabric does not retain a dormant fault variant in the
+meantime.

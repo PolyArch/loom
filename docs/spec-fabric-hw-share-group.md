@@ -52,6 +52,23 @@ family. One normative family descriptor owns:
 * the admitted registered `OperationSchemaId` members; and
 * the family-specific typed admission rule.
 
+Its generated logical shape is:
+
+```text
+ImplementationFamilyDescriptor {
+  family_id
+  admitted_operation_schema_ids[]
+  capability_params_schema_id
+  typed_admission_provider_id
+}
+```
+
+This is one generated descriptor, not a second runtime registry. The admission
+provider interprets the declared parameter schema against a registered actor
+projection and concrete physical ports. A hand-written family-shape switch,
+operation-name table, or backend-local member list is a competing authority and
+is forbidden.
+
 The descriptor does not enumerate every exact type, value, predicate, arity,
 or configuration point. Those semantics remain owned by the registered
 operation schemas and are intersected with a concrete resource's parameterized

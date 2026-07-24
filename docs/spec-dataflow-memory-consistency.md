@@ -19,6 +19,7 @@ The common atomic-access fields are one closed typed value:
 AtomicAccessContract {
   ordering : AtomicOrdering
   sync_scope : SyncScopeRef
+  source_alignment_bytes : uint64
   vector_granularity : absent | WholePayload | PerLane
   volatile : bool
 }
@@ -38,6 +39,7 @@ CompareExchangeContract {
   success_ordering : AtomicOrdering
   failure_ordering : AtomicOrdering
   sync_scope : SyncScopeRef
+  source_alignment_bytes : uint64
   vector_granularity : absent | WholePayload | PerLane
   weak : bool
   volatile : bool
@@ -55,6 +57,15 @@ persistent owner. There are no independent ordering, scope, atomicity, RMW
 kind, weakness, volatility, MMIO, or coherence attributes that can disagree
 with it. Scalar atomic accesses omit `vector_granularity` because both vector
 cases degenerate to one atomic object.
+
+`source_alignment_bytes` is the minimum alignment guaranteed by the software
+access. It is nonzero and a power of two. For scalar and `WholePayload`
+atomicity it applies to the complete atomic object. For `PerLane` atomicity it
+applies independently to every active lane; inactive lanes have no address or
+alignment obligation. The field is source legality and survives lowering. It
+is not inferred from a selected physical service. Fabric owns physical
+alignment requirements, and Mapping may select a realization only when the
+software guarantee satisfies them.
 
 `AtomicOrdering` has exactly the LLVM semantic values `unordered`,
 `monotonic`, `acquire`, `release`, `acq_rel`, and `seq_cst`. Source-language

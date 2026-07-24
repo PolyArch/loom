@@ -54,9 +54,10 @@ not copy a `canonical_dataflow_ref`, `GraphRef`, graph symbol, or logical
 invocation record.
 
 The dense coordinate count must equal the root thread domain rank. Every
-coordinate must be inside any statically known bound. A dynamic-work point is
-not admitted by schema 1.0; its persistent identity depends on the separately
-owned DynamicWork correspondence contract.
+coordinate must be inside any statically known bound. Schema 1.0 admits only a
+dense rooted launch. A DynamicWork workload is `Unsupported`; a producer must
+not invent a string key, provisional occurrence, or channel correspondence to
+serialize it.
 
 The value-input table is exactly total over graph value-input ordinals. A
 `Fixed` entry contains exactly one semantic token and makes that launch
@@ -102,20 +103,38 @@ The system root has the structural shape:
 
 ```text
 SystemSimulationWorkload {
-  program_entry_ref: Deployment-owned typed program-entry reference
-  external_interface_refs:
-    canonical set<Deployment-owned typed external-interface reference>
+  program_entry_ref: DeploymentProgramEntryRef
+  value_input_plan:
+    total table<program value-argument ordinal, SystemValueInputSource>
+  external_value_input_plan:
+    total table<input or inout DeploymentExternalInterfaceRef,
+                SystemValueInputSource>
   observable_contract: SystemObservableContract
+}
+
+SystemValueInputSource =
+    Fixed(CanonicalValueSequence)
+  | Runtime
+
+SystemObservableContract {
+  value_results: canonical set<program value-result ordinal>
+  external_value_outputs:
+    canonical set<output or inout DeploymentExternalInterfaceRef>
+  external_stream_outputs:
+    canonical set<output or inout DeploymentExternalInterfaceRef>
+  memories:
+    canonical table<DeploymentExternalInterfaceRef, MemoryObservationForm>
 }
 ```
 
 The program-entry reference already carries the exact Deployment identity, so
-there is no second `deployment_ref`. The Deployment family must own both
-target catalogs, ordinals, and validation. Until the executable-closure and
-Deployment frontiers close those references, a schema-1.0 producer must reject
-the `System` root rather than serialize a string, symbol, generic path,
-provisional ordinal, or private substitute. Closing those referenced catalogs
-does not permit this schema to copy Deployment entry or interface fields.
+there is no second `deployment_ref`. The Deployment family owns both target
+catalogs, ordinals, and validation. Every table and selected observable must
+match the exact entry or external-interface kind, direction, and semantic type.
+Input or inout stream and memory interfaces are always supplied by
+SimulationRuntimeInput. Fixed or runtime value selection follows the same
+single-token rule as the spatial root. This schema does not copy Deployment
+entry or interface fields.
 
 Workloads own fixed problem shape, fixed launch values, and requested
 observables. They do not own concrete runtime values, stream contents, memory
@@ -199,8 +218,8 @@ is exactly total over graph stream-input ordinals. `ClosedAfterLast` publishes
 the stream close after its final token. `OpenAfterLast` means that no close is
 observed within the sequence's owning observation horizon. For runtime input,
 that horizon is the complete supplied input: no later token or close exists,
-and future timed arrivals require an independently justified typed
-environment schedule rather than hidden simulator input. For execution
+and the first version rejects timed external arrivals rather than inventing a
+generic environment schedule. For execution
 output, the horizon ends at the execution terminal, so the same form records
 an open produced prefix without asserting a counterfactual future.
 
@@ -227,12 +246,35 @@ identity derives from its static `LogicalMemoryRootRef` and graph-invocation
 occurrence, and its storage is created under the owning software semantics.
 It therefore does not receive a workload-local object ID or root binding.
 
-The system runtime root must bind concrete inputs through the exact
-Deployment-owned program-entry and external-interface references in its
-workload. Its exact table variants remain gated by the same executable-closure
-and Deployment frontier. A producer must not substitute argv arrays, device
-names, string-key maps, or simulator-private event records for those typed
-interfaces.
+The system runtime root is:
+
+```text
+SystemSimulationRuntimeInput {
+  workload_ref: exact System SimulationWorkload reference
+  runtime_entry_values:
+    total table<runtime program value-argument ordinal,
+                CanonicalValueSequence>
+  runtime_external_values:
+    total table<runtime DeploymentExternalInterfaceRef,
+                CanonicalValueSequence>
+  external_stream_inputs:
+    total table<input or inout DeploymentExternalInterfaceRef,
+                CanonicalStreamSequence>
+  memory_objects: canonical array<RuntimeMemoryObject>
+  memory_interface_bindings:
+    total table<DeploymentExternalInterfaceRef, RuntimeMemoryRootBinding>
+}
+```
+
+The two value tables are exactly total over `Runtime` selections and each
+sequence contains one token. Stream inputs are finite untimed sequences with
+the same closed/open-after-last semantics as the spatial root. Memory bindings
+are exactly total over every selected memory observable and every input or
+inout memory interface required by the entry. Their object canonicalization,
+aliasing, baseline, and range rules are the same as spatial memory objects.
+
+A producer must not substitute argv arrays, device names, string-key maps, or
+simulator-private event records for these typed interfaces.
 
 Runtime input does not contain model timing, trace-capture policy, execution
 limits, Mapping repairs, physical addresses used only by a simulator, or
@@ -313,13 +355,10 @@ request_ref
   -> SimulationWorkload observable contract
 ```
 
-The root field order, terminal record, Spatial functional observations,
-Spatial progress observations, activity summaries, trace manifest/chunk
-envelope, and typed trace-event algebra are closed below. Together they define
-the complete Spatial `loom.simulation_execution 1.0` wire. System execution
-records remain fail-closed until their Deployment-owned workload and progress
-references are finalized; a producer must not substitute simulator-private
-records for that missing closure.
+The root field order, terminal record, Spatial and System functional and
+progress observations, activity summaries, trace manifest/chunk envelope, and
+typed Spatial trace-event algebra are closed below. Together they define the
+complete `loom.simulation_execution 1.0` wire.
 
 The closed terminal algebra is:
 
@@ -480,10 +519,33 @@ absence of required capability produces `Unsupported`; provider failure
 produces `ExecutionFailed`. Neither outcome creates an execution containing
 an unavailable placeholder.
 
-The System workload remains fail-closed until Deployment owns its exact
-program-entry and external-interface catalogs. Its future functional
-observations must be selected and ordered by that workload contract and must
-not add a second execution-root discriminator or provisional string-key map.
+## System Functional Observations
+
+The system workload's exact Deployment-owned catalogs and observable contract
+determine four positional arrays:
+
+```text
+SystemFunctionalObservations {
+  value_results: array<ValueResultObservation>
+  external_value_outputs: array<ValueResultObservation>
+  external_stream_outputs: array<CanonicalStreamSequence>
+  memories: array<MemoryObservationPayload>
+}
+```
+
+The arrays align with the canonical selections in `SystemObservableContract`
+and repeat no ordinals, interface references, kinds, directions, types, or
+memory-form tags. The Spatial definitions of `ValueResultObservation`,
+`MemoryObservationPayload`, full state, diff runs, and baseline eligibility
+apply unchanged.
+
+`Retired` requires every selected value to be published, every selected stream
+to be closed, and every memory payload to describe final externally visible
+state. `Halted` and a retained `StoppedByLimit` may contain unpublished values,
+open stream prefixes, and memory state at the terminal coordinate. Aliased or
+overlapping memory projections must agree. Provider-private process exit data,
+argv, file descriptors, device names, and gem5 statistics are not functional
+observations.
 
 ## Spatial Progress Observations
 
@@ -552,9 +614,39 @@ only when the requested metric definition accepts that reference domain. A
 retained `StoppedByLimit` preserves its coordinates, but its
 `CancelledOrTimeout` Evidence has no normalized metric results.
 
-The System progress record remains fail-closed until the Deployment-owned
-program-entry and external-interface catalogs define its launch and terminal
-boundaries. It must not reuse Spatial anchors by convention.
+## System Progress Observations
+
+```text
+SystemProgressObservations {
+  program_entry_accepted: SystemEventCoordinate
+  program_exit_visible: optional<SystemEventCoordinate>
+  terminal_observed: SystemEventCoordinate
+}
+
+SystemEventCoordinate {
+  gem5_tick: uint64
+  delta: uint64
+}
+```
+
+`gem5_tick` is the exact integer time coordinate of the gem5 EventQueue selected
+by the request's Gem5SimulationBinding and model binding. `delta` gives a
+deterministic commit order within one tick and does not add elapsed time. The
+coordinates compare lexicographically. `Retired` requires
+`program_exit_visible`; `Halted` and retained `StoppedByLimit` permit it to be
+absent or present. In every case:
+
+```text
+program_entry_accepted
+  <= program_exit_visible, when present
+  <= terminal_observed
+```
+
+These anchors do not copy a tick frequency, wall time, exit-code policy, or
+gem5 event priority. Evaluation derives metrics through the exact model. The
+first System wire does not standardize a typed gem5 event trace; its
+`trace_manifest` is absent and raw gem5 traces remain detailed bundle material.
+DFG and CGRA traces continue to use the typed Spatial event algebra below.
 
 ## Activity Summaries
 
@@ -978,9 +1070,12 @@ greater than that level. There is no event-local level, filter DSL, or
 independent flag combination. DFG-sim supports `Firing` and `Semantic`; a
 request for `Microarchitecture` is `Unsupported`. CGRA-sim supports all three
 when the exact `{Dataflow, Fabric, complete SpatialMapping}` closure provides
-the required physical references. System and mapped-RTL trace production
-remain fail-closed until their exact Deployment and implementation correlation
-references are finalized.
+the required physical references. System and mapped-RTL trace production do
+not create new event variants. System trace capture is unsupported in the first
+wire. Mapped RTL may emit this Spatial algebra only when its exact Deployment
+and HardwareImplementation activity catalog provide a total correlation to the
+required Dataflow, Fabric, and Mapping references; otherwise trace capture,
+not workload execution, is `Unsupported`.
 
 Launch, graph-retirement, and terminal markers are not `TraceEvent` variants.
 They are mechanically projected from `SpatialProgressObservations`. A viewer
@@ -1097,6 +1192,12 @@ two imported roots aliasing one object, and rejection of physical layout or
 arbitrary object identity. One vecadd case covers fixed `N`, runtime `A/B/C`,
 and a visible diff of `C`.
 
+System workload/input anchors cover exact Deployment entry and interface
+references, fixed versus runtime value complements, finite external streams,
+memory aliasing and baselines, direction/kind/type rejection, and absence of an
+argv or string-key escape. One host entry with a value, stream, and memory
+interface is sufficient.
+
 Execution anchors separately cover the single untagged root, Request-only
 coupling, typed output slot and ordinal resolution, mandatory terminal-finding
 totality, the closed terminal algebra and outcome cardinality, witness
@@ -1108,6 +1209,10 @@ inside `SimulationExecution`; canonical integral and fractional progress
 coordinates; progress ordering; terminal-specific graph-retirement presence;
 terminal observation only after an atomic transition; and metric derivation
 that excludes `delta`.
+
+System execution anchors cover positional functional arrays, retired versus
+partial publication, exact gem5 tick ordering, mandatory program-exit presence
+for `Retired`, and absence of a typed System trace manifest in version 1.
 
 Activity anchors cover the two progress-defined windows, rejection of a
 missing retirement anchor, complete versus partial target inventories,

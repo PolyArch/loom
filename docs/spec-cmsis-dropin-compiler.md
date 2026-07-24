@@ -66,6 +66,13 @@ Drop-in compatibility includes:
 Loom-specific behavior must be additive and namespaced. It must not
 silently reinterpret ordinary compiler flags as acceleration requests.
 
+Source annotation is optional. The only initial public spelling is the
+nonbinding `#pragma loom candidate` defined by
+`docs/spec-compiler-part-1-source.md`. It marks the immediately following
+function or loop as a candidate but neither enables acceleration nor requires
+that candidate to be selected. Unannotated programs remain fully eligible for
+profile-driven discovery and ordinary drop-in compilation.
+
 ## Driver Surface
 
 The public driver surface consists of:
@@ -161,6 +168,11 @@ Per-source or per-library adaptation belongs in:
 * sparse smoke metadata used by tests;
 * explicit compatibility shims supplied by the user or runtime.
 
+CMSIS names and arities are never compiler semantics. Loom obtains callable
+bodies through ordinary source compilation, linker-selected object and archive
+members, LLVM Linker, and LTO. It does not maintain a CMSIS symbol-rewrite table
+or a Dataflow-level library linker.
+
 The compiler must preserve CMSIS public API names, symbol visibility,
 target triples, data layout, ABI decisions, and ordinary diagnostics.
 
@@ -246,6 +258,12 @@ Diagnostics must distinguish:
 
 Diagnostics should preserve source locations when available and should
 identify the relevant pipeline component.
+
+Hard compiler failures use the clang diagnostic engine. Candidate selection,
+missed acceleration, and analysis explanations use LLVM optimization remarks
+and the standard optimization-record projection. Their facts come from the
+owning typed failure or Evaluation records; Loom does not define a global
+diagnostic Artifact, duplicate error taxonomy, or text-snapshot contract.
 
 Unsupported work must use the typed unsupported or incomplete boundaries in
 `docs/spec-loom-stack.md` and the Evaluation outcome contract in

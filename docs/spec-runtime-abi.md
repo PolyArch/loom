@@ -18,6 +18,16 @@ They may share typed atoms such as artifact identity, address, extent,
 permission, and logical coordinates. They do not share one generic launch
 record or completion domain.
 
+The persistent runtime-owned families are:
+
+```text
+loom.runtime_platform_binding 1.0
+loom.gem5_simulation_binding  1.0
+```
+
+Concrete device handles, leases, addresses, queues, and process state remain
+transient. There is no generic runtime manifest or public manual-launch schema.
+
 ## Immutable Mapping Contract
 
 Runtime consumes one complete, independently verified SystemMapping. The
@@ -67,11 +77,9 @@ SystemMapping-selected AccCore on which the binary may execute. Runtime
 consumes the validated relation; it does not renegotiate a target, ABI, feature
 set, runtime, or library.
 
-This section closes only semantic ownership and compatibility. The exact
-persistent carrier or root schema for Compiler Target Binding, its
-multiplicity and tie-breaking, and the exact binary artifact binding remain
-downstream open work. Nothing here defines canonical fields, bytes, or an
-implementable wire contract.
+The exact persistent carrier, unique resolution rule, and binary relation are
+owned by `docs/spec-executable-closure.md`. Runtime imports those artifacts and
+cannot author another target tuple or compatibility cache.
 
 ## Deployment Runtime Images
 
@@ -312,31 +320,160 @@ HardwareConfigurationImage relations, package projection, and finalization
 rules. Runtime consumes that exact Deployment and does not restate or repair
 its closure. The finalized Deployment must preserve the confirmed compatibility
 relation among each selected AccCore, compiler target, and target-specific
-binary, while the exact binary artifact binding remains open as stated above.
+binary.
 
 Runtime-local addresses, handles, mutable leases, and admission state do not
-enter Deployment identity. An immutable platform binding referenced by the
-Deployment is a packaged dependency, not a runtime-selected address. The
+enter Deployment identity. An immutable RuntimePlatformBinding referenced by
+the Deployment is a packaged dependency, not a runtime-selected address. The
 normalized Graph Execution Binding range helps derive imported
 SpatialMappings, but it is not a second Deployment selection authority.
 
+## Runtime Platform Binding And Loader
+
+```text
+RuntimePlatformBinding {
+  version
+  hardware_implementation_ref
+  provider_binding {
+    descriptor_identity
+    descriptor_version
+    implementation_semantic_identity
+    runtime_abi_identity
+  }
+  identity_verification :
+      HardwareReported { implementation_identity_endpoint_ref }
+    | TrustedImmutable { attestation_blob }
+  programming_bindings[] {
+    programming_unit_ref
+    implementation_interface_ref
+    provider_endpoint_ref
+  }
+  memory_interface_bindings[] {
+    implementation_interface_ref
+    provider_endpoint_ref
+  }
+  completion_interface_bindings[] {
+    implementation_interface_ref
+    provider_endpoint_ref
+  }
+}
+```
+
+The HardwareImplementation reference recovers exact Fabric,
+ConfigurationABI, Interconnect Implementation, and ImplementationPlatform
+facts. The binding does not copy them. The provider binding identifies one
+static typed provider contract and implementation; endpoint references are
+closed typed values owned by that descriptor. Paths, device nodes, process IDs,
+bus addresses, and handles are transient invocation state.
+
+Every required programming, memory, completion, interrupt, and external
+interface has exactly one binding. Extra, missing, foreign, ambiguous, or
+wrong-direction bindings are invalid. `HardwareReported` reads and validates
+the exact HardwareImplementation identity through a declared interface.
+`TrustedImmutable` binds an immutable signed or otherwise trusted attestation
+blob when the hardware cannot report identity. The first version defines
+identity verification, not a general package-signing or multi-tenant security
+model.
+
+The generated loader protocol is mechanical:
+
+```text
+validate package and Deployment closure
+  -> enumerate provider devices
+  -> verify exact implementation identity
+  -> acquire authorization and exclusive lease
+  -> quiesce and establish declared reset state
+  -> install and verify all configuration images
+  -> install static logical-memory images
+  -> register host and InstructionCore entries
+  -> activate
+  -> execute and retire
+```
+
+Before activation, failure releases acquired resources after restoring the
+declared clean state. After any partial programming or runtime fault, the
+provider must reset and reverify the implementation before reuse; if it cannot
+prove that state, the device is quarantined for that process and the execution
+fails. Runtime never repairs a package, substitutes a compatible artifact, or
+remaps work. A stable hand-written user launch API, dynamic shared-object
+loading, firmware update protocol, remote deployment service, and partial
+reconfiguration are deferred until they have concrete independent semantics.
+
+RuntimePlatformBinding canonical JSON contains exact direct references and
+canonically ordered interface bindings. Finalization verifies provider schema,
+complete interface coverage, identity-verification support, and an independent
+round-trip import before publication. Runtime enumeration results never enter
+its identity.
+
 ## Gem5 Simulation Binding
 
-Gem5 Simulation Binding is workload-independent. It relates the exact Fabric
-Hardware Description and selected Interconnect Implementation refinement to
-gem5 model and SimObject correspondences, model parameters, gem5 build
-identity, and Bridge ABI identity.
+Gem5 Simulation Binding is workload-independent. Its closed root is:
+
+```text
+Gem5SimulationBinding {
+  version
+  fabric_ref
+  interconnect_implementation_ref
+  gem5_build_identity {
+    repository_identity
+    full_commit_identity
+    build_configuration_digest
+  }
+  bridge_abi_identity
+  correspondences[] : Gem5Correspondence
+}
+
+Gem5Correspondence =
+    Processor {
+      processor_ref : HostCoreOccurrenceRef | InstructionCoreContextRef
+      sim_object_ref
+    }
+  | SpatialBridge {
+      spatial_core_occurrence_ref
+      fabric_spatial_launch_boundary_ref
+      bridge_endpoint_ref
+    }
+  | MemoryOrService {
+      fabric_memory_or_service_ref
+      sim_object_ref
+      sim_port_ref
+    }
+  | Transport {
+      fabric_transport_resource_or_endpoint_ref
+      sim_object_ref
+      sim_port_ref
+    }
+  | ExternalEndpoint {
+      fabric_external_endpoint_ref
+      sim_object_ref
+      sim_port_ref
+    }
+```
+
+The correspondence table is total over every modeled Fabric occurrence and
+boundary and canonically ordered by typed Fabric reference. A SimObject or port
+may serve several entries only when its exact gem5 model contract explicitly
+permits that sharing. Free-form object paths and partial best-effort topology
+matching are invalid.
+
+Canonical JSON stores the exact direct Fabric and Interconnect Implementation
+references, gem5 and Bridge identities, and this sorted table. Finalization
+reimports the root, resolves every typed correspondence, proves totality and
+declared sharing, and publishes atomically. Generated gem5 Python or SimObject
+configuration is a projection, not a second binding authority.
 
 Gem5 Simulation Binding is a simulator binding, not Fabric,
-HardwareImplementation, or SystemMapping truth. For each modeled
-InstructionCore it must validate all three authorities:
+HardwareImplementation, or SystemMapping truth. Its finalizer validates the
+first two authorities for each modeled InstructionCore, and Deployment
+admission joins the third:
 
 * the exact InstructionCore Architectural Contract;
 * the exact InstructionCore Microarchitectural Realization, including
   execution structure, timing, capacity, and mapping-visible resources; and
 * the compatible Compiler Target Binding used by the target-specific binary.
 
-It does not reference or copy SystemMapping. The system-simulator descriptor
+It does not reference or copy SystemMapping or CompilerTargetBindings. The
+system-simulator descriptor
 references the shared system-simulation case signature with ordered
 `deployment` and `system_model` roles; an ordinary `EvaluationRequest` binds
 their exact `Deployment` and Gem5SimulationBinding
@@ -347,9 +484,10 @@ The same Gem5SimulationBinding may therefore execute several workloads or
 compatible Deployments on the same hardware implementation. No separate
 system-simulation request family exists.
 
-The exact persistent `Gem5SimulationBinding` root schema remains downstream
-open work. The relations and Evaluation roles above do not define its fields,
-cardinalities, serialization, canonical bytes, or implementable wire contract.
+Deployment admission joins every selected binary's exact
+CompilerTargetBinding with the Fabric-owned Architectural Contract and the
+corresponding `Processor` entry. A mismatch rejects the pair; it does not add a
+CompilerTargetBinding copy to this root.
 
 Unsupported or incompatible ISA, ABI, data layout, code model, backend feature,
 component, protocol, or correspondence is a typed diagnostic. The binding must
@@ -431,6 +569,11 @@ Anchor-level tests should cover:
   closure mismatch rejected and no missing Spatial launch path synthesized;
 * mechanical Compiler Target Binding selection from the chosen InstructionCore
   Architectural Contract, with incompatible target-specific binaries rejected;
+* complete RuntimePlatformBinding interface coverage, exact identity
+  verification, failure-atomic programming, and quarantine when clean-state
+  recovery cannot be proved;
+* total Gem5Correspondence coverage with duplicate, foreign, partial, and
+  undeclared-sharing cases rejected;
 * gem5 model rejection on mismatch with the exact InstructionCore
   Architectural Contract, exact Microarchitectural Realization, or compatible
   Compiler Target Binding; and

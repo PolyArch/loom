@@ -25,6 +25,11 @@ not a token stream or a physical storage identity.
   No external SSA value may leak into the module body.
 * The body is closed by a `fabric.yield` terminator.
 
+`sym_name` is an authoring and intra-MLIR reference aid, not persistent
+hardware identity. `docs/spec-fabric-artifact.md` owns root finalization,
+canonical semantic bytes, dependency framing, and ArtifactIdentity;
+`docs/spec-fabric-identity.md` owns Mapping-visible local references.
+
 ## Inputs (entry-block arguments)
 
 `fabric.module` carries zero SSA operands of its own. Module inputs are
@@ -469,5 +474,9 @@ consume the exact Fabric Artifact. System-level connectivity belongs to
   the configured projections derived from that capability.
 * `spec-fabric-hw-share-group.md` -- legal hardware-share groups for
   `fabric.op` `op_list` members.
+* `spec-fabric-artifact.md` -- Fabric root variants, canonicalization,
+  finalization, dependency closure, and persistent identity.
+* `spec-fabric-resource-contract.md` -- shared typed state, use-pattern, and
+  arbitration atoms embedded by concrete resources.
 * `spec-fabric-fifo.md` -- finite buffering capability, Mapping-selected
   buffered or bypass traversal, and exact cycle behavior.

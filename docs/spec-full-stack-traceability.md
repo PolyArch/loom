@@ -22,10 +22,15 @@ Each persistent fact has one owner:
   Architectural Contract and Microarchitectural Realization, plus the exact
   Transport Architecture;
 * Compiler Target Binding owns compiler-facing target choices and binary
-  compatibility proof as specified by `docs/spec-runtime-abi.md` section
-  `Compiler Target And Binary Compatibility`;
+  compatibility proof as specified by `docs/spec-executable-closure.md`;
 * Gem5 Simulation Binding owns simulator-model correspondences and their
-  validation against exact architecture, compiler, and implementation inputs;
+  validation against exact architecture and Interconnect Implementation;
+  Deployment admission separately validates selected compiler bindings;
+* HardwareImplementation owns immutable RTL, netlist, ASIC, and FPGA
+  implementation state, while ImplementationPlatform owns immutable technology
+  inputs;
+* Deployment owns the complete selected executable closure, and
+  RuntimePlatformBinding owns provider-facing installation compatibility;
 * `SimulationExecution` owns workload terminal observables, activity, and trace
   manifest;
 * raw detailed bundles own large external payloads and tool products; and
@@ -59,7 +64,8 @@ architecture-only fabric.system + protocol-specific implementation definition
 architecture-only fabric.system
   -> ConfigurationABI
 architecture-only fabric.system + exact Interconnect Implementation/refinement
-  + ConfigurationABI
+  + ConfigurationABI + resolved generator binding
+  + optional ImplementationPlatform
   -> HardwareImplementation(RTL)
   -> HardwareImplementation(synthesized/physical/FPGA)
 
@@ -81,14 +87,16 @@ InstructionCore program + Compiler Target Binding
   -> target-specific binary
 complete Mapping + ConfigurationABI
   -> HardwareConfigurationImage
-selected software + complete Mapping + Compiler Target Binding
-  + target-specific binary + exact implementation refinements + images
-  + memory and platform bindings
+HardwareImplementation + provider binding
+  -> RuntimePlatformBinding
+linked host program + complete SystemMapping
+  + exact Compiler Target Bindings and InstructionCore binaries
+  + exact HardwareImplementations and RuntimePlatformBindings
+  + configuration images + static logical-memory images
   -> Deployment
 
 exact Fabric InstructionCore Architectural Contract
   + exact InstructionCore Microarchitectural Realization
-  + Compiler Target Binding
   + exact Interconnect Implementation/refinement
   + gem5 model, build, and Bridge identities
   -> Gem5SimulationBinding
@@ -105,13 +113,9 @@ candidate sets + Evidence + resolved DSE policy
   -> CandidateDecision lineage and selected/Pareto artifact set
 ```
 
-These edges are required traceability relations, not exact field schemas or an
-exhaustive executable-closure catalog. Compiler Target Binding and
-Gem5SimulationBinding denote confirmed ownership and compatibility edges only.
-Their persistent carrier or root schemas, Compiler Target Binding multiplicity
-and tie-breaking, exact binary artifact binding, and exact
-`Gem5SimulationBinding` schema remain downstream open work rather than wire
-contracts defined here.
+These edges are required traceability relations, not duplicated field schemas.
+Their exact roots are owned by the linked artifact specifications; this view
+cannot reopen or weaken them.
 
 Not every invocation traverses every edge. Compatibility compilation may stop
 at ordinary compiler output. Mapping, simulation, RTL, EDA, deployment, and DSE
@@ -141,8 +145,10 @@ semantic contract. Key boundaries are:
   AccCore's exact InstructionCore Architectural Contract, and each
   target-specific binary is validated under that binding;
 * CGRA-sim consumes `{D,F,SpatialMapping}`;
-* HardwareImplementation, Gem5 Simulation Binding, and Deployment each bind
-  the exact Interconnect Implementation and refinement required by their role;
+* HardwareImplementation binds the exact Interconnect Implementation required
+  by its role; Gem5 Simulation Binding references the exact same implementation
+  independently, and Deployment recovers it through its selected
+  HardwareImplementation closure;
 * sys-sim consumes `{Deployment,Gem5SimulationBinding}` through exact
   Evaluation subject roles `deployment` and `system_model`, and the gem5 model
   must be compatible with all three authorities: the exact Fabric
@@ -158,7 +164,7 @@ semantic contract. Key boundaries are:
   `docs/spec-configuration-deployment.md`; and
 * Deployment references, rather than copies, its exact software, hardware,
   mapping, compiler target, target-specific binary, configuration, memory,
-  platform, and runtime ABI dependencies.
+  runtime-platform, and runtime ABI dependencies.
 
 An identity mismatch is an invalid input, not an Evaluation finding and not a
 reason to repair or reinterpret the consumer artifact.
@@ -199,6 +205,14 @@ the framing, digest, and validated store behavior.
 Canonical semantic bytes exclude timestamps, producer metadata, invocation
 bindings, host paths, diagnostics, visualization layout, and lineage unless the
 artifact schema explicitly makes a typed upstream reference semantic.
+
+Import never performs an implicit schema upgrade. A compatible minor-version
+adapter first validates the source under its own schema, then constructs and
+finalizes a new artifact with a new identity. A major-version migration is an
+explicit owner-provided conversion, not a Common fallback. Without such a
+converter, an old artifact is accepted only by a consumer supporting that exact
+schema or is rejected as unsupported. In-place identity preservation, textual
+patching, and latest-version guessing are forbidden.
 
 ## Blob Digest Contract
 
@@ -293,9 +307,8 @@ Stable tests cover the fixed identity preimage, canonicalization invariance,
 store corruption detection, exact consumer coupling, lineage without semantic
 duplication, deterministic replay, and gem5 rejection when any of its three
 InstructionCore compatibility authorities disagree. Tests do not pin path
-layouts beyond the store contract, duplicate every producer/consumer pair in a
-fixture matrix, or freeze an open Compiler Target Binding or
-`Gem5SimulationBinding` carrier schema.
+layouts beyond the store contract or duplicate every producer/consumer pair in
+a fixture matrix.
 
 Blob-digest anchors cover one fixed logical-byte vector, the zero-length blob,
 strict binary and lowercase-text widths, transparent compression round-trip,
