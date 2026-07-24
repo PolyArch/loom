@@ -682,6 +682,80 @@ void acceptedFactsAreInsertionOrderInvariant() {
                 "insertion order changed a publication");
 }
 
+// A fresh declaration and a later batch insertion record the same accepted
+// sequenced-before facts. Synchronizes-with may make one predecessor happen
+// before another, but it cannot erase the explicit release-fence hook.
+void freshAndBatchDeclarationsPublishTheSameFenceOrigin() {
+  MemoryAtomicOrder order;
+  takeExpected(order.initializeObject(kFlag));
+  takeExpected(order.initializeObject(kGate));
+  AtomicVersionId published = takeExpected(order.atomicStore(kFlag));
+  AtomicReadId selected = takeExpected(order.atomicLoad(kFlag, published));
+  AtomicVersionId carried = takeExpected(order.atomicStore(kGate));
+
+  auto build = [&](bool freshDeclaration) {
+    MemorySynchronization sync(order);
+    SyncEffectId releaseFence = sync.declareEffect();
+    SyncEffectId publisher = sync.declareEffect();
+    SyncEffectId acquire = sync.declareEffect();
+    accept(sync.sequencedBefore(releaseFence, publisher), "release fence hook");
+    accept(sync.declareFenceRole(releaseFence, SyncRoleKind::Release, kHome),
+           "release fence role");
+    accept(sync.registerWrite(publisher, kHome, published), "publishing write");
+    accept(sync.registerRead(acquire, kHome, selected), "acquire read");
+    accept(sync.declareOperationRole(acquire, SyncRoleKind::Acquire),
+           "acquire role");
+    require(sync.synchronizesWith(releaseFence, acquire),
+            "the test setup did not synchronize the predecessor pair");
+
+    SyncEffectId writer = [&] {
+      if (!freshDeclaration) {
+        SyncEffectId declared = sync.declareEffect();
+        llvm::SmallVector<std::pair<SyncEffectId, SyncEffectId>, 2> relations{
+            {releaseFence, declared}, {acquire, declared}};
+        accept(sync.sequencedBefore(relations), "batch writer frontier");
+        return declared;
+      }
+      llvm::SmallVector<SyncEffectId, 2> predecessors{releaseFence, acquire};
+      return takeExpected(sync.declareEffectSequencedAfter(predecessors));
+    }();
+    accept(sync.registerWrite(writer, kHome, carried), "carried write");
+    require(sync.happensBefore(releaseFence, writer) &&
+                sync.happensBefore(acquire, writer),
+            "writer lost an accepted happens-before predecessor");
+    return std::tuple{std::move(sync), releaseFence};
+  };
+
+  auto [fresh, freshRelease] = build(true);
+  auto [batch, batchRelease] = build(false);
+  expectEffects(takeExpected(fresh.publishedOrigins(carried)), {freshRelease},
+                "fresh declaration lost a release-fence publication");
+  expectEffects(takeExpected(batch.publishedOrigins(carried)), {batchRelease},
+                "batch insertion lost a release-fence publication");
+}
+
+void broadIncomingFrontierDeduplicationIsAtomic() {
+  MemoryAtomicOrder order;
+  MemorySynchronization sync(order);
+  constexpr unsigned kFanIn = 65536;
+  llvm::SmallVector<SyncEffectId> sources;
+  sources.reserve(kFanIn);
+  for (unsigned index = 0; index < kFanIn; ++index)
+    sources.push_back(sync.declareEffect());
+
+  llvm::SmallVector<SyncEffectId> duplicated(sources);
+  duplicated.push_back(sources[kFanIn / 2]);
+  expectRejected(sync.declareEffectSequencedAfter(duplicated),
+                 Kind::DuplicateEdge,
+                 "a broad duplicated incoming frontier was accepted");
+
+  SyncEffectId target = takeExpected(sync.declareEffectSequencedAfter(sources));
+  require(target == SyncEffectId(kFanIn),
+          "a rejected broad frontier consumed an effect id");
+  require(sync.sequencedEdgeCount() == kFanIn,
+          "a broad independent frontier lost an accepted predecessor");
+}
+
 // One issue can inherit a wide token frontier. The authority accepts all of
 // those sequenced-before facts as one transaction, and a rejected collection
 // commits none of its otherwise-valid prefix.
@@ -781,6 +855,8 @@ int main() {
   rejectionsArePreciseAndAtomic();
   fenceShapeHoldsInEitherDeclarationOrder();
   acceptedFactsAreInsertionOrderInvariant();
+  freshAndBatchDeclarationsPublishTheSameFenceOrigin();
+  broadIncomingFrontierDeduplicationIsAtomic();
   wideFrontierUsesOneTransactionalInsertion();
   rejectedIncomingFrontierDoesNotAllocateEffect();
   loopCarriedFrontierAndRelationStayReduced();

@@ -352,6 +352,12 @@ static std::uint64_t dynamicWorkItems(const SimulatorState &state) {
 }
 static void flushPendingTokens(SimulatorState &state) {
   for (auto &entry : state.pendingChannels) {
+    if (!entry.second.empty()) {
+      mlir::Operation *owner = entry.first->getOwner();
+      auto ordinal = state.plainMemoryOperationOrder.find(owner);
+      if (ordinal != state.plainMemoryOperationOrder.end())
+        state.plainMemoryCandidates.try_emplace(ordinal->second, owner);
+    }
     auto &target = state.channels[entry.first];
     while (!entry.second.empty()) {
       target.push_back(entry.second.front());
@@ -799,42 +805,39 @@ static bool rejectPlainMemoryConflict(SimulatorState &state) {
   return false;
 }
 
-// A wave is a closed scheduler decision because its publications remain
-// pending until every actor has been visited. Purely project and admit every
-// ready plain action before that visit so conflicts take precedence over
-// executing any access.
-static bool admitReadyPlainMemoryActions(mlir::Block &block,
-                                         SimulatorState &state) {
+// Admit every ready plain action before executing the closed scheduler wave.
+static bool admitReadyPlainMemoryActions(SimulatorState &state) {
   state.admittedPlainMemoryActions.clear();
-  llvm::SmallVector<std::pair<mlir::Operation *, ReadyPlainMemoryAction>> ready;
+  llvm::SmallVector<mlir::Operation *> readyOperations;
+  llvm::SmallVector<ReadyPlainMemoryAction> ready;
+  llvm::SmallVector<std::uint64_t> inactiveCandidates;
   llvm::SmallVector<std::string> projectionDiagnostics;
   bool projectionUnsupported = false;
-  for (mlir::Operation &op : block.getOperations()) {
-    if (!mlir::isa<dataflow::LoadOp, dataflow::StoreOp>(op))
-      continue;
+  for (const auto &[ordinal, operation] : state.plainMemoryCandidates) {
     PlainMemoryActionProjection projection =
-        projectReadyPlainMemoryAction(&op, state);
+        projectReadyPlainMemoryAction(operation, state);
     projectionUnsupported |= projection.unsupported;
     for (std::string &diagnostic : projection.diagnostics)
       projectionDiagnostics.push_back(std::move(diagnostic));
-    if (projection.ready)
-      ready.emplace_back(&op, std::move(*projection.ready));
+    if (!projection.ready) {
+      inactiveCandidates.push_back(ordinal);
+      continue;
+    }
+    readyOperations.push_back(operation);
+    ready.push_back(std::move(*projection.ready));
   }
+  for (std::uint64_t ordinal : inactiveCandidates)
+    state.plainMemoryCandidates.erase(ordinal);
 
-  for (std::size_t left = 0; left < ready.size(); ++left)
-    for (std::size_t right = left + 1; right < ready.size(); ++right)
-      if (plainMemoryActionsConflict(ready[left].second.action,
-                                     ready[right].second.action))
-        return rejectPlainMemoryConflict(state);
+  if (scanReadyPlainMemoryConflicts(ready).hasConflict)
+    return rejectPlainMemoryConflict(state);
 
-  for (const auto &candidate : ready) {
-    llvm::SmallVector<SyncEffectId> conflictingEffects;
-    for (const auto &issued : state.memoryActions)
-      if (plainMemoryActionsConflict(candidate.second.action, issued.first))
-        conflictingEffects.push_back(issued.second);
-    if (!conflictingEffects.empty() &&
-        !state.memorySync->areCoveredByHappensBefore(
-            conflictingEffects, candidate.second.ctrlFrontier))
+  for (const ReadyPlainMemoryAction &candidate : ready) {
+    PlainMemoryConflictQuery conflict =
+        state.memoryActions.query(candidate.action);
+    if (!conflict.effects.empty() &&
+        !state.memorySync->areCoveredByHappensBefore(conflict.effects,
+                                                     candidate.ctrlFrontier))
       return rejectPlainMemoryConflict(state);
   }
 
@@ -845,9 +848,9 @@ static bool admitReadyPlainMemoryActions(mlir::Block &block,
     return false;
   }
 
-  for (auto &candidate : ready)
-    state.admittedPlainMemoryActions.try_emplace(candidate.first,
-                                                 std::move(candidate.second));
+  for (auto [index, operation] : llvm::enumerate(readyOperations))
+    state.admittedPlainMemoryActions.try_emplace(operation,
+                                                 std::move(ready[index]));
   return true;
 }
 
@@ -1449,9 +1452,15 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
     return std::move(err);
 
   std::set<std::pair<std::string, std::string>> unsupported;
+  std::uint64_t operationOrdinal = 0;
   for (mlir::Operation &op : entry.getOperations()) {
+    if (mlir::isa<dataflow::LoadOp, dataflow::StoreOp>(op)) {
+      state.plainMemoryOperationOrder.try_emplace(&op, operationOrdinal);
+      state.plainMemoryCandidates.try_emplace(operationOrdinal, &op);
+    }
     if (auto diagnostic = unsupportedOperation(&op))
       unsupported.emplace(diagnostic->label, diagnostic->reason);
+    ++operationOrdinal;
   }
   if (!unsupported.empty()) {
     report.status = "unsupported";
@@ -1562,7 +1571,7 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
 
   while ((report.wavefrontSteps < options.maxEventSteps || retired) &&
          report.status != "invalid") {
-    if (!admitReadyPlainMemoryActions(entry, state))
+    if (!admitReadyPlainMemoryActions(state))
       break;
     bool fired = false;
     for (mlir::Operation &op : entry.getOperations()) {

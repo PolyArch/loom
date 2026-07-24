@@ -719,11 +719,53 @@ void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
       "store changed run or memory state on synchronization insertion failure");
 }
 
+void disjointPlainMemoryHistoryHasBoundedQueryWork() {
+  loom::sim::MemoryAtomicOrder order;
+  loom::sim::MemorySynchronization sync(order);
+  PlainMemoryConflictIndex history;
+  constexpr std::uint64_t kRoot = 7;
+  constexpr unsigned kIntervals = 16384;
+  llvm::SmallVector<ReadyPlainMemoryAction> ready;
+  ready.reserve(kIntervals + 1);
+
+  for (unsigned index = 0; index < kIntervals; ++index) {
+    const std::int64_t begin = static_cast<std::int64_t>(index) * 2;
+    MemoryActionRecord read{kRoot, {{begin, begin + 1}}, false};
+    history.retain(read, sync.declareEffect(), sync);
+    ready.push_back(ReadyPlainMemoryAction{
+        MemoryActionRecord{kRoot, {{begin, begin + 1}}, true}, {}});
+  }
+  require(history.intervalCount(kRoot) == kIntervals,
+          "disjoint history did not retain one interval per access");
+
+  MemoryActionRecord gap{kRoot, {{1, 2}}, true};
+  PlainMemoryConflictQuery gapQuery = history.query(gap);
+  require(gapQuery.effects.empty() && gapQuery.inspectedIntervals == 0,
+          "a disjoint history query inspected unrelated intervals");
+
+  const std::int64_t lastBegin = static_cast<std::int64_t>(kIntervals - 1) * 2;
+  MemoryActionRecord overlap{kRoot, {{lastBegin, lastBegin + 1}}, true};
+  PlainMemoryConflictQuery overlapQuery = history.query(overlap);
+  require(overlapQuery.effects.size() == 1 &&
+              overlapQuery.effects.front() ==
+                  loom::sim::SyncEffectId(kIntervals - 1) &&
+              overlapQuery.inspectedIntervals == 1,
+          "a point conflict query inspected unrelated history");
+
+  ReadyPlainMemoryConflictScan disjoint = scanReadyPlainMemoryConflicts(ready);
+  require(!disjoint.hasConflict && disjoint.inspectedRanges == kIntervals,
+          "ready disjoint actions were not scanned once per range");
+  ready.push_back(ReadyPlainMemoryAction{overlap, {}});
+  require(scanReadyPlainMemoryConflicts(ready).hasConflict,
+          "ready overlapping writes were not rejected");
+}
+
 } // namespace
 
 int main() {
   tokenWidthNarrowsAtTokenBoundary();
   actorTransitionDescriptorContract();
+  disjointPlainMemoryHistoryHasBoundedQueryWork();
 
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();

@@ -162,6 +162,16 @@ maximalCandidates(llvm::ArrayRef<SyncEffectId> candidates,
   return accepted;
 }
 
+Graph transitivelyReduced(const Graph &graph) {
+  const Graph predecessors = reverseGraph(graph);
+  Graph reduced(graph.size());
+  for (std::uint64_t target = 0; target < predecessors.size(); ++target)
+    for (SyncEffectId predecessor :
+         maximalCandidates(predecessors[target], predecessors))
+      reduced[predecessor.value()].push_back(SyncEffectId(target));
+  return reduced;
+}
+
 } // namespace
 
 char MemorySynchronizationError::ID = 0;
@@ -333,13 +343,7 @@ MemorySynchronization::requireNoFenceRole(SyncEffectId effect) const {
 }
 
 void MemorySynchronization::reduceSequencedRelation(Facts &facts) const {
-  const Graph predecessors = reverseGraph(facts.sequenced);
-  Graph reduced(facts.effects);
-  for (std::uint64_t target = 0; target < predecessors.size(); ++target)
-    for (SyncEffectId predecessor :
-         maximalCandidates(predecessors[target], predecessors))
-      reduced[predecessor.value()].push_back(SyncEffectId(target));
-  facts.sequenced = std::move(reduced);
+  facts.sequenced = transitivelyReduced(facts.sequenced);
 }
 
 llvm::Error MemorySynchronization::commit(Facts candidate,
@@ -352,8 +356,11 @@ llvm::Error MemorySynchronization::commit(Facts candidate,
     reduceSequencedRelation(candidate);
     relation = buildGraph(candidate);
   }
+  Graph sequencedPredecessors = reverseGraph(candidate.sequenced);
+  relation = transitivelyReduced(relation);
   Graph predecessors = reverseGraph(relation);
   facts_ = std::move(candidate);
+  sequencedPredecessors_ = std::move(sequencedPredecessors);
   relation_ = std::move(relation);
   predecessors_ = std::move(predecessors);
   return llvm::Error::success();
@@ -361,30 +368,34 @@ llvm::Error MemorySynchronization::commit(Facts candidate,
 
 llvm::Expected<SyncEffectId> MemorySynchronization::declareEffectSequencedAfter(
     llvm::ArrayRef<SyncEffectId> predecessors) {
-  llvm::SmallVector<SyncEffectId, 2> accepted;
-  accepted.reserve(predecessors.size());
-  for (SyncEffectId predecessor : predecessors) {
+  llvm::SmallVector<SyncEffectId, 2> accepted(predecessors);
+  for (SyncEffectId predecessor : accepted)
     if (llvm::Error error = requireKnown(predecessor))
       return std::move(error);
-    if (llvm::is_contained(accepted, predecessor))
-      return reject(Kind::DuplicateEdge,
-                    "effect " + llvm::Twine(predecessor.value()) +
-                        " occurs more than once in an incoming frontier");
-    accepted.push_back(predecessor);
-  }
+  llvm::sort(accepted);
+  auto duplicate = std::adjacent_find(accepted.begin(), accepted.end());
+  if (duplicate != accepted.end())
+    return reject(Kind::DuplicateEdge,
+                  "effect " + llvm::Twine(duplicate->value()) +
+                      " occurs more than once in an incoming frontier");
 
   if (accepted.size() > 1)
-    accepted = llvm::cantFail(maximalHappensBeforeFrontier(accepted));
-  else
-    canonicalize(accepted);
+    accepted = maximalCandidates(accepted, sequencedPredecessors_);
+  llvm::SmallVector<SyncEffectId, 2> relationPredecessors =
+      accepted.size() > 1 ? maximalCandidates(accepted, predecessors_)
+                          : accepted;
 
   const SyncEffectId effect(facts_.effects);
   ++facts_.effects;
   facts_.sequenced.emplace_back();
+  sequencedPredecessors_.emplace_back();
   relation_.emplace_back();
   predecessors_.emplace_back();
   for (SyncEffectId predecessor : accepted) {
     facts_.sequenced[predecessor.value()].push_back(effect);
+    sequencedPredecessors_[effect.value()].push_back(predecessor);
+  }
+  for (SyncEffectId predecessor : relationPredecessors) {
     relation_[predecessor.value()].push_back(effect);
     predecessors_[effect.value()].push_back(predecessor);
   }

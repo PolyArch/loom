@@ -276,8 +276,9 @@ private:
   const MemoryAtomicOrder *order_;
   Facts facts_;
   // Derived execution-local indexes. The accepted facts above remain the
-  // authority; these two directions are rebuilt together after general
-  // updates and extended directly for a fresh effect.
+  // authority; these directions are rebuilt together after general updates
+  // and extended directly for a fresh effect.
+  Graph sequencedPredecessors_;
   Graph relation_;
   Graph predecessors_;
 };

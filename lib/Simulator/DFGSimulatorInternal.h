@@ -13,6 +13,7 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/IntervalMap.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
@@ -111,9 +112,245 @@ struct MemoryActionRecord {
   bool isWrite = false;
 };
 
+inline void canonicalizeMemoryActionRanges(
+    llvm::SmallVectorImpl<std::pair<std::int64_t, std::int64_t>> &ranges) {
+  llvm::sort(ranges);
+  llvm::SmallVector<std::pair<std::int64_t, std::int64_t>> merged;
+  for (const auto &range : ranges) {
+    if (range.first >= range.second)
+      continue;
+    if (merged.empty() || merged.back().second < range.first) {
+      merged.push_back(range);
+      continue;
+    }
+    merged.back().second = std::max(merged.back().second, range.second);
+  }
+  ranges.assign(merged.begin(), merged.end());
+}
+
 struct ReadyPlainMemoryAction {
   MemoryActionRecord action;
   llvm::SmallVector<SyncEffectId, 2> ctrlFrontier;
+};
+
+struct ReadyPlainMemoryConflictScan {
+  bool hasConflict = false;
+  std::uint64_t inspectedRanges = 0;
+};
+
+inline ReadyPlainMemoryConflictScan
+scanReadyPlainMemoryConflicts(llvm::ArrayRef<ReadyPlainMemoryAction> actions) {
+  struct Range {
+    std::uint64_t rootId;
+    std::int64_t begin;
+    std::int64_t end;
+    bool isWrite;
+  };
+
+  llvm::SmallVector<Range> ranges;
+  for (const ReadyPlainMemoryAction &ready : actions) {
+    auto actionRanges = ready.action.byteRanges;
+    canonicalizeMemoryActionRanges(actionRanges);
+    for (const auto &[begin, end] : actionRanges)
+      ranges.push_back(
+          Range{ready.action.rootId, begin, end, ready.action.isWrite});
+  }
+  llvm::sort(ranges, [](const Range &lhs, const Range &rhs) {
+    if (lhs.rootId != rhs.rootId)
+      return lhs.rootId < rhs.rootId;
+    if (lhs.begin != rhs.begin)
+      return lhs.begin < rhs.begin;
+    if (lhs.end != rhs.end)
+      return lhs.end < rhs.end;
+    return lhs.isWrite < rhs.isWrite;
+  });
+
+  ReadyPlainMemoryConflictScan result;
+  std::optional<std::uint64_t> rootId;
+  std::int64_t maximalEnd = 0;
+  std::int64_t maximalWriteEnd = 0;
+  bool hasRange = false;
+  bool hasWrite = false;
+  for (const Range &range : ranges) {
+    ++result.inspectedRanges;
+    if (!rootId || *rootId != range.rootId) {
+      rootId = range.rootId;
+      maximalEnd = range.end;
+      maximalWriteEnd = range.end;
+      hasRange = true;
+      hasWrite = range.isWrite;
+      continue;
+    }
+    if ((range.isWrite && hasRange && maximalEnd > range.begin) ||
+        (!range.isWrite && hasWrite && maximalWriteEnd > range.begin)) {
+      result.hasConflict = true;
+      return result;
+    }
+    maximalEnd = std::max(maximalEnd, range.end);
+    if (range.isWrite) {
+      maximalWriteEnd =
+          hasWrite ? std::max(maximalWriteEnd, range.end) : range.end;
+      hasWrite = true;
+    }
+  }
+  return result;
+}
+
+struct PlainMemoryConflictQuery {
+  llvm::SmallVector<SyncEffectId, 2> effects;
+  std::uint64_t inspectedIntervals = 0;
+};
+
+// Exact byte-interval cache of the maximal issued hazards. It stores effect
+// handles but no order relation; MemorySynchronization alone decides whether
+// one effect covers another and reduces read frontiers.
+class PlainMemoryConflictIndex {
+public:
+  PlainMemoryConflictQuery query(MemoryActionRecord action) const {
+    PlainMemoryConflictQuery result;
+    canonicalizeMemoryActionRanges(action.byteRanges);
+    auto root = intervals_.find(action.rootId);
+    if (root == intervals_.end())
+      return result;
+
+    const IntervalMap &intervals = root->second->intervals;
+    for (const auto &[begin, end] : action.byteRanges) {
+      auto interval = intervals.find(begin);
+      while (interval.valid() && interval.start() < end) {
+        ++result.inspectedIntervals;
+        const Hazards &hazards = interval.value();
+        if (hazards.write)
+          result.effects.push_back(*hazards.write);
+        if (action.isWrite)
+          result.effects.append(hazards.reads.begin(), hazards.reads.end());
+        ++interval;
+      }
+    }
+    llvm::sort(result.effects);
+    result.effects.erase(
+        std::unique(result.effects.begin(), result.effects.end()),
+        result.effects.end());
+    return result;
+  }
+
+  void retain(MemoryActionRecord action, SyncEffectId effect,
+              MemorySynchronization &synchronization) {
+    canonicalizeMemoryActionRanges(action.byteRanges);
+    if (action.byteRanges.empty())
+      return;
+    std::unique_ptr<RootIntervals> &root = intervals_[action.rootId];
+    if (!root)
+      root = std::make_unique<RootIntervals>();
+    for (const auto &[begin, end] : action.byteRanges)
+      updateRange(*root, begin, end, action.isWrite, effect, synchronization);
+  }
+
+  bool empty() const { return intervals_.empty(); }
+
+  std::size_t intervalCount(std::uint64_t rootId) const {
+    auto root = intervals_.find(rootId);
+    if (root == intervals_.end())
+      return 0;
+    return std::distance(root->second->intervals.begin(),
+                         root->second->intervals.end());
+  }
+
+private:
+  struct Hazards {
+    std::optional<SyncEffectId> write;
+    llvm::SmallVector<SyncEffectId, 2> reads;
+
+    friend bool operator==(const Hazards &lhs, const Hazards &rhs) {
+      return lhs.write == rhs.write && lhs.reads == rhs.reads;
+    }
+    friend bool operator!=(const Hazards &lhs, const Hazards &rhs) {
+      return !(lhs == rhs);
+    }
+  };
+  using IntervalMap =
+      llvm::IntervalMap<std::int64_t, Hazards, 3,
+                        llvm::IntervalMapHalfOpenInfo<std::int64_t>>;
+
+  struct RootIntervals {
+    IntervalMap::Allocator allocator;
+    IntervalMap intervals;
+
+    RootIntervals() : intervals(allocator) {}
+  };
+
+  struct IntervalReplacement {
+    std::int64_t begin;
+    std::int64_t end;
+    Hazards hazards;
+  };
+
+  static void applyAccess(Hazards &hazards, bool isWrite, SyncEffectId effect,
+                          MemorySynchronization &synchronization) {
+    if (isWrite) {
+      hazards.write = effect;
+      hazards.reads.clear();
+      return;
+    }
+    hazards.reads.push_back(effect);
+    if (hazards.reads.size() > 1)
+      hazards.reads = llvm::cantFail(
+          synchronization.maximalHappensBeforeFrontier(hazards.reads));
+  }
+
+  static Hazards makeHazards(bool isWrite, SyncEffectId effect,
+                             MemorySynchronization &synchronization) {
+    Hazards hazards;
+    applyAccess(hazards, isWrite, effect, synchronization);
+    return hazards;
+  }
+
+  static void updateRange(RootIntervals &root, std::int64_t begin,
+                          std::int64_t end, bool isWrite, SyncEffectId effect,
+                          MemorySynchronization &synchronization) {
+    llvm::SmallVector<IntervalReplacement, 4> existing;
+    auto interval = root.intervals.find(begin);
+    while (interval.valid() && interval.start() < end) {
+      existing.push_back(IntervalReplacement{interval.start(), interval.stop(),
+                                             interval.value()});
+      interval.erase();
+    }
+
+    llvm::SmallVector<IntervalReplacement, 6> replacements;
+    std::int64_t cursor = begin;
+    for (const IntervalReplacement &prior : existing) {
+      if (prior.begin < begin)
+        replacements.push_back(
+            IntervalReplacement{prior.begin, begin, prior.hazards});
+
+      const std::int64_t overlapBegin = std::max(begin, prior.begin);
+      if (cursor < overlapBegin)
+        replacements.push_back(
+            IntervalReplacement{cursor, overlapBegin,
+                                makeHazards(isWrite, effect, synchronization)});
+
+      const std::int64_t overlapEnd = std::min(end, prior.end);
+      Hazards updated = prior.hazards;
+      applyAccess(updated, isWrite, effect, synchronization);
+      replacements.push_back(
+          IntervalReplacement{overlapBegin, overlapEnd, std::move(updated)});
+      cursor = std::max(cursor, overlapEnd);
+
+      if (prior.end > end) {
+        replacements.push_back(
+            IntervalReplacement{end, prior.end, prior.hazards});
+        cursor = end;
+      }
+    }
+    if (cursor < end)
+      replacements.push_back(IntervalReplacement{
+          cursor, end, makeHazards(isWrite, effect, synchronization)});
+
+    for (IntervalReplacement &replacement : replacements)
+      root.intervals.insert(replacement.begin, replacement.end,
+                            std::move(replacement.hazards));
+  }
+
+  llvm::DenseMap<std::uint64_t, std::unique_ptr<RootIntervals>> intervals_;
 };
 
 struct PlainMemoryActionProjection {
@@ -166,10 +403,12 @@ struct SimulatorState {
   // an access needs them.
   std::unique_ptr<MemoryAtomicOrder> memoryOrder;
   std::unique_ptr<MemorySynchronization> memorySync;
-  // Compact conflict cache. A record retains only byte ranges where its effect
-  // remains a maximal prior read or write; MemorySynchronization still owns
-  // every causal comparison.
-  llvm::SmallVector<std::pair<MemoryActionRecord, SyncEffectId>> memoryActions;
+  PlainMemoryConflictIndex memoryActions;
+  // Static operation ordinals and the subset whose token queues changed or
+  // may still contain another firing. This limits pure admission projection to
+  // memory actors whose readiness can have changed.
+  llvm::DenseMap<mlir::Operation *, std::uint64_t> plainMemoryOperationOrder;
+  std::map<std::uint64_t, mlir::Operation *> plainMemoryCandidates;
   // Execution-local cache of the plain actions and ctrl-derived order
   // frontiers admitted for the current scheduler decision. The scheduler
   // clears and derives it again before every wave.
@@ -288,69 +527,8 @@ void writeMemoryElement(const MemoryView &view, std::size_t index, Token value);
 void commitDataflowMemoryWrite(const MemoryView &view,
                                const DataflowMemoryWrite &write);
 
-inline void canonicalizeMemoryActionRanges(
-    llvm::SmallVectorImpl<std::pair<std::int64_t, std::int64_t>> &ranges) {
-  llvm::sort(ranges);
-  llvm::SmallVector<std::pair<std::int64_t, std::int64_t>> merged;
-  for (const auto &range : ranges) {
-    if (merged.empty() || merged.back().second < range.first) {
-      merged.push_back(range);
-      continue;
-    }
-    merged.back().second = std::max(merged.back().second, range.second);
-  }
-  ranges.assign(merged.begin(), merged.end());
-}
-
-inline void subtractMemoryActionRanges(
-    llvm::SmallVectorImpl<std::pair<std::int64_t, std::int64_t>> &ranges,
-    llvm::ArrayRef<std::pair<std::int64_t, std::int64_t>> removed) {
-  llvm::SmallVector<std::pair<std::int64_t, std::int64_t>> remainder;
-  for (const auto &[begin, end] : ranges) {
-    std::int64_t cursor = begin;
-    for (const auto &[removedBegin, removedEnd] : removed) {
-      if (removedEnd <= cursor)
-        continue;
-      if (removedBegin >= end)
-        break;
-      if (cursor < removedBegin)
-        remainder.emplace_back(cursor, std::min(end, removedBegin));
-      cursor = std::max(cursor, removedEnd);
-      if (cursor >= end)
-        break;
-    }
-    if (cursor < end)
-      remainder.emplace_back(cursor, end);
-  }
-  ranges.assign(remainder.begin(), remainder.end());
-}
-
-inline void retainIssuedMemoryAction(SimulatorState &state,
-                                     MemoryActionRecord action,
-                                     SyncEffectId effect) {
-  canonicalizeMemoryActionRanges(action.byteRanges);
-  for (auto &issued : state.memoryActions) {
-    if (issued.first.rootId != action.rootId)
-      continue;
-    const bool superseded =
-        action.isWrite ||
-        (!issued.first.isWrite &&
-         state.memorySync->happensBefore(issued.second, effect));
-    if (superseded)
-      subtractMemoryActionRanges(issued.first.byteRanges, action.byteRanges);
-  }
-  state.memoryActions.erase(
-      std::remove_if(
-          state.memoryActions.begin(), state.memoryActions.end(),
-          [](const auto &issued) { return issued.first.byteRanges.empty(); }),
-      state.memoryActions.end());
-  state.memoryActions.emplace_back(std::move(action), effect);
-}
-
 PlainMemoryActionProjection
 projectReadyPlainMemoryAction(mlir::Operation *op, SimulatorState &state);
-bool plainMemoryActionsConflict(const MemoryActionRecord &lhs,
-                                const MemoryActionRecord &rhs);
 bool isSupportedLLVMCall(mlir::LLVM::CallOp op);
 bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
                                  llvm::ArrayRef<Token> operands, Token &result);

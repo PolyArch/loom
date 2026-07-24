@@ -910,22 +910,8 @@ static std::optional<MemoryActionRecord> projectMemoryAction(
     const std::int64_t begin = static_cast<std::int64_t>(slot) * *elementSize;
     action.byteRanges.emplace_back(begin, begin + *elementSize);
   }
+  canonicalizeMemoryActionRanges(action.byteRanges);
   return action;
-}
-
-static bool actionsOverlap(const MemoryActionRecord &lhs,
-                           const MemoryActionRecord &rhs) {
-  for (const auto &[leftBegin, leftEnd] : lhs.byteRanges)
-    for (const auto &[rightBegin, rightEnd] : rhs.byteRanges)
-      if (leftBegin < rightEnd && rightBegin < leftEnd)
-        return true;
-  return false;
-}
-
-bool plainMemoryActionsConflict(const MemoryActionRecord &lhs,
-                                const MemoryActionRecord &rhs) {
-  return lhs.rootId == rhs.rootId && (lhs.isWrite || rhs.isWrite) &&
-         actionsOverlap(lhs, rhs);
 }
 
 static MemorySynchronization &memorySynchronization(SimulatorState &state) {
@@ -966,7 +952,7 @@ issueMemoryAction(MemoryActionRecord action,
     state.runtimeUnsupportedCapability = true;
     return std::nullopt;
   }
-  retainIssuedMemoryAction(state, std::move(action), *effect);
+  state.memoryActions.retain(std::move(action), *effect, sync);
   return llvm::SmallVector<SyncEffectId, 2>{*effect};
 }
 
