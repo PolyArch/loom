@@ -91,6 +91,13 @@ cycles, CGRA cycles, RTL cycles, wall time, frequency, latency, throughput,
 power, and dimensionless work scores are distinct metrics unless a named
 `DerivedMetricModel` defines the conversion or composition.
 
+Execution progress anchors are raw observations, not an alternate metric
+registry. A comparison model may derive an elapsed observation only from the
+exact launch, graph-retirement, or terminal anchors selected by the requested
+metric definition and only after proving their reference domains compatible.
+It never treats `delta` as elapsed cycles or substitutes one execution's
+terminal horizon for another's graph-retirement boundary.
+
 For example, DFG operation count divided by CGRA cycle count is not a speedup.
 Likewise, cycle count multiplied by a frequency from another implementation is
 invalid unless exact subject compatibility is established by a derived model.
@@ -127,5 +134,6 @@ outcomes have no finding or metric results.
 Stable tests cover exact-role validation, visible-memory alignment,
 deterministic functional mismatch detection, `NotApplicable` for an
 unconstrained nondeterministic value relation, invariant comparison of legal
-atomic executions, rejection of incompatible metrics, and deterministic
-Evidence. Tests do not pin table formatting or duplicate simulator semantics.
+atomic executions, rejection of incompatible metrics and progress domains, and
+deterministic Evidence. Tests do not pin table formatting or duplicate
+simulator semantics.

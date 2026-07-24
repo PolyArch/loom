@@ -309,12 +309,12 @@ request_ref
   -> SimulationWorkload observable contract
 ```
 
-The root field order and the terminal record are closed below. The exact
-functional-observation, progress-observation, activity-summary, and
-trace-manifest records remain the next persistent-wire frontier. Until those
-records close, a producer must not serialize these conceptual collection
-names as generic maps or claim that the complete
-`loom.simulation_execution 1.0` wire is implemented.
+The root field order, terminal record, Spatial functional observations, and
+Spatial progress observations are closed below. Activity summaries and the
+trace manifest remain the persistent-wire frontier. Until those records close,
+a producer must not serialize these conceptual collection names as generic
+maps or claim that the complete `loom.simulation_execution 1.0` wire is
+implemented.
 
 The closed terminal algebra is:
 
@@ -480,6 +480,77 @@ program-entry and external-interface catalogs. Its future functional
 observations must be selected and ordered by that workload contract and must
 not add a second execution-root discriminator or provisional string-key map.
 
+## Spatial Progress Observations
+
+Every retained Spatial execution stores exactly three progress anchors:
+
+```text
+SpatialProgressObservations {
+  launch_accepted: EventCoordinate
+  graph_retirement_visible: optional<EventCoordinate>
+  terminal_observed: EventCoordinate
+}
+
+EventCoordinate {
+  reference_cycle: ExactRatio
+  delta: uint64
+}
+```
+
+`launch_accepted` is the coordinate at which the rooted Spatial Launch is
+accepted. `graph_retirement_visible` is the coordinate at which the graph
+completion frontier becomes visible at that launch boundary.
+`terminal_observed` is the observation horizon at which the execution
+terminal is fixed after the last fully committed atomic transition. A stop
+limit cannot leave half of a transition in the retained execution.
+
+All persistent cycle coordinates use the one canonical `ExactRatio` schema.
+An integral cycle `N` has the sole encoding `N/1`; there is no integer-or-ratio
+union. `delta` orders causal propagation within one reference cycle and never
+adds elapsed cycles. Coordinates compare lexicographically by exact
+`reference_cycle` and then `delta`, and finalization requires:
+
+```text
+launch_accepted
+  <= graph_retirement_visible, when present
+  <= terminal_observed
+```
+
+The progress record encodes fields in declaration order. Each coordinate
+encodes the canonical `ExactRatio` numerator and denominator followed by
+`delta`, all as unsigned 64-bit big-endian values. The optional retirement
+anchor uses a zero-based unsigned 32-bit `Absent | Present` discriminant and,
+when present, one coordinate payload. Native layout, field names, alternate
+integer coordinates, and non-reduced ratios are invalid identity bytes.
+
+`Retired` requires `graph_retirement_visible`. `Halted` and a retained
+`StoppedByLimit` permit it to be absent or present. For example, an execution
+may expose graph retirement and complete all functional observations, then
+halt while its mapped hardware fails to restore invocation-local quiescence.
+Its terminal remains `Halted`, its graph-retirement anchor remains present,
+and its terminal coordinate is later.
+
+The progress record stores no elapsed-cycle field, cycle-count metric,
+wall-clock duration, event count, completion Boolean, timebase descriptor, or
+clock-domain copy. DFG coordinates use the `AbstractCycle` owned by the exact
+DFG timing-model descriptor. CGRA coordinates use the reference domain
+mechanically derived from the exact Fabric, complete SpatialMapping, and
+mapped Spatial Launch boundary. A relative clock schedule not hard-fixed by
+Fabric remains an EvaluationRequest base condition.
+
+Evaluation derives requested timing observations from these anchors rather
+than copying them into the execution. A compatible retired cycle observation
+uses the exact reference-cycle difference from `launch_accepted` to
+`graph_retirement_visible`; `delta` is excluded. For `Halted`, a model may
+derive a censored lower bound from `launch_accepted` to `terminal_observed`
+only when the requested metric definition accepts that reference domain. A
+retained `StoppedByLimit` preserves its coordinates, but its
+`CancelledOrTimeout` Evidence has no normalized metric results.
+
+The System progress record remains fail-closed until the Deployment-owned
+program-entry and external-interface catalogs define its launch and terminal
+boundaries. It must not reuse Spatial anchors by convention.
+
 ## Trace And Activity
 
 An optional typed trace manifest owns the ordered list of content-addressed
@@ -499,9 +570,9 @@ correctness.
 Actor-bearing trace and activity records use the Dataflow-owned `ActorRef`.
 Execution-local invocation occurrences and per-actor firing ordinals qualify a
 dynamic event but never create persistent Dataflow entities. The remaining
-progress, activity, trace-manifest, and canonical chunk records remain owned
-by the `SimulationExecution persistent wire` design frontier; this rule fixes
-only their upstream identity owner.
+activity, trace-manifest, and canonical chunk records remain owned by the
+`SimulationExecution persistent wire` design frontier; this rule fixes only
+their upstream identity owner.
 
 Trace capture is a nonsemantic invocation binding. Enabling it may change
 execution cost and retained raw material, but must not change scheduling,
@@ -547,7 +618,10 @@ ownership and reference validation, runtime-dependent `Unsupported` versus
 `Halted` and `ExecutionFailed`, spatial functional-array alignment, terminal-
 specific value and stream completeness, unique memory-diff runs, baseline
 eligibility, alias-overlap agreement, and rejection of normalized results
-inside `SimulationExecution`. Progress observations, activity, and trace add
-their own anchors only as their persistent records close. Tests do not pin
-report layouts, simulator class hierarchies, broad workload matrices, every
-finding kind, every witness payload, or every partial-output combination.
+inside `SimulationExecution`; canonical integral and fractional progress
+coordinates; progress ordering; terminal-specific graph-retirement presence;
+terminal observation only after an atomic transition; and metric derivation
+that excludes `delta`. Activity and trace add their own anchors only as their
+persistent records close. Tests do not pin report layouts, simulator class
+hierarchies, broad workload matrices, every finding kind, every witness
+payload, every partial-output combination, or arbitrary clock ratios.

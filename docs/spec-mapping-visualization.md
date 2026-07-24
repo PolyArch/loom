@@ -135,11 +135,18 @@ Timed SpatialCore traces use:
 EventCoordinate = (reference_cycle, delta)
 ```
 
-`reference_cycle` is a nonnegative integer or canonical `ExactRatio` cycle.
-`delta` expresses same-cycle causal propagation and is not another cycle or a
-latency metric. Trace frames are strictly increasing by EventCoordinate. Events
-within one frame use a stable typed canonical serialization key; that ordering
-does not invent arbitration or execution semantics.
+`reference_cycle` is always a canonical `ExactRatio`; an integral cycle `N`
+has the sole persistent encoding `N/1`. `delta` expresses same-cycle causal
+propagation and is not another cycle or a latency metric. Trace frames are
+strictly increasing by EventCoordinate. Events within one frame use a stable
+typed canonical serialization key; that ordering does not invent arbitration
+or execution semantics.
+
+The viewer recovers launch, graph-retirement, and terminal markers from the
+execution's `SpatialProgressObservations`. It does not infer them from trace
+events, duplicate elapsed cycles, or choose a clock domain. The exact DFG model
+or the exact Fabric, SpatialMapping, and mapped launch boundary own the
+reference-domain meaning.
 
 An actor firing is shown at its commit coordinate. Commit and retirement may
 occur at different coordinates. Each firing record resolves its canonical

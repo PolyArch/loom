@@ -92,11 +92,12 @@ deterministic and event driven:
 
 `AbstractCycle`, defined by the exact DFG timing model, is the simulator time
 unit. It is not a physical time in nanoseconds and does not imply a target
-clock frequency. Timed events use `EventCoordinate = (abstract_cycle, delta)`.
-`delta` orders causally related zero-registered-delay propagation inside one
-cycle and never increments a cycle metric. DFG-sim may therefore estimate
-logical latency and throughput in abstract cycles without claiming
-hardware-aware timing.
+clock frequency. Timed events use the Simulation Artifact
+`EventCoordinate = (reference_cycle, delta)`, where an integral abstract cycle
+`N` has the sole persistent encoding `N/1`. `delta` orders causally related
+zero-registered-delay propagation inside one cycle and never increments a
+cycle metric. DFG-sim may therefore estimate logical latency and throughput in
+abstract cycles without claiming hardware-aware timing.
 
 The Dataflow-owned registered `OperationSchemaId` projection owns actor
 identity, closed semantic attributes, instance validity, and transition
@@ -219,9 +220,13 @@ witness proves that no future arrival, guaranteed release, or escape can
 restore progress. A long run or an empty event queue alone is insufficient.
 The execution terminal is exactly `Retired`, `Halted {finding,witness}`, or
 `StoppedByLimit`, with the Evidence mapping defined by Simulation Artifacts.
-Cycle count spans accepted Spatial Launch through visible graph retirement.
-Wall time, host parallelism, and license availability may interrupt execution
-but must not select a different formal result.
+DFG-sim fills the exact `SpatialProgressObservations` anchors. The DFG timing
+model's `AbstractCycle` is their reference domain. `Retired` includes visible
+graph retirement; a halt or retained stop may occur before or after it. Cycle
+count is derived from accepted Spatial Launch through visible graph retirement
+without `delta`, rather than stored in the execution. Wall time, host
+parallelism, and license availability may interrupt execution but must not
+select a different formal result.
 
 ## Observations
 
@@ -277,6 +282,7 @@ Stable anchor tests cover:
 * repeated-address `PerLane` atomic execution with one actor retirement;
 * at-most-once volatile MMIO observation through an exact external model;
 * deterministic `EventCoordinate` and within-frame trace order;
+* ordered progress anchors and required retirement presence;
 * trace observer noninterference;
 * exact terminal and Evidence outcome mapping, including deadlock witnesses;
 * explicit unsupported and deadlock outcomes; and

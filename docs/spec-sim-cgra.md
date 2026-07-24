@@ -86,11 +86,14 @@ The simulator derives disposable runtime queues, occupancy tables, calendars,
 and conflict caches from Fabric and Mapping. These are not persistent Mapping
 records. Mapping does not provide an absolute cycle-slot schedule.
 
-Single-clock SpatialCore sessions advance in nonnegative integer cycles. A
-multi-clock session chooses an explicit reference clock and represents every
-event in canonical `ExactRatio` reference cycles. The Evaluation base
-condition owns the exact relative period and phase selected for clocks that
-Fabric does not hard-fix. All timed events use
+Single-clock SpatialCore sessions advance in nonnegative integer cycles, but
+persist every cycle `N` as the canonical `ExactRatio` value `N/1`. A
+multi-clock session represents every event in exact reference cycles. The
+reference domain is derived mechanically from the exact Fabric, complete
+SpatialMapping, and mapped Spatial Launch boundary; it is not selected by the
+workload or a simulator-private default. The Evaluation base condition owns
+the exact relative period and phase selected for clocks that Fabric does not
+hard-fix. All timed events use
 `EventCoordinate = (reference_cycle, delta)`; host floating point and rounded
 nanoseconds cannot determine event order. `delta` expresses only causal
 combinational propagation inside one cycle. Equal coordinates use canonical
@@ -184,8 +187,12 @@ An invalid Mapping is never classified as dynamic deadlock.
 
 The execution terminal is exactly `Retired`, `Halted {finding,witness}`, or
 `StoppedByLimit`, with the Evidence mapping defined by Simulation Artifacts.
-Cycle count spans accepted Spatial Launch through visible graph retirement in
-the workload's declared completion clock domain.
+CGRA-sim fills the exact `SpatialProgressObservations` anchors in the derived
+reference domain. `Retired` includes visible graph retirement; a halt or
+retained stop may occur before or after it, including a halt during
+post-retirement self-reset. Cycle count is derived from accepted Spatial Launch
+through visible graph retirement without `delta`, rather than stored in the
+execution.
 
 ## Trace And Observations
 
@@ -237,6 +244,7 @@ Stable anchor tests cover:
 * repeated-address `PerLane` atomics and at-most-once volatile MMIO service;
 * rejection of incomplete external or weak-compare-exchange provider behavior;
 * exact single- and multi-clock event order and delta nonconvergence;
+* mechanically derived progress reference domain and ordered progress anchors;
 * trace observer noninterference;
 * ordered-token preservation under temporal interleaving;
 * deadlock versus invalid-Mapping classification; and

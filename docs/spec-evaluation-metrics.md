@@ -186,12 +186,12 @@ descriptor's precision and rounding contract. Original text and units remain
 in the raw detailed bundle.
 
 `ExactRatio` is not a third `MetricValue` form. It is used only by typed fields
-whose semantics are an exact dimensionless ratio, probability, or phase in
-reference cycles. Numerator and denominator are `uint64`; the denominator is
-nonzero; the pair is reduced by greatest common divisor; and zero has the sole
-encoding `0/1`. Arithmetic used for validation or normalization is checked.
-Absolute physical quantities remain `DecimalValue`, so Decimal and Ratio never
-compete to encode the same fact.
+whose semantics are an exact dimensionless ratio or probability, or an exact
+coordinate or phase in reference cycles. Numerator and denominator are `uint64`; the
+denominator is nonzero; the pair is reduced by greatest common divisor; and
+zero has the sole encoding `0/1`. Arithmetic used for validation or
+normalization is checked. Absolute physical quantities remain `DecimalValue`,
+so Decimal and Ratio never compete to encode the same fact.
 
 ## Evaluation Conditions
 
@@ -406,13 +406,16 @@ MetricKind, FormulaKind, or Evidence artifact.
 
 ## Persistence Boundary
 
-Metric, finding, scope, condition, Decimal, ExactRatio, query, and result
-encodings are reusable value schemas inside `evaluation.request.1.0` and
-`evaluation.evidence.1.0`. They do not create independent Metric, Finding,
-condition, query-set, or report artifact families. Canonical encoders use fixed
-field ordering and enum spellings, integer JSON tokens for integer values,
-Decimal components, and ExactRatio components, and strict rejection of unknown
-fields or noncanonical bytes.
+Metric, finding, scope, condition, Decimal, query, and result encodings are
+reusable value schemas inside `evaluation.request.1.0` and
+`evaluation.evidence.1.0`. `ExactRatio` is the same canonical scalar wire
+wherever an exact typed reference-cycle coordinate or phase is required,
+including `SimulationExecution`; consumers must not redefine it. None of these
+schemas creates an independent Metric, Finding, condition, query-set, or
+report artifact family. Canonical encoders use fixed field ordering and enum
+spellings, integer JSON tokens for integer values, Decimal components, and
+ExactRatio components, and strict rejection of unknown fields or noncanonical
+bytes.
 
 Raw tool reports, distributions, samples, logs, and trace chunks belong to
 immutable detailed bundles. A workload execution's typed trace manifest and
