@@ -202,15 +202,25 @@ serialize an interior loss as partial coverage. Frames are strictly ordered by
 `EventCoordinate`, cannot cross chunk boundaries, and use canonical
 within-frame event order.
 
-Firing is the atomic actor-transition commit, not readiness; publication and
-retirement may occur later. A firing record identifies the stable actor,
-execution-local occurrence, per-actor firing ordinal, consumed and produced
-logical endpoints, and relevant state transition. Raw payload inclusion is
-controlled by the invocation's capture request.
+DFG-sim supports the exact `Firing` and `Semantic` levels owned by Simulation
+Artifacts. `Firing` contains `ActorCommitted` and `ActorRetired`.
+`Semantic` strictly includes those events and adds every `TokenPublished` and
+`MemoryLinearized` event in the covered interval. Every semantic publication
+stores its exact one-token `CanonicalValueSequence`; payload omission is not a
+capture option. DFG-sim has no physical action source, so a
+`Microarchitecture` trace request is `Unsupported`.
 
-The stable actor field is the exact Dataflow-owned `ActorRef`. The occurrence
-and firing ordinal are execution-local coordinates and never become Dataflow
+Firing remains atomic actor-transition commit, not readiness. A transition
+ordinal is allocated when the complete semantic transition is formed and is
+also its firing ordinal once committed, allowing a retained execution to name
+a final pending transition without inventing another identity. Stable actor
+identity remains the Dataflow-owned `ActorRef`; invocation, transition, token,
+and memory-action occurrences are execution-local coordinates, never Dataflow
 entities, Mapping IDs, or physical Tags.
+
+Launch, graph-retirement, and terminal markers are projected from the
+execution's `SpatialProgressObservations`, not emitted as duplicate trace
+events.
 
 Successful termination requires all of the following:
 
@@ -296,6 +306,8 @@ Stable anchor tests cover:
 * repeated-address `PerLane` atomic execution with one actor retirement;
 * at-most-once volatile MMIO observation through an exact external model;
 * deterministic `EventCoordinate` and within-frame trace order;
+* exact firing-to-semantic level inclusion and mandatory semantic token values;
+* primitive memory-relation projection without copied derived relations;
 * ordered progress anchors and required retirement presence;
 * complete and partial actor-activity inventory semantics;
 * complete and launch-rooted prefix trace envelopes with no interior gaps;

@@ -158,12 +158,20 @@ events, duplicate elapsed cycles, or choose a clock domain. The exact DFG model
 or the exact Fabric, SpatialMapping, and mapped launch boundary own the
 reference-domain meaning.
 
-An actor firing is shown at its commit coordinate. Commit and retirement may
-occur at different coordinates. Each firing record resolves its canonical
-actor entity, execution-local invocation occurrence, per-actor firing ordinal,
-and EventCoordinate. A microarchitecture trace may additionally reference the
-exact Fabric resource and Mapping context responsible for route, buffer,
-resource, or stall activity.
+An actor firing is shown from `ActorCommitted`; `ActorRetired` may occur at a
+later coordinate. `TokenPublished` supplies the exact semantic token shown on
+an endpoint, and `MemoryLinearized` supplies only the primitive dynamic memory
+relations selected by the trace schema. Each record resolves through its
+execution-local graph invocation, actor transition, token, or memory-action
+occurrence to the exact Dataflow owner.
+
+A microarchitecture replay projects `PhysicalRequested`,
+`PhysicalGranted`, and `PhysicalRetired` onto the exact Fabric use pattern or
+selected traversal set named by the event. The request-to-grant interval is
+shown as stall time. Queue, occupancy, resource-state, Tag, and configuration
+views are derived from Fabric, Mapping, and this lifecycle; the viewer cannot
+consume a second event vocabulary or persist derived deltas as another
+authority.
 
 Replay is an activity projection, not a checkpoint or complete state-replay
 log. It must not copy simulator queues, token state, or logical memory into a

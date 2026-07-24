@@ -125,7 +125,8 @@ limits.
 ## Canonical Semantic Values
 
 One value representation is shared by fixed workload inputs, runtime value
-inputs, and runtime stream tokens:
+inputs, runtime stream tokens, functional observations, and semantic trace
+publications:
 
 ```text
 CanonicalValueSequence {
@@ -139,10 +140,13 @@ SemanticLane =
   | Undef
 ```
 
-The target type is recovered from the workload and is not serialized again.
-For a scalar, each token has one lane. For a fixed-ranked vector, each token
-has the product of its dimensions in canonical row-major lane order. The lane
-array length must therefore equal `token_count * lanes_per_token`.
+The target type is recovered from the owning workload slot, observable target,
+or trace token occurrence and is not serialized again. For a `none` token,
+each token has zero lanes. For a scalar, each token has one lane. For a
+fixed-ranked vector, each token has the product of its dimensions in canonical
+row-major lane order. The lane array length must therefore equal
+`token_count * lanes_per_token`; for `none`, that product is zero even when
+`token_count` is nonzero.
 
 A defined integer, index, or floating lane stores the exact fixed-width
 software-semantic bit representation. Variant tags and bits use canonical
@@ -310,11 +314,12 @@ request_ref
 ```
 
 The root field order, terminal record, Spatial functional observations,
-Spatial progress observations, activity summaries, and trace manifest/chunk
-envelope are closed below. The typed trace-event algebra remains the
-persistent-wire frontier. Until that algebra closes, a producer must not
-serialize private event records behind the canonical trace field or claim that
-the complete `loom.simulation_execution 1.0` wire is implemented.
+Spatial progress observations, activity summaries, trace manifest/chunk
+envelope, and typed trace-event algebra are closed below. Together they define
+the complete Spatial `loom.simulation_execution 1.0` wire. System execution
+records remain fail-closed until their Deployment-owned workload and progress
+references are finalized; a producer must not substitute simulator-private
+records for that missing closure.
 
 The closed terminal algebra is:
 
@@ -697,14 +702,16 @@ progress anchors, normalized metrics, or findings.
 
 ## Trace Manifest And Chunk Envelope
 
-The optional trace field has one closed envelope:
+The optional trace field has one closed envelope and one level type:
 
 ```text
+TraceCaptureLevel =
+    Firing
+  | Semantic
+  | Microarchitecture
+
 TraceManifest {
-  level:
-      Firing
-    | Semantic
-    | Microarchitecture
+  level: TraceCaptureLevel
   completeness:
       Complete
     | Prefix {
@@ -715,10 +722,7 @@ TraceManifest {
 }
 
 TraceChunk {
-  level:
-      Firing
-    | Semantic
-    | Microarchitecture
+  level: TraceCaptureLevel
   frames: nonempty array<TraceFrame>
 }
 
@@ -735,13 +739,14 @@ attempt has not satisfied that output requirement. This rule does not make
 capture policy part of the EvaluationRequest.
 
 `Complete` contains every event required by its level from
-`launch_accepted` through `terminal_observed`, including an event at either
-boundary. This definition is relative to the retained execution, so a
-`StoppedByLimit` execution may still own a complete trace through its terminal
-horizon. `Prefix` also begins at `launch_accepted`, is complete through
-`captured_through`, and stops there. Its coordinate must be no earlier than
-launch and strictly earlier than terminal. It may equal launch when no event
-has yet been retained.
+`launch_accepted` through `terminal_observed`, including every required event
+whose coordinate equals either boundary. It does not manufacture a boundary
+event when the selected level has none. This definition is relative to the
+retained execution, so a `StoppedByLimit` execution may still own a complete
+trace through its terminal horizon. `Prefix` also begins at
+`launch_accepted`, is complete through `captured_through`, and stops there.
+Its coordinate must be no earlier than launch and strictly earlier than
+terminal. It may equal launch when no event has yet been retained.
 
 Schema 1.0 admits neither late-start capture, arbitrary intervals, interior
 gaps, nor a set of coverage ranges. Losing an interior event or chunk
@@ -791,24 +796,274 @@ unsigned 32-bit `Absent | Present` discriminant.
 The referenced canonical chunk payloads and their inventory belong to the raw
 detailed bundle, not to `SimulationExecution` and not to a separate trace
 Artifact family. The manifest alone owns level, order, coverage, and
-completeness. The chunk envelope owns frame structure; the still-open typed
-event algebra will own event discriminants, payloads, level membership,
-canonical event keys, and cross-reference validation.
+completeness. The chunk envelope owns frame structure. The typed event algebra
+below alone owns event variants, payloads, level membership, canonical event
+keys, and cross-reference validation.
 
-Memory-consistency event payloads remain part of the typed event-algebra
-frontier. They must use closed canonical event variants, not simulator-private
-opaque records or extension maps. That closure decides which issue,
-linearization, reads-from, visibility or synchronization, and retirement
-observations belong to `Semantic`. Such observations remain projections of the
-exact execution; they are not a `ConsistencyExecution`, witness, relation, or
-simulator-specific Artifact family and are never required for semantic
-correctness.
+## Typed Trace Events
 
-Actor-bearing trace records use the Dataflow-owned `ActorRef`.
-Execution-local invocation occurrences and per-actor firing ordinals qualify a
-dynamic event but never create persistent Dataflow entities. The remaining
-typed event records remain owned by the `SimulationExecution persistent wire`
-design frontier; this rule fixes only their upstream identity owner.
+Trace events use a small closed lifecycle and relation algebra over references
+owned by Dataflow, Fabric, Mapping, and the exact execution. They do not use a
+generic `kind + properties` record, per-operation event classes, simulator
+extension maps, physical Tags as software identities, or a second persistent
+entity catalog.
+
+### Dynamic Occurrence References
+
+The execution-local reference families are:
+
+```text
+GraphInvocationOccurrenceRef =
+  invocation ordinal under the exact SpatialSimulationWorkload
+
+ActorTransitionOccurrenceRef =
+  (GraphInvocationOccurrenceRef, ActorRef, transition_ordinal)
+
+TokenOccurrenceRef =
+    GraphIngress(
+      GraphInvocationOccurrenceRef,
+      GraphIngressTokenRef,
+      producer_sequence_ordinal)
+  | ActorResult(
+      ActorTransitionOccurrenceRef,
+      result_ordinal,
+      producer_sequence_ordinal)
+
+MemoryActionOccurrenceRef =
+  (ActorTransitionOccurrenceRef,
+      ActorWide
+    | Lane(row_major_ordinal))
+
+PhysicalActionOccurrenceRef =
+  (Transition(ActorTransitionOccurrenceRef)
+   | Token(TokenOccurrenceRef),
+   local_action_ordinal)
+```
+
+All ordinals are unsigned 64-bit semantic values. A graph-invocation ordinal
+is dense in deterministic launch-acceptance order under the exact rooted
+Spatial workload. `ActorRef` must belong to the graph selected by that
+invocation. Transition ordinals are dense per
+`(GraphInvocationOccurrenceRef, ActorRef)` and are allocated when a complete
+semantic transition is first formed, before physical admission. A pending
+transition can therefore be referenced while stalled. An ordinal is never
+cancelled, reused, or reassigned; once its transition commits, it is also the
+actor's firing ordinal.
+
+Producer sequence ordinals are dense in the ordered Dataflow sequence emitted
+by one graph-ingress or actor-result endpoint. `result_ordinal` must name a
+token-plane result owned by the referenced actor. `ActorWide` names one
+scalar, plain-vector, `WholePayload`, or fence memory action. `Lane` is used
+only for an active `PerLane` memory action and names its canonical row-major
+software lane. Inactive lanes create no lane action. An all-zero masked vector
+memory transition creates no `MemoryActionOccurrenceRef` or
+`MemoryLinearized` event, although its actor commit, publication, and
+retirement lifecycle remains visible at the selected levels.
+
+`local_action_ordinal` is dense from zero in the canonical physical-action
+order mechanically derived for one transition or token by the exact Fabric
+and complete SpatialMapping. It is not a resource ID, route index, Physical
+Tag, instruction slot, or simulator container position. These occurrence
+references are local to one `SimulationExecution`; none is a Dataflow entity,
+Mapping entity, or independently referenceable Artifact object.
+
+### Event Algebra
+
+The closed event union is:
+
+```text
+TraceEvent =
+    ActorCommitted(ActorTransitionOccurrenceRef)
+  | ActorRetired(ActorTransitionOccurrenceRef)
+  | TokenPublished(
+      TokenOccurrenceRef,
+      value: CanonicalValueSequence)
+  | MemoryLinearized(
+      MemoryActionOccurrenceRef,
+      reads_from: optional<MemoryVersionRef>,
+      modification_predecessor: optional<MemoryVersionRef>,
+      sequentially_consistent_predecessor:
+        optional<MemoryActionOccurrenceRef>)
+  | PhysicalRequested(
+      PhysicalActionOccurrenceRef,
+      target: PhysicalActionTarget)
+  | PhysicalGranted(PhysicalActionOccurrenceRef)
+  | PhysicalRetired(PhysicalActionOccurrenceRef)
+
+MemoryVersionRef =
+    Initial
+  | WrittenBy(MemoryActionOccurrenceRef)
+
+PhysicalActionTarget =
+    Use(FabricUsePatternRef)
+  | Transfer(
+      traversals: nonempty canonical set<FabricPhysicalTraversalRef>,
+      use_pattern: optional<FabricUsePatternRef>)
+```
+
+Every `TokenPublished.value` contains exactly one semantic token. Its type is
+recovered from the referenced endpoint and is not repeated. A `none` token has
+`token_count = 1` and an empty lane array. Defined bits, poison, undef, fixed
+vector lane order, and width validation use the sole `CanonicalValueSequence`
+contract above. Semantic capture never has a `capture_values` switch.
+These occurrence values and the execution's terminal functional observations
+have one owner, `SimulationExecution`, and must agree wherever their horizons
+overlap. Graph-ingress publications likewise agree with the exact workload and
+runtime input. The trace supplies occurrence history; it does not redefine the
+terminal value or stream projection.
+
+`MemoryLinearized` records only primitive dynamic relations that cannot be
+recovered from program order and the exact actor contract:
+
+* an atomic load has `reads_from`;
+* an atomic store has `modification_predecessor`;
+* an atomic RMW and a successful compare-exchange have both;
+* a failed compare-exchange has only `reads_from`;
+* plain accesses and fences have neither object relation; and
+* a `seq_cst` operation or fence names its predecessor in the exact
+  sequentially-consistent order when one exists.
+
+`Initial` is relative to the exact dynamic atomic object of the containing
+action. `WrittenBy` must name an action that writes that same object. A
+`PerLane` actor emits one relation record for each active lane; scalar,
+plain-vector, `WholePayload`, and fence actors use `ActorWide`. The actor
+contract and outcome determine which optional fields are required or
+forbidden. Modification order, reads-from, and the sequentially-consistent
+predecessor are persistent primitive observations. Synchronizes-with,
+happens-before, release visibility, and acquire visibility are derived
+mechanically and must not be copied into the trace.
+
+`PhysicalActionTarget::Use` names one Fabric-owned atomic use pattern.
+`Transfer` names the exact selected directed traversal set and, when the
+Fabric contract groups those traversals atomically, its use pattern. A direct
+contention-free point transfer needs only its traversal. A temporal-switch
+transfer carries its traversal and use pattern. A broadcast carries one
+atomic use pattern and all selected branch traversals. A compute or memory
+resource action uses `Use`. Legality and grouping derive from the exact Fabric
+and complete SpatialMapping; a producer cannot merge unrelated actions or
+invent another resource grouping.
+
+There is no independent stall, queue-change, occupancy, state-transition,
+Tag, configuration, or blocker event. The interval from `PhysicalRequested`
+to `PhysicalGranted` is the exact stall interval; equal coordinates mean no
+stall. The referenced Fabric use-pattern contract and exact execution derive
+resource-state and queue effects. `PhysicalRetired` closes the action. A
+prefix, `Halted`, or retained `StoppedByLimit` execution may end with a request
+or grant still open, but a `Retired` execution cannot retain an unretired
+required physical action.
+
+### Capture Levels
+
+Each variant has one fixed minimum level:
+
+```text
+Firing:
+  ActorCommitted
+  ActorRetired
+
+Semantic:
+  every Firing event
+  TokenPublished
+  MemoryLinearized
+
+Microarchitecture:
+  every Semantic event
+  PhysicalRequested
+  PhysicalGranted
+  PhysicalRetired
+```
+
+A retained level contains every covered event whose minimum level is no
+greater than that level. There is no event-local level, filter DSL, or
+independent flag combination. DFG-sim supports `Firing` and `Semantic`; a
+request for `Microarchitecture` is `Unsupported`. CGRA-sim supports all three
+when the exact `{Dataflow, Fabric, complete SpatialMapping}` closure provides
+the required physical references. System and mapped-RTL trace production
+remain fail-closed until their exact Deployment and implementation correlation
+references are finalized.
+
+Launch, graph-retirement, and terminal markers are not `TraceEvent` variants.
+They are mechanically projected from `SpatialProgressObservations`. A viewer
+may render those markers together with a firing replay, but neither producer
+nor viewer serializes duplicate boundary events.
+
+### Canonical Wire And Validation
+
+The seven `TraceEvent` variants receive zero-based unsigned 32-bit
+discriminants in the declaration order above. Every event record encodes its
+discriminant, primary occurrence reference, and remaining payload fields in
+declaration order. Nested unions and optionals use zero-based unsigned 32-bit
+discriminants; ordinals use unsigned 64-bit big-endian values; nested
+persistent references use their owner-defined canonical bytes.
+
+The canonical event key is:
+
+```text
+(event discriminant, canonical primary occurrence reference)
+```
+
+The primary reference is the transition for actor lifecycle events, token for
+publication, memory action for linearization, and physical action for physical
+lifecycle events. Observational payload is excluded. Events in one frame sort
+lexicographically by this key, and a duplicate key is invalid. Distinct
+physical lifecycle phases remain distinct because their discriminants differ.
+This order is serialization only; it does not define causality, arbitration,
+memory order, or physical progress.
+
+Finalization validates at least:
+
+* every occurrence belongs to the exact Request, Spatial workload, rooted
+  graph invocation, and execution horizon;
+* transition and producer-sequence ordinals are dense, deterministic, and
+  consistent with actor commit, retirement, and ordered-token publication;
+* `ActorCommitted` precedes or equals `ActorRetired`, and every published
+  result or memory action belongs to the named transition; a complete Firing
+  projection of a `Retired` execution contains one retirement for every
+  committed transition;
+* token result ordinal, type, semantic width, lane count, and one-token
+  cardinality are exact;
+* memory relation fields match the actor kind, outcome, granularity, exact
+  dynamic atomic object, and valid acyclic or total order required by the
+  software contract;
+* physical targets belong to the exact Fabric and selected complete
+  SpatialMapping, transfer traversals belong to the selected route, and any
+  use pattern admits the claimed atomic grouping;
+* each physical action follows request, grant, retirement order without a
+  missing request or duplicate lifecycle event;
+* a higher capture level contains the exact lower-level projection over the
+  same covered interval;
+* token publications agree with input and functional-observation projections,
+  and any activity summary whose complete window is covered by a sufficient
+  trace level agrees with the aggregate mechanically derived from that trace;
+  and
+* no string key, property map, opaque extension payload, event-local
+  coordinate, simulator-private ID, or copied owner fact appears.
+
+For example, a mapped vector add may retain:
+
+```text
+(5,0) PhysicalRequested(action7, Use(vector_add_pattern))
+(7,0) PhysicalGranted(action7)
+(7,1) ActorCommitted(add_transition3)
+(8,0) TokenPublished(add_result9, one vector<4xf32> token)
+(8,0) ActorRetired(add_transition3)
+(8,0) PhysicalRetired(action7)
+```
+
+The two-cycle stall is derived from request and grant. For release/acquire,
+the trace can retain:
+
+```text
+MemoryLinearized(
+  store_action,
+  modification_predecessor = Initial)
+MemoryLinearized(
+  load_action,
+  reads_from = WrittenBy(store_action))
+```
+
+The exact contracts, program order, and reads-from relation derive
+synchronizes-with and happens-before; the trace does not serialize them.
 
 Trace capture is a nonsemantic invocation binding. Enabling it may change
 execution cost and retained raw material, but must not change scheduling,
@@ -868,8 +1123,14 @@ Trace-envelope anchors cover absent versus present capture, complete and
 prefix coverage, empty-event traces, strict frame/chunk order, no split frame,
 same-Request bundle coupling, blob-digest verification, rejection of
 interior gaps and duplicate chunk refs, and capture noninterference. One
-complete multi-chunk trace and one prefix are sufficient. Typed events add
-their own anchors only when that final persistent record closes.
+complete multi-chunk trace and one prefix are sufficient.
+
+Typed-event anchors cover one actor/token publication, one atomic relation,
+one buffered CGRA transfer with a nonzero request-to-grant interval, occurrence
+ownership and dense ordinals, lifecycle ordering, level inclusion,
+functional/activity projection agreement, and cross-reference rejection.
+Tests do not build a Cartesian product over event kinds, levels, vector shapes,
+resource kinds, memory orderings, compression formats, or chunk boundaries.
 
 Tests do not pin report layouts, simulator class hierarchies, broad workload
 matrices, every finding kind, every witness payload, every partial-output

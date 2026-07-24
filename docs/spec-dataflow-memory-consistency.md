@@ -334,6 +334,42 @@ Coherence is likewise not a Dataflow actor attribute. Fabric owns consistency
 and coherence capability, Mapping binds the software requirement to it, and
 the selected implementation or simulator executes its dynamic state.
 
+## Persistent Simulation Projection
+
+The typed trace schema in `docs/spec-simulation-artifacts.md` owns the
+persistent `MemoryLinearized` record. This document owns the semantic validity
+of its fields. The record retains only primitive dynamic choices that cannot
+be recovered from the exact actor contract and program order:
+
+```text
+reads_from
+modification_predecessor
+sequentially_consistent_predecessor
+```
+
+An atomic load records `reads_from`; an atomic store records
+`modification_predecessor`; an RMW or successful compare-exchange records
+both; a failed compare-exchange records only `reads_from`. A `seq_cst`
+operation or fence records the preceding action in the exact
+sequentially-consistent order when one exists. Plain actions and non-`seq_cst`
+fences carry no relation field.
+
+The initial version is relative to the addressed action's exact
+`AtomicObjectKey`. A written version must name a memory-action occurrence that
+writes the same object. Scalar, plain-vector, `WholePayload`, and fence actors
+use one actor-wide occurrence. `PerLane` uses one occurrence for each active
+row-major lane; inactive lanes produce no lane action. An all-zero masked
+vector memory transition produces no `MemoryLinearized` record, while its
+actor lifecycle and zero-filled load result or store completion remain
+observable through the ordinary actor and token events.
+
+Synchronizes-with, happens-before, release visibility, acquire visibility,
+and consistency-engine cache state are derived from these primitive
+observations and the exact contracts. They are not serialized. Transient
+implementation names such as an atomic-version ID, atomic-read ID, sync-effect
+ID, frontier-cache entry, provider transaction, or physical beat cannot become
+persistent memory identities.
+
 ## Derived Views And Downstream Ownership
 
 `CanonicalMemoryAccessView` remains a nonpersistent projection of the exact

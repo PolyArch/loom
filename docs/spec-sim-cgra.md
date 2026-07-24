@@ -197,17 +197,33 @@ execution.
 ## Trace And Observations
 
 The trace uses increasing `EventCoordinate` frames and canonical within-frame
-order. Firing is actor-transition commit; result publication and retirement
-may be later events. It can identify actor firings, selected physical
-occurrences and traversals, resource grants, stalls, queue changes, logical
-memory requests, implementation lane or beat transactions, and retirements.
-Child memory transactions remain correlated with their one parent firing and
-do not appear as additional actor firings. `SimulationExecution` owns the typed
-manifest, level, ordering, and complete or launch-rooted prefix coverage. Its
-one exact same-Request raw detailed bundle owns the canonical chunk bytes and
-their Common `BlobDigest` inventory. Frames cannot split across chunks, and an
-interior event or chunk loss invalidates the canonical trace.
-Neither creates a separate `SimulationTrace` artifact.
+order. CGRA-sim supports all three levels owned by Simulation Artifacts.
+`Firing` records actor commit and retirement. `Semantic` strictly includes
+firing and records every exact token publication and memory linearization.
+`Microarchitecture` strictly includes semantic and records the request, grant,
+and retirement lifecycle of each selected physical action.
+
+A physical action names either one Fabric use pattern or the exact selected
+traversal set with an optional Fabric-owned atomic use pattern. Compute,
+memory, temporal-switch, broadcast, buffered-route, and direct point-transfer
+behavior therefore use the same closed algebra. The request-to-grant interval
+is the stall; equal coordinates mean no stall. Queue changes, occupancy,
+resource-state transitions, Tags, configurations, and blocker strings are
+derived from the exact Fabric contract, Mapping, and lifecycle and are not
+duplicated as trace events.
+
+Implementation lane or beat actions remain deterministic child physical
+actions of one canonical actor transition and do not appear as additional
+actor firings. `SimulationExecution` owns the typed manifest, level, ordering,
+and complete or launch-rooted prefix coverage. Its one exact same-Request raw
+detailed bundle owns the canonical chunk bytes and their Common `BlobDigest`
+inventory. Frames cannot split across chunks, and an interior event or chunk
+loss invalidates the canonical trace. Neither creates a separate
+`SimulationTrace` artifact.
+
+Launch, graph-retirement, and terminal markers are projected from
+`SpatialProgressObservations`; CGRA-sim does not serialize duplicate boundary
+events.
 
 Trace capture is observational. Enabling or changing it cannot affect grants,
 event scheduling, outputs, terminal form, cycle count, metrics, or findings.
@@ -263,6 +279,8 @@ Stable anchor tests cover:
 * complete and partial actor/Fabric activity inventory semantics and Fabric
   capacity bounds;
 * complete and launch-rooted prefix trace envelopes with no interior gaps;
+* strict firing, semantic, and microarchitecture level inclusion;
+* physical request, grant, and retirement ordering with stall derivation;
 * trace observer noninterference;
 * ordered-token preservation under temporal interleaving;
 * deadlock versus invalid-Mapping classification; and
