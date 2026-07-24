@@ -43,26 +43,51 @@
 namespace loom {
 namespace lowering {
 
-bool isUnloweredGraphMemoryActor(::mlir::Operation *op) {
-  return ::llvm::isa<::dataflow::FenceOp, ::dataflow::AtomicRmwOp,
-                     ::dataflow::CmpXchgOp>(op);
+namespace {
+
+// The pure address leaves `findKnownRoot`, `canonicalizeRoot` and
+// `isMemoryCapabilityCapture` walk to resolve a memory root. Lowering keeps
+// them as ordinary frontier values rather than rewriting them, so they carry
+// no completion event of their own.
+bool isGraphMemoryAddressLeaf(::mlir::Operation *op) {
+  return ::llvm::isa<::mlir::UnrealizedConversionCastOp, ::mlir::memref::CastOp,
+                     ::mlir::memref::GetGlobalOp, ::mlir::LLVM::AddressOfOp,
+                     ::mlir::LLVM::GEPOp>(op);
+}
+
+} // namespace
+
+GraphLeafLowering classifyGraphLoweringLeaf(::mlir::Operation *op) {
+  // Movability is tested first because it is what the frontier fallback needs.
+  // A leaf with an in-place rewrite can still require the move afterwards:
+  // `lowerOperations` retargets a dataflow.constant's control token and then
+  // falls through to hoist it. The move is sound only with no region to
+  // flatten, no effect to order, and eligibility under the graph contract as a
+  // registered canonical actor or a pure address leaf the memory root
+  // resolution walks.
+  if (op->getNumRegions() == 0 && ::mlir::isPure(op) &&
+      (::dataflow::isCanonicalDataflowActor(op) ||
+       isGraphMemoryAddressLeaf(op)))
+    return GraphLeafLowering::Movable;
+  // The effectful leaves that never reach the fallback because a dedicated
+  // action rewrites or consumes them in place.
+  if (::llvm::isa<::mlir::memref::LoadOp, ::mlir::memref::StoreOp,
+                  ::dataflow::LoadOp, ::dataflow::StoreOp,
+                  ::dataflow::ChannelSendOp, ::dataflow::ChannelReceiveOp>(op))
+    return GraphLeafLowering::Implemented;
+  // Graph normalization rewrites these into dataflow memory actors before
+  // region lowering, and residual ones fail the normalized-effect check.
+  if (::llvm::isa<::mlir::LLVM::LoadOp, ::mlir::LLVM::StoreOp,
+                  ::mlir::LLVM::MemcpyOp, ::mlir::LLVM::MemsetOp>(op))
+    return GraphLeafLowering::Implemented;
+  // Nothing implements this leaf. An effectful actor such as dataflow.fence,
+  // atomic_rmw or cmpxchg lands here: it has no rewrite above and cannot be
+  // moved without dropping the ordering semantics lowering does not reproduce.
+  return GraphLeafLowering::Unsupported;
 }
 
 bool isSupportedGraphLoweringLeaf(::mlir::Operation *op) {
-  // A canonical Dataflow actor is a supported leaf only when lowering
-  // implements its transformation (dataflow.load / dataflow.store) or it is a
-  // pure actor movable under the graph contract. The effectful memory actors
-  // that have no graph lowering are rejected here so preflight fails cleanly
-  // rather than admitting an operation lowering cannot move.
-  if (::dataflow::isCanonicalDataflowActor(op))
-    return !isUnloweredGraphMemoryActor(op);
-  return ::llvm::isa<
-      ::mlir::UnrealizedConversionCastOp, ::mlir::memref::AllocOp,
-      ::mlir::memref::CastOp, ::mlir::memref::GetGlobalOp,
-      ::mlir::memref::LoadOp, ::mlir::memref::StoreOp,
-      ::mlir::LLVM::AddressOfOp, ::mlir::LLVM::GEPOp, ::mlir::LLVM::LoadOp,
-      ::mlir::LLVM::StoreOp, ::mlir::LLVM::MemcpyOp, ::mlir::LLVM::MemsetOp>(
-      op);
+  return classifyGraphLoweringLeaf(op) != GraphLeafLowering::Unsupported;
 }
 
 } // namespace lowering
@@ -245,12 +270,6 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
                     "must be normalized before graph-region lowering");
       return ::mlir::WalkResult::interrupt();
     }
-    if (::loom::lowering::isUnloweredGraphMemoryActor(op)) {
-      op->emitError() << "loom-lower-graph-memory: canonical memory actor '"
-                      << op->getName().getStringRef()
-                      << "' has no graph-region lowering";
-      return ::mlir::WalkResult::interrupt();
-    }
     bool modeled =
         ::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::ForOp, ::mlir::scf::WhileOp,
                     ::mlir::scf::IndexSwitchOp, ::mlir::scf::ParallelOp,
@@ -261,6 +280,14 @@ void replaceUsesInside(::mlir::Value from, ::mlir::Value to,
     if (::llvm::isa<::dataflow::ChannelSendOp, ::dataflow::ChannelReceiveOp>(
             op))
       modeled = boundary.isTransient();
+    // A registered actor that no capability covers is reported for what it is,
+    // so an effectful memory actor is not mistaken for an unregistered one.
+    if (!modeled && ::dataflow::isCanonicalDataflowActor(op)) {
+      op->emitError() << "loom-lower-graph-memory: canonical Dataflow actor '"
+                      << op->getName().getStringRef()
+                      << "' has no graph-region lowering";
+      return ::mlir::WalkResult::interrupt();
+    }
     if (!modeled && (op->getNumRegions() != 0 || op->getNumSuccessors() != 0)) {
       op->emitError()
           << "loom-lower-graph-memory: effectful or unmodeled graph "
@@ -1053,10 +1080,11 @@ private:
         constant.getCtrlMutable().assign(execution);
 
       if (op->getBlock() != &entry) {
-        // Preflight admits only movable leaves for the frontier, but a
-        // malformed or unsupported operation that slips through must fail
-        // cleanly here rather than abort lowering.
-        if (op->getNumRegions() != 0 || !::mlir::isPure(op)) {
+        // Preflight already proved every remaining leaf movable. This repeats
+        // the same classification as a defensive boundary so malformed input
+        // fails cleanly instead of aborting lowering.
+        if (::loom::lowering::classifyGraphLoweringLeaf(op) !=
+            ::loom::lowering::GraphLeafLowering::Movable) {
           op->emitError()
               << "loom-lower-graph-memory: operation '"
               << op->getName().getStringRef()

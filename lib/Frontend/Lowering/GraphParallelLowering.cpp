@@ -127,8 +127,13 @@ struct ParallelMemoryAccess {
   bool atomic;
 };
 
+// A canonical actor that graph-region lowering cannot lower or move has no
+// per-lane completion event either. This queries the shared leaf
+// classification instead of keeping its own notion of what is unsupported.
 bool hasUnsupportedParallelCompletion(::mlir::Operation *op) {
-  return ::loom::lowering::isUnloweredGraphMemoryActor(op);
+  return ::dataflow::isCanonicalDataflowActor(op) &&
+         ::loom::lowering::classifyGraphLoweringLeaf(op) ==
+             ::loom::lowering::GraphLeafLowering::Unsupported;
 }
 
 std::optional<ParallelMemoryAccess>

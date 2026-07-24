@@ -3,12 +3,12 @@
 // RUN: not loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/fence.mlir 2>&1 | FileCheck %s --check-prefix=FENCE
 // RUN: not loom-raise-opt --loom-lower-graph-memory --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t.dir/atomic.mlir 2>&1 | FileCheck %s --check-prefix=ATOMIC
 
-// An effectful canonical memory actor with no graph-region lowering is
-// rejected during preflight inside a serial scf container in the same shape as
-// the parallel path, instead of aborting lowering. One structured container
+// An effectful canonical actor that no lowering capability covers is rejected
+// during preflight inside a serial scf container in the same shape as the
+// parallel path, instead of aborting lowering. One structured container
 // exercises the shared classification for every effectful actor kind.
 
-// FENCE: error: loom-lower-graph-memory: canonical memory actor 'dataflow.fence' has no graph-region lowering
+// FENCE: error: loom-lower-graph-memory: canonical Dataflow actor 'dataflow.fence' has no graph-region lowering
 // FENCE-LABEL: dataflow.graph private @serial_fence
 // FENCE: scf.if
 // FENCE: dataflow.fence
@@ -26,7 +26,7 @@ dataflow.graph private @serial_fence(%start: none, %cond: i1) -> ()
   dataflow.graph.return %start : none
 }
 
-// ATOMIC: error: loom-lower-graph-memory: canonical memory actor 'dataflow.atomic_rmw' has no graph-region lowering
+// ATOMIC: error: loom-lower-graph-memory: canonical Dataflow actor 'dataflow.atomic_rmw' has no graph-region lowering
 // ATOMIC-LABEL: dataflow.graph private @serial_atomic
 // ATOMIC: scf.if
 // ATOMIC: dataflow.atomic_rmw

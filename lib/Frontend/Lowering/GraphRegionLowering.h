@@ -9,13 +9,32 @@
 namespace loom {
 namespace lowering {
 
-// The canonical Dataflow memory actors that graph-region lowering has no
-// transformation for: `dataflow.fence`, `dataflow.atomic_rmw`, and
-// `dataflow.cmpxchg`. This is the single authority both the serial classifier
-// (`isSupportedGraphLoweringLeaf`) and the parallel completion check consult,
-// so every serial and parallel nesting shape rejects these effectful actors
-// during preflight instead of aborting inside lowering.
-bool isUnloweredGraphMemoryActor(::mlir::Operation *op);
+// What graph-region lowering can do with one leaf operation. The cases name
+// the capabilities `GraphRegionLowerer::lowerOperations` actually implements,
+// so a leaf is supported because some capability covers it, never because it
+// escaped an exclusion list. This is the one authority that preflight, the
+// lowering fallback, and the parallel completion check all consult.
+enum class GraphLeafLowering {
+  // Regionless and pure, and eligible under the graph contract as a registered
+  // canonical Dataflow actor or as one of the pure address leaves the memory
+  // root resolution walks. Hoisting it into the graph frontier is a sound
+  // action, so this also covers a leaf whose in-place rewrite still leaves the
+  // move to the frontier fallback.
+  Movable,
+  // An effectful leaf a dedicated action rewrites or consumes in place, so it
+  // never reaches the frontier fallback: the memref and dataflow accesses and
+  // the stream endpoints `lowerOperations` handles, plus the LLVM memory
+  // operations graph normalization turns into dataflow memory actors before
+  // region lowering runs, with `checkResidualMemoryEffects` failing closed on
+  // any it could not convert.
+  Implemented,
+  // No implemented action. An effectful canonical actor with neither a rewrite
+  // nor a proof of movability lands here, so lowering never has to relocate an
+  // operation whose semantics it cannot reproduce.
+  Unsupported,
+};
+
+GraphLeafLowering classifyGraphLoweringLeaf(::mlir::Operation *op);
 
 bool isSupportedGraphLoweringLeaf(::mlir::Operation *op);
 
