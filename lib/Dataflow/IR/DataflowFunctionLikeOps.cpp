@@ -250,6 +250,21 @@ private:
         cacheUnknown(op);
         return;
       }
+      // Addition that breaks the no-overflow promise of its nsw/nuw flags
+      // is poison, and poison is no extent at all. Unflagged addition wraps
+      // and still folds.
+      arith::IntegerOverflowFlags flags =
+          cast<arith::AddIOp>(op).getOverflowFlags();
+      bool poison = false;
+      if (arith::bitEnumContainsAny(flags, arith::IntegerOverflowFlags::nsw))
+        (void)input.getValue().sadd_ov(rhs.getValue(), poison);
+      if (!poison &&
+          arith::bitEnumContainsAny(flags, arith::IntegerOverflowFlags::nuw))
+        (void)input.getValue().uadd_ov(rhs.getValue(), poison);
+      if (poison) {
+        cacheUnknown(op);
+        return;
+      }
       constants.try_emplace(
           op->getResult(0),
           IntegerAttr::get(resultType, input.getValue() + rhs.getValue()));
@@ -268,6 +283,22 @@ private:
   DenseSet<Value> active;
 };
 
+// Segmented operand accessors index the operand list through the raw
+// segment property, and the whole-module extent analysis below runs from a
+// thread definition's verifier, before a launch's own ODS invariants hold.
+// This is a readability predicate for that raw property, not a second
+// verifier: it reports nothing, and a launch it rejects is left to its own
+// ODS verification, which stays the only authority on segmentation.
+static bool hasReadableOperandSegments(ThreadLaunchOp launch) {
+  int64_t total = 0;
+  for (int32_t size : launch.getProperties().operandSegmentSizes) {
+    if (size < 0)
+      return false;
+    total += size;
+  }
+  return total == static_cast<int64_t>(launch->getNumOperands());
+}
+
 static LogicalResult verifyThreadLaunchExtents(ModuleOp module) {
   ExtentConstantEvaluator evaluator;
   WalkResult result =
@@ -277,6 +308,10 @@ static LogicalResult verifyThreadLaunchExtents(ModuleOp module) {
 
         auto launch = dyn_cast<ThreadLaunchOp>(op);
         if (!launch)
+          return WalkResult::advance();
+        // A launch whose segmentation cannot be read safely is diagnosed by
+        // its own verification; this analysis just leaves it alone.
+        if (!hasReadableOperandSegments(launch))
           return WalkResult::advance();
         for (auto [index, extent] :
              llvm::enumerate(launch.getGridUpperBounds())) {

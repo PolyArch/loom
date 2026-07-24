@@ -75,6 +75,38 @@ func.func @launch_malformed_extent() {
 }
 
 // -----
+// An overflowing nsw/nuw addition is poison, so it yields no static extent,
+// while a flagged addition that stays in range still folds.
+dataflow.thread private @t_overflow_extent() ctrl (%ctrl: none)
+    iv (%i: index) {
+  dataflow.thread.yield
+}
+func.func @launch_signed_overflow_extent() {
+  %max = arith.constant 9223372036854775807 : index
+  %one = arith.constant 1 : index
+  %extent = arith.addi %max, %one overflow<nsw> : index
+  %token = dataflow.thread.launch @t_overflow_extent() grid(%extent)
+      : () -> !dataflow.thread_token
+  return
+}
+func.func @launch_unsigned_overflow_extent() {
+  %minus_one = arith.constant -1 : index
+  %extent = arith.addi %minus_one, %minus_one overflow<nuw> : index
+  %token = dataflow.thread.launch @t_overflow_extent() grid(%extent)
+      : () -> !dataflow.thread_token
+  return
+}
+func.func @launch_flagged_in_range_extent() {
+  %minus_two = arith.constant -2 : index
+  %one = arith.constant 1 : index
+  %extent = arith.addi %minus_two, %one overflow<nsw> : index
+  // expected-error @+1 {{grid upper bound #0 must be nonnegative}}
+  %token = dataflow.thread.launch @t_overflow_extent() grid(%extent)
+      : () -> !dataflow.thread_token
+  return
+}
+
+// -----
 // Dynamic launch extents remain statically admissible.
 dataflow.thread private @t_dynamic_extent() ctrl (%ctrl: none) iv (%i: index) {
   dataflow.thread.yield
