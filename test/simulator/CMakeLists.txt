@@ -65,3 +65,20 @@ target_link_libraries(loom-simulator-operation-schema-projection-test PRIVATE
   MLIRIR
   LLVMSupport
 )
+
+add_executable(loom-simulator-simulation-wire-test
+  SimulationWireTest.cpp
+)
+
+target_link_libraries(loom-simulator-simulation-wire-test PRIVATE
+  LoomCommon
+  LoomSimulator
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRFuncDialect
+  MLIRIR
+  MLIRMemRefDialect
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)

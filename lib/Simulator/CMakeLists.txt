@@ -11,6 +11,10 @@ add_mlir_library(LoomSimulator
   MemorySynchronization.cpp
   OperationCostModel.cpp
   OperationSemantics.cpp
+  SimulationAdmission.cpp
+  SimulationRuntimeInput.cpp
+  SimulationWireSupport.cpp
+  SimulationWorkload.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Simulator
