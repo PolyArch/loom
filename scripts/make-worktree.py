@@ -680,11 +680,14 @@ class SharedProductLock:
     at a time, so a queued writer blocks every later reader while readers
     that already hold the product lock still coexist.
 
-    Losing a participant releases its ticket offset, so a crashed or
-    timed-out one is skipped rather than waited on. Registering rewrites the
+    Losing a participant releases its ticket offset, whether it crashed,
+    timed out, or simply took the product lock and left, so every departure
+    is reclaimable the same way. Entering the residency mutex rewrites the
     table as the live tickets alone, so residency stays proportional to the
     participants still acquiring, never to the peak concurrency reached or
-    the acquisitions performed.
+    the acquisitions performed. A participant reaches the product lock only
+    through a residency pass in which no earlier ticket is left, so the last
+    one out leaves the header and its own record behind.
     """
 
     def __init__(
@@ -835,9 +838,28 @@ class SharedProductLock:
             self._turnstile_lock(fcntl.LOCK_UN, ticket)
         return live
 
+    def _compact(self, watermark: int, tickets: list[int]) -> None:
+        """Rewrite the table as the watermark followed by `tickets`.
+
+        A record's position carries no meaning, so the table is written in
+        ticket order and truncated to exactly the tickets given.
+        """
+        self._write_record(0, watermark)
+        for slot, entry in enumerate(tickets, start=1):
+            self._write_record(slot, entry)
+        os.ftruncate(
+            self.turnstile_fd,
+            (len(tickets) + 1) * _TURNSTILE_RECORD_SIZE,
+        )
+
     @contextmanager
     def _residency(self, deadline: float):
-        """Yield the records and live tickets under the residency mutex."""
+        """Yield the ticket watermark and live tickets under the mutex.
+
+        Entering reclaims every record whose owner has stopped acquiring,
+        so what a participant hands to the next one is the participants
+        still there rather than the peak the turnstile once carried.
+        """
         self._acquire(
             self.turnstile_fd,
             fcntl.LOCK_EX,
@@ -848,42 +870,31 @@ class SharedProductLock:
         )
         try:
             records = self._read_records()
-            yield records, self._live_tickets(records)
+            watermark = records[0] if records else 1
+            live = self._live_tickets(records)
+            if live != records[1:]:
+                self._compact(watermark, live)
+            yield watermark, live
         finally:
             self._turnstile_lock(fcntl.LOCK_UN, _TURNSTILE_MUTEX_OFFSET)
 
     def _register(self, deadline: float) -> None:
-        """Take the next ticket and rewrite the table as the live tickets.
-
-        A record's position carries no meaning, so the table is rewritten in
-        ticket order and truncated to exactly the participants still
-        acquiring. Whatever the peak concurrency was, nothing a later
-        acquisition must scan outlives the participants themselves.
-        """
-        with self._residency(deadline) as (records, live):
+        """Take the next ticket and add it to the live tickets."""
+        with self._residency(deadline) as (watermark, live):
             # Above every live ticket, and never below the recorded
             # watermark, so arrival order survives a quiet turnstile.
-            ticket = max(
-                records[0] if records else 1,
-                max(live, default=0) + 1,
-            )
+            ticket = max(watermark, max(live, default=0) + 1)
             self._turnstile_lock(fcntl.LOCK_EX | fcntl.LOCK_NB, ticket)
             self.ticket = ticket
-            tickets = sorted(live) + [ticket]
-            self._write_record(0, ticket + 1)
-            for slot, entry in enumerate(tickets, start=1):
-                self._write_record(slot, entry)
-            os.ftruncate(
-                self.turnstile_fd,
-                (len(tickets) + 1) * _TURNSTILE_RECORD_SIZE,
-            )
+            self._compact(ticket + 1, sorted(live) + [ticket])
 
     def _await_predecessors(self, deadline: float) -> None:
         """Block until no participant holds an earlier ticket.
 
         Tickets are never reused, so each wait retires one candidate for
         good and the loop runs at most once per participant that was
-        already acquiring when this one registered.
+        already acquiring when this one registered. The pass that finds no
+        predecessor left is also the one that reclaims their records.
         """
         while True:
             with self._residency(deadline) as (_, live):

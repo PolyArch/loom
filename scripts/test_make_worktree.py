@@ -1241,6 +1241,66 @@ class MakeWorktreeTest(unittest.TestCase):
             issued = int(paths.llvm_lock_turnstile.read_bytes()[:16], 16)
             self.assertGreater(issued, acquisitions)
 
+    def test_drained_cohort_leaves_constant_turnstile_state(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            paths = build_paths(Path(td))
+            record_size = self.module._TURNSTILE_RECORD_SIZE
+            context = multiprocessing.get_context("fork")
+            held = context.Event()
+            release = context.Event()
+            cohort = 32
+
+            def hold_writer():
+                with self.module.SharedProductLock(
+                    paths.llvm_lock,
+                    paths.llvm_lock_turnstile,
+                    10.0,
+                    shared=False,
+                ):
+                    held.set()
+                    release.wait(10.0)
+
+            def queue_writer():
+                with self.module.SharedProductLock(
+                    paths.llvm_lock,
+                    paths.llvm_lock_turnstile,
+                    20.0,
+                    shared=False,
+                ):
+                    pass
+
+            holder = context.Process(target=hold_writer, name="holder")
+            queued = [
+                context.Process(target=queue_writer, name=f"queued-{index}")
+                for index in range(cohort)
+            ]
+            try:
+                holder.start()
+                self.assertTrue(held.wait(2.0))
+                for index, process in enumerate(queued):
+                    process.start()
+                    self.wait_for_turnstile_records(
+                        paths.llvm_lock_turnstile, index + 2
+                    )
+                peak = paths.llvm_lock_turnstile.stat().st_size
+                release.set()
+                self.join_processes(queued)
+            finally:
+                release.set()
+                self.join_processes((holder, *queued))
+
+            self.assertEqual(holder.exitcode, 0)
+            self.assertEqual({process.exitcode for process in queued}, {0})
+            self.assertEqual(peak, (cohort + 1) * record_size)
+            # The whole cohort drained normally and nothing has acquired
+            # since. What the burst leaves behind must be the header and the
+            # single record of the participant that left last, never the peak
+            # the turnstile once carried: residency outlives no participant,
+            # so the next acquisition scans a constant table.
+            self.assertEqual(
+                paths.llvm_lock_turnstile.stat().st_size, 2 * record_size
+            )
+
     def test_crashed_participants_are_reclaimed_without_replay(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
             paths = build_paths(Path(td))
