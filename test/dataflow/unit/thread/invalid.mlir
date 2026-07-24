@@ -61,6 +61,20 @@ func.func @launch_foldable_negative_extent() {
 }
 
 // -----
+// Malformed extent producers must be diagnosed before constant evaluation.
+dataflow.thread private @t_malformed_extent() ctrl (%ctrl: none)
+    iv (%i: index) {
+  dataflow.thread.yield
+}
+func.func @launch_malformed_extent() {
+  // expected-error @+1 {{expected 2 operands, but found 0}}
+  %extent = "arith.addi"() : () -> index
+  %token = dataflow.thread.launch @t_malformed_extent() grid(%extent)
+      : () -> !dataflow.thread_token
+  return
+}
+
+// -----
 // Dynamic launch extents remain statically admissible.
 dataflow.thread private @t_dynamic_extent() ctrl (%ctrl: none) iv (%i: index) {
   dataflow.thread.yield

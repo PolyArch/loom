@@ -8,6 +8,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -16,7 +17,6 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -88,6 +88,68 @@ static LogicalResult verifyGraphPortType(Operation *op, Type type,
   return success();
 }
 
+enum class ExtentExprKind { Unsupported, Constant, AddI, IndexCast };
+
+static bool isScalarNonzeroSignlessIntegerOrIndex(Type type) {
+  if (isa<IndexType>(type))
+    return true;
+  auto integerType = dyn_cast<IntegerType>(type);
+  return integerType && integerType.isSignless() && integerType.getWidth() != 0;
+}
+
+static unsigned getScalarIntegerBitWidth(Type type) {
+  if (isa<IndexType>(type))
+    return IndexType::kInternalStorageBitWidth;
+  return cast<IntegerType>(type).getWidth();
+}
+
+static ExtentExprKind classifyExtentExpr(Operation *op) {
+  if (op->getNumRegions() != 0 || op->getNumSuccessors() != 0)
+    return ExtentExprKind::Unsupported;
+
+  if (isa<arith::ConstantOp>(op)) {
+    if (op->getNumOperands() != 0 || op->getNumResults() != 1)
+      return ExtentExprKind::Unsupported;
+    Type resultType = op->getResult(0).getType();
+    auto value = dyn_cast_or_null<IntegerAttr>(
+        cast<arith::ConstantOp>(op).getProperties().value);
+    if (!isScalarNonzeroSignlessIntegerOrIndex(resultType) || !value ||
+        value.getType() != resultType)
+      return ExtentExprKind::Unsupported;
+    return ExtentExprKind::Constant;
+  }
+
+  if (isa<arith::AddIOp>(op)) {
+    if (op->getNumOperands() != 2 || op->getNumResults() != 1)
+      return ExtentExprKind::Unsupported;
+    Type resultType = op->getResult(0).getType();
+    if (!isScalarNonzeroSignlessIntegerOrIndex(resultType) ||
+        op->getOperand(0).getType() != resultType ||
+        op->getOperand(1).getType() != resultType)
+      return ExtentExprKind::Unsupported;
+    return ExtentExprKind::AddI;
+  }
+
+  if (isa<arith::IndexCastOp>(op)) {
+    if (op->getNumOperands() != 1 || op->getNumResults() != 1)
+      return ExtentExprKind::Unsupported;
+    Type inputType = op->getOperand(0).getType();
+    Type resultType = op->getResult(0).getType();
+    auto inputInteger = dyn_cast<IntegerType>(inputType);
+    auto resultInteger = dyn_cast<IntegerType>(resultType);
+    bool validPair =
+        (isa<IndexType>(inputType) && resultInteger &&
+         resultInteger.isSignless() && resultInteger.getWidth() != 0) ||
+        (inputInteger && inputInteger.isSignless() &&
+         inputInteger.getWidth() != 0 && isa<IndexType>(resultType));
+    if (!validPair)
+      return ExtentExprKind::Unsupported;
+    return ExtentExprKind::IndexCast;
+  }
+
+  return ExtentExprKind::Unsupported;
+}
+
 class ExtentConstantEvaluator {
 public:
   Attribute evaluate(Value value) {
@@ -118,7 +180,7 @@ public:
       if (descended)
         continue;
 
-      fold(definingOp);
+      evaluateOperation(definingOp, frame.kind);
       active.erase(frame.value);
       stack.pop_back();
     }
@@ -130,6 +192,7 @@ private:
   struct Frame {
     Value value;
     unsigned nextOperand;
+    ExtentExprKind kind;
   };
 
   void cacheUnknown(Operation *op) {
@@ -148,7 +211,8 @@ private:
     }
 
     Operation *definingOp = result.getOwner();
-    if (definingOp->getNumRegions() != 0 || !isPure(definingOp)) {
+    ExtentExprKind kind = classifyExtentExpr(definingOp);
+    if (kind == ExtentExprKind::Unsupported) {
       cacheUnknown(definingOp);
       return false;
     }
@@ -157,41 +221,47 @@ private:
       return false;
     }
 
-    stack.push_back({value, 0});
+    stack.push_back({value, 0, kind});
     return true;
   }
 
-  void fold(Operation *op) {
-    SmallVector<Attribute> operandConstants;
-    operandConstants.reserve(op->getNumOperands());
-    for (Value operand : op->getOperands())
-      operandConstants.push_back(constants.lookup(operand));
+  void evaluateOperation(Operation *op, ExtentExprKind kind) {
+    if (kind == ExtentExprKind::Constant) {
+      constants.try_emplace(
+          op->getResult(0),
+          cast<IntegerAttr>(cast<arith::ConstantOp>(op).getProperties().value));
+      return;
+    }
 
-    // Detached clones contain no regions and isolate in-place fold hooks.
-    Operation *probe = op->clone();
-    SmallVector<OpFoldResult> folded;
-    if (failed(probe->fold(operandConstants, folded)) ||
-        folded.size() != probe->getNumResults()) {
-      probe->erase();
+    auto operandConstant = [&](unsigned index) {
+      return dyn_cast_or_null<IntegerAttr>(
+          constants.lookup(op->getOperand(index)));
+    };
+    IntegerAttr input = operandConstant(0);
+    if (!input || input.getType() != op->getOperand(0).getType()) {
       cacheUnknown(op);
       return;
     }
 
-    for (auto [result, foldedResult] : llvm::zip(op->getResults(), folded)) {
-      Attribute constant = dyn_cast_if_present<Attribute>(foldedResult);
-      if (!constant) {
-        if (auto foldedValue = dyn_cast_if_present<Value>(foldedResult)) {
-          for (auto [index, operand] : llvm::enumerate(probe->getOperands())) {
-            if (foldedValue == operand) {
-              constant = operandConstants[index];
-              break;
-            }
-          }
-        }
+    Type resultType = op->getResult(0).getType();
+    if (kind == ExtentExprKind::AddI) {
+      IntegerAttr rhs = operandConstant(1);
+      if (!rhs || rhs.getType() != op->getOperand(1).getType()) {
+        cacheUnknown(op);
+        return;
       }
-      constants.try_emplace(result, constant);
+      constants.try_emplace(
+          op->getResult(0),
+          IntegerAttr::get(resultType, input.getValue() + rhs.getValue()));
+      return;
     }
-    probe->erase();
+
+    assert(kind == ExtentExprKind::IndexCast);
+    unsigned resultBitWidth = getScalarIntegerBitWidth(resultType);
+    constants.try_emplace(
+        op->getResult(0),
+        IntegerAttr::get(resultType,
+                         input.getValue().sextOrTrunc(resultBitWidth)));
   }
 
   DenseMap<Value, Attribute> constants;
