@@ -26,6 +26,7 @@ set(LOOM_TEST_DEPENDS
   loom-adg-builder-test
   loom-config-test
   loom-common-artifact-test
+  loom-common-blob-test
   loom-cost-test
   loom-coverage-test
   loom-dataflow-memory-effect-test

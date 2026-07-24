@@ -1,0 +1,40 @@
+#ifndef LOOM_COMMON_BLOBSTORE_H
+#define LOOM_COMMON_BLOBSTORE_H
+
+#include "Common/BlobDigest.h"
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace loom {
+
+/// Local filesystem store of complete logical blobs keyed by full BlobDigest.
+/// Publication is atomic and never overwrites or repairs an existing object.
+/// Equal bytes deduplicate; the full stored byte sequence is verified on
+/// deduplication and rehashed on every read. A digest occupied by different
+/// bytes is a hard collision, while malformed storage or a digest/bytes
+/// mismatch is corruption; neither is resolved by selecting one payload.
+/// Blob ownership, media type, and relation to a typed Artifact remain in the
+/// referencing owner's manifest; this store owns only content identity.
+class BlobStore {
+public:
+  /// Root must name an existing, durably provisioned non-symlink directory.
+  explicit BlobStore(llvm::StringRef root) : root_(root.str()) {}
+
+  llvm::Expected<BlobDigest>
+  put(llvm::ArrayRef<std::uint8_t> logicalBytes) const;
+
+  llvm::Expected<std::vector<std::uint8_t>> get(const BlobDigest &digest) const;
+
+private:
+  std::string root_;
+};
+
+} // namespace loom
+
+#endif // LOOM_COMMON_BLOBSTORE_H
