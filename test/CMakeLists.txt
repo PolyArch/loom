@@ -3,6 +3,7 @@ llvm_canonicalize_cmake_booleans(MLIR_ENABLE_BINDINGS_PYTHON)
 add_subdirectory(common)
 add_subdirectory(dataflow)
 add_subdirectory(evaluation)
+add_subdirectory(frontend)
 add_subdirectory(mapping)
 add_subdirectory(pnr)
 add_subdirectory(fabric)
@@ -40,12 +41,14 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-elaboration-header-test
   loom-fabric-persistent-ref-test
   loom-fabric-resource-contract-test
+  loom-frontend-payload-framing-test
   loom-hwsg-test
   loom-mapping-core-test
   loom-parallel-test
   loom-pnr-index-test
   loom-pnr-route-tree-state-test
   loom-pnr-routing-negotiation-test
+  loom-relocatable-payload-test
   loom-simulator-atomic-order-test
   loom-simulator-dynamic-work-test
   loom-simulator-synchronization-test

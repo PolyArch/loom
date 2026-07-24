@@ -1,3 +1,4 @@
 add_subdirectory(IR)
 add_subdirectory(Lowering)
+add_subdirectory(Payload)
 add_subdirectory(Raising)

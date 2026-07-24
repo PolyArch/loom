@@ -1,0 +1,10 @@
+#ifndef LOOM_FRONTEND_PAYLOAD_BUILDCONFIG_H
+#define LOOM_FRONTEND_PAYLOAD_BUILDCONFIG_H
+
+// Derived by the build from the LLVM submodule it selects. Editing these values
+// by hand would create a provider authority that can drift away from the LLVM
+// this build actually links.
+#define LOOM_LLVM_PROVIDER_REPOSITORY_IDENTITY "@LOOM_LLVM_PROVIDER_REPOSITORY@"
+#define LOOM_LLVM_PROVIDER_COMMIT_IDENTITY "@LOOM_LLVM_PROVIDER_COMMIT@"
+
+#endif // LOOM_FRONTEND_PAYLOAD_BUILDCONFIG_H
