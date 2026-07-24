@@ -52,6 +52,14 @@ legal complete Mapping, functional comparison may relate:
 * externally visible logical-memory state or diffs; and
 * graph completion outcome.
 
+The selected observations are aligned by the canonical selector order of the
+exact workload contract. Execution records do not introduce local output IDs.
+For a non-retired execution, `NotPublished`, an open stream prefix, and the
+visible memory snapshot at the terminal coordinate are concrete observations,
+not missing fields. A comparison model may compare such prefixes or snapshots
+only when its requested relation defines compatible terminal horizons;
+otherwise the corresponding request item is `NotApplicable`.
+
 Exact value equality is a valid relation only when the observable contract or
 the exact comparison model proves that observation deterministic. This is the
 normal relation for deterministic programs and for observations constrained

@@ -162,13 +162,13 @@ SpatialSimulationRuntimeInput {
   runtime_values:
     total table<runtime graph value-input ordinal, CanonicalValueSequence>
   runtime_streams:
-    total table<graph stream-input ordinal, RuntimeStreamInput>
+    total table<graph stream-input ordinal, CanonicalStreamSequence>
   memory_objects: canonical array<RuntimeMemoryObject>
   memory_root_bindings:
     total table<LogicalMemoryRootRef, RuntimeMemoryRootBinding>
 }
 
-RuntimeStreamInput {
+CanonicalStreamSequence {
   values: CanonicalValueSequence
   termination: ClosedAfterLast | OpenAfterLast
 }
@@ -192,9 +192,13 @@ RuntimeMemoryRootBinding {
 `runtime_values` is exactly total over value-input ordinals whose workload
 source is `Runtime`; every sequence has exactly one token. `runtime_streams`
 is exactly total over graph stream-input ordinals. `ClosedAfterLast` publishes
-the stream close after its final token. `OpenAfterLast` publishes no later
-token and never closes; future timed arrivals require an independently
-justified typed environment schedule and are not hidden simulator input.
+the stream close after its final token. `OpenAfterLast` means that no close is
+observed within the sequence's owning observation horizon. For runtime input,
+that horizon is the complete supplied input: no later token or close exists,
+and future timed arrivals require an independently justified typed
+environment schedule rather than hidden simulator input. For execution
+output, the horizon ends at the execution terminal, so the same form records
+an open produced prefix without asserting a counterfactual future.
 
 Every imported logical-memory root reachable from the selected launch has
 exactly one root binding, and no unrelated root may appear. A runtime memory
@@ -386,6 +390,96 @@ Execution limits and external cancellation remain `StoppedByLimit` or
 Static invalid IR, Fabric, or Mapping is rejected before execution and never
 becomes dynamic deadlock.
 
+## Spatial Functional Observations
+
+The spatial workload's observable contract is the sole owner of selected
+targets, target order, types, and memory observation forms. A spatial
+execution therefore stores three positional arrays:
+
+```text
+SpatialFunctionalObservations {
+  value_results: array<ValueResultObservation>
+  stream_outputs: array<CanonicalStreamSequence>
+  memories: array<MemoryObservationPayload>
+}
+
+ValueResultObservation =
+    Published(CanonicalValueSequence)
+  | NotPublished
+```
+
+The arrays align exactly with the canonical `value_results`,
+`stream_outputs`, and `memories` collections recovered through the execution's
+Request and workload. They do not repeat graph ordinals, memory targets,
+types, or `MemoryObservationForm` tags. A published graph value contains
+exactly one token. A stream may contain any token count, including an empty
+open prefix.
+
+The workload-selected memory form determines the corresponding payload
+without a second persistent discriminator:
+
+```text
+FullState payload {
+  byte_count: uint64
+  bytes: array<SemanticMemoryByte>
+}
+
+DiffFromRuntimeInput payload {
+  byte_count: uint64
+  runs: array<MemoryDiffRun>
+}
+
+MemoryDiffRun {
+  byte_offset: uint64
+  changed_bytes: nonempty array<SemanticMemoryByte>
+}
+```
+
+A full-state byte array has exactly `byte_count` elements. Diff runs are
+sorted by offset, in range, nonoverlapping, nonadjacent, and maximal. Every
+encoded byte differs semantically from the exact runtime baseline; adjacent
+changed bytes belong to one run. An empty run array uniquely means no change.
+Equality distinguishes `Defined`, `Poison`, and `Undef` states as well as
+defined byte values.
+
+`DiffFromRuntimeInput` is legal only when the exact Dataflow target and
+RuntimeInput mechanically establish one unique baseline range before
+simulation. Request verification rejects a target without that correspondence
+or with a mismatched extent. A fresh allocation, dynamically unresolved
+exposure, MMIO effect, or other target without a runtime byte baseline must
+use `FullState` when the exact model supports snapshot semantics.
+
+Each memory entry is the requested target-relative projection of one execution
+state. No execution-local memory-object ID or alias graph is added. If selected
+targets overlap through relations mechanically recoverable from Dataflow and
+RuntimeInput, finalization verifies that their overlapping semantic bytes
+agree. This check does not make either projection the storage authority.
+
+All three arrays are exactly total over the selected targets for every
+retained execution:
+
+* `Retired` requires every value to be `Published`, every selected stream to
+  be `ClosedAfterLast`, and every memory payload to describe final visible
+  logical state.
+* `Halted` permits a value to be `NotPublished` and a stream to contain an
+  open prefix. Memory payloads describe exact logical state visible at the
+  halt coordinate.
+* a retained `StoppedByLimit` execution uses the same partial-observation
+  forms at its stop coordinate.
+
+There is no generic `Complete | Partial | Unavailable` wrapper. Value
+publication, stream closure, and memory visibility already provide the three
+planes' exact completion facts. The Request verifier rejects a model whose
+descriptor statically cannot observe a selected target. Runtime-dependent
+absence of required capability produces `Unsupported`; provider failure
+produces `ExecutionFailed`. Neither outcome creates an execution containing
+an unavailable placeholder.
+
+The System workload remains fail-closed until Deployment owns its exact
+program-entry and external-interface catalogs. Its future functional
+observations must be selected and ordered by that workload contract and must
+not add a second execution-root discriminator or provisional string-key map.
+
 ## Trace And Activity
 
 An optional typed trace manifest owns the ordered list of content-addressed
@@ -404,10 +498,10 @@ correctness.
 
 Actor-bearing trace and activity records use the Dataflow-owned `ActorRef`.
 Execution-local invocation occurrences and per-actor firing ordinals qualify a
-dynamic event but never create persistent Dataflow entities. The complete
-persistent execution-record unions and canonical chunk wire remain owned by
-the `SimulationExecution persistent wire` design frontier; this rule fixes
-only the upstream identity owner.
+dynamic event but never create persistent Dataflow entities. The remaining
+progress, activity, trace-manifest, and canonical chunk records remain owned
+by the `SimulationExecution persistent wire` design frontier; this rule fixes
+only their upstream identity owner.
 
 Trace capture is a nonsemantic invocation binding. Enabling it may change
 execution cost and retained raw material, but must not change scheduling,
@@ -450,8 +544,10 @@ Execution anchors separately cover the single untagged root, Request-only
 coupling, typed output slot and ordinal resolution, mandatory terminal-finding
 totality, the closed terminal algebra and outcome cardinality, witness
 ownership and reference validation, runtime-dependent `Unsupported` versus
-`Halted` and `ExecutionFailed`, and rejection of normalized results inside
-`SimulationExecution`. Functional observations, progress observations,
-activity, and trace add their own anchors only as their persistent records
-close. Tests do not pin report layouts, simulator class hierarchies, broad
-workload matrices, every finding kind, or every witness payload.
+`Halted` and `ExecutionFailed`, spatial functional-array alignment, terminal-
+specific value and stream completeness, unique memory-diff runs, baseline
+eligibility, alias-overlap agreement, and rejection of normalized results
+inside `SimulationExecution`. Progress observations, activity, and trace add
+their own anchors only as their persistent records close. Tests do not pin
+report layouts, simulator class hierarchies, broad workload matrices, every
+finding kind, every witness payload, or every partial-output combination.

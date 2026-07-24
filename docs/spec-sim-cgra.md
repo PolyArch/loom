@@ -34,7 +34,8 @@ invocation and attempt state.
 CGRA-sim declares one typed `SimulationExecution` output slot and the complete
 mandatory terminal FindingQuery set. It produces one execution, one
 `EvaluationEvidence`, and an optional raw detailed bundle. Their ownership is identical to DFG-sim:
-execution owns terminal observables, activity, and trace; Evidence owns
+execution owns contract-aligned functional observations, progress, activity,
+and trace; Evidence owns
 normalized outcome, metrics, findings, and the typed execution output binding.
 `Retired` returns every mandatory terminal finding as `Absent`; `Halted`
 returns the corresponding finding as `Present` and all others as `Absent`.
@@ -161,6 +162,13 @@ semantics as DFG-sim. Exact value equality is required only for observations
 that the requested observable contract or comparison oracle proves
 deterministic; different deterministic legal executions may select different
 atomic orders.
+
+CGRA-sim uses the same positional value, stream, and memory records as
+DFG-sim. Physical stalls and arbitration may change publication coordinates
+and open prefixes at a non-retired terminal, but cannot change target order,
+memory-diff normalization, or the meaning of published software values.
+Missing runtime-dependent hardware-model capability is `Unsupported`, never
+an omitted or placeholder functional observation.
 
 ## Deadlock And Termination
 

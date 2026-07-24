@@ -35,8 +35,8 @@ slot and the complete mandatory terminal FindingQuery set. It produces:
 SimulationExecution + EvaluationEvidence + optional raw detailed bundle
 ```
 
-`SimulationExecution` owns terminal values, streams, visible logical-memory
-state or diffs, activity, and the trace manifest. `EvaluationEvidence` owns
+`SimulationExecution` owns contract-aligned functional observations, progress,
+activity, and the trace manifest. `EvaluationEvidence` owns
 normalized outcome, metrics, findings, and binds the execution through that
 output slot. `Retired` returns every mandatory terminal finding as `Absent`;
 `Halted` returns the corresponding finding as `Present` and all others as
@@ -224,6 +224,15 @@ Wall time, host parallelism, and license availability may interrupt execution
 but must not select a different formal result.
 
 ## Observations
+
+DFG-sim fills the positional value, stream, and memory arrays defined by
+Simulation Artifacts. It derives their targets and order from the exact
+workload rather than emitting graph names or simulator-local keys. At
+`Retired`, every selected value is published and every selected stream is
+closed. `Halted` and a retained `StoppedByLimit` execution preserve published
+values, open stream prefixes, and visible logical-memory state at their exact
+terminal coordinate. Lack of model capability is `Unsupported`, not an
+unavailable output entry.
 
 Supported normalized observations may include logical cycle count, actor fire
 and retirement counts, operation-class activity, terminal observables, and
