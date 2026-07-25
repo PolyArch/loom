@@ -14,6 +14,11 @@
 // vocabulary without duplicating it.
 namespace dataflow {
 
+/// The finalizer-owned attribute that carries a derived artifact-local entity
+/// ID. It is not actor semantics and therefore never enters an operation's
+/// identity-critical schema projection.
+inline constexpr char kEntityIdAttrName[] = "dataflow.entity_id";
+
 /// The closed first-schema catalog of independently referenceable entities.
 /// A future referenceable object requires an explicit catalog change here; a
 /// consumer cannot mint an ID for convenience.

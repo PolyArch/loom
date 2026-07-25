@@ -36,11 +36,6 @@ namespace detail {
 struct CanonicalLabeling;
 } // namespace detail
 
-/// The named attribute under which the derived EntityIdAttr is materialized on
-/// an entity carrier. It is the finalizer's output projection and is stripped
-/// and independently recomputed on every read.
-inline constexpr llvm::StringLiteral kEntityIdAttrName = "dataflow.entity_id";
-
 //===----------------------------------------------------------------------===//
 // Read-only entity projections
 //
@@ -97,13 +92,10 @@ struct ChannelConsumerBinding {
 
 /// The single Dataflow-owned read-only projection of the five entity kinds and
 /// the currently available structural-reference inventories and derived
-/// relations in DataflowStructuralRefs.h. It does not project the closed
-/// transfer-event family that would name EventFamilyKey: that projection is not
-/// yet defined in authority, so this view neither claims nor generates it.
-/// Independent import reconstructs the canonical relation graph, verifies every
-/// materialized ID, and generates, validates, and resolves the structural
-/// references consumers need with no Mapping Artifact. Native lookup indices
-/// are disposable caches.
+/// relations in DataflowStructuralRefs.h. Independent import reconstructs the
+/// canonical relation graph, verifies every materialized ID, and generates,
+/// validates, and resolves the structural references consumers need with no
+/// Mapping Artifact. Native lookup indices are disposable caches.
 class CanonicalDataflowProgramView {
 public:
   /// Reconstruct and verify a finalized program. Rejects any stale, missing,

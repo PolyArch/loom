@@ -47,6 +47,7 @@ target_link_libraries(loom-dataflow-canonical-artifact-test PRIVATE
   LoomCommon
   MLIRArithDialect
   MLIRDataflow
+  MLIRDLTIDialect
   MLIRFuncDialect
   MLIRMemRefDialect
   MLIRIR

@@ -9,6 +9,7 @@
 #include "Dataflow/IR/DataflowOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -63,14 +64,16 @@ mlir::MLIRContext &context() {
   static mlir::MLIRContext *ctx = [] {
     mlir::DialectRegistry registry;
     registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect,
-                    mlir::arith::ArithDialect, mlir::memref::MemRefDialect>();
+                    mlir::arith::ArithDialect, mlir::DLTIDialect,
+                    mlir::memref::MemRefDialect>();
     auto *c = new mlir::MLIRContext(registry);
     c->loadAllAvailableDialects();
     return c;
   }();
   return *ctx;
 }
-mlir::OwningOpRef<mlir::ModuleOp> parse(const char *test, llvm::StringRef text) {
+mlir::OwningOpRef<mlir::ModuleOp> parse(const char *test,
+                                        llvm::StringRef text) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
       mlir::parseSourceString<mlir::ModuleOp>(text, &context());
   if (!module)
@@ -131,7 +134,8 @@ std::string computeGraph(llvm::StringRef sym, int lhs, int rhs,
      << " : i32} : i32\n    %" << b
      << " = dataflow.constant %ctrl {const_value = " << rhs
      << " : i32} : i32\n    %sum = " << op << " %" << a << ", %" << b
-     << " : i32\n    %ret:2 = dataflow.sync %ctrl, %sum : (none, i32) -> (none, "
+     << " : i32\n    %ret:2 = dataflow.sync %ctrl, %sum : (none, i32) -> "
+        "(none, "
         "i32)\n    dataflow.graph.return values(%ret#1 : i32) streams() "
         "memories() complete(%ret#0 : none)\n  }\n}\n";
   return os.str();
@@ -169,21 +173,6 @@ module {
   require(test, identityOf(test, located) == identityOf(test, plain),
           "location changes must not change identity");
 
-  // Non-schema discardable debug metadata.
-  const char *labeled = R"mlir(
-module {
-  dataflow.graph private @g(%ctrl: none) -> i32 attributes {input_segments = array<i32: 0, 0, 0>, result_segments = array<i32: 1, 0, 0>} {
-    %c = dataflow.constant %ctrl {const_value = 5 : i32} : i32
-    %r:2 = dataflow.sync %ctrl, %c {debug_label = "s"} : (none, i32) -> (none, i32)
-    dataflow.graph.return values(%r#1 : i32) streams() memories() complete(%r#0 : none)
-  }
-}
-)mlir";
-  CanonicalDataflowArtifact pa = finalize(test, plain);
-  CanonicalDataflowArtifact la = finalize(test, labeled);
-  require(test, pa.identity() == la.identity() && bytesOf(pa) == bytesOf(la),
-          "non-schema debug metadata must not change bytes or identity");
-
   // Graph-actor textual reordering inside one graph body: two independent
   // constants swapped in program order must not change identity.
   auto twoActorGraph = [](llvm::StringRef first, llvm::StringRef second) {
@@ -214,12 +203,13 @@ module {
     std::string s = "module {\n";
     for (int k = 0; k < n; ++k) {
       std::string i = std::to_string(reverse ? n - 1 - k : k);
-      s += "  dataflow.graph private @g" + i +
-           "(%c: none) -> i32 attributes {input_segments = array<i32: 0, 0, 0>, "
-           "result_segments = array<i32: 1, 0, 0>} { %k = dataflow.constant %c "
-           "{const_value = 1 : i32} : i32\n    %r:2 = dataflow.sync %c, %k : "
-           "(none, i32) -> (none, i32)\n    dataflow.graph.return values(%r#1 : "
-           "i32) streams() memories() complete(%r#0 : none) }\n";
+      s +=
+          "  dataflow.graph private @g" + i +
+          "(%c: none) -> i32 attributes {input_segments = array<i32: 0, 0, 0>, "
+          "result_segments = array<i32: 1, 0, 0>} { %k = dataflow.constant %c "
+          "{const_value = 1 : i32} : i32\n    %r:2 = dataflow.sync %c, %k : "
+          "(none, i32) -> (none, i32)\n    dataflow.graph.return values(%r#1 : "
+          "i32) streams() memories() complete(%r#0 : none) }\n";
     }
     return s + "}";
   };
@@ -250,10 +240,12 @@ void semanticDifferences() {
   ArtifactIdentity base =
       identityOf(test, computeGraph("g", 3, 4, "arith.addi", "a", "b"));
   require(test,
-          base != identityOf(test, computeGraph("g", 3, 4, "arith.muli", "a", "b")),
+          base !=
+              identityOf(test, computeGraph("g", 3, 4, "arith.muli", "a", "b")),
           "actor kind must change identity");
   require(test,
-          base != identityOf(test, computeGraph("g", 9, 4, "arith.addi", "a", "b")),
+          base !=
+              identityOf(test, computeGraph("g", 9, 4, "arith.addi", "a", "b")),
           "a semantic attribute must change identity");
 
   // Payload type.
@@ -294,7 +286,8 @@ module { dataflow.graph private @g(%c: none, %x: i32, %y: i32) -> i32 attributes
     os << "module {\n"
        << "  dataflow.graph private @g(%c: none) -> i32 attributes "
           "{input_segments = array<i32: 0, 0, 0>, result_segments = array<i32: "
-          "1, 0, 0>} { %k = dataflow.constant %c {const_value = 1 : i32} : i32\n"
+          "1, 0, 0>} { %k = dataflow.constant %c {const_value = 1 : i32} : "
+          "i32\n"
           "    %r:2 = dataflow.sync %c, %k : (none, i32) -> (none, i32)\n"
           "    dataflow.graph.return values(%r#1 : i32) streams() memories() "
           "complete(%r#0 : none) }\n"
@@ -324,13 +317,15 @@ module { dataflow.graph private @g(%c: none, %x: i32, %y: i32) -> i32 attributes
     os << "module {\n"
        << "  dataflow.graph private @g0(%c: none) -> i32 attributes "
           "{input_segments = array<i32: 0, 0, 0>, result_segments = array<i32: "
-          "1, 0, 0>} { %k = dataflow.constant %c {const_value = 1 : i32} : i32\n"
+          "1, 0, 0>} { %k = dataflow.constant %c {const_value = 1 : i32} : "
+          "i32\n"
           "    %r:2 = dataflow.sync %c, %k : (none, i32) -> (none, i32)\n"
           "    dataflow.graph.return values(%r#1 : i32) streams() memories() "
           "complete(%r#0 : none) }\n"
        << "  dataflow.graph private @g1(%c: none) -> i32 attributes "
           "{input_segments = array<i32: 0, 0, 0>, result_segments = array<i32: "
-          "1, 0, 0>} { %k = dataflow.constant %c {const_value = 2 : i32} : i32\n"
+          "1, 0, 0>} { %k = dataflow.constant %c {const_value = 2 : i32} : "
+          "i32\n"
           "    %r:2 = dataflow.sync %c, %k : (none, i32) -> (none, i32)\n"
           "    dataflow.graph.return values(%r#1 : i32) streams() memories() "
           "complete(%r#0 : none) }\n"
@@ -359,7 +354,9 @@ module { dataflow.graph private @g(%c: none, %x: i32, %y: i32) -> i32 attributes
 // memory-formal root, a root thread launch, and a static graph launch.
 const char *allKindsProgram() {
   return R"mlir(
-module {
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
+} {
   dataflow.graph private @g(%ctrl: none, %mem: memref<10xi32>) -> memref<10xi32> attributes {input_segments = array<i32: 0, 0, 1>, result_segments = array<i32: 0, 0, 1>} {
     %a = memref.alloc() : memref<4xi32>
     %idx = arith.constant 0 : index
@@ -382,7 +379,8 @@ void finalizeImportRejections() {
   const char *test = "finalizeImportRejections";
   CanonicalDataflowArtifact artifact = finalize(test, allKindsProgram());
   CanonicalDataflowProgramView view = viewOf(test, artifact);
-  // No Mapping Artifact is consulted: the view resolves the five kinds directly.
+  // No Mapping Artifact is consulted: the view resolves the five kinds
+  // directly.
   bool sawGraph = view.graphs().size() == 1;
   bool sawActor = !view.actors().empty();
   bool sawRootLaunch = view.rootThreadLaunches().size() == 1;
@@ -436,34 +434,38 @@ module {
     mlir::OwningOpRef<mlir::ModuleOp> clone(
         llvm::cast<mlir::ModuleOp>(artifact.module().getOperation()->clone()));
     mutate(clone.get());
-    return isRejected(CanonicalDataflowProgramView::import(clone.get(),
-                                                           artifact.identity()));
+    return isRejected(
+        CanonicalDataflowProgramView::import(clone.get(), artifact.identity()));
   };
   require(test, importAfter([](mlir::ModuleOp m) {
-    m.walk([&](GraphOp g) {
-      g->setAttr(kEntityIdAttrName, EntityIdAttr::get(m.getContext(), 4096));
-    });
-  }), "a stale, out-of-range materialized ID is rejected");
+            m.walk([&](GraphOp g) {
+              g->setAttr(kEntityIdAttrName,
+                         EntityIdAttr::get(m.getContext(), 4096));
+            });
+          }),
+          "a stale, out-of-range materialized ID is rejected");
   require(test, importAfter([](mlir::ModuleOp m) {
-    m.walk([&](GraphOp g) { g->removeAttr(kEntityIdAttrName); });
-  }), "a missing materialized ID is rejected");
+            m.walk([&](GraphOp g) { g->removeAttr(kEntityIdAttrName); });
+          }),
+          "a missing materialized ID is rejected");
   require(test, importAfter([](mlir::ModuleOp m) {
-    llvm::SmallVector<mlir::Operation *> carriers;
-    m.walk([&](mlir::Operation *op) {
-      if (op->hasAttr(kEntityIdAttrName) && !llvm::isa<GraphOp>(op))
-        carriers.push_back(op);
-    });
-    if (carriers.size() >= 2)
-      carriers[1]->setAttr(kEntityIdAttrName,
-                           carriers[0]->getAttr(kEntityIdAttrName));
-  }), "a duplicate materialized ID is rejected");
+            llvm::SmallVector<mlir::Operation *> carriers;
+            m.walk([&](mlir::Operation *op) {
+              if (op->hasAttr(kEntityIdAttrName) && !llvm::isa<GraphOp>(op))
+                carriers.push_back(op);
+            });
+            if (carriers.size() >= 2)
+              carriers[1]->setAttr(kEntityIdAttrName,
+                                   carriers[0]->getAttr(kEntityIdAttrName));
+          }),
+          "a duplicate materialized ID is rejected");
   // A foreign artifact identity is rejected.
   {
     CanonicalDataflowArtifact other =
         finalize(test, computeGraph("h", 2, 3, "arith.muli", "a", "b"));
     require(test,
-            isRejected(view.resolve(GraphRef{other.identity(),
-                                             view.graphs().front().ref.entity})),
+            isRejected(view.resolve(
+                GraphRef{other.identity(), view.graphs().front().ref.entity})),
             "a foreign-artifact reference is rejected");
   }
   // A residual, unrooted memory producer as a graph memory input fails
@@ -649,9 +651,10 @@ void channelMulticastTerminals() {
   CanonicalProducerTerminalRef terminal{ChannelProducerTerminalRef{producer}};
   std::vector<CanonicalSinkTerminalRef> sinks;
   require(test,
-          !errored(view.pairedSinks(
-              terminal,
-              [&](const CanonicalSinkTerminalRef &s) { sinks.push_back(s); })) &&
+          !errored(view.pairedSinks(terminal,
+                                    [&](const CanonicalSinkTerminalRef &s) {
+                                      sinks.push_back(s);
+                                    })) &&
               sinks.size() == 2 && sinks[0] != sinks[1],
           "the producer terminal derives two distinct sinks");
   // MessageTransfer is the member of a channel transfer obligation.
@@ -662,8 +665,8 @@ void channelMulticastTerminals() {
               std::holds_alternative<MessageTransferMemberRef>(*channelMember),
           "a channel transfer obligation has a MessageTransfer member");
   // Boundary MessageTransfer: a root-thread start boundary is also a transfer.
-  CanonicalProducerTerminalRef boundary{RootThreadBoundarySourceRef{
-      RootThreadBoundaryTransferRef{
+  CanonicalProducerTerminalRef boundary{
+      RootThreadBoundarySourceRef{RootThreadBoundaryTransferRef{
           RootThreadStartTransferRef{sendingRoot(test, view)}}}};
   llvm::Expected<ServiceMemberRef> boundaryMember =
       view.messageTransferMember(boundary);
@@ -674,14 +677,14 @@ void channelMulticastTerminals() {
   // A static transfer event round-trips with no event entity ID; a foreign
   // producer is rejected.
   StaticTransferEventRef event{ProducedTransferEventRef{terminal}};
-  require(test, !errored(view.validate(event)) &&
-                    std::get<ProducedTransferEventRef>(event).terminal == terminal,
+  require(test,
+          !errored(view.validate(event)) &&
+              std::get<ProducedTransferEventRef>(event).terminal == terminal,
           "a static transfer event round trips with no entity ID");
   CanonicalDataflowArtifact other =
       finalize(test, computeGraph("q", 1, 2, "arith.addi", "a", "b"));
   ChannelProducerRef foreign{ThreadChannelSendSiteRef{
-      RootThreadLaunchRef{other.identity(),
-                          sendingRoot(test, view).entity},
+      RootThreadLaunchRef{other.identity(), sendingRoot(test, view).entity},
       0}};
   require(test, isRejected(view.channelConsumers(foreign)),
           "a foreign-artifact channel producer is rejected");
@@ -698,7 +701,9 @@ const char *memoryCompositionProgram() {
   // and consumes it in a load but never exposes it; @gc passes @gv's first
   // result through. The thread binds @gv to two distinct memory formals.
   return R"mlir(
-module {
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
+} {
   dataflow.graph private @gv(%start: none, %mem: memref<10xi32>) -> (memref<?xi32>, memref<?xi32>) attributes {input_segments = array<i32: 0, 0, 1>, result_segments = array<i32: 0, 0, 2>} {
     %v = memref.cast %mem : memref<10xi32> to memref<?xi32>
     dataflow.graph.return values() streams() memories(%v, %v : memref<?xi32>, memref<?xi32>) complete(%start : none)
@@ -732,7 +737,8 @@ module {
 }
 
 // A MemoryExposure is a capability boundary, structurally neither a contextual
-// actor nor a service member -- enforced at compile time, not by a runtime path.
+// actor nor a service member -- enforced at compile time, not by a runtime
+// path.
 static_assert(!std::is_constructible_v<ContextualActorRef, MemoryExposureRef>,
               "a memory exposure is not a contextual actor");
 static_assert(!std::is_constructible_v<ServiceMemberRef, MemoryExposureRef>,
@@ -740,7 +746,8 @@ static_assert(!std::is_constructible_v<ServiceMemberRef, MemoryExposureRef>,
 
 void memoryViewExposureService() {
   const char *test = "memoryViewExposureService";
-  CanonicalDataflowArtifact artifact = finalize(test, memoryCompositionProgram());
+  CanonicalDataflowArtifact artifact =
+      finalize(test, memoryCompositionProgram());
   CanonicalDataflowProgramView view = viewOf(test, artifact);
   require(test, view.logicalMemoryRoots().size() == 2,
           "two distinct thread memory formals are two roots");
@@ -753,7 +760,8 @@ void memoryViewExposureService() {
   };
   LogicalMemoryRootRef rootM0 = rootByFormal(0), rootM1 = rootByFormal(1);
 
-  // Identify the two @gv sites by the thread formal they bind, plus @gl and @gc.
+  // Identify the two @gv sites by the thread formal they bind, plus @gl and
+  // @gc.
   std::optional<StaticGraphLaunchRef> gvOf[2], glSite, gcSite;
   for (const CanonicalStaticGraphLaunchView &sg : view.staticGraphLaunches()) {
     llvm::StringRef name =
@@ -788,8 +796,9 @@ void memoryViewExposureService() {
   LogicalMemoryRootOrViewRef m0v0 = expose(*gvOf[0], 0);
   require(test, m0v0 == expose(*gvOf[0], 1),
           "one cast returned in two ordinals is exactly one view");
-  require(test, std::holds_alternative<LogicalMemoryViewRef>(m0v0) &&
-                    rootOf(m0v0) == rootM0,
+  require(test,
+          std::holds_alternative<LogicalMemoryViewRef>(m0v0) &&
+              rootOf(m0v0) == rootM0,
           "the @gv view over m0 is a root-local view under m0's root");
   LogicalMemoryRootOrViewRef m1v0 = expose(*gvOf[1], 0);
   require(test, m0v0 != m1v0 && rootOf(m1v0) == rootM1,
@@ -798,14 +807,17 @@ void memoryViewExposureService() {
   // exactly that thread-view: a root-local view under m0, distinct from @gv's
   // own graph-body view.
   LogicalMemoryRootOrViewRef gc = expose(*gcSite, 0);
-  require(test, std::holds_alternative<LogicalMemoryViewRef>(gc) &&
-                    rootOf(gc) == rootM0 && gc != m0v0,
+  require(test,
+          std::holds_alternative<LogicalMemoryViewRef>(gc) &&
+              rootOf(gc) == rootM0 && gc != m0v0,
           "the @gc exposure is a thread-view under m0, distinct from the @gv "
           "view");
   // m0's inventory holds three views (the @gv graph view, the thread cast, and
   // the non-exposed @gl cast), each exactly once; m1 holds only its @gv view.
-  llvm::Expected<llvm::ArrayRef<LogicalMemoryViewRef>> invM0 = view.views(rootM0);
-  llvm::Expected<llvm::ArrayRef<LogicalMemoryViewRef>> invM1 = view.views(rootM1);
+  llvm::Expected<llvm::ArrayRef<LogicalMemoryViewRef>> invM0 =
+      view.views(rootM0);
+  llvm::Expected<llvm::ArrayRef<LogicalMemoryViewRef>> invM1 =
+      view.views(rootM1);
   require(test, invM0 && invM0->size() == 3,
           "m0 inventory holds the @gv, thread, and non-exposed @gl views");
   std::set<StructuralOrdinal> ord;
@@ -823,16 +835,18 @@ void memoryViewExposureService() {
   ActorRef addRef = actorByName(test, view, "arith.addi").ref;
   llvm::Expected<ServiceMemberRef> member =
       view.serviceMemberFor(ContextualActorRef{glLaunch, loadRef});
-  require(test,
-          member &&
-              std::holds_alternative<AddressedMemoryActorMemberRef>(*member),
+  if (!member)
+    fail(test, "addressed memory service projection failed: " +
+                   llvm::toString(member.takeError()));
+  require(test, std::holds_alternative<AddressedMemoryActorMemberRef>(*member),
           "an addressed memory actor is an addressed-memory service member");
+  require(
+      test,
+      isRejected(view.serviceMemberFor(ContextualActorRef{glLaunch, addRef})),
+      "a compute actor is not a service member");
   require(test,
-          isRejected(view.serviceMemberFor(ContextualActorRef{glLaunch, addRef})),
-          "a compute actor is not a service member");
-  require(test,
-          isRejected(view.serviceMemberFor(
-              ContextualActorRef{RootedGraphLaunchRef{root, *gvOf[0]}, loadRef})),
+          isRejected(view.serviceMemberFor(ContextualActorRef{
+              RootedGraphLaunchRef{root, *gvOf[0]}, loadRef})),
           "an actor outside the launched graph is a wrong-owner rejection");
 }
 

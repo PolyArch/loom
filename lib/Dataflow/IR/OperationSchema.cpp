@@ -17,6 +17,7 @@
 
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowAttrs.h"
+#include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/DataflowOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -204,8 +205,11 @@ llvm::Expected<dataflow::SemanticPayload> readConstantValue(Operation *op) {
 llvm::Expected<dataflow::SemanticPayload>
 readPayload(Operation *op, dataflow::OperationSemanticsCase kind) {
   using Case = dataflow::OperationSemanticsCase;
-  if (!op->getDiscardableAttrDictionary().empty())
-    return mismatch(op, kind);
+  for (NamedAttribute attr : op->getDiscardableAttrDictionary()) {
+    if (attr.getName().getValue() != dataflow::kEntityIdAttrName ||
+        !llvm::isa<dataflow::EntityIdAttr>(attr.getValue()))
+      return mismatch(op, kind);
+  }
   switch (kind) {
   case Case::NoSemanticPayload: {
     if (auto poison = llvm::dyn_cast<ub::PoisonOp>(op)) {

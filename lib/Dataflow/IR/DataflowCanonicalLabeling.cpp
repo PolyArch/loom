@@ -18,6 +18,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowInterfaces.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/OperationSchemaCodec.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Block.h"
@@ -87,8 +88,9 @@ void putStr(std::string &s, StringRef x) {
   s.append(x.data(), x.size());
 }
 
-llvm::Error relationError(const char *message) {
-  return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
+llvm::Error relationError(const llvm::Twine &message) {
+  return llvm::createStringError(llvm::inconvertibleErrorCode(), "%s",
+                                 message.str().c_str());
 }
 
 bool isMemoryCapabilityType(Type type) {
@@ -201,8 +203,25 @@ void appendFunctionArgResAttrs(llvm::raw_ostream &os, StringRef name,
 // externally visible linkage name is retained through its public sym_name
 // attribute. The collected symbol references become the op's symbol-use
 // relations, keyed by their pre-order position.
-std::string opIntrinsic(Operation *op,
-                        llvm::SmallVectorImpl<SymbolRefAttr> &symbols) {
+llvm::Expected<std::string>
+opIntrinsic(Operation *op, llvm::SmallVectorImpl<SymbolRefAttr> &symbols) {
+  if (findOperationSchema(op->getName().getStringRef())) {
+    llvm::Expected<::loom::CanonicalSemanticBytes> projection =
+        projectRegisteredActorSchemaProjectionBytes(op);
+    if (!projection) {
+      std::string operationText;
+      llvm::raw_string_ostream stream(operationText);
+      op->print(stream);
+      return relationError("canonical dataflow: actor projection failed for " +
+                           operationText + ": " +
+                           llvm::toString(projection.takeError()));
+    }
+    llvm::ArrayRef<std::uint8_t> bytes = projection->bytes();
+    std::string result("ACTOR\x1f", 6);
+    result.append(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+    return result;
+  }
+
   std::string result;
   llvm::raw_string_ostream os(result);
   os << "OP\x1f" << op->getName().getStringRef() << '\x1e';
@@ -282,7 +301,7 @@ private:
     edges_.push_back({from, to, kind, ord0, ord1});
   }
 
-  void collectVertices(Operation *op);
+  llvm::Error collectVertices(Operation *op);
   llvm::Error detectCarriers(ModuleOp module);
   llvm::Error buildEdges(ModuleOp module);
   void buildAdjacency();
@@ -318,9 +337,12 @@ private:
   llvm::DenseMap<Operation *, llvm::SmallVector<SymbolRefAttr>> opSymbols_;
 };
 
-void SemanticGraph::collectVertices(Operation *op) {
+llvm::Error SemanticGraph::collectVertices(Operation *op) {
   llvm::SmallVector<SymbolRefAttr> symbols;
-  opVertex_[op] = addVertex(opIntrinsic(op, symbols));
+  llvm::Expected<std::string> intrinsic = opIntrinsic(op, symbols);
+  if (!intrinsic)
+    return intrinsic.takeError();
+  opVertex_[op] = addVertex(std::move(*intrinsic));
   opSymbols_[op] = std::move(symbols);
   for (Region &region : op->getRegions())
     for (Block &block : region) {
@@ -330,9 +352,11 @@ void SemanticGraph::collectVertices(Operation *op) {
       for (Operation &child : block) {
         for (OpResult res : child.getResults())
           valueVertex_[res] = addVertex(valueIntrinsic(res));
-        collectVertices(&child);
+        if (llvm::Error error = collectVertices(&child))
+          return error;
       }
     }
+  return llvm::Error::success();
 }
 
 llvm::Error SemanticGraph::detectCarriers(ModuleOp module) {
@@ -467,7 +491,8 @@ void SemanticGraph::buildAdjacency() {
 
 llvm::Expected<SemanticGraph> SemanticGraph::build(ModuleOp module) {
   SemanticGraph graph;
-  graph.collectVertices(module.getOperation());
+  if (llvm::Error error = graph.collectVertices(module.getOperation()))
+    return std::move(error);
   if (llvm::Error error = graph.detectCarriers(module))
     return std::move(error);
   if (llvm::Error error = graph.buildEdges(module))
