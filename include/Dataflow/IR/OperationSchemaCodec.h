@@ -2,12 +2,14 @@
 #define DATAFLOW_IR_OPERATIONSCHEMACODEC_H
 
 #include "Common/Artifact.h"
+#include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Dataflow/IR/OperationSchema.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace dataflow {
 
@@ -26,6 +28,54 @@ encodeOperationSemanticsCase(OperationSemanticsCase semanticCase);
 
 llvm::Expected<OperationSemanticsCase>
 decodeOperationSemanticsCase(llvm::ArrayRef<std::uint8_t> bytes);
+
+/// Stable codecs for closed Dataflow-owned atoms embedded by downstream
+/// capability records. Decoders reject wrong domains, unknown tags, malformed
+/// payloads, truncation, and trailing bytes.
+llvm::Expected<loom::CanonicalSemanticBytes>
+encodeServiceValueRole(semantics::ServiceValueRole role);
+llvm::Expected<semantics::ServiceValueRole>
+decodeServiceValueRole(llvm::ArrayRef<std::uint8_t> bytes);
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+encodeMemoryAccessForm(semantics::MemoryAccessForm form);
+llvm::Expected<semantics::MemoryAccessForm>
+decodeMemoryAccessForm(llvm::ArrayRef<std::uint8_t> bytes);
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+encodeMemoryMaskForm(semantics::MemoryMaskForm form);
+llvm::Expected<semantics::MemoryMaskForm>
+decodeMemoryMaskForm(llvm::ArrayRef<std::uint8_t> bytes);
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+encodeAtomicOrdering(AtomicOrdering ordering);
+llvm::Expected<AtomicOrdering>
+decodeAtomicOrdering(llvm::ArrayRef<std::uint8_t> bytes);
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+encodeAtomicRmwKind(AtomicRmwKind kind);
+llvm::Expected<AtomicRmwKind>
+decodeAtomicRmwKind(llvm::ArrayRef<std::uint8_t> bytes);
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+encodeVectorAtomicGranularity(VectorAtomicGranularity granularity);
+llvm::Expected<VectorAtomicGranularity>
+decodeVectorAtomicGranularity(llvm::ArrayRef<std::uint8_t> bytes);
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+encodeOptionalVectorAtomicGranularity(
+    std::optional<VectorAtomicGranularity> granularity);
+llvm::Expected<std::optional<VectorAtomicGranularity>>
+decodeOptionalVectorAtomicGranularity(llvm::ArrayRef<std::uint8_t> bytes);
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+encodeSyncScopeRef(const SyncScopeProjection &scope);
+llvm::Expected<SyncScopeProjection>
+decodeSyncScopeRef(llvm::ArrayRef<std::uint8_t> bytes,
+                   ::mlir::MLIRContext *context);
+
+llvm::Expected<loom::CanonicalSemanticBytes> encodeCanonicalBoolean(bool value);
+llvm::Expected<bool> decodeCanonicalBoolean(llvm::ArrayRef<std::uint8_t> bytes);
 
 /// Produces the complete stable bytes of one typed actor projection.
 llvm::Expected<loom::CanonicalSemanticBytes>

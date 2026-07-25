@@ -1,6 +1,7 @@
 #include "Dataflow/IR/OperationSchemaCodec.h"
 
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowServiceSchema.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
@@ -14,6 +15,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,12 +27,34 @@ namespace {
 constexpr char kSchemaDomain[] = "loom.dataflow.operation-schema-id\0";
 constexpr char kSemanticsDomain[] = "loom.dataflow.operation-semantics-case\0";
 constexpr char kProjectionDomain[] = "loom.dataflow.actor-schema-projection\0";
+constexpr char kServiceRoleDomain[] = "loom.dataflow.service-value-role\0";
+constexpr char kMemoryAccessFormDomain[] = "loom.dataflow.memory-access-form\0";
+constexpr char kMemoryMaskFormDomain[] = "loom.dataflow.memory-mask-form\0";
+constexpr char kAtomicOrderingDomain[] = "loom.dataflow.atomic-ordering\0";
+constexpr char kAtomicRmwKindDomain[] = "loom.dataflow.atomic-rmw-kind\0";
+constexpr char kVectorAtomicGranularityDomain[] =
+    "loom.dataflow.vector-atomic-granularity\0";
+constexpr char kOptionalVectorAtomicGranularityDomain[] =
+    "loom.dataflow.optional-vector-atomic-granularity\0";
+constexpr char kSyncScopeRefDomain[] = "loom.dataflow.sync-scope-ref\0";
+constexpr char kCanonicalBooleanDomain[] = "loom.dataflow.canonical-boolean\0";
 
 void appendU32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
   bytes.push_back(static_cast<std::uint8_t>(value >> 24));
   bytes.push_back(static_cast<std::uint8_t>(value >> 16));
   bytes.push_back(static_cast<std::uint8_t>(value >> 8));
   bytes.push_back(static_cast<std::uint8_t>(value));
+}
+
+void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
+  for (unsigned shift = 56; shift != 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+  bytes.push_back(static_cast<std::uint8_t>(value));
+}
+
+void appendString(std::vector<std::uint8_t> &bytes, llvm::StringRef value) {
+  appendU64(bytes, value.size());
+  bytes.insert(bytes.end(), value.bytes_begin(), value.bytes_end());
 }
 
 std::vector<std::uint8_t> expectedVocabularyBytes(llvm::StringRef domain,
@@ -160,6 +184,212 @@ bool checkVocabularyCodecs() {
   ok &= expectFailure(encodeOperationSchemaId(static_cast<OperationSchemaId>(
                           std::numeric_limits<std::uint32_t>::max())),
                       "unknown operation schema");
+  return ok;
+}
+
+template <typename Value, typename Encoder, typename Decoder>
+bool checkOwnedEnumCodec(Value value, Encoder encode, Decoder decode,
+                         llvm::StringRef domain, std::uint32_t wireTag,
+                         llvm::StringRef label) {
+  auto bytes = encode(value);
+  if (!bytes) {
+    llvm::errs() << llvm::toString(bytes.takeError()) << '\n';
+    return false;
+  }
+
+  bool ok = true;
+  auto decoded = decode(bytes->bytes());
+  if (!decoded || *decoded != value) {
+    if (!decoded)
+      llvm::errs() << llvm::toString(decoded.takeError()) << '\n';
+    else
+      llvm::errs() << label << " wire roundtrip changed identity\n";
+    ok = false;
+  }
+
+  const std::vector<std::uint8_t> expected =
+      expectedVocabularyBytes(domain, wireTag);
+  if (bytes->bytes() != llvm::ArrayRef<std::uint8_t>(expected)) {
+    llvm::errs() << label << " did not keep its explicit stable wire tag\n";
+    ok = false;
+  }
+
+  std::vector<std::uint8_t> unknown = expected;
+  std::fill(unknown.end() - 4, unknown.end(), 0xff);
+  ok &= expectFailure(decode(unknown), "unknown");
+  std::vector<std::uint8_t> trailing = expected;
+  trailing.push_back(0);
+  ok &= expectFailure(decode(trailing), "trailing bytes");
+  return ok;
+}
+
+bool checkOwnedAtomCodecs(MLIRContext &context) {
+  using semantics::MemoryAccessForm;
+  using semantics::MemoryMaskForm;
+  using semantics::ServiceValueRole;
+
+  bool ok = true;
+  ok &= checkOwnedEnumCodec(
+      ServiceValueRole::Mask,
+      [](ServiceValueRole value) { return encodeServiceValueRole(value); },
+      [](llvm::ArrayRef<std::uint8_t> bytes) {
+        return decodeServiceValueRole(bytes);
+      },
+      llvm::StringRef(kServiceRoleDomain, sizeof(kServiceRoleDomain) - 1), 7,
+      "service value role");
+  ok &= checkOwnedEnumCodec(
+      MemoryAccessForm::Indexed,
+      [](MemoryAccessForm value) { return encodeMemoryAccessForm(value); },
+      [](llvm::ArrayRef<std::uint8_t> bytes) {
+        return decodeMemoryAccessForm(bytes);
+      },
+      llvm::StringRef(kMemoryAccessFormDomain,
+                      sizeof(kMemoryAccessFormDomain) - 1),
+      3, "memory access form");
+  ok &= checkOwnedEnumCodec(
+      MemoryMaskForm::Dynamic,
+      [](MemoryMaskForm value) { return encodeMemoryMaskForm(value); },
+      [](llvm::ArrayRef<std::uint8_t> bytes) {
+        return decodeMemoryMaskForm(bytes);
+      },
+      llvm::StringRef(kMemoryMaskFormDomain, sizeof(kMemoryMaskFormDomain) - 1),
+      2, "memory mask form");
+  ok &= checkOwnedEnumCodec(
+      AtomicOrdering::AcqRel,
+      [](AtomicOrdering value) { return encodeAtomicOrdering(value); },
+      [](llvm::ArrayRef<std::uint8_t> bytes) {
+        return decodeAtomicOrdering(bytes);
+      },
+      llvm::StringRef(kAtomicOrderingDomain, sizeof(kAtomicOrderingDomain) - 1),
+      5, "atomic ordering");
+  ok &= checkOwnedEnumCodec(
+      AtomicRmwKind::FMinimumNum,
+      [](AtomicRmwKind value) { return encodeAtomicRmwKind(value); },
+      [](llvm::ArrayRef<std::uint8_t> bytes) {
+        return decodeAtomicRmwKind(bytes);
+      },
+      llvm::StringRef(kAtomicRmwKindDomain, sizeof(kAtomicRmwKindDomain) - 1),
+      23, "atomic RMW kind");
+  ok &= checkOwnedEnumCodec(
+      VectorAtomicGranularity::PerLane,
+      [](VectorAtomicGranularity value) {
+        return encodeVectorAtomicGranularity(value);
+      },
+      [](llvm::ArrayRef<std::uint8_t> bytes) {
+        return decodeVectorAtomicGranularity(bytes);
+      },
+      llvm::StringRef(kVectorAtomicGranularityDomain,
+                      sizeof(kVectorAtomicGranularityDomain) - 1),
+      2, "vector atomic granularity");
+
+  auto roleBytes = encodeServiceValueRole(ServiceValueRole::Mask);
+  if (!roleBytes) {
+    llvm::errs() << llvm::toString(roleBytes.takeError()) << '\n';
+    ok = false;
+  } else {
+    ok &= expectFailure(decodeMemoryAccessForm(roleBytes->bytes()),
+                        "wrong semantic domain");
+  }
+
+  for (std::optional<VectorAtomicGranularity> value :
+       {std::optional<VectorAtomicGranularity>{},
+        std::optional<VectorAtomicGranularity>{
+            VectorAtomicGranularity::PerLane}}) {
+    auto bytes = encodeOptionalVectorAtomicGranularity(value);
+    if (!bytes) {
+      llvm::errs() << llvm::toString(bytes.takeError()) << '\n';
+      ok = false;
+      continue;
+    }
+    auto decoded = decodeOptionalVectorAtomicGranularity(bytes->bytes());
+    if (!decoded || *decoded != value) {
+      if (!decoded)
+        llvm::errs() << llvm::toString(decoded.takeError()) << '\n';
+      else
+        llvm::errs() << "optional granularity wire roundtrip changed value\n";
+      ok = false;
+    }
+    std::vector<std::uint8_t> expected = expectedVocabularyBytes(
+        llvm::StringRef(kOptionalVectorAtomicGranularityDomain,
+                        sizeof(kOptionalVectorAtomicGranularityDomain) - 1),
+        value.has_value() ? 1 : 0);
+    if (value)
+      appendU32(expected, 2);
+    if (bytes->bytes() != llvm::ArrayRef<std::uint8_t>(expected)) {
+      llvm::errs() << "optional granularity did not keep stable bytes\n";
+      ok = false;
+    }
+  }
+  std::vector<std::uint8_t> invalidPresence = expectedVocabularyBytes(
+      llvm::StringRef(kOptionalVectorAtomicGranularityDomain,
+                      sizeof(kOptionalVectorAtomicGranularityDomain) - 1),
+      2);
+  ok &= expectFailure(decodeOptionalVectorAtomicGranularity(invalidPresence),
+                      "not a canonical boolean");
+
+  Builder builder(&context);
+  SyncScopeProjection scope{SyncScopeKind::Target, builder.getStringAttr("gpu"),
+                            builder.getStringAttr("device")};
+  auto scopeBytes = encodeSyncScopeRef(scope);
+  if (!scopeBytes) {
+    llvm::errs() << llvm::toString(scopeBytes.takeError()) << '\n';
+    ok = false;
+  } else {
+    auto decoded = decodeSyncScopeRef(scopeBytes->bytes(), &context);
+    const bool matches = decoded && decoded->kind == scope.kind &&
+                         decoded->targetNamespace == scope.targetNamespace &&
+                         decoded->targetKey == scope.targetKey;
+    if (!matches) {
+      if (!decoded)
+        llvm::errs() << llvm::toString(decoded.takeError()) << '\n';
+      else
+        llvm::errs() << "sync scope wire roundtrip changed identity\n";
+      ok = false;
+    }
+    std::vector<std::uint8_t> expected = expectedVocabularyBytes(
+        llvm::StringRef(kSyncScopeRefDomain, sizeof(kSyncScopeRefDomain) - 1),
+        3);
+    appendString(expected, "gpu");
+    appendString(expected, "device");
+    if (scopeBytes->bytes() != llvm::ArrayRef<std::uint8_t>(expected)) {
+      llvm::errs() << "sync scope did not keep stable bytes\n";
+      ok = false;
+    }
+    std::vector<std::uint8_t> unknown = expected;
+    const std::size_t tagOffset = sizeof(kSyncScopeRefDomain) - 1 + 8;
+    std::fill(unknown.begin() + tagOffset, unknown.begin() + tagOffset + 4,
+              0xff);
+    ok &= expectFailure(decodeSyncScopeRef(unknown, &context), "unknown");
+  }
+
+  auto booleanBytes = encodeCanonicalBoolean(true);
+  const std::vector<std::uint8_t> expectedBoolean = expectedVocabularyBytes(
+      llvm::StringRef(kCanonicalBooleanDomain,
+                      sizeof(kCanonicalBooleanDomain) - 1),
+      1);
+  if (!booleanBytes ||
+      booleanBytes->bytes() != llvm::ArrayRef<std::uint8_t>(expectedBoolean)) {
+    if (!booleanBytes)
+      llvm::errs() << llvm::toString(booleanBytes.takeError()) << '\n';
+    else
+      llvm::errs() << "canonical boolean did not keep stable bytes\n";
+    ok = false;
+  } else {
+    auto decoded = decodeCanonicalBoolean(booleanBytes->bytes());
+    if (!decoded || !*decoded) {
+      if (!decoded)
+        llvm::errs() << llvm::toString(decoded.takeError()) << '\n';
+      else
+        llvm::errs() << "canonical boolean wire roundtrip changed value\n";
+      ok = false;
+    }
+  }
+  std::vector<std::uint8_t> malformedBoolean = expectedVocabularyBytes(
+      llvm::StringRef(kCanonicalBooleanDomain,
+                      sizeof(kCanonicalBooleanDomain) - 1),
+      2);
+  ok &= expectFailure(decodeCanonicalBoolean(malformedBoolean),
+                      "not a canonical boolean");
   return ok;
 }
 
@@ -341,6 +571,7 @@ int main() {
 
   bool ok = true;
   ok &= checkVocabularyCodecs();
+  ok &= checkOwnedAtomCodecs(context);
   ok &= checkProjectionCodec(context);
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

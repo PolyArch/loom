@@ -1,5 +1,7 @@
 #include "Dataflow/IR/OperationSchemaCodec.h"
 
+#include "OperationSchemaCodecInternal.h"
+
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -358,104 +360,6 @@ llvm::Expected<std::uint32_t> streamStepWireTag(dataflow::StreamStepKind kind) {
     return 8;
   }
   return unknownEnum("stream step kind");
-}
-
-llvm::Expected<std::uint32_t>
-orderingWireTag(dataflow::AtomicOrdering ordering) {
-  using Ordering = dataflow::AtomicOrdering;
-  switch (ordering) {
-  case Ordering::Unordered:
-    return 1;
-  case Ordering::Monotonic:
-    return 2;
-  case Ordering::Acquire:
-    return 3;
-  case Ordering::Release:
-    return 4;
-  case Ordering::AcqRel:
-    return 5;
-  case Ordering::SeqCst:
-    return 6;
-  }
-  return unknownEnum("atomic ordering");
-}
-
-llvm::Expected<std::uint32_t> scopeKindWireTag(dataflow::SyncScopeKind kind) {
-  using Kind = dataflow::SyncScopeKind;
-  switch (kind) {
-  case Kind::System:
-    return 1;
-  case Kind::SingleThread:
-    return 2;
-  case Kind::Target:
-    return 3;
-  }
-  return unknownEnum("sync scope kind");
-}
-
-llvm::Expected<std::uint32_t>
-granularityWireTag(dataflow::VectorAtomicGranularity granularity) {
-  using Granularity = dataflow::VectorAtomicGranularity;
-  switch (granularity) {
-  case Granularity::WholePayload:
-    return 1;
-  case Granularity::PerLane:
-    return 2;
-  }
-  return unknownEnum("vector atomic granularity");
-}
-
-llvm::Expected<std::uint32_t> rmwKindWireTag(dataflow::AtomicRmwKind kind) {
-  using Kind = dataflow::AtomicRmwKind;
-  switch (kind) {
-  case Kind::Xchg:
-    return 1;
-  case Kind::Add:
-    return 2;
-  case Kind::Sub:
-    return 3;
-  case Kind::And:
-    return 4;
-  case Kind::Nand:
-    return 5;
-  case Kind::Or:
-    return 6;
-  case Kind::Xor:
-    return 7;
-  case Kind::Max:
-    return 8;
-  case Kind::Min:
-    return 9;
-  case Kind::UMax:
-    return 10;
-  case Kind::UMin:
-    return 11;
-  case Kind::FAdd:
-    return 12;
-  case Kind::FSub:
-    return 13;
-  case Kind::FMax:
-    return 14;
-  case Kind::FMin:
-    return 15;
-  case Kind::UIncWrap:
-    return 16;
-  case Kind::UDecWrap:
-    return 17;
-  case Kind::USubCond:
-    return 18;
-  case Kind::USubSat:
-    return 19;
-  case Kind::FMaximum:
-    return 20;
-  case Kind::FMinimum:
-    return 21;
-  case Kind::FMaximumNum:
-    return 22;
-  case Kind::FMinimumNum:
-    return 23;
-  }
-  return unknownEnum("atomic RMW kind");
 }
 
 llvm::Expected<std::uint32_t> floatFormatWireTag(FloatType type) {
@@ -936,7 +840,8 @@ llvm::Error validateConstant(Reader &reader) {
 
 llvm::Error encodeScope(Writer &writer,
                         const dataflow::SyncScopeProjection &scope) {
-  if (llvm::Error error = writeMappedTag(writer, scopeKindWireTag(scope.kind)))
+  if (llvm::Error error = writeMappedTag(
+          writer, dataflow::detail::syncScopeKindWireTag(scope.kind)))
     return error;
   if (scope.kind == dataflow::SyncScopeKind::Target) {
     if (!scope.targetNamespace || !scope.targetKey ||
@@ -952,10 +857,13 @@ llvm::Error encodeScope(Writer &writer,
 }
 
 llvm::Error validateScope(Reader &reader) {
-  auto kind = readClosedTag(reader, 3, "sync scope kind tag");
+  auto rawKind = reader.u32("sync scope kind tag");
+  if (!rawKind)
+    return rawKind.takeError();
+  auto kind = dataflow::detail::syncScopeKindFromWireTag(*rawKind);
   if (!kind)
     return kind.takeError();
-  if (*kind != 3)
+  if (*kind != dataflow::SyncScopeKind::Target)
     return llvm::Error::success();
   auto targetNamespace = reader.string("sync scope target namespace");
   if (!targetNamespace)
@@ -974,7 +882,8 @@ llvm::Error encodeOptionalGranularity(
   writer.boolean(granularity.has_value());
   if (!granularity)
     return llvm::Error::success();
-  return writeMappedTag(writer, granularityWireTag(*granularity));
+  return writeMappedTag(
+      writer, dataflow::detail::vectorAtomicGranularityWireTag(*granularity));
 }
 
 llvm::Error validateOptionalGranularity(Reader &reader) {
@@ -983,7 +892,11 @@ llvm::Error validateOptionalGranularity(Reader &reader) {
     return present.takeError();
   if (!*present)
     return llvm::Error::success();
-  auto granularity = readClosedTag(reader, 2, "vector atomic granularity tag");
+  auto rawGranularity = reader.u32("vector atomic granularity tag");
+  if (!rawGranularity)
+    return rawGranularity.takeError();
+  auto granularity =
+      dataflow::detail::vectorAtomicGranularityFromWireTag(*rawGranularity);
   if (!granularity)
     return granularity.takeError();
   return llvm::Error::success();
@@ -1007,8 +920,8 @@ llvm::Error validateAlignment(Reader &reader) {
 
 llvm::Error encodeAtomicAccess(Writer &writer,
                                const dataflow::AtomicAccessProjection &access) {
-  if (llvm::Error error =
-          writeMappedTag(writer, orderingWireTag(access.ordering)))
+  if (llvm::Error error = writeMappedTag(
+          writer, dataflow::detail::atomicOrderingWireTag(access.ordering)))
     return error;
   if (llvm::Error error = encodeScope(writer, access.scope))
     return error;
@@ -1022,7 +935,10 @@ llvm::Error encodeAtomicAccess(Writer &writer,
 }
 
 llvm::Error validateAtomicAccess(Reader &reader) {
-  auto ordering = readClosedTag(reader, 6, "atomic ordering tag");
+  auto rawOrdering = reader.u32("atomic ordering tag");
+  if (!rawOrdering)
+    return rawOrdering.takeError();
+  auto ordering = dataflow::detail::atomicOrderingFromWireTag(*rawOrdering);
   if (!ordering)
     return ordering.takeError();
   if (llvm::Error error = validateScope(reader))
@@ -1053,7 +969,8 @@ encodeMemoryContract(Writer &writer,
   }
   if (const auto *rmw = std::get_if<dataflow::AtomicRmwProjection>(&contract)) {
     writer.u32(static_cast<std::uint32_t>(MemoryContractWireTag::AtomicRmw));
-    if (llvm::Error error = writeMappedTag(writer, rmwKindWireTag(rmw->kind)))
+    if (llvm::Error error = writeMappedTag(
+            writer, dataflow::detail::atomicRmwKindWireTag(rmw->kind)))
       return error;
     return encodeAtomicAccess(writer, rmw->access);
   }
@@ -1061,11 +978,13 @@ encodeMemoryContract(Writer &writer,
           std::get_if<dataflow::CompareExchangeProjection>(&contract)) {
     writer.u32(
         static_cast<std::uint32_t>(MemoryContractWireTag::CompareExchange));
-    if (llvm::Error error =
-            writeMappedTag(writer, orderingWireTag(exchange->successOrdering)))
+    if (llvm::Error error = writeMappedTag(
+            writer,
+            dataflow::detail::atomicOrderingWireTag(exchange->successOrdering)))
       return error;
-    if (llvm::Error error =
-            writeMappedTag(writer, orderingWireTag(exchange->failureOrdering)))
+    if (llvm::Error error = writeMappedTag(
+            writer,
+            dataflow::detail::atomicOrderingWireTag(exchange->failureOrdering)))
       return error;
     if (llvm::Error error = encodeScope(writer, exchange->scope))
       return error;
@@ -1083,8 +1002,8 @@ encodeMemoryContract(Writer &writer,
   if (!fence)
     return invalid("unknown memory contract projection");
   writer.u32(static_cast<std::uint32_t>(MemoryContractWireTag::Fence));
-  if (llvm::Error error =
-          writeMappedTag(writer, orderingWireTag(fence->ordering)))
+  if (llvm::Error error = writeMappedTag(
+          writer, dataflow::detail::atomicOrderingWireTag(fence->ordering)))
     return error;
   return encodeScope(writer, fence->scope);
 }
@@ -1103,16 +1022,25 @@ llvm::Error validateMemoryContract(Reader &reader) {
   case MemoryContractWireTag::Atomic:
     return validateAtomicAccess(reader);
   case MemoryContractWireTag::AtomicRmw: {
-    auto kind = readClosedTag(reader, 23, "atomic RMW kind tag");
+    auto rawKind = reader.u32("atomic RMW kind tag");
+    if (!rawKind)
+      return rawKind.takeError();
+    auto kind = dataflow::detail::atomicRmwKindFromWireTag(*rawKind);
     if (!kind)
       return kind.takeError();
     return validateAtomicAccess(reader);
   }
   case MemoryContractWireTag::CompareExchange: {
-    auto success = readClosedTag(reader, 6, "success ordering tag");
+    auto rawSuccess = reader.u32("success ordering tag");
+    if (!rawSuccess)
+      return rawSuccess.takeError();
+    auto success = dataflow::detail::atomicOrderingFromWireTag(*rawSuccess);
     if (!success)
       return success.takeError();
-    auto failure = readClosedTag(reader, 6, "failure ordering tag");
+    auto rawFailure = reader.u32("failure ordering tag");
+    if (!rawFailure)
+      return rawFailure.takeError();
+    auto failure = dataflow::detail::atomicOrderingFromWireTag(*rawFailure);
     if (!failure)
       return failure.takeError();
     if (llvm::Error error = validateScope(reader))
@@ -1130,7 +1058,10 @@ llvm::Error validateMemoryContract(Reader &reader) {
     return llvm::Error::success();
   }
   case MemoryContractWireTag::Fence: {
-    auto ordering = readClosedTag(reader, 6, "fence ordering tag");
+    auto rawOrdering = reader.u32("fence ordering tag");
+    if (!rawOrdering)
+      return rawOrdering.takeError();
+    auto ordering = dataflow::detail::atomicOrderingFromWireTag(*rawOrdering);
     if (!ordering)
       return ordering.takeError();
     return validateScope(reader);
