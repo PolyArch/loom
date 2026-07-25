@@ -469,6 +469,12 @@ Dataflow actor contracts are defined by
 contract domain it accepts. Ordinary read or write support does not imply
 atomic, volatile, MMIO, coherence, RMW, compare-exchange, or fence support.
 
+When a capability references a `MemoryConsistencyDomain`, compatibility uses
+that domain's exact Fabric-owned release visibility point, fixed
+linearization/retirement invariants, progress variant, ResourceStates, and
+atomic UsePatterns. An operation engine, provider, Mapping record, or backend
+cannot fill an omitted guarantee with a default or weaken it to best effort.
+
 A Local Memory Service region uses the closed `Storage | Mmio` behavior from
 `docs/spec-fabric-system-adg.md`. A capability that admits volatile actors must
 preserve one at-most-once provider-observable logical operation. A mapped MMIO

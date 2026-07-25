@@ -40,6 +40,13 @@ The Fabric Hardware Description family distinguishes:
 These are typed Fabric concepts. A generic node kind, open dictionary, protocol
 string, or placeholder record is not an alternative system schema.
 
+Every referenced module is selected through the root's canonical
+`ImportedModule` dependency table from `docs/spec-fabric-artifact.md`. A
+module target inside that dependency is encoded as the dependency ordinal plus
+the exact Module-owned local reference. The System root never stores an
+`ArtifactReference<T>` in place of the root dependency or treats a digest as a
+module-local target.
+
 ## Canonical Service Schema
 
 The Canonical Service Schema is the sole owner of logical operation semantics
@@ -665,7 +672,8 @@ fabric.system.acc_core
   EntityId
   InstructionCoreArchitecturalContract
   InstructionCoreMicroarchitecturalRealization
-  exact FabricModuleTemplateRef spatial_core
+  exact (ImportedModule dependency ordinal, FabricModuleTemplateRef)
+    spatial_core
 
 fabric.system.memory_service
   EntityId
@@ -702,7 +710,8 @@ fabric.system.connection
   exact destination endpoint or input-port reference
 
 fabric.system.spatial_attachment
-  exact FabricModuleBoundaryEndpointRef
+  exact (ImportedModule dependency ordinal,
+         FabricModuleBoundaryEndpointRef)
   exact AccCore-local SpatialCore endpoint reference
 
 fabric.system.hardware_domain
@@ -781,10 +790,54 @@ Address { address_width: positive uint32,
           canonical disjoint half-open unsigned ranges }
 MemoryConsistency {
   canonical non-empty participant service or provider references
-  exact visibility, linearization, completion, and progress guarantees
+  release_visibility_point : AtLinearization | ByRetirement
+  progress : BoundedCompletion {
+               progress_clock: ClockDomainRef,
+               max_issue_to_retire_ticks: positive uint64
+             }
+           | FairEventual
   closed ResourceState and atomic UsePattern domains
 }
 ```
+
+`MemoryConsistency` has one fixed linearization and completion contract rather
+than configurable booleans that could weaken software semantics:
+
+* every admitted atomic addressed action and fence has exactly one logical
+  linearization after issue and before retirement;
+* modifying actions on one exact `AtomicObjectKey` form one total modification
+  order, RMW is one indivisible read/write action, and every admitted
+  sequentially-consistent action participates in the domain's one compatible
+  total sequentially-consistent order;
+* acquire visibility required by the exact Dataflow contract is imported
+  before the actor's result and done retirement packet can publish;
+* an addressed actor retires only after its linearization and required
+  visibility obligations hold, while a fence retires only after its exact
+  ordering and visibility closure holds; and
+* all results and done for one actor retire atomically according to the
+  Canonical Service Schema.
+
+`release_visibility_point` is the only current visibility timing choice. It
+states whether a release summary becomes importable at the publishing action's
+linearization or at a provider event no later than its retirement. Fence
+publication and import still follow the carrier and reads-from rules in
+`docs/spec-dataflow-memory-consistency.md`; a fence does not become a free
+global barrier.
+
+`BoundedCompletion` guarantees the declared number of rising-edge ticks of its
+exact `progress_clock` whenever required participants remain clocked, the
+operation is admitted, and downstream retirement is ready. The referenced
+clock must cover the consistency provider that owns completion. `FairEventual`
+guarantees eventual retirement under the domain's already declared fair grant
+policies and downstream progress but claims no numeric bound. There is no
+`Unknown`, timeout, best-effort, or provider-private progress mode. A provider
+unable to implement the selected contract is typed `Unsupported`.
+
+Linearization and completion are fixed schema invariants because the current
+Canonical Dataflow memory model admits no weaker alternative. Visibility point
+and progress class are persisted because they distinguish observable hardware
+capability. Concrete modification order, reads-from, visibility frontiers,
+queue occupancy, and grant state remain dynamic execution state.
 
 The hardware-domain catalog is one canonical sorted-unique sequence keyed by
 `HardwareDomainRef`. A domain reference is declared exactly once. Each

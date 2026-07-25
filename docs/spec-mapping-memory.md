@@ -99,6 +99,12 @@ reads-from, synchronizes-with, sequentially-consistent order, visibility
 frontiers, queue state, and provider timing are execution facts and must not be
 cached or serialized as Mapping truth.
 
+Compatibility also checks the domain's exact release visibility point, fixed
+linearization and completion guarantees, progress variant, ResourceStates,
+and atomic UsePatterns against the selected actor contract and complete route
+and service closure. Mapping neither copies those fields nor substitutes a
+local default when a domain omits or cannot provide a required guarantee.
+
 ## TechMapping Memory Realization
 
 TechMapping owns each selected Memory Realization:

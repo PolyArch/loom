@@ -221,6 +221,13 @@ result assembly, and one logical retirement event. Endpoint payload width and
 service beat width are independent facts; the backend cannot infer
 decomposition from their ratio or reinterpret Physical Tags as vector lanes.
 
+An implementation of a `MemoryConsistencyDomain` must preserve its exact
+release-visibility point, fixed linearization and retirement rules,
+`BoundedCompletion` or `FairEventual` progress contract, ResourceStates, and
+atomic UsePatterns. Backend queues, caches, or protocol adapters may realize
+those facts but cannot silently strengthen one emitted configuration and
+weaken another behind the same Fabric identity.
+
 The leaf-channel shape is mechanical:
 
 ```text

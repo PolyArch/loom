@@ -165,19 +165,27 @@ hardware model.
 
 The Builder likewise does not construct separate connection, domain,
 membership, or crossing catalogs for downstream validation. It hands the
-entire elaborated root to the canonical freeze boundary, and
-`FinalizedFabricDesign` exposes only the sealed root-complete views returned by
-that boundary. A convenience helper that internally records such facts must
-elaborate them into the root before freeze and discard its private state.
+entire authoring root to the canonical finalizer, which alone closes helpers,
+expands instantiations, constructs the private identifier-free root-complete
+candidate, verifies it, and creates sealed persistent views after canonical ID
+assignment. `FinalizedFabricDesign` exposes only those sealed views. A
+convenience helper that internally records such facts must elaborate them into
+the root before finalization and discard its private state.
 
 Finalization performs one all-or-none derivation:
 
 1. close construction scopes and expand all helpers;
 2. resolve every typed reference;
 3. run authoring-boundary checks;
-4. invoke the canonical Fabric verifier and finalizer for every root;
+4. invoke the canonical Fabric finalizer and its private pre-canonical verifier
+   for every root;
 5. derive canonical bytes, identities, and the complete dependency closure;
-6. expose the finalized closure only after every member succeeds.
+6. strictly reimport and reverify every canonical root; and
+7. expose the finalized closure only after every member succeeds.
+
+The Builder cannot call a public freeze hook, construct or subclass
+`FabricArtifactView`, assign persistent local IDs, or assert that a partial
+relation set is root-complete.
 
 Artifact-store publication may write immutable content blobs before the root,
 but it publishes the root reference only after the complete closure is

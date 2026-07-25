@@ -31,8 +31,81 @@ A Mapping root that declares one exact Fabric upstream binding may encode only
 does not permit rebinding, compatibility matching, or target lookup in another
 Fabric artifact.
 
+An Artifact root is always a Common `ArtifactRootReference`. It never uses this
+local-target framing. `docs/spec-fabric-artifact.md` owns the exact Fabric root
+dependency table and the compact dependency-ordinal projection used when a
+Fabric payload references a local target inside one of those roots.
+
 Symbols, source paths, printer positions, builder handles, native pointers,
 and freeze-local PnR indices are never persistent target identity.
+
+## Owner-Local Reference Kind Catalog
+
+`loom.fabric 1.0` owns this complete existential local-reference catalog. The
+ordinal is the Common `owner_local_kind`; the payload is the exact canonical
+bytes of the named Fabric reference defined in this specification.
+
+| Ordinal | Typed target |
+| ---: | --- |
+| 0 | `FabricModuleTemplateRef` |
+| 1 | `FabricPeOccurrenceRef` |
+| 2 | `FabricFuTemplateRef` |
+| 3 | `FabricFuOccurrenceRef` |
+| 4 | `FabricMemoryOccurrenceRef` |
+| 5 | `FabricSwitchOccurrenceRef` |
+| 6 | `FabricFifoOccurrenceRef` |
+| 7 | `FabricBoundaryOccurrenceRef` |
+| 8 | `HostCoreOccurrenceRef` |
+| 9 | `AccCoreOccurrenceRef` |
+| 10 | `SystemMemoryServiceRef` |
+| 11 | `SystemServiceEndpointRef` |
+| 12 | `SystemServiceTransformRef` |
+| 13 | `SystemTransportResourceRef` |
+| 14 | `HardwareDomainRef` |
+| 15 | `ExternalBoundaryRef` |
+| 16 | `SpatialCoreOccurrenceRef` |
+| 17 | `InstructionCoreContextRef` |
+| 18 | `InstructionContextRef` |
+| 19 | `FabricFuTemplateNodeRef` |
+| 20 | `FabricFuOccurrenceNodeRef` |
+| 21 | `FabricFuTemplatePortRef` |
+| 22 | `FabricFuNodePortRef` |
+| 23 | `FabricFuOccurrencePortRef` |
+| 24 | `FabricFuCapabilityTemplateRef` |
+| 25 | `FabricModuleBoundaryEndpointRef` |
+| 26 | `FabricTransportEndpointRef` |
+| 27 | `FabricMemoryEndpointRef` |
+| 28 | `FabricMemoryOperationPortRef` |
+| 29 | `FabricMemoryCapabilityAlternativeRef` |
+| 30 | `FabricMemoryOperationContextRef` |
+| 31 | `FabricMemoryServiceRef` |
+| 32 | `FabricMemoryServiceRegionRef` |
+| 33 | `FabricTransferPatternRef` |
+| 34 | `FabricResourceStateRef` |
+| 35 | `FabricUsePatternRef` |
+| 36 | `FabricSemanticConfigFieldRef` |
+| 37 | `FabricPhysicalRefinementDomainRef` |
+| 38 | `FabricPhysicalTraversalRef` |
+| 39 | `LocalMemoryServiceRef` |
+| 40 | `ManagerEndpointRef` |
+| 41 | `SubordinateEndpointRef` |
+| 42 | `MemoryConsistencyDomainRef` |
+| 43 | `ClockDomainRef` |
+| 44 | `ResetDomainRef` |
+
+One generated Fabric declaration owns this table, the C++ enum, each typed
+codec registration, strict decoder, and validator dispatch. A kind ordinal is
+stable for all schema 1.x versions. New kinds append under a compatible minor
+revision; reordering, deleting, repurposing, or changing a target's payload
+meaning requires a major revision. Root references use their separate Common
+variant and consume no local-kind ordinal.
+
+Role-refined kinds intentionally reuse the canonical bytes of their underlying
+reference while selecting a stricter validator. This is one target encoding
+with several static contracts, not several identities. Nested owner unions and
+endpoint components are encoded by their containing target codec and do not
+receive standalone local-kind ordinals unless this catalog explicitly lists
+them.
 
 ## Mapping-Visible Entity Catalog
 
@@ -106,6 +179,25 @@ InstructionCoreContextRef = (AccCoreOccurrenceRef, fixed ordinal zero)
 ```
 
 Equal numeric ordinals do not make these references interchangeable.
+
+## Module Template Boundary References
+
+A reusable module boundary endpoint is owner-relative and is not a physical
+occurrence endpoint:
+
+```text
+FabricModuleBoundaryEndpointRef =
+  (FabricModuleTemplateRef, Input | Output, endpoint ordinal)
+```
+
+Its type, direction, token or memory plane, width, and role are recovered from
+the exact Module root. A System root that imports that Module encodes the
+module dependency-table ordinal followed by this local reference. The scoped
+pair is equivalent to the complete cross-artifact reference; neither the
+dependency ordinal nor the local payload is meaningful alone.
+
+Module boundary references define attachment correspondence. They are not
+Spatial RouteTree endpoints or independently consumable capacity resources.
 
 ## FU-Internal Structural References
 
@@ -543,9 +635,13 @@ Anchor-level tests cover:
 * every token and memory endpoint owner projects exactly to its complete
   inventory-owner reference, including `SpatialCoreOccurrenceRef`;
 * wrong-owner, out-of-range, foreign-artifact, and deprecated-alias inputs are
-  rejected; and
+  rejected;
 * parse, canonical print, byte emission, and import resolve the same exact
-  reference.
+  reference;
+* every registered owner-local kind round-trips through its owner codec, while
+  unknown, reordered, or wrong-refinement kinds are rejected; and
+* a module boundary endpoint resolves only against its exact Module dependency
+  and cannot be treated as a concrete occurrence endpoint.
 
 Tests do not enumerate every owner/ordinal pair, freeze data structure, printer
 whitespace, or native PnR index width.

@@ -151,6 +151,13 @@ selected Fabric operation port, `MemoryConsistencyDomain`, use pattern,
 resource state, grant policy, and Mapping. Hardware delay may postpone any
 provider event, but it cannot change the logical memory-order contract.
 
+The provider must implement the exact domain release-visibility point and
+`BoundedCompletion` or `FairEventual` progress guarantee. It cannot replace
+them with a simulator timeout, zero-latency default, or private completion
+policy. A bounded guarantee is checked in rising-edge ticks of its exact Fabric
+`progress_clock`; a fair-eventual guarantee is checked against the declared
+grant and downstream-progress premises.
+
 The Dataflow software contract for atomic, RMW, compare-exchange, fence, and
 volatile actors is defined by `docs/spec-dataflow-memory-consistency.md`.
 A `MemoryConsistencyDomain` whose complete participant and service closure is
