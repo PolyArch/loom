@@ -50,5 +50,4 @@ add_mlir_dialect_library(MLIRDataflow
   MLIRMathDialect
   MLIRSideEffectInterfaces
   MLIRSupport
-  MLIRUBDialect
 )

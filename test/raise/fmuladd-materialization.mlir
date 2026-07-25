@@ -5,7 +5,7 @@
 // RUN: loom-raise-opt --loom-materialize-fmuladd=shape=fused %t/choice.mlir | mlir-opt --convert-math-to-llvm --convert-arith-to-llvm | FileCheck %s --check-prefix=FUSED-LLVM --implicit-check-not=constrained
 // RUN: loom-raise-opt --loom-materialize-fmuladd=shape=split %t/choice.mlir | mlir-opt --convert-math-to-llvm --convert-arith-to-llvm | FileCheck %s --check-prefix=SPLIT-LLVM --implicit-check-not=constrained
 // RUN: loom-raise-opt --loom-materialize-fmuladd=shape=split %t/choice.mlir | mlir-opt --math-uplift-to-fma | FileCheck %s --check-prefix=SPLIT-KEPT --implicit-check-not=math.fma
-// RUN: not loom-raise-opt --loom-materialize-fmuladd=shape=fused --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t/unrepresentable.mlir 2>&1 | FileCheck %s --check-prefix=REFUSE
+// RUN: loom-raise-opt --loom-materialize-fmuladd=shape=fused %t/unrepresentable.mlir | FileCheck %s --check-prefix=SCOPED
 // RUN: loom-raise-opt --loom-materialize-fmuladd=shape=fused %t/nested.mlir | FileCheck %s --check-prefix=NESTED --implicit-check-not=llvm.intr.fmuladd
 
 // `llvm.intr.fmuladd` states a choice, not a computation: the target may fuse
@@ -57,16 +57,16 @@
 // SPLIT-LLVM: llvm.fadd %[[LPROD]], %arg2 {fastmathFlags = #llvm.fastmath<nnan>} : f32
 
 // A callable stating a floating-point policy no standard operation restates
-// cannot receive either shape. The transform is atomic, so refusing it leaves
-// every fmuladd in the module untouched, including the one that on its own
-// would have been representable.
-// REFUSE: error: 'llvm.intr.fmuladd' op cannot be materialized
-// REFUSE-LABEL: llvm.func @representable
-// REFUSE: llvm.intr.fmuladd
-// REFUSE-LABEL: llvm.func @estimated
-// REFUSE: llvm.intr.fmuladd
-// REFUSE-NOT: math.fma
-// REFUSE-NOT: arith.mulf
+// cannot receive either shape. That refusal is local to the intrinsic: a
+// representable sibling still receives the selected typed shape, while the
+// unrepresentable intrinsic remains explicit for candidate finalization to
+// reject if its region is selected for SpatialCore.
+// SCOPED-LABEL: llvm.func @representable
+// SCOPED: math.fma %arg0, %arg1, %arg2 : f32
+// SCOPED-NOT: llvm.intr.fmuladd
+// SCOPED-LABEL: llvm.func @estimated
+// SCOPED: llvm.intr.fmuladd
+// SCOPED-NOT: math.fma
 
 // A native func.func owns a nested imported llvm.func held under a
 // builtin.module. Each callable region processes only the operations it owns:

@@ -663,9 +663,6 @@ std::uint64_t estimateWeightedOperationScore(
 /// diagnostics into the report.
 void projectRunObservations(SimulatorState &state, DFGSimulationReport &report);
 
-bool isSupportedLLVMCall(mlir::LLVM::CallOp op);
-bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
-                                 llvm::ArrayRef<Token> operands, Token &result);
 bool isSupportedPointerICmp(mlir::LLVM::ICmpOp op);
 llvm::Expected<Token> evaluatePointerICmp(mlir::LLVM::ICmpOp op,
                                           const Token &lhs, const Token &rhs);

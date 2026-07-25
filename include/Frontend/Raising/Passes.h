@@ -85,13 +85,14 @@ enum class FMulAddExecutionShape {
   Split,
 };
 
-// Materialize the selected execution shape for every llvm.intr.fmuladd in
-// each callable region, preserving exact types and locations and carrying the
-// source fast-math flags the selected shape still permits. A callable stating
-// a floating-point policy the standard operations cannot restate refuses the
-// selection; the transform is atomic, so a refusal leaves the module
-// unchanged. Mechanical S0 raising never runs this pass: the shape is
-// candidate lineage, not a mechanical disposition.
+// Materialize the selected execution shape for each exactly representable
+// llvm.intr.fmuladd in callable regions, preserving exact types and locations
+// and carrying the source fast-math flags the selected shape still permits.
+// An intrinsic whose exact types or enclosing floating-point policy the
+// standard operations cannot restate remains explicit without rejecting
+// representable siblings.
+// Mechanical S0 raising never runs this pass: the shape is candidate lineage,
+// not a mechanical disposition.
 std::unique_ptr<::mlir::Pass>
 createMaterializeFMulAddPass(FMulAddExecutionShape shape);
 

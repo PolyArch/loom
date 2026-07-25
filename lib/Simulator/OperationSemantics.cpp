@@ -30,7 +30,7 @@ constexpr const char *kSupportedPrimitiveOperations[] = {
     "llvm.fneg",          "llvm.select",       "llvm.intr.fshl",
     "llvm.intr.bswap",    "llvm.intr.umin",    "llvm.intr.umax",
     "llvm.intr.usub.sat", "llvm.intr.smin",    "llvm.intr.smax",
-    "llvm.intr.ctlz",     "llvm.intr.fmuladd", "llvm.intr.abs",
+    "llvm.intr.ctlz",     "llvm.intr.abs",
     "llvm.intr.fabs",     "math.absf",         "math.absi",
     "math.sin",           "math.cos",          "math.tan",
     "math.sinh",          "math.cosh",         "math.tanh",
@@ -756,12 +756,6 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
           "%s cannot represent absolute value of int64 minimum",
           opName.str().c_str());
     return PrimitiveValue::integer(value < 0 ? -value : value);
-  }
-  if (opName == "llvm.intr.fmuladd") {
-    if (llvm::Error arity = requireArity(opName, operands, 3))
-      return std::move(arity);
-    return PrimitiveValue::floating(
-        asFloat(operands[0]) * asFloat(operands[1]) + asFloat(operands[2]));
   }
   if (opName == "llvm.intr.fabs")
     return evaluateMathUnary(opName, operands);

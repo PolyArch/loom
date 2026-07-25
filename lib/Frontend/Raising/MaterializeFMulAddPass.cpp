@@ -28,10 +28,9 @@
 // `arith` floating operations state no environment of their own, so a callable
 // stating one that they cannot restate cannot receive either shape.
 //
-// The transform is atomic. Every intrinsic is proved representable before any
-// is replaced, so a refused selection leaves the module exactly as it was
-// rather than a partially materialized mixture of decided and undecided
-// operations.
+// Representability is intrinsic-local. An intrinsic whose complete semantics
+// the selected standard form cannot restate remains explicit; it does not
+// prevent representable siblings from receiving the selected shape.
 
 #include "Frontend/Raising/Passes.h"
 
@@ -52,28 +51,6 @@
 namespace {
 
 using loom::raising::FMulAddExecutionShape;
-
-// Every value the materialization has to restate, checked before any of them
-// is replaced.
-::mlir::LogicalResult requireRepresentable(::mlir::LLVM::FMulAddOp op,
-                                           FMulAddExecutionShape shape) {
-  for (::mlir::Value operand : op.getOperands())
-    if (!loom::raising::isExactNumericType(operand.getType()))
-      return op.emitOpError()
-             << "cannot be materialized: operand type " << operand.getType()
-             << " has no exact standard floating counterpart";
-  if (!loom::raising::isExactNumericType(op.getRes().getType()))
-    return op.emitOpError()
-           << "cannot be materialized: result type " << op.getRes().getType()
-           << " has no exact standard floating counterpart";
-  if (loom::raising::enclosingFloatingPolicyBlocksRewrite(op))
-    return op.emitOpError()
-           << "cannot be materialized: the enclosing callable states a "
-              "floating-point policy the "
-           << (shape == FMulAddExecutionShape::Fused ? "fused" : "split")
-           << " form cannot restate";
-  return ::mlir::success();
-}
 
 // Replace one proved-representable intrinsic with the selected shape. The
 // replacement keeps the source location and the exact operand and result
@@ -142,8 +119,8 @@ struct MaterializeFMulAddPass
     return "loom-materialize-fmuladd";
   }
   ::llvm::StringRef getDescription() const final {
-    return "Materialize one selected execution shape for every "
-           "llvm.intr.fmuladd in each callable region.";
+    return "Materialize one selected execution shape for each exactly "
+           "representable llvm.intr.fmuladd in callable regions.";
   }
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
@@ -170,25 +147,18 @@ struct MaterializeFMulAddPass
     }
 
     ::llvm::SmallVector<::mlir::LLVM::FMulAddOp> selected;
-    ::mlir::LogicalResult representable = loom::raising::forEachCallableRegion(
+    (void)loom::raising::forEachCallableRegion(
         getOperation(), [&](::mlir::Region &region) {
-          ::mlir::WalkResult walked = loom::raising::forEachOwnedOperation(
+          (void)loom::raising::forEachOwnedOperation(
               region, [&](::mlir::Operation *op) {
                 auto fmuladd = ::mlir::dyn_cast<::mlir::LLVM::FMulAddOp>(op);
-                if (!fmuladd)
-                  return ::mlir::WalkResult::advance();
-                if (failed(requireRepresentable(fmuladd, shape.getValue())))
-                  return ::mlir::WalkResult::interrupt();
-                selected.push_back(fmuladd);
+                if (fmuladd && loom::raising::restatesExactly(
+                                   fmuladd.getOperation(), /*floating=*/true))
+                  selected.push_back(fmuladd);
                 return ::mlir::WalkResult::advance();
               });
-          return walked.wasInterrupted() ? ::mlir::failure()
-                                         : ::mlir::success();
+          return ::mlir::success();
         });
-
-    // Nothing has been replaced yet, so a refusal leaves the module untouched.
-    if (failed(representable))
-      return signalPassFailure();
 
     if (selected.empty())
       return markAllAnalysesPreserved();

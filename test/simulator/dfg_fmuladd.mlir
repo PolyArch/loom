@@ -1,17 +1,10 @@
-// RUN: loom-dfg-sim %s --graph fmuladd --output %t.json
-// RUN: FileCheck %s < %t.json
-// RUN: loom-dfg-sim %s --graph split_mulf_addf --output %t.split.json
+// RUN: rm -rf %t.dir
+// RUN: split-file %s %t.dir
+// RUN: not loom-dfg-sim %t.dir/raw.mlir --graph fmuladd --output %t.json 2>&1 | FileCheck %s --check-prefix=FMULADD-REJECT
+// RUN: loom-dfg-sim %t.dir/split.mlir --graph split_mulf_addf --output %t.split.json
 // RUN: FileCheck %s --check-prefix=SPLIT < %t.split.json
 
-// CHECK-DAG: "kind": "dfg_sim_report"
-// CHECK-DAG: "workload": "fmuladd"
-// CHECK-DAG: "graph": "fmuladd"
-// CHECK-DAG: "status": "pass"
-// CHECK-DAG: "metric_definition": "weighted_operations_plus_library_work_diversity_and_address.v1"
-// CHECK-DAG: "operation_cost_score": 15
-// CHECK-DAG: "wavefront_steps": 3
-// CHECK-DAG: "event_count": 5
-// CHECK-DAG: "f32:10"
+// FMULADD-REJECT: finalized graph contains unregistered actor 'llvm.intr.fmuladd'
 
 // SPLIT-DAG: "kind": "dfg_sim_report"
 // SPLIT-DAG: "workload": "split_mulf_addf"
@@ -23,6 +16,7 @@
 // SPLIT-DAG: "event_count": 6
 // SPLIT-DAG: "f32:10"
 
+//--- raw.mlir
 module {
   dataflow.graph private @fmuladd(%ctrl: none) -> (f32)
       attributes {input_segments = array<i32: 0, 0, 0>,
@@ -35,7 +29,10 @@ module {
         : (none, f32) -> (none, f32)
     dataflow.graph.return %published#0, %published#1 : none, f32
   }
+}
 
+//--- split.mlir
+module {
   dataflow.graph private @split_mulf_addf(%ctrl: none) -> (f32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {

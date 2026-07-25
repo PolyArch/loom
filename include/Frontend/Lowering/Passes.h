@@ -28,12 +28,6 @@ std::unique_ptr<::mlir::Pass> createLowerForallToThreadPass();
 // spelling is not ownership, graph identity, or artifact identity.
 std::unique_ptr<::mlir::Pass> createLowerForToGraphPass();
 
-// Module-scope pass that expands known library helper calls inside
-// dataflow.graph bodies into primitive operations before PnR.
-// Unknown calls are left in place for the existing unsupported-call
-// diagnostics.
-std::unique_ptr<::mlir::Pass> createLowerKnownLibraryCallsPass();
-
 // Module-scope pass that expands SpatialCore-owned `memref.copy` inside
 // dataflow.graph bodies into a structured memref.load/memref.store element
 // loop. The graph-memory owner then derives the ordinary dataflow.load/store

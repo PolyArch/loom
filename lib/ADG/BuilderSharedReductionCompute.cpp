@@ -494,7 +494,7 @@ void loom::adg::detail::addSharedReductionComputeResources(
                {"!fabric.bits<32>"},
                {FabricOpSpec{
                    {"mac"},
-                   {"llvm.intr.fmuladd"},
+                   {"math.fma"},
                    {"lhs", "rhs", "acc"},
                    {"!fabric.bits<32>", "!fabric.bits<32>", "!fabric.bits<32>"},
                    {"!fabric.bits<32>"},

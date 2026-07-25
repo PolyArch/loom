@@ -27,7 +27,6 @@ void registerExpandGraphMemrefCopyPass();
 void registerLowerForallToThreadPass();
 void registerLowerForToGraphPass();
 void registerLowerGraphConstantsPass();
-void registerLowerKnownLibraryCallsPass();
 void registerLowerGraphMemoryPass();
 
 static void buildPipelineOnOpPassManager(::mlir::OpPassManager &pm) {
@@ -39,7 +38,6 @@ void registerLoweringPasses() {
   registerLowerForallToThreadPass();
   registerLowerForToGraphPass();
   registerLowerGraphConstantsPass();
-  registerLowerKnownLibraryCallsPass();
   registerLowerGraphMemoryPass();
   static bool once = []() {
     ::mlir::PassPipelineRegistration<>(

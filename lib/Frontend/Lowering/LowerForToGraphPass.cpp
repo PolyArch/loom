@@ -1005,7 +1005,6 @@ struct LowerForToGraphPass
     ::mlir::PassManager lowerer(module.getContext());
     lowerer.enableVerifier(false);
     lowerer.addPass(::mlir::createCanonicalizerPass());
-    lowerer.addPass(::loom::lowering::createLowerKnownLibraryCallsPass());
     lowerer.addPass(::loom::lowering::createExpandGraphMemrefCopyPass());
     lowerer.addPass(::mlir::createCanonicalizerPass());
     lowerer.addPass(::loom::lowering::createLowerGraphMemoryPass());

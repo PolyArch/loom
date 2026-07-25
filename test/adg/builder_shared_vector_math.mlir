@@ -12,7 +12,7 @@
 // HARDWARE-DAG: fabric.op [@arith.shli, @arith.shrsi, @arith.shrui]
 // HARDWARE-DAG: fabric.op [@arith.mulf]
 // HARDWARE-DAG: fabric.op [@llvm.fneg]
-// HARDWARE-DAG: fabric.op [@llvm.intr.fmuladd]
+// HARDWARE-DAG: fabric.op [@math.fma]
 // HARDWARE-DAG: fabric.op [@llvm.zext]
 // HARDWARE-DAG: fabric.op [@llvm.trunc]
 // HARDWARE-DAG: fabric.op [@dataflow.stream]

@@ -1,12 +1,6 @@
-// RUN: loom-dfg-sim %s --graph poison_top --output %t.top.json
-// RUN: FileCheck %s --check-prefix=TOP < %t.top.json
+// RUN: not loom-dfg-sim %s --graph poison_top --output %t.top.json 2>&1 | FileCheck %s --check-prefix=POISON-REJECT
 
-// TOP-DAG: "graph": "poison_top"
-// TOP-DAG: "status": "pass"
-// TOP-DAG: "ub.poison": 1
-// TOP-DAG: "final_outputs": [
-// TOP-DAG: "none"
-// TOP-DAG: "i32:0"
+// POISON-REJECT: finalized graph contains unregistered actor 'ub.poison'
 
 module {
   dataflow.graph private @poison_top(%ctrl: none) -> (i32)

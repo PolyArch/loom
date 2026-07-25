@@ -40,15 +40,16 @@ dataflow.graph private @g_no_streaming_user(%arg0: none,
   dataflow.graph.return %arg0, %0 : none, f32
 }
 
-// Integer poison in a graph is a hardware-visible zero seed. It must lower to
-// the same explicit constant source that PnR already maps onto fabric.op.
+// Poison is not a literal and cannot be assigned defined bits by constant
+// lowering. It remains explicit until the canonical operation schema owns its
+// propagation and observation semantics.
 
-// CHECK-LABEL: dataflow.graph private @g_poison_zero_promoted
-// CHECK-NOT: ub.poison
-// CHECK: %[[ZERO:.*]] = dataflow.constant %arg0 {const_value = 0 : i32} : i32
-// CHECK: arith.select %arg1, %[[ZERO]], %arg2 : i32
-dataflow.graph private @g_poison_zero_promoted(%arg0: none, %arg1: i1,
-                                                    %arg2: i32) -> (i32) {
+// CHECK-LABEL: dataflow.graph private @g_poison_preserved
+// CHECK: %[[POISON:.*]] = ub.poison : i32
+// CHECK: arith.select %arg1, %[[POISON]], %arg2 : i32
+// CHECK-NOT: const_value = 0 : i32
+dataflow.graph private @g_poison_preserved(%arg0: none, %arg1: i1,
+                                           %arg2: i32) -> (i32) {
   %poison = ub.poison : i32
   %selected = arith.select %arg1, %poison, %arg2 : i32
   dataflow.graph.return %arg0, %selected : none, i32

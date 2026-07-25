@@ -4,7 +4,6 @@
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -589,25 +588,6 @@ static bool fireGEP(mlir::LLVM::GEPOp op, SimulatorState &state) {
   return recordEvent(state, op->getName().getStringRef());
 }
 
-static bool fireLLVMCall(mlir::LLVM::CallOp op, SimulatorState &state) {
-  if (!isSupportedLLVMCall(op))
-    return false;
-  llvm::SmallVector<Token> operands;
-  operands.reserve(op->getNumOperands());
-  for (mlir::OpOperand &operand : op->getOpOperands()) {
-    if (!hasToken(state.channels, operand))
-      return false;
-  }
-  for (mlir::OpOperand &operand : op->getOpOperands())
-    operands.push_back(popToken(state, operand));
-
-  Token result;
-  if (!executeCmsisNNVecMatMultTS8(op, state, operands, result))
-    return false;
-  emitToken(state, op->getResult(0), result);
-  return true;
-}
-
 static bool hasVectorPrimitiveType(mlir::Operation *op) {
   return llvm::any_of(op->getOperandTypes(),
                       [](mlir::Type type) {
@@ -869,19 +849,6 @@ static bool fireLLVMAddressOf(mlir::LLVM::AddressOfOp op,
   return recordEvent(state, op->getName().getStringRef());
 }
 
-static bool fireUBPoison(mlir::ub::PoisonOp op, SimulatorState &state) {
-  if (state.oneShotOps.contains(op.getOperation()))
-    return false;
-  auto tokenOrErr = zeroToken(op->getResult(0).getType());
-  if (!tokenOrErr) {
-    state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
-    return false;
-  }
-  emitToken(state, op->getResult(0), *tokenOrErr);
-  state.oneShotOps.insert(op.getOperation());
-  return recordEvent(state, op->getName().getStringRef());
-}
-
 static bool fireLLVMICmp(mlir::LLVM::ICmpOp op, SimulatorState &state) {
   mlir::OpOperand &lhsOperand = op->getOpOperand(0);
   mlir::OpOperand &rhsOperand = op->getOpOperand(1);
@@ -987,8 +954,6 @@ bool fireActorOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireLLVMAddressOf(typedOp, state); })
       .Case<mlir::LLVM::ZeroOp>(
           [&](auto typedOp) { return fireLLVMZero(typedOp, state); })
-      .Case<mlir::ub::PoisonOp>(
-          [&](auto typedOp) { return fireUBPoison(typedOp, state); })
       .Case<mlir::LLVM::ICmpOp>(
           [&](auto typedOp) { return fireLLVMICmp(typedOp, state); })
       .Case<mlir::LLVM::SelectOp>(
@@ -999,8 +964,6 @@ bool fireActorOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireLLVMStore(typedOp, state); })
       .Case<mlir::LLVM::MemcpyOp>(
           [&](auto typedOp) { return fireLLVMMemcpy(typedOp, state); })
-      .Case<mlir::LLVM::CallOp>(
-          [&](auto typedOp) { return fireLLVMCall(typedOp, state); })
       .Case<mlir::arith::ConstantOp>(
           [&](auto typedOp) { return fireArithConstant(typedOp, state); })
       .Default([&](mlir::Operation *genericOp) {
@@ -1035,11 +998,6 @@ unsupportedActorOperation(mlir::Operation *op) {
       return std::nullopt;
     return UnsupportedOperation{unsupportedOperationLabel(op), ""};
   }
-  if (auto call = mlir::dyn_cast<mlir::LLVM::CallOp>(op)) {
-    if (isSupportedLLVMCall(call))
-      return std::nullopt;
-    return UnsupportedOperation{unsupportedOperationLabel(op), ""};
-  }
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
                 dataflow::InvariantOp, dataflow::GateOp, dataflow::SyncOp,
                 dataflow::MuxOp, dataflow::DemuxOp, dataflow::ParallelizeOp,
@@ -1048,7 +1006,7 @@ unsupportedActorOperation(mlir::Operation *op) {
                 mlir::UnrealizedConversionCastOp, mlir::LLVM::AddressOfOp,
                 mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::LoadOp,
                 mlir::LLVM::StoreOp, mlir::LLVM::MemcpyOp,
-                mlir::arith::ConstantOp, mlir::ub::PoisonOp>(op))
+                mlir::arith::ConstantOp>(op))
     return std::nullopt;
   return UnsupportedOperation{unsupportedOperationLabel(op), ""};
 }

@@ -459,7 +459,7 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   addUnaryBank("uitofp", config.toFpCount, "llvm.uitofp");
   addUnaryBank("fptosi", config.signedFromFpCount, "llvm.fptosi");
   addUnaryBank("fptoui", config.fromFpCount, "llvm.fptoui");
-  addTernaryBank("fma", config.fmaCount, "llvm.intr.fmuladd");
+  addTernaryBank("fma", config.fmaCount, "math.fma");
   addTernaryBank("fshl", config.fshlCount, "llvm.intr.fshl");
   addTernaryBank("arm_pkhbt", config.armPkhbtCount, "llvm.arm.pkhbt");
   addTernaryBank("arm_pkhtb", config.armPkhtbCount, "llvm.arm.pkhtb");

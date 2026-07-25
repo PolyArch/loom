@@ -5,7 +5,6 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Dialect/UB/IR/UBOps.h"
 
 using namespace mlir;
 
@@ -65,15 +64,12 @@ void dataflow::attachCanonicalDataflowActorInterfaces(MLIRContext &context) {
       LLVM::FMulOp, LLVM::FDivOp, LLVM::FRemOp, LLVM::FNegOp, LLVM::ICmpOp,
       LLVM::FCmpOp, LLVM::TruncOp, LLVM::ZExtOp, LLVM::SExtOp, LLVM::FPTruncOp,
       LLVM::FPExtOp, LLVM::SIToFPOp, LLVM::UIToFPOp, LLVM::FPToSIOp,
-      LLVM::FPToUIOp, LLVM::SelectOp, LLVM::FreezeOp, LLVM::ExtractElementOp,
+      LLVM::FPToUIOp, LLVM::SelectOp, LLVM::ExtractElementOp,
       LLVM::InsertElementOp, LLVM::ExtractValueOp, LLVM::InsertValueOp,
       LLVM::ShuffleVectorOp, LLVM::FshlOp, LLVM::ByteSwapOp, LLVM::UMinOp,
       LLVM::UMaxOp, LLVM::USubSat, LLVM::SMinOp, LLVM::SMaxOp,
-      LLVM::CountLeadingZerosOp, LLVM::FMulAddOp, LLVM::AbsOp, LLVM::FAbsOp>(
+      LLVM::CountLeadingZerosOp, LLVM::AbsOp, LLVM::FAbsOp>(
       context);
-
-  context.getOrLoadDialect<ub::UBDialect>();
-  attachActorModels<ub::PoisonOp>(context);
 }
 
 std::optional<dataflow::CanonicalDataflowActorKind>
