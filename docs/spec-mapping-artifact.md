@@ -405,8 +405,9 @@ Its closed owner union is a `ComputeBindingKey`, `MemoryEngineBindingKey`,
 `MemoryBindingRef`, or `(RouteTreeKey, RouteNodeOrdinal)`. The use site must
 resolve a Fabric-owned use pattern within the occurrence, service, or
 traversal already selected by that owner. Fabric owns the resource vector,
-capacity, duration, latency, initiation interval, and parameter schema;
-Mapping supplies only workload-specific typed values and sharing assignments.
+capacity, duration, latency, initiation interval, optional owner-defined commit
+transition, and parameter schema; Mapping supplies only workload-specific typed
+values and sharing assignments.
 
 Physical Tags are stored only as typed sharing assignments at real temporal
 writers or ingress points. Instruction contexts remain owned by bindings.

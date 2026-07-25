@@ -566,8 +566,9 @@ The aggregate Spatial model contains at least these complete groups:
 
 * exact TechRealization, actor, edge, and port disposition, exposed terminals,
   residual logical nets, and service-leg projections;
-* Fabric occurrences, contexts, endpoints, traversals, `ResourceState`s, and
-  tag, buffer, memory-service, and refinement capabilities;
+* Fabric occurrences, contexts, endpoints, traversals, `ResourceState`s,
+  `UsePattern`s, their owner-defined commit transitions, and tag, buffer,
+  memory-service, and refinement capabilities;
 * derived canonical memory-access views, parameterized operation-port
   compatibility, and declared memory use-pattern domains;
 * factorized occurrence, context, attachment, and refinement domains;

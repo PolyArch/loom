@@ -330,37 +330,81 @@ real dependencies in the final progress and deadlock closure.
 The temporal-PE schema uniquely owns the typed `ResourceState` values for
 resident contexts, logical operand/result queues, register FIFOs, and shared
 dispatch capacity; their canonical initial states; capacity dimensions;
-atomic UsePatterns; stable typed requester order; and exact GrantPolicy or
-exact refinement domains. One actor transition may atomically claim multiple
-queue heads, one operation pipeline, result holding capacity, and register-FIFO
+owner-defined atomic resource transitions; atomic UsePatterns; stable typed
+requester order; and exact GrantPolicy or exact refinement domains. One actor
+transition may atomically commit all required queue-head removals while
+claiming one operation pipeline, result holding capacity, and register-FIFO
 ports. Mapping binds typed workload values and selected exact refinements but
-cannot split that claim or define another scheduler. Queue contents, grant
-cursors, and in-flight transitions are nonpersistent execution state.
+cannot split that use or define another scheduler. Queue contents, occupancy,
+head/tail positions, grant cursors, and in-flight transitions are nonpersistent
+execution state.
 
 For operand buffering, the finalizer derives one exact resource contract from
 the two hardware parameters:
 
 ```text
 ResourceState:
-  OperandEntryCapacity(allocation_unit, capacity = operand_buffer_size)
-  OperandQueueOrder(logical_queue, initial = empty)
-  OperandEnqueueService(allocation_unit, capacity_per_local_cycle = 1)
-  OperandDequeueService(allocation_unit, capacity_per_local_cycle = 1)
+  OperandEntryPool(allocation_unit,
+                   capacity = operand_buffer_size,
+                   initial_occupancy = 0)
+  OperandQueue(logical_queue, initial = empty)
+  OperandEnqueueService(allocation_unit, capacity_per_pe_clock_cycle = 1)
+  OperandDequeueService(allocation_unit, capacity_per_pe_clock_cycle = 1)
+
+ResourceTransition:
+  AppendOperand(logical_queue)
+    append the accepted token at the queue tail and increment its allocation
+    unit occupancy by one
+  RemoveOperand(logical_queue)
+    remove the cycle-start head token and decrement its allocation unit
+    occupancy by one
 
 UsePattern:
   Enqueue(logical_queue)
-    atomically claims queue tail, one free entry, and one enqueue service slot
+    acquire_event = commit_event = EnqueueCommit
+    atomically claims one enqueue service slot
+    release_event = NextPeClockBoundary
+    commit_transition = AppendOperand(logical_queue)
   Dequeue(logical_queue)
-    atomically claims queue head and one dequeue service slot,
-    and releases one occupied entry on commit
+    acquire_event = commit_event = DequeueCommit
+    atomically claims one dequeue service slot
+    release_event = NextPeClockBoundary
+    commit_transition = RemoveOperand(logical_queue)
 ```
 
+The queue tail, queue head, free entry, and occupied entry are not temporary
+claims. They are parts of the Fabric-owned operand-buffer dynamic state. An
+enqueue does not create a claim that a later dequeue releases, and a dequeue
+does not inherit or transfer ownership of another pattern's claim. The short
+service reservation and durable queue mutation occur at the same atomic commit,
+so the model has one acquisition and no split transaction.
+
 One enqueue and one dequeue may commit on the same allocation unit in one
-local cycle. A successful dequeue may provide capacity to an enqueue in that
-cycle, but the newly enqueued token is not eligible to dequeue until the next
-local cycle; there is no implicit bypass. Enqueue and dequeue service slots are
-free at the start of each local cycle and remain consumed until the next local
-cycle boundary after a successful use.
+PE clock cycle. Let `O` be occupancy at the cycle start, `D` the selected
+dequeue count, and `E` the selected enqueue count for one allocation unit.
+Version 1.0 has `D` and `E` in `{0, 1}`. Dequeue eligibility observes only a
+token present at cycle start. Enqueue capacity is checked against `O - D`, and
+the next occupancy is exactly `O - D + E`. The two selected resource
+transitions commit atomically at the PE clock boundary. Consequently a dequeue
+may provide same-cycle capacity to an enqueue, while the newly enqueued token
+cannot satisfy that cycle's dequeue; there is no implicit bypass.
+
+`NextPeClockBoundary` is mechanically the next rising edge of the exact Clock
+domain containing the PE. It is not an `OperandBufferLocalCycle` state object,
+backend callback, or simulator-owned timing rule. Enqueue and dequeue service
+slots are free after reset and remain claimed until that boundary after a
+successful use.
+
+All `Dequeue(logical_queue)` uses required by one Canonical Dataflow actor
+transition are activated by that actor's existing single commit event. This is
+a derived atomic activation relation, not another composite-use record. The
+Mapping verifier must prove that their combined service claims fit every
+allocation unit. If two required heads project to one version-1 allocation
+unit in the same commit, its one-dequeue service is insufficient and that
+binding is invalid. A multiported buffer, explicit operand-staging resource,
+or other wider organization must be declared as a typed Fabric capability; an
+implementation cannot serialize the removals privately after partially
+consuming the actor inputs.
 
 When more than one logical queue can request the same enqueue or dequeue
 service slot, that service uses the shared `RoundRobin` GrantPolicy over the
@@ -440,7 +484,8 @@ other op kind is permitted.
 Anchor tests cover `per_instruction` depths 1 and 2 producing distinct Fabric
 identity and backpressure, rejection of an absent or nonpositive
 `operand_buffer_size` in every mode, canonical allocation-unit derivation for
-all three modes, simultaneous dequeue/enqueue without same-cycle bypass, and
+all three modes, one enqueue's atomic short service claim plus durable append
+transition, simultaneous dequeue/enqueue without same-cycle bypass, and
 deterministic round-robin contention between two logical queues. Tests do not
 construct a queue-count, depth, context, FU-input, or arbitration cross product.
 

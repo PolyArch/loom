@@ -151,6 +151,14 @@ selected Fabric operation port, `MemoryConsistencyDomain`, use pattern,
 resource state, grant policy, and Mapping. Hardware delay may postpone any
 provider event, but it cannot change the logical memory-order contract.
 
+For every non-memory resource use, CGRA-sim acquires the complete Fabric claim
+envelope at the declared acquire event, applies the optional owner-defined
+resource transition atomically at its commit event, and returns the complete
+claim envelope at its release event. It never treats durable queue occupancy as
+an outstanding claim or lets one use release another use's claim. Concrete
+resource state and event ordering come from the selected Fabric use pattern and
+its timing contract, not a simulator-private scheduler.
+
 The provider must implement the exact domain release-visibility point and
 `BoundedCompletion` or `FairEventual` progress guarantee. It cannot replace
 them with a simulator timeout, zero-latency default, or private completion

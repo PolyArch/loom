@@ -15,6 +15,7 @@ and legal parameter values.
 ```text
 ResourceContract {
   states[]
+  resource_transitions[]
   use_patterns[]
   requester_order
   grant_policy?
@@ -45,6 +46,30 @@ Dynamic occupancy is execution state and is not persisted. A stateful resource
 must return to its canonical reusable state under its declared close/reset
 contract before a conflicting invocation can reuse it.
 
+## Resource Commit Transition
+
+```text
+ResourceTransition {
+  transition_key
+}
+```
+
+A resource transition is one closed, owner-defined atomic relation over the
+resource's typed dynamic state and the accepted request. The concrete resource
+specification owns its exact pre-state, request, result, and post-state
+relation. The shared contract stores only the typed key and never admits a
+predicate DSL, callback, property bag, or implementation-private mutation.
+
+The relation may atomically update several states and capacity dimensions. It
+is not a capacity claim: state produced by one committed use may remain until a
+later use commits its own transition. No later use releases or inherits an
+earlier use's claim.
+
+`transition_key` is scoped to the concrete resource owner's closed transition
+inventory and is embedded by its UsePattern. It is not an independently
+addressable Fabric entity or persistent reference. Consumers resolve it only
+through the exact `FabricUsePatternRef` and owning Fabric artifact.
+
 ## Atomic UsePattern
 
 ```text
@@ -54,18 +79,46 @@ UsePattern {
   claims[]
   acquire_event
   release_event
+  commit? {
+    event
+    resource_transition
+  }
   timing_and_progress
 }
 ```
 
 A pattern is one atomic resource use. Its claims cannot be split by Mapping or
-runtime. Eligibility and claim parameters are typed by the owning resource.
-The contract states when all claims are acquired, when they release, and every
+runtime. All claims are acquired together at `acquire_event` and the complete
+claim envelope returns together at `release_event`. Claims therefore represent
+temporary reservations only; durable occupancy, queue contents, cursors, and
+logical resource state are changed only by the optional commit transition.
+
+When a commit is present, its one owner-defined transition is applied atomically
+at its exact event. The commit event may equal the acquire event. Version 1.0
+admits no cancellation after acquisition: the declared timing and progress
+contract must lead an accepted use through its commit, when present, and claim
+release. A resource that needs cancellation or rollback requires a future
+closed contract rather than a private convention.
+
+The timing contract must order `acquire_event <= commit.event <=
+release_event`, where equality denotes one atomic event. A pattern without a
+commit must still order acquisition no later than release. An owner declaration
+that cannot establish this order is invalid.
+
+The concrete resource validator must also prove that every eligible transition
+and every explicitly admitted concurrent commit set preserves the owner's state
+invariants and capacity bounds. This proof is resource-specific; the shared
+contract does not infer queue, cursor, payload, or state-machine behavior from
+numeric capacity alone.
+
+Eligibility, transition semantics, and claim parameters are typed by the
+owning resource. The contract states acquisition, commit, release, and every
 Mapping-visible timing, capacity, backpressure, and progress guarantee.
 
 Internal implementation transactions may refine one accepted use only when
 they preserve the declared external firing, retirement, ordering, and progress
-semantics. They do not become additional software actors or Mapping uses.
+semantics. They cannot acquire another claim envelope, apply another resource
+transition, or become additional software actors or Mapping uses.
 
 ## Requester Ordering And GrantPolicy
 
@@ -101,8 +154,8 @@ not admitted through a predicate DSL.
 
 Concrete resources embed only the atoms they need:
 
-* a stateless boundary uses one atomic transfer pattern and no state or grant
-  policy;
+* a stateless boundary uses one atomic transfer pattern and no state,
+  transition, or grant policy;
 * a spatial PE may have statically disjoint use patterns and no grant policy;
 * a temporal PE uses instruction-context requesters and declared state banks;
 * a switch uses transfer-pattern requesters and a declared arbitration policy;
@@ -119,8 +172,12 @@ contract does not infer or manufacture absorption.
 Verification rejects:
 
 * duplicate or unknown state, pattern, requester, or claim keys;
+* duplicate or unknown resource-transition keys;
 * noncanonical initial state or overflowing capacity;
 * a use pattern with an undeclared claim or ambiguous release;
+* a commit that names an undeclared transition or event;
+* a timing contract that does not order acquire, optional commit, and release;
+* an owner transition that can violate state or capacity invariants;
 * contention without an exact grant policy;
 * a grant policy that omits, duplicates, or foreign-references a requester;
 * a Mapping attempt to split an atomic use; and
@@ -128,6 +185,7 @@ Verification rejects:
   declared contract.
 
 Anchor tests cover one disjoint resource without arbitration, fixed-priority
-contention, round-robin reset and successful-grant advancement, and one
-resource-specific internal transaction decomposition. They do not create a
-cross-product fixture for every concrete resource.
+contention, round-robin reset and successful-grant advancement, one stateful
+use whose short-lived claim and durable commit transition are distinct, and
+one resource-specific internal transaction decomposition. They do not create
+a cross-product fixture for every concrete resource.

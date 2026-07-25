@@ -38,6 +38,8 @@ extends, these Fabric facts:
 * occurrences, ports, directed connectivity, and module/system boundaries;
 * compute, switch, memory, FIFO, boundary, and transport capabilities;
 * spatial/temporal organization, ResourceState, UsePattern, and GrantPolicy;
+* atomic claim acquisition/release and owner-defined resource commit
+  transitions;
 * latency, initiation interval, capacity, buffering, ordering, backpressure,
   reset, and progress behavior;
 * clock, reset, power, address, memory, coherence, and protection domains;

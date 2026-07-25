@@ -168,9 +168,9 @@ The verifier checks in dependency order:
 * each vector-memory address, data, and mask token remains complete on its
   route, and Physical Tags identify sharing interpretations rather than lanes;
 * complete ResourceUse ownership, Fabric use-pattern resolution, atomic
-  multi-ResourceState claims, relative activation, typed parameters,
-  capacity, sharing assignment, exact grant-policy refinement, and Physical
-  Tag legality;
+  multi-ResourceState claim envelopes, owner-defined commit-transition
+  resolution, relative activation, typed parameters, capacity, sharing
+  assignment, exact grant-policy refinement, and Physical Tag legality;
 * configured semantic realization and mapping-visible physical refinement
   without a duplicate configuration authority;
 * ordered-dataflow, resource-time, memory-service, Tag, and configuration
@@ -272,7 +272,7 @@ Using that projection, the base verifier checks:
   AccCore, with no competing target in InstructionCore ResourceUse;
 * exact resolution of every InstructionCore use site to a Fabric-owned atomic
   `UsePattern`, including its initial state, capacity, requester order, grant
-  contract, typed demand, activation, and release;
+  contract, typed demand, activation, optional commit transition, and release;
 * exactly one ServiceRealization per derived transfer or operation-service
   obligation;
 * exact derivation of each obligation's complete canonical member, sink, and
@@ -288,8 +288,9 @@ Using that projection, the base verifier checks:
   with its synchronization scope and all constrained memory effects;
 * complete System ResourceUse ownership, exact `ServicePlanElementRef`
   resolution where applicable, use-pattern resolution, atomic
-  multi-ResourceState claims, relative activation and release, typed demand,
-  capacity, exact grant-policy refinement, and sharing assignments;
+  multi-ResourceState claim envelopes, owner-defined commit-transition
+  resolution, relative activation and release, typed demand, capacity, exact
+  grant-policy refinement, and sharing assignments;
 * occurrence qualification of every imported Spatial use without copying it
   into System records;
 * end-to-end attachment, service, route, address, Tag, context, and

@@ -433,6 +433,11 @@ FabricPhysicalRefinementDomainRef =
   (FabricRefinementOwnerRef, refinement-domain ordinal)
 ```
 
+An owner-local `ResourceTransitionKey` is embedded inside its exact use-pattern
+record and is recovered through `FabricUsePatternRef`. It has no standalone
+persistent-reference kind or ordinal in this catalog because it cannot be
+selected, routed, or used independently of that pattern.
+
 The four role-specific owner types are distinct typed projections of this one
 closed constructor catalog:
 
