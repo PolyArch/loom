@@ -1,9 +1,8 @@
 add_library(LoomMapping
-  ConfiguredBoundaryProjection.cpp
+  ComputeCapabilityVerification.cpp
   FabricOccurrenceIndex.cpp
   FabricRoutingIndex.cpp
   MemoryRealizationProjection.cpp
-  PairedLane.cpp
   Verifier.cpp
 )
 
@@ -13,6 +12,8 @@ target_include_directories(LoomMapping PUBLIC
 
 target_link_libraries(LoomMapping PUBLIC
   LoomCommon
+  LoomFabricArtifact
   LoomFabricBoundaryDataPath
+  LoomFabricImplementationFamily
   LLVMSupport
 )

@@ -25,7 +25,7 @@ struct ValidatedComputeEndpoint {
   std::size_t compatibleTypeOffset;
   std::size_t compatibleTypeCount;
   PortRoleKey role;
-  fabric::DataPathKind transportKind;
+  ::fabric::DataPathKind transportKind;
 };
 
 struct ValidatedComputeLocalArc {
@@ -60,12 +60,12 @@ struct ValidatedPeOccurrence {
 };
 
 struct ValidatedFuOccurrence {
-  FuId implementation;
+  ::loom::fabric::FabricFuTemplateRef implementation;
   std::size_t parentPe;
 };
 
 struct ValidatedFuOccurrenceRange {
-  FuId implementation;
+  ::loom::fabric::FabricFuTemplateRef implementation;
   std::size_t occurrenceOffset;
   std::size_t occurrenceCount;
 };
@@ -79,7 +79,7 @@ struct ValidatedMemoryEndpoint {
   std::size_t compatibleTypeOffset;
   std::size_t compatibleTypeCount;
   PortRoleKey role;
-  fabric::DataPathKind transportKind;
+  ::fabric::DataPathKind transportKind;
 };
 
 struct ValidatedMemoryLocalArc {
@@ -147,19 +147,10 @@ struct ValidatedFabricProjection {
   ValidatedFabricRoutingProjection routing = {};
 };
 
-struct ValidatedActorPairedLaneProjection {
-  ActorId actor;
-  FabricOpId operation;
-  std::vector<std::uint32_t> laneIndices;
-  std::string bitmask;
-};
-
 struct ValidatedComputeRealizationProjection {
   ComputeRealizationId id;
-  FuId fu;
-  EncodingId encoding;
-  std::vector<ValidatedConfiguredBoundaryPort> activeBoundaryPorts;
-  std::vector<ValidatedActorPairedLaneProjection> pairedLaneProjections;
+  ::loom::fabric::FabricFuCapabilityTemplateRef capabilityTemplate;
+  std::vector<ValidatedComputeBoundaryPort> activeBoundaryPorts;
 };
 
 struct ValidatedMemoryBoundaryPort {
@@ -204,7 +195,7 @@ buildValidatedFabricProjection(
 
 llvm::ArrayRef<std::size_t>
 findFuOccurrences(const ValidatedFabricProjection &projection,
-                  FuId implementation);
+                  ::loom::fabric::FabricFuTemplateRef implementation);
 
 llvm::ArrayRef<std::size_t>
 findMemoryOccurrences(const ValidatedFabricProjection &projection,

@@ -51,7 +51,7 @@ TransportEndpointDescriptor
 transportEndpoint(std::uint64_t id, PortDirection direction,
                   std::uint32_t payloadCapacityBits) {
   return {TransportEndpointId(id), direction, PortKind::Value,
-          payloadCapacityBits,     0,         fabric::DataPathKind::Bits};
+          payloadCapacityBits,     0,         ::fabric::DataPathKind::Bits};
 }
 void selectAddressInternalMemoryGraph(TestCase &testCase) {
   selectInternalMemoryGraph(testCase);
@@ -470,8 +470,7 @@ void rejectsNoncanonicalMemoryInternalEdgeReference() {
   DataflowEdge &edge =
       testCase.mapping.memoryRealizations[0].internalEdges[0].edge.edge;
   edge.target = ActorPort{ActorId(2), PortDirection::Input, 1};
-  expectMapError(__func__, testCase,
-                 MappingErrorCode::UnresolvedEdgeReference);
+  expectMapError(__func__, testCase, MappingErrorCode::UnresolvedEdgeReference);
 }
 void freezesPhysicalMemoryOccurrenceDomains() {
   TestCase testCase = makeMemoryRouteDomainCase();
@@ -898,7 +897,7 @@ void rejectsAnchorMemoryCoverageAndReferences() {
   }
   {
     TestCase testCase = makeMemoryAnchorCase();
-    testCase.mapping.realizations[0].actors[0].entity = ActorId(2);
+    testCase.mapping.realizations[0].actorToOps[0].actor.entity = ActorId(2);
     testCase.mapping.realizations[0].actorToOps[0].actor.entity = ActorId(2);
     expectMapError(__func__, testCase,
                    MappingErrorCode::WrongActorRealizationKind);

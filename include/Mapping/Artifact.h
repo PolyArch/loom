@@ -2,10 +2,12 @@
 #define LOOM_MAPPING_ARTIFACT_H
 
 #include "Common/Artifact.h"
+#include "Dataflow/IR/OperationSchema.h"
+#include "Fabric/Artifact/FabricFuCapabilityTemplate.h"
 #include "Fabric/IR/BoundaryDataPath.h"
+#include "Fabric/IR/ImplementationFamily.h"
 
 #include <cstdint>
-#include <initializer_list>
 #include <optional>
 #include <utility>
 #include <variant>
@@ -63,26 +65,6 @@ private:
   std::uint64_t value_;
 };
 
-class SemanticKey {
-public:
-  SemanticKey() = delete;
-  SemanticKey(std::initializer_list<std::uint8_t> bytes) : bytes_(bytes) {}
-  explicit SemanticKey(std::vector<std::uint8_t> bytes)
-      : bytes_(std::move(bytes)) {}
-
-  friend bool operator==(const SemanticKey &lhs, const SemanticKey &rhs) {
-    return lhs.bytes_ == rhs.bytes_;
-  }
-  friend bool operator!=(const SemanticKey &lhs, const SemanticKey &rhs) {
-    return !(lhs == rhs);
-  }
-
-private:
-  // Lossless canonical bytes from the owning semantic artifact view. This is
-  // an equality identity, not a truncated hash.
-  std::vector<std::uint8_t> bytes_;
-};
-
 struct PortDescriptor {
   PortKind kind;
   TypeKey type;
@@ -120,13 +102,10 @@ private:
 struct GraphIdTag;
 struct ActorIdTag;
 struct LogicalMemoryRootIdTag;
-struct FuIdTag;
 struct ComputeOccurrenceIdTag;
 struct MemoryOccurrenceIdTag;
 struct TransportEndpointIdTag;
 struct TransportResourceIdTag;
-struct FabricOpIdTag;
-struct EncodingIdTag;
 struct ComputeRealizationIdTag;
 struct MemoryServiceDomainIdTag;
 struct MemoryImplementationIdTag;
@@ -138,15 +117,12 @@ struct MemoryRealizationIdTag;
 using GraphId = TypedEntityId<GraphIdTag>;
 using ActorId = TypedEntityId<ActorIdTag>;
 using LogicalMemoryRootId = TypedEntityId<LogicalMemoryRootIdTag>;
-using FuId = TypedEntityId<FuIdTag>;
 using ComputeOccurrenceId = TypedEntityId<ComputeOccurrenceIdTag>;
 using MemoryOccurrenceId = TypedEntityId<MemoryOccurrenceIdTag>;
 using TransportEndpointId = TypedEntityId<TransportEndpointIdTag>;
 using ComputeEndpointId = TransportEndpointId;
 using MemoryEndpointId = TransportEndpointId;
 using TransportResourceId = TypedEntityId<TransportResourceIdTag>;
-using FabricOpId = TypedEntityId<FabricOpIdTag>;
-using EncodingId = TypedEntityId<EncodingIdTag>;
 using ComputeRealizationId = TypedEntityId<ComputeRealizationIdTag>;
 using MemoryServiceDomainId = TypedEntityId<MemoryServiceDomainIdTag>;
 using MemoryImplementationId = TypedEntityId<MemoryImplementationIdTag>;
@@ -162,24 +138,15 @@ using EntityReference = ::loom::ArtifactReference<EntityId>;
 using GraphRef = EntityReference<GraphId>;
 using ActorRef = EntityReference<ActorId>;
 using LogicalMemoryRootRef = EntityReference<LogicalMemoryRootId>;
-using FuRef = EntityReference<FuId>;
 using TransportEndpointRef = EntityReference<TransportEndpointId>;
 using ComputeEndpointRef = TransportEndpointRef;
 using MemoryEndpointRef = TransportEndpointRef;
 using TransportResourceRef = EntityReference<TransportResourceId>;
-using FabricOpRef = EntityReference<FabricOpId>;
-using EncodingRef = EntityReference<EncodingId>;
 using MemoryImplementationRef = EntityReference<MemoryImplementationId>;
 using MemoryOperationPortTemplateRef =
     EntityReference<MemoryOperationPortTemplateId>;
 using MemoryInternalConnectionRef = EntityReference<MemoryInternalConnectionId>;
 using MemorySemanticEncodingRef = EntityReference<MemorySemanticEncodingId>;
-
-struct FuPortRef {
-  FuRef fu;
-  PortDirection direction;
-  std::uint32_t index;
-};
 
 struct GraphDescriptor {
   GraphId id;
@@ -208,8 +175,7 @@ struct CanonicalMemoryActorView {
 struct ActorDescriptor {
   ActorId id;
   GraphId graph;
-  SemanticKey operation;
-  SemanticKey attributes;
+  ::dataflow::CanonicalActorSchemaProjection semantics;
   std::vector<PortDescriptor> inputPorts;
   std::vector<PortDescriptor> outputPorts;
   std::optional<CanonicalMemoryActorView> memory;
@@ -287,9 +253,11 @@ struct DataflowProgramView {
 };
 
 struct FuDescriptor {
-  FuId id;
+  ::loom::fabric::FabricFuTemplateRef id;
   std::vector<PortDescriptor> inputPorts;
   std::vector<PortDescriptor> outputPorts;
+  std::vector<::loom::fabric::FabricFuCapabilityTemplateRecord>
+      capabilityTemplates;
 };
 
 struct ComputeEndpointDescriptor {
@@ -300,11 +268,11 @@ struct ComputeEndpointDescriptor {
   std::uint32_t tagCapacityBits;
   std::vector<TypeKey> compatibleTypes;
   PortRoleKey role;
-  fabric::DataPathKind transportKind = fabric::DataPathKind::Bits;
+  ::fabric::DataPathKind transportKind = ::fabric::DataPathKind::Bits;
 };
 
 struct ComputeLocalArcDescriptor {
-  FuPortRef fuPort;
+  ::loom::fabric::FabricFuTemplatePortRef fuPort;
   ComputeEndpointRef endpoint;
   std::uint32_t payloadCapacityBits;
   std::uint32_t tagCapacityBits;
@@ -313,7 +281,7 @@ struct ComputeLocalArcDescriptor {
 struct ComputeOccurrenceDescriptor {
   ComputeOccurrenceId id;
   ComputeScheduleKind schedule;
-  std::vector<FuRef> functionalUnits;
+  std::vector<::loom::fabric::FabricFuTemplateRef> functionalUnits;
   std::vector<ComputeEndpointDescriptor> endpoints;
   std::vector<ComputeLocalArcDescriptor> localArcs;
   // Fabric PE capability: one for Spatial, num_instruction for Temporal.
@@ -333,7 +301,7 @@ struct MemoryEndpointDescriptor {
   std::uint32_t tagCapacityBits;
   std::vector<TypeKey> compatibleTypes;
   PortRoleKey role;
-  fabric::DataPathKind transportKind = fabric::DataPathKind::Bits;
+  ::fabric::DataPathKind transportKind = ::fabric::DataPathKind::Bits;
 };
 
 struct MemoryLocalArcDescriptor {
@@ -356,14 +324,14 @@ struct TransportEndpointDescriptor {
   PortKind kind;
   std::uint32_t payloadCapacityBits;
   std::uint32_t tagCapacityBits;
-  fabric::DataPathKind transportKind = fabric::DataPathKind::Bits;
+  ::fabric::DataPathKind transportKind = ::fabric::DataPathKind::Bits;
 };
 
 struct TransportResourceDescriptor {
   TransportResourceId id;
   TransportResourceKind kind;
   std::vector<TransportEndpointDescriptor> endpoints;
-  std::optional<fabric::BoundaryDirection> boundaryDirection = std::nullopt;
+  std::optional<::fabric::BoundaryDirection> boundaryDirection = std::nullopt;
 };
 
 struct TransportArcDescriptor {
@@ -377,75 +345,12 @@ struct TransportTraversalDescriptor {
   TransportEndpointRef target;
 };
 
-struct PairedLaneDescriptor {
-  std::uint32_t inputPort;
-  std::uint32_t outputPort;
-  std::uint32_t maskBit;
-};
-
 struct FabricOpDescriptor {
-  FabricOpId id;
-  FuId fu;
+  ::loom::fabric::FabricFuTemplateNodeRef id;
+  ::fabric::ImplementationFamilyId family;
+  ::fabric::FamilyCapabilityParams capability;
   std::vector<PortDescriptor> inputPorts;
   std::vector<PortDescriptor> outputPorts;
-  // Inventory order is the complete configured lane order.
-  std::vector<PairedLaneDescriptor> pairedLanes = {};
-};
-
-struct FuInputValue {
-  std::uint32_t index;
-
-  friend bool operator==(FuInputValue lhs, FuInputValue rhs) {
-    return lhs.index == rhs.index;
-  }
-  friend bool operator!=(FuInputValue lhs, FuInputValue rhs) {
-    return !(lhs == rhs);
-  }
-};
-
-struct FabricOpResultValue {
-  FabricOpId operation;
-  std::uint32_t index;
-
-  friend bool operator==(FabricOpResultValue lhs, FabricOpResultValue rhs) {
-    return lhs.operation == rhs.operation && lhs.index == rhs.index;
-  }
-  friend bool operator!=(FabricOpResultValue lhs, FabricOpResultValue rhs) {
-    return !(lhs == rhs);
-  }
-};
-
-using ConfiguredValue = std::variant<FuInputValue, FabricOpResultValue>;
-
-struct ConfiguredFabricOpDescriptor {
-  FabricOpId operation;
-  SemanticKey semantics;
-  SemanticKey attributes;
-  std::vector<PortDescriptor> inputPorts;
-  std::vector<PortDescriptor> outputPorts;
-  std::vector<ConfiguredValue> operands;
-};
-
-struct ConfiguredInputDescriptor {
-  std::uint32_t fuPort;
-  PortDescriptor port;
-};
-
-struct ConfiguredOutputDescriptor {
-  std::uint32_t fuPort;
-  PortDescriptor port;
-  ConfiguredValue value;
-};
-
-struct EncodingDescriptor {
-  EncodingId id;
-  FuId fu;
-  // Derived lossless projection of the selected canonical ConfiguredFunction.
-  // The Mapping Artifact persists only the encoding reference and explicit
-  // correspondences, never this projection as a second software graph.
-  std::vector<ConfiguredInputDescriptor> inputs;
-  std::vector<ConfiguredFabricOpDescriptor> operations;
-  std::vector<ConfiguredOutputDescriptor> outputs;
 };
 
 struct MemoryServiceDomainDescriptor {
@@ -519,7 +424,6 @@ struct FabricHardwareView {
   ArtifactIdentity identity;
   std::vector<FuDescriptor> functionalUnits;
   std::vector<FabricOpDescriptor> operations;
-  std::vector<EncodingDescriptor> encodings;
   std::vector<MemoryServiceDomainDescriptor> memoryServiceDomains;
   std::vector<MemoryImplementationDescriptor> memoryImplementations;
   std::vector<MemoryOperationPortTemplateDescriptor>
@@ -545,21 +449,16 @@ struct GraphPortRef {
   std::uint32_t index;
 };
 
-struct PairedLaneSelection {
-  std::uint32_t inputPort;
-  std::uint32_t outputPort;
-};
-
 struct ActorToFabricOp {
   ActorRef actor;
-  FabricOpRef fabricOp;
-  // Sole persistent owner of ordered software-to-physical lane selection.
-  std::vector<PairedLaneSelection> laneSelections = {};
+  ::loom::fabric::FabricFuTemplateNodeRef fabricOp;
+  std::vector<std::uint32_t> operandPorts;
+  std::vector<std::uint32_t> resultPorts;
 };
 
 struct BoundaryPortCorrespondence {
   ActorPortRef actorPort;
-  FuPortRef fuPort;
+  ::loom::fabric::FabricFuTemplatePortRef fuPort;
 };
 
 struct MemoryImplementationBoundaryPortRef {
@@ -590,9 +489,7 @@ struct MemoryInternalEdgeWitness {
 
 struct ComputeRealizationDraft {
   ComputeRealizationId id;
-  std::vector<ActorRef> actors;
-  FuRef fu;
-  EncodingRef encoding;
+  ::loom::fabric::FabricFuCapabilityTemplateRef capabilityTemplate;
   std::vector<ActorToFabricOp> actorToOps;
   std::vector<BoundaryPortCorrespondence> boundaryPorts;
 };

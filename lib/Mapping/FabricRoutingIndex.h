@@ -27,7 +27,7 @@ enum class ValidatedRoutingArcKind {
 struct ValidatedTransportResource {
   TransportResourceId id;
   TransportResourceKind kind;
-  std::optional<fabric::BoundaryDirection> boundaryDirection;
+  std::optional<::fabric::BoundaryDirection> boundaryDirection;
   std::size_t endpointOffset;
   std::size_t endpointCount;
 };
@@ -38,7 +38,7 @@ struct ValidatedRoutingEndpoint {
   std::size_t owner;
   PortDirection direction;
   PortKind portKind;
-  fabric::DataPathKind transportKind;
+  ::fabric::DataPathKind transportKind;
   std::uint32_t payloadCapacityBits;
   std::uint32_t tagCapacityBits;
 };

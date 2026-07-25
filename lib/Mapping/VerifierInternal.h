@@ -27,8 +27,6 @@ enum class EntityKind {
   MemoryEndpoint,
   TransportEndpoint,
   TransportResource,
-  FabricOp,
-  Encoding,
   ComputeRealization,
   MemoryServiceDomain,
   MemoryImplementation,
@@ -44,59 +42,11 @@ llvm::Error mappingError(MappingErrorCode code, const llvm::Twine &message);
 llvm::Error addEntity(EntityKinds &entities, std::uint64_t id, EntityKind kind);
 llvm::Error requireLocalKind(const EntityKinds &entities, std::uint64_t id,
                              EntityKind expected);
-bool validPairedConfiguredPorts(const ConfiguredFabricOpDescriptor &configured,
-                                const FabricOpDescriptor &operation);
-
-struct ValidatedPairedLaneCapability {
-  std::vector<std::uint32_t> laneByInputPort;
-  std::vector<std::uint32_t> laneByOutputPort;
-};
-
-llvm::Expected<ValidatedPairedLaneCapability>
-buildValidatedPairedLaneCapability(const FabricOpDescriptor &operation);
-
-struct PairedLaneProjection {
-  std::vector<std::uint32_t> laneIndices;
-  std::string bitmask;
-};
-
-struct ValidatedConfiguredBoundaryPort {
+struct ValidatedComputeBoundaryPort {
   PortDirection direction;
   std::uint32_t fuPort;
   PortDescriptor descriptor;
 };
-
-struct ValidatedConfiguredBoundaryOperation {
-  FabricOpId operation;
-  std::vector<std::optional<std::size_t>> inputOperands;
-};
-
-struct ValidatedConfiguredBoundaryOutput {
-  ValidatedConfiguredBoundaryPort port;
-  std::variant<std::size_t, FabricOpResultValue> source;
-};
-
-struct ValidatedConfiguredBoundaryIndex {
-  std::vector<ValidatedConfiguredBoundaryPort> inputs;
-  std::vector<ValidatedConfiguredBoundaryOperation> operations;
-  std::vector<ValidatedConfiguredBoundaryOutput> outputs;
-};
-
-llvm::Expected<ValidatedConfiguredBoundaryIndex>
-buildValidatedConfiguredBoundaryIndex(const EncodingDescriptor &encoding);
-
-llvm::Expected<PairedLaneProjection> validateAndProjectPairedLaneSelection(
-    const ArtifactIdentity &fabricIdentity, const FabricOpDescriptor &operation,
-    const ValidatedPairedLaneCapability &capability,
-    const ActorToFabricOp &correspondence);
-
-std::vector<ValidatedConfiguredBoundaryPort>
-deriveActiveConfiguredBoundaryPorts(
-    const ValidatedConfiguredBoundaryIndex &index,
-    const std::map<std::uint64_t, const ConfiguredFabricOpDescriptor *>
-        &actorToOp,
-    const std::map<std::uint64_t, PairedLaneProjection>
-        &actorToLaneProjections);
 
 template <typename Id, typename Descriptor>
 llvm::Expected<const Descriptor *>
