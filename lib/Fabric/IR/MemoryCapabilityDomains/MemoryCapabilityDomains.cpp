@@ -342,15 +342,14 @@ llvm::Expected<MemoryAccessClass> MemoryAccessClass::create(
 
 bool MemoryAccessClass::contains(
     const CanonicalMemoryAccessView &access) const {
-  // Plain access has the specification-defined alignment of one byte. Atomic
-  // access stays fail-closed until its owner projection exposes exact source
-  // alignment; type and payload width are not alignment evidence.
-  if (access.contract().atomic)
-    return false;
+  const MemoryActorContract &contract = access.contract();
+  const std::optional<std::uint64_t> sourceAlignment =
+      contract.atomic ? contract.sourceAlignmentBytes
+                      : std::optional<std::uint64_t>(1);
   if (access.form() != accessForm_ ||
       !elementWidths_.contains(access.elementBits()) ||
-      !flattenedLaneCounts_.contains(access.laneCount()) ||
-      !sourceAlignments_.containsBytes(1))
+      !flattenedLaneCounts_.contains(access.laneCount()) || !sourceAlignment ||
+      !sourceAlignments_.containsBytes(*sourceAlignment))
     return false;
 
   InactiveLaneSemantics required = InactiveLaneSemantics::NotApplicable;

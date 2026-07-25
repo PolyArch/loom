@@ -1,9 +1,42 @@
 #include "Fabric/IR/FabricAttrs.h"
+#include "Fabric/IR/MemoryCapabilityFinalization.h"
 
 #include "llvm/ADT/StringRef.h"
 
 using namespace mlir;
 using namespace fabric;
+
+char MemoryCapabilityFinalizationError::ID = 0;
+
+void MemoryCapabilityFinalizationError::log(llvm::raw_ostream &stream) const {
+  stream << "Invalid(";
+  switch (reason_) {
+  case MemoryCapabilityFinalizationReason::MissingMemoryCapabilityContract:
+    stream << "missing-memory-capability-contract";
+    break;
+  case MemoryCapabilityFinalizationReason::MissingMemoryServiceContract:
+    stream << "missing-memory-service-contract";
+    break;
+  }
+  stream << ')';
+}
+
+std::error_code MemoryCapabilityFinalizationError::convertToErrorCode() const {
+  return llvm::inconvertibleErrorCode();
+}
+
+llvm::Error
+fabric::validateMemoryCapabilityFinalization(MemoryContractAttr contract) {
+  if (!contract)
+    return llvm::Error::success();
+  if (contract.getLocalService())
+    return llvm::make_error<MemoryCapabilityFinalizationError>(
+        MemoryCapabilityFinalizationReason::MissingMemoryServiceContract);
+  if (contract.getEngine())
+    return llvm::make_error<MemoryCapabilityFinalizationError>(
+        MemoryCapabilityFinalizationReason::MissingMemoryCapabilityContract);
+  return llvm::Error::success();
+}
 
 LogicalResult LocalMemoryServiceAttr::verify(
     llvm::function_ref<InFlightDiagnostic()> emitError, uint64_t capacityBytes,

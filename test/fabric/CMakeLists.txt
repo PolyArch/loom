@@ -30,6 +30,18 @@ add_executable(loom-fabric-memory-capability-domain-test
   MemoryCapabilityDomainTest.cpp
 )
 
+add_executable(loom-fabric-memory-capability-finalization-test
+  MemoryCapabilityFinalizationTest.cpp
+)
+
+add_executable(loom-fabric-memory-port-transaction-test
+  MemoryPortTransactionTest.cpp
+)
+
+add_executable(loom-fabric-memory-role-bindings-test
+  MemoryRoleBindingsTest.cpp
+)
+
 add_executable(loom-fabric-boundary-transfer-test
   BoundaryTransferTest.cpp
 )
@@ -75,6 +87,37 @@ target_link_libraries(loom-fabric-memory-consistency-contract-test PRIVATE
 target_link_libraries(loom-fabric-memory-capability-domain-test PRIVATE
   LoomCommon
   LoomFabricMemoryCapabilityDomains
+  MLIRDLTIDialect
+  MLIRDataflow
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-memory-capability-finalization-test PRIVATE
+  MLIRFabric
+  MLIRIR
+  MLIRSupport
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-memory-port-transaction-test PRIVATE
+  LoomFabricMemoryPortTransaction
+  LoomFabricResourceContract
+  MLIRDLTIDialect
+  MLIRDataflow
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  MLIRSupport
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-memory-role-bindings-test PRIVATE
+  LoomFabricIdentity
+  LoomFabricMemoryRoleBindings
   MLIRDLTIDialect
   MLIRDataflow
   MLIRFuncDialect

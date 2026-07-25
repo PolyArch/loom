@@ -264,6 +264,10 @@ public:
   const MemoryAccessClass *matchingClass(
       const dataflow::semantics::CanonicalMemoryAccessView &access) const;
 
+  llvm::ArrayRef<MemoryAccessClass> accessClasses() const {
+    return accessClasses_;
+  }
+
   bool
   contains(const dataflow::semantics::CanonicalMemoryAccessView &access) const {
     return matchingClass(access) != nullptr;

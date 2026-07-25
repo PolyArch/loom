@@ -288,6 +288,8 @@ void checkTypedAccessMembership(mlir::ModuleOp module) {
       "access domain", ParameterizedMemoryAccessDomain::create(
                            {accessClass(MemoryAccessForm::Element, 32, 1),
                             accessClass(MemoryAccessForm::Contiguous, 32, 4)}));
+  require("access domain", domain.accessClasses().size() == 2,
+          "the canonical access-class range is unavailable");
 
   expectRejected<ParameterizedMemoryAccessDomain>(
       "overlapping access classes",
@@ -316,8 +318,8 @@ void checkTypedAccessMembership(mlir::ModuleOp module) {
           "the fixture does not exercise equal vector payload widths");
   require("equal payload distinction", !domain.contains(vector2),
           "contiguous vector<2xf64> collapsed into vector<4xf32>");
-  require("atomic alignment dependency", !domain.contains(atomic),
-          "atomic access was admitted without its owner-projected alignment");
+  require("atomic alignment mismatch", !domain.contains(atomic),
+          "atomic access ignored its exact source alignment");
 
   ParameterizedMemoryAccessDomain inferredAlignment = take(
       "inferred alignment",
@@ -330,6 +332,8 @@ void checkTypedAccessMembership(mlir::ModuleOp module) {
                     fourByteAlignment(), readExact(), writeNotApplicable()))}));
   require("plain alignment derivation", !inferredAlignment.contains(element),
           "plain access alignment was inferred from its type or width");
+  require("atomic alignment projection", inferredAlignment.contains(atomic),
+          "atomic access did not use its owner-projected source alignment");
 }
 
 } // namespace
