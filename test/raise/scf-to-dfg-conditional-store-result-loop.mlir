@@ -38,7 +38,7 @@ dataflow.graph private @g_conditional_store_result_loop(
     %next = scf.if %is_zero -> (i32) {
       scf.yield %cursor : i32
     } else {
-      %cursor64 = llvm.zext %cursor : i32 to i64
+      %cursor64 = arith.extui %cursor : i32 to i64
       %out_mem = builtin.unrealized_conversion_cast %output
           : !llvm.ptr to memref<?xi32>
       %out_idx_pre = arith.index_cast %cursor64 : i64 to index
@@ -83,7 +83,7 @@ dataflow.graph private @g_conditional_store_result_then_loop(
     %data, %done = dataflow.load %in_mem[%in_idx] %ctrl : memref<?xi32>
     %is_zero = arith.cmpi eq, %data, %zero : i32
     %next = scf.if %is_zero -> (i32) {
-      %cursor64 = llvm.zext %cursor : i32 to i64
+      %cursor64 = arith.extui %cursor : i32 to i64
       %out_mem = builtin.unrealized_conversion_cast %output
           : !llvm.ptr to memref<?xi32>
       %out_idx_pre = arith.index_cast %cursor64 : i64 to index

@@ -24,3 +24,7 @@ set(LLVM_TARGET_DEFINITIONS DataflowOps.td)
 mlir_tablegen(DataflowOps.h.inc -gen-op-decls)
 mlir_tablegen(DataflowOps.cpp.inc -gen-op-defs)
 add_public_tablegen_target(MLIRDataflowOpsIncGen)
+
+set(LLVM_TARGET_DEFINITIONS OperationSchemas.td)
+tablegen(LOOM OperationSchemas.inc -gen-operation-schemas)
+add_public_tablegen_target(LoomOperationSchemasIncGen)

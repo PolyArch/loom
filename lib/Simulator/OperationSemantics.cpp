@@ -16,22 +16,24 @@ namespace {
 
 constexpr const char *kSupportedPrimitiveOperations[] = {
     "arith.addf",         "arith.subf",        "arith.mulf",
-    "arith.divf",         "arith.addi",        "arith.subi",
-    "arith.muli",         "arith.andi",        "arith.ori",
-    "arith.xori",         "arith.shli",        "arith.shrsi",
-    "arith.shrui",        "arith.divsi",       "arith.divui",
-    "arith.remsi",        "arith.remui",       "arith.cmpi",
-    "arith.cmpf",         "arith.select",      "arith.index_cast",
-    "arith.index_castui", "arith.extsi",       "arith.extui",
-    "arith.trunci",       "arith.sitofp",      "arith.uitofp",
-    "arith.fptosi",       "arith.fptoui",      "llvm.trunc",
-    "llvm.sext",          "llvm.zext",         "llvm.sitofp",
-    "llvm.uitofp",        "llvm.fptosi",       "llvm.fptoui",
-    "llvm.fneg",          "llvm.select",       "llvm.intr.fshl",
-    "llvm.intr.bswap",    "llvm.intr.umin",    "llvm.intr.umax",
-    "llvm.intr.usub.sat", "llvm.intr.smin",    "llvm.intr.smax",
-    "llvm.intr.ctlz",     "llvm.intr.abs",
-    "llvm.intr.fabs",     "math.absf",         "math.absi",
+    "arith.divf",         "arith.negf",        "arith.addi",
+    "arith.subi",         "arith.minsi",       "arith.maxsi",
+    "arith.minui",        "arith.maxui",       "arith.muli",
+    "arith.andi",         "arith.ori",         "arith.xori",
+    "arith.shli",         "arith.shrsi",       "arith.shrui",
+    "arith.divsi",        "arith.divui",       "arith.remsi",
+    "arith.remui",        "arith.cmpi",        "arith.cmpf",
+    "arith.select",       "arith.index_cast",  "arith.index_castui",
+    "arith.extsi",        "arith.extui",       "arith.trunci",
+    "arith.sitofp",       "arith.uitofp",      "arith.fptosi",
+    "arith.fptoui",       "llvm.trunc",        "llvm.sext",
+    "llvm.zext",          "llvm.sitofp",       "llvm.uitofp",
+    "llvm.fptosi",        "llvm.fptoui",       "llvm.fneg",
+    "llvm.select",        "llvm.intr.fshl",    "llvm.intr.bswap",
+    "llvm.intr.umin",     "llvm.intr.umax",    "llvm.intr.usub.sat",
+    "llvm.intr.smin",     "llvm.intr.smax",    "llvm.intr.ctlz",
+    "llvm.intr.abs",      "llvm.intr.fabs",    "math.absf",
+    "math.absi",          "math.ctlz",         "math.fma",
     "math.sin",           "math.cos",          "math.tan",
     "math.sinh",          "math.cosh",         "math.tanh",
     "math.exp",           "math.exp2",         "math.expm1",
@@ -191,7 +193,7 @@ evaluateMathUnary(llvm::StringRef opName,
   if (llvm::Error arity = requireArity(opName, operands, 1))
     return std::move(arity);
   const double value = asFloat(operands[0]);
-  if (opName == "math.absf" || opName == "llvm.intr.fabs")
+  if (opName == "math.absf")
     return PrimitiveValue::floating(std::fabs(value));
   if (opName == "math.sin")
     return PrimitiveValue::floating(std::sin(value));
@@ -424,7 +426,7 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     return PrimitiveValue::floating(asFloat(operands[0]) /
                                     asFloat(operands[1]));
   }
-  if (opName == "llvm.fneg") {
+  if (opName == "arith.negf") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
     return PrimitiveValue::floating(-asFloat(operands[0]));
@@ -575,7 +577,7 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     return PrimitiveValue::boolean(
         compareFloat(descriptor.predicate, operands[0], operands[1]));
   }
-  if (opName == "arith.select" || opName == "llvm.select") {
+  if (opName == "arith.select") {
     if (llvm::Error arity = requireArity(opName, operands, 3))
       return std::move(arity);
     return asBoolean(operands[0]) ? operands[1] : operands[2];
@@ -590,7 +592,7 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
                          sourceBitWidth),
         bitWidth);
   }
-  if (opName == "arith.extsi" || opName == "llvm.sext") {
+  if (opName == "arith.extsi") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
     const unsigned sourceBitWidth =
@@ -633,12 +635,7 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     }
     return integerFromBits(inputBits, bitWidth);
   }
-  if (opName == "llvm.trunc") {
-    if (llvm::Error arity = requireArity(opName, operands, 1))
-      return std::move(arity);
-    return integerFromBits(toUnsignedBits(operands[0], bitWidth), bitWidth);
-  }
-  if (opName == "arith.extui" || opName == "llvm.zext") {
+  if (opName == "arith.extui") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
     const unsigned sourceBitWidth =
@@ -659,13 +656,13 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     return integerFromBits(toUnsignedBits(operands[0], sourceBitWidth),
                            bitWidth);
   }
-  if (opName == "llvm.sitofp" || opName == "arith.sitofp") {
+  if (opName == "arith.sitofp") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
     return PrimitiveValue::floating(
         static_cast<double>(asInteger(operands[0])));
   }
-  if (opName == "llvm.uitofp" || opName == "arith.uitofp") {
+  if (opName == "arith.uitofp") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
     const unsigned sourceBitWidth =
@@ -673,13 +670,13 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     return PrimitiveValue::floating(
         static_cast<double>(toUnsignedBits(operands[0], sourceBitWidth)));
   }
-  if (opName == "llvm.fptosi" || opName == "arith.fptosi") {
+  if (opName == "arith.fptosi") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
     return integerFromSigned(static_cast<std::int64_t>(asFloat(operands[0])),
                              bitWidth);
   }
-  if (opName == "llvm.fptoui" || opName == "arith.fptoui") {
+  if (opName == "arith.fptoui") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
     const double value = asFloat(operands[0]);
@@ -707,13 +704,13 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
       return std::move(arity);
     return byteSwapInteger(opName, operands[0], bitWidth);
   }
-  if (opName == "llvm.intr.umin" || opName == "llvm.intr.umax") {
+  if (opName == "arith.minui" || opName == "arith.maxui") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
     const std::uint64_t lhs = toUnsignedBits(operands[0], bitWidth);
     const std::uint64_t rhs = toUnsignedBits(operands[1], bitWidth);
     const std::uint64_t selected =
-        opName == "llvm.intr.umin" ? std::min(lhs, rhs) : std::max(lhs, rhs);
+        opName == "arith.minui" ? std::min(lhs, rhs) : std::max(lhs, rhs);
     return integerFromBits(selected, bitWidth);
   }
   if (opName == "llvm.intr.usub.sat") {
@@ -723,7 +720,7 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     const std::uint64_t rhs = toUnsignedBits(operands[1], bitWidth);
     return integerFromBits(lhs >= rhs ? lhs - rhs : 0, bitWidth);
   }
-  if (opName == "llvm.intr.smin" || opName == "llvm.intr.smax") {
+  if (opName == "arith.minsi" || opName == "arith.maxsi") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
     const std::int64_t lhs =
@@ -731,10 +728,10 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     const std::int64_t rhs =
         fromUnsignedBits(toUnsignedBits(operands[1], bitWidth), bitWidth);
     const std::int64_t selected =
-        opName == "llvm.intr.smin" ? std::min(lhs, rhs) : std::max(lhs, rhs);
+        opName == "arith.minsi" ? std::min(lhs, rhs) : std::max(lhs, rhs);
     return integerFromSigned(selected, bitWidth);
   }
-  if (opName == "llvm.intr.ctlz") {
+  if (opName == "math.ctlz" || opName == "llvm.intr.ctlz") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
     const std::uint64_t bits = toUnsignedBits(operands[0], bitWidth);
@@ -759,6 +756,12 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
   }
   if (opName == "llvm.intr.fabs")
     return evaluateMathUnary(opName, operands);
+  if (opName == "math.fma") {
+    if (llvm::Error arity = requireArity(opName, operands, 3))
+      return std::move(arity);
+    return PrimitiveValue::floating(
+        asFloat(operands[0]) * asFloat(operands[1]) + asFloat(operands[2]));
+  }
   if (opName.starts_with("math.")) {
     if (opName == "math.absi") {
       if (llvm::Error arity = requireArity(opName, operands, 1))

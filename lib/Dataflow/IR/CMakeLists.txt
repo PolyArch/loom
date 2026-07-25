@@ -19,12 +19,13 @@ add_mlir_dialect_library(MLIRDataflow
   DataflowChannelOps.cpp
   DataflowDialect.cpp
   DataflowGraphValidation.cpp
-  DataflowProgramValidation.cpp
   DataflowInterfaces.cpp
+  DataflowProgramValidation.cpp
   DataflowFunctionLikeOps.cpp
   DataflowMemoryContracts.cpp
   DataflowOps.cpp
   DataflowServiceSchema.cpp
+  OperationSchema.cpp
   DataflowThreadCompletion.cpp
 
   PARTIAL_SOURCES_INTENDED
@@ -37,6 +38,7 @@ add_mlir_dialect_library(MLIRDataflow
   MLIRDataflowDialectIncGen
   MLIRDataflowInterfacesIncGen
   MLIRDataflowOpsIncGen
+  LoomOperationSchemasIncGen
 
   LINK_LIBS PUBLIC
   LoomCommon

@@ -10,7 +10,7 @@
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowGraphValidation.h"
-#include "Dataflow/IR/DataflowInterfaces.h"
+#include "Dataflow/IR/OperationSchema.h"
 #include "Dataflow/IR/DataflowOps.h"
 
 #include "mlir/IR/Builders.h"

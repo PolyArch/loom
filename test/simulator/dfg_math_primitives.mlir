@@ -1,7 +1,5 @@
 // RUN: loom-dfg-sim %s --graph math_unary_float --output %t.float.json
 // RUN: FileCheck %s --check-prefix=FLOAT < %t.float.json
-// RUN: loom-dfg-sim %s --graph llvm_fabs_intrinsic --output %t.llvm-fabs.json
-// RUN: FileCheck %s --check-prefix=LLVM-FABS < %t.llvm-fabs.json
 // RUN: loom-dfg-sim %s --graph math_rounding_float --output %t.round.json
 // RUN: FileCheck %s --check-prefix=ROUND < %t.round.json
 // RUN: loom-dfg-sim %s --graph math_roundeven_edges --output %t.roundeven.json
@@ -37,12 +35,6 @@
 // FLOAT-DAG: "f32:1"
 // FLOAT-DAG: "f32:8"
 // FLOAT-DAG: "f32:2"
-
-// LLVM-FABS-DAG: "workload": "llvm_fabs_intrinsic"
-// LLVM-FABS-DAG: "graph": "llvm_fabs_intrinsic"
-// LLVM-FABS-DAG: "status": "pass"
-// LLVM-FABS-DAG: "llvm.intr.fabs": 1
-// LLVM-FABS-DAG: "f32:3.500000"
 
 // ROUND: "final_outputs": [
 // ROUND-NEXT: "none",
@@ -124,17 +116,6 @@ module {
         %published#15, %published#16, %published#17
         : none, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32,
           f32, f32, f32, f32, f32, f32
-  }
-
-  dataflow.graph private @llvm_fabs_intrinsic(%ctrl: none)
-      -> (f32)
-      attributes {input_segments = array<i32: 0, 0, 0>,
-                  result_segments = array<i32: 1, 0, 0>} {
-    %neg = dataflow.constant %ctrl {const_value = -3.500000e+00 : f32} : f32
-    %abs = llvm.intr.fabs(%neg) : (f32) -> f32
-    %published:2 = dataflow.sync %ctrl, %abs
-        : (none, f32) -> (none, f32)
-    dataflow.graph.return %published#0, %published#1 : none, f32
   }
 
   dataflow.graph private @math_rounding_float(%ctrl: none)

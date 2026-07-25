@@ -15,7 +15,7 @@
 // SPATIAL-REGISTERED: %{{.*}}, %[[DONE:.*]] = dataflow.graph.launch @registered_actor_graph
 // SPATIAL-REGISTERED: dataflow.thread.yield %[[DONE]] : none
 // SPATIAL-REGISTERED-LABEL: dataflow.graph private @registered_actor_graph
-// SPATIAL-REGISTERED: llvm.fptosi
+// SPATIAL-REGISTERED: arith.fptosi
 // SPATIAL-REGISTERED: dataflow.graph.return
 // SPATIAL-REGISTERED-NOT: loom.spatial_region
 
@@ -30,7 +30,7 @@ dataflow.thread private @registered_spatial(%input: f32) ctrl (%start: none) {
       <{operandSegmentSizes = array<i32: 1, 0, 0, 0>,
         resultSegmentSizes = array<i32: 1, 0>}> ({
     ^bb0(%value: f32):
-      %converted = llvm.fptosi %value : f32 to i32
+      %converted = arith.fptosi %value : f32 to i32
       "loom.spatial_yield"(%converted)
           <{operandSegmentSizes = array<i32: 1, 0>}> : (i32) -> ()
   }) {graph_name = "registered_actor_graph", source_maps = []} :
@@ -59,7 +59,7 @@ module {
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %value = dataflow.constant %start {const_value = 1.0 : f32} : f32
-    %converted = llvm.fptosi %value : f32 to i32
+    %converted = arith.fptosi %value : f32 to i32
     %swapped = llvm.intr.bswap(%converted) : (i32) -> i32
     %published:2 = dataflow.sync %start, %swapped
         : (none, i32) -> (none, i32)
@@ -74,16 +74,14 @@ module {
 module {
   dataflow.graph private @canonical_backend_gap(
       %start: none, %lhs: i32, %rhs: i32) -> i32 {
-    %sum = llvm.add %lhs, %rhs : i32
-    %either = llvm.or %lhs, %rhs : i32
-    %published:2 = dataflow.sync %start, %sum
+    %frozen = llvm.freeze %lhs : i32
+    %published:2 = dataflow.sync %start, %frozen
         : (none, i32) -> (none, i32)
     dataflow.graph.return %published#0, %published#1 : none, i32
   }
 }
 
-// CANONICAL-BACKEND-GAP: "unsupported op: llvm.add"
-// CANONICAL-BACKEND-GAP-NEXT: "unsupported op: llvm.or"
+// CANONICAL-BACKEND-GAP: "unsupported op: llvm.freeze"
 // CANONICAL-BACKEND-GAP: "graph": "canonical_backend_gap"
 // CANONICAL-BACKEND-GAP: "status": "unsupported"
 

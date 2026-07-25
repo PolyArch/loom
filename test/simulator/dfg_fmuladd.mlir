@@ -24,7 +24,7 @@ module {
     %lhs = dataflow.constant %ctrl {const_value = 2.000000e+00 : f32} : f32
     %rhs = dataflow.constant %ctrl {const_value = 3.000000e+00 : f32} : f32
     %acc = dataflow.constant %ctrl {const_value = 4.000000e+00 : f32} : f32
-    %result = llvm.intr.fmuladd(%lhs, %rhs, %acc) : (f32, f32, f32) -> f32
+    %result = math.fma %lhs, %rhs, %acc : f32
     %published:2 = dataflow.sync %ctrl, %result
         : (none, f32) -> (none, f32)
     dataflow.graph.return %published#0, %published#1 : none, f32

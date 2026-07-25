@@ -8,8 +8,8 @@
 // RUN: FileCheck %s --check-prefix=NARROW-CMP < %t.narrow-cmp.json
 // RUN: loom-dfg-sim %s --graph i64_wraparound --output %t.i64-wrap.json
 // RUN: FileCheck %s --check-prefix=I64-WRAP < %t.i64-wrap.json
-// RUN: loom-dfg-sim %s --graph llvm_sign_extend --output %t.llvm-sext.json
-// RUN: FileCheck %s --check-prefix=LLVM-SEXT < %t.llvm-sext.json
+// RUN: loom-dfg-sim %s --graph sign_extend --output %t.sign-extend.json
+// RUN: FileCheck %s --check-prefix=SIGN-EXTEND < %t.sign-extend.json
 // RUN: loom-dfg-sim %s --graph exact_division_poison --output %t.exact-div.json
 // RUN: FileCheck %s --check-prefix=EXACT-DIV < %t.exact-div.json
 // RUN: loom-dfg-sim %s --graph exact_shift_poison --output %t.exact-shift.json
@@ -70,11 +70,11 @@
 // I64-WRAP-DAG: "status": "pass"
 // I64-WRAP-DAG: "workload": "i64_wraparound"
 
-// LLVM-SEXT-DAG: "workload": "llvm_sign_extend"
-// LLVM-SEXT-DAG: "graph": "llvm_sign_extend"
-// LLVM-SEXT-DAG: "status": "pass"
-// LLVM-SEXT-DAG: "llvm.sext": 1
-// LLVM-SEXT-DAG: "i32:-2"
+// SIGN-EXTEND-DAG: "workload": "sign_extend"
+// SIGN-EXTEND-DAG: "graph": "sign_extend"
+// SIGN-EXTEND-DAG: "status": "pass"
+// SIGN-EXTEND-DAG: "arith.extsi": 1
+// SIGN-EXTEND-DAG: "i32:-2"
 
 // EXACT-DIV-DAG: "workload": "exact_division_poison"
 // EXACT-DIV-DAG: "status": "blocked"
@@ -177,11 +177,11 @@ module {
         %published#3 : none, i64, i64, i64
   }
 
-  dataflow.graph private @llvm_sign_extend(%ctrl: none) -> (i32)
+  dataflow.graph private @sign_extend(%ctrl: none) -> (i32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %byte = dataflow.constant %ctrl {const_value = -2 : i8} : i8
-    %wide = llvm.sext %byte : i8 to i32
+    %wide = arith.extsi %byte : i8 to i32
     %published:2 = dataflow.sync %ctrl, %wide
         : (none, i32) -> (none, i32)
     dataflow.graph.return %published#0, %published#1 : none, i32

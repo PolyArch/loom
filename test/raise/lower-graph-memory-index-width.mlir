@@ -94,7 +94,7 @@ module attributes {
 
 // CHECK-LABEL: dataflow.graph private @declared_index_zext_address
 // CHECK-NOT: arith.index_cast %{{.*}} : i32 to index
-// CHECK: %[[WIDE:.*]] = llvm.zext %{{.*}} : i32 to i64
+// CHECK: %[[WIDE:.*]] = arith.extui %{{.*}} : i32 to i64
 // CHECK: %[[ZIDX:.*]] = arith.index_cast %[[WIDE]] : i64 to index
 // CHECK: dataflow.load %{{.*}}[%[[ZIDX]]]
 // CHECK-NOT: llvm.load
@@ -105,7 +105,7 @@ module attributes {
       %ctrl: none, %raw: i32, %base: !llvm.ptr) -> i8
       attributes {input_segments = array<i32: 1, 0, 1>,
                   result_segments = array<i32: 1, 0, 0>} {
-    %wide = llvm.zext %raw : i32 to i64
+    %wide = arith.extui %raw : i32 to i64
     %ptr = llvm.getelementptr %base[%wide] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %value = llvm.load %ptr : !llvm.ptr -> i8
     dataflow.graph.return %ctrl, %value : none, i8

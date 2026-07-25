@@ -26,3 +26,19 @@ target_link_libraries(loom-dataflow-service-schema-test PRIVATE
   MLIRSupport
   LLVMSupport
 )
+
+add_executable(loom-dataflow-operation-schema-test
+  OperationSchemaTest.cpp
+)
+
+target_link_libraries(loom-dataflow-operation-schema-test PRIVATE
+  MLIRDataflow
+  MLIRArithDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRMathDialect
+  MLIRUBDialect
+  MLIRSupport
+  LLVMSupport
+)

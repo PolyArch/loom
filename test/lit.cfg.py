@@ -15,6 +15,10 @@ config.substitutions.append(("%PATH%", config.environment["PATH"]))
 config.substitutions.append(("%shlibext", config.llvm_shlib_ext))
 # %python expands to the interpreter running lit.
 config.substitutions.append(("%python", sys.executable))
+# %loom_include is the tracked include root, so a generator anchor can name
+# the one canonical registry source without a relative path walk.
+config.substitutions.append(
+    ("%loom_include", os.path.join(config.loom_src_root, "include")))
 
 llvm_config.with_system_environment(
     ["HOME", "INCLUDE", "LIB", "TMP", "TEMP",
@@ -29,6 +33,7 @@ tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom-cc"),
     os.path.join(config.loom_obj_root, "tools", "loom-raise-opt"),
     os.path.join(config.loom_obj_root, "tools", "loom-adg-builder-test"),
+    os.path.join(config.loom_obj_root, "tools", "loom-tblgen"),
     os.path.join(config.loom_obj_root, "tools", "loom-config-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-cost-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-dfg-sim"),
@@ -46,10 +51,12 @@ tool_dirs = [
 ]
 tools = [
     "loom",
+    "loom-tblgen",
     "loom-adg-builder-test",
     "loom-config-test",
     "loom-cost-test",
     "loom-dataflow-memory-effect-test",
+    "loom-dataflow-operation-schema-test",
     "loom-dataflow-service-schema-test",
     "loom-dfg-sim",
     "loom-fabric-artifact-gate-test",
@@ -57,6 +64,7 @@ tools = [
     "loom-fabric-boundary-data-path-test",
     "loom-fabric-boundary-transfer-test",
     "loom-fabric-elaboration-alias-chain-test",
+    "loom-fabric-implementation-family-test",
     "loom-fabric-elaboration-api-test",
     "loom-fabric-elaboration-header-test",
     "loom-fabric-memory-capability-domain-test",
