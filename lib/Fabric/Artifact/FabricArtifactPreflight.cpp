@@ -9,12 +9,9 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cassert>
-#include <cstdint>
 #include <optional>
-#include <set>
 #include <string>
 #include <system_error>
-#include <tuple>
 #include <utility>
 
 namespace loom::fabric::detail {
@@ -23,9 +20,6 @@ namespace {
 struct MissingOwners {
   bool dependencyRootKind = false;
 };
-
-using ExactRootKey = std::tuple<std::string, std::uint32_t, std::uint32_t,
-                                ArtifactIdentity::Storage>;
 
 llvm::Error gateError(FabricArtifactGateFailureKind kind,
                       FabricArtifactGateReason reason,
@@ -43,6 +37,15 @@ llvm::Error gateError(FabricArtifactGateFailureKind kind,
       kind, reason, (prefix + ": " + message).str());
 }
 
+llvm::Error wrapCodecError(FabricArtifactGateReason reason,
+                           llvm::StringRef context, llvm::Error error) {
+  std::string diagnostic = llvm::toString(std::move(error));
+  llvm::StringRef detail(diagnostic);
+  detail.consume_front("fabric_artifact_invalid: ");
+  return gateError(FabricArtifactGateFailureKind::Invalid, reason,
+                   llvm::Twine(context) + ": " + detail);
+}
+
 bool isFabricSchema(const ArtifactRootReference &reference) {
   return reference.schemaIdentity == fabricArtifactSchema.identity &&
          reference.schemaVersion == fabricArtifactSchema.version;
@@ -53,12 +56,6 @@ fabricReference(const CanonicalSemanticBytes &canonicalBytes) {
   return ArtifactRootReference{
       fabricArtifactSchema.identity.str(), fabricArtifactSchema.version,
       finalizeArtifactIdentity(fabricArtifactSchema, canonicalBytes)};
-}
-
-ExactRootKey exactRootKey(const ArtifactRootReference &reference) {
-  return ExactRootKey{reference.schemaIdentity, reference.schemaVersion.major,
-                      reference.schemaVersion.minor,
-                      reference.artifact.bytes()};
 }
 
 llvm::Error validateDependencyRoles(const DecodedFabricArtifact &artifact) {
@@ -98,17 +95,6 @@ llvm::Error validateDependencyRoles(const DecodedFabricArtifact &artifact) {
   llvm_unreachable("closed Fabric root kind");
 }
 
-llvm::Error validateUniqueDependencies(const DecodedFabricArtifact &artifact) {
-  std::set<ExactRootKey> references;
-  for (const FabricDirectDependency &dependency : artifact.dependencies)
-    if (!references.insert(exactRootKey(dependency.root)).second)
-      return gateError(
-          FabricArtifactGateFailureKind::Invalid,
-          FabricArtifactGateReason::DuplicateDependency,
-          "one exact dependency appears in more than one dependency row");
-  return llvm::Error::success();
-}
-
 std::optional<FabricRootKind> expectedRootKind(FabricDependencyRole role,
                                                MissingOwners &missingOwners) {
   switch (role) {
@@ -136,8 +122,6 @@ llvm::Error preflightDecodedFabricArtifact(
   llvm::scope_exit abandonOnFailure([&] { traversal.abandon(reference); });
   if (llvm::Error error = validateDependencyRoles(artifact))
     return error;
-  if (llvm::Error error = validateUniqueDependencies(artifact))
-    return error;
 
   for (const FabricDirectDependency &dependency : artifact.dependencies) {
     auto canonicalDependency = store.get(dependency.root);
@@ -152,7 +136,9 @@ llvm::Error preflightDecodedFabricArtifact(
     auto decodedDependency =
         decodeFabricArtifactEnvelope(canonicalDependency->bytes());
     if (!decodedDependency)
-      return decodedDependency.takeError();
+      return wrapCodecError(FabricArtifactGateReason::InvalidDependencyEnvelope,
+                            "same-family dependency import failed",
+                            decodedDependency.takeError());
 
     const std::optional<FabricRootKind> requiredKind =
         expectedRootKind(dependency.role, missingOwners);
@@ -233,7 +219,9 @@ preflightCanonicalFabricArtifactDependencies(
     ArtifactStore &store, const CanonicalSemanticBytes &canonicalBytes) {
   auto decoded = decodeFabricArtifactEnvelope(canonicalBytes.bytes());
   if (!decoded)
-    return decoded.takeError();
+    return wrapCodecError(FabricArtifactGateReason::MalformedCandidateEnvelope,
+                          "candidate canonical envelope decode failed",
+                          decoded.takeError());
 
   FabricArtifactClosureTraversal traversal;
   MissingOwners missingOwners;

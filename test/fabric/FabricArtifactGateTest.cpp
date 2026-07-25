@@ -63,7 +63,8 @@ void expectErrorContains(const char *test, llvm::Expected<T> value,
 
 void expectGateError(const char *test, llvm::Error error,
                      FabricArtifactGateFailureKind expectedKind,
-                     FabricArtifactGateReason expectedReason) {
+                     FabricArtifactGateReason expectedReason,
+                     llvm::StringRef expectedDiagnostic = {}) {
   if (!error)
     fail(test, "expected a typed Fabric artifact gate error");
 
@@ -75,6 +76,15 @@ void expectGateError(const char *test, llvm::Error error,
                 "Fabric artifact gate failure kind changed");
         require(test, gateError.reason() == expectedReason,
                 "Fabric artifact gate failure reason changed");
+        if (!expectedDiagnostic.empty()) {
+          std::string message;
+          llvm::raw_string_ostream stream(message);
+          gateError.log(stream);
+          require(test,
+                  llvm::StringRef(stream.str()).contains(expectedDiagnostic),
+                  "Fabric artifact gate error lost its codec diagnostic: " +
+                      message);
+        }
       });
   if (remaining)
     fail(test, "unexpected error: " + llvm::toString(std::move(remaining)));
@@ -84,10 +94,12 @@ void expectGateError(const char *test, llvm::Error error,
 template <typename T>
 void expectGateError(const char *test, llvm::Expected<T> value,
                      FabricArtifactGateFailureKind expectedKind,
-                     FabricArtifactGateReason expectedReason) {
+                     FabricArtifactGateReason expectedReason,
+                     llvm::StringRef expectedDiagnostic = {}) {
   if (value)
     fail(test, "expected a typed Fabric artifact gate error");
-  expectGateError(test, value.takeError(), expectedKind, expectedReason);
+  expectGateError(test, value.takeError(), expectedKind, expectedReason,
+                  expectedDiagnostic);
 }
 
 void expectIncompletePreflight(
@@ -285,7 +297,45 @@ void foreignDependencyIsLoadedBeforeUnsupportedImporterRejection() {
   requireCandidateAbsent(__func__, store, root);
 }
 
-void wrongKindAndDuplicateDependenciesAreRejected() {
+void malformedCandidateEnvelopeIsTypedInvalid() {
+  TemporaryDirectory directory(__func__);
+  ArtifactStore store(directory.path());
+  const CanonicalSemanticBytes malformed(std::vector<std::uint8_t>{0x00});
+
+  expectGateError(
+      __func__, preflightCanonicalFabricArtifactDependencies(store, malformed),
+      FabricArtifactGateFailureKind::Invalid,
+      FabricArtifactGateReason::MalformedCandidateEnvelope,
+      "truncated semantic domain");
+  requireCandidateAbsent(__func__, store, malformed);
+}
+
+void invalidStoredFabricDependencyIsTypedInvalid() {
+  TemporaryDirectory directory(__func__);
+  ArtifactStore store(directory.path());
+  const CanonicalSemanticBytes malformedDependency(
+      std::vector<std::uint8_t>{0x00});
+  const ArtifactRootReference dependency = fabricReference(malformedDependency);
+  const ArtifactIdentity stored = takeExpected(
+      __func__, store.put(fabricArtifactSchema, malformedDependency));
+  require(__func__, stored == dependency.artifact,
+          "stored invalid Fabric fixture identity changed");
+  requireStoredReference(__func__, store, dependency);
+
+  const CanonicalSemanticBytes root =
+      envelope(__func__, FabricRootKind::Module,
+               {FabricDirectDependency{FabricDependencyRole::ImportedModule,
+                                       dependency}},
+               {0x30});
+  expectGateError(__func__,
+                  preflightCanonicalFabricArtifactDependencies(store, root),
+                  FabricArtifactGateFailureKind::Invalid,
+                  FabricArtifactGateReason::InvalidDependencyEnvelope,
+                  "truncated semantic domain");
+  requireCandidateAbsent(__func__, store, root);
+}
+
+void wrongKindDependencyIsRejected() {
   TemporaryDirectory directory(__func__);
   ArtifactStore store(directory.path());
 
@@ -300,18 +350,25 @@ void wrongKindAndDuplicateDependenciesAreRejected() {
       FabricArtifactGateFailureKind::Invalid,
       FabricArtifactGateReason::WrongDependencyRootKind);
   requireCandidateAbsent(__func__, store, wrongKind);
+}
 
-  const CanonicalSemanticBytes duplicate = envelope(
+void sameExactRootInDistinctRolesIsNotADuplicate() {
+  TemporaryDirectory directory(__func__);
+  ArtifactStore store(directory.path());
+
+  const ArtifactRootReference system =
+      storeFabric(__func__, store, FabricRootKind::System, {}, {0x33});
+  const CanonicalSemanticBytes crossRoleRoot = envelope(
       __func__, FabricRootKind::InterconnectImplementation,
       {FabricDirectDependency{FabricDependencyRole::RefinedSystem, system},
        FabricDirectDependency{FabricDependencyRole::ImplementationInput,
                               system}},
-      {0x33});
-  expectGateError(
-      __func__, preflightCanonicalFabricArtifactDependencies(store, duplicate),
-      FabricArtifactGateFailureKind::Invalid,
-      FabricArtifactGateReason::DuplicateDependency);
-  requireCandidateAbsent(__func__, store, duplicate);
+      {0x34});
+  expectIncompletePreflight(
+      __func__,
+      preflightCanonicalFabricArtifactDependencies(store, crossRoleRoot),
+      FabricArtifactPreflightBlocker::ImplementationInputRootKind);
+  requireCandidateAbsent(__func__, store, crossRoleRoot);
 }
 
 void dependencyUseVerificationWaitsForItsSemanticOwner() {
@@ -413,10 +470,13 @@ void contentAddressedCycleConstraintUsesProductionTraversal() {
 } // namespace
 
 int main() {
+  malformedCandidateEnvelopeIsTypedInvalid();
+  invalidStoredFabricDependencyIsTypedInvalid();
   roleAndRootKindLegalityPrecedeDependencyLoads();
   preflightRecursivelyLoadsExactFabricDependencies();
   foreignDependencyIsLoadedBeforeUnsupportedImporterRejection();
-  wrongKindAndDuplicateDependenciesAreRejected();
+  wrongKindDependencyIsRejected();
+  sameExactRootInDistinctRolesIsNotADuplicate();
   dependencyUseVerificationWaitsForItsSemanticOwner();
   implementationInputKindRemainsAnIncompleteOwnerBoundary();
   candidateRootsRemainAbsentAfterFailureOrIncompletePreflight();

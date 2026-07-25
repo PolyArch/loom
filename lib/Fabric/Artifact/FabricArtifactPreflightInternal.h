@@ -17,8 +17,9 @@ enum class FabricArtifactGateFailureKind {
 };
 
 enum class FabricArtifactGateReason {
+  MalformedCandidateEnvelope,
+  InvalidDependencyEnvelope,
   InvalidDependencyRoles,
-  DuplicateDependency,
   DependencyImporterUnavailable,
   WrongDependencyRootKind,
   CyclicDependency,
