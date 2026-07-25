@@ -1,3 +1,0 @@
-synth:
-  parallelism:
-    workers: 4294967296

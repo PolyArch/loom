@@ -30,7 +30,6 @@ set(LOOM_TEST_DEPENDS
   loom-common-artifact-local-reference-test
   loom-common-artifact-test
   loom-common-blob-test
-  loom-cost-test
   loom-dataflow-memory-effect-test
   loom-dataflow-operation-schema-codec-test
   loom-dataflow-operation-schema-test
@@ -56,7 +55,6 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-temporal-operand-buffer-test
   loom-frontend-payload-framing-test
   loom-mapping-core-test
-  loom-parallel-test
   loom-pnr-index-test
   loom-pnr-route-tree-state-test
   loom-pnr-routing-negotiation-test
@@ -65,7 +63,6 @@ set(LOOM_TEST_DEPENDS
   loom-simulator-dynamic-work-test
   loom-simulator-synchronization-test
   loom-simulator-vector-boundary-test
-  loom-synth-config-test
   loom-tblgen
 )
 
