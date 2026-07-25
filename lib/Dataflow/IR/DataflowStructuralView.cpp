@@ -8,11 +8,11 @@
 // SSA def-use, per-thread channel endpoint counts, the channel multicast
 // relation from the one shared whole-program channel-topology owner, and the
 // static memory composition (thread-formal and fresh-allocation roots,
-// root-preserving views, and per-static-site launch exposures). This is not the
-// complete first-schema catalog: the closed transfer-event family that would
-// name EventFamilyKey is not yet available in authority, so no such inventory
-// is generated here. Hot queries take direct owner-slot and ordinal offsets and
-// collision-free typed keys; no query walks MLIR or lossily packs an index.
+// root-preserving views, and per-static-site launch exposures). Static transfer
+// events remain exact aliases of their Dataflow-owned producer or consumer
+// terminals and never receive a separate event identity. Hot queries take
+// direct owner-slot and ordinal offsets and collision-free typed keys; no query
+// walks MLIR or lossily packs an index.
 //
 //===----------------------------------------------------------------------===//
 
@@ -283,34 +283,7 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
   // terminals share the range.
   if (llvm::Error error = forEachHostChannelRelation(
           module, [&](Value, const ChannelRelation &relation) -> llvm::Error {
-            if (relation.producers.size() != 1)
-              return invalid(
-                  "canonical dataflow: channel does not have exactly "
-                  "one producer");
-            const ChannelEndpointBinding &producer = relation.producers.front();
-            auto rootIt = rootThreadLaunchIdByOp_.find(producer.rootLaunch);
-            if (rootIt == rootThreadLaunchIdByOp_.end())
-              return invalid("canonical dataflow: channel producer root is not "
-                             "an entity");
-            unsigned rootSlot = slotOfId_[rootIt->second];
-            ChannelProducerKey producerKey;
-            if (producer.streamOrdinal) {
-              auto staticIt = staticGraphLaunchIdByOp_.find(producer.site);
-              if (staticIt == staticGraphLaunchIdByOp_.end())
-                return invalid("canonical dataflow: channel producer graph "
-                               "launch is not an entity");
-              producerKey = {kStreamOutput, rootSlot,
-                             static_cast<unsigned>(slotOfId_[staticIt->second]),
-                             *producer.streamOrdinal};
-            } else {
-              auto ordinal = sendOrdinalOf.find(producer.site);
-              if (ordinal == sendOrdinalOf.end())
-                return invalid("canonical dataflow: channel producer send site "
-                               "has no canonical ordinal");
-              producerKey = {kSend, rootSlot, 0, ordinal->second};
-            }
-
-            unsigned begin = channelBindings_.size();
+            llvm::SmallVector<ChannelConsumerBinding, 4> consumers;
             for (const ChannelEndpointBinding &binding : relation.consumers) {
               auto consumerRootIt =
                   rootThreadLaunchIdByOp_.find(binding.rootLaunch);
@@ -328,7 +301,7 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
                     rootRef,
                     StaticGraphLaunchRef{
                         identity_, StaticGraphLaunchId(staticIt->second)}};
-                channelBindings_.push_back(
+                consumers.push_back(
                     {ChannelConsumerRef{GraphStreamInputConsumerRef{
                          rooted, static_cast<StructuralOrdinal>(
                                      *binding.streamOrdinal)}},
@@ -338,27 +311,64 @@ llvm::Error CanonicalDataflowProgramView::buildStructuralInventories(
                 if (ordinal == receiveOrdinalOf.end())
                   return invalid("canonical dataflow: channel receive site has "
                                  "no canonical ordinal");
-                channelBindings_.push_back(
+                consumers.push_back(
                     {ChannelConsumerRef{ThreadChannelReceiveSiteRef{
                          rootRef,
                          static_cast<StructuralOrdinal>(ordinal->second)}},
                      std::nullopt});
               }
             }
-            if (channelBindings_.size() == begin)
+            if (consumers.empty())
               return invalid("canonical dataflow: channel producer has no "
                              "consumer");
-            std::sort(channelBindings_.begin() + begin, channelBindings_.end(),
+            std::sort(consumers.begin(), consumers.end(),
                       [](const ChannelConsumerBinding &a,
                          const ChannelConsumerBinding &b) {
                         return channelConsumerKey(a.consumer) <
                                channelConsumerKey(b.consumer);
                       });
-            for (unsigned i = begin; i < channelBindings_.size(); ++i)
+
+            const unsigned begin = channelBindings_.size();
+            channelBindings_.insert(channelBindings_.end(), consumers.begin(),
+                                    consumers.end());
+            for (const ChannelConsumerBinding &binding : consumers)
               channelSinks_.push_back(
-                  ChannelConsumerTerminalRef{channelBindings_[i].consumer});
-            channelRange_[producerKey] = {begin,
-                                          channelBindings_.size() - begin};
+                  ChannelConsumerTerminalRef{binding.consumer});
+
+            for (const ChannelEndpointBinding &producer : relation.producers) {
+              auto rootIt = rootThreadLaunchIdByOp_.find(producer.rootLaunch);
+              if (rootIt == rootThreadLaunchIdByOp_.end())
+                return invalid("canonical dataflow: channel producer root is "
+                               "not an entity");
+              unsigned rootSlot = slotOfId_[rootIt->second];
+              ChannelProducerKey producerKey;
+              if (producer.streamOrdinal) {
+                auto staticIt = staticGraphLaunchIdByOp_.find(producer.site);
+                if (staticIt == staticGraphLaunchIdByOp_.end())
+                  return invalid("canonical dataflow: channel producer graph "
+                                 "launch is not an entity");
+                producerKey = {
+                    kStreamOutput, rootSlot,
+                    static_cast<unsigned>(slotOfId_[staticIt->second]),
+                    *producer.streamOrdinal};
+              } else {
+                auto ordinal = sendOrdinalOf.find(producer.site);
+                if (ordinal == sendOrdinalOf.end())
+                  return invalid(
+                      "canonical dataflow: channel producer send site has no "
+                      "canonical ordinal");
+                producerKey = {kSend, rootSlot, 0, ordinal->second};
+              }
+
+              if (!channelRange_
+                       .emplace(
+                           producerKey,
+                           std::pair<unsigned, unsigned>{
+                               begin, static_cast<unsigned>(consumers.size())})
+                       .second)
+                return invalid("canonical dataflow: duplicate channel "
+                               "producer terminal");
+            }
             return llvm::Error::success();
           }))
     return error;

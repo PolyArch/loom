@@ -24,13 +24,17 @@ llvm::Error validateFinalizedProgram(::mlir::ModuleOp module);
 struct ChannelEndpointBinding {
   ThreadLaunchOp rootLaunch;
   ThreadOp thread;
+  unsigned threadArgumentOrdinal = 0;
   ::mlir::Operation *site = nullptr;
   std::optional<unsigned> streamOrdinal;
   std::optional<::mlir::AffineMap> sourceMap;
 };
 
-/// The complete channel relation of one host channel value: exactly one
-/// producer binding and its non-empty consumer set, in program-discovery order.
+/// The complete channel relation of one host channel value. Every producer
+/// site belongs to exactly one thread-launch body-operand binding; sequential
+/// and structured mutually exclusive sites under that binding contribute to
+/// the same ordered event sequence. Consumers remain a non-empty set in
+/// program-discovery order.
 struct ChannelRelation {
   llvm::SmallVector<ChannelEndpointBinding, 1> producers;
   llvm::SmallVector<ChannelEndpointBinding, 2> consumers;

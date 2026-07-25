@@ -131,7 +131,7 @@ llvm::Error collectThreadArgumentBindings(dataflow::ThreadLaunchOp launch,
       if (number >= streamInputBegin && number < streamInputEnd) {
         unsigned bindingIndex = number - streamInputBegin;
         relation.consumers.push_back(ChannelEndpointBinding{
-            launch, thread, graphLaunch, bindingIndex,
+            launch, thread, argumentIndex, graphLaunch, bindingIndex,
             llvm::cast<mlir::AffineMapAttr>(
                 graphLaunch.getSourceMaps()[bindingIndex])
                 .getValue()});
@@ -139,7 +139,7 @@ llvm::Error collectThreadArgumentBindings(dataflow::ThreadLaunchOp launch,
       }
       if (number >= streamOutputBegin && number < streamOutputEnd) {
         relation.producers.push_back(
-            ChannelEndpointBinding{launch, thread, graphLaunch,
+            ChannelEndpointBinding{launch, thread, argumentIndex, graphLaunch,
                                    number - streamOutputBegin, std::nullopt});
         continue;
       }
@@ -147,13 +147,13 @@ llvm::Error collectThreadArgumentBindings(dataflow::ThreadLaunchOp launch,
     if (llvm::isa<dataflow::ChannelSendOp>(owner) &&
         use.getOperandNumber() == 0) {
       relation.producers.push_back(ChannelEndpointBinding{
-          launch, thread, owner, std::nullopt, std::nullopt});
+          launch, thread, argumentIndex, owner, std::nullopt, std::nullopt});
       continue;
     }
     if (llvm::isa<dataflow::ChannelReceiveOp>(owner) &&
         use.getOperandNumber() == 0) {
       relation.consumers.push_back(ChannelEndpointBinding{
-          launch, thread, owner, std::nullopt, std::nullopt});
+          launch, thread, argumentIndex, owner, std::nullopt, std::nullopt});
       continue;
     }
     return programError(llvm::Twine("thread channel argument #") +
@@ -232,12 +232,16 @@ llvm::Error verifySourceMapBounds(const ChannelEndpointBinding &consumer,
 llvm::Error verifyTopology(const ChannelRelation &relation) {
   if (relation.producers.empty())
     return programError("channel topology has no producer binding");
-  if (relation.producers.size() != 1)
-    return programError("channel topology has multiple producer bindings");
-  if (relation.consumers.empty())
-    return programError("channel topology has no consumer binding");
 
   const ChannelEndpointBinding &producer = relation.producers.front();
+  for (const ChannelEndpointBinding &site :
+       llvm::ArrayRef(relation.producers).drop_front())
+    if (site.rootLaunch != producer.rootLaunch ||
+        site.thread != producer.thread ||
+        site.threadArgumentOrdinal != producer.threadArgumentOrdinal)
+      return programError("channel topology has multiple producer bindings");
+  if (relation.consumers.empty())
+    return programError("channel topology has no consumer binding");
   unsigned producerRank = getThreadRank(producer.thread);
   for (const ChannelEndpointBinding &consumer : relation.consumers) {
     unsigned consumerRank = getThreadRank(consumer.thread);
