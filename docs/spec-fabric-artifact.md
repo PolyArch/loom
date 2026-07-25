@@ -99,6 +99,73 @@ No root, local identifier, canonical byte stream, or digest is externally
 visible before the entire sequence succeeds. Retrying an unchanged valid draft
 must produce the same result.
 
+## Immutable Root-Complete Views
+
+The canonical Fabric root is the only authority for its structural relations.
+The C++ import API exposes those facts through one sealed, immutable
+`FabricArtifactView`. A view is created only by freezing an entire elaborated
+root inside the canonical finalizer or by importing an entire canonical root
+and its exact dependency closure. It has no public constructor, cannot be
+subclassed, and cannot be assembled from caller-provided relation fragments.
+
+The internal freeze used before semantic verification may contain invalid
+facts, but it is structurally complete: every relation in the selected root is
+present. Publication exposes the same immutable storage only after all root
+verifiers succeed. Tests that need invalid input freeze or import an invalid
+whole-root candidate; they do not implement a mock view with partial answers.
+
+For every root kind, the view exposes canonical complete ranges for all
+relations owned by that root, including its entities, owner inventories, token
+and memory endpoints, directed point connections, and dependency-derived
+occurrence facts. A `System` root additionally exposes complete canonical
+ranges for spatial attachments, hardware-domain declarations and membership,
+system transport resources, transfer patterns, and each transport resource's
+optional crossing contract.
+
+All range elements are exact typed Fabric references or immutable views of
+root-owned records. Ranges use canonical order and contain no duplicates.
+Convenience queries such as `entityKind`, `hardwareDomainKind`,
+`hasPointConnection`, membership lookup, or crossing lookup are derived
+indexes over these same ranges. An implementation may cache the indexes, but a
+query and a scan of the authoritative range must always agree. A query is
+never an independent callback authority.
+
+The critical C++ boundary is conceptually:
+
+```text
+freezeEntireFabricRoot(...) -> FabricArtifactView
+importEntireFabricRoot(...) -> FabricArtifactView
+requireSystemRoot(FabricArtifactView) -> FabricSystemRootView
+
+FabricArtifactView::pointConnections()
+  -> canonical range<FabricPointConnectionPayload>
+
+FabricSystemRootView::spatialAttachments()
+  -> canonical range<SpatialAttachmentRecordView>
+FabricSystemRootView::hardwareDomains()
+  -> canonical range<HardwareDomainRef>
+FabricSystemRootView::hardwareDomainContract(HardwareDomainRef)
+  -> exact closed HardwareDomainContractView
+FabricSystemRootView::hardwareDomainMembers(HardwareDomainRef)
+  -> canonical range<FabricInventoryOwnerRef>
+FabricSystemRootView::transportResources()
+  -> canonical range<SystemTransportResourceRef>
+FabricSystemRootView::transferPatterns(SystemTransportResourceRef)
+  -> canonical range<FabricTransferPatternRef>
+FabricSystemRootView::clockCrossing(SystemTransportResourceRef)
+  -> optional<ClockCrossingContractView>
+```
+
+`FabricSystemRootView` is a zero-copy typed refinement of the same immutable
+storage. It has no independent constructor or relation lists. Refinement of a
+non-`System` root is a typed wrong-root-kind error, not an empty view.
+
+`FabricImportBinding` proves only that a compact reference is interpreted
+against the expected exact artifact and root kind. It neither proves relation
+completeness nor authorizes a caller to supplement, omit, or replace root
+facts. Whole-root validators consume the appropriate root view directly and
+must not accept shadow topology, domain, membership, or crossing catalogs.
+
 Malformed hardware is `Invalid`. A well-formed custom Fabric whose selected
 backend lacks a provider remains a valid Fabric artifact; the backend reports
 typed `Unsupported`. A published builtin target must have provider closure for
@@ -131,6 +198,11 @@ Anchor tests cover:
 * wrong-kind, foreign, duplicate, cyclic, and missing direct references;
 * failure-atomic publication and deterministic retry;
 * independent import and re-verification of canonical bytes;
+* exact agreement between every complete relation range and its convenience
+  queries;
+* rejection of a hidden clock-domain crossing even when a caller would have
+  omitted that point connection from a former shadow list;
+* rejection of attempts to construct or subclass a partial root view;
 * a valid custom Fabric with a missing backend provider reporting
   `Unsupported`; and
 * a builtin target refusing publication when provider closure is incomplete.

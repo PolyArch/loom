@@ -240,6 +240,12 @@ SubordinateEndpointRef =
 
 MemoryConsistencyDomainRef =
   HardwareDomainRef whose domain kind is MemoryConsistency
+
+ClockDomainRef =
+  HardwareDomainRef whose domain kind is Clock
+
+ResetDomainRef =
+  HardwareDomainRef whose domain kind is Reset
 ```
 
 The refined name is selected by the consuming field's static type. Its
@@ -282,6 +288,7 @@ closed constructor catalog:
 ```text
 FabricInventoryOwnerRef =
     ModuleTemplate(FabricModuleTemplateRef)
+  | SpatialCoreOccurrence(SpatialCoreOccurrenceRef)
   | PeOccurrence(FabricPeOccurrenceRef)
   | FuTemplate(FabricFuTemplateRef)
   | FuOccurrence(FabricFuOccurrenceRef)
@@ -315,6 +322,16 @@ independently drifting copies; it is not a generic path or property reference.
 Membership in an owner union does not imply that every instance has a
 nonempty inventory. A reference is valid only when the selected instance
 declares the indexed object.
+
+Every `FabricTransportEndpointOwnerRef` and
+`FabricMemoryEndpointOwnerRef` has one total, exact projection into
+`FabricInventoryOwnerRef`. The projection preserves the complete typed owner
+payload. For example, a `SpatialCoreOccurrenceRef` remains
+`SpatialCoreOccurrence`, and a `SystemMemoryServiceRef` becomes the `System`
+variant of `FabricMemoryServiceRef` inside `MemoryService`. It never collapses
+an owner-relative reference to its parent `EntityId`, substitutes a child or
+parent owner, or returns absent. Hardware-domain membership and other
+owner-based relations use this projection rather than an entity-ID helper.
 
 ## Directed Physical Traversals
 
@@ -439,6 +456,10 @@ rejects:
 * a token-plane reference used as a memory capability or the reverse; and
 * a deprecated alias or generic path/property escape.
 
+Import also rejects any root-complete relation whose element cannot be
+represented by its declared closed owner union. It never skips an
+owner-relative member because that member lacks a standalone `EntityId`.
+
 These are invalid inputs. A well-formed reference whose target cannot support
 the requested software operation remains a Mapping feasibility failure, not
 an identity error.
@@ -456,6 +477,8 @@ Anchor-level tests cover:
 * a switch traversal, point connection, and induced resource state remain
   three distinct typed objects;
 * token and memory endpoint references cannot be interchanged;
+* every token and memory endpoint owner projects exactly to its complete
+  inventory-owner reference, including `SpatialCoreOccurrenceRef`;
 * wrong-owner, out-of-range, foreign-artifact, and deprecated-alias inputs are
   rejected; and
 * parse, canonical print, byte emission, and import resolve the same exact

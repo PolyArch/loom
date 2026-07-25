@@ -543,11 +543,33 @@ Clock, reset, power, address, and memory-consistency domains are explicit typed
 system facts. Domain crossings require explicit resources and verified
 semantics. Hierarchy or visualization grouping does not imply membership.
 
+The finalized `fabric.system` root is the sole persistent authority for the
+complete domain and crossing relation. Clock/reset validation consumes only a
+root-complete `FabricSystemRootView`, the typed refinement defined by
+`docs/spec-fabric-artifact.md`:
+
+```text
+validateClockReset(FabricSystemRootView) -> ValidatedClockResetView
+```
+
+The input view enumerates every point connection, spatial attachment,
+hardware-domain declaration and member, system transport resource, transfer
+pattern, and optional crossing contract in canonical order. The validator does
+not accept a `ClockResetStructure`, connection vector, domain vector, crossing
+vector, or any other caller-supplied shadow catalog. `FabricImportBinding`
+checks exact artifact scope only and is not a completeness proof.
+
+`ValidatedClockResetView` is a removable derived index over the same immutable
+root storage. It may cache exact member-to-domain and carrier-to-crossing
+lookups, but it owns no copied declarations and cannot outlive or disagree
+with its `FabricSystemRootView`.
+
 A transfer between different clock domains is legal only through a transport
 resource carrying one exact crossing contract:
 
 ```text
 ClockCrossingContract = AsyncFifo {
+  transfer_pattern_ref
   source_clock_domain_ref
   destination_clock_domain_ref
   depth
@@ -564,6 +586,13 @@ pattern, not a hidden connection behavior or a new generic crossing graph.
 Version 1 admits only the `AsyncFifo` variant. A direct cross-domain
 connection, an attachment that hides crossing state, or a backend-invented
 synchronizer is invalid.
+
+One transport-resource occurrence has zero or one crossing contract as one
+field of that resource's canonical record. A separate crossing list is
+forbidden. Consequently one carrier cannot have duplicate contracts and
+lookup never uses first-match behavior. The carrier is recovered from
+structural ownership and is not copied inside the contract. The selected
+transfer pattern must belong to that exact carrier.
 
 The fixed reset behavior discards no accepted token during ordinary operation.
 If either domain is reset, the crossing cannot accept or publish traffic until
@@ -757,6 +786,24 @@ MemoryConsistency {
 }
 ```
 
+The hardware-domain catalog is one canonical sorted-unique sequence keyed by
+`HardwareDomainRef`. A domain reference is declared exactly once. Each
+domain's member sequence is canonical sorted-unique over the complete
+`FabricInventoryOwnerRef` bytes. The same exact member may belong to at most
+one domain of a given kind; membership in one Clock and one Reset domain is
+legal. Duplicate membership within one declaration, duplicate Clock or Reset
+declarations, and membership of one exact member in two Clock or two Reset
+domains are invalid.
+
+Endpoint ownership is related to domain membership through the total exact
+endpoint-owner to inventory-owner projection defined by
+`docs/spec-fabric-identity.md`. Validation compares complete typed references.
+It never extracts a parent `EntityId`, silently skips an owner-relative member,
+or treats two different owner-relative references as the same entity. A
+crossing carrier has no ordinary single Clock membership; its ingress and
+egress faces derive their source and destination Clock domains from its exact
+crossing contract.
+
 Every atomic or fence capability references exactly one
 `MemoryConsistencyDomain`. Scope compatibility is derived from the exact
 Dataflow `SyncScopeRef`, compiler-target scope semantics, explicit domain
@@ -801,6 +848,16 @@ Connections are directed and one-to-one from one output to one input. Fanout,
 fan-in, multicast, arbitration, buffering, conversion, and protocol crossing
 must be represented by explicit resources and transfer patterns. A
 `spatial_attachment` is likewise one-to-one and has no hidden behavior.
+
+Clock/reset validation walks the complete root-owned point-connection and
+spatial-attachment ranges. Every endpoint owner must resolve through its exact
+inventory-owner projection. The two faces of a spatial attachment must belong
+to the same Clock domain because an attachment has no crossing behavior. Each
+point connection must likewise join equal effective face domains. A crossing
+carrier's ingress and egress faces obtain their effective domains from its
+contract, so a legal cross-domain path is represented by explicit same-domain
+legs into and out of that carrier. Omitting a relation from a consumer is
+impossible because consumers cannot supply the relation.
 
 ### Interconnect Implementation Sibling
 
@@ -856,6 +913,13 @@ arbiters, cache controllers, and simulator models consume the declared roots
 and refinements. Free-form kinds, protocol-as-capability, parameter bags,
 placeholder records, and compatibility wrappers are invalid.
 
+Before a `FabricSystemRootView` is returned or a root is published, the
+canonical importer/finalizer rejects duplicate point connections, duplicate
+hardware-domain references, duplicate domain members, conflicting same-kind
+membership, duplicate crossing fields for one carrier, wrong-kind typed domain
+refinements, and any connection or attachment hidden from the complete
+relation. These checks are root validation, not optional consumer policy.
+
 ## Validation Anchors
 
 Anchor-level validation should cover:
@@ -887,6 +951,14 @@ Anchor-level validation should cover:
   implementation;
 * one explicit asynchronous clock crossing and rejection of a hidden direct
   crossing or invalid reset-to-clock relation;
+* the omitted-bypass counterexample: a cross-domain point connection present
+  in the root is rejected even though no consumer supplies a connection list;
+* duplicate crossing contracts for one carrier, duplicate Clock or Reset
+  declarations, duplicate reset membership, and conflicting same-kind domain
+  membership are rejected;
+* owner-relative domain members, including a SpatialCore occurrence, are
+  validated by their full typed reference and are never skipped through an
+  entity-ID projection;
 * an InstructionCore-only SystemMapping with no imported SpatialMapping; and
 * Deployment closure including imported Mapping dependencies and a programmable
   transport unit, plus workload-independent Gem5 Simulation Binding reuse and

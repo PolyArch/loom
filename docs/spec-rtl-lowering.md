@@ -168,6 +168,13 @@ crossings. Stateful resources start in their canonical initial state and, for a
 legal completed invocation, satisfy Fabric's self-reset/quiescence contract
 before the same physical slot is reused.
 
+The backend obtains these facts by refining the exact imported Fabric artifact
+to `FabricSystemRootView` and consuming its complete domain, connection,
+attachment, transport-resource, and crossing ranges. It does not accept a
+backend-owned clock/reset manifest, caller-supplied connection list, or copied
+crossing catalog. Derived RTL or SDC indexes are disposable caches validated
+against that one root view.
+
 Power, clock-gating, reset synchronization, and backend constraints are emitted
 only from explicit Fabric implementation facts. An asynchronous clock crossing
 lowers only from the exact `ClockCrossingContract` on its owning transport

@@ -163,6 +163,13 @@ and failure classification are owned by `docs/spec-fabric-artifact.md`.
 Builder finalization calls that owner; it does not serialize or hash a parallel
 hardware model.
 
+The Builder likewise does not construct separate connection, domain,
+membership, or crossing catalogs for downstream validation. It hands the
+entire elaborated root to the canonical freeze boundary, and
+`FinalizedFabricDesign` exposes only the sealed root-complete views returned by
+that boundary. A convenience helper that internally records such facts must
+elaborate them into the root before freeze and discard its private state.
+
 Finalization performs one all-or-none derivation:
 
 1. close construction scopes and expand all helpers;
