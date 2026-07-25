@@ -48,6 +48,7 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-persistent-ref-test
   loom-fabric-resource-contract-record-test
   loom-fabric-resource-contract-test
+  loom-fabric-system-contract-test
   loom-fabric-temporal-operand-buffer-test
   loom-frontend-payload-framing-test
   loom-hwsg-test

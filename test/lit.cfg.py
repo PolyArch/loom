@@ -63,6 +63,7 @@ tools = [
     "loom-fabric-persistent-ref-test",
     "loom-fabric-resource-contract-record-test",
     "loom-fabric-resource-contract-test",
+    "loom-fabric-system-contract-test",
     "loom-fabric-temporal-operand-buffer-test",
     "loom-coverage-test",
     "loom-hwsg-test",

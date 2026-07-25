@@ -93,6 +93,10 @@ add_executable(loom-fabric-artifact-gate-test
   FabricArtifactGateTest.cpp
 )
 
+add_executable(loom-fabric-system-contract-test
+  FabricSystemContractTest.cpp
+)
+
 target_link_libraries(loom-fabric-persistent-ref-test PRIVATE
   LoomCommon
   LoomFabricIdentity
@@ -112,5 +116,12 @@ target_include_directories(loom-fabric-artifact-gate-test PRIVATE
 target_link_libraries(loom-fabric-artifact-gate-test PRIVATE
   LoomCommon
   LoomFabricArtifact
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-system-contract-test PRIVATE
+  LoomCommon
+  LoomFabricArtifact
+  LoomFabricIdentity
   LLVMSupport
 )
