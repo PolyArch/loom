@@ -90,6 +90,22 @@ SPEC membership is owned by its harness. Snapshot counts are evidence, not
 design constants. This distinction prevents a smoke subset or generated status
 file from becoming a false support boundary.
 
+## Why Suites Share One Compiler Contract
+
+LoomBench, CMSIS-DSP, and CMSIS-NN differ in ownership, build flags, source
+shape, and regression cost, not in compiler semantics. Assigning each suite a
+different terminal stage would turn benchmark organization into a product
+capability rule and could make the same conforming C function succeed or fail
+solely because of its directory.
+
+Fast tests may stop at stage checkpoints to localize regressions, and smoke
+selections may keep routine execution affordable. Those are invocation choices.
+The complete inventory remains eligible for every requested stage under the
+same driver, Artifact, verifier, and typed-failure contracts. A graph-free
+Canonical Dataflow result is legal only because the exact ownership decision
+kept all work on stored-program cores, not because CMSIS or LoomBench received
+a weaker contract.
+
 ## Why Several Features Are Explicitly Deferred
 
 Deferred features are absent rather than represented by empty records and

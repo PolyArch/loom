@@ -98,9 +98,10 @@ part of the first source contract.
 
 The clang provider lowers the hint through one provider-owned metadata
 encoding. Function candidates use a typed function annotation; loop candidates
-use a loop metadata operand. Import into S0 projects both to one internal unit
-attribute on the owning callable or loop. Part 2 must consume or explicitly
-discard that hint before candidate finalization; it cannot remain as unresolved
+use a loop metadata operand. The mutable raising workspace projects both to one
+internal unit attribute on the owning callable or loop. Part 2 must consume or
+explicitly discard that hint before publishing S0 or any later candidate; it
+cannot enter Structured Program canonical bytes or remain as unresolved
 target-specific metadata in Sn.
 
 ## 4. Boundary Principle

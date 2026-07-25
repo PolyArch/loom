@@ -316,6 +316,30 @@ Missing capability is reported honestly as a typed unsupported or incomplete
 outcome. Scaffolds, empty artifacts, skipped work, generated wrappers, or
 inventory counts cannot stand in for completed semantics.
 
+All three repository corpus owners exercise one compiler product contract.
+LoomBench, CMSIS-DSP, and CMSIS-NN may use different source manifests,
+toolchain flags, runtime oracles, and fast regression selections, but no suite
+has a shallower permanent compiler boundary. A requested stage is attempted
+through the same public driver and in-process stage libraries for every
+selected member, and the same validity and failure contracts apply.
+
+Stage checkpoints are diagnostic and regression boundaries, not suite
+capabilities. A checkpoint can stop after ordinary execution, Structured
+Program finalization, Canonical Dataflow finalization, Mapping, simulation, or
+hardware implementation to localize a failure. It cannot justify treating a
+deeper stage as unnecessary for one suite. A complete-stage corpus gate applies
+that stage uniformly to the requested inventory; a failure identifies a tool,
+provider, target, or program-semantics limitation rather than a suite-specific
+success rule.
+
+Canonical Dataflow publication is a whole-program result. It may contain no
+Spatial graph when the exact profile legitimately selects only HostCore or
+InstructionCore ownership. Such a graph-free program is different from an
+empty placeholder: it must retain the complete stored-program semantics and
+pass the same finalizer and importer. Representative acceleration anchors have
+separate nonempty Spatial graph requirements; corpus membership alone does not
+invent acceleration.
+
 Corpus contracts are specified by
 [CMSIS Compiler Contract](spec-cmsis-dropin-compiler.md), and
 [LoomBench](spec-loombench.md).

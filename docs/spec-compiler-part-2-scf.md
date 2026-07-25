@@ -150,6 +150,69 @@ Hot search may use an ephemeral region-local draft or delta. A value entering
 lineage, cache, an InvocationManifest, or the Artifact Store is always a full
 immutable program snapshot.
 
+### Artifact Schema And Canonical Bytes
+
+The Artifact family is fixed as:
+
+```text
+loom.structured_program 1.0
+```
+
+Its semantic root is exactly one `builtin.module` containing the complete
+mixed-dialect program snapshot. There is no wrapper operation, stage-state
+record, optimization-state flag, or direct Artifact dependency table in schema
+1.0. The linked LLVM and MLIR operations inside that module own the program,
+ABI, target triple, DataLayout, control, memory, and selected structured
+decisions. Candidate lineage and the exact Fabric used to evaluate a candidate
+belong to their existing owners and do not become Structured Program fields.
+
+The Structured Program family owns one canonical writer. It operates on a
+private clone and:
+
+1. verifies the complete mixed-dialect module and every registered operation;
+2. rejects unresolved source-provider metadata, transform plans, placeholders,
+   and target-specific software annotations;
+3. removes locations, debug provenance, consumed source hints, visual metadata,
+   derived analysis state, and any author-supplied identity carrier;
+4. resolves symbol uses, normalizes private symbols, SSA names, block labels,
+   attribute ordering, and nonsemantic symbol-table member order;
+5. preserves externally visible symbol spelling, ABI facts, ordered
+   stored-program operations, region semantics, and every registered semantic
+   field; and
+6. emits deterministic MLIR bytecode using the schema-owned writer and the
+   pinned MLIR dialect/version set.
+
+The exact canonical semantic bytes passed to the Common Artifact finalizer are:
+
+```text
+bytes("loom.structured_program.semantic.v1\0")
+|| u64be(canonical_mlir_bytecode_length)
+|| canonical_mlir_bytecode
+```
+
+The family writer, not a generic MLIR printer flag or arbitrary bytecode
+emission path, owns these bytes. A writer change that changes canonical bytes
+requires a compatible schema-minor append or an incompatible schema-major
+change according to the ordinary Artifact rules. The specification fixes the
+canonical result, not the symbol-normalization or graph-labeling algorithm.
+
+Finalization is failure-atomic. After canonical bytes are formed, the family
+parses them in a fresh context with the exact registered dialect set,
+reconstructs a sealed read-only `StructuredProgramCandidateView`, runs the
+complete verifier again, re-encodes through the same writer, and requires exact
+byte equality before the Common single-object `put`. Import performs the same
+parse, verify, and re-encode checks and never repairs stale or noncanonical
+content. Malformed content is `Invalid`; an exact, valid candidate whose
+selected SpatialRegion cannot be mechanically lowered is simply
+non-finalizable and is not silently reassigned to the InstructionCore.
+
+Source-provider candidate hints are transient analysis inputs. The frontend
+must consume or explicitly discard them before Artifact finalization. The raw
+hint never enters canonical bytes or identity. A hint can affect identity only
+indirectly when a typed decision materializes different semantic IR in the
+resulting candidate. Two candidates with identical canonical semantic content
+deduplicate even if one derivation observed a hint and the other did not.
+
 ### Parent-Local References
 
 A typed structured decision refers to an entity only within its exact parent:
@@ -161,6 +224,35 @@ StructuredEntityRef {
   canonical_parent_local_ordinal
 }
 ```
+
+Schema 1.0 keeps this one reference shape. `entity_kind` is a closed
+Structured Program family ordinal with exactly these structural categories:
+
+```text
+StructuredEntityKind = Operation | Region | Block | Value
+```
+
+The stable schema-1.0 ordinals are `Operation = 0`, `Region = 1`, `Block = 2`,
+and `Value = 3`. The standalone comparison and persistence wire is:
+
+```text
+parent_candidate_id[32]
+|| u32be(entity_kind)
+|| u64be(canonical_parent_local_ordinal)
+```
+
+The static reference type fixes the exact `loom.structured_program` schema, so
+the field does not repeat a free schema string. A containing record that also
+owns the parent candidate must require exact parent equality; it cannot omit or
+reinterpret the reference's parent field.
+
+The finalizer assigns a dense canonical ordinal independently within each
+category. A Value is an existing block argument or operation result in the
+canonical module; the resolver derives which variant and owner it has rather
+than storing another public value-reference union. The referenced operation's
+actual MLIR operation name, traits, interfaces, and semantic fields remain
+owned by that operation schema. `entity_kind` does not duplicate loop kinds,
+memory kinds, transformation kinds, or operation names.
 
 The child is reanalyzed and receives new local references. Reusing a parent
 reference across candidates fails. Source locations, textual names, printer
@@ -306,6 +398,25 @@ Applying a decision:
 
 Failure exposes no partial child. Equal canonical semantic bytes deduplicate by
 ArtifactIdentity. A no-op such as factor one produces no new candidate.
+
+### Artifact Anchors
+
+Only stable family boundaries require dedicated tests:
+
+* private symbol, SSA, block-label, source-location, debug-provenance, and
+  consumed-hint changes preserve canonical bytes and identity;
+* an operation, semantic field, ABI fact, ordered effect, ownership boundary,
+  or selected structured decision change changes canonical bytes and identity;
+* a wrong-parent, wrong-kind, stale, or out-of-range `StructuredEntityRef` is
+  rejected;
+* finalizer output imports and re-encodes byte-for-byte, while malformed or
+  noncanonical bytes publish nothing; and
+* an unsupported selected SpatialRegion is non-finalizable without changing
+  the original candidate or silently moving its operations.
+
+Tests must not build operation, dialect, loop-shape, transform-order, metadata,
+or printer-option matrices. They call the production writer, importer, and
+reference resolver rather than copying canonicalization formulas.
 
 ## Exact Fabric Target
 

@@ -10,6 +10,9 @@ Each persistent fact has one owner:
 * an artifact family owns its canonical semantic schema and bytes;
 * Common artifact finalization owns identity framing, hashing, and exact
   cross-artifact reference framing;
+* the Structured Program family owns each complete mixed-dialect candidate,
+  its canonical bytes, parent-local structural references, and read-only
+  importer projection;
 * the Canonical Dataflow family owns its graph, actor, root-thread-launch,
   static-graph-launch, and logical-memory-root entity catalog, canonical
   labeling, and read-only importer projection;

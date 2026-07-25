@@ -11,8 +11,8 @@ LoomBench tests two related product contracts:
 
 * `loom-cc` and `loom-c++` can replace ordinary C and C++ compiler drivers for
   self-contained programs; and
-* selected cases can enter Loom's compiler, Mapping, simulation, hardware, and
-  Evaluation flows without gaining benchmark-specific semantics.
+* every case is eligible for Loom's compiler, Mapping, simulation, hardware,
+  and Evaluation flows without gaining benchmark-specific semantics.
 
 CMSIS-DSP and CMSIS-NN are the other two canonical source suites. Their
 external-source-tree contract is owned by `spec-cmsis-dropin-compiler.md`.
@@ -37,6 +37,12 @@ dfg
 valid raised MLIR artifact. `dfg` requires a finalized canonical Dataflow
 artifact. Selecting a tier asserts success; an unsupported diagnostic is a
 failure for that selected tier, not a passing fixture.
+
+These tiers select fast regression checkpoints; they do not classify a case's
+maximum supported compiler depth. A complete-stage invocation can request the
+same deeper checkpoint for every manifest member. Absence of that tier from a
+case's fast selection does not waive the product contract or turn a failure at
+that stage into success.
 
 Every emitted source-suite identity is exactly one of `loombench`,
 `cmsis-dsp`, or `cmsis-nn`. A repository case emits `suite=loombench` and its
@@ -91,8 +97,12 @@ source
 ```
 
 Artifacts must parse, verify, and retain the case and source identities needed
-for exact lineage. A `dfg` case cannot pass with residual imperative control,
-an empty graph, or an unsupported-scope placeholder.
+for exact lineage. A `dfg` case cannot pass with residual unsupported control
+or an unsupported-scope placeholder. The Canonical Dataflow Program may be
+graph-free only when the exact profile selected no SpatialCore-owned region;
+it must still preserve the complete InstructionCore program and pass ordinary
+whole-program finalization. A representative anchor whose contract selects
+Spatial execution must contain the required nonempty graph.
 
 The representative ten-kernel frontend anchor set is owned by
 `spec-end-to-end-demonstrators.md`. Each anchor must resolve to a LoomBench
@@ -139,7 +149,8 @@ work, including dense and sparse numeric kernels, graph and irregular access,
 reductions and scans, stencils, signal processing, bit operations, control,
 streaming, vector behavior, and neural-network kernels.
 
-A smoke selection is an execution choice and never a smaller canonical suite.
+A smoke or tier selection is an execution choice and never a smaller canonical
+suite or a weaker product boundary.
 SPEC CPU 2026 is a separate external conformance corpus and does not alter
 LoomBench or CMSIS membership.
 

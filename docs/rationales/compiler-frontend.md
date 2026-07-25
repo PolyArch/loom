@@ -78,6 +78,38 @@ The compiler generates immutable candidates, uses typed analyses for legality,
 and asks the central Evaluation/DSE framework to compare legal alternatives,
 optionally against an exact Fabric target.
 
+## Why Structured Candidates Are Artifacts
+
+Structured optimization and hardware-aware Evaluation compare complete program
+states, not mutable pass-manager snapshots. An immutable Structured Program
+Artifact gives lineage, cache, replay, and Evaluation one exact subject while
+allowing hot search to keep removable drafts and deltas. Separate initial,
+optimized, and selected families would encode workflow state as program
+semantics, so every published candidate uses the same family and schema.
+
+The candidate stores the complete mixed-dialect `builtin.module` because LLVM
+ABI, structured control, standard operations, and selected ownership decisions
+must remain one coherent program. A separate Schedule IR, analysis Artifact, or
+optimization plan would duplicate facts already materialized in that module.
+Derived analyses therefore remain recomputable views.
+
+The canonical payload is family-owned deterministic MLIR bytecode rather than
+ordinary printer output. This keeps the expressive MLIR type, region, symbol,
+and operation model without introducing a parallel record schema. The family
+writer fixes semantic inclusion and normalization; Common only frames and
+hashes the resulting bytes. A generic bytecode command is not an identity
+authority.
+
+Parent-local structural references deliberately remain one closed reference
+shape. They identify a canonical operation, region, block, or value in one
+exact parent without adding permanent IDs to mutable MLIR. Actual loop,
+operation, memory, and transform semantics stay with their existing owners.
+
+Source hints do not enter candidate identity. They may influence which typed
+decision is explored, but equal resulting program semantics must deduplicate.
+Making the raw hint semantic would let a nonbinding compiler suggestion create
+distinct programs even when it changed no program decision.
+
 A persistent Schedule IR, Placement IR, or generic action DSL was rejected.
 Loop structure and transformations already live in the candidate IR;
 dependence and logical-domain models are derived analyses; physical binding

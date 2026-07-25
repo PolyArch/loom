@@ -289,11 +289,12 @@ checked-out submodule revisions match the parent repository gitlinks.
 LoomBench membership is defined by its own manifest rather than by this CMSIS
 contract.
 
-The CMSIS-DSP and CMSIS-NN DFG smoke tables select replaceable sources. Each
+The CMSIS-DSP and CMSIS-NN fast smoke tables select replaceable sources. Each
 row identifies a `Source`-relative translation unit, target triple, CPU, public
 source symbol, and optional compiler flags. The tables must validate as strict
 subsets of their canonical inventories. They neither define suite membership
-nor require adjacent status, binding, or provenance files. The parent
+nor define a shallower compiler capability for unselected members, and they do
+not require adjacent status, binding, or provenance files. The parent
 repository's pinned submodule commit and the source-relative path identify the
 source used by a smoke run.
 
@@ -312,11 +313,16 @@ Core CMSIS regression coverage requires:
 * ordinary compiler compatibility and acceleration-specific behavior are
   tested at their owning driver and pipeline boundaries.
 
-A complete-suite invocation attempts every requested translation unit through
-the public driver and records an honest typed outcome for each one. Every unit
-must satisfy ordinary drop-in compilation when its underlying compiler target
-is supported. Only regions selected by the exact acceleration profile are
-required to publish an optimized Canonical Dataflow Program.
+A complete-suite stage invocation attempts every requested translation unit
+through the public driver and the same in-process stage libraries used for
+LoomBench. Every unit must satisfy ordinary drop-in compilation when its
+underlying compiler target is supported. When Canonical Dataflow is requested,
+every unit must publish a valid whole-program Canonical Dataflow Artifact or
+report a real compiler/provider limitation. A valid Artifact may be graph-free
+when the exact profile selects no SpatialCore-owned region; this is not a
+CMSIS-specific exception and cannot be represented by an empty placeholder.
+When Mapping, simulation, or a later stage is requested, the same owner
+contracts apply without a CMSIS-specific stopping rule.
 
 Smoke targets are deliberately replaceable as compiler coverage changes.
 Expanding coverage toward the complete inventory does not require a parallel
