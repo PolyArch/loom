@@ -14,7 +14,6 @@
 #include "mlir/IR/Value.h"
 
 #include <algorithm>
-#include <limits>
 #include <utility>
 
 using namespace mlir;
@@ -28,7 +27,7 @@ constexpr std::uint32_t kSpatialRootTag = 0;
 // Semantic validation
 //===----------------------------------------------------------------------===//
 
-llvm::Error checkAscendingUnique(llvm::ArrayRef<std::uint32_t> ordinals,
+llvm::Error checkAscendingUnique(llvm::ArrayRef<std::uint64_t> ordinals,
                                  std::uint64_t ownerCount,
                                  const llvm::Twine &what) {
   for (std::size_t index = 0; index < ordinals.size(); ++index) {
@@ -206,15 +205,6 @@ decodeLogicalMemoryRootRef(detail::WireReader &reader) {
                                         dataflow::LogicalMemoryRootId(*entity)};
 }
 
-llvm::Expected<std::uint32_t> decodeOrdinal(detail::WireReader &reader) {
-  llvm::Expected<std::uint64_t> ordinal = reader.u64();
-  if (!ordinal)
-    return ordinal.takeError();
-  if (*ordinal > std::numeric_limits<std::uint32_t>::max())
-    return detail::invalid("simulation wire: ordinal exceeds 32 bits");
-  return static_cast<std::uint32_t>(*ordinal);
-}
-
 void encodeRootOrView(detail::WireWriter &writer,
                       const dataflow::LogicalMemoryRootOrViewRef &reference) {
   if (const auto *root =
@@ -248,7 +238,7 @@ decodeRootOrView(detail::WireReader &reader) {
       decodeLogicalMemoryRootRef(reader);
   if (!root)
     return root.takeError();
-  llvm::Expected<std::uint32_t> viewOrdinal = decodeOrdinal(reader);
+  llvm::Expected<std::uint64_t> viewOrdinal = reader.u64();
   if (!viewOrdinal)
     return viewOrdinal.takeError();
   return dataflow::LogicalMemoryRootOrViewRef{
@@ -282,7 +272,7 @@ decodeObservableTarget(detail::WireReader &reader) {
   if (*tag != 1)
     return detail::invalid(
         "simulation wire: unknown observable-target discriminant");
-  llvm::Expected<std::uint32_t> ordinal = decodeOrdinal(reader);
+  llvm::Expected<std::uint64_t> ordinal = reader.u64();
   if (!ordinal)
     return ordinal.takeError();
   return SpatialMemoryObservableTarget{MemoryExposureTarget{*ordinal}};
@@ -311,10 +301,10 @@ encodeSpatialWorkload(const SpatialSimulationWorkload &workload) {
   }
   const SpatialObservableContract &contract = workload.observableContract;
   writer.u64(contract.valueResults.size());
-  for (std::uint32_t ordinal : contract.valueResults)
+  for (std::uint64_t ordinal : contract.valueResults)
     writer.u64(ordinal);
   writer.u64(contract.streamOutputs.size());
-  for (std::uint32_t ordinal : contract.streamOutputs)
+  for (std::uint64_t ordinal : contract.streamOutputs)
     writer.u64(ordinal);
   writer.u64(contract.memories.size());
   for (const SpatialMemoryObservable &observable : contract.memories) {
@@ -324,17 +314,17 @@ encodeSpatialWorkload(const SpatialSimulationWorkload &workload) {
   return writer.take();
 }
 
-llvm::Expected<std::vector<std::uint32_t>>
+llvm::Expected<std::vector<std::uint64_t>>
 decodeOrdinalSet(detail::WireReader &reader, const llvm::Twine &what) {
   llvm::Expected<std::uint64_t> count = reader.u64();
   if (!count)
     return count.takeError();
   if (llvm::Error error = reader.guardCount(*count, 8))
     return std::move(error);
-  std::vector<std::uint32_t> ordinals;
+  std::vector<std::uint64_t> ordinals;
   ordinals.reserve(*count);
   for (std::uint64_t index = 0; index < *count; ++index) {
-    llvm::Expected<std::uint32_t> ordinal = decodeOrdinal(reader);
+    llvm::Expected<std::uint64_t> ordinal = reader.u64();
     if (!ordinal)
       return ordinal.takeError();
     if (index > 0 && *ordinal <= ordinals.back())
@@ -430,12 +420,12 @@ decodeSpatialWorkload(llvm::ArrayRef<std::uint8_t> bytes,
     workload.valueInputPlan.emplace_back(RuntimeValueInput{});
   }
 
-  llvm::Expected<std::vector<std::uint32_t>> valueResults =
+  llvm::Expected<std::vector<std::uint64_t>> valueResults =
       decodeOrdinalSet(reader, "simulation workload: value results");
   if (!valueResults)
     return valueResults.takeError();
   workload.observableContract.valueResults = std::move(*valueResults);
-  llvm::Expected<std::vector<std::uint32_t>> streamOutputs =
+  llvm::Expected<std::vector<std::uint64_t>> streamOutputs =
       decodeOrdinalSet(reader, "simulation workload: stream outputs");
   if (!streamOutputs)
     return streamOutputs.takeError();

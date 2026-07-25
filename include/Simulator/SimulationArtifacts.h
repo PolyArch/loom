@@ -108,7 +108,7 @@ enum class MemoryObservationForm : std::uint32_t {
 /// A launch-contextual graph memory result; its complete meaning is the
 /// corresponding MemoryExposureRef resolved through the rooted launch.
 struct MemoryExposureTarget {
-  std::uint32_t memoryResultOrdinal = 0;
+  std::uint64_t memoryResultOrdinal = 0;
 };
 
 using SpatialMemoryObservableTarget =
@@ -123,8 +123,8 @@ struct SpatialMemoryObservable {
 /// typed key and contains no duplicates; owner-relative ordinals resolve
 // through the rooted launch.
 struct SpatialObservableContract {
-  std::vector<std::uint32_t> valueResults = {};
-  std::vector<std::uint32_t> streamOutputs = {};
+  std::vector<std::uint64_t> valueResults = {};
+  std::vector<std::uint64_t> streamOutputs = {};
   std::vector<SpatialMemoryObservable> memories = {};
 };
 
@@ -153,7 +153,7 @@ struct SpatialSimulationWorkload {
 //===----------------------------------------------------------------------===//
 
 struct RuntimeValueEntry {
-  std::uint32_t valueInputOrdinal = 0;
+  std::uint64_t valueInputOrdinal = 0;
   CanonicalValueSequence value; // exactly one token
 };
 

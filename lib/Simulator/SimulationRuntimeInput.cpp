@@ -434,16 +434,15 @@ decodeSpatialRuntimeInput(llvm::ArrayRef<std::uint8_t> bytes,
     if (index > 0 && *ordinal <= input.runtimeValues.back().valueInputOrdinal)
       return detail::invalid("simulation runtime input: runtime values are "
                              "not sorted or contain a duplicate");
-    if (*ordinal > std::numeric_limits<std::uint32_t>::max() ||
-        *ordinal >= context->numValueInputs)
+    if (*ordinal >= context->numValueInputs)
       return detail::invalid(
           "simulation runtime input: value-input ordinal out of range");
     llvm::Expected<CanonicalValueSequence> value = detail::decodeValueSequence(
         reader, context->valueInputShapes[*ordinal]);
     if (!value)
       return value.takeError();
-    input.runtimeValues.push_back(RuntimeValueEntry{
-        static_cast<std::uint32_t>(*ordinal), std::move(*value)});
+    input.runtimeValues.push_back(
+        RuntimeValueEntry{*ordinal, std::move(*value)});
   }
 
   llvm::Expected<std::uint64_t> streamCount = reader.u64();

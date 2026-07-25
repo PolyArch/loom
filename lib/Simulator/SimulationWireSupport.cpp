@@ -195,8 +195,8 @@ importedRootOfValue(
       if (found == staticLaunchByOp.end())
         return invalid("simulation wire: launch memory result has no static "
                        "launch entity");
-      std::optional<std::uint32_t> memoryResultOrdinal;
-      unsigned ordinal = 0;
+      std::optional<std::uint64_t> memoryResultOrdinal;
+      std::uint64_t ordinal = 0;
       for (Value result : earlier.getMemoryResults()) {
         if (result == value) {
           memoryResultOrdinal = ordinal;

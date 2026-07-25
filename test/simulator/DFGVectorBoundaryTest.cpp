@@ -306,6 +306,22 @@ template <typename T> T takeExpected(llvm::Expected<T> value) {
   return std::move(*value);
 }
 
+template <typename Op>
+bool fireAdmittedActorOperation(Op op, SimulatorState &state) {
+  mlir::Operation *operation = op.getOperation();
+  if (!state.actorProjections.contains(operation)) {
+    auto projection =
+        dataflow::projectRegisteredActorSchemaProjection(operation);
+    if (!projection)
+      fail("actor admission failed: " + llvm::toString(projection.takeError()));
+    if (auto unsupported = unsupportedActorProvider(operation, *projection))
+      fail("actor provider admission failed: " + unsupported->label +
+           (unsupported->reason.empty() ? "" : ": " + unsupported->reason));
+    state.actorProjections.try_emplace(operation, std::move(*projection));
+  }
+  return loom::sim::detail::fireActorOperation(operation, state);
+}
+
 Token tokenWithBits(mlir::Type type, uint64_t value) {
   unsigned width = takeExpected(tokenTypeBitWidth(type));
   return takeExpected(tokenFromBitPattern(llvm::APInt(width, value), type));
@@ -365,13 +381,17 @@ void parallelizePreservesQueuedActivation(dataflow::ParallelizeOp op) {
   phase.push_back(boolValueToken(true));
   phase.push_back(boolValueToken(false));
 
-  require(fireActorOperation(op, state), "first scalar true did not fire");
+  require(fireAdmittedActorOperation(op, state),
+          "first scalar true did not fire");
   require(data.size() == 1, "first scalar true consumed the wrong payload");
-  require(fireActorOperation(op, state), "first scalar false did not fire");
+  require(fireAdmittedActorOperation(op, state),
+          "first scalar false did not fire");
   require(data.size() == 1,
           "scalar false consumed the next activation payload");
-  require(fireActorOperation(op, state), "second scalar true did not fire");
-  require(fireActorOperation(op, state), "second scalar false did not fire");
+  require(fireAdmittedActorOperation(op, state),
+          "second scalar true did not fire");
+  require(fireAdmittedActorOperation(op, state),
+          "second scalar false did not fire");
 
   expectBits(state.pendingObservedOutputs[op.getVector()],
              op.getVector().getType(), {17, 18},
@@ -396,13 +416,13 @@ void serializePreservesQueuedActivation(dataflow::SerializeOp op,
   packedMask.push_back(tokenWithBits(maskUnpack.getPacked().getType(), 0));
   packedMask.push_back(tokenWithBits(maskUnpack.getPacked().getType(), 5));
 
-  require(fireActorOperation(vectorUnpack, state),
+  require(fireAdmittedActorOperation(vectorUnpack, state),
           "first vector unpack did not fire");
-  require(fireActorOperation(vectorUnpack, state),
+  require(fireAdmittedActorOperation(vectorUnpack, state),
           "second vector unpack did not fire");
-  require(fireActorOperation(maskUnpack, state),
+  require(fireAdmittedActorOperation(maskUnpack, state),
           "first mask unpack did not fire");
-  require(fireActorOperation(maskUnpack, state),
+  require(fireAdmittedActorOperation(maskUnpack, state),
           "second mask unpack did not fire");
   flushPending(state);
 
@@ -416,16 +436,20 @@ void serializePreservesQueuedActivation(dataflow::SerializeOp op,
   phase.push_back(boolValueToken(true));
   phase.push_back(boolValueToken(false));
 
-  require(fireActorOperation(op, state), "all-zero true group did not fire");
+  require(fireAdmittedActorOperation(op, state),
+          "all-zero true group did not fire");
   require(vectors.size() == 1 && masks.size() == 1,
           "all-zero true group did not consume its payload");
   require(state.pendingObservedOutputs[op.getData()].empty(),
           "all-zero group emitted scalar data");
-  require(fireActorOperation(op, state), "first group false did not fire");
+  require(fireAdmittedActorOperation(op, state),
+          "first group false did not fire");
   require(vectors.size() == 1 && masks.size() == 1,
           "group false consumed the next activation payload");
-  require(fireActorOperation(op, state), "sparse true group did not fire");
-  require(fireActorOperation(op, state), "second group false did not fire");
+  require(fireAdmittedActorOperation(op, state),
+          "sparse true group did not fire");
+  require(fireAdmittedActorOperation(op, state),
+          "second group false did not fire");
 
   expectBits(state.pendingObservedOutputs[op.getData()], op.getData().getType(),
              {0x11, 0x33}, "serialize did not preserve low-slice lane order");
@@ -441,7 +465,7 @@ void parallelizeFailureIsAtomic(dataflow::ParallelizeOp op) {
         malformedToken(TokenKind::Integer, 16));
     state.channels[&op.getScalarPhaseMutable()].push_back(boolValueToken(true));
 
-    require(!fireActorOperation(op, state),
+    require(!fireAdmittedActorOperation(op, state),
             "parallelize accepted a malformed scalar token");
     require(state.channels[&op.getDataMutable()].size() == 1 &&
                 state.channels[&op.getScalarPhaseMutable()].size() == 1,
@@ -464,7 +488,7 @@ void parallelizeFailureIsAtomic(dataflow::ParallelizeOp op) {
     state.channels[&op.getScalarPhaseMutable()].push_back(
         boolValueToken(false));
 
-    require(!fireActorOperation(op, state),
+    require(!fireAdmittedActorOperation(op, state),
             "parallelize assembled a malformed pending group");
     const ParallelizeState &preserved =
         state.parallelizeStates.find(op.getOperation())->second;
@@ -497,7 +521,8 @@ void unpackPlacesRowMajorLanes(dataflow::UnpackOp op) {
   state.channels[&op.getPackedMutable()].push_back(
       tokenWithBits(op.getPacked().getType(), kRankTwoPacked));
 
-  require(fireActorOperation(op, state), "rank-two unpack did not fire");
+  require(fireAdmittedActorOperation(op, state),
+          "rank-two unpack did not fire");
   auto &published = state.pendingObservedOutputs[op.getVector()];
   require(published.size() == 1,
           "rank-two unpack did not publish exactly one vector token");
@@ -519,7 +544,7 @@ void packFlattensRowMajorLanes(dataflow::PackOp op) {
   state.channels[&op.getVectorMutable()].push_back(takeExpected(
       tokenFromBitPattern(rowMajorLaneBits(), op.getVector().getType())));
 
-  require(fireActorOperation(op, state), "rank-two pack did not fire");
+  require(fireAdmittedActorOperation(op, state), "rank-two pack did not fire");
   auto &published = state.pendingObservedOutputs[op.getPacked()];
   require(published.size() == 1,
           "rank-two pack did not publish exactly one packed token");
@@ -536,7 +561,8 @@ void packFailureIsAtomic(dataflow::PackOp op) {
   state.channels[&op.getVectorMutable()].push_back(
       malformedToken(TokenKind::Vector, 8));
 
-  require(!fireActorOperation(op, state), "pack accepted a malformed vector");
+  require(!fireAdmittedActorOperation(op, state),
+          "pack accepted a malformed vector");
   require(state.channels[&op.getVectorMutable()].size() == 1,
           "pack consumed input on conversion failure");
   require(state.pendingChannels.empty() &&
@@ -550,7 +576,7 @@ void unpackFailureIsAtomic(dataflow::UnpackOp op) {
   state.channels[&op.getPackedMutable()].push_back(
       malformedToken(TokenKind::Integer, 8));
 
-  require(!fireActorOperation(op, state),
+  require(!fireAdmittedActorOperation(op, state),
           "unpack accepted a malformed packed token");
   require(state.channels[&op.getPackedMutable()].size() == 1,
           "unpack consumed input on conversion failure");
@@ -568,7 +594,7 @@ void serializeFailureIsAtomic(dataflow::SerializeOp op) {
       tokenWithBits(op.getMask().getType(), 1));
   state.channels[&op.getGroupPhaseMutable()].push_back(boolValueToken(true));
 
-  require(!fireActorOperation(op, state),
+  require(!fireAdmittedActorOperation(op, state),
           "serialize accepted a malformed vector");
   require(state.channels[&op.getVectorMutable()].size() == 1 &&
               state.channels[&op.getMaskMutable()].size() == 1 &&
@@ -635,10 +661,10 @@ void loadRejectionIsAtomic(dataflow::LoadOp op) {
   state.admittedPlainMemoryActions.try_emplace(op.getOperation(),
                                                ReadyPlainMemoryAction{});
 
-  require(!fireActorOperation(op, state),
+  require(!fireAdmittedActorOperation(op, state),
           "load accepted an out-of-range address");
   require(state.diagnostics.size() == 1, "load recorded no rejection reason");
-  require(!fireActorOperation(op, state),
+  require(!fireAdmittedActorOperation(op, state),
           "load accepted an out-of-range address when re-polled");
   require(state.diagnostics.size() == 2,
           "a re-polled load rejection is not detectable as a failed attempt");
@@ -671,7 +697,7 @@ void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
   state.admittedPlainMemoryActions.try_emplace(op.getOperation(),
                                                std::move(*projected.ready));
 
-  require(!fireActorOperation(op, state),
+  require(!fireAdmittedActorOperation(op, state),
           "store fired after synchronization insertion failed");
   require(state.diagnostics.size() == 1,
           "store recorded no synchronization failure reason");
@@ -715,7 +741,7 @@ void storeDuplicateScatterIsProviderFailure(dataflow::StoreOp op) {
 
   state.admittedPlainMemoryActions.try_emplace(op.getOperation(),
                                                std::move(*projected.ready));
-  require(!fireActorOperation(op, state),
+  require(!fireAdmittedActorOperation(op, state),
           "store resolved a duplicate active plain scatter destination");
   require(state.diagnostics.size() == 1,
           "store recorded no duplicate-destination reason");
