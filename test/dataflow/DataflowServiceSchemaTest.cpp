@@ -113,7 +113,8 @@ module {
     %old, %done = dataflow.atomic_rmw %mem[%addr] %value %ctrl
         {contract = #dataflow.rmw_contract<
             kind = add,
-            access = <ordering = monotonic, sync_scope = <system>>>}
+            access = <ordering = monotonic, sync_scope = <system>,
+                      source_alignment_bytes = 4>>}
         : memref<10xi32>
     return %old, %done : i32, none
   }
@@ -126,7 +127,7 @@ module {
         {contract = #dataflow.rmw_contract<
             kind = add,
             access = <ordering = monotonic, sync_scope = <system>,
-                      vector_granularity = per_lane>>}
+                      source_alignment_bytes = 4, vector_granularity = per_lane>>}
         : memref<10xi32>, vector<2x3xindex>, vector<2x3xi32>
     return %old, %done : vector<2x3xi32>, none
   }
@@ -137,7 +138,8 @@ module {
     %old, %ok, %done = dataflow.cmpxchg %mem[%addr] %expected %desired %ctrl
         {contract = #dataflow.cmpxchg_contract<success_ordering = seq_cst,
                                                failure_ordering = monotonic,
-                                               sync_scope = <system>>}
+                                               sync_scope = <system>,
+                                               source_alignment_bytes = 4>}
         : memref<10xi32> -> i1
     return %old, %ok, %done : i32, i1, none
   }
@@ -149,7 +151,8 @@ module {
     %old, %ok, %done = dataflow.cmpxchg %mem[%addr] %expected %desired %ctrl
         {contract = #dataflow.cmpxchg_contract<
             success_ordering = seq_cst, failure_ordering = monotonic,
-            sync_scope = <system>, vector_granularity = whole_payload>}
+            sync_scope = <system>, source_alignment_bytes = 4,
+            vector_granularity = whole_payload>}
         : memref<8xvector<4xi32>> -> i1
     return %old, %ok, %done : vector<4xi32>, i1, none
   }
@@ -163,7 +166,8 @@ module {
         mask %mask
         {contract = #dataflow.cmpxchg_contract<
             success_ordering = seq_cst, failure_ordering = monotonic,
-            sync_scope = <system>, vector_granularity = per_lane>}
+            sync_scope = <system>, source_alignment_bytes = 4,
+            vector_granularity = per_lane>}
         : memref<10xi32>, vector<4xi32> -> vector<4xi1>
     return %old, %ok, %done : vector<4xi32>, vector<4xi1>, none
   }
@@ -948,7 +952,7 @@ bool checkSourceTracking(mlir::ModuleOp module) {
   auto atomic = AtomicAccessContractAttr::get(
       context, AtomicOrdering::Acquire,
       SyncScopeRefAttr::get(context, SyncScopeKind::System, {}, {}),
-      std::nullopt, /*is_volatile=*/false);
+      /*source_alignment_bytes=*/4, std::nullopt, /*is_volatile=*/false);
   host->setAttr("contract", atomic);
   holds("an ordered contract", host, ServiceKind::MemoryRead,
         [&](const CanonicalMemoryAccessView &v) {
@@ -1008,8 +1012,9 @@ bool checkSourceTracking(mlir::ModuleOp module) {
   auto weak = CompareExchangeContractAttr::get(
       context, cmpxchgContract.getSuccessOrdering(),
       cmpxchgContract.getFailureOrdering(), cmpxchgContract.getSyncScope(),
-      cmpxchgContract.getVectorGranularity(), /*weak=*/true,
-      cmpxchgContract.getIsVolatile());
+      cmpxchgContract.getSourceAlignmentBytes(),
+      cmpxchgContract.getVectorGranularity(),
+      /*weak=*/true, cmpxchgContract.getIsVolatile());
   cmpxchg->setAttr("contract", weak);
   holds("a weak compare-exchange", cmpxchg, ServiceKind::MemoryCompareExchange,
         [&](const CanonicalMemoryAccessView &v) {

@@ -13,8 +13,8 @@ func.func @plain_default(%mem: memref<10xi32>, %addr: index, %ctrl: none)
 
 // CHECK-LABEL: func.func @volatile_and_atomic
 // CHECK: contract = #dataflow.plain_access<is_volatile = true>
-// CHECK: contract = #dataflow.atomic_access<ordering = acquire, sync_scope = <system>>
-// CHECK: contract = #dataflow.atomic_access<ordering = release, sync_scope = <single_thread>>
+// CHECK: contract = #dataflow.atomic_access<ordering = acquire, sync_scope = <system>, source_alignment_bytes = 4>
+// CHECK: contract = #dataflow.atomic_access<ordering = release, sync_scope = <single_thread>, source_alignment_bytes = 4>
 func.func @volatile_and_atomic(%mem: memref<10xi32>, %addr: index, %ctrl: none)
     -> (i32, i32, none) {
   %plain, %plain_done = dataflow.load %mem[%addr] %ctrl
@@ -22,11 +22,13 @@ func.func @volatile_and_atomic(%mem: memref<10xi32>, %addr: index, %ctrl: none)
       : memref<10xi32>
   %acquired, %acquired_done = dataflow.load %mem[%addr] %ctrl
       {contract = #dataflow.atomic_access<ordering = acquire,
-                                          sync_scope = <system>>}
+                                          sync_scope = <system>,
+                                          source_alignment_bytes = 4>}
       : memref<10xi32>
   %stored = dataflow.store %mem[%addr] %acquired %ctrl
       {contract = #dataflow.atomic_access<ordering = release,
-                                          sync_scope = <single_thread>>}
+                                          sync_scope = <single_thread>,
+                                          source_alignment_bytes = 4>}
       : memref<10xi32>
   return %plain, %acquired, %stored : i32, i32, none
 }
@@ -42,11 +44,13 @@ func.func @vector_granularity(
   %gathered, %gathered_done = dataflow.load %lanes[%addr] %ctrl
       {contract = #dataflow.atomic_access<ordering = monotonic,
                                           sync_scope = <single_thread>,
+                                          source_alignment_bytes = 4,
                                           vector_granularity = per_lane>}
       : memref<10xi32>, vector<4xi32>
   %whole, %whole_done = dataflow.load %payload[%addr] %ctrl
       {contract = #dataflow.atomic_access<ordering = seq_cst,
                                           sync_scope = <system>,
+                                          source_alignment_bytes = 16,
                                           vector_granularity = whole_payload>}
       : memref<10xvector<4xi32>>
   return %gathered, %whole, %gathered_done, %whole_done
@@ -64,6 +68,7 @@ func.func @whole_payload_compare_exchange(
       {contract = #dataflow.cmpxchg_contract<success_ordering = seq_cst,
                                              failure_ordering = monotonic,
                                              sync_scope = <system>,
+                                             source_alignment_bytes = 16,
                                              vector_granularity = whole_payload>}
       : memref<8xvector<4xi32>> -> i1
   return %old, %ok, %done : vector<4xi32>, i1, none
@@ -80,7 +85,7 @@ func.func @multi_rank_indexed_rmw(
       {contract = #dataflow.rmw_contract<
           kind = add,
           access = <ordering = monotonic, sync_scope = <system>,
-                    vector_granularity = per_lane>>}
+                    source_alignment_bytes = 4, vector_granularity = per_lane>>}
       : memref<10xi32>, vector<2x3xindex>, vector<2x3xi32>
   return %old, %done : vector<2x3xi32>, none
 }
@@ -100,7 +105,7 @@ func.func @unrelated_metadata(%mem: memref<10xi32>, %addr: index, %ctrl: none)
 // The read-modify-write aggregate is exactly one kind plus one nested atomic
 // access contract.
 // CHECK-LABEL: func.func @read_modify_write
-// CHECK: dataflow.atomic_rmw %{{.*}}[%{{.*}}] %{{.*}} %{{.*}} {contract = #dataflow.rmw_contract<kind = fadd, access = <ordering = monotonic, sync_scope = <system>, is_volatile = true>>} : memref<10xf32>
+// CHECK: dataflow.atomic_rmw %{{.*}}[%{{.*}}] %{{.*}} %{{.*}} {contract = #dataflow.rmw_contract<kind = fadd, access = <ordering = monotonic, sync_scope = <system>, source_alignment_bytes = 4, is_volatile = true>>} : memref<10xf32>
 func.func @read_modify_write(
     %mem: memref<10xf32>, %addr: index, %value: f32, %ctrl: none)
     -> (f32, none) {
@@ -108,7 +113,7 @@ func.func @read_modify_write(
       {contract = #dataflow.rmw_contract<
           kind = fadd,
           access = <ordering = monotonic, sync_scope = <system>,
-                    is_volatile = true>>}
+                    source_alignment_bytes = 4, is_volatile = true>>}
       : memref<10xf32>
   return %old, %done : f32, none
 }
@@ -126,6 +131,7 @@ func.func @multi_rank_per_lane(
       {contract = #dataflow.cmpxchg_contract<success_ordering = seq_cst,
                                              failure_ordering = acquire,
                                              sync_scope = <system>,
+                                             source_alignment_bytes = 4,
                                              vector_granularity = per_lane,
                                              weak = true>}
       : memref<10xi32>, vector<2x3xi32> -> vector<2x3xi1>
@@ -133,14 +139,15 @@ func.func @multi_rank_per_lane(
 }
 
 // CHECK-LABEL: func.func @scalar_compare_exchange
-// CHECK: dataflow.cmpxchg %{{.*}}[%{{.*}}] %{{.*}} %{{.*}} %{{.*}} {contract = #dataflow.cmpxchg_contract<success_ordering = acq_rel, failure_ordering = monotonic, sync_scope = <system>>} : memref<10xi32> -> i1
+// CHECK: dataflow.cmpxchg %{{.*}}[%{{.*}}] %{{.*}} %{{.*}} %{{.*}} {contract = #dataflow.cmpxchg_contract<success_ordering = acq_rel, failure_ordering = monotonic, sync_scope = <system>, source_alignment_bytes = 4>} : memref<10xi32> -> i1
 func.func @scalar_compare_exchange(
     %mem: memref<10xi32>, %addr: index, %expected: i32, %desired: i32,
     %ctrl: none) -> (i32, i1, none) {
   %old, %ok, %done = dataflow.cmpxchg %mem[%addr] %expected %desired %ctrl
       {contract = #dataflow.cmpxchg_contract<success_ordering = acq_rel,
                                              failure_ordering = monotonic,
-                                             sync_scope = <system>>}
+                                             sync_scope = <system>,
+                                             source_alignment_bytes = 4>}
       : memref<10xi32> -> i1
   return %old, %ok, %done : i32, i1, none
 }

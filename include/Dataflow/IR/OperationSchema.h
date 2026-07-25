@@ -259,12 +259,14 @@ struct PlainAccessProjection {
 struct AtomicAccessProjection {
   AtomicOrdering ordering = AtomicOrdering::Unordered;
   SyncScopeProjection scope;
+  std::uint64_t sourceAlignmentBytes = 1;
   std::optional<VectorAtomicGranularity> vectorGranularity;
   bool isVolatile = false;
 
   friend bool operator==(const AtomicAccessProjection &lhs,
                          const AtomicAccessProjection &rhs) {
     return lhs.ordering == rhs.ordering && lhs.scope == rhs.scope &&
+           lhs.sourceAlignmentBytes == rhs.sourceAlignmentBytes &&
            lhs.vectorGranularity == rhs.vectorGranularity &&
            lhs.isVolatile == rhs.isVolatile;
   }
@@ -284,6 +286,7 @@ struct CompareExchangeProjection {
   AtomicOrdering successOrdering = AtomicOrdering::Unordered;
   AtomicOrdering failureOrdering = AtomicOrdering::Unordered;
   SyncScopeProjection scope;
+  std::uint64_t sourceAlignmentBytes = 1;
   std::optional<VectorAtomicGranularity> vectorGranularity;
   bool weak = false;
   bool isVolatile = false;
@@ -293,6 +296,7 @@ struct CompareExchangeProjection {
     return lhs.successOrdering == rhs.successOrdering &&
            lhs.failureOrdering == rhs.failureOrdering &&
            lhs.scope == rhs.scope &&
+           lhs.sourceAlignmentBytes == rhs.sourceAlignmentBytes &&
            lhs.vectorGranularity == rhs.vectorGranularity &&
            lhs.weak == rhs.weak && lhs.isVolatile == rhs.isVolatile;
   }
@@ -324,18 +328,18 @@ using SemanticPayload = std::variant<
     VectorStaticPositionPayload, VectorShuffleMaskPayload>;
 
 /// The complete identity-critical projection of one canonical actor instance.
-struct CanonicalActorSemantics {
+struct CanonicalActorSchemaProjection {
   OperationSchemaId schema;
   ::mlir::FunctionType type;
   SemanticPayload payload;
 
-  friend bool operator==(const CanonicalActorSemantics &lhs,
-                         const CanonicalActorSemantics &rhs) {
+  friend bool operator==(const CanonicalActorSchemaProjection &lhs,
+                         const CanonicalActorSchemaProjection &rhs) {
     return lhs.schema == rhs.schema && lhs.type == rhs.type &&
            lhs.payload == rhs.payload;
   }
-  friend bool operator!=(const CanonicalActorSemantics &lhs,
-                         const CanonicalActorSemantics &rhs) {
+  friend bool operator!=(const CanonicalActorSchemaProjection &lhs,
+                         const CanonicalActorSchemaProjection &rhs) {
     return !(lhs == rhs);
   }
 };
@@ -344,7 +348,7 @@ struct CanonicalActorSemantics {
 /// share a descriptor exactly when their typed projections are equal, so a
 /// consumer may key one transition implementation on it.
 struct TransitionDescriptorIdentity {
-  CanonicalActorSemantics projection;
+  CanonicalActorSchemaProjection projection;
 
   friend bool operator==(const TransitionDescriptorIdentity &lhs,
                          const TransitionDescriptorIdentity &rhs) {
@@ -359,8 +363,8 @@ struct TransitionDescriptorIdentity {
 /// Projects a registered actor instance. Failure means the instance does not
 /// carry the exact typed state its declared semantic case requires; there is
 /// no empty-payload fallback.
-llvm::Expected<CanonicalActorSemantics>
-projectRegisteredActorSemantics(::mlir::Operation *op);
+llvm::Expected<CanonicalActorSchemaProjection>
+projectRegisteredActorSchemaProjection(::mlir::Operation *op);
 
 /// Verifies that a registered actor instance carries exactly the typed state
 /// its schema's declared semantic case owns.

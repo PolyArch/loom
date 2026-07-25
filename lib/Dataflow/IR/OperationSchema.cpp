@@ -105,7 +105,8 @@ dataflow::AtomicAccessProjection
 projectAtomicAccess(dataflow::AtomicAccessContractAttr access) {
   return dataflow::AtomicAccessProjection{
       access.getOrdering(), projectScope(access.getSyncScope()),
-      access.getVectorGranularity(), access.getIsVolatile()};
+      access.getSourceAlignmentBytes(), access.getVectorGranularity(),
+      access.getIsVolatile()};
 }
 
 /// Reads the contract of one plain-or-atomic access actor. An absent optional
@@ -159,6 +160,7 @@ llvm::Expected<dataflow::SemanticPayload> readMemoryContract(Operation *op) {
                     contract.getSuccessOrdering(),
                     contract.getFailureOrdering(),
                     projectScope(contract.getSyncScope()),
+                    contract.getSourceAlignmentBytes(),
                     contract.getVectorGranularity(), contract.getWeak(),
                     contract.getIsVolatile()}}};
           })
@@ -456,8 +458,8 @@ bool dataflow::isCanonicalDataflowActor(Operation *op,
   return classifyCanonicalDataflowActor(op) == kind;
 }
 
-llvm::Expected<dataflow::CanonicalActorSemantics>
-dataflow::projectRegisteredActorSemantics(Operation *op) {
+llvm::Expected<dataflow::CanonicalActorSchemaProjection>
+dataflow::projectRegisteredActorSchemaProjection(Operation *op) {
   std::optional<OperationSchemaId> schema = operationSchemaOf(op);
   if (!schema)
     return llvm::createStringError(
@@ -470,12 +472,12 @@ dataflow::projectRegisteredActorSemantics(Operation *op) {
     return payload.takeError();
   FunctionType type = FunctionType::get(op->getContext(), op->getOperandTypes(),
                                         op->getResultTypes());
-  return CanonicalActorSemantics{*schema, type, *payload};
+  return CanonicalActorSchemaProjection{*schema, type, *payload};
 }
 
 LogicalResult dataflow::verifyRegisteredActorInstance(Operation *op) {
-  llvm::Expected<CanonicalActorSemantics> projection =
-      projectRegisteredActorSemantics(op);
+  llvm::Expected<CanonicalActorSchemaProjection> projection =
+      projectRegisteredActorSchemaProjection(op);
   if (projection)
     return success();
   return op->emitOpError(llvm::toString(projection.takeError()));
@@ -483,8 +485,8 @@ LogicalResult dataflow::verifyRegisteredActorInstance(Operation *op) {
 
 llvm::Expected<dataflow::TransitionDescriptorIdentity>
 dataflow::deriveTransitionDescriptorIdentity(Operation *op) {
-  llvm::Expected<CanonicalActorSemantics> projection =
-      projectRegisteredActorSemantics(op);
+  llvm::Expected<CanonicalActorSchemaProjection> projection =
+      projectRegisteredActorSchemaProjection(op);
   if (!projection)
     return projection.takeError();
   return TransitionDescriptorIdentity{*projection};

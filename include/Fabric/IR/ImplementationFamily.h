@@ -388,7 +388,7 @@ capabilityParamsSchema(const FamilyCapabilityParams &params);
 /// parameters and every unsupported semantic point fail closed.
 llvm::Error verifyImplementationFamilyAdmission(
     ImplementationFamilyId family, const FamilyCapabilityParams *params,
-    const ::dataflow::CanonicalActorSemantics &actor);
+    const ::dataflow::CanonicalActorSchemaProjection &actor);
 
 } // namespace fabric
 

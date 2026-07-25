@@ -178,7 +178,7 @@ bool checkTypedSemanticDelta(MLIRContext &context) {
 
   bool ok = true;
   auto project =
-      [&ok](Operation *op) -> std::optional<CanonicalActorSemantics> {
+      [&ok](Operation *op) -> std::optional<CanonicalActorSchemaProjection> {
     auto actor = llvm::dyn_cast<CanonicalDataflowActorOpInterface>(op);
     if (!actor) {
       llvm::errs() << op->getName().getStringRef()
@@ -186,8 +186,8 @@ bool checkTypedSemanticDelta(MLIRContext &context) {
       ok = false;
       return std::nullopt;
     }
-    llvm::Expected<CanonicalActorSemantics> projection =
-        actor.projectCanonicalActorSemantics();
+    llvm::Expected<CanonicalActorSchemaProjection> projection =
+        actor.projectCanonicalActorSchemaProjection();
     if (!projection) {
       llvm::errs() << llvm::toString(projection.takeError()) << '\n';
       ok = false;
@@ -205,8 +205,8 @@ bool checkTypedSemanticDelta(MLIRContext &context) {
                    << " interface verifier rejected its generated projection\n";
       ok = false;
     }
-    llvm::Expected<CanonicalActorSemantics> direct =
-        projectRegisteredActorSemantics(op);
+    llvm::Expected<CanonicalActorSchemaProjection> direct =
+        projectRegisteredActorSchemaProjection(op);
     if (!direct) {
       llvm::errs() << llvm::toString(direct.takeError()) << '\n';
       ok = false;
@@ -218,9 +218,9 @@ bool checkTypedSemanticDelta(MLIRContext &context) {
     return *projection;
   };
 
-  std::optional<CanonicalActorSemantics> first = project(signedLess);
-  std::optional<CanonicalActorSemantics> second = project(equal);
-  std::optional<CanonicalActorSemantics> third = project(alsoSignedLess);
+  std::optional<CanonicalActorSchemaProjection> first = project(signedLess);
+  std::optional<CanonicalActorSchemaProjection> second = project(equal);
+  std::optional<CanonicalActorSchemaProjection> third = project(alsoSignedLess);
   if (first && second && third) {
     if (first->schema != second->schema || first->type != second->type) {
       llvm::errs() << "the two comparisons differ in more than the predicate\n";
@@ -285,7 +285,7 @@ bool checkFloatingSemanticState(MLIRContext &context) {
 
   bool ok = true;
   auto project =
-      [&ok](Operation *op) -> std::optional<CanonicalActorSemantics> {
+      [&ok](Operation *op) -> std::optional<CanonicalActorSchemaProjection> {
     auto actor = llvm::dyn_cast<CanonicalDataflowActorOpInterface>(op);
     if (!actor) {
       llvm::errs() << op->getName().getStringRef()
@@ -293,8 +293,8 @@ bool checkFloatingSemanticState(MLIRContext &context) {
       ok = false;
       return std::nullopt;
     }
-    llvm::Expected<CanonicalActorSemantics> projection =
-        actor.projectCanonicalActorSemantics();
+    llvm::Expected<CanonicalActorSchemaProjection> projection =
+        actor.projectCanonicalActorSchemaProjection();
     if (!projection) {
       llvm::errs() << llvm::toString(projection.takeError()) << '\n';
       ok = false;
@@ -303,13 +303,18 @@ bool checkFloatingSemanticState(MLIRContext &context) {
     return *projection;
   };
 
-  std::optional<CanonicalActorSemantics> plainProjection = project(plain);
-  std::optional<CanonicalActorSemantics> fastProjection = project(fast);
-  std::optional<CanonicalActorSemantics> roundedProjection = project(rounded);
-  std::optional<CanonicalActorSemantics> plainSinProjection = project(plainSin);
-  std::optional<CanonicalActorSemantics> fastSinProjection = project(fastSin);
-  std::optional<CanonicalActorSemantics> plainFmaProjection = project(plainFma);
-  std::optional<CanonicalActorSemantics> roundedFmaProjection =
+  std::optional<CanonicalActorSchemaProjection> plainProjection =
+      project(plain);
+  std::optional<CanonicalActorSchemaProjection> fastProjection = project(fast);
+  std::optional<CanonicalActorSchemaProjection> roundedProjection =
+      project(rounded);
+  std::optional<CanonicalActorSchemaProjection> plainSinProjection =
+      project(plainSin);
+  std::optional<CanonicalActorSchemaProjection> fastSinProjection =
+      project(fastSin);
+  std::optional<CanonicalActorSchemaProjection> plainFmaProjection =
+      project(plainFma);
+  std::optional<CanonicalActorSchemaProjection> roundedFmaProjection =
       project(roundedFma);
   if (plainProjection && fastProjection &&
       *plainProjection == *fastProjection) {
@@ -364,10 +369,10 @@ bool checkExactAndNonNegativeSemanticState(MLIRContext &context) {
   bool ok = true;
   auto expectDelta = [&ok](Operation *plain, Operation *qualified,
                            llvm::StringRef state) {
-    llvm::Expected<CanonicalActorSemantics> plainProjection =
-        projectRegisteredActorSemantics(plain);
-    llvm::Expected<CanonicalActorSemantics> qualifiedProjection =
-        projectRegisteredActorSemantics(qualified);
+    llvm::Expected<CanonicalActorSchemaProjection> plainProjection =
+        projectRegisteredActorSchemaProjection(plain);
+    llvm::Expected<CanonicalActorSchemaProjection> qualifiedProjection =
+        projectRegisteredActorSchemaProjection(qualified);
     if (!plainProjection) {
       llvm::errs() << llvm::toString(plainProjection.takeError()) << '\n';
       ok = false;
@@ -432,7 +437,7 @@ bool checkVectorStructuralSemanticState(MLIRContext &context) {
 
   bool ok = true;
   auto project =
-      [&ok](Operation *op) -> std::optional<CanonicalActorSemantics> {
+      [&ok](Operation *op) -> std::optional<CanonicalActorSchemaProjection> {
     auto actor = llvm::dyn_cast<CanonicalDataflowActorOpInterface>(op);
     if (!actor) {
       llvm::errs() << op->getName().getStringRef()
@@ -440,8 +445,8 @@ bool checkVectorStructuralSemanticState(MLIRContext &context) {
       ok = false;
       return std::nullopt;
     }
-    llvm::Expected<CanonicalActorSemantics> projection =
-        actor.projectCanonicalActorSemantics();
+    llvm::Expected<CanonicalActorSchemaProjection> projection =
+        actor.projectCanonicalActorSchemaProjection();
     if (!projection) {
       llvm::errs() << llvm::toString(projection.takeError()) << '\n';
       ok = false;
@@ -450,14 +455,21 @@ bool checkVectorStructuralSemanticState(MLIRContext &context) {
     return *projection;
   };
 
-  std::optional<CanonicalActorSemantics> firstExtract = project(extractFirst);
-  std::optional<CanonicalActorSemantics> secondExtract = project(extractSecond);
-  std::optional<CanonicalActorSemantics> firstInsert = project(insertFirst);
-  std::optional<CanonicalActorSemantics> secondInsert = project(insertSecond);
-  std::optional<CanonicalActorSemantics> identity = project(identityShuffle);
-  std::optional<CanonicalActorSemantics> reverse = project(reverseShuffle);
-  std::optional<CanonicalActorSemantics> poison = project(poisonShuffle);
-  std::optional<CanonicalActorSemantics> dynamic = project(dynamicExtract);
+  std::optional<CanonicalActorSchemaProjection> firstExtract =
+      project(extractFirst);
+  std::optional<CanonicalActorSchemaProjection> secondExtract =
+      project(extractSecond);
+  std::optional<CanonicalActorSchemaProjection> firstInsert =
+      project(insertFirst);
+  std::optional<CanonicalActorSchemaProjection> secondInsert =
+      project(insertSecond);
+  std::optional<CanonicalActorSchemaProjection> identity =
+      project(identityShuffle);
+  std::optional<CanonicalActorSchemaProjection> reverse =
+      project(reverseShuffle);
+  std::optional<CanonicalActorSchemaProjection> poison = project(poisonShuffle);
+  std::optional<CanonicalActorSchemaProjection> dynamic =
+      project(dynamicExtract);
   if (firstExtract && secondExtract && *firstExtract == *secondExtract) {
     llvm::errs() << "two vector.extract positions share one projection\n";
     ok = false;
@@ -529,10 +541,10 @@ bool expectStructuralVectorRejection(Operation *op, llvm::StringRef state) {
   if (isCanonicalDataflowActor(op, CanonicalDataflowActorKind::Compute))
     reportAdmission("kind-specific isCanonicalDataflowActor");
 
-  llvm::Expected<CanonicalActorSemantics> direct =
-      projectRegisteredActorSemantics(op);
+  llvm::Expected<CanonicalActorSchemaProjection> direct =
+      projectRegisteredActorSchemaProjection(op);
   if (direct)
-    reportAdmission("projectRegisteredActorSemantics");
+    reportAdmission("projectRegisteredActorSchemaProjection");
   else
     llvm::consumeError(direct.takeError());
 
@@ -543,8 +555,8 @@ bool expectStructuralVectorRejection(Operation *op, llvm::StringRef state) {
                  << '\n';
     return false;
   }
-  llvm::Expected<CanonicalActorSemantics> projected =
-      actor.projectCanonicalActorSemantics();
+  llvm::Expected<CanonicalActorSchemaProjection> projected =
+      actor.projectCanonicalActorSchemaProjection();
   if (projected)
     reportAdmission("CanonicalDataflowActorOpInterface projection");
   else
@@ -665,7 +677,7 @@ bool checkPoisonFlagAdmission(MLIRContext &context) {
   bool ok = true;
   auto project = [&ok](Operation *op, OperationSchemaId schema,
                        OperationSemanticsCase semantics)
-      -> std::optional<CanonicalActorSemantics> {
+      -> std::optional<CanonicalActorSchemaProjection> {
     std::optional<OperationSchemaId> resolved = operationSchemaOf(op);
     if (!resolved || *resolved != schema ||
         semanticsCase(*resolved) != semantics) {
@@ -674,8 +686,8 @@ bool checkPoisonFlagAdmission(MLIRContext &context) {
       ok = false;
       return std::nullopt;
     }
-    llvm::Expected<CanonicalActorSemantics> projection =
-        projectRegisteredActorSemantics(op);
+    llvm::Expected<CanonicalActorSchemaProjection> projection =
+        projectRegisteredActorSchemaProjection(op);
     if (!projection) {
       llvm::errs() << llvm::toString(projection.takeError()) << '\n';
       ok = false;
@@ -684,13 +696,13 @@ bool checkPoisonFlagAdmission(MLIRContext &context) {
     return *projection;
   };
 
-  std::optional<CanonicalActorSemantics> ctlzPoison =
+  std::optional<CanonicalActorSchemaProjection> ctlzPoison =
       project(poisonOnZero, OperationSchemaId::LLVMCountLeadingZeros,
               OperationSemanticsCase::LLVMZeroPoison);
-  std::optional<CanonicalActorSemantics> ctlzPoisonAgain =
+  std::optional<CanonicalActorSchemaProjection> ctlzPoisonAgain =
       project(alsoPoisonOnZero, OperationSchemaId::LLVMCountLeadingZeros,
               OperationSemanticsCase::LLVMZeroPoison);
-  std::optional<CanonicalActorSemantics> absPoison =
+  std::optional<CanonicalActorSchemaProjection> absPoison =
       project(poisonOnMin, OperationSchemaId::LLVMAbs,
               OperationSemanticsCase::LLVMIntegerMinPoison);
 
@@ -751,15 +763,15 @@ bool checkAggregatePositionProjection(MLIRContext &context) {
 
   bool ok = true;
   auto project =
-      [&ok](Operation *op) -> std::optional<CanonicalActorSemantics> {
+      [&ok](Operation *op) -> std::optional<CanonicalActorSchemaProjection> {
     if (!operationSchemaOf(op)) {
       llvm::errs() << op->getName().getStringRef()
                    << " has no registered aggregate schema\n";
       ok = false;
       return std::nullopt;
     }
-    llvm::Expected<CanonicalActorSemantics> projection =
-        projectRegisteredActorSemantics(op);
+    llvm::Expected<CanonicalActorSchemaProjection> projection =
+        projectRegisteredActorSchemaProjection(op);
     if (!projection) {
       llvm::errs() << llvm::toString(projection.takeError()) << '\n';
       ok = false;
@@ -768,12 +780,14 @@ bool checkAggregatePositionProjection(MLIRContext &context) {
     return *projection;
   };
 
-  std::optional<CanonicalActorSemantics> first = project(extractFirst);
-  std::optional<CanonicalActorSemantics> second = project(extractSecond);
-  std::optional<CanonicalActorSemantics> firstAgain =
+  std::optional<CanonicalActorSchemaProjection> first = project(extractFirst);
+  std::optional<CanonicalActorSchemaProjection> second = project(extractSecond);
+  std::optional<CanonicalActorSchemaProjection> firstAgain =
       project(extractFirstAgain);
-  std::optional<CanonicalActorSemantics> insertedFirst = project(insertFirst);
-  std::optional<CanonicalActorSemantics> insertedSecond = project(insertSecond);
+  std::optional<CanonicalActorSchemaProjection> insertedFirst =
+      project(insertFirst);
+  std::optional<CanonicalActorSchemaProjection> insertedSecond =
+      project(insertSecond);
   if (first && second && firstAgain) {
     if (*first == *second) {
       llvm::errs() << "two extractvalue positions share one projection\n";
@@ -819,8 +833,8 @@ bool checkUnclassifiedStateFailsClosed(MLIRContext &context) {
                                               arith::RoundingModeAttr{});
 
   bool ok = true;
-  llvm::Expected<CanonicalActorSemantics> defaultPoison =
-      projectRegisteredActorSemantics(poison);
+  llvm::Expected<CanonicalActorSchemaProjection> defaultPoison =
+      projectRegisteredActorSchemaProjection(poison);
   if (!defaultPoison) {
     llvm::errs() << llvm::toString(defaultPoison.takeError()) << '\n';
     ok = false;
@@ -833,8 +847,8 @@ bool checkUnclassifiedStateFailsClosed(MLIRContext &context) {
   floating->setDiscardableAttr(stateName, builder.getUnitAttr());
 
   auto expectFailure = [&ok](Operation *op) {
-    llvm::Expected<CanonicalActorSemantics> projection =
-        projectRegisteredActorSemantics(op);
+    llvm::Expected<CanonicalActorSchemaProjection> projection =
+        projectRegisteredActorSchemaProjection(op);
     if (projection) {
       llvm::errs() << op->getName().getStringRef()
                    << " ignored unclassified firing state\n";
@@ -876,8 +890,8 @@ bool checkDeclaredCaseFailsClosed(MLIRContext &context) {
                     "actor interface\n";
     ok = false;
   } else {
-    llvm::Expected<CanonicalActorSemantics> projection =
-        actor.projectCanonicalActorSemantics();
+    llvm::Expected<CanonicalActorSchemaProjection> projection =
+        actor.projectCanonicalActorSchemaProjection();
     if (projection) {
       llvm::errs() << "an untyped constant value still produced a "
                       "projection\n";
@@ -894,6 +908,121 @@ bool checkDeclaredCaseFailsClosed(MLIRContext &context) {
   }
 
   malformed->erase();
+  return ok;
+}
+
+template <typename ContractProjection, typename AlignmentFn>
+bool checkMemorySourceAlignmentPair(MLIRContext &context,
+                                    llvm::StringRef operationName,
+                                    Attribute fourByteContract,
+                                    Attribute eightByteContract,
+                                    AlignmentFn alignment) {
+  OpBuilder builder(&context);
+  auto create = [&](Attribute contract) {
+    OperationState state(builder.getUnknownLoc(), operationName);
+    state.addAttribute("contract", contract);
+    return builder.create(state);
+  };
+  Operation *fourByteActor = create(fourByteContract);
+  Operation *eightByteActor = create(eightByteContract);
+
+  bool ok = true;
+  auto project =
+      [&](Operation *op) -> std::optional<CanonicalActorSchemaProjection> {
+    llvm::Expected<CanonicalActorSchemaProjection> projection =
+        projectRegisteredActorSchemaProjection(op);
+    if (!projection) {
+      llvm::errs() << llvm::toString(projection.takeError()) << '\n';
+      ok = false;
+      return std::nullopt;
+    }
+    return *projection;
+  };
+  auto checkAlignment = [&](const CanonicalActorSchemaProjection &projection,
+                            std::uint64_t expected) {
+    const auto *memory =
+        std::get_if<MemoryContractPayload>(&projection.payload);
+    if (!memory) {
+      llvm::errs() << operationName
+                   << " did not project a memory contract payload\n";
+      ok = false;
+      return;
+    }
+    const auto *contract = std::get_if<ContractProjection>(memory);
+    if (!contract) {
+      llvm::errs() << operationName
+                   << " projected the wrong memory contract alternative\n";
+      ok = false;
+      return;
+    }
+    if (alignment(*contract) != expected) {
+      llvm::errs() << operationName << " lost source_alignment_bytes "
+                   << expected << '\n';
+      ok = false;
+    }
+  };
+
+  std::optional<CanonicalActorSchemaProjection> fourByte =
+      project(fourByteActor);
+  std::optional<CanonicalActorSchemaProjection> eightByte =
+      project(eightByteActor);
+  if (fourByte && eightByte) {
+    if (*fourByte == *eightByte) {
+      llvm::errs() << operationName
+                   << " erased source_alignment_bytes from actor identity\n";
+      ok = false;
+    }
+    checkAlignment(*fourByte, 4);
+    checkAlignment(*eightByte, 8);
+  }
+
+  eightByteActor->erase();
+  fourByteActor->erase();
+  return ok;
+}
+
+bool checkMemorySourceAlignmentIdentity(MLIRContext &context) {
+  SyncScopeRefAttr scope = SyncScopeRefAttr::get(
+      &context, SyncScopeKind::System, StringAttr{}, StringAttr{});
+  auto atomic = [&](std::uint64_t alignment) {
+    return AtomicAccessContractAttr::get(&context, AtomicOrdering::Acquire,
+                                         scope, alignment, std::nullopt,
+                                         /*is_volatile=*/false);
+  };
+  AtomicAccessContractAttr atomicFour = atomic(4);
+  AtomicAccessContractAttr atomicEight = atomic(8);
+
+  bool ok = true;
+  auto atomicAlignment = [](const AtomicAccessProjection &projection) {
+    return projection.sourceAlignmentBytes;
+  };
+  ok &= checkMemorySourceAlignmentPair<AtomicAccessProjection>(
+      context, LoadOp::getOperationName(), atomicFour, atomicEight,
+      atomicAlignment);
+  ok &= checkMemorySourceAlignmentPair<AtomicAccessProjection>(
+      context, StoreOp::getOperationName(), atomicFour, atomicEight,
+      atomicAlignment);
+
+  AtomicRmwContractAttr rmwFour =
+      AtomicRmwContractAttr::get(&context, AtomicRmwKind::Add, atomicFour);
+  AtomicRmwContractAttr rmwEight =
+      AtomicRmwContractAttr::get(&context, AtomicRmwKind::Add, atomicEight);
+  ok &= checkMemorySourceAlignmentPair<AtomicRmwProjection>(
+      context, AtomicRmwOp::getOperationName(), rmwFour, rmwEight,
+      [](const AtomicRmwProjection &projection) {
+        return projection.access.sourceAlignmentBytes;
+      });
+
+  auto compareExchange = [&](std::uint64_t alignment) {
+    return CompareExchangeContractAttr::get(
+        &context, AtomicOrdering::SeqCst, AtomicOrdering::Monotonic, scope,
+        alignment, std::nullopt, /*weak=*/false, /*is_volatile=*/false);
+  };
+  ok &= checkMemorySourceAlignmentPair<CompareExchangeProjection>(
+      context, CmpXchgOp::getOperationName(), compareExchange(4),
+      compareExchange(8), [](const CompareExchangeProjection &projection) {
+        return projection.sourceAlignmentBytes;
+      });
   return ok;
 }
 
@@ -921,5 +1050,6 @@ int main() {
   ok &= checkAggregatePositionProjection(context);
   ok &= checkUnclassifiedStateFailsClosed(context);
   ok &= checkDeclaredCaseFailsClosed(context);
+  ok &= checkMemorySourceAlignmentIdentity(context);
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

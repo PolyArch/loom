@@ -6,7 +6,8 @@ func.func @atomic_load_release(%mem: memref<10xi32>, %addr: index, %ctrl: none)
   // expected-error @+1 {{atomic load ordering must not be 'release' or 'acq_rel'}}
   %data, %done = dataflow.load %mem[%addr] %ctrl
       {contract = #dataflow.atomic_access<ordering = release,
-                                          sync_scope = <system>>}
+                                          sync_scope = <system>,
+                                          source_alignment_bytes = 4>}
       : memref<10xi32>
   return %data, %done : i32, none
 }
@@ -18,7 +19,8 @@ func.func @atomic_store_acquire(
   // expected-error @+1 {{atomic store ordering must not be 'acquire' or 'acq_rel'}}
   %done = dataflow.store %mem[%addr] %data %ctrl
       {contract = #dataflow.atomic_access<ordering = acquire,
-                                          sync_scope = <system>>}
+                                          sync_scope = <system>,
+                                          source_alignment_bytes = 4>}
       : memref<10xi32>
   return %done : none
 }
@@ -32,7 +34,8 @@ func.func @rmw_unordered(
   %old, %done = dataflow.atomic_rmw %mem[%addr] %value %ctrl
       {contract = #dataflow.rmw_contract<
           kind = add,
-          access = <ordering = unordered, sync_scope = <system>>>}
+          access = <ordering = unordered, sync_scope = <system>,
+                    source_alignment_bytes = 4>>}
       : memref<10xi32>
   return %old, %done : i32, none
 }
@@ -46,7 +49,8 @@ func.func @cmpxchg_failure_acq_rel(
       // expected-error @+1 {{compare-exchange failure ordering must not be 'release' or 'acq_rel'}}
       {contract = #dataflow.cmpxchg_contract<success_ordering = acq_rel,
                                              failure_ordering = acq_rel,
-                                             sync_scope = <system>>}
+                                             sync_scope = <system>,
+                                             source_alignment_bytes = 4>}
       : memref<10xi32> -> i1
   return %old, %ok, %done : i32, i1, none
 }
@@ -89,6 +93,7 @@ func.func @scalar_granularity(%mem: memref<10xi32>, %addr: index, %ctrl: none)
   %data, %done = dataflow.load %mem[%addr] %ctrl
       {contract = #dataflow.atomic_access<ordering = monotonic,
                                           sync_scope = <system>,
+                                          source_alignment_bytes = 4,
                                           vector_granularity = per_lane>}
       : memref<10xi32>
   return %data, %done : i32, none
@@ -101,7 +106,8 @@ func.func @missing_granularity(%mem: memref<10xi32>, %addr: index, %ctrl: none)
   // expected-error @+1 {{vector atomic access must declare a vector atomic granularity}}
   %data, %done = dataflow.load %mem[%addr] %ctrl
       {contract = #dataflow.atomic_access<ordering = monotonic,
-                                          sync_scope = <system>>}
+                                          sync_scope = <system>,
+                                          source_alignment_bytes = 4>}
       : memref<10xi32>, vector<4xi32>
   return %data, %done : vector<4xi32>, none
 }
@@ -114,6 +120,7 @@ func.func @whole_payload_contiguous(
   %data, %done = dataflow.load %mem[%addr] %ctrl
       {contract = #dataflow.atomic_access<ordering = monotonic,
                                           sync_scope = <system>,
+                                          source_alignment_bytes = 4,
                                           vector_granularity = whole_payload>}
       : memref<10xi32>, vector<4xi32>
   return %data, %done : vector<4xi32>, none
@@ -129,6 +136,7 @@ func.func @per_lane_vector_element(
   %data, %done = dataflow.load %mem[%addr] %ctrl
       {contract = #dataflow.atomic_access<ordering = monotonic,
                                           sync_scope = <system>,
+                                          source_alignment_bytes = 4,
                                           vector_granularity = per_lane>}
       : memref<10xvector<4xi32>>
   return %data, %done : vector<4xi32>, none
@@ -146,6 +154,7 @@ func.func @whole_payload_success_shape(
       {contract = #dataflow.cmpxchg_contract<success_ordering = seq_cst,
                                              failure_ordering = monotonic,
                                              sync_scope = <system>,
+                                             source_alignment_bytes = 4,
                                              vector_granularity = whole_payload>}
       : memref<10xvector<4xi32>> -> vector<4xi1>
   return %old, %ok, %done : vector<4xi32>, vector<4xi1>, none
@@ -161,6 +170,7 @@ func.func @per_lane_success_shape(
       {contract = #dataflow.cmpxchg_contract<success_ordering = seq_cst,
                                              failure_ordering = monotonic,
                                              sync_scope = <system>,
+                                             source_alignment_bytes = 4,
                                              vector_granularity = per_lane>}
       : memref<10xi32>, vector<4xi32> -> i1
   return %old, %ok, %done : vector<4xi32>, i1, none
@@ -175,7 +185,8 @@ func.func @rmw_float_action_on_integer(
   %old, %done = dataflow.atomic_rmw %mem[%addr] %value %ctrl
       {contract = #dataflow.rmw_contract<
           kind = fadd,
-          access = <ordering = monotonic, sync_scope = <system>>>}
+          access = <ordering = monotonic, sync_scope = <system>,
+                    source_alignment_bytes = 4>>}
       : memref<10xi32>
   return %old, %done : i32, none
 }
@@ -189,7 +200,8 @@ func.func @rmw_non_power_of_two(
   %old, %done = dataflow.atomic_rmw %mem[%addr] %value %ctrl
       {contract = #dataflow.rmw_contract<
           kind = add,
-          access = <ordering = monotonic, sync_scope = <system>>>}
+          access = <ordering = monotonic, sync_scope = <system>,
+                    source_alignment_bytes = 4>>}
       : memref<10xi7>
   return %old, %done : i7, none
 }
@@ -204,7 +216,8 @@ func.func @cmpxchg_float_element(
   %old, %ok, %done = dataflow.cmpxchg %mem[%addr] %expected %desired %ctrl
       {contract = #dataflow.cmpxchg_contract<success_ordering = seq_cst,
                                              failure_ordering = monotonic,
-                                             sync_scope = <system>>}
+                                             sync_scope = <system>,
+                                             source_alignment_bytes = 4>}
       : memref<10xf32> -> i1
   return %old, %ok, %done : f32, i1, none
 }
@@ -216,7 +229,8 @@ func.func @atomic_index_element(
   // expected-error @+1 {{atomic load operand must have integer or floating-point element type, got 'index'}}
   %data, %done = dataflow.load %mem[%addr] %ctrl
       {contract = #dataflow.atomic_access<ordering = acquire,
-                                          sync_scope = <system>>}
+                                          sync_scope = <system>,
+                                          source_alignment_bytes = 4>}
       : memref<10xindex>
   return %data, %done : index, none
 }
@@ -229,7 +243,8 @@ func.func @second_contract(%mem: memref<10xi32>, %addr: index, %ctrl: none)
   %data, %done = dataflow.load %mem[%addr] %ctrl
       {contract = #dataflow.plain_access<is_volatile = true>,
        shadow = #dataflow.atomic_access<ordering = monotonic,
-                                        sync_scope = <system>>}
+                                        sync_scope = <system>,
+                                        source_alignment_bytes = 4>}
       : memref<10xi32>
   return %data, %done : i32, none
 }
@@ -242,8 +257,35 @@ func.func @second_sync_scope(%mem: memref<10xi32>, %addr: index, %ctrl: none)
   // expected-error @+1 {{'scope' must not carry a second synchronization scope}}
   %data, %done = dataflow.load %mem[%addr] %ctrl
       {contract = #dataflow.atomic_access<ordering = acquire,
-                                          sync_scope = <system>>,
+                                          sync_scope = <system>,
+                                          source_alignment_bytes = 4>,
        scope = #dataflow.sync_scope<single_thread>}
+      : memref<10xi32>
+  return %data, %done : i32, none
+}
+
+// -----
+// Source alignment is identity-critical typed state and must be a nonzero
+// power of two; it is never inferred from type or service.
+func.func @atomic_load_zero_alignment(%mem: memref<10xi32>, %addr: index,
+                                      %ctrl: none) -> (i32, none) {
+  // expected-error @+2 {{source alignment must be a nonzero power of two}}
+  %data, %done = dataflow.load %mem[%addr] %ctrl
+      {contract = #dataflow.atomic_access<ordering = acquire,
+                                          sync_scope = <system>,
+                                          source_alignment_bytes = 0>}
+      : memref<10xi32>
+  return %data, %done : i32, none
+}
+
+// -----
+func.func @atomic_load_non_power_of_two_alignment(
+    %mem: memref<10xi32>, %addr: index, %ctrl: none) -> (i32, none) {
+  // expected-error @+2 {{source alignment must be a nonzero power of two}}
+  %data, %done = dataflow.load %mem[%addr] %ctrl
+      {contract = #dataflow.atomic_access<ordering = acquire,
+                                          sync_scope = <system>,
+                                          source_alignment_bytes = 3>}
       : memref<10xi32>
   return %data, %done : i32, none
 }

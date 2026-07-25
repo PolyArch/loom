@@ -43,8 +43,8 @@ using dataflow::OperationSchemaId;
 
 namespace {
 
-std::optional<dataflow::CanonicalActorSemantics> projectActor(Operation *op,
-                                                              bool &ok) {
+std::optional<dataflow::CanonicalActorSchemaProjection>
+projectActor(Operation *op, bool &ok) {
   auto actor = llvm::dyn_cast<dataflow::CanonicalDataflowActorOpInterface>(op);
   if (!actor) {
     llvm::errs() << op->getName().getStringRef()
@@ -52,8 +52,8 @@ std::optional<dataflow::CanonicalActorSemantics> projectActor(Operation *op,
     ok = false;
     return std::nullopt;
   }
-  llvm::Expected<dataflow::CanonicalActorSemantics> projection =
-      actor.projectCanonicalActorSemantics();
+  llvm::Expected<dataflow::CanonicalActorSchemaProjection> projection =
+      actor.projectCanonicalActorSchemaProjection();
   if (!projection) {
     llvm::errs() << llvm::toString(projection.takeError()) << '\n';
     ok = false;
@@ -64,7 +64,7 @@ std::optional<dataflow::CanonicalActorSemantics> projectActor(Operation *op,
 
 bool expectAdmission(ImplementationFamilyId family,
                      const FamilyCapabilityParams *params,
-                     const dataflow::CanonicalActorSemantics &actor,
+                     const dataflow::CanonicalActorSchemaProjection &actor,
                      bool admitted, llvm::StringRef semanticReason) {
   llvm::Error error =
       verifyImplementationFamilyAdmission(family, params, actor);
@@ -266,7 +266,7 @@ bool checkIntegerCapabilityAdmission(MLIRContext &context) {
   auto check = [&](Operation *op, ImplementationFamilyId family,
                    const FamilyCapabilityParams *params, bool admitted,
                    llvm::StringRef reason) {
-    if (std::optional<dataflow::CanonicalActorSemantics> projection =
+    if (std::optional<dataflow::CanonicalActorSchemaProjection> projection =
             projectActor(op, ok))
       ok &= expectAdmission(family, params, *projection, admitted, reason);
   };
@@ -387,7 +387,7 @@ bool checkFloatingCapabilityAdmission(MLIRContext &context) {
   auto check = [&](Operation *op, ImplementationFamilyId family,
                    const FamilyCapabilityParams &params, bool admitted,
                    llvm::StringRef reason) {
-    if (std::optional<dataflow::CanonicalActorSemantics> projection =
+    if (std::optional<dataflow::CanonicalActorSchemaProjection> projection =
             projectActor(op, ok))
       ok &= expectAdmission(family, &params, *projection, admitted, reason);
   };
@@ -559,7 +559,7 @@ bool checkCastCapabilityAdmission(MLIRContext &context) {
   auto check = [&](Operation *op, ImplementationFamilyId family,
                    const FamilyCapabilityParams &params, bool admitted,
                    llvm::StringRef reason) {
-    if (std::optional<dataflow::CanonicalActorSemantics> projection =
+    if (std::optional<dataflow::CanonicalActorSchemaProjection> projection =
             projectActor(op, ok))
       ok &= expectAdmission(family, &params, *projection, admitted, reason);
   };
@@ -678,7 +678,7 @@ bool checkLoopCapabilityAdmission(MLIRContext &context) {
   bool ok = true;
   auto check = [&](Operation *op, const FamilyCapabilityParams &params,
                    bool admitted, llvm::StringRef reason) {
-    if (std::optional<dataflow::CanonicalActorSemantics> projection =
+    if (std::optional<dataflow::CanonicalActorSchemaProjection> projection =
             projectActor(op, ok))
       ok &= expectAdmission(ImplementationFamilyId::LoopStream, &params,
                             *projection, admitted, reason);
@@ -732,7 +732,7 @@ bool checkTokenPlaneCapabilityAdmission(MLIRContext &context) {
 
   bool ok = true;
   auto check = [&](Operation *op, bool admitted, llvm::StringRef reason) {
-    if (std::optional<dataflow::CanonicalActorSemantics> projection =
+    if (std::optional<dataflow::CanonicalActorSchemaProjection> projection =
             projectActor(op, ok))
       ok &= expectAdmission(ImplementationFamilyId::LoopCarry, &tokenPlane,
                             *projection, admitted, reason);

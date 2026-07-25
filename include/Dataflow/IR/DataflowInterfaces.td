@@ -48,9 +48,9 @@ def CanonicalDataflowActor : OpInterface<"CanonicalDataflowActorOpInterface"> {
         its declared semantic case requires. A projection never falls back to
         an empty payload.
       }],
-      "::llvm::Expected<::dataflow::CanonicalActorSemantics>",
-      "projectCanonicalActorSemantics", (ins), "", [{
-        return ::dataflow::projectRegisteredActorSemantics(
+      "::llvm::Expected<::dataflow::CanonicalActorSchemaProjection>",
+      "projectCanonicalActorSchemaProjection", (ins), "", [{
+        return ::dataflow::projectRegisteredActorSchemaProjection(
             $_op.getOperation());
       }]>,
     InterfaceMethod<[{

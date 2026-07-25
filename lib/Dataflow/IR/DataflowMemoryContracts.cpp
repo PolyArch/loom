@@ -118,8 +118,8 @@ AtomicElementCategory getAtomicElementCategory(Operation *op) {
 /// How the actor names itself in an atomic legality diagnostic.
 std::string getAtomicActionName(Operation *op) {
   if (auto rmw = llvm::dyn_cast<AtomicRmwOp>(op))
-    return ("atomicrmw '" + stringifyAtomicRmwKind(rmw.getContract().getKind()) +
-            "'")
+    return ("atomicrmw '" +
+            stringifyAtomicRmwKind(rmw.getContract().getKind()) + "'")
         .str();
   if (llvm::isa<CmpXchgOp>(op))
     return "compare-exchange";
@@ -291,6 +291,17 @@ bool isAcquireOrAcqRel(AtomicOrdering ordering) {
          ordering == AtomicOrdering::AcqRel;
 }
 
+/// `source_alignment_bytes` is identity-critical typed state and must be a
+/// nonzero power of two; it is never inferred from a type, endpoint width, or
+/// service.
+LogicalResult
+validateSourceAlignmentBytes(llvm::function_ref<InFlightDiagnostic()> emitError,
+                             std::uint64_t sourceAlignmentBytes) {
+  if (sourceAlignmentBytes == 0 || !llvm::isPowerOf2_64(sourceAlignmentBytes))
+    return emitError() << "source alignment must be a nonzero power of two";
+  return success();
+}
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -315,18 +326,18 @@ SyncScopeRefAttr::verify(llvm::function_ref<InFlightDiagnostic()> emitError,
 
 LogicalResult AtomicAccessContractAttr::verify(
     llvm::function_ref<InFlightDiagnostic()> emitError, AtomicOrdering ordering,
-    SyncScopeRefAttr syncScope,
+    SyncScopeRefAttr syncScope, std::uint64_t sourceAlignmentBytes,
     std::optional<VectorAtomicGranularity> granularity, bool isVolatile) {
   if (!syncScope)
     return emitError() << "atomic access contract requires a synchronization "
                           "scope";
-  return success();
+  return validateSourceAlignmentBytes(emitError, sourceAlignmentBytes);
 }
 
 LogicalResult CompareExchangeContractAttr::verify(
     llvm::function_ref<InFlightDiagnostic()> emitError,
     AtomicOrdering successOrdering, AtomicOrdering failureOrdering,
-    SyncScopeRefAttr syncScope,
+    SyncScopeRefAttr syncScope, std::uint64_t sourceAlignmentBytes,
     std::optional<VectorAtomicGranularity> granularity, bool weak,
     bool isVolatile) {
   if (!syncScope)
@@ -338,7 +349,7 @@ LogicalResult CompareExchangeContractAttr::verify(
   if (isReleaseOrAcqRel(failureOrdering))
     return emitError() << "compare-exchange failure ordering must not be "
                           "'release' or 'acq_rel'";
-  return success();
+  return validateSourceAlignmentBytes(emitError, sourceAlignmentBytes);
 }
 
 LogicalResult
@@ -377,35 +388,44 @@ dataflow::semantics::getMemoryActorContract(Operation *op) {
           aggregate = PlainAccessContractAttr::get(typedOp.getContext(),
                                                    /*is_volatile=*/false);
         if (auto plain = llvm::dyn_cast<PlainAccessContractAttr>(aggregate))
-          return MemoryActorContract{aggregate, /*atomic=*/false,
-                                     plain.getIsVolatile(), std::nullopt,
-                                     SyncScopeRefAttr()};
+          return MemoryActorContract{
+              aggregate,    /*atomic=*/false, plain.getIsVolatile(),
+              std::nullopt, std::nullopt,     SyncScopeRefAttr()};
         auto access = llvm::cast<AtomicAccessContractAttr>(aggregate);
-        return MemoryActorContract{aggregate, /*atomic=*/true,
+        return MemoryActorContract{aggregate,
+                                   /*atomic=*/true,
                                    access.getIsVolatile(),
+                                   access.getSourceAlignmentBytes(),
                                    access.getVectorGranularity(),
                                    access.getSyncScope()};
       })
       .Case<AtomicRmwOp>([](AtomicRmwOp typedOp) {
         AtomicRmwContractAttr aggregate = typedOp.getContract();
         AtomicAccessContractAttr access = aggregate.getAccess();
-        return MemoryActorContract{aggregate, /*atomic=*/true,
+        return MemoryActorContract{aggregate,
+                                   /*atomic=*/true,
                                    access.getIsVolatile(),
+                                   access.getSourceAlignmentBytes(),
                                    access.getVectorGranularity(),
                                    access.getSyncScope()};
       })
       .Case<CmpXchgOp>([](CmpXchgOp typedOp) {
         CompareExchangeContractAttr aggregate = typedOp.getContract();
-        return MemoryActorContract{aggregate, /*atomic=*/true,
+        return MemoryActorContract{aggregate,
+                                   /*atomic=*/true,
                                    aggregate.getIsVolatile(),
+                                   aggregate.getSourceAlignmentBytes(),
                                    aggregate.getVectorGranularity(),
                                    aggregate.getSyncScope()};
       })
       // A fence is ordered by construction and addresses no memory.
       .Case<FenceOp>([](FenceOp typedOp) {
         FenceContractAttr aggregate = typedOp.getContract();
-        return MemoryActorContract{aggregate, /*atomic=*/true,
-                                   /*isVolatile=*/false, std::nullopt,
+        return MemoryActorContract{aggregate,
+                                   /*atomic=*/true,
+                                   /*isVolatile=*/false,
+                                   std::nullopt,
+                                   std::nullopt,
                                    aggregate.getSyncScope()};
       })
       .Default([](Operation *) { return std::nullopt; });
@@ -485,7 +505,8 @@ llvm::Error dataflow::semantics::validateMemoryActorContract(
                            "'acq_rel'");
   }
   if (auto rmw = llvm::dyn_cast<AtomicRmwOp>(op))
-    if (rmw.getContract().getAccess().getOrdering() == AtomicOrdering::Unordered)
+    if (rmw.getContract().getAccess().getOrdering() ==
+        AtomicOrdering::Unordered)
       return contractError("atomic read-modify-write ordering must not be "
                            "'unordered'");
   if (!access)

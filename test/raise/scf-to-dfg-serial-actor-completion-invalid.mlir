@@ -42,7 +42,8 @@ dataflow.graph private @serial_atomic(
   scf.if %cond {
     %old, %done = dataflow.atomic_rmw %a[%c0] %v %start
         {contract = #dataflow.rmw_contract<kind = add,
-            access = <ordering = monotonic, sync_scope = <system>>>}
+            access = <ordering = monotonic, sync_scope = <system>,
+                      source_alignment_bytes = 4>>}
         : memref<10xi32>
   }
   dataflow.graph.return %start : none

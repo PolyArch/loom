@@ -58,7 +58,7 @@ familyTable() {
 
 namespace {
 
-using dataflow::CanonicalActorSemantics;
+using dataflow::CanonicalActorSchemaProjection;
 using dataflow::OperationSchemaId;
 using fabric::FamilyCapabilityParams;
 using fabric::FloatBehaviorProfile;
@@ -86,9 +86,9 @@ unsigned integerBitWidth(IntegerWidth width);
 llvm::Expected<FloatFormat> floatFormat(::mlir::Type type,
                                         llvm::StringRef relation);
 unsigned floatBitWidth(FloatFormat format);
-llvm::Error requireArity(const CanonicalActorSemantics &actor, unsigned inputs,
-                         unsigned results);
-llvm::Error requireUniformType(const CanonicalActorSemantics &actor,
+llvm::Error requireArity(const CanonicalActorSchemaProjection &actor,
+                         unsigned inputs, unsigned results);
+llvm::Error requireUniformType(const CanonicalActorSchemaProjection &actor,
                                unsigned inputs);
 llvm::Error
 admitFloatBehavior(const FloatBehaviorProfile &behavior,
@@ -96,44 +96,45 @@ admitFloatBehavior(const FloatBehaviorProfile &behavior,
                    std::optional<::mlir::arith::RoundingMode> rounding,
                    FloatNaNBehavior nanBehavior);
 llvm::Expected<::mlir::arith::FastMathFlags>
-floatingFlags(const CanonicalActorSemantics &actor);
+floatingFlags(const CanonicalActorSchemaProjection &actor);
 std::optional<::mlir::arith::RoundingMode>
-arithmeticRounding(const CanonicalActorSemantics &actor);
+arithmeticRounding(const CanonicalActorSchemaProjection &actor);
 
-llvm::Error
-admitScalarOrdinaryIntegerAdmission(const FamilyCapabilityParams &capability,
-                                    const CanonicalActorSemantics &actor);
+llvm::Error admitScalarOrdinaryIntegerAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor);
 llvm::Error
 admitScalarLogicIntegerAdmission(const FamilyCapabilityParams &capability,
-                                 const CanonicalActorSemantics &actor);
+                                 const CanonicalActorSchemaProjection &actor);
 llvm::Error
 admitScalarIntegerCompareAdmission(const FamilyCapabilityParams &capability,
-                                   const CanonicalActorSemantics &actor);
+                                   const CanonicalActorSchemaProjection &actor);
 llvm::Error
 admitScalarIntegerCastAdmission(const FamilyCapabilityParams &capability,
-                                const CanonicalActorSemantics &actor);
+                                const CanonicalActorSchemaProjection &actor);
 llvm::Error
 admitScalarBitReinterpretAdmission(const FamilyCapabilityParams &capability,
-                                   const CanonicalActorSemantics &actor);
+                                   const CanonicalActorSchemaProjection &actor);
 llvm::Error
 admitScalarValueSelectAdmission(const FamilyCapabilityParams &capability,
-                                const CanonicalActorSemantics &actor);
+                                const CanonicalActorSchemaProjection &actor);
 llvm::Error
 admitScalarUniformFloatAdmission(const FamilyCapabilityParams &capability,
-                                 const CanonicalActorSemantics &actor);
+                                 const CanonicalActorSchemaProjection &actor);
 llvm::Error
 admitScalarFloatCompareAdmission(const FamilyCapabilityParams &capability,
-                                 const CanonicalActorSemantics &actor);
+                                 const CanonicalActorSchemaProjection &actor);
 llvm::Error
 admitScalarFloatCastAdmission(const FamilyCapabilityParams &capability,
-                              const CanonicalActorSemantics &actor);
+                              const CanonicalActorSchemaProjection &actor);
 llvm::Error admitScalarIntegerFloatConversionAdmission(
     const FamilyCapabilityParams &capability,
-    const CanonicalActorSemantics &actor);
+    const CanonicalActorSchemaProjection &actor);
 llvm::Error admitStreamAdmission(const FamilyCapabilityParams &capability,
-                                 const CanonicalActorSemantics &actor);
-llvm::Error admitTokenPlaneAdmission(const FamilyCapabilityParams &capability,
-                                     const CanonicalActorSemantics &actor);
+                                 const CanonicalActorSchemaProjection &actor);
+llvm::Error
+admitTokenPlaneAdmission(const FamilyCapabilityParams &capability,
+                         const CanonicalActorSchemaProjection &actor);
 
 bool isValidStreamStepKind(::dataflow::StreamStepKind kind) {
   switch (kind) {
@@ -151,7 +152,7 @@ bool isValidStreamStepKind(::dataflow::StreamStepKind kind) {
 }
 
 llvm::Error admitStreamAdmission(const FamilyCapabilityParams &capability,
-                                 const CanonicalActorSemantics &actor) {
+                                 const CanonicalActorSchemaProjection &actor) {
   const auto &params = std::get<fabric::LoopStreamParams>(capability);
   if (llvm::Error error = validateIntegerWidths(
           params.integerWidths, ordinaryIntegerWidths(), "stream"))
@@ -215,8 +216,9 @@ llvm::Error admitTokenPlanePayload(::mlir::Type payloadType) {
                 "fixed-ranked vector, or none");
 }
 
-llvm::Error admitTokenPlaneAdmission(const FamilyCapabilityParams &capability,
-                                     const CanonicalActorSemantics &actor) {
+llvm::Error
+admitTokenPlaneAdmission(const FamilyCapabilityParams &capability,
+                         const CanonicalActorSchemaProjection &actor) {
   (void)std::get<fabric::TokenPlaneParams>(capability);
   ::mlir::Type payloadType;
   switch (actor.schema) {
@@ -273,7 +275,7 @@ fabric::capabilityParamsSchema(const FamilyCapabilityParams &params) {
 
 llvm::Error fabric::verifyImplementationFamilyAdmission(
     ImplementationFamilyId family, const FamilyCapabilityParams *params,
-    const ::dataflow::CanonicalActorSemantics &actor) {
+    const ::dataflow::CanonicalActorSchemaProjection &actor) {
   std::uint32_t familyIndex = static_cast<std::uint32_t>(family);
   if (familyIndex >= implementationFamilyCount())
     return reject("implementation family is not registered");
@@ -320,9 +322,9 @@ bitReinterpretEndpoint(::mlir::Type type,
   return floatBitWidth(*format);
 }
 
-llvm::Error
-admitScalarBitReinterpretAdmission(const FamilyCapabilityParams &capability,
-                                   const CanonicalActorSemantics &actor) {
+llvm::Error admitScalarBitReinterpretAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor) {
   const auto &params = std::get<fabric::ScalarBitReinterpretParams>(capability);
   if (!params.integerWidths.valid())
     return reject("invalid bit reinterpretation integer width set");
@@ -348,7 +350,7 @@ admitScalarBitReinterpretAdmission(const FamilyCapabilityParams &capability,
   return llvm::Error::success();
 }
 
-llvm::Error admitUniformFloatType(const CanonicalActorSemantics &actor,
+llvm::Error admitUniformFloatType(const CanonicalActorSchemaProjection &actor,
                                   FloatFormatSet formats, unsigned inputCount,
                                   FloatFormat &format) {
   if (llvm::Error error = requireUniformType(actor, inputCount))
@@ -365,7 +367,7 @@ llvm::Error admitUniformFloatType(const CanonicalActorSemantics &actor,
 
 llvm::Error
 admitScalarUniformFloatAdmission(const FamilyCapabilityParams &capability,
-                                 const CanonicalActorSemantics &actor) {
+                                 const CanonicalActorSchemaProjection &actor) {
   const auto &params = std::get<fabric::ScalarFloatParams>(capability);
   if (llvm::Error error = validateFloatFormats(params.formats, "scalar"))
     return error;
@@ -405,7 +407,7 @@ admitScalarUniformFloatAdmission(const FamilyCapabilityParams &capability,
 }
 
 llvm::Expected<::mlir::arith::CmpFPredicate>
-floatPredicate(const CanonicalActorSemantics &actor) {
+floatPredicate(const CanonicalActorSchemaProjection &actor) {
   if (actor.schema == OperationSchemaId::ArithCmpF) {
     const auto *payload =
         std::get_if<::dataflow::FloatComparePayload>(&actor.payload);
@@ -427,7 +429,7 @@ floatPredicate(const CanonicalActorSemantics &actor) {
 
 llvm::Error
 admitScalarFloatCompareAdmission(const FamilyCapabilityParams &capability,
-                                 const CanonicalActorSemantics &actor) {
+                                 const CanonicalActorSchemaProjection &actor) {
   const auto &params =
       std::get<fabric::ScalarFloatCompareMinMaxParams>(capability);
   if (llvm::Error error = validateFloatFormats(params.formats, "comparison"))
@@ -479,7 +481,7 @@ admitScalarFloatCompareAdmission(const FamilyCapabilityParams &capability,
 
 llvm::Error
 admitScalarFloatCastAdmission(const FamilyCapabilityParams &capability,
-                              const CanonicalActorSemantics &actor) {
+                              const CanonicalActorSchemaProjection &actor) {
   const auto &params = std::get<fabric::ScalarFloatWidthCastParams>(capability);
   if (!params.formatPairs.valid())
     return reject("invalid floating cast relation");
@@ -523,7 +525,7 @@ admitScalarFloatCastAdmission(const FamilyCapabilityParams &capability,
 
 llvm::Error admitScalarIntegerFloatConversionAdmission(
     const FamilyCapabilityParams &capability,
-    const CanonicalActorSemantics &actor) {
+    const CanonicalActorSchemaProjection &actor) {
   const auto &params =
       std::get<fabric::ScalarIntegerFloatConversionParams>(capability);
   if (!params.formatPairs.valid())
@@ -709,15 +711,15 @@ unsigned floatBitWidth(FloatFormat format) {
   llvm_unreachable("invalid floating format");
 }
 
-llvm::Error requireArity(const CanonicalActorSemantics &actor, unsigned inputs,
-                         unsigned results) {
+llvm::Error requireArity(const CanonicalActorSchemaProjection &actor,
+                         unsigned inputs, unsigned results) {
   if (actor.type.getNumInputs() != inputs ||
       actor.type.getNumResults() != results)
     return reject("actor function type has the wrong arity");
   return llvm::Error::success();
 }
 
-llvm::Error requireUniformType(const CanonicalActorSemantics &actor,
+llvm::Error requireUniformType(const CanonicalActorSchemaProjection &actor,
                                unsigned inputs) {
   if (llvm::Error error = requireArity(actor, inputs, 1))
     return error;
@@ -763,7 +765,7 @@ admitFloatBehavior(const FloatBehaviorProfile &behavior,
 }
 
 llvm::Expected<::mlir::arith::FastMathFlags>
-floatingFlags(const CanonicalActorSemantics &actor) {
+floatingFlags(const CanonicalActorSchemaProjection &actor) {
   if (const auto *payload =
           std::get_if<::dataflow::FloatingPointPayload>(&actor.payload))
     return payload->flags;
@@ -775,7 +777,7 @@ floatingFlags(const CanonicalActorSemantics &actor) {
 }
 
 std::optional<::mlir::arith::RoundingMode>
-arithmeticRounding(const CanonicalActorSemantics &actor) {
+arithmeticRounding(const CanonicalActorSchemaProjection &actor) {
   const auto *payload =
       std::get_if<::dataflow::FloatingPointPayload>(&actor.payload);
   if (!payload)
@@ -835,7 +837,7 @@ fabric::typedAdmissionProviderKeyword(TypedAdmissionProviderId provider) {
 
 namespace {
 
-llvm::Error admitUniformInteger(const CanonicalActorSemantics &actor,
+llvm::Error admitUniformInteger(const CanonicalActorSchemaProjection &actor,
                                 IntegerWidthSet widths, unsigned inputCount) {
   if (llvm::Error error = requireUniformType(actor, inputCount))
     return error;
@@ -848,9 +850,9 @@ llvm::Error admitUniformInteger(const CanonicalActorSemantics &actor,
   return llvm::Error::success();
 }
 
-llvm::Error
-admitScalarOrdinaryIntegerAdmission(const FamilyCapabilityParams &capability,
-                                    const CanonicalActorSemantics &actor) {
+llvm::Error admitScalarOrdinaryIntegerAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor) {
   const auto &params = std::get<fabric::ScalarIntegerParams>(capability);
   if (llvm::Error error = validateIntegerWidths(
           params.integerWidths, ordinaryIntegerWidths(), "ordinary scalar"))
@@ -870,7 +872,7 @@ admitScalarOrdinaryIntegerAdmission(const FamilyCapabilityParams &capability,
 
 llvm::Error
 admitScalarLogicIntegerAdmission(const FamilyCapabilityParams &capability,
-                                 const CanonicalActorSemantics &actor) {
+                                 const CanonicalActorSchemaProjection &actor) {
   const auto &params = std::get<fabric::ScalarIntegerParams>(capability);
   if (llvm::Error error = validateIntegerWidths(
           params.integerWidths, logicIntegerWidths(), "logic scalar"))
@@ -886,7 +888,7 @@ admitScalarLogicIntegerAdmission(const FamilyCapabilityParams &capability,
 }
 
 llvm::Expected<::mlir::arith::CmpIPredicate>
-integerPredicate(const CanonicalActorSemantics &actor) {
+integerPredicate(const CanonicalActorSchemaProjection &actor) {
   if (actor.schema == OperationSchemaId::ArithCmpI) {
     const auto *payload =
         std::get_if<::dataflow::IntegerComparePayload>(&actor.payload);
@@ -908,9 +910,9 @@ integerPredicate(const CanonicalActorSemantics &actor) {
   }
 }
 
-llvm::Error
-admitScalarIntegerCompareAdmission(const FamilyCapabilityParams &capability,
-                                   const CanonicalActorSemantics &actor) {
+llvm::Error admitScalarIntegerCompareAdmission(
+    const FamilyCapabilityParams &capability,
+    const CanonicalActorSchemaProjection &actor) {
   const auto &params =
       std::get<fabric::ScalarIntegerCompareMinMaxParams>(capability);
   if (llvm::Error error = validateIntegerWidths(
@@ -953,7 +955,7 @@ admitScalarIntegerCompareAdmission(const FamilyCapabilityParams &capability,
 
 llvm::Error
 admitScalarValueSelectAdmission(const FamilyCapabilityParams &capability,
-                                const CanonicalActorSemantics &actor) {
+                                const CanonicalActorSchemaProjection &actor) {
   const auto &params = std::get<fabric::ScalarValueSelectParams>(capability);
   if (!params.integerWidths.valid())
     return reject("invalid select integer width set");
@@ -1006,7 +1008,7 @@ resolvedIndexWidth(const fabric::IntegerCastRelation &relation) {
 
 llvm::Error
 admitScalarIntegerCastAdmission(const FamilyCapabilityParams &capability,
-                                const CanonicalActorSemantics &actor) {
+                                const CanonicalActorSchemaProjection &actor) {
   const auto &params = std::get<fabric::ScalarIntegerCastParams>(capability);
   if (!params.relation.widthPairs.valid())
     return reject("invalid integer cast relation");
