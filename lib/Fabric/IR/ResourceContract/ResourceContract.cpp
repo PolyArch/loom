@@ -90,7 +90,10 @@ struct NormalizedDeclaration {
   std::vector<std::vector<std::uint32_t>> claimPositions;
 };
 
-// One closed key inventory presents every key of its domain exactly once.
+// One closed key inventory presents every key of its domain exactly once. An
+// inventory is unordered, so the whole of it is scanned and the outcome depends
+// only on which keys it holds: a repeated key outranks a key outside the
+// domain, and the reported key is the lowest offending one.
 template <typename KeyAt>
 llvm::Error indexInventory(std::size_t size, KeyAt keyAt,
                            ResourceContractViolation duplicate,
@@ -98,14 +101,23 @@ llvm::Error indexInventory(std::size_t size, KeyAt keyAt,
                            const llvm::Twine &site,
                            std::vector<std::uint32_t> &positionByKey) {
   positionByKey.assign(size, absentPosition);
+  std::optional<std::uint32_t> repeated;
+  std::optional<std::uint32_t> foreign;
+
   for (std::size_t position = 0; position < size; ++position) {
     const std::uint32_t key = keyAt(position);
     if (static_cast<std::size_t>(key) >= size)
-      return rejected(unknown, site + " key " + llvm::Twine(key));
-    if (positionByKey[key] != absentPosition)
-      return rejected(duplicate, site + " key " + llvm::Twine(key));
-    positionByKey[key] = static_cast<std::uint32_t>(position);
+      foreign = foreign ? std::min(*foreign, key) : key;
+    else if (positionByKey[key] != absentPosition)
+      repeated = repeated ? std::min(*repeated, key) : key;
+    else
+      positionByKey[key] = static_cast<std::uint32_t>(position);
   }
+
+  if (repeated)
+    return rejected(duplicate, site + " key " + llvm::Twine(*repeated));
+  if (foreign)
+    return rejected(unknown, site + " key " + llvm::Twine(*foreign));
   return llvm::Error::success();
 }
 

@@ -4,6 +4,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
@@ -51,6 +52,20 @@ void expectViolation(const char *test, const std::string &label,
                    getResourceContractViolationName(*observed).str() +
                    ", expected " +
                    getResourceContractViolationName(expected).str());
+}
+
+// One malformed inventory must report the same typed violation however its
+// unordered entries were declared.
+template <typename Reorder>
+void expectStableViolation(const char *test, const std::string &label,
+                           ResourceContractDeclaration declaration,
+                           ResourceContractViolation expected,
+                           Reorder reorder) {
+  expectViolation(test, label + " as declared",
+                  ResourceContract::create(declaration), expected);
+  reorder(declaration);
+  expectViolation(test, label + " reordered",
+                  ResourceContract::create(declaration), expected);
 }
 
 template <typename Key, typename Enum> constexpr Key key(Enum value) {
@@ -616,6 +631,71 @@ void violationPrecedenceIsIndependentOfDeclarationOrder() {
                   ResourceContractViolation::UnknownEventKey);
 }
 
+// Every closed inventory below carries one repeated key and one key outside its
+// domain. An inventory is unordered, so both orders must report the duplicate.
+void inventoryViolationsAreInvariantUnderDeclarationOrder() {
+  ResourceContractDeclaration declaration = buffer::declaration();
+  const ResourceStateDeclaration declaredState = declaration.states[0];
+  ResourceStateDeclaration foreignState = declaredState;
+  foreignState.key = StateKey(5);
+  declaration.states = {declaredState, declaredState, foreignState};
+  expectStableViolation(__func__, "state inventory", declaration,
+                        ResourceContractViolation::DuplicateStateKey,
+                        [](ResourceContractDeclaration &declared) {
+                          std::reverse(declared.states.begin(),
+                                       declared.states.end());
+                        });
+
+  declaration = buffer::declaration();
+  const CapacityDimensionDeclaration declaredDimension =
+      declaration.states[0].capacityDimensions[0];
+  CapacityDimensionDeclaration foreignDimension = declaredDimension;
+  foreignDimension.key = CapacityDimensionKey(5);
+  declaration.states[0].capacityDimensions = {
+      declaredDimension, declaredDimension, foreignDimension};
+  expectStableViolation(
+      __func__, "capacity dimension inventory", declaration,
+      ResourceContractViolation::DuplicateCapacityDimensionKey,
+      [](ResourceContractDeclaration &declared) {
+        std::reverse(declared.states[0].capacityDimensions.begin(),
+                     declared.states[0].capacityDimensions.end());
+      });
+
+  declaration = buffer::declaration();
+  declaration.requesters = {RequesterKey(0), RequesterKey(0), RequesterKey(5)};
+  expectStableViolation(__func__, "requester inventory", declaration,
+                        ResourceContractViolation::DuplicateRequesterKey,
+                        [](ResourceContractDeclaration &declared) {
+                          std::reverse(declared.requesters.begin(),
+                                       declared.requesters.end());
+                        });
+
+  declaration = buffer::declaration();
+  const UsePatternDeclaration declaredPattern = declaration.usePatterns[0];
+  UsePatternDeclaration foreignPattern = declaredPattern;
+  foreignPattern.key = UsePatternKey(5);
+  declaration.usePatterns = {declaredPattern, declaredPattern, foreignPattern};
+  expectStableViolation(__func__, "use pattern inventory", declaration,
+                        ResourceContractViolation::DuplicateUsePatternKey,
+                        [](ResourceContractDeclaration &declared) {
+                          std::reverse(declared.usePatterns.begin(),
+                                       declared.usePatterns.end());
+                        });
+
+  declaration = buffer::declaration();
+  const ClaimDeclaration declaredClaim = declaration.usePatterns[0].claims[0];
+  ClaimDeclaration foreignClaim = declaredClaim;
+  foreignClaim.key = ClaimKey(5);
+  declaration.usePatterns[0].claims = {declaredClaim, declaredClaim,
+                                       foreignClaim};
+  expectStableViolation(__func__, "claim inventory", declaration,
+                        ResourceContractViolation::DuplicateClaimKey,
+                        [](ResourceContractDeclaration &declared) {
+                          std::reverse(declared.usePatterns[0].claims.begin(),
+                                       declared.usePatterns[0].claims.end());
+                        });
+}
+
 } // namespace
 
 int main() {
@@ -633,5 +713,6 @@ int main() {
   roundRobinAdvancesOnlyOnASuccessfulGrant();
   internalTransactionsRefineOneAcceptedUse();
   violationPrecedenceIsIndependentOfDeclarationOrder();
+  inventoryViolationsAreInvariantUnderDeclarationOrder();
   return 0;
 }

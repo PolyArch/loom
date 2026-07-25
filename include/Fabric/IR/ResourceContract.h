@@ -356,6 +356,11 @@ public:
   /// Every class scans keys in ascending order once its inventory is
   /// validated, and contention is reported at the lowest contended capacity
   /// dimension, so the result never depends on declaration or iteration order.
+  /// A key inventory is itself unordered: a repeated key outranks a key
+  /// outside the closed domain, and the reported key is the lowest offending
+  /// one. The requester permutation of a grant policy is an ordered sequence
+  /// rather than an inventory, so it is reported at its first offending
+  /// position.
   static llvm::Expected<ResourceContract>
   create(const ResourceContractDeclaration &declaration);
 
