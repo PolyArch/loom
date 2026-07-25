@@ -284,6 +284,13 @@ ThreadDispatchPayload {
 }
 ```
 
+`logical_parameter_schema` is exactly the Dataflow-owned root-launch parameter
+inventory used by `EventLogicalProjection`: extents first in coordinate order,
+then admitted `index` or signless-integer body operands in body-operand order.
+It is a verified compiled copy for dispatch decoding, not an editable runtime
+or Deployment-owned schema. The importer rederives it from the exact Dataflow
+artifact and rejects disagreement.
+
 There is exactly one row for every root thread launch in the complete
 SystemMapping closure and no other row. The compiled binding preserves the
 closed `BindingRelation<AccCoreOccurrenceRef>` semantics; it does not create a
@@ -351,22 +358,33 @@ AdmissionPayload {
 }
 ```
 
-Each `EventFamilyKey` is a Dataflow-owned
+Each `EventFamilyKey` is exactly the Dataflow-owned
 `Produced(CanonicalProducerTerminalRef)` or
-`Consumed(CanonicalSinkTerminalRef)` structural event plus its canonical
-logical projection. The keys denote static event families and reachable
-parameterized execution contexts, never dynamic event occurrences, static
-event IDs, or absolute time. The relation uses
-the same closed partition/lookup algebra as Mapping and selects a canonical
-child-local case for the remaining Dataflow-owned logical inputs. Its finite
-unique range is exactly the case-key set. There is exactly one row and context
-for every admission relation required by the verified closure and no other
-one. Thread Dispatch and Spatial Launch may reference the same case.
+`Consumed(CanonicalSinkTerminalRef)` structural event. The exact Dataflow
+program mechanically derives that key's `EventLogicalProjection`; the
+projection is not copied into the row key or stored as a second schema field.
+The keys denote static event families, never dynamic event occurrences,
+static event IDs, concrete coordinate or parameter values, or absolute time.
+The relation uses the same closed partition/lookup algebra as Mapping over the
+typed slots in the derived projection and, for DynamicWork, the separately
+owned stable-item projection. It selects a canonical child-local case. Its
+finite unique range is exactly the case-key set. There is exactly one row and
+context for every admission relation required by the verified closure and no
+other one. Thread Dispatch and Spatial Launch may reference the same case.
 `AdmissionCaseOrdinal` is assigned only after unique case payloads are sorted
 by canonical semantic bytes; relations are then rewritten to that derived
 ordinal. It is not an EntityId or an independent selection authority.
 
-Rows, contexts, target cases, and admission cases are sorted by canonical key
+The Deployment canonical JSON writer renders each row key as the exact typed
+`Produced` or `Consumed` variant plus its terminal reference, and renders each
+relation variable as the exact `EventLogicalInputSlot` variant plus ordinal.
+It orders rows and variables by the Dataflow-owned comparison wires. The
+importer rederives the complete projection from the exact Dataflow artifact and
+rejects disagreement. No projection digest, copied type, native index, symbol
+path, JSON field order, or parallel binary Deployment schema becomes another
+authority.
+
+Contexts, target cases, and admission cases are sorted by canonical key
 bytes. Every nested set is sorted and unique; every relation uses the canonical
 Mapping relation representation owned by the Mapping schema. Authoring order,
 runtime queue order, and derived dense-index assignment do not affect the
@@ -519,6 +537,9 @@ Tests protect only stable boundaries:
   non-empty;
 * Deployment derives runtime-image child stable keys and canonical ordering
   from exact Mapping structural keys and relations;
+* admission rows use exactly one Dataflow-owned `EventFamilyKey` per static
+  event, and projection-slot ordering, wire roundtrip, empty projection, and
+  foreign or noncanonical slot rejection match the exact Dataflow owner;
 * heterogeneous Thread and Graph binding ranges produce exact target-case
   tables without a singular duplicate selection field;
 * Deployment accepts exactly its required configuration-image/runtime-image

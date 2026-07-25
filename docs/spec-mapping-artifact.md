@@ -668,7 +668,11 @@ encoding remain owned by the selected interconnect implementation.
 Plan selection first derives an `ExecutionContextKey` from the evaluated
 `B_thread` and `B_graph` targets. Only reachable contexts are stored. Within a
 context, the same closed binding-relation algebra may select a plan from
-remaining Dataflow-owned logical inputs. Plans have no `EntityId`; the
+Dataflow-owned logical inputs. An event-rooted relation resolves its complete
+input universe from the exact Dataflow-owned `EventLogicalProjection` and, for
+a DynamicWork domain, its separately owned stable-item projection. It may
+reference any typed subset of those inputs but cannot persist another
+projection or reinterpret input order. Plans have no `EntityId`; the
 finalizer sorts and deduplicates complete plan semantic keys before assigning
 owner-local ordinals.
 
@@ -699,6 +703,15 @@ relative_activation:
   release = intrinsic
           | causal_event(EventFamilyKey + optional guaranteed offset)
 ```
+
+`EventFamilyKey` is exactly the Dataflow-owned `StaticTransferEventRef` alias.
+It does not contain concrete coordinates, launch-parameter values, a copied
+logical projection, or a Mapping-local event ID. Every trigger and causal
+release imports the exact Dataflow-derived `EventLogicalProjection`; runtime
+binds concrete values for that schema when the corresponding occurrence is
+observed. Two records referring to the same static event therefore use one
+key, while context and parameter relations own any legal variation across its
+logical domain.
 
 Offsets are legal only when guaranteed by the Fabric service contract.
 `intrinsic` uses the Fabric pattern's finite or periodic completion contract.

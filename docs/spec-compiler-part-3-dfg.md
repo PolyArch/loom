@@ -2132,19 +2132,82 @@ StaticTransferEventRef =
     Produced(CanonicalProducerTerminalRef)
   | Consumed(CanonicalSinkTerminalRef)
 
-EventFamilyKey =
-  (StaticTransferEventRef,
-   canonical projection of Dataflow-owned logical coordinates
-   and launch parameters)
+EventFamilyKey = StaticTransferEventRef
+
+EventLogicalInputSlot =
+    Coordinate(event-domain coordinate ordinal)
+  | LaunchParameter(root-launch parameter ordinal)
+
+EventLogicalProjection(EventFamilyKey) =
+  canonical sorted unique array<EventLogicalInputSlot>
 ```
 
-There is no static-event `EntityId`. The projection is selected from the
-Dataflow-owned logical signature and denotes a static event family. Runtime
-may append a transient occurrence handle, but that handle never enters
-Artifact identity, Mapping, channel ordering, or Physical Tag assignment.
-SpatialMapping-local actor activity remains owned by the SpatialMapping and is
-rebased to these System-visible boundary events only by the derived
-SystemMapping closure.
+There is no static-event `EntityId`, and the projection is not a field of the
+key. Every terminal resolves through the exact program to one rooted logical
+event domain. `Coordinate` indexes that domain's canonical coordinate
+inventory. `LaunchParameter` indexes the owning root thread launch's canonical
+parameter inventory. That inventory contains the launch extents in coordinate
+order followed by ordinary `bodyOperands` of `index` or signless-integer type
+in body-operand order. Channel handles, memory capabilities, tokens, pointers,
+floats, vectors, and aggregates are not launch parameters. For a DynamicWork
+launch, the designated work-item operand is also excluded because its identity
+is owned by the stable-item projection. Types, ranks, values, bounds, and
+domain membership are recovered from the exact Canonical Dataflow Program and
+are never copied into a slot.
+
+The event-domain coordinate inventory is likewise Dataflow-owned. A dense root
+boundary uses the thread coordinate suffix in source-dimension order; a graph
+or channel terminal uses the exact rooted event may-domain and endpoint
+relation. A repeated stored-program launch does not acquire a hidden iteration
+slot. If Mapping must distinguish such iterations, the selected program must
+already expose the distinction as a logical coordinate, launch parameter, or
+DynamicWork stable-item component.
+
+The projection contains every coordinate and launch-parameter slot available
+to Mapping or admission for this event. It is derived once by
+`CanonicalDataflowProgramView`; it is not selected by Mapping, Deployment, or
+runtime. An empty projection is valid. A missing, duplicate, wrong-owner,
+wrong-kind, out-of-range, or noncanonical slot is invalid. Dynamic-work stable
+item components remain in their separately owned stable-key projection. An
+event-rooted Mapping relation may consume that projection in addition to this
+coordinate/launch-parameter projection, but neither schema is embedded in the
+event key.
+
+Canonical projection order is the complete `EventLogicalInputSlot` key order:
+`Coordinate` before `LaunchParameter`, then unsigned ordinal. Variant
+discriminants are zero-based `u32be` values in declaration order, ordinals and
+counts are `u64be`, and the projection comparison wire is:
+
+```text
+u64be(slot_count)
+repeat slot_count times:
+  u32be(slot_kind)
+  u64be(slot_ordinal)
+```
+
+`EventFamilyKey` canonical comparison wire is exactly the
+`StaticTransferEventRef` wire: zero-based `u32be` `Produced` or `Consumed`,
+followed by the recursively encoded terminal reference. Closed-union variants
+use declaration-order `u32be` discriminants; Dataflow `EntityId` and
+owner-local ordinals use `u64be`; nested structural references are encoded in
+field order. When the containing artifact already binds the exact Canonical
+Dataflow identity, the local wire omits that repeated identity; a standalone
+reference uses the Common exact ArtifactReference framing first. There is no
+alternate textual, JSON-specific, or native-index ordering authority.
+
+This comparison wire fixes cross-family ordering and round-trip semantics; it
+does not create a parallel binary Artifact schema. A Mapping canonical assembly
+or Deployment canonical JSON writer renders the same typed variants and fields
+in its sole owner format, then rederives the comparison wire for ordering and
+validation.
+
+One runtime event occurrence consists of the key, concrete values matching the
+derived projection, any applicable separately owned DynamicWork item identity,
+and a transient occurrence handle. Concrete values, dynamic item identity, and
+the handle never enter Artifact identity, Mapping keys, channel ordering, or
+Physical Tag assignment. SpatialMapping-local actor activity remains owned by
+the SpatialMapping and is rebased to these System-visible boundary events only
+by the derived SystemMapping closure.
 
 ### Canonical Semantic Relation Graph
 
@@ -2209,8 +2272,9 @@ One Dataflow-owned read-only `CanonicalDataflowProgramView` projects the five
 typed ID maps, every closed structural-reference inventory above, canonical
 actor and endpoint relations, rooted launch contexts, channel producer and
 consumer relations, launch-callee closure, logical-memory root/view and
-exposure relations, service-member derivation, and static transfer events.
-Its native indices and lookup tables are disposable caches. Mapping's
+exposure relations, service-member derivation, static transfer events, and
+their exact `EventLogicalProjection` values. Its native indices and lookup
+tables are disposable caches. Mapping's
 draft/search structures and simulator event tables may cache this view, but
 cannot define another persistent graph, actor, launch, terminal, member,
 event, or memory catalog.
@@ -2245,7 +2309,8 @@ Anchor-level tests cover:
 * complete canonical sink derivation for one multicast channel producer;
 * rejection when a memory exposure is interpreted as a service member or
   assigned a service leg;
-* static transfer-event round trip without a static event entity ID; and
+* static transfer-event round trip without a static event entity ID, plus
+  empty and non-empty projection ordering and wire round trip; and
 * DFG-sim actor import from an exact Canonical Dataflow Artifact without any
   Mapping Artifact.
 

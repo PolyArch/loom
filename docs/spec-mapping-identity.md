@@ -243,13 +243,16 @@ The Mapping profiles also use these confirmed structural owners:
 * a ServicePlan element is identified by the exact
   `ServicePlanElementRef` above and does not receive an EntityId.
 
-An `EventFamilyKey` is also a Dataflow-owned typed structural key. It combines
-the exact `StaticTransferEventRef` with the canonical projection
-of Dataflow-owned logical coordinates and launch parameters. It is not an
-entity or dynamic occurrence identity, and there is no static event
-`EntityId`. Runtime may add a transient occurrence handle, but that handle
-never enters Mapping identity, persistent references, channel message order,
-or Physical Tag assignment.
+`EventFamilyKey` is the Dataflow-owned typed alias of one exact
+`StaticTransferEventRef`; it has no Mapping-owned fields and no static-event
+`EntityId`. The exact program mechanically derives its
+`EventLogicalProjection` as the canonical ordered coordinate and launch-
+parameter input schema. That projection is not serialized inside the key and
+cannot be selected or rewritten by Mapping. Mapping imports the Dataflow-owned
+key, projection, canonical comparison order, and wire contract unchanged.
+Runtime may add concrete projection values and a transient occurrence handle,
+but neither enters Mapping identity, persistent references, channel message
+order, or Physical Tag assignment.
 
 ## System Service Obligation Keys
 
