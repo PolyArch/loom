@@ -1,7 +1,8 @@
 #ifndef LOOM_SIMULATOR_OPERATION_COST_MODEL_H
 #define LOOM_SIMULATOR_OPERATION_COST_MODEL_H
 
-#include "llvm/ADT/StringRef.h"
+#include "Dataflow/IR/OperationSchema.h"
+
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -18,9 +19,10 @@ struct OperationCost {
   std::uint64_t repeatScore = 1;
 };
 
-bool hasOperationCost(llvm::StringRef opName);
+bool hasOperationCost(dataflow::OperationSchemaId schema);
 
-llvm::Expected<OperationCost> estimateOperationCost(llvm::StringRef opName);
+llvm::Expected<OperationCost>
+estimateOperationCost(dataflow::OperationSchemaId schema);
 
 } // namespace sim
 } // namespace loom

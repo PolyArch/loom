@@ -14,7 +14,6 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <optional>
-#include <string>
 
 #include "Fabric/IR/FabricAttrs.h"
 #include "Fabric/IR/FabricTypes.h"
@@ -44,22 +43,10 @@ namespace fabric {
 inline constexpr ::llvm::StringLiteral kInnerInputTypesPropertyName =
     "inner_input_types";
 
-enum class FabricOpModeKind { Legacy, Normalized, Malformed };
-
-struct FabricOpModeClassification {
-  FabricOpModeKind kind = FabricOpModeKind::Legacy;
-  std::string diagnostic;
-};
-
 bool isFabricModulePortType(::mlir::Type type);
 bool haveSameFabricModulePortKind(::mlir::Type source,
                                   ::mlir::Type destination);
 std::optional<unsigned> getFabricBitsWidth(::mlir::Type type);
-FabricOpModeClassification classifyFabricOpModes(OpOp op);
-::mlir::LogicalResult
-preflightPairedLaneModes(OpOp op,
-                         const FabricOpModeClassification &classification,
-                         std::string &error);
 ::mlir::FailureOr<unsigned> getSemanticPayloadWidth(::mlir::Type type,
                                                     std::string &error);
 ::mlir::LogicalResult
@@ -71,21 +58,6 @@ verifyInnerInputTypesProperty(::mlir::Operation *op, ::mlir::ValueRange inputs,
 ::mlir::Operation *
 resolveInstantiateTarget(InstantiateOp instantiate,
                          ::mlir::SymbolTableCollection &symbolTables);
-
-// Returns true if the software op named by `name` is one of the operations
-// supported as a member of fabric.op's `op_list`.
-bool isFabricOpSupported(::llvm::StringRef name);
-
-// Resolve the Loom address bit width for `op`. Walks up to the enclosing
-// fabric.module; if that module sets a `loom_addr_bits` override returns
-// it, otherwise returns ::loom::getDefaultLoomAddrBits().
-unsigned resolveLoomAddrBits(::mlir::Operation *op);
-
-// Resolve the Loom memory bus width (in bits) for `op`. Walks up to the
-// enclosing fabric.module; if that module sets a `loom_mem_bus_width`
-// override returns it, otherwise returns
-// ::loom::getDefaultLoomMemBusWidth().
-unsigned resolveLoomMemBusWidth(::mlir::Operation *op);
 } // namespace fabric
 
 #endif // FABRIC_IR_FABRICOPS_H

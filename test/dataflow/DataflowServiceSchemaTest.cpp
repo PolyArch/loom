@@ -93,6 +93,28 @@ module {
     }
   }
 
+  module @correspondence_index32 attributes {
+    dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+  } {
+    func.func @read_vector_index32(%mem: memref<8xf32>, %addr: index,
+                                   %ctrl: none) -> (vector<4xf32>, none) {
+      %data, %done = dataflow.load %mem[%addr] %ctrl
+          : memref<8xf32>, vector<4xf32>
+      return %data, %done : vector<4xf32>, none
+    }
+  }
+
+  module @correspondence_index64 attributes {
+    dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
+  } {
+    func.func @read_vector_index64(%mem: memref<8xf32>, %addr: index,
+                                   %ctrl: none) -> (vector<4xf32>, none) {
+      %data, %done = dataflow.load %mem[%addr] %ctrl
+          : memref<8xf32>, vector<4xf32>
+      return %data, %done : vector<4xf32>, none
+    }
+  }
+
   func.func @write_contiguous(%mem: memref<10xi32>, %addr: index,
                               %value: vector<4xi32>, %ctrl: none) -> none {
     %done = dataflow.store %mem[%addr] %value %ctrl
@@ -113,7 +135,8 @@ module {
     %old, %done = dataflow.atomic_rmw %mem[%addr] %value %ctrl
         {contract = #dataflow.rmw_contract<
             kind = add,
-            access = <ordering = monotonic, sync_scope = <system>>>}
+            access = <ordering = monotonic, sync_scope = <system>,
+                      source_alignment_bytes = 4>>}
         : memref<10xi32>
     return %old, %done : i32, none
   }
@@ -126,7 +149,7 @@ module {
         {contract = #dataflow.rmw_contract<
             kind = add,
             access = <ordering = monotonic, sync_scope = <system>,
-                      vector_granularity = per_lane>>}
+                      source_alignment_bytes = 4, vector_granularity = per_lane>>}
         : memref<10xi32>, vector<2x3xindex>, vector<2x3xi32>
     return %old, %done : vector<2x3xi32>, none
   }
@@ -137,7 +160,8 @@ module {
     %old, %ok, %done = dataflow.cmpxchg %mem[%addr] %expected %desired %ctrl
         {contract = #dataflow.cmpxchg_contract<success_ordering = seq_cst,
                                                failure_ordering = monotonic,
-                                               sync_scope = <system>>}
+                                               sync_scope = <system>,
+                                               source_alignment_bytes = 4>}
         : memref<10xi32> -> i1
     return %old, %ok, %done : i32, i1, none
   }
@@ -149,7 +173,8 @@ module {
     %old, %ok, %done = dataflow.cmpxchg %mem[%addr] %expected %desired %ctrl
         {contract = #dataflow.cmpxchg_contract<
             success_ordering = seq_cst, failure_ordering = monotonic,
-            sync_scope = <system>, vector_granularity = whole_payload>}
+            sync_scope = <system>, source_alignment_bytes = 4,
+            vector_granularity = whole_payload>}
         : memref<8xvector<4xi32>> -> i1
     return %old, %ok, %done : vector<4xi32>, i1, none
   }
@@ -163,7 +188,8 @@ module {
         mask %mask
         {contract = #dataflow.cmpxchg_contract<
             success_ordering = seq_cst, failure_ordering = monotonic,
-            sync_scope = <system>, vector_granularity = per_lane>}
+            sync_scope = <system>, source_alignment_bytes = 4,
+            vector_granularity = per_lane>}
         : memref<10xi32>, vector<4xi32> -> vector<4xi1>
     return %old, %ok, %done : vector<4xi32>, vector<4xi1>, none
   }
@@ -833,6 +859,47 @@ bool checkUnrepresentableProjection(mlir::ModuleOp module) {
   return ok;
 }
 
+bool checkCorrespondenceIncludesIndexScope(mlir::ModuleOp module) {
+  mlir::Operation *actor32 =
+      findActor(findFunction(module, "read_vector_index32"));
+  mlir::Operation *actor64 =
+      findActor(findFunction(module, "read_vector_index64"));
+  if (!actor32 || !actor64)
+    return fail("correspondence", "the scoped fixture is incomplete");
+
+  llvm::Expected<CanonicalActorSchemaProjection> projection32 =
+      projectRegisteredActorSchemaProjection(actor32);
+  llvm::Expected<CanonicalActorSchemaProjection> projection64 =
+      projectRegisteredActorSchemaProjection(actor64);
+  llvm::Expected<CanonicalService> service32 =
+      CanonicalService::forActor(actor32);
+  llvm::Expected<CanonicalMemoryAccessView> access64 =
+      getCanonicalMemoryAccessView(actor64);
+  if (!projection32 || !projection64 || !service32 || !access64) {
+    llvm::consumeError(projection32.takeError());
+    llvm::consumeError(projection64.takeError());
+    llvm::consumeError(service32.takeError());
+    llvm::consumeError(access64.takeError());
+    return fail("correspondence", "a valid scoped actor was not projected");
+  }
+
+  if (*projection32 != *projection64)
+    return fail("correspondence",
+                "the fixture changes the canonical actor projection");
+  if (service32->access().indexBits() != 32 || access64->indexBits() != 64 ||
+      service32->access().addressBits() != 32 || access64->addressBits() != 64)
+    return fail("correspondence",
+                "the fixture does not isolate the enclosing index scope");
+
+  if (llvm::Error error = validateCanonicalMemoryActorCorrespondence(
+          *projection32, *service32, &*access64)) {
+    llvm::consumeError(std::move(error));
+    return true;
+  }
+  return fail("correspondence",
+              "mixed index-width service and access views were accepted");
+}
+
 /// The projection tracks the owners it is derived from. Each step changes one
 /// owned fact of a valid actor and requires the exact changed projection or a
 /// deterministic rejection, then restores or replaces that actor. A stale or
@@ -948,7 +1015,7 @@ bool checkSourceTracking(mlir::ModuleOp module) {
   auto atomic = AtomicAccessContractAttr::get(
       context, AtomicOrdering::Acquire,
       SyncScopeRefAttr::get(context, SyncScopeKind::System, {}, {}),
-      std::nullopt, /*is_volatile=*/false);
+      /*source_alignment_bytes=*/4, std::nullopt, /*is_volatile=*/false);
   host->setAttr("contract", atomic);
   holds("an ordered contract", host, ServiceKind::MemoryRead,
         [&](const CanonicalMemoryAccessView &v) {
@@ -1008,8 +1075,9 @@ bool checkSourceTracking(mlir::ModuleOp module) {
   auto weak = CompareExchangeContractAttr::get(
       context, cmpxchgContract.getSuccessOrdering(),
       cmpxchgContract.getFailureOrdering(), cmpxchgContract.getSyncScope(),
-      cmpxchgContract.getVectorGranularity(), /*weak=*/true,
-      cmpxchgContract.getIsVolatile());
+      cmpxchgContract.getSourceAlignmentBytes(),
+      cmpxchgContract.getVectorGranularity(),
+      /*weak=*/true, cmpxchgContract.getIsVolatile());
   cmpxchg->setAttr("contract", weak);
   holds("a weak compare-exchange", cmpxchg, ServiceKind::MemoryCompareExchange,
         [&](const CanonicalMemoryAccessView &v) {
@@ -1089,6 +1157,7 @@ int main() {
   ok &= checkRejections(*module);
   ok &= checkMalformedActors(*module);
   ok &= checkUnrepresentableProjection(*module);
+  ok &= checkCorrespondenceIncludesIndexScope(*module);
   ok &= checkSourceTracking(*module);
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

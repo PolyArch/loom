@@ -58,8 +58,8 @@
 // UNSIGNED-DAG: "status": "pass"
 // UNSIGNED-DAG: "arith.extui": 1
 // UNSIGNED-DAG: "arith.index_castui": 2
-// UNSIGNED-DAG: "llvm.intr.umin": 1
-// UNSIGNED-DAG: "llvm.intr.umax": 1
+// UNSIGNED-DAG: "arith.minui": 1
+// UNSIGNED-DAG: "arith.maxui": 1
 // UNSIGNED-DAG: "i32:255"
 // UNSIGNED-DAG: "i32:7"
 // UNSIGNED-DAG: "i32:-1"
@@ -76,15 +76,15 @@
 // SIGNED-MINMAX-DAG: "workload": "signed_minmax"
 // SIGNED-MINMAX-DAG: "graph": "signed_minmax"
 // SIGNED-MINMAX-DAG: "status": "pass"
-// SIGNED-MINMAX-DAG: "llvm.intr.smin": 1
-// SIGNED-MINMAX-DAG: "llvm.intr.smax": 1
+// SIGNED-MINMAX-DAG: "arith.minsi": 1
+// SIGNED-MINMAX-DAG: "arith.maxsi": 1
 // SIGNED-MINMAX-DAG: "i8:-4"
 // SIGNED-MINMAX-DAG: "i8:7"
 
 // CTLZ-DAG: "workload": "count_leading_zeros"
 // CTLZ-DAG: "graph": "count_leading_zeros"
 // CTLZ-DAG: "status": "pass"
-// CTLZ-DAG: "llvm.intr.ctlz": 1
+// CTLZ-DAG: "math.ctlz": 1
 // CTLZ-DAG: "i32:27"
 
 module {
@@ -94,7 +94,7 @@ module {
     %lhs = dataflow.constant %ctrl {const_value = 9.000000e+00 : f32} : f32
     %rhs = dataflow.constant %ctrl {const_value = 3.000000e+00 : f32} : f32
     %pred = arith.cmpf ugt, %lhs, %rhs : f32
-    %selected = llvm.select %pred, %rhs, %lhs : i1, f32
+    %selected = arith.select %pred, %rhs, %lhs : f32
     %published:2 = dataflow.sync %ctrl, %selected
         : (none, f32) -> (none, f32)
     dataflow.graph.return %published#0, %published#1 : none, f32
@@ -104,7 +104,7 @@ module {
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %wide = dataflow.constant %ctrl {const_value = 305419896 : i64} : i64
-    %value = llvm.trunc %wide : i64 to i32
+    %value = arith.trunci %wide : i64 to i32
     %amount = dataflow.constant %ctrl {const_value = 4 : i32} : i32
     %rotated = llvm.intr.fshl(%value, %value, %amount) : (i32, i32, i32) -> i32
     %mask = dataflow.constant %ctrl {const_value = 255 : i32} : i32
@@ -136,7 +136,7 @@ module {
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %value = dataflow.constant %ctrl {const_value = -1 : i32} : i32
-    %wide = llvm.zext %value : i32 to i64
+    %wide = arith.extui %value : i32 to i64
     %published:2 = dataflow.sync %ctrl, %wide
         : (none, i64) -> (none, i64)
     dataflow.graph.return %published#0, %published#1 : none, i64
@@ -146,7 +146,7 @@ module {
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %value = dataflow.constant %ctrl {const_value = 7 : i32} : i32
-    %fp = llvm.uitofp %value : i32 to f32
+    %fp = arith.uitofp %value : i32 to f32
     %published:2 = dataflow.sync %ctrl, %fp
         : (none, f32) -> (none, f32)
     dataflow.graph.return %published#0, %published#1 : none, f32
@@ -163,8 +163,8 @@ module {
     %narrow_idx = arith.index_castui %wide_idx : index to i32
     %seven = dataflow.constant %ctrl {const_value = 7 : i32} : i32
     %minus_one = dataflow.constant %ctrl {const_value = -1 : i32} : i32
-    %min = llvm.intr.umin(%minus_one, %seven) : (i32, i32) -> i32
-    %max = llvm.intr.umax(%minus_one, %seven) : (i32, i32) -> i32
+    %min = arith.minui %minus_one, %seven : i32
+    %max = arith.maxui %minus_one, %seven : i32
     %published:6 = dataflow.sync %ctrl, %wide, %min, %max, %idx, %narrow_idx
         : (none, i32, i32, i32, index, i32)
           -> (none, i32, i32, i32, index, i32)
@@ -195,8 +195,8 @@ module {
                   result_segments = array<i32: 2, 0, 0>} {
     %minus_four = dataflow.constant %ctrl {const_value = -4 : i8} : i8
     %seven = dataflow.constant %ctrl {const_value = 7 : i8} : i8
-    %min = llvm.intr.smin(%minus_four, %seven) : (i8, i8) -> i8
-    %max = llvm.intr.smax(%minus_four, %seven) : (i8, i8) -> i8
+    %min = arith.minsi %minus_four, %seven : i8
+    %max = arith.maxsi %minus_four, %seven : i8
     %published:3 = dataflow.sync %ctrl, %min, %max
         : (none, i8, i8) -> (none, i8, i8)
     dataflow.graph.return %published#0, %published#1, %published#2
@@ -208,7 +208,7 @@ module {
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %value = dataflow.constant %ctrl {const_value = 16 : i32} : i32
-    %zeros = "llvm.intr.ctlz"(%value) <{is_zero_poison = false}> : (i32) -> i32
+    %zeros = math.ctlz %value : i32
     %published:2 = dataflow.sync %ctrl, %zeros
         : (none, i32) -> (none, i32)
     dataflow.graph.return %published#0, %published#1 : none, i32

@@ -144,43 +144,25 @@ def Fabric_OpOp : Fabric_Op<"op", []> {
       "fabric module instance: a configurable hardware area that can implement "
       "one of a set of software ops";
   let description = [{
-    Models a piece of fabric hardware (a "module") that can be
-    configured to implement one of its typed `hw_params`. The required
-    `op_list` mirrors the distinct operation identities in those modes.
-    Members must either be a single op or all belong to one shared hardware-
-    share group. Hardware ports are `fabric.bits<N>` only.
+    Models one physical operation datapath. Its explicit implementation family
+    selects the generated member relation and typed capability schema. The
+    required `op_list` is the enabled subset exposed by this occurrence.
+    Hardware ports are `fabric.bits<N>` only.
 
     Attributes:
+      * `implementation_family`: one explicit generated HSG family identity.
       * `op_list`    : checked array of `FlatSymbolRefAttr`, e.g.
-                       `[@arith.addi, @arith.subi]`. In a canonical FU its
-                       distinct entries equal the operation identities in
-                       `hw_params`.
-      * `hw_params`  : an array of complete typed software modes owned
-                       by this physical datapath. Each mode contains one
-                       operation identity, exact function type, exact semantic
-                       attributes, and ordered software-to-physical port maps.
-                       FU semantic encodings select these modes by index. Each
-                       mode must verify as the selected software operation;
-                       mapped physical payload widths may differ and need only
-                       be at least the corresponding software widths.
-                       Legacy programmed Fabric may still use the historical
-                       length-one allowed-set dictionary as an adapter form;
-                       canonical FUs reject that shape.
-      * `paired_lanes`: the complete ordered physical lane inventory for a
-                       wide `@dataflow.sync` capability. Each record is
-                       `{input_port, output_port, mask_bit}`. Its order must
-                       match every full-width sync mode's software port maps.
-      * `sw_configs` : `{ key = ... }` - a `DictionaryAttr` with
-                       runtime configuration. Normalized `hw_params` modes are
-                       selected only by `{mode = N}`. Legacy allowed-set input
-                       retains its historical field selections. Canonical FUs
-                       do not persist either programmed form.
+                       `[@arith.addi, @arith.subi]`.
+      * `hw_params`  : the one closed typed capability record selected by the
+                       generated implementation-family descriptor. The
+                       verifier rejects unknown fields, malformed domains,
+                       and a record of another family schema.
   }];
 
-  let arguments = (ins Variadic<Fabric_BitsType>:$inputs, ArrayAttr:$op_list,
-      OptionalAttr<ArrayAttr>:$hw_params,
-      OptionalAttr<ArrayAttr>:$paired_lanes,
-      OptionalAttr<DictionaryAttr>:$sw_configs);
+  let arguments = (ins Variadic<Fabric_BitsType>:$inputs,
+      OptionalAttr<Fabric_ImplementationFamilyAttr>:$implementation_family,
+      ArrayAttr:$op_list,
+      DictionaryAttr:$hw_params);
   let results = (outs Variadic<Fabric_BitsType>:$outputs);
 
   let assemblyFormat = [{
@@ -225,11 +207,8 @@ def Fabric_ModuleOp : Fabric_Op<"module", [
   let arguments = (ins
       SymbolNameAttr:$sym_name,
       TypeAttrOf<FunctionType>:$function_type,
-      // Optional per-module overrides for the global Loom constants
-      // consumed by `fabric.mem` (and any future op that depends on the
-      // address-space width or memory-bus width). When absent the
-      // verifier falls back to ::loom::getDefaultLoomAddrBits() and
-      // ::loom::getDefaultLoomMemBusWidth().
+      // Optional exact module-scoped semantic values. Absence remains
+      // absence during elaboration; no Fabric-local default is applied.
       OptionalAttr<I32Attr>:$loom_addr_bits,
       OptionalAttr<I32Attr>:$loom_mem_bus_width
   );
@@ -396,7 +375,6 @@ def Fabric_FuOp : Fabric_Op<"fu", [
   let arguments = (ins
       OptionalAttr<SymbolNameAttr>:$sym_name,
       OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
-      OptionalAttr<ArrayAttr>:$valid_encodings,
       Variadic<Fabric_BitsType>:$inputs);
   let results = (outs Variadic<Fabric_BitsType>:$outputs);
   let regions = (region SizedRegion<1>:$body);

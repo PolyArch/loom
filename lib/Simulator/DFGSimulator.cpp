@@ -63,16 +63,6 @@ static std::string typeToString(mlir::Type type) {
   return os.str();
 }
 
-static llvm::Expected<unsigned> supportedBitWidth(std::uint64_t width,
-                                                  llvm::StringRef label) {
-  if (width == 0 || width > 64)
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "%s bit width must be in [1, 64], got %llu",
-                                   label.str().c_str(),
-                                   static_cast<unsigned long long>(width));
-  return static_cast<unsigned>(width);
-}
-
 static llvm::Expected<std::int64_t> byteSizeForBitWidth(std::uint64_t width) {
   if (width == 0)
     return llvm::createStringError(std::errc::invalid_argument,
@@ -99,16 +89,9 @@ llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type,
       return width.takeError();
     return byteSizeForBitWidth(*width);
   }
-  if (auto arrayType = mlir::dyn_cast<mlir::LLVM::LLVMArrayType>(type)) {
-    auto elementSizeOrErr = byteSizeOfType(arrayType.getElementType(), scope);
-    if (!elementSizeOrErr)
-      return elementSizeOrErr.takeError();
-    return static_cast<std::int64_t>(arrayType.getNumElements()) *
-           *elementSizeOrErr;
-  }
   return llvm::createStringError(
       std::errc::invalid_argument,
-      "unsupported llvm.getelementptr element type: %s",
+      "unsupported memory element type: %s",
       typeToString(type).c_str());
 }
 
@@ -152,8 +135,6 @@ Token pointerToken(mlir::Value root, std::shared_ptr<MemoryValue> memory,
 }
 
 llvm::Expected<Token> zeroToken(mlir::Type type) {
-  if (mlir::isa<mlir::LLVM::LLVMPointerType>(type))
-    return pointerToken(mlir::Value{});
   if (mlir::isa<mlir::IndexType>(type))
     return integerValueToken(0);
   if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
@@ -167,76 +148,8 @@ llvm::Expected<Token> zeroToken(mlir::Type type) {
     return tokenFromBitPattern(llvm::APInt(*width, 0), type);
   }
   return llvm::createStringError(std::errc::invalid_argument,
-                                 "unsupported llvm.mlir.zero type: %s",
+                                 "unsupported zero-initialized memory type: %s",
                                  typeToString(type).c_str());
-}
-
-llvm::Expected<Token> ensurePointerMemory(SimulatorState &state, Token token,
-                                          mlir::Type elementType) {
-  if (token.kind != TokenKind::Pointer)
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "memory view operand is not a pointer");
-  if (token.pointer.memory) {
-    if (token.pointer.memory->elementType != elementType)
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "memory view type mismatch: existing %s, requested %s",
-          typeToString(token.pointer.memory->elementType).c_str(),
-          typeToString(elementType).c_str());
-    return token;
-  }
-  auto rawIt = state.rawMemoryFixtures.find(token.pointer.root);
-  if (rawIt == state.rawMemoryFixtures.end())
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "pointer memory fixture is missing");
-  auto memoryOrErr = materializeMemory(state, token.pointer.root,
-                                       rawIt->second.values, elementType);
-  if (!memoryOrErr)
-    return memoryOrErr.takeError();
-  token.pointer.memory = *memoryOrErr;
-  return token;
-}
-
-llvm::Expected<std::int64_t>
-gepByteOffset(mlir::LLVM::GEPOp op, llvm::ArrayRef<Token> dynamicTokens) {
-  mlir::Type currentType = op.getElemType();
-  std::int64_t offset = 0;
-  unsigned dynamicIndex = 0;
-  bool firstIndex = true;
-  for (std::int32_t rawIndex : op.getRawConstantIndices()) {
-    mlir::Type strideType = currentType;
-    if (!firstIndex) {
-      if (auto arrayType =
-              mlir::dyn_cast<mlir::LLVM::LLVMArrayType>(currentType)) {
-        strideType = arrayType.getElementType();
-      } else {
-        return llvm::createStringError(
-            std::errc::invalid_argument,
-            "unsupported llvm.getelementptr aggregate index over type: %s",
-            typeToString(currentType).c_str());
-      }
-    }
-    auto strideOrErr = byteSizeOfType(strideType, op.getOperation());
-    if (!strideOrErr)
-      return strideOrErr.takeError();
-    std::int64_t index = rawIndex;
-    if (rawIndex == mlir::LLVM::GEPOp::kDynamicIndex) {
-      if (dynamicIndex >= dynamicTokens.size())
-        return llvm::createStringError(
-            std::errc::invalid_argument,
-            "llvm.getelementptr dynamic index is missing");
-      const Token &token = dynamicTokens[dynamicIndex++];
-      if (token.kind != TokenKind::Integer && token.kind != TokenKind::Bool)
-        return llvm::createStringError(
-            std::errc::invalid_argument,
-            "llvm.getelementptr dynamic index must be integer-like");
-      index = integerToken(token);
-    }
-    offset += index * *strideOrErr;
-    currentType = strideType;
-    firstIndex = false;
-  }
-  return offset;
 }
 
 bool hasToken(ChannelMap &channels, mlir::OpOperand &operand) {
@@ -278,22 +191,35 @@ void emitTokenWithMemoryOrder(SimulatorState &state, mlir::Value value,
   publishToken(state, value, token);
 }
 
-bool recordEvent(SimulatorState &state, llvm::StringRef opName) {
-  auto costOrErr = estimateOperationCost(opName);
+bool recordEvent(SimulatorState &state, dataflow::OperationSchemaId schema) {
+  auto costOrErr = estimateOperationCost(schema);
   if (!costOrErr) {
     state.diagnostics.push_back(llvm::toString(costOrErr.takeError()));
     return false;
   }
   ++state.eventCount;
-  ++state.operationFireCounts[opName.str()];
+  ++state.operationFireCounts[schema];
   return true;
+}
+
+const dataflow::CanonicalActorSchemaProjection &
+actorProjection(const SimulatorState &state, mlir::Operation *op) {
+  auto found = state.actorProjections.find(op);
+  assert(found != state.actorProjections.end() &&
+         "admitted actor has no cached schema projection");
+  return found->second;
+}
+
+bool recordActorEvent(SimulatorState &state, mlir::Operation *op) {
+  return recordEvent(state, actorProjection(state, op).schema);
 }
 
 bool hasComputedAddress(mlir::Value value) {
   mlir::Operation *def = value.getDefiningOp();
   if (!def)
     return false;
-  return def->getName().getStringRef() != "dataflow.stream";
+  auto schema = dataflow::operationSchemaOf(def);
+  return !schema || *schema != dataflow::OperationSchemaId::DataflowStream;
 }
 
 static void flushPendingTokens(SimulatorState &state) {
@@ -334,58 +260,35 @@ bool boolToken(const Token &token) {
   return token.intValue != 0;
 }
 
-static bool samePointer(const MemoryView &lhs, const MemoryView &rhs) {
-  return lhs.root == rhs.root && lhs.byteOffset == rhs.byteOffset;
-}
-
-bool isSupportedPointerICmp(mlir::LLVM::ICmpOp op) {
-  if (!mlir::isa<mlir::LLVM::LLVMPointerType>(op.getLhs().getType()) ||
-      !mlir::isa<mlir::LLVM::LLVMPointerType>(op.getRhs().getType()))
-    return false;
-  return op.getPredicate() == mlir::LLVM::ICmpPredicate::eq ||
-         op.getPredicate() == mlir::LLVM::ICmpPredicate::ne;
-}
-
-llvm::Expected<Token> evaluatePointerICmp(mlir::LLVM::ICmpOp op,
-                                          const Token &lhs, const Token &rhs) {
-  if (!isSupportedPointerICmp(op))
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "llvm.icmp supports only pointer eq/ne in DFG-sim");
-  if (lhs.kind != TokenKind::Pointer || rhs.kind != TokenKind::Pointer)
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "llvm.icmp operands are not pointers");
-  bool equal = samePointer(lhs.pointer, rhs.pointer);
-  if (op.getPredicate() == mlir::LLVM::ICmpPredicate::ne)
-    equal = !equal;
-  return boolValueToken(equal);
-}
-
 llvm::Expected<PrimitiveValue> primitiveValueFromToken(const Token &token,
-                                                       mlir::Type type) {
+                                                       mlir::Type type,
+                                                       unsigned indexBitWidth) {
+  if (token.valueState == PrimitiveValueState::Poison)
+    return PrimitiveValue::poison();
+  if (token.valueState == PrimitiveValueState::Undef)
+    return PrimitiveValue::undef();
   if (mlir::isa<mlir::IndexType>(type)) {
-    if (token.kind != TokenKind::Integer && token.kind != TokenKind::Bool)
-      return llvm::createStringError(std::errc::invalid_argument,
-                                     "index primitive operand is not integer");
-    return PrimitiveValue::integer(integerToken(token));
+    if (indexBitWidth == 0)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "index primitive operand has no resolved bit width");
+    auto bits = indexTokenBitPattern(token, indexBitWidth);
+    if (!bits)
+      return bits.takeError();
+    return PrimitiveValue::integer(*bits);
   }
   if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type)) {
-    auto width = supportedBitWidth(intType.getWidth(), "primitive integer");
-    if (!width)
-      return width.takeError();
     auto bits = tokenBitPattern(token, intType);
     if (!bits)
       return bits.takeError();
-    if (*width == 1)
-      return PrimitiveValue::boolean(bits->isOne());
-    return PrimitiveValue::integer(bits->getSExtValue());
+    return PrimitiveValue::integer(*bits);
   }
   if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
     auto bits = tokenBitPattern(token, floatType);
     if (!bits)
       return bits.takeError();
     return PrimitiveValue::floating(
-        llvm::APFloat(floatType.getFloatSemantics(), *bits).convertToDouble());
+        llvm::APFloat(floatType.getFloatSemantics(), *bits));
   }
   return llvm::createStringError(
       std::errc::invalid_argument,
@@ -394,46 +297,24 @@ llvm::Expected<PrimitiveValue> primitiveValueFromToken(const Token &token,
 
 llvm::Expected<Token> tokenFromPrimitiveValue(const PrimitiveValue &value,
                                               mlir::Type type) {
-  if (mlir::isa<mlir::IndexType>(type)) {
-    if (value.kind == PrimitiveValueKind::Bool)
-      return integerValueToken(value.boolValue ? 1 : 0);
-    if (value.kind == PrimitiveValueKind::Integer)
-      return integerValueToken(value.intValue);
+  if (value.state != PrimitiveValueState::Defined)
+    return exceptionalValueToken(value.state, type);
+  if (!value.bits)
     return llvm::createStringError(std::errc::invalid_argument,
-                                   "index primitive result is not integer");
+                                   "defined primitive result has no bits");
+  if (mlir::isa<mlir::IndexType>(type)) {
+    return indexToken(*value.bits);
   }
   if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type)) {
-    auto width = supportedBitWidth(intType.getWidth(), "primitive integer");
-    if (!width)
-      return width.takeError();
-    std::int64_t integer = 0;
-    if (value.kind == PrimitiveValueKind::Bool)
-      integer = value.boolValue ? 1 : 0;
-    else if (value.kind == PrimitiveValueKind::Integer)
-      integer = value.intValue;
-    else
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "integer primitive result has incompatible value kind");
-    auto token = tokenFromBitPattern(
-        llvm::APInt(*width, static_cast<std::uint64_t>(integer),
-                    /*isSigned=*/true, /*implicitTrunc=*/true),
-        intType);
+    auto token = tokenFromBitPattern(*value.bits, intType);
     if (!token)
       return token.takeError();
-    token->intValue = integer;
+    if (intType.getWidth() >= 2 && intType.getWidth() <= 64)
+      token->intValue = value.bits->getSExtValue();
     return *token;
   }
   if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
-    if (value.kind != PrimitiveValueKind::Float)
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "floating-point primitive result has incompatible value kind");
-    llvm::APFloat result(value.floatValue);
-    bool losesInfo = false;
-    (void)result.convert(floatType.getFloatSemantics(),
-                         llvm::APFloat::rmNearestTiesToEven, &losesInfo);
-    return tokenFromBitPattern(result.bitcastToAPInt(), floatType);
+    return tokenFromBitPattern(*value.bits, floatType);
   }
   return llvm::createStringError(
       std::errc::invalid_argument,
@@ -442,71 +323,45 @@ llvm::Expected<Token> tokenFromPrimitiveValue(const PrimitiveValue &value,
 
 static llvm::Expected<unsigned> integerBitWidth(mlir::Type type,
                                                 mlir::Operation *scope) {
+  if (!type)
+    return 0u;
   if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
-    return supportedBitWidth(intType.getWidth(), "integer");
+    return intType.getWidth();
   if (mlir::isa<mlir::IndexType>(type)) {
-    // The scalar primitive evaluator models one value as a host integer, so it
-    // narrows the resolved index width here. The memory path does not.
     auto width = loom::getIndexBitWidth(scope);
     if (!width)
       return width.takeError();
-    return supportedBitWidth(*width, "index");
+    return *width;
   }
   return 0u;
 }
 
-std::string primitivePredicate(mlir::Operation *op) {
-  if (auto cmp = mlir::dyn_cast<mlir::arith::CmpIOp>(op))
-    return mlir::arith::stringifyCmpIPredicate(cmp.getPredicate()).str();
-  if (auto cmp = mlir::dyn_cast<mlir::arith::CmpFOp>(op))
-    return mlir::arith::stringifyCmpFPredicate(cmp.getPredicate()).str();
-  return "";
-}
-
-std::string primitiveOperationName(mlir::Operation *op) {
-  return op->getName().getStringRef().str();
+llvm::Expected<PrimitiveOperationDescriptor>
+primitiveDescriptor(const dataflow::CanonicalActorSchemaProjection &projection,
+                    mlir::Operation *op, mlir::Value result) {
+  mlir::Type operandType =
+      op->getNumOperands() == 0 ? mlir::Type{} : op->getOperand(0).getType();
+  return primitiveDescriptor(projection, op, result.getType(), operandType);
 }
 
 llvm::Expected<PrimitiveOperationDescriptor>
-primitiveDescriptor(mlir::Operation *op, llvm::StringRef predicate,
-                    mlir::Value result) {
-  return primitiveDescriptor(op, predicate, result.getType(),
-                             op->getOperand(0).getType());
-}
-
-llvm::Expected<PrimitiveOperationDescriptor>
-primitiveDescriptor(mlir::Operation *op, llvm::StringRef predicate,
-                    mlir::Type resultType, mlir::Type operandType) {
-  std::string opName = primitiveOperationName(op);
+primitiveDescriptor(const dataflow::CanonicalActorSchemaProjection &projection,
+                    mlir::Operation *op, mlir::Type resultType,
+                    mlir::Type operandType) {
   auto resultBitWidth = integerBitWidth(resultType, op);
   if (!resultBitWidth)
     return resultBitWidth.takeError();
   auto operandBitWidth = integerBitWidth(operandType, op);
   if (!operandBitWidth)
     return operandBitWidth.takeError();
-  PrimitiveOperationDescriptor descriptor{opName, predicate, *resultBitWidth,
-                                          *operandBitWidth};
-  if (auto div = mlir::dyn_cast<mlir::arith::DivSIOp>(op))
-    descriptor.isExact = div.getIsExact();
-  if (auto div = mlir::dyn_cast<mlir::arith::DivUIOp>(op))
-    descriptor.isExact = div.getIsExact();
-  if (auto shift = mlir::dyn_cast<mlir::arith::ShRSIOp>(op))
-    descriptor.isExact = shift.getIsExact();
-  if (auto shift = mlir::dyn_cast<mlir::arith::ShRUIOp>(op))
-    descriptor.isExact = shift.getIsExact();
-  if (auto trunc = mlir::dyn_cast<mlir::arith::TruncIOp>(op)) {
-    mlir::arith::IntegerOverflowFlags flags = trunc.getOverflowFlags();
-    descriptor.noSignedWrap = mlir::arith::bitEnumContainsAll(
-        flags, mlir::arith::IntegerOverflowFlags::nsw);
-    descriptor.noUnsignedWrap = mlir::arith::bitEnumContainsAll(
-        flags, mlir::arith::IntegerOverflowFlags::nuw);
-  }
-  return descriptor;
+  return PrimitiveOperationDescriptor{projection, *resultBitWidth,
+                                      *operandBitWidth};
 }
 
 static bool isSupportedNonEvent(mlir::Operation *op) {
   return mlir::isa<dataflow::GraphReturnOp, mlir::memref::AllocOp,
-                   mlir::memref::CastOp>(op);
+                   mlir::memref::CastOp,
+                   mlir::UnrealizedConversionCastOp>(op);
 }
 
 enum class FireOutcome {
@@ -538,13 +393,6 @@ std::string unsupportedOperationLabel(mlir::Operation *op) {
           .str();
   }
   return op->getName().getStringRef().str();
-}
-
-static std::optional<UnsupportedOperation>
-unsupportedOperation(mlir::Operation *op) {
-  if (isSupportedNonEvent(op))
-    return std::nullopt;
-  return unsupportedActorOperation(op);
 }
 
 static dataflow::GraphOp findGraph(mlir::ModuleOp module,
@@ -684,11 +532,14 @@ static llvm::Error initializeFreshMemoryRoots(mlir::Block &entry,
         alloc.getResult(), state.nextMemoryRootId);
     if (inserted)
       ++state.nextMemoryRootId;
-    state.memories[alloc.getResult()] = std::make_shared<MemoryValue>(
+    auto memory = std::make_shared<MemoryValue>(
         MemoryValue{rootIt->second, alloc.getType().getElementType(),
                     std::move(elements),
                     llvm::SmallBitVector(static_cast<unsigned>(*countOrErr),
                                          /*t=*/false)});
+    state.memories[alloc.getResult()] = memory;
+    state.memoryViews[alloc.getResult()] =
+        MemoryView{memory, alloc.getResult(), 0};
   }
   return llvm::Error::success();
 }
@@ -735,8 +586,25 @@ static llvm::Error propagateMemoryAliases(mlir::Block &entry,
       if (auto rootIt = state.memoryRootIds.find(source);
           rootIt != state.memoryRootIds.end())
         state.memoryRootIds.try_emplace(target, rootIt->second);
-      if (state.memories.contains(target))
+      if (state.memoryViews.contains(target))
         continue;
+      auto viewIt = state.memoryViews.find(source);
+      if (viewIt != state.memoryViews.end()) {
+        MemoryView view = viewIt->second;
+        auto targetMemref = mlir::dyn_cast<mlir::MemRefType>(target.getType());
+        if (targetMemref &&
+            view.memory->elementType != targetMemref.getElementType())
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "memory fixture type mismatch: existing %s, requested %s",
+              typeToString(view.memory->elementType).c_str(),
+              typeToString(targetMemref.getElementType()).c_str());
+        state.memories[target] = view.memory;
+        state.memoryViews[target] = view;
+        state.memoryRootIds.try_emplace(target, view.memory->logicalRootId);
+        changed = true;
+        continue;
+      }
       auto memoryIt = state.memories.find(source);
       if (memoryIt != state.memories.end()) {
         auto targetMemref = mlir::dyn_cast<mlir::MemRefType>(target.getType());
@@ -750,6 +618,7 @@ static llvm::Error propagateMemoryAliases(mlir::Block &entry,
         state.memoryRootIds.try_emplace(target,
                                         memoryIt->second->logicalRootId);
         state.memories[target] = memoryIt->second;
+        state.memoryViews[target] = MemoryView{memoryIt->second, source, 0};
         changed = true;
         continue;
       }
@@ -762,8 +631,11 @@ static llvm::Error propagateMemoryAliases(mlir::Block &entry,
       if (!memoryOrErr)
         return memoryOrErr.takeError();
       auto memory = *memoryOrErr;
+      MemoryView view{memory, source, rawIt->second.byteOffset};
       state.memories[source] = memory;
       state.memories[target] = memory;
+      state.memoryViews[source] = view;
+      state.memoryViews[target] = view;
       state.memoryRootIds.try_emplace(target, memory->logicalRootId);
       state.rawMemoryFixtures[target] = rawIt->second;
       changed = true;
@@ -957,15 +829,15 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
             state.memoryRootIds.try_emplace(arg, state.nextMemoryRootId);
         if (inserted)
           ++state.nextMemoryRootId;
-        state.memories[arg] = std::make_shared<MemoryValue>(
+        auto memory = std::make_shared<MemoryValue>(
             MemoryValue{rootIt->second, memrefType.getElementType(),
                         std::move(tokens), std::move(initialized)});
+        state.memories[arg] = memory;
+        state.memoryViews[arg] = MemoryView{memory, arg, 0};
       } else {
         if (!state.memoryRootIds.contains(arg))
           state.memoryRootIds[arg] = state.nextMemoryRootId++;
         state.rawMemoryFixtures[arg] = memories.lookup(key);
-        seedBlockArgument(
-            state, arg, pointerToken(arg, {}, memories.lookup(key).byteOffset));
       }
       continue;
     }
@@ -1006,8 +878,28 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       state.plainMemoryOperationOrder.try_emplace(&op, operationOrdinal);
       state.plainMemoryCandidates.try_emplace(operationOrdinal, &op);
     }
-    if (auto diagnostic = unsupportedOperation(&op))
+    if (isSupportedNonEvent(&op)) {
+      ++operationOrdinal;
+      continue;
+    }
+    if (!dataflow::operationSchemaOf(&op)) {
+      unsupported.emplace(unsupportedOperationLabel(&op), "");
+      ++operationOrdinal;
+      continue;
+    }
+    auto projection = dataflow::projectRegisteredActorSchemaProjection(&op);
+    if (!projection) {
+      unsupported.emplace(unsupportedOperationLabel(&op),
+                          llvm::toString(projection.takeError()));
+      ++operationOrdinal;
+      continue;
+    }
+    if (auto diagnostic = unsupportedActorProvider(&op, *projection)) {
       unsupported.emplace(diagnostic->label, diagnostic->reason);
+      ++operationOrdinal;
+      continue;
+    }
+    state.actorProjections.try_emplace(&op, std::move(*projection));
     ++operationOrdinal;
   }
   if (!unsupported.empty()) {

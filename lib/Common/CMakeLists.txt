@@ -8,11 +8,8 @@ add_mlir_library(LoomCommon
   BlobDigest.cpp
   BlobStore.cpp
   ComponentViewDigest.cpp
-  HwShareGroup.cpp
   IndexWidth.cpp
-  LoomConstants.cpp
   ResolvedConfig.cpp
-  SynthConfig.cpp
   VectorWidth.cpp
 
   ADDITIONAL_HEADER_DIRS

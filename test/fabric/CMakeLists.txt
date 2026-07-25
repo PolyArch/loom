@@ -93,6 +93,16 @@ target_link_libraries(loom-fabric-temporal-operand-buffer-test PRIVATE
   MLIRFabricEnums
 )
 
+add_executable(loom-fabric-implementation-family-test
+  ImplementationFamilyTest.cpp
+)
+
+target_link_libraries(loom-fabric-implementation-family-test PRIVATE
+  LoomFabricImplementationFamily
+  MLIRDataflow
+  LLVMSupport
+)
+
 add_executable(loom-fabric-persistent-ref-test
   PersistentRefTest.cpp
 )

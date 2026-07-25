@@ -1,7 +1,6 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/IR/Elaboration.h"
 #include "Fabric/IR/FabricDialect.h"
-#include "Fabric/Tech/Passes.h"
 #include "Frontend/IR/LoomDialect.h"
 
 #include "mlir/IR/DialectRegistry.h"
@@ -17,7 +16,6 @@ int main(int argc, char **argv) {
   registry.insert<fabric::FabricDialect, dataflow::DataflowDialect,
                   loom::LoomDialect>();
   fabric::registerFabricIRPasses();
-  fabric::registerConfiguredFunctionSynthesisPass();
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "Loom dialects optimizer\n", registry));
 }

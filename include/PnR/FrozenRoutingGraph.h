@@ -30,7 +30,7 @@ enum class FrozenRoutingArcKind {
 struct FrozenTransportResource {
   mapping::TransportResourceId id;
   mapping::TransportResourceKind kind;
-  std::optional<fabric::BoundaryDirection> boundaryDirection;
+  std::optional<::fabric::BoundaryDirection> boundaryDirection;
   PnrIndex endpointOffset;
   PnrIndex endpointCount;
 
@@ -49,7 +49,7 @@ struct FrozenRoutingEndpoint {
   PnrIndex owner;
   mapping::PortDirection direction;
   mapping::PortKind portKind;
-  fabric::DataPathKind transportKind;
+  ::fabric::DataPathKind transportKind;
   std::uint32_t payloadCapacityBits;
   std::uint32_t tagCapacityBits;
 

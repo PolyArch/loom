@@ -160,7 +160,7 @@ struct OwnershipInfo {
 struct ComputeTerminalKey {
   ComputeRealizationId realizationId;
   PnrIndex realization;
-  FuId fu;
+  ::loom::fabric::FabricFuTemplateRef fu;
   PortDirection direction;
   std::uint32_t port;
 };
@@ -229,10 +229,10 @@ struct TemplateTerminalLess {
       return lhs.index() < rhs.index();
     if (const auto *lhsCompute = std::get_if<ComputeTerminalKey>(&lhs)) {
       const auto &rhsCompute = std::get<ComputeTerminalKey>(rhs);
-      return std::make_tuple(lhsCompute->fu.value(),
+      return std::make_tuple(lhsCompute->fu.id(),
                              lhsCompute->realizationId.value(),
                              lhsCompute->direction, lhsCompute->port) <
-             std::make_tuple(rhsCompute.fu.value(),
+             std::make_tuple(rhsCompute.fu.id(),
                              rhsCompute.realizationId.value(),
                              rhsCompute.direction, rhsCompute.port);
     }
@@ -357,7 +357,7 @@ llvm::Error loom::pnr::detail::preflightFrozenRealizationGraphCapacity(
   std::uint64_t actorUpperBound = 0;
   for (const ComputeRealizationDraft &realization : computeRealizations) {
     if (llvm::Error error = addCapacityCount(actorCountContext, actorUpperBound,
-                                             realization.actors.size()))
+                                             realization.actorToOps.size()))
       return error;
   }
   for (const MemoryRealizationDraft &realization : memoryRealizations) {
@@ -449,10 +449,10 @@ loom::pnr::freezeRealizationGraph(const PnrProblemInputs &inputs) {
     auto denseIndex = checked(realizationIndexContext, index);
     if (!denseIndex)
       return denseIndex.takeError();
-    for (const ActorRef &actor : draft.actors) {
+    for (const ActorToFabricOp &binding : draft.actorToOps) {
       if (!ownershipByActor
                .emplace(
-                   actor.entity.value(),
+                   binding.actor.entity.value(),
                    OwnershipInfo{FrozenRealizationKind::Compute, *denseIndex})
                .second)
         return freezeError("cannot freeze realization graph: actor ownership "
@@ -461,9 +461,14 @@ loom::pnr::freezeRealizationGraph(const PnrProblemInputs &inputs) {
     for (const BoundaryPortCorrespondence &boundary : draft.boundaryPorts) {
       ActorPort actor{boundary.actorPort.actor.entity,
                       boundary.actorPort.direction, boundary.actorPort.index};
-      TemplateTerminalKey terminal =
-          ComputeTerminalKey{draft.id, *denseIndex, boundary.fuPort.fu.entity,
-                             boundary.fuPort.direction, boundary.fuPort.index};
+      const PortDirection direction =
+          boundary.fuPort.direction ==
+                  ::loom::fabric::FabricPortDirection::Input
+              ? PortDirection::Input
+              : PortDirection::Output;
+      TemplateTerminalKey terminal = ComputeTerminalKey{
+          draft.id, *denseIndex, boundary.fuPort.fu, direction,
+          static_cast<std::uint32_t>(boundary.fuPort.ordinal)};
       if (!actorTerminals.emplace(actor, std::move(terminal)).second)
         return freezeError("cannot freeze realization graph: actor terminal "
                            "correspondence is not unique");
@@ -675,8 +680,7 @@ loom::pnr::freezeRealizationGraph(const PnrProblemInputs &inputs) {
           freezeTerminal(externalEdges[index].target, templateTerminalKeys);
       if (!terminal)
         return terminal.takeError();
-      logicalNetSinks.push_back(
-          {externalEdges[index].edge.target, *terminal});
+      logicalNetSinks.push_back({externalEdges[index].edge.target, *terminal});
     }
     begin = end;
   }

@@ -1,12 +1,9 @@
-// RUN: not loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %s 2>&1 | FileCheck %s --implicit-check-not="dataflow.graph private" --implicit-check-not=dataflow.graph.launch
+// RUN: loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading %s | FileCheck %s --implicit-check-not=loom.spatial_region
 
-// Freeze is preserved in S0, but it cannot enter a selected Spatial region
-// until the canonical operation schema owns its exceptional-value transition.
-// Candidate failure leaves the selected region and its imported operation
-// intact and publishes no partial graph.
-// CHECK: error: loom-lower-graph-memory: operation 'llvm.freeze' is not a registered canonical Dataflow actor or a supported graph-lowering operation
+// Freeze carries its typed poison policy through the selected graph boundary.
 // CHECK-LABEL: dataflow.thread private @selected_freeze
-// CHECK: loom.spatial_region
+// CHECK: dataflow.graph.launch @selected_freeze_graph
+// CHECK-LABEL: dataflow.graph private @selected_freeze_graph
 // CHECK: llvm.freeze
 
 dataflow.thread private @selected_freeze(%input: i32) ctrl (%start: none) {

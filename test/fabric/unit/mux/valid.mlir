@@ -18,31 +18,8 @@ fabric.module @mux_hw_bits(%a : !fabric.bits<8>, %b : !fabric.bits<8>) {
       // CHECK: fabric.mux %{{.*}}, %{{.*}} : !fabric.bits<8>
       %0 = fabric.mux %fa, %fb : !fabric.bits<8>
       %k = fabric.op [@arith.addi] (%0, %0)
-           : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
       fabric.yield %k : !fabric.bits<8>
-    }
-  }
-  fabric.yield
-}
-
-// -----------------------------------------------------------------------------
-// Pure hardware (no software params programmed): 3 inputs, bits<0>.
-// -----------------------------------------------------------------------------
-
-// CHECK-LABEL: fabric.module @mux_hw_bits_zero
-fabric.module @mux_hw_bits_zero(%a : !fabric.bits<0>, %b : !fabric.bits<0>, %c : !fabric.bits<0>) {
-  fabric.pe [spatial] (%pa = %a : !fabric.bits<0>,
-                    %pb = %b : !fabric.bits<0>,
-                    %pc = %c : !fabric.bits<0>) -> !fabric.bits<0> {
-    fabric.fu(%fa = %pa : !fabric.bits<0>,
-              %fb = %pb : !fabric.bits<0>,
-              %fc = %pc : !fabric.bits<0>) -> !fabric.bits<0> {
-      // CHECK: fabric.mux %{{.*}}, %{{.*}}, %{{.*}} : !fabric.bits<0>
-      %0 = fabric.mux %fa, %fb, %fc : !fabric.bits<0>
-      %k = fabric.op [@dataflow.constant] (%0)
-           {sw_configs = {const_hex_value = "0"}}
-           : (!fabric.bits<0>) -> !fabric.bits<0>
-      fabric.yield %k : !fabric.bits<0>
     }
   }
   fabric.yield
@@ -63,7 +40,7 @@ fabric.module @mux_sw_passthrough(%a : !fabric.bits<16>, %b : !fabric.bits<16>, 
       // CHECK: fabric.mux %{{.*}}, %{{.*}}, %{{.*}} {sel = 1 : i32, discard = false, disconnect = false} : !fabric.bits<16>
       %0 = fabric.mux %fa, %fb, %fc {sel = 1 : i32, discard = false, disconnect = false} : !fabric.bits<16>
       %k = fabric.op [@arith.addi] (%0, %0)
-           : (!fabric.bits<16>, !fabric.bits<16>) -> !fabric.bits<16>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<16>, !fabric.bits<16>) -> !fabric.bits<16>
       fabric.yield %k : !fabric.bits<16>
     }
   }
@@ -83,7 +60,7 @@ fabric.module @mux_sw_discard(%a : !fabric.bits<4>, %b : !fabric.bits<4>) {
       // CHECK: fabric.mux %{{.*}}, %{{.*}} {sel = 0 : i32, discard = true, disconnect = false} : !fabric.bits<4>
       %0 = fabric.mux %fa, %fb {sel = 0 : i32, discard = true, disconnect = false} : !fabric.bits<4>
       %k = fabric.op [@arith.addi] (%0, %0)
-           : (!fabric.bits<4>, !fabric.bits<4>) -> !fabric.bits<4>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<4>, !fabric.bits<4>) -> !fabric.bits<4>
       fabric.yield %k : !fabric.bits<4>
     }
   }
@@ -103,7 +80,7 @@ fabric.module @mux_sw_disconnect(%a : !fabric.bits<4>, %b : !fabric.bits<4>) {
       // CHECK: fabric.mux %{{.*}}, %{{.*}} {sel = 0 : i32, discard = false, disconnect = true} : !fabric.bits<4>
       %0 = fabric.mux %fa, %fb {sel = 0 : i32, discard = false, disconnect = true} : !fabric.bits<4>
       %k = fabric.op [@arith.addi] (%0, %0)
-           : (!fabric.bits<4>, !fabric.bits<4>) -> !fabric.bits<4>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<4>, !fabric.bits<4>) -> !fabric.bits<4>
       fabric.yield %k : !fabric.bits<4>
     }
   }

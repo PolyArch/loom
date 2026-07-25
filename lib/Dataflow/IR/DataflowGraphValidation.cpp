@@ -1,7 +1,7 @@
 #include "Dataflow/IR/DataflowGraphValidation.h"
 
 #include "Dataflow/IR/DataflowActorSemantics.h"
-#include "Dataflow/IR/DataflowInterfaces.h"
+#include "Dataflow/IR/OperationSchema.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"

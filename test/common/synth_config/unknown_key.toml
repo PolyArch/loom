@@ -1,3 +1,0 @@
-[synth]
-strategy = "anchor"
-fallback_chain = ["mcs"]

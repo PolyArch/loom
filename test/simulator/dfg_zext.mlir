@@ -15,7 +15,7 @@ module {
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
     %narrow = dataflow.constant %ctrl {const_value = 42 : i32} : i32
-    %wide = llvm.zext %narrow : i32 to i64
+    %wide = arith.extui %narrow : i32 to i64
     %published:2 = dataflow.sync %ctrl, %wide
         : (none, i64) -> (none, i64)
     dataflow.graph.return %published#0, %published#1 : none, i64

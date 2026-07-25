@@ -287,14 +287,14 @@ loom::pnr::detail::buildFrozenComputeDomains(
       return frozenRealizationIndex.takeError();
     const ValidatedComputeRealizationProjection &selected =
         mappingProjection.computeRealizations[realizationIndex];
-    if (selected.id != realization.id || selected.fu != realization.fu.entity ||
-        selected.encoding != realization.encoding.entity)
+    if (selected.id != realization.id ||
+        selected.capabilityTemplate != realization.capabilityTemplate)
       return freezeError("cannot freeze compute domains: validated Mapping "
                          "projection does not match the realization");
 
     std::vector<PortDemandDraft> demands;
     demands.reserve(selected.activeBoundaryPorts.size());
-    for (const ValidatedConfiguredBoundaryPort &port :
+    for (const ValidatedComputeBoundaryPort &port :
          selected.activeBoundaryPorts)
       demands.push_back({port.direction, port.fuPort, &port.descriptor});
 
@@ -303,7 +303,7 @@ loom::pnr::detail::buildFrozenComputeDomains(
     if (!implDomainOffset)
       return implDomainOffset.takeError();
     const llvm::ArrayRef<std::size_t> candidates =
-        findFuOccurrences(projection, realization.fu.entity);
+        findFuOccurrences(projection, realization.capabilityTemplate.fu);
     if (candidates.empty())
       return mappingInfeasibility(
           FrozenMappingInfeasibilityCode::EmptyConcreteFuDomain, realization.id,
@@ -366,10 +366,11 @@ loom::pnr::detail::buildFrozenComputeDomains(
           return port.takeError();
         const PortDescriptor &descriptor = *demand.descriptor;
         result.portDemands.push_back(
-            {*implementationIndex, realization.fu.entity, demand.direction,
-             *port, descriptor.kind, descriptor.type, descriptor.role,
-             descriptor.payloadWidthBits, descriptor.tagWidthBits,
-             *endpointDomainOffset, *endpointDomainCount});
+            {*implementationIndex, realization.capabilityTemplate.fu,
+             demand.direction, *port, descriptor.kind, descriptor.type,
+             descriptor.role, descriptor.payloadWidthBits,
+             descriptor.tagWidthBits, *endpointDomainOffset,
+             *endpointDomainCount});
       }
 
       bool unaryEligible = scratch.allDomainsNonEmpty();
@@ -399,8 +400,8 @@ loom::pnr::detail::buildFrozenComputeDomains(
     if (llvm::Error error = preflightFrozenRangeCapacity(
             implementationOffsetContext, *implDomainOffset, *implDomainCount))
       return std::move(error);
-    result.realizations.push_back({realization.id, realization.fu.entity,
-                                   realization.encoding.entity,
+    result.realizations.push_back({realization.id,
+                                   realization.capabilityTemplate,
                                    *implDomainOffset, *implDomainCount});
   }
 

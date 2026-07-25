@@ -38,3 +38,34 @@ target_link_libraries(loom-dataflow-canonical-reference-test PRIVATE
   MLIRSupport
   LLVMSupport
 )
+
+add_executable(loom-dataflow-operation-schema-test
+  OperationSchemaTest.cpp
+)
+
+target_link_libraries(loom-dataflow-operation-schema-test PRIVATE
+  MLIRDataflow
+  MLIRArithDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRMathDialect
+  MLIRUBDialect
+  MLIRVectorDialect
+  MLIRSupport
+  LLVMSupport
+)
+
+add_executable(loom-dataflow-operation-schema-codec-test
+  OperationSchemaCodecTest.cpp
+)
+
+target_link_libraries(loom-dataflow-operation-schema-codec-test PRIVATE
+  LoomCommon
+  MLIRDataflow
+  MLIRArithDialect
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRSupport
+  LLVMSupport
+)

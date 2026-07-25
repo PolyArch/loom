@@ -55,7 +55,7 @@ struct DFGSimulationReport {
   std::uint64_t wavefrontSteps = 0;
   std::uint64_t eventCount = 0;
   std::uint64_t dynamicWorkItems = 0;
-  std::map<std::string, std::uint64_t> operationFireCounts;
+  std::map<dataflow::OperationSchemaId, std::uint64_t> operationFireCounts;
   std::map<std::string, std::uint64_t> modeledLibraryCalls;
   llvm::SmallVector<std::string> finalOutputs;
   llvm::SmallVector<llvm::SmallVector<std::string>> finalStreamOutputs;

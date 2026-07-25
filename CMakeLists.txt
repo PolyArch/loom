@@ -73,8 +73,13 @@ endif()
 set(LOOM_SOURCE_DIR ${PROJECT_SOURCE_DIR})
 set(LOOM_BINARY_DIR ${PROJECT_BINARY_DIR})
 
-add_subdirectory(include/Fabric)
+# The Loom TableGen driver owns the generated operation and implementation
+# family registries, so it is defined before any directory that generates from
+# them.
+add_subdirectory(tools/loom-tblgen)
+
 add_subdirectory(include/Dataflow)
+add_subdirectory(include/Fabric)
 add_subdirectory(include/Frontend)
 add_subdirectory(lib)
 add_subdirectory(tools)

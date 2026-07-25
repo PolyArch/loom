@@ -16,7 +16,7 @@ fabric.module @spatial_with_tag_width(%a : !fabric.bits<32>) {
        attributes { tag_width = 4 : i32 } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -37,7 +37,7 @@ fabric.module @temp_non_tag_port(%a : !fabric.bits<32>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -60,7 +60,7 @@ fabric.module @temp_mismatched_W(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -83,7 +83,7 @@ fabric.module @temp_mismatched_T(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -106,7 +106,7 @@ fabric.module @temp_tag_width_mismatch(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -129,7 +129,7 @@ fabric.module @temp_zero_instructions(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -153,7 +153,7 @@ fabric.module @temp_reg_fifo_no_depth(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -177,7 +177,7 @@ fabric.module @temp_reg_fifo_depth_no_regs(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -199,7 +199,7 @@ fabric.module @temp_buffer_size_absent_dedicated(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -221,7 +221,7 @@ fabric.module @temp_buffer_size_absent_banked(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -243,7 +243,7 @@ fabric.module @temp_buffer_size_absent_shared(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -266,7 +266,7 @@ fabric.module @temp_buffer_size_zero_dedicated(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -289,7 +289,7 @@ fabric.module @temp_buffer_size_zero_banked(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -312,7 +312,7 @@ fabric.module @temp_buffer_size_zero_shared(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -351,7 +351,7 @@ fabric.module @temp_discard_disconnect(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -390,7 +390,7 @@ fabric.module @temp_reg_src_no_regs(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -429,7 +429,7 @@ fabric.module @temp_src_sel_oor(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -468,7 +468,7 @@ fabric.module @temp_opcode_oor(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -507,7 +507,7 @@ fabric.module @temp_inst_count_mismatch(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -531,7 +531,7 @@ fabric.module @temp_partial_sw_configs(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -570,7 +570,7 @@ fabric.module @temp_per_fu_count_mismatch(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -608,7 +608,7 @@ fabric.module @temp_per_inst_no_fu_cfg(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
@@ -647,40 +647,13 @@ fabric.module @temp_missing_num_instruction(%a : !fabric.bits_tag<32, 4>) {
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
   }
   fabric.yield
 }
 
-// -----
-// Named temporal PE: entry block arg type bits_tag<W, T> is forbidden
-// (boundary auto-strip means body-level args must be bits<W'>).
-fabric.module @temp_named_arg_is_tag() {
-  // expected-error @+1 {{named PE entry block arg #0 type '!fabric.bits_tag<32, 4>' is bits_tag (forbidden)}}
-  fabric.pe @TempBadArg [temporal] (!fabric.bits_tag<32, 4>)
-                                    -> (!fabric.bits_tag<32, 4>)
-       attributes {
-         tag_width = 4 : i32,
-         num_instruction = 1 : i32,
-         fu_config_mode = "per_fu_config",
-         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
-         operand_buffer_size = 2 : i32
-       } {
-  ^bb0(%pa: !fabric.bits_tag<32, 4>):
-    fabric.fu() -> (!fabric.bits<32>) {
-      %k = fabric.op [@dataflow.constant] ()
-           {sw_configs = {const_hex_value = "0xdeadbeef"}}
-           : () -> !fabric.bits<32>
-      fabric.yield %k : !fabric.bits<32>
-    }
-    fabric.yield
-  }
-  fabric.yield
-}
-
-// -----
 // Named temporal PE: entry block arg bits-width exceeds the port
 // bits-data-width (truncation only narrows, never widens).
 fabric.module @temp_named_arg_too_wide() {
@@ -695,10 +668,10 @@ fabric.module @temp_named_arg_too_wide() {
          operand_buffer_size = 2 : i32
        } {
   ^bb0(%pa: !fabric.bits<32>):
-    fabric.fu() -> (!fabric.bits<16>) {
-      %k = fabric.op [@dataflow.constant] ()
-           {sw_configs = {const_hex_value = "0xbeef"}}
-           : () -> !fabric.bits<16>
+    fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<16>) {
+      %k = fabric.op [@arith.addi] (%fa, %fa)
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}}
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<16>
       fabric.yield %k : !fabric.bits<16>
     }
     fabric.yield
@@ -723,9 +696,9 @@ fabric.module @temp_named_value_bearing_yield() {
        } {
   ^bb0(%pa: !fabric.bits<16>):
     fabric.fu(%fa = %pa : !fabric.bits<16>) -> (!fabric.bits<32>) {
-      %k = fabric.op [@dataflow.constant] (%fa)
-           {sw_configs = {const_hex_value = "0xdeadbeef"}}
-           : (!fabric.bits<16>) -> !fabric.bits<32>
+      %k = fabric.op [@arith.addi] (%fa, %fa)
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}}
+           : (!fabric.bits<16>, !fabric.bits<16>) -> !fabric.bits<32>
       fabric.yield %k : !fabric.bits<32>
     }
     fabric.yield %pa : !fabric.bits<16>
@@ -751,7 +724,7 @@ fabric.module @temp_named_yield_declared_types() {
   ^bb0(%pa: !fabric.bits<32>):
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
     fabric.yield {declared_types = [!fabric.bits<32>]}
@@ -775,9 +748,9 @@ fabric.module @temp_anon_inner_too_wide(%a : !fabric.bits_tag<16, 2>) {
          operand_buffer_size = 2 : i32
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<16>) {
-      %k = fabric.op [@dataflow.constant] (%fa)
-           {sw_configs = {const_hex_value = "0xbeef"}}
-           : (!fabric.bits<32>) -> !fabric.bits<16>
+      %k = fabric.op [@arith.addi] (%fa, %fa)
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}}
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<16>
       fabric.yield %k : !fabric.bits<16>
     }
   }

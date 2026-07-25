@@ -1,8 +1,5 @@
 #include "Fabric/IR/FabricOps.h"
 
-#include "Fabric/IR/ConfiguredFunction.h"
-
-#include "Common/HwShareGroup.h"
 #include "Common/IndexWidth.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricTypes.h"
@@ -481,7 +478,7 @@ LogicalResult FuOp::verify() {
                << i << " type " << v.getType()
                << " must equal declared result type " << t;
     }
-    return verifyValidSemanticEncodings(*this);
+    return success();
   }
 
   // Anonymous form. Reject stray function_type.
@@ -533,7 +530,7 @@ LogicalResult FuOp::verify() {
   }
   if (numCompute < 1)
     return emitOpError("fabric.fu body requires at least one fabric.op; got 0");
-  return verifyValidSemanticEncodings(*this);
+  return success();
 }
 
 bool FuOp::isOptionalSymbol() { return true; }

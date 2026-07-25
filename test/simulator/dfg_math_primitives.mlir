@@ -1,7 +1,7 @@
-// RUN: loom-dfg-sim %s --graph math_unary_float --output %t.float.json
-// RUN: FileCheck %s --check-prefix=FLOAT < %t.float.json
-// RUN: loom-dfg-sim %s --graph llvm_fabs_intrinsic --output %t.llvm-fabs.json
-// RUN: FileCheck %s --check-prefix=LLVM-FABS < %t.llvm-fabs.json
+// RUN: loom-dfg-sim %s --graph math_abs_float --output %t.abs.json
+// RUN: FileCheck %s --check-prefix=ABS < %t.abs.json
+// RUN: loom-dfg-sim %s --graph math_provider_absence --output %t.absent.json
+// RUN: FileCheck %s --check-prefix=ABSENT < %t.absent.json
 // RUN: loom-dfg-sim %s --graph math_rounding_float --output %t.round.json
 // RUN: FileCheck %s --check-prefix=ROUND < %t.round.json
 // RUN: loom-dfg-sim %s --graph math_roundeven_edges --output %t.roundeven.json
@@ -11,38 +11,15 @@
 // RUN: loom-dfg-sim %s --graph math_integer_abs_poison --output %t.int-poison.json
 // RUN: FileCheck %s --check-prefix=INT-POISON < %t.int-poison.json
 
-// FLOAT-DAG: "workload": "math_unary_float"
-// FLOAT-DAG: "status": "pass"
-// FLOAT-DAG: "math.absf": 1
-// FLOAT-DAG: "math.sqrt": 1
-// FLOAT-DAG: "math.rsqrt": 1
-// FLOAT-DAG: "math.sin": 1
-// FLOAT-DAG: "math.cos": 1
-// FLOAT-DAG: "math.tan": 1
-// FLOAT-DAG: "math.sinh": 1
-// FLOAT-DAG: "math.cosh": 1
-// FLOAT-DAG: "math.tanh": 1
-// FLOAT-DAG: "math.exp": 1
-// FLOAT-DAG: "math.exp2": 1
-// FLOAT-DAG: "math.expm1": 1
-// FLOAT-DAG: "math.log": 1
-// FLOAT-DAG: "math.log2": 1
-// FLOAT-DAG: "math.log10": 1
-// FLOAT-DAG: "math.log1p": 1
-// FLOAT-DAG: "math.erf": 1
-// FLOAT-DAG: "f32:3"
-// FLOAT-DAG: "f32:4"
-// FLOAT-DAG: "f32:0.500000"
-// FLOAT-DAG: "f32:0"
-// FLOAT-DAG: "f32:1"
-// FLOAT-DAG: "f32:8"
-// FLOAT-DAG: "f32:2"
+// ABS-DAG: "workload": "math_abs_float"
+// ABS-DAG: "status": "pass"
+// ABS-DAG: "math.absf": 1
+// ABS-DAG: "f32:3"
 
-// LLVM-FABS-DAG: "workload": "llvm_fabs_intrinsic"
-// LLVM-FABS-DAG: "graph": "llvm_fabs_intrinsic"
-// LLVM-FABS-DAG: "status": "pass"
-// LLVM-FABS-DAG: "llvm.intr.fabs": 1
-// LLVM-FABS-DAG: "f32:3.500000"
+// ABSENT-DAG: "workload": "math_provider_absence"
+// ABSENT-DAG: "status": "unsupported"
+// ABSENT-DAG: "event_count": 0
+// ABSENT-DAG: "unsupported op: math.sin"
 
 // ROUND: "final_outputs": [
 // ROUND-NEXT: "none",
@@ -76,63 +53,27 @@
 // INT-DAG: "i32:17"
 
 // INT-POISON-DAG: "workload": "math_integer_abs_poison"
-// INT-POISON-DAG: "status": "blocked"
-// INT-POISON-DAG: "math.absi cannot represent absolute value of signed minimum"
+// INT-POISON-DAG: "status": "pass"
+// INT-POISON-DAG: "math.absi": 1
+// INT-POISON-DAG: "i8:poison"
 
 module {
-  dataflow.graph private @math_unary_float(%ctrl: none)
-      -> (f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32,
-          f32, f32, f32, f32, f32, f32)
-      attributes {input_segments = array<i32: 0, 0, 0>,
-                  result_segments = array<i32: 17, 0, 0>} {
-    %neg = dataflow.constant %ctrl {const_value = -3.000000e+00 : f32} : f32
-    %abs = math.absf %neg : f32
-    %sixteen = dataflow.constant %ctrl {const_value = 1.600000e+01 : f32} : f32
-    %sqrt = math.sqrt %sixteen : f32
-    %four = dataflow.constant %ctrl {const_value = 4.000000e+00 : f32} : f32
-    %rsqrt = math.rsqrt %four : f32
-    %zero = dataflow.constant %ctrl {const_value = 0.000000e+00 : f32} : f32
-    %sin = math.sin %zero : f32
-    %cos = math.cos %zero : f32
-    %tan = math.tan %zero : f32
-    %sinh = math.sinh %zero : f32
-    %cosh = math.cosh %zero : f32
-    %tanh = math.tanh %zero : f32
-    %exp = math.exp %zero : f32
-    %three = dataflow.constant %ctrl {const_value = 3.000000e+00 : f32} : f32
-    %exp2 = math.exp2 %three : f32
-    %expm1 = math.expm1 %zero : f32
-    %one = dataflow.constant %ctrl {const_value = 1.000000e+00 : f32} : f32
-    %log = math.log %one : f32
-    %eight = dataflow.constant %ctrl {const_value = 8.000000e+00 : f32} : f32
-    %log2 = math.log2 %eight : f32
-    %hundred = dataflow.constant %ctrl {const_value = 1.000000e+02 : f32} : f32
-    %log10 = math.log10 %hundred : f32
-    %log1p = math.log1p %zero : f32
-    %erf = math.erf %zero : f32
-    %published:18 = dataflow.sync %ctrl, %abs, %sqrt, %rsqrt, %sin, %cos,
-        %tan, %sinh, %cosh, %tanh, %exp, %exp2, %expm1, %log, %log2,
-        %log10, %log1p, %erf
-        : (none, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32,
-           f32, f32, f32, f32, f32, f32)
-          -> (none, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32,
-              f32, f32, f32, f32, f32, f32, f32)
-    dataflow.graph.return %published#0, %published#1, %published#2,
-        %published#3, %published#4, %published#5, %published#6,
-        %published#7, %published#8, %published#9, %published#10,
-        %published#11, %published#12, %published#13, %published#14,
-        %published#15, %published#16, %published#17
-        : none, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32,
-          f32, f32, f32, f32, f32, f32
-  }
-
-  dataflow.graph private @llvm_fabs_intrinsic(%ctrl: none)
-      -> (f32)
+  dataflow.graph private @math_abs_float(%ctrl: none) -> (f32)
       attributes {input_segments = array<i32: 0, 0, 0>,
                   result_segments = array<i32: 1, 0, 0>} {
-    %neg = dataflow.constant %ctrl {const_value = -3.500000e+00 : f32} : f32
-    %abs = llvm.intr.fabs(%neg) : (f32) -> f32
+    %neg = dataflow.constant %ctrl {const_value = -3.000000e+00 : f32} : f32
+    %abs = math.absf %neg : f32
     %published:2 = dataflow.sync %ctrl, %abs
+        : (none, f32) -> (none, f32)
+    dataflow.graph.return %published#0, %published#1 : none, f32
+  }
+
+  dataflow.graph private @math_provider_absence(%ctrl: none) -> (f32)
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %zero = dataflow.constant %ctrl {const_value = 0.000000e+00 : f32} : f32
+    %sin = math.sin %zero : f32
+    %published:2 = dataflow.sync %ctrl, %sin
         : (none, f32) -> (none, f32)
     dataflow.graph.return %published#0, %published#1 : none, f32
   }

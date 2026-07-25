@@ -8,9 +8,8 @@
 // RUN:   --arg 0=0x000000060000000500000004000000030000000200000001 \
 // RUN:   --output %t.index-vector.json
 // RUN: FileCheck %s --check-prefix=INDEX-VECTOR < %t.index-vector.json
-// RUN: loom-dfg-sim %s --graph invalid_index_width_with_stream --arg 0=1 --arg 1=0 --arg 2=64 --arg 3=1 --output %t.invalid.json
-// RUN: FileCheck %s --check-prefix=INVALID < %t.invalid.json
-// RUN: grep -c 'index bit width must be in \[1, 64\], got 128' %t.invalid.json | FileCheck %s --check-prefix=INVALID-COUNT
+// RUN: loom-dfg-sim %s --graph wide_index_with_stream --arg 0=1 --arg 1=0 --arg 2=64 --arg 3=1 --output %t.wide-stream.json
+// RUN: FileCheck %s --check-prefix=WIDE-STREAM < %t.wide-stream.json
 // RUN: env LOOM_INDEX_WIDTH=128 loom-dfg-sim %s --graph wide_index_load \
 // RUN:   --arg 0=2 --memref 1=10,20,30 --output %t.wide-load.json
 // RUN: FileCheck %s --check-prefix=WIDE-LOAD < %t.wide-load.json
@@ -56,9 +55,9 @@
 // INDEX-VECTOR-DAG: "status": "pass"
 // INDEX-VECTOR-DAG: "vector<2x3xindex>:0x60000000500000004000000030000000200000001"
 
-// INVALID-DAG: "status": "blocked"
-// INVALID-DAG: "dataflow.stream": 65
-// INVALID-COUNT: 1
+// WIDE-STREAM-DAG: "status": "pass"
+// WIDE-STREAM-DAG: "dataflow.stream": 65
+// WIDE-STREAM-DAG: "index:1"
 
 // The memory path carries an index at its resolved width, so an arbitrary
 // configured 128-bit index addresses memory exactly rather than through a
@@ -177,7 +176,7 @@ module {
   module attributes {
     dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 128>>
   } {
-    dataflow.graph private @invalid_index_width_with_stream(
+    dataflow.graph private @wide_index_with_stream(
         %ctrl: none, %value: i64, %init: i64, %limit: i64, %step: i64)
         -> (index, i1)
         attributes {input_segments = array<i32: 4, 0, 0>,

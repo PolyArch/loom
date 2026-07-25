@@ -1,5 +1,0 @@
-# Malformed TOML: section header missing closing bracket. The loader must
-# surface this as a `toml line N: ...` diagnostic so the pass can report
-# `config_parse_failed`.
-[synth.cost
-mux_penalty = 1.5

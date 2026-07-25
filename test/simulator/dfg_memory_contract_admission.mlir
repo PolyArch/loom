@@ -76,7 +76,8 @@ module {
     %value = dataflow.constant %start {const_value = 3 : i32} : i32
     %done = dataflow.store %mem[%addr] %value %start
         {contract = #dataflow.atomic_access<ordering = release,
-                                            sync_scope = <system>>}
+                                            sync_scope = <system>,
+                                            source_alignment_bytes = 4>}
         : memref<1xi32>
     dataflow.graph.return values() streams() memories()
         complete(%done : none)
@@ -106,7 +107,8 @@ module {
     %old, %done = dataflow.atomic_rmw %mem[%addr] %value %start
         {contract = #dataflow.rmw_contract<
             kind = add,
-            access = <ordering = monotonic, sync_scope = <system>>>}
+            access = <ordering = monotonic, sync_scope = <system>,
+                      source_alignment_bytes = 4>>}
         : memref<1xi32>
     dataflow.graph.return %done, %old : none, i32
   }
@@ -124,7 +126,8 @@ module {
     %old, %ok, %done = dataflow.cmpxchg %mem[%addr] %expected %desired %start
         {contract = #dataflow.cmpxchg_contract<success_ordering = seq_cst,
                                                failure_ordering = monotonic,
-                                               sync_scope = <system>>}
+                                               sync_scope = <system>,
+                                               source_alignment_bytes = 4>}
         : memref<1xi32> -> i1
     dataflow.graph.return %done, %old : none, i32
   }

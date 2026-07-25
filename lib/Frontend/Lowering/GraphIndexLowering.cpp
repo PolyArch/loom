@@ -1,7 +1,6 @@
 #include "GraphIndexLowering.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
@@ -112,18 +111,18 @@ private:
           .getResult();
     });
 
-  if (auto zext = value.getDefiningOp<::mlir::LLVM::ZExtOp>()) {
+  if (auto zext = value.getDefiningOp<::mlir::arith::ExtUIOp>()) {
     auto sourceType =
-        ::llvm::dyn_cast<::mlir::IntegerType>(zext.getArg().getType());
+        ::llvm::dyn_cast<::mlir::IntegerType>(zext.getIn().getType());
     auto resultType =
-        ::llvm::dyn_cast<::mlir::IntegerType>(zext.getResult().getType());
+        ::llvm::dyn_cast<::mlir::IntegerType>(zext.getOut().getType());
     // The extension is redundant in the index domain only when its source
     // already spans the canonical index. A narrower source still carries the
     // zero extension, because converting it directly would sign-extend it.
     if (sourceType && resultType && sourceType.getWidth() == indexBits &&
         resultType.getWidth() >= sourceType.getWidth()) {
       ::mlir::Value input =
-          materializeIndexDomainValue(zext.getArg(), builder, cache, indexBits);
+          materializeIndexDomainValue(zext.getIn(), builder, cache, indexBits);
       if (!input)
         return {};
       cache[value] = input;
@@ -363,7 +362,7 @@ void eraseDeadIndexArithmetic(::dataflow::GraphOp graph) {
       if (::llvm::isa<::mlir::arith::IndexCastOp, ::mlir::arith::AddIOp,
                       ::mlir::arith::SubIOp, ::mlir::arith::MulIOp,
                       ::mlir::arith::ShLIOp, ::mlir::arith::ShRUIOp,
-                      ::mlir::arith::AndIOp, ::mlir::LLVM::ZExtOp,
+                      ::mlir::arith::AndIOp, ::mlir::arith::ExtUIOp,
                       ::dataflow::ConstantOp, ::dataflow::InvariantOp,
                       ::dataflow::GateOp>(op))
         deadOps.push_back(op);

@@ -7,6 +7,7 @@
 // RUN: loom-raise-opt --loom-materialize-fmuladd=shape=split %t/choice.mlir | mlir-opt --math-uplift-to-fma | FileCheck %s --check-prefix=SPLIT-KEPT --implicit-check-not=math.fma
 // RUN: loom-raise-opt --loom-materialize-fmuladd=shape=fused %t/unrepresentable.mlir | FileCheck %s --check-prefix=SCOPED
 // RUN: loom-raise-opt --loom-materialize-fmuladd=shape=fused %t/nested.mlir | FileCheck %s --check-prefix=NESTED --implicit-check-not=llvm.intr.fmuladd
+// RUN: loom-raise-opt --loom-lower-for-to-graph --mlir-disable-threading %t/selected-fused.mlir | FileCheck %s --check-prefix=SELECTED-FUSED --implicit-check-not=loom.spatial_region
 
 // `llvm.intr.fmuladd` states a choice, not a computation: the target may fuse
 // it into one rounding or evaluate a separate multiply and add. Materializing
@@ -79,6 +80,14 @@
 // NESTED-LABEL: llvm.func @inner
 // NESTED: math.fma %{{.*}}, %{{.*}}, %{{.*}} : f32
 
+// The Fused execution shape materializes as the registered `math.fma` actor.
+// A selected candidate carrying that exact actor must cross atomic graph
+// publication without a frontend name rule or a second actor registry.
+// SELECTED-FUSED-LABEL: dataflow.thread private @selected_fused
+// SELECTED-FUSED: dataflow.graph.launch @selected_fused_graph
+// SELECTED-FUSED-LABEL: dataflow.graph private @selected_fused_graph
+// SELECTED-FUSED: math.fma %{{.*}}, %{{.*}}, %{{.*}} fastmath<nnan,contract> : f32
+
 //--- choice.mlir
 llvm.func @chosen(%x: f32, %y: f32, %z: f32) -> f32 {
   %r = llvm.intr.fmuladd(%x, %y, %z)
@@ -114,4 +123,19 @@ func.func @native_owner(%a: f32, %b: f32, %c: f32) -> f32 {
     }
   }
   return %a : f32
+}
+
+//--- selected-fused.mlir
+dataflow.thread private @selected_fused(
+    %lhs: f32, %rhs: f32, %acc: f32) ctrl (%start: none) {
+  %result = "loom.spatial_region"(%lhs, %rhs, %acc)
+      <{operandSegmentSizes = array<i32: 3, 0, 0, 0>,
+        resultSegmentSizes = array<i32: 1, 0>}> ({
+    ^bb0(%a: f32, %b: f32, %c: f32):
+      %fused = math.fma %a, %b, %c fastmath<nnan,contract> : f32
+      "loom.spatial_yield"(%fused)
+          <{operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> ()
+  }) {graph_name = "selected_fused_graph", source_maps = []} :
+      (f32, f32, f32) -> f32
+  dataflow.thread.yield
 }

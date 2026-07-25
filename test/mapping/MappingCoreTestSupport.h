@@ -28,7 +28,6 @@ struct TestCase {
 ArtifactIdentity artifact(std::uint8_t value);
 TypeKey type(std::uint64_t value);
 PortRoleKey role(std::uint64_t value);
-SemanticKey semantic(std::uint8_t value);
 PortDescriptor port(PortKind kind, TypeKey typeKey,
                     std::uint32_t payloadWidthBits = 0,
                     std::uint32_t tagWidthBits = 0,
@@ -72,13 +71,11 @@ void expectMapError(const char *test, const TestCase &testCase,
                     MappingErrorCode expected);
 
 TestCase makeValidCase();
-TestCase makeWideSyncCase();
-void selectWideSyncLanes(TestCase &testCase,
-                         llvm::ArrayRef<std::uint32_t> laneIndices);
 TestCase makeMemoryAnchorCase();
 void selectInternalMemoryGraph(TestCase &testCase);
 
 void runComputeFreezeTests();
+void runCapabilityTemplateTests();
 void runMemoryMappingTests();
 void runMappingVerifierTests();
 void runPnrProblemInputsTests();

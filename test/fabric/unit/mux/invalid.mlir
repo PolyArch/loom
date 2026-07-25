@@ -9,7 +9,7 @@ fabric.module @mux_too_few(%a : !fabric.bits<8>) {
       // expected-error @+1 {{requires at least 2 inputs}}
       %0 = "fabric.mux"(%fa) : (!fabric.bits<8>) -> !fabric.bits<8>
       %k = fabric.op [@arith.addi] (%0, %0)
-           : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
       fabric.yield %k : !fabric.bits<8>
     }
   }
@@ -26,7 +26,7 @@ fabric.module @mux_partial_params(%a : !fabric.bits<8>, %b : !fabric.bits<8>) {
       // expected-error @+1 {{software parameters must be all set or all unset}}
       %0 = fabric.mux %fa, %fb {sel = 0 : i32, discard = false} : !fabric.bits<8>
       %k = fabric.op [@arith.addi] (%0, %0)
-           : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
       fabric.yield %k : !fabric.bits<8>
     }
   }
@@ -43,7 +43,7 @@ fabric.module @mux_discard_and_disconnect(%a : !fabric.bits<8>, %b : !fabric.bit
       // expected-error @+1 {{'discard' and 'disconnect' cannot both be true}}
       %0 = fabric.mux %fa, %fb {sel = 0 : i32, discard = true, disconnect = true} : !fabric.bits<8>
       %k = fabric.op [@arith.addi] (%0, %0)
-           : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
       fabric.yield %k : !fabric.bits<8>
     }
   }
@@ -60,7 +60,7 @@ fabric.module @mux_disconnect_nonzero_sel(%a : !fabric.bits<8>, %b : !fabric.bit
       // expected-error @+1 {{when 'disconnect' is true, 'sel' must be 0}}
       %0 = fabric.mux %fa, %fb {sel = 1 : i32, discard = false, disconnect = true} : !fabric.bits<8>
       %k = fabric.op [@arith.addi] (%0, %0)
-           : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
       fabric.yield %k : !fabric.bits<8>
     }
   }
@@ -77,7 +77,7 @@ fabric.module @mux_sel_out_of_range(%a : !fabric.bits<8>, %b : !fabric.bits<8>) 
       // expected-error @+1 {{'sel' (2) must be in [0, 2)}}
       %0 = fabric.mux %fa, %fb {sel = 2 : i32, discard = false, disconnect = false} : !fabric.bits<8>
       %k = fabric.op [@arith.addi] (%0, %0)
-           : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<8>, !fabric.bits<8>) -> !fabric.bits<8>
       fabric.yield %k : !fabric.bits<8>
     }
   }

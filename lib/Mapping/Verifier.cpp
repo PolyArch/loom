@@ -1,7 +1,9 @@
 #include "Mapping/Verifier.h"
+#include "Dataflow/IR/OperationSchemaCodec.h"
 #include "FabricOccurrenceIndex.h"
 #include "MemoryRealizationProjection.h"
 #include "VerifierInternal.h"
+#include "VerifierState.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/raw_ostream.h"
@@ -42,65 +44,6 @@ llvm::Error loom::mapping::detail::requireLocalKind(const EntityKinds &entities,
   return llvm::Error::success();
 }
 namespace {
-struct EndpointKey {
-  bool actor;
-  std::uint64_t owner;
-  PortDirection direction;
-  std::uint32_t index;
-  friend bool operator==(const EndpointKey &lhs, const EndpointKey &rhs) {
-    return lhs.actor == rhs.actor && lhs.owner == rhs.owner &&
-           lhs.direction == rhs.direction && lhs.index == rhs.index;
-  }
-  friend bool operator<(const EndpointKey &lhs, const EndpointKey &rhs) {
-    return std::tie(lhs.actor, lhs.owner, lhs.direction, lhs.index) <
-           std::tie(rhs.actor, rhs.owner, rhs.direction, rhs.index);
-  }
-};
-using EdgeKey = std::pair<EndpointKey, EndpointKey>;
-struct DataflowPortInfo {
-  std::uint64_t graph;
-  EndpointKey key;
-  const PortDescriptor *descriptor;
-};
-struct ResolvedDataflowEdge {
-  DataflowPortInfo source;
-  DataflowPortInfo target;
-};
-using ActorPortKey = std::pair<PortDirection, std::uint32_t>;
-struct MemoryActorInfo {
-  const CanonicalMemoryActorView *view;
-  std::map<ActorPortKey, MemoryAccessPortRole> ports;
-};
-struct DataflowIndex {
-  EntityKinds kinds;
-  std::map<std::uint64_t, const GraphDescriptor *> graphs;
-  std::map<std::uint64_t, const ActorDescriptor *> actors;
-  std::map<std::uint64_t, const LogicalMemoryRootDescriptor *>
-      logicalMemoryRoots;
-  std::map<std::uint64_t, MemoryActorInfo> memoryActors;
-  std::map<EdgeKey, std::size_t> edgesByKey;
-  std::vector<ResolvedDataflowEdge> edges;
-};
-struct FabricIndex {
-  EntityKinds kinds;
-  std::map<std::uint64_t, const FuDescriptor *> functionalUnits;
-  std::map<std::uint64_t, const FabricOpDescriptor *> operations;
-  std::map<std::uint64_t, const EncodingDescriptor *> encodings;
-  std::map<std::uint64_t, ValidatedPairedLaneCapability> pairedLaneCapabilities;
-  std::map<std::uint64_t, ValidatedConfiguredBoundaryIndex>
-      configuredBoundaryIndexes;
-  std::map<std::uint64_t, const MemoryServiceDomainDescriptor *>
-      memoryServiceDomains;
-  std::map<std::uint64_t, const MemoryImplementationDescriptor *>
-      memoryImplementations;
-  std::map<std::uint64_t, const MemoryOperationPortTemplateDescriptor *>
-      memoryOperationPortTemplates;
-  std::map<std::uint64_t, const MemoryInternalConnectionDescriptor *>
-      memoryInternalConnections;
-  std::map<std::uint64_t, const MemorySemanticEncodingDescriptor *>
-      memorySemanticEncodings;
-  std::shared_ptr<const ValidatedFabricProjection> projection;
-};
 const std::set<MemoryAccessPortRole> &
 requiredMemoryAccessRoles(MemoryOperationKind operation) {
   static const std::set<MemoryAccessPortRole> loadRoles{
@@ -163,35 +106,6 @@ validateMemoryActorView(const ActorDescriptor &actor) {
                         "memory actor port semantics are incomplete");
   return MemoryActorInfo{&memory, std::move(ports)};
 }
-bool samePortClasses(const std::vector<PortDescriptor> &lhs,
-                     const std::vector<PortDescriptor> &rhs) {
-  if (lhs.size() != rhs.size())
-    return false;
-  for (auto [left, right] : llvm::zip(lhs, rhs))
-    if (left.kind != right.kind || left.role != right.role)
-      return false;
-  return true;
-}
-llvm::Expected<const PortDescriptor *> resolveConfiguredValue(
-    const ConfiguredValue &value,
-    const std::map<std::uint32_t, const PortDescriptor *> &inputs,
-    const std::map<std::uint64_t, const ConfiguredFabricOpDescriptor *>
-        &operations) {
-  if (const auto *input = std::get_if<FuInputValue>(&value)) {
-    auto descriptor = inputs.find(input->index);
-    if (descriptor == inputs.end())
-      return mappingError(MappingErrorCode::InvalidConfiguredFunction,
-                          "configured value names an inactive FU input");
-    return descriptor->second;
-  }
-  const auto &result = std::get<FabricOpResultValue>(value);
-  auto operation = operations.find(result.operation.value());
-  if (operation == operations.end() ||
-      result.index >= operation->second->outputPorts.size())
-    return mappingError(MappingErrorCode::InvalidConfiguredFunction,
-                        "configured value names an invalid fabric.op result");
-  return &operation->second->outputPorts[result.index];
-}
 llvm::Expected<DataflowPortInfo>
 resolveDataflowPort(const DataflowEndpoint &endpoint,
                     const DataflowIndex &index) {
@@ -240,6 +154,18 @@ buildDataflowIndex(const DataflowProgramView &dataflow) {
     if (llvm::Error error =
             addEntity(index.kinds, actor.id.value(), EntityKind::Actor))
       return std::move(error);
+    if (actor.semantics.type.getNumInputs() != actor.inputPorts.size() ||
+        actor.semantics.type.getNumResults() != actor.outputPorts.size())
+      return mappingError(
+          MappingErrorCode::InvalidPortConnection,
+          "actor port inventory disagrees with its canonical projection");
+    auto semanticBytes =
+        ::dataflow::encodeCanonicalActorSchemaProjection(actor.semantics);
+    if (!semanticBytes)
+      return mappingError(
+          MappingErrorCode::InvalidPortConnection,
+          llvm::Twine("actor has an invalid canonical projection: ") +
+              llvm::toString(semanticBytes.takeError()));
     index.actors.emplace(actor.id.value(), &actor);
   }
   for (const LogicalMemoryRootDescriptor &root : dataflow.logicalMemoryRoots) {
@@ -454,22 +380,34 @@ resolveLocalMemoryInternalEndpoint(const MemoryInternalEndpoint &endpoint,
 llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
   FabricIndex index;
   for (const FuDescriptor &fu : fabric.functionalUnits) {
-    if (llvm::Error error =
-            addEntity(index.kinds, fu.id.value(), EntityKind::Fu))
+    if (llvm::Error error = addEntity(index.kinds, fu.id.id(), EntityKind::Fu))
       return std::move(error);
-    index.functionalUnits.emplace(fu.id.value(), &fu);
+    auto normalized =
+        ::loom::fabric::normalizeFabricFuCapabilityTemplateInventory(
+            fu.capabilityTemplates);
+    if (!normalized)
+      return mappingError(
+          MappingErrorCode::InvalidCapabilityTemplateReference,
+          llvm::Twine("invalid Fabric FU capability-template inventory: ") +
+              llvm::toString(normalized.takeError()));
+    if (*normalized != fu.capabilityTemplates)
+      return mappingError(
+          MappingErrorCode::InvalidCapabilityTemplateReference,
+          "Fabric FU capability-template inventory is not canonical");
+    index.functionalUnits.emplace(fu.id.id(), &fu);
   }
   for (const FabricOpDescriptor &operation : fabric.operations) {
-    if (llvm::Error error =
-            addEntity(index.kinds, operation.id.value(), EntityKind::FabricOp))
-      return std::move(error);
-    index.operations.emplace(operation.id.value(), &operation);
-  }
-  for (const EncodingDescriptor &encoding : fabric.encodings) {
-    if (llvm::Error error =
-            addEntity(index.kinds, encoding.id.value(), EntityKind::Encoding))
-      return std::move(error);
-    index.encodings.emplace(encoding.id.value(), &encoding);
+    if (operation.id.node != ::loom::fabric::FabricFuNodeKind::Op ||
+        !index.functionalUnits.count(operation.id.fu.id()) ||
+        static_cast<std::uint32_t>(operation.family) >=
+            ::fabric::implementationFamilyCount() ||
+        ::fabric::capabilityParamsSchema(operation.capability) !=
+            ::fabric::implementationFamily(operation.family)
+                .capabilityParamsSchema ||
+        !index.operations.emplace(nodeKey(operation.id), &operation).second)
+      return mappingError(
+          MappingErrorCode::CapabilityTemplateMismatch,
+          "Fabric operation inventory has an invalid or duplicate owner");
   }
   for (const MemoryServiceDomainDescriptor &service :
        fabric.memoryServiceDomains) {
@@ -520,94 +458,6 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
   (*projection)->routing = std::move(*routing);
   index.projection =
       std::shared_ptr<const ValidatedFabricProjection>(std::move(*projection));
-  for (const FabricOpDescriptor &operation : fabric.operations) {
-    if (llvm::Error error =
-            requireLocalKind(index.kinds, operation.fu.value(), EntityKind::Fu))
-      return std::move(error);
-    if (!operation.pairedLanes.empty()) {
-      auto capability = buildValidatedPairedLaneCapability(operation);
-      if (!capability)
-        return capability.takeError();
-      index.pairedLaneCapabilities.emplace(operation.id.value(),
-                                           std::move(*capability));
-    }
-  }
-  for (const EncodingDescriptor &encoding : fabric.encodings) {
-    if (llvm::Error error =
-            requireLocalKind(index.kinds, encoding.fu.value(), EntityKind::Fu))
-      return std::move(error);
-    const FuDescriptor &fu = *index.functionalUnits.at(encoding.fu.value());
-    std::map<std::uint32_t, const PortDescriptor *> configuredInputs;
-    for (const ConfiguredInputDescriptor &input : encoding.inputs) {
-      if (input.fuPort >= fu.inputPorts.size() ||
-          fu.inputPorts[input.fuPort].kind != input.port.kind ||
-          fu.inputPorts[input.fuPort].role != input.port.role ||
-          !configuredInputs.emplace(input.fuPort, &input.port).second)
-        return mappingError(
-            MappingErrorCode::InvalidConfiguredFunction,
-            "encoding has an invalid or duplicate configured FU input");
-    }
-    std::map<std::uint64_t, const ConfiguredFabricOpDescriptor *>
-        configuredOperations;
-    for (const ConfiguredFabricOpDescriptor &configured : encoding.operations) {
-      auto operation = index.operations.find(configured.operation.value());
-      if (operation == index.operations.end() ||
-          operation->second->fu != encoding.fu ||
-          configured.operands.size() != configured.inputPorts.size() ||
-          !configuredOperations
-               .emplace(configured.operation.value(), &configured)
-               .second)
-        return mappingError(
-            MappingErrorCode::InvalidConfiguredFunction,
-            "encoding has an invalid or duplicate configured fabric.op");
-      const bool validPorts =
-          operation->second->pairedLanes.empty()
-              ? samePortClasses(configured.inputPorts,
-                                operation->second->inputPorts) &&
-                    samePortClasses(configured.outputPorts,
-                                    operation->second->outputPorts)
-              : validPairedConfiguredPorts(configured, *operation->second);
-      if (!validPorts)
-        return mappingError(
-            MappingErrorCode::InvalidConfiguredFunction,
-            "configured fabric.op ports do not match its physical capability");
-    }
-    for (const ConfiguredFabricOpDescriptor &configured : encoding.operations) {
-      for (auto [operand, expected] :
-           llvm::zip(configured.operands, configured.inputPorts)) {
-        auto source = resolveConfiguredValue(operand, configuredInputs,
-                                             configuredOperations);
-        if (!source)
-          return source.takeError();
-        if (**source != expected)
-          return mappingError(
-              MappingErrorCode::InvalidConfiguredFunction,
-              "configured fabric.op operand has the wrong semantic type");
-      }
-    }
-    std::set<std::uint32_t> configuredOutputs;
-    for (const ConfiguredOutputDescriptor &output : encoding.outputs) {
-      if (output.fuPort >= fu.outputPorts.size() ||
-          fu.outputPorts[output.fuPort].kind != output.port.kind ||
-          fu.outputPorts[output.fuPort].role != output.port.role ||
-          !configuredOutputs.insert(output.fuPort).second)
-        return mappingError(
-            MappingErrorCode::InvalidConfiguredFunction,
-            "encoding has an invalid or duplicate configured FU output");
-      auto source = resolveConfiguredValue(output.value, configuredInputs,
-                                           configuredOperations);
-      if (!source)
-        return source.takeError();
-      if (**source != output.port)
-        return mappingError(MappingErrorCode::InvalidConfiguredFunction,
-                            "configured FU output has the wrong semantic type");
-    }
-    auto boundaryIndex = buildValidatedConfiguredBoundaryIndex(encoding);
-    if (!boundaryIndex)
-      return boundaryIndex.takeError();
-    index.configuredBoundaryIndexes.emplace(encoding.id.value(),
-                                            std::move(*boundaryIndex));
-  }
   for (const MemoryImplementationDescriptor &implementation :
        fabric.memoryImplementations) {
     if (llvm::Error error =
@@ -713,10 +563,12 @@ llvm::Expected<FabricIndex> buildFabricIndex(const FabricHardwareView &fabric) {
 
   return index;
 }
+} // namespace
+
 llvm::Expected<DataflowPortInfo>
-resolveActorPortReference(const ActorPortRef &port,
-                          const ArtifactIdentity &artifact,
-                          const DataflowIndex &index) {
+loom::mapping::detail::resolveActorPortReference(
+    const ActorPortRef &port, const ArtifactIdentity &artifact,
+    const DataflowIndex &index) {
   auto actor = resolveReference(port.actor, artifact, index.kinds,
                                 EntityKind::Actor, index.actors);
   if (!actor)
@@ -733,6 +585,7 @@ resolveActorPortReference(const ActorPortRef &port,
       &ports[port.index]};
 }
 
+namespace {
 llvm::Expected<DataflowPortInfo>
 resolveGraphPortReference(const GraphPortRef &port,
                           const ArtifactIdentity &artifact,
@@ -774,30 +627,6 @@ resolveMemoryImplementationBoundaryPortReference(
   return MemoryImplementationBoundaryPortInfo{
       *implementation, port.index,
       &(*implementation)->boundaryPorts[port.index]};
-}
-
-struct FuPortInfo {
-  std::uint64_t fu;
-  PortDirection direction;
-  std::uint32_t index;
-  const PortDescriptor *descriptor;
-};
-
-llvm::Expected<FuPortInfo>
-resolveFuPortReference(const FuPortRef &port, const ArtifactIdentity &artifact,
-                       const FabricIndex &index) {
-  auto fu = resolveReference(port.fu, artifact, index.kinds, EntityKind::Fu,
-                             index.functionalUnits);
-  if (!fu)
-    return fu.takeError();
-  const auto &ports = port.direction == PortDirection::Input
-                          ? (*fu)->inputPorts
-                          : (*fu)->outputPorts;
-  if (port.index >= ports.size())
-    return mappingError(MappingErrorCode::InvalidPortConnection,
-                        "FU boundary port index is out of range");
-  return FuPortInfo{(*fu)->id.value(), port.direction, port.index,
-                    &ports[port.index]};
 }
 
 struct MemoryOperationPortInfo {
@@ -842,12 +671,6 @@ resolveEdgeReference(const DataflowEdgeRef &reference,
   return &index.edges[edge->second];
 }
 
-struct RealizationActors {
-  const ComputeRealizationDraft *record;
-  std::uint64_t graph;
-  std::map<std::uint64_t, const ActorDescriptor *> actors;
-};
-
 llvm::Expected<std::vector<RealizationActors>> resolveRealizationActors(
     const TechMappingDraft &mapping, const DataflowProgramView &dataflow,
     const DataflowIndex &dataflowIndex,
@@ -857,14 +680,14 @@ llvm::Expected<std::vector<RealizationActors>> resolveRealizationActors(
   resolved.reserve(mapping.realizations.size());
 
   for (const ComputeRealizationDraft &realization : mapping.realizations) {
-    if (realization.actors.empty())
+    if (realization.actorToOps.empty())
       return mappingError(MappingErrorCode::EmptyActorGroup,
                           "Compute Realization actor group is empty");
 
     RealizationActors actors{&realization, 0, {}};
     bool firstActor = true;
-    for (const ActorRef &actorReference : realization.actors) {
-      auto actor = resolveReference(actorReference, dataflow.identity,
+    for (const ActorToFabricOp &binding : realization.actorToOps) {
+      auto actor = resolveReference(binding.actor, dataflow.identity,
                                     dataflowIndex.kinds, EntityKind::Actor,
                                     dataflowIndex.actors);
       if (!actor)
@@ -946,304 +769,6 @@ resolveMemoryRealizationActors(
     resolved.push_back(std::move(actors));
   }
   return resolved;
-}
-
-struct ResolvedRealization {
-  const FuDescriptor *fu;
-  const EncodingDescriptor *encoding;
-  std::map<std::uint64_t, const ConfiguredFabricOpDescriptor *> actorToOp;
-  std::map<std::uint64_t, PairedLaneProjection> actorToLaneProjections;
-  std::vector<ValidatedConfiguredBoundaryPort> activeBoundaryPorts;
-};
-
-std::uint32_t configuredPortIndex(const ResolvedRealization &selected,
-                                  std::uint64_t actor,
-                                  std::uint32_t softwarePort) {
-  auto lanes = selected.actorToLaneProjections.find(actor);
-  return lanes == selected.actorToLaneProjections.end()
-             ? softwarePort
-             : lanes->second.laneIndices[softwarePort];
-}
-
-llvm::Expected<ResolvedRealization> validateActorToOpCorrespondence(
-    const RealizationActors &realization, const DataflowProgramView &dataflow,
-    const DataflowIndex &dataflowIndex, const FabricHardwareView &fabric,
-    const FabricIndex &fabricIndex) {
-  auto fu = resolveReference(realization.record->fu, fabric.identity,
-                             fabricIndex.kinds, EntityKind::Fu,
-                             fabricIndex.functionalUnits);
-  if (!fu)
-    return fu.takeError();
-  auto encoding = resolveReference(realization.record->encoding,
-                                   fabric.identity, fabricIndex.kinds,
-                                   EntityKind::Encoding, fabricIndex.encodings);
-  if (!encoding)
-    return encoding.takeError();
-  if ((*encoding)->fu != (*fu)->id)
-    return mappingError(MappingErrorCode::SelectedFuMismatch,
-                        "selected encoding belongs to a different FU");
-
-  if (realization.record->actorToOps.size() != realization.actors.size() ||
-      (*encoding)->operations.size() != realization.actors.size())
-    return mappingError(MappingErrorCode::IncompleteActorToOpCorrespondence,
-                        "actor-to-fabric.op correspondence is not complete");
-
-  std::map<std::uint64_t, const ConfiguredFabricOpDescriptor *>
-      configuredOperations;
-  for (const ConfiguredFabricOpDescriptor &operation : (*encoding)->operations)
-    configuredOperations.emplace(operation.operation.value(), &operation);
-
-  std::set<std::uint64_t> mappedActors;
-  std::set<std::uint64_t> mappedOperations;
-  ResolvedRealization resolved{*fu, *encoding, {}, {}, {}};
-  for (const ActorToFabricOp &correspondence : realization.record->actorToOps) {
-    auto actor = resolveReference(correspondence.actor, dataflow.identity,
-                                  dataflowIndex.kinds, EntityKind::Actor,
-                                  dataflowIndex.actors);
-    if (!actor)
-      return actor.takeError();
-    auto operation = resolveReference(correspondence.fabricOp, fabric.identity,
-                                      fabricIndex.kinds, EntityKind::FabricOp,
-                                      fabricIndex.operations);
-    if (!operation)
-      return operation.takeError();
-
-    if (!realization.actors.count((*actor)->id.value()) ||
-        !mappedActors.insert((*actor)->id.value()).second ||
-        !mappedOperations.insert((*operation)->id.value()).second)
-      return mappingError(MappingErrorCode::IncompleteActorToOpCorrespondence,
-                          "actor-to-fabric.op correspondence is not bijective");
-    if ((*operation)->fu != (*fu)->id)
-      return mappingError(MappingErrorCode::SelectedFuMismatch,
-                          "fabric.op belongs to a different FU");
-    auto configured = configuredOperations.find((*operation)->id.value());
-    if (configured == configuredOperations.end())
-      return mappingError(MappingErrorCode::IncompleteActorToOpCorrespondence,
-                          "actor correspondence names an inactive fabric.op");
-    if ((*actor)->operation != configured->second->semantics ||
-        (*actor)->attributes != configured->second->attributes)
-      return mappingError(
-          MappingErrorCode::ConfiguredFunctionMismatch,
-          "actor semantics do not match the configured fabric.op");
-
-    const bool subsetArity =
-        (*actor)->inputPorts.size() != configured->second->inputPorts.size() ||
-        (*actor)->outputPorts.size() != configured->second->outputPorts.size();
-    if ((*operation)->pairedLanes.empty()) {
-      if (subsetArity)
-        return mappingError(
-            MappingErrorCode::ConfiguredFunctionMismatch,
-            "subset arity requires an explicit paired-lane capability");
-      if (!correspondence.laneSelections.empty() ||
-          (*actor)->inputPorts != configured->second->inputPorts ||
-          (*actor)->outputPorts != configured->second->outputPorts)
-        return mappingError(
-            MappingErrorCode::ConfiguredFunctionMismatch,
-            "ordinary actor semantics do not match the configured fabric.op");
-    } else {
-      if ((*actor)->inputPorts.size() != correspondence.laneSelections.size() ||
-          (*actor)->outputPorts.size() != correspondence.laneSelections.size())
-        return mappingError(MappingErrorCode::ConfiguredFunctionMismatch,
-                            "paired-lane correspondence is incomplete");
-      auto capability =
-          fabricIndex.pairedLaneCapabilities.find((*operation)->id.value());
-      if (capability == fabricIndex.pairedLaneCapabilities.end())
-        return mappingError(MappingErrorCode::InternalError,
-                            "validated paired-lane capability is missing");
-      auto projection = validateAndProjectPairedLaneSelection(
-          fabric.identity, **operation, capability->second, correspondence);
-      if (!projection)
-        return projection.takeError();
-      for (std::size_t softwarePort = 0;
-           softwarePort < projection->laneIndices.size(); ++softwarePort) {
-        const std::uint32_t lane = projection->laneIndices[softwarePort];
-        if ((*actor)->inputPorts[softwarePort] !=
-                configured->second->inputPorts[lane] ||
-            (*actor)->outputPorts[softwarePort] !=
-                configured->second->outputPorts[lane])
-          return mappingError(
-              MappingErrorCode::ConfiguredFunctionMismatch,
-              "actor lane type does not match the configured fabric.op");
-      }
-      resolved.actorToLaneProjections.emplace((*actor)->id.value(),
-                                              std::move(*projection));
-    }
-    resolved.actorToOp.emplace((*actor)->id.value(), configured->second);
-  }
-
-  if (mappedActors.size() != realization.actors.size() ||
-      mappedOperations.size() != configuredOperations.size())
-    return mappingError(MappingErrorCode::IncompleteActorToOpCorrespondence,
-                        "actor-to-fabric.op correspondence is not complete");
-  return resolved;
-}
-
-std::set<EndpointKey> deriveBoundaryPorts(const RealizationActors &realization,
-                                          const DataflowIndex &dataflowIndex) {
-  std::set<EndpointKey> boundaryPorts;
-  for (const ResolvedDataflowEdge &edge : dataflowIndex.edges) {
-    const bool sourceInside = edge.source.key.actor &&
-                              realization.actors.count(edge.source.key.owner);
-    const bool targetInside = edge.target.key.actor &&
-                              realization.actors.count(edge.target.key.owner);
-    if (sourceInside == targetInside)
-      continue;
-    boundaryPorts.insert(sourceInside ? edge.source.key : edge.target.key);
-  }
-  return boundaryPorts;
-}
-
-struct ResolvedBoundary {
-  std::map<EndpointKey, std::uint32_t> actorToFuPort;
-};
-
-llvm::Expected<ResolvedBoundary> validateBoundaryCorrespondence(
-    const RealizationActors &realization, const ResolvedRealization &selected,
-    const DataflowProgramView &dataflow, const DataflowIndex &dataflowIndex,
-    const FabricHardwareView &fabric, const FabricIndex &fabricIndex) {
-  const std::set<EndpointKey> expected =
-      deriveBoundaryPorts(realization, dataflowIndex);
-  std::set<EndpointKey> mappedActorPorts;
-  std::set<std::tuple<std::uint64_t, PortDirection, std::uint32_t>>
-      mappedFuPorts;
-  std::map<std::pair<PortDirection, std::uint32_t>, const PortDescriptor *>
-      configuredPorts;
-  for (const ConfiguredInputDescriptor &input : selected.encoding->inputs)
-    configuredPorts.emplace(std::make_pair(PortDirection::Input, input.fuPort),
-                            &input.port);
-  for (const ConfiguredOutputDescriptor &output : selected.encoding->outputs)
-    configuredPorts.emplace(
-        std::make_pair(PortDirection::Output, output.fuPort), &output.port);
-
-  ResolvedBoundary resolved;
-
-  for (const BoundaryPortCorrespondence &correspondence :
-       realization.record->boundaryPorts) {
-    auto actorPort = resolveActorPortReference(
-        correspondence.actorPort, dataflow.identity, dataflowIndex);
-    if (!actorPort)
-      return actorPort.takeError();
-    auto fuPort = resolveFuPortReference(correspondence.fuPort, fabric.identity,
-                                         fabricIndex);
-    if (!fuPort)
-      return fuPort.takeError();
-
-    if (!realization.actors.count(actorPort->key.owner) ||
-        !expected.count(actorPort->key) ||
-        !mappedActorPorts.insert(actorPort->key).second)
-      return mappingError(
-          MappingErrorCode::IncompleteBoundaryCorrespondence,
-          "software boundary endpoint correspondence is not exact");
-    if (fuPort->fu != selected.fu->id.value())
-      return mappingError(MappingErrorCode::SelectedFuMismatch,
-                          "boundary correspondence uses a different FU");
-    if (actorPort->key.direction != fuPort->direction)
-      return mappingError(MappingErrorCode::InvalidPortConnection,
-                          "boundary correspondence reverses port direction");
-    auto configured =
-        configuredPorts.find(std::make_pair(fuPort->direction, fuPort->index));
-    if (configured == configuredPorts.end())
-      return mappingError(
-          MappingErrorCode::IncompleteBoundaryCorrespondence,
-          "boundary correspondence names an inactive configured FU port");
-    if (*actorPort->descriptor != *configured->second)
-      return mappingError(
-          MappingErrorCode::ConfiguredFunctionMismatch,
-          "software boundary type does not match the configured FU port");
-    const auto fuKey =
-        std::make_tuple(fuPort->fu, fuPort->direction, fuPort->index);
-    const bool repeatedFuPort = !mappedFuPorts.insert(fuKey).second;
-    if (repeatedFuPort && fuPort->direction == PortDirection::Output)
-      return mappingError(
-          MappingErrorCode::IncompleteBoundaryCorrespondence,
-          "configured FU output correspondence is not one-to-one");
-    resolved.actorToFuPort.emplace(actorPort->key, fuPort->index);
-  }
-
-  if (mappedActorPorts != expected)
-    return mappingError(
-        MappingErrorCode::UnaccountedGraphEdge,
-        "declared graph edge has an unmapped boundary endpoint");
-  if (mappedFuPorts.size() != selected.activeBoundaryPorts.size())
-    return mappingError(
-        MappingErrorCode::IncompleteBoundaryCorrespondence,
-        "active configured FU boundary correspondence is not complete");
-  for (const ValidatedConfiguredBoundaryPort &port :
-       selected.activeBoundaryPorts) {
-    const auto key =
-        std::make_tuple(selected.fu->id.value(), port.direction, port.fuPort);
-    if (!mappedFuPorts.count(key))
-      return mappingError(
-          MappingErrorCode::IncompleteBoundaryCorrespondence,
-          "active configured FU boundary correspondence is not complete");
-  }
-  return resolved;
-}
-
-llvm::Error validateConfiguredFunctionTopology(
-    const RealizationActors &realization, const ResolvedRealization &selected,
-    const ResolvedBoundary &boundary, const DataflowIndex &dataflowIndex) {
-  std::map<EndpointKey, const DataflowPortInfo *> drivers;
-  for (const ResolvedDataflowEdge &edge : dataflowIndex.edges)
-    drivers.emplace(edge.target.key, &edge.source);
-  std::map<std::uint32_t, EndpointKey> configuredInputSources;
-
-  for (const auto &entry : selected.actorToOp) {
-    const ActorDescriptor &actor = *realization.actors.at(entry.first);
-    const ConfiguredFabricOpDescriptor &configured = *entry.second;
-    for (std::size_t input = 0; input < actor.inputPorts.size(); ++input) {
-      const EndpointKey target{true, actor.id.value(), PortDirection::Input,
-                               static_cast<std::uint32_t>(input)};
-      const DataflowPortInfo &source = *drivers.at(target);
-      ConfiguredValue expected = FuInputValue{0};
-      if (source.key.actor && realization.actors.count(source.key.owner)) {
-        const ConfiguredFabricOpDescriptor &sourceOperation =
-            *selected.actorToOp.at(source.key.owner);
-        expected = FabricOpResultValue{
-            sourceOperation.operation,
-            configuredPortIndex(selected, source.key.owner, source.key.index)};
-      } else {
-        auto port = boundary.actorToFuPort.find(target);
-        if (port == boundary.actorToFuPort.end())
-          return mappingError(
-              MappingErrorCode::ConfiguredFunctionMismatch,
-              "software operand has no configured FU input correspondence");
-        auto [inputSource, inserted] =
-            configuredInputSources.emplace(port->second, source.key);
-        if (!inserted && !(inputSource->second == source.key))
-          return mappingError(
-              MappingErrorCode::ConfiguredFunctionMismatch,
-              "configured FU input correspondence merges distinct software "
-              "values");
-        expected = FuInputValue{port->second};
-      }
-      const std::uint32_t configuredInput = configuredPortIndex(
-          selected, actor.id.value(), static_cast<std::uint32_t>(input));
-      if (configured.operands[configuredInput] != expected)
-        return mappingError(
-            MappingErrorCode::ConfiguredFunctionMismatch,
-            "configured fabric.op operand topology does not match software");
-    }
-  }
-
-  std::map<std::uint32_t, const ConfiguredOutputDescriptor *> configuredOutputs;
-  for (const ConfiguredOutputDescriptor &output : selected.encoding->outputs)
-    configuredOutputs.emplace(output.fuPort, &output);
-  for (const auto &entry : boundary.actorToFuPort) {
-    if (entry.first.direction != PortDirection::Output)
-      continue;
-    const ConfiguredFabricOpDescriptor &source =
-        *selected.actorToOp.at(entry.first.owner);
-    const ConfiguredValue expected = FabricOpResultValue{
-        source.operation,
-        configuredPortIndex(selected, entry.first.owner, entry.first.index)};
-    auto output = configuredOutputs.find(entry.second);
-    if (output == configuredOutputs.end() || output->second->value != expected)
-      return mappingError(
-          MappingErrorCode::ConfiguredFunctionMismatch,
-          "configured FU output topology does not match software");
-  }
-  return llvm::Error::success();
 }
 
 llvm::Error validateMemoryRealization(
@@ -1698,41 +1223,14 @@ llvm::Expected<ValidatedTechMapping> loom::mapping::validateTechMapping(
   auto mappingProjection = std::make_shared<ValidatedTechMappingProjection>();
   mappingProjection->computeRealizations.reserve(realizations->size());
   for (const RealizationActors &realization : *realizations) {
-    auto selected = validateActorToOpCorrespondence(
-        realization, dataflow, *dataflowIndex, fabric, *fabricIndex);
-    if (!selected)
-      return selected.takeError();
-    auto boundaryIndex = fabricIndex->configuredBoundaryIndexes.find(
-        selected->encoding->id.value());
-    if (boundaryIndex == fabricIndex->configuredBoundaryIndexes.end())
-      return mappingError(MappingErrorCode::InternalError,
-                          "validated configured boundary index is missing");
-    selected->activeBoundaryPorts = deriveActiveConfiguredBoundaryPorts(
-        boundaryIndex->second, selected->actorToOp,
-        selected->actorToLaneProjections);
-    auto boundary = validateBoundaryCorrespondence(
-        realization, *selected, dataflow, *dataflowIndex, fabric, *fabricIndex);
-    if (!boundary)
-      return boundary.takeError();
-    if (llvm::Error error = validateConfiguredFunctionTopology(
-            realization, *selected, *boundary, *dataflowIndex))
-      return std::move(error);
-
-    ValidatedComputeRealizationProjection projected{
-        realization.record->id,
-        selected->fu->id,
-        selected->encoding->id,
-        std::move(selected->activeBoundaryPorts),
-        {}};
-    projected.pairedLaneProjections.reserve(
-        selected->actorToLaneProjections.size());
-    for (auto &entry : selected->actorToLaneProjections) {
-      PairedLaneProjection &lanes = entry.second;
-      projected.pairedLaneProjections.push_back(
-          {ActorId(entry.first), selected->actorToOp.at(entry.first)->operation,
-           std::move(lanes.laneIndices), std::move(lanes.bitmask)});
-    }
-    mappingProjection->computeRealizations.push_back(std::move(projected));
+    auto activeBoundaryPorts = verifyComputeRealization(
+        realization, dataflow, *dataflowIndex, *fabricIndex);
+    if (!activeBoundaryPorts)
+      return activeBoundaryPorts.takeError();
+    mappingProjection->computeRealizations.push_back(
+        ValidatedComputeRealizationProjection{
+            realization.record->id, realization.record->capabilityTemplate,
+            std::move(*activeBoundaryPorts)});
   }
   std::map<std::uint64_t, std::uint64_t> rootServices;
   for (const MemoryRealizationActors &realization : *memoryRealizations) {

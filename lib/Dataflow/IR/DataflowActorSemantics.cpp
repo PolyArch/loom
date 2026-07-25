@@ -1,7 +1,7 @@
 #include "Dataflow/IR/DataflowActorSemantics.h"
 
 #include "Common/VectorWidth.h"
-#include "Dataflow/IR/DataflowInterfaces.h"
+#include "Dataflow/IR/OperationSchema.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Matchers.h"

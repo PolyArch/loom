@@ -53,3 +53,15 @@ target_link_libraries(loom-simulator-vector-boundary-test PRIVATE
   MLIRUBDialect
   LLVMSupport
 )
+
+add_executable(loom-simulator-operation-schema-projection-test
+  OperationSchemaProjectionTest.cpp
+)
+
+target_link_libraries(loom-simulator-operation-schema-projection-test PRIVATE
+  LoomSimulator
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRIR
+  LLVMSupport
+)

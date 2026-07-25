@@ -21,9 +21,35 @@ add_mlir_library(MLIRFabricEnums
   MLIRSupport
 )
 
+# The normative implementation-family registry is a small typed library so a
+# consumer that must not depend on the Fabric dialect, such as a backend
+# provider registry, can still read the one generated relation.
+add_mlir_library(LoomFabricImplementationFamily
+  FamilyCapabilityParams.cpp
+  ImplementationFamily.cpp
+
+  PARTIAL_SOURCES_INTENDED
+
+  ADDITIONAL_HEADER_DIRS
+  ${LOOM_SOURCE_DIR}/include/Fabric
+
+  DEPENDS
+  LoomImplementationFamiliesIncGen
+  LoomOperationSchemasIncGen
+  MLIRDataflowEnumsIncGen
+  MLIRFabricEnumsIncGen
+
+  LINK_LIBS PUBLIC
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDataflowEnums
+  MLIRFabricEnums
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRSupport
+)
+
 add_mlir_dialect_library(MLIRFabric
-  ConfiguredFunction.cpp
-  ConfiguredFunctionCoverage.cpp
   FabricBoundaryOps.cpp
   FabricDialect.cpp
   FabricElaboration.cpp
@@ -35,7 +61,6 @@ add_mlir_dialect_library(MLIRFabric
   FabricOps.cpp
   FabricPrimitiveOps.cpp
   FabricPeTemporalOps.cpp
-  StreamConfiguration.cpp
   FabricSwitchOp.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -52,6 +77,7 @@ add_mlir_dialect_library(MLIRFabric
   LINK_LIBS PUBLIC
   LoomCommon
   LoomFabricBoundaryDataPath
+  LoomFabricImplementationFamily
   MLIRArithDialect
   MLIRDataflowEnums
   MLIRFabricEnums

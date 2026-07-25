@@ -406,10 +406,17 @@ analyzeMemoryAccessType(mlir::MemRefType memoryType, mlir::Type dataType,
 /// the projected facts are read back from that aggregate and its nested
 /// `AtomicAccessContract`, never stored beside them. `dataflow.fence` is
 /// ordered by construction and therefore always projects `atomic`.
+///
+/// `sourceAlignmentBytes` is the minimum alignment the software access
+/// guarantees. It is identity-critical typed state: an atomic load, store,
+/// read-modify-write, or compare-exchange owns exactly one, absent for a plain
+/// or fence contract. It is never inferred from a type, endpoint width, or
+/// selected service.
 struct MemoryActorContract {
   mlir::Attribute aggregate;
   bool atomic = false;
   bool isVolatile = false;
+  std::optional<std::uint64_t> sourceAlignmentBytes;
   std::optional<dataflow::VectorAtomicGranularity> vectorGranularity;
   dataflow::SyncScopeRefAttr syncScope;
 };

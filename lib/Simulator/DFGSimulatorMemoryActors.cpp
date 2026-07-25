@@ -3,13 +3,10 @@
 // One owner for how a memory actor observes and changes logical memory: the
 // view it addresses, the active lanes and element slots it resolves, the read
 // or write it prepares before anything commits, the action it projects for
-// admission, and the effect it issues on commit.
-//
-// The dataflow load and store path projects, prepares, and issues from peeked
-// inputs alone, so a rejection anywhere along it is atomic: no input is
-// consumed, nothing is published, and memory is unchanged. The llvm.load,
-// llvm.store, and llvm.intr.memcpy helpers that share this module's element
-// access consume their operands first and do not carry that guarantee.
+// admission, and the effect it issues on commit. The load and store path
+// projects, prepares, and issues from peeked inputs alone, so a rejection
+// anywhere along it is atomic: no input is consumed, nothing is published,
+// and memory is unchanged.
 //
 // MemorySynchronization remains the sole authority over the order between two
 // effects; this module only declares them.
@@ -53,6 +50,9 @@ peekMemoryView(SimulatorState &state, mlir::Value mem,
     }
     return token.pointer;
   }
+  auto viewIt = state.memoryViews.find(mem);
+  if (viewIt != state.memoryViews.end())
+    return viewIt->second;
   auto memIt = state.memories.find(mem);
   if (memIt != state.memories.end())
     return MemoryView{memIt->second, mem, 0};
@@ -68,7 +68,7 @@ static void consumeMemoryView(SimulatorState &state,
 static std::optional<std::size_t>
 resolveElementIndex(const MemoryView &view, const llvm::APInt &address,
                     llvm::SmallVectorImpl<std::string> &diagnostics,
-                    mlir::Operation *scope, llvm::StringRef opName) {
+                    mlir::Operation *scope, llvm::StringRef diagnosticLabel) {
   auto elementSizeOrErr = byteSizeOfType(view.memory->elementType, scope);
   if (!elementSizeOrErr) {
     diagnostics.push_back(llvm::toString(elementSizeOrErr.takeError()));
@@ -87,37 +87,37 @@ resolveElementIndex(const MemoryView &view, const llvm::APInt &address,
       address.sext(width) + llvm::APInt(width, baseIndex, /*isSigned=*/true);
   const llvm::APInt limit(width, view.memory->elements.size());
   if (slot.isNegative() || slot.uge(limit)) {
-    diagnostics.push_back((opName + " address is out of range").str());
+    diagnostics.push_back((diagnosticLabel + " address is out of range").str());
     return std::nullopt;
   }
   return static_cast<std::size_t>(slot.getZExtValue());
 }
 
-std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
-                                               const llvm::APInt &address,
-                                               SimulatorState &state,
-                                               mlir::Operation *scope,
-                                               llvm::StringRef opName) {
-  return resolveElementIndex(view, address, state.diagnostics, scope, opName);
+std::optional<std::size_t>
+resolveElementIndex(const MemoryView &view, const llvm::APInt &address,
+                    SimulatorState &state, mlir::Operation *scope,
+                    llvm::StringRef diagnosticLabel) {
+  return resolveElementIndex(view, address, state.diagnostics, scope,
+                             diagnosticLabel);
 }
 
-std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
-                                               const Token &addr,
-                                               SimulatorState &state,
-                                               mlir::Operation *scope,
-                                               llvm::StringRef opName) {
+std::optional<std::size_t>
+resolveElementIndex(const MemoryView &view, const Token &addr,
+                    SimulatorState &state, mlir::Operation *scope,
+                    llvm::StringRef diagnosticLabel) {
   return resolveElementIndex(
       view,
       llvm::APInt(64, static_cast<std::uint64_t>(integerToken(addr)),
                   /*isSigned=*/true),
-      state, scope, opName);
+      state, scope, diagnosticLabel);
 }
 
 std::optional<Token> readMemoryElement(const MemoryView &view,
                                        std::size_t index, SimulatorState &state,
-                                       llvm::StringRef opName) {
+                                       llvm::StringRef diagnosticLabel) {
   if (!view.memory->initialized[index]) {
-    state.diagnostics.push_back((opName + " reads uninitialized memory").str());
+    state.diagnostics.push_back(
+        (diagnosticLabel + " reads uninitialized memory").str());
     return std::nullopt;
   }
   return view.memory->elements[index];
@@ -160,7 +160,8 @@ resolveActiveLaneSlots(const MemoryView &view, const Token &addr,
                        const dataflow::semantics::MemoryAccessType &access,
                        const llvm::APInt &activeLanes,
                        llvm::SmallVectorImpl<std::string> &diagnostics,
-                       mlir::Operation *scope, llvm::StringRef opName) {
+                       mlir::Operation *scope,
+                       llvm::StringRef diagnosticLabel) {
   // The index width is structural: every access has one whether or not a lane
   // is active, so it is resolved before the inactive shortcut. No address is
   // parsed or evaluated for an inactive lane.
@@ -200,8 +201,8 @@ resolveActiveLaneSlots(const MemoryView &view, const Token &addr,
         access.isGather() ? addressBits->extractBits(*width, *width * lane)
                           : base + llvm::APInt(*width, lane, /*isSigned=*/false,
                                                /*implicitTrunc=*/true);
-    auto slot =
-        resolveElementIndex(view, laneAddress, diagnostics, scope, opName);
+    auto slot = resolveElementIndex(view, laneAddress, diagnostics, scope,
+                                    diagnosticLabel);
     if (!slot)
       return std::nullopt;
     slots.push_back(*slot);
@@ -219,7 +220,7 @@ static std::optional<ProjectedDataflowMemoryAccess> projectDataflowMemoryAccess(
     const MemoryView &view, const Token &addr, mlir::MemRefType memoryType,
     mlir::Type addressType, mlir::Type dataType, const Token *mask,
     mlir::Type maskType, llvm::SmallVectorImpl<std::string> &diagnostics,
-    mlir::Operation *scope, llvm::StringRef opName) {
+    mlir::Operation *scope, llvm::StringRef diagnosticLabel) {
   auto access = dataflow::semantics::analyzeMemoryAccessType(
       memoryType, dataType, addressType, maskType);
   if (!access) {
@@ -232,7 +233,7 @@ static std::optional<ProjectedDataflowMemoryAccess> projectDataflowMemoryAccess(
                            vectorAccess ? maskType : mlir::Type{}, diagnostics);
   auto slots = activeLanes
                    ? resolveActiveLaneSlots(view, addr, *access, *activeLanes,
-                                            diagnostics, scope, opName)
+                                            diagnostics, scope, diagnosticLabel)
                    : std::nullopt;
   if (!activeLanes || !slots)
     return std::nullopt;
@@ -596,157 +597,7 @@ bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   emitTokenWithMemoryOrder(state, op.getDone(), noneToken(), *publication);
   if (prepared->read.accessedMemory && hasComputedAddress(op.getAddr()))
     state.memoryAddressScore += kLoadAddressScore;
-  return recordEvent(state, op->getName().getStringRef());
-}
-
-bool fireLLVMLoad(mlir::LLVM::LoadOp op, SimulatorState &state) {
-  mlir::OpOperand &addrOperand = op->getOpOperand(0);
-  if (!hasToken(state.channels, addrOperand))
-    return false;
-  Token ptr = popToken(state, addrOperand);
-  auto viewOrErr = ensurePointerMemory(state, ptr, op->getResult(0).getType());
-  if (!viewOrErr) {
-    state.diagnostics.push_back(llvm::toString(viewOrErr.takeError()));
-    return false;
-  }
-  std::optional<std::size_t> index =
-      resolveElementIndex(viewOrErr->pointer, integerValueToken(0), state,
-                          op.getOperation(), "llvm.load");
-  if (!index)
-    return false;
-  std::optional<Token> value =
-      readMemoryElement(viewOrErr->pointer, *index, state, "llvm.load");
-  if (!value)
-    return false;
-  emitToken(state, op->getResult(0), *value);
-  return recordEvent(state, op->getName().getStringRef());
-}
-
-bool fireLLVMStore(mlir::LLVM::StoreOp op, SimulatorState &state) {
-  mlir::OpOperand &valueOperand = op->getOpOperand(0);
-  mlir::OpOperand &addrOperand = op->getOpOperand(1);
-  if (!hasToken(state.channels, valueOperand) ||
-      !hasToken(state.channels, addrOperand))
-    return false;
-  Token value = popToken(state, valueOperand);
-  Token ptr = popToken(state, addrOperand);
-  auto viewOrErr = ensurePointerMemory(state, ptr, op->getOperand(0).getType());
-  if (!viewOrErr) {
-    state.diagnostics.push_back(llvm::toString(viewOrErr.takeError()));
-    return false;
-  }
-  std::optional<std::size_t> index =
-      resolveElementIndex(viewOrErr->pointer, integerValueToken(0), state,
-                          op.getOperation(), "llvm.store");
-  if (!index)
-    return false;
-  writeMemoryElement(viewOrErr->pointer, *index, value);
-  return recordEvent(state, op->getName().getStringRef());
-}
-
-static std::optional<std::size_t>
-resolveByteRangeStart(const MemoryView &view, std::int64_t byteLength,
-                      SimulatorState &state, mlir::Operation *scope,
-                      llvm::StringRef opName, llvm::StringRef role) {
-  if (byteLength < 0) {
-    state.diagnostics.push_back((opName + " length is negative").str());
-    return std::nullopt;
-  }
-  if (view.byteOffset < 0) {
-    state.diagnostics.push_back(
-        (opName + " " + role + " byte offset is negative").str());
-    return std::nullopt;
-  }
-  auto elementSizeOrErr = byteSizeOfType(view.memory->elementType, scope);
-  if (!elementSizeOrErr) {
-    state.diagnostics.push_back(llvm::toString(elementSizeOrErr.takeError()));
-    return std::nullopt;
-  }
-  if (*elementSizeOrErr != 1) {
-    state.diagnostics.push_back(
-        (opName + " requires byte-addressable i8 memory fixtures").str());
-    return std::nullopt;
-  }
-  const std::uint64_t start = static_cast<std::uint64_t>(view.byteOffset);
-  const std::uint64_t length = static_cast<std::uint64_t>(byteLength);
-  const std::uint64_t size = view.memory->elements.size();
-  if (start > size || length > size - start) {
-    state.diagnostics.push_back(
-        (opName + " " + role + " range is out of range").str());
-    return std::nullopt;
-  }
-  return static_cast<std::size_t>(start);
-}
-
-bool executeLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state,
-                       const Token &dst, const Token &src, const Token &len) {
-  if (op.getIsVolatile()) {
-    state.diagnostics.push_back("volatile llvm.intr.memcpy is unsupported");
-    return false;
-  }
-
-  if (len.kind != TokenKind::Integer && len.kind != TokenKind::Bool) {
-    state.diagnostics.push_back("llvm.intr.memcpy length is not integer-like");
-    return false;
-  }
-
-  mlir::Type byteType = mlir::IntegerType::get(op.getContext(), 8);
-  auto dstOrErr = ensurePointerMemory(state, dst, byteType);
-  if (!dstOrErr) {
-    state.diagnostics.push_back(llvm::toString(dstOrErr.takeError()));
-    return false;
-  }
-  auto srcOrErr = ensurePointerMemory(state, src, byteType);
-  if (!srcOrErr) {
-    state.diagnostics.push_back(llvm::toString(srcOrErr.takeError()));
-    return false;
-  }
-
-  const std::int64_t byteLength = integerToken(len);
-  std::optional<std::size_t> dstStart = resolveByteRangeStart(
-      dstOrErr->pointer, byteLength, state, op.getOperation(),
-      "llvm.intr.memcpy", "destination");
-  std::optional<std::size_t> srcStart =
-      resolveByteRangeStart(srcOrErr->pointer, byteLength, state,
-                            op.getOperation(), "llvm.intr.memcpy", "source");
-  if (!dstStart || !srcStart)
-    return false;
-
-  if (dstOrErr->pointer.memory == srcOrErr->pointer.memory) {
-    std::size_t length = static_cast<std::size_t>(byteLength);
-    bool overlaps =
-        *dstStart < *srcStart + length && *srcStart < *dstStart + length;
-    if (overlaps && dstStart != srcStart) {
-      state.diagnostics.push_back(
-          "llvm.intr.memcpy overlapping ranges are unsupported");
-      return false;
-    }
-  }
-
-  llvm::SmallVector<Token> copied;
-  copied.reserve(static_cast<std::size_t>(byteLength));
-  for (std::int64_t i = 0; i < byteLength; ++i) {
-    std::optional<Token> value = readMemoryElement(
-        srcOrErr->pointer, *srcStart + i, state, "llvm.intr.memcpy");
-    if (!value)
-      return false;
-    copied.push_back(*value);
-  }
-  for (auto [offset, token] : llvm::enumerate(copied))
-    writeMemoryElement(dstOrErr->pointer, *dstStart + offset, token);
-  return recordEvent(state, op->getName().getStringRef());
-}
-
-bool fireLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state) {
-  if (!hasToken(state.channels, op.getDstMutable()) ||
-      !hasToken(state.channels, op.getSrcMutable()) ||
-      !hasToken(state.channels, op.getLenMutable()))
-    return false;
-
-  Token dst = popToken(state, op.getDstMutable());
-  Token src = popToken(state, op.getSrcMutable());
-  Token len = popToken(state, op.getLenMutable());
-  return executeLLVMMemcpy(op, state, dst, src, len);
+  return recordActorEvent(state, op.getOperation());
 }
 
 bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
@@ -772,7 +623,7 @@ bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   emitTokenWithMemoryOrder(state, op.getDone(), noneToken(), *publication);
   if (prepared->write.accessedMemory && hasComputedAddress(op.getAddr()))
     state.memoryAddressScore += kStoreAddressScore;
-  return recordEvent(state, op->getName().getStringRef());
+  return recordActorEvent(state, op.getOperation());
 }
 
 } // namespace LLVM_LIBRARY_VISIBILITY_NAMESPACE detail

@@ -19,7 +19,6 @@ ArtifactIdentity artifact(std::uint8_t value) {
 }
 TypeKey type(std::uint64_t value) { return TypeKey(value); }
 PortRoleKey role(std::uint64_t value) { return PortRoleKey(value); }
-SemanticKey semantic(std::uint8_t value) { return SemanticKey({value}); }
 PortDescriptor port(PortKind kind, TypeKey typeKey,
                     std::uint32_t payloadWidthBits, std::uint32_t tagWidthBits,
                     PortRoleKey roleKey) {
@@ -34,11 +33,11 @@ ComputeOccurrenceDescriptor makeSpatialComputeOccurrence(
   auto addPort = [&](PortDirection direction, std::uint32_t index,
                      const PortDescriptor &descriptor) {
     const ComputeEndpointId endpoint(endpointBase + endpoints.size());
-    const fabric::DataPathKind transportKind =
-        descriptor.tagWidthBits == 0 ? fabric::DataPathKind::Bits
-                                     : fabric::DataPathKind::BitsTag;
+    const ::fabric::DataPathKind transportKind =
+        descriptor.tagWidthBits == 0 ? ::fabric::DataPathKind::Bits
+                                     : ::fabric::DataPathKind::BitsTag;
     const std::uint32_t tagCapacityBits =
-        transportKind == fabric::DataPathKind::Bits ? 0 : unbounded;
+        transportKind == ::fabric::DataPathKind::Bits ? 0 : unbounded;
     endpoints.push_back({endpoint,
                          direction,
                          descriptor.kind,
@@ -47,7 +46,12 @@ ComputeOccurrenceDescriptor makeSpatialComputeOccurrence(
                          {descriptor.type},
                          descriptor.role,
                          transportKind});
-    localArcs.push_back({FuPortRef{FuRef{fabric, fu.id}, direction, index},
+    localArcs.push_back({::loom::fabric::FabricFuTemplatePortRef{
+                             fu.id,
+                             direction == PortDirection::Input
+                                 ? ::loom::fabric::FabricPortDirection::Input
+                                 : ::loom::fabric::FabricPortDirection::Output,
+                             index},
                          ComputeEndpointRef{fabric, endpoint}, unbounded,
                          unbounded});
   };
@@ -57,12 +61,9 @@ ComputeOccurrenceDescriptor makeSpatialComputeOccurrence(
   for (std::size_t index = 0; index < fu.outputPorts.size(); ++index)
     addPort(PortDirection::Output, static_cast<std::uint32_t>(index),
             fu.outputPorts[index]);
-  return ComputeOccurrenceDescriptor{occurrence,
-                                     ComputeScheduleKind::Spatial,
-                                     {FuRef{fabric, fu.id}},
-                                     std::move(endpoints),
-                                     std::move(localArcs),
-                                     1};
+  return ComputeOccurrenceDescriptor{
+      occurrence,           ComputeScheduleKind::Spatial, {fu.id},
+      std::move(endpoints), std::move(localArcs),         1};
 }
 [[noreturn]] void fail(const char *test, const char *message) {
   std::cerr << test << ": " << message << '\n';
@@ -106,117 +107,90 @@ void expectMapError(const char *test, const TestCase &testCase,
                                   testCase.fabric),
               expected);
 }
-void selectWideSyncLanes(TestCase &testCase,
-                         llvm::ArrayRef<std::uint32_t> laneIndices) {
-  const FabricOpDescriptor &operation = testCase.fabric.operations.front();
-  ActorToFabricOp &correspondence =
-      testCase.mapping.realizations.front().actorToOps.front();
-  correspondence.laneSelections.clear();
-  testCase.mapping.realizations.front().boundaryPorts.clear();
 
-  const ArtifactIdentity &dataflowId = testCase.dataflow.identity;
-  const ArtifactIdentity &fabricId = testCase.fabric.identity;
-  const ActorId actor = testCase.dataflow.actors.front().id;
-  const FuId fu = testCase.fabric.functionalUnits.front().id;
-  for (auto [softwareLane, laneIndex] : llvm::enumerate(laneIndices)) {
-    const PairedLaneDescriptor &lane = operation.pairedLanes[laneIndex];
-    correspondence.laneSelections.push_back({lane.inputPort, lane.outputPort});
-    testCase.mapping.realizations.front().boundaryPorts.push_back(
-        {ActorPortRef{ActorRef{dataflowId, actor}, PortDirection::Input,
-                      static_cast<std::uint32_t>(softwareLane)},
-         FuPortRef{FuRef{fabricId, fu}, PortDirection::Input, lane.inputPort}});
-    testCase.mapping.realizations.front().boundaryPorts.push_back(
-        {ActorPortRef{ActorRef{dataflowId, actor}, PortDirection::Output,
-                      static_cast<std::uint32_t>(softwareLane)},
-         FuPortRef{FuRef{fabricId, fu}, PortDirection::Output,
-                   lane.outputPort}});
-  }
+namespace {
+
+::mlir::MLIRContext &testContext() {
+  static ::mlir::MLIRContext context;
+  return context;
 }
-TestCase makeWideSyncCase() {
-  const ArtifactIdentity dataflowId = artifact(31);
-  const ArtifactIdentity fabricId = artifact(32);
-  const PortDescriptor value = port(PortKind::Value, type(31), 32);
-  const GraphId graph(31);
-  const ActorId syncActor(32);
-  const SemanticKey sync = semantic(31);
-  const SemanticKey noAttributes = semantic(32);
-  const FuId fu(33);
-  const FabricOpId syncOp(34);
-  const EncodingId encoding(35);
 
-  DataflowProgramView dataflow{
-      dataflowId,
-      {GraphDescriptor{graph, {value, value}, {value, value}}},
-      {ActorDescriptor{syncActor,
-                       graph,
-                       sync,
-                       noAttributes,
-                       {value, value},
-                       {value, value},
-                       std::nullopt}},
-      {DataflowEdge{GraphPort{graph, PortDirection::Input, 0},
-                    ActorPort{syncActor, PortDirection::Input, 0}},
-       DataflowEdge{GraphPort{graph, PortDirection::Input, 1},
-                    ActorPort{syncActor, PortDirection::Input, 1}},
-       DataflowEdge{ActorPort{syncActor, PortDirection::Output, 0},
-                    GraphPort{graph, PortDirection::Output, 0}},
-       DataflowEdge{ActorPort{syncActor, PortDirection::Output, 1},
-                    GraphPort{graph, PortDirection::Output, 1}}},
-      {}};
-
-  FabricHardwareView fabric{
-      fabricId,
-      {FuDescriptor{
-          fu, {value, value, value, value}, {value, value, value, value}}},
-      {FabricOpDescriptor{
-          syncOp,
-          fu,
-          {value, value, value, value},
-          {value, value, value, value},
-          {PairedLaneDescriptor{2, 1, 3}, PairedLaneDescriptor{0, 3, 0},
-           PairedLaneDescriptor{3, 0, 2}, PairedLaneDescriptor{1, 2, 1}}}},
-      {EncodingDescriptor{
-          encoding,
-          fu,
-          {{0, value}, {1, value}, {2, value}, {3, value}},
-          {ConfiguredFabricOpDescriptor{syncOp,
-                                        sync,
-                                        noAttributes,
-                                        {value, value, value, value},
-                                        {value, value, value, value},
-                                        {FuInputValue{2}, FuInputValue{0},
-                                         FuInputValue{3}, FuInputValue{1}}}},
-          {{1, value, FabricOpResultValue{syncOp, 0}},
-           {3, value, FabricOpResultValue{syncOp, 1}},
-           {0, value, FabricOpResultValue{syncOp, 2}},
-           {2, value, FabricOpResultValue{syncOp, 3}}}}},
-      {},
-      {},
-      {},
-      {},
-      {},
-      {}};
-  fabric.computeOccurrences.push_back(
-      makeSpatialComputeOccurrence(fabricId, ComputeOccurrenceId(3100),
-                                   fabric.functionalUnits.front(), 3200));
-
-  ComputeRealizationDraft realization{
-      ComputeRealizationId(36),
-      {ActorRef{dataflowId, syncActor}},
-      FuRef{fabricId, fu},
-      EncodingRef{fabricId, encoding},
-      {{ActorRef{dataflowId, syncActor}, FabricOpRef{fabricId, syncOp}, {}}},
-      {}};
-  TechMappingDraft mapping{
-      MappingDraftHeader{dataflowId, fabricId},
-      {GraphRef{dataflowId, graph}},
-      {std::move(realization)},
-      {}};
-  TestCase testCase{std::move(dataflow), std::move(fabric), artifact(33),
-                    std::move(mapping)};
-  selectWideSyncLanes(testCase, {0, 1});
-  return testCase;
+::dataflow::CanonicalActorSchemaProjection
+integerProjection(::dataflow::OperationSchemaId schema, std::size_t inputCount,
+                  std::size_t resultCount, unsigned width) {
+  ::mlir::Type type = ::mlir::IntegerType::get(&testContext(), width);
+  std::vector<::mlir::Type> inputs(inputCount, type);
+  std::vector<::mlir::Type> results(resultCount, type);
+  ::dataflow::SemanticPayload payload = ::dataflow::NoPayload{};
+  if (schema == ::dataflow::OperationSchemaId::ArithAddI ||
+      schema == ::dataflow::OperationSchemaId::ArithSubI ||
+      schema == ::dataflow::OperationSchemaId::ArithMulI)
+    payload = ::dataflow::IntegerOverflowPayload{};
+  return {schema, ::mlir::FunctionType::get(&testContext(), inputs, results),
+          std::move(payload)};
 }
+
+::dataflow::CanonicalActorSchemaProjection
+memoryProjection(::dataflow::OperationSchemaId schema, std::size_t inputCount,
+                 std::size_t resultCount, unsigned width) {
+  ::mlir::Type type = ::mlir::IntegerType::get(&testContext(), width);
+  return {
+      schema,
+      ::mlir::FunctionType::get(&testContext(),
+                                std::vector<::mlir::Type>(inputCount, type),
+                                std::vector<::mlir::Type>(resultCount, type)),
+      ::dataflow::MemoryContractPayload{::dataflow::PlainAccessProjection{}}};
+}
+
+::fabric::FamilyCapabilityParams integerCapability(unsigned width) {
+  const ::fabric::IntegerWidth admitted =
+      width == 16 ? ::fabric::IntegerWidth::I16 : ::fabric::IntegerWidth::I32;
+  return ::fabric::ScalarIntegerParams{
+      ::fabric::IntegerWidthSet::get({admitted})};
+}
+
+::loom::fabric::FabricFuTemplateNodeRef
+opNode(::loom::fabric::FabricFuTemplateRef fu, std::uint64_t ordinal) {
+  return {::loom::fabric::FabricFuNodeKind::Op, fu, ordinal};
+}
+
+::loom::fabric::FabricFuCapabilityTemplateEndpointRef
+boundaryEndpoint(::loom::fabric::FabricFuTemplateRef fu,
+                 ::loom::fabric::FabricPortDirection direction,
+                 std::uint64_t ordinal) {
+  return ::loom::fabric::FabricFuCapabilityTemplateEndpointRef::boundaryPort(
+      {fu, direction, ordinal});
+}
+
+::loom::fabric::FabricFuCapabilityTemplateEndpointRef
+nodeEndpoint(::loom::fabric::FabricFuTemplateNodeRef node,
+             ::loom::fabric::FabricPortDirection direction,
+             std::uint64_t ordinal) {
+  return ::loom::fabric::FabricFuCapabilityTemplateEndpointRef::nodePort(
+      {node, direction, ordinal});
+}
+
+std::vector<::loom::fabric::FabricFuCapabilityTemplateRecord> templateInventory(
+    std::vector<::loom::fabric::FabricFuTemplateNodeRef> nodes,
+    std::vector<::loom::fabric::FabricFuCapabilityTemplateEdge> edges) {
+  return llvm::cantFail(
+      ::loom::fabric::normalizeFabricFuCapabilityTemplateInventory(
+          {::loom::fabric::FabricFuCapabilityTemplateRecord{
+              std::move(nodes), std::move(edges)}}));
+}
+
+::loom::fabric::FabricFuTemplatePortRef
+fuPort(::loom::fabric::FabricFuTemplateRef fu, PortDirection direction,
+       std::uint32_t ordinal) {
+  return {fu,
+          direction == PortDirection::Input
+              ? ::loom::fabric::FabricPortDirection::Input
+              : ::loom::fabric::FabricPortDirection::Output,
+          ordinal};
+}
+
+} // namespace
+
 TestCase makeValidCase() {
   const ArtifactIdentity dataflowId = artifact(1);
   const ArtifactIdentity fabricId = artifact(2);
@@ -227,23 +201,20 @@ TestCase makeValidCase() {
   const GraphId graph(1);
   const ActorId multiplyActor(2);
   const ActorId addActor(3);
-  const SemanticKey multiply = semantic(1);
-  const SemanticKey add = semantic(2);
-  const SemanticKey noAttributes = semantic(10);
   DataflowProgramView dataflow{
       dataflowId,
       {GraphDescriptor{graph, {value, stream, auxiliary}, {value}}},
       {ActorDescriptor{multiplyActor,
                        graph,
-                       multiply,
-                       noAttributes,
+                       integerProjection(
+                           ::dataflow::OperationSchemaId::ArithMulI, 2, 1, 32),
                        {value, stream},
                        {value},
                        std::nullopt},
        ActorDescriptor{addActor,
                        graph,
-                       add,
-                       noAttributes,
+                       integerProjection(
+                           ::dataflow::OperationSchemaId::ArithAddI, 2, 1, 32),
                        {value, auxiliary},
                        {value},
                        std::nullopt}},
@@ -258,33 +229,38 @@ TestCase makeValidCase() {
        DataflowEdge{ActorPort{addActor, PortDirection::Output, 0},
                     GraphPort{graph, PortDirection::Output, 0}}},
       {}};
-  const FuId fu(10);
-  const FabricOpId multiplyOp(11);
-  const FabricOpId addOp(12);
-  const EncodingId encoding(13);
+  const ::loom::fabric::FabricFuTemplateRef fu(10);
+  const auto multiplyOp = opNode(fu, 0);
+  const auto addOp = opNode(fu, 1);
+  const auto input = ::loom::fabric::FabricPortDirection::Input;
+  const auto output = ::loom::fabric::FabricPortDirection::Output;
   FabricHardwareView fabric{
       fabricId,
-      {FuDescriptor{fu, {value, stream, auxiliary}, {value}}},
-      {FabricOpDescriptor{multiplyOp, fu, {value, stream}, {value}},
-       FabricOpDescriptor{addOp, fu, {value, auxiliary}, {value}}},
-      {EncodingDescriptor{
-          encoding,
-          fu,
-          {{0, value}, {1, stream}, {2, auxiliary}},
-          {ConfiguredFabricOpDescriptor{multiplyOp,
-                                        multiply,
-                                        noAttributes,
-                                        {value, stream},
-                                        {value},
-                                        {FuInputValue{0}, FuInputValue{1}}},
-           ConfiguredFabricOpDescriptor{
-               addOp,
-               add,
-               noAttributes,
-               {value, auxiliary},
-               {value},
-               {FabricOpResultValue{multiplyOp, 0}, FuInputValue{2}}}},
-          {{0, value, FabricOpResultValue{addOp, 0}}}}},
+      {FuDescriptor{fu,
+                    {value, stream, auxiliary},
+                    {value},
+                    templateInventory({multiplyOp, addOp},
+                                      {{boundaryEndpoint(fu, input, 0),
+                                        nodeEndpoint(multiplyOp, input, 0)},
+                                       {boundaryEndpoint(fu, input, 1),
+                                        nodeEndpoint(multiplyOp, input, 1)},
+                                       {nodeEndpoint(multiplyOp, output, 0),
+                                        nodeEndpoint(addOp, input, 0)},
+                                       {boundaryEndpoint(fu, input, 2),
+                                        nodeEndpoint(addOp, input, 1)},
+                                       {nodeEndpoint(addOp, output, 0),
+                                        boundaryEndpoint(fu, output, 0)}})}},
+      {FabricOpDescriptor{
+           multiplyOp,
+           ::fabric::ImplementationFamilyId::ScalarIntegerMultiply,
+           integerCapability(32),
+           {value, stream},
+           {value}},
+       FabricOpDescriptor{addOp,
+                          ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                          integerCapability(32),
+                          {value, auxiliary},
+                          {value}}},
       {},
       {},
       {},
@@ -296,26 +272,23 @@ TestCase makeValidCase() {
                                    fabric.functionalUnits.front(), 2000));
   ComputeRealizationDraft realization{
       ComputeRealizationId(20),
-      {ActorRef{dataflowId, multiplyActor}, ActorRef{dataflowId, addActor}},
-      FuRef{fabricId, fu},
-      EncodingRef{fabricId, encoding},
-      {{ActorRef{dataflowId, multiplyActor}, FabricOpRef{fabricId, multiplyOp}},
-       {ActorRef{dataflowId, addActor}, FabricOpRef{fabricId, addOp}}},
+      ::loom::fabric::FabricFuCapabilityTemplateRef{fu, 0},
+      {{ActorRef{dataflowId, multiplyActor}, multiplyOp, {0, 1}, {0}},
+       {ActorRef{dataflowId, addActor}, addOp, {0, 1}, {0}}},
       {{ActorPortRef{ActorRef{dataflowId, multiplyActor}, PortDirection::Input,
                      0},
-        FuPortRef{FuRef{fabricId, fu}, PortDirection::Input, 0}},
+        fuPort(fu, PortDirection::Input, 0)},
        {ActorPortRef{ActorRef{dataflowId, multiplyActor}, PortDirection::Input,
                      1},
-        FuPortRef{FuRef{fabricId, fu}, PortDirection::Input, 1}},
+        fuPort(fu, PortDirection::Input, 1)},
        {ActorPortRef{ActorRef{dataflowId, addActor}, PortDirection::Input, 1},
-        FuPortRef{FuRef{fabricId, fu}, PortDirection::Input, 2}},
+        fuPort(fu, PortDirection::Input, 2)},
        {ActorPortRef{ActorRef{dataflowId, addActor}, PortDirection::Output, 0},
-        FuPortRef{FuRef{fabricId, fu}, PortDirection::Output, 0}}}};
-  TechMappingDraft mapping{
-      MappingDraftHeader{dataflowId, fabricId},
-      {GraphRef{dataflowId, graph}},
-      {std::move(realization)},
-      {}};
+        fuPort(fu, PortDirection::Output, 0)}}};
+  TechMappingDraft mapping{MappingDraftHeader{dataflowId, fabricId},
+                           {GraphRef{dataflowId, graph}},
+                           {std::move(realization)},
+                           {}};
   return TestCase{std::move(dataflow), std::move(fabric), artifact(3),
                   std::move(mapping)};
 }
@@ -325,7 +298,6 @@ TestCase makeMemoryAnchorCase() {
   const PortDescriptor value = port(PortKind::Value, type(1), 16);
   const PortDescriptor control = port(PortKind::Value, type(2));
   const PortDescriptor memory = port(PortKind::Memory, type(3));
-  const SemanticKey noAttributes = semantic(20);
   const GraphId graph(1);
   const ActorId loadActor(2);
   const ActorId xoriActor(3);
@@ -335,10 +307,10 @@ TestCase makeMemoryAnchorCase() {
   const ActorId finalAddActor(7);
   const ActorId storeActor(8);
   const LogicalMemoryRootId root(20);
-  auto binaryActor = [&](ActorId actor, std::uint8_t operation) {
-    return ActorDescriptor{actor,        graph,          semantic(operation),
-                           noAttributes, {value, value}, {value},
-                           std::nullopt};
+  auto binaryActor = [&](ActorId actor, ::dataflow::OperationSchemaId schema) {
+    return ActorDescriptor{
+        actor,          graph,   integerProjection(schema, 2, 1, 16),
+        {value, value}, {value}, std::nullopt};
   };
   auto graphInputEdge = [&](std::uint32_t input, ActorId target,
                             std::uint32_t port) {
@@ -358,8 +330,8 @@ TestCase makeMemoryAnchorCase() {
       {ActorDescriptor{
            loadActor,
            graph,
-           semantic(1),
-           noAttributes,
+           memoryProjection(::dataflow::OperationSchemaId::DataflowLoad, 2, 2,
+                            16),
            {value, control},
            {value, control},
            CanonicalMemoryActorView{
@@ -372,14 +344,16 @@ TestCase makeMemoryAnchorCase() {
                 {MemoryAccessPortRole::Control, PortDirection::Input, 1},
                 {MemoryAccessPortRole::Result, PortDirection::Output, 0},
                 {MemoryAccessPortRole::Done, PortDirection::Output, 1}}}},
-       binaryActor(xoriActor, 2), binaryActor(preAddActor, 3),
-       binaryActor(multiplyActor, 4), binaryActor(subtractActor, 5),
-       binaryActor(finalAddActor, 3),
+       binaryActor(xoriActor, ::dataflow::OperationSchemaId::ArithXOrI),
+       binaryActor(preAddActor, ::dataflow::OperationSchemaId::ArithAddI),
+       binaryActor(multiplyActor, ::dataflow::OperationSchemaId::ArithMulI),
+       binaryActor(subtractActor, ::dataflow::OperationSchemaId::ArithSubI),
+       binaryActor(finalAddActor, ::dataflow::OperationSchemaId::ArithAddI),
        ActorDescriptor{
            storeActor,
            graph,
-           semantic(6),
-           noAttributes,
+           memoryProjection(::dataflow::OperationSchemaId::DataflowStore, 3, 1,
+                            16),
            {value, value, control},
            {control},
            CanonicalMemoryActorView{
@@ -410,19 +384,15 @@ TestCase makeMemoryAnchorCase() {
           graph,
           {GraphPort{graph, PortDirection::Input, 0}},
           {GraphPort{graph, PortDirection::Output, 0}}}}};
-  const FuId pairFu(10);
-  const FuId multiplyFu(20);
-  const FuId subtractFu(23);
-  const FuId finalAddFu(26);
-  const FabricOpId xoriOp(11);
-  const FabricOpId preAddOp(12);
-  const FabricOpId multiplyOp(21);
-  const FabricOpId subtractOp(24);
-  const FabricOpId finalAddOp(27);
-  const EncodingId pairEncoding(13);
-  const EncodingId multiplyEncoding(22);
-  const EncodingId subtractEncoding(25);
-  const EncodingId finalAddEncoding(28);
+  const ::loom::fabric::FabricFuTemplateRef pairFu(10);
+  const ::loom::fabric::FabricFuTemplateRef multiplyFu(20);
+  const ::loom::fabric::FabricFuTemplateRef subtractFu(23);
+  const ::loom::fabric::FabricFuTemplateRef finalAddFu(26);
+  const auto xoriOp = opNode(pairFu, 0);
+  const auto preAddOp = opNode(pairFu, 1);
+  const auto multiplyOp = opNode(multiplyFu, 0);
+  const auto subtractOp = opNode(subtractFu, 0);
+  const auto finalAddOp = opNode(finalAddFu, 0);
   const MemoryServiceDomainId service(30);
   const MemoryServiceDomainId otherService(31);
   const MemoryImplementationId implementation(32);
@@ -453,52 +423,71 @@ TestCase makeMemoryAnchorCase() {
       {MemoryAccessPortRole::Done, PortDirection::Output, control, 1}};
   const std::vector<MemoryAccessCapability> loadAccess{{2, 2}, {4, 4}};
   const std::vector<MemoryAccessCapability> storeAccess{{2, 2}, {4, 4}};
-  auto binaryEncoding = [&](EncodingId encoding, FuId fu, FabricOpId operation,
-                            std::uint8_t operationSemantics) {
-    return EncodingDescriptor{
-        encoding,
-        fu,
-        {{0, value}, {1, value}},
-        {ConfiguredFabricOpDescriptor{operation,
-                                      semantic(operationSemantics),
-                                      noAttributes,
-                                      {value, value},
-                                      {value},
-                                      {FuInputValue{0}, FuInputValue{1}}}},
-        {{0, value, FabricOpResultValue{operation, 0}}}};
+  const auto input = ::loom::fabric::FabricPortDirection::Input;
+  const auto output = ::loom::fabric::FabricPortDirection::Output;
+  auto binaryTemplate = [&](::loom::fabric::FabricFuTemplateRef fu,
+                            ::loom::fabric::FabricFuTemplateNodeRef operation) {
+    return templateInventory(
+        {operation},
+        {{boundaryEndpoint(fu, input, 0), nodeEndpoint(operation, input, 0)},
+         {boundaryEndpoint(fu, input, 1), nodeEndpoint(operation, input, 1)},
+         {nodeEndpoint(operation, output, 0),
+          boundaryEndpoint(fu, output, 0)}});
   };
   FabricHardwareView fabric{
       fabricId,
-      {FuDescriptor{pairFu, {value, value, value}, {value}},
-       FuDescriptor{multiplyFu, {value, value}, {value}},
-       FuDescriptor{subtractFu, {value, value}, {value}},
-       FuDescriptor{finalAddFu, {value, value}, {value}}},
-      {FabricOpDescriptor{xoriOp, pairFu, {value, value}, {value}},
-       FabricOpDescriptor{preAddOp, pairFu, {value, value}, {value}},
-       FabricOpDescriptor{multiplyOp, multiplyFu, {value, value}, {value}},
-       FabricOpDescriptor{subtractOp, subtractFu, {value, value}, {value}},
-       FabricOpDescriptor{finalAddOp, finalAddFu, {value, value}, {value}}},
-      {EncodingDescriptor{
-           pairEncoding,
-           pairFu,
-           {{0, value}, {1, value}, {2, value}},
-           {ConfiguredFabricOpDescriptor{xoriOp,
-                                         semantic(2),
-                                         noAttributes,
-                                         {value, value},
-                                         {value},
-                                         {FuInputValue{0}, FuInputValue{1}}},
-            ConfiguredFabricOpDescriptor{
-                preAddOp,
-                semantic(3),
-                noAttributes,
-                {value, value},
-                {value},
-                {FabricOpResultValue{xoriOp, 0}, FuInputValue{2}}}},
-           {{0, value, FabricOpResultValue{preAddOp, 0}}}},
-       binaryEncoding(multiplyEncoding, multiplyFu, multiplyOp, 4),
-       binaryEncoding(subtractEncoding, subtractFu, subtractOp, 5),
-       binaryEncoding(finalAddEncoding, finalAddFu, finalAddOp, 3)},
+      {FuDescriptor{pairFu,
+                    {value, value, value},
+                    {value},
+                    templateInventory({xoriOp, preAddOp},
+                                      {{boundaryEndpoint(pairFu, input, 0),
+                                        nodeEndpoint(xoriOp, input, 0)},
+                                       {boundaryEndpoint(pairFu, input, 1),
+                                        nodeEndpoint(xoriOp, input, 1)},
+                                       {nodeEndpoint(xoriOp, output, 0),
+                                        nodeEndpoint(preAddOp, input, 0)},
+                                       {boundaryEndpoint(pairFu, input, 2),
+                                        nodeEndpoint(preAddOp, input, 1)},
+                                       {nodeEndpoint(preAddOp, output, 0),
+                                        boundaryEndpoint(pairFu, output, 0)}})},
+       FuDescriptor{multiplyFu,
+                    {value, value},
+                    {value},
+                    binaryTemplate(multiplyFu, multiplyOp)},
+       FuDescriptor{subtractFu,
+                    {value, value},
+                    {value},
+                    binaryTemplate(subtractFu, subtractOp)},
+       FuDescriptor{finalAddFu,
+                    {value, value},
+                    {value},
+                    binaryTemplate(finalAddFu, finalAddOp)}},
+      {FabricOpDescriptor{xoriOp,
+                          ::fabric::ImplementationFamilyId::ScalarIntegerLogic,
+                          integerCapability(16),
+                          {value, value},
+                          {value}},
+       FabricOpDescriptor{preAddOp,
+                          ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                          integerCapability(16),
+                          {value, value},
+                          {value}},
+       FabricOpDescriptor{
+           multiplyOp,
+           ::fabric::ImplementationFamilyId::ScalarIntegerMultiply,
+           integerCapability(16),
+           {value, value},
+           {value}},
+       FabricOpDescriptor{subtractOp,
+                          ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                          integerCapability(16),
+                          {value, value},
+                          {value}},
+       FabricOpDescriptor{finalAddOp,
+                          ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                          integerCapability(16),
+                          {value, value},
+                          {value}}},
       {MemoryServiceDomainDescriptor{service},
        MemoryServiceDomainDescriptor{otherService}},
       {MemoryImplementationDescriptor{implementation, service,
@@ -559,7 +548,7 @@ TestCase makeMemoryAnchorCase() {
                                   0,
                                   {descriptor.port.type},
                                   descriptor.port.role,
-                                  fabric::DataPathKind::Bits});
+                                  ::fabric::DataPathKind::Bits});
       result.localArcs.push_back(
           {MemoryOperationPortRef{
                MemoryOperationPortTemplateRef{fabricId, operation}, portIndex},
@@ -581,36 +570,31 @@ TestCase makeMemoryAnchorCase() {
                        std::uint32_t index) {
     return ActorPortRef{actorRef(actor), direction, index};
   };
-  auto fuPort = [&](FuId fu, PortDirection direction, std::uint32_t index) {
-    return FuPortRef{FuRef{fabricId, fu}, direction, index};
-  };
   auto memoryPort = [&](MemoryOperationPortTemplateId operation,
                         std::uint32_t index) {
     return MemoryOperationPortRef{
         MemoryOperationPortTemplateRef{fabricId, operation}, index};
   };
-  auto singletonRealization = [&](std::uint64_t id, ActorId actor, FuId fu,
-                                  EncodingId encoding, FabricOpId operation) {
-    return ComputeRealizationDraft{
-        ComputeRealizationId(id),
-        {actorRef(actor)},
-        FuRef{fabricId, fu},
-        EncodingRef{fabricId, encoding},
-        {{actorRef(actor), FabricOpRef{fabricId, operation}}},
-        {{actorPort(actor, PortDirection::Input, 0),
-          fuPort(fu, PortDirection::Input, 0)},
-         {actorPort(actor, PortDirection::Input, 1),
-          fuPort(fu, PortDirection::Input, 1)},
-         {actorPort(actor, PortDirection::Output, 0),
-          fuPort(fu, PortDirection::Output, 0)}}};
-  };
+  auto singletonRealization =
+      [&](std::uint64_t id, ActorId actor,
+          ::loom::fabric::FabricFuTemplateRef fu,
+          ::loom::fabric::FabricFuTemplateNodeRef operation) {
+        return ComputeRealizationDraft{
+            ComputeRealizationId(id),
+            ::loom::fabric::FabricFuCapabilityTemplateRef{fu, 0},
+            {{actorRef(actor), operation, {0, 1}, {0}}},
+            {{actorPort(actor, PortDirection::Input, 0),
+              fuPort(fu, PortDirection::Input, 0)},
+             {actorPort(actor, PortDirection::Input, 1),
+              fuPort(fu, PortDirection::Input, 1)},
+             {actorPort(actor, PortDirection::Output, 0),
+              fuPort(fu, PortDirection::Output, 0)}}};
+      };
   ComputeRealizationDraft pairRealization{
       ComputeRealizationId(50),
-      {actorRef(xoriActor), actorRef(preAddActor)},
-      FuRef{fabricId, pairFu},
-      EncodingRef{fabricId, pairEncoding},
-      {{actorRef(xoriActor), FabricOpRef{fabricId, xoriOp}},
-       {actorRef(preAddActor), FabricOpRef{fabricId, preAddOp}}},
+      ::loom::fabric::FabricFuCapabilityTemplateRef{pairFu, 0},
+      {{actorRef(xoriActor), xoriOp, {0, 1}, {0}},
+       {actorRef(preAddActor), preAddOp, {0, 1}, {0}}},
       {{actorPort(xoriActor, PortDirection::Input, 0),
         fuPort(pairFu, PortDirection::Input, 0)},
        {actorPort(xoriActor, PortDirection::Input, 1),
@@ -619,12 +603,12 @@ TestCase makeMemoryAnchorCase() {
         fuPort(pairFu, PortDirection::Input, 2)},
        {actorPort(preAddActor, PortDirection::Output, 0),
         fuPort(pairFu, PortDirection::Output, 0)}}};
-  ComputeRealizationDraft multiplyRealization = singletonRealization(
-      51, multiplyActor, multiplyFu, multiplyEncoding, multiplyOp);
-  ComputeRealizationDraft subtractRealization = singletonRealization(
-      52, subtractActor, subtractFu, subtractEncoding, subtractOp);
-  ComputeRealizationDraft finalAddRealization = singletonRealization(
-      53, finalAddActor, finalAddFu, finalAddEncoding, finalAddOp);
+  ComputeRealizationDraft multiplyRealization =
+      singletonRealization(51, multiplyActor, multiplyFu, multiplyOp);
+  ComputeRealizationDraft subtractRealization =
+      singletonRealization(52, subtractActor, subtractFu, subtractOp);
+  ComputeRealizationDraft finalAddRealization =
+      singletonRealization(53, finalAddActor, finalAddFu, finalAddOp);
   MemoryRealizationDraft loadRealization{
       MemoryRealizationId(60),
       {actorRef(loadActor)},

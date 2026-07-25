@@ -1,105 +1,17 @@
-// RUN: rm -rf %t.dir
-// RUN: mkdir -p %t.dir
-// RUN: loom-adg-builder-test --shared-quantized-window --output %t.dir/hardware.mlir
-// RUN: loom-adg-builder-test --shared-quantized-window --output %t.dir/hardware.second.mlir
-// RUN: cmp %t.dir/hardware.mlir %t.dir/hardware.second.mlir
-// RUN: loom %t.dir/hardware.mlir | FileCheck %s --check-prefix=HARDWARE
+// RUN: not loom-adg-builder-test --shared-quantized-window --output %t.hardware.mlir 2>&1 | FileCheck %s
+// RUN: test ! -s %t.hardware.mlir
 
-// HARDWARE-LABEL: fabric.module @shared_quantized_window_adg
-// HARDWARE-DAG: load_group_size = 18 : i32
-// HARDWARE-DAG: store_group_size = 9 : i32
-// HARDWARE-DAG: fabric.op [@dataflow.stream]
-// HARDWARE-DAG: fabric.op [@dataflow.carry]
-// HARDWARE-DAG: fabric.op [@dataflow.demux]
-// HARDWARE-DAG: fabric.op [@dataflow.invariant]
-// HARDWARE-DAG: fabric.op [@dataflow.sync]
-// HARDWARE-DAG: fabric.op [@dataflow.constant]
-// HARDWARE-DAG: 0x0000ffef
-// HARDWARE-DAG: 0x00000018
-// HARDWARE-DAG: 0x30000000
-// HARDWARE-DAG: 0xffff0000
-// HARDWARE-DAG: fabric.op [@arith.addi, @arith.subi]
-// HARDWARE-DAG: fabric.op [@arith.muli]
-// HARDWARE-DAG: fabric.op [@arith.divsi]
-// HARDWARE-DAG: fabric.op [@arith.remsi]
-// HARDWARE-DAG: fabric.op [@arith.cmpi, @llvm.icmp]
-// HARDWARE-DAG: fabric.op [@arith.shli, @arith.shrsi, @arith.shrui]
-// HARDWARE-DAG: fabric.op [@llvm.intr.fshl]
-// HARDWARE-DAG: fabric.op [@llvm.arm.pkhbt]
-// HARDWARE-DAG: fabric.op [@llvm.arm.pkhtb]
-// HARDWARE-DAG: fabric.op [@llvm.arm.sadd16]
-// HARDWARE-DAG: fabric.op [@llvm.arm.sxtab16]
-// HARDWARE-DAG: fabric.op [@llvm.arm.sxtb16]
-// HARDWARE-DAG: fabric.op [@dataflow.mux]
-// HARDWARE-DAG: fabric.op [@llvm.intr.ctlz]
-// HARDWARE-DAG: fabric.op [@llvm.intr.umax]
-// HARDWARE-DAG: fabric.op [@llvm.intr.smin]
-// HARDWARE-DAG: fabric.op [@llvm.intr.smax]
-// HARDWARE-DAG: fabric.op [@arith.select]
-// HARDWARE-DAG: fabric.op [@llvm.sext]
-// HARDWARE-DAG: fabric.mem [spatial]
+// The shared quantized-window catalog references resources the normative
+// implementation-family registry cannot express: dataflow.constant, the
+// integer and floating divide/remainder operations, the elementary math
+// functions, the LLVM compute intrinsics without a registered family, and
+// the TokenControlFu routing schemas. Construction fails honestly and
+// atomically: the diagnostic names the target and every unsupported
+// resource, and no partial Fabric is emitted.
 
-module {
-  dataflow.graph private @quantized_window_pressure(
-      %ctrl: none,
-      %idx: index,
-      %x: i32,
-      %y: i32,
-      %in: memref<?xi8>,
-      %out: memref<?xi8>,
-      %out32: memref<?xi32>)
-      -> ()
-      attributes {input_segments = array<i32: 3, 0, 3>,
-                  result_segments = array<i32: 0, 0, 0>} {
-    %c0 = dataflow.constant %ctrl {const_value = 0 : index} : index
-    %c1 = dataflow.constant %ctrl {const_value = 1 : index} : index
-    %c2 = dataflow.constant %ctrl {const_value = 2 : index} : index
-    %c3 = dataflow.constant %ctrl {const_value = 3 : index} : index
-    %i0 = dataflow.constant %ctrl {const_value = 0 : i32} : i32
-    %i1 = dataflow.constant %ctrl {const_value = 1 : i32} : i32
-    %i3 = dataflow.constant %ctrl {const_value = 3 : i32} : i32
-    %one = dataflow.constant %ctrl {const_value = 1 : i32} : i32
-    %loop_idx, %rwc = dataflow.stream %i0, %i3, %i1 step add while slt : i32
-    %stable_x = dataflow.invariant %rwc, %x : i32
-    %carried = dataflow.carry %rwc, %stable_x, %next : i32
-    %carried_lanes:2 = dataflow.demux %rwc, %carried
-        : (i1, i32) -> (i32, i32)
-    %next = arith.addi %carried, %one : i32
-    %loop_adjusted = arith.addi %loop_idx, %next : i32
-    %a0, %a0_done = dataflow.load %in[%idx] %ctrl : memref<?xi8>
-    %a1, %a1_done = dataflow.load %in[%c1] %ctrl : memref<?xi8>
-    %a2, %a2_done = dataflow.load %in[%c2] %ctrl : memref<?xi8>
-    %a3, %a3_done = dataflow.load %in[%c3] %ctrl : memref<?xi8>
-    %m0 = llvm.intr.smax(%a0, %a1) : (i8, i8) -> i8
-    %m1 = llvm.intr.smax(%a2, %a3) : (i8, i8) -> i8
-    %p0 = arith.cmpi sgt, %x, %y : i32
-    %p1 = arith.cmpi slt, %x, %y : i32
-    %s0 = arith.shli %x, %y : i32
-    %s1 = arith.shrsi %s0, %y : i32
-    %s2 = arith.shrui %s1, %y : i32
-    %d0 = arith.subi %s2, %x : i32
-    %u0 = arith.addi %d0, %loop_adjusted : i32
-    %q0 = arith.divsi %u0, %one : i32
-    %q1 = arith.divsi %x, %one : i32
-    %q2 = arith.divsi %y, %one : i32
-    %q3 = arith.divsi %s2, %one : i32
-    %sel0 = arith.select %p0, %u0, %x : i32
-    %sel1 = arith.select %p1, %sel0, %y : i32
-    %mux0 = dataflow.mux %p0, %q0, %q1 : (i1, i32, i32) -> i32
-    %mux1 = dataflow.mux %p1, %q2, %q3 : (i1, i32, i32) -> i32
-    %mux2 = dataflow.mux %p0, %mux0, %mux1 : (i1, i32, i32) -> i32
-    %mux3 = dataflow.mux %p1, %mux2, %sel1 : (i1, i32, i32) -> i32
-    %store0 = dataflow.store %out[%c0] %m0 %ctrl : memref<?xi8>
-    %store1 = dataflow.store %out[%c1] %m1 %ctrl : memref<?xi8>
-    %store2 = dataflow.store %out32[%c2] %mux3 %ctrl : memref<?xi32>
-    %reads:4 = dataflow.sync %a0_done, %a1_done, %a2_done, %a3_done
-        : (none, none, none, none) -> (none, none, none, none)
-    %writes:3 = dataflow.sync %store0, %store1, %store2
-        : (none, none, none) -> (none, none, none)
-    %memory_done:2 = dataflow.sync %reads#0, %writes#0
-        : (none, none) -> (none, none)
-    %retired:2 = dataflow.sync %memory_done#0, %carried_lanes#0
-        : (none, i32) -> (none, i32)
-    dataflow.graph.return %retired#0 : none
-  }
-}
+// CHECK: error: ADG target 'shared_quantized_window_adg' requires {{[0-9]+}} resource(s) with no registered implementation family: dataflow.constant has no registered implementation family
+// CHECK-DAG: arith.divsi has no registered implementation family
+// CHECK-DAG: math.exp has no registered implementation family
+// CHECK-DAG: llvm.intr.fshl has no registered implementation family
+// CHECK-DAG: dataflow.mux has no registered implementation family
+// CHECK-DAG: dataflow.sync has no registered implementation family

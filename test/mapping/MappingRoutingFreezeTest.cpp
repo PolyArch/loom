@@ -34,7 +34,7 @@ TransportEndpointDescriptor transportEndpoint(
     std::uint64_t id, PortDirection direction,
     std::uint32_t payloadCapacityBits = unbounded,
     std::uint32_t tagCapacityBits = 0,
-    fabric::DataPathKind transportKind = fabric::DataPathKind::Bits,
+    ::fabric::DataPathKind transportKind = ::fabric::DataPathKind::Bits,
     PortKind portKind = PortKind::Value) {
   return TransportEndpointDescriptor{
       TransportEndpointId(id), direction,       portKind,
@@ -46,14 +46,14 @@ ComputeOccurrenceDescriptor singlePortOccurrence(
     std::uint64_t occurrenceId, std::uint64_t endpointId,
     PortDirection direction, std::uint32_t payloadCapacityBits = unbounded,
     std::uint32_t tagCapacityBits = 0,
-    fabric::DataPathKind transportKind = fabric::DataPathKind::Bits,
+    ::fabric::DataPathKind transportKind = ::fabric::DataPathKind::Bits,
     PortKind portKind = PortKind::Value) {
   const std::uint32_t portIndex = 0;
   const ComputeEndpointId endpoint(endpointId);
   return ComputeOccurrenceDescriptor{
       ComputeOccurrenceId(occurrenceId),
       ComputeScheduleKind::Spatial,
-      {FuRef{fabric, fu.id}},
+      {fu.id},
       {{endpoint,
         direction,
         portKind,
@@ -62,7 +62,12 @@ ComputeOccurrenceDescriptor singlePortOccurrence(
         {type(1)},
         role(0),
         transportKind}},
-      {{FuPortRef{FuRef{fabric, fu.id}, direction, portIndex},
+      {{::loom::fabric::FabricFuTemplatePortRef{
+            fu.id,
+            direction == PortDirection::Input
+                ? ::loom::fabric::FabricPortDirection::Input
+                : ::loom::fabric::FabricPortDirection::Output,
+            portIndex},
         ComputeEndpointRef{fabric, endpoint}, unbounded, unbounded}},
       1};
 }
@@ -181,31 +186,31 @@ TestCase makeTraversalCase() {
   const FuDescriptor &fu = testCase.fabric.functionalUnits.front();
   testCase.fabric.computeOccurrences = {
       singlePortOccurrence(fabric, fu, 100, 1000, PortDirection::Output, 64, 7,
-                           fabric::DataPathKind::BitsTag),
+                           ::fabric::DataPathKind::BitsTag),
       singlePortOccurrence(fabric, fu, 200, 2000, PortDirection::Input, 64, 9,
-                           fabric::DataPathKind::BitsTag)};
+                           ::fabric::DataPathKind::BitsTag)};
   testCase.fabric.transportResources = {
       {TransportResourceId(300),
        TransportResourceKind::Switch,
        {transportEndpoint(3000, PortDirection::Input, 32, 9,
-                          fabric::DataPathKind::BitsTag),
+                          ::fabric::DataPathKind::BitsTag),
         transportEndpoint(3001, PortDirection::Output, 48, 5,
-                          fabric::DataPathKind::BitsTag),
+                          ::fabric::DataPathKind::BitsTag),
         transportEndpoint(3002, PortDirection::Output, 48, 5,
-                          fabric::DataPathKind::BitsTag)}},
+                          ::fabric::DataPathKind::BitsTag)}},
       {TransportResourceId(400),
        TransportResourceKind::Fifo,
        {transportEndpoint(4000, PortDirection::Input, 16, 8,
-                          fabric::DataPathKind::BitsTag),
+                          ::fabric::DataPathKind::BitsTag),
         transportEndpoint(4001, PortDirection::Output, 24, 6,
-                          fabric::DataPathKind::BitsTag)}},
+                          ::fabric::DataPathKind::BitsTag)}},
       {TransportResourceId(500),
        TransportResourceKind::Boundary,
        {transportEndpoint(5000, PortDirection::Input, 32, 3,
-                          fabric::DataPathKind::BitsTag),
+                          ::fabric::DataPathKind::BitsTag),
         transportEndpoint(5001, PortDirection::Output, 32, 1,
-                          fabric::DataPathKind::BitsTag)},
-       fabric::BoundaryDirection::T2t}};
+                          ::fabric::DataPathKind::BitsTag)},
+       ::fabric::BoundaryDirection::T2t}};
   testCase.fabric.transportArcs = {
       {endpointRef(fabric, 1000), endpointRef(fabric, 3000)},
       {endpointRef(fabric, 3001), endpointRef(fabric, 4000)},
@@ -221,11 +226,13 @@ TestCase makeTraversalCase() {
   return testCase;
 }
 
-TestCase
-makeBoundaryCase(fabric::BoundaryDirection direction,
-                 fabric::DataPathKind inputKind, std::uint32_t inputPayloadBits,
-                 std::uint32_t inputTagBits, fabric::DataPathKind outputKind,
-                 std::uint32_t outputPayloadBits, std::uint32_t outputTagBits) {
+TestCase makeBoundaryCase(::fabric::BoundaryDirection direction,
+                          ::fabric::DataPathKind inputKind,
+                          std::uint32_t inputPayloadBits,
+                          std::uint32_t inputTagBits,
+                          ::fabric::DataPathKind outputKind,
+                          std::uint32_t outputPayloadBits,
+                          std::uint32_t outputTagBits) {
   TestCase testCase = makeValidCase();
   const ArtifactIdentity &fabric = testCase.fabric.identity;
   testCase.fabric.transportResources = {
@@ -405,7 +412,7 @@ void rejectsUnmediatedNativeTransportCrossing() {
     TestCase testCase = makeTraversalCase();
     ComputeEndpointDescriptor &output =
         testCase.fabric.computeOccurrences.front().endpoints.front();
-    output.transportKind = fabric::DataPathKind::Bits;
+    output.transportKind = ::fabric::DataPathKind::Bits;
     output.tagCapacityBits = 0;
     expectMapError(__func__, testCase, MappingErrorCode::InvalidPortConnection);
   }
@@ -414,7 +421,7 @@ void rejectsUnmediatedNativeTransportCrossing() {
     testCase.fabric.transportArcs.clear();
     TransportEndpointDescriptor &output =
         testCase.fabric.transportResources.front().endpoints[1];
-    output.transportKind = fabric::DataPathKind::Bits;
+    output.transportKind = ::fabric::DataPathKind::Bits;
     output.tagCapacityBits = 0;
     expectMapError(__func__, testCase, MappingErrorCode::InvalidPortConnection);
   }
@@ -423,7 +430,7 @@ void rejectsUnmediatedNativeTransportCrossing() {
     testCase.fabric.transportArcs.clear();
     TransportEndpointDescriptor &output =
         testCase.fabric.transportResources[1].endpoints[1];
-    output.transportKind = fabric::DataPathKind::Bits;
+    output.transportKind = ::fabric::DataPathKind::Bits;
     output.tagCapacityBits = 0;
     expectMapError(__func__, testCase, MappingErrorCode::InvalidPortConnection);
   }
@@ -436,9 +443,9 @@ void rejectsMemoryTransportTraversal() {
       {TransportResourceId(300),
        TransportResourceKind::Switch,
        {transportEndpoint(3000, PortDirection::Input, 32, 0,
-                          fabric::DataPathKind::Bits, PortKind::Memory),
+                          ::fabric::DataPathKind::Bits, PortKind::Memory),
         transportEndpoint(3001, PortDirection::Output, 32, 0,
-                          fabric::DataPathKind::Bits, PortKind::Memory)}}};
+                          ::fabric::DataPathKind::Bits, PortKind::Memory)}}};
   testCase.fabric.transportTraversals = {{resourceRef(fabric, 300),
                                           endpointRef(fabric, 3000),
                                           endpointRef(fabric, 3001)}};
@@ -449,11 +456,14 @@ void excludesDisconnectedMemoryComputeEndpoint() {
   TestCase testCase = makeValidCase();
   const ArtifactIdentity &fabric = testCase.fabric.identity;
   testCase.fabric.functionalUnits.push_back(
-      {FuId(900), {}, {port(PortKind::Memory, type(9), 32)}});
+      {::loom::fabric::FabricFuTemplateRef(900),
+       {},
+       {port(PortKind::Memory, type(9), 32)},
+       {}});
   const FuDescriptor &memoryFu = testCase.fabric.functionalUnits.back();
   testCase.fabric.computeOccurrences.push_back(singlePortOccurrence(
       fabric, memoryFu, 901, 9000, PortDirection::Output, 32, 0,
-      fabric::DataPathKind::Bits, PortKind::Memory));
+      ::fabric::DataPathKind::Bits, PortKind::Memory));
   FrozenRoutingGraph graph = validateAndFreezeRouting(__func__, testCase);
   for (const FrozenRoutingEndpoint &endpoint : graph.routingEndpoints())
     if (endpoint.id == TransportEndpointId(9000))
@@ -462,19 +472,19 @@ void excludesDisconnectedMemoryComputeEndpoint() {
 
 void freezesExactBoundaryConversions() {
   struct BoundaryCase {
-    fabric::BoundaryDirection direction;
-    fabric::DataPathKind inputKind;
+    ::fabric::BoundaryDirection direction;
+    ::fabric::DataPathKind inputKind;
     std::uint32_t inputTagBits;
-    fabric::DataPathKind outputKind;
+    ::fabric::DataPathKind outputKind;
     std::uint32_t outputTagBits;
   };
   const BoundaryCase cases[] = {
-      {fabric::BoundaryDirection::S2t, fabric::DataPathKind::Bits, 0,
-       fabric::DataPathKind::BitsTag, 4},
-      {fabric::BoundaryDirection::T2t, fabric::DataPathKind::BitsTag, 4,
-       fabric::DataPathKind::BitsTag, 8},
-      {fabric::BoundaryDirection::T2s, fabric::DataPathKind::BitsTag, 4,
-       fabric::DataPathKind::Bits, 0},
+      {::fabric::BoundaryDirection::S2t, ::fabric::DataPathKind::Bits, 0,
+       ::fabric::DataPathKind::BitsTag, 4},
+      {::fabric::BoundaryDirection::T2t, ::fabric::DataPathKind::BitsTag, 4,
+       ::fabric::DataPathKind::BitsTag, 8},
+      {::fabric::BoundaryDirection::T2s, ::fabric::DataPathKind::BitsTag, 4,
+       ::fabric::DataPathKind::Bits, 0},
   };
   for (const BoundaryCase &boundary : cases) {
     TestCase testCase = makeBoundaryCase(
@@ -503,33 +513,34 @@ void freezesExactBoundaryConversions() {
 
 void rejectsMalformedBoundaryConversions() {
   {
-    TestCase testCase = makeBoundaryCase(fabric::BoundaryDirection::S2t,
-                                         fabric::DataPathKind::BitsTag, 32, 4,
-                                         fabric::DataPathKind::BitsTag, 32, 4);
+    TestCase testCase = makeBoundaryCase(
+        ::fabric::BoundaryDirection::S2t, ::fabric::DataPathKind::BitsTag, 32,
+        4, ::fabric::DataPathKind::BitsTag, 32, 4);
     expectMapError(__func__, testCase, MappingErrorCode::InvalidPortConnection);
   }
   {
-    TestCase testCase = makeBoundaryCase(fabric::BoundaryDirection::T2s,
-                                         fabric::DataPathKind::BitsTag, 32, 4,
-                                         fabric::DataPathKind::Bits, 16, 0);
-    expectMapError(__func__, testCase, MappingErrorCode::InvalidPortConnection);
-  }
-  {
-    TestCase testCase = makeBoundaryCase(fabric::BoundaryDirection::S2t,
-                                         fabric::DataPathKind::Bits, 32, 1,
-                                         fabric::DataPathKind::BitsTag, 32, 4);
-    expectMapError(__func__, testCase, MappingErrorCode::InvalidPortConnection);
-  }
-  {
-    TestCase testCase = makeBoundaryCase(fabric::BoundaryDirection::S2t,
-                                         fabric::DataPathKind::Bits, 32, 0,
-                                         fabric::DataPathKind::BitsTag, 32, 0);
+    TestCase testCase = makeBoundaryCase(::fabric::BoundaryDirection::T2s,
+                                         ::fabric::DataPathKind::BitsTag, 32, 4,
+                                         ::fabric::DataPathKind::Bits, 16, 0);
     expectMapError(__func__, testCase, MappingErrorCode::InvalidPortConnection);
   }
   {
     TestCase testCase = makeBoundaryCase(
-        static_cast<fabric::BoundaryDirection>(99), fabric::DataPathKind::Bits,
-        32, 0, fabric::DataPathKind::BitsTag, 32, 4);
+        ::fabric::BoundaryDirection::S2t, ::fabric::DataPathKind::Bits, 32, 1,
+        ::fabric::DataPathKind::BitsTag, 32, 4);
+    expectMapError(__func__, testCase, MappingErrorCode::InvalidPortConnection);
+  }
+  {
+    TestCase testCase = makeBoundaryCase(
+        ::fabric::BoundaryDirection::S2t, ::fabric::DataPathKind::Bits, 32, 0,
+        ::fabric::DataPathKind::BitsTag, 32, 0);
+    expectMapError(__func__, testCase, MappingErrorCode::InvalidPortConnection);
+  }
+  {
+    TestCase testCase =
+        makeBoundaryCase(static_cast<::fabric::BoundaryDirection>(99),
+                         ::fabric::DataPathKind::Bits, 32, 0,
+                         ::fabric::DataPathKind::BitsTag, 32, 4);
     expectMapError(__func__, testCase, MappingErrorCode::InvalidPortConnection);
   }
 }
@@ -550,8 +561,7 @@ void rejectsDuplicateForeignWrongKindAndWrongDirectionReferences() {
   {
     TestCase testCase = makeTraversalCase();
     testCase.fabric.transportArcs.front().source.artifact = artifact(99);
-    expectMapError(__func__, testCase,
-                   MappingErrorCode::ForeignReference);
+    expectMapError(__func__, testCase, MappingErrorCode::ForeignReference);
   }
   {
     TestCase testCase = makeTraversalCase();

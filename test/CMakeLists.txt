@@ -30,10 +30,10 @@ set(LOOM_TEST_DEPENDS
   loom-common-artifact-local-reference-test
   loom-common-artifact-test
   loom-common-blob-test
-  loom-cost-test
-  loom-coverage-test
   loom-dataflow-canonical-reference-test
   loom-dataflow-memory-effect-test
+  loom-dataflow-operation-schema-codec-test
+  loom-dataflow-operation-schema-test
   loom-dataflow-service-schema-test
   loom-dfg-sim
   loom-evaluation-case-test
@@ -45,6 +45,7 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-boundary-data-path-test
   loom-fabric-boundary-transfer-test
   loom-fabric-elaboration-alias-chain-test
+  loom-fabric-implementation-family-test
   loom-fabric-elaboration-api-test
   loom-fabric-elaboration-header-test
   loom-fabric-memory-capability-domain-test
@@ -55,20 +56,17 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-system-contract-test
   loom-fabric-temporal-operand-buffer-test
   loom-frontend-payload-framing-test
-  loom-hwsg-test
   loom-mapping-core-test
-  loom-parallel-test
   loom-pnr-index-test
   loom-pnr-route-tree-state-test
   loom-pnr-routing-negotiation-test
   loom-relocatable-payload-test
   loom-simulator-atomic-order-test
   loom-simulator-dynamic-work-test
+  loom-simulator-operation-schema-projection-test
   loom-simulator-synchronization-test
   loom-simulator-vector-boundary-test
-  loom-synth-base-test
-  loom-synth-config-test
-  loom-synth-fu-dump
+  loom-tblgen
 )
 
 add_lit_testsuite(check-fabric "Running the fabric regression tests"

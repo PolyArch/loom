@@ -1,4 +1,6 @@
 #include "ADG/Builder.h"
+#include "Dataflow/IR/OperationSchema.h"
+#include "Fabric/IR/FabricEnums.h"
 
 #include "Dataflow/IR/DataflowEnums.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -159,11 +161,11 @@ static llvm::Error writePublicFifoBoundary(llvm::raw_ostream &out) {
                                   {"!fabric.bits_tag<16, 4>"}})
       .addFifo(loom::adg::FifoSpec{"queued", "tagged", "!fabric.bits_tag<8, 4>",
                                    4, true, false})
-      .addBoundary(loom::adg::BoundarySpec{::fabric::BoundaryDirection::T2s,
-                                           {{"queued"}},
-                                           {"untagged", "split_tag"},
-                                           {"!fabric.bits<8>",
-                                            "!fabric.bits<4>"}})
+      .addBoundary(
+          loom::adg::BoundarySpec{::fabric::BoundaryDirection::T2s,
+                                  {{"queued"}},
+                                  {"untagged", "split_tag"},
+                                  {"!fabric.bits<8>", "!fabric.bits<4>"}})
       .addOutput("untagged")
       .addOutput("split_tag");
   return module.print(out);
@@ -279,33 +281,40 @@ int main(int argc, char **argv) {
       fu.inputs = {{"fa", "pa", "!fabric.bits<32>", ""},
                    {"fb", "pb", "!fabric.bits<32>", ""},
                    {"fc", "pc", "!fabric.bits<32>", ""}};
-      loom::adg::FabricOpSpec stream;
-      stream.results = {"iv", "phase"};
-      stream.opList = {"dataflow.stream"};
-      stream.operands = {"fa", "fb", "fc"};
-      stream.operandTypes = {"!fabric.bits<32>", "!fabric.bits<32>",
-                             "!fabric.bits<32>"};
-      stream.resultTypes = {"!fabric.bits<32>", "!fabric.bits<1>"};
-
-      if (invalidStreamConfig == "generic") {
-        stream.hwParams["step_kind"] = {"0"};
-        stream.hwParams["predicate"] = {"2"};
-      } else if (invalidStreamConfig == "step") {
-        stream.streamConfig =
-            loom::adg::StreamConfig{static_cast<dataflow::StreamStepKind>(99),
-                                    {mlir::arith::CmpIPredicate::slt}};
+      auto makeStreamCapability = [](dataflow::StreamStepKind stepKind,
+                                     mlir::arith::CmpIPredicate predicate) {
+        return loom::adg::FabricOpCapability{
+            ::fabric::ImplementationFamilyId::LoopStream,
+            ::fabric::LoopStreamParams{
+                ::fabric::IntegerWidthSet::get(
+                    {::fabric::IntegerWidth::I8, ::fabric::IntegerWidth::I16,
+                     ::fabric::IntegerWidth::I32, ::fabric::IntegerWidth::I64}),
+                stepKind, ::fabric::IntegerPredicateSet::get({predicate})}};
+      };
+      loom::adg::FabricOpCapability capability = makeStreamCapability(
+          dataflow::StreamStepKind::Add, mlir::arith::CmpIPredicate::slt);
+      if (invalidStreamConfig == "step") {
+        capability =
+            makeStreamCapability(static_cast<dataflow::StreamStepKind>(99),
+                                 mlir::arith::CmpIPredicate::slt);
       } else if (invalidStreamConfig == "predicate") {
-        stream.streamConfig = loom::adg::StreamConfig{
-            dataflow::StreamStepKind::Add,
-            {static_cast<mlir::arith::CmpIPredicate>(99)}};
-      } else if (invalidStreamConfig != "missing") {
+        capability =
+            makeStreamCapability(dataflow::StreamStepKind::Add,
+                                 static_cast<mlir::arith::CmpIPredicate>(99));
+      } else {
         return llvm::createStringError(
             std::errc::invalid_argument,
             "unknown invalid stream configuration case %s",
             invalidStreamConfig.c_str());
       }
 
-      fu.operations.push_back(std::move(stream));
+      fu.operations.push_back(loom::adg::FabricOpSpec{
+          {"iv", "phase"},
+          std::move(capability),
+          {::dataflow::OperationSchemaId::DataflowStream},
+          {"fa", "fb", "fc"},
+          {"!fabric.bits<32>", "!fabric.bits<32>", "!fabric.bits<32>"},
+          {"!fabric.bits<32>", "!fabric.bits<1>"}});
       pe.fus.push_back(std::move(fu));
       module.addPe(std::move(pe));
       return module.print(out);
@@ -323,8 +332,8 @@ int main(int argc, char **argv) {
                 1U,
             false});
       } else if (invalidFifoSpec == "kind") {
-        module.addFifo(loom::adg::FifoSpec{
-            "output", "input", "!fabric.bits_tag<8, 4>", 1, false});
+        module.addFifo(loom::adg::FifoSpec{"output", "input",
+                                           "!fabric.bits_tag<8, 4>", 1, false});
       } else if (invalidFifoSpec == "bypass") {
         module.addFifo(loom::adg::FifoSpec{"output", "input", "!fabric.bits<8>",
                                            1, false, true});
@@ -369,8 +378,7 @@ int main(int argc, char **argv) {
             loom::adg::BoundarySpec{::fabric::BoundaryDirection::T2s,
                                     {{"tagged"}},
                                     {"untagged", "split_tag"},
-                                    {"!fabric.bits<32>",
-                                     "!fabric.bits<8>"}});
+                                    {"!fabric.bits<32>", "!fabric.bits<8>"}});
       } else {
         return llvm::createStringError(std::errc::invalid_argument,
                                        "unknown invalid boundary case %s",

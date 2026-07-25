@@ -9,7 +9,7 @@
 // CHECK-DAG: "graph": "llvm_store_fneg"
 // CHECK-DAG: "status": "pass"
 // CHECK-DAG: "dataflow.load": 1
-// CHECK-DAG: "llvm.fneg": 1
+// CHECK-DAG: "arith.negf": 1
 // CHECK-DAG: "dataflow.store": 1
 // CHECK-DAG: "arg1": [
 // CHECK-DAG: "f32:0"
@@ -24,7 +24,7 @@ module {
     %dst_next = llvm.getelementptr inbounds|nuw %dst[%offset]
         : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %loaded = llvm.load %src {alignment = 4 : i64} : !llvm.ptr -> f32
-    %negated = llvm.fneg %loaded : f32
+    %negated = arith.negf %loaded : f32
     llvm.store %negated, %dst_next {alignment = 4 : i64} : f32, !llvm.ptr
     dataflow.graph.return %ctrl : none
   }

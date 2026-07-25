@@ -169,12 +169,12 @@ dataflow.graph private @narrow_guarded_address(
   dataflow.graph.return %done, %data : none, f32
 }
 
-// A nonnegative i32 expression widened with llvm.zext remains address-domain.
+// A nonnegative i32 expression widened with arith.extui remains address-domain.
 // CHECK-LABEL: dataflow.graph private @narrow_zext_address
 // CHECK: %[[ZEXT_LHS:.*]] = arith.index_cast %arg4 : i32 to index
 // CHECK: %[[ZEXT_RHS:.*]] = arith.index_cast %arg5 : i32 to index
 // CHECK: %[[ZEXT_ADDR:.*]] = arith.addi %[[ZEXT_LHS]], %[[ZEXT_RHS]] : index
-// CHECK-NOT: llvm.zext
+// CHECK-NOT: arith.extui
 // CHECK: dataflow.load %arg6[%[[ZEXT_ADDR]]]
 dataflow.graph private @narrow_zext_address(
     %start: none, %lower: i64, %upper: i64, %step: i64,
@@ -184,7 +184,7 @@ dataflow.graph private @narrow_zext_address(
   %index, %phase = dataflow.stream %lower, %upper, %step
       step add while slt : i64
   %sum = arith.addi %lhs, %rhs : i32
-  %wide = llvm.zext nneg %sum : i32 to i64
+  %wide = arith.extui %sum : i32 to i64
   %addr = arith.index_cast %wide : i64 to index
   %data, %done = dataflow.load %memory[%addr] %start : memref<?xf32>
   dataflow.graph.return %done, %data : none, f32

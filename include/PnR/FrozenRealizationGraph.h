@@ -74,7 +74,7 @@ struct FabricPeOccurrenceRef {
 
 struct FabricFuOccurrenceRef {
   FabricPeOccurrenceRef parentPe;
-  mapping::FuId implementation;
+  ::loom::fabric::FabricFuTemplateRef implementation;
 
   friend bool operator==(FabricFuOccurrenceRef lhs, FabricFuOccurrenceRef rhs) {
     return lhs.parentPe == rhs.parentPe &&
@@ -86,7 +86,7 @@ struct FabricFuOccurrenceRef {
   friend bool operator<(FabricFuOccurrenceRef lhs, FabricFuOccurrenceRef rhs) {
     if (lhs.parentPe != rhs.parentPe)
       return lhs.parentPe < rhs.parentPe;
-    return lhs.implementation.value() < rhs.implementation.value();
+    return lhs.implementation.id() < rhs.implementation.id();
   }
 };
 
@@ -158,15 +158,14 @@ struct FrozenActorOwnership {
 
 struct FrozenComputeRealization {
   mapping::ComputeRealizationId id;
-  mapping::FuId fu;
-  mapping::EncodingId encoding;
+  ::loom::fabric::FabricFuCapabilityTemplateRef capabilityTemplate;
   PnrIndex implDomainOffset;
   PnrIndex implDomainCount;
 
   friend bool operator==(const FrozenComputeRealization &lhs,
                          const FrozenComputeRealization &rhs) {
-    return lhs.id == rhs.id && lhs.fu == rhs.fu &&
-           lhs.encoding == rhs.encoding &&
+    return lhs.id == rhs.id &&
+           lhs.capabilityTemplate == rhs.capabilityTemplate &&
            lhs.implDomainOffset == rhs.implDomainOffset &&
            lhs.implDomainCount == rhs.implDomainCount;
   }
@@ -342,7 +341,7 @@ struct FrozenMemoryImplementationOccurrence {
 
 struct FrozenPortDemand {
   PnrIndex implementation;
-  mapping::FuId fu;
+  ::loom::fabric::FabricFuTemplateRef fu;
   mapping::PortDirection direction;
   PnrIndex port;
   mapping::PortKind kind;
@@ -412,7 +411,7 @@ struct FrozenMemoryRealization {
 
 struct FrozenComputeTemplateTerminal {
   PnrIndex realization;
-  mapping::FuId fu;
+  ::loom::fabric::FabricFuTemplateRef fu;
   mapping::PortDirection direction;
   PnrIndex port;
 

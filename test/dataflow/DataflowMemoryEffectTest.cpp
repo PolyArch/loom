@@ -59,7 +59,8 @@ module {
       -> (i32, none) {
     %data, %done = dataflow.load %mem[%addr] %ctrl
         {contract = #dataflow.atomic_access<ordering = acquire,
-                                            sync_scope = <system>>}
+                                            sync_scope = <system>,
+                                            source_alignment_bytes = 4>}
         : memref<10xi32>
     return %data, %done : i32, none
   }
@@ -69,7 +70,8 @@ module {
     %old, %done = dataflow.atomic_rmw %mem[%addr] %value %ctrl
         {contract = #dataflow.rmw_contract<
             kind = add,
-            access = <ordering = monotonic, sync_scope = <system>>>}
+            access = <ordering = monotonic, sync_scope = <system>,
+                      source_alignment_bytes = 4>>}
         : memref<10xi32>
     return %old, %done : i32, none
   }
@@ -79,7 +81,8 @@ module {
     %old, %ok, %done = dataflow.cmpxchg %mem[%addr] %value %value %ctrl
         {contract = #dataflow.cmpxchg_contract<success_ordering = seq_cst,
                                                failure_ordering = monotonic,
-                                               sync_scope = <system>>}
+                                               sync_scope = <system>,
+                                               source_alignment_bytes = 4>}
         : memref<10xi32> -> i1
     return %old, %ok, %done : i32, i1, none
   }

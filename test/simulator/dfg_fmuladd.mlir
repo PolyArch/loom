@@ -1,10 +1,19 @@
 // RUN: rm -rf %t.dir
 // RUN: split-file %s %t.dir
-// RUN: not loom-dfg-sim %t.dir/raw.mlir --graph fmuladd --output %t.json 2>&1 | FileCheck %s --check-prefix=FMULADD-REJECT
+// RUN: loom-dfg-sim %t.dir/raw.mlir --graph fmuladd --output %t.json
+// RUN: FileCheck %s --check-prefix=FMA < %t.json
 // RUN: loom-dfg-sim %t.dir/split.mlir --graph split_mulf_addf --output %t.split.json
 // RUN: FileCheck %s --check-prefix=SPLIT < %t.split.json
 
-// FMULADD-REJECT: finalized graph contains unregistered actor 'llvm.intr.fmuladd'
+// FMA-DAG: "kind": "dfg_sim_report"
+// FMA-DAG: "workload": "fmuladd"
+// FMA-DAG: "graph": "fmuladd"
+// FMA-DAG: "status": "pass"
+// FMA-DAG: "operation_cost_score": 15
+// FMA-DAG: "wavefront_steps": 3
+// FMA-DAG: "event_count": 5
+// FMA-DAG: "math.fma": 1
+// FMA-DAG: "f32:10"
 
 // SPLIT-DAG: "kind": "dfg_sim_report"
 // SPLIT-DAG: "workload": "split_mulf_addf"
@@ -24,7 +33,7 @@ module {
     %lhs = dataflow.constant %ctrl {const_value = 2.000000e+00 : f32} : f32
     %rhs = dataflow.constant %ctrl {const_value = 3.000000e+00 : f32} : f32
     %acc = dataflow.constant %ctrl {const_value = 4.000000e+00 : f32} : f32
-    %result = llvm.intr.fmuladd(%lhs, %rhs, %acc) : (f32, f32, f32) -> f32
+    %result = math.fma %lhs, %rhs, %acc : f32
     %published:2 = dataflow.sync %ctrl, %result
         : (none, f32) -> (none, f32)
     dataflow.graph.return %published#0, %published#1 : none, f32

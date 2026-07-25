@@ -31,7 +31,7 @@ fabric.module @m_with_inner_ops(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
                   -> !fabric.bits<32> {
       %k = fabric.op [@arith.addi] (%x, %y)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %k : !fabric.bits<32>
     }
   }
@@ -60,7 +60,7 @@ fabric.module @m_with_outputs(%a : !fabric.bits<32>, %b : !fabric.bits<32>,
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
                   -> !fabric.bits<32> {
       %k = fabric.op [@arith.addi] (%x, %y)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %k : !fabric.bits<32>
     }
   }
@@ -216,7 +216,7 @@ fabric.module @m_pe_input_width_relax(%a : !fabric.bits<32>) {
                         -> !fabric.bits<16> {
     fabric.fu(%fa = %pa : !fabric.bits<16>) -> !fabric.bits<16> {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<16>, !fabric.bits<16>) -> !fabric.bits<16>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<16>, !fabric.bits<16>) -> !fabric.bits<16>
       fabric.yield %v : !fabric.bits<16>
     }
   }

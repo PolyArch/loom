@@ -1,4 +1,0 @@
-[synth]
-strategy = "anchor"
-[synth.mcs]
-timeout_sec = 1

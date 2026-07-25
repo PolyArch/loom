@@ -55,11 +55,6 @@ struct SharedMemoryAdgConfig {
   unsigned ctlzCount = 0;
   unsigned signedRemCount = 0;
   unsigned fshlCount = 0;
-  unsigned armPkhbtCount = 0;
-  unsigned armPkhtbCount = 0;
-  unsigned armSadd16Count = 0;
-  unsigned armSxtab16Count = 0;
-  unsigned armSxtb16Count = 0;
   unsigned extuiCount = 4;
   unsigned fpAddCount = 4;
   unsigned fpMulCount = 4;
@@ -122,34 +117,38 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   std::vector<std::string> sources0 = {"ctrl"};
   std::vector<std::string> sinks0;
 
-  auto addBinaryBank = [&](llvm::StringRef prefix, unsigned count,
-                           llvm::ArrayRef<llvm::StringRef> opNames) {
-    for (unsigned index = 0; index < count; ++index) {
-      std::string result = numbered(prefix, index);
-      std::string lhs = result + "_lhs";
-      std::string rhs = result + "_rhs";
-      addConfigurableBinaryPe(module, result, lhs, rhs, opNames);
-      sources32.push_back(result);
-      sinks32.push_back(lhs);
-      sinks32.push_back(rhs);
-    }
-  };
+  auto addBinaryBank =
+      [&](llvm::StringRef prefix, unsigned count,
+          ::fabric::ImplementationFamilyId family,
+          llvm::ArrayRef<::dataflow::OperationSchemaId> members) {
+        for (unsigned index = 0; index < count; ++index) {
+          std::string result = numbered(prefix, index);
+          std::string lhs = result + "_lhs";
+          std::string rhs = result + "_rhs";
+          addConfigurableBinaryPe(module, result, lhs, rhs, family, members);
+          sources32.push_back(result);
+          sinks32.push_back(lhs);
+          sinks32.push_back(rhs);
+        }
+      };
   auto addUnaryBank = [&](llvm::StringRef prefix, unsigned count,
-                          llvm::StringRef opName) {
+                          ::fabric::ImplementationFamilyId family,
+                          ::dataflow::OperationSchemaId member) {
     for (unsigned index = 0; index < count; ++index) {
       std::string result = numbered(prefix, index);
       std::string input = result + "_input";
-      addUnaryPe(module, result, input, opName);
+      addUnaryPe(module, result, input, family, member);
       sources32.push_back(result);
       sinks32.push_back(input);
     }
   };
   auto addWideExtensionBank = [&](llvm::StringRef prefix, unsigned count,
-                                  llvm::StringRef opName) {
+                                  ::fabric::ImplementationFamilyId family,
+                                  ::dataflow::OperationSchemaId member) {
     for (unsigned index = 0; index < count; ++index) {
       std::string result = numbered(prefix, index);
       std::string input = result + "_input";
-      addWideExtensionPe(module, result, input, opName);
+      addWideExtensionPe(module, result, input, family, member);
       sources64.push_back(result);
       sinks32.push_back(input);
     }
@@ -167,38 +166,43 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
     }
   };
   auto addWideNarrowingBank = [&](llvm::StringRef prefix, unsigned count,
-                                  llvm::StringRef opName) {
+                                  ::fabric::ImplementationFamilyId family,
+                                  ::dataflow::OperationSchemaId member) {
     for (unsigned index = 0; index < count; ++index) {
       std::string result = numbered(prefix, index);
       std::string wideResult = result + "_wide";
       std::string input = result + "_input";
-      addWideNarrowingPe(module, wideResult, input, opName);
+      addWideNarrowingPe(module, wideResult, input, family, member);
       module.addFifo(
           FifoSpec{result, wideResult, "!fabric.bits<32>", 1, true, true});
       sources32.push_back(result);
       sinks64.push_back(input);
     }
   };
-  auto addWideBinaryBank = [&](llvm::StringRef prefix, unsigned count,
-                               llvm::ArrayRef<llvm::StringRef> opNames) {
-    for (unsigned index = 0; index < count; ++index) {
-      std::string result = numbered(prefix, index);
-      std::string lhs = result + "_lhs";
-      std::string rhs = result + "_rhs";
-      addConfigurableWideBinaryPe(module, result, lhs, rhs, opNames);
-      sources64.push_back(result);
-      sinks64.push_back(lhs);
-      sinks64.push_back(rhs);
-    }
-  };
+  auto addWideBinaryBank =
+      [&](llvm::StringRef prefix, unsigned count,
+          ::fabric::ImplementationFamilyId family,
+          llvm::ArrayRef<::dataflow::OperationSchemaId> members) {
+        for (unsigned index = 0; index < count; ++index) {
+          std::string result = numbered(prefix, index);
+          std::string lhs = result + "_lhs";
+          std::string rhs = result + "_rhs";
+          addConfigurableWideBinaryPe(module, result, lhs, rhs, family,
+                                      members);
+          sources64.push_back(result);
+          sinks64.push_back(lhs);
+          sinks64.push_back(rhs);
+        }
+      };
   auto addTernaryBank = [&](llvm::StringRef prefix, unsigned count,
-                            llvm::StringRef opName) {
+                            ::fabric::ImplementationFamilyId family,
+                            ::dataflow::OperationSchemaId member) {
     for (unsigned index = 0; index < count; ++index) {
       std::string result = numbered(prefix, index);
       std::string lhs = result + "_lhs";
       std::string rhs = result + "_rhs";
       std::string acc = result + "_acc";
-      addTernaryPe(module, result, lhs, rhs, acc, opName);
+      addTernaryPe(module, result, lhs, rhs, acc, family, member);
       sources32.push_back(result);
       sinks32.push_back(lhs);
       sinks32.push_back(rhs);
@@ -229,17 +233,15 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
                    {"fb", "pb", dataType.str(), ""},
                    {"fc", "pc", dataType.str(), ""}};
       fu.resultTypes = {dataType.str(), dataType.str()};
-      fu.operations.push_back(FabricOpSpec{
-          {"idx", "rwc"},
-          {"dataflow.stream"},
-          {"fa", "fb", "fc"},
-          {dataType.str(), dataType.str(), dataType.str()},
-          {dataType.str(), "!fabric.bits<1>"},
-          {},
-          {},
-          StreamConfig{dataflow::StreamStepKind::Add,
-                       {mlir::arith::CmpIPredicate::slt,
-                        mlir::arith::CmpIPredicate::sgt}}});
+      fu.operations.push_back(
+          FabricOpSpec{{"idx", "rwc"},
+                       loopStreamCapability(dataflow::StreamStepKind::Add,
+                                            {mlir::arith::CmpIPredicate::slt,
+                                             mlir::arith::CmpIPredicate::sgt}),
+                       {::dataflow::OperationSchemaId::DataflowStream},
+                       {"fa", "fb", "fc"},
+                       {dataType.str(), dataType.str(), dataType.str()},
+                       {dataType.str(), "!fabric.bits<1>"}});
       fu.yieldValues = {"idx", "rwc"};
       fu.yieldTypes = {dataType.str(), "!fabric.bits<1>"};
       pe.fus.push_back(std::move(fu));
@@ -277,13 +279,13 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
            {"init", "pb", peType.str(), control ? dataType.str() : ""},
            {"next", "pc", peType.str(), control ? dataType.str() : ""}},
           {peType.str()},
-          {FabricOpSpec{{"carried"},
-                        {"dataflow.carry"},
-                        {"cond", "init", "next"},
-                        {"!fabric.bits<1>", dataType.str(), dataType.str()},
-                        {dataType.str()},
-                        {},
-                        {}}},
+          {FabricOpSpec{
+              {"carried"},
+              builtinOpCapability(::fabric::ImplementationFamilyId::LoopCarry),
+              {::dataflow::OperationSchemaId::DataflowCarry},
+              {"cond", "init", "next"},
+              {"!fabric.bits<1>", dataType.str(), dataType.str()},
+              {dataType.str()}}},
           {"carried"},
           {dataType.str()}});
       module.addPe(std::move(pe));
@@ -318,12 +320,12 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
                   {"value", "pb", dataType.str(), ""}},
                  {dataType.str(), dataType.str()},
                  {FabricOpSpec{{"after_cond", "after_value"},
-                               {"dataflow.gate"},
+                               builtinOpCapability(
+                                   ::fabric::ImplementationFamilyId::LoopGate),
+                               {::dataflow::OperationSchemaId::DataflowGate},
                                {"cond", "value"},
                                {"!fabric.bits<1>", dataType.str()},
-                               {"!fabric.bits<1>", dataType.str()},
-                               {},
-                               {{"value_kind", "data"}}}},
+                               {"!fabric.bits<1>", dataType.str()}}},
                  {"after_cond", "after_value"},
                  {"!fabric.bits<1>", dataType.str()}});
       module.addPe(std::move(pe));
@@ -350,18 +352,18 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
                    {"pb", value, dataType.str(), ""}};
       pe.resultNames = {result};
       pe.resultTypes = {dataType.str()};
-      pe.fus.push_back(
-          FuSpec{{{"cond", "pa", dataType.str(), "!fabric.bits<1>"},
-                  {"value", "pb", dataType.str(), ""}},
-                 {dataType.str()},
-                 {FabricOpSpec{{"stable"},
-                               {"dataflow.invariant"},
-                               {"cond", "value"},
-                               {"!fabric.bits<1>", dataType.str()},
-                               {dataType.str()},
-                               {},
-                               {}}},
-                 {"stable"}});
+      pe.fus.push_back(FuSpec{
+          {{"cond", "pa", dataType.str(), "!fabric.bits<1>"},
+           {"value", "pb", dataType.str(), ""}},
+          {dataType.str()},
+          {FabricOpSpec{{"stable"},
+                        builtinOpCapability(
+                            ::fabric::ImplementationFamilyId::LoopInvariant),
+                        {::dataflow::OperationSchemaId::DataflowInvariant},
+                        {"cond", "value"},
+                        {"!fabric.bits<1>", dataType.str()},
+                        {dataType.str()}}},
+          {"stable"}});
       module.addPe(std::move(pe));
       dataSources.push_back(result);
       sinks32.push_back(cond);
@@ -381,25 +383,10 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
       std::string rawDone = done + "_wide";
       std::string published = stem + "_published";
       PeSpec pe;
-      pe.inputs = {{"pc", control, "!fabric.bits<0>", boundaryType.str()},
-                   {"pv", value, boundaryType.str(), ""}};
-      pe.resultNames = {rawDone, published};
-      pe.resultTypes = {boundaryType.str(), boundaryType.str()};
-      pe.fus.push_back(
-          FuSpec{{{"control", "pc", boundaryType.str(), "!fabric.bits<0>"},
-                  {"value", "pv", boundaryType.str(),
-                   boundaryType == semanticType ? "" : semanticType.str()}},
-                 {boundaryType.str(), boundaryType.str()},
-                 {FabricOpSpec{{"done", "published"},
-                               {"dataflow.sync"},
-                               {"control", "value"},
-                               {"!fabric.bits<0>", semanticType.str()},
-                               {"!fabric.bits<0>", semanticType.str()},
-                               {},
-                               {{"bitmask", "11"}}}},
-                 {"done", "published"},
-                 {"!fabric.bits<0>", semanticType.str()}});
-      module.addPe(std::move(pe));
+      // dataflow.sync is a TokenControlFu resource with no registered
+      // implementation family, so it is reported rather than emitted.
+      recordUnsupportedCatalogResource(
+          module, {::dataflow::OperationSchemaId::DataflowSync});
       module.addFifo(FifoSpec{done, rawDone, "!fabric.bits<0>", 1, true, true});
       sinks0.push_back(control);
       sources0.push_back(done);
@@ -441,49 +428,101 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   addInvariantBank("wide_invariant", config.wideInvariantCount,
                    "!fabric.bits<64>", sources64, sinks64);
 
-  addBinaryBank("add", config.addCount, {"arith.addi", "arith.subi"});
-  addBinaryBank("mul", config.mulCount, {"arith.muli"});
-  addBinaryBank("div", config.divCount, {"arith.divsi"});
-  addBinaryBank("rem", config.signedRemCount, {"arith.remsi"});
-  addBinaryBank("udiv", config.unsignedDivCount,
-                {"arith.divui", "arith.remui"});
-  addBinaryBank("fp_add", config.fpAddCount, {"arith.addf", "arith.subf"});
-  addBinaryBank("fp_mul", config.fpMulCount, {"arith.mulf"});
-  addBinaryBank("fp_div", config.fpDivCount, {"arith.divf"});
-  addUnaryBank("fneg", config.fnegCount, "llvm.fneg");
-  addUnaryBank("fabs", config.fabsCount, "llvm.intr.fabs");
-  addUnaryBank("sqrt", config.sqrtCount, "math.sqrt");
-  addUnaryBank("exp", config.expCount, "math.exp");
-  addUnaryBank("cos", config.cosCount, "math.cos");
-  addUnaryBank("sitofp", config.signedToFpCount, "llvm.sitofp");
-  addUnaryBank("uitofp", config.toFpCount, "llvm.uitofp");
-  addUnaryBank("fptosi", config.signedFromFpCount, "llvm.fptosi");
-  addUnaryBank("fptoui", config.fromFpCount, "llvm.fptoui");
-  addTernaryBank("fma", config.fmaCount, "math.fma");
-  addTernaryBank("fshl", config.fshlCount, "llvm.intr.fshl");
-  addTernaryBank("arm_pkhbt", config.armPkhbtCount, "llvm.arm.pkhbt");
-  addTernaryBank("arm_pkhtb", config.armPkhtbCount, "llvm.arm.pkhtb");
-  addBinaryBank("arm_sadd16", config.armSadd16Count, {"llvm.arm.sadd16"});
-  addBinaryBank("arm_sxtab16", config.armSxtab16Count, {"llvm.arm.sxtab16"});
-  addUnaryBank("arm_sxtb16", config.armSxtb16Count, "llvm.arm.sxtb16");
-  addBinaryBank("and", config.logicCount, {"arith.andi"});
-  addBinaryBank("or", config.logicCount, {"arith.ori"});
-  addBinaryBank("xor", config.logicCount, {"arith.xori"});
+  addBinaryBank("add", config.addCount,
+                ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                {::dataflow::OperationSchemaId::ArithAddI,
+                 ::dataflow::OperationSchemaId::ArithSubI});
+  addBinaryBank("mul", config.mulCount,
+                ::fabric::ImplementationFamilyId::ScalarIntegerMultiply,
+                {::dataflow::OperationSchemaId::ArithMulI});
+  recordUnsupportedCatalogResource(module,
+                                   {::dataflow::OperationSchemaId::ArithDivSI});
+  recordUnsupportedCatalogResource(module,
+                                   {::dataflow::OperationSchemaId::ArithRemSI});
+  recordUnsupportedCatalogResource(module,
+                                   {::dataflow::OperationSchemaId::ArithDivUI,
+                                    ::dataflow::OperationSchemaId::ArithRemUI});
+  addBinaryBank("fp_add", config.fpAddCount,
+                ::fabric::ImplementationFamilyId::ScalarFloatAddSub,
+                {::dataflow::OperationSchemaId::ArithAddF,
+                 ::dataflow::OperationSchemaId::ArithSubF});
+  addBinaryBank("fp_mul", config.fpMulCount,
+                ::fabric::ImplementationFamilyId::ScalarFloatMultiply,
+                {::dataflow::OperationSchemaId::ArithMulF});
+  recordUnsupportedCatalogResource(module,
+                                   {::dataflow::OperationSchemaId::ArithDivF});
+  addUnaryBank("fneg", config.fnegCount,
+               ::fabric::ImplementationFamilyId::ScalarFloatSign,
+               ::dataflow::OperationSchemaId::ArithNegF);
+  addUnaryBank("fabs", config.fabsCount,
+               ::fabric::ImplementationFamilyId::ScalarFloatSign,
+               ::dataflow::OperationSchemaId::MathAbsF);
+  recordUnsupportedCatalogResource(module,
+                                   {::dataflow::OperationSchemaId::MathSqrt});
+  recordUnsupportedCatalogResource(module,
+                                   {::dataflow::OperationSchemaId::MathExp});
+  recordUnsupportedCatalogResource(module,
+                                   {::dataflow::OperationSchemaId::MathCos});
+  addUnaryBank("sitofp", config.signedToFpCount,
+               ::fabric::ImplementationFamilyId::ScalarIntegerToFloat,
+               ::dataflow::OperationSchemaId::ArithSIToFP);
+  addUnaryBank("uitofp", config.toFpCount,
+               ::fabric::ImplementationFamilyId::ScalarIntegerToFloat,
+               ::dataflow::OperationSchemaId::ArithUIToFP);
+  addUnaryBank("fptosi", config.signedFromFpCount,
+               ::fabric::ImplementationFamilyId::ScalarFloatToInteger,
+               ::dataflow::OperationSchemaId::ArithFPToSI);
+  addUnaryBank("fptoui", config.fromFpCount,
+               ::fabric::ImplementationFamilyId::ScalarFloatToInteger,
+               ::dataflow::OperationSchemaId::ArithFPToUI);
+  addTernaryBank("fma", config.fmaCount,
+                 ::fabric::ImplementationFamilyId::ScalarFloatFma,
+                 ::dataflow::OperationSchemaId::MathFma);
+  recordUnsupportedCatalogResource(module,
+                                   {::dataflow::OperationSchemaId::LLVMFshl});
+  addBinaryBank("and", config.logicCount,
+                ::fabric::ImplementationFamilyId::ScalarIntegerLogic,
+                {::dataflow::OperationSchemaId::ArithAndI});
+  addBinaryBank("or", config.logicCount,
+                ::fabric::ImplementationFamilyId::ScalarIntegerLogic,
+                {::dataflow::OperationSchemaId::ArithOrI});
+  addBinaryBank("xor", config.logicCount,
+                ::fabric::ImplementationFamilyId::ScalarIntegerLogic,
+                {::dataflow::OperationSchemaId::ArithXOrI});
   addBinaryBank("shift", config.shiftCount,
-                {"arith.shli", "arith.shrsi", "arith.shrui"});
+                ::fabric::ImplementationFamilyId::ScalarIntegerShift,
+                {::dataflow::OperationSchemaId::ArithShLI,
+                 ::dataflow::OperationSchemaId::ArithShRSI,
+                 ::dataflow::OperationSchemaId::ArithShRUI});
   addWideBinaryBank("wide_add", config.wideAddCount,
-                    {"arith.addi", "arith.subi"});
-  addWideBinaryBank("wide_mul", config.wideMulCount, {"arith.muli"});
-  addWideBinaryBank("wide_udiv", config.wideUnsignedDivCount,
-                    {"arith.divui", "arith.remui"});
+                    ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                    {::dataflow::OperationSchemaId::ArithAddI,
+                     ::dataflow::OperationSchemaId::ArithSubI});
+  addWideBinaryBank("wide_mul", config.wideMulCount,
+                    ::fabric::ImplementationFamilyId::ScalarIntegerMultiply,
+                    {::dataflow::OperationSchemaId::ArithMulI});
+  recordUnsupportedCatalogResource(module,
+                                   {::dataflow::OperationSchemaId::ArithDivUI,
+                                    ::dataflow::OperationSchemaId::ArithRemUI});
   addWideBinaryBank("wide_shift", config.wideShiftCount,
-                    {"arith.shli", "arith.shrsi", "arith.shrui"});
-  addBinaryBank("umin", config.unsignedMinCount, {"llvm.intr.umin"});
-  addBinaryBank("umax", config.unsignedMaxCount, {"llvm.intr.umax"});
-  addBinaryBank("usub_sat", config.unsignedSaturatingSubCount,
-                {"llvm.intr.usub.sat"});
-  addBinaryBank("smin", config.minCount, {"llvm.intr.smin"});
-  addBinaryBank("smax", config.maxCount, {"llvm.intr.smax"});
+                    ::fabric::ImplementationFamilyId::ScalarIntegerShift,
+                    {::dataflow::OperationSchemaId::ArithShLI,
+                     ::dataflow::OperationSchemaId::ArithShRSI,
+                     ::dataflow::OperationSchemaId::ArithShRUI});
+  addBinaryBank("umin", config.unsignedMinCount,
+                ::fabric::ImplementationFamilyId::ScalarIntegerCompareMinMax,
+                {::dataflow::OperationSchemaId::ArithMinUI});
+  addBinaryBank("umax", config.unsignedMaxCount,
+                ::fabric::ImplementationFamilyId::ScalarIntegerCompareMinMax,
+                {::dataflow::OperationSchemaId::ArithMaxUI});
+  recordUnsupportedCatalogResource(
+      module, {::dataflow::OperationSchemaId::LLVMUSubSat});
+  addBinaryBank("smin", config.minCount,
+                ::fabric::ImplementationFamilyId::ScalarIntegerCompareMinMax,
+                {::dataflow::OperationSchemaId::ArithMinSI});
+  addBinaryBank("smax", config.maxCount,
+                ::fabric::ImplementationFamilyId::ScalarIntegerCompareMinMax,
+                {::dataflow::OperationSchemaId::ArithMaxSI});
 
   for (unsigned index = 0; index < config.cmpCount; ++index) {
     std::string result = numbered("cmp", index);
@@ -617,21 +656,41 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
     sinks64.push_back(trueValue);
   }
 
-  addUnaryBank("cast", config.castCount, "llvm.trunc");
-  addUnaryBank("sext", config.castCount, "llvm.sext");
-  addUnaryBank("zext", config.castCount, "llvm.zext");
-  addUnaryBank("trunci", config.trunciCount, "arith.trunci");
-  addUnaryBank("ctlz", config.ctlzCount, "llvm.intr.ctlz");
-  addWideExtensionBank("wide_zext", config.wideCastCount, "llvm.zext");
-  addWideExtensionBank("wide_sext", config.wideSextCount, "llvm.sext");
-  addWideBinaryBank("wide_div", config.wideDivCount, {"arith.divsi"});
+  addUnaryBank("cast", config.castCount,
+               ::fabric::ImplementationFamilyId::ScalarIntegerCast,
+               ::dataflow::OperationSchemaId::ArithTruncI);
+  addUnaryBank("sext", config.castCount,
+               ::fabric::ImplementationFamilyId::ScalarIntegerCast,
+               ::dataflow::OperationSchemaId::ArithExtSI);
+  addUnaryBank("zext", config.castCount,
+               ::fabric::ImplementationFamilyId::ScalarIntegerCast,
+               ::dataflow::OperationSchemaId::ArithExtUI);
+  addUnaryBank("trunc", config.castCount,
+               ::fabric::ImplementationFamilyId::ScalarIntegerCast,
+               ::dataflow::OperationSchemaId::ArithTruncI);
+  recordUnsupportedCatalogResource(
+      module, {::dataflow::OperationSchemaId::LLVMCountLeadingZeros});
+  addWideExtensionBank("wide_zext", config.wideCastCount,
+                       ::fabric::ImplementationFamilyId::ScalarIntegerCast,
+                       ::dataflow::OperationSchemaId::ArithExtUI);
+  addWideExtensionBank("wide_sext", config.wideSextCount,
+                       ::fabric::ImplementationFamilyId::ScalarIntegerCast,
+                       ::dataflow::OperationSchemaId::ArithExtSI);
+  recordUnsupportedCatalogResource(module,
+                                   {::dataflow::OperationSchemaId::ArithDivSI});
   addWideTruncBank("wide_trunc", config.wideCastCount);
-  addWideNarrowingBank("wide_trunci", config.wideTrunciCount, "arith.trunci");
+  addWideNarrowingBank("wide_trunci", config.wideTrunciCount,
+                       ::fabric::ImplementationFamilyId::ScalarIntegerCast,
+                       ::dataflow::OperationSchemaId::ArithTruncI);
   addWideNarrowingBank("wide_index_cast", config.wideIndexCastCount,
-                       "arith.index_cast");
+                       ::fabric::ImplementationFamilyId::ScalarIntegerCast,
+                       ::dataflow::OperationSchemaId::ArithIndexCast);
   addWideNarrowingBank("wide_index_castui", config.wideIndexCastUiCount,
-                       "arith.index_castui");
-  addUnaryBank("extui", config.extuiCount, "arith.extui");
+                       ::fabric::ImplementationFamilyId::ScalarIntegerCast,
+                       ::dataflow::OperationSchemaId::ArithIndexCastUI);
+  addWideExtensionBank("wide_extui", config.wideCastCount,
+                       ::fabric::ImplementationFamilyId::ScalarIntegerCast,
+                       ::dataflow::OperationSchemaId::ArithExtUI);
 
   for (unsigned index = 0; index < config.syncCount; ++index) {
     std::string prefix = numbered("sync", index);
@@ -642,18 +701,14 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
           (prefix + llvm::Twine("_done") + llvm::Twine(lane)).str());
     }
   }
-  addTypedSyncBank("typed_sync_i1", config.typedSync1Count,
-                   "!fabric.bits<32>", "!fabric.bits<1>", sources32,
-                   sinks32);
-  addTypedSyncBank("typed_sync_i8", config.typedSync8Count,
-                   "!fabric.bits<32>", "!fabric.bits<8>", sources32,
-                   sinks32);
+  addTypedSyncBank("typed_sync_i1", config.typedSync1Count, "!fabric.bits<32>",
+                   "!fabric.bits<1>", sources32, sinks32);
+  addTypedSyncBank("typed_sync_i8", config.typedSync8Count, "!fabric.bits<32>",
+                   "!fabric.bits<8>", sources32, sinks32);
   addTypedSyncBank("typed_sync_i32", config.typedSync32Count,
-                   "!fabric.bits<32>", "!fabric.bits<32>", sources32,
-                   sinks32);
+                   "!fabric.bits<32>", "!fabric.bits<32>", sources32, sinks32);
   addTypedSyncBank("typed_sync_i64", config.typedSync64Count,
-                   "!fabric.bits<64>", "!fabric.bits<64>", sources64,
-                   sinks64);
+                   "!fabric.bits<64>", "!fabric.bits<64>", sources64, sinks64);
 
   for (unsigned index = 0; index < config.loadCount; ++index) {
     sources32.push_back(numbered("data", index));
@@ -764,11 +819,6 @@ ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {
   config.wideRouteBridgeCount = 16;
   config.ctlzCount = 2;
   config.fshlCount = 2;
-  config.armPkhbtCount = 2;
-  config.armPkhtbCount = 1;
-  config.armSadd16Count = 4;
-  config.armSxtab16Count = 2;
-  config.armSxtb16Count = 4;
   config.minCount = 11;
   config.maxCount = 11;
   config.streamCount = 4;
@@ -859,53 +909,42 @@ ModuleBuilder loom::adg::buildSharedVectorAluAdg() {
                   {"rhs", "bin1", "!fabric.bits<32>", ""}};
   xorPe.resultNames = {"xored"};
   xorPe.resultTypes = {"!fabric.bits<32>"};
-  xorPe.fus.push_back(
-      FuSpec{{{"a", "lhs", "!fabric.bits<32>", ""},
-              {"b", "rhs", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"value"},
-                           {"arith.xori"},
-                           {"a", "b"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"value"}});
+  xorPe.fus.push_back(FuSpec{
+      {{"a", "lhs", "!fabric.bits<32>", ""},
+       {"b", "rhs", "!fabric.bits<32>", ""}},
+      {"!fabric.bits<32>"},
+      {FabricOpSpec{{"value"},
+                    builtinOpCapability(
+                        ::fabric::ImplementationFamilyId::ScalarIntegerLogic),
+                    {::dataflow::OperationSchemaId::ArithXOrI},
+                    {"a", "b"},
+                    {"!fabric.bits<32>", "!fabric.bits<32>"},
+                    {"!fabric.bits<32>"}}},
+      {"value"}});
   module.addPe(std::move(xorPe));
 
-  PeSpec bswapPe;
-  bswapPe.inputs = {{"value", "unary", "!fabric.bits<32>", ""}};
-  bswapPe.resultNames = {"swapped"};
-  bswapPe.resultTypes = {"!fabric.bits<32>"};
-  bswapPe.fus.push_back(FuSpec{{{"input", "value", "!fabric.bits<32>", ""}},
-                               {"!fabric.bits<32>"},
-                               {FabricOpSpec{{"result"},
-                                             {"llvm.intr.bswap"},
-                                             {"input"},
-                                             {"!fabric.bits<32>"},
-                                             {"!fabric.bits<32>"},
-                                             {},
-                                             {}}},
-                               {"result"}});
-  module.addPe(std::move(bswapPe));
+  // A registered schema without an implementation family is reported rather
+  // than emitted.
+  recordUnsupportedCatalogResource(
+      module, {::dataflow::OperationSchemaId::LLVMByteSwap});
 
   PeSpec floatMulPe;
   floatMulPe.inputs = {{"lhs", "bin0", "!fabric.bits<32>", ""},
                        {"rhs", "bin1", "!fabric.bits<32>", ""}};
   floatMulPe.resultNames = {"product"};
   floatMulPe.resultTypes = {"!fabric.bits<32>"};
-  floatMulPe.fus.push_back(
-      FuSpec{{{"a", "lhs", "!fabric.bits<32>", ""},
-              {"b", "rhs", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"value"},
-                           {"arith.mulf"},
-                           {"a", "b"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"value"}});
+  floatMulPe.fus.push_back(FuSpec{
+      {{"a", "lhs", "!fabric.bits<32>", ""},
+       {"b", "rhs", "!fabric.bits<32>", ""}},
+      {"!fabric.bits<32>"},
+      {FabricOpSpec{{"value"},
+                    builtinOpCapability(
+                        ::fabric::ImplementationFamilyId::ScalarFloatMultiply),
+                    {::dataflow::OperationSchemaId::ArithMulF},
+                    {"a", "b"},
+                    {"!fabric.bits<32>", "!fabric.bits<32>"},
+                    {"!fabric.bits<32>"}}},
+      {"value"}});
   module.addPe(std::move(floatMulPe));
 
   PeSpec intMulPe;
@@ -917,13 +956,14 @@ ModuleBuilder loom::adg::buildSharedVectorAluAdg() {
       FuSpec{{{"a", "lhs", "!fabric.bits<32>", ""},
               {"b", "rhs", "!fabric.bits<32>", ""}},
              {"!fabric.bits<32>"},
-             {FabricOpSpec{{"value"},
-                           {"arith.muli"},
-                           {"a", "b"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
+             {FabricOpSpec{
+                 {"value"},
+                 builtinOpCapability(
+                     ::fabric::ImplementationFamilyId::ScalarIntegerMultiply),
+                 {::dataflow::OperationSchemaId::ArithMulI},
+                 {"a", "b"},
+                 {"!fabric.bits<32>", "!fabric.bits<32>"},
+                 {"!fabric.bits<32>"}}},
              {"value"}});
   module.addPe(std::move(intMulPe));
 
@@ -932,71 +972,36 @@ ModuleBuilder loom::adg::buildSharedVectorAluAdg() {
                      {"rhs", "bin1", "!fabric.bits<32>", ""}};
   intAddPe.resultNames = {"int_sum"};
   intAddPe.resultTypes = {"!fabric.bits<32>"};
-  intAddPe.fus.push_back(
-      FuSpec{{{"a", "lhs", "!fabric.bits<32>", ""},
-              {"b", "rhs", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"value"},
-                           {"arith.addi"},
-                           {"a", "b"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"value"}});
+  intAddPe.fus.push_back(FuSpec{
+      {{"a", "lhs", "!fabric.bits<32>", ""},
+       {"b", "rhs", "!fabric.bits<32>", ""}},
+      {"!fabric.bits<32>"},
+      {FabricOpSpec{{"value"},
+                    builtinOpCapability(
+                        ::fabric::ImplementationFamilyId::ScalarIntegerAddSub),
+                    {::dataflow::OperationSchemaId::ArithAddI},
+                    {"a", "b"},
+                    {"!fabric.bits<32>", "!fabric.bits<32>"},
+                    {"!fabric.bits<32>"}}},
+      {"value"}});
   module.addPe(std::move(intAddPe));
 
-  PeSpec qsub16Pe;
-  qsub16Pe.inputs = {{"lhs", "bin0", "!fabric.bits<32>", ""},
-                     {"rhs", "bin1", "!fabric.bits<32>", ""}};
-  qsub16Pe.resultNames = {"qsub16"};
-  qsub16Pe.resultTypes = {"!fabric.bits<32>"};
-  qsub16Pe.fus.push_back(
-      FuSpec{{{"a", "lhs", "!fabric.bits<32>", ""},
-              {"b", "rhs", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"value"},
-                           {"llvm.arm.qsub16"},
-                           {"a", "b"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"value"}});
-  module.addPe(std::move(qsub16Pe));
-
-  PeSpec syncPe;
-  syncPe.inputs = {{"pa", "sync0", "!fabric.bits<0>", ""},
-                   {"pb", "sync1", "!fabric.bits<0>", ""},
-                   {"pc", "sync2", "!fabric.bits<0>", ""}};
-  syncPe.resultTypes = {"!fabric.bits<0>"};
-  syncPe.fus.push_back(FuSpec{
-      {{"fa", "pa", "!fabric.bits<0>", ""},
-       {"fb", "pb", "!fabric.bits<0>", ""},
-       {"fc", "pc", "!fabric.bits<0>", ""}},
-      {"!fabric.bits<0>"},
-      {FabricOpSpec{{"sa", "sb", "sc"},
-                    {"dataflow.sync"},
-                    {"fa", "fb", "fc"},
-                    {"!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>"},
-                    {"!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>"},
-                    {},
-                    {{"bitmask", "111"}}}},
-      {"sa"}});
-  module.addPe(std::move(syncPe));
+  // A registered schema without an implementation family is reported rather
+  // than emitted.
+  recordUnsupportedCatalogResource(
+      module, {::dataflow::OperationSchemaId::DataflowSync});
 
   addTwoLoadOneStoreMem(module);
-  addUniformSwitch(module,
-                   {"load_ctrl0", "load_ctrl1", "store_ctrl", "sync0",
-                    "sync1", "sync2"},
-                   {"ctrl", "done0", "done1", "store_done"},
-                   "!fabric.bits<0>");
+  addUniformSwitch(
+      module,
+      {"load_ctrl0", "load_ctrl1", "store_ctrl", "sync0", "sync1", "sync2"},
+      {"ctrl", "done0", "done1", "store_done"}, "!fabric.bits<0>");
   addSpatialSwitch(module, {"bin0", "bin1", "unary"},
                    {"data0", "data1", "i32a"}, {"111", "111", "111"});
-  addUniformSwitch(module, {"store_value"},
-                   {"xored", "swapped", "product", "int_product", "int_sum",
-                    "qsub16", "i32b"},
-                   "!fabric.bits<32>");
+  addUniformSwitch(
+      module, {"store_value"},
+      {"xored", "swapped", "product", "int_product", "int_sum", "i32b"},
+      "!fabric.bits<32>");
   return module;
 }
 
@@ -1076,62 +1081,33 @@ ModuleBuilder loom::adg::buildSharedVectorMeshAdg() {
                   {"rhs", "mesh_rhs", "!fabric.bits<32>", ""}};
   xorPe.resultNames = {"xored"};
   xorPe.resultTypes = {"!fabric.bits<32>"};
-  xorPe.fus.push_back(
-      FuSpec{{{"a", "lhs", "!fabric.bits<32>", ""},
-              {"b", "rhs", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"value"},
-                           {"arith.xori"},
-                           {"a", "b"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"value"}});
+  xorPe.fus.push_back(FuSpec{
+      {{"a", "lhs", "!fabric.bits<32>", ""},
+       {"b", "rhs", "!fabric.bits<32>", ""}},
+      {"!fabric.bits<32>"},
+      {FabricOpSpec{{"value"},
+                    builtinOpCapability(
+                        ::fabric::ImplementationFamilyId::ScalarIntegerLogic),
+                    {::dataflow::OperationSchemaId::ArithXOrI},
+                    {"a", "b"},
+                    {"!fabric.bits<32>", "!fabric.bits<32>"},
+                    {"!fabric.bits<32>"}}},
+      {"value"}});
   module.addPe(std::move(xorPe));
 
-  PeSpec bswapPe;
-  bswapPe.inputs = {{"value", "mesh_unary", "!fabric.bits<32>", ""}};
-  bswapPe.resultNames = {"swapped"};
-  bswapPe.resultTypes = {"!fabric.bits<32>"};
-  bswapPe.fus.push_back(FuSpec{{{"input", "value", "!fabric.bits<32>", ""}},
-                               {"!fabric.bits<32>"},
-                               {FabricOpSpec{{"result"},
-                                             {"llvm.intr.bswap"},
-                                             {"input"},
-                                             {"!fabric.bits<32>"},
-                                             {"!fabric.bits<32>"},
-                                             {},
-                                             {}}},
-                               {"result"}});
-  module.addPe(std::move(bswapPe));
+  // Registered schemas without implementation families are reported rather
+  // than emitted.
+  recordUnsupportedCatalogResource(
+      module, {::dataflow::OperationSchemaId::LLVMByteSwap});
 
-  PeSpec syncPe;
-  syncPe.inputs = {{"pa", "sync0", "!fabric.bits<0>", ""},
-                   {"pb", "sync1", "!fabric.bits<0>", ""},
-                   {"pc", "sync2", "!fabric.bits<0>", ""}};
-  syncPe.resultTypes = {"!fabric.bits<0>"};
-  syncPe.fus.push_back(FuSpec{
-      {{"fa", "pa", "!fabric.bits<0>", ""},
-       {"fb", "pb", "!fabric.bits<0>", ""},
-       {"fc", "pc", "!fabric.bits<0>", ""}},
-      {"!fabric.bits<0>"},
-      {FabricOpSpec{{"sa", "sb", "sc"},
-                    {"dataflow.sync"},
-                    {"fa", "fb", "fc"},
-                    {"!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>"},
-                    {"!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>"},
-                    {},
-                    {{"bitmask", "111"}}}},
-      {"sa"}});
-  module.addPe(std::move(syncPe));
+  recordUnsupportedCatalogResource(
+      module, {::dataflow::OperationSchemaId::DataflowSync});
 
   addTwoLoadOneStoreMem(module);
-  addUniformSwitch(module,
-                   {"load_ctrl0", "load_ctrl1", "store_ctrl", "sync0",
-                    "sync1", "sync2"},
-                   {"ctrl", "done0", "done1", "store_done"},
-                   "!fabric.bits<0>");
+  addUniformSwitch(
+      module,
+      {"load_ctrl0", "load_ctrl1", "store_ctrl", "sync0", "sync1", "sync2"},
+      {"ctrl", "done0", "done1", "store_done"}, "!fabric.bits<0>");
   addSpatialSwitch(module, {"west0", "west1", "west_unary"},
                    {"data0", "data1", "i32a"}, {"111", "111", "101"});
   addSpatialSwitch(module, {"mesh_lhs", "mesh_rhs_pre"}, {"west0", "west1"},

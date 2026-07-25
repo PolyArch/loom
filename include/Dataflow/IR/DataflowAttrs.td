@@ -28,6 +28,11 @@ def Dataflow_OptionalGranularity : OptionalParameter<
 
 def Dataflow_Flag : DefaultValuedParameter<"bool", "false">;
 
+def Dataflow_SourceAlignmentBytes : AttrParameter<
+    "std::uint64_t",
+    "nonzero power-of-two minimum alignment in bytes the software access "
+    "guarantees; identity-critical and never inferred from type or service">;
+
 def Dataflow_SyncScopeRefAttr : Dataflow_Attr<"SyncScopeRef", "sync_scope"> {
   let summary = "closed synchronization scope reference";
   let description = [{
@@ -56,16 +61,20 @@ def Dataflow_AtomicAccessContractAttr
   let summary = "the common atomic-access fields as one closed typed value";
   let description = [{
     The single owner of an atomic access's ordering, synchronization scope,
-    optional vector atomic granularity, and volatility. Every actor that
-    performs an atomic access nests exactly one of these; none of its fields
-    is repeated by an enclosing aggregate.
+    source alignment, optional vector atomic granularity, and volatility.
+    Every actor that performs an atomic access nests exactly one of these;
+    none of its fields is repeated by an enclosing aggregate.
 
     A scalar atomic access omits the granularity because both vector cases
-    degenerate to one atomic object.
+    degenerate to one atomic object. The source alignment is the minimum
+    alignment the software access guarantees; it is nonzero and a power of
+    two and is not inferred from the access type, endpoint width, or a
+    selected service.
   }];
 
   let parameters = (ins Dataflow_Ordering:$ordering,
                         "::dataflow::SyncScopeRefAttr":$sync_scope,
+                        Dataflow_SourceAlignmentBytes:$source_alignment_bytes,
                         Dataflow_OptionalGranularity:$vector_granularity,
                         Dataflow_Flag:$is_volatile);
   let assemblyFormat = "`<` struct(params) `>`";
@@ -119,6 +128,7 @@ def Dataflow_CompareExchangeContractAttr
   let parameters = (ins Dataflow_Ordering:$success_ordering,
                         Dataflow_Ordering:$failure_ordering,
                         "::dataflow::SyncScopeRefAttr":$sync_scope,
+                        Dataflow_SourceAlignmentBytes:$source_alignment_bytes,
                         Dataflow_OptionalGranularity:$vector_granularity,
                         Dataflow_Flag:$weak,
                         Dataflow_Flag:$is_volatile);

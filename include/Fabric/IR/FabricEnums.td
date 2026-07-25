@@ -3,6 +3,7 @@
 
 include "Fabric/IR/FabricDialect.td"
 include "mlir/IR/EnumAttr.td"
+include "Fabric/IR/ImplementationFamilyEnum.td.inc"
 
 def Fabric_ScheduleAttr : I32EnumAttr<"Schedule",
     "fabric container schedule (spatial vs temporal time-share)",

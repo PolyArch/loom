@@ -1,0 +1,527 @@
+//===- ImplementationFamilyTest.cpp - HSG family admission anchors -------===//
+//
+// Anchors the generated 20-family registry and one discriminating example for
+// each closed capability schema. Pair relations deliberately reject a pair
+// whose source and destination both occur in other admitted pairs.
+//
+//===----------------------------------------------------------------------===//
+
+#include "Fabric/IR/ImplementationFamily.h"
+
+#include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowOps.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/MLIRContext.h"
+#include "llvm/ADT/StringSet.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <cstdlib>
+#include <optional>
+
+using namespace fabric;
+using namespace mlir;
+using dataflow::OperationSchemaId;
+
+namespace {
+
+struct OpFixture {
+  explicit OpFixture(MLIRContext &context)
+      : builder(&context), loc(builder.getUnknownLoc()) {
+    builder.setInsertionPointToEnd(&block);
+  }
+
+  Value poison(Type type) { return ub::PoisonOp::create(builder, loc, type); }
+
+  Block block;
+  OpBuilder builder;
+  Location loc;
+};
+
+std::optional<dataflow::CanonicalActorSchemaProjection>
+projectActor(Operation *op, bool &ok) {
+  auto actor = llvm::dyn_cast<dataflow::CanonicalDataflowActorOpInterface>(op);
+  if (!actor) {
+    llvm::errs() << op->getName().getStringRef()
+                 << " has no canonical actor interface\n";
+    ok = false;
+    return std::nullopt;
+  }
+  llvm::Expected<dataflow::CanonicalActorSchemaProjection> projection =
+      actor.projectCanonicalActorSchemaProjection();
+  if (!projection) {
+    llvm::errs() << llvm::toString(projection.takeError()) << '\n';
+    ok = false;
+    return std::nullopt;
+  }
+  return *projection;
+}
+
+bool expectAdmission(ImplementationFamilyId family,
+                     const FamilyCapabilityParams *params,
+                     const dataflow::CanonicalActorSchemaProjection &actor,
+                     bool admitted, llvm::StringRef semanticReason) {
+  llvm::Error error =
+      verifyImplementationFamilyAdmission(family, params, actor);
+  if (admitted) {
+    if (!error)
+      return true;
+    llvm::errs() << implementationFamilyKeyword(family)
+                 << " rejected an admitted actor: "
+                 << llvm::toString(std::move(error)) << '\n';
+    return false;
+  }
+  if (!error) {
+    llvm::errs() << implementationFamilyKeyword(family)
+                 << " admitted an actor that must fail " << semanticReason
+                 << '\n';
+    return false;
+  }
+  std::string message = llvm::toString(std::move(error));
+  if (llvm::StringRef(message).contains(semanticReason))
+    return true;
+  llvm::errs() << implementationFamilyKeyword(family)
+               << " reported an unspecific rejection: " << message << '\n';
+  return false;
+}
+
+bool checkDescriptorRelations() {
+  bool ok = true;
+  llvm::StringSet<> keywords;
+  const std::uint32_t families = implementationFamilyCount();
+  const std::uint32_t schemas = dataflow::operationSchemaCount();
+  if (families != 20) {
+    llvm::errs() << "the registry must contain exactly 20 families, found "
+                 << families << '\n';
+    ok = false;
+  }
+
+  for (std::uint32_t index = 0; index < families; ++index) {
+    auto family = static_cast<ImplementationFamilyId>(index);
+    const ImplementationFamilyDescriptor &descriptor =
+        implementationFamily(family);
+    auto [familyId, admittedSchemas, capabilitySchema, admissionProvider] =
+        descriptor;
+    if (familyId != family || admittedSchemas.empty()) {
+      llvm::errs() << "family " << index << " has an invalid descriptor\n";
+      ok = false;
+    }
+    for (OperationSchemaId schema : admittedSchemas) {
+      if (static_cast<std::uint32_t>(schema) >= schemas ||
+          !admitsOperationSchema(family, schema)) {
+        llvm::errs() << implementationFamilyKeyword(family)
+                     << " has an invalid generated member\n";
+        ok = false;
+      }
+    }
+
+    llvm::StringRef keyword = implementationFamilyKeyword(family);
+    std::optional<ImplementationFamilyId> resolved =
+        findImplementationFamily(keyword);
+    if (keyword.empty() || !keywords.insert(keyword).second || !resolved ||
+        *resolved != family ||
+        capabilityParamsSchemaKeyword(capabilitySchema).empty() ||
+        typedAdmissionProviderKeyword(admissionProvider).empty()) {
+      llvm::errs() << "family " << index
+                   << " does not round-trip through generated vocabularies\n";
+      ok = false;
+    }
+  }
+  return ok;
+}
+
+bool checkMembership() {
+  bool ok = true;
+  if (!admitsOperationSchema(ImplementationFamilyId::ScalarIntegerAddSub,
+                             OperationSchemaId::ArithAddI) ||
+      !admitsOperationSchema(ImplementationFamilyId::ScalarIntegerAddSub,
+                             OperationSchemaId::ArithSubI) ||
+      admitsOperationSchema(ImplementationFamilyId::ScalarIntegerAddSub,
+                            OperationSchemaId::ArithMulI) ||
+      !admitsOperationSchema(ImplementationFamilyId::LoopStream,
+                             OperationSchemaId::DataflowStream) ||
+      admitsOperationSchema(ImplementationFamilyId::LoopStream,
+                            OperationSchemaId::DataflowCarry)) {
+    llvm::errs() << "a generated family/member relation is incorrect\n";
+    ok = false;
+  }
+  if (findImplementationFamily("NoSuchFamily") ||
+      findImplementationFamily("ScalarFloatDivide")) {
+    llvm::errs() << "an unregistered or speculative family is representable\n";
+    ok = false;
+  }
+  return ok;
+}
+
+bool checkCapabilityCodec(MLIRContext &context) {
+  FloatBehaviorProfile behavior = FloatBehaviorProfile::strictIEEE();
+  behavior.roundingModes = RoundingModeSet::get(
+      {arith::RoundingMode::to_nearest_even, arith::RoundingMode::downward});
+  FamilyCapabilityParams capability = ScalarFloatWidthCastParams{
+      FloatFormatRelation::get({{FloatFormat::F16, FloatFormat::F32},
+                                {FloatFormat::F32, FloatFormat::F64}}),
+      behavior};
+  DictionaryAttr encoded = getFamilyCapabilityParamsAttr(&context, capability);
+  llvm::Expected<FamilyCapabilityParams> decoded = parseFamilyCapabilityParams(
+      ImplementationFamilyId::ScalarFloatWidthCast, encoded);
+  if (!decoded) {
+    llvm::errs() << "canonical typed hw_params failed to decode: "
+                 << llvm::toString(decoded.takeError()) << '\n';
+    return false;
+  }
+  if (getFamilyCapabilityParamsAttr(&context, *decoded) != encoded) {
+    llvm::errs() << "canonical typed hw_params did not round-trip\n";
+    return false;
+  }
+
+  OpBuilder builder(&context);
+  DictionaryAttr duplicateDomain =
+      builder.getDictionaryAttr({builder.getNamedAttr(
+          "integer_widths",
+          builder.getArrayAttr({builder.getI32IntegerAttr(32),
+                                builder.getI32IntegerAttr(32)}))});
+  llvm::Expected<FamilyCapabilityParams> duplicateDomainResult =
+      parseFamilyCapabilityParams(ImplementationFamilyId::ScalarIntegerAddSub,
+                                  duplicateDomain);
+  if (duplicateDomainResult) {
+    llvm::errs() << "duplicate typed capability domain was accepted\n";
+    return false;
+  }
+  if (!llvm::StringRef(llvm::toString(duplicateDomainResult.takeError()))
+           .contains("duplicate")) {
+    llvm::errs() << "duplicate typed capability domain was misclassified\n";
+    return false;
+  }
+
+  ArrayAttr pair = builder.getArrayAttr(
+      {builder.getI32IntegerAttr(8), builder.getI32IntegerAttr(32)});
+  DictionaryAttr duplicateRelation =
+      builder.getDictionaryAttr({builder.getNamedAttr(
+          "width_pairs", builder.getArrayAttr({pair, pair}))});
+  llvm::Expected<FamilyCapabilityParams> duplicateRelationResult =
+      parseFamilyCapabilityParams(ImplementationFamilyId::ScalarIntegerCast,
+                                  duplicateRelation);
+  if (duplicateRelationResult) {
+    llvm::errs() << "duplicate typed capability relation was accepted\n";
+    return false;
+  }
+  if (!llvm::StringRef(llvm::toString(duplicateRelationResult.takeError()))
+           .contains("duplicate")) {
+    llvm::errs() << "duplicate typed capability relation was misclassified\n";
+    return false;
+  }
+  return true;
+}
+
+bool checkIntegerAdmission(MLIRContext &context) {
+  OpFixture fixture(context);
+  Type i7 = fixture.builder.getIntegerType(7);
+  Type i8 = fixture.builder.getI8Type();
+  Type i32 = fixture.builder.getI32Type();
+  Operation *add8 = arith::AddIOp::create(
+      fixture.builder, fixture.loc, fixture.poison(i8), fixture.poison(i8));
+  Operation *add7 = arith::AddIOp::create(
+      fixture.builder, fixture.loc, fixture.poison(i7), fixture.poison(i7));
+  Operation *signedLess = arith::CmpIOp::create(
+      fixture.builder, fixture.loc, arith::CmpIPredicate::slt,
+      fixture.poison(i32), fixture.poison(i32));
+  Operation *equal = arith::CmpIOp::create(
+      fixture.builder, fixture.loc, arith::CmpIPredicate::eq,
+      fixture.poison(i32), fixture.poison(i32));
+
+  FamilyCapabilityParams ordinary = ScalarIntegerParams{
+      IntegerWidthSet::get({IntegerWidth::I8, IntegerWidth::I16,
+                            IntegerWidth::I32, IntegerWidth::I64})};
+  FamilyCapabilityParams comparisons = ScalarIntegerCompareMinMaxParams{
+      IntegerWidthSet::get({IntegerWidth::I32}),
+      IntegerPredicateSet::get({arith::CmpIPredicate::slt})};
+  FamilyCapabilityParams wrongSchema =
+      ScalarFloatParams{FloatFormatSet::get({FloatFormat::F32}),
+                        FloatBehaviorProfile::strictIEEE()};
+
+  bool ok = true;
+  auto check = [&](Operation *op, ImplementationFamilyId family,
+                   const FamilyCapabilityParams *params, bool admitted,
+                   llvm::StringRef reason) {
+    if (std::optional<dataflow::CanonicalActorSchemaProjection> projection =
+            projectActor(op, ok))
+      ok &= expectAdmission(family, params, *projection, admitted, reason);
+  };
+  check(add8, ImplementationFamilyId::ScalarIntegerAddSub, &ordinary, true, {});
+  check(add7, ImplementationFamilyId::ScalarIntegerAddSub, &ordinary, false,
+        "integer width");
+  check(signedLess, ImplementationFamilyId::ScalarIntegerCompareMinMax,
+        &comparisons, true, {});
+  check(equal, ImplementationFamilyId::ScalarIntegerCompareMinMax, &comparisons,
+        false, "integer predicate");
+  check(add8, ImplementationFamilyId::ScalarIntegerAddSub, nullptr, false,
+        "capability parameters");
+  check(add8, ImplementationFamilyId::ScalarIntegerAddSub, &wrongSchema, false,
+        "capability parameter schema");
+  check(add8, ImplementationFamilyId::ScalarFloatAddSub, &ordinary, false,
+        "actor schema is not admitted");
+
+  std::optional<dataflow::CanonicalActorSchemaProjection> mismatch =
+      projectActor(add8, ok);
+  if (mismatch) {
+    Type f32 = fixture.builder.getF32Type();
+    mismatch->type = fixture.builder.getFunctionType({f32, f32}, {f32});
+    ok &=
+        expectAdmission(ImplementationFamilyId::ScalarIntegerAddSub, &ordinary,
+                        *mismatch, false, "requires a scalar signless integer");
+  }
+  return ok;
+}
+
+bool checkFloatingAdmission(MLIRContext &context) {
+  OpFixture fixture(context);
+  Type f32 = fixture.builder.getF32Type();
+  Type f64 = fixture.builder.getF64Type();
+  Value lhs = fixture.poison(f32);
+  Value rhs = fixture.poison(f32);
+  Operation *plain = arith::AddFOp::create(fixture.builder, fixture.loc, lhs,
+                                           rhs, arith::FastMathFlags::none,
+                                           arith::RoundingModeAttr{});
+  Operation *noNaNs = arith::AddFOp::create(fixture.builder, fixture.loc, lhs,
+                                            rhs, arith::FastMathFlags::nnan,
+                                            arith::RoundingModeAttr{});
+  Operation *downward = arith::AddFOp::create(
+      fixture.builder, fixture.loc, lhs, rhs, arith::FastMathFlags::none,
+      arith::RoundingModeAttr::get(&context, arith::RoundingMode::downward));
+  Operation *wide = arith::AddFOp::create(
+      fixture.builder, fixture.loc, fixture.poison(f64), fixture.poison(f64),
+      arith::FastMathFlags::none, arith::RoundingModeAttr{});
+  Operation *orderedLess = arith::CmpFOp::create(
+      fixture.builder, fixture.loc, arith::CmpFPredicate::OLT, lhs, rhs,
+      arith::FastMathFlags::none);
+  Operation *orderedEqual = arith::CmpFOp::create(
+      fixture.builder, fixture.loc, arith::CmpFPredicate::OEQ, lhs, rhs,
+      arith::FastMathFlags::none);
+  Operation *minNum = arith::MinNumFOp::create(
+      fixture.builder, fixture.loc, lhs, rhs, arith::FastMathFlags::none);
+
+  FloatBehaviorProfile strict = FloatBehaviorProfile::strictIEEE();
+  FloatBehaviorProfile relaxed = strict;
+  relaxed.admittedFastMath = arith::FastMathFlags::nnan;
+  FloatBehaviorProfile rounded = strict;
+  rounded.roundingModes = RoundingModeSet::get(
+      {arith::RoundingMode::to_nearest_even, arith::RoundingMode::downward});
+  FloatBehaviorProfile numberPreferred = strict;
+  numberPreferred.nanBehaviors = FloatNaNBehaviorSet::get(
+      {FloatNaNBehavior::IEEE, FloatNaNBehavior::NumberPreferred});
+
+  FamilyCapabilityParams strictFloat =
+      ScalarFloatParams{FloatFormatSet::get({FloatFormat::F32}), strict};
+  FamilyCapabilityParams relaxedFloat =
+      ScalarFloatParams{FloatFormatSet::get({FloatFormat::F32}), relaxed};
+  FamilyCapabilityParams roundedFloat =
+      ScalarFloatParams{FloatFormatSet::get({FloatFormat::F32}), rounded};
+  FamilyCapabilityParams comparisons = ScalarFloatCompareMinMaxParams{
+      FloatFormatSet::get({FloatFormat::F32}), strict,
+      FloatPredicateSet::get({arith::CmpFPredicate::OLT})};
+  FamilyCapabilityParams numberPreferredComparisons =
+      ScalarFloatCompareMinMaxParams{
+          FloatFormatSet::get({FloatFormat::F32}), numberPreferred,
+          FloatPredicateSet::get({arith::CmpFPredicate::OLT})};
+
+  bool ok = true;
+  auto check = [&](Operation *op, ImplementationFamilyId family,
+                   const FamilyCapabilityParams &params, bool admitted,
+                   llvm::StringRef reason) {
+    if (std::optional<dataflow::CanonicalActorSchemaProjection> projection =
+            projectActor(op, ok))
+      ok &= expectAdmission(family, &params, *projection, admitted, reason);
+  };
+  check(plain, ImplementationFamilyId::ScalarFloatAddSub, strictFloat, true,
+        {});
+  check(wide, ImplementationFamilyId::ScalarFloatAddSub, strictFloat, false,
+        "floating format");
+  check(noNaNs, ImplementationFamilyId::ScalarFloatAddSub, strictFloat, false,
+        "fast-math behavior");
+  check(noNaNs, ImplementationFamilyId::ScalarFloatAddSub, relaxedFloat, true,
+        {});
+  check(downward, ImplementationFamilyId::ScalarFloatAddSub, strictFloat, false,
+        "rounding behavior");
+  check(downward, ImplementationFamilyId::ScalarFloatAddSub, roundedFloat, true,
+        {});
+  check(orderedLess, ImplementationFamilyId::ScalarFloatCompareMinMax,
+        comparisons, true, {});
+  check(orderedEqual, ImplementationFamilyId::ScalarFloatCompareMinMax,
+        comparisons, false, "floating predicate");
+  check(minNum, ImplementationFamilyId::ScalarFloatCompareMinMax, comparisons,
+        false, "NaN behavior");
+  check(minNum, ImplementationFamilyId::ScalarFloatCompareMinMax,
+        numberPreferredComparisons, true, {});
+  return ok;
+}
+
+bool checkCastRelations(MLIRContext &context) {
+  OpFixture fixture(context);
+  Type i8 = fixture.builder.getI8Type();
+  Type i16 = fixture.builder.getI16Type();
+  Type i32 = fixture.builder.getI32Type();
+  Type i64 = fixture.builder.getI64Type();
+  Type f16 = fixture.builder.getF16Type();
+  Type f32 = fixture.builder.getF32Type();
+  Type f64 = fixture.builder.getF64Type();
+
+  Operation *i8ToI32 = arith::ExtSIOp::create(fixture.builder, fixture.loc, i32,
+                                              fixture.poison(i8));
+  Operation *i16ToI64 = arith::ExtSIOp::create(fixture.builder, fixture.loc,
+                                               i64, fixture.poison(i16));
+  Operation *i16ToI32 = arith::ExtSIOp::create(fixture.builder, fixture.loc,
+                                               i32, fixture.poison(i16));
+  Operation *f16ToF32 = arith::ExtFOp::create(fixture.builder, fixture.loc, f32,
+                                              fixture.poison(f16));
+  Operation *f32ToF64 = arith::ExtFOp::create(fixture.builder, fixture.loc, f64,
+                                              fixture.poison(f32));
+  Operation *f16ToF64 = arith::ExtFOp::create(fixture.builder, fixture.loc, f64,
+                                              fixture.poison(f16));
+  Operation *i32ToF32 = arith::SIToFPOp::create(fixture.builder, fixture.loc,
+                                                f32, fixture.poison(i32));
+  Operation *i64ToF64 = arith::SIToFPOp::create(fixture.builder, fixture.loc,
+                                                f64, fixture.poison(i64));
+  Operation *i32ToF64 = arith::SIToFPOp::create(fixture.builder, fixture.loc,
+                                                f64, fixture.poison(i32));
+  Operation *f64ToI64 = arith::FPToSIOp::create(fixture.builder, fixture.loc,
+                                                i64, fixture.poison(f64));
+  Operation *f64ToI32 = arith::FPToSIOp::create(fixture.builder, fixture.loc,
+                                                i32, fixture.poison(f64));
+  Operation *bitcast = arith::BitcastOp::create(fixture.builder, fixture.loc,
+                                                f32, fixture.poison(i32));
+  Operation *wideBitcast = arith::BitcastOp::create(
+      fixture.builder, fixture.loc, f64, fixture.poison(i32));
+
+  FamilyCapabilityParams integerCasts =
+      ScalarIntegerCastParams{IntegerCastRelation{
+          IntegerWidthRelation::get({{IntegerWidth::I8, IntegerWidth::I32},
+                                     {IntegerWidth::I16, IntegerWidth::I64}}),
+          ResolvedIndexWidth::I64}};
+  FamilyCapabilityParams floatCasts = ScalarFloatWidthCastParams{
+      FloatFormatRelation::get({{FloatFormat::F16, FloatFormat::F32},
+                                {FloatFormat::F32, FloatFormat::F64}}),
+      FloatBehaviorProfile::strictIEEE()};
+  IntegerFloatFormatRelation conversionPairs =
+      IntegerFloatFormatRelation::get({{IntegerWidth::I32, FloatFormat::F32},
+                                       {IntegerWidth::I64, FloatFormat::F64}});
+  FamilyCapabilityParams conversions = ScalarIntegerFloatConversionParams{
+      conversionPairs, FloatBehaviorProfile::strictIEEE()};
+  FamilyCapabilityParams reinterpretation = ScalarBitReinterpretParams{
+      IntegerWidthSet::get({IntegerWidth::I32}),
+      FloatFormatSet::get({FloatFormat::F32, FloatFormat::F64})};
+
+  bool ok = true;
+  auto check = [&](Operation *op, ImplementationFamilyId family,
+                   const FamilyCapabilityParams &params, bool admitted,
+                   llvm::StringRef reason) {
+    if (std::optional<dataflow::CanonicalActorSchemaProjection> projection =
+            projectActor(op, ok))
+      ok &= expectAdmission(family, &params, *projection, admitted, reason);
+  };
+  check(i8ToI32, ImplementationFamilyId::ScalarIntegerCast, integerCasts, true,
+        {});
+  check(i16ToI64, ImplementationFamilyId::ScalarIntegerCast, integerCasts, true,
+        {});
+  check(i16ToI32, ImplementationFamilyId::ScalarIntegerCast, integerCasts,
+        false, "integer cast relation");
+  check(f16ToF32, ImplementationFamilyId::ScalarFloatWidthCast, floatCasts,
+        true, {});
+  check(f32ToF64, ImplementationFamilyId::ScalarFloatWidthCast, floatCasts,
+        true, {});
+  check(f16ToF64, ImplementationFamilyId::ScalarFloatWidthCast, floatCasts,
+        false, "floating cast relation");
+  check(i32ToF32, ImplementationFamilyId::ScalarIntegerToFloat, conversions,
+        true, {});
+  check(i64ToF64, ImplementationFamilyId::ScalarIntegerToFloat, conversions,
+        true, {});
+  check(i32ToF64, ImplementationFamilyId::ScalarIntegerToFloat, conversions,
+        false, "integer and floating relation");
+  check(f64ToI64, ImplementationFamilyId::ScalarFloatToInteger, conversions,
+        true, {});
+  check(f64ToI32, ImplementationFamilyId::ScalarFloatToInteger, conversions,
+        false, "integer and floating relation");
+  check(bitcast, ImplementationFamilyId::ScalarBitReinterpret, reinterpretation,
+        true, {});
+  check(wideBitcast, ImplementationFamilyId::ScalarBitReinterpret,
+        reinterpretation, false, "equal semantic width");
+  return ok;
+}
+
+bool checkLoopAndTokenAdmission(MLIRContext &context) {
+  OpFixture fixture(context);
+  Type i7 = fixture.builder.getIntegerType(7);
+  Type i32 = fixture.builder.getI32Type();
+  auto stream = [&](Type type, dataflow::StreamStepKind step,
+                    arith::CmpIPredicate predicate) -> Operation * {
+    return dataflow::StreamOp::create(
+        fixture.builder, fixture.loc, type, fixture.builder.getI1Type(),
+        fixture.poison(type), fixture.poison(type), fixture.poison(type), step,
+        predicate);
+  };
+  Operation *addStream =
+      stream(i32, dataflow::StreamStepKind::Add, arith::CmpIPredicate::slt);
+  Operation *subStream =
+      stream(i32, dataflow::StreamStepKind::Sub, arith::CmpIPredicate::slt);
+  Operation *equalStream =
+      stream(i32, dataflow::StreamStepKind::Add, arith::CmpIPredicate::eq);
+  Operation *narrowStream =
+      stream(i7, dataflow::StreamStepKind::Add, arith::CmpIPredicate::slt);
+  FamilyCapabilityParams streamParams = LoopStreamParams{
+      IntegerWidthSet::get({IntegerWidth::I32}), dataflow::StreamStepKind::Add,
+      IntegerPredicateSet::get({arith::CmpIPredicate::slt})};
+
+  auto carry = [&](Type payload) -> Operation * {
+    return dataflow::CarryOp::create(
+        fixture.builder, fixture.loc, payload,
+        fixture.poison(fixture.builder.getI1Type()), fixture.poison(payload),
+        fixture.poison(payload));
+  };
+  Operation *scalarCarry = carry(i32);
+  Operation *memoryCarry =
+      carry(MemRefType::get({4}, fixture.builder.getI32Type()));
+  FamilyCapabilityParams tokenPlane = TokenPlaneParams{};
+
+  bool ok = true;
+  auto check = [&](Operation *op, ImplementationFamilyId family,
+                   const FamilyCapabilityParams &params, bool admitted,
+                   llvm::StringRef reason) {
+    if (std::optional<dataflow::CanonicalActorSchemaProjection> projection =
+            projectActor(op, ok))
+      ok &= expectAdmission(family, &params, *projection, admitted, reason);
+  };
+  check(addStream, ImplementationFamilyId::LoopStream, streamParams, true, {});
+  check(subStream, ImplementationFamilyId::LoopStream, streamParams, false,
+        "fixed stream step kind");
+  check(equalStream, ImplementationFamilyId::LoopStream, streamParams, false,
+        "continuation predicate");
+  check(narrowStream, ImplementationFamilyId::LoopStream, streamParams, false,
+        "integer width");
+  check(scalarCarry, ImplementationFamilyId::LoopCarry, tokenPlane, true, {});
+  check(memoryCarry, ImplementationFamilyId::LoopCarry, tokenPlane, false,
+        "token-plane payload");
+  return ok;
+}
+
+} // namespace
+
+int main() {
+  DialectRegistry registry;
+  registry
+      .insert<arith::ArithDialect, ub::UBDialect, dataflow::DataflowDialect>();
+  MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  bool ok = true;
+  ok &= checkDescriptorRelations();
+  ok &= checkMembership();
+  ok &= checkCapabilityCodec(context);
+  ok &= checkIntegerAdmission(context);
+  ok &= checkFloatingAdmission(context);
+  ok &= checkCastRelations(context);
+  ok &= checkLoopAndTokenAdmission(context);
+  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+}

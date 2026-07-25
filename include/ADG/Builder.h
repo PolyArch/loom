@@ -1,7 +1,8 @@
 #ifndef LOOM_ADG_BUILDER_H
 #define LOOM_ADG_BUILDER_H
 
-#include "Fabric/IR/FabricEnums.h"
+#include "Dataflow/IR/OperationSchema.h"
+#include "Fabric/IR/ImplementationFamily.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -38,28 +39,37 @@ struct PortBinding {
   std::string castType;
 };
 
-struct StreamConfig {
-  StreamConfig(dataflow::StreamStepKind stepKind,
-               std::vector<mlir::arith::CmpIPredicate> predicates,
-               std::optional<mlir::arith::CmpIPredicate> selectedPredicate =
-                   std::nullopt)
-      : stepKind(stepKind), predicates(std::move(predicates)),
-        selectedPredicate(selectedPredicate) {}
+struct FabricOpCapability {
+  FabricOpCapability(::fabric::ImplementationFamilyId family,
+                     ::fabric::FamilyCapabilityParams params)
+      : family(family), params(std::move(params)) {}
 
-  dataflow::StreamStepKind stepKind;
-  std::vector<mlir::arith::CmpIPredicate> predicates;
-  std::optional<mlir::arith::CmpIPredicate> selectedPredicate = std::nullopt;
+  ::fabric::ImplementationFamilyId family;
+  ::fabric::FamilyCapabilityParams params;
 };
 
+/// One concrete `fabric.op` resource. It binds exactly one implementation
+/// family and enables a subset of that family's registered members by typed
+/// `OperationSchemaId`. The Builder holds no operation-name list of its own:
+/// textual spellings are derived from the registry only while constructing
+/// MLIR, and capability values use the family's registered parameter schema.
 struct FabricOpSpec {
+  FabricOpSpec(std::vector<std::string> results, FabricOpCapability capability,
+               std::vector<::dataflow::OperationSchemaId> enabledSchemas,
+               std::vector<std::string> operands,
+               std::vector<std::string> operandTypes,
+               std::vector<std::string> resultTypes)
+      : results(std::move(results)), capability(std::move(capability)),
+        enabledSchemas(std::move(enabledSchemas)),
+        operands(std::move(operands)), operandTypes(std::move(operandTypes)),
+        resultTypes(std::move(resultTypes)) {}
+
   std::vector<std::string> results;
-  std::vector<std::string> opList;
+  FabricOpCapability capability;
+  std::vector<::dataflow::OperationSchemaId> enabledSchemas;
   std::vector<std::string> operands;
   std::vector<std::string> operandTypes;
   std::vector<std::string> resultTypes;
-  std::map<std::string, std::vector<std::string>> hwParams;
-  std::map<std::string, std::string> swConfigs;
-  std::optional<StreamConfig> streamConfig = std::nullopt;
 };
 
 struct FuSpec {
@@ -268,6 +278,7 @@ private:
 
   std::size_t registerDirectUse(std::string sourceName);
   ModuleBuilder &addBodyOp(BodyOpSpec op);
+  ModuleBuilder &addUnsupportedResource(std::string detail);
 
   std::string name;
   std::vector<Input> inputs;
@@ -278,6 +289,7 @@ private:
   std::vector<SwitchEntry> switches;
   std::vector<MemEntry> mems;
   std::vector<BodyEntry> bodyEntries;
+  std::vector<std::string> unsupportedResources;
 };
 
 struct SystemNodeSpec {

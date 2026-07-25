@@ -19,11 +19,11 @@ fabric.module @fu_nested(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>) -> () {
       %k = fabric.op [@arith.muli] (%x, %y)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       // expected-error @+1 {{is not allowed inside fabric.fu}}
       fabric.fu(%xx = %x : !fabric.bits<32>) -> () {
         %inner = fabric.op [@arith.muli] (%xx, %xx)
-                 : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+                 {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
         fabric.yield
       }
       fabric.yield
@@ -39,7 +39,7 @@ fabric.module @fu_with_fifo(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>) -> () {
       %k = fabric.op [@arith.muli] (%x, %y)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       // expected-error @+1 {{is not allowed inside fabric.fu}}
       %f = fabric.fifo %k [max_depth = 4, bypassable = false] : !fabric.bits<32>
       fabric.yield
@@ -55,7 +55,7 @@ fabric.module @fu_with_arith(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
                     %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>) -> () {
       %k = fabric.op [@arith.muli] (%x, %y)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       // expected-error @+1 {{is not allowed inside fabric.fu}}
       %s = arith.constant 0 : i32
       fabric.yield
@@ -74,7 +74,7 @@ fabric.module @fu_yield_count_mismatch(%a : !fabric.bits<32>, %b : !fabric.bits<
                      %y = %pb : !fabric.bits<32>)
                     -> (!fabric.bits<32>, !fabric.bits<32>) {
       %k = fabric.op [@arith.muli] (%x, %y)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerMultiply>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       // expected-error @+1 {{yield value count (1) must match parent fabric.fu result count (2)}}
       fabric.yield %k : !fabric.bits<32>
     }
@@ -88,7 +88,7 @@ fabric.module @fu_yield_type_mismatch(%a : !fabric.bits<16>) {
   fabric.pe [spatial] (%pa = %a : !fabric.bits<16>) -> !fabric.bits<16> {
     %r = fabric.fu(%x = %pa : !fabric.bits<16>) -> !fabric.bits<16> {
       %k = fabric.op [@arith.sitofp] (%x)
-           : (!fabric.bits<16>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerToFloat>, hw_params = {format_pairs = [[1 : i32, "f16"]], behavior = {rounding_modes = ["to_nearest_even"], nan_behaviors = ["ieee"], subnormal_behaviors = ["preserve"], signed_zero_behaviors = ["preserve"], fastmath = "none"}}} : (!fabric.bits<16>) -> !fabric.bits<32>
       // expected-error @+1 {{yield value #0 type '!fabric.bits<32>' must match parent fabric.fu result type '!fabric.bits<16>'}}
       fabric.yield %k : !fabric.bits<32>
     }
@@ -109,12 +109,10 @@ fabric.yield
 fabric.module @fu_outer_lt_inner(%a : !fabric.bits<8>) {
   fabric.pe [spatial] (%pa = %a : !fabric.bits<8>) -> !fabric.bits<8> {
     // expected-error @+1 {{operand #0 bits-width 8 is less than block-argument bits-width 32; the FU boundary only supports high-bit truncation (outer >= inner)}}
-    fabric.fu(%fa = %pa : !fabric.bits<8> to !fabric.bits<32>) -> !fabric.bits<8> {
+    fabric.fu(%fa = %pa : !fabric.bits<8> to !fabric.bits<32>) -> () {
       %v = fabric.op [@arith.addi] (%fa, %fa)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-      %z = fabric.op [@dataflow.constant] ()
-           : () -> !fabric.bits<8>
-      fabric.yield %z : !fabric.bits<8>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerAddSub>, hw_params = {integer_widths = [1 : i32]}} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield
     }
   }
   fabric.yield
@@ -131,7 +129,7 @@ fabric.module @fu_yield_inner_gt_outer(%a : !fabric.bits<16>) {
   fabric.pe [spatial] (%pa = %a : !fabric.bits<16>) -> !fabric.bits<16> {
     %r = fabric.fu(%x = %pa : !fabric.bits<16>) -> !fabric.bits<16> {
       %k = fabric.op [@arith.sitofp] (%x)
-           : (!fabric.bits<16>) -> !fabric.bits<32>
+           {implementation_family = #fabric.implementation_family<ScalarIntegerToFloat>, hw_params = {format_pairs = [[1 : i32, "f16"]], behavior = {rounding_modes = ["to_nearest_even"], nan_behaviors = ["ieee"], subnormal_behaviors = ["preserve"], signed_zero_behaviors = ["preserve"], fastmath = "none"}}} : (!fabric.bits<16>) -> !fabric.bits<32>
       // expected-error @+1 {{yield value #0 inner bits-width 32 is greater than outer bits-width 16; the FU output boundary only supports low-bit-aligned widening (inner <= outer, high bits zero-filled)}}
       fabric.yield %k : !fabric.bits<32> to !fabric.bits<16>
     }
@@ -149,7 +147,7 @@ fabric.module @fu_yield_decl_mismatch(%a : !fabric.bits<32>, %b : !fabric.bits<3
     %r = fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
                   -> !fabric.bits<32> {
       %p = fabric.op [@arith.cmpi] (%x, %y)
-           {hw_params = [{predicate = ["eq", "ne"]}]}
+           {implementation_family = #fabric.implementation_family<ScalarIntegerCompareMinMax>, hw_params = {integer_widths = [32 : i32], predicates = ["eq", "ne"]}}
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>
       // expected-error @+1 {{yield value #0: declared destination type '!fabric.bits<16>' does not match parent fabric.fu result type '!fabric.bits<32>'}}
       fabric.yield %p : !fabric.bits<1> to !fabric.bits<16>

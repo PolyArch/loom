@@ -1,0 +1,65 @@
+# The generated registries depend only on the declared records: neither the
+# textual declaration order of the source nor a repeated run may change one
+# byte. Both generators are checked, because the family registry reads the
+# same records through a second projection.
+
+# RUN: loom-tblgen -gen-operation-schemas -I %loom_include \
+# RUN:   %S/declaration_order_a.td -o %t.schemas.a
+# RUN: loom-tblgen -gen-operation-schemas -I %loom_include \
+# RUN:   %S/declaration_order_b.td -o %t.schemas.b
+# RUN: diff %t.schemas.a %t.schemas.b
+
+# RUN: loom-tblgen -gen-implementation-families -I %loom_include \
+# RUN:   %S/declaration_order_a.td -o %t.families.a
+# RUN: loom-tblgen -gen-implementation-families -I %loom_include \
+# RUN:   %S/declaration_order_b.td -o %t.families.b
+# RUN: diff %t.families.a %t.families.b
+
+# RUN: loom-tblgen -gen-implementation-family-enum -I %loom_include \
+# RUN:   %S/declaration_order_a.td -o %t.family_enum.a
+# RUN: loom-tblgen -gen-implementation-family-enum -I %loom_include \
+# RUN:   %S/declaration_order_b.td -o %t.family_enum.b
+# RUN: diff %t.family_enum.a %t.family_enum.b
+
+# Rows are emitted in ascending dense internal id order. Deliberately
+# nonmonotonic wire tags prove that declaration order and wire order are not
+# internal table indices.
+# RUN: FileCheck --check-prefix=SCHEMAS %s < %t.schemas.a
+# RUN: FileCheck --check-prefix=FAMILIES %s < %t.families.a
+# RUN: FileCheck --check-prefix=FAMILY-ENUM %s < %t.family_enum.a
+
+# SCHEMAS: LOOM_OPERATION_SEMANTICS_CASE(PlainCase, 0, 103)
+# SCHEMAS-NEXT: LOOM_OPERATION_SEMANTICS_CASE(PredicateCase, 1, 41)
+# SCHEMAS: LOOM_OPERATION_SCHEMA(AlphaSchema, 0, 9001, ::test::AlphaOp, Compute, PlainCase)
+# SCHEMAS-NEXT: LOOM_OPERATION_SCHEMA(BetaSchema, 1, 73, ::test::BetaOp, Compute, PredicateCase)
+# SCHEMAS-NEXT: LOOM_OPERATION_SCHEMA(GammaSchema, 2, 500, ::test::GammaOp, Control, PlainCase)
+
+# A family descriptor carries exactly four fields: its stable id, its admitted
+# schemas, its capability parameter schema, and its typed admission provider.
+# FAMILIES: LOOM_IMPLEMENTATION_FAMILY(SharedAlphaBeta, 0, PredicateParams, PredicateAdmission)
+# FAMILIES-NEXT: LOOM_IMPLEMENTATION_FAMILY_MEMBER(SharedAlphaBeta, AlphaSchema)
+# FAMILIES-NEXT: LOOM_IMPLEMENTATION_FAMILY_MEMBER(SharedAlphaBeta, BetaSchema)
+# FAMILIES-NEXT: LOOM_IMPLEMENTATION_FAMILY_END(SharedAlphaBeta)
+# FAMILIES-NEXT: LOOM_IMPLEMENTATION_FAMILY(LoneGamma, 1, PlainParams, PlainAdmission)
+# FAMILIES-NEXT: LOOM_IMPLEMENTATION_FAMILY_MEMBER(LoneGamma, GammaSchema)
+# FAMILIES-NEXT: LOOM_IMPLEMENTATION_FAMILY_END(LoneGamma)
+
+# FAMILY-ENUM: def Fabric_ImplementationFamily_SharedAlphaBeta
+# FAMILY-ENUM-SAME: I32EnumAttrCase<"SharedAlphaBeta", 0, "SharedAlphaBeta">
+# FAMILY-ENUM-NEXT: def Fabric_ImplementationFamily_LoneGamma
+# FAMILY-ENUM-SAME: I32EnumAttrCase<"LoneGamma", 1, "LoneGamma">
+# FAMILY-ENUM: def Fabric_ImplementationFamilyId
+# FAMILY-ENUM: def Fabric_ImplementationFamilyAttr
+# FAMILY-ENUM: "implementation_family"
+
+# The one canonical registry itself is byte-reproducible across runs.
+# RUN: loom-tblgen -gen-operation-schemas -I %loom_include \
+# RUN:   %loom_include/Dataflow/IR/OperationSchemas.td -o %t.canonical.1
+# RUN: loom-tblgen -gen-operation-schemas -I %loom_include \
+# RUN:   %loom_include/Dataflow/IR/OperationSchemas.td -o %t.canonical.2
+# RUN: diff %t.canonical.1 %t.canonical.2
+# RUN: loom-tblgen -gen-implementation-family-enum -I %loom_include \
+# RUN:   %loom_include/Dataflow/IR/OperationSchemas.td -o %t.enum.1
+# RUN: loom-tblgen -gen-implementation-family-enum -I %loom_include \
+# RUN:   %loom_include/Dataflow/IR/OperationSchemas.td -o %t.enum.2
+# RUN: diff %t.enum.1 %t.enum.2

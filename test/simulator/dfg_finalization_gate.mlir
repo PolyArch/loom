@@ -16,7 +16,7 @@
 // DETACHED-DAG: "status": "invalid"
 // DETACHED-DAG: actor 'arith.addi' fired after graph retirement
 // DETACHED-FAILURE-DAG: "status": "invalid"
-// DETACHED-FAILURE-DAG: arith.divsi divisor must be non-zero
+// DETACHED-FAILURE-DAG: arith.divsi division by zero is undefined
 // DETACHED-FAILURE-DAG: actor 'arith.divsi' failed after graph retirement
 
 //--- residual.mlir

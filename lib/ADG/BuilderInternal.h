@@ -23,6 +23,11 @@ struct ModuleBuilderInternals {
   static ModuleBuilder &addBodyOp(ModuleBuilder &builder, BodyOpSpec op) {
     return builder.addBodyOp(std::move(op));
   }
+
+  static ModuleBuilder &addUnsupportedResource(ModuleBuilder &builder,
+                                               std::string detail) {
+    return builder.addUnsupportedResource(std::move(detail));
+  }
 };
 
 namespace detail {
@@ -30,6 +35,22 @@ namespace detail {
 using BodyLineSpec = ModuleBuilderInternals::BodyLineSpec;
 using BodyOpSpec = ModuleBuilderInternals::BodyOpSpec;
 using BodyResultSpec = ModuleBuilderInternals::BodyResultSpec;
+
+inline ModuleBuilder &recordUnsupportedCatalogResource(
+    ModuleBuilder &builder,
+    std::initializer_list<::dataflow::OperationSchemaId> schemas) {
+  std::string detail;
+  llvm::raw_string_ostream os(detail);
+  bool first = true;
+  for (::dataflow::OperationSchemaId schema : schemas) {
+    if (!first)
+      os << ", ";
+    first = false;
+    os << ::dataflow::operationSchemaSpelling(schema);
+  }
+  os << " has no registered implementation family";
+  return ModuleBuilderInternals::addUnsupportedResource(builder, os.str());
+}
 
 struct VisualPoint {
   llvm::StringRef node;
@@ -99,20 +120,43 @@ void addSpatialSwitch(ModuleBuilder &module,
                       llvm::ArrayRef<llvm::StringRef> results,
                       llvm::ArrayRef<llvm::StringRef> inputs,
                       llvm::ArrayRef<llvm::StringRef> rows);
+
+/// The builtin catalog selects its concrete typed domains once here. These
+/// helpers are not public Builder defaults: custom ADGs construct an explicit
+/// FabricOpCapability with their own typed value.
+FabricOpCapability builtinOpCapability(::fabric::ImplementationFamilyId family);
+FabricOpCapability
+builtinIndexCastCapability(::fabric::ResolvedIndexWidth resolvedIndexWidth);
+FabricOpCapability loopStreamCapability(
+    ::dataflow::StreamStepKind stepKind,
+    std::initializer_list<::mlir::arith::CmpIPredicate> predicates);
+
+llvm::Error validateFabricOpCapability(const FabricOpCapability &capability);
+void printFabricOpAttrs(llvm::raw_ostream &os, ::mlir::MLIRContext &context,
+                        const FabricOpCapability &capability);
+std::string fabricOpAttrsText(const FabricOpCapability &capability);
+
 void addSpatialAddPe(ModuleBuilder &module, llvm::StringRef result,
                      llvm::StringRef lhs, llvm::StringRef rhs,
-                     llvm::StringRef opName = "arith.addi");
+                     ::fabric::ImplementationFamilyId family,
+                     ::dataflow::OperationSchemaId member);
 void addUnaryPe(ModuleBuilder &module, llvm::StringRef result,
-                llvm::StringRef input, llvm::StringRef opName);
+                llvm::StringRef input, ::fabric::ImplementationFamilyId family,
+                ::dataflow::OperationSchemaId member);
 void addWideExtensionPe(ModuleBuilder &module, llvm::StringRef result,
-                        llvm::StringRef input, llvm::StringRef opName);
+                        llvm::StringRef input,
+                        ::fabric::ImplementationFamilyId family,
+                        ::dataflow::OperationSchemaId member);
 void addWideNarrowingPe(ModuleBuilder &module, llvm::StringRef result,
-                        llvm::StringRef input, llvm::StringRef opName);
+                        llvm::StringRef input,
+                        ::fabric::ImplementationFamilyId family,
+                        ::dataflow::OperationSchemaId member);
 void addWideTruncPe(ModuleBuilder &module, llvm::StringRef result,
                     llvm::StringRef input);
 void addTernaryPe(ModuleBuilder &module, llvm::StringRef result,
                   llvm::StringRef lhs, llvm::StringRef rhs, llvm::StringRef acc,
-                  llvm::StringRef opName);
+                  ::fabric::ImplementationFamilyId family,
+                  ::dataflow::OperationSchemaId member);
 std::string numbered(llvm::StringRef prefix, unsigned index);
 void addConfigurableConstantPe(ModuleBuilder &module, llvm::StringRef result,
                                llvm::StringRef control,
@@ -120,12 +164,14 @@ void addConfigurableConstantPe(ModuleBuilder &module, llvm::StringRef result,
 void addConfigurableWideConstantPe(
     ModuleBuilder &module, llvm::StringRef result, llvm::StringRef control,
     llvm::ArrayRef<llvm::StringRef> constHexValues);
-void addConfigurableBinaryPe(ModuleBuilder &module, llvm::StringRef result,
-                             llvm::StringRef lhs, llvm::StringRef rhs,
-                             llvm::ArrayRef<llvm::StringRef> opNames);
-void addConfigurableWideBinaryPe(ModuleBuilder &module, llvm::StringRef result,
-                                 llvm::StringRef lhs, llvm::StringRef rhs,
-                                 llvm::ArrayRef<llvm::StringRef> opNames);
+void addConfigurableBinaryPe(
+    ModuleBuilder &module, llvm::StringRef result, llvm::StringRef lhs,
+    llvm::StringRef rhs, ::fabric::ImplementationFamilyId family,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> members);
+void addConfigurableWideBinaryPe(
+    ModuleBuilder &module, llvm::StringRef result, llvm::StringRef lhs,
+    llvm::StringRef rhs, ::fabric::ImplementationFamilyId family,
+    llvm::ArrayRef<::dataflow::OperationSchemaId> members);
 void addCmpPe(ModuleBuilder &module, llvm::StringRef result,
               llvm::StringRef lhs, llvm::StringRef rhs);
 void addWideCmpPe(ModuleBuilder &module, llvm::StringRef result,

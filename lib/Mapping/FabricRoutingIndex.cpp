@@ -45,7 +45,7 @@ llvm::Error invalidTransport(const llvm::Twine &message) {
   return mappingError(MappingErrorCode::InvalidPortConnection, message);
 }
 
-fabric::DataPathType dataPathType(const ValidatedRoutingEndpoint &endpoint) {
+::fabric::DataPathType dataPathType(const ValidatedRoutingEndpoint &endpoint) {
   return {endpoint.transportKind, endpoint.payloadCapacityBits,
           endpoint.tagCapacityBits};
 }
@@ -147,9 +147,9 @@ loom::mapping::detail::buildValidatedFabricRoutingProjection(
       if (endpoint.kind == PortKind::Memory)
         continue;
       if (!validRoutingPortKind(endpoint.kind) ||
-          !fabric::DataPathType{endpoint.transportKind,
-                                endpoint.payloadCapacityBits,
-                                endpoint.tagCapacityBits}
+          !::fabric::DataPathType{endpoint.transportKind,
+                                  endpoint.payloadCapacityBits,
+                                  endpoint.tagCapacityBits}
                .isWellFormed())
         return invalidTransport(
             "compute endpoint has an invalid transport signature");
@@ -175,9 +175,9 @@ loom::mapping::detail::buildValidatedFabricRoutingProjection(
                                                EntityKind::MemoryEndpoint))
         return std::move(error);
       if (!validRoutingPortKind(endpoint.kind) ||
-          !fabric::DataPathType{endpoint.transportKind,
-                                endpoint.payloadCapacityBits,
-                                endpoint.tagCapacityBits}
+          !::fabric::DataPathType{endpoint.transportKind,
+                                  endpoint.payloadCapacityBits,
+                                  endpoint.tagCapacityBits}
                .isWellFormed())
         return invalidTransport(
             "memory endpoint has an invalid transport signature");
@@ -198,9 +198,9 @@ loom::mapping::detail::buildValidatedFabricRoutingProjection(
         return std::move(error);
       if (!validDirection(endpoint.direction) ||
           !validRoutingPortKind(endpoint.kind) ||
-          !fabric::DataPathType{endpoint.transportKind,
-                                endpoint.payloadCapacityBits,
-                                endpoint.tagCapacityBits}
+          !::fabric::DataPathType{endpoint.transportKind,
+                                  endpoint.payloadCapacityBits,
+                                  endpoint.tagCapacityBits}
                .isWellFormed())
         return invalidTransport(
             "transport resource endpoint has an invalid signature");
@@ -321,10 +321,10 @@ loom::mapping::detail::buildValidatedFabricRoutingProjection(
     const TransportResourceDescriptor &resourceDescriptor =
         *resources[*resource];
     if (resourceDescriptor.kind == TransportResourceKind::Boundary) {
-      if (fabric::checkBoundaryDataPath(*resourceDescriptor.boundaryDirection,
-                                        dataPathType(sourceEndpoint),
-                                        dataPathType(targetEndpoint)) !=
-          fabric::BoundaryDataPathError::None)
+      if (::fabric::checkBoundaryDataPath(*resourceDescriptor.boundaryDirection,
+                                          dataPathType(sourceEndpoint),
+                                          dataPathType(targetEndpoint)) !=
+          ::fabric::BoundaryDataPathError::None)
         return invalidTransport(
             "boundary traversal does not match its declared direction");
     } else if (sourceEndpoint.transportKind != targetEndpoint.transportKind) {
