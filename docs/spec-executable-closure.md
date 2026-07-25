@@ -80,13 +80,18 @@ scope to one exact LLVM target scope. Support components bind exact bytes and
 interface ABI once. Paths, package names, environment variables, and
 unvalidated feature strings are not semantic requirements; backend feature
 entries are canonical LLVM target-feature names validated by the selected
-provider.
+provider. `data_layout` is the exact spelling produced by reconstructing this
+binding's LLVM `TargetMachine`; it is not copied from a relocatable payload.
 
 For one exact HostCore or InstructionCore Architectural Contract and resolved
 target policy, resolution
 must produce exactly one binding. Zero matches are `Unsupported`; multiple
 matches are an ambiguity error. There is no priority fallback. LLVM
-`TargetMachine` reconstruction must produce the exact stored data layout.
+`TargetMachine` reconstruction must produce the exact stored binding data
+layout. Compatibility with the final linked LLVM module is checked by parsing
+both layouts with the same pinned LLVM provider and requiring structural
+`DataLayout::operator==`; equivalent spellings need not be byte-identical.
+Neither artifact rewrites the other's owner field.
 
 Microarchitectural differences that preserve one Architectural Contract may
 share a binding. An ISA, endian, addressability, ABI, synchronization-scope, or
@@ -224,9 +229,11 @@ then builds the final Structured Program Candidate and Canonical Dataflow
 Program. Dataflow is not a cross-object linking boundary.
 
 Binary finalization is failure-atomic. It verifies the exact target binding,
-reconstructed data layout, entries, imports, segments, blob digests, and
-Dataflow relation before publishing canonical bytes and identity. It does not
-publish a partial binary or silently keep a Spatial candidate on another core.
+exact reconstruction of the binding-owned data-layout spelling, structural
+compatibility with the final LLVM module layout, entries, imports, segments,
+blob digests, and Dataflow relation before publishing canonical bytes and
+identity. It does not publish a partial binary or silently keep a Spatial
+candidate on another core.
 
 Host and InstructionCore code generation may consume the same linked program,
 but they use independently exact CompilerTargetBindings. Ordinary host
@@ -243,9 +250,10 @@ order, source symbols that are not ABI-visible, paths, timestamps, and emitted
 temporary names do not affect identity.
 
 Finalization reconstructs the LLVM TargetMachine, validates the exact
-Architectural Contract and data layout, re-parses `code_blob`, verifies the
-load manifest, entries, imports, and blob digests, independently reimports the
-canonical JSON, then publishes atomically. HostProgramLeaf and
+Architectural Contract and binding-owned data layout, proves structural
+compatibility with the final linked module layout, re-parses `code_blob`,
+verifies the load manifest, entries, imports, and blob digests, independently
+reimports the canonical JSON, then publishes atomically. HostProgramLeaf and
 StaticMemoryImageLeaf are inline Deployment records and therefore acquire no
 independent ArtifactIdentity.
 
@@ -257,7 +265,8 @@ Anchor tests cover:
 * zero, one, and ambiguous target-binding resolution;
 * identical architecture with different compatible microarchitecture sharing
   one binding, and one ISA change producing incompatibility;
-* LLVM data-layout reconstruction mismatch;
+* exact binding data-layout reconstruction mismatch and structurally
+  incompatible final-module layout;
 * binary entry, import, segment, blob, and Dataflow-reference validation;
 * complete and unique binary coverage for SystemMapping-selected thread
   entries;

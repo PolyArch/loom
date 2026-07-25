@@ -226,9 +226,11 @@ RelocatableAcceleratorPayload {
 `repository_identity` is the closed LLVM provider identity selected by the
 build; the initial value denotes `llvm-project`. `full_commit_identity` is the
 complete pinned commit, not a release nickname or abbreviated hash. The target
-triple and data layout are canonical LLVM strings validated by LLVM parsers.
-They are mechanically projected from the normalized module and checked against
-it; the module remains their semantic owner. They are not independent target
+triple is the pinned LLVM canonical spelling. The data layout is the exact
+nonempty module-owned spelling accepted by the pinned LLVM `DataLayout` parser;
+LLVM does not define a canonical printer for every valid layout. Both fields
+are mechanically projected from the normalized module and checked against it;
+the module remains their semantic owner. They are not independent target
 choices. The later Compiler Target Binding owns final InstructionCore codegen
 target selection and must prove compatibility with these module facts. Its
 persistent schema and the exact InstructionCore binary relation are owned by
@@ -264,7 +266,6 @@ SHA-256(
   || bytes64(repository_identity)
   || bytes64(full_commit_identity)
   || bytes64(canonical_target_triple)
-  || bytes64(canonical_data_layout)
   || bytes64(frontend_view_schema_descriptor)
   || bytes64(frontend_view_canonical_bytes)
 )
@@ -274,18 +275,20 @@ bytes64(x) = u64be(length(x)) || x
 
 The domain separator includes its trailing zero byte. The key does not include
 `component_view_digest`: that digest is already derived from the authoritative
-descriptor and view bytes and is validated independently. The key also does
-not include the bitcode digest or module contents, because distinct
-translation units must be able to occupy the same compatibility cohort.
-Changing any preimage field changes the key. The initial exact
-`repository_identity` denotes the pinned `llvm-project` repository;
-`full_commit_identity` is its complete normalized commit identity.
+descriptor and view bytes and is validated independently. It does not include
+the exact data-layout spelling because LLVM defines structural layout equality
+but no canonical byte projection for every valid layout. It also does not
+include the bitcode digest or module contents, because distinct translation
+units must be able to occupy the same compatibility cohort. Changing any
+preimage field changes the key. The initial exact `repository_identity`
+denotes the pinned `llvm-project` repository; `full_commit_identity` is its
+complete normalized commit identity.
 
 The ABI key is a necessary cohort and preflight check, not the complete LLVM
-ABI authority. Readers validate the raw provider, target, and view fields as
-well as the key. The pinned LLVM Linker and LTO libraries remain the authority
-for module flags, symbol and COMDAT resolution, ODR, and all other
-module-level compatibility rules.
+ABI authority. Readers validate the raw provider, canonical triple, exact
+DataLayout projection, and view fields as well as the key. The pinned LLVM
+Linker and LTO libraries remain the authority for module flags, symbol and
+COMDAT resolution, ODR, and all other module-level compatibility rules.
 
 ### LLVM Module Normalization
 
@@ -294,9 +297,10 @@ payload version 1.0:
 
 1. Parse with the pinned LLVM provider, fully materialize the module, and run
    the LLVM verifier.
-2. Require valid target-triple and DataLayout fields. Parse and print both
-   through the pinned LLVM canonical parsers and printers, accepting equivalent
-   input spellings but storing only their canonical spellings.
+2. Require nonempty valid target-triple and DataLayout fields. Canonicalize the
+   target triple with pinned LLVM `Triple::normalize`. Parse the DataLayout for
+   validation, but retain its exact module spelling. Do not reorder entries,
+   remove redundant entries, or replace it with a target-derived default.
 3. Preserve module identifier, source filename, debug provenance, module
    flags, attributes, symbols, linkage, visibility, COMDAT, inline assembly,
    named metadata, and module order. Do not sort, rename, strip debug
@@ -320,9 +324,23 @@ same complete in-memory LLVM module
 This is serialization determinism, not semantic canonicalization across
 arbitrary equivalent LLVM modules. Debug and source provenance remain in the
 module, so provenance or source-path differences may change compile-only
-payload identity. This byte-exact identity is distinct from the later
-Canonical Dataflow identity, which excludes provenance under its own
-finalization contract. Loom does not create a sidecar provenance IR.
+payload identity. Two modules whose DataLayout spellings parse to the same LLVM
+layout also retain distinct compile-only payload identities when their exact
+strings differ. This byte-exact identity is distinct from the later Canonical
+Dataflow identity, which excludes provenance under its own finalization
+contract. Loom does not create a sidecar provenance IR.
+
+`Triple::computeDataLayout(ABIName)` is a target-and-ABI default generator, not
+a validator or canonicalizer. A frontend may use it before payload creation to
+populate a module that has no layout only when the exact ABI is already known.
+Once a module contains a valid DataLayout, normalization never invokes that
+generator to replace or judge the module-owned value.
+
+For example, a verified `riscv64-unknown-elf` module carrying the `lp64e` ABI
+may own
+`e-m:e-p:64:64-i64:64-i128:128-n32:64-S64`. Payload normalization accepts and
+preserves that exact layout. An ABI-unspecified target default ending in
+`S128` cannot reject or replace it.
 
 The stored SHA-256 digest is computed over exactly the normalized bitcode
 bytes. The bytes, not that digest, remain the module content authority. Symbol
@@ -332,14 +350,14 @@ symbol table or Loom-specific substitute.
 
 Normalization and publication are failure-atomic. Part 1 rejects the payload
 before publication when parsing, full materialization, or verification fails;
-when the target triple or DataLayout is absent or invalid; when their stored
-projections disagree with the module; when the frontend-view digest, ABI key,
-or bitcode digest is stale or malformed; when bitcode or schema is newer than
-the reader supports; or when the input encoding or writer settings violate
-this normalization contract. Canonical-byte validation rewrites the fully
-materialized module through the same production writer and requires exact byte
-equality with the stored bitcode. The reader must not repair, guess, or
-silently fall back.
+when the target triple or DataLayout is absent or invalid; when the stored
+canonical triple or exact DataLayout projection disagrees with the module; when
+the frontend-view digest, ABI key, or bitcode digest is stale or malformed;
+when bitcode or schema is newer than the reader supports; or when the input
+encoding or writer settings violate this normalization contract.
+Canonical-byte validation rewrites the fully materialized module through the
+same production writer and requires exact byte equality with the stored
+bitcode. The reader must not repair, guess, or silently fall back.
 
 The payload must not contain a Fabric, Mapping, MappingConstraintSet,
 ConfigurationABI, HardwareConfigurationImage, HardwareImplementation, or
@@ -356,13 +374,15 @@ enter ArtifactIdentity. A platform adapter may change those details without
 changing the payload.
 
 At final link, the ordinary linker is the sole authority for which object and
-archive members participate. Loom collects payloads from exactly those selected
-members. Every collected payload must have identical LLVM provider/commit,
-target triple, data layout, ABI compatibility key, and complete frontend config
-view. Version 1.0 has no implicit config merge, precedence rule, or
-compatibility lattice; disagreement is a typed link error. This raw-field and
-derived-key equality is a necessary preflight, not sufficient proof that LLVM
-modules are link-compatible.
+archive members participate. Loom collects payloads from exactly those
+selected members. Every collected payload must have identical LLVM
+provider/commit, canonical target triple, ABI compatibility key, and complete
+frontend config view. Each exact DataLayout spelling is reparsed by that pinned
+provider, and all selected modules must be structurally equal under LLVM
+`DataLayout::operator==`; spelling equality is neither required nor sufficient.
+Version 1.0 has no implicit config merge, precedence rule, or compatibility
+lattice; structural layout disagreement is a typed link error. This preflight
+is not sufficient proof that LLVM modules are link-compatible.
 
 Loom parses and verifies every normalized module, then uses the pinned LLVM
 Linker and LTO libraries to perform symbol resolution, COMDAT/ODR handling,
@@ -392,12 +412,17 @@ Anchor-level tests cover:
   maintaining copied formulas;
 * modules that differ only in use-list order produce identical normalized
   bytes, and repeated writes of one complete module produce identical bytes;
+* one valid ABI-specific layout that differs from the target's ABI-unspecified
+  default is accepted and preserved exactly;
+* structurally equivalent DataLayout spellings retain distinct payload
+  identities but pass final-link layout compatibility, while structurally
+  different layouts fail that preflight;
 * module flags, ABI attributes, debug information, and provenance survive
   normalization;
 * semantic or module-content changes alter the bitcode digest and payload
   identity;
-* stale projections, malformed payloads, unsupported versions, and
-  noncanonical input fail closed;
+* stale projections, malformed payloads, unsupported versions, invalid target
+  facts, and input violating the fixed writer contract fail closed;
 * self-contained carrier round trip, linker-selected archive membership,
   LLVM-owned COMDAT/ODR resolution, preservation of the complete imported LLVM
   function and ABI envelope through the MLIR handoff, and absence of
