@@ -172,6 +172,10 @@ llvm::Error validateFabricRef(const FabricArtifactView &view,
                               const SubordinateEndpointRef &ref);
 llvm::Error validateFabricRef(const FabricArtifactView &view,
                               const MemoryConsistencyDomainRef &ref);
+llvm::Error validateFabricRef(const FabricArtifactView &view,
+                              const ClockDomainRef &ref);
+llvm::Error validateFabricRef(const FabricArtifactView &view,
+                              const ResetDomainRef &ref);
 
 /// Resolves one complete cross-artifact reference: exact artifact scope first,
 /// then the typed Fabric-local target.

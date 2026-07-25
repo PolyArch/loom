@@ -98,6 +98,7 @@ constexpr FabricEntityId kBareMemory = 32;
 constexpr FabricEntityId kAccCore = 41;
 constexpr FabricEntityId kConsistencyDomain = 51;
 constexpr FabricEntityId kClockDomain = 52;
+constexpr FabricEntityId kResetDomain = 53;
 constexpr FabricEntityId kSystemService = 61;
 constexpr FabricEntityId kAbsentEntity = 999;
 
@@ -130,6 +131,7 @@ public:
       return FabricEntityKind::AccCoreOccurrence;
     case kConsistencyDomain:
     case kClockDomain:
+    case kResetDomain:
       return FabricEntityKind::HardwareDomain;
     case kSystemService:
       return FabricEntityKind::SystemMemoryService;
@@ -222,6 +224,8 @@ public:
       return FabricHardwareDomainKind::MemoryConsistency;
     case kClockDomain:
       return FabricHardwareDomainKind::Clock;
+    case kResetDomain:
+      return FabricHardwareDomainKind::Reset;
     default:
       return std::nullopt;
     }
@@ -461,6 +465,35 @@ void testOwnerProjections() {
   requireSuccess(test, validateFabricRef(view, state), "resource state");
   requireKind(test, validateFabricRef(view, pattern),
               FabricRefErrorKind::OrdinalOutOfRange, "empty use patterns");
+
+  static_assert(
+      static_cast<std::uint32_t>(FabricInventoryOwnerKind::ExternalBoundary) ==
+          21,
+      "appending an inventory owner must not renumber existing constructors");
+  static_assert(static_cast<std::uint32_t>(
+                    FabricInventoryOwnerKind::SpatialCoreOccurrence) == 22,
+                "the spatial core inventory owner is appended");
+
+  const SpatialCoreOccurrenceRef spatial{AccCoreOccurrenceRef(kAccCore)};
+  const FabricInventoryOwnerRef expected = FabricInventoryOwnerRef::of(spatial);
+  const FabricInventoryOwnerRef transport =
+      projectFabricInventoryOwner(FabricTransportEndpointOwnerRef::of(spatial));
+  const FabricInventoryOwnerRef memory =
+      projectFabricInventoryOwner(FabricMemoryEndpointOwnerRef::of(spatial));
+  require(test, transport == expected && memory == expected,
+          "endpoint-owner projections preserve the exact spatial payload");
+  require(test,
+          takeExpected(test, decodeFabricRef<FabricInventoryOwnerRef>(
+                                 canonicalFabricBytes(expected))) == expected,
+          "the appended spatial owner round trips through canonical bytes");
+
+  const SystemMemoryServiceRef systemService(kSystemService);
+  const FabricInventoryOwnerRef expectedService = FabricInventoryOwnerRef::of(
+      FabricMemoryServiceRef::system(systemService));
+  require(test,
+          projectFabricInventoryOwner(FabricMemoryEndpointOwnerRef::of(
+              systemService)) == expectedService,
+          "system memory projection uses the canonical service constructor");
 }
 
 /// The role-specific refinements select an underlying reference by static type
@@ -529,6 +562,21 @@ void testTypedRefinements() {
       validateFabricRef(
           view, MemoryConsistencyDomainRef{HardwareDomainRef(kClockDomain)}),
       FabricRefErrorKind::WrongEntityKind, "clock domain");
+
+  const HardwareDomainRef clockDomain(kClockDomain);
+  const HardwareDomainRef resetDomain(kResetDomain);
+  const ClockDomainRef clock(clockDomain);
+  const ResetDomainRef reset(resetDomain);
+  require(test,
+          canonicalFabricBytes(clock) == canonicalFabricBytes(clockDomain) &&
+              canonicalFabricBytes(reset) == canonicalFabricBytes(resetDomain),
+          "clock and reset refinements keep hardware-domain bytes");
+  requireSuccess(test, validateFabricRef(view, clock), "clock refinement");
+  requireSuccess(test, validateFabricRef(view, reset), "reset refinement");
+  requireKind(test, validateFabricRef(view, ClockDomainRef(resetDomain)),
+              FabricRefErrorKind::WrongEntityKind, "reset as clock");
+  requireKind(test, validateFabricRef(view, ResetDomainRef(clockDomain)),
+              FabricRefErrorKind::WrongEntityKind, "clock as reset");
 }
 
 /// An owner mismatch between two individually valid objects is its own

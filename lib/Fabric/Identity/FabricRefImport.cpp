@@ -450,17 +450,36 @@ llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,
                            FabricMemoryEndpointRole::Subordinate);
 }
 
+static llvm::Error checkHardwareDomainKind(const FabricArtifactView &view,
+                                           HardwareDomainRef domain,
+                                           FabricHardwareDomainKind required) {
+  if (llvm::Error error = validateFabricRef(view, domain))
+    return error;
+  const std::optional<FabricHardwareDomainKind> declared =
+      view.hardwareDomainKind(domain);
+  if (!declared || *declared != required)
+    return makeFabricRefError(FabricRefErrorKind::WrongEntityKind,
+                              llvm::Twine("hardware domain ") +
+                                  llvm::Twine(domain.id()) + " is not a " +
+                                  fabricRefKeyword(required) + " domain");
+  return llvm::Error::success();
+}
+
 llvm::Error
 loom::fabric::validateFabricRef(const FabricArtifactView &view,
                                 const MemoryConsistencyDomainRef &ref) {
-  if (llvm::Error error = validateFabricRef(view, ref.underlying()))
-    return error;
-  const std::optional<FabricHardwareDomainKind> declared =
-      view.hardwareDomainKind(ref.underlying());
-  if (!declared || *declared != FabricHardwareDomainKind::MemoryConsistency)
-    return makeFabricRefError(FabricRefErrorKind::WrongEntityKind,
-                              llvm::Twine("hardware domain ") +
-                                  llvm::Twine(ref.underlying().id()) +
-                                  " is not a memory consistency domain");
-  return llvm::Error::success();
+  return checkHardwareDomainKind(view, ref.underlying(),
+                                 FabricHardwareDomainKind::MemoryConsistency);
+}
+
+llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,
+                                            const ClockDomainRef &ref) {
+  return checkHardwareDomainKind(view, ref.underlying(),
+                                 FabricHardwareDomainKind::Clock);
+}
+
+llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,
+                                            const ResetDomainRef &ref) {
+  return checkHardwareDomainKind(view, ref.underlying(),
+                                 FabricHardwareDomainKind::Reset);
 }

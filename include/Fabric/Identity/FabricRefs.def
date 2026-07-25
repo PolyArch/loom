@@ -233,6 +233,7 @@ LOOM_FABRIC_INVENTORY_OWNER(SystemTransportResource, SystemTransportResourceRef)
 LOOM_FABRIC_INVENTORY_OWNER(TransferPattern, FabricTransferPatternRef)
 LOOM_FABRIC_INVENTORY_OWNER(HardwareDomain, HardwareDomainRef)
 LOOM_FABRIC_INVENTORY_OWNER(ExternalBoundary, ExternalBoundaryRef)
+LOOM_FABRIC_INVENTORY_OWNER(SpatialCoreOccurrence, SpatialCoreOccurrenceRef)
 
 LOOM_FABRIC_OWNER_ROLE(FabricResourceStateOwnerRef, ResourceState,
                        FabricResourceStateRef, "fabric.resource_state")
@@ -253,6 +254,8 @@ LOOM_FABRIC_REFINEMENT(SubordinateEndpoint, SubordinateEndpointRef,
                        FabricMemoryEndpointRef)
 LOOM_FABRIC_REFINEMENT(MemoryConsistencyDomain, MemoryConsistencyDomainRef,
                        HardwareDomainRef)
+LOOM_FABRIC_REFINEMENT(ClockDomain, ClockDomainRef, HardwareDomainRef)
+LOOM_FABRIC_REFINEMENT(ResetDomain, ResetDomainRef, HardwareDomainRef)
 
 LOOM_FABRIC_REF_ERROR(MalformedSyntax, "malformed_syntax")
 LOOM_FABRIC_REF_ERROR(DeprecatedAlias, "deprecated_alias")

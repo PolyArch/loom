@@ -7,6 +7,20 @@ using namespace loom::fabric;
 
 char FabricRefError::ID = 0;
 
+namespace {
+
+template <typename Ref>
+FabricInventoryOwnerRef inventoryOwnerFor(const Ref &ref) {
+  return FabricInventoryOwnerRef::of(ref);
+}
+
+FabricInventoryOwnerRef
+inventoryOwnerFor(const SystemMemoryServiceRef &service) {
+  return FabricInventoryOwnerRef::of(FabricMemoryServiceRef::system(service));
+}
+
+} // namespace
+
 // Every keyword table below is a projection of the one catalog declaration.
 
 #define LOOM_FABRIC_ROOT_KIND(Name, Keyword)                                   \
@@ -133,4 +147,16 @@ FabricRefErrorKind loom::fabric::takeFabricRefErrorKind(llvm::Error error) {
       [&](const FabricRefError &typed) { kind = typed.kind(); },
       [](const llvm::ErrorInfoBase &) {});
   return kind;
+}
+
+FabricInventoryOwnerRef loom::fabric::projectFabricInventoryOwner(
+    const FabricTransportEndpointOwnerRef &owner) {
+  return std::visit([](const auto &value) { return inventoryOwnerFor(value); },
+                    owner.payload);
+}
+
+FabricInventoryOwnerRef loom::fabric::projectFabricInventoryOwner(
+    const FabricMemoryEndpointOwnerRef &owner) {
+  return std::visit([](const auto &value) { return inventoryOwnerFor(value); },
+                    owner.payload);
 }

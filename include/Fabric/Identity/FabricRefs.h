@@ -686,6 +686,14 @@ inline bool operator!=(const FabricInventoryOwnerRef &lhs,
   return !(lhs == rhs);
 }
 
+/// Projects either endpoint-owner plane into the shared inventory-owner
+/// catalog while preserving the complete typed owner. A system memory service
+/// uses the catalog's canonical MemoryService::System constructor.
+FabricInventoryOwnerRef
+projectFabricInventoryOwner(const FabricTransportEndpointOwnerRef &owner);
+FabricInventoryOwnerRef
+projectFabricInventoryOwner(const FabricMemoryEndpointOwnerRef &owner);
+
 /// A role-specific owner projection over that one catalog. Four distinct
 /// static types share one constructor declaration and one canonical encoding;
 /// the role only selects which owner-declared inventory an ordinal indexes.
