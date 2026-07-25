@@ -597,11 +597,32 @@ bool MemorySynchronization::areCoveredByHappensBefore(
     return effects.front() == frontier.front() ||
            happensBefore(effects.front(), frontier.front());
 
+  llvm::SmallVector<SyncEffectId, 4> seeds(frontier);
+  canonicalize(seeds);
+  auto isSeed = [&](SyncEffectId effect) {
+    return std::binary_search(seeds.begin(), seeds.end(), effect);
+  };
+
+  // Settle from each requested effect's own outgoing edges first. Plain-memory
+  // admission asks this question once per ready access, about the hazards of
+  // the bytes that access covers under the ctrl frontier it has just
+  // inherited, so a hazard is normally a frontier member or one reduced edge
+  // behind one. Deciding those here keeps the query proportional to itself
+  // rather than to every effect the run has declared.
+  llvm::SmallVector<SyncEffectId, 4> undecided;
+  for (SyncEffectId effect : effects) {
+    if (isSeed(effect) || llvm::any_of(relation_[effect.value()], isSeed))
+      continue;
+    undecided.push_back(effect);
+  }
+  if (undecided.empty())
+    return true;
+
+  // Whatever one edge did not settle needs the frontier's full predecessor
+  // closure, which stays the authority's answer for a distant predecessor.
   std::vector<bool> covered(facts_.effects, false);
   llvm::SmallVector<SyncEffectId> worklist;
-  for (SyncEffectId effect : frontier) {
-    if (covered[effect.value()])
-      continue;
+  for (SyncEffectId effect : seeds) {
     covered[effect.value()] = true;
     worklist.push_back(effect);
   }
@@ -615,7 +636,7 @@ bool MemorySynchronization::areCoveredByHappensBefore(
     }
   }
   return llvm::all_of(
-      effects, [&](SyncEffectId effect) { return covered[effect.value()]; });
+      undecided, [&](SyncEffectId effect) { return covered[effect.value()]; });
 }
 
 llvm::Expected<llvm::SmallVector<SyncEffectId>>

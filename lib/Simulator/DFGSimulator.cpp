@@ -13,14 +13,9 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/APFloat.h"
-#include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
-#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
-#include "llvm/Support/JSON.h"
 #include "llvm/Support/MathExtras.h"
-#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -301,40 +296,6 @@ bool hasComputedAddress(mlir::Value value) {
   return def->getName().getStringRef() != "dataflow.stream";
 }
 
-static std::uint64_t estimateWeightedOperationScore(
-    const std::map<std::string, std::uint64_t> &operationFireCounts,
-    llvm::SmallVectorImpl<std::string> &diagnostics) {
-  std::uint64_t score = 0;
-  for (const auto &[opName, fireCount] : operationFireCounts) {
-    if (fireCount == 0)
-      continue;
-    auto costOrErr = estimateOperationCost(opName);
-    if (!costOrErr) {
-      diagnostics.push_back(llvm::toString(costOrErr.takeError()));
-      continue;
-    }
-    score += costOrErr->baseScore;
-    if (fireCount > 1)
-      score += (fireCount - 1) * costOrErr->repeatScore;
-  }
-  return score;
-}
-
-static std::uint64_t dynamicWorkItems(const SimulatorState &state) {
-  std::uint64_t maxStreamItems = 0;
-  for (const auto &entry : state.streamTrueEmissionCounts)
-    maxStreamItems = std::max(maxStreamItems, entry.second);
-  std::uint64_t maxSeededItems = 0;
-  for (const auto &entry : state.seededTokenCounts) {
-    if (mlir::isa<mlir::NoneType>(entry.first.getType()))
-      continue;
-    maxSeededItems = std::max(maxSeededItems, entry.second);
-  }
-  const std::uint64_t workItems = std::max(maxStreamItems, maxSeededItems);
-  if (workItems == 0 && state.eventCount > 0)
-    return 1;
-  return workItems;
-}
 static void flushPendingTokens(SimulatorState &state) {
   for (auto &entry : state.pendingChannels) {
     if (!entry.second.empty()) {
@@ -782,60 +743,6 @@ static FireOutcome fireOperation(mlir::Operation *op, SimulatorState &state) {
   return FireOutcome::NotReady;
 }
 
-static bool rejectPlainMemoryConflict(SimulatorState &state) {
-  state.admittedPlainMemoryActions.clear();
-  state.diagnostics.push_back(
-      "unordered plain accesses conflict on the same memory");
-  state.runtimeUnsupportedCapability = true;
-  return false;
-}
-
-// Admit every ready plain action before executing the closed scheduler wave.
-static bool admitReadyPlainMemoryActions(SimulatorState &state) {
-  state.admittedPlainMemoryActions.clear();
-  llvm::SmallVector<mlir::Operation *> readyOperations;
-  llvm::SmallVector<ReadyPlainMemoryAction> ready;
-  llvm::SmallVector<std::uint64_t> inactiveCandidates;
-  llvm::SmallVector<std::string> projectionDiagnostics;
-  for (const auto &[ordinal, operation] : state.plainMemoryCandidates) {
-    PlainMemoryActionProjection projection =
-        projectReadyPlainMemoryAction(operation, state);
-    for (std::string &diagnostic : projection.diagnostics)
-      projectionDiagnostics.push_back(std::move(diagnostic));
-    if (!projection.ready) {
-      inactiveCandidates.push_back(ordinal);
-      continue;
-    }
-    readyOperations.push_back(operation);
-    ready.push_back(std::move(*projection.ready));
-  }
-  for (std::uint64_t ordinal : inactiveCandidates)
-    state.plainMemoryCandidates.erase(ordinal);
-
-  if (scanReadyPlainMemoryConflicts(ready).hasConflict)
-    return rejectPlainMemoryConflict(state);
-
-  for (const ReadyPlainMemoryAction &candidate : ready) {
-    PlainMemoryConflictQuery conflict =
-        state.memoryActions.query(candidate.action);
-    if (!conflict.effects.empty() &&
-        !state.memorySync->areCoveredByHappensBefore(conflict.effects,
-                                                     candidate.ctrlFrontier))
-      return rejectPlainMemoryConflict(state);
-  }
-
-  if (!projectionDiagnostics.empty()) {
-    for (std::string &diagnostic : projectionDiagnostics)
-      state.diagnostics.push_back(std::move(diagnostic));
-    return false;
-  }
-
-  for (auto [index, operation] : llvm::enumerate(readyOperations))
-    state.admittedPlainMemoryActions.try_emplace(operation,
-                                                 std::move(ready[index]));
-  return true;
-}
-
 std::string unsupportedOperationLabel(mlir::Operation *op) {
   if (auto call = mlir::dyn_cast<mlir::LLVM::CallOp>(op)) {
     auto callee = call.getCallee();
@@ -1074,134 +981,6 @@ static llvm::Error propagateMemoryAliases(mlir::Block &entry,
       state.rawMemoryFixtures[target] = rawIt->second;
       changed = true;
     }
-  }
-  return llvm::Error::success();
-}
-
-static std::shared_ptr<MemoryValue> memoryForValue(SimulatorState &state,
-                                                   mlir::Value value) {
-  llvm::DenseSet<mlir::Value> visited;
-  while (value && visited.insert(value).second) {
-    auto memory = state.memories.find(value);
-    if (memory != state.memories.end())
-      return memory->second;
-    if (auto cast = value.getDefiningOp<mlir::memref::CastOp>()) {
-      value = cast.getSource();
-      continue;
-    }
-    if (auto cast = value.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
-      if (cast.getInputs().size() != 1)
-        return {};
-      value = cast.getInputs().front();
-      continue;
-    }
-    return {};
-  }
-  return {};
-}
-
-static std::optional<std::uint64_t> memoryRootIdForValue(SimulatorState &state,
-                                                         mlir::Value value) {
-  llvm::DenseSet<mlir::Value> visited;
-  while (value && visited.insert(value).second) {
-    auto root = state.memoryRootIds.find(value);
-    if (root != state.memoryRootIds.end())
-      return root->second;
-    if (auto cast = value.getDefiningOp<mlir::memref::CastOp>()) {
-      value = cast.getSource();
-      continue;
-    }
-    if (auto cast = value.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
-      if (cast.getInputs().size() != 1)
-        return std::nullopt;
-      value = cast.getInputs().front();
-      continue;
-    }
-    return std::nullopt;
-  }
-  return std::nullopt;
-}
-
-static bool hasPendingVectorGroups(SimulatorState &state) {
-  bool pending = false;
-  for (auto &entry : state.parallelizeStates) {
-    if (entry.second.semanticState.pendingItems == 0)
-      continue;
-    pending = true;
-    state.diagnostics.push_back(
-        "dataflow.parallelize ended with pending lanes; emit a false "
-        "continuation token to flush the partial vector group");
-  }
-  return pending;
-}
-
-static llvm::Expected<llvm::SmallVector<std::string>>
-serializeMemoryValue(const MemoryValue &memory, mlir::Operation *scope) {
-  llvm::SmallVector<std::string> values;
-  for (auto [index, token] : llvm::enumerate(memory.elements)) {
-    if (!memory.initialized[index]) {
-      values.push_back("uninitialized");
-      continue;
-    }
-    auto value = tokenToString(token, memory.elementType, scope);
-    if (!value)
-      return value.takeError();
-    values.push_back(std::move(*value));
-  }
-  return values;
-}
-
-static llvm::Expected<std::string>
-memoryFixtureFromSerializedValues(llvm::ArrayRef<std::string> values) {
-  std::string fixture;
-  llvm::raw_string_ostream os(fixture);
-  for (auto [index, value] : llvm::enumerate(values)) {
-    llvm::StringRef serialized(value);
-    size_t separator = serialized.find(':');
-    if (separator == llvm::StringRef::npos)
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "cannot reuse serialized memory value '%s' for another invocation",
-          value.c_str());
-    if (index != 0)
-      os << ',';
-    os << serialized.drop_front(separator + 1);
-  }
-  return os.str();
-}
-
-static llvm::Error captureFinalMemoryState(dataflow::GraphOp graph,
-                                           SimulatorState &state,
-                                           DFGSimulationReport &report) {
-  mlir::Block &entry = graph.getBody().front();
-  for (unsigned index = 0, end = graph.getFunctionType().getNumInputs();
-       index < end; ++index) {
-    mlir::BlockArgument arg = entry.getArgument(index + 1);
-    std::shared_ptr<MemoryValue> memory = memoryForValue(state, arg);
-    std::string port = llvm::formatv("arg{0}", index).str();
-    if (memory) {
-      auto values = serializeMemoryValue(*memory, graph);
-      if (!values)
-        return values.takeError();
-      report.finalMemoryState[port] = std::move(*values);
-    }
-    if (auto rootId = memoryRootIdForValue(state, arg))
-      report.finalMemoryRoots[port] =
-          llvm::formatv("memory_root{0}", *rootId).str();
-  }
-  auto ret = mlir::cast<dataflow::GraphReturnOp>(entry.getTerminator());
-  for (auto [index, memoryResult] : llvm::enumerate(ret.getMemories())) {
-    std::shared_ptr<MemoryValue> memory = memoryForValue(state, memoryResult);
-    std::string port = llvm::formatv("memory_result{0}", index).str();
-    if (memory) {
-      auto values = serializeMemoryValue(*memory, graph);
-      if (!values)
-        return values.takeError();
-      report.finalMemoryState[port] = std::move(*values);
-    }
-    if (auto rootId = memoryRootIdForValue(state, memoryResult))
-      report.finalMemoryRoots[port] =
-          llvm::formatv("memory_root{0}", *rootId).str();
   }
   return llvm::Error::success();
 }
@@ -1560,6 +1339,14 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       if (isSupportedNonEvent(&op))
         continue;
       FireOutcome outcome = fireOperation(&op, state);
+      // The run has already failed at runtime, so it leaves the wave here,
+      // before any later actor observes or mutates state and before this wave
+      // publishes anything. The retained failure overrides the lifecycle
+      // classification below, so the run never continues into a deadlock
+      // witness, an exhausted event budget, or a static-invalid diagnosis
+      // that would relabel it.
+      if (state.failure != RunFailure::None)
+        break;
       if (retired && outcome != FireOutcome::NotReady) {
         report.status = "invalid";
         report.diagnostics.push_back(("actor '" + op.getName().getStringRef() +
@@ -1569,43 +1356,30 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
                                          .str());
         break;
       }
-      // A provider broke an invariant it guarantees, so this run has already
-      // failed internally. It leaves the wave here, before any later actor
-      // observes or mutates state, and resolves through the same invalid
-      // terminal as the checks above, carrying the provider's own rejection
-      // as its diagnostic. The run therefore never continues into a deadlock
-      // witness or an exhausted event budget that would relabel it.
-      if (state.providerInvariantViolation) {
-        report.status = "invalid";
-        break;
-      }
       fired |= outcome == FireOutcome::Fired;
     }
-    if (report.status == "invalid" || !fired)
+    if (report.status == "invalid" || state.failure != RunFailure::None ||
+        !fired)
       break;
     flushPendingTokens(state);
     ++report.wavefrontSteps;
     observeRetirement();
   }
-  // A runtime-exposed unsupported capability is definitive: once a plain
-  // conflicting access is rejected it does not become a deadlock, so an
-  // exhausted event budget must not mask it as blocked. The unsupported
-  // resolution below then reports it whether or not the budget was reached.
+  // A runtime failure is definitive: once a plain conflicting access is
+  // rejected or a provider invariant breaks, the run does not become a
+  // deadlock, so an exhausted event budget must not mask it as blocked.
   if (!retired && report.wavefrontSteps == options.maxEventSteps &&
-      !state.runtimeUnsupportedCapability) {
+      state.failure == RunFailure::None) {
     report.status = "blocked";
     report.diagnostics.push_back("maximum event steps reached");
   }
 
   bool missingReturn = false;
   bool pendingVectorGroups = false;
-  report.dynamicWorkItems = dynamicWorkItems(state);
-  // Unsupported execution has no result: diagnostics and execution evidence
-  // remain reportable, but outputs and terminal memory are not fabricated from
-  // a prefix that the rejected scheduler decision never committed.
-  if (report.status == "pass" && state.runtimeUnsupportedCapability)
-    report.status = "unsupported";
-  if (report.status != "unsupported") {
+  // A failed run has no result, whichever way it failed: diagnostics and
+  // execution evidence remain reportable, but outputs and terminal memory are
+  // not fabricated from a prefix the failed decision never committed.
+  if (!applyRunFailureTerminal(state, report)) {
     if (!retired) {
       report.finalOutputs.push_back("missing");
       missingReturn = true;
@@ -1661,132 +1435,6 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
         retired ? "graph retired with incomplete internal state"
                 : "graph stopped before retirement outputs were complete");
   }
-  report.eventCount = state.eventCount;
-  report.operationFireCounts = state.operationFireCounts;
-  report.modeledLibraryCalls = state.modeledLibraryCalls;
-  report.weightedOperationScore = estimateWeightedOperationScore(
-      state.operationFireCounts, state.diagnostics);
-  report.operationCostScore = report.weightedOperationScore;
-  report.modeledLibraryScore = state.modeledLibraryScore;
-  report.operationCostScore += report.modeledLibraryScore;
-  report.operationDiversityScore = report.operationFireCounts.size();
-  report.operationCostScore += report.operationDiversityScore;
-  report.memoryAddressScore = state.memoryAddressScore;
-  report.operationCostScore += report.memoryAddressScore;
-  // Execution records every rejected attempt, which is what classifies an
-  // actor transition as failed. The report projects each distinct reason once;
-  // re-polling an actor whose inputs did not change repeats no new reason.
-  for (const std::string &reason : state.diagnostics)
-    if (!llvm::is_contained(report.diagnostics, reason))
-      report.diagnostics.push_back(reason);
+  projectRunObservations(state, report);
   return report;
-}
-
-llvm::Error
-loom::sim::writeDFGSimulationReportJson(llvm::StringRef outputPath,
-                                        const DFGSimulationReport &report) {
-  llvm::SmallString<256> parent(outputPath);
-  llvm::sys::path::remove_filename(parent);
-  if (!parent.empty()) {
-    if (std::error_code ec = llvm::sys::fs::create_directories(parent))
-      return llvm::createStringError(ec, "could not create %s", parent.c_str());
-  }
-
-  llvm::json::Object root;
-  root["schema_version"] = report.schemaVersion;
-  root["kind"] = report.kind;
-  root["workload"] = report.workload;
-  root["graph"] = report.graph;
-  root["status"] = report.status;
-  root["metric_definition"] = report.metricDefinition;
-  root["operation_semantics_source"] = report.operationSemanticsSource;
-  root["operation_cost_model_source"] = report.operationCostModelSource;
-  if (report.status == "pass") {
-    root["operation_cost_score"] = report.operationCostScore;
-    root["weighted_operation_score"] =
-        static_cast<int64_t>(report.weightedOperationScore);
-    root["modeled_library_score"] = report.modeledLibraryScore;
-    root["operation_diversity_score"] = report.operationDiversityScore;
-    root["memory_address_score"] = report.memoryAddressScore;
-    llvm::json::Array scoreBreakdown;
-    scoreBreakdown.push_back(llvm::json::Object{
-        {"category", "weighted_operations"},
-        {"score", static_cast<int64_t>(report.weightedOperationScore)},
-        {"evidence", "operation_fire_counts"},
-        {"heuristic", true},
-    });
-    scoreBreakdown.push_back(llvm::json::Object{
-        {"category", "modeled_library_work"},
-        {"score", static_cast<int64_t>(report.modeledLibraryScore)},
-        {"evidence", "modeled_library_calls and modeled workload dimensions"},
-        {"heuristic", true},
-    });
-    scoreBreakdown.push_back(llvm::json::Object{
-        {"category", "operation_diversity"},
-        {"score", static_cast<int64_t>(report.operationDiversityScore)},
-        {"evidence", "distinct operation_fire_counts keys"},
-        {"heuristic", true},
-    });
-    scoreBreakdown.push_back(llvm::json::Object{
-        {"category", "computed_memory_address"},
-        {"score", static_cast<int64_t>(report.memoryAddressScore)},
-        {"evidence", "computed dataflow.load/store address operands"},
-        {"heuristic", true},
-    });
-    root["score_breakdown"] = std::move(scoreBreakdown);
-  }
-  root["wavefront_steps"] = report.wavefrontSteps;
-  root["event_count"] = report.eventCount;
-  root["dynamic_work_items"] = report.dynamicWorkItems;
-
-  llvm::json::Object fireCounts;
-  for (const auto &[opName, count] : report.operationFireCounts)
-    fireCounts[opName] = count;
-  root["operation_fire_counts"] = std::move(fireCounts);
-
-  llvm::json::Object libraryCalls;
-  for (const auto &[callee, count] : report.modeledLibraryCalls)
-    libraryCalls[callee] = count;
-  root["modeled_library_calls"] = std::move(libraryCalls);
-
-  llvm::json::Array outputs;
-  for (const std::string &value : report.finalOutputs)
-    outputs.push_back(value);
-  root["final_outputs"] = std::move(outputs);
-
-  llvm::json::Array streamOutputs;
-  for (const auto &stream : report.finalStreamOutputs) {
-    llvm::json::Array streamValues;
-    for (const std::string &value : stream)
-      streamValues.push_back(value);
-    streamOutputs.push_back(std::move(streamValues));
-  }
-  root["final_stream_outputs"] = std::move(streamOutputs);
-
-  llvm::json::Object finalMemoryState;
-  for (const auto &[argument, values] : report.finalMemoryState) {
-    llvm::json::Array memoryValues;
-    for (const std::string &value : values)
-      memoryValues.push_back(value);
-    finalMemoryState[argument] = std::move(memoryValues);
-  }
-  root["final_memory_state"] = std::move(finalMemoryState);
-
-  llvm::json::Object finalMemoryRoots;
-  for (const auto &[port, rootId] : report.finalMemoryRoots)
-    finalMemoryRoots[port] = rootId;
-  root["final_memory_roots"] = std::move(finalMemoryRoots);
-
-  llvm::json::Array diagnostics;
-  for (const std::string &diagnostic : report.diagnostics)
-    diagnostics.push_back(diagnostic);
-  root["diagnostics"] = std::move(diagnostics);
-
-  std::error_code ec;
-  llvm::raw_fd_ostream out(outputPath, ec, llvm::sys::fs::OF_Text);
-  if (ec)
-    return llvm::createStringError(ec, "could not open %s",
-                                   outputPath.str().c_str());
-  out << llvm::formatv("{0:2}", llvm::json::Value(std::move(root))) << "\n";
-  return llvm::Error::success();
 }

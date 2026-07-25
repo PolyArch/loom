@@ -366,21 +366,9 @@ struct MemoryActionRecord {
   bool isWrite = false;
 };
 
-inline void canonicalizeMemoryActionRanges(
-    llvm::SmallVectorImpl<std::pair<std::int64_t, std::int64_t>> &ranges) {
-  llvm::sort(ranges);
-  llvm::SmallVector<std::pair<std::int64_t, std::int64_t>> merged;
-  for (const auto &range : ranges) {
-    if (range.first >= range.second)
-      continue;
-    if (merged.empty() || merged.back().second < range.first) {
-      merged.push_back(range);
-      continue;
-    }
-    merged.back().second = std::max(merged.back().second, range.second);
-  }
-  ranges.assign(merged.begin(), merged.end());
-}
+/// Merges the ranges into the ascending, non-touching cover of the same bytes.
+void canonicalizeMemoryActionRanges(
+    llvm::SmallVectorImpl<std::pair<std::int64_t, std::int64_t>> &ranges);
 
 struct ReadyPlainMemoryAction {
   MemoryActionRecord action;
@@ -392,63 +380,12 @@ struct ReadyPlainMemoryConflictScan {
   std::uint64_t inspectedRanges = 0;
 };
 
-inline ReadyPlainMemoryConflictScan
-scanReadyPlainMemoryConflicts(llvm::ArrayRef<ReadyPlainMemoryAction> actions) {
-  struct Range {
-    std::uint64_t rootId;
-    std::int64_t begin;
-    std::int64_t end;
-    bool isWrite;
-  };
-
-  llvm::SmallVector<Range> ranges;
-  for (const ReadyPlainMemoryAction &ready : actions) {
-    auto actionRanges = ready.action.byteRanges;
-    canonicalizeMemoryActionRanges(actionRanges);
-    for (const auto &[begin, end] : actionRanges)
-      ranges.push_back(
-          Range{ready.action.rootId, begin, end, ready.action.isWrite});
-  }
-  llvm::sort(ranges, [](const Range &lhs, const Range &rhs) {
-    if (lhs.rootId != rhs.rootId)
-      return lhs.rootId < rhs.rootId;
-    if (lhs.begin != rhs.begin)
-      return lhs.begin < rhs.begin;
-    if (lhs.end != rhs.end)
-      return lhs.end < rhs.end;
-    return lhs.isWrite < rhs.isWrite;
-  });
-
-  ReadyPlainMemoryConflictScan result;
-  std::optional<std::uint64_t> rootId;
-  std::int64_t maximalEnd = 0;
-  std::int64_t maximalWriteEnd = 0;
-  bool hasRange = false;
-  bool hasWrite = false;
-  for (const Range &range : ranges) {
-    ++result.inspectedRanges;
-    if (!rootId || *rootId != range.rootId) {
-      rootId = range.rootId;
-      maximalEnd = range.end;
-      maximalWriteEnd = range.end;
-      hasRange = true;
-      hasWrite = range.isWrite;
-      continue;
-    }
-    if ((range.isWrite && hasRange && maximalEnd > range.begin) ||
-        (!range.isWrite && hasWrite && maximalWriteEnd > range.begin)) {
-      result.hasConflict = true;
-      return result;
-    }
-    maximalEnd = std::max(maximalEnd, range.end);
-    if (range.isWrite) {
-      maximalWriteEnd =
-          hasWrite ? std::max(maximalWriteEnd, range.end) : range.end;
-      hasWrite = true;
-    }
-  }
-  return result;
-}
+/// True when one ready set overlaps itself on a hazard, which is exactly the
+/// conflict no explicit order can resolve within one scheduler decision. The
+/// ranges of a single action are canonical, so an action never conflicts with
+/// itself here.
+ReadyPlainMemoryConflictScan
+scanReadyPlainMemoryConflicts(llvm::ArrayRef<ReadyPlainMemoryAction> actions);
 
 struct PlainMemoryConflictQuery {
   llvm::SmallVector<SyncEffectId, 2> effects;
@@ -460,54 +397,19 @@ struct PlainMemoryConflictQuery {
 // one effect covers another and reduces read frontiers.
 class PlainMemoryConflictIndex {
 public:
-  PlainMemoryConflictQuery query(MemoryActionRecord action) const {
-    PlainMemoryConflictQuery result;
-    canonicalizeMemoryActionRanges(action.byteRanges);
-    auto root = intervals_.find(action.rootId);
-    if (root == intervals_.end())
-      return result;
+  /// The maximal issued hazards `action` meets, without deciding whether any
+  /// of them is ordered before it.
+  PlainMemoryConflictQuery query(MemoryActionRecord action) const;
 
-    const IntervalMap &intervals = root->second->intervals;
-    for (const auto &[begin, end] : action.byteRanges) {
-      auto interval = intervals.find(begin);
-      while (interval.valid() && interval.start() < end) {
-        ++result.inspectedIntervals;
-        const Hazards &hazards = interval.value();
-        if (hazards.write)
-          result.effects.push_back(*hazards.write);
-        if (action.isWrite)
-          result.effects.append(hazards.reads.begin(), hazards.reads.end());
-        ++interval;
-      }
-    }
-    llvm::sort(result.effects);
-    result.effects.erase(
-        std::unique(result.effects.begin(), result.effects.end()),
-        result.effects.end());
-    return result;
-  }
-
+  /// Records one issued access as the new maximal hazard of its byte ranges.
   void retain(MemoryActionRecord action, SyncEffectId effect,
-              MemorySynchronization &synchronization) {
-    canonicalizeMemoryActionRanges(action.byteRanges);
-    if (action.byteRanges.empty())
-      return;
-    std::unique_ptr<RootIntervals> &root = intervals_[action.rootId];
-    if (!root)
-      root = std::make_unique<RootIntervals>();
-    for (const auto &[begin, end] : action.byteRanges)
-      updateRange(*root, begin, end, action.isWrite, effect, synchronization);
-  }
+              MemorySynchronization &synchronization);
 
   bool empty() const { return intervals_.empty(); }
 
-  std::size_t intervalCount(std::uint64_t rootId) const {
-    auto root = intervals_.find(rootId);
-    if (root == intervals_.end())
-      return 0;
-    return std::distance(root->second->intervals.begin(),
-                         root->second->intervals.end());
-  }
+  /// Retained interval count of one logical root, which is this index's share
+  /// of the run's conflict state.
+  std::size_t intervalCount(std::uint64_t rootId) const;
 
 private:
   struct Hazards {
@@ -539,70 +441,12 @@ private:
   };
 
   static void applyAccess(Hazards &hazards, bool isWrite, SyncEffectId effect,
-                          MemorySynchronization &synchronization) {
-    if (isWrite) {
-      hazards.write = effect;
-      hazards.reads.clear();
-      return;
-    }
-    hazards.reads.push_back(effect);
-    if (hazards.reads.size() > 1)
-      hazards.reads = llvm::cantFail(
-          synchronization.maximalHappensBeforeFrontier(hazards.reads));
-  }
-
+                          MemorySynchronization &synchronization);
   static Hazards makeHazards(bool isWrite, SyncEffectId effect,
-                             MemorySynchronization &synchronization) {
-    Hazards hazards;
-    applyAccess(hazards, isWrite, effect, synchronization);
-    return hazards;
-  }
-
+                             MemorySynchronization &synchronization);
   static void updateRange(RootIntervals &root, std::int64_t begin,
                           std::int64_t end, bool isWrite, SyncEffectId effect,
-                          MemorySynchronization &synchronization) {
-    llvm::SmallVector<IntervalReplacement, 4> existing;
-    auto interval = root.intervals.find(begin);
-    while (interval.valid() && interval.start() < end) {
-      existing.push_back(IntervalReplacement{interval.start(), interval.stop(),
-                                             interval.value()});
-      interval.erase();
-    }
-
-    llvm::SmallVector<IntervalReplacement, 6> replacements;
-    std::int64_t cursor = begin;
-    for (const IntervalReplacement &prior : existing) {
-      if (prior.begin < begin)
-        replacements.push_back(
-            IntervalReplacement{prior.begin, begin, prior.hazards});
-
-      const std::int64_t overlapBegin = std::max(begin, prior.begin);
-      if (cursor < overlapBegin)
-        replacements.push_back(
-            IntervalReplacement{cursor, overlapBegin,
-                                makeHazards(isWrite, effect, synchronization)});
-
-      const std::int64_t overlapEnd = std::min(end, prior.end);
-      Hazards updated = prior.hazards;
-      applyAccess(updated, isWrite, effect, synchronization);
-      replacements.push_back(
-          IntervalReplacement{overlapBegin, overlapEnd, std::move(updated)});
-      cursor = std::max(cursor, overlapEnd);
-
-      if (prior.end > end) {
-        replacements.push_back(
-            IntervalReplacement{end, prior.end, prior.hazards});
-        cursor = end;
-      }
-    }
-    if (cursor < end)
-      replacements.push_back(IntervalReplacement{
-          cursor, end, makeHazards(isWrite, effect, synchronization)});
-
-    for (IntervalReplacement &replacement : replacements)
-      root.intervals.insert(replacement.begin, replacement.end,
-                            std::move(replacement.hazards));
-  }
+                          MemorySynchronization &synchronization);
 
   llvm::DenseMap<std::uint64_t, std::unique_ptr<RootIntervals>> intervals_;
 };
@@ -610,6 +454,27 @@ private:
 struct PlainMemoryActionProjection {
   std::optional<ReadyPlainMemoryAction> ready;
   llvm::SmallVector<std::string, 1> diagnostics;
+};
+
+/// The closed set of runtime failures a run can retain. A run holds at most
+/// one, recorded once, so the kind is decided in a single place instead of
+/// being reconciled from flags. A retained failure overrides the ordinary
+/// lifecycle classification the driver would otherwise derive; it does not
+/// name that lifecycle, so static invalidity and a run that merely stopped
+/// remain the driver's own terminals. Ordinary execution diagnostics leave it
+/// `None`.
+enum class RunFailure {
+  None,
+  /// A capability whose absence only runtime values expose, such as a plain
+  /// conflicting access that carries no explicit causal order. The exact model
+  /// reports the missing capability instead of an arbitrary result or a
+  /// deadlock witness.
+  UnsupportedCapability,
+  /// An invariant this run's own providers or its finalized program guarantee,
+  /// broken during execution. It is an internal failure of the simulator or
+  /// its input, never a capability the exact model lacks and never static
+  /// invalidity, which is rejected before execution state exists.
+  ProviderInvariant,
 };
 
 struct SimulatorState {
@@ -648,18 +513,9 @@ struct SimulatorState {
   // The one graph this run simulates. Every `index` token in it resolves its
   // width against this scope, including the elements of a memory fixture.
   mlir::Operation *graphScope = nullptr;
-  // A capability whose absence only the runtime values expose, such as a plain
-  // conflicting access that carries no explicit causal order. The run reports
-  // an unsupported capability instead of an arbitrary result or a deadlock
-  // witness. Ordinary execution diagnostics never set this.
-  bool runtimeUnsupportedCapability = false;
-  // An invariant this run's own providers guarantee, broken during execution:
-  // the causality authority rejecting a frontier this run itself derived, for
-  // example. It is an internal failure of the simulator, not a capability the
-  // exact model lacks, so it resolves to the same invalid terminal as the
-  // run's other invariant checks rather than to an unsupported capability or
-  // a deadlock. Ordinary execution diagnostics never set this.
-  bool providerInvariantViolation = false;
+  // The runtime failure this run retained, if any. Execution stops at the
+  // failure, so at most one is ever recorded.
+  RunFailure failure = RunFailure::None;
   // The causality engines this run projects its plain accesses onto. They are
   // owned indirectly so the bound reference inside MemorySynchronization stays
   // valid however this state itself is stored, and they are created only once
@@ -790,8 +646,48 @@ void writeMemoryElement(const MemoryView &view, std::size_t index, Token value);
 void commitDataflowMemoryWrite(const MemoryView &view,
                                const DataflowMemoryWrite &write);
 
+/// The plain action one candidate would issue, derived from peeked inputs
+/// alone. It answers only what the access covers and what ctrl order it
+/// carries; legality the finalized program already owns is not re-derived.
 PlainMemoryActionProjection
 projectReadyPlainMemoryAction(mlir::Operation *op, SimulatorState &state);
+
+/// Admits every ready plain action of one scheduler decision, or rejects the
+/// whole decision. False leaves nothing admitted, so no access of a rejected
+/// decision can still fire.
+bool admitReadyPlainMemoryActions(SimulatorState &state);
+
+/// Projects a retained RunFailure onto the report status and returns true, so
+/// the caller knows the run exports no observation. A run that retained no
+/// failure keeps the driver's own lifecycle classification and returns false.
+bool applyRunFailureTerminal(const SimulatorState &state,
+                             DFGSimulationReport &report);
+
+/// Records the graph memory a finished run may still export.
+llvm::Error captureFinalMemoryState(dataflow::GraphOp graph,
+                                    SimulatorState &state,
+                                    DFGSimulationReport &report);
+
+/// True when a vector group actor still holds lanes it never flushed, which
+/// leaves the run's internal state incomplete.
+bool hasPendingVectorGroups(SimulatorState &state);
+
+/// Re-encodes one serialized memory observation as the fixture text a further
+/// invocation of the same graph consumes.
+llvm::Expected<std::string>
+memoryFixtureFromSerializedValues(llvm::ArrayRef<std::string> values);
+
+/// The registered cost model's score for one inventory of fired operations.
+/// An operation the model does not know contributes a diagnostic instead of a
+/// guessed score.
+std::uint64_t estimateWeightedOperationScore(
+    const std::map<std::string, std::uint64_t> &operationFireCounts,
+    llvm::SmallVectorImpl<std::string> &diagnostics);
+
+/// Copies the run's counters, derived cost scores, and distinct execution
+/// diagnostics into the report.
+void projectRunObservations(SimulatorState &state, DFGSimulationReport &report);
+
 bool isSupportedLLVMCall(mlir::LLVM::CallOp op);
 bool executeCmsisNNVecMatMultTS8(mlir::LLVM::CallOp op, SimulatorState &state,
                                  llvm::ArrayRef<Token> operands, Token &result);
@@ -816,6 +712,11 @@ llvm::Expected<Token> evaluatePrimitiveToken(mlir::Operation *op,
                                              mlir::Value result,
                                              llvm::ArrayRef<Token> inputTokens);
 
+bool fireLoad(dataflow::LoadOp op, SimulatorState &state);
+bool fireStore(dataflow::StoreOp op, SimulatorState &state);
+bool fireLLVMLoad(mlir::LLVM::LoadOp op, SimulatorState &state);
+bool fireLLVMStore(mlir::LLVM::StoreOp op, SimulatorState &state);
+bool fireLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state);
 bool executeLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state,
                        const Token &dst, const Token &src, const Token &len);
 bool isPointerSelect(mlir::LLVM::SelectOp op);

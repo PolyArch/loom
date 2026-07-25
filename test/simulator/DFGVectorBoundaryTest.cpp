@@ -778,8 +778,8 @@ void serializeFailureIsAtomic(dataflow::SerializeOp op) {
 }
 
 // A memory actor rejects an access entirely on peeked inputs. Only its reason
-// and the unsupported-capability outcome may change; inputs, outputs, actor
-// mutation state, events, fire counts, and memory may not.
+// and the run's retained failure may change; inputs, outputs, actor mutation
+// state, events, fire counts, and memory may not.
 std::shared_ptr<MemoryValue>
 makeMemory(mlir::Type elementType, std::initializer_list<uint64_t> values) {
   auto memory = std::make_shared<MemoryValue>();
@@ -909,11 +909,9 @@ void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
           "store fired after synchronization insertion failed");
   require(state.diagnostics.size() == 1,
           "store recorded no synchronization failure reason");
-  require(!state.runtimeUnsupportedCapability,
-          "a synchronization provider failure became an unsupported "
-          "capability");
-  require(state.providerInvariantViolation,
-          "a synchronization provider failure did not mark the run failed");
+  require(state.failure == RunFailure::ProviderInvariant,
+          "a synchronization provider failure was not classified as an "
+          "execution failure");
   require(state.channels[&op.getMemMutable()].size() == 1 &&
               state.channels[&op.getAddrMutable()].size() == 1 &&
               state.channels[&op.getDataMutable()].size() == 1 &&
@@ -926,6 +924,50 @@ void storeSynchronizationFailureIsAtomic(dataflow::StoreOp op) {
   expectUntouchedRun(
       state, *memory, {0x11, 0x22},
       "store changed run or memory state on synchronization insertion failure");
+}
+
+// A finalized plain scatter carries the distinctness its program already
+// proved (docs/spec-dataflow-vectorization.md), so admission neither inspects
+// nor guesses that legality. Resolved duplicates therefore break an invariant
+// the provider guarantees rather than exposing a capability the model lacks,
+// and the refused firing consumes, retains, and publishes nothing.
+void storeDuplicateScatterIsProviderFailure(dataflow::StoreOp op) {
+  SimulatorState state;
+  auto memoryType = mlir::cast<mlir::MemRefType>(op.getMem().getType());
+  auto memory = makeMemory(memoryType.getElementType(), {0x11, 0x22});
+  state.channels[&op.getMemMutable()].push_back(
+      pointerToken(op.getMem(), memory, 0));
+  state.channels[&op.getAddrMutable()].push_back(
+      indexVectorToken(resolvedIndexBits(op.getOperation()), {1, 1}));
+  state.channels[&op.getDataMutable()].push_back(
+      tokenWithBits(op.getData().getType(), 0xAB43));
+  state.channels[&op.getCtrlMutable()].push_back(noneToken());
+  PlainMemoryActionProjection projected =
+      projectReadyPlainMemoryAction(op.getOperation(), state);
+  require(projected.ready && projected.diagnostics.empty(),
+          "admission rejected a duplicate plain scatter it does not own");
+
+  state.admittedPlainMemoryActions.try_emplace(op.getOperation(),
+                                               std::move(*projected.ready));
+  require(!fireActorOperation(op, state),
+          "store resolved a duplicate active plain scatter destination");
+  require(state.diagnostics.size() == 1,
+          "store recorded no duplicate-destination reason");
+  require(state.failure == RunFailure::ProviderInvariant,
+          "a duplicate plain scatter was not classified as an execution "
+          "failure");
+  require(state.channels[&op.getMemMutable()].size() == 1 &&
+              state.channels[&op.getAddrMutable()].size() == 1 &&
+              state.channels[&op.getDataMutable()].size() == 1 &&
+              state.channels[&op.getCtrlMutable()].size() == 1,
+          "store consumed input on a duplicate active destination");
+  require(state.memoryActions.empty() &&
+              state.firingMemoryOrderFrontier.empty() &&
+              state.admittedPlainMemoryActions.contains(op.getOperation()),
+          "store partially issued a duplicate active destination");
+  expectUntouchedRun(
+      state, *memory, {0x11, 0x22},
+      "store changed run or memory state on a duplicate active destination");
 }
 
 void disjointPlainMemoryHistoryHasBoundedQueryWork() {
@@ -967,6 +1009,15 @@ void disjointPlainMemoryHistoryHasBoundedQueryWork() {
   ready.push_back(ReadyPlainMemoryAction{overlap, {}});
   require(scanReadyPlainMemoryConflicts(ready).hasConflict,
           "ready overlapping writes were not rejected");
+
+  // A read overlapping a ready write is the same unordered hazard, and in
+  // address order it reaches the branch no write-only ready set exercises.
+  const ReadyPlainMemoryAction readyWrite{
+      MemoryActionRecord{kRoot, {{0, 4}}, true}, {}};
+  const ReadyPlainMemoryAction readyRead{
+      MemoryActionRecord{kRoot, {{2, 6}}, false}, {}};
+  require(scanReadyPlainMemoryConflicts({readyWrite, readyRead}).hasConflict,
+          "a ready read overlapping a ready write was not rejected");
 }
 
 // Scale gate for the memory-order frontier representation.
@@ -1240,6 +1291,7 @@ int main() {
   serializeFailureIsAtomic(serialize);
   loadRejectionIsAtomic(load);
   storeSynchronizationFailureIsAtomic(store);
+  storeDuplicateScatterIsProviderFailure(store);
   wideSyncSharesOnePublishedFrontier(context);
   syncReconvergingOneFrontierRetainsOneCopy(context);
   return 0;

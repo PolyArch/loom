@@ -9,6 +9,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <initializer_list>
 #include <limits>
@@ -841,6 +842,60 @@ void loopCarriedFrontierAndRelationStayReduced() {
           "frontier reduction changed happens-before");
 }
 
+// Scale gate for the plain-memory admission query.
+//
+// Admission asks one question per ready access: are the hazards this access
+// meets already covered by the ctrl frontier it inherited. Both sides of that
+// question are small and stay small, so its cost must follow the question
+// rather than the number of effects the run has declared so far.
+//
+// The gate is elapsed time because the answer alone cannot reject the old
+// behaviour: resolving the same query through a full predecessor closure of
+// the frontier returns exactly the same boolean. With a closure the measured
+// cost tracked the history exactly, 2.3 us per call at 1000 effects, 9.1 us at
+// 4000 and 36.5 us at 16000, which makes one ordered read-modify-write loop
+// quadratic in its own iteration count. Answering from the effect's own
+// adjacency costs a fraction of a microsecond at any history.
+//
+// The history and the call count are both fixed, so the measured region is
+// deterministic and runs in milliseconds once the query is bounded.
+void admissionQueryCostFollowsTheQueryNotTheHistory() {
+  MemoryAtomicOrder order;
+  MemorySynchronization sync(order);
+  constexpr unsigned kHistory = 8192;
+  constexpr unsigned kQueries = 100000;
+  constexpr double kBudgetSeconds = 0.3;
+
+  SyncEffectId tail = sync.declareEffect();
+  SyncEffectId prior = tail;
+  for (unsigned index = 0; index < kHistory; ++index) {
+    llvm::SmallVector<SyncEffectId, 1> ctrl{tail};
+    prior = tail;
+    tail = takeExpected(sync.declareEffectSequencedAfter(ctrl));
+  }
+
+  // Exactly the admission shape: the write hazard one step back plus the read
+  // hazard the ctrl frontier itself names.
+  const llvm::SmallVector<SyncEffectId, 2> hazards{prior, tail};
+  const llvm::SmallVector<SyncEffectId, 1> frontier{tail};
+  const auto start = std::chrono::steady_clock::now();
+  for (unsigned index = 0; index < kQueries; ++index)
+    require(sync.areCoveredByHappensBefore(hazards, frontier),
+            "an inherited ctrl frontier did not cover the hazards it follows");
+  const double elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+          .count();
+  require(elapsed < kBudgetSeconds,
+          "a bounded admission query scaled with the run's effect history");
+
+  // The bound must not have been bought by weakening the relation.
+  SyncEffectId unrelated = sync.declareEffect();
+  require(!sync.areCoveredByHappensBefore({prior, unrelated}, frontier),
+          "an unrelated effect was reported covered");
+  require(sync.areCoveredByHappensBefore({SyncEffectId(0), prior}, frontier),
+          "a distant sequenced predecessor was not reported covered");
+}
+
 } // namespace
 
 int main() {
@@ -860,5 +915,6 @@ int main() {
   wideFrontierUsesOneTransactionalInsertion();
   rejectedIncomingFrontierDoesNotAllocateEffect();
   loopCarriedFrontierAndRelationStayReduced();
+  admissionQueryCostFollowsTheQueryNotTheHistory();
   return 0;
 }
