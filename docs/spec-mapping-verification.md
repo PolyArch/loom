@@ -71,7 +71,8 @@ at least:
 * disjoint and complete actor coverage for every covered graph;
 * correct addressed-memory and fence ownership by Memory Realizations and all
   other actor ownership by Compute Realizations;
-* selected FU capability-template ownership and exact parameterized
+* exact resolution of each selected `FabricFuCapabilityTemplateRef`, including
+  owner, ordinal, active nodes, active edges, and exact parameterized
   capability matching against Dataflow actor semantics;
 * complete ordered actor operand/result and FU-boundary correspondences;
 * derived FU implementation, actor set, configured-function topology,
@@ -92,6 +93,13 @@ at least:
   rules, with equal total width insufficient for a memory match; and
 * exact classification of every canonical edge as realization-internal or an
   externally derived obligation.
+
+The verifier derives state, timing, and use-pattern requirements from the
+selected template's active concrete Fabric nodes. It rejects a
+Mapping-owned encoding descriptor, copied configured graph, copied resource
+contract, or backend-local support record as a competing authority. Missing
+backend support is checked separately and reported as typed `Unsupported`; it
+does not make a semantically valid custom Fabric or TechMapping malformed.
 
 Software-edge identity is the exact `D` binding plus typed producer and
 consumer endpoint keys. There is no edge entity, number, symbol, path,
@@ -128,6 +136,10 @@ The verifier checks in dependency order:
   logical-net, and ResourceUse structural keys;
 * FU and memory occurrence membership, instruction and operation context
   range, physical port compatibility, and active physical-refinement domains;
+* equality between each placed FU occurrence's Fabric-owned definition and
+  the owner of the Compute Realization's selected capability-template
+  reference, with template nodes and ports mapped mechanically to that
+  occurrence;
 * one MemoryOperationEntry per covered memory actor, its exact addressed or
   fence variant, exact memory placement, internal source selection, required
   MemoryBinding, typed dispatch or consistency target, and exposure closure;

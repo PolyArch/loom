@@ -21,6 +21,15 @@ Registered operation schemas own exact software semantics, while typed
 Hardware Sharing Groups own only genuine physical implementation-family
 sharing legality.
 
+The finalized Fabric root projects both named and anonymous authoring forms
+into canonical `FabricFuTemplateRef` definitions. Each definition owns the
+canonical ordered inventory of `FabricFuCapabilityTemplateRef` records defined
+by `docs/spec-fabric-identity.md`. A record contains only selected physical FU
+nodes and directed FU-local edges. Node capability, state, timing, and
+configuration facts are derived from the referenced concrete Fabric
+resources; a capability template is not another operation schema or encoding
+descriptor.
+
 [Software Function To FU Synthesis](spec-generalize-subgraphs-to-fu.md) owns
 the reverse construction contract from canonical software-function sets to
 this same FU capability model. It does not create a second FU schema.
@@ -30,7 +39,7 @@ supported configured software function. HSG membership and `op_list` syntax
 alone never grant a concrete operation arbitrary capability; the complete
 typed capability relation and exact software binding must accept it.
 
-TechMapping selects an FU structural/capability template and binds exact
+TechMapping selects an exact `FabricFuCapabilityTemplateRef` and binds exact
 Canonical Dataflow actors to inner operations with ordered operand, result,
 and FU-boundary correspondence. A FU-local mux, demux, or operation choice that
 changes the configured software graph, selected physical operation, topology,
@@ -43,6 +52,11 @@ derives them from Fabric capability, the exact TechMapping realization, and
 SpatialMapping's semantic-preserving refinements. Fabric owns configuration
 field semantics and legal domains; only `ConfigurationABI` owns their physical
 bit encoding and programming representation.
+
+SpatialMapping may place that realization only on an FU occurrence whose
+Fabric-owned definition relation names the selected capability template's
+owner. Template nodes and ports then map mechanically to occurrence nodes and
+ports; Mapping cannot invent a correspondence between unrelated definitions.
 
 The configured projection is a closed sum:
 

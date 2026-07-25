@@ -70,6 +70,13 @@ code, behavioral or external-IP implementation availability, and typed
 external dependencies. It does not own family membership, operation types,
 HSG legality, timing semantics, or configuration encoding.
 
+When a mapped configured function is projected, the selected
+`FabricFuCapabilityTemplateRef` supplies only the active FU node and edge set.
+Provider dispatch and availability are derived from the active operation
+nodes' `ImplementationFamilyId` values. Providers do not own capability
+template identity, FU topology, admitted software members, or a substitute
+state/timing descriptor.
+
 Operation-name string classification, backend-local exact-mode enumeration,
 and global `(operation name, variant)` selection are forbidden as semantic or
 dispatch authorities. A behavioral or golden provider uses the same family ID

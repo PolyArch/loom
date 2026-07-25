@@ -123,7 +123,12 @@ whole-root candidate; they do not implement a mock view with partial answers.
 For every root kind, the view exposes canonical complete ranges for all
 relations owned by that root, including its entities, owner inventories, token
 and memory endpoints, directed point connections, and dependency-derived
-occurrence facts. A `System` root additionally exposes complete canonical
+occurrence facts. It also exposes the FU definition inventory, the exact FU
+occurrence-to-definition relation, and each FU definition's canonical
+capability-template inventory. Convenience queries such as
+`fuTemplate(occurrence)` and `fuCapabilityTemplates(template)` are indexes over
+those complete ranges, not additional authorities. A `System` root
+additionally exposes complete canonical
 ranges for spatial attachments, hardware-domain declarations and membership,
 system transport resources, transfer patterns, and each transport resource's
 optional crossing contract.
@@ -187,8 +192,15 @@ This artifact family does not own:
 * concrete `fabric.op` capability, owned by Fabric operation contracts;
 * backend availability or recipes, owned by Fabric-to-RTL providers;
 * software-selected configuration, owned by Mapping and ConfigurationABI;
-* implementation state, owned by HardwareImplementation; or
-* timing, power, area, and other observations, owned by EvaluationEvidence.
+* implementation realization and tool outputs, owned by
+  HardwareImplementation; or
+* timing, power, area, and other measured or predicted observations, owned by
+  EvaluationEvidence.
+
+Fabric itself remains the authority for resource state, capacity, use-pattern,
+transition-timing, and progress capability contracts. HardwareImplementation
+and Evaluation may realize or observe those contracts, but neither may
+redefine them.
 
 These owners may reference a Fabric artifact. They may not copy its topology,
 capability, identity catalog, or canonicalization rules.

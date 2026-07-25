@@ -60,7 +60,8 @@ reusable SpatialCore template. `fabric.system` describes typed system-level
 resources and explicit directed connectivity. Coordinates and visualization
 metadata never define reachability or legality.
 
-Fabric owns parameterized FU capability templates, operation and memory
+Fabric owns canonical FU definitions, parameterized FU capability-template
+inventories and references, operation and memory
 implementation families, ports, configuration and physical-refinement
 domains, use-pattern schemas, capacity, and service guarantees. It owns each
 configuration field's semantic meaning and typed value domain, but not its
@@ -97,6 +98,9 @@ Hardware Description. It selects parameterized capability templates and
 stores the exact ordered relations needed to instantiate semantic
 realizations. Operation-specific masks, configured fields, raw `sw_configs`,
 and configured-function views are derived rather than copied into Mapping.
+The selected FU capability is an exact Fabric-owned
+`FabricFuCapabilityTemplateRef`; no Mapping-owned compute encoding or copied
+configured graph is a parallel authority.
 
 SpatialMapping binds one exact TechMapping predecessor plus exact Dataflow and
 Fabric aliases for scoped references. It preserves TechMapping semantics and

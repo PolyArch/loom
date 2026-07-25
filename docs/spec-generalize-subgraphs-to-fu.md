@@ -17,7 +17,8 @@ The output `F` is canonical Fabric capability consisting of:
 * one HSG-legal implementation family for each `fabric.op`;
 * each operation resource's `op_list` projection, `hw_params`, physical ports,
   and typed constraints; and
-* a finite normalized domain of structural/capability templates.
+* a finite normalized domain of Fabric-owned
+  `FabricFuCapabilityTemplateRecord` values.
 
 The output does not enumerate exact software parameter values, complete
 software functions, or raw configuration words. Materialized members of the
@@ -33,7 +34,7 @@ S' = { Materialize(F, legal_binding) }
 require S subset-of S'
 ```
 
-`legal_binding` selects a structural/capability template and supplies exact
+`legal_binding` selects a capability-template record and supplies exact
 actors plus ordered actor-to-operation port and software-to-FU-boundary
 correspondence. `Materialize` interprets that binding through the registered
 operation schemas and Fabric capability relation. A successful synthesis must
@@ -69,6 +70,11 @@ The witness is an acceptance result for constructing `F`; it is not a
 persistent Mapping Artifact and does not place an FU occurrence. TechMapping
 later constructs its own exact realization for a concrete Canonical Dataflow
 Program and the finalized Fabric artifact.
+
+Before Fabric finalization, a synthesis witness may use a draft-local handle
+to the normalized record. Successful finalization resolves that handle to the
+canonical `FabricFuCapabilityTemplateRef`; the handle, witness, and synthesis
+order do not enter persistent identity.
 
 Coverage failure rejects the synthesized FU. Two independently produced
 witnesses with the same normalized binding are duplicates. Distinct templates
@@ -175,7 +181,8 @@ obligation; physical co-location never absorbs it.
 ## Mapping And Finalization Boundary
 
 Synthesis creates hardware capability, not a workload configuration.
-TechMapping for exact `D + F` selects the capability template and binds exact
+TechMapping for exact `D + F` selects the exact finalized
+`FabricFuCapabilityTemplateRef` and binds exact
 actors, attributes, ordered operation ports, and FU boundary ports.
 SpatialMapping selects only semantic-preserving physical or QoR refinements on
 the chosen realization. Mapping then derives a temporary semantic projection:

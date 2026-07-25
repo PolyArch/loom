@@ -83,6 +83,15 @@ no generic predicate DSL and no parallel handwritten member table. Backend
 provider availability is queried by the same family ID but is not part of the
 registry's semantic ownership.
 
+An FU capability template is a separate Fabric-owned composition of concrete
+nodes and edges. It references concrete `fabric.op` resources whose family,
+enabled members, and `hw_params` are already fixed; it neither extends HSG
+admission nor copies the family descriptor. Backend provider closure for a
+selected template is derived from the implementation families of its active
+operation nodes. A provider may implement those exact contracts or report
+typed `Unsupported`; it cannot reinterpret the template or manufacture a
+second member table.
+
 Graph admission, simulator dispatch, and Fabric matching must all resolve the
 same registered `OperationSchemaId`. An HSG descriptor may narrow where a
 schema can be physically shared, but it cannot make an unregistered actor

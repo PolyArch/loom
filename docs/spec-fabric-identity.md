@@ -145,6 +145,65 @@ FabricFuOccurrencePortRef =
 TechMapping uses template and node ports. Spatial routing uses occurrence
 ports. No generic `FabricFuRef` or untyped port reference erases this boundary.
 
+Every finalized FU occurrence has exactly one Fabric-owned definition:
+
+```text
+fuTemplate(FabricFuOccurrenceRef) -> FabricFuTemplateRef
+```
+
+Named and anonymous FU authoring forms are both projected into this canonical
+definition inventory. Names and authoring-site identity are nonsemantic. Two
+definition graphs that are identical after Fabric canonicalization share one
+`FabricFuTemplateRef`; their physical occurrences remain distinct.
+
+## FU Capability Template References
+
+Each canonical FU definition owns one finite normalized inventory of
+condition-relevant physical graph templates:
+
+```text
+FabricFuCapabilityTemplateRef =
+  (FabricFuTemplateRef, capability-template ordinal)
+
+FabricFuCapabilityTemplateEndpointRef =
+    BoundaryPort(FabricFuTemplatePortRef)
+  | NodePort(FabricFuNodePortRef)
+
+FabricFuCapabilityTemplateRecord {
+  active_nodes[] : sorted unique FabricFuTemplateNodeRef
+  active_edges[] : sorted unique
+      (FabricFuCapabilityTemplateEndpointRef,
+       FabricFuCapabilityTemplateEndpointRef)
+}
+```
+
+Every active edge must be a directed physical connection in the owning FU
+definition under one legal coherent selection of its configurable muxes,
+demuxes, and operation resources. The record does not copy operation schemas,
+HSG membership, `hw_params`, ports, state, timing, configuration values, or a
+materialized software graph. Those facts are recovered from the referenced
+Fabric nodes and their owning contracts.
+
+The finalizer rejects an empty active-node set, an out-of-definition node or
+endpoint, a nonphysical edge, an incoherent selection, and duplicate records.
+Distinct records may materialize the same software function only when they
+select genuinely different physical nodes or topology; they remain distinct
+physical TechMapping candidates.
+
+For each FU definition, records are ordered lexicographically by their
+canonical bytes and receive dense zero-based ordinals. A local reference
+encodes the owning `FabricFuTemplateRef` followed by the unsigned 64-bit
+big-endian ordinal. A standalone reference uses the Common exact
+`ArtifactReference<FabricFuCapabilityTemplateRef>` framing. Symbols, textual
+variant names, configured-function hashes, and Mapping-local encoding IDs are
+not template identity.
+
+After SpatialMapping selects a concrete FU occurrence, the exact
+template-to-occurrence relation mechanically derives the occurrence node and
+port corresponding to every template node and port. An occurrence is eligible
+only when `fuTemplate(occurrence)` equals the owner of the selected capability
+template.
+
 ## Transport And Memory Endpoints
 
 Token transport and memory-service capability are separate planes.
@@ -474,6 +533,10 @@ Anchor-level tests cover:
 
 * two occurrences elaborated from one template receive distinct occurrence
   references while retaining exact template correspondence;
+* named and anonymous authoring forms of one FU definition resolve to the same
+  definition and capability-template references;
+* capability-template record reorder is identity-neutral while one active
+  node or edge change changes the selected reference;
 * a switch traversal, point connection, and induced resource state remain
   three distinct typed objects;
 * token and memory endpoint references cannot be interchanged;

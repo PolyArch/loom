@@ -114,7 +114,8 @@ canonical memory actor; it is not another ID type.
 
 `docs/spec-fabric-identity.md` is the sole catalog and framing authority for
 Fabric-local persistent targets. It defines the Mapping-visible entity kinds,
-template-versus-occurrence references, FU structural nodes and ports, token
+template-versus-occurrence references, FU capability-template references, FU
+structural nodes and ports, token
 and memory endpoints, memory-operation structures, instruction contexts,
 resource states, use patterns, semantic configuration fields, physical
 refinement domains, and directed physical traversal variants.
@@ -137,6 +138,18 @@ A Mapping root that already declares the exact Fabric
 artifact, wrong entity kind, wrong owner, or an out-of-range structural
 ordinal is invalid. A well-formed target that lacks a compatible capability is
 a Mapping feasibility failure rather than an identity error.
+
+TechMapping's selected FU capability uses the exact local shape:
+
+```text
+FabricFuCapabilityTemplateRef =
+  (FabricFuTemplateRef, capability-template ordinal)
+```
+
+The containing TechMapping root supplies the exact Fabric identity. Mapping
+does not wrap this target in an `EncodingId`, copy the template record, or
+derive identity from a configured software graph. SpatialMapping resolves the
+selected template through the Fabric-owned occurrence-to-definition relation.
 
 ## Mapping-Local References
 

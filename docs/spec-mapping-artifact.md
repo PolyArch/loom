@@ -111,7 +111,7 @@ A Compute Realization owns one selected actor grouping and its selected
 Fabric FU structural/capability template. Its persistent basis is:
 
 * one artifact-global Mapping `EntityId`;
-* one exact selected `fu_capability_template` reference; and
+* one exact selected Fabric-owned `FabricFuCapabilityTemplateRef`; and
 * complete `mapping.compute_actor` and `mapping.compute_boundary` child
   relations.
 
@@ -133,6 +133,20 @@ constants, predicates, arity, and other semantic parameters remain owned by
 `D`. The configured function, active ports, masks, and `sw_configs` are
 derived from `D`, `F`, the selected template, and the ordered TechMapping
 relations. They are not persistent fields.
+
+The selected reference is encoded in the exact Fabric scope already bound by
+the TechMapping root. It resolves to one canonical capability-template record
+owned by one `FabricFuTemplateRef`. A later SpatialMapping may choose only an
+FU occurrence whose exact Fabric definition relation names that owner.
+
+The former Mapping-owned compute `EncodingId`, `EncodingRef`,
+`EncodingDescriptor`, and copied configured-operation graph are retired with
+no persistent replacement or compatibility shadow. Matching and
+materialization may use removable hot caches keyed by the exact `D`, exact
+`F`, selected capability-template reference, and correspondence, but those
+caches are not artifact fields. The separately specified Fabric memory
+semantic encoding remains valid because it owns a different `fabric.mem`
+contract.
 
 All Fabric operations use the same parameterized capability and match model.
 For `dataflow.sync`, ordered all-of lane correspondence is expressed by the

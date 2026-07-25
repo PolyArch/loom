@@ -21,7 +21,9 @@ Each fact has one semantic owner:
   physical ports, and typed constraints jointly define its parameterized
   capability.
 * `fabric.fu` topology owns the physical `fabric.op`, `fabric.mux`, and
-  `fabric.demux` resources and their SSA wiring.
+  `fabric.demux` resources, their SSA wiring, and the canonical finite
+  inventory of `FabricFuCapabilityTemplateRef` records selecting those
+  resources and edges.
 * Canonical Dataflow owns exact actor instances and their schema projections.
   TechMapping owns one exact realization by selecting a capability template
   and binding those exact actors, and therefore their exact types and closed
@@ -422,9 +424,12 @@ missing binding or compensate with a hidden drain.
 ## FU Templates And Explicit Topology
 
 An FU exposes a finite, normalized domain of condition-relevant structural and
-capability templates. The domain covers choices of physical resources,
-FU-local routes, and boundary correspondence. It does not enumerate large or
-symbolic software parameter domains.
+capability templates. The canonical owner and record shape are
+`FabricFuTemplateRef` and `FabricFuCapabilityTemplateRecord` in
+`docs/spec-fabric-identity.md`. The domain covers choices of physical
+resources and FU-local routes. Exact software-to-FU boundary correspondence is
+selected by TechMapping and is not copied into the Fabric record. The domain
+does not enumerate large or symbolic software parameter domains.
 
 Fabric SSA multi-use inside an FU is real token broadcast. Every consumer
 participates in delivery and backpressure. When mutually exclusive physical
@@ -479,11 +484,19 @@ function equality. Different predicates, constants, vector shapes, result
 ordinals, or boundary maps may denote different functions on the same
 physical graph.
 
-TechMapping persists the selected capability template and only the
+TechMapping persists the exact Fabric-owned
+`FabricFuCapabilityTemplateRef` and only the
 correspondences that cannot be derived. It references exact Dataflow actors
 rather than copying their semantic parameters. It does not persist a
 configured-function copy, active masks, raw `sw_configs`, legality booleans,
 candidate scores, or solver state.
+
+The capability template owns no parallel state or timing descriptor. Its
+active node set mechanically selects the concrete Fabric-owned
+`ResourceState`, `UsePattern`, transition timing, progress, and physical
+refinement closure of those nodes. An RTL provider consumes those exact
+contracts through resolved Fabric views; provider availability cannot add
+members, change the selected graph, or replace its state and timing semantics.
 
 SpatialMapping cannot change this projection. It may select only closed,
 Fabric-declared physical refinements such as a semantic-preserving pipeline,
