@@ -6,6 +6,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -108,10 +109,48 @@ llvm::Error domainError(const char *message);
 template <typename Enum> class ClosedEnumDomain {
 public:
   static llvm::Expected<ClosedEnumDomain>
+  normalize(llvm::ArrayRef<Enum> values) {
+    if (values.empty())
+      return detail::domainError("closed enum domain must not be empty");
+
+    std::vector<std::pair<std::uint8_t, Enum>> tagged;
+    tagged.reserve(values.size());
+    for (Enum value : values) {
+      llvm::Expected<std::uint8_t> tag =
+          detail::ClosedEnumTraits<Enum>::tag(value);
+      if (!tag)
+        return tag.takeError();
+      tagged.emplace_back(*tag, value);
+    }
+    std::sort(
+        tagged.begin(), tagged.end(),
+        [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
+
+    std::vector<Enum> normalizedValues;
+    std::vector<std::uint8_t> normalizedTags;
+    normalizedValues.reserve(tagged.size());
+    normalizedTags.reserve(tagged.size());
+    for (const auto &[tag, value] : tagged) {
+      if (!normalizedTags.empty() && normalizedTags.back() == tag) {
+        if (normalizedValues.back() != value)
+          return detail::domainError(
+              "closed enum codec assigns one tag to multiple values");
+        continue;
+      }
+      normalizedValues.push_back(value);
+      normalizedTags.push_back(tag);
+    }
+    return ClosedEnumDomain(std::move(normalizedValues),
+                            std::move(normalizedTags));
+  }
+
+  static llvm::Expected<ClosedEnumDomain>
   fromCanonical(llvm::ArrayRef<Enum> values) {
     if (values.empty())
       return detail::domainError("closed enum domain must not be empty");
 
+    std::vector<std::uint8_t> tags;
+    tags.reserve(values.size());
     std::uint8_t previous = 0;
     bool hasPrevious = false;
     for (Enum value : values) {
@@ -124,24 +163,30 @@ public:
             "closed enum domain is not sorted and unique");
       previous = *tag;
       hasPrevious = true;
+      tags.push_back(*tag);
     }
-    return ClosedEnumDomain(std::vector<Enum>(values.begin(), values.end()));
+    return ClosedEnumDomain(std::vector<Enum>(values.begin(), values.end()),
+                            std::move(tags));
   }
 
   llvm::ArrayRef<Enum> values() const { return values_; }
 
   bool contains(Enum value) const {
-    for (Enum candidate : values_)
-      if (candidate == value)
-        return true;
-    return false;
+    llvm::Expected<std::uint8_t> tag =
+        detail::ClosedEnumTraits<Enum>::tag(value);
+    if (!tag) {
+      llvm::consumeError(tag.takeError());
+      return false;
+    }
+    return std::binary_search(tags_.begin(), tags_.end(), *tag);
   }
 
 private:
-  explicit ClosedEnumDomain(std::vector<Enum> values)
-      : values_(std::move(values)) {}
+  ClosedEnumDomain(std::vector<Enum> values, std::vector<std::uint8_t> tags)
+      : values_(std::move(values)), tags_(std::move(tags)) {}
 
   std::vector<Enum> values_;
+  std::vector<std::uint8_t> tags_;
 };
 
 struct MaskInactivePair {

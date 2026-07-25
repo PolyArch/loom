@@ -47,6 +47,15 @@ module {
         : memref<8xf64>, vector<2xf64>
     return %data, %done : vector<2xf64>, none
   }
+
+  func.func @atomic_element_f32(%mem: memref<8xf32>, %address: index,
+                                %ctrl: none) -> (f32, none) {
+    %data, %done = dataflow.load %mem[%address] %ctrl
+        {contract = #dataflow.atomic_access<ordering = acquire,
+                                            sync_scope = <system>>}
+        : memref<8xf32>
+    return %data, %done : f32, none
+  }
 }
 )mlir";
 
@@ -80,6 +89,10 @@ UnsignedDomain singleton(std::uint64_t value) {
 
 AlignmentDomain scalarAlignment() {
   return take("alignment", AlignmentDomain::create(singleton(0)));
+}
+
+AlignmentDomain fourByteAlignment() {
+  return take("alignment", AlignmentDomain::create(singleton(2)));
 }
 
 ClosedEnumDomain<ReadSubwordSemantics> readExact() {
@@ -184,6 +197,9 @@ void checkUnsignedDomains() {
 }
 
 void checkEnumCodecs() {
+  expectRejected<ClosedEnumDomain<ReadSubwordSemantics>>(
+      "empty normalized read domain",
+      ClosedEnumDomain<ReadSubwordSemantics>::normalize({}));
   require("read tags",
           getCanonicalTag(ReadSubwordSemantics::NotApplicable) == 0 &&
               getCanonicalTag(ReadSubwordSemantics::Exact) == 1 &&
@@ -213,6 +229,28 @@ void checkEnumCodecs() {
       "unsorted read domain",
       ClosedEnumDomain<ReadSubwordSemantics>::fromCanonical(
           {ReadSubwordSemantics::ZeroExtend, ReadSubwordSemantics::Exact}));
+
+  ClosedEnumDomain<ReadSubwordSemantics> normalized =
+      take("read domain normalization",
+           ClosedEnumDomain<ReadSubwordSemantics>::normalize(
+               {ReadSubwordSemantics::ZeroExtend, ReadSubwordSemantics::Exact,
+                ReadSubwordSemantics::ZeroExtend}));
+  const ReadSubwordSemantics expected[] = {ReadSubwordSemantics::Exact,
+                                           ReadSubwordSemantics::ZeroExtend};
+  require("read domain normalization",
+          normalized.values() == llvm::ArrayRef(expected),
+          "enum values did not normalize by their stable Fabric tags");
+  require(
+      "read domain lookup",
+      normalized.contains(ReadSubwordSemantics::Exact) &&
+          normalized.contains(ReadSubwordSemantics::ZeroExtend) &&
+          !normalized.contains(ReadSubwordSemantics::NotApplicable) &&
+          !normalized.contains(static_cast<ReadSubwordSemantics>(UINT8_MAX)),
+      "normalized enum membership is not exact");
+  expectRejected<ClosedEnumDomain<ReadSubwordSemantics>>(
+      "unknown normalized read domain",
+      ClosedEnumDomain<ReadSubwordSemantics>::normalize(
+          {static_cast<ReadSubwordSemantics>(UINT8_MAX)}));
 }
 
 mlir::func::FuncOp findFunction(mlir::ModuleOp module, llvm::StringRef name) {
@@ -265,6 +303,7 @@ void checkTypedAccessMembership(mlir::ModuleOp module) {
   CanonicalMemoryAccessView element = accessView(module, "element_f32");
   CanonicalMemoryAccessView vector4 = accessView(module, "vector4_f32");
   CanonicalMemoryAccessView vector2 = accessView(module, "vector2_f64");
+  CanonicalMemoryAccessView atomic = accessView(module, "atomic_element_f32");
 
   require("element membership", domain.contains(element),
           "element f32 was rejected");
@@ -276,6 +315,20 @@ void checkTypedAccessMembership(mlir::ModuleOp module) {
           "the fixture does not exercise equal vector payload widths");
   require("equal payload distinction", !domain.contains(vector2),
           "contiguous vector<2xf64> collapsed into vector<4xf32>");
+  require("atomic alignment dependency", !domain.contains(atomic),
+          "atomic access was admitted without its owner-projected alignment");
+
+  ParameterizedMemoryAccessDomain inferredAlignment = take(
+      "inferred alignment",
+      ParameterizedMemoryAccessDomain::create(
+          {take("four-byte access class",
+                MemoryAccessClass::create(
+                    MemoryAccessForm::Element, singleton(32), singleton(1),
+                    {MaskInactivePair{MemoryMaskForm::Absent,
+                                      InactiveLaneSemantics::NotApplicable}},
+                    fourByteAlignment(), readExact(), writeNotApplicable()))}));
+  require("plain alignment derivation", !inferredAlignment.contains(element),
+          "plain access alignment was inferred from its type or width");
 }
 
 } // namespace

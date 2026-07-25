@@ -342,6 +342,9 @@ llvm::Expected<MemoryAccessClass> MemoryAccessClass::create(
 
 bool MemoryAccessClass::contains(
     const CanonicalMemoryAccessView &access) const {
+  // Plain access has the specification-defined alignment of one byte. Atomic
+  // access stays fail-closed until its owner projection exposes exact source
+  // alignment; type and payload width are not alignment evidence.
   if (access.contract().atomic)
     return false;
   if (access.form() != accessForm_ ||
