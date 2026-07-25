@@ -1,6 +1,8 @@
 #ifndef LOOM_LIB_FRONTEND_RAISING_EXACTREWRITE_H
 #define LOOM_LIB_FRONTEND_RAISING_EXACTREWRITE_H
 
+#include "CallableRegions.h"
+
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Region.h"
 #include "mlir/IR/Visitors.h"
@@ -19,11 +21,18 @@ namespace raising {
 // respelling of the operations it declares. Only operations that exist before
 // the walk are offered a pattern, so a replacement is never revisited, and an
 // unreachable block survives until the structuring pass removes it explicitly.
+//
+// The walk is the callable-ownership walk, so a nested callable's body is
+// never offered patterns here: it is owned by that callable and processed by
+// its own region-level application.
 inline void
 applyExactPatternsOnce(::mlir::Region &region,
                        const ::mlir::FrozenRewritePatternSet &patterns) {
   ::llvm::SmallVector<::mlir::Operation *> candidates;
-  region.walk([&](::mlir::Operation *op) { candidates.push_back(op); });
+  forEachOwnedOperation(region, [&](::mlir::Operation *op) {
+    candidates.push_back(op);
+    return ::mlir::WalkResult::advance();
+  });
 
   ::mlir::PatternApplicator applicator(patterns);
   applicator.applyDefaultCostModel();

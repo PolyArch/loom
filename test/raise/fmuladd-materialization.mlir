@@ -6,6 +6,7 @@
 // RUN: loom-raise-opt --loom-materialize-fmuladd=shape=split %t/choice.mlir | mlir-opt --convert-math-to-llvm --convert-arith-to-llvm | FileCheck %s --check-prefix=SPLIT-LLVM --implicit-check-not=constrained
 // RUN: loom-raise-opt --loom-materialize-fmuladd=shape=split %t/choice.mlir | mlir-opt --math-uplift-to-fma | FileCheck %s --check-prefix=SPLIT-KEPT --implicit-check-not=math.fma
 // RUN: not loom-raise-opt --loom-materialize-fmuladd=shape=fused --mlir-disable-threading --mlir-print-ir-after-failure --mlir-print-ir-module-scope %t/unrepresentable.mlir 2>&1 | FileCheck %s --check-prefix=REFUSE
+// RUN: loom-raise-opt --loom-materialize-fmuladd=shape=fused %t/nested.mlir | FileCheck %s --check-prefix=NESTED --implicit-check-not=llvm.intr.fmuladd
 
 // `llvm.intr.fmuladd` states a choice, not a computation: the target may fuse
 // it into one rounding or evaluate a separate multiply and add. Materializing
@@ -67,6 +68,17 @@
 // REFUSE-NOT: math.fma
 // REFUSE-NOT: arith.mulf
 
+// A native func.func owns a nested imported llvm.func held under a
+// builtin.module. Each callable region processes only the operations it owns:
+// the enclosing func.func's walk prunes the nested llvm.func body, so the one
+// llvm.intr.fmuladd inside it is collected exactly once and materialized once.
+// Before the ownership walk pruned nested callables, the same intrinsic was
+// collected from both regions and the second materialization crashed on the
+// already-replaced operation.
+// NESTED-LABEL: func.func @native_owner
+// NESTED-LABEL: llvm.func @inner
+// NESTED: math.fma %{{.*}}, %{{.*}}, %{{.*}} : f32
+
 //--- choice.mlir
 llvm.func @chosen(%x: f32, %y: f32, %z: f32) -> f32 {
   %r = llvm.intr.fmuladd(%x, %y, %z)
@@ -91,4 +103,15 @@ llvm.func @estimated(%x: f32, %y: f32, %z: f32) -> f32
     attributes {reciprocal_estimates = "all"} {
   %r = llvm.intr.fmuladd(%x, %y, %z) : (f32, f32, f32) -> f32
   llvm.return %r : f32
+}
+
+//--- nested.mlir
+func.func @native_owner(%a: f32, %b: f32, %c: f32) -> f32 {
+  builtin.module {
+    llvm.func @inner(%x: f32, %y: f32, %z: f32) -> f32 {
+      %r = llvm.intr.fmuladd(%x, %y, %z) : (f32, f32, f32) -> f32
+      llvm.return %r : f32
+    }
+  }
+  return %a : f32
 }

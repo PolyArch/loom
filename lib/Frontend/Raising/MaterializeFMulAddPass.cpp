@@ -172,11 +172,14 @@ struct MaterializeFMulAddPass
     ::llvm::SmallVector<::mlir::LLVM::FMulAddOp> selected;
     ::mlir::LogicalResult representable = loom::raising::forEachCallableRegion(
         getOperation(), [&](::mlir::Region &region) {
-          ::mlir::WalkResult walked =
-              region.walk([&](::mlir::LLVM::FMulAddOp op) {
-                if (failed(requireRepresentable(op, shape.getValue())))
+          ::mlir::WalkResult walked = loom::raising::forEachOwnedOperation(
+              region, [&](::mlir::Operation *op) {
+                auto fmuladd = ::mlir::dyn_cast<::mlir::LLVM::FMulAddOp>(op);
+                if (!fmuladd)
+                  return ::mlir::WalkResult::advance();
+                if (failed(requireRepresentable(fmuladd, shape.getValue())))
                   return ::mlir::WalkResult::interrupt();
-                selected.push_back(op);
+                selected.push_back(fmuladd);
                 return ::mlir::WalkResult::advance();
               });
           return walked.wasInterrupted() ? ::mlir::failure()

@@ -40,3 +40,27 @@ llvm.func @llvm_call_in_body(%base: !llvm.ptr) {
     }
     llvm.return
 }
+
+// A nested callable is a definition, not an operation executed by the outer
+// loop. Its body belongs to that callable and must not make an otherwise
+// parallel outer loop fail the body check.
+// CHECK-LABEL: func.func @nested_callable_is_not_loop_body
+// CHECK: scf.forall
+// CHECK: module {
+// CHECK: func.func @inner
+func.func @nested_callable_is_not_loop_body(%dst: memref<?xf32>, %n: index) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %f0 = arith.constant 0.0 : f32
+  scf.for %i = %c0 to %n step %c1 {
+    builtin.module {
+      func.func private @opaque()
+      func.func @inner() {
+        func.call @opaque() : () -> ()
+        return
+      }
+    }
+    memref.store %f0, %dst[%i] : memref<?xf32>
+  }
+  return
+}

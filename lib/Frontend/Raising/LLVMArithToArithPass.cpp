@@ -374,25 +374,27 @@ struct IntegerTruncationAlias
   }
 };
 
-// llvm.fpext -> arith.extf and llvm.fptrunc -> arith.truncf. Both sources
-// carry a fast-math contract, and both targets have an optional carrier for
-// it, so an unflagged source stays unflagged rather than acquiring an empty
-// contract attribute.
+// llvm.fpext -> arith.extf and llvm.fptrunc -> arith.truncf. An unflagged
+// source is the exact inverse of the pinned arith-to-llvm lowering, so it is
+// restated directly and stays unflagged rather than acquiring an empty
+// contract attribute. A flagged source is preserved in llvm form: the pinned
+// convert-arith-to-llvm lowering of a fast-math arith.extf or arith.truncf
+// does not carry that contract back onto the llvm operation, so the raised
+// form is not roundtrippable -- it leaves a foreign arith fast-math attribute
+// that mlir-translate rejects. Keeping the llvm spelling is exact where
+// respelling it would weaken or break the round trip.
 template <typename LLVMOp, typename StandardOp>
 struct FloatResizeAlias : public ::mlir::OpRewritePattern<LLVMOp> {
   using ::mlir::OpRewritePattern<LLVMOp>::OpRewritePattern;
 
   ::mlir::LogicalResult
-  matchAndRewrite(LLVMOp op,
-                  ::mlir::PatternRewriter &rewriter) const override {
+  matchAndRewrite(LLVMOp op, ::mlir::PatternRewriter &rewriter) const override {
     if (!restatesExactly(op, /*floating=*/true))
+      return ::mlir::failure();
+    if (op.getFastmathFlags() != ::mlir::LLVM::FastmathFlags::none)
       return ::mlir::failure();
 
     ::mlir::arith::FastMathFlagsAttr fastmath;
-    if (op.getFastmathFlags() != ::mlir::LLVM::FastmathFlags::none)
-      fastmath = ::mlir::arith::FastMathFlagsAttr::get(
-          op.getContext(), exactFastMathFlags(op.getFastmathFlags()));
-
     if constexpr (::std::is_same_v<StandardOp, ::mlir::arith::TruncFOp>)
       rewriter.replaceOpWithNewOp<::mlir::arith::TruncFOp>(
           op, op.getRes().getType(), op.getArg(),

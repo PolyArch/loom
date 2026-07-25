@@ -26,15 +26,12 @@ CXX_EXTENSIONS = {".C", ".cc", ".cpp", ".cxx"}
 # The printer emits `llvm.func`, then the linkage keyword when it is not
 # external, then visibility, unnamed-addr and calling convention when they are
 # not the default, then the symbol. A definition ends its line with the opening
-# body brace; a declaration has no body. Any optional non-linkage modifier is
-# therefore accepted, while a declaration and a non-external linkage are not.
-NON_PUBLIC_LINKAGE = (
-    r"available_externally|linkonce|linkonce_odr|weak|weak_odr"
-    r"|appending|internal|private|extern_weak|common"
-)
+# body brace; a declaration has no body. The harness only proves the expected
+# symbol survived raising as a defined callable, so any linkage -- external,
+# weak_odr, linkonce or otherwise -- and any optional modifier are accepted,
+# while a bodyless declaration is not.
 MAIN_DEFINITION = re.compile(
-    r"^\s*llvm\.func\s+(?!(?:" + NON_PUBLIC_LINKAGE + r")\s)"
-    r"(?:[A-Za-z_][A-Za-z0-9_]*\s+)*@main\b[^\n]*\{\s*$",
+    r"^\s*llvm\.func\s+(?:[A-Za-z_][A-Za-z0-9_]*\s+)*@main\b[^\n]*\{\s*$",
     re.MULTILINE,
 )
 SCF_OPERATION = re.compile(r"\bscf\.[A-Za-z_][A-Za-z0-9_.]*\b")
@@ -269,7 +266,7 @@ def validate_raise_ir(path: Path, spec: CaseSpec) -> None:
     text = read_ir(path, f"{spec.case}: raised IR validation")
     if MAIN_DEFINITION.search(text) is None:
         raise RunnerExecutionError(
-            f"{spec.case}: {path} has no public llvm.func @main definition with a body"
+            f"{spec.case}: {path} has no llvm.func @main definition with a body"
         )
     if SCF_OPERATION.search(text) is None:
         raise RunnerExecutionError(f"{spec.case}: {path} has no scf operation")

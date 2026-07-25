@@ -125,10 +125,12 @@ llvm.func @width_and_domain_casts(%narrow: i16, %wide: i32, %single: f32,
 
 // Neither narrowing cast acquires a rounding mode: an arith cast that states
 // one is a constrained operation, while the source is an ordinary cast in the
-// default floating-point environment. Every source flag that does have an
-// exact carrier is transferred: nsw / nuw on truncation, nneg on the two
-// casts that read the operand as unsigned, and the fast-math contract on the
-// floating resize.
+// default floating-point environment. Every source flag that has an exact and
+// roundtrippable carrier is transferred: nsw / nuw on truncation and nneg on
+// the two casts that read the operand as unsigned. A fast-math contract on a
+// floating resize is the one exception: the pinned arith-to-llvm lowering of a
+// fast-math arith.extf or arith.truncf does not carry it back onto the llvm
+// op, so a flagged resize keeps its llvm form rather than break the round trip.
 // CHECK-LABEL: llvm.func @cast_flags
 llvm.func @cast_flags(%narrow: i16, %wide: i32, %single: f32) {
     // CHECK: %{{.*}} = arith.trunci %arg1 overflow<nsw, nuw> : i32 to i16
@@ -137,7 +139,7 @@ llvm.func @cast_flags(%narrow: i16, %wide: i32, %single: f32) {
     %1 = llvm.zext nneg %narrow : i16 to i32
     // CHECK: %{{.*}} = arith.uitofp %arg1 nneg : i32 to f32
     %2 = llvm.uitofp nneg %wide : i32 to f32
-    // CHECK: %{{.*}} = arith.extf %arg2 fastmath<nnan> : f32 to f64
+    // CHECK: %{{.*}} = llvm.fpext %arg2 fastmath<nnan> : f32 to f64
     %3 = llvm.fpext %single fastmath<nnan> : f32 to f64
     llvm.return
 }

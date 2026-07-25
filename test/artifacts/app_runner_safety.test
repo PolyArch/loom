@@ -2,6 +2,15 @@
 # RUN: %python -c "import dataclasses, os, sys; from pathlib import Path; sys.path.insert(0, r'%S/../app'); import native_runner as n; spec = n.load_case_specs(Path(r'%S/../app/manifest.json'), ['vecadd'])[0]; result = n.run_case(dataclasses.replace(spec, expected_stdout=Path('/dev/null')), Path(r'%t.dir'), r'%loom-cc', r'%loom-c++', dict(os.environ)); assert not result.passed and 'stdout mismatch' in result.diagnostic"
 # RUN: echo 'module {}' > %t.empty.mlir
 # RUN: not %python -c "import sys; from pathlib import Path; sys.path.insert(0, r'%S/../app'); import ir_runner as r; r.require_dfg_artifact(Path(r'%t.empty.mlir'), 'empty')" 2>&1 | FileCheck %s --check-prefix=DFG
+# RUN: %python -c "import sys; sys.path.insert(0, r'%S/../app'); import ir_runner as r; assert r.MAIN_DEFINITION.search('llvm.func weak_odr @main() {')"
+# RUN: %python -c "import sys; sys.path.insert(0, r'%S/../app'); import ir_runner as r; assert r.MAIN_DEFINITION.search('llvm.func linkonce @main() {')"
+# RUN: %python -c "import sys; sys.path.insert(0, r'%S/../app'); import ir_runner as r; assert r.MAIN_DEFINITION.search('llvm.func @main()') is None"
+# RUN: echo 'llvm.func weak_odr @kernel() {' > %t.weak.mlir
+# RUN: echo 'llvm.func linkonce @kernel() {' > %t.linkonce.mlir
+# RUN: echo 'llvm.func @kernel()' > %t.declaration.mlir
+# RUN: bash -c 'source "$1"; cmsis_common_mlir_has_callable_definition "$2" kernel' _ %S/../cmsis-common.sh %t.weak.mlir
+# RUN: bash -c 'source "$1"; cmsis_common_mlir_has_callable_definition "$2" kernel' _ %S/../cmsis-common.sh %t.linkonce.mlir
+# RUN: not bash -c 'source "$1"; cmsis_common_mlir_has_callable_definition "$2" kernel' _ %S/../cmsis-common.sh %t.declaration.mlir
 
 # CHECK: RunnerConfigurationError: case must be a single file name
 # DFG: RunnerExecutionError: empty: {{.*}} has no dataflow.graph definition

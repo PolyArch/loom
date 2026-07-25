@@ -47,26 +47,6 @@ valid_symbol() {
     [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
 }
 
-# True when ${mlir} defines ${symbol} as an externally linked llvm.func.
-#
-# The printer emits `llvm.func`, then the linkage keyword when it is not
-# external, then visibility, unnamed-addr and calling convention when they are
-# not the default, then the symbol. A definition ends its line with the opening
-# body brace; a declaration has no body. Any optional non-linkage modifier is
-# therefore accepted, while a declaration and a non-external linkage are not.
-mlir_has_public_callable_definition() {
-    local mlir="$1"
-    local symbol="$2"
-    local non_public='available_externally|linkonce|linkonce_odr|weak|weak_odr'
-    non_public+='|appending|internal|private|extern_weak|common'
-    local definitions
-    definitions="$(grep -E \
-        "^[[:space:]]*llvm\\.func[[:space:]]+([A-Za-z_][A-Za-z0-9_]*[[:space:]]+)*@${symbol}\\(.*\\{[[:space:]]*$" \
-        "${mlir}")" || return 1
-    grep -qvE "^[[:space:]]*llvm\\.func[[:space:]]+(${non_public})[[:space:]]" \
-        <<<"${definitions}"
-}
-
 require_executable "${LOOM_CC}" loom-cc
 require_executable "${LOOM_RAISE}" loom-raise
 require_executable "${LOOM_RAISE_OPT}" loom-raise-opt
@@ -140,8 +120,8 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     if ! "${LOOM_RAISE_OPT}" "${out_scf}" -o /dev/null >"${parse_log}" 2>&1; then
         row_error "loom-raise-opt could not parse ${out_scf}; see ${parse_log}"
     fi
-    mlir_has_public_callable_definition "${out_scf}" "${source_symbol}" || row_error \
-        "public llvm.func definition ${source_symbol} did not survive raising for ${src}"
+    cmsis_common_mlir_has_callable_definition "${out_scf}" "${source_symbol}" || row_error \
+        "llvm.func definition ${source_symbol} did not survive raising for ${src}"
     echo "  PASS  ${src}"
     row_count=$((row_count + 1))
 done < "${SMOKE_TARGETS_FILE}"

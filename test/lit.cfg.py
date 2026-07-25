@@ -74,6 +74,7 @@ tools = [
     "loom-synth-config-test",
     "loom-synth-fu-dump",
     "mlir-opt",
+    "mlir-translate",
 ]
 llvm_config.add_tool_substitutions(tools, tool_dirs)
 

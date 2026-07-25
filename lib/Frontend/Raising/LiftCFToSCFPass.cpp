@@ -39,8 +39,9 @@
 // preserved with its complete original semantics. Unstructured `cf` control is
 // ordinary legal S0, so preservation costs nothing an unselected or
 // InstructionCore-owned region needs. Rejection belongs to the boundary that
-// actually narrows the surface: a candidate that selects a `loom.spatial_region`
-// must present structured control there, and cannot do so from a preserved CFG.
+// actually narrows the surface: a candidate that selects a
+// `loom.spatial_region` must present structured control there, and cannot do so
+// from a preserved CFG.
 //
 // A region is preserved when:
 //
@@ -61,16 +62,25 @@
 // avoids relying on the transformation's own unknown-terminator check, which
 // runs per region, after earlier regions may already be structured.
 //
-// The structuring traversal then works on detached clones of the callable
-// ops: it erases the clone region's own unreachable blocks, which is the one
-// cleanup upstream's documented structural preconditions require of this
-// surface, and structures the clone region without descending into nested
-// regions. A clone is published back into its original callable op only once
-// it is complete: upstream's documented "unspecified IR on interface failure"
-// unwinds inside the clone, and an annotation the completed clone could not
-// place leaves that region preserved. Publishing cannot fail: it preserves each
-// callable op, its order, and its identity, leaving llvm.func the sole ABI
-// envelope of its body.
+// The structuring traversal then works on detached clones of the callable ops:
+// it erases the clone region's own unreachable blocks, which is the one cleanup
+// upstream's documented structural preconditions require of this surface, and
+// structures the clone region without descending into nested regions. Each
+// clone is taken from the then-current original and published back into its
+// original callable op the moment it is complete. The callable walk is
+// post-order, so a nested callable is structured and published before its
+// enclosing callable: the ancestor is therefore cloned from an original that
+// already holds the structured descendant, and its clone carries that structure
+// through. A deferred publication would instead clone the ancestor from a
+// snapshot taken before the descendant published, so publishing that stale
+// ancestor clone would overwrite the descendant's structured body with the
+// unstructured copy the clone still held. Upstream's documented "unspecified IR
+// on interface failure" unwinds inside the clone, and an annotation the
+// completed clone could not place leaves that region preserved, so a clone that
+// declines is dropped without publishing. Publishing cannot fail: it preserves
+// the region's owning callable op and carries already-structured descendant
+// bodies through ancestor clones, leaving each imported callable in llvm.func
+// form as the sole ABI envelope of its body.
 
 #include "Frontend/Raising/Passes.h"
 
@@ -364,87 +374,86 @@ struct LiftCFToSCFPass
   }
 
   void runOnOperation() final {
-    // Regions are disjoint, so one map holds every structured region's loop
-    // headers.
-    LoopAnnotations annotations;
-    ::llvm::DenseSet<::mlir::Region *> structure;
+    // One plan per callable region chosen for structuring, holding only that
+    // region's own resolved loop annotations. Annotation headers are blocks of
+    // the region the plan owns, so a plan is consulted only while that region's
+    // original blocks are still live and never after the region is published.
+    struct RegionPlan {
+      ::mlir::Region *region;
+      LoopAnnotations annotations;
+    };
+    // The callable walk is post-order, so a nested callable is planned before
+    // its enclosing callable. Structuring in that order is what makes nested
+    // publication correct: an enclosing callable is cloned from the
+    // then-current original, which already holds the structured descendant, so
+    // publishing the ancestor cannot overwrite the descendant's structure.
+    ::llvm::SmallVector<RegionPlan, 4> plans;
     (void)loom::raising::forEachCallableRegion(
         getOperation(), [&](::mlir::Region &region) {
-          if (decideRegion(region, annotations) == Disposition::Structure)
-            structure.insert(&region);
+          LoopAnnotations regionAnnotations;
+          if (decideRegion(region, regionAnnotations) == Disposition::Structure)
+            plans.push_back({&region, std::move(regionAnnotations)});
           return ::mlir::success();
         });
-
-    // One structured clone per callable region that will be structured, each
-    // published back into its original callable op only once it is complete.
-    struct PendingPublication {
-      ::mlir::Region *originalRegion;
-      ::mlir::OwningOpRef<::mlir::Operation *> structuredClone;
-    };
-    ::llvm::SmallVector<PendingPublication, 4> publications;
 
     ::mlir::IRRewriter rewriter(&getContext());
-    (void)loom::raising::forEachCallableRegion(
-        getOperation(), [&](::mlir::Region &region) -> ::mlir::LogicalResult {
-          if (!structure.contains(&region))
-            return ::mlir::success();
+    bool structuredAny = false;
+    for (RegionPlan &plan : plans) {
+      ::mlir::Region *region = plan.region;
+      ::mlir::Operation *originalCallable = region->getParentOp();
+      ::mlir::IRMapping mapping;
+      ::mlir::OwningOpRef<::mlir::Operation *> clone(
+          originalCallable->clone(mapping));
+      ::mlir::Region &cloneRegion = clone->getRegion(region->getRegionNumber());
 
-          ::mlir::Operation *originalCallable = region.getParentOp();
-          ::mlir::IRMapping mapping;
-          ::mlir::OwningOpRef<::mlir::Operation *> clone(
-              originalCallable->clone(mapping));
-          ::mlir::Region &cloneRegion =
-              clone->getRegion(region.getRegionNumber());
+      // The adapter resolves this region's annotations on the clone's own
+      // blocks. Only this plan's headers are read, so a descendant already
+      // published in an earlier iteration -- whose original blocks no longer
+      // exist -- is never reached here.
+      LoopAnnotations cloneAnnotations;
+      for (auto &[header, annotation] : plan.annotations) {
+        ::mlir::Block *cloneHeader = mapping.lookupOrNull(header);
+        assert(cloneHeader && "cloned region holds every original block");
+        cloneAnnotations[cloneHeader] = annotation;
+      }
 
-          // The adapter resolves annotations on the clone's own blocks.
-          LoopAnnotations cloneAnnotations;
-          for (auto &[header, annotation] : annotations)
-            if (header->getParent() == &region) {
-              ::mlir::Block *cloneHeader = mapping.lookupOrNull(header);
-              assert(cloneHeader && "cloned region holds every original block");
-              cloneAnnotations[cloneHeader] = annotation;
-            }
+      // Upstream rejects a region holding a block no edge reaches. Such a
+      // block runs never, so erasing it is the one cleanup this surface
+      // needs and it decides nothing. Nested regions are left alone.
+      (void)::mlir::eraseUnreachableBlocks(rewriter, cloneRegion,
+                                           /*recurse=*/false);
 
-          // Upstream rejects a region holding a block no edge reaches. Such a
-          // block runs never, so erasing it is the one cleanup this surface
-          // needs and it decides nothing. Nested regions are left alone.
-          (void)::mlir::eraseUnreachableBlocks(rewriter, cloneRegion,
-                                               /*recurse=*/false);
+      // The transformation moves, creates and erases blocks, so the
+      // dominance information it invalidates in place belongs to exactly
+      // the region being structured.
+      ::mlir::DominanceInfo dominance(clone.get());
+      CallableStructuring structuring(
+          ::mlir::isa<::mlir::LLVM::LLVMFuncOp>(clone.get()), cloneAnnotations);
+      if (failed(
+              ::mlir::transformCFGToSCF(cloneRegion, structuring, dominance)))
+        continue;
 
-          // The transformation moves, creates and erases blocks, so the
-          // dominance information it invalidates in place belongs to exactly
-          // the region being structured.
-          ::mlir::DominanceInfo dominance(clone.get());
-          CallableStructuring structuring(
-              ::mlir::isa<::mlir::LLVM::LLVMFuncOp>(clone.get()),
-              cloneAnnotations);
-          if (failed(::mlir::transformCFGToSCF(cloneRegion, structuring,
-                                               dominance)))
-            return ::mlir::success();
+      // Two facts only the completed clone can state: an entry multiplexer
+      // that dispatches to more than one annotated loop header leaves the
+      // owning loop of each annotation unprovable, and a leftover entry
+      // means an annotation reached no recovered loop. Either way the
+      // clone is dropped and the original region keeps its annotation
+      // exactly where it was imported.
+      if (structuring.firstUnprovenAssociationLoc() ||
+          !cloneAnnotations.empty())
+        continue;
 
-          // Two facts only the completed clone can state: an entry multiplexer
-          // that dispatches to more than one annotated loop header leaves the
-          // owning loop of each annotation unprovable, and a leftover entry
-          // means an annotation reached no recovered loop. Either way the
-          // clone is dropped and the original region keeps its annotation
-          // exactly where it was imported.
-          if (structuring.firstUnprovenAssociationLoc() ||
-              !cloneAnnotations.empty())
-            return ::mlir::success();
+      // Publish immediately. The clone was taken from the current original, so
+      // a descendant already published in an earlier iteration is captured
+      // structured. Replacing an ancestor body may replace that descendant op
+      // with its clone, but cannot restore the stale unstructured body.
+      // takeBody preserves this region's owning callable op and leaves every
+      // imported callable in llvm.func form as its body's sole ABI envelope.
+      region->takeBody(cloneRegion);
+      structuredAny = true;
+    }
 
-          publications.push_back({&region, std::move(clone)});
-          return ::mlir::success();
-        });
-
-    // Every step that could decline ran on a clone. Publishing the structured
-    // bodies back into the original callable ops cannot fail and preserves the
-    // ops themselves, their order, and their identity.
-    for (PendingPublication &publication : publications)
-      publication.originalRegion->takeBody(
-          publication.structuredClone->getRegion(
-              publication.originalRegion->getRegionNumber()));
-
-    if (publications.empty())
+    if (!structuredAny)
       markAllAnalysesPreserved();
   }
 };

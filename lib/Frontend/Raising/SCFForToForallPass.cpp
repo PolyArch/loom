@@ -33,6 +33,8 @@
 
 #include "Frontend/Raising/Passes.h"
 
+#include "CallableRegions.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -43,6 +45,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -525,22 +528,25 @@ bool isTransparentScfOp(::mlir::Operation *op) {
 // successor (e.g. a free-standing cf.cond_br, cf.switch, or
 // llvm.cond_br). A nested scf.for / scf.if is fine because the
 // successor counts of its own internal blocks are not the outer body's
-// concern. We only check blocks that BELONG to `loop.getBody()` and to
-// regions of nested transparent scf ops.
+// concern. We only check blocks that belong to `loop.getBody()` and to regions
+// of nested transparent scf ops. A nested callable owns its own body and is
+// pruned before either check can inspect it.
 bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
-  bool found = false;
-  loop.getBody()->walk([&](::mlir::Operation *op) {
-    if (op == loop.getBody()->getTerminator())
-      return;
-    if (op->getNumSuccessors() <= 1)
-      return;
-    // Allow scf transparent ops -- they have no successors at the cf
-    // level (they yield). The check for `op->getNumSuccessors()` already
-    // protects against that since the SCF ops do not list terminator
-    // successors.
-    found = true;
-  });
-  return found;
+  ::mlir::WalkResult walked = loom::raising::forEachOwnedOperation(
+      loop.getRegion(), [&](::mlir::Operation *op) {
+        if (op->hasTrait<::mlir::OpTrait::SymbolTable>())
+          return ::mlir::WalkResult::skip();
+        if (op == loop.getBody()->getTerminator())
+          return ::mlir::WalkResult::advance();
+        if (op->getNumSuccessors() <= 1)
+          return ::mlir::WalkResult::advance();
+        // Allow scf transparent ops -- they have no successors at the cf
+        // level (they yield). The check for `op->getNumSuccessors()` already
+        // protects against that since the SCF ops do not list terminator
+        // successors.
+        return ::mlir::WalkResult::interrupt();
+      });
+  return walked.wasInterrupted();
 }
 
 // Walk the body of `loop` (recursively into nested regions) and verify:
@@ -566,61 +572,65 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
   if (bodyHasMultipleSuccessorTerminator(loop))
     return ::mlir::failure();
 
-  auto walkResult = loop.getBody()->walk([&](::mlir::Operation *op) {
-    if (op == loop.getBody()->getTerminator())
-      return ::mlir::WalkResult::advance();
-    // Reject scf.execute_region inside the body.
-    if (::mlir::isa<::mlir::scf::ExecuteRegionOp>(op))
-      return ::mlir::WalkResult::interrupt();
-    // Reject calls to non-pure callees and inline asm / invoke.
-    if (isUnmodelledCall(op))
-      return ::mlir::WalkResult::interrupt();
-    // Atomic ops are conservative bail-outs.
-    if (::mlir::isa<::mlir::LLVM::AtomicRMWOp, ::mlir::LLVM::AtomicCmpXchgOp,
-                    ::mlir::memref::AtomicRMWOp, ::mlir::memref::AtomicYieldOp>(
-            op))
-      return ::mlir::WalkResult::interrupt();
+  auto walkResult = loom::raising::forEachOwnedOperation(
+      loop.getRegion(), [&](::mlir::Operation *op) {
+        if (op->hasTrait<::mlir::OpTrait::SymbolTable>())
+          return ::mlir::WalkResult::skip();
+        if (op == loop.getBody()->getTerminator())
+          return ::mlir::WalkResult::advance();
+        // Reject scf.execute_region inside the body.
+        if (::mlir::isa<::mlir::scf::ExecuteRegionOp>(op))
+          return ::mlir::WalkResult::interrupt();
+        // Reject calls to non-pure callees and inline asm / invoke.
+        if (isUnmodelledCall(op))
+          return ::mlir::WalkResult::interrupt();
+        // Atomic ops are conservative bail-outs.
+        if (::mlir::isa<
+                ::mlir::LLVM::AtomicRMWOp, ::mlir::LLVM::AtomicCmpXchgOp,
+                ::mlir::memref::AtomicRMWOp, ::mlir::memref::AtomicYieldOp>(op))
+          return ::mlir::WalkResult::interrupt();
 
-    if (isTransparentScfOp(op))
-      return ::mlir::WalkResult::advance();
+        if (isTransparentScfOp(op))
+          return ::mlir::WalkResult::advance();
 
-    // Pure ops do not constrain parallelism here.
-    if (::mlir::isMemoryEffectFree(op))
-      return ::mlir::WalkResult::advance();
+        // Pure ops do not constrain parallelism here.
+        if (::mlir::isMemoryEffectFree(op))
+          return ::mlir::WalkResult::advance();
 
-    // Read-only ops: capture the base pointer for read/write disjoint
-    // analysis below. Reject volatile loads.
-    bool isVol = false;
-    if (::mlir::Value loadPtr = getLoadPointer(op, isVol)) {
-      if (isVol)
+        // Read-only ops: capture the base pointer for read/write disjoint
+        // analysis below. Reject volatile loads.
+        bool isVol = false;
+        if (::mlir::Value loadPtr = getLoadPointer(op, isVol)) {
+          if (isVol)
+            return ::mlir::WalkResult::interrupt();
+          ::mlir::Value base = getMemoryBase(loadPtr);
+          readBases.insert(base);
+          loadsByBase[base].push_back(op);
+          return ::mlir::WalkResult::advance();
+        }
+
+        // Store ops: capture the base for disjoint analysis, address must
+        // be syntactic affine. Reject volatile stores.
+        if (::mlir::Value storePtr = getStorePointer(op, isVol)) {
+          if (isVol)
+            return ::mlir::WalkResult::interrupt();
+          ::mlir::Value base = getMemoryBase(storePtr);
+          writeBases.insert(base);
+          stores.push_back(op);
+          storesByBase[base].push_back(op);
+          return ::mlir::WalkResult::advance();
+        }
+
+        // Lifetime markers are explicitly fine.
+        if (auto name = op->getName().getStringRef();
+            name == "llvm.intr.lifetime.start" ||
+            name == "llvm.intr.lifetime.end")
+          return ::mlir::WalkResult::advance();
+
+        // Unknown side-effecting op (including other LLVM memory-effect
+        // intrinsics like memcpy / memset): bail out.
         return ::mlir::WalkResult::interrupt();
-      ::mlir::Value base = getMemoryBase(loadPtr);
-      readBases.insert(base);
-      loadsByBase[base].push_back(op);
-      return ::mlir::WalkResult::advance();
-    }
-
-    // Store ops: capture the base for disjoint analysis, address must
-    // be syntactic affine. Reject volatile stores.
-    if (::mlir::Value storePtr = getStorePointer(op, isVol)) {
-      if (isVol)
-        return ::mlir::WalkResult::interrupt();
-      ::mlir::Value base = getMemoryBase(storePtr);
-      writeBases.insert(base);
-      stores.push_back(op);
-      storesByBase[base].push_back(op);
-      return ::mlir::WalkResult::advance();
-    }
-
-    // Lifetime markers are explicitly fine.
-    if (auto name = op->getName().getStringRef();
-        name == "llvm.intr.lifetime.start" || name == "llvm.intr.lifetime.end")
-      return ::mlir::WalkResult::advance();
-
-    // Unknown side-effecting op (including other LLVM memory-effect
-    // intrinsics like memcpy / memset): bail out.
-    return ::mlir::WalkResult::interrupt();
-  });
+      });
   if (walkResult.wasInterrupted())
     return ::mlir::failure();
 

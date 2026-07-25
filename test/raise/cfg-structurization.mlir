@@ -4,6 +4,7 @@
 // RUN: %loom-raise %t/irreducible.ll | FileCheck %s --check-prefix=UNDEF --implicit-check-not=ub.poison
 // RUN: loom-raise-opt --loom-llvm-cf-to-cf --loom-lift-cf-to-scf %t/switch-carrier.mlir | FileCheck %s --check-prefix=SWITCH
 // RUN: loom-raise-opt --loom-lift-cf-to-scf %t/preserved.mlir | FileCheck %s --check-prefix=PRESERVE
+// RUN: loom-raise-opt --loom-lift-cf-to-scf %t/nested.mlir | FileCheck %s --check-prefix=NESTED --implicit-check-not=cf.cond_br
 
 // Mechanical CFG recovery runs on the callable region where it stands. What
 // an imported LLVM callable spells differently is respelled by an adapter, and
@@ -59,6 +60,21 @@
 // PRESERVE: cf.cond_br
 // PRESERVE-NOT: scf.
 // PRESERVE-NOT: ub.poison
+
+// Both the enclosing func.func and the nested imported llvm.func are multiblock
+// and structurable, and the nested callable owns an annotated loop. Descendant-
+// first publication structures the nested llvm.func and publishes it before the
+// enclosing func.func is cloned, so the enclosing clone is taken from an
+// original that already holds the structured descendant and publishing the
+// ancestor cannot overwrite it. Keeping annotations per region is equally
+// necessary: publishing the descendant invalidates its original blocks, which
+// an ancestor plan must never inspect.
+// NESTED-DAG: #[[INNER_ANNOTATION:.*]] = #llvm.loop_annotation<mustProgress = true>
+// NESTED-LABEL: func.func @outer
+// NESTED: scf.if
+// NESTED-LABEL: llvm.func @inner
+// NESTED: scf.while
+// NESTED: } attributes {llvm.loop_annotation = #[[INNER_ANNOTATION]]}
 
 //--- counted.ll
 define void @counted(ptr %p) {
@@ -166,4 +182,34 @@ llvm.func @index_valued(%enter: i1) -> i64 {
 ^exit(%res: index):
   %out = arith.index_cast %res : index to i64
   llvm.return %out : i64
+}
+
+//--- nested.mlir
+#inner_annotation = #llvm.loop_annotation<mustProgress = true>
+
+func.func @outer(%c: i1) -> i32 {
+  %z = arith.constant 0 : i32
+  cf.cond_br %c, ^a, ^b
+^a:
+  %one = arith.constant 1 : i32
+  cf.br ^exit(%one : i32)
+^b:
+  cf.br ^exit(%z : i32)
+^exit(%r: i32):
+  builtin.module {
+    llvm.func @inner(%limit: i32) -> i32 {
+      %zero = arith.constant 0 : i32
+      %inner_one = arith.constant 1 : i32
+      cf.br ^loop(%zero : i32)
+    ^loop(%iv: i32):
+      %next = arith.addi %iv, %inner_one : i32
+      %done = arith.cmpi eq, %next, %limit : i32
+      cf.cond_br %done, ^iexit, ^loop(%next : i32) {
+        llvm.loop_annotation = #inner_annotation
+      }
+    ^iexit:
+      llvm.return %next : i32
+    }
+  }
+  return %r : i32
 }

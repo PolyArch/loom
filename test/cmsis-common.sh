@@ -23,6 +23,19 @@ cmsis_common_default_out_dir() {
     printf '%s\n' "${out_root}"
 }
 
+# True when ${mlir} defines ${symbol} as an llvm.func with a body. The printer
+# puts linkage and other optional modifiers before the symbol and opens a
+# definition body at the end of the line. No linkage classification belongs to
+# a smoke harness: weak, linkonce and externally linked definitions all prove
+# the same source-to-SCF survival contract, while a declaration has no brace.
+cmsis_common_mlir_has_callable_definition() {
+    local mlir="$1"
+    local symbol="$2"
+    grep -qE \
+        "^[[:space:]]*llvm\\.func[[:space:]]+([A-Za-z_][A-Za-z0-9_]*[[:space:]]+)*@${symbol}\\(.*\\{[[:space:]]*$" \
+        "${mlir}"
+}
+
 cmsis_common_libc_defines() {
     local -n flags=$1
     local common_dir
