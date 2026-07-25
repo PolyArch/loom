@@ -1,8 +1,8 @@
 // loom-raise-opt: an mlir-opt-style driver that registers all upstream
 // passes plus the Loom raising and lowering passes
-// (loom-llvm-cf-to-cf, loom-llvm-func-to-func,
+// (loom-llvm-cf-to-cf, loom-lift-cf-to-scf,
 // loom-llvm-arith-to-arith, loom-normalize-lifted-scf-exit,
-// loom-scf-while-to-for,
+// loom-scf-while-to-for, loom-materialize-fmuladd,
 // loom-scf-for-to-forall, loom-lower-forall-to-thread,
 // loom-lower-for-to-graph, loom-lower-scf-to-dfg) and the optional
 // typed Dataflow rewrite pass (dataflow-rewrite). The Loom dataflow

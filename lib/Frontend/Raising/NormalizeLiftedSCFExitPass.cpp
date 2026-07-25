@@ -1,19 +1,23 @@
-// Normalize only the loop-exit scaffold emitted by --lift-cf-to-scf.
+// Normalize only the loop-exit scaffold emitted by CFG-to-SCF structuring.
 //
 // The lift encodes an exit with a yield-only scf.if that selects either
-// continuation values or ub.poison placeholders, followed by an i32
-// discriminator and an i32 shouldRepeat flag. The shouldRepeat flag is
-// truncated to i1 for scf.condition. Counted-loop uplift needs that condition
-// to be an arith.cmpi directly.
+// continuation values or undefined-value placeholders, followed by an i32
+// discriminator and an i32 shouldRepeat flag. The placeholder is
+// llvm.mlir.undef inside an imported LLVM callable and ub.poison inside a
+// native one. The shouldRepeat flag is truncated to i1 for scf.condition.
+// Counted-loop uplift needs that condition to be an arith.cmpi directly.
 //
 // Generic SCF canonicalization is not safe here: it can combine nested lazy
 // scf.if conditions into an eager arith.andi. This pass instead recognizes the
 // complete lift-owned scaffold and rewrites it directly. If any while result is
-// live, the scaffold is left intact so its exit-edge poison remains observable.
+// live, the scaffold is left intact so its exit-edge value remains observable.
+// Only that unobservable placeholder is removed, so a source poison, undef or
+// freeze keeps its own meaning.
 
 #include "Frontend/Raising/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -68,8 +72,8 @@ bool normalizeLiftedExit(::mlir::scf::ConditionOp condition,
                      loop.getAfter().front().getArguments()))
     return false;
 
-  // Replacing an exit-edge poison is exact only when the corresponding loop
-  // result is unobservable. Keep the whole scaffold if any result is live.
+  // Replacing an exit-edge placeholder is exact only when the corresponding
+  // loop result is unobservable. Keep the whole scaffold if any result is live.
   if (::llvm::any_of(loop.getResults(),
                      [](::mlir::Value result) { return !result.use_empty(); }))
     return false;
@@ -152,7 +156,8 @@ bool normalizeLiftedExit(::mlir::scf::ConditionOp condition,
                                      : elseYield.getResults()[index];
     ::mlir::Value exit = shouldRepeatThen ? elseYield.getResults()[index]
                                           : thenYield.getResults()[index];
-    if (!exit.getDefiningOp<::mlir::ub::PoisonOp>())
+    if (!::mlir::isa_and_present<::mlir::ub::PoisonOp, ::mlir::LLVM::UndefOp>(
+            exit.getDefiningOp()))
       return false;
     continuationArgs.push_back(continuation);
   }
@@ -184,7 +189,7 @@ struct NormalizeLiftedSCFExitPass
   }
   ::llvm::StringRef getDescription() const final {
     return "Normalize the exact poison-safe loop-exit scaffold emitted by "
-           "--lift-cf-to-scf";
+           "CFG-to-SCF structuring";
   }
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {

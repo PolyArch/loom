@@ -12,39 +12,88 @@ class PassManager;
 namespace loom {
 namespace raising {
 
-// Convert llvm.br / llvm.cond_br / llvm.switch terminators inside
-// func.func bodies into the matching cf.br / cf.cond_br / cf.switch
-// ops. Pattern-rewrite based, scoped to func.func (the func-to-func
-// pass runs first, raising lift-able llvm.func ops to func.func; this
-// pass is then nested under func::FuncOp). Intentionally does not
-// replace llvm.return; the func-to-func pass already replaced
-// llvm.return with func.return when raising the function shape.
+// Convert llvm.br / llvm.cond_br / llvm.switch terminators inside callable
+// regions into the matching cf.br / cf.cond_br / cf.switch ops, carrying
+// imported branch weights and loop annotations onto the replacing branch.
+// Pattern-rewrite based, with no incidental region simplification.
+// llvm.return is intentionally preserved: it is the return of an imported
+// LLVM callable and the CFG-to-SCF transformation treats it as an ordinary
+// return-like exit. A weighted llvm.switch keeps its LLVM form, because
+// cf.switch has no branch-weight carrier and preserving the operation that
+// owns the imported profile is exact where respelling it is not.
 std::unique_ptr<::mlir::Pass> createLLVMCfToCfPass();
 
-// Convert llvm.* arithmetic, comparison and integer/float constant ops into
-// the matching arith dialect ops:
-//   integer:    add, sub, mul, sdiv, udiv, srem, urem,
-//               shl, lshr, ashr, and, or, xor.
-//   float:      fadd, fsub, fmul, fdiv, frem.
-//   compares:   icmp -> arith.cmpi, fcmp -> arith.cmpf (predicate kept).
-//   constants:  llvm.mlir.constant -> arith.constant when the type is a
-//               builtin integer or float.
-// Any operation whose operands or results carry non-builtin types
-// (pointers, structs, vectors with non-builtin element types, ...) is
-// skipped and remains in llvm form. Pointer arithmetic via
-// llvm.getelementptr stays as llvm by design.
+// Structure the cf-shaped control flow of each callable region with the
+// upstream region-level mlir::transformCFGToSCF utility. An imported
+// llvm.func is structured in place and keeps its complete ABI envelope;
+// undefined values are spelled llvm.mlir.undef and unreachable continuations
+// llvm.unreachable there, and each imported loop annotation moves to the
+// structured loop that owns its cycle.
+//
+// A region that cannot be structured exactly -- weighted control no structured
+// operation can own, a terminator whose transfer would not be restated
+// exactly, a switch carrier that would drop high bits, a value type LLVM
+// cannot spell, or a loop annotation whose loop is not exactly identifiable --
+// is preserved with its complete original semantics. Unstructured cf control
+// is legal S0, so this never fails the module; rejection belongs to a
+// candidate that selects a loom.spatial_region and needs structured control
+// there. Preservation is per region: sibling callables are still structured.
+std::unique_ptr<::mlir::Pass> createLiftCFToSCFPass();
+
+// Rewrite each llvm computation whose complete semantics an arith or math
+// operation restates exactly into that standard operation, scoped to callable
+// regions. The catalog covers integer and floating arithmetic; integer and
+// floating minimum and maximum; negation and absolute value; the exact fused
+// multiply-add llvm.intr.fma; comparisons, selection and numeric constants;
+// and the width and domain casts trunc / zext / sext, signed and unsigned
+// integer-to-float, float-to-signed and float-to-unsigned integer, fpext and
+// fptrunc.
+//
+// An operation is left in llvm form when an operand or result type has no
+// exact standard counterpart -- pointers, structs, scalable vectors -- when it
+// states a semantic fact the standard operation cannot carry, or when it is a
+// floating computation inside a callable stating a floating-point environment
+// arith and math cannot restate. llvm.intr.fmuladd states a choice no single
+// standard operation restates and is left for typed materialization. Pointer
+// arithmetic via llvm.getelementptr stays llvm by design.
 std::unique_ptr<::mlir::Pass> createLLVMArithToArithPass();
 
-// Normalize the exact poison-safe loop-exit scaffold emitted by
-// --lift-cf-to-scf so counted-loop uplift can read its comparison directly.
+// Normalize the exact poison-safe loop-exit scaffold emitted by CFG-to-SCF
+// structuring so counted-loop uplift can read its comparison directly.
 // Scaffolds with live loop results or any unexpected structure are unchanged.
 std::unique_ptr<::mlir::Pass> createNormalizeLiftedSCFExitPass();
 
-// Uplift counted scf.while loops produced by --lift-cf-to-scf into
-// scf.for. This combines upstream counted-loop patterns with Loom's
-// conservative do-while counted-loop fallback. Loops that do not match
-// a supported counted shape are left as scf.while.
+// Uplift counted scf.while loops produced by CFG-to-SCF structuring into
+// scf.for, keeping each loop's imported annotation on the uplifted loop. This
+// combines the upstream counted-loop utility with Loom's conservative
+// do-while counted-loop fallback. Loops that do not match a supported counted
+// shape are left as scf.while.
 std::unique_ptr<::mlir::Pass> createSCFWhileToForPass();
+
+// The closed set of execution shapes an `llvm.intr.fmuladd` can be
+// materialized as. The intrinsic states a target choice rather than a
+// computation, and the two shapes round differently, so the shape is a typed
+// decision with no default and is never inferred from the intrinsic spelling.
+enum class FMulAddExecutionShape {
+  // One math.fma: the multiply and the add share a single rounding, and the
+  // complete source fast-math contract carries onto it.
+  Fused,
+  // An arith.mulf followed by an arith.addf, each rounding separately. This
+  // shape consumes the source's `contract` permission, so neither operation
+  // may be contracted back into one rounding by a later pass or by target
+  // code generation. Every other source fast-math flag is preserved.
+  Split,
+};
+
+// Materialize the selected execution shape for every llvm.intr.fmuladd in
+// each callable region, preserving exact types and locations and carrying the
+// source fast-math flags the selected shape still permits. A callable stating
+// a floating-point policy the standard operations cannot restate refuses the
+// selection; the transform is atomic, so a refusal leaves the module
+// unchanged. Mechanical S0 raising never runs this pass: the shape is
+// candidate lineage, not a mechanical disposition.
+std::unique_ptr<::mlir::Pass>
+createMaterializeFMulAddPass(FMulAddExecutionShape shape);
 
 // Lift trivially parallel scf.for loops (no iter_args, iv-dependent
 // stores only, no nested calls; lane-local structured scf.while is
@@ -54,40 +103,15 @@ std::unique_ptr<::mlir::Pass> createSCFWhileToForPass();
 // runners. The standard raising pipeline does not invoke it.
 std::unique_ptr<::mlir::Pass> createSCFForToForallPass();
 
-// For each llvm.func whose signature is composed entirely of MLIR-native
-// types (builtin integers, floats, index, !llvm.ptr), create a sibling
-// func.func with the same name, move the body region over, replace the
-// llvm.return terminator on each block ending with one with func.return,
-// and erase the original llvm.func.
-//
-// A function is *skipped* (left as llvm.func) when:
-//   * it is variadic;
-//   * it has no body (declaration only);
-//   * any argument type is a non-pointer aggregate type (struct, array,
-//     non-builtin vector);
-//   * the result type is a non-pointer aggregate type.
-//
-// Mixed-island contract: when a callee is skipped, the raised callers
-// retain `llvm.call @callee` references. This is allowed MLIR -- a
-// `func.func` body may host `llvm.call` ops as long as the referenced
-// symbol still resolves to an `llvm.func`.
-//
-// This pass runs FIRST in the standard pipeline. The cf-to-cf and
-// arith-to-arith passes that follow are nested under func::FuncOp,
-// guaranteeing that skipped llvm.func ops keep their bodies in
-// pristine LLVM form (no mixed cf.br + llvm.return half-shape).
-std::unique_ptr<::mlir::Pass> createLLVMFuncToFuncPass();
-
 // Register all raising passes with the global pass registry. Lets
 // `mlir-opt` style drivers expose them via --loom-llvm-cf-to-cf,
-// --loom-llvm-arith-to-arith, --loom-llvm-func-to-func.
+// --loom-lift-cf-to-scf, --loom-llvm-arith-to-arith.
 void registerRaisingPasses();
 
 // Append the standard Loom raising pipeline to the given pass manager:
-//   loom-llvm-func-to-func          (module-level)
-//   loom-llvm-cf-to-cf              (nested under func.func)
-//   --lift-cf-to-scf                (nested under func.func)
-//   loom-llvm-arith-to-arith        (nested under func.func)
+//   loom-llvm-cf-to-cf
+//   loom-lift-cf-to-scf
+//   loom-llvm-arith-to-arith
 //   loom-normalize-lifted-scf-exit
 //   loom-scf-while-to-for
 // Selected SCF optimization decisions are outside this pipeline.

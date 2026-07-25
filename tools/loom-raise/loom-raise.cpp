@@ -1,8 +1,9 @@
 // loom-raise: read an LLVM IR (.ll / .bc) file via parseIRFile, translate
 // to MLIR using the upstream translateLLVMIRToModule, then run the
-// standard Loom raising pipeline (func-to-func -> cf-to-cf ->
-// --lift-cf-to-scf -> arith-to-arith -> lifted-exit normalization ->
-// while-to-for) and emit initial SCF MLIR on stdout or to -o <file>.
+// standard Loom raising pipeline (cf-to-cf -> cf-to-scf structuring ->
+// arith-to-arith -> lifted-exit normalization -> while-to-for) and emit
+// initial SCF MLIR on stdout or to -o <file>. Every imported llvm.func is
+// structured in place and keeps its complete ABI envelope.
 // Selected SCF optimization decisions are outside this mechanical pipeline.
 //
 // CLI shape mirrors mlir-translate / mlir-opt:
@@ -107,10 +108,9 @@ int main(int argc, char **argv) {
       "Loom LLVM IR -> SCF MLIR raising driver\n"
       "Reads an LLVM IR (.ll / .bc) file, translates it to MLIR via the "
       "upstream LLVMIR-import path, and runs the standard Loom raising "
-      "pipeline (loom-llvm-func-to-func, loom-llvm-cf-to-cf, "
-      "--lift-cf-to-scf, loom-llvm-arith-to-arith, "
-      "loom-normalize-lifted-scf-exit, loom-scf-while-to-for) to produce "
-      "initial SCF MLIR. "
+      "pipeline (loom-llvm-cf-to-cf, loom-lift-cf-to-scf, "
+      "loom-llvm-arith-to-arith, loom-normalize-lifted-scf-exit, "
+      "loom-scf-while-to-for) to produce initial SCF MLIR. "
       "Selected SCF optimization decisions are outside this mechanical "
       "pipeline.\n");
 

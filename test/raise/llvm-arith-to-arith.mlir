@@ -1,18 +1,18 @@
-// RUN: loom-raise-opt --loom-llvm-func-to-func --loom-llvm-arith-to-arith %s | FileCheck %s
+// RUN: loom-raise-opt --loom-llvm-arith-to-arith %s | FileCheck %s
 
-// Verify that LLVM arithmetic, compare and constant ops with builtin
-// numeric types are rewritten into the matching arith dialect ops, and
-// that every semantic flag arith cannot express keeps its op in llvm form.
-// Pointer-typed ops (gep/load/store/alloca) and llvm.* float-ext / cast
-// ops with exotic types stay in the llvm dialect on purpose.
+// Verify that each LLVM computation whose complete semantics an arith or math
+// operation restates exactly is rewritten into that standard operation, and
+// that every source fact the standard operation cannot carry keeps its
+// operation in llvm form. Pointer-typed ops (gep/load/store/alloca) stay in
+// the llvm dialect on purpose.
 //
-// The arith-to-arith pass is nested under func.func, so llvm.func inputs
-// are first raised via loom-llvm-func-to-func. Cases whose subject is a
-// signature func-to-func does not raise -- vector element types -- or whose
-// values are only observable as several results state their container as a
-// func.func directly, so what they anchor is the arith rewrite alone.
+// The pass rewrites every callable region in place, so an imported llvm.func
+// is normalized where it stands and stays the sole owner of its ABI envelope.
+// A case whose values are only observable as several results states its
+// container as a func.func, which anchors the same rewrite on the other
+// callable kind.
 
-// CHECK-LABEL: func.func @int_arith
+// CHECK-LABEL: llvm.func @int_arith
 llvm.func @int_arith(%a: i32, %b: i32) -> i32 {
     // CHECK: %{{.*}} = arith.addi %arg0, %arg1
     %0 = llvm.add %a, %b : i32
@@ -23,7 +23,7 @@ llvm.func @int_arith(%a: i32, %b: i32) -> i32 {
     llvm.return %2 : i32
 }
 
-// CHECK-LABEL: func.func @float_arith
+// CHECK-LABEL: llvm.func @float_arith
 llvm.func @float_arith(%a: f32, %b: f32) -> f32 {
     // CHECK: %{{.*}} = arith.addf %arg0, %arg1
     %0 = llvm.fadd %a, %b : f32
@@ -34,7 +34,7 @@ llvm.func @float_arith(%a: f32, %b: f32) -> f32 {
 
 // Integer overflow flags are exactly representable in arith and must
 // survive the rewrite.
-// CHECK-LABEL: func.func @int_overflow_flags
+// CHECK-LABEL: llvm.func @int_overflow_flags
 llvm.func @int_overflow_flags(%a: i32, %b: i32) -> i32 {
     // CHECK: %{{.*}} = arith.addi %arg0, %arg1 overflow<nsw> : i32
     %0 = llvm.add %a, %b overflow<nsw> : i32
@@ -46,7 +46,7 @@ llvm.func @int_overflow_flags(%a: i32, %b: i32) -> i32 {
 }
 
 // The exact flag is exactly representable on the matching arith ops.
-// CHECK-LABEL: func.func @int_exact_flag
+// CHECK-LABEL: llvm.func @int_exact_flag
 llvm.func @int_exact_flag(%a: i32, %b: i32) -> i32 {
     // CHECK: %{{.*}} = arith.divsi %arg0, %arg1 exact : i32
     %0 = llvm.sdiv exact %a, %b : i32
@@ -57,7 +57,7 @@ llvm.func @int_exact_flag(%a: i32, %b: i32) -> i32 {
 
 // LLVM and arith fast-math flags name the same facts but use different
 // bit positions, so each flag must be mapped by name.
-// CHECK-LABEL: func.func @float_fastmath_flags
+// CHECK-LABEL: llvm.func @float_fastmath_flags
 llvm.func @float_fastmath_flags(%a: f32, %b: f32) -> f32 {
     // CHECK: %{{.*}} = arith.addf %arg0, %arg1 fastmath<nnan> : f32
     %0 = llvm.fadd %a, %b {fastmathFlags = #llvm.fastmath<nnan>} : f32
@@ -72,7 +72,7 @@ llvm.func @float_fastmath_flags(%a: f32, %b: f32) -> f32 {
 
 // arith.cmpf carries fast-math flags; arith.select does not, so a
 // flagged llvm.select has to stay in llvm form.
-// CHECK-LABEL: func.func @float_fastmath_users
+// CHECK-LABEL: llvm.func @float_fastmath_users
 llvm.func @float_fastmath_users(%a: f32, %b: f32) -> f32 {
     // CHECK: %{{.*}} = arith.cmpf oeq, %arg0, %arg1 fastmath<nnan> : f32
     %0 = llvm.fcmp "oeq" %a, %b {fastmathFlags = #llvm.fastmath<nnan>} : f32
@@ -84,13 +84,105 @@ llvm.func @float_fastmath_users(%a: f32, %b: f32) -> f32 {
 
 // llvm.or's disjoint flag has no arith counterpart, so that op stays in
 // llvm form while its exactly representable neighbour is raised.
-// CHECK-LABEL: func.func @or_disjoint_stays_llvm
+// CHECK-LABEL: llvm.func @or_disjoint_stays_llvm
 llvm.func @or_disjoint_stays_llvm(%a: i32, %b: i32) -> i32 {
     // CHECK: %{{.*}} = llvm.or disjoint %arg0, %arg1 : i32
     %0 = llvm.or disjoint %a, %b : i32
     // CHECK: %{{.*}} = arith.ori %{{.*}}, %arg1 : i32
     %1 = llvm.or %0, %b : i32
     llvm.return %1 : i32
+}
+
+// A width or domain cast states which bits the result keeps, how the source
+// pattern is read, and how the result rounds. The signedness reading is part
+// of the operation identity on both sides, so each source cast reaches its own
+// standard counterpart rather than a shared one.
+// CHECK-LABEL: llvm.func @width_and_domain_casts
+llvm.func @width_and_domain_casts(%narrow: i16, %wide: i32, %single: f32,
+                                  %double: f64) {
+    // CHECK: %{{.*}} = arith.trunci %arg1 : i32 to i16
+    %0 = llvm.trunc %wide : i32 to i16
+    // CHECK: %{{.*}} = arith.extui %arg0 : i16 to i32
+    %1 = llvm.zext %narrow : i16 to i32
+    // CHECK: %{{.*}} = arith.extsi %arg0 : i16 to i32
+    %2 = llvm.sext %narrow : i16 to i32
+    // CHECK: %{{.*}} = arith.sitofp %arg1 : i32 to f32
+    %3 = llvm.sitofp %wide : i32 to f32
+    // CHECK: %{{.*}} = arith.uitofp %arg1 : i32 to f32
+    %4 = llvm.uitofp %wide : i32 to f32
+    // CHECK: %{{.*}} = arith.fptosi %arg2 : f32 to i32
+    %5 = llvm.fptosi %single : f32 to i32
+    // CHECK: %{{.*}} = arith.fptoui %arg2 : f32 to i32
+    %6 = llvm.fptoui %single : f32 to i32
+    // CHECK: %{{.*}} = arith.extf %arg2 : f32 to f64
+    %7 = llvm.fpext %single : f32 to f64
+    // CHECK: %{{.*}} = arith.truncf %arg3 : f64 to f32
+    %8 = llvm.fptrunc %double : f64 to f32
+    // CHECK-NOT: llvm.trunc
+    // CHECK-NOT: llvm.zext
+    llvm.return
+}
+
+// Neither narrowing cast acquires a rounding mode: an arith cast that states
+// one is a constrained operation, while the source is an ordinary cast in the
+// default floating-point environment. Every source flag that does have an
+// exact carrier is transferred: nsw / nuw on truncation, nneg on the two
+// casts that read the operand as unsigned, and the fast-math contract on the
+// floating resize.
+// CHECK-LABEL: llvm.func @cast_flags
+llvm.func @cast_flags(%narrow: i16, %wide: i32, %single: f32) {
+    // CHECK: %{{.*}} = arith.trunci %arg1 overflow<nsw, nuw> : i32 to i16
+    %0 = llvm.trunc %wide overflow<nsw, nuw> : i32 to i16
+    // CHECK: %{{.*}} = arith.extui %arg0 nneg : i16 to i32
+    %1 = llvm.zext nneg %narrow : i16 to i32
+    // CHECK: %{{.*}} = arith.uitofp %arg1 nneg : i32 to f32
+    %2 = llvm.uitofp nneg %wide : i32 to f32
+    // CHECK: %{{.*}} = arith.extf %arg2 fastmath<nnan> : f32 to f64
+    %3 = llvm.fpext %single fastmath<nnan> : f32 to f64
+    llvm.return
+}
+
+// Sign flip and magnitude, and the four minimum/maximum families. The two
+// floating families differ in what they state about NaN and signed zero, so
+// each keeps its own identity instead of collapsing into one spelling.
+// CHECK-LABEL: llvm.func @unary_and_extremum
+llvm.func @unary_and_extremum(%i: i32, %f: f32) {
+    // CHECK: %{{.*}} = arith.negf %arg1 : f32
+    %0 = llvm.fneg %f : f32
+    // CHECK: %{{.*}} = math.absf %arg1 fastmath<ninf> : f32
+    %1 = llvm.intr.fabs(%f) {fastmathFlags = #llvm.fastmath<ninf>} : (f32) -> f32
+    // CHECK: %{{.*}} = arith.maxnumf %arg1, %arg1 : f32
+    %2 = llvm.intr.maxnum(%f, %f) : (f32, f32) -> f32
+    // CHECK: %{{.*}} = arith.minnumf %arg1, %arg1 : f32
+    %3 = llvm.intr.minnum(%f, %f) : (f32, f32) -> f32
+    // CHECK: %{{.*}} = arith.maximumf %arg1, %arg1 : f32
+    %4 = llvm.intr.maximum(%f, %f) : (f32, f32) -> f32
+    // CHECK: %{{.*}} = arith.minimumf %arg1, %arg1 : f32
+    %5 = llvm.intr.minimum(%f, %f) : (f32, f32) -> f32
+    // CHECK: %{{.*}} = arith.maxsi %arg0, %arg0 : i32
+    %6 = llvm.intr.smax(%i, %i) : (i32, i32) -> i32
+    // CHECK: %{{.*}} = arith.minsi %arg0, %arg0 : i32
+    %7 = llvm.intr.smin(%i, %i) : (i32, i32) -> i32
+    // CHECK: %{{.*}} = arith.maxui %arg0, %arg0 : i32
+    %8 = llvm.intr.umax(%i, %i) : (i32, i32) -> i32
+    // CHECK: %{{.*}} = arith.minui %arg0, %arg0 : i32
+    %9 = llvm.intr.umin(%i, %i) : (i32, i32) -> i32
+    llvm.return
+}
+
+// llvm.intr.fma is the exact fused multiply-add, so it has one standard
+// counterpart. llvm.intr.fmuladd states a choice between that fused form and
+// a separate multiply and add, which no single standard operation restates,
+// so it survives mechanical raising untouched.
+// CHECK-LABEL: llvm.func @fused_multiply_add
+llvm.func @fused_multiply_add(%f: f32) {
+    // CHECK: %{{.*}} = math.fma %arg0, %arg0, %arg0 fastmath<contract> : f32
+    %0 = llvm.intr.fma(%f, %f, %f)
+        {fastmathFlags = #llvm.fastmath<contract>} : (f32, f32, f32) -> f32
+    // CHECK: %{{.*}} = llvm.intr.fmuladd(%arg0, %arg0, %arg0)
+    // CHECK-NOT: math.fma
+    %1 = llvm.intr.fmuladd(%f, %f, %f) : (f32, f32, f32) -> f32
+    llvm.return
 }
 
 // A fixed-shape vector of a builtin element type is exactly what arith
@@ -113,17 +205,39 @@ func.func @fixed_vector_float_arith(%a: vector<4xf32>, %b: vector<4xf32>) -> (ve
     return %0, %1 : vector<4xf32>, vector<4xi1>
 }
 
-// A scalable vector's length is a runtime fact, and no authority defines
-// what raising one means, so its ops stay in llvm form.
+// CHECK-LABEL: func.func @fixed_vector_casts_and_extremum
+func.func @fixed_vector_casts_and_extremum(%i: vector<4xi16>, %f: vector<4xf32>)
+        -> (vector<4xi32>, vector<4xf64>, vector<4xf32>) {
+    // CHECK: %{{.*}} = arith.extsi %arg0 : vector<4xi16> to vector<4xi32>
+    %0 = llvm.sext %i : vector<4xi16> to vector<4xi32>
+    // CHECK: %{{.*}} = arith.extf %arg1 : vector<4xf32> to vector<4xf64>
+    %1 = llvm.fpext %f : vector<4xf32> to vector<4xf64>
+    // CHECK: %{{.*}} = arith.maxnumf %arg1, %arg1 : vector<4xf32>
+    %2 = llvm.intr.maxnum(%f, %f) : (vector<4xf32>, vector<4xf32>) -> vector<4xf32>
+    return %0, %1, %2 : vector<4xi32>, vector<4xf64>, vector<4xf32>
+}
+
+// A scalable vector's element count is a runtime `vscale` multiple rather
+// than a shape, so every alias fails closed on one. Its operations keep their
+// llvm form until a typed structured transform has materialized the
+// computation as fixed-width chunks, loops, and masks or tails.
 // CHECK-LABEL: func.func @scalable_vector_stays_llvm
-func.func @scalable_vector_stays_llvm(%a: vector<[4]xi32>, %b: vector<[4]xi32>) -> (vector<[4]xi32>, vector<[4]xi1>) {
+func.func @scalable_vector_stays_llvm(%a: vector<[4]xi32>, %b: vector<[4]xi32>,
+                                      %f: vector<[4]xf32>)
+        -> (vector<[4]xi32>, vector<[4]xi1>, vector<[4]xi64>, vector<[4]xf32>) {
     // CHECK: %{{.*}} = llvm.add %arg0, %arg1 : vector<[4]xi32>
     // CHECK-NOT: arith.addi
     %0 = llvm.add %a, %b : vector<[4]xi32>
     // CHECK: %{{.*}} = llvm.icmp "slt" %{{.*}}, %arg1 : vector<[4]xi32>
     // CHECK-NOT: arith.cmpi
     %1 = llvm.icmp "slt" %0, %b : vector<[4]xi32>
-    return %0, %1 : vector<[4]xi32>, vector<[4]xi1>
+    // CHECK: %{{.*}} = llvm.zext %arg0 : vector<[4]xi32> to vector<[4]xi64>
+    // CHECK-NOT: arith.extui
+    %2 = llvm.zext %a : vector<[4]xi32> to vector<[4]xi64>
+    // CHECK: %{{.*}} = llvm.intr.maxnum(%arg2, %arg2)
+    // CHECK-NOT: arith.maxnumf
+    %3 = llvm.intr.maxnum(%f, %f) : (vector<[4]xf32>, vector<[4]xf32>) -> vector<[4]xf32>
+    return %0, %1, %2, %3 : vector<[4]xi32>, vector<[4]xi1>, vector<[4]xi64>, vector<[4]xf32>
 }
 
 // Every predicate the pinned LLVM dialect defines is mapped by name, so a
@@ -194,21 +308,21 @@ func.func @float_cmp(%a: f32, %b: f32) -> (i1, i1, i1, i1, i1, i1, i1, i1, i1, i
     return %0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15 : i1, i1, i1, i1, i1, i1, i1, i1, i1, i1, i1, i1, i1, i1, i1, i1
 }
 
-// CHECK-LABEL: func.func @numeric_select
+// CHECK-LABEL: llvm.func @numeric_select
 llvm.func @numeric_select(%cond: i1, %a: i32, %b: i32) -> i32 {
     // CHECK: %{{.*}} = arith.select %arg0, %arg1, %arg2 : i32
     %0 = llvm.select %cond, %a, %b : i1, i32
     llvm.return %0 : i32
 }
 
-// CHECK-LABEL: func.func @int_constant
+// CHECK-LABEL: llvm.func @int_constant
 llvm.func @int_constant() -> i32 {
     // CHECK: %{{.*}} = arith.constant 42 : i32
     %0 = llvm.mlir.constant(42 : i32) : i32
     llvm.return %0 : i32
 }
 
-// CHECK-LABEL: func.func @ptr_load_stays_llvm
+// CHECK-LABEL: llvm.func @ptr_load_stays_llvm
 // Load of a pointer-typed memory remains as llvm.load -- we only
 // rewrite arith and comparison ops here.
 llvm.func @ptr_load_stays_llvm(%p: !llvm.ptr) -> f32 {
@@ -217,7 +331,7 @@ llvm.func @ptr_load_stays_llvm(%p: !llvm.ptr) -> f32 {
     llvm.return %v : f32
 }
 
-// CHECK-LABEL: func.func @ptr_select_stays_llvm
+// CHECK-LABEL: llvm.func @ptr_select_stays_llvm
 llvm.func @ptr_select_stays_llvm(%cond: i1, %a: !llvm.ptr, %b: !llvm.ptr) -> !llvm.ptr {
     // CHECK: %{{.*}} = llvm.select
     %0 = llvm.select %cond, %a, %b : i1, !llvm.ptr

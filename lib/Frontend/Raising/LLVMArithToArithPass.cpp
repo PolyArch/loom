@@ -1,126 +1,72 @@
-// Convert llvm.* arith / compare / constant ops with builtin numeric
-// types into the matching arith dialect ops. Operations whose operand or
-// result types are not exactly representable in arith (see
-// isExactNumericType below) are intentionally left alone so they can
-// continue through the pipeline unchanged.
+// Normalize each LLVM computation to the exact standard `arith` or `math`
+// spelling, so Canonical Dataflow sees one operation-schema identity per basic
+// computation instead of a family of dialect aliases.
 //
-// The rewrite is exact in both directions: every semantic flag the source
-// op carries is transferred to the target op, and an op carrying a flag
-// arith cannot express stays in llvm form instead of being weakened.
+// Every pattern below replaces one LLVM operation with the standard operation
+// that the pinned upstream `arith`/`math`-to-LLVM lowering produces exactly
+// that LLVM operation from. That inverse relation is what proves the two
+// spellings are one computation; a familiar opcode name proves nothing on its
+// own, and the signedness reading is part of the operation identity on both
+// sides. A source fact the standard operation cannot carry -- `disjoint` on an
+// or, a fast-math contract on a select, a floating-point environment the
+// enclosing callable states, a scalable element count -- has no entry on
+// purpose, and the operation stating it stays in llvm form rather than being
+// weakened. Multi-dialect S0 output is the intended result, not a fallback.
 //
-// Calls are not rewritten here. A recognized libm symbol does not prove the
-// pure-math contract an arith/math op states -- an absent LLVM memory-effects
-// attribute is the default read/write effect set, and the spelling of a name
-// establishes nothing about errno, the FP environment, termination, or
-// whether the caller asked for the builtin at all. Math lowering needs a
-// source form that owns that contract explicitly.
+// No replacement is given a rounding mode. A standard operation that states
+// one is a constrained operation, which standard lowering turns into
+// `llvm.intr.experimental.constrained.*` under an explicit rounding and
+// exception mode, dropping the fast-math flags on the way. Every source here
+// is an ordinary non-constrained LLVM operation in the default floating-point
+// environment, which is exactly what an unrounded standard operation lowers
+// back to.
 //
-// Pointer arithmetic (llvm.getelementptr), pointer ops (llvm.alloca,
-// llvm.load, llvm.store), and ext/trunc with non-builtin element types
-// stay in llvm form by design -- the spec allows multi-dialect output.
+// Calls are deliberately absent. A recognized libm symbol does not prove the
+// pure-math contract an arith or math operation states: an absent LLVM
+// memory-effects attribute is the default read/write effect set, and a name
+// establishes nothing about errno, the floating-point environment,
+// termination, or whether the caller asked for the builtin at all. Pointer
+// arithmetic (llvm.getelementptr) and the pointer memory operations stay in
+// llvm form for the same kind of reason: no standard operation states an LLVM
+// pointer's address computation or its memory model.
 //
-// This pass runs as a function-level pass strictly under func.func. The
-// pipeline (see Pipeline.cpp) raises lift-able llvm.func ops into
-// func.func first, then nests this pass under each func.func. Aggregate-
-// signature llvm.func ops left as llvm.func by func-to-func are
-// untouched, so their bodies stay in pristine LLVM form.
+// The rewrite is scoped to callable regions, so an imported callable's body is
+// normalized in place while a constant region such as an llvm.mlir.global
+// initializer, which must stay expressible as an LLVM constant, is left alone.
+// Each declared pattern is offered once per operation and nothing else runs:
+// no folding, no constant CSE, no dead-code or unreachable-block removal.
 
 #include "Frontend/Raising/Passes.h"
 
+#include "CallableRegions.h"
+#include "ExactRewrite.h"
+#include "ExactStandardSpelling.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/IR/Builders.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/BuiltinAttributes.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
-#include "mlir/IR/ValueRange.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Rewrite/FrozenRewritePatternSet.h"
+#include "llvm/ADT/StringRef.h"
 
+#include <memory>
 #include <optional>
+#include <type_traits>
 #include <utility>
 
 namespace {
 
-// Numeric exactness gate ----------------------------------------------
-//
-// A rewrite may replace an LLVM operation with its arith counterpart only
-// when every source semantic fact has an exact target representation: which
-// types have an exact builtin counterpart, and how LLVM's numeric flag enums
-// map onto arith's. Facts the target cannot express have no entry here on
-// purpose -- an `llvm.or` with `disjoint` and fast-math flags on
-// `llvm.select` are the current cases. A rewrite that meets one fails and
-// leaves the operation in llvm form rather than emitting a weaker target op.
-
-// True when `type` has an exact arith counterpart: a signless integer of
-// non-zero width, `index`, a float, or a fixed-shape vector of those.
-// arith rejects zero-width and signed integers, and a scalable vector's
-// length is a runtime fact no existing authority defines a raising for, so
-// those types keep their operations in llvm form.
-bool isExactNumericType(::mlir::Type type) {
-  if (auto vectorType = ::mlir::dyn_cast<::mlir::VectorType>(type)) {
-    if (vectorType.isScalable())
-      return false;
-    type = vectorType.getElementType();
-  }
-  if (auto integerType = ::mlir::dyn_cast<::mlir::IntegerType>(type))
-    return integerType.isSignless() && integerType.getWidth() > 0;
-  return ::mlir::isa<::mlir::IndexType, ::mlir::FloatType>(type);
-}
-
-bool allExactNumericTypes(::mlir::ValueRange values) {
-  for (::mlir::Value value : values) {
-    if (!isExactNumericType(value.getType()))
-      return false;
-  }
-  return true;
-}
-
-// arith counterpart of LLVM's integer overflow flags. Both enums carry
-// exactly nsw and nuw with the same meaning, so nothing is lost.
-::mlir::arith::IntegerOverflowFlags
-exactOverflowFlags(::mlir::LLVM::IntegerOverflowFlags flags) {
-  ::mlir::arith::IntegerOverflowFlags result{};
-  if (::mlir::LLVM::bitEnumContainsAll(flags,
-                                       ::mlir::LLVM::IntegerOverflowFlags::nsw))
-    result = result | ::mlir::arith::IntegerOverflowFlags::nsw;
-  if (::mlir::LLVM::bitEnumContainsAll(flags,
-                                       ::mlir::LLVM::IntegerOverflowFlags::nuw))
-    result = result | ::mlir::arith::IntegerOverflowFlags::nuw;
-  return result;
-}
-
-// arith counterpart of LLVM's fast-math flags. Both enums name the same
-// seven facts but assign them different bit positions, so each flag is
-// mapped by name instead of being reinterpreted.
-::mlir::arith::FastMathFlags
-exactFastMathFlags(::mlir::LLVM::FastmathFlags flags) {
-  const std::pair<::mlir::LLVM::FastmathFlags, ::mlir::arith::FastMathFlags>
-      equivalents[] = {
-          {::mlir::LLVM::FastmathFlags::nnan,
-           ::mlir::arith::FastMathFlags::nnan},
-          {::mlir::LLVM::FastmathFlags::ninf,
-           ::mlir::arith::FastMathFlags::ninf},
-          {::mlir::LLVM::FastmathFlags::nsz, ::mlir::arith::FastMathFlags::nsz},
-          {::mlir::LLVM::FastmathFlags::arcp,
-           ::mlir::arith::FastMathFlags::arcp},
-          {::mlir::LLVM::FastmathFlags::contract,
-           ::mlir::arith::FastMathFlags::contract},
-          {::mlir::LLVM::FastmathFlags::afn, ::mlir::arith::FastMathFlags::afn},
-          {::mlir::LLVM::FastmathFlags::reassoc,
-           ::mlir::arith::FastMathFlags::reassoc}};
-
-  ::mlir::arith::FastMathFlags result{};
-  for (auto [llvmFlag, arithFlag] : equivalents) {
-    if (::mlir::LLVM::bitEnumContainsAll(flags, llvmFlag))
-      result = result | arithFlag;
-  }
-  return result;
-}
+using loom::raising::allExactNumericTypes;
+using loom::raising::enclosingFloatingPolicyBlocksRewrite;
+using loom::raising::exactFastMathFlags;
+using loom::raising::exactOverflowFlags;
+using loom::raising::isExactNumericType;
+using loom::raising::restatesExactly;
 
 // Exact arith counterpart of an LLVM integer compare predicate, or nothing
 // when the predicate has no explicitly stated counterpart. The two enums are
@@ -199,24 +145,36 @@ exactCmpFPredicate(::mlir::LLVM::FCmpPredicate predicate) {
   return ::std::nullopt;
 }
 
-// Generic pattern: rewrite a binary llvm op into the matching binary
-// arith op when both operands have exactly representable types. The arith
-// op receives the same operand types and result type by SameOperandsAndResult.
-//
-// Which semantic flags the source op can carry is read from the upstream
-// LLVM flag interfaces, so every instantiation below is covered without a
-// per-opcode table. Each paired arith op declares the matching attribute;
-// a pairing that ever loses one fails to compile rather than dropping it.
-template <typename LLVMOp, typename ArithOp>
-struct BinaryRewrite : public ::mlir::OpRewritePattern<LLVMOp> {
+// Carry every semantic flag the source operation can state onto the standard
+// operation that replaces it. Which flags a source can state is read from the
+// upstream LLVM flag interfaces, so a new instantiation is covered without a
+// per-opcode table, and a pairing whose target lacks the matching setter fails
+// to compile rather than dropping the flag.
+template <typename LLVMOp, typename StandardOp>
+void carryExactFlags(LLVMOp op, StandardOp raised) {
+  if constexpr (LLVMOp::template hasTrait<
+                    ::mlir::LLVM::IntegerOverflowFlagsInterface::Trait>())
+    raised.setOverflowFlags(exactOverflowFlags(op.getOverflowFlags()));
+  if constexpr (LLVMOp::template hasTrait<
+                    ::mlir::LLVM::ExactFlagInterface::Trait>())
+    raised.setIsExact(op.getIsExact());
+  if constexpr (LLVMOp::template hasTrait<
+                    ::mlir::LLVM::FastmathFlagsInterface::Trait>())
+    raised.setFastmath(exactFastMathFlags(op.getFastmathFlags()));
+}
+
+// Binary computation with two operands and one result of the operation type:
+// integer and floating arithmetic, and integer and floating minimum and
+// maximum. `Floating` selects whether the enclosing callable's floating-point
+// environment participates.
+template <typename LLVMOp, typename StandardOp, bool Floating>
+struct BinaryAlias : public ::mlir::OpRewritePattern<LLVMOp> {
   using ::mlir::OpRewritePattern<LLVMOp>::OpRewritePattern;
 
   ::mlir::LogicalResult
   matchAndRewrite(LLVMOp op,
                   ::mlir::PatternRewriter &rewriter) const override {
-    if (!allExactNumericTypes(op.getOperands()))
-      return ::mlir::failure();
-    if (!isExactNumericType(op.getResult().getType()))
+    if (!restatesExactly(op, Floating))
       return ::mlir::failure();
 
     // `disjoint` states that the operands share no set bit, which arith.ori
@@ -227,26 +185,61 @@ struct BinaryRewrite : public ::mlir::OpRewritePattern<LLVMOp> {
         return ::mlir::failure();
     }
 
-    ArithOp raised =
-        ArithOp::create(rewriter, op.getLoc(), op.getResult().getType(),
-                        op.getLhs(), op.getRhs());
-    if constexpr (LLVMOp::template hasTrait<
-                      ::mlir::LLVM::IntegerOverflowFlagsInterface::Trait>())
-      raised.setOverflowFlags(exactOverflowFlags(op.getOverflowFlags()));
-    if constexpr (LLVMOp::template hasTrait<
-                      ::mlir::LLVM::ExactFlagInterface::Trait>())
-      raised.setIsExact(op.getIsExact());
-    if constexpr (LLVMOp::template hasTrait<
-                      ::mlir::LLVM::FastmathFlagsInterface::Trait>())
-      raised.setFastmath(exactFastMathFlags(op.getFastmathFlags()));
-
+    StandardOp raised = StandardOp::create(
+        rewriter, op.getLoc(), op->getResult(0).getType(), op->getOperand(0),
+        op->getOperand(1));
+    carryExactFlags(op, raised);
     rewriter.replaceOp(op, raised);
     return ::mlir::success();
   }
 };
 
+// Unary floating computation with one operand and one result of the operation
+// type: negation and absolute value.
+template <typename LLVMOp, typename StandardOp>
+struct UnaryFloatAlias : public ::mlir::OpRewritePattern<LLVMOp> {
+  using ::mlir::OpRewritePattern<LLVMOp>::OpRewritePattern;
+
+  ::mlir::LogicalResult
+  matchAndRewrite(LLVMOp op,
+                  ::mlir::PatternRewriter &rewriter) const override {
+    if (!restatesExactly(op, /*floating=*/true))
+      return ::mlir::failure();
+    StandardOp raised =
+        StandardOp::create(rewriter, op.getLoc(), op->getResult(0).getType(),
+                           op->getOperand(0));
+    carryExactFlags(op, raised);
+    rewriter.replaceOp(op, raised);
+    return ::mlir::success();
+  }
+};
+
+// llvm.intr.fma -> math.fma.
+//
+// llvm.intr.fma is the exact fused multiply-add: one operation, one rounding,
+// in the default floating-point environment, and math.fma without a rounding
+// mode states the same non-constrained computation. llvm.intr.fmuladd is
+// deliberately absent: it states a choice between that fused form and a
+// separate multiply and add, which no single standard operation restates, so
+// it survives mechanical raising until one typed materialization decision
+// names the form.
+struct FMAAlias : public ::mlir::OpRewritePattern<::mlir::LLVM::FMAOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  ::mlir::LogicalResult
+  matchAndRewrite(::mlir::LLVM::FMAOp op,
+                  ::mlir::PatternRewriter &rewriter) const override {
+    if (!restatesExactly(op, /*floating=*/true))
+      return ::mlir::failure();
+    rewriter.replaceOpWithNewOp<::mlir::math::FmaOp>(
+        op, op.getRes().getType(), op.getA(), op.getB(), op.getC(),
+        exactFastMathFlags(op.getFastmathFlags()));
+    return ::mlir::success();
+  }
+};
+
 // llvm.icmp -> arith.cmpi.
-struct ICmpRewrite : public ::mlir::OpRewritePattern<::mlir::LLVM::ICmpOp> {
+struct ICmpAlias : public ::mlir::OpRewritePattern<::mlir::LLVM::ICmpOp> {
   using OpRewritePattern::OpRewritePattern;
 
   ::mlir::LogicalResult
@@ -264,13 +257,15 @@ struct ICmpRewrite : public ::mlir::OpRewritePattern<::mlir::LLVM::ICmpOp> {
 };
 
 // llvm.fcmp -> arith.cmpf.
-struct FCmpRewrite : public ::mlir::OpRewritePattern<::mlir::LLVM::FCmpOp> {
+struct FCmpAlias : public ::mlir::OpRewritePattern<::mlir::LLVM::FCmpOp> {
   using OpRewritePattern::OpRewritePattern;
 
   ::mlir::LogicalResult
   matchAndRewrite(::mlir::LLVM::FCmpOp op,
                   ::mlir::PatternRewriter &rewriter) const override {
     if (!allExactNumericTypes(op.getOperands()))
+      return ::mlir::failure();
+    if (enclosingFloatingPolicyBlocksRewrite(op))
       return ::mlir::failure();
     auto predicate = exactCmpFPredicate(op.getPredicate());
     if (!predicate)
@@ -282,8 +277,7 @@ struct FCmpRewrite : public ::mlir::OpRewritePattern<::mlir::LLVM::FCmpOp> {
   }
 };
 
-struct SelectRewrite
-    : public ::mlir::OpRewritePattern<::mlir::LLVM::SelectOp> {
+struct SelectAlias : public ::mlir::OpRewritePattern<::mlir::LLVM::SelectOp> {
   using OpRewritePattern::OpRewritePattern;
 
   ::mlir::LogicalResult
@@ -308,7 +302,7 @@ struct SelectRewrite
 // llvm.mlir.constant with builtin int/float type -> arith.constant.
 // llvm.mlir.constant with pointer / struct / vector elt of !llvm.* stays
 // in llvm form because arith.constant cannot represent it directly.
-struct ConstantRewrite
+struct ConstantAlias
     : public ::mlir::OpRewritePattern<::mlir::LLVM::ConstantOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -318,8 +312,7 @@ struct ConstantRewrite
     ::mlir::Type ty = op.getResult().getType();
     if (!isExactNumericType(ty))
       return ::mlir::failure();
-    auto valueAttr =
-        ::mlir::dyn_cast<::mlir::TypedAttr>(op.getValueAttr());
+    auto valueAttr = ::mlir::dyn_cast<::mlir::TypedAttr>(op.getValueAttr());
     if (!valueAttr || valueAttr.getType() != ty)
       return ::mlir::failure();
     rewriter.replaceOpWithNewOp<::mlir::arith::ConstantOp>(op, ty, valueAttr);
@@ -327,62 +320,195 @@ struct ConstantRewrite
   }
 };
 
+// Cast that states nothing beyond the two types: sign extension, and the four
+// integer/floating domain conversions. `Floating` selects whether the
+// enclosing callable's floating-point environment participates.
+template <typename LLVMOp, typename StandardOp, bool Floating>
+struct PlainCastAlias : public ::mlir::OpRewritePattern<LLVMOp> {
+  using ::mlir::OpRewritePattern<LLVMOp>::OpRewritePattern;
+
+  ::mlir::LogicalResult
+  matchAndRewrite(LLVMOp op,
+                  ::mlir::PatternRewriter &rewriter) const override {
+    if (!restatesExactly(op, Floating))
+      return ::mlir::failure();
+    rewriter.replaceOpWithNewOp<StandardOp>(op, op.getRes().getType(),
+                                            op.getArg());
+    return ::mlir::success();
+  }
+};
+
+// Cast whose source may state that the operand's most significant bit is
+// clear: zero extension and unsigned integer-to-float. Both target operations
+// carry the same `nneg` fact with the same poison rule when it is violated.
+template <typename LLVMOp, typename StandardOp, bool Floating>
+struct NonNegativeCastAlias : public ::mlir::OpRewritePattern<LLVMOp> {
+  using ::mlir::OpRewritePattern<LLVMOp>::OpRewritePattern;
+
+  ::mlir::LogicalResult
+  matchAndRewrite(LLVMOp op,
+                  ::mlir::PatternRewriter &rewriter) const override {
+    if (!restatesExactly(op, Floating))
+      return ::mlir::failure();
+    rewriter.replaceOpWithNewOp<StandardOp>(op, op.getRes().getType(),
+                                            op.getArg(), op.getNonNeg());
+    return ::mlir::success();
+  }
+};
+
+// llvm.trunc -> arith.trunci. Both carry nsw and nuw with the same
+// poison-on-violation rule.
+struct IntegerTruncationAlias
+    : public ::mlir::OpRewritePattern<::mlir::LLVM::TruncOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  ::mlir::LogicalResult
+  matchAndRewrite(::mlir::LLVM::TruncOp op,
+                  ::mlir::PatternRewriter &rewriter) const override {
+    if (!restatesExactly(op, /*floating=*/false))
+      return ::mlir::failure();
+    rewriter.replaceOpWithNewOp<::mlir::arith::TruncIOp>(
+        op, op.getRes().getType(), op.getArg(),
+        exactOverflowFlags(op.getOverflowFlags()));
+    return ::mlir::success();
+  }
+};
+
+// llvm.fpext -> arith.extf and llvm.fptrunc -> arith.truncf. Both sources
+// carry a fast-math contract, and both targets have an optional carrier for
+// it, so an unflagged source stays unflagged rather than acquiring an empty
+// contract attribute.
+template <typename LLVMOp, typename StandardOp>
+struct FloatResizeAlias : public ::mlir::OpRewritePattern<LLVMOp> {
+  using ::mlir::OpRewritePattern<LLVMOp>::OpRewritePattern;
+
+  ::mlir::LogicalResult
+  matchAndRewrite(LLVMOp op,
+                  ::mlir::PatternRewriter &rewriter) const override {
+    if (!restatesExactly(op, /*floating=*/true))
+      return ::mlir::failure();
+
+    ::mlir::arith::FastMathFlagsAttr fastmath;
+    if (op.getFastmathFlags() != ::mlir::LLVM::FastmathFlags::none)
+      fastmath = ::mlir::arith::FastMathFlagsAttr::get(
+          op.getContext(), exactFastMathFlags(op.getFastmathFlags()));
+
+    if constexpr (::std::is_same_v<StandardOp, ::mlir::arith::TruncFOp>)
+      rewriter.replaceOpWithNewOp<::mlir::arith::TruncFOp>(
+          op, op.getRes().getType(), op.getArg(),
+          ::mlir::arith::RoundingModeAttr{}, fastmath);
+    else
+      rewriter.replaceOpWithNewOp<StandardOp>(op, op.getRes().getType(),
+                                              op.getArg(), fastmath);
+    return ::mlir::success();
+  }
+};
+
+template <typename LLVMOp, typename StandardOp>
+using IntegerBinaryAlias = BinaryAlias<LLVMOp, StandardOp, /*Floating=*/false>;
+template <typename LLVMOp, typename StandardOp>
+using FloatBinaryAlias = BinaryAlias<LLVMOp, StandardOp, /*Floating=*/true>;
+
 struct LLVMArithToArithPass
-    : public ::mlir::PassWrapper<
-          LLVMArithToArithPass,
-          ::mlir::OperationPass<::mlir::func::FuncOp>> {
+    : public ::mlir::PassWrapper<LLVMArithToArithPass,
+                                 ::mlir::OperationPass<>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LLVMArithToArithPass)
 
   ::llvm::StringRef getArgument() const final {
     return "loom-llvm-arith-to-arith";
   }
   ::llvm::StringRef getDescription() const final {
-    return "Rewrite llvm.* arithmetic / compare / constant ops with exactly "
-           "representable numeric types into the matching arith dialect ops, "
-           "scoped to func.func bodies. Skipped llvm.func ops are left "
-           "untouched.";
+    return "Rewrite each llvm computation whose complete semantics an arith "
+           "or math operation restates exactly into that standard operation, "
+           "scoped to callable regions.";
   }
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
-    registry.insert<::mlir::arith::ArithDialect, ::mlir::LLVM::LLVMDialect>();
+    registry.insert<::mlir::arith::ArithDialect, ::mlir::LLVM::LLVMDialect,
+                    ::mlir::math::MathDialect>();
   }
 
   void runOnOperation() final {
-    ::mlir::func::FuncOp funcOp = getOperation();
-    if (funcOp.isExternal())
-      return;
     ::mlir::MLIRContext *ctx = &getContext();
-
     ::mlir::RewritePatternSet patterns(ctx);
     patterns.add<
         // integer arithmetic
-        BinaryRewrite<::mlir::LLVM::AddOp, ::mlir::arith::AddIOp>,
-        BinaryRewrite<::mlir::LLVM::SubOp, ::mlir::arith::SubIOp>,
-        BinaryRewrite<::mlir::LLVM::MulOp, ::mlir::arith::MulIOp>,
-        BinaryRewrite<::mlir::LLVM::SDivOp, ::mlir::arith::DivSIOp>,
-        BinaryRewrite<::mlir::LLVM::UDivOp, ::mlir::arith::DivUIOp>,
-        BinaryRewrite<::mlir::LLVM::SRemOp, ::mlir::arith::RemSIOp>,
-        BinaryRewrite<::mlir::LLVM::URemOp, ::mlir::arith::RemUIOp>,
-        BinaryRewrite<::mlir::LLVM::ShlOp, ::mlir::arith::ShLIOp>,
-        BinaryRewrite<::mlir::LLVM::LShrOp, ::mlir::arith::ShRUIOp>,
-        BinaryRewrite<::mlir::LLVM::AShrOp, ::mlir::arith::ShRSIOp>,
-        BinaryRewrite<::mlir::LLVM::AndOp, ::mlir::arith::AndIOp>,
-        BinaryRewrite<::mlir::LLVM::OrOp, ::mlir::arith::OrIOp>,
-        BinaryRewrite<::mlir::LLVM::XOrOp, ::mlir::arith::XOrIOp>,
+        IntegerBinaryAlias<::mlir::LLVM::AddOp, ::mlir::arith::AddIOp>,
+        IntegerBinaryAlias<::mlir::LLVM::SubOp, ::mlir::arith::SubIOp>,
+        IntegerBinaryAlias<::mlir::LLVM::MulOp, ::mlir::arith::MulIOp>,
+        IntegerBinaryAlias<::mlir::LLVM::SDivOp, ::mlir::arith::DivSIOp>,
+        IntegerBinaryAlias<::mlir::LLVM::UDivOp, ::mlir::arith::DivUIOp>,
+        IntegerBinaryAlias<::mlir::LLVM::SRemOp, ::mlir::arith::RemSIOp>,
+        IntegerBinaryAlias<::mlir::LLVM::URemOp, ::mlir::arith::RemUIOp>,
+        IntegerBinaryAlias<::mlir::LLVM::ShlOp, ::mlir::arith::ShLIOp>,
+        IntegerBinaryAlias<::mlir::LLVM::LShrOp, ::mlir::arith::ShRUIOp>,
+        IntegerBinaryAlias<::mlir::LLVM::AShrOp, ::mlir::arith::ShRSIOp>,
+        IntegerBinaryAlias<::mlir::LLVM::AndOp, ::mlir::arith::AndIOp>,
+        IntegerBinaryAlias<::mlir::LLVM::OrOp, ::mlir::arith::OrIOp>,
+        IntegerBinaryAlias<::mlir::LLVM::XOrOp, ::mlir::arith::XOrIOp>,
+
+        // integer minimum and maximum, in both signedness readings
+        IntegerBinaryAlias<::mlir::LLVM::SMaxOp, ::mlir::arith::MaxSIOp>,
+        IntegerBinaryAlias<::mlir::LLVM::SMinOp, ::mlir::arith::MinSIOp>,
+        IntegerBinaryAlias<::mlir::LLVM::UMaxOp, ::mlir::arith::MaxUIOp>,
+        IntegerBinaryAlias<::mlir::LLVM::UMinOp, ::mlir::arith::MinUIOp>,
 
         // float arithmetic
-        BinaryRewrite<::mlir::LLVM::FAddOp, ::mlir::arith::AddFOp>,
-        BinaryRewrite<::mlir::LLVM::FSubOp, ::mlir::arith::SubFOp>,
-        BinaryRewrite<::mlir::LLVM::FMulOp, ::mlir::arith::MulFOp>,
-        BinaryRewrite<::mlir::LLVM::FDivOp, ::mlir::arith::DivFOp>,
-        BinaryRewrite<::mlir::LLVM::FRemOp, ::mlir::arith::RemFOp>,
+        FloatBinaryAlias<::mlir::LLVM::FAddOp, ::mlir::arith::AddFOp>,
+        FloatBinaryAlias<::mlir::LLVM::FSubOp, ::mlir::arith::SubFOp>,
+        FloatBinaryAlias<::mlir::LLVM::FMulOp, ::mlir::arith::MulFOp>,
+        FloatBinaryAlias<::mlir::LLVM::FDivOp, ::mlir::arith::DivFOp>,
+        FloatBinaryAlias<::mlir::LLVM::FRemOp, ::mlir::arith::RemFOp>,
 
-        // compares and constants
-        ICmpRewrite, FCmpRewrite, SelectRewrite, ConstantRewrite>(ctx);
+        // floating minimum and maximum. The two families differ in what they
+        // state about NaN and signed zero, so each keeps its own identity:
+        // maxnum/minnum return the other operand for a NaN, maximum/minimum
+        // propagate it and order -0.0 below +0.0.
+        FloatBinaryAlias<::mlir::LLVM::MaxNumOp, ::mlir::arith::MaxNumFOp>,
+        FloatBinaryAlias<::mlir::LLVM::MinNumOp, ::mlir::arith::MinNumFOp>,
+        FloatBinaryAlias<::mlir::LLVM::MaximumOp, ::mlir::arith::MaximumFOp>,
+        FloatBinaryAlias<::mlir::LLVM::MinimumOp, ::mlir::arith::MinimumFOp>,
 
-    if (failed(::mlir::applyPatternsGreedily(funcOp.getBody(),
-                                             std::move(patterns))))
-      return signalPassFailure();
+        // floating negation and absolute value
+        UnaryFloatAlias<::mlir::LLVM::FNegOp, ::mlir::arith::NegFOp>,
+        UnaryFloatAlias<::mlir::LLVM::FAbsOp, ::mlir::math::AbsFOp>,
+
+        // exact fused multiply-add
+        FMAAlias,
+
+        // compares, selection and constants
+        ICmpAlias, FCmpAlias, SelectAlias, ConstantAlias,
+
+        // integer width casts
+        IntegerTruncationAlias,
+        PlainCastAlias<::mlir::LLVM::SExtOp, ::mlir::arith::ExtSIOp,
+                       /*Floating=*/false>,
+        NonNegativeCastAlias<::mlir::LLVM::ZExtOp, ::mlir::arith::ExtUIOp,
+                             /*Floating=*/false>,
+
+        // integer to floating, in both signedness readings
+        PlainCastAlias<::mlir::LLVM::SIToFPOp, ::mlir::arith::SIToFPOp,
+                       /*Floating=*/true>,
+        NonNegativeCastAlias<::mlir::LLVM::UIToFPOp, ::mlir::arith::UIToFPOp,
+                             /*Floating=*/true>,
+
+        // floating to integer, in both signedness readings
+        PlainCastAlias<::mlir::LLVM::FPToSIOp, ::mlir::arith::FPToSIOp,
+                       /*Floating=*/true>,
+        PlainCastAlias<::mlir::LLVM::FPToUIOp, ::mlir::arith::FPToUIOp,
+                       /*Floating=*/true>,
+
+        // floating width casts
+        FloatResizeAlias<::mlir::LLVM::FPExtOp, ::mlir::arith::ExtFOp>,
+        FloatResizeAlias<::mlir::LLVM::FPTruncOp, ::mlir::arith::TruncFOp>>(
+        ctx);
+    ::mlir::FrozenRewritePatternSet frozen(std::move(patterns));
+
+    (void)loom::raising::forEachCallableRegion(
+        getOperation(), [&](::mlir::Region &region) {
+          loom::raising::applyExactPatternsOnce(region, frozen);
+          return ::mlir::success();
+        });
   }
 };
 

@@ -1,10 +1,10 @@
-// RUN: loom-raise-opt --loom-llvm-func-to-func --loom-llvm-cf-to-cf %s | FileCheck %s
+// RUN: loom-raise-opt --loom-llvm-cf-to-cf %s | FileCheck %s
 
-// llvm.switch is rewritten into cf.switch so the upstream
-// --lift-cf-to-scf pass can see structured control flow. Default
-// destination, case values, and case operands carry through directly.
+// llvm.switch is rewritten into cf.switch so the region-level CFG-to-SCF
+// transformation can recognize its branch structure. Default destination,
+// case values, and case operands carry through directly.
 
-// CHECK-LABEL: func.func @route_value
+// CHECK-LABEL: llvm.func @route_value
 // CHECK-NOT: llvm.switch
 // CHECK: cf.switch
 llvm.func @route_value(%v: i32) -> i32 {

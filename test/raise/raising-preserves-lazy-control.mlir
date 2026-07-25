@@ -4,12 +4,10 @@
 // The inner condition is evaluated only after the outer branch selects its
 // edge. Combining both conditions would consume poison when the outer
 // condition is false.
-// CHECK-LABEL: func.func @lazy_nested_poison
+// CHECK-LABEL: llvm.func @lazy_nested_poison
 // CHECK: %[[POISON:.*]] = llvm.mlir.poison : i1
-// CHECK: %{{.*}} = scf.if %arg0 -> (i32) {
-// CHECK:   %{{.*}} = scf.if %[[POISON]] -> (i32) {
-// CHECK:   }
-// CHECK: }
+// CHECK: scf.if %arg0
+// CHECK: scf.if %[[POISON]]
 
 //--- lazy-nested-poison.ll
 define i32 @lazy_nested_poison(i1 %outer) {

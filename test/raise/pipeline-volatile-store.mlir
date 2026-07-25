@@ -1,10 +1,10 @@
-// RUN: loom-raise-opt --loom-llvm-func-to-func --loom-llvm-cf-to-cf --lift-cf-to-scf --loom-llvm-arith-to-arith --canonicalize --loom-scf-while-to-for --canonicalize --loom-scf-for-to-forall --canonicalize %s | FileCheck %s
+// RUN: loom-raise-opt --loom-llvm-cf-to-cf --loom-lift-cf-to-scf --loom-llvm-arith-to-arith --canonicalize --loom-scf-while-to-for --canonicalize --loom-scf-for-to-forall --canonicalize %s | FileCheck %s
 
 // A volatile llvm.store inside a counted loop body must SURVIVE the
 // pipeline as a volatile store. The for-to-forall lift refuses to
 // fire on volatile stores, so the loop stays as scf.for / scf.while.
 
-// CHECK-LABEL: func.func @volatile_survives
+// CHECK-LABEL: llvm.func @volatile_survives
 // CHECK-NOT: scf.forall
 // CHECK: llvm.store volatile
 llvm.func @volatile_survives(%base: !llvm.ptr) {

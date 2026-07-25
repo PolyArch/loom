@@ -1,12 +1,12 @@
-// Uplift counted scf.while loops produced by --lift-cf-to-scf into
+// Uplift counted scf.while loops produced by CFG-to-SCF structuring into
 // scf.for. We run two flavours of pattern:
 //
-//   1. The upstream `scf::populateUpliftWhileToForPatterns` patterns,
-//      which handle while loops whose `before` block contains only an
-//      arith.cmpi slt/sgt and forward all carried values directly.
+//   1. The upstream `scf::upliftWhileToForLoop` utility, which handles
+//      while loops whose `before` block contains only an arith.cmpi
+//      slt/sgt and forwards all carried values directly.
 //
 //   2. A Loom-specific pattern for the do-while shape that
-//      --lift-cf-to-scf emits when the original LLVM IR had a
+//      structuring emits when the original LLVM IR had a
 //      counted-reduction loop with the increment placed inside the
 //      latch. That shape looks like:
 //
@@ -47,10 +47,12 @@
 
 #include "Frontend/Raising/Passes.h"
 
+#include "PreservedHints.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/SCF/Transforms/Patterns.h"
+#include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
@@ -60,6 +62,28 @@
 #include "llvm/ADT/SmallVector.h"
 
 namespace {
+
+using loom::raising::carryLoopAnnotation;
+using loom::raising::loopAnnotationName;
+
+// Uplift a counted while loop with the upstream utility, keeping the loop
+// annotation on the loop the utility creates.
+struct UpliftCountedWhileToFor
+    : public ::mlir::OpRewritePattern<::mlir::scf::WhileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  ::mlir::LogicalResult
+  matchAndRewrite(::mlir::scf::WhileOp loop,
+                  ::mlir::PatternRewriter &rewriter) const override {
+    ::mlir::Attribute annotation = loop->getAttr(loopAnnotationName);
+    ::mlir::FailureOr<::mlir::scf::ForOp> uplifted =
+        ::mlir::scf::upliftWhileToForLoop(rewriter, loop);
+    if (failed(uplifted))
+      return ::mlir::failure();
+    carryLoopAnnotation(annotation, *uplifted);
+    return ::mlir::success();
+  }
+};
 
 // Helper: given an scf.while loop, identify whether one of the carried
 // values is a counted induction var that is bumped by an arith.addi
@@ -282,6 +306,7 @@ struct UpliftDoWhileToFor
                            ::mlir::Value, ::mlir::ValueRange) {};
     auto forOp = ::mlir::scf::ForOp::create(rewriter, loc, lb, ub, step,
                                             iterArgs, emptyBuilder);
+    carryLoopAnnotation(loop->getAttr(loopAnnotationName), forOp);
     ::mlir::Block *forBody = forOp.getBody();
 
     // Erase the trivial yield ForOp::create added; we will append our
@@ -358,8 +383,8 @@ struct SCFWhileToForPass
   }
   ::llvm::StringRef getDescription() const final {
     return "Uplift counted scf.while loops into scf.for, supporting both "
-           "the upstream UpliftWhileToFor and the do-while-counted shape "
-           "produced by --lift-cf-to-scf on raised LLVM IR.";
+           "the upstream uplift utility and the do-while-counted shape "
+           "produced by CFG-to-SCF structuring on raised LLVM IR.";
   }
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
@@ -371,8 +396,7 @@ struct SCFWhileToForPass
     ::mlir::MLIRContext *ctx = &getContext();
 
     ::mlir::RewritePatternSet patterns(ctx);
-    ::mlir::scf::populateUpliftWhileToForPatterns(patterns);
-    patterns.add<UpliftDoWhileToFor>(ctx);
+    patterns.add<UpliftCountedWhileToFor, UpliftDoWhileToFor>(ctx);
 
     if (failed(::mlir::applyPatternsGreedily(module, std::move(patterns))))
       return signalPassFailure();

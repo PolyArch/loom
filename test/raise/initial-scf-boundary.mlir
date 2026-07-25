@@ -2,13 +2,13 @@
 // RUN: %loom-raise %t/parallel-store.ll | FileCheck %s --check-prefix=STANDARD
 // RUN: %loom-raise %t/parallel-store.ll | loom-raise-opt --loom-scf-for-to-forall | FileCheck %s --check-prefix=EXPLICIT
 
-// STANDARD-LABEL: func.func @parallel_store
+// STANDARD-LABEL: llvm.func @parallel_store
 // STANDARD-NOT: scf.forall
 // STANDARD: scf.for %
 // STANDARD-NOT: scf.forall
-// STANDARD: return
+// STANDARD: llvm.return
 
-// EXPLICIT-LABEL: func.func @parallel_store
+// EXPLICIT-LABEL: llvm.func @parallel_store
 // EXPLICIT: scf.forall
 
 //--- parallel-store.ll

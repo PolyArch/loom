@@ -1,7 +1,8 @@
 add_mlir_library(LoomFrontendRaising
+  LiftCFToSCFPass.cpp
   LLVMArithToArithPass.cpp
   LLVMCfToCfPass.cpp
-  LLVMFuncToFuncPass.cpp
+  MaterializeFMulAddPass.cpp
   NormalizeLiftedSCFExitPass.cpp
   Pipeline.cpp
   SCFForToForallPass.cpp
@@ -15,12 +16,17 @@ add_mlir_library(LoomFrontendRaising
   MLIRControlFlowDialect
   MLIRControlFlowToSCF
   MLIRFuncDialect
+  MLIRFunctionInterfaces
   MLIRIR
   MLIRLLVMDialect
+  MLIRMathDialect
   MLIRMemRefDialect
   MLIRPass
+  MLIRRewrite
   MLIRSCFDialect
   MLIRSCFTransforms
   MLIRSupport
+  MLIRTransformUtils
   MLIRTransforms
+  MLIRUBDialect
 )

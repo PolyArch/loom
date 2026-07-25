@@ -1,10 +1,10 @@
-// RUN: loom-raise-opt --loom-llvm-func-to-func --loom-llvm-cf-to-cf --lift-cf-to-scf --loom-llvm-arith-to-arith --canonicalize %s | FileCheck %s
+// RUN: loom-raise-opt --loom-llvm-cf-to-cf --loom-lift-cf-to-scf --loom-llvm-arith-to-arith --canonicalize %s | FileCheck %s
 
 // End-to-end: an llvm.switch in the input survives translation through
-// loom-llvm-cf-to-cf into cf.switch and is then lifted by
-// --lift-cf-to-scf into scf.index_switch.
+// loom-llvm-cf-to-cf into cf.switch and is then structured by
+// loom-lift-cf-to-scf into scf.index_switch, inside the imported callable.
 
-// CHECK-LABEL: func.func @switch_to_index
+// CHECK-LABEL: llvm.func @switch_to_index
 // CHECK-NOT: llvm.switch
 // CHECK-NOT: cf.switch
 // CHECK: scf.index_switch

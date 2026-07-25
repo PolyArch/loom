@@ -26,6 +26,52 @@ LogicalResult verifyValueCarrier(Operation *op, Type type, StringRef label,
   return success();
 }
 
+bool containsScalableVector(Type type) {
+  return type
+      .walk<WalkOrder::PreOrder>([](Type nested) -> WalkResult {
+        auto vector = dyn_cast<VectorType>(nested);
+        return vector && vector.isScalable() ? WalkResult::interrupt()
+                                             : WalkResult::advance();
+      })
+      .wasInterrupted();
+}
+
+// The first scalable vector type the selected boundary holds, on its own
+// operands and results or on any value its body defines, or a null type.
+//
+// A scalable vector is a legal S0 value: its element count is a runtime
+// `vscale` multiple, which the fixed-rank Canonical Dataflow contract has no
+// meaning for. A selected SpatialCore boundary is therefore where it has to be
+// gone: a typed structured transform must first materialize its semantics as
+// fixed-width chunks, loops, and masks or tails, and until then the candidate
+// that selected this region cannot finalize. Rejecting it here neither moves
+// the code elsewhere nor presents `vscale` as a constant.
+Type findScalableVector(Operation *op, Region &body) {
+  for (Type type :
+       llvm::concat<const Type>(op->getOperandTypes(), op->getResultTypes()))
+    if (containsScalableVector(type))
+      return type;
+
+  // Every value inside the region is either a block argument or an operation
+  // result, so walking the blocks reaches all of them, nested regions included.
+  Type found;
+  body.walk([&](Block *block) {
+    for (BlockArgument argument : block->getArguments())
+      if (containsScalableVector(argument.getType())) {
+        found = argument.getType();
+        return WalkResult::interrupt();
+      }
+    for (Operation &nested : *block)
+      for (Value result : nested.getResults())
+        if (containsScalableVector(result.getType())) {
+          found = result.getType();
+          return WalkResult::interrupt();
+        }
+    return WalkResult::advance();
+  });
+  return found;
+}
+
 LogicalResult verifyMemoryCarrier(Operation *op, Type type, StringRef label,
                                   unsigned index) {
   if (dataflow::DataflowDialect::isMemoryCapabilityType(type))
@@ -124,6 +170,12 @@ LogicalResult SpatialRegionOp::verify() {
   getUsedValuesDefinedAbove(getBody(), captures);
   if (!captures.empty())
     return emitOpError("must not capture values implicitly");
+
+  if (Type scalable = findScalableVector(getOperation(), getBody()))
+    return emitOpError("holds scalable vector type ")
+           << scalable
+           << ", which must be materialized as fixed-width chunks, loops, and "
+              "masks or tails before this candidate can finalize";
 
   Operation *forbidden = nullptr;
   getBody().walk([&](Operation *nested) {
