@@ -10,6 +10,8 @@
 #include "llvm/AsmParser/Parser.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
+#include "llvm/Bitcode/LLVMBitCodes.h"
+#include "llvm/Bitstream/BitstreamWriter.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Error.h"
@@ -64,9 +66,26 @@ void requireRejection(const char *test, const std::string &message,
 }
 
 constexpr llvm::StringRef canonicalTargetTriple = "x86_64-unknown-linux-gnu";
-constexpr llvm::StringRef canonicalDataLayout =
+constexpr llvm::StringRef anchorDataLayout =
     "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-"
     "n8:16:32:64-S128";
+constexpr llvm::StringRef equivalentDataLayout =
+    "e-S128-n8:16:32:64-f80:128-i128:128-i64:64:64-p272:64:64-"
+    "p271:32:32-p270:32:32-m:e";
+constexpr llvm::StringRef riscv64Lp64eDataLayout =
+    "e-m:e-p:64:64-i64:64-i128:128-n32:64-S64";
+constexpr llvm::StringRef riscv64RewriteProneDataLayout =
+    "e-m:e-p:64:64-i64:64-i128:128-n64-S64";
+
+constexpr llvm::StringRef riscv64Lp64eAssembly = R"(
+target datalayout = "e-m:e-p:64:64-i64:64-i128:128-n32:64-S64"
+target triple = "riscv64-unknown-linux-gnu"
+
+define i32 @identity(i32 %value) {
+entry:
+  ret i32 %value
+}
+)";
 
 /// One representative module carrying module flags, ABI attributes, debug
 /// information, source provenance, symbols, linkage, visibility, COMDAT,
@@ -133,12 +152,12 @@ attributes #1 = { nounwind }
 std::string equivalentSpellingAssembly() {
   std::string assembly = representativeModuleAssembly.str();
   const std::string canonicalTargets =
-      "target datalayout = \"" + canonicalDataLayout.str() +
+      "target datalayout = \"" + anchorDataLayout.str() +
       "\"\ntarget triple = \"" + canonicalTargetTriple.str() + "\"";
-  const std::string equivalentTargets =
-      "target datalayout = \"e-S128-n8:16:32:64-f80:128-i128:128-i64:64:64-"
-      "p272:64:64-p271:32:32-p270:32:32-m:e\"\n"
-      "target triple = \"x86_64-linux-gnu\"";
+  const std::string equivalentTargets = "target datalayout = \"" +
+                                        equivalentDataLayout.str() +
+                                        "\"\n"
+                                        "target triple = \"x86_64-linux-gnu\"";
   const std::size_t at = assembly.find(canonicalTargets);
   if (at == std::string::npos)
     fail(__func__, "canonical target lines not found");
@@ -163,6 +182,37 @@ std::vector<std::uint8_t> buildSourceBitcode(const char *test,
   llvm::SmallVector<char, 0> buffer;
   llvm::raw_svector_ostream stream(buffer);
   llvm::WriteBitcodeToFile(*module, stream, preserveUseListOrder);
+  return std::vector<std::uint8_t>(buffer.begin(), buffer.end());
+}
+
+std::vector<std::uint8_t>
+minimalBitcodeWithDataLayout(llvm::StringRef targetTriple,
+                             llvm::StringRef dataLayout,
+                             bool duplicateDataLayout = false) {
+  llvm::SmallVector<char, 0> buffer;
+  llvm::BitstreamWriter stream(buffer);
+  stream.Emit(static_cast<unsigned>('B'), 8);
+  stream.Emit(static_cast<unsigned>('C'), 8);
+  stream.Emit(0x0, 4);
+  stream.Emit(0xC, 4);
+  stream.Emit(0xE, 4);
+  stream.Emit(0xD, 4);
+  stream.EnterSubblock(llvm::bitc::MODULE_BLOCK_ID, 3);
+  stream.EmitRecord(llvm::bitc::MODULE_CODE_VERSION,
+                    llvm::ArrayRef<std::uint64_t>{2});
+
+  const auto emitStringRecord = [&](unsigned code, llvm::StringRef value) {
+    llvm::SmallVector<std::uint64_t, 32> record;
+    for (const char byte : value)
+      record.push_back(static_cast<unsigned char>(byte));
+    stream.EmitRecord(code, record);
+  };
+  emitStringRecord(llvm::bitc::MODULE_CODE_TRIPLE, targetTriple);
+  emitStringRecord(llvm::bitc::MODULE_CODE_DATALAYOUT, dataLayout);
+  if (duplicateDataLayout)
+    emitStringRecord(llvm::bitc::MODULE_CODE_DATALAYOUT, dataLayout);
+  stream.ExitBlock();
+  stream.FlushToWord();
   return std::vector<std::uint8_t>(buffer.begin(), buffer.end());
 }
 
@@ -228,16 +278,44 @@ RelocatableAcceleratorPayload anchorPayload(const char *test) {
                 anchorView()));
 }
 
-void normalizationIsRepeatableAndCanonicalizesTargetSpellings() {
+void normalizationPreservesRiscv64Lp64eDataLayoutSpelling() {
+  const NormalizedLlvmModule normalized =
+      takeExpected(__func__, normalizeLlvmModule(buildSourceBitcode(
+                                 __func__, riscv64Lp64eAssembly, false)));
+  require(__func__, normalized.dataLayout == riscv64Lp64eDataLayout,
+          "normalization replaced the module-owned data layout: " +
+              normalized.dataLayout);
+  require(__func__,
+          llvm::StringRef(printBitcodeAsAssembly(__func__, normalized.bitcode))
+              .contains("target datalayout = \"" +
+                        riscv64Lp64eDataLayout.str() + "\""),
+          "normalized bitcode did not preserve the exact data layout spelling");
+}
+
+void normalizationPreservesRewriteProneDataLayoutSpelling() {
+  const NormalizedLlvmModule normalized = takeExpected(
+      __func__, normalizeLlvmModule(minimalBitcodeWithDataLayout(
+                    "riscv64-unknown-elf", riscv64RewriteProneDataLayout)));
+  require(__func__, normalized.dataLayout == riscv64RewriteProneDataLayout,
+          "normalization upgraded the module-owned data layout: " +
+              normalized.dataLayout);
+  const NormalizedLlvmModule again =
+      takeExpected(__func__, normalizeLlvmModule(normalized.bitcode));
+  require(__func__, again.dataLayout == riscv64RewriteProneDataLayout,
+          "normalized bitcode did not preserve the raw data layout spelling");
+  require(__func__, again.bitcode == normalized.bitcode,
+          "rewrite-prone data layout normalization was not repeatable");
+}
+
+void normalizationIsRepeatableAndPreservesDataLayoutSpelling() {
   const NormalizedLlvmModule normalized = takeExpected(
       __func__, normalizeLlvmModule(buildSourceBitcode(
                     __func__, representativeModuleAssembly, false)));
   require(__func__, normalized.canonicalTargetTriple == canonicalTargetTriple,
           "unexpected canonical target triple: " +
               normalized.canonicalTargetTriple);
-  require(__func__, normalized.canonicalDataLayout == canonicalDataLayout,
-          "unexpected canonical data layout: " +
-              normalized.canonicalDataLayout);
+  require(__func__, normalized.dataLayout == anchorDataLayout,
+          "unexpected exact data layout: " + normalized.dataLayout);
   // Renormalizing the normalizer's own output reproduces it byte for byte.
   const NormalizedLlvmModule again =
       takeExpected(__func__, normalizeLlvmModule(normalized.bitcode));
@@ -246,18 +324,36 @@ void normalizationIsRepeatableAndCanonicalizesTargetSpellings() {
   require(__func__, again.bitcodeDigest == normalized.bitcodeDigest,
           "repeated normalization changed the bitcode digest");
 
-  // Equivalent target spellings are accepted and stored canonically.
+  // Only the equivalent target triple spelling is canonicalized. The layout
+  // spelling remains module-owned and therefore remains identity-bearing.
   const NormalizedLlvmModule equivalent = takeExpected(
       __func__, normalizeLlvmModule(buildSourceBitcode(
                     __func__, equivalentSpellingAssembly(), false)));
   require(__func__, equivalent.canonicalTargetTriple == canonicalTargetTriple,
           "an equivalent triple spelling was not canonicalized: " +
               equivalent.canonicalTargetTriple);
-  require(__func__, equivalent.canonicalDataLayout == canonicalDataLayout,
-          "an equivalent data layout spelling was not canonicalized: " +
-              equivalent.canonicalDataLayout);
-  require(__func__, equivalent.bitcode == normalized.bitcode,
-          "equivalent target spellings produced different normalized bytes");
+  require(__func__, equivalent.dataLayout == equivalentDataLayout,
+          "an equivalent data layout spelling was rewritten: " +
+              equivalent.dataLayout);
+  require(__func__, equivalent.bitcode != normalized.bitcode,
+          "distinct data layout spellings collapsed to identical bytes");
+
+  const RelocatableAcceleratorPayload exactPayload = takeExpected(
+      __func__,
+      RelocatableAcceleratorPayload::create(
+          buildSourceBitcode(__func__, representativeModuleAssembly, false),
+          anchorView()));
+  const RelocatableAcceleratorPayload equivalentPayload = takeExpected(
+      __func__,
+      RelocatableAcceleratorPayload::create(
+          buildSourceBitcode(__func__, equivalentSpellingAssembly(), false),
+          anchorView()));
+  require(__func__, exactPayload.identity() != equivalentPayload.identity(),
+          "equivalent data layout spellings collapsed payload identity");
+  require(__func__,
+          exactPayload.abiCompatibilityKey() ==
+              equivalentPayload.abiCompatibilityKey(),
+          "data layout spelling entered the ABI compatibility key");
 }
 
 void useListOrderIsTheOnlyDroppedDetail() {
@@ -286,7 +382,7 @@ void normalizationPreservesTheCompleteModule() {
   const std::string printed =
       printBitcodeAsAssembly(__func__, normalized.bitcode);
 
-  // Nothing but the canonical target spellings may differ from the source, so
+  // Nothing but the canonical target triple may differ from the source, so
   // the source module printed through the same path is the exact expectation.
   const std::string expected = printBitcodeAsAssembly(
       __func__,
@@ -312,7 +408,7 @@ void payloadRoundTripsThroughCanonicalBytes() {
           "the payload provider is not the build-selected provider");
   require(__func__, payload.targetTriple() == canonicalTargetTriple,
           "unexpected payload target triple: " + payload.targetTriple().str());
-  require(__func__, payload.dataLayout() == canonicalDataLayout,
+  require(__func__, payload.dataLayout() == anchorDataLayout,
           "unexpected payload data layout: " + payload.dataLayout().str());
 
   const CanonicalSemanticBytes canonical = payload.canonicalSemanticBytes();
@@ -341,7 +437,6 @@ void payloadRoundTripsThroughCanonicalBytes() {
   inputs.repositoryIdentity = payload.llvmProvider().repositoryIdentity;
   inputs.fullCommitIdentity = payload.llvmProvider().fullCommitIdentity;
   inputs.canonicalTargetTriple = payload.targetTriple();
-  inputs.canonicalDataLayout = payload.dataLayout();
   inputs.viewSchemaDescriptorBytes =
       payload.frontendConfigView().schemaDescriptorBytes();
   inputs.viewCanonicalBytes = payload.frontendConfigView().canonicalViewBytes();
@@ -373,23 +468,35 @@ void moduleContentChangesPayloadIdentity() {
           "a module content change moved the payload out of its ABI cohort");
 }
 
-/// Normalization fails closed rather than repairing an input: one target fact
-/// the pinned provider does not print, and one unparsable module.
+/// Normalization fails closed rather than repairing absent, malformed, or
+/// otherwise unparsable module data.
 void normalizationFailsClosed() {
   const char *test = __func__;
-  std::string foreignLayout = representativeModuleAssembly.str();
+  std::string emptyLayout = representativeModuleAssembly.str();
   const std::string layoutLine =
-      "target datalayout = \"" + canonicalDataLayout.str() + "\"";
-  const std::size_t at = foreignLayout.find(layoutLine);
+      "target datalayout = \"" + anchorDataLayout.str() + "\"\n";
+  const std::size_t at = emptyLayout.find(layoutLine);
   require(test, at != std::string::npos, "target fixture not found");
-  foreignLayout.replace(
-      at, layoutLine.size(),
-      "target datalayout = \"e-m:e-p:64:64-i64:64-n8:16:32:64-S128\"");
+  emptyLayout.erase(at, layoutLine.size());
   requireRejection(
       test,
-      rejectionMessage(test, normalizeLlvmModule(buildSourceBitcode(
-                                 test, foreignLayout, false))),
-      "data_layout_not_canonical", "unexpected foreign data layout rejection");
+      rejectionMessage(test, normalizeLlvmModule(
+                                 buildSourceBitcode(test, emptyLayout, false))),
+      "data_layout_absent", "unexpected empty data layout rejection");
+
+  requireRejection(
+      test,
+      rejectionMessage(test,
+                       normalizeLlvmModule(minimalBitcodeWithDataLayout(
+                           canonicalTargetTriple, "e-not-a-data-layout"))),
+      "data_layout_invalid", "unexpected malformed data layout rejection");
+
+  requireRejection(
+      test,
+      rejectionMessage(test, normalizeLlvmModule(minimalBitcodeWithDataLayout(
+                                 canonicalTargetTriple, anchorDataLayout,
+                                 /*duplicateDataLayout=*/true))),
+      "llvm_module_unparsable", "unexpected duplicate data layout rejection");
 
   const std::vector<std::uint8_t> garbage(64, 0x5a);
   requireRejection(test, rejectionMessage(test, normalizeLlvmModule(garbage)),
@@ -443,6 +550,8 @@ void staleRootProjectionsAreRejected() {
        "component_view_digest_mismatch"},
       {"target triple", &Root::targetTriple,
        bytesOf("aarch64-unknown-linux-gnu"), "target_triple_mismatch"},
+      {"data layout", &Root::dataLayout, bytesOf("not-a-data-layout"),
+       "data_layout_mismatch"},
       {"normalized bitcode digest", &Root::normalizedBitcodeDigest,
        flipped(payload.normalizedBitcodeDigest()),
        "normalized_bitcode_digest_mismatch"},
@@ -490,7 +599,9 @@ void noncanonicalModuleBytesAreRejected() {
 } // namespace
 
 int main() {
-  normalizationIsRepeatableAndCanonicalizesTargetSpellings();
+  normalizationPreservesRiscv64Lp64eDataLayoutSpelling();
+  normalizationPreservesRewriteProneDataLayoutSpelling();
+  normalizationIsRepeatableAndPreservesDataLayoutSpelling();
   useListOrderIsTheOnlyDroppedDetail();
   normalizationPreservesTheCompleteModule();
   payloadRoundTripsThroughCanonicalBytes();

@@ -31,10 +31,10 @@ const LlvmProviderIdentity &buildSelectedLlvmProvider();
 /// The complete `loom.relocatable_accelerator_payload` 1.0 Artifact value.
 ///
 /// Its raw fields are authority: the normalized module bytes, the provider
-/// identity, the canonical target facts, and the frontend view descriptor and
-/// bytes. The bitcode digest, component-view digest, and ABI compatibility key
-/// are mechanical projections that a reader recomputes and rejects on
-/// disagreement.
+/// identity, the canonical target triple, the exact data layout spelling, and
+/// the frontend view descriptor and bytes. The bitcode digest, component-view
+/// digest, and ABI compatibility key are mechanical projections that a reader
+/// recomputes and rejects on disagreement.
 class RelocatableAcceleratorPayload {
 public:
   static constexpr ArtifactSchemaDescriptor artifactSchema{
@@ -103,8 +103,8 @@ decodeRelocatableAcceleratorPayload(
     llvm::ArrayRef<std::uint8_t> canonicalBytes);
 
 /// The raw-field cohort preflight over two already validated payloads: provider
-/// repository and commit, canonical target triple and data layout, ABI
-/// compatibility key, and the complete frontend config view.
+/// repository and commit, canonical target triple, structurally equal data
+/// layouts, ABI compatibility key, and the complete frontend config view.
 ///
 /// This is a necessary condition, not proof that the LLVM modules link. It
 /// inspects no module content; the pinned LLVM Linker and LTO libraries remain

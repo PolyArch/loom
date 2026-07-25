@@ -20,12 +20,12 @@ namespace loom {
 /// The result of the one deterministic LLVM parser and bitcode writer contract
 /// that payload version 1.0 owns.
 ///
-/// The bitcode bytes are the module authority. The canonical target facts are
-/// mechanical projections of that same module, and the digest is a mechanical
-/// projection of exactly those bytes.
+/// The bitcode bytes are the module authority. The canonical target triple and
+/// exact data layout spelling are mechanical projections of that same module,
+/// and the digest is a mechanical projection of exactly those bytes.
 struct NormalizedLlvmModule {
   std::string canonicalTargetTriple;
-  std::string canonicalDataLayout;
+  std::string dataLayout;
   std::vector<std::uint8_t> bitcode;
   std::array<std::uint8_t, 32> bitcodeDigest = {};
 };
@@ -42,9 +42,9 @@ parseCompleteLlvmModule(llvm::ArrayRef<std::uint8_t> bitcode,
                         llvm::LLVMContext &context);
 
 /// Parses the source bitcode with the pinned LLVM provider, fully materializes
-/// it, runs the LLVM verifier, canonicalizes the target triple and data layout
-/// through the pinned LLVM parsers and printers, and writes the complete module
-/// back through the fixed writer contract.
+/// it, runs the LLVM verifier, canonicalizes the target triple, validates the
+/// exact module-owned data layout spelling through the pinned LLVM parser, and
+/// writes the complete module back through the fixed writer contract.
 ///
 /// LLVM's non-semantic use-list order is the only detail dropped. Nothing is
 /// sorted, renamed, stripped, optimized, or summarized, and no wrapper or

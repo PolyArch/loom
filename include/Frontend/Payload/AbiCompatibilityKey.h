@@ -15,14 +15,14 @@ namespace loom {
 ///
 /// The key frames these raw authoritative values directly. It deliberately
 /// excludes the component-view digest, which is already derived from the view
-/// descriptor and bytes below, and excludes the bitcode digest and module
-/// contents, because distinct translation units must be able to share one
-/// compatibility cohort.
+/// descriptor and bytes below. It also excludes the exact data layout spelling
+/// because LLVM defines structural equality but no canonical byte projection,
+/// and excludes the bitcode digest and module contents because distinct
+/// translation units must be able to share one compatibility cohort.
 struct AbiCompatibilityKeyInputs {
   llvm::StringRef repositoryIdentity;
   llvm::StringRef fullCommitIdentity;
   llvm::StringRef canonicalTargetTriple;
-  llvm::StringRef canonicalDataLayout;
   llvm::ArrayRef<std::uint8_t> viewSchemaDescriptorBytes;
   llvm::ArrayRef<std::uint8_t> viewCanonicalBytes;
 };

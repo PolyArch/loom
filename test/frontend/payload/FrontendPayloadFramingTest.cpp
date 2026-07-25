@@ -59,11 +59,8 @@ constexpr llvm::StringRef closedRepositoryIdentity = "llvm-project";
 constexpr llvm::StringRef closedCommitIdentity =
     "040a641988f6ed6f4fab250706ca2b620c1de2d8";
 
-/// Canonical target facts of the fixed ABI-key vector below.
+/// Canonical target triple of the fixed ABI-key vector below.
 constexpr llvm::StringRef vectorTargetTriple = "x86_64-unknown-linux-gnu";
-constexpr llvm::StringRef vectorDataLayout =
-    "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-"
-    "n8:16:32:64-S128";
 
 /// SHA-256 of the component-view preimage for the exact 1.0 frontend view,
 /// computed independently of this project's encoders.
@@ -74,13 +71,13 @@ constexpr std::array<std::uint8_t, ComponentViewDigest::byteSize>
                                0x6a, 0x5b, 0x54, 0x08, 0xac, 0x8d, 0xd2, 0x4d};
 
 /// SHA-256 of the ABI-key preimage for the closed provider, the canonical
-/// target facts above, and the 1.0 frontend view, computed independently of
+/// target triple above, and the 1.0 frontend view, computed independently of
 /// this project's encoders.
 constexpr std::array<std::uint8_t, AbiCompatibilityKey::byteSize>
-    knownAbiCompatibilityKey = {0xda, 0xe2, 0xde, 0xf1, 0x2b, 0x68, 0x24, 0x44,
-                                0x01, 0x3f, 0xf2, 0x2f, 0x16, 0x27, 0xe9, 0x3b,
-                                0x3b, 0x8a, 0x65, 0xd7, 0xe6, 0x05, 0xb7, 0x9b,
-                                0x0b, 0x02, 0x0e, 0x35, 0x94, 0x1a, 0x1b, 0x64};
+    knownAbiCompatibilityKey = {0xad, 0x60, 0xcf, 0x4c, 0x62, 0xc6, 0x49, 0xe6,
+                                0x68, 0x71, 0x34, 0x1f, 0x55, 0x6e, 0x37, 0x31,
+                                0xc3, 0x00, 0xea, 0xb0, 0x22, 0xbd, 0xec, 0xd8,
+                                0xbb, 0xf0, 0xf1, 0x44, 0x23, 0x3a, 0x68, 0x34};
 
 AbiCompatibilityKeyInputs
 vectorKeyInputs(const ResolvedFrontendConfigView &view) {
@@ -88,7 +85,6 @@ vectorKeyInputs(const ResolvedFrontendConfigView &view) {
   inputs.repositoryIdentity = closedRepositoryIdentity;
   inputs.fullCommitIdentity = closedCommitIdentity;
   inputs.canonicalTargetTriple = vectorTargetTriple;
-  inputs.canonicalDataLayout = vectorDataLayout;
   inputs.viewSchemaDescriptorBytes = view.schemaDescriptorBytes();
   inputs.viewCanonicalBytes = view.canonicalViewBytes();
   return inputs;
@@ -207,7 +203,7 @@ void abiKeyMatchesKnownVector() {
   static_assert(!std::is_same_v<AbiCompatibilityKey, ComponentViewDigest>);
 }
 
-void abiKeyFollowsEverySourceField() {
+void abiKeyFollowsEveryPreimageField() {
   const ResolvedFrontendConfigView view =
       projectResolvedFrontendConfigView(defaultResolvedConfig());
   const AbiCompatibilityKey key =
@@ -216,7 +212,6 @@ void abiKeyFollowsEverySourceField() {
   const std::string otherRepository = "llvm-project-fork";
   const std::string otherCommit(40, 'a');
   const std::string otherTriple = "aarch64-unknown-linux-gnu";
-  const std::string otherDataLayout = vectorDataLayout.str() + "-P0";
   const std::string otherDescriptor = "loom.config.view.frontend.2.0";
   const std::array<std::uint8_t, 1> otherViewBytes = {0x00};
 
@@ -238,9 +233,6 @@ void abiKeyFollowsEverySourceField() {
   });
   add("canonical_target_triple", [&](AbiCompatibilityKeyInputs &inputs) {
     inputs.canonicalTargetTriple = otherTriple;
-  });
-  add("canonical_data_layout", [&](AbiCompatibilityKeyInputs &inputs) {
-    inputs.canonicalDataLayout = otherDataLayout;
   });
   add("view_schema_descriptor", [&](AbiCompatibilityKeyInputs &inputs) {
     inputs.viewSchemaDescriptorBytes = asBytes(otherDescriptor);
@@ -288,6 +280,6 @@ int main() {
   unrelatedResolvedConfigFieldsLeaveTheViewUnchanged();
   adoptedFrontendViewFieldsFailClosed();
   abiKeyMatchesKnownVector();
-  abiKeyFollowsEverySourceField();
+  abiKeyFollowsEveryPreimageField();
   return 0;
 }

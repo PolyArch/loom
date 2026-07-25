@@ -9,6 +9,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
@@ -34,13 +35,11 @@ llvm::StringRef asText(llvm::ArrayRef<std::uint8_t> bytes) {
 
 AbiCompatibilityKeyInputs keyInputs(const LlvmProviderIdentity &provider,
                                     llvm::StringRef targetTriple,
-                                    llvm::StringRef dataLayout,
                                     const ResolvedFrontendConfigView &view) {
   AbiCompatibilityKeyInputs inputs;
   inputs.repositoryIdentity = provider.repositoryIdentity;
   inputs.fullCommitIdentity = provider.fullCommitIdentity;
   inputs.canonicalTargetTriple = targetTriple;
-  inputs.canonicalDataLayout = dataLayout;
   inputs.viewSchemaDescriptorBytes = view.schemaDescriptorBytes();
   inputs.viewCanonicalBytes = view.canonicalViewBytes();
   return inputs;
@@ -79,13 +78,12 @@ RelocatableAcceleratorPayload::create(
     return normalized.takeError();
 
   const LlvmProviderIdentity &provider = buildSelectedLlvmProvider();
-  const AbiCompatibilityKey abiKey = computeAbiCompatibilityKey(
-      keyInputs(provider, normalized->canonicalTargetTriple,
-                normalized->canonicalDataLayout, frontendConfigView));
+  const AbiCompatibilityKey abiKey = computeAbiCompatibilityKey(keyInputs(
+      provider, normalized->canonicalTargetTriple, frontendConfigView));
   return RelocatableAcceleratorPayload(
-      provider, normalized->canonicalTargetTriple,
-      normalized->canonicalDataLayout, abiKey, frontendConfigView,
-      std::move(normalized->bitcode), normalized->bitcodeDigest);
+      provider, normalized->canonicalTargetTriple, normalized->dataLayout,
+      abiKey, frontendConfigView, std::move(normalized->bitcode),
+      normalized->bitcodeDigest);
 }
 
 CanonicalSemanticBytes
@@ -177,25 +175,24 @@ decodeRelocatableAcceleratorPayload(
                     "'" +
                     asText(targetTriple) + "' but its module projects '" +
                     normalized->canonicalTargetTriple + "'");
-  if (asText(dataLayout) != llvm::StringRef(normalized->canonicalDataLayout))
+  if (asText(dataLayout) != llvm::StringRef(normalized->dataLayout))
     return rejected("data_layout_mismatch: the payload records data layout '" +
                     asText(dataLayout) + "' but its module projects '" +
-                    normalized->canonicalDataLayout + "'");
+                    normalized->dataLayout + "'");
 
   llvm::Expected<AbiCompatibilityKey> abiKey =
       AbiCompatibilityKey::fromBytes(abiKeyBytes);
   if (!abiKey)
     return abiKey.takeError();
   if (llvm::Error error = validateAbiCompatibilityKey(
-          keyInputs(provider, normalized->canonicalTargetTriple,
-                    normalized->canonicalDataLayout, *view),
+          keyInputs(provider, normalized->canonicalTargetTriple, *view),
           *abiKey))
     return std::move(error);
 
   return RelocatableAcceleratorPayload(
-      provider, normalized->canonicalTargetTriple,
-      normalized->canonicalDataLayout, *abiKey, *view,
-      std::move(normalized->bitcode), normalized->bitcodeDigest);
+      provider, normalized->canonicalTargetTriple, normalized->dataLayout,
+      *abiKey, *view, std::move(normalized->bitcode),
+      normalized->bitcodeDigest);
 }
 
 llvm::Error requireRelocatablePayloadCompatibility(
@@ -209,8 +206,21 @@ llvm::Error requireRelocatablePayloadCompatibility(
     return disagreement("the LLVM provider commit identity");
   if (lhs.targetTriple() != rhs.targetTriple())
     return disagreement("the canonical target triple");
-  if (lhs.dataLayout() != rhs.dataLayout())
-    return disagreement("the canonical data layout");
+
+  llvm::Expected<llvm::DataLayout> lhsLayout =
+      llvm::DataLayout::parse(lhs.dataLayout());
+  if (!lhsLayout)
+    return rejected("relocatable_payload_invalid: the left payload data "
+                    "layout is not accepted by the pinned LLVM provider: " +
+                    llvm::toString(lhsLayout.takeError()));
+  llvm::Expected<llvm::DataLayout> rhsLayout =
+      llvm::DataLayout::parse(rhs.dataLayout());
+  if (!rhsLayout)
+    return rejected("relocatable_payload_invalid: the right payload data "
+                    "layout is not accepted by the pinned LLVM provider: " +
+                    llvm::toString(rhsLayout.takeError()));
+  if (*lhsLayout != *rhsLayout)
+    return disagreement("the data layout structure");
   if (lhs.abiCompatibilityKey() != rhs.abiCompatibilityKey())
     return disagreement("the ABI compatibility key");
 

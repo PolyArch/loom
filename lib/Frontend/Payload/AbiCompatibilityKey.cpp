@@ -49,7 +49,6 @@ buildAbiCompatibilityKeyPreimage(const AbiCompatibilityKeyInputs &inputs) {
   appendFramed(preimage, inputs.repositoryIdentity);
   appendFramed(preimage, inputs.fullCommitIdentity);
   appendFramed(preimage, inputs.canonicalTargetTriple);
-  appendFramed(preimage, inputs.canonicalDataLayout);
   appendFramed(preimage, inputs.viewSchemaDescriptorBytes);
   appendFramed(preimage, inputs.viewCanonicalBytes);
   return preimage;

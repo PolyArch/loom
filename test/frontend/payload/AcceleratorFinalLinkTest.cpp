@@ -14,6 +14,8 @@
 #include "mlir/Target/LLVMIR/Import.h"
 
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/AsmParser/Parser.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
@@ -36,6 +38,7 @@
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -108,9 +111,22 @@ const llvm::Triple &foreignCohortTriple() {
   return triple;
 }
 
-std::string assemblyFor(const llvm::Triple &triple, const std::string &body) {
-  return "target datalayout = \"" + triple.computeDataLayout() +
+std::string assemblyWithDataLayout(const llvm::Triple &triple,
+                                   llvm::StringRef dataLayout,
+                                   const std::string &body) {
+  return "target datalayout = \"" + dataLayout.str() +
          "\"\ntarget triple = \"" + triple.str() + "\"\n\n" + body;
+}
+
+std::string assemblyFor(const llvm::Triple &triple, const std::string &body) {
+  return assemblyWithDataLayout(triple, triple.computeDataLayout(), body);
+}
+
+std::string reorderedDataLayout(llvm::StringRef dataLayout) {
+  llvm::SmallVector<llvm::StringRef, 16> components;
+  dataLayout.split(components, '-');
+  std::reverse(components.begin(), components.end());
+  return llvm::join(components, "-");
 }
 
 /// One externally visible definition, so a linked module states which selected
@@ -152,15 +168,20 @@ std::vector<std::uint8_t> bitcodeOf(const llvm::Module &module) {
 
 /// The complete canonical payload bytes production payload creation derives for
 /// one translation unit.
-std::vector<std::uint8_t> payloadBytesFor(const char *test,
-                                          llvm::StringRef assembly) {
+RelocatableAcceleratorPayload payloadFor(const char *test,
+                                         llvm::StringRef assembly) {
   llvm::LLVMContext context;
   const std::unique_ptr<llvm::Module> module =
       parseAssembly(test, assembly, context);
-  const RelocatableAcceleratorPayload payload = takeExpected(
+  return takeExpected(
       test, RelocatableAcceleratorPayload::create(
                 bitcodeOf(*module),
                 projectResolvedFrontendConfigView(defaultResolvedConfig())));
+}
+
+std::vector<std::uint8_t> payloadBytesFor(const char *test,
+                                          llvm::StringRef assembly) {
+  const RelocatableAcceleratorPayload payload = payloadFor(test, assembly);
   const CanonicalSemanticBytes canonical = payload.canonicalSemanticBytes();
   return std::vector<std::uint8_t>(canonical.bytes().begin(),
                                    canonical.bytes().end());
@@ -401,6 +422,97 @@ void carrierRoundTripPreservesPayloadIdentity() {
                 RelocatableAcceleratorPayload::artifactSchema, canonicalBytes));
   require(test, decoded.identity() == direct.identity(),
           "riding inside an object changed the payload's ArtifactIdentity");
+}
+
+/// Exact layout spelling is part of payload identity, while final-link
+/// compatibility is the pinned LLVM layout structure rather than text.
+void equivalentDataLayoutSpellingsLinkWithDistinctPayloadIdentities() {
+  const char *test = __func__;
+  const std::string exactLayout = hostTriple().computeDataLayout();
+  const std::string equivalentLayout = reorderedDataLayout(exactLayout);
+  require(test, equivalentLayout != exactLayout,
+          "the equivalent layout fixture did not change spelling");
+
+  const std::string body =
+      "$layout_anchor = comdat any\n"
+      "\n"
+      "define linkonce_odr i32 @loom_equivalent_layout(i32 %value) "
+      "comdat($layout_anchor) {\n"
+      "entry:\n"
+      "  ret i32 %value\n"
+      "}\n";
+  const std::string exactAssembly =
+      assemblyWithDataLayout(hostTriple(), exactLayout, body);
+  const std::string equivalentAssembly =
+      assemblyWithDataLayout(hostTriple(), equivalentLayout, body);
+  const RelocatableAcceleratorPayload exactPayload =
+      payloadFor(test, exactAssembly);
+  const RelocatableAcceleratorPayload equivalentPayload =
+      payloadFor(test, equivalentAssembly);
+  require(test, exactPayload.identity() != equivalentPayload.identity(),
+          "equivalent layout spellings collapsed payload identity");
+  require(test,
+          exactPayload.abiCompatibilityKey() ==
+              equivalentPayload.abiCompatibilityKey(),
+          "layout spelling entered the ABI compatibility key");
+
+  TempTree tree(test);
+  const std::string exactObject = tree.writeFile(
+      "exact.o", emitObject(test, translationUnitAssembly("loom_exact_carrier"),
+                            payloadBytesFor(test, exactAssembly)));
+  const std::string equivalentObject = tree.writeFile(
+      "equivalent.o",
+      emitObject(test, translationUnitAssembly("loom_equivalent_carrier"),
+                 payloadBytesFor(test, equivalentAssembly)));
+  LinkerSelectedInputs selected;
+  selected.selectObjectFile(exactObject);
+  selected.selectObjectFile(equivalentObject);
+
+  llvm::LLVMContext context;
+  const std::unique_ptr<llvm::Module> linked =
+      takeExpected(test, linkWith(selected, context));
+  require(test, linked != nullptr,
+          "structurally equivalent layouts produced no linked module");
+}
+
+/// A layout that differs structurally stays in the same necessary ABI-key
+/// cohort but is rejected by the production final-link preflight.
+void structurallyDifferentDataLayoutsFailFinalLink() {
+  const char *test = __func__;
+  const std::string exactLayout = hostTriple().computeDataLayout();
+  const std::string differentLayout = exactLayout + "-i7:8:8";
+  const std::string exactAssembly = assemblyWithDataLayout(
+      hostTriple(), exactLayout, definitionOf("loom_layout_exact"));
+  const std::string differentAssembly = assemblyWithDataLayout(
+      hostTriple(), differentLayout, definitionOf("loom_layout_different"));
+  const RelocatableAcceleratorPayload exactPayload =
+      payloadFor(test, exactAssembly);
+  const RelocatableAcceleratorPayload differentPayload =
+      payloadFor(test, differentAssembly);
+  require(test,
+          exactPayload.abiCompatibilityKey() ==
+              differentPayload.abiCompatibilityKey(),
+          "a structural layout mismatch changed the necessary ABI key");
+
+  TempTree tree(test);
+  const std::string exactObject = tree.writeFile(
+      "exact.o", emitObject(test, translationUnitAssembly("loom_exact_carrier"),
+                            payloadBytesFor(test, exactAssembly)));
+  const std::string differentObject = tree.writeFile(
+      "different.o",
+      emitObject(test, translationUnitAssembly("loom_different_carrier"),
+                 payloadBytesFor(test, differentAssembly)));
+  LinkerSelectedInputs selected;
+  selected.selectObjectFile(exactObject);
+  selected.selectObjectFile(differentObject);
+
+  llvm::LLVMContext context;
+  const std::string message =
+      rejectionMessage(test, linkWith(selected, context));
+  requireMentions(test, message, "selected_payload_incompatible",
+                  "a structural layout mismatch was not typed");
+  requireMentions(test, message, "data layout",
+                  "a structural layout mismatch did not name the field");
 }
 
 /// Objects without a payload stay valid link inputs, and a selection carrying
@@ -736,6 +848,8 @@ int main() {
 
   selectedObjectsAndArchiveMemberLinkOnce();
   carrierRoundTripPreservesPayloadIdentity();
+  equivalentDataLayoutSpellingsLinkWithDistinctPayloadIdentities();
+  structurallyDifferentDataLayoutsFailFinalLink();
   objectsWithoutPayloadStayValid();
   malformedSelectedMemberFailsWithAttribution();
   incompatibleRawCohortFieldsFail();

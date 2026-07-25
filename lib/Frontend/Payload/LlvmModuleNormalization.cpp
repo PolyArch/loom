@@ -6,6 +6,8 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
+#include "llvm/Bitcode/LLVMBitCodes.h"
+#include "llvm/Bitstream/BitstreamReader.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -18,14 +20,94 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace loom {
 namespace {
 
 llvm::Error rejected(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
+}
+
+llvm::Expected<std::string>
+readModuleDataLayoutRecord(llvm::BitstreamCursor &stream) {
+  if (llvm::Error error = stream.EnterSubBlock(llvm::bitc::MODULE_BLOCK_ID))
+    return std::move(error);
+
+  llvm::SmallVector<std::uint64_t, 64> record;
+  std::string dataLayout;
+  bool sawDataLayout = false;
+  while (true) {
+    llvm::Expected<llvm::BitstreamEntry> entry =
+        stream.advanceSkippingSubblocks();
+    if (!entry)
+      return entry.takeError();
+    switch (entry->Kind) {
+    case llvm::BitstreamEntry::SubBlock:
+    case llvm::BitstreamEntry::Error:
+      return rejected("malformed module block");
+    case llvm::BitstreamEntry::EndBlock:
+      return dataLayout;
+    case llvm::BitstreamEntry::Record:
+      break;
+    }
+
+    llvm::Expected<unsigned> code = stream.readRecord(entry->ID, record);
+    if (!code)
+      return code.takeError();
+    if (*code == llvm::bitc::MODULE_CODE_DATALAYOUT) {
+      if (sawDataLayout)
+        return rejected("duplicate data layout record");
+      sawDataLayout = true;
+      dataLayout.clear();
+      dataLayout.reserve(record.size());
+      for (std::uint64_t byte : record) {
+        if (byte > 0xff)
+          return rejected("invalid data layout record");
+        dataLayout.push_back(static_cast<char>(byte));
+      }
+    }
+    record.clear();
+  }
+}
+
+llvm::Expected<std::string> readRawDataLayout(llvm::MemoryBufferRef buffer) {
+  llvm::Expected<std::vector<llvm::BitcodeModule>> modules =
+      llvm::getBitcodeModuleList(buffer);
+  if (!modules)
+    return modules.takeError();
+  if (modules->size() != 1)
+    return rejected("expected exactly one bitcode module");
+
+  const llvm::StringRef moduleBuffer = modules->front().getBuffer();
+  llvm::BitstreamCursor stream(llvm::ArrayRef<std::uint8_t>(
+      reinterpret_cast<const std::uint8_t *>(moduleBuffer.data()),
+      moduleBuffer.size()));
+  while (true) {
+    llvm::Expected<llvm::BitstreamEntry> entry = stream.advance();
+    if (!entry)
+      return entry.takeError();
+    switch (entry->Kind) {
+    case llvm::BitstreamEntry::EndBlock:
+    case llvm::BitstreamEntry::Error:
+      return rejected("malformed bitcode block");
+    case llvm::BitstreamEntry::SubBlock:
+      if (entry->ID == llvm::bitc::MODULE_BLOCK_ID)
+        return readModuleDataLayoutRecord(stream);
+      if (llvm::Error error = stream.SkipBlock())
+        return std::move(error);
+      break;
+    case llvm::BitstreamEntry::Record: {
+      llvm::Expected<unsigned> skipped = stream.skipRecord(entry->ID);
+      if (!skipped)
+        return skipped.takeError();
+      break;
+    }
+    }
+  }
 }
 
 } // namespace
@@ -38,12 +120,31 @@ parseCompleteLlvmModule(llvm::ArrayRef<std::uint8_t> bitcode,
                       bitcode.size()),
       "loom.relocatable_accelerator_payload");
 
+  // BitcodeReader upgrades layout strings before its callback. Read the owner
+  // record first, then override that upgrade with the exact validated spelling.
+  llvm::Expected<std::string> rawDataLayout = readRawDataLayout(buffer);
+  if (!rawDataLayout)
+    return rejected("llvm_module_unparsable: " +
+                    llvm::toString(rawDataLayout.takeError()));
+  const std::string sourceDataLayout = std::move(*rawDataLayout);
+  if (!sourceDataLayout.empty()) {
+    llvm::Expected<llvm::DataLayout> parsedLayout =
+        llvm::DataLayout::parse(sourceDataLayout);
+    if (!parsedLayout)
+      return rejected("data_layout_invalid: " +
+                      llvm::toString(parsedLayout.takeError()));
+  }
+
+  llvm::ParserCallbacks callbacks(
+      [&sourceDataLayout](llvm::StringRef,
+                          llvm::StringRef) -> std::optional<std::string> {
+        return sourceDataLayout;
+      });
   llvm::Expected<std::unique_ptr<llvm::Module>> parsed =
-      llvm::parseBitcodeFile(buffer, context);
+      llvm::parseBitcodeFile(buffer, context, std::move(callbacks));
   if (!parsed)
     return rejected("llvm_module_unparsable: " +
                     llvm::toString(parsed.takeError()));
-
   // parseBitcodeFile already reads every function body. Materializing again
   // states the complete-module requirement explicitly and surfaces any deferred
   // failure before the module is treated as whole.
@@ -86,39 +187,7 @@ normalizeLlvmModule(llvm::ArrayRef<std::uint8_t> sourceBitcode) {
   if (sourceDataLayout.empty())
     return rejected("data_layout_absent: the module declares no data layout");
 
-  llvm::Expected<llvm::DataLayout> sourceLayout =
-      llvm::DataLayout::parse(sourceDataLayout);
-  if (!sourceLayout)
-    return rejected("data_layout_invalid: " +
-                    llvm::toString(sourceLayout.takeError()));
-
-  // Triple::computeDataLayout is the pinned provider's sole authority for data
-  // layout strings: clang derives every module data layout from it, and so do
-  // the code generators. DataLayout::getStringRepresentation only echoes the
-  // spelling a layout was parsed from and is documented as unusable for
-  // comparison, so it cannot canonicalize equivalent spellings. Structural
-  // equality through DataLayout::operator== is LLVM's own equivalence test, so
-  // an equivalent input spelling is accepted here and the canonical spelling is
-  // the one stored. A layout the pinned provider does not print for this triple
-  // is rejected rather than echoed back in its source spelling.
-  const std::string canonicalDataLayout = triple.computeDataLayout();
-  if (canonicalDataLayout.empty())
-    return rejected("data_layout_not_canonical: the pinned LLVM provider "
-                    "defines no data layout for target triple '" +
-                    canonicalTargetTriple + "'");
-  llvm::Expected<llvm::DataLayout> canonicalLayout =
-      llvm::DataLayout::parse(canonicalDataLayout);
-  if (!canonicalLayout)
-    return rejected("data_layout_invalid: " +
-                    llvm::toString(canonicalLayout.takeError()));
-  if (*sourceLayout != *canonicalLayout)
-    return rejected("data_layout_not_canonical: the module data layout is not "
-                    "equivalent to the pinned canonical layout '" +
-                    canonicalDataLayout + "' for target triple '" +
-                    canonicalTargetTriple + "'");
-
   module.setTargetTriple(triple);
-  module.setDataLayout(*canonicalLayout);
 
   llvm::SmallVector<char, 0> written;
   llvm::raw_svector_ostream stream(written);
@@ -127,7 +196,7 @@ normalizeLlvmModule(llvm::ArrayRef<std::uint8_t> sourceBitcode) {
 
   NormalizedLlvmModule normalized;
   normalized.canonicalTargetTriple = canonicalTargetTriple;
-  normalized.canonicalDataLayout = canonicalDataLayout;
+  normalized.dataLayout = sourceDataLayout;
   normalized.bitcode.assign(written.begin(), written.end());
   normalized.bitcodeDigest = llvm::SHA256::hash(normalized.bitcode);
   return normalized;
