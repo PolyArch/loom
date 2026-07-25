@@ -7,6 +7,12 @@ target_link_libraries(loom-common-artifact-test PRIVATE
   LLVMSupport
 )
 
+# Route fsync calls in this test binary through the deterministic
+# directory-flush failure wrapper defined in ArtifactTest.cpp.
+target_link_options(loom-common-artifact-test PRIVATE
+  "-Wl,--wrap=fsync"
+)
+
 add_executable(loom-common-blob-test
   BlobTest.cpp
 )

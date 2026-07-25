@@ -24,6 +24,8 @@
 #include <limits>
 #include <string>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/un.h>
 #include <thread>
 #include <type_traits>
@@ -32,6 +34,22 @@
 #include <vector>
 
 using namespace loom;
+
+// This test binary is linked with --wrap=fsync so that the real ArtifactStore
+// implementation's fsync calls resolve to __wrap_fsync. The wrapper fails
+// exactly one scoped class of call, a store-directory flush, to reproduce the
+// ambiguous post-insertion failure. Production code carries no injection hook.
+static std::atomic<bool> failDirectoryFlush{false};
+
+extern "C" int __wrap_fsync(int fd) {
+  struct stat status;
+  if (failDirectoryFlush.load(std::memory_order_acquire) &&
+      ::fstat(fd, &status) == 0 && S_ISDIR(status.st_mode)) {
+    errno = EIO;
+    return -1;
+  }
+  return static_cast<int>(::syscall(SYS_fsync, fd));
+}
 
 namespace {
 
@@ -329,6 +347,51 @@ void concurrentIdenticalPublishDeduplicates() {
           readFile(__func__, files.front()) ==
               expectedPreimage(testSchema, bytes),
           "deduplicated object has unexpected contents");
+}
+
+class DirectoryFlushFailureScope {
+public:
+  DirectoryFlushFailureScope() {
+    failDirectoryFlush.store(true, std::memory_order_release);
+  }
+  ~DirectoryFlushFailureScope() {
+    failDirectoryFlush.store(false, std::memory_order_release);
+  }
+};
+
+void postInsertionIoFailureKeepsCompleteObjectAndAllowsRetry() {
+  TemporaryDirectory directory(__func__);
+  ArtifactStore store(directory.path());
+  const CanonicalSemanticBytes bytes = semantic({0x60, 0x61});
+  const ArtifactIdentity identity = finalizeArtifactIdentity(testSchema, bytes);
+
+  {
+    DirectoryFlushFailureScope flushFailure;
+    expectErrorContains(__func__, store.put(testSchema, bytes),
+                        "artifact_store_io");
+    const CanonicalSemanticBytes published =
+        takeExpected(__func__, store.get(testSchema, identity));
+    require(__func__, published.bytes().equals(bytes.bytes()),
+            "post-insertion failure did not leave the complete object "
+            "readable");
+    const std::vector<std::string> files =
+        regularFiles(__func__, directory.path());
+    require(__func__,
+            files.size() == 1 &&
+                files.front() == objectPath(directory.path(), identity),
+            "post-insertion failure left state other than the one complete "
+            "object");
+  }
+
+  require(__func__,
+          takeExpected(__func__, store.put(testSchema, bytes)) == identity,
+          "deterministic retry after a post-insertion failure returned a "
+          "different identity");
+  const CanonicalSemanticBytes recovered =
+      takeExpected(__func__, store.get(testSchema, identity));
+  require(__func__, recovered.bytes().equals(bytes.bytes()),
+          "deterministic retry did not converge to the complete expected "
+          "object");
 }
 
 void existingWrongOrCorruptObjectIsRejected() {
@@ -712,6 +775,7 @@ int main() {
   finalizerMatchesKnownEnvelopeAndDigest();
   identityBoundariesRejectInvalidValues();
   concurrentIdenticalPublishDeduplicates();
+  postInsertionIoFailureKeepsCompleteObjectAndAllowsRetry();
   existingWrongOrCorruptObjectIsRejected();
   existingSymlinkObjectIsRejected();
   storedCanonicalBytesRoundTrip();
