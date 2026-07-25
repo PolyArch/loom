@@ -244,10 +244,24 @@ loom::fabric::validateFabricRef(const FabricArtifactView &view,
 llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,
                                             const FabricMemoryServiceRef &ref) {
   switch (ref.kind()) {
-#define LOOM_FABRIC_MEMORY_SERVICE(Name, Keyword, Type)                        \
-  case FabricMemoryServiceKind::Name:                                          \
-    return validateFabricRef(view, std::get<Type>(ref.payload));
-#include "Fabric/Identity/FabricRefs.def"
+  case FabricMemoryServiceKind::Local: {
+    // The Local variant exists only where the memory occurrence declares its
+    // optional Local Memory Service. This is the one place that rule lives,
+    // so every nested region, owner, and refined use inherits it.
+    const FabricMemoryOccurrenceRef memory =
+        std::get<FabricMemoryOccurrenceRef>(ref.payload);
+    if (llvm::Error error = validateFabricRef(view, memory))
+      return error;
+    if (!view.declaresLocalMemoryService(memory))
+      return makeFabricRefError(FabricRefErrorKind::WrongEntityKind,
+                                llvm::Twine("memory occurrence ") +
+                                    llvm::Twine(memory.id()) +
+                                    " declares no Local Memory Service");
+    return llvm::Error::success();
+  }
+  case FabricMemoryServiceKind::System:
+    return validateFabricRef(view,
+                             std::get<SystemMemoryServiceRef>(ref.payload));
   }
   return llvm::Error::success();
 }
@@ -393,20 +407,13 @@ loom::fabric::deriveFabricFuOccurrenceNode(const FabricArtifactView &view,
 
 llvm::Error loom::fabric::validateFabricRef(const FabricArtifactView &view,
                                             const LocalMemoryServiceRef &ref) {
-  if (llvm::Error error = validateFabricRef(view, ref.underlying()))
-    return error;
+  // The refined name only narrows the accepted variant; presence of the
+  // service remains the generic reference's rule.
   if (ref.underlying().kind() != FabricMemoryServiceKind::Local)
     return makeFabricRefError(FabricRefErrorKind::WrongEntityKind,
                               "a local memory service reference selects the "
                               "System variant");
-  const FabricMemoryOccurrenceRef memory =
-      std::get<FabricMemoryOccurrenceRef>(ref.underlying().payload);
-  if (!view.declaresLocalMemoryService(memory))
-    return makeFabricRefError(FabricRefErrorKind::WrongEntityKind,
-                              llvm::Twine("memory occurrence ") +
-                                  llvm::Twine(memory.id()) +
-                                  " declares no Local Memory Service");
-  return llvm::Error::success();
+  return validateFabricRef(view, ref.underlying());
 }
 
 /// The owner inventory decides which refined endpoint name applies; the
