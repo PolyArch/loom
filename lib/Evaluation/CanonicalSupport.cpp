@@ -38,11 +38,6 @@ void appendFramedString(std::vector<std::uint8_t> &bytes,
   bytes.insert(bytes.end(), text.bytes_begin(), text.bytes_end());
 }
 
-void appendArtifactIdentity(std::vector<std::uint8_t> &bytes,
-                            const ArtifactIdentity &identity) {
-  bytes.insert(bytes.end(), identity.bytes().begin(), identity.bytes().end());
-}
-
 void appendSchemaVersion(std::vector<std::uint8_t> &bytes,
                          SchemaVersion version) {
   appendU32Be(bytes, version.major);
@@ -57,43 +52,6 @@ void appendDecimalValue(std::vector<std::uint8_t> &bytes, DecimalValue value) {
 void appendExactRatio(std::vector<std::uint8_t> &bytes, ExactRatio value) {
   appendU64Be(bytes, value.numerator());
   appendU64Be(bytes, value.denominator());
-}
-
-std::string formatPayloadHex(llvm::ArrayRef<std::uint8_t> payload) {
-  static constexpr char digits[] = "0123456789abcdef";
-  std::string text;
-  text.reserve(payload.size() * 2);
-  for (std::uint8_t byte : payload) {
-    text.push_back(digits[byte >> 4]);
-    text.push_back(digits[byte & 0x0f]);
-  }
-  return text;
-}
-
-llvm::Expected<std::vector<std::uint8_t>>
-parsePayloadHex(llvm::StringRef text) {
-  const auto nibble = [](char character) -> int {
-    if (character >= '0' && character <= '9')
-      return character - '0';
-    if (character >= 'a' && character <= 'f')
-      return 10 + (character - 'a');
-    return -1;
-  };
-
-  if ((text.size() % 2) != 0)
-    return evaluationError("a local target payload must use paired lowercase "
-                           "hexadecimal characters");
-  std::vector<std::uint8_t> payload;
-  payload.reserve(text.size() / 2);
-  for (std::size_t index = 0; index < text.size(); index += 2) {
-    const int high = nibble(text[index]);
-    const int low = nibble(text[index + 1]);
-    if (high < 0 || low < 0)
-      return evaluationError("a local target payload must use paired lowercase "
-                             "hexadecimal characters");
-    payload.push_back(static_cast<std::uint8_t>((high << 4) | low));
-  }
-  return payload;
 }
 
 llvm::Error

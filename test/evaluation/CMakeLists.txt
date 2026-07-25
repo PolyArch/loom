@@ -4,6 +4,8 @@ add_executable(loom-evaluation-case-test
 
 target_link_libraries(loom-evaluation-case-test PRIVATE
   LoomEvaluation
+  LoomFabricIdentity
+  LoomImplementationPlatform
   LLVMSupport
 )
 

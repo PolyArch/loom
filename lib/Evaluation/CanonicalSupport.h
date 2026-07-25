@@ -13,12 +13,12 @@
 
 #include <cstdint>
 #include <initializer_list>
-#include <string>
 #include <vector>
 
 // Shared canonical-byte framing and strict JSON decoding used by every
 // Evaluation value schema. Framing is big-endian with explicit lengths so no
-// key is a prefix of another.
+// key is a prefix of another. Cross-artifact reference framing itself is
+// owned by Common; these helpers only compose it.
 
 namespace loom::evaluation::detail {
 
@@ -30,22 +30,16 @@ void appendI64Be(std::vector<std::uint8_t> &bytes, std::int64_t value);
 void appendFramedBytes(std::vector<std::uint8_t> &bytes,
                        llvm::ArrayRef<std::uint8_t> payload);
 void appendFramedString(std::vector<std::uint8_t> &bytes, llvm::StringRef text);
-void appendArtifactIdentity(std::vector<std::uint8_t> &bytes,
-                            const ArtifactIdentity &identity);
 void appendSchemaVersion(std::vector<std::uint8_t> &bytes,
                          SchemaVersion version);
 void appendDecimalValue(std::vector<std::uint8_t> &bytes, DecimalValue value);
 void appendExactRatio(std::vector<std::uint8_t> &bytes, ExactRatio value);
 
-/// Framed target key shared by the canonical scope key and every condition key
-/// that carries a target.
+/// Framed target key shared by the canonical scope key and every condition
+/// key that carries a target. The reference framing is exactly the Common
+/// heterogeneous framing.
 void appendSubjectTargetKey(std::vector<std::uint8_t> &bytes,
                             const SubjectTargetRef &target);
-
-/// Lowercase hexadecimal text of a complete family-owned payload of any
-/// length. Evaluation frames the bytes and never interprets them.
-std::string formatPayloadHex(llvm::ArrayRef<std::uint8_t> payload);
-llvm::Expected<std::vector<std::uint8_t>> parsePayloadHex(llvm::StringRef text);
 
 llvm::Error rejectUnknownFields(const llvm::json::Object &object,
                                 llvm::StringRef context,

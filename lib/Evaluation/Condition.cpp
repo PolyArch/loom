@@ -2,6 +2,8 @@
 
 #include "CanonicalSupport.h"
 
+#include "ImplementationPlatform/TechnologyCorner.h"
+
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -16,6 +18,7 @@ namespace {
 
 using detail::appendDecimalValue;
 using detail::appendExactRatio;
+using detail::appendFramedBytes;
 using detail::appendSubjectTargetKey;
 using detail::appendU32Be;
 using detail::appendU64Be;
@@ -121,56 +124,45 @@ llvm::Error validateConditionPayload(const EvaluationCondition &condition) {
   llvm_unreachable("unknown EvaluationConditionKind");
 }
 
-/// Every SubjectTargetRef a condition payload carries, in canonical payload
-/// order. A condition target obeys exactly the same case-bound rules as a
-/// scope target.
-llvm::SmallVector<const SubjectTargetRef *, 2>
-conditionTargets(const EvaluationCondition &condition) {
-  llvm::SmallVector<const SubjectTargetRef *, 2> targets;
-  switch (condition.kind()) {
-  case EvaluationConditionKind::ProcessCorner:
-    targets.push_back(
-        &std::get<ProcessCornerCondition>(condition.payload).target);
-    break;
-  case EvaluationConditionKind::SupplyVoltage:
-    targets.push_back(
-        &std::get<SupplyVoltageCondition>(condition.payload).powerDomain);
-    break;
-  case EvaluationConditionKind::Temperature:
-    targets.push_back(
-        &std::get<TemperatureCondition>(condition.payload).thermalDomainOrRoot);
-    break;
-  case EvaluationConditionKind::RequiredClockPeriod:
-    targets.push_back(
-        &std::get<RequiredClockPeriodCondition>(condition.payload).clockDomain);
-    break;
-  case EvaluationConditionKind::RelativeClockSchedule: {
-    const auto &schedule =
-        std::get<RelativeClockScheduleCondition>(condition.payload);
-    targets.push_back(&schedule.referenceClock);
-    targets.push_back(&schedule.dependentClock);
-    break;
-  }
-  case EvaluationConditionKind::ActivityBinding: {
-    const auto &activity =
-        std::get<ActivityBindingCondition>(condition.payload);
-    targets.push_back(&activity.target);
-    if (const auto *assumption =
-            std::get_if<ExplicitAssumptionSource>(&activity.source))
-      targets.push_back(&assumption->clockDomain);
-    break;
-  }
-  case EvaluationConditionKind::Quantile:
-    break;
-  }
-  return targets;
+/// A process corner is exactly the TechnologyCorner local-reference kind of
+/// loom.implementation_platform 1.0. The ImplementationPlatform owner decodes
+/// and validates it; the exact platform must additionally be admitted by the
+/// condition target's anchor closure.
+llvm::Error validateProcessCorner(const ProcessCornerCondition &corner,
+                                  const CaseTargetContext &context) {
+  if (corner.corner.artifact.schema != platform::implementationPlatformSchema)
+    return evaluationError("a process corner requires the exact "
+                           "loom.implementation_platform 1.0 schema");
+  if (corner.corner.ownerLocalKind != platform::technologyCornerLocalKind)
+    return evaluationError("local-reference kind " +
+                           std::to_string(corner.corner.ownerLocalKind) +
+                           " is not the technology corner kind of schema '" +
+                           platform::implementationPlatformSchema.identity +
+                           "'");
+  const CaseArtifactResolution::Entry *platformEntry =
+      context.resolution().find(corner.corner.artifact);
+  if (!platformEntry)
+    return evaluationError("the implementation platform artifact of a process "
+                           "corner is unresolved");
+  if (llvm::Error error = validateArtifactLocalReference(corner.corner))
+    return error;
+
+  const CaseArtifactResolution::Entry *anchor =
+      context.resolution().find(corner.target.anchorSubjectArtifact);
+  if (!anchor ||
+      !CaseArtifactResolution::reaches(*anchor, corner.corner.artifact))
+    return evaluationError(
+        "the exact implementation platform is not admitted by the selected "
+        "subject's dependency closure");
+  return llvm::Error::success();
 }
 
 void appendActivitySource(std::vector<std::uint8_t> &key,
                           const ActivitySource &source) {
   if (const auto *execution = std::get_if<ExecutionActivitySource>(&source)) {
     appendU32Be(key, executionActivityDiscriminator);
-    detail::appendArtifactIdentity(key, execution->simulationExecution);
+    appendFramedBytes(key,
+                      encodeArtifactRootReference(execution->simulationExecution));
     appendU64Be(key, execution->activitySummaryOrdinal);
     return;
   }
@@ -216,6 +208,61 @@ llvm::StringRef toString(ConditionLocation location) {
   llvm_unreachable("unknown ConditionLocation");
 }
 
+std::vector<const SubjectTargetRef *>
+conditionOrderedTargets(const EvaluationCondition &condition) {
+  std::vector<const SubjectTargetRef *> targets;
+  switch (condition.kind()) {
+  case EvaluationConditionKind::ProcessCorner:
+    targets.push_back(
+        &std::get<ProcessCornerCondition>(condition.payload).target);
+    break;
+  case EvaluationConditionKind::SupplyVoltage:
+    targets.push_back(
+        &std::get<SupplyVoltageCondition>(condition.payload).powerDomain);
+    break;
+  case EvaluationConditionKind::Temperature:
+    targets.push_back(
+        &std::get<TemperatureCondition>(condition.payload).thermalDomainOrRoot);
+    break;
+  case EvaluationConditionKind::RequiredClockPeriod:
+    targets.push_back(
+        &std::get<RequiredClockPeriodCondition>(condition.payload).clockDomain);
+    break;
+  case EvaluationConditionKind::RelativeClockSchedule: {
+    const auto &schedule =
+        std::get<RelativeClockScheduleCondition>(condition.payload);
+    targets.push_back(&schedule.referenceClock);
+    targets.push_back(&schedule.dependentClock);
+    break;
+  }
+  case EvaluationConditionKind::ActivityBinding: {
+    const auto &activity =
+        std::get<ActivityBindingCondition>(condition.payload);
+    targets.push_back(&activity.target);
+    if (const auto *assumption =
+            std::get_if<ExplicitAssumptionSource>(&activity.source))
+      targets.push_back(&assumption->clockDomain);
+    break;
+  }
+  case EvaluationConditionKind::Quantile:
+    break;
+  }
+  return targets;
+}
+
+ConditionApplicabilityPattern
+deriveConditionApplicabilityPattern(const EvaluationCondition &condition,
+                                    EvaluationCaseSignatureRef caseSignature) {
+  std::vector<const SubjectTargetRef *> targets =
+      conditionOrderedTargets(condition);
+  llvm::SmallVector<SubjectTargetRef, 2> owned;
+  owned.reserve(targets.size());
+  for (const SubjectTargetRef *target : targets)
+    owned.push_back(*target);
+  return ConditionApplicabilityPattern{
+      condition.kind(), deriveOrderedTargetPattern(owned, caseSignature)};
+}
+
 std::vector<std::uint8_t>
 conditionAssignmentKey(const EvaluationCondition &condition) {
   std::vector<std::uint8_t> key;
@@ -225,7 +272,7 @@ conditionAssignmentKey(const EvaluationCondition &condition) {
   case EvaluationConditionKind::Temperature:
   case EvaluationConditionKind::RequiredClockPeriod:
   case EvaluationConditionKind::ActivityBinding:
-    appendSubjectTargetKey(key, *conditionTargets(condition)[0]);
+    appendSubjectTargetKey(key, *conditionOrderedTargets(condition)[0]);
     return key;
   case EvaluationConditionKind::RelativeClockSchedule: {
     const auto &schedule =
@@ -248,8 +295,7 @@ conditionPayloadKey(const EvaluationCondition &condition) {
   case EvaluationConditionKind::ProcessCorner: {
     const auto &corner = std::get<ProcessCornerCondition>(condition.payload);
     appendSubjectTargetKey(key, corner.target);
-    detail::appendArtifactIdentity(key, corner.corner.provider());
-    appendU64Be(key, corner.corner.corner());
+    appendFramedBytes(key, encodeArtifactLocalReference(corner.corner));
     return key;
   }
   case EvaluationConditionKind::SupplyVoltage: {
@@ -296,9 +342,11 @@ conditionPayloadKey(const EvaluationCondition &condition) {
 }
 
 llvm::Expected<std::vector<EvaluationCondition>>
-canonicalizeEvaluationConditions(llvm::ArrayRef<EvaluationCondition> conditions,
-                                 const ConditionApplicability &applicability,
-                                 const CaseTargetContext &context) {
+canonicalizeEvaluationConditions(
+    llvm::ArrayRef<EvaluationCondition> conditions, ConditionLocation location,
+    llvm::StringRef permittingOwner,
+    llvm::ArrayRef<ConditionApplicabilityPattern> permittedPatterns,
+    const CaseTargetContext &context) {
   struct KeyedCondition {
     EvaluationCondition condition;
     std::vector<std::uint8_t> assignmentKey;
@@ -310,31 +358,32 @@ canonicalizeEvaluationConditions(llvm::ArrayRef<EvaluationCondition> conditions,
   for (const EvaluationCondition &condition : conditions) {
     const EvaluationConditionDescriptor &descriptor =
         conditionDescriptor(condition.kind());
-    if (!descriptor.permitsLocation(applicability.location))
+    if (!descriptor.permitsLocation(location))
       return evaluationError("condition '" + descriptor.spelling +
-                             "' is not permitted in " +
-                             toString(applicability.location) + " conditions");
-    const ConditionPattern *pattern =
-        applicability.findPattern(condition.kind());
-    if (!pattern)
-      return evaluationError("condition '" + descriptor.spelling +
-                             "' is not applicable to '" +
-                             applicability.permittingOwner + "'");
+                             "' is not permitted in " + toString(location) +
+                             " conditions");
     if (llvm::Error error = validateConditionPayload(condition))
       return std::move(error);
-    for (const SubjectTargetRef *target : conditionTargets(condition)) {
-      if (std::find(pattern->permittedTargetRoles.begin(),
-                    pattern->permittedTargetRoles.end(),
-                    target->caseSubjectRole) ==
-          pattern->permittedTargetRoles.end())
-        return evaluationError(
-            "'" + applicability.permittingOwner +
-            "' does not permit case subject role " +
-            std::to_string(target->caseSubjectRole.ordinal()) +
-            " as a target of condition '" + descriptor.spelling + "'");
+    if (condition.kind() == EvaluationConditionKind::ProcessCorner)
+      if (llvm::Error error = validateProcessCorner(
+              std::get<ProcessCornerCondition>(condition.payload), context))
+        return std::move(error);
+    for (const SubjectTargetRef *target : conditionOrderedTargets(condition))
       if (llvm::Error error = validateSubjectTargetRef(*target, context))
         return std::move(error);
-    }
+
+    // Owner validation ran first; now the derived exact pattern must match
+    // one complete pattern of the permitting owner.
+    const ConditionApplicabilityPattern derived =
+        deriveConditionApplicabilityPattern(condition, context.signatureRef());
+    bool permitted = false;
+    for (const ConditionApplicabilityPattern &pattern : permittedPatterns)
+      permitted = permitted || pattern == derived;
+    if (!permitted)
+      return evaluationError("condition '" + descriptor.spelling +
+                             "' is not applicable to '" + permittingOwner +
+                             "'");
+
     keyed.push_back({condition, conditionAssignmentKey(condition),
                      conditionPayloadKey(condition)});
   }

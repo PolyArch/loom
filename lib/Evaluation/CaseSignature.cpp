@@ -3,17 +3,13 @@
 #include "CanonicalSupport.h"
 
 #include "Common/ArtifactText.h"
-#include "Fabric/ArtifactSchema.h"
-#include "Mapping/ArtifactSchema.h"
-#include "Simulator/ArtifactSchema.h"
-
-#include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
-#include <array>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace loom::evaluation {
 namespace {
@@ -22,8 +18,14 @@ using detail::evaluationError;
 
 constexpr SchemaVersion evaluationSchema{1, 0};
 
-bool identityLess(const ArtifactIdentity &lhs, const ArtifactIdentity &rhs) {
-  return lhs.bytes() < rhs.bytes();
+std::vector<const EvaluationCaseSignatureDescriptor *> &caseSignatures() {
+  static std::vector<const EvaluationCaseSignatureDescriptor *> descriptors;
+  return descriptors;
+}
+
+std::mutex &caseSignatureMutex() {
+  static std::mutex mutex;
+  return mutex;
 }
 
 llvm::Error unresolvedArtifact(llvm::StringRef reference) {
@@ -33,25 +35,21 @@ llvm::Error unresolvedArtifact(llvm::StringRef reference) {
 llvm::Error validateAcceptedSchema(
     llvm::StringRef reference,
     llvm::ArrayRef<const ArtifactSchemaDescriptor *> accepted,
-    const ArtifactIdentity &artifact,
-    const CaseArtifactResolution &resolution) {
-  const CaseArtifactResolution::Entry *entry = resolution.find(artifact);
-  if (!entry)
-    return unresolvedArtifact(reference);
+    const ArtifactRootReference &artifact) {
   for (const ArtifactSchemaDescriptor *schema : accepted)
-    if (schema->identity == entry->schema->identity &&
-        schema->version == entry->schema->version)
+    if (*schema == artifact.schema)
       return llvm::Error::success();
   return evaluationError(reference + " does not accept schema '" +
-                         entry->schema->identity + " " +
-                         formatSchemaVersion(entry->schema->version) + "'");
+                         artifact.schema.identity + " " +
+                         formatSchemaVersion(artifact.schema.version) + "'");
 }
 
 llvm::Error validateReferenceRequirement(
     const EvaluationCaseSignatureDescriptor &signature,
     ArtifactRequirement requirement,
     llvm::ArrayRef<const ArtifactSchemaDescriptor *> accepted,
-    llvm::StringRef reference, const std::optional<ArtifactIdentity> &value,
+    llvm::StringRef reference,
+    const std::optional<ArtifactRootReference> &value,
     const CaseArtifactResolution &resolution) {
   if (!value) {
     if (requirement == ArtifactRequirement::Required)
@@ -62,89 +60,68 @@ llvm::Error validateReferenceRequirement(
   if (requirement == ArtifactRequirement::Forbidden)
     return evaluationError("case signature '" + signature.spelling +
                            "' forbids a " + reference + " reference");
-  return validateAcceptedSchema(reference, accepted, *value, resolution);
+  if (!resolution.find(*value))
+    return unresolvedArtifact(reference);
+  return validateAcceptedSchema(reference, accepted, *value);
 }
 
-//===----------------------------------------------------------------------===//
-// The MappedWorkloadExecution signature
-//===----------------------------------------------------------------------===//
-
-const ArtifactSchemaDescriptor *const acceptedFabricSchemas[] = {
-    &fabric::artifactSchema};
-const ArtifactSchemaDescriptor *const acceptedMappingSchemas[] = {
-    &loom::mapping::artifactSchema};
-const ArtifactSchemaDescriptor *const acceptedWorkloadSchemas[] = {
-    &loom::sim::workloadSchema};
-const ArtifactSchemaDescriptor *const acceptedRuntimeInputSchemas[] = {
-    &loom::sim::runtimeInputSchema};
-
-/// A Mapping root binds its exact Fabric upstream, so a bound Mapping subject
-/// must depend on every bound Fabric subject of the same case.
-llvm::Error verifyMappingBindsFabric(const ArtifactIdentity &subject,
-                                     const EvaluationSubjectBindings &bindings,
-                                     const CaseArtifactResolution &resolution) {
-  const CaseArtifactResolution::Entry *entry = resolution.find(subject);
-  if (!entry)
-    return unresolvedArtifact("mapping subject");
-  for (const ArtifactIdentity &fabricSubject :
-       bindings.subjects(CaseSubjectRoleRef(0)))
-    if (!CaseArtifactResolution::reaches(*entry, fabricSubject))
-      return evaluationError("the bound mapping subject does not depend on the "
-                             "bound fabric subject");
+llvm::Error validateRoleDefinitions(
+    const EvaluationCaseSignatureDescriptor &descriptor) {
+  for (std::size_t index = 0; index < descriptor.subjectRoles.size(); ++index) {
+    const CaseSubjectRoleDescriptor &role = descriptor.subjectRoles[index];
+    if (role.role != CaseSubjectRoleRef(static_cast<std::uint32_t>(index)))
+      return evaluationError("case signature '" + descriptor.spelling +
+                             "' must declare ordered nonrepeating subject "
+                             "roles");
+    if (role.acceptedSchemas.empty())
+      return evaluationError("subject role '" + role.semanticRole +
+                             "' must accept at least one artifact schema");
+    for (std::size_t earlier = 0; earlier < index; ++earlier)
+      if (descriptor.subjectRoles[earlier].semanticRole == role.semanticRole)
+        return evaluationError("case signature '" + descriptor.spelling +
+                               "' must declare ordered nonrepeating subject "
+                               "roles");
+  }
   return llvm::Error::success();
 }
 
-/// A runtime input references its exact workload, so the two orthogonal
-/// references of one case must agree.
-llvm::Error verifyRuntimeInputBindsWorkload(
-    const EvaluationSubjectBindings &bindings,
-    const std::optional<ArtifactIdentity> &workload,
-    const std::optional<ArtifactIdentity> &runtimeInput,
-    const CaseArtifactResolution &resolution) {
-  if (!runtimeInput)
-    return llvm::Error::success();
-  const CaseArtifactResolution::Entry *entry = resolution.find(*runtimeInput);
-  if (!entry)
-    return unresolvedArtifact("runtime input");
-  if (!workload || !CaseArtifactResolution::reaches(*entry, *workload))
-    return evaluationError("the runtime input does not reference the exact "
-                           "workload of this case");
+llvm::Error validateBasePatternSet(
+    const EvaluationCaseSignatureDescriptor &descriptor,
+    EvaluationCaseSignatureRef signatureRef) {
+  for (std::size_t index = 0; index < descriptor.permittedBaseConditions.size();
+       ++index) {
+    const ConditionApplicabilityPattern &pattern =
+        descriptor.permittedBaseConditions[index];
+    if (index != 0 &&
+        !conditionApplicabilityPatternLess(
+            descriptor.permittedBaseConditions[index - 1], pattern)) {
+      if (descriptor.permittedBaseConditions[index - 1] == pattern)
+        return evaluationError("case signature '" + descriptor.spelling +
+                               "' declares a duplicate base-condition pattern");
+      return evaluationError("case signature '" + descriptor.spelling +
+                             "' declares base-condition patterns out of "
+                             "canonical order");
+    }
+    if (!conditionDescriptor(pattern.kind)
+             .permitsLocation(ConditionLocation::Base))
+      return evaluationError("condition '" + toString(pattern.kind) +
+                             "' is not permitted in base conditions");
+    if (pattern.targets.caseSignature != signatureRef)
+      return evaluationError("a base-condition pattern of case signature '" +
+                             descriptor.spelling +
+                             "' must name that exact case signature");
+    for (const SubjectTargetPattern &target : pattern.targets.targets)
+      if (!descriptor.findSubjectRole(target.caseSubjectRole))
+        return evaluationError("a base-condition pattern of case signature '" +
+                               descriptor.spelling +
+                               "' names a foreign case subject role");
+  }
   return llvm::Error::success();
 }
-
-const CaseSubjectRoleDescriptor mappedWorkloadExecutionRoles[] = {
-    {CaseSubjectRoleRef(0), "fabric", SubjectRoleCardinality::ExactlyOne,
-     acceptedFabricSchemas, nullptr},
-    {CaseSubjectRoleRef(1), "mapping", SubjectRoleCardinality::ExactlyOne,
-     acceptedMappingSchemas, &verifyMappingBindsFabric},
-};
-
-const CaseSubjectRoleRef clockDomainTargetRoles[] = {CaseSubjectRoleRef(0)};
-
-const ConditionPattern mappedWorkloadExecutionBaseConditions[] = {
-    {EvaluationConditionKind::RequiredClockPeriod, clockDomainTargetRoles},
-};
-
-const std::array<EvaluationCaseSignatureDescriptor, 1> caseSignatures = {{
-    {EvaluationCaseKind::MappedWorkloadExecution, "mapped_workload_execution",
-     "One exact Fabric and Mapping executing one exact workload.",
-     mappedWorkloadExecutionRoles, ArtifactRequirement::Required,
-     acceptedWorkloadSchemas, ArtifactRequirement::Optional,
-     acceptedRuntimeInputSchemas, &verifyRuntimeInputBindsWorkload,
-     mappedWorkloadExecutionBaseConditions},
-}};
 
 } // namespace
 
 SchemaVersion evaluationSchemaVersion() { return evaluationSchema; }
-
-const ConditionPattern *
-ConditionApplicability::findPattern(EvaluationConditionKind kind) const {
-  for (const ConditionPattern &pattern : permittedPatterns)
-    if (pattern.kind == kind)
-      return &pattern;
-  return nullptr;
-}
 
 const CaseSubjectRoleDescriptor *
 EvaluationCaseSignatureDescriptor::findSubjectRole(
@@ -153,12 +130,6 @@ EvaluationCaseSignatureDescriptor::findSubjectRole(
     if (descriptor.role == role)
       return &descriptor;
   return nullptr;
-}
-
-ConditionApplicability
-EvaluationCaseSignatureDescriptor::baseConditionApplicability() const {
-  return ConditionApplicability{ConditionLocation::Base, spelling,
-                                permittedBaseConditions};
 }
 
 llvm::Expected<EvaluationCaseSignatureRef>
@@ -170,21 +141,58 @@ EvaluationCaseSignatureRef::get(SchemaVersion schemaVersion,
   return EvaluationCaseSignatureRef(schemaVersion, caseKind);
 }
 
-const EvaluationCaseSignatureDescriptor &
+const EvaluationCaseSignatureDescriptor *
 EvaluationCaseSignatureRef::descriptor() const {
-  return caseSignatureDescriptor(caseKind_);
+  return findEvaluationCaseSignature(caseKind_);
 }
 
-const EvaluationCaseSignatureDescriptor &
-caseSignatureDescriptor(EvaluationCaseKind caseKind) {
-  for (const EvaluationCaseSignatureDescriptor &descriptor : caseSignatures)
-    if (descriptor.caseKind == caseKind)
+llvm::Error registerEvaluationCaseSignature(
+    const EvaluationCaseSignatureDescriptor &descriptor) {
+  llvm::Expected<EvaluationCaseSignatureRef> signatureRef =
+      EvaluationCaseSignatureRef::get(evaluationSchema, descriptor.caseKind);
+  if (!signatureRef)
+    return signatureRef.takeError();
+  if (descriptor.spelling.empty())
+    return evaluationError("a case signature requires a spelling");
+  if (llvm::Error error = validateRoleDefinitions(descriptor))
+    return error;
+  if (descriptor.workload == ArtifactRequirement::Forbidden &&
+      !descriptor.acceptedWorkloadSchemas.empty())
+    return evaluationError("case signature '" + descriptor.spelling +
+                           "' forbids a workload but accepts workload schemas");
+  if (descriptor.runtimeInput == ArtifactRequirement::Forbidden &&
+      !descriptor.acceptedRuntimeInputSchemas.empty())
+    return evaluationError("case signature '" + descriptor.spelling +
+                           "' forbids a runtime input but accepts runtime "
+                           "input schemas");
+  if (llvm::Error error = validateBasePatternSet(descriptor, *signatureRef))
+    return error;
+
+  std::lock_guard<std::mutex> lock(caseSignatureMutex());
+  for (const EvaluationCaseSignatureDescriptor *existing : caseSignatures()) {
+    if (existing->caseKind == descriptor.caseKind) {
+      if (existing == &descriptor)
+        return llvm::Error::success();
+      return evaluationError("conflicting registration for evaluation case "
+                             "kind " +
+                             std::to_string(descriptor.caseKind.ordinal()));
+    }
+    if (existing->spelling == descriptor.spelling)
+      return evaluationError("conflicting registration for evaluation case "
+                             "signature '" +
+                             descriptor.spelling + "'");
+  }
+  caseSignatures().push_back(&descriptor);
+  return llvm::Error::success();
+}
+
+const EvaluationCaseSignatureDescriptor *
+findEvaluationCaseSignature(EvaluationCaseKind caseKind) {
+  std::lock_guard<std::mutex> lock(caseSignatureMutex());
+  for (const EvaluationCaseSignatureDescriptor *descriptor : caseSignatures())
+    if (descriptor->caseKind == caseKind)
       return descriptor;
-  llvm_unreachable("unknown EvaluationCaseKind");
-}
-
-llvm::StringRef toString(EvaluationCaseKind caseKind) {
-  return caseSignatureDescriptor(caseKind).spelling;
+  return nullptr;
 }
 
 llvm::Expected<EvaluationSubjectBindings>
@@ -203,7 +211,8 @@ EvaluationSubjectBindings::get(std::vector<CaseRoleBinding> bindings) {
       return evaluationError("subject role " +
                              std::to_string(binding.role.ordinal()) +
                              " must bind at least one subject");
-    std::sort(binding.subjects.begin(), binding.subjects.end(), identityLess);
+    std::sort(binding.subjects.begin(), binding.subjects.end(),
+              artifactRootReferenceLess);
     for (std::size_t subject = 1; subject < binding.subjects.size(); ++subject)
       if (binding.subjects[subject - 1] == binding.subjects[subject])
         return evaluationError("duplicate subject artifact for role " +
@@ -212,7 +221,7 @@ EvaluationSubjectBindings::get(std::vector<CaseRoleBinding> bindings) {
   return EvaluationSubjectBindings(std::move(bindings));
 }
 
-llvm::ArrayRef<ArtifactIdentity>
+llvm::ArrayRef<ArtifactRootReference>
 EvaluationSubjectBindings::subjects(CaseSubjectRoleRef role) const {
   for (const CaseRoleBinding &binding : bindings_)
     if (binding.role == role)
@@ -221,8 +230,8 @@ EvaluationSubjectBindings::subjects(CaseSubjectRoleRef role) const {
 }
 
 bool EvaluationSubjectBindings::isBoundSubject(
-    CaseSubjectRoleRef role, const ArtifactIdentity &subject) const {
-  llvm::ArrayRef<ArtifactIdentity> bound = subjects(role);
+    CaseSubjectRoleRef role, const ArtifactRootReference &subject) const {
+  llvm::ArrayRef<ArtifactRootReference> bound = subjects(role);
   return std::find(bound.begin(), bound.end(), subject) != bound.end();
 }
 
@@ -230,17 +239,14 @@ llvm::Expected<CaseArtifactResolution>
 CaseArtifactResolution::get(std::vector<Entry> entries) {
   std::sort(entries.begin(), entries.end(),
             [](const Entry &lhs, const Entry &rhs) {
-              return identityLess(lhs.artifact, rhs.artifact);
+              return artifactRootReferenceLess(lhs.artifact, rhs.artifact);
             });
   for (std::size_t index = 0; index < entries.size(); ++index) {
     Entry &entry = entries[index];
-    if (!entry.schema)
-      return evaluationError("a resolved artifact must carry its owner's "
-                             "schema descriptor");
     if (index != 0 && entries[index - 1].artifact == entry.artifact)
       return evaluationError("duplicate resolution for one artifact");
     std::sort(entry.dependencyClosure.begin(), entry.dependencyClosure.end(),
-              identityLess);
+              artifactRootReferenceLess);
     for (std::size_t member = 1; member < entry.dependencyClosure.size();
          ++member)
       if (entry.dependencyClosure[member - 1] ==
@@ -251,41 +257,46 @@ CaseArtifactResolution::get(std::vector<Entry> entries) {
 }
 
 const CaseArtifactResolution::Entry *
-CaseArtifactResolution::find(const ArtifactIdentity &artifact) const {
+CaseArtifactResolution::find(const ArtifactRootReference &artifact) const {
   for (const Entry &entry : entries_)
     if (entry.artifact == artifact)
       return &entry;
   return nullptr;
 }
 
-bool CaseArtifactResolution::reaches(const Entry &entry,
-                                     const ArtifactIdentity &dependency) {
+bool CaseArtifactResolution::reaches(
+    const Entry &entry, const ArtifactRootReference &dependency) {
   if (entry.artifact == dependency)
     return true;
   return std::find(entry.dependencyClosure.begin(),
-                   entry.dependencyClosure.end(),
-                   dependency) != entry.dependencyClosure.end();
+                   entry.dependencyClosure.end(), dependency) !=
+         entry.dependencyClosure.end();
 }
 
 llvm::Expected<EvaluationCase>
 EvaluationCase::get(EvaluationCaseSignatureRef signature,
                     EvaluationSubjectBindings bindings,
-                    std::optional<ArtifactIdentity> workload,
-                    std::optional<ArtifactIdentity> runtimeInput,
+                    std::optional<ArtifactRootReference> workload,
+                    std::optional<ArtifactRootReference> runtimeInput,
                     llvm::ArrayRef<EvaluationCondition> baseConditions,
                     const CaseArtifactResolution &resolution) {
-  const EvaluationCaseSignatureDescriptor &descriptor = signature.descriptor();
+  const EvaluationCaseSignatureDescriptor *descriptor =
+      signature.descriptor();
+  if (!descriptor)
+    return evaluationError("unregistered evaluation case kind " +
+                           std::to_string(signature.caseKind().ordinal()));
 
   for (const CaseRoleBinding &binding : bindings.roleBindings())
-    if (!descriptor.findSubjectRole(binding.role))
+    if (!descriptor->findSubjectRole(binding.role))
       return evaluationError(
           "case subject role " + std::to_string(binding.role.ordinal()) +
-          " is not a role of case signature '" + descriptor.spelling + "'");
+          " is not a role of case signature '" + descriptor->spelling + "'");
 
-  for (const CaseSubjectRoleDescriptor &role : descriptor.subjectRoles) {
-    llvm::ArrayRef<ArtifactIdentity> subjects = bindings.subjects(role.role);
+  for (const CaseSubjectRoleDescriptor &role : descriptor->subjectRoles) {
+    llvm::ArrayRef<ArtifactRootReference> subjects =
+        bindings.subjects(role.role);
     if (subjects.empty())
-      return evaluationError("case signature '" + descriptor.spelling +
+      return evaluationError("case signature '" + descriptor->spelling +
                              "' requires a binding for subject role " +
                              std::to_string(role.role.ordinal()) + " ('" +
                              role.semanticRole + "')");
@@ -293,42 +304,46 @@ EvaluationCase::get(EvaluationCaseSignatureRef signature,
         subjects.size() != 1)
       return evaluationError("subject role '" + role.semanticRole +
                              "' requires exactly one subject");
-    for (const ArtifactIdentity &subject : subjects) {
+    for (const ArtifactRootReference &subject : subjects) {
       const std::string reference =
           ("subject role '" + role.semanticRole + "'").str();
-      if (llvm::Error error = validateAcceptedSchema(
-              reference, role.acceptedSchemas, subject, resolution))
+      if (!resolution.find(subject))
+        return unresolvedArtifact(reference);
+      if (llvm::Error error =
+              validateAcceptedSchema(reference, role.acceptedSchemas, subject))
         return std::move(error);
     }
   }
 
   if (llvm::Error error = validateReferenceRequirement(
-          descriptor, descriptor.workload, descriptor.acceptedWorkloadSchemas,
+          *descriptor, descriptor->workload, descriptor->acceptedWorkloadSchemas,
           "workload", workload, resolution))
     return std::move(error);
   if (llvm::Error error = validateReferenceRequirement(
-          descriptor, descriptor.runtimeInput,
-          descriptor.acceptedRuntimeInputSchemas, "runtime input", runtimeInput,
+          *descriptor, descriptor->runtimeInput,
+          descriptor->acceptedRuntimeInputSchemas, "runtime input", runtimeInput,
           resolution))
     return std::move(error);
 
-  for (const CaseSubjectRoleDescriptor &role : descriptor.subjectRoles) {
+  for (const CaseSubjectRoleDescriptor &role : descriptor->subjectRoles) {
     if (!role.verifyCrossRoleCompatibility)
       continue;
-    for (const ArtifactIdentity &subject : bindings.subjects(role.role))
+    for (const ArtifactRootReference &subject : bindings.subjects(role.role))
       if (llvm::Error error =
               role.verifyCrossRoleCompatibility(subject, bindings, resolution))
         return std::move(error);
   }
-  if (descriptor.verifyWorkloadCompatibility)
-    if (llvm::Error error = descriptor.verifyWorkloadCompatibility(
+  if (descriptor->verifyWorkloadCompatibility)
+    if (llvm::Error error = descriptor->verifyWorkloadCompatibility(
             bindings, workload, runtimeInput, resolution))
       return std::move(error);
 
-  const CaseTargetContext context(descriptor, bindings, resolution);
+  const CaseTargetContext context(*descriptor, signature, bindings, resolution);
   llvm::Expected<std::vector<EvaluationCondition>> canonicalConditions =
-      canonicalizeEvaluationConditions(
-          baseConditions, descriptor.baseConditionApplicability(), context);
+      canonicalizeEvaluationConditions(baseConditions, ConditionLocation::Base,
+                                       descriptor->spelling,
+                                       descriptor->permittedBaseConditions,
+                                       context);
   if (!canonicalConditions)
     return canonicalConditions.takeError();
 

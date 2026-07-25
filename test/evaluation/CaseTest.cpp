@@ -5,9 +5,11 @@
 #include "Evaluation/Request.h"
 
 #include "Common/Artifact.h"
-#include "Fabric/ArtifactSchema.h"
-#include "Mapping/ArtifactSchema.h"
-#include "Simulator/ArtifactSchema.h"
+#include "Common/ArtifactLocalReference.h"
+#include "Common/ArtifactText.h"
+#include "Fabric/Identity/FabricLocalReference.h"
+#include "Fabric/Identity/FabricRefImport.h"
+#include "ImplementationPlatform/TechnologyCorner.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
@@ -82,152 +84,213 @@ ExactRatio ratio(const char *test, std::uint64_t numerator,
 }
 
 //===----------------------------------------------------------------------===//
-// A representative Artifact family
-//===----------------------------------------------------------------------===//
-
-// The family owns its schema descriptor, its closed local target kinds, and the
-// structure and validity of their canonical payloads. A single-entity region
-// reference and a two-entity channel reference show that Evaluation frames a
-// family-owned payload whole rather than assuming one entity shape.
-const ArtifactSchemaDescriptor representativeSchema{
-    "loom.test.evaluation_owner", SchemaVersion{1, 0}};
-
-constexpr LocalTargetKind representativeRegionKind{0};
-constexpr LocalTargetKind representativeChannelKind{1};
-constexpr std::uint64_t representativeRegionCount = 64;
-
-struct RegionIdTag;
-struct ChannelEndIdTag;
-
-template <typename Tag> class RepresentativeEntityId {
-public:
-  explicit constexpr RepresentativeEntityId(std::uint64_t value)
-      : value_(value) {}
-
-  constexpr std::uint64_t value() const { return value_; }
-
-private:
-  std::uint64_t value_;
-};
-
-using RegionId = RepresentativeEntityId<RegionIdTag>;
-using ChannelEndId = RepresentativeEntityId<ChannelEndIdTag>;
-
-llvm::StringRef representativeLocalKindSpelling(LocalTargetKind kind) {
-  if (kind == representativeRegionKind)
-    return "region";
-  if (kind == representativeChannelKind)
-    return "channel";
-  return llvm::StringRef();
-}
-
-llvm::Error representativeError(const std::string &message) {
-  return llvm::createStringError(llvm::inconvertibleErrorCode(), message);
-}
-
-llvm::Error
-representativeValidateLocalTarget(LocalTargetKind kind,
-                                  const LocalTargetPayload &payload) {
-  llvm::ArrayRef<std::uint8_t> bytes = payload.bytes();
-  if (kind == representativeRegionKind) {
-    if (bytes.size() != 8)
-      return representativeError("a region reference is one entity ordinal");
-    std::uint64_t region = 0;
-    for (std::uint8_t byte : bytes)
-      region = (region << 8) | byte;
-    if (region >= representativeRegionCount)
-      return representativeError("region ordinal must be less than 64");
-    return llvm::Error::success();
-  }
-  if (kind == representativeChannelKind) {
-    if (bytes.size() != 16)
-      return representativeError("a channel reference is two entity ordinals");
-    return llvm::Error::success();
-  }
-  return representativeError("unknown representative local target kind");
-}
-
-const LocalTargetFamilyDescriptor representativeFamily{
-    &representativeSchema, &representativeLocalKindSpelling,
-    &representativeValidateLocalTarget};
-
-//===----------------------------------------------------------------------===//
-// One exact MappedWorkloadExecution case
+// Exact case artifacts and owner importer views
 //===----------------------------------------------------------------------===//
 
 ArtifactIdentity fabricArtifact() { return testArtifact({0x11}); }
-ArtifactIdentity mappingArtifact() { return testArtifact({0x22}); }
+ArtifactIdentity platformArtifact() { return testArtifact({0x22}); }
+ArtifactIdentity otherPlatformArtifact() { return testArtifact({0x23}); }
 ArtifactIdentity workloadArtifact() { return testArtifact({0x33}); }
-ArtifactIdentity runtimeInputArtifact() { return testArtifact({0x44}); }
-ArtifactIdentity ownedArtifact() { return testArtifact({0x55}); }
 ArtifactIdentity foreignArtifact() { return testArtifact({0x66}); }
-ArtifactIdentity otherFabricArtifact() { return testArtifact({0x77}); }
 
-CaseSubjectRoleRef fabricRole() { return CaseSubjectRoleRef(0); }
-CaseSubjectRoleRef mappingRole() { return CaseSubjectRoleRef(1); }
+constexpr fabric::FabricEntityId clockDomainEntity = 52;
+constexpr fabric::FabricEntityId otherClockDomainEntity = 53;
 
-CaseArtifactResolution::Entry resolved(ArtifactIdentity artifact,
-                                       const ArtifactSchemaDescriptor &schema,
-                                       std::vector<ArtifactIdentity> closure) {
-  return CaseArtifactResolution::Entry{std::move(artifact), &schema,
-                                       std::move(closure)};
+/// One small finalized Fabric answering only from its own typed facts.
+class TestFabricView : public fabric::FabricArtifactView {
+public:
+  explicit TestFabricView(ArtifactIdentity identity)
+      : identity_(std::move(identity)) {}
+
+  const ArtifactIdentity &identity() const override { return identity_; }
+  fabric::FabricRootKind rootKind() const override {
+    return fabric::FabricRootKind::System;
+  }
+  std::optional<fabric::FabricEntityKind>
+  entityKind(fabric::FabricEntityId id) const override {
+    if (id == clockDomainEntity || id == otherClockDomainEntity)
+      return fabric::FabricEntityKind::HardwareDomain;
+    return std::nullopt;
+  }
+
+  std::uint64_t transportEndpointCount(
+      const fabric::FabricTransportEndpointOwnerRef &) const override {
+    return 0;
+  }
+  std::uint64_t memoryEndpointCount(
+      const fabric::FabricMemoryEndpointOwnerRef &) const override {
+    return 0;
+  }
+  std::uint64_t
+  inventorySize(const fabric::FabricInventoryOwnerRef &,
+                fabric::FabricInventoryKind) const override {
+    return 0;
+  }
+  std::optional<fabric::FabricFuNodeKind>
+  fuNodeKind(const fabric::FabricInventoryOwnerRef &,
+             fabric::FabricOrdinal) const override {
+    return std::nullopt;
+  }
+  bool declaresLocalMemoryService(
+      fabric::FabricMemoryOccurrenceRef) const override {
+    return false;
+  }
+  std::optional<fabric::FabricMemoryEndpointRole>
+  memoryEndpointRole(const fabric::FabricMemoryEndpointRef &) const override {
+    return std::nullopt;
+  }
+  std::optional<fabric::FabricHardwareDomainKind>
+  hardwareDomainKind(fabric::HardwareDomainRef domain) const override {
+    if (domain.id() == clockDomainEntity)
+      return fabric::FabricHardwareDomainKind::Clock;
+    return std::nullopt;
+  }
+  std::optional<fabric::FabricFuTemplateRef>
+  fuTemplateOf(fabric::FabricFuOccurrenceRef) const override {
+    return std::nullopt;
+  }
+  bool hasPointConnection(
+      const fabric::FabricTransportEndpointRef &,
+      const fabric::FabricTransportEndpointRef &) const override {
+    return false;
+  }
+  bool admitsTraversal(
+      const fabric::FabricPhysicalTraversalRef &) const override {
+    return false;
+  }
+
+private:
+  ArtifactIdentity identity_;
+};
+
+/// One exact validated platform with a dense two-corner catalog.
+class TestPlatformView : public platform::ImplementationPlatformView {
+public:
+  TestPlatformView(ArtifactIdentity identity, std::uint64_t cornerCount)
+      : identity_(std::move(identity)), cornerCount_(cornerCount) {}
+
+  const ArtifactIdentity &identity() const override { return identity_; }
+  std::uint64_t technologyCornerCount() const override { return cornerCount_; }
+
+private:
+  ArtifactIdentity identity_;
+  std::uint64_t cornerCount_;
+};
+
+TestFabricView fabricView(fabricArtifact());
+TestPlatformView platformView(platformArtifact(), 2);
+TestPlatformView otherPlatformView(otherPlatformArtifact(), 2);
+
+ArtifactRootReference fabricSubject() {
+  return ArtifactRootReference{fabric::fabricArtifactSchema, fabricArtifact()};
+}
+ArtifactRootReference platformSubject() {
+  return ArtifactRootReference{platform::implementationPlatformSchema,
+                               platformArtifact()};
+}
+ArtifactRootReference workloadReference() {
+  return ArtifactRootReference{fabric::fabricArtifactSchema,
+                               workloadArtifact()};
 }
 
 /// The exact bound Artifacts of the case, as an Artifact store resolves them.
-/// The Mapping subject depends on the Fabric subject and the runtime input
-/// depends on the workload, exactly as those families require.
+/// The Fabric subject depends on the exact ImplementationPlatform it was built
+/// for; the second platform stays outside that closure.
 CaseArtifactResolution caseResolution(const char *test) {
   return takeExpected(
       test, CaseArtifactResolution::get(
-                {resolved(fabricArtifact(), fabric::artifactSchema,
-                          {ownedArtifact()}),
-                 resolved(mappingArtifact(), loom::mapping::artifactSchema,
-                          {fabricArtifact()}),
-                 resolved(workloadArtifact(), loom::sim::workloadSchema, {}),
-                 resolved(runtimeInputArtifact(), loom::sim::runtimeInputSchema,
-                          {workloadArtifact()}),
-                 resolved(ownedArtifact(), representativeSchema, {}),
-                 resolved(otherFabricArtifact(), fabric::artifactSchema, {}),
-                 resolved(foreignArtifact(), representativeSchema, {})}));
+                {{fabricSubject(), {platformSubject()}},
+                 {platformSubject(), {}},
+                 {ArtifactRootReference{platform::implementationPlatformSchema,
+                                        otherPlatformArtifact()},
+                  {}},
+                 {workloadReference(), {}}}));
 }
+
+//===----------------------------------------------------------------------===//
+// One test case signature over one exact Fabric subject
+//===----------------------------------------------------------------------===//
+
+constexpr EvaluationCaseKind testCaseKind{1};
+
+EvaluationCaseSignatureRef testSignatureRef(const char *test) {
+  return takeExpected(test, EvaluationCaseSignatureRef::get(
+                                evaluationSchemaVersion(), testCaseKind));
+}
+
+CaseSubjectRoleRef fabricRole() { return CaseSubjectRoleRef(0); }
+
+const ArtifactSchemaDescriptor *const acceptedFabricSchemas[] = {
+    &fabric::fabricArtifactSchema};
+
+const CaseSubjectRoleDescriptor testSubjectRoles[] = {
+    {fabricRole(), "fabric", SubjectRoleCardinality::ExactlyOne,
+     acceptedFabricSchemas, nullptr},
+};
+
+SubjectReferenceType fabricRootType() {
+  return SubjectReferenceType{ArtifactRootType{fabric::fabricArtifactSchema}};
+}
+SubjectReferenceType platformRootType() {
+  return SubjectReferenceType{
+      ArtifactRootType{platform::implementationPlatformSchema}};
+}
+SubjectReferenceType fabricClockDomainType() {
+  return SubjectReferenceType{ArtifactLocalType{
+      {fabric::fabricArtifactSchema,
+       fabric::fabricEntityLocalKind<fabric::FabricEntityKind::HardwareDomain>()}}};
+}
+
+const std::vector<ConditionApplicabilityPattern> testBasePatterns = {
+    {EvaluationConditionKind::ProcessCorner,
+     {llvm::cantFail(EvaluationCaseSignatureRef::get({1, 0}, testCaseKind)),
+      {{fabricRole(), fabricRootType()}}}},
+    {EvaluationConditionKind::RequiredClockPeriod,
+     {llvm::cantFail(EvaluationCaseSignatureRef::get({1, 0}, testCaseKind)),
+      {{fabricRole(), fabricRootType()}}}},
+    {EvaluationConditionKind::RequiredClockPeriod,
+     {llvm::cantFail(EvaluationCaseSignatureRef::get({1, 0}, testCaseKind)),
+      {{fabricRole(), fabricClockDomainType()}}}},
+    {EvaluationConditionKind::RelativeClockSchedule,
+     {llvm::cantFail(EvaluationCaseSignatureRef::get({1, 0}, testCaseKind)),
+      {{fabricRole(), fabricClockDomainType()},
+       {fabricRole(), fabricClockDomainType()}}}},
+};
+
+const EvaluationCaseSignatureDescriptor testCaseSignature{
+    testCaseKind,
+    "test_fabric_case",
+    "A test case signature over one exact Fabric subject.",
+    testSubjectRoles,
+    ArtifactRequirement::Optional,
+    acceptedFabricSchemas,
+    ArtifactRequirement::Forbidden,
+    {},
+    nullptr,
+    testBasePatterns};
+
+//===----------------------------------------------------------------------===//
+// Case fixtures
+//===----------------------------------------------------------------------===//
 
 EvaluationSubjectBindings caseBindings(const char *test,
-                                       ArtifactIdentity fabric,
-                                       ArtifactIdentity mapping) {
+                                       ArtifactRootReference fabric) {
   return takeExpected(test, EvaluationSubjectBindings::get(
-                                {{fabricRole(), {std::move(fabric)}},
-                                 {mappingRole(), {std::move(mapping)}}}));
+                                {{fabricRole(), {std::move(fabric)}}}));
 }
 
-LocalTargetRef regionTarget(const char *test, std::uint64_t region) {
-  return takeExpected(
-      test, LocalTargetRef::get(
-                representativeFamily, representativeRegionKind, ownedArtifact(),
-                LocalTargetPayload::ofEntities(RegionId(region))));
-}
-
-LocalTargetRef channelTarget(const char *test, std::uint64_t source,
-                             std::uint64_t sink) {
-  return takeExpected(
-      test, LocalTargetRef::get(representativeFamily, representativeChannelKind,
-                                ownedArtifact(),
-                                LocalTargetPayload::ofEntities(
-                                    ChannelEndId(source), ChannelEndId(sink))));
+EncodedArtifactLocalReference clockDomainLocal(std::uint64_t entity) {
+  return fabric::encodeFabricEntityLocalReference(
+      fabricArtifact(), fabric::HardwareDomainRef(entity));
 }
 
 SubjectTargetRef fabricRootTarget() {
-  return SubjectTargetRef{fabricRole(), fabricArtifact(),
-                          ArtifactRootTarget{fabricArtifact()}};
+  return SubjectTargetRef{fabricRole(), fabricSubject(), fabricSubject()};
 }
 
-SubjectTargetRef mappingRootTarget() {
-  return SubjectTargetRef{mappingRole(), mappingArtifact(),
-                          ArtifactRootTarget{mappingArtifact()}};
-}
-
-SubjectTargetRef regionScopeTarget(const char *test, std::uint64_t region) {
-  return SubjectTargetRef{fabricRole(), fabricArtifact(),
-                          regionTarget(test, region)};
+SubjectTargetRef clockDomainTarget(std::uint64_t entity) {
+  return SubjectTargetRef{fabricRole(), fabricSubject(),
+                          clockDomainLocal(entity)};
 }
 
 EvaluationCondition clockPeriodCondition(const char *test,
@@ -237,121 +300,113 @@ EvaluationCondition clockPeriodCondition(const char *test,
       clockDomain, decimal(test, coefficient, -10)}};
 }
 
-EvaluationCase mappedCase(const char *test,
-                          llvm::ArrayRef<EvaluationCondition> baseConditions) {
+EvaluationCase testCase(const char *test,
+                        llvm::ArrayRef<EvaluationCondition> baseConditions) {
   return takeExpected(
       test,
-      EvaluationCase::get(
-          takeExpected(test, EvaluationCaseSignatureRef::get(
-                                 evaluationSchemaVersion(),
-                                 EvaluationCaseKind::MappedWorkloadExecution)),
-          caseBindings(test, fabricArtifact(), mappingArtifact()),
-          workloadArtifact(), runtimeInputArtifact(), baseConditions,
-          caseResolution(test)));
+      EvaluationCase::get(testSignatureRef(test),
+                          caseBindings(test, fabricSubject()),
+                          workloadReference(), std::nullopt, baseConditions,
+                          caseResolution(test)));
+}
+
+void expectBaseConditionRejected(const char *test,
+                                 const EvaluationCondition &condition,
+                                 llvm::StringRef expected) {
+  expectErrorContains(test, EvaluationCase::get(testSignatureRef(test),
+                                                caseBindings(test, fabricSubject()),
+                                                workloadReference(), std::nullopt,
+                                                {condition}, caseResolution(test)),
+                      expected);
+}
+
+void expectCornerRejected(const char *test,
+                          const EncodedArtifactLocalReference &corner,
+                          llvm::StringRef expected) {
+  expectBaseConditionRejected(
+      test,
+      EvaluationCondition{ProcessCornerCondition{fabricRootTarget(), corner}},
+      expected);
 }
 
 //===----------------------------------------------------------------------===//
 // Query-owned scope forms
 //===----------------------------------------------------------------------===//
 
-const AcceptedLocalTarget regionTargets[] = {
-    {&representativeFamily, representativeRegionKind}};
-const AcceptedLocalTarget channelTargets[] = {
-    {&representativeFamily, representativeChannelKind}};
+const ScopeRoleDescriptor subjectFormRoles[] = {{ScopeRoleRef(0), "subject"}};
+const ScopeRoleDescriptor clockFormRoles[] = {{ScopeRoleRef(0), "clock"}};
+const ScopeRoleDescriptor scheduleFormRoles[] = {
+    {ScopeRoleRef(0), "reference"}, {ScopeRoleRef(1), "dependent"}};
 
-const ScopeRoleDescriptor subjectRoles[] = {
-    {ScopeRoleRef(0), "subject", true, {}}};
-const ScopeRoleDescriptor regionRoles[] = {
-    {ScopeRoleRef(0), "region", false, regionTargets}};
-const ScopeRoleDescriptor relationRoles[] = {
-    {ScopeRoleRef(0), "source", false, regionTargets},
-    {ScopeRoleRef(1), "sink", false, regionTargets}};
-const ScopeRoleDescriptor repeatedRoles[] = {
-    {ScopeRoleRef(0), "endpoint", true, {}},
-    {ScopeRoleRef(0), "endpoint", true, {}}};
-
-llvm::Error verifyDistinctEndpoints(llvm::ArrayRef<SubjectTargetRef> targets) {
+llvm::Error verifyDistinctClocks(llvm::ArrayRef<SubjectTargetRef> targets) {
   if (targets[0] == targets[1])
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "a transfer relation requires distinct "
-                                   "endpoints");
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "a clock schedule requires distinct clock domains");
   return llvm::Error::success();
 }
 
-const ScopeFormDescriptor testScopeForms[] = {
-    {ScopeFormRef(0), "the entire exact Evaluation case", {}, nullptr},
-    {ScopeFormRef(1), "one exact case subject Artifact root", subjectRoles,
-     nullptr},
-    {ScopeFormRef(2), "one family-owned region", regionRoles, nullptr},
-    {ScopeFormRef(3), "an ordered source-to-sink transfer", relationRoles,
-     &verifyDistinctEndpoints},
-    {ScopeFormRef(4), "a malformed repeated role tuple", repeatedRoles,
-     nullptr},
+const std::vector<OrderedTargetPattern> subjectFormPatterns = {
+    {llvm::cantFail(EvaluationCaseSignatureRef::get({1, 0}, testCaseKind)),
+     {{fabricRole(), fabricRootType()}}},
+    {llvm::cantFail(EvaluationCaseSignatureRef::get({1, 0}, testCaseKind)),
+     {{fabricRole(), platformRootType()}}},
+};
+const std::vector<OrderedTargetPattern> clockFormPatterns = {
+    {llvm::cantFail(EvaluationCaseSignatureRef::get({1, 0}, testCaseKind)),
+     {{fabricRole(), fabricClockDomainType()}}},
+};
+const std::vector<OrderedTargetPattern> scheduleFormPatterns = {
+    {llvm::cantFail(EvaluationCaseSignatureRef::get({1, 0}, testCaseKind)),
+     {{fabricRole(), fabricClockDomainType()},
+      {fabricRole(), fabricClockDomainType()}}},
 };
 
-const ScopeRoleDescriptor channelRoles[] = {
-    {ScopeRoleRef(0), "channel", false, channelTargets}};
-
-const ScopeFormDescriptor channelScopeForms[] = {
-    {ScopeFormRef(0), "one family-owned channel", channelRoles, nullptr}};
-
-std::string scopeJson(const EvaluationScope &scope) {
-  llvm::SmallString<256> storage;
-  llvm::raw_svector_ostream output(storage);
-  llvm::json::OStream json(output);
-  writeEvaluationScopeJson(json, scope);
-  return output.str().str();
-}
-
-llvm::Expected<EvaluationScope>
-parseScopeJson(llvm::StringRef text,
-               llvm::ArrayRef<ScopeFormDescriptor> forms) {
-  llvm::Expected<llvm::json::Value> value = llvm::json::parse(text);
-  if (!value)
-    return value.takeError();
-  const llvm::json::Object *object = value->getAsObject();
-  if (!object)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "scope must be an object");
-  return parseEvaluationScopeJson(*object, forms);
-}
+const ScopeFormDescriptor testScopeForms[] = {
+    {ScopeFormRef(0), "the entire exact Evaluation case", {}, {}, nullptr},
+    {ScopeFormRef(1), "one exact case Artifact root", subjectFormRoles,
+     subjectFormPatterns, nullptr},
+    {ScopeFormRef(2), "one exact clock domain", clockFormRoles,
+     clockFormPatterns, nullptr},
+    {ScopeFormRef(3), "an ordered reference-to-dependent clock relation",
+     scheduleFormRoles, scheduleFormPatterns, &verifyDistinctClocks},
+};
 
 //===----------------------------------------------------------------------===//
 // Anchors
 //===----------------------------------------------------------------------===//
 
-void sharedSignatureAlignsCaseKeysAcrossModelDescriptors() {
-  const EvaluationModelDescriptor &analytical =
-      modelDescriptor(EvaluationModelKind::AnalyticalTimingModel);
-  const EvaluationModelDescriptor &simulator =
-      modelDescriptor(EvaluationModelKind::CycleAccurateSimulator);
+/// Two model descriptors that reference one exact shared case signature derive
+/// one case key from identical case facts; the key never depends on the model.
+void sharedSignatureDerivesOneCaseKeyAcrossModels() {
+  EvaluationCaseSignatureRef signature = testSignatureRef(__func__);
 
-  // Each descriptor holds one exact versioned case-signature reference.
-  require(__func__, analytical.caseSignature == simulator.caseSignature,
+  EvaluationModelDescriptor modelA{"loom.test.model_a", signature, {}, {}};
+  EvaluationModelDescriptor modelB{"loom.test.model_b", signature, {}, {}};
+  require(__func__, modelA.caseSignature == modelB.caseSignature,
           "the two descriptors no longer share one exact case signature");
   require(__func__,
-          analytical.caseSignature.schemaVersion() == evaluationSchemaVersion(),
+          modelA.caseSignature.schemaVersion() == evaluationSchemaVersion(),
           "the stored case signature lost its exact schema version");
   require(__func__,
-          analytical.implementationSemanticIdentity !=
-              simulator.implementationSemanticIdentity,
+          modelA.implementationSemanticIdentity !=
+              modelB.implementationSemanticIdentity,
           "distinct model descriptors lost their distinct model identity");
 
   const std::vector<EvaluationCondition> conditions = {
-      clockPeriodCondition(__func__, fabricRootTarget(), 8)};
-  EvaluationCase evaluationCase = mappedCase(__func__, conditions);
-  EvaluationCase sameFacts = mappedCase(__func__, conditions);
+      clockPeriodCondition(__func__, clockDomainTarget(clockDomainEntity), 8)};
+  EvaluationCase evaluationCase = testCase(__func__, conditions);
+  EvaluationCase sameFacts = testCase(__func__, conditions);
   require(__func__, baseCaseKey(evaluationCase) == baseCaseKey(sameFacts),
           "identical case facts produced different base case keys");
 
+  CaseArtifactResolution resolution = caseResolution(__func__);
   MetricQuery cycles{MetricKind::CycleCount,
-                     EvaluationScope{ScopeFormRef(1), {fabricRootTarget()}}};
+                     EvaluationScope{ScopeFormRef(0), {}}};
   const std::vector<EvaluationCondition> quantile = {
       EvaluationCondition{QuantileCondition{ratio(__func__, 95, 100)}}};
-  CaseArtifactResolution resolution = caseResolution(__func__);
-  MetricRequest request =
-      takeExpected(__func__, MetricRequest::get(cycles, quantile,
-                                                evaluationCase, resolution));
+  MetricRequest request = takeExpected(
+      __func__, MetricRequest::get(cycles, quantile, evaluationCase, resolution));
   MetricRequest sameRequest = takeExpected(
       __func__, MetricRequest::get(cycles, quantile, sameFacts, resolution));
   require(__func__,
@@ -373,431 +428,365 @@ void sharedSignatureAlignsCaseKeysAcrossModelDescriptors() {
               metricCaseKey(evaluationCase, medianRequest),
           "request-specific conditions do not reach the metric case key");
 
-  EvaluationCase withoutRuntimeInput = takeExpected(
-      __func__, EvaluationCase::get(
-                    analytical.caseSignature,
-                    caseBindings(__func__, fabricArtifact(), mappingArtifact()),
-                    workloadArtifact(), std::nullopt, conditions, resolution));
+  EvaluationCase withoutWorkload = takeExpected(
+      __func__,
+      EvaluationCase::get(signature, caseBindings(__func__, fabricSubject()),
+                          std::nullopt, std::nullopt, conditions, resolution));
   require(__func__,
-          baseCaseKey(evaluationCase) != baseCaseKey(withoutRuntimeInput),
+          baseCaseKey(evaluationCase) != baseCaseKey(withoutWorkload),
           "distinct case facts produced one base case key");
-
-  // Model capability covers the exact requested outputs, not just the case.
-  if (llvm::Error error =
-          validateModelCapability(analytical, evaluationCase, request))
-    fail(__func__, llvm::toString(std::move(error)));
-  expectErrorContains(
-      __func__, validateModelCapability(simulator, evaluationCase, request),
-      "does not recognize condition");
-  expectErrorContains(
-      __func__,
-      validateModelCapability(
-          simulator, evaluationCase,
-          takeExpected(__func__,
-                       MetricRequest::get(
-                           MetricQuery{MetricKind::ClockPeriod,
-                                       EvaluationScope{ScopeFormRef(0), {}}},
-                           {}, evaluationCase, resolution))),
-      "does not support metric");
-  expectErrorContains(__func__,
-                      validateModelCapability(simulator,
-                                              mappedCase(__func__, {}),
-                                              llvm::ArrayRef<MetricRequest>{}),
-                      "requires condition");
 }
 
-void caseSignatureOwnsSchemasAndCompatibility() {
-  EvaluationCaseSignatureRef signature =
-      takeExpected(__func__, EvaluationCaseSignatureRef::get(
-                                 evaluationSchemaVersion(),
-                                 EvaluationCaseKind::MappedWorkloadExecution));
-  CaseArtifactResolution resolution = caseResolution(__func__);
-
-  // The signature owns accepted schemas per subject role.
-  expectErrorContains(
-      __func__,
-      EvaluationCase::get(
-          signature,
-          caseBindings(__func__, mappingArtifact(), mappingArtifact()),
-          workloadArtifact(), std::nullopt, {}, resolution),
-      "does not accept schema");
-  expectErrorContains(
-      __func__,
-      EvaluationCase::get(
-          signature,
-          caseBindings(__func__, fabricArtifact(), foreignArtifact()),
-          workloadArtifact(), std::nullopt, {}, resolution),
-      "does not accept schema");
-
-  // An unresolved subject is never silently accepted.
-  expectErrorContains(
-      __func__,
-      EvaluationCase::get(
-          signature,
-          caseBindings(__func__, fabricArtifact(), testArtifact({0xfe})),
-          workloadArtifact(), std::nullopt, {}, resolution),
-      "unresolved");
-
-  // The signature owns the workload and runtime-input requirements, their
-  // accepted schemas, and their compatibility.
-  expectErrorContains(
-      __func__,
-      EvaluationCase::get(
-          signature,
-          caseBindings(__func__, fabricArtifact(), mappingArtifact()),
-          std::nullopt, std::nullopt, {}, resolution),
-      "requires a workload");
-  expectErrorContains(
-      __func__,
-      EvaluationCase::get(
-          signature,
-          caseBindings(__func__, fabricArtifact(), mappingArtifact()),
-          fabricArtifact(), std::nullopt, {}, resolution),
-      "does not accept schema");
-  expectErrorContains(
-      __func__,
-      EvaluationCase::get(
-          signature,
-          caseBindings(__func__, fabricArtifact(), mappingArtifact()),
-          workloadArtifact(), foreignArtifact(), {}, resolution),
-      "does not accept schema");
-
-  // Cross-role compatibility: a Mapping subject must bind the Fabric subject.
-  expectErrorContains(
-      __func__,
-      EvaluationCase::get(
-          signature,
-          caseBindings(__func__, otherFabricArtifact(), mappingArtifact()),
-          workloadArtifact(), std::nullopt, {}, resolution),
-      "does not depend on");
-
-  // Workload compatibility: a runtime input is for its exact workload.
-  CaseArtifactResolution strayRuntimeInput = takeExpected(
-      __func__,
-      CaseArtifactResolution::get(
-          {resolved(fabricArtifact(), fabric::artifactSchema, {}),
-           resolved(mappingArtifact(), loom::mapping::artifactSchema,
-                    {fabricArtifact()}),
-           resolved(workloadArtifact(), loom::sim::workloadSchema, {}),
-           resolved(runtimeInputArtifact(), loom::sim::runtimeInputSchema,
-                    {})}));
-  expectErrorContains(
-      __func__,
-      EvaluationCase::get(
-          signature,
-          caseBindings(__func__, fabricArtifact(), mappingArtifact()),
-          workloadArtifact(), runtimeInputArtifact(), {}, strayRuntimeInput),
-      "runtime input");
-
-  // Role totality and cardinality stay with the signature.
-  expectErrorContains(
-      __func__,
-      EvaluationCase::get(
-          signature,
-          takeExpected(__func__, EvaluationSubjectBindings::get(
-                                     {{fabricRole(), {fabricArtifact()}}})),
-          workloadArtifact(), std::nullopt, {}, resolution),
-      "requires a binding for subject role");
-  expectErrorContains(
-      __func__,
-      EvaluationCase::get(
-          signature,
-          takeExpected(
-              __func__,
-              EvaluationSubjectBindings::get(
-                  {{fabricRole(), {fabricArtifact(), otherFabricArtifact()}},
-                   {mappingRole(), {mappingArtifact()}}})),
-          workloadArtifact(), std::nullopt, {}, resolution),
-      "requires exactly one subject");
-}
-
-void scopeFormsOwnRolesTargetsAndRelations() {
-  EvaluationScope wholeCase{ScopeFormRef(0), {}};
-  EvaluationScope subjectRoot{ScopeFormRef(1), {fabricRootTarget()}};
-  EvaluationScope region{ScopeFormRef(2), {regionScopeTarget(__func__, 3)}};
-  for (const EvaluationScope &scope : {wholeCase, subjectRoot, region})
-    if (llvm::Error error = validateEvaluationScopeForm(testScopeForms, scope))
-      fail(__func__, llvm::toString(std::move(error)));
-
-  expectErrorContains(__func__,
-                      validateEvaluationScopeForm(
-                          testScopeForms, EvaluationScope{ScopeFormRef(9), {}}),
-                      "unknown scope form");
-  expectErrorContains(__func__,
-                      validateEvaluationScopeForm(
-                          testScopeForms, EvaluationScope{ScopeFormRef(1), {}}),
-                      "requires exactly 1 target");
-  expectErrorContains(
-      __func__,
-      validateEvaluationScopeForm(
-          testScopeForms,
-          EvaluationScope{ScopeFormRef(0), {fabricRootTarget()}}),
-      "requires exactly 0 targets");
-
-  // A role accepts exactly the target kinds its descriptor declares.
-  expectErrorContains(
-      __func__,
-      validateEvaluationScopeForm(
-          testScopeForms,
-          EvaluationScope{ScopeFormRef(1), {regionScopeTarget(__func__, 3)}}),
-      "does not accept");
-  expectErrorContains(
-      __func__,
-      validateEvaluationScopeForm(
-          testScopeForms,
-          EvaluationScope{ScopeFormRef(2), {fabricRootTarget()}}),
-      "does not accept");
-  expectErrorContains(
-      __func__,
-      validateEvaluationScopeForm(
-          testScopeForms,
-          EvaluationScope{ScopeFormRef(2),
-                          {SubjectTargetRef{fabricRole(), fabricArtifact(),
-                                            channelTarget(__func__, 1, 2)}}}),
-      "does not accept");
-
-  // The role tuple of a form is ordered and nonrepeating.
-  expectErrorContains(
-      __func__,
-      validateEvaluationScopeForm(
-          testScopeForms,
-          EvaluationScope{ScopeFormRef(4),
-                          {fabricRootTarget(), mappingRootTarget()}}),
-      "ordered nonrepeating roles");
-
-  // The query form owns its own relation verification.
-  EvaluationScope transfer{
-      ScopeFormRef(3),
-      {regionScopeTarget(__func__, 1), regionScopeTarget(__func__, 2)}};
-  if (llvm::Error error = validateEvaluationScopeForm(testScopeForms, transfer))
-    fail(__func__, llvm::toString(std::move(error)));
-  expectErrorContains(
-      __func__,
-      validateEvaluationScopeForm(
-          testScopeForms, EvaluationScope{ScopeFormRef(3),
-                                          {regionScopeTarget(__func__, 1),
-                                           regionScopeTarget(__func__, 1)}}),
-      "distinct endpoints");
-
-  // Role order is part of the scope and of its canonical key.
-  EvaluationScope swapped{
-      ScopeFormRef(3),
-      {regionScopeTarget(__func__, 2), regionScopeTarget(__func__, 1)}};
-  require(__func__, transfer != swapped, "role order is not part of the scope");
-  require(__func__, canonicalScopeKey(transfer) != canonicalScopeKey(swapped),
-          "the canonical scope key is insensitive to role order");
-
-  // The complete family-owned payload reaches the canonical key.
-  EvaluationScope firstChannel{
-      ScopeFormRef(0),
-      {SubjectTargetRef{fabricRole(), fabricArtifact(),
-                        channelTarget(__func__, 1, 2)}}};
-  EvaluationScope secondChannel{
-      ScopeFormRef(0),
-      {SubjectTargetRef{fabricRole(), fabricArtifact(),
-                        channelTarget(__func__, 1, 3)}}};
-  require(__func__,
-          canonicalScopeKey(firstChannel) != canonicalScopeKey(secondChannel),
-          "the canonical key drops part of the family payload");
-
-  // The family owns payload validity, so an invalid local reference never
-  // reaches a scope.
-  expectErrorContains(
-      __func__,
-      LocalTargetRef::get(representativeFamily, representativeRegionKind,
-                          ownedArtifact(),
-                          LocalTargetPayload::ofEntities(RegionId(64))),
-      "less than 64");
-  expectErrorContains(
-      __func__,
-      LocalTargetRef::get(representativeFamily, representativeChannelKind,
-                          ownedArtifact(),
-                          LocalTargetPayload::ofEntities(ChannelEndId(1))),
-      "two entity ordinals");
-
-  // Canonical text frames the complete payload and decodes through the family.
-  const std::string channelText =
-      R"({"form":0,"targets":[{"case_subject_role":0,"anchor":"1100000000000000000000000000000000000000000000000000000000000000","target":{"kind":"artifact_local","family":"loom.test.evaluation_owner","family_version":"1.0","local_kind":"channel","artifact":"5500000000000000000000000000000000000000000000000000000000000000","payload":"00000000000000010000000000000002"}}]})";
-  require(__func__, scopeJson(firstChannel) == channelText,
-          "canonical local-target text changed:\n" + scopeJson(firstChannel));
-  require(
-      __func__,
-      takeExpected(__func__, parseScopeJson(channelText, channelScopeForms)) ==
-          firstChannel,
-      "the local-target scope did not round-trip");
-  expectErrorContains(
-      __func__,
-      parseScopeJson(
-          R"({"form":0,"targets":[{"case_subject_role":0,"anchor":"1100000000000000000000000000000000000000000000000000000000000000","target":{"kind":"artifact_local","family":"loom.test.evaluation_owner","family_version":"1.0","local_kind":"channel","artifact":"5500000000000000000000000000000000000000000000000000000000000000","payload":"0000000000000001"}}]})",
-          channelScopeForms),
-      "two entity ordinals");
-}
-
-void scopeCaseValidationOwnsAnchorsAndClosure() {
-  EvaluationCase evaluationCase = mappedCase(__func__, {});
+/// Scope targets: exact bound anchors, the anchor's dependency closure, typed
+/// local targets through the owner codec, and significant role order.
+void scopeAnchorsClosureTypedLocalTargetsAndRoleOrder() {
+  EvaluationCase evaluationCase = testCase(__func__, {});
   CaseArtifactResolution resolution = caseResolution(__func__);
   CaseTargetContext context = evaluationCase.targetContext(resolution);
 
-  // The anchor itself, its exact closure, and a family-owned local object in
-  // that closure are all reachable.
-  for (const SubjectTargetRef &target :
-       {fabricRootTarget(),
-        SubjectTargetRef{fabricRole(), fabricArtifact(),
-                         ArtifactRootTarget{ownedArtifact()}},
-        regionScopeTarget(__func__, 3)})
-    if (llvm::Error error = validateSubjectTargetRef(target, context))
+  // The anchor itself, an exact Artifact in its dependency closure, and a
+  // family-owned local object in that closure are all reachable targets.
+  EvaluationScope subjectRoot{ScopeFormRef(1), {fabricRootTarget()}};
+  EvaluationScope platformRoot{
+      ScopeFormRef(1),
+      {SubjectTargetRef{fabricRole(), fabricSubject(), platformSubject()}}};
+  EvaluationScope clock{ScopeFormRef(2),
+                        {clockDomainTarget(clockDomainEntity)}};
+  for (const EvaluationScope &scope : {subjectRoot, platformRoot, clock})
+    if (llvm::Error error =
+            validateEvaluationScopeCase(scope, testScopeForms, context))
       fail(__func__, llvm::toString(std::move(error)));
 
+  // Registry-relative checks: unknown form, wrong arity.
   expectErrorContains(
       __func__,
-      validateSubjectTargetRef(
-          SubjectTargetRef{CaseSubjectRoleRef(7), fabricArtifact(),
-                           ArtifactRootTarget{fabricArtifact()}},
-          context),
+      validateEvaluationScopeCase(EvaluationScope{ScopeFormRef(9), {}},
+                                  testScopeForms, context),
+      "unknown scope form");
+  expectErrorContains(
+      __func__,
+      validateEvaluationScopeCase(EvaluationScope{ScopeFormRef(1), {}},
+                                  testScopeForms, context),
+      "requires exactly 1 target");
+
+  // A foreign case role, an unbound anchor, and a target outside the anchor's
+  // exact dependency closure are all invalid.
+  expectErrorContains(
+      __func__,
+      validateEvaluationScopeCase(
+          EvaluationScope{ScopeFormRef(1),
+                          {SubjectTargetRef{CaseSubjectRoleRef(7),
+                                            fabricSubject(), fabricSubject()}}},
+          testScopeForms, context),
       "is not a role of");
   expectErrorContains(
       __func__,
-      validateSubjectTargetRef(
-          SubjectTargetRef{fabricRole(), mappingArtifact(),
-                           ArtifactRootTarget{mappingArtifact()}},
-          context),
+      validateEvaluationScopeCase(
+          EvaluationScope{ScopeFormRef(1),
+                          {SubjectTargetRef{fabricRole(), workloadReference(),
+                                            workloadReference()}}},
+          testScopeForms, context),
       "is not bound to case subject role");
-  expectErrorContains(
-      __func__,
-      validateSubjectTargetRef(
-          SubjectTargetRef{fabricRole(), fabricArtifact(),
-                           ArtifactRootTarget{foreignArtifact()}},
-          context),
-      "not reachable");
-
-  // A local target must name an Artifact of its own family.
-  expectErrorContains(
-      __func__,
-      validateSubjectTargetRef(
-          SubjectTargetRef{
-              fabricRole(), fabricArtifact(),
-              takeExpected(__func__,
-                           LocalTargetRef::get(
-                               representativeFamily, representativeRegionKind,
-                               fabricArtifact(),
-                               LocalTargetPayload::ofEntities(RegionId(1))))},
-          context),
-      "does not belong to family");
-
-  // A scope validates every one of its targets.
   expectErrorContains(
       __func__,
       validateEvaluationScopeCase(
           EvaluationScope{
               ScopeFormRef(1),
-              {SubjectTargetRef{fabricRole(), fabricArtifact(),
-                                ArtifactRootTarget{foreignArtifact()}}}},
-          context),
+              {SubjectTargetRef{
+                  fabricRole(), fabricSubject(),
+                  ArtifactRootReference{fabric::fabricArtifactSchema,
+                                        foreignArtifact()}}}},
+          testScopeForms, context),
       "not reachable");
-}
 
-void conditionOwnershipDuplicatesAndConflicts() {
-  CaseArtifactResolution resolution = caseResolution(__func__);
-  EvaluationCase evaluationCase = mappedCase(__func__, {});
-  EvaluationCaseSignatureRef signature = evaluationCase.signature();
-
-  // The condition registry owns allowed locations.
+  // The derived exact pattern must match one descriptor-owned alternative: a
+  // local clock target is not an accepted root pattern, and a root target is
+  // not the accepted local clock pattern.
   expectErrorContains(
       __func__,
-      EvaluationCase::get(
-          signature,
-          caseBindings(__func__, fabricArtifact(), mappingArtifact()),
-          workloadArtifact(), std::nullopt,
-          {EvaluationCondition{QuantileCondition{ratio(__func__, 1, 2)}}},
-          resolution),
+      validateEvaluationScopeCase(
+          EvaluationScope{ScopeFormRef(1),
+                          {clockDomainTarget(clockDomainEntity)}},
+          testScopeForms, context),
+      "does not accept");
+  expectErrorContains(
+      __func__,
+      validateEvaluationScopeCase(
+          EvaluationScope{ScopeFormRef(2), {fabricRootTarget()}},
+          testScopeForms, context),
+      "does not accept");
+
+  // The owner codec owns payload shape and kind; the owner validator owns
+  // resolution inside the exact Fabric artifact.
+  SubjectTargetRef wrongKindPayload{
+      fabricRole(), fabricSubject(),
+      EncodedArtifactLocalReference{
+          fabricSubject(),
+          fabric::fabricEntityLocalKind<
+              fabric::FabricEntityKind::FabricPeOccurrence>(),
+          clockDomainLocal(clockDomainEntity).payload}};
+  expectErrorContains(
+      __func__,
+      validateEvaluationScopeCase(EvaluationScope{ScopeFormRef(2),
+                                                  {wrongKindPayload}},
+                                  testScopeForms, context),
+      "wrong_entity_kind");
+  SubjectTargetRef shortPayload{
+      fabricRole(), fabricSubject(),
+      EncodedArtifactLocalReference{
+          fabricSubject(),
+          fabric::fabricEntityLocalKind<
+              fabric::FabricEntityKind::HardwareDomain>(),
+          {0, 0, 0, 14, 0, 0, 0}}};
+  expectErrorContains(
+      __func__,
+      validateEvaluationScopeCase(EvaluationScope{ScopeFormRef(2),
+                                                  {shortPayload}},
+                                  testScopeForms, context),
+      "truncated");
+  expectErrorContains(
+      __func__,
+      validateEvaluationScopeCase(EvaluationScope{ScopeFormRef(2),
+                                                  {clockDomainTarget(999)}},
+                                  testScopeForms, context),
+      "unknown_entity");
+
+  // Role order is part of the scope and of its canonical key; the query form
+  // owns its relation verification.
+  EvaluationScope forward{ScopeFormRef(3),
+                          {clockDomainTarget(clockDomainEntity),
+                           clockDomainTarget(otherClockDomainEntity)}};
+  EvaluationScope swapped{ScopeFormRef(3),
+                          {clockDomainTarget(otherClockDomainEntity),
+                           clockDomainTarget(clockDomainEntity)}};
+  EvaluationScope ordered{ScopeFormRef(3),
+                          {clockDomainTarget(clockDomainEntity),
+                           clockDomainTarget(clockDomainEntity)}};
+  require(__func__, forward != swapped, "role order is not part of the scope");
+  require(__func__, canonicalScopeKey(forward) != canonicalScopeKey(swapped),
+          "the canonical scope key is insensitive to role order");
+  expectErrorContains(
+      __func__,
+      validateEvaluationScopeCase(ordered, testScopeForms, context),
+      "distinct clock domains");
+
+  // Canonical text frames the complete owner payload and decodes through the
+  // registered owner codec.
+  llvm::SmallString<512> storage;
+  llvm::raw_svector_ostream output(storage);
+  llvm::json::OStream json(output);
+  writeEvaluationScopeJson(json, clock);
+  const std::string expectedText =
+      R"({"form":2,"targets":[{"case_subject_role":0,"anchor":{"schema":"loom.fabric","schema_version":"1.0","artifact":"1100000000000000000000000000000000000000000000000000000000000000"},"target":{"kind":"artifact_local","schema":"loom.fabric","schema_version":"1.0","artifact":"1100000000000000000000000000000000000000000000000000000000000000","local_kind":14,"payload":"0000000e0000000000000034"}}]})";
+  require(__func__, output.str() == expectedText,
+          "canonical local-target text changed:\n" + output.str().str());
+  llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(expectedText);
+  if (!parsed)
+    fail(__func__, llvm::toString(parsed.takeError()));
+  require(__func__,
+          takeExpected(__func__,
+                       parseEvaluationScopeJson(*parsed->getAsObject(),
+                                                testScopeForms)) == clock,
+          "the local-target scope did not round-trip");
+  llvm::Expected<llvm::json::Value> malformed = llvm::json::parse(
+      R"({"form":2,"targets":[{"case_subject_role":0,"anchor":{"schema":"loom.fabric","schema_version":"1.0","artifact":"1100000000000000000000000000000000000000000000000000000000000000"},"target":{"kind":"artifact_local","schema":"loom.fabric","schema_version":"1.0","artifact":"1100000000000000000000000000000000000000000000000000000000000000","local_kind":14,"payload":"0000000e00000000000003"}}]})");
+  if (!malformed)
+    fail(__func__, llvm::toString(malformed.takeError()));
+  expectErrorContains(
+      __func__,
+      parseEvaluationScopeJson(*malformed->getAsObject(), testScopeForms),
+      "truncated");
+}
+
+/// Conditions: kind-owned locations, exact ordered applicability patterns,
+/// distinct semantic target validation, and duplicate/conflict rejection.
+void conditionLocationApplicabilityDuplicatesAndConflicts() {
+  EvaluationCaseSignatureRef signature = testSignatureRef(__func__);
+  CaseArtifactResolution resolution = caseResolution(__func__);
+  EvaluationCase evaluationCase = testCase(__func__, {});
+
+  // The condition registry owns allowed locations.
+  expectBaseConditionRejected(
+      __func__,
+      EvaluationCondition{QuantileCondition{ratio(__func__, 1, 2)}},
       "not permitted in base conditions");
   expectErrorContains(
       __func__,
       MetricRequest::get(
-          MetricQuery{MetricKind::CycleCount,
-                      EvaluationScope{ScopeFormRef(0), {}}},
+          MetricQuery{MetricKind::CycleCount, EvaluationScope{ScopeFormRef(0), {}}},
           {clockPeriodCondition(__func__, fabricRootTarget(), 8)},
           evaluationCase, resolution),
       "not permitted in metric-request conditions");
 
-  // The case signature owns which base-condition kinds and target roles apply.
-  expectErrorContains(
+  // The case signature owns complete ordered applicability patterns: an
+  // unlisted kind, and a listed kind whose exact target pattern does not
+  // match, are both invalid.
+  expectBaseConditionRejected(
       __func__,
-      EvaluationCase::get(
-          signature,
-          caseBindings(__func__, fabricArtifact(), mappingArtifact()),
-          workloadArtifact(), std::nullopt,
-          {EvaluationCondition{SupplyVoltageCondition{
-              fabricRootTarget(), decimal(__func__, 9, -1)}}},
-          resolution),
+      EvaluationCondition{SupplyVoltageCondition{fabricRootTarget(),
+                                                 decimal(__func__, 9, -1)}},
       "is not applicable");
-  expectErrorContains(
+  expectBaseConditionRejected(
       __func__,
-      EvaluationCase::get(
-          signature,
-          caseBindings(__func__, fabricArtifact(), mappingArtifact()),
-          workloadArtifact(), std::nullopt,
-          {clockPeriodCondition(__func__, mappingRootTarget(), 8)}, resolution),
-      "does not permit case subject role");
-
-  // The Metric descriptor owns request-specific kinds.
-  const std::vector<EvaluationCondition> quantile = {
-      EvaluationCondition{QuantileCondition{ratio(__func__, 1, 2)}}};
-  expectErrorContains(
-      __func__,
-      MetricRequest::get(MetricQuery{MetricKind::ClockPeriod,
-                                     EvaluationScope{ScopeFormRef(0), {}}},
-                         quantile, evaluationCase, resolution),
+      EvaluationCondition{ProcessCornerCondition{
+          clockDomainTarget(clockDomainEntity),
+          platform::encodeTechnologyCornerRef(
+              platform::TechnologyCornerRef{platformArtifact(),
+                                            platform::TechnologyCornerId(1)})}},
       "is not applicable");
-  MetricRequest sampled = takeExpected(
-      __func__,
-      MetricRequest::get(MetricQuery{MetricKind::CycleCount,
-                                     EvaluationScope{ScopeFormRef(0), {}}},
-                         quantile, evaluationCase, resolution));
-  require(__func__, sampled.conditions().size() == 1,
-          "the metric request lost its request-specific condition");
 
-  // Exact duplicates and assignment conflicts are both invalid, while distinct
-  // assignments of one kind are legal and canonically ordered.
-  const EvaluationCondition firstDomain =
+  // Multiple patterns per kind: the root and the local clock patterns are
+  // distinct complete alternatives of RequiredClockPeriod.
+  const EvaluationCondition rootClock =
       clockPeriodCondition(__func__, fabricRootTarget(), 8);
-  const EvaluationCondition secondDomain =
-      clockPeriodCondition(__func__, regionScopeTarget(__func__, 1), 4);
-  const EvaluationCondition conflicting =
-      clockPeriodCondition(__func__, fabricRootTarget(), 6);
+  const EvaluationCondition localClock =
+      clockPeriodCondition(__func__, clockDomainTarget(clockDomainEntity), 4);
+  EvaluationCase withClocks = testCase(__func__, {rootClock, localClock});
+  require(__func__, withClocks.baseConditions().size() == 2,
+          "distinct condition assignments were collapsed");
 
+  // Distinct semantic targets: a relative schedule requires two distinct
+  // clock domains, a positive ratio, and a normalized phase.
+  const ExactRatio half = ratio(__func__, 1, 2);
+  EvaluationCondition schedule{RelativeClockScheduleCondition{
+      clockDomainTarget(clockDomainEntity),
+      clockDomainTarget(otherClockDomainEntity), half, ratio(__func__, 1, 4)}};
+  EvaluationCase withSchedule = testCase(__func__, {schedule});
+  require(__func__, withSchedule.baseConditions().size() == 1,
+          "the exact relative clock schedule was not preserved");
+  expectBaseConditionRejected(
+      __func__,
+      EvaluationCondition{RelativeClockScheduleCondition{
+          clockDomainTarget(clockDomainEntity),
+          clockDomainTarget(clockDomainEntity), half, ratio(__func__, 0, 1)}},
+      "distinct clock domains");
+  expectBaseConditionRejected(
+      __func__,
+      EvaluationCondition{RelativeClockScheduleCondition{
+          clockDomainTarget(clockDomainEntity),
+          clockDomainTarget(otherClockDomainEntity), half,
+          ratio(__func__, 3, 4)}},
+      "normalized into");
+
+  // The Metric descriptor owns request-specific applicability.
   expectErrorContains(
       __func__,
-      EvaluationCase::get(
-          signature,
-          caseBindings(__func__, fabricArtifact(), mappingArtifact()),
-          workloadArtifact(), std::nullopt, {firstDomain, firstDomain},
-          resolution),
+      MetricRequest::get(
+          MetricQuery{MetricKind::ClockPeriod,
+                      EvaluationScope{ScopeFormRef(0), {}}},
+          {EvaluationCondition{QuantileCondition{ratio(__func__, 1, 2)}}},
+          evaluationCase, resolution),
+      "is not applicable");
+
+  // Exact duplicates and assignment conflicts are both invalid, while
+  // canonical order is authoring-order independent.
+  expectErrorContains(
+      __func__,
+      EvaluationCase::get(signature, caseBindings(__func__, fabricSubject()),
+                          workloadReference(), std::nullopt,
+                          {rootClock, rootClock}, resolution),
       "duplicate evaluation condition");
   expectErrorContains(
       __func__,
       EvaluationCase::get(
-          signature,
-          caseBindings(__func__, fabricArtifact(), mappingArtifact()),
-          workloadArtifact(), std::nullopt, {firstDomain, conflicting},
+          signature, caseBindings(__func__, fabricSubject()),
+          workloadReference(), std::nullopt,
+          {rootClock, clockPeriodCondition(__func__, fabricRootTarget(), 6)},
           resolution),
       "conflicting");
-
-  EvaluationCase forward = mappedCase(__func__, {firstDomain, secondDomain});
-  EvaluationCase reverse = mappedCase(__func__, {secondDomain, firstDomain});
-  require(__func__, forward.baseConditions().size() == 2,
-          "distinct condition assignments were collapsed");
+  EvaluationCase forward = testCase(__func__, {rootClock, localClock});
+  EvaluationCase reverse = testCase(__func__, {localClock, rootClock});
   require(__func__, baseCaseKey(forward) == baseCaseKey(reverse),
           "authoring order reached the canonical condition set");
+}
+
+/// One exact TechnologyCorner import through the ImplementationPlatform owner
+/// codec, plus wrong-platform, wrong-kind, malformed, and unresolved
+/// rejection. The corner's platform must also be admitted by the selected
+/// subject's exact dependency closure.
+void technologyCornerImportIsOwnerValidated() {
+  EvaluationCaseSignatureRef signature = testSignatureRef(__func__);
+  CaseArtifactResolution resolution = caseResolution(__func__);
+
+  // The fixed eight-byte known vector and typed round-trip through the owner
+  // codec.
+  const platform::TechnologyCornerRef cornerOne{platformArtifact(),
+                                                platform::TechnologyCornerId(1)};
+  const std::array<std::uint8_t, 8> knownPayload =
+      platform::encodeTechnologyCornerPayload(platform::TechnologyCornerId(1));
+  require(__func__,
+          knownPayload == std::array<std::uint8_t, 8>{0, 0, 0, 0, 0, 0, 0, 1},
+          "the technology corner payload is not exactly u64be(corner_id)");
+  require(__func__,
+          takeExpected(__func__, platform::decodeTechnologyCornerPayload(
+                                     knownPayload)) ==
+              platform::TechnologyCornerId(1),
+          "the technology corner payload did not round-trip");
+  EncodedArtifactLocalReference encodedCorner =
+      platform::encodeTechnologyCornerRef(cornerOne);
+  require(__func__,
+          takeExpected(__func__,
+                       platform::decodeTechnologyCornerRef(encodedCorner)) ==
+              cornerOne,
+          "the heterogeneous corner reference did not round-trip");
+
+  // One exact import: the corner resolves inside the exact platform admitted
+  // by the selected subject's dependency closure.
+  EvaluationCondition processCorner{ProcessCornerCondition{
+      fabricRootTarget(), encodedCorner}};
+  EvaluationCase withCorner = takeExpected(
+      __func__,
+      EvaluationCase::get(signature, caseBindings(__func__, fabricSubject()),
+                          workloadReference(), std::nullopt, {processCorner},
+                          resolution));
+  require(__func__, withCorner.baseConditions().size() == 1,
+          "the exact process corner condition was not preserved");
+
+  EncodedArtifactLocalReference wrongPlatform = encodedCorner;
+  wrongPlatform.artifact.schema = fabric::fabricArtifactSchema;
+  expectCornerRejected(__func__, wrongPlatform, "loom.implementation_platform");
+  EncodedArtifactLocalReference wrongKind = encodedCorner;
+  wrongKind.ownerLocalKind = platform::technologyCornerLocalKind + 1;
+  expectCornerRejected(__func__, wrongKind, "technology corner kind");
+  EncodedArtifactLocalReference malformed = encodedCorner;
+  malformed.payload.assign(4, 0);
+  expectCornerRejected(__func__, malformed, "exactly eight bytes");
+  expectCornerRejected(
+      __func__,
+      platform::encodeTechnologyCornerRef(platform::TechnologyCornerRef{
+          platformArtifact(), platform::TechnologyCornerId(5)}),
+      "does not resolve");
+
+  // A platform outside the selected subject's exact closure is not admitted.
+  expectCornerRejected(
+      __func__,
+      platform::encodeTechnologyCornerRef(platform::TechnologyCornerRef{
+          otherPlatformArtifact(), platform::TechnologyCornerId(1)}),
+      "not admitted");
 }
 
 } // namespace
 
 int main() {
-  sharedSignatureAlignsCaseKeysAcrossModelDescriptors();
-  caseSignatureOwnsSchemasAndCompatibility();
-  scopeFormsOwnRolesTargetsAndRelations();
-  scopeCaseValidationOwnsAnchorsAndClosure();
-  conditionOwnershipDuplicatesAndConflicts();
+  if (llvm::Error error = fabric::registerFabricLocalReferenceKinds())
+    fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          platform::registerImplementationPlatformLocalReferenceKinds())
+    fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error = fabric::publishFabricImporterView(fabricView))
+    fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          platform::publishImplementationPlatformView(platformView))
+    fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          platform::publishImplementationPlatformView(otherPlatformView))
+    fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error = registerEvaluationCaseSignature(testCaseSignature))
+    fail("registration", llvm::toString(std::move(error)));
+
+  sharedSignatureDerivesOneCaseKeyAcrossModels();
+  scopeAnchorsClosureTypedLocalTargetsAndRoleOrder();
+  conditionLocationApplicabilityDuplicatesAndConflicts();
+  technologyCornerImportIsOwnerValidated();
   return 0;
 }

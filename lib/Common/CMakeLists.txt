@@ -1,5 +1,6 @@
 add_mlir_library(LoomCommon
   ArtifactFinalizer.cpp
+  ArtifactLocalReference.cpp
   ArtifactStore.cpp
   ArtifactText.cpp
   BlobDigest.cpp

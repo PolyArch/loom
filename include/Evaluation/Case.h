@@ -4,6 +4,7 @@
 #include "Evaluation/NumericValue.h"
 
 #include "Common/Artifact.h"
+#include "Common/ArtifactLocalReference.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -16,22 +17,28 @@
 #include <vector>
 
 // The model-independent Evaluation case: one static typed case-signature
-// registry, its role-labeled subject bindings, the shared scope algebra used by
-// every query kind, and the closed condition union. These atoms are mutually
-// defined by specification: a signature permits base-condition kinds and
-// targets, a condition carries scope targets, and a scope target names a case
-// role and an exact bound anchor. They therefore share one header and have no
-// second semantic authority.
+// registry, its role-labeled subject bindings, the shared scope algebra used
+// by every query kind, and the closed condition union. These atoms are
+// mutually defined by specification: a signature permits base-condition
+// patterns, a condition carries scope targets, and a scope target names a
+// case role and an exact bound anchor. They therefore share one header and
+// have no second semantic authority.
+//
+// Every cross-artifact reference is exact: subject bindings, anchors, and
+// targets use the Common ArtifactRootReference and
+// EncodedArtifactLocalReference carriers. Each Artifact family owns its local
+// kind ordinals, canonical payload bytes, typed decoder, and validation;
+// Evaluation owns only case-role, anchor/closure, and pattern verification.
 
 namespace loom::evaluation {
 
-/// The exact Evaluation schema version that owns every registry ordinal in this
-/// header. Case-signature, scope-form, and role ordinals are stable only within
-/// it; a breaking change requires an incompatible schema version.
+/// The exact Evaluation schema version that owns every registry ordinal in
+/// this header. Case-signature, scope-form, and role ordinals are stable only
+/// within it; a breaking change requires an incompatible schema version.
 SchemaVersion evaluationSchemaVersion();
 
 //===----------------------------------------------------------------------===//
-// Condition kinds, locations, and applicability
+// Condition kinds and locations
 //===----------------------------------------------------------------------===//
 
 enum class EvaluationConditionKind : std::uint8_t {
@@ -51,6 +58,10 @@ enum class ConditionLocation : std::uint8_t {
   MetricRequest,
   FindingRequest,
 };
+
+//===----------------------------------------------------------------------===//
+// Case subject roles and exact target patterns
+//===----------------------------------------------------------------------===//
 
 /// A stable ordinal local to one exact case-signature version. The signature,
 /// never a model descriptor, owns which ordinals exist and what they mean.
@@ -74,155 +85,32 @@ private:
   std::uint32_t ordinal_;
 };
 
-/// One condition pattern an owner permits: the exact kind and the exact case
-/// subject roles its targets may name. A targetless kind permits no role.
-struct ConditionPattern {
-  EvaluationConditionKind kind;
-  llvm::ArrayRef<CaseSubjectRoleRef> permittedTargetRoles;
-};
-
-/// The exact owner that permits condition patterns at one location: a case
-/// signature owns Base applicability, and a Metric or Finding descriptor owns
-/// request-specific applicability. A model descriptor separately declares what
-/// it consumes, requires, or proves invariant; it never widens either owner or
-/// redefines a payload.
-struct ConditionApplicability {
-  ConditionLocation location;
-  llvm::StringRef permittingOwner;
-  llvm::ArrayRef<ConditionPattern> permittedPatterns;
-
-  const ConditionPattern *findPattern(EvaluationConditionKind kind) const;
-};
-
-//===----------------------------------------------------------------------===//
-// Subject bindings and resolved case artifacts
-//===----------------------------------------------------------------------===//
-
-struct CaseRoleBinding {
-  CaseSubjectRoleRef role;
-  std::vector<ArtifactIdentity> subjects;
-
-  friend bool operator==(const CaseRoleBinding &lhs,
-                         const CaseRoleBinding &rhs) {
-    return lhs.role == rhs.role && lhs.subjects == rhs.subjects;
-  }
-  friend bool operator!=(const CaseRoleBinding &lhs,
-                         const CaseRoleBinding &rhs) {
-    return !(lhs == rhs);
-  }
-};
-
-/// A total table from case-signature role to a canonical collection of exact
-/// bound Artifacts. Collections contain no duplicates and are ordered by
-/// complete reference key; authoring order has no meaning. Totality relative
-/// to the exact signature is enforced by EvaluationCase.
-class EvaluationSubjectBindings {
+/// A stable registry ordinal naming one case signature within the exact
+/// Evaluation schema version. Case-signature owners register their descriptor
+/// under their own pinned ordinal; it is not an Artifact reference, digest,
+/// string name, or model-descriptor-local ordinal.
+class EvaluationCaseKind {
 public:
-  static llvm::Expected<EvaluationSubjectBindings>
-  get(std::vector<CaseRoleBinding> bindings);
+  explicit constexpr EvaluationCaseKind(std::uint32_t ordinal)
+      : ordinal_(ordinal) {}
 
-  llvm::ArrayRef<CaseRoleBinding> roleBindings() const { return bindings_; }
-  llvm::ArrayRef<ArtifactIdentity> subjects(CaseSubjectRoleRef role) const;
-  bool isBoundSubject(CaseSubjectRoleRef role,
-                      const ArtifactIdentity &subject) const;
+  constexpr std::uint32_t ordinal() const { return ordinal_; }
 
-  friend bool operator==(const EvaluationSubjectBindings &lhs,
-                         const EvaluationSubjectBindings &rhs) {
-    return lhs.bindings_ == rhs.bindings_;
+  friend constexpr bool operator==(EvaluationCaseKind lhs,
+                                   EvaluationCaseKind rhs) {
+    return lhs.ordinal_ == rhs.ordinal_;
   }
-  friend bool operator!=(const EvaluationSubjectBindings &lhs,
-                         const EvaluationSubjectBindings &rhs) {
+  friend constexpr bool operator!=(EvaluationCaseKind lhs,
+                                   EvaluationCaseKind rhs) {
     return !(lhs == rhs);
   }
 
 private:
-  explicit EvaluationSubjectBindings(std::vector<CaseRoleBinding> bindings)
-      : bindings_(std::move(bindings)) {}
-
-  std::vector<CaseRoleBinding> bindings_;
+  std::uint32_t ordinal_;
 };
 
-/// The facts about exact case Artifacts that only an Artifact store can supply:
-/// each Artifact's owner-exported schema descriptor and its exact semantic
-/// dependency closure. Evaluation resolves no Artifact and persists no
-/// resolution; an unresolved Artifact is never silently accepted.
-class CaseArtifactResolution {
-public:
-  struct Entry {
-    ArtifactIdentity artifact;
-    const ArtifactSchemaDescriptor *schema;
-    std::vector<ArtifactIdentity> dependencyClosure;
-  };
-
-  static llvm::Expected<CaseArtifactResolution> get(std::vector<Entry> entries);
-
-  const Entry *find(const ArtifactIdentity &artifact) const;
-  /// True when the dependency is the Artifact itself or occurs in its exact
-  /// semantic dependency closure.
-  static bool reaches(const Entry &entry, const ArtifactIdentity &dependency);
-
-private:
-  explicit CaseArtifactResolution(std::vector<Entry> entries)
-      : entries_(std::move(entries)) {}
-
-  std::vector<Entry> entries_;
-};
-
-//===----------------------------------------------------------------------===//
-// Case signature registry
-//===----------------------------------------------------------------------===//
-
-enum class EvaluationCaseKind : std::uint8_t {
-  MappedWorkloadExecution,
-};
-
-enum class ArtifactRequirement : std::uint8_t { Forbidden, Optional, Required };
-
-enum class SubjectRoleCardinality : std::uint8_t { ExactlyOne, OneOrMore };
-
-struct CaseSubjectRoleDescriptor {
-  CaseSubjectRoleRef role;
-  llvm::StringRef semanticRole;
-  SubjectRoleCardinality cardinality;
-  /// Owner-exported Artifact schema descriptors this role accepts. Evaluation
-  /// never authors a family schema identity; it references the descriptor the
-  /// owning family publishes.
-  llvm::ArrayRef<const ArtifactSchemaDescriptor *> acceptedSchemas;
-  /// This role's compatibility with the other bound roles, owned by the
-  /// signature. Null when the role imposes no cross-role relation.
-  llvm::Error (*verifyCrossRoleCompatibility)(
-      const ArtifactIdentity &subject,
-      const EvaluationSubjectBindings &bindings,
-      const CaseArtifactResolution &resolution);
-};
-
-struct EvaluationCaseSignatureDescriptor {
-  EvaluationCaseKind caseKind;
-  llvm::StringRef spelling;
-  llvm::StringRef semanticDefinition;
-  llvm::ArrayRef<CaseSubjectRoleDescriptor> subjectRoles;
-  ArtifactRequirement workload;
-  llvm::ArrayRef<const ArtifactSchemaDescriptor *> acceptedWorkloadSchemas;
-  ArtifactRequirement runtimeInput;
-  llvm::ArrayRef<const ArtifactSchemaDescriptor *> acceptedRuntimeInputSchemas;
-  /// Compatibility between the two orthogonal exact references and the bound
-  /// subjects, owned by the signature. Null when the signature imposes no
-  /// relation beyond the accepted schemas.
-  llvm::Error (*verifyWorkloadCompatibility)(
-      const EvaluationSubjectBindings &bindings,
-      const std::optional<ArtifactIdentity> &workload,
-      const std::optional<ArtifactIdentity> &runtimeInput,
-      const CaseArtifactResolution &resolution);
-  llvm::ArrayRef<ConditionPattern> permittedBaseConditions;
-
-  const CaseSubjectRoleDescriptor *
-  findSubjectRole(CaseSubjectRoleRef role) const;
-  ConditionApplicability baseConditionApplicability() const;
-};
-
-/// The persistent registry reference is exactly
-/// (Evaluation schema version, EvaluationCaseKind). It is not an Artifact
-/// reference, digest, string name, or model-descriptor-local ordinal.
+/// The persistent registry reference is exactly (Evaluation schema version,
+/// EvaluationCaseKind).
 class EvaluationCaseSignatureRef {
 public:
   static llvm::Expected<EvaluationCaseSignatureRef>
@@ -230,7 +118,8 @@ public:
 
   SchemaVersion schemaVersion() const { return schemaVersion_; }
   EvaluationCaseKind caseKind() const { return caseKind_; }
-  const EvaluationCaseSignatureDescriptor &descriptor() const;
+  /// The registered descriptor, or null when no owner registered this kind.
+  const struct EvaluationCaseSignatureDescriptor *descriptor() const;
 
   friend bool operator==(EvaluationCaseSignatureRef lhs,
                          EvaluationCaseSignatureRef rhs) {
@@ -251,137 +140,253 @@ private:
   EvaluationCaseKind caseKind_;
 };
 
-const EvaluationCaseSignatureDescriptor &
-caseSignatureDescriptor(EvaluationCaseKind caseKind);
+/// Total canonical order over exact case-signature references.
+bool evaluationCaseSignatureRefLess(EvaluationCaseSignatureRef lhs,
+                                    EvaluationCaseSignatureRef rhs);
 
-llvm::StringRef toString(EvaluationCaseKind caseKind);
+/// One exact accepted root type: any Artifact root of this exact schema.
+struct ArtifactRootType {
+  ArtifactSchemaDescriptor schema;
 
-//===----------------------------------------------------------------------===//
-// Family-owned local targets
-//===----------------------------------------------------------------------===//
-
-/// The discriminator of one local object kind inside an Artifact family. Its
-/// values are owned by that family, not by Evaluation.
-class LocalTargetKind {
-public:
-  explicit constexpr LocalTargetKind(std::uint32_t value) : value_(value) {}
-
-  constexpr std::uint32_t value() const { return value_; }
-
-  friend constexpr bool operator==(LocalTargetKind lhs, LocalTargetKind rhs) {
-    return lhs.value_ == rhs.value_;
+  friend bool operator==(const ArtifactRootType &lhs,
+                         const ArtifactRootType &rhs) {
+    return lhs.schema == rhs.schema;
   }
-  friend constexpr bool operator!=(LocalTargetKind lhs, LocalTargetKind rhs) {
+  friend bool operator!=(const ArtifactRootType &lhs,
+                         const ArtifactRootType &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+/// One exact accepted local type: one owner-local kind of one exact Artifact
+/// family and schema version.
+struct ArtifactLocalType {
+  ArtifactLocalReferenceTypeDescriptor type;
+
+  friend bool operator==(const ArtifactLocalType &lhs,
+                         const ArtifactLocalType &rhs) {
+    return lhs.type == rhs.type;
+  }
+  friend bool operator!=(const ArtifactLocalType &lhs,
+                         const ArtifactLocalType &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+using SubjectReferenceType = std::variant<ArtifactRootType, ArtifactLocalType>;
+
+/// One positional alternative of a target pattern: the exact case subject
+/// role plus the exact root or local reference type accepted at this
+/// position. Accepted target types are not independent per-role sets whose
+/// accidental Cartesian product admits invalid relations.
+struct SubjectTargetPattern {
+  CaseSubjectRoleRef caseSubjectRole;
+  SubjectReferenceType referenceType;
+
+  friend bool operator==(const SubjectTargetPattern &lhs,
+                         const SubjectTargetPattern &rhs) {
+    return lhs.caseSubjectRole == rhs.caseSubjectRole &&
+           lhs.referenceType == rhs.referenceType;
+  }
+  friend bool operator!=(const SubjectTargetPattern &lhs,
+                         const SubjectTargetPattern &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+/// One complete positional target-pattern alternative pinned to the exact
+/// case signature it serves.
+struct OrderedTargetPattern {
+  EvaluationCaseSignatureRef caseSignature;
+  std::vector<SubjectTargetPattern> targets;
+
+  friend bool operator==(const OrderedTargetPattern &lhs,
+                         const OrderedTargetPattern &rhs) {
+    return lhs.caseSignature == rhs.caseSignature && lhs.targets == rhs.targets;
+  }
+  friend bool operator!=(const OrderedTargetPattern &lhs,
+                         const OrderedTargetPattern &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+/// One condition pattern an owner permits: the exact kind and one complete
+/// ordered target pattern. Semantic applicability has three nonoverlapping
+/// owners: the exact EvaluationCaseSignature owns Base patterns, a Metric or
+/// Finding descriptor owns request-specific patterns, and an
+/// EvaluationModelDescriptor declares which already-permitted exact patterns
+/// it consumes, requires, or proves irrelevant.
+struct ConditionApplicabilityPattern {
+  EvaluationConditionKind kind;
+  OrderedTargetPattern targets;
+
+  friend bool operator==(const ConditionApplicabilityPattern &lhs,
+                         const ConditionApplicabilityPattern &rhs) {
+    return lhs.kind == rhs.kind && lhs.targets == rhs.targets;
+  }
+  friend bool operator!=(const ConditionApplicabilityPattern &lhs,
+                         const ConditionApplicabilityPattern &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+/// Canonical pattern ordering: exact case-signature reference, arity, then
+/// each positional (case role, root/local discriminant, owner schema,
+/// owner-local kind when present) key. Duplicate patterns are invalid.
+bool orderedTargetPatternLess(const OrderedTargetPattern &lhs,
+                              const OrderedTargetPattern &rhs);
+bool conditionApplicabilityPatternLess(const ConditionApplicabilityPattern &lhs,
+                                       const ConditionApplicabilityPattern &rhs);
+
+/// Validates one descriptor-owned pattern collection: canonical order and no
+/// duplicate patterns.
+llvm::Error validateOrderedTargetPatternSet(
+    llvm::StringRef owner, llvm::ArrayRef<OrderedTargetPattern> patterns);
+
+//===----------------------------------------------------------------------===//
+// Subject bindings and resolved case artifacts
+//===----------------------------------------------------------------------===//
+
+struct CaseRoleBinding {
+  CaseSubjectRoleRef role;
+  std::vector<ArtifactRootReference> subjects;
+
+  friend bool operator==(const CaseRoleBinding &lhs,
+                         const CaseRoleBinding &rhs) {
+    return lhs.role == rhs.role && lhs.subjects == rhs.subjects;
+  }
+  friend bool operator!=(const CaseRoleBinding &lhs,
+                         const CaseRoleBinding &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+/// A total table from case-signature role to a canonical collection of exact
+/// bound Artifact roots. Collections contain no duplicates and are ordered by
+/// complete root-reference canonical key; authoring order has no meaning.
+/// Totality relative to the exact signature is enforced by EvaluationCase.
+class EvaluationSubjectBindings {
+public:
+  static llvm::Expected<EvaluationSubjectBindings>
+  get(std::vector<CaseRoleBinding> bindings);
+
+  llvm::ArrayRef<CaseRoleBinding> roleBindings() const { return bindings_; }
+  llvm::ArrayRef<ArtifactRootReference> subjects(CaseSubjectRoleRef role) const;
+  bool isBoundSubject(CaseSubjectRoleRef role,
+                      const ArtifactRootReference &subject) const;
+
+  friend bool operator==(const EvaluationSubjectBindings &lhs,
+                         const EvaluationSubjectBindings &rhs) {
+    return lhs.bindings_ == rhs.bindings_;
+  }
+  friend bool operator!=(const EvaluationSubjectBindings &lhs,
+                         const EvaluationSubjectBindings &rhs) {
     return !(lhs == rhs);
   }
 
 private:
-  std::uint32_t value_;
+  explicit EvaluationSubjectBindings(std::vector<CaseRoleBinding> bindings)
+      : bindings_(std::move(bindings)) {}
+
+  std::vector<CaseRoleBinding> bindings_;
 };
 
-/// The canonical payload of one family-owned local reference. The owning family
-/// composes it from its own typed entity and structural references and remains
-/// the sole authority on its meaning and validity. Evaluation frames the
-/// complete payload in canonical keys and text and never interprets it, so
-/// there is no Evaluation-owned entity shape, generic path, or property bag.
-class LocalTargetPayload {
+/// The facts about exact case Artifacts that only an Artifact store can
+/// supply: each Artifact's exact semantic dependency closure. Evaluation
+/// resolves no Artifact and persists no resolution; an unresolved Artifact is
+/// never silently accepted. The family-owned importer view a local-reference
+/// validator needs never enters this structure: each referenced Artifact
+/// family resolves its own typed view through its own owner boundary.
+class CaseArtifactResolution {
 public:
-  /// Family-facing composition from the family's own typed references. Each
-  /// reference contributes its ordinal in declaration order, so a single-entity
-  /// reference and a structural reference stay distinguishable.
-  template <typename... EntityIds>
-  static LocalTargetPayload ofEntities(EntityIds... entities) {
-    std::vector<std::uint8_t> bytes;
-    (appendEntityOrdinal(bytes, entities.value()), ...);
-    return LocalTargetPayload(std::move(bytes));
-  }
+  struct Entry {
+    ArtifactRootReference artifact;
+    std::vector<ArtifactRootReference> dependencyClosure;
+  };
 
-  /// Family-facing decode of bytes this family already framed. The family's
-  /// validator remains the authority on whether they are well formed.
-  static LocalTargetPayload
-  fromCanonicalBytes(llvm::ArrayRef<std::uint8_t> bytes) {
-    return LocalTargetPayload(
-        std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
-  }
+  static llvm::Expected<CaseArtifactResolution> get(std::vector<Entry> entries);
 
-  llvm::ArrayRef<std::uint8_t> bytes() const { return bytes_; }
-
-  friend bool operator==(const LocalTargetPayload &lhs,
-                         const LocalTargetPayload &rhs) {
-    return lhs.bytes_ == rhs.bytes_;
-  }
-  friend bool operator!=(const LocalTargetPayload &lhs,
-                         const LocalTargetPayload &rhs) {
-    return !(lhs == rhs);
-  }
+  const Entry *find(const ArtifactRootReference &artifact) const;
+  /// True when the dependency is the Artifact itself or occurs in its exact
+  /// semantic dependency closure.
+  static bool reaches(const Entry &entry, const ArtifactRootReference &dependency);
 
 private:
-  explicit LocalTargetPayload(std::vector<std::uint8_t> bytes)
-      : bytes_(std::move(bytes)) {}
+  explicit CaseArtifactResolution(std::vector<Entry> entries)
+      : entries_(std::move(entries)) {}
 
-  static void appendEntityOrdinal(std::vector<std::uint8_t> &bytes,
-                                  std::uint64_t ordinal) {
-    for (unsigned shift = 56; shift != 0; shift -= 8)
-      bytes.push_back(static_cast<std::uint8_t>(ordinal >> shift));
-    bytes.push_back(static_cast<std::uint8_t>(ordinal));
-  }
-
-  std::vector<std::uint8_t> bytes_;
+  std::vector<Entry> entries_;
 };
 
-/// One Artifact family's authority over the local objects an Evaluation target
-/// may name inside its artifacts. The family owns the closed local kind set,
-/// their canonical spellings, and the validity of their payloads. Evaluation
-/// imports this descriptor unchanged and defines no global Evaluation entity
-/// catalog.
-struct LocalTargetFamilyDescriptor {
-  const ArtifactSchemaDescriptor *artifactSchema;
-  llvm::StringRef (*localKindSpelling)(LocalTargetKind kind);
-  llvm::Error (*validateLocalTarget)(LocalTargetKind kind,
-                                     const LocalTargetPayload &payload);
+//===----------------------------------------------------------------------===//
+// Case signature registry
+//===----------------------------------------------------------------------===//
+
+enum class ArtifactRequirement : std::uint8_t { Forbidden, Optional, Required };
+
+enum class SubjectRoleCardinality : std::uint8_t { ExactlyOne, OneOrMore };
+
+struct CaseSubjectRoleDescriptor {
+  CaseSubjectRoleRef role;
+  llvm::StringRef semanticRole;
+  SubjectRoleCardinality cardinality;
+  /// Owner-exported Artifact schema descriptors this role accepts. Evaluation
+  /// never authors a family schema identity; it references the descriptor the
+  /// owning family publishes.
+  llvm::ArrayRef<const ArtifactSchemaDescriptor *> acceptedSchemas;
+  /// This role's compatibility with the other bound roles, owned by the
+  /// signature. Null when the role imposes no cross-role relation.
+  llvm::Error (*verifyCrossRoleCompatibility)(
+      const ArtifactRootReference &subject,
+      const EvaluationSubjectBindings &bindings,
+      const CaseArtifactResolution &resolution);
 };
 
-/// An exact reference to one family-owned local object. Every instance is
-/// family-validated, so an unvalidated or caller-invented payload cannot reach
-/// a scope, a condition, or a canonical key.
-class LocalTargetRef {
-public:
-  static llvm::Expected<LocalTargetRef>
-  get(const LocalTargetFamilyDescriptor &family, LocalTargetKind kind,
-      ArtifactIdentity artifact, LocalTargetPayload payload);
+struct EvaluationCaseSignatureDescriptor {
+  EvaluationCaseKind caseKind;
+  llvm::StringRef spelling;
+  llvm::StringRef semanticDefinition;
+  llvm::ArrayRef<CaseSubjectRoleDescriptor> subjectRoles;
+  ArtifactRequirement workload;
+  llvm::ArrayRef<const ArtifactSchemaDescriptor *> acceptedWorkloadSchemas;
+  ArtifactRequirement runtimeInput;
+  llvm::ArrayRef<const ArtifactSchemaDescriptor *> acceptedRuntimeInputSchemas;
+  /// Compatibility between the two orthogonal exact references and the bound
+  /// subjects, owned by the signature. Null when the signature imposes no
+  /// relation beyond the accepted schemas.
+  llvm::Error (*verifyWorkloadCompatibility)(
+      const EvaluationSubjectBindings &bindings,
+      const std::optional<ArtifactRootReference> &workload,
+      const std::optional<ArtifactRootReference> &runtimeInput,
+      const CaseArtifactResolution &resolution);
+  /// The complete exact Base-condition patterns this signature permits. Every
+  /// pattern's case signature must be this signature itself.
+  llvm::ArrayRef<ConditionApplicabilityPattern> permittedBaseConditions;
 
-  const LocalTargetFamilyDescriptor &family() const { return *family_; }
-  LocalTargetKind localKind() const { return kind_; }
-  const ArtifactIdentity &artifact() const { return artifact_; }
-  const LocalTargetPayload &payload() const { return payload_; }
-
-private:
-  LocalTargetRef(const LocalTargetFamilyDescriptor &family,
-                 LocalTargetKind kind, ArtifactIdentity artifact,
-                 LocalTargetPayload payload)
-      : family_(&family), kind_(kind), artifact_(std::move(artifact)),
-        payload_(std::move(payload)) {}
-
-  const LocalTargetFamilyDescriptor *family_;
-  LocalTargetKind kind_;
-  ArtifactIdentity artifact_;
-  LocalTargetPayload payload_;
+  const CaseSubjectRoleDescriptor *
+  findSubjectRole(CaseSubjectRoleRef role) const;
 };
 
-/// Family identity is the family's own Artifact schema identity and version, so
-/// two descriptors for one family compare equal.
-bool operator==(const LocalTargetRef &lhs, const LocalTargetRef &rhs);
-inline bool operator!=(const LocalTargetRef &lhs, const LocalTargetRef &rhs) {
-  return !(lhs == rhs);
-}
+/// Statically registers one case-signature descriptor under its pinned kind
+/// ordinal. The descriptor and everything it references must have static
+/// storage duration. Re-registering the same descriptor is a no-op; a kind
+/// ordinal or spelling conflict, malformed roles, or a noncanonical
+/// Base-pattern set is an error.
+llvm::Error registerEvaluationCaseSignature(
+    const EvaluationCaseSignatureDescriptor &descriptor);
+
+/// The registered descriptor for one case kind, or null.
+const EvaluationCaseSignatureDescriptor *
+findEvaluationCaseSignature(EvaluationCaseKind caseKind);
 
 //===----------------------------------------------------------------------===//
 // Evaluation scope
 //===----------------------------------------------------------------------===//
 
-/// A stable ordinal local to one query-kind descriptor in the exact Evaluation
-/// schema version. The containing MetricKind or FindingKind always resolves it,
-/// so it is neither a global relation registry nor a free string.
+/// A stable ordinal local to one query-kind descriptor in the exact
+/// Evaluation schema version. The containing MetricKind or FindingKind always
+/// resolves it, so it is neither a global relation registry nor a free
+/// string.
 class ScopeFormRef {
 public:
   explicit constexpr ScopeFormRef(std::uint32_t ordinal) : ordinal_(ordinal) {}
@@ -418,16 +423,9 @@ private:
   std::uint32_t ordinal_;
 };
 
-struct AcceptedLocalTarget {
-  const LocalTargetFamilyDescriptor *family;
-  LocalTargetKind localKind;
-};
-
 struct ScopeRoleDescriptor {
   ScopeRoleRef role;
   llvm::StringRef semanticRole;
-  bool acceptsArtifactRoot;
-  llvm::ArrayRef<AcceptedLocalTarget> acceptedLocalTargets;
 };
 
 struct SubjectTargetRef;
@@ -438,41 +436,38 @@ struct ScopeFormDescriptor {
   /// Ordered, nonrepeating role tuple: each role ordinal is its position and
   /// the semantic roles are distinct.
   llvm::ArrayRef<ScopeRoleDescriptor> roles;
-  /// Relation-specific verification owned by this query form, such as requiring
-  /// two distinct endpoints. Null when per-role acceptance is the whole
-  /// contract.
+  /// The complete positional alternatives accepted at this form. A zero-role
+  /// form denotes the entire exact Evaluation case and declares no patterns:
+  /// its one accepted pattern is the targetless pattern of the requesting
+  /// case signature. A form with roles declares a canonical nonempty set.
+  llvm::ArrayRef<OrderedTargetPattern> acceptedTargetPatterns;
+  /// Relation-specific verification owned by this query form, such as
+  /// requiring two distinct endpoints. Null when the accepted patterns are
+  /// the whole contract.
   llvm::Error (*verifyRelation)(llvm::ArrayRef<SubjectTargetRef> targets);
 };
 
 const ScopeFormDescriptor *
 findScopeForm(llvm::ArrayRef<ScopeFormDescriptor> forms, ScopeFormRef form);
 
-struct ArtifactRootTarget {
-  ArtifactIdentity artifact;
-
-  friend bool operator==(const ArtifactRootTarget &lhs,
-                         const ArtifactRootTarget &rhs) {
-    return lhs.artifact == rhs.artifact;
-  }
-  friend bool operator!=(const ArtifactRootTarget &lhs,
-                         const ArtifactRootTarget &rhs) {
-    return !(lhs == rhs);
-  }
-};
-
-using SubjectTarget = std::variant<ArtifactRootTarget, LocalTargetRef>;
+/// The exact target of one scope position: an Artifact root or one
+/// family-owned local object in heterogeneous framing.
+using SubjectTarget =
+    std::variant<ArtifactRootReference, EncodedArtifactLocalReference>;
 
 struct SubjectTargetRef {
   CaseSubjectRoleRef caseSubjectRole;
-  ArtifactIdentity anchorSubject;
+  /// An exact member of the selected case subject-role binding.
+  ArtifactRootReference anchorSubjectArtifact;
   SubjectTarget target;
 
-  const ArtifactIdentity &targetArtifact() const;
+  const ArtifactRootReference &targetArtifact() const;
 
   friend bool operator==(const SubjectTargetRef &lhs,
                          const SubjectTargetRef &rhs) {
     return lhs.caseSubjectRole == rhs.caseSubjectRole &&
-           lhs.anchorSubject == rhs.anchorSubject && lhs.target == rhs.target;
+           lhs.anchorSubjectArtifact == rhs.anchorSubjectArtifact &&
+           lhs.target == rhs.target;
   }
   friend bool operator!=(const SubjectTargetRef &lhs,
                          const SubjectTargetRef &rhs) {
@@ -480,10 +475,9 @@ struct SubjectTargetRef {
   }
 };
 
-/// The one closed scope algebra shared by every MetricKind and FindingKind. The
-/// target tuple has exactly the descriptor arity in descriptor role order and
-/// is never sorted as an unordered set. A zero-role form denotes the entire
-/// exact Evaluation case.
+/// The one closed scope algebra shared by every MetricKind and FindingKind.
+/// The target tuple has exactly the descriptor arity in descriptor role order
+/// and is never sorted as an unordered set.
 struct EvaluationScope {
   ScopeFormRef form;
   std::vector<SubjectTargetRef> targets;
@@ -498,16 +492,25 @@ struct EvaluationScope {
   }
 };
 
+/// The resolved reference type of one exact target.
+SubjectReferenceType subjectReferenceTypeOf(const SubjectTarget &target);
+
+/// The exact ordered target pattern of one validated target tuple under one
+/// exact case signature.
+OrderedTargetPattern
+deriveOrderedTargetPattern(llvm::ArrayRef<SubjectTargetRef> targets,
+                           EvaluationCaseSignatureRef caseSignature);
+
 /// The canonical scope key: form ordinal, exact arity framing, and each fully
 /// framed target in descriptor role order, including the case role, anchor
-/// identity, target Artifact identity, target-kind discriminator, and the
-/// complete family-owned canonical local payload.
+/// root reference, target root reference, owner-local type descriptor, and
+/// family-owned canonical local payload.
 std::vector<std::uint8_t> canonicalScopeKey(const EvaluationScope &scope);
 
-/// Query-descriptor-relative validation: the form exists among the query kind's
-/// own forms, its role tuple is ordered and nonrepeating, the target tuple has
-/// exactly the descriptor arity, every target kind is accepted by its role, and
-/// the form's own relation verification holds.
+/// Query-descriptor-relative validation: the form exists among the query
+/// kind's own forms, its role tuple is ordered and nonrepeating, the target
+/// tuple has exactly the descriptor arity, and the form's pattern set is
+/// canonical.
 llvm::Error
 validateEvaluationScopeForm(llvm::ArrayRef<ScopeFormDescriptor> forms,
                             const EvaluationScope &scope);
@@ -516,70 +519,56 @@ validateEvaluationScopeForm(llvm::ArrayRef<ScopeFormDescriptor> forms,
 // Case-relative target validation
 //===----------------------------------------------------------------------===//
 
-/// The case-relative facts a target validator needs: the exact case signature,
-/// its bound subjects, and the resolved case Artifacts.
+/// The case-relative facts a target validator needs: the exact case
+/// signature, its bound subjects, and the resolved case Artifacts.
 class CaseTargetContext {
 public:
   CaseTargetContext(const EvaluationCaseSignatureDescriptor &signature,
+                    EvaluationCaseSignatureRef signatureRef,
                     const EvaluationSubjectBindings &bindings,
                     const CaseArtifactResolution &resolution)
-      : signature_(&signature), bindings_(&bindings), resolution_(&resolution) {
-  }
+      : signature_(&signature), signatureRef_(signatureRef),
+        bindings_(&bindings), resolution_(&resolution) {}
 
   const EvaluationCaseSignatureDescriptor &signature() const {
     return *signature_;
   }
+  EvaluationCaseSignatureRef signatureRef() const { return signatureRef_; }
   const EvaluationSubjectBindings &bindings() const { return *bindings_; }
   const CaseArtifactResolution &resolution() const { return *resolution_; }
 
 private:
   const EvaluationCaseSignatureDescriptor *signature_;
+  EvaluationCaseSignatureRef signatureRef_;
   const EvaluationSubjectBindings *bindings_;
   const CaseArtifactResolution *resolution_;
 };
 
 /// Rejects a foreign case role, an anchor that is not an exact member of that
-/// role's binding, an unresolved Artifact, a target outside the anchor's exact
-/// dependency closure, and a local target whose Artifact does not belong to the
-/// naming family.
+/// role's binding, an unresolved Artifact, a target outside the anchor's
+/// exact dependency closure, and a local target whose owner codec or owner
+/// validator rejects it.
 llvm::Error validateSubjectTargetRef(const SubjectTargetRef &target,
                                      const CaseTargetContext &context);
 
-llvm::Error validateEvaluationScopeCase(const EvaluationScope &scope,
-                                        const CaseTargetContext &context);
+/// Case-relative scope validation: every target is valid, the derived exact
+/// ordered target pattern matches one descriptor-owned pattern of the
+/// selected form, and the form's own relation verification holds.
+llvm::Error validateEvaluationScopeCase(
+    const EvaluationScope &scope, llvm::ArrayRef<ScopeFormDescriptor> forms,
+    const CaseTargetContext &context);
 
 //===----------------------------------------------------------------------===//
 // Evaluation conditions
 //===----------------------------------------------------------------------===//
 
-/// An exact family-owned typed reference into immutable technology data. The
-/// provider Artifact owns the corner catalog; a bare corner string is invalid.
-class TechnologyCornerRef {
-public:
-  template <typename CornerId>
-  explicit TechnologyCornerRef(const ArtifactReference<CornerId> &reference)
-      : provider_(reference.artifact), corner_(reference.entity.value()) {}
-
-  const ArtifactIdentity &provider() const { return provider_; }
-  std::uint64_t corner() const { return corner_; }
-
-  friend bool operator==(const TechnologyCornerRef &lhs,
-                         const TechnologyCornerRef &rhs) {
-    return lhs.provider_ == rhs.provider_ && lhs.corner_ == rhs.corner_;
-  }
-  friend bool operator!=(const TechnologyCornerRef &lhs,
-                         const TechnologyCornerRef &rhs) {
-    return !(lhs == rhs);
-  }
-
-private:
-  ArtifactIdentity provider_;
-  std::uint64_t corner_;
-};
-
 struct ProcessCornerCondition {
   SubjectTargetRef target;
-  TechnologyCornerRef corner;
+  /// The exact TechnologyCornerRef in heterogeneous persistent form: the
+  /// loom.implementation_platform 1.0 family local kind TechnologyCorner with
+  /// its exactly eight-byte canonical payload. The ImplementationPlatform
+  /// owner, not Evaluation, decodes and validates it.
+  EncodedArtifactLocalReference corner;
 
   friend bool operator==(const ProcessCornerCondition &lhs,
                          const ProcessCornerCondition &rhs) {
@@ -637,11 +626,11 @@ struct RelativeClockScheduleCondition {
   }
 };
 
-/// One exact typed activity summary owned by a SimulationExecution. That family
-/// owns canonical summary order, ordinal range, source-basis coverage, and
-/// Request-lineage validation.
+/// One exact typed activity summary owned by a SimulationExecution. That
+/// family owns canonical summary order, ordinal range, source-basis coverage,
+/// and Request-lineage validation.
 struct ExecutionActivitySource {
-  ArtifactIdentity simulationExecution;
+  ArtifactRootReference simulationExecution;
   std::uint64_t activitySummaryOrdinal;
 
   friend bool operator==(const ExecutionActivitySource &lhs,
@@ -726,6 +715,19 @@ conditionDescriptor(EvaluationConditionKind kind);
 llvm::StringRef toString(EvaluationConditionKind kind);
 llvm::StringRef toString(ConditionLocation location);
 
+/// The kind-owned typed projection from a validated payload to its exact
+/// ordered tuple of SubjectTargetRef values, in semantic payload-field order.
+/// It is derived and never serialized as another list.
+std::vector<const SubjectTargetRef *>
+conditionOrderedTargets(const EvaluationCondition &condition);
+
+/// The exact condition applicability pattern of one validated condition under
+/// one exact case signature, derived from the ordered targets and their
+/// resolved reference types.
+ConditionApplicabilityPattern
+deriveConditionApplicabilityPattern(const EvaluationCondition &condition,
+                                    EvaluationCaseSignatureRef caseSignature);
+
 /// The kind-owned assignment-key projection. Two values of one kind with the
 /// same assignment key but different payloads are a conflict.
 std::vector<std::uint8_t>
@@ -736,15 +738,18 @@ conditionAssignmentKey(const EvaluationCondition &condition);
 std::vector<std::uint8_t>
 conditionPayloadKey(const EvaluationCondition &condition);
 
-/// Validates each condition's location, applicability against the exact
-/// permitting owner's pattern, typed payload, and case-bound targets, then
-/// returns the canonical set ordered by (kind, assignment key, complete payload
-/// key). An exact duplicate and an assignment conflict are both invalid; there
-/// is no last-wins behavior or override layer.
+/// Validates each condition's location, typed payload, case-bound targets
+/// through every target Artifact owner's codec and validator, and exact
+/// pattern applicability against the permitting owner's complete patterns,
+/// then returns the canonical set ordered by (kind, assignment key, complete
+/// payload key). An exact duplicate and an assignment conflict are both
+/// invalid; there is no last-wins behavior or override layer.
 llvm::Expected<std::vector<EvaluationCondition>>
-canonicalizeEvaluationConditions(llvm::ArrayRef<EvaluationCondition> conditions,
-                                 const ConditionApplicability &applicability,
-                                 const CaseTargetContext &context);
+canonicalizeEvaluationConditions(
+    llvm::ArrayRef<EvaluationCondition> conditions, ConditionLocation location,
+    llvm::StringRef permittingOwner,
+    llvm::ArrayRef<ConditionApplicabilityPattern> permittedPatterns,
+    const CaseTargetContext &context);
 
 //===----------------------------------------------------------------------===//
 // Evaluation case
@@ -758,15 +763,17 @@ class EvaluationCase {
 public:
   static llvm::Expected<EvaluationCase>
   get(EvaluationCaseSignatureRef signature, EvaluationSubjectBindings bindings,
-      std::optional<ArtifactIdentity> workload,
-      std::optional<ArtifactIdentity> runtimeInput,
+      std::optional<ArtifactRootReference> workload,
+      std::optional<ArtifactRootReference> runtimeInput,
       llvm::ArrayRef<EvaluationCondition> baseConditions,
       const CaseArtifactResolution &resolution);
 
   EvaluationCaseSignatureRef signature() const { return signature_; }
   const EvaluationSubjectBindings &subjectBindings() const { return bindings_; }
-  const std::optional<ArtifactIdentity> &workload() const { return workload_; }
-  const std::optional<ArtifactIdentity> &runtimeInput() const {
+  const std::optional<ArtifactRootReference> &workload() const {
+    return workload_;
+  }
+  const std::optional<ArtifactRootReference> &runtimeInput() const {
     return runtimeInput_;
   }
   llvm::ArrayRef<EvaluationCondition> baseConditions() const {
@@ -774,15 +781,13 @@ public:
   }
 
   CaseTargetContext
-  targetContext(const CaseArtifactResolution &resolution) const {
-    return CaseTargetContext(signature_.descriptor(), bindings_, resolution);
-  }
+  targetContext(const CaseArtifactResolution &resolution) const;
 
 private:
   EvaluationCase(EvaluationCaseSignatureRef signature,
                  EvaluationSubjectBindings bindings,
-                 std::optional<ArtifactIdentity> workload,
-                 std::optional<ArtifactIdentity> runtimeInput,
+                 std::optional<ArtifactRootReference> workload,
+                 std::optional<ArtifactRootReference> runtimeInput,
                  std::vector<EvaluationCondition> baseConditions)
       : signature_(signature), bindings_(std::move(bindings)),
         workload_(std::move(workload)), runtimeInput_(std::move(runtimeInput)),
@@ -790,8 +795,8 @@ private:
 
   EvaluationCaseSignatureRef signature_;
   EvaluationSubjectBindings bindings_;
-  std::optional<ArtifactIdentity> workload_;
-  std::optional<ArtifactIdentity> runtimeInput_;
+  std::optional<ArtifactRootReference> workload_;
+  std::optional<ArtifactRootReference> runtimeInput_;
   std::vector<EvaluationCondition> baseConditions_;
 };
 

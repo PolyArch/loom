@@ -96,4 +96,41 @@ parseArtifactIdentityHex(llvm::StringRef spelling) {
   return ArtifactIdentity::fromBytes(bytes);
 }
 
+std::string formatArtifactLocalPayloadHex(llvm::ArrayRef<std::uint8_t> payload) {
+  static constexpr char hex[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(payload.size() * 2);
+  for (std::uint8_t byte : payload) {
+    result.push_back(hex[byte >> 4]);
+    result.push_back(hex[byte & 0x0f]);
+  }
+  return result;
+}
+
+llvm::Expected<std::vector<std::uint8_t>>
+parseArtifactLocalPayloadHex(llvm::StringRef spelling) {
+  auto parseNibble = [](char character) -> int {
+    if (character >= '0' && character <= '9')
+      return character - '0';
+    if (character >= 'a' && character <= 'f')
+      return character - 'a' + 10;
+    return -1;
+  };
+
+  if ((spelling.size() % 2) != 0)
+    return artifactTextError("an artifact local-reference payload must use "
+                             "paired lowercase hexadecimal characters");
+  std::vector<std::uint8_t> payload;
+  payload.reserve(spelling.size() / 2);
+  for (std::size_t index = 0; index < spelling.size(); index += 2) {
+    const int high = parseNibble(spelling[index]);
+    const int low = parseNibble(spelling[index + 1]);
+    if (high < 0 || low < 0)
+      return artifactTextError("an artifact local-reference payload must use "
+                               "paired lowercase hexadecimal characters");
+    payload.push_back(static_cast<std::uint8_t>((high << 4) | low));
+  }
+  return payload;
+}
+
 } // namespace loom

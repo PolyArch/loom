@@ -60,14 +60,6 @@ void expectErrorContains(const char *test, llvm::Expected<T> value,
   expectErrorContains(test, value.takeError(), expected);
 }
 
-ArtifactIdentity testArtifact(std::initializer_list<std::uint8_t> prefix) {
-  ArtifactIdentity::Storage bytes{};
-  require(__func__, prefix.size() <= bytes.size(),
-          "test identity prefix is too long");
-  std::copy(prefix.begin(), prefix.end(), bytes.begin());
-  return takeExpected(__func__, ArtifactIdentity::fromBytes(bytes));
-}
-
 DecimalValue decimal(const char *test, std::int64_t coefficient,
                      std::int64_t exponent) {
   return takeExpected(test, DecimalValue::get(coefficient, exponent));
@@ -78,36 +70,15 @@ ExactRatio ratio(const char *test, std::uint64_t numerator,
   return takeExpected(test, ExactRatio::get(numerator, denominator));
 }
 
-// Every registered metric owns a zero-role whole-case form and a one-role
-// subject-root form.
+// Every registered metric owns the zero-role whole-case form.
 EvaluationScope wholeCaseScope() {
   return EvaluationScope{ScopeFormRef(0), {}};
-}
-
-EvaluationScope subjectScope(ArtifactIdentity anchor, ArtifactIdentity target) {
-  return EvaluationScope{
-      ScopeFormRef(1),
-      {SubjectTargetRef{CaseSubjectRoleRef(0), std::move(anchor),
-                        ArtifactRootTarget{std::move(target)}}}};
 }
 
 MetricObservation cyclePoint(std::int64_t cycles) {
   return MetricObservation{MetricKind::CycleCount, wholeCaseScope(),
                            UncertaintyKind::ExactWithinModel,
                            PointObservation{MetricValue{IntegerValue(cycles)}}};
-}
-
-void sharedArtifactAtomsAreSingleSource() {
-  ArtifactIdentity identity = testArtifact({0x01, 0xab});
-  require(__func__, identity.bytes().size() == ArtifactIdentity::byteSize,
-          "identity width changed");
-
-  loom::mapping::ActorRef mappingReference{identity, loom::mapping::ActorId(7)};
-  ArtifactReference<loom::mapping::ActorId> commonReference = mappingReference;
-  require(__func__, commonReference.artifact == identity,
-          "Mapping reference lost the common artifact identity");
-  require(__func__, commonReference.entity == loom::mapping::ActorId(7),
-          "Mapping reference lost its typed entity ID");
 }
 
 void metricDescriptorsOwnScopeFormsAndRequestConditions() {
@@ -126,27 +97,18 @@ void metricDescriptorsOwnScopeFormsAndRequestConditions() {
               !period.permitsObservationForm(ObservationForm::Censored),
           "the clock_period descriptor changed");
 
-  // A metric owns its own scope forms; there is no metric-local entity scope.
-  require(__func__, cycles.scopeForms.size() == 2,
-          "cycle_count lost one of its owned scope forms");
+  // A metric owns its own scope forms; the whole-case form has no role.
+  require(__func__, cycles.scopeForms.size() == 1,
+          "cycle_count lost its owned whole-case scope form");
   require(__func__, cycles.scopeForms[0].roles.empty(),
           "the whole-case scope form gained a role");
-  require(__func__,
-          cycles.scopeForms[1].roles.size() == 1 &&
-              cycles.scopeForms[1].roles[0].role == ScopeRoleRef(0) &&
-              cycles.scopeForms[1].roles[0].acceptsArtifactRoot,
-          "the subject scope form changed");
 
   // A metric owns which request-specific conditions apply to it.
-  const ConditionApplicability sampled = cycles.requestConditionApplicability();
-  require(__func__, sampled.location == ConditionLocation::MetricRequest,
-          "metric request conditions changed location");
   require(__func__,
-          sampled.findPattern(EvaluationConditionKind::Quantile) != nullptr,
+          cycles.permitsRequestCondition(EvaluationConditionKind::Quantile),
           "cycle_count lost its quantile applicability");
   require(__func__,
-          period.requestConditionApplicability().findPattern(
-              EvaluationConditionKind::Quantile) == nullptr,
+          !period.permitsRequestCondition(EvaluationConditionKind::Quantile),
           "clock_period gained a request-specific condition");
 
   require(__func__,
@@ -261,37 +223,30 @@ void observationValidationRejectsIllegalCombinations() {
 
 void metricQueriesCanonicalizeByScopeKey() {
   MetricQuery clockWhole{MetricKind::ClockPeriod, wholeCaseScope()};
-  MetricQuery clockEarly{
-      MetricKind::ClockPeriod,
-      subjectScope(testArtifact({0x01}), testArtifact({0x03}))};
-  MetricQuery clockLate{
-      MetricKind::ClockPeriod,
-      subjectScope(testArtifact({0x01}), testArtifact({0x09}))};
   MetricQuery cyclesWhole{MetricKind::CycleCount, wholeCaseScope()};
+  MetricQuery runtimeWhole{MetricKind::Runtime, wholeCaseScope()};
 
   std::vector<MetricQuery> forward = takeExpected(
-      __func__, canonicalizeMetricQueries(
-                    {cyclesWhole, clockLate, clockWhole, clockEarly}));
+      __func__,
+      canonicalizeMetricQueries({runtimeWhole, clockWhole, cyclesWhole}));
   std::vector<MetricQuery> reverse = takeExpected(
-      __func__, canonicalizeMetricQueries(
-                    {clockEarly, clockWhole, clockLate, cyclesWhole}));
+      __func__,
+      canonicalizeMetricQueries({cyclesWhole, runtimeWhole, clockWhole}));
   require(__func__, forward == reverse,
           "canonical order depends on input order");
   require(__func__,
-          forward == std::vector<MetricQuery>{clockWhole, clockEarly, clockLate,
-                                              cyclesWhole},
+          forward == std::vector<MetricQuery>{clockWhole, cyclesWhole,
+                                              runtimeWhole},
           "canonical query ordering changed");
   expectErrorContains(
-      __func__, canonicalizeMetricQueries({clockWhole, clockEarly, clockEarly}),
+      __func__, canonicalizeMetricQueries({clockWhole, clockWhole}),
       "duplicate metric query");
 }
 
 void metricTextCarriesTheSharedScope() {
-  MetricQuery query{
-      MetricKind::ClockPeriod,
-      subjectScope(testArtifact({0x01, 0xab}), testArtifact({0x02, 0xcd}))};
+  MetricQuery query{MetricKind::ClockPeriod, wholeCaseScope()};
   const std::string expectedQuery =
-      R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"clock_period","scope":{"form":1,"targets":[{"case_subject_role":0,"anchor":"01ab000000000000000000000000000000000000000000000000000000000000","target":{"kind":"artifact_root","artifact":"02cd000000000000000000000000000000000000000000000000000000000000"}}]}})";
+      R"({"schema":"evaluation.metric_query","schema_version":"1.0","metric":"clock_period","scope":{"form":0,"targets":[]}})";
   std::string serializedQuery =
       takeExpected(__func__, serializeMetricQuery(query));
   require(__func__, serializedQuery == expectedQuery,
@@ -314,14 +269,6 @@ void metricTextCarriesTheSharedScope() {
               observation,
           "metric text did not round-trip");
 
-  // The replaced scope authorities leave no trace in the persistent text.
-  for (const std::string &text : {serializedQuery, serializedObservation}) {
-    require(__func__, text.find("whole_subject") == std::string::npos,
-            "the persistent text still spells a whole-subject scope");
-    require(__func__, text.find("entity_id") == std::string::npos,
-            "the persistent text still spells a metric-local entity");
-  }
-
   expectErrorContains(
       __func__,
       parseMetricObservation(
@@ -332,7 +279,6 @@ void metricTextCarriesTheSharedScope() {
 } // namespace
 
 int main() {
-  sharedArtifactAtomsAreSingleSource();
   metricDescriptorsOwnScopeFormsAndRequestConditions();
   decimalValuesNormalizeCanonically();
   exactRatioNormalizesReducesAndChecksOverflow();

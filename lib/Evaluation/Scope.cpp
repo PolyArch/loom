@@ -15,38 +15,36 @@ using detail::evaluationError;
 constexpr std::uint32_t artifactRootDiscriminator = 0;
 constexpr std::uint32_t artifactLocalDiscriminator = 1;
 
-std::string localKindText(const LocalTargetRef &local) {
-  llvm::StringRef spelling =
-      local.family().localKindSpelling(local.localKind());
-  if (!spelling.empty())
-    return spelling.str();
-  return std::to_string(local.localKind().value());
+int compareSchemaVersion(SchemaVersion lhs, SchemaVersion rhs) {
+  if (lhs.major != rhs.major)
+    return lhs.major < rhs.major ? -1 : 1;
+  if (lhs.minor != rhs.minor)
+    return lhs.minor < rhs.minor ? -1 : 1;
+  return 0;
 }
 
-bool isSameFamily(const LocalTargetFamilyDescriptor &lhs,
-                  const LocalTargetFamilyDescriptor &rhs) {
-  return lhs.artifactSchema->identity == rhs.artifactSchema->identity &&
-         lhs.artifactSchema->version == rhs.artifactSchema->version;
+int compareSchemaDescriptors(const ArtifactSchemaDescriptor &lhs,
+                             const ArtifactSchemaDescriptor &rhs) {
+  if (lhs.identity != rhs.identity)
+    return lhs.identity < rhs.identity ? -1 : 1;
+  return compareSchemaVersion(lhs.version, rhs.version);
 }
 
-llvm::Error validateAcceptedTargetKind(const ScopeRoleDescriptor &role,
-                                       const SubjectTargetRef &target) {
-  if (std::holds_alternative<ArtifactRootTarget>(target.target)) {
-    if (!role.acceptsArtifactRoot)
-      return evaluationError("scope role '" + role.semanticRole +
-                             "' does not accept an artifact-root target");
-    return llvm::Error::success();
-  }
-
-  const auto &local = std::get<LocalTargetRef>(target.target);
-  for (const AcceptedLocalTarget &accepted : role.acceptedLocalTargets)
-    if (isSameFamily(*accepted.family, local.family()) &&
-        accepted.localKind == local.localKind())
-      return llvm::Error::success();
-  return evaluationError("scope role '" + role.semanticRole +
-                         "' does not accept local target kind '" +
-                         localKindText(local) + "' from family '" +
-                         local.family().artifactSchema->identity + "'");
+int compareReferenceTypes(const SubjectReferenceType &lhs,
+                          const SubjectReferenceType &rhs) {
+  if (lhs.index() != rhs.index())
+    return lhs.index() < rhs.index() ? -1 : 1;
+  if (const auto *lhsRoot = std::get_if<ArtifactRootType>(&lhs))
+    return compareSchemaDescriptors(
+        lhsRoot->schema, std::get<ArtifactRootType>(rhs).schema);
+  const auto &lhsLocal = std::get<ArtifactLocalType>(lhs).type;
+  const auto &rhsLocal = std::get<ArtifactLocalType>(rhs).type;
+  if (int order = compareSchemaDescriptors(lhsLocal.ownerSchema,
+                                           rhsLocal.ownerSchema))
+    return order;
+  if (lhsLocal.ownerLocalKind != rhsLocal.ownerLocalKind)
+    return lhsLocal.ownerLocalKind < rhsLocal.ownerLocalKind ? -1 : 1;
+  return 0;
 }
 
 /// A form's role tuple is ordered and nonrepeating: each role ordinal is its
@@ -69,25 +67,54 @@ llvm::Error validateFormRoles(const ScopeFormDescriptor &descriptor) {
 
 } // namespace
 
-bool operator==(const LocalTargetRef &lhs, const LocalTargetRef &rhs) {
-  return isSameFamily(lhs.family(), rhs.family()) &&
-         lhs.localKind() == rhs.localKind() &&
-         lhs.artifact() == rhs.artifact() && lhs.payload() == rhs.payload();
+bool evaluationCaseSignatureRefLess(EvaluationCaseSignatureRef lhs,
+                                    EvaluationCaseSignatureRef rhs) {
+  if (int order = compareSchemaVersion(lhs.schemaVersion(), rhs.schemaVersion()))
+    return order < 0;
+  return lhs.caseKind().ordinal() < rhs.caseKind().ordinal();
 }
 
-llvm::Expected<LocalTargetRef>
-LocalTargetRef::get(const LocalTargetFamilyDescriptor &family,
-                    LocalTargetKind kind, ArtifactIdentity artifact,
-                    LocalTargetPayload payload) {
-  if (llvm::Error error = family.validateLocalTarget(kind, payload))
-    return std::move(error);
-  return LocalTargetRef(family, kind, std::move(artifact), std::move(payload));
+bool orderedTargetPatternLess(const OrderedTargetPattern &lhs,
+                              const OrderedTargetPattern &rhs) {
+  if (lhs.caseSignature != rhs.caseSignature)
+    return evaluationCaseSignatureRefLess(lhs.caseSignature, rhs.caseSignature);
+  if (lhs.targets.size() != rhs.targets.size())
+    return lhs.targets.size() < rhs.targets.size();
+  for (std::size_t index = 0; index < lhs.targets.size(); ++index) {
+    const SubjectTargetPattern &lhsTarget = lhs.targets[index];
+    const SubjectTargetPattern &rhsTarget = rhs.targets[index];
+    if (lhsTarget.caseSubjectRole != rhsTarget.caseSubjectRole)
+      return lhsTarget.caseSubjectRole.ordinal() <
+             rhsTarget.caseSubjectRole.ordinal();
+    if (int order =
+            compareReferenceTypes(lhsTarget.referenceType, rhsTarget.referenceType))
+      return order < 0;
+  }
+  return false;
 }
 
-const ArtifactIdentity &SubjectTargetRef::targetArtifact() const {
-  if (const auto *root = std::get_if<ArtifactRootTarget>(&target))
-    return root->artifact;
-  return std::get<LocalTargetRef>(target).artifact();
+bool conditionApplicabilityPatternLess(
+    const ConditionApplicabilityPattern &lhs,
+    const ConditionApplicabilityPattern &rhs) {
+  if (lhs.kind != rhs.kind)
+    return lhs.kind < rhs.kind;
+  return orderedTargetPatternLess(lhs.targets, rhs.targets);
+}
+
+llvm::Error validateOrderedTargetPatternSet(
+    llvm::StringRef owner, llvm::ArrayRef<OrderedTargetPattern> patterns) {
+  for (std::size_t index = 0; index < patterns.size(); ++index) {
+    if (index != 0 && !orderedTargetPatternLess(patterns[index - 1],
+                                                patterns[index])) {
+      if (patterns[index - 1] == patterns[index])
+        return evaluationError("'" + owner +
+                               "' declares a duplicate target pattern");
+      return evaluationError("'" + owner +
+                             "' declares target patterns out of canonical "
+                             "order");
+    }
+  }
+  return llvm::Error::success();
 }
 
 const ScopeFormDescriptor *
@@ -98,22 +125,44 @@ findScopeForm(llvm::ArrayRef<ScopeFormDescriptor> forms, ScopeFormRef form) {
   return nullptr;
 }
 
+const ArtifactRootReference &SubjectTargetRef::targetArtifact() const {
+  if (const auto *root = std::get_if<ArtifactRootReference>(&target))
+    return *root;
+  return std::get<EncodedArtifactLocalReference>(target).artifact;
+}
+
+SubjectReferenceType subjectReferenceTypeOf(const SubjectTarget &target) {
+  if (const auto *root = std::get_if<ArtifactRootReference>(&target))
+    return SubjectReferenceType{ArtifactRootType{root->schema}};
+  return SubjectReferenceType{
+      ArtifactLocalType{std::get<EncodedArtifactLocalReference>(target).type()}};
+}
+
+OrderedTargetPattern
+deriveOrderedTargetPattern(llvm::ArrayRef<SubjectTargetRef> targets,
+                           EvaluationCaseSignatureRef caseSignature) {
+  OrderedTargetPattern pattern{caseSignature, {}};
+  pattern.targets.reserve(targets.size());
+  for (const SubjectTargetRef &target : targets)
+    pattern.targets.push_back(SubjectTargetPattern{
+        target.caseSubjectRole, subjectReferenceTypeOf(target.target)});
+  return pattern;
+}
+
 void detail::appendSubjectTargetKey(std::vector<std::uint8_t> &bytes,
                                     const SubjectTargetRef &target) {
   appendU32Be(bytes, target.caseSubjectRole.ordinal());
-  appendArtifactIdentity(bytes, target.anchorSubject);
-  if (const auto *root = std::get_if<ArtifactRootTarget>(&target.target)) {
+  appendFramedBytes(bytes,
+                    encodeArtifactRootReference(target.anchorSubjectArtifact));
+  if (const auto *root = std::get_if<ArtifactRootReference>(&target.target)) {
     appendU32Be(bytes, artifactRootDiscriminator);
-    appendArtifactIdentity(bytes, root->artifact);
+    appendFramedBytes(bytes, encodeArtifactRootReference(*root));
     return;
   }
-  const auto &local = std::get<LocalTargetRef>(target.target);
   appendU32Be(bytes, artifactLocalDiscriminator);
-  appendArtifactIdentity(bytes, local.artifact());
-  appendFramedString(bytes, local.family().artifactSchema->identity);
-  appendSchemaVersion(bytes, local.family().artifactSchema->version);
-  appendU32Be(bytes, local.localKind().value());
-  appendFramedBytes(bytes, local.payload().bytes());
+  appendFramedBytes(bytes,
+                    encodeArtifactLocalReference(
+                        std::get<EncodedArtifactLocalReference>(target.target)));
 }
 
 std::vector<std::uint8_t> canonicalScopeKey(const EvaluationScope &scope) {
@@ -142,13 +191,24 @@ validateEvaluationScopeForm(llvm::ArrayRef<ScopeFormDescriptor> forms,
                            " requires exactly " + std::to_string(arity) +
                            (arity == 1 ? " target" : " targets"));
 
-  for (std::size_t index = 0; index < arity; ++index)
-    if (llvm::Error error = validateAcceptedTargetKind(descriptor->roles[index],
-                                                       scope.targets[index]))
-      return error;
-
-  if (descriptor->verifyRelation)
-    return descriptor->verifyRelation(scope.targets);
+  if (arity == 0) {
+    if (!descriptor->acceptedTargetPatterns.empty())
+      return evaluationError("a zero-role scope form must not declare target "
+                             "patterns");
+    return llvm::Error::success();
+  }
+  if (descriptor->acceptedTargetPatterns.empty())
+    return evaluationError("scope form " +
+                           std::to_string(descriptor->form.ordinal()) +
+                           " must declare a nonempty target pattern set");
+  if (llvm::Error error = validateOrderedTargetPatternSet(
+          descriptor->semanticDefinition, descriptor->acceptedTargetPatterns))
+    return error;
+  for (const OrderedTargetPattern &pattern : descriptor->acceptedTargetPatterns)
+    if (pattern.targets.size() != arity)
+      return evaluationError("scope form " +
+                             std::to_string(descriptor->form.ordinal()) +
+                             " declares a target pattern of the wrong arity");
   return llvm::Error::success();
 }
 
@@ -162,48 +222,73 @@ llvm::Error validateSubjectTargetRef(const SubjectTargetRef &target,
                            signature.spelling + "'");
 
   if (!context.bindings().isBoundSubject(target.caseSubjectRole,
-                                         target.anchorSubject))
+                                         target.anchorSubjectArtifact))
     return evaluationError(
         "anchor artifact is not bound to case subject role " +
-        std::to_string(target.caseSubjectRole.ordinal()) +
-        " of case signature '" + signature.spelling + "'");
+        std::to_string(target.caseSubjectRole.ordinal()) + " of case signature '" +
+        signature.spelling + "'");
 
   const CaseArtifactResolution::Entry *anchor =
-      context.resolution().find(target.anchorSubject);
+      context.resolution().find(target.anchorSubjectArtifact);
   if (!anchor)
     return evaluationError("the anchor artifact of case subject role " +
                            std::to_string(target.caseSubjectRole.ordinal()) +
                            " is unresolved");
 
-  const ArtifactIdentity &targetArtifact = target.targetArtifact();
+  const ArtifactRootReference &targetArtifact = target.targetArtifact();
   if (!CaseArtifactResolution::reaches(*anchor, targetArtifact))
     return evaluationError("target artifact is not reachable from its anchor "
-                           "subject");
+                           "subject's exact dependency closure");
 
-  const auto *local = std::get_if<LocalTargetRef>(&target.target);
+  const auto *local =
+      std::get_if<EncodedArtifactLocalReference>(&target.target);
   if (!local)
     return llvm::Error::success();
 
-  // A local reference is only meaningful inside an Artifact of its own family.
+  // A local reference is only meaningful inside an exact Artifact of its own
+  // family, imported through the family's own codec and validator. The family
+  // resolves its typed importer view through its own owner boundary.
   const CaseArtifactResolution::Entry *entry =
       context.resolution().find(targetArtifact);
   if (!entry)
     return evaluationError("the target artifact is unresolved");
-  const ArtifactSchemaDescriptor &familySchema =
-      *local->family().artifactSchema;
-  if (entry->schema->identity != familySchema.identity ||
-      entry->schema->version != familySchema.version)
-    return evaluationError("the target artifact does not belong to family '" +
-                           familySchema.identity + "'");
-  return llvm::Error::success();
+  return validateArtifactLocalReference(*local);
 }
 
-llvm::Error validateEvaluationScopeCase(const EvaluationScope &scope,
-                                        const CaseTargetContext &context) {
+llvm::Error validateEvaluationScopeCase(
+    const EvaluationScope &scope, llvm::ArrayRef<ScopeFormDescriptor> forms,
+    const CaseTargetContext &context) {
+  if (llvm::Error error = validateEvaluationScopeForm(forms, scope))
+    return error;
+  const ScopeFormDescriptor &descriptor = *findScopeForm(forms, scope.form);
+
   for (const SubjectTargetRef &target : scope.targets)
     if (llvm::Error error = validateSubjectTargetRef(target, context))
       return error;
+
+  if (!descriptor.roles.empty()) {
+    const OrderedTargetPattern derived =
+        deriveOrderedTargetPattern(scope.targets, context.signatureRef());
+    bool accepted = false;
+    for (const OrderedTargetPattern &pattern : descriptor.acceptedTargetPatterns)
+      accepted = accepted || pattern == derived;
+    if (!accepted)
+      return evaluationError(
+          "scope form " + std::to_string(descriptor.form.ordinal()) +
+          " does not accept the derived ordered target pattern of case "
+          "signature '" +
+          context.signature().spelling + "'");
+  }
+
+  if (descriptor.verifyRelation)
+    return descriptor.verifyRelation(scope.targets);
   return llvm::Error::success();
+}
+
+CaseTargetContext
+EvaluationCase::targetContext(const CaseArtifactResolution &resolution) const {
+  return CaseTargetContext(*signature_.descriptor(), signature_, bindings_,
+                           resolution);
 }
 
 } // namespace loom::evaluation

@@ -51,20 +51,17 @@ constexpr std::uint8_t nonCensoredObservationForms =
 constexpr CensoredReasonPolicy subjectDidNotCompletePolicy{
     CensoredReason::SubjectDidNotComplete, true, false};
 
-// Every registered metric owns the same two scope forms: the entire exact
-// Evaluation case, and one exact case subject Artifact root.
-const ScopeRoleDescriptor subjectRootRole[] = {
-    {ScopeRoleRef(0), "subject", true, {}}};
-
+// Every registered metric owns the zero-role whole-case form: the entire
+// exact Evaluation case. A zero-role form declares no target patterns; its
+// one accepted pattern is the targetless pattern of the requesting case
+// signature.
 const ScopeFormDescriptor metricScopeForms[] = {
-    {ScopeFormRef(0), "the entire exact Evaluation case", {}, nullptr},
-    {ScopeFormRef(1), "one exact case subject Artifact root", subjectRootRole,
-     nullptr},
+    {ScopeFormRef(0), "the entire exact Evaluation case", {}, {}, nullptr},
 };
 
 // A quantile selects among samples of one metric request and names no target.
-const ConditionPattern sampledRequestConditions[] = {
-    {EvaluationConditionKind::Quantile, {}}};
+const EvaluationConditionKind sampledRequestConditions[] = {
+    EvaluationConditionKind::Quantile};
 
 const std::array<MetricDescriptor, 3> metricDescriptors = {{
     {MetricKind::CycleCount, "cycle_count",
@@ -346,9 +343,11 @@ bool MetricDescriptor::permitsObservationForm(ObservationForm form) const {
   return (permittedObservationForms & observationFormBit(form)) != 0;
 }
 
-ConditionApplicability MetricDescriptor::requestConditionApplicability() const {
-  return ConditionApplicability{ConditionLocation::MetricRequest, spelling,
-                                permittedRequestConditions};
+bool MetricDescriptor::permitsRequestCondition(
+    EvaluationConditionKind kind) const {
+  return std::find(permittedRequestConditions.begin(),
+                   permittedRequestConditions.end(),
+                   kind) != permittedRequestConditions.end();
 }
 
 llvm::ArrayRef<MetricDescriptor> allMetricDescriptors() {

@@ -41,12 +41,16 @@ struct MetricDescriptor {
   llvm::StringRef canonicalUnit;
   MetricValueDomain valueDomain;
   llvm::ArrayRef<ScopeFormDescriptor> scopeForms;
-  llvm::ArrayRef<ConditionPattern> permittedRequestConditions;
+  /// The request-specific condition kinds this metric permits. Schema 1.0
+  /// admits only the targetless Quantile kind here, so each permitted kind
+  /// derives exactly one pattern for the requesting case signature. Targeted
+  /// kinds are Base-only and never appear in this list.
+  llvm::ArrayRef<EvaluationConditionKind> permittedRequestConditions;
   std::uint8_t permittedObservationForms;
   std::optional<CensoredReasonPolicy> censoredReasonPolicy;
 
   bool permitsObservationForm(ObservationForm form) const;
-  ConditionApplicability requestConditionApplicability() const;
+  bool permitsRequestCondition(EvaluationConditionKind kind) const;
 };
 
 llvm::ArrayRef<MetricDescriptor> allMetricDescriptors();
@@ -80,8 +84,8 @@ struct MetricQuery {
 };
 
 /// Registry-relative validation: the scope resolves against the exact
-/// MetricKind's own scope forms. Case-relative anchors and reachability are
-/// checked where the exact case is known.
+/// MetricKind's own scope forms. Case-relative anchors, closure, and pattern
+/// applicability are checked where the exact case is known.
 llvm::Error validateMetricQuery(const MetricQuery &query);
 
 /// Canonical query collections sort by registry kind and the complete

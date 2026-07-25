@@ -2,6 +2,7 @@
 
 #include "CanonicalSupport.h"
 
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/SHA256.h"
 
@@ -12,10 +13,10 @@
 namespace loom::evaluation {
 namespace {
 
-using detail::appendArtifactIdentity;
 using detail::appendFramedBytes;
 using detail::appendFramedString;
 using detail::appendSchemaVersion;
+using detail::appendU32Be;
 using detail::appendU64Be;
 
 constexpr llvm::StringLiteral baseCaseKeyDomain =
@@ -26,14 +27,15 @@ constexpr llvm::StringLiteral metricCaseKeyDomain =
 constexpr std::uint64_t absentReference = 0;
 constexpr std::uint64_t presentReference = 1;
 
-void appendOptionalReference(std::vector<std::uint8_t> &preimage,
-                             const std::optional<ArtifactIdentity> &reference) {
+void appendOptionalReference(
+    std::vector<std::uint8_t> &preimage,
+    const std::optional<ArtifactRootReference> &reference) {
   if (!reference) {
     appendU64Be(preimage, absentReference);
     return;
   }
   appendU64Be(preimage, presentReference);
-  appendArtifactIdentity(preimage, *reference);
+  appendFramedBytes(preimage, encodeArtifactRootReference(*reference));
 }
 
 void appendConditions(std::vector<std::uint8_t> &preimage,
@@ -54,14 +56,29 @@ MetricRequest::get(MetricQuery query,
     return std::move(error);
 
   const CaseTargetContext context = evaluationCase.targetContext(resolution);
-  if (llvm::Error error = validateEvaluationScopeCase(query.scope, context))
+  if (llvm::Error error = validateEvaluationScopeCase(
+          query.scope, metricDescriptor(query.metric).scopeForms, context))
     return std::move(error);
 
+  // The metric descriptor owns which request-specific conditions apply. Every
+  // permitted kind is targetless in schema 1.0, so each derives exactly one
+  // complete pattern for this exact case signature.
+  const MetricDescriptor &descriptor = metricDescriptor(query.metric);
+  llvm::SmallVector<ConditionApplicabilityPattern, 1> permittedPatterns;
+  for (EvaluationConditionKind kind : descriptor.permittedRequestConditions) {
+    if (conditionDescriptor(kind).permitsLocation(ConditionLocation::Base))
+      return detail::evaluationError(
+          "metric descriptor '" + descriptor.spelling +
+          "' permits a base-only condition kind in request conditions");
+    permittedPatterns.push_back(ConditionApplicabilityPattern{
+        kind, OrderedTargetPattern{context.signatureRef(), {}}});
+  }
+
   llvm::Expected<std::vector<EvaluationCondition>> canonicalConditions =
-      canonicalizeEvaluationConditions(
-          conditions,
-          metricDescriptor(query.metric).requestConditionApplicability(),
-          context);
+      canonicalizeEvaluationConditions(conditions,
+                                       ConditionLocation::MetricRequest,
+                                       descriptor.spelling, permittedPatterns,
+                                       context);
   if (!canonicalConditions)
     return canonicalConditions.takeError();
 
@@ -72,16 +89,16 @@ EvaluationCaseKey baseCaseKey(const EvaluationCase &evaluationCase) {
   std::vector<std::uint8_t> preimage;
   appendFramedString(preimage, baseCaseKeyDomain);
   appendSchemaVersion(preimage, evaluationCase.signature().schemaVersion());
-  appendFramedString(preimage, toString(evaluationCase.signature().caseKind()));
+  appendU32Be(preimage, evaluationCase.signature().caseKind().ordinal());
 
   const llvm::ArrayRef<CaseRoleBinding> bindings =
       evaluationCase.subjectBindings().roleBindings();
   appendU64Be(preimage, bindings.size());
   for (const CaseRoleBinding &binding : bindings) {
-    detail::appendU32Be(preimage, binding.role.ordinal());
+    appendU32Be(preimage, binding.role.ordinal());
     appendU64Be(preimage, binding.subjects.size());
-    for (const ArtifactIdentity &subject : binding.subjects)
-      appendArtifactIdentity(preimage, subject);
+    for (const ArtifactRootReference &subject : binding.subjects)
+      appendFramedBytes(preimage, encodeArtifactRootReference(subject));
   }
 
   appendOptionalReference(preimage, evaluationCase.workload());

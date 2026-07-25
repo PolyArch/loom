@@ -36,8 +36,8 @@ private:
   std::vector<EvaluationCondition> conditions_;
 };
 
-/// A removable derived index over exact case facts. It is never serialized into
-/// Request or Evidence, and it is not an Artifact identity.
+/// A removable derived index over exact case facts. It is never serialized
+/// into Request or Evidence, and it is not an Artifact identity.
 class EvaluationCaseKey {
 public:
   using Storage = std::array<std::uint8_t, 32>;
@@ -64,9 +64,9 @@ private:
 };
 
 /// Derived from the exact case-signature reference, the canonical subject
-/// bindings, the workload and runtime-input references, and the canonical base
-/// conditions. Two model descriptors that reference one exact signature and
-/// bind identical case facts therefore derive one key.
+/// bindings, the workload and runtime-input references, and the canonical
+/// base conditions. Two model descriptors that reference one exact signature
+/// and bind identical case facts therefore derive one key.
 EvaluationCaseKey baseCaseKey(const EvaluationCase &evaluationCase);
 
 /// Derived from the base case key, the MetricQuery, and the canonical

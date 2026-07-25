@@ -29,6 +29,15 @@ struct SchemaVersion {
 struct ArtifactSchemaDescriptor {
   llvm::StringLiteral identity;
   SchemaVersion version;
+
+  friend bool operator==(const ArtifactSchemaDescriptor &lhs,
+                         const ArtifactSchemaDescriptor &rhs) {
+    return lhs.identity == rhs.identity && lhs.version == rhs.version;
+  }
+  friend bool operator!=(const ArtifactSchemaDescriptor &lhs,
+                         const ArtifactSchemaDescriptor &rhs) {
+    return !(lhs == rhs);
+  }
 };
 
 class CanonicalSemanticBytes {

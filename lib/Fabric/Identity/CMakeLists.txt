@@ -3,6 +3,7 @@ add_mlir_library(LoomFabricIdentity
   FabricRefText.cpp
   FabricRefBytes.cpp
   FabricRefImport.cpp
+  FabricLocalReference.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric/Identity
