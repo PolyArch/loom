@@ -23,7 +23,15 @@ public:
   get(const ArtifactSchemaDescriptor &expectedSchema,
       const ArtifactIdentity &identity) const;
 
+  /// Resolves the schema framing carried by one exact root reference.
+  llvm::Expected<CanonicalSemanticBytes>
+  get(const ArtifactRootReference &reference) const;
+
 private:
+  llvm::Expected<CanonicalSemanticBytes>
+  getExact(llvm::StringRef schemaIdentity, SchemaVersion schemaVersion,
+           const ArtifactIdentity &identity) const;
+
   std::string root_;
 };
 

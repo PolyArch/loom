@@ -65,6 +65,10 @@ add_executable(loom-fabric-artifact-codec-test
   FabricArtifactCodecTest.cpp
 )
 
+add_executable(loom-fabric-artifact-gate-test
+  FabricArtifactGateTest.cpp
+)
+
 target_link_libraries(loom-fabric-persistent-ref-test PRIVATE
   LoomCommon
   LoomFabricIdentity
@@ -72,6 +76,16 @@ target_link_libraries(loom-fabric-persistent-ref-test PRIVATE
 )
 
 target_link_libraries(loom-fabric-artifact-codec-test PRIVATE
+  LoomCommon
+  LoomFabricArtifact
+  LLVMSupport
+)
+
+target_include_directories(loom-fabric-artifact-gate-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Fabric/Artifact
+)
+
+target_link_libraries(loom-fabric-artifact-gate-test PRIVATE
   LoomCommon
   LoomFabricArtifact
   LLVMSupport

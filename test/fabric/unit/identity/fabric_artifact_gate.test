@@ -1,0 +1,3 @@
+# RUN: loom-fabric-artifact-gate-test | FileCheck %s
+
+# CHECK: fabric artifact gate ok

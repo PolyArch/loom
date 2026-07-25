@@ -320,6 +320,19 @@ ArtifactStore::put(const ArtifactSchemaDescriptor &schema,
 llvm::Expected<CanonicalSemanticBytes>
 ArtifactStore::get(const ArtifactSchemaDescriptor &expectedSchema,
                    const ArtifactIdentity &identity) const {
+  return getExact(expectedSchema.identity, expectedSchema.version, identity);
+}
+
+llvm::Expected<CanonicalSemanticBytes>
+ArtifactStore::get(const ArtifactRootReference &reference) const {
+  return getExact(reference.schemaIdentity, reference.schemaVersion,
+                  reference.artifact);
+}
+
+llvm::Expected<CanonicalSemanticBytes>
+ArtifactStore::getExact(llvm::StringRef schemaIdentity,
+                        SchemaVersion schemaVersion,
+                        const ArtifactIdentity &identity) const {
   auto directoryOrError = openStoreDirectory(root_);
   if (!directoryOrError)
     return directoryOrError.takeError();
@@ -348,11 +361,11 @@ ArtifactStore::get(const ArtifactSchemaDescriptor &expectedSchema,
   if (!parsed)
     return parsed.takeError();
 
-  if (parsed->schemaIdentity != expectedSchema.identity)
+  if (parsed->schemaIdentity != schemaIdentity)
     return storeError("artifact_schema_mismatch",
                       "stored object schema identity does not match expected "
                       "schema identity");
-  if (parsed->schemaVersion != expectedSchema.version)
+  if (parsed->schemaVersion != schemaVersion)
     return storeError("artifact_schema_mismatch",
                       "stored object schema version does not match expected "
                       "schema version");
