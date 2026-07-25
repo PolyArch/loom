@@ -29,8 +29,6 @@ using detail::requireInteger;
 using detail::requireObject;
 using detail::requireString;
 
-constexpr llvm::StringLiteral metricSchemaIdentity = "evaluation.metric";
-constexpr SchemaVersion metricSchemaVersion{1, 0};
 constexpr llvm::StringLiteral metricQuerySchemaIdentity =
     "evaluation.metric_query";
 constexpr SchemaVersion metricQuerySchemaVersion{1, 0};
@@ -255,16 +253,6 @@ parseMetricValueField(const llvm::json::Object &object, llvm::StringRef key,
   return parseMetricValue(**valueObject, valueContext);
 }
 
-llvm::Expected<EvaluationScope> parseScopeField(const llvm::json::Object &root,
-                                                MetricKind metric,
-                                                llvm::StringRef context) {
-  auto scopeObject = requireObject(root, "scope", context);
-  if (!scopeObject)
-    return scopeObject.takeError();
-  return parseEvaluationScopeJson(**scopeObject,
-                                  metricDescriptor(metric).scopeForms);
-}
-
 llvm::Expected<MetricObservationValue>
 parseObservationValue(const llvm::json::Object &object) {
   auto formSpelling = requireString(object, "form", "metric observation");
@@ -476,7 +464,8 @@ llvm::Error validateMetricScopeAdmissibility(
   llvm_unreachable("unknown ReferenceCycleRequirement");
 }
 
-llvm::Error validateMetricScopeAdmissibility(
+llvm::Expected<std::optional<ReferenceCycleBasis>>
+validateMetricScopeAdmissibility(
     MetricKind metric, ScopeFormRef form,
     const EvaluationCase &evaluationCase,
     const CaseArtifactResolution &resolution,
@@ -487,17 +476,19 @@ llvm::Error validateMetricScopeAdmissibility(
     return evaluationError("the EvaluationCase signature is unresolved");
   if (llvm::Error error =
           validateMetricScopeAdmissibility(metric, form, *signature))
-    return error;
+    return std::move(error);
   const ScopeFormDescriptor *scope =
       findScopeForm(metricDescriptor(metric).scopeForms, form);
   if (scope->referenceCycleRequirement ==
-      ReferenceCycleRequirement::ExactCaseUniqueReferenceCycle) {
-    auto basis =
-        resolveReferenceCycleBasis(evaluationCase, resolution, artifactStore);
-    if (!basis)
-      return basis.takeError();
-  }
-  return llvm::Error::success();
+      ReferenceCycleRequirement::NotRequired)
+    return std::nullopt;
+  // ExactCaseUniqueReferenceCycle: the case-signature registry resolves the
+  // basis once and the metric registry returns the validated basis.
+  auto basis =
+      resolveReferenceCycleBasis(evaluationCase, resolution, artifactStore);
+  if (!basis)
+    return basis.takeError();
+  return std::optional<ReferenceCycleBasis>{std::move(*basis)};
 }
 
 llvm::Expected<std::vector<MetricQuery>>
@@ -569,10 +560,6 @@ llvm::Expected<MetricQuery> parseMetricQuery(llvm::StringRef json) {
   return *query;
 }
 
-ObservationForm observationForm(const MetricObservation &observation) {
-  return observationForm(observation.observation);
-}
-
 ObservationForm observationForm(const MetricObservationValue &observation) {
   if (std::holds_alternative<PointObservation>(observation))
     return ObservationForm::Point;
@@ -629,16 +616,6 @@ llvm::Error validateMetricObservationValue(
   return llvm::Error::success();
 }
 
-llvm::Error validateMetricObservation(const MetricObservation &observation) {
-  const MetricDescriptor &descriptor = metricDescriptor(observation.metric);
-  if (llvm::Error error =
-          validateEvaluationScopeForm(descriptor.scopeForms, observation.scope))
-    return error;
-  return validateMetricObservationValue(observation.metric,
-                                        observation.uncertainty,
-                                        observation.observation);
-}
-
 void writeMetricObservationValueJson(
     llvm::json::OStream &json, const MetricObservationValue &observation) {
   writeObservation(json, observation);
@@ -647,98 +624,6 @@ void writeMetricObservationValueJson(
 llvm::Expected<MetricObservationValue>
 parseMetricObservationValueJson(const llvm::json::Object &object) {
   return parseObservationValue(object);
-}
-
-llvm::Expected<std::string>
-serializeMetricObservation(const MetricObservation &observation) {
-  if (llvm::Error error = validateMetricObservation(observation))
-    return std::move(error);
-
-  llvm::SmallString<512> storage;
-  llvm::raw_svector_ostream output(storage);
-  llvm::json::OStream json(output);
-  json.object([&] {
-    json.attribute("schema", metricSchemaIdentity);
-    json.attribute("schema_version", formatSchemaVersion(metricSchemaVersion));
-    json.attribute("metric", toString(observation.metric));
-    json.attributeBegin("scope");
-    writeEvaluationScopeJson(json, observation.scope);
-    json.attributeEnd();
-    json.attribute("uncertainty", toString(observation.uncertainty));
-    json.attributeBegin("observation");
-    writeObservation(json, observation.observation);
-    json.attributeEnd();
-  });
-  return output.str().str();
-}
-
-llvm::Expected<MetricObservation> parseMetricObservation(llvm::StringRef json) {
-  auto value = llvm::json::parse(json);
-  if (!value)
-    return value.takeError();
-  const llvm::json::Object *root = value->getAsObject();
-  if (!root)
-    return evaluationError("evaluation.metric root must be an object");
-  if (llvm::Error error =
-          rejectUnknownFields(*root, "evaluation.metric root",
-                              {"schema", "schema_version", "metric", "scope",
-                               "uncertainty", "observation"}))
-    return std::move(error);
-
-  auto schema = requireString(*root, "schema", "evaluation.metric root");
-  if (!schema)
-    return schema.takeError();
-  if (*schema != metricSchemaIdentity)
-    return evaluationError("unsupported metric schema '" + *schema + "'");
-  auto version =
-      requireString(*root, "schema_version", "evaluation.metric root");
-  if (!version)
-    return version.takeError();
-  auto parsedVersion = parseSchemaVersion(*version);
-  if (!parsedVersion)
-    return parsedVersion.takeError();
-  if (*parsedVersion != metricSchemaVersion)
-    return evaluationError("unsupported evaluation.metric version '" +
-                           *version + "'");
-
-  auto metricSpelling =
-      requireString(*root, "metric", "evaluation.metric root");
-  if (!metricSpelling)
-    return metricSpelling.takeError();
-  auto metric = parseMetricKind(*metricSpelling);
-  if (!metric)
-    return metric.takeError();
-
-  auto scope = parseScopeField(*root, *metric, "evaluation.metric root");
-  if (!scope)
-    return scope.takeError();
-
-  auto uncertaintySpelling =
-      requireString(*root, "uncertainty", "evaluation.metric root");
-  if (!uncertaintySpelling)
-    return uncertaintySpelling.takeError();
-  auto uncertainty = parseUncertaintyKind(*uncertaintySpelling);
-  if (!uncertainty)
-    return uncertainty.takeError();
-
-  auto observationObject =
-      requireObject(*root, "observation", "evaluation.metric root");
-  if (!observationObject)
-    return observationObject.takeError();
-  auto observationValue = parseObservationValue(**observationObject);
-  if (!observationValue)
-    return observationValue.takeError();
-
-  MetricObservation observation{*metric, std::move(*scope), *uncertainty,
-                                std::move(*observationValue)};
-  if (llvm::Error error = validateMetricObservation(observation))
-    return std::move(error);
-  auto canonical = serializeMetricObservation(observation);
-  if (!canonical)
-    return canonical.takeError();
-  if (*canonical != json)
-    return evaluationError("metric JSON is not canonical");
-  return observation;
 }
 
 } // namespace loom::evaluation

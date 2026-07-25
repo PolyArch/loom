@@ -2,6 +2,10 @@ add_executable(loom-evaluation-case-test
   CaseTest.cpp
 )
 
+target_include_directories(loom-evaluation-case-test PRIVATE
+  ${PROJECT_SOURCE_DIR}/lib/Common
+)
+
 target_link_libraries(loom-evaluation-case-test PRIVATE
   LoomEvaluation
   LoomImplementationPlatform

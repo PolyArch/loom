@@ -8,6 +8,7 @@
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Common/ResolvedConfig.h"
+#include "ArtifactLocalReferenceRegistry.h"
 #include "ImplementationPlatform/TechnologyCorner.h"
 
 #include "llvm/ADT/SmallString.h"
@@ -161,7 +162,10 @@ ExactRatio ratio(const char *test, std::uint64_t numerator,
 constexpr ArtifactSchemaDescriptor subjectSchema{"loom.test.subject", {1, 0}};
 constexpr EvaluationCaseKind testCaseKind{17};
 constexpr EvaluationCaseKind noCycleCaseKind{18};
+constexpr EvaluationCaseKind clockAliasCaseKind{19};
+constexpr EvaluationCaseKind failingCycleCaseKind{20};
 constexpr std::uint32_t testLocalKind = 9;
+constexpr std::uint32_t clockLocalKind = 10;
 
 EvaluationCaseSignatureRef testSignatureRef() {
   return llvm::cantFail(
@@ -171,6 +175,16 @@ EvaluationCaseSignatureRef testSignatureRef() {
 EvaluationCaseSignatureRef noCycleSignatureRef() {
   return llvm::cantFail(EvaluationCaseSignatureRef::get(
       evaluationSchemaVersion(), noCycleCaseKind));
+}
+
+EvaluationCaseSignatureRef clockAliasSignatureRef() {
+  return llvm::cantFail(EvaluationCaseSignatureRef::get(
+      evaluationSchemaVersion(), clockAliasCaseKind));
+}
+
+EvaluationCaseSignatureRef failingCycleSignatureRef() {
+  return llvm::cantFail(EvaluationCaseSignatureRef::get(
+      evaluationSchemaVersion(), failingCycleCaseKind));
 }
 
 CaseSubjectRoleRef subjectRole() { return CaseSubjectRoleRef(0); }
@@ -214,6 +228,35 @@ SubjectReferenceType subjectLocalType() {
       ArtifactLocalType{{subjectSchema, testLocalKind}}};
 }
 
+SubjectReferenceType clockLocalType() {
+  return SubjectReferenceType{
+      ArtifactLocalType{{subjectSchema, clockLocalKind}}};
+}
+
+llvm::Expected<SubjectTargetRef>
+failCycleResolution(const EvaluationCase &, const CaseArtifactResolution &,
+                    const ArtifactStore &) {
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "test reference-cycle resolution failure");
+}
+
+llvm::Error validateClockLocalPayload(llvm::ArrayRef<std::uint8_t> payload) {
+  if (payload.size() != 1)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "test clock local target payload must be one byte");
+  return llvm::Error::success();
+}
+
+llvm::Error
+validateClockLocalTarget(const CanonicalSemanticBytes &,
+                         const EncodedArtifactLocalReference &reference) {
+  if (reference.ownerLocalKind != clockLocalKind)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "wrong test clock local kind");
+  return llvm::Error::success();
+}
+
 const std::vector<ConditionApplicabilityPattern> baseConditionPatterns = {
     {EvaluationConditionKind::ProcessCorner,
      {testSignatureRef(), {{subjectRole(), subjectRootType()}}}},
@@ -253,6 +296,53 @@ const EvaluationCaseSignatureDescriptor noCycleSignature{
     AbsentReferenceCycle{},
     {}};
 
+CaseSubjectRoleRef clockReferenceRole() { return CaseSubjectRoleRef(0); }
+CaseSubjectRoleRef clockDependentRole() { return CaseSubjectRoleRef(1); }
+
+const CaseSubjectRoleDescriptor clockAliasRoles[] = {
+    {clockReferenceRole(), "clock_reference_anchor",
+     SubjectRoleCardinality::ExactlyOne, acceptedSubjectSchemas, nullptr},
+    {clockDependentRole(), "clock_dependent_anchor",
+     SubjectRoleCardinality::ExactlyOne, acceptedSubjectSchemas, nullptr},
+};
+
+const std::vector<ConditionApplicabilityPattern> clockAliasBasePatterns = {
+    {EvaluationConditionKind::RelativeClockSchedule,
+     {clockAliasSignatureRef(),
+      {{clockReferenceRole(), subjectRootType()},
+       {clockDependentRole(), subjectRootType()}}}},
+    {EvaluationConditionKind::RelativeClockSchedule,
+     {clockAliasSignatureRef(),
+      {{clockReferenceRole(), clockLocalType()},
+       {clockDependentRole(), clockLocalType()}}}},
+};
+
+const EvaluationCaseSignatureDescriptor clockAliasSignature{
+    clockAliasCaseKind,
+    "test_clock_alias_case",
+    "Two clock anchors whose closures reach one shared clock domain.",
+    clockAliasRoles,
+    ArtifactRequirement::Forbidden,
+    {},
+    ArtifactRequirement::Forbidden,
+    {},
+    nullptr,
+    AbstractCaseCycle{},
+    clockAliasBasePatterns};
+
+const EvaluationCaseSignatureDescriptor failingCycleSignature{
+    failingCycleCaseKind,
+    "test_failing_cycle_case",
+    "One exact subject-cycle resolver used to prove basis ownership.",
+    subjectRoles,
+    ArtifactRequirement::Forbidden,
+    {},
+    ArtifactRequirement::Forbidden,
+    {},
+    nullptr,
+    ExactSubjectCycle{subjectRootType(), &failCycleResolution},
+    {}};
+
 EvaluationSubjectBindings bindings(const char *test) {
   return takeExpected(test, EvaluationSubjectBindings::get(
                                 {{subjectRole(), {subjectArtifact()}}}));
@@ -283,6 +373,14 @@ evaluationCase(const char *test, llvm::ArrayRef<EvaluationCondition> conditions,
 
 SubjectTargetRef rootTarget(ArtifactRootReference target) {
   return SubjectTargetRef{subjectRole(), subjectArtifact(), std::move(target)};
+}
+
+ArtifactRootReference storeSubject(const char *test, const ArtifactStore &store,
+                                   std::uint8_t byte) {
+  const ArtifactIdentity identity = takeExpected(
+      test, store.put(subjectSchema,
+                      CanonicalSemanticBytes(std::vector<std::uint8_t>{byte})));
+  return root(subjectSchema, identity);
 }
 
 SubjectTargetRef localTarget() {
@@ -529,6 +627,47 @@ const EvaluationModelDescriptor slottedModelDescriptor{
     DeterminismContract::Deterministic,
     mandatoryTerminalFindings};
 
+constexpr EvaluationModelKind clockAliasModelKind{40};
+constexpr EvaluationModelKind failingCycleModelKind{41};
+
+const ModelConditionCapability clockAliasConditionCapabilities[] = {
+    {clockAliasBasePatterns[0], ConditionDisposition::Consumed},
+    {clockAliasBasePatterns[1], ConditionDisposition::Consumed}};
+
+const EvaluationModelDescriptor clockAliasModelDescriptor{
+    clockAliasModelKind,
+    "test_model_clock_alias",
+    "loom.test.model.clock_alias",
+    clockAliasSignatureRef(),
+    clockAliasConditionCapabilities,
+    metricCapabilities,
+    findingCapabilities,
+    {},
+    {},
+    emptyModelConfigView,
+    analyticPhenomena,
+    EvaluationExecutionMethod::Analytic,
+    analyticInteractions,
+    DeterminismContract::Deterministic,
+    {}};
+
+const EvaluationModelDescriptor failingCycleModelDescriptor{
+    failingCycleModelKind,
+    "test_model_failing_cycle",
+    "loom.test.model.failing_cycle",
+    failingCycleSignatureRef(),
+    {},
+    metricCapabilities,
+    findingCapabilities,
+    {},
+    {},
+    emptyModelConfigView,
+    analyticPhenomena,
+    EvaluationExecutionMethod::Analytic,
+    analyticInteractions,
+    DeterminismContract::Deterministic,
+    {}};
+
 ResolvedModelBinding
 modelBinding(const char *test, const EvaluationModelDescriptor &descriptor,
              std::vector<ModelInputBinding> inputs = {}) {
@@ -758,6 +897,210 @@ void wholeCaseMetricRequiresSignatureCycleBasis() {
       {}};
   expectErrorContains(__func__, registerEvaluationModelDescriptor(invalidModel),
                       "requires a unique whole-case reference cycle");
+}
+
+void requestVerifierRejectsResolvedClockDomainAlias() {
+  // Two anchors live in distinct case roles; each closure reaches the same
+  // shared clock-domain artifact. The static payload check only rejects an
+  // identical SubjectTargetRef, so this schedule is admitted at the case and
+  // request-item level. Request verification must still reject it because the
+  // two targets resolve through their bindings and anchor closures to one
+  // clock domain, even though both the role and the anchor differ.
+  const ArtifactRootReference referenceSubject =
+      root(subjectSchema, testArtifact({0x51}));
+  const ArtifactRootReference dependentSubject =
+      root(subjectSchema, testArtifact({0x52}));
+  const ArtifactRootReference sharedClock =
+      root(subjectSchema, testArtifact({0x60}));
+  const EvaluationSubjectBindings twoAnchors = takeExpected(
+      __func__,
+      EvaluationSubjectBindings::get({{clockReferenceRole(), {referenceSubject}},
+                                       {clockDependentRole(), {dependentSubject}}}));
+  const CaseArtifactResolution resolved = takeExpected(
+      __func__, CaseArtifactResolution::get(
+                    {{referenceSubject, {sharedClock}},
+                     {dependentSubject, {sharedClock}},
+                     {sharedClock, {}}}));
+  const EvaluationCondition aliasingSchedule{RelativeClockScheduleCondition{
+      SubjectTargetRef{clockReferenceRole(), referenceSubject, sharedClock},
+      SubjectTargetRef{clockDependentRole(), dependentSubject, sharedClock},
+      ratio(__func__, 1, 1), ratio(__func__, 0, 1)}};
+  const EvaluationCase aliasCase = takeExpected(
+      __func__, EvaluationCase::get(clockAliasSignatureRef(), twoAnchors,
+                                    std::nullopt, std::nullopt, {aliasingSchedule},
+                                    resolved, artifactStore()));
+  const MetricRequest metric = takeExpected(
+      __func__, MetricRequest::get(
+                    MetricQuery{MetricKind::CycleCount,
+                                EvaluationScope{ScopeFormRef(0), {}}},
+                    {}, aliasCase, resolved, artifactStore()));
+  const ResolvedModelBinding binding =
+      modelBinding(__func__, clockAliasModelDescriptor);
+  expectErrorContains(
+      __func__,
+      EvaluationRequest::get(aliasCase, {metric}, {}, binding, 0, resolved,
+                             artifactStore()),
+      "clock domain");
+
+  // A schedule whose two targets resolve to distinct clock domains is accepted.
+  const ArtifactRootReference distinctClock =
+      root(subjectSchema, testArtifact({0x61}));
+  const CaseArtifactResolution distinctResolved = takeExpected(
+      __func__, CaseArtifactResolution::get(
+                    {{referenceSubject, {sharedClock, distinctClock}},
+                     {dependentSubject, {sharedClock, distinctClock}},
+                     {sharedClock, {}},
+                     {distinctClock, {}}}));
+  const EvaluationCondition distinctSchedule{RelativeClockScheduleCondition{
+      SubjectTargetRef{clockReferenceRole(), referenceSubject, sharedClock},
+      SubjectTargetRef{clockDependentRole(), dependentSubject, distinctClock},
+      ratio(__func__, 1, 1), ratio(__func__, 0, 1)}};
+  const EvaluationCase distinctCase = takeExpected(
+      __func__, EvaluationCase::get(clockAliasSignatureRef(), twoAnchors,
+                                    std::nullopt, std::nullopt, {distinctSchedule},
+                                    distinctResolved, artifactStore()));
+  const MetricRequest distinctMetric = takeExpected(
+      __func__, MetricRequest::get(
+                    MetricQuery{MetricKind::CycleCount,
+                                EvaluationScope{ScopeFormRef(0), {}}},
+                    {}, distinctCase, distinctResolved, artifactStore()));
+  takeExpected(__func__,
+               EvaluationRequest::get(distinctCase, {distinctMetric}, {}, binding,
+                                      0, distinctResolved, artifactStore()));
+}
+
+void metricScopeAdmissibilityReturnsValidatedBasis() {
+  const EvaluationCase current = evaluationCase(__func__, {});
+  const CaseArtifactResolution resolved = resolution(__func__);
+  // CycleCount owns a registry admission that requires the case-signature
+  // reference-cycle basis. The metric registry owns admission and the
+  // case-signature registry owns basis resolution; the resolved basis is
+  // returned once so the caller may propagate or consume it without resolving
+  // a second time.
+  auto cycleAdmission = validateMetricScopeAdmissibility(
+      MetricKind::CycleCount, ScopeFormRef(0), current, resolved,
+      artifactStore());
+  const std::optional<ReferenceCycleBasis> basis =
+      takeExpected(__func__, std::move(cycleAdmission));
+  require(__func__, basis.has_value(),
+          "cycle-count admission did not return the validated cycle basis");
+  require(__func__, std::holds_alternative<AbstractCaseCycle>(*basis),
+          "cycle-count admission returned the wrong reference-cycle basis");
+
+  // Runtime does not require a cycle basis, so admission returns no basis.
+  auto runtimeAdmission = validateMetricScopeAdmissibility(
+      MetricKind::Runtime, ScopeFormRef(0), current, resolved, artifactStore());
+  require(__func__,
+          !takeExpected(__func__, std::move(runtimeAdmission)).has_value(),
+          "runtime admission returned an unexpected cycle basis");
+
+  // The descriptor context remains error-only: a signature without a whole-case
+  // cycle basis rejects cycle-count admission instead of returning a basis.
+  const EvaluationCase withoutCycle =
+      evaluationCase(__func__, {}, noCycleSignatureRef());
+  expectErrorContains(__func__,
+                      validateMetricScopeAdmissibility(
+                          MetricKind::CycleCount, ScopeFormRef(0), withoutCycle,
+                          resolved, artifactStore()),
+                      "requires a unique whole-case reference cycle");
+}
+
+void requestVerifierOwnsExactCycleBasisResolution() {
+  // The exact subject-cycle resolver fails. MetricRequest construction admits
+  // CycleCount through descriptor-context static admission only and does not
+  // resolve the basis, so construction succeeds without invoking the resolver.
+  const EvaluationCase failingCase =
+      evaluationCase(__func__, {}, failingCycleSignatureRef());
+  const CaseArtifactResolution resolved = resolution(__func__);
+  const MetricRequest metric = takeExpected(
+      __func__, MetricRequest::get(
+                    MetricQuery{MetricKind::CycleCount,
+                                EvaluationScope{ScopeFormRef(0), {}}},
+                    {}, failingCase, resolved, artifactStore()));
+  const ResolvedModelBinding binding =
+      modelBinding(__func__, failingCycleModelDescriptor);
+  // RequestVerifier owns the exact request-context admission and resolves the
+  // basis exactly once, so the resolver failure surfaces here and only here.
+  expectErrorContains(
+      __func__,
+      EvaluationRequest::get(failingCase, {metric}, {}, binding, 0, resolved,
+                             artifactStore()),
+      "test reference-cycle resolution failure");
+}
+
+void requestVerifierDistinguishesLocalClockTargets() {
+  TemporaryDirectory directory(__func__);
+  const ArtifactStore store(directory.path());
+  // Two anchors in distinct roles; both closures reach one shared owning
+  // Artifact that carries distinct canonical local clock-domain targets.
+  const ArtifactRootReference referenceSubject =
+      storeSubject(__func__, store, 0x51);
+  const ArtifactRootReference dependentSubject =
+      storeSubject(__func__, store, 0x52);
+  const ArtifactRootReference sharedOwner = storeSubject(__func__, store, 0x60);
+  const EvaluationSubjectBindings twoAnchors = takeExpected(
+      __func__,
+      EvaluationSubjectBindings::get({{clockReferenceRole(), {referenceSubject}},
+                                       {clockDependentRole(), {dependentSubject}}}));
+  const CaseArtifactResolution resolved = takeExpected(
+      __func__, CaseArtifactResolution::get(
+                    {{referenceSubject, {sharedOwner}},
+                     {dependentSubject, {sharedOwner}},
+                     {sharedOwner, {}}}));
+  const auto localClock = [&](const ArtifactRootReference &anchor,
+                              std::uint8_t payload) {
+    return SubjectTargetRef{
+        clockReferenceRole(), anchor,
+        EncodedArtifactLocalReference{sharedOwner, clockLocalKind, {payload}}};
+  };
+  const ResolvedModelBinding binding =
+      modelBinding(__func__, clockAliasModelDescriptor);
+
+  // Two distinct canonical local targets in one Artifact resolve to distinct
+  // exact SubjectTarget identities and are accepted across the two roles.
+  const EvaluationCondition distinctLocals{RelativeClockScheduleCondition{
+      SubjectTargetRef{clockReferenceRole(), referenceSubject,
+                       EncodedArtifactLocalReference{sharedOwner, clockLocalKind,
+                                                     {0x01}}},
+      SubjectTargetRef{clockDependentRole(), dependentSubject,
+                       EncodedArtifactLocalReference{sharedOwner, clockLocalKind,
+                                                     {0x02}}},
+      ratio(__func__, 1, 1), ratio(__func__, 0, 1)}};
+  const EvaluationCase distinctCase = takeExpected(
+      __func__, EvaluationCase::get(clockAliasSignatureRef(), twoAnchors,
+                                    std::nullopt, std::nullopt, {distinctLocals},
+                                    resolved, store));
+  const MetricRequest distinctMetric = takeExpected(
+      __func__, MetricRequest::get(
+                    MetricQuery{MetricKind::CycleCount,
+                                EvaluationScope{ScopeFormRef(0), {}}},
+                    {}, distinctCase, resolved, store));
+  takeExpected(__func__,
+               EvaluationRequest::get(distinctCase, {distinctMetric}, {}, binding,
+                                      0, resolved, store));
+
+  // The same exact local target across the two roles resolves to one identity
+  // and is rejected, even though both the role and the anchor differ.
+  const EvaluationCase sameCase = takeExpected(
+      __func__, EvaluationCase::get(
+                    clockAliasSignatureRef(), twoAnchors, std::nullopt,
+                    std::nullopt,
+                    {EvaluationCondition{RelativeClockScheduleCondition{
+                        localClock(referenceSubject, 0x01),
+                        SubjectTargetRef{clockDependentRole(), dependentSubject,
+                                         EncodedArtifactLocalReference{
+                                             sharedOwner, clockLocalKind, {0x01}}},
+                        ratio(__func__, 1, 1), ratio(__func__, 0, 1)}}},
+                    resolved, store));
+  const MetricRequest sameMetric = takeExpected(
+      __func__, MetricRequest::get(
+                    MetricQuery{MetricKind::CycleCount,
+                                EvaluationScope{ScopeFormRef(0), {}}},
+                    {}, sameCase, resolved, store));
+  expectErrorContains(__func__,
+                      EvaluationRequest::get(sameCase, {sameMetric}, {}, binding,
+                                             0, resolved, store),
+                      "clock domain");
 }
 
 void requestCanonicalRoundTripAndStoreImport() {
@@ -1145,6 +1488,15 @@ int main() {
     fail("registration", llvm::toString(std::move(error)));
   if (llvm::Error error = registerEvaluationCaseSignature(noCycleSignature))
     fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error = registerEvaluationCaseSignature(clockAliasSignature))
+    fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error = registerEvaluationCaseSignature(failingCycleSignature))
+    fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error = registerArtifactLocalReferenceKind(
+          subjectSchema, clockLocalKind,
+          ArtifactLocalReferenceCodec{validateClockLocalPayload,
+                                      validateClockLocalTarget}))
+    fail("registration", llvm::toString(std::move(error)));
   if (llvm::Error error = registerFindingDescriptor(testFindingDescriptor))
     fail("registration", llvm::toString(std::move(error)));
   if (llvm::Error error = registerFindingDescriptor(secondFindingDescriptor))
@@ -1161,9 +1513,19 @@ int main() {
   if (llvm::Error error =
           registerEvaluationModelDescriptor(slottedModelDescriptor))
     fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          registerEvaluationModelDescriptor(clockAliasModelDescriptor))
+    fail("registration", llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          registerEvaluationModelDescriptor(failingCycleModelDescriptor))
+    fail("registration", llvm::toString(std::move(error)));
   sharedSignatureDerivesOneCaseKeyAcrossDescriptors();
   requestVerifierRejectsNoncanonicalAndForeignBindings();
   wholeCaseMetricRequiresSignatureCycleBasis();
+  requestVerifierRejectsResolvedClockDomainAlias();
+  metricScopeAdmissibilityReturnsValidatedBasis();
+  requestVerifierOwnsExactCycleBasisResolution();
+  requestVerifierDistinguishesLocalClockTargets();
   requestCanonicalRoundTripAndStoreImport();
   scopeChecksAnchorClosureLocalProviderAndRoleOrder();
   conditionsCheckLocationApplicabilityDuplicatesAndConflicts();

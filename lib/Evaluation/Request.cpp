@@ -181,6 +181,35 @@ llvm::Error validateEvaluationRequestDirectDependencies(
   return llvm::Error::success();
 }
 
+/// The static RelativeClockSchedule payload check only rejects two identical
+/// SubjectTargetRef values. Request verification additionally rejects a
+/// schedule whose reference and dependent clocks resolve to the same exact
+/// SubjectTarget identity after EvaluationCase has validated binding, closure,
+/// and owner codecs. Only the role and anchor provenance are ignored, so the
+/// same root or the same complete canonical local target is rejected across
+/// roles or anchors while two distinct local targets in one Artifact remain
+/// distinct.
+llvm::Error rejectAliasedClockDomains(const EvaluationRequest &request) {
+  for (const EvaluationCondition &condition : request.baseConditions()) {
+    if (condition.kind() != EvaluationConditionKind::RelativeClockSchedule)
+      continue;
+    const auto &schedule =
+        std::get<RelativeClockScheduleCondition>(condition.payload);
+    if (schedule.referenceClock.target == schedule.dependentClock.target)
+      return evaluationError("relative clock schedule binds one clock domain as "
+                             "both the reference and the dependent clock");
+  }
+  return llvm::Error::success();
+}
+
+/// RequestVerifier owns exact request-context admission: it resolves the
+/// reference-cycle basis exactly once per metric request and is the terminal
+/// consumer of the validated basis, which is never stored or re-resolved.
+void consumeAdmittedReferenceCycleBasis(
+    std::optional<ReferenceCycleBasis> admittedBasis) {
+  (void)admittedBasis;
+}
+
 } // namespace
 
 const ArtifactSchemaDescriptor EvaluationRequest::artifactSchema{
@@ -200,9 +229,11 @@ MetricRequest::get(MetricQuery query,
   if (llvm::Error error = validateEvaluationScopeCase(
           query.scope, metricDescriptor(query.metric).scopeForms, context))
     return std::move(error);
+  // Descriptor-context static admission only; RequestVerifier owns the exact
+  // request-context reference-cycle basis and resolves it once per request.
   if (llvm::Error error = validateMetricScopeAdmissibility(
-          query.metric, query.scope.form, evaluationCase, resolution,
-          artifactStore))
+          query.metric, query.scope.form,
+          *evaluationCase.signature().descriptor()))
     return std::move(error);
 
   const MetricDescriptor &descriptor = metricDescriptor(query.metric);
@@ -356,6 +387,8 @@ llvm::Error RequestVerifier::verify(const EvaluationRequest &request) const {
       artifactStore_);
   if (!evaluationCase)
     return evaluationCase.takeError();
+  if (llvm::Error error = rejectAliasedClockDomains(request))
+    return error;
 
   for (const MetricRequest &requestItem : request.metricRequests()) {
     auto reverified =
@@ -365,6 +398,14 @@ llvm::Error RequestVerifier::verify(const EvaluationRequest &request) const {
       return reverified.takeError();
     if (!(*reverified == requestItem))
       return evaluationError("metric request is not canonical");
+    // Exact request-context admission is owned by the verifier: resolve the
+    // reference-cycle basis exactly once per metric request and consume it.
+    auto cycleBasis = validateMetricScopeAdmissibility(
+        requestItem.query().metric, requestItem.query().scope.form,
+        *evaluationCase, resolution_, artifactStore_);
+    if (!cycleBasis)
+      return cycleBasis.takeError();
+    consumeAdmittedReferenceCycleBasis(std::move(*cycleBasis));
   }
   for (const FindingRequest &requestItem : request.findingRequests()) {
     auto reverified =

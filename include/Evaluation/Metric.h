@@ -98,11 +98,17 @@ struct MetricQuery {
 llvm::Error validateMetricQuery(const MetricQuery &query);
 
 /// Metric-registry-owned admission for one exact scope form against either a
-/// case signature contract or a fully resolved exact case.
+/// case signature contract or a fully resolved exact case. The descriptor
+/// context remains error-only. The case context returns the validated
+/// reference-cycle basis when the scope form requires one and no basis when it
+/// does not; the metric registry owns admission and the case-signature registry
+/// owns basis resolution, so the basis is resolved exactly once for the caller
+/// to propagate or consume.
 llvm::Error validateMetricScopeAdmissibility(
     MetricKind metric, ScopeFormRef form,
     const EvaluationCaseSignatureDescriptor &caseSignature);
-llvm::Error validateMetricScopeAdmissibility(
+llvm::Expected<std::optional<ReferenceCycleBasis>>
+validateMetricScopeAdmissibility(
     MetricKind metric, ScopeFormRef form,
     const EvaluationCase &evaluationCase,
     const CaseArtifactResolution &resolution,
@@ -159,34 +165,10 @@ using MetricObservationValue =
     std::variant<PointObservation, IntervalObservation, CensoredObservation,
                  NotApplicableObservation>;
 
-struct MetricObservation {
-  MetricKind metric;
-  EvaluationScope scope;
-  UncertaintyKind uncertainty;
-  MetricObservationValue observation;
-
-  friend bool operator==(const MetricObservation &lhs,
-                         const MetricObservation &rhs) {
-    return lhs.metric == rhs.metric && lhs.scope == rhs.scope &&
-           lhs.uncertainty == rhs.uncertainty &&
-           lhs.observation == rhs.observation;
-  }
-  friend bool operator!=(const MetricObservation &lhs,
-                         const MetricObservation &rhs) {
-    return !(lhs == rhs);
-  }
-};
-
-ObservationForm observationForm(const MetricObservation &observation);
 ObservationForm observationForm(const MetricObservationValue &observation);
 llvm::Error validateMetricObservationValue(
     MetricKind metric, UncertaintyKind uncertainty,
     const MetricObservationValue &observation);
-llvm::Error validateMetricObservation(const MetricObservation &observation);
-
-llvm::Expected<std::string>
-serializeMetricObservation(const MetricObservation &observation);
-llvm::Expected<MetricObservation> parseMetricObservation(llvm::StringRef json);
 
 } // namespace loom::evaluation
 
