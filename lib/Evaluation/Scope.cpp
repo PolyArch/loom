@@ -240,6 +240,11 @@ llvm::Error validateSubjectTargetRef(const SubjectTargetRef &target,
     return evaluationError("target artifact is not reachable from its anchor "
                            "subject's exact dependency closure");
 
+  const CaseArtifactResolution::Entry *entry =
+      context.resolution().find(targetArtifact);
+  if (!entry)
+    return evaluationError("the target artifact is unresolved");
+
   const auto *local =
       std::get_if<EncodedArtifactLocalReference>(&target.target);
   if (!local)
@@ -248,10 +253,6 @@ llvm::Error validateSubjectTargetRef(const SubjectTargetRef &target,
   // A local reference is only meaningful inside an exact Artifact of its own
   // family, imported through the family's own codec and validator. The family
   // resolves its typed importer view through its own owner boundary.
-  const CaseArtifactResolution::Entry *entry =
-      context.resolution().find(targetArtifact);
-  if (!entry)
-    return evaluationError("the target artifact is unresolved");
   return validateArtifactLocalReference(*local);
 }
 

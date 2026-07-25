@@ -120,15 +120,6 @@ struct ArtifactLocalReferenceCodec {
   llvm::Error (*validate)(const EncodedArtifactLocalReference &reference);
 };
 
-/// Statically registers one owner-local kind for one exact Artifact family.
-/// Only the family that owns the schema may supply its kinds and codecs.
-/// Registering the same kind with the same codec again is a no-op; a
-/// conflicting registration is an error.
-llvm::Error
-registerArtifactLocalReferenceKind(const ArtifactSchemaDescriptor &ownerSchema,
-                                   std::uint32_t ownerLocalKind,
-                                   ArtifactLocalReferenceCodec codec);
-
 /// The registered codec for one (owner schema, owner-local kind) pair, or
 /// absent. The result is a value copy taken under the registry lock: later
 /// registrations never invalidate it. An absent codec is an

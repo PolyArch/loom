@@ -1,5 +1,7 @@
 #include "Common/ArtifactLocalReference.h"
 
+#include "ArtifactLocalReferenceRegistry.h"
+
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 

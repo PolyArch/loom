@@ -5,6 +5,7 @@
 
 #include "Common/Artifact.h"
 #include "Common/ArtifactLocalReference.h"
+#include "ImplementationPlatform/TechnologyCorner.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -564,11 +565,10 @@ llvm::Error validateEvaluationScopeCase(
 
 struct ProcessCornerCondition {
   SubjectTargetRef target;
-  /// The exact TechnologyCornerRef in heterogeneous persistent form: the
-  /// loom.implementation_platform 1.0 family local kind TechnologyCorner with
-  /// its exactly eight-byte canonical payload. The ImplementationPlatform
-  /// owner, not Evaluation, decodes and validates it.
-  EncodedArtifactLocalReference corner;
+  /// The exact typed TechnologyCornerRef. Persistent encoders obtain its
+  /// heterogeneous eight-byte representation only through the
+  /// ImplementationPlatform owner codec.
+  platform::TechnologyCornerRef corner;
 
   friend bool operator==(const ProcessCornerCondition &lhs,
                          const ProcessCornerCondition &rhs) {

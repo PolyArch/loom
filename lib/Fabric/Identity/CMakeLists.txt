@@ -12,3 +12,7 @@ add_mlir_library(LoomFabricIdentity
   LoomCommon
   LLVMSupport
 )
+
+target_include_directories(LoomFabricIdentity PRIVATE
+  ${LOOM_SOURCE_DIR}/lib
+)

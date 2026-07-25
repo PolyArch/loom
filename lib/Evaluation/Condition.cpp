@@ -130,27 +130,20 @@ llvm::Error validateConditionPayload(const EvaluationCondition &condition) {
 /// condition target's anchor closure.
 llvm::Error validateProcessCorner(const ProcessCornerCondition &corner,
                                   const CaseTargetContext &context) {
-  if (corner.corner.artifact.schema != platform::implementationPlatformSchema)
-    return evaluationError("a process corner requires the exact "
-                           "loom.implementation_platform 1.0 schema");
-  if (corner.corner.ownerLocalKind != platform::technologyCornerLocalKind)
-    return evaluationError("local-reference kind " +
-                           std::to_string(corner.corner.ownerLocalKind) +
-                           " is not the technology corner kind of schema '" +
-                           platform::implementationPlatformSchema.identity +
-                           "'");
+  const EncodedArtifactLocalReference encoded =
+      platform::encodeTechnologyCornerRef(corner.corner);
   const CaseArtifactResolution::Entry *platformEntry =
-      context.resolution().find(corner.corner.artifact);
+      context.resolution().find(encoded.artifact);
   if (!platformEntry)
     return evaluationError("the implementation platform artifact of a process "
                            "corner is unresolved");
-  if (llvm::Error error = validateArtifactLocalReference(corner.corner))
+  if (llvm::Error error = validateArtifactLocalReference(encoded))
     return error;
 
   const CaseArtifactResolution::Entry *anchor =
       context.resolution().find(corner.target.anchorSubjectArtifact);
   if (!anchor ||
-      !CaseArtifactResolution::reaches(*anchor, corner.corner.artifact))
+      !CaseArtifactResolution::reaches(*anchor, encoded.artifact))
     return evaluationError(
         "the exact implementation platform is not admitted by the selected "
         "subject's dependency closure");
@@ -295,7 +288,9 @@ conditionPayloadKey(const EvaluationCondition &condition) {
   case EvaluationConditionKind::ProcessCorner: {
     const auto &corner = std::get<ProcessCornerCondition>(condition.payload);
     appendSubjectTargetKey(key, corner.target);
-    appendFramedBytes(key, encodeArtifactLocalReference(corner.corner));
+    appendFramedBytes(
+        key, encodeArtifactLocalReference(
+                 platform::encodeTechnologyCornerRef(corner.corner)));
     return key;
   }
   case EvaluationConditionKind::SupplyVoltage: {

@@ -1,5 +1,6 @@
 #include "Fabric/Identity/FabricLocalReference.h"
 
+#include "Common/ArtifactLocalReferenceRegistry.h"
 #include "Common/ArtifactText.h"
 
 #include "llvm/ADT/ArrayRef.h"

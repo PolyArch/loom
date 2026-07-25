@@ -1,5 +1,6 @@
 #include "ImplementationPlatform/TechnologyCorner.h"
 
+#include "Common/ArtifactLocalReferenceRegistry.h"
 #include "Common/ArtifactText.h"
 
 #include "llvm/ADT/Twine.h"
@@ -94,7 +95,8 @@ encodeTechnologyCornerRef(const TechnologyCornerRef &reference) {
       encodeTechnologyCornerPayload(reference.entity);
   return EncodedArtifactLocalReference{
       ArtifactRootReference{implementationPlatformSchema, reference.artifact},
-      technologyCornerLocalKind,
+      implementationPlatformLocalKind(
+          ImplementationPlatformLocalReferenceKind::TechnologyCorner),
       std::vector<std::uint8_t>(payload.begin(), payload.end())};
 }
 
@@ -103,7 +105,9 @@ decodeTechnologyCornerRef(const EncodedArtifactLocalReference &reference) {
   if (reference.artifact.schema != implementationPlatformSchema)
     return platformError("technology corner references require the exact "
                          "loom.implementation_platform 1.0 schema");
-  if (reference.ownerLocalKind != technologyCornerLocalKind)
+  if (reference.ownerLocalKind !=
+      implementationPlatformLocalKind(
+          ImplementationPlatformLocalReferenceKind::TechnologyCorner))
     return platformError("local-reference kind " +
                          llvm::Twine(reference.ownerLocalKind) +
                          " is not the technology corner kind of schema '" +
@@ -146,7 +150,9 @@ publishImplementationPlatformView(const ImplementationPlatformView &view) {
 
 llvm::Error registerImplementationPlatformLocalReferenceKinds() {
   return registerArtifactLocalReferenceKind(
-      implementationPlatformSchema, technologyCornerLocalKind,
+      implementationPlatformSchema,
+      implementationPlatformLocalKind(
+          ImplementationPlatformLocalReferenceKind::TechnologyCorner),
       ArtifactLocalReferenceCodec{&strictDecodeTechnologyCornerPayload,
                                   &validateTechnologyCornerLocalReference});
 }

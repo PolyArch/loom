@@ -8,3 +8,7 @@ add_mlir_library(LoomImplementationPlatform
   LoomCommon
   LLVMSupport
 )
+
+target_include_directories(LoomImplementationPlatform PRIVATE
+  ${LOOM_SOURCE_DIR}/lib
+)

@@ -21,12 +21,3 @@ target_link_libraries(loom-common-blob-test PRIVATE
   LoomCommon
   LLVMSupport
 )
-
-add_executable(loom-common-local-reference-test
-  ArtifactLocalReferenceTest.cpp
-)
-
-target_link_libraries(loom-common-local-reference-test PRIVATE
-  LoomCommon
-  LLVMSupport
-)

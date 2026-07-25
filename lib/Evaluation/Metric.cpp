@@ -145,10 +145,8 @@ llvm::Error validateOrderedValues(const MetricDescriptor &descriptor,
 }
 
 bool metricQueryLess(const MetricQuery &lhs, const MetricQuery &rhs) {
-  const llvm::StringRef lhsSpelling = toString(lhs.metric);
-  const llvm::StringRef rhsSpelling = toString(rhs.metric);
-  if (lhsSpelling != rhsSpelling)
-    return lhsSpelling < rhsSpelling;
+  if (lhs.metric != rhs.metric)
+    return lhs.metric < rhs.metric;
   return canonicalScopeKey(lhs.scope) < canonicalScopeKey(rhs.scope);
 }
 

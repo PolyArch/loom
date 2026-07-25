@@ -60,9 +60,15 @@ private:
 /// The typed in-memory API for one exact technology-corner reference.
 using TechnologyCornerRef = ArtifactReference<TechnologyCornerId>;
 
-/// ImplementationPlatformLocalReferenceKind. The family owns this closed
-/// ordinal space for heterogeneous local references.
-inline constexpr std::uint32_t technologyCornerLocalKind = 0;
+/// The family-owned closed ordinal space for heterogeneous local references.
+enum class ImplementationPlatformLocalReferenceKind : std::uint32_t {
+  TechnologyCorner = 0,
+};
+
+constexpr std::uint32_t implementationPlatformLocalKind(
+    ImplementationPlatformLocalReferenceKind kind) {
+  return static_cast<std::uint32_t>(kind);
+}
 
 /// The family-owned existential-reference codec for local kind
 /// TechnologyCorner: exactly u64be(corner_id), so the payload is exactly
