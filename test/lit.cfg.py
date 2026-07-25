@@ -59,6 +59,7 @@ tools = [
     "loom-fabric-elaboration-header-test",
     "loom-fabric-persistent-ref-test",
     "loom-fabric-resource-contract-test",
+    "loom-fabric-temporal-operand-buffer-test",
     "loom-coverage-test",
     "loom-hwsg-test",
     "loom-lower",

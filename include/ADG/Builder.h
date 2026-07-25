@@ -76,6 +76,8 @@ struct TemporalPeConfig {
   std::string fuConfigMode;
   ::fabric::OperandBufferMode operandBufferMode =
       ::fabric::OperandBufferMode::PerInstruction;
+  // Entries per mode-derived allocation unit. Zero means the recipe supplied
+  // nothing and is rejected before Fabric emission; no mode has a default.
   unsigned operandBufferSize = 0;
   unsigned numRegFifo = 0;
   unsigned regFifoDepth = 0;

@@ -629,30 +629,20 @@ static LogicalResult verifyTemporalHwParams(PeOp op, unsigned T) {
            << fuCfgMode << "'";
 
   // 7. operand_buffer_mode: required typed enum.
-  auto bufModeAttr = op.getOperandBufferModeAttr();
-  if (!bufModeAttr)
+  if (!op.getOperandBufferModeAttr())
     return op.emitOpError(
         "temporal fabric.pe requires 'operand_buffer_mode' attribute");
-  OperandBufferMode bufMode = bufModeAttr.getValue();
-  StringRef perInstruction =
-      stringifyOperandBufferMode(OperandBufferMode::PerInstruction);
 
-  // 8. operand_buffer_size: required iff mode != per_instruction.
+  // 8. operand_buffer_size: required and positive in every mode. It counts
+  //    entries per mode-derived allocation unit, so a dedicated queue has no
+  //    implicit depth and no mode carries a default.
   auto bufSize = getOptInt(op, "operand_buffer_size");
-  if (bufMode == OperandBufferMode::PerInstruction) {
-    if (bufSize)
-      return op.emitOpError("'operand_buffer_size' must be absent when "
-                            "'operand_buffer_mode' is '")
-             << perInstruction << "'";
-  } else {
-    if (!bufSize)
-      return op.emitOpError("'operand_buffer_size' is required when "
-                            "'operand_buffer_mode' is not '")
-             << perInstruction << "'";
-    if (*bufSize < 1)
-      return op.emitOpError("'operand_buffer_size' must be >= 1, got ")
-             << *bufSize;
-  }
+  if (!bufSize)
+    return op.emitOpError("temporal fabric.pe requires 'operand_buffer_size' "
+                          "in every 'operand_buffer_mode'");
+  if (*bufSize < 1)
+    return op.emitOpError("'operand_buffer_size' must be >= 1, got ")
+           << *bufSize;
   return success();
 }
 

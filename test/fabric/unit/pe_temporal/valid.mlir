@@ -11,13 +11,43 @@ fabric.module @temp_min(%a : !fabric.bits_tag<32, 4>)
   // CHECK: fabric.pe [temporal]
   // CHECK-SAME: !fabric.bits_tag<32, 4>
   // CHECK: operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
+  // CHECK-SAME: operand_buffer_size = 2 : i32
   %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<32, 4>)
                             -> !fabric.bits_tag<32, 4>
        attributes {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
+         operand_buffer_size = 2 : i32
+       } {
+    fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
+      %v = fabric.op [@arith.addi] (%fa, %fa)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %v : !fabric.bits<32>
+    }
+  }
+  fabric.yield %r : !fabric.bits_tag<32, 4>
+}
+
+// -----------------------------------------------------------------------------
+// The same dedicated organization at depth 1. The depth is canonical Fabric
+// content, so this PE is not the one above.
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: fabric.module @temp_min_depth_one
+fabric.module @temp_min_depth_one(%a : !fabric.bits_tag<32, 4>)
+                                 -> (!fabric.bits_tag<32, 4>) {
+  // CHECK: operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
+  // CHECK-SAME: operand_buffer_size = 1 : i32
+  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<32, 4>)
+                            -> !fabric.bits_tag<32, 4>
+       attributes {
+         tag_width = 4 : i32,
+         num_instruction = 1 : i32,
+         fu_config_mode = "per_fu_config",
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
+         operand_buffer_size = 1 : i32
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
@@ -107,6 +137,7 @@ fabric.module @temp_programmed(%a : !fabric.bits_tag<32, 4>,
          num_instruction = 2 : i32,
          fu_config_mode = "per_instruction_fu_config",
          operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
+         operand_buffer_size = 2 : i32,
          pe_enable = true,
          instruction_mem = [
            {
@@ -227,7 +258,8 @@ fabric.module @temp_named_host() {
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
+         operand_buffer_size = 2 : i32
        } {
   ^bb0(%pa: !fabric.bits<32>):
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
@@ -257,7 +289,8 @@ fabric.module @temp_implicit_strip(%a : !fabric.bits_tag<32, 4>)
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
+         operand_buffer_size = 2 : i32
        } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
@@ -285,7 +318,8 @@ fabric.module @temp_truncate_inner(%a : !fabric.bits_tag<32, 4>)
          tag_width = 4 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
+         operand_buffer_size = 2 : i32
        } {
     // FU outer operand inherits the PE block-arg's bits<16> width
     // (auto-stripped tag, then user-narrowed to F=16). The FU's own
@@ -317,7 +351,8 @@ fabric.module @temp_named_full_width() {
          tag_width = 2 : i32,
          num_instruction = 1 : i32,
          fu_config_mode = "per_fu_config",
-         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>
+         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
+         operand_buffer_size = 2 : i32
        } {
   ^bb0(%pa: !fabric.bits<16>, %pb: !fabric.bits<16>):
     fabric.fu(%fa = %pa : !fabric.bits<16>,

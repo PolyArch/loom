@@ -22,6 +22,10 @@ add_executable(loom-fabric-boundary-transfer-test
   BoundaryTransferTest.cpp
 )
 
+add_executable(loom-fabric-temporal-operand-buffer-test
+  TemporalOperandBufferTest.cpp
+)
+
 target_link_libraries(loom-fabric-elaboration-api-test PRIVATE
   MLIRFabric
   MLIRParser
@@ -46,6 +50,11 @@ target_link_libraries(loom-fabric-resource-contract-test PRIVATE
 
 target_link_libraries(loom-fabric-boundary-transfer-test PRIVATE
   LoomFabricBoundaryTransfer
+)
+
+target_link_libraries(loom-fabric-temporal-operand-buffer-test PRIVATE
+  LoomFabricTemporalOperandBuffer
+  MLIRFabricEnums
 )
 
 add_executable(loom-fabric-persistent-ref-test

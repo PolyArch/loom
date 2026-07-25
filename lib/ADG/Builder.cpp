@@ -616,6 +616,18 @@ llvm::Error validateFu(const FuSpec &fu) {
   return llvm::Error::success();
 }
 
+// Every temporal PE recipe supplies its own positive operand-buffer depth: the
+// value counts entries per mode-derived allocation unit and no mode, helper, or
+// backend may substitute one. Expansion fails here, before Fabric emission.
+llvm::Error validateTemporalPe(const TemporalPeConfig &config) {
+  if (config.operandBufferSize == 0)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "temporal ADG pe requires a positive operand buffer size in every "
+        "operand buffer mode");
+  return llvm::Error::success();
+}
+
 void printTemporalPeAttributes(llvm::raw_ostream &os,
                                const TemporalPeConfig &config) {
   os << " attributes {\n"
@@ -629,11 +641,9 @@ void printTemporalPeAttributes(llvm::raw_ostream &os,
     os << "         reg_fifo_ports = " << config.regFifoPorts << " : i32,\n";
   os << "         fu_config_mode = \"" << config.fuConfigMode << "\",\n"
      << "         operand_buffer_mode = #fabric.operand_buffer_mode<"
-     << ::fabric::stringifyOperandBufferMode(config.operandBufferMode) << ">";
-  if (config.operandBufferSize)
-    os << ",\n         operand_buffer_size = " << config.operandBufferSize
-       << " : i32";
-  os << "\n       }";
+     << ::fabric::stringifyOperandBufferMode(config.operandBufferMode) << ">,\n"
+     << "         operand_buffer_size = " << config.operandBufferSize
+     << " : i32\n       }";
 }
 
 void printPe(llvm::raw_ostream &os, const PeSpec &pe,
@@ -1150,6 +1160,9 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &destination) const {
     if (entry.useIds.size() != pe.inputs.size())
       return llvm::createStringError(std::errc::invalid_argument,
                                      "ADG pe direct use count is invalid");
+    if (pe.schedule == Schedule::Temporal)
+      if (llvm::Error err = validateTemporalPe(pe.temporal))
+        return err;
     for (const FuSpec &fu : pe.fus)
       if (llvm::Error err = validateFu(fu))
         return err;

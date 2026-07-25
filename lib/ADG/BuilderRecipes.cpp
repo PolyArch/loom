@@ -1624,6 +1624,7 @@ ModuleBuilder loom::adg::buildMinimalTemporalAdg() {
   temporal.numInstruction = 1;
   temporal.fuConfigMode = "per_fu_config";
   temporal.operandBufferMode = ::fabric::OperandBufferMode::PerInstruction;
+  temporal.operandBufferSize = 2;
   module.addPe(makeMinimalAddPe(Schedule::Temporal, "!fabric.bits_tag<32, 4>",
                                 "!fabric.bits<32>", std::move(temporal)));
 
