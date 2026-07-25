@@ -256,6 +256,13 @@ requireSystemRoot(FabricArtifactView) -> FabricSystemRootView
 
 FabricArtifactView::pointConnections()
   -> canonical range<FabricPointConnectionPayload>
+FabricArtifactView::memoryOperationPorts(FabricMemoryOccurrenceRef)
+  -> canonical range<FabricMemoryOperationPortRef>
+FabricArtifactView::memoryOperationPort(FabricMemoryOperationPortRef)
+  -> exact MemoryOperationPortView
+FabricArtifactView::memoryCapabilityAlternative(
+    FabricMemoryCapabilityAlternativeRef)
+  -> exact MemoryCapabilityAlternativeView
 
 FabricSystemRootView::spatialAttachments()
   -> canonical range<SpatialAttachmentRecordView>
@@ -276,6 +283,17 @@ FabricSystemRootView::clockCrossing(SystemTransportResourceRef)
 `FabricSystemRootView` is a zero-copy typed refinement of the same immutable
 storage. It has no independent constructor or relation lists. Refinement of a
 non-`System` root is a typed wrong-root-kind error, not an empty view.
+
+`MemoryOperationPortView` exposes the exact endpoint inventory, validated
+embedded `ResourceContract`, canonical ResourceState and UsePattern references,
+memory-specific operation-pattern semantics, and capability-alternative
+references. `MemoryCapabilityAlternativeView`
+exposes the OperationSchema-owned actor-contract domain, canonical service-role
+bindings, optional parameterized access domain, and typed admissible
+use-pattern references. These views are the only C++ projection of the
+operation-port persistent records in `docs/spec-fabric-mem.md`;
+counts, raw MLIR attributes, and consumer-owned geometry tables are not
+alternative APIs.
 
 `FinalizedFabricRoot` is an owner result that contains the exact
 `ArtifactRootReference`, canonical bytes, direct dependency references, and

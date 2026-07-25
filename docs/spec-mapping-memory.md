@@ -129,9 +129,11 @@ A derived `ElementAccessOnly | VectorAccessOnly | ElementAndVectorAccess`
 label is never selected or persisted. A shared hybrid physical port and
 separate element and vector ports have different inventories, ResourceState,
 and capacity even when both derive aggregate element-plus-vector support.
-A declared Fabric use pattern may realize one actor firing with several
-internal service transactions, but TechMapping cannot invent that
-decomposition. Fence compatibility proves its exact contract and a compatible
+A declared Fabric operation-port use pattern may derive one Direct child or
+row-major active-lane children under the actor firing's single parent service
+request, but TechMapping cannot invent or change that projection. The selected
+service contract independently owns physical beat realization. Fence
+compatibility proves its exact contract, mandatory Direct projection, and a compatible
 single-domain operation capability without fabricating an address or memory
 root.
 
@@ -248,6 +250,11 @@ may-overlap incompatible interpretations at the same local physical ingress
 and may be reused across disjoint match domains. They are not forced equal
 within one operation row and are never global firing, iteration, invocation,
 logical-token, atomic-object, memory, or vector-lane identity.
+Several input roles in one Temporal row may select the same tagged ingress
+only because the Fabric-owned row architecture provides one independent
+matcher and ordered queue per role. Their may-overlap interpretations require
+distinct tags. Output role endpoints within one row remain injective in
+version 1.0; Mapping cannot synthesize an unmodeled result serializer.
 
 Every addressed atomic operation and fence resolves through its selected
 target and use pattern to exactly one compatible MemoryConsistency domain. A
@@ -279,10 +286,18 @@ capacity occupancy, and sharing assignments over the already selected engine,
 service, route, port, queue, bank, or context. It does not copy Fabric capacity,
 duration, latency, or use vectors.
 
-For a memory actor, the selected Fabric use pattern owns any internal lane or
-beat transactions and their resource claims. Mapping supplies only its typed
-parameters and reservations. The operation endpoint payload width and backing
-service beat width therefore remain separate Fabric facts rather than route or
+For a memory actor, the selected operation-port use pattern owns port-local
+child-transaction projection (`Direct` or `ActiveLanesRowMajor`), holding,
+assembly, and claims under one parent Canonical Service request. Each selected
+service use pattern separately owns physical beats and service-local claims.
+Mapping consumes the Fabric owner-defined
+`deriveMemoryPortTransactionPlan` result, supplies only typed parameters and
+ordinary `ResourceUse` records for those exact owner-local patterns, and
+cannot reconstruct lane addresses, masks, or assembly. It cannot combine the
+port and service into a cross-owner pattern, change transaction projection,
+create another request identity, or derive a projection from endpoint or beat
+widths. The operation endpoint payload width and backing service beat width
+therefore remain separate Fabric facts rather than route or
 MemoryOperationEntry fields.
 
 Configured `memory_operation_table` rows, dispatch selectors, provider decode,
@@ -427,11 +442,12 @@ Anchor-level tests should cover:
   including rejection of an equal-width but semantically incompatible port;
 * routing of complete vector address, data, and mask tokens without lane Tags
   or implicit endpoint splitting;
-* one declared multi-transaction Fabric use pattern with one logical actor
-  retirement and rejection of Mapping-invented decomposition;
+* one declared Fabric child-transaction plan with one parent request and one
+  logical actor retirement, plus rejection of Mapping-invented decomposition;
 * local Physical Tag ownership by the real writer/ingress `ResourceUse`;
-* distinct per-role Temporal tags within one operation row and legal tag reuse
-  across disjoint ingress match domains;
+* distinct tags for may-overlap input roles sharing one Temporal ingress,
+  legal tag reuse across disjoint ingress match domains, and rejection of
+  shared output endpoints within one operation row;
 * shared hybrid operation-port capacity versus separate element and vector
   ports, with rejection of a persisted derived geometry class;
 * local-service and manager-endpoint MemoryOperationEntry targets using the

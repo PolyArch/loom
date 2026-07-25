@@ -377,6 +377,16 @@ Operation kind, access form, actor contract, active endpoints, and use pattern
 are derived from the selected capability alternative. They are not copied
 into an operation-port or context reference.
 
+Each `FabricMemoryOperationPortRef` owns one complete embedded
+`ResourceContractRecord`. Its state and use-pattern array positions are the
+resource-state and use-pattern ordinals for that owner. A count, capability
+alternative ordinal, memory-occurrence ordinal, or consumer-local dense index
+cannot stand in for either reference. Capability alternatives store typed
+`UsePatternKey` selections into that same contract and strict import projects
+them as complete `FabricUsePatternRef` values. The memory-specific semantic
+record at the same pattern ordinal is part of that operation port and has no
+independent reference or identity.
+
 Existing role-specific names are typed refinements, not alternate encodings:
 
 ```text

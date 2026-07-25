@@ -501,6 +501,15 @@ unclassified actor state is rejected; consumers never copy an arbitrary
 attribute dictionary. A field may be excluded only when its owning spec proves
 it nonsemantic, as for source provenance.
 
+For memory actors the closed semantic projection contains the complete
+aggregate contract owned by `docs/spec-dataflow-memory-consistency.md`.
+Atomic load/store, atomic RMW, and compare-exchange projections include the
+exact `source_alignment_bytes`; dropping it while retaining ordering, scope,
+granularity, or volatility is an invalid partial projection. Geometry remains
+the separate nonpersistent `CanonicalMemoryAccessView`, but Fabric capability
+matching consumes both projections and may not reconstruct alignment from a
+type, endpoint width, or selected service.
+
 Graph admission, canonical relation construction, Configured Function
 materialization, simulator dispatch, and Fabric capability matching all consume
 the same `OperationSchemaId` and projection. The canonical actor classifier is
@@ -508,6 +517,16 @@ a derived query over this registry, not another whitelist. Simulator providers
 own executable transition implementations, while Hardware Sharing Groups own
 only genuine physical sharing relations. Neither may redefine software
 semantics or maintain a competing operation-name table.
+
+The OperationSchema registry owns the stable versioned canonical codec and
+validator for `OperationSchemaId`. The Dataflow specifications that own closed
+projection atoms, including Canonical Service roles, memory access and mask
+forms, atomic ordering and RMW kind, vector atomic granularity, and
+`SyncScopeRef`, likewise own their stable wire tags and payload codecs. C++
+enum values, TableGen case numbers, registration order, and printer spelling
+are not persistent encodings. A downstream artifact embeds the exact
+owner-produced bytes and fails import on an unknown or malformed value; it
+cannot define a local ordinal table.
 
 Canonical actor values distinguish defined, poison, and undef state. A defined
 state carries the exact type-appropriate bits or logical identity; fixed

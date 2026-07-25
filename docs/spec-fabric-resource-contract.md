@@ -27,20 +27,116 @@ structural keys and selects only declared exact refinements. Simulation,
 runtime, and RTL implement the same contract rather than reconstructing local
 schedulers.
 
+## Persistent Record And Typed Projection
+
+A concrete Fabric owner embeds one complete `ResourceContractRecord`. The
+record is not referenced independently and does not carry an artifact identity.
+Its exact normalized shape is:
+
+```text
+ResourceContractRecord {
+  states : array<ResourceStateRecord>
+  resource_transition_count : uint32
+  timing_contracts : array<TimingContractRecord>
+  use_patterns : array<UsePatternRecord>
+  requester_count : uint32
+  eligibility_count : uint32
+  event_count : uint32
+  grant_policy : absent | FixedPriorityRecord | RoundRobinRecord
+}
+
+ResourceStateRecord {
+  capacity_dimensions : array<CapacityDimensionRecord>
+}
+
+CapacityDimensionRecord {
+  capacity : uint32
+  initial_occupancy : uint32
+}
+
+TimingContractRecord {
+  event_rank : array<uint32>
+}
+
+UsePatternRecord {
+  requester : RequesterKey
+  eligibility : EligibilityKey
+  acquire : EventKey
+  release : EventKey
+  commit : absent | {
+    event : EventKey
+    transition : ResourceTransitionKey
+  }
+  timing_and_progress : TimingContractKey
+  claims : array<ClaimRecord>
+  internal_transactions : array<array<ClaimKey>>
+}
+
+ClaimRecord {
+  state : StateKey
+  capacity_dimension : CapacityDimensionKey
+  amount : uint32
+}
+
+FixedPriorityRecord {
+  requester_order : array<RequesterKey>
+}
+
+RoundRobinRecord {
+  requester_cycle : array<RequesterKey>
+  reset_cursor : RequesterKey
+}
+```
+
+Array position is the canonical dense zero-based key for states, capacity
+dimensions within a state, resource transitions, timing contracts, use
+patterns, and claims within a pattern. The persistent normalized form omits
+redundant explicit keys. Requester, eligibility, and event domains have no
+payload records, so their exact closed domains are their counts. This is not a
+replacement for state or use-pattern records: those records are always
+present in full.
+
+Claims inherit the enclosing pattern's one release event, so the normalized
+record does not repeat it. Internal transactions reference only claim
+positions in that pattern. Every claim references only a state and capacity
+dimension in the same embedded owner contract. Cross-owner state references,
+claim transfer, and a composite pattern assembled by a consumer are invalid.
+Coordination between resources uses their declared transport handshake and
+ordinary event-relative `ResourceUse` records; it never merges their contracts.
+Every integer reference is decoded immediately to its distinct typed key class
+and range-checked; no public API exposes an untyped ordinal or a generic
+property path.
+
+The canonical record is produced by normalizing the authoring
+`ResourceContractDeclaration` through `ResourceContract::create`. State,
+dimension, timing, pattern, and claim arrays are in key order. Grant-policy
+order remains semantic and is not sorted. Re-encoding an imported validated
+`ResourceContract` must reproduce the same record byte for byte.
+
+The C++ projection is the existing immutable validated `ResourceContract`.
+Concrete owner views return `const ResourceContract &` and mechanically form
+`FabricResourceStateRef` and `FabricUsePatternRef` from the exact owner plus
+the validated state or pattern key. No concrete resource may expose a count in
+place of that contract, maintain a second declaration vector, or reinterpret
+the same ordinal under another owner.
+
 ## ResourceState
 
 ```text
 ResourceState {
   state_key
-  initial_value
-  capacity_dimensions[]
+  capacity_dimensions[] {
+    capacity
+    initial_occupancy
+  }
 }
 ```
 
-`state_key` is owner-defined and closed. The initial value is canonical and
-must describe the all-free or otherwise explicitly declared reset state.
-Capacity dimensions use typed integer units owned by the resource; free-form
-names and property maps are forbidden.
+`state_key` is owner-defined and closed. The complete vector of dimension
+`initial_occupancy` values is the canonical initial value and must describe the
+all-free or otherwise explicitly declared reset state. Capacity dimensions use
+typed integer units owned by the resource; free-form names and property maps
+are forbidden.
 
 Dynamic occupancy is execution state and is not persisted. A stateful resource
 must return to its canonical reusable state under its declared close/reset
@@ -159,7 +255,9 @@ Concrete resources embed only the atoms they need:
 * a spatial PE may have statically disjoint use patterns and no grant policy;
 * a temporal PE uses instruction-context requesters and declared state banks;
 * a switch uses transfer-pattern requesters and a declared arbitration policy;
-* a memory engine uses operation-row and service requesters; and
+* a memory operation port uses operation-context or row requesters, while a
+  Local Memory Service uses its own operation-port, subordinate, and service
+  requesters; and
 * a system transport resource uses transfer or service-leg requesters.
 
 Memory operation rows, FU configured graphs, temporal-PE register-file
@@ -187,5 +285,7 @@ Verification rejects:
 Anchor tests cover one disjoint resource without arbitration, fixed-priority
 contention, round-robin reset and successful-grant advancement, one stateful
 use whose short-lived claim and durable commit transition are distinct, and
-one resource-specific internal transaction decomposition. They do not create
-a cross-product fixture for every concrete resource.
+one resource-specific internal transaction decomposition. One fixed persistent
+record must round-trip to the same validated states, patterns, claims, timing,
+and grant policy, while a count-only replacement is rejected. Tests do not
+create a cross-product fixture for every concrete resource.
