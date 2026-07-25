@@ -1,0 +1,3 @@
+# RUN: loom-fabric-artifact-codec-test | FileCheck %s
+
+# CHECK: fabric artifact codec ok

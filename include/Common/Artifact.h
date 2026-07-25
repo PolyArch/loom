@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -73,6 +74,23 @@ private:
                            const CanonicalSemanticBytes &canonicalBytes);
 
   Storage bytes_;
+};
+
+struct ArtifactRootReference {
+  std::string schemaIdentity;
+  SchemaVersion schemaVersion;
+  ArtifactIdentity artifact;
+
+  friend bool operator==(const ArtifactRootReference &lhs,
+                         const ArtifactRootReference &rhs) {
+    return lhs.schemaIdentity == rhs.schemaIdentity &&
+           lhs.schemaVersion == rhs.schemaVersion &&
+           lhs.artifact == rhs.artifact;
+  }
+  friend bool operator!=(const ArtifactRootReference &lhs,
+                         const ArtifactRootReference &rhs) {
+    return !(lhs == rhs);
+  }
 };
 
 template <typename EntityId> struct ArtifactReference {

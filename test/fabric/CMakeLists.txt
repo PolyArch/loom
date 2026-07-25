@@ -61,8 +61,18 @@ add_executable(loom-fabric-persistent-ref-test
   PersistentRefTest.cpp
 )
 
+add_executable(loom-fabric-artifact-codec-test
+  FabricArtifactCodecTest.cpp
+)
+
 target_link_libraries(loom-fabric-persistent-ref-test PRIVATE
   LoomCommon
   LoomFabricIdentity
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-artifact-codec-test PRIVATE
+  LoomCommon
+  LoomFabricArtifact
   LLVMSupport
 )

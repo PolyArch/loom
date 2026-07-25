@@ -36,6 +36,7 @@ set(LOOM_TEST_DEPENDS
   loom-dfg-sim
   loom-evaluation-metric-test
   loom-evaluation-tool-runner-test
+  loom-fabric-artifact-codec-test
   loom-fabric-boundary-data-path-test
   loom-fabric-boundary-transfer-test
   loom-fabric-elaboration-alias-chain-test

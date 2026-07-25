@@ -52,6 +52,7 @@ tools = [
     "loom-dataflow-memory-effect-test",
     "loom-dataflow-service-schema-test",
     "loom-dfg-sim",
+    "loom-fabric-artifact-codec-test",
     "loom-fabric-boundary-data-path-test",
     "loom-fabric-boundary-transfer-test",
     "loom-fabric-elaboration-alias-chain-test",
