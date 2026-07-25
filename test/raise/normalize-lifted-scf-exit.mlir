@@ -48,11 +48,13 @@ func.func @normalize_all_unused(%bound: i64) {
 // CHECK-NOT: scf.if
 // CHECK-NOT: arith.trunci
 // UPLIFT-LABEL: func.func @normalize_repeat_then
-// UPLIFT-NOT: scf.while
+// The counted do-while shape is preserved as scf.while (see
+// scf-while-to-for.mlir); only the lifted scf.if scaffold is collapsed.
+// UPLIFT-NOT: scf.for
 // UPLIFT-NOT: scf.if
 // UPLIFT-NOT: arith.trunci
-// UPLIFT: scf.for
-// UPLIFT-NOT: scf.while
+// UPLIFT: scf.while
+// UPLIFT-NOT: scf.for
 // UPLIFT-NOT: scf.if
 // UPLIFT-NOT: arith.trunci
 // UPLIFT: return
@@ -82,7 +84,7 @@ func.func @normalize_repeat_then(%bound: i64, %output: !llvm.ptr) {
 
 // A live while result carries poison on the exit edge. The normalizer must
 // leave the entire scaffold intact instead of manufacturing a non-poison
-// result or exposing it to counted-loop uplift.
+// result.
 // CHECK-LABEL: func.func @preserve_live_exit_value
 // CHECK: %[[LIVE_POISON:.*]] = ub.poison : i64
 // CHECK: %[[LOOP:.*]] = scf.while

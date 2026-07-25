@@ -311,16 +311,52 @@ resource spec. For example, a switch may require all of its declared
 ports to be uniform even though neighboring resources connected to
 those ports may use different widths under this module-level rule.
 
-### Combinational Handshake Closure
+### Handshake Dependency Projection
 
-Direct connections and zero-state resources contribute their exact
-ready/valid dependency arcs to one module-level combinational handshake graph.
-The finalizer rejects every directed cycle in that graph. A software dataflow
-cycle is legal only when its physical realization contains an explicit
-stateful break, such as a FIFO, registered operation, or another Fabric
-resource whose contract owns the required state and latency. Simulator delta
-iteration, HDL loop-breaking, or implementation-specific signal defaults
-cannot repair an invalid combinational cycle.
+Fabric owns the ready/valid behavior of every transport endpoint, direct point
+connection, resource-local traversal, configured mode, and physical
+refinement. The one derived signal vocabulary is:
+
+```text
+HandshakeSignalRef = (FabricTransportEndpointRef, Valid | Ready)
+HandshakeDependencyArc = (source HandshakeSignalRef,
+                          destination HandshakeSignalRef)
+```
+
+A directed point connection contributes producer-valid to consumer-valid and
+consumer-ready to producer-ready arcs. Each resource owner derives its exact
+internal arcs from an exact configured view. These arcs are projections of the
+resource's normative handshake equations; they are not separately persisted
+fields, caller-supplied summaries, or backend netlist guesses.
+
+The hardware-only Fabric root has no workload-selected route table, FIFO mode,
+tag row, or refinement assignment. Fabric structural verification therefore
+must not union mutually exclusive or disabled traversal alternatives and call
+that union an active graph. It validates every alternative locally and rejects
+only a root-complete cycle composed entirely of arcs that are unconditional in
+every legal configured view. Configuration-dependent global closure belongs
+to Mapping.
+
+An arc is unconditional exactly when the owning Fabric behavior projects that
+same arc for every value in its already-declared legal configuration and
+refinement domains. This is a derived universal property of existing typed
+domains, not a new predicate language or persisted guard. If an arc is absent
+from even one legal alternative, it is configuration-dependent and is checked
+only after Mapping selects a concrete view.
+
+The SpatialMapping and SystemMapping verifiers derive the complete selected
+combinational handshake graph from the exact root-complete Fabric and the
+exact Mapping-selected routes, configured functions, service plans, and
+physical refinements. They reject every directed cycle in that selected graph.
+Unselected alternatives contribute no arc. Runtime tags, token values, traffic
+assumptions, simulator delta iteration, HDL loop-breaking, or
+implementation-specific signal defaults cannot excuse a selected cycle. The
+exact gate and failure ownership are specified by
+`docs/spec-mapping-verification.md`.
+
+A cycle in the Fabric-owned unconditional graph fails Fabric finalization as
+`Invalid(UnconditionalCombinationalHandshakeCycle)`. This diagnostic cannot be
+used for a cycle that exists only after one concrete Mapping selection.
 
 ## Stateful Resource Lifecycle
 

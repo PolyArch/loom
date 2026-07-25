@@ -26,3 +26,15 @@ target_link_libraries(loom-dataflow-service-schema-test PRIVATE
   MLIRSupport
   LLVMSupport
 )
+
+add_executable(loom-dataflow-canonical-reference-test
+  CanonicalReferenceTest.cpp
+)
+
+target_link_libraries(loom-dataflow-canonical-reference-test PRIVATE
+  LoomCommon
+  MLIRDataflow
+  MLIRIR
+  MLIRSupport
+  LLVMSupport
+)

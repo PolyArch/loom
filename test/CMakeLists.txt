@@ -32,6 +32,7 @@ set(LOOM_TEST_DEPENDS
   loom-common-blob-test
   loom-cost-test
   loom-coverage-test
+  loom-dataflow-canonical-reference-test
   loom-dataflow-memory-effect-test
   loom-dataflow-service-schema-test
   loom-dfg-sim

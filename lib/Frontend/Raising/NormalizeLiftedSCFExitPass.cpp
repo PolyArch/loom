@@ -5,7 +5,8 @@
 // discriminator and an i32 shouldRepeat flag. The placeholder is
 // llvm.mlir.undef inside an imported LLVM callable and ub.poison inside a
 // native one. The shouldRepeat flag is truncated to i1 for scf.condition.
-// Counted-loop uplift needs that condition to be an arith.cmpi directly.
+// The scaffold collapses back into the direct arith.cmpi condition it
+// selects, which is the exact canonical form of the lifted exit.
 //
 // Generic SCF canonicalization is not safe here: it can combine nested lazy
 // scf.if conditions into an eager arith.andi. This pass instead recognizes the

@@ -1,0 +1,112 @@
+//===- DataflowStructuralRefUnions.def - closed union catalog -*- C++ -*-===//
+//
+// Single source of truth for the alternatives and stable wire tags of every
+// closed union in the Canonical Dataflow structural-reference catalog.
+// Alternatives are appended and their unsigned 32-bit tags are never
+// reordered or reinterpreted.
+//
+// Each alternatives macro accepts (Macro, Union), then invokes
+// Macro(Union, WireTag, AlternativeType) for every declared alternative.
+//
+//===----------------------------------------------------------------------===//
+
+// clang-format off
+
+#define LOOM_DATAFLOW_GRAPH_INGRESS_TOKEN_REF_ALTERNATIVES(Macro, Union)      \
+  Macro(Union, 0, GraphStartTokenRef)                                         \
+  Macro(Union, 1, GraphValueInputTokenRef)                                    \
+  Macro(Union, 2, GraphStreamInputTokenRef)
+
+#define LOOM_DATAFLOW_GRAPH_EGRESS_TOKEN_REF_ALTERNATIVES(Macro, Union)       \
+  Macro(Union, 0, GraphValueOutputTokenRef)                                   \
+  Macro(Union, 1, GraphStreamOutputTokenRef)                                  \
+  Macro(Union, 2, GraphCompletionFrontierTokenRef)
+
+#define LOOM_DATAFLOW_GRAPH_PRODUCER_ENDPOINT_REF_ALTERNATIVES(Macro, Union)  \
+  Macro(Union, 0, GraphIngressTokenRef)                                       \
+  Macro(Union, 1, ActorTokenResultRef)
+
+#define LOOM_DATAFLOW_GRAPH_CONSUMER_ENDPOINT_REF_ALTERNATIVES(Macro, Union)  \
+  Macro(Union, 0, ActorTokenOperandRef)                                       \
+  Macro(Union, 1, GraphEgressTokenRef)
+
+#define LOOM_DATAFLOW_ROOT_THREAD_TRANSFER_REF_ALTERNATIVES(Macro, Union)     \
+  Macro(Union, 0, RootThreadStartTransferRef)                                 \
+  Macro(Union, 1, RootThreadValueInputTransferRef)                            \
+  Macro(Union, 2, RootThreadCompletionTransferRef)
+
+#define LOOM_DATAFLOW_GRAPH_LAUNCH_TRANSFER_REF_ALTERNATIVES(Macro, Union)    \
+  Macro(Union, 0, GraphLaunchStartTransferRef)                                \
+  Macro(Union, 1, GraphLaunchValueInputTransferRef)                           \
+  Macro(Union, 2, GraphLaunchValueResultTransferRef)                          \
+  Macro(Union, 3, GraphLaunchDoneTransferRef)
+
+#define LOOM_DATAFLOW_CHANNEL_PRODUCER_REF_ALTERNATIVES(Macro, Union)         \
+  Macro(Union, 0, GraphStreamOutputProducerRef)                               \
+  Macro(Union, 1, ThreadChannelSendSiteRef)
+
+#define LOOM_DATAFLOW_CHANNEL_CONSUMER_REF_ALTERNATIVES(Macro, Union)         \
+  Macro(Union, 0, GraphStreamInputConsumerRef)                                \
+  Macro(Union, 1, ThreadChannelReceiveSiteRef)
+
+#define LOOM_DATAFLOW_PRODUCER_TERMINAL_REF_ALTERNATIVES(Macro, Union)        \
+  Macro(Union, 0, RootThreadBoundarySourceRef)                                \
+  Macro(Union, 1, GraphLaunchBoundarySourceRef)                               \
+  Macro(Union, 2, ChannelProducerTerminalRef)
+
+#define LOOM_DATAFLOW_SINK_TERMINAL_REF_ALTERNATIVES(Macro, Union)            \
+  Macro(Union, 0, RootThreadBoundarySinkRef)                                  \
+  Macro(Union, 1, GraphLaunchBoundarySinkRef)                                 \
+  Macro(Union, 2, ChannelConsumerTerminalRef)
+
+#define LOOM_DATAFLOW_MEMORY_ROOT_OR_VIEW_REF_ALTERNATIVES(Macro, Union)      \
+  Macro(Union, 0, LogicalMemoryRootRef)                                       \
+  Macro(Union, 1, LogicalMemoryViewRef)
+
+#define LOOM_DATAFLOW_SERVICE_MEMBER_REF_ALTERNATIVES(Macro, Union)           \
+  Macro(Union, 0, MessageTransferMemberRef)                                   \
+  Macro(Union, 1, AddressedMemoryActorMemberRef)                              \
+  Macro(Union, 2, FenceActorMemberRef)
+
+#define LOOM_DATAFLOW_STATIC_TRANSFER_EVENT_REF_ALTERNATIVES(Macro, Union)    \
+  Macro(Union, 0, ProducedTransferEventRef)                                   \
+  Macro(Union, 1, ConsumedTransferEventRef)
+
+#define LOOM_DATAFLOW_EVENT_LOGICAL_INPUT_SLOT_ALTERNATIVES(Macro, Union)     \
+  Macro(Union, 0, CoordinateSlot)                                             \
+  Macro(Union, 1, LaunchParameterSlot)
+
+#define LOOM_DATAFLOW_STRUCTURAL_REFERENCE_UNIONS(Macro)                      \
+  Macro(GraphIngressTokenRef, "graph-ingress token",                         \
+        LOOM_DATAFLOW_GRAPH_INGRESS_TOKEN_REF_ALTERNATIVES)                   \
+  Macro(GraphEgressTokenRef, "graph-egress token",                           \
+        LOOM_DATAFLOW_GRAPH_EGRESS_TOKEN_REF_ALTERNATIVES)                    \
+  Macro(CanonicalGraphProducerEndpointRef, "graph-producer endpoint",        \
+        LOOM_DATAFLOW_GRAPH_PRODUCER_ENDPOINT_REF_ALTERNATIVES)               \
+  Macro(CanonicalGraphConsumerEndpointRef, "graph-consumer endpoint",        \
+        LOOM_DATAFLOW_GRAPH_CONSUMER_ENDPOINT_REF_ALTERNATIVES)               \
+  Macro(RootThreadBoundaryTransferRef, "root-thread boundary transfer",      \
+        LOOM_DATAFLOW_ROOT_THREAD_TRANSFER_REF_ALTERNATIVES)                  \
+  Macro(GraphLaunchBoundaryTransferRef, "graph-launch boundary transfer",    \
+        LOOM_DATAFLOW_GRAPH_LAUNCH_TRANSFER_REF_ALTERNATIVES)                 \
+  Macro(ChannelProducerRef, "channel producer",                              \
+        LOOM_DATAFLOW_CHANNEL_PRODUCER_REF_ALTERNATIVES)                      \
+  Macro(ChannelConsumerRef, "channel consumer",                              \
+        LOOM_DATAFLOW_CHANNEL_CONSUMER_REF_ALTERNATIVES)                      \
+  Macro(CanonicalProducerTerminalRef, "producer terminal",                   \
+        LOOM_DATAFLOW_PRODUCER_TERMINAL_REF_ALTERNATIVES)                     \
+  Macro(CanonicalSinkTerminalRef, "sink terminal",                           \
+        LOOM_DATAFLOW_SINK_TERMINAL_REF_ALTERNATIVES)                         \
+  Macro(LogicalMemoryRootOrViewRef, "logical memory root-or-view",           \
+        LOOM_DATAFLOW_MEMORY_ROOT_OR_VIEW_REF_ALTERNATIVES)                   \
+  Macro(ServiceMemberRef, "service member",                                  \
+        LOOM_DATAFLOW_SERVICE_MEMBER_REF_ALTERNATIVES)                        \
+  Macro(StaticTransferEventRef, "static transfer event",                     \
+        LOOM_DATAFLOW_STATIC_TRANSFER_EVENT_REF_ALTERNATIVES)
+
+#define LOOM_DATAFLOW_CLOSED_UNIONS(Macro)                                    \
+  LOOM_DATAFLOW_STRUCTURAL_REFERENCE_UNIONS(Macro)                            \
+  Macro(EventLogicalInputSlot, "event logical slot",                         \
+        LOOM_DATAFLOW_EVENT_LOGICAL_INPUT_SLOT_ALTERNATIVES)
+
+// clang-format on

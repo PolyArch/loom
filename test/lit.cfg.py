@@ -49,6 +49,7 @@ tools = [
     "loom-adg-builder-test",
     "loom-config-test",
     "loom-cost-test",
+    "loom-dataflow-canonical-reference-test",
     "loom-dataflow-memory-effect-test",
     "loom-dataflow-service-schema-test",
     "loom-dfg-sim",

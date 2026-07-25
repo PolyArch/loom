@@ -135,10 +135,13 @@ state. An implementation that needs holding or pipelining must use an explicit
 Fabric FIFO or a future typed stateful refinement whose state, latency, and
 capacity enter Fabric identity.
 
-These equations create explicit combinational handshake dependencies. A
-composed Fabric containing a directed combinational ready/valid dependency
-cycle with no stateful break is invalid; finalization must reject it rather
-than relying on simulator iteration order or backend-specific loop breaking.
+These equations are the Fabric-owned source of the boundary's derived
+combinational handshake arcs. Fabric structural finalization includes them
+only when they are unconditional for the root being finalized. Mapping
+verification includes them exactly when the boundary traversal is selected and
+rejects any directed cycle in the complete selected graph. Neither gate may
+replace these equations with a caller-supplied graph, simulator iteration
+order, or backend-specific loop breaking.
 
 `fabric.boundary` is required for a real port-kind or tagged-domain
 transition. It is not required for an ordinary `bits` to `bits` or
@@ -404,8 +407,9 @@ Anchor-level validation covers a Mapping-assigned constant `s2t` tag reused by
 repeated firings, bounded `t2t` content matching without direct tag indexing,
 `t2s` tag removal, and rejection of any physical LUT layout outside the exact
 `ConfigurationABI`. It also covers the two-input partial-valid counterexample,
-one stalled output of split `t2s`, an uncovered reachable `t2t` tag, and an
-unbroken combinational handshake cycle. Tests do not freeze diagnostic
+one stalled output of split `t2s`, an uncovered reachable `t2t` tag, and a
+selected Mapping whose active boundary closes a combinational handshake cycle.
+Tests do not freeze diagnostic
 wording, comparator topology, row placement, or raw configuration bits.
 
 ## Cross-references

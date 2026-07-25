@@ -11,12 +11,19 @@
 // a region whose structuring Loom cannot prove exact keeps its original
 // control instead of failing the module.
 
-// A counted cycle becomes scf.for, and the imported loop annotation moves from
-// the latch branch that carried it to the structured loop that owns the cycle.
+// This counted cycle is post-tested: the exit comparison observes the
+// already-bumped induction value, so the body runs at least once and the
+// recovered loop is not mechanically equivalent to scf.for. Structuring
+// preserves it as a legal scf.while, and the imported loop annotation still
+// moves from the latch branch that carried it to the structured loop that
+// owns the cycle.
 // LOOP: #[[ANNOTATION:.*]] = #llvm.loop_annotation<mustProgress = true>
 // LOOP-LABEL: llvm.func @counted
-// LOOP: scf.for
-// LOOP: } {llvm.loop_annotation = #[[ANNOTATION]]}
+// LOOP: scf.while
+// LOOP: arith.cmpi ne
+// LOOP: scf.condition
+// LOOP-NOT: scf.for
+// LOOP: } attributes {llvm.loop_annotation = #[[ANNOTATION]]}
 
 // A statically infinite loop leaves the continuation of the structured loop
 // unreachable. An imported callable states that with llvm.unreachable instead

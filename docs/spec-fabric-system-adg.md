@@ -922,6 +922,16 @@ owns every concrete endpoint, bundle, channel, field, packet, flit, queue, and
 state type in the implementation body. Adding a new protocol requires a typed
 schema version; a protocol name string cannot admit arbitrary payload.
 
+This typed operation is the only legal
+`InterconnectImplementation` root payload. A `fabric.module`, `fabric.system`,
+generic region, or opaque byte payload labeled with root-kind ordinal 2 is
+invalid. A build in which this operation and its canonical owner provider are
+not registered must fail closed as
+`Unsupported(FabricRootProviderUnavailable)`; it cannot report a successful
+module-payload finalization. This provider-availability failure does not alter
+the stable root-kind ordinal or permit the reserved-unavailable
+`ImplementationInput` dependency role.
+
 In `loom.fabric 1.0`, the protocol-schema identity is a closed root-local schema
 tag interpreted by the typed interconnect implementation body. It is not an
 external Artifact reference and does not authorize a generic implementation
@@ -959,6 +969,13 @@ implementation. Refinement proves the architecture contract; it neither edits
 `fabric.system` nor adds Mapping choices. Protocol-specific implementation
 schemas may be developed independently, but they cannot change these four
 relation variants or the architecture root without a Fabric schema revision.
+
+SystemMapping-selected routes are checked for combinational handshake closure
+against the root-complete architecture relation before configuration or
+deployment. The interconnect implementation must realize that already-valid
+selection and may independently re-run the same derived check after
+refinement; it cannot remove an active arc, enable an unselected route, or
+insert an undeclared stateful break to repair a cycle.
 
 ### Canonicalization And Ownership
 

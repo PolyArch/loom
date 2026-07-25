@@ -1,12 +1,11 @@
 // RUN: loom-raise-opt --loom-scf-while-to-for %s | FileCheck %s
 
-// The do-while uplift only matches the exact ne counted-loop shape and
-// unsigned half-open loops. Signed less-than, inclusive predicates
-// (sle / ule / sge / uge), reversed predicates (sgt / ugt, or slt / ult
-// with the bumped induction value on the right-hand side), and result
-// arity-changing while loops MUST NOT trigger the rewrite -- doing so
-// without proving trip-count and result-shape equivalence would change
-// semantics or build invalid IR.
+// Post-tested scf.while loops -- the exit comparison observes the
+// already-bumped induction value -- are not mechanically equivalent to
+// scf.for whatever the predicate spelling, and a condition that changes
+// the result arity carries state an scf.for cannot reconstruct. None of
+// them is the pre-tested shape the upstream utility recognizes, so every
+// one stays legal scf.while.
 
 // CHECK-LABEL: func.func @sle_predicate_kept
 // CHECK: scf.while

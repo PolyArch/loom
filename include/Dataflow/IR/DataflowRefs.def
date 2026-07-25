@@ -1,0 +1,54 @@
+//===- DataflowRefs.def - canonical reference catalog -------*- C++ -*-===//
+//
+// The Canonical Dataflow reference codec and the subset that are independently
+// resolvable Common owner-local targets. Local ordinals are persistent
+// owner_local_kind values and are appended, never reordered or reinterpreted.
+// An obligation-relative value such as ServiceMemberRef has a canonical nested
+// wire but is not an independently resolvable local target.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef LOOM_DATAFLOW_REFERENCE_CODEC
+#define LOOM_DATAFLOW_REFERENCE_CODEC(Type)
+#endif
+
+#ifndef LOOM_DATAFLOW_LOCAL_REFERENCE_KIND
+#define LOOM_DATAFLOW_LOCAL_REFERENCE_KIND(Ordinal, Type)
+#endif
+
+#define LOOM_DATAFLOW_LOCAL_REFERENCE(Ordinal, Type)                          \
+  LOOM_DATAFLOW_REFERENCE_CODEC(Type)                                         \
+  LOOM_DATAFLOW_LOCAL_REFERENCE_KIND(Ordinal, Type)
+
+LOOM_DATAFLOW_LOCAL_REFERENCE(0, GraphRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(1, ActorRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(2, RootThreadLaunchRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(3, StaticGraphLaunchRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(4, LogicalMemoryRootRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(5, RootedGraphLaunchRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(6, GraphIngressTokenRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(7, GraphEgressTokenRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(8, ActorTokenResultRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(9, ActorTokenOperandRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(10, CanonicalGraphProducerEndpointRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(11, CanonicalGraphConsumerEndpointRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(12, RootThreadBoundaryTransferRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(13, GraphLaunchBoundaryTransferRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(14, ThreadChannelSendSiteRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(15, ThreadChannelReceiveSiteRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(16, ChannelProducerRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(17, ChannelConsumerRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(18, CanonicalProducerTerminalRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(19, CanonicalSinkTerminalRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(20, LogicalMemoryViewRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(21, LogicalMemoryRootOrViewRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(22, ContextualActorRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(23, MemoryExposureRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(24, FenceActorFamilyRef)
+LOOM_DATAFLOW_LOCAL_REFERENCE(25, StaticTransferEventRef)
+
+LOOM_DATAFLOW_REFERENCE_CODEC(ServiceMemberRef)
+
+#undef LOOM_DATAFLOW_LOCAL_REFERENCE
+#undef LOOM_DATAFLOW_LOCAL_REFERENCE_KIND
+#undef LOOM_DATAFLOW_REFERENCE_CODEC

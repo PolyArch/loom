@@ -437,9 +437,10 @@ including when the selected value equals a Fabric default.
 Active masks, configured-function copies, programmed-configuration keys,
 resource claims, continuity segments, Tag interference graphs, switch rows,
 memory operation tables including derived access projections and mask-source
-selectors, raw `sw_configs`, bitstreams, cost vectors, search history,
-statistics, and transaction journals are deterministic projections or
-external records. They are not SpatialMapping semantic content.
+selectors, the selected combinational handshake graph and its cycle-check
+scratch, raw `sw_configs`, bitstreams, cost vectors, search history, statistics,
+and transaction journals are deterministic projections or external records.
+They are not SpatialMapping semantic content.
 
 ## SystemMapping Root
 
