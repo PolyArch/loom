@@ -65,7 +65,8 @@ bool nativeSemanticInterfacesAreClassified(OperationSemanticsCase semantics) {
 
 bool checkNativeSemanticInterfaceCoverage() {
   bool ok = true;
-#define LOOM_OPERATION_SCHEMA(Name, Id, OpClass, ActorKind, SemanticsCase)     \
+#define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
+                              SemanticsCase)                                   \
   if (!nativeSemanticInterfacesAreClassified<OpClass>(                         \
           OperationSemanticsCase::SemanticsCase)) {                            \
     llvm::errs() << OpClass::getOperationName()                                \
@@ -83,12 +84,6 @@ bool checkSpellingRoundTrip() {
   if (count == 0) {
     llvm::errs() << "the registry declares no operation schema\n";
     return false;
-  }
-  if (static_cast<std::uint32_t>(OperationSchemaId::VectorExtract) != 94 ||
-      static_cast<std::uint32_t>(OperationSchemaId::VectorInsert) != 95 ||
-      static_cast<std::uint32_t>(OperationSchemaId::VectorShuffle) != 96) {
-    llvm::errs() << "fixed-vector schema ids changed\n";
-    ok = false;
   }
   for (std::uint32_t index = 0; index < count; ++index) {
     auto schema = static_cast<OperationSchemaId>(index);

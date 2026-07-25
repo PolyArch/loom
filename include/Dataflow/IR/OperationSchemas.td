@@ -45,21 +45,21 @@ include "Dataflow/IR/OperationSchemaBase.td"
 // that its exact function type does not already state. Vector lane counts and
 // element types, for example, are recovered from the type and therefore need
 // no case of their own.
-def NoSemanticPayload : SemanticsCase<0>;
-def ArithFloatingPoint : SemanticsCase<1>;
-def ArithIntegerOverflow : SemanticsCase<2>;
-def ArithIntegerCompare : SemanticsCase<3>;
-def ArithFloatCompare : SemanticsCase<4>;
-def TypedConstantValue : SemanticsCase<5>;
-def StreamRecurrence : SemanticsCase<6>;
-def MemoryContract : SemanticsCase<7>;
-def LLVMZeroPoison : SemanticsCase<8>;
-def LLVMIntegerMinPoison : SemanticsCase<9>;
-def LLVMAggregatePosition : SemanticsCase<10>;
-def ArithExact : SemanticsCase<11>;
-def ArithNonNegative : SemanticsCase<12>;
-def VectorStaticPosition : SemanticsCase<13>;
-def VectorShuffleMask : SemanticsCase<14>;
+def NoSemanticPayload : SemanticsCase<0, 0x4c530101>;
+def ArithFloatingPoint : SemanticsCase<1, 0x4c530102>;
+def ArithIntegerOverflow : SemanticsCase<2, 0x4c530103>;
+def ArithIntegerCompare : SemanticsCase<3, 0x4c530104>;
+def ArithFloatCompare : SemanticsCase<4, 0x4c530105>;
+def TypedConstantValue : SemanticsCase<5, 0x4c530106>;
+def StreamRecurrence : SemanticsCase<6, 0x4c530107>;
+def MemoryContract : SemanticsCase<7, 0x4c530108>;
+def LLVMZeroPoison : SemanticsCase<8, 0x4c530109>;
+def LLVMIntegerMinPoison : SemanticsCase<9, 0x4c53010a>;
+def LLVMAggregatePosition : SemanticsCase<10, 0x4c53010b>;
+def ArithExact : SemanticsCase<11, 0x4c53010c>;
+def ArithNonNegative : SemanticsCase<12, 0x4c53010d>;
+def VectorStaticPosition : SemanticsCase<13, 0x4c53010e>;
+def VectorShuffleMask : SemanticsCase<14, 0x4c53010f>;
 
 //===----------------------------------------------------------------------===//
 // Closed typed capability-parameter record schemas
@@ -98,157 +98,157 @@ def TokenPlaneAdmission : TypedAdmissionProvider<11>;
 // Standard integer, floating-point, and cast compute schemas
 //===----------------------------------------------------------------------===//
 
-def ArithConstant : ActorSchema<0, "::mlir::arith::ConstantOp", "Compute",
+def ArithConstant : ActorSchema<0, 0x4c530201, "::mlir::arith::ConstantOp", "Compute",
     TypedConstantValue>;
-def ArithAddI : ActorSchema<1, "::mlir::arith::AddIOp", "Compute",
+def ArithAddI : ActorSchema<1, 0x4c530202, "::mlir::arith::AddIOp", "Compute",
     ArithIntegerOverflow>;
-def ArithSubI : ActorSchema<2, "::mlir::arith::SubIOp", "Compute",
+def ArithSubI : ActorSchema<2, 0x4c530203, "::mlir::arith::SubIOp", "Compute",
     ArithIntegerOverflow>;
-def ArithMulI : ActorSchema<3, "::mlir::arith::MulIOp", "Compute",
+def ArithMulI : ActorSchema<3, 0x4c530204, "::mlir::arith::MulIOp", "Compute",
     ArithIntegerOverflow>;
-def ArithShLI : ActorSchema<4, "::mlir::arith::ShLIOp", "Compute",
+def ArithShLI : ActorSchema<4, 0x4c530205, "::mlir::arith::ShLIOp", "Compute",
     ArithIntegerOverflow>;
-def ArithShRSI : ActorSchema<5, "::mlir::arith::ShRSIOp", "Compute",
+def ArithShRSI : ActorSchema<5, 0x4c530206, "::mlir::arith::ShRSIOp", "Compute",
     ArithExact>;
-def ArithShRUI : ActorSchema<6, "::mlir::arith::ShRUIOp", "Compute",
+def ArithShRUI : ActorSchema<6, 0x4c530207, "::mlir::arith::ShRUIOp", "Compute",
     ArithExact>;
-def ArithAndI : ActorSchema<7, "::mlir::arith::AndIOp", "Compute",
+def ArithAndI : ActorSchema<7, 0x4c530208, "::mlir::arith::AndIOp", "Compute",
     NoSemanticPayload>;
-def ArithOrI : ActorSchema<8, "::mlir::arith::OrIOp", "Compute",
+def ArithOrI : ActorSchema<8, 0x4c530209, "::mlir::arith::OrIOp", "Compute",
     NoSemanticPayload>;
-def ArithXOrI : ActorSchema<9, "::mlir::arith::XOrIOp", "Compute",
+def ArithXOrI : ActorSchema<9, 0x4c53020a, "::mlir::arith::XOrIOp", "Compute",
     NoSemanticPayload>;
-def ArithDivSI : ActorSchema<10, "::mlir::arith::DivSIOp", "Compute",
+def ArithDivSI : ActorSchema<10, 0x4c53020b, "::mlir::arith::DivSIOp", "Compute",
     ArithExact>;
-def ArithDivUI : ActorSchema<11, "::mlir::arith::DivUIOp", "Compute",
+def ArithDivUI : ActorSchema<11, 0x4c53020c, "::mlir::arith::DivUIOp", "Compute",
     ArithExact>;
-def ArithRemSI : ActorSchema<12, "::mlir::arith::RemSIOp", "Compute",
+def ArithRemSI : ActorSchema<12, 0x4c53020d, "::mlir::arith::RemSIOp", "Compute",
     NoSemanticPayload>;
-def ArithRemUI : ActorSchema<13, "::mlir::arith::RemUIOp", "Compute",
+def ArithRemUI : ActorSchema<13, 0x4c53020e, "::mlir::arith::RemUIOp", "Compute",
     NoSemanticPayload>;
-def ArithMinSI : ActorSchema<14, "::mlir::arith::MinSIOp", "Compute",
+def ArithMinSI : ActorSchema<14, 0x4c53020f, "::mlir::arith::MinSIOp", "Compute",
     NoSemanticPayload>;
-def ArithMaxSI : ActorSchema<15, "::mlir::arith::MaxSIOp", "Compute",
+def ArithMaxSI : ActorSchema<15, 0x4c530210, "::mlir::arith::MaxSIOp", "Compute",
     NoSemanticPayload>;
-def ArithMinUI : ActorSchema<16, "::mlir::arith::MinUIOp", "Compute",
+def ArithMinUI : ActorSchema<16, 0x4c530211, "::mlir::arith::MinUIOp", "Compute",
     NoSemanticPayload>;
-def ArithMaxUI : ActorSchema<17, "::mlir::arith::MaxUIOp", "Compute",
+def ArithMaxUI : ActorSchema<17, 0x4c530212, "::mlir::arith::MaxUIOp", "Compute",
     NoSemanticPayload>;
-def ArithCmpI : ActorSchema<18, "::mlir::arith::CmpIOp", "Compute",
+def ArithCmpI : ActorSchema<18, 0x4c530213, "::mlir::arith::CmpIOp", "Compute",
     ArithIntegerCompare>;
-def ArithSelect : ActorSchema<19, "::mlir::arith::SelectOp", "Compute",
+def ArithSelect : ActorSchema<19, 0x4c530214, "::mlir::arith::SelectOp", "Compute",
     NoSemanticPayload>;
-def ArithExtSI : ActorSchema<20, "::mlir::arith::ExtSIOp", "Compute",
+def ArithExtSI : ActorSchema<20, 0x4c530215, "::mlir::arith::ExtSIOp", "Compute",
     NoSemanticPayload>;
-def ArithExtUI : ActorSchema<21, "::mlir::arith::ExtUIOp", "Compute",
+def ArithExtUI : ActorSchema<21, 0x4c530216, "::mlir::arith::ExtUIOp", "Compute",
     ArithNonNegative>;
-def ArithTruncI : ActorSchema<22, "::mlir::arith::TruncIOp", "Compute",
+def ArithTruncI : ActorSchema<22, 0x4c530217, "::mlir::arith::TruncIOp", "Compute",
     ArithIntegerOverflow>;
-def ArithIndexCast : ActorSchema<23, "::mlir::arith::IndexCastOp", "Compute",
+def ArithIndexCast : ActorSchema<23, 0x4c530218, "::mlir::arith::IndexCastOp", "Compute",
     NoSemanticPayload>;
-def ArithIndexCastUI : ActorSchema<24, "::mlir::arith::IndexCastUIOp",
+def ArithIndexCastUI : ActorSchema<24, 0x4c530219, "::mlir::arith::IndexCastUIOp",
     "Compute", ArithNonNegative>;
-def ArithBitcast : ActorSchema<25, "::mlir::arith::BitcastOp", "Compute",
+def ArithBitcast : ActorSchema<25, 0x4c53021a, "::mlir::arith::BitcastOp", "Compute",
     NoSemanticPayload>;
-def ArithAddF : ActorSchema<26, "::mlir::arith::AddFOp", "Compute",
+def ArithAddF : ActorSchema<26, 0x4c53021b, "::mlir::arith::AddFOp", "Compute",
     ArithFloatingPoint>;
-def ArithSubF : ActorSchema<27, "::mlir::arith::SubFOp", "Compute",
+def ArithSubF : ActorSchema<27, 0x4c53021c, "::mlir::arith::SubFOp", "Compute",
     ArithFloatingPoint>;
-def ArithMulF : ActorSchema<28, "::mlir::arith::MulFOp", "Compute",
+def ArithMulF : ActorSchema<28, 0x4c53021d, "::mlir::arith::MulFOp", "Compute",
     ArithFloatingPoint>;
-def ArithDivF : ActorSchema<29, "::mlir::arith::DivFOp", "Compute",
+def ArithDivF : ActorSchema<29, 0x4c53021e, "::mlir::arith::DivFOp", "Compute",
     ArithFloatingPoint>;
-def ArithRemF : ActorSchema<30, "::mlir::arith::RemFOp", "Compute",
+def ArithRemF : ActorSchema<30, 0x4c53021f, "::mlir::arith::RemFOp", "Compute",
     ArithFloatingPoint>;
-def ArithNegF : ActorSchema<31, "::mlir::arith::NegFOp", "Compute",
+def ArithNegF : ActorSchema<31, 0x4c530220, "::mlir::arith::NegFOp", "Compute",
     ArithFloatingPoint>;
-def ArithMinimumF : ActorSchema<32, "::mlir::arith::MinimumFOp", "Compute",
+def ArithMinimumF : ActorSchema<32, 0x4c530221, "::mlir::arith::MinimumFOp", "Compute",
     ArithFloatingPoint>;
-def ArithMaximumF : ActorSchema<33, "::mlir::arith::MaximumFOp", "Compute",
+def ArithMaximumF : ActorSchema<33, 0x4c530222, "::mlir::arith::MaximumFOp", "Compute",
     ArithFloatingPoint>;
-def ArithMinNumF : ActorSchema<34, "::mlir::arith::MinNumFOp", "Compute",
+def ArithMinNumF : ActorSchema<34, 0x4c530223, "::mlir::arith::MinNumFOp", "Compute",
     ArithFloatingPoint>;
-def ArithMaxNumF : ActorSchema<35, "::mlir::arith::MaxNumFOp", "Compute",
+def ArithMaxNumF : ActorSchema<35, 0x4c530224, "::mlir::arith::MaxNumFOp", "Compute",
     ArithFloatingPoint>;
-def ArithCmpF : ActorSchema<36, "::mlir::arith::CmpFOp", "Compute",
+def ArithCmpF : ActorSchema<36, 0x4c530225, "::mlir::arith::CmpFOp", "Compute",
     ArithFloatCompare>;
-def ArithExtF : ActorSchema<37, "::mlir::arith::ExtFOp", "Compute",
+def ArithExtF : ActorSchema<37, 0x4c530226, "::mlir::arith::ExtFOp", "Compute",
     ArithFloatingPoint>;
-def ArithTruncF : ActorSchema<38, "::mlir::arith::TruncFOp", "Compute",
+def ArithTruncF : ActorSchema<38, 0x4c530227, "::mlir::arith::TruncFOp", "Compute",
     ArithFloatingPoint>;
-def ArithSIToFP : ActorSchema<39, "::mlir::arith::SIToFPOp", "Compute",
+def ArithSIToFP : ActorSchema<39, 0x4c530228, "::mlir::arith::SIToFPOp", "Compute",
     NoSemanticPayload>;
-def ArithUIToFP : ActorSchema<40, "::mlir::arith::UIToFPOp", "Compute",
+def ArithUIToFP : ActorSchema<40, 0x4c530229, "::mlir::arith::UIToFPOp", "Compute",
     ArithNonNegative>;
-def ArithFPToSI : ActorSchema<41, "::mlir::arith::FPToSIOp", "Compute",
+def ArithFPToSI : ActorSchema<41, 0x4c53022a, "::mlir::arith::FPToSIOp", "Compute",
     NoSemanticPayload>;
-def ArithFPToUI : ActorSchema<42, "::mlir::arith::FPToUIOp", "Compute",
+def ArithFPToUI : ActorSchema<42, 0x4c53022b, "::mlir::arith::FPToUIOp", "Compute",
     NoSemanticPayload>;
 
 //===----------------------------------------------------------------------===//
 // Elementary mathematical function schemas
 //===----------------------------------------------------------------------===//
 
-def MathAbsF : ActorSchema<43, "::mlir::math::AbsFOp", "Compute",
+def MathAbsF : ActorSchema<43, 0x4c53022c, "::mlir::math::AbsFOp", "Compute",
     ArithFloatingPoint>;
-def MathAbsI : ActorSchema<44, "::mlir::math::AbsIOp", "Compute",
+def MathAbsI : ActorSchema<44, 0x4c53022d, "::mlir::math::AbsIOp", "Compute",
     NoSemanticPayload>;
-def MathSin : ActorSchema<45, "::mlir::math::SinOp", "Compute",
+def MathSin : ActorSchema<45, 0x4c53022e, "::mlir::math::SinOp", "Compute",
     ArithFloatingPoint>;
-def MathCos : ActorSchema<46, "::mlir::math::CosOp", "Compute",
+def MathCos : ActorSchema<46, 0x4c53022f, "::mlir::math::CosOp", "Compute",
     ArithFloatingPoint>;
-def MathTan : ActorSchema<47, "::mlir::math::TanOp", "Compute",
+def MathTan : ActorSchema<47, 0x4c530230, "::mlir::math::TanOp", "Compute",
     ArithFloatingPoint>;
-def MathSinh : ActorSchema<48, "::mlir::math::SinhOp", "Compute",
+def MathSinh : ActorSchema<48, 0x4c530231, "::mlir::math::SinhOp", "Compute",
     ArithFloatingPoint>;
-def MathCosh : ActorSchema<49, "::mlir::math::CoshOp", "Compute",
+def MathCosh : ActorSchema<49, 0x4c530232, "::mlir::math::CoshOp", "Compute",
     ArithFloatingPoint>;
-def MathTanh : ActorSchema<50, "::mlir::math::TanhOp", "Compute",
+def MathTanh : ActorSchema<50, 0x4c530233, "::mlir::math::TanhOp", "Compute",
     ArithFloatingPoint>;
-def MathExp : ActorSchema<51, "::mlir::math::ExpOp", "Compute",
+def MathExp : ActorSchema<51, 0x4c530234, "::mlir::math::ExpOp", "Compute",
     ArithFloatingPoint>;
-def MathExp2 : ActorSchema<52, "::mlir::math::Exp2Op", "Compute",
+def MathExp2 : ActorSchema<52, 0x4c530235, "::mlir::math::Exp2Op", "Compute",
     ArithFloatingPoint>;
-def MathExpM1 : ActorSchema<53, "::mlir::math::ExpM1Op", "Compute",
+def MathExpM1 : ActorSchema<53, 0x4c530236, "::mlir::math::ExpM1Op", "Compute",
     ArithFloatingPoint>;
-def MathLog : ActorSchema<54, "::mlir::math::LogOp", "Compute",
+def MathLog : ActorSchema<54, 0x4c530237, "::mlir::math::LogOp", "Compute",
     ArithFloatingPoint>;
-def MathLog2 : ActorSchema<55, "::mlir::math::Log2Op", "Compute",
+def MathLog2 : ActorSchema<55, 0x4c530238, "::mlir::math::Log2Op", "Compute",
     ArithFloatingPoint>;
-def MathLog10 : ActorSchema<56, "::mlir::math::Log10Op", "Compute",
+def MathLog10 : ActorSchema<56, 0x4c530239, "::mlir::math::Log10Op", "Compute",
     ArithFloatingPoint>;
-def MathLog1p : ActorSchema<57, "::mlir::math::Log1pOp", "Compute",
+def MathLog1p : ActorSchema<57, 0x4c53023a, "::mlir::math::Log1pOp", "Compute",
     ArithFloatingPoint>;
-def MathFloor : ActorSchema<58, "::mlir::math::FloorOp", "Compute",
+def MathFloor : ActorSchema<58, 0x4c53023b, "::mlir::math::FloorOp", "Compute",
     ArithFloatingPoint>;
-def MathCeil : ActorSchema<59, "::mlir::math::CeilOp", "Compute",
+def MathCeil : ActorSchema<59, 0x4c53023c, "::mlir::math::CeilOp", "Compute",
     ArithFloatingPoint>;
-def MathRound : ActorSchema<60, "::mlir::math::RoundOp", "Compute",
+def MathRound : ActorSchema<60, 0x4c53023d, "::mlir::math::RoundOp", "Compute",
     ArithFloatingPoint>;
-def MathTrunc : ActorSchema<61, "::mlir::math::TruncOp", "Compute",
+def MathTrunc : ActorSchema<61, 0x4c53023e, "::mlir::math::TruncOp", "Compute",
     ArithFloatingPoint>;
-def MathRoundEven : ActorSchema<62, "::mlir::math::RoundEvenOp", "Compute",
+def MathRoundEven : ActorSchema<62, 0x4c53023f, "::mlir::math::RoundEvenOp", "Compute",
     ArithFloatingPoint>;
-def MathSqrt : ActorSchema<63, "::mlir::math::SqrtOp", "Compute",
+def MathSqrt : ActorSchema<63, 0x4c530240, "::mlir::math::SqrtOp", "Compute",
     ArithFloatingPoint>;
-def MathRsqrt : ActorSchema<64, "::mlir::math::RsqrtOp", "Compute",
+def MathRsqrt : ActorSchema<64, 0x4c530241, "::mlir::math::RsqrtOp", "Compute",
     ArithFloatingPoint>;
-def MathErf : ActorSchema<65, "::mlir::math::ErfOp", "Compute",
+def MathErf : ActorSchema<65, 0x4c530242, "::mlir::math::ErfOp", "Compute",
     ArithFloatingPoint>;
-def MathFma : ActorSchema<66, "::mlir::math::FmaOp", "Compute",
+def MathFma : ActorSchema<66, 0x4c530243, "::mlir::math::FmaOp", "Compute",
     ArithFloatingPoint>;
-def MathCountLeadingZeros : ActorSchema<93,
+def MathCountLeadingZeros : ActorSchema<93, 0x4c53025e,
     "::mlir::math::CountLeadingZerosOp", "Compute", NoSemanticPayload>;
 
 //===----------------------------------------------------------------------===//
 // Fixed-vector structural schemas
 //===----------------------------------------------------------------------===//
 
-def VectorExtract : ActorSchema<94, "::mlir::vector::ExtractOp", "Compute",
+def VectorExtract : ActorSchema<94, 0x4c53025f, "::mlir::vector::ExtractOp", "Compute",
     VectorStaticPosition>;
-def VectorInsert : ActorSchema<95, "::mlir::vector::InsertOp", "Compute",
+def VectorInsert : ActorSchema<95, 0x4c530260, "::mlir::vector::InsertOp", "Compute",
     VectorStaticPosition>;
-def VectorShuffle : ActorSchema<96, "::mlir::vector::ShuffleOp", "Compute",
+def VectorShuffle : ActorSchema<96, 0x4c530261, "::mlir::vector::ShuffleOp", "Compute",
     VectorShuffleMask>;
 
 //===----------------------------------------------------------------------===//
@@ -284,62 +284,62 @@ def VectorShuffle : ActorSchema<96, "::mlir::vector::ShuffleOp", "Compute",
 // `vector.shuffle`, so it has no schema of its own.
 //===----------------------------------------------------------------------===//
 
-def UBPoison : ActorSchema<67, "::mlir::ub::PoisonOp", "Compute",
+def UBPoison : ActorSchema<67, 0x4c530244, "::mlir::ub::PoisonOp", "Compute",
     NoSemanticPayload>;
-def LLVMFreeze : ActorSchema<68, "::mlir::LLVM::FreezeOp", "Compute",
+def LLVMFreeze : ActorSchema<68, 0x4c530245, "::mlir::LLVM::FreezeOp", "Compute",
     NoSemanticPayload>;
-def LLVMFshl : ActorSchema<69, "::mlir::LLVM::FshlOp", "Compute",
+def LLVMFshl : ActorSchema<69, 0x4c530246, "::mlir::LLVM::FshlOp", "Compute",
     NoSemanticPayload>;
-def LLVMByteSwap : ActorSchema<70, "::mlir::LLVM::ByteSwapOp", "Compute",
+def LLVMByteSwap : ActorSchema<70, 0x4c530247, "::mlir::LLVM::ByteSwapOp", "Compute",
     NoSemanticPayload>;
-def LLVMUSubSat : ActorSchema<71, "::mlir::LLVM::USubSat", "Compute",
+def LLVMUSubSat : ActorSchema<71, 0x4c530248, "::mlir::LLVM::USubSat", "Compute",
     NoSemanticPayload>;
-def LLVMCountLeadingZeros : ActorSchema<72,
+def LLVMCountLeadingZeros : ActorSchema<72, 0x4c530249,
     "::mlir::LLVM::CountLeadingZerosOp", "Compute", LLVMZeroPoison>;
-def LLVMAbs : ActorSchema<73, "::mlir::LLVM::AbsOp", "Compute",
+def LLVMAbs : ActorSchema<73, 0x4c53024a, "::mlir::LLVM::AbsOp", "Compute",
     LLVMIntegerMinPoison>;
-def LLVMExtractValue : ActorSchema<74, "::mlir::LLVM::ExtractValueOp",
+def LLVMExtractValue : ActorSchema<74, 0x4c53024b, "::mlir::LLVM::ExtractValueOp",
     "Compute", LLVMAggregatePosition>;
-def LLVMInsertValue : ActorSchema<75, "::mlir::LLVM::InsertValueOp",
+def LLVMInsertValue : ActorSchema<75, 0x4c53024c, "::mlir::LLVM::InsertValueOp",
     "Compute", LLVMAggregatePosition>;
 
 //===----------------------------------------------------------------------===//
 // Canonical Dataflow control and memory actor schemas
 //===----------------------------------------------------------------------===//
 
-def DataflowStream : ActorSchema<76, "::dataflow::StreamOp", "Control",
+def DataflowStream : ActorSchema<76, 0x4c53024d, "::dataflow::StreamOp", "Control",
     StreamRecurrence>;
-def DataflowCarry : ActorSchema<77, "::dataflow::CarryOp", "Control",
+def DataflowCarry : ActorSchema<77, 0x4c53024e, "::dataflow::CarryOp", "Control",
     NoSemanticPayload>;
-def DataflowInvariant : ActorSchema<78, "::dataflow::InvariantOp", "Control",
+def DataflowInvariant : ActorSchema<78, 0x4c53024f, "::dataflow::InvariantOp", "Control",
     NoSemanticPayload>;
-def DataflowGate : ActorSchema<79, "::dataflow::GateOp", "Control",
+def DataflowGate : ActorSchema<79, 0x4c530250, "::dataflow::GateOp", "Control",
     NoSemanticPayload>;
-def DataflowConstant : ActorSchema<80, "::dataflow::ConstantOp", "Control",
+def DataflowConstant : ActorSchema<80, 0x4c530251, "::dataflow::ConstantOp", "Control",
     TypedConstantValue>;
-def DataflowSync : ActorSchema<81, "::dataflow::SyncOp", "Control",
+def DataflowSync : ActorSchema<81, 0x4c530252, "::dataflow::SyncOp", "Control",
     NoSemanticPayload>;
-def DataflowMux : ActorSchema<82, "::dataflow::MuxOp", "Control",
+def DataflowMux : ActorSchema<82, 0x4c530253, "::dataflow::MuxOp", "Control",
     NoSemanticPayload>;
-def DataflowDemux : ActorSchema<83, "::dataflow::DemuxOp", "Control",
+def DataflowDemux : ActorSchema<83, 0x4c530254, "::dataflow::DemuxOp", "Control",
     NoSemanticPayload>;
-def DataflowParallelize : ActorSchema<84, "::dataflow::ParallelizeOp",
+def DataflowParallelize : ActorSchema<84, 0x4c530255, "::dataflow::ParallelizeOp",
     "Control", NoSemanticPayload>;
-def DataflowSerialize : ActorSchema<85, "::dataflow::SerializeOp", "Control",
+def DataflowSerialize : ActorSchema<85, 0x4c530256, "::dataflow::SerializeOp", "Control",
     NoSemanticPayload>;
-def DataflowPack : ActorSchema<86, "::dataflow::PackOp", "Control",
+def DataflowPack : ActorSchema<86, 0x4c530257, "::dataflow::PackOp", "Control",
     NoSemanticPayload>;
-def DataflowUnpack : ActorSchema<87, "::dataflow::UnpackOp", "Control",
+def DataflowUnpack : ActorSchema<87, 0x4c530258, "::dataflow::UnpackOp", "Control",
     NoSemanticPayload>;
-def DataflowLoad : ActorSchema<88, "::dataflow::LoadOp", "Memory",
+def DataflowLoad : ActorSchema<88, 0x4c530259, "::dataflow::LoadOp", "Memory",
     MemoryContract>;
-def DataflowStore : ActorSchema<89, "::dataflow::StoreOp", "Memory",
+def DataflowStore : ActorSchema<89, 0x4c53025a, "::dataflow::StoreOp", "Memory",
     MemoryContract>;
-def DataflowAtomicRmw : ActorSchema<90, "::dataflow::AtomicRmwOp", "Memory",
+def DataflowAtomicRmw : ActorSchema<90, 0x4c53025b, "::dataflow::AtomicRmwOp", "Memory",
     MemoryContract>;
-def DataflowCmpXchg : ActorSchema<91, "::dataflow::CmpXchgOp", "Memory",
+def DataflowCmpXchg : ActorSchema<91, 0x4c53025c, "::dataflow::CmpXchgOp", "Memory",
     MemoryContract>;
-def DataflowFence : ActorSchema<92, "::dataflow::FenceOp", "Memory",
+def DataflowFence : ActorSchema<92, 0x4c53025d, "::dataflow::FenceOp", "Memory",
     MemoryContract>;
 
 //===----------------------------------------------------------------------===//

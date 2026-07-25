@@ -8,10 +8,10 @@ include "Dataflow/IR/OperationSchemaBase.td"
 def PlainAdmission : TypedAdmissionProvider<0>;
 def PlainParams : CapabilityParamsSchema<0>;
 
-def PredicateCase : SemanticsCase<1>;
-def PlainCase : SemanticsCase<0>;
+def PredicateCase : SemanticsCase<1, 41>;
+def PlainCase : SemanticsCase<0, 103>;
 
-def GammaSchema : ActorSchema<2, "::test::GammaOp", "Control", PlainCase>;
+def GammaSchema : ActorSchema<2, 500, "::test::GammaOp", "Control", PlainCase>;
 
 def LoneGamma : ImplementationFamily<1, [GammaSchema],
     PlainParams, PlainAdmission>;
@@ -19,8 +19,8 @@ def LoneGamma : ImplementationFamily<1, [GammaSchema],
 def PredicateParams : CapabilityParamsSchema<1>;
 def PredicateAdmission : TypedAdmissionProvider<1>;
 
-def BetaSchema : ActorSchema<1, "::test::BetaOp", "Compute", PredicateCase>;
-def AlphaSchema : ActorSchema<0, "::test::AlphaOp", "Compute", PlainCase>;
+def BetaSchema : ActorSchema<1, 73, "::test::BetaOp", "Compute", PredicateCase>;
+def AlphaSchema : ActorSchema<0, 9001, "::test::AlphaOp", "Compute", PlainCase>;
 
 def SharedAlphaBeta : ImplementationFamily<0, [AlphaSchema, BetaSchema],
     PredicateParams, PredicateAdmission>;

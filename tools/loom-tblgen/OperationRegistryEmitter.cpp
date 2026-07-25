@@ -9,11 +9,11 @@
 // here; the emitted row names the operation class and the reader expands
 // `OpClass::getOperationName()`.
 //
-// Generation fails closed on a duplicate id or record name, on an actor kind
-// or semantic case outside its closed C++ enum, on an empty or repeated
-// family member list, and on any id domain that is not dense `[0, N)`. Rows
-// are emitted in numeric-id order, so the bytes depend only on the source
-// records and never on record-map iteration order.
+// Generation fails closed on a duplicate id, record name, or stable wire tag,
+// on an actor kind or semantic case outside its closed C++ enum, on an empty
+// or repeated family member list, and on any id domain that is not dense
+// `[0, N)`. Rows are emitted in numeric-id order, while persistent codecs use
+// only the explicit wire tags carried by those rows.
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,6 +30,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -44,6 +45,7 @@ constexpr StringLiteral kActorKinds[] = {"Compute", "Control", "Memory"};
 
 struct SchemaRow {
   int64_t id;
+  int64_t wireTag;
   StringRef name;
   StringRef opClass;
   StringRef actorKind;
@@ -60,6 +62,12 @@ struct FamilyRow {
 
 struct VocabularyRow {
   int64_t id;
+  StringRef name;
+};
+
+struct WireVocabularyRow {
+  int64_t id;
+  int64_t wireTag;
   StringRef name;
 };
 
@@ -92,6 +100,20 @@ void requireDenseDomain(std::vector<Row> &rows, StringRef domain) {
   }
 }
 
+template <typename Row>
+void requireUniqueWireTags(const std::vector<Row> &rows, StringRef domain) {
+  DenseSet<std::uint64_t> tags;
+  for (const Row &row : rows) {
+    if (row.wireTag < 0 || static_cast<std::uint64_t>(row.wireTag) >
+                               std::numeric_limits<std::uint32_t>::max())
+      PrintFatalError(domain + " wire tag for " + row.name +
+                      " must fit in uint32_t");
+    if (!tags.insert(static_cast<std::uint64_t>(row.wireTag)).second)
+      PrintFatalError("duplicate " + domain + " wire tag " +
+                      Twine(row.wireTag));
+  }
+}
+
 std::vector<VocabularyRow> readVocabulary(const RecordKeeper &records,
                                           StringRef superclass,
                                           StringRef idField, StringRef domain) {
@@ -102,10 +124,21 @@ std::vector<VocabularyRow> readVocabulary(const RecordKeeper &records,
   return rows;
 }
 
-std::vector<SchemaRow> readSchemas(const RecordKeeper &records,
-                                   const std::vector<VocabularyRow> &cases) {
+std::vector<WireVocabularyRow> readSemanticsCases(const RecordKeeper &records) {
+  std::vector<WireVocabularyRow> rows;
+  for (const Record *record : recordsOf(records, "SemanticsCase"))
+    rows.push_back({record->getValueAsInt("caseId"),
+                    record->getValueAsInt("stableWireTag"), record->getName()});
+  requireDenseDomain(rows, "semantics case");
+  requireUniqueWireTags(rows, "semantics case");
+  return rows;
+}
+
+std::vector<SchemaRow>
+readSchemas(const RecordKeeper &records,
+            const std::vector<WireVocabularyRow> &cases) {
   StringSet<> caseNames;
-  for (const VocabularyRow &row : cases)
+  for (const WireVocabularyRow &row : cases)
     caseNames.insert(row.name);
 
   std::vector<SchemaRow> rows;
@@ -118,10 +151,12 @@ std::vector<SchemaRow> readSchemas(const RecordKeeper &records,
     if (!caseNames.contains(semantics))
       PrintFatalError(record->getName() + " names semantics case '" +
                       semantics + "', which is not declared");
-    rows.push_back({record->getValueAsInt("schemaId"), record->getName(),
+    rows.push_back({record->getValueAsInt("schemaId"),
+                    record->getValueAsInt("stableWireTag"), record->getName(),
                     record->getValueAsString("opClass"), actorKind, semantics});
   }
   requireDenseDomain(rows, "operation schema");
+  requireUniqueWireTags(rows, "operation schema");
 
   StringSet<> classes;
   for (const SchemaRow &row : rows)
@@ -201,24 +236,23 @@ void emitMacroUndef(raw_ostream &os, StringRef macro) {
 
 void loom::tblgen::emitOperationSchemas(const RecordKeeper &records,
                                         raw_ostream &os) {
-  std::vector<VocabularyRow> cases =
-      readVocabulary(records, "SemanticsCase", "caseId", "semantics case");
+  std::vector<WireVocabularyRow> cases = readSemanticsCases(records);
   std::vector<SchemaRow> schemas = readSchemas(records, cases);
 
   emitHeader(os, "The canonical operation schema rows.");
-  emitMacroGuard(os, "LOOM_OPERATION_SEMANTICS_CASE", "Name, Id");
+  emitMacroGuard(os, "LOOM_OPERATION_SEMANTICS_CASE", "Name, Id, WireTag");
   emitMacroGuard(os, "LOOM_OPERATION_SCHEMA",
-                 "Name, Id, OpClass, ActorKind, SemanticsCase");
+                 "Name, Id, WireTag, OpClass, ActorKind, SemanticsCase");
   os << "\n";
 
-  for (const VocabularyRow &row : cases)
-    os << "LOOM_OPERATION_SEMANTICS_CASE(" << row.name << ", " << row.id
-       << ")\n";
+  for (const WireVocabularyRow &row : cases)
+    os << "LOOM_OPERATION_SEMANTICS_CASE(" << row.name << ", " << row.id << ", "
+       << row.wireTag << ")\n";
   os << "\n";
   for (const SchemaRow &row : schemas)
     os << "LOOM_OPERATION_SCHEMA(" << row.name << ", " << row.id << ", "
-       << row.opClass << ", " << row.actorKind << ", " << row.semanticsCase
-       << ")\n";
+       << row.wireTag << ", " << row.opClass << ", " << row.actorKind << ", "
+       << row.semanticsCase << ")\n";
 
   os << "\n";
   emitMacroUndef(os, "LOOM_OPERATION_SEMANTICS_CASE");
@@ -227,8 +261,7 @@ void loom::tblgen::emitOperationSchemas(const RecordKeeper &records,
 
 void loom::tblgen::emitImplementationFamilies(const RecordKeeper &records,
                                               raw_ostream &os) {
-  std::vector<VocabularyRow> cases =
-      readVocabulary(records, "SemanticsCase", "caseId", "semantics case");
+  std::vector<WireVocabularyRow> cases = readSemanticsCases(records);
   std::vector<SchemaRow> schemas = readSchemas(records, cases);
   std::vector<VocabularyRow> params = readVocabulary(
       records, "CapabilityParamsSchema", "paramsId", "capability params");
@@ -272,8 +305,7 @@ void loom::tblgen::emitImplementationFamilies(const RecordKeeper &records,
 
 void loom::tblgen::emitImplementationFamilyEnum(const RecordKeeper &records,
                                                 raw_ostream &os) {
-  std::vector<VocabularyRow> cases =
-      readVocabulary(records, "SemanticsCase", "caseId", "semantics case");
+  std::vector<WireVocabularyRow> cases = readSemanticsCases(records);
   std::vector<SchemaRow> schemas = readSchemas(records, cases);
   std::vector<FamilyRow> families = readFamilies(records, schemas);
 

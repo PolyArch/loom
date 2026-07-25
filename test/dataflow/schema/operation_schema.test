@@ -1,1 +1,9 @@
 # RUN: loom-dataflow-operation-schema-test
+# RUN: not loom-tblgen -gen-operation-schemas -I %loom_include \
+# RUN:   %S/duplicate_wire_tag.td -o /dev/null 2>&1 | FileCheck %s
+# RUN: not loom-tblgen -gen-operation-schemas -I %loom_include \
+# RUN:   %S/duplicate_semantics_wire_tag.td -o /dev/null 2>&1 | \
+# RUN:   FileCheck --check-prefix=SEMANTICS %s
+
+# CHECK: duplicate operation schema wire tag 9001
+# SEMANTICS: duplicate semantics case wire tag 103

@@ -33,6 +33,7 @@ set(LOOM_TEST_DEPENDS
   loom-cost-test
   loom-coverage-test
   loom-dataflow-memory-effect-test
+  loom-dataflow-operation-schema-codec-test
   loom-dataflow-operation-schema-test
   loom-dataflow-service-schema-test
   loom-dfg-sim

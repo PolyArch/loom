@@ -43,3 +43,17 @@ target_link_libraries(loom-dataflow-operation-schema-test PRIVATE
   MLIRSupport
   LLVMSupport
 )
+
+add_executable(loom-dataflow-operation-schema-codec-test
+  OperationSchemaCodecTest.cpp
+)
+
+target_link_libraries(loom-dataflow-operation-schema-codec-test PRIVATE
+  LoomCommon
+  MLIRDataflow
+  MLIRArithDialect
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRSupport
+  LLVMSupport
+)

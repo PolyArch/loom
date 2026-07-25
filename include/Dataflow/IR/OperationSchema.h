@@ -21,10 +21,11 @@ namespace dataflow {
 /// The stable identity of one registered canonical actor operation schema.
 ///
 /// `include/Dataflow/IR/OperationSchemas.td` is the one source of this domain.
-/// The enumerators are dense and their numeric values are stable, so every
-/// consumer indexes generated tables directly instead of matching a name.
+/// The enumerators are dense internal indices for generated tables. Persistent
+/// identity uses the registry-owned wire codec, never these numeric values.
 enum class OperationSchemaId : std::uint32_t {
-#define LOOM_OPERATION_SCHEMA(Name, Id, OpClass, ActorKind, SemanticsCase)     \
+#define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
+                              SemanticsCase)                                   \
   Name = Id,
 #include "Dataflow/IR/OperationSchemas.inc"
 };
@@ -33,7 +34,7 @@ enum class OperationSchemaId : std::uint32_t {
 /// actor's identity-critical semantic payload uses; no semantic value is ever
 /// reached through an attribute name.
 enum class OperationSemanticsCase : std::uint32_t {
-#define LOOM_OPERATION_SEMANTICS_CASE(Name, Id) Name = Id,
+#define LOOM_OPERATION_SEMANTICS_CASE(Name, Id, WireTag) Name = Id,
 #include "Dataflow/IR/OperationSchemas.inc"
 };
 

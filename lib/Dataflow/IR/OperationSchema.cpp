@@ -4,11 +4,12 @@
 // typed projection each registered actor presents through
 // `CanonicalDataflowActorOpInterface`.
 //
-// Every table is built once and indexed by the stable `OperationSchemaId`, so
-// a consumer never scans a list or compares an operation name to decide
-// semantics. Every payload reader reads exact typed accessors of the operation
-// class its schema names and fails closed when the instance does not carry the
-// state its declared case owns.
+// Every table is built once and indexed by the dense internal
+// `OperationSchemaId`, so a consumer never scans a list or compares an
+// operation name to decide semantics. Persistent identity uses the separate
+// generated wire tags. Every payload reader reads exact typed accessors of the
+// operation class its schema names and fails closed when the instance does not
+// carry the state its declared case owns.
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,12 +38,14 @@ using namespace mlir;
 namespace {
 
 constexpr std::size_t kSchemaCount = 0
-#define LOOM_OPERATION_SCHEMA(Name, Id, OpClass, ActorKind, SemanticsCase) +1
+#define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
+                              SemanticsCase)                                   \
+  +1
 #include "Dataflow/IR/OperationSchemas.inc"
     ;
 
 constexpr std::size_t kSemanticsCaseCount = 0
-#define LOOM_OPERATION_SEMANTICS_CASE(Name, Id) +1
+#define LOOM_OPERATION_SEMANTICS_CASE(Name, Id, WireTag) +1
 #include "Dataflow/IR/OperationSchemas.inc"
     ;
 
@@ -56,7 +59,8 @@ struct SchemaRecord {
 /// the index and no search is ever needed.
 const std::array<SchemaRecord, kSchemaCount> &schemaTable() {
   static const std::array<SchemaRecord, kSchemaCount> table = {{
-#define LOOM_OPERATION_SCHEMA(Name, Id, OpClass, ActorKind, SemanticsCase)     \
+#define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
+                              SemanticsCase)                                   \
   SchemaRecord{OpClass::getOperationName(),                                    \
                dataflow::CanonicalDataflowActorKind::ActorKind,                \
                dataflow::OperationSemanticsCase::SemanticsCase},
@@ -67,7 +71,7 @@ const std::array<SchemaRecord, kSchemaCount> &schemaTable() {
 
 const std::array<llvm::StringRef, kSemanticsCaseCount> &semanticsCaseTable() {
   static const std::array<llvm::StringRef, kSemanticsCaseCount> table = {{
-#define LOOM_OPERATION_SEMANTICS_CASE(Name, Id) llvm::StringRef(#Name),
+#define LOOM_OPERATION_SEMANTICS_CASE(Name, Id, WireTag) llvm::StringRef(#Name),
 #include "Dataflow/IR/OperationSchemas.inc"
   }};
   return table;
@@ -499,7 +503,8 @@ void dataflow::attachCanonicalDataflowActorInterfaces(MLIRContext &context) {
   context.getOrLoadDialect<ub::UBDialect>();
   context.getOrLoadDialect<vector::VectorDialect>();
 
-#define LOOM_OPERATION_SCHEMA(Name, Id, OpClass, ActorKind, SemanticsCase)     \
+#define LOOM_OPERATION_SCHEMA(Name, Id, WireTag, OpClass, ActorKind,           \
+                              SemanticsCase)                                   \
   attachActorModel<OpClass>(context);
 #include "Dataflow/IR/OperationSchemas.inc"
 }

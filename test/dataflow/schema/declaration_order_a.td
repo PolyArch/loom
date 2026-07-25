@@ -4,12 +4,12 @@
 
 include "Dataflow/IR/OperationSchemaBase.td"
 
-def PlainCase : SemanticsCase<0>;
-def PredicateCase : SemanticsCase<1>;
+def PlainCase : SemanticsCase<0, 103>;
+def PredicateCase : SemanticsCase<1, 41>;
 
-def AlphaSchema : ActorSchema<0, "::test::AlphaOp", "Compute", PlainCase>;
-def BetaSchema : ActorSchema<1, "::test::BetaOp", "Compute", PredicateCase>;
-def GammaSchema : ActorSchema<2, "::test::GammaOp", "Control", PlainCase>;
+def AlphaSchema : ActorSchema<0, 9001, "::test::AlphaOp", "Compute", PlainCase>;
+def BetaSchema : ActorSchema<1, 73, "::test::BetaOp", "Compute", PredicateCase>;
+def GammaSchema : ActorSchema<2, 500, "::test::GammaOp", "Control", PlainCase>;
 
 def PlainParams : CapabilityParamsSchema<0>;
 def PredicateParams : CapabilityParamsSchema<1>;
